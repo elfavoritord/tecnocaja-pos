@@ -1,19 +1,19 @@
-﻿{
-    "version":  "1.1.1",
-    "stableVersion":  "1.1.1",
-    "date":  "23/05/2026",
-    "size":  "47.3 MB",
-    "type":  "feature",
-    "critical":  false,
-    "downloadUrl":  null,
-    "changes":  [
-                    "âœ¨ Nuevo mÃ³dulo de facturaciÃ³n electrÃ³nica e-CF completo.",
-                    "âš¡ Mejoras significativas en velocidad de facturaciÃ³n.",
-                    "ðŸ› CorrecciÃ³n de errores en impresiÃ³n tÃ©rmica ESC/POS.",
-                    "ðŸ“¦ OptimizaciÃ³n del mÃ³dulo de inventario y stock.",
-                    "ðŸ“Š Nuevos reportes avanzados de ventas y rentabilidad.",
-                    "ðŸ”’ Mayor seguridad en autenticaciÃ³n y manejo de sesiones.",
-                    "ðŸ–¥ Interfaz de usuario rediseÃ±ada con mejor contraste.",
-                    "ðŸ”„ SincronizaciÃ³n mÃ¡s rÃ¡pida en modo multicaja."
-                ]
+{
+  "version": "1.1.2",
+  "stableVersion": "1.1.2",
+  "date": "23/05/2026",
+  "size": "47.3 MB",
+  "type": "feature",
+  "critical": false,
+  "downloadUrl": null,
+  "changes": [
+    "âœ¨ Nuevo mÃ³dulo de facturaciÃ³n electrÃ³nica e-CF completo.",
+    "âš¡ Mejoras significativas en velocidad de facturaciÃ³n.",
+    "ðŸ› CorrecciÃ³n de errores en impresiÃ³n tÃ©rmica ESC/POS.",
+    "ðŸ“¦ OptimizaciÃ³n del mÃ³dulo de inventario y stock.",
+    "ðŸ“Š Nuevos reportes avanzados de ventas y rentabilidad.",
+    "ðŸ”’ Mayor seguridad en autenticaciÃ³n y manejo de sesiones.",
+    "ðŸ–¥ Interfaz de usuario rediseÃ±ada con mejor contraste.",
+    "ðŸ”„ SincronizaciÃ³n mÃ¡s rÃ¡pida en modo multicaja."
+  ]
 }
