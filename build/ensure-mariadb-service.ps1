@@ -154,44 +154,69 @@ function Initialize-BundledData {
 
   $mysqlDir = Join-Path $dataDir 'mysql'
   $ibdata   = Join-Path $dataDir 'ibdata1'
+
+  # Si los datos ya existen, no tocar nada — proteccion de datos
   if ((Test-Path -LiteralPath $mysqlDir) -and (Test-Path -LiteralPath $ibdata)) {
-    Write-Log 'Directorio de datos ya existe, omitiendo inicializacion.'
+    Write-Log 'Directorio de datos ya existe y esta completo. Omitiendo inicializacion.'
     Ensure-ManagedConfig -Candidate $Candidate
     return
   }
 
-  if (-not (Test-Path -LiteralPath $Candidate.BootstrapExe)) {
-    throw "No se encontro mysql_install_db.exe en: $($Candidate.BootstrapExe)"
+  # Buscar el ejecutable de bootstrap: preferir mariadb-install-db.exe (v10.9+/12.x),
+  # caer a mysql_install_db.exe (v10.8 y anteriores)
+  $bootstrapExe = $null
+  foreach ($exeName in @('mariadb-install-db.exe', 'mysql_install_db.exe')) {
+    $candidate_exe = Join-Path (Split-Path $Candidate.ServerExe -Parent) $exeName
+    if (Test-Path -LiteralPath $candidate_exe) {
+      $bootstrapExe = $candidate_exe
+      break
+    }
   }
 
-  Write-Log "Inicializando datos MariaDB con: $($Candidate.BootstrapExe)"
+  if (-not $bootstrapExe) {
+    throw "No se encontro ningun ejecutable de bootstrap (mariadb-install-db.exe / mysql_install_db.exe) en: $(Split-Path $Candidate.ServerExe -Parent)"
+  }
+
+  Write-Log "Bootstrap executable: $bootstrapExe"
+
+  # Limpiar directorio de datos si existe pero esta incompleto
   if (Test-Path -LiteralPath $dataDir) {
+    Write-Log "Limpiando directorio de datos incompleto: $dataDir"
     Get-ChildItem -Path $dataDir -Force -ErrorAction SilentlyContinue |
       Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
   } else {
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
   }
 
-  # Usar argumentos estilo --long para compatibilidad con todas las versiones Windows de MariaDB
-  $bootstrapArgs = @(
-    "--datadir=$dataDir",
-    "--port=$port",
-    '--password='
-  )
-  Write-Log "Ejecutando: $($Candidate.BootstrapExe) $($bootstrapArgs -join ' ')"
-  & $Candidate.BootstrapExe @bootstrapArgs 2>&1 | ForEach-Object { Write-Log "  bootstrap: $_" }
-  $exitCode = $LASTEXITCODE
+  Ensure-ManagedConfig -Candidate $Candidate
 
-  # mysql_install_db.exe a veces retorna 1 pero igual crea los archivos correctamente
-  if ($exitCode -ne 0) {
-    Write-Log "mysql_install_db.exe retorno codigo $exitCode — verificando si los datos se crearon..."
-    if (-not ((Test-Path -LiteralPath $mysqlDir) -and (Test-Path -LiteralPath $ibdata))) {
-      throw "mysql_install_db.exe fallo (codigo $exitCode) y no se crearon los datos."
+  # Intentar bootstrap — primero sin --password (MariaDB 11+/12.x),
+  # luego con --password= (10.x compatibilidad)
+  $bootstrapSets = @(
+    @("--datadir=$dataDir", "--port=$port", "--default-authentication-plugin=mysql_native_password"),
+    @("--datadir=$dataDir", "--port=$port"),
+    @("--datadir=$dataDir", "--port=$port", '--password=')
+  )
+
+  $bootstrapOk = $false
+  foreach ($args in $bootstrapSets) {
+    Write-Log "Intentando bootstrap: $bootstrapExe $($args -join ' ')"
+    & $bootstrapExe @args 2>&1 | ForEach-Object { Write-Log "  > $_" }
+    $exitCode = $LASTEXITCODE
+    Write-Log "Bootstrap exit code: $exitCode"
+
+    # Verificar si los datos se crearon correctamente (el codigo puede ser no-cero pero datos ok)
+    if ((Test-Path -LiteralPath $mysqlDir) -and (Test-Path -LiteralPath $ibdata)) {
+      Write-Log "Datos creados correctamente (exit code: $exitCode)"
+      $bootstrapOk = $true
+      break
     }
-    Write-Log 'Datos creados correctamente a pesar del codigo de salida no-cero.'
+    Write-Log "Datos no creados con estos argumentos, intentando siguiente variante..."
   }
 
-  Ensure-ManagedConfig -Candidate $Candidate
+  if (-not $bootstrapOk) {
+    throw "Bootstrap de MariaDB fallo con todas las variantes. Verifica el log en: $logFile"
+  }
 }
 
 function Configure-Service {
@@ -203,14 +228,18 @@ function Configure-Service {
   $service = Get-ServiceIfExists -Name $Name
   if ($service) {
     Write-Log "Reconfigurando servicio existente $Name..."
-    & sc.exe config $Name binPath= $binPath start= auto | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "No se pudo reconfigurar el servicio $Name (sc config)." }
+    $configCmd = "sc config `"$Name`" binPath= `"$binPath`" start= auto"
+    cmd /c $configCmd 2>&1 | ForEach-Object { Write-Log "  sc: $_" }
+    if ($LASTEXITCODE -ne 0) { throw "No se pudo reconfigurar el servicio $Name (sc config, codigo $LASTEXITCODE)." }
     return
   }
 
   Write-Log "Creando servicio $Name..."
-  & sc.exe create $Name binPath= $binPath start= auto DisplayName= $displayName | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "No se pudo crear el servicio $Name (sc create)." }
+  # Usar cmd /c para manejar correctamente el DisplayName con espacios
+  $createCmd = "sc create `"$Name`" binPath= `"$binPath`" start= auto DisplayName= `"$displayName`""
+  Write-Log "Ejecutando: $createCmd"
+  cmd /c $createCmd 2>&1 | ForEach-Object { Write-Log "  sc: $_" }
+  if ($LASTEXITCODE -ne 0) { throw "No se pudo crear el servicio $Name (sc create, codigo $LASTEXITCODE)." }
   & sc.exe description $Name 'MariaDB local incluida con Tecno Caja.' | Out-Null
 }
 

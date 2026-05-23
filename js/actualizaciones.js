@@ -288,10 +288,23 @@
   function _setStatus(s) {
     UPD.status = s;
     const el = document.getElementById('upd-status-badge');
-    if (!el) return;
-    const m = STATUS_MAP[s] || STATUS_MAP.idle;
-    el.className = `upd-status-badge ${m.cls}`;
-    el.innerHTML = `<span>${m.dot}</span><span>${m.text}</span>`;
+    if (el) {
+      const m = STATUS_MAP[s] || STATUS_MAP.idle;
+      el.className = `upd-status-badge ${m.cls}`;
+      el.innerHTML = `<span>${m.dot}</span><span>${m.text}</span>`;
+    }
+    // Exponer estado al sistema de notificaciones global
+    if (s === 'available' && UPD.latestInfo) {
+      window._updAvailable = {
+        version : UPD.latestInfo.version || '',
+        type    : UPD.latestInfo.type    || 'update',
+        size    : UPD.latestInfo.size    || '',
+      };
+    } else if (s === 'uptodate' || s === 'installed' || s === 'idle') {
+      window._updAvailable = null;
+    }
+    // Actualizar badge de notificaciones si la función existe
+    if (typeof updateNotifications === 'function') updateNotifications();
   }
 
   function _refreshHero() {
