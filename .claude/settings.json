@@ -58,7 +58,8 @@
       "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, usuario_id, token, activa, creada_en FROM sesiones_activas WHERE activa=1 ORDER BY id DESC LIMIT 5;\" 2>&1)",
       "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, rol, estado FROM users ORDER BY id DESC LIMIT 10; SELECT id, user_id, is_active, session_type FROM sesiones_activas WHERE is_active=1;\" 2>&1)",
       "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, estado FROM branches; SELECT id, nombre, branch_id, estado FROM cash_registers;\" 2>&1)",
-      "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, usuario, rol, estado FROM users ORDER BY id; SELECT id, user_id, is_active, session_type, created_at FROM sesiones_activas ORDER BY id;\" 2>&1)"
+      "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, usuario, rol, estado FROM users ORDER BY id; SELECT id, user_id, is_active, session_type, created_at FROM sesiones_activas ORDER BY id;\" 2>&1)",
+      "Bash(git add *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",
