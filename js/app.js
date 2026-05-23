@@ -6604,6 +6604,235 @@ async function _printCashCorte(d, contado, diferencia, notas) {
   if (win) { win.document.write(html); win.document.close(); }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO DE DEVOLUCIONES
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _devolucionCurrentSale = null;
+let _devolucionCurrentItems = [];
+
+function openDevolucionModal() {
+  if (!currentUserCan('devolver_ventas')) {
+    showToast('No tienes permiso para procesar devoluciones.', 'error');
+    return;
+  }
+  // Reset al paso 1
+  document.getElementById('devolucion-step-1').classList.remove('hidden');
+  document.getElementById('devolucion-step-2').classList.add('hidden');
+  document.getElementById('devolucion-search-results').style.display = 'none';
+  document.getElementById('devolucion-search-empty').classList.add('hidden');
+  document.getElementById('devolucion-search-input').value = '';
+  document.getElementById('devolucion-reason').value = '';
+  document.getElementById('devolucion-refund-cash').checked = true;
+  _devolucionCurrentSale = null;
+  _devolucionCurrentItems = [];
+  document.getElementById('devolucion-modal')?.classList.remove('hidden');
+  setTimeout(() => document.getElementById('devolucion-search-input')?.focus(), 100);
+}
+
+function closeDevolucionModal() {
+  document.getElementById('devolucion-modal')?.classList.add('hidden');
+}
+
+async function buscarFacturaDevolucion() {
+  const q = document.getElementById('devolucion-search-input')?.value?.trim();
+  if (!q || q.length < 2) {
+    showToast('Ingresa al menos 2 caracteres para buscar.', 'warning');
+    return;
+  }
+  const btn = document.getElementById('btn-buscar-factura');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando...'; }
+
+  try {
+    const resp = await api.searchForReturn(q);
+    const results = resp?.results || [];
+    const listEl = document.getElementById('devolucion-results-list');
+    const emptyEl = document.getElementById('devolucion-search-empty');
+    const resultsWrap = document.getElementById('devolucion-search-results');
+
+    if (!results.length) {
+      resultsWrap.style.display = 'none';
+      emptyEl.classList.remove('hidden');
+      return;
+    }
+
+    emptyEl.classList.add('hidden');
+    resultsWrap.style.display = '';
+    listEl.innerHTML = results.map(s => {
+      const statusBadge = s.fiscal_status === 'cancelada'
+        ? '<span style="color:#dc3545;font-size:0.75rem">• Cancelada</span>'
+        : s.sale_status === 'devuelta'
+          ? '<span style="color:#fd7e14;font-size:0.75rem">• Devuelta</span>'
+          : '<span style="color:#28a745;font-size:0.75rem">• Válida</span>';
+      const fmtDate = s.created_at ? new Date(s.created_at).toLocaleDateString('es-DO') : '—';
+      const canReturn = s.fiscal_status !== 'cancelada' && s.sale_status !== 'devuelta';
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:0.6rem 0.75rem;
+                    border:1px solid var(--border-color,#333);border-radius:8px;margin-bottom:0.4rem;
+                    background:var(--bg-secondary,#1e1e2e);cursor:${canReturn ? 'pointer' : 'default'};opacity:${canReturn ? 1 : 0.6}"
+             ${canReturn ? `onclick="seleccionarFacturaDevolucion('${s.invoice_number}')"` : ''}>
+          <div>
+            <strong style="font-size:0.95rem">${s.invoice_number}</strong>
+            <span style="margin-left:0.5rem;font-size:0.8rem;color:var(--text-muted)">${s.client_name}</span>
+            <div style="font-size:0.78rem;color:var(--text-muted)">${fmtDate} • ${s.cashier_name}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-weight:600">${fmt(s.total)}</div>
+            ${statusBadge}
+          </div>
+        </div>`;
+    }).join('');
+  } catch (err) {
+    showToast(err?.message || 'Error buscando factura.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar'; }
+  }
+}
+
+async function seleccionarFacturaDevolucion(invoiceNumber) {
+  try {
+    const data = await api.getSaleReturnDetail(invoiceNumber);
+    _devolucionCurrentSale = data.sale;
+    _devolucionCurrentItems = data.items;
+
+    // Poblar header
+    document.getElementById('devolucion-invoice-num').textContent = data.sale.invoiceNumber;
+    document.getElementById('devolucion-client-name').textContent = data.sale.clientName;
+    document.getElementById('devolucion-sale-total').textContent = fmt(data.sale.total);
+    document.getElementById('devolucion-sale-date').textContent = data.sale.createdAt
+      ? new Date(data.sale.createdAt).toLocaleDateString('es-DO') : '—';
+    document.getElementById('devolucion-cashier').textContent = data.sale.cashierName || '—';
+    document.getElementById('devolucion-method').textContent = data.sale.paymentMethod || '—';
+
+    // Renderizar items
+    const listEl = document.getElementById('devolucion-items-list');
+    listEl.innerHTML = data.items.map((item, idx) => {
+      const disponible = item.qtyDisponible;
+      const disabled = disponible <= 0 ? 'disabled' : '';
+      const style = disponible <= 0 ? 'opacity:0.5' : '';
+      return `
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:0.5rem;align-items:center;
+                    padding:0.6rem 0.75rem;border:1px solid var(--border-color,#333);border-radius:8px;
+                    background:var(--bg-secondary,#1e1e2e);${style}" data-item-idx="${idx}">
+          <div>
+            <div style="font-weight:500;font-size:0.9rem">${item.productName}</div>
+            <div style="font-size:0.78rem;color:var(--text-muted)">
+              Precio: ${fmt(item.price)} &nbsp;|&nbsp;
+              Vendidos: ${item.qty} &nbsp;|&nbsp;
+              ${item.qtyDevuelta > 0 ? `<span style="color:#fd7e14">Ya devueltos: ${item.qtyDevuelta}</span> &nbsp;|&nbsp;` : ''}
+              Disponibles: <strong>${disponible}</strong>
+            </div>
+          </div>
+          <div style="font-size:0.85rem;color:var(--text-muted);text-align:right;min-width:80px">
+            ${fmt(item.lineTotal)}
+          </div>
+          <div style="min-width:90px">
+            <input type="number" ${disabled}
+                   id="devolucion-qty-${idx}"
+                   data-item-idx="${idx}"
+                   data-product-id="${item.productId}"
+                   data-price="${item.price}"
+                   data-qty-max="${disponible}"
+                   min="0" max="${disponible}" step="1" value="0"
+                   style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid var(--border-color,#555);
+                          background:var(--bg-input,#2a2a3e);color:var(--text,#fff);text-align:center;font-size:0.9rem"
+                   oninput="recalcDevolucionTotal(this)" placeholder="0">
+          </div>
+        </div>`;
+    }).join('');
+
+    document.getElementById('devolucion-step-1').classList.add('hidden');
+    document.getElementById('devolucion-step-2').classList.remove('hidden');
+    document.getElementById('devolucion-total-calc').textContent = fmt(0);
+  } catch (err) {
+    showToast(err?.message || 'Error cargando detalle de la factura.', 'error');
+  }
+}
+
+function recalcDevolucionTotal(input) {
+  // Clamp al máximo
+  const max = Number(input.dataset.qtyMax || 0);
+  let val = Number(input.value || 0);
+  if (val < 0) { input.value = 0; val = 0; }
+  if (val > max) { input.value = max; val = max; }
+
+  let total = 0;
+  document.querySelectorAll('#devolucion-items-list input[type=number]').forEach(el => {
+    const qty = Number(el.value || 0);
+    const price = Number(el.dataset.price || 0);
+    total += qty * price;
+  });
+  document.getElementById('devolucion-total-calc').textContent = fmt(total);
+}
+
+function devolucionGoBack() {
+  document.getElementById('devolucion-step-1').classList.remove('hidden');
+  document.getElementById('devolucion-step-2').classList.add('hidden');
+  _devolucionCurrentSale = null;
+  _devolucionCurrentItems = [];
+}
+
+async function procesarDevolucion() {
+  if (!_devolucionCurrentSale) return;
+
+  const items = [];
+  document.querySelectorAll('#devolucion-items-list input[type=number]').forEach(el => {
+    const qty = Number(el.value || 0);
+    if (qty > 0) {
+      items.push({
+        productId: Number(el.dataset.productId),
+        qty,
+      });
+    }
+  });
+
+  if (!items.length) {
+    showToast('Selecciona al menos un producto y una cantidad mayor a 0.', 'warning');
+    return;
+  }
+
+  const reason = document.getElementById('devolucion-reason')?.value?.trim() || 'Devolución de cliente';
+  const refundCash = document.getElementById('devolucion-refund-cash')?.checked !== false;
+
+  const btn = document.getElementById('btn-procesar-devolucion');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Procesando...'; }
+
+  try {
+    const result = await api.processReturn({
+      invoiceNumber: _devolucionCurrentSale.invoiceNumber,
+      items,
+      reason,
+      refundCash,
+      ...getBusinessStructurePayload(),
+      ...getActorPayload(),
+    });
+
+    showToast(`✅ ${result.message}`, 'success');
+    closeDevolucionModal();
+
+    // Refrescar datos locales
+    try {
+      const freshData = await api.getBootstrap();
+      if (freshData) hydrateDB(freshData);
+      syncCajaState();
+      refreshAuditLogs();
+    } catch (_e) {}
+
+  } catch (err) {
+    showToast(err?.message || 'No se pudo procesar la devolución.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '✅ Procesar Devolución'; }
+  }
+}
+
+window.openDevolucionModal          = openDevolucionModal;
+window.closeDevolucionModal         = closeDevolucionModal;
+window.buscarFacturaDevolucion      = buscarFacturaDevolucion;
+window.seleccionarFacturaDevolucion = seleccionarFacturaDevolucion;
+window.recalcDevolucionTotal        = recalcDevolucionTotal;
+window.devolucionGoBack             = devolucionGoBack;
+window.procesarDevolucion           = procesarDevolucion;
+
 window.openCashExpenseModal = openCashExpenseModal;
 window.syncCashExpenseFields = syncCashExpenseFields;
 window.saveCashExpense = saveCashExpense;

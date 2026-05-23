@@ -808,6 +808,36 @@ VALUES (1, 1, 'Sucursal Principal', 'PRINCIPAL', '', '', 'Administrador', 'Activ
 INSERT INTO cash_registers (id, branch_id, nombre, codigo, estado)
 VALUES (1, 1, 'Caja Principal', 'CAJA-01', 'Activa');
 
+CREATE TABLE sale_returns (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  original_sale_id INT NOT NULL,
+  original_invoice_number VARCHAR(40) NOT NULL,
+  return_type VARCHAR(20) NOT NULL DEFAULT 'parcial',
+  return_reason VARCHAR(255) DEFAULT NULL,
+  returned_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  returned_by_user_id INT DEFAULT NULL,
+  returned_by_user_name VARCHAR(120) DEFAULT NULL,
+  branch_id INT DEFAULT NULL,
+  cash_register_id INT DEFAULT NULL,
+  cash_movement_id INT DEFAULT NULL,
+  returned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_sale_returns_sale (original_sale_id),
+  KEY idx_sale_returns_invoice (original_invoice_number),
+  CONSTRAINT fk_sale_returns_sale FOREIGN KEY (original_sale_id) REFERENCES sales(id) ON DELETE CASCADE
+);
+
+CREATE TABLE sale_return_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  return_id INT NOT NULL,
+  product_id INT NOT NULL,
+  product_name VARCHAR(255) NOT NULL DEFAULT '',
+  qty_returned DECIMAL(10,2) NOT NULL,
+  price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  line_total DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  KEY idx_sale_return_items_return (return_id),
+  CONSTRAINT fk_sale_return_items_return FOREIGN KEY (return_id) REFERENCES sale_returns(id) ON DELETE CASCADE
+);
+
 INSERT INTO roles (id, codigo, nombre, permisos, estado) VALUES
 (1, 'administrador_general', 'Administrador general', '["*"]', 'Activo'),
 (2, 'administrador_sucursal', 'Administrador de sucursal', '["dashboard_sucursal","ver_dashboard_sucursal","caja","cajas","ver_cajas_sucursal","crear_cajas_sucursal","editar_cajas_sucursal","activar_cajas_sucursal","asignar_cajeros_sucursal","usuarios","usuarios_crear","usuarios_editar","ver_usuarios_sucursal","crear_cajeros_sucursal","crear_supervisores_sucursal","editar_usuarios_sucursal","activar_usuarios_sucursal","resetear_password_usuarios_sucursal","ventas","ver_ventas_sucursal","ver_cierres_caja_sucursal","ver_aperturas_caja_sucursal","reportes_sucursal","ver_reportes_sucursal","inventario","ver_inventario_sucursal","registrar_movimientos_internos_sucursal","ver_productos_sucursal","consultar_stock_sucursal","ver_arqueos_caja_sucursal","ver_historial_inventario_sucursal"]', 'Activo'),
