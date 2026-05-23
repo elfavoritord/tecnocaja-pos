@@ -62,7 +62,8 @@
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",
-      "C:\\Users\\Emilio Coding IA\\AppData\\Local\\Programs\\NovaPOS\\resources\\app\\config"
+      "C:\\Users\\Emilio Coding IA\\AppData\\Local\\Programs\\NovaPOS\\resources\\app\\config",
+      "C:\\Users\\Emilio Coding IA\\AppData\\Local\\Tecno Caja"
     ]
   }
 }

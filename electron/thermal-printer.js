@@ -470,7 +470,7 @@ if (-not (Test-Path $dllDir)) {
 $typeCode = @"
 using System;
 using System.Runtime.InteropServices;
-public class Tecno CajaRawPrint {
+public class TecnoCajaRawPrint {
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
   public class DOCINFO {
     [MarshalAs(UnmanagedType.LPWStr)]
@@ -528,24 +528,24 @@ $pageStarted = $false
 $ptr = [IntPtr]::Zero
 
 try {
-  if (-not [Tecno CajaRawPrint]::OpenPrinter($PrinterName, [ref]$hPrinter, [IntPtr]::Zero)) {
+  if (-not [TecnoCajaRawPrint]::OpenPrinter($PrinterName, [ref]$hPrinter, [IntPtr]::Zero)) {
     $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     throw "OpenPrinter fallo en '$PrinterName': $(Get-Win32Message $code) (Win32 $code)"
   }
 
-  $di = New-Object Tecno CajaRawPrint+DOCINFO
+  $di = New-Object TecnoCajaRawPrint+DOCINFO
   $di.pDocName = "Tecno Caja-Recibo"
   $di.pOutputFile = $null
   $di.pDataType = "RAW"
 
-  $jobId = [Tecno CajaRawPrint]::StartDocPrinter($hPrinter, 1, $di)
+  $jobId = [TecnoCajaRawPrint]::StartDocPrinter($hPrinter, 1, $di)
   if ($jobId -eq 0) {
     $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     throw "StartDocPrinter fallo en '$PrinterName': $(Get-Win32Message $code) (Win32 $code)"
   }
   $docStarted = $true
 
-  if (-not [Tecno CajaRawPrint]::StartPagePrinter($hPrinter)) {
+  if (-not [TecnoCajaRawPrint]::StartPagePrinter($hPrinter)) {
     $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
     throw "StartPagePrinter fallo en '$PrinterName': $(Get-Win32Message $code) (Win32 $code)"
   }
@@ -555,7 +555,7 @@ try {
   $ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length)
   [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $ptr, $bytes.Length)
   $written = 0
-  $ok = [Tecno CajaRawPrint]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written)
+  $ok = [TecnoCajaRawPrint]::WritePrinter($hPrinter, $ptr, $bytes.Length, [ref]$written)
   $writeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
   if (-not $ok) {
     throw "WritePrinter fallo en '$PrinterName': $(Get-Win32Message $writeError) (Win32 $writeError)"
@@ -576,13 +576,13 @@ finally {
     [Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
   }
   if ($pageStarted) {
-    [Tecno CajaRawPrint]::EndPagePrinter($hPrinter) | Out-Null
+    [TecnoCajaRawPrint]::EndPagePrinter($hPrinter) | Out-Null
   }
   if ($docStarted) {
-    [Tecno CajaRawPrint]::EndDocPrinter($hPrinter) | Out-Null
+    [TecnoCajaRawPrint]::EndDocPrinter($hPrinter) | Out-Null
   }
   if ($hPrinter -ne [IntPtr]::Zero) {
-    [Tecno CajaRawPrint]::ClosePrinter($hPrinter) | Out-Null
+    [TecnoCajaRawPrint]::ClosePrinter($hPrinter) | Out-Null
   }
 }
 `;
