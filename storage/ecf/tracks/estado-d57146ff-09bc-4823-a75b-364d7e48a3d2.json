@@ -1,0 +1,23 @@
+{
+  "trackId": "d57146ff-09bc-4823-a75b-364d7e48a3d2",
+  "fecha": "2026-05-21T16:57:40.336Z",
+  "estado": "RECHAZADO",
+  "environment": "testecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000013",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "5/21/2026 12:57:15 PM",
+  "mensajes": [
+    {
+      "valor": "El campo TotalISRRetencion del área Totales de la sección Encabezado no es válido",
+      "codigo": 11170
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"d57146ff-09bc-4823-a75b-364d7e48a3d2\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000013\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"5/21/2026 12:57:15 PM\",\"mensajes\":[{\"valor\":\"El campo TotalISRRetencion del área Totales de la sección Encabezado no es válido\",\"codigo\":11170}]}",
+  "statusPath": "storage/ecf/tracks/estado-d57146ff-09bc-4823-a75b-364d7e48a3d2.json"
+}

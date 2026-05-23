@@ -1,0 +1,27 @@
+{
+  "trackId": "58f34f4e-b549-411a-b1cf-a72c43022145",
+  "fecha": "2026-05-21T17:54:03.165Z",
+  "estado": "ACEPTADO",
+  "environment": "testecf",
+  "codigo": "4",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000023",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "5/21/2026 1:52:59 PM",
+  "mensajes": [
+    {
+      "valor": "La longitud del nombre del archivo no es válida.",
+      "codigo": 81
+    },
+    {
+      "valor": "El campo TelefonoEmisor del área Emisor de la sección Encabezado de la línea 1 no es válido",
+      "codigo": 1273
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"58f34f4e-b549-411a-b1cf-a72c43022145\",\"codigo\":\"4\",\"estado\":\"Aceptado Condicional\",\"rnc\":\"40211932609\",\"encf\":\"E470000000023\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"5/21/2026 1:52:59 PM\",\"mensajes\":[{\"valor\":\"La longitud del nombre del archivo no es válida.\",\"codigo\":81},{\"valor\":\"El campo TelefonoEmisor del área Emisor de la sección Encabezado de la línea 1 no es válido\",\"codigo\":1273}]}",
+  "statusPath": "storage/ecf/tracks/estado-58f34f4e-b549-411a-b1cf-a72c43022145.json"
+}

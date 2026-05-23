@@ -1,0 +1,23 @@
+{
+  "trackId": "3c9243a2-7e77-4dab-9851-d6610058e0be",
+  "fecha": "2026-05-21T12:03:53.495Z",
+  "estado": "RECHAZADO",
+  "environment": "testecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000011",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "5/21/2026 7:47:10 AM",
+  "mensajes": [
+    {
+      "valor": "\n-The element 'IdDoc' has invalid child element 'TipoIngresos'. List of possible elements expected: 'FechaVencimientoSecuencia'.\n-The element 'Totales' has invalid child element 'MontoGravadoTotal'. List of possible elements expected: 'MontoExento, MontoTotal'.\n-The element 'Item' has invalid child element 'NombreItem'. List of possible elements expected: 'TablaCodigosItem, IndicadorFacturacion'.",
+      "codigo": 3
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"3c9243a2-7e77-4dab-9851-d6610058e0be\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000011\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"5/21/2026 7:47:10 AM\",\"mensajes\":[{\"valor\":\"\\n-The element 'IdDoc' has invalid child element 'TipoIngresos'. List of possible elements expected: 'FechaVencimientoSecuencia'.\\n-The element 'Totales' has invalid child element 'MontoGravadoTotal'. List of possible elements expected: 'MontoExento, MontoTotal'.\\n-The element 'Item' has invalid child element 'NombreItem'. List of possible elements expected: 'TablaCodigosItem, IndicadorFacturacion'.\",\"codigo\":3}]}",
+  "statusPath": "storage/ecf/tracks/estado-3c9243a2-7e77-4dab-9851-d6610058e0be.json"
+}

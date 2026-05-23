@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-21T11:41:34.762Z",
+  "estado": "ENVIADO",
+  "environment": "testecf",
+  "codigo": null,
+  "descripcion": "The element 'Emisor' has invalid child element 'TelefonoEmisor'. List of possible elements expected: 'Municipio, Provincia, TablaTelefonoEmisor, CorreoEmisor, WebSite, ActividadEconomica, CodigoVendedor, NumeroFacturaInterna, NumeroPedidoInterno, ZonaVenta, RutaVenta, InformacionAdicionalEmisor, FechaEmision'.",
+  "mensaje": "The element 'Emisor' has invalid child element 'TelefonoEmisor'. List of possible elements expected: 'Municipio, Provincia, TablaTelefonoEmisor, CorreoEmisor, WebSite, ActividadEconomica, CodigoVendedor, NumeroFacturaInterna, NumeroPedidoInterno, ZonaVenta, RutaVenta, InformacionAdicionalEmisor, FechaEmision'.",
+  "error": "Estructura del archivo XML inválida. ",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260521-074134.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Estructura del archivo XML inválida. \",\"mensaje\":\"The element 'Emisor' has invalid child element 'TelefonoEmisor'. List of possible elements expected: 'Municipio, Provincia, TablaTelefonoEmisor, CorreoEmisor, WebSite, ActividadEconomica, CodigoVendedor, NumeroFacturaInterna, NumeroPedidoInterno, ZonaVenta, RutaVenta, InformacionAdicionalEmisor, FechaEmision'.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260521-074134.json"
+}

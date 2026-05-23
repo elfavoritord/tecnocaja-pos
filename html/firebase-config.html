@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuración Firebase - Tecno Caja</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      overflow: hidden;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
+
+    header h1 {
+      font-size: 28px;
+      margin-bottom: 8px;
+    }
+
+    header p {
+      font-size: 14px;
+      opacity: 0.9;
+    }
+
+    .content {
+      padding: 30px;
+    }
+
+    .section {
+      margin-bottom: 30px;
+    }
+
+    .section h2 {
+      font-size: 20px;
+      color: #333;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #667eea;
+    }
+
+    .status-box {
+      background: #f8f9fa;
+      border-left: 4px solid #667eea;
+      padding: 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 14px;
+    }
+
+    .status-item strong {
+      color: #333;
+    }
+
+    .status-value {
+      font-family: 'Courier New', monospace;
+      color: #667eea;
+      font-weight: 600;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .badge.online {
+      background: #d4edda;
+      color: #155724;
+    }
+
+    .badge.offline {
+      background: #f8d7da;
+      color: #721c24;
+    }
+
+    .badge.syncing {
+      background: #fff3cd;
+      color: #856404;
+    }
+
+    .sync-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+
+    .stat-card {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+    }
+
+    .stat-number {
+      font-size: 24px;
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+
+    .stat-label {
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    .sync-queue {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 16px;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .queue-item {
+      padding: 8px;
+      border-bottom: 1px solid #ddd;
+      font-size: 12px;
+      font-family: 'Courier New', monospace;
+    }
+
+    .queue-item:last-child {
+      border-bottom: none;
+    }
+
+    .queue-item strong {
+      color: #667eea;
+    }
+
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    .info-box {
+      background: #e7f3ff;
+      border-left: 4px solid #2196F3;
+      padding: 16px;
+      border-radius: 6px;
+      margin-top: 20px;
+    }
+
+    .info-box strong {
+      color: #1565c0;
+    }
+
+    .info-box p {
+      margin-top: 8px;
+      font-size: 13px;
+      line-height: 1.6;
+      color: #333;
+    }
+
+    .debug-section {
+      background: #f5f5f5;
+      border: 1px dashed #ccc;
+      padding: 16px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .debug-section p {
+      margin: 4px 0;
+      color: #666;
+    }
+
+    footer {
+      background: #f8f9fa;
+      padding: 16px;
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+      border-top: 1px solid #ddd;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🔥 Sincronización Firebase</h1>
+      <p>Panel de control para Tecno Caja ↔ Firebase</p>
+    </header>
+
+    <div class="content">
+      <!-- ESTADO ACTUAL -->
+      <div class="section">
+        <h2>Estado Actual</h2>
+        <div id="sync-status-widget"></div>
+      </div>
+
+      <!-- ESTADÍSTICAS -->
+      <div class="section">
+        <h2>Estadísticas</h2>
+        <div class="sync-stats">
+          <div class="stat-card">
+            <div class="stat-number" id="stat-total">0</div>
+            <div class="stat-label">Total</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="stat-pending">0</div>
+            <div class="stat-label">Pendientes</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="stat-synced">0</div>
+            <div class="stat-label">Sincronizados</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-number" id="stat-errors">0</div>
+            <div class="stat-label">Errores</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ACCIONES -->
+      <div class="section">
+        <h2>Acciones Manuales</h2>
+        <div class="button-group">
+          <button onclick="syncSales()">📊 Sincronizar Ventas</button>
+          <button onclick="syncClosings()">💰 Sincronizar Cierres</button>
+          <button onclick="syncInventory()">📦 Sincronizar Inventario</button>
+          <button onclick="syncReports()">📈 Generar Reportes</button>
+          <button onclick="refreshStatus()">🔄 Actualizar</button>
+        </div>
+
+        <div class="info-box" style="margin-top: 20px;">
+          <strong>💡 Consejo:</strong>
+          <p>
+            Usa estos botones para forzar una sincronización manual. El sistema también sincroniza
+            automáticamente cada 30 segundos cuando hay cambios pendientes.
+          </p>
+        </div>
+      </div>
+
+      <!-- COLA DE PENDIENTES -->
+      <div class="section">
+        <h2>Cola de Sincronización</h2>
+        <div class="sync-queue" id="sync-queue">
+          <p style="text-align: center; color: #999;">Cargando...</p>
+        </div>
+      </div>
+
+      <!-- DEBUG -->
+      <div class="section">
+        <h2>Información de Debug</h2>
+        <div class="debug-section" id="debug-info">
+          <p>Cargando información...</p>
+        </div>
+      </div>
+
+      <div class="info-box">
+        <strong>❓ ¿Cómo funciona?</strong>
+        <p>
+          <strong>1. Detección automática:</strong> El sistema detecta si tienes internet cada 10 segundos.<br>
+          <strong>2. Sincronización automática:</strong> Cada 30 segundos, se sincronizan datos pendientes a Firebase.<br>
+          <strong>3. Reintentos inteligentes:</strong> Si hay error, reintentos con backoff exponencial (30s, 1m, 2m, etc.).<br>
+          <strong>4. Sin bloqueos:</strong> El POS continúa funcionando normal aunque no haya internet.<br>
+          <strong>5. Reportes en la nube:</strong> Una vez sincronizado, los reportes están disponibles en tu app Flutter.
+        </p>
+      </div>
+    </div>
+
+    <footer>
+      Tecno Caja © 2026 | Sistema de Sincronización Firebase | Actualiza esta página para ver estado en vivo
+    </footer>
+  </div>
+
+  <!-- Incluir el widget de sincronización -->
+  <script src="/js/sync-status-widget.js"></script>
+
+  <script>
+    // Actualizar estado cada 5 segundos
+    setInterval(updateDashboard, 5000);
+
+    async function updateDashboard() {
+      await updateQueueStatus();
+      await updateDebugInfo();
+    }
+
+    async function updateQueueStatus() {
+      try {
+        const response = await fetch('/api/sync/queue');
+        const stats = await response.json();
+
+        document.getElementById('stat-total').textContent = stats.total || 0;
+        document.getElementById('stat-pending').textContent = stats.pending || 0;
+        document.getElementById('stat-synced').textContent = stats.synced || 0;
+        document.getElementById('stat-errors').textContent = stats.errors || 0;
+
+        // Obtener items pendientes
+        const pendingResponse = await fetch('/api/sync/pending?limit=10');
+        const pending = await pendingResponse.json();
+
+        let html = '';
+        if (Array.isArray(pending) && pending.length > 0) {
+          html = pending.map(item => `
+            <div class="queue-item">
+              <strong>${item.entity_type}:</strong> ${item.entity_id} (${item.status})
+              <br><small>${new Date(item.created_at).toLocaleString()}</small>
+            </div>
+          `).join('');
+        } else {
+          html = '<p style="text-align: center; color: #999; padding: 16px;">Cola vacía ✓</p>';
+        }
+
+        document.getElementById('sync-queue').innerHTML = html;
+      } catch (err) {
+        console.error('Error updating queue:', err);
+      }
+    }
+
+    async function updateDebugInfo() {
+      try {
+        const status = await fetch('/api/sync/status').then(r => r.json());
+        const html = `
+          <p><strong>Online:</strong> ${status.isOnline ? '✓ Sí' : '✗ No'}</p>
+          <p><strong>Sincronizando:</strong> ${status.isSyncing ? '🔄 Sí' : '⏸️ No'}</p>
+          <p><strong>Última sincronización:</strong> ${status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString() : 'Nunca'}</p>
+          <p><strong>Hora del servidor:</strong> ${new Date().toLocaleString()}</p>
+        `;
+        document.getElementById('debug-info').innerHTML = html;
+      } catch (err) {
+        console.error('Error updating debug info:', err);
+      }
+    }
+
+    async function syncSales() {
+      await fetch('/api/sync/sales', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessId: '1', branchId: '1' })
+      });
+      updateDashboard();
+    }
+
+    async function syncClosings() {
+      await fetch('/api/sync/cash-closings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessId: '1', branchId: '1' })
+      });
+      updateDashboard();
+    }
+
+    async function syncInventory() {
+      await fetch('/api/sync/inventory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessId: '1', branchId: '1' })
+      });
+      updateDashboard();
+    }
+
+    async function syncReports() {
+      await fetch('/api/sync/last-n-days', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessId: '1', branchId: '1', days: 7 })
+      });
+      updateDashboard();
+    }
+
+    async function refreshStatus() {
+      await updateDashboard();
+    }
+
+    // Cargar al inicio
+    updateDashboard();
+  </script>
+</body>
+</html>

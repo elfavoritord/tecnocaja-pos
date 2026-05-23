@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-21T18:02:47.933Z",
+  "estado": "ENVIADO",
+  "environment": "testecf",
+  "codigo": null,
+  "descripcion": "Tipo de archivo no válido, favor proveer un XML.",
+  "mensaje": "Tipo de archivo no válido, favor proveer un XML.",
+  "error": "Error de estructura.",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260521-140247.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Error de estructura.\",\"mensaje\":\"Tipo de archivo no válido, favor proveer un XML.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260521-140247.json"
+}

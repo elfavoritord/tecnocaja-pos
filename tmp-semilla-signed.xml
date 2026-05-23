@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
+<SemillaModel xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <valor>1234567890</valor>
+  <fecha>2026-05-19T08:00:00-04:00</fecha>
+<Signature xmlns="http://www.w3.org/2000/09/xmldsig#"><SignedInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/><SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"/><Reference URI=""><Transforms><Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/></Transforms><DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256"/><DigestValue>xaMEpLprwx5sDFs5b4OTPI9rRV+YB+hIchwm7oLkRCw=</DigestValue></Reference></SignedInfo><SignatureValue>PHiFigv+BcINUCNAlD17hxxzDpz4zyGiPjRz7lL7dzvHB11b0ImWXu/fp5/0Bz8YVIcP0WHdN3RxvPWaVS0x5XnQyyhF2no+VRX/c90Mwz3nwpX6zrQbRq4AOFLFKiTYJ5V3jiNif71cwWKuVfSnuRLmG4TVo2ApwUvBEVEYxsjVGC2P7MbIDruIolr71Cff44fwBGz8o7AURCKfACqQ5I5ofF5OJgsrfVkr0xNX6VHZRdrIMkwMyF5kiYWBp2O3rdG6D/36zs9N5jpFpIF77+gMa13O+4cXpdwSgfZWJvExlPffj3uA7sqWrGpxGejuuZ247SXmmCdPZWZT+8xjhA==</SignatureValue><KeyInfo><X509Data><X509Certificate>
+MIICoTCCAYmgAwIBAgIBATANBgkqhkiG9w0BAQsFADAUMRIwEAYDVQQDEwkxMDEy
+MzQ1NjcwHhcNMjYwMTAxMDAwMDAwWhcNMjcwMTAxMDAwMDAwWjAUMRIwEAYDVQQD
+EwkxMDEyMzQ1NjcwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDpj8b6
+q9VI8ep28zuje//r5wwA/MAFeUvI0NuLlNmu0K6q4SGvIdPaVKCktLSwZJ0NTB8b
+1ZfpXt9nMGhbETR+KJSUn7nex3HuQWu654zjuCXalQjKw1f+H/8WR7MJS90hkFyr
+V87Z9ONOFwyWjBHLUaeAByOW/ceq/ie7wUj1e+PgNYaxZ2sFD/4Dp0ON0208Tip9
+AbtNrpOAkl3N1unqBe3W940Wzdk0rjYSsu2Xp4Nqk3DJy2fiZicpbNkL9DluwY5G
+YMZlcTE5fSxTv/1mAXUem6rWKxuAxodz2IDCnYDlX53qyWrOi2ymOPzIQXycZJhl
+6hkDQjgmIkcP67MlAgMBAAEwDQYJKoZIhvcNAQELBQADggEBAExupAVzyWShweGk
+eUFVtEJBd+ow9GIXF/uuKIJr2+OVnl1SxHcOkAY6TCjzfJpiIIZcmMjRgZnfoUoW
+o8cNR/qmdOZEDdxty51+eJLRvnOHHuOkhCxwlZcz4yJhflKbfHQAZVvBF3W9nhmM
+k95mppq6ijCWLbn369F2QCPJbTK8PqIjVEVW9QFGMzL7nA7mDevilT1JyQUOKWuz
+tAO2y25IoUu+nLN6obsUF+OE6GnHi0D4Z2iuTd4Ady8StC59v6iIu4OqBTZzpQCO
+y2beqNNunLSEunKi9iJaPpQSOlT3dk+2/ILnvflneJTnUw/FahkyXrAG6Wpzzj1n
+Hg8wqWI=
+
+</X509Certificate></X509Data></KeyInfo></Signature></SemillaModel>

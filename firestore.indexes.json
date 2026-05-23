@@ -1,0 +1,178 @@
+{
+  "indexes": [
+    // ── Pedidos delivery (legacy) ───────────────────────────────────────────
+    {
+      "collectionGroup": "pedidos_delivery",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "repartidorId", "order": "ASCENDING" },
+        { "fieldPath": "estado",       "order": "ASCENDING" },
+        { "fieldPath": "creadoEn",     "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos_delivery",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "repartidorId", "order": "ASCENDING" },
+        { "fieldPath": "estado",       "order": "ASCENDING" },
+        { "fieldPath": "actualizadoEn","order": "DESCENDING" }
+      ]
+    },
+
+    // ── Ventas ─────────────────────────────────────────────────────────────
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "branchId",   "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId",     "order": "ASCENDING" },
+        { "fieldPath": "status",         "order": "ASCENDING" },
+        { "fieldPath": "createdAt",      "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId",  "order": "ASCENDING" },
+        { "fieldPath": "registerId",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt",   "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId",   "order": "ASCENDING" },
+        { "fieldPath": "paymentMethod","order": "ASCENDING" },
+        { "fieldPath": "createdAt",    "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Cierres de caja ─────────────────────────────────────────────────────
+    {
+      "collectionGroup": "cashClosings",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "branchId",   "order": "ASCENDING" },
+        { "fieldPath": "closedAt",   "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cashClosings",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "registerId", "order": "ASCENDING" },
+        { "fieldPath": "closedAt",   "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Gastos ──────────────────────────────────────────────────────────────
+    {
+      "collectionGroup": "expenses",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "branchId",   "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Clientes ────────────────────────────────────────────────────────────
+    {
+      "collectionGroup": "customers",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId",    "order": "ASCENDING" },
+        { "fieldPath": "updatedAt",     "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Inventario por sucursal ─────────────────────────────────────────────
+    {
+      "collectionGroup": "inventory",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "branchId",   "order": "ASCENDING" },
+        { "fieldPath": "updatedAt",  "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Movimientos de inventario ───────────────────────────────────────────
+    {
+      "collectionGroup": "inventoryMovements",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "branchId",   "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Pedidos delivery (nivel negocio) ────────────────────────────────────
+    {
+      "collectionGroup": "deliveryOrders",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId",   "order": "ASCENDING" },
+        { "fieldPath": "repartidorId", "order": "ASCENDING" },
+        { "fieldPath": "estado",       "order": "ASCENDING" },
+        { "fieldPath": "createdAt",    "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Auditoría ───────────────────────────────────────────────────────────
+    {
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "action",     "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Reportes diarios ────────────────────────────────────────────────────
+    {
+      "collectionGroup": "daily_reports",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "branchId",   "order": "ASCENDING" },
+        { "fieldPath": "date",       "order": "DESCENDING" }
+      ]
+    },
+
+    // ── Cuentas por cobrar ──────────────────────────────────────────────────
+    {
+      "collectionGroup": "receivables",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "businessId", "order": "ASCENDING" },
+        { "fieldPath": "status",     "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
