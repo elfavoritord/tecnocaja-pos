@@ -1466,6 +1466,16 @@ const BRANCH_ADMIN_ALLOWED_PERMISSIONS = [
   'editar_cajas_sucursal',
   'activar_cajas_sucursal',
   'asignar_cajeros_sucursal',
+  // Operaciones de caja (admin sucursal tiene control completo de caja)
+  'abrir_caja',
+  'cerrar_caja',
+  'hacer_corte_caja',
+  'abrir_gaveta',
+  'devolver_ventas',
+  'anular_ventas',
+  'ver_reportes_caja',
+  'ver_cierres_caja',
+  'ver_ganancias',
   'usuarios',
   'usuarios_crear',
   'usuarios_editar',
@@ -1487,7 +1497,8 @@ const BRANCH_ADMIN_ALLOWED_PERMISSIONS = [
   'ver_productos_sucursal',
   'consultar_stock_sucursal',
   'ver_arqueos_caja_sucursal',
-  'ver_historial_inventario_sucursal'
+  'ver_historial_inventario_sucursal',
+  'clientes'
 ];
 const BRANCH_ADMIN_DENIED_PERMISSIONS = [
   'crear_sucursales',
@@ -1517,9 +1528,9 @@ const BRANCH_ADMIN_DENIED_PERMISSIONS = [
 
 function normalizeLegacyUserRoleCode(roleLabel) {
   const normalized = String(roleLabel || '').trim().toLowerCase();
-  if (normalized === 'administrador_general') return 'administrador_general';
+  if (normalized === 'administrador_general' || normalized === 'administrador general') return 'administrador_general';
   if (normalized === 'administrador_sucursal' || normalized === 'administrador sucursal') return 'administrador_sucursal';
-  if (normalized === 'administrador' || normalized === 'admin' || normalized === 'admin general') return 'administrador_general';
+  if (normalized === 'administrador' || normalized === 'admin' || normalized === 'admin general' || normalized === 'admin_general') return 'administrador_general';
   if (normalized === 'supervisor') return 'supervisor';
   if (normalized === 'cajero' || normalized === 'delivery') return 'cajero';
   return normalized || 'cajero';
@@ -3186,15 +3197,20 @@ async function ensureRolesTable() {
   for (const user of legacyUsers) {
     if (Number(user.role_id || 0)) continue;
     const legacyRole = String(user.rol || '').trim().toLowerCase();
-    const normalizedRoleCode = legacyRole === 'administrador'
-      ? 'administrador_general'
+    // Normalizar rol heredado al código de rol correcto
+    const normalizedRoleCode =
+      (legacyRole === 'administrador' || legacyRole === 'administrador_general' ||
+       legacyRole === 'administrador general' || legacyRole === 'admin' || legacyRole === 'admin general')
+        ? 'administrador_general'
+      : (legacyRole === 'administrador_sucursal' || legacyRole === 'administrador sucursal')
+        ? 'administrador_sucursal'
       : legacyRole === 'cajero'
         ? 'cajero'
-        : legacyRole === 'supervisor'
-          ? 'supervisor'
-          : legacyRole === 'delivery'
-            ? 'cajero'
-            : 'administrador_sucursal';
+      : legacyRole === 'supervisor'
+        ? 'supervisor'
+      : legacyRole === 'delivery'
+        ? 'cajero'
+      : 'cajero'; // fallback conservador: nunca escalar a admin desconocido
     const roleId = roleMap.get(normalizedRoleCode) || null;
     if (roleId) {
       await query('UPDATE users SET role_id = ? WHERE id = ?', [roleId, user.id]);
@@ -10945,6 +10961,19 @@ app.post('/api/sales/return', async (req, res) => {
           `UPDATE sale_returns SET cash_movement_id = ? WHERE id = ?`,
           [cashMovementId, returnId]
         );
+        // Actualizar saldo de la sesión activa
+        const openSessions = await conn.query(
+          'SELECT id FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1',
+          [structure.cashRegisterId]
+        );
+        if (openSessions.length) {
+          await conn.query(
+            'UPDATE cash_sessions SET current_amount = current_amount - ? WHERE id = ?',
+            [returnedAmount, openSessions[0].id]
+          );
+        }
+        // Actualizar también el campo legacy config.cash_amount
+        await conn.query('UPDATE config SET cash_amount = cash_amount - ? WHERE id = 1', [returnedAmount]);
       }
 
       // Si todos los items fueron devueltos, marcar venta como devuelta
