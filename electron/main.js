@@ -5,7 +5,7 @@ const { app, BrowserWindow, dialog, ipcMain, shell, clipboard, nativeImage, scre
 const http = require('http');
 const net = require('net');
 const os = require('os');
-const { printReceipt, openCashDrawer: escposOpenDrawer } = require('./thermal-printer');
+const { printReceipt, printCorteReceipt, openCashDrawer: escposOpenDrawer } = require('./thermal-printer');
 const { openDrawer: openCashDrawerAll, testDrawer } = require('./cash-drawer');
 const { listSerialPorts, readWeightFromSerial } = require('./scale-reader');
 
@@ -2560,6 +2560,20 @@ ipcMain.handle('receipt:print-escpos', async (_event, receiptData, options = {})
     return result;
   } catch (err) {
     return { ok: false, error: err.message || 'Error en impresión ESC/POS.' };
+  }
+});
+
+// ─── ESC/POS: Impresión de Corte de Caja directo a impresora térmica ────────
+ipcMain.handle('corte:print-escpos', async (_event, corteData, options = {}) => {
+  try {
+    const printerName = String(options.printerName || '').trim();
+    if (!printerName) {
+      return { ok: false, error: 'Nombre de impresora no especificado para imprimir el corte.' };
+    }
+    const result = await printCorteReceipt(printerName, corteData);
+    return result;
+  } catch (err) {
+    return { ok: false, error: err.message || 'Error imprimiendo el corte de caja.' };
   }
 });
 

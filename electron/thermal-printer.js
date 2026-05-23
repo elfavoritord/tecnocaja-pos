@@ -668,10 +668,118 @@ async function openCashDrawer(printerName, pin = 0) {
   }
 }
 
+/**
+ * Construye el buffer ESC/POS de un Corte de Caja
+ *
+ * @param {object} data
+ * @param {object} data.negocio  — { nombre, rnc }
+ * @param {object} data.corte    — { cajero, horaApertura, horaCorte, ventasCount,
+ *                                   efectivo, tarjeta, transferencia, credito,
+ *                                   descuentos, devoluciones, entradas, salidas,
+ *                                   totalEsperado, contado, diferencia, notas }
+ * @param {object} data.config   — { paperWidth, cortarPapel, currency }
+ * @returns {Buffer}
+ */
+function buildCorteReceipt(data) {
+  const { negocio = {}, corte = {}, config = {} } = data;
+  const paperWidth = config.paperWidth || '80mm';
+  const currency   = config.currency   || 'RD$';
+  const p = new ESCPOSBuilder(paperWidth);
+
+  const fmtN = (n) =>
+    `${currency} ${Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  p.init();
+
+  // ── Encabezado ────────────────────────────────────────────────────────────
+  p.align(1);
+  if (negocio.nombre) {
+    const cols = p.cols;
+    const sz = negocio.nombre.length <= Math.floor(cols / 2) ? [1, 2] : [1, 1];
+    p.bold(true).size(...sz).text(negocio.nombre).size(1, 1).bold(false);
+  }
+  if (negocio.rnc) p.text(`RNC: ${negocio.rnc}`);
+  p.feed(1).bold(true).text('CORTE DE CAJA').bold(false).align(0);
+  p.separator('-');
+
+  // ── Datos del turno ───────────────────────────────────────────────────────
+  p.row2('Cajero:',   String(corte.cajero        || ''));
+  p.row2('Apertura:', String(corte.horaApertura  || ''));
+  p.row2('Corte:',    String(corte.horaCorte     || ''));
+  p.row2('Ventas:',   String(corte.ventasCount   || 0));
+  p.separator('-');
+
+  // ── Ventas del turno ──────────────────────────────────────────────────────
+  p.align(1).bold(true).text('VENTAS DEL TURNO').bold(false).align(0);
+  p.separator('-');
+  p.row2('Efectivo:',       fmtN(corte.efectivo));
+  p.row2('Tarjeta:',        fmtN(corte.tarjeta));
+  p.row2('Transferencia:',  fmtN(corte.transferencia));
+  p.row2('Credito:',        fmtN(corte.credito));
+  if (Number(corte.descuentos)  > 0) p.row2('Descuentos:',  `- ${fmtN(corte.descuentos)}`);
+  if (Number(corte.devoluciones) > 0) p.row2('Devoluciones:', `- ${fmtN(corte.devoluciones)}`);
+  p.separator('-');
+
+  // ── Movimientos de caja ───────────────────────────────────────────────────
+  p.align(1).bold(true).text('MOVIMIENTOS DE CAJA').bold(false).align(0);
+  p.separator('-');
+  p.row2('Entradas:', `+ ${fmtN(corte.entradas)}`);
+  p.row2('Salidas:',  `- ${fmtN(corte.salidas)}`);
+  p.separator('=');
+
+  // ── Totales ───────────────────────────────────────────────────────────────
+  p.bold(true).row2('Total esperado:', fmtN(corte.totalEsperado)).bold(false);
+  if (corte.contado !== undefined && corte.contado !== null) {
+    p.bold(true).row2('Contado fisico:', fmtN(corte.contado)).bold(false);
+  }
+  p.separator('=');
+
+  // ── Diferencia ────────────────────────────────────────────────────────────
+  const diff = Number(corte.diferencia || 0);
+  const diffText = Math.abs(diff) < 0.01
+    ? 'Sin diferencia'
+    : diff > 0
+      ? `Sobran ${fmtN(diff)}`
+      : `Faltan ${fmtN(Math.abs(diff))}`;
+  p.align(1).bold(true).text(diffText).bold(false).align(0);
+
+  // ── Notas ─────────────────────────────────────────────────────────────────
+  if (corte.notas) {
+    p.separator('-');
+    p.text(`Notas: ${corte.notas}`);
+  }
+
+  p.separator('-');
+  p.align(1).text(new Date().toLocaleString('es-DO')).align(0);
+  p.feed(3);
+
+  if (config.cortarPapel !== false) p.cut(false);
+
+  return p.build();
+}
+
+/**
+ * Imprime un Corte de Caja en una impresora térmica
+ *
+ * @param {string} printerName
+ * @param {object} corteData  — mismo formato que buildCorteReceipt()
+ * @returns {Promise<{ok:boolean, error?:string}>}
+ */
+async function printCorteReceipt(printerName, corteData) {
+  try {
+    const buffer = buildCorteReceipt(corteData);
+    return await sendRawToPrinter(printerName, buffer);
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 module.exports = {
   ESCPOSBuilder,
   buildReceipt,
+  buildCorteReceipt,
   printReceipt,
+  printCorteReceipt,
   openCashDrawer,
   sendRawToPrinter,
   encodeText,

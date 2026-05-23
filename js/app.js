@@ -6209,7 +6209,10 @@ async function saveCashCorte({ print = false } = {}) {
     // 3. Imprimir si se solicitó (primero cerrar modal, luego imprimir)
     closeCashCorteModal();
     showToast('✅ Corte guardado. Caja cerrada. Redirigiendo...', 'success');
-    if (print) _printCashCorte(d, contado, diferencia, notas);
+    if (print) _printCashCorte(d, contado, diferencia, notas).catch((err) => {
+      console.warn('[corte] Error imprimiendo corte:', err);
+      showToast('No se pudo imprimir el corte. Revisa la impresora.', 'error');
+    });
 
     // 4. Redirigir al inicio de sesión
     setTimeout(() => doLogout(), 1800);
@@ -6226,9 +6229,60 @@ async function saveCashCorteAndClose() {
   await saveCashCorte({ print: false });
 }
 
-function _printCashCorte(d, contado, diferencia, notas) {
-  const biz = DB.config?.businessName || 'Tecno Caja';
-  const currency = DB.config?.currency || 'RD$';
+async function _printCashCorte(d, contado, diferencia, notas) {
+  const printerName  = String(DB.config?.receiptPrinterName || '').trim();
+  const paperWidth   = String(DB.config?.receiptPaperSize   || '80mm').toLowerCase();
+  const currency     = DB.config?.currency || 'RD$';
+  const isThermal    = paperWidth === '58mm' || paperWidth === '80mm';
+  const canEscpos    = Boolean(window.novaDesktop?.printCorteEscpos && isThermal && printerName);
+
+  // ── Ruta 1: ESC/POS directo a impresora térmica (app de escritorio) ──────
+  if (canEscpos) {
+    const cortePayload = {
+      negocio: {
+        nombre:    DB.config?.businessName  || 'Tecno Caja',
+        rnc:       DB.config?.rnc           || '',
+      },
+      corte: {
+        cajero:        d.cajero,
+        horaApertura:  d.horaApertura,
+        horaCorte:     d.horaCorte,
+        ventasCount:   d.ventasCount,
+        efectivo:      d.efectivo,
+        tarjeta:       d.tarjeta,
+        transferencia: d.transferencia,
+        credito:       d.credito,
+        descuentos:    d.descuentos,
+        devoluciones:  d.devoluciones,
+        entradas:      d.entradas,
+        salidas:       d.salidas,
+        totalEsperado: d.totalEsperado,
+        contado,
+        diferencia,
+        notas,
+      },
+      config: {
+        paperWidth,
+        cortarPapel: true,
+        currency,
+      },
+    };
+
+    try {
+      const result = await window.novaDesktop.printCorteEscpos(cortePayload, { printerName, paperWidth });
+      if (result?.ok) {
+        showToast('Corte enviado a la impresora.', 'success');
+        return;
+      }
+      console.warn('[corte] ESC/POS falló, usando impresión HTML:', result?.error);
+      showToast(result?.error || 'No se pudo imprimir el corte. Revisa la impresora.', 'error');
+      return;
+    } catch (err) {
+      console.warn('[corte] Error ESC/POS:', err?.message);
+    }
+  }
+
+  // ── Ruta 2: HTML + ventana del sistema (sin impresora configurada o web) ──
   const fmtN = (n) => `${currency} ${Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const diffLine = Math.abs(diferencia) < 0.01
     ? '✅ Sin diferencia'
@@ -6247,7 +6301,7 @@ function _printCashCorte(d, contado, diferencia, notas) {
     .small{font-size:10px;color:#555}
     @media print{body{padding:4px}}
   </style></head><body>
-  <h2>${biz}</h2>
+  <h2>${DB.config?.businessName || 'Tecno Caja'}</h2>
   <p class="center small">CORTE DE CAJA</p>
   <div class="sep"></div>
   <div class="row"><span>Cajero:</span><span>${d.cajero}</span></div>
