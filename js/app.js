@@ -6931,6 +6931,19 @@ function buildOperationalNotifications(limit = 4) {
 
 function buildNotifications() {
   const notifications = [];
+
+  // ── Actualización del sistema disponible ──────────────────────────────────
+  if (window._updAvailable?.version) {
+    const typeLabel = window._updAvailable.type === 'feature' ? 'Nueva función' :
+                      window._updAvailable.type === 'critical' ? '¡Crítica!' : 'Actualización';
+    notifications.push({
+      severity : 'warning',
+      title    : `Sistema: ${typeLabel} disponible`,
+      text     : `Versión ${window._updAvailable.version} lista para descargar${window._updAvailable.size ? ' · ' + window._updAvailable.size : ''}. Ve a Configuración → Actualización.`,
+      time     : 'Sistema'
+    });
+  }
+
   const lowStock = DB.productos.filter((p) => p.estado === 'Activo' && p.stock > 0 && p.stock <= p.stockMin);
   const outStock = DB.productos.filter((p) => p.stock === 0);
 
