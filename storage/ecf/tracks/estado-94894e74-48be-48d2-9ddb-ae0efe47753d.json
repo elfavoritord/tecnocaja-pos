@@ -1,0 +1,23 @@
+{
+  "trackId": "94894e74-48be-48d2-9ddb-ae0efe47753d",
+  "fecha": "2026-05-21T16:38:12.034Z",
+  "estado": "RECHAZADO",
+  "environment": "testecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000012",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "5/21/2026 12:37:14 PM",
+  "mensajes": [
+    {
+      "valor": "Los comprobantes tipo 47 solo permiten indicador de bien o servicio como servicio (2).",
+      "codigo": 294
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"94894e74-48be-48d2-9ddb-ae0efe47753d\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000012\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"5/21/2026 12:37:14 PM\",\"mensajes\":[{\"valor\":\"Los comprobantes tipo 47 solo permiten indicador de bien o servicio como servicio (2).\",\"codigo\":294}]}",
+  "statusPath": "storage/ecf/tracks/estado-94894e74-48be-48d2-9ddb-ae0efe47753d.json"
+}

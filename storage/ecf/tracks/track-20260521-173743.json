@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-21T21:37:43.209Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": "The element 'IdDoc' has invalid child element 'IndicadorNotaCredito'. List of possible elements expected: 'FechaLimitePago, TerminoPago, TablaFormasPago, TipoCuentaPago, NumeroCuentaPago, BancoPago, FechaDesde, FechaHasta, TotalPaginas'.",
+  "mensaje": "The element 'IdDoc' has invalid child element 'IndicadorNotaCredito'. List of possible elements expected: 'FechaLimitePago, TerminoPago, TablaFormasPago, TipoCuentaPago, NumeroCuentaPago, BancoPago, FechaDesde, FechaHasta, TotalPaginas'.",
+  "error": "Estructura del archivo XML inválida. ",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260521-173742.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Estructura del archivo XML inválida. \",\"mensaje\":\"The element 'IdDoc' has invalid child element 'IndicadorNotaCredito'. List of possible elements expected: 'FechaLimitePago, TerminoPago, TablaFormasPago, TipoCuentaPago, NumeroCuentaPago, BancoPago, FechaDesde, FechaHasta, TotalPaginas'.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260521-173743.json"
+}

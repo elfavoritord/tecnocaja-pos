@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-21T20:26:37.244Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": "The element 'Encabezado' has invalid child element 'InformacionReferencia'. List of possible elements expected: 'InformacionesAdicionales, Transporte, Totales'.",
+  "mensaje": "The element 'Encabezado' has invalid child element 'InformacionReferencia'. List of possible elements expected: 'InformacionesAdicionales, Transporte, Totales'.",
+  "error": "Estructura del archivo XML inválida. ",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260521-162636.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Estructura del archivo XML inválida. \",\"mensaje\":\"The element 'Encabezado' has invalid child element 'InformacionReferencia'. List of possible elements expected: 'InformacionesAdicionales, Transporte, Totales'.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260521-162637.json"
+}

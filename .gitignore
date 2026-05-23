@@ -1,0 +1,109 @@
+﻿# === Tecno Caja .gitignore ===
+# Dependencias
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.bak
+
+# Build y empaquetado Electron
+dist/
+out/
+release/
+build/mariadb-runtime/
+*.exe
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.blockmap
+
+# Variables de entorno y secretos (NUNCA COMMITEAR)
+.env
+.env.local
+.env.*.local
+config/app.env
+!/.env.example
+
+# Credenciales Firebase y service accounts
+firebase-key.json
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
+serviceAccountKey.json
+service-account*.json
+google-services.json
+GoogleService-Info.plist
+
+# Bases de datos locales
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+db/*.sqlite
+db/tecnocaja.db
+/data/
+/backups/
+*.novaseguro
+secure-backups/
+
+# Uploads de productos y archivos de usuario
+uploads/
+public/uploads/
+productos-uploads/
+
+# Logs
+logs/
+*.log
+tecnocaja-*.log
+tecnocaja-electron-startup.log
+tmp-*.out.log
+tmp-*.log
+server-*.out.log
+server-*.log
+desktop-*.out.log
+desktop-*.log
+
+# Semillas DGII locales
+storage/ecf/seeds/
+
+# IDE y editores
+.vscode/
+!.vscode/settings.json.example
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Temporales del sistema operativo
+*.tmp
+*.temp
+~$*
+desktop.ini
+
+# Caches
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+
+# Playwright / Puppeteer
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Cobertura y tests
+coverage/
+.nyc_output/
+
+# Archivos de licencia locales
+.tecnocaja-license
+tecnocaja-license-*.json
+
+# Archivos de respaldo generados
+*.backup
+*.bak
+*.orig

@@ -1,0 +1,361 @@
+rules_version = '2';
+
+/**
+ * firestore.rules — Tecno Caja POS
+ *
+ * Principios:
+ *  1. Ningún usuario accede a datos de otro negocio (businessId siempre validado).
+ *  2. Los roles controlan qué puede leer/escribir cada usuario.
+ *  3. Los campos críticos (businessId, ownerUid, branchId, createdBy, createdAt)
+ *     son inmutables después de creados.
+ *  4. Las eliminaciones son siempre lógicas (status: "deleted"), nunca físicas.
+ *  5. El servidor (Admin SDK) escribe todo — bypasea estas reglas por diseño.
+ *     Las reglas protegen el acceso desde clientes (app Flutter, app móvil).
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // HELPERS
+    // ──────────────────────────────────────────────────────────────────────────
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    // Carga el perfil del usuario autenticado desde /users/{uid}
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // El usuario pertenece a este negocio
+    function belongsToBusiness(businessId) {
+      let u = me();
+      return u.businessId == businessId
+          || (u.get('businessIds', []).hasAny([businessId]));
+    }
+
+    // Rol del usuario autenticado
+    function myRole() {
+      return me().get('role', '');
+    }
+
+    // Roles de acceso amplio (ven todo el negocio)
+    function isOwnerOrAdmin(businessId) {
+      return isAuth()
+          && belongsToBusiness(businessId)
+          && myRole() in ['superadmin', 'businessOwner', 'admin'];
+    }
+
+    // Roles con acceso a sucursal y arriba
+    function isBranchAdmin(businessId) {
+      return isAuth()
+          && belongsToBusiness(businessId)
+          && myRole() in ['superadmin', 'businessOwner', 'admin',
+                          'branchAdmin', 'branch_admin'];
+    }
+
+    // Cualquier empleado del negocio (cajero, supervisor, etc.)
+    function isEmployee(businessId) {
+      return isAuth() && belongsToBusiness(businessId);
+    }
+
+    // Rol de contador / acceso financiero de solo lectura
+    function isAccountant(businessId) {
+      return isAuth()
+          && belongsToBusiness(businessId)
+          && myRole() in ['superadmin', 'businessOwner', 'admin',
+                          'branchAdmin', 'branch_admin', 'accountant'];
+    }
+
+    // El campo businessId en el doc nuevo coincide con la ruta
+    function validBusiness(businessId) {
+      return request.resource.data.businessId == businessId;
+    }
+
+    // El campo createdBy en el doc nuevo es el UID del usuario actual
+    function validCreatedBy() {
+      return request.resource.data.get('createdBy', uid()) == uid();
+    }
+
+    // Campos que NUNCA pueden cambiar después de creados
+    function immutable(fields) {
+      return !request.resource.data.diff(resource.data).affectedKeys().hasAny(fields);
+    }
+
+    // Campos inmutables estándar para cualquier documento de negocio
+    function coreImmutable() {
+      return immutable(['businessId', 'ownerUid', 'branchId', 'registerId',
+                        'createdBy', 'createdAt']);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // /users/{uid}  — Perfil de usuario para app Flutter
+    // Solo el propio usuario puede leer su perfil.
+    // Solo Admin SDK escribe (POS al crear/sincronizar empleados).
+    // ──────────────────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read:  if isAuth() && uid() == userId;
+      allow write: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // /businesses/{businessId}  — Raíz del negocio
+    // ──────────────────────────────────────────────────────────────────────────
+    match /businesses/{businessId} {
+
+      // Perfil del negocio — solo dueño/admin escribe (Admin SDK igual lo bypasea)
+      allow read:   if isAuth() && belongsToBusiness(businessId);
+      allow write:  if false;
+
+      // ── Ventas ─────────────────────────────────────────────────────────────
+      match /sales/{saleId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isEmployee(businessId)
+                      && validBusiness(businessId)
+                      && validCreatedBy();
+        allow update: if isOwnerOrAdmin(businessId) && coreImmutable();
+        allow delete: if false;
+      }
+
+      // ── Facturas ───────────────────────────────────────────────────────────
+      match /invoices/{invoiceId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if isOwnerOrAdmin(businessId) && coreImmutable();
+        allow delete: if false;
+      }
+
+      // ── Productos ──────────────────────────────────────────────────────────
+      match /products/{productId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isBranchAdmin(businessId) && validBusiness(businessId);
+        allow update: if isBranchAdmin(businessId) && immutable(['businessId', 'createdBy', 'createdAt']);
+        allow delete: if false;
+      }
+
+      // ── Clientes ───────────────────────────────────────────────────────────
+      match /customers/{customerId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if isEmployee(businessId)  && immutable(['businessId', 'createdBy', 'createdAt']);
+        allow delete: if false;
+      }
+
+      // ── Proveedores ────────────────────────────────────────────────────────
+      match /suppliers/{supplierId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isBranchAdmin(businessId) && validBusiness(businessId);
+        allow update: if isBranchAdmin(businessId) && immutable(['businessId', 'createdBy', 'createdAt']);
+        allow delete: if false;
+      }
+
+      // ── Compras / Órdenes a proveedores ────────────────────────────────────
+      match /purchases/{purchaseId} {
+        allow read:   if isAccountant(businessId);
+        allow create: if isBranchAdmin(businessId) && validBusiness(businessId);
+        allow update: if isBranchAdmin(businessId) && coreImmutable();
+        allow delete: if false;
+      }
+
+      // ── Gastos ─────────────────────────────────────────────────────────────
+      match /expenses/{expenseId} {
+        allow read:   if isAccountant(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if isOwnerOrAdmin(businessId) && coreImmutable();
+        allow delete: if false;
+      }
+
+      // ── Cuentas por cobrar / Préstamos ─────────────────────────────────────
+      match /receivables/{receivableId} {
+        allow read:   if isAccountant(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if isEmployee(businessId) && coreImmutable();
+        allow delete: if false;
+      }
+
+      match /loans/{loanId} {
+        allow read:   if isAccountant(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if isEmployee(businessId) && coreImmutable();
+        allow delete: if false;
+      }
+
+      // ── Cierres de caja (nivel negocio) ────────────────────────────────────
+      match /cashClosings/{closingId} {
+        allow read:   if isAccountant(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // ── Movimientos de caja ────────────────────────────────────────────────
+      match /cashMovements/{movementId} {
+        allow read:   if isAccountant(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // ── Movimientos de inventario ──────────────────────────────────────────
+      match /inventoryMovements/{movementId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isBranchAdmin(businessId) && validBusiness(businessId);
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      // ── Cajas registradoras ────────────────────────────────────────────────
+      match /cashRegisters/{registerId} {
+        allow read:   if isEmployee(businessId);
+        allow write:  if isOwnerOrAdmin(businessId);
+      }
+
+      // ── Reportes fiscales / DGII ───────────────────────────────────────────
+      match /taxReports/{reportId} {
+        allow read:   if isAccountant(businessId);
+        allow write:  if false;
+      }
+
+      // ── Reportes generales ─────────────────────────────────────────────────
+      match /reports/{reportId} {
+        allow read:   if isAccountant(businessId);
+        allow write:  if false;
+      }
+
+      // ── Alertas del sistema ────────────────────────────────────────────────
+      match /alerts/{alertId} {
+        allow read:   if isEmployee(businessId);
+        allow write:  if false;
+      }
+
+      // ── Configuración del negocio ──────────────────────────────────────────
+      match /settings/{settingId} {
+        allow read:   if isEmployee(businessId);
+        allow write:  if isOwnerOrAdmin(businessId);
+      }
+
+      // ── Usuarios del negocio (subdocumentos espejo) ────────────────────────
+      match /users/{empUid} {
+        // Dueño/admin ve todos; empleado solo se ve a sí mismo
+        allow read:   if isOwnerOrAdmin(businessId)
+                      || (isAuth() && uid() == empUid && belongsToBusiness(businessId));
+        allow write:  if false;
+      }
+
+      // ── Pedidos delivery (nivel negocio) ────────────────────────────────────
+      match /deliveryOrders/{orderId} {
+        // Repartidor asignado o cualquier empleado del negocio
+        allow read:   if isEmployee(businessId)
+                      || (isAuth() && resource.data.repartidorId == uid());
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        // Repartidor solo puede cambiar estado/incidencias/ubicación
+        allow update: if (isAuth()
+                          && resource.data.repartidorId == uid()
+                          && request.resource.data.diff(resource.data).affectedKeys()
+                             .hasOnly(['estado', 'actualizadoEn', 'entregadoEn',
+                                       'incidencias', 'notasRepartidor', 'ubicacion']))
+                      || isBranchAdmin(businessId);
+        allow delete: if false;
+      }
+
+      // ── Auditoría — solo lectura para dueño/admin ──────────────────────────
+      match /auditLogs/{logId} {
+        allow read:   if isOwnerOrAdmin(businessId);
+        allow write:  if false;
+      }
+
+      // ── Cola de sincronización (visible para diagnóstico) ──────────────────
+      match /syncQueue/{syncId} {
+        allow read:   if isOwnerOrAdmin(businessId);
+        allow write:  if false;
+      }
+
+      // ── Sucursales + sus subcolecciones ────────────────────────────────────
+      match /branches/{branchId} {
+        allow read:   if isEmployee(businessId);
+        allow write:  if isOwnerOrAdmin(businessId);
+
+        match /cash_closings/{closingId} {
+          allow read:   if isAccountant(businessId)
+                        || (isEmployee(businessId)
+                            && resource.data.branchId in me().get('branchIds', []));
+          allow create: if isEmployee(businessId)
+                        && validBusiness(businessId)
+                        && request.resource.data.branchId == branchId;
+          allow update: if false;
+          allow delete: if false;
+        }
+
+        match /daily_reports/{reportDate} {
+          allow read:   if isAccountant(businessId);
+          allow write:  if false;
+        }
+
+        match /inventory/{productId} {
+          allow read:   if isEmployee(businessId);
+          allow write:  if isBranchAdmin(businessId);
+        }
+      }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // /codigos/{code}  — Códigos de conexión mobile (lectura pública)
+    // Necesario para que la app mobile identifique el negocio al conectarse.
+    // ──────────────────────────────────────────────────────────────────────────
+    match /codigos/{code} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // /repartidores/{uid}  — Perfil del repartidor
+    // Solo el propio repartidor puede leer y actualizar campos de ubicación/estado.
+    // ──────────────────────────────────────────────────────────────────────────
+    match /repartidores/{repUid} {
+      allow read:   if isAuth() && uid() == repUid;
+      allow update: if isAuth()
+                    && uid() == repUid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['ultimaUbicacion', 'pedidoActual', 'actualizadoEn', 'estado']);
+      allow create, delete: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // /pedidos_delivery/{pedidoId}  — Legacy delivery (global)
+    // Mantener para compatibilidad. Migrar a businesses/{id}/deliveryOrders/
+    // ──────────────────────────────────────────────────────────────────────────
+    match /pedidos_delivery/{pedidoId} {
+      allow read:   if isAuth() && resource.data.repartidorId == uid();
+      allow update: if isAuth()
+                    && resource.data.repartidorId == uid()
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['estado', 'incidencias', 'entregadoEn',
+                                 'actualizadoEn', 'notasRepartidor', 'ubicacion']);
+      allow create, delete: if false;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Colecciones legacy — BLOQUEADAS para clientes, solo Admin SDK
+    // ──────────────────────────────────────────────────────────────────────────
+    match /usuarios/{docId} {
+      allow read, write: if false;
+    }
+
+    match /licencias/{docId} {
+      allow read, write: if false;
+    }
+
+    match /pos_clientes/{docId} {
+      allow read, write: if false;
+    }
+
+    match /negocios/{docId} {
+      allow read, write: if false;
+    }
+  }
+}

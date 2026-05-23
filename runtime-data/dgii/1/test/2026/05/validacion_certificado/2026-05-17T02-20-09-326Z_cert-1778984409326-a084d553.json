@@ -1,0 +1,7 @@
+{
+  "certificateMode": "p12",
+  "certificateBase64Sha256": "4bb32d37324039e65acefe7b4f4d2a24fd3a709a5788342cc1c68dcf3ac7fab8",
+  "certificateBase64": "[REDACTED]",
+  "certificatePasswordSha256": "f9f5d37c42819d7f9e7e34702dfd298d37ab44db2b59dabbe36493d836c1320d",
+  "certificatePassword": "[REDACTED]"
+}

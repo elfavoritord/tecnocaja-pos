@@ -1,0 +1,306 @@
+﻿╔═══════════════════════════════════════════════════════════════════════════════╗
+║                        ARQUITECTURA DEL SISTEMA                               ║
+║                    TECNO_CAJA ↔ FIREBASE ↔ APP FLUTTER                          ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🖥️  CAPA LOCAL - TECNO_CAJA (Tu computadora)
+═══════════════════════════════════════════════════════════════════════════════
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    TECNO_CAJA ELECTRON APP                      │
+    │  ┌────────────────┐           ┌──────────────────────────┐  │
+    │  │   HTML/CSS/JS  │           │    Express (Node.js)     │  │
+    │  │   (Frontend)   │◄──────────┤    (server.js)           │  │
+    │  └────────────────┘           │                          │  │
+    │                               │  ✅ Rutas del POS        │  │
+    │  Usuarios compran             │  ✅ Módulo de Sync       │  │
+    │  productos, crean ventas      │  ✅ API REST (/api/sync) │  │
+    │                               │  ✅ WebSockets (Socket.io)│  │
+    │  ┌────────────────────────────┴──────────────────────────┘  │
+    │  │                                                           │
+    │  ▼                                                           │
+    │  ┌──────────────────────────────────────────────────────┐  │
+    │  │              MariaDB (Base de datos local)           │  │
+    │  │  ┌──────────────────────────────────────────────┐    │  │
+    │  │  │ • sales (ventas)                             │    │  │
+    │  │  │ • sale_items (detalles de venta)             │    │  │
+    │  │  │ • cash_sessions (sesiones de caja)           │    │  │
+    │  │  │ • cash_closings (cierres de caja)            │    │  │
+    │  │  │ • inventory_by_branch (inventario)           │    │  │
+    │  │  │ • users (cajeros/usuarios)                   │    │  │
+    │  │  │ • branches (sucursales)                       │    │  │
+    │  │  │ ... y más                                     │    │  │
+    │  │  └──────────────────────────────────────────────┘    │  │
+    │  └──────────────────────────────────────────────────────┘  │
+    │                                                           │
+    └─────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🔄 CAPA DE SINCRONIZACIÓN (Automática)
+═══════════════════════════════════════════════════════════════════════════════
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │       FIREBASE SYNC SERVICE (Proceso en background)          │
+    │                                                              │
+    │  Cada venta completada:                                     │
+    │  ┌───────────────────────────────────────┐                 │
+    │  │ 1. Evento: "venta_completada"        │                 │
+    │  └─────────────┬───────────────────────┘                 │
+    │                ▼                                           │
+    │  ┌───────────────────────────────────────┐                 │
+    │  │ 2. Cola LOCAL (SQLite):              │                 │
+    │  │    firebase_sync_queue tabla         │                 │
+    │  │    Estado: PENDING                   │                 │
+    │  └─────────────┬───────────────────────┘                 │
+    │                ▼                                           │
+    │  ┌───────────────────────────────────────┐                 │
+    │  │ 3. Cada 30 segundos:                 │                 │
+    │  │    ¿Hay items pendientes?            │                 │
+    │  │    ¿Hay internet?                    │                 │
+    │  └─────────────┬───────────────────────┘                 │
+    │                ▼                                           │
+    │       ┌────────────────┐                                  │
+    │       │  ¿Hay Internet? │                                  │
+    │       └────┬─────────┬──┘                                  │
+    │            │         │                                    │
+    │          SÍ│         │NO                                   │
+    │            ▼         ▼                                    │
+    │      [Enviar a   [Esperar]                                │
+    │       Firebase]                                           │
+    │            │                                              │
+    │            ▼                                              │
+    │       ¿Éxito?                                             │
+    │      ┌─────┬──────┐                                       │
+    │    SÍ│     │NO    │                                       │
+    │      ▼     ▼      ▼                                       │
+    │   [Marcar] [Reintentar más]                              │
+    │   [Synced] [tarde con backoff]                           │
+    │                                                           │
+    └──────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+☁️  CAPA CLOUD - FIREBASE (Servidores de Google)
+═══════════════════════════════════════════════════════════════════════════════
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │             FIREBASE PROJECT: inversiones-martinez-14703      │
+    │                                                              │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │         FIRESTORE DATABASE (Base de datos remota)      │  │
+    │  │                                                        │  │
+    │  │  businesses/                                          │  │
+    │  │  ├─ 1/                 (Tu empresa)                   │  │
+    │  │  │  ├─ info/                                         │  │
+    │  │  │  └─ branches/                                     │  │
+    │  │  │     └─ 1/        (Tu sucursal principal)          │  │
+    │  │  │        ├─ sales/         ← Ventas sinc.          │  │
+    │  │  │        ├─ sale_items/    ← Items sinc.           │  │
+    │  │  │        ├─ cash_closings/ ← Cierres sinc.         │  │
+    │  │  │        ├─ inventory/     ← Stock actual           │  │
+    │  │  │        └─ daily_reports/ ← Reportes diarios      │  │
+    │  │  │           └─ yyyy-MM-dd/                         │  │
+    │  │  │              ├─ summary                          │  │
+    │  │  │              ├─ by_payment                       │  │
+    │  │  │              └─ by_cashier                       │  │
+    │  │  │                                                   │  │
+    │  │  └─ 2/                (Otra empresa, si aplica)      │  │
+    │  │     └─ ...                                           │  │
+    │  │                                                        │  │
+    │  │  users/                                              │  │
+    │  │  ├─ uid_usuario_1/                                   │  │
+    │  │  │  ├─ info/                                        │  │
+    │  │  │  │  ├─ nombre                                    │  │
+    │  │  │  │  ├─ email                                     │  │
+    │  │  │  │  └─ rol                                       │  │
+    │  │  │  └─ assigned_businesses: [1]  ← Acceso a emp.   │  │
+    │  │  │                                                   │  │
+    │  │  └─ uid_usuario_2/                                   │  │
+    │  │     └─ ...                                           │  │
+    │  │                                                        │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    │                                                              │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │        FIREBASE AUTHENTICATION                        │  │
+    │  │  • Google Sign-In                                     │  │
+    │  │  • Email/Password                                     │  │
+    │  │  • Sessions de usuarios                               │  │
+    │  │  • Custom Claims (admin, roles, etc)                  │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    │                                                              │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │        FIREBASE SECURITY RULES                        │  │
+    │  │  • Cada usuario ve SOLO sus empresas                 │  │
+    │  │  • Lectura restringida por assigned_businesses        │  │
+    │  │  • Escritura solo para sync service (admin SDK)       │  │
+    │  │  • Protección contra acceso no autorizado             │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+📱 CAPA CLIENTE - APP FLUTTER (Múltiples dispositivos)
+═══════════════════════════════════════════════════════════════════════════════
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │              APP FLUTTER DE REPORTES                         │
+    │          (Web, Android, iOS, Desktop)                        │
+    │                                                              │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │         AUTENTICACIÓN (Firebase Auth)                 │  │
+    │  │  • Login con email/password                            │  │
+    │  │  • Login con Google                                    │  │
+    │  │  • Verificación de permiso (assigned_businesses)       │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    │                          │                                  │
+    │                          ▼                                  │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │    REPOSITORIOS (Leen desde Firestore)                │  │
+    │  │  • SalesRepository                                    │  │
+    │  │  • DashboardRepository                                │  │
+    │  │  • InventoryRepository                                │  │
+    │  │  • CashClosingRepository                              │  │
+    │  │  • Todos usan Cloud Firestore (no servidor local)     │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    │                          │                                  │
+    │                          ▼                                  │
+    │  ┌────────────────────────────────────────────────────────┐  │
+    │  │       PANTALLAS DE REPORTES                           │  │
+    │  │  ├─ Sales Report        (Ventas)                      │  │
+    │  │  ├─ Cash Report         (Caja)                        │  │
+    │  │  ├─ Inventory Report    (Inventario)                  │  │
+    │  │  ├─ Profits Report      (Ganancias)                   │  │
+    │  │  ├─ Customers Report    (Clientes)                    │  │
+    │  │  ├─ Branches Report     (Sucursales)                  │  │
+    │  │  ├─ Expenses Report     (Gastos)                      │  │
+    │  │  ├─ Fiscal Report       (Fiscal)                      │  │
+    │  │  └─ Receivables Report  (Por cobrar)                  │  │
+    │  │                                                        │  │
+    │  │  CADA PANTALLA:                                        │  │
+    │  │  • Lee directamente de Firestore                      │  │
+    │  │  • Filtra por fecha, sucursal, cajero                 │  │
+    │  │  • Muestra gráficos y tablas                          │  │
+    │  │  • Se actualiza en tiempo real (snapshots)            │  │
+    │  │  • Funciona offline (lectura en caché)                │  │
+    │  │                                                        │  │
+    │  └────────────────────────────────────────────────────────┘  │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🔗 FLUJO COMPLETO (De principio a fin)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. USUARIO CREA VENTA EN TECNO_CAJA
+   └─ Cliente compra producto → Se registra en MariaDB local ✓
+   └─ POS sigue funcionando 100% normal (sin internet)
+
+2. VENTA SE COMPLETA Y "PAGA"
+   └─ Evento: "venta_completada"
+   └─ Firebase Sync Service lo detecta
+   └─ Se agrega a cola local (sqlite)
+
+3. SINCRONIZACIÓN AUTOMÁTICA
+   ├─ Cada 30 segundos:
+   │  └─ ¿Hay items en cola? ✓
+   │  └─ ¿Hay internet? ✓
+   │  └─ Enviar a Firebase
+   │
+   └─ Si hay error:
+      └─ Reintentar más tarde
+      └─ Backoff exponencial (30s → 1m → 2m → ...)
+
+4. DATOS LLEGAN A FIRESTORE
+   └─ Se escriben en: businesses/1/branches/1/sales/{saleId}
+   └─ Se aplican reglas de seguridad
+   └─ Otros documentos: daily_reports, etc.
+
+5. APP FLUTTER LO DETECTA
+   └─ Snapshot listeners se activan
+   └─ Los repositorios leen los datos
+   └─ Las pantallas se actualizan automáticamente
+
+6. USUARIO VE EL REPORTE
+   └─ Desde cualquier lugar (web, móvil, escritorio)
+   └─ Datos en tiempo real
+   └─ Filtros por fecha, sucursal, cajero
+   └─ Gráficos y tablas automáticas
+
+
+═══════════════════════════════════════════════════════════════════════════════
+🎯 CASOS DE USO
+═══════════════════════════════════════════════════════════════════════════════
+
+CASO 1: Usuario en la tienda
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Abre app Flutter en tablet en la tienda                  │
+│ 2. Lee reportes de las ventas del día (actualizados en TR)  │
+│ 3. No necesita estar en LAN, USA DATOS DE FIREBASE         │
+└─────────────────────────────────────────────────────────────┘
+
+CASO 2: Dueño en casa
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Abre app Flutter desde casa (sin estar en LAN)           │
+│ 2. Ve reportes de todas sus sucursales                      │
+│ 3. Datos vienen de Firebase en tiempo real                  │
+└─────────────────────────────────────────────────────────────┘
+
+CASO 3: Sin internet en la tienda
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Tecno Caja sigue funcionando normalmente                    │
+│ 2. Las ventas se registran en MariaDB local                │
+│ 3. Cuando vuelve el internet, se sincronizan automáticamente │
+└─────────────────────────────────────────────────────────────┘
+
+CASO 4: Varias sucursales
+┌─────────────────────────────────────────────────────────────┐
+│ 1. Cada sucursal tiene su Tecno Caja + MariaDB local          │
+│ 2. Todos sincronizan a mismo Firebase                       │
+│ 3. Datos centralizados accesibles desde cualquier lugar     │
+└─────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+📊 FLUJO DE DATOS
+═══════════════════════════════════════════════════════════════════════════════
+
+         TECNO_CAJA              FIREBASE             APP FLUTTER
+           (Local)              (Cloud)              (Cliente)
+             │                    │                    │
+         VENTA │                   │                    │
+           ↓   │                   │                    │
+         ┌──────────┐              │                    │
+         │ MariaDB  │              │                    │
+         └────┬─────┘              │                    │
+              │                    │                    │
+              ├─→ Cola LOCAL ──┐   │                    │
+              │                │   │                    │
+              │            30s │   │                    │
+              │                ↓   │                    │
+              │            Enviar  │◄────────┐          │
+              │                ├──────────────┤          │
+              │                │   FIRESTORE  │          │
+              │                └──────────────┤          │
+              │                        │      │          │
+              │                        ├──────┤──→ LECTURA ──┐
+              │                        │              └──→ APP
+              │                        │
+              └────────────────────────┘
+
+RESUMEN:
+• Escritura: Tecno Caja → MariaDB local → Cola → Firebase
+• Lectura: App Flutter ← Firebase (Firestore)
+• Dirección: Unidireccional de Tecno Caja a Firebase
+• Tiempo real: Snapshots en Firebase actualizan app
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+¡LISTO PARA USAR! 🚀
+
+Revisa INICIO_RAPIDO.md para empezar en 5 pasos.

@@ -1,0 +1,23 @@
+{
+  "trackId": "f3e19b81-1413-43aa-ab0d-70265bc7f0a0",
+  "fecha": "2026-05-21T18:00:11.480Z",
+  "estado": "ACEPTADO",
+  "environment": "testecf",
+  "codigo": "4",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000024",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "5/21/2026 2:00:03 PM",
+  "mensajes": [
+    {
+      "valor": "La longitud del nombre del archivo no es válida.",
+      "codigo": 81
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"f3e19b81-1413-43aa-ab0d-70265bc7f0a0\",\"codigo\":\"4\",\"estado\":\"Aceptado Condicional\",\"rnc\":\"40211932609\",\"encf\":\"E470000000024\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"5/21/2026 2:00:03 PM\",\"mensajes\":[{\"valor\":\"La longitud del nombre del archivo no es válida.\",\"codigo\":81}]}",
+  "statusPath": "storage/ecf/tracks/estado-f3e19b81-1413-43aa-ab0d-70265bc7f0a0.json"
+}

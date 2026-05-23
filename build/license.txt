@@ -1,0 +1,31 @@
+Tecno Caja - Sistema de Punto de Venta
+====================================
+Copyright (C) 2025 Emilio. Todos los derechos reservados.
+
+ACUERDO DE LICENCIA DE USUARIO FINAL
+
+Este software (Tecno Caja) es propiedad de Emilio y está protegido por las leyes
+de derechos de autor. Al instalar este software, usted acepta los siguientes
+términos y condiciones:
+
+1. USO PERMITIDO
+   Puede instalar y usar este software en una sola computadora para sus
+   operaciones comerciales propias.
+
+2. RESTRICCIONES
+   - No puede copiar, modificar ni distribuir este software sin autorización.
+   - No puede realizar ingeniería inversa ni descompilar el software.
+   - No puede sublicenciar ni vender el software a terceros.
+
+3. DATOS Y PRIVACIDAD
+   Todos los datos de ventas, clientes e inventario se guardan localmente
+   en su computadora. El usuario es responsable de hacer copias de seguridad
+   de sus datos.
+
+4. GARANTÍA LIMITADA
+   Este software se proporciona "tal cual" sin garantía de ningún tipo.
+
+5. SOPORTE
+   Para soporte técnico o consultas, contacte al desarrollador.
+
+Al continuar con la instalación, usted acepta todos los términos anteriores.

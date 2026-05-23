@@ -1,0 +1,19 @@
+{
+  "version": "1.1.0",
+  "stableVersion": "1.1.0",
+  "date": "22/05/2026",
+  "size": "47.3 MB",
+  "type": "feature",
+  "critical": false,
+  "downloadUrl": null,
+  "changes": [
+    "✨ Nuevo módulo de facturación electrónica e-CF completo.",
+    "⚡ Mejoras significativas en velocidad de facturación.",
+    "🐛 Corrección de errores en impresión térmica ESC/POS.",
+    "📦 Optimización del módulo de inventario y stock.",
+    "📊 Nuevos reportes avanzados de ventas y rentabilidad.",
+    "🔒 Mayor seguridad en autenticación y manejo de sesiones.",
+    "🖥 Interfaz de usuario rediseñada con mejor contraste.",
+    "🔄 Sincronización más rápida en modo multicaja."
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-21T16:24:22.149Z",
+  "estado": "ENVIADO",
+  "environment": "testecf",
+  "codigo": null,
+  "descripcion": "The 'eNCF' element is invalid - The value 'E4700000000012' is invalid according to its datatype 'eNCFValidation' - The actual length is greater than the MaxLength value.",
+  "mensaje": "The 'eNCF' element is invalid - The value 'E4700000000012' is invalid according to its datatype 'eNCFValidation' - The actual length is greater than the MaxLength value.",
+  "error": "Estructura del archivo XML inválida. ",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260521-122422.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Estructura del archivo XML inválida. \",\"mensaje\":\"The 'eNCF' element is invalid - The value 'E4700000000012' is invalid according to its datatype 'eNCFValidation' - The actual length is greater than the MaxLength value.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260521-122422.json"
+}

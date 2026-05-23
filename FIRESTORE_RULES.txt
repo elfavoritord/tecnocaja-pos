@@ -1,0 +1,133 @@
+﻿/**
+ * FIRESTORE SECURITY RULES PARA TECNO_CAJA
+ *
+ * 🔒 Reglas de seguridad que garantizan que cada usuario solo vea su empresa.
+ *
+ * CÓMO APLICAR:
+ * 1. Ve a Firebase Console → Tu Proyecto
+ * 2. Selecciona "Firestore Database"
+ * 3. Haz clic en "Rules"
+ * 4. Copia TODO el contenido de este archivo (desde "rules_version" hasta el final)
+ * 5. Pega en el editor de reglas
+ * 6. Haz clic en "Publish"
+ *
+ * ESTRUCTURA DE DATOS:
+ * - businesses/{businessId}/... → Datos de cada empresa
+ * - users/{userId}/... → Datos de usuarios
+ * - Cada usuario tiene assigned_businesses = [lista de IDs de empresas permitidas]
+ */
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ═══════════════════════════════════════════════════════════
+    // FUNCIONES AUXILIARES
+    // ═══════════════════════════════════════════════════════════
+
+    // ¿Está el usuario autenticado?
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    // ¿Es administrador? (Los admins ven todo)
+    // Nota: Verificar con un custom claim "admin" en Firebase Auth
+    function isAdmin() {
+      return isAuth() && request.auth.token.admin == true;
+    }
+
+    // ¿Tiene acceso a esta empresa?
+    function hasAccessToBusinessId(businessId) {
+      return isAuth() &&
+             businessId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.assigned_businesses;
+    }
+
+    // ¿Tiene acceso a esta rama? (está en la empresa de la rama)
+    function hasAccessToBranch(businessId) {
+      return isAdmin() || hasAccessToBusinessId(businessId);
+    }
+
+    // ¿Es la sincronización automática de Tecno Caja?
+    // Los datos se sincronizan via Firebase Admin SDK (desde el backend)
+    function isSyncService() {
+      return request.auth.uid == 'sync-service';
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // COLECCIÓN: users
+    // ═══════════════════════════════════════════════════════════
+
+    match /users/{userId} {
+      // Leer: Solo tú mismo o un admin
+      allow read: if isAuth() && (request.auth.uid == userId || isAdmin());
+
+      // Escribir: Solo Tecno Caja (admin SDK) actualiza esto
+      allow write: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // COLECCIÓN: businesses/{businessId}/**
+    // ═══════════════════════════════════════════════════════════
+
+    match /businesses/{businessId} {
+      // Leer info de la empresa: si tienes acceso
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+
+      // Escribir: Solo Tecno Caja (admin SDK)
+      allow write: if false;
+    }
+
+    // ───────────────────────────────────────────────────────────
+    // SUBRUTA: branches/{branchId}/...
+    // ───────────────────────────────────────────────────────────
+
+    match /businesses/{businessId}/branches/{branchId} {
+      // Info de rama
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // Sales
+    match /businesses/{businessId}/branches/{branchId}/sales/{saleId} {
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // Sale items
+    match /businesses/{businessId}/branches/{branchId}/sale_items/{itemId} {
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // Cash closings
+    match /businesses/{businessId}/branches/{branchId}/cash_closings/{closingId} {
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // Inventory
+    match /businesses/{businessId}/branches/{branchId}/inventory/{productId} {
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // Daily reports
+    match /businesses/{businessId}/branches/{branchId}/daily_reports/{reportDate} {
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // Subcollections de daily_reports
+    match /businesses/{businessId}/branches/{branchId}/daily_reports/{reportDate}/{document=**} {
+      allow read: if isAuth() && (hasAccessToBusinessId(businessId) || isAdmin());
+      allow write: if false;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // REGLA POR DEFECTO: DENEGAR TODO
+    // ═══════════════════════════════════════════════════════════
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

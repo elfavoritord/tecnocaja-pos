@@ -1,0 +1,23 @@
+{
+  "trackId": "825e9606-5e9b-4033-b9e2-b36b4518d487",
+  "fecha": "2026-05-22T02:59:44.647Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000005",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/21/2026 10:59:45 PM",
+  "mensajes": [
+    {
+      "valor": "\n-The element 'Transporte' has invalid child element 'FechaEmbarque'. List of possible elements expected: 'Conductor, DocumentoTransporte, Ficha, Placa, RutaTransporte, ZonaTransporte, NumeroAlbaran'.",
+      "codigo": 3
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"825e9606-5e9b-4033-b9e2-b36b4518d487\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000005\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/21/2026 10:59:45 PM\",\"mensajes\":[{\"valor\":\"\\n-The element 'Transporte' has invalid child element 'FechaEmbarque'. List of possible elements expected: 'Conductor, DocumentoTransporte, Ficha, Placa, RutaTransporte, ZonaTransporte, NumeroAlbaran'.\",\"codigo\":3}]}",
+  "statusPath": "storage/ecf/tracks/estado-825e9606-5e9b-4033-b9e2-b36b4518d487.json"
+}

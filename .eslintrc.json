@@ -1,0 +1,44 @@
+{
+  "root": true,
+  "env": {
+    "node": true,
+    "browser": true,
+    "es2022": true,
+    "jest": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "extends": ["eslint:recommended", "prettier"],
+  "rules": {
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
+    "no-console": "off",
+    "no-empty": ["warn", { "allowEmptyCatch": true }],
+    "no-useless-escape": "warn",
+    "no-prototype-builtins": "warn",
+    "no-inner-declarations": "off",
+    "no-undef": "error",
+    "no-redeclare": "error",
+    "eqeqeq": ["warn", "smart"],
+    "prefer-const": "warn"
+  },
+  "overrides": [
+    {
+      "files": ["js/**/*.js", "electron/preload.js"],
+      "env": { "browser": true }
+    },
+    {
+      "files": ["tests/**/*.test.js"],
+      "env": { "jest": true }
+    }
+  ],
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    "build/mariadb-runtime/",
+    "coverage/",
+    "reporte app/",
+    "**/*.min.js"
+  ]
+}

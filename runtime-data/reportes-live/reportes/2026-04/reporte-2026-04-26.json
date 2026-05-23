@@ -1,0 +1,15 @@
+{
+  "fecha": "2026-04-26",
+  "generadoEn": "2026-04-26T01:58:37.760Z",
+  "kpis": {
+    "total_facturas": 0,
+    "total_ventas": "0.00",
+    "total_itbis": "0.00",
+    "ticket_promedio": "0.000000",
+    "efectivo": "0.00",
+    "tarjeta": "0.00",
+    "transferencia": "0.00"
+  },
+  "porSucursal": [],
+  "porMetodo": []
+}
