@@ -957,6 +957,10 @@
           <span class="cqa-icon">🧾</span>
           <span class="cqa-label">Corte Caja</span>
         </button>
+        <button class="caja-quick-btn caja-quick-btn--danger" type="button" id="btn-cierre-rapido" onclick="openCashCierreModal()" title="Cerrar caja y turno" style="display:none">
+          <span class="cqa-icon">🔒</span>
+          <span class="cqa-label">Cerrar Caja</span>
+        </button>
         <button class="caja-quick-btn" type="button" onclick="openGavetaModal()" title="Abrir gaveta sin venta">
           <span class="cqa-icon">💵</span>
           <span class="cqa-label">Abrir Gaveta</span>
@@ -3583,8 +3587,145 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
     </div>
     <div class="modal-card-footer corte-modal-footer">
       <button class="btn-secondary" type="button" onclick="closeCashCorteModal()">Cerrar</button>
-      <button class="btn-secondary" type="button" onclick="saveCashCorte({ print: false })">💾 Guardar sin imprimir</button>
-      <button class="btn-secondary" type="button" onclick="saveCashCorte({ print: true })">🖨️ Guardar e imprimir</button>
+      <button class="btn-secondary" type="button" onclick="printSoloCorte()">🖨️ Imprimir Corte</button>
+      <button class="btn-warning" type="button" onclick="openCashCierreModal()" id="btn-ir-cierre">🔒 Cerrar Caja</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     MODAL: CIERRE DE CAJA
+═══════════════════════════════════════════════ -->
+<div id="cash-cierre-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="cierre-modal-title">
+  <div class="modal-card corte-modal-card">
+    <div class="modal-card-header" style="background:var(--danger,#dc3545)">
+      <span class="modal-card-icon">🔒</span>
+      <h3 id="cierre-modal-title" style="color:#fff">Cierre de Caja</h3>
+      <button class="modal-card-close" type="button" onclick="closeCashCierreModal()" aria-label="Cerrar" style="color:#fff">✕</button>
+    </div>
+    <div class="modal-card-body corte-modal-body">
+
+      <!-- Info del turno -->
+      <div class="corte-info-row">
+        <div class="corte-info-item"><span class="corte-info-label">Cajero</span><strong id="cierre-cajero">—</strong></div>
+        <div class="corte-info-item"><span class="corte-info-label">Apertura</span><strong id="cierre-hora-apertura">—</strong></div>
+        <div class="corte-info-item"><span class="corte-info-label">Hora cierre</span><strong id="cierre-hora-actual">—</strong></div>
+        <div class="corte-info-item"><span class="corte-info-label">Ventas</span><strong id="cierre-ventas-count">0</strong></div>
+      </div>
+
+      <!-- Desglose -->
+      <div class="corte-section-title">Ventas del turno</div>
+      <div class="corte-grid">
+        <div class="corte-row"><span>Efectivo</span><span id="cierre-efectivo" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Tarjeta</span><span id="cierre-tarjeta" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Transferencia</span><span id="cierre-transferencia" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Crédito</span><span id="cierre-credito" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Descuentos</span><span id="cierre-descuentos" class="corte-val text-warning">- RD$ 0.00</span></div>
+        <div class="corte-row"><span>Devoluciones</span><span id="cierre-devoluciones" class="corte-val text-danger">- RD$ 0.00</span></div>
+      </div>
+
+      <div class="corte-section-title">Movimientos de caja</div>
+      <div class="corte-grid">
+        <div class="corte-row"><span>Entradas adicionales</span><span id="cierre-entradas" class="corte-val text-success">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Salidas / Gastos</span><span id="cierre-salidas" class="corte-val text-danger">- RD$ 0.00</span></div>
+      </div>
+
+      <!-- Total esperado -->
+      <div class="corte-total-row">
+        <span>Total esperado en caja</span>
+        <strong id="cierre-total-esperado" class="corte-total-val">RD$ 0.00</strong>
+      </div>
+
+      <!-- Conteo físico -->
+      <div class="corte-count-row">
+        <label for="cierre-contado">Contado físicamente</label>
+        <input type="number" id="cierre-contado" class="form-input corte-count-input"
+               placeholder="0.00" min="0" step="0.01"
+               oninput="calcCierreDiff()">
+      </div>
+
+      <!-- Diferencia calculada -->
+      <div id="cierre-diff-wrap" class="corte-diff-wrap hidden">
+        <span id="cierre-diff-icon">⚠</span>
+        <span id="cierre-diff-text">RD$ 0.00</span>
+      </div>
+
+      <!-- Observación -->
+      <div class="form-group" style="margin-top:0.75rem">
+        <label>Observaciones del cierre</label>
+        <textarea id="cierre-notas" class="form-input" rows="2" placeholder="Notas del cierre..."></textarea>
+      </div>
+
+      <!-- Aviso importante -->
+      <div style="background:rgba(220,53,69,0.1);border:1px solid rgba(220,53,69,0.3);border-radius:8px;padding:10px 12px;margin-top:0.75rem;font-size:0.85rem;color:var(--danger,#dc3545)">
+        ⚠️ <strong>El cierre de caja bloqueará nuevas ventas hasta abrir un nuevo turno.</strong><br>
+        Tu sesión de usuario permanecerá activa.
+      </div>
+
+    </div>
+    <div class="modal-card-footer corte-modal-footer">
+      <button class="btn-secondary" type="button" onclick="closeCashCierreModal()">Cancelar</button>
+      <button class="btn-secondary" type="button" onclick="executeCashCierre({ print: false })" id="btn-cierre-sin-imprimir">💾 Cerrar sin imprimir</button>
+      <button class="btn-danger" type="button" onclick="executeCashCierre({ print: true })" id="btn-cierre-con-imprimir">🖨️ Cerrar e imprimir</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     PANTALLA: RESUMEN POST-CIERRE
+═══════════════════════════════════════════════ -->
+<div id="cash-cierre-summary" class="modal-overlay hidden" role="dialog" aria-modal="true" style="z-index:2100">
+  <div class="modal-card corte-modal-card" style="max-width:520px">
+    <div class="modal-card-header" style="background:var(--success,#28a745)">
+      <span class="modal-card-icon">✅</span>
+      <h3 style="color:#fff">Caja Cerrada — Resumen del Turno</h3>
+    </div>
+    <div class="modal-card-body corte-modal-body">
+
+      <div class="corte-info-row">
+        <div class="corte-info-item"><span class="corte-info-label">Cajero</span><strong id="summary-cajero">—</strong></div>
+        <div class="corte-info-item"><span class="corte-info-label">Apertura</span><strong id="summary-apertura">—</strong></div>
+        <div class="corte-info-item"><span class="corte-info-label">Cierre</span><strong id="summary-cierre">—</strong></div>
+        <div class="corte-info-item"><span class="corte-info-label">Ventas</span><strong id="summary-ventas">0</strong></div>
+      </div>
+
+      <div class="corte-section-title">Ventas del turno</div>
+      <div class="corte-grid">
+        <div class="corte-row"><span>Efectivo</span><span id="summary-efectivo" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Tarjeta</span><span id="summary-tarjeta" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Transferencia</span><span id="summary-transferencia" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Crédito</span><span id="summary-credito" class="corte-val">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Descuentos</span><span id="summary-descuentos" class="corte-val text-warning">- RD$ 0.00</span></div>
+      </div>
+
+      <div class="corte-section-title">Caja</div>
+      <div class="corte-grid">
+        <div class="corte-row"><span>Entradas</span><span id="summary-entradas" class="corte-val text-success">RD$ 0.00</span></div>
+        <div class="corte-row"><span>Salidas / Gastos</span><span id="summary-salidas" class="corte-val text-danger">- RD$ 0.00</span></div>
+      </div>
+
+      <div class="corte-total-row" style="margin-top:0.5rem">
+        <span>Total esperado</span>
+        <strong id="summary-esperado" class="corte-total-val">RD$ 0.00</strong>
+      </div>
+      <div class="corte-total-row">
+        <span>Contado físico</span>
+        <strong id="summary-contado" class="corte-total-val">RD$ 0.00</strong>
+      </div>
+      <div id="summary-diff-wrap" class="corte-diff-wrap hidden" style="margin-top:0.5rem">
+        <span id="summary-diff-icon">⚠</span>
+        <span id="summary-diff-text">—</span>
+      </div>
+      <div id="summary-notas-wrap" class="hidden" style="margin-top:0.5rem;font-size:0.85rem;color:var(--text-muted)">
+        📝 <span id="summary-notas"></span>
+      </div>
+
+    </div>
+    <div class="modal-card-footer" style="flex-wrap:wrap;gap:0.5rem">
+      <button class="btn-secondary" type="button" onclick="printCloseSummary()">🖨️ Imprimir</button>
+      <button class="btn-secondary" type="button" onclick="closePostCloseScreen(); openCajaModule()">🗂️ Ver ventas</button>
+      <button class="btn-primary" type="button" onclick="closePostCloseScreen()">↗ Nuevo turno / Continuar</button>
+      <button class="btn-danger" type="button" onclick="closePostCloseScreen(); doLogout()">🚪 Cerrar sesión</button>
     </div>
   </div>
 </div>

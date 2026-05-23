@@ -6176,18 +6176,26 @@ function parseFmtMoney(text) {
   return parseFloat(String(text || '').replace(/[^0-9.-]/g, '')) || 0;
 }
 
+/** Imprime el corte actual sin cerrar la caja */
+async function printSoloCorte() {
+  const d = _getCorteData();
+  try {
+    await _printCashCorte(d, 0, 0, '');
+  } catch (err) {
+    console.warn('[corte] Error imprimiendo:', err);
+    showToast('No se pudo imprimir el corte.', 'error');
+  }
+}
+
+/** Guarda un registro de corte parcial (NO cierra la caja, NO hace logout) */
 async function saveCashCorte({ print = false } = {}) {
   const d = _getCorteData();
-  const contado    = parseFloat(document.getElementById('corte-contado')?.value || 0) || 0;
-  const notas      = document.getElementById('corte-notas')?.value?.trim() || '';
-  const diferencia = contado - d.totalEsperado;
+  const notas = document.getElementById('corte-notas')?.value?.trim() || '';
 
-  // Deshabilitar botones para evitar doble envío
   const footerBtns = document.querySelectorAll('#cash-corte-modal .modal-card-footer button');
   footerBtns.forEach(b => { b.disabled = true; });
 
   try {
-    // 1. Guardar el registro de corte
     await api.cashCorte({
       cajero:        d.cajero,
       horaApertura:  d.horaApertura,
@@ -6202,57 +6210,25 @@ async function saveCashCorte({ print = false } = {}) {
       entradas:      d.entradas,
       salidas:       d.salidas,
       totalEsperado: d.totalEsperado,
-      contadoFisico: contado,
-      diferencia,
+      contadoFisico: 0,
+      diferencia:    0,
       notas,
       ...getBusinessStructurePayload(),
       ...getActorPayload()
     });
 
-    // 2. Cerrar la sesión de caja automáticamente (sin pedir confirmación)
-    if (cajaAbierta) {
-      try {
-        const montoFinal = contado || DB.config.cajaMonto || 0;
-        const response = await api.closeCash({
-          monto: montoFinal,
-          obs:   notas || 'Cierre por corte de caja',
-          ...getBusinessStructurePayload(),
-          ...getActorPayload()
-        });
-        DB.config = { ...DB.config, ...response.config };
-        DB.caja   = { ...DB.caja, sessionId: null, abierta: false };
-        cajaAbierta = false;
-        DB.movimientosCaja.unshift({
-          tipo:          'Cierre',
-          monto:         montoFinal,
-          hora:          new Date().toLocaleString('es-DO'),
-          obs:           notas || 'Cierre por corte de caja',
-          usuarioId:     DB.currentUser?.id || null,
-          usuarioNombre: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Sistema'
-        });
-        syncCajaState();
-        refreshAuditLogs();
-        updateNotifications();
-      } catch (closeErr) {
-        console.warn('[corte] Error al cerrar sesión de caja:', closeErr);
-        showToast('Corte guardado, pero no se pudo cerrar la sesión de caja.', 'warning');
-      }
+    showToast('✅ Corte guardado. La caja sigue abierta.', 'success');
+    if (print) {
+      await printSoloCorte().catch(err => {
+        console.warn('[corte] Error imprimiendo:', err);
+        showToast('No se pudo imprimir el corte.', 'error');
+      });
     }
-
-    // 3. Imprimir si se solicitó (primero cerrar modal, luego imprimir)
     closeCashCorteModal();
-    showToast('✅ Corte guardado. Caja cerrada. Redirigiendo...', 'success');
-    if (print) _printCashCorte(d, contado, diferencia, notas).catch((err) => {
-      console.warn('[corte] Error imprimiendo corte:', err);
-      showToast('No se pudo imprimir el corte. Revisa la impresora.', 'error');
-    });
-
-    // 4. Redirigir al inicio de sesión
-    setTimeout(() => doLogout(), 1800);
-
   } catch (err) {
-    showToast(err.message || 'Error al guardar el corte.', 'error');
-    // Re-habilitar botones si hubo error
+    console.error('[corte] Error guardando corte:', err);
+    showToast(err?.message || 'No se pudo guardar el corte.', 'error');
+  } finally {
     footerBtns.forEach(b => { b.disabled = false; });
   }
 }
@@ -6260,6 +6236,269 @@ async function saveCashCorte({ print = false } = {}) {
 async function saveCashCorteAndClose() {
   // Mantener por compatibilidad — ahora saveCashCorte ya cierra la caja
   await saveCashCorte({ print: false });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CIERRE DE CAJA (separado del corte — no hace logout)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function openCashCierreModal() {
+  if (!currentUserCan('cerrar_caja')) {
+    showToast('No tienes permiso para cerrar caja.', 'error');
+    return;
+  }
+  if (!cajaAbierta) {
+    showToast('La caja no está abierta.', 'warning');
+    return;
+  }
+  const d = _getCorteData();
+  document.getElementById('cierre-cajero').textContent       = d.cajero;
+  document.getElementById('cierre-hora-apertura').textContent = d.horaApertura;
+  document.getElementById('cierre-hora-actual').textContent   = d.horaCorte;
+  document.getElementById('cierre-ventas-count').textContent  = d.ventasCount;
+  document.getElementById('cierre-efectivo').textContent      = fmt(d.efectivo);
+  document.getElementById('cierre-tarjeta').textContent       = fmt(d.tarjeta);
+  document.getElementById('cierre-transferencia').textContent = fmt(d.transferencia);
+  document.getElementById('cierre-credito').textContent       = fmt(d.credito);
+  document.getElementById('cierre-descuentos').textContent    = `- ${fmt(d.descuentos)}`;
+  document.getElementById('cierre-devoluciones').textContent  = `- ${fmt(d.devoluciones)}`;
+  document.getElementById('cierre-entradas').textContent      = fmt(d.entradas);
+  document.getElementById('cierre-salidas').textContent       = `- ${fmt(d.salidas)}`;
+  document.getElementById('cierre-total-esperado').textContent = fmt(d.totalEsperado);
+  const contadoEl = document.getElementById('cierre-contado');
+  if (contadoEl) contadoEl.value = '';
+  document.getElementById('cierre-diff-wrap')?.classList.add('hidden');
+  document.getElementById('cierre-notas').value = '';
+  // Guardar datos del turno para el resumen post-cierre
+  openCashCierreModal._turnoData = d;
+  document.getElementById('cash-cierre-modal')?.classList.remove('hidden');
+}
+
+function closeCashCierreModal() {
+  document.getElementById('cash-cierre-modal')?.classList.add('hidden');
+}
+
+function calcCierreDiff() {
+  const totalEsperadoEl = document.getElementById('cierre-total-esperado');
+  const contadoEl = document.getElementById('cierre-contado');
+  const diffWrap = document.getElementById('cierre-diff-wrap');
+  const diffText = document.getElementById('cierre-diff-text');
+  const diffIcon = document.getElementById('cierre-diff-icon');
+
+  if (!contadoEl?.value || !diffWrap) return;
+
+  const esperado = parseFmtMoney(totalEsperadoEl?.textContent || '0');
+  const contado  = parseFloat(contadoEl.value || 0) || 0;
+  const diff     = contado - esperado;
+
+  diffWrap.classList.remove('hidden', 'corte-diff-ok', 'corte-diff-over', 'corte-diff-under');
+
+  if (Math.abs(diff) < 0.01) {
+    diffWrap.classList.add('corte-diff-ok');
+    diffIcon.textContent = '✅';
+    diffText.textContent = 'Sin diferencia — caja cuadrada';
+  } else if (diff > 0) {
+    diffWrap.classList.add('corte-diff-over');
+    diffIcon.textContent = '⚠';
+    diffText.textContent = `Sobran ${fmt(diff)}`;
+  } else {
+    diffWrap.classList.add('corte-diff-under');
+    diffIcon.textContent = '⚠';
+    diffText.textContent = `Faltan ${fmt(Math.abs(diff))}`;
+  }
+}
+
+/**
+ * Cierra la caja/turno activo.
+ * NO hace logout — muestra la pantalla de resumen post-cierre.
+ */
+async function executeCashCierre({ print = false } = {}) {
+  if (!currentUserCan('cerrar_caja')) {
+    showToast('No tienes permiso para cerrar caja.', 'error');
+    return;
+  }
+
+  const d = openCashCierreModal._turnoData || _getCorteData();
+  const contado    = parseFloat(document.getElementById('cierre-contado')?.value || 0) || 0;
+  const notas      = document.getElementById('cierre-notas')?.value?.trim() || '';
+  const diferencia = contado - d.totalEsperado;
+  const horaCierre = new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo' });
+
+  const btns = document.querySelectorAll('#cash-cierre-modal .modal-card-footer button');
+  btns.forEach(b => { b.disabled = true; });
+
+  try {
+    // 1. Cerrar caja en backend
+    const response = await api.closeCash({
+      monto: contado || DB.config.cajaMonto || 0,
+      obs:   notas || 'Cierre de caja',
+      ...getBusinessStructurePayload(),
+      ...getActorPayload()
+    });
+
+    // 2. Actualizar estado local
+    DB.config = { ...DB.config, ...(response.config || {}) };
+    DB.caja   = { ...DB.caja, sessionId: null, abierta: false };
+    cajaAbierta = false;
+    DB.movimientosCaja.unshift({
+      tipo:          'Cierre',
+      monto:         contado,
+      hora:          new Date().toLocaleString('es-DO', { timeZone: 'America/Santo_Domingo' }),
+      obs:           notas || 'Cierre de caja',
+      usuarioId:     DB.currentUser?.id || null,
+      usuarioNombre: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Sistema'
+    });
+
+    // 3. Guardar también el corte en audit
+    try {
+      await api.cashCorte({
+        cajero: d.cajero, horaApertura: d.horaApertura, horaCorte: horaCierre,
+        ventas: d.ventasCount, efectivo: d.efectivo, tarjeta: d.tarjeta,
+        transferencia: d.transferencia, credito: d.credito, descuentos: d.descuentos,
+        devoluciones: d.devoluciones, entradas: d.entradas, salidas: d.salidas,
+        totalEsperado: d.totalEsperado, contadoFisico: contado, diferencia, notas,
+        ...getBusinessStructurePayload(), ...getActorPayload()
+      });
+    } catch (_e) { /* no crítico */ }
+
+    syncCajaState();
+    refreshAuditLogs();
+    updateNotifications();
+
+    // 4. Cerrar modal de cierre
+    closeCashCierreModal();
+
+    // 5. Imprimir si se solicitó
+    if (print) {
+      _printCashCorte(
+        { ...d, horaCorte: horaCierre },
+        contado, diferencia, notas
+      ).catch(err => {
+        console.warn('[cierre] Error imprimiendo:', err);
+        showToast('Caja cerrada. No se pudo imprimir el comprobante.', 'warning');
+      });
+    }
+
+    // 6. Mostrar pantalla de resumen — SIN logout
+    showPostCloseScreen({
+      cajero: d.cajero,
+      apertura: d.horaApertura,
+      cierre: horaCierre,
+      ventas: d.ventasCount,
+      efectivo: d.efectivo,
+      tarjeta: d.tarjeta,
+      transferencia: d.transferencia,
+      credito: d.credito,
+      descuentos: d.descuentos,
+      entradas: d.entradas,
+      salidas: d.salidas,
+      totalEsperado: d.totalEsperado,
+      contado,
+      diferencia,
+      notas,
+    });
+
+  } catch (err) {
+    console.error('[cierre] Error al cerrar caja:', err);
+    showToast(err?.message || 'No se pudo cerrar la caja. Revisa la conexión.', 'error');
+  } finally {
+    btns.forEach(b => { b.disabled = false; });
+  }
+}
+
+/** Muestra la pantalla de resumen después del cierre (sin logout) */
+function showPostCloseScreen(summary) {
+  const f = fmt;
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+
+  set('summary-cajero',       summary.cajero || '—');
+  set('summary-apertura',     summary.apertura || '—');
+  set('summary-cierre',       summary.cierre || '—');
+  set('summary-ventas',       summary.ventas || '0');
+  set('summary-efectivo',     f(summary.efectivo));
+  set('summary-tarjeta',      f(summary.tarjeta));
+  set('summary-transferencia',f(summary.transferencia));
+  set('summary-credito',      f(summary.credito));
+  set('summary-descuentos',   `- ${f(summary.descuentos)}`);
+  set('summary-entradas',     f(summary.entradas));
+  set('summary-salidas',      `- ${f(summary.salidas)}`);
+  set('summary-esperado',     f(summary.totalEsperado));
+  set('summary-contado',      f(summary.contado));
+
+  const diffWrap = document.getElementById('summary-diff-wrap');
+  const diff = Number(summary.diferencia || 0);
+  if (diffWrap) {
+    if (Math.abs(diff) < 0.01) {
+      diffWrap.classList.remove('hidden', 'corte-diff-over', 'corte-diff-under');
+      diffWrap.classList.add('corte-diff-ok');
+      document.getElementById('summary-diff-icon').textContent = '✅';
+      document.getElementById('summary-diff-text').textContent = 'Caja cuadrada — sin diferencia';
+    } else {
+      diffWrap.classList.remove('hidden', 'corte-diff-ok');
+      diffWrap.classList.add(diff > 0 ? 'corte-diff-over' : 'corte-diff-under');
+      document.getElementById('summary-diff-icon').textContent = '⚠';
+      document.getElementById('summary-diff-text').textContent = diff > 0
+        ? `Sobran ${f(diff)}`
+        : `Faltan ${f(Math.abs(diff))}`;
+    }
+    diffWrap.classList.remove('hidden');
+  }
+
+  const notasWrap = document.getElementById('summary-notas-wrap');
+  if (notasWrap) {
+    if (summary.notas) {
+      notasWrap.classList.remove('hidden');
+      document.getElementById('summary-notas').textContent = summary.notas;
+    } else {
+      notasWrap.classList.add('hidden');
+    }
+  }
+
+  // Guardar datos para poder imprimir desde la pantalla de resumen
+  showPostCloseScreen._lastSummary = summary;
+
+  document.getElementById('cash-cierre-summary')?.classList.remove('hidden');
+}
+
+function closePostCloseScreen() {
+  document.getElementById('cash-cierre-summary')?.classList.add('hidden');
+}
+
+/** Imprime el resumen del cierre desde la pantalla de resumen post-cierre */
+async function printCloseSummary() {
+  const summary = showPostCloseScreen._lastSummary;
+  if (!summary) return;
+  try {
+    await _printCashCorte(
+      {
+        cajero: summary.cajero,
+        horaApertura: summary.apertura,
+        horaCorte: summary.cierre,
+        ventasCount: summary.ventas,
+        efectivo: summary.efectivo,
+        tarjeta: summary.tarjeta,
+        transferencia: summary.transferencia,
+        credito: summary.credito,
+        descuentos: summary.descuentos,
+        devoluciones: 0,
+        entradas: summary.entradas,
+        salidas: summary.salidas,
+        totalEsperado: summary.totalEsperado,
+      },
+      summary.contado,
+      summary.diferencia,
+      summary.notas
+    );
+  } catch (err) {
+    console.warn('[summary] Error imprimiendo resumen:', err);
+    showToast('No se pudo imprimir el resumen.', 'error');
+  }
+}
+
+function openCajaModule() {
+  // Navega al módulo de caja para ver ventas
+  document.querySelector('[data-module="caja"]')?.click();
+  closePostCloseScreen();
 }
 
 async function _printCashCorte(d, contado, diferencia, notas) {
@@ -6380,6 +6619,15 @@ window.closeCashCorteModal   = closeCashCorteModal;
 window.calcCorteDiff         = calcCorteDiff;
 window.saveCashCorte         = saveCashCorte;
 window.saveCashCorteAndClose = saveCashCorteAndClose;
+window.openCashCierreModal    = openCashCierreModal;
+window.closeCashCierreModal   = closeCashCierreModal;
+window.calcCierreDiff         = calcCierreDiff;
+window.executeCashCierre      = executeCashCierre;
+window.showPostCloseScreen    = showPostCloseScreen;
+window.closePostCloseScreen   = closePostCloseScreen;
+window.printCloseSummary      = printCloseSummary;
+window.printSoloCorte         = printSoloCorte;
+window.openCajaModule         = openCajaModule;
 window.goToVentasAction      = goToVentasAction;
 initializeStartupFlow();
 
@@ -6436,6 +6684,11 @@ function syncCajaState() {
   renderPendingDeliveryCash();
   applyAppTranslations();
   syncColaCobróNav();
+  // Mostrar/ocultar botón de cierre rápido en quick bar
+  const btnCierreRapido = document.getElementById('btn-cierre-rapido');
+  if (btnCierreRapido) {
+    btnCierreRapido.style.display = cajaAbierta && currentUserCan('cerrar_caja') ? '' : 'none';
+  }
 }
 
 async function toggleCaja() {
@@ -6479,32 +6732,8 @@ async function toggleCaja() {
       showToast(error.message, 'error');
     }
   } else {
-    if (!window.confirm('¿Deseas cerrar la caja ahora?')) return;
-    try {
-      const monto = parseFloat(inputMonto.value) || DB.config.cajaMonto || 0;
-      const response = await api.closeCash({
-        monto,
-        obs: document.getElementById('caja-obs').value || 'Cierre de caja',
-        ...getBusinessStructurePayload(),
-        ...getActorPayload()
-      });
-      DB.config = { ...DB.config, ...response.config };
-      DB.caja = { ...DB.caja, sessionId: null, abierta: false };
-      DB.movimientosCaja.unshift({
-        tipo: 'Cierre',
-        monto,
-        hora: new Date().toLocaleString('es-DO'),
-        obs: document.getElementById('caja-obs').value || 'Cierre de caja',
-        usuarioId: DB.currentUser?.id || null,
-        usuarioNombre: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Sistema'
-      });
-      syncCajaState();
-      refreshAuditLogs();
-      updateNotifications();
-      showToast('Caja cerrada exitosamente', 'success');
-    } catch (error) {
-      showToast(error.message, 'error');
-    }
+    // Cerrar caja — abre el modal de cierre
+    openCashCierreModal();
   }
 }
 
