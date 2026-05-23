@@ -1274,6 +1274,36 @@ function getCurrentUserRoleCode() {
   return normalizeCurrentUserRoleCode(DB.currentUser?.roleCode || DB.currentUser?.rol);
 }
 
+/**
+ * Verifica si el usuario actual tiene un permiso específico.
+ * Soporta '*' (admin general), roleCode shortcuts y permisos granulares.
+ */
+function currentUserCan(permission) {
+  const user = DB.currentUser;
+  if (!user) return false;
+  const roleCode = getCurrentUserRoleCode();
+  if (roleCode === 'administrador_general') return true;
+  const perms = Array.isArray(user.rolePermissions) ? user.rolePermissions : [];
+  if (perms.includes('*')) return true;
+  if (perms.includes(permission)) return true;
+  // Compatibilidad con permisos legacy de módulo
+  const legacyMap = {
+    abrir_caja: ['caja'],
+    cerrar_caja: ['caja'],
+    hacer_corte_caja: ['caja'],
+    abrir_gaveta: ['caja'],
+    anular_ventas: ['ventas'],
+    devolver_ventas: ['ventas'],
+    ver_reportes_caja: ['reportes_sucursal'],
+  };
+  const legacyPerms = legacyMap[permission] || [];
+  // Solo aplicar legacy si además el rol tiene las funciones implícitas de caja
+  if (legacyPerms.some((lp) => perms.includes(lp))) {
+    if (['administrador_sucursal', 'supervisor', 'cajero'].includes(roleCode)) return true;
+  }
+  return false;
+}
+
 function getVisibleModulesForCurrentRole() {
   const roleCode = getCurrentUserRoleCode();
   if (roleCode === 'administrador_sucursal') {
@@ -2228,14 +2258,13 @@ function applyAppTranslations() {
   if (cashStatus) cashStatus.textContent = cajaAbierta ? appText('cash.open', 'Caja Abierta') : appText('cash.closed', 'Caja Cerrada');
   const cashBtn = document.getElementById('btn-caja-action');
   if (cashBtn) {
-    // Cuando la caja está abierta, ocultar el botón — solo se puede cerrar por Corte de Caja
-    cashBtn.style.display = cajaAbierta ? 'none' : '';
-    cashBtn.textContent = appText('cash.openAction', 'Abrir Caja');
+    // Siempre visible — solo deshabilitado si no tiene permiso
+    cashBtn.style.display = '';
+    cashBtn.textContent = cajaAbierta ? appText('cash.closeAction', 'Cerrar Caja') : appText('cash.openAction', 'Abrir Caja');
   }
   const cashHint = document.getElementById('caja-action-hint');
   if (cashHint) {
-    // Cuando la caja está abierta, ocultar también el hint (el botón no existe)
-    cashHint.style.display = cajaAbierta ? 'none' : '';
+    cashHint.style.display = '';
     if (!cajaAbierta) cashHint.textContent = appText('cash.openHint', 'Indica el monto inicial y deja una nota para la apertura.');
   }
   const cashAmountLabel = document.querySelector('#module-caja label[for="caja-input-monto"], #module-caja .caja-form .form-group:first-child label');
@@ -6028,7 +6057,7 @@ function _getCorteData() {
   // Hora apertura — buscar el último movimiento de tipo 'Apertura'
   const aperturaMov = (DB.movimientosCaja || []).find(m => m.tipo === 'Apertura');
   const horaApertura = aperturaMov
-    ? new Date(aperturaMov.hora).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })
+    ? new Date(aperturaMov.hora).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo' })
     : '—';
 
   // Ventas de hoy
@@ -6074,7 +6103,7 @@ function _getCorteData() {
   return {
     cajero: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Cajero',
     horaApertura,
-    horaCorte: new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }),
+    horaCorte: new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo' }),
     ventasCount: ventasHoy.length,
     efectivo, tarjeta, transferencia, credito,
     descuentos, devoluciones, entradas, salidas,
@@ -6083,6 +6112,10 @@ function _getCorteData() {
 }
 
 function openCashCorteModal() {
+  if (!currentUserCan('hacer_corte_caja')) {
+    showToast('No tienes permiso para hacer el corte de caja.', 'error');
+    return;
+  }
   const d = _getCorteData();
   document.getElementById('corte-cajero').textContent       = d.cajero;
   document.getElementById('corte-hora-apertura').textContent = d.horaApertura;
@@ -6378,8 +6411,17 @@ function syncCajaState() {
     identity.textContent = `${DB.config?.activeBranchName || 'Sin sucursal'} · ${DB.config?.activeCashRegisterName || 'Sin caja'}`;
   }
   cajaMontoEl.textContent = fmt(DB.config.cajaMonto);
+  const canOpenClose = currentUserCan('abrir_caja') || currentUserCan('cerrar_caja');
   btn.textContent = cajaAbierta ? appText('cash.closeAction', 'Cerrar Caja') : appText('cash.openAction', 'Abrir Caja');
   btn.style.background = cajaAbierta ? 'var(--danger)' : '';
+  btn.disabled = !canOpenClose;
+  if (!canOpenClose) {
+    btn.title = cajaAbierta
+      ? 'No tienes permiso para cerrar caja'
+      : 'No tienes permiso para abrir caja';
+  } else {
+    btn.title = '';
+  }
   document.getElementById('caja-status-card').style.borderColor = cajaAbierta ? 'var(--success)' : '';
   if (actionHint) {
     actionHint.textContent = cajaAbierta
@@ -6397,6 +6439,18 @@ function syncCajaState() {
 }
 
 async function toggleCaja() {
+  if (!currentUserCan('abrir_caja') && !currentUserCan('cerrar_caja')) {
+    showToast('No tienes permiso para operar la caja.', 'error');
+    return;
+  }
+  if (cajaAbierta && !currentUserCan('cerrar_caja')) {
+    showToast('No tienes permiso para cerrar caja.', 'error');
+    return;
+  }
+  if (!cajaAbierta && !currentUserCan('abrir_caja')) {
+    showToast('No tienes permiso para abrir caja.', 'error');
+    return;
+  }
   const inputMonto = document.getElementById('caja-input-monto');
   if (!cajaAbierta) {
     const monto = parseFloat(inputMonto.value) || 0;

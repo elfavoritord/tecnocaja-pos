@@ -1678,6 +1678,97 @@ function userCanResetScopedPasswords(user) {
   return isGlobalAdministratorUser(user) || userRoleHasPermission(user, 'resetear_password_usuarios_sucursal');
 }
 
+// ─── Permisos de caja y turnos ────────────────────────────────────────────────
+
+function userCanOpenCash(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  if (isCashierUser(user)) return true;
+  return userRoleHasPermission(user, 'abrir_caja');
+}
+
+function userCanCloseCash(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  if (isCashierUser(user)) return true;
+  return userRoleHasPermission(user, 'cerrar_caja');
+}
+
+function userCanMakeCorte(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  if (isCashierUser(user)) return true;
+  return userRoleHasPermission(user, 'hacer_corte_caja');
+}
+
+function userCanOpenDrawer(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  if (isCashierUser(user)) return true;
+  return userRoleHasPermission(user, 'abrir_gaveta');
+}
+
+function userCanVoidSales(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  return userRoleHasPermission(user, 'anular_ventas');
+}
+
+function userCanReturnSales(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  return userRoleHasPermission(user, 'devolver_ventas');
+}
+
+function userCanViewCashReports(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
+  return userRoleHasPermission(user, 'ver_reportes_caja');
+}
+
+function userCanViewProfits(user) {
+  if (!user) return false;
+  if (isGlobalAdministratorUser(user)) return true;
+  return userRoleHasPermission(user, 'ver_ganancias');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timezone de República Dominicana
+// ─────────────────────────────────────────────────────────────────────────────
+const RD_TIMEZONE = 'America/Santo_Domingo';
+
+/**
+ * Devuelve fecha y hora local en zona RD como strings.
+ * @returns {{ fecha_local: string, hora_local: string, datetime_local: string }}
+ */
+function getLocalDateTimeRD(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  // Crear fecha en zona RD usando el método recomendado
+  const rdStr = date.toLocaleString('sv-SE', { timeZone: RD_TIMEZONE });
+  // sv-SE da formato YYYY-MM-DD HH:MM:SS
+  const [fechaPart, horaPart] = rdStr.split(' ');
+  return {
+    fecha_local: fechaPart || '',
+    hora_local: horaPart || '',
+    datetime_local: rdStr.replace(' ', 'T'),
+  };
+}
+
+/**
+ * Devuelve `datetime('now')` en formato MariaDB/SQLite para zona RD.
+ * Usa el offset fijo de RD (-04:00) ya que no observa DST.
+ */
+function nowRD() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: RD_TIMEZONE }));
+}
+
+function nowRDString() {
+  const { datetime_local } = getLocalDateTimeRD();
+  return datetime_local.replace('T', ' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function readAuthToken(req) {
   const authorization = String(req.headers?.authorization || '').trim();
   if (authorization.toLowerCase().startsWith(`${TECNO_CAJA_AUTH_SCHEME.toLowerCase()} `)) {
@@ -1767,7 +1858,8 @@ function mapUserRow(row) {
     firebaseUid,
     userNumber: String(row.user_number || `pos_user_${row.id || ''}`).trim(),
     localPasswordSet: Boolean(String(row.password_hash || row.password || '').trim()),
-    googleLinked: Boolean(firebaseUid)
+    googleLinked: Boolean(firebaseUid),
+    rolePermissions: parseJsonArrayField(row.role_permissions)
   };
 }
 
@@ -2998,12 +3090,12 @@ const DEFAULT_ROLE_DEFINITIONS = [
   {
     codigo: 'cajero',
     nombre: 'Cajero',
-    permisos: ['ventas', 'caja', 'clientes']
+    permisos: ['ventas', 'caja', 'clientes', 'abrir_caja', 'cerrar_caja', 'hacer_corte_caja', 'abrir_gaveta']
   },
   {
     codigo: 'supervisor',
     nombre: 'Supervisor',
-    permisos: ['ventas', 'caja', 'reportes_sucursal', 'inventario']
+    permisos: ['ventas', 'caja', 'reportes_sucursal', 'inventario', 'abrir_caja', 'cerrar_caja', 'hacer_corte_caja', 'abrir_gaveta', 'anular_ventas', 'devolver_ventas', 'ver_reportes_caja', 'ver_cierres_caja', 'ver_ganancias']
   },
   {
     codigo: 'repartidor',
@@ -5909,7 +6001,14 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   }
 
   await ensureUserExtensions();
-  const rows = await query('SELECT * FROM users WHERE usuario = ? AND estado = "Activo" LIMIT 1', [usuario]);
+  const rows = await query(
+    `SELECT u.*, r.codigo AS role_code, r.nombre AS role_name, r.permisos AS role_permissions
+     FROM users u
+     LEFT JOIN roles r ON r.id = u.role_id
+     WHERE u.usuario = ? AND u.estado = "Activo"
+     LIMIT 1`,
+    [usuario]
+  );
   const user = rows[0];
   if (!user || !userPasswordMatches(user, password)) {
     try { await query('INSERT INTO login_attempts (usuario, ip_address, success) VALUES (?, ?, 0)', [usuario, req.ip]); } catch (_e) {}
@@ -6107,7 +6206,12 @@ app.post('/api/login/google', loginLimiter, async (req, res) => {
     detail: `Acceso al sistema con Google: ${email}`
   });
   const bootstrap = await getBootstrapData(user);
-  const currentUserRows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [user.id]);
+  const currentUserRows = await query(
+    `SELECT u.*, r.codigo AS role_code, r.nombre AS role_name, r.permisos AS role_permissions
+     FROM users u LEFT JOIN roles r ON r.id = u.role_id
+     WHERE u.id = ? LIMIT 1`,
+    [user.id]
+  );
   const currentUser = mapUserRow({ ...currentUserRows[0], last_login: now });
   bootstrap.currentUser = currentUser;
   const token = await createAuthSession(currentUserRows[0], req.ip, req.headers['user-agent']);
@@ -6191,7 +6295,12 @@ app.post('/api/login/google/link', async (req, res) => {
   });
 
   const bootstrap = await getBootstrapData();
-  const currentUserRows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [user.id]);
+  const currentUserRows = await query(
+    `SELECT u.*, r.codigo AS role_code, r.nombre AS role_name, r.permisos AS role_permissions
+     FROM users u LEFT JOIN roles r ON r.id = u.role_id
+     WHERE u.id = ? LIMIT 1`,
+    [user.id]
+  );
   const currentUser = mapUserRow({ ...currentUserRows[0], last_login: now });
   bootstrap.currentUser = currentUser;
 
@@ -6560,7 +6669,12 @@ app.post('/api/setup/complete', async (req, res) => {
   });
 
   const bootstrap = await getBootstrapData();
-  const currentUserRows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [sessionData.userId]);
+  const currentUserRows = await query(
+    `SELECT u.*, r.codigo AS role_code, r.nombre AS role_name, r.permisos AS role_permissions
+     FROM users u LEFT JOIN roles r ON r.id = u.role_id
+     WHERE u.id = ? LIMIT 1`,
+    [sessionData.userId]
+  );
   const currentUser = mapUserRow(currentUserRows[0]);
   bootstrap.currentUser = currentUser;
   bootstrap.caja = {
@@ -10823,7 +10937,10 @@ app.post('/api/cash/open', async (req, res) => {
   await ensureCashMovementExtensions();
   const amount = Number(req.body?.monto || 0);
   const notes = req.body?.obs || 'Apertura de caja';
-  await resolveRequestActorUser(req, { required: true });
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanOpenCash(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para abrir caja.' });
+  }
   const actor = getActor(req);
 
   let structure;
@@ -10973,7 +11090,10 @@ app.post('/api/cash/close', async (req, res) => {
   await ensureCashMovementExtensions();
   const amount = Number(req.body?.monto || 0);
   const notes = req.body?.obs || 'Cierre de caja';
-  await resolveRequestActorUser(req, { required: true });
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanCloseCash(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para cerrar caja.' });
+  }
   const actor = getActor(req);
 
   let structure;
@@ -11288,7 +11408,10 @@ app.post('/api/cash/drawer-event', async (req, res) => {
   await ensureBusinessStructureExtensions();
   await ensureCashMovementExtensions();
   const reason = String(req.body?.motivo || 'Sin motivo').trim();
-  await resolveRequestActorUser(req, { required: true });
+  const actorUserDrawer = await resolveRequestActorUser(req, { required: true });
+  if (!userCanOpenDrawer(actorUserDrawer)) {
+    return res.status(403).json({ error: 'No tienes permiso para abrir la gaveta.' });
+  }
   const actor = getActor(req);
   const structure = await resolveScopedBusinessStructureSelection(req, null, req.body?.branchId, req.body?.cashRegisterId);
 
@@ -11317,7 +11440,10 @@ app.post('/api/cash/drawer-event', async (req, res) => {
 // ─── Corte de caja (guarda el resumen en audit_logs) ──────────────────────────
 app.post('/api/cash/corte', async (req, res) => {
   await ensureBusinessStructureExtensions();
-  await resolveRequestActorUser(req, { required: true });
+  const actorUserCorte = await resolveRequestActorUser(req, { required: true });
+  if (!userCanMakeCorte(actorUserCorte)) {
+    return res.status(403).json({ error: 'No tienes permiso para hacer corte de caja.' });
+  }
   const actor = getActor(req);
   const structure = await resolveScopedBusinessStructureSelection(req, null, req.body?.branchId, req.body?.cashRegisterId);
 
