@@ -1263,7 +1263,9 @@ function getActorPayload() {
 function normalizeCurrentUserRoleCode(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (!normalized) return '';
-  if (normalized === 'administrador' || normalized === 'administrador_general' || normalized === 'admin') return 'administrador_general';
+  if (normalized === 'administrador' || normalized === 'administrador_general' ||
+      normalized === 'administrador general' || normalized === 'admin' ||
+      normalized === 'admin general' || normalized === 'admin_general') return 'administrador_general';
   if (normalized === 'administrador sucursal' || normalized === 'administrador_sucursal') return 'administrador_sucursal';
   if (normalized === 'supervisor') return 'supervisor';
   if (normalized === 'cajero' || normalized === 'delivery') return 'cajero';
@@ -1282,10 +1284,26 @@ function currentUserCan(permission) {
   const user = DB.currentUser;
   if (!user) return false;
   const roleCode = getCurrentUserRoleCode();
+
+  // Administrador general — acceso total
   if (roleCode === 'administrador_general') return true;
+
+  // También verificar por rol legado (si roleCode no se normalizó, usar rol directo)
+  const rawRol = normalizeCurrentUserRoleCode(user.rol);
+  if (rawRol === 'administrador_general') return true;
+
   const perms = Array.isArray(user.rolePermissions) ? user.rolePermissions : [];
   if (perms.includes('*')) return true;
   if (perms.includes(permission)) return true;
+
+  // Administrador de sucursal — permisos completos de caja y ventas
+  const ADMIN_SUCURSAL_CAJA_PERMS = [
+    'abrir_caja', 'cerrar_caja', 'hacer_corte_caja', 'abrir_gaveta',
+    'devolver_ventas', 'anular_ventas',
+    'ver_reportes_caja', 'ver_cierres_caja', 'ver_ganancias'
+  ];
+  if (roleCode === 'administrador_sucursal' && ADMIN_SUCURSAL_CAJA_PERMS.includes(permission)) return true;
+
   // Compatibilidad con permisos legacy de módulo
   const legacyMap = {
     abrir_caja: ['caja'],
@@ -1295,12 +1313,14 @@ function currentUserCan(permission) {
     anular_ventas: ['ventas'],
     devolver_ventas: ['ventas'],
     ver_reportes_caja: ['reportes_sucursal'],
+    ver_cierres_caja: ['reportes_sucursal'],
+    ver_ganancias: ['reportes_sucursal'],
   };
-  const legacyPerms = legacyMap[permission] || [];
-  // Solo aplicar legacy si además el rol tiene las funciones implícitas de caja
-  if (legacyPerms.some((lp) => perms.includes(lp))) {
+  if (permission in legacyMap) {
+    if (legacyMap[permission].some(lp => perms.includes(lp))) return true;
     if (['administrador_sucursal', 'supervisor', 'cajero'].includes(roleCode)) return true;
   }
+
   return false;
 }
 
@@ -6096,9 +6116,10 @@ function _getCorteData() {
     else if (monto < 0) salidas += Math.abs(monto);
   }
 
-  // Total esperado en la gaveta
-  const montoApertura = Number(DB.config.cajaMonto || 0);
-  const totalEsperado = Math.max(0, montoApertura);
+  // Total esperado en la gaveta:
+  // monto inicial (apertura) + ventas efectivo + entradas - salidas - devoluciones
+  const montoApertura = aperturaMov ? Number(aperturaMov.monto || 0) : 0;
+  const totalEsperado = Math.max(0, montoApertura + efectivo + entradas - salidas - devoluciones);
 
   return {
     cajero: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Cajero',
@@ -7133,22 +7154,30 @@ function renderCajaDaySummary() {
   const expenseTotals = getCajaExpenseBreakdown();
   const incomeTotals = getCajaIncomeBreakdown();
   const totalVentas = salesTotals.efectivo + salesTotals.tarjeta + salesTotals.transferencia;
-  const totalGastos = Object.values(expenseTotals).reduce((sum, value) => sum + Number(value || 0), 0);
-  const balance = totalVentas + Number(incomeTotals.ingreso_adicional || 0) - totalGastos;
+  // Separar devoluciones de gastos operativos para mejor visibilidad
+  const totalDevoluciones = Number(expenseTotals.devolucion || 0);
+  const totalGastosOperativos = Number(expenseTotals.gasto || 0)
+    + Number(expenseTotals.pago_suplidor || 0)
+    + Number(expenseTotals.retiro_efectivo || 0);
+  const totalEgresos = totalGastosOperativos + totalDevoluciones;
+  const balance = totalVentas + Number(incomeTotals.ingreso_adicional || 0) - totalEgresos;
 
-  const efectivoEl = document.getElementById('res-efectivo');
-  const tarjetaEl = document.getElementById('res-tarjeta');
-  const transferEl = document.getElementById('res-transfer');
-  const totalEl = document.getElementById('res-total');
-  const gastosEl = document.getElementById('res-gastos');
-  const balanceEl = document.getElementById('res-balance');
+  const efectivoEl    = document.getElementById('res-efectivo');
+  const tarjetaEl     = document.getElementById('res-tarjeta');
+  const transferEl    = document.getElementById('res-transfer');
+  const totalEl       = document.getElementById('res-total');
+  const devolucionEl  = document.getElementById('res-devoluciones');
+  const gastosEl      = document.getElementById('res-gastos');
+  const balanceEl     = document.getElementById('res-balance');
 
-  if (efectivoEl) efectivoEl.textContent = fmt(salesTotals.efectivo);
-  if (tarjetaEl) tarjetaEl.textContent = fmt(salesTotals.tarjeta);
-  if (transferEl) transferEl.textContent = fmt(salesTotals.transferencia);
-  if (totalEl) totalEl.textContent = fmt(totalVentas);
-  if (gastosEl) gastosEl.textContent = fmt(totalGastos);
-  if (balanceEl) balanceEl.textContent = fmt(balance);
+  if (efectivoEl)   efectivoEl.textContent = fmt(salesTotals.efectivo);
+  if (tarjetaEl)    tarjetaEl.textContent = fmt(salesTotals.tarjeta);
+  if (transferEl)   transferEl.textContent = fmt(salesTotals.transferencia);
+  if (totalEl)      totalEl.textContent = fmt(totalVentas);
+  if (devolucionEl) devolucionEl.textContent = fmt(totalDevoluciones);
+  // "Gastos" muestra solo egresos operativos (sin devoluciones)
+  if (gastosEl)     gastosEl.textContent = fmt(totalGastosOperativos);
+  if (balanceEl)    balanceEl.textContent = fmt(balance);
 }
 
 function getPendingSupplierInvoicesForCash() {
