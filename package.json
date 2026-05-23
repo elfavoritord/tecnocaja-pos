@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "pos-system",
-  "version": "1.0.0",
-  "description": "Sistema POS moderno, rápido y profesional inspirado en Eleventa.",
+  "version": "1.1.1",
+  "description": "Sistema POS moderno, rÃ¡pido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
     "db:init": "node scripts/init-db.js",
@@ -12,6 +12,10 @@
     "electron": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe .",
     "desktop": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe .",
     "build:desktop": "node scripts/prepare-mariadb-bundle.js && electron-builder --win nsis",
+    "publish:desktop": "node scripts/prepare-mariadb-bundle.js && electron-builder --win nsis --publish always",
+    "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump patch",
+    "release:minor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump minor",
+    "release:major": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump major",
     "lint": "eslint . --ext .js",
     "lint:fix": "eslint . --ext .js --fix",
     "format": "prettier --write \"**/*.{js,json,md}\"",
@@ -74,7 +78,7 @@
   "build": {
     "appId": "com.emilio.possystem",
     "productName": "Tecno Caja",
-    "copyright": "Copyright © 2026 Emilio. Todos los derechos reservados.",
+    "copyright": "Copyright Â© 2026 Emilio. Todos los derechos reservados.",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -109,6 +113,10 @@
       {
         "from": "build/mariadb-runtime",
         "to": "mariadb-runtime"
+      },
+      {
+        "from": "build/vc_redist.x64.exe",
+        "to": "vc_redist.x64.exe"
       }
     ],
     "extraMetadata": {

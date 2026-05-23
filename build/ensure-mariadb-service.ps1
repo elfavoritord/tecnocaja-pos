@@ -284,7 +284,7 @@ function Ensure-ManagedMariaDb {
   if (-not (Wait-ForPort -TargetHost $hostName -Port $port -Attempts 45)) {
     throw "Timeout: el servicio $managedServiceName no abrio el puerto $port en 45 segundos."
   }
-  Write-Log 'MariaDB del sistema configurada para NovaPOS.'
+  Write-Log 'MariaDB del sistema configurada para Tecno Caja.'
   return 0
 }
 
