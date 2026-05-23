@@ -811,8 +811,8 @@ VALUES (1, 1, 'Caja Principal', 'CAJA-01', 'Activa');
 INSERT INTO roles (id, codigo, nombre, permisos, estado) VALUES
 (1, 'administrador_general', 'Administrador general', '["*"]', 'Activo'),
 (2, 'administrador_sucursal', 'Administrador de sucursal', '["dashboard_sucursal","ver_dashboard_sucursal","caja","cajas","ver_cajas_sucursal","crear_cajas_sucursal","editar_cajas_sucursal","activar_cajas_sucursal","asignar_cajeros_sucursal","usuarios","usuarios_crear","usuarios_editar","ver_usuarios_sucursal","crear_cajeros_sucursal","crear_supervisores_sucursal","editar_usuarios_sucursal","activar_usuarios_sucursal","resetear_password_usuarios_sucursal","ventas","ver_ventas_sucursal","ver_cierres_caja_sucursal","ver_aperturas_caja_sucursal","reportes_sucursal","ver_reportes_sucursal","inventario","ver_inventario_sucursal","registrar_movimientos_internos_sucursal","ver_productos_sucursal","consultar_stock_sucursal","ver_arqueos_caja_sucursal","ver_historial_inventario_sucursal"]', 'Activo'),
-(3, 'cajero', 'Cajero', '["ventas","caja","clientes"]', 'Activo'),
-(4, 'supervisor', 'Supervisor', '["ventas","caja","reportes_sucursal","inventario"]', 'Activo'),
+(3, 'cajero', 'Cajero', '["ventas","caja","clientes","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta"]', 'Activo'),
+(4, 'supervisor', 'Supervisor', '["ventas","caja","reportes_sucursal","inventario","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta","anular_ventas","devolver_ventas","ver_reportes_caja","ver_cierres_caja","ver_ganancias"]', 'Activo'),
 (5, 'repartidor', 'Repartidor (Delivery)', '[]', 'Activo');
 
 INSERT INTO payment_methods (id, codigo, nombre, estado) VALUES
