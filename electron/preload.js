@@ -81,6 +81,15 @@ contextBridge.exposeInMainWorld('novaDesktop', {
     return ipcRenderer.invoke('invoice:save-pdf', payload);
   },
 
+  /**
+   * Imprime el Corte de Caja directo a la impresora térmica (ESC/POS)
+   * @param {object} corteData — { negocio, corte, config }
+   * @param {object} options   — { printerName, paperWidth }
+   */
+  printCorteEscpos(corteData, options) {
+    return ipcRenderer.invoke('corte:print-escpos', corteData, options || {});
+  },
+
   // ── Gaveta registradora ──────────────────────────────────────────────────
   /**
    * Abre la gaveta registradora
