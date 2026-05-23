@@ -85,7 +85,9 @@
       "PowerShell(Head 10)",
       "PowerShell(Start-Process \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\dist\\\\win-unpacked\\\\Tecno Caja.exe\")",
       "PowerShell(Get-Process | Where-Object { $_.MainWindowTitle -ne \"\" } | Select-Object Id, Name, MainWindowTitle | Sort-Object Name)",
-      "PowerShell(Copy-Item \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\js\\\\app.js\" \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\dist\\\\win-unpacked\\\\resources\\\\app\\\\js\\\\app.js\" -Force)"
+      "PowerShell(Copy-Item \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\js\\\\app.js\" \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\dist\\\\win-unpacked\\\\resources\\\\app\\\\js\\\\app.js\" -Force)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('version:', p.version\\)\")",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"
