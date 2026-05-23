@@ -593,5 +593,24 @@ const api = {
       method: 'POST',
       body: JSON.stringify(data)
     });
+  },
+
+  searchForReturn(q) {
+    return this.request(`/api/sales/search-for-return?q=${encodeURIComponent(q)}`);
+  },
+
+  getSaleReturnDetail(invoiceNumber) {
+    return this.request(`/api/sales/${encodeURIComponent(invoiceNumber)}/return-detail`);
+  },
+
+  processReturn(data) {
+    return this.request('/api/sales/return', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  getReturnsHistory(params = {}) {
+    return this.request(`/api/sales/returns-history?desde=${params.desde || ''}&hasta=${params.hasta || ''}`);
   }
 };

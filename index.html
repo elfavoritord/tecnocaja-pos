@@ -965,7 +965,7 @@
           <span class="cqa-icon">💵</span>
           <span class="cqa-label">Abrir Gaveta</span>
         </button>
-        <button class="caja-quick-btn" type="button" onclick="openCashExpenseModal('devolucion')" title="Registrar devolución">
+        <button class="caja-quick-btn" type="button" onclick="openDevolucionModal()" title="Devolución de venta con selección de productos">
           <span class="cqa-icon">↺</span>
           <span class="cqa-label">Devolución</span>
         </button>
@@ -3726,6 +3726,83 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
       <button class="btn-secondary" type="button" onclick="closePostCloseScreen(); openCajaModule()">🗂️ Ver ventas</button>
       <button class="btn-primary" type="button" onclick="closePostCloseScreen()">↗ Nuevo turno / Continuar</button>
       <button class="btn-danger" type="button" onclick="closePostCloseScreen(); doLogout()">🚪 Cerrar sesión</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════
+     MODAL: DEVOLUCIÓN DE VENTA
+═══════════════════════════════════════════════ -->
+<div id="devolucion-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="devolucion-modal-title" style="z-index:2200">
+  <div class="modal-card" style="max-width:680px;width:95vw">
+    <div class="modal-card-header">
+      <span class="modal-card-icon">↺</span>
+      <h3 id="devolucion-modal-title">Devolución de Venta</h3>
+      <button class="modal-card-close" type="button" onclick="closeDevolucionModal()" aria-label="Cerrar">✕</button>
+    </div>
+    <div class="modal-card-body" style="padding:1rem;overflow-y:auto;max-height:70vh">
+
+      <!-- PASO 1: Buscar factura -->
+      <div id="devolucion-step-1">
+        <div style="display:flex;gap:0.5rem;margin-bottom:1rem">
+          <input type="text" id="devolucion-search-input" class="form-input" placeholder="Número de factura o nombre de cliente..." style="flex:1"
+                 onkeydown="if(event.key==='Enter') buscarFacturaDevolucion()">
+          <button class="btn-primary" type="button" onclick="buscarFacturaDevolucion()" id="btn-buscar-factura">🔍 Buscar</button>
+        </div>
+        <div id="devolucion-search-results" style="display:none">
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem">Resultados:</div>
+          <div id="devolucion-results-list"></div>
+        </div>
+        <div id="devolucion-search-empty" class="hidden" style="text-align:center;padding:1rem;color:var(--text-muted)">
+          No se encontraron facturas con ese criterio.
+        </div>
+      </div>
+
+      <!-- PASO 2: Seleccionar productos a devolver -->
+      <div id="devolucion-step-2" class="hidden">
+        <div id="devolucion-sale-header" style="background:var(--bg-secondary,#1e1e2e);border-radius:8px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.88rem">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>
+              <strong id="devolucion-invoice-num" style="font-size:1rem">—</strong>
+              <span style="margin:0 0.5rem;color:var(--text-muted)">|</span>
+              <span id="devolucion-client-name" style="color:var(--text-muted)">—</span>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:0.8rem;color:var(--text-muted)">Total original</div>
+              <strong id="devolucion-sale-total" style="color:var(--success)">RD$ 0.00</strong>
+            </div>
+          </div>
+          <div style="margin-top:0.4rem;font-size:0.8rem;color:var(--text-muted)">
+            📅 <span id="devolucion-sale-date">—</span> &nbsp;|&nbsp;
+            👤 <span id="devolucion-cashier">—</span> &nbsp;|&nbsp;
+            💳 <span id="devolucion-method">—</span>
+          </div>
+        </div>
+
+        <div style="font-weight:600;margin-bottom:0.5rem;font-size:0.9rem">Selecciona los productos a devolver:</div>
+        <div id="devolucion-items-list" style="display:flex;flex-direction:column;gap:0.5rem"></div>
+
+        <div style="margin-top:1rem;padding:0.75rem 1rem;background:var(--bg-secondary,#1e1e2e);border-radius:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
+            <span style="font-weight:600">Total a devolver:</span>
+            <strong id="devolucion-total-calc" style="font-size:1.1rem;color:var(--danger,#dc3545)">RD$ 0.00</strong>
+          </div>
+          <div class="form-group" style="margin-bottom:0.5rem">
+            <label style="font-size:0.85rem">Motivo de devolución</label>
+            <input type="text" id="devolucion-reason" class="form-input" placeholder="Ej: Producto defectuoso, cliente insatisfecho..." style="font-size:0.9rem">
+          </div>
+          <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.88rem;cursor:pointer">
+            <input type="checkbox" id="devolucion-refund-cash" checked>
+            Registrar salida de efectivo en caja
+          </label>
+        </div>
+
+        <div style="margin-top:0.75rem">
+          <button class="btn-secondary" type="button" onclick="devolucionGoBack()" style="margin-right:0.5rem">← Otra factura</button>
+          <button class="btn-danger" type="button" onclick="procesarDevolucion()" id="btn-procesar-devolucion">✅ Procesar Devolución</button>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>

@@ -3202,6 +3202,36 @@ async function ensureRolesTable() {
   }
 }
 
+async function ensureReturnTables() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS sale_returns (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      original_sale_id INT NOT NULL,
+      original_invoice_number VARCHAR(40) NOT NULL,
+      return_type VARCHAR(20) NOT NULL DEFAULT 'parcial',
+      return_reason VARCHAR(255) DEFAULT NULL,
+      returned_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      returned_by_user_id INT DEFAULT NULL,
+      returned_by_user_name VARCHAR(120) DEFAULT NULL,
+      branch_id INT DEFAULT NULL,
+      cash_register_id INT DEFAULT NULL,
+      cash_movement_id INT DEFAULT NULL,
+      returned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS sale_return_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      return_id INT NOT NULL,
+      product_id INT NOT NULL,
+      product_name VARCHAR(255) NOT NULL DEFAULT '',
+      qty_returned DECIMAL(10,2) NOT NULL,
+      price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+      line_total DECIMAL(12,2) NOT NULL DEFAULT 0.00
+    )
+  `);
+}
+
 async function ensurePaymentMethodsTable() {
   await query(`
     CREATE TABLE IF NOT EXISTS payment_methods (
@@ -10625,6 +10655,365 @@ app.post('/api/branches', plans.requirePlan('plus', query, () => secureLicenseSe
     sucursal: mapBranchRow(newBranchRow),
     sucursales: (await getBranchRows()).map(mapBranchRow)
   });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DEVOLUCIONES — Flujo completo: buscar factura → seleccionar items → devolver
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── 1. Buscar factura por número o fragmento ──────────────────────────────
+app.get('/api/sales/search-for-return', async (req, res) => {
+  try {
+    await ensureReturnTables();
+    await ensureSalesExtensions();
+    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    const q = String(req.query?.q || '').trim();
+    if (!q || q.length < 2) {
+      return res.status(400).json({ error: 'Ingresa al menos 2 caracteres para buscar.' });
+    }
+    const scopedBranchId = getUserScopeBranchId(actorUser);
+    const like = `%${q}%`;
+    const params = [like, like];
+    let where = `WHERE (s.invoice_number LIKE ? OR COALESCE(c.nombre, s.client_name_snapshot, '') LIKE ?)`;
+    if (scopedBranchId) { where += ` AND COALESCE(s.branch_id, s.billed_branch_id) = ?`; params.push(scopedBranchId); }
+    where += ` AND s.sale_status NOT IN ('pendiente')`;
+    const rows = await query(
+      `SELECT s.id, s.invoice_number, s.total, s.payment_method, s.sale_status,
+              s.fiscal_status, s.created_at, s.inventory_branch_id, s.branch_id,
+              COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS client_name,
+              COALESCE(u.nombre, u.usuario, 'Sistema') AS cashier_name
+       FROM sales s
+       LEFT JOIN clients c ON c.id = s.client_id
+       LEFT JOIN users u ON u.id = COALESCE(s.billed_by_user_id, s.user_id)
+       ${where}
+       ORDER BY s.id DESC LIMIT 20`,
+      params
+    );
+    res.json({ results: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── 2. Obtener detalle completo de una venta (con items y devoluciones previas) ──
+app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
+  try {
+    await ensureReturnTables();
+    await ensureSalesExtensions();
+    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    const invoiceNumber = String(req.params.invoiceNumber || '').trim();
+    if (!invoiceNumber) return res.status(400).json({ error: 'Número de factura requerido.' });
+
+    const saleRows = await query(
+      `SELECT s.*, COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS client_name,
+              COALESCE(u.nombre, u.usuario, 'Sistema') AS cashier_name
+       FROM sales s
+       LEFT JOIN clients c ON c.id = s.client_id
+       LEFT JOIN users u ON u.id = COALESCE(s.billed_by_user_id, s.user_id)
+       WHERE s.invoice_number = ? LIMIT 1`,
+      [invoiceNumber]
+    );
+    if (!saleRows.length) return res.status(404).json({ error: 'Factura no encontrada.' });
+    const sale = saleRows[0];
+
+    assertActorCanAccessBranch(actorUser, Number(sale.inventory_branch_id || sale.branch_id || 0), 'No puedes ver ventas de otra sucursal.');
+
+    const items = await query(
+      `SELECT si.id, si.product_id, si.qty, si.price, si.discount_rate, si.tax_rate,
+              si.line_total, si.sale_mode,
+              COALESCE(p.nombre, 'Producto eliminado') AS product_name,
+              p.codigo AS product_code
+       FROM sale_items si
+       LEFT JOIN products p ON p.id = si.product_id
+       WHERE si.sale_id = ?`,
+      [sale.id]
+    );
+
+    // Obtener cantidades ya devueltas por item
+    const prevReturns = await query(
+      `SELECT sri.product_id, SUM(sri.qty_returned) AS total_devuelto
+       FROM sale_return_items sri
+       JOIN sale_returns sr ON sr.id = sri.return_id
+       WHERE sr.original_sale_id = ?
+       GROUP BY sri.product_id`,
+      [sale.id]
+    );
+    const devueltoMap = {};
+    prevReturns.forEach(r => { devueltoMap[r.product_id] = Number(r.total_devuelto || 0); });
+
+    const returnHistory = await query(
+      `SELECT sr.id, sr.returned_at, sr.return_type, sr.returned_amount,
+              sr.return_reason, sr.returned_by_user_name
+       FROM sale_returns sr
+       WHERE sr.original_sale_id = ?
+       ORDER BY sr.id DESC`,
+      [sale.id]
+    );
+
+    res.json({
+      sale: {
+        id: sale.id,
+        invoiceNumber: sale.invoice_number,
+        clientName: sale.client_name,
+        cashierName: sale.cashier_name,
+        createdAt: sale.created_at,
+        total: Number(sale.total || 0),
+        paymentMethod: sale.payment_method,
+        saleStatus: sale.sale_status,
+        fiscalStatus: sale.fiscal_status,
+        inventoryBranchId: Number(sale.inventory_branch_id || sale.branch_id || 0),
+      },
+      items: items.map(i => ({
+        id: i.id,
+        productId: i.product_id,
+        productName: i.product_name,
+        productCode: i.product_code || '',
+        qty: Number(i.qty || 0),
+        price: Number(i.price || 0),
+        discountRate: Number(i.discount_rate || 0),
+        lineTotal: Number(i.line_total || 0),
+        saleMode: i.sale_mode || 'unidad',
+        qtyDevuelta: devueltoMap[i.product_id] || 0,
+        qtyDisponible: Math.max(0, Number(i.qty || 0) - (devueltoMap[i.product_id] || 0)),
+      })),
+      returnHistory,
+    });
+  } catch (err) {
+    const code = err.statusCode || 500;
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// ─── 3. Procesar devolución (parcial o total) ──────────────────────────────
+app.post('/api/sales/return', async (req, res) => {
+  try {
+    await ensureReturnTables();
+    await ensureSalesExtensions();
+    await ensureCashMovementExtensions();
+    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    if (!userCanReturnSales(actorUser)) {
+      return res.status(403).json({ error: 'No tienes permiso para procesar devoluciones.' });
+    }
+    const actor = getActor(req);
+    const invoiceNumber = String(req.body?.invoiceNumber || '').trim();
+    const itemsToReturn = Array.isArray(req.body?.items) ? req.body.items : [];
+    const reason = String(req.body?.reason || '').trim() || 'Devolución de cliente';
+    const refundCash = Boolean(req.body?.refundCash !== false);
+
+    if (!invoiceNumber) return res.status(400).json({ error: 'Número de factura requerido.' });
+    if (!itemsToReturn.length) return res.status(400).json({ error: 'Debes seleccionar al menos un producto a devolver.' });
+
+    // Validar estructura de negocio
+    let structure;
+    try {
+      structure = await resolveScopedBusinessStructureSelection(req, null, req.body?.branchId, req.body?.cashRegisterId);
+    } catch (_e) {
+      structure = { branchId: null, cashRegisterId: null, branch: { nombre: 'Principal' }, cashRegister: { nombre: 'Caja' } };
+    }
+
+    const result = await withTransaction(async (conn) => {
+      // Cargar la venta original
+      const saleRows = await conn.query(
+        `SELECT s.*, COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS client_name
+         FROM sales s LEFT JOIN clients c ON c.id = s.client_id
+         WHERE s.invoice_number = ? LIMIT 1`,
+        [invoiceNumber]
+      );
+      if (!saleRows.length) throw Object.assign(new Error('Factura no encontrada.'), { statusCode: 404 });
+      const sale = saleRows[0];
+
+      if (String(sale.fiscal_status || '').trim() === 'cancelada') {
+        throw Object.assign(new Error('Esta venta ya fue cancelada. No se puede devolver.'), { statusCode: 409 });
+      }
+
+      const inventoryBranchId = Number(sale.inventory_branch_id || sale.branch_id || structure.branchId || 0);
+
+      // Cargar items originales
+      const originalItems = await conn.query(
+        `SELECT si.*, COALESCE(p.nombre,'Producto') AS product_name
+         FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
+         WHERE si.sale_id = ?`,
+        [sale.id]
+      );
+
+      // Cargar cantidades ya devueltas
+      const prevReturns = await conn.query(
+        `SELECT sri.product_id, SUM(sri.qty_returned) AS total_devuelto
+         FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+         WHERE sr.original_sale_id = ? GROUP BY sri.product_id`,
+        [sale.id]
+      );
+      const devueltoMap = {};
+      prevReturns.forEach(r => { devueltoMap[r.product_id] = Number(r.total_devuelto || 0); });
+
+      // Validar cantidades a devolver
+      let returnedAmount = 0;
+      const validatedItems = [];
+      for (const item of itemsToReturn) {
+        const pid = Number(item.productId || 0);
+        const qtyReturn = Number(item.qty || 0);
+        if (!pid || qtyReturn <= 0) continue;
+
+        const original = originalItems.find(o => Number(o.product_id) === pid);
+        if (!original) throw Object.assign(new Error(`Producto ID ${pid} no pertenece a esta factura.`), { statusCode: 400 });
+
+        const qtyOriginal = Number(original.qty || 0);
+        const qtyYaDevuelta = devueltoMap[pid] || 0;
+        const qtyDisponible = qtyOriginal - qtyYaDevuelta;
+
+        if (qtyReturn > qtyDisponible) {
+          throw Object.assign(new Error(
+            `${original.product_name}: solo puedes devolver ${qtyDisponible} unidad(es), ya se devolvieron ${qtyYaDevuelta}.`
+          ), { statusCode: 400 });
+        }
+
+        const unitPrice = Number(original.price || 0);
+        const discRate = Number(original.discount_rate || 0);
+        const effectivePrice = unitPrice * (1 - discRate / 100);
+        const lineTotal = effectivePrice * qtyReturn;
+        returnedAmount += lineTotal;
+
+        validatedItems.push({
+          productId: pid,
+          productName: original.product_name || '',
+          qty: qtyReturn,
+          price: effectivePrice,
+          lineTotal,
+        });
+      }
+
+      if (!validatedItems.length) throw Object.assign(new Error('No hay ítems válidos para devolver.'), { statusCode: 400 });
+
+      returnedAmount = Number(returnedAmount.toFixed(2));
+
+      // Insertar registro de devolución
+      const returnInsert = await conn.query(
+        `INSERT INTO sale_returns
+         (original_sale_id, original_invoice_number, return_type, return_reason,
+          returned_amount, returned_by_user_id, returned_by_user_name,
+          branch_id, cash_register_id, returned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        [
+          sale.id, invoiceNumber,
+          validatedItems.length === originalItems.length ? 'total' : 'parcial',
+          reason, returnedAmount,
+          actor.userId || null, actor.userName || 'Sistema',
+          structure.branchId || null, structure.cashRegisterId || null,
+        ]
+      );
+      const returnId = returnInsert.insertId;
+
+      // Insertar items devueltos y reintegrar al inventario
+      for (const item of validatedItems) {
+        await conn.query(
+          `INSERT INTO sale_return_items (return_id, product_id, product_name, qty_returned, price, line_total)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [returnId, item.productId, item.productName, item.qty, item.price, item.lineTotal]
+        );
+        // Reintegrar al inventario
+        if (inventoryBranchId) {
+          await changeBranchInventoryStock(conn, {
+            productId: item.productId,
+            branchId: inventoryBranchId,
+            quantityDelta: +item.qty,
+            preventNegative: false,
+          });
+          // Registrar movimiento de inventario
+          await conn.query(
+            `INSERT INTO inventory_movements (product_id, branch_id, movement_type, quantity, notes, user_id, user_name, happened_at)
+             VALUES (?, ?, 'devolucion', ?, ?, ?, ?, datetime('now'))`,
+            [item.productId, inventoryBranchId, item.qty,
+             `Devolución factura ${invoiceNumber} — ${reason}`,
+             actor.userId || null, actor.userName || 'Sistema']
+          ).catch(() => {}); // no crítico si falla el log
+        }
+      }
+
+      // Registrar egreso de caja si aplica
+      let cashMovementId = null;
+      if (refundCash && structure.cashRegisterId) {
+        const cashInsert = await conn.query(
+          `INSERT INTO cash_movements
+           (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id)
+           VALUES (NULL, 'Devolución', ?, ?, ?, ?, datetime('now'), ?, ?)`,
+          [-returnedAmount, `Devolución ${invoiceNumber} — ${reason}`,
+           actor.userId || null, actor.userName || 'Sistema',
+           structure.branchId || null, structure.cashRegisterId]
+        );
+        cashMovementId = cashInsert.insertId;
+        await conn.query(
+          `UPDATE sale_returns SET cash_movement_id = ? WHERE id = ?`,
+          [cashMovementId, returnId]
+        );
+      }
+
+      // Si todos los items fueron devueltos, marcar venta como devuelta
+      const totalItemsQty = originalItems.reduce((s, i) => s + Number(i.qty || 0), 0);
+      const totalDevueltaQty = validatedItems.reduce((s, i) => s + i.qty, 0) +
+        Object.values(devueltoMap).reduce((s, v) => s + v, 0);
+      if (totalDevueltaQty >= totalItemsQty) {
+        await conn.query(
+          `UPDATE sales SET sale_status = 'devuelta', fiscal_status = 'cancelada',
+                            canceled_at = datetime('now'), canceled_by_user_id = ?, canceled_by_user_name = ?,
+                            cancel_reason = ?
+           WHERE id = ?`,
+          [actor.userId || null, actor.userName || 'Sistema',
+           `Devolución total — ${reason}`, sale.id]
+        );
+      }
+
+      return { returnId, returnedAmount, itemsCount: validatedItems.length, cashMovementId };
+    });
+
+    await writeAuditLog({
+      ...actor,
+      moduleName: 'Ventas',
+      actionName: 'Devolución procesada',
+      detail: `Factura ${invoiceNumber} — ${result.itemsCount} producto(s) — RD$ ${result.returnedAmount.toFixed(2)} — ${reason}`
+    });
+
+    res.status(201).json({
+      ok: true,
+      returnId: result.returnId,
+      returnedAmount: result.returnedAmount,
+      itemsCount: result.itemsCount,
+      message: `Devolución procesada: RD$ ${result.returnedAmount.toFixed(2)} por ${result.itemsCount} producto(s).`,
+    });
+  } catch (err) {
+    const code = err.statusCode || 500;
+    console.error('[return] Error:', err.message);
+    res.status(code).json({ error: err.message });
+  }
+});
+
+// ─── 4. Historial de devoluciones de una sucursal ─────────────────────────
+app.get('/api/sales/returns-history', async (req, res) => {
+  try {
+    await ensureReturnTables();
+    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    const scopedBranchId = getUserScopeBranchId(actorUser);
+    const desde = String(req.query?.desde || '').trim() || new Date().toISOString().split('T')[0];
+    const hasta = String(req.query?.hasta || '').trim() || desde;
+
+    let where = `WHERE sr.returned_at BETWEEN ? AND ?`;
+    const params = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    if (scopedBranchId) { where += ` AND sr.branch_id = ?`; params.push(scopedBranchId); }
+
+    const rows = await query(
+      `SELECT sr.id, sr.original_invoice_number, sr.returned_at, sr.return_type,
+              sr.returned_amount, sr.return_reason, sr.returned_by_user_name,
+              GROUP_CONCAT(sri.product_name ORDER BY sri.id SEPARATOR ', ') AS productos
+       FROM sale_returns sr
+       LEFT JOIN sale_return_items sri ON sri.return_id = sr.id
+       ${where}
+       GROUP BY sr.id
+       ORDER BY sr.id DESC LIMIT 200`,
+      params
+    );
+    res.json({ returns: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/api/cash-registers', plans.requirePlan('pro', query, () => secureLicenseService.resolveState({ allowRemote: true })), async (req, res) => {
