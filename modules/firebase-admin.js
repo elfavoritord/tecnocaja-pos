@@ -1253,6 +1253,8 @@ module.exports = {
   fetchRemotePosLicenseState,
   getAdminLicensesCollectionName,
   getAdminUsersCollectionName,
+  getFirebaseApp,
+  getFirebaseAuth,
   getFirebaseConfigStatus,
   getFirestore,
   getPosClientsCollectionName,

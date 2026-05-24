@@ -2715,8 +2715,8 @@ function buildBillingCompactModalMarkup() {
     { key: 'efectivo',      icon: '💵',   label: 'Efectivo',  shortcut: 'F2' },
     { key: 'tarjeta',       icon: '💳',   label: 'Tarjeta',   shortcut: 'F3' },
     { key: 'transferencia', icon: '🏦',   label: 'Transfer.', shortcut: 'F4' },
-    { key: 'mixto',         icon: '💵💳', label: 'Mixto',     shortcut: '' },
-    { key: 'credito',       icon: '📄',   label: 'Crédito',   shortcut: '' }
+    { key: 'mixto',         icon: '💵💳', label: 'Mixto',     shortcut: 'F5' },
+    { key: 'credito',       icon: '📄',   label: 'Crédito',   shortcut: 'F6' }
   ];
 
   const clientChips = selectedClient ? `
@@ -2866,8 +2866,8 @@ function buildBillingCompactModalMarkup() {
               class="billing-v3-cobrar-noprint"
               type="button"
               onclick="processSale('charge')"
-              title="F5 · cobrar sin imprimir">
-              💾 Cobrar sin imprimir
+              title="cobrar sin imprimir">
+              💾 Sin imprimir
             </button>
           </div>
 
@@ -2900,14 +2900,21 @@ function buildBillingCompactModalMarkup() {
             <input type="number" id="monto-recibido" placeholder="0.00"
               oninput="calcCambio()" class="billing-v3-amount-input" autocomplete="off">
             <div class="billing-v3-quick-row" id="quick-amounts">
-              <button type="button" class="billing-v3-quick-btn billing-v3-quick-exact quick-amount-btn" id="quick-amount-exact" onclick="setMontoExacto(this)">Exacto</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(100, this)">100</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(500, this)">500</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(1000, this)">1,000</button>
+              <button type="button" class="billing-v3-quick-btn billing-v3-quick-exact quick-amount-btn" id="quick-amount-exact" onclick="setMontoExacto(this)" title="Alt+E — Exacto">Exacto</button>
+              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(100, this)" title="Alt+1 — Poner 100">100</button>
+              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(200, this)" title="Alt+2 — Poner 200">200</button>
+              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(500, this)" title="Alt+5 — Poner 500">500</button>
+              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(1000, this)" title="Alt+0 — Poner 1,000">1,000</button>
+              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(2000, this)" title="Alt+9 — Poner 2,000">2,000</button>
             </div>
-            <div class="billing-v3-cambio-wrap">
-              <span class="billing-v3-cambio-label">Cambio</span>
-              <strong id="cambio-val" class="billing-v3-cambio-amount">RD$ 0.00</strong>
+            <!-- Tarjeta de cambio prominente -->
+            <div class="billing-v3-cambio-card" id="billing-cambio-card">
+              <div class="billing-cambio-card-top">
+                <span class="billing-cambio-card-icon">💵</span>
+                <span class="billing-cambio-card-label">DEVUELTA AL CLIENTE</span>
+              </div>
+              <strong id="cambio-val" class="billing-cambio-card-amount">RD$ 0.00</strong>
+              <div id="billing-cambio-faltan" class="billing-cambio-card-faltan hidden"></div>
             </div>
           </div>
 
@@ -3723,7 +3730,7 @@ function syncBillingModalFooter() {
           onclick="processSale('whatsapp')" title="F6">
           📱 WA
         </button>
-        <span class="billing-v2-footer-hint">F2 Efectivo · F3 Tarjeta · F4 Transf. · F9 🖨/💾 · ENTER Cobrar · ESC Salir</span>
+        <span class="billing-v2-footer-hint">Efectivo: F2 Exacto · F3+100 · F4+200 · F5+500 · F6+1K · F7+2K · F9 🖨/💾 · ENTER Cobrar · ESC Salir</span>
       </div>
     `;
     // También sincronizar el botón COBRAR embebido en Col 3
@@ -4189,56 +4196,90 @@ function attachBillingKeyHandler() {
     const isRestrictedInput = tag === 'TEXTAREA' ||
       (tag === 'INPUT' && event.target?.id !== 'monto-recibido');
 
+    const isEfectivoActive = DB.payMethod === 'efectivo';
+
+    // ── Atajos Alt + tecla (montos rápidos, solo en efectivo) ──────────────
+    if (event.altKey && isEfectivoActive) {
+      switch (event.key) {
+        case 'e': case 'E':
+          event.preventDefault();
+          setMontoExacto(document.getElementById('quick-amount-exact'));
+          document.getElementById('monto-recibido')?.focus();
+          return;
+        case '1':
+          event.preventDefault();
+          setMontoRapido(100, document.querySelector('.billing-v3-quick-btn[onclick*="100"]'));
+          return;
+        case '2':
+          event.preventDefault();
+          setMontoRapido(200, document.querySelector('.billing-v3-quick-btn[onclick*="200"]'));
+          return;
+        case '5':
+          event.preventDefault();
+          setMontoRapido(500, document.querySelector('.billing-v3-quick-btn[onclick*="500"]'));
+          return;
+        case '0':
+          event.preventDefault();
+          setMontoRapido(1000, document.querySelector('.billing-v3-quick-btn[onclick*="1,000"]'));
+          return;
+        case '9':
+          event.preventDefault();
+          setMontoRapido(2000, document.querySelector('.billing-v3-quick-btn[onclick*="2,000"]'));
+          return;
+      }
+    }
+
     switch (event.key) {
-      case 'F1':
+      // ── Métodos de pago (F2–F6, siempre) ──────────────────────────────
+      case 'F2': {
         event.preventDefault();
-        setMontoExacto(document.getElementById('quick-amount-exact'));
+        const btn = document.querySelector('.pay-method[onclick*="\'efectivo\'"]');
+        if (btn) setPayMethod('efectivo', btn);
         document.getElementById('monto-recibido')?.focus();
         break;
-
-      case 'F2':
+      }
+      case 'F3': {
         event.preventDefault();
-        { const btn = document.querySelector('.pay-method[onclick*="\'efectivo\'"]');
-          if (btn) setPayMethod('efectivo', btn); }
+        const btn = document.querySelector('.pay-method[onclick*="\'tarjeta\'"]');
+        if (btn) setPayMethod('tarjeta', btn);
         break;
-
-      case 'F3':
+      }
+      case 'F4': {
         event.preventDefault();
-        { const btn = document.querySelector('.pay-method[onclick*="\'tarjeta\'"]');
-          if (btn) setPayMethod('tarjeta', btn); }
+        const btn = document.querySelector('.pay-method[onclick*="\'transferencia\'"]');
+        if (btn) setPayMethod('transferencia', btn);
         break;
-
-      case 'F4':
+      }
+      case 'F5': {
         event.preventDefault();
-        { const btn = document.querySelector('.pay-method[onclick*="\'transferencia\'"]');
-          if (btn) setPayMethod('transferencia', btn); }
+        const btn = document.querySelector('.pay-method[onclick*="\'mixto\'"]');
+        if (btn) setPayMethod('mixto', btn);
         break;
-
-      case 'F5':
+      }
+      case 'F6': {
         event.preventDefault();
-        if (!_billingSubmitting) processSale('charge');
+        const btn = document.querySelector('.pay-method[onclick*="\'credito\'"]');
+        if (btn) setPayMethod('credito', btn);
         break;
+      }
 
-      case 'F6':
-        event.preventDefault();
-        { const b = buildBillingValidationBuckets();
-          if (!b.confirm.length && !_billingSubmitting) processSale('whatsapp'); }
-        break;
-
+      // ── Imprimir / no imprimir ─────────────────────────────────────────
       case 'F9':
         event.preventDefault();
-        event.stopPropagation(); // Evita que ui.js también lo procese
+        event.stopPropagation();
         toggleBillingPrintMode();
         break;
 
+      // ── Cobrar (Enter) ─────────────────────────────────────────────────
       case 'Enter':
-        if (isRestrictedInput) return; // No interceptar si está escribiendo en textarea
+        if (isRestrictedInput) return;
         event.preventDefault();
-        event.stopPropagation(); // Evita doble disparo desde ui.js
+        event.stopPropagation();
         { const b = buildBillingValidationBuckets();
           if (!b.confirm.length && !_billingSubmitting) processSale(getBillingPrintMode() ? 'print' : 'charge'); }
         break;
 
+      // ── Cancelar (Escape) ──────────────────────────────────────────────
       case 'Escape':
         event.preventDefault();
         requestBillingModalClose({ source: 'cancel' });
@@ -5236,14 +5277,19 @@ function setPayMethod(method, el) {
     document.querySelectorAll('.quick-amount-btn').forEach((button) => button.classList.remove('active'));
   }
   const amountInput = document.getElementById('monto-recibido');
-  const totalEl = document.getElementById('billing-total')?.textContent || fmt(0);
-  const total = parseFmt(totalEl);
   if (amountInput) {
-    if (method === 'contra_entrega') {
+    if (method === 'efectivo') {
+      // Limpiar — el cajero pone el monto con botones rápidos o teclado
       amountInput.value = '';
-    } else if (method === 'credito') {
-      amountInput.value = '0';
+    } else if (method === 'contra_entrega' || method === 'credito' || method === 'mixto') {
+      amountInput.value = '';
     } else {
+      // Tarjeta / Transferencia: pre-llenar con el total (cobro exacto)
+      const modalBox = document.getElementById('modal-box');
+      const billingTotalEl = (modalBox && modalBox.querySelector('#billing-total'))
+        || document.getElementById('billing-total');
+      const totalEl = billingTotalEl?.textContent || fmt(0);
+      const total = parseFmt(totalEl);
       amountInput.value = total.toFixed(2);
     }
   }
@@ -5265,21 +5311,98 @@ function setPayMethod(method, el) {
 }
 
 function calcCambio() {
-  const totalEl = document.getElementById('s-total')?.textContent || fmt(0);
-  const total = parseFmt(totalEl);
+  // Leer el total desde el elemento dentro del modal (fuente autoritativa)
+  // billing-total se inicializa con el total real al abrir el modal
+  const modalBox = document.getElementById('modal-box');
+  const billingTotalEl = (modalBox && modalBox.querySelector('#billing-total'))
+    || document.getElementById('billing-total');
+  const totalRaw = billingTotalEl?.textContent || document.getElementById('s-total')?.textContent || fmt(0);
+  const total = parseFmt(totalRaw);
+
   const amountInput = document.getElementById('monto-recibido');
   const cambioVal = document.getElementById('cambio-val');
+  const cambioCard = document.getElementById('billing-cambio-card');
+  const faltanEl = document.getElementById('billing-cambio-faltan');
   if (!amountInput || !cambioVal) return;
+
+  // Métodos sin cambio en efectivo — limpiar y salir
   if (DB.payMethod === 'contra_entrega' || DB.payMethod === 'credito' || DB.payMethod === 'mixto') {
-    amountInput.value = '';
     cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'neutral', '');
     return;
   }
-  const recibido = parseFloat(amountInput.value) || 0;
-  const cambio = Math.max(0, recibido - total);
-  cambioVal.textContent = fmt(cambio);
+
+  // Parsear recibido con validación estricta
+  const rawVal = String(amountInput.value || '').trim();
+  const recibido = rawVal === '' ? 0 : (parseFloat(rawVal) || 0);
+
+  // Guardar para defensa: nunca mostrar NaN
+  if (isNaN(recibido)) {
+    cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'neutral', '');
+    return;
+  }
+
+  // FÓRMULA: Devuelta = Recibido − Total  (NO Recibido + Total)
+  const diferencia = recibido - total;
+
+  if (recibido <= 0) {
+    cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'neutral', '');
+  } else if (diferencia > 0.004) {
+    // Hay devuelta positiva
+    cambioVal.textContent = fmt(diferencia);
+    _setCambioCardState(cambioCard, faltanEl, 'ok', '');
+  } else if (Math.abs(diferencia) <= 0.004) {
+    // Pago exacto (tolerancia 0.4 centavos para flotantes)
+    cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'exacto', '');
+  } else {
+    // Monto insuficiente — mostrar el faltante en el card amount (no cero)
+    cambioVal.textContent = fmt(Math.abs(diferencia));
+    _setCambioCardState(cambioCard, faltanEl, 'insuf', '');
+  }
+
   syncBillingModalFooter();
   syncBillingConfirmSummary();
+}
+
+function _setCambioCardState(card, faltanEl, state, faltanText) {
+  if (card) {
+    card.classList.remove('cambio-ok', 'cambio-exacto', 'cambio-insuf', 'cambio-neutral');
+    if (state) card.classList.add(`cambio-${state}`);
+
+    // Actualizar ícono y etiqueta según el estado
+    const iconEl  = card.querySelector('.billing-cambio-card-icon');
+    const labelEl = card.querySelector('.billing-cambio-card-label');
+    if (iconEl && labelEl) {
+      switch (state) {
+        case 'ok':
+          iconEl.textContent  = '✅';
+          labelEl.textContent = 'DEVUELTA AL CLIENTE';
+          break;
+        case 'exacto':
+          iconEl.textContent  = '✓';
+          labelEl.textContent = 'PAGO EXACTO';
+          break;
+        case 'insuf':
+          iconEl.textContent  = '⚠️';
+          labelEl.textContent = 'FALTAN';
+          break;
+        default:
+          iconEl.textContent  = '💵';
+          labelEl.textContent = 'DEVUELTA AL CLIENTE';
+      }
+    }
+  }
+  if (faltanEl) {
+    if (faltanText) {
+      faltanEl.textContent = faltanText;
+      faltanEl.classList.remove('hidden');
+    } else {
+      faltanEl.classList.add('hidden');
+    }
+  }
 }
 
 function calcMixto() {
@@ -5317,10 +5440,13 @@ function calcMixto() {
 function setMontoRapido(val, button = null) {
   const amountInput = document.getElementById('monto-recibido');
   if (!amountInput) return;
-  amountInput.value = val;
+  // SET directo — Recibido = val (NO sumar al total)
+  amountInput.value = Number(val).toFixed(2);
   document.querySelectorAll('.quick-amount-btn').forEach((quickButton) => {
-    quickButton.classList.toggle('active', quickButton === button);
+    quickButton.classList.remove('active');
   });
+  if (button) button.classList.add('active');
+  amountInput.focus();
   calcCambio();
 }
 
@@ -7563,10 +7689,14 @@ function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
       pushSummaryLine('Cambio', fmtThermal(venta.cambio));
     }
     pushSummaryLine('Método', 'Mixto (Tarjeta + Efectivo)');
-  } else if (!receiptSimpleMode) {
-    pushSummaryLine('Pagado', fmtThermal(venta.recibido));
-    pushSummaryLine('Cambio', fmtThermal(venta.cambio));
-    pushSummaryLine('Método', SALE_PAYMENT_TYPES[venta.metodo] || venta.metodo || 'Efectivo');
+  } else {
+    // Mostrar recibido y devuelta cuando el cliente pagó más del total
+    const recibidoAmt = Number(venta.recibido || 0);
+    const cambioAmt   = Number(venta.cambio   || 0);
+    if (cambioAmt > 0) {
+      pushSummaryLine('Recibido', fmtThermal(recibidoAmt));
+      pushSummaryLine('Devuelta', fmtThermal(cambioAmt), 'total');
+    }
   }
   const footerMessage = venta.receiptFooterMessageOverride || cfg.mensaje;
   if (footerMessage) {

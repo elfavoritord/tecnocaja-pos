@@ -2180,6 +2180,79 @@ ipcMain.handle('secure-backup:open-folder', async (_event, password) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+//  RESPALDOS — Diálogos de archivo .tcbak
+// ═══════════════════════════════════════════════════════════════
+
+/** Muestra diálogo "Guardar como..." y devuelve la ruta elegida */
+ipcMain.handle('backup:save-dialog', async (_event, { defaultName = 'respaldo.tcbak', defaultDir } = {}) => {
+  try {
+    const documentsPath = app.getPath('documents');
+    const defaultPath   = path.join(defaultDir || path.join(documentsPath, 'TecnoCaja', 'Backups'), defaultName);
+    const { canceled, filePath: chosen } = await dialog.showSaveDialog(mainWindow, {
+      title:       'Guardar respaldo Tecno Caja',
+      defaultPath,
+      filters:     [{ name: 'Respaldo Tecno Caja', extensions: ['tcbak'] }],
+      properties:  ['createDirectory'],
+    });
+    if (canceled || !chosen) return { ok: false, canceled: true };
+    return { ok: true, filePath: chosen };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+/** Muestra diálogo "Abrir archivo" y devuelve la ruta y el contenido en base64 */
+ipcMain.handle('backup:open-dialog', async () => {
+  try {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title:      'Seleccionar respaldo Tecno Caja',
+      filters:    [{ name: 'Respaldo Tecno Caja', extensions: ['tcbak', 'novaseguro', 'json'] }],
+      properties: ['openFile'],
+    });
+    if (canceled || !filePaths.length) return { ok: false, canceled: true };
+    const filePath = filePaths[0];
+    const buffer   = fs.readFileSync(filePath);
+    return {
+      ok:       true,
+      filePath,
+      fileName: path.basename(filePath),
+      base64:   buffer.toString('base64'),
+      size:     buffer.length,
+    };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+/** Escribe un buffer (base64) a la ruta elegida mediante diálogo */
+ipcMain.handle('backup:write-file', async (_event, { base64, filePath: targetPath }) => {
+  try {
+    if (!targetPath || !base64) return { ok: false, error: 'Faltan parámetros.' };
+    const dir = path.dirname(targetPath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(targetPath, Buffer.from(base64, 'base64'));
+    const size = fs.statSync(targetPath).size;
+    return { ok: true, filePath: targetPath, size };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+/** Abre la carpeta de respaldos en el Explorador de Windows */
+ipcMain.handle('backup:open-folder', async (_event, customDir) => {
+  try {
+    const documentsPath = app.getPath('documents');
+    const backupDir     = customDir || path.join(documentsPath, 'TecnoCaja', 'Backups');
+    if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
+    const result = await shell.openPath(backupDir);
+    if (result) return { ok: false, error: result };
+    return { ok: true, path: backupDir };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 ipcMain.handle('app:open-external', async (_event, targetUrl) => {
   try {
     const candidate = String(targetUrl || '').trim();

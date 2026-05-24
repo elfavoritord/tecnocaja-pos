@@ -281,7 +281,15 @@
     const rows = RV2.ventas_dia;
 
     const labels = rows.map(r => {
-      const d = new Date(r.dia + 'T00:00:00');
+      // r.dia puede llegar como string 'YYYY-MM-DD' o como Date object (MariaDB)
+      let d;
+      if (r.dia instanceof Date) {
+        d = r.dia;
+      } else {
+        const dStr = String(r.dia || '').trim();
+        d = new Date(dStr.includes('T') ? dStr : dStr + 'T00:00:00');
+      }
+      if (isNaN(d.getTime())) return String(r.dia || '?');
       return d.toLocaleDateString('es-DO', { day: '2-digit', month: 'short' });
     });
     const values = rows.map(r => Number(r.total));
@@ -743,29 +751,39 @@
 
   function renderDevolucionesTable() {
     const { rows, total, totalCancelado } = RV2.devoluciones;
-    setText('det-dev-count', `${total} anulaciones · ${fmt(totalCancelado)} total`);
+    setText('det-dev-count', `${total} devoluciones · ${fmt(totalCancelado)} total devuelto`);
     const resumen = el('det-dev-resumen');
     if (resumen) {
       if (total > 0) {
         resumen.style.display = 'block';
-        resumen.innerHTML = `⚠️ Se encontraron <strong>${total}</strong> facturas anuladas por un total de <strong>${fmt(totalCancelado)}</strong> en el período.`;
+        resumen.innerHTML = `↺ <strong>${total}</strong> devoluciones registradas en el período por un total de <strong>${fmt(totalCancelado)}</strong>.`;
       } else {
         resumen.style.display = 'none';
       }
     }
     const tbody = el('det-dev-tbody');
     if (!tbody) return;
-    if (!rows.length) { tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text3)">Sin devoluciones en el período</td></tr>`; return; }
-    tbody.innerHTML = rows.map(r => `
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text3)">Sin devoluciones en el período</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const tipoBadge = r.tipo === 'parcial'
+        ? `<span style="background:var(--warning);color:#000;border-radius:4px;padding:2px 6px;font-size:.75rem">Parcial</span>`
+        : `<span style="background:var(--danger);color:#fff;border-radius:4px;padding:2px 6px;font-size:.75rem">Total</span>`;
+      const fechaFmt = (() => { try { return new Date(r.fecha).toLocaleDateString('es-DO'); } catch(_) { return r.fecha; } })();
+      return `
       <tr>
-        <td>${r.factura}</td>
-        <td>${new Date(r.fecha).toLocaleDateString('es-DO')}</td>
+        <td style="font-weight:700">${r.factura}</td>
+        <td>${fechaFmt}</td>
         <td>${r.cliente || '—'}</td>
-        <td>${r.cajero || '—'}</td>
+        <td>${r.cajero  || '—'}</td>
+        <td>${tipoBadge}</td>
+        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${r.motivo || ''}">${r.motivo || '—'}</td>
         <td>${fmtMetodo(r.metodo)}</td>
-        <td>${fmt(r.itbis)}</td>
-        <td style="font-family:var(--font-mono);font-weight:800;color:var(--danger)">${fmt(r.total)}</td>
-      </tr>`).join('');
+        <td style="font-family:var(--font-mono);font-weight:800;color:var(--danger)">− ${fmt(r.total)}</td>
+      </tr>`;
+    }).join('');
   }
 
   // ── DGII ──────────────────────────────────────────────────
@@ -1003,11 +1021,19 @@
     const res = buildPdfBase('Devoluciones y Anulaciones');
     if (!res) return;
     const { doc } = res;
-    const rows = RV2.devoluciones.rows.map(r => [
-      r.factura, new Date(r.fecha).toLocaleDateString('es-DO'),
-      (r.cliente || '—').substring(0, 20), fmtMetodo(r.metodo), fmt(r.total)
-    ]);
-    pdfTable(doc, res.y, ['Factura', 'Fecha', 'Cliente', 'Método', 'Total Anulado'], rows, [30, 22, 55, 25, 40]);
+    const rows = RV2.devoluciones.rows.map(r => {
+      const fechaFmt = (() => { try { return new Date(r.fecha).toLocaleDateString('es-DO'); } catch(_) { return String(r.fecha || ''); } })();
+      return [
+        r.factura,
+        fechaFmt,
+        (r.cliente || '—').substring(0, 18),
+        r.tipo === 'parcial' ? 'Parcial' : 'Total',
+        (r.motivo || '—').substring(0, 20),
+        fmtMetodo(r.metodo),
+        fmt(r.total)
+      ];
+    });
+    pdfTable(doc, res.y, ['Factura', 'Fecha', 'Cliente', 'Tipo', 'Motivo', 'Método', 'Total Dev.'], rows, [28, 20, 40, 15, 38, 20, 30]);
     const _fn8 = `Devoluciones_${RV2.filtros.desde}_${RV2.filtros.hasta}.pdf`;
     doc.save(_fn8);
     saveReportToSistemaData(doc, 'reporte_ventas', _fn8);

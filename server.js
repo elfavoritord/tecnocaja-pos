@@ -38,6 +38,9 @@ const { createFileManagerRouter }  = require('./server/routes/file-manager.route
 const { ensureInitialReportsBootstrap } = require('./server/services/firebase-initial-sync');
 const createDeliveryRouter = require('./server/routes/delivery.routes');
 
+// ✅ Respaldo local + nube
+const createRespaldosRouter = require('./server/routes/respaldos.routes');
+
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
 
@@ -1325,6 +1328,18 @@ app.use(async (req, _res, next) => {
   }
 });
 
+// ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
+//    req.authUser esté disponible en las rutas de respaldo.
+createRespaldosRouter({
+  app,
+  query,
+  getActor,
+  writeAuditLog,
+  ensureAdministrator,
+  isGlobalAdministratorUser,
+  resolveRequestActorUser,
+});
+
 const LOCAL_PASSWORD_HASH_PREFIX = 'scrypt';
 const TECNO_CAJA_AUTH_SCHEME = 'Bearer';
 const TECNO_CAJA_AUTH_SESSION_TTL_MS = 1000 * 60 * 60 * 16;
@@ -2344,6 +2359,46 @@ async function trySyncAllPosAccountsToFirebase() {
   }
 
   return { synced: true, ...result, reportsApp: reportsResults };
+}
+
+/**
+ * Sincroniza TODOS los usuarios staff al Firebase Authentication.
+ * Crea la cuenta Firebase Auth de los usuarios que aún no tienen firebase_uid,
+ * y actualiza la de los que ya la tienen.  Se llama al arranque del servidor
+ * y desde POST /api/firebase-sync/auth-all.
+ */
+async function trySyncAllStaffToFirebaseAuth() {
+  const status = getFirebaseConfigStatus();
+  if (!status.adminEnabled) {
+    return { synced: false, reason: status.adminReason || status.reason };
+  }
+  await ensureUserExtensions();
+  const rows = await query(
+    `SELECT * FROM users
+     WHERE (account_type IS NULL OR account_type != 'customer')
+     ORDER BY id ASC`
+  );
+  const results = { total: rows.length, synced: 0, skipped: 0, failed: 0, errors: [] };
+  for (const user of rows) {
+    if (!user.email || !user.password) {
+      results.skipped++;
+      continue;
+    }
+    try {
+      const result = await trySyncStaffFirebaseAuthForLocalUser(user.id);
+      if (result?.synced) {
+        results.synced++;
+      } else {
+        results.skipped++;
+      }
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ userId: user.id, email: user.email, error: err.message });
+      console.warn(`[firebase-auth-sync] falló usuario ${user.id} (${user.email}): ${err.message}`);
+    }
+  }
+  console.log(`[firebase-auth-sync] Resultado: ${results.synced} sincronizados, ${results.skipped} omitidos, ${results.failed} fallidos de ${results.total} usuarios.`);
+  return results;
 }
 
 async function tryRepairPendingDeliveryOrdersInFirebase() {
@@ -6021,6 +6076,32 @@ app.post('/api/logout', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LISTA PÚBLICA DE USUARIOS — para el selector de login (sin contraseñas)
+// ═══════════════════════════════════════════════════════════════════════════
+app.get('/api/public/users-list', loginLimiter, async (req, res) => {
+  try {
+    const users = await query(
+      `SELECT id, nombre, usuario, rol
+       FROM users
+       WHERE LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '')
+          OR estado IS NULL
+       ORDER BY nombre ASC
+       LIMIT 50`,
+      []
+    );
+    const safeUsers = users.map(u => ({
+      id: Number(u.id),
+      nombre: String(u.nombre || u.usuario || 'Usuario'),
+      usuario: String(u.usuario || ''),
+      rol: String(u.rol || ''),
+    }));
+    res.json({ ok: true, users: safeUsers });
+  } catch (e) {
+    res.status(500).json({ ok: false, users: [], error: e.message });
+  }
+});
+
 app.post('/api/login', loginLimiter, async (req, res) => {
   const setupStatus = await getSetupStatus();
   if (setupStatus.setupRequired) {
@@ -8025,6 +8106,34 @@ app.post('/api/firebase-sync/accounts', async (req, res) => {
     moduleName: 'Usuarios',
     actionName: 'Usuarios POS sincronizados a Firebase',
     detail: `${result.total || 0} registros -> ${result.usersCollection || 'usuarios'} / ${result.licensesCollection || 'licencias'}`
+  });
+  res.json(result);
+});
+
+/**
+ * Sincroniza TODOS los usuarios staff al Firebase Authentication (crea cuentas
+ * Firebase para los que aún no las tienen y actualiza las existentes).
+ * Útil para la migración inicial cuando el sistema ya tiene usuarios registrados.
+ */
+app.post('/api/firebase-sync/auth-all', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true }).catch(() => null);
+  if (!actorUser || !isGlobalAdministratorUser(actorUser)) {
+    return res.status(403).json({ error: 'Solo el administrador general puede ejecutar esta operación.' });
+  }
+  const status = getFirebaseConfigStatus();
+  if (!status.adminEnabled) {
+    return res.status(503).json({
+      error: status.adminReason || status.reason || 'Firebase Admin no está configurado.',
+    });
+  }
+  const result = await trySyncAllStaffToFirebaseAuth();
+  await writeAuditLog({
+    userId: actorUser.id,
+    userName: actorUser.nombre,
+    userRole: actorUser.rol,
+    moduleName: 'Usuarios',
+    actionName: 'Sincronización masiva Firebase Auth',
+    detail: `${result.synced || 0} sincronizados, ${result.skipped || 0} omitidos, ${result.failed || 0} fallidos de ${result.total || 0} usuarios`,
   });
   res.json(result);
 });
@@ -13670,7 +13779,8 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
       ORDER BY dia ASC`, p);
 
     res.json(rows.map(r => ({
-      dia: r.dia,
+      // Normalizar a string YYYY-MM-DD para evitar Invalid Date en el frontend
+      dia: r.dia instanceof Date ? r.dia.toISOString().slice(0, 10) : String(r.dia || '').slice(0, 10),
       facturas: Number(r.facturas),
       total: Number(r.total),
       itbis: Number(r.itbis)
@@ -13773,11 +13883,15 @@ app.get('/api/reports/advanced/metodos-pago', async (req, res) => {
     const scopedBranchId = getUserScopeBranchId(actorUser);
     const { desde, hasta } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
+    const cajaId  = Number(req.query?.cajaId   || 0) || null;
+    const userId  = Number(req.query?.userId   || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
-    if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
+    if (ef)     { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
+    if (cajaId) { w += ' AND COALESCE(s.billed_cash_register_id,s.cash_register_id)=?'; p.push(cajaId); }
+    if (userId) { w += ' AND s.billed_by_user_id=?'; p.push(userId); }
 
     const rows = await query(`
       SELECT
@@ -14096,36 +14210,77 @@ app.get('/api/reports/advanced/devoluciones', async (req, res) => {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
     const { desde, hasta } = getDefaultRange(req);
+    await ensureReturnTables();
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') = 'cancelada'`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
-    if (scopedBranchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(scopedBranchId); }
+    // ── Parte 1: devoluciones del sistema sale_returns (parciales y totales) ──
+    let w1 = `WHERE sr.returned_at BETWEEN ? AND ?`;
+    const p1 = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    if (scopedBranchId) { w1 += ' AND sr.branch_id = ?'; p1.push(scopedBranchId); }
 
-    const rows = await query(`
+    const returnRows = await query(`
+      SELECT
+        sr.id,
+        sr.original_invoice_number  AS invoice_number,
+        sr.returned_at              AS created_at,
+        COALESCE(c.nombre, s.client_name_snapshot, '') AS cliente,
+        COALESCE(sr.returned_by_user_name, u.nombre, u.usuario, 'Sistema') AS cajero,
+        COALESCE(s.payment_method, 'efectivo') AS payment_method,
+        COALESCE(s.tax, 0)          AS itbis_amount,
+        sr.total_returned           AS total,
+        sr.return_type,
+        sr.return_reason,
+        'devolucion'                AS tipo_registro
+      FROM sale_returns sr
+      LEFT JOIN sales   s ON s.id = sr.original_sale_id
+      LEFT JOIN clients c ON s.client_id = c.id
+      LEFT JOIN users   u ON sr.returned_by_user_id = u.id
+      ${w1}
+      ORDER BY sr.returned_at DESC`, p1);
+
+    // ── Parte 2: anulaciones antiguas sin registro en sale_returns ──
+    let w2 = `WHERE s.created_at BETWEEN ? AND ?
+              AND COALESCE(s.fiscal_status,'emitida') = 'cancelada'
+              AND s.id NOT IN (
+                SELECT COALESCE(original_sale_id,0) FROM sale_returns WHERE original_sale_id IS NOT NULL
+              )`;
+    const p2 = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    if (scopedBranchId) { w2 += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p2.push(scopedBranchId); }
+
+    const cancelRows = await query(`
       SELECT
         s.id, s.invoice_number, s.created_at,
         COALESCE(c.nombre, s.client_name_snapshot, '') AS cliente,
-        COALESCE(u.nombre, u.usuario, '') AS cajero,
-        s.total, s.tax AS itbis_amount, s.payment_method
+        COALESCE(u.nombre, u.usuario, '')              AS cajero,
+        s.total, COALESCE(s.tax, 0) AS itbis_amount, s.payment_method,
+        'total'      AS return_type,
+        'Anulación'  AS return_reason,
+        'anulacion'  AS tipo_registro
       FROM sales s
-      LEFT JOIN clients c ON s.client_id=c.id
-      LEFT JOIN users u ON s.billed_by_user_id=u.id
-      ${w}
-      ORDER BY s.created_at DESC`, p);
+      LEFT JOIN clients c ON s.client_id = c.id
+      LEFT JOIN users   u ON s.billed_by_user_id = u.id
+      ${w2}
+      ORDER BY s.created_at DESC`, p2);
 
-    const totalCancelado = rows.reduce((s, r) => s + Number(r.total || 0), 0);
+    const allRows = [...returnRows, ...cancelRows]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    const totalCancelado = allRows.reduce((s, r) => s + Number(r.total || 0), 0);
+
     res.json({
-      total: rows.length,
+      total: allRows.length,
       totalCancelado,
-      rows: rows.map(r => ({
-        id: r.id,
-        factura: r.invoice_number || `#${r.id}`,
-        fecha: r.created_at,
-        cliente: r.cliente,
-        cajero: r.cajero,
-        metodo: r.payment_method || 'efectivo',
-        itbis: Number(r.itbis_amount || 0),
-        total: Number(r.total || 0)
+      rows: allRows.map(r => ({
+        id:             r.id,
+        factura:        r.invoice_number || `#${r.id}`,
+        fecha:          r.created_at,
+        cliente:        r.cliente || '—',
+        cajero:         r.cajero  || '—',
+        metodo:         r.payment_method || 'efectivo',
+        itbis:          Number(r.itbis_amount || 0),
+        total:          Number(r.total || 0),
+        tipo:           r.return_type   || 'total',
+        motivo:         r.return_reason || '',
+        tipoRegistro:   r.tipo_registro || 'devolucion'
       }))
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -14743,6 +14898,9 @@ async function prepareServerRuntime() {
       await syncRemoteLicenseToLocalConfig({ force: true }).catch(() => {});
       // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
       trySyncAllPosAccountsToFirebase().catch(() => {});
+      // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
+      // (crea cuentas Firebase para usuarios que aún no las tienen).
+      trySyncAllStaffToFirebaseAuth().catch(() => {});
       // Asegura que los clientes existentes también se envíen al menos al arrancar.
       trySyncAllPosClientsToFirebase().catch(() => {});
       // Repara pedidos delivery ya creados para que mantengan link y referencia en Firestore.
@@ -14827,6 +14985,9 @@ async function prepareServerRuntime() {
     await syncRemoteLicenseToLocalConfig({ force: true }).catch(() => {});
     // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
     trySyncAllPosAccountsToFirebase().catch(() => {});
+    // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
+    // (crea cuentas Firebase para usuarios que aún no las tienen).
+    trySyncAllStaffToFirebaseAuth().catch(() => {});
     // Asegura que los clientes existentes también se envíen al menos al arrancar.
     trySyncAllPosClientsToFirebase().catch(() => {});
     // Repara pedidos delivery ya creados para que mantengan link y referencia en Firestore.
