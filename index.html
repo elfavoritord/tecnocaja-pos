@@ -54,18 +54,33 @@
         <select id="login-language-select" class="form-input" onchange="changeStartupLanguage(this.value)"></select>
       </div>
       <div id="login-existing-panel">
-        <div class="form-group">
-        <label id="login-user-label">Usuario</label>
-        <input type="text" id="login-user" placeholder="admin">
-        </div>
-        <div class="form-group">
-          <label id="login-pass-label">Contraseña</label>
-          <div class="password-field">
-            <input type="password" id="login-pass" placeholder="••••••••">
-            <button class="password-toggle" type="button" onclick="togglePasswordVisibility('login-pass', this)" aria-label="Mostrar contraseña">👁</button>
+        <!-- Paso 1: Selector de usuario -->
+        <div id="login-user-picker-section">
+          <label id="login-user-label" class="form-label-sm">Selecciona tu usuario</label>
+          <div id="login-user-grid" class="login-user-grid">
+            <div class="login-user-grid-loading">Cargando usuarios…</div>
           </div>
+          <input type="hidden" id="login-user" value="">
         </div>
-        <button class="btn-login" id="login-submit-button" onclick="doLogin()">Iniciar Sesión</button>
+        <!-- Paso 2: Contraseña (aparece después de seleccionar usuario) -->
+        <div id="login-pass-section" class="hidden">
+          <div class="login-selected-user-bar">
+            <div id="login-selected-avatar" class="login-avatar-badge"></div>
+            <div class="login-selected-info">
+              <strong id="login-selected-nombre">Usuario</strong>
+              <span id="login-selected-rol"></span>
+            </div>
+            <button type="button" class="btn-change-user" onclick="deselectLoginUser()">← Cambiar</button>
+          </div>
+          <div class="form-group">
+            <label id="login-pass-label">Contraseña</label>
+            <div class="password-field">
+              <input type="password" id="login-pass" placeholder="••••••••">
+              <button class="password-toggle" type="button" onclick="togglePasswordVisibility('login-pass', this)" aria-label="Mostrar contraseña">👁</button>
+            </div>
+          </div>
+          <button class="btn-login" id="login-submit-button" onclick="doLogin()">Iniciar Sesión</button>
+        </div>
         <button class="btn-secondary btn-login-google" id="login-google-button" type="button" onclick="doGoogleLogin()">
           <span>G</span>
           <span id="login-google-button-text">Entrar con Google</span>
@@ -503,6 +518,161 @@
       </div>
       <button type="button" class="btn-secondary" onclick="wzScenarioCancel()" style="width:100%;margin-top:0.4rem">← Cambiar estructura</button>
     </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         WELCOME OVERLAY — Pantalla inicial: Nuevo / Restaurar local / Nube
+         Se muestra ANTES del asistente cuando setup es requerido
+    ═══════════════════════════════════════════════════════════════════ -->
+    <div id="wz-welcome-overlay" class="wz-auth-overlay wz-hidden" role="dialog" aria-modal="true" aria-label="Bienvenido a Tecno Caja">
+      <div class="wz-auth-icon-wrap" style="font-size:2.2rem">🚀</div>
+      <h3 style="margin-bottom:.3rem">Bienvenido a Tecno Caja</h3>
+      <p style="color:var(--text3);font-size:.85rem;margin-bottom:1.4rem;line-height:1.5">¿Es una instalación nueva o deseas restaurar un sistema existente?</p>
+      <div style="display:grid;gap:.75rem;margin-bottom:1rem">
+
+        <!-- Opción 1: Negocio nuevo -->
+        <button type="button" onclick="wzWelcomeChoice('nuevo')"
+          style="display:flex;align-items:flex-start;gap:.85rem;padding:1rem 1.1rem;background:rgba(108,92,231,.1);border:2px solid rgba(108,92,231,.3);border-radius:12px;cursor:pointer;text-align:left;transition:border-color .18s;width:100%">
+          <span style="font-size:1.6rem;line-height:1;flex-shrink:0">🏪</span>
+          <span>
+            <strong style="display:block;color:var(--text1,#f0f0f0);font-size:.92rem;margin-bottom:.2rem">Crear negocio nuevo</strong>
+            <span style="color:var(--text3,#7a8a9a);font-size:.8rem;line-height:1.4">Configura Tecno Caja desde cero con el asistente de inicio.</span>
+          </span>
+        </button>
+
+        <!-- Opción 2: Restaurar local -->
+        <button type="button" onclick="wzWelcomeChoice('restaurar-local')"
+          style="display:flex;align-items:flex-start;gap:.85rem;padding:1rem 1.1rem;background:rgba(0,184,148,.08);border:2px solid rgba(0,184,148,.25);border-radius:12px;cursor:pointer;text-align:left;transition:border-color .18s;width:100%">
+          <span style="font-size:1.6rem;line-height:1;flex-shrink:0">💾</span>
+          <span>
+            <strong style="display:block;color:var(--text1,#f0f0f0);font-size:.92rem;margin-bottom:.2rem">Restaurar desde respaldo local</strong>
+            <span style="color:var(--text3,#7a8a9a);font-size:.8rem;line-height:1.4">Selecciona un archivo <code style="font-size:.78rem;background:rgba(255,255,255,.07);padding:0 3px;border-radius:3px">.tcbak</code> guardado en esta PC o en un USB.</span>
+          </span>
+        </button>
+
+        <!-- Opción 3: Restaurar nube -->
+        <button type="button" onclick="wzWelcomeChoice('restaurar-nube')"
+          style="display:flex;align-items:flex-start;gap:.85rem;padding:1rem 1.1rem;background:rgba(9,132,227,.08);border:2px solid rgba(9,132,227,.25);border-radius:12px;cursor:pointer;text-align:left;transition:border-color .18s;width:100%">
+          <span style="font-size:1.6rem;line-height:1;flex-shrink:0">☁️</span>
+          <span>
+            <strong style="display:block;color:var(--text1,#f0f0f0);font-size:.92rem;margin-bottom:.2rem">Restaurar desde la nube</strong>
+            <span style="color:var(--text3,#7a8a9a);font-size:.8rem;line-height:1.4">Inicia sesión con Google para recuperar un respaldo guardado en Firebase.</span>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         RESTORE-LOCAL OVERLAY — Selección de archivo .tcbak + confirmación
+    ═══════════════════════════════════════════════════════════════════ -->
+    <div id="wz-restore-local-overlay" class="wz-auth-overlay wz-hidden" role="dialog" aria-modal="true" aria-label="Restaurar desde respaldo local">
+      <div class="wz-auth-icon-wrap" style="font-size:1.8rem">💾</div>
+      <h3>Restaurar desde respaldo local</h3>
+      <p style="color:var(--text3);font-size:.83rem;margin-bottom:1rem">Selecciona el archivo <strong>.tcbak</strong> de Tecno Caja que deseas restaurar.</p>
+
+      <!-- Paso A: selector de archivo -->
+      <div id="wzrl-step-select">
+        <button type="button" class="btn-primary" onclick="wzRestoreLocalSelectFile()" style="width:100%;margin-bottom:.8rem">
+          📂 Seleccionar archivo .tcbak…
+        </button>
+        <input type="file" id="wzrl-file-input" accept=".tcbak,.novaseguro" style="display:none">
+        <div id="wzrl-reading-msg" style="display:none;color:var(--text3);font-size:.82rem;text-align:center;padding:.5rem 0">Leyendo archivo…</div>
+      </div>
+
+      <!-- Paso B: metadata + contraseña + confirmar -->
+      <div id="wzrl-step-confirm" style="display:none">
+        <div id="wzrl-meta-box" style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:.9rem 1rem;margin-bottom:1rem;font-size:.83rem;line-height:1.8">
+          <!-- llenado por JS -->
+        </div>
+        <div class="form-group" style="margin-bottom:.9rem">
+          <label style="font-size:.82rem;color:var(--text2)">Contraseña del respaldo (dejar vacío si es la predeterminada)</label>
+          <div style="position:relative">
+            <input type="password" id="wzrl-password" class="form-input" autocomplete="off"
+              placeholder="Contraseña personalizada (opcional)"
+              style="padding-right:2.6rem;font-size:.86rem">
+            <button type="button" tabindex="-1"
+              onclick="var i=document.getElementById('wzrl-password');i.type=i.type==='password'?'text':'password'"
+              style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:1rem">👁</button>
+          </div>
+        </div>
+        <div id="wzrl-warn-existing" class="wz-auth-warning" style="display:none;margin-bottom:.8rem">
+          ⚠️ Ya existe un negocio configurado. Esta operación <strong>sobreescribirá</strong> todos los datos actuales con los del respaldo. Se creará un pre-respaldo automático antes de continuar.
+        </div>
+        <div id="wzrl-error" class="wz-auth-error wz-hidden" style="margin-bottom:.6rem"></div>
+        <div id="wzrl-progress" style="display:none;margin-bottom:.6rem">
+          <div style="background:rgba(255,255,255,.08);border-radius:6px;overflow:hidden;height:6px;margin-bottom:.4rem">
+            <div id="wzrl-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,#6c5ce7,#00b894);transition:width .4s"></div>
+          </div>
+          <div id="wzrl-progress-msg" style="font-size:.78rem;color:var(--text3);text-align:center">Restaurando…</div>
+        </div>
+        <div style="display:flex;gap:.7rem;margin-top:.2rem">
+          <button type="button" class="btn-secondary" onclick="wzRestoreLocalBack()" style="flex:1" id="wzrl-back-btn">← Volver</button>
+          <button type="button" class="btn-primary" onclick="wzRestoreLocalConfirm()" style="flex:1.8" id="wzrl-confirm-btn">✅ Restaurar ahora</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         RESTORE-CLOUD OVERLAY — Login Google + lista de respaldos en nube
+    ═══════════════════════════════════════════════════════════════════ -->
+    <div id="wz-restore-cloud-overlay" class="wz-auth-overlay wz-hidden" role="dialog" aria-modal="true" aria-label="Restaurar desde la nube">
+      <div class="wz-auth-icon-wrap" style="font-size:1.8rem">☁️</div>
+      <h3>Restaurar desde la nube</h3>
+
+      <!-- Panel A: buscar por correo electrónico -->
+      <div id="wzrc-panel-login">
+        <p style="color:var(--text3);font-size:.83rem;margin-bottom:1.1rem;line-height:1.5">Ingresa el correo electrónico con el que registraste tu negocio para ver tus respaldos en la nube.</p>
+        <div style="margin-bottom:.8rem">
+          <label for="wzrc-email" style="display:block;font-size:.8rem;color:var(--text3);margin-bottom:.3rem">Correo electrónico</label>
+          <input type="email" id="wzrc-email" class="form-input" placeholder="correo@ejemplo.com"
+            style="width:100%;font-size:.85rem" autocomplete="email"
+            onkeydown="if(event.key==='Enter') wzRestoreCloudLogin()">
+        </div>
+        <button type="button" class="btn-primary" onclick="wzRestoreCloudLogin()" id="wzrc-login-btn" style="width:100%;margin-bottom:.6rem">
+          🔍 Buscar mis respaldos en la nube
+        </button>
+        <div id="wzrc-list-loading" style="display:none;text-align:center;color:var(--text3);font-size:.82rem;padding:.4rem 0">Buscando respaldos…</div>
+        <div id="wzrc-login-error" class="wz-auth-error wz-hidden" style="margin-top:.5rem"></div>
+        <button type="button" class="btn-ghost" onclick="wzRestoreCloudBack()" style="width:100%;margin-top:.5rem;font-size:.82rem">← Volver</button>
+      </div>
+
+      <!-- Panel B: lista de respaldos + confirmación -->
+      <div id="wzrc-panel-list" style="display:none">
+        <div id="wzrc-user-badge" style="background:rgba(255,255,255,.06);border-radius:8px;padding:.5rem .8rem;font-size:.8rem;color:var(--text2);margin-bottom:.9rem;display:flex;align-items:center;gap:.5rem">
+          <span>✓</span><span id="wzrc-user-email"></span>
+        </div>
+        <div id="wzrc-list-error" class="wz-auth-error wz-hidden" style="margin-bottom:.5rem"></div>
+        <div id="wzrc-backup-list" style="max-height:200px;overflow-y:auto;display:none;margin-bottom:.8rem"></div>
+        <div id="wzrc-confirm-box" style="display:none">
+          <div id="wzrc-meta-box" style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:.9rem 1rem;margin-bottom:.8rem;font-size:.83rem;line-height:1.8"></div>
+          <div style="margin-bottom:.7rem">
+            <label for="wzrc-login-password" style="display:block;font-size:.8rem;color:var(--text3);margin-bottom:.3rem">
+              🔑 Contraseña de tu cuenta TecnoCaja
+            </label>
+            <input type="password" id="wzrc-login-password" class="form-input"
+              placeholder="La misma contraseña que usas para entrar al sistema"
+              style="width:100%;font-size:.85rem" autocomplete="current-password">
+            <span style="font-size:.72rem;color:var(--text3);display:block;margin-top:.25rem">
+              Usa la contraseña del usuario administrador del negocio que quieres restaurar.
+            </span>
+          </div>
+          <div id="wzrc-warn-existing" class="wz-auth-warning" style="display:none;margin-bottom:.7rem">
+            ⚠️ Ya existe un negocio configurado. Esta operación <strong>sobreescribirá</strong> todos los datos actuales. Se creará un pre-respaldo automático antes de continuar.
+          </div>
+          <div id="wzrc-error" class="wz-auth-error wz-hidden" style="margin-bottom:.6rem"></div>
+          <div id="wzrc-progress" style="display:none;margin-bottom:.6rem">
+            <div style="background:rgba(255,255,255,.08);border-radius:6px;overflow:hidden;height:6px;margin-bottom:.4rem">
+              <div id="wzrc-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,#6c5ce7,#0984e3);transition:width .4s"></div>
+            </div>
+            <div id="wzrc-progress-msg" style="font-size:.78rem;color:var(--text3);text-align:center">Descargando respaldo…</div>
+          </div>
+          <div style="display:flex;gap:.7rem">
+            <button type="button" class="btn-secondary" onclick="wzRestoreCloudBack()" id="wzrc-back-btn" style="flex:1">← Volver</button>
+            <button type="button" class="btn-primary" onclick="wzRestoreCloudConfirm()" id="wzrc-confirm-btn" style="flex:1.8">☁️ Restaurar desde nube</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -1389,7 +1559,7 @@
           <div class="repv2-table-wrap">
             <table class="repv2-table">
               <thead><tr>
-                <th>Factura</th><th>Fecha</th><th>Cliente</th><th>Cajero</th><th>Método</th><th>ITBIS</th><th>Total Anulado</th>
+                <th>Factura</th><th>Fecha</th><th>Cliente</th><th>Cajero</th><th>Tipo</th><th>Motivo</th><th>Método</th><th>Total Devuelto</th>
               </tr></thead>
               <tbody id="det-dev-tbody"></tbody>
             </table>
@@ -1644,13 +1814,16 @@
     <div id="module-usuarios" class="module hidden">
       <div class="module-header">
         <h2>Usuarios y Permisos</h2>
-        <button class="btn-primary" onclick="openUserModal()">+ Nuevo Usuario</button>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <button class="btn-secondary" id="btn-sync-all-firebase" onclick="syncAllUsersFirebase()" title="Crea o actualiza la cuenta Firebase de todos los usuarios para acceso a apps móviles">🔥 Sync Firebase</button>
+          <button class="btn-primary" onclick="openUserModal()">+ Nuevo Usuario</button>
+        </div>
       </div>
       <p id="usuarios-plan-limit-note" class="helper-text hidden" style="margin:0 0 1rem"></p>
       <div class="table-wrap">
         <table class="data-table">
           <thead>
-            <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th>Último Acceso</th><th>Acciones</th></tr>
+            <tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th>Firebase</th><th>Último Acceso</th><th>Acciones</th></tr>
           </thead>
           <tbody id="usuarios-tbody"></tbody>
         </table>
@@ -2131,19 +2304,194 @@
             <div id="cfg-business-guide-lines"></div>
           </div>
         </div>
-        <div class="config-section">
-          <h3 id="cfg-section-backup-title">Respaldo</h3>
-          <div class="form-group">
-            <label id="cfg-label-backup-copy">Copia de seguridad</label>
-            <p id="cfg-backup-copy-text" style="color:var(--text2);font-size:0.82rem;line-height:1.5;margin-bottom:0.75rem">
-              Al cerrar la app se guarda automáticamente una copia segura cifrada en una carpeta protegida. También puedes exportar un respaldo manual en JSON.
-            </p>
-            <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
-              <button id="cfg-btn-export-backup" class="btn-secondary" type="button" onclick="exportBackup()">⬇ Descargar copia</button>
-              <button id="cfg-btn-restore-backup" class="btn-primary" type="button" onclick="restoreSecureBackup()">🔐 Restaurar copia segura</button>
-              <button id="cfg-btn-open-backup-folder" class="btn-secondary" type="button" onclick="openSecureBackupFolder()">📁 Abrir carpeta segura</button>
+        <!-- ══════════════════════════════════════════════════════════════
+             RESPALDO Y RESTAURACIÓN — Módulo completo local + nube
+        ══════════════════════════════════════════════════════════════ -->
+        <div class="config-section span-full" id="cfg-backup-section">
+          <h3 id="cfg-section-backup-title">Respaldo y Restauración</h3>
+
+          <!-- Barra de progreso -->
+          <div id="rb-progress-wrap" class="rb-progress-wrap hidden">
+            <div id="rb-progress-bar" class="rb-progress-bar rb-progress-info"></div>
+            <span id="rb-progress-text" class="rb-progress-text"></span>
+          </div>
+
+          <!-- ── Fila superior: estado local + estado nube ──────────────── -->
+          <div class="rb-status-grid">
+            <!-- Estado local -->
+            <div class="rb-status-card">
+              <div class="rb-status-card-head">
+                <span class="rb-status-icon">💾</span>
+                <div>
+                  <div class="rb-status-title">Respaldo Local</div>
+                  <div class="rb-status-sub">Guardado en esta computadora</div>
+                </div>
+              </div>
+              <div class="rb-status-body">
+                <div id="rb-ultimo-local" class="rb-status-value rb-empty">Sin respaldos aún</div>
+                <div class="rb-status-dir" id="rb-dir-display" style="font-size:0.65rem;color:var(--text3);margin-top:0.2rem;word-break:break-all"></div>
+              </div>
+              <div class="rb-status-actions">
+                <button class="rb-btn rb-btn-primary" onclick="RespaldosMod.crearLocal()">
+                  💾 Crear respaldo local
+                </button>
+                <button class="rb-btn" onclick="RespaldosMod.restaurarDesdeLocal()">
+                  🔄 Restaurar desde archivo
+                </button>
+                <button class="rb-btn" onclick="RespaldosMod.abrirCarpeta()">
+                  📁 Abrir carpeta
+                </button>
+              </div>
             </div>
-            <input type="file" id="backup-file-input" accept=".json,application/json" class="hidden" onchange="handleBackupFile(event)">
+
+            <!-- Estado nube -->
+            <div class="rb-status-card rb-nube-only">
+              <div class="rb-status-card-head">
+                <span class="rb-status-icon">☁️</span>
+                <div>
+                  <div class="rb-status-title">Respaldo en la Nube</div>
+                  <div class="rb-status-sub">
+                    Plan: <span id="rb-plan-badge"><span class="rb-badge badge-warning">TRIAL</span></span>
+                  </div>
+                </div>
+              </div>
+              <div class="rb-status-body">
+                <div id="rb-ultimo-nube" class="rb-status-value rb-empty">—</div>
+              </div>
+              <div class="rb-status-actions">
+                <button class="rb-btn rb-btn-cloud" onclick="RespaldosMod.subirNube()">
+                  ☁️ Subir respaldo a nube
+                </button>
+                <button class="rb-btn" onclick="RespaldosMod.cargarListaNube()">
+                  🔍 Ver respaldos en nube
+                </button>
+                <button class="rb-btn" onclick="RespaldosMod.subirPendientes()">
+                  🔄 Subir pendientes
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ── Respaldos locales ────────────────────────────────────── -->
+          <div class="rb-section">
+            <div class="rb-section-head">
+              <strong>📦 Respaldos locales recientes</strong>
+            </div>
+            <div id="rb-lista-local" class="rb-file-list">
+              <div class="rb-empty-row">Cargando…</div>
+            </div>
+          </div>
+
+          <!-- ── Respaldos en la nube ────────────────────────────────── -->
+          <div class="rb-section rb-nube-only">
+            <div class="rb-section-head">
+              <strong>☁️ Respaldos en la nube</strong>
+              <button class="rb-btn rb-btn-sm" onclick="RespaldosMod.cargarListaNube()">↻ Actualizar</button>
+            </div>
+            <div id="rb-lista-nube" class="rb-file-list">
+              <div class="rb-empty-row">—</div>
+            </div>
+          </div>
+
+          <!-- ── Subir archivo a la nube ──────────────────────────────── -->
+          <div class="rb-section rb-nube-only" id="rb-upload-section">
+            <div class="rb-section-head">
+              <strong>📤 Subir archivo a la nube</strong>
+              <span class="rb-meta" style="font-size:0.7rem;color:var(--text3)">Importa cualquier .tcbak desde tu computadora</span>
+            </div>
+            <div class="rb-upload-area"
+                 id="rb-upload-area"
+                 ondragover="RespaldosMod.uploadDragOver(event)"
+                 ondragleave="RespaldosMod.uploadDragLeave(event)"
+                 ondrop="RespaldosMod.uploadDrop(event)">
+              <div class="rb-upload-icon">☁️</div>
+              <p class="rb-upload-label">Arrastra un archivo <strong>.tcbak</strong> aquí</p>
+              <p class="rb-upload-sub">o haz clic en el botón para buscarlo</p>
+              <button class="rb-btn rb-btn-cloud rb-upload-btn"
+                      onclick="RespaldosMod.subirArchivoDesdePC()">
+                📂 Seleccionar archivo .tcbak
+              </button>
+            </div>
+            <!-- Estado de archivo seleccionado / progreso inline -->
+            <div id="rb-upload-status" class="rb-upload-status hidden"></div>
+            <input type="file" id="rb-upload-input" accept=".tcbak,.novaseguro" class="hidden">
+          </div>
+
+          <!-- ── Historial de operaciones ────────────────────────────── -->
+          <div class="rb-section">
+            <div class="rb-section-head">
+              <strong>📋 Historial de respaldos</strong>
+            </div>
+            <div class="rb-table-wrap">
+              <table class="rb-table">
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>Archivo</th>
+                    <th>Tipo</th>
+                    <th>Estado</th>
+                    <th>Tamaño</th>
+                    <th>Prod / Cli / Ven</th>
+                    <th>Creado por</th>
+                  </tr>
+                </thead>
+                <tbody id="rb-historial-body">
+                  <tr><td colspan="7" class="rb-empty-row">Sin historial.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- ── Configuración automática ────────────────────────────── -->
+          <div class="rb-section">
+            <div class="rb-section-head">
+              <strong>⚙️ Configuración de respaldo automático</strong>
+              <button class="rb-btn rb-btn-sm rb-btn-primary" onclick="RespaldosMod.guardarAutoConfig()">💾 Guardar</button>
+            </div>
+            <div class="rb-auto-config-grid">
+              <label class="rb-toggle-row">
+                <input type="checkbox" id="rb-cfg-auto-diario" checked>
+                <span>☀️ Crear respaldo local diario</span>
+              </label>
+              <label class="rb-toggle-row">
+                <input type="checkbox" id="rb-cfg-auto-semanal">
+                <span>📅 Crear respaldo semanal</span>
+              </label>
+              <label class="rb-toggle-row">
+                <input type="checkbox" id="rb-cfg-cerrar-caja" checked>
+                <span>💰 Crear respaldo al cerrar caja</span>
+              </label>
+              <label class="rb-toggle-row rb-nube-only">
+                <input type="checkbox" id="rb-cfg-nube-auto">
+                <span>☁️ Subir automáticamente a la nube</span>
+              </label>
+              <label class="rb-toggle-row">
+                <input type="checkbox" id="rb-cfg-antes-actualizar" checked>
+                <span>🔄 Respaldo antes de actualizar sistema</span>
+              </label>
+              <label class="rb-toggle-row">
+                <input type="checkbox" id="rb-cfg-antes-restaurar" checked>
+                <span>⚠️ Respaldo antes de restaurar</span>
+              </label>
+            </div>
+            <div class="rb-dir-row">
+              <label class="rb-dir-label">📁 Carpeta de respaldos personalizada (opcional)</label>
+              <div style="display:flex;gap:0.5rem">
+                <input type="text" id="rb-cfg-dir" class="form-input" placeholder="Ej: D:\Respaldos\TecnoCaja" style="flex:1">
+                <button class="rb-btn" onclick="RespaldosMod.abrirCarpeta()">Abrir</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Input file oculto para restaurar en navegador -->
+          <input type="file" id="rb-file-input" accept=".tcbak,.novaseguro,.json" class="hidden">
+
+          <!-- Botones legacy (compatibilidad) -->
+          <div style="display:none">
+            <button id="cfg-btn-export-backup"      onclick="exportBackup()"></button>
+            <button id="cfg-btn-restore-backup"     onclick="restoreSecureBackup()"></button>
+            <button id="cfg-btn-open-backup-folder" onclick="openSecureBackupFolder()"></button>
+            <input  type="file" id="backup-file-input" accept=".json,application/json" onchange="handleBackupFile(event)">
           </div>
         </div>
         <div class="config-section">
@@ -3386,6 +3734,7 @@
 <script src="js/network-manager.js"></script>
 <script src="js/delivery-panel.js"></script>
 <script src="js/file-manager.js"></script>
+<script src="js/respaldos.js"></script>
 <script src="js/app.js"></script>
 <script src="js/wizard.js"></script>
 <script src="js/actualizaciones.js"></script>

@@ -1153,11 +1153,450 @@
     setTimeout(check, 500);
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  //  WELCOME / RESTORE OVERLAY
+  //  Pantalla inicial antes del asistente: Nuevo / Local / Nube
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Estado del flujo de restauración */
+  const WZR = {
+    fileBase64:    null,   // base64 del .tcbak elegido localmente
+    fileName:      null,
+    metadata:      null,   // metadatos leídos del archivo
+    selectedBackup: null,  // respaldo elegido en la nube (objeto R2)
+    cloudEmail:    null,   // email usado para buscar respaldos en la nube
+    businessId:    null,   // businessId resuelto desde el índice R2
+  };
+
+  // ─── Helpers de visibilidad ───────────────────────────────────────────────
+  function _wzShow(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('wz-hidden');
+  }
+  function _wzHide(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('wz-hidden');
+  }
+  function _wzDisable(id, disabled) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !!disabled;
+  }
+  function _wzText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
+  function _wzHtml(id, html) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  }
+  function _wzStyle(id, prop, val) {
+    const el = document.getElementById(id);
+    if (el) el.style[prop] = val;
+  }
+
+  // ─── Mostrar/ocultar overlays ─────────────────────────────────────────────
+  function _wzShowOverlay(id) {
+    ['wz-welcome-overlay', 'wz-restore-local-overlay', 'wz-restore-cloud-overlay',
+     'wz-auth-overlay', 'wz-scenario-overlay'].forEach(oid => {
+      const el = document.getElementById(oid);
+      if (el) el.classList.add('wz-hidden');
+    });
+    if (id) _wzShow(id);
+  }
+
+  /** Elección en la pantalla de bienvenida */
+  window.wzWelcomeChoice = function wzWelcomeChoice(choice) {
+    if (choice === 'nuevo') {
+      // Cerrar el welcome overlay y dejar correr el wizard normal
+      _wzShowOverlay(null);
+    } else if (choice === 'restaurar-local') {
+      _wzShowOverlay('wz-restore-local-overlay');
+      // Volver a step-select limpio
+      _wzStyle('wzrl-step-select', 'display', '');
+      _wzStyle('wzrl-step-confirm', 'display', 'none');
+      _wzHide('wzrl-error');
+      _wzStyle('wzrl-progress', 'display', 'none');
+    } else if (choice === 'restaurar-nube') {
+      _wzShowOverlay('wz-restore-cloud-overlay');
+      _wzStyle('wzrc-panel-login', 'display', '');
+      _wzStyle('wzrc-panel-list', 'display', 'none');
+    }
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  FLUJO: RESTAURAR LOCAL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  window.wzRestoreLocalSelectFile = function wzRestoreLocalSelectFile() {
+    const input = document.getElementById('wzrl-file-input');
+    if (!input) return;
+    input.value = '';
+    input.onchange = _wzHandleFileChosen;
+    input.click();
+  };
+
+  async function _wzHandleFileChosen(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+
+    _wzStyle('wzrl-reading-msg', 'display', '');
+    _wzStyle('wzrl-step-select', 'display', 'none'); // ocultar botón mientras lee
+
+    try {
+      // Leer como base64
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = ev => {
+          const result = ev.target.result;
+          // result es "data:application/octet-stream;base64,XXXX"
+          resolve(result.split(',')[1] || result);
+        };
+        reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+        reader.readAsDataURL(file);
+      });
+
+      // Consultar metadatos al backend (sin restaurar)
+      const res  = await fetch('/api/respaldos/setup/leer-tcbak', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ base64 }),
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        _wzStyle('wzrl-reading-msg', 'display', 'none');
+        _wzStyle('wzrl-step-select', 'display', '');
+        _wzShow('wzrl-error');
+        _wzText('wzrl-error', data.error || 'Archivo inválido.');
+        return;
+      }
+
+      WZR.fileBase64 = base64;
+      WZR.fileName   = file.name;
+      WZR.metadata   = data.metadata || {};
+
+      // Mostrar metadatos
+      const m = WZR.metadata;
+      const fecha = data.createdAt ? new Date(data.createdAt).toLocaleString('es-DO') : '—';
+      _wzHtml('wzrl-meta-box',
+        `<table style="width:100%;border-collapse:collapse">` +
+        `<tr><td style="color:var(--text3);padding-right:.6rem;width:40%">Negocio</td><td><strong>${m.businessName || '—'}</strong></td></tr>` +
+        `<tr><td style="color:var(--text3)">RNC</td><td>${m.rnc || '—'}</td></tr>` +
+        `<tr><td style="color:var(--text3)">Fecha</td><td>${fecha}</td></tr>` +
+        `<tr><td style="color:var(--text3)">Versión</td><td>${m.systemVersion || '—'}</td></tr>` +
+        `<tr><td style="color:var(--text3)">Productos</td><td>${m.stats?.productos ?? '—'}</td></tr>` +
+        `<tr><td style="color:var(--text3)">Clientes</td><td>${m.stats?.clientes ?? '—'}</td></tr>` +
+        `<tr><td style="color:var(--text3)">Ventas</td><td>${m.stats?.ventas ?? '—'}</td></tr>` +
+        `</table>`
+      );
+
+      // Avisar si hay datos existentes (setup no requerido = ya hay negocio)
+      _wzStyle('wzrl-warn-existing', 'display', 'none');
+      try {
+        const st = await fetch('/api/setup/status').then(r => r.json()).catch(() => ({}));
+        if (!st.setupRequired) _wzStyle('wzrl-warn-existing', 'display', '');
+      } catch (_) {}
+
+      _wzHide('wzrl-error');
+      _wzStyle('wzrl-reading-msg', 'display', 'none');
+      _wzStyle('wzrl-step-select', 'display', '');
+      _wzStyle('wzrl-step-confirm', 'display', '');
+    } catch (err) {
+      _wzStyle('wzrl-reading-msg', 'display', 'none');
+      _wzStyle('wzrl-step-select', 'display', '');
+      _wzShow('wzrl-error');
+      _wzText('wzrl-error', err.message || 'Error al leer el archivo.');
+    }
+  }
+
+  window.wzRestoreLocalBack = function wzRestoreLocalBack() {
+    WZR.fileBase64 = null;
+    WZR.metadata   = null;
+    _wzShowOverlay('wz-welcome-overlay');
+  };
+
+  window.wzRestoreLocalConfirm = async function wzRestoreLocalConfirm() {
+    if (!WZR.fileBase64) { _wzShow('wzrl-error'); _wzText('wzrl-error', 'No hay archivo seleccionado.'); return; }
+
+    _wzDisable('wzrl-confirm-btn', true);
+    _wzDisable('wzrl-back-btn',    true);
+    _wzHide('wzrl-error');
+    _wzStyle('wzrl-progress', 'display', '');
+    _wzStyle('wzrl-progress-bar', 'width', '20%');
+    _wzText('wzrl-progress-msg', 'Enviando al servidor…');
+
+    const password = (document.getElementById('wzrl-password') || {}).value || '';
+
+    try {
+      _wzStyle('wzrl-progress-bar', 'width', '50%');
+      _wzText('wzrl-progress-msg', 'Restaurando base de datos…');
+
+      const res  = await fetch('/api/respaldos/setup/restaurar-local', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ base64: WZR.fileBase64, fileName: WZR.fileName, password }),
+      });
+      const data = await res.json();
+
+      _wzStyle('wzrl-progress-bar', 'width', '100%');
+
+      if (!data.ok) {
+        _wzText('wzrl-progress-msg', '');
+        _wzStyle('wzrl-progress', 'display', 'none');
+        _wzShow('wzrl-error');
+        _wzText('wzrl-error', data.error || 'Error al restaurar.');
+        _wzDisable('wzrl-confirm-btn', false);
+        _wzDisable('wzrl-back-btn',    false);
+        return;
+      }
+
+      _wzText('wzrl-progress-msg', '¡Listo! Reiniciando…');
+      await _wzShowSuccessAndRestart('Restauración completada. La aplicación se reiniciará.');
+    } catch (err) {
+      _wzStyle('wzrl-progress', 'display', 'none');
+      _wzShow('wzrl-error');
+      _wzText('wzrl-error', err.message || 'Error de red al restaurar.');
+      _wzDisable('wzrl-confirm-btn', false);
+      _wzDisable('wzrl-back-btn',    false);
+    }
+  };
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  FLUJO: RESTAURAR NUBE (R2 + email)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** Panel A → busca backups en R2 por email */
+  window.wzRestoreCloudLogin = async function wzRestoreCloudLogin() {
+    const email = (document.getElementById('wzrc-email') || {}).value.trim();
+    if (!email) {
+      _wzShow('wzrc-login-error');
+      _wzText('wzrc-login-error', 'Ingresa tu correo electrónico.');
+      return;
+    }
+
+    const btn = document.getElementById('wzrc-login-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando…'; }
+    _wzHide('wzrc-login-error');
+    _wzStyle('wzrc-list-loading', 'display', '');
+
+    try {
+      const res  = await fetch('/api/respaldos/setup/cloud/auth', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email }),
+      });
+      const data = await res.json();
+
+      _wzStyle('wzrc-list-loading', 'display', 'none');
+
+      if (!data.ok) {
+        _wzShow('wzrc-login-error');
+        _wzText('wzrc-login-error', data.error || 'No se encontraron respaldos para este correo.');
+        return;
+      }
+
+      WZR.cloudEmail  = email;
+      WZR.businessId  = data.businessId || '';
+
+      // Pasar al panel de lista
+      _wzStyle('wzrc-panel-login', 'display', 'none');
+      _wzStyle('wzrc-panel-list',  'display', '');
+      _wzText('wzrc-user-email', email);
+
+      // Renderizar lista de backups
+      _wzRenderBackupList(data.backups || []);
+
+    } catch (err) {
+      _wzStyle('wzrc-list-loading', 'display', 'none');
+      _wzShow('wzrc-login-error');
+      _wzText('wzrc-login-error', err.message || 'Error de red al buscar respaldos.');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar mis respaldos en la nube'; }
+    }
+  };
+
+  /** Renderiza la lista de backups R2 */
+  function _wzRenderBackupList(backups) {
+    const listEl = document.getElementById('wzrc-backup-list');
+    if (!listEl) return;
+
+    if (!backups.length) {
+      _wzShow('wzrc-list-error');
+      _wzText('wzrc-list-error', 'No se encontraron respaldos en la nube para este correo.');
+      return;
+    }
+
+    listEl.innerHTML = backups.map((b, i) => {
+      const fecha = b.lastModified ? new Date(b.lastModified).toLocaleString('es-DO') : '—';
+      const size  = b.size ? `${(b.size / 1024).toFixed(0)} KB` : '—';
+      return `<button type="button" onclick="wzRestoreCloudSelect(${i})"
+        data-backup-idx="${i}"
+        style="display:block;width:100%;text-align:left;padding:.65rem .85rem;margin-bottom:.4rem;
+               background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:8px;
+               cursor:pointer;transition:background .15s;font-size:.8rem;line-height:1.55">
+        <strong style="color:var(--text1)">${b.fileName || b.key || '—'}</strong><br>
+        <span style="color:var(--text3)">📅 ${fecha} &nbsp;·&nbsp; 📦 ${size}</span>
+      </button>`;
+    }).join('');
+
+    listEl._backups = backups;
+    _wzStyle('wzrc-backup-list', 'display', '');
+  }
+
+  window.wzRestoreCloudSelect = async function wzRestoreCloudSelect(idx) {
+    const listEl  = document.getElementById('wzrc-backup-list');
+    const backups = listEl && listEl._backups;
+    if (!backups || !backups[idx]) return;
+
+    const b = backups[idx];
+    WZR.selectedBackup = b;
+
+    // Resaltar seleccionado
+    listEl.querySelectorAll('button').forEach((btn, i) => {
+      btn.style.background  = i === idx ? 'rgba(9,132,227,.2)' : 'rgba(255,255,255,.04)';
+      btn.style.borderColor = i === idx ? 'rgba(9,132,227,.5)' : 'rgba(255,255,255,.1)';
+    });
+
+    // Mostrar caja de confirmación
+    const fecha = b.lastModified ? new Date(b.lastModified).toLocaleString('es-DO') : '—';
+    const size  = b.size ? `${(b.size / 1048576).toFixed(2)} MB` : '—';
+    _wzHtml('wzrc-meta-box',
+      `<table style="width:100%;border-collapse:collapse">` +
+      `<tr><td style="color:var(--text3);padding-right:.6rem;width:40%">Archivo</td><td><strong>${b.fileName || '—'}</strong></td></tr>` +
+      `<tr><td style="color:var(--text3)">Tamaño</td><td>${size}</td></tr>` +
+      `<tr><td style="color:var(--text3)">Fecha</td><td>${fecha}</td></tr>` +
+      `</table>`
+    );
+
+    // Avisar si hay datos existentes
+    _wzStyle('wzrc-warn-existing', 'display', 'none');
+    try {
+      const st = await fetch('/api/setup/status').then(r => r.json()).catch(() => ({}));
+      if (!st.setupRequired) _wzStyle('wzrc-warn-existing', 'display', '');
+    } catch (_) {}
+
+    _wzHide('wzrc-error');
+    _wzStyle('wzrc-confirm-box', 'display', '');
+  };
+
+  window.wzRestoreCloudBack = function wzRestoreCloudBack() {
+    WZR.selectedBackup = null;
+    WZR.cloudEmail     = null;
+    // Volver al panel de email
+    _wzStyle('wzrc-panel-list',  'display', 'none');
+    _wzStyle('wzrc-panel-login', 'display', '');
+    _wzStyle('wzrc-confirm-box', 'display', 'none');
+    _wzStyle('wzrc-backup-list', 'display', 'none');
+    _wzHide('wzrc-list-error');
+    _wzShowOverlay('wz-welcome-overlay');
+  };
+
+  window.wzRestoreCloudConfirm = async function wzRestoreCloudConfirm() {
+    if (!WZR.selectedBackup) {
+      _wzShow('wzrc-error'); _wzText('wzrc-error', 'Selecciona un respaldo primero.');
+      return;
+    }
+
+    const b             = WZR.selectedBackup;
+    const loginEmail    = (document.getElementById('wzrc-email')          || {}).value.trim();
+    const loginPassword = (document.getElementById('wzrc-login-password') || {}).value || '';
+
+    if (!loginPassword) {
+      _wzShow('wzrc-error');
+      _wzText('wzrc-error', 'Ingresa tu contraseña de TecnoCaja para confirmar tu identidad.');
+      return;
+    }
+
+    _wzDisable('wzrc-confirm-btn', true);
+    _wzDisable('wzrc-back-btn',    true);
+    _wzHide('wzrc-error');
+    _wzStyle('wzrc-progress', 'display', '');
+    _wzStyle('wzrc-progress-bar', 'width', '20%');
+    _wzText('wzrc-progress-msg', 'Descargando respaldo desde la nube…');
+
+    try {
+      _wzStyle('wzrc-progress-bar', 'width', '55%');
+      _wzText('wzrc-progress-msg', 'Verificando identidad y restaurando datos…');
+
+      const res = await fetch('/api/respaldos/setup/restaurar-nube', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          storageKey:    b.storageKey || b.key,
+          loginEmail,
+          loginPassword,
+        }),
+      });
+      const data = await res.json();
+
+      _wzStyle('wzrc-progress-bar', 'width', '100%');
+
+      if (!data.ok) {
+        _wzStyle('wzrc-progress', 'display', 'none');
+        _wzShow('wzrc-error');
+        _wzText('wzrc-error', data.error || 'Error al restaurar desde la nube.');
+        _wzDisable('wzrc-confirm-btn', false);
+        _wzDisable('wzrc-back-btn',    false);
+        return;
+      }
+
+      _wzText('wzrc-progress-msg', '¡Listo! Reiniciando…');
+      await _wzShowSuccessAndRestart('Restauración desde la nube completada. La aplicación se reiniciará.');
+    } catch (err) {
+      _wzStyle('wzrc-progress', 'display', 'none');
+      _wzShow('wzrc-error');
+      _wzText('wzrc-error', err.message || 'Error de red al restaurar.');
+      _wzDisable('wzrc-confirm-btn', false);
+      _wzDisable('wzrc-back-btn',    false);
+    }
+  };
+
+  // ─── Éxito y reinicio ─────────────────────────────────────────────────────
+  async function _wzShowSuccessAndRestart(msg) {
+    // Notificar al usuario con un toast o alert simple
+    if (window.showToast) {
+      window.showToast(msg, 'success');
+    }
+    await new Promise(r => setTimeout(r, 1800));
+    // Solicitar reinicio al proceso Electron (si está disponible)
+    if (window.novaDesktop && window.novaDesktop.restartApp) {
+      window.novaDesktop.restartApp();
+    } else {
+      window.location.reload();
+    }
+  }
+
+  // ─── Inicializar el welcome overlay ──────────────────────────────────────
+  function initWelcomeOverlay() {
+    const check = () => {
+      // setupState es null hasta que app.js lo llene con getSetupStatus()
+      if (typeof setupState === 'undefined' || setupState === null) {
+        setTimeout(check, 200);
+        return;
+      }
+      // Si es modo enlace (terminal secundaria), no mostrar el welcome overlay
+      if (setupState.linkingMode) return;
+
+      // Solo mostrar si el setup es requerido
+      if (setupState.setupRequired) {
+        const el = document.getElementById('wz-welcome-overlay');
+        if (el) el.classList.remove('wz-hidden');
+      }
+    };
+    setTimeout(check, 350);
+  }
+
+  // Exponer para uso externo si es necesario
+  window.wzShowWelcomeOverlay = function() {
+    _wzShowOverlay('wz-welcome-overlay');
+  };
+
   // ─── Init ────────────────────────────────────────────────────────────────
   injectStyles();
   bindBizTypeCards();
   detectLinkingMode();
   ensureSucursalOption();
   bindStructureCardReset();
+  initWelcomeOverlay();
 
 })();

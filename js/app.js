@@ -2356,7 +2356,7 @@ function showLoginScreen() {
   applyRememberedLoginUser();
   setLoginMode(setupState?.setupRequired ? 'new' : 'existing');
   if (!setupState?.setupRequired) {
-    setTimeout(() => document.getElementById(getLastLoginUser() ? 'login-pass' : 'login-user')?.focus(), 0);
+    loadLoginUsers();
   }
 }
 
@@ -2644,7 +2644,12 @@ function setLoginMode(mode = 'existing') {
         : copy.loginHint;
   }
   if (loginMode === 'existing') {
-    setTimeout(() => document.getElementById(getLastLoginUser() ? 'login-pass' : 'login-user')?.focus(), 0);
+    // El picker de usuario maneja el foco — no usar el fallback de texto aquí
+    // loadLoginUsers se llama desde showLoginScreen; aquí solo recargamos si el grid está vacío
+    const grid = document.getElementById('login-user-grid');
+    if (grid && !grid.querySelector('.login-user-card')) {
+      loadLoginUsers();
+    }
   }
 }
 
@@ -2929,6 +2934,12 @@ function handleEnterActions(event) {
     doLogin();
     return;
   }
+  // Enter sobre una tarjeta de usuario en el picker — seleccionarla
+  if (loginVisible && target?.classList.contains('login-user-card')) {
+    event.preventDefault();
+    target.click();
+    return;
+  }
 
   if (!document.getElementById('app')?.classList.contains('hidden') && target?.id === 'monto-recibido') {
     event.preventDefault();
@@ -2982,17 +2993,156 @@ function setLastLoginUser(usuario) {
 }
 
 function applyRememberedLoginUser() {
-  const userInput = document.getElementById('login-user');
+  // Con el nuevo selector visual, el remembered user se aplica en loadLoginUsers()
+  // Solo limpiamos la contraseña como seguridad
   const passInput = document.getElementById('login-pass');
-  if (!userInput) return;
-  const rememberedUser = getLastLoginUser();
-  if (rememberedUser) {
-    userInput.value = rememberedUser;
-  }
-  if (passInput) {
-    passInput.value = '';
+  if (passInput) passInput.value = '';
+}
+
+// ─── Login User Picker ────────────────────────────────────────────────────────
+
+async function loadLoginUsers() {
+  const grid = document.getElementById('login-user-grid');
+  if (!grid) return;
+  grid.innerHTML = '<div class="login-user-grid-loading">Cargando usuarios…</div>';
+  try {
+    const data = await api.request('/api/public/users-list');
+    const users = Array.isArray(data?.users) ? data.users : [];
+    if (!users.length) {
+      _showLoginTextFallback();
+      return;
+    }
+    _renderLoginUserGrid(users);
+    // Auto-seleccionar el usuario recordado si existe en la lista
+    const remembered = getLastLoginUser();
+    if (remembered) {
+      const match = users.find(u => u.usuario === remembered);
+      if (match) {
+        selectLoginUser(match.id, match.nombre, match.usuario, match.rol);
+        return;
+      }
+    }
+    // Auto-seleccionar si hay un solo usuario
+    if (users.length === 1) {
+      selectLoginUser(users[0].id, users[0].nombre, users[0].usuario, users[0].rol);
+    }
+  } catch (e) {
+    _showLoginTextFallback();
   }
 }
+
+function _renderLoginUserGrid(users) {
+  const grid = document.getElementById('login-user-grid');
+  if (!grid) return;
+  grid.innerHTML = users.map(u => {
+    const initials = _getAvatarInitials(u.nombre);
+    const color = _getAvatarColor(u.nombre);
+    const safeName = String(u.nombre || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    const safeUsuario = String(u.usuario || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    const safeRol = String(u.rol || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    const avatarInner = initials;
+    return `<button type="button" class="login-user-card" data-usuario="${safeUsuario}"
+        onclick="selectLoginUser(${Number(u.id)}, '${safeName}', '${safeUsuario}', '${safeRol}')">
+      <div class="login-user-avatar" style="background:${color}">${avatarInner}</div>
+      <span class="login-user-name" title="${safeName}">${safeName}</span>
+      <span class="login-user-role-badge">${_formatRolDisplay(u.rol)}</span>
+    </button>`;
+  }).join('');
+}
+
+function selectLoginUser(id, nombre, usuario, rol) {
+  const userInput = document.getElementById('login-user');
+  const pickerSection = document.getElementById('login-user-picker-section');
+  const passSection = document.getElementById('login-pass-section');
+  if (userInput) userInput.value = usuario;
+  // Actualizar barra de usuario seleccionado
+  const nombreEl = document.getElementById('login-selected-nombre');
+  const rolEl = document.getElementById('login-selected-rol');
+  const avatarEl = document.getElementById('login-selected-avatar');
+  if (nombreEl) nombreEl.textContent = nombre;
+  if (rolEl) rolEl.textContent = _formatRolDisplay(rol);
+  if (avatarEl) {
+    avatarEl.style.background = _getAvatarColor(nombre);
+    avatarEl.textContent = _getAvatarInitials(nombre);
+  }
+  // Mostrar/ocultar secciones
+  pickerSection?.classList.add('hidden');
+  passSection?.classList.remove('hidden');
+  // Marcar tarjeta seleccionada
+  document.querySelectorAll('.login-user-card').forEach(c =>
+    c.classList.toggle('selected', c.dataset.usuario === usuario));
+  // Enfocar contraseña
+  setTimeout(() => document.getElementById('login-pass')?.focus(), 50);
+}
+
+function deselectLoginUser() {
+  const userInput = document.getElementById('login-user');
+  const pickerSection = document.getElementById('login-user-picker-section');
+  const passSection = document.getElementById('login-pass-section');
+  if (userInput) userInput.value = '';
+  const passInput = document.getElementById('login-pass');
+  if (passInput) passInput.value = '';
+  pickerSection?.classList.remove('hidden');
+  passSection?.classList.add('hidden');
+  document.querySelectorAll('.login-user-card').forEach(c => c.classList.remove('selected'));
+}
+
+function _showLoginTextFallback() {
+  const pickerSection = document.getElementById('login-user-picker-section');
+  if (!pickerSection) return;
+  pickerSection.innerHTML = `
+    <div class="form-group">
+      <label id="login-user-label">Usuario</label>
+      <input type="text" id="login-user" placeholder="admin" autocomplete="username">
+    </div>`;
+  // Mostrar también la sección de contraseña
+  const passSection = document.getElementById('login-pass-section');
+  if (passSection) {
+    passSection.classList.remove('hidden');
+    // Ocultar la barra de usuario seleccionado ya que no hay selector
+    passSection.querySelector('.login-selected-user-bar')?.classList.add('hidden');
+  }
+  const remembered = getLastLoginUser();
+  const userInput = document.getElementById('login-user');
+  if (remembered && userInput) userInput.value = remembered;
+  setTimeout(() => {
+    const target = remembered ? 'login-pass' : 'login-user';
+    document.getElementById(target)?.focus();
+  }, 50);
+}
+
+function _getAvatarInitials(nombre) {
+  const parts = String(nombre || '?').trim().split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return String(nombre || '?').slice(0, 2).toUpperCase();
+}
+
+function _getAvatarColor(nombre) {
+  const colors = ['#6366f1','#8b5cf6','#06b6d4','#10b981','#f59e0b','#ef4444','#ec4899','#3b82f6'];
+  let h = 0;
+  const s = String(nombre || '');
+  for (let i = 0; i < s.length; i++) h = ((h * 31) + s.charCodeAt(i)) & 0xffff;
+  return colors[h % colors.length];
+}
+
+function _formatRolDisplay(rol) {
+  const m = {
+    'administrador_general': 'Administrador',
+    'administrador general': 'Administrador',
+    'administrador': 'Administrador',
+    'admin_general': 'Administrador',
+    'admin general': 'Administrador',
+    'administrador_sucursal': 'Admin Suc.',
+    'administrador sucursal': 'Admin Suc.',
+    'supervisor': 'Supervisor',
+    'cajero': 'Cajero',
+    'delivery': 'Delivery',
+  };
+  const key = String(rol || '').toLowerCase().trim();
+  return m[key] || String(rol || '').replace(/_/g, ' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 function setLoginLoadingState(active, options = {}) {
   const card = document.querySelector('.login-card');
@@ -3077,6 +3227,14 @@ async function doLogin() {
     return;
   }
   const user = document.getElementById('login-user').value.trim();
+  // Validar que se haya seleccionado un usuario del picker (o escrito en el fallback)
+  if (!user) {
+    showToast('Selecciona un usuario para continuar.', 'warning');
+    // Si el picker está oculto y la sección de pass tampoco, algo falló — recargar
+    const passSection = document.getElementById('login-pass-section');
+    if (passSection?.classList.contains('hidden')) loadLoginUsers();
+    return;
+  }
   const pass = document.getElementById('login-pass').value;
   const sessionLanguage = document.getElementById('login-language-select')?.value || setupWizard.language || DB.config?.idioma || 'es';
   try {
@@ -3367,6 +3525,7 @@ function showModule(name, el) {
   if (name === 'delivery') { if (typeof initDeliveryPanel === 'function') initDeliveryPanel(); }
   if (name !== 'delivery') { if (typeof stopDeliveryPanel === 'function') stopDeliveryPanel(); }
   if (name === 'archivos') { if (typeof FileManager !== 'undefined') FileManager.init(); }
+  if (name === 'configuracion') { if (typeof RespaldosMod !== 'undefined') RespaldosMod.init(); }
   if (name === 'configuracion') {
     if (typeof loadNcfSequences === 'function') loadNcfSequences();
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();

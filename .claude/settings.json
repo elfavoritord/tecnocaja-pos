@@ -59,7 +59,15 @@
       "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, rol, estado FROM users ORDER BY id DESC LIMIT 10; SELECT id, user_id, is_active, session_type FROM sesiones_activas WHERE is_active=1;\" 2>&1)",
       "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, estado FROM branches; SELECT id, nombre, branch_id, estado FROM cash_registers;\" 2>&1)",
       "PowerShell(& \"C:\\\\Users\\\\Emilio Coding IA\\\\AppData\\\\Local\\\\Programs\\\\NovaPOS\\\\resources\\\\mariadb-runtime\\\\bin\\\\mysql.exe\" -u root -h 127.0.0.1 -P 3306 novapos -e \"SELECT id, nombre, usuario, rol, estado FROM users ORDER BY id; SELECT id, user_id, is_active, session_type, created_at FROM sesiones_activas ORDER BY id;\" 2>&1)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(node --check js/app.js)",
+      "Bash(git commit -m 'feat: sistema completo de devoluciones v1.1.8 *)",
+      "Bash(git commit -m 'fix: permisos admin, cajaMonto en devolucion, totalEsperado cierre v1.1.9 *)",
+      "PowerShell(\\(Get-Content \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\css\\\\main.css\"\\).Count)",
+      "Bash(node --check js/wizard.js)",
+      "Bash(node --check modules/firebase-admin.js)",
+      "Bash(node -e \"require\\('@aws-sdk/client-s3'\\); console.log\\('R2 SDK OK'\\)\")",
+      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const r2 = require\\('./server/services/r2-storage'\\); console.log\\('KeyID:', process.env.R2_ACCESS_KEY_ID\\); r2.isR2Available\\(true\\).then\\(function\\(\\){ console.log\\('OK'\\); }\\).catch\\(function\\(e\\){ console.error\\('ERR:', e.message, JSON.stringify\\(e.Code\\), e.httpStatusCode\\); }\\);\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",

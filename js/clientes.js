@@ -1545,6 +1545,10 @@ function loadUsuariosTable() {
   const scopedUsers = getScopedUsersForUserManagement();
   tbody.innerHTML = scopedUsers.map((user) => {
     const isActive = String(user?.estado || '').trim().toLowerCase() === 'activo';
+    const hasFbUid  = Boolean(user?.firebase_uid || user?.firebaseUid);
+    const fbBadge   = hasFbUid
+      ? `<span title="${escapeUserFieldHtml(user.firebase_uid || user.firebaseUid || '')}" style="color:var(--success,#16a34a);font-size:1rem;cursor:default">🔥</span>`
+      : `<span title="${userText('Sin cuenta Firebase — haz clic en Sync Firebase')}" style="color:var(--text3,#9ca3af);font-size:1rem;cursor:default">○</span>`;
     return `
       <tr>
         <td style="font-family:var(--font-mono);font-weight:700">${escapeUserFieldHtml(user.usuario)}</td>
@@ -1555,6 +1559,7 @@ function loadUsuariosTable() {
         </td>
         <td>${getRolBadge(user)}</td>
         <td><span class="badge ${isActive ? 'badge-success' : 'badge-warning'}">${userText(user.estado)}</span></td>
+        <td style="text-align:center">${fbBadge}</td>
         <td style="color:var(--text2);font-size:0.82rem">${escapeUserFieldHtml(user.lastLogin || '—')}</td>
         <td>
           ${canManage ? `<button class="btn-edit" style="margin-right:4px" onclick="openEditUserModal(${user.id})">✏ ${userText('Editar')}</button>` : `<span class="user-readonly-pill">${userText('Solo lectura')}</span>`}
@@ -1564,6 +1569,38 @@ function loadUsuariosTable() {
   }).join('');
 
   if (typeof translateDynamicUi === 'function') translateDynamicUi(document.getElementById('module-usuarios'));
+}
+
+/**
+ * Sincronización masiva: crea/actualiza la cuenta Firebase Auth de TODOS los
+ * usuarios del sistema.  Llama a POST /api/firebase-sync/auth-all.
+ */
+async function syncAllUsersFirebase() {
+  const btn = document.getElementById('btn-sync-all-firebase');
+  const origText = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = `⏳ ${userText('Sincronizando...')}`; }
+  try {
+    const result = await api.request('/api/firebase-sync/auth-all', {
+      method: 'POST',
+      body: JSON.stringify({}),
+      _timeoutMs: 60000,          // puede tardar si hay muchos usuarios
+    });
+    const msg = userText(
+      `Firebase: ${result.synced || 0} sincronizados` +
+      (result.skipped ? `, ${result.skipped} omitidos` : '') +
+      (result.failed  ? `, ${result.failed} fallidos`  : '')
+    );
+    showToast(`✅ ${msg}`, result.failed ? 'warning' : 'success');
+    // Recargar datos para que los indicadores 🔥 se actualicen
+    if (typeof reloadBootstrapData === 'function') {
+      await reloadBootstrapData().catch(() => {});
+    }
+    loadUsuariosTable();
+  } catch (err) {
+    showToast(err.message || userText('Error al sincronizar con Firebase.'), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origText; }
+  }
 }
 
 function buildUserModeMessage(roleCode, mode, branchName, cashName) {
