@@ -1,14 +1,14 @@
 {
-  "terminalId": "c998492d13a6a846",
+  "terminalId": "074f94e15c57a0e2",
   "terminalName": "Terminal Principal",
-  "branchId": 8,
+  "branchId": 13,
   "branchName": "Sucursal Principal",
-  "cashRegisterId": 8,
+  "cashRegisterId": 13,
   "cashRegisterName": "Caja Principal",
   "setupMode": "monocaja",
   "language": "es",
-  "linkedAt": "2026-05-24T13:11:43.864Z",
+  "linkedAt": "2026-05-24T21:00:40.837Z",
   "linkedBy": "admin",
   "isMain": true,
-  "savedAt": "2026-05-24T13:11:43.865Z"
+  "savedAt": "2026-05-24T21:00:40.837Z"
 }

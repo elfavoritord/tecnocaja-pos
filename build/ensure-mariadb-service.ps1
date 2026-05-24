@@ -11,7 +11,11 @@ $fallbackServiceNames = @('MariaDB')
 $displayName = 'Tecno Caja MariaDB'
 $port = 3306
 $hostName = '127.0.0.1'
-$programDataRoot = Join-Path $env:ProgramData 'TecnoCaja\MariaDB'
+
+# IMPORTANTE: runtime-bootstrap.js y ensure-local-mysql.js usan 'Tecno Caja' CON espacio.
+# Este script usa el mismo path para evitar que se creen dos carpetas distintas.
+# La variante legacy sin espacio ('TecnoCaja\MariaDB') se limpia en el uninstall.
+$programDataRoot = Join-Path $env:ProgramData 'Tecno Caja\MariaDB'
 $dataDir = Join-Path $programDataRoot 'data'
 $logsDir = Join-Path $programDataRoot 'logs'
 $configFile = Join-Path $programDataRoot 'my.ini'
@@ -319,7 +323,32 @@ function Ensure-ManagedMariaDb {
 
 try {
   if ($Uninstall) {
+    # Detener y eliminar el servicio MariaDB gestionado
     Stop-AndDeleteService -Name $managedServiceName
+
+    # Intentar también con el nombre legacy por si existe de versión anterior
+    Stop-AndDeleteService -Name 'MariaDB'
+    Stop-AndDeleteService -Name 'TecnoCajaMariaDB'
+
+    # Limpiar carpeta de datos MariaDB (ambas variantes de nombre)
+    # El installer.nsh borra las carpetas AppData/ProgramData, pero por si
+    # el script se ejecuta independientemente, también lo hacemos aquí.
+    foreach ($legacyRoot in @(
+      (Join-Path $env:ProgramData 'Tecno Caja\MariaDB'),   # con espacio (actual)
+      (Join-Path $env:ProgramData 'TecnoCaja\MariaDB')     # sin espacio (legacy)
+    )) {
+      if (Test-Path -LiteralPath $legacyRoot -ErrorAction SilentlyContinue) {
+        Write-Log "Eliminando datos MariaDB en: $legacyRoot"
+        try {
+          Remove-Item -Recurse -Force -LiteralPath $legacyRoot -ErrorAction SilentlyContinue
+          Write-Log "Eliminado: $legacyRoot"
+        } catch {
+          Write-Log "No se pudo eliminar $legacyRoot: $($_.Exception.Message)"
+        }
+      }
+    }
+
+    Write-Log 'Desinstalación MariaDB completada.'
     exit 0
   }
   $result = Ensure-ManagedMariaDb

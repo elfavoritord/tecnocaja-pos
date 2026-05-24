@@ -1278,16 +1278,28 @@
       // Mostrar metadatos
       const m = WZR.metadata;
       const fecha = data.createdAt ? new Date(data.createdAt).toLocaleString('es-DO') : '—';
+      const usuariosCount = m.stats?.usuarios ?? null;
+      const noUsers = usuariosCount !== null && usuariosCount === 0;
       _wzHtml('wzrl-meta-box',
         `<table style="width:100%;border-collapse:collapse">` +
         `<tr><td style="color:var(--text3);padding-right:.6rem;width:40%">Negocio</td><td><strong>${m.businessName || '—'}</strong></td></tr>` +
         `<tr><td style="color:var(--text3)">RNC</td><td>${m.rnc || '—'}</td></tr>` +
         `<tr><td style="color:var(--text3)">Fecha</td><td>${fecha}</td></tr>` +
         `<tr><td style="color:var(--text3)">Versión</td><td>${m.systemVersion || '—'}</td></tr>` +
+        `<tr><td style="color:var(--text3)">Usuarios</td><td>${usuariosCount !== null
+          ? (noUsers
+              ? '<span style="color:#f87171;font-weight:600">⚠ Sin usuarios</span>'
+              : `<span style="color:#4ade80">${usuariosCount}</span>`)
+          : '—'}</td></tr>` +
         `<tr><td style="color:var(--text3)">Productos</td><td>${m.stats?.productos ?? '—'}</td></tr>` +
         `<tr><td style="color:var(--text3)">Clientes</td><td>${m.stats?.clientes ?? '—'}</td></tr>` +
         `<tr><td style="color:var(--text3)">Ventas</td><td>${m.stats?.ventas ?? '—'}</td></tr>` +
-        `</table>`
+        `</table>` +
+        (noUsers
+          ? `<p style="color:#f87171;font-size:.82rem;margin:.8rem 0 0;padding:.6rem .8rem;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;line-height:1.5">
+               ⚠ Este respaldo no tiene usuarios registrados. Si lo restauras, la app iniciará en modo de configuración inicial y deberás configurar todo desde cero.
+             </p>`
+          : '')
       );
 
       // Avisar si hay datos existentes (setup no requerido = ya hay negocio)
@@ -1341,6 +1353,14 @@
       _wzStyle('wzrl-progress-bar', 'width', '100%');
 
       if (!data.ok) {
+        // Caso especial: el backup se procesó pero no tenía usuarios.
+        // El backend puso setup_completed=0 → reiniciar lleva al wizard de primer inicio.
+        if (data.setupReset && data.reiniciarRequerido) {
+          _wzText('wzrl-progress-msg', data.error || 'Sin usuarios. Iniciando configuración inicial…');
+          await new Promise(r => setTimeout(r, 2200));
+          await _wzShowSuccessAndRestart('El respaldo fue procesado. Iniciando configuración inicial…');
+          return;
+        }
         _wzText('wzrl-progress-msg', '');
         _wzStyle('wzrl-progress', 'display', 'none');
         _wzShow('wzrl-error');
@@ -1350,7 +1370,7 @@
         return;
       }
 
-      _wzText('wzrl-progress-msg', '¡Listo! Reiniciando…');
+      _wzText('wzrl-progress-msg', `¡Listo! ${data.usersRestored ? `${data.usersRestored} usuario(s) restaurado(s). ` : ''}Reiniciando…`);
       await _wzShowSuccessAndRestart('Restauración completada. La aplicación se reiniciará.');
     } catch (err) {
       _wzStyle('wzrl-progress', 'display', 'none');
@@ -1532,6 +1552,13 @@
       _wzStyle('wzrc-progress-bar', 'width', '100%');
 
       if (!data.ok) {
+        // Caso especial: backup sin usuarios → reiniciar al wizard de primer inicio
+        if (data.setupReset && data.reiniciarRequerido) {
+          _wzText('wzrc-progress-msg', data.error || 'Sin usuarios. Iniciando configuración inicial…');
+          await new Promise(r => setTimeout(r, 2200));
+          await _wzShowSuccessAndRestart('Iniciando configuración inicial…');
+          return;
+        }
         _wzStyle('wzrc-progress', 'display', 'none');
         _wzShow('wzrc-error');
         _wzText('wzrc-error', data.error || 'Error al restaurar desde la nube.');
@@ -1566,6 +1593,141 @@
     }
   }
 
+  // ─── Overlay de error: sistema configurado pero sin usuarios ─────────────
+  function _wzShowCorruptedAlert() {
+    // Evitar crear el overlay si ya existe
+    if (document.getElementById('wz-corrupted-overlay')) return;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'wz-corrupted-overlay';
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:9999',
+      'background:rgba(0,0,0,0.85)',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'font-family:inherit'
+    ].join(';');
+
+    overlay.innerHTML = `
+      <div style="background:var(--bg2,#1e2128);border-radius:16px;padding:2rem 2.2rem;max-width:460px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.5);text-align:center">
+        <div style="font-size:2.4rem;margin-bottom:.8rem">⚠️</div>
+        <h3 style="color:var(--text1,#f0f0f0);margin:0 0 .6rem;font-size:1.1rem">Sistema configurado — datos incompletos</h3>
+        <p style="color:var(--text3,#7a8a9a);font-size:.85rem;line-height:1.6;margin-bottom:1.4rem">
+          Se detectó una configuración existente (<code style="background:rgba(255,255,255,.07);padding:0 4px;border-radius:3px">setup_completed = 1</code>)
+          pero no se encontraron usuarios en la base de datos.<br><br>
+          Esto puede ocurrir si la restauración del respaldo fue incompleta o después de un reset.
+        </p>
+        <div style="display:grid;gap:.6rem" id="wz-corrupted-btns">
+          <button type="button"
+            onclick="location.reload()"
+            style="padding:.75rem;background:rgba(108,92,231,.15);border:1.5px solid rgba(108,92,231,.4);border-radius:9px;color:var(--text1,#f0f0f0);cursor:pointer;font-size:.88rem">
+            🔄 Reintentar
+          </button>
+          <button type="button"
+            onclick="document.getElementById('wz-corrupted-overlay').remove(); window.wzShowWelcomeOverlay && window.wzShowWelcomeOverlay();"
+            style="padding:.75rem;background:rgba(0,184,148,.1);border:1.5px solid rgba(0,184,148,.3);border-radius:9px;color:var(--text1,#f0f0f0);cursor:pointer;font-size:.88rem">
+            🔧 Restaurar un respaldo
+          </button>
+          <button type="button"
+            onclick="_wzCorruptedStartFresh()"
+            style="padding:.75rem;background:rgba(239,68,68,.12);border:1.5px solid rgba(239,68,68,.35);border-radius:9px;color:#f87171;cursor:pointer;font-size:.88rem">
+            🚀 Empezar desde cero
+          </button>
+          <button type="button"
+            onclick="if(window.novaDesktop&&window.novaDesktop.restartApp) window.novaDesktop.restartApp(); else location.reload();"
+            style="padding:.75rem;background:rgba(255,255,255,.05);border:1.5px solid rgba(255,255,255,.1);border-radius:9px;color:var(--text3,#7a8a9a);cursor:pointer;font-size:.82rem">
+            ↩ Reiniciar aplicación
+          </button>
+        </div>
+
+        <!-- Panel inline de "Empezar desde cero" — oculto por defecto -->
+        <div id="wz-corrupted-fresh-panel" style="display:none;margin-top:1.2rem;text-align:left">
+          <hr style="border:none;border-top:1px solid rgba(255,255,255,.08);margin-bottom:1rem">
+          <p style="color:#f87171;font-size:.82rem;line-height:1.5;margin-bottom:.85rem">
+            ⚠ Esto borrará <strong>todos los datos locales</strong> y mostrará el asistente de configuración inicial. No se puede deshacer.
+          </p>
+          <div style="display:grid;gap:.55rem">
+            <input type="text" id="wz-fresh-confirm-text" class="form-input" placeholder="Escribe ELIMINAR TODO"
+              style="background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.12);border-radius:8px;padding:.65rem .75rem;color:var(--text1,#f0f0f0);font-size:.9rem;outline:none">
+            <div style="position:relative">
+              <input type="password" id="wz-fresh-confirm-pwd" class="form-input" placeholder="Clave de seguridad"
+                style="background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.12);border-radius:8px;padding:.65rem .75rem;color:var(--text1,#f0f0f0);font-size:.9rem;outline:none;width:100%;box-sizing:border-box;padding-right:2.8rem">
+              <button type="button"
+                onclick="const p=document.getElementById('wz-fresh-confirm-pwd');p.type=p.type==='password'?'text':'password';"
+                style="position:absolute;right:.6rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1rem;color:var(--text3,#7a8a9a)">👁</button>
+            </div>
+            <div id="wz-fresh-status" style="color:#f87171;font-size:.82rem;min-height:1.2em"></div>
+            <div style="display:flex;gap:.5rem;margin-top:.2rem">
+              <button type="button"
+                onclick="document.getElementById('wz-corrupted-fresh-panel').style.display='none';document.getElementById('wz-corrupted-btns').style.display='grid';"
+                style="flex:1;padding:.65rem;background:rgba(255,255,255,.06);border:1.5px solid rgba(255,255,255,.1);border-radius:8px;color:var(--text3,#7a8a9a);cursor:pointer;font-size:.85rem">
+                Cancelar
+              </button>
+              <button type="button"
+                onclick="_wzCorruptedDoReset()"
+                style="flex:2;padding:.65rem;background:rgba(239,68,68,.2);border:1.5px solid rgba(239,68,68,.5);border-radius:8px;color:#f87171;cursor:pointer;font-size:.85rem;font-weight:600">
+                Borrar todo y empezar de cero
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    document.body.appendChild(overlay);
+  }
+
+  // Muestra el panel inline de "empezar desde cero" dentro del overlay corrupto
+  window._wzCorruptedStartFresh = function() {
+    const btns = document.getElementById('wz-corrupted-btns');
+    const panel = document.getElementById('wz-corrupted-fresh-panel');
+    if (btns) btns.style.display = 'none';
+    if (panel) panel.style.display = 'block';
+    setTimeout(() => document.getElementById('wz-fresh-confirm-text')?.focus(), 0);
+  };
+
+  // Ejecuta el factory reset desde el overlay corrupto
+  window._wzCorruptedDoReset = async function() {
+    const confirmText = (document.getElementById('wz-fresh-confirm-text')?.value || '').trim().toUpperCase();
+    const password = (document.getElementById('wz-fresh-confirm-pwd')?.value || '').trim();
+    const statusEl = document.getElementById('wz-fresh-status');
+
+    if (confirmText !== 'ELIMINAR TODO') {
+      if (statusEl) statusEl.textContent = 'Escribe exactamente ELIMINAR TODO para confirmar.';
+      return;
+    }
+    if (!password) {
+      if (statusEl) statusEl.textContent = 'Ingresa la clave de seguridad.';
+      return;
+    }
+
+    if (statusEl) statusEl.textContent = 'Borrando datos y preparando instalación limpia...';
+
+    try {
+      const res = await fetch('/api/system/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          confirmation: 'ELIMINAR TODO',
+          password,
+          purgeFirebase: false,
+          cloudConfirmation: '',
+          factoryReset: true,
+          actorUserId: null,
+          actorUserName: 'Corrupted State Recovery',
+          actorUserRole: 'Sistema'
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (statusEl) statusEl.textContent = data?.error || 'Error al ejecutar el reset.';
+        return;
+      }
+      if (statusEl) statusEl.textContent = '✅ Listo. Reiniciando...';
+      setTimeout(() => location.reload(), 1500);
+    } catch (err) {
+      if (statusEl) statusEl.textContent = 'Error de red: ' + (err.message || 'desconocido');
+    }
+  };
+
   // ─── Inicializar el welcome overlay ──────────────────────────────────────
   function initWelcomeOverlay() {
     const check = () => {
@@ -1577,7 +1739,16 @@
       // Si es modo enlace (terminal secundaria), no mostrar el welcome overlay
       if (setupState.linkingMode) return;
 
-      // Solo mostrar si el setup es requerido
+      if (setupState.setupCorrupted) {
+        // setup_completed = 1 pero sin usuarios — NO mostrar el asistente de primer inicio.
+        // Mostrar en su lugar un aviso de error con opciones de reparación.
+        // El asistente de primer inicio borraría la configuración restaurada.
+        console.warn('[wizard] setupCorrupted detectado — mostrando alerta de reparación en lugar del welcome overlay.');
+        _wzShowCorruptedAlert();
+        return;
+      }
+
+      // Solo mostrar el asistente de primer inicio si setup es genuinamente requerido
       if (setupState.setupRequired) {
         const el = document.getElementById('wz-welcome-overlay');
         if (el) el.classList.remove('wz-hidden');

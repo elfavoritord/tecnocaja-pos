@@ -92,7 +92,8 @@
       "Bash(node -e \"console.log\\(require\\('./package.json'\\).version\\)\")",
       "Bash(node --check electron/main.js)",
       "Bash(node -e \"require\\('@aws-sdk/client-s3'\\);console.log\\('OK'\\)\")",
-      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const r2 = require\\('./server/services/r2-storage'\\); r2.isR2Available\\(true\\).then\\(function\\(\\){ console.log\\('OK: B2 conectado correctamente'\\); }\\).catch\\(function\\(e\\){ console.error\\('ERR:', e.message\\); }\\);\")"
+      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const r2 = require\\('./server/services/r2-storage'\\); r2.isR2Available\\(true\\).then\\(function\\(\\){ console.log\\('OK: B2 conectado correctamente'\\); }\\).catch\\(function\\(e\\){ console.error\\('ERR:', e.message\\); }\\);\")",
+      "Bash(grep -n \"return res.status\\(201\\).json\\({ sessionId: result, config:\" server.js)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

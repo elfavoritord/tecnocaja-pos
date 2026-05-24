@@ -6539,7 +6539,15 @@ async function finalizePendingSale(action = 'charge') {
       await sendReceiptToWhatsApp(savedVenta);
     }
   } catch (error) {
-    showToast(error.message, 'error');
+    if (error?.code === 'NO_ACTIVE_SESSION' || error?.statusCode === 409 || /no hay.*caja.*abierta/i.test(error?.message || '')) {
+      showToast('Debes abrir la caja antes de registrar ventas. Ve al módulo de Caja y ábrela.', 'warning');
+      // Refrescar el estado de la caja por si cambió desde otro terminal
+      if (typeof refreshCajaFromServer === 'function') {
+        refreshCajaFromServer().catch(() => {});
+      }
+    } else {
+      showToast(error.message, 'error');
+    }
   } finally {
     _saleSubmitting = false;
     document.querySelectorAll('.receipt-confirm-btn').forEach(b => { b.disabled = false; b.style.opacity = ''; });
