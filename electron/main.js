@@ -146,7 +146,16 @@ function postJson(url, payload, method = 'POST') {
 }
 
 async function createAutoBackup(actor = {}) {
-  return postJson(`${currentAppUrl}/api/backup/auto-save`, actor);
+  // Usa el sistema moderno de respaldos (.tcbak cifrado + nube opcional).
+  // Fallback al sistema legacy si la nueva ruta falla.
+  try {
+    return await postJson(`${currentAppUrl}/api/respaldos/auto`, {
+      trigger: 'cierre_app',
+      ...actor,
+    });
+  } catch (_e) {
+    return postJson(`${currentAppUrl}/api/backup/auto-save`, actor);
+  }
 }
 
 async function verifySecurityPassword(password) {
@@ -1463,23 +1472,41 @@ function closeShutdownWindow() {
   shutdownWindow = null;
 }
 
-function updateShutdownWindowStatus(message) {
+/** Avanza al paso N (1-4) y actualiza el mensaje de estado. */
+function updateShutdownStep(step, message) {
   if (!shutdownWindow || shutdownWindow.isDestroyed()) return;
-  const safeMessage = escapeHtml(message);
   shutdownWindow.webContents.executeJavaScript(`
-    (() => {
-      const status = document.getElementById('shutdown-status');
-      if (status) status.innerHTML = ${JSON.stringify(safeMessage)};
-    })();
+    window._setStep && window._setStep(${JSON.stringify(step)}, ${JSON.stringify(message || '')});
   `).catch(() => {});
+}
+
+/** Muestra el estado de éxito con las estadísticas del respaldo. */
+function updateShutdownComplete(data) {
+  if (!shutdownWindow || shutdownWindow.isDestroyed()) return;
+  shutdownWindow.webContents.executeJavaScript(`
+    window._setComplete && window._setComplete(${JSON.stringify(data || {})});
+  `).catch(() => {});
+}
+
+/** Muestra un error en el modal (por si el backup falla). */
+function updateShutdownError(msg) {
+  if (!shutdownWindow || shutdownWindow.isDestroyed()) return;
+  shutdownWindow.webContents.executeJavaScript(`
+    window._setError && window._setError(${JSON.stringify(msg || 'Error desconocido')});
+  `).catch(() => {});
+}
+
+/** Alias legado — solo actualiza el texto de estado (mantiene compatibilidad). */
+function updateShutdownWindowStatus(message) {
+  updateShutdownStep(2, message);
 }
 
 function createShutdownWindow() {
   closeShutdownWindow();
 
   shutdownWindow = new BrowserWindow({
-    width: 460,
-    height: 280,
+    width: 480,
+    height: 340,
     resizable: false,
     minimizable: false,
     maximizable: false,
@@ -1489,94 +1516,403 @@ function createShutdownWindow() {
     show: false,
     modal: true,
     parent: mainWindow || undefined,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#080f1a',
     webPreferences: {
-      contextIsolation: true,
+      contextIsolation: false,
       nodeIntegration: false
     }
   });
 
   shutdownWindow.removeMenu?.();
   shutdownWindow.setMenuBarVisibility(false);
-  shutdownWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(`
-    <!DOCTYPE html>
-    <html lang="es">
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Guardando copia</title>
-      <style>
-        :root { color-scheme: dark; }
-        * { box-sizing: border-box; }
-        body {
-          margin: 0;
-          min-height: 100vh;
-          display: grid;
-          place-items: center;
-          font-family: Segoe UI, Arial, sans-serif;
-          background:
-            radial-gradient(circle at top, rgba(90,106,255,.35), transparent 42%),
-            linear-gradient(180deg, #101726 0%, #0b1220 100%);
-          color: #eef2ff;
-        }
-        .panel {
-          width: calc(100% - 32px);
-          max-width: 380px;
-          background: rgba(17, 24, 39, 0.92);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 24px;
-          padding: 28px;
-          text-align: center;
-          box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
-        }
-        .spinner {
-          width: 68px;
-          height: 68px;
-          margin: 0 auto 18px;
-          border-radius: 50%;
-          border: 5px solid rgba(255, 255, 255, 0.12);
-          border-top-color: #8b5cf6;
-          animation: spin 1s linear infinite;
-        }
-        h1 {
-          margin: 0 0 10px;
-          font-size: 1.35rem;
-          font-weight: 800;
-        }
-        p {
-          margin: 0;
-          line-height: 1.65;
-          color: #cbd5e1;
-        }
-        .status {
-          margin-top: 16px;
-          color: #f8fafc;
-          font-weight: 700;
-        }
-        .hint {
-          margin-top: 10px;
-          font-size: 0.9rem;
-          color: #94a3b8;
-        }
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-      </style>
-    </head>
-    <body>
-      <div class="panel">
-        <div class="spinner"></div>
-        <h1>Guardando copia de seguridad</h1>
-        <p>
-          Tecno Caja está guardando tu respaldo automático antes de cerrar.
-          Espera unos segundos para proteger la información del sistema.
-        </p>
-        <div id="shutdown-status" class="status">Preparando cierre seguro...</div>
-        <div class="hint">La ventana se cerrará automáticamente al terminar.</div>
+
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Guardando respaldo</title>
+<style>
+:root { color-scheme: dark; }
+*,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+  background: linear-gradient(150deg, #0c1525 0%, #080f1a 60%, #0a0d1a 100%);
+  color: #e2e8f0;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Top brand bar ──────────────────────────── */
+.brand-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.brand-bolt {
+  font-size: 1.2rem;
+  filter: drop-shadow(0 0 8px #8b5cf6);
+}
+.brand-name {
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #a78bfa;
+}
+.brand-tag {
+  margin-left: auto;
+  font-size: 0.72rem;
+  color: #475569;
+  letter-spacing: 0.04em;
+}
+
+/* ── Main body ──────────────────────────────── */
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 28px 20px;
+  gap: 18px;
+}
+
+/* ── Icon area ──────────────────────────────── */
+.icon-wrap {
+  position: relative;
+  width: 72px;
+  height: 72px;
+}
+.ring {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  border: 3px solid rgba(139,92,246,0.15);
+  border-top-color: #8b5cf6;
+  animation: spin 1s linear infinite;
+}
+.ring-track {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.05);
+}
+.icon-inner {
+  position: absolute; inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.6rem;
+}
+.icon-inner.success { display: none; }
+
+/* ── Title ──────────────────────────────────── */
+.title {
+  font-size: 1.2rem;
+  font-weight: 800;
+  text-align: center;
+  letter-spacing: -0.01em;
+  color: #f1f5f9;
+}
+
+/* ── Steps ──────────────────────────────────── */
+.steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  width: 100%;
+  max-width: 380px;
+}
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  position: relative;
+}
+.step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 13px;
+  left: calc(50% + 13px);
+  right: calc(-50% + 13px);
+  height: 2px;
+  background: rgba(255,255,255,0.08);
+  transition: background 0.4s;
+}
+.step.done:not(:last-child)::after {
+  background: linear-gradient(90deg, #8b5cf6, #6366f1);
+}
+.step-dot {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #64748b;
+  transition: all 0.35s;
+  position: relative; z-index: 1;
+}
+.step.active .step-dot {
+  border-color: #8b5cf6;
+  background: rgba(139,92,246,0.18);
+  color: #a78bfa;
+  box-shadow: 0 0 0 4px rgba(139,92,246,0.12);
+}
+.step.done .step-dot {
+  border-color: #22c55e;
+  background: rgba(34,197,94,0.15);
+  color: #4ade80;
+}
+.step-dot .check { display: none; }
+.step.done .step-dot .num { display: none; }
+.step.done .step-dot .check { display: block; }
+
+.step-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #475569;
+  text-align: center;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  transition: color 0.35s;
+}
+.step.active .step-label { color: #a78bfa; }
+.step.done  .step-label  { color: #4ade80; }
+
+/* ── Status text ────────────────────────────── */
+.status-text {
+  font-size: 0.84rem;
+  color: #94a3b8;
+  text-align: center;
+  min-height: 1.2em;
+  transition: opacity 0.3s;
+}
+
+/* ── Stats row (visible solo al completar) ──── */
+.stats-row {
+  display: none;
+  gap: 16px;
+  align-items: center;
+  background: rgba(34,197,94,0.07);
+  border: 1px solid rgba(34,197,94,0.2);
+  border-radius: 10px;
+  padding: 8px 16px;
+  width: 100%;
+  max-width: 380px;
+}
+.stats-row.visible { display: flex; }
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  gap: 1px;
+}
+.stat-num {
+  font-size: 1rem;
+  font-weight: 800;
+  color: #4ade80;
+}
+.stat-lbl {
+  font-size: 0.62rem;
+  color: #64748b;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.stats-divider {
+  width: 1px;
+  height: 28px;
+  background: rgba(255,255,255,0.06);
+}
+
+/* ── File name footer ───────────────────────── */
+.file-hint {
+  font-size: 0.68rem;
+  color: #334155;
+  text-align: center;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: -8px;
+}
+
+/* ── Error state ────────────────────────────── */
+.error-box {
+  display: none;
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.25);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  color: #fca5a5;
+  text-align: center;
+  max-width: 380px;
+}
+.error-box.visible { display: block; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
+.animate-in { animation: fadeIn 0.35s ease both; }
+</style>
+</head>
+<body>
+
+<!-- Brand bar -->
+<div class="brand-bar">
+  <span class="brand-bolt">⚡</span>
+  <span class="brand-name">Tecno Caja</span>
+  <span class="brand-tag">Cierre seguro</span>
+</div>
+
+<!-- Main content -->
+<div class="body">
+
+  <!-- Spinner / check icon -->
+  <div class="icon-wrap" id="iconWrap">
+    <div class="ring-track"></div>
+    <div class="ring" id="ring"></div>
+    <div class="icon-inner" id="iconSpinner">💾</div>
+    <div class="icon-inner success" id="iconSuccess">✅</div>
+  </div>
+
+  <div class="title">Guardando copia de seguridad</div>
+
+  <!-- Step indicator -->
+  <div class="steps" id="steps">
+    <div class="step active" id="step1">
+      <div class="step-dot">
+        <span class="num">1</span>
+        <span class="check">✓</span>
       </div>
-    </body>
-    </html>
-  `)}`);
+      <div class="step-label">Datos</div>
+    </div>
+    <div class="step" id="step2">
+      <div class="step-dot">
+        <span class="num">2</span>
+        <span class="check">✓</span>
+      </div>
+      <div class="step-label">Respaldo</div>
+    </div>
+    <div class="step" id="step3">
+      <div class="step-dot">
+        <span class="num">3</span>
+        <span class="check">✓</span>
+      </div>
+      <div class="step-label">Cifrado</div>
+    </div>
+    <div class="step" id="step4">
+      <div class="step-dot">
+        <span class="num">4</span>
+        <span class="check">✓</span>
+      </div>
+      <div class="step-label">Completo</div>
+    </div>
+  </div>
+
+  <div class="status-text" id="statusText">Recopilando información del negocio...</div>
+
+  <!-- Stats (aparece al completar) -->
+  <div class="stats-row" id="statsRow">
+    <div class="stat-item">
+      <span class="stat-num" id="statProd">—</span>
+      <span class="stat-lbl">Productos</span>
+    </div>
+    <div class="stats-divider"></div>
+    <div class="stat-item">
+      <span class="stat-num" id="statCli">—</span>
+      <span class="stat-lbl">Clientes</span>
+    </div>
+    <div class="stats-divider"></div>
+    <div class="stat-item">
+      <span class="stat-num" id="statVentas">—</span>
+      <span class="stat-lbl">Ventas</span>
+    </div>
+  </div>
+
+  <div class="file-hint" id="fileHint">La ventana se cerrará automáticamente al terminar.</div>
+  <div class="error-box" id="errorBox"></div>
+
+</div>
+
+<script>
+var STEPS = [null,
+  document.getElementById('step1'),
+  document.getElementById('step2'),
+  document.getElementById('step3'),
+  document.getElementById('step4'),
+];
+var _currentStep = 1;
+
+function _setStep(n, msg) {
+  // Mark all steps up to n-1 as done, n as active, rest as pending
+  for (var i = 1; i <= 4; i++) {
+    var el = STEPS[i];
+    if (!el) continue;
+    el.className = 'step';
+    if (i < n)  el.classList.add('done');
+    if (i === n) el.classList.add('active');
+  }
+  _currentStep = n;
+  var txt = document.getElementById('statusText');
+  if (txt && msg) txt.textContent = msg;
+}
+
+function _setComplete(data) {
+  // All steps done
+  for (var i = 1; i <= 4; i++) {
+    if (STEPS[i]) STEPS[i].className = 'step done';
+  }
+  // Switch icon to success
+  document.getElementById('ring').style.display = 'none';
+  document.getElementById('iconSpinner').style.display = 'none';
+  document.getElementById('iconSuccess').style.display = 'flex';
+
+  var txt = document.getElementById('statusText');
+  if (txt) txt.textContent = 'Respaldo guardado correctamente. Cerrando...';
+
+  // Stats
+  var stats = data && data.stats ? data.stats : {};
+  var fmt = function(n) {
+    var num = parseInt(n) || 0;
+    return num >= 1000 ? (num/1000).toFixed(1)+'k' : String(num);
+  };
+  if (stats.productos !== undefined || stats.clientes !== undefined || stats.ventas !== undefined) {
+    document.getElementById('statProd').textContent   = fmt(stats.productos);
+    document.getElementById('statCli').textContent    = fmt(stats.clientes);
+    document.getElementById('statVentas').textContent = fmt(stats.ventas);
+    document.getElementById('statsRow').classList.add('visible');
+  }
+
+  // File hint
+  if (data && data.fileName) {
+    document.getElementById('fileHint').textContent = '📁 ' + data.fileName;
+  }
+}
+
+function _setError(msg) {
+  var txt = document.getElementById('statusText');
+  if (txt) txt.textContent = 'Ocurrió un error al guardar.';
+  var box = document.getElementById('errorBox');
+  if (box) { box.textContent = msg; box.classList.add('visible'); }
+  document.getElementById('ring').style.borderTopColor = '#ef4444';
+}
+
+window._setStep     = _setStep;
+window._setComplete = _setComplete;
+window._setError    = _setError;
+</script>
+</body>
+</html>`;
+
+  shutdownWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(html)}`);
 
   shutdownWindow.once('ready-to-show', () => {
     shutdownWindow?.show();
@@ -1622,7 +1958,10 @@ async function createWindow() {
 
       if (status && status.allowed) {
         createShutdownWindow();
-        updateShutdownWindowStatus('Guardando copia de seguridad...');
+
+        // Paso 1 — Recopilando datos
+        updateShutdownStep(1, 'Recopilando información del negocio...');
+
         const actor = await mainWindow.webContents.executeJavaScript(`
           (() => {
             const currentUser = window.DB?.currentUser;
@@ -1633,12 +1972,34 @@ async function createWindow() {
             } : {};
           })()
         `);
-        await Promise.all([
-          createAutoBackup(actor),
-          wait(MIN_BACKUP_NOTICE_MS)
+
+        // Paso 2 — Guardando respaldo (mientras corre el backup real)
+        await wait(700);
+        updateShutdownStep(2, 'Guardando respaldo completo...');
+
+        // Lanzar backup y esperar mínimo MIN_BACKUP_NOTICE_MS para que el usuario vea los pasos
+        const [backupResult] = await Promise.all([
+          createAutoBackup(actor).catch(e => ({ error: e.message })),
+          wait(MIN_BACKUP_NOTICE_MS),
         ]);
-        updateShutdownWindowStatus('Copia guardada correctamente. Cerrando Tecno Caja...');
-        await wait(900);
+
+        // Paso 3 — Cifrando
+        updateShutdownStep(3, 'Cifrando y verificando integridad...');
+        await wait(600);
+
+        if (backupResult && backupResult.error) {
+          // Hubo un error pero igual cerramos — el backup legacy ya habrá intentado
+          updateShutdownError(`El respaldo presentó un problema: ${backupResult.error}. Cerrando de todos modos...`);
+          await wait(2500);
+        } else {
+          // Paso 4 — Completado
+          updateShutdownComplete({
+            fileName: backupResult?.fileName,
+            stats: backupResult?.stats || {},
+          });
+          await wait(1800);
+        }
+
         closeShutdownWindow();
         mainWindow.__allowClose = true;
         mainWindow.close();

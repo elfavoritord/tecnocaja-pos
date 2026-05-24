@@ -313,8 +313,16 @@ CREATE TABLE cash_sessions (
   opened_at DATETIME NOT NULL,
   closed_at DATETIME DEFAULT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'open',
+  -- Fecha operativa del turno (fija al momento de apertura, no cambia si cruza medianoche)
+  operative_date DATE DEFAULT NULL,
+  -- Quién cerró el turno
+  closed_by_user_id INT DEFAULT NULL,
+  closed_by_user_name VARCHAR(120) DEFAULT NULL,
+  -- Duración del turno en horas (calculada al cerrar)
+  duration_hours DECIMAL(6,2) DEFAULT NULL,
   KEY idx_cash_sessions_register_status (cash_register_id, status),
   KEY idx_cash_sessions_branch (branch_id),
+  KEY idx_cash_sessions_operative_date (operative_date),
   CONSTRAINT fk_cash_sessions_branch FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL,
   CONSTRAINT fk_cash_sessions_register FOREIGN KEY (cash_register_id) REFERENCES cash_registers(id) ON DELETE SET NULL,
   CONSTRAINT fk_cash_sessions_user FOREIGN KEY (opened_by_user_id) REFERENCES users(id) ON DELETE SET NULL
@@ -426,12 +434,21 @@ CREATE TABLE sales (
   charged_at DATETIME DEFAULT NULL,
   inventory_discounted_at DATETIME DEFAULT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Turno (sesión de caja) al que pertenece esta venta
+  -- NUNCA cambia, aunque el turno cruce medianoche
+  cash_session_id INT DEFAULT NULL,
+  -- Fecha operativa del turno (desnormalizada para queries rápidos)
+  -- SIEMPRE es la fecha de apertura del turno, nunca la del reloj al cobrar
+  -- EXCEPCIÓN: e-CF/DGII usa created_at, no operative_date
+  operative_date DATE DEFAULT NULL,
   KEY idx_sales_branch (branch_id),
   KEY idx_sales_cash_register (cash_register_id),
   KEY idx_sales_status (sale_status),
   KEY idx_sales_mode (sale_mode),
   KEY idx_sales_inventory_branch (inventory_branch_id),
   KEY idx_sales_created_at (created_at),
+  KEY idx_sales_cash_session (cash_session_id),
+  KEY idx_sales_operative_date (operative_date),
   CONSTRAINT fk_sales_user FOREIGN KEY (user_id) REFERENCES users(id),
   CONSTRAINT fk_sales_client FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL,
   CONSTRAINT fk_sales_branch FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL,
@@ -445,7 +462,8 @@ CREATE TABLE sales (
   CONSTRAINT fk_sales_inventory_branch FOREIGN KEY (inventory_branch_id) REFERENCES branches(id) ON DELETE SET NULL,
   CONSTRAINT fk_sales_delivery_user FOREIGN KEY (delivery_user_id) REFERENCES users(id) ON DELETE SET NULL,
   CONSTRAINT fk_sales_delivery_cash_user FOREIGN KEY (delivery_cash_received_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
-  CONSTRAINT fk_sales_cancel_user FOREIGN KEY (canceled_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+  CONSTRAINT fk_sales_cancel_user FOREIGN KEY (canceled_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_sales_cash_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id) ON DELETE SET NULL
 );
 
 CREATE TABLE sale_items (

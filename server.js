@@ -3979,6 +3979,70 @@ async function ensureCashMovementExtensions() {
   await addColumnIfMissing('cash_movements', 'created_by_user_name', 'VARCHAR(120) DEFAULT NULL');
 }
 
+/**
+ * Migraciones para el sistema de turnos con fecha operativa.
+ *
+ * operative_date en cash_sessions:
+ *   Fecha del día en que se ABRIÓ la sesión (fecha operativa del turno).
+ *   No cambia si el turno cruza medianoche.
+ *   Ejemplo: turno abierto el 24/05 a las 8h sigue siendo operative_date='2026-05-24'
+ *   aunque cierre a las 2h del día 25.
+ *
+ * cash_session_id en sales:
+ *   Liga cada venta al turno activo cuando fue creada.
+ *   Permite filtrar "ventas del turno" sin depender de la fecha del reloj.
+ *
+ * operative_date en sales:
+ *   Copia la fecha operativa del turno en cada venta.
+ *   Permite reportes históricos por "día operativo" sin hacer JOIN.
+ */
+async function ensureOperativeDateExtensions() {
+  // cash_sessions: fecha operativa (día de apertura del turno)
+  await addColumnIfMissing('cash_sessions', 'operative_date', 'DATE DEFAULT NULL');
+  // cash_sessions: quién cerró
+  await addColumnIfMissing('cash_sessions', 'closed_by_user_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('cash_sessions', 'closed_by_user_name', 'VARCHAR(120) DEFAULT NULL');
+  // cash_sessions: duración en horas (calculada al cerrar)
+  await addColumnIfMissing('cash_sessions', 'duration_hours', 'DECIMAL(8,2) DEFAULT NULL');
+
+  // sales: FK al turno activo cuando se creó la venta
+  await addColumnIfMissing('sales', 'cash_session_id', 'INT DEFAULT NULL');
+  // sales: fecha operativa del turno (copia desnormalizada para consultas rápidas)
+  await addColumnIfMissing('sales', 'operative_date', 'DATE DEFAULT NULL');
+
+  // Backfill: asignar operative_date a sesiones existentes que no la tienen
+  // (usa la fecha de apertura como referencia)
+  await query(`
+    UPDATE cash_sessions
+    SET operative_date = DATE(opened_at)
+    WHERE operative_date IS NULL AND opened_at IS NOT NULL
+  `).catch(() => {});
+
+  // Backfill: asignar operative_date a ventas existentes sin ella
+  // (usa la fecha de creación como fallback)
+  await query(`
+    UPDATE sales
+    SET operative_date = DATE(created_at)
+    WHERE operative_date IS NULL AND created_at IS NOT NULL
+  `).catch(() => {});
+
+  // Backfill: ligar ventas a su sesión cuando cash_register_id coincide
+  // (solo las ventas que ocurrieron durante una sesión abierta de esa caja)
+  await query(`
+    UPDATE sales s
+    SET s.cash_session_id = (
+      SELECT cs.id
+      FROM cash_sessions cs
+      WHERE cs.cash_register_id = s.cash_register_id
+        AND cs.opened_at <= s.created_at
+        AND (cs.closed_at IS NULL OR cs.closed_at >= s.created_at)
+      ORDER BY cs.id DESC
+      LIMIT 1
+    )
+    WHERE s.cash_session_id IS NULL AND s.cash_register_id IS NOT NULL
+  `).catch(() => {}); // no-fatal: puede fallar en SQLite por sintaxis
+}
+
 // ─── Memoización de migraciones de schema ─────────────────────────────────────
 // Estas funciones son idempotentes pero caras (SHOW COLUMNS + ALTER TABLE).
 // Se llaman desde muchos endpoints (sobre todo el hot-path de ventas), por lo
@@ -5041,11 +5105,35 @@ async function getSetupStatus() {
   const row = configRows[0];
   const license = licenseResult?.license || getLicenseSummary(row || {});
   const hasUsers = Number(userCountRows[0]?.total || 0) > 0;
-  // Si el config dice "completado" pero no hay usuarios, tratar como pendiente
-  const setupCompleted = Boolean(row?.setup_completed) && hasUsers;
+
+  // ── Lógica de setup_completed ──────────────────────────────────────────────
+  // setup_completed = 1 es la señal autoritativa: el sistema fue configurado
+  // (ya sea mediante el asistente o mediante una restauración de respaldo).
+  //
+  // CAMBIO vs versión anterior:
+  //  Antes: setupCompleted = Boolean(setup_completed) && hasUsers
+  //  Problema: si los usuarios no se restauraron correctamente, hasUsers = false
+  //            causaba setupRequired = true y el asistente volvía a mostrarse,
+  //            borrando la configuración restaurada en un loop infinito.
+  //
+  //  Ahora: setupCompleted = Boolean(setup_completed)  ← setup_completed es autoritativo
+  //         setupCorrupted  = setup_completed pero sin usuarios  ← señal de error
+  //         La UI maneja setupCorrupted mostrando un error, NO el asistente de configuración.
+  const setupCompleted = Boolean(row?.setup_completed);
+
+  // setupCorrupted: config dice "completado" pero no hay usuarios.
+  // Indica un problema post-restauración (datos incompletos) o corrupción.
+  // La UI debe mostrar un mensaje de error/reparación, NUNCA el asistente inicial.
+  const setupCorrupted = setupCompleted && !hasUsers;
+
+  if (setupCorrupted) {
+    console.warn('[setup] ⚠ setup_completed=1 pero users está vacío. Posible restauración incompleta.');
+  }
+
   return {
     setupRequired: !setupCompleted,
     setupCompleted,
+    setupCorrupted,   // nuevo: true = configurado pero sin usuarios (error a mostrar en UI)
     hasUsers,
     config: await getConfig({ syncRemote: false, licenseResult }),
     license,
@@ -5628,6 +5716,8 @@ function mapSaleRows(sales, items) {
     return ({
     id: sale.invoice_number,
     ventaId: sale.id === null || sale.id === undefined ? null : Number(sale.id),
+    cashSessionId: sale.cash_session_id === null || sale.cash_session_id === undefined ? null : Number(sale.cash_session_id),
+    operativeDate: sale.operative_date || null,
     clientId: sale.client_id === null || sale.client_id === undefined ? null : Number(sale.client_id),
     sucursalId: sale.branch_id === null || sale.branch_id === undefined ? null : Number(sale.branch_id),
     cajaSucursalId: sale.cash_register_id === null || sale.cash_register_id === undefined ? null : Number(sale.cash_register_id),
@@ -5945,13 +6035,14 @@ async function getBootstrapData(actorUser = null) {
       : effectiveCashRegisterId
       ? query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements WHERE cash_register_id = ? ORDER BY id DESC LIMIT 50', [effectiveCashRegisterId])
       : query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements ORDER BY id DESC LIMIT 50'),
+    // Sesión activa: incluimos operative_date para que el frontend filtre por turno
     scopedCashRegisterId
-      ? query('SELECT id, opened_amount, current_amount FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [scopedCashRegisterId])
+      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [scopedCashRegisterId])
       : branchScopedUser
-      ? query('SELECT id, opened_amount, current_amount FROM cash_sessions WHERE status = "open" AND branch_id = ? ORDER BY id DESC LIMIT 1', [effectiveBranchId])
+      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" AND branch_id = ? ORDER BY id DESC LIMIT 1', [effectiveBranchId])
       : effectiveCashRegisterId
-      ? query('SELECT id, opened_amount, current_amount FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [effectiveCashRegisterId])
-      : query('SELECT id, opened_amount, current_amount FROM cash_sessions WHERE status = "open" ORDER BY id DESC LIMIT 1'),
+      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [effectiveCashRegisterId])
+      : query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" ORDER BY id DESC LIMIT 1'),
     canAccessGlobalAudit
       ? query('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 200')
       : Promise.resolve([]),
@@ -5981,8 +6072,30 @@ async function getBootstrapData(actorUser = null) {
   const pendingCreditByClient = buildClientPendingCreditMapFromSaleRows(saleRows);
   const activeBranch = branchRows.find((item) => Number(item.id || 0) === Number(effectiveBranchId || 0)) || branchRows[0] || null;
   const activeCashRegister = cashRegisterRows.find((item) => Number(item.id || 0) === Number(effectiveCashRegisterId || 0)) || cashRegisterRows[0] || null;
-  const cajaAbierta = openSessionRows.length > 0;
-  const cajaMonto = Number(openSessionRows[0]?.current_amount || 0);
+  const openSession = openSessionRows[0] || null;
+  const cajaAbierta = Boolean(openSession);
+  const cajaMonto = Number(openSession?.current_amount || 0);
+
+  // Construir objeto de sesión activa con fecha operativa y advertencia de turno largo
+  const STALE_SESSION_HOURS = 20;
+  let activeSessionInfo = null;
+  if (openSession) {
+    const openedAtMs = openSession.opened_at ? new Date(openSession.opened_at).getTime() : Date.now();
+    const hoursOpen = Math.round((Date.now() - openedAtMs) / 36000) / 100;
+    const operativeDate = openSession.operative_date
+      || (openSession.opened_at ? new Date(openSession.opened_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
+    activeSessionInfo = {
+      id: Number(openSession.id),
+      openedAmount: Number(openSession.opened_amount || 0),
+      currentAmount: Number(openSession.current_amount || 0),
+      openedAt: openSession.opened_at,
+      openedByUserName: openSession.opened_by_user_name || 'Sistema',
+      operativeDate,
+      hoursOpen,
+      staleWarning: hoursOpen > STALE_SESSION_HOURS,
+    };
+  }
+
   if (branchScopedUser) {
     config = {
       ...config,
@@ -6065,7 +6178,8 @@ async function getBootstrapData(actorUser = null) {
     saleOrderNotes: '',
     caja: {
       sessionId: openSessionRows[0]?.id || null,
-      abierta: cajaAbierta
+      abierta: cajaAbierta,
+      activeSession: activeSessionInfo
     }
   };
 }
@@ -8721,26 +8835,45 @@ app.post('/api/system/reset', async (req, res) => {
       if (fs.existsSync(TERMINAL_CONFIG_PATH)) fs.unlinkSync(TERMINAL_CONFIG_PATH);
     } catch (_error) {}
   }
+
+  // isFactoryReset controla QUÉ TAN PROFUNDO es el reset local (borrar todo vs. borrar solo datos).
+  // purgeFirebase controla si TAMBIÉN se borra la nube.
+  // Son decisiones independientes: puedes hacer factory reset local sin tocar Firebase.
   await resetSystemData({
-    keepUserId: purgeFirebase ? null : (req.body?.actorUserId || null),
-    factoryReset: purgeFirebase
+    keepUserId: isFactoryReset ? null : (req.body?.actorUserId || null),
+    factoryReset: isFactoryReset
   });
+
   const actor = getActor(req);
-  await writeAuditLog({
-    ...actor,
-    moduleName: 'Configuración',
-    actionName: purgeFirebase ? 'Sistema y Firebase limpiados' : 'Sistema limpiado',
-    detail: purgeFirebase
-      ? `Se limpió la app y Firebase. Copia previa: ${backup.fileName}`
-      : `Se limpió la app completa. Copia previa: ${backup.fileName}`
-  });
+  let actionName, detail;
+  if (isFactoryReset && purgeFirebase) {
+    actionName = 'Factory reset completo (local + Firebase)';
+    detail = `Se borró todo: base local y Firebase. Copia previa: ${backup.fileName}`;
+  } else if (isFactoryReset) {
+    actionName = 'Factory reset local';
+    detail = `Se borró la base local completa. Firebase conservado. Copia previa: ${backup.fileName}`;
+  } else if (purgeFirebase) {
+    actionName = 'Sistema y Firebase limpiados';
+    detail = `Se limpió la app y Firebase. Copia previa: ${backup.fileName}`;
+  } else {
+    actionName = 'Sistema limpiado';
+    detail = `Se limpió la app completa. Copia previa: ${backup.fileName}`;
+  }
+  await writeAuditLog({ ...actor, moduleName: 'Configuración', actionName, detail });
+
   const payload = {
     ok: true,
     backupFile: backup.fileName,
     firebasePurged: Boolean(purgeFirebase),
     firebaseSummary,
   };
-  if (purgeFirebase) {
+  if (isFactoryReset) {
+    // Factory reset siempre reinicia en modo instalación limpia (wizard).
+    // El frontend recarga y setup_completed=0 → muestra el asistente de configuración.
+    payload.message = purgeFirebase
+      ? 'Factory reset completo. Firebase eliminado y base local en cero. La app arrancará como nueva instalación.'
+      : 'Factory reset local completado. Firebase conservado. La app arrancará como nueva instalación.';
+  } else if (purgeFirebase) {
     payload.message = 'Firebase fue eliminado y la base local quedó en estado inicial. Ahora desinstala Tecno Caja y acepta borrar los archivos locales de esta PC.';
   } else {
     payload.data = await getBootstrapData();
@@ -11459,9 +11592,50 @@ app.put('/api/config/whatsapp-guide', async (req, res) => {
   res.json({ ok: true, enabled });
 });
 
+/**
+ * Devuelve la sesión activa (status='open') para una caja dada.
+ * Incluye operative_date, opened_by_user_name y horas abiertas.
+ * Retorna null si no hay sesión abierta.
+ */
+async function getActiveSessionForRegister(cashRegisterId) {
+  if (!cashRegisterId) return null;
+  const rows = await query(
+    `SELECT id, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name,
+            opened_amount, current_amount, expected_amount,
+            opened_at, operative_date, status
+     FROM cash_sessions
+     WHERE status = 'open' AND cash_register_id = ?
+     ORDER BY id DESC LIMIT 1`,
+    [cashRegisterId]
+  );
+  const session = rows[0] || null;
+  if (!session) return null;
+
+  const openedAt = session.opened_at ? new Date(session.opened_at) : null;
+  const hoursOpen = openedAt
+    ? Math.round((Date.now() - openedAt.getTime()) / 36000) / 100  // 2 decimales
+    : 0;
+  const STALE_HOURS = 20; // advertir si lleva más de 20h abierta
+
+  return {
+    id: Number(session.id),
+    branchId: session.branch_id ? Number(session.branch_id) : null,
+    cashRegisterId: session.cash_register_id ? Number(session.cash_register_id) : null,
+    openedByUserId: session.opened_by_user_id ? Number(session.opened_by_user_id) : null,
+    openedByUserName: session.opened_by_user_name || 'Sistema',
+    openedAmount: Number(session.opened_amount || 0),
+    currentAmount: Number(session.current_amount || 0),
+    openedAt: session.opened_at,
+    operativeDate: session.operative_date || (openedAt ? openedAt.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)),
+    hoursOpen,
+    staleWarning: hoursOpen > STALE_HOURS,
+  };
+}
+
 app.post('/api/cash/open', async (req, res) => {
   await ensureBusinessRulesExtensions();
   await ensureCashMovementExtensions();
+  await ensureOperativeDateExtensions();
   const amount = Number(req.body?.monto || 0);
   const notes = req.body?.obs || 'Apertura de caja';
   const actorUser = await resolveRequestActorUser(req, { required: true });
@@ -11496,10 +11670,13 @@ app.post('/api/cash/open', async (req, res) => {
         );
         return Number(existingSession.id);
       }
+      // operative_date = fecha del día en que se abre el turno.
+      // Se mantiene fija aunque el turno cruce medianoche.
+      const operativeDateStr = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
       const sessionResult = await conn.query(
-        `INSERT INTO cash_sessions (opened_amount, current_amount, status, opened_at, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name)
-         VALUES (?, ?, "open", datetime('now'), ?, ?, ?, ?)`,
-        [amount, amount, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema']
+        `INSERT INTO cash_sessions (opened_amount, current_amount, status, opened_at, operative_date, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name)
+         VALUES (?, ?, "open", datetime('now'), ?, ?, ?, ?, ?)`,
+        [amount, amount, operativeDateStr, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema']
       );
       await conn.query(
         `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Apertura", ?, ?, ?, ?, datetime('now'), ?, ?)`,
@@ -11541,11 +11718,12 @@ app.post('/api/cash/open', async (req, res) => {
         opened_by_user_name: actor.userName || 'Sistema',
       }, { config: cfg, branches });
     });
-    return res.status(201).json({ sessionId: result, config: await getConfig() });
+    const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
+    return res.status(201).json({ sessionId: result, activeSession, config: await getConfig() });
   } catch (err) {
     if (req.authUser?.offlineSession) {
       await setOfflineCashState(true, amount, structure.branchId, structure.cashRegisterId);
-      return res.status(201).json({ sessionId: 'offline', config: await getOfflineCashConfig() });
+      return res.status(201).json({ sessionId: 'offline', activeSession: null, config: await getOfflineCashConfig() });
     }
     throw err;
   }
@@ -11638,11 +11816,17 @@ app.post('/api/cash/close', async (req, res) => {
       const expectedAmount = Number(session.current_amount || 0);
       const countedAmount = amount;
       const differenceAmount = Number((countedAmount - expectedAmount).toFixed(2));
+      // Calcular duración del turno en horas
+      const openedAtMs = session.opened_at ? new Date(session.opened_at).getTime() : Date.now();
+      const durationHours = Number(((Date.now() - openedAtMs) / 3600000).toFixed(2));
       await conn.query(
         `UPDATE cash_sessions
-         SET closed_amount = ?, current_amount = ?, expected_amount = ?, counted_amount = ?, difference_amount = ?, closed_at = datetime('now'), status = "closed"
+         SET closed_amount = ?, current_amount = ?, expected_amount = ?, counted_amount = ?, difference_amount = ?,
+             closed_at = datetime('now'), status = "closed",
+             closed_by_user_id = ?, closed_by_user_name = ?, duration_hours = ?
          WHERE id = ?`,
-        [countedAmount, expectedAmount, expectedAmount, countedAmount, differenceAmount, session.id]
+        [countedAmount, expectedAmount, expectedAmount, countedAmount, differenceAmount,
+         actor.userId || null, actor.userName || 'Sistema', durationHours, session.id]
       );
       await conn.query(
         `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Cierre", ?, ?, ?, ?, datetime('now'), ?, ?)`,
@@ -12029,6 +12213,36 @@ app.post('/api/sales', async (req, res) => {
       throw error;
     }
 
+    // ── Validar sesión de caja activa (turno) ─────────────────────
+    // Buscar el turno abierto para esta caja. Si require_cash_open_before_use=1
+    // y no hay turno, bloquear la venta — el cajero debe abrir caja primero.
+    const activeSessionRows = await conn.query(
+      `SELECT id, operative_date, opened_by_user_id
+       FROM cash_sessions
+       WHERE status = 'open' AND cash_register_id = ?
+       ORDER BY id DESC LIMIT 1`,
+      [structure.cashRegisterId]
+    );
+    const activeSession = activeSessionRows[0] || null;
+    const requireCashOpen = Number(config?.require_cash_open_before_use ?? 1) !== 0;
+
+    if (!activeSession && requireCashOpen) {
+      const noSessionError = new Error(
+        'No hay una caja abierta en este momento. Abre la caja antes de registrar ventas.'
+      );
+      noSessionError.statusCode = 409;
+      noSessionError.code = 'NO_ACTIVE_SESSION';
+      throw noSessionError;
+    }
+
+    // Fecha operativa = la del turno activo (no la del reloj).
+    // Si la venta cruza medianoche, sigue perteneciendo al turno abierto el día anterior.
+    // Para e-CF/DGII se usa created_at (fecha real) — nunca operative_date.
+    const saleSessionId = activeSession ? Number(activeSession.id) : null;
+    const saleOperativeDate = activeSession
+      ? (activeSession.operative_date || new Date().toISOString().slice(0, 10))
+      : new Date().toISOString().slice(0, 10);
+
     // ── Determine document type and NCF ──────────────────────────
     const VALID_NCF_TYPES = ['B01','B02','B03','B04','B14','B15'];
     const requestedNcfType = VALID_NCF_TYPES.includes(String(sale.ncfType || '').toUpperCase())
@@ -12228,25 +12442,53 @@ app.post('/api/sales', async (req, res) => {
 
     const result = await conn.query(
       `INSERT INTO sales
-        (invoice_number, user_id, client_id, branch_id, cash_register_id, billed_branch_id, billed_cash_register_id, billed_by_user_id, charged_branch_id, charged_cash_register_id, charged_by_user_id, charged_at, inventory_branch_id, inventory_discounted_at, sale_status, sale_mode, document_type, client_name_snapshot, client_phone_snapshot, client_tax_id_snapshot, payment_method, subtotal, discount, tax, total, received_amount, change_amount, fiscal_status, fiscal_payload, created_at, order_type, kitchen_status, delivery_user_id, delivery_name_snapshot, delivery_email_snapshot, delivery_phone_snapshot, delivery_address_snapshot, delivery_reference_snapshot, delivery_location_link_snapshot, table_label, order_notes,
-         ncf, ncf_type, ncf_referencia, factura_referencia_id, razon_social_cliente, es_electronica, fecha_emision_fiscal)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        (invoice_number, user_id, client_id, branch_id, cash_register_id,
+         billed_branch_id, billed_cash_register_id, billed_by_user_id,
+         charged_branch_id, charged_cash_register_id, charged_by_user_id, charged_at,
+         inventory_branch_id, inventory_discounted_at,
+         sale_status, sale_mode, document_type,
+         client_name_snapshot, client_phone_snapshot, client_tax_id_snapshot,
+         payment_method, subtotal, discount, tax, total, received_amount, change_amount,
+         fiscal_status, fiscal_payload, created_at,
+         order_type, kitchen_status,
+         delivery_user_id, delivery_name_snapshot, delivery_email_snapshot, delivery_phone_snapshot,
+         delivery_address_snapshot, delivery_reference_snapshot, delivery_location_link_snapshot,
+         table_label, order_notes,
+         ncf, ncf_type, ncf_referencia, factura_referencia_id, razon_social_cliente, es_electronica, fecha_emision_fiscal,
+         cash_session_id, operative_date)
+       VALUES (?, ?, ?, ?, ?,
+               ?, ?, ?,
+               ?, ?, ?, ?,
+               ?, ?,
+               ?, ?, ?,
+               ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, datetime('now'),
+               ?, ?,
+               ?, ?, ?, ?,
+               ?, ?, ?,
+               ?, ?,
+               ?, ?, ?, ?, ?, ?, datetime('now'),
+               ?, ?)`,
       [
         invoiceNumber,
         sale.userId,
         clientId,
         structure.branchId,
         structure.cashRegisterId,
+        // billed
         structure.branchId,
         structure.cashRegisterId,
         sale.userId || null,
+        // charged
         saleStatus === 'pagada' ? structure.branchId : null,
         saleStatus === 'pagada' ? structure.cashRegisterId : null,
         saleStatus === 'pagada' ? (sale.userId || null) : null,
         saleStatus === 'pagada' ? nowSql : null,
+        // inventory
         structure.branchId,
         shouldDiscountInventoryNow ? nowSql : null,
+        // sale data
         saleStatus,
         saleMode,
         effectiveNcfType ? 'comprobante-fiscal' : documentType,
@@ -12262,8 +12504,10 @@ app.post('/api/sales', async (req, res) => {
         changeAmount,
         'emitida',
         fiscalPayload,
+        // order
         orderType,
         kitchenStatus,
+        // delivery
         deliveryUserId,
         deliveryName || null,
         deliveryEmail || null,
@@ -12273,13 +12517,16 @@ app.post('/api/sales', async (req, res) => {
         deliveryLocationLink || null,
         String(sale.mesa || '').trim() || null,
         String(sale.notasPedido || '').trim() || null,
-        // NCF fields
+        // NCF
         generatedNcf || null,
         effectiveNcfType || null,
         ncfReferenciaVal || null,
         facturaReferenciaId || null,
         razonSocialCliente || null,
-        shouldUseEcfFlow ? 1 : 0
+        shouldUseEcfFlow ? 1 : 0,
+        // Turno — NUNCA usar para e-CF (usar created_at/fecha_emision_fiscal)
+        saleSessionId,
+        saleOperativeDate,
       ]
     );
 
@@ -14852,24 +15099,83 @@ function isUnknownDatabaseError(error) {
   );
 }
 
+/**
+ * Detecta errores de conexión transitorios que ocurren cuando MariaDB
+ * abre el puerto TCP pero todavía no está lista para aceptar queries
+ * (ventana de ~500ms–2s durante el arranque inicial).
+ */
+function isTransientConnectionError(error) {
+  if (!error) return false;
+  const code = String(error.code || '').toUpperCase();
+  const message = String(error.message || '').toLowerCase();
+  return (
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNABORTED' ||
+    code === 'PROTOCOL_CONNECTION_LOST' ||
+    message.includes('econnreset') ||
+    message.includes('connection lost') ||
+    message.includes('connection refused') ||
+    message.includes('read econnreset')
+  );
+}
+
+/**
+ * Ejecuta `fn` con reintentos automáticos cuando el error es transitorio
+ * (ECONNRESET, ECONNREFUSED, etc.). Útil en el arranque cuando MariaDB
+ * acaba de abrir el puerto pero aún no procesa queries.
+ */
+async function withRetryOnTransient(fn, { maxAttempts = 5, baseDelayMs = 800, label = 'query' } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err;
+      if (!isTransientConnectionError(err) || attempt === maxAttempts) {
+        throw err;
+      }
+      const delay = baseDelayMs * attempt; // 800ms, 1600ms, 2400ms, 3200ms …
+      console.warn(
+        `[startup] ${label} — error transitorio (${err.code || err.message}), ` +
+        `reintentando en ${delay}ms (intento ${attempt}/${maxAttempts - 1} restantes)…`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
 async function prepareServerRuntime() {
   try {
     if (getDbClient() === 'mysql') {
       let schemaState;
       try {
-        schemaState = await inspectCoreSchema();
+        // Primer intento con reintentos para errores transitorios de arranque
+        // (MariaDB abre el puerto TCP ~1s antes de estar lista para queries).
+        schemaState = await withRetryOnTransient(
+          () => inspectCoreSchema(),
+          { maxAttempts: 6, baseDelayMs: 1000, label: 'inspectCoreSchema' }
+        );
       } catch (inspectError) {
         if (!isUnknownDatabaseError(inspectError)) throw inspectError;
         console.log('La base de datos MySQL no existe todavía. Creándola desde cero...');
         await initializeMySqlDatabase();
         await reloadDatabase();
-        schemaState = await inspectCoreSchema();
+        schemaState = await withRetryOnTransient(
+          () => inspectCoreSchema(),
+          { maxAttempts: 4, baseDelayMs: 800, label: 'inspectCoreSchema (post-init)' }
+        );
       }
       if (!schemaState.hasRequiredTables) {
         console.log('Inicializando base de datos MySQL...');
         await initializeMySqlDatabase();
         await reloadDatabase();
-        schemaState = await inspectCoreSchema();
+        schemaState = await withRetryOnTransient(
+          () => inspectCoreSchema(),
+          { maxAttempts: 4, baseDelayMs: 800, label: 'inspectCoreSchema (post-repair)' }
+        );
         if (!schemaState.hasRequiredTables) {
           throw new Error('La base MySQL no pudo inicializarse correctamente.');
         }
@@ -14891,6 +15197,7 @@ async function prepareServerRuntime() {
         plans.ensurePlanExtensions(query),
         ecfModule.ensureSchema().catch(e => console.warn('[ecf] init fallo:', e.message)),
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
+        ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
       ]);
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);
@@ -14978,6 +15285,7 @@ async function prepareServerRuntime() {
       plans.ensurePlanExtensions(query),
       ecfModule.ensureSchema().catch(e => console.warn('[ecf] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
+      ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]);
     const setup = await getSetupStatus();
     await ensureStarterCatalogSeededIfNeeded(setup.config);

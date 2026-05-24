@@ -23,6 +23,11 @@ const crypto = require('crypto');
 const zlib   = require('zlib');
 const { promisify } = require('util');
 
+// Acceso directo a withTransaction y getDbClient para garantizar misma conexión
+// durante la restauración (SET FOREIGN_KEY_CHECKS = 0 debe estar en la misma
+// conexión que los INSERTs; con pool.query() cada llamada puede usar conexión distinta).
+const { withTransaction: _withDbTransaction, getDbClient } = require('../../db');
+
 const gzip   = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 
@@ -312,6 +317,57 @@ function pruneLocalBackups(dir) {
 }
 
 // ─── Restaurar payload en la base de datos ───────────────────────────────────
+//
+// IMPORTANTE: Para MySQL/MariaDB usamos withTransaction (misma conexión dedicada)
+// para que SET FOREIGN_KEY_CHECKS = 0 aplique a TODOS los queries del proceso.
+// Con pool.query() cada llamada puede obtener una conexión diferente del pool,
+// lo que hace que el FK check deshabilita no tenga efecto en los INSERTs siguientes.
+//
+// Para SQLite (sql.js): insertamos fila a fila porque sql.js NO soporta el
+// formato bulk VALUES ? con array 2D que usa mysql2.
+/**
+ * Normaliza un valor datetime al formato que acepta MariaDB/MySQL: 'YYYY-MM-DD HH:MM:SS'.
+ * Los backups almacenan fechas como ISO 8601 ('2026-05-24T21:00:40.000Z') que MariaDB rechaza.
+ */
+function _normalizeDbDateTime(value) {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return null;
+    return value.toISOString().slice(0, 19).replace('T', ' ');
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  // Ya en formato SQL correcto
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) return text;
+  // Solo fecha
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  // ISO con T (con o sin Z / offset)
+  if (text.includes('T')) return text.slice(0, 19).replace('T', ' ');
+  return text;
+}
+
+/**
+ * Aplica _normalizeDbDateTime a todos los valores de una fila que parezcan datetimes.
+ * Los detectamos por: valor string que contiene 'T' + dígitos, o que coincida con
+ * el patrón de fecha ISO, o que sea una instancia de Date.
+ */
+function _normalizeDateTimesInRow(row) {
+  const normalized = {};
+  for (const [key, val] of Object.entries(row)) {
+    if (val instanceof Date) {
+      normalized[key] = _normalizeDbDateTime(val);
+    } else if (typeof val === 'string' && val.length >= 10 && (
+      /^\d{4}-\d{2}-\d{2}[T ]/.test(val) ||  // ISO fecha-hora
+      /^\d{4}-\d{2}-\d{2}$/.test(val)          // Solo fecha
+    )) {
+      normalized[key] = _normalizeDbDateTime(val);
+    } else {
+      normalized[key] = val;
+    }
+  }
+  return normalized;
+}
+
 async function restorePayloadToDb(payload, query) {
   const { data } = payload;
   if (!data) throw new Error('El respaldo no contiene datos.');
@@ -339,39 +395,102 @@ async function restorePayloadToDb(payload, query) {
     ['dining_tables',     data.tables           || []],
   ];
 
-  const safeQ = async (sql, params) => { try { return await query(sql, params); } catch (_) {} };
+  const isMySQL = getDbClient() === 'mysql';
 
-  // Deshabilitar FK temporalmente
-  await safeQ('SET FOREIGN_KEY_CHECKS = 0', []);
+  // Función interna que ejecuta toda la restauración usando la función `q` dada.
+  // `q` puede ser la txQuery de withTransaction (MySQL) o query directo (SQLite).
+  async function _doRestore(q) {
+    const safeQ = async (sql, params) => {
+      try {
+        return await q(sql, params);
+      } catch (e) {
+        console.warn(`[respaldos][restore] query omitida: ${String(sql).slice(0, 80)} — ${e.message}`);
+      }
+    };
 
-  for (const [table, rows] of tableOrder) {
-    if (!rows.length) continue;
-    // Vaciar tabla
-    await safeQ(`DELETE FROM \`${table}\``, []);
-    // Re-insertar en lotes de 200
-    const cols   = Object.keys(rows[0]);
-    const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ?`;
-    for (let i = 0; i < rows.length; i += 200) {
-      const chunk = rows.slice(i, i + 200).map(r => cols.map(c => r[c] !== undefined ? r[c] : null));
-      await safeQ(insert, [chunk]);
+    // Deshabilitar verificación de FK en esta conexión
+    await safeQ('SET FOREIGN_KEY_CHECKS = 0', []);
+
+    for (const [table, rows] of tableOrder) {
+      if (!rows.length) continue;
+
+      // Vaciar tabla
+      await safeQ(`DELETE FROM \`${table}\``, []);
+
+      // Normalizar datetimes en todas las filas antes de insertar.
+      // MariaDB rechaza el formato ISO 8601 ('2026-05-24T21:00:40.000Z');
+      // el formato correcto es 'YYYY-MM-DD HH:MM:SS'.
+      const normalizedRows = rows.map(_normalizeDateTimesInRow);
+      const cols = Object.keys(normalizedRows[0]);
+
+      if (isMySQL) {
+        // mysql2: bulk INSERT con VALUES ? y array 2D (más eficiente)
+        const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ?`;
+        for (let i = 0; i < normalizedRows.length; i += 200) {
+          const chunk = normalizedRows.slice(i, i + 200).map(r => cols.map(c => r[c] !== undefined ? r[c] : null));
+          await safeQ(insert, [chunk]);
+        }
+      } else {
+        // SQLite (sql.js): NO soporta VALUES ? con array 2D → fila a fila
+        const placeholders = `(${cols.map(() => '?').join(',')})`;
+        const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ${placeholders}`;
+        for (const row of normalizedRows) {
+          const values = cols.map(c => row[c] !== undefined ? row[c] : null);
+          await safeQ(insert, values);
+        }
+      }
+    }
+
+    // Re-habilitar FK
+    await safeQ('SET FOREIGN_KEY_CHECKS = 1', []);
+
+    // ── Garantizar setup_completed = 1 (SIEMPRE, sin importar el valor en el backup) ──
+    // Un sistema restaurado debe arrancar en modo "configurado", no en modo wizard.
+    await safeQ('UPDATE `config` SET `setup_completed` = 1 WHERE `id` = 1', []);
+
+    // Fallback: si config quedó vacía (INSERT del backup falló silenciosamente)
+    const cfgCheck = await safeQ('SELECT id FROM `config` WHERE id = 1 LIMIT 1');
+    if (!cfgCheck || !cfgCheck.length) {
+      console.warn('[respaldos][restore] config quedó vacía tras restauración; insertando fila mínima.');
+      await safeQ("INSERT IGNORE INTO `config` (id, setup_completed) VALUES (1, 1)", []);
+    }
+
+    // Verificar usuarios restaurados
+    const userCheck = await safeQ('SELECT COUNT(*) AS total FROM `users`');
+    const userCount = Number(userCheck?.[0]?.total || 0);
+    if (userCount === 0) {
+      console.warn('[respaldos][restore] ¡ADVERTENCIA! La tabla users quedó vacía tras restauración.');
+      // Si el backup no tiene usuarios, configurar setup_completed = 0 para que
+      // el usuario vea el wizard de primer inicio en lugar del overlay "corrompido".
+      // Esto permite hacer una instalación limpia sin quedar atrapado.
+      await safeQ('UPDATE `config` SET `setup_completed` = 0 WHERE `id` = 1', []);
+      console.warn('[respaldos][restore] setup_completed → 0 para evitar estado "corrompido". El usuario verá el wizard inicial.');
+    } else {
+      console.log(`[respaldos][restore] ✅ ${userCount} usuario(s) restaurado(s) correctamente.`);
     }
   }
 
-  await safeQ('SET FOREIGN_KEY_CHECKS = 1', []);
-
-  // ── Post-restauración: garantizar setup_completed = 1 ────────────────────────
-  // Sin esta línea, si el INSERT de config falla silenciosamente el servidor
-  // arranca con setup_completed = 0 y muestra el wizard en vez del login.
-  await safeQ('UPDATE `config` SET `setup_completed` = 1 WHERE `id` = 1', []);
-
-  // Si la tabla config quedó vacía (raro pero posible), insertar fila mínima
-  const cfgCheck = await safeQ('SELECT id FROM `config` WHERE id = 1 LIMIT 1');
-  if (!cfgCheck || !cfgCheck.length) {
-    await safeQ(
-      "INSERT IGNORE INTO `config` (id, setup_completed) VALUES (1, 1)",
-      []
-    );
+  // Ejecutar restauración
+  let restoreResult = { userCount: 0 };
+  if (isMySQL) {
+    // MySQL: withTransaction garantiza UNA SOLA conexión dedicada para todo el proceso.
+    // safeQ captura errores individuales → withTransaction siempre hace COMMIT al final.
+    await _withDbTransaction(async ({ query: txQ }) => {
+      await _doRestore(txQ);
+    });
+  } else {
+    // SQLite: single-threaded, no hay problema de conexiones distintas
+    await _doRestore(query);
   }
+
+  // Verificar el resultado final fuera de la transacción (para MySQL, asegura que el
+  // COMMIT se completó correctamente antes de responder al cliente)
+  try {
+    const finalCheck = await query('SELECT COUNT(*) AS total FROM users');
+    restoreResult.userCount = Number(finalCheck?.[0]?.total || 0);
+  } catch (_) {}
+
+  return restoreResult;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1106,14 +1225,30 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
   //  No requieren sesión de usuario (el wizard aún no tiene DB configurada)
   // ══════════════════════════════════════════════════════════════════════
 
-  /** Middleware: bloquea si el setup ya fue completado */
+  /**
+   * Middleware: permite acceso solo cuando el setup NO está completado,
+   * O cuando el sistema está en estado "corrompido" (setup_completed=1 pero sin usuarios).
+   *
+   * Estado corrompido = se permite restaurar de nuevo para reparar la instalación.
+   * Estado normal completado = bloqueado (usar rutas /api/respaldos/* con auth de admin).
+   */
   async function setupOnly(req, res, next) {
     try {
-      const rows = await query('SELECT setup_completed FROM config LIMIT 1').catch(() => []);
-      const done = rows[0]?.setup_completed;
-      if (done === 1 || done === '1' || done === true) {
+      const [cfgRows, userRows] = await Promise.all([
+        query('SELECT setup_completed FROM config WHERE id = 1 LIMIT 1').catch(() => []),
+        query('SELECT COUNT(*) AS total FROM users').catch(() => [{ total: 1 }]),
+      ]);
+      const done     = cfgRows[0]?.setup_completed;
+      const hasUsers = Number(userRows[0]?.total || 0) > 0;
+      const isSetupDone = done === 1 || done === '1' || done === true;
+
+      if (isSetupDone && hasUsers) {
+        // Sistema completamente configurado — bloquear rutas de setup
         return res.status(403).json({ ok: false, error: 'El sistema ya está configurado.' });
       }
+
+      // Permitir si: setup no completado (primera instalación)
+      //          O: setup marcado como completado pero sin usuarios (estado corrompido/restauración incompleta)
       next();
     } catch (_) {
       next(); // tabla inexistente = primera instalación, permitir
@@ -1154,6 +1289,42 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
   });
 
   // ──────────────────────────────────────────────────────────────────────
+  //  Helper: guardar metadata de restauración en installation_config
+  //  y asegurarse de que setup_completed = 1 quedó grabado.
+  // ──────────────────────────────────────────────────────────────────────
+  async function _saveRestorationMetadata(metadata, tipo) {
+    const now = new Date().toISOString();
+    const safeSet = async (k, v) => {
+      try {
+        await query(
+          `INSERT INTO installation_config (config_key, config_value) VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE config_value = VALUES(config_value)`,
+          [k, String(v)]
+        );
+      } catch (_) {
+        // installation_config puede no existir; ignorar
+      }
+    };
+    await safeSet('restoration_tipo',         tipo);
+    await safeSet('restoration_at',           now);
+    await safeSet('restoration_business_id',  metadata?.businessId   || '');
+    await safeSet('restoration_business_name',metadata?.businessName || '');
+    await safeSet('restoration_version',      metadata?.systemVersion || '');
+
+    // Doble garantía: setup_completed = 1 directamente en config
+    try {
+      await query('UPDATE `config` SET `setup_completed` = 1 WHERE `id` = 1');
+      // Si por alguna razón config está vacía, insertar fila mínima
+      const rows = await query('SELECT id FROM `config` WHERE id = 1 LIMIT 1');
+      if (!rows || !rows.length) {
+        await query("INSERT IGNORE INTO `config` (id, setup_completed) VALUES (1, 1)");
+      }
+    } catch (_) {}
+
+    console.log(`[respaldos][setup] Restauración tipo="${tipo}" guardada. Business: "${metadata?.businessName}" — ${now}`);
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   //  POST /api/respaldos/setup/restaurar-local
   //  Restaura desde un archivo .tcbak en base64 sin sesión de usuario.
   //  Body: { base64, fileName, password }
@@ -1170,15 +1341,41 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       const fileBuffer = Buffer.from(base64, 'base64');
       const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
 
-      await restorePayloadToDb(payload, query);
+      // Verificación preventiva: si el backup no tiene usuarios, avisarlo antes de restaurar
+      const backupUserCount = Array.isArray(payload?.data?.users) ? payload.data.users.length : 0;
+      console.log(`[respaldos][setup] Restaurando backup: ${backupUserCount} usuario(s), ${payload?.stats?.productos || 0} producto(s), ${payload?.stats?.ventas || 0} venta(s)`);
+
+      const restoreResult = await restorePayloadToDb(payload, query);
+
+      if (restoreResult.userCount === 0) {
+        // El backup no tenía usuarios (o la restauración de usuarios falló).
+        // setup_completed ya fue puesto a 0 dentro de restorePayloadToDb, así que
+        // el usuario verá el wizard de primera instalación en lugar del overlay "corrompido".
+        const motivo = backupUserCount === 0
+          ? 'Este respaldo no contiene usuarios registrados.'
+          : `El respaldo tiene ${backupUserCount} usuario(s) en el archivo pero no se pudieron restaurar.`;
+
+        return res.status(422).json({
+          ok:    false,
+          code:  'NO_USERS_IN_BACKUP',
+          error: `${motivo} La aplicación se reiniciará en modo de configuración inicial para que puedas comenzar desde cero.`,
+          reiniciarRequerido: true,
+          setupReset: true,   // el frontend puede reiniciar la app igualmente
+        });
+      }
+
+      // Guardar metadata de restauración (audit + setup_completed garantizado)
+      await _saveRestorationMetadata(metadata, 'local');
 
       res.json({
         ok:                true,
         mensaje:           'Restauración completada. Reinicia la aplicación para aplicar los cambios.',
         metadata,
+        usersRestored:     restoreResult.userCount,
         reiniciarRequerido: true,
       });
     } catch (e) {
+      console.error('[respaldos][setup] Error en restaurar-local:', e.message);
       res.status(500).json({ ok: false, error: e.message });
     }
   });
@@ -1200,16 +1397,49 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         return res.status(503).json({ ok: false, error: 'La nube no está disponible o no está configurada en este dispositivo.' });
       }
 
-      // Buscar businessId en índice R2
+      // ── Paso 1: Buscar businessId en índice R2 por email ────────────────
       const idxKey = r2.emailIndexKey(email);
       const idx    = await r2.getJson(idxKey);
 
-      if (!idx || !idx.businessIds || !idx.businessIds.length) {
-        return res.status(404).json({ ok: false, error: 'No se encontraron respaldos en la nube para este correo.' });
+      let resolvedBusinessIds = idx?.businessIds?.length ? idx.businessIds : null;
+
+      // ── Paso 2: Fallback por TECNO_CAJA_LICENSE_UID ──────────────────────
+      // El índice email→businessId se crea solo cuando se sube un backup desde
+      // este dispositivo. Si el backup fue subido en otro dispositivo o la
+      // primera instalación nunca creó el índice, el lookup por email falla.
+      // En ese caso intentamos directamente con la UID de licencia del .env.
+      if (!resolvedBusinessIds) {
+        const envUid = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+        if (envUid) {
+          console.log(`[respaldos][setup/cloud/auth] Índice email no encontrado. Probando fallback con TECNO_CAJA_LICENSE_UID="${envUid}"`);
+          try {
+            const fallbackObjects = await r2.listObjects(r2.backupPrefix(envUid));
+            const fallbackBackups = fallbackObjects.filter(o => (o.Key || '').endsWith('.tcbak'));
+            if (fallbackBackups.length > 0) {
+              console.log(`[respaldos][setup/cloud/auth] Fallback exitoso: ${fallbackBackups.length} respaldo(s) encontrado(s) con UID de licencia.`);
+              resolvedBusinessIds = [envUid];
+              // Registrar el índice en R2 para futuros lookups por email
+              try {
+                const newIdx = { businessIds: [envUid], createdByFallback: true, createdAt: new Date().toISOString() };
+                await r2.putJson(idxKey, newIdx);
+                console.log(`[respaldos][setup/cloud/auth] Índice email actualizado en R2 para futuros lookups.`);
+              } catch (_) { /* non-fatal */ }
+            }
+          } catch (fallbackErr) {
+            console.warn(`[respaldos][setup/cloud/auth] Fallback con UID de licencia también falló: ${fallbackErr.message}`);
+          }
+        }
       }
 
-      // Listar backups del primer businessId (el principal)
-      const businessId = idx.businessIds[0];
+      if (!resolvedBusinessIds) {
+        return res.status(404).json({
+          ok: false,
+          error: 'No se encontraron respaldos en la nube para este correo. Si subiste el respaldo desde otro dispositivo, asegúrate de usar el mismo correo con el que creaste la cuenta en ese dispositivo.',
+        });
+      }
+
+      // ── Paso 3: Listar backups del primer businessId (el principal) ──────
+      const businessId = resolvedBusinessIds[0];
       const prefix     = r2.backupPrefix(businessId);
       const objects    = await r2.listObjects(prefix);
       const backups    = objects
@@ -1224,7 +1454,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified))
         .slice(0, 20);
 
-      res.json({ ok: true, businessId, businessIds: idx.businessIds, backups, email });
+      res.json({ ok: true, businessId, businessIds: resolvedBusinessIds, backups, email });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
@@ -1329,15 +1559,36 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       }
 
       // Restaurar
-      await restorePayloadToDb(payload, query);
+      const backupUserCount = Array.isArray(payload?.data?.users) ? payload.data.users.length : 0;
+      console.log(`[respaldos][setup] Restaurando backup nube: ${backupUserCount} usuario(s), ${payload?.stats?.productos || 0} producto(s)`);
+
+      const restoreResult = await restorePayloadToDb(payload, query);
+
+      if (restoreResult.userCount === 0) {
+        const motivo = backupUserCount === 0
+          ? 'Este respaldo no contiene usuarios registrados.'
+          : `El respaldo tiene ${backupUserCount} usuario(s) pero no se pudieron restaurar.`;
+        return res.status(422).json({
+          ok:    false,
+          code:  'NO_USERS_IN_BACKUP',
+          error: `${motivo} La aplicación se reiniciará en modo de configuración inicial.`,
+          reiniciarRequerido: true,
+          setupReset: true,
+        });
+      }
+
+      // Guardar metadata de restauración (audit + setup_completed garantizado)
+      await _saveRestorationMetadata(metadata, 'nube');
 
       res.json({
         ok:                true,
         mensaje:           'Restauración desde la nube completada. Reinicia la aplicación.',
         metadata,
+        usersRestored:     restoreResult.userCount,
         reiniciarRequerido: true,
       });
     } catch (e) {
+      console.error('[respaldos][setup] Error en restaurar-nube:', e.message);
       res.status(500).json({ ok: false, error: e.message });
     }
   });

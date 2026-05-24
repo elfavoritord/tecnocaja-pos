@@ -1,18 +1,33 @@
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 
-!define VC_REDIST_FILE "vc_redist.x64.exe"
+!define VC_REDIST_FILE    "vc_redist.x64.exe"
 !define MARIADB_HELPER_FILE "ensure-mariadb-service.ps1"
-!define APP_NAME "Tecno Caja"
-!define APP_DATA_DIR "$APPDATA\TecnoCaja"
-!define APP_PROGRAMDATA_DIR "$PROGRAMDATA\TecnoCaja"
-!define MARIADB_LOG "%TEMP%\tecnocaja-mariadb-install.log"
+!define APP_NAME          "Tecno Caja"
+
+; ── Paths que usa el runtime ─────────────────────────────────────────────────
+;
+; REGLA: si cambias un path aquí, cambia el mismo en runtime-bootstrap.js
+;         y en ensure-local-mysql.js (getManagedMariaDbRoot).
+;
+; userData principal → runtime-bootstrap.js: path.join(APPDATA, 'Tecno Caja')
+!define APP_ROAMING_DIR         "$APPDATA\Tecno Caja"
+; Electron puede usar LOCALAPPDATA en entorno portable o con setPath()
+!define APP_LOCAL_DIR           "$LOCALAPPDATA\Tecno Caja"
+; package.json "name"=pos-system → dev-builds y versiones antiguas usaban este path
+!define APP_LEGACY_ROAMING_DIR  "$APPDATA\pos-system"
+; ProgramData con espacio → ensure-local-mysql.js  getManagedMariaDbRoot()
+!define APP_PROGRAMDATA_DIR     "$PROGRAMDATA\Tecno Caja"
+; ProgramData sin espacio → ensure-mariadb-service.ps1  $programDataRoot
+!define APP_PROGRAMDATA_NOSPACE "$PROGRAMDATA\TecnoCaja"
+; Documentos → electron/main.js  path.join(documents, 'TecnoCaja', 'Backups')
+!define APP_DOCS_DIR            "$DOCUMENTS\TecnoCaja"
+; Log de instalación MariaDB (siempre limpiable)
+!define MARIADB_INSTALL_LOG     "$TEMP\tecnocaja-mariadb-install.log"
 
 !ifndef BUILD_UNINSTALLER
 
-; -------------------------------------------------------
-; Verifica si Visual C++ Redistributable ya está instalado
-; -------------------------------------------------------
+; ── Verifica si Visual C++ Redistributable ya está instalado ─────────────────
 Function CheckVCRedistInstalled
   StrCpy $0 0
   SetRegView 64
@@ -28,11 +43,7 @@ Function CheckVCRedistInstalled
   SetRegView 32
 FunctionEnd
 
-; -------------------------------------------------------
-; Instala VC++ Redistributable desde archivo local incluido
-; Busca en $INSTDIR\resources\ (extraResources), luego junto al .exe
-; NO depende de internet
-; -------------------------------------------------------
+; ── Instala VC++ Redistributable desde archivo local incluido ─────────────────
 Function EnsureVCRedistReady
   Call CheckVCRedistInstalled
   ${If} $0 = 1
@@ -42,9 +53,6 @@ Function EnsureVCRedistReady
 
   DetailPrint "Preparando Microsoft Visual C++ Redistributable x64..."
 
-  ; Buscar en este orden:
-  ; 1. Incluido en los recursos del instalador ($INSTDIR\resources\)
-  ; 2. Junto al archivo .exe del instalador ($EXEDIR)
   ${If} ${FileExists} "$INSTDIR\resources\${VC_REDIST_FILE}"
     DetailPrint "Usando prerrequisito incluido en la instalación..."
     CopyFiles /SILENT "$INSTDIR\resources\${VC_REDIST_FILE}" "$PLUGINSDIR\${VC_REDIST_FILE}"
@@ -70,23 +78,20 @@ Function EnsureVCRedistReady
   Abort
 FunctionEnd
 
-; -------------------------------------------------------
-; Crea las carpetas de datos de la aplicación
-; -------------------------------------------------------
+; ── Crea las carpetas de datos de la aplicación ───────────────────────────────
 Function CreateAppDataFolders
   DetailPrint "Creando carpetas de datos de ${APP_NAME}..."
-  CreateDirectory "${APP_DATA_DIR}"
-  CreateDirectory "${APP_DATA_DIR}\data"
-  CreateDirectory "${APP_DATA_DIR}\uploads"
-  CreateDirectory "${APP_DATA_DIR}\logs"
-  CreateDirectory "${APP_DATA_DIR}\backups"
-  CreateDirectory "${APP_DATA_DIR}\secure-backups"
+  CreateDirectory "${APP_ROAMING_DIR}"
+  CreateDirectory "${APP_ROAMING_DIR}\data"
+  CreateDirectory "${APP_ROAMING_DIR}\uploads"
+  CreateDirectory "${APP_ROAMING_DIR}\logs"
+  CreateDirectory "${APP_ROAMING_DIR}\backups"
+  CreateDirectory "${APP_ROAMING_DIR}\secure-backups"
+  CreateDirectory "${APP_ROAMING_DIR}\config"
   DetailPrint "Carpetas de datos creadas correctamente."
 FunctionEnd
 
-; -------------------------------------------------------
-; Agrega regla de Firewall para el servidor local
-; -------------------------------------------------------
+; ── Regla de Firewall para el servidor local ──────────────────────────────────
 Function AddFirewallRule
   DetailPrint "Configurando regla de Firewall para ${APP_NAME}..."
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${APP_NAME} Server"'
@@ -99,10 +104,7 @@ Function AddFirewallRule
   ${EndIf}
 FunctionEnd
 
-; -------------------------------------------------------
-; Configura MariaDB incluida en el instalador
-; Verifica si ya existe antes de reinstalar
-; -------------------------------------------------------
+; ── Configura y levanta MariaDB embebida ──────────────────────────────────────
 Function EnsureMariaDbService
   DetailPrint "Verificando y configurando MariaDB para ${APP_NAME}..."
   SetOutPath "$PLUGINSDIR"
@@ -114,16 +116,14 @@ Function EnsureMariaDbService
     DetailPrint "MariaDB configurada y lista para ${APP_NAME}."
   ${ElseIf} $0 = 20
     DetailPrint "Advertencia: no se encontró el bundle de MariaDB en la instalación."
-    MessageBox MB_ICONEXCLAMATION|MB_OK "${APP_NAME} no encontró los archivos de MariaDB incluidos.$\r$\n$\r$\nLa aplicación se instaló correctamente, pero la base de datos local requiere configuración manual.$\r$\n$\r$\nLog de diagnóstico: ${MARIADB_LOG}"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "${APP_NAME} no encontró los archivos de MariaDB incluidos.$\r$\n$\r$\nLa aplicación se instaló correctamente, pero la base de datos local requiere configuración manual.$\r$\n$\r$\nLog de diagnóstico: ${MARIADB_INSTALL_LOG}"
   ${Else}
     DetailPrint "Advertencia: MariaDB no pudo configurarse automáticamente (código $0)."
-    MessageBox MB_ICONEXCLAMATION|MB_OK "${APP_NAME} no pudo configurar MariaDB automáticamente.$\r$\n$\r$\nPuedes continuar la instalación. Si usas base de datos local, revísala manualmente.$\r$\n$\r$\nLog de diagnóstico: ${MARIADB_LOG}$\r$\n$\r$\nCódigo de error: $0"
+    MessageBox MB_ICONEXCLAMATION|MB_OK "${APP_NAME} no pudo configurar MariaDB automáticamente.$\r$\n$\r$\nPuedes continuar la instalación. Si usas base de datos local, revísala manualmente.$\r$\n$\r$\nLog de diagnóstico: ${MARIADB_INSTALL_LOG}$\r$\n$\r$\nCódigo de error: $0"
   ${EndIf}
 FunctionEnd
 
-; -------------------------------------------------------
-; Hook principal de instalación
-; -------------------------------------------------------
+; ── Hook principal de instalación ─────────────────────────────────────────────
 !macro customInstall
   ${ifNot} ${isUpdated}
     Call EnsureVCRedistReady
@@ -133,28 +133,87 @@ FunctionEnd
   Call AddFirewallRule
 !macroend
 
-; -------------------------------------------------------
-; Hook de desinstalación: limpia servicios y regla de Firewall
-; Pregunta antes de borrar datos para proteger información
-; -------------------------------------------------------
+; ── Hook de desinstalación ────────────────────────────────────────────────────
+;
+; Flujo:
+;   1. Detiene y elimina el servicio MariaDB (siempre, sin preguntar)
+;   2. Elimina la regla de Firewall (siempre)
+;   3. Pregunta: ¿eliminar también TODOS los datos?
+;        SÍ → borra todos los directorios de datos (lista exhaustiva abajo)
+;        NO → conserva los datos (útil si reinstalarán y quieren migrar)
+;
+; Nota: en una ACTUALIZACIÓN (${isUpdated}), NSIS no llama customUnInstall,
+; así que este hook NO se ejecuta durante updates → los datos se preservan.
+;
 !macro customUnInstall
+
+  ; ── 1. Detener y eliminar servicio MariaDB (siempre) ──────────────────────
+  DetailPrint "Deteniendo servicio MariaDB de ${APP_NAME}..."
   SetOutPath "$PLUGINSDIR"
   File "/oname=$PLUGINSDIR\${MARIADB_HELPER_FILE}" "${__FILEDIR__}\${MARIADB_HELPER_FILE}"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\${MARIADB_HELPER_FILE}" -Uninstall'
+  DetailPrint "Servicio MariaDB detenido."
 
-  MessageBox MB_ICONQUESTION|MB_YESNO "¿Deseas eliminar también los datos locales y la base de datos de ${APP_NAME}?$\r$\n$\r$\n⚠ Esto borrará permanentemente:$\r$\n• Ventas e inventario$\r$\n• Clientes y productos$\r$\n• Respaldos guardados en esta PC$\r$\n$\r$\nSelecciona NO para conservar los datos." IDYES removeData IDNO keepData
-
-  removeData:
-    RMDir /r "${APP_DATA_DIR}"
-    RMDir /r "${APP_PROGRAMDATA_DIR}"
-    DetailPrint "Datos de ${APP_NAME} eliminados."
-    Goto doneData
-  keepData:
-    DetailPrint "Datos de ${APP_NAME} conservados en ${APP_DATA_DIR}."
-  doneData:
-
+  ; ── 2. Eliminar regla de Firewall (siempre) ───────────────────────────────
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${APP_NAME} Server"'
   DetailPrint "Regla de Firewall de ${APP_NAME} eliminada."
+
+  ; ── 3. Preguntar si eliminar datos ────────────────────────────────────────
+  MessageBox MB_ICONQUESTION|MB_YESNO \
+    "¿Deseas eliminar también TODOS los datos de ${APP_NAME}?$\r$\n$\r$\n\
+⚠ Esto borrará PERMANENTEMENTE:$\r$\n\
+• Base de datos (ventas, clientes, inventario)$\r$\n\
+• Respaldos guardados en esta PC$\r$\n\
+• Imágenes de productos$\r$\n\
+• Configuración de la app$\r$\n\
+• Datos de MariaDB$\r$\n$\r$\n\
+Selecciona SÍ solo si deseas una desinstalación completa.$\r$\n\
+Selecciona NO para conservar los datos (útil antes de reinstalar)." \
+    IDYES removeAllData IDNO keepData
+
+  removeAllData:
+    DetailPrint "Eliminando todos los datos de ${APP_NAME}..."
+
+    ; ── AppData\Roaming\Tecno Caja  (userData principal) ──────────────────
+    RMDir /r "${APP_ROAMING_DIR}"
+    DetailPrint "Eliminado: ${APP_ROAMING_DIR}"
+
+    ; ── AppData\Local\Tecno Caja  (Electron userData alternativo) ─────────
+    RMDir /r "${APP_LOCAL_DIR}"
+    DetailPrint "Eliminado: ${APP_LOCAL_DIR}"
+
+    ; ── AppData\Roaming\pos-system  (nombre legado, dev builds) ───────────
+    RMDir /r "${APP_LEGACY_ROAMING_DIR}"
+    DetailPrint "Eliminado: ${APP_LEGACY_ROAMING_DIR}"
+
+    ; ── ProgramData\Tecno Caja  (con espacio – ensure-local-mysql.js) ─────
+    RMDir /r "${APP_PROGRAMDATA_DIR}"
+    DetailPrint "Eliminado: ${APP_PROGRAMDATA_DIR}"
+
+    ; ── ProgramData\TecnoCaja  (sin espacio – ensure-mariadb-service.ps1) ─
+    RMDir /r "${APP_PROGRAMDATA_NOSPACE}"
+    DetailPrint "Eliminado: ${APP_PROGRAMDATA_NOSPACE}"
+
+    ; ── Documentos\TecnoCaja  (carpeta de backups en Documentos) ──────────
+    RMDir /r "${APP_DOCS_DIR}"
+    DetailPrint "Eliminado: ${APP_DOCS_DIR}"
+
+    ; ── Log temporal de instalación MariaDB ────────────────────────────────
+    Delete "${MARIADB_INSTALL_LOG}"
+
+    ; ── Claves de registro de la app (Electron/Squirrel puede escribir aquí) ──
+    DeleteRegKey HKCU "Software\Tecno Caja"
+    DeleteRegKey HKCU "Software\pos-system"
+    DeleteRegKey HKLM "Software\Tecno Caja"
+
+    DetailPrint "Todos los datos de ${APP_NAME} han sido eliminados."
+    Goto doneData
+
+  keepData:
+    DetailPrint "Datos conservados. Puedes reinstalar ${APP_NAME} y recuperarlos."
+
+  doneData:
+
 !macroend
 
 !endif

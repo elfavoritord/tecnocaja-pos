@@ -2354,6 +2354,17 @@ function showLoginScreen() {
   document.getElementById('cash-gate-screen')?.classList.add('hidden');
   renderStartupLanguageOptions();
   applyRememberedLoginUser();
+
+  // setupCorrupted: setup_completed=1 pero sin usuarios (restauración incompleta).
+  // NO mostrar el asistente; el wizard.js ya muestra el overlay de error.
+  // Pasamos 'existing' para que el login muestre la pantalla normal (aunque vacía),
+  // mientras el overlay de error superpone opciones de reparación.
+  if (setupState?.setupCorrupted) {
+    setLoginMode('existing');
+    // No cargar usuarios (no existen); wizard.js mostrará el overlay de reparación.
+    return;
+  }
+
   setLoginMode(setupState?.setupRequired ? 'new' : 'existing');
   if (!setupState?.setupRequired) {
     loadLoginUsers();
@@ -2782,12 +2793,27 @@ function openFactoryResetModal() {
         <button class="password-toggle" type="button" onclick="togglePasswordVisibility('factory-reset-password', this)" aria-label="Mostrar clave">👁</button>
       </div>
     </div>
-    <div class="form-group">
-      <label>Confirmación remota</label>
-      <input type="text" id="factory-reset-cloud-confirmation" class="form-input" placeholder="Escribe BORRAR FIREBASE">
-      <p style="color:var(--text2);font-size:0.82rem;line-height:1.5;margin-top:0.5rem">
-        Esto también borrará la licencia y la información sincronizada en Firebase. Solo hazlo si quieres empezar desde cero completo.
-      </p>
+    <div class="form-group" style="margin-top:0.25rem">
+      <label style="display:flex;align-items:flex-start;gap:0.6rem;cursor:pointer;font-weight:normal">
+        <input type="checkbox" id="factory-reset-purge-firebase"
+          style="margin-top:3px;flex-shrink:0;accent-color:var(--danger)"
+          onchange="
+            const fields = document.getElementById('factory-reset-firebase-fields');
+            if(this.checked) { fields.style.display='block'; fields.querySelector('input')?.focus(); }
+            else { fields.style.display='none'; fields.querySelector('input').value=''; }
+          ">
+        <span>
+          <strong>También borrar Firebase</strong><br>
+          <small style="color:var(--text2)">Elimina la licencia, usuarios remotos, reportes y datos sincronizados en la nube. Opcional — puedes resetear solo lo local sin tocar Firebase.</small>
+        </span>
+      </label>
+      <div id="factory-reset-firebase-fields" style="display:none;margin-top:0.85rem;padding:0.85rem;border:1px solid rgba(239,68,68,0.28);border-radius:12px;background:rgba(239,68,68,0.08)">
+        <label style="font-size:0.85rem;margin-bottom:0.4rem;display:block">Confirmación remota</label>
+        <input type="text" id="factory-reset-cloud-confirmation" class="form-input" placeholder="Escribe BORRAR FIREBASE">
+        <p style="color:var(--text2);font-size:0.8rem;line-height:1.5;margin-top:0.5rem;margin-bottom:0">
+          Escribe <strong>BORRAR FIREBASE</strong> para confirmar que deseas limpiar también la nube.
+        </p>
+      </div>
     </div>
     <div id="factory-reset-status" style="color:var(--text2);font-size:0.84rem;margin-top:0.75rem"></div>
   `;
@@ -2803,11 +2829,13 @@ function openFactoryResetModal() {
 async function submitFactoryResetModal() {
   const confirmationInput = document.getElementById('factory-reset-confirmation');
   const passwordInput = document.getElementById('factory-reset-password');
+  const purgeFirebaseCheckbox = document.getElementById('factory-reset-purge-firebase');
   const cloudConfirmationInput = document.getElementById('factory-reset-cloud-confirmation');
   const status = document.getElementById('factory-reset-status');
 
   const confirmation = confirmationInput?.value?.trim().toUpperCase() || '';
   const password = passwordInput?.value?.trim() || '';
+  const purgeFirebase = Boolean(purgeFirebaseCheckbox?.checked);
   const cloudConfirmation = cloudConfirmationInput?.value?.trim().toUpperCase() || '';
 
   if (confirmation !== 'ELIMINAR TODO') {
@@ -2818,19 +2846,24 @@ async function submitFactoryResetModal() {
     if (status) status.textContent = 'Debes ingresar la clave de seguridad.';
     return;
   }
-  if (cloudConfirmation !== 'BORRAR FIREBASE') {
-    if (status) status.textContent = 'Debes escribir BORRAR FIREBASE para borrar la nube.';
+  // Solo validar BORRAR FIREBASE si el checkbox está marcado
+  if (purgeFirebase && cloudConfirmation !== 'BORRAR FIREBASE') {
+    if (status) status.textContent = 'Debes escribir BORRAR FIREBASE para confirmar que borrarás la nube.';
     return;
   }
 
-  if (status) status.textContent = 'Ejecutando reset completo...';
+  if (status) {
+    status.textContent = purgeFirebase
+      ? 'Borrando datos locales y Firebase...'
+      : 'Borrando datos locales (Firebase se conservará)...';
+  }
 
   try {
     const response = await api.resetSystem({
       confirmation,
       password,
-      purgeFirebase: true,
-      cloudConfirmation,
+      purgeFirebase,
+      cloudConfirmation: purgeFirebase ? cloudConfirmation : '',
       factoryReset: true,
       actorUserId: 1,
       actorUserName: 'Factory Reset',
@@ -2839,11 +2872,10 @@ async function submitFactoryResetModal() {
 
     closeAllModals();
     if (response.firebasePurged) {
-      showToast('Reset completo realizado. La aplicación se reiniciará.', 'success');
-      setTimeout(() => window.location.reload(), 2000);
-      return;
+      showToast('Reset completo realizado (local + Firebase). La aplicación se reiniciará.', 'success');
+    } else {
+      showToast('Reset local realizado. Firebase conservado. La aplicación se reiniciará.', 'success');
     }
-    showToast('Reset realizado parcialmente. Reinicia la aplicación.', 'warning');
     setTimeout(() => window.location.reload(), 2000);
   } catch (error) {
     if (status) status.textContent = error.message || 'No se pudo ejecutar el reset.';
@@ -5380,7 +5412,12 @@ async function submitCashGate() {
       DB.config.cajaAbierta = true;
       DB.config.cajaMonto = amount;
     }
-    DB.caja = { ...DB.caja, abierta: true, sessionId: result?.sessionId || DB.caja?.sessionId || null };
+    DB.caja = {
+      ...DB.caja,
+      abierta: true,
+      sessionId: result?.sessionId || result?.activeSession?.id || DB.caja?.sessionId || null,
+      activeSession: result?.activeSession || DB.caja?.activeSession || null
+    };
     syncCajaState();
     applyRolePermissions();
     const gate = document.getElementById('cash-gate-screen');
@@ -6231,23 +6268,39 @@ async function submitGavetaOpen() {
 // ─── CORTE DE CAJA ────────────────────────────────────────────────
 
 function _getCorteData() {
+  const session = _getActiveCajaSession();
   const todayKey = getDateKeyFromValue(new Date());
 
-  // Hora apertura — buscar el último movimiento de tipo 'Apertura'
-  const aperturaMov = (DB.movimientosCaja || []).find(m => m.tipo === 'Apertura');
-  const horaApertura = aperturaMov
-    ? new Date(aperturaMov.hora).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo' })
-    : '—';
+  // Hora apertura — preferir la hora de apertura de la sesión activa,
+  // con fallback al primer movimiento de tipo 'Apertura'
+  let horaApertura = '—';
+  let montoApertura = 0;
+  if (session?.openedAt) {
+    horaApertura = new Date(session.openedAt).toLocaleTimeString('es-DO', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo'
+    });
+    montoApertura = session.openedAmount || 0;
+  } else {
+    const aperturaMov = (DB.movimientosCaja || []).find(m => m.tipo === 'Apertura');
+    if (aperturaMov) {
+      horaApertura = new Date(aperturaMov.hora).toLocaleTimeString('es-DO', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo'
+      });
+      montoApertura = Number(aperturaMov.monto || 0);
+    }
+  }
 
-  // Ventas de hoy
-  const ventasHoy = (DB.ventas || []).filter(s => {
+  // Ventas del turno activo (filtra por sesión si está disponible)
+  const ventasTurno = (DB.ventas || []).filter(s => {
     if (s.cancelada) return false;
+    if (String(s.estadoVenta || 'pagada') !== 'pagada') return false;
+    if (session) return _isSaleInActiveSession(s);
     const fecha = s.cobradaEn || s.fecha;
-    return getDateKeyFromValue(fecha) === todayKey && String(s.estadoVenta || 'pagada') === 'pagada';
+    return getDateKeyFromValue(fecha) === todayKey;
   });
 
   let efectivo = 0, tarjeta = 0, transferencia = 0, credito = 0, descuentos = 0;
-  for (const s of ventasHoy) {
+  for (const s of ventasTurno) {
     const mth = String(s.metodo || '').trim();
     const total = Number(s.total || 0);
     descuentos += Number(s.descuento || 0);
@@ -6256,20 +6309,22 @@ function _getCorteData() {
     else if (mth === 'transferencia') transferencia += total;
     else if (mth === 'credito') credito += total;
     else if (mth === 'mixto') {
-      // Para mixto, distribuir según los campos
-      efectivo    += Number(s.mixedCashAmount    || 0);
-      tarjeta     += Number(s.mixedCardAmount    || 0);
+      efectivo      += Number(s.mixedCashAmount    || 0);
+      tarjeta       += Number(s.mixedCardAmount    || 0);
       transferencia += Number(s.mixedTransferAmount || 0);
     }
   }
 
-  // Movimientos de caja de hoy
+  // Movimientos del turno activo
   let entradas = 0, salidas = 0, devoluciones = 0;
   for (const mov of DB.movimientosCaja || []) {
     const monto = Number(mov.monto || 0);
-    const movDay = getDateKeyFromValue(mov.hora);
-    if (movDay !== todayKey) continue;
     if (monto === 0) continue; // gaveta eventos
+    if (session) {
+      if (!_isMovementInActiveSession(mov)) continue;
+    } else {
+      if (getDateKeyFromValue(mov.hora) !== todayKey) continue;
+    }
     if (mov.tipo === 'Ingreso adicional') entradas += monto;
     else if (mov.tipo === 'Devolución' && monto < 0) devoluciones += Math.abs(monto);
     else if (monto < 0) salidas += Math.abs(monto);
@@ -6277,14 +6332,13 @@ function _getCorteData() {
 
   // Total esperado en la gaveta:
   // monto inicial (apertura) + ventas efectivo + entradas - salidas - devoluciones
-  const montoApertura = aperturaMov ? Number(aperturaMov.monto || 0) : 0;
   const totalEsperado = Math.max(0, montoApertura + efectivo + entradas - salidas - devoluciones);
 
   return {
     cajero: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Cajero',
     horaApertura,
     horaCorte: new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo' }),
-    ventasCount: ventasHoy.length,
+    ventasCount: ventasTurno.length,
     efectivo, tarjeta, transferencia, credito,
     descuentos, devoluciones, entradas, salidas,
     totalEsperado,
@@ -6518,7 +6572,7 @@ async function executeCashCierre({ print = false } = {}) {
 
     // 2. Actualizar estado local
     DB.config = { ...DB.config, ...(response.config || {}) };
-    DB.caja   = { ...DB.caja, sessionId: null, abierta: false };
+    DB.caja   = { ...DB.caja, sessionId: null, abierta: false, activeSession: null };
     cajaAbierta = false;
     DB.movimientosCaja.unshift({
       tipo:          'Cierre',
@@ -7085,6 +7139,24 @@ function syncCajaState() {
       ? appText('cash.closeHint', 'Registra el monto final y una observación antes de cerrar.')
       : appText('cash.openHint', 'Indica el monto inicial y deja una nota para la apertura.');
   }
+
+  // ── Fecha operativa y advertencia de turno largo ──────────────────────────
+  const operativeDateEl = document.getElementById('caja-operative-date');
+  const staleWarningEl  = document.getElementById('caja-stale-warning');
+  if (operativeDateEl && staleWarningEl) {
+    const session = _getActiveCajaSession();
+    if (cajaAbierta && session?.operativeDate) {
+      // Formatear la fecha operativa de manera legible
+      const [year, month, day] = session.operativeDate.split('-');
+      const dateLabel = `${day}/${month}/${year}`;
+      operativeDateEl.textContent = `📅 Fecha operativa: ${dateLabel}`;
+      operativeDateEl.style.display = '';
+      staleWarningEl.style.display = session.staleWarning ? '' : 'none';
+    } else {
+      operativeDateEl.style.display = 'none';
+      staleWarningEl.style.display = 'none';
+    }
+  }
   syncCashStartupGate();
   renderCajaExpenseSummary();
   renderCajaIncomeSummary();
@@ -7124,7 +7196,21 @@ async function toggleCaja() {
         ...getActorPayload()
       });
       DB.config = { ...DB.config, ...response.config };
-      DB.caja = { ...DB.caja, sessionId: response.sessionId, abierta: true };
+      DB.caja = {
+        ...DB.caja,
+        sessionId: response.sessionId || response.activeSession?.id || DB.caja?.sessionId,
+        abierta: true,
+        activeSession: response.activeSession || (response.sessionId ? {
+          id: response.sessionId,
+          openedAt: new Date().toISOString(),
+          openedAmount: monto,
+          currentAmount: monto,
+          openedByUserName: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Sistema',
+          operativeDate: new Date().toISOString().slice(0, 10),
+          hoursOpen: 0,
+          staleWarning: false
+        } : null)
+      };
       DB.movimientosCaja.unshift({
         tipo: 'Apertura',
         monto,
@@ -7212,6 +7298,51 @@ function getDateKeyFromValue(value) {
   return '';
 }
 
+// ─── Helpers para filtrar por turno/sesión activa ────────────────────────────
+// Las ventas y movimientos se filtran por la sesión abierta (operative_date)
+// en lugar de "hoy en el reloj", así los turnos que cruzan medianoche funcionan
+// correctamente y las sesiones cerradas nunca se mezclan con las nuevas.
+
+function _getActiveCajaSession() {
+  return DB.caja?.activeSession || null;
+}
+
+/**
+ * Devuelve true si la venta pertenece a la sesión activa actual.
+ * Usa cashSessionId cuando está disponible (post-migración); si no, usa la
+ * operative_date de la sesión como fallback para ventas antiguas.
+ */
+function _isSaleInActiveSession(sale) {
+  const session = _getActiveCajaSession();
+  if (!session) return false;
+  if (sale.cashSessionId != null) {
+    return Number(sale.cashSessionId) === Number(session.id);
+  }
+  // Fallback para ventas sin cashSessionId (antes de la migración)
+  const fecha = sale.cobradaEn || sale.fecha;
+  return getDateKeyFromValue(fecha) === (session.operativeDate || getDateKeyFromValue(new Date()));
+}
+
+/**
+ * Devuelve true si el movimiento pertenece a la sesión activa actual.
+ * Usa el timestamp de apertura de la sesión para filtrar; si no hay sesión,
+ * cae a "hoy" como antes.
+ */
+function _isMovementInActiveSession(mov) {
+  const session = _getActiveCajaSession();
+  if (!session) return false;
+  if (session.openedAt) {
+    const movTime = mov.hora ? new Date(mov.hora).getTime() : 0;
+    const sessionOpenTime = new Date(session.openedAt).getTime();
+    return movTime >= sessionOpenTime;
+  }
+  // Fallback por operative_date
+  const operativeDate = session.operativeDate || getDateKeyFromValue(new Date());
+  return getDateKeyFromValue(mov.hora) === operativeDate;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 function getCajaExpenseBreakdown() {
   const labels = {
     Gasto: 'gasto',
@@ -7225,13 +7356,17 @@ function getCajaExpenseBreakdown() {
     devolucion: 0,
     retiro_efectivo: 0
   };
+  const session = _getActiveCajaSession();
   const todayKey = getDateKeyFromValue(new Date());
   for (const mov of DB.movimientosCaja || []) {
     const amount = Number(mov.monto || 0);
     const typeKey = labels[mov.tipo];
     if (!typeKey || amount >= 0) continue;
-    const movementDay = getDateKeyFromValue(mov.hora);
-    if (movementDay !== todayKey) continue;
+    if (session) {
+      if (!_isMovementInActiveSession(mov)) continue;
+    } else {
+      if (getDateKeyFromValue(mov.hora) !== todayKey) continue;
+    }
     totals[typeKey] += Math.abs(amount);
   }
   return totals;
@@ -7256,12 +7391,16 @@ function getCajaIncomeBreakdown() {
   const totals = {
     ingreso_adicional: 0
   };
+  const session = _getActiveCajaSession();
   const todayKey = getDateKeyFromValue(new Date());
   for (const mov of DB.movimientosCaja || []) {
     const amount = Number(mov.monto || 0);
     if (amount <= 0 || mov.tipo !== 'Ingreso adicional') continue;
-    const movementDay = getDateKeyFromValue(mov.hora);
-    if (movementDay !== todayKey) continue;
+    if (session) {
+      if (!_isMovementInActiveSession(mov)) continue;
+    } else {
+      if (getDateKeyFromValue(mov.hora) !== todayKey) continue;
+    }
     totals.ingreso_adicional += amount;
   }
   return totals;
@@ -7282,6 +7421,7 @@ function getCajaDaySalesSummary() {
     tarjeta: 0,
     transferencia: 0
   };
+  const session = _getActiveCajaSession();
   const todayKey = getDateKeyFromValue(new Date());
 
   for (const sale of DB.ventas || []) {
@@ -7300,7 +7440,13 @@ function getCajaDaySalesSummary() {
     }
 
     if (!['efectivo', 'tarjeta', 'transferencia'].includes(method)) continue;
-    if (getDateKeyFromValue(saleDate) !== todayKey) continue;
+
+    // Filtrar por sesión activa (turno) en lugar de por fecha del reloj
+    if (session) {
+      if (!_isSaleInActiveSession(sale)) continue;
+    } else {
+      if (getDateKeyFromValue(saleDate) !== todayKey) continue;
+    }
 
     totals[method] += Number(sale.total || 0);
   }
