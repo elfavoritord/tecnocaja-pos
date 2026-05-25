@@ -1695,15 +1695,52 @@ async function sendNextCertificationCase() {
 }
 
 async function runCertificationSequence() {
+  const btns = document.querySelectorAll('[onclick="runCertificationSequence()"]');
+  btns.forEach((b) => { b.disabled = true; b.textContent = '⏳ Enviando…'; });
   try {
-    showFiscalToast('Ejecutando pruebas secuenciales DGII…', 'info');
-    const response = await fiscalApi('POST', '/certification/run-sequential', {});
-    showFiscalToast(`Secuencia completada: ${response.totalProcessed || 0} prueba(s) procesadas.`, 'success');
-    showFiscalTechnicalResult('Ejecución secuencial de certificación DGII', response);
+    showFiscalToast('Enviando todos los casos pendientes a DGII…', 'info');
+    // Paso 1: ráfaga de envíos (rápida, sin esperar respuesta de cada TrackID)
+    const response = await fiscalApi('POST', '/certification/run-sequential', { limit: 50 });
+    const sent = response.totalProcessed || 0;
+    showFiscalToast(`${sent} caso(s) enviado(s). Consultando estados…`, 'info');
+    showFiscalTechnicalResult('Envíos secuenciales DGII', response);
+    await loadCertificationCases();
+
+    // Paso 2: consulta masiva de TrackIDs para actualizar los estados
+    await new Promise((r) => setTimeout(r, 1500)); // Dar tiempo a DGII a procesar
+    const pollResponse = await fiscalApi('POST', '/certification/poll-statuses').catch(() => null);
+    if (pollResponse?.polled > 0) {
+      const aceptados = (pollResponse.results || []).filter((r) => r.estado === 'aceptado').length;
+      const rechazados = (pollResponse.results || []).filter((r) => r.estado === 'rechazado').length;
+      showFiscalToast(
+        `Estados actualizados: ${aceptados} aceptado(s)${rechazados ? `, ${rechazados} rechazado(s)` : ''}.`,
+        rechazados > 0 ? 'warning' : 'success'
+      );
+    }
     await loadCertificationCases();
     await loadFiscalStatus();
   } catch (err) {
-    showFiscalToast(`Error en la ejecución secuencial: ${err.message}`, 'error');
+    showFiscalToast(`Error: ${err.message}`, 'error');
+  } finally {
+    btns.forEach((b) => { b.disabled = false; b.textContent = '▶ Ejecutar pruebas secuenciales'; });
+  }
+}
+
+async function pollCertificationStatuses() {
+  try {
+    showFiscalToast('Consultando estados en DGII…', 'info');
+    const response = await fiscalApi('POST', '/certification/poll-statuses');
+    const aceptados = (response.results || []).filter((r) => r.estado === 'aceptado').length;
+    const rechazados = (response.results || []).filter((r) => r.estado === 'rechazado').length;
+    showFiscalToast(
+      `${response.polled || 0} consultado(s): ${aceptados} ✅${rechazados ? ` / ${rechazados} ❌` : ''}`,
+      rechazados > 0 ? 'warning' : 'success'
+    );
+    showFiscalTechnicalResult('Consulta de estados DGII', response);
+    await loadCertificationCases();
+    await loadFiscalStatus();
+  } catch (err) {
+    showFiscalToast(`Error consultando estados: ${err.message}`, 'error');
   }
 }
 

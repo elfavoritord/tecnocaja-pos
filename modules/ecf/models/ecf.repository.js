@@ -1251,7 +1251,7 @@ class EcfRepository {
     };
   }
 
-  async getNextPendingCertificationDocument() {
+  async getNextPendingCertificationDocument({ includeRejected = false } = {}) {
     const batchId = await this.getLatestCertificationBatchId();
     const params = [];
     let batchClause = '';
@@ -1259,17 +1259,19 @@ class EcfRepository {
       batchClause = ' AND certification_batch_id = ?';
       params.push(batchId);
     }
-    // Solo estados que aún no han sido evaluados por DGII o que son errores
-    // transitorios de red/auth. Los estados 'rechazado', 'error', 'error_xml' y
-    // 'error_firma' requieren intervención manual (botón ↺ individual); no se
-    // reintentam con "Enviar siguiente" para evitar quedar en bucle sobre el mismo caso.
+    // Estados base: no evaluados por DGII o errores transitorios de red/auth.
+    // Con includeRejected=true (ráfaga secuencial) se incluyen también los rechazados
+    // para permitir reenviarlos en el mismo pase sin intervención manual.
+    const estados = includeRejected
+      ? "'pendiente','firmado','error_auth','error_consulta','rechazado','error'"
+      : "'pendiente','firmado','error_auth','error_consulta'";
     const rows = await this.query(
       `SELECT *
        FROM ecf_documents
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
          ${batchClause}
-         AND estado_dgii IN ('pendiente', 'firmado', 'error_auth', 'error_consulta')
+         AND estado_dgii IN (${estados})
        ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
        LIMIT 1`,
       params

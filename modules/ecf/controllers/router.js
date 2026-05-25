@@ -104,6 +104,7 @@ function createEcfRouter(deps) {
   router.post('/certification/import', wrap((req) => service.importCertificationSet(req)));
   router.post('/certification/send-next', wrap((req) => service.sendNextCertificationCase(req)));
   router.post('/certification/run-sequential', wrap((req) => service.runCertificationSequence(req)));
+  router.post('/certification/poll-statuses', wrap(() => service.pollCertificationStatuses()));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/resend', wrap((req) => service.sendCertificationCase(Number(req.params.id), req, { forceResend: true })));
   router.get('/certification/cases/:id/track', wrap((req) => service.queryCertificationCase(Number(req.params.id))));

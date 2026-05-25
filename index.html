@@ -3396,11 +3396,12 @@
                 <input type="file" id="certification-testset-folder" webkitdirectory directory multiple class="form-input" style="padding:.4rem">
               </div>
               <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.65rem">
-                <button id="certification-btn-import" class="btn-primary" onclick="importCertificationSet()">Importar Set de Pruebas DGII</button>
-                <button class="btn-secondary" onclick="sendNextCertificationCase()">Enviar siguiente automáticamente</button>
-                <button class="btn-secondary" onclick="runCertificationSequence()">Ejecutar pruebas secuenciales</button>
+                <button id="certification-btn-import" class="btn-primary" onclick="importCertificationSet()">📥 Importar Set de Pruebas DGII</button>
+                <button class="btn-primary" onclick="runCertificationSequence()" title="Envía todos los casos pendientes en ráfaga y luego consulta los estados">▶ Ejecutar pruebas secuenciales</button>
+                <button class="btn-secondary" onclick="pollCertificationStatuses()" title="Consulta el estado actual en DGII de todos los casos enviados">🔄 Consultar estados DGII</button>
+                <button class="btn-secondary" onclick="sendNextCertificationCase()">Enviar siguiente</button>
                 <button class="btn-secondary" onclick="resignPendingDocs()">Re-firmar pendientes</button>
-                <button id="certification-btn-reset" class="btn-danger" onclick="resetCertificationData()" title="Elimina todos los casos del batch actual para empezar desde cero">🗑 Borrar pruebas y empezar de nuevo</button>
+                <button id="certification-btn-reset" class="btn-danger" onclick="resetCertificationData()" title="Elimina todos los casos del batch actual para empezar desde cero">🗑 Borrar y empezar de nuevo</button>
               </div>
               <div id="certification-import-result" style="display:none;margin-top:.6rem;padding:.85rem 1rem;border-radius:10px;background:var(--bg2);font-size:.82rem"></div>
             </div>
@@ -3437,8 +3438,9 @@
             </div>
             <div style="display:flex;gap:.5rem;flex-wrap:wrap">
               <button class="btn-secondary" onclick="loadCertificationCases()">Actualizar</button>
+              <button class="btn-primary" onclick="runCertificationSequence()" title="Envía todos los pendientes en ráfaga y consulta estados">▶ Ejecutar secuencial</button>
+              <button class="btn-secondary" onclick="pollCertificationStatuses()" title="Actualiza estados DGII de casos enviados">🔄 Consultar estados</button>
               <button class="btn-secondary" onclick="sendNextCertificationCase()">Enviar siguiente</button>
-              <button class="btn-secondary" onclick="runCertificationSequence()">Ejecutar pruebas secuenciales</button>
             </div>
           </div>
           <div id="certification-cases-table"><div class="loading-text">Cargando pruebas de certificación…</div></div>
