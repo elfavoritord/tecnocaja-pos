@@ -73,13 +73,15 @@ function extractDgiiIdentityFromXml(xmlContent) {
 }
 
 function crearArchivoTemporalDGII({ xmlContent, dgiiFileName, baseDir = process.cwd() } = {}) {
-  const content = String(xmlContent || '');
+  // Quitar BOM UTF-8 (EF BB BF) que DGII rechaza con código 1 "El formato del XML no es válido"
+  const content = String(xmlContent || '').replace(/^﻿/, '');
   assertCondition(content.trim(), 'No hay XML para preparar el archivo temporal DGII.', { statusCode: 422 });
 
   const tempDir = path.join(path.resolve(baseDir), 'storage', 'ecf', 'tmp');
   fs.mkdirSync(tempDir, { recursive: true });
 
   const tempPath = path.join(tempDir, dgiiFileName);
+  // Escribir con encoding 'utf8' sin BOM (Node.js 'utf8' nunca agrega BOM)
   fs.writeFileSync(tempPath, content, 'utf8');
 
   return {

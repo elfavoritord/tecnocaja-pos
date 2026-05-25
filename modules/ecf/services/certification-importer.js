@@ -84,6 +84,9 @@ function parseXmlTestCase(xmlContent, sourceName) {
   const comprador = encabezado.getElementsByTagName('Comprador')?.[0] || root;
   const totales = encabezado.getElementsByTagName('Totales')?.[0] || root;
 
+  // InformacionReferencia puede estar en el nivel raíz (hijo de ECF) o dentro de Encabezado
+  const infoRef = root.getElementsByTagName('InformacionReferencia')?.[0] || null;
+
   const tipoEcf = normalizeUpper(getXmlNodeText(idDoc, 'TipoeCF'));
   const encf = normalizeUpper(getXmlNodeText(idDoc, 'eNCF'));
   assertCondition(tipoEcf && encf, `El XML ${sourceName} no contiene TipoeCF/eNCF.`, { statusCode: 422 });
@@ -95,6 +98,12 @@ function parseXmlTestCase(xmlContent, sourceName) {
   const totalAmount = Number(getXmlNodeText(totales, 'MontoTotal') || 0);
   const buyerName = getXmlNodeText(comprador, 'RazonSocialComprador') || 'Consumidor Final';
   const filenameLabel = path.basename(sourceName, path.extname(sourceName));
+
+  // Extraer NCFModificado para que dedupeCertificationCases pueda ordenar dependencias
+  // (p.ej. E32 debe enviarse antes que E33 que lo referencia)
+  const ncfModificado = infoRef ? normalizeUpper(getXmlNodeText(infoRef, 'NCFModificado')) : '';
+  const fechaNcfModificado = infoRef ? getXmlNodeText(infoRef, 'FechaNCFModificado') : '';
+  const codigoModificacion = infoRef ? getXmlNodeText(infoRef, 'CodigoModificacion') : '';
 
   return {
     casoPrueba: filenameLabel || encf,
@@ -117,6 +126,10 @@ function parseXmlTestCase(xmlContent, sourceName) {
     originalXml: String(xmlContent || ''),
     sourceName: sourceName,
     rncEmisor: digitsOnly(getXmlNodeText(emisor, 'RNCEmisor')),
+    // rawRow con NCFModificado para que dedupeCertificationCases ordene correctamente
+    rawRow: ncfModificado && ncfModificado !== '#E'
+      ? { NCFModificado: ncfModificado, FechaNCFModificado: fechaNcfModificado, CodigoModificacion: codigoModificacion }
+      : null,
   };
 }
 

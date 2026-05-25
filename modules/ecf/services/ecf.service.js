@@ -845,7 +845,9 @@ class EcfService {
     }
 
     const certificationSource = parseCertificationStoredSource(document.certification_original_xml);
-    let normalizedXml = normalizeEcfXmlStructure(document.xml_content, { removeSignature: true });
+    // Quitar BOM UTF-8 del XML almacenado — DGII rechaza con código 1 si hay BOM
+    const storedXmlClean = String(document.xml_content || '').replace(/^﻿/, '');
+    let normalizedXml = normalizeEcfXmlStructure(storedXmlClean, { removeSignature: true });
     if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
       const rebuilt = buildTransmissionFromSpreadsheetRow({
         testCase: {
@@ -864,7 +866,10 @@ class EcfService {
     if (String(document.tipo_ecf || '').trim().toUpperCase() === 'E47') {
       normalizedXml = await this.rebuildExteriorPaymentXml(document, normalizedXml);
     }
-    const needsResign = normalizedXml !== document.xml_content || !String(document.signed_xml_content || '').trim();
+    // Forzar re-firma si el XML almacenado tenía BOM o si el contenido cambió
+    const storedSignedClean = String(document.signed_xml_content || '').replace(/^﻿/, '');
+    const hadBom = document.xml_content !== storedXmlClean || document.signed_xml_content !== storedSignedClean;
+    const needsResign = hadBom || normalizedXml !== storedXmlClean || !storedSignedClean.trim();
     if (!needsResign) {
       return document;
     }
@@ -1883,7 +1888,9 @@ class EcfService {
   async snapshotCertificationSignedXml(document) {
     if (!String(document?.signed_xml_content || '').trim() || !String(document?.encf || '').trim()) return null;
     const targetPath = path.join(this.certificationSignedDir, `${document.encf}.xml`);
-    fs.writeFileSync(targetPath, document.signed_xml_content, 'utf8');
+    // Quitar BOM UTF-8 antes de guardar — DGII rechaza XMLs con BOM (código 1)
+    const cleanXml = String(document.signed_xml_content || '').replace(/^﻿/, '');
+    fs.writeFileSync(targetPath, cleanXml, 'utf8');
     return path.relative(process.cwd(), targetPath).replace(/\\/g, '/');
   }
 
