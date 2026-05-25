@@ -106,11 +106,15 @@ function createEcfRouter(deps) {
   router.post('/certification/run-sequential', wrap((req) => service.runCertificationSequence(req)));
   router.post('/certification/poll-statuses', wrap(() => service.pollCertificationStatuses()));
   router.post('/certification/reset-sent', wrap((req) => service.resetSentCertificationCases(req)));
+  // Convierte E32 RFCE → ECF cuando es referenciado por E33/E34 (NCFModificado)
+  router.post('/certification/fix-ncf-refs', wrap((req) => service.fixNcfModificadoRefs(req)));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/resend', wrap((req) => service.sendCertificationCase(Number(req.params.id), req, { forceResend: true })));
   router.get('/certification/cases/:id/track', wrap((req) => service.queryCertificationCase(Number(req.params.id))));
   router.delete('/certification/reset', wrap((req) => service.resetCertificationData(req)));
   router.get('/reports/summary', wrap(() => service.getSummaryReport()));
+  // DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación
+  router.get('/diag/cert-original-xml', wrap(() => service.diagCertificationOriginalXml()));
 
   return {
     router,
