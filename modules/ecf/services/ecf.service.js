@@ -2019,6 +2019,33 @@ class EcfService {
     };
   }
 
+  // Marca los casos ENVIADO/EN_PROCESO como FIRMADO para poder reenviarlos inmediatamente
+  // sin esperar que DGII los rechace (útil cuando el portal DGII reinicia las pruebas).
+  async resetSentCertificationCases(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const result = await this.repository.resetSentCertificationCasesToFirmado();
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      documentId: null,
+      sequenceId: null,
+      tipoComprobante: null,
+      encf: null,
+      actionName: 'certification_reset_sent',
+      status: 'ok',
+      detail: `Se reestablecieron ${result.reset} caso(s) enviados a estado "firmado" para reenvío.`,
+      responsePayload: result,
+    });
+    return {
+      ok: true,
+      message: `${result.reset} caso(s) reestablecido(s) a "firmado". Ahora ejecuta las pruebas secuenciales para reenviar con el XML correcto.`,
+      reset: result.reset,
+      batchId: result.batchId,
+    };
+  }
+
   async resetCertificationData(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
