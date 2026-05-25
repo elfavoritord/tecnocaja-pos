@@ -124,17 +124,12 @@ function appendSimple(node, tagName, value) {
   node.ele(tagName).txt(text);
 }
 
-// Formatea un valor numérico con exactamente 4 decimales.
-// DGII exige 4 decimales para PrecioUnitarioItem y PrecioUnitarioReferencia en el XSD e-CF.
-// La hoja de cálculo DGII suele tener las celdas formateadas con 2 decimales (0.00),
-// por lo que XLSX las lee como "200.00" en vez del "200.0000" que requiere el esquema.
-function appendDecimal4(node, tagName, value) {
-  const text = normalizeRowValue(value);
-  if (!text) return;
-  const num = Number(text.replace(/,/g, '.'));
-  const formatted = Number.isFinite(num) ? num.toFixed(4) : text;
-  node.ele(tagName).txt(formatted);
-}
+// NOTA sobre PrecioUnitarioItem y PrecioUnitarioReferencia:
+// DGII valida los campos contra el valor EXACTO del set de pruebas que ellos definieron.
+// Si el set DGII tiene "220.00" (2 decimales) y enviamos "220.0000" (4 decimales), rechazan.
+// Si el set DGII tiene "115000.0000" (4 decimales) y enviamos "115000.00", también rechazan.
+// Por eso usamos appendSimple (valor tal cual viene de la hoja) — el spreadsheet DGII ya
+// contiene el formato exacto que DGII espera. No convertir decimales.
 
 function collectIndexedSubGroups(row, prefix) {
   const groups = new Map();
@@ -481,8 +476,6 @@ function buildCertificationEcfXml(testCase, issueDate) {
       appendSimple(retention, 'MontoISRRetenido', row[`MontoISRRetenido[${lineIndex}]`]);
     }
 
-    // Campos que usan 4 decimales según el XSD DGII (PrecioUnitarioItem, PrecioUnitarioReferencia)
-    const decimal4Fields = new Set(['PrecioUnitarioItem', 'PrecioUnitarioReferencia']);
     [
       'NombreItem',
       'IndicadorBienoServicio',
@@ -503,13 +496,7 @@ function buildCertificationEcfXml(testCase, issueDate) {
       'MontoItemMasITBIS',
       'TasaITBIS',
       'ITBISItem',
-    ].forEach((field) => {
-      if (decimal4Fields.has(field)) {
-        appendDecimal4(item, field, row[`${field}[${lineIndex}]`]);
-      } else {
-        appendSimple(item, field, row[`${field}[${lineIndex}]`]);
-      }
-    });
+    ].forEach((field) => appendSimple(item, field, row[`${field}[${lineIndex}]`]));
 
     appendItemAdjustmentTable({
       itemNode: item,
