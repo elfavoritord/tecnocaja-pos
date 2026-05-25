@@ -1698,6 +1698,10 @@ async function runCertificationSequence() {
   const btns = document.querySelectorAll('[onclick="runCertificationSequence()"]');
   btns.forEach((b) => { b.disabled = true; b.textContent = '⏳ Enviando…'; });
   try {
+    // Paso 0: resetear casos "enviado/en_proceso" para que puedan ser recogidos por el loop.
+    // Esto es necesario cuando el portal DGII reinicia las pruebas (casos rechazados/reseteados).
+    await fiscalApi('POST', '/certification/reset-sent').catch(() => null);
+
     showFiscalToast('Enviando todos los casos pendientes a DGII…', 'info');
     // Paso 1: ráfaga de envíos (rápida, sin esperar respuesta de cada TrackID)
     const response = await fiscalApi('POST', '/certification/run-sequential', { limit: 50 });
@@ -1706,16 +1710,18 @@ async function runCertificationSequence() {
     showFiscalTechnicalResult('Envíos secuenciales DGII', response);
     await loadCertificationCases();
 
-    // Paso 2: consulta masiva de TrackIDs para actualizar los estados
-    await new Promise((r) => setTimeout(r, 1500)); // Dar tiempo a DGII a procesar
+    // Paso 2: esperar y consultar TrackIDs para actualizar estados
+    await new Promise((r) => setTimeout(r, 2000));
     const pollResponse = await fiscalApi('POST', '/certification/poll-statuses').catch(() => null);
     if (pollResponse?.polled > 0) {
       const aceptados = (pollResponse.results || []).filter((r) => r.estado === 'aceptado').length;
       const rechazados = (pollResponse.results || []).filter((r) => r.estado === 'rechazado').length;
       showFiscalToast(
-        `Estados actualizados: ${aceptados} aceptado(s)${rechazados ? `, ${rechazados} rechazado(s)` : ''}.`,
+        `Estados: ${aceptados} ✅ aceptado(s)${rechazados ? ` / ${rechazados} ❌ rechazado(s)` : ''}.`,
         rechazados > 0 ? 'warning' : 'success'
       );
+    } else {
+      showFiscalToast(`${sent} caso(s) enviados a DGII. En proceso…`, 'info');
     }
     await loadCertificationCases();
     await loadFiscalStatus();
@@ -1723,6 +1729,16 @@ async function runCertificationSequence() {
     showFiscalToast(`Error: ${err.message}`, 'error');
   } finally {
     btns.forEach((b) => { b.disabled = false; b.textContent = '▶ Ejecutar pruebas secuenciales'; });
+  }
+}
+
+async function resetSentCertificationCases() {
+  try {
+    const response = await fiscalApi('POST', '/certification/reset-sent');
+    showFiscalToast(response.message || `${response.reset} caso(s) reseteados a "firmado".`, 'success');
+    await loadCertificationCases();
+  } catch (err) {
+    showFiscalToast(`Error: ${err.message}`, 'error');
   }
 }
 

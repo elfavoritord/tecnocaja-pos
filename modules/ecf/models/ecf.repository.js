@@ -1316,6 +1316,32 @@ class EcfRepository {
     return rows[0] || null;
   }
 
+  // Marca todos los casos del batch actual que están en estado 'enviado', 'en_proceso' o
+  // 'procesando' de vuelta a 'firmado', limpiando el TrackID. Útil cuando el portal DGII
+  // reinicia las pruebas y los TrackIDs previos ya no son válidos.
+  async resetSentCertificationCasesToFirmado() {
+    const batchId = await this.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(batchId);
+    }
+    const result = await this.query(
+      `UPDATE ecf_documents
+       SET estado_dgii = 'firmado',
+           track_id    = NULL,
+           error_message = NULL,
+           updated_at  = CURRENT_TIMESTAMP
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')`,
+      params
+    );
+    return { reset: result.affectedRows || 0, batchId };
+  }
+
   async updateCertificationTracking(documentId, payload = {}) {
     await this.query(
       `UPDATE ecf_documents
