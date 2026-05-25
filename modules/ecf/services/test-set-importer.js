@@ -330,8 +330,11 @@ function buildCertificationEcfXml(testCase, issueDate) {
     'FechaEmision',
   ].forEach((field) => appendSimple(emisor, field, row[field]));
 
-  const comprador = encabezado.ele('Comprador');
-  [
+  // E43 (Gastos Menores) y otros tipos sin comprador formal no tienen datos en el Comprador.
+  // Si todos los campos están vacíos NO se debe crear <Comprador /> vacío porque el XSD DGII
+  // requiere RNCComprador dentro de Comprador cuando el elemento existe.
+  // Solución: solo crear <Comprador> cuando al menos un campo tiene valor.
+  const compradorFields = [
     'RNCComprador',
     'IdentificadorExtranjero',
     'RazonSocialComprador',
@@ -350,7 +353,12 @@ function buildCertificationEcfXml(testCase, issueDate) {
     'CodigoInternoComprador',
     'ResponsablePago',
     'InformacionAdicionalComprador',
-  ].forEach((field) => appendSimple(comprador, field, row[field]));
+  ];
+  const hasCompradorData = compradorFields.some((f) => rowHasValue(row, f));
+  if (hasCompradorData) {
+    const comprador = encabezado.ele('Comprador');
+    compradorFields.forEach((field) => appendSimple(comprador, field, row[field]));
+  }
 
   const informacionAdicionalFields = [
     'FechaEmbarque',

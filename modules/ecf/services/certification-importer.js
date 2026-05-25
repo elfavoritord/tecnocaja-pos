@@ -162,17 +162,26 @@ function parseJsonCases(jsonText, sourceName) {
 function parseSpreadsheetCases(buffer, sourceName) {
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const hasRfceSheet = workbook.SheetNames.some((name) => String(name || '').trim().toUpperCase() === 'RFCE');
-  const e32EcfRows = new Map();
+  const e32EcfRows = new Map(); // E32 rows from ECF sheet (para linkedRawRow en RFCE)
+  const rfceEncfs = new Set(); // eNCFs E32 que están en la hoja RFCE
 
   if (hasRfceSheet) {
     for (const sheetName of workbook.SheetNames) {
       const normalizedSheet = String(sheetName || '').trim().toUpperCase();
-      if (normalizedSheet !== 'ECF') continue;
       const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: false });
-      for (const row of rows) {
-        const encf = normalizeUpper(row.ENCF || row.eNCF || '');
-        if (encf.startsWith('E32')) {
-          e32EcfRows.set(encf, { ...row });
+      if (normalizedSheet === 'ECF') {
+        // Pre-escanear hoja ECF para guardar filas E32 (se usan como linkedRawRow)
+        for (const row of rows) {
+          const encf = normalizeUpper(row.ENCF || row.eNCF || '');
+          if (encf.startsWith('E32')) {
+            e32EcfRows.set(encf, { ...row });
+          }
+        }
+      } else if (normalizedSheet === 'RFCE') {
+        // Pre-escanear hoja RFCE para saber qué E32s tiene
+        for (const row of rows) {
+          const encf = normalizeUpper(row.ENCF || row.eNCF || '');
+          if (encf.startsWith('E32')) rfceEncfs.add(encf);
         }
       }
     }
@@ -190,7 +199,11 @@ function parseSpreadsheetCases(buffer, sourceName) {
       sourceKind: 'sheet',
       forceSubmissionMode: normalizedSheet === 'RFCE' ? 'rfce' : null,
     })
-      .filter((item) => !(hasRfceSheet && normalizedSheet === 'ECF' && item.tipoEcf === 'E32'))
+      // Filtrar E32 del sheet ECF SOLO si ese encf específico ya está en el sheet RFCE.
+      // E32s que solo están en ECF (como E320000000006 que E33 referencia como NCFModificado)
+      // NO se filtran — se importan como ECF normal para que DGII los reconozca como comprobantes
+      // emitidos cuando valida el NCFModificado del E33/E34.
+      .filter((item) => !(hasRfceSheet && normalizedSheet === 'ECF' && item.tipoEcf === 'E32' && rfceEncfs.has(item.encf)))
       .map((item, index) => ({
         ...item,
         testType: `${path.basename(sourceName, path.extname(sourceName))}-${normalizedSheet}-${index + 1}`,
