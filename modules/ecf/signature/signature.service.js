@@ -154,7 +154,7 @@ $signatureNode = $signedXml.GetXml()
 [void]$xmlDoc.DocumentElement.AppendChild($xmlDoc.ImportNode($signatureNode, $true))
 
 $settings = New-Object System.Xml.XmlWriterSettings
-$settings.Encoding = New-Object System.Text.UTF8Encoding($true)
+$settings.Encoding = New-Object System.Text.UTF8Encoding($false)
 $settings.Indent = $true
 $settings.NewLineChars = "\`r\`n"
 $settings.NewLineHandling = [System.Xml.NewLineHandling]::Replace

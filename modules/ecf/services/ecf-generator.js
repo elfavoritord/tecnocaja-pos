@@ -293,6 +293,28 @@ function normalizeEcfXmlStructure(xmlContent, options = {}) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${serialized}`;
 }
 
+// ---------------------------------------------------------------------------
+// Clasificación de tipos de e-CF según reglas XSD DGII verificadas en campo
+// ---------------------------------------------------------------------------
+
+/** Tipos que usan IndicadorNotaCredito en IdDoc (sin TipoIngresos). */
+const TIPOS_NOTA_CREDITO = new Set(['E34']);
+
+/** Tipos que NUNCA llevan TipoIngresos en IdDoc. */
+const TIPOS_SIN_TIPO_INGRESOS = new Set(['E34', 'E43', 'E47']);
+
+/** Tipos que llevan FechaVencimientoSecuencia en IdDoc. */
+const TIPOS_CON_FECHA_VENCIMIENTO = new Set(['E33', 'E41', 'E43', 'E44', 'E45', 'E46', 'E47']);
+
+/** Tipos que NO llevan TipoPago en IdDoc. */
+const TIPOS_SIN_TIPO_PAGO = new Set(['E43']);
+
+/** Tipos "gastos/exterior" donde Totales sólo lleva MontoExento + MontoTotal (+ TotalISRRetencion para E47). */
+const TIPOS_TOTALES_EXENTO = new Set(['E43', 'E47']);
+
+/** E47: pago al exterior, tiene bloque Retencion por ítem y IndicadorBienoServicio=2 forzado. */
+const TIPO_EXTERIOR = 'E47';
+
 function generateEcfXml(payload) {
   const emitter = payload?.emitter || {};
   const customer = payload?.customer || {};
@@ -302,37 +324,66 @@ function generateEcfXml(payload) {
   const totals = buildTotals(items);
   const documentTypeCode = normalizeDocumentTypeCode(document.tipoeCF);
   const normalizedEncf = normalizeEncfValue(document.eNCF, documentTypeCode);
-  const isExteriorPayment = documentTypeCode === 'E47';
+  const isExteriorPayment = documentTypeCode === TIPO_EXTERIOR;
+  const isExentoTotal = TIPOS_TOTALES_EXENTO.has(documentTypeCode);
+  const isNotaCredito = TIPOS_NOTA_CREDITO.has(documentTypeCode);
+  const hasFechaVencimiento = TIPOS_CON_FECHA_VENCIMIENTO.has(documentTypeCode);
+  const hasTipoIngresos = !TIPOS_SIN_TIPO_INGRESOS.has(documentTypeCode);
+  const hasTipoPago = !TIPOS_SIN_TIPO_PAGO.has(documentTypeCode);
 
   assertCondition(items.length > 0, 'No se puede generar un XML e-CF sin productos.', { statusCode: 422 });
   assertCondition(totals.total >= 0, 'El monto total del e-CF no puede ser negativo.', { statusCode: 422 });
   assertCondition(document.eNCF, 'Debe indicar el eNCF del documento.', { statusCode: 422 });
   assertCondition(document.tipoeCF, 'Debe indicar el tipo de e-CF.', { statusCode: 422 });
+  if (hasFechaVencimiento && isExteriorPayment) {
+    assertCondition(
+      document.fechaVencimientoSecuencia,
+      'El e-CF E47 requiere FechaVencimientoSecuencia en IdDoc.',
+      { statusCode: 422 }
+    );
+  }
 
   const xml = builder
     .create('ECF', { encoding: 'UTF-8' })
     .att('xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance')
     .att('xmlns:xsd', 'http://www.w3.org/2001/XMLSchema');
 
+  // ── Encabezado ──────────────────────────────────────────────────────────
   const encabezado = xml.ele('Encabezado');
   encabezado.ele('Version').txt('1.0');
 
+  // ── IdDoc ────────────────────────────────────────────────────────────────
   const idDoc = encabezado.ele('IdDoc');
   idDoc.ele('TipoeCF').txt(String(document.tipoeCF).replace(/^E/i, ''));
   idDoc.ele('eNCF').txt(sanitizeText(normalizedEncf));
-  if (isExteriorPayment) {
-    assertCondition(
-      document.fechaVencimientoSecuencia,
-      'El e-CF E47 requiere FechaVencimientoSecuencia en IdDoc.',
-      { statusCode: 422 }
-    );
+
+  // FechaVencimientoSecuencia: E33, E41, E43, E44, E45, E46, E47
+  if (hasFechaVencimiento && document.fechaVencimientoSecuencia) {
     idDoc.ele('FechaVencimientoSecuencia').txt(formatDate(document.fechaVencimientoSecuencia));
-  } else {
+  }
+
+  // E34: IndicadorNotaCredito en lugar de TipoIngresos
+  if (isNotaCredito) {
+    const indicador = document.indicadorNotaCredito ?? document.indicadorNotaDebito ?? 1;
+    idDoc.ele('IndicadorNotaCredito').txt(String(indicador));
+  }
+
+  // TipoIngresos: E31, E32, E33, E41, E44, E45, E46 (NO en E34, E43, E47)
+  if (hasTipoIngresos) {
     appendIfValue(idDoc, 'TipoIngresos', document.tipoIngresos || '01');
   }
-  appendIfValue(idDoc, 'TipoPago', document.tipoPago || '1');
-  appendIfValue(idDoc, 'IndicadorMontoGravado', document.indicadorMontoGravado);
 
+  // IndicadorMontoGravado: opcional para tipos que lo admiten (E41, E31...)
+  if (!isExteriorPayment && !isExentoTotal) {
+    appendIfValue(idDoc, 'IndicadorMontoGravado', document.indicadorMontoGravado);
+  }
+
+  // TipoPago: todos excepto E43
+  if (hasTipoPago) {
+    appendIfValue(idDoc, 'TipoPago', document.tipoPago || '1');
+  }
+
+  // ── Emisor ───────────────────────────────────────────────────────────────
   const emisor = encabezado.ele('Emisor');
   emisor.ele('RNCEmisor').txt(sanitizeText(emitter.rnc));
   emisor.ele('RazonSocialEmisor').txt(sanitizeText(emitter.razonSocial || emitter.razon_social));
@@ -348,6 +399,7 @@ function generateEcfXml(payload) {
   appendIfValue(emisor, 'CorreoEmisor', sanitizeText(emitter.correo, { allowEmpty: true }));
   emisor.ele('FechaEmision').txt(formatDate(issueDate));
 
+  // ── Comprador ────────────────────────────────────────────────────────────
   const buyerTaxId = normalizeBuyerTaxId(customer.rnc || customer.taxId || customer.cedula);
   const comprador = encabezado.ele('Comprador');
   appendIfValue(comprador, 'RNCComprador', buyerTaxId);
@@ -356,19 +408,21 @@ function generateEcfXml(payload) {
   appendIfValue(comprador, 'TelefonoAdicional', sanitizeText(customer.telefono, { allowEmpty: true }));
   appendIfValue(comprador, 'DireccionComprador', sanitizeText(customer.direccion, { allowEmpty: true }));
 
+  // ── Totales ──────────────────────────────────────────────────────────────
   const totalsNode = encabezado.ele('Totales');
-  if (isExteriorPayment) {
-    appendIfValue(totalsNode, 'MontoExento', totals.total.toFixed(2));
+  if (isExentoTotal) {
+    // E43 y E47: sólo MontoExento + MontoTotal (+ TotalISRRetencion para E47)
+    appendIfValue(totalsNode, 'MontoExento', totals.total > 0 ? totals.total.toFixed(2) : null);
     totalsNode.ele('MontoTotal').txt(totals.total.toFixed(2));
-    // En la XSD oficial del e-CF 47, TotalISRRetencion forma parte de Totales.
-    // DGII lo reclama aunque el monto retenido sea 0.00 cuando existe Retencion en el detalle.
-    appendIfValue(
-      totalsNode,
-      'TotalISRRetencion',
-      round2(document.totalIsrRetencion ?? totals.totalIsrRetenido).toFixed(2)
-    );
+    if (isExteriorPayment) {
+      // E47: TotalISRRetencion es obligatorio incluso si es 0.00
+      totalsNode.ele('TotalISRRetencion').txt(
+        round2(document.totalIsrRetencion ?? totals.totalIsrRetenido).toFixed(2)
+      );
+    }
   } else {
-    appendIfValue(totalsNode, 'MontoGravadoTotal', totals.totalTaxed.toFixed(2));
+    // Tipos con ITBIS (E31, E32, E33, E34, E41, E44, E45, E46)
+    appendIfValue(totalsNode, 'MontoGravadoTotal', totals.totalTaxed ? totals.totalTaxed.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI1', totals.taxed18 ? totals.taxed18.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI2', totals.taxed16 ? totals.taxed16.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI3', totals.taxed0 ? totals.taxed0.toFixed(2) : null);
@@ -378,23 +432,33 @@ function generateEcfXml(payload) {
     totalsNode.ele('MontoTotal').txt(totals.total.toFixed(2));
   }
 
+  // ── DetallesItems ────────────────────────────────────────────────────────
   const detallesItems = xml.ele('DetallesItems');
   for (const item of totals.items) {
     const detalle = detallesItems.ele('Item');
     detalle.ele('NumeroLinea').txt(String(item.lineNumber));
+
     if (isExteriorPayment) {
+      // E47: orden XSD → NumeroLinea, IndicadorFacturacion, Retencion, NombreItem,
+      //                   IndicadorBienoServicio(=2), DescripcionItem, CantidadItem,
+      //                   UnidadMedida, PrecioUnitarioItem, MontoItem
       detalle.ele('IndicadorFacturacion').txt(String(item.billingIndicator ?? 4));
       const retencion = detalle.ele('Retencion');
-      retencion.ele('IndicadorAgenteRetencionoPercepcion').txt(String(item.retentionIndicator ?? document.retentionIndicator ?? 1));
+      retencion.ele('IndicadorAgenteRetencionoPercepcion').txt(
+        String(item.retentionIndicator ?? document.retentionIndicator ?? 1)
+      );
       retencion.ele('MontoISRRetenido').txt(round2(item.withholdingAmount ?? 0).toFixed(2));
       detalle.ele('NombreItem').txt(item.name);
-      detalle.ele('IndicadorBienoServicio').txt(String(item.goodsOrServicesIndicator || 1));
+      // E47 exige IndicadorBienoServicio=2 (servicio) siempre
+      detalle.ele('IndicadorBienoServicio').txt('2');
       appendIfValue(detalle, 'DescripcionItem', item.additionalDescription || null);
       detalle.ele('CantidadItem').txt(item.quantity.toFixed(2));
       appendIfValue(detalle, 'UnidadMedida', item.unitMeasure || null);
       detalle.ele('PrecioUnitarioItem').txt(item.unitPrice.toFixed(2));
       detalle.ele('MontoItem').txt(item.taxableBase.toFixed(2));
     } else {
+      // Tipos normales: orden XSD → NumeroLinea, NombreItem, CantidadItem,
+      //                 PrecioUnitarioItem, DescuentoMonto, MontoItem, TasaITBIS, ITBISItem
       detalle.ele('NombreItem').txt(item.name);
       detalle.ele('CantidadItem').txt(item.quantity.toFixed(2));
       detalle.ele('PrecioUnitarioItem').txt(item.unitPrice.toFixed(2));
@@ -406,6 +470,7 @@ function generateEcfXml(payload) {
     }
   }
 
+  // ── InformacionReferencia (notas de crédito/débito) ──────────────────────
   if (document.referencia) {
     const referencia = xml.ele('InformacionReferencia');
     appendIfValue(referencia, 'NCFModificado', sanitizeText(document.referencia.ncfModificado, { allowEmpty: true }));
