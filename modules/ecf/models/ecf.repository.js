@@ -1336,7 +1336,8 @@ class EcfRepository {
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
          ${batchClause}
-         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')`,
+         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando', 'aceptado', 'aceptado_condicional', 'rechazado', 'error')
+         AND (submission_mode IS NULL OR submission_mode != 'rfce')`,
       params
     );
     return { reset: result.affectedRows || 0, batchId };
