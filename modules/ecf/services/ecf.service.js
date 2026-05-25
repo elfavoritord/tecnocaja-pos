@@ -844,55 +844,103 @@ class EcfService {
       return document;
     }
 
-    const certificationSource = parseCertificationStoredSource(document.certification_original_xml);
-    // Quitar BOM UTF-8 del XML almacenado — DGII rechaza con código 1 si hay BOM
+    // Quitar BOM U+FEFF con escape explícito ﻿ (más robusto que el carácter visual).
     const storedXmlClean = String(document.xml_content || '').replace(/^﻿/, '');
     let normalizedXml = normalizeEcfXmlStructure(storedXmlClean, { removeSignature: true });
-    // Cuando el caso de certificación proviene de un XML del set DGII (no de hoja de cálculo),
-    // usamos el XML ORIGINAL como fuente de firma. Esto preserva exactamente todos los campos
-    // (Municipio, Provincia, WebSite, NumeroFacturaInterna, PrecioUnitarioItem con 4 decimales,
-    // ValorPagar, MontoPeriodo, TerminoPago, IdentificadorExtranjero, etc.) que DGII valida
-    // contra su set de pruebas. Regenerar con nuestro generador pierde esos valores y causa
-    // el rechazo "La propiedad X no es válida debido a que el valor enviado () no coincide...".
-    const rawOriginalXml = String(document.certification_original_xml || '').trim();
-    const isXmlSourcedCertification = document.certification_case_key
-      && rawOriginalXml
-      && (rawOriginalXml.startsWith('<') || rawOriginalXml.startsWith('<?'));
+
+    // --- Estrategia para casos de certificación ---
+    // DGII valida los comprobantes contra su set de datos exacto. Campos como Municipio,
+    // Provincia, WebSite, NumeroFacturaInterna, PrecioUnitarioItem (4 decimales), etc.
+    // sólo existen en los XML originales del set DGII, no en lo que genera nuestro motor ECF.
+    // Por eso debemos re-firmar usando el XML ORIGINAL del set DGII cuando está disponible.
+
+    const rawCertOriginal = String(document.certification_original_xml || '');
+    // Quitar BOM U+FEFF con escape explícito antes del startsWith check.
+    const rawOriginalXml = rawCertOriginal.replace(/^﻿/, '').trim();
+
+    // Detectar origen del XML de certificación:
+    // - 'xml'         → el set DGII vino como ZIP de XMLs → rawOriginalXml empieza con '<'
+    // - 'spreadsheet' → el set DGII vino como hoja de cálculo → rawOriginalXml empieza con '{'
+    // - 'none'        → sin dato (importación antigua que no guardó el original)
+    const certOrigin = rawOriginalXml.startsWith('<') || rawOriginalXml.startsWith('<?')
+      ? 'xml'
+      : rawOriginalXml.startsWith('{')
+        ? 'spreadsheet'
+        : 'none';
+
+    const isCertificationCase = Boolean(document.certification_case_key);
+
+    if (isCertificationCase) {
+      // LOG DIAGNÓSTICO — visible en consola del proceso Node/Electron
+      console.log(`[repairXml] encf=${document.encf} certOrigin=${certOrigin} rawLen=${rawCertOriginal.length} first20=${JSON.stringify(rawCertOriginal.slice(0, 20))}`);
+    }
 
     let skipE47Rebuild = false;
-    if (isXmlSourcedCertification) {
-      const cleanOriginalXml = rawOriginalXml.replace(/^﻿/, '');
-      const strippedOriginal = normalizeEcfXmlStructure(cleanOriginalXml, { removeSignature: true });
+    if (certOrigin === 'xml' && isCertificationCase) {
+      // Fuente XML del set DGII — usar tal cual (solo quitar firma para re-firmar con nuestro cert).
+      const strippedOriginal = normalizeEcfXmlStructure(rawOriginalXml, { removeSignature: true });
       if (strippedOriginal.trim()) {
-        // El XML original ya tiene todos los valores correctos — no sobrescribir.
         normalizedXml = strippedOriginal;
-        skipE47Rebuild = true; // FechaVencimientoSecuencia y demás ya están en el XML original.
+        skipE47Rebuild = true;
       }
-    } else if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
-      const rebuilt = buildTransmissionFromSpreadsheetRow({
-        testCase: {
-          encf: document.encf,
-          tipoEcf: document.tipo_ecf,
-          rawRow: certificationSource.row,
-          linkedRawRow: certificationSource.linkedRawRow || null,
-          sourceSheet: certificationSource.sourceSheet || null,
-          submissionMode: certificationSource.submissionMode || null,
-        },
-        issueDate: new Date(),
-        certificateContext: certificate,
-      });
-      normalizedXml = rebuilt.xml;
+    } else if (certOrigin === 'spreadsheet') {
+      // Fuente hoja de cálculo — reconstruir desde la fila guardada.
+      // IMPORTANTE: NO llamar a rebuildExteriorPaymentXml para E47 después de esto.
+      // buildCertificationEcfXml ya incluye todos los campos DGII (Municipio, TerminoPago,
+      // MontoPeriodo, ValorPagar, IdentificadorExtranjero) directamente desde la fila de
+      // la hoja de cálculo. rebuildExteriorPaymentXml usa generateEcfXml que solo produce
+      // el subconjunto de campos del motor ECF genérico — sobreescribiría y eliminaría
+      // los campos específicos del set DGII que son obligatorios para la certificación.
+      const certificationSource = parseCertificationStoredSource(rawCertOriginal);
+      if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
+        const rebuilt = buildTransmissionFromSpreadsheetRow({
+          testCase: {
+            encf: document.encf,
+            tipoEcf: document.tipo_ecf,
+            rawRow: certificationSource.row,
+            linkedRawRow: certificationSource.linkedRawRow || null,
+            sourceSheet: certificationSource.sourceSheet || null,
+            submissionMode: certificationSource.submissionMode || null,
+          },
+          issueDate: new Date(),
+          certificateContext: certificate,
+        });
+        normalizedXml = rebuilt.xml;
+        skipE47Rebuild = true; // ← preservar XML de la hoja; no sobreescribir con generateEcfXml
+      }
+    }
+    // certOrigin === 'none': intentar leer el XML firmado del disco como fuente alternativa.
+    // Los archivos en storage/ecf/certification/signed/ fueron escritos por snapshotCertificationSignedXml
+    // al momento de enviar → contienen el XML original DGII con sus campos exactos.
+    // Si el XML del disco tiene más campos que storedXmlClean (lo indica el tamaño), lo usamos.
+    if (certOrigin === 'none' && isCertificationCase && String(document.encf || '').trim()) {
+      try {
+        const diskPath = path.join(this.certificationSignedDir, `${document.encf}.xml`);
+        if (fs.existsSync(diskPath)) {
+          const diskRaw = fs.readFileSync(diskPath, 'utf8').replace(/^﻿/, '');
+          const diskStripped = normalizeEcfXmlStructure(diskRaw, { removeSignature: true });
+          if (diskStripped.trim() && diskStripped.length > normalizedXml.length) {
+            // El XML del disco tiene más contenido → probablemente el original DGII.
+            normalizedXml = diskStripped;
+            skipE47Rebuild = true;
+            console.log(`[repairXml] encf=${document.encf} → disk fallback (${diskStripped.length} > ${storedXmlClean.length})`);
+          }
+        }
+      } catch (_) { /* ignore disk errors */ }
     }
 
     if (!skipE47Rebuild && String(document.tipo_ecf || '').trim().toUpperCase() === 'E47') {
       normalizedXml = await this.rebuildExteriorPaymentXml(document, normalizedXml);
     }
 
-    // Forzar re-firma si el XML almacenado tenía BOM, si el contenido cambió (incluye el caso
-    // en que normalizedXml proviene del original DGII, que difiere del regenerado), o si no hay firma.
+    // Para casos de certificación: SIEMPRE re-firmar — DGII valida contra su set exacto
+    // y necesitamos el XML original con todos sus campos en cada reintento.
     const storedSignedClean = String(document.signed_xml_content || '').replace(/^﻿/, '');
     const hadBom = document.xml_content !== storedXmlClean || document.signed_xml_content !== storedSignedClean;
-    const needsResign = hadBom || normalizedXml !== storedXmlClean || !storedSignedClean.trim();
+    const needsResign = isCertificationCase
+      || hadBom
+      || normalizedXml !== storedXmlClean
+      || !storedSignedClean.trim();
     if (!needsResign) {
       return document;
     }
@@ -2019,8 +2067,11 @@ class EcfService {
     };
   }
 
-  // Marca los casos ENVIADO/EN_PROCESO como FIRMADO para poder reenviarlos inmediatamente
-  // sin esperar que DGII los rechace (útil cuando el portal DGII reinicia las pruebas).
+  // Marca los casos ENVIADO/EN_PROCESO/ACEPTADO como FIRMADO para poder reenviarlos.
+  // Crucial cuando el portal DGII reinicia el conteo: los casos que DGII ya rechazó
+  // (por ejemplo E33 cuya E32 referenciada dejó de ser válida) y los previamente aceptados
+  // deben re-enviarse completos. Los casos RFCE (submission_mode='rfce') NO se tocan —
+  // sus 4/4 aceptados sobreviven el reinicio del portal.
   async resetSentCertificationCases(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
@@ -2043,6 +2094,114 @@ class EcfService {
       message: `${result.reset} caso(s) reestablecido(s) a "firmado". Ahora ejecuta las pruebas secuenciales para reenviar con el XML correcto.`,
       reset: result.reset,
       batchId: result.batchId,
+    };
+  }
+
+  // Corrige el problema donde E33/E34 referencian un E32 que fue importado como RFCE.
+  // DGII valida el NCFModificado en su sistema ECF (no RFCE), por lo que el E32 referenciado
+  // debe ser enviado como ECF completo ANTES de que se envíe el E33/E34.
+  // Este método convierte el E32 referenciado de RFCE → ECF usando el linkedRawRow (datos ECF)
+  // que quedó guardado en certification_original_xml al momento de importar.
+  async fixNcfModificadoRefs(req) {
+    await this.ensureReady();
+    const actor = req ? await this.getCurrentActor(req, { adminOnly: true }) : { id: null, nombre: 'Sistema', usuario: 'sistema', rol: 'admin' };
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) { batchClause = ' AND certification_batch_id = ?'; params.push(batchId); }
+
+    // 1. Encontrar todos los E33/E34 con NCFModificado en el JSON
+    const notaRows = await this.repository.query(
+      `SELECT id, encf, tipo_ecf, certification_original_xml
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         AND tipo_ecf IN ('E33','E34')
+         ${batchClause}`,
+      params
+    );
+
+    const ncfRefs = new Set();
+    for (const row of notaRows) {
+      try {
+        const src = parseCertificationStoredSource(row.certification_original_xml || '');
+        const ncfMod = String(src?.row?.NCFModificado || '').trim().toUpperCase();
+        if (ncfMod && /^E\d{13,14}$/.test(ncfMod)) {
+          ncfRefs.add(ncfMod);
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    if (!ncfRefs.size) {
+      return { ok: true, fixed: 0, message: 'No se encontraron referencias NCFModificado en E33/E34.' };
+    }
+
+    // 2. Por cada encf referenciado, encontrar el documento en la DB
+    const fixed = [];
+    const skipped = [];
+    for (const refEncf of ncfRefs) {
+      const [refDoc] = await this.repository.query(
+        `SELECT id, encf, tipo_ecf, submission_mode, estado_dgii, track_id, certification_original_xml
+         FROM ecf_documents
+         WHERE business_id = 1 AND encf = ?
+         ORDER BY id DESC LIMIT 1`,
+        [refEncf]
+      );
+      if (!refDoc) {
+        skipped.push({ encf: refEncf, reason: 'No encontrado en DB' });
+        continue;
+      }
+      if (String(refDoc.submission_mode || '').toLowerCase() !== 'rfce') {
+        skipped.push({ encf: refEncf, reason: `Ya es ECF (submission_mode=${refDoc.submission_mode})` });
+        continue;
+      }
+
+      // 3. Extraer linkedRawRow (datos ECF) del JSON guardado
+      let ecfOriginalJson = null;
+      try {
+        const src = parseCertificationStoredSource(refDoc.certification_original_xml || '');
+        if (src?.linkedRawRow && typeof src.linkedRawRow === 'object' && Object.keys(src.linkedRawRow).length > 0) {
+          // Construir nuevo JSON con linkedRawRow como la fuente ECF
+          ecfOriginalJson = JSON.stringify({
+            kind: 'spreadsheet_row',
+            sourceSheet: 'ECF',
+            submissionMode: 'normal',
+            row: src.linkedRawRow,     // datos de la hoja ECF (Municipio, FechaEmision, etc.)
+            linkedRawRow: src.row,     // datos RFCE guardados como referencia
+          });
+        }
+      } catch (_) { /* ignore */ }
+
+      if (!ecfOriginalJson) {
+        skipped.push({ encf: refEncf, reason: 'No tiene linkedRawRow con datos ECF' });
+        continue;
+      }
+
+      // 4. Actualizar el documento: cambiar de RFCE → ECF y resetear estado
+      await this.repository.query(
+        `UPDATE ecf_documents
+         SET submission_mode = 'normal',
+             estado_dgii = 'firmado',
+             track_id = NULL,
+             error_message = NULL,
+             certification_original_xml = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [ecfOriginalJson, refDoc.id]
+      );
+
+      fixed.push({ encf: refEncf, previousMode: 'rfce', newMode: 'normal' });
+      this.logger?.info(`[fixNcfModificadoRefs] ${refEncf} convertido RFCE→ECF para que E33/E34 pueda referenciarlo.`);
+    }
+
+    return {
+      ok: true,
+      fixed: fixed.length,
+      skipped: skipped.length,
+      details: { fixed, skipped },
+      message: fixed.length > 0
+        ? `${fixed.length} caso(s) E32 convertido(s) de RFCE→ECF para que E33/E34 los pueda referenciar: ${fixed.map((f) => f.encf).join(', ')}.`
+        : `No se requirió conversión. Revisados: ${[...ncfRefs].join(', ')}.`,
     };
   }
 
@@ -2536,6 +2695,68 @@ class EcfService {
 
   async getSummaryReport() {
     return this.repository.getSummaryReport();
+  }
+
+  // ENDPOINT DE DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación
+  async diagCertificationOriginalXml() {
+    await this.ensureReady();
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) { batchClause = ' AND certification_batch_id = ?'; params.push(batchId); }
+    // Devolver los 2 primeros casos generales + todos los E47 (los que siempre fallan)
+    const rows = await this.repository.query(
+      `SELECT encf, tipo_ecf, estado_dgii, submission_mode,
+              LENGTH(certification_original_xml) AS orig_len,
+              CASE
+                WHEN certification_original_xml IS NULL THEN 'NULL'
+                WHEN LEFT(certification_original_xml,1) = '<' THEN 'XML_no_bom'
+                WHEN HEX(LEFT(certification_original_xml,3)) = 'EFBBBF' THEN 'XML_bom'
+                WHEN LEFT(certification_original_xml,1) = '{' THEN 'JSON'
+                ELSE 'OTHER'
+              END AS orig_type,
+              certification_original_xml AS raw_json
+       FROM ecf_documents
+       WHERE business_id = 1 AND certification_case_key IS NOT NULL ${batchClause}
+       ORDER BY COALESCE(certification_order_index, id) ASC
+       LIMIT 30`,
+      params
+    );
+    // Para cada caso, parsear el JSON y devolver las claves del row y los campos relevantes
+    const cases = rows.map((r) => {
+      let rowKeys = [];
+      let sampleFields = {};
+      try {
+        const parsed = JSON.parse(r.raw_json || '{}');
+        const row = parsed.row || {};
+        rowKeys = Object.keys(row).slice(0, 80);
+        sampleFields = {
+          Municipio: row['Municipio'],
+          Provincia: row['Provincia'],
+          WebSite: row['WebSite'],
+          NumeroFacturaInterna: row['NumeroFacturaInterna'],
+          IdentificadorExtranjero: row['IdentificadorExtranjero'],
+          ValorPagar: row['ValorPagar'],
+          MontoPeriodo: row['MontoPeriodo'],
+          TerminoPago: row['TerminoPago'],
+          PrecioUnitarioItem1: row['PrecioUnitarioItem[1]'],
+          kind: parsed.kind,
+          sourceSheet: parsed.sourceSheet,
+        };
+      } catch (_) {}
+      return {
+        encf: r.encf,
+        tipo_ecf: r.tipo_ecf,
+        estado_dgii: r.estado_dgii,
+        orig_type: r.orig_type,
+        orig_len: r.orig_len,
+        sampleFields,
+        rowKeyCount: rowKeys.length,
+        // Solo mostrar rowKeys completas para casos E47 (los que fallan)
+        rowKeys: String(r.tipo_ecf || '').toUpperCase() === 'E47' ? rowKeys : undefined,
+      };
+    });
+    return { ok: true, batchId, cases };
   }
 }
 
