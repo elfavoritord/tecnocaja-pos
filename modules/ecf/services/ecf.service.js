@@ -2094,8 +2094,11 @@ class EcfService {
 
     const sent = await this.finalizeSentDocument(preparedDocument, response, 'Documento de certificación enviado a DGII.');
 
+    // En modo secuencial (skipStatusQuery=true) no consultamos el TrackID inmediatamente
+    // para no bloquear el envío de los siguientes casos. El estado queda como 'enviado'
+    // y el usuario puede usar "Consultar estados" al finalizar la ráfaga.
     let statusPayload = null;
-    if (sent.trackId) {
+    if (sent.trackId && !options.skipStatusQuery) {
       statusPayload = await this.queryDocumentStatus(preparedDocument.id);
     }
     const finalCertificationState = String(statusPayload?.estado || sent.estado || '').trim().toLowerCase();
@@ -2217,27 +2220,115 @@ class EcfService {
   async runCertificationSequence(req) {
     await this.ensureReady();
     await this.getCurrentActor(req, { adminOnly: true });
-    const limit = Math.max(1, Math.min(Number(req.body?.limit || 21), 100));
+    // Límite generoso — un set DGII típico tiene 21-30 casos.
+    const limit = Math.max(1, Math.min(Number(req.body?.limit || 50), 200));
+    // Retardo entre envíos (ms) para no saturar DGII ni expirar el token.
+    const delayMs = Math.max(0, Math.min(Number(req.body?.delayMs || 400), 3000));
     const results = [];
+    let consecutiveErrors = 0;
+    // Guard para no reintentar el mismo documento más de una vez en la misma ráfaga.
+    // Si DGII lo rechaza en este pase, queda en 'rechazado' para revisión manual.
+    const processedInThisRun = new Set();
+
     for (let index = 0; index < limit; index += 1) {
-      const step = await this.sendNextCertificationCase(req).catch((error) => ({
-        ok: false,
-        blocked: false,
-        message: error.message,
-        error,
-      }));
-      if (!step || (!step.case && !step.ok && !step.blocked)) {
-        results.push(step);
+      // Obtener el siguiente documento no resuelto del batch.
+      // includeRejected=true: reintenta rechazados de corridas ANTERIORES sin reset manual.
+      // Los documentos en 'enviado'/'en_proceso'/'aceptado' se saltan automáticamente.
+      let nextDocument;
+      try {
+        nextDocument = await this.repository.getNextPendingCertificationDocument({ includeRejected: true });
+      } catch (_) {
         break;
       }
-      if (step.blocked && !step.case) break;
+      if (!nextDocument) break; // No quedan pendientes → todos enviados o set vacío.
+      if (processedInThisRun.has(nextDocument.id)) break; // Ya procesamos todos los elegibles.
+      processedInThisRun.add(nextDocument.id);
+
+      let step;
+      try {
+        // skipStatusQuery=true: no esperamos respuesta de DGII tras el envío.
+        // El documento queda en estado 'enviado' con su TrackID registrado.
+        // El usuario puede consultar los estados con "Actualizar estados" al finalizar.
+        step = await this.sendCertificationCase(nextDocument.id, req, { skipStatusQuery: true });
+        consecutiveErrors = 0;
+      } catch (error) {
+        consecutiveErrors += 1;
+        const isFatal = consecutiveErrors >= 3
+          || (error.statusCode != null && error.statusCode >= 500);
+        results.push({
+          ok: false,
+          message: error.message,
+          encf: nextDocument.encf,
+          fatalStop: isFatal,
+        });
+        if (isFatal) break; // Error de red / auth grave: detener la ráfaga.
+        // Error puntual (firma, XML): registrar y continuar con el siguiente caso.
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        continue;
+      }
+
       results.push(step);
-      const state = String(step?.case?.estado || '').trim().toLowerCase();
-      if (!step?.ok || step?.blocked || ['rechazado', 'error', 'enviado', 'procesando', 'en_proceso'].includes(state)) break;
+
+      // Pausa entre envíos para respetar la tasa de DGII y mantener vivo el token.
+      if (index < limit - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
+
     return {
       ok: true,
       totalProcessed: results.length,
+      results,
+      summary: await this.repository.getCertificationSummary(),
+    };
+  }
+
+  // Consulta masiva de TrackIDs para todos los casos de certificación que están en
+  // estado 'enviado' o 'en_proceso'. Se llama tras la ráfaga de envíos para actualizar
+  // los estados sin bloquear el bucle de envío.
+  async pollCertificationStatuses() {
+    await this.ensureReady();
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(batchId);
+    }
+    const rows = await this.repository.query(
+      `SELECT *
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')
+         AND track_id IS NOT NULL
+       ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
+       LIMIT 60`,
+      params
+    );
+
+    const results = [];
+    for (const document of rows) {
+      try {
+        const status = await this.queryDocumentStatus(document.id);
+        results.push({
+          id: document.id,
+          encf: document.encf,
+          estado: status.estado,
+          trackId: status.trackId,
+          mensaje: status.mensaje,
+        });
+        // Pequeña pausa entre consultas para no saturar DGII.
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      } catch (error) {
+        results.push({ id: document.id, encf: document.encf, error: error.message });
+      }
+    }
+
+    return {
+      ok: true,
+      polled: results.length,
       results,
       summary: await this.repository.getCertificationSummary(),
     };
