@@ -848,7 +848,27 @@ class EcfService {
     // Quitar BOM UTF-8 del XML almacenado — DGII rechaza con código 1 si hay BOM
     const storedXmlClean = String(document.xml_content || '').replace(/^﻿/, '');
     let normalizedXml = normalizeEcfXmlStructure(storedXmlClean, { removeSignature: true });
-    if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
+    // Cuando el caso de certificación proviene de un XML del set DGII (no de hoja de cálculo),
+    // usamos el XML ORIGINAL como fuente de firma. Esto preserva exactamente todos los campos
+    // (Municipio, Provincia, WebSite, NumeroFacturaInterna, PrecioUnitarioItem con 4 decimales,
+    // ValorPagar, MontoPeriodo, TerminoPago, IdentificadorExtranjero, etc.) que DGII valida
+    // contra su set de pruebas. Regenerar con nuestro generador pierde esos valores y causa
+    // el rechazo "La propiedad X no es válida debido a que el valor enviado () no coincide...".
+    const rawOriginalXml = String(document.certification_original_xml || '').trim();
+    const isXmlSourcedCertification = document.certification_case_key
+      && rawOriginalXml
+      && (rawOriginalXml.startsWith('<') || rawOriginalXml.startsWith('<?'));
+
+    let skipE47Rebuild = false;
+    if (isXmlSourcedCertification) {
+      const cleanOriginalXml = rawOriginalXml.replace(/^﻿/, '');
+      const strippedOriginal = normalizeEcfXmlStructure(cleanOriginalXml, { removeSignature: true });
+      if (strippedOriginal.trim()) {
+        // El XML original ya tiene todos los valores correctos — no sobrescribir.
+        normalizedXml = strippedOriginal;
+        skipE47Rebuild = true; // FechaVencimientoSecuencia y demás ya están en el XML original.
+      }
+    } else if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
       const rebuilt = buildTransmissionFromSpreadsheetRow({
         testCase: {
           encf: document.encf,
@@ -863,10 +883,13 @@ class EcfService {
       });
       normalizedXml = rebuilt.xml;
     }
-    if (String(document.tipo_ecf || '').trim().toUpperCase() === 'E47') {
+
+    if (!skipE47Rebuild && String(document.tipo_ecf || '').trim().toUpperCase() === 'E47') {
       normalizedXml = await this.rebuildExteriorPaymentXml(document, normalizedXml);
     }
-    // Forzar re-firma si el XML almacenado tenía BOM o si el contenido cambió
+
+    // Forzar re-firma si el XML almacenado tenía BOM, si el contenido cambió (incluye el caso
+    // en que normalizedXml proviene del original DGII, que difiere del regenerado), o si no hay firma.
     const storedSignedClean = String(document.signed_xml_content || '').replace(/^﻿/, '');
     const hadBom = document.xml_content !== storedXmlClean || document.signed_xml_content !== storedSignedClean;
     const needsResign = hadBom || normalizedXml !== storedXmlClean || !storedSignedClean.trim();
