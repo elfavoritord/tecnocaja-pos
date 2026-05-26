@@ -1040,20 +1040,21 @@ class EcfService {
       // los campos específicos del set DGII que son obligatorios para la certificación.
       const certificationSource = parseCertificationStoredSource(rawCertOriginal);
       if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
-        // Obtener el emisor configurado por el usuario desde la BD.
-        // getEmitterForXml() usa ?? (no ||) en getResolvedEmitter, así que
-        // si el usuario dejó nombre_comercial vacío, llega '' y el tag se omite.
-        // Nunca usar el rawRow del Excel para NombreComercial del emisor —
-        // DGII valida contra su BD y el Excel puede tener valores que no coinciden.
+        // NombreComercial en certificación: SIEMPRE usar el valor del rawRow (Excel del set de pruebas DGII).
+        // DGII valida cada XML contra "el conjunto de datos entregados" — cada caso tiene su propio
+        // valor esperado (ej. "", "DOCUMENTOS ELECTRONICOS DE 02", "DOCUMENTOS ELECTRONICOS DE 03").
+        // NO pasar emitterNombreComercial aquí para que buildCertificationEcfXml() haga el fallback
+        // correcto: rowText(row, 'NombreComercial') del Excel.
         const localEmitter = await this.getEmitterForXml(1);
+        const rowNombreComercial = String(certificationSource.row?.NombreComercial ?? certificationSource.row?.['NombreComercial'] ?? '');
         await this.repository.saveEmitterXmlLog({
           businessId: 1,
           encf: document.encf,
           tipoEcf: document.tipo_ecf,
           emitterData: localEmitter,
-          origen: 'ecf_emitters (getEmitterForXml)',
+          origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, emitterNombreComercial="${localEmitter.nombreComercial}"`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, NombreComercial tomado del rawRow="${rowNombreComercial}" (local="${localEmitter.nombreComercial}" ignorado)`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1064,11 +1065,8 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
-            // NombreComercial del emisor: se toma de la configuración real del usuario.
-            // - Si el usuario configuró '' → el tag se omite del XML (correcto para DGII)
-            // - Si el usuario configuró 'MiEmpresa' → el tag aparece con ese valor
-            // NUNCA se usa el valor del rawRow (Excel del set de pruebas).
-            emitterNombreComercial: localEmitter.nombreComercial,
+            // emitterNombreComercial se omite intencionalmente:
+            // buildCertificationEcfXml() detecta su ausencia con 'in' y usa rowText(row, 'NombreComercial').
           },
           issueDate: new Date(),
           certificateContext: certificate,
