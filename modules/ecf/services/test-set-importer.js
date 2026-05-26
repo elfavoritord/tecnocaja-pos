@@ -304,7 +304,19 @@ function buildCertificationEcfXml(testCase, issueDate) {
   [
     'RNCEmisor',
     'RazonSocialEmisor',
-    'NombreComercial',
+  ].forEach((field) => appendSimple(emisor, field, row[field]));
+
+  // NombreComercial del emisor: DGII valida este campo contra el valor registrado en su BD para el RNC.
+  // Si el Excel del set de pruebas tiene un valor diferente al registrado en DGII, la validación falla.
+  // Por eso usamos el valor del emisor LOCAL (que el usuario controla). Si está vacío, no se incluye.
+  // El usuario debe asegurarse de que 'nombre_comercial' en la configuración coincida con lo que
+  // tiene registrado en DGII (o dejarlo vacío si el RNC no tiene NombreComercial en DGII).
+  const emitterNombreComercial = ('emitterNombreComercial' in testCase)
+    ? testCase.emitterNombreComercial
+    : rowText(row, 'NombreComercial');
+  appendSimple(emisor, 'NombreComercial', emitterNombreComercial);
+
+  [
     'Sucursal',
     'DireccionEmisor',
     'Municipio',
