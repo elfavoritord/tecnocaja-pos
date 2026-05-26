@@ -3165,7 +3165,8 @@
           <div class="form-group"><label>Teléfono</label><input type="text" id="fiscal-biz-telefono" class="form-input"></div>
           <div class="form-group"><label>Correo</label><input type="email" id="fiscal-biz-correo" class="form-input"></div>
         </div>
-        <div style="display:flex;justify-content:flex-end;margin-top:.85rem">
+        <div style="display:flex;justify-content:flex-end;gap:.6rem;margin-top:.85rem;flex-wrap:wrap">
+          <button class="btn-secondary" onclick="showEmitterXmlPreview()" title="Muestra exactamente qué datos aparecerán en el XML que se envía a DGII">🔍 Ver XML generado</button>
           <button id="fiscal-btn-save-biz" class="btn-primary" onclick="saveFiscalBusinessData()">Guardar datos del negocio</button>
         </div>
 
@@ -3399,7 +3400,8 @@
                 <button id="certification-btn-import" class="btn-primary" onclick="importCertificationSet()">📥 Importar Set de Pruebas DGII</button>
                 <button class="btn-primary" onclick="runCertificationSequence()" title="Resetea enviados y envía todos los pendientes en ráfaga, luego consulta estados">▶ Ejecutar pruebas secuenciales</button>
                 <button class="btn-secondary" onclick="pollCertificationStatuses()" title="Consulta el estado actual en DGII de todos los casos enviados">🔄 Consultar estados DGII</button>
-                <button class="btn-secondary" onclick="resetSentCertificationCases()" title="Marca los casos 'enviado/en_proceso' como 'firmado' para reenviarlos sin borrar nada">↩ Reset enviados</button>
+                <button class="btn-secondary" onclick="resetSentCertificationCases()" title="Rota TODOS los eNCFs (incluye RFCE) y resetea todo a 'firmado'. Usar cuando el portal DGII reinicia las pruebas por un rechazo.">↩ Reset enviados</button>
+                <button id="btn-gen-250mil" class="btn-secondary" onclick="generate250MilXmls()" title="Genera y firma los 4 XMLs con los eNCFs actuales (sin NombreComercial). Ejecutar DESPUÉS de tener 21/21 + 4/4 aceptados.">📋 Generar XMLs &lt;250Mil</button>
                 <button class="btn-secondary" onclick="sendNextCertificationCase()">Enviar siguiente</button>
                 <button class="btn-secondary" onclick="resignPendingDocs()">Re-firmar pendientes</button>
                 <button id="certification-btn-reset" class="btn-danger" onclick="resetCertificationData()" title="Elimina todos los casos del batch actual para empezar desde cero">🗑 Borrar y empezar de nuevo</button>

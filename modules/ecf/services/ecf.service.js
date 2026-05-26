@@ -415,10 +415,126 @@ class EcfService {
     };
   }
 
+  /**
+   * Obtiene los datos del emisor SIEMPRE frescos desde la BD (ecf_emitters).
+   * Es la fuente única y oficial para construir XMLs e-CF.
+   * Nunca usa valores hardcodeados, constantes ni caché.
+   * - nombre_comercial = '' → <NombreComercial> se omite del XML (campo vacío)
+   * - nombre_comercial = 'X' → <NombreComercial>X</NombreComercial> en el XML
+   */
+  async getEmitterForXml(businessId = 1) {
+    const emitter = await this.repository.getResolvedEmitter(businessId);
+    return {
+      rnc: String(emitter.rnc || '').replace(/\D/g, ''),
+      razonSocial: String(emitter.razon_social || '').trim(),
+      // Con la corrección ?? en getResolvedEmitter, este valor refleja exactamente
+      // lo guardado en ecf_emitters: '' si no se configuró / si se borró.
+      nombreComercial: String(emitter.nombre_comercial || '').trim(),
+      direccion: String(emitter.direccion || '').trim(),
+      municipio: String(emitter.municipio || '').trim(),
+      provincia: String(emitter.provincia || '').trim(),
+      telefono: String(emitter.telefono || '').trim(),
+      correo: String(emitter.correo || '').trim(),
+      // Campos raw para compatibilidad con código que usa nombre_comercial (snake_case)
+      razon_social: String(emitter.razon_social || '').trim(),
+      nombre_comercial: String(emitter.nombre_comercial || '').trim(),
+    };
+  }
+
+  /**
+   * Vista previa de los datos del emisor tal como aparecerán en el XML.
+   * Permite al usuario verificar ANTES de enviar qué datos usará DGII.
+   */
+  async getEmitterXmlPreview() {
+    await this.ensureReady();
+    const emitter = await this.getEmitterForXml();
+    const xmlTags = {
+      RNCEmisor: emitter.rnc || '(vacío — requerido)',
+      RazonSocialEmisor: emitter.razonSocial || '(vacío — requerido)',
+      NombreComercial: emitter.nombreComercial || '(no se incluirá en el XML)',
+      DireccionEmisor: emitter.direccion || '(no se incluirá en el XML)',
+      Municipio: emitter.municipio || '(no se incluirá en el XML)',
+      Provincia: emitter.provincia || '(no se incluirá en el XML)',
+      TelefonoEmisor: emitter.telefono || '(no se incluirá en el XML)',
+      CorreoEmisor: emitter.correo || '(no se incluirá en el XML)',
+    };
+
+    // Validaciones
+    const warnings = [];
+    if (!emitter.rnc) warnings.push('RNC no configurado — el XML será rechazado por DGII.');
+    if (!emitter.razonSocial) warnings.push('Razón social no configurada — el XML será rechazado por DGII.');
+
+    return {
+      emitter,
+      xmlTags,
+      warnings,
+      source: 'ecf_emitters (base de datos, sin caché)',
+      note: 'Los campos que dicen "(no se incluirá)" no generan el tag XML — esto es correcto si DGII no tiene ese dato registrado para el RNC.',
+    };
+  }
+
+  /**
+   * Vista previa del XML que se generaría para un documento de certificación.
+   * Útil para diagnóstico antes de enviar.
+   */
+  async getCertificationCaseXmlPreview(documentId) {
+    await this.ensureReady();
+    const document = await this.repository.getDocument(documentId);
+    assertCondition(document, `Documento ${documentId} no encontrado.`, { statusCode: 404 });
+
+    const certificate = await this.resolveCertificate().catch(() => null);
+    const repaired = await this.repairStoredDocumentXml(document, certificate);
+    const xmlContent = String(repaired.xml_content || repaired.signed_xml_content || '').trim();
+
+    // Extraer campos del XML para comparar con el emisor configurado
+    const { DOMParser } = require('@xmldom/xmldom');
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlContent.replace(/^<\?xml[^>]*\?>/, '').trim(), 'text/xml');
+    const getTag = (tag) => {
+      const el = xmlDoc.getElementsByTagName(tag)[0];
+      return el ? String(el.textContent || '').trim() : null;
+    };
+
+    const emitter = await this.getEmitterForXml();
+    const xmlEmitter = {
+      RNCEmisor: getTag('RNCEmisor'),
+      RazonSocialEmisor: getTag('RazonSocialEmisor'),
+      NombreComercial: getTag('NombreComercial'),
+    };
+
+    const diferencias = [];
+    if (xmlEmitter.RNCEmisor !== emitter.rnc) diferencias.push({ campo: 'RNC', enXml: xmlEmitter.RNCEmisor, enConfig: emitter.rnc });
+    if (xmlEmitter.RazonSocialEmisor !== emitter.razonSocial) diferencias.push({ campo: 'RazonSocial', enXml: xmlEmitter.RazonSocialEmisor, enConfig: emitter.razonSocial });
+    if ((xmlEmitter.NombreComercial || '') !== emitter.nombreComercial) diferencias.push({ campo: 'NombreComercial', enXml: xmlEmitter.NombreComercial || '(no está en XML)', enConfig: emitter.nombreComercial || '(vacío)' });
+
+    return {
+      encf: document.encf,
+      tipoEcf: document.tipo_ecf,
+      estadoDgii: document.estado_dgii,
+      emitterConfigurado: emitter,
+      emitterEnXml: xmlEmitter,
+      diferencias,
+      hayDiferencias: diferencias.length > 0,
+      xmlPreview: xmlContent.slice(0, 2000),
+      xmlLength: xmlContent.length,
+    };
+  }
+
+  /**
+   * Retorna los últimos logs de emisor usados en XMLs.
+   */
+  async getEmitterXmlLogs() {
+    await this.ensureReady();
+    return this.repository.getEmitterXmlLogs(1, 100);
+  }
+
   async saveBusiness(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     const payload = req.body || {};
+    // IMPORTANTE: String(null || '').trim() = '' pero necesitamos distinguir entre
+    // "usuario no mandó el campo" y "usuario lo limpió". El frontend manda '' o el valor.
+    // String(X || '') convierte null → '' correctamente para permitir borrar campos.
     const emitter = await this.repository.upsertEmitter(1, {
       rnc: digitsOnly(payload.rnc),
       razon_social: String(payload.razon_social || '').trim(),
@@ -429,14 +545,45 @@ class EcfService {
       telefono: String(payload.telefono || '').trim(),
       correo: String(payload.correo || '').trim(),
     });
+
+    // Auto-limpiar XMLs firmados de certificación en disco que puedan tener datos stale.
+    // Cuando el usuario cambia el nombre comercial, los XMLs previos en disco quedan obsoletos.
+    // Se regeneran automáticamente al reenviar.
+    try {
+      const certDir = this.certificationSignedDir;
+      if (certDir && require('fs').existsSync(certDir)) {
+        const xmlFiles = require('fs').readdirSync(certDir).filter((f) => f.endsWith('.xml'));
+        let cleared = 0;
+        for (const file of xmlFiles) {
+          try {
+            require('fs').unlinkSync(require('path').join(certDir, file));
+            cleared++;
+          } catch (_) { /* ignorar errores individuales */ }
+        }
+        if (cleared > 0) {
+          this.logger.info(`[saveBusiness] Auto-limpieza: ${cleared} XML(s) de certificación en disco eliminados (datos del emisor actualizados).`);
+        }
+      }
+    } catch (_) { /* auto-limpieza nunca debe fallar el guardado */ }
+
     await this.repository.saveAudit({
       userId: actor.id,
       userName: actor.nombre || actor.usuario,
       userRole: actor.rol || actor.role_code,
       actionName: 'emitter_updated',
       status: 'ok',
-      detail: `Actualizó datos fiscales del emisor ${emitter.rnc || ''}.`,
+      detail: `Actualizó datos fiscales del emisor ${emitter.rnc || ''}. nombre_comercial="${emitter.nombre_comercial ?? ''}"`,
     });
+
+    // Log de auditoría específico para el emisor
+    await this.repository.saveEmitterXmlLog({
+      businessId: 1,
+      emitterData: emitter,
+      origen: 'ecf_emitters',
+      accion: 'emitter_guardado',
+      detalle: `Usuario ${actor.nombre || actor.usuario} actualizó el emisor. nombre_comercial="${emitter.nombre_comercial ?? ''}"`,
+    });
+
     return this.getBundle();
   }
 
@@ -893,6 +1040,22 @@ class EcfService {
       // los campos específicos del set DGII que son obligatorios para la certificación.
       const certificationSource = parseCertificationStoredSource(rawCertOriginal);
       if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
+        // Obtener el emisor configurado por el usuario desde la BD.
+        // getEmitterForXml() usa ?? (no ||) en getResolvedEmitter, así que
+        // si el usuario dejó nombre_comercial vacío, llega '' y el tag se omite.
+        // Nunca usar el rawRow del Excel para NombreComercial del emisor —
+        // DGII valida contra su BD y el Excel puede tener valores que no coinciden.
+        const localEmitter = await this.getEmitterForXml(1);
+        await this.repository.saveEmitterXmlLog({
+          businessId: 1,
+          encf: document.encf,
+          tipoEcf: document.tipo_ecf,
+          emitterData: localEmitter,
+          origen: 'ecf_emitters (getEmitterForXml)',
+          accion: 'xml_certificacion_reconstruido',
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, emitterNombreComercial="${localEmitter.nombreComercial}"`,
+        });
+
         const rebuilt = buildTransmissionFromSpreadsheetRow({
           testCase: {
             encf: document.encf,
@@ -901,13 +1064,11 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
-            // NombreComercial del emisor: DGII valida este campo contra su BD.
-            // El valor del Excel del set de pruebas no necesariamente coincide con
-            // el registrado en DGII para el RNC, causando rechazo. Lo omitimos siempre
-            // (vacío = no se incluye el tag en el XML). Si el RNC realmente tiene
-            // NombreComercial registrado en DGII, el usuario debe configurarlo en
-            // la pantalla de emisor y aquí se usaría ese valor.
-            emitterNombreComercial: '',
+            // NombreComercial del emisor: se toma de la configuración real del usuario.
+            // - Si el usuario configuró '' → el tag se omite del XML (correcto para DGII)
+            // - Si el usuario configuró 'MiEmpresa' → el tag aparece con ese valor
+            // NUNCA se usa el valor del rawRow (Excel del set de pruebas).
+            emitterNombreComercial: localEmitter.nombreComercial,
           },
           issueDate: new Date(),
           certificateContext: certificate,
@@ -1566,7 +1727,11 @@ class EcfService {
   }
 
   async buildPayloadForSale(saleId, requestedType) {
-    const emitter = await this.repository.getResolvedEmitter(1);
+    // Usar getEmitterForXml() — fuente única y oficial de los datos del emisor.
+    // Siempre lee de ecf_emitters (sin caché). Con la corrección ?? en getResolvedEmitter,
+    // nombre_comercial = '' cuando el usuario no lo configuró (nunca fallback a business_name).
+    const emitter = await this.getEmitterForXml(1);
+    const rawEmitter = await this.repository.getResolvedEmitter(1); // para environment
     const { sale, items } = await this.repository.getSaleWithItems(saleId);
     const buyerTaxId = sale.client_tax_id || sale.client_tax_id_snapshot || '';
     const tipoEcf = inferRequestedType(requestedType, buyerTaxId);
@@ -1574,7 +1739,18 @@ class EcfService {
       saleId,
       userId: sale.user_id || null,
       tipoEcf,
-      environment: emitter.environment,
+      environment: rawEmitter.environment,
+    });
+
+    // Log de auditoría: registra qué datos del emisor se usaron en este XML
+    await this.repository.saveEmitterXmlLog({
+      businessId: 1,
+      encf: reservation.encf,
+      tipoEcf,
+      emitterData: emitter,
+      origen: 'ecf_emitters (getEmitterForXml)',
+      accion: 'xml_venta_generado',
+      detalle: `buildPayloadForSale: venta ${saleId}, nombreComercial="${emitter.nombreComercial}"`,
     });
 
     const preparedItems = items.map((item) => ({
@@ -1593,8 +1769,8 @@ class EcfService {
     const generated = generateEcfXml({
       emitter: {
         rnc: emitter.rnc,
-        razonSocial: emitter.razon_social,
-        nombreComercial: emitter.nombre_comercial,
+        razonSocial: emitter.razonSocial,
+        nombreComercial: emitter.nombreComercial,
         direccion: emitter.direccion,
         telefono: emitter.telefono,
         correo: emitter.correo,

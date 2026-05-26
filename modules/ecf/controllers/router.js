@@ -28,6 +28,14 @@ function createEcfRouter(deps) {
   router.post('/config/business', wrap((req) => service.saveBusiness(req)));
   router.post('/config/dgii', wrap((req) => service.saveDgiiSettings(req)));
   router.post('/config/environment', wrap((req) => service.saveEnvironment(req)));
+
+  // ── Diagnóstico y auditoría del emisor ───────────────────────────────────────
+  // Muestra los datos del emisor tal como aparecerán en el XML — sin caché, sin hardcoding.
+  router.get('/emitter/xml-preview', wrap(() => service.getEmitterXmlPreview()));
+  // Historial de emisores usados en XMLs (auditoría de origen de datos).
+  router.get('/emitter/xml-logs', wrap(() => service.getEmitterXmlLogs()));
+  // Vista previa del XML de un caso de certificación específico.
+  router.get('/certification/cases/:id/xml-preview', wrap((req) => service.getCertificationCaseXmlPreview(Number(req.params.id))));
   router.post('/security/internal-token/rotate', wrap((req) => service.rotateInternalToken(req)));
 
   router.post('/certificate/upload', wrap((req) => service.handleCertificateUpload(req)));
@@ -108,6 +116,11 @@ function createEcfRouter(deps) {
   router.post('/certification/reset-sent', wrap((req) => service.resetSentCertificationCases(req)));
   // Convierte E32 RFCE → ECF cuando es referenciado por E33/E34 (NCFModificado)
   router.post('/certification/fix-ncf-refs', wrap((req) => service.fixNcfModificadoRefs(req)));
+  // Rota eNCFs quemados (ya enviados en intentos anteriores) asignando nuevos números de secuencia.
+  // Usar cuando DGII rechaza con "Este número de secuencia ya ha sido utilizado".
+  router.post('/certification/rotate-encfs', wrap((req) => service.rotateBurnedEncfs(req)));
+  // Genera y firma los 4 XMLs < 250Mil para subir al portal DGII
+  router.post('/certification/generate-250mil', wrap((req) => service.generate250MilXmls(req)));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/resend', wrap((req) => service.sendCertificationCase(Number(req.params.id), req, { forceResend: true })));
   router.get('/certification/cases/:id/track', wrap((req) => service.queryCertificationCase(Number(req.params.id))));
