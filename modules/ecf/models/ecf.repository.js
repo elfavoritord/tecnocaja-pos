@@ -257,6 +257,47 @@ class EcfRepository {
     for (const [columnName, definitionSql] of documentColumns) {
       await addColumnIfMissing(this.query, 'ecf_documents', columnName, definitionSql).catch(() => {});
     }
+
+    // Tabla de auditoría: registra el origen de los datos del emisor usados en cada XML enviado.
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS ecf_emitter_xml_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_id INT NOT NULL DEFAULT 1,
+        fecha DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        encf VARCHAR(30) DEFAULT NULL,
+        tipo_ecf VARCHAR(5) DEFAULT NULL,
+        rnc VARCHAR(20) DEFAULT NULL,
+        razon_social VARCHAR(255) DEFAULT NULL,
+        nombre_comercial VARCHAR(255) DEFAULT NULL,
+        direccion TEXT DEFAULT NULL,
+        origen_datos VARCHAR(80) NOT NULL DEFAULT 'ecf_emitters',
+        accion VARCHAR(60) NOT NULL DEFAULT 'xml_generado',
+        detalle TEXT DEFAULT NULL
+      )
+    `).catch(() => {});
+  }
+
+  async saveEmitterXmlLog({ businessId = 1, encf = null, tipoEcf = null, emitterData = {}, origen = 'ecf_emitters', accion = 'xml_generado', detalle = null } = {}) {
+    try {
+      await this.query(
+        `INSERT INTO ecf_emitter_xml_log (business_id, encf, tipo_ecf, rnc, razon_social, nombre_comercial, direccion, origen_datos, accion, detalle)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [businessId, encf || null, tipoEcf || null,
+          emitterData.rnc || null,
+          emitterData.razon_social || null,
+          emitterData.nombre_comercial ?? null,
+          emitterData.direccion || null,
+          origen, accion, detalle || null,
+        ]
+      );
+    } catch (_) { /* log failure nunca debe interrumpir el flujo */ }
+  }
+
+  async getEmitterXmlLogs(businessId = 1, limit = 50) {
+    return this.query(
+      'SELECT * FROM ecf_emitter_xml_log WHERE business_id = ? ORDER BY id DESC LIMIT ?',
+      [businessId, limit]
+    ).catch(() => []);
   }
 
   async getEmitter(businessId = 1) {
@@ -283,7 +324,13 @@ class EcfRepository {
       business_id: businessId,
       rnc: emitter?.rnc || fallback.rnc || '',
       razon_social: emitter?.razon_social || fallback.business_name || '',
-      nombre_comercial: emitter?.nombre_comercial || fallback.business_name || '',
+      // IMPORTANTE: nombre_comercial NO debe hacer fallback a business_name.
+      // NombreComercial es un campo INDEPENDIENTE de RazonSocial. Si el emisor
+      // no tiene nombre comercial configurado (null) o lo dejó en blanco (''),
+      // debe quedar vacío — así appendIfValue/appendSimple omiten el tag XML.
+      // Usar ?? (nullish coalescing) en lugar de || para que '' (cadena vacía
+      // guardada explícitamente) no sea tratada como falsy y no haga fallback.
+      nombre_comercial: emitter?.nombre_comercial ?? '',
       direccion: emitter?.direccion || fallback.address || '',
       provincia: emitter?.provincia || '',
       municipio: emitter?.municipio || '',

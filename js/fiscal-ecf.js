@@ -750,19 +750,202 @@ async function saveFiscalBusinessData() {
   const body = {};
   fields.forEach((field) => {
     const el = document.getElementById(`fiscal-biz-${field}`);
-    if (el) body[field] = el.value.trim() || null;
+    // IMPORTANTE: enviar '' (cadena vacía) cuando el campo está vacío, NO null.
+    // Si enviamos null, upsertEmitter con ?? no lo actualiza y el valor anterior persiste.
+    // Enviando '' permite limpiar explícitamente el campo en la BD.
+    if (el) body[field] = el.value.trim(); // '' si vacío → limpia el campo en BD
   });
 
   const btn = document.getElementById('fiscal-btn-save-biz');
   setBtnLoading(btn, true, 'Guardando…');
   try {
     await fiscalApi('POST', '/config/business', body);
-    showFiscalToast('Datos del negocio guardados correctamente.', 'success');
+    showFiscalToast('✅ Datos del negocio guardados. Los XMLs de certificación en disco se limpiaron automáticamente.', 'success');
     await loadFiscalStatus();
+    // Actualizar la vista previa automáticamente después de guardar
+    const previewPanel = document.getElementById('emitter-xml-preview-panel');
+    if (previewPanel && !previewPanel.classList.contains('hidden')) {
+      await showEmitterXmlPreview();
+    }
   } catch (e) {
     showFiscalToast(`Error: ${e.message}`, 'error');
   } finally {
     setBtnLoading(btn, false, 'Guardar datos del negocio');
+  }
+}
+
+/**
+ * Muestra la vista previa de los datos del emisor tal como aparecerán en el XML.
+ * Permite al usuario verificar ANTES de enviar que nombre_comercial, RNC, etc. son correctos.
+ */
+async function showEmitterXmlPreview() {
+  let panel = document.getElementById('emitter-xml-preview-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'emitter-xml-preview-panel';
+    panel.style.cssText = `
+      background:#1e293b; color:#e2e8f0; border-radius:10px; padding:16px 20px;
+      margin:12px 0; font-size:13px; line-height:1.7; position:relative;
+      border:2px solid #3b82f6; font-family:monospace;
+    `;
+    // Insertar después del botón de guardar
+    const saveBtn = document.getElementById('fiscal-btn-save-biz');
+    if (saveBtn && saveBtn.parentNode) {
+      saveBtn.parentNode.insertBefore(panel, saveBtn.nextSibling);
+    } else {
+      document.querySelector('.fiscal-business-section')?.appendChild(panel);
+    }
+  }
+
+  panel.innerHTML = '<div style="color:#94a3b8">⏳ Cargando vista previa del XML del emisor…</div>';
+  panel.classList.remove('hidden');
+
+  try {
+    const data = await fiscalApi('GET', '/emitter/xml-preview');
+    const { emitter, xmlTags, warnings, source } = data;
+
+    const tagRows = Object.entries(xmlTags || {}).map(([tag, val]) => {
+      const isOmitted = val.includes('(no se incluirá)');
+      const color = isOmitted ? '#64748b' : '#4ade80';
+      return `<tr>
+        <td style="color:#94a3b8;padding:2px 8px 2px 0">&lt;${tag}&gt;</td>
+        <td style="color:${color};padding:2px 0">${val}</td>
+      </tr>`;
+    }).join('');
+
+    const warningHtml = (warnings || []).map((w) =>
+      `<div style="color:#f87171;margin-top:4px">⚠ ${w}</div>`
+    ).join('');
+
+    panel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <strong style="color:#3b82f6;font-size:14px">🔍 Vista previa — datos del emisor en el XML</strong>
+        <button onclick="document.getElementById('emitter-xml-preview-panel').remove()"
+          style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:16px">✕</button>
+      </div>
+      <div style="color:#64748b;font-size:11px;margin-bottom:8px">Fuente: <strong style="color:#94a3b8">${source}</strong></div>
+      <table style="border-collapse:collapse;width:100%">${tagRows}</table>
+      ${warningHtml}
+      <div style="margin-top:10px;color:#64748b;font-size:11px">
+        Los campos "(no se incluirá en el XML)" son correctos si DGII no tiene ese dato registrado para el RNC.<br>
+        Si DGII espera ese campo vacío, dejarlo en blanco es la configuración correcta.
+      </div>
+    `;
+  } catch (e) {
+    panel.innerHTML = `<div style="color:#f87171">Error al cargar vista previa: ${e.message}</div>`;
+  }
+}
+
+/**
+ * Modal de validación previa antes de enviar a DGII.
+ * Muestra comparación entre datos configurados y datos en el XML.
+ */
+async function showDgiiPreSendValidation(caseId, onConfirm) {
+  // Eliminar modal previo si existe
+  document.getElementById('dgii-presend-modal')?.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'dgii-presend-modal';
+  modal.style.cssText = `
+    position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.75);
+    z-index:10000;display:flex;align-items:center;justify-content:center;
+  `;
+  modal.innerHTML = `
+    <div style="background:#1e293b;border-radius:12px;padding:24px;max-width:600px;width:95%;
+                color:#e2e8f0;border:2px solid #3b82f6;font-family:monospace;font-size:13px;
+                max-height:85vh;overflow-y:auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <strong style="color:#3b82f6;font-size:15px">✅ Validación previa DGII</strong>
+        <button id="dgii-presend-close" style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:18px">✕</button>
+      </div>
+      <div id="dgii-presend-content" style="color:#94a3b8">⏳ Verificando datos del emisor…</div>
+      <div style="margin-top:16px;display:flex;gap:10px;justify-content:flex-end">
+        <button id="dgii-presend-cancel" style="
+          background:#374151;color:#e2e8f0;border:none;padding:8px 18px;
+          border-radius:6px;cursor:pointer;font-size:13px;">Cancelar</button>
+        <button id="dgii-presend-confirm" style="
+          background:#3b82f6;color:#fff;border:none;padding:8px 18px;
+          border-radius:6px;cursor:pointer;font-size:13px;" disabled>⏳ Verificando…</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  modal.querySelector('#dgii-presend-close').onclick = close;
+  modal.querySelector('#dgii-presend-cancel').onclick = close;
+
+  try {
+    // Cargar vista previa del emisor
+    const preview = await fiscalApi('GET', '/emitter/xml-preview');
+    const { emitter, xmlTags, warnings } = preview;
+
+    const checks = [
+      { ok: !!emitter.rnc, label: 'RNC cargado', valor: emitter.rnc || '(vacío)' },
+      { ok: !!emitter.razonSocial, label: 'Razón social cargada', valor: emitter.razonSocial || '(vacío)' },
+      { ok: true, label: 'Nombre comercial configurado', valor: emitter.nombreComercial || '(vacío — se omitirá del XML)' },
+      { ok: !!emitter.direccion || true, label: 'Dirección', valor: emitter.direccion || '(no se incluirá en el XML)' },
+    ];
+
+    const checksHtml = checks.map((c) => `
+      <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+        <span style="color:${c.ok ? '#4ade80' : '#f87171'}">${c.ok ? '✓' : '✗'}</span>
+        <span style="color:#94a3b8">${c.label}:</span>
+        <span style="color:${c.ok ? '#e2e8f0' : '#fbbf24'}">${c.valor}</span>
+      </div>
+    `).join('');
+
+    const warningsHtml = (warnings || []).length
+      ? `<div style="background:#450a0a;border-radius:6px;padding:10px;margin:10px 0">
+           ${warnings.map((w) => `<div style="color:#f87171">⚠ ${w}</div>`).join('')}
+         </div>`
+      : '';
+
+    const hasErrors = warnings && warnings.length > 0;
+
+    modal.querySelector('#dgii-presend-content').innerHTML = `
+      <div style="margin-bottom:12px">
+        <strong style="color:#94a3b8">Datos del negocio cargados desde la BD:</strong>
+        <div style="margin-top:8px">${checksHtml}</div>
+      </div>
+      ${warningsHtml}
+      <div style="background:#0f172a;border-radius:6px;padding:10px;font-size:12px">
+        <strong style="color:#64748b">Tags que aparecerán en el XML:</strong><br>
+        ${Object.entries(xmlTags || {}).map(([k, v]) => `
+          <span style="color:#3b82f6">&lt;${k}&gt;</span>
+          <span style="color:${v.includes('(no se incluirá)') ? '#64748b' : '#4ade80'}">${v}</span><br>
+        `).join('')}
+      </div>
+      <div style="margin-top:10px;color:#64748b;font-size:11px">
+        Fuente: ecf_emitters (base de datos, sin caché, sin valores hardcodeados)
+      </div>
+    `;
+
+    const confirmBtn = modal.querySelector('#dgii-presend-confirm');
+    if (hasErrors) {
+      confirmBtn.textContent = '⚠ Hay errores — revisar';
+      confirmBtn.style.background = '#dc2626';
+      confirmBtn.disabled = false;
+      confirmBtn.onclick = () => {
+        close();
+        showFiscalToast('Corrige los errores antes de enviar a DGII.', 'error');
+      };
+    } else {
+      confirmBtn.textContent = '▶ Enviar a DGII';
+      confirmBtn.style.background = '#16a34a';
+      confirmBtn.disabled = false;
+      confirmBtn.onclick = () => {
+        close();
+        if (onConfirm) onConfirm();
+      };
+    }
+  } catch (e) {
+    modal.querySelector('#dgii-presend-content').innerHTML =
+      `<div style="color:#f87171">Error al verificar: ${e.message}</div>`;
+    const confirmBtn = modal.querySelector('#dgii-presend-confirm');
+    confirmBtn.textContent = 'Enviar de todas formas';
+    confirmBtn.disabled = false;
+    confirmBtn.onclick = () => { close(); if (onConfirm) onConfirm(); };
   }
 }
 
@@ -1529,6 +1712,38 @@ function certificationStatusBadge(state) {
   return map[normalized] || { label: state || '—', cls: 'badge-gray' };
 }
 
+/**
+ * Muestra un aviso prominente que recuerda generar XMLs frescos antes de subir al portal.
+ * Se llama después de cada run-sequential exitoso.
+ */
+function showCertification250MilReminder() {
+  // Quitar aviso anterior si existe
+  const prev = document.getElementById('cert-250mil-reminder');
+  if (prev) prev.remove();
+
+  const box = document.getElementById('certification-cases-table') || document.querySelector('.certification-section');
+  if (!box) return;
+
+  const div = document.createElement('div');
+  div.id = 'cert-250mil-reminder';
+  div.style.cssText = `
+    background: #7c3aed; color: #fff; border-radius: 8px; padding: 14px 18px;
+    margin: 12px 0; font-size: 14px; line-height: 1.6; position: relative;
+  `;
+  div.innerHTML = `
+    <button onclick="document.getElementById('cert-250mil-reminder').remove()" style="
+      position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
+      font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
+    <strong>⚠ PASO OBLIGATORIO antes de subir al portal < 250Mil</strong><br>
+    Haz click en el botón <strong>"📋 Generar XMLs &lt;250Mil"</strong> para generar los XMLs frescos con los eNCFs actuales.<br>
+    <strong>⛔ NO subas XMLs anteriores — DGII los rechazará y reseteará todo.</strong><br>
+    <button onclick="generate250MilXmls()" style="margin-top:8px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;">
+      📋 Generar XMLs &lt;250Mil ahora
+    </button>
+  `;
+  box.parentNode.insertBefore(div, box);
+}
+
 async function loadCertificationCases() {
   const box = document.getElementById('certification-cases-table');
   if (!box) return;
@@ -1658,16 +1873,19 @@ async function importCertificationSet() {
 }
 
 async function sendCertificationDoc(id, isResend = false) {
-  try {
-    const endpoint = isResend ? `/certification/cases/${id}/resend` : `/certification/cases/${id}/send`;
-    const response = await fiscalApi('POST', endpoint, {});
-    showFiscalToast(response.message || 'Prueba enviada a DGII.', response.ok ? 'success' : 'warning');
-    showFiscalTechnicalResult(isResend ? 'Reenvío prueba certificación DGII' : 'Envío prueba certificación DGII', response);
-    await loadCertificationCases();
-    await loadFiscalStatus();
-  } catch (err) {
-    showFiscalToast(`Error al enviar prueba: ${err.message}`, 'error');
-  }
+  // Mostrar validación previa del emisor antes de enviar a DGII
+  await showDgiiPreSendValidation(id, async () => {
+    try {
+      const endpoint = isResend ? `/certification/cases/${id}/resend` : `/certification/cases/${id}/send`;
+      const response = await fiscalApi('POST', endpoint, {});
+      showFiscalToast(response.message || 'Prueba enviada a DGII.', response.ok ? 'success' : 'warning');
+      showFiscalTechnicalResult(isResend ? 'Reenvío prueba certificación DGII' : 'Envío prueba certificación DGII', response);
+      await loadCertificationCases();
+      await loadFiscalStatus();
+    } catch (err) {
+      showFiscalToast(`Error al enviar prueba: ${err.message}`, 'error');
+    }
+  });
 }
 
 async function queryCertificationDoc(id) {
@@ -1683,18 +1901,27 @@ async function queryCertificationDoc(id) {
 }
 
 async function sendNextCertificationCase() {
-  try {
-    const response = await fiscalApi('POST', '/certification/send-next', {});
-    showFiscalToast(response.message || 'Se envió la siguiente prueba pendiente.', response.ok ? 'success' : 'warning');
-    showFiscalTechnicalResult('Enviar siguiente prueba DGII', response);
-    await loadCertificationCases();
-    await loadFiscalStatus();
-  } catch (err) {
-    showFiscalToast(`Error al enviar siguiente prueba: ${err.message}`, 'error');
-  }
+  await showDgiiPreSendValidation(null, async () => {
+    try {
+      const response = await fiscalApi('POST', '/certification/send-next', {});
+      showFiscalToast(response.message || 'Se envió la siguiente prueba pendiente.', response.ok ? 'success' : 'warning');
+      showFiscalTechnicalResult('Enviar siguiente prueba DGII', response);
+      await loadCertificationCases();
+      await loadFiscalStatus();
+    } catch (err) {
+      showFiscalToast(`Error al enviar siguiente prueba: ${err.message}`, 'error');
+    }
+  });
 }
 
 async function runCertificationSequence() {
+  // Mostrar validación previa del emisor una sola vez antes de ejecutar todos los casos
+  await showDgiiPreSendValidation(null, async () => {
+    await _runCertificationSequenceConfirmed();
+  });
+}
+
+async function _runCertificationSequenceConfirmed() {
   const btns = document.querySelectorAll('[onclick="runCertificationSequence()"]');
   btns.forEach((b) => { b.disabled = true; b.textContent = '⏳ Enviando…'; });
   try {
@@ -1725,6 +1952,11 @@ async function runCertificationSequence() {
     }
     await loadCertificationCases();
     await loadFiscalStatus();
+
+    // Aviso prominente para < 250Mil: NUNCA subir XMLs viejos
+    if (sent > 0) {
+      showCertification250MilReminder();
+    }
   } catch (err) {
     showFiscalToast(`Error: ${err.message}`, 'error');
   } finally {
@@ -1733,12 +1965,83 @@ async function runCertificationSequence() {
 }
 
 async function resetSentCertificationCases() {
+  const ok = confirm(
+    '¿Rotar eNCFs y reiniciar todo el proceso de certificación?\n\n' +
+    '• Se asignan nuevos números de secuencia a TODOS los documentos\n' +
+    '  (incluyendo los 4 comprobantes RFCE de < 250Mil).\n' +
+    '• Todos los documentos vuelven a estado "firmado".\n' +
+    '• Los XMLs firmados anteriores se descartan.\n\n' +
+    'Usar cuando el portal DGII ha reiniciado las pruebas por un rechazo.\n' +
+    'Después ejecuta "▶ Ejecutar pruebas secuenciales".'
+  );
+  if (!ok) return;
+
+  const btn = document.querySelector('[onclick="resetSentCertificationCases()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Rotando…'; }
+
   try {
-    const response = await fiscalApi('POST', '/certification/reset-sent');
-    showFiscalToast(response.message || `${response.reset} caso(s) reseteados a "firmado".`, 'success');
+    const response = await fiscalApi('POST', '/certification/rotate-encfs', { force: true });
+    const rotated = response.rotated ?? response.rotatedCount ?? 0;
+    showFiscalToast(
+      `✓ ${rotated} eNCF(s) rotados. Todos los docs vuelven a "firmado". Ahora ejecuta ▶ Ejecutar pruebas secuenciales.`,
+      'success'
+    );
     await loadCertificationCases();
   } catch (err) {
-    showFiscalToast(`Error: ${err.message}`, 'error');
+    showFiscalToast(`Error al rotar eNCFs: ${err.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↩ Reset enviados'; }
+  }
+}
+
+async function generate250MilXmls() {
+  const btn = document.getElementById('btn-gen-250mil');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Generando…'; }
+
+  // Quitar aviso anterior
+  const prev = document.getElementById('cert-250mil-reminder');
+  if (prev) prev.remove();
+
+  try {
+    showFiscalToast('Generando y firmando XMLs < 250Mil…', 'info');
+    const response = await fiscalApi('POST', '/certification/generate-250mil');
+
+    if (!response.ok) {
+      showFiscalToast(`Error: ${response.error || 'Error desconocido'}`, 'error');
+      return;
+    }
+
+    // Mostrar resultado con la lista de archivos generados
+    const files = (response.generated || []);
+    const fileList = files.map(f =>
+      `<li><strong>${f.encf}.xml</strong> — ${f.sizekb}KB — ${f.items?.join(', ') || '?'} — MontoTotal: ${f.montoTotal}</li>`
+    ).join('');
+
+    const box = document.getElementById('certification-cases-table') || document.querySelector('.certification-section');
+    if (box) {
+      const div = document.createElement('div');
+      div.id = 'cert-250mil-reminder';
+      div.style.cssText = `
+        background: #065f46; color: #fff; border-radius: 8px; padding: 14px 18px;
+        margin: 12px 0; font-size: 14px; line-height: 1.8; position: relative;
+      `;
+      div.innerHTML = `
+        <button onclick="document.getElementById('cert-250mil-reminder').remove()" style="
+          position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
+          font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
+        <strong>✅ ${files.length} XMLs generados y firmados — SIN NombreComercial</strong><br>
+        <small>📁 ${response.outDir || 'scripts/250mil-upload/'}</small>
+        <ul style="margin:8px 0 4px 16px;padding:0;">${fileList}</ul>
+        <strong>⬆ Sube esos ${files.length} archivos uno a uno al portal DGII "Facturas de consumo &lt;250Mil".</strong>
+      `;
+      box.parentNode.insertBefore(div, box);
+    }
+
+    showFiscalToast(`✓ ${files.length} XMLs listos en scripts/250mil-upload/. Súbelos al portal.`, 'success');
+  } catch (err) {
+    showFiscalToast(`Error generando XMLs: ${err.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 Generar XMLs <250Mil'; }
   }
 }
 
