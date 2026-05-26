@@ -1040,21 +1040,21 @@ class EcfService {
       // los campos específicos del set DGII que son obligatorios para la certificación.
       const certificationSource = parseCertificationStoredSource(rawCertOriginal);
       if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
-        // NombreComercial en certificación: usar el NombreComercial REAL del emisor configurado.
-        // DGII valida este campo contra los datos registrados del RNCEmisor en su sistema.
-        // Para persona física (sin nombre comercial), nombre_comercial = '' → el tag se omite.
-        // Esto resuelve casos como E310000000002 donde el test set espera '' pero el Excel
-        // del set de pruebas tiene el valor genérico 'DOCUMENTOS ELECTRONICOS DE 02'.
-        // appendSimple() ya omite el tag cuando el valor es '' o null.
+        // NombreComercial en certificación: usar el rawRow del Excel del set de pruebas DGII.
+        // DGII valida NombreComercial contra su test set interno — cada caso tiene su valor
+        // exacto esperado (ej. "DOCUMENTOS ELECTRONICOS DE 02", ""). El rawRow refleja esos
+        // valores en la mayoría de los casos. Casos con datos incorrectos en el Excel deben
+        // corregirse via /certification/fix-nombre-comercial antes de reenviar.
         const localEmitter = await this.getEmitterForXml(1);
+        const rowNombreComercial = String(certificationSource.row?.NombreComercial ?? '');
         await this.repository.saveEmitterXmlLog({
           businessId: 1,
           encf: document.encf,
           tipoEcf: document.tipo_ecf,
           emitterData: localEmitter,
-          origen: 'ecf_emitters (getEmitterForXml)',
+          origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, emitterNombreComercial="${localEmitter.nombreComercial}" (real del emisor, no del rawRow)`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, NombreComercial="${rowNombreComercial}" (del rawRow)`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1065,9 +1065,8 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
-            // Usar el NombreComercial real del emisor (no el del rawRow del Excel).
-            // Para persona física: nombreComercial = '' → appendSimple omite el tag.
-            emitterNombreComercial: localEmitter.nombreComercial,
+            // NombreComercial se toma del rawRow (Excel). Si el caso fue patched vía
+            // /certification/fix-nombre-comercial, el rawRow ya tiene el valor correcto.
           },
           issueDate: new Date(),
           certificateContext: certificate,
@@ -2574,6 +2573,75 @@ class EcfService {
       message: forceAll
         ? `[REINICIO TOTAL] ${rotated.length} comprobante(s) rotados a nuevos eNCFs incluyendo aceptados. ${refUpdated.length} referencia(s) NCFModificado actualizadas. Ahora ejecuta "run-sequential".`
         : `${rotated.length} comprobante(s) rotados a nuevos eNCFs (los ya aceptados no fueron tocados). ${refUpdated.length} referencia(s) NCFModificado actualizadas. Ahora ejecuta "run-sequential" para reenviar.`,
+    };
+  }
+
+  /**
+   * Parchea el NombreComercial del rawRow de un caso de certificación en la BD.
+   * Necesario cuando el Excel del set DGII tiene un valor incorrecto para un caso específico.
+   * Ejemplo: E310000000002 tiene 'DOCUMENTOS ELECTRONICOS DE 02' en el Excel
+   * pero DGII espera '' (campo omitido). Llamar con { encf, nombreComercial: '' } para corregirlo.
+   */
+  async fixCaseNombreComercial(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const body = req.body || {};
+    const encf = String(body?.encf || '').trim().toUpperCase();
+    assertCondition(encf, 'Se requiere el campo encf.', { statusCode: 422 });
+
+    // NombreComercial nuevo: '' para omitirlo (DGII espera campo ausente), o cualquier texto
+    const nombreComercial = body?.nombreComercial == null ? '' : String(body.nombreComercial);
+
+    const rows = await this.repository.query(
+      `SELECT id, encf, certification_original_xml
+       FROM ecf_documents
+       WHERE business_id = 1 AND encf = ?
+       LIMIT 1`,
+      [encf]
+    );
+    assertCondition(rows.length > 0, `Documento ${encf} no encontrado.`, { statusCode: 404 });
+
+    const doc = rows[0];
+    const rawCertOriginal = String(doc.certification_original_xml || '').replace(/^﻿/, '').trim();
+    assertCondition(
+      rawCertOriginal.startsWith('{'),
+      `El documento ${encf} no tiene rawRow (certification_original_xml no es JSON).`,
+      { statusCode: 422 }
+    );
+
+    let src;
+    try {
+      src = JSON.parse(rawCertOriginal);
+    } catch (e) {
+      throw new EcfError(`certification_original_xml de ${encf} no es JSON válido.`, { statusCode: 422 });
+    }
+
+    assertCondition(
+      src?.kind === 'spreadsheet_row' && src?.row,
+      `El documento ${encf} no tiene rawRow de hoja de cálculo (kind=${src?.kind}).`,
+      { statusCode: 422 }
+    );
+
+    const oldValue = String(src.row.NombreComercial ?? '');
+    src.row.NombreComercial = nombreComercial;
+
+    await this.repository.query(
+      `UPDATE ecf_documents
+       SET certification_original_xml = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [JSON.stringify(src), doc.id]
+    );
+
+    this.logger?.info(`[fixCaseNombreComercial] ${encf}: NombreComercial "${oldValue}" → "${nombreComercial}"`);
+
+    return {
+      ok: true,
+      encf,
+      oldNombreComercial: oldValue,
+      newNombreComercial: nombreComercial,
+      message: `NombreComercial de ${encf} actualizado de "${oldValue}" a "${nombreComercial}". Reenvía el caso para aplicar el cambio.`,
     };
   }
 
