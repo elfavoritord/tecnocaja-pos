@@ -901,6 +901,13 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
+            // NombreComercial del emisor: DGII valida este campo contra su BD.
+            // El valor del Excel del set de pruebas no necesariamente coincide con
+            // el registrado en DGII para el RNC, causando rechazo. Lo omitimos siempre
+            // (vacío = no se incluye el tag en el XML). Si el RNC realmente tiene
+            // NombreComercial registrado en DGII, el usuario debe configurarlo en
+            // la pantalla de emisor y aquí se usaría ese valor.
+            emitterNombreComercial: '',
           },
           issueDate: new Date(),
           certificateContext: certificate,
@@ -2202,6 +2209,425 @@ class EcfService {
       message: fixed.length > 0
         ? `${fixed.length} caso(s) E32 convertido(s) de RFCE→ECF para que E33/E34 los pueda referenciar: ${fixed.map((f) => f.encf).join(', ')}.`
         : `No se requirió conversión. Revisados: ${[...ncfRefs].join(', ')}.`,
+    };
+  }
+
+  // Rota los eNCFs quemados (ya enviados a DGII en intentos anteriores) asignando nuevos números
+  // de secuencia para que DGII no rechace con "Este número de secuencia ya ha sido utilizado".
+  // DGII no permite reutilizar secuencias entre intentos, aunque el portal se reinicie.
+  // Pasos:
+  //   1. Encuentra todos los docs del batch que ya fueron enviados (estado != firmado/pendiente), excepto RFCE.
+  //   2. Calcula el máximo de secuencia por tipo_ecf entre TODOS los docs del batch.
+  //   3. Asigna nuevos eNCFs (max+1, max+2...) a cada doc quemado.
+  //   4. Actualiza NCFModificado en docs que referencian un eNCF quemado.
+  //   5. Resetea estado a "firmado" para que vuelvan a enviarse desde cero.
+  async rotateBurnedEncfs(req) {
+    await this.ensureReady();
+    const actor = req
+      ? await this.getCurrentActor(req, { adminOnly: true })
+      : { id: null, nombre: 'Sistema', usuario: 'sistema', rol: 'admin' };
+
+    // force=true → reinicio completo: rota TODOS los enviados (incluso aceptados),
+    // porque DGII quemó todas las secuencias al reiniciar las pruebas por una rechazo.
+    // Usar cuando el portal DGII se resetea a 0 y ningún eNCF enviado es reutilizable.
+    const forceAll = String(req?.query?.force || req?.body?.force || '').toLowerCase() === 'true';
+
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const batchClause = batchId ? 'AND certification_batch_id = ?' : '';
+    const batchParams = batchId ? [batchId] : [];
+
+    // 1. Docs quemados:
+    //    - Normal: solo rechazado/error/en-vuelo (aceptados quedan intactos)
+    //    - Force:  todos los enviados alguna vez (NOT firmado/pendiente) = reinicio total
+    const estadoFilter = forceAll
+      ? `AND estado_dgii NOT IN ('firmado', 'pendiente')`
+      : `AND estado_dgii IN ('rechazado', 'error', 'enviado', 'en_proceso', 'procesando')`;
+
+    // En force mode se incluyen también docs RFCE (tienen submission_mode='rfce')
+    const submissionModeFilter = forceAll
+      ? `AND (submission_mode IS NULL OR submission_mode IN ('normal', 'rfce'))`
+      : `AND (submission_mode IS NULL OR submission_mode = 'normal')`;
+
+    const burnedDocs = await this.repository.query(
+      `SELECT id, encf, tipo_ecf, certification_original_xml, certification_case_key, submission_mode
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         ${estadoFilter}
+         ${submissionModeFilter}
+       ORDER BY tipo_ecf, encf`,
+      batchParams
+    );
+
+    if (!burnedDocs.length) {
+      return {
+        ok: true,
+        rotated: 0,
+        refUpdated: 0,
+        mapping: [],
+        message: forceAll
+          ? 'No hay comprobantes enviados que rotar. Todos están en firmado/pendiente.'
+          : 'No hay comprobantes quemados que rotar. Solo hay docs en firmado/pendiente/aceptado.',
+      };
+    }
+
+    // 2. Calcular máximo de secuencia por tipo_ecf en todo el batch
+    const allCertDocs = await this.repository.query(
+      `SELECT encf, tipo_ecf FROM ecf_documents
+       WHERE business_id = 1 AND certification_case_key IS NOT NULL ${batchClause}`,
+      batchParams
+    );
+    const maxSeqByType = {};
+    for (const doc of allCertDocs) {
+      // eNCF tiene formato E310000000001 → extraer parte numérica
+      const numStr = String(doc.encf || '').replace(/^E\d{2}0*/, '');
+      const seqNum = Number(numStr) || 0;
+      const tipo = String(doc.tipo_ecf || '').trim().toUpperCase();
+      if (!maxSeqByType[tipo] || seqNum > maxSeqByType[tipo]) {
+        maxSeqByType[tipo] = seqNum;
+      }
+    }
+
+    // 3. Asignar nuevos eNCFs (max+1 por tipo)
+    const encfMapping = new Map(); // old → new
+    const currentMaxByType = { ...maxSeqByType };
+    for (const doc of burnedDocs) {
+      const tipo = String(doc.tipo_ecf || '').trim().toUpperCase();
+      currentMaxByType[tipo] = (currentMaxByType[tipo] || 0) + 1;
+      // Padding a 11 dígitos: E31 + 11 dígitos = 14 chars total (formato estándar DGII)
+      const newSeqStr = String(currentMaxByType[tipo]).padStart(11, '0');
+      const newEncf = `${tipo}${newSeqStr}`;
+      encfMapping.set(String(doc.encf || '').trim().toUpperCase(), newEncf);
+    }
+
+    // 4. Actualizar cada doc quemado
+    const rotated = [];
+    for (const doc of burnedDocs) {
+      const oldEncf = String(doc.encf || '').trim().toUpperCase();
+      const newEncf = encfMapping.get(oldEncf);
+      if (!newEncf) continue;
+
+      // Actualizar NCFModificado si apunta a otro eNCF quemado
+      let newCertOriginal = doc.certification_original_xml || null;
+      try {
+        const src = JSON.parse(newCertOriginal || '{}');
+        if (src?.row?.NCFModificado) {
+          const oldRef = String(src.row.NCFModificado).trim().toUpperCase();
+          if (encfMapping.has(oldRef)) {
+            src.row.NCFModificado = encfMapping.get(oldRef);
+            newCertOriginal = JSON.stringify(src);
+          }
+        }
+      } catch (_) { /* Si el JSON no parsea, dejamos el original */ }
+
+      // Actualizar certification_case_key (reemplazar el viejo encf por el nuevo)
+      const oldCaseKey = doc.certification_case_key || '';
+      const newCaseKey = oldCaseKey.includes(oldEncf.toLowerCase())
+        ? oldCaseKey.replace(new RegExp(oldEncf.toLowerCase(), 'gi'), newEncf.toLowerCase())
+        : oldCaseKey.replace(new RegExp(doc.encf, 'gi'), newEncf);
+
+      await this.repository.query(
+        `UPDATE ecf_documents
+         SET encf = ?,
+             certification_original_xml = ?,
+             certification_case_key = ?,
+             estado_dgii = 'firmado',
+             track_id = NULL,
+             error_message = NULL,
+             xml_content = NULL,
+             signed_xml_content = NULL,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [newEncf, newCertOriginal, newCaseKey, doc.id]
+      );
+
+      rotated.push({ old: doc.encf, new: newEncf, tipo: doc.tipo_ecf });
+      this.logger?.info(`[rotateBurnedEncfs] ${doc.encf} → ${newEncf}`);
+    }
+
+    // 5. Actualizar NCFModificado en docs NO quemados que referencian eNCFs quemados
+    const nonBurnedDocs = await this.repository.query(
+      `SELECT id, encf, certification_original_xml FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND (submission_mode IS NULL OR submission_mode = 'normal')
+         AND estado_dgii IN ('firmado', 'pendiente', 'aceptado', 'aceptado_condicional')`,
+      batchParams
+    );
+    const refUpdated = [];
+    for (const doc of nonBurnedDocs) {
+      try {
+        const src = JSON.parse(doc.certification_original_xml || '{}');
+        if (src?.row?.NCFModificado) {
+          const oldRef = String(src.row.NCFModificado).trim().toUpperCase();
+          if (encfMapping.has(oldRef)) {
+            src.row.NCFModificado = encfMapping.get(oldRef);
+            await this.repository.query(
+              `UPDATE ecf_documents
+               SET certification_original_xml = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`,
+              [JSON.stringify(src), doc.id]
+            );
+            refUpdated.push(doc.encf);
+          }
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      documentId: null,
+      sequenceId: null,
+      tipoComprobante: null,
+      encf: null,
+      actionName: 'certification_rotate_encfs',
+      status: 'ok',
+      detail: `${forceAll ? '[FORCE] ' : ''}${rotated.length} eNCF(s) rotados. Mapeo: ${rotated.map((r) => `${r.old}→${r.new}`).join(', ')}. ${refUpdated.length} referencia(s) NCFModificado actualizadas.`,
+      responsePayload: { rotated, refUpdated },
+    });
+
+    return {
+      ok: true,
+      rotated: rotated.length,
+      refUpdated: refUpdated.length,
+      mapping: rotated,
+      message: forceAll
+        ? `[REINICIO TOTAL] ${rotated.length} comprobante(s) rotados a nuevos eNCFs incluyendo aceptados. ${refUpdated.length} referencia(s) NCFModificado actualizadas. Ahora ejecuta "run-sequential".`
+        : `${rotated.length} comprobante(s) rotados a nuevos eNCFs (los ya aceptados no fueron tocados). ${refUpdated.length} referencia(s) NCFModificado actualizadas. Ahora ejecuta "run-sequential" para reenviar.`,
+    };
+  }
+
+  /**
+   * Genera y firma los 4 XMLs de facturas de consumo < 250Mil para subir al portal DGII.
+   * Lee los eNCFs ACTUALES de los docs RFCE en la BD y usa linkedRawRow (datos exactos DGII).
+   * NombreComercial se excluye siempre — DGII espera '' igual que en los RFCE enviados.
+   * Los archivos firmados quedan en scripts/250mil-upload/<eNCF>.xml.
+   */
+  async generate250MilXmls(req) {
+    await this.ensureReady();
+    const { execFileSync } = require('child_process');
+    const fs   = require('fs');
+    const path = require('path');
+    const os   = require('os');
+
+    const CERT_PATH = 'C:\\Users\\Emilio Coding IA\\Downloads\\20260519-145000-DHP4YAET5.p12';
+    const CERT_PASS = 'TecnoCaja95';
+    const OUT_DIR   = path.join(__dirname, '..', '..', '..', 'scripts', '250mil-upload');
+    if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+
+    // Helper: limpia valores #e / vacíos
+    const val = (row, key) => {
+      const v = String(row[key] ?? '').trim();
+      return (v === '' || v.toLowerCase() === '#e' || v.toLowerCase() === 'n/a' || v.toLowerCase() === '#n/a') ? '' : v;
+    };
+
+    // Construye XML ECF sin NombreComercial desde linkedRawRow
+    const buildXml = (encf, lr) => {
+      const tipoIngresos = val(lr, 'TipoIngresos');
+      const tipoPago     = val(lr, 'TipoPago');
+      const indMontoGrav = val(lr, 'IndicadorMontoGravado');
+      let tablaFormasPago = '';
+      for (let i = 1; i <= 7; i++) {
+        const fp = val(lr, `FormaPago[${i}]`);
+        if (!fp) break;
+        const mp = val(lr, `MontoPago[${i}]`);
+        tablaFormasPago += `        <FormaDePago>\n          <FormaPago>${fp}</FormaPago>\n${mp ? `          <MontoPago>${mp}</MontoPago>\n` : ''}        </FormaDePago>\n`;
+      }
+      const rncEmisor   = val(lr, 'RNCEmisor');
+      const razonEmisor = val(lr, 'RazonSocialEmisor');
+      // NombreComercial: EXCLUIDO explícitamente
+      const sucursal    = val(lr, 'Sucursal');
+      const dirEmisor   = val(lr, 'DireccionEmisor');
+      const munEmisor   = val(lr, 'Municipio');
+      const provEmisor  = val(lr, 'Provincia');
+      const correoEmisor = val(lr, 'CorreoEmisor');
+      const fechaEmision = val(lr, 'FechaEmision');
+      let tels = '';
+      for (let i = 1; i <= 3; i++) {
+        const t = val(lr, `TelefonoEmisor[${i}]`);
+        if (!t) break;
+        tels += `          <TelefonoEmisor>${t}</TelefonoEmisor>\n`;
+      }
+      const rncComp    = val(lr, 'RNCComprador');
+      const razonComp  = val(lr, 'RazonSocialComprador');
+      const correoComp = val(lr, 'CorreoComprador');
+      const dirComp    = val(lr, 'DireccionComprador');
+      const munComp    = val(lr, 'MunicipioComprador');
+      const provComp   = val(lr, 'ProvinciaComprador');
+      const telAd      = val(lr, 'TelefonoAdicional');
+      const hasComp    = [rncComp, razonComp, correoComp, dirComp, munComp, provComp, telAd].some(Boolean);
+
+      const mg  = val(lr, 'MontoGravadoTotal');
+      const mg1 = val(lr, 'MontoGravadoI1');
+      const mg2 = val(lr, 'MontoGravadoI2');
+      const mg3 = val(lr, 'MontoGravadoI3');
+      const me  = val(lr, 'MontoExento');
+      const ti  = val(lr, 'TotalITBIS');
+      const ti1 = val(lr, 'TotalITBIS1');
+      const ti2 = val(lr, 'TotalITBIS2');
+      const ti3 = val(lr, 'TotalITBIS3');
+      const mt  = val(lr, 'MontoTotal');
+      const mp2 = val(lr, 'MontoPeriodo');
+      const vp  = val(lr, 'ValorPagar');
+
+      let items = '';
+      for (let i = 1; i <= 20; i++) {
+        const nl = val(lr, `NumeroLinea[${i}]`);
+        const nm = val(lr, `NombreItem[${i}]`);
+        if (!nm) break;
+        const ib  = val(lr, `IndicadorBienoServicio[${i}]`);
+        const cnt = val(lr, `CantidadItem[${i}]`);
+        const um  = val(lr, `UnidadMedida[${i}]`);
+        const pu  = val(lr, `PrecioUnitarioItem[${i}]`);
+        const mo  = val(lr, `MontoItem[${i}]`);
+        items += `    <Item>\n${nl ? `      <NumeroLinea>${nl}</NumeroLinea>\n` : ''}      <IndicadorFacturacion>1</IndicadorFacturacion>\n      <NombreItem>${nm}</NombreItem>\n${ib ? `      <IndicadorBienoServicio>${ib}</IndicadorBienoServicio>\n` : ''}${cnt ? `      <CantidadItem>${cnt}</CantidadItem>\n` : ''}${um ? `      <UnidadMedida>${um}</UnidadMedida>\n` : ''}${pu ? `      <PrecioUnitarioItem>${pu}</PrecioUnitarioItem>\n` : ''}${mo ? `      <MontoItem>${mo}</MontoItem>\n` : ''}    </Item>\n`;
+      }
+
+      return `<?xml version="1.0" encoding="utf-8"?>
+<ECF xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Encabezado>
+    <Version>1.0</Version>
+    <IdDoc>
+      <TipoeCF>32</TipoeCF>
+      <eNCF>${encf}</eNCF>
+${indMontoGrav ? `      <IndicadorMontoGravado>${indMontoGrav}</IndicadorMontoGravado>\n` : ''
+}${tipoIngresos ? `      <TipoIngresos>${tipoIngresos}</TipoIngresos>\n` : ''
+}${tipoPago     ? `      <TipoPago>${tipoPago}</TipoPago>\n` : ''
+}${tablaFormasPago ? `      <TablaFormasPago>\n${tablaFormasPago}      </TablaFormasPago>\n` : ''
+}    </IdDoc>
+    <Emisor>
+${rncEmisor    ? `      <RNCEmisor>${rncEmisor}</RNCEmisor>\n` : ''
+}${razonEmisor  ? `      <RazonSocialEmisor>${razonEmisor}</RazonSocialEmisor>\n` : ''
+}${sucursal     ? `      <Sucursal>${sucursal}</Sucursal>\n` : ''
+}${dirEmisor    ? `      <DireccionEmisor>${dirEmisor}</DireccionEmisor>\n` : ''
+}${munEmisor    ? `      <Municipio>${munEmisor}</Municipio>\n` : ''
+}${provEmisor   ? `      <Provincia>${provEmisor}</Provincia>\n` : ''
+}${tels         ? `      <TablaTelefonoEmisor>\n${tels}      </TablaTelefonoEmisor>\n` : ''
+}${correoEmisor ? `      <CorreoEmisor>${correoEmisor}</CorreoEmisor>\n` : ''
+}${fechaEmision ? `      <FechaEmision>${fechaEmision}</FechaEmision>\n` : ''
+}    </Emisor>
+${hasComp ? `    <Comprador>\n${rncComp ? `      <RNCComprador>${rncComp}</RNCComprador>\n` : ''}${razonComp ? `      <RazonSocialComprador>${razonComp}</RazonSocialComprador>\n` : ''}${correoComp ? `      <CorreoComprador>${correoComp}</CorreoComprador>\n` : ''}${dirComp ? `      <DireccionComprador>${dirComp}</DireccionComprador>\n` : ''}${munComp ? `      <MunicipioComprador>${munComp}</MunicipioComprador>\n` : ''}${provComp ? `      <ProvinciaComprador>${provComp}</ProvinciaComprador>\n` : ''}${telAd ? `      <TelefonoAdicional>${telAd}</TelefonoAdicional>\n` : ''}    </Comprador>\n` : ''
+}    <Totales>
+${mg  ? `      <MontoGravadoTotal>${mg}</MontoGravadoTotal>\n` : ''
+}${mg1 ? `      <MontoGravadoI1>${mg1}</MontoGravadoI1>\n` : ''
+}${mg2 ? `      <MontoGravadoI2>${mg2}</MontoGravadoI2>\n` : ''
+}${mg3 ? `      <MontoGravadoI3>${mg3}</MontoGravadoI3>\n` : ''
+}${me  ? `      <MontoExento>${me}</MontoExento>\n` : ''
+}${ti  ? `      <TotalITBIS>${ti}</TotalITBIS>\n` : ''
+}${ti1 ? `      <TotalITBIS1>${ti1}</TotalITBIS1>\n` : ''
+}${ti2 ? `      <TotalITBIS2>${ti2}</TotalITBIS2>\n` : ''
+}${ti3 ? `      <TotalITBIS3>${ti3}</TotalITBIS3>\n` : ''
+}${mt  ? `      <MontoTotal>${mt}</MontoTotal>\n` : ''
+}${mp2 ? `      <MontoPeriodo>${mp2}</MontoPeriodo>\n` : ''
+}${vp  ? `      <ValorPagar>${vp}</ValorPagar>\n` : ''
+}    </Totales>
+  </Encabezado>
+  <DetallesItems>
+${items}  </DetallesItems>
+</ECF>`;
+    };
+
+    // PowerShell para firmar XML con el certificado .p12
+    const signerScript = `
+param([string]$In,[string]$Out,[string]$Pfx,[string]$Pass)
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @"
+using System;using System.Security.Cryptography;
+public class RSAPKCS1SHA256Desc:SignatureDescription{
+  public RSAPKCS1SHA256Desc(){KeyAlgorithm=typeof(RSACryptoServiceProvider).FullName;DigestAlgorithm=typeof(SHA256Managed).FullName;FormatterAlgorithm=typeof(RSAPKCS1SignatureFormatter).FullName;DeformatterAlgorithm=typeof(RSAPKCS1SignatureDeformatter).FullName;}
+  public override AsymmetricSignatureDeformatter CreateDeformatter(AsymmetricAlgorithm k){var d=new RSAPKCS1SignatureDeformatter(k);d.SetHashAlgorithm("SHA256");return d;}
+  public override AsymmetricSignatureFormatter CreateFormatter(AsymmetricAlgorithm k){var f=new RSAPKCS1SignatureFormatter(k);f.SetHashAlgorithm("SHA256");return f;}
+}
+"@ -IgnoreWarnings -ErrorAction SilentlyContinue
+[System.Security.Cryptography.CryptoConfig]::AddAlgorithm([RSAPKCS1SHA256Desc],'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256')
+[void][System.Reflection.Assembly]::LoadWithPartialName('System.Security')
+$fl=[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
+$cert=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($Pfx,$Pass,$fl)
+$doc=New-Object System.Xml.XmlDocument;$doc.PreserveWhitespace=$false;$doc.Load($In)
+$sx=New-Object System.Security.Cryptography.Xml.SignedXml($doc);$sx.SigningKey=$cert.PrivateKey
+$sx.SignedInfo.CanonicalizationMethod=[System.Security.Cryptography.Xml.SignedXml]::XmlDsigCanonicalizationUrl
+$sx.SignedInfo.SignatureMethod='http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'
+$ref=New-Object System.Security.Cryptography.Xml.Reference;$ref.Uri=''
+$ref.DigestMethod='http://www.w3.org/2001/04/xmlenc#sha256'
+$t=New-Object System.Security.Cryptography.Xml.XmlDsigEnvelopedSignatureTransform;[void]$ref.AddTransform($t);[void]$sx.AddReference($ref)
+$ki=New-Object System.Security.Cryptography.Xml.KeyInfo;$x5=New-Object System.Security.Cryptography.Xml.KeyInfoX509Data($cert);[void]$ki.AddClause($x5);$sx.KeyInfo=$ki
+$sx.ComputeSignature();$sig=$sx.GetXml();[void]$doc.DocumentElement.AppendChild($doc.ImportNode($sig,$true))
+$s=New-Object System.Xml.XmlWriterSettings;$s.Encoding=New-Object System.Text.UTF8Encoding($false);$s.Indent=$true
+$w=[System.Xml.XmlWriter]::Create($Out,$s);$doc.Save($w);$w.Flush();$w.Close()
+Write-Output "OK"
+`;
+    const ps1 = path.join(os.tmpdir(), 'gen250mil-svc.ps1');
+    fs.writeFileSync(ps1, signerScript, 'utf8');
+
+    // Limpiar XMLs anteriores del directorio
+    for (const f of fs.readdirSync(OUT_DIR)) {
+      if (f.endsWith('.xml')) fs.unlinkSync(path.join(OUT_DIR, f));
+    }
+
+    // Obtener los 4 docs RFCE actuales
+    const rfceDocs = await this.repository.query(
+      `SELECT id, encf, certification_original_xml
+       FROM ecf_documents
+       WHERE business_id=1
+         AND certification_case_key IS NOT NULL
+         AND submission_mode='rfce'
+         AND tipo_ecf='E32'
+       ORDER BY encf ASC
+       LIMIT 4`
+    );
+
+    if (rfceDocs.length !== 4) {
+      return { ok: false, error: `Se esperaban 4 docs RFCE, encontrados: ${rfceDocs.length}. Asegúrate de tener los 4 aceptados.` };
+    }
+
+    const generated = [];
+    for (const doc of rfceDocs) {
+      const obj = JSON.parse(doc.certification_original_xml || '{}');
+      const lr  = obj.linkedRawRow || {};
+      if (Object.keys(lr).length < 5) {
+        return { ok: false, error: `linkedRawRow vacío para ${doc.encf}. Reimporta el set de pruebas.` };
+      }
+
+      const unsignedXml  = buildXml(doc.encf, lr);
+      const unsignedPath = path.join(os.tmpdir(), `250mil-${doc.encf}-unsigned.xml`);
+      const signedPath   = path.join(OUT_DIR, `${doc.encf}.xml`);
+
+      fs.writeFileSync(unsignedPath, unsignedXml, 'utf8');
+
+      // Verificar que no tiene NombreComercial antes de firmar
+      if (unsignedXml.includes('<NombreComercial>')) {
+        return { ok: false, error: `BUG: XML de ${doc.encf} contiene NombreComercial — no se firmó.` };
+      }
+
+      execFileSync('pwsh', [
+        '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', ps1,
+        '-In',   unsignedPath,
+        '-Out',  signedPath,
+        '-Pfx',  CERT_PATH,
+        '-Pass', CERT_PASS,
+      ], { encoding: 'utf8', timeout: 30000 });
+
+      const content  = fs.readFileSync(signedPath, 'utf8');
+      if (content.includes('<NombreComercial>')) {
+        return { ok: false, error: `BUG: XML firmado de ${doc.encf} contiene NombreComercial.` };
+      }
+
+      const sizekb = Math.round(fs.statSync(signedPath).size / 1024);
+      const items  = Object.keys(lr).filter(k => /^NombreItem\[/.test(k) && lr[k] && lr[k] !== '#e').map(k => lr[k]);
+      generated.push({ encf: doc.encf, file: signedPath, sizekb, items, montoTotal: lr.MontoTotal || '?' });
+    }
+
+    return {
+      ok: true,
+      generated,
+      outDir: OUT_DIR,
+      message: `✓ ${generated.length} XMLs generados y firmados en ${OUT_DIR}. Sin NombreComercial. Súbelos uno a uno al portal < 250Mil.`,
     };
   }
 
