@@ -119,6 +119,9 @@ function createEcfRouter(deps) {
   // Rota eNCFs quemados (ya enviados en intentos anteriores) asignando nuevos números de secuencia.
   // Usar cuando DGII rechaza con "Este número de secuencia ya ha sido utilizado".
   router.post('/certification/rotate-encfs', wrap((req) => service.rotateBurnedEncfs(req)));
+  // Parchea NombreComercial del rawRow de un caso cuando el Excel tiene valor incorrecto.
+  // Body: { encf: 'E310000000002', nombreComercial: '' }
+  router.post('/certification/fix-nombre-comercial', wrap((req) => service.fixCaseNombreComercial(req)));
   // Genera y firma los 4 XMLs < 250Mil para subir al portal DGII
   router.post('/certification/generate-250mil', wrap((req) => service.generate250MilXmls(req)));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
