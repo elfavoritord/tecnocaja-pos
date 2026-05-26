@@ -1045,27 +1045,16 @@ class EcfService {
         // exacto esperado (ej. "DOCUMENTOS ELECTRONICOS DE 02", ""). El rawRow refleja esos
         // valores en la mayoría de los casos.
         //
-        // OVERRIDES PERMANENTES — casos donde el Excel del set de pruebas tiene un valor
-        // incorrecto para NombreComercial y DGII espera un valor diferente.
-        // Clave: eNCF en mayúsculas. Valor: '' omite el tag; cualquier texto lo establece.
-        // Se aplica independientemente del rawRow y sobrevive reimportaciones del set.
-        const CERT_NC_OVERRIDES = {
-          'E310000000002': '', // DGII espera '' (RNC persona física sin NombreComercial registrado)
-        };
-
         const localEmitter = await this.getEmitterForXml(1);
-        const encfKey = String(document.encf || '').trim().toUpperCase();
         const rowNombreComercial = String(certificationSource.row?.NombreComercial ?? '');
-        const ncOverride = encfKey in CERT_NC_OVERRIDES ? CERT_NC_OVERRIDES[encfKey] : undefined;
-        const ncUsed = ncOverride !== undefined ? ncOverride : rowNombreComercial;
         await this.repository.saveEmitterXmlLog({
           businessId: 1,
           encf: document.encf,
           tipoEcf: document.tipo_ecf,
           emitterData: localEmitter,
-          origen: ncOverride !== undefined ? `override permanente (rawRow="${rowNombreComercial}" → "${ncOverride}")` : 'rawRow (Excel set de pruebas DGII)',
+          origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, NombreComercial="${ncUsed}" ${ncOverride !== undefined ? '(OVERRIDE)' : '(rawRow)'}`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, NombreComercial="${rowNombreComercial}" (del rawRow)`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1076,9 +1065,6 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
-            // Si hay override permanente, lo pasamos explícitamente como emitterNombreComercial.
-            // buildCertificationEcfXml prioriza emitterNombreComercial sobre rawRow.NombreComercial.
-            ...(ncOverride !== undefined ? { emitterNombreComercial: ncOverride } : {}),
           },
           issueDate: new Date(),
           certificateContext: certificate,
