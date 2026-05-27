@@ -1,0 +1,23 @@
+{
+  "trackId": "66126af9-175d-4e87-9692-5474ae1f00d1",
+  "fecha": "2026-05-25T04:25:03.387Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E430000000008",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/25/2026 12:23:54 AM",
+  "mensajes": [
+    {
+      "valor": "El formato del XML no es válido.",
+      "codigo": 1
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"66126af9-175d-4e87-9692-5474ae1f00d1\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E430000000008\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/25/2026 12:23:54 AM\",\"mensajes\":[{\"valor\":\"El formato del XML no es válido.\",\"codigo\":1}]}",
+  "statusPath": "storage/ecf/tracks/estado-66126af9-175d-4e87-9692-5474ae1f00d1.json"
+}

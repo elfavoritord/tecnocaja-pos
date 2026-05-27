@@ -1,0 +1,23 @@
+{
+  "trackId": "e51a7157-7437-4af8-87da-9353cd2e71fb",
+  "fecha": "2026-05-25T13:03:11.248Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E430000000010",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/25/2026 8:54:44 AM",
+  "mensajes": [
+    {
+      "valor": "El formato del XML no es válido.La propiedad PrecioUnitarioItem no es válida debido a que el valor enviado (330.0000) no coincide con el valor (330.00) del conjunto de datos entregados.",
+      "codigo": 1
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"e51a7157-7437-4af8-87da-9353cd2e71fb\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E430000000010\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/25/2026 8:54:44 AM\",\"mensajes\":[{\"valor\":\"El formato del XML no es válido.La propiedad PrecioUnitarioItem no es válida debido a que el valor enviado (330.0000) no coincide con el valor (330.00) del conjunto de datos entregados.\",\"codigo\":1}]}",
+  "statusPath": "storage/ecf/tracks/estado-e51a7157-7437-4af8-87da-9353cd2e71fb.json"
+}

@@ -1,0 +1,14 @@
+{
+  "trackId": "d3110f10-24d4-43cd-bafe-60063a131cdf",
+  "fecha": "2026-05-26T15:15:48.612Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260526-111548.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"d3110f10-24d4-43cd-bafe-60063a131cdf\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260526-111548.json"
+}

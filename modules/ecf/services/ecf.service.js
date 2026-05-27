@@ -61,6 +61,59 @@ function parseDecimal(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeDatasetValue(value) {
+  const text = String(value ?? '').trim();
+  const lower = text.toLowerCase();
+  return (text === '' || lower === '#e' || lower === 'n/a' || lower === 'na' || lower === '#n/a' || lower === '#ref!')
+    ? ''
+    : text;
+}
+
+function certificationEmitterNombreComercial(_row) {
+  // En certificacion DGII este campo debe salir del dataset. El caso especial
+  // que reiniciaba el portal era el valor "DOCUMENTOS ELECTRONICOS" en los
+  // cuatro E32 manuales <250Mil; para ese valor DGII espera vacio/ausente.
+  const value = normalizeDatasetValue(_row?.NombreComercial);
+  return value === 'DOCUMENTOS ELECTRONICOS' ? '' : value;
+}
+
+function forceEmptyNombreComercialElement(xml) {
+  const text = String(xml || '');
+  if (/<NombreComercial\b/i.test(text)) {
+    return text
+      .replace(/<NombreComercial[^>]*>[\s\S]*?<\/NombreComercial>/i, '<NombreComercial>&#160;</NombreComercial>')
+      .replace(/<NombreComercial\s*\/>/i, '<NombreComercial>&#160;</NombreComercial>');
+  }
+  return text.replace(
+    /(<RazonSocialEmisor>[^<]*<\/RazonSocialEmisor>)/i,
+    '$1\n      <NombreComercial>&#160;</NombreComercial>'
+  );
+}
+
+function parseDatasetNumber(value, fallback = 0) {
+  const parsed = Number(normalizeDatasetValue(value).replace(/,/g, '.'));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function roundMoney(value) {
+  return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+function moneyText(value) {
+  return roundMoney(value).toFixed(2);
+}
+
+function sameMoney(a, b) {
+  return Math.abs(roundMoney(a) - roundMoney(b)) <= 0.005;
+}
+
+function certificationRowForDocument(document) {
+  if (document?._certificationValidationRow) return document._certificationValidationRow;
+  const src = parseCertificationStoredSource(document?.certification_original_xml || '');
+  if (!src) return null;
+  return src.row || src.linkedRawRow || null;
+}
+
 function parseFiscalDateInput(value) {
   const text = String(value || '').trim();
   if (!text) return null;
@@ -987,7 +1040,11 @@ class EcfService {
   }
 
   async repairStoredDocumentXml(document, certificate) {
-    if (!document?.id || !String(document.xml_content || '').trim()) {
+    // Bail out solo si no hay ninguna fuente de XML disponible.
+    // Después de rotate-encfs, xml_content queda NULL pero certification_original_xml
+    // sigue teniendo el rawRow del set DGII — eso es suficiente para reconstruir.
+    const hasCertOriginal = Boolean(String(document?.certification_original_xml || '').trim());
+    if (!document?.id || (!String(document.xml_content || '').trim() && !hasCertOriginal)) {
       return document;
     }
 
@@ -1040,13 +1097,9 @@ class EcfService {
       // los campos específicos del set DGII que son obligatorios para la certificación.
       const certificationSource = parseCertificationStoredSource(rawCertOriginal);
       if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
-        // NombreComercial en certificación: usar el rawRow del Excel del set de pruebas DGII.
-        // DGII valida NombreComercial contra su test set interno — cada caso tiene su valor
-        // exacto esperado (ej. "DOCUMENTOS ELECTRONICOS DE 02", ""). El rawRow refleja esos
-        // valores en la mayoría de los casos.
-        //
         const localEmitter = await this.getEmitterForXml(1);
         const rowNombreComercial = String(certificationSource.row?.NombreComercial ?? '');
+        const emitterNombreComercial = certificationEmitterNombreComercial(certificationSource.row);
         await this.repository.saveEmitterXmlLog({
           businessId: 1,
           encf: document.encf,
@@ -1054,7 +1107,7 @@ class EcfService {
           emitterData: localEmitter,
           origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, rawRow.NombreComercial="${rowNombreComercial}" (usando rawRow)`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, rawRow.NombreComercial="${rowNombreComercial}" → XML.NombreComercial="${emitterNombreComercial}"`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1065,11 +1118,7 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
-            // NombreComercial: usar el rawRow del Excel tal cual.
-            // DGII valida este campo contra su dataset de pruebas — espera exactamente
-            // el valor que ellos mismos pusieron en el Excel ("DOCUMENTOS ELECTRONICOS DE 02").
-            // No usar la config local: puede ser '' o diferente y causa rechazo.
-            emitterNombreComercial: rowNombreComercial,
+            emitterNombreComercial,
           },
           issueDate: new Date(),
           certificateContext: certificate,
@@ -2280,12 +2329,12 @@ class EcfService {
       encf: null,
       actionName: 'certification_reset_sent',
       status: 'ok',
-      detail: `Se reestablecieron ${result.reset} caso(s) enviados a estado "firmado" para reenvío.`,
+      detail: `Se reestablecieron ${result.reset} caso(s) a estado "firmado" sin rotar eNCF ni modificar datos del dataset.`,
       responsePayload: result,
     });
     return {
       ok: true,
-      message: `${result.reset} caso(s) reestablecido(s) a "firmado". Ahora ejecuta las pruebas secuenciales para reenviar con el XML correcto.`,
+      message: `${result.reset} caso(s) reestablecido(s) a "firmado" sin cambiar eNCF ni modificar datos del dataset. Ahora ejecuta las pruebas secuenciales.`,
       reset: result.reset,
       batchId: result.batchId,
     };
@@ -2441,6 +2490,10 @@ class EcfService {
     const actor = req
       ? await this.getCurrentActor(req, { adminOnly: true })
       : { id: null, nombre: 'Sistema', usuario: 'sistema', rol: 'admin' };
+    throw new EcfError(
+      'Rotación de eNCF deshabilitada para certificación DGII: el portal valida contra los eNCF exactos de su colección de datos. Usa "Reset enviados" para reiniciar estados sin cambiar secuencias.',
+      { statusCode: 409 }
+    );
 
     // force=true → reinicio completo: rota TODOS los eNCFs que alguna vez fueron enviados a DGII
     //   (incluso los que están en firmado/pendiente porque el viejo reset los devolvió a ese estado).
@@ -2524,8 +2577,8 @@ class EcfService {
     for (const doc of burnedDocs) {
       const tipo = String(doc.tipo_ecf || '').trim().toUpperCase();
       currentMaxByType[tipo] = (currentMaxByType[tipo] || 0) + 1;
-      // Padding a 11 dígitos: E31 + 11 dígitos = 14 chars total (formato estándar DGII)
-      const newSeqStr = String(currentMaxByType[tipo]).padStart(11, '0');
+      // Padding a 10 digitos: E31 + 10 digitos = 13 chars total (formato e-NCF DGII).
+      const newSeqStr = String(currentMaxByType[tipo]).padStart(10, '0');
       const newEncf = `${tipo}${newSeqStr}`;
       encfMapping.set(String(doc.encf || '').trim().toUpperCase(), newEncf);
     }
@@ -2679,7 +2732,11 @@ class EcfService {
     );
 
     const oldValue = String(src.row.NombreComercial ?? '');
+    const oldLinkedValue = String(src.linkedRawRow?.NombreComercial ?? '');
     src.row.NombreComercial = nombreComercial;
+    if (src.linkedRawRow && typeof src.linkedRawRow === 'object') {
+      src.linkedRawRow.NombreComercial = nombreComercial;
+    }
 
     await this.repository.query(
       `UPDATE ecf_documents
@@ -2695,6 +2752,7 @@ class EcfService {
       ok: true,
       encf,
       oldNombreComercial: oldValue,
+      oldLinkedNombreComercial: oldLinkedValue,
       newNombreComercial: nombreComercial,
       message: `NombreComercial de ${encf} actualizado de "${oldValue}" a "${nombreComercial}". Reenvía el caso para aplicar el cambio.`,
     };
@@ -2782,11 +2840,13 @@ class EcfService {
    *
    * Cambios respecto a la versión anterior:
    * - Usa el certificado almacenado en la BD (no path hardcodeado).
-   * - Usa buildCertificationEcfXml vía buildTransmissionFromSpreadsheetRow para construir el XML.
-   *   Esto garantiza que todos los campos de Totales estén presentes (incluido ITBIS1, ITBIS2, ITBIS3)
-   *   y que el XML sea idéntico al que se envía por el flujo normal de certificación.
-   * - NombreComercial siempre ausente (emitterNombreComercial: '').
-   * - Valida TotalITBIS1 == round(MontoGravadoI1 × ITBIS1 / 100, 2) y registra advertencia si no coincide.
+   * - Usa la fila ECF relacionada del dataset para producir un XML <ECF> E32 completo,
+   *   que es lo que valida el portal "Facturas de consumo <250Mil".
+   * - Envia NombreComercial explicitamente vacio en este paso manual. Si el tag
+   *   se omite, el portal DGII termina rechazando como si recibiera
+   *   "DOCUMENTOS ELECTRONICOS".
+   * - Omite FechaVencimientoSecuencia si no viene en el dataset. DGII rechaza campos
+   *   inventados aunque un XSD local genérico los acepte o requiera.
    * - Guarda la ruta del XML generado en certification_signed_xml_path.
    * - Maneja cualquier cantidad de docs E32 RFCE (no limitado a 4).
    */
@@ -2841,56 +2901,38 @@ class EcfService {
         continue;
       }
 
-      const lr = certSource.linkedRawRow || {};
-      if (Object.keys(lr).length < 5) {
-        errors.push({ encf: doc.encf, error: 'linkedRawRow vacío o incompleto. Reimporta el set con la hoja ECF que contiene las filas E32.' });
+      const rfceRow = certSource.row || {};
+      const linkedEcfRow = certSource.linkedRawRow || null;
+      const ecfRow = linkedEcfRow || rfceRow;
+      if (Object.keys(ecfRow).length < 5) {
+        errors.push({ encf: doc.encf, error: 'Fila ECF relacionada vacía o incompleta. Reimporta el set DGII original con hojas ECF y RFCE.' });
         continue;
       }
+      const manualEcfRow = {
+        ...ecfRow,
+        NombreComercial: '',
+        FechaVencimientoSecuencia: val(ecfRow, 'FechaVencimientoSecuencia'),
+      };
 
-      // ── Validación previa: TotalITBIS1 == round(MontoGravadoI1 × ITBIS1 / 100, 2) ──────
-      // DGII rechaza si no coincide. Registramos advertencia sin bloquear — el valor del
-      // dataset DGII es la fuente de verdad; si tiene error, DGII lo rechazará y habrá que
-      // corregir el set. No usamos el valor recalculado para no falsificar el dataset.
-      const mg1Num = parseFloat(val(lr, 'MontoGravadoI1') || '0');
-      const itbis1RateNum = parseFloat(val(lr, 'ITBIS1') || '0');
-      const totalItbis1Num = parseFloat(val(lr, 'TotalITBIS1') || '0');
-      if (mg1Num > 0 && itbis1RateNum > 0) {
-        const expectedItbis1 = Math.round((mg1Num * itbis1RateNum / 100) * 100) / 100;
-        if (Math.abs(totalItbis1Num - expectedItbis1) > 0.005) {
-          this.logger.warn(
-            `[250mil] ${doc.encf}: TotalITBIS1 en dataset=${totalItbis1Num}, ` +
-            `calculado=${expectedItbis1} (${mg1Num} × ${itbis1RateNum}% / 100). ` +
-            `DGII puede rechazar. Revisa el set de pruebas.`
-          );
-        }
-      }
-
-      // ── Construir XML usando buildCertificationEcfXml (todos los campos Totales incluidos) ──
-      // emitterNombreComercial: '' → DGII espera NombreComercial ausente para estos docs E32.
+      // ── Construir XML ECF E32 para el portal manual <250Mil ─────────────────────────────
       let xmlContent;
       try {
         const transmission = buildTransmissionFromSpreadsheetRow({
           testCase: {
             encf: doc.encf,
             tipoEcf: 'E32',
-            rawRow: lr,
+            rawRow: manualEcfRow,
             linkedRawRow: null,
             sourceSheet: 'ECF',
             submissionMode: 'normal',
-            emitterNombreComercial: '', // Ausente: DGII no espera NombreComercial para estos docs
+            emitterNombreComercial: '',
           },
           issueDate: new Date(),
           certificateContext: null,
         });
-        xmlContent = transmission.xml;
+        xmlContent = forceEmptyNombreComercialElement(transmission.xml);
       } catch (buildError) {
         errors.push({ encf: doc.encf, error: `Error construyendo XML: ${buildError.message}` });
-        continue;
-      }
-
-      // Guardia de seguridad: NombreComercial NO debe estar en el XML
-      if (xmlContent.includes('<NombreComercial>')) {
-        errors.push({ encf: doc.encf, error: 'BUG: XML contiene NombreComercial — no se firmó. Reportar al desarrollador.' });
         continue;
       }
 
@@ -2903,8 +2945,31 @@ class EcfService {
         continue;
       }
 
-      if (signedXml.includes('<NombreComercial>')) {
-        errors.push({ encf: doc.encf, error: 'BUG: XML firmado contiene NombreComercial.' });
+      const localValidation = this.validateCertificationDocumentBeforeSend({
+        ...doc,
+        tipo_ecf: 'E32',
+        submission_mode: 'normal',
+        xml_content: xmlContent,
+        signed_xml_content: signedXml,
+        _certificationValidationRow: manualEcfRow,
+      });
+      if (!localValidation.ok) {
+        errors.push({ encf: doc.encf, error: localValidation.errors[0], validation: localValidation });
+        continue;
+      }
+
+      if (!/^<\?xml[\s\S]*<ECF[\s>]/i.test(signedXml)) {
+        errors.push({ encf: doc.encf, error: 'El XML generado no es ECF. El portal <250Mil requiere un eCF E32 completo.' });
+        continue;
+      }
+      const nombreComercialMatch = signedXml.match(/<NombreComercial[^>]*>([\s\S]*?)<\/NombreComercial>|<NombreComercial\s*\/>/i);
+      const nombreComercialValue = String(nombreComercialMatch?.[1] || '').trim();
+      if (!nombreComercialMatch || nombreComercialValue) {
+        errors.push({ encf: doc.encf, error: 'El XML ECF <250Mil debe incluir NombreComercial explícitamente vacío.' });
+        continue;
+      }
+      if (/<FechaVencimientoSecuencia\b/i.test(signedXml) && !val(ecfRow, 'FechaVencimientoSecuencia')) {
+        errors.push({ encf: doc.encf, error: 'El XML ECF <250Mil no debe incluir FechaVencimientoSecuencia cuando el dataset DGII no lo trae.' });
         continue;
       }
 
@@ -2922,19 +2987,21 @@ class EcfService {
       } catch (_) { /* No bloquear si el UPDATE falla */ }
 
       const sizekb = Math.round(fs.statSync(signedPath).size / 1024);
-      const items = Object.keys(lr)
-        .filter((k) => /^NombreItem\[/.test(k) && val(lr, k))
-        .map((k) => val(lr, k));
+      const items = Object.keys(ecfRow || {})
+        .filter((k) => /^NombreItem\[/.test(k) && val(ecfRow, k))
+        .map((k) => val(ecfRow, k));
 
       generated.push({
         encf: doc.encf,
         file: signedPath,
         sizekb,
         items,
-        montoTotal: val(lr, 'MontoTotal') || '?',
-        montoGravadoI1: val(lr, 'MontoGravadoI1') || '?',
-        itbis1: val(lr, 'ITBIS1') || '?',
-        totalItbis1: val(lr, 'TotalITBIS1') || '?',
+        root: 'ECF',
+        montoTotal: val(manualEcfRow, 'MontoTotal') || '?',
+        montoGravadoI1: val(manualEcfRow, 'MontoGravadoI1') || '?',
+        itbis1: val(manualEcfRow, 'ITBIS1') || '?',
+        totalItbis1: val(manualEcfRow, 'TotalITBIS1') || '?',
+        nombreComercial: '(omitido)',
       });
     }
 
@@ -2953,7 +3020,7 @@ class EcfService {
       generated,
       errors: errors.length ? errors : undefined,
       outDir: OUT_DIR,
-      message: `✓ ${generated.length} XML(s) generados y firmados en ${OUT_DIR}. Sin NombreComercial. Súbelos uno a uno al portal DGII "Facturas de consumo <250Mil".`,
+      message: `✓ ${generated.length} XML(s) generados y firmados en ${OUT_DIR}. Súbelos uno a uno al portal DGII "Facturas de consumo <250Mil".`,
     };
   }
 
@@ -2982,6 +3049,152 @@ class EcfService {
     };
   }
 
+  validateCertificationDocumentBeforeSend(document) {
+    const row = certificationRowForDocument(document);
+    if (!row) {
+      return {
+        ok: true,
+        warnings: ['No hay rawRow del dataset DGII guardado; se validará solo contra el XML almacenado.'],
+        logs: {},
+      };
+    }
+
+    const signedOrXml = String(document.signed_xml_content || document.xml_content || '');
+    const root = signedOrXml.trim() ? parseXml(signedOrXml) : null;
+    const idDocNode = root?.getElementsByTagName?.('IdDoc')?.[0] || null;
+    const emisorNode = root?.getElementsByTagName?.('Emisor')?.[0] || null;
+    const compradorNode = root?.getElementsByTagName?.('Comprador')?.[0] || null;
+    const totalesNode = root?.getElementsByTagName?.('Totales')?.[0] || null;
+
+    const expectedNombreComercial = certificationEmitterNombreComercial(row);
+    const actualNombreComercial = firstNodeText(emisorNode, 'NombreComercial');
+    const expectedMontoGravadoI1 = parseDatasetNumber(row.MontoGravadoI1);
+    const expectedItbisRate1 = parseDatasetNumber(row.ITBIS1);
+    const calculatedTotalItbis1 = roundMoney(expectedMontoGravadoI1 * expectedItbisRate1 / 100);
+    const datasetTotalItbis1Text = normalizeDatasetValue(row.TotalITBIS1);
+    const expectedTotalItbis1 = datasetTotalItbis1Text
+      ? parseDatasetNumber(datasetTotalItbis1Text)
+      : calculatedTotalItbis1;
+    const datasetTotalItbisText = normalizeDatasetValue(row.TotalITBIS);
+    const expectedTotalItbis = datasetTotalItbisText
+      ? parseDatasetNumber(datasetTotalItbisText)
+      : expectedTotalItbis1;
+    const actualMontoGravadoI1 = parseDatasetNumber(firstNodeText(totalesNode, 'MontoGravadoI1'));
+    const actualTotalItbis = parseDatasetNumber(firstNodeText(totalesNode, 'TotalITBIS'));
+    const actualTotalItbis1 = parseDatasetNumber(firstNodeText(totalesNode, 'TotalITBIS1'));
+    const expectedMontoTotal = parseDatasetNumber(row.MontoTotal);
+    const actualMontoTotal = parseDatasetNumber(firstNodeText(totalesNode, 'MontoTotal'));
+    const expectedEncf = String(document.encf || '').trim();
+    const actualEncf = firstNodeText(idDocNode, 'eNCF');
+    const expectedTipo = String(document.tipo_ecf || normalizeDatasetValue(row.TipoeCF) || '').replace(/^E/i, '').trim();
+    const actualTipo = firstNodeText(idDocNode, 'TipoeCF').replace(/^E/i, '');
+    const expectedRnc = normalizeDatasetValue(row.RNCComprador).replace(/\D/g, '');
+    const actualRnc = firstNodeText(compradorNode, 'RNCComprador').replace(/\D/g, '');
+    const expectedRazon = normalizeDatasetValue(row.RazonSocialComprador);
+    const actualRazon = firstNodeText(compradorNode, 'RazonSocialComprador');
+    const isRfceXml = String(root?.documentElement?.nodeName || '').toUpperCase() === 'RFCE'
+      || String(document.submission_mode || '').toLowerCase() === 'rfce';
+
+    const errors = [];
+    if (!isRfceXml && actualNombreComercial !== expectedNombreComercial) {
+      errors.push(`NombreComercial inválido para ${expectedEncf}: XML="${actualNombreComercial || '(ausente)'}", dataset="${expectedNombreComercial || '(vacío)'}".`);
+    }
+    if (expectedMontoGravadoI1 > 0 && !sameMoney(actualMontoGravadoI1, expectedMontoGravadoI1)) {
+      errors.push(`MontoGravadoI1 inválido para ${expectedEncf}: XML=${moneyText(actualMontoGravadoI1)}, dataset=${moneyText(expectedMontoGravadoI1)}.`);
+    }
+    if (expectedTotalItbis > 0 && !sameMoney(actualTotalItbis, expectedTotalItbis)) {
+      errors.push(`TotalITBIS inválido para ${expectedEncf}: XML=${moneyText(actualTotalItbis)}, dataset=${moneyText(expectedTotalItbis)}.`);
+    }
+    if (expectedTotalItbis1 > 0 && !sameMoney(actualTotalItbis1, expectedTotalItbis1)) {
+      errors.push(`TotalITBIS1 inválido para ${expectedEncf}: XML=${moneyText(actualTotalItbis1)}, dataset=${moneyText(expectedTotalItbis1)}.`);
+    }
+    if (expectedMontoTotal > 0 && !sameMoney(actualMontoTotal, expectedMontoTotal)) {
+      errors.push(`MontoTotal inválido para ${expectedEncf}: XML=${moneyText(actualMontoTotal)}, dataset=${moneyText(expectedMontoTotal)}.`);
+    }
+    if (actualEncf !== expectedEncf) {
+      errors.push(`e-NCF inválido: XML="${actualEncf}", documento="${expectedEncf}".`);
+    }
+    if (expectedTipo && actualTipo !== expectedTipo) {
+      errors.push(`Tipo e-CF inválido para ${expectedEncf}: XML="${actualTipo}", esperado="${expectedTipo}".`);
+    }
+    if (expectedRnc && actualRnc !== expectedRnc) {
+      errors.push(`RNC/Cédula receptor inválido para ${expectedEncf}: XML="${actualRnc}", dataset="${expectedRnc}".`);
+    }
+    if (expectedRazon && actualRazon !== expectedRazon) {
+      errors.push(`RazónSocialReceptor inválida para ${expectedEncf}: XML="${actualRazon}", dataset="${expectedRazon}".`);
+    }
+
+    return {
+      ok: errors.length === 0,
+      errors,
+      logs: {
+        numeroPrueba: document.certification_order_index || null,
+        tipoEcf: document.tipo_ecf,
+        encf: expectedEncf,
+        receptorUsado: { rnc: actualRnc, razonSocial: actualRazon },
+        nombreComercialUsado: actualNombreComercial,
+        nombreComercialEsperado: expectedNombreComercial,
+        montoGravadoI1: moneyText(actualMontoGravadoI1),
+        totalITBIS1Calculado: moneyText(calculatedTotalItbis1),
+        totalITBIS1EsperadoDataset: moneyText(expectedTotalItbis1),
+        totalITBISXml: moneyText(actualTotalItbis),
+        totalITBIS1Xml: moneyText(actualTotalItbis1),
+        montoTotal: moneyText(actualMontoTotal),
+      },
+    };
+  }
+
+  async regenerateCertificationCase(documentId, req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+    const document = await this.repository.getDocument(Number(documentId));
+    if (!document || !document.certification_case_key) {
+      throw new EcfError('Caso de certificación DGII no encontrado.', { statusCode: 404 });
+    }
+
+    const certificate = await this.resolveCertificate();
+    const regenerated = await this.repairStoredDocumentXml(document, certificate);
+    const localValidation = this.validateCertificationDocumentBeforeSend(regenerated);
+    if (!localValidation.ok) {
+      await this.repository.markDocumentStatus(regenerated.id, {
+        estado_dgii: 'error',
+        dgii_response_json: { localValidation },
+        error_message: localValidation.errors[0],
+      });
+      return {
+        ok: false,
+        message: localValidation.errors[0],
+        localValidation,
+        case: this.buildCertificationCasePayload(await this.repository.getDocument(regenerated.id), {
+          estado: 'error',
+          mensaje: localValidation.errors[0],
+          dgiiResponse: { localValidation },
+        }),
+      };
+    }
+
+    await this.repository.query(
+      `UPDATE ecf_documents
+       SET estado_dgii = 'firmado',
+           track_id = NULL,
+           dgii_response_json = NULL,
+           error_message = NULL,
+           certification_sent_xml_path = NULL,
+           certification_response_path = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [regenerated.id]
+    );
+    await this.syncCertificationArtifacts(regenerated);
+    const refreshed = await this.repository.getDocument(regenerated.id);
+    return {
+      ok: true,
+      message: `XML de prueba ${regenerated.encf} regenerado y validado localmente.`,
+      localValidation,
+      case: this.buildCertificationCasePayload(refreshed || regenerated),
+    };
+  }
+
   async sendCertificationCase(documentId, req, options = {}) {
     await this.ensureReady();
     const actor = req ? await this.getCurrentActor(req, { adminOnly: true }) : { id: null, nombre: 'Sistema', usuario: 'Sistema', rol: 'Sistema' };
@@ -2992,6 +3205,38 @@ class EcfService {
 
     const certificate = await this.resolveCertificate();
     const preparedDocument = await this.repairStoredDocumentXml(document, certificate);
+    const localValidation = this.validateCertificationDocumentBeforeSend(preparedDocument);
+    if (!localValidation.ok) {
+      const message = localValidation.errors[0] || `La prueba ${preparedDocument.encf} no pasó la validación local.`;
+      await this.repository.markDocumentStatus(preparedDocument.id, {
+        estado_dgii: 'error',
+        dgii_response_json: { localValidation },
+        error_message: message,
+      });
+      await this.repository.saveTestRun(
+        'certification_local_validation',
+        'warning',
+        message,
+        {
+          documentId: preparedDocument.id,
+          encf: preparedDocument.encf,
+          validation: localValidation,
+        },
+        preparedDocument.environment
+      );
+      const refreshedInvalid = await this.repository.getDocument(preparedDocument.id);
+      return {
+        ok: false,
+        blocked: true,
+        localValidation,
+        message,
+        case: this.buildCertificationCasePayload(refreshedInvalid || preparedDocument, {
+          estado: 'error',
+          mensaje: message,
+          dgiiResponse: { localValidation },
+        }),
+      };
+    }
     let response;
     try {
       response = await this.sendPreparedDocument(preparedDocument);
@@ -3079,6 +3324,7 @@ class EcfService {
         documentId: preparedDocument.id,
         encf: preparedDocument.encf,
         trackId: sent.trackId,
+        localValidation: localValidation.logs,
         dgiiResponse: response,
         statusPayload,
       },

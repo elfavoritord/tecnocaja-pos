@@ -1,0 +1,23 @@
+{
+  "trackId": "1f149784-8be9-4065-9892-9778e0b9cf4b",
+  "fecha": "2026-05-26T04:18:12.071Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E410000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/26/2026 12:16:45 AM",
+  "mensajes": [
+    {
+      "valor": "La propiedad NombreComercial no es válida debido a que el valor enviado (EMILIO MANAURYS CABRERA) no coincide con el valor () del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"1f149784-8be9-4065-9892-9778e0b9cf4b\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E410000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/26/2026 12:16:45 AM\",\"mensajes\":[{\"valor\":\"La propiedad NombreComercial no es válida debido a que el valor enviado (EMILIO MANAURYS CABRERA) no coincide con el valor () del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-1f149784-8be9-4065-9892-9778e0b9cf4b.json"
+}

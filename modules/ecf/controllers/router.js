@@ -127,8 +127,9 @@ function createEcfRouter(deps) {
   // Actualiza campos arbitrarios del rawRow de un caso de certificación.
   // Body: { encf: 'E310000000002', fields: { MontoGravadoI1: '3961.31', MontoGravadoTotal: '3961.31' } }
   router.post('/certification/fix-rawrow', wrap((req) => service.fixCaseRawRow(req)));
-  // Genera y firma los 4 XMLs < 250Mil para subir al portal DGII
+  // Genera y firma los XMLs < 250Mil detectados en el dataset para subir al portal DGII
   router.post('/certification/generate-250mil', wrap((req) => service.generate250MilXmls(req)));
+  router.post('/certification/cases/:id/regenerate', wrap((req) => service.regenerateCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/resend', wrap((req) => service.sendCertificationCase(Number(req.params.id), req, { forceResend: true })));
   router.get('/certification/cases/:id/track', wrap((req) => service.queryCertificationCase(Number(req.params.id))));

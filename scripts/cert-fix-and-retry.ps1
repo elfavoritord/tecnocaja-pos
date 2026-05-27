@@ -8,10 +8,9 @@
 #
 # SECUENCIA:
 #   1. Verificar rawRow NombreComercial (diagnóstico)
-#   2. Fijar NombreComercial="DOCUMENTOS ELECTRONICOS DE 02" en todos los rechazados
-#      (usa fix-nombre-comercial individualmente para cada doc)
+#   2. Diagnosticar NombreComercial sin modificar el dataset
 #   3. Fijar E310000000002: MontoGravadoI1/MontoGravadoTotal 3230→3961.31
-#   4. Rotar eNCFs quemados (force=true)
+#   4. Resetear solo envíos pendientes/en proceso sin rotar eNCF
 #   5. Resetear docs rechazados → firmado
 #   6. Correr secuencia de certificación
 #   7. Esperar y hacer poll de estados
@@ -61,43 +60,14 @@ if ($diag -and $diag.cases) {
     $diag.cases | ForEach-Object {
         $nc = $_.sampleFields.NombreComercial
         $nc_display = if ($null -eq $nc) { "<ABSENT>" } elseif ($nc -eq "") { "<EMPTY>" } else { $nc }
-        $color = if ($nc -eq "DOCUMENTOS ELECTRONICOS DE 02") { "Green" } else { "Yellow" }
+        $color = if ($null -eq $nc -or $nc -eq "") { "Green" } else { "Yellow" }
         Write-Host "  $($_.encf): NombreComercial=$nc_display" -ForegroundColor $color
     }
 }
 
-# ─── Paso 2: Fijar NombreComercial en todos los docs ───────────────────────
-Write-Host "`n[2/7] Fijando NombreComercial='DOCUMENTOS ELECTRONICOS DE 02' en docs rechazados/pendientes..." -ForegroundColor Yellow
-
-# Docs que necesitan NombreComercial = "DOCUMENTOS ELECTRONICOS DE 02"
-# (todos los rechazados + E310000000002 pendiente, excluyendo los aceptados)
-$docsConNombreComercial = @(
-    "E320000000006","E330000000001","E440000000013","E340000000013",
-    "E310000000001","E310000000002","E310000000003","E310000000009",
-    "E320000000001","E410000000008","E430000000010","E430000000001",
-    "E440000000010","E450000000003","E450000000002","E460000000008",
-    "E460000000011","E470000000007","E470000000008","E340000000001"
-)
-# Aceptados (no tocar): E410000000001, E320000000015, E320000000012, E320000000014, E320000000013
-
-$fixedCount = 0
-foreach ($encf in $docsConNombreComercial) {
-    $result = Invoke-Ecf -Method POST -Path "/certification/fix-nombre-comercial" -Body @{
-        encf = $encf
-        nombreComercial = "DOCUMENTOS ELECTRONICOS DE 02"
-    }
-    if ($result -and $result.ok) {
-        $fixedCount++
-        if ($result.oldNombreComercial -ne $result.newNombreComercial) {
-            Write-Host "  ✓ $encf: '$($result.oldNombreComercial)' → '$($result.newNombreComercial)'" -ForegroundColor Green
-        } else {
-            Write-Host "  = $encf: ya era correcto" -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "  ✗ $encf: fallo al actualizar" -ForegroundColor Red
-    }
-}
-Write-Host "  $fixedCount docs actualizados." -ForegroundColor Green
+# ─── Paso 2: No modificar NombreComercial del dataset ───────────────────────
+Write-Host "`n[2/7] NombreComercial: sin cambios automáticos." -ForegroundColor Yellow
+Write-Host "  El código usa el valor exacto del dataset y solo omite el caso manual E32 <250Mil al generar XML para el portal." -ForegroundColor Gray
 
 # ─── Paso 3: Fijar E310000000002 MontoGravadoI1 ─────────────────────────────
 Write-Host "`n[3/7] Fijando E310000000002 MontoGravadoI1/MontoGravadoTotal 3230→3961.31..." -ForegroundColor Yellow
@@ -117,14 +87,14 @@ if ($fixResult -and $fixResult.ok) {
     Write-Host "  ✗ Fallo al actualizar E310000000002" -ForegroundColor Red
 }
 
-# ─── Paso 4: Rotar eNCFs quemados ───────────────────────────────────────────
-Write-Host "`n[4/7] Rotando eNCFs quemados (force=true)..." -ForegroundColor Yellow
-$rotateResult = Invoke-Ecf -Method POST -Path "/certification/rotate-encfs?force=true" -Body @{}
-if ($rotateResult) {
-    Write-Host "  ✓ Rotados: $($rotateResult.rotated ?? $rotateResult.count ?? 'ver respuesta')" -ForegroundColor Green
-    Write-Host "  Detalle: $($rotateResult.message ?? $rotateResult | ConvertTo-Json -Compress)" -ForegroundColor Gray
+# ─── Paso 4: Resetear envíos pendientes/en proceso sin rotar eNCF ───────────
+Write-Host "`n[4/7] Reseteando envíos pendientes/en proceso sin rotar eNCF..." -ForegroundColor Yellow
+$rotateResult = Invoke-Ecf -Method POST -Path "/certification/reset-sent" -Body @{}
+if ($rotateResult -and $rotateResult.ok) {
+    Write-Host "  ✓ Reseteados: $($rotateResult.reset)" -ForegroundColor Green
+    Write-Host "  Detalle: $($rotateResult.message)" -ForegroundColor Gray
 } else {
-    Write-Host "  ✗ Fallo en rotación de eNCFs" -ForegroundColor Red
+    Write-Host "  ✗ Fallo en reset de pendientes/en proceso" -ForegroundColor Red
 }
 
 # ─── Paso 5: Resetear rechazados → firmado ──────────────────────────────────

@@ -1,0 +1,23 @@
+{
+  "trackId": "2322b712-be0a-4056-abc1-d1dd8a4cecdb",
+  "fecha": "2026-05-26T04:18:11.656Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E340000000018",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/26/2026 12:16:41 AM",
+  "mensajes": [
+    {
+      "valor": "El eNCF modificado no ha sido emitido.La propiedad NombreComercial no es válida debido a que el valor enviado (EMILIO MANAURYS CABRERA) no coincide con el valor () del conjunto de datos entregados.",
+      "codigo": 614
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"2322b712-be0a-4056-abc1-d1dd8a4cecdb\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E340000000018\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/26/2026 12:16:41 AM\",\"mensajes\":[{\"valor\":\"El eNCF modificado no ha sido emitido.La propiedad NombreComercial no es válida debido a que el valor enviado (EMILIO MANAURYS CABRERA) no coincide con el valor () del conjunto de datos entregados.\",\"codigo\":614}]}",
+  "statusPath": "storage/ecf/tracks/estado-2322b712-be0a-4056-abc1-d1dd8a4cecdb.json"
+}

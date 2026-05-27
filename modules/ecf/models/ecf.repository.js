@@ -1372,8 +1372,8 @@ class EcfRepository {
   //     haría que se reenvíen y DGII rechazaría con "secuencia ya utilizada".
   //   - 'rechazado'/'error': necesitan corrección manual y reenvío individual.
   //     La ráfaga secuencial los salta (includeRejected: false).
-  //   Cuando DGII reinicia el conteo de pruebas por un rechazo, usar rotateBurnedEncfs(force=true)
-  //   para asignar nuevas secuencias a TODOS los docs antes de reenviar.
+  //   Cuando DGII reinicia el conteo de pruebas por un rechazo, el portal vuelve a esperar
+  //   los eNCF exactos de su colección de datos. Por eso este reset NO rota secuencias.
   async resetSentCertificationCasesToFirmado() {
     const batchId = await this.getLatestCertificationBatchId();
     const params = [];
@@ -1386,13 +1386,26 @@ class EcfRepository {
       `UPDATE ecf_documents
        SET estado_dgii = 'firmado',
            track_id    = NULL,
+           mensajes_dgii = NULL,
            error_message = NULL,
+           response_payload = NULL,
+           dgii_response_json = NULL,
+           xml_content = NULL,
+           signed_xml_content = NULL,
+           xml_path = NULL,
+           signed_xml_path = NULL,
+           certification_sent_xml_path = NULL,
+           certification_signed_xml_path = NULL,
+           certification_response_path = NULL,
+           certification_dgii_file_name = NULL,
+           is_sent = 0,
+           sent_at = NULL,
+           last_checked_at = NULL,
            updated_at  = CURRENT_TIMESTAMP
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
          ${batchClause}
-         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')
-         AND (submission_mode IS NULL OR submission_mode != 'rfce')`,
+         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando', 'pendiente')`,
       params
     );
     return { reset: result.affectedRows || 0, batchId };

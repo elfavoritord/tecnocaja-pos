@@ -1,0 +1,23 @@
+{
+  "trackId": "41687891-722c-49a2-b897-931ef0e38c03",
+  "fecha": "2026-05-27T12:31:31.468Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E440000000015",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/27/2026 8:30:20 AM",
+  "mensajes": [
+    {
+      "valor": "La factura recibida con el e-NCF E440000000015, no existe en nuestra colección de datos.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"41687891-722c-49a2-b897-931ef0e38c03\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E440000000015\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/27/2026 8:30:20 AM\",\"mensajes\":[{\"valor\":\"La factura recibida con el e-NCF E440000000015, no existe en nuestra colección de datos.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-41687891-722c-49a2-b897-931ef0e38c03.json"
+}

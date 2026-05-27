@@ -155,4 +155,70 @@ describe('ecf test-set importer', () => {
     expect(transmission.xml).toContain('<eNCF>E320000000011</eNCF>');
     expect(transmission.xml).toContain('<MontoTotal>40120.00</MontoTotal>');
   });
+
+  test('omite NombreComercial vacio y respeta TotalITBIS1 del dataset DGII', () => {
+    const transmission = buildTransmissionFromSpreadsheetRow({
+      testCase: {
+        encf: 'E310000000002',
+        tipoEcf: 'E31',
+        sourceSheet: 'ECF',
+        rawRow: {
+          Version: '1.0',
+          TipoeCF: '31',
+          ENCF: 'E310000000002',
+          TipoIngresos: '01',
+          TipoPago: '1',
+          RNCEmisor: '40211932609',
+          RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS DE 02',
+          NombreComercial: '',
+          FechaEmision: '01-04-2020',
+          RNCComprador: '131880681',
+          RazonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03',
+          MontoGravadoTotal: '3230.00',
+          MontoGravadoI1: '3230.00',
+          ITBIS1: '18',
+          TotalITBIS: '713.04',
+          TotalITBIS1: '713.04',
+          MontoTotal: '3943.04',
+          'NumeroLinea[1]': '1',
+          'IndicadorFacturacion[1]': '1',
+          'NombreItem[1]': 'Producto con total DGII',
+          'CantidadItem[1]': '1',
+          'PrecioUnitarioItem[1]': '3230.00',
+          'MontoItem[1]': '3230.00',
+        },
+      },
+      issueDate: new Date('2026-05-21T00:00:00Z'),
+    });
+
+    expect(transmission.xml).not.toContain('<NombreComercial>');
+    expect(transmission.xml).toContain('<TotalITBIS>713.04</TotalITBIS>');
+    expect(transmission.xml).toContain('<TotalITBIS1>713.04</TotalITBIS1>');
+  });
+
+  test('calcula TotalITBIS1 solo si el dataset no lo trae', () => {
+    const transmission = buildTransmissionFromSpreadsheetRow({
+      testCase: {
+        encf: 'E320000000012',
+        tipoEcf: 'E32',
+        sourceSheet: 'ECF',
+        rawRow: {
+          Version: '1.0',
+          TipoeCF: '32',
+          ENCF: 'E320000000012',
+          RNCEmisor: '40211932609',
+          RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL',
+          NombreComercial: '',
+          MontoGravadoTotal: '40000.00',
+          MontoGravadoI1: '40000.00',
+          ITBIS1: '18',
+          MontoTotal: '47200.00',
+        },
+      },
+      issueDate: new Date('2026-05-21T00:00:00Z'),
+    });
+
+    expect(transmission.xml).toContain('<TotalITBIS>7200.00</TotalITBIS>');
+    expect(transmission.xml).toContain('<TotalITBIS1>7200.00</TotalITBIS1>');
+  });
 });

@@ -1,0 +1,23 @@
+{
+  "trackId": "4340dd23-616b-45e5-80fe-f38d52023d5c",
+  "fecha": "2026-05-26T05:16:36.587Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000002",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/26/2026 1:15:16 AM",
+  "mensajes": [
+    {
+      "valor": "El campo TotalITBIS1 del área Totales de la sección Encabezado no coincide con la multiplicación de los campos de Monto Gravado 1 y ITBIS Tasa 1.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"4340dd23-616b-45e5-80fe-f38d52023d5c\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000002\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/26/2026 1:15:16 AM\",\"mensajes\":[{\"valor\":\"El campo TotalITBIS1 del área Totales de la sección Encabezado no coincide con la multiplicación de los campos de Monto Gravado 1 y ITBIS Tasa 1.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-4340dd23-616b-45e5-80fe-f38d52023d5c.json"
+}
