@@ -67,19 +67,18 @@ if ($diag -and $diag.cases) {
 }
 
 # ─── Paso 2: Fijar NombreComercial en todos los docs ───────────────────────
-Write-Host "`n[2/7] Fijando NombreComercial='DOCUMENTOS ELECTRONICOS DE 02' en todos los docs (excepto E41)..." -ForegroundColor Yellow
+Write-Host "`n[2/7] Fijando NombreComercial='DOCUMENTOS ELECTRONICOS DE 02' en docs rechazados/pendientes..." -ForegroundColor Yellow
 
-# Docs que SÍ necesitan NombreComercial = "DOCUMENTOS ELECTRONICOS DE 02"
+# Docs que necesitan NombreComercial = "DOCUMENTOS ELECTRONICOS DE 02"
+# (todos los rechazados + E310000000002 pendiente, excluyendo los aceptados)
 $docsConNombreComercial = @(
     "E320000000006","E330000000001","E440000000013","E340000000013",
-    "E310000000001","E310000000002","E310000000003","E310000000004",
-    "E310000000005","E310000000006","E310000000007","E310000000008",
-    "E310000000009","E310000000010","E440000000001","E440000000002",
-    "E440000000003","E440000000004","E460000000001","E460000000008",
-    "E340000000001"
+    "E310000000001","E310000000002","E310000000003","E310000000009",
+    "E320000000001","E410000000008","E430000000010","E430000000001",
+    "E440000000010","E450000000003","E450000000002","E460000000008",
+    "E460000000011","E470000000007","E470000000008","E340000000001"
 )
-# E410000000001 ya fue ACEPTADO — no tocar
-# E320000000001-E320000000005 son RFCE aceptados — no tocar
+# Aceptados (no tocar): E410000000001, E320000000015, E320000000012, E320000000014, E320000000013
 
 $fixedCount = 0
 foreach ($encf in $docsConNombreComercial) {
