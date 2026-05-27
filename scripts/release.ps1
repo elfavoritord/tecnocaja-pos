@@ -46,6 +46,10 @@ if (-not $env:GH_TOKEN) {
 }
 Ok 'GH_TOKEN cargado'
 
+# ── Preflight: evitar subir una version si el build no puede tocar MariaDB ──
+node scripts/prepare-mariadb-bundle.js --check-unlocked
+if ($LASTEXITCODE -ne 0) { Fail "MariaDB empaquetado esta en uso. Cierra Tecno Caja o detén el PID indicado y vuelve a intentar" }
+
 # ── 1. Bump de version (Node.js maneja el JSON sin corromper) ─
 Step '1/5' 'Calculando y actualizando version...'
 
