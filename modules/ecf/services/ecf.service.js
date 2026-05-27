@@ -2673,6 +2673,82 @@ class EcfService {
   }
 
   /**
+   * Actualiza campos arbitrarios del rawRow de un caso de certificación.
+   * Body: { encf: 'E310000000002', fields: { MontoGravadoI1: '3961.31', MontoGravadoTotal: '3961.31' } }
+   * Útil para corregir valores incorrectos importados del Excel antes de reenviar.
+   */
+  async fixCaseRawRow(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const body = req.body || {};
+    const encf = String(body?.encf || '').trim().toUpperCase();
+    assertCondition(encf, 'Se requiere el campo encf.', { statusCode: 422 });
+    const fields = body?.fields;
+    assertCondition(
+      fields && typeof fields === 'object' && !Array.isArray(fields) && Object.keys(fields).length > 0,
+      'Se requiere el campo fields (objeto con los campos a actualizar).',
+      { statusCode: 422 }
+    );
+
+    const rows = await this.repository.query(
+      `SELECT id, encf, certification_original_xml
+       FROM ecf_documents
+       WHERE business_id = 1 AND encf = ?
+       LIMIT 1`,
+      [encf]
+    );
+    assertCondition(rows.length > 0, `Documento ${encf} no encontrado.`, { statusCode: 404 });
+
+    const doc = rows[0];
+    const rawCertOriginal = String(doc.certification_original_xml || '').replace(/^﻿/, '').trim();
+    assertCondition(
+      rawCertOriginal.startsWith('{'),
+      `El documento ${encf} no tiene rawRow (certification_original_xml no es JSON).`,
+      { statusCode: 422 }
+    );
+
+    let src;
+    try {
+      src = JSON.parse(rawCertOriginal);
+    } catch (e) {
+      throw new EcfError(`certification_original_xml de ${encf} no es JSON válido.`, { statusCode: 422 });
+    }
+
+    assertCondition(
+      src?.kind === 'spreadsheet_row' && src?.row,
+      `El documento ${encf} no tiene rawRow de hoja de cálculo (kind=${src?.kind}).`,
+      { statusCode: 422 }
+    );
+
+    const oldValues = {};
+    const newValues = {};
+    for (const [fieldName, fieldValue] of Object.entries(fields)) {
+      oldValues[fieldName] = src.row[fieldName] ?? null;
+      src.row[fieldName] = fieldValue;
+      newValues[fieldName] = fieldValue;
+    }
+
+    await this.repository.query(
+      `UPDATE ecf_documents
+       SET certification_original_xml = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [JSON.stringify(src), doc.id]
+    );
+
+    this.logger?.info(`[fixCaseRawRow] ${encf}: ${JSON.stringify(oldValues)} → ${JSON.stringify(newValues)}`);
+
+    return {
+      ok: true,
+      encf,
+      oldValues,
+      newValues,
+      message: `rawRow de ${encf} actualizado. Reenvía el caso para aplicar el cambio.`,
+    };
+  }
+
+  /**
    * Genera y firma los XMLs de facturas de consumo < 250Mil para subir al portal DGII.
    * Lee los eNCFs ACTUALES de los docs E32 RFCE en la BD y usa linkedRawRow (datos exactos DGII).
    *
