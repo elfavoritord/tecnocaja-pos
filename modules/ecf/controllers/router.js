@@ -131,6 +131,8 @@ function createEcfRouter(deps) {
   router.get('/reports/summary', wrap(() => service.getSummaryReport()));
   // DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación
   router.get('/diag/cert-original-xml', wrap(() => service.diagCertificationOriginalXml()));
+  // Muestra los mensajes DGII de todos los docs rechazados en el batch actual.
+  router.get('/diag/cert-rejection-messages', wrap(() => service.diagCertRejectionMessages()));
 
   return {
     router,
