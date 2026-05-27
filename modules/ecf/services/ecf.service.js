@@ -2085,10 +2085,19 @@ class EcfService {
     const dgii = await this.statusService.getTrackStatus(document.track_id);
     const state = normalizeDgiiState(dgii);
 
+    // Extraer mensaje de rechazo: DGII a veces lo pone en dgii.mensaje (singular) y otras
+    // en dgii.mensajes[] (array de objetos con .valor o .descripcion).
+    const mensajesArr = Array.isArray(dgii.mensajes) ? dgii.mensajes : (Array.isArray(dgii.Mensajes) ? dgii.Mensajes : []);
+    const mensajesText = mensajesArr
+      .map((m) => String(m?.valor || m?.Valor || m?.descripcion || m?.Descripcion || m?.mensaje || m || '').trim())
+      .filter(Boolean)
+      .join(' | ');
+    const errorMsg = dgii.mensaje || dgii.message || dgii.descripcion || dgii.Descripcion || mensajesText || null;
+
     await this.repository.markDocumentStatus(id, {
       estado_dgii: state,
       dgii_response_json: dgii,
-      error_message: dgii.mensaje || dgii.message || null,
+      error_message: errorMsg || null,
     });
     if (document.sale_id) {
       await this.repository.attachSaleSummary(document.sale_id, {
@@ -2097,12 +2106,13 @@ class EcfService {
         documentId: document.id,
         estado: state,
         trackId: document.track_id,
-        error: dgii.mensaje || dgii.message || null,
+        error: errorMsg || null,
       });
     }
     return {
       estado: state,
-      mensaje: dgii.mensaje || dgii.message || 'Consulta completada.',
+      mensaje: errorMsg || 'Consulta completada.',
+      mensajes: mensajesArr,
       trackId: document.track_id,
       encf: document.encf,
       environment: document.environment,
@@ -3179,7 +3189,8 @@ class EcfService {
       try {
         const status = await this.queryDocumentStatus(document.id);
         const pollState = (status.estado || 'pendiente').toUpperCase();
-        const pollMsg = status.mensaje || '';
+        const pollMsg = (status.mensaje && status.mensaje !== 'Consulta completada.') ? status.mensaje
+          : (status.mensajes || []).map((m) => String(m?.valor || m?.descripcion || '').trim()).filter(Boolean).join(' | ');
         console.log(`[poll] ${document.encf}: ${pollState}${pollMsg ? ` — ${pollMsg}` : ''}`);
         results.push({
           id: document.id,
@@ -3417,6 +3428,44 @@ class EcfService {
       };
     });
     return { ok: true, batchId, cases };
+  }
+
+  // Diagnóstico: mensajes DGII de todos los docs rechazados en el batch actual.
+  // Llamar con GET /api/ecf/diag/cert-rejection-messages para ver por qué DGII rechazó.
+  async diagCertRejectionMessages() {
+    await this.ensureReady();
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) { batchClause = ' AND certification_batch_id = ?'; params.push(batchId); }
+    const rows = await this.repository.query(
+      `SELECT encf, tipo_ecf, estado_dgii, error_message, dgii_response_json
+       FROM ecf_documents
+       WHERE business_id = 1 AND certification_case_key IS NOT NULL ${batchClause}
+         AND estado_dgii = 'rechazado'
+       ORDER BY COALESCE(certification_order_index, id) ASC
+       LIMIT 30`,
+      params
+    );
+    const results = rows.map((r) => {
+      let mensajes = [];
+      let rawMensaje = null;
+      try {
+        const parsed = JSON.parse(r.dgii_response_json || '{}');
+        const arr = Array.isArray(parsed.mensajes) ? parsed.mensajes : (Array.isArray(parsed.Mensajes) ? parsed.Mensajes : []);
+        mensajes = arr.map((m) => String(m?.valor || m?.Valor || m?.descripcion || m?.Descripcion || m?.mensaje || JSON.stringify(m) || '').trim()).filter(Boolean);
+        rawMensaje = parsed.mensaje || parsed.message || parsed.descripcion || null;
+      } catch (_) {}
+      return {
+        encf: r.encf,
+        tipo: r.tipo_ecf,
+        estado: r.estado_dgii,
+        errorMessage: r.error_message,
+        rawMensaje,
+        mensajes,
+      };
+    });
+    return { ok: true, total: results.length, results };
   }
 }
 
