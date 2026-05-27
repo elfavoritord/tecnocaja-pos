@@ -122,6 +122,9 @@ function createEcfRouter(deps) {
   // Parchea NombreComercial del rawRow de un caso cuando el Excel tiene valor incorrecto.
   // Body: { encf: 'E310000000002', nombreComercial: '' }
   router.post('/certification/fix-nombre-comercial', wrap((req) => service.fixCaseNombreComercial(req)));
+  // Actualiza campos arbitrarios del rawRow de un caso de certificación.
+  // Body: { encf: 'E310000000002', fields: { MontoGravadoI1: '3961.31', MontoGravadoTotal: '3961.31' } }
+  router.post('/certification/fix-rawrow', wrap((req) => service.fixCaseRawRow(req)));
   // Genera y firma los 4 XMLs < 250Mil para subir al portal DGII
   router.post('/certification/generate-250mil', wrap((req) => service.generate250MilXmls(req)));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
