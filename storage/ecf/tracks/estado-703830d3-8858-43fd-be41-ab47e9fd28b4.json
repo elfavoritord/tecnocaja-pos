@@ -1,0 +1,23 @@
+{
+  "trackId": "703830d3-8858-43fd-be41-ab47e9fd28b4",
+  "fecha": "2026-05-27T10:53:09.409Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000002",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/27/2026 6:52:48 AM",
+  "mensajes": [
+    {
+      "valor": "El campo TablaSubcantidad de la sección DetallesItems de la línea 1 no es válido",
+      "codigo": 2150
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"703830d3-8858-43fd-be41-ab47e9fd28b4\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000002\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/27/2026 6:52:48 AM\",\"mensajes\":[{\"valor\":\"El campo TablaSubcantidad de la sección DetallesItems de la línea 1 no es válido\",\"codigo\":2150}]}",
+  "statusPath": "storage/ecf/tracks/estado-703830d3-8858-43fd-be41-ab47e9fd28b4.json"
+}

@@ -93,7 +93,21 @@
       "Bash(node --check electron/main.js)",
       "Bash(node -e \"require\\('@aws-sdk/client-s3'\\);console.log\\('OK'\\)\")",
       "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const r2 = require\\('./server/services/r2-storage'\\); r2.isR2Available\\(true\\).then\\(function\\(\\){ console.log\\('OK: B2 conectado correctamente'\\); }\\).catch\\(function\\(e\\){ console.error\\('ERR:', e.message\\); }\\);\")",
-      "Bash(grep -n \"return res.status\\(201\\).json\\({ sessionId: result, config:\" server.js)"
+      "Bash(grep -n \"return res.status\\(201\\).json\\({ sessionId: result, config:\" server.js)",
+      "Bash(cat \"storage/ecf/certification/signed/E310000000004.xml\")",
+      "Bash(cat \"storage/ecf/certification/signed/E470000000011.xml\")",
+      "Bash(node --check modules/ecf/services/ecf.service.js)",
+      "Bash(node --check modules/ecf/services/test-set-importer.js)",
+      "Bash(node --check modules/ecf/controllers/router.js)",
+      "Bash(node scripts/find-source.js)",
+      "Read(//c/Users/Emilio Coding IA/Desktop/sistema pos completo/storage/ecf/certification/signed/**)",
+      "Bash(Get-ChildItem \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\storage\\\\ecf\\\\certification\\\\signed\\\\*.xml\")",
+      "Bash(Select-Object Name, Length)",
+      "Bash(git commit -m 'fix: NombreComercial usa valor real del emisor \\(no rawRow\\) para certificacion *)",
+      "Bash(node -e \"const r = require\\('./modules/ecf/controllers/router.js'\\); console.log\\('loaded ok'\\);\")",
+      "Bash(node -e \"const db = require\\('./db'\\); db.query\\('SELECT id, encf, LEFT\\(certification_original_xml,80\\) as src FROM ecf_documents WHERE encf=? LIMIT 1', ['E310000000002'], \\(err, rows\\) => { console.log\\(JSON.stringify\\({err: err?.message, rows}\\)\\); process.exit\\(0\\); }\\);\")",
+      "Bash(git commit -m 'fix: corregir NombreComercial, TotalITBIS1 y flujo de certificacion DGII e-CF *)",
+      "Bash(git commit -m 'feat: endpoint reset-rejected para resetear rechazados→firmado antes de reintento *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

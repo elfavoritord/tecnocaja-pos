@@ -1,0 +1,23 @@
+{
+  "trackId": "b1936460-c7de-429d-a050-c5b8aefe64c3",
+  "fecha": "2026-05-25T11:35:38.621Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000007",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/25/2026 7:35:05 AM",
+  "mensajes": [
+    {
+      "valor": "La propiedad TerminoPago no es válida debido a que el valor enviado () no coincide con el valor (6) del conjunto de datos entregados.La propiedad Municipio no es válida debido a que el valor enviado () no coincide con el valor (010100) del conjunto de datos entregados.La propiedad Provincia no es válida debido a que el valor enviado () no coincide con el valor (010000) del conjunto de datos entregados.La propiedad WebSite no es válida debido a que el valor enviado () no coincide con el valor (www.facturaelectronica.com) del conjunto de datos entregados.La propiedad NumeroFacturaInterna no es válida debido a que el valor enviado () no coincide con el valor (123456789016) del conjunto de datos entregados.La propiedad NumeroPedidoInterno no es válida debido a que el valor enviado () no coincide con el valor (123456789016) del conjunto de datos entregados.La propiedad IdentificadorExtranjero no es válida debido a que el valor enviado () no coincide con el valor (350555123) del conjunto de datos entregados.La propiedad ValorPagar no es válida debido a que el valor enviado () no coincide con el valor (35500.00) del conjunto de datos entregados.La propiedad PrecioUnitarioItem no es válida debido a que el valor enviado (200.00) no coincide con el valor (200.0000) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"b1936460-c7de-429d-a050-c5b8aefe64c3\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000007\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/25/2026 7:35:05 AM\",\"mensajes\":[{\"valor\":\"La propiedad TerminoPago no es válida debido a que el valor enviado () no coincide con el valor (6) del conjunto de datos entregados.La propiedad Municipio no es válida debido a que el valor enviado () no coincide con el valor (010100) del conjunto de datos entregados.La propiedad Provincia no es válida debido a que el valor enviado () no coincide con el valor (010000) del conjunto de datos entregados.La propiedad WebSite no es válida debido a que el valor enviado () no coincide con el valor (www.facturaelectronica.com) del conjunto de datos entregados.La propiedad NumeroFacturaInterna no es válida debido a que el valor enviado () no coincide con el valor (123456789016) del conjunto de datos entregados.La propiedad NumeroPedidoInterno no es válida debido a que el valor enviado () no coincide con el valor (123456789016) del conjunto de datos entregados.La propiedad IdentificadorExtranjero no es válida debido a que el valor enviado () no coincide con el valor (350555123) del conjunto de datos entregados.La propiedad ValorPagar no es válida debido a que el valor enviado () no coincide con el valor (35500.00) del conjunto de datos entregados.La propiedad PrecioUnitarioItem no es válida debido a que el valor enviado (200.00) no coincide con el valor (200.0000) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-b1936460-c7de-429d-a050-c5b8aefe64c3.json"
+}

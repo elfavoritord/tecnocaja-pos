@@ -67,7 +67,16 @@
       "Bash(node --check js/wizard.js)",
       "Bash(node --check modules/firebase-admin.js)",
       "Bash(node -e \"require\\('@aws-sdk/client-s3'\\); console.log\\('R2 SDK OK'\\)\")",
-      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const r2 = require\\('./server/services/r2-storage'\\); console.log\\('KeyID:', process.env.R2_ACCESS_KEY_ID\\); r2.isR2Available\\(true\\).then\\(function\\(\\){ console.log\\('OK'\\); }\\).catch\\(function\\(e\\){ console.error\\('ERR:', e.message, JSON.stringify\\(e.Code\\), e.httpStatusCode\\); }\\);\")"
+      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const r2 = require\\('./server/services/r2-storage'\\); console.log\\('KeyID:', process.env.R2_ACCESS_KEY_ID\\); r2.isR2Available\\(true\\).then\\(function\\(\\){ console.log\\('OK'\\); }\\).catch\\(function\\(e\\){ console.error\\('ERR:', e.message, JSON.stringify\\(e.Code\\), e.httpStatusCode\\); }\\);\")",
+      "Bash(git commit -m 'fix: revert PrecioUnitarioItem a appendSimple y ampliar reset-sent a estados aceptado/rechazado *)",
+      "Bash(git commit -m 'fix: E43 Comprador vacio y E320000000006 excluido del import *)",
+      "Bash(Get-ChildItem \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\40211932609-25052026125432\" -Recurse)",
+      "Bash(Select-Object FullName, Length, LastWriteTime)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(git commit -m 'fix: NombreComercial en certificacion usa rawRow Excel, no config local *)",
+      "Bash(git commit -m 'fix: rotateBurnedEncfs incluye firmado con sent_at \\(eNCFs quemados reseteados\\), log mensaje DGII *)",
+      "Bash(git commit -m 'fix: NombreComercial usa rawRow Excel \\(no config local\\) — DGII espera '\\\\''DOCUMENTOS ELECTRONICOS DE 02'\\\\'' *)",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue | Select-Object Id, CPU, @{N='StartTime';E={$_.StartTime.ToString\\('HH:mm:ss'\\)}} | Format-Table)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",

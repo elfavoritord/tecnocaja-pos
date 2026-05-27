@@ -1,0 +1,23 @@
+{
+  "trackId": "46bf269c-f6e9-426e-bf3f-7302e0fbe8f0",
+  "fecha": "2026-05-25T13:03:10.340Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E410000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/25/2026 8:54:36 AM",
+  "mensajes": [
+    {
+      "valor": "La propiedad PrecioUnitarioItem no es válida debido a que el valor enviado (10000.0000) no coincide con el valor (10000.00) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"46bf269c-f6e9-426e-bf3f-7302e0fbe8f0\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E410000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/25/2026 8:54:36 AM\",\"mensajes\":[{\"valor\":\"La propiedad PrecioUnitarioItem no es válida debido a que el valor enviado (10000.0000) no coincide con el valor (10000.00) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-46bf269c-f6e9-426e-bf3f-7302e0fbe8f0.json"
+}

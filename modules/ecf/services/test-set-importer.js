@@ -118,6 +118,35 @@ function rowNumber(row, key) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function formatMoney(value) {
+  return (Math.round((Number(value) + Number.EPSILON) * 100) / 100).toFixed(2);
+}
+
+function calculatedItbisTotal(row, bucket) {
+  const taxableAmount = rowNumber(row, `MontoGravadoI${bucket}`);
+  const taxRate = rowNumber(row, `ITBIS${bucket}`);
+  if (taxableAmount === null || taxRate === null) return null;
+  return formatMoney(taxableAmount * taxRate / 100);
+}
+
+function totalFieldValue(row, field) {
+  if (rowHasValue(row, field)) return row[field];
+
+  const match = String(field || '').match(/^TotalITBIS([123])$/);
+  if (match) {
+    const calculated = calculatedItbisTotal(row, match[1]);
+    if (calculated !== null) return calculated;
+  }
+  if (field === 'TotalITBIS') {
+    const values = [1, 2, 3]
+      .map((bucket) => calculatedItbisTotal(row, bucket))
+      .filter((value) => value !== null)
+      .map(Number);
+    if (values.length) return formatMoney(values.reduce((sum, value) => sum + value, 0));
+  }
+  return row[field];
+}
+
 function appendSimple(node, tagName, value) {
   const text = normalizeRowValue(value);
   if (!text) return;
@@ -421,6 +450,32 @@ function buildCertificationEcfXml(testCase, issueDate) {
     'TotalITBIS2',
     'TotalITBIS3',
     'MontoImpuestoAdicional',
+  ].forEach((field) => appendSimple(totalsNode, field, totalFieldValue(row, field)));
+
+  // ImpuestosAdicionales: tabla de ISC/impuestos selectivos al consumo.
+  // Requerida por el XSD cuando MontoImpuestoAdicional > 0 (e.g. bebidas alcohólicas E31).
+  // Sin esta tabla, DGII no puede reconciliar TotalITBIS1 cuando la base ITBIS incluye ISC.
+  // Fields: TipoImpuesto[i], TasaImpuestoAdicional[i], MontoImpuestoSelectivoConsumoEspecifico[i],
+  //         MontoImpuestoSelectivoConsumoAdvalorem[i], OtrosImpuestosAdicionales[i]
+  const additionalTaxIndexes = [];
+  for (let i = 1; i <= 20; i++) {
+    if (rowHasValue(row, `TipoImpuesto[${i}]`)) {
+      additionalTaxIndexes.push(i);
+    }
+  }
+  if (additionalTaxIndexes.length) {
+    const impuestosAdicionalesNode = totalsNode.ele('ImpuestosAdicionales');
+    for (const i of additionalTaxIndexes) {
+      const impuestoNode = impuestosAdicionalesNode.ele('ImpuestoAdicional');
+      appendSimple(impuestoNode, 'TipoImpuesto', row[`TipoImpuesto[${i}]`]);
+      appendSimple(impuestoNode, 'TasaImpuestoAdicional', row[`TasaImpuestoAdicional[${i}]`]);
+      appendSimple(impuestoNode, 'MontoImpuestoSelectivoConsumoEspecifico', row[`MontoImpuestoSelectivoConsumoEspecifico[${i}]`]);
+      appendSimple(impuestoNode, 'MontoImpuestoSelectivoConsumoAdvalorem', row[`MontoImpuestoSelectivoConsumoAdvalorem[${i}]`]);
+      appendSimple(impuestoNode, 'OtrosImpuestosAdicionales', row[`OtrosImpuestosAdicionales[${i}]`]);
+    }
+  }
+
+  [
     'MontoTotal',
     'MontoNoFacturable',
     'MontoPeriodo',
@@ -504,6 +559,27 @@ function buildCertificationEcfXml(testCase, issueDate) {
       'UnidadMedida',
       'CantidadReferencia',
       'UnidadReferencia',
+    ].forEach((field) => appendSimple(item, field, row[`${field}[${lineIndex}]`]));
+
+    // TablaSubcantidad: sub-cantidades del ítem (e.g. volumen por unidad para bebidas).
+    // Debe ir DESPUÉS de UnidadReferencia y ANTES de GradosAlcohol según el XSD.
+    // Fields: Subcantidad[lineIndex][subIndex], CodigoSubcantidad[lineIndex][subIndex] (hasta 5)
+    const subcantidadSubIndexes = [];
+    for (let j = 1; j <= 5; j++) {
+      if (rowHasValue(row, `Subcantidad[${lineIndex}][${j}]`) || rowHasValue(row, `CodigoSubcantidad[${lineIndex}][${j}]`)) {
+        subcantidadSubIndexes.push(j);
+      }
+    }
+    if (subcantidadSubIndexes.length) {
+      const tablaSubcantidad = item.ele('TablaSubcantidad');
+      for (const j of subcantidadSubIndexes) {
+        const subcantidadItem = tablaSubcantidad.ele('SubcantidadItem');
+        appendSimple(subcantidadItem, 'Subcantidad', row[`Subcantidad[${lineIndex}][${j}]`]);
+        appendSimple(subcantidadItem, 'CodigoSubcantidad', row[`CodigoSubcantidad[${lineIndex}][${j}]`]);
+      }
+    }
+
+    [
       'GradosAlcohol',
       'PrecioUnitarioReferencia',
       'FechaElaboracion',
@@ -547,6 +623,23 @@ function buildCertificationEcfXml(testCase, issueDate) {
       percentTag: 'SubRecargoPorcentaje',
       amountTag: 'MontoSubRecargo',
     });
+
+    // TablaImpuestoAdicional: tipos de ISC del ítem (e.g. cerveza/alcohol).
+    // Requerida para que DGII pueda incluir el ISC en la base del ITBIS al validar TotalITBIS1.
+    // Solo incluye TipoImpuesto[lineIndex][subIndex] — los montos van en la tabla global de Totales.
+    const itemTaxSubIndexes = [];
+    for (let j = 1; j <= 2; j++) {
+      if (rowHasValue(row, `TipoImpuesto[${lineIndex}][${j}]`)) {
+        itemTaxSubIndexes.push(j);
+      }
+    }
+    if (itemTaxSubIndexes.length) {
+      const tablaImpuestoAdicional = item.ele('TablaImpuestoAdicional');
+      for (const j of itemTaxSubIndexes) {
+        const impuestoItem = tablaImpuestoAdicional.ele('ImpuestoAdicional');
+        appendSimple(impuestoItem, 'TipoImpuesto', row[`TipoImpuesto[${lineIndex}][${j}]`]);
+      }
+    }
 
     appendSimple(item, 'MontoItem', row[`MontoItem[${lineIndex}]`]);
   }
@@ -638,7 +731,7 @@ function buildCertificationRfceXml(testCase, issueDate) {
     'MontoTotal',
     'MontoNoFacturable',
     'MontoPeriodo',
-  ].forEach((field) => appendSimple(totalsNode, field, row[field]));
+  ].forEach((field) => appendSimple(totalsNode, field, totalFieldValue(row, field)));
 
   appendSimple(encabezado, 'CodigoSeguridadeCF', testCase.computedCodigoSeguridadeCF || row.CodigoSeguridadeCF);
 

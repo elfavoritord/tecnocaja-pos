@@ -1,0 +1,23 @@
+{
+  "trackId": "33dac535-46e2-4308-a60b-c51c25695074",
+  "fecha": "2026-05-27T10:41:51.152Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000002",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/27/2026 6:41:15 AM",
+  "mensajes": [
+    {
+      "valor": "El campo MontoGravadoI1 del área Totales de la sección Encabezado no coincide con la sumatoria de los valores del detalle gravado con tasa 18% menos descuentos mas recargos.El campo MontoTotal del área Totales de la sección Encabezado no es válido.El elemento MontoTotal no es correctoLa propiedad MontoGravadoTotal no es válida debido a que el valor enviado (3961.31) no coincide con el valor (3230.00) del conjunto de datos entregados.La propiedad MontoGravadoI1 no es válida debido a que el valor enviado (3961.31) no coincide con el valor (3230.00) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"33dac535-46e2-4308-a60b-c51c25695074\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000002\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/27/2026 6:41:15 AM\",\"mensajes\":[{\"valor\":\"El campo MontoGravadoI1 del área Totales de la sección Encabezado no coincide con la sumatoria de los valores del detalle gravado con tasa 18% menos descuentos mas recargos.El campo MontoTotal del área Totales de la sección Encabezado no es válido.El elemento MontoTotal no es correctoLa propiedad MontoGravadoTotal no es válida debido a que el valor enviado (3961.31) no coincide con el valor (3230.00) del conjunto de datos entregados.La propiedad MontoGravadoI1 no es válida debido a que el valor enviado (3961.31) no coincide con el valor (3230.00) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-33dac535-46e2-4308-a60b-c51c25695074.json"
+}

@@ -1,0 +1,23 @@
+{
+  "trackId": "9158edf5-c413-4c5d-b3d3-05dbaff91d91",
+  "fecha": "2026-05-27T11:45:45.028Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000002",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/27/2026 7:44:43 AM",
+  "mensajes": [
+    {
+      "valor": "El campo TotalITBIS1 del área Totales de la sección Encabezado no coincide con la multiplicación de los campos de Monto Gravado 1 y ITBIS Tasa 1.El campo MontoTotal del área Totales de la sección Encabezado no es válido.El elemento MontoTotal no es correctoLa propiedad TotalITBIS no es válida debido a que el valor enviado (581.40) no coincide con el valor (713.04) del conjunto de datos entregados.La propiedad TotalITBIS1 no es válida debido a que el valor enviado (581.40) no coincide con el valor (713.04) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"9158edf5-c413-4c5d-b3d3-05dbaff91d91\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000002\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/27/2026 7:44:43 AM\",\"mensajes\":[{\"valor\":\"El campo TotalITBIS1 del área Totales de la sección Encabezado no coincide con la multiplicación de los campos de Monto Gravado 1 y ITBIS Tasa 1.El campo MontoTotal del área Totales de la sección Encabezado no es válido.El elemento MontoTotal no es correctoLa propiedad TotalITBIS no es válida debido a que el valor enviado (581.40) no coincide con el valor (713.04) del conjunto de datos entregados.La propiedad TotalITBIS1 no es válida debido a que el valor enviado (581.40) no coincide con el valor (713.04) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-9158edf5-c413-4c5d-b3d3-05dbaff91d91.json"
+}

@@ -1799,6 +1799,7 @@ function renderCertificationCasesTable(container, cases) {
                 <td style="white-space:nowrap">
                   <button class="btn-xs" onclick="sendCertificationDoc(${testCase.id})" title="Enviar individual">Enviar</button>
                   <button class="btn-xs" onclick="sendCertificationDoc(${testCase.id}, true)" title="Reenviar">↺</button>
+                  <button class="btn-xs" onclick="regenerateCertificationDoc(${testCase.id})" title="Regenerar XML de prueba">Regenerar</button>
                   <button class="btn-xs" onclick="queryCertificationDoc(${testCase.id})" title="Consultar DGII">⟳</button>
                   <button class="btn-xs" onclick="viewEcfXml(${testCase.id})" title="Ver XML">XML</button>
                   <button class="btn-xs" onclick="downloadEcfXml(${testCase.id}, '${escapeHtml(testCase.encf || 'ecf')}')" title="Descargar XML">⬇</button>
@@ -1810,6 +1811,17 @@ function renderCertificationCasesTable(container, cases) {
       </table>
     </div>
   `;
+}
+
+async function regenerateCertificationDoc(id) {
+  try {
+    const response = await fiscalApi('POST', `/certification/cases/${id}/regenerate`, {});
+    showFiscalToast(response.message || 'XML de prueba regenerado.', response.ok ? 'success' : 'warning');
+    showFiscalTechnicalResult('Regenerar XML de prueba', response);
+    await loadCertificationCases();
+  } catch (err) {
+    showFiscalToast(`Error regenerando XML: ${err.message}`, 'error');
+  }
 }
 
 async function importCertificationSet() {
@@ -1925,10 +1937,6 @@ async function _runCertificationSequenceConfirmed() {
   const btns = document.querySelectorAll('[onclick="runCertificationSequence()"]');
   btns.forEach((b) => { b.disabled = true; b.textContent = '⏳ Enviando…'; });
   try {
-    // Paso 0: resetear casos "enviado/en_proceso" para que puedan ser recogidos por el loop.
-    // Esto es necesario cuando el portal DGII reinicia las pruebas (casos rechazados/reseteados).
-    await fiscalApi('POST', '/certification/reset-sent').catch(() => null);
-
     showFiscalToast('Enviando todos los casos pendientes a DGII…', 'info');
     // Paso 1: ráfaga de envíos (rápida, sin esperar respuesta de cada TrackID)
     const response = await fiscalApi('POST', '/certification/run-sequential', { limit: 50 });
@@ -1979,9 +1987,8 @@ async function _runCertificationSequenceConfirmed() {
 
 async function resetSentCertificationCases() {
   const ok = confirm(
-    '¿Rotar eNCFs y reiniciar todo el proceso de certificación?\n\n' +
-    '• Se asignan nuevos números de secuencia a TODOS los documentos\n' +
-    '  (incluyendo los 4 comprobantes RFCE de < 250Mil).\n' +
+    '¿Reiniciar el estado local de certificación sin cambiar los eNCF?\n\n' +
+    '• Se conservan exactamente los eNCF del dataset DGII.\n' +
     '• Todos los documentos vuelven a estado "firmado".\n' +
     '• Los XMLs firmados anteriores se descartan.\n\n' +
     'Usar cuando el portal DGII ha reiniciado las pruebas por un rechazo.\n' +
@@ -1990,13 +1997,13 @@ async function resetSentCertificationCases() {
   if (!ok) return;
 
   const btn = document.querySelector('[onclick="resetSentCertificationCases()"]');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Rotando…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Reiniciando…'; }
 
   try {
-    const response = await fiscalApi('POST', '/certification/rotate-encfs', { force: true });
-    const rotated = response.rotated ?? response.rotatedCount ?? 0;
+    const response = await fiscalApi('POST', '/certification/reset-sent', {});
+    const reset = response.reset ?? 0;
     showFiscalToast(
-      `✓ ${rotated} eNCF(s) rotados. Todos los docs vuelven a "firmado". Ahora ejecuta ▶ Ejecutar pruebas secuenciales.`,
+      `✓ ${reset} caso(s) reiniciados sin cambiar eNCF. Ahora ejecuta ▶ Ejecutar pruebas secuenciales.`,
       'success'
     );
     await loadCertificationCases();
@@ -2042,7 +2049,7 @@ async function generate250MilXmls() {
         <button onclick="document.getElementById('cert-250mil-reminder').remove()" style="
           position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
           font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
-        <strong>✅ ${files.length} XMLs generados y firmados — SIN NombreComercial</strong><br>
+        <strong>✅ ${files.length} XMLs ECF &lt;250Mil generados y firmados — SIN NombreComercial</strong><br>
         <small>📁 ${response.outDir || 'scripts/250mil-upload/'}</small>
         <ul style="margin:8px 0 4px 16px;padding:0;">${fileList}</ul>
         <strong>⬆ Sube esos ${files.length} archivos uno a uno al portal DGII "Facturas de consumo &lt;250Mil".</strong>

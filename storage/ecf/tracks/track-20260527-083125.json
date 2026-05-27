@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-27T12:31:25.923Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260527-083125.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"codigo\":2,\"estado\":\"Rechazado\",\"mensajes\":[{\"codigo\":null,\"valor\":\"La factura recibida con el e-NCF E320000000021, no existe en nuestra colección de datos.\"}],\"encf\":\"E320000000021\",\"secuenciaUtilizada\":false}",
+  "trackPath": "storage/ecf/tracks/track-20260527-083125.json"
+}
