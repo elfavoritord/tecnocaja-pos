@@ -1933,7 +1933,20 @@ async function _runCertificationSequenceConfirmed() {
     // Paso 1: ráfaga de envíos (rápida, sin esperar respuesta de cada TrackID)
     const response = await fiscalApi('POST', '/certification/run-sequential', { limit: 50 });
     const sent = response.totalProcessed || 0;
-    showFiscalToast(`${sent} caso(s) enviado(s). Consultando estados…`, 'info');
+
+    // Si el servidor detuvo la ráfaga por un rechazo, mostrar aviso prominente
+    if (response.stoppedByRejection) {
+      const lastResult = (response.results || []).slice().reverse().find((r) => !r?.ok);
+      const rejectedEncf = lastResult?.case?.encf || lastResult?.encf || '—';
+      showFiscalToast(
+        `⛔ Ráfaga detenida: la prueba ${rejectedEncf} fue rechazada por DGII. ` +
+        'Corrige ese caso y reenvíalo individualmente antes de continuar.',
+        'error'
+      );
+    } else {
+      showFiscalToast(`${sent} caso(s) enviado(s). Consultando estados…`, 'info');
+    }
+
     showFiscalTechnicalResult('Envíos secuenciales DGII', response);
     await loadCertificationCases();
 
@@ -1947,14 +1960,14 @@ async function _runCertificationSequenceConfirmed() {
         `Estados: ${aceptados} ✅ aceptado(s)${rechazados ? ` / ${rechazados} ❌ rechazado(s)` : ''}.`,
         rechazados > 0 ? 'warning' : 'success'
       );
-    } else {
+    } else if (!response.stoppedByRejection) {
       showFiscalToast(`${sent} caso(s) enviados a DGII. En proceso…`, 'info');
     }
     await loadCertificationCases();
     await loadFiscalStatus();
 
-    // Aviso prominente para < 250Mil: NUNCA subir XMLs viejos
-    if (sent > 0) {
+    // Aviso prominente para < 250Mil: NUNCA subir XMLs viejos (solo si se enviaron pruebas)
+    if (sent > 0 && !response.stoppedByRejection) {
       showCertification250MilReminder();
     }
   } catch (err) {
