@@ -64,7 +64,7 @@ function ensureBundleDirectoryIsUnlocked() {
     'No se puede reconstruir build/mariadb-runtime porque MariaDB está ejecutándose desde ese mismo bundle.\n' +
     'Cierra Tecno Caja o detén este proceso y vuelve a intentar:\n' +
     `${details}\n` +
-    'Sugerencia PowerShell: Stop-Process -Id <PID> -Force'
+    `Sugerencia PowerShell: Stop-Process -Id ${bundledProcesses.map((processInfo) => processInfo.ProcessId).join(',')} -Force`
   );
   error.code = 'BUNDLED_MARIADB_RUNNING';
   throw error;
@@ -208,7 +208,11 @@ function prepareMariaDbBundle() {
 
 if (require.main === module) {
   try {
-    prepareMariaDbBundle();
+    if (process.argv.includes('--check-unlocked')) {
+      ensureBundleDirectoryIsUnlocked();
+    } else {
+      prepareMariaDbBundle();
+    }
   } catch (error) {
     console.error(error.message || error);
     process.exit(1);
@@ -216,5 +220,6 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ensureBundleDirectoryIsUnlocked,
   prepareMariaDbBundle
 };

@@ -12,7 +12,7 @@
     "electron": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe .",
     "desktop": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe .",
     "build:desktop": "node scripts/prepare-mariadb-bundle.js && electron-builder --win nsis",
-    "publish:desktop": "node scripts/prepare-mariadb-bundle.js && electron-builder --win nsis --publish always",
+    "publish:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-desktop.ps1",
     "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump patch",
     "release:minor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump minor",
     "release:major": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump major",
