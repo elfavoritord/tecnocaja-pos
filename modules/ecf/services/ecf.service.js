@@ -2404,24 +2404,36 @@ class EcfService {
       ? await this.getCurrentActor(req, { adminOnly: true })
       : { id: null, nombre: 'Sistema', usuario: 'sistema', rol: 'admin' };
 
-    // force=true → reinicio completo: rota TODOS los enviados (incluso aceptados),
-    // porque DGII quemó todas las secuencias al reiniciar las pruebas por una rechazo.
-    // Usar cuando el portal DGII se resetea a 0 y ningún eNCF enviado es reutilizable.
+    // force=true → reinicio completo: rota TODOS los eNCFs que alguna vez fueron enviados a DGII
+    //   (incluso los que están en firmado/pendiente porque el viejo reset los devolvió a ese estado).
+    // Detectamos "enviado alguna vez" con sent_at IS NOT NULL, que el reset no borra.
+    // nuclear=true → caso extremo: rota TODOS sin excepción (incluso docs nunca enviados).
+    //   Usar solo cuando se reimporta el set completo desde cero.
     const forceAll = String(req?.query?.force || req?.body?.force || '').toLowerCase() === 'true';
+    const nuclearAll = String(req?.query?.nuclear || req?.body?.nuclear || '').toLowerCase() === 'true';
 
     const batchId = await this.repository.getLatestCertificationBatchId();
     const batchClause = batchId ? 'AND certification_batch_id = ?' : '';
     const batchParams = batchId ? [batchId] : [];
 
     // 1. Docs quemados:
-    //    - Normal: solo rechazado/error/en-vuelo (aceptados quedan intactos)
-    //    - Force:  todos los enviados alguna vez (NOT firmado/pendiente) = reinicio total
-    const estadoFilter = forceAll
-      ? `AND estado_dgii NOT IN ('firmado', 'pendiente')`
-      : `AND estado_dgii IN ('rechazado', 'error', 'enviado', 'en_proceso', 'procesando')`;
+    //    - Normal:  solo rechazado/error/en-vuelo (aceptados quedan intactos)
+    //    - Force:   todo lo que fue enviado alguna vez (sent_at IS NOT NULL) incluyendo los que
+    //               el viejo reset devolvió a firmado. Preserva aceptados y docs nunca enviados.
+    //    - Nuclear: todo sin excepción (evitar salvo reimportación total)
+    let estadoFilter;
+    if (nuclearAll) {
+      estadoFilter = ''; // Sin filtro: rotar TODOS
+    } else if (forceAll) {
+      // Rotar si:  no está aceptado  Y  (no está firmado/pendiente  O  fue enviado antes)
+      estadoFilter = `AND estado_dgii NOT IN ('aceptado', 'aceptado_condicional')
+         AND (estado_dgii NOT IN ('firmado', 'pendiente') OR sent_at IS NOT NULL)`;
+    } else {
+      estadoFilter = `AND estado_dgii IN ('rechazado', 'error', 'enviado', 'en_proceso', 'procesando')`;
+    }
 
-    // En force mode se incluyen también docs RFCE (tienen submission_mode='rfce')
-    const submissionModeFilter = forceAll
+    // En force/nuclear mode se incluyen también docs RFCE (tienen submission_mode='rfce')
+    const submissionModeFilter = (forceAll || nuclearAll)
       ? `AND (submission_mode IS NULL OR submission_mode IN ('normal', 'rfce'))`
       : `AND (submission_mode IS NULL OR submission_mode = 'normal')`;
 
@@ -2443,8 +2455,10 @@ class EcfService {
         rotated: 0,
         refUpdated: 0,
         mapping: [],
-        message: forceAll
-          ? 'No hay comprobantes enviados que rotar. Todos están en firmado/pendiente.'
+        message: nuclearAll
+          ? 'No hay comprobantes de certificación en el batch. Importa el set primero.'
+          : forceAll
+          ? 'No hay comprobantes enviados que rotar. Todos están en firmado/pendiente sin haber sido enviados a DGII.'
           : 'No hay comprobantes quemados que rotar. Solo hay docs en firmado/pendiente/aceptado.',
       };
     }
@@ -2972,6 +2986,9 @@ class EcfService {
 
     const refreshed = await this.repository.getDocument(preparedDocument.id);
     const certificationSummary = await this.repository.getCertificationSummary();
+    const dgiiMsg = statusPayload?.mensaje || sent.mensaje
+      || (statusPayload?.dgiiResponse || {})?.mensaje || null;
+    const dgiiCode = getDgiiResponseCode(statusPayload?.dgiiResponse || {}) || null;
     console.log('===== DGII CERTIFICACIÓN =====');
     console.log(`Prueba: ${preparedDocument.certification_order_index || '?'} / ${certificationSummary.total || '?'}`);
     console.log(`Tipo: ${preparedDocument.tipo_ecf || '—'}`);
@@ -2979,6 +2996,8 @@ class EcfService {
     console.log(`Archivo: ${this.receptionStorage.getState()?.latestSent?.dgiiFileName || '—'}`);
     console.log(`TrackID: ${sent.trackId || '—'}`);
     console.log(`Estado: ${(finalCertificationState || 'pendiente').toString().toUpperCase()}`);
+    if (dgiiCode) console.log(`Código DGII: ${dgiiCode}`);
+    if (dgiiMsg) console.log(`Mensaje DGII: ${dgiiMsg}`);
     console.log('=============================');
     return {
       ok: !['rechazado', 'error'].includes(finalCertificationState),
@@ -3159,6 +3178,9 @@ class EcfService {
     for (const document of rows) {
       try {
         const status = await this.queryDocumentStatus(document.id);
+        const pollState = (status.estado || 'pendiente').toUpperCase();
+        const pollMsg = status.mensaje || '';
+        console.log(`[poll] ${document.encf}: ${pollState}${pollMsg ? ` — ${pollMsg}` : ''}`);
         results.push({
           id: document.id,
           encf: document.encf,
