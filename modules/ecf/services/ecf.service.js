@@ -1054,7 +1054,7 @@ class EcfService {
           emitterData: localEmitter,
           origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, NombreComercial="${rowNombreComercial}" (del rawRow)`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, rawRow.NombreComercial="${rowNombreComercial}", usando config local="${localEmitter.nombreComercial || ''}"`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1065,6 +1065,11 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
+            // NombreComercial: usar la config LOCAL del emisor, nunca el valor del Excel.
+            // DGII valida este campo contra su BD interna para el RNC del emisor.
+            // El Excel puede tener "DOCUMENTOS ELECTRONICOS" pero DGII espera '' (vacío).
+            // El usuario configura nombre_comercial='' si DGII no registra NombreComercial para su RNC.
+            emitterNombreComercial: localEmitter.nombreComercial || '',
           },
           issueDate: new Date(),
           certificateContext: certificate,
@@ -2644,173 +2649,43 @@ class EcfService {
   }
 
   /**
-   * Genera y firma los 4 XMLs de facturas de consumo < 250Mil para subir al portal DGII.
-   * Lee los eNCFs ACTUALES de los docs RFCE en la BD y usa linkedRawRow (datos exactos DGII).
-   * NombreComercial se excluye siempre — DGII espera '' igual que en los RFCE enviados.
-   * Los archivos firmados quedan en scripts/250mil-upload/<eNCF>.xml.
+   * Genera y firma los XMLs de facturas de consumo < 250Mil para subir al portal DGII.
+   * Lee los eNCFs ACTUALES de los docs E32 RFCE en la BD y usa linkedRawRow (datos exactos DGII).
+   *
+   * Cambios respecto a la versión anterior:
+   * - Usa el certificado almacenado en la BD (no path hardcodeado).
+   * - Usa buildCertificationEcfXml vía buildTransmissionFromSpreadsheetRow para construir el XML.
+   *   Esto garantiza que todos los campos de Totales estén presentes (incluido ITBIS1, ITBIS2, ITBIS3)
+   *   y que el XML sea idéntico al que se envía por el flujo normal de certificación.
+   * - NombreComercial siempre ausente (emitterNombreComercial: '').
+   * - Valida TotalITBIS1 == round(MontoGravadoI1 × ITBIS1 / 100, 2) y registra advertencia si no coincide.
+   * - Guarda la ruta del XML generado en certification_signed_xml_path.
+   * - Maneja cualquier cantidad de docs E32 RFCE (no limitado a 4).
    */
   async generate250MilXmls(req) {
     await this.ensureReady();
-    const { execFileSync } = require('child_process');
-    const fs   = require('fs');
-    const path = require('path');
-    const os   = require('os');
 
-    const CERT_PATH = 'C:\\Users\\Emilio Coding IA\\Downloads\\20260519-145000-DHP4YAET5.p12';
-    const CERT_PASS = 'TecnoCaja95';
-    const OUT_DIR   = path.join(__dirname, '..', '..', '..', 'scripts', '250mil-upload');
+    const OUT_DIR = path.join(process.cwd(), 'scripts', '250mil-upload');
     if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-    // Helper: limpia valores #e / vacíos
+    // Certificado del repositorio (mismo que usa el flujo normal de certificación)
+    const certificate = await this.resolveCertificate();
+
+    // Helper: normaliza valores vacíos / especiales del dataset DGII
     const val = (row, key) => {
       const v = String(row[key] ?? '').trim();
-      return (v === '' || v.toLowerCase() === '#e' || v.toLowerCase() === 'n/a' || v.toLowerCase() === '#n/a') ? '' : v;
+      const lower = v.toLowerCase();
+      return (v === '' || lower === '#e' || lower === 'n/a' || lower === '#n/a') ? '' : v;
     };
-
-    // Construye XML ECF sin NombreComercial desde linkedRawRow
-    const buildXml = (encf, lr) => {
-      const tipoIngresos = val(lr, 'TipoIngresos');
-      const tipoPago     = val(lr, 'TipoPago');
-      const indMontoGrav = val(lr, 'IndicadorMontoGravado');
-      let tablaFormasPago = '';
-      for (let i = 1; i <= 7; i++) {
-        const fp = val(lr, `FormaPago[${i}]`);
-        if (!fp) break;
-        const mp = val(lr, `MontoPago[${i}]`);
-        tablaFormasPago += `        <FormaDePago>\n          <FormaPago>${fp}</FormaPago>\n${mp ? `          <MontoPago>${mp}</MontoPago>\n` : ''}        </FormaDePago>\n`;
-      }
-      const rncEmisor   = val(lr, 'RNCEmisor');
-      const razonEmisor = val(lr, 'RazonSocialEmisor');
-      // NombreComercial: EXCLUIDO explícitamente
-      const sucursal    = val(lr, 'Sucursal');
-      const dirEmisor   = val(lr, 'DireccionEmisor');
-      const munEmisor   = val(lr, 'Municipio');
-      const provEmisor  = val(lr, 'Provincia');
-      const correoEmisor = val(lr, 'CorreoEmisor');
-      const fechaEmision = val(lr, 'FechaEmision');
-      let tels = '';
-      for (let i = 1; i <= 3; i++) {
-        const t = val(lr, `TelefonoEmisor[${i}]`);
-        if (!t) break;
-        tels += `          <TelefonoEmisor>${t}</TelefonoEmisor>\n`;
-      }
-      const rncComp    = val(lr, 'RNCComprador');
-      const razonComp  = val(lr, 'RazonSocialComprador');
-      const correoComp = val(lr, 'CorreoComprador');
-      const dirComp    = val(lr, 'DireccionComprador');
-      const munComp    = val(lr, 'MunicipioComprador');
-      const provComp   = val(lr, 'ProvinciaComprador');
-      const telAd      = val(lr, 'TelefonoAdicional');
-      const hasComp    = [rncComp, razonComp, correoComp, dirComp, munComp, provComp, telAd].some(Boolean);
-
-      const mg  = val(lr, 'MontoGravadoTotal');
-      const mg1 = val(lr, 'MontoGravadoI1');
-      const mg2 = val(lr, 'MontoGravadoI2');
-      const mg3 = val(lr, 'MontoGravadoI3');
-      const me  = val(lr, 'MontoExento');
-      const ti  = val(lr, 'TotalITBIS');
-      const ti1 = val(lr, 'TotalITBIS1');
-      const ti2 = val(lr, 'TotalITBIS2');
-      const ti3 = val(lr, 'TotalITBIS3');
-      const mt  = val(lr, 'MontoTotal');
-      const mp2 = val(lr, 'MontoPeriodo');
-      const vp  = val(lr, 'ValorPagar');
-
-      let items = '';
-      for (let i = 1; i <= 20; i++) {
-        const nl = val(lr, `NumeroLinea[${i}]`);
-        const nm = val(lr, `NombreItem[${i}]`);
-        if (!nm) break;
-        const ib  = val(lr, `IndicadorBienoServicio[${i}]`);
-        const cnt = val(lr, `CantidadItem[${i}]`);
-        const um  = val(lr, `UnidadMedida[${i}]`);
-        const pu  = val(lr, `PrecioUnitarioItem[${i}]`);
-        const mo  = val(lr, `MontoItem[${i}]`);
-        items += `    <Item>\n${nl ? `      <NumeroLinea>${nl}</NumeroLinea>\n` : ''}      <IndicadorFacturacion>1</IndicadorFacturacion>\n      <NombreItem>${nm}</NombreItem>\n${ib ? `      <IndicadorBienoServicio>${ib}</IndicadorBienoServicio>\n` : ''}${cnt ? `      <CantidadItem>${cnt}</CantidadItem>\n` : ''}${um ? `      <UnidadMedida>${um}</UnidadMedida>\n` : ''}${pu ? `      <PrecioUnitarioItem>${pu}</PrecioUnitarioItem>\n` : ''}${mo ? `      <MontoItem>${mo}</MontoItem>\n` : ''}    </Item>\n`;
-      }
-
-      return `<?xml version="1.0" encoding="utf-8"?>
-<ECF xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
-  <Encabezado>
-    <Version>1.0</Version>
-    <IdDoc>
-      <TipoeCF>32</TipoeCF>
-      <eNCF>${encf}</eNCF>
-${indMontoGrav ? `      <IndicadorMontoGravado>${indMontoGrav}</IndicadorMontoGravado>\n` : ''
-}${tipoIngresos ? `      <TipoIngresos>${tipoIngresos}</TipoIngresos>\n` : ''
-}${tipoPago     ? `      <TipoPago>${tipoPago}</TipoPago>\n` : ''
-}${tablaFormasPago ? `      <TablaFormasPago>\n${tablaFormasPago}      </TablaFormasPago>\n` : ''
-}    </IdDoc>
-    <Emisor>
-${rncEmisor    ? `      <RNCEmisor>${rncEmisor}</RNCEmisor>\n` : ''
-}${razonEmisor  ? `      <RazonSocialEmisor>${razonEmisor}</RazonSocialEmisor>\n` : ''
-}${sucursal     ? `      <Sucursal>${sucursal}</Sucursal>\n` : ''
-}${dirEmisor    ? `      <DireccionEmisor>${dirEmisor}</DireccionEmisor>\n` : ''
-}${munEmisor    ? `      <Municipio>${munEmisor}</Municipio>\n` : ''
-}${provEmisor   ? `      <Provincia>${provEmisor}</Provincia>\n` : ''
-}${tels         ? `      <TablaTelefonoEmisor>\n${tels}      </TablaTelefonoEmisor>\n` : ''
-}${correoEmisor ? `      <CorreoEmisor>${correoEmisor}</CorreoEmisor>\n` : ''
-}${fechaEmision ? `      <FechaEmision>${fechaEmision}</FechaEmision>\n` : ''
-}    </Emisor>
-${hasComp ? `    <Comprador>\n${rncComp ? `      <RNCComprador>${rncComp}</RNCComprador>\n` : ''}${razonComp ? `      <RazonSocialComprador>${razonComp}</RazonSocialComprador>\n` : ''}${correoComp ? `      <CorreoComprador>${correoComp}</CorreoComprador>\n` : ''}${dirComp ? `      <DireccionComprador>${dirComp}</DireccionComprador>\n` : ''}${munComp ? `      <MunicipioComprador>${munComp}</MunicipioComprador>\n` : ''}${provComp ? `      <ProvinciaComprador>${provComp}</ProvinciaComprador>\n` : ''}${telAd ? `      <TelefonoAdicional>${telAd}</TelefonoAdicional>\n` : ''}    </Comprador>\n` : ''
-}    <Totales>
-${mg  ? `      <MontoGravadoTotal>${mg}</MontoGravadoTotal>\n` : ''
-}${mg1 ? `      <MontoGravadoI1>${mg1}</MontoGravadoI1>\n` : ''
-}${mg2 ? `      <MontoGravadoI2>${mg2}</MontoGravadoI2>\n` : ''
-}${mg3 ? `      <MontoGravadoI3>${mg3}</MontoGravadoI3>\n` : ''
-}${me  ? `      <MontoExento>${me}</MontoExento>\n` : ''
-}${ti  ? `      <TotalITBIS>${ti}</TotalITBIS>\n` : ''
-}${ti1 ? `      <TotalITBIS1>${ti1}</TotalITBIS1>\n` : ''
-}${ti2 ? `      <TotalITBIS2>${ti2}</TotalITBIS2>\n` : ''
-}${ti3 ? `      <TotalITBIS3>${ti3}</TotalITBIS3>\n` : ''
-}${mt  ? `      <MontoTotal>${mt}</MontoTotal>\n` : ''
-}${mp2 ? `      <MontoPeriodo>${mp2}</MontoPeriodo>\n` : ''
-}${vp  ? `      <ValorPagar>${vp}</ValorPagar>\n` : ''
-}    </Totales>
-  </Encabezado>
-  <DetallesItems>
-${items}  </DetallesItems>
-</ECF>`;
-    };
-
-    // PowerShell para firmar XML con el certificado .p12
-    const signerScript = `
-param([string]$In,[string]$Out,[string]$Pfx,[string]$Pass)
-$ErrorActionPreference='Stop'
-Add-Type -TypeDefinition @"
-using System;using System.Security.Cryptography;
-public class RSAPKCS1SHA256Desc:SignatureDescription{
-  public RSAPKCS1SHA256Desc(){KeyAlgorithm=typeof(RSACryptoServiceProvider).FullName;DigestAlgorithm=typeof(SHA256Managed).FullName;FormatterAlgorithm=typeof(RSAPKCS1SignatureFormatter).FullName;DeformatterAlgorithm=typeof(RSAPKCS1SignatureDeformatter).FullName;}
-  public override AsymmetricSignatureDeformatter CreateDeformatter(AsymmetricAlgorithm k){var d=new RSAPKCS1SignatureDeformatter(k);d.SetHashAlgorithm("SHA256");return d;}
-  public override AsymmetricSignatureFormatter CreateFormatter(AsymmetricAlgorithm k){var f=new RSAPKCS1SignatureFormatter(k);f.SetHashAlgorithm("SHA256");return f;}
-}
-"@ -IgnoreWarnings -ErrorAction SilentlyContinue
-[System.Security.Cryptography.CryptoConfig]::AddAlgorithm([RSAPKCS1SHA256Desc],'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256')
-[void][System.Reflection.Assembly]::LoadWithPartialName('System.Security')
-$fl=[System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet
-$cert=New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($Pfx,$Pass,$fl)
-$doc=New-Object System.Xml.XmlDocument;$doc.PreserveWhitespace=$false;$doc.Load($In)
-$sx=New-Object System.Security.Cryptography.Xml.SignedXml($doc);$sx.SigningKey=$cert.PrivateKey
-$sx.SignedInfo.CanonicalizationMethod=[System.Security.Cryptography.Xml.SignedXml]::XmlDsigCanonicalizationUrl
-$sx.SignedInfo.SignatureMethod='http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'
-$ref=New-Object System.Security.Cryptography.Xml.Reference;$ref.Uri=''
-$ref.DigestMethod='http://www.w3.org/2001/04/xmlenc#sha256'
-$t=New-Object System.Security.Cryptography.Xml.XmlDsigEnvelopedSignatureTransform;[void]$ref.AddTransform($t);[void]$sx.AddReference($ref)
-$ki=New-Object System.Security.Cryptography.Xml.KeyInfo;$x5=New-Object System.Security.Cryptography.Xml.KeyInfoX509Data($cert);[void]$ki.AddClause($x5);$sx.KeyInfo=$ki
-$sx.ComputeSignature();$sig=$sx.GetXml();[void]$doc.DocumentElement.AppendChild($doc.ImportNode($sig,$true))
-$s=New-Object System.Xml.XmlWriterSettings;$s.Encoding=New-Object System.Text.UTF8Encoding($false);$s.Indent=$true
-$w=[System.Xml.XmlWriter]::Create($Out,$s);$doc.Save($w);$w.Flush();$w.Close()
-Write-Output "OK"
-`;
-    const ps1 = path.join(os.tmpdir(), 'gen250mil-svc.ps1');
-    fs.writeFileSync(ps1, signerScript, 'utf8');
 
     // Limpiar XMLs anteriores del directorio
     for (const f of fs.readdirSync(OUT_DIR)) {
-      if (f.endsWith('.xml')) fs.unlinkSync(path.join(OUT_DIR, f));
+      if (f.endsWith('.xml')) {
+        try { fs.unlinkSync(path.join(OUT_DIR, f)); } catch (_) { /* ignorar */ }
+      }
     }
 
-    // Obtener los 4 docs RFCE actuales
+    // Obtener todos los docs E32 RFCE del batch actual de certificación
     const rfceDocs = await this.repository.query(
       `SELECT id, encf, certification_original_xml
        FROM ecf_documents
@@ -2818,57 +2693,139 @@ Write-Output "OK"
          AND certification_case_key IS NOT NULL
          AND submission_mode='rfce'
          AND tipo_ecf='E32'
-       ORDER BY encf ASC
-       LIMIT 4`
+       ORDER BY encf ASC`
     );
 
-    if (rfceDocs.length !== 4) {
-      return { ok: false, error: `Se esperaban 4 docs RFCE, encontrados: ${rfceDocs.length}. Asegúrate de tener los 4 aceptados.` };
+    if (!rfceDocs.length) {
+      return { ok: false, error: 'No se encontraron documentos E32 RFCE de certificación. Verifica que el set fue importado con la hoja RFCE.' };
     }
 
     const generated = [];
+    const errors = [];
+
     for (const doc of rfceDocs) {
-      const obj = JSON.parse(doc.certification_original_xml || '{}');
-      const lr  = obj.linkedRawRow || {};
+      // Leer y parsear el JSON almacenado
+      let certSource;
+      try {
+        certSource = JSON.parse(doc.certification_original_xml || '{}');
+      } catch (_) {
+        errors.push({ encf: doc.encf, error: 'certification_original_xml no es JSON válido. Reimporta el set.' });
+        continue;
+      }
+
+      const lr = certSource.linkedRawRow || {};
       if (Object.keys(lr).length < 5) {
-        return { ok: false, error: `linkedRawRow vacío para ${doc.encf}. Reimporta el set de pruebas.` };
+        errors.push({ encf: doc.encf, error: 'linkedRawRow vacío o incompleto. Reimporta el set con la hoja ECF que contiene las filas E32.' });
+        continue;
       }
 
-      const unsignedXml  = buildXml(doc.encf, lr);
-      const unsignedPath = path.join(os.tmpdir(), `250mil-${doc.encf}-unsigned.xml`);
-      const signedPath   = path.join(OUT_DIR, `${doc.encf}.xml`);
-
-      fs.writeFileSync(unsignedPath, unsignedXml, 'utf8');
-
-      // Verificar que no tiene NombreComercial antes de firmar
-      if (unsignedXml.includes('<NombreComercial>')) {
-        return { ok: false, error: `BUG: XML de ${doc.encf} contiene NombreComercial — no se firmó.` };
+      // ── Validación previa: TotalITBIS1 == round(MontoGravadoI1 × ITBIS1 / 100, 2) ──────
+      // DGII rechaza si no coincide. Registramos advertencia sin bloquear — el valor del
+      // dataset DGII es la fuente de verdad; si tiene error, DGII lo rechazará y habrá que
+      // corregir el set. No usamos el valor recalculado para no falsificar el dataset.
+      const mg1Num = parseFloat(val(lr, 'MontoGravadoI1') || '0');
+      const itbis1RateNum = parseFloat(val(lr, 'ITBIS1') || '0');
+      const totalItbis1Num = parseFloat(val(lr, 'TotalITBIS1') || '0');
+      if (mg1Num > 0 && itbis1RateNum > 0) {
+        const expectedItbis1 = Math.round((mg1Num * itbis1RateNum / 100) * 100) / 100;
+        if (Math.abs(totalItbis1Num - expectedItbis1) > 0.005) {
+          this.logger.warn(
+            `[250mil] ${doc.encf}: TotalITBIS1 en dataset=${totalItbis1Num}, ` +
+            `calculado=${expectedItbis1} (${mg1Num} × ${itbis1RateNum}% / 100). ` +
+            `DGII puede rechazar. Revisa el set de pruebas.`
+          );
+        }
       }
 
-      execFileSync('pwsh', [
-        '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-        '-File', ps1,
-        '-In',   unsignedPath,
-        '-Out',  signedPath,
-        '-Pfx',  CERT_PATH,
-        '-Pass', CERT_PASS,
-      ], { encoding: 'utf8', timeout: 30000 });
-
-      const content  = fs.readFileSync(signedPath, 'utf8');
-      if (content.includes('<NombreComercial>')) {
-        return { ok: false, error: `BUG: XML firmado de ${doc.encf} contiene NombreComercial.` };
+      // ── Construir XML usando buildCertificationEcfXml (todos los campos Totales incluidos) ──
+      // emitterNombreComercial: '' → DGII espera NombreComercial ausente para estos docs E32.
+      let xmlContent;
+      try {
+        const transmission = buildTransmissionFromSpreadsheetRow({
+          testCase: {
+            encf: doc.encf,
+            tipoEcf: 'E32',
+            rawRow: lr,
+            linkedRawRow: null,
+            sourceSheet: 'ECF',
+            submissionMode: 'normal',
+            emitterNombreComercial: '', // Ausente: DGII no espera NombreComercial para estos docs
+          },
+          issueDate: new Date(),
+          certificateContext: null,
+        });
+        xmlContent = transmission.xml;
+      } catch (buildError) {
+        errors.push({ encf: doc.encf, error: `Error construyendo XML: ${buildError.message}` });
+        continue;
       }
+
+      // Guardia de seguridad: NombreComercial NO debe estar en el XML
+      if (xmlContent.includes('<NombreComercial>')) {
+        errors.push({ encf: doc.encf, error: 'BUG: XML contiene NombreComercial — no se firmó. Reportar al desarrollador.' });
+        continue;
+      }
+
+      // ── Firmar con el certificado del repositorio ────────────────────────────────────────
+      let signedXml;
+      try {
+        signedXml = signatureService.signXML(xmlContent, certificate);
+      } catch (signError) {
+        errors.push({ encf: doc.encf, error: `Error firmando XML: ${signError.message}` });
+        continue;
+      }
+
+      if (signedXml.includes('<NombreComercial>')) {
+        errors.push({ encf: doc.encf, error: 'BUG: XML firmado contiene NombreComercial.' });
+        continue;
+      }
+
+      const signedPath = path.join(OUT_DIR, `${doc.encf}.xml`);
+      fs.writeFileSync(signedPath, signedXml, 'utf8');
+
+      // Actualizar ruta del XML generado en la BD
+      try {
+        await this.repository.query(
+          `UPDATE ecf_documents
+           SET certification_signed_xml_path = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [signedPath, doc.id]
+        );
+      } catch (_) { /* No bloquear si el UPDATE falla */ }
 
       const sizekb = Math.round(fs.statSync(signedPath).size / 1024);
-      const items  = Object.keys(lr).filter(k => /^NombreItem\[/.test(k) && lr[k] && lr[k] !== '#e').map(k => lr[k]);
-      generated.push({ encf: doc.encf, file: signedPath, sizekb, items, montoTotal: lr.MontoTotal || '?' });
+      const items = Object.keys(lr)
+        .filter((k) => /^NombreItem\[/.test(k) && val(lr, k))
+        .map((k) => val(lr, k));
+
+      generated.push({
+        encf: doc.encf,
+        file: signedPath,
+        sizekb,
+        items,
+        montoTotal: val(lr, 'MontoTotal') || '?',
+        montoGravadoI1: val(lr, 'MontoGravadoI1') || '?',
+        itbis1: val(lr, 'ITBIS1') || '?',
+        totalItbis1: val(lr, 'TotalITBIS1') || '?',
+      });
+    }
+
+    if (generated.length === 0) {
+      return {
+        ok: false,
+        error: errors.length
+          ? `${errors.length} error(es). Primer error: ${errors[0].error}`
+          : 'No se generaron XMLs.',
+        errors,
+      };
     }
 
     return {
       ok: true,
       generated,
+      errors: errors.length ? errors : undefined,
       outDir: OUT_DIR,
-      message: `✓ ${generated.length} XMLs generados y firmados en ${OUT_DIR}. Sin NombreComercial. Súbelos uno a uno al portal < 250Mil.`,
+      message: `✓ ${generated.length} XML(s) generados y firmados en ${OUT_DIR}. Sin NombreComercial. Súbelos uno a uno al portal DGII "Facturas de consumo <250Mil".`,
     };
   }
 
@@ -3102,22 +3059,24 @@ Write-Output "OK"
     const delayMs = Math.max(0, Math.min(Number(req.body?.delayMs || 400), 3000));
     const results = [];
     let consecutiveErrors = 0;
-    // Guard para no reintentar el mismo documento más de una vez en la misma ráfaga.
-    // Si DGII lo rechaza en este pase, queda en 'rechazado' para revisión manual.
+    // Guard de seguridad: no procesar el mismo documento dos veces en la misma ráfaga.
     const processedInThisRun = new Set();
 
     for (let index = 0; index < limit; index += 1) {
-      // Obtener el siguiente documento no resuelto del batch.
-      // includeRejected=true: reintenta rechazados de corridas ANTERIORES sin reset manual.
-      // Los documentos en 'enviado'/'en_proceso'/'aceptado' se saltan automáticamente.
+      // includeRejected: false — los rechazados necesitan corrección manual y reenvío individual.
+      // No los retomamos automáticamente en la ráfaga para evitar que el mismo doc quemado
+      // bloquee el avance de la secuencia (bug: el doc rechazado se retornaba como "siguiente"
+      // indefinidamente y el guard processedInThisRun cortaba el loop antes de procesar docs
+      // posteriores con orden_index mayor).
+      // Los documentos en 'aceptado'/'enviado'/'en_proceso' se saltan automáticamente.
       let nextDocument;
       try {
-        nextDocument = await this.repository.getNextPendingCertificationDocument({ includeRejected: true });
+        nextDocument = await this.repository.getNextPendingCertificationDocument({ includeRejected: false });
       } catch (_) {
         break;
       }
       if (!nextDocument) break; // No quedan pendientes → todos enviados o set vacío.
-      if (processedInThisRun.has(nextDocument.id)) break; // Ya procesamos todos los elegibles.
+      if (processedInThisRun.has(nextDocument.id)) break; // Safety guard (no debería ocurrir).
       processedInThisRun.add(nextDocument.id);
 
       let step;
@@ -3145,14 +3104,26 @@ Write-Output "OK"
 
       results.push(step);
 
+      // Detener en primer rechazo explícito de DGII.
+      // No continuar enviando documentos si uno fue rechazado — los siguientes pueden
+      // depender del rechazado (ej. E33/E34 referencian E31/E32) y fallarían en cascada.
+      // El usuario debe corregir el caso rechazado y reenviarlo individualmente.
+      if (!step.ok) {
+        break;
+      }
+
       // Pausa entre envíos para respetar la tasa de DGII y mantener vivo el token.
       if (index < limit - 1) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
 
+    const stoppedByRejection = results.length > 0 && !results[results.length - 1]?.ok
+      && !results[results.length - 1]?.fatalStop;
+
     return {
-      ok: true,
+      ok: results.every((r) => r?.ok !== false),
+      stoppedByRejection,
       totalProcessed: results.length,
       results,
       summary: await this.repository.getCertificationSummary(),

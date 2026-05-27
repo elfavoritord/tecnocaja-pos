@@ -1363,9 +1363,17 @@ class EcfRepository {
     return rows[0] || null;
   }
 
-  // Marca todos los casos del batch actual que están en estado 'enviado', 'en_proceso' o
-  // 'procesando' de vuelta a 'firmado', limpiando el TrackID. Útil cuando el portal DGII
-  // reinicia las pruebas y los TrackIDs previos ya no son válidos.
+  // Marca los casos "en vuelo" del batch actual (enviado/en_proceso/procesando) de vuelta a
+  // 'firmado', limpiando el TrackID. Se llama automáticamente antes de la ráfaga secuencial
+  // para recoger docs que quedaron pendientes de respuesta DGII en corridas anteriores.
+  //
+  // IMPORTANTE: NO resetea 'aceptado', 'aceptado_condicional', 'rechazado' ni 'error':
+  //   - 'aceptado'/'aceptado_condicional': ya fueron validados por DGII — resetearlos
+  //     haría que se reenvíen y DGII rechazaría con "secuencia ya utilizada".
+  //   - 'rechazado'/'error': necesitan corrección manual y reenvío individual.
+  //     La ráfaga secuencial los salta (includeRejected: false).
+  //   Cuando DGII reinicia el conteo de pruebas por un rechazo, usar rotateBurnedEncfs(force=true)
+  //   para asignar nuevas secuencias a TODOS los docs antes de reenviar.
   async resetSentCertificationCasesToFirmado() {
     const batchId = await this.getLatestCertificationBatchId();
     const params = [];
@@ -1383,7 +1391,7 @@ class EcfRepository {
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
          ${batchClause}
-         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando', 'aceptado', 'aceptado_condicional', 'rechazado', 'error')
+         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')
          AND (submission_mode IS NULL OR submission_mode != 'rfce')`,
       params
     );
