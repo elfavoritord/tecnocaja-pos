@@ -1054,7 +1054,7 @@ class EcfService {
           emitterData: localEmitter,
           origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, rawRow.NombreComercial="${rowNombreComercial}", usando config local="${localEmitter.nombreComercial || ''}"`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, rawRow.NombreComercial="${rowNombreComercial}" (usando rawRow)`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1065,11 +1065,11 @@ class EcfService {
             linkedRawRow: certificationSource.linkedRawRow || null,
             sourceSheet: certificationSource.sourceSheet || null,
             submissionMode: certificationSource.submissionMode || null,
-            // NombreComercial: usar la config LOCAL del emisor, nunca el valor del Excel.
-            // DGII valida este campo contra su BD interna para el RNC del emisor.
-            // El Excel puede tener "DOCUMENTOS ELECTRONICOS" pero DGII espera '' (vacío).
-            // El usuario configura nombre_comercial='' si DGII no registra NombreComercial para su RNC.
-            emitterNombreComercial: localEmitter.nombreComercial || '',
+            // NombreComercial: usar el rawRow del Excel tal cual.
+            // DGII valida este campo contra su dataset de pruebas — espera exactamente
+            // el valor que ellos mismos pusieron en el Excel ("DOCUMENTOS ELECTRONICOS DE 02").
+            // No usar la config local: puede ser '' o diferente y causa rechazo.
+            emitterNombreComercial: rowNombreComercial,
           },
           issueDate: new Date(),
           certificateContext: certificate,
@@ -3411,6 +3411,14 @@ class EcfService {
           MontoPeriodo: row['MontoPeriodo'],
           TerminoPago: row['TerminoPago'],
           PrecioUnitarioItem1: row['PrecioUnitarioItem[1]'],
+          NombreComercial: row['NombreComercial'],
+          MontoGravadoTotal: row['MontoGravadoTotal'],
+          MontoGravadoI1: row['MontoGravadoI1'],
+          ITBIS1: row['ITBIS1'],
+          TotalITBIS: row['TotalITBIS'],
+          TotalITBIS1: row['TotalITBIS1'],
+          MontoImpuestoAdicional: row['MontoImpuestoAdicional'],
+          MontoTotal: row['MontoTotal'],
           kind: parsed.kind,
           sourceSheet: parsed.sourceSheet,
         };
