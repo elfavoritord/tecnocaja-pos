@@ -114,6 +114,8 @@ function createEcfRouter(deps) {
   router.post('/certification/run-sequential', wrap((req) => service.runCertificationSequence(req)));
   router.post('/certification/poll-statuses', wrap(() => service.pollCertificationStatuses()));
   router.post('/certification/reset-sent', wrap((req) => service.resetSentCertificationCases(req)));
+  // Resetea docs rechazados/error → firmado para reintento (usar después de fix-rawrow/fix-nombre-comercial).
+  router.post('/certification/reset-rejected', wrap((req) => service.resetRejectedCertificationCases(req)));
   // Convierte E32 RFCE → ECF cuando es referenciado por E33/E34 (NCFModificado)
   router.post('/certification/fix-ncf-refs', wrap((req) => service.fixNcfModificadoRefs(req)));
   // Rota eNCFs quemados (ya enviados en intentos anteriores) asignando nuevos números de secuencia.

@@ -1398,6 +1398,36 @@ class EcfRepository {
     return { reset: result.affectedRows || 0, batchId };
   }
 
+  /**
+   * Resetea documentos en estado 'rechazado' o 'error' de vuelta a 'firmado'
+   * para que la ráfaga secuencial los reintente.
+   * NO toca 'aceptado', 'aceptado_condicional', 'enviado', 'en_proceso', 'procesando'.
+   * NO toca docs RFCE (ya aceptados en el portal).
+   */
+  async resetRejectedCertificationCasesToFirmado() {
+    const batchId = await this.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(batchId);
+    }
+    const result = await this.query(
+      `UPDATE ecf_documents
+       SET estado_dgii  = 'firmado',
+           track_id     = NULL,
+           error_message = NULL,
+           updated_at   = CURRENT_TIMESTAMP
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND estado_dgii IN ('rechazado', 'error')
+         AND (submission_mode IS NULL OR submission_mode != 'rfce')`,
+      params
+    );
+    return { reset: result.affectedRows || 0, batchId };
+  }
+
   async updateCertificationTracking(documentId, payload = {}) {
     await this.query(
       `UPDATE ecf_documents

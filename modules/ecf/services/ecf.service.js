@@ -2291,6 +2291,34 @@ class EcfService {
     };
   }
 
+  // Resetea documentos rechazados/error de vuelta a 'firmado' para reintento.
+  // Usar después de corregir el rawRow (fix-nombre-comercial, fix-rawrow) y antes de run-sequential.
+  // NO toca docs RFCE ni aceptados.
+  async resetRejectedCertificationCases(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const result = await this.repository.resetRejectedCertificationCasesToFirmado();
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      documentId: null,
+      sequenceId: null,
+      tipoComprobante: null,
+      encf: null,
+      actionName: 'certification_reset_rejected',
+      status: 'ok',
+      detail: `Se reestablecieron ${result.reset} caso(s) rechazados/error a estado "firmado" para reintento.`,
+      responsePayload: result,
+    });
+    return {
+      ok: true,
+      message: `${result.reset} caso(s) rechazado(s)/error reestablecido(s) a "firmado". Ahora ejecuta run-sequential.`,
+      reset: result.reset,
+      batchId: result.batchId,
+    };
+  }
+
   // Corrige el problema donde E33/E34 referencian un E32 que fue importado como RFCE.
   // DGII valida el NCFModificado en su sistema ECF (no RFCE), por lo que el E32 referenciado
   // debe ser enviado como ECF completo ANTES de que se envíe el E33/E34.
