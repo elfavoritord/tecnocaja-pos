@@ -2504,6 +2504,23 @@ function stopMySqlWatchdog() {
   mysqlWatchdogTimer = null;
 }
 
+async function stopLocalMysqlRuntime() {
+  try {
+    if (String(process.env.DB_CLIENT || 'sqlite').trim().toLowerCase() !== 'mysql') {
+      return;
+    }
+
+    const appRoot = app.getAppPath();
+    const { stopLocalMysqlIfManaged } = require(path.join(appRoot, 'scripts', 'ensure-local-mysql'));
+    const status = await stopLocalMysqlIfManaged({
+      log: (message) => logStartup(`[mysql-shutdown] ${message}`)
+    });
+    logStartup(`[mysql-shutdown] Resultado: ${JSON.stringify(status)}`);
+  } catch (error) {
+    logStartup(`[mysql-shutdown] No se pudo detener MariaDB: ${error?.message || error}`);
+  }
+}
+
 function startServeoTunnel() {
   try {
     const home = os.homedir();
@@ -2553,12 +2570,11 @@ function stopServeoTunnel() {
 async function stopServer() {
   stopServeoTunnel();
   stopMySqlWatchdog();
-  if (!serverRuntime?.stopHttpServer) {
-    serverRuntime = null;
-    return;
+  if (serverRuntime?.stopHttpServer) {
+    await serverRuntime.stopHttpServer().catch(() => {});
   }
-  await serverRuntime.stopHttpServer().catch(() => {});
   serverRuntime = null;
+  await stopLocalMysqlRuntime();
 }
 
 ipcMain.handle('secure-backup:open-folder', async (_event, password) => {
