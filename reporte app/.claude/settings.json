@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\reporte app\\\\\" -Recurse -Force | Select-Object FullName, PSIsContainer | Sort-Object FullName)"
-    ]
-  }
-}

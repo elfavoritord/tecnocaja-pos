@@ -1,0 +1,17 @@
+{
+  "id": "20260528-080741",
+  "fecha": "2026-05-28T12:07:41.524Z",
+  "environment": "certecf",
+  "estado": "ENVIADO",
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260528-080741.xml",
+  "filename": "rfce-enviado-20260528-080741.xml",
+  "dgiiFileName": "40211932609E320000000013.xml",
+  "sourcePath": "E320000000013-rfce.xml",
+  "localEcfPath": null,
+  "xsdValidation": {
+    "ok": true,
+    "errors": [],
+    "schemaPath": "C:\\Users\\Emilio Coding IA\\Desktop\\sistema pos completo\\modules\\ecf\\schemas\\RFCE 32 v.1.0.xsd"
+  },
+  "sizeBytes": 4737
+}

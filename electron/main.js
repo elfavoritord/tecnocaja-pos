@@ -39,6 +39,7 @@ const DEFAULT_ELECTRON_PORT = 3399;
 const FALLBACK_APP_PORT = 3000;
 let currentServerPort = DEFAULT_ELECTRON_PORT;
 let currentAppUrl = `http://127.0.0.1:${currentServerPort}`;
+let mysqlWatchdogTimer = null;
 const MIN_BACKUP_NOTICE_MS = 5000;
 const STARTUP_LOG_FILE = path.join(process.env.TEMP || __dirname, 'tecnocaja-electron-startup.log');
 // Switches de Chromium deben ir ANTES de app.whenReady().
@@ -151,6 +152,7 @@ async function createAutoBackup(actor = {}) {
   try {
     return await postJson(`${currentAppUrl}/api/respaldos/auto`, {
       trigger: 'cierre_app',
+      forceCloud: false,
       ...actor,
     });
   } catch (_e) {
@@ -2405,6 +2407,7 @@ async function startServer() {
     currentServerPort = targetPort;
     currentAppUrl = buildLocalUrl(targetPort);
     logStartup(`Internal server ready on port ${targetPort}`);
+    startMySqlWatchdog(appRoot);
     if (isServeoTunnelEnabled()) {
       startServeoTunnel();
     } else {
@@ -2423,6 +2426,7 @@ async function startServer() {
       currentServerPort = targetPort;
       currentAppUrl = preferredUrl;
       logStartup(`Reusing existing local server on port ${targetPort}`);
+      startMySqlWatchdog(appRoot);
       return;
     }
 
@@ -2442,6 +2446,7 @@ async function startServer() {
           currentServerPort = alternatePort;
           currentAppUrl = buildLocalUrl(alternatePort);
           logStartup(`Internal server moved to alternate port ${alternatePort}`);
+          startMySqlWatchdog(appRoot);
           return;
         } catch (alternateError) {
           startupError = alternateError;
@@ -2456,6 +2461,7 @@ async function startServer() {
     currentServerPort = FALLBACK_APP_PORT;
     currentAppUrl = fallbackUrl;
     logStartup(`Using fallback server already available on port ${FALLBACK_APP_PORT}`);
+    startMySqlWatchdog(appRoot);
     return;
   }
 
@@ -2468,6 +2474,34 @@ async function startServer() {
       : `No se pudo iniciar el servidor interno.\n\nDetalles: ${details}`
   );
   app.quit();
+}
+
+function startMySqlWatchdog(appRoot) {
+  if (mysqlWatchdogTimer) return;
+  if (String(process.env.DB_CLIENT || 'sqlite').trim().toLowerCase() !== 'mysql') return;
+
+  const runCheck = async () => {
+    try {
+      const { ensureLocalMysqlAvailable } = require(path.join(appRoot, 'scripts', 'ensure-local-mysql'));
+      const status = await ensureLocalMysqlAvailable({
+        log: (message) => logStartup(`[mysql-watchdog] ${message}`)
+      });
+      if (status.status !== 'ready' && status.status !== 'skipped') {
+        logStartup(`[mysql-watchdog] MariaDB no está lista: ${JSON.stringify(status)}`);
+      }
+    } catch (error) {
+      logStartup(`[mysql-watchdog] Error verificando MariaDB: ${error?.message || error}`);
+    }
+  };
+
+  mysqlWatchdogTimer = setInterval(runCheck, 30 * 1000);
+  runCheck();
+}
+
+function stopMySqlWatchdog() {
+  if (!mysqlWatchdogTimer) return;
+  clearInterval(mysqlWatchdogTimer);
+  mysqlWatchdogTimer = null;
 }
 
 function startServeoTunnel() {
@@ -2518,6 +2552,7 @@ function stopServeoTunnel() {
 
 async function stopServer() {
   stopServeoTunnel();
+  stopMySqlWatchdog();
   if (!serverRuntime?.stopHttpServer) {
     serverRuntime = null;
     return;
@@ -3253,6 +3288,7 @@ app.on('second-instance', function() {
 ═══════════════════════════════════════════════════════════════════════════ */
 let autoUpdater = null;
 let updaterReady = false;
+let isInstallingUpdate = false;
 
 try {
   ({ autoUpdater } = require('electron-updater'));
@@ -3273,7 +3309,7 @@ function setupAutoUpdater() {
 
   // ── Configuración ──────────────────────────────────────────────────────
   autoUpdater.autoDownload        = false;  // El usuario decide cuándo descargar
-  autoUpdater.autoInstallOnAppQuit = true;  // Instala al cerrar si ya descargó
+  autoUpdater.autoInstallOnAppQuit = false; // Solo instalar cuando el usuario confirme
   autoUpdater.allowDowngrade      = false;  // No permite versiones menores
 
   // En desarrollo (no empaquetado): sólo loguea, no activa el updater real
@@ -3387,11 +3423,35 @@ ipcMain.handle('updater:download', async () => {
 });
 
 /** Instalar actualización y reiniciar */
-ipcMain.handle('updater:install', () => {
-  if (!updaterReady || !autoUpdater || !app.isPackaged) return;
-  logStartup('[updater] Instalando y reiniciando…');
-  // isSilent=false → muestra el progreso del instalador, isForceRunAfter=true → relanza la app
-  setImmediate(() => autoUpdater.quitAndInstall(false, true));
+ipcMain.handle('updater:install', async (_event, options = {}) => {
+  if (!updaterReady || !autoUpdater || !app.isPackaged) return { devMode: true };
+  try {
+    logStartup('[updater] Preparando instalación: respaldo completo y cierre ordenado…');
+    if (!options.backupAlreadyDone) {
+      const backupResult = await createAutoBackup({
+        trigger: 'actualizacion_sistema',
+        forceCloud: true,
+        updatedAt: new Date().toISOString(),
+      });
+      if (backupResult?.error) {
+        return { ok: false, error: backupResult.error };
+      }
+    }
+
+    isInstallingUpdate = true;
+    app.isQuitting = true;
+    await stopServer().catch((error) => {
+      logStartup('[updater] No se pudo detener servidor antes de instalar: ' + (error?.message || error));
+    });
+
+    logStartup('[updater] Instalando y reiniciando…');
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return { ok: true };
+  } catch (err) {
+    isInstallingUpdate = false;
+    app.isQuitting = false;
+    return { ok: false, error: err.message || 'No se pudo preparar la instalación.' };
+  }
 });
 
 /** Versión actual */
@@ -3484,10 +3544,11 @@ app.whenReady().then(async function() {
 });
 
 app.on('before-quit', function(e) {
+  if (isInstallingUpdate) return;
   if (app.isQuitting) return;
   e.preventDefault();
   app.isQuitting = true;
-  postJson(currentAppUrl + '/api/reports/auto-save-daily', {})
+  createAutoBackup({ trigger: 'cierre_app', forceCloud: false })
     .catch(function() {})
     .finally(function() { stopServer().catch(function() {}).finally(function() { app.quit(); }); });
 });

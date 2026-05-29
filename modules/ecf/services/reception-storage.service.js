@@ -65,24 +65,31 @@ class ReceptionStorageService {
     this.baseDir = path.resolve(baseDir);
     this.now = now;
     this.enviadosDir = path.join(this.baseDir, 'storage', 'ecf', 'enviados');
+    this.rfceEnviadosDir = path.join(this.baseDir, 'storage', 'ecf', 'rfce-enviados');
     this.tracksDir = path.join(this.baseDir, 'storage', 'ecf', 'tracks');
     this.currentSentXmlPath = path.join(this.enviadosDir, 'current-enviado.xml');
     this.currentSentMetaPath = path.join(this.enviadosDir, 'current-enviado.json');
+    this.currentRfceSentXmlPath = path.join(this.rfceEnviadosDir, 'current-rfce-enviado.xml');
+    this.currentRfceSentMetaPath = path.join(this.rfceEnviadosDir, 'current-rfce-enviado.json');
     this.currentTrackPath = path.join(this.tracksDir, 'current-track.json');
     this.currentTrackStatusPath = path.join(this.tracksDir, 'current-track-status.json');
   }
 
   ensureStorage() {
     fs.mkdirSync(this.enviadosDir, { recursive: true });
+    fs.mkdirSync(this.rfceEnviadosDir, { recursive: true });
     fs.mkdirSync(this.tracksDir, { recursive: true });
   }
 
   getPaths() {
     return {
       enviadosDir: this.enviadosDir,
+      rfceEnviadosDir: this.rfceEnviadosDir,
       tracksDir: this.tracksDir,
       currentSentXmlPath: this.currentSentXmlPath,
       currentSentMetaPath: this.currentSentMetaPath,
+      currentRfceSentXmlPath: this.currentRfceSentXmlPath,
+      currentRfceSentMetaPath: this.currentRfceSentMetaPath,
       currentTrackPath: this.currentTrackPath,
       currentTrackStatusPath: this.currentTrackStatusPath,
     };
@@ -111,6 +118,34 @@ class ReceptionStorageService {
     fs.writeFileSync(targetPath, content, 'utf8');
     fs.writeFileSync(this.currentSentXmlPath, content, 'utf8');
     this.#writeJson(this.currentSentMetaPath, entry);
+    return entry;
+  }
+
+  saveSentRfceXml({ xmlContent, environment = 'certecf', sourcePath = null, filename = null, dgiiFileName = null, localEcfPath = null, xsdValidation = null } = {}) {
+    this.ensureStorage();
+    const content = String(xmlContent || '');
+    assertCondition(content.trim(), 'El RFCE a enviar está vacío.', { statusCode: 422 });
+
+    const now = this.now();
+    const id = formatTimestampId(now);
+    const targetPath = path.join(this.rfceEnviadosDir, `rfce-enviado-${id}.xml`);
+    const entry = {
+      id,
+      fecha: now.toISOString(),
+      environment,
+      estado: 'ENVIADO',
+      xmlPath: this.#displayPath(targetPath),
+      filename: path.basename(targetPath),
+      dgiiFileName: dgiiFileName || null,
+      sourcePath: sourcePath ? this.#displayPath(sourcePath) : null,
+      localEcfPath: localEcfPath ? this.#displayPath(localEcfPath) : null,
+      xsdValidation: xsdValidation || null,
+      sizeBytes: Buffer.byteLength(content, 'utf8'),
+    };
+
+    fs.writeFileSync(targetPath, content, 'utf8');
+    fs.writeFileSync(this.currentRfceSentXmlPath, content, 'utf8');
+    this.#writeJson(this.currentRfceSentMetaPath, entry);
     return entry;
   }
 
@@ -176,10 +211,13 @@ class ReceptionStorageService {
     this.ensureStorage();
     return {
       latestSent: parseJsonIfExists(this.currentSentMetaPath),
+      latestRfceSent: parseJsonIfExists(this.currentRfceSentMetaPath),
       latestTrack: parseJsonIfExists(this.currentTrackPath),
       latestTrackStatus: parseJsonIfExists(this.currentTrackStatusPath),
       currentSentXmlPath: fs.existsSync(this.currentSentXmlPath) ? this.#displayPath(this.currentSentXmlPath) : null,
       currentSentMetaPath: fs.existsSync(this.currentSentMetaPath) ? this.#displayPath(this.currentSentMetaPath) : null,
+      currentRfceSentXmlPath: fs.existsSync(this.currentRfceSentXmlPath) ? this.#displayPath(this.currentRfceSentXmlPath) : null,
+      currentRfceSentMetaPath: fs.existsSync(this.currentRfceSentMetaPath) ? this.#displayPath(this.currentRfceSentMetaPath) : null,
       currentTrackPath: fs.existsSync(this.currentTrackPath) ? this.#displayPath(this.currentTrackPath) : null,
       currentTrackStatusPath: fs.existsSync(this.currentTrackStatusPath) ? this.#displayPath(this.currentTrackStatusPath) : null,
     };

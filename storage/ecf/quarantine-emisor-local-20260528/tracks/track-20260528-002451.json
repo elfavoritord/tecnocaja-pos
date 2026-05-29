@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-28T04:24:51.856Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260528-002451.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"codigo\":2,\"estado\":\"Rechazado\",\"mensajes\":[{\"codigo\":null,\"valor\":\"La propiedad RazonSocialEmisor no es válida debido a que el valor enviado (EMILIO MANURYS CABRERA) no coincide con el valor (DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL) del conjunto de datos entregados.La propiedad Emisor no es válida debido a que el valor enviado { RNCEmisor = 40211932609, RazonSocialEmisor = EMILIO MANURYS CABRERA, FechaEmision = 01-04-2020 }no coincide con el valor ({ RNCEmisor = 40211932609, RazonSocialEmisor = DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL, FechaEmision = 01-04-2020 }) del conjunto de datos entregados.\"}],\"encf\":\"E320000000015\",\"secuenciaUtilizada\":false}",
+  "trackPath": "storage/ecf/tracks/track-20260528-002451.json"
+}

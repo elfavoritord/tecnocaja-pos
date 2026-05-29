@@ -129,6 +129,8 @@ function createEcfRouter(deps) {
   router.post('/certification/fix-rawrow', wrap((req) => service.fixCaseRawRow(req)));
   // Genera y firma los XMLs < 250Mil detectados en el dataset para subir al portal DGII
   router.post('/certification/generate-250mil', wrap((req) => service.generate250MilXmls(req)));
+  router.post('/certification/prepare-final-250mil', wrap((req) => service.prepareFinal250MilPortalPackage(req)));
+  router.post('/certification/open-final-250mil-folder', wrap((req) => service.openFinal250MilPortalFolder(req)));
   router.post('/certification/cases/:id/regenerate', wrap((req) => service.regenerateCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/send', wrap((req) => service.sendCertificationCase(Number(req.params.id), req)));
   router.post('/certification/cases/:id/resend', wrap((req) => service.sendCertificationCase(Number(req.params.id), req, { forceResend: true })));

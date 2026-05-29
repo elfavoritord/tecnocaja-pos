@@ -4,6 +4,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { EcfError, assertCondition } = require('../utils/errors');
+const { assertDgiiXmlRoot } = require('../utils/dgii-file.util');
 
 function buildMultipartBody(fields) {
   const boundary = `----TecnoCajaECF${crypto.randomBytes(12).toString('hex')}`;
@@ -227,6 +228,7 @@ class DgiiClient {
 
   async submitEcf({ token, signedXml, filename }) {
     assertCondition(token, 'No hay token DGII disponible para enviar el e-CF.', { statusCode: 422 });
+    const xmlRoot = assertDgiiXmlRoot(signedXml, 'ECF', this.config.DGII_RECEPCION_URL);
     const multipart = buildMultipartBody([
       {
         name: 'xml',
@@ -247,6 +249,10 @@ class DgiiClient {
     const parsed = parseTrackResponse(response.body);
     return {
       ...parsed,
+      endpoint: this.config.DGII_RECEPCION_URL,
+      xmlRoot,
+      xmlType: 'ECF',
+      filename: filename || null,
       http: response,
     };
   }
@@ -284,6 +290,7 @@ class DgiiClient {
 
   async submitRfce({ token, signedXml, filename }) {
     assertCondition(token, 'No hay token DGII disponible para enviar el resumen RFCE.', { statusCode: 422 });
+    const xmlRoot = assertDgiiXmlRoot(signedXml, 'RFCE', this.config.DGII_FC_URL);
     const multipart = buildMultipartBody([
       {
         name: 'xml',
@@ -302,6 +309,10 @@ class DgiiClient {
     });
     return {
       ...parseTrackResponse(response.body),
+      endpoint: this.config.DGII_FC_URL,
+      xmlRoot,
+      xmlType: 'RFCE',
+      filename: filename || null,
       http: response,
     };
   }

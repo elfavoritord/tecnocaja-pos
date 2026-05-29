@@ -9,6 +9,33 @@ function extractTagValue(source, tagName) {
   return match?.[1] ? match[1].trim() : '';
 }
 
+function detectXmlRoot(xmlContent) {
+  const xml = String(xmlContent || '').replace(/^\uFEFF/, '').trim();
+  const match = xml.match(/^<\?xml[^>]*>\s*<([A-Za-z_][\w:.-]*)\b/i) || xml.match(/^<([A-Za-z_][\w:.-]*)\b/i);
+  return match?.[1] ? match[1].replace(/^.*:/, '').toUpperCase() : '';
+}
+
+function getDgiiXmlDispatchType(xmlContent) {
+  const root = detectXmlRoot(xmlContent);
+  if (root === 'ECF') return 'ecf';
+  if (root === 'RFCE') return 'rfce';
+  return root ? root.toLowerCase() : 'unknown';
+}
+
+function assertDgiiXmlRoot(xmlContent, expectedRoot, endpointName, options = {}) {
+  const root = detectXmlRoot(xmlContent);
+  const expected = String(expectedRoot || '').trim().toUpperCase();
+  assertCondition(root === expected, options.message || `El XML enviado a ${endpointName} debe tener raíz <${expected}>; se detectó <${root || 'desconocida'}>.`, {
+    statusCode: 422,
+    details: {
+      endpointName,
+      expectedRoot: expected,
+      detectedRoot: root || null,
+    },
+  });
+  return root;
+}
+
 function sanitizeRncForDgii(value) {
   return String(value || '').replace(/\D/g, '');
 }
@@ -101,10 +128,13 @@ function eliminarArchivoTemporalDGII(tempPath) {
 }
 
 module.exports = {
+  assertDgiiXmlRoot,
   crearArchivoTemporalDGII,
+  detectXmlRoot,
   eliminarArchivoTemporalDGII,
   extractDgiiIdentityFromXml,
   generarNombreArchivoDGII,
+  getDgiiXmlDispatchType,
   sanitizeEncfForDgii,
   sanitizeRncForDgii,
   validarNombreArchivoDGII,

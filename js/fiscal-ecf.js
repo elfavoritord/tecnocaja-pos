@@ -127,7 +127,7 @@ async function loadFiscalStatus() {
       await loadEcfDocuments();
     }
     if (getCurrentFiscalTab() === 'homologation') {
-      await loadCertificationCases();
+      primeCertificationCasesPanel();
     }
   } catch (e) {
     showFiscalError(e.message);
@@ -1604,7 +1604,7 @@ function renderDocsTable(container, data) {
         <thead>
           <tr>
             <th>e-NCF</th><th>Tipo</th><th>Comprador</th><th>Monto</th>
-            <th>ITBIS</th><th>TrackID</th><th>Emisión</th><th>Estado DGII</th><th>Acciones</th>
+            <th>ITBIS</th><th>TrackID</th><th>XML/Endpoint</th><th>Emisión</th><th>Estado DGII</th><th>Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -1616,6 +1616,11 @@ function renderDocsTable(container, data) {
               <td style="text-align:right">${Number(doc.monto_total || 0).toLocaleString('es-DO', { style: 'currency', currency: 'DOP' })}</td>
               <td style="text-align:right">${Number(doc.itbis_total || 0).toLocaleString('es-DO', { style: 'currency', currency: 'DOP' })}</td>
               <td><code>${escapeHtml(doc.track_id || '—')}</code>${doc.submission_mode === 'rfce' ? '<div style="font-size:0.68rem;color:var(--text3)">RFCE</div>' : ''}</td>
+              <td style="font-size:0.72rem;line-height:1.25">
+                <strong>${escapeHtml(doc.xmlType || (doc.submissionMode === 'rfce' || doc.submission_mode === 'rfce' ? 'RFCE' : 'ECF'))}</strong>
+                <div>${escapeHtml(doc.submission_mode === 'rfce' ? 'RecepcionFC' : 'Recepcion')}</div>
+                <div>${escapeHtml(doc.documentCount ? `${doc.documentCount} doc.` : '1 doc.')}</div>
+              </td>
               <td>${formatDate(doc.fecha_emision)}</td>
               <td title="${escapeHtml(doc.mensajes_dgii || '')}"><span class="badge-${estadoMap[doc.estado_dgii] || 'gray'}" style="font-size:0.7rem">${escapeHtml(formatDocStateLabel(doc.estado_dgii))}</span></td>
               <td style="white-space:nowrap">
@@ -1713,7 +1718,7 @@ function certificationStatusBadge(state) {
 }
 
 /**
- * Muestra un aviso prominente que recuerda generar XMLs frescos antes de subir al portal.
+ * Muestra un aviso prominente que recuerda generar RFCE frescos antes de enviar por RecepcionFC.
  * Se llama después de cada run-sequential exitoso.
  */
 function showCertification250MilReminder() {
@@ -1734,22 +1739,29 @@ function showCertification250MilReminder() {
     <button onclick="document.getElementById('cert-250mil-reminder').remove()" style="
       position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
       font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
-    <strong>⚠ PASO OBLIGATORIO antes de subir al portal < 250Mil</strong><br>
-    Haz click en el botón <strong>"📋 Generar XMLs &lt;250Mil"</strong> para generar los XMLs frescos con los eNCFs actuales.<br>
-    <strong>⛔ NO subas XMLs anteriores — DGII los rechazará y reseteará todo.</strong><br>
-    <button onclick="generate250MilXmls()" style="margin-top:8px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;">
-      📋 Generar XMLs &lt;250Mil ahora
+    <strong>Paso final para consumo &lt;250Mil</strong><br>
+    Cuando DGII muestre 21/21 comprobantes y 4/4 resúmenes aceptados, prepara la carpeta final y sube solo esos 4 XML por el portal.<br>
+    <strong>No uses carpetas viejas ni ZIP.</strong><br>
+    <button onclick="prepare250MilPortalPackage(true)" style="margin-top:8px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;">
+      Preparar y abrir carpeta final
     </button>
   `;
   box.parentNode.insertBefore(div, box);
 }
 
-async function loadCertificationCases() {
+function primeCertificationCasesPanel() {
+  const box = document.getElementById('certification-cases-table');
+  if (!box || box.dataset.loaded === '1') return;
+  box.innerHTML = '<div class="empty-state-small">Tabla en pausa para abrir más rápido. Usa “Ver casos” si necesitas revisar el detalle.</div>';
+}
+
+async function loadCertificationCases(options = {}) {
   const box = document.getElementById('certification-cases-table');
   if (!box) return;
-  box.innerHTML = '<div class="loading-text">Cargando pruebas de certificación…</div>';
+  if (!options.silent) box.innerHTML = '<div class="loading-text">Cargando pruebas de certificación…</div>';
   try {
-    const payload = await fiscalApi('GET', '/certification/cases');
+    const payload = await fiscalApi('GET', '/certification/cases?compact=1');
+    box.dataset.loaded = '1';
     renderCertificationSummary(payload.summary || null);
     renderCertificationCasesTable(box, payload.cases || []);
   } catch (err) {
@@ -1763,6 +1775,7 @@ function renderCertificationCasesTable(container, cases) {
     return;
   }
 
+  const ordered = [...cases].sort((a, b) => Number(a.orden || a.order || a.id || 0) - Number(b.orden || b.order || b.id || 0));
   container.innerHTML = `
     <div style="overflow-x:auto">
       <table class="compact-table" style="width:100%;font-size:.8rem">
@@ -1771,16 +1784,13 @@ function renderCertificationCasesTable(container, cases) {
             <th>Estado</th>
             <th>Tipo</th>
             <th>e-NCF</th>
-            <th>Cliente</th>
             <th>Total</th>
-            <th>Tipo de prueba</th>
             <th>TrackID</th>
-            <th>Archivo XML</th>
-            <th>Acción</th>
+            <th>Mensaje DGII</th>
           </tr>
         </thead>
         <tbody>
-          ${cases.map((testCase) => {
+          ${ordered.map((testCase) => {
             const badge = certificationStatusBadge(testCase.estado);
             const total = Number(testCase.total || 0).toLocaleString('es-DO', { style: 'currency', currency: 'DOP' });
             const dgiiMsg = Array.isArray(testCase.mensajes)
@@ -1791,19 +1801,9 @@ function renderCertificationCasesTable(container, cases) {
                 <td><span class="${badge.cls}" style="font-size:.72rem">${escapeHtml(badge.label)}</span></td>
                 <td>${escapeHtml(testCase.tipo || '—')}</td>
                 <td><code>${escapeHtml(testCase.encf || '—')}</code></td>
-                <td>${escapeHtml(testCase.cliente || 'Consumidor Final')}</td>
                 <td style="text-align:right">${total}</td>
-                <td>${escapeHtml(testCase.tipoPrueba || testCase.testKey || '—')}</td>
                 <td><code>${escapeHtml(testCase.trackId || '—')}</code></td>
-                <td style="font-size:.73rem;color:var(--text3)">${escapeHtml(testCase.xmlPath || 'Generado internamente')}</td>
-                <td style="white-space:nowrap">
-                  <button class="btn-xs" onclick="sendCertificationDoc(${testCase.id})" title="Enviar individual">Enviar</button>
-                  <button class="btn-xs" onclick="sendCertificationDoc(${testCase.id}, true)" title="Reenviar">↺</button>
-                  <button class="btn-xs" onclick="regenerateCertificationDoc(${testCase.id})" title="Regenerar XML de prueba">Regenerar</button>
-                  <button class="btn-xs" onclick="queryCertificationDoc(${testCase.id})" title="Consultar DGII">⟳</button>
-                  <button class="btn-xs" onclick="viewEcfXml(${testCase.id})" title="Ver XML">XML</button>
-                  <button class="btn-xs" onclick="downloadEcfXml(${testCase.id}, '${escapeHtml(testCase.encf || 'ecf')}')" title="Descargar XML">⬇</button>
-                </td>
+                <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3)">${escapeHtml(dgiiMsg || testCase.error || '—')}</td>
               </tr>
             `;
           }).join('')}
@@ -1824,7 +1824,7 @@ async function regenerateCertificationDoc(id) {
   }
 }
 
-async function importCertificationSet() {
+async function importCertificationSet(options = {}) {
   const fileInput = document.getElementById('certification-testset-files');
   const folderInput = document.getElementById('certification-testset-folder');
   const files = [
@@ -1839,8 +1839,9 @@ async function importCertificationSet() {
   const btn = document.getElementById('certification-btn-import');
   const resultBox = document.getElementById('certification-import-result');
   btn.disabled = true;
-  btn.textContent = 'Importando…';
+  btn.textContent = 'Importando rápido…';
   resultBox.style.display = 'none';
+  const startedAt = performance.now();
 
   try {
     const formData = new FormData();
@@ -1849,18 +1850,25 @@ async function importCertificationSet() {
     }
     const envEl = document.getElementById('fiscal-environment-select') || document.getElementById('fiscal-dgii-environment');
     formData.append('ambiente', envEl?.value || 'testecf');
+    formData.append('fastImport', '1');
 
     const result = await fiscalApi('POST', '/certification/import', formData, true);
     const okRows = (result.results || []).filter((row) => row.ok);
     const errRows = (result.results || []).filter((row) => !row.ok);
+    const durationSeconds = Math.max(0.1, ((result.durationMs || (performance.now() - startedAt)) / 1000)).toFixed(1);
     resultBox.style.display = 'block';
     resultBox.innerHTML = `
       <div style="font-weight:700;margin-bottom:.5rem;color:${errRows.length ? '#9b2c2c' : '#276749'}">
-        ${result.ok} de ${result.total} pruebas listas
+        ${result.ok} de ${result.total} pruebas listas en ${durationSeconds}s
         ${errRows.length ? ` &mdash; ${errRows.length} error(es)` : ''}
       </div>
-      <div style="display:grid;gap:.3rem;max-height:220px;overflow-y:auto">
-        ${(result.results || []).map((row) => `
+      <div style="font-size:.78rem;color:var(--text3);margin-bottom:.5rem">
+        Modo rápido activo: se guardan los datos del set y la firma se genera justo al enviar a DGII.
+      </div>
+      <details style="display:${errRows.length ? 'block' : 'none'}">
+        <summary style="cursor:pointer;font-weight:700">Ver detalle de importación</summary>
+        <div style="display:grid;gap:.3rem;max-height:220px;overflow-y:auto;margin-top:.45rem">
+          ${(result.results || []).map((row) => `
           <div style="display:flex;gap:.45rem;align-items:baseline;font-size:.78rem">
             <span style="font-weight:700;color:${row.ok ? '#276749' : '#c53030'}">${row.ok ? '✓' : '✗'}</span>
             <code style="min-width:140px">${escapeHtml(row.encf || row.casoPrueba || '—')}</code>
@@ -1868,36 +1876,39 @@ async function importCertificationSet() {
               ? `${escapeHtml(row.tipoEcf || '—')} · ${escapeHtml(row.submissionMode || 'normal')} · ${Number(row.montoTotal || 0).toLocaleString('es-DO', { style: 'currency', currency: 'DOP' })}`
               : `<span style="color:#c53030">${escapeHtml(row.error || 'Error')}</span>`}</span>
           </div>
-        `).join('')}
-      </div>
+          `).join('')}
+        </div>
+      </details>
       ${result.certificateWarning ? `<div style="margin-top:.7rem;color:#9c4221">${escapeHtml(result.certificateWarning)}</div>` : ''}
     `;
+    if (result.summary) renderCertificationSummary(result.summary);
     showFiscalToast(result.message || `${result.ok} pruebas importadas.`, errRows.length ? 'warning' : 'success');
-    await loadCertificationCases();
+    if (!options.skipTableRefresh) {
+      loadCertificationCases({ silent: true }).catch(() => {});
+    }
+    return result;
   } catch (err) {
     resultBox.style.display = 'block';
     resultBox.innerHTML = `<span style="color:#9b2c2c">Error: ${escapeHtml(err.message)}</span>`;
     showFiscalToast(`Error al importar certificación: ${err.message}`, 'error');
+    return null;
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Importar Set de Pruebas DGII';
+    btn.textContent = 'Solo importar';
   }
 }
 
 async function sendCertificationDoc(id, isResend = false) {
-  // Mostrar validación previa del emisor antes de enviar a DGII
-  await showDgiiPreSendValidation(id, async () => {
-    try {
-      const endpoint = isResend ? `/certification/cases/${id}/resend` : `/certification/cases/${id}/send`;
-      const response = await fiscalApi('POST', endpoint, {});
-      showFiscalToast(response.message || 'Prueba enviada a DGII.', response.ok ? 'success' : 'warning');
-      showFiscalTechnicalResult(isResend ? 'Reenvío prueba certificación DGII' : 'Envío prueba certificación DGII', response);
-      await loadCertificationCases();
-      await loadFiscalStatus();
-    } catch (err) {
-      showFiscalToast(`Error al enviar prueba: ${err.message}`, 'error');
-    }
-  });
+  try {
+    const endpoint = isResend ? `/certification/cases/${id}/resend` : `/certification/cases/${id}/send`;
+    const response = await fiscalApi('POST', endpoint, {});
+    showFiscalToast(response.message || 'Prueba enviada a DGII.', response.ok ? 'success' : 'warning');
+    showFiscalTechnicalResult(isResend ? 'Reenvío prueba certificación DGII' : 'Envío prueba certificación DGII', response);
+    await loadCertificationCases();
+    await loadFiscalStatus();
+  } catch (err) {
+    showFiscalToast(`Error al enviar prueba: ${err.message}`, 'error');
+  }
 }
 
 async function queryCertificationDoc(id) {
@@ -1913,33 +1924,28 @@ async function queryCertificationDoc(id) {
 }
 
 async function sendNextCertificationCase() {
-  await showDgiiPreSendValidation(null, async () => {
-    try {
-      const response = await fiscalApi('POST', '/certification/send-next', {});
-      showFiscalToast(response.message || 'Se envió la siguiente prueba pendiente.', response.ok ? 'success' : 'warning');
-      showFiscalTechnicalResult('Enviar siguiente prueba DGII', response);
-      await loadCertificationCases();
-      await loadFiscalStatus();
-    } catch (err) {
-      showFiscalToast(`Error al enviar siguiente prueba: ${err.message}`, 'error');
-    }
-  });
+  try {
+    const response = await fiscalApi('POST', '/certification/send-next', {});
+    showFiscalToast(response.message || 'Se envió la siguiente prueba pendiente.', response.ok ? 'success' : 'warning');
+    showFiscalTechnicalResult('Enviar siguiente prueba DGII', response);
+    await loadCertificationCases();
+    await loadFiscalStatus();
+  } catch (err) {
+    showFiscalToast(`Error al enviar siguiente prueba: ${err.message}`, 'error');
+  }
 }
 
 async function runCertificationSequence() {
-  // Mostrar validación previa del emisor una sola vez antes de ejecutar todos los casos
-  await showDgiiPreSendValidation(null, async () => {
-    await _runCertificationSequenceConfirmed();
-  });
+  await _runCertificationSequenceConfirmed();
 }
 
 async function _runCertificationSequenceConfirmed() {
-  const btns = document.querySelectorAll('[onclick="runCertificationSequence()"]');
-  btns.forEach((b) => { b.disabled = true; b.textContent = '⏳ Enviando…'; });
+  const btns = document.querySelectorAll('.certification-run-btn, [onclick="runCertificationSequence()"]');
+  btns.forEach((b) => { b.disabled = true; b.textContent = 'Enviando…'; });
   try {
     showFiscalToast('Enviando todos los casos pendientes a DGII…', 'info');
     // Paso 1: ráfaga de envíos (rápida, sin esperar respuesta de cada TrackID)
-    const response = await fiscalApi('POST', '/certification/run-sequential', { limit: 50 });
+    const response = await fiscalApi('POST', '/certification/run-sequential', { limit: 50, delayMs: 80 });
     const sent = response.totalProcessed || 0;
 
     // Si el servidor detuvo la ráfaga por un rechazo, mostrar aviso prominente
@@ -1950,6 +1956,13 @@ async function _runCertificationSequenceConfirmed() {
         `⛔ Ráfaga detenida: la prueba ${rejectedEncf} fue rechazada por DGII. ` +
         'Corrige ese caso y reenvíalo individualmente antes de continuar.',
         'error'
+      );
+    } else if (response.stoppedByTransient) {
+      const lastResult = (response.results || []).slice().reverse().find((r) => !r?.ok);
+      const transientEncf = lastResult?.case?.encf || lastResult?.encf || '—';
+      showFiscalToast(
+        `DGII no respondió correctamente para ${transientEncf}. No es rechazo del XML; espera unos segundos y presiona “Enviar pendientes”.`,
+        'warning'
       );
     } else {
       showFiscalToast(`${sent} caso(s) enviado(s). Consultando estados…`, 'info');
@@ -1981,7 +1994,19 @@ async function _runCertificationSequenceConfirmed() {
   } catch (err) {
     showFiscalToast(`Error: ${err.message}`, 'error');
   } finally {
-    btns.forEach((b) => { b.disabled = false; b.textContent = '▶ Ejecutar pruebas secuenciales'; });
+    btns.forEach((b) => { b.disabled = false; b.textContent = 'Enviar pendientes'; });
+  }
+}
+
+async function runFastCertificationFlow() {
+  const btn = document.getElementById('certification-btn-fast-flow');
+  if (btn) { btn.disabled = true; btn.textContent = 'Procesando…'; }
+  try {
+    const imported = await importCertificationSet({ skipTableRefresh: true });
+    if (!imported || Number(imported.ok || 0) <= 0) return;
+    await _runCertificationSequenceConfirmed();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Importar y enviar ahora'; }
   }
 }
 
@@ -2023,7 +2048,7 @@ async function generate250MilXmls() {
   if (prev) prev.remove();
 
   try {
-    showFiscalToast('Generando y firmando XMLs < 250Mil…', 'info');
+    showFiscalToast('Generando y firmando resúmenes RFCE < 250Mil…', 'info');
     const response = await fiscalApi('POST', '/certification/generate-250mil');
 
     if (!response.ok) {
@@ -2034,7 +2059,7 @@ async function generate250MilXmls() {
     // Mostrar resultado con la lista de archivos generados
     const files = (response.generated || []);
     const fileList = files.map(f =>
-      `<li><strong>${f.encf}.xml</strong> — ${f.sizekb}KB — ${f.items?.join(', ') || '?'} — MontoTotal: ${f.montoTotal}</li>`
+      `<li><strong>${f.encf}.xml</strong> — ${escapeHtml(f.root || 'ECF')} — ${f.sizekb}KB — ${f.items?.join(', ') || '?'} — MontoTotal: ${f.montoTotal}</li>`
     ).join('');
 
     const box = document.getElementById('certification-cases-table') || document.querySelector('.certification-section');
@@ -2049,20 +2074,69 @@ async function generate250MilXmls() {
         <button onclick="document.getElementById('cert-250mil-reminder').remove()" style="
           position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
           font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
-        <strong>✅ ${files.length} XMLs ECF &lt;250Mil generados y firmados — SIN NombreComercial</strong><br>
+        <strong>✅ ${files.length} resúmenes RFCE &lt;250Mil generados y firmados</strong><br>
+        <small>Tipo detectado: RFCE · Endpoint destino: RecepcionFC · Documentos incluidos: 1 por archivo</small><br>
+        <small>E32 completas almacenadas localmente para auditoría/RI/QR: ${escapeHtml(response.localEcfDir || '')}</small><br>
         <small>📁 ${response.outDir || 'scripts/250mil-upload/'}</small>
         <ul style="margin:8px 0 4px 16px;padding:0;">${fileList}</ul>
-        <strong>⬆ Sube esos ${files.length} archivos uno a uno al portal DGII "Facturas de consumo &lt;250Mil".</strong>
+        <strong>⬆ Enviando Resumen RFCE por RecepcionFC. No enviar e-CF completos a este endpoint.</strong>
       `;
       box.parentNode.insertBefore(div, box);
     }
 
-    showFiscalToast(`✓ ${files.length} XMLs listos en scripts/250mil-upload/. Súbelos al portal.`, 'success');
+    showFiscalToast(`✓ ${files.length} RFCE listos en scripts/250mil-upload/.`, 'success');
   } catch (err) {
     showFiscalToast(`Error generando XMLs: ${err.message}`, 'error');
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '📋 Generar XMLs <250Mil'; }
+    if (btn) { btn.disabled = false; btn.textContent = '📋 Generar RFCE <250Mil'; }
   }
+}
+
+function render250MilPortalPackageResult(response) {
+  const box = document.getElementById('certification-final-250mil-result');
+  if (!box) return;
+  if (!response?.ok) {
+    box.style.display = 'block';
+    box.style.background = 'rgba(220,38,38,.08)';
+    box.style.borderColor = 'rgba(220,38,38,.25)';
+    box.innerHTML = `<strong style="color:#f87171">No se pudo preparar la carpeta final</strong><br>${escapeHtml(response?.error || 'Error desconocido')}`;
+    return;
+  }
+  const files = response.generated || [];
+  box.style.display = 'block';
+  box.style.background = 'rgba(16,185,129,.08)';
+  box.style.borderColor = 'rgba(16,185,129,.22)';
+  box.innerHTML = `
+    <strong>${files.length} XML finales listos para el portal DGII</strong><br>
+    <code style="word-break:break-all">${escapeHtml(response.outDir || '')}</code>
+    <div style="display:grid;gap:.2rem;margin-top:.55rem">
+      ${files.map((file) => `
+        <div><code>${escapeHtml(file.fileName || file.encf || '')}</code> · ECF 32 · NombreComercial omitido</div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function prepare250MilPortalPackage(openFolder = false) {
+  const btn = document.getElementById('btn-prepare-final-250mil');
+  if (btn) { btn.disabled = true; btn.textContent = openFolder ? 'Preparando y abriendo…' : 'Preparando…'; }
+  try {
+    const endpoint = openFolder ? '/certification/open-final-250mil-folder' : '/certification/prepare-final-250mil';
+    const response = await fiscalApi('POST', endpoint, {});
+    render250MilPortalPackageResult(response);
+    showFiscalToast(response.message || 'Carpeta final preparada.', response.ok ? 'success' : 'error');
+    return response;
+  } catch (err) {
+    render250MilPortalPackageResult({ ok: false, error: err.message });
+    showFiscalToast(`Error preparando carpeta final: ${err.message}`, 'error');
+    return null;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Preparar 4 XML finales'; }
+  }
+}
+
+async function open250MilPortalFolder() {
+  await prepare250MilPortalPackage(true);
 }
 
 async function pollCertificationStatuses() {

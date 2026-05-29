@@ -2,12 +2,14 @@
 
 const fs = require('fs');
 const {
+  assertDgiiXmlRoot,
   crearArchivoTemporalDGII,
   eliminarArchivoTemporalDGII,
   extractDgiiIdentityFromXml,
   generarNombreArchivoDGII,
   validarNombreArchivoDGII,
 } = require('../utils/dgii-file.util');
+const { assertValidRfceXml } = require('../utils/rfce-xsd.util');
 
 function pickFirst(source, candidates) {
   for (const key of candidates) {
@@ -41,17 +43,24 @@ class FcService {
     this.storageService = storageService || null;
   }
 
-  async sendConsumptionSummary({ signedXml, filename }) {
+  async sendConsumptionSummary({ signedXml, filename, localEcfPath = null }) {
+    const endpointName = this.config?.DGII_FC_URL || 'RecepcionFC';
+    const xmlRoot = assertDgiiXmlRoot(signedXml, 'RFCE', endpointName, {
+      message: 'Este archivo es un e-CF completo. Para este paso debe enviar un resumen RFCE.',
+    });
+    const xsdValidation = assertValidRfceXml(signedXml, { requireSignature: true });
     const { rncEmisor, encf } = extractDgiiIdentityFromXml(signedXml);
     const dgiiFileName = validarNombreArchivoDGII(generarNombreArchivoDGII(rncEmisor, encf), {
       rnc: rncEmisor,
       encf,
     });
-    const savedXml = this.storageService?.saveSentXml({
+    const savedXml = this.storageService?.saveSentRfceXml({
       xmlContent: signedXml,
       environment: this.config?.DGII_ENV,
       sourcePath: filename || null,
       dgiiFileName,
+      localEcfPath,
+      xsdValidation,
     }) || null;
     const tempFile = crearArchivoTemporalDGII({
       xmlContent: signedXml,
@@ -60,6 +69,8 @@ class FcService {
     });
 
     console.log('===== ENVÍO DGII =====');
+    console.log('Tipo XML: RFCE');
+    console.log(`Endpoint: ${this.config?.DGII_FC_URL}`);
     console.log(`RNC: ${rncEmisor}`);
     console.log(`eNCF: ${encf}`);
     console.log('Archivo Local:');
@@ -109,6 +120,12 @@ class FcService {
       archivoEnviado: savedXml?.xmlPath || null,
       trackPath: savedTrack?.trackPath || null,
       dgiiFileName,
+      endpoint: this.config?.DGII_FC_URL,
+      xmlRoot,
+      xmlType: 'RFCE',
+      requestXmlPath: savedXml?.xmlPath || null,
+      requestXml: signedXml,
+      xsdValidation,
     };
 
     const logPayload = {
@@ -119,6 +136,12 @@ class FcService {
       codigo: result.codigo || null,
       descripcion: result.descripcion || null,
       error: result.error || null,
+      recepcionFcUrl: this.config?.DGII_FC_URL,
+      xmlRoot,
+      xmlType: 'RFCE',
+      xsdValidation,
+      localEcfPath,
+      rfceXmlPath: savedXml?.xmlPath || null,
     };
 
     if (Number(result.http?.status || 0) >= 400) {

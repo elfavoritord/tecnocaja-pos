@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-05-28T05:57:34.616Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260528-015734.xml",
+  "httpStatus": 503,
+  "responseBody": "The service is unavailable.",
+  "trackPath": "storage/ecf/tracks/track-20260528-015734.json"
+}

@@ -156,6 +156,78 @@ describe('ecf test-set importer', () => {
     expect(transmission.xml).toContain('<MontoTotal>40120.00</MontoTotal>');
   });
 
+  test('preserva la razon social del set DGII al reconstruir RFCE', () => {
+    const transmission = buildTransmissionFromSpreadsheetRow({
+      testCase: {
+        encf: 'E320000000012',
+        tipoEcf: 'E32',
+        sourceSheet: 'RFCE',
+        submissionMode: 'rfce',
+        rawRow: {
+          Version: '1.0',
+          TipoeCF: '32',
+          ENCF: 'E320000000012',
+          TipoIngresos: '01',
+          TipoPago: '1',
+          RNCEmisor: '40211932609',
+          RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL',
+          FechaEmision: '01-04-2020',
+          MontoGravadoTotal: '40000.00',
+          MontoGravadoI1: '40000.00',
+          TotalITBIS: '7200.00',
+          TotalITBIS1: '7200.00',
+          MontoTotal: '47200.00',
+        },
+      },
+      emitter: {
+        rnc: '40211932609',
+        razonSocial: 'EMILIO MANAURYS CABRERA',
+        nombreComercial: '',
+      },
+      issueDate: new Date('2026-05-21T00:00:00Z'),
+    });
+
+    expect(transmission.xml).toContain('<RazonSocialEmisor>DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL</RazonSocialEmisor>');
+    expect(transmission.xml).not.toContain('EMILIO MANAURYS CABRERA');
+  });
+
+  test('no sobrescribe el emisor del set aunque se soliciten overrides locales', () => {
+    const transmission = buildTransmissionFromSpreadsheetRow({
+      testCase: {
+        encf: 'E320000000015',
+        tipoEcf: 'E32',
+        sourceSheet: 'RFCE',
+        submissionMode: 'rfce',
+        rawRow: {
+          Version: '1.0',
+          TipoeCF: '32',
+          ENCF: 'E320000000015',
+          TipoIngresos: '01',
+          TipoPago: '1',
+          RNCEmisor: '40211932609',
+          RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL',
+          FechaEmision: '01-04-2020',
+          MontoGravadoTotal: '40000.00',
+          MontoGravadoI1: '40000.00',
+          TotalITBIS: '7200.00',
+          TotalITBIS1: '7200.00',
+          MontoTotal: '47200.00',
+        },
+      },
+      emitter: {
+        rnc: '40211932609',
+        razonSocial: 'EMILIO MANURYS CABRERA',
+        nombreComercial: 'DOCUMENTOS ELECTRONICOS',
+      },
+      overrideEmitterFromConfig: true,
+      issueDate: new Date('2026-05-21T00:00:00Z'),
+    });
+
+    expect(transmission.xml).toContain('<RazonSocialEmisor>DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL</RazonSocialEmisor>');
+    expect(transmission.xml).not.toContain('EMILIO MANURYS CABRERA');
+    expect(transmission.xml).not.toContain('<NombreComercial>');
+  });
+
   test('omite NombreComercial vacio y respeta TotalITBIS1 del dataset DGII', () => {
     const transmission = buildTransmissionFromSpreadsheetRow({
       testCase: {
