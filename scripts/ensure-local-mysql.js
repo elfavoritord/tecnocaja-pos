@@ -3,7 +3,8 @@ const path = require('path');
 const net = require('net');
 const { spawn, spawnSync } = require('child_process');
 
-const MANAGED_SERVICE_NAME = 'Tecno CajaMariaDB';
+const MANAGED_SERVICE_NAMES = ['TecnoCajaMariaDB', 'Tecno CajaMariaDB'];
+const FALLBACK_SERVICE_NAMES = ['MariaDB'];
 
 function isLoopbackHost(host) {
   const normalized = String(host || '').trim().toLowerCase();
@@ -52,6 +53,17 @@ async function waitForPort(host, port, attempts = 15, delayMs = 1000) {
   return false;
 }
 
+async function waitForPortClosed(host, port, attempts = 10, delayMs = 500) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!(await testPort(host, port, 800))) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  return false;
+}
+
 function runSc(args = []) {
   try {
     return spawnSync('sc.exe', args, {
@@ -79,12 +91,25 @@ function queryExistingService(serviceName) {
   };
 }
 
+function queryServiceConfig(serviceName) {
+  const result = runSc(['qc', serviceName]);
+  if (result.status !== 0) {
+    return '';
+  }
+
+  return `${result.stdout || ''}\n${result.stderr || ''}`;
+}
+
 function setServiceAutoStart(serviceName) {
   runSc(['config', serviceName, 'start=', 'auto']);
 }
 
 function startService(serviceName) {
   return runSc(['start', serviceName]);
+}
+
+function stopService(serviceName) {
+  return runSc(['stop', serviceName]);
 }
 
 function ensureDirectory(targetDir) {
@@ -120,6 +145,79 @@ function getBundledCandidate() {
     pluginDir: path.join(root, 'lib', 'plugin'),
     defaultsFile: path.join(getManagedMariaDbRoot(), 'my.ini')
   };
+}
+
+function normalizeForCompare(value) {
+  return String(value || '').replace(/\//g, '\\').toLowerCase();
+}
+
+function isClearlyManagedService(serviceName, candidate) {
+  if (MANAGED_SERVICE_NAMES.includes(serviceName)) {
+    return true;
+  }
+
+  const config = queryServiceConfig(serviceName);
+  if (!config) return false;
+
+  const normalizedConfig = normalizeForCompare(config);
+  const managedRoot = normalizeForCompare(getManagedMariaDbRoot());
+  const candidateRoot = normalizeForCompare(candidate?.root || '');
+
+  return normalizedConfig.includes(managedRoot)
+    || (candidateRoot && normalizedConfig.includes(candidateRoot));
+}
+
+function getWindowsMariaDbProcesses() {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+
+  const command = [
+    '$items = Get-CimInstance Win32_Process',
+    "  | Where-Object { $_.Name -in @('mariadbd.exe','mysqld.exe') }",
+    '  | Select-Object ProcessId,ExecutablePath,CommandLine;',
+    'if ($items) { $items | ConvertTo-Json -Compress }'
+  ].join(' ');
+
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    windowsHide: true,
+    encoding: 'utf8'
+  });
+
+  if (result.status !== 0 || !String(result.stdout || '').trim()) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(String(result.stdout || '').trim());
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function isManagedMariaDbProcess(processInfo, candidate) {
+  const executablePath = normalizeForCompare(processInfo?.ExecutablePath || '');
+  const commandLine = normalizeForCompare(processInfo?.CommandLine || '');
+  const managedRoot = normalizeForCompare(getManagedMariaDbRoot());
+  const candidateRoot = normalizeForCompare(candidate?.root || '');
+  const defaultsFile = normalizeForCompare(candidate?.defaultsFile || path.join(getManagedMariaDbRoot(), 'my.ini'));
+
+  return (candidateRoot && executablePath.startsWith(candidateRoot))
+    || commandLine.includes(managedRoot)
+    || commandLine.includes(defaultsFile);
+}
+
+function killWindowsProcessTree(pid) {
+  const normalizedPid = Number(pid);
+  if (!Number.isInteger(normalizedPid) || normalizedPid <= 0) {
+    return { status: 1, stdout: '', stderr: 'PID invalido' };
+  }
+
+  return spawnSync('taskkill.exe', ['/PID', String(normalizedPid), '/T', '/F'], {
+    windowsHide: true,
+    encoding: 'utf8'
+  });
 }
 
 function findInstallDirectories() {
@@ -312,7 +410,7 @@ async function ensureLocalMysqlAvailable(options = {}) {
   }
 
   if (process.platform === 'win32') {
-    for (const serviceName of [MANAGED_SERVICE_NAME, 'MariaDB']) {
+    for (const serviceName of [...MANAGED_SERVICE_NAMES, ...FALLBACK_SERVICE_NAMES]) {
       const service = queryExistingService(serviceName);
       if (!service) continue;
 
@@ -361,7 +459,73 @@ async function ensureLocalMysqlAvailable(options = {}) {
   };
 }
 
+async function stopLocalMysqlIfManaged(options = {}) {
+  const log = typeof options.log === 'function' ? options.log : () => {};
+  const dbClient = String(process.env.DB_CLIENT || 'sqlite').trim().toLowerCase();
+  const host = String(process.env.DB_HOST || '127.0.0.1').trim() || '127.0.0.1';
+  const port = Number(process.env.DB_PORT || 3306);
+
+  if (dbClient !== 'mysql') {
+    return { status: 'skipped', reason: 'DB_CLIENT no usa mysql.' };
+  }
+
+  if (!isLoopbackHost(host)) {
+    return { status: 'skipped', reason: `DB_HOST apunta a ${host}, no a una instancia local.` };
+  }
+
+  const candidate = findServerCandidate();
+  const stoppedServices = [];
+  const stoppedProcesses = [];
+
+  if (process.platform === 'win32') {
+    for (const serviceName of [...MANAGED_SERVICE_NAMES, ...FALLBACK_SERVICE_NAMES]) {
+      const service = queryExistingService(serviceName);
+      if (!service) continue;
+      if (!isClearlyManagedService(serviceName, candidate)) {
+        log(`Servicio ${serviceName} detectado, pero no parece pertenecer a Tecno Caja. No se detiene.`);
+        continue;
+      }
+
+      log(`Deteniendo servicio MariaDB de Tecno Caja: ${serviceName}.`);
+      const result = stopService(serviceName);
+      if (result.status === 0 || /STOP_PENDING|not been started|no se ha iniciado/i.test(`${result.stdout || ''}\n${result.stderr || ''}`)) {
+        stoppedServices.push(serviceName);
+      } else {
+        log(`No se pudo detener el servicio ${serviceName}: ${result.stderr || result.stdout || 'sin detalle'}`);
+      }
+    }
+
+    for (const processInfo of getWindowsMariaDbProcesses()) {
+      if (!isManagedMariaDbProcess(processInfo, candidate)) {
+        continue;
+      }
+
+      const pid = Number(processInfo.ProcessId);
+      log(`Deteniendo proceso MariaDB de Tecno Caja PID ${pid}.`);
+      const result = killWindowsProcessTree(pid);
+      if (result.status === 0) {
+        stoppedProcesses.push(pid);
+      } else {
+        log(`No se pudo detener el PID ${pid}: ${result.stderr || result.stdout || 'sin detalle'}`);
+      }
+    }
+  }
+
+  await waitForPortClosed(host, port, 12, 500);
+
+  if (stoppedServices.length || stoppedProcesses.length) {
+    return {
+      status: 'stopped',
+      services: stoppedServices,
+      processes: stoppedProcesses
+    };
+  }
+
+  return { status: 'skipped', reason: 'No se encontro MariaDB local administrada por Tecno Caja.' };
+}
+
 module.exports = {
   ensureLocalMysqlAvailable,
-  resolveMysqlBindHost
+  resolveMysqlBindHost,
+  stopLocalMysqlIfManaged
 };
