@@ -2851,7 +2851,7 @@
     <div class="setup-form-grid">
       <div class="form-group">
         <label>Monto inicial</label>
-        <input type="number" id="cash-gate-amount" class="form-input" value="0" min="0" step="0.01">
+        <input type="number" id="cash-gate-amount" class="form-input" placeholder="0.00" min="0" step="0.01">
       </div>
       <div class="form-group span-2">
         <label>Observaciones</label>
@@ -3369,85 +3369,78 @@
 
       <!-- ── TAB: CERTIFICACIÓN DGII ───────────────────────── -->
       <div id="fiscal-tab-homologation" class="fiscal-tab-content" style="display:none">
-        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.9fr);gap:1rem">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1rem">
           <div class="config-card" style="padding:1rem">
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;margin-bottom:.85rem">
-              <div>
-                <div style="font-size:.95rem;font-weight:700">Checklist visual de certificación</div>
-                <div style="font-size:.8rem;color:var(--text3)">Marca aquí el avance real del contribuyente sin simular pasos pendientes de DGII.</div>
-              </div>
-              <div id="fiscal-homologation-summary" style="font-size:.82rem;color:var(--text3)">—</div>
+            <div style="font-size:1rem;font-weight:800">Certificación DGII rápida</div>
+            <div style="font-size:.8rem;color:var(--text3);margin:.25rem 0 1rem">
+              Flujo único: importar el set, enviar e-CF/RFCE en secuencia y preparar la carpeta final de Facturas de Consumo &lt;250Mil.
             </div>
-            <div id="fiscal-homologation-list" style="display:grid;gap:.6rem"></div>
+
+            <div style="display:grid;gap:.85rem">
+              <div style="padding:.85rem;border:1px solid var(--border);border-radius:10px;background:var(--bg2)">
+                <div style="font-weight:700;margin-bottom:.55rem">1. Set oficial</div>
+                <div class="form-group" style="margin-bottom:.55rem">
+                  <label style="font-size:.8rem">Archivo descargado de DGII</label>
+                  <input type="file" id="certification-testset-files" accept=".xml,.zip,.txt,.json,.csv,.xlsx,.xls,.ods" class="form-input" style="padding:.4rem">
+                </div>
+                <div style="display:flex;gap:.55rem;flex-wrap:wrap;align-items:center">
+                  <button id="certification-btn-fast-flow" class="btn-primary" onclick="runFastCertificationFlow()">Importar y enviar ahora</button>
+                  <button id="certification-btn-import" class="btn-secondary" onclick="importCertificationSet()">Solo importar</button>
+                </div>
+              </div>
+
+              <div style="padding:.85rem;border:1px solid var(--border);border-radius:10px;background:var(--bg2)">
+                <div style="font-weight:700;margin-bottom:.35rem">2. Seguimiento DGII</div>
+                <div style="font-size:.78rem;color:var(--text3);margin-bottom:.65rem">
+                  Úsalo para continuar un set ya importado o actualizar los TrackID.
+                </div>
+                <div style="display:flex;gap:.55rem;flex-wrap:wrap">
+                  <button class="btn-secondary certification-run-btn" onclick="runCertificationSequence()">Enviar pendientes</button>
+                  <button class="btn-secondary" onclick="pollCertificationStatuses()">Consultar estados</button>
+                </div>
+              </div>
+
+              <div style="padding:.85rem;border:1px solid var(--border);border-radius:10px;background:var(--bg2)">
+                <div style="font-weight:700;margin-bottom:.35rem">3. Portal final &lt;250Mil</div>
+                <div style="font-size:.78rem;color:var(--text3);margin-bottom:.65rem">
+                  Cuando DGII marque 21/21 comprobantes y 4/4 resúmenes, genera y abre una carpeta con solo los 4 e-CF íntegros para la pantalla final.
+                </div>
+                <div style="display:flex;gap:.55rem;flex-wrap:wrap">
+                  <button id="btn-prepare-final-250mil" class="btn-primary" onclick="prepare250MilPortalPackage(false)">Preparar 4 XML finales</button>
+                  <button class="btn-secondary" onclick="open250MilPortalFolder()">Abrir carpeta final</button>
+                </div>
+                <div id="certification-final-250mil-result" style="display:none;margin-top:.65rem;padding:.7rem;border-radius:8px;background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.22);font-size:.78rem;color:var(--text2)"></div>
+              </div>
+            </div>
+
+            <details style="margin-top:.85rem">
+              <summary style="cursor:pointer;color:var(--text3);font-size:.82rem">Recuperación si DGII reinicia o rechaza</summary>
+              <div style="display:flex;gap:.55rem;flex-wrap:wrap;margin-top:.65rem">
+                <button class="btn-secondary" onclick="resetSentCertificationCases()">Reintentar lote</button>
+                <button id="certification-btn-reset" class="btn-danger" onclick="resetCertificationData()">Borrar set local</button>
+              </div>
+            </details>
+
+            <div id="certification-import-result" style="display:none;margin-top:.75rem;padding:.85rem 1rem;border-radius:10px;background:var(--bg2);font-size:.82rem"></div>
           </div>
 
-          <div style="display:grid;gap:1rem">
-            <div class="config-card" style="padding:1rem">
-              <div style="font-size:.95rem;font-weight:700;margin-bottom:.3rem">DGII Certificación</div>
-              <div style="font-size:.8rem;color:var(--text3);margin-bottom:.85rem">
-                Importa el set oficial descargado del portal DGII. El sistema leerá XML, ZIP, TXT, JSON, Excel o una carpeta completa,
-                regenerará cada comprobante internamente, lo firmará con el certificado .p12 y lo enviará a DGII uno por uno.
-              </div>
-              <div class="form-group" style="margin-bottom:.55rem">
-                <label style="font-size:.85rem">Archivos del set DGII (.xml, .zip, .txt, .json, .csv, .xlsx, .xls)</label>
-                <input type="file" id="certification-testset-files" accept=".xml,.zip,.txt,.json,.csv,.xlsx,.xls,.ods" multiple class="form-input" style="padding:.4rem">
-              </div>
-              <div class="form-group" style="margin-bottom:.65rem">
-                <label style="font-size:.85rem">Carpeta completa del set DGII</label>
-                <input type="file" id="certification-testset-folder" webkitdirectory directory multiple class="form-input" style="padding:.4rem">
-              </div>
-              <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.65rem">
-                <button id="certification-btn-import" class="btn-primary" onclick="importCertificationSet()">📥 Importar Set de Pruebas DGII</button>
-                <button class="btn-primary" onclick="runCertificationSequence()" title="Resetea enviados y envía todos los pendientes en ráfaga, luego consulta estados">▶ Ejecutar pruebas secuenciales</button>
-                <button class="btn-secondary" onclick="pollCertificationStatuses()" title="Consulta el estado actual en DGII de todos los casos enviados">🔄 Consultar estados DGII</button>
-                <button class="btn-secondary" onclick="resetSentCertificationCases()" title="Rota TODOS los eNCFs (incluye RFCE) y resetea todo a 'firmado'. Usar cuando el portal DGII reinicia las pruebas por un rechazo.">↩ Reset enviados</button>
-                <button id="btn-gen-250mil" class="btn-secondary" onclick="generate250MilXmls()" title="Genera y firma los 4 XMLs con los eNCFs actuales (sin NombreComercial). Ejecutar DESPUÉS de tener 21/21 + 4/4 aceptados.">📋 Generar XMLs &lt;250Mil</button>
-                <button class="btn-secondary" onclick="sendNextCertificationCase()">Enviar siguiente</button>
-                <button class="btn-secondary" onclick="resignPendingDocs()">Re-firmar pendientes</button>
-                <button id="certification-btn-reset" class="btn-danger" onclick="resetCertificationData()" title="Elimina todos los casos del batch actual para empezar desde cero">🗑 Borrar y empezar de nuevo</button>
-              </div>
-              <div id="certification-import-result" style="display:none;margin-top:.6rem;padding:.85rem 1rem;border-radius:10px;background:var(--bg2);font-size:.82rem"></div>
-            </div>
-
-            <div class="config-card" style="padding:1rem">
-              <div style="font-size:.95rem;font-weight:700;margin-bottom:.65rem">Resumen de Certificación DGII</div>
-              <div id="certification-summary-panel" style="display:grid;gap:.5rem"></div>
-            </div>
-
-            <div class="config-card" style="padding:1rem">
-              <div style="font-size:.95rem;font-weight:700;margin-bottom:.5rem">Validación manual final</div>
-              <div style="font-size:.8rem;color:var(--text3);margin-bottom:.85rem">Usa esta sección para dejar constancia cuando el contribuyente apruebe su representación impresa en térmica 58/80 mm o A4.</div>
-              <div class="form-group">
-                <label>Representación impresa validada</label>
-                <select id="fiscal-manual-print-status" class="form-input">
-                  <option value="pending">Pendiente</option>
-                  <option value="warning">Observada</option>
-                  <option value="ok">Validada</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>Notas / evidencia</label>
-                <textarea id="fiscal-manual-print-notes" class="form-input" rows="6" placeholder="Ejemplo: validada factura A4 el 16/05/2026, QR visible, e-NCF impreso correctamente, pendiente revisar 58mm."></textarea>
-              </div>
-              <button id="fiscal-btn-save-manual-print" class="btn-primary" onclick="saveFiscalManualPrintCheck()">Guardar validación manual</button>
-            </div>
+          <div class="config-card" style="padding:1rem">
+            <div style="font-size:.95rem;font-weight:700;margin-bottom:.65rem">Resumen DGII</div>
+            <div id="certification-summary-panel" style="display:grid;gap:.5rem"></div>
           </div>
         </div>
-        <div class="config-card" style="padding:1rem;margin-top:1rem">
+
+        <details class="config-card" style="padding:1rem;margin-top:1rem">
+          <summary style="cursor:pointer;font-weight:700">Ver casos del set actual</summary>
           <div style="display:flex;justify-content:space-between;align-items:center;gap:.75rem;flex-wrap:wrap;margin-bottom:.75rem">
             <div>
-              <div style="font-size:.95rem;font-weight:700">Pruebas Oficiales de Certificación DGII</div>
-              <div style="font-size:.8rem;color:var(--text3)">Importa el set, revisa cada prueba y ejecútalas individualmente o en secuencia automática.</div>
+              <div style="font-size:.95rem;font-weight:700;margin-top:.75rem">Casos del set actual</div>
+              <div style="font-size:.8rem;color:var(--text3)">Vista de seguimiento. Las acciones principales están arriba.</div>
             </div>
-            <div style="display:flex;gap:.5rem;flex-wrap:wrap">
-              <button class="btn-secondary" onclick="loadCertificationCases()">Actualizar</button>
-              <button class="btn-primary" onclick="runCertificationSequence()" title="Envía todos los pendientes en ráfaga y consulta estados">▶ Ejecutar secuencial</button>
-              <button class="btn-secondary" onclick="pollCertificationStatuses()" title="Actualiza estados DGII de casos enviados">🔄 Consultar estados</button>
-              <button class="btn-secondary" onclick="sendNextCertificationCase()">Enviar siguiente</button>
-            </div>
+            <button class="btn-secondary" onclick="loadCertificationCases()">Ver casos / actualizar</button>
           </div>
-          <div id="certification-cases-table"><div class="loading-text">Cargando pruebas de certificación…</div></div>
-        </div>
+          <div id="certification-cases-table"><div class="empty-state-small">Tabla en pausa para abrir más rápido.</div></div>
+        </details>
       </div>
 
       <!-- ── TAB: SECUENCIAS e-NCF ──────────────────────────── -->

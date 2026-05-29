@@ -1793,6 +1793,11 @@ function nowRDString() {
   return datetime_local.replace('T', ' ');
 }
 
+function toLocalDateKeyRD(value = new Date()) {
+  const date = value instanceof Date ? value : parseStoredDateTime(value);
+  return getLocalDateTimeRD(date || new Date()).fecha_local;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function readAuthToken(req) {
@@ -2057,6 +2062,19 @@ async function persistProductsCsvBackup(reason = 'auto') {
     console.warn(`[products-csv] No se pudo generar el respaldo CSV (${reason}):`, error.message);
     return null;
   }
+}
+
+let _silentProductBackupTimer = null;
+function scheduleSilentProductBackup(trigger = 'producto_cambiado') {
+  if (_silentProductBackupTimer) clearTimeout(_silentProductBackupTimer);
+  _silentProductBackupTimer = setTimeout(() => {
+    _silentProductBackupTimer = null;
+    const createBackup = app.locals && app.locals.createAutomaticBackup;
+    if (typeof createBackup !== 'function') return;
+    createBackup({ trigger, forceCloud: true }).catch((error) => {
+      console.warn(`[respaldos-auto] No se pudo completar respaldo silencioso (${trigger}):`, error.message);
+    });
+  }, 2500);
 }
 
 function importedProductFieldProvided(record, fieldName) {
@@ -6083,7 +6101,8 @@ async function getBootstrapData(actorUser = null) {
     const openedAtMs = openSession.opened_at ? new Date(openSession.opened_at).getTime() : Date.now();
     const hoursOpen = Math.round((Date.now() - openedAtMs) / 36000) / 100;
     const operativeDate = openSession.operative_date
-      || (openSession.opened_at ? new Date(openSession.opened_at).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
+      ? toLocalDateKeyRD(openSession.operative_date)
+      : toLocalDateKeyRD(openSession.opened_at || new Date());
     activeSessionInfo = {
       id: Number(openSession.id),
       openedAmount: Number(openSession.opened_amount || 0),
@@ -6193,8 +6212,19 @@ app.post('/api/logout', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // LISTA PÚBLICA DE USUARIOS — para el selector de login (sin contraseñas)
 // ═══════════════════════════════════════════════════════════════════════════
+let publicUsersListCache = { expiresAt: 0, payload: null };
+
+function clearPublicUsersListCache() {
+  publicUsersListCache = { expiresAt: 0, payload: null };
+}
+
 app.get('/api/public/users-list', loginLimiter, async (req, res) => {
   try {
+    if (publicUsersListCache.payload && publicUsersListCache.expiresAt > Date.now()) {
+      res.setHeader('Cache-Control', 'private, max-age=10');
+      return res.json(publicUsersListCache.payload);
+    }
+
     const users = await query(
       `SELECT id, nombre, usuario, rol
        FROM users
@@ -6210,7 +6240,13 @@ app.get('/api/public/users-list', loginLimiter, async (req, res) => {
       usuario: String(u.usuario || ''),
       rol: String(u.rol || ''),
     }));
-    res.json({ ok: true, users: safeUsers });
+    const payload = { ok: true, users: safeUsers };
+    publicUsersListCache = {
+      expiresAt: Date.now() + 10 * 1000,
+      payload
+    };
+    res.setHeader('Cache-Control', 'private, max-age=10');
+    res.json(payload);
   } catch (e) {
     res.status(500).json({ ok: false, users: [], error: e.message });
   }
@@ -6858,6 +6894,7 @@ app.post('/api/setup/complete', async (req, res) => {
 
   await ensureBusinessStarterCatalog(businessType);
   await query('UPDATE config SET starter_catalog_seeded = 1 WHERE id = 1');
+  clearPublicUsersListCache();
   saveTerminalConfig({
     terminalId: crypto.randomBytes(8).toString('hex'),
     terminalName: 'Terminal Principal',
@@ -9063,6 +9100,7 @@ app.post('/api/products', async (req, res) => {
     await reportsSync.syncProduct(createdResult.row, { config: cfg, branchId: createdResult.branchId });
   });
   await persistProductsCsvBackup('crear_producto');
+  scheduleSilentProductBackup('crear_producto');
   res.status(201).json(created);
 });
 
@@ -9326,6 +9364,7 @@ app.post('/api/products/import-csv', async (req, res) => {
   }
 
   const backupInfo = await persistProductsCsvBackup('importacion_csv');
+  scheduleSilentProductBackup('importacion_csv');
 
   try {
     await productsCache.loadAll();
@@ -9638,6 +9677,7 @@ app.put('/api/products/:id', async (req, res) => {
     await reportsSync.syncProduct(updatedResult.row, { config: cfg, branchId: updatedResult.branchId });
   });
   await persistProductsCsvBackup('actualizar_producto');
+  scheduleSilentProductBackup('actualizar_producto');
   res.json(updated);
 });
 
@@ -9677,6 +9717,7 @@ app.delete('/api/products/:id', async (req, res) => {
     await deleteProductsFromReportsByIds([req.params.id]);
   });
   await persistProductsCsvBackup('eliminar_producto');
+  scheduleSilentProductBackup('eliminar_producto');
   res.status(204).end();
 });
 
@@ -10521,6 +10562,7 @@ app.post('/api/users', async (req, res) => {
     }));
   }
   const rows = await query('SELECT * FROM users WHERE id = ?', [result.insertId]);
+  clearPublicUsersListCache();
   await writeAuditLog({
     userId: actorUser.id,
     userName: actorUser.nombre,
@@ -10645,6 +10687,7 @@ app.put('/api/users/:id', async (req, res) => {
     }));
   }
   const updatedRows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [id]);
+  clearPublicUsersListCache();
   await writeAuditLog({
     userId: actorUser.id,
     userName: actorUser.nombre,
@@ -11626,7 +11669,9 @@ async function getActiveSessionForRegister(cashRegisterId) {
     openedAmount: Number(session.opened_amount || 0),
     currentAmount: Number(session.current_amount || 0),
     openedAt: session.opened_at,
-    operativeDate: session.operative_date || (openedAt ? openedAt.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10)),
+    operativeDate: session.operative_date
+      ? toLocalDateKeyRD(session.operative_date)
+      : toLocalDateKeyRD(openedAt || new Date()),
     hoursOpen,
     staleWarning: hoursOpen > STALE_HOURS,
   };
@@ -11672,20 +11717,21 @@ app.post('/api/cash/open', async (req, res) => {
       }
       // operative_date = fecha del día en que se abre el turno.
       // Se mantiene fija aunque el turno cruce medianoche.
-      const operativeDateStr = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+      const openedAtStr = nowRDString();
+      const operativeDateStr = toLocalDateKeyRD(openedAtStr); // 'YYYY-MM-DD'
       const sessionResult = await conn.query(
         `INSERT INTO cash_sessions (opened_amount, current_amount, status, opened_at, operative_date, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name)
-         VALUES (?, ?, "open", datetime('now'), ?, ?, ?, ?, ?)`,
-        [amount, amount, operativeDateStr, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema']
+         VALUES (?, ?, "open", ?, ?, ?, ?, ?, ?)`,
+        [amount, amount, openedAtStr, operativeDateStr, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema']
       );
       await conn.query(
-        `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Apertura", ?, ?, ?, ?, datetime('now'), ?, ?)`,
-        [sessionResult.insertId, amount, notes, actor.userId || null, actor.userName || 'Sistema', structure.branchId, structure.cashRegisterId]
+        `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Apertura", ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionResult.insertId, amount, notes, actor.userId || null, actor.userName || 'Sistema', openedAtStr, structure.branchId, structure.cashRegisterId]
       );
       await conn.query(
         `INSERT INTO cash_openings (cash_session_id, branch_id, cash_register_id, opened_amount, notes, opened_by_user_id, opened_by_user_name, opened_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        [sessionResult.insertId, structure.branchId, structure.cashRegisterId, amount, notes, actor.userId || null, actor.userName || 'Sistema']
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [sessionResult.insertId, structure.branchId, structure.cashRegisterId, amount, notes, actor.userId || null, actor.userName || 'Sistema', openedAtStr]
       );
       await conn.query('UPDATE config SET cash_open = 1, cash_amount = ?, active_branch_id = ?, active_cash_register_id = ? WHERE id = 1', [amount, structure.branchId, structure.cashRegisterId]);
       return Number(sessionResult.insertId);
@@ -11794,6 +11840,7 @@ app.post('/api/cash/close', async (req, res) => {
   await ensureBusinessRulesExtensions();
   await ensureCashMovementExtensions();
   const amount = Number(req.body?.monto || 0);
+  const amountWasCaptured = req.body?.montoCapturado === true;
   const notes = req.body?.obs || 'Cierre de caja';
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanCloseCash(actorUser)) {
@@ -11810,6 +11857,28 @@ app.post('/api/cash/close', async (req, res) => {
 
     if (!session) {
       return res.status(400).json({ error: 'No hay una caja abierta.' });
+    }
+
+    const [saleCountRows, cashSaleMovementRows] = await Promise.all([
+      query(
+        `SELECT COUNT(*) AS total
+         FROM sales
+         WHERE cash_session_id = ? AND COALESCE(sale_status, 'pagada') = 'pagada'`,
+        [session.id]
+      ).catch(() => [{ total: 0 }]),
+      query(
+        `SELECT COUNT(*) AS total
+         FROM cash_movements
+         WHERE session_id = ? AND movement_type = 'Venta'`,
+        [session.id]
+      ).catch(() => [{ total: 0 }]),
+    ]);
+    const hasSalesInTurn = Number(saleCountRows[0]?.total || 0) > 0
+      || Number(cashSaleMovementRows[0]?.total || 0) > 0;
+    if (hasSalesInTurn && !amountWasCaptured) {
+      return res.status(400).json({
+        error: 'Para cerrar caja con ventas debes escribir manualmente el monto contado/vendido.'
+      });
     }
 
     await withTransaction(async (conn) => {

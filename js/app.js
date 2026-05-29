@@ -7,6 +7,8 @@ let licenseWatchTimer = null;
 let licenseBlockInProgress = false;
 const UI_PREFS_KEY = 'tecnocaja-ui-preferences';
 const LAST_LOGIN_USER_KEY = 'tecnocaja-last-login-user';
+const LOGIN_USERS_CACHE_KEY = 'tecnocaja-login-users-cache';
+const LOGIN_USERS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_LICENSE_WHATSAPP = '18292812877';
 let setupState = null;
 let pendingGoogleLinkSession = null;
@@ -21,6 +23,7 @@ let setupWizard = {
 };
 let loginMode = 'existing';
 let loginTransitionLock = false;
+let loginUsersLoadPromise = null;
 let trialBusinessCatalog = [];
 let trialBusinessState = {
   active: false,
@@ -2209,6 +2212,7 @@ function applyAppTranslations() {
     const el = document.getElementById(id);
     if (el) el.textContent = value;
   });
+  decorateConfigSectionCards();
 
   const loginLicenseRefresh = document.getElementById('login-license-refresh');
   if (loginLicenseRefresh) loginLicenseRefresh.textContent = appText('settings.licenseRefresh', 'Actualizar estado');
@@ -2366,9 +2370,6 @@ function showLoginScreen() {
   }
 
   setLoginMode(setupState?.setupRequired ? 'new' : 'existing');
-  if (!setupState?.setupRequired) {
-    loadLoginUsers();
-  }
 }
 
 function normalizePhoneForWhatsApp(rawPhone, defaultCountryCode = '1') {
@@ -2659,7 +2660,7 @@ function setLoginMode(mode = 'existing') {
     // loadLoginUsers se llama desde showLoginScreen; aquí solo recargamos si el grid está vacío
     const grid = document.getElementById('login-user-grid');
     if (grid && !grid.querySelector('.login-user-card')) {
-      loadLoginUsers();
+      loadLoginUsers({ preferCache: true });
     }
   }
 }
@@ -3033,38 +3034,123 @@ function applyRememberedLoginUser() {
 
 // ─── Login User Picker ────────────────────────────────────────────────────────
 
-async function loadLoginUsers() {
-  const grid = document.getElementById('login-user-grid');
-  if (!grid) return;
-  grid.innerHTML = '<div class="login-user-grid-loading">Cargando usuarios…</div>';
+function getCachedLoginUsers() {
   try {
-    const data = await api.request('/api/public/users-list');
-    const users = Array.isArray(data?.users) ? data.users : [];
-    if (!users.length) {
-      _showLoginTextFallback();
+    const cached = JSON.parse(localStorage.getItem(LOGIN_USERS_CACHE_KEY) || 'null');
+    if (!cached || !Array.isArray(cached.users)) return [];
+    const age = Date.now() - Number(cached.savedAt || 0);
+    return age >= 0 && age <= LOGIN_USERS_CACHE_TTL_MS ? cached.users : [];
+  } catch (_error) {
+    return [];
+  }
+}
+
+function setCachedLoginUsers(users) {
+  try {
+    localStorage.setItem(LOGIN_USERS_CACHE_KEY, JSON.stringify({
+      savedAt: Date.now(),
+      users: (Array.isArray(users) ? users : []).slice(0, 50)
+    }));
+  } catch (_error) {
+    // El selector sigue funcionando aunque localStorage no esté disponible.
+  }
+}
+
+function applyLoginUsersList(users, { autoSelect = true } = {}) {
+  if (!Array.isArray(users) || !users.length) {
+    _showLoginTextFallback();
+    return;
+  }
+
+  _renderLoginUserGrid(users);
+  if (!autoSelect) return;
+
+  const currentSelected = String(document.getElementById('login-user')?.value || '').trim();
+  if (currentSelected) return;
+
+  const remembered = getLastLoginUser();
+  if (remembered) {
+    const match = users.find(u => u.usuario === remembered);
+    if (match) {
+      selectLoginUser(match.id, match.nombre, match.usuario, match.rol);
       return;
     }
-    _renderLoginUserGrid(users);
-    // Auto-seleccionar el usuario recordado si existe en la lista
-    const remembered = getLastLoginUser();
-    if (remembered) {
-      const match = users.find(u => u.usuario === remembered);
-      if (match) {
-        selectLoginUser(match.id, match.nombre, match.usuario, match.rol);
-        return;
+  }
+
+  if (users.length === 1) {
+    selectLoginUser(users[0].id, users[0].nombre, users[0].usuario, users[0].rol);
+  }
+}
+
+async function loadLoginUsers(options = {}) {
+  const preferCache = options.preferCache !== false;
+  const force = Boolean(options.force);
+  let grid = document.getElementById('login-user-grid');
+  if (!grid) {
+    const pickerSection = document.getElementById('login-user-picker-section');
+    if (pickerSection) {
+      pickerSection.innerHTML = `
+        <label id="login-user-label" class="form-label-sm">Selecciona tu usuario</label>
+        <div id="login-user-grid" class="login-user-grid"></div>
+        <input type="hidden" id="login-user" value="">`;
+      grid = document.getElementById('login-user-grid');
+    }
+  }
+  if (!grid) return;
+
+  const cachedUsers = preferCache ? getCachedLoginUsers() : [];
+  if (cachedUsers.length) {
+    applyLoginUsersList(cachedUsers, { autoSelect: true });
+  } else if (!force) {
+    grid.innerHTML = '<div class="login-user-grid-loading">Cargando usuarios…</div>';
+  }
+
+  if (loginUsersLoadPromise) {
+    return loginUsersLoadPromise;
+  }
+
+  loginUsersLoadPromise = (async () => {
+    try {
+      const data = await api.request('/api/public/users-list', { _timeoutMs: 5000 });
+      const users = Array.isArray(data?.users) ? data.users : [];
+      if (!users.length) {
+        if (!cachedUsers.length) _showLoginTextFallback();
+        return users;
       }
+      setCachedLoginUsers(users);
+
+      const loginVisible = !document.getElementById('login-screen')?.classList.contains('hidden');
+      if (loginVisible && loginMode === 'existing') {
+        const selectedUser = String(document.getElementById('login-user')?.value || '').trim();
+        applyLoginUsersList(users, { autoSelect: !selectedUser });
+      }
+      return users;
+    } catch (e) {
+      if (!cachedUsers.length) _showLoginTextFallback();
+      return cachedUsers;
+    } finally {
+      loginUsersLoadPromise = null;
     }
-    // Auto-seleccionar si hay un solo usuario
-    if (users.length === 1) {
-      selectLoginUser(users[0].id, users[0].nombre, users[0].usuario, users[0].rol);
-    }
-  } catch (e) {
-    _showLoginTextFallback();
+  })();
+
+  try {
+    return await loginUsersLoadPromise;
+  } catch (_error) {
+    return cachedUsers;
   }
 }
 
 function _renderLoginUserGrid(users) {
-  const grid = document.getElementById('login-user-grid');
+  let grid = document.getElementById('login-user-grid');
+  if (!grid) {
+    const pickerSection = document.getElementById('login-user-picker-section');
+    if (!pickerSection) return;
+    pickerSection.innerHTML = `
+      <label id="login-user-label" class="form-label-sm">Selecciona tu usuario</label>
+      <div id="login-user-grid" class="login-user-grid"></div>
+      <input type="hidden" id="login-user" value="">`;
+    grid = document.getElementById('login-user-grid');
+  }
   if (!grid) return;
   grid.innerHTML = users.map(u => {
     const initials = _getAvatarInitials(u.nombre);
@@ -3603,6 +3689,162 @@ function setAccent(color, light) {
   saveUiPreferences();
 }
 
+const CONFIG_SECTION_CARD_META = {
+  'cfg-section-business-title': {
+    icon: '🏪',
+    eyebrow: 'Negocio',
+    desc: 'Logo, RNC, dirección, idioma y modo de operación.'
+  },
+  'cfg-section-branches-title': {
+    icon: '🏢',
+    eyebrow: 'Operación',
+    desc: 'Sucursal activa, caja activa y reglas para cajeros.'
+  },
+  'cfg-admin-delete-section': {
+    icon: '⚠️',
+    eyebrow: 'Administración',
+    desc: 'Eliminar sucursales y cajas con control de seguridad.',
+    tone: 'danger'
+  },
+  'cfg-section-billing-title': {
+    icon: '🧾',
+    eyebrow: 'Ventas',
+    desc: 'Moneda, ITBIS, numeración, recibos e impresoras.'
+  },
+  'cfg-ecf-section': {
+    icon: '⚡',
+    eyebrow: 'DGII',
+    desc: 'Certificado, ambiente fiscal y estado e-CF.'
+  },
+  'cfg-network-section': {
+    icon: '🔗',
+    eyebrow: 'Red',
+    desc: 'Terminal principal, equipos conectados y acceso LAN.'
+  },
+  'cfg-bascula-section': {
+    icon: '⚖️',
+    eyebrow: 'TCP',
+    desc: 'Conexión por IP y puerto para básculas en red.'
+  },
+  'cfg-ncf-section': {
+    icon: '🔢',
+    eyebrow: 'Fiscal',
+    desc: 'Rangos autorizados para comprobantes NCF.'
+  },
+  'cfg-section-drawer-title': {
+    icon: '🧰',
+    eyebrow: 'Caja',
+    desc: 'Apertura automática de gaveta por impresora, red o serial.'
+  },
+  'cfg-section-appearance-title': {
+    icon: '🎨',
+    eyebrow: 'Interfaz',
+    desc: 'Tema, colores, WhatsApp Web y vista de ventas.'
+  },
+  'cfg-business-guide-heading': {
+    icon: '🧭',
+    eyebrow: 'Guía',
+    desc: 'Atajos y recomendaciones según el tipo de negocio.'
+  },
+  'cfg-section-backup-title': {
+    icon: '☁️',
+    eyebrow: 'Seguridad',
+    desc: 'Respaldos locales, nube, restauración y retención.'
+  },
+  'cfg-section-access-title': {
+    icon: '👤',
+    eyebrow: 'Cuenta',
+    desc: 'Métodos de acceso y contraseña del usuario actual.'
+  },
+  'cfg-section-security-title': {
+    icon: '🔐',
+    eyebrow: 'Protección',
+    desc: 'Clave de seguridad para restaurar, abrir carpetas y resetear.'
+  },
+  'cfg-section-danger-title': {
+    icon: '🛑',
+    eyebrow: 'Crítico',
+    desc: 'Reset completo del sistema y datos remotos.',
+    tone: 'danger'
+  },
+  'cfg-update-section': {
+    icon: '🔄',
+    eyebrow: 'Sistema',
+    desc: 'Buscar, descargar e instalar nuevas versiones.'
+  }
+};
+
+function getConfigSectionCardMeta(section, heading) {
+  const key = heading?.id || section?.id || '';
+  const title = String(heading?.textContent || '').trim();
+  const byKey = CONFIG_SECTION_CARD_META[key];
+  if (byKey) return byKey;
+
+  const normalized = title.toLowerCase();
+  if (normalized.includes('báscula digital')) {
+    return { icon: '⚖️', eyebrow: 'Peso', desc: 'Lectura USB o serial para productos por peso.' };
+  }
+  if (normalized.includes('actualización')) {
+    return CONFIG_SECTION_CARD_META['cfg-update-section'];
+  }
+  if (normalized.includes('acceso')) {
+    return CONFIG_SECTION_CARD_META['cfg-section-access-title'];
+  }
+  if (normalized.includes('seguridad')) {
+    return CONFIG_SECTION_CARD_META['cfg-section-security-title'];
+  }
+  if (normalized.includes('zona')) {
+    return CONFIG_SECTION_CARD_META['cfg-section-danger-title'];
+  }
+  return { icon: '⚙️', eyebrow: 'Configuración', desc: 'Abrir opciones de esta sección.' };
+}
+
+function decorateConfigSectionCards(rootSelector = '#module-configuracion') {
+  const root = document.querySelector(rootSelector);
+  if (!root) return;
+  root.querySelectorAll('.config-section').forEach((section) => {
+    const heading = section.querySelector('h3');
+    if (!heading) return;
+
+    const rawTitle = String(heading.textContent || '').replace(/^[^\p{L}\p{N}]+/u, '').trim();
+    const currentTitle = heading.querySelector('.config-section-card-title')
+      ? (heading.dataset.cardTitle || rawTitle)
+      : rawTitle;
+    if (!currentTitle) return;
+
+    const meta = getConfigSectionCardMeta(section, heading);
+    heading.dataset.cardTitle = currentTitle;
+    section.classList.toggle('config-section--danger', meta.tone === 'danger');
+
+    heading.innerHTML = '';
+    const icon = document.createElement('span');
+    icon.className = 'config-section-card-icon';
+    icon.textContent = meta.icon || '⚙️';
+
+    const copy = document.createElement('span');
+    copy.className = 'config-section-card-copy';
+
+    const eyebrow = document.createElement('span');
+    eyebrow.className = 'config-section-card-eyebrow';
+    eyebrow.textContent = meta.eyebrow || 'Configuración';
+
+    const title = document.createElement('span');
+    title.className = 'config-section-card-title';
+    title.textContent = currentTitle;
+
+    const desc = document.createElement('span');
+    desc.className = 'config-section-card-desc';
+    desc.textContent = meta.desc || 'Abrir opciones de esta sección.';
+
+    const action = document.createElement('span');
+    action.className = 'config-section-card-action';
+    action.textContent = 'Abrir';
+
+    copy.append(eyebrow, title, desc);
+    heading.append(icon, copy, action);
+  });
+}
+
 function initConfigAccordions(rootSelector = '#module-configuracion') {
   const root = document.querySelector(rootSelector);
   if (!root) return;
@@ -3642,6 +3884,7 @@ function initConfigAccordions(rootSelector = '#module-configuracion') {
       section.classList.toggle('collapsed');
     });
   });
+  decorateConfigSectionCards(rootSelector);
 }
 
 function hexToRgb(hex) {
@@ -5133,6 +5376,13 @@ function syncCashStartupGate() {
     && DB.config?.requireCashOpenBeforeUse
     && !(DB.config?.cajaAbierta || DB.caja?.abierta)
   );
+  if (shouldBlock) {
+    DB.config.cajaMonto = 0;
+    const amountInput = document.getElementById('cash-gate-amount');
+    const notesInput = document.getElementById('cash-gate-notes');
+    if (amountInput && !amountInput.matches(':focus')) amountInput.value = '';
+    if (notesInput && !notesInput.matches(':focus')) notesInput.value = '';
+  }
   gate.classList.toggle('hidden', !shouldBlock);
 }
 
@@ -6553,7 +6803,15 @@ async function executeCashCierre({ print = false } = {}) {
   }
 
   const d = openCashCierreModal._turnoData || _getCorteData();
-  const contado    = parseFloat(document.getElementById('cierre-contado')?.value || 0) || 0;
+  const contadoInput = document.getElementById('cierre-contado');
+  const contadoRaw = String(contadoInput?.value || '').trim();
+  const tieneVentas = Number(d.ventasCount || 0) > 0;
+  if (tieneVentas && contadoRaw === '') {
+    showToast('Para cerrar caja con ventas debes escribir el monto contado/vendido.', 'error');
+    contadoInput?.focus();
+    return;
+  }
+  const contado    = parseFloat(contadoRaw || 0) || 0;
   const notas      = document.getElementById('cierre-notas')?.value?.trim() || '';
   const diferencia = contado - d.totalEsperado;
   const horaCierre = new Date().toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santo_Domingo' });
@@ -6564,7 +6822,8 @@ async function executeCashCierre({ print = false } = {}) {
   try {
     // 1. Cerrar caja en backend
     const response = await api.closeCash({
-      monto: contado || DB.config.cajaMonto || 0,
+      monto: contadoRaw !== '' ? contado : (DB.config.cajaMonto || 0),
+      montoCapturado: contadoRaw !== '',
       obs:   notas || 'Cierre de caja',
       ...getBusinessStructurePayload(),
       ...getActorPayload()
@@ -7116,6 +7375,7 @@ function syncCajaState() {
   cajaAbierta = Boolean(DB.config?.cajaAbierta || DB.caja?.abierta);
   DB.config.cajaAbierta = cajaAbierta;
   DB.caja = { ...DB.caja, abierta: cajaAbierta };
+  if (!cajaAbierta) DB.config.cajaMonto = 0;
 
   statusText.textContent = cajaAbierta ? appText('cash.open', 'Caja Abierta') : appText('cash.closed', 'Caja Cerrada');
   if (identity) {
@@ -7145,11 +7405,12 @@ function syncCajaState() {
   const staleWarningEl  = document.getElementById('caja-stale-warning');
   if (operativeDateEl && staleWarningEl) {
     const session = _getActiveCajaSession();
-    if (cajaAbierta && session?.operativeDate) {
-      // Formatear la fecha operativa de manera legible
-      const [year, month, day] = session.operativeDate.split('-');
-      const dateLabel = `${day}/${month}/${year}`;
-      operativeDateEl.textContent = `📅 Fecha operativa: ${dateLabel}`;
+    if (cajaAbierta && (session?.openedAt || session?.operativeDate)) {
+      const openedLabel = formatCajaDateTime(session.openedAt);
+      const operativeLabel = formatDateKeyForDisplay(session.operativeDate);
+      operativeDateEl.textContent = openedLabel
+        ? `📅 Abierta: ${openedLabel}`
+        : `📅 Fecha operativa: ${operativeLabel}`;
       operativeDateEl.style.display = '';
       staleWarningEl.style.display = session.staleWarning ? '' : 'none';
     } else {
@@ -7296,6 +7557,34 @@ function getDateKeyFromValue(value) {
   if (!Number.isNaN(parsed.getTime())) return formatDateKey(parsed);
 
   return '';
+}
+
+function formatDateKeyForDisplay(dateKey) {
+  const normalized = getDateKeyFromValue(dateKey);
+  if (!normalized) return '';
+  const [year, month, day] = normalized.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function formatCajaDateTime(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const parsed = value instanceof Date
+    ? value
+    : new Date(/[zZ]|[+-]\d{2}:\d{2}$/.test(raw) ? raw : raw.replace(' ', 'T'));
+
+  if (Number.isNaN(parsed.getTime())) {
+    return formatDateKeyForDisplay(raw);
+  }
+
+  return parsed.toLocaleString('es-DO', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }
 
 // ─── Helpers para filtrar por turno/sesión activa ────────────────────────────

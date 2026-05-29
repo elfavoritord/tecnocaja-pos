@@ -1280,8 +1280,17 @@ class EcfRepository {
       clauses.push('date(created_at) <= date(?)');
       params.push(filters.hasta);
     }
+    const selectSql = filters.compact
+      ? `id, business_id, tipo_ecf, encf, environment, estado_dgii, submission_mode, track_id,
+         nombre_comprador, rnc_comprador, monto_total, dgii_response_json, error_message,
+         certification_case_key, certification_source_name, certification_source_format,
+         certification_test_type, certification_batch_id, certification_order_index,
+         certification_sent_xml_path, certification_signed_xml_path,
+         certification_response_path, certification_dgii_file_name,
+         xml_generated_at, sent_at, last_checked_at, created_at, updated_at`
+      : '*';
     const rows = await this.query(
-      `SELECT *
+      `SELECT ${selectSql}
        FROM ecf_documents
        WHERE ${clauses.join(' AND ')}
        ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
@@ -1363,17 +1372,9 @@ class EcfRepository {
     return rows[0] || null;
   }
 
-  // Marca los casos "en vuelo" del batch actual (enviado/en_proceso/procesando) de vuelta a
-  // 'firmado', limpiando el TrackID. Se llama automáticamente antes de la ráfaga secuencial
-  // para recoger docs que quedaron pendientes de respuesta DGII en corridas anteriores.
-  //
-  // IMPORTANTE: NO resetea 'aceptado', 'aceptado_condicional', 'rechazado' ni 'error':
-  //   - 'aceptado'/'aceptado_condicional': ya fueron validados por DGII — resetearlos
-  //     haría que se reenvíen y DGII rechazaría con "secuencia ya utilizada".
-  //   - 'rechazado'/'error': necesitan corrección manual y reenvío individual.
-  //     La ráfaga secuencial los salta (includeRejected: false).
-  //   Cuando DGII reinicia el conteo de pruebas por un rechazo, el portal vuelve a esperar
-  //   los eNCF exactos de su colección de datos. Por eso este reset NO rota secuencias.
+  // Recuperación de certificación: cuando DGII reinicia el dataset, el portal vuelve a
+  // esperar los mismos 21 e-CF y los mismos 4 RFCE desde cero. Por eso este reset vuelve
+  // TODO el batch actual a 'firmado', incluyendo aceptados y RFCE, sin rotar eNCF.
   async resetSentCertificationCasesToFirmado() {
     const batchId = await this.getLatestCertificationBatchId();
     const params = [];
@@ -1404,8 +1405,7 @@ class EcfRepository {
            updated_at  = CURRENT_TIMESTAMP
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
-         ${batchClause}
-         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando', 'pendiente')`,
+         ${batchClause}`,
       params
     );
     return { reset: result.affectedRows || 0, batchId };

@@ -34,7 +34,7 @@ const gunzip = promisify(zlib.gunzip);
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const BACKUP_MAGIC          = 'TECNOCAJA_BACKUP_V1';
 const BACKUP_FORMAT_VERSION = '2';
-const MAX_LOCAL_BACKUPS     = 10;   // cuántos .tcbak conservar automáticamente
+const DEFAULT_BACKUP_RETENTION = 5; // cuántos .tcbak conservar automáticamente
 
 // ─── Helper de dirs ──────────────────────────────────────────────────────────
 function getDefaultBackupDir() {
@@ -78,6 +78,7 @@ async function buildFullPayload(query) {
     auditLogs, suspendedSales, quotations,
     ncfSequences, pendingSales,
     tables, paymentMethods, branches, cashRegisters,
+    inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
   ] = await Promise.all([
     safeQuery('SELECT * FROM config'),
     safeQuery('SELECT * FROM users'),
@@ -99,6 +100,10 @@ async function buildFullPayload(query) {
     safeQuery('SELECT * FROM payment_methods'),
     safeQuery('SELECT * FROM branches'),
     safeQuery('SELECT * FROM cash_registers'),
+    safeQuery('SELECT * FROM inventory_by_branch LIMIT 200000'),
+    safeQuery('SELECT * FROM inventory_movements LIMIT 500000'),
+    safeQuery('SELECT * FROM branch_transfers LIMIT 50000'),
+    safeQuery('SELECT * FROM branch_transfer_items LIMIT 200000'),
   ]);
 
   // Config como mapa para metadatos
@@ -133,6 +138,8 @@ async function buildFullPayload(query) {
       categorias:  (categories  || []).length,
       facturas:    (saleItems   || []).length,
       proveedores: (suppliers   || []).length,
+      inventario:  (inventoryByBranch || []).length,
+      movimientosInventario: (inventoryMovements || []).length,
     },
     data: {
       config, users, categories, products, clients,
@@ -142,6 +149,7 @@ async function buildFullPayload(query) {
       auditLogs, suspendedSales, quotations,
       ncfSequences, pendingSales,
       tables, paymentMethods, branches, cashRegisters,
+      inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
     },
   };
 }
@@ -306,14 +314,134 @@ async function recordHistory(query, row) {
   } catch (_) { /* non-fatal */ }
 }
 
-// ─── Limpiar respaldos locales viejos (conservar MAX_LOCAL_BACKUPS) ───────���───
-function pruneLocalBackups(dir) {
+function normalizeRetentionCount(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_BACKUP_RETENTION;
+  return Math.min(50, Math.max(3, parsed));
+}
+
+async function getBackupRetentionCount(query) {
+  const rows = await query(
+    'SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1',
+    ['backup_retener_cantidad']
+  ).catch(() => []);
+  return normalizeRetentionCount(rows[0]?.config_value);
+}
+
+// ─── Limpiar respaldos locales viejos ────────────────────────────────────────
+function pruneLocalBackups(dir, keepCount = DEFAULT_BACKUP_RETENTION) {
   const files = listLocalBackups(dir).filter(f => f.name.endsWith('.tcbak'));
-  if (files.length > MAX_LOCAL_BACKUPS) {
-    files.slice(MAX_LOCAL_BACKUPS).forEach(f => {
+  const keep = normalizeRetentionCount(keepCount);
+  if (files.length > keep) {
+    files.slice(keep).forEach(f => {
       try { fs.unlinkSync(f.path); } catch (_) {}
     });
   }
+}
+
+async function pruneCloudBackups(businessId, keepCount = DEFAULT_BACKUP_RETENTION) {
+  const keep = normalizeRetentionCount(keepCount);
+  const prefix = r2.backupPrefix(businessId);
+  const objects = await r2.listObjects(prefix);
+  const backups = objects
+    .filter(o => (o.Key || '').endsWith('.tcbak'))
+    .sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));
+
+  for (const old of backups.slice(keep)) {
+    try { await r2.remove(old.Key); } catch (_) {}
+  }
+}
+
+async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = false } = {}) {
+  const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
+
+  // Verificar si auto-backup está habilitado. Los triggers críticos pueden
+  // forzar respaldo aunque el respaldo diario esté apagado.
+  const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_auto_diario']).catch(() => []);
+  const autoEnabled = (cfgRows[0]?.config_value || '1') !== '0';
+  if (!autoEnabled && !forceCloud && trigger === 'cierre_dia') {
+    return { ok: true, skipped: true, reason: 'Auto-backup deshabilitado.' };
+  }
+
+  const payload    = await buildFullPayload(query);
+  const retentionCount = await getBackupRetentionCount(query);
+  const fileName   = generateFilename(payload.businessName + '_AUTO', payload.systemVersion);
+  const fileBuffer = await createTcbakBuffer(payload, securityPwd);
+  const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  const backupDir  = ensureDir(getDefaultBackupDir());
+  const filePath   = path.join(backupDir, fileName);
+  fs.writeFileSync(filePath, fileBuffer);
+  pruneLocalBackups(backupDir, retentionCount);
+
+  // Verificar si hay nube configurada y auto-subida habilitada.
+  const nubeRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_nube_auto']).catch(() => []);
+  const nubeAuto = forceCloud || (nubeRows[0]?.config_value || '0') === '1';
+
+  let estado = 'completado';
+  let storagePath = null;
+  if (nubeAuto) {
+    try {
+      const businessId = await resolveBusinessId(query);
+      storagePath = r2.backupKey(businessId, fileName);
+      await r2.upload(storagePath, fileBuffer, {
+        businessId,
+        trigger,
+        sha256,
+        exportedAt: new Date().toISOString(),
+      });
+      await pruneCloudBackups(businessId, retentionCount);
+      estado = 'completado';
+    } catch (_) {
+      // Sin internet o R2 no configurado: conservar local y marcar pendiente.
+      estado = 'pendiente_nube';
+      storagePath = null;
+    }
+  }
+
+  await recordHistory(query, {
+    fileName, filePath, storagePath, sha256,
+    fileSize: fileBuffer.length,
+    tipo: nubeAuto && storagePath ? 'local_cloud' : 'automatico',
+    estado,
+    businessName: payload.businessName,
+    businessId:   payload.businessId,
+    version:      payload.systemVersion,
+    productos:    payload.stats.productos,
+    clientes:     payload.stats.clientes,
+    ventas:       payload.stats.ventas,
+    createdBy:    'sistema-auto',
+    observacion:  `Trigger: ${trigger}`,
+  });
+
+  return { ok: true, fileName, filePath, storagePath, sha256, estado, stats: payload.stats };
+}
+
+async function uploadPendingCloudBackups(query, limit = 5) {
+  const pendientes = await query(
+    `SELECT * FROM backup_history WHERE estado = 'pendiente_nube' ORDER BY created_at ASC LIMIT ?`,
+    [limit]
+  ).catch(() => []);
+
+  const resultados = [];
+  for (const row of pendientes) {
+    if (!row.file_path || !fs.existsSync(row.file_path)) {
+      resultados.push({ fileName: row.file_name, ok: false, error: 'Archivo local no encontrado.' });
+      continue;
+    }
+    try {
+      const fileBuffer = fs.readFileSync(row.file_path);
+      const businessId = await resolveBusinessId(query);
+      const storageKey = r2.backupKey(businessId, row.file_name);
+      await r2.upload(storageKey, fileBuffer, { businessId, recoveredFromPending: true });
+      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
+      await query('UPDATE backup_history SET estado = ?, tipo = ?, storage_path = ? WHERE id = ?', ['completado', 'local_cloud', storageKey, row.id]);
+      resultados.push({ fileName: row.file_name, ok: true, storageKey });
+    } catch (uploadErr) {
+      resultados.push({ fileName: row.file_name, ok: false, error: uploadErr.message });
+    }
+  }
+
+  return resultados;
 }
 
 // ─── Restaurar payload en la base de datos ───────────────────────────────────
@@ -383,10 +511,14 @@ async function restorePayloadToDb(payload, query) {
     ['payment_methods',   data.paymentMethods   || []],
     ['branches',          data.branches         || []],
     ['cash_registers',    data.cashRegisters    || []],
+    ['inventory_by_branch', data.inventoryByBranch || []],
     ['cash_sessions',     data.cashSessions     || []],
     ['cash_movements',    data.cashMovements    || []],
     ['sales',             data.sales            || []],
     ['sale_items',        data.saleItems        || []],
+    ['inventory_movements', data.inventoryMovements || []],
+    ['branch_transfers',  data.branchTransfers  || []],
+    ['branch_transfer_items', data.branchTransferItems || []],
     ['supplier_invoices', data.supplierInvoices || []],
     ['suspended_sales',   data.suspendedSales   || []],
     ['quotations',        data.quotations       || []],
@@ -497,6 +629,13 @@ async function restorePayloadToDb(payload, query) {
 //  FACTORY PRINCIPAL
 // ════════════════════════════════════════════════════════════════════════════
 module.exports = function createRespaldosRouter({ app, query, getActor, writeAuditLog, ensureAdministrator, isGlobalAdministratorUser, resolveRequestActorUser }) {
+  app.locals.createAutomaticBackup = (options = {}) => createAutomaticBackup({ query, ...options });
+  app.locals.uploadPendingCloudBackups = (limit = 5) => uploadPendingCloudBackups(query, limit);
+  if (!app.locals.backupPendingUploadTimer) {
+    app.locals.backupPendingUploadTimer = setInterval(() => {
+      uploadPendingCloudBackups(query, 5).catch(() => {});
+    }, 10 * 60 * 1000);
+  }
 
   // ── Middleware de admin ──────────────────────────────────────────────────
   async function adminOnly(req, res, next) {
@@ -592,6 +731,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
     try {
       const customDir  = (await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_dir_personalizado']).catch(() => []))[0]?.config_value || null;
       const backupDir  = customDir || getDefaultBackupDir();
+      pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
       const localFiles = listLocalBackups(backupDir);
 
       const historyRows = await query(
@@ -671,7 +811,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       const fileSize = fs.statSync(filePath).size;
 
       // 4. Limpiar respaldos viejos
-      pruneLocalBackups(backupDir);
+      pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
 
       // 5. Historial
       await recordHistory(query, {
@@ -800,7 +940,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         const backupDir = ensureDir(getDefaultBackupDir());
         const localPath = path.join(backupDir, fileName);
         fs.writeFileSync(localPath, fileBuffer);
-        pruneLocalBackups(backupDir);
+        pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
       }
 
       // Subir a Cloudflare R2
@@ -813,6 +953,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         sha256,
         exportedAt:    payload.exportedAt || new Date().toISOString(),
       });
+      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
 
       // Actualizar índice email → businessId en R2
       try {
@@ -868,6 +1009,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
   app.get('/api/respaldos/lista-nube', anyStaff, async (req, res) => {
     try {
       const businessId = await resolveBusinessId(query);
+      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
       const prefix     = r2.backupPrefix(businessId);
       const objects    = await r2.listObjects(prefix);
 
@@ -1039,7 +1181,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
     const actor = getActor(req);
     try {
       const pendientes = await query(
-        `SELECT * FROM backup_history WHERE tipo = 'local' AND estado = 'pendiente_nube' ORDER BY created_at DESC LIMIT 5`
+        `SELECT * FROM backup_history WHERE estado = 'pendiente_nube' ORDER BY created_at DESC LIMIT 5`
       ).catch(() => []);
 
       const resultados = [];
@@ -1053,7 +1195,8 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
           const businessId = await resolveBusinessId(query);
           const storageKey = r2.backupKey(businessId, row.file_name);
           await r2.upload(storageKey, fileBuffer, { businessId });
-          await query('UPDATE backup_history SET estado = ?, storage_path = ? WHERE id = ?', ['completado', storageKey, row.id]);
+          await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
+          await query('UPDATE backup_history SET estado = ?, tipo = ?, storage_path = ? WHERE id = ?', ['completado', 'local_cloud', storageKey, row.id]);
           resultados.push({ fileName: row.file_name, ok: true, storageKey });
         } catch (uploadErr) {
           resultados.push({ fileName: row.file_name, ok: false, error: uploadErr.message });
@@ -1108,6 +1251,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         source:      'manual-upload',
         uploadedBy:  actor.userName || 'sistema',
       });
+      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
 
       // Actualizar índice email → businessId en R2 (igual que subir-nube)
       // Necesario para que el wizard de restauración pueda encontrar el backup por email.
@@ -1155,64 +1299,9 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
   // ══════════════════════════════════════════════════════════════════════
   app.post('/api/respaldos/auto', async (req, res) => {
     try {
-      const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
-      const { trigger = 'manual' } = req.body || {};
-
-      // Verificar si auto-backup está habilitado
-      const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_auto_diario']).catch(() => []);
-      const autoEnabled = (cfgRows[0]?.config_value || '1') !== '0';
-      if (!autoEnabled && trigger === 'cierre_dia') {
-        return res.json({ ok: true, skipped: true, reason: 'Auto-backup deshabilitado.' });
-      }
-
-      const payload    = await buildFullPayload(query);
-      const fileName   = generateFilename(payload.businessName + '_AUTO', payload.systemVersion);
-      const fileBuffer = await createTcbakBuffer(payload, securityPwd);
-      const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-      const backupDir  = ensureDir(getDefaultBackupDir());
-      const filePath   = path.join(backupDir, fileName);
-      fs.writeFileSync(filePath, fileBuffer);
-      pruneLocalBackups(backupDir);
-
-      // Verificar si hay nube configurada y auto-subida habilitada
-      const nubeRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_nube_auto']).catch(() => []);
-      const nubeAuto = (nubeRows[0]?.config_value || '0') === '1';
-
-      let estado = 'completado';
-      let storagePath = null;
-      if (nubeAuto) {
-        try {
-          const businessId = await resolveBusinessId(query);
-          storagePath = r2.backupKey(businessId, fileName);
-          await r2.upload(storagePath, fileBuffer, {
-            businessId,
-            trigger,
-            exportedAt: new Date().toISOString(),
-          });
-          estado = 'completado';
-        } catch (_) {
-          // Sin internet o R2 no configurado: marcar como pendiente
-          estado = 'pendiente_nube';
-          storagePath = null;
-        }
-      }
-
-      await recordHistory(query, {
-        fileName, filePath, storagePath, sha256,
-        fileSize: fileBuffer.length,
-        tipo: nubeAuto && storagePath ? 'local_cloud' : 'automatico',
-        estado,
-        businessName: payload.businessName,
-        businessId:   payload.businessId,
-        version:      payload.systemVersion,
-        productos:    payload.stats.productos,
-        clientes:     payload.stats.clientes,
-        ventas:       payload.stats.ventas,
-        createdBy:    'sistema-auto',
-        observacion:  `Trigger: ${trigger}`,
-      });
-
-      res.json({ ok: true, fileName, filePath, sha256, estado, stats: payload.stats });
+      const { trigger = 'manual', forceCloud = false } = req.body || {};
+      const result = await app.locals.createAutomaticBackup({ trigger, forceCloud: Boolean(forceCloud) });
+      res.json(result);
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }

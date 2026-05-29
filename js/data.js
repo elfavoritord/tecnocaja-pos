@@ -100,7 +100,7 @@ function hydrateDB(payload) {
   DB.config = {
     ...DB.config,
     cajaAbierta: resolvedCajaAbierta,
-    cajaMonto: Number(DB.config?.cajaMonto || 0) || 0
+    cajaMonto: resolvedCajaAbierta ? (Number(DB.config?.cajaMonto || 0) || 0) : 0
   };
   DB.ventasPendientes = payload.ventasPendientes || DB.ventasPendientes || [];
   DB.cotizaciones = payload.cotizaciones || DB.cotizaciones || [];

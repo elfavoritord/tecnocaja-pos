@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const XLSX = require('xlsx');
+const { execFile } = require('child_process');
 const { formidable } = require('formidable');
 const { OFFICIAL_ENVIRONMENTS, buildEcfConfig, normalizeEnvironmentKey, toBoolean } = require('../config/ecf.config');
 const { getDocumentTypes, getDocumentType } = require('../config/document-types');
@@ -21,8 +23,11 @@ const { decryptText, encryptText, maskSecret } = require('./crypto-service');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { createLogger } = require('../utils/logger');
 const { parseXml } = require('../utils/xml.util');
+const { detectXmlRoot, getDgiiXmlDispatchType } = require('../utils/dgii-file.util');
+const { assertValidRfceXml } = require('../utils/rfce-xsd.util');
 
 const CERT_STORAGE_DIR = path.resolve(__dirname, '..', 'certificates');
+const DEFAULT_DOWNLOADS_DIR = path.join(process.env.USERPROFILE || process.env.HOME || process.cwd(), 'Downloads');
 
 function nowIso() {
   return new Date().toISOString();
@@ -38,7 +43,7 @@ function computeSecurityCode(signedXml) {
   const signatureValue = String(
     parseXml(signedXml).getElementsByTagName('SignatureValue')?.[0]?.textContent || ''
   ).trim();
-  return require('crypto').createHash('sha256').update(signatureValue).digest('hex').slice(0, 6).toUpperCase();
+  return signatureValue.slice(0, 6);
 }
 
 function normalizeManualEncfInput(value, tipoEcf) {
@@ -75,19 +80,6 @@ function certificationEmitterNombreComercial(_row) {
   // cuatro E32 manuales <250Mil; para ese valor DGII espera vacio/ausente.
   const value = normalizeDatasetValue(_row?.NombreComercial);
   return value === 'DOCUMENTOS ELECTRONICOS' ? '' : value;
-}
-
-function forceEmptyNombreComercialElement(xml) {
-  const text = String(xml || '');
-  if (/<NombreComercial\b/i.test(text)) {
-    return text
-      .replace(/<NombreComercial[^>]*>[\s\S]*?<\/NombreComercial>/i, '<NombreComercial>&#160;</NombreComercial>')
-      .replace(/<NombreComercial\s*\/>/i, '<NombreComercial>&#160;</NombreComercial>');
-  }
-  return text.replace(
-    /(<RazonSocialEmisor>[^<]*<\/RazonSocialEmisor>)/i,
-    '$1\n      <NombreComercial>&#160;</NombreComercial>'
-  );
 }
 
 function parseDatasetNumber(value, fallback = 0) {
@@ -142,6 +134,79 @@ function parseCertificationStoredSource(value) {
   }
 }
 
+function findLatestDgiiCertificationExcel() {
+  if (!fs.existsSync(DEFAULT_DOWNLOADS_DIR)) return null;
+  return fs.readdirSync(DEFAULT_DOWNLOADS_DIR)
+    .filter((name) => /^40211932609-\d+\.xlsx$/i.test(name))
+    .map((name) => {
+      const fullPath = path.join(DEFAULT_DOWNLOADS_DIR, name);
+      const stat = fs.statSync(fullPath);
+      return { fullPath, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.fullPath || null;
+}
+
+function readRfceDocsFromExcel(filePath) {
+  const workbook = XLSX.readFile(filePath, { cellDates: false, raw: false, defval: '#e' });
+  const rfceSheetName = workbook.SheetNames.find((name) => String(name || '').trim().toUpperCase() === 'RFCE');
+  const ecfSheetName = workbook.SheetNames.find((name) => String(name || '').trim().toUpperCase() === 'ECF');
+  assertCondition(rfceSheetName, `El Excel DGII no contiene hoja RFCE: ${filePath}`, { statusCode: 422 });
+
+  const rfceRows = XLSX.utils.sheet_to_json(workbook.Sheets[rfceSheetName], { defval: '#e', raw: false });
+  const ecfRows = ecfSheetName
+    ? XLSX.utils.sheet_to_json(workbook.Sheets[ecfSheetName], { defval: '#e', raw: false })
+    : [];
+  const ecfByEncf = new Map();
+  for (const row of ecfRows) {
+    const encf = normalizeDatasetValue(row.ENCF || row.eNCF || row.Encf);
+    if (encf) ecfByEncf.set(encf, row);
+  }
+
+  return rfceRows
+    .map((row, index) => {
+      const encf = normalizeDatasetValue(row.ENCF || row.eNCF || row.Encf);
+      if (!encf) return null;
+      return {
+        id: null,
+        encf,
+        tipo_ecf: 'E32',
+        certification_original_xml: JSON.stringify({
+          row,
+          linkedRawRow: ecfByEncf.get(encf) || null,
+          sourceSheet: 'RFCE',
+          sourceExcel: filePath,
+          sourceRow: index + 2,
+        }),
+        _sourceExcel: filePath,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(a.encf).localeCompare(String(b.encf)));
+}
+
+function getPreferredFinal250MilDir() {
+  const configured = String(process.env.DGII_FINAL_250MIL_DIR || '').trim();
+  if (configured) return path.resolve(configured);
+  if (process.platform === 'win32' && fs.existsSync('E:\\')) {
+    return 'E:\\SUBIR_FINAL_DGII_SOLO_4_XML';
+  }
+  return path.join(process.cwd(), 'scripts', 'SUBIR_FINAL_DGII_SOLO_4_XML');
+}
+
+function openFolderInOs(folderPath) {
+  if (!folderPath || !fs.existsSync(folderPath)) return false;
+  if (process.platform === 'win32') {
+    execFile('explorer.exe', [folderPath], { windowsHide: false }, () => {});
+    return true;
+  }
+  if (process.platform === 'darwin') {
+    execFile('open', [folderPath], () => {});
+    return true;
+  }
+  execFile('xdg-open', [folderPath], () => {});
+  return true;
+}
+
 function normalizeDgiiState(payload) {
   const responseCode = getDgiiResponseCode(payload);
   if (responseCode === '1') return 'aceptado';
@@ -150,6 +215,7 @@ function normalizeDgiiState(payload) {
   if (responseCode === '4') return 'aceptado_condicional';
 
   const httpStatus = Number(payload?.http?.status || payload?.httpStatus || 0);
+  if (httpStatus >= 500) return 'error_consulta';
   if (httpStatus >= 400) return 'rechazado';
 
   const candidates = [
@@ -1122,6 +1188,7 @@ class EcfService {
           },
           issueDate: new Date(),
           certificateContext: certificate,
+          emitter: localEmitter,
         });
         normalizedXml = rebuilt.xml;
         skipE47Rebuild = true; // ← preservar XML de la hoja; no sobreescribir con generateEcfXml
@@ -1417,6 +1484,7 @@ class EcfService {
       return this.fcService.sendConsumptionSummary({
         signedXml: document.signed_xml_content,
         filename: `${document.encf || `documento-${document.id}`}-rfce.xml`,
+        localEcfPath: document.certification_sent_xml_path || null,
       });
     }
 
@@ -1507,7 +1575,7 @@ class EcfService {
     }
 
     return {
-      ok: state !== 'rechazado',
+      ok: !['rechazado', 'error', 'error_consulta', 'error_auth'].includes(state),
       estado: state,
       mensaje: response.mensaje || response.message || response.descripcion || fallbackMessage,
       trackId,
@@ -1602,12 +1670,22 @@ class EcfService {
       assertCondition(!manualEncfRaw, 'El e-NCF manual solo puede aplicarse cuando el sistema envía un documento interno, no al usar una ruta XML manual.', { statusCode: 422 });
       const certificate = await this.resolveCertificate();
       const manualXml = fs.readFileSync(resolvedXmlPath, 'utf8');
-      const preparedXml = this.buildSignedXmlForManualSend(manualXml, certificate);
-
-      result = await this.receptionService.sendSignedEcf({
-        signedXml: preparedXml.signedXml,
-        filename: path.basename(resolvedXmlPath),
-      });
+      const manualRoot = detectXmlRoot(manualXml);
+      if (manualRoot === 'RFCE') {
+        const rfceUnsigned = String(manualXml || '').replace(/<Signature\b[\s\S]*?<\/Signature>/i, '');
+        const signedRfce = signatureService.signXML(rfceUnsigned, certificate);
+        result = await this.fcService.sendConsumptionSummary({
+          signedXml: signedRfce,
+          filename: path.basename(resolvedXmlPath),
+          localEcfPath: null,
+        });
+      } else {
+        const preparedXml = this.buildSignedXmlForManualSend(manualXml, certificate);
+        result = await this.receptionService.sendSignedEcf({
+          signedXml: preparedXml.signedXml,
+          filename: path.basename(resolvedXmlPath),
+        });
+      }
     } else {
       sourceDocument = documentId
         ? await this.repository.getDocument(documentId)
@@ -1662,7 +1740,14 @@ class EcfService {
         rutaXml: resolvedXmlPath,
         documentId: sourceDocument?.id || documentId || null,
         encf: sourceDocument?.encf || null,
-        recepcionUrl: this.config.DGII_RECEPCION_URL,
+        endpoint: result.endpoint || (result.xmlType === 'RFCE' ? this.config.DGII_FC_URL : this.config.DGII_RECEPCION_URL),
+        recepcionUrl: result.xmlType === 'RFCE' ? null : this.config.DGII_RECEPCION_URL,
+        recepcionFcUrl: result.xmlType === 'RFCE' ? this.config.DGII_FC_URL : null,
+        xmlType: result.xmlType || null,
+        xmlRoot: result.xmlRoot || null,
+        requestXmlPath: result.requestXmlPath || result.xmlPath || result.archivoEnviado || null,
+        requestXml: result.requestXml || null,
+        dgiiResponseBody: result.raw || result.http?.body || '',
       },
       environment
     );
@@ -1680,6 +1765,10 @@ class EcfService {
       trackFile: result.trackPath || null,
       documentId: sourceDocument?.id || documentId || null,
       encf: sourceDocument?.encf || null,
+      endpoint: result.endpoint || null,
+      xmlType: result.xmlType || null,
+      xmlRoot: result.xmlRoot || null,
+      requestXmlPath: result.requestXmlPath || result.xmlPath || result.archivoEnviado || null,
       dgiiStatus: result.http?.status || null,
       dgiiResponseBody: result.raw || '',
     };
@@ -1923,7 +2012,7 @@ class EcfService {
         const rfceXml = generateRfceXml({
           emitter: {
             rnc: payload.emitter.rnc,
-            razonSocial: payload.emitter.razon_social,
+            razonSocial: payload.emitter.razonSocial || payload.emitter.razon_social,
         },
         customer: {
           rnc: payload.buyerTaxId,
@@ -1949,6 +2038,7 @@ class EcfService {
         dgiiResponse = await this.fcService.sendConsumptionSummary({
           signedXml: signedRfce,
           filename: `${payload.reservation.encf}-rfce.xml`,
+          localEcfPath: null,
         });
       } else {
         dgiiResponse = await this.receptionService.sendSignedEcf({
@@ -2038,7 +2128,7 @@ class EcfService {
     });
 
     return {
-      ok: state !== 'rechazado',
+      ok: !['rechazado', 'error', 'error_consulta', 'error_auth'].includes(state),
       documentId: finalDocument.id,
       encf: finalDocument.encf,
       tipoEcf: finalDocument.tipo_ecf || payload.tipoEcf,
@@ -2173,6 +2263,13 @@ class EcfService {
   buildCertificationCasePayload(document, extra = {}) {
     const dgiiResponse = extra.dgiiResponse || null;
     const storedResponse = dgiiResponse || parseJson(document.dgii_response_json, null);
+    const xmlSource = document.signed_xml_content || document.xml_content || storedResponse?.requestXml || '';
+    const guessedRoot = String(document.submission_mode || '').toLowerCase() === 'rfce' ? 'RFCE' : 'ECF';
+    const xmlRoot = String(xmlSource || '').trim() ? detectXmlRoot(xmlSource) : guessedRoot;
+    const xmlType = String(xmlSource || '').trim() ? getDgiiXmlDispatchType(xmlSource) : guessedRoot;
+    const endpointDestino = String(document.submission_mode || '').toLowerCase() === 'rfce'
+      ? this.config.DGII_FC_URL
+      : this.config.DGII_RECEPCION_URL;
     const mensajes = Array.isArray(storedResponse?.mensajes)
       ? storedResponse.mensajes
       : Array.isArray(storedResponse?.Mensajes) ? storedResponse.Mensajes : [];
@@ -2193,6 +2290,11 @@ class EcfService {
       xmlPath: document.certification_sent_xml_path || null,
       signedXmlPath: document.certification_signed_xml_path || null,
       responsePath: document.certification_response_path || null,
+      xmlRoot: xmlRoot || storedResponse?.xmlRoot || null,
+      xmlType: xmlType === 'unknown' ? (storedResponse?.xmlType || null) : xmlType.toUpperCase(),
+      endpointDestino: storedResponse?.endpoint || endpointDestino,
+      submissionMode: document.submission_mode || 'normal',
+      documentCount: xmlRoot === 'RFCE' || xmlRoot === 'ECF' ? 1 : null,
       suggestedSolution: suggestDgiiSolution(storedResponse || { codigo: extra.codigo, mensaje: extra.mensaje }),
       mensajes,
       environment: document.environment,
@@ -2214,6 +2316,7 @@ class EcfService {
     await this.repository.updateCertificationTracking(document.id, {
       sentXmlPath: overrides.sentXmlPath
         || receptionState?.latestSent?.xmlPath
+        || receptionState?.latestRfceSent?.xmlPath
         || null,
       signedXmlPath,
       responsePath: overrides.responsePath
@@ -2222,6 +2325,7 @@ class EcfService {
         || null,
       dgiiFileName: overrides.dgiiFileName
         || receptionState?.latestSent?.dgiiFileName
+        || receptionState?.latestRfceSent?.dgiiFileName
         || null,
     });
   }
@@ -2244,6 +2348,7 @@ class EcfService {
 
   async importCertificationSet(req) {
     await this.ensureReady();
+    const startedAt = Date.now();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     const form = formidable({ multiples: true, maxFileSize: 50 * 1024 * 1024, keepExtensions: true });
     const { fields, files } = await new Promise((resolve, reject) => {
@@ -2260,17 +2365,21 @@ class EcfService {
 
     const environmentField = Array.isArray(fields.ambiente) ? fields.ambiente[0] : fields.ambiente;
     const environmentFallback = Array.isArray(fields.environment) ? fields.environment[0] : fields.environment;
+    const fastImportField = Array.isArray(fields.fastImport) ? fields.fastImport[0] : fields.fastImport;
+    const fastImport = String(fastImportField ?? '1').trim() !== '0';
     const environment = normalizeEnvironmentKey(environmentField || environmentFallback || (await this.repository.getResolvedEmitter(1)).environment);
     const emitter = await this.repository.getResolvedEmitter(1);
     assertCondition(digitsOnly(emitter.rnc), 'Debes guardar el RNC del negocio antes de importar el set DGII.', { statusCode: 422 });
 
     let certificateContext = null;
     let certificateWarning = null;
-    try {
-      certificateContext = await this.resolveCertificate();
-    } catch (error) {
-      certificateWarning = error.message;
-      this.logger.warn('Set de certificación importado sin certificado activo.', { error: error.message });
+    if (!fastImport) {
+      try {
+        certificateContext = await this.resolveCertificate();
+      } catch (error) {
+        certificateWarning = error.message;
+        this.logger.warn('Set de certificación importado sin certificado activo.', { error: error.message });
+      }
     }
 
     const result = await importCertificationSet({
@@ -2282,12 +2391,13 @@ class EcfService {
       certificateContext,
       userId: actor.id || null,
     });
+    const durationMs = Date.now() - startedAt;
 
     await this.repository.saveTestRun(
       'certification_import',
       result.errors > 0 ? 'warning' : 'ok',
-      `Certificación DGII importada: ${result.ok}/${result.total} casos listos.`,
-      { ...result, certificateWarning },
+      `Certificación DGII importada: ${result.ok}/${result.total} casos listos en ${Math.round(durationMs / 1000)}s.`,
+      { ...result, certificateWarning, durationMs, fastImport },
       environment
     );
     await this.repository.saveAudit({
@@ -2304,8 +2414,12 @@ class EcfService {
       ...result,
       message: certificateWarning
         ? `Set importado sin firma digital activa. ${certificateWarning}`
-        : `Set importado: ${result.ok}/${result.total} pruebas preparadas.`,
+        : fastImport
+          ? `Set importado en modo rápido: ${result.ok}/${result.total} pruebas listas. Se firmarán automáticamente al enviar.`
+          : `Set importado: ${result.ok}/${result.total} pruebas preparadas.`,
       certificateWarning,
+      fastImport,
+      durationMs,
       summary: await this.repository.getCertificationSummary(),
     };
   }
@@ -2313,8 +2427,8 @@ class EcfService {
   // Marca los casos ENVIADO/EN_PROCESO/ACEPTADO como FIRMADO para poder reenviarlos.
   // Crucial cuando el portal DGII reinicia el conteo: los casos que DGII ya rechazó
   // (por ejemplo E33 cuya E32 referenciada dejó de ser válida) y los previamente aceptados
-  // deben re-enviarse completos. Los casos RFCE (submission_mode='rfce') NO se tocan —
-  // sus 4/4 aceptados sobreviven el reinicio del portal.
+  // deben re-enviarse completos. Incluye los 4 RFCE porque DGII también reinicia el
+  // contador de resúmenes cuando rechaza un comprobante estructuralmente inválido.
   async resetSentCertificationCases(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
@@ -2835,29 +2949,29 @@ class EcfService {
   }
 
   /**
-   * Genera y firma los XMLs de facturas de consumo < 250Mil para subir al portal DGII.
-   * Lee los eNCFs ACTUALES de los docs E32 RFCE en la BD y usa linkedRawRow (datos exactos DGII).
-   *
-   * Cambios respecto a la versión anterior:
-   * - Usa el certificado almacenado en la BD (no path hardcodeado).
-   * - Usa la fila ECF relacionada del dataset para producir un XML <ECF> E32 completo,
-   *   que es lo que valida el portal "Facturas de consumo <250Mil".
-   * - Envia NombreComercial explicitamente vacio en este paso manual. Si el tag
-   *   se omite, el portal DGII termina rechazando como si recibiera
-   *   "DOCUMENTOS ELECTRONICOS".
-   * - Omite FechaVencimientoSecuencia si no viene en el dataset. DGII rechaza campos
-   *   inventados aunque un XSD local genérico los acepte o requiera.
-   * - Guarda la ruta del XML generado en certification_signed_xml_path.
-   * - Maneja cualquier cantidad de docs E32 RFCE (no limitado a 4).
+   * Genera y firma los RFCE de facturas de consumo < 250Mil para RecepcionFC.
+   * La E32 completa se conserva localmente para auditoria, RI, QR y reimpresion,
+   * pero no se remite a DGII cuando el monto es menor a RD$250,000.
    */
   async generate250MilXmls(req) {
     await this.ensureReady();
 
     const OUT_DIR = path.join(process.cwd(), 'scripts', '250mil-upload');
     if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
+    const LOCAL_ECF_DIR = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    fs.mkdirSync(LOCAL_ECF_DIR, { recursive: true });
+    const tmpDir = path.join(process.cwd(), 'storage', 'ecf', 'tmp');
+    if (fs.existsSync(tmpDir)) {
+      for (const f of fs.readdirSync(tmpDir)) {
+        if (/\.(xml|zip|json)$/i.test(f)) {
+          try { fs.unlinkSync(path.join(tmpDir, f)); } catch (_) { /* ignorar */ }
+        }
+      }
+    }
 
     // Certificado del repositorio (mismo que usa el flujo normal de certificación)
     const certificate = await this.resolveCertificate();
+    const localEmitter = await this.getEmitterForXml(1);
 
     // Helper: normaliza valores vacíos / especiales del dataset DGII
     const val = (row, key) => {
@@ -2866,15 +2980,25 @@ class EcfService {
       return (v === '' || lower === '#e' || lower === 'n/a' || lower === '#n/a') ? '' : v;
     };
 
-    // Limpiar XMLs anteriores del directorio
+    // Limpiar XMLs/ZIP anteriores del directorio para evitar subir payloads viejos.
+    // Esta carpeta debe quedar solo con RFCE exportables; los ECF completos se
+    // guardan en storage/ecf/ecf-originales-locales para auditoria.
     for (const f of fs.readdirSync(OUT_DIR)) {
-      if (f.endsWith('.xml')) {
-        try { fs.unlinkSync(path.join(OUT_DIR, f)); } catch (_) { /* ignorar */ }
+      const target = path.join(OUT_DIR, f);
+      if (/\.(xml|zip)$/i.test(f)) {
+        try { fs.unlinkSync(target); } catch (_) { /* ignorar */ }
+      } else if (f.toLowerCase() === 'ecf-originales-locales') {
+        try { fs.rmSync(target, { recursive: true, force: true }); } catch (_) { /* ignorar */ }
+      }
+    }
+    for (const f of fs.readdirSync(LOCAL_ECF_DIR)) {
+      if (/\.(xml|zip)$/i.test(f)) {
+        try { fs.unlinkSync(path.join(LOCAL_ECF_DIR, f)); } catch (_) { /* ignorar */ }
       }
     }
 
     // Obtener todos los docs E32 RFCE del batch actual de certificación
-    const rfceDocs = await this.repository.query(
+    let rfceDocs = await this.repository.query(
       `SELECT id, encf, certification_original_xml
        FROM ecf_documents
        WHERE business_id=1
@@ -2885,7 +3009,18 @@ class EcfService {
     );
 
     if (!rfceDocs.length) {
-      return { ok: false, error: 'No se encontraron documentos E32 RFCE de certificación. Verifica que el set fue importado con la hoja RFCE.' };
+      const latestExcel = findLatestDgiiCertificationExcel();
+      if (latestExcel) {
+        rfceDocs = readRfceDocsFromExcel(latestExcel);
+        this.logger?.warn?.('No había RFCE en BD; se usará el Excel DGII más reciente como fuente.', {
+          latestExcel,
+          count: rfceDocs.length,
+        });
+      }
+    }
+
+    if (!rfceDocs.length) {
+      return { ok: false, error: 'No se encontraron documentos E32 RFCE de certificación ni Excel DGII RFCE válido en Downloads.' };
     }
 
     const generated = [];
@@ -2904,24 +3039,22 @@ class EcfService {
       const rfceRow = certSource.row || {};
       const linkedEcfRow = certSource.linkedRawRow || null;
       const ecfRow = linkedEcfRow || rfceRow;
-      if (Object.keys(ecfRow).length < 5) {
-        errors.push({ encf: doc.encf, error: 'Fila ECF relacionada vacía o incompleta. Reimporta el set DGII original con hojas ECF y RFCE.' });
+      if (Object.keys(rfceRow).length < 5) {
+        errors.push({ encf: doc.encf, error: 'Fila RFCE vacía o incompleta. Reimporta el set DGII original con hojas ECF y RFCE.' });
         continue;
       }
-      const manualEcfRow = {
-        ...ecfRow,
-        NombreComercial: '',
-        FechaVencimientoSecuencia: val(ecfRow, 'FechaVencimientoSecuencia'),
-      };
 
-      // ── Construir XML ECF E32 para el portal manual <250Mil ─────────────────────────────
-      let xmlContent;
       try {
-        const transmission = buildTransmissionFromSpreadsheetRow({
+        const localEcfRow = {
+          ...ecfRow,
+          NombreComercial: '',
+          FechaVencimientoSecuencia: val(ecfRow, 'FechaVencimientoSecuencia'),
+        };
+        const localTransmission = buildTransmissionFromSpreadsheetRow({
           testCase: {
             encf: doc.encf,
             tipoEcf: 'E32',
-            rawRow: manualEcfRow,
+            rawRow: localEcfRow,
             linkedRawRow: null,
             sourceSheet: 'ECF',
             submissionMode: 'normal',
@@ -2929,8 +3062,32 @@ class EcfService {
           },
           issueDate: new Date(),
           certificateContext: null,
+          emitter: localEmitter,
         });
-        xmlContent = forceEmptyNombreComercialElement(transmission.xml);
+        const localSignedEcf = signatureService.signXML(localTransmission.xml, certificate);
+        fs.writeFileSync(path.join(LOCAL_ECF_DIR, `${doc.encf}.xml`), localSignedEcf, 'utf8');
+      } catch (localError) {
+        errors.push({ encf: doc.encf, error: `Error construyendo ECF local: ${localError.message}` });
+        continue;
+      }
+
+      // ── Construir XML RFCE E32 para RecepcionFC ─────────────────────────────────────────
+      let xmlContent;
+      try {
+        const transmission = buildTransmissionFromSpreadsheetRow({
+          testCase: {
+            encf: doc.encf,
+            tipoEcf: 'E32',
+            rawRow: rfceRow,
+            linkedRawRow: ecfRow,
+            sourceSheet: 'RFCE',
+            submissionMode: 'rfce',
+          },
+          issueDate: new Date(),
+          certificateContext: certificate,
+          emitter: localEmitter,
+        });
+        xmlContent = transmission.xml;
       } catch (buildError) {
         errors.push({ encf: doc.encf, error: `Error construyendo XML: ${buildError.message}` });
         continue;
@@ -2938,41 +3095,40 @@ class EcfService {
 
       // ── Firmar con el certificado del repositorio ────────────────────────────────────────
       let signedXml;
+      let xsdValidation;
       try {
         signedXml = signatureService.signXML(xmlContent, certificate);
+        xsdValidation = assertValidRfceXml(signedXml, { requireSignature: true });
       } catch (signError) {
-        errors.push({ encf: doc.encf, error: `Error firmando XML: ${signError.message}` });
+        errors.push({ encf: doc.encf, error: `Error firmando/validando RFCE: ${signError.message}` });
         continue;
       }
 
       const localValidation = this.validateCertificationDocumentBeforeSend({
         ...doc,
         tipo_ecf: 'E32',
-        submission_mode: 'normal',
+        submission_mode: 'rfce',
         xml_content: xmlContent,
         signed_xml_content: signedXml,
-        _certificationValidationRow: manualEcfRow,
+        _certificationValidationRow: rfceRow,
       });
       if (!localValidation.ok) {
         errors.push({ encf: doc.encf, error: localValidation.errors[0], validation: localValidation });
         continue;
       }
 
-      if (!/^<\?xml[\s\S]*<ECF[\s>]/i.test(signedXml)) {
-        errors.push({ encf: doc.encf, error: 'El XML generado no es ECF. El portal <250Mil requiere un eCF E32 completo.' });
+      if (!/^<\?xml[\s\S]*<RFCE[\s>]/i.test(signedXml)) {
+        errors.push({ encf: doc.encf, error: 'El XML generado no es RFCE. RecepcionFC requiere resumen RFCE E32.' });
         continue;
       }
-      const nombreComercialMatch = signedXml.match(/<NombreComercial[^>]*>([\s\S]*?)<\/NombreComercial>|<NombreComercial\s*\/>/i);
-      const nombreComercialValue = String(nombreComercialMatch?.[1] || '').trim();
-      if (!nombreComercialMatch || nombreComercialValue) {
-        errors.push({ encf: doc.encf, error: 'El XML ECF <250Mil debe incluir NombreComercial explícitamente vacío.' });
+      if (/<NombreComercial\b/i.test(signedXml)) {
+        errors.push({ encf: doc.encf, error: 'El XML RFCE <250Mil no debe incluir NombreComercial.' });
         continue;
       }
-      if (/<FechaVencimientoSecuencia\b/i.test(signedXml) && !val(ecfRow, 'FechaVencimientoSecuencia')) {
-        errors.push({ encf: doc.encf, error: 'El XML ECF <250Mil no debe incluir FechaVencimientoSecuencia cuando el dataset DGII no lo trae.' });
+      if (!/<CodigoSeguridadeCF\b/i.test(signedXml)) {
+        errors.push({ encf: doc.encf, error: 'El XML RFCE <250Mil debe incluir CodigoSeguridadeCF.' });
         continue;
       }
-
       const signedPath = path.join(OUT_DIR, `${doc.encf}.xml`);
       fs.writeFileSync(signedPath, signedXml, 'utf8');
 
@@ -2980,9 +3136,13 @@ class EcfService {
       try {
         await this.repository.query(
           `UPDATE ecf_documents
-           SET certification_signed_xml_path = ?, updated_at = CURRENT_TIMESTAMP
+           SET certification_signed_xml_path = ?,
+               signed_xml_content = ?,
+               xml_content = ?,
+               submission_mode = 'rfce',
+               updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
-          [signedPath, doc.id]
+          [signedPath, signedXml, xmlContent, doc.id]
         );
       } catch (_) { /* No bloquear si el UPDATE falla */ }
 
@@ -2996,12 +3156,15 @@ class EcfService {
         file: signedPath,
         sizekb,
         items,
-        root: 'ECF',
-        montoTotal: val(manualEcfRow, 'MontoTotal') || '?',
-        montoGravadoI1: val(manualEcfRow, 'MontoGravadoI1') || '?',
-        itbis1: val(manualEcfRow, 'ITBIS1') || '?',
-        totalItbis1: val(manualEcfRow, 'TotalITBIS1') || '?',
+        root: 'RFCE',
+        endpoint: this.config.DGII_FC_URL,
+        montoTotal: val(rfceRow, 'MontoTotal') || '?',
+        montoGravadoI1: val(rfceRow, 'MontoGravadoI1') || '?',
+        itbis1: val(rfceRow, 'ITBIS1') || '?',
+        totalItbis1: val(rfceRow, 'TotalITBIS1') || '?',
         nombreComercial: '(omitido)',
+        localEcfFile: path.join(LOCAL_ECF_DIR, `${doc.encf}.xml`),
+        xsdValidation,
       });
     }
 
@@ -3020,7 +3183,172 @@ class EcfService {
       generated,
       errors: errors.length ? errors : undefined,
       outDir: OUT_DIR,
-      message: `✓ ${generated.length} XML(s) generados y firmados en ${OUT_DIR}. Súbelos uno a uno al portal DGII "Facturas de consumo <250Mil".`,
+      localEcfDir: LOCAL_ECF_DIR,
+      message: `✓ ${generated.length} RFCE generado(s) y firmados en ${OUT_DIR}. Enviar por RecepcionFC; las E32 completas quedan locales en ${LOCAL_ECF_DIR}.`,
+    };
+  }
+
+  async prepareFinal250MilPortalPackage(_req) {
+    await this.ensureReady();
+
+    const OUT_DIR = getPreferredFinal250MilDir();
+    const resolvedOutDir = path.resolve(OUT_DIR);
+    const expectedLeaf = 'SUBIR_FINAL_DGII_SOLO_4_XML';
+    assertCondition(
+      path.basename(resolvedOutDir).toUpperCase() === expectedLeaf,
+      `Ruta final 250Mil no permitida: ${resolvedOutDir}`,
+      { statusCode: 422 }
+    );
+
+    fs.rmSync(resolvedOutDir, { recursive: true, force: true });
+    fs.mkdirSync(resolvedOutDir, { recursive: true });
+
+    const certificate = await this.resolveCertificate();
+    const val = (row, key) => {
+      const v = String(row?.[key] ?? '').trim();
+      const lower = v.toLowerCase();
+      return (v === '' || lower === '#e' || lower === 'n/a' || lower === '#n/a' || lower === '#ref!') ? '' : v;
+    };
+
+    let rfceDocs = await this.repository.query(
+      `SELECT id, encf, certification_original_xml
+       FROM ecf_documents
+       WHERE business_id=1
+         AND certification_case_key IS NOT NULL
+         AND submission_mode='rfce'
+         AND tipo_ecf='E32'
+       ORDER BY encf ASC`
+    );
+
+    if (!rfceDocs.length) {
+      const latestExcel = findLatestDgiiCertificationExcel();
+      if (latestExcel) {
+        rfceDocs = readRfceDocsFromExcel(latestExcel);
+        this.logger?.warn?.('No había RFCE en BD; se preparará carpeta final desde el Excel DGII más reciente.', {
+          latestExcel,
+          count: rfceDocs.length,
+        });
+      }
+    }
+
+    if (!rfceDocs.length) {
+      return {
+        ok: false,
+        error: 'No se encontraron los 4 casos E32 <250Mil. Importa el set DGII primero.',
+        outDir: resolvedOutDir,
+      };
+    }
+
+    const generated = [];
+    const errors = [];
+
+    for (const doc of rfceDocs) {
+      let certSource;
+      try {
+        certSource = JSON.parse(doc.certification_original_xml || '{}');
+      } catch (_) {
+        errors.push({ encf: doc.encf, error: 'certification_original_xml no es JSON válido. Reimporta el set DGII.' });
+        continue;
+      }
+
+      const rfceRow = certSource.row || {};
+      const ecfRow = certSource.linkedRawRow || rfceRow;
+      if (!Object.keys(ecfRow || {}).length) {
+        errors.push({ encf: doc.encf, error: 'No existe la fila ECF íntegra vinculada al RFCE.' });
+        continue;
+      }
+
+      try {
+        const localEcfRow = {
+          ...ecfRow,
+          NombreComercial: '',
+          FechaVencimientoSecuencia: val(ecfRow, 'FechaVencimientoSecuencia'),
+        };
+        const transmission = buildTransmissionFromSpreadsheetRow({
+          testCase: {
+            encf: doc.encf,
+            tipoEcf: 'E32',
+            rawRow: localEcfRow,
+            linkedRawRow: null,
+            sourceSheet: 'ECF',
+            submissionMode: 'normal',
+            emitterNombreComercial: '',
+          },
+          issueDate: new Date(),
+          certificateContext: null,
+        });
+        const signedXml = signatureService.signXML(transmission.xml, certificate);
+        const localValidation = this.validateCertificationDocumentBeforeSend({
+          id: doc.id || null,
+          encf: doc.encf,
+          tipo_ecf: 'E32',
+          submission_mode: 'normal',
+          xml_content: transmission.xml,
+          signed_xml_content: signedXml,
+          _certificationValidationRow: localEcfRow,
+        });
+
+        if (!localValidation.ok) {
+          errors.push({ encf: doc.encf, error: localValidation.errors[0], validation: localValidation });
+          continue;
+        }
+        if (!/^<\?xml[\s\S]*<ECF[\s>]/i.test(signedXml)) {
+          errors.push({ encf: doc.encf, error: 'El archivo final debe tener raíz <ECF>.' });
+          continue;
+        }
+        if (/<NombreComercial\b/i.test(signedXml)) {
+          errors.push({ encf: doc.encf, error: 'El archivo final no debe incluir NombreComercial.' });
+          continue;
+        }
+        if (!/<DetallesItems\b/i.test(signedXml)) {
+          errors.push({ encf: doc.encf, error: 'El archivo final debe incluir DetallesItems.' });
+          continue;
+        }
+
+        const rnc = val(localEcfRow, 'RNCEmisor') || this.config?.DGII_RNC || '';
+        const fileName = `${digitsOnly(rnc)}${doc.encf}.xml`;
+        const filePath = path.join(resolvedOutDir, fileName);
+        fs.writeFileSync(filePath, signedXml, 'utf8');
+        generated.push({
+          encf: doc.encf,
+          file: filePath,
+          fileName,
+          root: 'ECF',
+          tipoEcf: '32',
+          nombreComercial: '(omitido)',
+          razonSocialEmisor: val(localEcfRow, 'RazonSocialEmisor'),
+          sizekb: Math.round(fs.statSync(filePath).size / 1024),
+        });
+      } catch (error) {
+        errors.push({ encf: doc.encf, error: error.message });
+      }
+    }
+
+    if (!generated.length) {
+      return {
+        ok: false,
+        error: errors.length ? `No se preparó ningún XML final. Primer error: ${errors[0].error}` : 'No se preparó ningún XML final.',
+        errors,
+        outDir: resolvedOutDir,
+      };
+    }
+
+    return {
+      ok: true,
+      generated,
+      errors: errors.length ? errors : undefined,
+      outDir: resolvedOutDir,
+      message: `✓ ${generated.length} XML ECF finales listos en ${resolvedOutDir}. Sube estos archivos uno por uno en la pantalla Facturas de consumo <250Mil.`,
+    };
+  }
+
+  async openFinal250MilPortalFolder(req) {
+    const prepared = await this.prepareFinal250MilPortalPackage(req);
+    if (!prepared.ok) return prepared;
+    const opened = openFolderInOs(prepared.outDir);
+    return {
+      ...prepared,
+      opened,
     };
   }
 
@@ -3079,6 +3407,12 @@ class EcfService {
     const expectedTotalItbis = datasetTotalItbisText
       ? parseDatasetNumber(datasetTotalItbisText)
       : expectedTotalItbis1;
+    const expectedRncEmisor = normalizeDatasetValue(row.RNCEmisor).replace(/\D/g, '');
+    const actualRncEmisor = firstNodeText(emisorNode, 'RNCEmisor').replace(/\D/g, '');
+    const expectedRazonSocialEmisor = normalizeDatasetValue(row.RazonSocialEmisor);
+    const actualRazonSocialEmisor = firstNodeText(emisorNode, 'RazonSocialEmisor');
+    const expectedFechaEmision = normalizeDatasetValue(row.FechaEmision);
+    const actualFechaEmision = firstNodeText(emisorNode, 'FechaEmision');
     const actualMontoGravadoI1 = parseDatasetNumber(firstNodeText(totalesNode, 'MontoGravadoI1'));
     const actualTotalItbis = parseDatasetNumber(firstNodeText(totalesNode, 'TotalITBIS'));
     const actualTotalItbis1 = parseDatasetNumber(firstNodeText(totalesNode, 'TotalITBIS1'));
@@ -3096,6 +3430,15 @@ class EcfService {
       || String(document.submission_mode || '').toLowerCase() === 'rfce';
 
     const errors = [];
+    if (expectedRncEmisor && actualRncEmisor !== expectedRncEmisor) {
+      errors.push(`RNCEmisor inválido para ${expectedEncf}: XML="${actualRncEmisor}", dataset="${expectedRncEmisor}".`);
+    }
+    if (expectedRazonSocialEmisor && actualRazonSocialEmisor !== expectedRazonSocialEmisor) {
+      errors.push(`RazonSocialEmisor inválida para ${expectedEncf}: XML="${actualRazonSocialEmisor}", dataset="${expectedRazonSocialEmisor}".`);
+    }
+    if (expectedFechaEmision && actualFechaEmision !== expectedFechaEmision) {
+      errors.push(`FechaEmision inválida para ${expectedEncf}: XML="${actualFechaEmision}", dataset="${expectedFechaEmision}".`);
+    }
     if (!isRfceXml && actualNombreComercial !== expectedNombreComercial) {
       errors.push(`NombreComercial inválido para ${expectedEncf}: XML="${actualNombreComercial || '(ausente)'}", dataset="${expectedNombreComercial || '(vacío)'}".`);
     }
@@ -3131,6 +3474,16 @@ class EcfService {
         numeroPrueba: document.certification_order_index || null,
         tipoEcf: document.tipo_ecf,
         encf: expectedEncf,
+        emisorUsado: {
+          rnc: actualRncEmisor,
+          razonSocial: actualRazonSocialEmisor,
+          fechaEmision: actualFechaEmision,
+        },
+        emisorEsperado: {
+          rnc: expectedRncEmisor,
+          razonSocial: expectedRazonSocialEmisor,
+          fechaEmision: expectedFechaEmision,
+        },
         receptorUsado: { rnc: actualRnc, razonSocial: actualRazon },
         nombreComercialUsado: actualNombreComercial,
         nombreComercialEsperado: expectedNombreComercial,
@@ -3435,7 +3788,7 @@ class EcfService {
     // Límite generoso — un set DGII típico tiene 21-30 casos.
     const limit = Math.max(1, Math.min(Number(req.body?.limit || 50), 200));
     // Retardo entre envíos (ms) para no saturar DGII ni expirar el token.
-    const delayMs = Math.max(0, Math.min(Number(req.body?.delayMs || 400), 3000));
+    const delayMs = Math.max(0, Math.min(Number(req.body?.delayMs ?? 80), 3000));
     const results = [];
     let consecutiveErrors = 0;
     // Guard de seguridad: no procesar el mismo documento dos veces en la misma ráfaga.
@@ -3497,12 +3850,19 @@ class EcfService {
       }
     }
 
-    const stoppedByRejection = results.length > 0 && !results[results.length - 1]?.ok
-      && !results[results.length - 1]?.fatalStop;
+    const lastResult = results.length > 0 ? results[results.length - 1] : null;
+    const lastState = String(lastResult?.case?.estado || '').trim().toLowerCase();
+    const stoppedByRejection = Boolean(lastResult && !lastResult.ok
+      && !lastResult.fatalStop
+      && ['rechazado', 'error'].includes(lastState));
+    const stoppedByTransient = Boolean(lastResult && !lastResult.ok
+      && !lastResult.fatalStop
+      && ['error_consulta', 'error_auth'].includes(lastState));
 
     return {
       ok: results.every((r) => r?.ok !== false),
       stoppedByRejection,
+      stoppedByTransient,
       totalProcessed: results.length,
       results,
       summary: await this.repository.getCertificationSummary(),
@@ -3550,7 +3910,7 @@ class EcfService {
           mensaje: status.mensaje,
         });
         // Pequeña pausa entre consultas para no saturar DGII.
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        await new Promise((resolve) => setTimeout(resolve, 80));
       } catch (error) {
         results.push({ id: document.id, encf: document.encf, error: error.message });
       }

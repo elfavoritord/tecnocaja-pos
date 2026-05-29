@@ -1,0 +1,23 @@
+{
+  "trackId": "aceee4d0-4a86-456f-abf9-c4804dbdbf8b",
+  "fecha": "2026-05-28T04:25:38.869Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E330000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "5/28/2026 12:23:41 AM",
+  "mensajes": [
+    {
+      "valor": "El eNCF modificado no ha sido emitido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.La propiedad RazonSocialEmisor no es válida debido a que el valor enviado (EMILIO MANURYS CABRERA) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.",
+      "codigo": 614
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"aceee4d0-4a86-456f-abf9-c4804dbdbf8b\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E330000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"5/28/2026 12:23:41 AM\",\"mensajes\":[{\"valor\":\"El eNCF modificado no ha sido emitido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.La propiedad RazonSocialEmisor no es válida debido a que el valor enviado (EMILIO MANURYS CABRERA) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.\",\"codigo\":614}]}",
+  "statusPath": "storage/ecf/tracks/estado-aceee4d0-4a86-456f-abf9-c4804dbdbf8b.json"
+}

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ECF xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <Encabezado>
+    <Version>1.0</Version>
+    <IdDoc>
+      <TipoeCF>43</TipoeCF>
+      <eNCF>E430000000001</eNCF>
+      <FechaVencimientoSecuencia>31-12-2028</FechaVencimientoSecuencia>
+    </IdDoc>
+    <Emisor>
+      <RNCEmisor>40211932609</RNCEmisor>
+      <RazonSocialEmisor>EMILIO MANURYS CABRERA</RazonSocialEmisor>
+      <NombreComercial>DOCUMENTOS ELECTRONICOS DE 02</NombreComercial>
+      <DireccionEmisor>AVE. ISABEL AGUIAR NO. 269, ZONA INDUSTRIAL DE HERRERA</DireccionEmisor>
+      <Municipio>010101</Municipio>
+      <Provincia>010000</Provincia>
+      <TablaTelefonoEmisor>
+        <TelefonoEmisor>809-472-7676</TelefonoEmisor>
+        <TelefonoEmisor>809-491-1918</TelefonoEmisor>
+      </TablaTelefonoEmisor>
+      <CorreoEmisor>DOCUMENTOSELECTRONICOSDE0612345678969789+9000000000000000000000000000001@123.COM</CorreoEmisor>
+      <WebSite>www.facturaelectronica.com</WebSite>
+      <NumeroFacturaInterna>123456789016</NumeroFacturaInterna>
+      <NumeroPedidoInterno>123456789016</NumeroPedidoInterno>
+      <FechaEmision>01-04-2020</FechaEmision>
+    </Emisor>
+    <Totales>
+      <MontoExento>700.00</MontoExento>
+      <MontoTotal>700.00</MontoTotal>
+    </Totales>
+  </Encabezado>
+  <DetallesItems>
+    <Item>
+      <NumeroLinea>1</NumeroLinea>
+      <IndicadorFacturacion>4</IndicadorFacturacion>
+      <NombreItem>Peajes viaje semana I</NombreItem>
+      <IndicadorBienoServicio>2</IndicadorBienoServicio>
+      <CantidadItem>7.00</CantidadItem>
+      <UnidadMedida>43</UnidadMedida>
+      <PrecioUnitarioItem>100.00</PrecioUnitarioItem>
+      <MontoItem>700.00</MontoItem>
+    </Item>
+  </DetallesItems>
+  <FechaHoraFirma>28-05-2026 00:24:22</FechaHoraFirma>
+  <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+    <SignedInfo>
+      <CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315" />
+      <SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" />
+      <Reference URI="">
+        <Transforms>
+          <Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature" />
+        </Transforms>
+        <DigestMethod Algorithm="http://www.w3.org/2001/04/xmlenc#sha256" />
+        <DigestValue>2kLjMEyn96B5RZ2nVj9mQUlG1AdgC31xdgEKnKl0Bwk=</DigestValue>
+      </Reference>
+    </SignedInfo>
+    <SignatureValue>ns0SaxVlX/d8FteFS9jjUOGDFSVnGltlOEr5tBBw7zglm5I7kSFpD9rSmiKXA87nazWBLxFHI2vy0zJF20qT3dkAm1AMr/jaHVRvxDLxfT3DwXZfV2Tfp1Ew6uRwVBzMtR4W4tCG5hUqBsZPKzX/kLI58rigauJuogaTKb8UiZ7ktHnm9ZR1RxBHVEupFBuuLPFIoXRPzntd2E9qQSgRRp/0s3EtQVKdugalaKlF0fsX2d7ttRbd6NJOIE+3oYX/Z6IebB0bjB4Jc4j28O5tQ/Ju4/C9pyOe1dtY46K8mgJDRA5Vw+VUTgvc1D+xq/b+XXXTBRedy0ArQQ+n1XbBJQ==</SignatureValue>
+    <KeyInfo>
+      <X509Data>
+        <X509Certificate>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</X509Certificate>
+      </X509Data>
+    </KeyInfo>
+  </Signature>
+</ECF>

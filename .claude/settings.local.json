@@ -107,7 +107,8 @@
       "Bash(node -e \"const r = require\\('./modules/ecf/controllers/router.js'\\); console.log\\('loaded ok'\\);\")",
       "Bash(node -e \"const db = require\\('./db'\\); db.query\\('SELECT id, encf, LEFT\\(certification_original_xml,80\\) as src FROM ecf_documents WHERE encf=? LIMIT 1', ['E310000000002'], \\(err, rows\\) => { console.log\\(JSON.stringify\\({err: err?.message, rows}\\)\\); process.exit\\(0\\); }\\);\")",
       "Bash(git commit -m 'fix: corregir NombreComercial, TotalITBIS1 y flujo de certificacion DGII e-CF *)",
-      "Bash(git commit -m 'feat: endpoint reset-rejected para resetear rechazados→firmado antes de reintento *)"
+      "Bash(git commit -m 'feat: endpoint reset-rejected para resetear rechazados→firmado antes de reintento *)",
+      "Bash(npm test *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

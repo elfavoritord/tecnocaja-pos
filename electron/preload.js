@@ -142,8 +142,8 @@ contextBridge.exposeInMainWorld('novaDesktop', {
     return ipcRenderer.invoke('updater:download');
   },
   /** Instala la actualización descargada y reinicia el sistema */
-  updaterInstall() {
-    return ipcRenderer.invoke('updater:install');
+  updaterInstall(options = {}) {
+    return ipcRenderer.invoke('updater:install', options || {});
   },
   /** Devuelve { version, isPackaged } del proceso main */
   updaterGetVersion() {

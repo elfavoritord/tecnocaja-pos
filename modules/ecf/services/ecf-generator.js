@@ -540,6 +540,7 @@ function generateRfceXml(payload) {
   appendIfValue(totalNode, 'MontoGravadoI3', Number(totals.taxed0 || 0).toFixed(2));
   appendIfValue(totalNode, 'MontoExento', Number(totals.exemptAmount || 0).toFixed(2));
   appendIfValue(totalNode, 'TotalITBIS', Number(totals.totalTax || 0).toFixed(2));
+  appendIfValue(totalNode, 'TotalITBIS1', Number(totals.totalTax || 0).toFixed(2));
   totalNode.ele('MontoTotal').txt(Number(totals.total || 0).toFixed(2));
   encabezado.ele('CodigoSeguridadeCF').txt(codigoSeguridad);
 

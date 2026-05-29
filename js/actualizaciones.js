@@ -226,9 +226,23 @@
       // Crear respaldo antes de instalar
       _setStepState('us-backup', 'active');
       try {
-        await fetch('/api/reports/auto-save-daily', { method: 'POST' }).catch(() => {});
+        const backupRes = await fetch('/api/respaldos/auto', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trigger: 'actualizacion_sistema', forceCloud: true })
+        });
+        const backupData = await backupRes.json().catch(() => ({}));
+        if (!backupRes.ok || backupData?.ok === false) {
+          throw new Error(backupData?.error || 'No se pudo crear el respaldo completo.');
+        }
         await _sleep(1500);
-      } catch (_) {}
+      } catch (err) {
+        _setStatus('error');
+        _setStepState('us-backup', 'error');
+        _showError(err.message || 'No se pudo crear el respaldo antes de actualizar.');
+        if (installBtn) installBtn.disabled = false;
+        return;
+      }
       _setStepState('us-backup', 'done');
 
       _setStepState('us-update', 'active');
@@ -242,7 +256,12 @@
       _setStepState('us-restart', 'active');
       await _sleep(500);
       // Instala y reinicia — la app se cierra aquí
-      window.novaDesktop.updaterInstall();
+      const installResult = await window.novaDesktop.updaterInstall({ backupAlreadyDone: true });
+      if (installResult?.ok === false) {
+        _setStatus('error');
+        _showError(installResult.error || 'No se pudo iniciar el instalador.');
+        if (installBtn) installBtn.disabled = false;
+      }
     } else {
       // Simulación (desarrollo)
       const durations = [3500, 3000, 2000, 2000];

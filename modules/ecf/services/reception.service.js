@@ -7,6 +7,7 @@ const FormData = require('form-data');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { normalizeReceptionState } = require('./reception-storage.service');
 const {
+  assertDgiiXmlRoot,
   crearArchivoTemporalDGII,
   eliminarArchivoTemporalDGII,
   extractDgiiIdentityFromXml,
@@ -172,6 +173,7 @@ class ReceptionService {
 
     const xmlContent = String(signedXml || '');
     assertCondition(xmlContent.trim(), 'El XML firmado no contiene datos para enviar.', { statusCode: 422 });
+    const xmlRoot = assertDgiiXmlRoot(xmlContent, 'ECF', this.config?.DGII_RECEPCION_URL || 'Recepcion');
     const dispatchPlan = buildDgiiDispatchPlan({
       xmlContent,
       sourcePath: xmlFilePath,
@@ -257,6 +259,11 @@ class ReceptionService {
         elapsedMs: Date.now() - startedAt,
       },
       raw: parsed.raw,
+      endpoint: this.config.DGII_RECEPCION_URL,
+      xmlRoot,
+      xmlType: 'ECF',
+      requestXmlPath: savedXml?.xmlPath || null,
+      requestXml: xmlContent,
     };
 
     if (response.status >= 200 && response.status < 300 && result.trackId) {
@@ -267,6 +274,9 @@ class ReceptionService {
         trackId: result.trackId,
         filename: dispatchPlan.dgiiFileName,
         archivoEnviado: result.xmlPath,
+        recepcionUrl: this.config?.DGII_RECEPCION_URL,
+        xmlRoot,
+        xmlType: 'ECF',
       });
     } else {
       this.logger.warn('DGII devolvió observación al enviar e-CF.', {
@@ -277,6 +287,9 @@ class ReceptionService {
         codigo: result.codigo,
         descripcion: result.descripcion,
         error: result.error,
+        recepcionUrl: this.config?.DGII_RECEPCION_URL,
+        xmlRoot,
+        xmlType: 'ECF',
       });
     }
 

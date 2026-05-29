@@ -12,8 +12,8 @@ describe('ecf.config', () => {
   test('resuelve endpoints oficiales por ambiente', () => {
     const config = buildEcfConfig({ DGII_ENV: 'certecf' });
     expect(config.DGII_ENV).toBe('certecf');
-    expect(config.DGII_AUTH_URL).toContain('/certecf/autenticacion');
-    expect(config.DGII_RECEPCION_URL).toContain('/certecf/recepcion/api/facturaselectronicas');
-    expect(config.DGII_FC_URL).toContain('fc.dgii.gov.do/certecf/recepcionfc/api/recepcion/ecf');
+    expect(config.DGII_AUTH_URL.toLowerCase()).toContain('/certecf/autenticacion');
+    expect(config.DGII_RECEPCION_URL.toLowerCase()).toContain('/certecf/recepcion/api/facturaselectronicas');
+    expect(config.DGII_FC_URL.toLowerCase()).toContain('fc.dgii.gov.do/certecf/recepcionfc/api/recepcion/ecf');
   });
 });

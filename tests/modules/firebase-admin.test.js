@@ -126,7 +126,7 @@ describe('modules/firebase-admin', () => {
     expect(selected?.id).toBe('pos_user_14');
   });
 
-  it('reutiliza la licencia canónica existente y corrige un TECNO_CAJA_LICENSE_UID equivocado', async () => {
+  it('respeta TECNO_CAJA_LICENSE_UID configurado aunque exista otra licencia mejor para el mismo nombre', async () => {
     const mockFirestore = createMockFirestore({
       licencias: {
         pos_user_1: {
@@ -176,13 +176,13 @@ describe('modules/firebase-admin', () => {
       .filter((entry) => entry.type === 'delete' && entry.ref.collectionName === 'licencias')
       .map((entry) => entry.ref.id);
 
-    expect(result.licenseDocId).toBe('pos_user_14');
+    expect(result.licenseDocId).toBe('pos_user_1');
     expect(licenseSetOperations).toHaveLength(1);
-    expect(licenseSetOperations[0].ref.id).toBe('pos_user_14');
-    expect(deletedLicenseIds).toContain('pos_user_1');
+    expect(licenseSetOperations[0].ref.id).toBe('pos_user_1');
+    expect(deletedLicenseIds).toHaveLength(0);
   });
 
-  it('corrige un TECNO_CAJA_LICENSE_UID guardado con una licencia inferior cuando existe una mejor en Firestore', async () => {
+  it('fetchRemotePosLicenseState usa TECNO_CAJA_LICENSE_UID como fuente autoritativa', async () => {
     const mockFirestore = createMockFirestore({
       licencias: {
         pos_user_1: {
@@ -214,8 +214,8 @@ describe('modules/firebase-admin', () => {
     const { fetchRemotePosLicenseState } = require('../../modules/firebase-admin');
     const remoteState = await fetchRemotePosLicenseState({ business_name: 'Demo POS' });
 
-    expect(remoteState?.id).toBe('pos_user_14');
-    expect(remoteState?.status).toBe('active');
+    expect(remoteState?.id).toBe('pos_user_1');
+    expect(remoteState?.status).toBe('trial');
   });
 
   it('bloquea reutilizar el mismo nombre comercial si ya existe otra licencia en Firebase', async () => {
@@ -223,7 +223,7 @@ describe('modules/firebase-admin', () => {
       licencias: {
         pos_user_14: {
           source: 'pos',
-          businessKey: 'pos:demo-pos',
+          businessKey: 'pos:tecno-caja-demo-pos',
           businessName: 'Demo POS',
           status: 'active',
         },

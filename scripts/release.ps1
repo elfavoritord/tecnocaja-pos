@@ -24,6 +24,27 @@ function Step { param($n,$t) Write-Host "" ; Write-Host "  [$n] $t" -ForegroundC
 function Ok   { param($t)    Write-Host "      OK  $t" -ForegroundColor Green }
 function Info { param($t)    Write-Host "      ... $t" -ForegroundColor DarkGray }
 function Fail { param($t)    Write-Host "" ; Write-Host "  ERROR: $t" -ForegroundColor Red ; exit 1 }
+function Invoke-ReleasePreflight {
+  Step 'PRE' 'Validando archivos criticos antes de publicar...'
+  $syntaxFiles = @(
+    'electron/main.js',
+    'electron/preload.js',
+    'server.js',
+    'js/app.js',
+    'js/data.js',
+    'js/actualizaciones.js',
+    'server/routes/respaldos.routes.js'
+  )
+  foreach ($file in $syntaxFiles) {
+    node --check $file
+    if ($LASTEXITCODE -ne 0) { Fail "Error de sintaxis en $file" }
+  }
+  Ok 'Sintaxis JS valida'
+
+  npm test -- --runInBand
+  if ($LASTEXITCODE -ne 0) { Fail 'Pruebas automatizadas fallaron. No se publica la actualizacion.' }
+  Ok 'Pruebas automatizadas pasaron'
+}
 
 Write-Host ""
 Write-Host "  ==========================================" -ForegroundColor Magenta
@@ -45,6 +66,8 @@ if (-not $env:GH_TOKEN) {
   Fail "GH_TOKEN no encontrado. Agrega GH_TOKEN=ghp_... a tu archivo .env"
 }
 Ok 'GH_TOKEN cargado'
+
+Invoke-ReleasePreflight
 
 # ── Preflight: evitar subir una version si el build no puede tocar MariaDB ──
 node scripts/prepare-mariadb-bundle.js --check-unlocked

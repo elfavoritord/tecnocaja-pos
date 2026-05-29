@@ -1935,6 +1935,7 @@ async function saveUser(id = null) {
         DB.users[existingIndex] = saved;
       }
     }
+    try { localStorage.removeItem('tecnocaja-login-users-cache'); } catch (_error) {}
 
     closeAllModals();
     loadUsuariosTable();

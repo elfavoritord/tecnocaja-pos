@@ -162,13 +162,17 @@ function parseJsonCases(jsonText, sourceName) {
 function parseSpreadsheetCases(buffer, sourceName) {
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   const hasRfceSheet = workbook.SheetNames.some((name) => String(name || '').trim().toUpperCase() === 'RFCE');
+  const rowsBySheet = new Map();
+  for (const sheetName of workbook.SheetNames) {
+    rowsBySheet.set(sheetName, XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: false }));
+  }
   const e32EcfRows = new Map(); // E32 rows from ECF sheet (para linkedRawRow en RFCE)
   const rfceEncfs = new Set(); // eNCFs E32 que están en la hoja RFCE
 
   if (hasRfceSheet) {
     for (const sheetName of workbook.SheetNames) {
       const normalizedSheet = String(sheetName || '').trim().toUpperCase();
-      const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: false });
+      const rows = rowsBySheet.get(sheetName) || [];
       if (normalizedSheet === 'ECF') {
         // Pre-escanear hoja ECF para guardar filas E32 (se usan como linkedRawRow)
         for (const row of rows) {
@@ -190,7 +194,7 @@ function parseSpreadsheetCases(buffer, sourceName) {
   const cases = [];
 
   for (const sheetName of workbook.SheetNames) {
-    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: false });
+    const rows = rowsBySheet.get(sheetName) || [];
     if (!rows.length) continue;
     const normalizedSheet = String(sheetName || '').trim().toUpperCase();
     const parsed = rowsToTestCases(rows, {
@@ -363,6 +367,8 @@ async function importCertificationSet({
       emitter,
       environment,
       certificateContext,
+      signOnImport: false,
+      buildXmlOnImport: false,
       userId,
       certificationMetaResolver: (testCase) => ({
         certificationCaseKey: slugify(testCase.casoPrueba || testCase.encf || `caso-${testCase.certificationOrderIndex}`),
@@ -388,6 +394,8 @@ async function importCertificationSet({
       ...result,
       batchId,
       ignored,
+      signingDeferred: true,
+      xmlBuildDeferred: true,
       importedSources: sources.map((item) => item.originalFilename || path.basename(item.filepath)),
       supportedFormats: ['xml', 'zip', 'txt', 'csv', 'json', 'xlsx', 'xls', 'ods', 'folder'],
     };

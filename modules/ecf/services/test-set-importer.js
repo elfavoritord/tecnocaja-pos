@@ -153,6 +153,44 @@ function appendSimple(node, tagName, value) {
   node.ele(tagName).txt(text);
 }
 
+function normalizeEmitterOverrideValue(value) {
+  return normalizeRowValue(value);
+}
+
+function applyEmitterOverridesToRow(row, emitter = null) {
+  const next = { ...(row || {}) };
+  if (!emitter) return next;
+
+  const rnc = digitsOnly(
+    normalizeEmitterOverrideValue(emitter.rnc)
+      || normalizeEmitterOverrideValue(emitter.rncEmisor)
+      || normalizeEmitterOverrideValue(emitter.RNCEmisor)
+  );
+  const razonSocial = normalizeEmitterOverrideValue(emitter.razonSocial)
+    || normalizeEmitterOverrideValue(emitter.razon_social)
+    || normalizeEmitterOverrideValue(emitter.nombre)
+    || normalizeEmitterOverrideValue(emitter.name);
+
+  if (rnc && !rowHasValue(next, 'RNCEmisor')) next.RNCEmisor = rnc;
+  if (razonSocial && !rowHasValue(next, 'RazonSocialEmisor')) {
+    next.RazonSocialEmisor = razonSocial;
+  }
+
+  if (
+    !rowHasValue(next, 'NombreComercial')
+    && (
+      Object.prototype.hasOwnProperty.call(emitter, 'nombreComercial')
+      || Object.prototype.hasOwnProperty.call(emitter, 'nombre_comercial')
+    )
+  ) {
+    next.NombreComercial = normalizeEmitterOverrideValue(
+      emitter.nombreComercial ?? emitter.nombre_comercial
+    );
+  }
+
+  return next;
+}
+
 // NOTA sobre PrecioUnitarioItem y PrecioUnitarioReferencia:
 // DGII valida los campos contra el valor EXACTO del set de pruebas que ellos definieron.
 // Si el set DGII tiene "220.00" (2 decimales) y enviamos "220.0000" (4 decimales), rechazan.
@@ -222,7 +260,7 @@ function computeSecurityCodeFromSignedXml(signedXml) {
     (String(signedXml || '').match(/<SignatureValue[^>]*>([^<]+)<\/SignatureValue>/i) || [])[1] || ''
   ).trim();
   if (!signatureValue) return null;
-  return require('crypto').createHash('sha256').update(signatureValue).digest('hex').slice(0, 6).toUpperCase();
+  return signatureValue.slice(0, 6);
 }
 
 function collectIndexedEntries(row, prefix) {
@@ -275,6 +313,43 @@ function summarizeTotalsFromRow(row) {
     totalTaxed,
     totalIsrRetenido: rowNumber(row, 'TotalISRRetencion') ?? 0,
   };
+}
+
+function buildDeferredTotals(testCase, defaults = {}) {
+  if (testCase?.rawRow) return summarizeTotalsFromRow(testCase.rawRow);
+  const total = round2(Number(testCase?.totalAmount || defaults.montoBase || 0));
+  const taxRate = Number(defaults.itbisRate || 0);
+  const totalTaxed = taxRate > 0 ? round2(total / (1 + (taxRate / 100))) : total;
+  const totalTax = taxRate > 0 ? round2(total - totalTaxed) : 0;
+  return {
+    items: [],
+    subtotal: totalTaxed,
+    totalDiscount: 0,
+    exemptAmount: taxRate > 0 ? 0 : total,
+    taxed18: taxRate === 18 ? totalTaxed : 0,
+    taxed16: taxRate === 16 ? totalTaxed : 0,
+    taxed0: taxRate > 0 ? 0 : total,
+    totalTax,
+    total,
+    totalTaxed: taxRate > 0 ? totalTaxed : 0,
+    totalIsrRetenido: 0,
+  };
+}
+
+function inferSubmissionModeForImport(testCase, defaults = {}) {
+  const explicitMode = String(testCase?.submissionMode || '').trim().toLowerCase();
+  if (explicitMode === 'rfce') return 'rfce';
+  if (explicitMode === 'normal') return 'normal';
+
+  const sourceSheet = String(testCase?.sourceSheet || '').trim().toUpperCase();
+  if (sourceSheet === 'RFCE') return 'rfce';
+  if (sourceSheet === 'ECF') return 'normal';
+
+  const originalXml = String(testCase?.originalXml || '').trim();
+  if (/^<\?xml[\s\S]*<RFCE[\s>]/i.test(originalXml) || /^<RFCE[\s>]/i.test(originalXml)) return 'rfce';
+  if (/^<\?xml[\s\S]*<ECF[\s>]/i.test(originalXml) || /^<ECF[\s>]/i.test(originalXml)) return 'normal';
+
+  return defaults.submissionMode || 'normal';
 }
 
 function buildCertificationCaseCustomer(testCase, defaults, emitter) {
@@ -733,6 +808,22 @@ function buildCertificationRfceXml(testCase, issueDate) {
     'MontoPeriodo',
   ].forEach((field) => appendSimple(totalsNode, field, totalFieldValue(row, field)));
 
+  const additionalTaxes = collectIndexedEntries(row, 'TipoImpuesto').filter((entry) => (
+    normalizeRowValue(row[`MontoImpuestoSelectivoConsumoEspecifico[${entry.index}]`])
+    || normalizeRowValue(row[`MontoImpuestoSelectivoConsumoAdvalorem[${entry.index}]`])
+    || normalizeRowValue(row[`OtrosImpuestosAdicionales[${entry.index}]`])
+  ));
+  if (additionalTaxes.length) {
+    const table = totalsNode.ele('ImpuestosAdicionales');
+    for (const entry of additionalTaxes) {
+      const item = table.ele('ImpuestoAdicional');
+      item.ele('TipoImpuesto').txt(entry.value);
+      appendSimple(item, 'MontoImpuestoSelectivoConsumoEspecifico', row[`MontoImpuestoSelectivoConsumoEspecifico[${entry.index}]`]);
+      appendSimple(item, 'MontoImpuestoSelectivoConsumoAdvalorem', row[`MontoImpuestoSelectivoConsumoAdvalorem[${entry.index}]`]);
+      appendSimple(item, 'OtrosImpuestosAdicionales', row[`OtrosImpuestosAdicionales[${entry.index}]`]);
+    }
+  }
+
   appendSimple(encabezado, 'CodigoSeguridadeCF', testCase.computedCodigoSeguridadeCF || row.CodigoSeguridadeCF);
 
   return {
@@ -742,26 +833,57 @@ function buildCertificationRfceXml(testCase, issueDate) {
   };
 }
 
-function buildTransmissionFromSpreadsheetRow({ testCase, issueDate, certificateContext = null }) {
-  if (String(testCase.sourceSheet || '').trim().toUpperCase() === 'RFCE'
-    || String(testCase.submissionMode || '').trim().toLowerCase() === 'rfce') {
-    let computedCodigoSeguridadeCF = rowText(testCase.rawRow, 'CodigoSeguridadeCF');
-    if (!computedCodigoSeguridadeCF && testCase.linkedRawRow && certificateContext) {
-      const linkedTransmission = buildCertificationEcfXml({
+function buildTransmissionFromSpreadsheetRow({
+  testCase,
+  issueDate,
+  certificateContext = null,
+  emitter = null,
+  overrideEmitterFromConfig = false,
+}) {
+  const normalizedTestCase = overrideEmitterFromConfig
+    ? {
         ...testCase,
-        rawRow: testCase.linkedRawRow,
+        rawRow: testCase?.rawRow ? applyEmitterOverridesToRow(testCase.rawRow, emitter) : testCase?.rawRow,
+        linkedRawRow: testCase?.linkedRawRow ? applyEmitterOverridesToRow(testCase.linkedRawRow, emitter) : testCase?.linkedRawRow,
+      }
+    : { ...(testCase || {}) };
+
+  if (
+    overrideEmitterFromConfig
+    && emitter
+    && !Object.prototype.hasOwnProperty.call(normalizedTestCase, 'emitterNombreComercial')
+    && (
+      Object.prototype.hasOwnProperty.call(emitter, 'nombreComercial')
+      || Object.prototype.hasOwnProperty.call(emitter, 'nombre_comercial')
+    )
+  ) {
+    normalizedTestCase.emitterNombreComercial = normalizeEmitterOverrideValue(
+      emitter.nombreComercial ?? emitter.nombre_comercial
+    );
+  }
+
+  if (String(normalizedTestCase.sourceSheet || '').trim().toUpperCase() === 'RFCE'
+    || String(normalizedTestCase.submissionMode || '').trim().toLowerCase() === 'rfce') {
+    let computedCodigoSeguridadeCF = null;
+    if (normalizedTestCase.linkedRawRow && certificateContext) {
+      const linkedTransmission = buildCertificationEcfXml({
+        ...normalizedTestCase,
+        rawRow: normalizedTestCase.linkedRawRow,
         sourceSheet: 'ECF',
         submissionMode: 'normal',
       }, issueDate);
       const linkedSignature = signIfPossible(linkedTransmission.xml, certificateContext);
       computedCodigoSeguridadeCF = computeSecurityCodeFromSignedXml(linkedSignature.signedXml);
     }
+    if (!computedCodigoSeguridadeCF) {
+      computedCodigoSeguridadeCF = rowText(normalizedTestCase.rawRow, 'CodigoSeguridadeCF');
+    }
     return buildCertificationRfceXml({
-      ...testCase,
+      ...normalizedTestCase,
       computedCodigoSeguridadeCF,
     }, issueDate);
   }
-  return buildCertificationEcfXml(testCase, issueDate);
+  return buildCertificationEcfXml(normalizedTestCase, issueDate);
 }
 
 function findColumn(sample, aliases) {
@@ -893,7 +1015,7 @@ function buildTestItems(testCase, defaults) {
 
 function buildTransmissionXml({ testCase, emitter, customer, defaults, issueDate, certificateContext = null }) {
   if (testCase.rawRow) {
-    return buildTransmissionFromSpreadsheetRow({ testCase, issueDate, certificateContext });
+    return buildTransmissionFromSpreadsheetRow({ testCase, issueDate, certificateContext, emitter });
   }
 
   const baseDocument = {
@@ -1009,6 +1131,8 @@ async function importTestCases({
   emitter,
   environment,
   certificateContext = null,
+  signOnImport = true,
+  buildXmlOnImport = true,
   userId = null,
   certificationMetaResolver = null,
 }) {
@@ -1049,15 +1173,23 @@ async function importTestCases({
         const sequence = sequenceMap.get(testCase.tipoEcf);
         const issueDate = new Date();
         const customer = buildCertificationCaseCustomer(testCase, defaults, emitter);
-        const transmission = buildTransmissionXml({
-          testCase,
-          emitter,
-          customer,
-          defaults,
-          issueDate,
-          certificateContext,
-        });
-        const signature = signIfPossible(transmission.xml, certificateContext);
+        const transmission = buildXmlOnImport
+          ? buildTransmissionXml({
+              testCase,
+              emitter,
+              customer,
+              defaults,
+              issueDate,
+              certificateContext: signOnImport ? certificateContext : null,
+            })
+          : {
+              submissionMode: inferSubmissionModeForImport(testCase, defaults),
+              xml: testCase.originalXml || null,
+              totals: buildDeferredTotals(testCase, defaults),
+            };
+        const signature = signOnImport && transmission.xml
+          ? signIfPossible(transmission.xml, certificateContext)
+          : { signedXml: null, verification: null };
         const codigoSeguridad = signature.signedXml
           ? require('crypto').createHash('sha256').update(String(signature.verification.signatureValue || '')).digest('hex').slice(0, 6).toUpperCase()
           : null;
@@ -1122,6 +1254,8 @@ async function importTestCases({
       ok: results.filter((item) => item.ok).length,
       errors: results.filter((item) => !item.ok).length,
       hasCert: Boolean(certificateContext),
+      signingDeferred: !signOnImport,
+      xmlBuildDeferred: !buildXmlOnImport,
       results,
     };
   });
