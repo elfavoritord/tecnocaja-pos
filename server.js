@@ -176,6 +176,278 @@ async function deleteProductsFromReportsByIds(productIds) {
   return { deleted };
 }
 
+async function syncCategoriesToReports(options = {}) {
+  if (!reportsSync.isEnabled()) return { synced: 0, skipped: true };
+  const cfg = options.config || await getReportSyncConfig();
+  const categories = await getCategories().catch(() => []);
+  const seen = new Set();
+  let synced = 0;
+  for (const category of categories) {
+    const key = String(category.nombre || category.name || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    await reportsSync.syncCategory(category, { config: cfg });
+    synced += 1;
+  }
+  return { synced };
+}
+
+async function resolveReportAppCategoryName(category) {
+  const raw = String(category || '').trim();
+  if (!raw) {
+    const error = new Error('El producto no tiene categoría sincronizada desde el POS.');
+    error.statusCode = 400;
+    throw error;
+  }
+  await ensureCategoriesTable();
+  const rows = await query('SELECT nombre FROM categories WHERE LOWER(nombre) = LOWER(?) LIMIT 1', [raw]);
+  if (!rows[0]) {
+    const error = new Error(`La categoría "${raw}" no existe en Tecno Caja POS.`);
+    error.statusCode = 400;
+    throw error;
+  }
+  return rows[0].nombre;
+}
+
+function normalizeReportAppText(value, fallback = '') {
+  const normalized = String(value ?? '').trim();
+  return normalized || fallback;
+}
+
+function normalizeReportAppNumber(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizeReportAppBool(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (value === null || value === undefined || value === '') return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['true', '1', 'si', 'sí', 'activo', 'active'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'inactivo', 'inactive'].includes(normalized)) return false;
+  return fallback;
+}
+
+async function writeReportAppProductSyncLog(conn, entry = {}) {
+  const runner = conn?.query ? conn : { query };
+  await ensureReportAppProductSyncLogTable().catch(() => {});
+  await runner.query(
+    `INSERT INTO report_app_product_sync_logs
+      (remote_product_id, product_name, user_name, attempt, status, error_message, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      entry.remoteProductId || null,
+      entry.productName || '',
+      entry.userName || '',
+      Number(entry.attempt || 1),
+      entry.status || 'error',
+      entry.errorMessage || null,
+    ]
+  ).catch(() => {});
+}
+
+async function syncPendingReportAppProducts(options = {}) {
+  if (!reportsSync.isEnabled()) return { synced: 0, skipped: true };
+  const { getFirestore } = require('./modules/firebase-admin');
+  const { FieldValue } = require('firebase-admin/firestore');
+  const firestore = getFirestore();
+  if (!firestore) return { synced: 0, skipped: true };
+
+  await ensureBusinessRulesExtensions();
+  await ensureReportAppProductSyncLogTable();
+
+  const cfg = await getReportSyncConfig();
+  const businessId = reportsSync.getBusinessId(cfg);
+  const snapshot = await firestore
+    .collection('businesses')
+    .doc(businessId)
+    .collection('products')
+    .where('origen', '==', 'app_reporte')
+    .limit(60)
+    .get();
+
+  let synced = 0;
+  let errors = 0;
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data() || {};
+    const alreadySynced = data.sincronizado === true || data.synced === true || data.syncStatus === 'synced';
+    if (alreadySynced && !options.force) continue;
+
+    const attempt = Number(data.syncAttempts || 0) + 1;
+    const name = normalizeReportAppText(data.nombre ?? data.name);
+    const sku = normalizeReportAppText(data.codigo ?? data.sku ?? data.barcode ?? doc.id);
+    const barcode = normalizeReportAppText(data.barcode ?? sku);
+    const userName = normalizeReportAppText(data.creadoPor ?? data.createdByName ?? data.updatedByName, 'App Reporte');
+
+    try {
+      if (!name) throw new Error('El producto no tiene nombre.');
+      const price = normalizeReportAppNumber(data.precioVenta ?? data.price, 0);
+      const cost = normalizeReportAppNumber(data.precioCompra ?? data.cost, 0);
+      const stock = normalizeReportAppNumber(data.stock, 0);
+      if (price <= 0) throw new Error('El precio debe ser mayor que cero.');
+      if (cost < 0) throw new Error('El costo no puede ser negativo.');
+      if (stock < 0) throw new Error('El stock inicial no puede ser negativo.');
+      const canonicalCategory = await resolveReportAppCategoryName(data.categoria ?? data.category);
+
+      const result = await withTransaction(async (conn) => {
+        const existingByRemote = await conn.query(
+          'SELECT * FROM products WHERE remote_report_product_id = ? LIMIT 1',
+          [doc.id]
+        );
+        const existingBySku = existingByRemote[0] ? [] : await conn.query(
+          'SELECT * FROM products WHERE LOWER(codigo) = LOWER(?) LIMIT 1',
+          [sku]
+        );
+        const existingByBarcode = existingByRemote[0] || existingBySku[0] || !barcode ? [] : await conn.query(
+          `SELECT * FROM products
+           WHERE LOWER(COALESCE(barcode, "")) = LOWER(?)
+              OR LOWER(COALESCE(codigo, "")) = LOWER(?)
+           LIMIT 1`,
+          [barcode, barcode]
+        );
+        const existing = existingByRemote[0] || existingBySku[0] || existingByBarcode[0] || null;
+        const estado = normalizeReportAppBool(data.isActive, true) ? 'Activo' : 'Inactivo';
+        const payload = [
+          sku,
+          name,
+          canonicalCategory,
+          normalizeReportAppText(data.marca ?? data.brand),
+          normalizeReportAppText(data.unidad ?? data.unit, 'unidad'),
+          cost,
+          price,
+          stock,
+          normalizeReportAppNumber(data.stockMin ?? data.minStock, 0),
+          estado,
+          normalizeReportAppText(data.imageUrl),
+          normalizeReportAppBool(data.aplicaItbis ?? data.appliesTax, false) ? 1 : 0,
+          barcode || sku,
+          doc.id,
+          'app_reporte',
+        ];
+
+        let productId;
+        if (existing) {
+          productId = Number(existing.id);
+          await conn.query(
+            `UPDATE products
+             SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?,
+                 precio_compra = ?, precio_venta = ?, stock = ?, stock_min = ?, estado = ?,
+                 image_url = COALESCE(NULLIF(?, ''), image_url), aplica_itbis = ?,
+                 barcode = ?, remote_report_product_id = ?, sync_origin = ?
+             WHERE id = ?`,
+            [...payload, productId]
+          );
+        } else {
+          const insert = await conn.query(
+            `INSERT INTO products
+              (codigo, nombre, categoria, marca, unidad, precio_compra, precio_venta,
+               stock, stock_min, estado, image_url, aplica_itbis, barcode,
+               remote_report_product_id, sync_origin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)`,
+            payload
+          );
+          productId = Number(insert.insertId || 0);
+        }
+
+        const branchId = Number(data.sucursalId || data.branchId || 0) || null;
+        const resolvedBranchId = await resolveInventoryBranchId(conn, branchId);
+        await ensureBranchInventoryCoverageForProduct(conn, {
+          productId,
+          branchId: resolvedBranchId,
+          stock,
+          stockMin: normalizeReportAppNumber(data.stockMin ?? data.minStock, 0),
+        });
+        if (resolvedBranchId) {
+          await changeBranchInventoryStock(conn, {
+            productId,
+            branchId: resolvedBranchId,
+            absoluteStock: stock,
+            stockMin: normalizeReportAppNumber(data.stockMin ?? data.minStock, 0),
+          });
+        }
+        await writeReportAppProductSyncLog(conn, {
+          remoteProductId: doc.id,
+          productName: name,
+          userName,
+          attempt,
+          status: 'synced',
+        });
+        return { productId, branchId: resolvedBranchId };
+      });
+
+      await doc.ref.set({
+        synced: true,
+        sincronizado: true,
+        syncStatus: 'synced',
+        syncError: null,
+        syncAttempts: attempt,
+        posProductId: result.productId,
+        fechaSincronizacion: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      const productRows = await query('SELECT * FROM products WHERE id = ? LIMIT 1', [result.productId]);
+      if (productRows[0]) {
+        productsCache.upsert(mapProductRow(productRows[0]));
+        await reportsSync.syncProduct(productRows[0], { config: cfg, branchId: result.branchId });
+      }
+      io.emit('reports-app:product-received', {
+        message: 'Nuevo producto recibido desde la App de Reporte',
+        productName: name,
+        productId: result.productId,
+      });
+      synced += 1;
+    } catch (error) {
+      errors += 1;
+      const message = error?.message || String(error);
+      await writeReportAppProductSyncLog(null, {
+        remoteProductId: doc.id,
+        productName: name,
+        userName,
+        attempt,
+        status: 'error',
+        errorMessage: message,
+      });
+      await doc.ref.set({
+        synced: false,
+        sincronizado: false,
+        syncStatus: 'error',
+        syncError: message,
+        syncAttempts: attempt,
+        lastSyncErrorAt: FieldValue.serverTimestamp(),
+      }, { merge: true }).catch(() => {});
+    }
+  }
+
+  if (synced) {
+    await productsCache.loadAll().catch(() => {});
+    await persistProductsCsvBackup('sync_app_reporte').catch(() => {});
+    scheduleSilentProductBackup('sync_app_reporte');
+  }
+
+  return { synced, errors };
+}
+
+let reportAppProductSyncTimer = null;
+let reportAppProductSyncRunning = false;
+function startReportAppProductSync() {
+  if (reportAppProductSyncTimer) return;
+  const run = async () => {
+    if (reportAppProductSyncRunning) return;
+    reportAppProductSyncRunning = true;
+    try {
+      await syncPendingReportAppProducts();
+    } catch (error) {
+      console.warn('[reports-app-products] sync falló:', error?.message || error);
+    } finally {
+      reportAppProductSyncRunning = false;
+    }
+  };
+  run();
+  reportAppProductSyncTimer = setInterval(run, 60 * 1000);
+}
+
 const {
   assertNoFirebaseIdentityConflicts,
   fetchRemotePosLicenseState,
@@ -2019,6 +2291,7 @@ function mapProductRow(row) {
   return {
     id: row.id,
     codigo: row.codigo,
+    barcode: row.barcode || row.codigo || '',
     nombre: row.nombre,
     categoria: row.categoria,
     marca: row.marca,
@@ -3781,6 +4054,9 @@ async function ensureUserExtensions() {
 }
 
 async function ensureProductExtensions() {
+  await addColumnIfMissing('products', 'barcode', 'VARCHAR(120) DEFAULT NULL');
+  await addColumnIfMissing('products', 'remote_report_product_id', 'VARCHAR(191) DEFAULT NULL');
+  await addColumnIfMissing('products', 'sync_origin', 'VARCHAR(40) DEFAULT NULL');
   await addColumnIfMissing('products', 'image_url', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('products', 'image_local', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('products', 'sale_mode', `VARCHAR(20) NOT NULL DEFAULT 'unidad'`);
@@ -3796,6 +4072,23 @@ async function ensureProductExtensions() {
   await addColumnIfMissing('products', 'business_metadata', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
   await query(`UPDATE products SET sale_mode = 'unidad' WHERE sale_mode IS NULL OR sale_mode = ''`).catch(() => {});
+  await query('CREATE INDEX idx_products_barcode ON products (barcode)').catch(() => {});
+  await query('CREATE INDEX idx_products_remote_report_product_id ON products (remote_report_product_id)').catch(() => {});
+}
+
+async function ensureReportAppProductSyncLogTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS report_app_product_sync_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      remote_product_id VARCHAR(191) DEFAULT NULL,
+      product_name VARCHAR(255) DEFAULT NULL,
+      user_name VARCHAR(160) DEFAULT NULL,
+      attempt INT NOT NULL DEFAULT 1,
+      status VARCHAR(30) NOT NULL DEFAULT 'error',
+      error_message TEXT DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 }
 
 async function ensureClientExtensions() {
@@ -3842,6 +4135,18 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sales', 'delivery_cash_received_by_user_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_cash_received_by_user_name', 'VARCHAR(120) DEFAULT NULL');
   await addColumnIfMissing('sales', 'pdf_path', 'VARCHAR(512) DEFAULT NULL');
+  await addColumnIfMissing('sales', 'created_date', 'DATE DEFAULT NULL');
+  await addColumnIfMissing('sales', 'created_time', 'TIME DEFAULT NULL');
+  await query(`
+    UPDATE sales
+    SET created_date = DATE(created_at)
+    WHERE created_date IS NULL AND created_at IS NOT NULL
+  `).catch(() => {});
+  await query(`
+    UPDATE sales
+    SET created_time = TIME(created_at)
+    WHERE created_time IS NULL AND created_at IS NOT NULL
+  `).catch(() => {});
 }
 
 // ── NCF / Comprobantes fiscales ────────────────────────────────────────────────
@@ -4027,6 +4332,8 @@ async function ensureOperativeDateExtensions() {
   await addColumnIfMissing('sales', 'cash_session_id', 'INT DEFAULT NULL');
   // sales: fecha operativa del turno (copia desnormalizada para consultas rápidas)
   await addColumnIfMissing('sales', 'operative_date', 'DATE DEFAULT NULL');
+  await addColumnIfMissing('sales', 'created_date', 'DATE DEFAULT NULL');
+  await addColumnIfMissing('sales', 'created_time', 'TIME DEFAULT NULL');
 
   // Backfill: asignar operative_date a sesiones existentes que no la tienen
   // (usa la fecha de apertura como referencia)
@@ -4042,6 +4349,16 @@ async function ensureOperativeDateExtensions() {
     UPDATE sales
     SET operative_date = DATE(created_at)
     WHERE operative_date IS NULL AND created_at IS NOT NULL
+  `).catch(() => {});
+  await query(`
+    UPDATE sales
+    SET created_date = DATE(created_at)
+    WHERE created_date IS NULL AND created_at IS NOT NULL
+  `).catch(() => {});
+  await query(`
+    UPDATE sales
+    SET created_time = TIME(created_at)
+    WHERE created_time IS NULL AND created_at IS NOT NULL
   `).catch(() => {});
 
   // Backfill: ligar ventas a su sesión cuando cash_register_id coincide
@@ -5100,7 +5417,13 @@ async function resolveRoleSelection(inputRoleId, inputRoleCode, inputRoleLabel) 
 
 async function recalculateCashAmount(conn = null) {
   const executor = conn || { query };
-  const rows = await executor.query('SELECT COALESCE(SUM(total), 0) AS total FROM sales');
+  const rows = await executor.query(`
+    SELECT COALESCE(current_amount, opened_amount, 0) AS total
+    FROM cash_sessions
+    WHERE status = 'open'
+    ORDER BY id DESC
+    LIMIT 1
+  `);
   const total = Number(rows[0]?.total || 0);
   await executor.query('UPDATE config SET cash_amount = ? WHERE id = 1', [total]);
   return total;
@@ -5984,6 +6307,26 @@ async function ensureUniqueProductName(nombre, ignoreId = null, executor = query
     : await runQuery('SELECT id FROM products WHERE LOWER(nombre) = LOWER(?) LIMIT 1', [nombre]);
   if (rows.length) {
     const error = new Error('Ya existe un producto con ese nombre.');
+    error.statusCode = 409;
+    throw error;
+  }
+}
+
+async function ensureUniqueProductBarcode(barcode, ignoreId = null, executor = query) {
+  const normalized = String(barcode || '').trim();
+  if (!normalized) return;
+  const runQuery = typeof executor?.query === 'function'
+    ? executor.query.bind(executor)
+    : query;
+  const sql = `SELECT id FROM products
+               WHERE (
+                 LOWER(COALESCE(barcode, "")) = LOWER(?)
+                 OR LOWER(COALESCE(codigo, "")) = LOWER(?)
+               )${ignoreId ? ' AND id <> ?' : ''} LIMIT 1`;
+  const params = ignoreId ? [normalized, normalized, ignoreId] : [normalized, normalized];
+  const rows = await runQuery(sql, params);
+  if (rows.length) {
+    const error = new Error('Ya existe un producto con ese código de barra.');
     error.statusCode = 409;
     throw error;
   }
@@ -8407,7 +8750,7 @@ app.post('/api/firebase-reports/sync-tax-report', async (req, res) => {
   }
 
   const branchId = Number(req.body?.branchId || 0) || null;
-  let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+  let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
   const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
   if (branchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(branchId); }
 
@@ -8442,6 +8785,36 @@ app.post('/api/firebase-reports/sync-tax-report', async (req, res) => {
     totalInvoices: Number(resumen[0]?.total_facturas || 0),
     totalAmount: Number(resumen[0]?.total_facturado || 0),
   });
+});
+
+app.post('/api/firebase-reports/sync-products-from-app', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanManageGlobalProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para sincronizar productos desde la App de Reporte.' });
+  }
+  const result = await syncPendingReportAppProducts({ force: req.body?.force === true });
+  res.json({ ok: true, ...result });
+});
+
+app.get('/api/firebase-reports/product-sync-logs', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+  if (!isGlobalAdministratorUser(actorUser)) {
+    return res.status(403).json({ error: 'Solo el administrador puede ver logs de sincronización.' });
+  }
+  await ensureReportAppProductSyncLogTable();
+  const rows = await query(
+    `SELECT * FROM report_app_product_sync_logs ORDER BY id DESC LIMIT 100`
+  );
+  res.json(rows.map((row) => ({
+    id: Number(row.id),
+    remoteProductId: row.remote_product_id || '',
+    producto: row.product_name || '',
+    usuario: row.user_name || '',
+    intento: Number(row.attempt || 1),
+    estado: row.status || '',
+    error: row.error_message || '',
+    fecha: row.created_at,
+  })));
 });
 
 app.get('/api/suspended-sales', async (req, res) => {
@@ -8973,6 +9346,7 @@ app.post('/api/categories', async (req, res) => {
     actionName: 'Categoría creada',
     detail: nombre
   });
+  fireReportSync(() => syncCategoriesToReports());
   res.status(201).json(mapCategoryRow(rows[0]));
 });
 
@@ -8996,14 +9370,16 @@ app.post('/api/products', async (req, res) => {
   const createdResult = await withTransaction(async (conn) => {
     await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
     await ensureUniqueProductCode(data.codigo, null, conn);
+    await ensureUniqueProductBarcode(data.barcode || data.codigo, null, conn);
     await ensureUniqueProductName(data.nombre, null, conn);
 
     const result = await conn.query(
       `INSERT INTO products
-        (codigo, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         data.codigo,
+        data.barcode || data.codigo,
         data.nombre,
         data.categoria,
         data.marca,
@@ -9097,6 +9473,7 @@ app.post('/api/products', async (req, res) => {
   // ── Sync reporte-sistema-pos (producto creado) ──
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
+    await syncCategoriesToReports({ config: cfg });
     await reportsSync.syncProduct(createdResult.row, { config: cfg, branchId: createdResult.branchId });
   });
   await persistProductsCsvBackup('crear_producto');
@@ -9570,6 +9947,7 @@ app.put('/api/products/:id', async (req, res) => {
 
     await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
     await ensureUniqueProductCode(data.codigo, id, conn);
+    await ensureUniqueProductBarcode(data.barcode || data.codigo, id, conn);
     await ensureUniqueProductName(data.nombre, id, conn);
     await conn.query(
       `UPDATE products
@@ -9577,7 +9955,7 @@ app.put('/api/products/:id', async (req, res) => {
            precio_venta = ?, stock = ?, stock_min = ?, estado = ?, image_url = ?, image_local = ?, product_type = ?,
            size_options = ?, dough_options = ?, border_options = ?, extra_options = ?,
            allow_half_and_half = ?, is_combo = ?, aplica_itbis = ?, preparation_time_minutes = ?, business_metadata = ?,
-           tracks_stock = ?
+           tracks_stock = ?, barcode = ?
        WHERE id = ?`,
       [
         data.codigo,
@@ -9604,6 +9982,7 @@ app.put('/api/products/:id', async (req, res) => {
         Number(data.tiempoPreparacion || 15),
         JSON.stringify(data.metaNegocio || {}),
         data.tracksStock === false ? 0 : 1,
+        data.barcode || data.codigo,
         id
       ]
     );
@@ -9674,6 +10053,7 @@ app.put('/api/products/:id', async (req, res) => {
   // ── Sync reporte-sistema-pos (producto actualizado) ──
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
+    await syncCategoriesToReports({ config: cfg });
     await reportsSync.syncProduct(updatedResult.row, { config: cfg, branchId: updatedResult.branchId });
   });
   await persistProductsCsvBackup('actualizar_producto');
@@ -11306,7 +11686,7 @@ app.get('/api/sales/returns-history', async (req, res) => {
     await ensureReturnTables();
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const desde = String(req.query?.desde || '').trim() || new Date().toISOString().split('T')[0];
+    const desde = String(req.query?.desde || '').trim() || getTodayDateKey();
     const hasta = String(req.query?.hasta || '').trim() || desde;
 
     let where = `WHERE sr.returned_at BETWEEN ? AND ?`;
@@ -11863,7 +12243,8 @@ app.post('/api/cash/close', async (req, res) => {
       query(
         `SELECT COUNT(*) AS total
          FROM sales
-         WHERE cash_session_id = ? AND COALESCE(sale_status, 'pagada') = 'pagada'`,
+         WHERE cash_session_id = ?
+           AND ${buildSaleActiveClause('sales')}`,
         [session.id]
       ).catch(() => [{ total: 0 }]),
       query(
@@ -12309,8 +12690,8 @@ app.post('/api/sales', async (req, res) => {
     // Para e-CF/DGII se usa created_at (fecha real) — nunca operative_date.
     const saleSessionId = activeSession ? Number(activeSession.id) : null;
     const saleOperativeDate = activeSession
-      ? (activeSession.operative_date || new Date().toISOString().slice(0, 10))
-      : new Date().toISOString().slice(0, 10);
+      ? (activeSession.operative_date || toLocalDateKeyRD(new Date()))
+      : toLocalDateKeyRD(new Date());
 
     // ── Determine document type and NCF ──────────────────────────
     const VALID_NCF_TYPES = ['B01','B02','B03','B04','B14','B15'];
@@ -12424,7 +12805,9 @@ app.post('/api/sales', async (req, res) => {
     const pendingCreditAmount = paymentMethod === 'credito'
       ? Math.max(0, saleTotal - receivedAmount)
       : 0;
-    const nowSql = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const nowSql = nowRDString();
+    const createdDate = toLocalDateKeyRD(nowSql);
+    const createdTime = String(nowSql).slice(11, 19);
 
     if (paymentMethod === 'contra_entrega' && orderType !== 'delivery') {
       const error = new Error('Pago contra entrega solo está disponible para pedidos delivery.');
@@ -12518,7 +12901,7 @@ app.post('/api/sales', async (req, res) => {
          sale_status, sale_mode, document_type,
          client_name_snapshot, client_phone_snapshot, client_tax_id_snapshot,
          payment_method, subtotal, discount, tax, total, received_amount, change_amount,
-         fiscal_status, fiscal_payload, created_at,
+         fiscal_status, fiscal_payload, created_at, created_date, created_time,
          order_type, kitchen_status,
          delivery_user_id, delivery_name_snapshot, delivery_email_snapshot, delivery_phone_snapshot,
          delivery_address_snapshot, delivery_reference_snapshot, delivery_location_link_snapshot,
@@ -12532,12 +12915,12 @@ app.post('/api/sales', async (req, res) => {
                ?, ?, ?,
                ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?,
-               ?, ?, datetime('now'),
+               ?, ?, ?, ?, ?,
                ?, ?,
                ?, ?, ?, ?,
                ?, ?, ?,
                ?, ?,
-               ?, ?, ?, ?, ?, ?, datetime('now'),
+               ?, ?, ?, ?, ?, ?, ?,
                ?, ?)`,
       [
         invoiceNumber,
@@ -12573,6 +12956,9 @@ app.post('/api/sales', async (req, res) => {
         changeAmount,
         'emitida',
         fiscalPayload,
+        nowSql,
+        createdDate,
+        createdTime,
         // order
         orderType,
         kitchenStatus,
@@ -12593,6 +12979,7 @@ app.post('/api/sales', async (req, res) => {
         facturaReferenciaId || null,
         razonSocialCliente || null,
         shouldUseEcfFlow ? 1 : 0,
+        nowSql,
         // Turno — NUNCA usar para e-CF (usar created_at/fecha_emision_fiscal)
         saleSessionId,
         saleOperativeDate,
@@ -13640,13 +14027,15 @@ app.get('/api/reports/consolidado-global', async (req, res) => {
   if (!isGlobalAdministratorUser(actorUser)) {
     return res.status(403).json({ error: 'Solo el administrador general puede ver el consolidado global.' });
   }
-  const desde = String(req.query?.desde || '').trim() || new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
-  const hasta = String(req.query?.hasta || '').trim() || new Date().toISOString().split('T')[0];
+  const todayRD = getTodayDateKey();
+  const thirtyDaysAgo = toLocalDateKeyRD(new Date(Date.now() - 30 * 86400000));
+  const desde = String(req.query?.desde || '').trim() || thirtyDaysAgo;
+  const hasta = String(req.query?.hasta || '').trim() || todayRD;
   const branchId = Number(req.query?.branchId || 0) || null;
   const cashRegisterId = Number(req.query?.cashRegisterId || 0) || null;
   const userId = Number(req.query?.userId || 0) || null;
 
-  let where = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+  let where = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
   const params = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
   if (branchId) { where += ' AND COALESCE(s.billed_branch_id, s.branch_id) = ?'; params.push(branchId); }
   if (cashRegisterId) { where += ' AND COALESCE(s.billed_cash_register_id, s.cash_register_id) = ?'; params.push(cashRegisterId); }
@@ -13716,15 +14105,17 @@ app.get('/api/reports/sales-by-branch', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
+  const { desde, hasta } = getDefaultRange(req);
   const rows = await query(
     `SELECT b.id, b.nombre, COUNT(s.id) AS total_sales, COALESCE(SUM(s.total), 0) AS total_amount
      FROM branches b
      LEFT JOIN sales s ON COALESCE(s.inventory_branch_id, s.billed_branch_id, s.branch_id) = b.id
-       AND COALESCE(s.fiscal_status, 'emitida') <> 'cancelada'
+       AND s.created_at BETWEEN ? AND ?
+       AND ${buildSaleActiveClause('s')}
      ${scopedBranchId ? 'WHERE b.id = ?' : ''}
      GROUP BY b.id, b.nombre
      ORDER BY b.nombre`,
-    scopedBranchId ? [scopedBranchId] : []
+    scopedBranchId ? [`${desde} 00:00:00`, `${hasta} 23:59:59`, scopedBranchId] : [`${desde} 00:00:00`, `${hasta} 23:59:59`]
   );
   res.json(rows.map((row) => ({
     sucursalId: Number(row.id),
@@ -13738,16 +14129,18 @@ app.get('/api/reports/sales-by-cash-register', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
+  const { desde, hasta } = getDefaultRange(req);
   const rows = await query(
     `SELECT cr.id, cr.nombre, b.nombre AS branch_name, COUNT(s.id) AS total_sales, COALESCE(SUM(s.total), 0) AS total_amount
      FROM cash_registers cr
      INNER JOIN branches b ON b.id = cr.branch_id
      LEFT JOIN sales s ON COALESCE(s.charged_cash_register_id, s.cash_register_id) = cr.id
-       AND COALESCE(s.fiscal_status, 'emitida') <> 'cancelada'
+       AND s.created_at BETWEEN ? AND ?
+       AND ${buildSaleActiveClause('s')}
      ${scopedBranchId ? 'WHERE cr.branch_id = ?' : ''}
      GROUP BY cr.id, cr.nombre, b.nombre
      ORDER BY b.nombre, cr.nombre`,
-    scopedBranchId ? [scopedBranchId] : []
+    scopedBranchId ? [`${desde} 00:00:00`, `${hasta} 23:59:59`, scopedBranchId] : [`${desde} 00:00:00`, `${hasta} 23:59:59`]
   );
   res.json(rows.map((row) => ({
     cajaId: Number(row.id),
@@ -13762,15 +14155,17 @@ app.get('/api/reports/sales-by-cashier', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
+  const { desde, hasta } = getDefaultRange(req);
   const rows = await query(
     `SELECT u.id, u.nombre, u.usuario, COUNT(s.id) AS total_sales, COALESCE(SUM(s.total), 0) AS total_amount
      FROM users u
      LEFT JOIN sales s ON COALESCE(s.charged_by_user_id, s.user_id) = u.id
-       AND COALESCE(s.fiscal_status, 'emitida') <> 'cancelada'
+       AND s.created_at BETWEEN ? AND ?
+       AND ${buildSaleActiveClause('s')}
      ${scopedBranchId ? 'WHERE COALESCE(u.sucursal_id, u.branch_id, 0) = ?' : ''}
      GROUP BY u.id, u.nombre, u.usuario
      ORDER BY total_amount DESC, u.nombre`,
-    scopedBranchId ? [scopedBranchId] : []
+    scopedBranchId ? [`${desde} 00:00:00`, `${hasta} 23:59:59`, scopedBranchId] : [`${desde} 00:00:00`, `${hasta} 23:59:59`]
   );
   res.json(rows.map((row) => ({
     usuarioId: Number(row.id),
@@ -13928,13 +14323,27 @@ app.get('/api/reports/dashboard', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
+  const today = getTodayDateKey();
+  const activeSalesClause = buildSaleActiveClause('s');
   const [salesRows, lowStockRows, hourRows, topPizzaRows] = await Promise.all([
     scopedBranchId
       ? query(
-          'SELECT payment_method, order_type, total, created_at FROM sales WHERE COALESCE(inventory_branch_id, billed_branch_id, branch_id) = ? ORDER BY id DESC LIMIT 1000',
-          [scopedBranchId]
+          `SELECT payment_method, order_type, total, created_at
+           FROM sales s
+           WHERE COALESCE(s.inventory_branch_id, s.billed_branch_id, s.branch_id) = ?
+             AND s.created_at BETWEEN ? AND ?
+             AND ${activeSalesClause}
+           ORDER BY s.id DESC LIMIT 1000`,
+          [scopedBranchId, `${today} 00:00:00`, `${today} 23:59:59`]
         )
-      : query('SELECT payment_method, order_type, total, created_at FROM sales ORDER BY id DESC LIMIT 1000'),
+      : query(
+          `SELECT payment_method, order_type, total, created_at
+           FROM sales s
+           WHERE s.created_at BETWEEN ? AND ?
+             AND ${activeSalesClause}
+           ORDER BY s.id DESC LIMIT 1000`,
+          [`${today} 00:00:00`, `${today} 23:59:59`]
+        ),
     scopedBranchId
       ? query(
           `SELECT ib.product_id AS id, p.nombre, ib.stock, ib.stock_min
@@ -13950,19 +14359,23 @@ app.get('/api/reports/dashboard', async (req, res) => {
       : query('SELECT id, nombre, stock, stock_min FROM products WHERE estado = "Activo" AND stock <= stock_min ORDER BY stock ASC LIMIT 12'),
     scopedBranchId
       ? query(
-          `SELECT strftime('%H:00', created_at) AS hora, COUNT(*) AS total
-           FROM sales
-           WHERE COALESCE(inventory_branch_id, billed_branch_id, branch_id) = ?
-           GROUP BY strftime('%H:00', created_at)
+          `SELECT strftime('%H:00', s.created_at) AS hora, COUNT(*) AS total
+           FROM sales s
+           WHERE COALESCE(s.inventory_branch_id, s.billed_branch_id, s.branch_id) = ?
+             AND s.created_at BETWEEN ? AND ?
+             AND ${activeSalesClause}
+           GROUP BY strftime('%H:00', s.created_at)
            ORDER BY total DESC
            LIMIT 8`,
-          [scopedBranchId]
+          [scopedBranchId, `${today} 00:00:00`, `${today} 23:59:59`]
         )
-      : query(`SELECT strftime('%H:00', created_at) AS hora, COUNT(*) AS total
-           FROM sales
-           GROUP BY strftime('%H:00', created_at)
+      : query(`SELECT strftime('%H:00', s.created_at) AS hora, COUNT(*) AS total
+           FROM sales s
+           WHERE s.created_at BETWEEN ? AND ?
+             AND ${activeSalesClause}
+           GROUP BY strftime('%H:00', s.created_at)
            ORDER BY total DESC
-           LIMIT 8`),
+           LIMIT 8`, [`${today} 00:00:00`, `${today} 23:59:59`]),
     scopedBranchId
       ? query(
           `SELECT p.nombre, SUM(si.qty) AS total_qty
@@ -13971,18 +14384,23 @@ app.get('/api/reports/dashboard', async (req, res) => {
            INNER JOIN products p ON p.id = si.product_id
            WHERE (p.categoria = "Pizzas" OR p.product_type IN ("pizza", "combo"))
              AND COALESCE(s.inventory_branch_id, s.billed_branch_id, s.branch_id) = ?
+             AND s.created_at BETWEEN ? AND ?
+             AND ${activeSalesClause}
            GROUP BY p.id, p.nombre
            ORDER BY total_qty DESC
            LIMIT 5`,
-          [scopedBranchId]
+          [scopedBranchId, `${today} 00:00:00`, `${today} 23:59:59`]
         )
       : query(`SELECT p.nombre, SUM(si.qty) AS total_qty
            FROM sale_items si
+           INNER JOIN sales s ON s.id = si.sale_id
            INNER JOIN products p ON p.id = si.product_id
-           WHERE p.categoria = "Pizzas" OR p.product_type IN ("pizza", "combo")
+           WHERE (p.categoria = "Pizzas" OR p.product_type IN ("pizza", "combo"))
+             AND s.created_at BETWEEN ? AND ?
+             AND ${activeSalesClause}
            GROUP BY p.id, p.nombre
            ORDER BY total_qty DESC
-           LIMIT 5`)
+           LIMIT 5`, [`${today} 00:00:00`, `${today} 23:59:59`])
   ]);
 
   res.json({
@@ -14017,10 +14435,26 @@ function buildDateWhere(desde, hasta, alias = 's') {
   };
 }
 
+function getTodayDateKey() {
+  return toLocalDateKeyRD(new Date());
+}
+
 function getDefaultRange(req) {
-  const desde = String(req.query?.desde || '').trim() || new Date(Date.now() - 29 * 86400000).toISOString().split('T')[0];
-  const hasta = String(req.query?.hasta || '').trim() || new Date().toISOString().split('T')[0];
+  const today = getTodayDateKey();
+  const desde = String(req.query?.desde || '').trim() || today;
+  const hasta = String(req.query?.hasta || '').trim() || today;
   return { desde, hasta };
+}
+
+function buildSaleActiveClause(alias = 's') {
+  return `COALESCE(${alias}.fiscal_status,'emitida') <> 'cancelada'
+    AND COALESCE(${alias}.sale_status,'pagada') = 'pagada'`;
+}
+
+function appendDateRangeFilter(where, params, { desde, hasta, alias = 's', field = 'created_at' }) {
+  where += ` AND ${alias}.${field} BETWEEN ? AND ?`;
+  params.push(`${desde} 00:00:00`, `${hasta} 23:59:59`);
+  return where;
 }
 
 // ── KPIs generales ──────────────────────────────────────────
@@ -14033,7 +14467,7 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
     const cajaId = Number(req.query?.cajaId || 0) || null;
     const userId = Number(req.query?.userId || 0) || null;
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -14079,7 +14513,7 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
     const { desde, hasta } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -14113,7 +14547,7 @@ app.get('/api/reports/advanced/productos', async (req, res) => {
     const branchId = Number(req.query?.branchId || 0) || null;
     const limit = Math.min(Number(req.query?.limit || 20), 100);
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -14158,7 +14592,7 @@ app.get('/api/reports/advanced/clientes', async (req, res) => {
     const scopedBranchId = getUserScopeBranchId(actorUser);
     const { desde, hasta } = getDefaultRange(req);
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND s.client_id IS NOT NULL AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND s.client_id IS NOT NULL AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     if (scopedBranchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(scopedBranchId); }
 
@@ -14202,7 +14636,7 @@ app.get('/api/reports/advanced/metodos-pago', async (req, res) => {
     const cajaId  = Number(req.query?.cajaId   || 0) || null;
     const userId  = Number(req.query?.userId   || 0) || null;
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
     if (ef)     { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -14236,7 +14670,7 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
     const { desde, hasta } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -14297,7 +14731,7 @@ app.get('/api/reports/advanced/por-sucursal', async (req, res) => {
       LEFT JOIN sales s
         ON COALESCE(s.billed_branch_id,s.branch_id)=b.id
        AND s.created_at BETWEEN ? AND ?
-       AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
+       AND ${buildSaleActiveClause('s')}
       LEFT JOIN (
         SELECT branch_id, SUM(ABS(amount)) AS total_gastos
         FROM cash_movements
@@ -14329,7 +14763,7 @@ app.get('/api/reports/advanced/ganancias', async (req, res) => {
     const scopedBranchId = getUserScopeBranchId(actorUser);
     const { desde, hasta } = getDefaultRange(req);
 
-    let where = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let where = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const baseParams = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     if (scopedBranchId) {
       where += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?';
@@ -14418,7 +14852,7 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
     const { desde, hasta } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || scopedBranchId;
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     if (branchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(branchId); }
 
@@ -14610,7 +15044,7 @@ app.get('/api/reports/advanced/dgii', async (req, res) => {
     const { desde, hasta } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
 
-    let w = `WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`;
+    let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
     const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -14800,13 +15234,13 @@ async function buildAccountsPayableReportData() {
     LIMIT 300
   `);
 
-  const todayIso = new Date().toISOString().slice(0, 10);
+  const todayRd = getTodayDateKey();  // Fecha local RD, no UTC
   const mappedRows = rows.map((row) => {
     const mapped = mapSupplierInvoiceRow(row);
     const dueAt = mapped.fechaVencimiento || null;
     return {
       ...mapped,
-      overdue: Boolean(dueAt && dueAt < todayIso && Number(mapped.montoPendiente || 0) > 0),
+      overdue: Boolean(dueAt && dueAt < todayRd && Number(mapped.montoPendiente || 0) > 0),
     };
   });
 
@@ -14904,7 +15338,7 @@ app.get('/api/reports/advanced/filtros', async (req, res) => {
 // ── Guardar reporte diario en carpeta ───────────────────────
 app.post('/api/reports/auto-save-daily', async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getTodayDateKey();
     const p = [`${today} 00:00:00`, `${today} 23:59:59`];
 
     const [kpisRows, porSucursalRows, porMetodoRows] = await Promise.all([
@@ -14913,13 +15347,13 @@ app.post('/api/reports/auto-save-daily', async (req, res) => {
              COALESCE(SUM(CASE WHEN payment_method='efectivo' THEN total ELSE 0 END),0) AS efectivo,
              COALESCE(SUM(CASE WHEN payment_method='tarjeta' THEN total ELSE 0 END),0) AS tarjeta,
              COALESCE(SUM(CASE WHEN payment_method='transferencia' THEN total ELSE 0 END),0) AS transferencia
-             FROM sales WHERE created_at BETWEEN ? AND ? AND COALESCE(fiscal_status,'emitida') <> 'cancelada'`, p),
+             FROM sales s WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`, p),
       query(`SELECT b.nombre AS sucursal, COUNT(s.id) AS facturas, COALESCE(SUM(s.total),0) AS total
              FROM sales s JOIN branches b ON COALESCE(s.billed_branch_id,s.branch_id)=b.id
-             WHERE s.created_at BETWEEN ? AND ? AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
+             WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}
              GROUP BY b.id, b.nombre ORDER BY total DESC`, p),
       query(`SELECT COALESCE(payment_method,'efectivo') AS metodo, COUNT(*) AS facturas, COALESCE(SUM(total),0) AS total
-             FROM sales WHERE created_at BETWEEN ? AND ? AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
+             FROM sales s WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}
              GROUP BY metodo ORDER BY total DESC`, p)
     ]);
 
@@ -15254,6 +15688,7 @@ async function prepareServerRuntime() {
         ensureConfigExtensions(),
         ensureUserExtensions(),
         ensureProductExtensions(),
+        ensureReportAppProductSyncLogTable(),
         ensureClientExtensions(),
         ensureSalesExtensions(),
         ensureDiningTables(),
@@ -15292,6 +15727,8 @@ async function prepareServerRuntime() {
       productsCache.init(query);
       productsCache.loadAll().catch(err => console.warn('[products-cache] Carga inicial falló:', err.message));
       getSyncService().initialize().catch(e => console.warn('[sync] Firebase Sync Service init falló:', e.message));
+      fireReportSync(() => syncCategoriesToReports());
+      startReportAppProductSync();
       fileManagerService.initStructure().catch(e => console.warn('[file-manager] init falló:', e.message));
       console.log('Runtime de Tecno Caja preparado correctamente en MySQL.');
       return;
@@ -15342,6 +15779,7 @@ async function prepareServerRuntime() {
       ensureConfigExtensions(),
       ensureUserExtensions(),
       ensureProductExtensions(),
+      ensureReportAppProductSyncLogTable(),
       ensureClientExtensions(),
       ensureSalesExtensions(),
       ensureDiningTables(),
@@ -15400,6 +15838,8 @@ async function prepareServerRuntime() {
     } catch (_) {}
 
     getSyncService().initialize().catch(e => console.warn('[sync] Firebase Sync Service init falló:', e.message));
+    fireReportSync(() => syncCategoriesToReports());
+    startReportAppProductSync();
     fileManagerService.initStructure().catch(e => console.warn('[file-manager] init falló:', e.message));
     console.log('Runtime de Tecno Caja preparado correctamente.');
   } catch (error) {

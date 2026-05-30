@@ -15,8 +15,11 @@ class SyncStatusWidget {
 
   /**
    * Inicializa el widget y comienza a actualizar estado.
+   * Si el contenedor no existe en el DOM (p.ej. pantalla de login), termina
+   * silenciosamente sin iniciar el intervalo ni emitir advertencias.
    */
   async init() {
+    if (!this.container) return;   // no-op silencioso: elemento no está en DOM
     this.render();
     await this.updateStatus();
     this.refreshInterval = setInterval(() => this.updateStatus(), 30000);
@@ -47,10 +50,7 @@ class SyncStatusWidget {
    * Renderiza el HTML del widget.
    */
   render(status = null) {
-    if (!this.container) {
-      console.warn(`Container #${this.containerId} no encontrado`);
-      return;
-    }
+    if (!this.container) return;  // silencioso: el elemento no está en este contexto
 
     const isOnline = status?.isOnline ?? false;
     const hasInternet = status?.hasInternet ?? isOnline;

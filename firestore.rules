@@ -48,7 +48,9 @@ service cloud.firestore {
     function isOwnerOrAdmin(businessId) {
       return isAuth()
           && belongsToBusiness(businessId)
-          && myRole() in ['superadmin', 'businessOwner', 'admin'];
+          && myRole() in ['superadmin', 'businessOwner', 'admin',
+                          'administrador', 'Administrador',
+                          'Administrador General'];
     }
 
     // Roles con acceso a sucursal y arriba
@@ -56,7 +58,11 @@ service cloud.firestore {
       return isAuth()
           && belongsToBusiness(businessId)
           && myRole() in ['superadmin', 'businessOwner', 'admin',
-                          'branchAdmin', 'branch_admin'];
+                          'administrador', 'Administrador',
+                          'Administrador General',
+                          'branchAdmin', 'branch_admin',
+                          'admin_sucursal', 'administrador_sucursal',
+                          'Administrador de Sucursal'];
     }
 
     // Cualquier empleado del negocio (cajero, supervisor, etc.)
@@ -69,7 +75,11 @@ service cloud.firestore {
       return isAuth()
           && belongsToBusiness(businessId)
           && myRole() in ['superadmin', 'businessOwner', 'admin',
-                          'branchAdmin', 'branch_admin', 'accountant'];
+                          'administrador', 'Administrador',
+                          'Administrador General',
+                          'branchAdmin', 'branch_admin',
+                          'admin_sucursal', 'administrador_sucursal',
+                          'Administrador de Sucursal', 'accountant'];
     }
 
     // El campo businessId en el doc nuevo coincide con la ruta
@@ -136,6 +146,13 @@ service cloud.firestore {
         allow create: if isBranchAdmin(businessId) && validBusiness(businessId);
         allow update: if isBranchAdmin(businessId) && immutable(['businessId', 'createdBy', 'createdAt']);
         allow delete: if false;
+      }
+
+      // ── Categorías del POS ─────────────────────────────────────────────────
+      // La app las lee para evitar categorías manuales. El POS las escribe con Admin SDK.
+      match /categories/{categoryId} {
+        allow read:   if isEmployee(businessId);
+        allow write:  if false;
       }
 
       // ── Clientes ───────────────────────────────────────────────────────────

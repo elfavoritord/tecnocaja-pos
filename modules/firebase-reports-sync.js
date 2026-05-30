@@ -217,6 +217,14 @@ async function syncSale(sale, ctx = {}) {
     const docId = String(sale.invoice_number || sale.id);
     const createdAt = toTimestamp(sale.created_at || new Date());
 
+    // Fecha contable: si existe usar accounting_date, si no usar la fecha del turno
+    // o la fecha de creación. Permite filtrar por día contable en la App de Reporte.
+    const accountingDate = toTimestamp(
+      sale.accounting_date || sale.shift_date || sale.created_at
+    );
+
+    const saleStatus = normalizeSaleStatus(sale.sale_status);
+
     const data = stripNulls({
       branchId,
       branchName,
@@ -230,9 +238,21 @@ async function syncSale(sale, ctx = {}) {
       tax: toNumber(sale.tax),
       total: toNumber(sale.total),
       paymentMethod: normalizePaymentMethod(sale.payment_method),
-      status: normalizeSaleStatus(sale.sale_status),
+      status: saleStatus,
       invoiceNumber: String(sale.invoice_number || ''),
       invoiceType: normalizeInvoiceType(sale.document_type),
+      // Campos extendidos para filtros correctos en la App de Reporte
+      accountingDate,
+      sessionId: sale.cash_session_id
+        ? String(sale.cash_session_id)
+        : (sale.session_id ? String(sale.session_id) : null),
+      ncfType: sale.ncf_type ? String(sale.ncf_type) : null,
+      source: 'POS',
+      syncStatus: 'synced',
+      cancelledAt: saleStatus === 'cancelled'
+        ? toTimestamp(sale.cancelled_at || sale.updated_at || new Date())
+        : null,
+      cancelReason: sale.cancel_reason || sale.anulacion_motivo || null,
       createdAt,
       updatedAt: new Date(),
     });
@@ -518,6 +538,43 @@ async function syncCashMovement(movement, ctx = {}) {
 
 // ---------- PRODUCTS ----------
 
+function normalizeCategoryId(category) {
+  const raw = String(category.id || category.nombre || category.name || 'categoria')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `cat-${raw || 'general'}`;
+}
+
+async function syncCategory(category, ctx = {}) {
+  const firestore = safeGetFirestore();
+  if (!firestore || !category) return;
+  try {
+    const businessId = getBusinessId(ctx.config || {});
+    const name = String(category.nombre || category.name || '').trim();
+    if (!name) return;
+    const data = stripNulls({
+      businessId,
+      name,
+      nombre: name,
+      normalizedName: name.toLowerCase(),
+      origin: 'pos',
+      origen: 'pos',
+      posCategoryId: category.id ? String(category.id) : null,
+      updatedAt: new Date(),
+      createdAt: toTimestamp(category.created_at || category.createdAt || new Date()),
+    });
+    await col(firestore, businessId, 'categories')
+      .doc(normalizeCategoryId(category))
+      .set(data, { merge: true });
+  } catch (err) {
+    console.warn('[reports-sync] syncCategory falló:', err.message);
+  }
+}
+
 async function syncProduct(product, ctx = {}) {
   const firestore = safeGetFirestore();
   if (!firestore || !product) return;
@@ -527,7 +584,8 @@ async function syncProduct(product, ctx = {}) {
     const data = stripNulls({
       name: product.nombre || product.name || '',
       category: product.categoria || product.category || '',
-      barcode: product.codigo || null,
+      sku: product.codigo || product.sku || null,
+      barcode: product.barcode || product.codigo || null,
       price: toNumber(product.precio_venta ?? product.price),
       cost: toNumber(product.precio_compra ?? product.cost),
       stock: toNumber(product.stock),
@@ -537,6 +595,11 @@ async function syncProduct(product, ctx = {}) {
       brand: product.marca || null,
       isActive: String(product.estado || 'Activo').toLowerCase() === 'activo',
       branchId: ctx.branchId ? String(ctx.branchId) : null,
+      origin: product.sync_origin || product.origin || 'pos',
+      origen: product.sync_origin || product.origen || 'pos',
+      synced: true,
+      sincronizado: true,
+      syncStatus: 'synced',
       updatedAt: new Date(),
     });
     await col(firestore, businessId, 'products').doc(productId).set(data, { merge: true });
@@ -886,7 +949,8 @@ async function syncDailySummary(sale, ctx = {}) {
     if (!FV) return;
 
     const businessId = getBusinessId(ctx.config || {});
-    const d = sale.created_at ? new Date(sale.created_at) : new Date();
+    // Usar accounting_date si está disponible (turnos nocturnos), si no usar created_at
+    const d = new Date(sale.accounting_date || sale.shift_date || sale.created_at || Date.now());
     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
     const status = normalizeSaleStatus(sale.sale_status);
@@ -942,6 +1006,7 @@ module.exports = {
   syncCashClosing,
   syncCashMovement,
   // Inventory
+  syncCategory,
   syncProduct,
   deleteProduct,
   pruneMissingProducts,

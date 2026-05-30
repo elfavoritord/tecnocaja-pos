@@ -7,7 +7,6 @@ function showToast(msg, type = 'success') {
     t.id = 'toast';
     t.className = 'toast hidden';
     document.body?.appendChild(t);
-    console.warn('[Tecno Caja] #toast no existía en el DOM. Se creó dinámicamente para evitar bloqueo de UI.');
   }
   t.textContent = typeof window.translateUiString === 'function' ? window.translateUiString(msg) : msg;
   t.className = 'toast toast-' + type;

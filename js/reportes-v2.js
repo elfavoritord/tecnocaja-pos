@@ -64,8 +64,15 @@
   }
 
   // ── Calcular rango de fechas según período ────────────────
+  // IMPORTANTE: usar componentes de fecha LOCAL (getFullYear/getMonth/getDate),
+  // NO toISOString() que devuelve UTC. En RD (UTC-4) a las 10 PM, toISOString()
+  // daría la fecha de mañana y los KPIs mostrarían 0 (no hay ventas de mañana).
+  function localDateStr(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
   function calcFiltros() {
-    const periodo = el('repv2-periodo')?.value || 'mes';
+    const periodo = el('repv2-periodo')?.value || 'hoy';
     const now = new Date();
     let desde, hasta;
 
@@ -73,15 +80,19 @@
       desde = el('repv2-desde')?.value || '';
       hasta = el('repv2-hasta')?.value || '';
     } else {
-      hasta = now.toISOString().split('T')[0];
+      hasta = localDateStr(now);           // Fecha LOCAL, no UTC
       if (periodo === 'hoy') {
         desde = hasta;
+      } else if (periodo === 'ayer') {
+        const ayer = new Date(now);
+        ayer.setDate(ayer.getDate() - 1);
+        desde = hasta = localDateStr(ayer);
       } else if (periodo === 'semana') {
         const d = new Date(now);
         d.setDate(d.getDate() - 6);
-        desde = d.toISOString().split('T')[0];
+        desde = localDateStr(d);           // Fecha LOCAL, no UTC
       } else if (periodo === 'mes') {
-        desde = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        desde = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
       } else if (periodo === 'año') {
         desde = `${now.getFullYear()}-01-01`;
       }
@@ -405,6 +416,9 @@
     const rows = RV2.metodos;
 
     if (!rows.length) {
+      // Limpiar el canvas para que no quede el gráfico anterior visible
+      const ctxEmpty = canvas.getContext('2d');
+      ctxEmpty.clearRect(0, 0, canvas.width, canvas.height);
       if (legend) legend.innerHTML = '<p style="color:var(--text3);font-size:0.8rem">Sin datos</p>';
       return;
     }

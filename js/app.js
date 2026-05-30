@@ -3609,6 +3609,10 @@ function showModule(name, el) {
   document.getElementById('breadcrumb').textContent = el ? el.querySelector('.nav-label').textContent : name;
   if (name === 'ventas') document.getElementById('product-search').focus();
   if (name === 'productos') {
+    if (typeof startReportAppProductsPolling === 'function') startReportAppProductsPolling();
+    if (typeof syncReportAppProductsNow === 'function') {
+      syncReportAppProductsNow({ silent: true, minIntervalMs: 0 });
+    }
     if (typeof refreshProductCategoryFilter === 'function') refreshProductCategoryFilter();
     if (typeof loadProductsTable === 'function') loadProductsTable();
   }
@@ -3637,7 +3641,14 @@ function showModule(name, el) {
     if (typeof refreshMobilePosModule === 'function') refreshMobilePosModule();
   }
   if (name === 'reportes') { loadVentasHistory(); updateReportes(); }
-  if (name === 'inventario') { updateInventoryStats(); loadInventoryTable(); }
+  if (name === 'inventario') {
+    if (typeof startReportAppProductsPolling === 'function') startReportAppProductsPolling();
+    if (typeof syncReportAppProductsNow === 'function') {
+      syncReportAppProductsNow({ silent: true, minIntervalMs: 0 });
+    }
+    updateInventoryStats();
+    loadInventoryTable();
+  }
   if (name === 'caja') { refreshCajaFromServer(); }
   if (name === 'colacobro') { loadColaCobro(); }
   if (name === 'delivery') { if (typeof initDeliveryPanel === 'function') initDeliveryPanel(); }
@@ -5137,6 +5148,15 @@ function connectLicenseSocket() {
         showLoginScreen();
       }
     });
+    _licenseSocket.on('reports-app:product-received', async (data) => {
+      showToast(data?.message || 'Nuevo producto recibido desde la App de Reporte', 'success');
+      try {
+        await loadData();
+        if (typeof renderProducts === 'function') renderProducts();
+        if (typeof renderVentas === 'function') renderVentas();
+        updateNotifications();
+      } catch (_error) {}
+    });
     _licenseSocket.on('disconnect', () => {
       _licenseSocket = null;
     });
@@ -5682,8 +5702,37 @@ async function initializeStartupFlow() {
   applyUiPreferences();
   applyBranding();
   if (typeof window.observeUiTranslations === 'function') window.observeUiTranslations();
+
+  // Intenta conectar al servidor local. En Electron puede haber una pequeña
+  // ventana de tiempo entre que la app abre la ventana y el servidor Express
+  // está listo. Se reintenta una vez después de 800 ms antes de mostrar error.
+  let setupState_; // variable local para no pisar la global hasta el éxito
+  let connectError = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      setupState_ = await api.getSetupStatus();
+      connectError = null;
+      break; // éxito
+    } catch (err) {
+      connectError = err;
+      if (attempt === 0) {
+        // Esperar antes del segundo intento (el server puede estar arrancando)
+        await new Promise(resolve => setTimeout(resolve, 800));
+      }
+    }
+  }
+
+  if (connectError) {
+    // Ambos intentos fallaron — mostrar login igual y notificar discretamente
+    showLoginScreen();
+    if (typeof showToast === 'function') {
+      showToast(connectError.message || 'No se pudo preparar el inicio del sistema.', 'error');
+    }
+    return;
+  }
+
   try {
-    setupState = await api.getSetupStatus();
+    setupState = setupState_;
     if (setupState?.config) {
       DB.config = { ...DB.config, ...setupState.config };
     }
@@ -7160,18 +7209,26 @@ async function buscarFacturaDevolucion() {
       const fmtDate = s.created_at ? new Date(s.created_at).toLocaleDateString('es-DO') : '—';
       const canReturn = s.fiscal_status !== 'cancelada' && s.sale_status !== 'devuelta';
       return `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:0.6rem 0.75rem;
-                    border:1px solid var(--border-color,#333);border-radius:8px;margin-bottom:0.4rem;
-                    background:var(--bg-secondary,#1e1e2e);cursor:${canReturn ? 'pointer' : 'default'};opacity:${canReturn ? 1 : 0.6}"
-             ${canReturn ? `onclick="seleccionarFacturaDevolucion('${s.invoice_number}')"` : ''}>
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:0.75rem 1rem;border:1px solid ${canReturn ? '#e0d9f7' : '#e5e7eb'};
+                    border-left:3px solid ${canReturn ? '#6d28d9' : '#d1d5db'};
+                    border-radius:10px;margin-bottom:0.5rem;background:#fff;
+                    cursor:${canReturn ? 'pointer' : 'default'};opacity:${canReturn ? 1 : 0.55};
+                    transition:box-shadow 0.15s,background 0.15s"
+             ${canReturn ? `onmouseover="this.style.boxShadow='0 2px 12px #6d28d920';this.style.background='#faf5ff'"
+                           onmouseout="this.style.boxShadow='none';this.style.background='#fff'"
+                           onclick="seleccionarFacturaDevolucion('${s.invoice_number}')"` : ''}>
           <div>
-            <strong style="font-size:0.95rem">${s.invoice_number}</strong>
-            <span style="margin-left:0.5rem;font-size:0.8rem;color:var(--text-muted)">${s.client_name}</span>
-            <div style="font-size:0.78rem;color:var(--text-muted)">${fmtDate} • ${s.cashier_name}</div>
+            <div style="display:flex;align-items:center;gap:0.5rem">
+              <strong style="font-size:0.95rem;color:#111827">${s.invoice_number}</strong>
+              ${statusBadge}
+            </div>
+            <div style="font-size:0.8rem;color:#374151;margin-top:1px">${s.client_name || 'Sin cliente'}</div>
+            <div style="font-size:0.76rem;color:#9ca3af;margin-top:1px">📅 ${fmtDate} &nbsp;·&nbsp; 🧾 ${s.cashier_name || '—'}</div>
           </div>
-          <div style="text-align:right">
-            <div style="font-weight:600">${fmt(s.total)}</div>
-            ${statusBadge}
+          <div style="text-align:right;flex-shrink:0;margin-left:1rem">
+            <div style="font-weight:700;font-size:1rem;color:#111827">${fmt(s.total)}</div>
+            ${canReturn ? '<div style="font-size:0.75rem;color:#6d28d9;margin-top:2px">Seleccionar →</div>' : ''}
           </div>
         </div>`;
     }).join('');
@@ -7204,19 +7261,20 @@ async function seleccionarFacturaDevolucion(invoiceNumber) {
       const disabled = disponible <= 0 ? 'disabled' : '';
       const style = disponible <= 0 ? 'opacity:0.5' : '';
       return `
-        <div style="display:grid;grid-template-columns:1fr auto auto;gap:0.5rem;align-items:center;
-                    padding:0.6rem 0.75rem;border:1px solid var(--border-color,#333);border-radius:8px;
-                    background:var(--bg-secondary,#1e1e2e);${style}" data-item-idx="${idx}">
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:0.75rem;align-items:center;
+                    padding:0.75rem 1rem;border:1px solid ${disponible > 0 ? '#e5e7eb' : '#fde8e8'};
+                    border-left:3px solid ${disponible > 0 ? '#6d28d9' : '#d1d5db'};
+                    border-radius:10px;background:#fff;${style}" data-item-idx="${idx}">
           <div>
-            <div style="font-weight:500;font-size:0.9rem">${item.productName}</div>
-            <div style="font-size:0.78rem;color:var(--text-muted)">
-              Precio: ${fmt(item.price)} &nbsp;|&nbsp;
-              Vendidos: ${item.qty} &nbsp;|&nbsp;
-              ${item.qtyDevuelta > 0 ? `<span style="color:#fd7e14">Ya devueltos: ${item.qtyDevuelta}</span> &nbsp;|&nbsp;` : ''}
-              Disponibles: <strong>${disponible}</strong>
+            <div style="font-weight:600;font-size:0.9rem;color:#111827">${item.productName}</div>
+            <div style="font-size:0.77rem;color:#6b7280;margin-top:2px">
+              Precio: <strong style="color:#374151">${fmt(item.price)}</strong> &nbsp;·&nbsp;
+              Vendidos: ${item.qty} &nbsp;·&nbsp;
+              ${item.qtyDevuelta > 0 ? `<span style="color:#d97706;font-weight:600">Ya devueltos: ${item.qtyDevuelta}</span> &nbsp;·&nbsp;` : ''}
+              Disponibles: <strong style="color:${disponible > 0 ? '#059669' : '#dc2626'}">${disponible}</strong>
             </div>
           </div>
-          <div style="font-size:0.85rem;color:var(--text-muted);text-align:right;min-width:80px">
+          <div style="font-size:0.9rem;font-weight:600;color:#374151;text-align:right;min-width:90px;white-space:nowrap">
             ${fmt(item.lineTotal)}
           </div>
           <div style="min-width:90px">
@@ -7467,7 +7525,7 @@ async function toggleCaja() {
           openedAmount: monto,
           currentAmount: monto,
           openedByUserName: DB.currentUser?.nombre || DB.currentUser?.usuario || 'Sistema',
-          operativeDate: new Date().toISOString().slice(0, 10),
+          operativeDate: formatDateKey(new Date()),  // fecha LOCAL, no UTC
           hoursOpen: 0,
           staleWarning: false
         } : null)
@@ -7607,8 +7665,16 @@ function _isSaleInActiveSession(sale) {
   if (sale.cashSessionId != null) {
     return Number(sale.cashSessionId) === Number(session.id);
   }
-  // Fallback para ventas sin cashSessionId (antes de la migración)
+  // Fallback para ventas sin cashSessionId (antes de la migración): nunca arrastrar
+  // ventas hechas antes de la apertura de la nueva caja.
   const fecha = sale.cobradaEn || sale.fecha;
+  if (session.openedAt && fecha) {
+    const saleTime = new Date(fecha).getTime();
+    const sessionOpenTime = new Date(session.openedAt).getTime();
+    if (Number.isFinite(saleTime) && Number.isFinite(sessionOpenTime)) {
+      return saleTime >= sessionOpenTime;
+    }
+  }
   return getDateKeyFromValue(fecha) === (session.operativeDate || getDateKeyFromValue(new Date()));
 }
 

@@ -1,0 +1,80 @@
+rules_version = '2';
+
+/**
+ * storage.rules — Tecno Caja POS
+ *
+ * Solo usuarios autenticados que pertenezcan al negocio pueden subir/leer
+ * imágenes de productos. El Admin SDK del servidor bypasea estas reglas.
+ */
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── Imágenes de productos ──────────────────────────────────────────────
+    // Path: businesses/{businessId}/products/{filename}
+    match /businesses/{businessId}/products/{filename} {
+
+      // Leer: cualquier usuario autenticado del negocio
+      allow read: if request.auth != null;
+
+      // Escribir: solo admins/branch_admins del negocio
+      // Verificamos el rol desde el perfil en Firestore
+      allow write: if request.auth != null
+                   && _isAdminOrBranchAdmin(businessId)
+                   && filename.matches('.*\\.(jpg|jpeg|png|webp|gif)')
+                   && request.resource.size < 5 * 1024 * 1024;  // máx 5 MB
+    }
+
+    // ── Logos del negocio ──────────────────────────────────────────────────
+    match /businesses/{businessId}/logo/{filename} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null
+                   && _isOwnerOrAdmin(businessId)
+                   && request.resource.size < 2 * 1024 * 1024;
+    }
+
+    // ── Respaldos generados por el servidor (solo Admin SDK escribe) ───────
+    match /businesses/{businessId}/backups/{filename} {
+      allow read: if request.auth != null && _isOwnerOrAdmin(businessId);
+      allow write: if false;  // Solo Admin SDK
+    }
+
+    // ── Bloqueo por defecto ────────────────────────────────────────────────
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function _userProfile(businessId) {
+  return firestore.get(
+    /databases/(default)/documents/users/$(request.auth.uid)
+  ).data;
+}
+
+function _belongsToBusiness(businessId) {
+  let profile = _userProfile(businessId);
+  return profile.businessId == businessId
+      || (profile.keys().hasAll(['businessIds'])
+          && profile.businessIds.hasAny([businessId]));
+}
+
+function _isOwnerOrAdmin(businessId) {
+  let profile = _userProfile(businessId);
+  return _belongsToBusiness(businessId)
+      && profile.role in ['superadmin', 'businessOwner', 'admin',
+                          'administrador', 'Administrador',
+                          'Administrador General'];
+}
+
+function _isAdminOrBranchAdmin(businessId) {
+  let profile = _userProfile(businessId);
+  return _belongsToBusiness(businessId)
+      && profile.role in ['superadmin', 'businessOwner', 'admin',
+                          'administrador', 'Administrador',
+                          'Administrador General',
+                          'branchAdmin', 'branch_admin',
+                          'admin_sucursal', 'administrador_sucursal',
+                          'Administrador de Sucursal'];
+}
