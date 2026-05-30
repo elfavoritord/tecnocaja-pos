@@ -18,9 +18,11 @@ const { FirebaseSyncQueue } = require('./firebase-sync-queue');
 async function generateAndSyncDailyReport(businessId, branchId, reportDate, opts = {}) {
   const { ownerUid = null } = opts;
   try {
+    // Usar fecha LOCAL (no UTC) para evitar que a las 8 PM DR el reporte
+    // se genere con la fecha de mañana (bug UTC+4 → UTC).
     const dateStr = reportDate instanceof Date
-      ? reportDate.toISOString().split('T')[0]
-      : reportDate;
+      ? `${reportDate.getFullYear()}-${String(reportDate.getMonth() + 1).padStart(2, '0')}-${String(reportDate.getDate()).padStart(2, '0')}`
+      : String(reportDate).trim();
 
     console.log(`📊 Generando reporte diario para ${dateStr}...`);
 
@@ -34,6 +36,7 @@ async function generateAndSyncDailyReport(businessId, branchId, reportDate, opts
         SUM(subtotal) as subtotal
       FROM sales
       WHERE branch_id = ? AND sale_status = 'pagada'
+        AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
         AND DATE(created_at) = ?`,
       [branchId, dateStr]
     );
@@ -54,6 +57,7 @@ async function generateAndSyncDailyReport(businessId, branchId, reportDate, opts
         SUM(total) as amount
       FROM sales
       WHERE branch_id = ? AND sale_status = 'pagada'
+        AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
         AND DATE(created_at) = ?
       GROUP BY payment_method`,
       [branchId, dateStr]
@@ -68,6 +72,7 @@ async function generateAndSyncDailyReport(businessId, branchId, reportDate, opts
       FROM sales s
       JOIN users u ON s.user_id = u.id
       WHERE s.branch_id = ? AND s.sale_status = 'pagada'
+        AND COALESCE(s.fiscal_status, 'emitida') <> 'cancelada'
         AND DATE(s.created_at) = ?
       GROUP BY s.user_id, u.nombre`,
       [branchId, dateStr]

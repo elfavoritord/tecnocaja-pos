@@ -40,6 +40,7 @@ async function bootstrapAll(db, config = {}) {
     branches: 0,
     cashRegisters: 0,
     cashClosings: 0,
+    categories: 0,
     products: 0,
     customers: 0,
     sales: 0,
@@ -128,6 +129,17 @@ async function bootstrapAll(db, config = {}) {
   }
 
   // --- Products (último snapshot) ---
+  const catRows = await db.query('SELECT * FROM categories ORDER BY nombre').catch(() => []);
+  const categories = Array.isArray(catRows) ? catRows : (catRows?.[0] || []);
+  for (const c of categories) {
+    try {
+      await sync.syncCategory(c, { config });
+      report.categories += 1;
+    } catch (err) {
+      report.errors.push(`category ${c.id}: ${err.message}`);
+    }
+  }
+
   const prodRows = await db.query('SELECT * FROM products').catch(() => []);
   const products = Array.isArray(prodRows) ? prodRows : (prodRows?.[0] || []);
   try {

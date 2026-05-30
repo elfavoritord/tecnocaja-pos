@@ -281,6 +281,14 @@ const api = {
     return this.request(`/api/products/${id}`, { method: 'DELETE' });
   },
 
+  syncReportAppProducts(options = {}) {
+    return this.request('/api/firebase-reports/sync-products-from-app', {
+      method: 'POST',
+      body: JSON.stringify({ force: options.force === true }),
+      _timeoutMs: 30000
+    });
+  },
+
   async importProductsCsv(formData) {
     const authToken = getStoredAuthToken();
     const response = await fetch('/api/products/import-csv', {

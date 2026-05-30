@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Tecno Caja — Sistema Punto de Venta</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧾</text></svg>">
 <link rel="stylesheet" href="css/main.css">
 <link rel="stylesheet" href="css/repv2.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1302,9 +1303,10 @@
         </div>
         <div class="repv2-filters">
           <select class="repv2-filter-select" id="repv2-periodo" onchange="repV2OnPeriodoChange()">
-            <option value="hoy">Hoy</option>
+            <option value="hoy" selected>Hoy</option>
+            <option value="ayer">Ayer</option>
             <option value="semana">Esta semana</option>
-            <option value="mes" selected>Este mes</option>
+            <option value="mes">Este mes</option>
             <option value="año">Este año</option>
             <option value="custom">Personalizado</option>
           </select>
@@ -3729,7 +3731,7 @@
 <script src="js/business-config.js"></script>
 <script src="js/plans.js"></script>
 <script src="js/mobile-pos.js"></script>
-<script src="js/firebase-web-auth.js"></script>
+<script type="module" src="js/firebase-web-auth.js"></script>
 <script src="js/fiscal-ecf.js"></script>
 <script src="js/network-manager.js"></script>
 <script src="js/delivery-panel.js"></script>
@@ -3741,10 +3743,15 @@
 
 <script>
 // ── Inyectar config de terminal desde el servidor ──────────────
+// Solo se ejecuta cuando ya hay un token de autenticación; si no,
+// se omite para no generar el error 401 en la pantalla de login.
 (async function () {
+  const token = window._authToken || '';
+  if (!token) return;   // sin token → no llamar al endpoint protegido
+
   try {
     const res = await fetch('/api/network/status', {
-      headers: { Authorization: 'Bearer ' + (window._authToken || '') }
+      headers: { Authorization: 'Bearer ' + token }
     });
     if (res.ok) {
       const data = await res.json();
@@ -4110,46 +4117,79 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
 
       <!-- PASO 2: Seleccionar productos a devolver -->
       <div id="devolucion-step-2" class="hidden">
-        <div id="devolucion-sale-header" style="background:var(--bg-secondary,#1e1e2e);border-radius:8px;padding:0.75rem 1rem;margin-bottom:1rem;font-size:0.88rem">
-          <div style="display:flex;justify-content:space-between;align-items:center">
+
+        <!-- Cabecera de la factura seleccionada -->
+        <div id="devolucion-sale-header" style="
+            background:linear-gradient(135deg,#4c1d95 0%,#6d28d9 100%);
+            border-radius:12px;padding:1rem 1.1rem;margin-bottom:1.25rem;color:#fff">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem">
             <div>
-              <strong id="devolucion-invoice-num" style="font-size:1rem">—</strong>
-              <span style="margin:0 0.5rem;color:var(--text-muted)">|</span>
-              <span id="devolucion-client-name" style="color:var(--text-muted)">—</span>
+              <div style="font-size:0.7rem;letter-spacing:0.08em;opacity:0.75;margin-bottom:2px;text-transform:uppercase">Factura</div>
+              <strong id="devolucion-invoice-num" style="font-size:1.05rem;color:#fff">—</strong>
+              <div style="margin-top:2px;font-size:0.82rem;opacity:0.85">
+                <span id="devolucion-client-name">—</span>
+              </div>
             </div>
-            <div style="text-align:right">
-              <div style="font-size:0.8rem;color:var(--text-muted)">Total original</div>
-              <strong id="devolucion-sale-total" style="color:var(--success)">RD$ 0.00</strong>
+            <div style="text-align:right;flex-shrink:0">
+              <div style="font-size:0.7rem;opacity:0.75;text-transform:uppercase;letter-spacing:0.06em">Total original</div>
+              <strong id="devolucion-sale-total" style="font-size:1.15rem;color:#86efac">RD$ 0.00</strong>
             </div>
           </div>
-          <div style="margin-top:0.4rem;font-size:0.8rem;color:var(--text-muted)">
-            📅 <span id="devolucion-sale-date">—</span> &nbsp;|&nbsp;
-            👤 <span id="devolucion-cashier">—</span> &nbsp;|&nbsp;
-            💳 <span id="devolucion-method">—</span>
+          <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.6rem 1.2rem;font-size:0.79rem;opacity:0.88">
+            <span>📅 <span id="devolucion-sale-date">—</span></span>
+            <span>🧾 <span id="devolucion-cashier">—</span></span>
+            <span>💳 <span id="devolucion-method">—</span></span>
           </div>
         </div>
 
-        <div style="font-weight:600;margin-bottom:0.5rem;font-size:0.9rem">Selecciona los productos a devolver:</div>
-        <div id="devolucion-items-list" style="display:flex;flex-direction:column;gap:0.5rem"></div>
-
-        <div style="margin-top:1rem;padding:0.75rem 1rem;background:var(--bg-secondary,#1e1e2e);border-radius:8px">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
-            <span style="font-weight:600">Total a devolver:</span>
-            <strong id="devolucion-total-calc" style="font-size:1.1rem;color:var(--danger,#dc3545)">RD$ 0.00</strong>
-          </div>
-          <div class="form-group" style="margin-bottom:0.5rem">
-            <label style="font-size:0.85rem">Motivo de devolución</label>
-            <input type="text" id="devolucion-reason" class="form-input" placeholder="Ej: Producto defectuoso, cliente insatisfecho..." style="font-size:0.9rem">
-          </div>
-          <label style="display:flex;align-items:center;gap:0.5rem;font-size:0.88rem;cursor:pointer">
-            <input type="checkbox" id="devolucion-refund-cash" checked>
-            Registrar salida de efectivo en caja
-          </label>
+        <!-- Título de sección -->
+        <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem">
+          <div style="width:3px;height:16px;background:#6d28d9;border-radius:2px"></div>
+          <span style="font-weight:700;font-size:0.9rem">Selecciona los productos a devolver</span>
         </div>
 
-        <div style="margin-top:0.75rem">
-          <button class="btn-secondary" type="button" onclick="devolucionGoBack()" style="margin-right:0.5rem">← Otra factura</button>
-          <button class="btn-danger" type="button" onclick="procesarDevolucion()" id="btn-procesar-devolucion">✅ Procesar Devolución</button>
+        <div id="devolucion-items-list" style="display:flex;flex-direction:column;gap:0.5rem;margin-bottom:1rem"></div>
+
+        <!-- Panel de resumen + motivo -->
+        <div style="border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
+
+          <!-- Total resaltado -->
+          <div style="display:flex;justify-content:space-between;align-items:center;
+                      padding:0.85rem 1rem;background:#faf5ff;border-bottom:1px solid #e5e7eb">
+            <span style="font-weight:600;color:#4c1d95;font-size:0.92rem">Total a devolver</span>
+            <strong id="devolucion-total-calc" style="font-size:1.2rem;color:#dc2626">RD$ 0.00</strong>
+          </div>
+
+          <!-- Campos -->
+          <div style="padding:0.85rem 1rem;display:flex;flex-direction:column;gap:0.65rem">
+            <div>
+              <label style="display:block;font-size:0.8rem;font-weight:600;color:#6b7280;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em">Motivo de devolución</label>
+              <input type="text" id="devolucion-reason" class="form-input"
+                     placeholder="Ej: Producto defectuoso, cliente insatisfecho..."
+                     style="font-size:0.9rem;width:100%">
+            </div>
+            <label style="display:flex;align-items:center;gap:0.6rem;font-size:0.87rem;color:#374151;cursor:pointer;
+                          padding:0.5rem 0.75rem;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">
+              <input type="checkbox" id="devolucion-refund-cash" checked
+                     style="width:16px;height:16px;accent-color:#6d28d9">
+              <span>Registrar salida de efectivo en caja</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Botones de acción -->
+        <div style="display:flex;gap:0.6rem;margin-top:1rem">
+          <button class="btn-secondary" type="button" onclick="devolucionGoBack()"
+                  style="flex:0 0 auto;padding:0.55rem 1rem;font-size:0.88rem">
+            ← Otra factura
+          </button>
+          <button type="button" onclick="procesarDevolucion()" id="btn-procesar-devolucion"
+                  style="flex:1;padding:0.65rem;background:linear-gradient(135deg,#dc2626,#b91c1c);
+                         color:#fff;border:none;border-radius:10px;font-weight:700;
+                         font-size:0.95rem;cursor:pointer;display:flex;align-items:center;
+                         justify-content:center;gap:0.4rem;transition:opacity 0.15s">
+            ✅ Procesar Devolución
+          </button>
         </div>
       </div>
 

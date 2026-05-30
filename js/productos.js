@@ -18,6 +18,75 @@ const productScannerState = {
 };
 
 let _pendingProductImageDataUrl = null;
+const reportAppProductSyncState = {
+  running: false,
+  timer: null,
+  lastRunAt: 0
+};
+
+function isProductsSyncModuleActive() {
+  const active = document.querySelector('.module.active');
+  return active?.id === 'module-productos' || active?.id === 'module-inventario';
+}
+
+async function refreshProductsAfterReportAppSync() {
+  const payload = await api.getBootstrap();
+  if (payload) hydrateDB(payload);
+  if (typeof refreshProductCategoryFilter === 'function') refreshProductCategoryFilter();
+  if (typeof loadProductsTable === 'function') loadProductsTable();
+  if (typeof loadInventoryTable === 'function') loadInventoryTable();
+  if (typeof updateInventoryStats === 'function') updateInventoryStats();
+  if (typeof renderSalesCatalog === 'function') renderSalesCatalog();
+  if (typeof updateNotifications === 'function') updateNotifications();
+}
+
+async function syncReportAppProductsNow(options = {}) {
+  const {
+    silent = true,
+    force = false,
+    minIntervalMs = 8000
+  } = options;
+  const now = Date.now();
+  if (reportAppProductSyncState.running) return { skipped: true, reason: 'running' };
+  if (minIntervalMs > 0 && now - reportAppProductSyncState.lastRunAt < minIntervalMs) {
+    return { skipped: true, reason: 'too-soon' };
+  }
+  reportAppProductSyncState.running = true;
+  reportAppProductSyncState.lastRunAt = now;
+  try {
+    const result = await api.syncReportAppProducts({ force });
+    if (Number(result?.synced || 0) > 0) {
+      await refreshProductsAfterReportAppSync();
+      showToast(`${result.synced} producto(s) recibido(s) desde la App de Reporte.`, 'success');
+    } else if (!silent) {
+      if (typeof refreshProductCategoryFilter === 'function') refreshProductCategoryFilter();
+      if (typeof loadProductsTable === 'function') loadProductsTable();
+      showToast('Inventario sincronizado. No hay productos nuevos pendientes.', 'info');
+    }
+    if (Number(result?.errors || 0) > 0 && !silent) {
+      showToast(`${result.errors} producto(s) no pudieron sincronizarse. Revisa el log.`, 'warning');
+    }
+    return result;
+  } catch (error) {
+    if (!silent) {
+      showToast(error?.message || 'No se pudo consultar productos de la App de Reporte.', 'warning');
+    }
+    return { ok: false, error: error?.message || String(error) };
+  } finally {
+    reportAppProductSyncState.running = false;
+  }
+}
+
+function startReportAppProductsPolling() {
+  if (reportAppProductSyncState.timer) return;
+  reportAppProductSyncState.timer = setInterval(() => {
+    if (!isProductsSyncModuleActive()) return;
+    syncReportAppProductsNow({ silent: true, minIntervalMs: 25000 });
+  }, 30000);
+}
+
+window.syncReportAppProductsNow = syncReportAppProductsNow;
+window.startReportAppProductsPolling = startReportAppProductsPolling;
 
 function handleProductImageSelect(input) {
   const file = input?.files?.[0];
@@ -812,7 +881,8 @@ function filterProducts() {
   loadProductsTable();
 }
 
-function reloadProductsModule() {
+async function reloadProductsModule() {
+  await syncReportAppProductsNow({ silent: false, minIntervalMs: 0 });
   refreshProductCategoryFilter();
   filterProducts();
   hideProductsFallback();
