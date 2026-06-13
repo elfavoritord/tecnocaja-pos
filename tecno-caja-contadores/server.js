@@ -472,11 +472,41 @@ app.put('/api/perfil', requireAuth, async (req, res) => {
 
 app.get('/api/actualizaciones', requireAuth, async (_req, res) => {
   try {
-    const snap = await col(COL_VERSIONES).get();
-    const sorted = snap.docs.map(docData)
-      .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
-      .slice(0, 20);
-    res.json(sorted);
+    const GITHUB_OWNER = process.env.GITHUB_OWNER || 'elfavoritord';
+    const GITHUB_REPO  = process.env.GITHUB_REPO_CONTADORES || 'tecnocaja-contadores';
+    const ghUrl = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases?per_page=20`;
+
+    const https = require('https');
+    const data  = await new Promise((resolve, reject) => {
+      const opts = {
+        headers: {
+          'User-Agent': 'TecnoCajaContadores',
+          Accept: 'application/vnd.github.v3+json',
+          ...(process.env.GH_TOKEN ? { Authorization: `token ${process.env.GH_TOKEN}` } : {}),
+        },
+      };
+      https.get(ghUrl, opts, (r) => {
+        let raw = '';
+        r.on('data', c => { raw += c; });
+        r.on('end', () => {
+          try { resolve(JSON.parse(raw)); } catch { resolve([]); }
+        });
+      }).on('error', reject);
+    });
+
+    if (!Array.isArray(data)) return res.json([]);
+
+    const releases = data.map(r => ({
+      version:       r.tag_name?.replace(/^v/, '') || r.name,
+      tag:           r.tag_name,
+      descripcion:   r.body?.split('\n').slice(0, 3).join(' ').trim() || '',
+      created_at:    r.published_at || r.created_at,
+      url:           r.html_url,
+      es_obligatoria: false,
+      prerelease:    r.prerelease || false,
+    }));
+
+    res.json(releases);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

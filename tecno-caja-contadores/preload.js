@@ -19,13 +19,15 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
   updaterGetVersion() { return ipcRenderer.invoke('updater:get-version'); },
   onUpdaterEvent(callback) {
     if (typeof callback !== 'function') return () => {};
-    const onAvailable  = (_e, d) => callback('available', d);
-    const onDownloaded = ()      => callback('downloaded', {});
-    ipcRenderer.on('updater:available',  onAvailable);
-    ipcRenderer.on('updater:downloaded', onDownloaded);
-    return () => {
-      ipcRenderer.removeListener('updater:available',  onAvailable);
-      ipcRenderer.removeListener('updater:downloaded', onDownloaded);
+    const wrap = (ev) => (_e, d) => callback(ev, d || {});
+    const handlers = {
+      'updater:available':     wrap('available'),
+      'updater:not-available': wrap('not-available'),
+      'updater:progress':      wrap('progress'),
+      'updater:downloaded':    wrap('downloaded'),
+      'updater:error':         wrap('error'),
     };
+    Object.entries(handlers).forEach(([ch, fn]) => ipcRenderer.on(ch, fn));
+    return () => Object.entries(handlers).forEach(([ch, fn]) => ipcRenderer.removeListener(ch, fn));
   },
 });

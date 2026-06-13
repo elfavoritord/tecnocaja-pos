@@ -90,17 +90,30 @@ function initUpdater() {
     autoUpdater.autoInstallOnAppQuit = true;
 
     autoUpdater.on('update-available', (info) => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('updater:available', { version: info.version });
-      }
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('updater:available', { version: info.version, releaseNotes: info.releaseNotes });
     });
-    autoUpdater.on('update-downloaded', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('updater:downloaded');
-      }
+    autoUpdater.on('update-not-available', () => {
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('updater:not-available');
+    });
+    autoUpdater.on('download-progress', (p) => {
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('updater:progress', {
+          percent:  Math.round(p.percent || 0),
+          transferred: p.transferred,
+          total:    p.total,
+          bytesPerSecond: p.bytesPerSecond,
+        });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('updater:downloaded', { version: info.version });
     });
     autoUpdater.on('error', (err) => {
       console.error('[updater]', err?.message || err);
+      if (mainWindow && !mainWindow.isDestroyed())
+        mainWindow.webContents.send('updater:error', { message: err?.message || 'Error desconocido' });
     });
 
     // Revisa al iniciar y cada 4 horas

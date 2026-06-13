@@ -669,28 +669,159 @@ async function savePerfil() {
 // ACTUALIZACIONES
 // ══════════════════════════════════════════════════════════════════════
 
+// ── Estado del auto-updater ───────────────────────────────────────────────
+let _updUnsub       = null;
+let _updDownloaded  = false;
+let _updNewVersion  = null;
+
+function _updSetStatus(icon, titulo, sub, actions = '') {
+  setText('upd-status-icon',   icon);
+  setText('upd-status-titulo', titulo);
+  setText('upd-status-sub',    sub);
+  const el = $id('upd-status-actions');
+  if (el) el.innerHTML = actions;
+}
+
+function _updShowProgress(show) {
+  const el = $id('upd-progress-wrap');
+  if (el) el.classList.toggle('hidden', !show);
+}
+
+function _updSetProgress(pct, speed) {
+  const bar = $id('upd-progress-bar');
+  if (bar) bar.style.width = pct + '%';
+  setText('upd-progress-pct', pct + '%');
+  if (speed !== undefined) {
+    const mb = (speed / 1024 / 1024).toFixed(1);
+    setText('upd-progress-speed', mb + ' MB/s');
+  }
+}
+
+function _fmtBytes(b) {
+  if (!b) return '';
+  if (b > 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+  return (b / 1024).toFixed(0) + ' KB';
+}
+
+async function _initUpdaterUI() {
+  if (!window.contadoresAPI?.updaterGetVersion) {
+    _updSetStatus('🌐', 'Modo web', 'El actualizador automático solo funciona en la app de escritorio.');
+    return;
+  }
+
+  const info = await window.contadoresAPI.updaterGetVersion();
+  setText('upd-ver-actual', 'v' + info.version);
+
+  if (!info.isPackaged) {
+    _updSetStatus('🛠', 'Modo desarrollo', 'El actualizador está deshabilitado en modo desarrollo.');
+    return;
+  }
+
+  // Suscribir a eventos del main process
+  if (_updUnsub) _updUnsub();
+  _updUnsub = window.contadoresAPI.onUpdaterEvent((event, data) => {
+    if (event === 'available') {
+      _updNewVersion = data.version;
+      _updSetStatus(
+        '⬆️',
+        `Nueva versión disponible: v${data.version}`,
+        'Descarga e instala la actualización para obtener las últimas mejoras.',
+        `<button class="btn btn-primary" onclick="app.descargarActualizacion()">⬇ Descargar ahora</button>`
+      );
+    } else if (event === 'not-available') {
+      _updSetStatus('✅', 'Estás al día', 'No hay nuevas versiones disponibles.');
+    } else if (event === 'progress') {
+      _updShowProgress(true);
+      _updSetProgress(data.percent || 0, data.bytesPerSecond);
+      _updSetStatus(
+        '⬇️',
+        `Descargando v${_updNewVersion || ''}…`,
+        `${_fmtBytes(data.transferred)} de ${_fmtBytes(data.total)}`
+      );
+    } else if (event === 'downloaded') {
+      _updDownloaded = true;
+      _updShowProgress(false);
+      _updSetProgress(100);
+      _updSetStatus(
+        '🎉',
+        `v${data.version || _updNewVersion} lista para instalar`,
+        'La actualización se descargó. Haz clic para instalar y reiniciar la app.',
+        `<button class="btn btn-primary" onclick="app.instalarActualizacion()">⚡ Instalar y reiniciar</button>`
+      );
+    } else if (event === 'error') {
+      _updShowProgress(false);
+      _updSetStatus('❌', 'Error al actualizar', data.message || 'Intenta verificar de nuevo.',
+        `<button class="btn btn-secondary" onclick="app.verificarActualizacion()">↺ Reintentar</button>`
+      );
+    }
+  });
+
+  _updSetStatus('✅', 'App actualizada', 'Haz clic en "Verificar ahora" para buscar actualizaciones.');
+}
+
+async function verificarActualizacion() {
+  if (!window.contadoresAPI?.updaterCheck) return;
+  _updSetStatus('🔍', 'Verificando…', 'Buscando nuevas versiones en GitHub…');
+  const btn = $id('upd-btn-verificar');
+  if (btn) btn.disabled = true;
+  try {
+    await window.contadoresAPI.updaterCheck();
+  } catch {
+    _updSetStatus('❌', 'Error de conexión', 'No se pudo conectar a GitHub para verificar.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function descargarActualizacion() {
+  if (!window.contadoresAPI?.updaterDownload) return;
+  _updShowProgress(true);
+  _updSetProgress(0);
+  _updSetStatus('⬇️', 'Iniciando descarga…', '');
+  try {
+    await window.contadoresAPI.updaterDownload();
+  } catch {
+    _updShowProgress(false);
+    _updSetStatus('❌', 'Error al descargar', 'No se pudo iniciar la descarga.',
+      `<button class="btn btn-secondary" onclick="app.descargarActualizacion()">↺ Reintentar</button>`
+    );
+  }
+}
+
+function instalarActualizacion() {
+  if (!window.contadoresAPI?.updaterInstall) return;
+  _updSetStatus('⚡', 'Instalando…', 'La app se cerrará y se instalará la nueva versión.');
+  window.contadoresAPI.updaterInstall();
+}
+
 async function loadActualizaciones() {
+  await _initUpdaterUI();
+
   const container = $id('actualizaciones-list');
-  if (container) container.innerHTML = '<div class="empty-state"><div class="empty-icon">⏳</div><div class="empty-text">Cargando…</div></div>';
+  if (!container) return;
+  container.innerHTML = '<div class="empty-state"><div class="empty-icon">⏳</div><div class="empty-text">Cargando…</div></div>';
   try {
     await refreshToken();
     const list = await apiCall('GET', '/api/actualizaciones');
     if (!list.length) {
-      container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-text">Sin versiones publicadas</div></div>';
+      container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-text">Sin versiones publicadas aún</div></div>';
       return;
     }
     container.innerHTML = list.map((v, i) => `
       <div class="ver-card">
-        <div>
-          <div class="ver-num">v${v.version}</div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <div class="ver-num">v${esc(v.version)}</div>
+            ${i === 0 ? '<span class="ver-badge-nueva">✦ Última</span>' : ''}
+            ${v.prerelease ? '<span style="background:#f59e0b22;color:#f59e0b;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">BETA</span>' : ''}
+          </div>
           <div class="ver-date">${fmtDate(v.created_at)}</div>
-          ${v.descripcion ? `<div class="ver-desc">${v.descripcion}</div>` : ''}
-          ${v.es_obligatoria ? '<div style="margin-top:6px;font-size:12px;color:#f59e0b">⚠️ Actualización obligatoria</div>' : ''}
+          ${v.descripcion ? `<div class="ver-desc" style="margin-top:4px;font-size:12px;color:var(--text-sub)">${esc(v.descripcion)}</div>` : ''}
         </div>
-        ${i === 0 ? '<span class="ver-badge-nueva">✦ Última</span>' : ''}
+        ${v.url ? `<a href="${esc(v.url)}" onclick="event.preventDefault();window.open('${esc(v.url)}','_blank')" class="btn btn-secondary btn-sm" style="white-space:nowrap;align-self:center">Ver release</a>` : ''}
       </div>`).join('');
   } catch (e) {
-    if (container) container.innerHTML = `<div class="empty-state"><div style="color:#ef4444">${e.message}</div></div>`;
+    container.innerHTML = `<div class="empty-state"><div style="color:#ef4444">Error: ${esc(e.message)}</div></div>`;
   }
 }
 
@@ -1888,7 +2019,7 @@ window.app = {
   // perfil
   loadPerfil, savePerfil,
   // actualizaciones
-  loadActualizaciones,
+  loadActualizaciones, verificarActualizacion, descargarActualizacion, instalarActualizacion,
   // reportes
   loadReportes, selNegocioReporte, cambiarTabReporte, cargarDatosReporte,
   aplicarFiltros, limpiarFiltros, exportarCSV, imprimirReporte, actualizarReporte,
