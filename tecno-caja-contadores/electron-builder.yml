@@ -23,9 +23,9 @@ extraMetadata:
 
 # Archivos config fuera del asar (accesibles vía process.resourcesPath)
 extraResources:
-  - from: .env
+  - from: tecno-caja-contadores/.env
     to: .env
-  - from: firebase-service-account.json
+  - from: tecno-caja-contadores/firebase-service-account.json
     to: firebase-service-account.json
 
 # Node modules del directorio raíz
