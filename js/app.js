@@ -6124,6 +6124,56 @@ function openSecureBackupFolder() {
   openSecureBackupModal('folder');
 }
 
+async function forceCloudSync() {
+  const btn = document.getElementById('cfg-btn-force-cloud-sync');
+  const res = document.getElementById('cfg-cloud-sync-result');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Sincronizando...'; }
+  if (res) { res.style.display = 'none'; }
+  try {
+    const data = await api.request('/api/firebase-sync/accounts', { method: 'POST', body: JSON.stringify({}) });
+    if (res) {
+      res.style.display = 'block';
+      res.style.color = 'var(--success, #10b981)';
+      res.textContent = `✅ Sincronización completada. ${data.total || 0} usuario(s) enviados a la nube.`;
+    }
+    showToast('Datos del negocio sincronizados con la plataforma.', 'success');
+  } catch (err) {
+    if (res) {
+      res.style.display = 'block';
+      res.style.color = 'var(--danger, #ef4444)';
+      res.textContent = `❌ ${err.message || 'Error al sincronizar.'}`;
+    }
+    showToast(err.message || 'Error al sincronizar con la plataforma.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 Sincronizar con plataforma'; }
+  }
+}
+
+async function forcePosStatsSync() {
+  const btn = document.getElementById('cfg-btn-force-stats-sync');
+  const res = document.getElementById('cfg-cloud-sync-result');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Calculando...'; }
+  if (res) { res.style.display = 'none'; }
+  try {
+    await api.request('/api/sync/pos-stats', { method: 'POST', body: JSON.stringify({}) });
+    if (res) {
+      res.style.display = 'block';
+      res.style.color = 'var(--success, #10b981)';
+      res.textContent = '✅ Reportes sincronizados al Portal de Contadores.';
+    }
+    showToast('Reportes enviados al Portal de Contadores.', 'success');
+  } catch (err) {
+    if (res) {
+      res.style.display = 'block';
+      res.style.color = 'var(--danger, #ef4444)';
+      res.textContent = `❌ ${err.message || 'Error al sincronizar reportes.'}`;
+    }
+    showToast(err.message || 'Error al sincronizar reportes.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📊 Sincronizar reportes'; }
+  }
+}
+
 function openResetSystemModal() {
   if (!isAdministrator()) {
     showToast('Solo el administrador puede limpiar la app.', 'warning');
@@ -7190,11 +7240,11 @@ async function _printCashCorte(d, contado, diferencia, notas) {
   ${notas ? `<div class="sep"></div><p class="small">Notas: ${notas}</p>` : ''}
   <div class="sep"></div>
   <p class="center small">${new Date().toLocaleString('es-DO')}</p>
-  <script>window.onload=()=>{window.print();setTimeout(()=>window.close(),800)}<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank', 'width=320,height=600');
-  if (win) { win.document.write(html); win.document.close(); }
+  if (window.novaDesktop?.printReceiptHtml) {
+    await window.novaDesktop.printReceiptHtml(html, { paperSize: paperWidth || '80mm', mode: 'dialog' });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

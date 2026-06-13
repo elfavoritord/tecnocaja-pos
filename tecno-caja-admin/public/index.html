@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tecno Caja Admin</title>
   <link rel="stylesheet" href="css/admin.css" />
+  <!-- Firebase Web SDK (compat) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="js/firebase-client-config.js"></script>
 </head>
 <body>
 
@@ -26,21 +30,67 @@
     <div id="firebase-error-banner" class="error-banner hidden"></div>
 
     <div class="form-group">
-      <label>Nombre (solo primer acceso)</label>
-      <input id="inp-nombre" type="text" placeholder="Tu nombre completo" class="hidden" />
-    </div>
-    <div class="form-group">
       <label>Correo electrónico</label>
-      <input id="inp-email" type="email" placeholder="admin@empresa.com" />
+      <input id="inp-email" type="email" placeholder="correo@dominio.com" />
     </div>
     <div class="form-group">
       <label>Contraseña</label>
-      <input id="inp-password" type="password" placeholder="••••••••" />
+      <div class="password-wrap">
+        <input id="inp-password" type="password" placeholder="••••••••" />
+        <button type="button" class="btn-eye" onclick="adminApp.togglePassword('inp-password', this)" tabindex="-1" aria-label="Mostrar contraseña">
+          <svg id="eye-open" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg id="eye-closed" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+        </button>
+      </div>
     </div>
-    <button id="btn-login" class="btn-primary full-width" onclick="adminApp.doLogin()">
-      Iniciar sesión
-    </button>
-    <div id="login-error" class="error-text hidden"></div>
+    <!-- Vista: Login -->
+    <div id="view-login">
+      <label class="checkbox-row" style="margin-bottom:12px;font-size:13px;color:#8892a4;cursor:pointer;display:flex;align-items:center;gap:8px;">
+        <input id="chk-remember" type="checkbox" checked />
+        Mantener sesión iniciada
+      </label>
+      <button id="btn-login" class="btn-primary full-width" onclick="adminApp.doLogin()">
+        Iniciar sesión
+      </button>
+      <div id="login-error" class="error-text hidden"></div>
+      <p style="text-align:center;margin-top:12px;">
+        <a href="#" onclick="adminApp.showForgotPassword(event)" style="color:#3d8bff;font-size:13px;">¿Olvidaste tu contraseña?</a>
+      </p>
+    </div>
+
+    <!-- Vista: Recuperar contraseña -->
+    <div id="view-forgot" class="hidden">
+      <p style="font-size:13px;color:#8892a4;margin-bottom:12px;">
+        Ingresa tu correo y te enviaremos un enlace para restablecer tu contraseña.
+      </p>
+      <button class="btn-primary full-width" onclick="adminApp.sendPasswordReset()">
+        Enviar enlace de recuperación
+      </button>
+      <div id="forgot-error" class="error-text hidden"></div>
+      <p style="text-align:center;margin-top:12px;">
+        <a href="#" onclick="adminApp.showLogin(event)" style="color:#3d8bff;font-size:13px;">← Volver al login</a>
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Cambiar contraseña -->
+<div id="modal-change-password" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:380px">
+    <h2>Cambiar contraseña</h2>
+    <div class="form-group">
+      <label>Nueva contraseña</label>
+      <input id="new-password-inp" type="password" placeholder="Mínimo 8 caracteres" />
+    </div>
+    <div class="form-group">
+      <label>Confirmar contraseña</label>
+      <input id="confirm-password-inp" type="password" placeholder="Repite la contraseña" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn-outline" onclick="adminApp.closeModal('modal-change-password')">Cancelar</button>
+      <button class="btn-primary" onclick="adminApp.changePassword()">Cambiar</button>
+    </div>
+    <div id="change-pw-error" class="error-text hidden"></div>
   </div>
 </div>
 
@@ -75,9 +125,12 @@
       <li class="nav-item" data-module="auditoria">
         <span class="nav-icon">📋</span> Auditoría
       </li>
+      <li class="nav-item" data-module="configuracion">
+        <span class="nav-icon">⚙️</span> Configuración
+      </li>
     </ul>
     <div class="sidebar-footer">
-      <span id="admin-name-display">Admin</span>
+      <span id="admin-name-display" style="cursor:pointer" onclick="adminApp.openChangePassword()" title="Cambiar contraseña">Admin</span>
       <button class="btn-logout" onclick="adminApp.logout()">Salir</button>
     </div>
   </nav>
@@ -311,6 +364,63 @@
         <thead><tr><th>Actor</th><th>Acción</th><th>Objetivo</th><th>Detalle</th><th>Fecha</th></tr></thead>
         <tbody id="auditoria-list"></tbody>
       </table>
+    </section>
+
+    <!-- Configuración -->
+    <section id="mod-configuracion" class="module hidden">
+      <div class="module-header"><h1>Configuración</h1></div>
+
+      <!-- Perfil -->
+      <div class="config-section">
+        <h2 class="config-section-title">Perfil</h2>
+        <div class="detail-card" style="max-width:480px">
+          <div id="config-perfil-info" class="info-dl" style="margin-bottom:16px"></div>
+          <button class="btn-sm" onclick="adminApp.loadConfigPerfil()">↺ Actualizar perfil</button>
+        </div>
+      </div>
+
+      <!-- Seguridad -->
+      <div class="config-section">
+        <h2 class="config-section-title">Seguridad — Cambiar contraseña</h2>
+        <div class="detail-card" style="max-width:420px">
+          <div class="form-group">
+            <label>Contraseña actual *</label>
+            <div class="password-wrap">
+              <input id="sec-current-pw" type="password" placeholder="Tu contraseña actual" />
+              <button type="button" class="btn-eye" onclick="adminApp.togglePassword('sec-current-pw', this)" tabindex="-1">👁</button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:10px">
+            <label>Nueva contraseña *</label>
+            <div class="password-wrap">
+              <input id="sec-new-pw" type="password" placeholder="Mínimo 8 caracteres" />
+              <button type="button" class="btn-eye" onclick="adminApp.togglePassword('sec-new-pw', this)" tabindex="-1">👁</button>
+            </div>
+          </div>
+          <div class="form-group" style="margin-top:10px">
+            <label>Confirmar nueva contraseña *</label>
+            <div class="password-wrap">
+              <input id="sec-confirm-pw" type="password" placeholder="Repite la nueva contraseña" />
+              <button type="button" class="btn-eye" onclick="adminApp.togglePassword('sec-confirm-pw', this)" tabindex="-1">👁</button>
+            </div>
+          </div>
+          <div id="sec-error" class="error-text hidden" style="margin-top:8px"></div>
+          <button class="btn-primary" style="margin-top:14px" onclick="adminApp.changePasswordSec()">
+            Actualizar contraseña
+          </button>
+        </div>
+      </div>
+
+      <!-- Sesión -->
+      <div class="config-section">
+        <h2 class="config-section-title">Sesión</h2>
+        <div class="detail-card" style="max-width:420px">
+          <p style="font-size:13px;color:#8892a4;margin-bottom:14px">
+            Cierra tu sesión actual en este dispositivo.
+          </p>
+          <button class="btn-danger" onclick="adminApp.logout()">Cerrar sesión</button>
+        </div>
+      </div>
     </section>
 
   </main>

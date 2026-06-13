@@ -7,6 +7,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧾</text></svg>">
 <link rel="stylesheet" href="css/main.css">
 <link rel="stylesheet" href="css/repv2.css">
+<link rel="stylesheet" href="css/superadmin.css">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
@@ -2491,6 +2492,21 @@
             </div>
           </div>
         </div>
+        <div class="config-section" id="cfg-cloud-sync-section">
+          <h3>☁️ Plataforma / Nube</h3>
+          <div class="form-group">
+            <label>Datos del negocio en la nube</label>
+            <p style="color:var(--text2);font-size:0.82rem;line-height:1.5;margin-bottom:0.75rem">
+              Sincroniza la información del negocio (nombre, plan, contador asignado) con la plataforma Tecno Caja.
+              Útil si el panel de administración no muestra el contador correctamente.
+            </p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="cfg-btn-force-cloud-sync" class="btn-secondary" type="button" onclick="forceCloudSync()">🔄 Sincronizar cuenta</button>
+              <button id="cfg-btn-force-stats-sync" class="btn-secondary" type="button" onclick="forcePosStatsSync()">📊 Sincronizar reportes</button>
+            </div>
+            <p id="cfg-cloud-sync-result" style="font-size:.8rem;margin-top:.5rem;display:none"></p>
+          </div>
+        </div>
         <div class="config-section">
           <h3 id="cfg-section-danger-title">Zona de Peligro</h3>
           <div class="form-group">
@@ -4160,62 +4176,179 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
 </div>
 
 <!-- ══════════════════════════════════════════════════════════════
-     Platform Init Screen — Selección inicial antes del wizard
+     Platform Init Screen — Pantalla de bienvenida rediseñada
      ══════════════════════════════════════════════════════════════ -->
 <div id="platform-init-screen" class="hidden" style="display:none">
-  <div class="pi-container">
-    <div class="pi-brand">
-      <h1>⚡ Tecno Caja</h1>
-      <p>¿Cómo deseas comenzar?</p>
+
+  <!-- ── Vista principal ─────────────────────────────────────────────────── -->
+  <div id="pi-main-options" class="pi-fullscreen">
+
+    <!-- Fondo decorativo -->
+    <div class="pi-bg-shapes">
+      <div class="pi-shape pi-shape-1"></div>
+      <div class="pi-shape pi-shape-2"></div>
+      <div class="pi-shape pi-shape-3"></div>
     </div>
 
-    <!-- Opciones principales -->
-    <div id="pi-main-options" class="pi-options">
-      <button class="pi-option-btn" onclick="platformInit.choose({ type: 'independent' })">
-        <span class="pi-option-icon">🏪</span>
+    <!-- Header -->
+    <header class="pi-header">
+      <div class="pi-logo">
+        <span class="pi-logo-icon">⚡</span>
         <div>
-          <div class="pi-option-label">Crear negocio independiente</div>
-          <div class="pi-option-desc">Administra tu negocio de forma autónoma</div>
+          <div class="pi-logo-name">Tecno Caja POS</div>
+          <div class="pi-logo-tagline">La tecnología que impulsa tus ventas</div>
         </div>
-      </button>
-      <button class="pi-option-btn" onclick="platformInit.showSubview('pi-sub-accountant-client')">
-        <span class="pi-option-icon">🤝</span>
-        <div>
-          <div class="pi-option-label">Negocio bajo Contador Asociado</div>
-          <div class="pi-option-desc">Prueba gratis 30 días con soporte contable</div>
-        </div>
-      </button>
-      <!-- Opción "Soy Contador Asociado" se usa desde la app Tecno Caja Admin (app separada) -->
-      <button class="pi-option-btn" onclick="platformInit.choose({ type: 'restore_local' })">
-        <span class="pi-option-icon">💾</span>
-        <div>
-          <div class="pi-option-label">Restaurar desde copia local</div>
-          <div class="pi-option-desc">Recupera un respaldo guardado en este equipo</div>
-        </div>
-      </button>
-      <button class="pi-option-btn" onclick="platformInit.choose({ type: 'restore_cloud' })">
-        <span class="pi-option-icon">☁️</span>
-        <div>
-          <div class="pi-option-label">Restaurar desde la nube</div>
-          <div class="pi-option-desc">Descarga un respaldo de tu cuenta en la nube</div>
-        </div>
-      </button>
-    </div>
-
-    <!-- Subvista: Negocio bajo contador -->
-    <div id="pi-sub-accountant-client" class="pi-subview hidden">
-      <button class="pi-back-btn" onclick="platformInit.backToMain()">← Volver</button>
-      <p style="margin:0;font-size:0.9rem;color:#4a5568">Busca el contador que gestionará tu negocio:</p>
-      <div class="pi-search-wrap">
-        <input id="pi-contador-search" type="text" class="pi-search-input" placeholder="Nombre, RNC o correo del contador…">
-        <div id="pi-contador-results" class="pi-results hidden"></div>
       </div>
-      <div id="pi-contador-selected"></div>
-      <button class="sa-btn sa-btn-primary" onclick="platformInit.confirmContadorChoice()" style="align-self:flex-end">
-        Continuar →
+    </header>
+
+    <!-- Hero text -->
+    <div class="pi-hero">
+      <h1 class="pi-hero-title">Bienvenido a Tecno Caja</h1>
+      <p class="pi-hero-sub">Selecciona cómo deseas comenzar tu experiencia</p>
+    </div>
+
+    <!-- Cards grid -->
+    <div class="pi-cards-grid">
+
+      <!-- Card 1: Independiente -->
+      <button class="pi-card pi-card-blue" onclick="platformInit.choose({ type: 'independent' })">
+        <div class="pi-card-icon-wrap pi-icon-blue">
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </div>
+        <div class="pi-card-body">
+          <div class="pi-card-title">Crear Negocio Independiente</div>
+          <div class="pi-card-desc">Administra tu negocio de forma autónoma con ventas, inventario, clientes, reportes y facturación.</div>
+        </div>
+        <div class="pi-card-footer">
+          <span class="pi-card-btn pi-btn-blue">Comenzar →</span>
+        </div>
       </button>
+
+      <!-- Card 2: Contador asociado -->
+      <button class="pi-card pi-card-green" onclick="platformInit.showSubview('pi-sub-accountant-client')">
+        <div class="pi-card-badge">30 días gratis</div>
+        <div class="pi-card-icon-wrap pi-icon-green">
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <div class="pi-card-body">
+          <div class="pi-card-title">Negocio Bajo Contador Asociado</div>
+          <div class="pi-card-desc">Registra tu negocio bajo una firma contable y obtén soporte especializado con 30 días de prueba gratuita.</div>
+        </div>
+        <div class="pi-card-footer">
+          <span class="pi-card-btn pi-btn-green">Seleccionar →</span>
+        </div>
+      </button>
+
+      <!-- Card 3: Restaurar local -->
+      <button class="pi-card pi-card-orange" onclick="platformInit.choose({ type: 'restore_local' })">
+        <div class="pi-card-icon-wrap pi-icon-orange">
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <div class="pi-card-body">
+          <div class="pi-card-title">Restaurar Respaldo Local</div>
+          <div class="pi-card-desc">Recupera la información de un respaldo almacenado en tu equipo de forma rápida y segura.</div>
+        </div>
+        <div class="pi-card-footer">
+          <span class="pi-card-btn pi-btn-orange">Restaurar →</span>
+        </div>
+      </button>
+
+      <!-- Card 4: Restaurar nube -->
+      <button class="pi-card pi-card-purple" onclick="platformInit.choose({ type: 'restore_cloud' })">
+        <div class="pi-card-icon-wrap pi-icon-purple">
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/></svg>
+        </div>
+        <div class="pi-card-body">
+          <div class="pi-card-title">Restaurar Desde la Nube</div>
+          <div class="pi-card-desc">Recupera automáticamente tu negocio utilizando tu cuenta registrada en la plataforma Tecno Caja.</div>
+        </div>
+        <div class="pi-card-footer">
+          <span class="pi-card-btn pi-btn-purple">Recuperar →</span>
+        </div>
+      </button>
+
+    </div><!-- /pi-cards-grid -->
+
+    <!-- Footer de estado -->
+    <footer class="pi-status-footer">
+      <div class="pi-status-item" id="pi-status-firebase">
+        <span class="pi-status-dot pi-dot-checking"></span>
+        <span>Verificando conexión…</span>
+      </div>
+      <div class="pi-status-sep">·</div>
+      <div class="pi-status-item">
+        <span class="pi-status-dot pi-dot-ok"></span>
+        <span>Base de datos local</span>
+      </div>
+      <div class="pi-status-sep">·</div>
+      <div class="pi-status-version" id="pi-version-label">Tecno Caja POS</div>
+    </footer>
+
+  </div><!-- /pi-main-options -->
+
+  <!-- ── Modal: Negocio bajo contador ─────────────────────────────────────── -->
+  <div id="pi-sub-accountant-client" class="pi-subview-overlay hidden">
+    <div class="pi-modal-box">
+
+      <!-- ── Cabecera ── -->
+      <div class="pi-mh">
+        <div class="pi-mh-left">
+          <div class="pi-mh-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </div>
+          <div>
+            <div class="pi-mh-title">Seleccionar Contador</div>
+            <div class="pi-mh-sub">Conecta tu negocio a una firma contable certificada</div>
+          </div>
+        </div>
+        <div class="pi-mh-right">
+          <span class="pi-mh-badge">✓ 30 días gratis</span>
+          <button class="pi-mh-close" onclick="platformInit.backToMain()" title="Cerrar">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="pi-mh-divider"></div>
+
+      <!-- ── Buscador ── -->
+      <div class="pi-ms">
+        <div class="pi-search-wrap">
+          <svg class="pi-search-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="pi-contador-search" type="text" class="pi-search-input" placeholder="Nombre, RNC, teléfono o correo…" autocomplete="off">
+          <div id="pi-search-spinner" class="pi-spinner hidden"></div>
+        </div>
+      </div>
+
+      <!-- ── Lista de resultados ── -->
+      <div class="pi-mr" id="pi-mr">
+        <div id="pi-contador-results" class="pi-results-inner"></div>
+      </div>
+
+      <!-- ── Contador seleccionado ── -->
+      <div id="pi-contador-selected" class="pi-selected-wrap hidden">
+        <div class="pi-selected-card">
+          <div class="pi-selected-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <div class="pi-selected-info">
+            <div id="pi-sel-nombre" class="pi-sel-nombre"></div>
+            <div id="pi-sel-detalle" class="pi-sel-detalle"></div>
+          </div>
+          <button class="pi-sel-change" onclick="platformInit.clearContador()">Cambiar</button>
+        </div>
+      </div>
+
+      <!-- ── Footer ── -->
+      <div class="pi-modal-footer">
+        <button class="pi-btn-secondary" onclick="platformInit.backToMain()">Cancelar</button>
+        <button class="pi-btn-primary" id="pi-btn-continuar" onclick="platformInit.confirmContadorChoice()" disabled>
+          Continuar →
+        </button>
+      </div>
+
     </div>
   </div>
+
 </div>
 
 <!-- Paneles de superadmin y contador eliminados del POS.

@@ -3093,6 +3093,65 @@ ipcMain.handle('cash-drawer:open-escpos', async (_event, printerName, pin = 0) =
   }
 });
 
+// ── Guardar reportes como PDF (diálogo "Guardar como…") ──────────────────────
+ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'reporte.pdf', landscape = false } = {}) => {
+  let pdfWindow = null;
+  let tempFile  = null;
+  try {
+    const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
+      title:       'Guardar reporte como PDF',
+      defaultPath: path.join(app.getPath('documents'), filename),
+      filters:     [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+
+    tempFile = path.join(os.tmpdir(), `tc-report-${Date.now()}.html`);
+    fs.writeFileSync(tempFile, html, 'utf8');
+
+    pdfWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    await pdfWindow.loadFile(tempFile);
+
+    const pdfBuffer = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      landscape: landscape,
+      margins: { marginType: 'printableArea' },
+    });
+
+    pdfWindow.close();
+    pdfWindow = null;
+    fs.unlinkSync(tempFile);
+    tempFile = null;
+
+    fs.writeFileSync(filePath, pdfBuffer);
+    return { ok: true, filePath };
+  } catch (error) {
+    if (pdfWindow && !pdfWindow.isDestroyed()) pdfWindow.close();
+    if (tempFile && fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+    return { ok: false, error: error.message || 'No se pudo guardar el PDF.' };
+  }
+});
+
+// ── Abrir texto/XML en el editor predeterminado del sistema ──────────────────
+ipcMain.handle('report:open-text', async (_event, { content = '', filename = 'documento.txt' } = {}) => {
+  let tempFile = null;
+  try {
+    const safeExt  = path.extname(filename) || '.txt';
+    const safeName = path.basename(filename, safeExt).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60);
+    tempFile = path.join(os.tmpdir(), `tc-${safeName}-${Date.now()}${safeExt}`);
+    fs.writeFileSync(tempFile, content, 'utf8');
+    const openError = await shell.openPath(tempFile);
+    if (openError) return { ok: false, error: openError };
+    return { ok: true, filePath: tempFile };
+  } catch (error) {
+    if (tempFile && fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+    return { ok: false, error: error.message || 'No se pudo abrir el archivo.' };
+  }
+});
+
 // ── Guardado automático de facturas en PDF ────────────────────────────────────
 ipcMain.handle('invoice:save-pdf', async (_event, payload = {}) => {
   try {

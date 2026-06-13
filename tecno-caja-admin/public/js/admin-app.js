@@ -1,519 +1,723 @@
 'use strict';
 /**
- * Tecno Caja Admin — Frontend
- * Single-page app que corre en http://127.0.0.1:3400
+ * Tecno Caja Admin — Frontend SPA
+ * Login con Firebase Authentication (email/password).
+ * Config de Firebase se obtiene del servidor (env vars, nunca hardcodeada aquí).
  */
-const adminApp = (() => {
 
-  let _token = '';
-  let _currentModule = 'dashboard';
-  let _currentNegocioId = null;
-  let _currentSolicitudId = null;
-  let _allNegocios = [];
+// ── Firebase init ──────────────────────────────────────────────────────────
+let _auth         = null;
+let _currentUser  = null;
+let _idToken      = null;
+let _adminProfile = null;
 
-  // ── API helper ─────────────────────────────────────────────────────────────
-  async function api(method, path, body) {
-    const opts = {
-      method,
-      headers: { 'Content-Type': 'application/json', Authorization: _token ? `Bearer ${_token}` : '' }
-    };
-    if (body !== undefined) opts.body = JSON.stringify(body);
-    const res = await fetch(`/api${path}`, opts);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-    return data;
-  }
+async function initFirebaseClient() {
+  try {
+    const res  = await fetch('/api/firebase-config');
+    const cfg  = await res.json();
 
-  // ── Toast ──────────────────────────────────────────────────────────────────
-  let _toastTimer = null;
-  function toast(msg, type = 'ok') {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = `toast ${type}`;
-    if (_toastTimer) clearTimeout(_toastTimer);
-    _toastTimer = setTimeout(() => el.classList.add('hidden'), 3500);
-  }
-
-  // ── Init ───────────────────────────────────────────────────────────────────
-  async function init() {
-    _token = localStorage.getItem('tc-admin-token') || '';
-
-    let status = {};
-    try {
-      const res = await fetch('/api/auth/first-run');
-      status = await res.json();
-    } catch (e) {
-      showCriticalError('No se pudo conectar con el servidor admin. ' + e.message);
+    if (!res.ok) {
+      showFirebaseError(cfg.error || 'No se pudo obtener la configuración de Firebase.');
       return;
     }
 
-    // DB no lista aún (MariaDB arrancando)
-    if (status.dbReady === false) {
-      showCriticalError(status.dbError || 'Conectando a la base de datos del POS...');
-      // Reintentar en 2 segundos
-      setTimeout(() => init(), 2000);
-      return;
-    }
+    firebase.initializeApp(cfg);
+    _auth = firebase.auth();
 
-    if (status.firstRun) {
-      showSetupMode();
-      return;
-    }
-
-    if (_token) {
-      try {
-        await loadDashboard();
-        showAppShell();
-        return;
-      } catch {
-        _token = '';
-        localStorage.removeItem('tc-admin-token');
-      }
-    }
-
-    showLoginScreen();
-  }
-
-  function showCriticalError(msg) {
-    const el = document.getElementById('firebase-error-banner');
-    if (el) { el.textContent = '⚠️ ' + msg; el.classList.remove('hidden'); }
-    const btn = document.getElementById('btn-login');
-    if (btn) btn.disabled = true;
-    showLoginScreen();
-  }
-
-  function showSetupMode() {
-    document.getElementById('setup-banner').classList.remove('hidden');
-    document.getElementById('inp-nombre').classList.remove('hidden');
-    document.getElementById('btn-login').textContent = 'Crear cuenta';
-    document.getElementById('btn-login').onclick = doSetup;
-  }
-
-  function showLoginScreen() {
-    document.getElementById('login-screen').classList.remove('hidden');
-    document.getElementById('app-shell').classList.add('hidden');
-  }
-
-  function showAppShell() {
-    document.getElementById('login-screen').classList.add('hidden');
-    document.getElementById('app-shell').classList.remove('hidden');
-  }
-
-  // ── Auth ───────────────────────────────────────────────────────────────────
-  async function doSetup() {
-    const nombre = document.getElementById('inp-nombre').value.trim();
-    const email  = document.getElementById('inp-email').value.trim();
-    const pass   = document.getElementById('inp-password').value;
-    if (!nombre || !email || !pass) return showError('Todos los campos son requeridos.');
-    try {
-      const data = await api('POST', '/auth/setup', { nombre, email, password: pass });
-      _token = data.token;
-      localStorage.setItem('tc-admin-token', _token);
-      document.getElementById('admin-name-display').textContent = data.nombre || email;
-      await loadDashboard();
-      showAppShell();
-    } catch (e) { showError(e.message); }
-  }
-
-  async function doLogin() {
-    const email = document.getElementById('inp-email').value.trim();
-    const pass  = document.getElementById('inp-password').value;
-    if (!email || !pass) return showError('Correo y contraseña son requeridos.');
-    try {
-      const data = await api('POST', '/auth/login', { email, password: pass });
-      _token = data.token;
-      localStorage.setItem('tc-admin-token', _token);
-      document.getElementById('admin-name-display').textContent = data.nombre || email;
-      await loadDashboard();
-      showAppShell();
-    } catch (e) { showError(e.message); }
-  }
-
-  function logout() {
-    _token = '';
-    localStorage.removeItem('tc-admin-token');
-    document.getElementById('app-shell').classList.add('hidden');
-    document.getElementById('login-screen').classList.remove('hidden');
-    document.getElementById('inp-password').value = '';
-  }
-
-  function showError(msg) {
-    const el = document.getElementById('login-error');
-    el.textContent = msg;
-    el.classList.remove('hidden');
-    setTimeout(() => el.classList.add('hidden'), 4000);
-  }
-
-  // ── Módulo routing ─────────────────────────────────────────────────────────
-  function switchModule(name) {
-    document.querySelectorAll('.module').forEach(m => m.classList.add('hidden'));
-    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-
-    const mod = document.getElementById(`mod-${name}`);
-    if (mod) mod.classList.remove('hidden');
-    document.querySelector(`.nav-item[data-module="${name}"]`)?.classList.add('active');
-    _currentModule = name;
-
-    if (name === 'dashboard')      loadDashboard();
-    if (name === 'negocios')       loadNegocios();
-    if (name === 'licencias')      loadLicencias();
-    if (name === 'contadores')     loadContadores();
-    if (name === 'solicitudes')    loadSolicitudes();
-    if (name === 'actualizaciones') loadActualizaciones();
-    if (name === 'auditoria')      loadAuditoria();
-  }
-
-  // ── Dashboard ──────────────────────────────────────────────────────────────
-  async function loadDashboard() {
-    try {
-      const d = await api('GET', '/dashboard');
-      const t = d.totales;
-      document.getElementById('s-negocios').textContent  = t.negocios;
-      document.getElementById('s-activas').textContent   = t.activas;
-      document.getElementById('s-prueba').textContent    = t.prueba;
-      document.getElementById('s-pendientes').textContent = t.pendientes;
-      document.getElementById('s-vencidas').textContent  = t.vencidas;
-      document.getElementById('s-contadores').textContent = t.contadores;
-
-      // Badge solicitudes
-      const badge = document.getElementById('sol-badge');
-      if (t.solicitudesPendientes > 0) {
-        badge.textContent = t.solicitudesPendientes;
-        badge.classList.remove('hidden');
-      } else {
-        badge.classList.add('hidden');
-      }
-
-      const tbody = document.getElementById('dash-negocios-list');
-      tbody.innerHTML = (d.ultimosNegocios || []).map(n => `
-        <tr>
-          <td>${n.cloud_business_id || n.id}</td>
-          <td><a href="#" onclick="adminApp.openNegocio('${n.id}')" style="color:var(--accent)">${n.nombre_negocio || '—'}</a></td>
-          <td>${n.plan || '—'}</td>
-          <td><span class="status-badge status-${n.license_status || 'trial'}">${n.license_status || 'trial'}</span></td>
-          <td>${fmtDate(n.created_at)}</td>
-        </tr>`).join('');
-    } catch (e) { toast('Error al cargar dashboard: ' + e.message, 'err'); }
-  }
-
-  // ── Negocios ───────────────────────────────────────────────────────────────
-  async function loadNegocios() {
-    try {
-      const status = document.getElementById('neg-filter-status')?.value || '';
-      _allNegocios = await api('GET', `/negocios${status ? `?status=${status}` : ''}`);
-      renderNegocios(_allNegocios);
-    } catch (e) { toast('Error al cargar negocios: ' + e.message, 'err'); }
-  }
-
-  function renderNegocios(list) {
-    document.getElementById('negocios-list').innerHTML = (list || []).map(n => `
-      <tr>
-        <td>${n.cloud_business_id || n.id}</td>
-        <td><a href="#" onclick="adminApp.openNegocio('${n.id}')" style="color:var(--accent)">${n.nombre_negocio || '—'}</a></td>
-        <td>${n.plan || '—'}</td>
-        <td><span class="status-badge status-${n.license_status || 'trial'}">${n.license_status || 'trial'}</span></td>
-        <td>${n.contador_nombre || '—'}</td>
-        <td>${fmtDate(n.created_at)}</td>
-        <td><button class="btn-sm" onclick="adminApp.openNegocio('${n.id}')">Ver</button></td>
-      </tr>`).join('');
-  }
-
-  function filterNegocios(q) {
-    const lq = q.toLowerCase();
-    renderNegocios(_allNegocios.filter(n =>
-      (n.nombre_negocio     || '').toLowerCase().includes(lq) ||
-      (n.cloud_business_id  || '').toLowerCase().includes(lq)
-    ));
-  }
-
-  async function openNegocio(id) {
-    _currentNegocioId = id;
-    try {
-      const n = await api('GET', `/negocios/${id}`);
-      document.getElementById('det-nombre').textContent = n.nombre_negocio || id;
-
-      document.getElementById('det-info').innerHTML = [
-        ['ID',             n.cloud_business_id || n.id],
-        ['RNC',            n.rnc || '—'],
-        ['Teléfono',       n.telefono || '—'],
-        ['Correo',         n.email || '—'],
-        ['Plan',           n.plan || '—'],
-        ['Estado',         n.license_status || '—'],
-        ['Contador',       n.contador_nombre || '—'],
-        ['Modo',           n.business_mode || '—'],
-        ['Trial inicio',   fmtDate(n.trial_start_date)],
-        ['Trial fin',      fmtDate(n.trial_end_date)],
-        ['Vence',          fmtDate(n.license_expires_at)],
-        ['Registrado',     fmtDate(n.created_at)],
-      ].map(([k, v]) => `<div class="detail-row"><span>${k}</span><span>${v}</span></div>`).join('');
-
-      const sel = document.getElementById('lic-plan');
-      if (sel) sel.value = n.plan || 'standalone';
-
-      // Cargar historial licencias
-      const hist = await api('GET', `/licencias/${id}`);
-      document.getElementById('lic-historial').innerHTML = (hist || []).map(h => `
-        <tr>
-          <td>${h.action || '—'}</td>
-          <td>${h.plan || '—'}</td>
-          <td>${h.activated_by || '—'}</td>
-          <td>${fmtDate(h.created_at)}</td>
-        </tr>`).join('');
-
-      // Mostrar módulo detalle
-      document.querySelectorAll('.module').forEach(m => m.classList.add('hidden'));
-      document.getElementById('mod-negocio-detalle').classList.remove('hidden');
-    } catch (e) { toast('Error al abrir negocio: ' + e.message, 'err'); }
-  }
-
-  function backToNegocios() {
-    switchModule('negocios');
-  }
-
-  async function accionLicencia(accion) {
-    if (!_currentNegocioId) return;
-    const plan  = document.getElementById('lic-plan')?.value;
-    const notas = document.getElementById('lic-notas')?.value;
-    const dias  = document.getElementById('lic-dias')?.value;
-    try {
-      await api('POST', `/negocios/${_currentNegocioId}/licencia`, { accion, plan, notas, dias });
-      toast(`Licencia: ${accion} aplicado correctamente.`, 'ok');
-      // Refrescar historial
-      const hist = await api('GET', `/licencias/${_currentNegocioId}`);
-      document.getElementById('lic-historial').innerHTML = (hist || []).map(h => `
-        <tr>
-          <td>${h.action || '—'}</td>
-          <td>${h.plan || '—'}</td>
-          <td>${h.activated_by || '—'}</td>
-          <td>${fmtDate(h.created_at)}</td>
-        </tr>`).join('');
-      document.getElementById('renovar-form').classList.add('hidden');
-    } catch (e) { toast('Error: ' + e.message, 'err'); }
-  }
-
-  function showRenovar() {
-    document.getElementById('renovar-form').classList.toggle('hidden');
-  }
-
-  // ── Licencias ──────────────────────────────────────────────────────────────
-  async function loadLicencias() {
-    try {
-      const m = await api('GET', '/licencias-resumen');
-      document.getElementById('ls-active').textContent    = m.active    || 0;
-      document.getElementById('ls-trial').textContent     = m.trial     || 0;
-      document.getElementById('ls-pending').textContent   = m.pending   || 0;
-      document.getElementById('ls-expired').textContent   = m.expired   || 0;
-      document.getElementById('ls-suspended').textContent = m.suspended || 0;
-      document.getElementById('ls-cancelled').textContent = m.cancelled || 0;
-    } catch (e) { toast('Error: ' + e.message, 'err'); }
-  }
-
-  function goNegociosByStatus(status) {
-    document.getElementById('neg-filter-status').value = status;
-    switchModule('negocios');
-  }
-
-  // ── Contadores ─────────────────────────────────────────────────────────────
-  async function loadContadores() {
-    try {
-      const list = await api('GET', '/contadores');
-      document.getElementById('contadores-list').innerHTML = (list || []).map(c => `
-        <tr>
-          <td>${c.nombre_firma || '—'}</td>
-          <td>${c.responsable || '—'}</td>
-          <td>${c.rnc || '—'}</td>
-          <td>${c.correo || '—'}</td>
-          <td><span class="status-badge status-${c.estado || 'activo'}">${c.estado || 'activo'}</span></td>
-          <td>
-            ${c.estado === 'activo'
-              ? `<button class="btn-sm" onclick="adminApp.suspenderContador('${c.id}')">Suspender</button>`
-              : `<button class="btn-sm" onclick="adminApp.reactivarContador('${c.id}')">Reactivar</button>`}
-            <button class="btn-sm" style="margin-left:4px;color:var(--red)" onclick="adminApp.eliminarContador('${c.id}')">Eliminar</button>
-          </td>
-        </tr>`).join('');
-    } catch (e) { toast('Error al cargar contadores: ' + e.message, 'err'); }
-  }
-
-  function openNuevoContador() {
-    document.getElementById('modal-cont-title').textContent = 'Nuevo Contador';
-    ['cont-nombre-firma','cont-responsable','cont-rnc','cont-telefono','cont-correo','cont-email-acceso','cont-password']
-      .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
-    document.getElementById('cont-error').classList.add('hidden');
-    document.getElementById('modal-contador').classList.remove('hidden');
-  }
-
-  async function guardarContador() {
-    const payload = {
-      nombre_firma:    document.getElementById('cont-nombre-firma').value.trim(),
-      responsable:     document.getElementById('cont-responsable').value.trim(),
-      rnc:             document.getElementById('cont-rnc').value.trim(),
-      telefono:        document.getElementById('cont-telefono').value.trim(),
-      correo:          document.getElementById('cont-correo').value.trim(),
-      email_acceso:    document.getElementById('cont-email-acceso').value.trim(),
-      password_acceso: document.getElementById('cont-password').value,
-    };
-    const errEl = document.getElementById('cont-error');
-    try {
-      await api('POST', '/contadores', payload);
-      closeModal('modal-contador');
-      toast('Contador creado.', 'ok');
-      loadContadores();
-    } catch (e) {
-      errEl.textContent = e.message;
-      errEl.classList.remove('hidden');
-    }
-  }
-
-  async function suspenderContador(id) {
-    if (!confirm('¿Suspender este contador?')) return;
-    try { await api('POST', `/contadores/${id}/suspender`); toast('Contador suspendido.', 'ok'); loadContadores(); }
-    catch (e) { toast(e.message, 'err'); }
-  }
-
-  async function reactivarContador(id) {
-    try { await api('POST', `/contadores/${id}/reactivar`); toast('Contador reactivado.', 'ok'); loadContadores(); }
-    catch (e) { toast(e.message, 'err'); }
-  }
-
-  async function eliminarContador(id) {
-    if (!confirm('¿Eliminar este contador? Esta acción no se puede deshacer.')) return;
-    try { await api('DELETE', `/contadores/${id}`); toast('Contador eliminado.', 'ok'); loadContadores(); }
-    catch (e) { toast(e.message, 'err'); }
-  }
-
-  // ── Solicitudes ────────────────────────────────────────────────────────────
-  async function loadSolicitudes() {
-    try {
-      const status = document.getElementById('sol-filter')?.value || '';
-      const list = await api('GET', `/solicitudes${status ? `?status=${status}` : ''}`);
-      document.getElementById('solicitudes-list').innerHTML = (list || []).map(s => `
-        <tr>
-          <td>${s.business_id || s.negocio_nombre || '—'}</td>
-          <td>${s.asunto || '—'}</td>
-          <td><span class="status-badge status-${s.status || 'pending'}">${s.status || 'pendiente'}</span></td>
-          <td>${fmtDate(s.created_at)}</td>
-          <td><button class="btn-sm" onclick="adminApp.openSolicitud('${s.id}','${escHtml(s.mensaje || '')}')">Responder</button></td>
-        </tr>`).join('');
-    } catch (e) { toast('Error: ' + e.message, 'err'); }
-  }
-
-  function openSolicitud(id, mensaje) {
-    _currentSolicitudId = id;
-    document.getElementById('sol-detalle').textContent = mensaje || '(sin detalle)';
-    document.getElementById('sol-respuesta').value = '';
-    document.getElementById('sol-status').value = 'en_proceso';
-    document.getElementById('modal-solicitud').classList.remove('hidden');
-  }
-
-  async function responderSolicitud() {
-    const status    = document.getElementById('sol-status').value;
-    const respuesta = document.getElementById('sol-respuesta').value;
-    try {
-      await api('PUT', `/solicitudes/${_currentSolicitudId}`, { status, respuesta });
-      closeModal('modal-solicitud');
-      toast('Solicitud actualizada.', 'ok');
-      loadSolicitudes();
-    } catch (e) { toast(e.message, 'err'); }
-  }
-
-  // ── Actualizaciones ────────────────────────────────────────────────────────
-  async function loadActualizaciones() {
-    try {
-      const list = await api('GET', '/actualizaciones');
-      document.getElementById('actualizaciones-list').innerHTML = (list || []).map(v => `
-        <tr>
-          <td><strong>${v.version}</strong></td>
-          <td>${v.descripcion || '—'}</td>
-          <td><span class="status-badge status-${v.estado === 'publicado' ? 'active' : 'pending'}">${v.estado || '—'}</span></td>
-          <td>${v.es_obligatoria ? '✅ Sí' : '—'}</td>
-          <td>${fmtDate(v.created_at)}</td>
-        </tr>`).join('');
-    } catch (e) { toast('Error: ' + e.message, 'err'); }
-  }
-
-  function openNuevaVersion() {
-    ['ver-version','ver-desc','ver-url'].forEach(id => { const e = document.getElementById(id); if(e) e.value = ''; });
-    document.getElementById('ver-obligatoria').checked = false;
-    document.getElementById('ver-error').classList.add('hidden');
-    document.getElementById('modal-version').classList.remove('hidden');
-  }
-
-  async function publicarVersion() {
-    const errEl = document.getElementById('ver-error');
-    const payload = {
-      version:       document.getElementById('ver-version').value.trim(),
-      descripcion:   document.getElementById('ver-desc').value.trim(),
-      url_descarga:  document.getElementById('ver-url').value.trim(),
-      es_obligatoria: document.getElementById('ver-obligatoria').checked,
-      estado: 'publicado'
-    };
-    try {
-      await api('POST', '/actualizaciones', payload);
-      closeModal('modal-version');
-      toast('Versión publicada.', 'ok');
-      loadActualizaciones();
-    } catch (e) {
-      errEl.textContent = e.message;
-      errEl.classList.remove('hidden');
-    }
-  }
-
-  // ── Auditoría ──────────────────────────────────────────────────────────────
-  async function loadAuditoria() {
-    try {
-      const list = await api('GET', '/auditoria');
-      document.getElementById('auditoria-list').innerHTML = (list || []).map(l => `
-        <tr>
-          <td>${l.actor || '—'}</td>
-          <td><code style="font-size:11px">${l.action || '—'}</code></td>
-          <td>${l.target || '—'}</td>
-          <td style="color:var(--text-sub);font-size:12px">${l.detail || '—'}</td>
-          <td>${fmtDate(l.created_at)}</td>
-        </tr>`).join('');
-    } catch (e) { toast('Error: ' + e.message, 'err'); }
-  }
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
-  function fmtDate(iso) {
-    if (!iso) return '—';
-    try { return new Date(iso).toLocaleDateString('es-DO', { day:'2-digit', month:'short', year:'numeric' }); }
-    catch { return iso; }
-  }
-
-  function escHtml(s) {
-    return String(s).replace(/'/g, "\\'").replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  function closeModal(id) {
-    document.getElementById(id)?.classList.add('hidden');
-  }
-
-  // ── Nav click handler ──────────────────────────────────────────────────────
-  document.addEventListener('DOMContentLoaded', () => {
-    document.querySelectorAll('.nav-item').forEach(el => {
-      el.addEventListener('click', () => switchModule(el.dataset.module));
+    // Renovar token automáticamente en background
+    _auth.onIdTokenChanged(async user => {
+      if (user) { _idToken = await user.getIdToken(); _currentUser = user; }
     });
 
-    // Enter en login
-    ['inp-email','inp-password','inp-nombre'].forEach(id => {
-      document.getElementById(id)?.addEventListener('keydown', e => {
-        if (e.key === 'Enter') document.getElementById('btn-login').click();
-      });
+    _auth.onAuthStateChanged(onAuthStateChanged);
+  } catch (e) {
+    showFirebaseError('Error conectando con Firebase: ' + e.message);
+  }
+}
+
+function showFirebaseError(msg) {
+  const el = document.getElementById('firebase-error-banner');
+  if (el) { el.textContent = msg; el.classList.remove('hidden'); }
+  console.error('[admin]', msg);
+}
+
+// ── Auth state listener ────────────────────────────────────────────────────
+async function onAuthStateChanged(user) {
+  if (!user) {
+    _currentUser  = null;
+    _idToken      = null;
+    _adminProfile = null;
+    showLoginScreen();
+    return;
+  }
+
+  try {
+    _idToken     = await user.getIdToken();
+    _currentUser = user;
+
+    const res  = await fetch('/api/auth/verify', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ idToken: _idToken }),
     });
+    const data = await res.json();
 
-    init();
-  });
+    if (!res.ok) {
+      await _auth.signOut();
+      showLoginError(data.error || 'Acceso denegado.');
+      return;
+    }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
-  return {
-    doLogin, doSetup, logout,
-    loadDashboard, loadNegocios, filterNegocios, openNegocio,
-    backToNegocios, accionLicencia, showRenovar,
-    loadLicencias, goNegociosByStatus,
-    loadContadores, openNuevoContador, guardarContador, suspenderContador, reactivarContador, eliminarContador,
-    loadSolicitudes, openSolicitud, responderSolicitud,
-    loadActualizaciones, openNuevaVersion, publicarVersion,
-    loadAuditoria,
-    closeModal,
+    _adminProfile = data;
+    showAppShell();
+  } catch {
+    showLoginError('Error de red verificando sesión.');
+  }
+}
+
+// ── API helper ─────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  if (_currentUser) _idToken = await _currentUser.getIdToken();
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${_idToken}` },
   };
-})();
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res  = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+// ── UI helpers ─────────────────────────────────────────────────────────────
+const $id     = id  => document.getElementById(id);
+const hide    = id  => $id(id)?.classList.add('hidden');
+const show    = id  => $id(id)?.classList.remove('hidden');
+const setText = (id, v) => { const el = $id(id); if (el) el.textContent = String(v ?? '—'); };
+
+function showLoginScreen() {
+  hide('app-shell');
+  show('login-screen');
+  showLogin(null);
+  hide('firebase-error-banner');
+  const btn = $id('btn-login');
+  if (btn) { btn.disabled = false; btn.textContent = 'Iniciar sesión'; }
+}
+
+function showAppShell() {
+  hide('login-screen');
+  show('app-shell');
+  setText('admin-name-display', _adminProfile?.fullName || _adminProfile?.email || 'Admin');
+  navigateTo('dashboard');
+}
+
+function showLoginError(msg) {
+  const el = $id('login-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function showToast(msg, type = 'success') {
+  const t = $id('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.className   = `toast ${type}`;
+  t.classList.remove('hidden');
+  setTimeout(() => t.classList.add('hidden'), 3500);
+}
+
+// ── Login views ────────────────────────────────────────────────────────────
+function showLogin(e) {
+  if (e) e.preventDefault();
+  show('view-login');
+  hide('view-forgot');
+  hide('login-error');
+  hide('forgot-error');
+}
+
+function showForgotPassword(e) {
+  if (e) e.preventDefault();
+  hide('view-login');
+  show('view-forgot');
+}
+
+// ── Login ──────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const email    = ($id('inp-email')?.value    || '').trim();
+  const password = $id('inp-password')?.value  || '';
+  const remember = $id('chk-remember')?.checked ?? true;
+  const btn      = $id('btn-login');
+
+  hide('login-error');
+  if (!email || !password) { showLoginError('Ingresa correo y contraseña.'); return; }
+  if (!_auth)              { showLoginError('Firebase no está listo. Verifica la configuración.'); return; }
+
+  btn.disabled    = true;
+  btn.textContent = 'Verificando...';
+
+  try {
+    const persistence = remember
+      ? firebase.auth.Auth.Persistence.LOCAL
+      : firebase.auth.Auth.Persistence.SESSION;
+    await _auth.setPersistence(persistence);
+    await _auth.signInWithEmailAndPassword(email, password);
+    // onAuthStateChanged continúa el flujo
+  } catch (e) {
+    const map = {
+      'auth/user-not-found':       'Correo no registrado.',
+      'auth/wrong-password':       'Contraseña incorrecta.',
+      'auth/invalid-email':        'Correo inválido.',
+      'auth/too-many-requests':    'Demasiados intentos fallidos. Espera unos minutos.',
+      'auth/user-disabled':        'Esta cuenta está deshabilitada.',
+      'auth/invalid-credential':   'Credenciales inválidas. Verifica tu correo y contraseña.',
+      'auth/api-key-not-valid':    'API Key de Firebase inválida. Verifica FIREBASE_API_KEY en tecno-caja-admin/.env',
+      'auth/invalid-api-key':      'API Key de Firebase inválida. Verifica FIREBASE_API_KEY en tecno-caja-admin/.env',
+      'auth/network-request-failed': 'Sin conexión a internet.',
+    };
+    const msg = map[e.code] || (e.message?.includes('api-key') ? 'API Key inválida. Verifica FIREBASE_API_KEY en el .env del admin.' : e.message);
+    showLoginError(msg);
+    btn.disabled    = false;
+    btn.textContent = 'Iniciar sesión';
+  }
+}
+
+// ── Recuperar contraseña ───────────────────────────────────────────────────
+async function sendPasswordReset() {
+  const email = ($id('inp-email')?.value || '').trim();
+  if (!email) { showForgotErr('Ingresa tu correo en el campo de arriba.'); return; }
+  if (!_auth) { showForgotErr('Firebase no está listo.'); return; }
+
+  try {
+    await _auth.sendPasswordResetEmail(email);
+    showToast('Correo de recuperación enviado. Revisa tu bandeja.', 'success');
+    showLogin(null);
+  } catch (e) {
+    const map = {
+      'auth/user-not-found':    'No existe una cuenta con ese correo.',
+      'auth/invalid-email':     'Correo inválido.',
+      'auth/too-many-requests': 'Demasiados intentos. Espera unos minutos.',
+    };
+    showForgotErr(map[e.code] || e.message);
+  }
+}
+
+function showForgotErr(msg) {
+  const el = $id('forgot-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+// ── Toggle visibilidad de contraseña ──────────────────────────────────────
+function togglePassword(inputId, btn) {
+  const inp = $id(inputId);
+  if (!inp) return;
+  const isHidden = inp.type === 'password';
+  inp.type = isHidden ? 'text' : 'password';
+
+  // SVG open/closed (login) o emoji (configuración)
+  const eyeOpen   = btn.querySelector('#eye-open');
+  const eyeClosed = btn.querySelector('#eye-closed');
+  if (eyeOpen && eyeClosed) {
+    eyeOpen.style.display   = isHidden ? 'none'  : '';
+    eyeClosed.style.display = isHidden ? ''      : 'none';
+  } else {
+    btn.textContent = isHidden ? '🙈' : '👁';
+  }
+}
+
+// ── Cerrar sesión ──────────────────────────────────────────────────────────
+async function logout() {
+  if (_auth) await _auth.signOut();
+  // onAuthStateChanged llamará showLoginScreen()
+}
+
+// ── Cambiar contraseña (Configuración → Seguridad) ─────────────────────────
+async function changePasswordSec() {
+  const currentPw = $id('sec-current-pw')?.value  || '';
+  const newPw     = $id('sec-new-pw')?.value      || '';
+  const confirmPw = $id('sec-confirm-pw')?.value  || '';
+  const errEl     = $id('sec-error');
+  const showErr   = msg => { if(errEl){ errEl.textContent=msg; errEl.classList.remove('hidden'); } };
+
+  if (errEl) errEl.classList.add('hidden');
+  if (!currentPw)        { showErr('Ingresa tu contraseña actual.');    return; }
+  if (newPw.length < 8)  { showErr('La nueva contraseña debe tener al menos 8 caracteres.'); return; }
+  if (newPw !== confirmPw){ showErr('Las contraseñas nuevas no coinciden.'); return; }
+  if (!_currentUser)     { showErr('No hay sesión activa.'); return; }
+
+  try {
+    // Re-autenticar antes de cambiar contraseña (requerido por Firebase)
+    const credential = firebase.auth.EmailAuthProvider.credential(_currentUser.email, currentPw);
+    await _currentUser.reauthenticateWithCredential(credential);
+    await _currentUser.updatePassword(newPw);
+
+    // Limpiar campos
+    ['sec-current-pw','sec-new-pw','sec-confirm-pw'].forEach(id => { const el=$id(id); if(el)el.value=''; });
+    showToast('Contraseña actualizada correctamente.', 'success');
+  } catch (e) {
+    const map = {
+      'auth/wrong-password':          'La contraseña actual es incorrecta.',
+      'auth/too-many-requests':       'Demasiados intentos. Espera antes de volver a intentar.',
+      'auth/requires-recent-login':   'Cierra sesión e inicia de nuevo para cambiar la contraseña.',
+    };
+    showErr(map[e.code] || e.message);
+  }
+}
+
+// ── Navegación ─────────────────────────────────────────────────────────────
+function navigateTo(mod) {
+  document.querySelectorAll('.module').forEach(m => m.classList.add('hidden'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  const section = $id('mod-' + mod);
+  if (section) section.classList.remove('hidden');
+  const navItem = document.querySelector(`[data-module="${mod}"]`);
+  if (navItem) navItem.classList.add('active');
+
+  if (mod === 'dashboard')       loadDashboard();
+  if (mod === 'negocios')        loadNegocios();
+  if (mod === 'licencias')       loadLicencias();
+  if (mod === 'contadores')      loadContadores();
+  if (mod === 'solicitudes')     loadSolicitudes();
+  if (mod === 'actualizaciones') loadActualizaciones();
+  if (mod === 'auditoria')       loadAuditoria();
+  if (mod === 'configuracion')   loadConfigPerfil();
+}
+
+function closeModal(id) { hide(id); }
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.addEventListener('click', () => navigateTo(n.dataset.module));
+  });
+  initFirebaseClient();
+});
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const data = await api('GET', '/api/dashboard');
+    const t    = data.totales || {};
+    setText('s-negocios',   t.negocios   ?? '—');
+    setText('s-activas',    t.activas    ?? '—');
+    setText('s-prueba',     t.prueba     ?? '—');
+    setText('s-pendientes', t.pendientes ?? '—');
+    setText('s-vencidas',   t.vencidas   ?? '—');
+    setText('s-contadores', t.contadores ?? '—');
+
+    const badge = $id('sol-badge');
+    if (badge) {
+      const sol = t.solicitudesPendientes || 0;
+      badge.textContent = sol;
+      badge.classList.toggle('hidden', sol === 0);
+    }
+
+    const tbody = $id('dash-negocios-list');
+    if (tbody) {
+      tbody.innerHTML = (data.ultimosNegocios || []).map(n => `
+        <tr>
+          <td><code style="font-size:11px">${n.businessKey || n.id}</code></td>
+          <td>${n.businessName || '—'}</td>
+          <td>${n.planCode || n.plan_code || '—'}</td>
+          <td><span class="badge badge-${n.status || 'trial'}">${n.status || 'trial'}</span></td>
+          <td>${fmtDate(n.syncedAt || n.updatedAt)}</td>
+        </tr>`).join('');
+    }
+  } catch (e) { showToast('Error cargando dashboard: ' + e.message, 'error'); }
+}
+
+// ── Negocios ───────────────────────────────────────────────────────────────
+let _allNegocios = [];
+
+async function loadNegocios() {
+  const sf  = $id('neg-filter-status')?.value || '';
+  const url = sf ? `/api/negocios?status=${encodeURIComponent(sf)}` : '/api/negocios';
+  try {
+    _allNegocios = await api('GET', url);
+    renderNegociosList(_allNegocios);
+  } catch (e) { showToast('Error cargando negocios: ' + e.message, 'error'); }
+}
+
+function renderNegociosList(list) {
+  const tbody = $id('negocios-list');
+  if (!tbody) return;
+  tbody.innerHTML = list.map(n => `
+    <tr>
+      <td><code style="font-size:11px">${n.businessKey || n.id}</code></td>
+      <td>${n.businessName || '—'}</td>
+      <td>${n.planCode || n.plan_code || '—'}</td>
+      <td><span class="badge badge-${n.status || 'trial'}">${n.status || 'trial'}</span></td>
+      <td>${n.contadorNombre
+        ? `<span style="color:#10b981;font-weight:600">${n.contadorNombre}</span>`
+        : `<span style="color:#64748b">—</span> <button class="btn-sm btn-warning" style="font-size:10px;padding:2px 7px" onclick="adminApp.openNegocio('${n.id}');setTimeout(()=>adminApp.showAsignarContador(),300)">Asignar</button>`}</td>
+      <td>${fmtDate(n.syncedAt || n.updatedAt)}</td>
+      <td><button class="btn-sm" onclick="adminApp.openNegocio('${n.id}')">Ver</button></td>
+    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;opacity:.6">Sin resultados</td></tr>';
+}
+
+function filterNegocios(q) {
+  const lower    = q.toLowerCase();
+  const filtered = _allNegocios.filter(n =>
+    (n.businessName || '').toLowerCase().includes(lower) ||
+    (n.businessKey  || '').toLowerCase().includes(lower) ||
+    (n.id           || '').toLowerCase().includes(lower)
+  );
+  renderNegociosList(filtered);
+}
+
+let _currentNegocioId = null;
+async function openNegocio(id) {
+  _currentNegocioId = id;
+  try {
+    const [neg, hist] = await Promise.all([
+      api('GET', `/api/negocios/${id}`),
+      api('GET', `/api/licencias/${id}`).catch(() => []),
+    ]);
+
+    setText('det-nombre', neg.businessName || neg.businessKey || id);
+    const contadorHtml = neg.contadorNombre
+      ? `<span style="color:#10b981;font-weight:600">${neg.contadorNombre}</span>`
+      : `<span style="color:#64748b">Sin asignar</span>
+         <button class="btn-sm btn-warning" style="margin-left:8px" onclick="adminApp.showAsignarContador()">Asignar</button>`;
+    $id('det-info').innerHTML = `
+      <dl class="info-dl">
+        <dt>Business Key</dt><dd><code>${neg.businessKey || id}</code></dd>
+        <dt>Plan</dt><dd>${neg.planCode || neg.plan_code || '—'}</dd>
+        <dt>Estado</dt><dd><span class="badge badge-${neg.status||'trial'}">${neg.status||'trial'}</span></dd>
+        <dt>Contador</dt><dd>${contadorHtml}</dd>
+        <dt>Trial inicia</dt><dd>${fmtDate(neg.trialStartedAt)}</dd>
+        <dt>Trial vence</dt><dd>${fmtDate(neg.trialEndsAt)}</dd>
+        <dt>Expira</dt><dd>${fmtDate(neg.expiresAt)}</dd>
+        <dt>Último sync</dt><dd>${fmtDate(neg.syncedAt)}</dd>
+      </dl>
+      <div id="form-asignar-contador" class="hidden" style="margin-top:1rem;padding:1rem;background:rgba(255,255,255,.04);border-radius:10px;border:1px solid rgba(255,255,255,.1)">
+        <label style="font-size:.83rem;color:#94a3b8;display:block;margin-bottom:.5rem">Buscar y asignar contador:</label>
+        <div style="display:flex;gap:.5rem">
+          <input id="inp-asignar-contador" type="text" placeholder="Nombre o RNC del contador…"
+            style="flex:1;padding:.5rem .75rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#e2e8f0;font-size:.85rem"
+            oninput="adminApp.buscarContadorAsignar(this.value)">
+          <button class="btn-sm btn-back" onclick="adminApp.hideAsignarContador()">Cancelar</button>
+        </div>
+        <div id="res-asignar-contador" style="margin-top:.5rem"></div>
+      </div>`;
+
+    const sel = $id('lic-plan');
+    if (sel && (neg.planCode || neg.plan_code)) sel.value = neg.planCode || neg.plan_code;
+
+    const hbody = $id('lic-historial');
+    if (hbody) {
+      hbody.innerHTML = (hist || []).map(h => `
+        <tr>
+          <td>${h.action || '—'}</td>
+          <td>${h.plan || '—'}</td>
+          <td>${h.activated_by || '—'}</td>
+          <td>${fmtDate(h.created_at)}</td>
+        </tr>`).join('') || '<tr><td colspan="4" style="opacity:.6">Sin historial</td></tr>';
+    }
+
+    document.querySelectorAll('.module').forEach(m => m.classList.add('hidden'));
+    show('mod-negocio-detalle');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function backToNegocios() {
+  _currentNegocioId = null;
+  navigateTo('negocios');
+}
+
+function showAsignarContador() {
+  $id('form-asignar-contador')?.classList.remove('hidden');
+  setTimeout(() => $id('inp-asignar-contador')?.focus(), 80);
+}
+function hideAsignarContador() { $id('form-asignar-contador')?.classList.add('hidden'); }
+
+let _asignarTimeout = null;
+async function buscarContadorAsignar(q) {
+  clearTimeout(_asignarTimeout);
+  const res = $id('res-asignar-contador');
+  if (!res) return;
+  if ((q || '').trim().length < 2) { res.innerHTML = ''; return; }
+  _asignarTimeout = setTimeout(async () => {
+    try {
+      const list = await api('GET', `/api/contadores?q=${encodeURIComponent(q)}`);
+      if (!Array.isArray(list) || !list.length) { res.innerHTML = '<p style="font-size:.8rem;color:#64748b;margin:.5rem 0">Sin resultados</p>'; return; }
+      res.innerHTML = list.map(c => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:.5rem .75rem;border-radius:8px;background:rgba(255,255,255,.04);margin-bottom:.3rem">
+          <div>
+            <div style="font-size:.85rem;font-weight:600;color:#e2e8f0">${c.nombre_firma}</div>
+            ${c.rnc ? `<div style="font-size:.75rem;color:#64748b">RNC: ${c.rnc}</div>` : ''}
+          </div>
+          <button class="btn-sm" onclick="adminApp.confirmarAsignarContador('${c.id}','${(c.nombre_firma||'').replace(/'/g,"\\'")}')">Asignar</button>
+        </div>`).join('');
+    } catch (e) { res.innerHTML = `<p style="color:#ef4444;font-size:.8rem">${e.message}</p>`; }
+  }, 350);
+}
+
+async function confirmarAsignarContador(contadorId, nombre) {
+  if (!_currentNegocioId) return;
+  if (!confirm(`¿Asignar el contador "${nombre}" a este negocio?`)) return;
+  try {
+    await api('POST', `/api/negocios/${_currentNegocioId}/asignar-contador`, { contadorId });
+    showToast(`Contador "${nombre}" asignado.`, 'success');
+    openNegocio(_currentNegocioId);
+    loadNegocios();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function showRenovar() {
+  const f = $id('renovar-form');
+  if (f) f.classList.toggle('hidden');
+}
+
+async function accionLicencia(accion) {
+  if (!_currentNegocioId) return;
+  const plan  = $id('lic-plan')?.value;
+  const dias  = $id('lic-dias')?.value;
+  const notas = $id('lic-notas')?.value;
+  try {
+    await api('POST', `/api/negocios/${_currentNegocioId}/licencia`, { accion, plan, dias, notas });
+    showToast('Licencia actualizada.', 'success');
+    openNegocio(_currentNegocioId);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ── Licencias overview ─────────────────────────────────────────────────────
+async function loadLicencias() {
+  try {
+    const data = await api('GET', '/api/licencias-resumen');
+    const set  = (id, key) => setText(id, data[key] || 0);
+    set('ls-active',    'active');
+    set('ls-trial',     'trial');
+    set('ls-pending',   'pending');
+    set('ls-expired',   'expired');
+    set('ls-suspended', 'suspended');
+    set('ls-cancelled', 'cancelled');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function goNegociosByStatus(status) {
+  const sel = $id('neg-filter-status');
+  if (sel) sel.value = status;
+  navigateTo('negocios');
+}
+
+// ── Contadores ─────────────────────────────────────────────────────────────
+async function loadContadores() {
+  try {
+    const list  = await api('GET', '/api/contadores');
+    const tbody = $id('contadores-list');
+    if (!tbody) return;
+    tbody.innerHTML = list.map(c => `
+      <tr>
+        <td>${c.nombre_firma || '—'}</td>
+        <td>${c.responsable || '—'}</td>
+        <td>${c.rnc || '—'}</td>
+        <td>${c.correo || '—'}</td>
+        <td><span class="badge badge-${c.estado==='activo'?'active':'suspended'}">${c.estado}</span></td>
+        <td>
+          ${c.estado === 'activo'
+            ? `<button class="btn-sm btn-warning" onclick="adminApp.suspenderContador('${c.id}')">Suspender</button>`
+            : `<button class="btn-sm btn-success" onclick="adminApp.reactivarContador('${c.id}')">Reactivar</button>`}
+          <button class="btn-sm btn-danger" onclick="adminApp.eliminarContador('${c.id}','${(c.nombre_firma||'').replace(/'/g,'&#39;')}')" style="margin-left:4px">Eliminar</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;opacity:.6">Sin contadores</td></tr>';
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function openNuevoContador() {
+  ['cont-nombre-firma','cont-responsable','cont-rnc','cont-telefono','cont-correo','cont-email-acceso','cont-password']
+    .forEach(id => { const el=$id(id); if(el) el.value=''; });
+  hide('cont-error');
+  show('modal-contador');
+}
+
+async function guardarContador() {
+  const showErr = msg => { const e=$id('cont-error'); if(e){e.textContent=msg;e.classList.remove('hidden');} };
+  const g       = id  => ($id(id)?.value || '').trim();
+  const nombre_firma    = g('cont-nombre-firma');
+  const email_acceso    = g('cont-email-acceso');
+  const password_acceso = $id('cont-password')?.value || '';
+  if (!nombre_firma || !email_acceso || !password_acceso) {
+    showErr('Nombre de firma, correo de acceso y contraseña son obligatorios.'); return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email_acceso)) {
+    showErr('El correo de acceso no tiene un formato válido. Ejemplo: contador@firma.com'); return;
+  }
+  if (password_acceso.length < 6) {
+    showErr('La contraseña debe tener al menos 6 caracteres.'); return;
+  }
+  try {
+    await api('POST', '/api/contadores', {
+      nombre_firma, responsable: g('cont-responsable'),
+      rnc: g('cont-rnc'), telefono: g('cont-telefono'),
+      correo: g('cont-correo') || email_acceso,
+      email_acceso, password_acceso,
+    });
+    closeModal('modal-contador');
+    showToast('Contador creado correctamente.', 'success');
+    loadContadores();
+  } catch (e) { showErr(e.message); }
+}
+
+async function suspenderContador(id) {
+  if (!confirm('¿Suspender este contador?')) return;
+  try { await api('POST', `/api/contadores/${id}/suspender`); showToast('Suspendido.', 'success'); loadContadores(); }
+  catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function reactivarContador(id) {
+  try { await api('POST', `/api/contadores/${id}/reactivar`); showToast('Reactivado.', 'success'); loadContadores(); }
+  catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function eliminarContador(id, nombre) {
+  if (!confirm(`¿Eliminar al contador "${nombre}"? Esta acción no se puede deshacer.`)) return;
+  try { await api('DELETE', `/api/contadores/${id}`); showToast('Eliminado.', 'success'); loadContadores(); }
+  catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ── Solicitudes ────────────────────────────────────────────────────────────
+let _currentSolicitudId = null;
+
+async function loadSolicitudes() {
+  const status = $id('sol-filter')?.value || '';
+  const url    = status ? `/api/solicitudes?status=${encodeURIComponent(status)}` : '/api/solicitudes';
+  try {
+    const list  = await api('GET', url);
+    const tbody = $id('solicitudes-list');
+    if (!tbody) return;
+    tbody.innerHTML = list.map(s => `
+      <tr>
+        <td>${s.businessName || s.businessKey || '—'}</td>
+        <td>${s.asunto || s.subject || '—'}</td>
+        <td><span class="badge badge-${s.status||'pendiente'}">${s.status||'pendiente'}</span></td>
+        <td>${fmtDate(s.created_at)}</td>
+        <td><button class="btn-sm" onclick="adminApp.abrirSolicitud('${s.id}')">Responder</button></td>
+      </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;opacity:.6">Sin solicitudes</td></tr>';
+    window._solicitudesCache = list;
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function abrirSolicitud(id) {
+  _currentSolicitudId = id;
+  const sol = (window._solicitudesCache || []).find(s => s.id === id);
+  const el  = $id('sol-detalle');
+  if (el) el.textContent = sol?.mensaje || sol?.body || 'Sin mensaje.';
+  const resp = $id('sol-respuesta'); if(resp) resp.value = '';
+  const st   = $id('sol-status');   if(st)   st.value   = 'en_proceso';
+  show('modal-solicitud');
+}
+
+async function responderSolicitud() {
+  if (!_currentSolicitudId) return;
+  const status    = $id('sol-status')?.value    || 'en_proceso';
+  const respuesta = $id('sol-respuesta')?.value || '';
+  try {
+    await api('PUT', `/api/solicitudes/${_currentSolicitudId}`, { status, respuesta });
+    closeModal('modal-solicitud');
+    showToast('Solicitud actualizada.', 'success');
+    loadSolicitudes();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ── Actualizaciones ────────────────────────────────────────────────────────
+async function loadActualizaciones() {
+  try {
+    const list  = await api('GET', '/api/actualizaciones');
+    const tbody = $id('actualizaciones-list');
+    if (!tbody) return;
+    tbody.innerHTML = list.map(v => `
+      <tr>
+        <td><strong>${v.version}</strong></td>
+        <td>${v.descripcion || '—'}</td>
+        <td><span class="badge badge-active">${v.estado || 'publicado'}</span></td>
+        <td>${v.es_obligatoria ? '✔ Sí' : 'No'}</td>
+        <td>${fmtDate(v.created_at)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;opacity:.6">Sin versiones</td></tr>';
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function openNuevaVersion() {
+  ['ver-version','ver-desc','ver-url'].forEach(id => { const el=$id(id); if(el) el.value=''; });
+  const ob = $id('ver-obligatoria'); if(ob) ob.checked = false;
+  hide('ver-error');
+  show('modal-version');
+}
+
+async function publicarVersion() {
+  const showErr    = msg => { const e=$id('ver-error'); if(e){e.textContent=msg;e.classList.remove('hidden');} };
+  const version    = ($id('ver-version')?.value || '').trim();
+  const descripcion  = ($id('ver-desc')?.value  || '').trim();
+  const url_descarga = ($id('ver-url')?.value   || '').trim();
+  const es_obligatoria = $id('ver-obligatoria')?.checked || false;
+  if (!version) { showErr('La versión es obligatoria.'); return; }
+  try {
+    await api('POST', '/api/actualizaciones', { version, descripcion, url_descarga, es_obligatoria });
+    closeModal('modal-version');
+    showToast('Versión publicada.', 'success');
+    loadActualizaciones();
+  } catch (e) { showErr(e.message); }
+}
+
+// ── Auditoría ──────────────────────────────────────────────────────────────
+async function loadAuditoria() {
+  try {
+    const list  = await api('GET', '/api/auditoria');
+    const tbody = $id('auditoria-list');
+    if (!tbody) return;
+    tbody.innerHTML = list.map(a => `
+      <tr>
+        <td>${a.actor  || '—'}</td>
+        <td><code style="font-size:11px">${a.action || '—'}</code></td>
+        <td>${a.target || '—'}</td>
+        <td>${a.detail || '—'}</td>
+        <td>${fmtDate(a.created_at)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" style="text-align:center;opacity:.6">Sin registros</td></tr>';
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+// ── Configuración ──────────────────────────────────────────────────────────
+async function loadConfigPerfil() {
+  try {
+    const data = await api('GET', '/api/perfil');
+    const el   = $id('config-perfil-info');
+    if (!el) return;
+    el.innerHTML = `
+      <dt>Nombre</dt><dd>${data.fullName || '—'}</dd>
+      <dt>Correo</dt><dd>${data.email || '—'}</dd>
+      <dt>Rol</dt><dd>${data.role || '—'}</dd>
+      <dt>Estado</dt><dd><span class="badge badge-${data.status==='active'?'active':'suspended'}">${data.status || '—'}</span></dd>
+      <dt>Permisos</dt><dd>${(data.permissions || []).join(', ')}</dd>
+      <dt>Último acceso</dt><dd>${fmtDate(data.lastLoginAt)}</dd>
+      <dt>Creado</dt><dd>${fmtDate(data.createdAt)}</dd>`;
+  } catch (e) { showToast('Error cargando perfil: ' + e.message, 'error'); }
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+function fmtDate(v) {
+  if (!v) return '—';
+  try {
+    const d = v?.toDate ? v.toDate() : new Date(v);
+    if (isNaN(d.getTime())) return String(v);
+    return d.toLocaleString('es-DO', { dateStyle: 'short', timeStyle: 'short' });
+  } catch { return String(v); }
+}
+
+// ── Exponer al HTML ────────────────────────────────────────────────────────
+window.adminApp = {
+  doLogin, logout, sendPasswordReset, showLogin, showForgotPassword,
+  togglePassword, changePasswordSec, closeModal,
+  loadDashboard,
+  loadNegocios, filterNegocios, openNegocio, backToNegocios,
+  showAsignarContador, hideAsignarContador, buscarContadorAsignar, confirmarAsignarContador,
+  accionLicencia, showRenovar,
+  loadLicencias, goNegociosByStatus,
+  loadContadores, openNuevoContador, guardarContador,
+  suspenderContador, reactivarContador, eliminarContador,
+  loadSolicitudes, abrirSolicitud, responderSolicitud,
+  loadActualizaciones, openNuevaVersion, publicarVersion,
+  loadAuditoria,
+  loadConfigPerfil,
+};

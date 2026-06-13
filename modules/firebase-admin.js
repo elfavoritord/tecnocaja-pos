@@ -879,6 +879,15 @@ async function syncPosAccountsToFirestore(users, config) {
 
   const statusToWrite = (remoteStatus === 'active' || remoteStatus === 'suspended') ? remoteStatus : effectiveStatus;
 
+  // Solo incluir contadorId/contadorNombre si el POS los tiene configurados localmente.
+  // Si están vacíos, NO los incluimos en el payload para que { merge: true } preserve
+  // el valor asignado desde el Admin panel — evita que el reinicio del POS los borre.
+  const localContadorId     = String(config?.accountant_id   || config?.accountantId   || '').trim() || null;
+  const localContadorNombre = String(config?.accountant_name || config?.accountantName || '').trim() || null;
+  const contadorFields = localContadorId
+    ? { contadorId: localContadorId, contadorNombre: localContadorNombre }
+    : {};
+
   userBatch.set(
     licenseDocRef,
     {
@@ -901,6 +910,7 @@ async function syncPosAccountsToFirestore(users, config) {
       business_structure_mode: localBusinessStructureMode || null,
       trialStartedAt: trialStartsAt && !Number.isNaN(trialStartsAt.getTime()) ? trialStartsAt : null,
       trialEndsAt: trialEndsAt && !Number.isNaN(trialEndsAt.getTime()) ? trialEndsAt : null,
+      ...contadorFields,
       syncedAt,
     },
     { merge: true }

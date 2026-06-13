@@ -12258,6 +12258,8 @@ app.post('/api/cash/open', async (req, res) => {
         opened_by_user_name: actor.userName || 'Sistema',
       }, { config: cfg, branches });
     });
+    // Actualizar KPIs del Portal de Contadores al abrir caja (fire & forget)
+    require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
     const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
     return res.status(201).json({ sessionId: result, activeSession, config: await getConfig() });
   } catch (err) {
@@ -12431,6 +12433,8 @@ app.post('/api/cash/close', async (req, res) => {
     cajeroNombre: actor.userName,
     montoActual: amount,
   }).catch(() => {});
+  // Actualizar KPIs del Portal de Contadores al cerrar caja (fire & forget)
+  require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
   // ── Sync reporte-sistema-pos (cierre) ──
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
@@ -13278,6 +13282,9 @@ app.post('/api/sales', async (req, res) => {
       sucursalId: created.branchId,
       sucursalNombre: created.branchName,
     }).catch(() => {});
+    // Actualizar KPIs del Portal de Contadores en tiempo real (fire & forget)
+    const { syncPosStatsToFirestore } = require('./server/sync/sync-pos-stats');
+    syncPosStatsToFirestore().catch(() => {});
   }
   if (rows[0]?.order_type === 'delivery') {
     firebaseSync.syncDeliveryOrder(rows[0]).catch(() => {});

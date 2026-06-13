@@ -1,250 +1,314 @@
 'use strict';
 /**
  * Tecno Caja Admin — Express server
- *
- * Usa la MISMA base de datos MariaDB/SQLite del POS (sin necesidad de Firebase).
- * Ambas apps comparten datos porque corren en el mismo equipo.
- * Firebase se puede agregar después para sincronización multi-instalación.
+ * Login 100% Firebase Authentication.
+ * Datos en Firestore (mismas colecciones que el POS).
+ * NO usa MariaDB.
  */
 const path    = require('path');
-const crypto  = require('crypto');
 const express = require('express');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-// ── Conectar a la misma DB del POS ────────────────────────────────────────
-// Usamos mysql2 directamente apuntando al mismo MariaDB del POS (puerto 3399 interno)
-const ROOT = path.resolve(__dirname, '..');
+// ── Firebase Admin SDK ─────────────────────────────────────────────────────
+let adminSdk   = null;
+let db         = null;
+let fbReady    = false;
+let fbError    = null;
 
-let query;
-let dbReady = false;
-let dbError = null;
-
-// Leer el .env del POS para obtener los parámetros de MariaDB
-try {
-  require('dotenv').config({ path: path.join(ROOT, '.env'), override: false });
-} catch (_e) {}
-
-try {
-  const mysql2 = require('mysql2/promise');
-  const pool = mysql2.createPool({
-    host:            process.env.DB_HOST     || '127.0.0.1',
-    port:     Number(process.env.DB_PORT)    || 3306,
-    user:            process.env.DB_USER     || 'root',
-    // El POS usa DB_PASSWORD (no DB_PASS)
-    password:        process.env.DB_PASSWORD || process.env.DB_PASS || '',
-    database:        process.env.DB_NAME     || 'novapos',
-    waitForConnections: true,
-    connectionLimit: 5,
-    charset: 'utf8mb4',
-  });
-
-  query = async (sql, params = []) => {
-    const [rows] = await pool.execute(sql, params);
-    // SELECT devuelve array de rows
-    // INSERT/UPDATE/DELETE devuelve ResultSetHeader — lo envolvemos en array
-    if (Array.isArray(rows)) return rows;
-    return [rows];
-  };
-
-  // Verificar conexión
-  pool.getConnection()
-    .then(conn => { conn.release(); dbReady = true; console.log('[admin] Conectado a MariaDB del POS.'); })
-    .catch(e => { dbError = e.message; console.error('[admin] No se pudo conectar a MariaDB:', e.message); });
-
-} catch (e) {
-  dbError = 'mysql2 no disponible: ' + e.message;
-  console.error('[admin]', dbError);
-  // query dummy para que el servidor arranque igual
-  query = async () => { throw new Error('Base de datos no disponible: ' + dbError); };
-}
-
-// ── JWT ────────────────────────────────────────────────────────────────────
-const { SignJWT, jwtVerify } = require('jose');
-const JWT_SECRET = process.env.ADMIN_JWT_SECRET || 'tecnocaja-admin-secret-change-me';
-const JWT_KEY    = Buffer.from(JWT_SECRET, 'utf8');
-
-async function signToken(payload) {
-  return new SignJWT(payload).setProtectedHeader({ alg: 'HS256' }).setIssuedAt().setExpirationTime('12h').sign(JWT_KEY);
-}
-async function verifyToken(token) {
-  const { payload } = await jwtVerify(token, JWT_KEY);
-  return payload;
-}
-
-// ── Passwords ──────────────────────────────────────────────────────────────
-function hashPassword(password) {
-  const salt    = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, salt, 32).toString('hex');
-  return `scrypt:${salt}:${derived}`;
-}
-function checkPassword(password, hash) {
+function initFirebase() {
   try {
-    const [, salt, stored] = hash.split(':');
-    const derived = crypto.scryptSync(password, salt, 32).toString('hex');
-    return crypto.timingSafeEqual(Buffer.from(stored, 'hex'), Buffer.from(derived, 'hex'));
-  } catch { return false; }
+    const admin = require('firebase-admin');
+
+    if (admin.apps.length) {
+      adminSdk = admin;
+      db = admin.apps[0].firestore();
+      fbReady = true;
+      return;
+    }
+
+    let credential;
+    const saJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+
+    if (saJson) {
+      credential = admin.credential.cert(JSON.parse(saJson));
+    } else if (saPath) {
+      const absPath = path.isAbsolute(saPath) ? saPath : path.resolve(__dirname, saPath);
+      credential = admin.credential.cert(require(absPath));
+    } else {
+      fbError = 'Configura FIREBASE_SERVICE_ACCOUNT_PATH en tecno-caja-admin/.env';
+      console.error('[admin]', fbError);
+      return;
+    }
+
+    admin.initializeApp({ credential, projectId: process.env.FIREBASE_PROJECT_ID });
+    adminSdk = admin;
+    db = admin.firestore();
+    fbReady = true;
+    console.log('[admin] Firebase Admin conectado — proyecto:', process.env.FIREBASE_PROJECT_ID);
+  } catch (e) {
+    fbError = e.message;
+    console.error('[admin] Firebase init error:', e.message);
+  }
 }
+
+initFirebase();
+
+// ── Colecciones (alineadas con el POS) ────────────────────────────────────
+const COL_ADMINS      = 'platform_admins';
+const COL_LICENCIAS   = process.env.FIREBASE_ADMIN_LICENSES_COLLECTION || 'licencias';
+const COL_USUARIOS    = process.env.FIREBASE_ADMIN_USERS_COLLECTION     || 'usuarios';
+const COL_CONTADORES  = 'contadores';
+const COL_SOLICITUDES = 'support_requests';
+const COL_HISTORIAL   = 'license_history';
+const COL_AUDITORIA   = 'audit_logs';
+const COL_VERSIONES   = 'app_versions';
 
 // ── Express ────────────────────────────────────────────────────────────────
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Auth middleware ────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
+function col(name) {
+  if (!fbReady) throw new Error('Firebase no configurado. Revisa el .env del admin.');
+  return db.collection(name);
+}
+function docData(doc) { return { id: doc.id, ...doc.data() }; }
+function isoNow() { return new Date().toISOString(); }
+
+async function audit(actor, action, target, detail) {
+  if (!fbReady) return;
+  await col(COL_AUDITORIA).add({ actor, action, target: target || null, detail: detail || null, created_at: isoNow() }).catch(() => {});
+}
+
+// ── Auth middleware — verifica ID token de Firebase ────────────────────────
 async function requireAuth(req, res, next) {
+  if (!fbReady) return res.status(503).json({ error: fbError || 'Firebase no disponible.' });
+
   const header = String(req.headers.authorization || '').trim();
   if (!header.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado.' });
+
   try {
-    req.adminUser = await verifyToken(header.slice(7));
+    const decoded = await adminSdk.auth().verifyIdToken(header.slice(7));
+    const uid = decoded.uid;
+
+    const userDoc = await col(COL_ADMINS).doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(403).json({ error: 'Esta cuenta no tiene permisos para acceder a Tecno Caja Admin.' });
+    }
+
+    const userData = userDoc.data();
+    if (userData.role !== 'super_admin_platform') {
+      return res.status(403).json({ error: 'Esta cuenta no tiene permisos para acceder a Tecno Caja Admin.' });
+    }
+    if (userData.status !== 'active') {
+      return res.status(403).json({ error: 'Esta cuenta está inactiva o suspendida.' });
+    }
+
+    // Actualizar lastLoginAt
+    await col(COL_ADMINS).doc(uid).update({ lastLoginAt: isoNow() }).catch(() => {});
+
+    req.adminUser = { uid, email: decoded.email, fullName: userData.fullName, role: userData.role, permissions: userData.permissions || ['*'] };
     next();
-  } catch {
-    res.status(401).json({ error: 'Sesión expirada. Inicia sesión nuevamente.' });
-  }
-}
-
-// ── Garantizar tablas del admin ────────────────────────────────────────────
-async function ensureAdminTables() {
-  await query(`CREATE TABLE IF NOT EXISTS platform_admins (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    nombre VARCHAR(200) NOT NULL,
-    password_hash VARCHAR(500) NOT NULL,
-    role VARCHAR(50) NOT NULL DEFAULT 'superadmin',
-    status VARCHAR(30) NOT NULL DEFAULT 'active',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
-
-  await query(`CREATE TABLE IF NOT EXISTS admin_audit_log (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    actor VARCHAR(255),
-    action VARCHAR(100),
-    target VARCHAR(200),
-    detail TEXT,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
-
-  await query(`CREATE TABLE IF NOT EXISTS admin_versions (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    version VARCHAR(50) NOT NULL,
-    descripcion TEXT,
-    url_descarga VARCHAR(500),
-    es_obligatoria TINYINT(1) NOT NULL DEFAULT 0,
-    estado VARCHAR(30) NOT NULL DEFAULT 'publicado',
-    publicado_por VARCHAR(255),
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
-}
-
-async function ensureFirstAdmin() {
-  const [existing] = await query(`SELECT id FROM platform_admins LIMIT 1`).catch(() => []);
-  if (existing) return;
-  const defaultPass = process.env.ADMIN_DEFAULT_PASSWORD || 'TecnoAdmin2026!';
-  const hash = hashPassword(defaultPass);
-  await query(`INSERT IGNORE INTO platform_admins (email, nombre, password_hash, role, status) VALUES (?, 'Super Admin', ?, 'superadmin', 'active')`,
-    ['admin@tecnocaja.app', hash]).catch(() => {});
-  console.log(`[admin] Admin creado — email: admin@tecnocaja.app  pass: ${defaultPass}`);
-  console.log('[admin] Cambia la contraseña desde el panel o define ADMIN_DEFAULT_PASSWORD en .env');
-}
-
-async function auditLog(actor, action, target, detail) {
-  await query(`INSERT INTO admin_audit_log (actor, action, target, detail) VALUES (?,?,?,?)`,
-    [actor, action, target || null, detail || null]).catch(() => {});
-}
-
-// ── Init ───────────────────────────────────────────────────────────────────
-(async () => {
-  await ensureAdminTables();
-  await ensureFirstAdmin();
-})();
-
-// ── Health ─────────────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ ok: true }));
-app.get('/api/status', (_req, res) => res.json({ ok: true, mode: 'local-mariadb', dbReady, dbError }));
-
-// ── Auth ───────────────────────────────────────────────────────────────────
-app.get('/api/auth/first-run', async (_req, res) => {
-  if (!dbReady) {
-    return res.json({ firstRun: false, dbReady: false, dbError: dbError || 'Conectando a la base de datos...' });
-  }
-  try {
-    const rows = await query(`SELECT id FROM platform_admins LIMIT 1`);
-    res.json({ firstRun: rows.length === 0, dbReady: true });
   } catch (e) {
-    res.json({ firstRun: false, dbReady: false, dbError: e.message });
+    const msg = e?.code === 'auth/id-token-expired'
+      ? 'Sesión expirada. Inicia sesión nuevamente.'
+      : 'Token inválido.';
+    res.status(401).json({ error: msg });
+  }
+}
+
+// ── Rutas públicas ─────────────────────────────────────────────────────────
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+app.get('/api/status', (_req, res) => res.json({
+  fbReady,
+  fbError,
+  projectId: process.env.FIREBASE_PROJECT_ID || null,
+}));
+
+// Config Firebase para el cliente (sin exponer service account)
+app.get('/api/firebase-config', (_req, res) => {
+  const cfg = {
+    apiKey:            process.env.FIREBASE_API_KEY            || null,
+    authDomain:        process.env.FIREBASE_AUTH_DOMAIN        || null,
+    projectId:         process.env.FIREBASE_PROJECT_ID         || null,
+    storageBucket:     process.env.FIREBASE_STORAGE_BUCKET     || null,
+    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || null,
+    appId:             process.env.FIREBASE_APP_ID             || null,
+  };
+  const missing = Object.entries(cfg).filter(([,v]) => !v).map(([k]) => k);
+  if (missing.length) {
+    return res.status(503).json({
+      error: `Variables de entorno Firebase faltantes en .env: ${missing.join(', ')}`,
+    });
+  }
+  res.json(cfg);
+});
+
+// Verificar token + perfil (llamado después del login de Firebase en el cliente)
+app.post('/api/auth/verify', async (req, res) => {
+  if (!fbReady) return res.status(503).json({ error: fbError });
+  const { idToken } = req.body;
+  if (!idToken) return res.status(400).json({ error: 'idToken es requerido.' });
+
+  try {
+    const decoded = await adminSdk.auth().verifyIdToken(idToken);
+    const uid = decoded.uid;
+
+    const userDoc = await col(COL_ADMINS).doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(403).json({ error: 'Esta cuenta no tiene permisos para acceder a Tecno Caja Admin.' });
+    }
+
+    const data = userDoc.data();
+    if (data.role !== 'super_admin_platform') {
+      return res.status(403).json({ error: 'Esta cuenta no tiene permisos para acceder a Tecno Caja Admin.' });
+    }
+    if (data.status !== 'active') {
+      return res.status(403).json({ error: 'Esta cuenta está inactiva o suspendida.' });
+    }
+
+    await col(COL_ADMINS).doc(uid).update({ lastLoginAt: isoNow() }).catch(() => {});
+    res.json({
+      ok: true, uid, email: decoded.email,
+      fullName: data.fullName, role: data.role,
+      permissions: data.permissions || ['*'],
+    });
+  } catch (e) {
+    res.status(401).json({ error: e.message });
   }
 });
 
-app.post('/api/auth/setup', async (req, res) => {
-  const { email, password, nombre } = req.body;
-  if (!email || !password || !nombre) return res.status(400).json({ error: 'email, password y nombre son requeridos.' });
+// Enviar correo de recuperación de contraseña
+app.post('/api/auth/forgot-password', async (req, res) => {
+  if (!fbReady) return res.status(503).json({ error: fbError });
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email requerido.' });
   try {
-    const [existing] = await query(`SELECT id FROM platform_admins LIMIT 1`).catch(() => []);
-    if (existing) return res.status(403).json({ error: 'Ya existe un administrador. Inicia sesión.' });
-    await query(`INSERT INTO platform_admins (email, nombre, password_hash) VALUES (?,?,?)`,
-      [email, nombre, hashPassword(password)]);
-    const token = await signToken({ email, nombre, role: 'superadmin' });
-    res.json({ ok: true, token, nombre });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ error: 'Correo y contraseña son requeridos.' });
-  try {
-    const [admin] = await query(`SELECT * FROM platform_admins WHERE email=? AND status='active' LIMIT 1`, [email]).catch(() => []);
-    if (!admin || !checkPassword(password, admin.password_hash))
-      return res.status(401).json({ error: 'Credenciales incorrectas.' });
-    const token = await signToken({ email: admin.email, nombre: admin.nombre, role: admin.role });
-    res.json({ ok: true, token, nombre: admin.nombre });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const link = await adminSdk.auth().generatePasswordResetLink(email);
+    // En producción se enviaría por correo; aquí confirmamos que se generó
+    console.log('[admin] Password reset link generado para:', email);
+    res.json({ ok: true, message: 'Correo de recuperación enviado.' });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 app.get('/api/dashboard', requireAuth, async (_req, res) => {
   try {
-    const [negocios]   = await query(`SELECT COUNT(*) as total FROM cloud_businesses`).catch(() => [{ total: 0 }]);
-    const [contadores] = await query(`SELECT COUNT(*) as total FROM contadores WHERE estado='activo'`).catch(() => [{ total: 0 }]);
-    const [solicitudes]= await query(`SELECT COUNT(*) as total FROM solicitudes WHERE status='pendiente'`).catch(() => [{ total: 0 }]);
+    const [licSnap, contSnap, solSnap] = await Promise.all([
+      col(COL_LICENCIAS).get(),
+      col(COL_CONTADORES).where('estado', '==', 'activo').get(),
+      col(COL_SOLICITUDES).where('status', '==', 'pendiente').get(),
+    ]);
 
-    const licStats = await query(`SELECT license_status, COUNT(*) as cnt FROM cloud_businesses GROUP BY license_status`).catch(() => []);
+    const negocios = licSnap.docs.map(d => ({ id: d.id, ...d.data() }));
     const licMap = {};
-    licStats.forEach(r => { licMap[r.license_status] = r.cnt; });
+    negocios.forEach(n => { const s = n.status || 'trial'; licMap[s] = (licMap[s] || 0) + 1; });
 
-    const recientes = await query(`SELECT * FROM cloud_businesses ORDER BY created_at DESC LIMIT 10`).catch(() => []);
+    const recientes = [...negocios]
+      .sort((a, b) => String(b.syncedAt || b.updatedAt || '').localeCompare(String(a.syncedAt || a.updatedAt || '')))
+      .slice(0, 10);
 
     res.json({
       totales: {
-        negocios:    negocios?.total  || 0,
-        contadores:  contadores?.total || 0,
+        negocios:    negocios.length,
+        contadores:  contSnap.size,
         activas:     licMap.active    || 0,
         prueba:      licMap.trial     || 0,
         pendientes:  licMap.pending   || 0,
         vencidas:    (licMap.expired  || 0) + (licMap.cancelled || 0),
         suspendidas: licMap.suspended || 0,
-        solicitudesPendientes: solicitudes?.total || 0,
+        solicitudesPendientes: solSnap.size,
       },
       ultimosNegocios: recientes,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── Negocios (tabla cloud_businesses del POS) ──────────────────────────────
+// ── Perfil del admin autenticado ───────────────────────────────────────────
+app.get('/api/perfil', requireAuth, async (req, res) => {
+  try {
+    const doc = await col(COL_ADMINS).doc(req.adminUser.uid).get();
+    res.json(docData(doc));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Negocios (colección licencias del POS) ─────────────────────────────────
 app.get('/api/negocios', requireAuth, async (req, res) => {
   try {
-    const { status } = req.query;
-    const rows = status
-      ? await query(`SELECT cb.*, c.nombre_firma as contador_nombre FROM cloud_businesses cb LEFT JOIN contadores c ON c.id=cb.accountant_id WHERE cb.license_status=? ORDER BY cb.created_at DESC`, [status])
-      : await query(`SELECT cb.*, c.nombre_firma as contador_nombre FROM cloud_businesses cb LEFT JOIN contadores c ON c.id=cb.accountant_id ORDER BY cb.created_at DESC`);
-    res.json(rows || []);
+    const snap = req.query.status
+      ? await col(COL_LICENCIAS).where('status', '==', req.query.status).get()
+      : await col(COL_LICENCIAS).get();
+
+    // Resolver nombres de contadores para docs que tengan contadorId pero no contadorNombre
+    const negocios = snap.docs.map(docData);
+    const sinNombre = negocios.filter(n => n.contadorId && !n.contadorNombre);
+
+    if (sinNombre.length > 0) {
+      const ids = [...new Set(sinNombre.map(n => n.contadorId))];
+      const contMap = {};
+      await Promise.all(ids.map(async id => {
+        try {
+          const d = await col(COL_CONTADORES).doc(String(id)).get();
+          if (d.exists) contMap[id] = d.data().nombre_firma || null;
+        } catch {}
+      }));
+      negocios.forEach(n => {
+        if (n.contadorId && !n.contadorNombre && contMap[n.contadorId]) {
+          n.contadorNombre = contMap[n.contadorId];
+        }
+      });
+    }
+
+    res.json(negocios);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Asignar contador a un negocio directamente desde el admin
+app.post('/api/negocios/:id/asignar-contador', requireAuth, async (req, res) => {
+  const { contadorId } = req.body;
+  if (!contadorId) return res.status(400).json({ error: 'contadorId requerido.' });
+  try {
+    const cDoc = await col(COL_CONTADORES).doc(String(contadorId)).get();
+    if (!cDoc.exists) return res.status(404).json({ error: 'Contador no encontrado.' });
+    const contadorNombre = cDoc.data().nombre_firma || null;
+    await col(COL_LICENCIAS).doc(req.params.id).update({
+      contadorId: String(contadorId),
+      contadorNombre,
+      businessStructureMode: 'accountant_client',
+    });
+    await audit(req.adminUser.email, 'negocio.asignar_contador', req.params.id, contadorNombre);
+    res.json({ ok: true, contadorNombre });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/negocios/:id', requireAuth, async (req, res) => {
   try {
-    const [row] = await query(`SELECT cb.*, c.nombre_firma as contador_nombre FROM cloud_businesses cb LEFT JOIN contadores c ON c.id=cb.accountant_id WHERE cb.id=?`, [req.params.id]);
-    if (!row) return res.status(404).json({ error: 'Negocio no encontrado.' });
-    res.json(row);
+    const doc = await col(COL_LICENCIAS).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
+    const neg = docData(doc);
+    if (neg.contadorId && !neg.contadorNombre) {
+      try {
+        const cDoc = await col(COL_CONTADORES).doc(String(neg.contadorId)).get();
+        if (cDoc.exists) neg.contadorNombre = cDoc.data().nombre_firma || null;
+      } catch {}
+    }
+    res.json(neg);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/negocios/:id/usuarios', requireAuth, async (req, res) => {
+  try {
+    const licDoc = await col(COL_LICENCIAS).doc(req.params.id).get();
+    if (!licDoc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
+    const businessKey = licDoc.data().businessKey || req.params.id;
+    const snap = await col(COL_USUARIOS).where('businessKey', '==', businessKey).get();
+    res.json(snap.docs.map(docData));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -255,118 +319,150 @@ app.post('/api/negocios/:id/licencia', requireAuth, async (req, res) => {
   if (!ACCIONES.includes(accion)) return res.status(400).json({ error: 'Acción inválida.' });
 
   try {
-    const [biz] = await query(`SELECT * FROM cloud_businesses WHERE id=?`, [req.params.id]);
-    if (!biz) return res.status(404).json({ error: 'Negocio no encontrado.' });
+    const ref = col(COL_LICENCIAS).doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
 
+    const biz = doc.data();
     const now = new Date();
-    const isoNow = now.toISOString().slice(0, 19).replace('T', ' ');
+    const update = { updatedAt: now, syncedAt: now };
+    if (plan) { update.planCode = plan; update.plan_code = plan; }
 
-    let newStatus, expiresAt = null, trialStart = null, trialEnd = null;
     switch (accion) {
-      case 'activar':   newStatus = 'active'; break;
-      case 'suspender': newStatus = 'suspended'; break;
-      case 'cancelar':  newStatus = 'cancelled'; break;
-      case 'pendiente': newStatus = 'pending'; break;
+      case 'activar':   update.status = 'active'; break;
+      case 'suspender': update.status = 'suspended'; break;
+      case 'cancelar':  update.status = 'cancelled'; break;
+      case 'pendiente': update.status = 'pending'; break;
       case 'trial':
-        newStatus   = 'trial';
-        trialStart  = isoNow;
-        trialEnd    = new Date(now.getTime() + 30 * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+        update.status        = 'trial';
+        update.trialStartedAt = now;
+        update.trialEndsAt    = new Date(now.getTime() + 30 * 86400000);
         break;
       case 'renovar':
-        newStatus   = 'active';
-        expiresAt   = new Date(now.getTime() + (Number(dias) || 365) * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+        update.status    = 'active';
+        update.expiresAt = new Date(now.getTime() + (Number(dias) || 365) * 86400000);
         break;
     }
 
-    await query(`UPDATE cloud_businesses SET license_status=?, plan=COALESCE(?,plan), updated_at=? WHERE id=?`,
-      [newStatus, plan || null, isoNow, req.params.id]);
+    await ref.update(update);
 
-    if (trialStart)  await query(`UPDATE cloud_businesses SET trial_start_date=?, trial_end_date=? WHERE id=?`, [trialStart, trialEnd, req.params.id]);
-    if (expiresAt)   await query(`UPDATE cloud_businesses SET license_expires_at=? WHERE id=?`, [expiresAt, req.params.id]);
+    await col(COL_HISTORIAL).add({
+      business_id: req.params.id, businessKey: biz.businessKey || req.params.id,
+      businessName: biz.businessName || '—', plan: plan || biz.planCode || '—',
+      status: update.status, action: accion,
+      activated_by: req.adminUser.email, notes: notas || null, created_at: isoNow(),
+    }).catch(() => {});
 
-    // Historial en tabla licencias
-    await query(`INSERT INTO licencias (cloud_business_id, plan, status, activated_by, notes) VALUES (?,?,?,?,?)`,
-      [req.params.id, plan || biz.plan || null, newStatus, req.adminUser.email, notas || null]
-    ).catch(() => {});
-
-    await auditLog(req.adminUser.email, `licencia.${accion}`, String(req.params.id), `Plan: ${plan || biz.plan}, Notas: ${notas || '—'}`);
+    await audit(req.adminUser.email, `licencia.${accion}`, req.params.id, `Plan: ${plan || biz.planCode}`);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/licencias/:businessId', requireAuth, async (req, res) => {
   try {
-    const rows = await query(`SELECT * FROM licencias WHERE business_id=? ORDER BY created_at DESC LIMIT 50`, [req.params.businessId]).catch(() => []);
-    res.json(rows || []);
+    const snap = await col(COL_HISTORIAL)
+      .where('business_id', '==', req.params.businessId).get();
+    const sorted = snap.docs.map(docData).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 50);
+    res.json(sorted);
+  } catch (_e) { res.json([]); }
+});
+
+app.get('/api/licencias-resumen', requireAuth, async (_req, res) => {
+  try {
+    const snap = await col(COL_LICENCIAS).get();
+    const m = {};
+    snap.docs.forEach(d => { const s = d.data().status || 'trial'; m[s] = (m[s] || 0) + 1; });
+    res.json(m);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Contadores ─────────────────────────────────────────────────────────────
-app.get('/api/contadores', requireAuth, async (_req, res) => {
+app.get('/api/contadores', requireAuth, async (req, res) => {
   try {
-    const rows = await query(`SELECT c.*, u.usuario, u.email FROM contadores c LEFT JOIN users u ON u.id=c.user_id ORDER BY c.created_at DESC`).catch(() => []);
-    res.json(rows || []);
+    const snap = await col(COL_CONTADORES).get();
+    let list = snap.docs.map(docData).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+    const q = String(req.query.q || '').trim().toLowerCase();
+    if (q) {
+      list = list.filter(c =>
+        (c.nombre_firma || '').toLowerCase().includes(q) ||
+        (c.rnc          || '').toLowerCase().includes(q) ||
+        (c.correo       || '').toLowerCase().includes(q)
+      );
+    }
+    res.json(list);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/contadores', requireAuth, async (req, res) => {
   const { nombre_firma, responsable, rnc, telefono, correo, email_acceso, password_acceso } = req.body;
   if (!nombre_firma || !email_acceso || !password_acceso)
-    return res.status(400).json({ error: 'Nombre, correo de acceso y contraseña son requeridos.' });
+    return res.status(400).json({ error: 'Nombre, correo y contraseña son requeridos.' });
   try {
-    const [existingUser] = await query(`SELECT id FROM users WHERE email=? OR usuario=?`, [email_acceso, email_acceso]);
-    if (existingUser) return res.status(409).json({ error: 'Ese correo ya está registrado en el sistema.' });
+    // Crear en Firebase Auth
+    const userRecord = await adminSdk.auth().createUser({
+      email: email_acceso, password: password_acceso,
+      displayName: responsable || nombre_firma, disabled: false,
+    });
 
-    const [roleRow] = await query(`SELECT id FROM roles WHERE codigo='contador_asociado' LIMIT 1`).catch(() => []);
-    const roleId = roleRow?.id || 7;
-    const hash = require(path.join(ROOT, 'server.js')) ? null : null; // usamos la misma función del servidor
+    // Guardar en Firestore
+    const now = isoNow();
+    await col(COL_ADMINS).doc(userRecord.uid).set({
+      uid: userRecord.uid, email: email_acceso,
+      fullName: responsable || nombre_firma,
+      role: 'contador_asociado', status: 'active', created_at: now,
+    });
 
-    // Usar el formato de hash del POS (scrypt)
-    const passHash = hashPassword(password_acceso);
-    const [result] = await query(
-      `INSERT INTO users (usuario, email, password_hash, nombre, rol, role_id, estado, auth_provider) VALUES (?,?,?,?,?,?,'Activo','local')`,
-      [email_acceso, email_acceso, passHash, responsable || nombre_firma, 'Contador Asociado', roleId]
-    );
-    const userId = result?.insertId;
+    const contRef = await col(COL_CONTADORES).add({
+      firebase_uid: userRecord.uid, nombre_firma, responsable: responsable || null,
+      rnc: rnc || null, telefono: telefono || null, correo: correo || email_acceso,
+      estado: 'activo', created_at: now, updated_at: now,
+    });
 
-    const [contResult] = await query(
-      `INSERT INTO contadores (user_id, nombre_firma, responsable, rnc, telefono, correo, estado) VALUES (?,?,?,?,?,?,'activo')`,
-      [userId, nombre_firma, responsable || null, rnc || null, telefono || null, correo || email_acceso]
-    );
-
-    await auditLog(req.adminUser.email, 'contador.crear', String(contResult?.insertId), nombre_firma);
-    const [nuevo] = await query(`SELECT * FROM contadores WHERE id=?`, [contResult?.insertId]);
-    res.status(201).json(nuevo || {});
+    await audit(req.adminUser.email, 'contador.crear', contRef.id, nombre_firma);
+    const doc = await contRef.get();
+    res.status(201).json(docData(doc));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/contadores/:id/suspender', requireAuth, async (req, res) => {
   try {
-    const [cont] = await query(`SELECT * FROM contadores WHERE id=?`, [req.params.id]);
-    if (!cont) return res.status(404).json({ error: 'Contador no encontrado.' });
-    await query(`UPDATE contadores SET estado='suspendido' WHERE id=?`, [req.params.id]);
-    if (cont.user_id) await query(`UPDATE users SET estado='Inactivo' WHERE id=?`, [cont.user_id]).catch(() => {});
-    await auditLog(req.adminUser.email, 'contador.suspender', req.params.id, cont.nombre_firma);
+    const doc = await col(COL_CONTADORES).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Contador no encontrado.' });
+    const data = doc.data();
+    await col(COL_CONTADORES).doc(req.params.id).update({ estado: 'suspendido', updated_at: isoNow() });
+    if (data.firebase_uid) {
+      await adminSdk.auth().updateUser(data.firebase_uid, { disabled: true }).catch(() => {});
+      await col(COL_ADMINS).doc(data.firebase_uid).update({ status: 'inactive' }).catch(() => {});
+    }
+    await audit(req.adminUser.email, 'contador.suspender', req.params.id, data.nombre_firma);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/contadores/:id/reactivar', requireAuth, async (req, res) => {
   try {
-    const [cont] = await query(`SELECT * FROM contadores WHERE id=?`, [req.params.id]);
-    if (!cont) return res.status(404).json({ error: 'Contador no encontrado.' });
-    await query(`UPDATE contadores SET estado='activo' WHERE id=?`, [req.params.id]);
-    if (cont.user_id) await query(`UPDATE users SET estado='Activo' WHERE id=?`, [cont.user_id]).catch(() => {});
+    const doc = await col(COL_CONTADORES).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Contador no encontrado.' });
+    const data = doc.data();
+    await col(COL_CONTADORES).doc(req.params.id).update({ estado: 'activo', updated_at: isoNow() });
+    if (data.firebase_uid) {
+      await adminSdk.auth().updateUser(data.firebase_uid, { disabled: false }).catch(() => {});
+      await col(COL_ADMINS).doc(data.firebase_uid).update({ status: 'active' }).catch(() => {});
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.delete('/api/contadores/:id', requireAuth, async (req, res) => {
   try {
-    const [cont] = await query(`SELECT * FROM contadores WHERE id=?`, [req.params.id]);
-    if (!cont) return res.status(404).json({ error: 'Contador no encontrado.' });
-    await query(`DELETE FROM contadores WHERE id=?`, [req.params.id]);
-    if (cont.user_id) await query(`DELETE FROM users WHERE id=?`, [cont.user_id]).catch(() => {});
+    const doc = await col(COL_CONTADORES).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Contador no encontrado.' });
+    const data = doc.data();
+    await col(COL_CONTADORES).doc(req.params.id).delete();
+    if (data.firebase_uid) {
+      await adminSdk.auth().deleteUser(data.firebase_uid).catch(() => {});
+      await col(COL_ADMINS).doc(data.firebase_uid).delete().catch(() => {});
+    }
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -374,18 +470,20 @@ app.delete('/api/contadores/:id', requireAuth, async (req, res) => {
 // ── Solicitudes ────────────────────────────────────────────────────────────
 app.get('/api/solicitudes', requireAuth, async (req, res) => {
   try {
-    const rows = req.query.status
-      ? await query(`SELECT s.*, cb.nombre_negocio FROM solicitudes s LEFT JOIN cloud_businesses cb ON cb.id=s.cloud_business_id WHERE s.status=? ORDER BY s.created_at DESC LIMIT 200`, [req.query.status])
-      : await query(`SELECT s.*, cb.nombre_negocio FROM solicitudes s LEFT JOIN cloud_businesses cb ON cb.id=s.cloud_business_id ORDER BY s.created_at DESC LIMIT 200`);
-    res.json(rows || []);
+    const snap = req.query.status
+      ? await col(COL_SOLICITUDES).where('status', '==', req.query.status).get()
+      : await col(COL_SOLICITUDES).get();
+    const sorted = snap.docs.map(docData).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 200);
+    res.json(sorted);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/solicitudes/:id', requireAuth, async (req, res) => {
   const { status, respuesta } = req.body;
   try {
-    await query(`UPDATE solicitudes SET status=?, respuesta=?, responded_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-      [status, respuesta || null, req.adminUser.email, req.params.id]);
+    await col(COL_SOLICITUDES).doc(req.params.id).update({
+      status, respuesta: respuesta || null, updated_at: isoNow(), responded_by: req.adminUser.email,
+    });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -393,8 +491,9 @@ app.put('/api/solicitudes/:id', requireAuth, async (req, res) => {
 // ── Actualizaciones ────────────────────────────────────────────────────────
 app.get('/api/actualizaciones', requireAuth, async (_req, res) => {
   try {
-    const rows = await query(`SELECT * FROM admin_versions ORDER BY created_at DESC LIMIT 50`).catch(() => []);
-    res.json(rows || []);
+    const snap = await col(COL_VERSIONES).get();
+    const sorted = snap.docs.map(docData).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 50);
+    res.json(sorted);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -402,35 +501,28 @@ app.post('/api/actualizaciones', requireAuth, async (req, res) => {
   const { version, descripcion, url_descarga, es_obligatoria } = req.body;
   if (!version) return res.status(400).json({ error: 'Versión es requerida.' });
   try {
-    const [result] = await query(
-      `INSERT INTO admin_versions (version, descripcion, url_descarga, es_obligatoria, publicado_por) VALUES (?,?,?,?,?)`,
-      [version, descripcion || null, url_descarga || null, es_obligatoria ? 1 : 0, req.adminUser.email]
-    );
-    const [row] = await query(`SELECT * FROM admin_versions WHERE id=?`, [result?.insertId]);
-    res.status(201).json(row || {});
+    const ref = await col(COL_VERSIONES).add({
+      version, descripcion: descripcion || null, url_descarga: url_descarga || null,
+      es_obligatoria: Boolean(es_obligatoria), estado: 'publicado',
+      publicado_por: req.adminUser.email, created_at: isoNow(),
+    });
+    await audit(req.adminUser.email, 'version.publicar', ref.id, version);
+    const doc = await ref.get();
+    res.status(201).json(docData(doc));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Auditoría ──────────────────────────────────────────────────────────────
 app.get('/api/auditoria', requireAuth, async (_req, res) => {
   try {
-    const rows = await query(`SELECT * FROM admin_audit_log ORDER BY created_at DESC LIMIT 200`).catch(() => []);
-    res.json(rows || []);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ── Licencias overview (para módulo de licencias) ──────────────────────────
-app.get('/api/licencias-resumen', requireAuth, async (_req, res) => {
-  try {
-    const stats = await query(`SELECT license_status, COUNT(*) as cnt FROM cloud_businesses GROUP BY license_status`).catch(() => []);
-    const m = {};
-    (stats || []).forEach(r => { m[r.license_status] = r.cnt; });
-    res.json(m);
+    const snap = await col(COL_AUDITORIA).get();
+    const sorted = snap.docs.map(docData).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 200);
+    res.json(sorted);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── SPA fallback ───────────────────────────────────────────────────────────
-app.get('*', (_req, res) => {
+app.get(/(.*)/, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

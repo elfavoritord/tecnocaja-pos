@@ -61,6 +61,11 @@ class FirebaseSyncService {
     // Intentar sincronizar cada 30 segundos si hay internet
     this.syncInterval = setInterval(() => this.processPendingItems(), 30000);
 
+    // Sincronizar KPIs del POS al Portal de Contadores cada 15 minutos
+    this._statsInterval = setInterval(() => this.syncPosStats(), 15 * 60 * 1000);
+    // Primer sync de stats a los 30 segundos de arranque (esperar a que la DB esté lista)
+    setTimeout(() => this.syncPosStats(), 30 * 1000);
+
     // Limpiar items antiguos cada 24 horas
     setInterval(() => FirebaseSyncQueue.cleanup(7), 24 * 60 * 60 * 1000);
 
@@ -312,10 +317,25 @@ class FirebaseSyncService {
     return { status: 'syncing' };
   }
 
+  /**
+   * Sincroniza KPIs y datos recientes al Portal de Contadores.
+   * Solo se ejecuta si hay internet y Firebase está listo.
+   */
+  async syncPosStats() {
+    if (!this.isOnline || !this.firebaseReady) return;
+    try {
+      const { syncPosStatsToFirestore } = require('./sync-pos-stats');
+      await syncPosStatsToFirestore();
+    } catch (err) {
+      console.warn('[sync-service] Error en syncPosStats:', err.message);
+    }
+  }
+
   /** Detiene el servicio. */
   stop() {
-    if (this.syncInterval) clearInterval(this.syncInterval);
+    if (this.syncInterval)       clearInterval(this.syncInterval);
     if (this.checkInternetInterval) clearInterval(this.checkInternetInterval);
+    if (this._statsInterval)     clearInterval(this._statsInterval);
     console.log('⛔ Firebase Sync Service detenido');
   }
 }

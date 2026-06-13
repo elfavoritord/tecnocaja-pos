@@ -397,3 +397,64 @@ hr { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Badge color variants ──────────────────────────────────────────────────── */
+.badge { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 10px; padding: 2px 8px; }
+.badge-active    { background: #166534; color: #86efac; }
+.badge-trial     { background: #713f12; color: #fde68a; }
+.badge-pending   { background: #7c2d12; color: #fdba74; }
+.badge-expired,
+.badge-cancelled { background: #3f1515; color: #fca5a5; }
+.badge-suspended { background: #1e293b; color: #94a3b8; }
+.badge-pendiente { background: #7c2d12; color: #fdba74; }
+.badge-en_proceso{ background: #1e3a5f; color: #90c4ff; }
+.badge-resuelto  { background: #166534; color: #86efac; }
+
+/* ── Login: vista login / forgot password ────────────────────────────────── */
+#view-forgot p { margin-bottom: 8px; }
+
+/* ── Info DL (detalle negocio) ───────────────────────────────────────────── */
+.info-dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 13px; }
+.info-dl dt { color: var(--text-sub); white-space: nowrap; }
+.info-dl dd { color: var(--text); }
+
+/* ── Toast success/error variants ───────────────────────────────────────── */
+.toast.success { border-left: 4px solid var(--green); }
+.toast.error   { border-left: 4px solid var(--red); }
+
+/* ── Btn variants ───────────────────────────────────────────────────────── */
+.btn-success { background: #166534; color: #86efac; border: 1px solid #166534; border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
+.btn-success:hover { background: #15803d; }
+.btn-warning { background: #713f12; color: #fde68a; border: 1px solid #713f12; border-radius: 8px; padding: 8px 16px; cursor: pointer; font-size: 13px; }
+.btn-warning:hover { background: #92400e; }
+.btn-back { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0; margin-right: 12px; }
+.btn-back:hover { text-decoration: underline; }
+
+/* ── Password wrap + eye toggle ─────────────────────────────────────────── */
+.password-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.password-wrap input {
+  width: 100%;
+  padding-right: 40px;
+}
+.btn-eye {
+  position: absolute;
+  right: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-sub);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  line-height: 1;
+  font-size: 16px;
+}
+.btn-eye:hover { color: var(--text); }
+
+/* ── Configuración ───────────────────────────────────────────────────────── */
+.config-section { margin-bottom: 32px; }
+.config-section-title { font-size: 15px; font-weight: 700; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }

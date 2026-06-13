@@ -32,6 +32,8 @@ firebase-key.json
 serviceAccountKey.json
 service-account*.json
 google-services.json
+firebase-service-account.json
+tecno-caja-admin/firebase-service-account.json
 GoogleService-Info.plist
 
 # Bases de datos locales

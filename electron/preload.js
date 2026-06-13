@@ -172,4 +172,27 @@ contextBridge.exposeInMainWorld('novaDesktop', {
     });
     return () => listeners.forEach(({ ev, fn }) => ipcRenderer.removeListener(ev, fn));
   },
+
+  // ── Guardar reportes / documentos como PDF ───────────────────────────────
+  /**
+   * Abre diálogo "Guardar como…", genera PDF desde HTML y lo escribe en disco.
+   * @param {string} html      — HTML completo (con <style> incrustado)
+   * @param {string} filename  — Nombre de archivo sugerido (ej. "reporte.pdf")
+   * @param {boolean} landscape — true para orientación horizontal
+   * @returns {{ ok:boolean, filePath?:string, canceled?:boolean, error?:string }}
+   */
+  saveReportPdf(html, filename, landscape) {
+    return ipcRenderer.invoke('report:save-pdf', { html, filename, landscape: !!landscape });
+  },
+
+  /**
+   * Escribe texto a un archivo temporal y lo abre con la aplicación
+   * predeterminada del sistema (ej. Bloc de Notas para XML/TXT).
+   * @param {string} content  — Contenido de texto
+   * @param {string} filename — Nombre de archivo (ej. "semilla.xml")
+   * @returns {{ ok:boolean, filePath?:string, error?:string }}
+   */
+  openTextFile(content, filename) {
+    return ipcRenderer.invoke('report:open-text', { content, filename });
+  },
 });

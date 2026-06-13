@@ -1116,10 +1116,8 @@ async function viewCurrentSeedXml() {
     }
 
     showFiscalTechnicalResult('XML original de la semilla actual', xml);
-    const win = window.open('', '_blank', 'width=900,height=680,scrollbars=yes');
-    if (win) {
-      win.document.write(`<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.8rem;padding:1rem">${escapeHtml(xml)}</pre>`);
-      win.document.close();
+    if (window.novaDesktop?.openTextFile) {
+      await window.novaDesktop.openTextFile(xml, 'semilla-ecf.xml');
     }
   } catch (error) {
     showFiscalTechnicalResult('Error obteniendo XML de semilla', { error: error.message }, true);
@@ -1258,13 +1256,9 @@ async function viewCurrentSentXml() {
       throw new Error(raw || 'No se pudo obtener el XML enviado.');
     }
     const xml = await res.text();
-    const win = window.open('', '_blank', 'width=900,height=680,scrollbars=yes');
-    if (!win) {
-      showFiscalToast('El navegador bloqueó la ventana emergente para mostrar el XML enviado.', 'warning');
-      return;
+    if (window.novaDesktop?.openTextFile) {
+      await window.novaDesktop.openTextFile(xml, 'ecf-enviado.xml');
     }
-    win.document.write(`<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.8rem;padding:1rem">${escapeHtml(xml)}</pre>`);
-    win.document.close();
   } catch (error) {
     showFiscalTechnicalResult('Error mostrando XML enviado', { error: error.message }, true);
     showFiscalToast(`Error: ${error.message}`, 'error');
@@ -1669,13 +1663,9 @@ async function viewEcfXml(id) {
     });
     if (!res.ok) throw new Error('No se pudo obtener el XML.');
     const xml = await res.text();
-    const win = window.open('', '_blank', 'width=900,height=680,scrollbars=yes');
-    if (!win) {
-      showFiscalToast('El navegador bloqueó la ventana emergente para mostrar el XML.', 'warning');
-      return;
+    if (window.novaDesktop?.openTextFile) {
+      await window.novaDesktop.openTextFile(xml, 'ecf-firmado.xml');
     }
-    win.document.write(`<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.8rem;padding:1rem">${escapeHtml(xml)}</pre>`);
-    win.document.close();
   } catch (e) {
     showFiscalToast(`Error: ${e.message}`, 'error');
   }

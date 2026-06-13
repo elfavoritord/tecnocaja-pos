@@ -474,15 +474,14 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 1rem;
-  padding: 2rem 1.5rem 1.5rem;
+  padding: 1.75rem 1.5rem 1.5rem;
   border-radius: 16px;
   border: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.04);
   backdrop-filter: blur(12px);
   cursor: pointer;
-  text-align: center;
+  text-align: left;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
   min-height: 220px;
 }
@@ -528,7 +527,7 @@
 .pi-card-icon-wrap svg { display: block; }
 
 /* Cuerpo de la card */
-.pi-card-body { flex: 1; width: 100%; }
+.pi-card-body { flex: 1; }
 .pi-card-title {
   font-size: 1rem;
   font-weight: 700;
@@ -543,10 +542,10 @@
 }
 
 /* Footer de la card (botón) */
-.pi-card-footer { margin-top: auto; padding-top: 0.5rem; width: 100%; display: flex; justify-content: center; }
+.pi-card-footer { margin-top: auto; padding-top: 0.5rem; }
 .pi-card-btn {
   display: inline-block;
-  padding: 0.55rem 1.4rem;
+  padding: 0.5rem 1.1rem;
   border-radius: 8px;
   font-size: 0.83rem;
   font-weight: 700;

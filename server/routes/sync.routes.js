@@ -11,6 +11,7 @@ const { syncNewSales } = require('../sync/sync-sales');
 const { syncCashClosings } = require('../sync/sync-cash-closings');
 const { generateAndSyncDailyReport, syncLastNDays } = require('../sync/sync-daily-reports');
 const { syncBranchInventory } = require('../sync/sync-inventory');
+const { syncPosStatsToFirestore } = require('../sync/sync-pos-stats');
 const { query } = require('../../db');
 
 const router = express.Router();
@@ -184,6 +185,24 @@ router.get('/pending', async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const pending = await FirebaseSyncQueue.getPending(limit);
     res.json(pending);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/sync/pos-stats
+ * Sincroniza KPIs y datos recientes del POS al Portal de Contadores via Firestore.
+ * No requiere body — usa TECNO_CAJA_LICENSE_UID del .env.
+ */
+router.post('/pos-stats', async (req, res) => {
+  try {
+    const result = await syncPosStatsToFirestore();
+    if (result.ok) {
+      res.json({ ok: true, message: 'KPIs sincronizados al Portal de Contadores.', posStats: result.posStats });
+    } else {
+      res.status(503).json({ ok: false, error: result.reason });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
