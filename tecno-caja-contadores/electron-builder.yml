@@ -21,6 +21,13 @@ files:
 extraMetadata:
   main: main.js
 
+# Archivos config fuera del asar (accesibles vía process.resourcesPath)
+extraResources:
+  - from: .env
+    to: .env
+  - from: firebase-service-account.json
+    to: firebase-service-account.json
+
 # Node modules del directorio raíz
 nodeGypRebuild: false
 

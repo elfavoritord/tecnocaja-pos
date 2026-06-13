@@ -15,7 +15,22 @@ if (!app.isPackaged) {
   require('module').globalPaths.push(path.join(ROOT, 'node_modules'));
 }
 
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// En app empaquetada, .env y el service account están en process.resourcesPath
+const envPath = app.isPackaged
+  ? path.join(process.resourcesPath, '.env')
+  : path.join(__dirname, '.env');
+require('dotenv').config({ path: envPath });
+
+// Ajusta la ruta del service account cuando es relativa (packaged)
+if (app.isPackaged && process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+  const saPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  if (!path.isAbsolute(saPath)) {
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH = path.join(
+      process.resourcesPath,
+      path.basename(saPath)
+    );
+  }
+}
 
 const PORT = Number(process.env.CONTADORES_PORT || 3401);
 let mainWindow = null;
