@@ -28,15 +28,15 @@ win:
   target:
     - target: nsis
       arch: x64
-  icon: ../electron/icon.png
+  icon: build/icon.ico
 
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   shortcutName: "Tecno Caja Contadores"
-  installerIcon: ../electron/icon.png
-  uninstallerIcon: ../electron/icon.png
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
   include: null
 
 publish:
