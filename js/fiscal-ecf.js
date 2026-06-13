@@ -985,7 +985,7 @@ async function saveDgiiSettings() {
 }
 
 async function rotateFiscalInternalToken() {
-  if (!confirm('Se generará un nuevo token interno para las rutas públicas DGII. El token anterior dejará de ser válido.')) return;
+  if (!await showDeleteConfirm('Se generará un nuevo token interno para las rutas públicas DGII. El token anterior dejará de ser válido.', { confirmText: 'Rotar token' })) return;
   const btn = document.getElementById('fiscal-btn-rotate-token');
   setBtnLoading(btn, true, 'Rotando…');
   try {
@@ -1172,7 +1172,7 @@ async function signCurrentSeed() {
 }
 
 async function clearSeedHistory() {
-  if (!confirm('¿Deseas eliminar el historial local de semillas DGII? Esta acción borra los XML guardados en storage/ecf/seeds.')) return;
+  if (!await showDeleteConfirm('¿Eliminar el historial local de semillas DGII? Esta acción borra los XML guardados en storage/ecf/seeds.')) return;
   const btn = document.getElementById('fiscal-btn-clear-seed-history');
   setBtnLoading(btn, true, 'Limpiando…');
   try {
@@ -1293,7 +1293,7 @@ async function activateFiscalMode() {
     showFiscalToast(`No se puede activar: ${(validation.reasons || []).join(' | ')}`, 'error');
     return;
   }
-  if (!confirm('¿Activar la facturación electrónica e-CF? Las nuevas ventas intentarán emitir e-CF en DGII usando la configuración del contribuyente.')) return;
+  if (!await showDeleteConfirm('¿Activar la facturación electrónica e-CF? Las nuevas ventas intentarán emitir e-CF en DGII usando la configuración del contribuyente.', { confirmText: 'Activar e-CF' })) return;
   const btn = document.getElementById('fiscal-btn-activate');
   setBtnLoading(btn, true, 'Activando…');
   try {
@@ -1308,7 +1308,7 @@ async function activateFiscalMode() {
 }
 
 async function deactivateFiscalMode() {
-  if (!confirm('Las facturas electrónicas ya emitidas se conservarán. A partir de ahora las nuevas ventas no serán enviadas a DGII.\n\n¿Desactivar?')) return;
+  if (!await showDeleteConfirm('Las facturas electrónicas ya emitidas se conservarán. A partir de ahora las nuevas ventas no serán enviadas a DGII. ¿Desactivar?', { confirmText: 'Desactivar e-CF' })) return;
   const btn = document.getElementById('fiscal-btn-deactivate');
   setBtnLoading(btn, true, 'Desactivando…');
   try {
@@ -1515,7 +1515,7 @@ async function setEcfSequenceNext(id, currentNext, tipo) {
 }
 
 async function disableEcfSequence(id) {
-  if (!confirm('¿Desactivar esta secuencia e-NCF? No podrá ser usada hasta ser reactivada, pero el historial se conserva.')) return;
+  if (!await showDeleteConfirm('¿Desactivar esta secuencia e-NCF? No podrá ser usada hasta ser reactivada, pero el historial se conserva.', { confirmText: 'Desactivar' })) return;
   try {
     await fiscalApi('DELETE', `/sequences/${id}`);
     showFiscalToast('Secuencia desactivada.', 'success');
@@ -1787,6 +1787,7 @@ function renderCertificationCasesTable(container, cases) {
             <th>Total</th>
             <th>TrackID</th>
             <th>Mensaje DGII</th>
+            <th>Acciones</th>
           </tr>
         </thead>
         <tbody>
@@ -1796,6 +1797,8 @@ function renderCertificationCasesTable(container, cases) {
             const dgiiMsg = Array.isArray(testCase.mensajes)
               ? testCase.mensajes.map((item) => `[${item.codigo}] ${item.valor}`).join(' | ')
               : (testCase.dgiiMessage || '');
+            const canSend = ['pendiente', 'firmado', 'error', 'error_firma', 'error_xml', 'error_auth', 'error_validacion'].includes(testCase.estado);
+            const canResend = ['enviado', 'procesando', 'rechazado', 'pendiente_red', 'aceptado_condicional'].includes(testCase.estado);
             return `
               <tr title="${escapeHtml(dgiiMsg)}">
                 <td><span class="${badge.cls}" style="font-size:.72rem">${escapeHtml(badge.label)}</span></td>
@@ -1803,7 +1806,12 @@ function renderCertificationCasesTable(container, cases) {
                 <td><code>${escapeHtml(testCase.encf || '—')}</code></td>
                 <td style="text-align:right">${total}</td>
                 <td><code>${escapeHtml(testCase.trackId || '—')}</code></td>
-                <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3)">${escapeHtml(dgiiMsg || testCase.error || '—')}</td>
+                <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3)">${escapeHtml(dgiiMsg || testCase.error || '—')}</td>
+                <td style="white-space:nowrap">
+                  ${canSend ? `<button class="btn-xs" onclick="sendCertificationDoc(${testCase.id})" title="Enviar a DGII">Enviar</button>` : ''}
+                  ${canResend ? `<button class="btn-xs" onclick="sendCertificationDoc(${testCase.id}, true)" title="Reenviar">↺</button>` : ''}
+                  <button class="btn-xs" onclick="queryCertificationDoc(${testCase.id})" title="Consultar estado DGII">⟳</button>
+                </td>
               </tr>
             `;
           }).join('')}
@@ -1924,6 +1932,8 @@ async function queryCertificationDoc(id) {
 }
 
 async function sendNextCertificationCase() {
+  const btn = document.getElementById('certification-btn-send-next');
+  setBtnLoading(btn, true, 'Enviando…');
   try {
     const response = await fiscalApi('POST', '/certification/send-next', {});
     showFiscalToast(response.message || 'Se envió la siguiente prueba pendiente.', response.ok ? 'success' : 'warning');
@@ -1932,6 +1942,8 @@ async function sendNextCertificationCase() {
     await loadFiscalStatus();
   } catch (err) {
     showFiscalToast(`Error al enviar siguiente prueba: ${err.message}`, 'error');
+  } finally {
+    setBtnLoading(btn, false, 'Enviar siguiente');
   }
 }
 
@@ -2011,13 +2023,9 @@ async function runFastCertificationFlow() {
 }
 
 async function resetSentCertificationCases() {
-  const ok = confirm(
-    '¿Reiniciar el estado local de certificación sin cambiar los eNCF?\n\n' +
-    '• Se conservan exactamente los eNCF del dataset DGII.\n' +
-    '• Todos los documentos vuelven a estado "firmado".\n' +
-    '• Los XMLs firmados anteriores se descartan.\n\n' +
-    'Usar cuando el portal DGII ha reiniciado las pruebas por un rechazo.\n' +
-    'Después ejecuta "▶ Ejecutar pruebas secuenciales".'
+  const ok = await showDeleteConfirm(
+    '¿Reiniciar el estado local de certificación? Se conservan los eNCF del dataset DGII pero los XMLs firmados se descartan y los documentos vuelven a estado "firmado". Usar cuando el portal DGII ha reiniciado las pruebas.',
+    { confirmText: 'Reiniciar estado' }
   );
   if (!ok) return;
 
@@ -2395,11 +2403,9 @@ async function importDgiiTestSet() {
 }
 
 async function resetCertificationData() {
-  const confirmed = window.confirm(
-    '⚠️ ¿Borrar TODAS las pruebas de certificación del batch actual?\n\n' +
-    'Esto eliminará los documentos enviados y los pendientes.\n' +
-    'Tendrás que importar el set de DGII nuevamente para empezar de cero.\n\n' +
-    '¿Continuar?'
+  const confirmed = await showDeleteConfirm(
+    '¿Borrar TODAS las pruebas de certificación del batch actual? Esto eliminará los documentos enviados y pendientes. Tendrás que importar el set de DGII nuevamente para empezar de cero.',
+    { confirmText: 'Borrar todo' }
   );
   if (!confirmed) return;
 

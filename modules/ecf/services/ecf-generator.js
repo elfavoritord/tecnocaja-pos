@@ -422,13 +422,18 @@ function generateEcfXml(payload) {
     }
   } else {
     // Tipos con ITBIS (E31, E32, E33, E34, E41, E44, E45, E46)
+    // Orden XSD: MontoGravadoTotal → MontoGravadoI1/I2/I3 → MontoExento →
+    //            ITBIS1/I2/I3 → TotalITBIS → TotalITBIS1/I2/I3 → MontoTotal
+    // DescuentoMonto NO es campo de <Totales> — va en <Item> a nivel de línea.
     appendIfValue(totalsNode, 'MontoGravadoTotal', totals.totalTaxed ? totals.totalTaxed.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI1', totals.taxed18 ? totals.taxed18.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI2', totals.taxed16 ? totals.taxed16.toFixed(2) : null);
-    appendIfValue(totalsNode, 'MontoGravadoI3', totals.taxed0 ? totals.taxed0.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoExento', totals.exemptAmount ? totals.exemptAmount.toFixed(2) : null);
+    appendIfValue(totalsNode, 'ITBIS1', totals.taxed18 ? '18' : null);
+    appendIfValue(totalsNode, 'ITBIS2', totals.taxed16 ? '16' : null);
     appendIfValue(totalsNode, 'TotalITBIS', totals.totalTax ? totals.totalTax.toFixed(2) : null);
-    appendIfValue(totalsNode, 'DescuentoMonto', totals.totalDiscount ? totals.totalDiscount.toFixed(2) : null);
+    appendIfValue(totalsNode, 'TotalITBIS1', totals.taxed18 ? round2(totals.taxed18 * 0.18).toFixed(2) : null);
+    appendIfValue(totalsNode, 'TotalITBIS2', totals.taxed16 ? round2(totals.taxed16 * 0.16).toFixed(2) : null);
     totalsNode.ele('MontoTotal').txt(totals.total.toFixed(2));
   }
 
@@ -457,16 +462,28 @@ function generateEcfXml(payload) {
       detalle.ele('PrecioUnitarioItem').txt(item.unitPrice.toFixed(2));
       detalle.ele('MontoItem').txt(item.taxableBase.toFixed(2));
     } else {
-      // Tipos normales: orden XSD → NumeroLinea, NombreItem, CantidadItem,
-      //                 PrecioUnitarioItem, DescuentoMonto, MontoItem, TasaITBIS, ITBISItem
+      // Tipos normales (E31, E32, E33, E34, E41, E44, E45, E46):
+      // Orden XSD: IndicadorFacturacion → NombreItem → IndicadorBienoServicio →
+      //            [DescripcionItem] → CantidadItem → [UnidadMedida] → PrecioUnitarioItem →
+      //            [MontoItemMasITBIS] → [TasaITBIS] → [ITBISItem] → [DescuentoMonto] → MontoItem
+      // IndicadorFacturacion: 1=Gravado18%, 3=TasaReducida16%, 4=Exento
+      const billingInd = item.billingIndicator ?? (item.taxRate === 16 ? 3 : item.exempt ? 4 : 1);
+      detalle.ele('IndicadorFacturacion').txt(String(billingInd));
       detalle.ele('NombreItem').txt(item.name);
+      // IndicadorBienoServicio: 1=Bien, 2=Servicio
+      detalle.ele('IndicadorBienoServicio').txt(String(item.goodsOrServicesIndicator || 1));
+      appendIfValue(detalle, 'DescripcionItem', item.additionalDescription || null);
       detalle.ele('CantidadItem').txt(item.quantity.toFixed(2));
+      appendIfValue(detalle, 'UnidadMedida', item.unitMeasure || null);
       detalle.ele('PrecioUnitarioItem').txt(item.unitPrice.toFixed(2));
-      appendIfValue(detalle, 'DescuentoMonto', item.discount ? item.discount.toFixed(2) : null);
-      appendIfValue(detalle, 'MontoItem', item.taxableBase.toFixed(2));
-      appendIfValue(detalle, 'TasaITBIS', item.taxRate ? item.taxRate.toFixed(2) : null);
+      // MontoItemMasITBIS = total de la línea incluyendo ITBIS (solo cuando aplica ITBIS)
+      appendIfValue(detalle, 'MontoItemMasITBIS', !item.exempt ? item.lineTotal.toFixed(2) : null);
+      // TasaITBIS es entero (18, 16) — no usar toFixed
+      appendIfValue(detalle, 'TasaITBIS', !item.exempt && item.taxRate ? String(item.taxRate) : null);
       appendIfValue(detalle, 'ITBISItem', item.taxAmount ? item.taxAmount.toFixed(2) : null);
-      appendIfValue(detalle, 'MontoItemMasITBIS', item.lineTotal.toFixed(2));
+      appendIfValue(detalle, 'DescuentoMonto', item.discount ? item.discount.toFixed(2) : null);
+      // MontoItem = base imponible sin ITBIS; siempre al final del bloque Item
+      detalle.ele('MontoItem').txt(item.taxableBase.toFixed(2));
     }
   }
 
@@ -533,14 +550,23 @@ function generateRfceXml(payload) {
   appendIfValue(comprador, 'RNCComprador', normalizeBuyerTaxId(payload?.customer?.rnc));
   appendIfValue(comprador, 'RazonSocialComprador', sanitizeText(payload?.customer?.nombre || 'Consumidor Final', { allowEmpty: true }));
 
+  // Totales RFCE: solo escribir campos con valor > 0 (campos opcionales deben omitirse en cero).
+  // TotalITBIS1 = solo la porción al 18%, no el total combinado de ITBIS.
   const totalNode = encabezado.ele('Totales');
-  appendIfValue(totalNode, 'MontoGravadoTotal', Number(totals.totalTaxed || 0).toFixed(2));
-  appendIfValue(totalNode, 'MontoGravadoI1', Number(totals.taxed18 || 0).toFixed(2));
-  appendIfValue(totalNode, 'MontoGravadoI2', Number(totals.taxed16 || 0).toFixed(2));
-  appendIfValue(totalNode, 'MontoGravadoI3', Number(totals.taxed0 || 0).toFixed(2));
-  appendIfValue(totalNode, 'MontoExento', Number(totals.exemptAmount || 0).toFixed(2));
-  appendIfValue(totalNode, 'TotalITBIS', Number(totals.totalTax || 0).toFixed(2));
-  appendIfValue(totalNode, 'TotalITBIS1', Number(totals.totalTax || 0).toFixed(2));
+  const rfceTaxed18 = Number(totals.taxed18 || 0);
+  const rfceTaxed16 = Number(totals.taxed16 || 0);
+  const rfceTotalTaxed = Number(totals.totalTaxed || 0);
+  const rfceExempt = Number(totals.exemptAmount || 0);
+  const rfceTotalTax = Number(totals.totalTax || 0);
+  if (rfceTotalTaxed > 0) totalNode.ele('MontoGravadoTotal').txt(rfceTotalTaxed.toFixed(2));
+  if (rfceTaxed18 > 0) totalNode.ele('MontoGravadoI1').txt(rfceTaxed18.toFixed(2));
+  if (rfceTaxed16 > 0) totalNode.ele('MontoGravadoI2').txt(rfceTaxed16.toFixed(2));
+  if (rfceExempt > 0) totalNode.ele('MontoExento').txt(rfceExempt.toFixed(2));
+  if (rfceTotalTax > 0) totalNode.ele('TotalITBIS').txt(rfceTotalTax.toFixed(2));
+  const rfceItbis1 = rfceTaxed18 > 0 ? round2(rfceTaxed18 * 0.18) : 0;
+  if (rfceItbis1 > 0) totalNode.ele('TotalITBIS1').txt(rfceItbis1.toFixed(2));
+  const rfceItbis2 = rfceTaxed16 > 0 ? round2(rfceTaxed16 * 0.16) : 0;
+  if (rfceItbis2 > 0) totalNode.ele('TotalITBIS2').txt(rfceItbis2.toFixed(2));
   totalNode.ele('MontoTotal').txt(Number(totals.total || 0).toFixed(2));
   encabezado.ele('CodigoSeguridadeCF').txt(codigoSeguridad);
 

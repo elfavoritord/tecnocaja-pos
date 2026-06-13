@@ -217,8 +217,8 @@ async function saveTerminalAssignment() {
 }
 
 // ── Eliminar terminal ─────────────────────────────────────────────────────────
-function confirmRemoveTerminal(terminalId, terminalName) {
-  if (!confirm(`¿Eliminar el registro del terminal "${terminalName}"?\nEl equipo podrá volver a registrarse.`)) return;
+async function confirmRemoveTerminal(terminalId, terminalName) {
+  if (!await showDeleteConfirm(`¿Eliminar el registro del terminal <strong>${terminalName}</strong>? El equipo podrá volver a registrarse.`)) return;
   removeTerminalEntry(terminalId);
 }
 
@@ -491,7 +491,7 @@ async function saveThinClientConfig() {
   const name = (nameInput && nameInput.value.trim()) || 'Caja Secundaria';
   if (!url) return;
 
-  if (!confirm('¿Configurar esta PC como terminal de:\n' + url + '\n\nLa app se reiniciará automáticamente.')) return;
+  if (!await showDeleteConfirm(`¿Configurar esta PC como terminal de: <strong>${url}</strong>? La app se reiniciará automáticamente.`, { confirmText: 'Conectar y reiniciar' })) return;
 
   if (btn)     { btn.disabled = true; btn.textContent = 'Reiniciando…'; }
   if (resultEl) resultEl.innerHTML = '<span style="color:var(--text2)">Guardando y reiniciando…</span>';
@@ -505,7 +505,7 @@ async function saveThinClientConfig() {
 }
 
 async function resetThinClientConfig() {
-  if (!confirm('¿Volver a modo servidor principal?\n\nEsta PC volverá a arrancar su propio servidor. La app se reiniciará.')) return;
+  if (!await showDeleteConfirm('¿Volver a modo servidor principal? Esta PC volverá a arrancar su propio servidor y la app se reiniciará.', { confirmText: 'Reiniciar como servidor' })) return;
   await window.novaDesktop.resetTerminalConfig();
 }
 

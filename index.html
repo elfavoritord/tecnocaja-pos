@@ -520,47 +520,7 @@
       <button type="button" class="btn-secondary" onclick="wzScenarioCancel()" style="width:100%;margin-top:0.4rem">← Cambiar estructura</button>
     </div>
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         WELCOME OVERLAY — Pantalla inicial: Nuevo / Restaurar local / Nube
-         Se muestra ANTES del asistente cuando setup es requerido
-    ═══════════════════════════════════════════════════════════════════ -->
-    <div id="wz-welcome-overlay" class="wz-auth-overlay wz-hidden" role="dialog" aria-modal="true" aria-label="Bienvenido a Tecno Caja">
-      <div class="wz-auth-icon-wrap" style="font-size:2.2rem">🚀</div>
-      <h3 style="margin-bottom:.3rem">Bienvenido a Tecno Caja</h3>
-      <p style="color:var(--text3);font-size:.85rem;margin-bottom:1.4rem;line-height:1.5">¿Es una instalación nueva o deseas restaurar un sistema existente?</p>
-      <div style="display:grid;gap:.75rem;margin-bottom:1rem">
-
-        <!-- Opción 1: Negocio nuevo -->
-        <button type="button" onclick="wzWelcomeChoice('nuevo')"
-          style="display:flex;align-items:flex-start;gap:.85rem;padding:1rem 1.1rem;background:rgba(108,92,231,.1);border:2px solid rgba(108,92,231,.3);border-radius:12px;cursor:pointer;text-align:left;transition:border-color .18s;width:100%">
-          <span style="font-size:1.6rem;line-height:1;flex-shrink:0">🏪</span>
-          <span>
-            <strong style="display:block;color:var(--text1,#f0f0f0);font-size:.92rem;margin-bottom:.2rem">Crear negocio nuevo</strong>
-            <span style="color:var(--text3,#7a8a9a);font-size:.8rem;line-height:1.4">Configura Tecno Caja desde cero con el asistente de inicio.</span>
-          </span>
-        </button>
-
-        <!-- Opción 2: Restaurar local -->
-        <button type="button" onclick="wzWelcomeChoice('restaurar-local')"
-          style="display:flex;align-items:flex-start;gap:.85rem;padding:1rem 1.1rem;background:rgba(0,184,148,.08);border:2px solid rgba(0,184,148,.25);border-radius:12px;cursor:pointer;text-align:left;transition:border-color .18s;width:100%">
-          <span style="font-size:1.6rem;line-height:1;flex-shrink:0">💾</span>
-          <span>
-            <strong style="display:block;color:var(--text1,#f0f0f0);font-size:.92rem;margin-bottom:.2rem">Restaurar desde respaldo local</strong>
-            <span style="color:var(--text3,#7a8a9a);font-size:.8rem;line-height:1.4">Selecciona un archivo <code style="font-size:.78rem;background:rgba(255,255,255,.07);padding:0 3px;border-radius:3px">.tcbak</code> guardado en esta PC o en un USB.</span>
-          </span>
-        </button>
-
-        <!-- Opción 3: Restaurar nube -->
-        <button type="button" onclick="wzWelcomeChoice('restaurar-nube')"
-          style="display:flex;align-items:flex-start;gap:.85rem;padding:1rem 1.1rem;background:rgba(9,132,227,.08);border:2px solid rgba(9,132,227,.25);border-radius:12px;cursor:pointer;text-align:left;transition:border-color .18s;width:100%">
-          <span style="font-size:1.6rem;line-height:1;flex-shrink:0">☁️</span>
-          <span>
-            <strong style="display:block;color:var(--text1,#f0f0f0);font-size:.92rem;margin-bottom:.2rem">Restaurar desde la nube</strong>
-            <span style="color:var(--text3,#7a8a9a);font-size:.8rem;line-height:1.4">Inicia sesión con Google para recuperar un respaldo guardado en Firebase.</span>
-          </span>
-        </button>
-      </div>
-    </div>
+    <!-- wz-welcome-overlay eliminado — reemplazado por #platform-init-screen -->
 
     <!-- ═══════════════════════════════════════════════════════════════════
          RESTORE-LOCAL OVERLAY — Selección de archivo .tcbak + confirmación
@@ -3398,6 +3358,7 @@
                 </div>
                 <div style="display:flex;gap:.55rem;flex-wrap:wrap">
                   <button class="btn-secondary certification-run-btn" onclick="runCertificationSequence()">Enviar pendientes</button>
+                  <button class="btn-secondary" id="certification-btn-send-next" onclick="sendNextCertificationCase()">Enviar siguiente</button>
                   <button class="btn-secondary" onclick="pollCertificationStatuses()">Consultar estados</button>
                 </div>
               </div>
@@ -3737,6 +3698,7 @@
 <script src="js/delivery-panel.js"></script>
 <script src="js/file-manager.js"></script>
 <script src="js/respaldos.js"></script>
+<script src="js/platform-init.js"></script>
 <script src="js/app.js"></script>
 <script src="js/wizard.js"></script>
 <script src="js/actualizaciones.js"></script>
@@ -4196,6 +4158,70 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
     </div>
   </div>
 </div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     Platform Init Screen — Selección inicial antes del wizard
+     ══════════════════════════════════════════════════════════════ -->
+<div id="platform-init-screen" class="hidden" style="display:none">
+  <div class="pi-container">
+    <div class="pi-brand">
+      <h1>⚡ Tecno Caja</h1>
+      <p>¿Cómo deseas comenzar?</p>
+    </div>
+
+    <!-- Opciones principales -->
+    <div id="pi-main-options" class="pi-options">
+      <button class="pi-option-btn" onclick="platformInit.choose({ type: 'independent' })">
+        <span class="pi-option-icon">🏪</span>
+        <div>
+          <div class="pi-option-label">Crear negocio independiente</div>
+          <div class="pi-option-desc">Administra tu negocio de forma autónoma</div>
+        </div>
+      </button>
+      <button class="pi-option-btn" onclick="platformInit.showSubview('pi-sub-accountant-client')">
+        <span class="pi-option-icon">🤝</span>
+        <div>
+          <div class="pi-option-label">Negocio bajo Contador Asociado</div>
+          <div class="pi-option-desc">Prueba gratis 30 días con soporte contable</div>
+        </div>
+      </button>
+      <!-- Opción "Soy Contador Asociado" se usa desde la app Tecno Caja Admin (app separada) -->
+      <button class="pi-option-btn" onclick="platformInit.choose({ type: 'restore_local' })">
+        <span class="pi-option-icon">💾</span>
+        <div>
+          <div class="pi-option-label">Restaurar desde copia local</div>
+          <div class="pi-option-desc">Recupera un respaldo guardado en este equipo</div>
+        </div>
+      </button>
+      <button class="pi-option-btn" onclick="platformInit.choose({ type: 'restore_cloud' })">
+        <span class="pi-option-icon">☁️</span>
+        <div>
+          <div class="pi-option-label">Restaurar desde la nube</div>
+          <div class="pi-option-desc">Descarga un respaldo de tu cuenta en la nube</div>
+        </div>
+      </button>
+    </div>
+
+    <!-- Subvista: Negocio bajo contador -->
+    <div id="pi-sub-accountant-client" class="pi-subview hidden">
+      <button class="pi-back-btn" onclick="platformInit.backToMain()">← Volver</button>
+      <p style="margin:0;font-size:0.9rem;color:#4a5568">Busca el contador que gestionará tu negocio:</p>
+      <div class="pi-search-wrap">
+        <input id="pi-contador-search" type="text" class="pi-search-input" placeholder="Nombre, RNC o correo del contador…">
+        <div id="pi-contador-results" class="pi-results hidden"></div>
+      </div>
+      <div id="pi-contador-selected"></div>
+      <button class="sa-btn sa-btn-primary" onclick="platformInit.confirmContadorChoice()" style="align-self:flex-end">
+        Continuar →
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Paneles de superadmin y contador eliminados del POS.
+     La administración de plataforma está en la app separada: tecno-caja-admin/ -->
+<div id="superadmin-panel" class="hidden" style="display:none"></div>
+<div id="contador-panel" class="hidden" style="display:none"></div>
 
 </body>
 </html>

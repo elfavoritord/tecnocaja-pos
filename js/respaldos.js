@@ -595,7 +595,7 @@ const RespaldosMod = (() => {
           onCancel:  () => resolve(false),
         });
       } else {
-        resolve(window.confirm(message));
+        showDeleteConfirm(message, { confirmText: 'Restaurar' }).then(resolve);
       }
     });
   }

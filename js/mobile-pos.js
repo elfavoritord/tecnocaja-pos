@@ -161,7 +161,7 @@ async function copyMobileConnectionCode() {
 }
 
 async function regenerateMobileConnectionCode() {
-  const confirmed = window.confirm(mobileText('Se generará un código nuevo y el anterior dejará de funcionar. ¿Deseas continuar?'));
+  const confirmed = await showDeleteConfirm(mobileText('Se generará un código nuevo y el anterior dejará de funcionar. ¿Deseas continuar?'), { confirmText: 'Regenerar código' });
   if (!confirmed) return;
 
   try {

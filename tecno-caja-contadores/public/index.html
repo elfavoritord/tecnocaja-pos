@@ -1,0 +1,975 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tecno Caja Contadores</title>
+  <link rel="stylesheet" href="css/contadores.css" />
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="js/firebase-client-config.js"></script>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════════
+  LOGIN SCREEN
+══════════════════════════════════════════════════════════════════════ -->
+<div id="screen-login">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="login-brand-icon">🧮</div>
+      <div>
+        <div class="login-brand-title">Tecno Caja Contadores</div>
+        <div class="login-brand-sub">Portal exclusivo de firmas contables</div>
+      </div>
+    </div>
+
+    <div id="login-error-banner" class="hidden" style="background:#450a0a;border:1px solid #ef4444;border-radius:8px;padding:10px 14px;font-size:13px;color:#fca5a5;"></div>
+
+    <div id="view-login">
+      <div class="form-group" style="margin-bottom:12px">
+        <label class="login-label">Correo electrónico</label>
+        <input id="inp-email" type="email" class="login-input" placeholder="correo@firma.com" />
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label class="login-label">Contraseña</label>
+        <div class="pw-wrap">
+          <input id="inp-password" type="password" class="login-input" placeholder="••••••••"
+            onkeydown="if(event.key==='Enter') app.doLogin()" />
+          <button class="btn-eye" onclick="app.togglePw()" tabindex="-1">👁</button>
+        </div>
+      </div>
+      <label class="chk-row" style="margin-bottom:16px">
+        <input id="chk-remember" type="checkbox" checked />
+        Mantener sesión iniciada
+      </label>
+      <button id="btn-login" class="btn-login" onclick="app.doLogin()">
+        Iniciar sesión
+      </button>
+      <div id="login-err" class="login-error hidden" style="margin-top:10px"></div>
+      <p style="text-align:center;margin-top:14px">
+        <button class="login-link" onclick="app.showForgot()">¿Olvidaste tu contraseña?</button>
+      </p>
+    </div>
+
+    <div id="view-forgot" class="hidden">
+      <p style="font-size:13px;color:#8fa3c2;margin-bottom:14px">
+        Ingresa tu correo y te enviaremos un enlace para restablecer tu contraseña.
+      </p>
+      <button class="btn-login" onclick="app.sendReset()">Enviar enlace de recuperación</button>
+      <div id="forgot-err" class="login-error hidden" style="margin-top:10px"></div>
+      <p style="text-align:center;margin-top:14px">
+        <button class="login-link" onclick="app.showLogin()">← Volver al login</button>
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+  APP SHELL
+══════════════════════════════════════════════════════════════════════ -->
+<div id="screen-app" class="hidden">
+
+  <!-- SIDEBAR -->
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-brand">
+        <div class="sidebar-brand-icon">🧮</div>
+        <div>
+          <div class="sidebar-brand-name">Tecno Caja</div>
+          <div class="sidebar-brand-sub">Portal Contadores</div>
+        </div>
+      </div>
+      <button class="btn-reg-cliente" onclick="app.goto('negocios')">
+        🏪 Negocios Asociados
+      </button>
+    </div>
+
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Principal</div>
+      <a class="nav-item active" data-mod="dashboard" onclick="app.goto('dashboard')">
+        <span class="nav-icon">📊</span> Dashboard
+      </a>
+      <a class="nav-item" data-mod="negocios" onclick="app.goto('negocios')">
+        <span class="nav-icon">🏪</span> Negocios Asociados
+      </a>
+      <a class="nav-item" data-mod="licencias" onclick="app.goto('licencias')">
+        <span class="nav-icon">🧾</span> Licencias
+      </a>
+      <a class="nav-item" data-mod="reportes" onclick="app.goto('reportes')">
+        <span class="nav-icon">📈</span> Reportes
+      </a>
+
+      <div class="nav-section-label" style="margin-top:8px">Gestión</div>
+      <a class="nav-item" data-mod="solicitudes" onclick="app.goto('solicitudes')">
+        <span class="nav-icon">📋</span> Solicitudes
+        <span id="nav-badge-sol" class="nav-badge hidden">0</span>
+      </a>
+      <a class="nav-item" data-mod="facturacion" onclick="app.goto('facturacion')">
+        <span class="nav-icon">💳</span> Facturación
+      </a>
+
+      <div class="nav-section-label" style="margin-top:8px">Cuenta</div>
+      <a class="nav-item" data-mod="configuracion" onclick="app.goto('configuracion')">
+        <span class="nav-icon">⚙️</span> Configuración
+      </a>
+      <a class="nav-item" data-mod="actualizaciones" onclick="app.goto('actualizaciones')">
+        <span class="nav-icon">🔄</span> Actualizaciones
+      </a>
+      <a class="nav-item" data-mod="ayuda" onclick="app.goto('ayuda')">
+        <span class="nav-icon">❓</span> Centro de Ayuda
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="user-avatar-row">
+        <div class="user-avatar" id="user-avatar-letter">C</div>
+        <div>
+          <div class="user-name" id="sidebar-nombre">Firma contable</div>
+          <div class="user-role" id="sidebar-email" style="font-size:10px">contador asociado</div>
+        </div>
+      </div>
+      <button class="btn-logout" onclick="app.logout()">
+        <span>🚪</span> Cerrar sesión
+      </button>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main id="main-content">
+
+    <!-- ── DASHBOARD ─────────────────────────────────────────────────────── -->
+    <div id="mod-dashboard" class="module active">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Dashboard</div>
+          <div class="mod-sub">Resumen de tu cartera de clientes</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadDashboard()">↺ Actualizar</button>
+          <button class="btn btn-secondary" onclick="app.goto('negocios')">🏪 Ver Negocios</button>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-icon blue">👥</div>
+          <div><div class="stat-label">Total Clientes</div><div class="stat-value" id="dash-total">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green">🟢</div>
+          <div><div class="stat-label">Licencias Activas</div><div class="stat-value" id="dash-activas">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon orange">🟡</div>
+          <div><div class="stat-label">En Prueba</div><div class="stat-value" id="dash-prueba">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon red">🔴</div>
+          <div><div class="stat-label">Vencidas</div><div class="stat-value" id="dash-vencidas">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon purple">📋</div>
+          <div><div class="stat-label">Sol. Pendientes</div><div class="stat-value" id="dash-sol">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon orange">📅</div>
+          <div><div class="stat-label">Próx. a Vencer</div><div class="stat-value" id="dash-proximos">—</div></div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <div class="section-card">
+          <div class="section-card-title">📅 Próximos vencimientos</div>
+          <div id="dash-venc-list" class="venc-grid">
+            <div class="empty-state"><div class="empty-icon">🎉</div><div class="empty-text">Sin vencimientos próximos</div></div>
+          </div>
+        </div>
+        <div class="section-card">
+          <div class="section-card-title">🔄 Últimos clientes sincronizados</div>
+          <div id="dash-recientes" class="recientes-list">
+            <div class="empty-state"><div class="empty-icon">👥</div><div class="empty-text">Sin clientes aún</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── NEGOCIOS ASOCIADOS ───────────────────────────────────────────── -->
+    <div id="mod-negocios" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Negocios Asociados</div>
+          <div class="mod-sub" id="clientes-count">Empresas registradas bajo su firma contable.</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadClientes()">🔄 Actualizar datos</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="search-bar">
+          <input class="search-input" placeholder="🔍 Buscar por nombre, RNC, propietario, correo…"
+            oninput="app.filtrarClientes(this.value)" />
+          <select id="filtro-status" class="form-select" style="width:160px" onchange="app.loadClientes()">
+            <option value="">Todos los estados</option>
+            <option value="active">Activa</option>
+            <option value="trial">En prueba</option>
+            <option value="expired">Vencida</option>
+            <option value="suspended">Suspendida</option>
+          </select>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Negocio</th>
+              <th>Propietario</th>
+              <th>RNC</th>
+              <th>Plan</th>
+              <th>Estado</th>
+              <th>Vencimiento</th>
+              <th>Última Sync</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="clientes-tbody">
+            <tr><td colspan="8" style="text-align:center;padding:30px;color:#5a7099">Cargando negocios…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── NEGOCIO DETALLE ──────────────────────────────────────────────── -->
+    <div id="mod-cliente-detalle" class="module">
+      <div class="mod-header">
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="app.goto('negocios')" style="margin-bottom:8px">← Volver a Negocios</button>
+          <div class="mod-title" id="det-nombre">Cliente</div>
+          <div class="mod-sub" id="det-key" style="font-family:monospace;font-size:12px"></div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.abrirSolicitudModal(app.currentClienteId)">📋 Crear Solicitud</button>
+        </div>
+      </div>
+
+      <div class="detail-grid">
+        <div class="detail-card">
+          <div class="detail-card-title">Información del negocio</div>
+          <div class="info-list" id="det-info-negocio"></div>
+        </div>
+        <div class="detail-card">
+          <div class="detail-card-title">Estado de licencia</div>
+          <div id="det-info-licencia"></div>
+        </div>
+        <div class="detail-card">
+          <div class="detail-card-title">Contacto</div>
+          <div class="info-list" id="det-info-contacto"></div>
+        </div>
+        <div class="detail-card">
+          <div class="detail-card-title">Configuración técnica</div>
+          <div class="info-list" id="det-info-tecnico"></div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-card-title">📋 Historial de licencias</div>
+        <table>
+          <thead>
+            <tr><th>Acción</th><th>Plan</th><th>Por</th><th>Fecha</th></tr>
+          </thead>
+          <tbody id="det-historial-tbody">
+            <tr><td colspan="4" style="text-align:center;padding:20px;color:#5a7099">Sin historial</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+
+    <!-- ── LICENCIAS ─────────────────────────────────────────────────────── -->
+    <div id="mod-licencias" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Licencias</div>
+          <div class="mod-sub">Estado de licencias de todos tus clientes</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadLicencias()">↺ Actualizar</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Cliente</th><th>Plan</th><th>Estado</th><th>Inicio</th><th>Vencimiento</th><th>Días Rest.</th><th>Acción</th></tr>
+          </thead>
+          <tbody id="licencias-tbody">
+            <tr><td colspan="7" style="text-align:center;padding:30px;color:#5a7099">Cargando…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── REPORTES ───────────────────────────────────────────────────────── -->
+    <div id="mod-reportes" class="module">
+
+      <!-- Header -->
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Reportes</div>
+          <div class="mod-sub">Consulta y exporta datos de tus negocios asociados</div>
+        </div>
+        <div class="mod-actions" id="rep-header-actions">
+          <button class="btn btn-secondary" onclick="app.actualizarReporte()">↺ Actualizar</button>
+          <button class="btn btn-secondary" onclick="app.exportarCSV()" id="btn-exportar-csv">📊 Exportar CSV</button>
+          <button class="btn btn-secondary" onclick="app.imprimirReporte()" id="btn-imprimir">🖨 Imprimir</button>
+        </div>
+      </div>
+
+      <!-- Selector bar -->
+      <div class="rep-selector-bar">
+        <div class="rep-selector-icon">🏪</div>
+        <div style="flex:1">
+          <div class="rep-selector-label">Negocio asociado</div>
+          <select id="rep-negocio-select" class="rep-selector-select" onchange="app.selNegocioReporte(this.value)">
+            <option value="">— Seleccionar negocio asociado —</option>
+          </select>
+        </div>
+        <div id="rep-biz-status" style="display:none">
+          <span id="rep-biz-badge" class="badge badge-trial"></span>
+          <div id="rep-biz-sync" class="rep-sync-text"></div>
+        </div>
+      </div>
+
+      <!-- STATE: no business selected -->
+      <div id="rep-state-empty">
+        <div class="rep-welcome-grid">
+          <div class="rep-welcome-card">
+            <div class="rep-welcome-icon" style="background:var(--blue-glow)">📊</div>
+            <div class="rep-welcome-title">Ventas y Facturas</div>
+            <div class="rep-welcome-desc">Consulta el historial de ventas, facturas NCF y comprobantes de cada negocio</div>
+          </div>
+          <div class="rep-welcome-card">
+            <div class="rep-welcome-icon" style="background:var(--green-bg)">🧾</div>
+            <div class="rep-welcome-title">ITBIS y DGII</div>
+            <div class="rep-welcome-desc">Revisa el ITBIS generado, tipos de NCF y prepárate para las declaraciones fiscales</div>
+          </div>
+          <div class="rep-welcome-card">
+            <div class="rep-welcome-icon" style="background:var(--orange-bg)">📦</div>
+            <div class="rep-welcome-title">Inventario</div>
+            <div class="rep-welcome-desc">Productos con bajo stock, movimientos y estado del inventario en tiempo real</div>
+          </div>
+          <div class="rep-welcome-card">
+            <div class="rep-welcome-icon" style="background:rgba(168,85,247,.12)">💰</div>
+            <div class="rep-welcome-title">Cierres de Caja</div>
+            <div class="rep-welcome-desc">Historial de cierres, diferencias y estado de cada caja registradora</div>
+          </div>
+        </div>
+        <div class="rep-hint">
+          <span>👆 Selecciona un negocio en el selector de arriba para ver sus reportes</span>
+        </div>
+      </div>
+
+      <!-- STATE: business selected — dashboard -->
+      <div id="rep-state-data" style="display:none">
+
+        <!-- Biz info bar -->
+        <div class="rep-biz-bar" id="rep-biz-bar">
+          <div class="rep-biz-icon">🏪</div>
+          <div class="rep-biz-info">
+            <div class="rep-biz-name" id="rep-biz-name">—</div>
+            <div class="rep-biz-meta" id="rep-biz-meta">—</div>
+          </div>
+          <div class="rep-biz-chips" id="rep-biz-chips"></div>
+        </div>
+
+        <!-- Stats compactas -->
+        <div class="stats-grid rep-stats-compact" id="rep-stats-grid" style="margin-bottom:14px">
+          <div class="stat-card rep-sc"><div class="stat-icon blue">💵</div><div><div class="stat-label">Ventas hoy</div><div class="stat-value rep-sv" id="rs-v-hoy">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon green">📅</div><div><div class="stat-label">Ventas del mes</div><div class="stat-value rep-sv" id="rs-v-mes">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon blue">🧾</div><div><div class="stat-label">Facturas emitidas</div><div class="stat-value rep-sv" id="rs-facturas">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon orange">🏛</div><div><div class="stat-label">ITBIS generado</div><div class="stat-value rep-sv" id="rs-itbis">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon green">📦</div><div><div class="stat-label">Productos vendidos</div><div class="stat-value rep-sv" id="rs-prod">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon red">⚠️</div><div><div class="stat-label">Bajo inventario</div><div class="stat-value rep-sv" id="rs-bajo-inv">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon orange">💳</div><div><div class="stat-label">Cuentas × cobrar</div><div class="stat-value rep-sv" id="rs-cxc">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon blue">🔄</div><div><div class="stat-label">Última sync</div><div class="stat-value rep-sv" id="rs-sync" style="font-size:12px">—</div></div></div>
+        </div>
+
+        <!-- Gráfico de ventas -->
+        <div class="section-card rep-chart-wrap" style="margin-bottom:14px">
+          <div class="section-card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>📈 Ventas últimos 30 días</span>
+            <span id="rep-chart-total" style="font-size:12px;color:var(--text-sub)"></span>
+          </div>
+          <div style="position:relative;height:160px">
+            <canvas id="rep-sales-chart"></canvas>
+          </div>
+          <div id="rep-chart-empty" style="display:none;text-align:center;padding:32px;color:var(--text-muted);font-size:13px">Sin datos de ventas para mostrar</div>
+        </div>
+
+        <!-- Botón Ver Reportes -->
+        <div style="display:flex;gap:10px;justify-content:center;padding:6px 0 4px">
+          <button class="btn btn-primary" style="padding:10px 28px;font-size:14px" onclick="app.abrirRepDetalle('ventas')">📊 Ver Reportes Detallados</button>
+          <button class="btn btn-secondary" onclick="app.imprimirReporteMensual()">📄 Reporte mensual</button>
+          <button class="btn btn-secondary" onclick="app.actualizarReporte()">↺ Actualizar</button>
+        </div>
+
+      </div><!-- /rep-state-data -->
+    </div>
+
+    <!-- ── SOLICITUDES ────────────────────────────────────────────────────── -->
+    <div id="mod-solicitudes" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Solicitudes</div>
+          <div class="mod-sub">Gestión de solicitudes al equipo de Tecno Caja</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadSolicitudes()">↺ Actualizar</button>
+          <button class="btn btn-primary" onclick="app.abrirSolicitudModal(null)">+ Nueva Solicitud</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="search-bar">
+          <select id="filtro-sol-status" class="form-select" style="width:200px" onchange="app.loadSolicitudes()">
+            <option value="">Todos los estados</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="en_revision">En revisión</option>
+            <option value="aprobada">Aprobada</option>
+            <option value="completada">Completada</option>
+            <option value="rechazada">Rechazada</option>
+          </select>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Tipo</th><th>Cliente</th><th>Descripción</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr>
+          </thead>
+          <tbody id="solicitudes-tbody">
+            <tr><td colspan="6" style="text-align:center;padding:30px;color:#5a7099">Cargando…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── FACTURACIÓN ────────────────────────────────────────────────────── -->
+    <div id="mod-facturacion" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">💳 Facturación</div>
+          <div class="mod-sub">Emite facturas por tus servicios contables</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.abrirClientesFac()">👥 Mis Clientes</button>
+          <button class="btn btn-primary"   onclick="app.nuevaFactura()">＋ Nueva Factura</button>
+        </div>
+      </div>
+
+      <div class="fac-stats-grid">
+        <div class="fac-stat-card">
+          <div class="fac-stat-icon">📅</div>
+          <div class="fac-stat-lbl">Total este mes</div>
+          <div class="fac-stat-val blue" id="fac-s-mes">RD$ 0</div>
+        </div>
+        <div class="fac-stat-card">
+          <div class="fac-stat-icon">⏳</div>
+          <div class="fac-stat-lbl">Pendientes de cobro</div>
+          <div class="fac-stat-val orange" id="fac-s-pend">0</div>
+        </div>
+        <div class="fac-stat-card">
+          <div class="fac-stat-icon">✅</div>
+          <div class="fac-stat-lbl">Facturas pagadas</div>
+          <div class="fac-stat-val green" id="fac-s-pag">0</div>
+        </div>
+        <div class="fac-stat-card">
+          <div class="fac-stat-icon">💰</div>
+          <div class="fac-stat-lbl">Total acumulado</div>
+          <div class="fac-stat-val" id="fac-s-gen">RD$ 0</div>
+        </div>
+      </div>
+
+      <div class="section-card" style="padding:12px 16px;margin-bottom:12px">
+        <div class="fac-filters">
+          <select id="fac-f-estado" class="fac-filter-select">
+            <option value="">Todos los estados</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="pagada">Pagada</option>
+            <option value="anulada">Anulada</option>
+          </select>
+          <select id="fac-f-tipo" class="fac-filter-select">
+            <option value="">Todos los tipos</option>
+            <option value="B01">B01 — Crédito Fiscal</option>
+            <option value="B02">B02 — Consumidor Final</option>
+            <option value="B14">B14 — Régimen Especial</option>
+            <option value="B15">B15 — Gubernamental</option>
+            <option value="B16">B16 — Exportación</option>
+          </select>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="date" id="fac-f-desde" class="fac-filter-date" />
+            <span style="color:var(--text-muted);font-size:11px">→</span>
+            <input type="date" id="fac-f-hasta" class="fac-filter-date" />
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="app.filtrarFacturas()">Filtrar</button>
+          <button class="btn btn-ghost btn-sm"     onclick="app.limpiarFiltrosFac()">Limpiar</button>
+        </div>
+      </div>
+
+      <div class="section-card" style="overflow:hidden">
+        <div class="section-card-title">📄 Facturas emitidas</div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>NCF</th>
+                <th>Cliente</th>
+                <th>RNC</th>
+                <th>Tipo</th>
+                <th style="text-align:right">Total</th>
+                <th>Estado</th>
+                <th style="text-align:center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="fac-tbody">
+              <tr><td colspan="8" class="td-empty">Cargando facturas...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CONFIGURACIÓN ──────────────────────────────────────────────────── -->
+    <div id="mod-configuracion" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Configuración</div>
+          <div class="mod-sub">Información de tu firma contable</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-primary" onclick="app.savePerfil()">💾 Guardar cambios</button>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="section-card-title">🏢 Datos de la firma</div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Nombre de la Firma *</label>
+            <input id="cfg-nombre-firma" type="text" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Responsable / CPA</label>
+            <input id="cfg-responsable" type="text" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">RNC de la Firma</label>
+            <input id="cfg-rnc" type="text" class="form-input" disabled style="opacity:.6" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Dirección</label>
+            <input id="cfg-direccion" type="text" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Correo de contacto</label>
+            <input id="cfg-correo" type="email" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Teléfono</label>
+            <input id="cfg-telefono" type="tel" class="form-input" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">WhatsApp</label>
+            <input id="cfg-whatsapp" type="tel" class="form-input" placeholder="809-000-0000" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">URL del Logo</label>
+            <input id="cfg-logo" type="url" class="form-input" placeholder="https://…" />
+          </div>
+        </div>
+      </div>
+
+      <div class="section-card" style="opacity:.6;pointer-events:none">
+        <div class="section-card-title">🔒 Campos no modificables</div>
+        <p style="font-size:13px;color:#8fa3c2">El rol, estado y permisos de tu cuenta son gestionados por el administrador de Tecno Caja.</p>
+      </div>
+    </div>
+
+    <!-- ── ACTUALIZACIONES ────────────────────────────────────────────────── -->
+    <div id="mod-actualizaciones" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Actualizaciones</div>
+          <div class="mod-sub">Historial de versiones de Tecno Caja POS</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadActualizaciones()">↺ Actualizar</button>
+        </div>
+      </div>
+      <div id="actualizaciones-list">
+        <div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>
+      </div>
+    </div>
+
+    <!-- ── CENTRO DE AYUDA ────────────────────────────────────────────────── -->
+    <div id="mod-ayuda" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Centro de Ayuda</div>
+          <div class="mod-sub">Recursos y soporte para contadores asociados</div>
+        </div>
+      </div>
+      <div class="ayuda-grid" style="margin-bottom:24px">
+        <div class="ayuda-card">
+          <div class="ayuda-icon">📖</div>
+          <div class="ayuda-title">Manual del Contador</div>
+          <div class="ayuda-desc">Guía completa para gestionar clientes y licencias</div>
+        </div>
+        <div class="ayuda-card">
+          <div class="ayuda-icon">🎥</div>
+          <div class="ayuda-title">Videos tutoriales</div>
+          <div class="ayuda-desc">Aprende paso a paso con nuestros videos</div>
+        </div>
+        <div class="ayuda-card">
+          <div class="ayuda-icon">❓</div>
+          <div class="ayuda-title">Preguntas frecuentes</div>
+          <div class="ayuda-desc">Respuestas a las dudas más comunes</div>
+        </div>
+        <div class="ayuda-card" onclick="app.abrirSolicitudModal(null)">
+          <div class="ayuda-icon">💬</div>
+          <div class="ayuda-title">Contactar Soporte</div>
+          <div class="ayuda-desc">Crea una solicitud de soporte técnico</div>
+        </div>
+      </div>
+      <div class="section-card">
+        <div class="section-card-title">📞 Contacto directo</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-top:4px">
+          <div style="font-size:13px"><span style="color:#8fa3c2">WhatsApp:</span><br><strong>+1 (809) 000-0000</strong></div>
+          <div style="font-size:13px"><span style="color:#8fa3c2">Correo:</span><br><strong>soporte@tecnocaja.com</strong></div>
+          <div style="font-size:13px"><span style="color:#8fa3c2">Horario:</span><br><strong>Lun–Vie 8am–6pm</strong></div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ── MODAL: Nueva Solicitud ──────────────────────────────────────────── -->
+<div id="modal-solicitud" class="modal-overlay hidden">
+  <div class="modal-card wide">
+    <button class="btn-modal-close" onclick="app.cerrarSolicitudModal()">✕</button>
+    <div class="modal-title">📋 Nueva Solicitud</div>
+    <div class="modal-sub">Selecciona el tipo y describe tu necesidad</div>
+
+    <div style="margin-bottom:16px">
+      <label class="form-label" style="margin-bottom:8px;display:block">Tipo de solicitud</label>
+      <div class="sol-tipo-grid" id="sol-tipos"></div>
+    </div>
+
+    <div class="form-group" style="margin-bottom:12px">
+      <label class="form-label">Cliente relacionado (opcional)</label>
+      <select id="sol-cliente" class="form-select">
+        <option value="">— General (sin cliente específico) —</option>
+      </select>
+    </div>
+
+    <div class="form-group" style="margin-bottom:12px">
+      <label class="form-label">Descripción *</label>
+      <textarea id="sol-descripcion" class="form-textarea" placeholder="Describe tu solicitud con el mayor detalle posible…"></textarea>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarSolicitudModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="app.enviarSolicitud()">Enviar Solicitud</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Reportes Detallados ───────────────────────────────────────── -->
+<div id="modal-rep-detalle" class="modal-overlay hidden">
+  <div class="modal-card rep-modal-full">
+    <button class="btn-modal-close" onclick="app.cerrarRepDetalle()">✕</button>
+
+    <!-- Header del modal -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div>
+        <div style="font-size:16px;font-weight:700;margin-bottom:2px" id="rmd-titulo">Reportes</div>
+        <div style="font-size:12px;color:var(--text-sub)" id="rmd-subtitulo">—</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-secondary btn-sm" onclick="app.actualizarReporte()">↺ Actualizar</button>
+        <button class="btn btn-secondary btn-sm" onclick="app.exportarCSV()">📊 CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="app.imprimirTabReporte()">🖨 Imprimir pestaña</button>
+        <button class="btn btn-primary btn-sm"   onclick="app.imprimirReporteMensual()">📄 Reporte mensual</button>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="rep-tabs-nav" id="rep-tabs-nav" style="margin-bottom:10px">
+      <button class="rep-tab-btn active" data-tab="ventas"     onclick="app.cambiarTabReporte('ventas')">💵 Ventas</button>
+      <button class="rep-tab-btn"        data-tab="facturas"   onclick="app.cambiarTabReporte('facturas')">🧾 Facturas</button>
+      <button class="rep-tab-btn"        data-tab="productos"  onclick="app.cambiarTabReporte('productos')">📦 Productos</button>
+      <button class="rep-tab-btn"        data-tab="inventario" onclick="app.cambiarTabReporte('inventario')">🗄 Inventario</button>
+      <button class="rep-tab-btn"        data-tab="itbis"      onclick="app.cambiarTabReporte('itbis')">🏛 ITBIS / DGII</button>
+      <button class="rep-tab-btn"        data-tab="cxc"        onclick="app.cambiarTabReporte('cxc')">💳 C × Cobrar</button>
+      <button class="rep-tab-btn"        data-tab="clientes"   onclick="app.cambiarTabReporte('clientes')">👥 Clientes</button>
+      <button class="rep-tab-btn"        data-tab="cierres"    onclick="app.cambiarTabReporte('cierres')">🔐 Cierres Caja</button>
+      <button class="rep-tab-btn"        data-tab="mensual"    onclick="app.cambiarTabReporte('mensual')">📅 Mensual</button>
+    </div>
+
+    <!-- Filtros -->
+    <div class="rep-filter-bar" id="rep-filter-bar">
+      <div class="rep-filter-group">
+        <label class="rep-filter-label">Desde</label>
+        <input type="date" id="rep-f-desde" class="rep-filter-input" onchange="app.aplicarFiltros()" />
+      </div>
+      <div class="rep-filter-group">
+        <label class="rep-filter-label">Hasta</label>
+        <input type="date" id="rep-f-hasta" class="rep-filter-input" onchange="app.aplicarFiltros()" />
+      </div>
+      <div class="rep-filter-group">
+        <label class="rep-filter-label">Cajero</label>
+        <input type="text" id="rep-f-cajero" class="rep-filter-input" placeholder="Todos" onchange="app.aplicarFiltros()" />
+      </div>
+      <div class="rep-filter-group" id="rep-f-ncf-group">
+        <label class="rep-filter-label">Tipo NCF</label>
+        <select id="rep-f-ncf" class="rep-filter-input" onchange="app.aplicarFiltros()">
+          <option value="">Todos</option>
+          <option value="B01">B01 — Crédito Fiscal</option>
+          <option value="B02">B02 — Consumidor Final</option>
+          <option value="B14">B14 — Reg. Especiales</option>
+          <option value="E31">E31 — e-CF</option>
+        </select>
+      </div>
+      <div class="rep-filter-group">
+        <label class="rep-filter-label">Pago</label>
+        <select id="rep-f-pago" class="rep-filter-input" onchange="app.aplicarFiltros()">
+          <option value="">Todos</option>
+          <option value="efectivo">Efectivo</option>
+          <option value="tarjeta">Tarjeta</option>
+          <option value="transferencia">Transferencia</option>
+          <option value="credito">Crédito</option>
+        </select>
+      </div>
+      <button class="btn btn-xs btn-secondary" onclick="app.limpiarFiltros()" style="align-self:flex-end">✕ Limpiar</button>
+    </div>
+
+    <!-- Tabla -->
+    <div id="rep-table-inner" style="min-height:200px;overflow-x:auto">
+      <div class="rep-loading"><div class="rep-spinner"></div>Selecciona una pestaña</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Nueva Factura ──────────────────────────────────────────────── -->
+<div id="modal-nueva-factura" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarNuevaFactura()">✕</button>
+    <div class="modal-title">＋ Nueva Factura</div>
+    <div class="modal-sub">Completa los datos para emitir el comprobante fiscal</div>
+
+    <div class="fac-form-layout">
+      <!-- Columna izquierda: cliente + condiciones -->
+      <div>
+        <div class="fac-form-section">
+          <div class="fac-section-lbl">Cliente</div>
+          <div class="form-group">
+            <label class="form-label">Cliente guardado / negocio asociado</label>
+            <select id="nf-cliente-sel" class="form-select" onchange="app.selClienteFac(this.value)">
+              <option value="">— Ingresar datos manualmente —</option>
+            </select>
+          </div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Nombre / Razón social *</label>
+              <input id="nf-cli-nombre" type="text" class="form-input" placeholder="Empresa o persona" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">RNC / Cédula</label>
+              <input id="nf-cli-rnc" type="text" class="form-input" placeholder="000-00000-0" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Dirección</label>
+            <input id="nf-cli-dir" type="text" class="form-input" placeholder="Calle, número, sector..." />
+          </div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Teléfono</label>
+              <input id="nf-cli-tel" type="text" class="form-input" placeholder="809-000-0000" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Correo</label>
+              <input id="nf-cli-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
+            </div>
+          </div>
+        </div>
+
+        <div class="fac-form-section">
+          <div class="fac-section-lbl">Comprobante &amp; Pago</div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Tipo comprobante *</label>
+              <select id="nf-tipo-ncf" class="form-select">
+                <option value="B02">B02 — Consumidor Final</option>
+                <option value="B01">B01 — Crédito Fiscal</option>
+                <option value="B14">B14 — Régimen Especial</option>
+                <option value="B15">B15 — Gubernamental</option>
+                <option value="B16">B16 — Exportación</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Fecha *</label>
+              <input id="nf-fecha" type="date" class="form-input" />
+            </div>
+          </div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Condición de pago</label>
+              <select id="nf-condicion" class="form-select">
+                <option value="contado">Contado</option>
+                <option value="credito">Crédito</option>
+                <option value="adelanto">Adelanto</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Método de pago</label>
+              <select id="nf-metodo" class="form-select">
+                <option value="efectivo">Efectivo</option>
+                <option value="transferencia">Transferencia</option>
+                <option value="tarjeta">Tarjeta</option>
+                <option value="cheque">Cheque</option>
+                <option value="otro">Otro</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Observación</label>
+          <textarea id="nf-observacion" class="form-textarea" rows="3" placeholder="Notas, instrucciones de pago..."></textarea>
+        </div>
+      </div>
+
+      <!-- Columna derecha: ítems + totales -->
+      <div>
+        <div class="fac-form-section">
+          <div class="fac-section-lbl" style="display:flex;justify-content:space-between;align-items:center">
+            <span>Servicios / Ítems</span>
+            <button class="btn btn-secondary btn-sm" onclick="app.addItemFac()">＋ Agregar ítem</button>
+          </div>
+          <div style="overflow-x:auto;margin-top:4px">
+            <table class="fac-items-table">
+              <thead>
+                <tr>
+                  <th style="min-width:160px">Descripción</th>
+                  <th style="width:52px">Cant.</th>
+                  <th style="width:80px">Precio</th>
+                  <th style="width:58px">Desc.%</th>
+                  <th style="width:62px">ITBIS</th>
+                  <th style="width:80px;text-align:right">Total</th>
+                  <th style="width:28px"></th>
+                </tr>
+              </thead>
+              <tbody id="nf-items-body"></tbody>
+            </table>
+          </div>
+          <datalist id="fac-servicios-list">
+            <option value="Servicio contable mensual">
+            <option value="Implementación de sistema">
+            <option value="Soporte técnico">
+            <option value="Asesoría fiscal">
+            <option value="Declaración ITBIS">
+            <option value="Declaración IR-17">
+            <option value="Declaración IR-2">
+            <option value="Preparación de nómina">
+            <option value="Auditoría">
+            <option value="Consultoría empresarial">
+            <option value="Registro mercantil">
+          </datalist>
+        </div>
+
+        <div class="fac-totals-box">
+          <div class="fac-total-row"><span>Subtotal</span><span id="nf-t-sub">RD$ 0.00</span></div>
+          <div class="fac-total-row"><span>Descuento</span><span id="nf-t-desc" style="color:var(--red)">— RD$ 0.00</span></div>
+          <div class="fac-total-row"><span>ITBIS</span><span id="nf-t-itbis">RD$ 0.00</span></div>
+          <div class="fac-total-row fac-total-final"><span>TOTAL GENERAL</span><span id="nf-t-total">RD$ 0.00</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarNuevaFactura()">Cancelar</button>
+      <button class="btn btn-primary" id="nf-btn-guardar" onclick="app.guardarFactura()">💾 Emitir Factura</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Ver Factura ────────────────────────────────────────────────── -->
+<div id="modal-ver-factura" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-lg">
+    <button class="btn-modal-close" onclick="app.cerrarVerFactura()">✕</button>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      <div>
+        <div style="font-size:18px;font-weight:700;font-family:monospace;margin-bottom:6px" id="vf-ncf">—</div>
+        <span id="vf-estado"></span>
+        <span style="font-size:12px;color:var(--text-muted);margin-left:10px" id="vf-fecha-lbl"></span>
+      </div>
+      <div id="vf-actions" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+    </div>
+    <div id="vf-content">
+      <div style="text-align:center;padding:48px;color:var(--text-muted)">Cargando factura...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Mis Clientes de Facturación ──────────────────────────────── -->
+<div id="modal-clientes-fac" class="modal-overlay hidden">
+  <div class="modal-card wide">
+    <button class="btn-modal-close" onclick="app.cerrarClientesFac()">✕</button>
+    <div class="modal-title">👥 Mis Clientes</div>
+    <div class="modal-sub">Clientes para tu facturación personal</div>
+
+    <div class="fac-cliente-form" style="margin-top:16px">
+      <div class="fac-section-lbl" id="clf-form-title">Nuevo cliente</div>
+      <div class="fac-grid-2" style="margin-top:10px">
+        <div class="form-group">
+          <label class="form-label">Nombre *</label>
+          <input id="clf-nombre" type="text" class="form-input" placeholder="Empresa o persona" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">RNC / Cédula</label>
+          <input id="clf-rnc" type="text" class="form-input" placeholder="000-00000-0" />
+        </div>
+      </div>
+      <div class="form-group" style="margin-top:8px">
+        <label class="form-label">Dirección</label>
+        <input id="clf-direccion" type="text" class="form-input" />
+      </div>
+      <div class="fac-grid-2" style="margin-top:8px">
+        <div class="form-group">
+          <label class="form-label">Teléfono</label>
+          <input id="clf-telefono" type="text" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Correo</label>
+          <input id="clf-correo" type="email" class="form-input" />
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-primary btn-sm" onclick="app.guardarClienteFac()">Guardar cliente</button>
+        <button class="btn btn-ghost btn-sm"   onclick="app.cancelarClienteFac()">Cancelar</button>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 10px">
+      <span style="font-size:13px;color:var(--text-muted)">Clientes registrados</span>
+      <button class="btn btn-secondary btn-sm" onclick="app.nuevoClienteFac()">＋ Nuevo</button>
+    </div>
+    <div id="clf-lista">
+      <div style="text-align:center;padding:32px;color:var(--text-muted)">Cargando clientes...</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── TOAST ──────────────────────────────────────────────────────────── -->
+<div id="toast" class="hidden"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="js/contadores-app.js"></script>
+</body>
+</html>

@@ -67,6 +67,7 @@ desktop-*.log
 
 # Semillas DGII locales
 storage/ecf/seeds/
+storage/ecf/ecf-originales-locales/
 
 # IDE y editores
 .vscode/

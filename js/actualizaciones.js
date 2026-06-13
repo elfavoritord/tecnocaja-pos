@@ -200,13 +200,9 @@
   async function installUpdate() {
     if (UPD.status !== 'ready') return;
 
-    // Advertencia previa
-    const ok = confirm(
-      '⚠ ANTES DE ACTUALIZAR:\n\n' +
-      '• Cierra todas las ventas abiertas.\n' +
-      '• Realiza el corte de caja.\n\n' +
-      'Se creará un respaldo automático y el sistema se reiniciará.\n\n' +
-      '¿Deseas continuar con la actualización ahora?'
+    const ok = await showDeleteConfirm(
+      'Antes de actualizar: cierra todas las ventas abiertas y realiza el corte de caja. Se creará un respaldo automático y el sistema se reiniciará. ¿Deseas continuar con la actualización ahora?',
+      { confirmText: 'Actualizar ahora' }
     );
     if (!ok) return;
 

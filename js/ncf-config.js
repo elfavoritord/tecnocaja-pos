@@ -76,7 +76,7 @@ async function saveNcfSequence() {
 }
 
 async function deleteNcfSequence(id) {
-  if (!confirm('¿Eliminar esta secuencia? Esta acción no se puede deshacer.')) return;
+  if (!await showDeleteConfirm('¿Eliminar esta secuencia NCF? Esta acción no se puede deshacer.')) return;
   try {
     const resp = await fetch(`/api/ncf/sequences/${id}`, {
       method: 'DELETE',

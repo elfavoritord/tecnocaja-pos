@@ -245,7 +245,7 @@
     container.querySelectorAll('[data-cancel-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const id = btn.getAttribute('data-cancel-id');
-        if (!confirm(`¿Cancelar la venta ${id}? Esta acción no se puede deshacer.`)) return;
+        if (!await showDeleteConfirm(`¿Cancelar la venta <strong>${id}</strong>? Esta acción no se puede deshacer.`)) return;
         btn.disabled = true;
         btn.textContent = 'Cancelando...';
         try {

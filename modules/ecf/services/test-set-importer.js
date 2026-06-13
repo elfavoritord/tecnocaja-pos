@@ -864,8 +864,10 @@ function buildTransmissionFromSpreadsheetRow({
 
   if (String(normalizedTestCase.sourceSheet || '').trim().toUpperCase() === 'RFCE'
     || String(normalizedTestCase.submissionMode || '').trim().toLowerCase() === 'rfce') {
-    let computedCodigoSeguridadeCF = null;
-    if (normalizedTestCase.linkedRawRow && certificateContext) {
+    let computedCodigoSeguridadeCF = normalizeRowValue(normalizedTestCase.computedCodigoSeguridadeCF);
+    let linkedEcfXml = null;
+    let linkedSignedEcfXml = null;
+    if (!computedCodigoSeguridadeCF && normalizedTestCase.linkedRawRow && certificateContext) {
       const linkedTransmission = buildCertificationEcfXml({
         ...normalizedTestCase,
         rawRow: normalizedTestCase.linkedRawRow,
@@ -873,15 +875,22 @@ function buildTransmissionFromSpreadsheetRow({
         submissionMode: 'normal',
       }, issueDate);
       const linkedSignature = signIfPossible(linkedTransmission.xml, certificateContext);
+      linkedEcfXml = linkedTransmission.xml;
+      linkedSignedEcfXml = linkedSignature.signedXml;
       computedCodigoSeguridadeCF = computeSecurityCodeFromSignedXml(linkedSignature.signedXml);
     }
     if (!computedCodigoSeguridadeCF) {
       computedCodigoSeguridadeCF = rowText(normalizedTestCase.rawRow, 'CodigoSeguridadeCF');
     }
-    return buildCertificationRfceXml({
-      ...normalizedTestCase,
+    return {
+      ...buildCertificationRfceXml({
+        ...normalizedTestCase,
+        computedCodigoSeguridadeCF,
+      }, issueDate),
       computedCodigoSeguridadeCF,
-    }, issueDate);
+      linkedEcfXml,
+      linkedSignedEcfXml,
+    };
   }
   return buildCertificationEcfXml(normalizedTestCase, issueDate);
 }

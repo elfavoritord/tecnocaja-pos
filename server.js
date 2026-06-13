@@ -41,6 +41,9 @@ const createDeliveryRouter = require('./server/routes/delivery.routes');
 // ✅ Respaldo local + nube
 const createRespaldosRouter = require('./server/routes/respaldos.routes');
 
+// Plataforma Multiempresa — referencia ligera para buscar contadores desde el wizard POS
+const createPlatformRouter = require('./server/routes/platform.routes');
+
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
 
@@ -1475,6 +1478,7 @@ app.use(createRncRouter());
 // ✅ Rutas Red de Terminales — multicaja LAN + sucursales remotas
 app.use('/api/network', createNetworkRouter({ query, resolveRequestActorUser }));
 
+
 // ✅ Báscula TCP — inyectar instancia io y cargar config guardada
 bascula.setIo(io);
 (async () => {
@@ -1599,6 +1603,9 @@ app.use(async (req, _res, next) => {
     next(error);
   }
 });
+
+// Plataforma Multiempresa — solo rutas públicas del wizard (buscar contador)
+app.use('/api/platform', createPlatformRouter({ query }));
 
 // ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
 //    req.authUser esté disponible en las rutas de respaldo.
@@ -4376,6 +4383,113 @@ async function ensureOperativeDateExtensions() {
     )
     WHERE s.cash_session_id IS NULL AND s.cash_register_id IS NOT NULL
   `).catch(() => {}); // no-fatal: puede fallar en SQLite por sintaxis
+}
+
+async function ensureMultiempresaExtensions() {
+  // Columnas nuevas en config
+  await addColumnIfMissing('config', 'business_mode', "VARCHAR(30) NOT NULL DEFAULT 'independent'");
+  await addColumnIfMissing('config', 'cloud_business_id', 'VARCHAR(64) DEFAULT NULL');
+  await addColumnIfMissing('config', 'accountant_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('config', 'accountant_name', 'VARCHAR(200) DEFAULT NULL');
+
+  // Roles superadmin y contador_asociado
+  await query(`INSERT IGNORE INTO roles (id, codigo, nombre, permisos, estado) VALUES
+    (6, 'superadmin', 'Super Administrador', '["*"]', 'Activo'),
+    (7, 'contador_asociado', 'Contador Asociado', '["contador.ver_clientes","contador.registrar_negocio","contador.ver_reportes","contador.solicitudes"]', 'Activo')`
+  ).catch(() => {});
+
+  // Tablas del sistema multiempresa (idempotentes con IF NOT EXISTS)
+  await query(`CREATE TABLE IF NOT EXISTS contadores (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL UNIQUE,
+    nombre_firma VARCHAR(200) NOT NULL,
+    responsable VARCHAR(150) DEFAULT NULL,
+    rnc VARCHAR(40) DEFAULT NULL,
+    telefono VARCHAR(40) DEFAULT NULL,
+    whatsapp VARCHAR(40) DEFAULT NULL,
+    correo VARCHAR(160) DEFAULT NULL,
+    direccion VARCHAR(255) DEFAULT NULL,
+    logo_url TEXT DEFAULT NULL,
+    estado VARCHAR(20) NOT NULL DEFAULT 'activo',
+    datos_fiscales LONGTEXT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_contadores_estado (estado),
+    CONSTRAINT fk_contadores_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS cloud_businesses (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    cloud_id VARCHAR(64) NOT NULL UNIQUE,
+    nombre_negocio VARCHAR(200) NOT NULL,
+    rnc VARCHAR(40) DEFAULT NULL,
+    propietario VARCHAR(150) DEFAULT NULL,
+    telefono VARCHAR(40) DEFAULT NULL,
+    correo VARCHAR(160) DEFAULT NULL,
+    contador_id INT DEFAULT NULL,
+    plan VARCHAR(30) NOT NULL DEFAULT 'basico',
+    license_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    trial_start_date DATETIME DEFAULT NULL,
+    trial_end_date DATETIME DEFAULT NULL,
+    license_activated_at DATETIME DEFAULT NULL,
+    license_expires_at DATETIME DEFAULT NULL,
+    license_notes TEXT DEFAULT NULL,
+    last_sync_at DATETIME DEFAULT NULL,
+    business_mode VARCHAR(30) NOT NULL DEFAULT 'independent',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_cloud_businesses_contador (contador_id),
+    KEY idx_cloud_businesses_status (license_status),
+    CONSTRAINT fk_cloud_businesses_contador FOREIGN KEY (contador_id) REFERENCES contadores(id) ON DELETE SET NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS licencias (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    cloud_business_id INT DEFAULT NULL,
+    plan VARCHAR(30) DEFAULT NULL,
+    status VARCHAR(20) NOT NULL,
+    activated_at DATETIME DEFAULT NULL,
+    expires_at DATETIME DEFAULT NULL,
+    activated_by VARCHAR(160) DEFAULT NULL,
+    notes TEXT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_licencias_business (cloud_business_id),
+    CONSTRAINT fk_licencias_business FOREIGN KEY (cloud_business_id) REFERENCES cloud_businesses(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS solicitudes (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    cloud_business_id INT DEFAULT NULL,
+    contador_id INT DEFAULT NULL,
+    tipo VARCHAR(60) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'pendiente',
+    descripcion TEXT DEFAULT NULL,
+    respuesta TEXT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    KEY idx_solicitudes_business (cloud_business_id),
+    KEY idx_solicitudes_contador (contador_id),
+    KEY idx_solicitudes_status (status),
+    CONSTRAINT fk_solicitudes_business FOREIGN KEY (cloud_business_id) REFERENCES cloud_businesses(id) ON DELETE SET NULL,
+    CONSTRAINT fk_solicitudes_contador FOREIGN KEY (contador_id) REFERENCES contadores(id) ON DELETE SET NULL
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
+  await query(`CREATE TABLE IF NOT EXISTS sync_queue (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    entity_type VARCHAR(60) NOT NULL,
+    entity_id VARCHAR(80) DEFAULT NULL,
+    operation VARCHAR(20) NOT NULL,
+    payload LONGTEXT DEFAULT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    attempts INT NOT NULL DEFAULT 0,
+    last_attempt_at DATETIME DEFAULT NULL,
+    error_message TEXT DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_sync_queue_status (status),
+    KEY idx_sync_queue_entity (entity_type, entity_id),
+    KEY idx_sync_queue_created (created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`).catch(() => {});
+
 }
 
 // ─── Memoización de migraciones de schema ─────────────────────────────────────
@@ -15702,6 +15816,7 @@ async function prepareServerRuntime() {
         ecfModule.ensureSchema().catch(e => console.warn('[ecf] init fallo:', e.message)),
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
+        ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
       ]);
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);

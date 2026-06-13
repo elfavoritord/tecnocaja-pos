@@ -309,7 +309,7 @@ const FileManager = (() => {
   }
 
   async function deleteFile(id, name) {
-    if (!confirm(`¿Eliminar el archivo "${name}"?\n\nSe marcará como eliminado.`)) return;
+    if (!await showDeleteConfirm(`¿Eliminar el archivo <strong>${name}</strong>? Se marcará como eliminado.`)) return;
     try {
       const data = await api(`/${id}`, { method: 'DELETE' });
       if (data.ok) {

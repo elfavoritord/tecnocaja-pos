@@ -964,8 +964,8 @@ async function cleanupZeroPriceProducts() {
   }
   const names = zeroPriceProducts.slice(0, 5).map((p) => p.nombre).join(', ');
   const more = zeroPriceProducts.length > 5 ? ` y ${zeroPriceProducts.length - 5} más` : '';
-  const confirmed = confirm(
-    `Se eliminarán ${zeroPriceProducts.length} producto(s) sin precio:\n${names}${more}\n\n¿Continuar?`
+  const confirmed = await showDeleteConfirm(
+    `Se eliminarán <strong>${zeroPriceProducts.length}</strong> producto(s) sin precio: ${names}${more}`
   );
   if (!confirmed) return;
   const btn = document.getElementById('btn-cleanup-zero-price');
@@ -1551,9 +1551,10 @@ async function deleteProduct(id) {
     showToast('No puedes eliminar este producto porque tiene stock pendiente.', 'warning');
     return;
   }
-  if (!confirm('¿Eliminar este producto?')) return;
+  if (!await showDeleteConfirm('¿Eliminar este producto? Esta acción no se puede deshacer.')) return;
   const footerButtons = Array.from(document.querySelectorAll('#modal-footer button'));
   const deleteButton = footerButtons.find((button) => String(button.textContent || '').toLowerCase().includes('eliminar'));
+  let success = false;
   try {
     footerButtons.forEach((button) => {
       button.disabled = true;
@@ -1564,6 +1565,7 @@ async function deleteProduct(id) {
       method: 'DELETE',
       body: JSON.stringify(getActorPayload())
     });
+    success = true;
     closeAllModals();
     DB.productos = (DB.productos || []).filter((item) => Number(item.id) !== Number(id));
     refreshProductCategoryFilter();
@@ -1574,12 +1576,15 @@ async function deleteProduct(id) {
     if (typeof updateNotifications === 'function') updateNotifications();
     showToast('Producto eliminado', 'success');
   } catch (error) {
-    footerButtons.forEach((button) => {
-      button.disabled = false;
-      button.style.opacity = '';
-    });
-    if (deleteButton) deleteButton.textContent = 'Eliminar';
     showToast(error.message, 'error');
+  } finally {
+    if (!success) {
+      footerButtons.forEach((button) => {
+        button.disabled = false;
+        button.style.opacity = '';
+      });
+      if (deleteButton) deleteButton.textContent = 'Eliminar';
+    }
   }
 }
 

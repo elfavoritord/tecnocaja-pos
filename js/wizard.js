@@ -1196,11 +1196,21 @@
 
   // ─── Mostrar/ocultar overlays ─────────────────────────────────────────────
   function _wzShowOverlay(id) {
-    ['wz-welcome-overlay', 'wz-restore-local-overlay', 'wz-restore-cloud-overlay',
+    ['wz-restore-local-overlay', 'wz-restore-cloud-overlay',
      'wz-auth-overlay', 'wz-scenario-overlay'].forEach(oid => {
       const el = document.getElementById(oid);
       if (el) el.classList.add('wz-hidden');
     });
+    if (id === 'wz-welcome-overlay') {
+      // El welcome overlay fue reemplazado por platform-init — volver a él
+      document.getElementById('setup-screen')?.classList.add('hidden');
+      if (typeof window.platformInit !== 'undefined') {
+        window.platformInit.show((choice) =>
+          typeof window._handlePlatformInitChoice === 'function' && window._handlePlatformInitChoice(choice)
+        );
+      }
+      return;
+    }
     if (id) _wzShow(id);
   }
 
@@ -1748,17 +1758,15 @@
         return;
       }
 
-      // Solo mostrar el asistente de primer inicio si setup es genuinamente requerido
-      if (setupState.setupRequired) {
-        const el = document.getElementById('wz-welcome-overlay');
-        if (el) el.classList.remove('wz-hidden');
-      }
+      // El welcome overlay fue reemplazado por platform-init (js/platform-init.js).
+      // No mostrar nada aquí — platform-init ya manejó la elección del usuario.
     };
     setTimeout(check, 350);
   }
 
   // Exponer para uso externo si es necesario
   window.wzShowWelcomeOverlay = function() {
+    // Delegado a platform-init
     _wzShowOverlay('wz-welcome-overlay');
   };
 

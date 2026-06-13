@@ -1,0 +1,14 @@
+{
+  "trackId": "e20780db-bed2-43ef-ae1d-556d275e68d7",
+  "fecha": "2026-06-12T00:26:38.022Z",
+  "estado": "ENVIADO",
+  "environment": "testecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260611-202637.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"e20780db-bed2-43ef-ae1d-556d275e68d7\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260611-202638.json"
+}

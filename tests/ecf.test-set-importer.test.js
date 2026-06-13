@@ -2,6 +2,7 @@
 
 const XLSX = require('xlsx');
 const { buildTransmissionFromSpreadsheetRow, importTestSet, parseTestSetBuffer } = require('../modules/ecf/services/test-set-importer');
+const signatureService = require('../modules/ecf/signature/signature.service');
 
 describe('ecf test-set importer', () => {
   test('parsea archivos CSV del set DGII', () => {
@@ -154,6 +155,96 @@ describe('ecf test-set importer', () => {
     expect(transmission.xml).toContain('<RFCE');
     expect(transmission.xml).toContain('<eNCF>E320000000011</eNCF>');
     expect(transmission.xml).toContain('<MontoTotal>40120.00</MontoTotal>');
+  });
+
+  test('usa el mismo ECF firmado para calcular y conservar el codigo del RFCE', () => {
+    const signedEcf = '<ECF><Signature><SignedInfo/><SignatureValue>ABC123firma</SignatureValue><KeyInfo><X509Certificate>cert</X509Certificate></KeyInfo><DigestValue>digest</DigestValue></Signature></ECF>';
+    const signSpy = jest.spyOn(signatureService, 'signXML').mockReturnValue(signedEcf);
+    const verifySpy = jest.spyOn(signatureService, 'verifySignature').mockReturnValue({ ok: true });
+
+    try {
+      const transmission = buildTransmissionFromSpreadsheetRow({
+        testCase: {
+          encf: 'E320000000012',
+          tipoEcf: 'E32',
+          sourceSheet: 'RFCE',
+          submissionMode: 'rfce',
+          rawRow: {
+            Version: '1.0',
+            TipoeCF: '32',
+            ENCF: 'E320000000012',
+            TipoIngresos: '01',
+            TipoPago: '1',
+            RNCEmisor: '40211932609',
+            RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL',
+            FechaEmision: '01-04-2020',
+            MontoTotal: '47200.00',
+          },
+          linkedRawRow: {
+            Version: '1.0',
+            TipoeCF: '32',
+            ENCF: 'E320000000012',
+            TipoIngresos: '01',
+            TipoPago: '1',
+            RNCEmisor: '40211932609',
+            RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL',
+            DireccionEmisor: 'Santo Domingo',
+            FechaEmision: '01-04-2020',
+            MontoTotal: '47200.00',
+            'NumeroLinea[1]': '1',
+            'NombreItem[1]': 'Estufa',
+            'CantidadItem[1]': '1',
+            'PrecioUnitarioItem[1]': '40000.00',
+            'MontoItem[1]': '40000.00',
+          },
+          emitterNombreComercial: '',
+        },
+        issueDate: new Date('2026-05-28T12:07:27Z'),
+        certificateContext: { test: true },
+      });
+
+      expect(transmission.xml).toContain('<CodigoSeguridadeCF>ABC123</CodigoSeguridadeCF>');
+      expect(transmission.computedCodigoSeguridadeCF).toBe('ABC123');
+      expect(transmission.linkedSignedEcfXml).toBe(signedEcf);
+      expect(transmission.linkedEcfXml).toContain('<eNCF>E320000000012</eNCF>');
+    } finally {
+      signSpy.mockRestore();
+      verifySpy.mockRestore();
+    }
+  });
+
+  test('respeta un codigo de seguridad ya calculado sin volver a firmar el ECF', () => {
+    const signSpy = jest.spyOn(signatureService, 'signXML');
+    try {
+      const transmission = buildTransmissionFromSpreadsheetRow({
+        testCase: {
+          encf: 'E320000000012',
+          tipoEcf: 'E32',
+          sourceSheet: 'RFCE',
+          submissionMode: 'rfce',
+          computedCodigoSeguridadeCF: 'ZXCVBN',
+          rawRow: {
+            Version: '1.0',
+            TipoeCF: '32',
+            ENCF: 'E320000000012',
+            TipoIngresos: '01',
+            TipoPago: '1',
+            RNCEmisor: '40211932609',
+            RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS PRUEBA FACTURA DE CONSUMO MENOR 250MIL',
+            FechaEmision: '01-04-2020',
+            MontoTotal: '47200.00',
+          },
+          linkedRawRow: { ENCF: 'E320000000012' },
+        },
+        issueDate: new Date('2026-05-28T12:07:27Z'),
+        certificateContext: { test: true },
+      });
+
+      expect(transmission.xml).toContain('<CodigoSeguridadeCF>ZXCVBN</CodigoSeguridadeCF>');
+      expect(signSpy).not.toHaveBeenCalled();
+    } finally {
+      signSpy.mockRestore();
+    }
   });
 
   test('preserva la razon social del set DGII al reconstruir RFCE', () => {

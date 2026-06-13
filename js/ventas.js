@@ -8401,11 +8401,7 @@ async function recoverSuspendedSaleById(pendingId) {
     return;
   }
 
-  const confirmMessage = typeof window.translateUiString === 'function'
-    ? window.translateUiString('Hay una venta activa en pantalla. Si recuperas otra, la actual se reemplazará.')
-    : 'Hay una venta activa en pantalla. Si recuperas otra, la actual se reemplazará.';
-
-  if (DB.saleItems.length && !window.confirm(confirmMessage)) {
+  if (DB.saleItems.length && !await showDeleteConfirm('Hay una venta activa en pantalla. Si recuperas esta, la actual se reemplazará.', { confirmText: 'Recuperar' })) {
     return;
   }
 
@@ -8430,18 +8426,14 @@ function applyRecoveredQuotation(quotation) {
   activeRecoveredQuotationName = quotation.nombre || quotation.clientName || 'Cotización';
 }
 
-function recoverQuotationById(quotationId) {
+async function recoverQuotationById(quotationId) {
   const quotation = (DB.cotizaciones || []).find((item) => item.id === quotationId);
   if (!quotation) {
     showToast('La cotización ya no está disponible.', 'warning');
     return;
   }
 
-  const confirmMessage = typeof window.translateUiString === 'function'
-    ? window.translateUiString('Hay una venta activa en pantalla. Si recuperas otra, la actual se reemplazará.')
-    : 'Hay una venta activa en pantalla. Si recuperas otra, la actual se reemplazará.';
-
-  if (DB.saleItems.length && !window.confirm(confirmMessage)) {
+  if (DB.saleItems.length && !await showDeleteConfirm('Hay una venta activa en pantalla. Si recuperas esta cotización, la actual se reemplazará.', { confirmText: 'Recuperar' })) {
     return;
   }
 
@@ -8458,11 +8450,8 @@ async function deleteQuotationById(quotationId) {
   }
 
   const quotationLabel = quotation.nombre || quotation.clientName || quotationId;
-  const confirmMessage = typeof window.translateUiString === 'function'
-    ? window.translateUiString(`Se eliminará la cotización ${quotationLabel}. Esta acción no se puede deshacer.`)
-    : `Se eliminará la cotización ${quotationLabel}. Esta acción no se puede deshacer.`;
 
-  if (!window.confirm(confirmMessage)) {
+  if (!await showDeleteConfirm(`Se eliminará la cotización <strong>${quotationLabel}</strong>. Esta acción no se puede deshacer.`)) {
     return;
   }
 

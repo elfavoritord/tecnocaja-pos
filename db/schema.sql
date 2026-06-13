@@ -2,6 +2,11 @@
 USE tecnocaja;
 
 SET FOREIGN_KEY_CHECKS = 0;
+DROP TABLE IF EXISTS solicitudes;
+DROP TABLE IF EXISTS sync_queue;
+DROP TABLE IF EXISTS licencias;
+DROP TABLE IF EXISTS cloud_businesses;
+DROP TABLE IF EXISTS contadores;
 DROP TABLE IF EXISTS sync_log;
 DROP TABLE IF EXISTS pending_cash_movements;
 DROP TABLE IF EXISTS pending_sale_items;
@@ -154,6 +159,10 @@ CREATE TABLE config (
   cash_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   cashier_register_required TINYINT(1) NOT NULL DEFAULT 1,
   exclusive_cashier_per_register TINYINT(1) NOT NULL DEFAULT 1,
+  business_mode VARCHAR(30) NOT NULL DEFAULT 'independent',
+  cloud_business_id VARCHAR(64) DEFAULT NULL,
+  accountant_id INT DEFAULT NULL,
+  accountant_name VARCHAR(200) DEFAULT NULL,
   CONSTRAINT fk_config_business FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE SET NULL,
   CONSTRAINT fk_config_active_branch FOREIGN KEY (active_branch_id) REFERENCES branches(id) ON DELETE SET NULL,
   CONSTRAINT fk_config_active_cash_register FOREIGN KEY (active_cash_register_id) REFERENCES cash_registers(id) ON DELETE SET NULL
@@ -817,6 +826,101 @@ CREATE TABLE offline_sync_map (
   KEY idx_synced_at (synced_at)
 );
 
+-- ═══════════════════════════════════════════════════════════════
+-- TABLAS PLATAFORMA MULTIEMPRESA
+-- ═══════════════════════════════════════════════════════════════
+
+CREATE TABLE contadores (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL UNIQUE,
+  nombre_firma VARCHAR(200) NOT NULL,
+  responsable VARCHAR(150) DEFAULT NULL,
+  rnc VARCHAR(40) DEFAULT NULL,
+  telefono VARCHAR(40) DEFAULT NULL,
+  whatsapp VARCHAR(40) DEFAULT NULL,
+  correo VARCHAR(160) DEFAULT NULL,
+  direccion VARCHAR(255) DEFAULT NULL,
+  logo_url TEXT DEFAULT NULL,
+  estado VARCHAR(20) NOT NULL DEFAULT 'activo',
+  datos_fiscales LONGTEXT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_contadores_estado (estado),
+  CONSTRAINT fk_contadores_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE cloud_businesses (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  cloud_id VARCHAR(64) NOT NULL UNIQUE,
+  nombre_negocio VARCHAR(200) NOT NULL,
+  rnc VARCHAR(40) DEFAULT NULL,
+  propietario VARCHAR(150) DEFAULT NULL,
+  telefono VARCHAR(40) DEFAULT NULL,
+  correo VARCHAR(160) DEFAULT NULL,
+  contador_id INT DEFAULT NULL,
+  plan VARCHAR(30) NOT NULL DEFAULT 'basico',
+  license_status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  trial_start_date DATETIME DEFAULT NULL,
+  trial_end_date DATETIME DEFAULT NULL,
+  license_activated_at DATETIME DEFAULT NULL,
+  license_expires_at DATETIME DEFAULT NULL,
+  license_notes TEXT DEFAULT NULL,
+  last_sync_at DATETIME DEFAULT NULL,
+  business_mode VARCHAR(30) NOT NULL DEFAULT 'independent',
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_cloud_businesses_contador (contador_id),
+  KEY idx_cloud_businesses_status (license_status),
+  CONSTRAINT fk_cloud_businesses_contador FOREIGN KEY (contador_id) REFERENCES contadores(id) ON DELETE SET NULL
+);
+
+CREATE TABLE licencias (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  cloud_business_id INT DEFAULT NULL,
+  plan VARCHAR(30) DEFAULT NULL,
+  status VARCHAR(20) NOT NULL,
+  activated_at DATETIME DEFAULT NULL,
+  expires_at DATETIME DEFAULT NULL,
+  activated_by VARCHAR(160) DEFAULT NULL,
+  notes TEXT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_licencias_business (cloud_business_id),
+  CONSTRAINT fk_licencias_business FOREIGN KEY (cloud_business_id) REFERENCES cloud_businesses(id) ON DELETE CASCADE
+);
+
+CREATE TABLE solicitudes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  cloud_business_id INT DEFAULT NULL,
+  contador_id INT DEFAULT NULL,
+  tipo VARCHAR(60) NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'pendiente',
+  descripcion TEXT DEFAULT NULL,
+  respuesta TEXT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  KEY idx_solicitudes_business (cloud_business_id),
+  KEY idx_solicitudes_contador (contador_id),
+  KEY idx_solicitudes_status (status),
+  CONSTRAINT fk_solicitudes_business FOREIGN KEY (cloud_business_id) REFERENCES cloud_businesses(id) ON DELETE SET NULL,
+  CONSTRAINT fk_solicitudes_contador FOREIGN KEY (contador_id) REFERENCES contadores(id) ON DELETE SET NULL
+);
+
+CREATE TABLE sync_queue (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  entity_type VARCHAR(60) NOT NULL,
+  entity_id VARCHAR(80) DEFAULT NULL,
+  operation VARCHAR(20) NOT NULL,
+  payload LONGTEXT DEFAULT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  attempts INT NOT NULL DEFAULT 0,
+  last_attempt_at DATETIME DEFAULT NULL,
+  error_message TEXT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_sync_queue_status (status),
+  KEY idx_sync_queue_entity (entity_type, entity_id),
+  KEY idx_sync_queue_created (created_at)
+);
+
 INSERT INTO businesses (id, nombre, rnc, direccion, telefono, estado)
 VALUES (1, 'Tecno Caja', '', '', '', 'Activo');
 
@@ -861,7 +965,9 @@ INSERT INTO roles (id, codigo, nombre, permisos, estado) VALUES
 (2, 'administrador_sucursal', 'Administrador de sucursal', '["dashboard_sucursal","ver_dashboard_sucursal","caja","cajas","ver_cajas_sucursal","crear_cajas_sucursal","editar_cajas_sucursal","activar_cajas_sucursal","asignar_cajeros_sucursal","usuarios","usuarios_crear","usuarios_editar","ver_usuarios_sucursal","crear_cajeros_sucursal","crear_supervisores_sucursal","editar_usuarios_sucursal","activar_usuarios_sucursal","resetear_password_usuarios_sucursal","ventas","ver_ventas_sucursal","ver_cierres_caja_sucursal","ver_aperturas_caja_sucursal","reportes_sucursal","ver_reportes_sucursal","inventario","ver_inventario_sucursal","registrar_movimientos_internos_sucursal","ver_productos_sucursal","consultar_stock_sucursal","ver_arqueos_caja_sucursal","ver_historial_inventario_sucursal"]', 'Activo'),
 (3, 'cajero', 'Cajero', '["ventas","caja","clientes","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta"]', 'Activo'),
 (4, 'supervisor', 'Supervisor', '["ventas","caja","reportes_sucursal","inventario","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta","anular_ventas","devolver_ventas","ver_reportes_caja","ver_cierres_caja","ver_ganancias"]', 'Activo'),
-(5, 'repartidor', 'Repartidor (Delivery)', '[]', 'Activo');
+(5, 'repartidor', 'Repartidor (Delivery)', '[]', 'Activo'),
+(6, 'superadmin', 'Super Administrador', '["*"]', 'Activo'),
+(7, 'contador_asociado', 'Contador Asociado', '["contador.ver_clientes","contador.registrar_negocio","contador.ver_reportes","contador.config","contador.solicitudes"]', 'Activo');
 
 INSERT INTO payment_methods (id, codigo, nombre, estado) VALUES
 (1, 'efectivo', 'Efectivo', 'Activo'),
@@ -879,11 +985,13 @@ INSERT INTO config (
   whatsapp_web_enabled, whatsapp_paste_guide_enabled,
   app_logo, security_password, language, business_type, setup_completed, license_status, require_cash_open_before_use,
   business_structure_mode, sales_operation_mode, starter_catalog_seeded, cash_open, cash_amount,
-  cashier_register_required, exclusive_cashier_per_register
+  cashier_register_required, exclusive_cashier_per_register,
+  business_mode, cloud_business_id, accountant_id, accountant_name
 ) VALUES (
   1, 1, 1, 1, 'Tecno Caja', '', '', '', 'RD$', 18.00,
   'FAC-', 1001, 1, 'ECF-', 1, '¡Gracias por su compra!',
   'dialog', NULL, '80mm', 0, 'escpos', NULL, 0, NULL, 9100, 'COM1', 'none', NULL, 9600, 'kg', NULL, 2, 1, 0, 1,
   NULL, '6888939502182025', 'es', 'pizzeria', 0, 'trial', 1,
-  'monocaja', 'directa', 1, 0, 0.00, 1, 1
+  'monocaja', 'directa', 1, 0, 0.00, 1, 1,
+  'independent', NULL, NULL, NULL
 );

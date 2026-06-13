@@ -22,6 +22,7 @@
   --font: 'Plus Jakarta Sans', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   --transition: all 0.18s ease;
+  color-scheme: dark;
 }
 
 [data-theme="light"] {
@@ -34,6 +35,13 @@
   --text2: #4A5280;
   --text3: #8B93B0;
   --card-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  color-scheme: light;
+}
+
+/* Garantiza que los <option> del select sean legibles en tema claro */
+[data-theme="light"] select option {
+  background-color: #ffffff;
+  color: #1a1e30;
 }
 
 [data-theme="light"] .sales-product-card,

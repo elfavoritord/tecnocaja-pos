@@ -645,7 +645,7 @@ async function deleteCliente(id) {
     showToast(clientText('No puedes eliminar este cliente porque tiene factura o balance pendiente.'), 'warning');
     return;
   }
-  if (!confirm(clientText('¿Eliminar este cliente?'))) return;
+  if (!await showDeleteConfirm(clientText('¿Eliminar este cliente? Esta acción no se puede deshacer.'))) return;
   try {
     await api.request(`/api/clients/${id}`, {
       method: 'DELETE',

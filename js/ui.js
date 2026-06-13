@@ -74,6 +74,53 @@ function requestPrimaryModalClose() {
   closeAllModals(true, 'x');
 }
 
+/**
+ * Reemplaza window.confirm() para eliminar en Electron.
+ * Usa un modal en-página para evitar que el renderer pierda el foco
+ * con los diálogos nativos del sistema operativo.
+ */
+function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Cancelar' } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0',
+      'background:rgba(6,8,16,0.88)',
+      'z-index:3000',
+      'display:flex', 'align-items:center', 'justify-content:center',
+    ].join(';');
+    overlay.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem 1.75rem;max-width:360px;width:92%;box-shadow:var(--card-shadow)">
+        <p style="margin:0 0 1.25rem;color:var(--text);line-height:1.6;font-size:0.95rem">${message}</p>
+        <div style="display:flex;gap:0.75rem;justify-content:flex-end">
+          <button class="btn-secondary" data-action="cancel">${cancelText}</button>
+          <button class="btn-danger" data-action="ok">${confirmText}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const cancelBtn = overlay.querySelector('[data-action="cancel"]');
+    const okBtn = overlay.querySelector('[data-action="ok"]');
+    okBtn.focus();
+
+    function close(result) {
+      document.removeEventListener('keydown', onKey, true);
+      if (overlay.parentNode) document.body.removeChild(overlay);
+      resolve(result);
+    }
+
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
+      if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); close(true);  }
+    }
+
+    cancelBtn.addEventListener('click', () => close(false));
+    okBtn.addEventListener('click', () => close(true));
+    document.addEventListener('keydown', onKey, true);
+  });
+}
+window.showDeleteConfirm = showDeleteConfirm;
+
 // Keyboard shortcuts
 window.addEventListener('keydown', function(e) {
   const activeModule = document.querySelector('.module.active');

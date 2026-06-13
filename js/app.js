@@ -2681,11 +2681,54 @@ async function startNewUserFlow() {
     }
   }
   if (setupState?.setupRequired !== false) {
-    startSetupWizardSession();
+    // Mostrar pantalla de selección de plataforma antes del wizard
+    if (typeof window.platformInit !== 'undefined') {
+      window.platformInit.show((choice) => _handlePlatformInitChoice(choice));
+    } else {
+      startSetupWizardSession();
+    }
     return;
   }
   showToast(getConfiguredAppSetupMessage(), 'warning');
   launchSetupWizardFromLogin();
+}
+
+function _handlePlatformInitChoice(choice) {
+  if (!choice) { startSetupWizardSession(); return; }
+
+  switch (choice.type) {
+    case 'independent':
+      setupWizard._platformBusinessMode = 'independent';
+      setupWizard._platformContadorId = null;
+      startSetupWizardSession();
+      break;
+
+    case 'accountant_client':
+      setupWizard._platformBusinessMode = 'accountant_client';
+      setupWizard._platformContadorId = choice.contador?.id || null;
+      setupWizard._platformContadorName = choice.contador?.nombre_firma || '';
+      startSetupWizardSession();
+      break;
+
+    case 'restore_local':
+      // Iniciar wizard (para tener el DOM de overlays listo) y abrir restore-local
+      startSetupWizardSession();
+      setTimeout(() => {
+        if (typeof window.wzWelcomeChoice === 'function') window.wzWelcomeChoice('restaurar-local');
+      }, 400);
+      break;
+
+    case 'restore_cloud':
+      // Iniciar wizard y abrir restore-cloud
+      startSetupWizardSession();
+      setTimeout(() => {
+        if (typeof window.wzWelcomeChoice === 'function') window.wzWelcomeChoice('restaurar-nube');
+      }, 400);
+      break;
+
+    default:
+      startSetupWizardSession();
+  }
 }
 
 function startSetupWizardSession({ preserveGoogle = false, forceReset = false, securityPassword = '' } = {}) {
@@ -3112,7 +3155,9 @@ async function loadLoginUsers(options = {}) {
   loginUsersLoadPromise = (async () => {
     try {
       const data = await api.request('/api/public/users-list', { _timeoutMs: 5000 });
-      const users = Array.isArray(data?.users) ? data.users : [];
+      const POS_EXCLUDED_ROLES = ['superadmin', 'contador_asociado'];
+      const users = (Array.isArray(data?.users) ? data.users : [])
+        .filter(u => !POS_EXCLUDED_ROLES.includes(u.role_code || u.roleCode || ''));
       if (!users.length) {
         if (!cachedUsers.length) _showLoginTextFallback();
         return users;
@@ -3329,6 +3374,7 @@ async function activateAuthenticatedSession(response, sessionLanguage, options =
   document.getElementById('login-screen')?.classList.add('hidden');
   const loginScreen = document.getElementById('login-screen');
   if (loginScreen) loginScreen.style.display = 'none';
+
   document.getElementById('app')?.classList.remove('hidden');
   initApp();
   const salesNav = document.querySelector('.nav-item[data-module="ventas"]');
@@ -4506,7 +4552,7 @@ async function applyActiveBusinessStructure() {
     return;
   }
   if (Array.isArray(DB.saleItems) && DB.saleItems.length) {
-    const confirmed = window.confirm('Hay un pedido en curso. Si cambias de sucursal o caja, se limpiará ese pedido actual. ¿Deseas continuar?');
+    const confirmed = await showDeleteConfirm('Hay un pedido en curso. Si cambias de sucursal o caja, se limpiará ese pedido actual. ¿Deseas continuar?', { confirmText: 'Continuar' });
     if (!confirmed) return;
     if (typeof cancelSale === 'function') cancelSale();
   }
@@ -4576,7 +4622,7 @@ async function createCashRegisterFromConfig() {
 }
 
 async function deleteBranchFromConfig(id, nombre) {
-  if (!confirm(`¿Eliminar la sucursal "${nombre}"?\n\nTodas sus cajas también quedarán inactivas.\nEsta acción no se puede deshacer.`)) return;
+  if (!await showDeleteConfirm(`¿Eliminar la sucursal "<strong>${nombre}</strong>"?<br><br>Todas sus cajas también quedarán inactivas. Esta acción no se puede deshacer.`)) return;
   try {
     const response = await fetch(`/api/branches/${id}`, {
       method: 'DELETE',
@@ -4596,7 +4642,7 @@ async function deleteBranchFromConfig(id, nombre) {
 }
 
 async function deleteCashRegisterFromConfig(id, nombre) {
-  if (!confirm(`¿Eliminar la caja "${nombre}"?\n\nEsta acción no se puede deshacer.`)) return;
+  if (!await showDeleteConfirm(`¿Eliminar la caja "<strong>${nombre}</strong>"? Esta acción no se puede deshacer.`)) return;
   try {
     const response = await fetch(`/api/cash-registers/${id}`, {
       method: 'DELETE',
@@ -5744,7 +5790,11 @@ async function initializeStartupFlow() {
     applyBusinessProfile();
     updateLicenseUI();
     if (setupState?.setupRequired) {
-      startSetupWizardSession();
+      if (typeof window.platformInit !== 'undefined') {
+        window.platformInit.show((choice) => _handlePlatformInitChoice(choice));
+      } else {
+        startSetupWizardSession();
+      }
       return;
     }
     showLoginScreen();
@@ -6049,7 +6099,7 @@ async function handleBackupFile(event) {
     }
     const content = await file.text();
     const payload = JSON.parse(content);
-    if (!confirm('Esto reemplazará la data actual del sistema. ¿Deseas continuar?')) {
+    if (!await showDeleteConfirm('Esto reemplazará la data actual del sistema con el archivo seleccionado. ¿Deseas continuar?', { confirmText: 'Restaurar' })) {
       event.target.value = '';
       return;
     }
@@ -6381,7 +6431,7 @@ async function legacyRestoreSecureBackupHandler() {
     showToast('Debes ingresar la clave de seguridad.', 'warning');
     return;
   }
-  if (!confirm('Esto reemplazará la data actual por la última copia segura automática. ¿Deseas continuar?')) {
+  if (!await showDeleteConfirm('Esto reemplazará la data actual por la última copia segura automática. ¿Deseas continuar?', { confirmText: 'Restaurar' })) {
     return;
   }
 
@@ -6447,6 +6497,7 @@ window.getLocalizedProductName = getLocalizedProductName;
 window.getLocalizedCategoryName = getLocalizedCategoryName;
 window.setLoginMode = setLoginMode;
 window.startNewUserFlow = startNewUserFlow;
+window._handlePlatformInitChoice = _handlePlatformInitChoice;
 window.launchSetupWizardFromLogin = launchSetupWizardFromLogin;
 window.confirmSetupReinstallModal = confirmSetupReinstallModal;
 window.refreshStartupStatus = refreshStartupStatus;
@@ -8114,7 +8165,7 @@ async function settleDeliveryCash(invoiceNumber) {
     showToast('No se encontró la factura contra entrega.', 'error');
     return;
   }
-  if (!confirm(`¿Validar el pago contra entrega de ${invoiceNumber} por ${fmt(sale.total)}?`)) {
+  if (!await showDeleteConfirm(`¿Validar el pago contra entrega de <strong>${invoiceNumber}</strong> por <strong>${fmt(sale.total)}</strong>?`, { confirmText: 'Validar pago' })) {
     return;
   }
 

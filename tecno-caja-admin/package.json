@@ -1,0 +1,10 @@
+{
+  "name": "tecno-caja-admin",
+  "version": "1.0.0",
+  "description": "Panel de administración de plataforma Tecno Caja",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& ..\\node_modules\\electron\\dist\\electron.exe ."
+  }
+}

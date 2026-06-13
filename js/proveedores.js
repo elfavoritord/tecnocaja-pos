@@ -375,7 +375,7 @@ async function deleteProveedor(id) {
     showToast(supplierText('No puedes eliminar este proveedor porque tiene facturas pendientes.'), 'warning');
     return;
   }
-  if (!confirm(supplierText('¿Eliminar este proveedor?'))) return;
+  if (!await showDeleteConfirm(supplierText('¿Eliminar este proveedor? Esta acción no se puede deshacer.'))) return;
   try {
     await api.request(`/api/suppliers/${id}`, {
       method: 'DELETE',
