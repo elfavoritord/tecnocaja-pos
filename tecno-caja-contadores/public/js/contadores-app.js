@@ -140,6 +140,20 @@ function goto(mod) {
 // FIREBASE INIT & AUTH
 // ══════════════════════════════════════════════════════════════════════
 
+async function _verifyWithRetry(token, attempts = 4, delay = 1200) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await apiCall('POST', '/api/auth/verify', { idToken: token });
+    } catch (e) {
+      if (e.message === 'Failed to fetch' && i < attempts - 1) {
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw e;
+      }
+    }
+  }
+}
+
 async function initApp() {
   try {
     const cfg = await fetch('/api/firebase-config').then(r => r.json());
@@ -167,11 +181,14 @@ async function initApp() {
       if (user) {
         try {
           _token = await user.getIdToken();
-          const profile = await apiCall('POST', '/api/auth/verify', { idToken: _token });
+          const profile = await _verifyWithRetry(_token);
           _perfil = profile;
           showApp(profile);
         } catch (e) {
-          showLoginError(e.message);
+          const msg = e.message === 'Failed to fetch'
+            ? 'No se pudo conectar al servidor. Intenta de nuevo.'
+            : e.message;
+          showLoginError(msg);
           _fbAuth.signOut();
         }
       } else {
@@ -186,6 +203,19 @@ async function initApp() {
 function showLoginScreen() {
   hide('screen-app');
   show('screen-login');
+
+  // Restaurar credenciales guardadas si "Mantener sesión" estaba activo
+  const savedEmail = localStorage.getItem('tc_saved_email') || '';
+  const savedPass  = localStorage.getItem('tc_saved_pass')  || '';
+  const savedRemember = localStorage.getItem('tc_cont_persist') !== 'false';
+
+  const emailEl = $id('inp-email');
+  const passEl  = $id('inp-password');
+  const chkEl   = $id('chk-remember');
+
+  if (emailEl && savedEmail) emailEl.value = savedEmail;
+  if (passEl  && savedPass)  passEl.value  = atob(savedPass);
+  if (chkEl)                 chkEl.checked = savedRemember;
 }
 
 function showApp(profile) {
@@ -228,11 +258,20 @@ async function doLogin() {
       remember ? firebase.auth.Auth.Persistence.LOCAL : firebase.auth.Auth.Persistence.SESSION
     );
     await _fbAuth.signInWithEmailAndPassword(email, pass);
+    // Guardar credenciales si "Mantener sesión" activo
+    if (remember) {
+      localStorage.setItem('tc_saved_email', email);
+      localStorage.setItem('tc_saved_pass',  btoa(pass));
+    } else {
+      localStorage.removeItem('tc_saved_email');
+      localStorage.removeItem('tc_saved_pass');
+    }
     // onAuthStateChanged lo toma desde aquí
   } catch (e) {
     let msg = e.message;
     if (e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found') msg = 'Correo o contraseña incorrectos.';
     if (e.code === 'auth/too-many-requests') msg = 'Demasiados intentos. Espera un momento.';
+    if (e.message === 'Failed to fetch') msg = 'No se pudo conectar al servidor. Reintenta.';
     if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Iniciar sesión'; }
