@@ -2,16 +2,16 @@
 
 const {
   createDisabledLegacyApiRouter,
-  createDisabledLegacyPublicRouter,
   createEcfRouter,
 } = require('./controllers/router');
+const { createDgiiPublicRouter } = require('../../server/routes/dgii-public.routes');
 
 function createEcfModule(deps) {
   const { router, service } = createEcfRouter(deps);
   return {
     apiRouter: router,
     legacyApiRouter: createDisabledLegacyApiRouter(),
-    legacyPublicRouter: createDisabledLegacyPublicRouter(),
+    publicDgiiRouter: createDgiiPublicRouter(),
     service,
     ensureSchema: () => service.ensureReady(),
   };

@@ -3375,6 +3375,17 @@ async function activateAuthenticatedSession(response, sessionLanguage, options =
   const loginScreen = document.getElementById('login-screen');
   if (loginScreen) loginScreen.style.display = 'none';
 
+  // Redirección por rol: superadmin → panel propio; contador_asociado → panel propio
+  const userRoleCode = response?.user?.role_code || response?.user?.roleCode || '';
+  if (userRoleCode === 'superadmin' && typeof window.superAdminPanel !== 'undefined') {
+    window.superAdminPanel.activate();
+    return;
+  }
+  if (userRoleCode === 'contador_asociado' && typeof window.contadorPanel !== 'undefined') {
+    window.contadorPanel.activate();
+    return;
+  }
+
   document.getElementById('app')?.classList.remove('hidden');
   initApp();
   const salesNav = document.querySelector('.nav-item[data-module="ventas"]');

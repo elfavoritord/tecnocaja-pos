@@ -406,8 +406,52 @@ async function importCertificationSet({
   }
 }
 
+function previewCertificationSet(uploadedFiles = []) {
+  const { sources, cleanupDirs } = collectCertificationSources(uploadedFiles);
+  assertCondition(sources.length > 0, 'Debe subir al menos un archivo, carpeta o ZIP del set DGII.', { statusCode: 400 });
+  const parsedCases = [];
+  const ignored = [];
+
+  try {
+    for (const source of sources) {
+      const cases = parseCertificationSource(source);
+      if (!cases.length) {
+        ignored.push(source.originalFilename || path.basename(source.filepath));
+        continue;
+      }
+      parsedCases.push(...cases);
+    }
+
+    const normalizedCases = dedupeCertificationCases(parsedCases);
+    assertCondition(normalizedCases.length > 0, 'No se detectaron comprobantes válidos en los archivos del set DGII.', {
+      statusCode: 422,
+      details: {
+        ignored,
+        sources: sources.map((item) => item.originalFilename || path.basename(item.filepath)),
+      },
+    });
+
+    return {
+      ok: true,
+      total: normalizedCases.length,
+      ignored,
+      sources: sources.map((item) => item.originalFilename || path.basename(item.filepath)),
+      byType: normalizedCases.reduce((acc, item) => {
+        const key = String(item.tipoEcf || 'SIN_TIPO').toUpperCase();
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {}),
+    };
+  } finally {
+    for (const tempDir of cleanupDirs) {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+}
+
 module.exports = {
   importCertificationSet,
+  previewCertificationSet,
   parseCertificationSource,
   parseXmlTestCase,
 };

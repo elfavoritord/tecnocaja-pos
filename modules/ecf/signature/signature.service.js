@@ -202,7 +202,9 @@ function signXmlWithWindows(xmlContent, certificateContext) {
   } catch (error) {
     const stderr = String(error?.stderr || '').trim();
     const stdout = String(error?.stdout || '').trim();
-    const detail = stderr || stdout || error.message || 'Error desconocido al firmar XML con Windows.';
+    const raw = stderr || stdout || error.message || 'Error desconocido al firmar XML con Windows.';
+    // Strip ANSI escape codes emitted by pwsh.exe
+    const detail = raw.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/\r?\n[ \t]+/g, ' ').trim();
     throw new Error(`No se pudo firmar la semilla con Windows/.NET SignedXml. ${detail}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });

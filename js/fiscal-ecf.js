@@ -127,7 +127,7 @@ async function loadFiscalStatus() {
       await loadEcfDocuments();
     }
     if (getCurrentFiscalTab() === 'homologation') {
-      primeCertificationCasesPanel();
+      await loadCertificationCenterStatus({ silent: true });
     }
   } catch (e) {
     showFiscalError(e.message);
@@ -175,6 +175,7 @@ function renderFiscalStatus(status, bundle) {
   renderQuickChecklist(checklist);
   renderPublicUrls(dgiiSettings.publicUrls);
   renderInternalTokenStatus(dgiiSettings.internalToken);
+  _renderEcfStatusCards(status, bundle);
 }
 
 function buildConnectionStatusHtml(status) {
@@ -325,6 +326,182 @@ function renderInternalTokenStatus(tokenInfo) {
     <div><strong>Configurado:</strong> ${tokenInfo.configured ? 'Sí' : 'No'}</div>
     <div><strong>Huella:</strong> ${escapeHtml(tokenInfo.hashPreview || '—')}</div>
   `;
+}
+
+// ── Visual Status Cards ─────────────────────────────────────────────────────
+function _renderEcfStatusCards(status, bundle) {
+  const cert = bundle?.certificate || {};
+
+  function setCard(id, valId, html, state) {
+    const card = document.getElementById(id);
+    const val  = document.getElementById(valId);
+    if (!val) return;
+    val.innerHTML = html;
+    if (card) {
+      card.className = 'ecf-scard' + (state ? ` ecf-scard--${state}` : '');
+    }
+  }
+
+  const dot = (color) => `<span class="ecf-dot ecf-dot--${color}"></span>`;
+
+  // DGII connection
+  if (status?.lastConnStatus === 'conectado') {
+    setCard('ecf-scard-dgii', 'ecf-scard-dgii-val', `${dot('green')} Conectado`, 'ok');
+  } else if (status?.lastConnMsg) {
+    setCard('ecf-scard-dgii', 'ecf-scard-dgii-val', `${dot('red')} Error`, 'error');
+  } else {
+    setCard('ecf-scard-dgii', 'ecf-scard-dgii-val', `${dot('gray')} Sin conexión`, '');
+  }
+
+  // Certificado
+  if (!status?.hasCertificate) {
+    setCard('ecf-scard-cert', 'ecf-scard-cert-val', `${dot('red')} Sin certificado`, 'error');
+  } else if (status?.certificateStatus === 'vencido' || cert.isExpired) {
+    setCard('ecf-scard-cert', 'ecf-scard-cert-val', `${dot('red')} Vencido`, 'error');
+  } else if (Number(cert.daysRemaining || 999) < 30) {
+    const days = cert.daysRemaining ?? '?';
+    setCard('ecf-scard-cert', 'ecf-scard-cert-val', `${dot('yellow')} Vence en ${days}d`, 'warn');
+  } else {
+    setCard('ecf-scard-cert', 'ecf-scard-cert-val', `${dot('green')} Válido`, 'ok');
+  }
+
+  // Facturación e-CF
+  if (status?.isActive) {
+    setCard('ecf-scard-factura', 'ecf-scard-factura-val', `${dot('green')} Activa`, 'ok');
+  } else {
+    setCard('ecf-scard-factura', 'ecf-scard-factura-val', `${dot('gray')} Inactiva`, '');
+  }
+
+  // Secuencias
+  if (status?.hasActiveSequences) {
+    setCard('ecf-scard-seq', 'ecf-scard-seq-val', `${dot('green')} Sincronizadas`, 'ok');
+  } else {
+    setCard('ecf-scard-seq', 'ecf-scard-seq-val', `${dot('yellow')} Sin secuencias`, 'warn');
+  }
+
+  // Último envío
+  const lastSent = status?.lastSentAt || bundle?.receptionStorage?.lastSent;
+  const valUlt = document.getElementById('ecf-scard-ultimo-val');
+  if (valUlt) {
+    valUlt.innerHTML = lastSent
+      ? `<span style="font-size:11px;line-height:1.4">${escapeHtml(formatDateTime(lastSent))}</span>`
+      : `<span style="color:var(--text3)">Sin envíos</span>`;
+  }
+}
+
+// ── Mi Contador ──────────────────────────────────────────────────────────────
+async function loadContadorSection() {
+  const panel = document.getElementById('ecf-contador-panel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="loading-text">Cargando…</div>';
+  try {
+    const token = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '') || DB?.authToken || '';
+    const userId = DB?.currentUser?.id;
+    const r = await fetch(`/api/platform/mi-contador${userId ? `?actorUserId=${userId}` : ''}`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json();
+    if (!data || !data.found) {
+      panel.innerHTML = `
+        <div style="text-align:center;padding:40px 20px;max-width:460px;margin:0 auto">
+          <div style="font-size:48px;margin-bottom:16px">👨‍💼</div>
+          <div style="font-size:1.1rem;font-weight:700;margin-bottom:8px">¿Necesitas ayuda con tus obligaciones fiscales?</div>
+          <div style="font-size:.9rem;color:var(--text3);margin-bottom:24px">
+            Conecta con un contador verificado Tecno Caja para gestionar tu DGII, e-CF y obligaciones tributarias desde aquí mismo.
+          </div>
+          <button class="btn-primary" onclick="openWizardStep('wizard-contador')">🔍 Buscar Contador Verificado</button>
+        </div>`;
+      return;
+    }
+    const c = data;
+    const badge = c.verified ? '<span style="background:#065f46;color:#6ee7b7;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700">✅ Verificado DGII</span>' : '';
+    panel.innerHTML = `
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:start;max-width:640px">
+        <div style="width:80px;height:80px;border-radius:50%;background:var(--bg2);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:36px;flex-shrink:0">
+          ${c.logo_url ? `<img src="${escapeHtml(c.logo_url)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">` : '👨‍💼'}
+        </div>
+        <div>
+          <div style="font-size:1.1rem;font-weight:700;margin-bottom:4px">${escapeHtml(c.nombre || c.nombre_firma || '—')}</div>
+          ${badge}
+          ${c.especialidad ? `<div style="font-size:.85rem;color:var(--text3);margin-top:6px">${escapeHtml(c.especialidad)}</div>` : ''}
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px">
+            ${c.telefono ? `<a href="tel:${escapeHtml(c.telefono)}" class="btn-secondary" style="text-decoration:none;text-align:center">📞 ${escapeHtml(c.telefono)}</a>` : ''}
+            ${c.whatsapp ? `<a href="https://wa.me/${String(c.whatsapp).replace(/\D/g,'')}" target="_blank" class="btn-secondary" style="text-decoration:none;text-align:center">💬 WhatsApp</a>` : ''}
+            ${c.email || c.correo ? `<a href="mailto:${escapeHtml(c.email || c.correo)}" class="btn-secondary" style="text-decoration:none;text-align:center">📧 Correo</a>` : ''}
+            <button class="btn-secondary" onclick="showFiscalToast('Funcionalidad próximamente disponible.','info')">🔄 Solicitar cambio</button>
+          </div>
+        </div>
+      </div>`;
+  } catch (e) {
+    panel.innerHTML = `<div style="color:var(--text3);padding:24px">No se pudo cargar la información del contador asignado.</div>`;
+  }
+}
+
+// ── Centro Fiscal ────────────────────────────────────────────────────────────
+function renderCentroFiscal() {
+  const panel = document.getElementById('ecf-centro-fiscal-panel');
+  if (!panel) return;
+
+  const now  = new Date();
+  const year = now.getFullYear();
+  const mon  = now.getMonth() + 1; // 1-12
+
+  // Calcular próximas fechas de vencimiento DGII (RD)
+  // ITBIS: día 20 del mes siguiente
+  // 606/607: día 20 del mes siguiente
+  // ISR adelanto: día 15 del tercer mes del trimestre
+  function nextDue(dayOfMonth, offsetMonths = 1) {
+    const d = new Date(year, mon - 1 + offsetMonths, dayOfMonth);
+    return d;
+  }
+
+  function daysLeft(d) {
+    return Math.ceil((d - now) / 86400000);
+  }
+
+  function fmtDate(d) {
+    return d.toLocaleDateString('es-DO', { day:'2-digit', month:'long', year:'numeric' });
+  }
+
+  function stateColor(days) {
+    if (days < 0)  return { dot: 'red',    label: 'Atrasado',  cls: '#7f1d1d' };
+    if (days <= 5) return { dot: 'red',    label: 'Urgente',   cls: '#7f1d1d' };
+    if (days <= 15)return { dot: 'yellow', label: 'Próximo',   cls: '#78350f' };
+    return             { dot: 'green',  label: 'Al día',    cls: '#064e3b' };
+  }
+
+  const obligations = [
+    { icon:'🧾', name:'ITBIS (IT-1)',    due: nextDue(20), desc:'Declaración y pago mensual ITBIS' },
+    { icon:'📋', name:'Formato 606',      due: nextDue(20), desc:'Compras y gastos del mes anterior' },
+    { icon:'📋', name:'Formato 607',      due: nextDue(20), desc:'Ventas del mes anterior' },
+    { icon:'🏦', name:'Retenciones 608',  due: nextDue(10), desc:'Retenciones efectuadas' },
+    { icon:'💰', name:'ISR Adelanto',     due: nextDue(15, Math.ceil(mon / 3) * 3 - mon + 1), desc:'Pago a cuenta ISR trimestral' },
+  ];
+
+  panel.innerHTML = `
+    <div style="margin-bottom:16px">
+      <div style="font-size:1rem;font-weight:700">Centro Fiscal</div>
+      <div style="font-size:.85rem;color:var(--text3)">Próximas obligaciones tributarias DGII — ${now.toLocaleDateString('es-DO',{month:'long',year:'numeric'})}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+      ${obligations.map(ob => {
+        const days = daysLeft(ob.due);
+        const st   = stateColor(days);
+        return `
+          <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:14px;border-left:3px solid ${st.cls === '#064e3b' ? '#10b981' : st.cls === '#78350f' ? '#f59e0b' : '#ef4444'}">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+              <div style="font-size:20px">${ob.icon}</div>
+              <span style="font-size:11px;font-weight:700;background:${st.cls};color:${st.dot==='green'?'#6ee7b7':st.dot==='yellow'?'#fde68a':'#fca5a5'};border-radius:4px;padding:2px 6px">${st.label}</span>
+            </div>
+            <div style="font-size:.9rem;font-weight:700;margin-bottom:2px">${ob.name}</div>
+            <div style="font-size:.78rem;color:var(--text3);margin-bottom:6px">${ob.desc}</div>
+            <div style="font-size:.82rem;font-weight:600">${fmtDate(ob.due)}</div>
+            <div style="font-size:.78rem;color:var(--text3)">${days < 0 ? `${Math.abs(days)}d de retraso` : days === 0 ? 'Vence hoy' : `${days}d restantes`}</div>
+          </div>`;
+      }).join('')}
+    </div>
+    <div style="margin-top:14px;padding:.85rem 1rem;background:var(--bg2);border:1px solid var(--border);border-radius:10px;font-size:.82rem;color:var(--text3)">
+      💡 Las fechas son aproximadas. Verifica en <strong>dgii.gov.do</strong> o consulta con tu contador.
+    </div>`;
 }
 
 function renderBusinessForm(bundle, status) {
@@ -1327,6 +1504,92 @@ async function loadFiscalSequences() {
   } catch (e) {
     container.innerHTML = `<div class="error-text">Error al cargar: ${escapeHtml(e.message)}</div>`;
   }
+  loadSequenceUsagePanel();
+}
+
+async function loadSequenceUsagePanel() {
+  const panel = document.getElementById('ecf-seq-usage-panel');
+  if (!panel) return;
+  try {
+    const stats = await fiscalApi('GET', '/sequence-usage/stats');
+    if (!stats.length) {
+      panel.innerHTML = '<p style="font-size:.8rem;color:var(--text3);margin:0">No hay e-NCF enviados a DGII registrados aún.</p>';
+      return;
+    }
+    const statusLabel = (s) => ({
+      ACCEPTED: '<span style="color:#10b981;font-weight:700">✓ Aceptada</span>',
+      REJECTED: '<span style="color:#ef4444;font-weight:700">✗ Rechazada</span>',
+      BLOCKED_DGII_USED: '<span style="color:#f59e0b;font-weight:700">⛔ Bloqueada DGII</span>',
+      SENT: '<span style="color:#3b82f6">↑ Enviada</span>',
+      RESERVED: '<span style="color:var(--text3)">⏳ Reservada</span>',
+    }[s] || s);
+    panel.innerHTML = `
+      <div style="overflow-x:auto">
+        <table class="compact-table" style="width:100%;font-size:.78rem">
+          <thead>
+            <tr>
+              <th>Tipo e-CF</th>
+              <th style="text-align:right">Último usado</th>
+              <th style="text-align:right">Próximo disponible</th>
+              <th style="text-align:right">Aceptadas</th>
+              <th style="text-align:right">Rechazadas</th>
+              <th style="text-align:right">Bloqueadas</th>
+              <th style="text-align:right">Enviadas</th>
+              <th style="text-align:right">Total registradas</th>
+              <th style="text-align:right">Disponibles</th>
+              <th>Último envío</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${stats.map(r => `
+              <tr>
+                <td><strong>${escapeHtml(r.tipoEcf)}</strong></td>
+                <td style="text-align:right;font-family:monospace">${r.ultimoNumero || '—'}</td>
+                <td style="text-align:right;font-family:monospace;color:var(--accent)">${r.proximoDisponible || '—'}</td>
+                <td style="text-align:right;color:#10b981">${r.aceptadas || 0}</td>
+                <td style="text-align:right;color:#ef4444">${r.rechazadas || 0}</td>
+                <td style="text-align:right;color:#f59e0b">${r.bloqueadas || 0}</td>
+                <td style="text-align:right;color:#3b82f6">${r.enviadas || 0}</td>
+                <td style="text-align:right">${r.total || 0}</td>
+                <td style="text-align:right;color:${r.disponibleTotal > 0 ? '#10b981' : '#ef4444'}">${r.disponibleTotal ?? '—'}</td>
+                <td style="font-size:.72rem;color:var(--text3)">${r.ultimoEnvio ? new Date(r.ultimoEnvio).toLocaleString('es-DO') : '—'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch (e) {
+    panel.innerHTML = `<p style="font-size:.8rem;color:var(--text3);margin:0">No se pudieron cargar estadísticas: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function openFindNextSequenceModal() {
+  const tipo = prompt('Ingresa el tipo de e-CF a consultar (ej. E31, E32, E33, E41, E44, E45, E46, E47):');
+  if (!tipo) return;
+  try {
+    const r = await fiscalApi('POST', '/sequence-usage/find-next', { tipoEcf: tipo.trim().toUpperCase() });
+    if (!r.ok) { showFiscalToast(r.message || 'No se encontró resultado.', 'warning'); return; }
+    const lines = [
+      `Tipo: ${r.tipoEcf}`,
+      `Próximo disponible: ${r.proximoDisponible}`,
+      r.encf ? `e-NCF: ${r.encf}` : '',
+      `Máximo usado en DGII: ${r.maxUsadoEnDGII || 0}`,
+      `Próximo en secuencia local: ${r.proxNumeroSecuencia || 'Sin secuencia'}`,
+      r.disponibleTotal !== undefined ? `Disponibles: ${r.disponibleTotal}` : '',
+    ].filter(Boolean).join('\n');
+    if (r.encf && confirm(`${lines}\n\n¿Actualizar la secuencia ${r.tipoEcf} al próximo disponible (${r.proximoDisponible})?`)) {
+      if (r.secuenciaId) {
+        await fiscalApi('POST', `/sequences/${r.secuenciaId}/next`, { proximoNumero: r.proximoDisponible });
+        showFiscalToast(`Secuencia ${r.tipoEcf} actualizada al ${r.proximoDisponible}. Próximo e-NCF: ${r.encf}`, 'success');
+        loadFiscalSequences();
+      }
+    } else {
+      showFiscalToast(lines.replace(/\n/g, ' | '), 'info');
+    }
+  } catch (e) {
+    showFiscalToast(`Error: ${e.message}`, 'error');
+  }
 }
 
 function renderSequencesTable(container, seqs) {
@@ -1369,6 +1632,7 @@ function renderSequencesTable(container, seqs) {
               <td style="display:flex;gap:.35rem;flex-wrap:wrap">
                 ${seq.activo ? `<button class="btn-xs" onclick='setEcfSequenceNext(${seq.id}, ${Number(seq.proximo || 0)}, ${JSON.stringify(String(seq.tipoComprobante || ''))})' title="Ajustar próximo número">↺</button>` : ''}
                 ${seq.activo ? `<button class="btn-xs btn-danger" onclick="disableEcfSequence(${seq.id})" title="Desactivar">✕</button>` : ''}
+                <button class="btn-xs btn-danger" onclick="deleteEcfSequencePermanently(${seq.id},'${escapeHtml(seq.tipoComprobante)}')" title="Eliminar permanentemente">🗑</button>
               </td>
             </tr>
           `;
@@ -1515,6 +1779,22 @@ async function disableEcfSequence(id) {
     showFiscalToast('Secuencia desactivada.', 'success');
     await loadFiscalSequences();
     await loadFiscalStatus();
+  } catch (e) {
+    showFiscalToast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function deleteEcfSequencePermanently(id, tipo) {
+  if (!confirm(`¿ELIMINAR permanentemente la secuencia ${tipo || id}?\n\nEsta acción no se puede deshacer. La secuencia será borrada de la base de datos.`)) return;
+  try {
+    const r = await fiscalApi('DELETE', `/sequences/${id}/permanent`);
+    if (r.ok) {
+      showFiscalToast(`Secuencia ${tipo || id} eliminada.`, 'success');
+      await loadFiscalSequences();
+      await loadFiscalStatus();
+    } else {
+      showFiscalToast(r.message || 'No se pudo eliminar.', 'warning');
+    }
   } catch (e) {
     showFiscalToast(`Error: ${e.message}`, 'error');
   }
@@ -1697,6 +1977,7 @@ function certificationStatusBadge(state) {
     aceptado: { label: '🟢 Aceptado', cls: 'badge-green' },
     aceptado_condicional: { label: '🟡 Aceptado Condicional', cls: 'badge-blue' },
     rechazado: { label: '🔴 Rechazado', cls: 'badge-red' },
+    bloqueado: { label: 'Bloqueado', cls: 'badge-red' },
     pendiente: { label: '⏳ Pendiente', cls: 'badge-yellow' },
     firmado: { label: '⏳ Pendiente', cls: 'badge-yellow' },
     enviado: { label: '🔄 Enviado', cls: 'badge-blue' },
@@ -1705,6 +1986,419 @@ function certificationStatusBadge(state) {
     error: { label: '🔴 Rechazado', cls: 'badge-red' }
   };
   return map[normalized] || { label: state || '—', cls: 'badge-gray' };
+}
+
+let _certCenterPolling = null;
+
+function certCenterAppendLog(message, tone = 'info') {
+  const log = document.getElementById('cert-center-log');
+  if (!log) return;
+  const colors = { info: 'var(--text3)', ok: '#16a34a', warn: '#d97706', error: '#dc2626' };
+  const line = document.createElement('div');
+  line.style.cssText = `padding:2px 0;color:${colors[tone] || colors.info}`;
+  line.textContent = `[${new Date().toLocaleTimeString('es-DO')}] ${message}`;
+  if (log.textContent.includes('Centro listo. Esperando archivos.')) log.innerHTML = '';
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderCertCenterDashboard(counts = {}, byType = []) {
+  const box = document.getElementById('cert-center-dashboard');
+  if (!box) return;
+
+  // ── Resumen general (fila superior) ─────────────────────────────────────
+  const summaryItems = [
+    ['Total', counts.total || 0, '#2563eb'],
+    ['Aceptados', counts.accepted || 0, '#16a34a'],
+    ['Rechazados', counts.rejected || 0, '#dc2626'],
+    ['Bloqueados', counts.blocked || 0, '#b91c1c'],
+    ['En proceso', counts.sent || 0, '#d97706'],
+    ['Avance', `${counts.progress || 0}%`, '#0f766e'],
+  ];
+  const summaryHtml = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:.55rem;margin-bottom:1rem">
+      ${summaryItems.map(([label, value, color]) => `
+        <div style="border:1px solid var(--border);border-radius:8px;background:var(--bg2);padding:.65rem">
+          <div style="font-size:.68rem;color:var(--text3);font-weight:700;text-transform:uppercase">${escapeHtml(label)}</div>
+          <div style="font-size:1.2rem;font-weight:900;color:${color};margin-top:.15rem">${escapeHtml(String(value))}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  // ── Progreso por tipo (estilo portal DGII) ───────────────────────────────
+  let byTypeHtml = '';
+  if (byType && byType.length > 0) {
+    // Separar ECF normales y RFCE
+    const ecfItems = byType.filter((t) => !t.isRfce);
+    const rfceItems = byType.filter((t) => t.isRfce);
+
+    const renderTypeCard = (t) => {
+      const allAccepted = t.accepted === t.total && t.total > 0;
+      const hasRejected = t.rejected > 0;
+      const borderColor = allAccepted ? '#16a34a' : hasRejected ? '#dc2626' : 'var(--border)';
+      const countColor = allAccepted ? '#16a34a' : hasRejected ? '#dc2626' : t.sent > 0 ? '#d97706' : 'var(--text)';
+      const label = t.isRfce ? `Comprobantes tipo ${t.tipo.replace('E', '')} RFCE` : `Comprobantes tipo ${t.tipo.replace('E', '')}`;
+      return `
+        <div style="border:1px solid ${borderColor};border-radius:8px;background:var(--bg2);padding:.6rem .85rem;display:flex;align-items:center;justify-content:space-between;gap:.5rem">
+          <div style="font-size:.78rem;color:var(--text3)">${escapeHtml(label)}</div>
+          <div style="font-size:1rem;font-weight:800;color:${countColor};white-space:nowrap">
+            ${t.accepted}/${t.total}
+            ${allAccepted ? '<span style="color:#16a34a;margin-left:.3rem">✓</span>' : ''}
+            ${hasRejected ? '<span style="color:#dc2626;margin-left:.3rem">✗</span>' : ''}
+          </div>
+        </div>
+      `;
+    };
+
+    const ecfGrid = ecfItems.length ? `
+      <div style="margin-bottom:.65rem">
+        <div style="font-size:.72rem;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:.45rem">Estado actual de las pruebas de simulación</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.45rem">
+          ${ecfItems.map(renderTypeCard).join('')}
+        </div>
+      </div>
+    ` : '';
+
+    const rfceGrid = rfceItems.length ? `
+      <div>
+        <div style="font-size:.72rem;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:.45rem">Facturas de consumo &lt;250Mil (RFCE)</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.45rem">
+          ${rfceItems.map(renderTypeCard).join('')}
+        </div>
+      </div>
+    ` : '';
+
+    byTypeHtml = ecfGrid + rfceGrid;
+  }
+
+  box.innerHTML = summaryHtml + (byTypeHtml
+    ? `<div style="border:1px solid var(--border);border-radius:10px;background:var(--bg2);padding:.85rem">${byTypeHtml}</div>`
+    : '<div class="empty-state-small">Carga el Excel DGII para ver el progreso por tipo.</div>'
+  );
+}
+
+function certCenterStageIndex(stage, state) {
+  const normalized = String(state || '').toLowerCase();
+  if (normalized === 'bloqueado') return 6;
+  if (normalized === 'rechazado' || normalized === 'error') return 6;
+  if (normalized === 'aceptado' || normalized === 'aceptado_condicional') return 6;
+  const stages = ['Pendiente', 'Generando XML', 'Firmando', 'Enviando', 'Consultando'];
+  return Math.max(0, stages.indexOf(stage));
+}
+
+function renderCertCenterCards(cases = []) {
+  const box = document.getElementById('cert-center-cards');
+  if (!box) return;
+  if (!cases.length) {
+    box.innerHTML = '<div class="empty-state-small">Carga el Excel oficial de DGII para ver las tarjetas del lote.</div>';
+    return;
+  }
+  const ordered = [...cases].sort((a, b) => Number(a.orden || a.order || a.id || 0) - Number(b.orden || b.order || b.id || 0));
+  const stages = ['Pendiente', 'Generando XML', 'Firmando', 'Enviando', 'Consultando', 'Aceptado/Rechazado'];
+  box.innerHTML = ordered.map((item) => {
+    const state = String(item.estado || '').toLowerCase();
+    const badge = certificationStatusBadge(item.estado);
+    const activeIndex = certCenterStageIndex(item.stage, item.estado);
+    const response = item.responseText || item.dgiiMessage || item.error || 'Sin respuesta DGII todavía.';
+    const canRetry = Boolean(item.retryable);
+    return `
+      <div style="border:1px solid var(--border);border-radius:8px;background:var(--bg2);padding:.85rem;display:grid;gap:.65rem">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:.75rem;flex-wrap:wrap">
+          <div>
+            <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
+              <span class="${badge.cls}" style="font-size:.72rem">${escapeHtml(badge.label)}</span>
+              <strong>${escapeHtml(item.tipo || '—')}</strong>
+              <code>${escapeHtml(item.encf || '—')}</code>
+            </div>
+            <div style="font-size:.76rem;color:var(--text3);margin-top:.25rem">TrackID: <code>${escapeHtml(item.trackId || '—')}</code></div>
+          </div>
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap">
+            <button class="btn-xs" onclick="viewEcfXml(${item.id})">Ver XML</button>
+            <button class="btn-xs" onclick="downloadEcfXml(${item.id}, '${escapeHtml(item.encf || 'ecf')}')">Descargar XML</button>
+            ${canRetry ? `<button class="btn-xs btn-secondary" onclick="retryCertificationCenterCase(${item.id})">Reintentar</button>` : ''}
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:.3rem">
+          ${stages.map((stage, idx) => {
+            const done = idx <= activeIndex;
+            const color = state === 'bloqueado' ? '#b91c1c' : state === 'rechazado' || state === 'error' ? '#dc2626' : done ? '#16a34a' : 'var(--border)';
+            return `<div title="${escapeHtml(stage)}" style="height:7px;border-radius:999px;background:${color}"></div>`;
+          }).join('')}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:.45rem;font-size:.76rem;color:var(--text3)">
+          <div>Tipo e-CF: <strong style="color:var(--text)">${escapeHtml(item.tipo || '—')}</strong></div>
+          <div>e-NCF: <code>${escapeHtml(item.encf || '—')}</code></div>
+          <div>Modo: <strong style="color:var(--text)">${escapeHtml(item.submissionMode || 'normal')}</strong></div>
+          <div>Etapa: <strong style="color:var(--text)">${escapeHtml(item.stage || 'Pendiente')}</strong></div>
+        </div>
+        <div style="font-size:.76rem;color:var(--text3);border-top:1px solid var(--border);padding-top:.55rem;word-break:break-word">
+          Respuesta DGII: ${escapeHtml(response)}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderCertificationCenterRfce(rfceStep4 = {}) {
+  const box = document.getElementById('cert-center-rfce');
+  if (!box) return;
+  const items = rfceStep4.items || [];
+  const accepted = items.filter((it) => ['aceptado', 'aceptado_condicional'].includes(String(it.estado || '').toLowerCase())).length;
+  const sent = items.filter((it) => String(it.estado || '').toLowerCase() === 'enviado').length;
+  if (!items.length && !rfceStep4.outDir) {
+    box.innerHTML = `
+      <div style="font-weight:800;margin-bottom:.45rem">Paso 4: RFCE &lt;250Mil</div>
+      <div style="font-size:.78rem;color:var(--text3);margin-bottom:.55rem">Genera los 4 resúmenes RFCE y envíalos por el servicio RecepcionFC de CerteCF.</div>
+      <div style="display:flex;gap:.45rem;flex-wrap:wrap">
+        <button class="btn-secondary" onclick="generateCertificationCenterRfce()">Generar RFCE</button>
+        <button class="btn-secondary" onclick="submitCertificationCenterRfce()">Enviar RecepcionFC</button>
+      </div>
+    `;
+    return;
+  }
+  box.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:.75rem;align-items:center;flex-wrap:wrap;margin-bottom:.45rem">
+      <div style="font-weight:800">Paso 4: RFCE &lt;250Mil</div>
+      <span class="${accepted === 4 ? 'badge-green' : 'badge-blue'}" style="font-size:.72rem">${accepted}/4 aceptados</span>
+    </div>
+    <code style="font-size:.72rem;word-break:break-all;color:var(--text3)">${escapeHtml(rfceStep4.outDir || 'Pendiente de generar')}</code>
+    <div style="display:grid;gap:.25rem;margin-top:.55rem;font-size:.76rem">
+      ${items.map((item) => `<div><code>${escapeHtml(item.fileName || item.encf || '')}</code> · ${escapeHtml(item.estado || 'generado')}${item.trackId ? ` · Track ${escapeHtml(item.trackId)}` : ''}</div>`).join('')}
+    </div>
+    <div style="display:flex;gap:.45rem;flex-wrap:wrap;margin-top:.65rem">
+      <button class="btn-secondary" onclick="generateCertificationCenterRfce()">Generar RFCE</button>
+      <button class="btn-secondary" onclick="submitCertificationCenterRfce()">Enviar RecepcionFC</button>
+      <button class="btn-secondary" onclick="pollCertificationCenterRfce()">Consultar RFCE</button>
+    </div>
+    <div style="font-size:.72rem;color:var(--text3);margin-top:.5rem">${sent}/4 enviado(s) esperando consulta DGII.</div>
+  `;
+}
+
+function renderCertificationCenterHistory(history = []) {
+  const box = document.getElementById('cert-center-history');
+  if (!box) return;
+  if (!history.length) {
+    box.innerHTML = 'Sin sesiones registradas.';
+    return;
+  }
+  box.innerHTML = history.slice(0, 6).map((row) => `
+    <div style="border-bottom:1px solid var(--border);padding:.3rem 0">
+      <div style="font-weight:700;color:var(--text)">${escapeHtml(row.summary || row.key || 'Sesión DGII')}</div>
+      <div>${escapeHtml(row.environment || '—')} · ${escapeHtml(row.status || '—')} · ${escapeHtml(row.createdAt || '')}</div>
+    </div>
+  `).join('');
+}
+
+function renderCertificationCenter(payload = {}) {
+  renderCertCenterDashboard(payload.counts || {}, payload.byType || []);
+  renderCertCenterCards(payload.cases || []);
+  renderCertificationCenterRfce(payload.rfceStep4 || {});
+  renderCertificationCenterHistory(payload.history || []);
+}
+
+async function loadCertificationCenterStatus(options = {}) {
+  try {
+    const payload = await fiscalApi('GET', '/certification-center/status');
+    renderCertificationCenter(payload);
+    if (!options.silent) certCenterAppendLog(payload.message || 'Estado actualizado.', 'info');
+    return payload;
+  } catch (err) {
+    certCenterAppendLog(`Error consultando estado: ${err.message}`, 'error');
+    if (!options.silent) showFiscalToast(`Error: ${err.message}`, 'error');
+    return null;
+  }
+}
+
+async function processCertificationCenter() {
+  const excel = document.getElementById('cert-center-excel');
+  const p12 = document.getElementById('cert-center-p12');
+  const password = document.getElementById('cert-center-password');
+  const env = document.getElementById('cert-center-environment');
+  const btn = document.getElementById('cert-center-process');
+  if (!excel?.files?.[0]) { showFiscalToast('Carga el Excel oficial DGII.', 'warning'); return; }
+  if (p12?.files?.[0] && !password?.value) { showFiscalToast('Escribe la contraseña del certificado.', 'warning'); return; }
+
+  const formData = new FormData();
+  formData.append('excel', excel.files[0], excel.files[0].name);
+  if (p12?.files?.[0]) {
+    formData.append('certificate', p12.files[0], p12.files[0].name);
+    formData.append('password', password.value);
+  }
+  formData.append('environment', env?.value || 'certecf');
+
+  setBtnLoading(btn, true, 'Procesando...');
+  certCenterAppendLog('Validando certificado P12...', 'info');
+  certCenterAppendLog('Importando Excel oficial DGII y generando XML...', 'info');
+  clearInterval(_certCenterPolling);
+  _certCenterPolling = setInterval(() => loadCertificationCenterStatus({ silent: true }), 1800);
+  try {
+    const payload = await fiscalApi('POST', '/certification-center/process', formData, true);
+    renderCertificationCenter(payload);
+    const counts = payload.counts || {};
+    certCenterAppendLog(`Proceso terminado: ${counts.accepted || 0}/${counts.total || 0} aceptados, ${counts.blocked || 0} bloqueados.`, counts.rejected || counts.blocked ? 'warn' : 'ok');
+    showFiscalToast(payload.message || 'Certificación procesada.', counts.rejected || counts.blocked ? 'warning' : 'success');
+    showFiscalTechnicalResult('Centro de Certificación DGII', payload);
+  } catch (err) {
+    if (err.statusCode === 409 || (err.message || '').includes('aceptados por DGII')) {
+      certCenterAppendLog(`⚠ ${err.message}`, 'warn');
+      const confirmed = confirm(`${err.message}\n\n¿Deseas forzar el reinicio y perder los resultados actuales?`);
+      if (confirmed) {
+        formData.set('forceReset', 'true');
+        setBtnLoading(btn, true, 'Procesando (forzado)...');
+        try {
+          const payload2 = await fiscalApi('POST', '/certification-center/process', formData, true);
+          renderCertificationCenter(payload2);
+          certCenterAppendLog(`Proceso forzado terminado: ${(payload2.counts || {}).accepted || 0} aceptados.`, 'ok');
+        } catch (err2) {
+          certCenterAppendLog(`Error: ${err2.message}`, 'error');
+          showFiscalToast(`Error: ${err2.message}`, 'error');
+        }
+      }
+    } else {
+      certCenterAppendLog(`Error: ${err.message}`, 'error');
+      showFiscalToast(`Error procesando certificación: ${err.message}`, 'error');
+      showFiscalTechnicalResult('Error Centro de Certificación DGII', { error: err.message, details: err.details || null }, true);
+    }
+  } finally {
+    clearInterval(_certCenterPolling);
+    _certCenterPolling = null;
+    setBtnLoading(btn, false, 'Procesar paso 4');
+    await loadCertificationCenterStatus({ silent: true });
+  }
+}
+
+async function retryCertificationCenterCase(id) {
+  try {
+    certCenterAppendLog(`Reintentando caso #${id}...`, 'info');
+    const payload = await fiscalApi('POST', `/certification-center/cases/${id}/retry`, {});
+    renderCertificationCenter(payload);
+    showFiscalToast('Reintento procesado.', 'success');
+  } catch (err) {
+    certCenterAppendLog(`Reintento bloqueado/error: ${err.message}`, 'error');
+    showFiscalToast(`No se pudo reintentar: ${err.message}`, 'error');
+  }
+}
+
+async function generateCertificationCenterRfce() {
+  try {
+    const payload = await fiscalApi('POST', '/certification-center/rfce/generate', {});
+    if (payload.ok) {
+      certCenterAppendLog(payload.message || 'RFCE generados.', 'ok');
+      showFiscalToast(payload.message || 'RFCE generados.', 'success');
+    } else {
+      certCenterAppendLog(payload.error || 'No se pudieron generar los RFCE.', 'warn');
+      showFiscalToast(payload.error || 'No se pudieron generar los RFCE.', 'warning');
+    }
+    await loadCertificationCenterStatus({ silent: true });
+  } catch (err) {
+    certCenterAppendLog(`Error generando RFCE: ${err.message}`, 'error');
+    showFiscalToast(`Error: ${err.message}`, 'error');
+  }
+}
+
+async function submitCertificationCenterRfce() {
+  try {
+    certCenterAppendLog('Enviando RFCE por RecepcionFC...', 'info');
+    const payload = await fiscalApi('POST', '/certification-center/rfce/submit', {});
+    renderCertificationCenter({ ...(await loadCertificationCenterStatus({ silent: true }) || {}), rfceStep4: { items: payload.items || [] } });
+    certCenterAppendLog(`RFCE enviados: ${(payload.results || []).filter((r) => r.ok).length}/${(payload.results || []).length}.`, payload.ok ? 'ok' : 'warn');
+    showFiscalToast('Envío RFCE completado. Consulta estados en unos segundos.', payload.ok ? 'success' : 'warning');
+  } catch (err) {
+    certCenterAppendLog(`Error enviando RFCE: ${err.message}`, 'error');
+    showFiscalToast(`Error RFCE: ${err.message}`, 'error');
+  } finally {
+    await loadCertificationCenterStatus({ silent: true });
+  }
+}
+
+async function pollCertificationCenterRfce() {
+  try {
+    const payload = await fiscalApi('POST', '/certification-center/rfce/poll', {});
+    const accepted = payload.aceptados || 0;
+    certCenterAppendLog(`RFCE actualizados: ${accepted}/4 aceptados.`, accepted === 4 ? 'ok' : 'info');
+    showFiscalToast(`RFCE: ${accepted}/4 aceptados.`, accepted === 4 ? 'success' : 'info');
+  } catch (err) {
+    certCenterAppendLog(`Error consultando RFCE: ${err.message}`, 'error');
+    showFiscalToast(`Error consulta RFCE: ${err.message}`, 'error');
+  } finally {
+    await loadCertificationCenterStatus({ silent: true });
+  }
+}
+
+async function resetCertificationCenter() {
+  const ok = await showDeleteConfirm(
+    '¿Reiniciar por completo el Centro de Certificación? Se borrarán los casos locales, estados y archivos temporales RFCE del paso 4.',
+    { confirmText: 'Reiniciar limpio' }
+  );
+  if (!ok) return;
+  const btn = document.getElementById('cert-center-reset');
+  setBtnLoading(btn, true, 'Reiniciando...');
+  try {
+    const payload = await fiscalApi('POST', '/certification-center/reset', {});
+    certCenterAppendLog(payload.message || 'Centro reiniciado.', 'ok');
+    showFiscalToast(payload.message || 'Centro reiniciado.', 'success');
+    renderCertificationCenter({ counts: {}, cases: [], rfceStep4: {} });
+  } catch (err) {
+    certCenterAppendLog(`Error reiniciando: ${err.message}`, 'error');
+    showFiscalToast(`Error: ${err.message}`, 'error');
+  } finally {
+    setBtnLoading(btn, false, 'Reinicio limpio');
+  }
+}
+
+async function processAcecf() {
+  const btn = document.getElementById('acecf-process-btn');
+  const resultDiv = document.getElementById('acecf-result');
+  const excelInput = document.getElementById('acecf-excel');
+  const envSelect = document.getElementById('acecf-environment');
+
+  if (!excelInput?.files?.[0]) {
+    showFiscalToast('Carga el Excel de Aprobaciones Comerciales descargado del portal DGII.', 'warning');
+    return;
+  }
+
+  setBtnLoading(btn, true, 'Enviando…');
+  resultDiv.innerHTML = '<span style="color:var(--text3)">Procesando…</span>';
+
+  const formData = new FormData();
+  formData.append('excel', excelInput.files[0]);
+  formData.append('environment', envSelect?.value || 'certecf');
+
+  try {
+    const payload = await fiscalApi('POST', '/certification/aprobacion-comercial/process', formData, true);
+    const results = payload.results || [];
+    const accepted = payload.accepted || 0;
+    const total = payload.total || results.length;
+
+    const color = accepted === total && total > 0 ? '#4ade80' : accepted > 0 ? '#facc15' : '#f87171';
+    let html = `<div style="font-weight:700;color:${color};margin-bottom:.5rem">${accepted}/${total} aceptadas — ${escapeHtml(payload.message || '')}</div>`;
+    html += '<div style="display:grid;gap:.3rem">';
+    for (const r of results) {
+      const rowColor = r.ok ? '#4ade80' : '#f87171';
+      html += `<div style="border-left:3px solid ${rowColor};padding-left:.5rem;font-size:.76rem">`;
+      html += `<strong>${escapeHtml(r.encf || 'N/A')}</strong> `;
+      if (r.trackId) html += `TrackId: ${escapeHtml(r.trackId)} `;
+      if (r.estado) html += `Estado: ${escapeHtml(String(r.estado))} `;
+      if (r.mensaje) html += `· ${escapeHtml(r.mensaje)} `;
+      if (r.error) html += `<span style="color:#f87171">Error: ${escapeHtml(r.error)}</span>`;
+      if (r.http) html += `<span style="color:var(--text3)">[HTTP ${r.http}]</span>`;
+      html += '</div>';
+    }
+    html += '</div>';
+    resultDiv.innerHTML = html;
+
+    if (accepted === total && total > 0) {
+      showFiscalToast(`${accepted}/${total} Aprobaciones Comerciales enviadas y aceptadas.`, 'success');
+    } else {
+      showFiscalToast(`${accepted}/${total} aceptadas. Revisa los errores.`, 'warning');
+    }
+  } catch (err) {
+    resultDiv.innerHTML = `<span style="color:#f87171">Error: ${escapeHtml(err.message)}</span>`;
+    showFiscalToast(`Error: ${err.message}`, 'error');
+  } finally {
+    setBtnLoading(btn, false, 'Enviar Aprobaciones Comerciales');
+  }
 }
 
 /**
@@ -1730,10 +2424,10 @@ function showCertification250MilReminder() {
       position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
       font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
     <strong>Paso final para consumo &lt;250Mil</strong><br>
-    Cuando DGII muestre 21/21 comprobantes y 4/4 resúmenes aceptados, prepara la carpeta final y sube solo esos 4 XML por el portal.<br>
-    <strong>No uses carpetas viejas ni ZIP.</strong><br>
-    <button onclick="prepare250MilPortalPackage(true)" style="margin-top:8px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;">
-      Preparar y abrir carpeta final
+    Genera y envía los 4 resúmenes RFCE por RecepcionFC; no subas e-CF completos a ese servicio.<br>
+    <strong>Este bloque pertenece al paso 4 de simulación.</strong><br>
+    <button onclick="generateCertificationCenterRfce()" style="margin-top:8px;background:#6d28d9;color:#fff;border:none;border-radius:6px;padding:8px 16px;cursor:pointer;font-size:13px;">
+      Generar RFCE paso 4
     </button>
   `;
   box.parentNode.insertBefore(div, box);
@@ -1801,6 +2495,8 @@ function renderCertificationCasesTable(container, cases) {
                   ${canSend ? `<button class="btn-xs" onclick="sendCertificationDoc(${testCase.id})" title="Enviar a DGII">Enviar</button>` : ''}
                   ${canResend ? `<button class="btn-xs" onclick="sendCertificationDoc(${testCase.id}, true)" title="Reenviar">↺</button>` : ''}
                   <button class="btn-xs" onclick="queryCertificationDoc(${testCase.id})" title="Consultar estado DGII">⟳</button>
+                  <button class="btn-xs btn-secondary" onclick="openXmlEditor(${testCase.id},'${escapeHtml(testCase.encf||'')}')" title="Editar XML manualmente">✏️ XML</button>
+                  <button class="btn-xs btn-danger" onclick="deleteCertificationCase(${testCase.id},'${escapeHtml(testCase.encf||'')}')" title="Eliminar este caso">🗑</button>
                 </td>
               </tr>
             `;
@@ -1819,6 +2515,105 @@ async function regenerateCertificationDoc(id) {
     await loadCertificationCases();
   } catch (err) {
     showFiscalToast(`Error regenerando XML: ${err.message}`, 'error');
+  }
+}
+
+async function deleteCertificationCase(id, encf) {
+  const label = encf ? ` (${encf})` : ` #${id}`;
+  if (!confirm(`¿Eliminar caso de certificación${label}?\n\nEste caso se borrará de la base de datos local. Podrás reimportarlo junto al set DGII si es necesario.`)) return;
+  try {
+    const response = await fiscalApi('DELETE', `/certification/cases/${id}`, {});
+    showFiscalToast(response.message || 'Caso eliminado.', response.ok ? 'success' : 'warning');
+    if (response.ok) await loadCertificationCases();
+  } catch (err) {
+    showFiscalToast(`Error eliminando caso: ${err.message}`, 'error');
+  }
+}
+
+async function openXmlEditor(id, encf) {
+  const existing = document.getElementById('xml-editor-modal');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'xml-editor-modal';
+  modal.style.cssText = `
+    position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;
+    display:flex;align-items:center;justify-content:center;padding:16px
+  `;
+  modal.innerHTML = `
+    <div style="background:#1e293b;border-radius:10px;width:100%;max-width:860px;
+      max-height:90vh;display:flex;flex-direction:column;border:1px solid #334155">
+      <div style="padding:14px 18px;border-bottom:1px solid #334155;display:flex;
+        justify-content:space-between;align-items:center">
+        <strong style="color:#e2e8f0;font-size:14px">✏️ Editar XML — <code style="color:#60a5fa">${escapeHtml(encf)}</code></strong>
+        <button id="xml-editor-close" style="background:none;border:none;color:#94a3b8;
+          cursor:pointer;font-size:18px;line-height:1">✕</button>
+      </div>
+      <div id="xml-editor-body" style="padding:14px 18px;flex:1;overflow:auto;display:flex;flex-direction:column;gap:10px">
+        <div style="color:#94a3b8;font-size:12px">⏳ Cargando XML…</div>
+      </div>
+      <div id="xml-editor-footer" style="padding:12px 18px;border-top:1px solid #334155;
+        display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button id="xml-editor-save" class="btn-primary" disabled style="min-width:160px">
+          💾 Guardar y Firmar
+        </button>
+        <button id="xml-editor-cancel" class="btn-secondary">Cancelar</button>
+        <span id="xml-editor-status" style="color:#94a3b8;font-size:12px;margin-left:auto"></span>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  modal.querySelector('#xml-editor-close').onclick = close;
+  modal.querySelector('#xml-editor-cancel').onclick = close;
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+
+  const body = modal.querySelector('#xml-editor-body');
+  const saveBtn = modal.querySelector('#xml-editor-save');
+  const status = modal.querySelector('#xml-editor-status');
+
+  try {
+    const data = await fiscalApi('GET', `/certification/cases/${id}/full-xml`);
+    const xmlContent = data.xml || '';
+
+    body.innerHTML = `
+      <div style="font-size:11px;color:#64748b;margin-bottom:4px">
+        Puedes editar el XML directamente. Al guardar se re-firma con el certificado almacenado.
+        <strong style="color:#f59e0b">No modifiques la firma (SignatureValue) — se reemplaza automáticamente.</strong>
+      </div>
+      <textarea id="xml-editor-textarea" spellcheck="false" style="
+        flex:1;width:100%;min-height:400px;background:#0f172a;color:#e2e8f0;
+        border:1px solid #334155;border-radius:6px;padding:12px;
+        font-family:monospace;font-size:11.5px;line-height:1.55;resize:vertical;
+        outline:none;tab-size:2">${escapeHtml(xmlContent)}</textarea>
+    `;
+    saveBtn.disabled = false;
+
+    saveBtn.onclick = async () => {
+      const textarea = document.getElementById('xml-editor-textarea');
+      const xmlToSave = textarea?.value?.trim() || '';
+      if (!xmlToSave) { status.textContent = '❌ El XML no puede estar vacío.'; status.style.color = '#f87171'; return; }
+      saveBtn.disabled = true;
+      saveBtn.textContent = '⏳ Firmando…';
+      status.textContent = '';
+      try {
+        const result = await fiscalApi('POST', `/certification/cases/${id}/edit-xml`, { xml: xmlToSave });
+        status.textContent = result.message || 'Guardado y firmado.';
+        status.style.color = '#4ade80';
+        saveBtn.textContent = '✅ Guardado';
+        showFiscalToast(result.message || 'XML guardado y firmado.', 'success');
+        await loadCertificationCases({ silent: true });
+        setTimeout(close, 1200);
+      } catch (err) {
+        status.textContent = `❌ ${err.message}`;
+        status.style.color = '#f87171';
+        saveBtn.disabled = false;
+        saveBtn.textContent = '💾 Guardar y Firmar';
+      }
+    };
+  } catch (err) {
+    body.innerHTML = `<div style="color:#f87171">Error cargando XML: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -1944,6 +2739,7 @@ async function runCertificationSequence() {
 async function _runCertificationSequenceConfirmed() {
   const btns = document.querySelectorAll('.certification-run-btn, [onclick="runCertificationSequence()"]');
   btns.forEach((b) => { b.disabled = true; b.textContent = 'Enviando…'; });
+  startCertLivePolling();
   try {
     showFiscalToast('Enviando todos los casos pendientes a DGII…', 'info');
     // Paso 1: ráfaga de envíos (rápida, sin esperar respuesta de cada TrackID)
@@ -2012,6 +2808,77 @@ async function runFastCertificationFlow() {
   }
 }
 
+let _certLivePolling = null;
+
+function startCertLivePolling() {
+  const log = document.getElementById('cert-live-log');
+  const badge = document.getElementById('cert-live-badge');
+  if (log) { log.style.display = 'block'; log.innerHTML = ''; }
+  if (badge) badge.style.display = 'inline-block';
+
+  // Rastrear el último estado conocido por e-NCF para detectar cambios
+  const knownState = {}; // encf → estado
+  const lineEls = {};    // encf → elemento DOM de la línea del log
+
+  const IN_PROGRESS = new Set(['pendiente', 'firmado', 'enviado', 'procesando', 'en_proceso']);
+
+  const tick = async () => {
+    try {
+      const payload = await fiscalApi('GET', '/certification/cases?compact=1');
+      const cases = payload.cases || [];
+
+      if (log) {
+        cases.forEach(c => {
+          const encf = c.encf || '—';
+          const prev = knownState[encf];
+          const cur = c.estado;
+          if (prev === cur) return; // sin cambio
+          knownState[encf] = cur;
+
+          if (cur === 'enviado' || cur === 'procesando' || cur === 'en_proceso') {
+            // Mostrar spinner inmediatamente cuando el documento se envía
+            if (!lineEls[encf]) {
+              const el = document.createElement('div');
+              el.style.cssText = 'padding:3px 0;border-bottom:1px solid rgba(255,255,255,.08)';
+              log.appendChild(el);
+              lineEls[encf] = el;
+            }
+            lineEls[encf].innerHTML = `<span style="color:#94a3b8">🔄 <b style="color:#e2e8f0">${escapeHtml(encf)}</b> (${escapeHtml(c.tipo || '')}) — Esperando respuesta DGII…</span>`;
+            log.scrollTop = log.scrollHeight;
+          } else if (cur === 'aceptado' || cur === 'rechazado') {
+            const color = cur === 'aceptado' ? '#10b981' : '#ef4444';
+            const icon = cur === 'aceptado' ? '✅' : '❌';
+            const msg = c.mensajes?.[0]?.valor || c.dgiiMessage || '';
+            const msgHtml = msg ? ` <span style="color:#94a3b8;font-size:12px">— ${escapeHtml(msg)}</span>` : '';
+            if (!lineEls[encf]) {
+              const el = document.createElement('div');
+              el.style.cssText = 'padding:3px 0;border-bottom:1px solid rgba(255,255,255,.08)';
+              log.appendChild(el);
+              lineEls[encf] = el;
+            }
+            lineEls[encf].innerHTML = `<span style="color:${color}">${icon} <b>${escapeHtml(encf)}</b> (${escapeHtml(c.tipo || '')})</span>${msgHtml}`;
+            log.scrollTop = log.scrollHeight;
+          }
+        });
+      }
+
+      renderCertificationCasesTable(document.getElementById('certification-cases-table'), cases);
+      if (payload.summary) renderCertificationSummary(payload.summary);
+
+      // Detener cuando no quede ningún caso en proceso
+      const inProgress = cases.filter(c => IN_PROGRESS.has(c.estado)).length;
+      if (inProgress === 0) { stopCertLivePolling(); }
+    } catch (_) {}
+  };
+  _certLivePolling = setInterval(tick, 1500);
+}
+
+function stopCertLivePolling() {
+  if (_certLivePolling) { clearInterval(_certLivePolling); _certLivePolling = null; }
+  const badge = document.getElementById('cert-live-badge');
+  if (badge) badge.style.display = 'none';
+}
+
 async function resetSentCertificationCases() {
   const ok = await showDeleteConfirm(
     '¿Reiniciar el estado local de certificación? Se conservan los eNCF del dataset DGII pero los XMLs firmados se descartan y los documentos vuelven a estado "firmado". Usar cuando el portal DGII ha reiniciado las pruebas.',
@@ -2056,8 +2923,15 @@ async function generate250MilXmls() {
 
     // Mostrar resultado con la lista de archivos generados
     const files = (response.generated || []);
-    const fileList = files.map(f =>
-      `<li><strong>${f.encf}.xml</strong> — ${escapeHtml(f.root || 'ECF')} — ${f.sizekb}KB — ${f.items?.join(', ') || '?'} — MontoTotal: ${f.montoTotal}</li>`
+    const portalFiles = (response.portalFiles || []);
+    const portalDir = response.portalDir || '';
+
+    const rfceList = files.map(f =>
+      `<li><strong>${escapeHtml(f.encf)}.xml</strong> — RFCE — ${f.sizekb}KB — MontoTotal: ${escapeHtml(String(f.montoTotal || '?'))}</li>`
+    ).join('');
+
+    const portalList = portalFiles.map(f =>
+      `<li><strong>${escapeHtml(f.dgiiFileName)}</strong> — E32 completo para portal DGII</li>`
     ).join('');
 
     const box = document.getElementById('certification-cases-table') || document.querySelector('.certification-section');
@@ -2072,17 +2946,21 @@ async function generate250MilXmls() {
         <button onclick="document.getElementById('cert-250mil-reminder').remove()" style="
           position:absolute;top:8px;right:12px;background:none;border:none;color:#fff;
           font-size:18px;cursor:pointer;line-height:1;" title="Cerrar">✕</button>
-        <strong>✅ ${files.length} resúmenes RFCE &lt;250Mil generados y firmados</strong><br>
-        <small>Tipo detectado: RFCE · Endpoint destino: RecepcionFC · Documentos incluidos: 1 por archivo</small><br>
-        <small>E32 completas almacenadas localmente para auditoría/RI/QR: ${escapeHtml(response.localEcfDir || '')}</small><br>
-        <small>📁 ${response.outDir || 'scripts/250mil-upload/'}</small>
-        <ul style="margin:8px 0 4px 16px;padding:0;">${fileList}</ul>
-        <strong>⬆ Enviando Resumen RFCE por RecepcionFC. No enviar e-CF completos a este endpoint.</strong>
+        <strong>✅ ${files.length} archivos generados y firmados</strong><br><br>
+        <strong>📤 RFCE para RecepcionFC (API — ya enviados/aceptados):</strong><br>
+        <small>Carpeta: ${escapeHtml(response.outDir || 'scripts/250mil-upload/')}</small>
+        <ul style="margin:4px 0 8px 16px;padding:0;">${rfceList}</ul>
+        ${portalDir ? `
+        <strong>🌐 E32 completos para portal DGII "Facturas de consumo &lt;250Mil":</strong><br>
+        <small style="word-break:break-all">Carpeta: <strong>${escapeHtml(portalDir)}</strong></small><br>
+        <small>Sube estos ${portalFiles.length} archivos uno a uno en el portal CerteCF → "Facturas de consumo &lt;250Mil"</small>
+        <ul style="margin:4px 0 4px 16px;padding:0;">${portalList}</ul>
+        ` : `<small>E32 locales en: ${escapeHtml(response.localEcfDir || '')}</small><br>`}
       `;
       box.parentNode.insertBefore(div, box);
     }
 
-    showFiscalToast(`✓ ${files.length} RFCE listos en scripts/250mil-upload/.`, 'success');
+    showFiscalToast(`✓ ${files.length} RFCE + ${portalFiles.length} E32 portal listos.`, 'success');
   } catch (err) {
     showFiscalToast(`Error generando XMLs: ${err.message}`, 'error');
   } finally {
@@ -2090,51 +2968,45 @@ async function generate250MilXmls() {
   }
 }
 
-function render250MilPortalPackageResult(response) {
-  const box = document.getElementById('certification-final-250mil-result');
-  if (!box) return;
-  if (!response?.ok) {
-    box.style.display = 'block';
-    box.style.background = 'rgba(220,38,38,.08)';
-    box.style.borderColor = 'rgba(220,38,38,.25)';
-    box.innerHTML = `<strong style="color:#f87171">No se pudo preparar la carpeta final</strong><br>${escapeHtml(response?.error || 'Error desconocido')}`;
-    return;
-  }
-  const files = response.generated || [];
-  box.style.display = 'block';
-  box.style.background = 'rgba(16,185,129,.08)';
-  box.style.borderColor = 'rgba(16,185,129,.22)';
-  box.innerHTML = `
-    <strong>${files.length} XML finales listos para el portal DGII</strong><br>
-    <code style="word-break:break-all">${escapeHtml(response.outDir || '')}</code>
-    <div style="display:grid;gap:.2rem;margin-top:.55rem">
-      ${files.map((file) => `
-        <div><code>${escapeHtml(file.fileName || file.encf || '')}</code> · ECF 32 · NombreComercial omitido</div>
-      `).join('')}
-    </div>
-  `;
+function _showDisabled250MilPortalFlow() {
+  const message = 'Ese flujo fue eliminado. Para las facturas <250Mil usa solo RFCE automático: Generar RFCE, Enviar RFCE y Consultar.';
+  if (typeof showFiscalToast === 'function') showFiscalToast(message, 'warning');
+  return { ok: false, disabled: true, message };
 }
 
-async function prepare250MilPortalPackage(openFolder = false) {
-  const btn = document.getElementById('btn-prepare-final-250mil');
-  if (btn) { btn.disabled = true; btn.textContent = openFolder ? 'Preparando y abriendo…' : 'Preparando…'; }
-  try {
-    const endpoint = openFolder ? '/certification/open-final-250mil-folder' : '/certification/prepare-final-250mil';
-    const response = await fiscalApi('POST', endpoint, {});
-    render250MilPortalPackageResult(response);
-    showFiscalToast(response.message || 'Carpeta final preparada.', response.ok ? 'success' : 'error');
-    return response;
-  } catch (err) {
-    render250MilPortalPackageResult({ ok: false, error: err.message });
-    showFiscalToast(`Error preparando carpeta final: ${err.message}`, 'error');
-    return null;
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Preparar 4 XML finales'; }
-  }
+function render250MilPortalPackageResult() {
+  const box = document.getElementById('certification-final-250mil-result');
+  if (!box) return;
+  box.style.display = 'none';
+  box.innerHTML = '';
+}
+
+async function prepare250MilPortalPackage() {
+  return _showDisabled250MilPortalFlow();
 }
 
 async function open250MilPortalFolder() {
-  await prepare250MilPortalPackage(true);
+  return _showDisabled250MilPortalFlow();
+}
+
+function render250MilPortalCards() {}
+
+async function open250MilXmlEditor() {
+  return _showDisabled250MilPortalFlow();
+}
+
+async function load250MilPortalStatus() {}
+
+async function portal250MilGenerate() {
+  return _showDisabled250MilPortalFlow();
+}
+
+async function portal250MilSubmit() {
+  return _showDisabled250MilPortalFlow();
+}
+
+async function portal250MilPoll() {
+  return _showDisabled250MilPortalFlow();
 }
 
 async function pollCertificationStatuses() {
@@ -2179,6 +3051,7 @@ function switchFiscalTab(tab) {
     btn.classList.remove('active');
     btn.style.borderBottomColor = 'transparent';
     btn.style.color = '';
+    btn.style.opacity = '';
   });
   document.querySelectorAll('.fiscal-tab-content').forEach((content) => {
     content.classList.remove('active');
@@ -2191,6 +3064,7 @@ function switchFiscalTab(tab) {
     btn.classList.add('active');
     btn.style.borderBottomColor = 'var(--accent)';
     btn.style.color = 'var(--accent)';
+    btn.style.opacity = '1';
   }
   if (content) {
     content.classList.add('active');
@@ -2206,10 +3080,16 @@ function switchFiscalTab(tab) {
   if (tab === 'connection' && FISCAL_UI_STATE.bundle) {
     renderConnectionPanel(FISCAL_UI_STATE.bundle, FISCAL_UI_STATE.status);
   }
-  if (tab === 'homologation' && FISCAL_UI_STATE.bundle?.checklist) {
-    renderHomologationChecklist(FISCAL_UI_STATE.bundle.checklist);
-    renderCertificationSummary(FISCAL_UI_STATE.bundle.certificationSummary || null);
-    loadCertificationCases();
+  if (tab === 'homologation') {
+    if (typeof ECF_CERT_WIZARD !== 'undefined') {
+      ECF_CERT_WIZARD.init();
+    }
+  }
+  if (tab === 'contador') {
+    loadContadorSection();
+  }
+  if (tab === 'centro-fiscal') {
+    renderCentroFiscal();
   }
 }
 
@@ -2470,4 +3350,18 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeFiscalConfigModal();
   });
+
+  // Persistir contraseña del certificado P12 en localStorage (app de escritorio local).
+  const certPwdInput = document.getElementById('cert-center-password');
+  if (certPwdInput) {
+    const saved = localStorage.getItem('cert_center_p12_password');
+    if (saved) certPwdInput.value = saved;
+    certPwdInput.addEventListener('input', () => {
+      if (certPwdInput.value) {
+        localStorage.setItem('cert_center_p12_password', certPwdInput.value);
+      } else {
+        localStorage.removeItem('cert_center_p12_password');
+      }
+    });
+  }
 });

@@ -157,6 +157,51 @@ describe('ecf test-set importer', () => {
     expect(transmission.xml).toContain('<MontoTotal>40120.00</MontoTotal>');
   });
 
+  test('preserva FechaLimitePago y TerminoPago del set DGII en e-CF', () => {
+    const transmission = buildTransmissionFromSpreadsheetRow({
+      testCase: {
+        encf: 'E310000000020',
+        tipoEcf: 'E31',
+        sourceSheet: 'ECF',
+        submissionMode: 'normal',
+        rawRow: {
+          Version: '1.0',
+          TipoeCF: '31',
+          ENCF: 'E310000000020',
+          TipoIngresos: '01',
+          TipoPago: '2',
+          FechaLimitePago: '07-04-2020',
+          TerminoPago: '6',
+          RNCEmisor: '40211932609',
+          RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS DE 02',
+          FechaEmision: '01-04-2020',
+          RNCComprador: '131880681',
+          RazonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 03',
+          MontoGravadoTotal: '1000.00',
+          MontoGravadoI1: '1000.00',
+          TotalITBIS: '180.00',
+          TotalITBIS1: '180.00',
+          MontoTotal: '1180.00',
+          'NumeroLinea[1]': '1',
+          'IndicadorFacturacion[1]': '1',
+          'NombreItem[1]': 'Servicio',
+          'IndicadorBienoServicio[1]': '2',
+          'CantidadItem[1]': '1.00',
+          'PrecioUnitarioItem[1]': '1000.00',
+          'MontoItem[1]': '1000.00',
+        },
+      },
+      issueDate: new Date('2026-05-21T00:00:00Z'),
+    });
+
+    expect(transmission.xml).toContain('<TipoPago>2</TipoPago>');
+    expect(transmission.xml).toContain('<FechaLimitePago>07-04-2020</FechaLimitePago>');
+    expect(transmission.xml).toContain('<TerminoPago>6</TerminoPago>');
+    expect(transmission.xml.indexOf('<TipoPago>2</TipoPago>')).toBeLessThan(transmission.xml.indexOf('<FechaLimitePago>07-04-2020</FechaLimitePago>'));
+    expect(transmission.xml.indexOf('<FechaLimitePago>07-04-2020</FechaLimitePago>')).toBeLessThan(transmission.xml.indexOf('<TerminoPago>6</TerminoPago>'));
+    expect(transmission.xml.indexOf('<TerminoPago>6</TerminoPago>')).toBeLessThan(transmission.xml.indexOf('<Totales>'));
+  });
+
   test('usa el mismo ECF firmado para calcular y conservar el codigo del RFCE', () => {
     const signedEcf = '<ECF><Signature><SignedInfo/><SignatureValue>ABC123firma</SignatureValue><KeyInfo><X509Certificate>cert</X509Certificate></KeyInfo><DigestValue>digest</DigestValue></Signature></ECF>';
     const signSpy = jest.spyOn(signatureService, 'signXML').mockReturnValue(signedEcf);
@@ -357,6 +402,38 @@ describe('ecf test-set importer', () => {
     expect(transmission.xml).not.toContain('<NombreComercial>');
     expect(transmission.xml).toContain('<TotalITBIS>713.04</TotalITBIS>');
     expect(transmission.xml).toContain('<TotalITBIS1>713.04</TotalITBIS1>');
+  });
+
+  test('no contamina un NombreComercial #e con el emisor local', () => {
+    const transmission = buildTransmissionFromSpreadsheetRow({
+      testCase: {
+        encf: 'E410000000001',
+        tipoEcf: 'E41',
+        sourceSheet: 'ECF',
+        rawRow: {
+          Version: '1.0',
+          TipoeCF: '41',
+          ENCF: 'E410000000001',
+          RNCEmisor: '40211932609',
+          RazonSocialEmisor: 'DOCUMENTOS ELECTRONICOS DE 02',
+          NombreComercial: '#e',
+          FechaEmision: '01-04-2020',
+          RNCComprador: '131880681',
+          RazonSocialComprador: 'DOCUMENTOS ELECTRONICOS DE 02',
+          MontoTotal: '0.00',
+        },
+      },
+      emitter: {
+        rnc: '40211932609',
+        razonSocial: 'EMISOR LOCAL',
+        nombreComercial: 'DOCUMENTOS ELECTRONICOS DE 02',
+      },
+      overrideEmitterFromConfig: true,
+      issueDate: new Date('2026-06-15T00:00:00Z'),
+    });
+
+    expect(transmission.xml).not.toContain('<NombreComercial>');
+    expect(transmission.xml).toContain('<RazonSocialEmisor>DOCUMENTOS ELECTRONICOS DE 02</RazonSocialEmisor>');
   });
 
   test('calcula TotalITBIS1 solo si el dataset no lo trae', () => {

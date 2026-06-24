@@ -1,0 +1,60 @@
+========================================
+   TECNO CAJA - PAGINA WEB
+   Sistema POS para Republica Dominicana
+========================================
+
+ESTRUCTURA DE CARPETAS
+----------------------
+tecnocaja/
+  |- index.html          -> La pagina principal (abre este archivo)
+  |- css/
+  |     |- styles.css     -> Todos los estilos y animaciones
+  |- js/
+  |     |- main.js        -> Animaciones, menu, FAQ y descarga del demo
+  |- descargas/
+  |     |- LEEME.txt       -> Aqui debes poner tu instalador del POS
+  |- LEEME.txt            -> Este archivo
+
+
+COMO VERLA
+----------
+Haz doble clic en "index.html" y se abrira en tu navegador.
+Necesita internet la primera vez para cargar las fuentes (Google Fonts).
+
+
+COMO PUBLICARLA EN INTERNET
+---------------------------
+Sube TODA la carpeta "tecnocaja" (con sus subcarpetas) a tu hosting.
+Apunta tu dominio al archivo index.html.
+
+
+BOTON "DESCARGAR DEMO 30 DIAS GRATIS"
+-------------------------------------
+Por defecto, el boton descarga un archivo de instrucciones para que
+ya funcione. Para que descargue tu instalador REAL del sistema:
+
+1. Copia tu instalador (ej: TecnoCaja-Setup.exe) dentro de la
+   carpeta "descargas/".
+
+2. Abre el archivo  js/main.js  con el Bloc de notas.
+
+3. Busca al inicio esta linea:
+       const URL_INSTALADOR = "";
+
+4. Cambiala por la ruta de tu instalador, por ejemplo:
+       const URL_INSTALADOR = "descargas/TecnoCaja-Setup.exe";
+
+5. Guarda. Listo: al hacer clic, descargara tu sistema.
+
+   (Si tu instalador esta en otro hosting, puedes poner el enlace
+    completo: const URL_INSTALADOR = "https://tudominio.com/TecnoCaja-Setup.exe"; )
+
+
+CONTACTO CONFIGURADO EN LA PAGINA
+---------------------------------
+  WhatsApp: 829 281 2877
+  Correo:   emiliomanaurys@gmail.com
+
+(Estan en el boton flotante, el menu, los planes, el CTA y el pie de pagina.)
+
+========================================

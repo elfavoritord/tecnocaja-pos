@@ -13,11 +13,13 @@ function getRncHandler() {
     const mod = require('dgii-rnc');
     handler = new mod.RNCHandler();
     scheduleUpdates = mod.scheduleUpdates;
-    // Arrancar actualización diaria silenciosa
-    scheduleUpdates({ handler, intervalMs: 24 * 60 * 60 * 1000 });
-    // Pre-cargar dataset en background
+    // Pre-cargar dataset en background al iniciar
     handler.checkFile()
-      .then(() => { rncReady = true; })
+      .then(() => {
+        rncReady = true;
+        // Actualizar una vez por día silenciosamente (no bloquear requests)
+        scheduleUpdates({ handler, intervalMs: 24 * 60 * 60 * 1000 });
+      })
       .catch((err) => { rncError = err.message; });
   } catch (err) {
     rncError = 'Paquete dgii-rnc no disponible: ' + err.message;
@@ -33,25 +35,56 @@ function createRncRouter() {
 
   // GET /api/rnc/lookup?id=130000000
   router.get('/api/rnc/lookup', async (req, res) => {
-    const id = String(req.query.id || '').replace(/\D/g, '').slice(0, 11);
-    if (!id || id.length < 9) {
+    const raw = String(req.query.id || '').replace(/\D/g, '');
+    if (!raw || raw.length < 9) {
       return res.status(400).json({ error: 'Proporciona un RNC válido (9-11 dígitos).' });
     }
+
     const h = getRncHandler();
     if (!h) return res.status(503).json({ error: rncError || 'Servicio RNC no disponible.' });
+
     try {
-      const results = await h.search({ ID: id });
-      if (!results || results.length === 0) {
-        return res.status(404).json({ found: false, rnc: id });
+      // Construir lista de candidatos a buscar:
+      // El dataset guarda cédulas con ceros a la izquierda (11 dígitos).
+      // Si el usuario escribe solo 10 dígitos (falta el cero inicial), probamos
+      // también con el padding. Para RNCs de empresa (9 dígitos) no se hace padding.
+      const candidates = [raw.slice(0, 11)];
+      if (raw.length === 10) {
+        candidates.push('0' + raw);   // cédula sin el cero inicial
+      } else if (raw.length === 9) {
+        // RNC de empresa — también probar como los primeros 9 dígitos de una cédula de 11
+        // (raro, pero cubre errores de tipeo)
       }
-      const r = results[0];
+
+      // Si el dataset ya está en memoria, buscar directo para evitar checkFile() en cada request
+      let record = null;
+      const df = rncReady && h.df && h.df.length > 0 ? h.df : null;
+      if (df) {
+        for (const id of candidates) {
+          record = df.find(r => r.ID === id) || null;
+          if (record) break;
+        }
+      } else {
+        for (const id of candidates) {
+          const results = await h.search({ ID: id });
+          if (results && results.length > 0) { record = results[0]; break; }
+        }
+        rncReady = handler && handler.df && handler.df.length > 0;
+      }
+
+      if (!record) {
+        return res.json({ found: false, rnc: raw });
+      }
+
       return res.json({
         found: true,
-        rnc: r.ID || r.RNC || id,
-        nombre: r.NOMBRE || r.nombre || '',
-        nombreComercial: r.NOMBRE_COMERCIAL || r.nombre_comercial || '',
-        estado: r.ESTADO || r.estado || '',
-        tipo: r.TIPO || r.tipo || ''
+        rnc: record.ID || raw,
+        nombre: record.NOMBRE || '',
+        nombreComercial: record.NOMBRE_COMERCIAL || record.NOMBRE || '',
+        estado: record.ESTADO || '',
+        tipo: (record.ID || '').length === 11 ? 'Persona Física' : 'Persona Jurídica',
+        categoria: record.CATEGORIA || '',
+        regimen: record.REGIMEN_PAGO || '',
       });
     } catch (err) {
       return res.status(500).json({ error: err.message });
@@ -68,15 +101,31 @@ function createRncRouter() {
     const h = getRncHandler();
     if (!h) return res.status(503).json({ error: rncError || 'Servicio RNC no disponible.' });
     try {
-      const results = await h.search({ NOMBRE: q });
-      const mapped = (results || []).slice(0, limit).map((r) => ({
-        rnc: r.ID || r.RNC || '',
-        nombre: r.NOMBRE || r.nombre || '',
-        nombreComercial: r.NOMBRE_COMERCIAL || r.nombre_comercial || '',
-        estado: r.ESTADO || r.estado || '',
-        tipo: r.TIPO || r.tipo || ''
-      }));
-      return res.json({ results: mapped, total: results.length });
+      const qUpper = q.toUpperCase();
+      let rows;
+      // Búsqueda directa en memoria si el dataset ya cargó
+      if (rncReady && h.df && h.df.length > 0) {
+        rows = [];
+        for (const r of h.df) {
+          if (r.NOMBRE.includes(qUpper) || (r.NOMBRE_COMERCIAL && r.NOMBRE_COMERCIAL.includes(qUpper))) {
+            rows.push(r);
+            if (rows.length >= limit) break;
+          }
+        }
+      } else {
+        const results = await h.search({ NOMBRE: q });
+        rows = (results || []).slice(0, limit);
+      }
+      return res.json({
+        results: rows.map(r => ({
+          rnc:             r.ID || '',
+          nombre:          r.NOMBRE || '',
+          nombreComercial: r.NOMBRE_COMERCIAL || r.NOMBRE || '',
+          estado:          r.ESTADO || '',
+          tipo:            (r.ID || '').length === 11 ? 'Persona Física' : 'Persona Jurídica',
+          categoria:       r.CATEGORIA || '',
+        }))
+      });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }

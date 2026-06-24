@@ -34,6 +34,21 @@ function parseEncfNumber(encf, prefijo = '') {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function toSqlNumber(value, fallback = 0) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const normalized = typeof value === 'string'
+    ? value.trim().replace(/,/g, '')
+    : value;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function toSqlInteger(value, fallback = null) {
+  const parsed = toSqlNumber(value, fallback);
+  if (parsed === null || parsed === undefined) return fallback;
+  return Number.isFinite(Number(parsed)) ? Math.trunc(Number(parsed)) : fallback;
+}
+
 async function getTableColumns(query, tableName) {
   const rows = await query(`PRAGMA table_info(${tableName})`).catch(() => []);
   return rows.map((row) => String(row.name || '').trim()).filter(Boolean);
@@ -154,6 +169,31 @@ class EcfRepository {
     `);
 
     await this.query(`
+      CREATE TABLE IF NOT EXISTS ecf_sequence_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_id INT NOT NULL DEFAULT 1,
+        rnc_emisor VARCHAR(20) NOT NULL DEFAULT '',
+        tipo_ecf VARCHAR(5) NOT NULL,
+        encf VARCHAR(30) NOT NULL,
+        sequence_number BIGINT NOT NULL DEFAULT 0,
+        status VARCHAR(30) NOT NULL DEFAULT 'RESERVED',
+        dgii_track_id VARCHAR(120) DEFAULT NULL,
+        dgii_code VARCHAR(20) DEFAULT NULL,
+        dgii_message TEXT DEFAULT NULL,
+        xml_file_name VARCHAR(255) DEFAULT NULL,
+        xml_hash VARCHAR(64) DEFAULT NULL,
+        sale_id INT DEFAULT NULL,
+        ecf_document_id INT DEFAULT NULL,
+        user_id INT DEFAULT NULL,
+        environment VARCHAR(20) NOT NULL DEFAULT 'testecf',
+        sent_at DATETIME DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (business_id, tipo_ecf, encf)
+      )
+    `);
+
+    await this.query(`
       CREATE TABLE IF NOT EXISTS ecf_test_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         business_id INT NOT NULL DEFAULT 1,
@@ -226,6 +266,9 @@ class EcfRepository {
     for (const [columnName, definitionSql] of certificateColumns) {
       await addColumnIfMissing(this.query, 'ecf_certificates', columnName, definitionSql).catch(() => {});
     }
+
+    // Migración: columna legacy certificate_encrypted puede existir sin DEFAULT NULL en MariaDB
+    await this.query('ALTER TABLE ecf_certificates MODIFY COLUMN certificate_encrypted TEXT DEFAULT NULL').catch(() => {});
 
     const sequenceColumns = [
       ['fecha_autorizacion', 'DATE DEFAULT NULL'],
@@ -653,6 +696,11 @@ class EcfRepository {
     await this.query('UPDATE ecf_sequences SET activo = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
   }
 
+  async deleteSequencePermanently(id) {
+    const result = await this.query('DELETE FROM ecf_sequences WHERE id = ? AND business_id = 1', [id]);
+    return { deleted: result.affectedRows || 0 };
+  }
+
   async updateSequenceNextNumber(sequenceId, nextNumber) {
     const normalizedSequenceId = Number(sequenceId || 0);
     const normalizedNext = Number(nextNumber || 0);
@@ -728,7 +776,17 @@ class EcfRepository {
        LIMIT 1`,
       [normalizedEncf, excludeDocumentId || null, excludeDocumentId || null]
     ).catch(() => []);
-    return saleRows.length > 0;
+    if (saleRows.length > 0) return true;
+
+    // Verificar en el registro persistente de uso — protege contra reseteo local de ecf_documents
+    const usageRows = await conn.query(
+      `SELECT id FROM ecf_sequence_usage
+        WHERE business_id=? AND UPPER(encf)=?
+          AND status IN ('SENT','ACCEPTED','REJECTED','BLOCKED_DGII_USED','RESERVED')
+        LIMIT 1`,
+      [businessId, normalizedEncf]
+    ).catch(() => []);
+    return usageRows.length > 0;
   }
 
   async generateNextENCF(options = {}) {
@@ -842,6 +900,90 @@ class EcfRepository {
     });
   }
 
+  // ── ecf_sequence_usage ────────────────────────────────────────────────────
+
+  async recordSequenceUsage(params = {}) {
+    const encf = String(params.encf || '').trim().toUpperCase();
+    const tipoEcf = String(params.tipoEcf || params.tipo_ecf || '').trim().toUpperCase();
+    if (!encf || !tipoEcf) return null;
+    const businessId = toSqlInteger(params.businessId, 1) || 1;
+    const rncEmisor  = String(params.rncEmisor || params.rnc_emisor || '').trim();
+    const seqNum     = toSqlInteger(params.sequenceNumber ?? params.sequence_number, 0) || 0;
+    const status     = String(params.status || 'SENT').toUpperCase();
+    const existing   = await this.query(
+      'SELECT id FROM ecf_sequence_usage WHERE business_id=? AND tipo_ecf=? AND encf=? LIMIT 1',
+      [businessId, tipoEcf, encf]
+    );
+    if (existing.length) {
+      await this.query(`
+        UPDATE ecf_sequence_usage
+           SET status=?, dgii_track_id=COALESCE(?,dgii_track_id), dgii_code=COALESCE(?,dgii_code),
+               dgii_message=COALESCE(?,dgii_message), xml_file_name=COALESCE(?,xml_file_name),
+               xml_hash=COALESCE(?,xml_hash), sale_id=COALESCE(?,sale_id),
+               ecf_document_id=COALESCE(?,ecf_document_id), user_id=COALESCE(?,user_id),
+               environment=COALESCE(?,environment),
+               sent_at=CASE WHEN ? IS NOT NULL THEN ? ELSE sent_at END,
+               updated_at=CURRENT_TIMESTAMP
+         WHERE business_id=? AND tipo_ecf=? AND encf=?
+      `, [
+        status,
+        params.dgiiTrackId    || null, params.dgiiCode    || null,
+        params.dgiiMessage    || null, params.xmlFileName || null,
+        params.xmlHash        || null, params.saleId      || null,
+        params.ecfDocumentId  || null, params.userId      || null,
+        params.environment    || null,
+        params.sentAt || null, params.sentAt || null,
+        businessId, tipoEcf, encf,
+      ]);
+      return { updated: true };
+    }
+    await this.query(`
+      INSERT INTO ecf_sequence_usage
+        (business_id, rnc_emisor, tipo_ecf, encf, sequence_number, status,
+         dgii_track_id, dgii_code, dgii_message, xml_file_name, xml_hash,
+         sale_id, ecf_document_id, user_id, environment, sent_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    `, [
+      businessId, rncEmisor, tipoEcf, encf, seqNum, status,
+      params.dgiiTrackId   || null, params.dgiiCode    || null,
+      params.dgiiMessage   || null, params.xmlFileName || null,
+      params.xmlHash       || null, params.saleId      || null,
+      params.ecfDocumentId || null, params.userId      || null,
+      params.environment   || 'testecf', params.sentAt || null,
+    ]);
+    return { inserted: true };
+  }
+
+  async getSequenceUsageStats(businessId = 1) {
+    const rows = await this.query(`
+      SELECT tipo_ecf,
+             COUNT(*) AS total,
+             SUM(status='ACCEPTED')          AS aceptadas,
+             SUM(status='REJECTED')          AS rechazadas,
+             SUM(status='BLOCKED_DGII_USED') AS bloqueadas,
+             SUM(status='SENT')              AS enviadas,
+             SUM(status='RESERVED')          AS reservadas,
+             SUM(status='CANCELLED_INTERNAL') AS canceladas,
+             MAX(CAST(sequence_number AS UNSIGNED)) AS ultimo_numero,
+             MAX(sent_at)                    AS ultimo_envio
+        FROM ecf_sequence_usage
+       WHERE business_id=?
+       GROUP BY tipo_ecf
+       ORDER BY tipo_ecf
+    `, [businessId]);
+    return rows;
+  }
+
+  async getNextAvailableAfterUsage(businessId, tipoEcf) {
+    const rows = await this.query(`
+      SELECT MAX(CAST(sequence_number AS UNSIGNED)) AS max_used
+        FROM ecf_sequence_usage
+       WHERE business_id=? AND tipo_ecf=?
+         AND status IN ('SENT','ACCEPTED','REJECTED','BLOCKED_DGII_USED','RESERVED')
+    `, [businessId, tipoEcf]);
+    return Number(rows[0]?.max_used || 0);
+  }
+
   async getSaleWithItems(saleId) {
     const saleRows = await this.query(
       `SELECT s.*,
@@ -915,6 +1057,9 @@ class EcfRepository {
   }
 
   async updateDocumentPayload(documentId, payload) {
+    const numberOrNull = (value) => (
+      value === null || value === undefined ? null : toSqlNumber(value, null)
+    );
     await this.query(
       `UPDATE ecf_documents
        SET nombre_comprador = COALESCE(?, nombre_comprador),
@@ -936,12 +1081,12 @@ class EcfRepository {
       [
         payload.nombre_comprador ?? null,
         payload.rnc_comprador ?? null,
-        payload.subtotal ?? null,
-        payload.descuento_total ?? null,
-        payload.monto_exento ?? null,
-        payload.monto_gravado ?? null,
-        payload.itbis_total ?? null,
-        payload.monto_total ?? null,
+        numberOrNull(payload.subtotal),
+        numberOrNull(payload.descuento_total),
+        numberOrNull(payload.monto_exento),
+        numberOrNull(payload.monto_gravado),
+        numberOrNull(payload.itbis_total),
+        numberOrNull(payload.monto_total),
         payload.codigo_seguridad ?? null,
         payload.xml_content ?? null,
         payload.signed_xml_content ?? null,
@@ -958,10 +1103,22 @@ class EcfRepository {
     const encf = String(payload.encf || '').trim().toUpperCase();
     assertCondition(tipoEcf, 'Debe indicar el tipo de e-CF del documento importado.', { statusCode: 422 });
     assertCondition(encf, 'Debe indicar el e-NCF del documento importado.', { statusCode: 422 });
+    const safeBusinessId = toSqlInteger(businessId, 1) || 1;
+    const safeSequenceId = toSqlInteger(payload.sequenceId, null);
+    const safeUserId = toSqlInteger(payload.userId, null);
+    const safeMoney = {
+      subtotal: toSqlNumber(payload.subtotal, 0),
+      descuentoTotal: toSqlNumber(payload.descuentoTotal, 0),
+      montoExento: toSqlNumber(payload.montoExento, 0),
+      montoGravado: toSqlNumber(payload.montoGravado, 0),
+      itbisTotal: toSqlNumber(payload.itbisTotal, 0),
+      montoTotal: toSqlNumber(payload.montoTotal, 0),
+    };
+    const safeOrderIndex = toSqlInteger(payload.certificationOrderIndex, null);
 
     const existingRows = await conn.query(
       'SELECT * FROM ecf_documents WHERE business_id = ? AND encf = ? ORDER BY id DESC LIMIT 1',
-      [businessId, encf]
+      [safeBusinessId, encf]
     );
     const existing = existingRows[0] || null;
     const protectedStatuses = new Set(['aceptado', 'aceptado_condicional', 'en_proceso', 'enviado', 'procesando']);
@@ -1014,8 +1171,8 @@ class EcfRepository {
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [
-          payload.sequenceId || null,
-          payload.userId || null,
+          safeSequenceId,
+          safeUserId,
           tipoEcf,
           environment,
           state,
@@ -1023,12 +1180,12 @@ class EcfRepository {
           payload.codigoSeguridad || null,
           payload.nombreComprador || null,
           digitsOnly(payload.rncComprador),
-          payload.subtotal ?? 0,
-          payload.descuentoTotal ?? 0,
-          payload.montoExento ?? 0,
-          payload.montoGravado ?? 0,
-          payload.itbisTotal ?? 0,
-          payload.montoTotal ?? 0,
+          safeMoney.subtotal,
+          safeMoney.descuentoTotal,
+          safeMoney.montoExento,
+          safeMoney.montoGravado,
+          safeMoney.itbisTotal,
+          safeMoney.montoTotal,
           payload.xmlContent || null,
           payload.signedXml || null,
           payload.certificationCaseKey || null,
@@ -1036,7 +1193,7 @@ class EcfRepository {
           payload.certificationSourceFormat || null,
           payload.certificationTestType || null,
           payload.certificationBatchId || null,
-          payload.certificationOrderIndex ?? null,
+          safeOrderIndex,
           payload.certificationOriginalXml || null,
           signedAt,
           existing.id,
@@ -1050,9 +1207,9 @@ class EcfRepository {
        (business_id, sale_id, sequence_id, branch_id, cash_register_id, created_by_user_id, tipo_ecf, encf, environment, estado_dgii, submission_mode, track_id, codigo_seguridad, nombre_comprador, rnc_comprador, subtotal, descuento_total, monto_exento, monto_gravado, itbis_total, monto_total, xml_content, signed_xml_content, certification_case_key, certification_source_name, certification_source_format, certification_test_type, certification_batch_id, certification_order_index, certification_original_xml, dgii_response_json, xml_generated_at, signed_at, sent_at, last_checked_at, error_message, created_at, updated_at)
        VALUES (?, NULL, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, CURRENT_TIMESTAMP, ?, NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
-        businessId,
-        payload.sequenceId || null,
-        payload.userId || null,
+        safeBusinessId,
+        safeSequenceId,
+        safeUserId,
         tipoEcf,
         encf,
         environment,
@@ -1061,12 +1218,12 @@ class EcfRepository {
         payload.codigoSeguridad || null,
         payload.nombreComprador || null,
         digitsOnly(payload.rncComprador),
-        payload.subtotal ?? 0,
-        payload.descuentoTotal ?? 0,
-        payload.montoExento ?? 0,
-        payload.montoGravado ?? 0,
-        payload.itbisTotal ?? 0,
-        payload.montoTotal ?? 0,
+        safeMoney.subtotal,
+        safeMoney.descuentoTotal,
+        safeMoney.montoExento,
+        safeMoney.montoGravado,
+        safeMoney.itbisTotal,
+        safeMoney.montoTotal,
         payload.xmlContent || null,
         payload.signedXml || null,
         payload.certificationCaseKey || null,
@@ -1074,7 +1231,7 @@ class EcfRepository {
         payload.certificationSourceFormat || null,
         payload.certificationTestType || null,
         payload.certificationBatchId || null,
-        payload.certificationOrderIndex ?? null,
+        safeOrderIndex,
         payload.certificationOriginalXml || null,
         signedAt,
       ]
@@ -1328,11 +1485,20 @@ class EcfRepository {
          AND certification_case_key IS NOT NULL
          ${batchClause}
          AND estado_dgii IN (${estados})
+         AND (submission_mode IS NULL OR submission_mode != 'rfce')
        ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
        LIMIT 1`,
       params
     );
     return rows[0] || null;
+  }
+
+  async deleteSingleCertificationCase(documentId) {
+    const result = await this.query(
+      'DELETE FROM ecf_documents WHERE id = ? AND business_id = 1 AND certification_case_key IS NOT NULL',
+      [documentId]
+    );
+    return { deleted: result.affectedRows || 0, id: documentId };
   }
 
   async deleteCurrentBatchCertificationCases() {

@@ -257,6 +257,36 @@ class DgiiClient {
     };
   }
 
+  async submitAcecf({ token, signedXml, filename }) {
+    assertCondition(token, 'No hay token DGII disponible para enviar la Aprobación Comercial.', { statusCode: 422 });
+    assertDgiiXmlRoot(signedXml, 'ACECF', this.config.DGII_APROBACION_COMERCIAL_URL);
+    const multipart = buildMultipartBody([
+      {
+        name: 'xml',
+        filename: filename || `acecf-${Date.now()}.xml`,
+        contentType: 'text/xml',
+        value: signedXml,
+      },
+    ]);
+    const response = await request('POST', this.config.DGII_APROBACION_COMERCIAL_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/form-data; boundary=${multipart.boundary}`,
+      },
+      body: multipart.body,
+      timeoutMs: 45000,
+    });
+    const parsed = parseTrackResponse(response.body);
+    return {
+      ...parsed,
+      endpoint: this.config.DGII_APROBACION_COMERCIAL_URL,
+      xmlRoot: 'ACECF',
+      xmlType: 'ACECF',
+      filename: filename || null,
+      http: response,
+    };
+  }
+
   async getTrackStatus({ token, trackId }) {
     assertCondition(trackId, 'Debe indicar un TrackId para consultar estado.', { statusCode: 422 });
     const url = `${this.config.DGII_CONSULTA_URL}?trackid=${encodeURIComponent(trackId)}`;

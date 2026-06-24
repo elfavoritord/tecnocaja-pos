@@ -1,23 +1,23 @@
 {
-  "trackId": "78edf7c1-9df4-4be8-ab7c-1b38ed9d0fcb",
-  "fecha": "2026-06-12T04:02:49.192Z",
-  "estado": "RECHAZADO",
+  "trackId": "5b8e4696-09be-45cf-841c-a06e80cf6ab6",
+  "fecha": "2026-06-24T01:29:54.479Z",
+  "estado": "ACEPTADO",
   "environment": "certecf",
-  "codigo": "2",
+  "codigo": "1",
   "descripcion": null,
   "mensaje": null,
   "error": null,
   "rnc": "40211932609",
-  "encf": "E470000000008",
-  "secuenciaUtilizada": false,
-  "fechaRecepcion": "6/12/2026 12:02:25 AM",
+  "encf": "E470000000127",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "6/23/2026 9:29:48 PM",
   "mensajes": [
     {
-      "valor": "La propiedad NombreComercial no es válida debido a que el valor enviado () no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.",
+      "valor": "",
       "codigo": 0
     }
   ],
   "httpStatus": 200,
-  "raw": "{\"trackId\":\"78edf7c1-9df4-4be8-ab7c-1b38ed9d0fcb\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000008\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/12/2026 12:02:25 AM\",\"mensajes\":[{\"valor\":\"La propiedad NombreComercial no es válida debido a que el valor enviado () no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.\",\"codigo\":0}]}",
-  "statusPath": "storage/ecf/tracks/estado-78edf7c1-9df4-4be8-ab7c-1b38ed9d0fcb.json"
+  "raw": "{\"trackId\":\"5b8e4696-09be-45cf-841c-a06e80cf6ab6\",\"codigo\":\"1\",\"estado\":\"Aceptado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000127\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"6/23/2026 9:29:48 PM\",\"mensajes\":[{\"valor\":\"\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-5b8e4696-09be-45cf-841c-a06e80cf6ab6.json"
 }

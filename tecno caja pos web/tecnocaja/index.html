@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tecno Caja | Sistema POS y Punto de Venta en República Dominicana con Facturación Fiscal DGII</title>
+<meta name="description" content="Tecno Caja es el sistema POS profesional para República Dominicana: punto de venta rápido, control de inventario, facturación fiscal DGII y e-CF, delivery, reportes de ventas desde el celular y portal para contadores. Todo tu negocio en una sola plataforma.">
+<meta name="keywords" content="sistema POS República Dominicana, punto de venta, facturación fiscal, DGII, e-CF, control de inventario, reportes de ventas, POS para delivery, software para colmados, software para restaurantes">
+<meta name="author" content="Tecno Caja">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Tecno Caja | Sistema POS profesional para República Dominicana">
+<meta property="og:description" content="Vende, factura, controla inventario, maneja caja, delivery y facturación fiscal DGII desde una sola plataforma.">
+<meta property="og:locale" content="es_DO">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="icon" type="image/png" href="logo/logo tecno caja pos.png">
+<meta property="og:image" content="logo/logo tecno caja pos.png">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<!-- ===== NAV ===== -->
+<header id="header">
+  <nav class="nav">
+    <a href="#inicio" class="logo">
+      <span class="logo-mark logo-mark-img"><img src="logo/logo tecno caja pos.png" alt="Logo Tecno Caja POS"></span>
+      Tecno<span>Caja</span>
+    </a>
+    <ul class="nav-links" id="navLinks">
+      <li><a href="#inicio">Inicio</a></li>
+      <li><a href="#capturas">Capturas</a></li>
+      <li><a href="#modulos">Módulos</a></li>
+      <li><a href="#fiscal">Fiscal</a></li>
+      <li><a href="#reportes">Reportes</a></li>
+      <li><a href="#contadores">Contadores</a></li>
+      <li><a href="#planes">Planes</a></li>
+      <li><a href="#contacto">Contacto</a></li>
+    </ul>
+    <div class="nav-cta">
+      <a href="https://wa.me/18292812877?text=Hola%2C%20quiero%20informaci%C3%B3n%20sobre%20Tecno%20Caja" target="_blank" rel="noopener" class="wa-btn">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.7-.84-2-.93-.27-.1-.47-.15-.66.15-.2.3-.76.93-.93 1.12-.17.2-.34.22-.64.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.6.13-.14.3-.34.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.66-1.6-.9-2.18-.24-.57-.48-.5-.66-.5h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.7-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.27-.2-.57-.34M12 21.5a9.5 9.5 0 01-4.85-1.33l-.35-.2-3.6.94.96-3.5-.22-.36A9.5 9.5 0 1112 21.5m0-21a11.5 11.5 0 00-9.9 17.32L.5 24l6.36-1.66A11.5 11.5 0 1012 .5"/></svg>
+        <span>WhatsApp</span>
+      </a>
+      <a href="#planes" class="btn btn-primary" style="padding:11px 20px">Solicitar demo</a>
+      <button class="burger" id="burger" aria-label="Menú"><span></span><span></span><span></span></button>
+    </div>
+  </nav>
+</header>
+
+<!-- ===== HERO ===== -->
+<section class="hero" id="inicio">
+  <div class="hero-bg"></div>
+  <div class="hero-grid"></div>
+  <div class="wrap hero-inner">
+    <div class="hero-text">
+      <div class="hero-badge reveal">🇩🇴 Hecho para negocios dominicanos <b>DGII / e-CF</b></div>
+      <h1 class="reveal d1">Controla tu negocio completo con <span class="hl">Tecno Caja</span></h1>
+      <p class="sub reveal d2">Sistema POS profesional para vender, facturar, controlar inventario, manejar caja, delivery, reportes móviles y facturación fiscal DGII desde una sola plataforma.</p>
+      <div class="hero-cta reveal d3">
+        <button class="btn btn-green" onclick="descargarDemo()">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Descargar demo · 30 días gratis
+        </button>
+        <a href="#modulos" class="btn btn-ghost">Ver módulos</a>
+      </div>
+      <div class="hero-trust reveal d4">
+        <div class="ht"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Instálalo en Windows</div>
+        <div class="ht"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Impresora térmica</div>
+        <div class="ht"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg> Soporte local</div>
+      </div>
+    </div>
+
+    <div class="hero-visual reveal d2">
+      <div class="devices">
+        <!-- POS desktop -->
+        <div class="pos-window float-a">
+          <div class="pos-bar"><i></i><i></i><i></i><b>Tecno Caja POS — Venta</b><span class="live"><span class="dot"></span>Caja abierta</span></div>
+          <div class="pos-body">
+            <div class="pos-products">
+              <div class="prod"><div class="ic" style="background:#FEF2E6">🥤</div><b>Refresco</b><span>RD$ 60</span></div>
+              <div class="prod"><div class="ic" style="background:#E8F5EC">🍞</div><b>Pan</b><span>RD$ 25</span></div>
+              <div class="prod"><div class="ic" style="background:#EAF1FE">🧀</div><b>Queso lb</b><span>RD$ 180</span></div>
+              <div class="prod"><div class="ic" style="background:#FEECEC">🍗</div><b>Pollo lb</b><span>RD$ 95</span></div>
+              <div class="prod"><div class="ic" style="background:#F3EEFE">🧴</div><b>Aceite</b><span>RD$ 250</span></div>
+              <div class="prod"><div class="ic" style="background:#FFF6E0">🍚</div><b>Arroz lb</b><span>RD$ 35</span></div>
+            </div>
+            <div class="pos-cart">
+              <div class="cart-title">Venta actual</div>
+              <div class="cart-line"><span>2× Refresco</span><span>120</span></div>
+              <div class="cart-line"><span>1× Queso lb</span><span>180</span></div>
+              <div class="cart-line"><span>3× Arroz lb</span><span>105</span></div>
+              <div class="cart-tot">
+                <div class="row"><span>Subtotal</span><span>RD$ 343.22</span></div>
+                <div class="row"><span>ITBIS (18%)</span><span>RD$ 61.78</span></div>
+                <div class="big"><small>Total a cobrar</small><b id="heroTotal">RD$ 405</b></div>
+                <div class="pay"><span class="on">💵 Efectivo</span><span>💳 Tarjeta</span><span>📱 Transfer.</span><span>📒 Crédito</span></div>
+                <div class="cobrar">Cobrar venta · F12</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- map card -->
+        <div class="map-card float-c">
+          <div class="mc-head"><span class="dot"></span><b>Delivery</b><small>3 activos</small></div>
+          <div class="map-canvas">
+            <svg viewBox="0 0 166 96"><path d="M40 64 Q70 20 122 56" stroke="#0B5CE0" stroke-width="2.5" fill="none" stroke-dasharray="5 5" stroke-linecap="round"/></svg>
+            <div class="pin driver"></div><div class="pin dest"></div>
+          </div>
+        </div>
+        <!-- phone -->
+        <div class="phone float-b">
+          <div class="phone-screen">
+            <div class="phone-notch"><i></i></div>
+            <div class="ph-head"><small>TECNO REPORTE</small><h5>Ventas de hoy</h5></div>
+            <div class="ph-stats">
+              <div class="ph-stat"><small>Vendido</small><b class="g">RD$ 84.5K</b></div>
+              <div class="ph-stat"><small>Ganancia</small><b>RD$ 23.1K</b></div>
+            </div>
+            <div class="ph-chart"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== TRUST STRIP ===== -->
+<section class="trust">
+  <div class="wrap">
+    <div class="trust-grid">
+      <div class="trust-item reveal"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="13" rx="2" stroke="currentColor" stroke-width="2"/><path d="M8 21h8M12 17v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><b>POS de escritorio</b></div>
+      <div class="trust-item gr reveal d1"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 3h10l4 6-9 12L3 9l4-6z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><b>Facturación DGII / e-CF</b></div>
+      <div class="trust-item reveal d2"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="2" stroke="currentColor" stroke-width="2"/><path d="M11 18h2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><b>Reportes móviles</b></div>
+      <div class="trust-item gr reveal d3"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><path d="M1 3h4l2.7 13.4a2 2 0 002 1.6h7.7a2 2 0 002-1.6L23 7H6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="9" cy="21" r="1.5" fill="currentColor"/><circle cx="18" cy="21" r="1.5" fill="currentColor"/></svg></div><b>Delivery y contra entrega</b></div>
+      <div class="trust-item reveal"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2.5" stroke="currentColor" stroke-width="2"/></svg></div><b>Control de caja</b></div>
+      <div class="trust-item gr reveal d1"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2" stroke="currentColor" stroke-width="2"/><rect x="8" y="2" width="8" height="4" rx="1" stroke="currentColor" stroke-width="2"/></svg></div><b>Portal para contadores</b></div>
+      <div class="trust-item reveal d2"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="2"/><path d="M15 11a3 3 0 100-6M3 20a6 6 0 0112 0M15 14a6 6 0 016 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><b>Multiusuario y sucursales</b></div>
+      <div class="trust-item gr reveal d3"><div class="ti-ic"><svg viewBox="0 0 24 24" fill="none"><path d="M21 12a9 9 0 11-3-6.7M21 4v4h-4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><b>Respaldos y sincronización</b></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CAPTURAS DEL SISTEMA ===== -->
+<section class="sec screenshots" id="capturas">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow green">🖥️ Capturas del sistema</span>
+      <h2>Así se ve Tecno Caja trabajando en tu negocio</h2>
+      <p>Pantallas del ecosistema: caja rápida, reportes móviles, delivery con mapa y portal para contadores.</p>
+    </div>
+
+    <div class="shot-hero reveal">
+      <div class="shot-copy">
+        <span class="shot-kicker">POS principal</span>
+        <h3>Ventas rápidas con caja, ITBIS y atajos</h3>
+        <p>Una pantalla pensada para vender sin fricción: productos, carrito, total, comprobantes, impresión y cobro desde un solo lugar.</p>
+        <div class="shot-pills">
+          <span>F2 búsqueda</span>
+          <span>F10 facturar</span>
+          <span>F12 cobrar</span>
+        </div>
+      </div>
+      <div class="shot-frame shot-frame-main">
+        <img src="assets/screenshots/pos-ventas.png" alt="Pantalla de ventas del sistema POS Tecno Caja" loading="lazy">
+      </div>
+    </div>
+
+    <div class="shot-grid">
+      <article class="shot-card reveal">
+        <div class="shot-frame">
+          <img src="assets/screenshots/reportes-movil.png" alt="App movil Tecno Reporte con dashboard de ventas" loading="lazy">
+        </div>
+        <div class="shot-card-copy">
+          <span>Tecno Reporte</span>
+          <h3>Reportes desde el celular</h3>
+          <p>Ventas, ganancias, inventario, caja y PDF para revisar el negocio aunque no estés frente a la computadora.</p>
+        </div>
+      </article>
+      <article class="shot-card reveal d1">
+        <div class="shot-frame">
+          <img src="assets/screenshots/delivery-panel.png" alt="Panel de delivery de Tecno Caja con pedidos y mapa" loading="lazy">
+        </div>
+        <div class="shot-card-copy">
+          <span>Delivery integrado</span>
+          <h3>Pedidos, rutas y contra entrega</h3>
+          <p>Asigna repartidores, controla incidencias y valida el dinero pendiente cuando el delivery regresa a caja.</p>
+        </div>
+      </article>
+      <article class="shot-card reveal d2">
+        <div class="shot-frame">
+          <img src="assets/screenshots/portal-contadores.png" alt="Portal Tecno Caja Contadores con negocios asociados y reportes" loading="lazy">
+        </div>
+        <div class="shot-card-copy">
+          <span>Portal contable</span>
+          <h3>Negocios asociados en orden</h3>
+          <p>Las firmas contables pueden ver clientes, licencias, solicitudes y reportes centralizados.</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- ===== POS RÁPIDO ===== -->
+<section class="sec" id="modulos">
+  <div class="wrap">
+    <div class="feat">
+      <div class="feat-text reveal">
+        <span class="eyebrow">⚡ Punto de venta</span>
+        <h2>Un POS hecho para vender rápido</h2>
+        <p class="lead">Cada segundo en caja cuenta. Tecno Caja agiliza el cobro para que tu fila avance y tus clientes salgan contentos, sin complicaciones.</p>
+        <ul class="feat-list">
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Búsqueda y escaneo de productos</b><p>Encuentra o escanea con código de barras al instante.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Efectivo, tarjeta, transferencia y crédito</b><p>Cobra en cualquier método, incluso ventas combinadas.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Recibos e impresión térmica</b><p>Imprime al toque o suspende y recupera ventas.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Cotizaciones y control de crédito</b><p>Crea cotizaciones y lleva el fiao de tus clientes al día.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Caja abierta/cerrada y cortes</b><p>Registra ingresos, egresos y cierra el día cuadrado.</p></div></li>
+        </ul>
+      </div>
+      <div class="feat-visual reveal d2">
+        <div class="mock">
+          <div class="mock-top">
+            <div class="mt-l"><div class="mt-ic"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="13" rx="2" stroke="#fff" stroke-width="2"/><path d="M8 21h8" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div><div><h4>Cierre de caja</h4><small>Turno de hoy · Caja 1</small></div></div>
+            <span class="pill">Cuadrada ✓</span>
+          </div>
+          <div class="kpi-row">
+            <div class="kpi"><small>Ventas</small><b>RD$ 84.5K</b><span class="up">▲ 124 tickets</span></div>
+            <div class="kpi"><small>Efectivo</small><b>RD$ 51.2K</b><span class="up">en caja</span></div>
+            <div class="kpi"><small>Crédito</small><b>RD$ 9.8K</b><span class="up">por cobrar</span></div>
+          </div>
+          <div class="chart-mock">
+            <div class="bar" style="--h:45%"></div><div class="bar" style="--h:68%"></div><div class="bar" style="--h:52%"></div><div class="bar" style="--h:80%"></div><div class="bar" style="--h:60%"></div><div class="bar" style="--h:92%"></div><div class="bar" style="--h:74%"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== INVENTARIO ===== -->
+<section class="sec" style="background:#fff;border-top:1px solid var(--line)">
+  <div class="wrap">
+    <div class="feat rev">
+      <div class="feat-text reveal">
+        <span class="eyebrow green">📦 Inventario</span>
+        <h2>Inventario y productos bajo control</h2>
+        <p class="lead">Sabe siempre qué tienes, qué se está acabando y cuánto te cuesta. El inventario se actualiza solo con cada venta y compra.</p>
+        <ul class="feat-list">
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Productos, categorías y variantes</b><p>Organiza todo tu catálogo con presentaciones y unidades.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Stock, alertas y ajustes</b><p>Avisos automáticos cuando un producto está bajo.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Importar / exportar CSV</b><p>Carga cientos de productos de una vez en minutos.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Kardex y movimientos</b><p>Historial completo de entradas y salidas por producto.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Proveedores y facturas de suplidores</b><p>Registra compras y controla cuánto le debes a cada suplidor.</p></div></li>
+        </ul>
+      </div>
+      <div class="feat-visual reveal d2">
+        <div class="mock">
+          <div class="mock-top">
+            <div class="mt-l"><div class="mt-ic"><svg viewBox="0 0 24 24" fill="none"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M3 8l9 5 9-5M12 13v8" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg></div><div><h4>Inventario en vivo</h4><small>248 productos activos</small></div></div>
+            <span class="pill">Sincronizado</span>
+          </div>
+          <table class="inv-table">
+            <thead><tr><th>Producto</th><th>Stock</th><th>Estado</th></tr></thead>
+            <tbody>
+              <tr><td><span class="nm"><span class="dot" style="background:#FEF2E6">🥤</span>Refresco 600ml</span></td><td>142</td><td><span class="tag ok">En stock</span></td></tr>
+              <tr><td><span class="nm"><span class="dot" style="background:#E8F5EC">🍞</span>Pan de agua</span></td><td>8</td><td><span class="tag low">Bajo</span></td></tr>
+              <tr><td><span class="nm"><span class="dot" style="background:#EAF1FE">🧀</span>Queso geo lb</span></td><td>26</td><td><span class="tag ok">En stock</span></td></tr>
+              <tr><td><span class="nm"><span class="dot" style="background:#FEECEC">🧴</span>Aceite 1L</span></td><td>0</td><td><span class="tag no">Agotado</span></td></tr>
+              <tr><td><span class="nm"><span class="dot" style="background:#FFF6E0">🍚</span>Arroz selecto lb</span></td><td>310</td><td><span class="tag ok">En stock</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FISCAL ===== -->
+<section class="sec fiscal" id="fiscal">
+  <div class="wrap">
+    <div class="feat">
+      <div class="feat-text reveal">
+        <span class="eyebrow light">🇩🇴 Cumplimiento fiscal</span>
+        <h2>Facturación fiscal para República Dominicana</h2>
+        <p class="lead">Tecno Caja está preparado para negocios que necesitan orden fiscal, comprobantes y reportes claros. Emite con NCF, factura electrónica e-CF y mantén todo listo para la DGII.</p>
+        <ul class="feat-list">
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>NCF y secuencias de comprobantes</b><p>Control automático de numeración y vencimientos.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>e-CF y XML fiscal</b><p>Genera la factura electrónica con su XML listo para enviar.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Integración DGII y certificados digitales</b><p>Preparado para firmar y reportar según la norma.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Reportes fiscales (606, 607, 608, 609)</b><p>Exporta los formatos que tu negocio necesita declarar.</p></div></li>
+        </ul>
+      </div>
+      <div class="feat-visual reveal d2">
+        <div class="ncf-card">
+          <div class="ncf-head">
+            <div><div class="ttl">Comprobante Fiscal</div><div class="sub">e-CF · Factura de Crédito Fiscal</div></div>
+            <div class="seal"><svg viewBox="0 0 24 24" fill="none" width="13" height="13"><path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/></svg>Emitido</div>
+          </div>
+          <div class="ncf-rows">
+            <div class="nr"><span>Tipo de comprobante</span><b>31 · Crédito Fiscal</b></div>
+            <div class="nr"><span>e-NCF</span><code>E310000000125</code></div>
+            <div class="nr"><span>RNC cliente</span><b>1-31-XXXXX-9</b></div>
+            <div class="nr"><span>Fecha</span><b>20/06/2026</b></div>
+            <div class="nr"><span>ITBIS (18%)</span><b>RD$ 1,224.00</b></div>
+          </div>
+          <div class="ncf-foot">
+            <div class="tot"><small>Total comprobante</small><b>RD$ 8,024.00</b></div>
+            <div class="seal" style="background:rgba(120,168,255,.12);color:#9FC0FF;border-color:rgba(120,168,255,.25)">XML firmado</div>
+          </div>
+          <div class="ncf-tags">
+            <span>NCF</span><span>e-CF</span><span>DGII</span><span>XML fiscal</span><span>606 / 607 / 608</span><span>Certificado digital</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== DELIVERY ===== -->
+<section class="sec" style="background:#fff;border-top:1px solid var(--line)">
+  <div class="wrap">
+    <div class="feat rev">
+      <div class="feat-text reveal">
+        <span class="eyebrow green">🛵 Delivery</span>
+        <h2>Delivery integrado a tu caja</h2>
+        <p class="lead">Maneja los pedidos a domicilio desde el mismo POS. Asigna repartidores, controla el contra entrega y nunca pierdas de vista el dinero pendiente por entregar.</p>
+        <ul class="feat-list">
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Pedidos delivery desde el POS</b><p>Crea el pedido con dirección, teléfono, referencia y ubicación.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Asignación de repartidor y pago contra entrega</b><p>Designa quién entrega y registra cómo se va a cobrar.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Panel con pedidos activos e incidencias</b><p>Sigue cada pedido en vivo y resuelve problemas al momento.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Mapa de repartidores y dinero pendiente</b><p>Visualiza tus motores y cuánto efectivo traen de vuelta a caja.</p></div></li>
+        </ul>
+      </div>
+      <div class="feat-visual reveal d2">
+        <div class="deliv-map">
+          <div class="dm-head"><div class="mt-ic"><svg viewBox="0 0 24 24" fill="none"><path d="M9 20H5a2 2 0 01-2-2v-5l2-5h9v12M9 20h6m0 0a2 2 0 104 0 2 2 0 00-4 0zm-6 0a2 2 0 11-4 0 2 2 0 014 0zM14 8h4l3 4v6h-2" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><b>Mapa de delivery</b><span class="live"><span class="dot"></span>3 en ruta</span></div>
+          <div class="dm-canvas">
+            <div class="streets"></div>
+            <svg viewBox="0 0 100 100" preserveAspectRatio="none"><path d="M14 78 Q40 30 78 42" stroke="#0B5CE0" stroke-width="1.4" fill="none" stroke-dasharray="3 3" stroke-linecap="round"/><path d="M14 78 Q45 75 60 88" stroke="#F59E0B" stroke-width="1.4" fill="none" stroke-dasharray="3 3" stroke-linecap="round"/></svg>
+            <div class="dpin g" style="top:10%;left:10%"></div>
+            <div class="dpin b move"></div>
+            <div class="dpin o" style="top:78%;left:55%"></div>
+            <div class="dpin g" style="top:34%;left:74%"></div>
+          </div>
+          <div class="dm-list">
+            <div class="dm-order"><div class="num">#84</div><div class="info"><b>Calle Duarte #12, ref. colmado</b><small>Repartidor: Luis · RD$ 640</small></div><span class="st way">En ruta</span></div>
+            <div class="dm-order"><div class="num">#85</div><div class="info"><b>Res. Las Palmas, edif. 3</b><small>Pago contra entrega · RD$ 1,250</small></div><span class="st cod">Contra entrega</span></div>
+            <div class="dm-order"><div class="num">#83</div><div class="info"><b>Av. Mella #98</b><small>Repartidor: Ana · RD$ 380</small></div><span class="st done">Entregado</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== REPORTES MÓVIL ===== -->
+<section class="sec rep" id="reportes" style="background:linear-gradient(180deg,var(--bg),#fff)">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">📱 Tecno Reporte</span>
+      <h2>Tu negocio en el celular</h2>
+      <p>Consulta cómo va tu negocio desde el móvil, sin estar pegado a la caja. Toda la información que importa, en tu bolsillo.</p>
+    </div>
+    <div class="rep-grid">
+      <div class="rep-phones reveal">
+        <div class="bigphone float-a">
+          <div class="scr">
+            <div class="bp-notch"><i></i></div>
+            <div class="bp-head"><small>HOLA, EMILIO 👋</small><h5>Resumen de tu negocio</h5></div>
+            <div class="bp-hero"><small>Ganancia del mes</small><b>RD$ 312,480</b><span class="up">▲ 18% vs. mes pasado</span></div>
+            <div class="bp-cards">
+              <div class="bp-card"><div class="ci" style="background:var(--blue-50);color:var(--blue)"><svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18M7 14l4-4 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><small>Ventas hoy</small><b>RD$ 84.5K</b></div>
+              <div class="bp-card"><div class="ci" style="background:var(--green-50);color:var(--green-600)"><svg viewBox="0 0 24 24" fill="none"><rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="2" stroke="currentColor" stroke-width="2"/></svg></div><small>En caja</small><b>RD$ 51.2K</b></div>
+              <div class="bp-card"><div class="ci" style="background:#FFF1E6;color:#D97706"><svg viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><small>Por cobrar</small><b>RD$ 9.8K</b></div>
+              <div class="bp-card"><div class="ci" style="background:#F3EEFE;color:#7C3AED"><svg viewBox="0 0 24 24" fill="none"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><small>Sucursales</small><b>3 activas</b></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="rep-text reveal d2">
+        <h3 style="font-family:'Sora';font-size:1.5rem;font-weight:700;margin-bottom:14px">Todo lo que pasa en tu negocio, al alcance de tu mano</h3>
+        <p style="color:var(--slate);margin-bottom:6px">Desde el dashboard hasta el detalle fiscal, Tecno Reporte te da el control total estés donde estés. Exporta cualquier reporte a PDF y compártelo con un toque.</p>
+        <div class="rep-feats">
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="9" rx="1" stroke="currentColor" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1" stroke="currentColor" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1" stroke="currentColor" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1" stroke="currentColor" stroke-width="2"/></svg>Dashboard</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M3 3v18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M7 14l4-4 3 3 5-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Ventas</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Ganancias</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M21 8l-9-5-9 5v8l9 5 9-5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Inventario</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><rect x="2" y="6" width="20" height="12" rx="2" stroke="currentColor" stroke-width="2"/></svg>Caja</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>CxC y CxP</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M12 2v6m0 0l-3-3m3 3l3-3M5 12h14l-1.5 8h-11z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Gastos</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M7 3h10l4 6-9 12L3 9z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Fiscal</div>
+          <div class="rep-chip"><svg viewBox="0 0 24 24" fill="none"><path d="M14 2v6h6M9 13h6M9 17h6M9 9h1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>Exportar PDF</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CONTADORES ===== -->
+<section class="sec" id="contadores" style="background:#fff;border-top:1px solid var(--line)">
+  <div class="wrap">
+    <div class="feat">
+      <div class="feat-text reveal">
+        <span class="eyebrow">🧮 Tecno Caja Contadores</span>
+        <h2>Portal para contadores</h2>
+        <p class="lead">Las firmas contables pueden acompañar a sus clientes con datos organizados y reportes centralizados. Todos tus negocios asociados en un solo lugar.</p>
+        <ul class="feat-list">
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Negocios asociados y reportes de clientes</b><p>Accede a la información fiscal y de ventas de cada cliente.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Licencias y solicitudes</b><p>Gestiona altas, renovaciones y peticiones de tus clientes.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Facturación y colaboradores</b><p>Maneja la facturación de la firma y tu equipo de trabajo.</p></div></li>
+          <li><span class="chk"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><div><b>Perfil de firma contable</b><p>Tu marca y datos profesionales en un portal centralizado.</p></div></li>
+        </ul>
+      </div>
+      <div class="feat-visual reveal d2">
+        <div class="cont-card">
+          <div class="cont-head"><div class="av">FC</div><div><b>Firma Contable Asociados</b><small>12 negocios asociados</small></div></div>
+          <div class="cont-body">
+            <div class="cont-row"><div class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M3 21h18M5 21V7l8-4 8 4v14M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><div class="tx"><b>Negocios asociados</b><small>Colmados, tiendas y restaurantes</small></div><div class="cnt">12</div></div>
+            <div class="cont-row"><div class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="tx"><b>Licencias activas</b><small>Todas al día este mes</small></div><div class="cnt">10</div></div>
+            <div class="cont-row"><div class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div><div class="tx"><b>Solicitudes pendientes</b><small>2 esperan tu aprobación</small></div><div class="cnt">2</div></div>
+            <div class="cont-row"><div class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M14 2v6h6M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><div class="tx"><b>Reportes generados</b><small>Listos para exportar a la DGII</small></div><div class="cnt">36</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== PLANES ===== -->
+<section class="sec planes" id="planes">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">💼 Planes</span>
+      <h2>Elige el plan ideal para tu negocio</h2>
+      <p>Empieza con lo esencial y crece cuando lo necesites. Sin amarres y con soporte local dominicano.</p>
+    </div>
+    <div class="plan-grid">
+      <div class="plan reveal">
+        <h3>Básico</h3>
+        <p class="pdesc">Para arrancar a vender y controlar lo esencial de tu negocio.</p>
+        <div class="price"><b>Consultar</b><small>/ instalación</small></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Ventas y punto de venta</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Productos e inventario</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Clientes y crédito</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Control de caja</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Reportes básicos</li>
+        </ul>
+        <a href="https://wa.me/18292812877?text=Hola%2C%20quiero%20el%20plan%20B%C3%A1sico%20de%20Tecno%20Caja" target="_blank" rel="noopener" class="btn btn-ghost">Consultar</a>
+      </div>
+      <div class="plan pop reveal d1">
+        <div class="plan-tag">Más popular</div>
+        <h3>Pro</h3>
+        <p class="pdesc">Para negocios que venden rápido y quieren delivery y movilidad.</p>
+        <div class="price"><b>Consultar</b><small>/ instalación</small></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Todo lo del plan Básico</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>POS móvil · Tecno Reporte</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Delivery integrado</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Usuarios avanzados y permisos</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Sincronización en la nube</li>
+        </ul>
+        <a href="https://wa.me/18292812877?text=Hola%2C%20quiero%20el%20plan%20Pro%20de%20Tecno%20Caja" target="_blank" rel="noopener" class="btn btn-primary">Consultar</a>
+      </div>
+      <div class="plan reveal d2">
+        <h3>Plus</h3>
+        <p class="pdesc">Para cadenas, varias sucursales y firmas contables.</p>
+        <div class="price"><b>Consultar</b><small>/ instalación</small></div>
+        <ul>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Todo lo del plan Pro</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Multisucursal</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Reportes consolidados</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Portal para contadores</li>
+          <li><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>Funciones avanzadas y prioridad</li>
+        </ul>
+        <a href="https://wa.me/18292812877?text=Hola%2C%20quiero%20el%20plan%20Plus%20de%20Tecno%20Caja" target="_blank" rel="noopener" class="btn btn-ghost">Consultar</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== NEGOCIOS ===== -->
+<section class="sec" style="background:#fff;border-top:1px solid var(--line)">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow green">🏪 Negocios ideales</span>
+      <h2>Hecho para tu tipo de negocio</h2>
+      <p>Tecno Caja se adapta a la realidad de cada negocio dominicano, sin importar su tamaño.</p>
+    </div>
+    <div class="biz-grid">
+      <div class="biz reveal"><div class="bic">🏪</div><h4>Colmados</h4><p>Ventas rápidas, fiao y control de efectivo del día a día.</p></div>
+      <div class="biz reveal d1"><div class="bic">🍽️</div><h4>Restaurantes</h4><p>Comandas, mesas, delivery e impresión térmica.</p></div>
+      <div class="biz reveal d2"><div class="bic">🍕</div><h4>Pizzerías</h4><p>Pedidos a domicilio y contra entrega bien controlados.</p></div>
+      <div class="biz reveal"><div class="bic">👕</div><h4>Tiendas</h4><p>Variantes, tallas, colores y control de inventario.</p></div>
+      <div class="biz reveal d1"><div class="bic">🔧</div><h4>Ferreterías</h4><p>Catálogos grandes, proveedores y cotizaciones.</p></div>
+      <div class="biz reveal d2"><div class="bic">💊</div><h4>Farmacias</h4><p>Inventario detallado y comprobantes fiscales al día.</p></div>
+      <div class="biz reveal"><div class="bic">🛒</div><h4>Minimarkets</h4><p>Escaneo veloz y reportes claros de cada turno.</p></div>
+      <div class="biz reveal d1"><div class="bic">🛵</div><h4>Negocios con delivery</h4><p>Repartidores, mapa y dinero pendiente por entregar.</p></div>
+      <div class="biz reveal d2"><div class="bic">🧮</div><h4>Firmas contables</h4><p>Reportes centralizados de todos sus clientes.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FAQ ===== -->
+<section class="sec" style="background:var(--bg)">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">❓ Preguntas frecuentes</span>
+      <h2>Lo que más nos preguntan</h2>
+      <p>Respuestas claras antes de que des el paso con Tecno Caja.</p>
+    </div>
+    <div class="faq">
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Tecno Caja funciona para negocios pequeños?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Sí. Tecno Caja está pensado tanto para colmados y negocios pequeños como para tiendas grandes con varias cajas. Empiezas con el plan Básico y vas creciendo a tu ritmo.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Puedo usarlo con impresora térmica?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Claro que sí. Tecno Caja imprime recibos en impresoras térmicas para que entregues el ticket al instante en cada venta.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Maneja facturación fiscal DGII?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Sí. Trabaja con NCF, factura electrónica e-CF, XML fiscal y está preparado para la integración con la DGII, incluyendo los reportes fiscales que tu negocio necesita declarar.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Tiene reportes desde el celular?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Con Tecno Reporte consultas ventas, ganancias, inventario, caja, cuentas por cobrar y pagar, gastos y datos fiscales desde tu móvil, y exportas todo a PDF.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Puedo controlar delivery?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Sí. Creas pedidos delivery desde el POS, asignas repartidores, manejas el pago contra entrega y ves un mapa con los pedidos activos y el dinero pendiente por entregar.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Sirve para varias cajas o sucursales?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>El plan Plus es multisucursal y multiusuario, con reportes consolidados para que veas todos tus locales desde un mismo lugar.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Los contadores pueden ver reportes?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Sí. El portal Tecno Caja Contadores permite a las firmas ver los reportes de sus negocios asociados de forma organizada y centralizada.</p></div></div>
+      <div class="faq-item reveal"><div class="faq-q"><span>¿Se puede instalar en Windows?</span><span class="ic"><svg viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg></span></div><div class="faq-a"><p>Sí, Tecno Caja POS se instala en computadoras con Windows. Descarga la demo de 30 días gratis e instálala en tu equipo para probarla.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== CTA ===== -->
+<section class="sec cta" id="contacto">
+  <div class="wrap">
+    <div class="cta-inner reveal">
+      <span class="eyebrow light">🚀 Da el paso</span>
+      <h2>Lleva tu negocio al siguiente nivel con Tecno Caja</h2>
+      <p>Vende más rápido, controla mejor y toma decisiones con datos reales.</p>
+      <div class="cta-cta">
+        <button class="btn btn-green" onclick="descargarDemo()">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Descargar demo · 30 días gratis
+        </button>
+        <a href="https://wa.me/18292812877?text=Hola%2C%20quiero%20solicitar%20la%20instalaci%C3%B3n%20de%20Tecno%20Caja" target="_blank" rel="noopener" class="btn btn-light">
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.7-.84-2-.93-.27-.1-.47-.15-.66.15-.2.3-.76.93-.93 1.12-.17.2-.34.22-.64.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.6.13-.14.3-.34.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.66-1.6-.9-2.18-.24-.57-.48-.5-.66-.5h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.7-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.27-.2-.57-.34M12 21.5a9.5 9.5 0 01-4.85-1.33l-.35-.2-3.6.94.96-3.5-.22-.36A9.5 9.5 0 1112 21.5"/></svg>
+          Hablar por WhatsApp
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FOOTER ===== -->
+<footer>
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="foot-brand">
+        <div class="footer-logo-card"><img src="logo/logo tecno caja pos.png" alt="Logo Tecno Caja POS"></div>
+        <div class="logo footer-logo-text">Tecno<span style="color:#3E8BFF">Caja</span></div>
+        <p>El sistema POS completo para negocios en República Dominicana: ventas, inventario, caja, facturación fiscal DGII, reportes, delivery y contadores.</p>
+        <div class="foot-contact">
+          <a href="https://wa.me/18292812877" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.7-.84-2-.93-.27-.1-.47-.15-.66.15-.2.3-.76.93-.93 1.12-.17.2-.34.22-.64.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.6.13-.14.3-.34.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.66-1.6-.9-2.18-.24-.57-.48-.5-.66-.5h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.7-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.27-.2-.57-.34M12 21.5a9.5 9.5 0 01-4.85-1.33l-.35-.2-3.6.94.96-3.5-.22-.36A9.5 9.5 0 1112 21.5"/></svg>829 281 2877</a>
+          <a href="mailto:emiliomanaurys@gmail.com"><svg viewBox="0 0 24 24" fill="none"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M3 7l9 6 9-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>emiliomanaurys@gmail.com</a>
+        </div>
+      </div>
+      <div class="foot-col">
+        <h5>Módulos</h5>
+        <a href="#modulos">Tecno Caja POS</a>
+        <a href="#fiscal">Facturación fiscal</a>
+        <a href="#reportes">Tecno Reporte</a>
+        <a href="#modulos">Inventario</a>
+        <a href="#contacto">Delivery Tecno Caja</a>
+      </div>
+      <div class="foot-col">
+        <h5>Empresa</h5>
+        <a href="#contadores">Tecno Caja Contadores</a>
+        <a href="#planes">Planes</a>
+        <a href="#contacto">Solicitar demo</a>
+        <a href="#contacto">Contacto</a>
+      </div>
+      <div class="foot-col">
+        <h5>¿Listo para empezar?</h5>
+        <p style="font-size:.88rem;margin-bottom:16px">Descarga la demo de 30 días gratis e instálala en tu Windows hoy mismo.</p>
+        <button class="btn btn-green" style="width:100%" onclick="descargarDemo()">Descargar demo gratis</button>
+      </div>
+    </div>
+    <div class="foot-bot">
+      <span>© 2026 Tecno Caja · Sistema POS para República Dominicana 🇩🇴</span>
+      <span>Ventas · Inventario · Fiscal DGII · Delivery · Reportes</span>
+    </div>
+  </div>
+</footer>
+
+<!-- WhatsApp float -->
+<a href="https://wa.me/18292812877?text=Hola%2C%20quiero%20informaci%C3%B3n%20sobre%20Tecno%20Caja" target="_blank" rel="noopener" class="wa-float" aria-label="WhatsApp">
+  <span class="ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.15-1.7-.84-2-.93-.27-.1-.47-.15-.66.15-.2.3-.76.93-.93 1.12-.17.2-.34.22-.64.07-.3-.15-1.26-.46-2.4-1.48-.89-.79-1.49-1.77-1.66-2.07-.17-.3-.02-.46.13-.6.13-.14.3-.34.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.07-.15-.66-1.6-.9-2.18-.24-.57-.48-.5-.66-.5h-.57c-.2 0-.52.07-.79.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.3 1.26.49 1.69.63.71.22 1.36.19 1.87.12.57-.09 1.7-.7 1.95-1.37.24-.67.24-1.25.17-1.37-.07-.12-.27-.2-.57-.34M12 21.5a9.5 9.5 0 01-4.85-1.33l-.35-.2-3.6.94.96-3.5-.22-.36A9.5 9.5 0 1112 21.5m0-21a11.5 11.5 0 00-9.9 17.32L.5 24l6.36-1.66A11.5 11.5 0 1012 .5"/></svg></span>
+  <span class="lbl">Escríbenos por WhatsApp</span>
+</a>
+
+<!-- toast -->
+<div class="toast" id="toast">
+  <div class="ti"><svg viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+  <div><b>¡Descargando Tecno Caja!</b><small>Tu demo de 30 días gratis está en camino.</small></div>
+</div>
+
+<script src="js/main.js"></script>
+</body>
+</html>

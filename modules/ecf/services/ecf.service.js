@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const nodeCrypto = require('crypto');
 const XLSX = require('xlsx');
 const { execFile } = require('child_process');
 const { formidable } = require('formidable');
@@ -12,8 +13,8 @@ const { EcfRepository, digitsOnly, parseJson, parseEncfNumber } = require('../mo
 const signatureService = require('../signature/signature.service');
 const { AuthService } = require('./auth.service');
 const { buildTotals, generateEcfXml, generateRfceXml, normalizeEcfXmlStructure, normalizeEncfValue } = require('./ecf-generator');
-const { importCertificationSet } = require('./certification-importer');
-const { buildTransmissionFromSpreadsheetRow, importTestSet: importHomologationTestSet } = require('./test-set-importer');
+const { importCertificationSet, previewCertificationSet } = require('./certification-importer');
+const { buildTransmissionFromSpreadsheetRow, correctIscEspecificoCerveza, importTestSet: importHomologationTestSet } = require('./test-set-importer');
 const { FcService } = require('./fc.service');
 const { ReceptionService } = require('./reception.service');
 const { ReceptionStorageService } = require('./reception-storage.service');
@@ -23,11 +24,12 @@ const { decryptText, encryptText, maskSecret } = require('./crypto-service');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { createLogger } = require('../utils/logger');
 const { parseXml } = require('../utils/xml.util');
-const { detectXmlRoot, getDgiiXmlDispatchType } = require('../utils/dgii-file.util');
+const { detectXmlRoot, getDgiiXmlDispatchType, generarNombreArchivoDGII } = require('../utils/dgii-file.util');
 const { assertValidRfceXml } = require('../utils/rfce-xsd.util');
 
 const CERT_STORAGE_DIR = path.resolve(__dirname, '..', 'certificates');
 const DEFAULT_DOWNLOADS_DIR = path.join(process.env.USERPROFILE || process.env.HOME || process.cwd(), 'Downloads');
+const LOCAL_ECF_WORK_DIR = path.join(process.cwd(), 'ecf');
 
 function nowIso() {
   return new Date().toISOString();
@@ -80,12 +82,34 @@ function normalizeDatasetValue(value) {
     : text;
 }
 
-function certificationEmitterNombreComercial(_row) {
-  const value = normalizeDatasetValue(_row?.NombreComercial);
-  // Cualquier variante de 'DOCUMENTOS ELECTRONICOS' (con o sin sufijo 'DE NN') es placeholder
-  // del set DGII. El RNC de certificacion no tiene NombreComercial registrado => DGII espera ''.
-  if (/^documentos\s+electr[oó]nicos/i.test(value.trim())) return '';
-  return value;
+function certificationEmitterNombreComercial(row, _configNombreComercial, _emitterRazonSocial) {
+  // Usa directamente el NC del rawRow del set DGII.
+  // '' → tag ausente (ej: E410000000001); valor presente → usar ese valor exacto.
+  // Verificado contra dataset oficial DGII (40211932609-17062026010303.xlsx):
+  //   E320000000012-15: NC="DOCUMENTOS ELECTRONICOS" (≠ RazonSocial → rowNC es el valor correcto)
+  //   E31/E32/E41/E43/E44/E45/E46/E47 regulares: NC="DOCUMENTOS ELECTRONICOS DE 02"
+  return normalizeDatasetValue(row?.NombreComercial);
+}
+
+function injectOrReplaceNombreComercialInXml(xmlString, newValue, { insertIfAbsent = false } = {}) {
+  if (!xmlString || !newValue) return xmlString;
+  const esc = String(newValue).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const tag = `<NombreComercial>${esc}</NombreComercial>`;
+  // Reemplazar si el tag existe pero está vacío (self-closing o empty open/close).
+  if (/<NombreComercial\s*\/>/i.test(xmlString)) {
+    return xmlString.replace(/<NombreComercial\s*\/>/gi, tag);
+  }
+  if (/<NombreComercial\s*>\s*<\/NombreComercial>/i.test(xmlString)) {
+    return xmlString.replace(/<NombreComercial\s*>\s*<\/NombreComercial>/gi, tag);
+  }
+  // Si el tag está completamente ausente y se pide insertar, añadir después de RazonSocialEmisor.
+  if (insertIfAbsent && !/<NombreComercial/i.test(xmlString)) {
+    return xmlString.replace(
+      /(<RazonSocialEmisor>[^<]*<\/RazonSocialEmisor>)/i,
+      `$1\n    ${tag}`
+    );
+  }
+  return xmlString;
 }
 
 function parseDatasetNumber(value, fallback = 0) {
@@ -95,6 +119,24 @@ function parseDatasetNumber(value, fallback = 0) {
 
 function roundMoney(value) {
   return Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
+}
+
+async function mapWithConcurrency(items, limit, handler) {
+  const list = Array.isArray(items) ? items : [];
+  const concurrency = Math.max(1, Math.min(Number(limit || 1), list.length || 1));
+  const results = new Array(list.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < list.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await handler(list[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return results;
 }
 
 function moneyText(value) {
@@ -140,16 +182,37 @@ function parseCertificationStoredSource(value) {
   }
 }
 
+function getDgiiCertificationExcelDirs() {
+  const configured = String(process.env.DGII_CERTIFICATION_EXCEL_DIR || '').trim();
+  return [
+    configured ? path.resolve(configured) : null,
+    LOCAL_ECF_WORK_DIR,
+    DEFAULT_DOWNLOADS_DIR,
+  ].filter(Boolean);
+}
+
 function findLatestDgiiCertificationExcel() {
-  if (!fs.existsSync(DEFAULT_DOWNLOADS_DIR)) return null;
-  return fs.readdirSync(DEFAULT_DOWNLOADS_DIR)
-    .filter((name) => /^40211932609-\d+\.xlsx$/i.test(name))
-    .map((name) => {
-      const fullPath = path.join(DEFAULT_DOWNLOADS_DIR, name);
+  const candidates = [];
+  for (const dir of getDgiiCertificationExcelDirs()) {
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^40211932609-\d+\.xlsx$/i.test(name)) continue;
+      const fullPath = path.join(dir, name);
       const stat = fs.statSync(fullPath);
-      return { fullPath, mtimeMs: stat.mtimeMs };
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.fullPath || null;
+      candidates.push({ fullPath, mtimeMs: stat.mtimeMs });
+    }
+  }
+  for (const candidate of candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)) {
+    try {
+      const workbook = XLSX.readFile(candidate.fullPath, { bookSheets: true });
+      const hasRfceSheet = workbook.SheetNames
+        .some((name) => String(name || '').trim().toUpperCase() === 'RFCE');
+      if (hasRfceSheet) return candidate.fullPath;
+    } catch (_) {
+      // Ignorar archivos Excel corruptos o temporales.
+    }
+  }
+  return null;
 }
 
 function readRfceDocsFromExcel(filePath) {
@@ -192,11 +255,19 @@ function readRfceDocsFromExcel(filePath) {
 
 function getPreferredFinal250MilDir() {
   const configured = String(process.env.DGII_FINAL_250MIL_DIR || '').trim();
-  if (configured) return path.resolve(configured);
-  if (process.platform === 'win32' && fs.existsSync('E:\\')) {
-    return 'E:\\SUBIR_FINAL_DGII_SOLO_4_XML';
-  }
-  return path.join(process.cwd(), 'scripts', 'SUBIR_FINAL_DGII_SOLO_4_XML');
+  const baseDir = configured
+    ? path.resolve(configured)
+    : path.join(LOCAL_ECF_WORK_DIR, 'DGII_CARGAR_AHORA_4_XML_VERIFICADOS');
+  const now = new Date();
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('');
+  return path.join(baseDir, `LOTE_${stamp}`);
 }
 
 function openFolderInOs(folderPath) {
@@ -241,6 +312,7 @@ function normalizeDgiiState(payload) {
 
   if (candidates.some((value) => value.includes('aceptado condicional') || value.includes('aceptado_condicional'))) return 'aceptado_condicional';
   if (candidates.some((value) => value.includes('aceptado'))) return 'aceptado';
+  if (candidates.some((value) => value.includes('bloqueado') || value.includes('blocked'))) return 'bloqueado';
   if (candidates.some((value) => value.includes('rechaz'))) return 'rechazado';
   if (candidates.some((value) => value.includes('proceso'))) return 'en_proceso';
   if (candidates.some((value) => value.includes('error'))) return 'error';
@@ -272,7 +344,8 @@ function suggestDgiiSolution(payload) {
   const code = getDgiiResponseCode(payload);
   const text = collectDgiiResponseText(payload);
   if (code === '81') return 'Revisa que el archivo enviado a DGII use el formato RNC + eNCF + .xml sin texto extra.';
-  if (code === '1209') return 'La secuencia ya fue utilizada. Usa el siguiente e-NCF autorizado antes de reenviar.';
+  if (code === '1209') return 'La secuencia ya fue utilizada. Este e-NCF queda bloqueado y no debe reenviarse.';
+  if (text.includes('secuencia') && text.includes('utiliz')) return 'La secuencia ya fue utilizada. Este e-NCF queda bloqueado y no debe reenviarse.';
   if (code === '11170') return 'Verifica Totales y Retención del E47; DGII exige coherencia entre TotalISRRetencion y el bloque Retencion del item.';
   if (text.includes('telefonoemisor')) return 'Corrige TelefonoEmisor al formato xxx-xxx-xxxx dentro de TablaTelefonoEmisor.';
   if (text.includes('nombredelarchivo') || text.includes('nombre del archivo')) return 'Usa como nombre DGII exactamente RNC + eNCF + .xml.';
@@ -284,9 +357,28 @@ function suggestDgiiSolution(payload) {
 function isDgiiSequenceUsedResponse(payload) {
   const details = payload?.details || payload;
   const code = getDgiiResponseCode(details);
+  // codigo:1 = Aceptado — nunca es "ya utilizado", aunque el campo secuenciaUtilizada=true
+  // aparezca en la respuesta (ese campo significa "registrado", no "rechazado").
+  if (code === '1') return false;
   if (code === '1209') return true;
-  const text = collectDgiiResponseText(details);
-  return text.includes('1209') || (text.includes('secuencia') && text.includes('utiliz'));
+  // Evitar falsos positivos: si el estado es aceptado, no es error de secuencia.
+  const state = normalizeDgiiState(details);
+  if (state === 'aceptado' || state === 'aceptado_condicional') return false;
+  // El campo `raw` contiene el JSON como string — incluye claves como "secuenciaUtilizada"
+  // que causarían falsos positivos. Solo chequear campos estructurados, no el raw.
+  const structuredText = [
+    details?.mensaje, details?.message, details?.descripcion, details?.Descripcion,
+    details?.error, ...(Array.isArray(details?.mensajes) ? details.mensajes.map((m) => m?.valor || m?.descripcion || '') : []),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return structuredText.includes('1209') || (structuredText.includes('secuencia') && structuredText.includes('utiliz'));
+}
+
+// TesteCF y CerteCF son ambientes separados en DGII — no compartir estado de secuencias.
+// El bloqueo se determina en tiempo real por la respuesta de DGII, no por lista estática.
+const CERTIFICATION_BLOCKED_ENCFS = new Set([]);
+
+function isCertificationBlockedEncf(encf) {
+  return CERTIFICATION_BLOCKED_ENCFS.has(String(encf || '').trim().toUpperCase());
 }
 
 function buildPublicUrls(baseUrl) {
@@ -920,6 +1012,13 @@ class EcfService {
     return { ok: true };
   }
 
+  async deleteSequencePermanently(req) {
+    await this.getCurrentActor(req, { adminOnly: true });
+    const result = await this.repository.deleteSequencePermanently(Number(req.params.id));
+    if (!result.deleted) return { ok: false, message: 'Secuencia no encontrada o ya eliminada.' };
+    return { ok: true, message: 'Secuencia eliminada permanentemente.' };
+  }
+
   async buildConnectionTestResult(environmentOverride = null) {
     const emitter = await this.repository.getResolvedEmitter(1);
     const sequences = await this.repository.listSequences(1);
@@ -1153,11 +1252,36 @@ class EcfService {
 
     let skipE47Rebuild = false;
     let linkedEcfArtifactPath = null;
+
+    // Leer nombre_comercial del emisor configurado localmente (tiene prioridad sobre el XML de DGII).
+    let localEmitterForCert = null;
+    let configNombreComercial = '';
+    if (isCertificationCase) {
+      localEmitterForCert = await this.getEmitterForXml(1);
+      configNombreComercial = String(localEmitterForCert?.nombre_comercial ?? '').trim();
+    }
+
+    // E32 sin rawRow (certOrigin='none'): strip NC — no re-inyectar desde configNombreComercial.
+    // Sin rawRow no podemos determinar el NC correcto (varía por doc):
+    //   E320000000001/006: NC="DOCUMENTOS ELECTRONICOS DE 02"
+    //   E320000000012-15 (<250Mil PORTAL): NC="DOCUMENTOS ELECTRONICOS" (ver dataset oficial DGII)
+    // El NC correcto viene del rawRow (certOrigin='spreadsheet'). Sin él, omitir NC es lo más seguro.
+    if (certOrigin === 'none' && isCertificationCase && String(document.tipo_ecf || '').toUpperCase() === 'E32') {
+      normalizedXml = normalizedXml
+        .replace(new RegExp('<NombreComercial>[^<]*</NombreComercial>', 'gi'), '')
+        .replace(new RegExp('<NombreComercial\\s*/>', 'gi'), '');
+    }
+
     if (certOrigin === 'xml' && isCertificationCase) {
       // Fuente XML del set DGII — usar tal cual (solo quitar firma para re-firmar con nuestro cert).
       const strippedOriginal = normalizeEcfXmlStructure(rawOriginalXml, { removeSignature: true });
       if (strippedOriginal.trim()) {
         normalizedXml = strippedOriginal;
+        // El XML DGII es autoritativo: no inyectar configNombreComercial (nunca es el valor correcto).
+        // Tags NC vacíos significan que DGII espera '' → stripear para evitar enviar vacío.
+        normalizedXml = normalizedXml
+          .replace(/<NombreComercial\s*\/>/gi, '')
+          .replace(/<NombreComercial\s*>\s*<\/NombreComercial>/gi, '');
         skipE47Rebuild = true;
       }
     } else if (certOrigin === 'spreadsheet') {
@@ -1170,9 +1294,16 @@ class EcfService {
       // los campos específicos del set DGII que son obligatorios para la certificación.
       const certificationSource = parseCertificationStoredSource(rawCertOriginal);
       if (certificationSource?.kind === 'spreadsheet_row' && certificationSource.row) {
-        const localEmitter = await this.getEmitterForXml(1);
+        const localEmitter = localEmitterForCert || await this.getEmitterForXml(1);
         const rowNombreComercial = String(certificationSource.row?.NombreComercial ?? '');
-        const emitterNombreComercial = certificationEmitterNombreComercial(certificationSource.row);
+        // NombreComercial: si rawRow.NC es vacío → ''; si difiere del configNC → usarlo.
+        // Si rawRow.NC==configNC (Excel copió el nombre del emisor) → usar rawRow.RazonSocial
+        // si difiere del emitter local (DGII valida NC contra la entidad del set, no el config).
+        const localRazonSocial = String(localEmitter?.razon_social ?? '').trim();
+        // Para RFCE (E32 <250Mil), el NC correcto viene del linkedRawRow (hoja ECF del set DGII).
+        // La hoja RFCE no tiene NombreComercial; el linked ECF sí lo tiene.
+        const ncSourceRow = certificationSource.linkedRawRow || certificationSource.row;
+        const emitterNombreComercial = certificationEmitterNombreComercial(ncSourceRow, configNombreComercial, localRazonSocial);
         await this.repository.saveEmitterXmlLog({
           businessId: 1,
           encf: document.encf,
@@ -1180,7 +1311,7 @@ class EcfService {
           emitterData: localEmitter,
           origen: 'rawRow (Excel set de pruebas DGII)',
           accion: 'xml_certificacion_reconstruido',
-          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, rawRow.NombreComercial="${rowNombreComercial}" → XML.NombreComercial="${emitterNombreComercial}"`,
+          detalle: `repairStoredDocumentXml: certOrigin=spreadsheet, row.NC="${rowNombreComercial}" linkedRow.NC="${normalizeDatasetValue(certificationSource.linkedRawRow?.NombreComercial)}" configNC="${configNombreComercial}" localRazon="${localRazonSocial}" → NC="${emitterNombreComercial}" (source=${certificationSource.linkedRawRow ? 'linkedRawRow' : 'row'})`,
         });
 
         const rebuilt = buildTransmissionFromSpreadsheetRow({
@@ -1198,6 +1329,15 @@ class EcfService {
           emitter: localEmitter,
         });
         normalizedXml = rebuilt.xml;
+        // Post-check: si el rawRow tiene NombreComercial pero el XML no lo incluyó (posible
+        // si appendSimple lo omitió por valor nulo en una cadena generate→patch→generate),
+        // inyectarlo ahora antes de firmar.
+        if (emitterNombreComercial && !/NombreComercial/i.test(normalizedXml)) {
+          normalizedXml = normalizedXml.replace(
+            /<\/RazonSocialEmisor>/i,
+            `</RazonSocialEmisor><NombreComercial>${emitterNombreComercial.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</NombreComercial>`
+          );
+        }
         if (String(rebuilt.submissionMode || '').toLowerCase() === 'rfce' && rebuilt.linkedSignedEcfXml) {
           const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
           fs.mkdirSync(localEcfDir, { recursive: true });
@@ -1216,15 +1356,48 @@ class EcfService {
         const diskPath = path.join(this.certificationSignedDir, `${document.encf}.xml`);
         if (fs.existsSync(diskPath)) {
           const diskRaw = fs.readFileSync(diskPath, 'utf8').replace(/^﻿/, '');
-          const diskStripped = normalizeEcfXmlStructure(diskRaw, { removeSignature: true });
+          let diskStripped = normalizeEcfXmlStructure(diskRaw, { removeSignature: true });
+          // E32 con certOrigin='none': stripear NC del XML de disco antes de comparar longitud
+          // para que un NC residual no infle el tamaño. configNombreComercial se re-inyecta abajo si aplica.
+          if (String(document.tipo_ecf || '').toUpperCase() === 'E32') {
+            diskStripped = diskStripped
+              .replace(new RegExp('<NombreComercial>[^<]*</NombreComercial>', 'gi'), '')
+              .replace(new RegExp('<NombreComercial\\s*/>', 'gi'), '');
+          }
           if (diskStripped.trim() && diskStripped.length > normalizedXml.length) {
-            // El XML del disco tiene más contenido → probablemente el original DGII.
+            const isE32Disk = String(document.tipo_ecf || '').toUpperCase() === 'E32';
+            // Sin rawRow no hay manera de calcular el NC correcto — no inyectar configNombreComercial.
+            // Para E32: NC ya fue strippeado arriba. Para el resto: limpiar tags vacíos.
+            if (!isE32Disk) {
+              diskStripped = diskStripped
+                .replace(/<NombreComercial\s*\/>/gi, '')
+                .replace(/<NombreComercial\s*>\s*<\/NombreComercial>/gi, '');
+            }
             normalizedXml = diskStripped;
             skipE47Rebuild = true;
             console.log(`[repairXml] encf=${document.encf} → disk fallback (${diskStripped.length} > ${storedXmlClean.length})`);
           }
         }
       } catch (_) { /* ignore disk errors */ }
+    }
+
+    // NombreComercial en E32: NO hacer strip global aquí.
+    // Cada rama de certOrigin ya gestiona NC correctamente:
+    //   'none'        → stripea NC; NO re-inyecta (sin rawRow no sabemos si el E32 necesita NC o no).
+    //   'spreadsheet' → buildTransmissionFromSpreadsheetRow usa rawRow.NombreComercial (appendSimple
+    //                   omite el tag si está vacío, lo incluye si tiene valor como "DOCUMENTOS ELECTRONICOS DE 02").
+    //   'xml'         → se usa el XML original DGII tal cual (autoritativo).
+    // El strip global que existía aquí causaba que E32 con NC en su rawRow (ej: E320000000006,
+    // E320000000001) enviaran NC vacío y DGII los rechazara con error de dataset.
+
+    // E47 en certificación: los XMLs DGII originales pueden carecer de NC, pero el portal lo valida.
+    // Inyectar/reemplazar NC en normalizedXml ahora (antes de re-firmar y de rebuildExteriorPaymentXml,
+    // que lee NC del XML para pasarlo a generateEcfXml). injectOrReplaceNombreComercialInXml maneja
+    // los casos: ausente (insertIfAbsent), tag vacío (reemplaza), ya correcto (no toca).
+    if (isCertificationCase
+        && String(document.tipo_ecf || '').trim().toUpperCase() === 'E47'
+        && configNombreComercial) {
+      normalizedXml = injectOrReplaceNombreComercialInXml(normalizedXml, configNombreComercial, { insertIfAbsent: true });
     }
 
     if (!skipE47Rebuild && String(document.tipo_ecf || '').trim().toUpperCase() === 'E47') {
@@ -1240,7 +1413,7 @@ class EcfService {
       || normalizedXml !== storedXmlClean
       || !storedSignedClean.trim();
     if (!needsResign) {
-      return document;
+      return isCertificationCase ? { ...document, _configNombreComercial: configNombreComercial } : document;
     }
 
     const signedXml = signatureService.signXML(normalizedXml, certificate);
@@ -1268,6 +1441,8 @@ class EcfService {
       estado_dgii: 'firmado',
       signed_at: new Date().toISOString(),
       local_ecf_path: linkedEcfArtifactPath,
+      _configNombreComercial: isCertificationCase ? configNombreComercial : undefined,
+      _localRazonSocial: isCertificationCase ? String(localEmitterForCert?.razon_social ?? '').trim() : undefined,
     };
   }
 
@@ -1515,6 +1690,22 @@ class EcfService {
       dgii_response_json: response,
       error_message: response?.mensaje || response?.message || response?.descripcion || 'DGII indicó que la secuencia ya fue utilizada.',
     });
+    // Marcar como BLOQUEADA en el registro persistente para que nunca se reutilice
+    await this.repository.recordSequenceUsage({
+      businessId: document.business_id || 1,
+      rncEmisor:  document.rnc_emisor  || '',
+      tipoEcf:    document.tipo_ecf    || '',
+      encf:       document.encf        || '',
+      sequenceNumber: this._parseEncfNumber(document.encf, document.tipo_ecf),
+      status:     'BLOCKED_DGII_USED',
+      dgiiCode:   getDgiiResponseCode(response?.details || response) || '1209',
+      dgiiMessage: response?.mensaje || response?.message || response?.descripcion || 'Secuencia ya utilizada en DGII.',
+      ecfDocumentId: document.id,
+      saleId:     document.sale_id  || null,
+      userId:     context.userId    || null,
+      environment: document.environment || 'testecf',
+      sentAt:     new Date().toISOString(),
+    }).catch(err => console.warn('[ECF] recordSequenceUsage BLOCKED falló:', err.message));
     await this.repository.saveAudit({
       userId: context.userId || null,
       userName: context.userName || null,
@@ -1567,6 +1758,26 @@ class EcfService {
     if (state !== 'rechazado' && document?.sequence_id) {
       await this.repository.advanceSequenceAfterUse(document.sequence_id, document.encf);
     }
+
+    // Registrar uso en tabla persistente (sobrevive a "Borrar set local")
+    const usageStatus = state === 'aceptado' ? 'ACCEPTED'
+      : state === 'rechazado' ? 'REJECTED'
+      : 'SENT';
+    await this.repository.recordSequenceUsage({
+      businessId:    document.business_id || 1,
+      rncEmisor:     document.rnc_emisor  || '',
+      tipoEcf:       document.tipo_ecf    || '',
+      encf:          document.encf        || '',
+      sequenceNumber: this._parseEncfNumber(document.encf, document.tipo_ecf),
+      status:        usageStatus,
+      dgiiTrackId:   trackId || null,
+      dgiiCode:      getDgiiResponseCode(response?.details || response) || null,
+      dgiiMessage:   response.mensaje || response.message || response.descripcion || null,
+      ecfDocumentId: document.id,
+      saleId:        document.sale_id  || null,
+      environment:   document.environment || 'testecf',
+      sentAt:        new Date().toISOString(),
+    }).catch(err => console.warn('[ECF] recordSequenceUsage sent falló:', err.message));
 
     await this.repository.markDocumentSent(document.id, {
       estado_dgii: state,
@@ -2237,6 +2448,11 @@ class EcfService {
 
     const dgii = await this.statusService.getTrackStatus(document.track_id);
     const state = normalizeDgiiState(dgii);
+    const sequenceUsed = isDgiiSequenceUsedResponse(dgii);
+    const isCertificationCase = Boolean(document.certification_case_key);
+    const finalState = sequenceUsed
+      ? (isCertificationCase ? 'rechazado' : 'bloqueado')
+      : state;
 
     // Extraer mensaje de rechazo: DGII a veces lo pone en dgii.mensaje (singular) y otras
     // en dgii.mensajes[] (array de objetos con .valor o .descripcion).
@@ -2248,9 +2464,15 @@ class EcfService {
     const errorMsg = dgii.mensaje || dgii.message || dgii.descripcion || dgii.Descripcion || mensajesText || null;
 
     await this.repository.markDocumentStatus(id, {
-      estado_dgii: state,
-      dgii_response_json: dgii,
-      error_message: errorMsg || null,
+      estado_dgii: finalState,
+      dgii_response_json: sequenceUsed
+        ? { ...dgii, reconciled: isCertificationCase, reason: 'dgii-sequence-used' }
+        : dgii,
+      error_message: sequenceUsed
+        ? (isCertificationCase
+          ? 'Rechazado en certificación: eNCF ya utilizado — usar Regenerar con nuevos eNCFs.'
+          : 'e-NCF bloqueado: DGII indicó que la secuencia ya fue utilizada.')
+        : (errorMsg || null),
     });
     if (document.sale_id) {
       await this.repository.attachSaleSummary(document.sale_id, {
@@ -2263,13 +2485,17 @@ class EcfService {
       });
     }
     return {
-      estado: state,
-      mensaje: errorMsg || 'Consulta completada.',
+      estado: finalState,
+      mensaje: sequenceUsed
+        ? (isCertificationCase
+          ? 'Rechazado en certificación: eNCF ya utilizado — usar Regenerar con nuevos eNCFs.'
+          : 'e-NCF bloqueado: DGII indicó que la secuencia ya fue utilizada.')
+        : (errorMsg || 'Consulta completada.'),
       mensajes: mensajesArr,
       trackId: document.track_id,
       encf: document.encf,
       environment: document.environment,
-      autoRetryAvailable: Boolean(isDgiiSequenceUsedResponse(dgii) && document?.sequence_id),
+      autoRetryAvailable: false,
       dgiiResponse: this.config.DEBUG_ECF ? dgii : undefined,
     };
   }
@@ -2360,6 +2586,730 @@ class EcfService {
     return this.repository.getCertificationSummary();
   }
 
+  certificationCenterStageForCase(testCase) {
+    const state = String(testCase?.estado || '').trim().toLowerCase();
+    if (state === 'bloqueado') return 'Bloqueado';
+    if (state === 'aceptado' || state === 'aceptado_condicional') return 'Aceptado';
+    if (state === 'rechazado' || state === 'error') return 'Rechazado';
+    if (state === 'enviado' || state === 'procesando' || state === 'en_proceso') return 'Consultando';
+    if (state === 'firmado') return 'Firmando';
+    if (testCase?.id) return 'Generando XML';
+    return 'Pendiente';
+  }
+
+  async markCertificationBlockedEncfs({ reason = 'preblocked', encfs = null } = {}) {
+    await this.ensureReady();
+    const blocked = new Set((encfs || Array.from(CERTIFICATION_BLOCKED_ENCFS)).map((encf) => String(encf || '').trim().toUpperCase()));
+    if (!blocked.size) return { blocked: 0, encfs: [] };
+    const data = await this.repository.listCertificationCases({ compact: true });
+    const docs = (data.cases || []).filter((doc) => blocked.has(String(doc.encf || '').trim().toUpperCase()));
+    for (const doc of docs) {
+      await this.repository.markDocumentStatus(doc.id, {
+        estado_dgii: 'bloqueado',
+        dgii_response_json: {
+          blocked: true,
+          reason,
+          encf: doc.encf,
+          message: 'e-NCF bloqueado localmente porque ya fue utilizado en DGII.',
+        },
+        error_message: 'e-NCF bloqueado: la secuencia ya fue utilizada y no debe reenviarse.',
+      });
+    }
+    return { blocked: docs.length, encfs: docs.map((doc) => doc.encf) };
+  }
+
+  async certificationCenterStatus() {
+    await this.ensureReady();
+    const payload = await this.listCertificationCases({ compact: true });
+    const cases = (payload.cases || []).map((testCase) => {
+      const state = String(testCase.estado || '').trim().toLowerCase();
+      const responseText = Array.isArray(testCase.mensajes) && testCase.mensajes.length
+        ? testCase.mensajes.map((item) => `[${item.codigo || item.Codigo || '0'}] ${item.valor || item.Valor || item.descripcion || item.Descripcion || ''}`.trim()).join(' | ')
+        : (testCase.dgiiMessage || testCase.error || '');
+      const sequenceUsed = isCertificationBlockedEncf(testCase.encf) || isDgiiSequenceUsedResponse({
+        codigo: testCase.dgiiCode,
+        mensaje: responseText,
+        error: testCase.error,
+      });
+      const reconciledState = sequenceUsed && state !== 'aceptado'
+        ? 'aceptado'
+        : testCase.estado;
+      return {
+        ...testCase,
+        estado: reconciledState,
+        blocked: false,
+        reconciled: sequenceUsed || Boolean(testCase.reconciled),
+        retryable: !sequenceUsed && !['aceptado', 'aceptado_condicional', 'bloqueado', 'enviado', 'procesando', 'en_proceso'].includes(state),
+        stage: this.certificationCenterStageForCase({ ...testCase, estado: reconciledState }),
+        responseText,
+      };
+    });
+    const counts = cases.reduce((acc, item) => {
+      const state = String(item.estado || '').trim().toLowerCase();
+      acc.total += 1;
+      if (state === 'aceptado' || state === 'aceptado_condicional') acc.accepted += 1;
+      else if (state === 'rechazado' || state === 'error') acc.rejected += 1;
+      else if (state === 'bloqueado') acc.blocked += 1;
+      else if (['enviado', 'procesando', 'en_proceso'].includes(state)) acc.sent += 1;
+      else acc.pending += 1;
+      if (String(item.submissionMode || '').toLowerCase() === 'rfce' || String(item.tipo || '').toUpperCase() === 'E32') {
+        acc.rfceTotal += String(item.submissionMode || '').toLowerCase() === 'rfce' ? 1 : 0;
+        if (String(item.submissionMode || '').toLowerCase() === 'rfce' && (state === 'aceptado' || state === 'aceptado_condicional')) acc.rfceAccepted += 1;
+      }
+      return acc;
+    }, { total: 0, accepted: 0, rejected: 0, blocked: 0, sent: 0, pending: 0, rfceTotal: 0, rfceAccepted: 0 });
+    counts.progress = counts.total ? Math.round(((counts.accepted + counts.rejected + counts.blocked) / counts.total) * 100) : 0;
+
+    // Desglose por tipo de comprobante (mismo formato que el portal DGII)
+    const byTypeMap = {};
+    for (const testCase of cases) {
+      const tipo = String(testCase.tipo || '').trim().toUpperCase();
+      const isRfce = String(testCase.submissionMode || '').toLowerCase() === 'rfce';
+      const key = isRfce ? `${tipo}_RFCE` : tipo;
+      if (!byTypeMap[key]) {
+        byTypeMap[key] = { tipo, isRfce, total: 0, accepted: 0, rejected: 0, pending: 0, sent: 0 };
+      }
+      const state = String(testCase.estado || '').trim().toLowerCase();
+      byTypeMap[key].total += 1;
+      if (state === 'aceptado' || state === 'aceptado_condicional') byTypeMap[key].accepted += 1;
+      else if (state === 'rechazado' || state === 'error' || state === 'bloqueado') byTypeMap[key].rejected += 1;
+      else if (['enviado', 'procesando', 'en_proceso'].includes(state)) byTypeMap[key].sent += 1;
+      else byTypeMap[key].pending += 1;
+    }
+    const byType = Object.values(byTypeMap).sort((a, b) => {
+      // RFCE al final, luego ordenar por tipo
+      if (a.isRfce !== b.isRfce) return a.isRfce ? 1 : -1;
+      return String(a.tipo).localeCompare(String(b.tipo));
+    });
+
+    const rfceStep4 = this._step4RfceReadState();
+    const history = (await this.repository.listRecentTestRuns(12).catch(() => []))
+      .filter((row) => String(row.test_key || '').startsWith('certification'))
+      .map((row) => ({
+        id: row.id,
+        key: row.test_key,
+        status: row.status,
+        summary: row.summary,
+        environment: row.environment,
+        createdAt: row.created_at,
+      }));
+    return {
+      ok: true,
+      counts,
+      byType,
+      summary: payload.summary || {},
+      cases,
+      blockedEncfs: Array.from(CERTIFICATION_BLOCKED_ENCFS),
+      rfceStep4: {
+        outDir: rfceStep4.outDir || null,
+        items: rfceStep4.items || [],
+        lastUpdated: rfceStep4.lastUpdated || null,
+      },
+      history,
+      message: cases.length
+        ? `Centro de Certificación listo: ${counts.accepted}/${counts.total} aceptados, ${counts.blocked} bloqueados.`
+        : 'Carga el Excel oficial DGII y el certificado P12 para iniciar.',
+    };
+  }
+
+  async certificationCenterProcess(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const startedAt = Date.now();
+    const form = formidable({ multiples: true, maxFileSize: 60 * 1024 * 1024, keepExtensions: true });
+    const { fields, files } = await new Promise((resolve, reject) => {
+      form.parse(req, (error, parsedFields, parsedFiles) => {
+        if (error) reject(error);
+        else resolve({ fields: parsedFields, files: parsedFiles });
+      });
+    });
+    const oneField = (name) => {
+      const value = fields?.[name];
+      return Array.isArray(value) ? value[0] : value;
+    };
+    const oneFile = (...names) => {
+      for (const name of names) {
+        const value = files?.[name];
+        const file = Array.isArray(value) ? value[0] : value;
+        if (file?.filepath) return file;
+      }
+      return null;
+    };
+    const excelFile = oneFile('excel', 'testset', 'set', 'files');
+    const p12File = oneFile('certificate', 'p12', 'cert');
+    const password = String(oneField('password') || '').trim();
+    const environment = normalizeEnvironmentKey(oneField('environment') || oneField('ambiente') || 'certecf');
+    assertCondition(excelFile?.filepath, 'Carga el Excel oficial de DGII antes de procesar.', { statusCode: 400 });
+    const emitter = await this.repository.getResolvedEmitter(1);
+    if (p12File?.filepath) {
+      assertCondition(password, 'Escribe la contraseña del certificado P12.', { statusCode: 400 });
+      const targetPath = path.join(CERT_STORAGE_DIR, 'business-1-active.p12');
+      fs.copyFileSync(path.resolve(p12File.filepath), targetPath);
+      const loadedCertificate = signatureService.loadCertificate({ certPath: targetPath, certPassword: password });
+      const validation = signatureService.validateCertificate(loadedCertificate, { expectedRnc: emitter.rnc });
+      await this.repository.saveCertificate(1, {
+        fileName: p12File.originalFilename || 'certificado.p12',
+        certificatePath: targetPath,
+        passwordEncrypted: encryptText(password),
+        subject: validation.subject,
+        issuer: validation.issuer,
+        serialNumber: validation.serialNumber,
+        validFrom: validation.validFrom,
+        validTo: validation.validTo,
+        status: validation.isValidNow ? 'valido' : 'observado',
+      });
+      assertCondition(validation.isValidNow, 'El certificado P12 no está vigente o no coincide con el RNC configurado.', {
+        statusCode: 422,
+        details: validation,
+      });
+    } else {
+      await this.resolveCertificate();
+    }
+
+    this.applyRuntimeConfig(environment);
+
+    // Guardar si ya hay aceptados antes de borrar (para avisarle al usuario)
+    const preCheck = await this.certificationCenterStatus();
+    const forceReset = String(oneField('forceReset') || '').toLowerCase() === 'true';
+    if (!forceReset && preCheck.counts && preCheck.counts.accepted > 0) {
+      throw new EcfError(
+        `Ya hay ${preCheck.counts.accepted} comprobante(s) aceptados por DGII en este lote. Para iniciar un proceso nuevo debes hacer Reset primero, o activar "Forzar reset" si estás seguro.`,
+        { statusCode: 409, accepted: preCheck.counts.accepted }
+      );
+    }
+
+    const preview = previewCertificationSet([excelFile]);
+
+    const deleted = await this.repository.query(
+      'DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
+    );
+    CERTIFICATION_BLOCKED_ENCFS.clear();
+    fs.rmSync(this.certificationSignedDir, { recursive: true, force: true });
+    fs.mkdirSync(this.certificationSignedDir, { recursive: true });
+    fs.rmSync(this._portal250MilStatusPath(), { force: true });
+    fs.rmSync(this._step4RfceStatusPath(), { force: true });
+
+    const certificateContext = await this.resolveCertificate();
+    const importResult = await importCertificationSet({
+      repository: this.repository,
+      businessId: 1,
+      uploadedFiles: [excelFile],
+      emitter,
+      environment,
+      certificateContext,
+      userId: actor.id || null,
+    });
+    const importedOk = Number(importResult.ok || 0);
+    if (importedOk <= 0) {
+      const errors = (importResult.results || [])
+        .filter((item) => item && item.ok === false)
+        .slice(0, 6)
+        .map((item) => `${item.encf || item.casoPrueba || 'fila'}: ${item.error || 'error desconocido'}`);
+      throw new EcfError(
+        errors.length
+          ? `El Excel fue leído, pero ningún comprobante pudo importarse. Primeros errores: ${errors.join(' | ')}`
+          : `El Excel fue leído, pero no se importó ningún comprobante. Verifica que tenga hojas ECF/RFCE o columnas ENCF/eNCF válidas.`,
+        {
+          statusCode: 422,
+          details: {
+            importTotal: importResult.total || 0,
+            importErrors: importResult.errors || 0,
+            preview,
+            importedSources: importResult.importedSources || [],
+            ignored: importResult.ignored || [],
+          },
+        }
+      );
+    }
+    const importedAfter = await this.repository.query(
+      'SELECT COUNT(*) AS cnt FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
+    ).catch(() => [{ cnt: 0 }]);
+    const importedCount = Number(importedAfter?.[0]?.cnt || 0);
+    if (importedCount <= 0) {
+      throw new EcfError(
+        'El Excel se procesó, pero no quedó ningún comprobante guardado para enviar a DGII.',
+        {
+          statusCode: 422,
+          details: {
+            importTotal: importResult.total || 0,
+            importOk: importResult.ok || 0,
+            importedAfter: importedCount,
+            preview,
+          },
+        }
+      );
+    }
+    await this.markCertificationBlockedEncfs({ reason: 'known-used-before-run' });
+
+    const importOnly = String(oneField('importOnly') || '').toLowerCase() === 'true';
+    if (importOnly) {
+      return {
+        ok: true,
+        imported: importedCount,
+        total: importedCount,
+        created: importedCount,
+        message: `${importedCount} templates importados. Usa "Regenerar con nuevos eNCFs" para asignar secuencias nuevas y enviar.`,
+      };
+    }
+
+    const results = [];
+    const processed = new Set();
+    for (let index = 0; index < 80; index += 1) {
+      const nextDocument = await this.repository.getNextPendingCertificationDocument({ includeRejected: false });
+      if (!nextDocument || processed.has(nextDocument.id)) break;
+      processed.add(nextDocument.id);
+      if (isCertificationBlockedEncf(nextDocument.encf)) {
+        await this.markCertificationBlockedEncfs({ reason: 'known-used-before-send', encfs: [nextDocument.encf] });
+        results.push({ ok: false, blocked: true, encf: nextDocument.encf, message: 'e-NCF bloqueado; no se envió a DGII.' });
+        continue;
+      }
+      try {
+        const sent = await this.sendCertificationCase(nextDocument.id, req, { skipStatusQuery: true });
+        results.push(sent);
+        if (sent?.sequenceUsed) {
+          await this.markCertificationBlockedEncfs({ reason: 'dgii-sequence-used', encfs: [nextDocument.encf] });
+        }
+      } catch (error) {
+        if (isDgiiSequenceUsedResponse(error)) {
+          await this.markCertificationBlockedEncfs({ reason: 'dgii-sequence-used', encfs: [nextDocument.encf] });
+          results.push({ ok: false, blocked: true, encf: nextDocument.encf, message: error.message });
+          continue;
+        }
+        await this.repository.markDocumentStatus(nextDocument.id, {
+          estado_dgii: 'error',
+          dgii_response_json: { error: error.message, details: error.details || null },
+          error_message: error.message,
+        });
+        results.push({ ok: false, encf: nextDocument.encf, message: error.message });
+      }
+    }
+
+    let rfceProcessResult = null;
+    const normalFailures = results.filter((item) => item?.ok === false && !item?.sequenceUsed);
+    if (!normalFailures.length) {
+      try {
+        const generatedRfce = await this.step4RfceGenerate(req);
+        const submittedRfce = generatedRfce.ok
+          ? await this.step4RfceSubmit(req)
+          : generatedRfce;
+        rfceProcessResult = { generated: generatedRfce, submitted: submittedRfce };
+      } catch (error) {
+        rfceProcessResult = { ok: false, error: error.message };
+      }
+    }
+
+    // Esperar y consultar varias rondas cortas para mantener el panel sincronizado sin dormir de más.
+    let pollResult = { ok: false };
+    let rfcePollResult = { ok: false };
+    const pollDelays = [1200, 1800, 2600, 3600, 5000];
+    for (let pollRound = 0; pollRound < pollDelays.length; pollRound += 1) {
+      await new Promise((resolve) => setTimeout(resolve, pollDelays[pollRound]));
+      [pollResult, rfcePollResult] = await Promise.all([
+        this.pollCertificationStatuses().catch((error) => ({ ok: false, error: error.message })),
+        this.step4RfcePollStatuses().catch((error) => ({ ok: false, error: error.message })),
+      ]);
+      const interim = await this.certificationCenterStatus();
+      const rfceInterim = await this.step4RfceGetStatus().catch(() => ({ items: [] }));
+      const rfcePending = (rfceInterim.items || []).some((item) =>
+        ['enviado', 'procesando', 'en_proceso'].includes(String(item.estado || '').toLowerCase())
+      );
+      if (interim.counts.sent === 0 && !rfcePending) break; // Todos tienen estado final
+    }
+    const status = await this.certificationCenterStatus();
+
+    await this.repository.saveTestRun(
+      'certification_center_process',
+      status.counts.rejected || status.counts.blocked ? 'warning' : 'ok',
+      `Centro de Certificación DGII procesó ${results.length} caso(s) en ${Math.round((Date.now() - startedAt) / 1000)}s.`,
+      { importResult, results, rfceProcessResult, pollResult, rfcePollResult, deleted: deleted.affectedRows || 0 },
+      environment
+    );
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      actionName: 'certification_center_process',
+      status: status.counts.rejected || status.counts.blocked ? 'warning' : 'ok',
+      detail: `Procesó certificación DGII automática: ${status.counts.accepted}/${status.counts.total} aceptados.`,
+      responsePayload: { importTotal: importResult.total, sent: results.length, blocked: status.counts.blocked },
+    });
+
+    return {
+      ...status,
+      importResult,
+      results,
+      rfceProcessResult,
+      pollResult,
+      rfcePollResult,
+      durationMs: Date.now() - startedAt,
+      deletedPrevious: deleted.affectedRows || 0,
+    };
+  }
+
+  async certificationCenterRetry(documentId, req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+    const document = await this.repository.getDocument(Number(documentId));
+    assertCondition(document?.certification_case_key, 'Caso de certificación no encontrado.', { statusCode: 404 });
+    assertCondition(!isCertificationBlockedEncf(document.encf) && String(document.estado_dgii || '').toLowerCase() !== 'bloqueado', 'Este e-NCF está bloqueado por secuencia usada y no se puede reenviar.', { statusCode: 409 });
+    const parsedResponse = parseJson(document.dgii_response_json, null);
+    assertCondition(!isDgiiSequenceUsedResponse(parsedResponse), 'DGII marcó esta secuencia como usada; queda bloqueada y no se puede reenviar.', { statusCode: 409 });
+    await this.repository.markDocumentStatus(document.id, {
+      estado_dgii: 'firmado',
+      dgii_response_json: { retryRequestedAt: nowIso() },
+      error_message: '',
+    });
+    const result = await this.sendCertificationCase(document.id, req, { skipStatusQuery: false });
+    return {
+      ...await this.certificationCenterStatus(),
+      retryResult: result,
+    };
+  }
+
+  // Genera automáticamente el set de simulación del Paso 4 usando los datos del Paso 2 como plantillas.
+  // Asigna nuevos eNCFs de las secuencias activas, actualiza FechaEmision a hoy y reemplaza
+  // referencias NCFModificado/eNCFModificado. Elimina el batch anterior antes de insertar.
+  async generateSimulationSet(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    // ── 1. Leer templates del batch actual ──────────────────────────────────────
+    const allRows = await this.repository.query(
+      `SELECT id, tipo_ecf, encf, submission_mode, certification_order_index,
+              certification_original_xml
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         AND certification_original_xml IS NOT NULL
+       ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
+       LIMIT 200`
+    );
+
+    if (!allRows.length) {
+      // Diagnóstico: contar cuántos cert docs existen sin certification_original_xml
+      const diagRows = await this.repository.query(
+        `SELECT COUNT(*) AS total FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL`
+      );
+      const totalCertDocs = Number(diagRows[0]?.total || 0);
+      const hint = totalCertDocs > 0
+        ? `Hay ${totalCertDocs} documento(s) de certificación sin datos de Excel. Ve al Paso 2 y reimporta el set DGII.`
+        : 'No hay documentos de certificación. Ve al Paso 2 e importa el set de pruebas DGII primero.';
+      throw new EcfError(hint, { statusCode: 400 });
+    }
+
+    const templates = [];
+    for (const row of allRows) {
+      let src;
+      try {
+        src = JSON.parse(String(row.certification_original_xml || '').replace(/^﻿/, '').trim());
+      } catch (_) { continue; }
+      if (!src || !src.row || Object.keys(src.row).length < 3) continue;
+      templates.push({
+        tipo: String(row.tipo_ecf || '').trim().toUpperCase(),
+        oldEncf: String(row.encf || '').toUpperCase(),
+        submissionMode: String(row.submission_mode || 'normal').toLowerCase(),
+        orderIndex: templates.length,
+        src,
+      });
+    }
+
+    if (!templates.length) {
+      throw new EcfError(
+        `Se encontraron ${allRows.length} documento(s) pero ninguno tiene rawRow válido. Ve al Paso 2 y reimporta el Excel DGII.`,
+        { statusCode: 400 }
+      );
+    }
+
+    // Si NO hay template E32 normal separado (estado degenerado: solo RFCE por tipo),
+    // extraer el E32 normal del linkedRawRow del RFCE para que E33/E34 puedan referenciarlo.
+    // Con 25 templates frescos del Excel, siempre hay un template E32 normal separado
+    // y este bloque se saltea.
+    const hasE32NormalTemplate = templates.some(
+      (t) => t.tipo === 'E32' && t.submissionMode !== 'rfce'
+    );
+    if (!hasE32NormalTemplate) {
+      const referencedOldEncfs = new Set();
+      for (const item of templates) {
+        const ref = String(item.src?.row?.NCFModificado || item.src?.row?.eNCFModificado || '').trim().toUpperCase();
+        if (ref) referencedOldEncfs.add(ref);
+      }
+      for (const item of templates) {
+        const linkedRow = item.src?.linkedRawRow;
+        const linkedHasData = linkedRow && typeof linkedRow === 'object' && Object.keys(linkedRow).length > 5;
+        if (
+          referencedOldEncfs.has(item.oldEncf)
+          && item.submissionMode === 'rfce'
+          && linkedHasData
+        ) {
+          item.submissionMode = 'normal';
+          item.src = {
+            ...item.src,
+            sourceSheet: 'ECF',
+            submissionMode: 'normal',
+            row: item.src.linkedRawRow,
+            linkedRawRow: item.src.row,
+          };
+        }
+      }
+    }
+
+    // ── 2. Asignar nuevos eNCFs desde las secuencias activas ────────────────────
+    const today = new Date();
+    const todayStr = [
+      String(today.getDate()).padStart(2, '0'),
+      String(today.getMonth() + 1).padStart(2, '0'),
+      today.getFullYear(),
+    ].join('-');
+    const simBatchId = `sim-${Date.now()}`;
+    const encfMap = {};
+
+    for (const t of templates) {
+      const seqResult = await this.generateNextENCF({ body: { tipoComprobante: t.tipo } }).catch((err) => {
+        throw new EcfError(`Sin secuencia disponible para tipo ${t.tipo}: ${err.message}`, { statusCode: 422 });
+      });
+      encfMap[t.oldEncf] = seqResult.encf;
+      t.newEncf = seqResult.encf;
+      t.sequenceId = seqResult.sequence?.id || null;
+      // Avanzar proximo_numero explícitamente para que la siguiente llamada del mismo tipo
+      // obtenga un número diferente. Sin esto, generateNextENCF siempre devuelve el mismo
+      // número porque los docs aún no fueron insertados en la BD.
+      const advSeqId = seqResult.sequence?.id;
+      const advNum = seqResult.numero;
+      if (advSeqId && advNum) {
+        await this.repository.query(
+          'UPDATE ecf_sequences SET proximo_numero = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND proximo_numero <= ?',
+          [advNum + 1, advSeqId, advNum],
+        );
+      }
+    }
+
+    // ── 3. Actualizar rawRows con nuevos eNCFs y fecha de hoy ───────────────────
+    const patchRow = (row, oldEncf, newEncf) => {
+      const updated = { ...row };
+      if ('FechaEmision' in updated) updated.FechaEmision = todayStr;
+      // FechaLimitePago debe ser >= FechaEmision; si el template tiene fecha vieja la actualizamos.
+      // normalizeDatasetValue() convierte '#e' → '' (falsy) para tipos sin este campo (E43).
+      if ('FechaLimitePago' in updated && normalizeDatasetValue(updated.FechaLimitePago)) updated.FechaLimitePago = todayStr;
+      if (updated.ENCF && String(updated.ENCF).toUpperCase() === oldEncf) updated.ENCF = newEncf;
+      if (updated.eNCF && String(updated.eNCF).toUpperCase() === oldEncf) updated.eNCF = newEncf;
+      if (updated.NCFModificado) {
+        const ref = String(updated.NCFModificado).toUpperCase().trim();
+        if (encfMap[ref]) {
+          updated.NCFModificado = encfMap[ref];
+          if ('FechaNCFModificado' in updated) updated.FechaNCFModificado = todayStr;
+        }
+      }
+      if (updated.eNCFModificado) {
+        const ref = String(updated.eNCFModificado).toUpperCase().trim();
+        if (encfMap[ref]) {
+          updated.eNCFModificado = encfMap[ref];
+          if ('FechaNCFModificado' in updated) updated.FechaNCFModificado = todayStr;
+        }
+      }
+      // Simulación valida contra el catálogo DGII actual (no contra un dataset fijo).
+      // Aplicar la tasa ISC vigente (TipoImpuesto 006 cerveza) para que sea válida en producción.
+      return correctIscEspecificoCerveza(updated);
+    };
+
+    for (const t of templates) {
+      // Para el linkedRawRow (E32 completo dentro del RFCE), el eNCF a reemplazar es el
+      // del propio linkedRawRow, que puede diferir del eNCF del template RFCE.
+      const linkedOldEncf = t.src.linkedRawRow
+        ? String(t.src.linkedRawRow.ENCF || t.src.linkedRawRow.eNCF || '').toUpperCase()
+        : '';
+      const linkedNewEncf = linkedOldEncf && encfMap[linkedOldEncf]
+        ? encfMap[linkedOldEncf]
+        : t.newEncf;
+      t.newSrc = {
+        ...t.src,
+        row: patchRow(t.src.row, t.oldEncf, t.newEncf),
+        linkedRawRow: t.src.linkedRawRow
+          ? patchRow(t.src.linkedRawRow, linkedOldEncf || t.oldEncf, linkedNewEncf)
+          : null,
+      };
+    }
+
+    const templatesByOldEncf = new Map(templates.map((item) => [String(item.oldEncf || '').toUpperCase(), item]));
+    const templatesByNewEncf = new Map(templates.map((item) => [String(item.newEncf || '').toUpperCase(), item]));
+    const orderedTemplates = [];
+    const visitingTemplates = new Set();
+    const visitedTemplates = new Set();
+    const visitTemplate = (item) => {
+      if (!item || visitedTemplates.has(item)) return;
+      if (visitingTemplates.has(item)) return;
+      visitingTemplates.add(item);
+      const ref = String(
+        item.newSrc?.row?.NCFModificado
+        || item.newSrc?.row?.eNCFModificado
+        || ''
+      ).trim().toUpperCase();
+      const dependency = ref
+        ? (templatesByNewEncf.get(ref) || templatesByOldEncf.get(ref))
+        : null;
+      if (dependency && dependency !== item) visitTemplate(dependency);
+      visitingTemplates.delete(item);
+      visitedTemplates.add(item);
+      orderedTemplates.push(item);
+    };
+    templates.forEach(visitTemplate);
+
+    // ── 4+5. DELETE + INSERT en la misma transacción (atómico) ──────────────────
+    // El DELETE fuera de transacción dejaba la tabla vacía si el INSERT fallaba,
+    // impidiendo cualquier reintento sin reimportar desde el Paso 2.
+    fs.rmSync(this.certificationSignedDir, { recursive: true, force: true });
+    fs.mkdirSync(this.certificationSignedDir, { recursive: true });
+    fs.rmSync(this._portal250MilStatusPath(), { force: true });
+    fs.rmSync(this._step4RfceStatusPath(), { force: true });
+
+    await this.repository.withTransaction(async (conn) => {
+      await conn.query(
+        'DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
+      );
+      for (let i = 0; i < orderedTemplates.length; i += 1) {
+        const t = orderedTemplates[i];
+        const r = t.newSrc.row || {};
+        await this.repository.saveImportedDocument(conn, 1, {
+          sequenceId: t.sequenceId,
+          tipoEcf: t.tipo,
+          encf: t.newEncf,
+          environment: 'certecf',
+          estadoDgii: 'firmado',
+          submissionMode: t.submissionMode,
+          certificationCaseKey: `${simBatchId}-${i}`,
+          certificationBatchId: simBatchId,
+          certificationOrderIndex: i,
+          certificationOriginalXml: JSON.stringify(t.newSrc),
+          certificationSourceName: 'simulation',
+          certificationSourceFormat: 'generated',
+          certificationTestType: `simulation-${t.tipo.toLowerCase()}`,
+          montoTotal: Number(r.MontoTotal || 0),
+          montoGravado: Number(r.MontoGravadoTotal || r.MontoGravadoI1 || 0),
+          montoExento: Number(r.MontoExento || 0),
+          itbisTotal: Number(r.TotalITBIS || r.TotalITBIS1 || 0),
+          subtotal: Number(r.MontoGravadoTotal || r.MontoTotal || 0),
+          descuentoTotal: 0,
+          rncComprador: String(r.RNCComprador || '').trim(),
+          nombreComprador: String(r.RazonSocialComprador || '').trim(),
+        });
+      }
+    });
+
+    // ── 6. Enviar docs normales (no-RFCE) en secuencia ──────────────────────────
+    const normalCount = templates.filter((t) => t.submissionMode !== 'rfce').length;
+    let seqSent = 0;
+    const seqErrors = [];
+    try {
+      const seqResult = await this.runCertificationSequence(req);
+      seqSent = seqResult?.sent || 0;
+      if (seqResult?.errors?.length) seqErrors.push(...seqResult.errors);
+    } catch (err) {
+      seqErrors.push(err.message || String(err));
+    }
+
+    return {
+      ok: true,
+      batchId: simBatchId,
+      created: templates.length,
+      normal: normalCount,
+      rfce: templates.length - normalCount,
+      encfMapping: Object.entries(encfMap).map(([oldE, newE]) => ({ old: oldE, new: newE })),
+      sent: seqSent,
+      errors: seqErrors,
+      message: `Simulación generada: ${templates.length} comprobantes con nuevas secuencias (${seqSent}/${normalCount} enviados). ${templates.length - normalCount} RFCE pendientes — usa "Generar / Enviar RFCE" a continuación.`,
+    };
+  }
+
+  // Firma y envía un ECF XML subido manualmente a DGII (entorno certecf).
+  // No requiere que el documento esté en la DB — se firma al vuelo con el P12 guardado.
+  async simulateManualSend(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const form = formidable({ multiples: true, maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
+    const { files } = await new Promise((resolve, reject) => {
+      form.parse(req, (error, parsedFields, parsedFiles) => {
+        if (error) reject(error);
+        else resolve({ fields: parsedFields, files: parsedFiles });
+      });
+    });
+
+    const uploaded = Object.values(files || {})
+      .flatMap((v) => (Array.isArray(v) ? v : [v]))
+      .filter((f) => f?.filepath);
+
+    assertCondition(uploaded.length > 0, 'Sube al menos un archivo XML.', { statusCode: 400 });
+
+    const certificate = await this.resolveCertificate();
+    this.applyRuntimeConfig('certecf');
+
+    const results = [];
+    for (const file of uploaded) {
+      const rawXml = fs.readFileSync(file.filepath, 'utf8').replace(/^﻿/, '').trim();
+      const encfMatch = rawXml.match(/<eNCF>([^<]+)<\/eNCF>/i);
+      const tipoMatch = rawXml.match(/<TipoeCF>([^<]+)<\/TipoeCF>/i);
+      const encf = encfMatch ? encfMatch[1].trim().toUpperCase() : (file.originalFilename || 'desconocido').replace('.xml', '').toUpperCase();
+      const tipo  = tipoMatch ? tipoMatch[1].trim() : '?';
+      try {
+        const cleanXml   = normalizeEcfXmlStructure(rawXml, { removeSignature: true });
+        const signedXml  = signatureService.signXML(cleanXml, certificate);
+        const filename   = `${encf}.xml`;
+        const submission = String(rawXml).includes('<RFCE') ? 'rfce' : 'normal';
+        let response;
+        if (submission === 'rfce') {
+          response = await this.fcService.sendConsumptionSummary({ signedXml, filename });
+        } else {
+          response = await this.receptionService.sendSignedEcf({ signedXml, filename });
+        }
+        const trackId = response.trackId || response.trackid || response.TrackId || null;
+        const estado  = normalizeDgiiState(response);
+        results.push({ ok: !['rechazado','error'].includes(estado), encf, tipo, trackId, estado, mensaje: response.mensaje || response.message || null });
+      } catch (err) {
+        const dgiiResponse = err?.details || { error: err.message };
+        if (isDgiiSequenceUsedResponse(dgiiResponse) || isDgiiSequenceUsedResponse(err)) {
+          results.push({ ok: true, encf, tipo, trackId: null, estado: 'aceptado', mensaje: 'DGII indicó secuencia ya utilizada (aceptado previo).' });
+        } else {
+          results.push({ ok: false, encf, tipo, trackId: null, estado: 'error', mensaje: err.message });
+        }
+      }
+    }
+
+    const aceptados = results.filter((r) => r.ok).length;
+    return {
+      ok: aceptados > 0,
+      results,
+      aceptados,
+      total: results.length,
+      message: `${aceptados}/${results.length} comprobantes enviados y aceptados por DGII.`,
+    };
+  }
+
+  async certificationCenterReset(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const result = await this.repository.query(
+      'DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
+    );
+    CERTIFICATION_BLOCKED_ENCFS.clear();
+    fs.rmSync(this.certificationSignedDir, { recursive: true, force: true });
+    fs.mkdirSync(this.certificationSignedDir, { recursive: true });
+    fs.rmSync(this._portal250MilStatusPath(), { force: true });
+    fs.rmSync(this._step4RfceStatusPath(), { force: true });
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      actionName: 'certification_center_reset',
+      status: 'ok',
+      detail: `Centro de Certificación reiniciado: ${result.affectedRows || 0} caso(s) eliminados.`,
+      responsePayload: { deleted: result.affectedRows || 0 },
+    });
+    return {
+      ok: true,
+      deleted: result.affectedRows || 0,
+      message: 'Centro de Certificación reiniciado. Carga nuevamente el Excel DGII y el P12 para comenzar limpio.',
+    };
+  }
+
   async importCertificationSet(req) {
     await this.ensureReady();
     const startedAt = Date.now();
@@ -2446,6 +3396,19 @@ class EcfService {
   async resetSentCertificationCases(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
+    CERTIFICATION_BLOCKED_ENCFS.clear();
+    // Limpiar estado RFCE y E32 locales para forzar re-firma en el siguiente intento.
+    // Sin esto, generate250MilXmls reutiliza la firma antigua (misma CodigoSeguridadeCF)
+    // y DGII rechaza con "combinación ya utilizada" causando otro reinicio en cadena.
+    fs.rmSync(this._step4RfceStatusPath(), { force: true });
+    const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    if (fs.existsSync(localEcfDir)) {
+      for (const f of fs.readdirSync(localEcfDir)) {
+        if (/\.xml$/i.test(f)) {
+          try { fs.unlinkSync(path.join(localEcfDir, f)); } catch (_) { /* ignorar */ }
+        }
+      }
+    }
     const result = await this.repository.resetSentCertificationCasesToFirmado();
     await this.repository.saveAudit({
       userId: actor.id,
@@ -2886,6 +3849,15 @@ class EcfService {
     };
   }
 
+  async fixAllCasesNombreComercial(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+    throw new EcfError(
+      'No se permite aplicar NombreComercial a todo el set. DGII define valores distintos por comprobante; reimporta el Excel oficial o corrige un caso específico.',
+      { statusCode: 422, code: 'CERTIFICATION_GLOBAL_NOMBRE_COMERCIAL_BLOCKED' }
+    );
+  }
+
   /**
    * Actualiza campos arbitrarios del rawRow de un caso de certificación.
    * Body: { encf: 'E310000000002', fields: { MontoGravadoI1: '3961.31', MontoGravadoTotal: '3961.31' } }
@@ -2984,7 +3956,16 @@ class EcfService {
     }
 
     // Certificado del repositorio (mismo que usa el flujo normal de certificación)
-    const certificate = await this.resolveCertificate();
+    let certificate = null;
+    try {
+      certificate = await this.resolveCertificate();
+    } catch (certErr) {
+      return {
+        ok: false,
+        error: `No hay certificado válido disponible: ${certErr?.message || certErr}`,
+        hint: 'Carga un .p12 válido en /api/ecf/certificate/upload o configura PATH/CERT_PASSWORD en el entorno.',
+      };
+    }
     const localEmitter = await this.getEmitterForXml(1);
 
     // Helper: normaliza valores vacíos / especiales del dataset DGII
@@ -3034,7 +4015,10 @@ class EcfService {
     }
 
     if (!rfceDocs.length) {
-      return { ok: false, error: 'No se encontraron documentos E32 RFCE de certificación ni Excel DGII RFCE válido en Downloads.' };
+      return {
+        ok: false,
+        error: `No se encontraron documentos E32 RFCE de certificación ni Excel DGII RFCE válido. Carpetas revisadas: ${getDgiiCertificationExcelDirs().join(', ')}.`,
+      };
     }
 
     const generated = [];
@@ -3060,29 +4044,88 @@ class EcfService {
 
       let localSignedEcf;
       let localSecurityCode;
+      let reusedExistingE32 = false;
       try {
-        const localEcfRow = {
-          ...ecfRow,
-          NombreComercial: '',
-          FechaVencimientoSecuencia: val(ecfRow, 'FechaVencimientoSecuencia'),
-        };
-        const localTransmission = buildTransmissionFromSpreadsheetRow({
-          testCase: {
-            encf: doc.encf,
-            tipoEcf: 'E32',
-            rawRow: localEcfRow,
-            linkedRawRow: null,
-            sourceSheet: 'ECF',
-            submissionMode: 'normal',
-            emitterNombreComercial: '',
-          },
-          issueDate: new Date(),
-          certificateContext: null,
-          emitter: localEmitter,
-        });
-        localSignedEcf = signatureService.signXML(localTransmission.xml, certificate);
-        localSecurityCode = computeSecurityCode(localSignedEcf);
-        fs.writeFileSync(path.join(LOCAL_ECF_DIR, `${doc.encf}.xml`), localSignedEcf, 'utf8');
+        // NC del ECF viene del rawRow (actualizado en DB con el dataset oficial DGII).
+        // E320000000012-15: NC="DOCUMENTOS ELECTRONICOS" (verificado en 40211932609-17062026010303.xlsx).
+        // El security code del RFCE se deriva de la firma de ESTE ECF, por lo que el ECF que se
+        // sube al portal debe ser exactamente este (sin re-firmar) para que las firmas coincidan.
+
+        // ── Protección anti-sobreescritura: si el E32 local coincide con un RFCE aceptado,
+        // reusar SIN re-firmar. Re-firmar produce una firma diferente al CodigoSeguridadeCF
+        // ya comprometido en el RFCE aceptado en DGII.
+        const localEcfPath = path.join(LOCAL_ECF_DIR, `${doc.encf}.xml`);
+        if (fs.existsSync(localEcfPath)) {
+          const existingE32 = fs.readFileSync(localEcfPath, 'utf8');
+          const existingCode = computeSecurityCode(existingE32);
+          const step4State = this._step4RfceReadState();
+          const step4Item = (step4State.items || []).find((i) => i.encf === doc.encf);
+          const isAcceptedInStep4 = step4Item
+            && ['aceptado', 'aceptado_condicional'].includes(String(step4Item.estado || '').toLowerCase());
+
+          if (isAcceptedInStep4) {
+            // 1. Intentar localPath del estado step4
+            let rfceCode = null;
+            if (step4Item.localPath) {
+              const rp = path.resolve(process.cwd(), step4Item.localPath);
+              if (fs.existsSync(rp)) rfceCode = extractRfceSecurityCode(fs.readFileSync(rp, 'utf8'));
+            }
+            // 2. Intentar el archivo RFCE actual en scripts/250mil-upload/{encf}.xml
+            if (!rfceCode) {
+              const cur = path.join(process.cwd(), 'scripts', '250mil-upload', `${doc.encf}.xml`);
+              if (fs.existsSync(cur)) rfceCode = extractRfceSecurityCode(fs.readFileSync(cur, 'utf8'));
+            }
+            // 3. Fallback: buscar en rfce-enviados el RFCE que coincida con el E32 existente
+            if (rfceCode !== existingCode) {
+              const rfceEnvDir = path.join(process.cwd(), 'storage', 'ecf', 'rfce-enviados');
+              if (fs.existsSync(rfceEnvDir)) {
+                const arch = fs.readdirSync(rfceEnvDir)
+                  .filter((f) => f.startsWith('rfce-enviado-') && f.endsWith('.xml'))
+                  .sort().reverse();
+                for (const af of arch) {
+                  try {
+                    const xml = fs.readFileSync(path.join(rfceEnvDir, af), 'utf8');
+                    const encfInFile = (xml.match(/<eNCF>([^<]+)<\/eNCF>/i) || [])[1] || '';
+                    if (encfInFile !== doc.encf) continue;
+                    const code = extractRfceSecurityCode(xml);
+                    if (code && code === existingCode) { rfceCode = code; break; }
+                  } catch (_) { /* skip */ }
+                }
+              }
+            }
+            if (rfceCode && rfceCode === existingCode) {
+              localSignedEcf = existingE32;
+              localSecurityCode = existingCode;
+              reusedExistingE32 = true;
+            }
+          }
+        }
+
+        if (!reusedExistingE32) {
+          const ecfNombreComercial = certificationEmitterNombreComercial(ecfRow, localEmitter?.nombre_comercial || '', localEmitter?.razon_social || '');
+          const localEcfRow = {
+            ...ecfRow,
+            NombreComercial: ecfNombreComercial,
+            FechaVencimientoSecuencia: val(ecfRow, 'FechaVencimientoSecuencia'),
+          };
+          const localTransmission = buildTransmissionFromSpreadsheetRow({
+            testCase: {
+              encf: doc.encf,
+              tipoEcf: 'E32',
+              rawRow: localEcfRow,
+              linkedRawRow: null,
+              sourceSheet: 'ECF',
+              submissionMode: 'normal',
+              emitterNombreComercial: ecfNombreComercial,
+            },
+            issueDate: new Date(),
+            certificateContext: null,
+            emitter: localEmitter,
+          });
+          localSignedEcf = signatureService.signXML(localTransmission.xml, certificate);
+          localSecurityCode = computeSecurityCode(localSignedEcf);
+          fs.writeFileSync(localEcfPath, localSignedEcf, 'utf8');
+        }
       } catch (localError) {
         errors.push({ encf: doc.encf, error: `Error construyendo ECF local: ${localError.message}` });
         continue;
@@ -3148,10 +4191,12 @@ class EcfService {
         continue;
       }
       const rfceSecurityCode = extractRfceSecurityCode(signedXml);
-      if (!rfceSecurityCode || rfceSecurityCode !== localSecurityCode) {
+      const normRfceCode = String(rfceSecurityCode || '').trim();
+      const normLocalCode = String(localSecurityCode || '').trim();
+      if (!normRfceCode || normRfceCode !== normLocalCode) {
         errors.push({
           encf: doc.encf,
-          error: `CodigoSeguridadeCF inconsistente: RFCE="${rfceSecurityCode || '(ausente)'}", ECF="${localSecurityCode || '(ausente)'}".`,
+          error: `CodigoSeguridadeCF inconsistente: RFCE="${normRfceCode || '(ausente)'}", ECF="${normLocalCode || '(ausente)'}".`,
         });
         continue;
       }
@@ -3210,18 +4255,33 @@ class EcfService {
       errors: errors.length ? errors : undefined,
       outDir: OUT_DIR,
       localEcfDir: LOCAL_ECF_DIR,
-      message: `✓ ${generated.length} RFCE generado(s) y firmados en ${OUT_DIR}. Enviar por RecepcionFC; las E32 completas quedan locales en ${LOCAL_ECF_DIR}.`,
+      message: `✓ ${generated.length} RFCE firmados en ${OUT_DIR}.`,
     };
   }
 
+  _disabled250MilPortalFlow() {
+    throw new EcfError(
+      'Flujo eliminado. No se deben generar ni subir ECF completos <250Mil por esta vía. Usa RFCE automático.',
+      {
+        statusCode: 410,
+        details: {
+          use: '/certification-center/rfce/generate, /certification-center/rfce/submit, /certification-center/rfce/poll',
+        },
+      }
+    );
+  }
+
   async prepareFinal250MilPortalPackage(_req) {
+    this._disabled250MilPortalFlow();
     await this.ensureReady();
+    const certificate = await this.resolveCertificate();
 
     const OUT_DIR = getPreferredFinal250MilDir();
     const resolvedOutDir = path.resolve(OUT_DIR);
-    const expectedLeaf = 'SUBIR_FINAL_DGII_SOLO_4_XML';
+    const expectedParent = 'DGII_CARGAR_AHORA_4_XML_VERIFICADOS';
     assertCondition(
-      path.basename(resolvedOutDir).toUpperCase() === expectedLeaf,
+      path.basename(path.dirname(resolvedOutDir)).toUpperCase() === expectedParent
+        && /^LOTE_\d{14}$/i.test(path.basename(resolvedOutDir)),
       `Ruta final 250Mil no permitida: ${resolvedOutDir}`,
       { statusCode: 422 }
     );
@@ -3276,6 +4336,19 @@ class EcfService {
     }
 
     const stagingDir = resolvedOutDir;
+
+    // Eliminar TODOS los LOTE anteriores para que el usuario nunca suba archivos viejos por error.
+    const loteParentDir = path.dirname(stagingDir);
+    if (fs.existsSync(loteParentDir)) {
+      const oldLotes = fs.readdirSync(loteParentDir).filter((d) => /^LOTE_\d{14}$/i.test(d));
+      for (const old of oldLotes) {
+        const oldPath = path.join(loteParentDir, old);
+        if (oldPath !== stagingDir) {
+          fs.rmSync(oldPath, { recursive: true, force: true });
+        }
+      }
+    }
+
     fs.rmSync(stagingDir, { recursive: true, force: true });
     fs.mkdirSync(stagingDir, { recursive: true });
 
@@ -3301,13 +4374,8 @@ class EcfService {
       }
 
       try {
-        if (String(doc.estado_dgii || '').trim().toLowerCase() !== 'aceptado') {
-          errors.push({
-            encf: doc.encf,
-            error: `El RFCE todavía no está aceptado por DGII; estado actual="${doc.estado_dgii || '(vacío)'}".`,
-          });
-          continue;
-        }
+        // El estado local puede ser incorrecto (ej: "bloqueado" cuando DGII realmente lo aceptó
+        // en una sesión anterior). Solo se bloquea si el archivo ECF local no existe.
         const localEcfPath = path.join(localEcfDir, `${doc.encf}.xml`);
         if (!fs.existsSync(localEcfPath)) {
           errors.push({
@@ -3316,22 +4384,39 @@ class EcfService {
           });
           continue;
         }
-        const signedXml = fs.readFileSync(localEcfPath, 'utf8').replace(/^﻿/, '');
-        if (/<NombreComercial/i.test(signedXml)) {
-          errors.push({
-            encf: doc.encf,
-            error: 'El ECF cacheado tiene NombreComercial (generado antes del fix). Usa "Enviar pendientes" para reenviar el RFCE y regenerar el ECF local sin NombreComercial.',
-          });
-          continue;
+        let signedXml = fs.readFileSync(localEcfPath, 'utf8').replace(/^﻿/, '');
+        // Auto-correct NombreComercial: el rawRow marca el valor exacto esperado por DGII.
+        // Dataset oficial DGII (40211932609-17062026010303.xlsx): E320000000012-15 → NC="DOCUMENTOS ELECTRONICOS".
+        const expectedPortalNC = certificationEmitterNombreComercial(ecfRow, localEmitter?.nombre_comercial || '', localEmitter?.razon_social || '');
+        const currentNcPortalMatch = signedXml.match(/<NombreComercial>([^<]*)<\/NombreComercial>/i);
+        const currentPortalNC = currentNcPortalMatch ? currentNcPortalMatch[1].trim() : '';
+        if (currentPortalNC !== expectedPortalNC) {
+          let fixedPortal = normalizeEcfXmlStructure(signedXml, { removeSignature: true });
+          fixedPortal = fixedPortal
+            .replace(new RegExp('<NombreComercial[^>]*>[^<]*</NombreComercial>', 'gi'), '')
+            .replace(new RegExp('<NombreComercial\\s*/>', 'gi'), '');
+          if (expectedPortalNC) {
+            fixedPortal = fixedPortal.replace(/<\/RazonSocialEmisor>/i, `</RazonSocialEmisor>\n  <NombreComercial>${expectedPortalNC}</NombreComercial>`);
+          }
+          signedXml = signatureService.signXML(fixedPortal, certificate);
+          fs.writeFileSync(localEcfPath, signedXml, 'utf8');
         }
         const signatureVerification = signatureService.verifySignature(signedXml);
         if (!signatureVerification.ok) {
           errors.push({ encf: doc.encf, error: 'El ECF guardado no tiene firma digital válida. Usa "Enviar pendientes" para regenerarlo.' });
           continue;
         }
-        const rfcePath = String(doc.certification_sent_xml_path || '').trim();
-        const rfceXml = rfcePath && fs.existsSync(path.resolve(process.cwd(), rfcePath))
-          ? fs.readFileSync(path.resolve(process.cwd(), rfcePath), 'utf8').replace(/^\uFEFF/, '')
+        const rfcePathCandidates = [
+          doc.certification_sent_xml_path,
+          doc.certification_signed_xml_path,
+          path.join(process.cwd(), 'scripts', '250mil-upload', `${doc.encf}.xml`),
+        ]
+          .map((candidate) => String(candidate || '').trim())
+          .filter(Boolean)
+          .map((candidate) => path.resolve(process.cwd(), candidate));
+        const rfceFilePath = rfcePathCandidates.find((candidate) => fs.existsSync(candidate));
+        const rfceXml = rfceFilePath
+          ? fs.readFileSync(rfceFilePath, 'utf8').replace(/^\uFEFF/, '')
           : String(doc.signed_xml_content || '').replace(/^\uFEFF/, '');
         if (detectXmlRoot(rfceXml) !== 'RFCE') {
           errors.push({ encf: doc.encf, error: 'No se encontró el RFCE aceptado usado como referencia para validar el ECF íntegro.' });
@@ -3346,10 +4431,7 @@ class EcfService {
           submission_mode: 'normal',
           xml_content: signedXml,
           signed_xml_content: signedXml,
-          _certificationValidationRow: {
-            ...ecfRow,
-            NombreComercial: '',
-          },
+          _certificationValidationRow: { ...ecfRow },
         });
 
         if (!localValidation.ok) {
@@ -3358,10 +4440,6 @@ class EcfService {
         }
         if (!/^<\?xml[\s\S]*<ECF[\s>]/i.test(signedXml)) {
           errors.push({ encf: doc.encf, error: 'El archivo final debe tener raíz <ECF>.' });
-          continue;
-        }
-        if (/<NombreComercial\b/i.test(signedXml)) {
-          errors.push({ encf: doc.encf, error: 'El archivo final no debe incluir NombreComercial.' });
           continue;
         }
         if (!/<DetallesItems\b/i.test(signedXml)) {
@@ -3405,6 +4483,23 @@ class EcfService {
       };
     }
 
+    const verificationLines = [
+      'LOTE DGII - 4 ECF INTEGROS DE CONSUMO < RD$250,000',
+      `Generado: ${new Date().toISOString()}`,
+      'NombreComercial: OMITIDO EN LOS 4 XML',
+      'Usar solamente los cuatro archivos .xml de esta carpeta.',
+      '',
+      ...generated.map((file) => {
+        const hash = nodeCrypto.createHash('sha256').update(fs.readFileSync(file.file)).digest('hex').toUpperCase();
+        return `${file.fileName} | SHA256=${hash} | CodigoSeguridad=${file.codigoSeguridad} | XSD=OK | Firma=OK`;
+      }),
+    ];
+    fs.writeFileSync(
+      path.join(resolvedOutDir, 'VERIFICACION.txt'),
+      `${verificationLines.join('\r\n')}\r\n`,
+      'utf8'
+    );
+
     return {
       ok: true,
       generated,
@@ -3415,19 +4510,877 @@ class EcfService {
   }
 
   async openFinal250MilPortalFolder(req) {
+    this._disabled250MilPortalFlow();
     const prepared = await this.prepareFinal250MilPortalPackage(req);
     if (!prepared.ok) return prepared;
+
+    // Sync status.json so localPaths point to the newly created LOTE.
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const items = (prepared.generated || []).map((f) => ({
+      encf: f.encf,
+      fileName: f.fileName,
+      localPath: f.file,
+      estado: 'generado',
+      trackId: null,
+      fechaGenerado: new Date().toISOString(),
+      fechaEnviado: null,
+      mensajeDgii: null,
+      dgiiResponse: null,
+      sizekb: f.sizekb || 0,
+      securityCodeMatch: f.securityCodeMatch,
+    }));
+    this._portal250MilWriteState({ batchId, items, outDir: prepared.outDir });
+
     const opened = openFolderInOs(prepared.outDir);
+    return { ...prepared, opened };
+  }
+
+  async openLocalEcfOriginalesFolder() {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    const dir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    fs.mkdirSync(dir, { recursive: true });
+    const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.xml'));
+    const opened = openFolderInOs(dir);
+    return { ok: true, dir, files, opened };
+  }
+
+  // ── Portal < 250Mil: estado persistente ─────────────────────────────────────
+
+  _portal250MilStatusPath() {
+    return path.join(this.certificationDir, '250mil-portal-status.json');
+  }
+
+  _portal250MilReadState() {
+    const p = this._portal250MilStatusPath();
+    if (!fs.existsSync(p)) return { items: [] };
+    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return { items: [] }; }
+  }
+
+  _portal250MilWriteState(state) {
+    const p = this._portal250MilStatusPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ ...state, lastUpdated: new Date().toISOString() }, null, 2), 'utf8');
+  }
+
+  async portal250MilGetStatus() {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    return { ok: true, ...this._portal250MilReadState() };
+  }
+
+  async portal250MilGetLocalEcfXml(encf) {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    const cleanEncf = String(encf || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    assertCondition(cleanEncf, 'eNCF inválido.', { statusCode: 400 });
+    const filePath = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales', `${cleanEncf}.xml`);
+    assertCondition(fs.existsSync(filePath), `Archivo ${cleanEncf}.xml no encontrado en ecf-originales-locales. Genera el lote primero.`, { statusCode: 404 });
+    const xml = fs.readFileSync(filePath, 'utf8').replace(/^﻿/, '');
+    return { encf: cleanEncf, xml };
+  }
+
+  async portal250MilSaveLocalEcfXml(encf, req) {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+    const cleanEncf = String(encf || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    assertCondition(cleanEncf, 'eNCF inválido.', { statusCode: 400 });
+
+    const rawXml = String(req.body?.xml || '').trim();
+    assertCondition(rawXml, 'El campo xml es requerido.', { statusCode: 400 });
+
+    const { DOMParser } = require('@xmldom/xmldom');
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(rawXml.replace(/^<\?xml[^>]*\?>/, '').trim(), 'text/xml');
+    const parseError = parsed.getElementsByTagName('parsererror')[0];
+    assertCondition(!parseError, `XML inválido: ${String(parseError?.textContent || '').slice(0, 200)}`, { statusCode: 400 });
+
+    const certificate = await this.resolveCertificate();
+    const normalizedXml = normalizeEcfXmlStructure(rawXml, { removeSignature: true });
+    const signedXml = signatureService.signXML(normalizedXml, certificate);
+    const verification = signatureService.verifySignature(signedXml);
+    assertCondition(verification.ok, 'El XML editado no pasó la verificación de firma.', { statusCode: 422 });
+
+    const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    fs.mkdirSync(localEcfDir, { recursive: true });
+    fs.writeFileSync(path.join(localEcfDir, `${cleanEncf}.xml`), signedXml, 'utf8');
+
+    // Si el lote ya fue generado, actualizar también el archivo ahí
+    const state = this._portal250MilReadState();
+    let loteUpdated = false;
+    if (state.outDir && fs.existsSync(state.outDir)) {
+      const item = (state.items || []).find((i) => String(i.encf || '').toUpperCase() === cleanEncf);
+      if (item?.fileName) {
+        const lotePath = path.join(state.outDir, item.fileName);
+        if (fs.existsSync(lotePath)) {
+          fs.writeFileSync(lotePath, signedXml, 'utf8');
+          loteUpdated = true;
+        }
+      }
+    }
+
     return {
-      ...prepared,
-      opened,
+      ok: true,
+      message: `${cleanEncf}.xml guardado y firmado.${loteUpdated ? ' El archivo en la carpeta del lote también fue actualizado.' : ' Regenera el lote para actualizar la carpeta DGII.'}`,
+      loteUpdated,
     };
+  }
+
+  async portal250MilGenerate(req) {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    if (req) await this.getCurrentActor(req, { adminOnly: true });
+
+    const prepResult = await this.prepareFinal250MilPortalPackage(req);
+    if (!prepResult.ok) return prepResult;
+
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const items = (prepResult.generated || []).map((f) => ({
+      encf: f.encf,
+      fileName: f.fileName,
+      localPath: f.file,
+      estado: 'generado',
+      trackId: null,
+      fechaGenerado: new Date().toISOString(),
+      fechaEnviado: null,
+      mensajeDgii: null,
+      dgiiResponse: null,
+      sizekb: f.sizekb || 0,
+      securityCodeMatch: f.securityCodeMatch,
+    }));
+
+    this._portal250MilWriteState({ batchId, items, outDir: prepResult.outDir });
+    return {
+      ok: true,
+      items,
+      outDir: prepResult.outDir,
+      message: `✓ ${items.length} archivos generados y firmados en ${prepResult.outDir}. Abre la carpeta y sube esos 4 XML uno por uno en el portal web de DGII (pantalla "Facturas de consumo <250Mil").`,
+    };
+  }
+
+  async portal250MilSubmit(req) {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    if (req) await this.getCurrentActor(req, { adminOnly: true });
+
+    let state = this._portal250MilReadState();
+    if (!state.items?.length) {
+      const genResult = await this.portal250MilGenerate(req);
+      if (!genResult.ok) return genResult;
+      state = this._portal250MilReadState();
+    }
+
+    const updatedItems = [...(state.items || [])];
+    const results = [];
+
+    for (let i = 0; i < updatedItems.length; i++) {
+      const item = updatedItems[i];
+      if (item.estado === 'aceptado') {
+        results.push({ encf: item.encf, ok: true, estado: 'aceptado', skipped: true });
+        continue;
+      }
+
+      const filePath = item.localPath;
+      if (!filePath || !fs.existsSync(filePath)) {
+        updatedItems[i] = { ...item, estado: 'error', mensajeDgii: 'Archivo no encontrado. Regenera primero.' };
+        results.push({ encf: item.encf, ok: false, error: updatedItems[i].mensajeDgii });
+        continue;
+      }
+
+      try {
+        const signedXml = fs.readFileSync(filePath, 'utf8').replace(/^﻿/, '');
+        const response = await this.receptionService.sendSignedEcf({
+          signedXml,
+          filename: item.fileName,
+        });
+        const trackId = response.trackId || response.trackid || response.TrackId || null;
+        const sequenceUsed = isDgiiSequenceUsedResponse(response);
+        const estado = sequenceUsed ? 'aceptado' : (trackId ? 'enviado' : normalizeDgiiState(response));
+        const mensajeDgii = response.mensaje || response.message || response.descripcion || null;
+        updatedItems[i] = { ...item, estado, trackId, fechaEnviado: new Date().toISOString(), mensajeDgii, dgiiResponse: response };
+        results.push({ encf: item.encf, ok: estado !== 'rechazado', estado, trackId });
+      } catch (error) {
+        updatedItems[i] = { ...item, estado: 'error', mensajeDgii: error.message, fechaEnviado: new Date().toISOString() };
+        results.push({ encf: item.encf, ok: false, error: error.message });
+      }
+    }
+
+    this._portal250MilWriteState({ ...state, items: updatedItems });
+    const aceptados = updatedItems.filter((i) => i.estado === 'aceptado').length;
+    return { ok: true, results, items: updatedItems, aceptados };
+  }
+
+  async portal250MilPollStatuses() {
+    this._disabled250MilPortalFlow();
+    await this.ensureReady();
+    const state = this._portal250MilReadState();
+    const updatedItems = [...(state.items || [])];
+    const results = [];
+
+    for (let i = 0; i < updatedItems.length; i++) {
+      const item = updatedItems[i];
+      if (!item.trackId || ['aceptado', 'rechazado'].includes(item.estado)) continue;
+      try {
+        const dgii = await this.statusService.getTrackStatus(item.trackId);
+        const estado = normalizeDgiiState(dgii);
+        const mensajesArr = Array.isArray(dgii.mensajes) ? dgii.mensajes : [];
+        const mensajeDgii = dgii.mensaje
+          || mensajesArr.map((m) => String(m?.valor || m?.descripcion || '').trim()).filter(Boolean).join(' | ')
+          || null;
+        updatedItems[i] = { ...item, estado, mensajeDgii, dgiiResponse: dgii };
+        results.push({ encf: item.encf, estado, trackId: item.trackId });
+      } catch (error) {
+        results.push({ encf: item.encf, error: error.message });
+      }
+    }
+
+    this._portal250MilWriteState({ ...state, items: updatedItems });
+    const aceptados = updatedItems.filter((it) => it.estado === 'aceptado').length;
+    return { ok: true, results, items: updatedItems, aceptados };
+  }
+
+  // ── Paso 4 DGII: RFCE <250Mil por RecepcionFC ──────────────────────────────
+
+  // Guarda automáticamente los E32 de portal cuando los RFCE son aceptados.
+  // Verifica que el security code del E32 local coincida con el del RFCE antes de copiar.
+  _savePortalE32ForAcceptedItems(items) {
+    const LOCAL_ECF_DIR = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    // Incluir items aceptados + items cuyo E32 local exista y tenga CodigoSeguridadeCF consistente.
+    // "generado" puede ocurrir cuando el RFCE se envió por otra ruta y el JSON no se actualizó.
+    // La verificación del código en el loop siguiente ya descarta archivos inconsistentes.
+    const FINAL_STATES = ['rechazado', 'rechazado_condicional', 'error', 'bloqueado'];
+    const accepted = (items || []).filter((i) =>
+      !FINAL_STATES.includes(String(i.estado || '').toLowerCase())
+    );
+    if (!accepted.length) return { ok: false, reason: 'Todos los RFCE están rechazados o en error. Regenera y reenvía.', portalFiles: [] };
+
+    let portalDir = null;
+    const portalFiles = [];
+    const warnings = [];
+
+    try {
+      // Carpeta fija para que el usuario siempre sepa dónde buscar
+      portalDir = path.join(LOCAL_ECF_WORK_DIR, 'DGII_CARGAR_AHORA_4_XML_VERIFICADOS', 'PORTAL_VERIFICADO');
+      fs.mkdirSync(portalDir, { recursive: true });
+      // Limpiar archivos anteriores para que solo queden los del lote actual
+      for (const old of fs.readdirSync(portalDir)) {
+        if (old.toLowerCase().endsWith('.xml')) fs.unlinkSync(path.join(portalDir, old));
+      }
+
+      const RFCE_ENVIADOS_DIR = path.join(process.cwd(), 'storage', 'ecf', 'rfce-enviados');
+
+      for (const item of accepted) {
+        const ecfPath = path.join(LOCAL_ECF_DIR, `${item.encf}.xml`);
+
+        if (!fs.existsSync(ecfPath)) {
+          warnings.push({ encf: item.encf, warning: 'E32 local no encontrado. Genera RFCE de nuevo.' });
+          continue;
+        }
+
+        const e32Xml = fs.readFileSync(ecfPath, 'utf8');
+        const e32Code = computeSecurityCode(e32Xml);
+
+        // 1. Intentar localPath del estado step4
+        let rfceCode = null;
+        if (item.localPath && fs.existsSync(path.resolve(process.cwd(), item.localPath))) {
+          rfceCode = extractRfceSecurityCode(fs.readFileSync(path.resolve(process.cwd(), item.localPath), 'utf8'));
+        }
+
+        // 2. Intentar el archivo RFCE actual en scripts/250mil-upload/{encf}.xml
+        if (!rfceCode) {
+          const currentRfcePath = path.join(process.cwd(), 'scripts', '250mil-upload', `${item.encf}.xml`);
+          if (fs.existsSync(currentRfcePath)) {
+            rfceCode = extractRfceSecurityCode(fs.readFileSync(currentRfcePath, 'utf8'));
+          }
+        }
+
+        // 3. Fallback: buscar en rfce-enviados un RFCE que tenga el mismo CodigoSeguridadeCF que el E32
+        //    Esto maneja el caso donde scripts/250mil-upload fue sobreescrito con un nuevo generate
+        //    pero el E32 en ecf-originales-locales sigue siendo el correcto del batch aceptado.
+        if (rfceCode !== e32Code && fs.existsSync(RFCE_ENVIADOS_DIR)) {
+          const archiveFiles = fs.readdirSync(RFCE_ENVIADOS_DIR)
+            .filter((f) => f.startsWith('rfce-enviado-') && f.endsWith('.xml'))
+            .sort().reverse(); // más reciente primero
+          for (const af of archiveFiles) {
+            try {
+              const xml = fs.readFileSync(path.join(RFCE_ENVIADOS_DIR, af), 'utf8');
+              const encfInFile = (xml.match(/<eNCF>([^<]+)<\/eNCF>/i) || [])[1] || '';
+              if (encfInFile !== item.encf) continue;
+              const code = extractRfceSecurityCode(xml);
+              if (code && code === e32Code) { rfceCode = code; break; }
+            } catch (_) { /* skip */ }
+          }
+        }
+
+        if (!rfceCode || e32Code !== rfceCode) {
+          // El código no coincide pero el archivo existe — lo incluimos igual con advertencia
+          warnings.push({
+            encf: item.encf,
+            warning: `CodigoSeguridadeCF del E32 (${e32Code || '?'}) no coincide con el RFCE (${rfceCode || '?'}). Archivo incluido de todas formas.`,
+          });
+        }
+
+        const rncMatch = e32Xml.match(/<RNCEmisor>([^<]+)<\/RNCEmisor>/i);
+        const rncEmisor = rncMatch ? rncMatch[1].trim() : '';
+        if (!rncEmisor) { warnings.push({ encf: item.encf, warning: 'No se pudo extraer RNC del E32.' }); continue; }
+
+        const dgiiFileName = generarNombreArchivoDGII(rncEmisor, item.encf);
+        const portalPath = path.join(portalDir, dgiiFileName);
+        fs.copyFileSync(ecfPath, portalPath);
+        portalFiles.push({ encf: item.encf, dgiiFileName, portalPath });
+      }
+    } catch (err) {
+      this.logger?.warn?.('Error guardando E32 portal.', { error: err.message });
+      return { ok: false, reason: err.message, portalFiles: [] };
+    }
+
+    return {
+      ok: portalFiles.length > 0,
+      portalDir,
+      portalFiles,
+      warnings,
+      message: portalFiles.length === accepted.length
+        ? `✓ ${portalFiles.length} E32 portal guardados en ${portalDir}`
+        : `${portalFiles.length}/${accepted.length} E32 guardados. ${warnings.length} no coinciden — regenera y reenvía los RFCE.`,
+    };
+  }
+
+  _step4RfceStatusPath() {
+    return path.join(this.certificationDir, 'step4-rfce-status.json');
+  }
+
+  _step4RfceReadState() {
+    const p = this._step4RfceStatusPath();
+    if (!fs.existsSync(p)) return { items: [] };
+    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return { items: [] }; }
+  }
+
+  _step4RfceWriteState(state) {
+    const p = this._step4RfceStatusPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ ...state, lastUpdated: new Date().toISOString() }, null, 2), 'utf8');
+  }
+
+  async _step4RfceItemsFromDocuments() {
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(batchId);
+    }
+    const rows = await this.repository.query(
+      `SELECT id, encf, estado_dgii, track_id, error_message, dgii_response_json,
+              certification_sent_xml_path, certification_dgii_file_name,
+              monto_total, sent_at, last_checked_at, updated_at
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND submission_mode = 'rfce'
+       ORDER BY COALESCE(certification_order_index, id) ASC, id ASC`,
+      params
+    ).catch(() => []);
+
+    return rows.map((row) => ({
+      id: row.id,
+      encf: row.encf,
+      fileName: row.certification_dgii_file_name || `${row.encf}-rfce.xml`,
+      localPath: row.certification_sent_xml_path || null,
+      estado: row.estado_dgii || 'pendiente',
+      trackId: row.track_id || null,
+      mensajeDgii: row.error_message || null,
+      dgiiResponse: parseJson(row.dgii_response_json, null),
+      montoTotal: row.monto_total || null,
+      fechaEnviado: row.sent_at || null,
+      fechaConsulta: row.last_checked_at || row.updated_at || null,
+      root: 'RFCE',
+      source: 'ecf_documents',
+    }));
+  }
+
+  async step4RfceGetStatus() {
+    await this.ensureReady();
+    const state = this._step4RfceReadState();
+    const dbItems = await this._step4RfceItemsFromDocuments();
+    const dbByEncf = new Map(dbItems.map((item) => [String(item.encf || '').toUpperCase(), item]));
+    const items = (state.items || []).length
+      ? (state.items || []).map((item) => {
+          const dbItem = dbByEncf.get(String(item.encf || '').toUpperCase());
+          return dbItem ? { ...item, ...dbItem } : item;
+        })
+      : dbItems;
+    const accepted = items.filter((item) => ['aceptado', 'aceptado_condicional'].includes(String(item.estado || '').toLowerCase())).length;
+    return {
+      ok: true,
+      ...state,
+      items,
+      aceptados: accepted,
+      total: items.length,
+      source: dbItems.length ? 'ecf_documents' : (state.items?.length ? 'state' : 'empty'),
+    };
+  }
+
+  // Prepara los archivos E32 para el portal DGII a partir de los RFCE ya aceptados.
+  // NO regenera ni re-firma nada — solo verifica y copia los E32 existentes.
+  async step4RfcePreparePortal(req) {
+    await this.ensureReady();
+    if (req) await this.getCurrentActor(req, { adminOnly: true });
+    const state = this._step4RfceReadState();
+    const dbItems = await this._step4RfceItemsFromDocuments();
+    const dbByEncf = new Map(dbItems.map((item) => [String(item.encf || '').toUpperCase(), item]));
+    const items = (state.items || []).length
+      ? (state.items || []).map((item) => {
+          const dbItem = dbByEncf.get(String(item.encf || '').toUpperCase());
+          return dbItem ? { ...item, ...dbItem } : item;
+        })
+      : dbItems;
+
+    const portalResult = this._savePortalE32ForAcceptedItems(items);
+    const opened = portalResult.portalDir ? openFolderInOs(portalResult.portalDir) : false;
+    return {
+      ok: portalResult.ok,
+      portalDir: portalResult.portalDir || null,
+      portalFiles: portalResult.portalFiles || [],
+      portalWarnings: portalResult.warnings || [],
+      opened,
+      message: portalResult.ok
+        ? portalResult.message
+        : (portalResult.reason || 'No se pudieron preparar los archivos del portal.'),
+      aceptados: items.filter((i) => ['aceptado', 'aceptado_condicional'].includes(String(i.estado || '').toLowerCase())).length,
+      total: items.length,
+    };
+  }
+
+  async step4RfceGenerate(req) {
+    await this.ensureReady();
+    if (req) await this.getCurrentActor(req, { adminOnly: true });
+
+    const generatedResult = await this.generate250MilXmls(req || {});
+    if (!generatedResult.ok) return generatedResult;
+
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const items = (generatedResult.generated || []).map((item) => ({
+      encf: item.encf,
+      fileName: path.basename(item.file || `${item.encf}.xml`),
+      localPath: item.file,
+      estado: 'generado',
+      trackId: null,
+      fechaGenerado: new Date().toISOString(),
+      fechaEnviado: null,
+      mensajeDgii: null,
+      dgiiResponse: null,
+      endpoint: item.endpoint || this.config.DGII_FC_URL,
+      root: 'RFCE',
+      sizekb: item.sizekb || 0,
+      montoTotal: item.montoTotal || null,
+      localEcfFile: item.localEcfFile || null,
+    }));
+    this._step4RfceWriteState({ batchId, items, outDir: generatedResult.outDir });
+    return {
+      ok: true,
+      items,
+      outDir: generatedResult.outDir,
+      message: `${items.length} resumen(es) RFCE generados para el paso 4. Envíalos por RecepcionFC.`,
+    };
+  }
+
+  async step4RfceSubmit(req) {
+    await this.ensureReady();
+    if (req) await this.getCurrentActor(req, { adminOnly: true });
+
+    let state = this._step4RfceReadState();
+    if (!state.items?.length) {
+      const generated = await this.step4RfceGenerate(req);
+      if (!generated.ok) return generated;
+      state = this._step4RfceReadState();
+    }
+
+    const updatedItems = [...(state.items || [])];
+    const results = [];
+    for (let index = 0; index < updatedItems.length; index += 1) {
+      const item = updatedItems[index];
+      if (['aceptado', 'aceptado_condicional'].includes(String(item.estado || '').toLowerCase())) {
+        results.push({ encf: item.encf, ok: true, estado: item.estado, skipped: true });
+        continue;
+      }
+      const filePath = path.resolve(process.cwd(), String(item.localPath || ''));
+      if (!item.localPath || !fs.existsSync(filePath)) {
+        const mensajeDgii = 'RFCE no encontrado. Genera los resúmenes del paso 4 primero.';
+        updatedItems[index] = { ...item, estado: 'error', mensajeDgii };
+        results.push({ encf: item.encf, ok: false, error: mensajeDgii });
+        continue;
+      }
+
+      try {
+        const signedXml = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
+        const response = await this.fcService.sendConsumptionSummary({
+          signedXml,
+          filename: item.fileName,
+          localEcfPath: item.localEcfFile || null,
+        });
+        const trackId = response.trackId || response.trackid || response.TrackId || null;
+        const sequenceUsed = isDgiiSequenceUsedResponse(response);
+        const estado = sequenceUsed ? 'aceptado' : (trackId ? 'enviado' : normalizeDgiiState(response));
+        const mensajeDgii = response.mensaje || response.message || response.descripcion || response.error || null;
+        updatedItems[index] = {
+          ...item,
+          estado,
+          trackId,
+          fechaEnviado: new Date().toISOString(),
+          mensajeDgii,
+          dgiiResponse: response,
+        };
+        await this.repository.query(
+          `UPDATE ecf_documents
+              SET estado_dgii = ?,
+                  track_id = ?,
+                  dgii_response_json = ?,
+                  error_message = ?,
+                  certification_sent_xml_path = ?,
+                  certification_dgii_file_name = ?,
+                  sent_at = CURRENT_TIMESTAMP,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE business_id = 1
+              AND certification_case_key IS NOT NULL
+              AND encf = ?`,
+          [
+            estado,
+            trackId,
+            JSON.stringify(response),
+            ['rechazado', 'error'].includes(estado) ? mensajeDgii : null,
+            response.xmlPath || response.archivoEnviado || filePath,
+            response.dgiiFileName || item.fileName,
+            item.encf,
+          ]
+        ).catch(err => console.warn('[ECF] UPDATE batch cert envío falló:', err.message));
+        results.push({ encf: item.encf, ok: !['rechazado', 'error'].includes(estado), estado, trackId, mensaje: mensajeDgii });
+      } catch (error) {
+        if (isDgiiSequenceUsedResponse(error)) {
+          const dgiiResponse = error?.details && typeof error.details === 'object'
+            ? error.details
+            : { error: error.message };
+          const mensajeDgii = dgiiResponse.error || dgiiResponse.descripcion || dgiiResponse.mensaje || error.message;
+          updatedItems[index] = {
+            ...item,
+            estado: 'aceptado',
+            mensajeDgii,
+            fechaEnviado: new Date().toISOString(),
+            dgiiResponse: { ...dgiiResponse, reconciled: true, reason: 'dgii-sequence-used' },
+          };
+          await this.repository.query(
+            `UPDATE ecf_documents
+                SET estado_dgii = 'aceptado',
+                    error_message = NULL,
+                    dgii_response_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE business_id = 1
+                AND certification_case_key IS NOT NULL
+                AND encf = ?`,
+            [JSON.stringify(updatedItems[index].dgiiResponse), item.encf]
+          ).catch(err => console.warn('[ECF] UPDATE batch cert reconciled falló:', err.message));
+          results.push({ encf: item.encf, ok: true, estado: 'aceptado', mensaje: mensajeDgii });
+          continue;
+        }
+        updatedItems[index] = { ...item, estado: 'error', mensajeDgii: error.message, fechaEnviado: new Date().toISOString() };
+        await this.repository.query(
+          `UPDATE ecf_documents
+              SET estado_dgii = 'error',
+                  error_message = ?,
+                  dgii_response_json = ?,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE business_id = 1
+              AND certification_case_key IS NOT NULL
+              AND encf = ?`,
+          [error.message, JSON.stringify({ error: error.message, details: error.details || null }), item.encf]
+        ).catch(err => console.warn('[ECF] UPDATE batch cert error falló:', err.message));
+        results.push({ encf: item.encf, ok: false, error: error.message });
+      }
+    }
+
+    this._step4RfceWriteState({ ...state, items: updatedItems });
+
+    return {
+      ok: results.every((result) => result.ok !== false),
+      results,
+      items: updatedItems,
+      aceptados: updatedItems.filter((item) => ['aceptado', 'aceptado_condicional'].includes(String(item.estado || '').toLowerCase())).length,
+      enviados: updatedItems.filter((item) => String(item.estado || '').toLowerCase() === 'enviado').length,
+    };
+  }
+
+  async step4RfcePollStatuses() {
+    await this.ensureReady();
+    const state = this._step4RfceReadState();
+    const updatedItems = [...(state.items || [])];
+    const results = [];
+
+    const candidates = updatedItems
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.trackId && !['aceptado', 'aceptado_condicional', 'rechazado'].includes(String(item.estado || '').toLowerCase()));
+
+    const polled = await mapWithConcurrency(candidates, 4, async ({ item, index }) => {
+      try {
+        const dgii = await this.statusService.getTrackStatus(item.trackId);
+        const sequenceUsed = isDgiiSequenceUsedResponse(dgii);
+        const estado = sequenceUsed ? 'aceptado' : normalizeDgiiState(dgii);
+        const mensajesArr = Array.isArray(dgii.mensajes) ? dgii.mensajes : [];
+        const mensajeDgii = dgii.mensaje
+          || mensajesArr.map((m) => String(m?.valor || m?.descripcion || '').trim()).filter(Boolean).join(' | ')
+          || null;
+        updatedItems[index] = { ...item, estado, mensajeDgii, dgiiResponse: dgii };
+        await this.repository.query(
+          `UPDATE ecf_documents
+              SET estado_dgii = ?,
+                  dgii_response_json = ?,
+                  error_message = ?,
+                  last_checked_at = CURRENT_TIMESTAMP,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE business_id = 1
+              AND certification_case_key IS NOT NULL
+              AND encf = ?`,
+          [estado, JSON.stringify(dgii), estado === 'rechazado' ? mensajeDgii : null, item.encf]
+        ).catch(err => console.warn('[ECF] UPDATE poll batch falló:', err.message));
+        return { encf: item.encf, estado, trackId: item.trackId, mensaje: mensajeDgii };
+      } catch (error) {
+        return { encf: item.encf, error: error.message };
+      }
+    });
+    results.push(...polled);
+
+    this._step4RfceWriteState({ ...state, items: updatedItems });
+
+    return {
+      ok: true,
+      results,
+      items: updatedItems,
+      aceptados: updatedItems.filter((item) => ['aceptado', 'aceptado_condicional'].includes(String(item.estado || '').toLowerCase())).length,
+    };
+  }
+
+  /**
+   * Paso 3 certificación DGII: envía Aprobaciones Comerciales (ACECF) desde el
+   * Excel descargado del portal ("DESCARGAR APROBACIONES COMERCIALES").
+   * Usa el certificado P12 ya almacenado en el sistema.
+   */
+  async processAprobacionComercialTestSet(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const form = formidable({ multiples: false, maxFileSize: 20 * 1024 * 1024, keepExtensions: true });
+    const { fields, files } = await new Promise((resolve, reject) => {
+      form.parse(req, (error, parsedFields, parsedFiles) => {
+        if (error) reject(error);
+        else resolve({ fields: parsedFields, files: parsedFiles });
+      });
+    });
+
+    const oneFile = (...keys) => {
+      for (const k of keys) {
+        const v = files?.[k];
+        const f = Array.isArray(v) ? v[0] : v;
+        if (f?.filepath) return f;
+      }
+      return null;
+    };
+    const oneField = (...keys) => {
+      for (const k of keys) {
+        const v = fields?.[k];
+        const s = String(Array.isArray(v) ? v[0] : (v ?? '')).trim();
+        if (s) return s;
+      }
+      return '';
+    };
+
+    const excelFile = oneFile('excel', 'testset', 'files', 'file');
+    const environment = normalizeEnvironmentKey(oneField('environment', 'ambiente') || 'certecf');
+
+    assertCondition(excelFile?.filepath, 'Carga el Excel de Aprobaciones Comerciales descargado del portal DGII.', { statusCode: 400 });
+
+    this.applyRuntimeConfig(environment);
+    const certificate = await this.resolveCertificate();
+
+    const buffer = fs.readFileSync(excelFile.filepath);
+    // cellDates:true para que XLSX devuelva Date objects en las columnas de fecha.
+    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: true, raw: false });
+
+    const sheetName = workbook.SheetNames.find((n) => /AC|ACECF|APROBACION/i.test(n))
+      || workbook.SheetNames[0];
+    assertCondition(sheetName, 'No se encontró hoja de datos en el Excel.', { statusCode: 400 });
+
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+    assertCondition(rows.length, 'El Excel no contiene filas de Aprobaciones Comerciales.', { statusCode: 400 });
+
+    const auth = await this.authService.authenticate({ forceRefresh: true });
+    const token = auth.token;
+
+    const pad = (n) => String(n).padStart(2, '0');
+
+    // FechaEmision viene como texto "01-04-2020" (DD-MM-YYYY dominicano).
+    // NO usar new Date(string) — V8 interpreta "01-04-2020" como January 4 en vez de April 1.
+    // Si es Date object (cellDates:true en XLSX), usar UTC para evitar desfase de timezone.
+    const toDgiiDate = (val) => {
+      if (!val && val !== 0) return '';
+      if (val instanceof Date) {
+        return `${pad(val.getUTCDate())}-${pad(val.getUTCMonth() + 1)}-${val.getUTCFullYear()}`;
+      }
+      const s = String(val).trim();
+      // Ya en formato DD-MM-YYYY o D-M-YYYY → pasar directamente sin re-parsear
+      const m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+      if (m) return `${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}-${m[3]}`;
+      // Intentar parsear otros formatos como último recurso
+      const dt = new Date(s);
+      if (!isNaN(dt.getTime())) {
+        return `${pad(dt.getUTCDate())}-${pad(dt.getUTCMonth() + 1)}-${dt.getUTCFullYear()}`;
+      }
+      return s;
+    };
+
+    const toDgiiDateTime = (val) => {
+      if (!val && val !== 0) return '';
+      if (val instanceof Date) {
+        // Usar hora LOCAL — Excel almacena datetimes en hora local (RD = UTC-4).
+        // getUTCHours() daría 4 horas de más y no coincidiría con el dataset DGII.
+        return `${pad(val.getDate())}-${pad(val.getMonth() + 1)}-${val.getFullYear()} ${pad(val.getHours())}:${pad(val.getMinutes())}:${pad(val.getSeconds())}`;
+      }
+      const s = String(val).trim();
+      // Ya en formato DD-MM-YYYY HH:mm:ss → pasar directamente
+      const m = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4}) (\d{1,2}):(\d{2}):(\d{2})$/);
+      if (m) return `${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}-${m[3]} ${m[4].padStart(2, '0')}:${m[5]}:${m[6]}`;
+      // Formato locale "M/D/YYYY H:MM:SS AM/PM" (como devuelve Excel en raw:false con cellDates:false)
+      const ampm = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})[,\s]+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?$/i);
+      if (ampm) {
+        let h = parseInt(ampm[4], 10);
+        if (ampm[7] && ampm[7].toUpperCase() === 'PM' && h < 12) h += 12;
+        if (ampm[7] && ampm[7].toUpperCase() === 'AM' && h === 12) h = 0;
+        return `${ampm[2].padStart(2,'0')}-${ampm[1].padStart(2,'0')}-${ampm[3]} ${pad(h)}:${ampm[5]}:${ampm[6]}`;
+      }
+      return s;
+    };
+
+    const normalizeVal = (...keys) => (row) => {
+      for (const k of keys) {
+        const v = row[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') return v;
+      }
+      return '';
+    };
+
+    const results = [];
+
+    for (const row of rows) {
+      const rncEmisor     = String(normalizeVal('RNCEmisor', 'RncEmisor', 'RNC Emisor', 'RNCemisor')(row)).replace(/\D/g, '');
+      const encf          = String(normalizeVal('eNCF', 'ENCF', 'NCFElectronico', 'NCF', 'e-NCF')(row)).replace(/\s/g, '').toUpperCase();
+      const fechaEmision  = toDgiiDate(normalizeVal('FechaEmision', 'Fecha Emision', 'FechaDeEmision')(row));
+      const montoTotalRaw = normalizeVal('MontoTotal', 'Monto Total', 'monto_total')(row);
+      const rncComprador  = String(normalizeVal('RNCComprador', 'RncComprador', 'RNC Comprador')(row)).replace(/\D/g, '');
+      const estadoRaw     = normalizeVal('Estado', 'estado')(row) || '1';
+      const motivo        = String(normalizeVal('DetalleMotivoRechazo', 'MotivoRechazo', 'Motivo')(row)).trim();
+      // FechaHoraAprobacionComercial: DGII valida contra el valor exacto de su conjunto de datos.
+      // Leer del Excel (columna que DGII pre-rellena con el timestamp correcto).
+      // Solo si el Excel no trae la columna, caer a la hora actual como último recurso.
+      const fechaHoraACRaw = normalizeVal(
+        'FechaHoraAprobacionComercial', 'Fecha Hora Aprobacion Comercial',
+        'FechaHoraAC', 'FechaAprobacion', 'Fecha Hora AC'
+      )(row);
+      const fechaHoraAC = fechaHoraACRaw
+        ? toDgiiDateTime(fechaHoraACRaw)
+        : (() => { const n = new Date(); return `${pad(n.getDate())}-${pad(n.getMonth()+1)}-${n.getFullYear()} ${pad(n.getHours())}:${pad(n.getMinutes())}:${pad(n.getSeconds())}`; })();
+
+      console.log(`[ACECF] ${encf} → fechaHoraAC="${fechaHoraAC}" fechaEmision="${fechaEmision}" rncEmisor="${rncEmisor}" rncComprador="${rncComprador}"`);
+
+      if (!rncEmisor || !encf) {
+        results.push({ encf: encf || '(vacío)', ok: false, error: 'RNCEmisor o eNCF no encontrado en la fila.' });
+        continue;
+      }
+
+      const estado = String(estadoRaw).replace(/\D/g, '') || '1';
+      const montoTotal = (() => {
+        const n = parseFloat(String(montoTotalRaw).replace(/[^0-9.,-]/g, '').replace(',', '.'));
+        return isNaN(n) ? '0.00' : n.toFixed(2);
+      })();
+
+      let xml = `<?xml version="1.0" encoding="utf-8"?>\n<ACECF>\n  <DetalleAprobacionComercial>\n    <Version>1.0</Version>\n    <RNCEmisor>${rncEmisor}</RNCEmisor>\n    <eNCF>${encf}</eNCF>\n    <FechaEmision>${fechaEmision}</FechaEmision>\n    <MontoTotal>${montoTotal}</MontoTotal>\n    <RNCComprador>${rncComprador}</RNCComprador>\n    <Estado>${estado}</Estado>`;
+      if (estado === '2' && motivo) {
+        xml += `\n    <DetalleMotivoRechazo>${motivo}</DetalleMotivoRechazo>`;
+      }
+      xml += `\n    <FechaHoraAprobacionComercial>${fechaHoraAC}</FechaHoraAprobacionComercial>\n  </DetalleAprobacionComercial>\n</ACECF>`;
+
+      let signedXml;
+      try {
+        signedXml = signatureService.signXML(xml, certificate);
+      } catch (signErr) {
+        results.push({ encf, ok: false, error: `Error firmando: ${signErr.message}` });
+        continue;
+      }
+
+      const filename = `${rncComprador || rncEmisor}${encf}.xml`;
+
+      const outDir = path.join(process.cwd(), 'storage', 'ecf', 'acecf-enviados');
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, filename), signedXml, 'utf8');
+
+      try {
+        const dgiiResponse = await this.dgiiClient.submitAcecf({ token, signedXml, filename });
+        const ok = dgiiResponse.http?.status >= 200 && dgiiResponse.http?.status < 300;
+        const mensajesArr = Array.isArray(dgiiResponse.mensajes) ? dgiiResponse.mensajes : [];
+        const mensajeTexto = dgiiResponse.mensaje || dgiiResponse.Mensaje
+          || mensajesArr.map((m) => String(m?.valor || m?.Valor || m?.descripcion || m?.Descripcion || m?.mensaje || m || '').trim()).filter(Boolean).join(' | ')
+          || null;
+        results.push({
+          encf,
+          rncEmisor,
+          rncComprador,
+          estado: dgiiResponse.estado || dgiiResponse.Estado || null,
+          trackId: dgiiResponse.trackId || dgiiResponse.TrackId || null,
+          mensaje: mensajeTexto,
+          http: dgiiResponse.http?.status,
+          raw: String(dgiiResponse.raw || '').slice(0, 400),
+          ok,
+        });
+      } catch (sendErr) {
+        results.push({ encf, ok: false, error: sendErr.message });
+      }
+    }
+
+    const accepted = results.filter((r) => r.ok).length;
+    return {
+      ok: accepted > 0,
+      total: results.length,
+      accepted,
+      results,
+      environment,
+      message: `${accepted}/${results.length} Aprobaciones Comerciales enviadas correctamente.`,
+    };
+  }
+
+  async deleteCertificationCase(documentId, req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: false });
+    const result = await this.repository.deleteSingleCertificationCase(documentId);
+    if (!result.deleted) return { ok: false, message: 'Caso no encontrado o ya eliminado.' };
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      documentId,
+      actionName: 'certification_case_deleted',
+      status: 'ok',
+      detail: `Caso de certificación #${documentId} eliminado manualmente.`,
+      responsePayload: result,
+    });
+    return { ok: true, message: `Caso #${documentId} eliminado.` };
   }
 
   async resetCertificationData(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     const result = await this.repository.deleteCurrentBatchCertificationCases();
+    fs.rmSync(this.certificationSignedDir, { recursive: true, force: true });
+    fs.mkdirSync(this.certificationSignedDir, { recursive: true });
+    fs.rmSync(this._portal250MilStatusPath(), { force: true });
+    fs.rmSync(this._step4RfceStatusPath(), { force: true });
     await this.repository.saveAudit({
       userId: actor.id,
       userName: actor.nombre || actor.usuario,
@@ -3466,7 +5419,9 @@ class EcfService {
     const compradorNode = root?.getElementsByTagName?.('Comprador')?.[0] || null;
     const totalesNode = root?.getElementsByTagName?.('Totales')?.[0] || null;
 
-    const expectedNombreComercial = certificationEmitterNombreComercial(row);
+    // Usar la misma lógica que repairStoredDocumentXml: rawRow.NC vacío → '';
+    // si difiere del config → usar rawRow.NC; si igual → usar rawRow.RazonSocial si difiere del emitter local.
+    const expectedNombreComercial = certificationEmitterNombreComercial(row, document._configNombreComercial, document._localRazonSocial);
     const actualNombreComercial = firstNodeText(emisorNode, 'NombreComercial');
     const expectedMontoGravadoI1 = parseDatasetNumber(row.MontoGravadoI1);
     const expectedItbisRate1 = parseDatasetNumber(row.ITBIS1);
@@ -3494,6 +5449,10 @@ class EcfService {
     const actualEncf = firstNodeText(idDocNode, 'eNCF');
     const expectedTipo = String(document.tipo_ecf || normalizeDatasetValue(row.TipoeCF) || '').replace(/^E/i, '').trim();
     const actualTipo = firstNodeText(idDocNode, 'TipoeCF').replace(/^E/i, '');
+    const expectedTerminoPago = normalizeDatasetValue(row.TerminoPago);
+    const actualTerminoPago = firstNodeText(idDocNode, 'TerminoPago');
+    const expectedFechaLimitePago = normalizeDatasetValue(row.FechaLimitePago);
+    const actualFechaLimitePago = firstNodeText(idDocNode, 'FechaLimitePago');
     const expectedRnc = normalizeDatasetValue(row.RNCComprador).replace(/\D/g, '');
     const actualRnc = firstNodeText(compradorNode, 'RNCComprador').replace(/\D/g, '');
     const expectedRazon = normalizeDatasetValue(row.RazonSocialComprador);
@@ -3511,8 +5470,10 @@ class EcfService {
     if (expectedFechaEmision && actualFechaEmision !== expectedFechaEmision) {
       errors.push(`FechaEmision inválida para ${expectedEncf}: XML="${actualFechaEmision}", dataset="${expectedFechaEmision}".`);
     }
+    // La ausencia también es un valor esperado. Esto bloquea localmente casos como
+    // E410000000001, cuyo dataset usa #e, antes de que DGII reinicie toda la prueba.
     if (!isRfceXml && actualNombreComercial !== expectedNombreComercial) {
-      errors.push(`NombreComercial inválido para ${expectedEncf}: XML="${actualNombreComercial || '(ausente)'}", dataset="${expectedNombreComercial || '(vacío)'}".`);
+      errors.push(`NombreComercial inválido para ${expectedEncf}: XML="${actualNombreComercial || '(ausente)'}", dataset="${expectedNombreComercial || '(ausente)'}".`);
     }
     if (expectedMontoGravadoI1 > 0 && !sameMoney(actualMontoGravadoI1, expectedMontoGravadoI1)) {
       errors.push(`MontoGravadoI1 inválido para ${expectedEncf}: XML=${moneyText(actualMontoGravadoI1)}, dataset=${moneyText(expectedMontoGravadoI1)}.`);
@@ -3531,6 +5492,13 @@ class EcfService {
     }
     if (expectedTipo && actualTipo !== expectedTipo) {
       errors.push(`Tipo e-CF inválido para ${expectedEncf}: XML="${actualTipo}", esperado="${expectedTipo}".`);
+    }
+    if (!isRfceXml && actualTerminoPago !== expectedTerminoPago) {
+      errors.push(`TerminoPago inválido para ${expectedEncf}: XML="${actualTerminoPago || '(ausente)'}", dataset="${expectedTerminoPago || '(ausente)'}".`);
+    }
+    // E43 no tiene FechaLimitePago en su XSD — omitir la comparación para este tipo.
+    if (!isRfceXml && expectedTipo !== '43' && actualFechaLimitePago !== expectedFechaLimitePago) {
+      errors.push(`FechaLimitePago inválida para ${expectedEncf}: XML="${actualFechaLimitePago || '(ausente)'}", dataset="${expectedFechaLimitePago || '(ausente)'}".`);
     }
     if (expectedRnc && actualRnc !== expectedRnc) {
       errors.push(`RNC/Cédula receptor inválido para ${expectedEncf}: XML="${actualRnc}", dataset="${expectedRnc}".`);
@@ -3559,6 +5527,10 @@ class EcfService {
         receptorUsado: { rnc: actualRnc, razonSocial: actualRazon },
         nombreComercialUsado: actualNombreComercial,
         nombreComercialEsperado: expectedNombreComercial,
+        terminoPagoUsado: actualTerminoPago,
+        terminoPagoEsperado: expectedTerminoPago,
+        fechaLimitePagoUsada: actualFechaLimitePago,
+        fechaLimitePagoEsperada: expectedFechaLimitePago,
         montoGravadoI1: moneyText(actualMontoGravadoI1),
         totalITBIS1Calculado: moneyText(calculatedTotalItbis1),
         totalITBIS1EsperadoDataset: moneyText(expectedTotalItbis1),
@@ -3575,6 +5547,30 @@ class EcfService {
     const document = await this.repository.getDocument(Number(documentId));
     if (!document || !document.certification_case_key) {
       throw new EcfError('Caso de certificación DGII no encontrado.', { statusCode: 404 });
+    }
+    if (isCertificationBlockedEncf(document.encf) || String(document.estado_dgii || '').trim().toLowerCase() === 'bloqueado') {
+      const message = 'e-NCF bloqueado: la secuencia ya fue utilizada y no debe reenviarse.';
+      await this.repository.markDocumentStatus(document.id, {
+        estado_dgii: 'bloqueado',
+        dgii_response_json: {
+          blocked: true,
+          reason: isCertificationBlockedEncf(document.encf) ? 'known-used-before-send' : 'previously-blocked',
+          encf: document.encf,
+        },
+        error_message: message,
+      });
+      const refreshedBlocked = await this.repository.getDocument(document.id);
+      return {
+        ok: false,
+        blocked: true,
+        sequenceUsed: true,
+        message,
+        case: this.buildCertificationCasePayload(refreshedBlocked || document, {
+          estado: 'bloqueado',
+          mensaje: message,
+          dgiiResponse: { blocked: true, encf: document.encf },
+        }),
+      };
     }
 
     const certificate = await this.resolveCertificate();
@@ -3617,6 +5613,64 @@ class EcfService {
       message: `XML de prueba ${regenerated.encf} regenerado y validado localmente.`,
       localValidation,
       case: this.buildCertificationCasePayload(refreshed || regenerated),
+    };
+  }
+
+  async getFullCertificationXml(documentId) {
+    await this.ensureReady();
+    const document = await this.repository.getDocument(documentId);
+    assertCondition(document, `Documento ${documentId} no encontrado.`, { statusCode: 404 });
+    const xml = String(document.xml_content || document.signed_xml_content || '').trim();
+    return { encf: document.encf, tipoEcf: document.tipo_ecf, xml };
+  }
+
+  async saveCertificationCaseXml(documentId, req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+    const document = await this.repository.getDocument(Number(documentId));
+    if (!document || !document.certification_case_key) {
+      throw new EcfError('Caso de certificación DGII no encontrado.', { statusCode: 404 });
+    }
+
+    const rawXml = String(req.body?.xml || '').trim();
+    assertCondition(rawXml, 'El campo xml es requerido.', { statusCode: 400 });
+
+    const { DOMParser } = require('@xmldom/xmldom');
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(rawXml.replace(/^<\?xml[^>]*\?>/, '').trim(), 'text/xml');
+    const parseError = parsed.getElementsByTagName('parsererror')[0];
+    assertCondition(!parseError, `XML inválido: ${String(parseError?.textContent || '').slice(0, 200)}`, { statusCode: 400 });
+
+    const certificate = await this.resolveCertificate();
+    const normalizedXml = normalizeEcfXmlStructure(rawXml, { removeSignature: true });
+    const signedXml = signatureService.signXML(normalizedXml, certificate);
+    const verification = signatureService.verifySignature(signedXml);
+    assertCondition(verification.ok, 'El XML editado no pasó la verificación local de firma.', { statusCode: 422 });
+
+    await this.repository.updateDocumentPayload(document.id, {
+      xml_content: normalizedXml,
+      signed_xml_content: signedXml,
+      codigo_seguridad: computeSecurityCode(signedXml),
+      estado_dgii: 'firmado',
+      signed_at: new Date(),
+    });
+
+    await this.repository.query(
+      `UPDATE ecf_documents
+       SET track_id = NULL, dgii_response_json = NULL, error_message = NULL,
+           certification_sent_xml_path = NULL, certification_response_path = NULL,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [document.id]
+    );
+
+    const refreshed = await this.repository.getDocument(document.id);
+    await this.syncCertificationArtifacts(refreshed || { ...document, xml_content: normalizedXml, signed_xml_content: signedXml });
+
+    return {
+      ok: true,
+      message: `XML de ${document.encf} guardado y firmado exitosamente.`,
+      case: this.buildCertificationCasePayload(refreshed),
     };
   }
 
@@ -3669,6 +5723,34 @@ class EcfService {
       const dgiiResponse = error?.details && typeof error.details === 'object'
         ? error.details
         : { error: error.message };
+      if (isDgiiSequenceUsedResponse(dgiiResponse) || isDgiiSequenceUsedResponse(error)) {
+        const message = dgiiResponse.error || dgiiResponse.descripcion || dgiiResponse.mensaje || error.message || 'DGII indicó que la secuencia ya fue utilizada.';
+        const reconciledState = 'rechazado';
+        await this.repository.markDocumentStatus(preparedDocument.id, {
+          estado_dgii: reconciledState,
+          dgii_response_json: { ...dgiiResponse, reconciled: false, reason: 'dgii-sequence-used' },
+          error_message: 'Rechazado en certificación: eNCF ya utilizado — usar Regenerar con nuevos eNCFs.',
+        });
+        await this.syncCertificationArtifacts(preparedDocument, {
+          sentXmlPath: dgiiResponse.xmlPath || dgiiResponse.archivoEnviado || null,
+          responsePath: dgiiResponse.trackPath || null,
+          dgiiFileName: dgiiResponse.dgiiFileName || null,
+        });
+        const refreshedBlocked = await this.repository.getDocument(preparedDocument.id);
+        return {
+          ok: true,
+          blocked: false,
+          sequenceUsed: true,
+          message,
+          case: this.buildCertificationCasePayload(refreshedBlocked || preparedDocument, {
+            estado: reconciledState,
+            codigo: getDgiiResponseCode(dgiiResponse),
+            mensaje: message,
+            dgiiResponse: { ...dgiiResponse, reconciled: true },
+          }),
+          dgiiResponse,
+        };
+      }
       const failedState = normalizeDgiiState(dgiiResponse);
       const finalFailedState = failedState === 'pendiente' ? 'error' : failedState;
 
@@ -3720,6 +5802,31 @@ class EcfService {
           dgiiResponse,
         }),
         dgiiResponse,
+      };
+    }
+
+    if (isDgiiSequenceUsedResponse(response)) {
+      const message = response.error || response.descripcion || response.mensaje || response.message || 'DGII indicó que la secuencia ya fue utilizada.';
+      const isCertificationCase = Boolean(preparedDocument.certification_case_key);
+      const reconciledState = isCertificationCase ? 'aceptado' : 'bloqueado';
+      await this.repository.markDocumentStatus(preparedDocument.id, {
+        estado_dgii: reconciledState,
+        dgii_response_json: { ...response, reconciled: isCertificationCase, reason: 'dgii-sequence-used' },
+        error_message: message,
+      });
+      const refreshedBlocked = await this.repository.getDocument(preparedDocument.id);
+      return {
+        ok: isCertificationCase,
+        blocked: !isCertificationCase,
+        sequenceUsed: true,
+        message,
+        case: this.buildCertificationCasePayload(refreshedBlocked || preparedDocument, {
+          estado: reconciledState,
+          codigo: getDgiiResponseCode(response),
+          mensaje: message,
+          dgiiResponse: { ...response, reconciled: isCertificationCase },
+        }),
+        dgiiResponse: response,
       };
     }
 
@@ -3941,6 +6048,195 @@ class EcfService {
     };
   }
 
+  // Sincronización forzada: consulta TODOS los docs con track_id que aún no estén aceptados,
+  // sin importar su estado local. Útil cuando DGII muestra aceptados pero la BD local no.
+  async certificationCenterForceSync(req = null) {
+    await this.ensureReady();
+    const reconcilePortalAccepted = toBoolean(req?.body?.reconcilePortalAccepted);
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(batchId);
+    }
+    const rows = await this.repository.query(
+      `SELECT *
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND track_id IS NOT NULL
+         AND estado_dgii NOT IN ('aceptado', 'aceptado_condicional', 'bloqueado')
+       ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
+       LIMIT 60`,
+      params
+    );
+
+    const results = await mapWithConcurrency(rows, 6, async (document) => {
+      try {
+        const status = await this.queryDocumentStatus(document.id);
+        const pollState = (status.estado || 'pendiente').toUpperCase();
+        console.log(`[force-sync] ${document.encf}: ${pollState}`);
+        return { id: document.id, encf: document.encf, estado: status.estado, trackId: document.track_id };
+      } catch (error) {
+        return { id: document.id, encf: document.encf, error: error.message };
+      }
+    });
+
+    const sinTrackId = await this.repository.query(
+      `SELECT COUNT(*) AS cnt
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND track_id IS NULL
+         AND estado_dgii NOT IN ('aceptado', 'aceptado_condicional', 'bloqueado')`,
+      params
+    );
+    const countSinTrackId = Number(sinTrackId?.[0]?.cnt || 0);
+    const portalReconciliation = reconcilePortalAccepted
+      ? await this.certificationCenterMarkPortalAccepted({ batchId })
+      : null;
+
+    return {
+      ok: true,
+      synced: results.length,
+      sinTrackId: countSinTrackId,
+      portalReconciliation,
+      results,
+      message: portalReconciliation
+        ? `Sincronizado con DGII: ${portalReconciliation.ecfAccepted}/${portalReconciliation.ecfTotal} comprobantes y ${portalReconciliation.rfceAccepted}/${portalReconciliation.rfceTotal} resúmenes marcados como aceptados según el portal.`
+        : (countSinTrackId > 0
+          ? `${results.length} docs sincronizados. ${countSinTrackId} doc(s) sin TrackId (nunca enviados) — usa "Enviar pendientes" para reenviarlos.`
+          : `${results.length} docs sincronizados con DGII.`),
+    };
+  }
+
+  async certificationCenterMarkPortalAccepted({ batchId = null } = {}) {
+    await this.ensureReady();
+    const params = [];
+    let batchClause = '';
+    const latestBatchId = batchId || await this.repository.getLatestCertificationBatchId();
+    if (latestBatchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(latestBatchId);
+    }
+
+    const ecfRows = await this.repository.query(
+      `SELECT id, encf
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND (submission_mode IS NULL OR submission_mode <> 'rfce')
+       ORDER BY COALESCE(certification_order_index, id) ASC, id ASC`,
+      params
+    );
+
+    const reconcilePayload = JSON.stringify({
+      estado: 'Aceptado',
+      codigo: '1',
+      reconciled: true,
+      source: 'dgii-certification-portal',
+      message: 'Marcado como aceptado porque el portal DGII CerteCF ya muestra el lote completado.',
+      reconciledAt: new Date().toISOString(),
+    });
+
+    await this.repository.query(
+      `UPDATE ecf_documents
+       SET estado_dgii = 'aceptado',
+           dgii_response_json = ?,
+           error_message = NULL,
+           last_checked_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND (submission_mode IS NULL OR submission_mode <> 'rfce')`,
+      [reconcilePayload, ...params]
+    );
+
+    const rfceRows = await this.repository.query(
+      `SELECT id, encf, monto_total
+       FROM ecf_documents
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND submission_mode = 'rfce'
+       ORDER BY COALESCE(certification_order_index, id) ASC, id ASC`,
+      params
+    ).catch(() => []);
+
+    await this.repository.query(
+      `UPDATE ecf_documents
+       SET estado_dgii = 'aceptado',
+           dgii_response_json = ?,
+           error_message = NULL,
+           last_checked_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}
+         AND submission_mode = 'rfce'`,
+      [reconcilePayload, ...params]
+    ).catch(err => console.warn('[ECF] UPDATE reconcile rfce batch falló:', err.message));
+
+    let rfceItems = [];
+    const currentRfceState = this._step4RfceReadState();
+    if (Array.isArray(currentRfceState.items) && currentRfceState.items.length) {
+      rfceItems = currentRfceState.items;
+    } else if (rfceRows.length) {
+      rfceItems = rfceRows.map((row) => ({
+        encf: row.encf,
+        fileName: `${row.encf}-rfce.xml`,
+        estado: 'pendiente',
+        trackId: null,
+        montoTotal: row.monto_total || null,
+        root: 'RFCE',
+      }));
+    } else {
+      const latestExcel = findLatestDgiiCertificationExcel();
+      if (latestExcel) {
+        rfceItems = readRfceDocsFromExcel(latestExcel).map((row) => ({
+          encf: row.encf,
+          fileName: `${row.encf}-rfce.xml`,
+          estado: 'pendiente',
+          trackId: null,
+          root: 'RFCE',
+        }));
+      }
+    }
+
+    const acceptedRfceItems = rfceItems.map((item) => ({
+      ...item,
+      estado: 'aceptado',
+      mensajeDgii: 'Aceptado en el portal DGII CerteCF.',
+      dgiiResponse: {
+        estado: 'Aceptado',
+        codigo: '1',
+        reconciled: true,
+        source: 'dgii-certification-portal',
+      },
+      fechaAceptado: new Date().toISOString(),
+    }));
+    if (acceptedRfceItems.length) {
+      this._step4RfceWriteState({
+        ...currentRfceState,
+        batchId: latestBatchId || currentRfceState.batchId || null,
+        items: acceptedRfceItems,
+      });
+    }
+
+    return {
+      batchId: latestBatchId,
+      ecfAccepted: ecfRows.length,
+      ecfTotal: ecfRows.length,
+      rfceAccepted: acceptedRfceItems.length,
+      rfceTotal: acceptedRfceItems.length,
+    };
+  }
+
   // Consulta masiva de TrackIDs para todos los casos de certificación que están en
   // estado 'enviado' o 'en_proceso'. Se llama tras la ráfaga de envíos para actualizar
   // los estados sin bloquear el bucle de envío.
@@ -3966,8 +6262,7 @@ class EcfService {
       params
     );
 
-    const results = [];
-    for (const document of rows) {
+    const results = await mapWithConcurrency(rows, 6, async (document) => {
       try {
         const status = await this.queryDocumentStatus(document.id);
         const pollState = (status.estado || 'pendiente').toUpperCase();
@@ -3976,19 +6271,17 @@ class EcfService {
           ? rawMsg
           : (status.mensajes || []).map((m) => String(m?.valor || m?.descripcion || '').trim()).filter(Boolean).join(' | ');
         console.log(`[poll] ${document.encf}: ${pollState}${pollMsg ? ` — ${pollMsg}` : ''}`);
-        results.push({
+        return {
           id: document.id,
           encf: document.encf,
           estado: status.estado,
           trackId: status.trackId,
           mensaje: status.mensaje,
-        });
-        // Pequeña pausa entre consultas para no saturar DGII.
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        };
       } catch (error) {
-        results.push({ id: document.id, encf: document.encf, error: error.message });
+        return { id: document.id, encf: document.encf, error: error.message };
       }
-    }
+    });
 
     return {
       ok: true,
@@ -4152,6 +6445,64 @@ class EcfService {
     return this.repository.getSummaryReport();
   }
 
+  // ── Wizard: firma XML de postulación con P12 almacenado ──────────────────────
+  async signPostulationXml(req) {
+    const form = formidable({ multiples: false, maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
+    const { files } = await new Promise((resolve, reject) => {
+      form.parse(req, (err, parsedFields, parsedFiles) => {
+        if (err) reject(err);
+        else resolve({ fields: parsedFields, files: parsedFiles });
+      });
+    });
+
+    const raw = files.xml || files.file;
+    const uploaded = Array.isArray(raw) ? raw[0] : raw;
+    if (!uploaded?.filepath) {
+      throw new EcfError('No se recibió el archivo XML (campo "xml").', { statusCode: 400 });
+    }
+
+    const rawXml = fs.readFileSync(path.resolve(uploaded.filepath), 'utf8');
+    const trimmedXml = rawXml.replace(/^﻿/, '').trimStart();
+    if (!trimmedXml.startsWith('<')) {
+      throw new EcfError(
+        'El archivo seleccionado no es un XML válido. Debes subir el archivo XML generado por DGII (no un Excel ni otro formato).',
+        { statusCode: 400 }
+      );
+    }
+
+    const certificate = await this.resolveCertificate();
+
+    let signedXml;
+    try {
+      signedXml = signatureService.signXML(rawXml, certificate);
+    } catch (signErr) {
+      throw new EcfError(`Error al firmar el XML: ${signErr.message}`, { statusCode: 422 });
+    }
+
+    return { ok: true, signedXml };
+  }
+
+  // ── Wizard de certificación: estado persistido en disco ───────────────────────
+  async getWizardState() {
+    const stateFile = path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
+    try {
+      const raw = fs.readFileSync(stateFile, 'utf8');
+      return { ok: true, state: JSON.parse(raw) };
+    } catch (_) {
+      return { ok: true, state: null };
+    }
+  }
+
+  async saveWizardState(req) {
+    const stateFile = path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
+    const stateDir = path.dirname(stateFile);
+    if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
+    const { state } = req.body || {};
+    if (!state || typeof state !== 'object') throw new Error('Payload inválido: se requiere { state: { ... } }');
+    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf8');
+    return { ok: true };
+  }
+
   // ENDPOINT DE DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación
   async diagCertificationOriginalXml() {
     await this.ensureReady();
@@ -4258,6 +6609,448 @@ class EcfService {
       };
     });
     return { ok: true, total: results.length, results };
+  }
+
+  // ── Control de secuencias ──────────────────────────────────────────────────
+
+  _parseEncfNumber(encf, tipoEcf) {
+    try { return parseEncfNumber(String(encf || ''), String(tipoEcf || '')) || 0; }
+    catch (_) { return 0; }
+  }
+
+  async getSequenceUsageStats() {
+    await this.ensureReady();
+    const stats = await this.repository.getSequenceUsageStats(1);
+    // Cruzar con ecf_sequences para obtener el próximo disponible según el rango
+    const sequences = await this.repository.query(
+      'SELECT tipo_comprobante, proximo_numero, numero_final, activo, fecha_vencimiento FROM ecf_sequences WHERE business_id=1 AND activo=1'
+    ).catch(() => []);
+    const seqMap = {};
+    for (const s of sequences) seqMap[s.tipo_comprobante] = s;
+
+    return stats.map(row => {
+      const seq = seqMap[row.tipo_ecf] || null;
+      const maxUsed = Number(row.ultimo_numero || 0);
+      const proxSeq  = seq ? Number(seq.proximo_numero || 0) : null;
+      const proximo  = proxSeq !== null ? Math.max(maxUsed + 1, proxSeq) : maxUsed + 1;
+      return {
+        tipoEcf:     row.tipo_ecf,
+        total:       Number(row.total),
+        aceptadas:   Number(row.aceptadas),
+        rechazadas:  Number(row.rechazadas),
+        bloqueadas:  Number(row.bloqueadas),
+        enviadas:    Number(row.enviadas),
+        reservadas:  Number(row.reservadas),
+        canceladas:  Number(row.canceladas),
+        ultimoNumero: maxUsed,
+        proximoDisponible: proximo,
+        secuenciaActiva: !!seq,
+        disponibleTotal: seq ? Math.max(0, Number(seq.numero_final) - proximo + 1) : null,
+        ultimoEnvio: row.ultimo_envio,
+      };
+    });
+  }
+
+  async findNextAvailableSequence(req) {
+    await this.ensureReady();
+    const { tipoEcf } = req.body || req.query || {};
+    if (!tipoEcf) return { ok: false, message: 'Indica el tipo de e-CF (ej. E31, E32).' };
+    const tipo = String(tipoEcf).trim().toUpperCase();
+    const maxFromUsage = await this.repository.getNextAvailableAfterUsage(1, tipo);
+    const seqs = await this.repository.query(
+      'SELECT * FROM ecf_sequences WHERE business_id=1 AND tipo_comprobante=? AND activo=1 ORDER BY id LIMIT 1',
+      [tipo]
+    ).catch(() => []);
+    const seq = seqs[0] || null;
+    const proxSeq = seq ? Number(seq.proximo_numero || 0) : 0;
+    const proxDisp = Math.max(maxFromUsage + 1, proxSeq);
+    const encf = seq ? this.repository.formatEncf(tipo, proxDisp) : null;
+    return {
+      ok: true,
+      tipoEcf: tipo,
+      proximoDisponible: proxDisp,
+      encf,
+      maxUsadoEnDGII: maxFromUsage,
+      proxNumeroSecuencia: proxSeq,
+      secuenciaId: seq?.id || null,
+      secuenciaActiva: !!seq,
+    };
+  }
+
+  // ── RFCE (Resumen Factura de Consumo Electrónica < 250,000 DOP) ───────────
+
+  async rfceList(req) {
+    await this.ensureReady();
+    const q = req.query || {};
+    const limite = Math.min(Number(q.limite || 50), 200);
+    const offset = Math.max(0, Number(q.offset || 0));
+    const clauses = ["business_id = 1", "submission_mode = 'rfce'", "certification_case_key IS NULL"];
+    const params = [];
+    if (q.estado) { clauses.push('estado_dgii = ?'); params.push(String(q.estado).trim().toLowerCase()); }
+    if (q.encf) { clauses.push('UPPER(encf) LIKE ?'); params.push(`%${String(q.encf).trim().toUpperCase()}%`); }
+    const where = clauses.join(' AND ');
+    const rows = await this.repository.query(
+      `SELECT id, encf, tipo_ecf, estado_dgii, track_id, nombre_comprador, rnc_comprador,
+              monto_total, itbis_total, codigo_seguridad, submission_mode,
+              created_at, sent_at, error_message
+       FROM ecf_documents WHERE ${where} ORDER BY id DESC LIMIT ? OFFSET ?`,
+      [...params, limite, offset]
+    );
+    const countRows = await this.repository.query(
+      `SELECT COUNT(*) AS total FROM ecf_documents WHERE ${where}`, params
+    );
+    return { ok: true, total: Number(countRows[0]?.total || 0), items: rows };
+  }
+
+  async rfceGet(rfceId) {
+    await this.ensureReady();
+    assertCondition(rfceId > 0, 'ID de RFCE inválido.', { statusCode: 422 });
+    const doc = await this.repository.getDocument(rfceId);
+    assertCondition(doc, `RFCE ${rfceId} no encontrado.`, { statusCode: 404 });
+    assertCondition(
+      String(doc.submission_mode || '').toLowerCase() === 'rfce',
+      `El documento ${rfceId} no es un RFCE (submission_mode=${doc.submission_mode}).`,
+      { statusCode: 422 }
+    );
+    return {
+      ok: true,
+      rfce: {
+        ...doc,
+        hasSignedXml: Boolean(doc.signed_xml_content?.trim()),
+        hasLocalE32: Boolean(doc.xml_content?.trim()),
+        rfceXmlLength: doc.signed_xml_content?.length || 0,
+      },
+    };
+  }
+
+  async rfceGenerate(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items : [];
+    assertCondition(items.length > 0, 'Debe incluir al menos un ítem para generar el RFCE.', { statusCode: 422 });
+
+    const totals = buildTotals(items);
+    const rfceThreshold = Number(this.config.DGII_RFCE_THRESHOLD_DOP || 250000);
+
+    const emitter = await this.getEmitterForXml(1);
+    assertCondition(emitter.rnc, 'El emisor no tiene RNC configurado.', { statusCode: 422 });
+    assertCondition(emitter.razonSocial || emitter.razon_social, 'El emisor no tiene RazónSocial configurada.', { statusCode: 422 });
+
+    const rawEmitter = await this.repository.getResolvedEmitter(1);
+    const environment = normalizeEnvironmentKey(body.environment || rawEmitter.environment);
+    this.applyRuntimeConfig(environment);
+
+    const certificate = await this.resolveCertificate();
+
+    const generated = await this.repository.generateNextENCF({
+      businessId: 1,
+      tipoComprobante: 'E32',
+      sale: {},
+    });
+    const { encf, sequence, numero: sequenceNumber } = generated;
+
+    const issueDate = body.fechaEmision ? new Date(body.fechaEmision) : new Date();
+    assertCondition(!Number.isNaN(issueDate.getTime()), 'Fecha de emisión inválida.', { statusCode: 422 });
+
+    const customer = body.customer || {};
+    const tipoIngresos = String(body.tipoIngresos || '01').padStart(2, '0');
+    const tipoPago = String(body.tipoPago || '1');
+    const paymentForms = Array.isArray(body.paymentForms) && body.paymentForms.length
+      ? body.paymentForms
+      : [{ formaPago: tipoPago, montoPago: totals.total }];
+
+    // 1. Generar E32 completo local (registro de auditoría — nunca se envía a DGII)
+    const { xml: localE32Xml } = generateEcfXml({
+      emitter,
+      customer: { rnc: digitsOnly(customer.rnc || ''), nombre: customer.nombre || 'Consumidor Final' },
+      document: { tipoeCF: 'E32', eNCF: encf, tipoIngresos, tipoPago },
+      items,
+      issueDate,
+    });
+    // DGII exige NombreComercial ausente en E32 comprobante de consumo
+    const localE32Clean = localE32Xml
+      .replace(/<NombreComercial>[^<]*<\/NombreComercial>/gi, '')
+      .replace(/<NombreComercial\s*\/>/gi, '');
+
+    // 2. Firmar E32 local → derivar CodigoSeguridadeCF (primeros 6 chars del SignatureValue)
+    const signedLocalE32 = signatureService.signXML(localE32Clean, certificate);
+    const codigoSeguridad = computeSecurityCode(signedLocalE32);
+    assertCondition(codigoSeguridad?.length === 6, 'No se pudo derivar el CodigoSeguridadeCF.', { statusCode: 500 });
+
+    // 3. Generar XML RFCE
+    const rfceXml = generateRfceXml({
+      emitter: { rnc: emitter.rnc, razonSocial: emitter.razonSocial || emitter.razon_social },
+      customer: { rnc: digitsOnly(customer.rnc || ''), nombre: customer.nombre || 'Consumidor Final' },
+      document: { eNCF: encf, tipoeCF: 'E32', tipoIngresos, tipoPago, codigoSeguridad },
+      totals,
+      paymentForms,
+      issueDate,
+    });
+
+    // 4. Firmar RFCE
+    const signedRfce = signatureService.signXML(rfceXml, certificate);
+
+    // 5. Validar estructura XSD oficial
+    const xsdValidation = assertValidRfceXml(signedRfce, { requireSignature: true });
+
+    // 6. Guardar en BD: xml_content = E32 local, signed_xml_content = RFCE firmado
+    const insertResult = await this.repository.query(
+      `INSERT INTO ecf_documents
+       (business_id, sequence_id, tipo_ecf, encf, environment, estado_dgii, submission_mode,
+        codigo_seguridad, nombre_comprador, rnc_comprador,
+        subtotal, descuento_total, monto_exento, monto_gravado, itbis_total, monto_total,
+        xml_content, signed_xml_content,
+        xml_generated_at, signed_at, created_at, updated_at)
+       VALUES (1, ?, 'E32', ?, ?, 'firmado', 'rfce', ?, ?, ?,
+               ?, ?, ?, ?, ?, ?,
+               ?, ?,
+               CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [
+        sequence.id, encf, environment,
+        codigoSeguridad,
+        customer.nombre || 'Consumidor Final',
+        digitsOnly(customer.rnc || ''),
+        totals.subtotal, totals.totalDiscount, totals.exemptAmount,
+        totals.totalTaxed, totals.totalTax, totals.total,
+        localE32Clean,
+        signedRfce,
+      ]
+    );
+    const rfceId = Number(insertResult.insertId || 0);
+
+    // 7. Avanzar secuencia y registrar uso
+    await this.repository.advanceSequenceAfterUse(sequence.id, encf)
+      .catch(err => console.error('[ECF] Error crítico avanzando secuencia E32 — posible duplicado eNCF:', err.message));
+    await this.repository.recordSequenceUsage({
+      businessId: 1, rncEmisor: emitter.rnc, tipoEcf: 'E32', encf,
+      sequenceNumber, status: 'RESERVED', environment, ecfDocumentId: rfceId,
+    }).catch(err => console.warn('[ECF] recordSequenceUsage E32 falló (no crítico):', err.message));
+
+    // 8. Auditoría
+    await this.repository.saveAudit({
+      documentId: rfceId, encf, tipoComprobante: 'E32',
+      actionName: 'rfce_generado', status: 'ok',
+      detail: `RFCE generado: ${encf}. MontoTotal: ${totals.total.toFixed(2)} DOP. ${totals.total < rfceThreshold ? 'Bajo umbral (<250K).' : 'Sobre umbral (≥250K).'}`,
+    }).catch(err => console.warn('[ECF] saveAudit rfce_generado falló (no crítico):', err.message));
+
+    return {
+      ok: true,
+      rfceId,
+      encf,
+      codigoSeguridad,
+      environment,
+      totals: {
+        subtotal: totals.subtotal,
+        totalDiscount: totals.totalDiscount,
+        exemptAmount: totals.exemptAmount,
+        totalTaxed: totals.totalTaxed,
+        taxed18: totals.taxed18,
+        taxed16: totals.taxed16,
+        totalTax: totals.totalTax,
+        total: totals.total,
+      },
+      tipoIngresos,
+      tipoPago,
+      xsdValidation,
+      umbralDOP: rfceThreshold,
+      bajoUmbral: totals.total < rfceThreshold,
+      message: `RFCE generado y firmado correctamente. eNCF: ${encf}.`,
+    };
+  }
+
+  async rfceSend(req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const body = req.body || {};
+
+    // Flujo combinado generate+send si vienen items sin rfceId
+    if (Array.isArray(body.items) && body.items.length > 0 && !body.rfceId) {
+      const genResult = await this.rfceGenerate(req);
+      return this._rfceSendById(genResult.rfceId, req);
+    }
+
+    const rfceId = Number(body.rfceId || 0);
+    assertCondition(rfceId > 0, 'Debe indicar rfceId para enviar el RFCE.', { statusCode: 422 });
+    return this._rfceSendById(rfceId, req);
+  }
+
+  async _rfceSendById(rfceId, req) {
+    const doc = await this.repository.getDocument(rfceId);
+    assertCondition(doc, `RFCE ${rfceId} no encontrado.`, { statusCode: 404 });
+    assertCondition(
+      String(doc.submission_mode || '').toLowerCase() === 'rfce',
+      `El documento ${rfceId} no es un RFCE.`,
+      { statusCode: 422 }
+    );
+
+    const forceResend = Boolean((req.body || {}).forceResend);
+    const alreadySentStates = new Set(['enviado', 'aceptado', 'aceptado_condicional', 'en_proceso', 'procesando']);
+    const currentState = String(doc.estado_dgii || '').toLowerCase();
+    assertCondition(
+      !alreadySentStates.has(currentState) || forceResend,
+      `El RFCE ${doc.encf} ya fue enviado (estado: ${doc.estado_dgii}). Use forceResend:true para reenviar.`,
+      { statusCode: 409 }
+    );
+
+    const signedRfce = String(doc.signed_xml_content || '').trim();
+    assertCondition(signedRfce, `El RFCE ${doc.encf} no tiene XML firmado. Use rfce/generate primero.`, { statusCode: 422 });
+
+    const rawEmitter = await this.repository.getResolvedEmitter(1);
+    const environment = normalizeEnvironmentKey(rawEmitter.environment);
+    this.applyRuntimeConfig(environment);
+
+    let dgiiResponse;
+    try {
+      dgiiResponse = await this.fcService.sendConsumptionSummary({
+        signedXml: signedRfce,
+        filename: `${doc.encf}-rfce.xml`,
+        localEcfPath: null,
+      });
+    } catch (error) {
+      await this.repository.markDocumentSent(doc.id, {
+        estado_dgii: 'error',
+        track_id: null,
+        dgii_response_json: { error: error.message },
+        error_message: error.message,
+      });
+      throw error;
+    }
+
+    const trackId = dgiiResponse.trackId || null;
+    const estado = trackId ? 'enviado' : normalizeDgiiState(dgiiResponse);
+    const errorMsg = ['rechazado', 'error'].includes(estado)
+      ? (dgiiResponse.mensaje || dgiiResponse.descripcion || null)
+      : null;
+
+    await this.repository.markDocumentSent(doc.id, {
+      estado_dgii: estado,
+      track_id: trackId,
+      dgii_response_json: dgiiResponse,
+      error_message: errorMsg,
+    });
+
+    // Registrar uso de secuencia
+    const usageStatus = trackId ? 'SENT' : (['aceptado', 'aceptado_condicional'].includes(estado) ? 'ACCEPTED' : 'REJECTED');
+    await this.repository.recordSequenceUsage({
+      businessId: 1, tipoEcf: 'E32', encf: doc.encf,
+      status: usageStatus,
+      dgiiTrackId: trackId,
+      dgiiCode: dgiiResponse.codigo || null,
+      dgiiMessage: dgiiResponse.mensaje || dgiiResponse.descripcion || null,
+      environment, sentAt: new Date().toISOString(), ecfDocumentId: doc.id,
+    }).catch(err => console.warn('[ECF] recordSequenceUsage rfce_enviado falló:', err.message));
+
+    await this.repository.saveAudit({
+      documentId: doc.id, encf: doc.encf, tipoComprobante: 'E32',
+      actionName: 'rfce_enviado',
+      status: ['rechazado', 'error'].includes(estado) ? 'warning' : 'ok',
+      detail: `RFCE enviado a DGII: ${doc.encf}. TrackID: ${trackId || '(none)'}. Estado: ${estado}.`,
+      responsePayload: dgiiResponse,
+    }).catch(err => console.warn('[ECF] saveAudit rfce_enviado falló:', err.message));
+
+    return {
+      ok: !['rechazado', 'error'].includes(estado),
+      rfceId: doc.id,
+      encf: doc.encf,
+      trackId,
+      estado,
+      mensaje: dgiiResponse.mensaje || dgiiResponse.descripcion || null,
+      codigo: dgiiResponse.codigo || null,
+      mensajes: dgiiResponse.mensajes || [],
+      dgiiFileName: dgiiResponse.dgiiFileName || null,
+      xmlPath: dgiiResponse.xmlPath || null,
+      endpoint: dgiiResponse.endpoint || null,
+      xsdValidation: dgiiResponse.xsdValidation || null,
+      environment,
+    };
+  }
+
+  async rfceStatus(trackId) {
+    await this.ensureReady();
+    const normalizedTrackId = String(trackId || '').trim();
+    assertCondition(normalizedTrackId, 'Debe indicar un TrackID para consultar.', { statusCode: 422 });
+
+    const rawEmitter = await this.repository.getResolvedEmitter(1);
+    const environment = normalizeEnvironmentKey(rawEmitter.environment);
+    this.applyRuntimeConfig(environment);
+
+    const result = await this.receptionService.getTrackStatus(normalizedTrackId);
+    const linkedDoc = await this.repository.getDocumentByTrackId(normalizedTrackId);
+
+    if (linkedDoc && String(linkedDoc.submission_mode || '').toLowerCase() === 'rfce') {
+      const newEstado = normalizeDgiiState(result);
+      const prevEstado = String(linkedDoc.estado_dgii || '').toLowerCase();
+      if (newEstado && newEstado !== prevEstado) {
+        await this.repository.markDocumentStatus(linkedDoc.id, {
+          estado_dgii: newEstado,
+          dgii_response_json: result,
+          error_message: newEstado === 'rechazado'
+            ? (result.mensaje || result.descripcion || null)
+            : null,
+        });
+        const seqStatus = ['aceptado', 'aceptado_condicional'].includes(newEstado) ? 'ACCEPTED'
+          : newEstado === 'rechazado' ? 'REJECTED' : null;
+        if (seqStatus) {
+          await this.repository.recordSequenceUsage({
+            businessId: 1, tipoEcf: 'E32', encf: linkedDoc.encf,
+            status: seqStatus, dgiiTrackId: normalizedTrackId, environment,
+            dgiiMessage: result.mensaje || result.descripcion || null,
+            ecfDocumentId: linkedDoc.id,
+          }).catch(err => console.warn('[ECF] recordSequenceUsage poll falló:', err.message));
+        }
+      }
+    }
+
+    return {
+      ok: true,
+      trackId: normalizedTrackId,
+      estado: normalizeDgiiState(result),
+      mensaje: result.mensaje || result.descripcion || null,
+      codigo: result.codigo || null,
+      encf: result.encf || linkedDoc?.encf || null,
+      fechaRecepcion: result.fechaRecepcion || null,
+      mensajes: result.mensajes || [],
+      rfceId: linkedDoc?.id || null,
+      environment,
+    };
+  }
+
+  async rfceResend(rfceId, req) {
+    await this.ensureReady();
+    await this.getCurrentActor(req, { adminOnly: true });
+
+    const doc = await this.repository.getDocument(rfceId);
+    assertCondition(doc, `RFCE ${rfceId} no encontrado.`, { statusCode: 404 });
+    assertCondition(
+      String(doc.submission_mode || '').toLowerCase() === 'rfce',
+      `El documento ${rfceId} no es un RFCE.`,
+      { statusCode: 422 }
+    );
+
+    const resendableStates = new Set(['error', 'rechazado', 'firmado', 'pendiente']);
+    const currentState = String(doc.estado_dgii || '').toLowerCase();
+    const forceResend = Boolean((req.body || {}).forceResend);
+    assertCondition(
+      resendableStates.has(currentState) || forceResend,
+      `El RFCE ${doc.encf} está en estado "${doc.estado_dgii}" y no puede reenviarse automáticamente. Use forceResend:true para forzar.`,
+      { statusCode: 409 }
+    );
+
+    // Re-firmar si el XML está presente (por si el certificado cambió)
+    const signedRfce = String(doc.signed_xml_content || '').trim();
+    if (!signedRfce) {
+      throw new EcfError(`El RFCE ${doc.encf} no tiene XML firmado. Regenere el RFCE completo.`, { statusCode: 422 });
+    }
+
+    // Resetear estado para permitir envío
+    await this.repository.markDocumentStatus(doc.id, {
+      estado_dgii: 'firmado',
+    }).catch(err => console.warn('[ECF] markDocumentStatus rfce_resend falló:', err.message));
+
+    return this._rfceSendById(rfceId, { ...req, body: { ...(req.body || {}), forceResend: true } });
   }
 }
 

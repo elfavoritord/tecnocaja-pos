@@ -131,6 +131,30 @@ window.superAdminPanel = (() => {
     document.getElementById('sa-contador-usuario-row').style.display = '';
     document.getElementById('sa-contador-modal-title').textContent = 'Nuevo Contador';
     document.getElementById('sa-contador-modal').classList.remove('hidden');
+    _attachRncSA();
+  }
+
+  function _attachRncSA() {
+    if (!window.RNCLookup) return;
+    const rncEl    = document.getElementById('sa-contador-rnc');
+    const nombreEl = document.getElementById('sa-contador-nombre-firma');
+    const respEl   = document.getElementById('sa-contador-responsable');
+    if (rncEl) {
+      RNCLookup.attach(rncEl, {
+        nameEl: nombreEl,
+        mode: 'both',
+        onSelect(data) {
+          // Autocompletar nombre de firma si está vacío
+          if (nombreEl && !nombreEl.value) {
+            nombreEl.value = data.nombreComercial || data.nombre || '';
+          }
+          // Autocompletar responsable si está vacío (para personas físicas)
+          if (respEl && !respEl.value && data.nombre) {
+            respEl.value = data.nombre;
+          }
+        },
+      });
+    }
   }
 
   function editContador(id) {
@@ -146,6 +170,7 @@ window.superAdminPanel = (() => {
     document.getElementById('sa-contador-usuario-row').style.display = 'none';
     document.getElementById('sa-contador-modal-title').textContent = 'Editar Contador';
     document.getElementById('sa-contador-modal').classList.remove('hidden');
+    _attachRncSA();
   }
 
   function closeContadorModal() {

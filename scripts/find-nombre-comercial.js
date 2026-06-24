@@ -4,7 +4,7 @@ const mysql = require('mysql2/promise');
 
 (async () => {
   const c = await mysql.createConnection({
-    host: '127.0.0.1', port: 3306, user: 'root', password: '', database: 'novapos'
+    host: process.env.DB_HOST || '127.0.0.1', port: parseInt(process.env.DB_PORT || '3306'), user: process.env.DB_USER || 'root', password: process.env.DB_PASS || process.env.DB_PASSWORD || '', database: process.env.DB_NAME || process.env.DB_DATABASE || 'novapos'
   });
 
   const [rows] = await c.query(`

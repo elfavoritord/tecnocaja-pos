@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "cors": "^2.8.6",
+    "dgii-rnc": "^1.0.1",
     "dotenv": "^17.3.1",
     "electron-updater": "^6.8.3",
     "express": "^5.2.1",

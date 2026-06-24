@@ -62,6 +62,16 @@ router.post('/now', async (req, res) => {
   }
 });
 
+function requireBizBranch(req, res) {
+  const businessId = Number(req.body?.businessId);
+  const branchId   = Number(req.body?.branchId);
+  if (!businessId || !branchId || businessId <= 0 || branchId <= 0) {
+    res.status(400).json({ error: 'businessId y branchId deben ser números positivos.' });
+    return null;
+  }
+  return { businessId, branchId };
+}
+
 /**
  * POST /api/sync/sales
  * Sincroniza ventas de una sucursal.
@@ -69,11 +79,9 @@ router.post('/now', async (req, res) => {
  */
 router.post('/sales', async (req, res) => {
   try {
-    const { businessId, branchId } = req.body;
-
-    if (!businessId || !branchId) {
-      return res.status(400).json({ error: 'businessId y branchId requeridos' });
-    }
+    const ids = requireBizBranch(req, res);
+    if (!ids) return;
+    const { businessId, branchId } = ids;
 
     await syncNewSales(businessId, branchId);
     res.json({ status: 'syncing' });
@@ -89,11 +97,9 @@ router.post('/sales', async (req, res) => {
  */
 router.post('/cash-closings', async (req, res) => {
   try {
-    const { businessId, branchId } = req.body;
-
-    if (!businessId || !branchId) {
-      return res.status(400).json({ error: 'businessId y branchId requeridos' });
-    }
+    const ids = requireBizBranch(req, res);
+    if (!ids) return;
+    const { businessId, branchId } = ids;
 
     await syncCashClosings(businessId, branchId);
     res.json({ status: 'syncing' });
@@ -109,13 +115,15 @@ router.post('/cash-closings', async (req, res) => {
  */
 router.post('/daily-report', async (req, res) => {
   try {
-    const { businessId, branchId, reportDate } = req.body;
+    const ids = requireBizBranch(req, res);
+    if (!ids) return;
+    const { businessId, branchId } = ids;
 
-    if (!businessId || !branchId) {
-      return res.status(400).json({ error: 'businessId y branchId requeridos' });
-    }
+    const rawDate = String(req.body?.reportDate || '').trim();
+    const date = rawDate && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)
+      ? rawDate
+      : new Date().toISOString().split('T')[0];
 
-    const date = reportDate || new Date().toISOString().split('T')[0];
     await generateAndSyncDailyReport(businessId, branchId, date);
     res.json({ status: 'syncing' });
   } catch (err) {
@@ -130,11 +138,9 @@ router.post('/daily-report', async (req, res) => {
  */
 router.post('/inventory', async (req, res) => {
   try {
-    const { businessId, branchId } = req.body;
-
-    if (!businessId || !branchId) {
-      return res.status(400).json({ error: 'businessId y branchId requeridos' });
-    }
+    const ids = requireBizBranch(req, res);
+    if (!ids) return;
+    const { businessId, branchId } = ids;
 
     await syncBranchInventory(businessId, branchId);
     res.json({ status: 'syncing' });
@@ -150,13 +156,11 @@ router.post('/inventory', async (req, res) => {
  */
 router.post('/last-n-days', async (req, res) => {
   try {
-    const { businessId, branchId, days = 7 } = req.body;
+    const ids = requireBizBranch(req, res);
+    if (!ids) return;
+    const { businessId, branchId } = ids;
 
-    if (!businessId || !branchId) {
-      return res.status(400).json({ error: 'businessId y branchId requeridos' });
-    }
-
-    await syncLastNDays(businessId, branchId, days);
+    const days = Math.min(Math.max(Number(req.body?.days) || 7, 1), 90);
     res.json({ status: 'syncing' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -182,7 +186,7 @@ router.get('/queue', async (req, res) => {
  */
 router.get('/pending', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit) || 20;
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 200);
     const pending = await FirebaseSyncQueue.getPending(limit);
     res.json(pending);
   } catch (err) {
@@ -203,6 +207,87 @@ router.post('/pos-stats', async (req, res) => {
     } else {
       res.status(503).json({ ok: false, error: result.reason });
     }
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/sync/diagnostic
+ * Panel de diagnóstico completo de sincronización.
+ * Devuelve: estado, últimos errores, pendientes por tipo, latencia estimada.
+ */
+router.get('/diagnostic', async (req, res) => {
+  try {
+    const status = await syncService.getStatus();
+
+    // Últimos 20 items con error
+    const errors = await query(
+      `SELECT entity_type, entity_id, error_message, retry_count, last_retry_at, created_at
+       FROM firebase_sync_queue
+       WHERE status = 'error'
+       ORDER BY last_retry_at DESC
+       LIMIT 20`
+    ).catch(() => []);
+
+    // Pendientes agrupados por tipo
+    const byType = await query(
+      `SELECT entity_type, COUNT(*) as total
+       FROM firebase_sync_queue
+       WHERE status IN ('pending','error')
+       GROUP BY entity_type
+       ORDER BY total DESC`
+    ).catch(() => []);
+
+    // Última sincronización exitosa por tipo
+    const lastSynced = await query(
+      `SELECT entity_type, MAX(synced_at) as last_synced_at, COUNT(*) as total_synced
+       FROM firebase_sync_queue
+       WHERE status = 'synced'
+       GROUP BY entity_type`
+    ).catch(() => []);
+
+    // Total histórico
+    const totals = await query(
+      `SELECT status, COUNT(*) as count FROM firebase_sync_queue GROUP BY status`
+    ).catch(() => []);
+
+    res.json({
+      status: {
+        isOnline:     status.isOnline,
+        hasInternet:  status.hasInternet,
+        firebaseReady: status.firebaseReady,
+        isSyncing:    status.isSyncing,
+        lastSyncAt:   status.lastSyncAt,
+        lastError:    status.lastError,
+      },
+      queue:       status.queue,
+      pendingByType: Array.isArray(byType) ? byType : [],
+      lastSynced:   Array.isArray(lastSynced) ? lastSynced : [],
+      totals:       Array.isArray(totals) ? totals : [],
+      recentErrors: Array.isArray(errors) ? errors : [],
+      checkedAt:    new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/sync/retry-errors
+ * Reintenta todos los items con error (resetea next_retry_at).
+ */
+router.post('/retry-errors', async (req, res) => {
+  try {
+    const result = await query(
+      `UPDATE firebase_sync_queue
+       SET status = 'pending', next_retry_at = NULL, error_message = NULL
+       WHERE status = 'error'`
+    );
+    const affected = result.affectedRows || result.changes || 0;
+    // Lanza procesamiento inmediato
+    syncService.processPendingItems().catch(() => {});
+    res.json({ ok: true, retried: affected });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -46,7 +46,10 @@ const OFFICIAL_ENVIRONMENTS = Object.freeze({
       'https://ecf.dgii.gov.do/TesteCF/ConsultaResultado/api/Consultas/Estado',
 
     facturaConsumoUrl:
-      'https://fc.dgii.gov.do/TesteCF/RecepcionFC/api/Recepcion/ecf'
+      'https://fc.dgii.gov.do/TesteCF/RecepcionFC/api/Recepcion/ecf',
+
+    aprobacionComercialUrl:
+      'https://ecf.dgii.gov.do/TesteCF/AprobacionComercial/api/AprobacionComercial'
   },
 
   certecf: {
@@ -72,7 +75,10 @@ const OFFICIAL_ENVIRONMENTS = Object.freeze({
       'https://ecf.dgii.gov.do/CerteCF/ConsultaResultado/api/Consultas/Estado',
 
     facturaConsumoUrl:
-      'https://fc.dgii.gov.do/CerteCF/RecepcionFC/api/Recepcion/ecf'
+      'https://fc.dgii.gov.do/CerteCF/RecepcionFC/api/Recepcion/ecf',
+
+    aprobacionComercialUrl:
+      'https://ecf.dgii.gov.do/CerteCF/AprobacionComercial/api/AprobacionComercial'
   },
 
   ecf: {
@@ -98,7 +104,10 @@ const OFFICIAL_ENVIRONMENTS = Object.freeze({
       'https://ecf.dgii.gov.do/eCF/ConsultaResultado/api/Consultas/Estado',
 
     facturaConsumoUrl:
-      'https://fc.dgii.gov.do/eCF/RecepcionFC/api/Recepcion/ecf'
+      'https://fc.dgii.gov.do/eCF/RecepcionFC/api/Recepcion/ecf',
+
+    aprobacionComercialUrl:
+      'https://ecf.dgii.gov.do/eCF/AprobacionComercial/api/AprobacionComercial'
   }
 });
 
@@ -201,6 +210,13 @@ function buildEcfConfig(overrides = {}) {
         overrides.DGII_FC_URL ||
         process.env.DGII_FC_URL,
         official.facturaConsumoUrl
+      ),
+
+    DGII_APROBACION_COMERCIAL_URL:
+      safeUrl(
+        overrides.DGII_APROBACION_COMERCIAL_URL ||
+        process.env.DGII_APROBACION_COMERCIAL_URL,
+        official.aprobacionComercialUrl
       ),
 
     DGII_SEMILLA_URL:

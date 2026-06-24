@@ -26,19 +26,6 @@ function getFirestoreDb() {
 function createPlatformRouter({ query }) {
   const router = express.Router();
 
-  // ── Diagnóstico Firestore (eliminar en producción) ─────────────────────────
-  router.get('/debug-firestore', async (_req, res) => {
-    const db = getFirestoreDb();
-    if (!db) return res.json({ ok: false, error: 'Firestore no disponible (getFirestoreDb retornó null)' });
-    try {
-      const snap = await db.collection('contadores').get();
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      res.json({ ok: true, total: snap.size, docs });
-    } catch (e) {
-      res.json({ ok: false, error: e.message });
-    }
-  });
-
   // ── Buscar contadores ──────────────────────────────────────────────────────
   // Primero busca en Firestore (donde guarda Tecno Caja Admin).
   // Si Firestore no está disponible, cae a MariaDB local.
@@ -188,6 +175,51 @@ function createPlatformRouter({ query }) {
       }
 
       res.json({ ok: true, cloudId, new: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Contador asignado al negocio actual ───────────────────────────────────
+  router.get('/mi-contador', async (req, res) => {
+    try {
+      const [cfg] = await query('SELECT accountant_id, accountant_name FROM config WHERE id=1');
+      if (!cfg?.accountant_id) return res.json({ found: false });
+
+      // Intentar obtener datos completos desde tabla contadores (plataforma)
+      let contData = null;
+      try {
+        const [row] = await query(`
+          SELECT c.id, c.nombre_firma, c.responsable, c.telefono, c.whatsapp,
+                 c.correo, c.logo_url, c.estado, u.email
+          FROM contadores c
+          LEFT JOIN users u ON u.id = c.user_id
+          WHERE c.id = ?
+          LIMIT 1
+        `, [cfg.accountant_id]);
+        if (row) contData = row;
+      } catch (_) { /* tabla puede no existir aún */ }
+
+      if (contData) {
+        return res.json({
+          found:       true,
+          nombre:      contData.nombre_firma || cfg.accountant_name || '',
+          responsable: contData.responsable  || '',
+          telefono:    contData.telefono     || '',
+          whatsapp:    contData.whatsapp     || '',
+          email:       contData.email        || contData.correo || '',
+          logo_url:    contData.logo_url     || null,
+          estado:      contData.estado       || 'activo',
+          verified:    true,
+        });
+      }
+
+      // Fallback: solo nombre guardado en config
+      return res.json({
+        found:   true,
+        nombre:  cfg.accountant_name || '',
+        verified: false,
+      });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

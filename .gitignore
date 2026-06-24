@@ -110,3 +110,23 @@ tecnocaja-license-*.json
 *.backup
 *.bak
 *.orig
+
+# Storage ECF — solo trackear directorio base, no archivos generados
+storage/ecf/certification/signed/
+storage/ecf/enviados/
+storage/ecf/rfce-enviados/
+storage/ecf/tracks/
+storage/ecf/acecf-enviados/
+storage/ecf/cert-wizard-state.json
+
+# Backups de productos CSV (generados automáticamente)
+storage/products/csv-backups/
+
+# Scripts de operación one-shot (datos específicos de negocio)
+ecf/
+scripts/250mil-upload/
+scripts/portal-250mil-upload/
+
+# Contadores app — archivos de build local
+tecno-caja-contadores/node_modules/
+tecno-caja-contadores/dist/

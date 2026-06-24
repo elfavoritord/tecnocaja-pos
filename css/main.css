@@ -1838,6 +1838,34 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 [data-theme="light"] .ncf-ref-item:hover { background:#f5f3ff; }
 [data-theme="light"] .ncf-none-badge { background:#f0f0f0; border-color:#ccc; color:#666; }
 
+/* ── e-CF Visual Status Cards ──────────────────────────────────────────────── */
+.ecf-scard {
+  background: var(--bg2,#1a2234);
+  border: 1px solid var(--border,#2d3a52);
+  border-radius: 12px;
+  padding: 14px 10px;
+  text-align: center;
+  transition: border-color .2s, box-shadow .2s;
+}
+.ecf-scard--ok    { border-color: #10b981; box-shadow: 0 0 0 1px rgba(16,185,129,.15); }
+.ecf-scard--warn  { border-color: #f59e0b; box-shadow: 0 0 0 1px rgba(245,158,11,.15); }
+.ecf-scard--error { border-color: #ef4444; box-shadow: 0 0 0 1px rgba(239,68,68,.15); }
+.ecf-scard-icon  { font-size: 22px; margin-bottom: 6px; }
+.ecf-scard-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--text3,#5a7099); margin-bottom: 5px; line-height:1.3; }
+.ecf-scard-val   { font-size: 12px; font-weight: 600; line-height: 1.4; }
+.ecf-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; flex-shrink:0; }
+.ecf-dot--green  { background: #10b981; }
+.ecf-dot--yellow { background: #f59e0b; }
+.ecf-dot--red    { background: #ef4444; }
+.ecf-dot--gray   { background: var(--text3,#5a7099); }
+[data-theme="light"] .ecf-scard { background: #f8fafc; border-color: #e2e8f0; }
+@media (max-width:600px) {
+  .ecf-scard { padding: 10px 6px; }
+  .ecf-scard-icon { font-size:18px; }
+  .ecf-scard-title { font-size:9px; }
+  .ecf-scard-val { font-size:11px; }
+}
+
 .billing-payment-pane {
   align-content:start;
 }

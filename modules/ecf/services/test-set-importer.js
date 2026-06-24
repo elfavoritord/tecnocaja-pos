@@ -176,18 +176,6 @@ function applyEmitterOverridesToRow(row, emitter = null) {
     next.RazonSocialEmisor = razonSocial;
   }
 
-  if (
-    !rowHasValue(next, 'NombreComercial')
-    && (
-      Object.prototype.hasOwnProperty.call(emitter, 'nombreComercial')
-      || Object.prototype.hasOwnProperty.call(emitter, 'nombre_comercial')
-    )
-  ) {
-    next.NombreComercial = normalizeEmitterOverrideValue(
-      emitter.nombreComercial ?? emitter.nombre_comercial
-    );
-  }
-
   return next;
 }
 
@@ -365,7 +353,42 @@ function buildCertificationCaseCustomer(testCase, defaults, emitter) {
   return buildCustomer(testCase, defaults, emitter);
 }
 
+// Corrects TipoImpuesto=006 (ISC Específico Cerveza) to the current DGII quarterly rate.
+// DGII certecf validates TasaImpuestoAdicional against their internal catalog; the DGII-provided
+// Excel template may carry an outdated rate from a previous quarter.
+// Rate source: Resolución DDG-AR1-2026-00002 (Q2 2026: RD$ 758.26 / litro alcohol absoluto).
+function correctIscEspecificoCerveza(rawRow) {
+  const TASA_006_CURRENT = 758.26;
+  let corrected = null;
+  for (let i = 1; i <= 4; i++) {
+    if (String(rawRow[`TipoImpuesto[${i}]`] || '').trim() !== '006') continue;
+    const oldTasa = parseFloat(String(rawRow[`TasaImpuestoAdicional[${i}]`] || '').replace(',', '.')) || 0;
+    if (oldTasa <= 0 || oldTasa === TASA_006_CURRENT) continue;
+    const oldAmount = parseFloat(String(rawRow[`MontoImpuestoSelectivoConsumoEspecifico[${i}]`] || '').replace(',', '.')) || 0;
+    if (oldAmount <= 0) continue;
+    if (!corrected) corrected = { ...rawRow };
+    const newAmount = round2(TASA_006_CURRENT * (oldAmount / oldTasa));
+    const delta = round2(newAmount - oldAmount);
+    corrected[`TasaImpuestoAdicional[${i}]`] = String(TASA_006_CURRENT);
+    corrected[`MontoImpuestoSelectivoConsumoEspecifico[${i}]`] = String(newAmount);
+    const newMia = round2((parseFloat(String(corrected['MontoImpuestoAdicional'] || '').replace(',', '.')) || 0) + delta);
+    corrected['MontoImpuestoAdicional'] = String(newMia);
+    const itbis1Rate = (parseFloat(String(corrected['ITBIS1'] || '').replace(',', '.')) || 0) / 100;
+    if (itbis1Rate > 0) {
+      const base1 = parseFloat(String(corrected['MontoGravadoI1'] || '').replace(',', '.')) || 0;
+      const newTotalItbis = round2((base1 + newMia) * itbis1Rate);
+      corrected['TotalITBIS'] = String(newTotalItbis);
+      corrected['TotalITBIS1'] = String(newTotalItbis);
+      corrected['MontoTotal'] = String(round2(base1 + newTotalItbis + newMia));
+    }
+  }
+  return corrected || rawRow;
+}
+
 function buildCertificationEcfXml(testCase, issueDate) {
+  // DGII certecf valida cada campo contra el valor EXACTO del conjunto de datos entregados
+  // en la postulación — no contra el catálogo de tasas actual. No aplicar correcciones de
+  // tasa ISC aquí: si el Excel DGII tiene 633.85, DGII espera 633.85 en el XML enviado.
   const row = testCase.rawRow || {};
   const xml = builder
     .create('ECF', { encoding: 'UTF-8' })
@@ -386,9 +409,11 @@ function buildCertificationEcfXml(testCase, issueDate) {
     'IndicadorServicioTodoIncluido',
     'TipoIngresos',
     'TipoPago',
-    'FechaLimitePago',
-    'TerminoPago',
   ].forEach((field) => appendSimple(idDoc, field, row[field]));
+  // FechaLimitePago va ANTES de TerminoPago en el XSD (todos los tipos excepto E43).
+  const tipoNum = String(testCase.tipoEcf || rowText(row, 'TipoeCF') || '').replace(/^E/i, '');
+  if (tipoNum !== '43') appendSimple(idDoc, 'FechaLimitePago', row['FechaLimitePago']);
+  appendSimple(idDoc, 'TerminoPago', row['TerminoPago']);
 
   const paymentForms = collectIndexedEntries(row, 'FormaPago');
   if (paymentForms.length) {
@@ -415,9 +440,11 @@ function buildCertificationEcfXml(testCase, issueDate) {
   // Por eso usamos el valor del emisor LOCAL (que el usuario controla). Si está vacío, no se incluye.
   // El usuario debe asegurarse de que 'nombre_comercial' en la configuración coincida con lo que
   // tiene registrado en DGII (o dejarlo vacío si el RNC no tiene NombreComercial en DGII).
+  // NombreComercial: DGII valida contra su BD (no contra el Excel del set). Nunca leer del Excel —
+  // si el RNC no tiene NombreComercial registrado en DGII, enviar el tag causa rechazo del set completo.
   const emitterNombreComercial = ('emitterNombreComercial' in testCase)
     ? testCase.emitterNombreComercial
-    : rowText(row, 'NombreComercial');
+    : '';
   appendSimple(emisor, 'NombreComercial', emitterNombreComercial);
 
   [
@@ -538,9 +565,14 @@ function buildCertificationEcfXml(testCase, issueDate) {
       additionalTaxIndexes.push(i);
     }
   }
-  if (additionalTaxIndexes.length) {
+  // ImpuestosAdicionales solo existe en XSD de E31, E32, E33, E34, E44, E45
+  const tipoNumForImpuesto = String(testCase.tipoEcf || rowText(row, 'TipoeCF') || '').replace(/^E/i, '');
+  const tiposConImpuestosAdicionales = new Set(['31','32','33','34','44','45']);
+  if (additionalTaxIndexes.length && tiposConImpuestosAdicionales.has(tipoNumForImpuesto)) {
     const impuestosAdicionalesNode = totalsNode.ele('ImpuestosAdicionales');
     for (const i of additionalTaxIndexes) {
+      const tasa = parseFloat(String(row[`TasaImpuestoAdicional[${i}]`] ?? '').replace(',', '.')) || 0;
+      if (tasa <= 0) continue; // TasaImpuestoAdicional debe ser > 0
       const impuestoNode = impuestosAdicionalesNode.ele('ImpuestoAdicional');
       appendSimple(impuestoNode, 'TipoImpuesto', row[`TipoImpuesto[${i}]`]);
       appendSimple(impuestoNode, 'TasaImpuestoAdicional', row[`TasaImpuestoAdicional[${i}]`]);
@@ -848,20 +880,6 @@ function buildTransmissionFromSpreadsheetRow({
       }
     : { ...(testCase || {}) };
 
-  if (
-    overrideEmitterFromConfig
-    && emitter
-    && !Object.prototype.hasOwnProperty.call(normalizedTestCase, 'emitterNombreComercial')
-    && (
-      Object.prototype.hasOwnProperty.call(emitter, 'nombreComercial')
-      || Object.prototype.hasOwnProperty.call(emitter, 'nombre_comercial')
-    )
-  ) {
-    normalizedTestCase.emitterNombreComercial = normalizeEmitterOverrideValue(
-      emitter.nombreComercial ?? emitter.nombre_comercial
-    );
-  }
-
   if (String(normalizedTestCase.sourceSheet || '').trim().toUpperCase() === 'RFCE'
     || String(normalizedTestCase.submissionMode || '').trim().toLowerCase() === 'rfce') {
     let computedCodigoSeguridadeCF = normalizeRowValue(normalizedTestCase.computedCodigoSeguridadeCF);
@@ -870,6 +888,7 @@ function buildTransmissionFromSpreadsheetRow({
     if (!computedCodigoSeguridadeCF && normalizedTestCase.linkedRawRow && certificateContext) {
       const linkedTransmission = buildCertificationEcfXml({
         ...normalizedTestCase,
+        emitterNombreComercial: normalizedTestCase.emitterNombreComercial || '',
         rawRow: normalizedTestCase.linkedRawRow,
         sourceSheet: 'ECF',
         submissionMode: 'normal',
@@ -1294,6 +1313,7 @@ async function importTestSet({
 
 module.exports = {
   buildTransmissionFromSpreadsheetRow,
+  correctIscEspecificoCerveza,
   importTestCases,
   importTestSet,
   parseTestSetBuffer,

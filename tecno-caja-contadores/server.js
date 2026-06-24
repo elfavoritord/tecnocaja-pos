@@ -55,6 +55,32 @@ function initFirebase() {
 
 initFirebase();
 
+// ── RNC / DGII — dataset local (dgii-rnc) ─────────────────────────────────
+let _rncHandler    = null;
+let _rncReady      = false;
+let _rncError      = null;
+
+function getRncHandler() {
+  if (_rncHandler) return _rncHandler;
+  try {
+    const mod = require('dgii-rnc');
+    _rncHandler = new mod.RNCHandler();
+    if (mod.scheduleUpdates) {
+      mod.scheduleUpdates({ handler: _rncHandler, intervalMs: 24 * 60 * 60 * 1000 });
+    }
+    _rncHandler.checkFile()
+      .then(() => { _rncReady = true; console.log('[rnc] Dataset DGII listo.'); })
+      .catch(e  => { _rncError = e.message; console.warn('[rnc] Dataset no disponible:', e.message); });
+  } catch (e) {
+    _rncError = 'Módulo dgii-rnc no disponible: ' + e.message;
+    console.warn('[rnc]', _rncError);
+  }
+  return _rncHandler;
+}
+
+// Iniciar carga en background al arrancar
+getRncHandler();
+
 // ── Colecciones ────────────────────────────────────────────────────────────
 const COL_ADMINS      = 'platform_admins';
 const COL_CONTADORES  = 'contadores';
@@ -62,6 +88,7 @@ const COL_LICENCIAS   = process.env.FIREBASE_ADMIN_LICENSES_COLLECTION || 'licen
 const COL_SOLICITUDES = 'support_requests';
 const COL_VERSIONES   = 'app_versions';
 const COL_HISTORIAL   = 'license_history';
+const SUB_COLABORADORES = 'colaboradores'; // subcol de contadores/{id}/colaboradores
 
 // ── Express ────────────────────────────────────────────────────────────────
 const app = express();
@@ -106,11 +133,56 @@ async function requireAuth(req, res, next) {
     }
 
     const adminData = adminDoc.data();
-    if (adminData.role !== 'contador_asociado') {
-      return res.status(403).json({ error: 'Esta cuenta no es de tipo contador asociado.' });
-    }
+
     if (adminData.status !== 'active') {
       return res.status(403).json({ error: 'Esta cuenta está inactiva o suspendida.' });
+    }
+
+    // ── Colaborador ──────────────────────────────────────────────────────────
+    if (adminData.role === 'colaborador') {
+      const parentId = adminData.parentContadorId;
+      if (!parentId) return res.status(403).json({ error: 'Colaborador sin contador principal asignado.' });
+
+      const [colabDoc, parentDoc] = await Promise.all([
+        col(COL_CONTADORES).doc(parentId).collection(SUB_COLABORADORES).doc(uid).get(),
+        col(COL_CONTADORES).doc(parentId).get(),
+      ]);
+
+      if (!colabDoc.exists) return res.status(403).json({ error: 'Perfil de colaborador no encontrado.' });
+
+      const colabData = colabDoc.data();
+      if (colabData.estado !== 'activo') return res.status(403).json({ error: 'Colaborador inactivo o suspendido.' });
+
+      const parentData = parentDoc.data() || {};
+      col(COL_ADMINS).doc(uid).update({ lastLoginAt: isoNow() }).catch(() => {});
+
+      req.contador = {
+        uid,
+        contadorDocId: parentId,
+        email:        decoded.email || adminData.email || '',
+        fullName:     colabData.nombre || '',
+        nombre_firma: parentData.nombre_firma || '',
+        responsable:  colabData.nombre || '',
+        rnc:          colabData.rnc || parentData.rnc || '',
+        telefono:     colabData.telefono || '',
+        correo:       colabData.email || decoded.email || '',
+        logo_url:     parentData.logo_url || null,
+      };
+      req.colaborador = {
+        uid,
+        tipo:              colabData.tipo || 'dependiente',
+        estado:            colabData.estado,
+        clientesAsignados: colabData.clientesAsignados || [],
+        parentContadorId:  parentId,
+        esColaborador:     true,
+        esDependiente:     (colabData.tipo || 'dependiente') === 'dependiente',
+      };
+      return next();
+    }
+
+    // ── Contador principal ───────────────────────────────────────────────────
+    if (adminData.role !== 'contador_asociado') {
+      return res.status(403).json({ error: 'Esta cuenta no tiene acceso a Tecno Caja Contadores.' });
     }
 
     const contSnap = await col(COL_CONTADORES).where('firebase_uid', '==', uid).limit(1).get();
@@ -139,6 +211,7 @@ async function requireAuth(req, res, next) {
       correo:      contData.correo || decoded.email || '',
       logo_url:    contData.logo_url || null,
     };
+    req.colaborador = null;
 
     next();
   } catch (e) {
@@ -191,11 +264,52 @@ app.post('/api/auth/verify', async (req, res) => {
     }
 
     const adminData = adminDoc.data();
-    if (adminData.role !== 'contador_asociado') {
-      return res.status(403).json({ error: 'Esta cuenta no es de tipo contador asociado.' });
-    }
+
     if (adminData.status !== 'active') {
       return res.status(403).json({ error: 'Cuenta inactiva o suspendida.' });
+    }
+
+    // ── Colaborador login ────────────────────────────────────────────────────
+    if (adminData.role === 'colaborador') {
+      const parentId = adminData.parentContadorId;
+      if (!parentId) return res.status(403).json({ error: 'Colaborador sin contador principal asignado.' });
+
+      const [colabDoc, parentDoc] = await Promise.all([
+        col(COL_CONTADORES).doc(parentId).collection(SUB_COLABORADORES).doc(uid).get(),
+        col(COL_CONTADORES).doc(parentId).get(),
+      ]);
+
+      if (!colabDoc.exists) return res.status(403).json({ error: 'Perfil de colaborador no encontrado.' });
+
+      const colabData = colabDoc.data();
+      if (colabData.estado !== 'activo') return res.status(403).json({ error: 'Colaborador inactivo o suspendido.' });
+
+      const parentData = parentDoc.data() || {};
+      col(COL_ADMINS).doc(uid).update({ lastLoginAt: isoNow() }).catch(() => {});
+
+      return res.json({
+        ok: true, uid,
+        email:        decoded.email,
+        fullName:     colabData.nombre,
+        nombre_firma: parentData.nombre_firma || '',
+        responsable:  colabData.nombre || '',
+        rnc:          colabData.rnc || parentData.rnc || '',
+        telefono:     colabData.telefono || '',
+        correo:       colabData.email || decoded.email || '',
+        logo_url:     parentData.logo_url || null,
+        contadorDocId: parentId,
+        // Campos exclusivos de colaborador
+        isColaborador:     true,
+        colaboradorId:     uid,
+        tipo:              colabData.tipo || 'dependiente',
+        estado:            colabData.estado,
+        clientesAsignados: colabData.clientesAsignados || [],
+      });
+    }
+
+    // ── Contador principal ───────────────────────────────────────────────────
+    if (adminData.role !== 'contador_asociado') {
+      return res.status(403).json({ error: 'Esta cuenta no es de tipo contador asociado.' });
     }
 
     const contSnap = await col(COL_CONTADORES).where('firebase_uid', '==', uid).limit(1).get();
@@ -219,6 +333,7 @@ app.post('/api/auth/verify', async (req, res) => {
       correo:       contData.correo       || decoded.email || '',
       logo_url:     contData.logo_url     || null,
       contadorDocId: contDoc.id,
+      isColaborador: false,
     });
   } catch (e) {
     res.status(401).json({ error: e.message });
@@ -786,6 +901,323 @@ app.put('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
       if (upd.balance === 0) upd.estado = 'pagada';
     }
     await ref.update(upd);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// RNC / DGII — proxy hacia dataset local
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/rnc/status', (_req, res) => {
+  res.json({ ready: _rncReady, error: _rncError });
+});
+
+// GET /api/rnc/lookup?id=XXXXXXXXX
+app.get('/api/rnc/lookup', requireAuth, async (req, res) => {
+  const raw = String(req.query.id || '').replace(/\D/g, '');
+  if (!raw || raw.length < 9) {
+    return res.status(400).json({ error: 'RNC/Cédula debe tener 9-11 dígitos.' });
+  }
+  const h = getRncHandler();
+  if (!h) {
+    return res.status(503).json({ error: _rncError || 'Módulo DGII no disponible.' });
+  }
+  try {
+    // El dataset guarda cédulas con ceros a la izquierda (11 dígitos).
+    // Si el usuario escribe 10 dígitos (le falta el cero inicial), probar también con padding.
+    const candidates = [raw.slice(0, 11)];
+    if (raw.length === 10) candidates.push('0' + raw);
+
+    let record = null;
+    // Ruta rápida: buscar en memoria si el dataset ya está listo
+    if (_rncReady && h.df && h.df.length > 0) {
+      for (const id of candidates) {
+        record = h.df.find(r => r.ID === id) || null;
+        if (record) break;
+      }
+    } else {
+      // Fallback: h.search() carga el dataset on-demand si es necesario
+      for (const id of candidates) {
+        const results = await h.search({ ID: id });
+        if (results && results.length > 0) { record = results[0]; break; }
+      }
+      _rncReady = h.df && h.df.length > 0; // marcar listo tras la carga
+    }
+
+    if (!record) return res.json({ found: false, rnc: raw });
+    return res.json({
+      found:          true,
+      rnc:            record.ID || raw,
+      nombre:         record.NOMBRE          || '',
+      nombreComercial:record.NOMBRE_COMERCIAL || record.NOMBRE || '',
+      estado:         record.ESTADO          || '',
+      tipo:           (record.ID || '').length === 11 ? 'Persona Física' : 'Persona Jurídica',
+      categoria:      record.CATEGORIA       || '',
+      regimen:        record.REGIMEN_PAGO    || '',
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/rnc/search?q=banco+popular&limit=8
+app.get('/api/rnc/search', requireAuth, async (req, res) => {
+  const q     = String(req.query.q || '').trim();
+  const limit = Math.min(Number(req.query.limit) || 8, 50);
+  if (!q || q.length < 3) {
+    return res.status(400).json({ error: 'Escribe al menos 3 caracteres para buscar.' });
+  }
+  const h = getRncHandler();
+  if (!h) {
+    return res.status(503).json({ error: _rncError || 'Módulo DGII no disponible.' });
+  }
+  try {
+    const qUpper = q.toUpperCase();
+    let rows;
+    if (_rncReady && h.df && h.df.length > 0) {
+      rows = [];
+      for (const r of h.df) {
+        if (r.NOMBRE.includes(qUpper) || (r.NOMBRE_COMERCIAL && r.NOMBRE_COMERCIAL.includes(qUpper))) {
+          rows.push(r);
+          if (rows.length >= limit) break;
+        }
+      }
+    } else {
+      const results = await h.search({ NOMBRE: q });
+      rows = (results || []).slice(0, limit);
+    }
+    res.json({
+      results: rows.map(r => ({
+        rnc:            r.ID || '',
+        nombre:         r.NOMBRE           || '',
+        nombreComercial:r.NOMBRE_COMERCIAL || r.NOMBRE || '',
+        estado:         r.ESTADO           || '',
+        tipo:           (r.ID || '').length === 11 ? 'Persona Física' : 'Persona Jurídica',
+        categoria:      r.CATEGORIA        || '',
+      }))
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// COLABORADORES
+// ══════════════════════════════════════════════════════════════════════
+
+// Middleware: solo el contador principal (o colaborador completo) puede gestionar
+function requirePrincipalOrCompleto(req, res, next) {
+  const colab = req.colaborador;
+  if (colab?.esColaborador && colab.esDependiente) {
+    return res.status(403).json({ error: 'No tienes permisos para gestionar colaboradores.' });
+  }
+  next();
+}
+
+function colabsRef(contadorDocId) {
+  return col(COL_CONTADORES).doc(contadorDocId).collection(SUB_COLABORADORES);
+}
+
+// GET /api/colaboradores — listado
+app.get('/api/colaboradores', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const snap = await colabsRef(req.contador.contadorDocId)
+      .orderBy('createdAt', 'desc').get();
+    res.json(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/colaboradores — crear
+app.post('/api/colaboradores', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const { nombre, cedula, rnc, telefono, whatsapp, correo, direccion, tipo, password } = req.body;
+    if (!nombre?.trim())  return res.status(400).json({ error: 'Nombre requerido.' });
+    if (!correo?.trim())  return res.status(400).json({ error: 'Correo requerido.' });
+    if (!password || String(password).length < 6)
+      return res.status(400).json({ error: 'Contraseña mínima de 6 caracteres.' });
+
+    const tipoVal = tipo === 'completo' ? 'completo' : 'dependiente';
+
+    // 1. Firebase Auth
+    const userRecord = await adminSdk.auth().createUser({
+      email:       correo.trim(),
+      password,
+      displayName: nombre.trim(),
+    });
+    const uid = userRecord.uid;
+    const now = isoNow();
+
+    // 2. platform_admins
+    await col(COL_ADMINS).doc(uid).set({
+      role:             'colaborador',
+      status:           'active',
+      email:            correo.trim(),
+      fullName:         nombre.trim(),
+      parentContadorId: req.contador.contadorDocId,
+      tipo:             tipoVal,
+      createdAt:        now,
+      lastLoginAt:      null,
+    });
+
+    // 3. Documento colaborador
+    const colabData = {
+      uid,
+      email:       correo.trim(),
+      nombre:      nombre.trim(),
+      cedula:      cedula    || '',
+      rnc:         rnc       || '',
+      telefono:    telefono  || '',
+      whatsapp:    whatsapp  || '',
+      direccion:   direccion || '',
+      foto_url:    '',
+      tipo:        tipoVal,
+      estado:      'activo',
+      clientesAsignados: [],
+      parentContadorId:  req.contador.contadorDocId,
+      createdBy:   req.contador.uid,
+      createdAt:   now,
+      updatedAt:   now,
+    };
+    await colabsRef(req.contador.contadorDocId).doc(uid).set(colabData);
+
+    res.json({ id: uid, ...colabData });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/colaboradores/:id — detalle
+app.get('/api/colaboradores/:id', requireAuth, async (req, res) => {
+  try {
+    const doc = await colabsRef(req.contador.contadorDocId).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+    res.json({ id: doc.id, ...doc.data() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /api/colaboradores/:id — editar
+app.put('/api/colaboradores/:id', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const ref = colabsRef(req.contador.contadorDocId).doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+
+    const { nombre, cedula, rnc, telefono, whatsapp, correo, direccion, tipo, estado } = req.body;
+    const upd = { updatedAt: isoNow() };
+    if (nombre    !== undefined) upd.nombre    = String(nombre).trim();
+    if (cedula    !== undefined) upd.cedula    = cedula;
+    if (rnc       !== undefined) upd.rnc       = rnc;
+    if (telefono  !== undefined) upd.telefono  = telefono;
+    if (whatsapp  !== undefined) upd.whatsapp  = whatsapp;
+    if (correo    !== undefined) upd.correo    = String(correo).trim();
+    if (direccion !== undefined) upd.direccion = direccion;
+    if (tipo      !== undefined) upd.tipo      = tipo === 'completo' ? 'completo' : 'dependiente';
+    if (estado    !== undefined) upd.estado    = estado;
+
+    await ref.update(upd);
+
+    // Sync a platform_admins
+    const adminUpd = { updatedAt: isoNow() };
+    if (nombre)  adminUpd.fullName = String(nombre).trim();
+    if (estado) {
+      adminUpd.status = estado === 'activo' ? 'active'
+        : estado === 'suspendido' ? 'suspended' : 'inactive';
+      // Si se suspende, deshabilitar Firebase Auth
+      if (estado !== 'activo') {
+        adminSdk.auth().updateUser(req.params.id, { disabled: true }).catch(() => {});
+      } else {
+        adminSdk.auth().updateUser(req.params.id, { disabled: false }).catch(() => {});
+      }
+    }
+    if (tipo) adminUpd.tipo = tipo;
+    await col(COL_ADMINS).doc(req.params.id).update(adminUpd).catch(() => {});
+
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/colaboradores/:id — eliminar (soft)
+app.delete('/api/colaboradores/:id', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const ref = colabsRef(req.contador.contadorDocId).doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+
+    await ref.update({ estado: 'eliminado', updatedAt: isoNow() });
+    await col(COL_ADMINS).doc(req.params.id).update({ status: 'inactive' }).catch(() => {});
+    await adminSdk.auth().updateUser(req.params.id, { disabled: true }).catch(() => {});
+
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/colaboradores/:id/asignar — asignar un negocio
+app.post('/api/colaboradores/:id/asignar', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const { businessId } = req.body;
+    if (!businessId) return res.status(400).json({ error: 'businessId requerido.' });
+
+    const ref = colabsRef(req.contador.contadorDocId).doc(req.params.id);
+    if (!(await ref.get()).exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+
+    await ref.update({
+      clientesAsignados: adminSdk.firestore.FieldValue.arrayUnion(businessId),
+      updatedAt: isoNow(),
+    });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// DELETE /api/colaboradores/:id/clientes/:businessId — quitar asignación
+app.delete('/api/colaboradores/:id/clientes/:businessId', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const ref = colabsRef(req.contador.contadorDocId).doc(req.params.id);
+    if (!(await ref.get()).exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+
+    await ref.update({
+      clientesAsignados: adminSdk.firestore.FieldValue.arrayRemove(req.params.businessId),
+      updatedAt: isoNow(),
+    });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /api/colaboradores/:id/clientes — negocios asignados a un colaborador
+app.get('/api/colaboradores/:id/clientes', requireAuth, async (req, res) => {
+  try {
+    const doc = await colabsRef(req.contador.contadorDocId).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+
+    const asignados = doc.data().clientesAsignados || [];
+    if (!asignados.length) return res.json([]);
+
+    const results = [];
+    for (let i = 0; i < asignados.length; i += 10) {
+      const chunk = asignados.slice(i, i + 10);
+      const snap = await col(COL_LICENCIAS)
+        .where(adminSdk.firestore.FieldPath.documentId(), 'in', chunk)
+        .get();
+      snap.docs.forEach(d => results.push({
+        id: d.id,
+        businessName: d.data().businessName || d.data().businessKey || '—',
+        rnc:          d.data().rnc    || '—',
+        status:       d.data().status || 'trial',
+        planCode:     d.data().planCode || '—',
+        propietario:  d.data().propietario || '—',
+      }));
+    }
+    res.json(results);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/colaboradores/:id/cambiar-password — cambiar contraseña
+app.post('/api/colaboradores/:id/cambiar-password', requireAuth, requirePrincipalOrCompleto, async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password || String(password).length < 6)
+      return res.status(400).json({ error: 'Contraseña mínima de 6 caracteres.' });
+
+    const doc = await colabsRef(req.contador.contadorDocId).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Colaborador no encontrado.' });
+
+    await adminSdk.auth().updateUser(req.params.id, { password });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

@@ -10,6 +10,9 @@ let _fbApp  = null;
 let _fbAuth = null;
 let _token  = null;
 let _perfil = null;
+
+// Exponer token para rnc-lookup.js y otros scripts externos
+window.getTecnoCajaContToken = () => _token || '';
 let _allClientes = [];
 let _toastTimer = null;
 let _solTipoSel = null;
@@ -126,14 +129,15 @@ function goto(mod) {
   if (navEl) navEl.classList.add('active');
 
   // Load data for the module
-  if (mod === 'dashboard')       loadDashboard();
-  if (mod === 'negocios')        loadClientes();
-  if (mod === 'licencias')       loadLicencias();
-  if (mod === 'solicitudes')     loadSolicitudes();
-  if (mod === 'configuracion')   loadPerfil();
-  if (mod === 'actualizaciones') loadActualizaciones();
-  if (mod === 'reportes')        loadReportes();
-  if (mod === 'facturacion')     loadFacturacion();
+  if (mod === 'dashboard')        loadDashboard();
+  if (mod === 'negocios')         loadClientes();
+  if (mod === 'licencias')        loadLicencias();
+  if (mod === 'solicitudes')      loadSolicitudes();
+  if (mod === 'configuracion')    loadPerfil();
+  if (mod === 'actualizaciones')  loadActualizaciones();
+  if (mod === 'reportes')         loadReportes();
+  if (mod === 'facturacion')      loadFacturacion();
+  if (mod === 'colaboradores')    loadColaboradores();
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -227,7 +231,42 @@ function showApp(profile) {
   setText('sidebar-email', profile.email || '');
   setText('user-avatar-letter', nombre.charAt(0).toUpperCase());
 
+  // Permisos según tipo de usuario
+  _applyPermisos(profile);
+
   goto('dashboard');
+}
+
+function _applyPermisos(profile) {
+  const esDependiente = profile.isColaborador && profile.tipo === 'dependiente';
+  const esCompleto    = profile.isColaborador && profile.tipo === 'completo';
+
+  // Colaborador dependiente: ocultar módulos bloqueados
+  const hiddenMods = esDependiente
+    ? ['colaboradores', 'licencias', 'solicitudes', 'facturacion']
+    : [];
+
+  document.querySelectorAll('.nav-item[data-mod]').forEach(el => {
+    const mod = el.dataset.mod;
+    if (hiddenMods.includes(mod)) {
+      el.style.display = 'none';
+    } else {
+      el.style.display = '';
+    }
+  });
+
+  // Botón nuevo colaborador solo para principal y completos
+  const btnNuevo = $id('btn-nuevo-colab');
+  if (btnNuevo) btnNuevo.style.display = esDependiente ? 'none' : '';
+
+  // Badge de rol en sidebar
+  const roleEl = $id('sidebar-email');
+  if (roleEl) {
+    const roleLabel = esDependiente ? 'Colaborador Dependiente'
+      : esCompleto    ? 'Colaborador Completo'
+      : 'Contador Principal';
+    roleEl.textContent = roleLabel;
+  }
 }
 
 function showLoginError(msg) {
@@ -1523,6 +1562,19 @@ async function nuevaFactura() {
   set('nf-fecha', today);
   ['nf-cli-nombre','nf-cli-rnc','nf-cli-dir','nf-cli-tel','nf-cli-correo','nf-observacion']
     .forEach(id => set(id, ''));
+
+  // Autocomplete DGII en el RNC del cliente de facturación
+  if (window.RNCLookup) {
+    const rncEl    = $id('nf-cli-rnc');
+    const nombreEl = $id('nf-cli-nombre');
+    if (rncEl) {
+      RNCLookup.attach(rncEl, {
+        nameEl: nombreEl,
+        mode: 'both',
+        onSelect() {},
+      });
+    }
+  }
   set('nf-tipo-ncf', 'B02');
   set('nf-condicion', 'contado');
   set('nf-metodo', 'efectivo');
@@ -1943,6 +1995,20 @@ async function abrirClientesFac() {
     .forEach(id => { const el = $id(id); if (el) el.value = ''; });
   setText('clf-form-title', 'Nuevo cliente');
   show('modal-clientes-fac');
+
+  // Autocomplete DGII en el RNC del cliente de facturación
+  if (window.RNCLookup) {
+    const rncEl    = $id('clf-rnc');
+    const nombreEl = $id('clf-nombre');
+    if (rncEl) {
+      RNCLookup.attach(rncEl, {
+        nameEl: nombreEl,
+        mode: 'both',
+        onSelect() {},
+      });
+    }
+  }
+
   await loadClientesFac();
 }
 
@@ -2038,6 +2104,460 @@ async function eliminarClienteFac(id) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// COLABORADORES
+// ══════════════════════════════════════════════════════════════════════
+
+let _colabs        = [];        // array completo del servidor
+let _colabsFiltered = [];       // resultado del filtro en tabla
+let _colabEditId   = null;      // id del colaborador en edición (null = nuevo)
+let _colabDetalleId = null;     // id del colaborador en vista detalle
+let _negociosAsignar = [];      // cache de negocios para modal asignar
+
+const PERMISOS_DEPENDIENTE = {
+  puede: [
+    'Iniciar sesión en la plataforma',
+    'Ver clientes asignados',
+    'Consultar reportes de clientes asignados',
+    'Ver ventas y movimientos permitidos',
+    'Cambiar contraseña propia',
+  ],
+  noPuede: [
+    'Crear clientes propios',
+    'Crear colaboradores',
+    'Asignar clientes',
+    'Crear empresas',
+    'Gestionar licencias',
+    'Ver negocios fuera de los asignados',
+  ],
+};
+
+const PERMISOS_COMPLETO = {
+  puede: [
+    'Todo lo del Colaborador Dependiente',
+    'Crear clientes propios',
+    'Instalar Tecno Caja POS a clientes',
+    'Registrar empresas',
+    'Crear colaboradores propios',
+    'Gestionar licencias',
+    'Crear su propia red de trabajo',
+  ],
+  noPuede: [
+    'Ver clientes privados de otros colaboradores',
+  ],
+};
+
+function colabEstadoBadge(e) {
+  const m = { activo: 'badge-active', inactivo: 'badge-pending', suspendido: 'badge-suspended', eliminado: 'badge-pending' };
+  const labels = { activo: '✅ Activo', inactivo: '⚫ Inactivo', suspendido: '🚫 Suspendido', eliminado: '🗑 Eliminado' };
+  return `<span class="badge ${m[e] || ''}">${labels[e] || e}</span>`;
+}
+
+function colabTipoBadge(t) {
+  return t === 'completo'
+    ? '<span class="badge badge-active" style="background:#7c3aed22;color:#a78bfa;border-color:#7c3aed">🌐 Completo</span>'
+    : '<span class="badge badge-pending" style="background:#1e3a5f;color:#60a5fa;border-color:#2563eb">🔗 Dependiente</span>';
+}
+
+// ── Cargar listado ─────────────────────────────────────────────────────────
+async function loadColaboradores() {
+  setText('colab-subtitle', 'Cargando…');
+  try {
+    _colabs = await apiCall('GET', '/api/colaboradores');
+    _colabsFiltered = _colabs.filter(c => c.estado !== 'eliminado');
+    _renderColabStats();
+    _renderColabTabla(_colabsFiltered);
+    setText('colab-subtitle', `${_colabsFiltered.length} colaborador(es) en tu red`);
+    // badge en nav
+    const badge = $id('nav-badge-colab');
+    if (badge) {
+      const activos = _colabsFiltered.filter(c => c.estado === 'activo').length;
+      if (activos > 0) { badge.textContent = activos; badge.classList.remove('hidden'); }
+      else badge.classList.add('hidden');
+    }
+  } catch (e) {
+    setText('colab-subtitle', 'Error cargando colaboradores');
+    $id('colab-tbody').innerHTML = `<tr><td colspan="7" class="td-empty" style="color:#ef4444">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function _renderColabStats() {
+  const lista = _colabs.filter(c => c.estado !== 'eliminado');
+  setText('cs-total',   lista.length);
+  setText('cs-activos', lista.filter(c => c.estado === 'activo').length);
+  setText('cs-dep',     lista.filter(c => c.tipo === 'dependiente').length);
+  setText('cs-comp',    lista.filter(c => c.tipo === 'completo').length);
+}
+
+function _renderColabTabla(lista) {
+  const tbody = $id('colab-tbody');
+  if (!lista.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="td-empty">No hay colaboradores registrados</td></tr>';
+    return;
+  }
+  tbody.innerHTML = lista.map(c => `
+    <tr>
+      <td>
+        <div style="font-weight:600;color:var(--text)">${esc(c.nombre)}</div>
+        ${c.cedula ? `<div style="font-size:11px;color:var(--text-muted)">${esc(c.cedula)}</div>` : ''}
+      </td>
+      <td style="font-size:12px">${esc(c.email || '—')}</td>
+      <td>${colabTipoBadge(c.tipo)}</td>
+      <td>${colabEstadoBadge(c.estado)}</td>
+      <td style="text-align:center">
+        <span style="background:#1e3a5f;color:#60a5fa;border-radius:12px;padding:2px 10px;font-size:12px;font-weight:600">
+          ${(c.clientesAsignados || []).length}
+        </span>
+      </td>
+      <td style="font-size:11px;color:var(--text-muted)">${c.createdAt ? new Date(c.createdAt).toLocaleDateString('es-DO') : '—'}</td>
+      <td style="text-align:center">
+        <div style="display:flex;gap:4px;justify-content:center">
+          <button class="btn btn-secondary btn-xs" onclick="app.verColabDetalle('${c.id}')">👁 Ver</button>
+          <button class="btn btn-secondary btn-xs" onclick="app.abrirModalColab('${c.id}')">✏️</button>
+          <button class="btn btn-danger btn-xs" onclick="app.eliminarColab('${c.id}')">🗑</button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function filtrarColaboradores(q) {
+  const t = (q || '').toLowerCase().trim();
+  _colabsFiltered = _colabs.filter(c => {
+    if (c.estado === 'eliminado') return false;
+    if (!t) return true;
+    return (c.nombre || '').toLowerCase().includes(t)
+      || (c.email || '').toLowerCase().includes(t)
+      || (c.cedula || '').toLowerCase().includes(t);
+  });
+  _renderColabTabla(_colabsFiltered);
+}
+
+// ── Modal crear/editar ─────────────────────────────────────────────────────
+function abrirModalColab(id) {
+  _colabEditId = id || null;
+  const colab = id ? _colabs.find(c => c.id === id) : null;
+
+  setText('mcolab-title', colab ? 'Editar colaborador' : 'Nuevo colaborador');
+  setText('mcolab-sub', colab ? `Editando: ${colab.nombre}` : 'Completa los datos del nuevo miembro');
+
+  // Resetear/rellenar campos
+  const f = (elId, val) => { const el = $id(elId); if (el) el.value = val || ''; };
+  f('mc-nombre',   colab?.nombre    || '');
+  f('mc-cedula',   colab?.cedula    || '');
+  f('mc-rnc',      colab?.rnc       || '');
+  f('mc-correo',   colab?.email     || '');
+  f('mc-telefono', colab?.telefono  || '');
+  f('mc-whatsapp', colab?.whatsapp  || '');
+  f('mc-direccion',colab?.direccion || '');
+  f('mc-password', '');
+  const estadoEl = $id('mc-estado');
+  if (estadoEl) estadoEl.value = colab?.estado || 'activo';
+
+  // Tipo
+  const chk = $id('mc-check-dependiente');
+  if (chk) chk.checked = (colab?.tipo || 'dependiente') === 'dependiente';
+  toggleTipoColab((colab?.tipo || 'dependiente') === 'dependiente');
+
+  // En modo edición: campo contraseña es opcional (botón separado)
+  const pwGroup = $id('mc-pw-group');
+  const pwInput = $id('mc-password');
+  const btnPwChange = $id('mc-btn-pw-change');
+  if (colab) {
+    if (pwGroup)    pwGroup.style.display = 'none';
+    if (btnPwChange) btnPwChange.style.display = '';
+  } else {
+    if (pwGroup)    pwGroup.style.display = '';
+    if (btnPwChange) btnPwChange.style.display = 'none';
+  }
+
+  // El correo no se puede cambiar (Firebase Auth limitation)
+  const correoEl = $id('mc-correo');
+  if (correoEl) correoEl.disabled = !!colab;
+
+  show('modal-colaborador');
+
+  // Conectar autocomplete DGII a ambos campos
+  if (window.RNCLookup) {
+    const cedulaEl = $id('mc-cedula');
+    const nombreEl = $id('mc-nombre');
+
+    // Buscar por ID desde el campo Cédula/RNC → rellena nombre automáticamente
+    if (cedulaEl) {
+      RNCLookup.attach(cedulaEl, {
+        nameEl: nombreEl,
+        mode: 'both',
+        onSelect(data) {
+          if (nombreEl && !nombreEl.value) nombreEl.value = data.nombre || '';
+          const rncEl = $id('mc-rnc');
+          if (rncEl && data.rnc) {
+            const digits = String(data.rnc).replace(/\D/g, '');
+            rncEl.value = digits.length === 9 ? data.rnc : '';
+          }
+        },
+      });
+    }
+
+    // Buscar por nombre desde el campo Nombre/Empresa → rellena cédula/RNC automáticamente
+    if (nombreEl) {
+      RNCLookup.attach(nombreEl, {
+        mode: 'name',
+        idEl: cedulaEl,
+        onSelect(data) {
+          const rncEl = $id('mc-rnc');
+          if (rncEl && data.rnc) {
+            const digits = String(data.rnc).replace(/\D/g, '');
+            rncEl.value = digits.length === 9 ? data.rnc : '';
+          }
+        },
+      });
+    }
+  }
+}
+
+function cerrarModalColab() { hide('modal-colaborador'); }
+
+function toggleTipoColab(checked) {
+  const badge = $id('mc-tipo-badge');
+  const desc  = $id('mc-tipo-desc');
+  const perms = checked ? PERMISOS_DEPENDIENTE : PERMISOS_COMPLETO;
+
+  if (badge) badge.innerHTML = checked
+    ? colabTipoBadge('dependiente') + ' <span style="font-size:11px;color:var(--text-muted);margin-left:6px">Este colaborador NO puede crear sus propios clientes</span>'
+    : colabTipoBadge('completo')    + ' <span style="font-size:11px;color:var(--text-muted);margin-left:6px">Este colaborador tiene acceso completo a la plataforma</span>';
+
+  if (desc) desc.innerHTML = checked
+    ? 'Al activar este check, el colaborador será <strong style="color:#60a5fa">Dependiente</strong>: solo podrá ver y gestionar los clientes que le asignes.'
+    : 'Sin este check, el colaborador funciona como <strong style="color:#a78bfa">Contador Completo</strong>: puede crear sus propios clientes y formar su propia red.';
+
+  const pLista = $id('mc-permite-list');
+  const bLista = $id('mc-bloquea-list');
+  if (pLista) pLista.innerHTML = perms.puede.map(p => `• ${p}`).join('<br>');
+  if (bLista) bLista.innerHTML = perms.noPuede.map(p => `• ${p}`).join('<br>');
+}
+
+async function guardarColab() {
+  const get = id => ($id(id)?.value || '').trim();
+  const nombre   = get('mc-nombre');
+  const correo   = get('mc-correo');
+  const password = get('mc-password');
+  const tipo     = $id('mc-check-dependiente')?.checked ? 'dependiente' : 'completo';
+  const estado   = $id('mc-estado')?.value || 'activo';
+
+  if (!nombre)  { toast('El nombre es requerido.', 'error'); return; }
+  if (!_colabEditId && !correo) { toast('El correo es requerido.', 'error'); return; }
+  if (!_colabEditId && password.length < 6) { toast('La contraseña debe tener al menos 6 caracteres.', 'error'); return; }
+
+  const btn = $id('mc-btn-guardar');
+  if (btn) btn.disabled = true;
+
+  try {
+    // Detectar si el campo Cédula/RNC tiene una cédula (11 dígitos) o RNC (9 dígitos)
+    const cedulaRncRaw = get('mc-cedula').replace(/\D/g, '');
+    const esCedula = cedulaRncRaw.length === 11;
+    const body = {
+      nombre,
+      cedula:    esCedula ? get('mc-cedula') : '',
+      rnc:       esCedula ? (get('mc-rnc') || '') : get('mc-cedula'),
+      telefono:  get('mc-telefono'),
+      whatsapp:  get('mc-whatsapp'),
+      direccion: get('mc-direccion'),
+      tipo, estado,
+    };
+
+    if (_colabEditId) {
+      await apiCall('PUT', `/api/colaboradores/${_colabEditId}`, body);
+      toast('Colaborador actualizado.', 'success');
+    } else {
+      body.correo   = correo;
+      body.password = password;
+      await apiCall('POST', '/api/colaboradores', body);
+      toast('Colaborador creado. Ya puede iniciar sesión.', 'success');
+    }
+
+    cerrarModalColab();
+    await loadColaboradores();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function cambiarPwColab() {
+  if (!_colabEditId) return;
+  const pw = prompt('Nueva contraseña (mínimo 6 caracteres):');
+  if (!pw) return;
+  if (pw.length < 6) { toast('La contraseña debe tener al menos 6 caracteres.', 'error'); return; }
+  try {
+    await apiCall('POST', `/api/colaboradores/${_colabEditId}/cambiar-password`, { password: pw });
+    toast('Contraseña actualizada.', 'success');
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+async function eliminarColab(id) {
+  const colab = _colabs.find(c => c.id === id);
+  if (!confirm(`¿Eliminar a ${colab?.nombre || id}?\nSe deshabilitará su acceso. No se puede deshacer.`)) return;
+  try {
+    await apiCall('DELETE', `/api/colaboradores/${id}`);
+    toast('Colaborador eliminado.', 'success');
+    await loadColaboradores();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Vista detalle ──────────────────────────────────────────────────────────
+async function verColabDetalle(id) {
+  _colabDetalleId = id;
+  goto('colab-detalle');
+
+  try {
+    const colab = await apiCall('GET', `/api/colaboradores/${id}`);
+    const esD = colab.tipo === 'dependiente';
+
+    setText('cdet-nombre', colab.nombre || '—');
+    $id('cdet-tipo-badge').innerHTML = colabTipoBadge(colab.tipo) + ' ' + colabEstadoBadge(colab.estado);
+
+    // Info personal
+    $id('cdet-info').innerHTML = [
+      ['📧', 'Correo',     colab.email     || '—'],
+      ['🪪', 'Cédula',     colab.cedula    || '—'],
+      ['📄', 'RNC',        colab.rnc       || '—'],
+      ['📱', 'Teléfono',   colab.telefono  || '—'],
+      ['💬', 'WhatsApp',   colab.whatsapp  || '—'],
+      ['📍', 'Dirección',  colab.direccion || '—'],
+      ['📅', 'Creado',     colab.createdAt ? new Date(colab.createdAt).toLocaleDateString('es-DO') : '—'],
+    ].map(([icon, label, val]) =>
+      `<div class="info-row"><span class="info-icon">${icon}</span><span class="info-label">${label}:</span><span class="info-value">${esc(val)}</span></div>`
+    ).join('');
+
+    // Permisos
+    const perms = esD ? PERMISOS_DEPENDIENTE : PERMISOS_COMPLETO;
+    $id('cdet-permisos').innerHTML = `
+      <div style="margin-bottom:10px">
+        <div style="font-size:12px;font-weight:700;color:#4ade80;margin-bottom:4px">✅ Puede hacer</div>
+        <div style="font-size:12px;color:#86efac;line-height:1.8">${perms.puede.map(p => '• ' + p).join('<br>')}</div>
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:#f87171;margin-bottom:4px">❌ No puede hacer</div>
+        <div style="font-size:12px;color:#fca5a5;line-height:1.8">${perms.noPuede.map(p => '• ' + p).join('<br>')}</div>
+      </div>`;
+
+    // Acciones
+    $id('cdet-actions').innerHTML = `
+      <button class="btn btn-secondary" onclick="app.abrirModalColab('${id}')">✏️ Editar</button>
+      <button class="btn btn-danger" onclick="app.eliminarColab('${id}')">🗑 Eliminar</button>`;
+
+    // Cargar negocios asignados
+    await _renderColabClientes(id);
+  } catch (e) {
+    toast('Error cargando detalle: ' + e.message, 'error');
+  }
+}
+
+async function _renderColabClientes(colabId) {
+  const grid = $id('cdet-clientes-grid');
+  if (!grid) return;
+  try {
+    const clientes = await apiCall('GET', `/api/colaboradores/${colabId}/clientes`);
+    if (!clientes.length) {
+      grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🏪</div><div class="empty-text">Sin negocios asignados</div></div>';
+      return;
+    }
+    grid.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
+      ${clientes.map(c => `
+        <div style="background:var(--surface);border:1px solid #2d3a52;border-radius:10px;padding:14px;display:flex;justify-content:space-between;align-items:center">
+          <div>
+            <div style="font-weight:600;color:var(--text);font-size:13px">${esc(c.businessName)}</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(c.propietario)} • ${esc(c.rnc)}</div>
+            <div style="margin-top:4px">${statusBadge(c.status)}</div>
+          </div>
+          <button class="btn btn-danger btn-xs" onclick="app.quitarCliente('${colabId}','${c.id}')">✕ Quitar</button>
+        </div>`).join('')}
+    </div>`;
+  } catch (e) {
+    grid.innerHTML = `<div class="empty-state"><div class="empty-text" style="color:#ef4444">Error: ${esc(e.message)}</div></div>`;
+  }
+}
+
+async function quitarCliente(colabId, businessId) {
+  if (!confirm('¿Quitar este negocio del colaborador?')) return;
+  try {
+    await apiCall('DELETE', `/api/colaboradores/${colabId}/clientes/${businessId}`);
+    toast('Negocio removido.', 'success');
+    await _renderColabClientes(colabId);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── Modal asignar negocio ──────────────────────────────────────────────────
+async function abrirModalAsignar() {
+  if (!_colabDetalleId) return;
+  const colab = await apiCall('GET', `/api/colaboradores/${_colabDetalleId}`).catch(() => null);
+  setText('masig-colab-nombre', colab ? `Asignando a: ${colab.nombre}` : '');
+
+  show('modal-asignar-cliente');
+  $id('masig-search').value = '';
+
+  // Cargar negocios disponibles
+  try {
+    _negociosAsignar = await apiCall('GET', '/api/clientes');
+    _renderNegociosAsignar(_negociosAsignar, colab?.clientesAsignados || []);
+  } catch (e) {
+    $id('masig-lista').innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444">Error: ${esc(e.message)}</div>`;
+  }
+}
+
+function cerrarModalAsignar() { hide('modal-asignar-cliente'); }
+
+function _renderNegociosAsignar(lista, yaAsignados) {
+  const el = $id('masig-lista');
+  if (!lista.length) {
+    el.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted)">Sin negocios disponibles</div>';
+    return;
+  }
+  el.innerHTML = lista.map(n => {
+    const asignado = (yaAsignados || []).includes(n.id);
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #2d3a52">
+      <div>
+        <div style="font-weight:600;color:var(--text);font-size:13px">${esc(n.businessName || n.id)}</div>
+        <div style="font-size:11px;color:var(--text-muted)">${esc(n.propietario || '')} • ${esc(n.rnc || '')} • ${statusBadge(n.status).replace(/<[^>]+>/g,'').trim()}</div>
+      </div>
+      ${asignado
+        ? '<span style="font-size:11px;color:#4ade80;font-weight:600">✅ Ya asignado</span>'
+        : `<button class="btn btn-primary btn-xs" onclick="app.asignarNegocio('${n.id}','${esc(n.businessName || n.id)}')">Asignar</button>`
+      }
+    </div>`;
+  }).join('');
+}
+
+function filtrarNegociosAsignar(q) {
+  const t = (q || '').toLowerCase().trim();
+  const filtrados = t
+    ? _negociosAsignar.filter(n =>
+        (n.businessName || '').toLowerCase().includes(t) ||
+        (n.rnc || '').toLowerCase().includes(t) ||
+        (n.propietario || '').toLowerCase().includes(t))
+    : _negociosAsignar;
+  _renderNegociosAsignar(filtrados, []);
+}
+
+async function asignarNegocio(businessId, businessName) {
+  if (!_colabDetalleId) return;
+  try {
+    await apiCall('POST', `/api/colaboradores/${_colabDetalleId}/asignar`, { businessId });
+    toast(`"${businessName}" asignado correctamente.`, 'success');
+    cerrarModalAsignar();
+    await _renderColabClientes(_colabDetalleId);
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // EXPORT — accesible desde HTML (onclick)
 // ══════════════════════════════════════════════════════════════════════
 
@@ -2074,6 +2594,11 @@ window.app = {
   // facturación — clientes
   abrirClientesFac, cerrarClientesFac,
   nuevoClienteFac, editarClienteFac, guardarClienteFac, cancelarClienteFac, eliminarClienteFac,
+  // colaboradores
+  loadColaboradores, filtrarColaboradores,
+  abrirModalColab, cerrarModalColab, guardarColab, toggleTipoColab, cambiarPwColab, eliminarColab,
+  verColabDetalle, quitarCliente,
+  abrirModalAsignar, cerrarModalAsignar, filtrarNegociosAsignar, asignarNegocio,
   // estado
   get currentClienteId() { return _currentClienteId; },
 };

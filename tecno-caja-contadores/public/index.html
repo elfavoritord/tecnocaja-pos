@@ -108,6 +108,10 @@
       <a class="nav-item" data-mod="facturacion" onclick="app.goto('facturacion')">
         <span class="nav-icon">💳</span> Facturación
       </a>
+      <a class="nav-item" id="nav-colaboradores" data-mod="colaboradores" onclick="app.goto('colaboradores')">
+        <span class="nav-icon">🤝</span> Colaboradores
+        <span id="nav-badge-colab" class="nav-badge hidden">0</span>
+      </a>
 
       <div class="nav-section-label" style="margin-top:8px">Cuenta</div>
       <a class="nav-item" data-mod="configuracion" onclick="app.goto('configuracion')">
@@ -529,6 +533,101 @@
               <tr><td colspan="8" class="td-empty">Cargando facturas...</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── COLABORADORES ─────────────────────────────────────────────────── -->
+    <div id="mod-colaboradores" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">🤝 Colaboradores</div>
+          <div class="mod-sub" id="colab-subtitle">Red de trabajo de tu firma contable</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadColaboradores()">↺ Actualizar</button>
+          <button class="btn btn-primary" id="btn-nuevo-colab" onclick="app.abrirModalColab(null)">＋ Nuevo Colaborador</button>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="stats-grid" id="colab-stats-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat-card">
+          <div class="stat-icon blue">🤝</div>
+          <div><div class="stat-label">Total</div><div class="stat-value" id="cs-total">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green">✅</div>
+          <div><div class="stat-label">Activos</div><div class="stat-value" id="cs-activos">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon purple">🔗</div>
+          <div><div class="stat-label">Dependientes</div><div class="stat-value" id="cs-dep">—</div></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon orange">🌐</div>
+          <div><div class="stat-label">Completos</div><div class="stat-value" id="cs-comp">—</div></div>
+        </div>
+      </div>
+
+      <!-- Tabla -->
+      <div class="section-card" style="overflow:hidden">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="section-card-title" style="margin-bottom:0">👥 Listado de colaboradores</div>
+          <input class="search-input" style="width:260px;margin-bottom:0"
+            placeholder="🔍 Buscar por nombre, correo, cédula…"
+            oninput="app.filtrarColaboradores(this.value)" />
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Correo</th>
+                <th>Tipo</th>
+                <th>Estado</th>
+                <th>Clientes Asignados</th>
+                <th>Creado</th>
+                <th style="text-align:center">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="colab-tbody">
+              <tr><td colspan="7" class="td-empty">Cargando colaboradores…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── COLABORADOR DETALLE ────────────────────────────────────────────── -->
+    <div id="mod-colab-detalle" class="module">
+      <div class="mod-header">
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="app.goto('colaboradores')" style="margin-bottom:8px">← Volver</button>
+          <div class="mod-title" id="cdet-nombre">Colaborador</div>
+          <div class="mod-sub" id="cdet-tipo-badge"></div>
+        </div>
+        <div class="mod-actions" id="cdet-actions"></div>
+      </div>
+
+      <div class="detail-grid" style="grid-template-columns:1fr 1fr">
+        <div class="detail-card">
+          <div class="detail-card-title">👤 Información personal</div>
+          <div class="info-list" id="cdet-info"></div>
+        </div>
+        <div class="detail-card">
+          <div class="detail-card-title">🔒 Permisos y accesos</div>
+          <div id="cdet-permisos"></div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="section-card-title" style="margin-bottom:0">🏪 Negocios asignados</div>
+          <button class="btn btn-primary btn-sm" id="btn-asignar-cliente" onclick="app.abrirModalAsignar()">＋ Asignar negocio</button>
+        </div>
+        <div id="cdet-clientes-grid">
+          <div class="empty-state"><div class="empty-icon">🏪</div><div class="empty-text">Sin negocios asignados</div></div>
         </div>
       </div>
     </div>
@@ -991,10 +1090,118 @@
   </div>
 </div>
 
+<!-- ── MODAL: Crear / Editar Colaborador ────────────────────────────────── -->
+<div id="modal-colaborador" class="modal-overlay hidden">
+  <div class="modal-card wide" style="max-width:760px;display:flex;flex-direction:column;max-height:calc(100vh - 60px)">
+    <button class="btn-modal-close" onclick="app.cerrarModalColab()">✕</button>
+    <div class="modal-title" id="mcolab-title" style="margin-bottom:2px">Nuevo colaborador</div>
+    <div class="modal-sub" id="mcolab-sub" style="margin-bottom:16px">Completa los datos del nuevo miembro de tu equipo</div>
+
+    <div style="overflow-y:auto;flex:1;padding-right:2px">
+      <!-- Fila 1: Cédula/RNC | Nombre -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Cédula / RNC</label>
+          <input id="mc-cedula" type="text" class="form-input" placeholder="Cédula (11 dígitos) o RNC (9 dígitos)" />
+          <input id="mc-rnc" type="hidden" />
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Nombre / Empresa *</label>
+          <input id="mc-nombre" type="text" class="form-input" placeholder="Nombre o razón social (busca en DGII…)" />
+        </div>
+      </div>
+
+      <!-- Fila 2: Correo | Teléfono | WhatsApp -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Correo *</label>
+          <input id="mc-correo" type="email" class="form-input" placeholder="correo@empresa.com" />
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Teléfono</label>
+          <input id="mc-telefono" type="tel" class="form-input" placeholder="809-000-0000" />
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">WhatsApp</label>
+          <input id="mc-whatsapp" type="tel" class="form-input" placeholder="809-000-0000" />
+        </div>
+      </div>
+
+      <!-- Fila 3: Contraseña | Estado -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <div class="form-group" id="mc-pw-group" style="margin:0">
+          <label class="form-label">Contraseña temporal *</label>
+          <input id="mc-password" type="password" class="form-input" placeholder="Mínimo 6 caracteres" />
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label">Estado</label>
+          <select id="mc-estado" class="form-input">
+            <option value="activo">✅ Activo</option>
+            <option value="inactivo">⚫ Inactivo</option>
+            <option value="suspendido">🚫 Suspendido</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Tipo + Permisos (3 columnas) -->
+      <div style="display:grid;grid-template-columns:190px 1fr 1fr;gap:10px;align-items:start">
+        <div style="background:var(--surface,#1a2234);border:1px solid #2d3a52;border-radius:9px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--text-sub,#8fa3c2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Tipo de colaborador</div>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+            <input id="mc-check-dependiente" type="checkbox" style="width:15px;height:15px;flex-shrink:0"
+              onchange="app.toggleTipoColab(this.checked)" />
+            <span style="font-size:13px;color:var(--text,#e8edf5);font-weight:600">Dependiente</span>
+          </label>
+          <div id="mc-tipo-badge" style="margin-bottom:6px"></div>
+          <div id="mc-tipo-desc" style="font-size:11px;color:var(--text-muted,#5a7099);line-height:1.5"></div>
+        </div>
+        <div style="background:#052e16;border:1px solid #15803d;border-radius:9px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:#4ade80;margin-bottom:7px">✅ Puede hacer</div>
+          <div id="mc-permite-list" style="font-size:11px;color:#86efac;line-height:1.8"></div>
+        </div>
+        <div style="background:#450a0a;border:1px solid #b91c1c;border-radius:9px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:#f87171;margin-bottom:7px">❌ No puede hacer</div>
+          <div id="mc-bloquea-list" style="font-size:11px;color:#fca5a5;line-height:1.8"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-footer" style="border-top:1px solid var(--border,#2d3a52);padding-top:14px;margin-top:14px">
+      <button class="btn btn-secondary" onclick="app.cerrarModalColab()">Cancelar</button>
+      <button class="btn btn-primary" id="mc-btn-pw-change" style="display:none" onclick="app.cambiarPwColab()">🔑 Cambiar contraseña</button>
+      <button class="btn btn-primary" id="mc-btn-guardar" onclick="app.guardarColab()">💾 Guardar colaborador</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Asignar Negocio ────────────────────────────────────────────── -->
+<div id="modal-asignar-cliente" class="modal-overlay hidden">
+  <div class="modal-card wide">
+    <button class="btn-modal-close" onclick="app.cerrarModalAsignar()">✕</button>
+    <div class="modal-title">🏪 Asignar negocio a colaborador</div>
+    <div class="modal-sub" id="masig-colab-nombre"></div>
+
+    <div style="margin-top:16px">
+      <input class="search-input" style="width:100%;margin-bottom:12px"
+        placeholder="🔍 Buscar negocio por nombre, RNC o propietario…"
+        oninput="app.filtrarNegociosAsignar(this.value)" id="masig-search" />
+
+      <div id="masig-lista" style="max-height:380px;overflow-y:auto">
+        <div style="text-align:center;padding:32px;color:var(--text-muted)">Cargando negocios…</div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarModalAsignar()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── TOAST ──────────────────────────────────────────────────────────── -->
 <div id="toast" class="hidden"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="js/rnc-lookup.js"></script>
 <script src="js/contadores-app.js"></script>
 </body>
 </html>

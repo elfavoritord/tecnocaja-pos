@@ -184,10 +184,14 @@ class FirebaseSyncService {
       console.log(`🚀 Sincronizando ${entity_type}:${entity_id}...`);
 
       const handlers = {
-        sale: this.syncSale.bind(this),
+        sale:         this.syncSale.bind(this),
         cash_closing: this.syncCashClosing.bind(this),
         daily_report: this.syncDailyReport.bind(this),
-        inventory: this.syncInventory.bind(this),
+        inventory:    this.syncInventory.bind(this),
+        product:      this.syncProduct.bind(this),
+        product_delete: this.syncProductDelete.bind(this),
+        client:       this.syncClient.bind(this),
+        client_delete: this.syncClientDelete.bind(this),
       };
 
       const handler = handlers[entity_type];
@@ -202,6 +206,16 @@ class FirebaseSyncService {
       console.error('❌ Error sincronizando:', err);
       await FirebaseSyncQueue.markError(item.id, err.message);
     }
+  }
+
+  /**
+   * Encola un item y lanza un procesamiento inmediato (fire-and-forget).
+   * Garantiza que el cambio llegue a Firebase en segundos, no en 30s.
+   */
+  enqueueAndSync(entityType, entityId, payload) {
+    FirebaseSyncQueue.enqueue(entityType, String(entityId), payload)
+      .then(() => this.processPendingItems())
+      .catch((err) => console.warn(`[sync] enqueueAndSync error (${entityType}:${entityId}):`, err.message));
   }
 
   /** Sincroniza una venta. */
@@ -269,6 +283,54 @@ class FirebaseSyncService {
     }
 
     await batch.commit();
+  }
+
+  /** Sincroniza un producto al catálogo global del negocio. */
+  async syncProduct(payload, productId) {
+    const db = this.getDb();
+    const { businessId, ...productData } = payload;
+    await db
+      .collection('businesses')
+      .doc(businessId)
+      .collection('products')
+      .doc(String(productId))
+      .set({ ...productData, _synced_at: new Date() }, { merge: true });
+  }
+
+  /** Marca un producto como eliminado en Firebase (soft-delete). */
+  async syncProductDelete(payload, productId) {
+    const db = this.getDb();
+    const { businessId } = payload;
+    await db
+      .collection('businesses')
+      .doc(businessId)
+      .collection('products')
+      .doc(String(productId))
+      .set({ deleted: true, deletedAt: new Date(), _synced_at: new Date() }, { merge: true });
+  }
+
+  /** Sincroniza un cliente al negocio. */
+  async syncClient(payload, clientId) {
+    const db = this.getDb();
+    const { businessId, ...clientData } = payload;
+    await db
+      .collection('businesses')
+      .doc(businessId)
+      .collection('clients')
+      .doc(String(clientId))
+      .set({ ...clientData, _synced_at: new Date() }, { merge: true });
+  }
+
+  /** Marca un cliente como eliminado en Firebase (soft-delete). */
+  async syncClientDelete(payload, clientId) {
+    const db = this.getDb();
+    const { businessId } = payload;
+    await db
+      .collection('businesses')
+      .doc(businessId)
+      .collection('clients')
+      .doc(String(clientId))
+      .set({ deleted: true, deletedAt: new Date(), _synced_at: new Date() }, { merge: true });
   }
 
   /**

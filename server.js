@@ -44,11 +44,18 @@ const createRespaldosRouter = require('./server/routes/respaldos.routes');
 // Plataforma Multiempresa — referencia ligera para buscar contadores desde el wizard POS
 const createPlatformRouter = require('./server/routes/platform.routes');
 
+// Panel SuperAdmin de Tecno Caja
+const createSuperAdminRouter = require('./server/routes/superadmin.routes');
+
+// Panel Contador Asociado
+const createContadorRouter = require('./server/routes/contador.routes');
+
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
 
 // ✅ Módulo Fiscal e-CF / DGII
 const { createEcfModule } = require('./modules/ecf');
+const { listDgiiReceived } = require('./server/routes/dgii-public.routes');
 const createRncRouter  = require('./server/routes/rnc.routes');
 
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
@@ -1470,7 +1477,16 @@ app.use('/api/ecf', ecfModule.apiRouter);
 
 // ✅ Rutas fiscales anteriores desactivadas para evitar mezclar legado con v2
 app.use('/api/fiscal', ecfModule.legacyApiRouter);
-app.use(ecfModule.legacyPublicRouter);
+
+// ✅ Rutas públicas DGII — DGII llama a estos endpoints durante certificación y producción
+// GET  /fe/autenticacion/api/semilla
+// POST /fe/autenticacion/api/validacioncertificado
+// POST /fe/recepcion/api/ecf
+// POST /fe/aprobacioncomercial/api/ecf
+app.use(ecfModule.publicDgiiRouter);
+
+// Documentos recibidos de DGII (para el wizard de certificación)
+app.get('/api/ecf/reception/received', (_req, res) => res.json({ items: listDgiiReceived() }));
 
 // ✅ Consulta RNC — dataset DGII local (dgii-rnc)
 app.use(createRncRouter());
@@ -1606,6 +1622,12 @@ app.use(async (req, _res, next) => {
 
 // Plataforma Multiempresa — solo rutas públicas del wizard (buscar contador)
 app.use('/api/platform', createPlatformRouter({ query }));
+
+// Panel SuperAdmin — solo accesible con role_code = 'superadmin'
+app.use('/api/superadmin', createSuperAdminRouter({ query, resolveRequestActorUser, createLocalPasswordHash }));
+
+// Panel Contador Asociado — solo accesible con role_code = 'contador_asociado'
+app.use('/api/contador', createContadorRouter({ query, resolveRequestActorUser }));
 
 // ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
 //    req.authUser esté disponible en las rutas de respaldo.
@@ -9590,6 +9612,22 @@ app.post('/api/products', async (req, res) => {
     await syncCategoriesToReports({ config: cfg });
     await reportsSync.syncProduct(createdResult.row, { config: cfg, branchId: createdResult.branchId });
   });
+  // ── Sync nuevo sistema Firebase (inmediato) ──
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic && createdResult.row) {
+      const _r = createdResult.row;
+      getSyncService().enqueueAndSync('product', _r.id, {
+        businessId: _lic,
+        codigo: _r.codigo || '', nombre: _r.nombre || '', categoria: _r.categoria || '',
+        marca: _r.marca || '', unidad: _r.unidad || '', precioVenta: Number(_r.precio_venta || 0),
+        precioCompra: Number(_r.precio_compra || 0), stock: Number(_r.stock || 0),
+        stockMin: Number(_r.stock_min || 0), estado: _r.estado || 'Activo',
+        aplicaItbis: Boolean(_r.aplica_itbis), imageUrl: _r.image_url || null,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (_e) {}
   await persistProductsCsvBackup('crear_producto');
   scheduleSilentProductBackup('crear_producto');
   res.status(201).json(created);
@@ -10170,6 +10208,22 @@ app.put('/api/products/:id', async (req, res) => {
     await syncCategoriesToReports({ config: cfg });
     await reportsSync.syncProduct(updatedResult.row, { config: cfg, branchId: updatedResult.branchId });
   });
+  // ── Sync nuevo sistema Firebase (inmediato) ──
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic && updatedResult.row) {
+      const _r = updatedResult.row;
+      getSyncService().enqueueAndSync('product', _r.id, {
+        businessId: _lic,
+        codigo: _r.codigo || '', nombre: _r.nombre || '', categoria: _r.categoria || '',
+        marca: _r.marca || '', unidad: _r.unidad || '', precioVenta: Number(_r.precio_venta || 0),
+        precioCompra: Number(_r.precio_compra || 0), stock: Number(_r.stock || 0),
+        stockMin: Number(_r.stock_min || 0), estado: _r.estado || 'Activo',
+        aplicaItbis: Boolean(_r.aplica_itbis), imageUrl: _r.image_url || null,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (_e) {}
   await persistProductsCsvBackup('actualizar_producto');
   scheduleSilentProductBackup('actualizar_producto');
   res.json(updated);
@@ -10210,6 +10264,13 @@ app.delete('/api/products/:id', async (req, res) => {
   fireReportSync(async () => {
     await deleteProductsFromReportsByIds([req.params.id]);
   });
+  // ── Sync nuevo sistema Firebase (soft-delete inmediato) ──
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic) {
+      getSyncService().enqueueAndSync('product_delete', req.params.id, { businessId: _lic });
+    }
+  } catch (_e) {}
   await persistProductsCsvBackup('eliminar_producto');
   scheduleSilentProductBackup('eliminar_producto');
   res.status(204).end();
@@ -10410,6 +10471,21 @@ app.post('/api/clients', async (req, res) => {
     const cfg = await getReportSyncConfig();
     await reportsSync.syncCustomer(createdRow, { config: cfg });
   });
+  // ── Sync nuevo sistema Firebase (inmediato) ──
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic && createdRow) {
+      getSyncService().enqueueAndSync('client', createdRow.id, {
+        businessId: _lic,
+        nombre: createdRow.nombre || '', telefono: createdRow.telefono || '',
+        email: createdRow.email || '', cedula: createdRow.cedula || '',
+        rnc: createdRow.rnc || '', direccion: createdRow.direccion || '',
+        limiteCredito: Number(createdRow.limite_credito || 0),
+        balance: Number(createdRow.balance || 0),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (_e) {}
   res.status(201).json(mapClientRow(createdRow));
 });
 
@@ -10456,6 +10532,22 @@ app.put('/api/clients/:id', async (req, res) => {
     const cfg = await getReportSyncConfig();
     if (rows[0]) await reportsSync.syncCustomer(rows[0], { config: cfg });
   });
+  // ── Sync nuevo sistema Firebase (inmediato) ──
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic && rows[0]) {
+      const _c = rows[0];
+      getSyncService().enqueueAndSync('client', id, {
+        businessId: _lic,
+        nombre: _c.nombre || '', telefono: _c.telefono || '',
+        email: _c.email || '', cedula: _c.cedula || '',
+        rnc: _c.rnc || '', direccion: _c.direccion || '',
+        limiteCredito: Number(_c.limite_credito || 0),
+        balance: Number(_c.balance || 0),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (_e) {}
   res.json(mapClientRow(rows[0]));
 });
 
@@ -10506,6 +10598,13 @@ app.delete('/api/clients/:id', async (req, res) => {
     const cfg = await getReportSyncConfig();
     await reportsSync.deleteCustomer(req.params.id, { config: cfg });
   });
+  // ── Sync nuevo sistema Firebase (soft-delete inmediato) ──
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic) {
+      getSyncService().enqueueAndSync('client_delete', req.params.id, { businessId: _lic });
+    }
+  } catch (_e) {}
   res.status(204).end();
 });
 
@@ -13285,6 +13384,38 @@ app.post('/api/sales', async (req, res) => {
     // Actualizar KPIs del Portal de Contadores en tiempo real (fire & forget)
     const { syncPosStatsToFirestore } = require('./server/sync/sync-pos-stats');
     syncPosStatsToFirestore().catch(() => {});
+    // Encolar venta en el nuevo sync service y procesar inmediatamente (<3s)
+    try {
+      const _syncSvc = getSyncService();
+      const _licUid  = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      if (_licUid) {
+        const _saleRow = rows[0];
+        const _saleItems = Array.isArray(items) ? items : [];
+        _syncSvc.enqueueAndSync('sale', created.saleId, {
+          businessId:    _licUid,
+          branchId:      String(created.branchId || 1),
+          registerId:    String(created.cashRegisterId || ''),
+          saleId:        created.saleId,
+          invoiceNumber: _saleRow?.invoice_number || '',
+          cashierId:     _saleRow?.user_id || null,
+          cashierName:   _saleRow?.cashier_name || '',
+          paymentMethod: _saleRow?.payment_method || '',
+          subtotal:      Number(_saleRow?.subtotal || 0),
+          discount:      Number(_saleRow?.discount || 0),
+          tax:           Number(_saleRow?.tax || 0),
+          total:         Number(_saleRow?.total || 0),
+          status:        'completed',
+          createdAt:     _saleRow?.created_at || new Date().toISOString(),
+          items: _saleItems.map((it) => ({
+            product_id: it.product_id,
+            nombre:     it.product_name || '',
+            qty:        Number(it.qty || 1),
+            price:      Number(it.price || 0),
+            line_total: Number(it.line_total || 0),
+          })),
+        });
+      }
+    } catch (_e) { /* fire-and-forget, nunca bloquea la respuesta */ }
   }
   if (rows[0]?.order_type === 'delivery') {
     firebaseSync.syncDeliveryOrder(rows[0]).catch(() => {});
