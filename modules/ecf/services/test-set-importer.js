@@ -399,11 +399,15 @@ function buildCertificationEcfXml(testCase, issueDate) {
   encabezado.ele('Version').txt(rowText(row, 'Version') || '1.0');
 
   const idDoc = encabezado.ele('IdDoc');
-  idDoc.ele('TipoeCF').txt(String(testCase.tipoEcf || rowText(row, 'TipoeCF')).replace(/^E/i, ''));
+  // tipoNum debe calcularse ANTES del array de campos porque condiciona cuáles se incluyen.
+  const tipoNum = String(testCase.tipoEcf || rowText(row, 'TipoeCF') || '').replace(/^E/i, '');
+  idDoc.ele('TipoeCF').txt(tipoNum);
   idDoc.ele('eNCF').txt(testCase.encf);
   [
     'FechaVencimientoSecuencia',
-    'IndicadorNotaCredito',
+    // IndicadorNotaCredito solo válido en E34 (Nota de Crédito). DGII rechaza el campo
+    // si aparece en cualquier otro tipo (E32, E33, E41, etc.) aunque el valor sea 0.
+    ...(tipoNum === '34' ? ['IndicadorNotaCredito'] : []),
     'IndicadorEnvioDiferido',
     'IndicadorMontoGravado',
     'IndicadorServicioTodoIncluido',
@@ -411,7 +415,6 @@ function buildCertificationEcfXml(testCase, issueDate) {
     'TipoPago',
   ].forEach((field) => appendSimple(idDoc, field, row[field]));
   // FechaLimitePago va ANTES de TerminoPago en el XSD (todos los tipos excepto E43).
-  const tipoNum = String(testCase.tipoEcf || rowText(row, 'TipoeCF') || '').replace(/^E/i, '');
   if (tipoNum !== '43') appendSimple(idDoc, 'FechaLimitePago', row['FechaLimitePago']);
   appendSimple(idDoc, 'TerminoPago', row['TerminoPago']);
 

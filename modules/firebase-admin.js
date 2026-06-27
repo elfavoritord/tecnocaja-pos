@@ -151,7 +151,9 @@ function getReportsAppUsersCollectionName() {
 // Detecta si el TECNO_CAJA_LICENSE_UID usa el formato hash legado (pos_XXXXXXXX)
 // que debe ser reemplazado por el formato legible pos:tecno-caja-{nombre}.
 function isLegacyLicenseUid(uid) {
-  return /^pos_[a-f0-9]{8,}$/i.test(uid);
+  // Legacy = IDs derivados de la huella de hardware (prefijo 'npd_').
+  // Los UIDs creados por el wizard (pos_XXXX) NO son legacy aunque tengan hex.
+  return /^npd_[a-f0-9]+$/i.test(uid);
 }
 
 // Devuelve el businessId canónico que usa la app de reportes.

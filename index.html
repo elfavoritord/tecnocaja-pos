@@ -685,11 +685,12 @@
       <a href="#" class="nav-item" onclick="showModule('delivery', this)" data-module="delivery" id="nav-delivery">
         <span class="nav-icon">🛵</span><span class="nav-label">Delivery</span>
       </a>
-      <a href="#" class="nav-item" onclick="showModule('archivos', this)" data-module="archivos" data-deny-role="Cajero">
-        <span class="nav-icon">🗂️</span><span class="nav-label">Archivos</span>
-      </a>
       <a href="#" class="nav-item" onclick="showModule('configuracion', this)" data-module="configuracion" data-deny-role="Cajero">
         <span class="nav-icon">⚙️</span><span class="nav-label">Configuración</span>
+      </a>
+      <a href="#" class="nav-item" onclick="showModule('wabot', this)" data-module="wabot" data-deny-role="Cajero">
+        <span class="nav-icon">💬</span><span class="nav-label">Bot WhatsApp</span>
+        <span class="nav-wa-dot" id="nav-wa-dot" style="display:none"></span>
       </a>
     </nav>
     <div class="sidebar-footer">
@@ -2763,6 +2764,116 @@
       </div>
     </div><!-- /module-delivery -->
 
+    <!-- ══════════════════════════════════════════ BOT WHATSAPP ══ -->
+    <div id="module-wabot" class="module hidden" style="flex-direction:column;overflow-y:auto;padding:2rem">
+
+      <style>
+        #module-wabot { gap: 1.5rem; }
+        .wabot-header { display:flex; align-items:center; gap:1rem; margin-bottom:.5rem; }
+        .wabot-header h2 { font-size:1.4rem; font-weight:700; margin:0; }
+        .wabot-status-badge { display:inline-flex; align-items:center; gap:.4rem; padding:.3rem .75rem; border-radius:20px; font-size:.8rem; font-weight:600; }
+        .wabot-status-badge.stopped     { background:rgba(107,114,128,.15); color:#6b7280; }
+        .wabot-status-badge.starting    { background:rgba(245,158,11,.15);  color:#f59e0b; }
+        .wabot-status-badge.qr         { background:rgba(59,130,246,.15);  color:#3b82f6; }
+        .wabot-status-badge.ready      { background:rgba(16,185,129,.15);  color:#10b981; }
+        .wabot-status-badge.disconnected{ background:rgba(239,68,68,.15);   color:#ef4444; }
+        .wabot-status-badge::before { content:''; width:8px; height:8px; border-radius:50%; background:currentColor; }
+        .wabot-grid { display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; }
+        @media(max-width:800px){ .wabot-grid { grid-template-columns:1fr; } }
+        .wabot-card { background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:1.25rem; }
+        .wabot-card h3 { font-size:.9rem; font-weight:700; color:var(--text2); text-transform:uppercase; letter-spacing:.05em; margin:0 0 1rem; }
+        .wabot-qr-box { display:flex; flex-direction:column; align-items:center; gap:1rem; min-height:160px; justify-content:center; }
+        .wabot-qr-box img { border-radius:12px; border:3px solid var(--accent); width:220px; height:220px; }
+        .wabot-qr-hint { font-size:.8rem; color:var(--text3); text-align:center; max-width:220px; line-height:1.4; }
+        .wabot-connected-info { display:flex; flex-direction:column; gap:.6rem; }
+        .wabot-connected-info p { margin:0; font-size:.9rem; color:var(--text); }
+        .wabot-connected-info span { color:var(--text3); font-size:.8rem; }
+        .wabot-form-row { display:flex; flex-direction:column; gap:.35rem; margin-bottom:.75rem; }
+        .wabot-form-row label { font-size:.8rem; font-weight:600; color:var(--text2); }
+        .wabot-form-row input { background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:.5rem .75rem; color:var(--text); font-size:.9rem; outline:none; }
+        .wabot-form-row input:focus { border-color:var(--accent); }
+        .wabot-btn { padding:.55rem 1.25rem; border-radius:9px; border:none; font-weight:600; font-size:.9rem; cursor:pointer; transition:opacity .15s; }
+        .wabot-btn:hover { opacity:.85; }
+        .wabot-btn-start { background:var(--accent); color:#fff; }
+        .wabot-btn-stop  { background:rgba(239,68,68,.15); color:#ef4444; border:1px solid rgba(239,68,68,.3); }
+        .wabot-btn-row   { display:flex; gap:.75rem; flex-wrap:wrap; margin-top:.5rem; }
+        .wabot-ai-selector { display:flex; flex-direction:column; gap:.4rem; }
+        .wabot-ai-option { display:flex; align-items:center; gap:.6rem; padding:.5rem .75rem; border:1px solid var(--border); border-radius:8px; cursor:pointer; transition:background .12s; font-size:.88rem; font-weight:500; }
+        .wabot-ai-option:hover { background:var(--bg3); }
+        .wabot-ai-option input[type=radio] { accent-color:var(--accent); width:15px; height:15px; flex-shrink:0; }
+        .wabot-ai-option.selected { border-color:var(--accent); background:rgba(99,102,241,.08); }
+        .wabot-ai-badge { font-size:.7rem; padding:.1rem .4rem; border-radius:4px; font-weight:700; margin-left:auto; }
+        .wabot-ai-badge.free { background:rgba(16,185,129,.15); color:#10b981; }
+        .wabot-ai-badge.paid { background:rgba(245,158,11,.12); color:#f59e0b; }
+        .wabot-log { display:flex; flex-direction:column; gap:.5rem; max-height:320px; overflow-y:auto; }
+        .wabot-log-msg { display:flex; gap:.6rem; align-items:flex-start; }
+        .wabot-log-msg.in  .wabot-log-bubble { background:var(--bg3); color:var(--text); border-radius:0 10px 10px 10px; }
+        .wabot-log-msg.out .wabot-log-bubble { background:rgba(99,102,241,.15); color:var(--text); border-radius:10px 0 10px 10px; margin-left:auto; }
+        .wabot-log-msg.out { flex-direction:row-reverse; }
+        .wabot-log-bubble { padding:.45rem .75rem; border-radius:10px; font-size:.82rem; max-width:85%; line-height:1.4; }
+        .wabot-log-time { font-size:.7rem; color:var(--text3); white-space:nowrap; padding-top:.25rem; }
+        .wabot-log-empty { color:var(--text3); font-size:.85rem; text-align:center; padding:2rem 0; }
+        .nav-wa-dot { width:7px; height:7px; border-radius:50%; background:#10b981; margin-left:auto; flex-shrink:0; }
+      </style>
+
+      <div class="wabot-header">
+        <h2>💬 Bot WhatsApp</h2>
+        <span class="wabot-status-badge stopped" id="wabot-status-badge">Detenido</span>
+      </div>
+
+      <div class="wabot-grid">
+        <div class="wabot-card">
+          <h3>Estado de Conexión</h3>
+          <div class="wabot-qr-box" id="wabot-qr-box">
+            <div class="wabot-log-empty">Bot detenido.<br>Configura y presiona <strong>Iniciar Bot</strong>.</div>
+          </div>
+        </div>
+
+        <div class="wabot-card">
+          <h3>Configuración</h3>
+          <div class="wabot-form-row">
+            <label>Número principal (recibirá y enviará mensajes al bot)</label>
+            <input type="tel" id="wabot-owner-phone" placeholder="18292812877" value="18292812877">
+          </div>
+          <div class="wabot-form-row">
+            <label>Número secundario <span style="font-size:.75rem;color:var(--text3)">(opcional — también puede hablar con el bot)</span></label>
+            <input type="tel" id="wabot-owner-phone2" placeholder="18091234567 (opcional)">
+          </div>
+          <!-- Selector IA oculto (modo solo comandos fijo por ahora) -->
+          <input type="radio" name="wabot-ai" value="none" checked style="display:none">
+          <div id="wabot-apikey-row" style="display:none">
+            <input type="password" id="wabot-api-key">
+          </div>
+          <div class="wabot-btn-row">
+            <button class="wabot-btn wabot-btn-start" onclick="waBotStart()">▶ Iniciar Bot</button>
+            <button class="wabot-btn wabot-btn-stop"  onclick="waBotStop()">■ Detener</button>
+          </div>
+          <p style="font-size:.78rem;color:var(--text3);margin-top:1rem;line-height:1.5">
+            Al iniciar, aparece un <strong>código QR</strong> aquí.<br>
+            Escanéalo con el WhatsApp del número del negocio.<br>
+            Luego escríbele desde tu personal (<code>18292812877</code>).
+          </p>
+        </div>
+
+        <!-- Instrucciones personalizadas -->
+        <div class="wabot-card" style="grid-column:1/-1">
+          <h3 style="margin-bottom:.6rem">📝 Instrucciones del Bot</h3>
+          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem">Personaliza cómo responde el bot. Ej: "Cuando saludes, menciona el nombre del negocio. Si hay bajo stock, ponlo primero siempre."</p>
+          <textarea id="wabot-instructions" rows="4" placeholder="Escribe aquí las instrucciones para el bot..." style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.85rem;resize:vertical;font-family:inherit"></textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:.5rem">
+            <button onclick="waBotSaveInstructions()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:.5rem 1.2rem;font-weight:600;font-size:.85rem;cursor:pointer">Guardar instrucciones</button>
+          </div>
+        </div>
+
+        <div class="wabot-card" style="grid-column:1/-1">
+          <h3>Conversación Reciente</h3>
+          <div class="wabot-log" id="wabot-log">
+            <div class="wabot-log-empty" id="wabot-log-empty">Sin mensajes aún.</div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /module-wabot -->
+
   </main>
 </div>
 
@@ -2866,6 +2977,21 @@
 </div>
 
 <!-- MODALS -->
+<!-- ══ MODAL GRUPOS DE CONFIGURACIÓN ══ -->
+<div id="cfg-group-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:3500;align-items:center;justify-content:center;padding:1rem" onclick="closeCfgGroupModal(event)">
+  <div style="background:var(--bg);border-radius:14px;width:100%;max-width:700px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.45);overflow:hidden" onclick="event.stopPropagation()">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--border);flex-shrink:0">
+      <h3 id="cfg-group-modal-title" style="font-size:1.05rem;font-weight:800;margin:0"></h3>
+      <button onclick="closeCfgGroupModal()" style="background:none;border:none;font-size:1.3rem;color:var(--text3);cursor:pointer;padding:.2rem .5rem;line-height:1;border-radius:6px">✕</button>
+    </div>
+    <div id="cfg-group-modal-body" style="flex:1;overflow-y:auto;padding:1rem 1.25rem;display:flex;flex-direction:column;gap:.5rem"></div>
+    <div style="display:flex;gap:.6rem;justify-content:flex-end;padding:.75rem 1.25rem;border-top:1px solid var(--border);flex-shrink:0;background:var(--bg2)">
+      <button class="btn-secondary" onclick="saveConfig()">💾 Guardar</button>
+      <button class="btn-primary" onclick="closeCfgGroupModal()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal(event)">
   <div class="modal" id="modal-box">
     <div class="modal-header">
@@ -3106,7 +3232,6 @@
       <button class="fiscal-tab-btn"        data-tab="centro-fiscal" onclick="switchFiscalTab('centro-fiscal')" style="padding:.6rem .9rem;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap">📅 Centro Fiscal</button>
       <button class="fiscal-tab-btn"        data-tab="connection"    onclick="switchFiscalTab('connection')"    style="padding:.6rem .9rem;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap">⚙ DGII</button>
       <button class="fiscal-tab-btn"        data-tab="homologation"  onclick="switchFiscalTab('homologation')"  style="padding:.6rem .9rem;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap">🧪 Certificación</button>
-      <button class="fiscal-tab-btn"        data-tab="acecf"         onclick="switchFiscalTab('acecf')"         style="padding:.6rem .9rem;border:none;background:none;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap">✅ Aprobaciones</button>
     </div>
 
     <!-- Body con scroll -->
@@ -3234,9 +3359,9 @@
             <div style="display:flex;align-items:center;gap:.35rem;flex-shrink:0">
               <span style="font-size:.72rem;color:var(--text3);white-space:nowrap">Ambiente</span>
               <select id="fiscal-dgii-environment" class="form-input" style="padding:.3rem .55rem;font-size:.8rem;height:auto;min-width:150px" onchange="syncFiscalEnvironmentSelects(this.value)">
-                <option value="test">Test (TesteCF)</option>
-                <option value="certificacion">Certificación (CerteCF)</option>
-                <option value="produccion">Producción (eCF)</option>
+                <option value="testecf">Test (TesteCF)</option>
+                <option value="certecf">Certificación (CerteCF)</option>
+                <option value="ecf">Producción (eCF)</option>
               </select>
             </div>
 
@@ -3298,7 +3423,7 @@
       <!-- ── TAB: CERTIFICADO ───────────────────────────────── -->
       <div id="fiscal-tab-cert" class="fiscal-tab-content" style="display:none">
         <p class="helper-text">El archivo <strong>.p12</strong> se cifra y almacena de forma segura. Nunca se envía al navegador.</p>
-        <div style="background:var(--bg2);padding:1rem;border-radius:8px;margin-bottom:1rem">
+        <div style="background:var(--bg2);padding:1rem;border-radius:8px;margin-bottom:1rem;max-width:480px">
           <div class="form-group" style="margin-bottom:.6rem">
             <label>Archivo de certificado (.p12) *</label>
             <input type="file" id="fiscal-cert-file" accept=".p12,.pfx" class="form-input" style="padding:.4rem">
@@ -3338,9 +3463,9 @@
             <div class="form-group" style="max-width:420px;margin-bottom:1rem">
               <label>Ambiente DGII</label>
               <select id="fiscal-environment-select" class="form-input" onchange="syncFiscalEnvironmentSelects(this.value)">
-                <option value="test">Test (TesteCF)</option>
-                <option value="certificacion">Certificación (CerteCF)</option>
-                <option value="produccion">Producción (eCF)</option>
+                <option value="testecf">Test (TesteCF)</option>
+                <option value="certecf">Certificación (CerteCF)</option>
+                <option value="ecf">Producción (eCF)</option>
               </select>
               <p class="helper-text" style="margin-top:.3rem">Cambiar el ambiente invalida el token actual y actualiza los endpoints oficiales mostrados.</p>
             </div>
@@ -3406,41 +3531,6 @@
       <!-- ── TAB: CERTIFICACIÓN DGII — Wizard guiado ───────── -->
       <div id="fiscal-tab-homologation" class="fiscal-tab-content" style="display:none"></div>
 
-      <!-- ── TAB: APROBACIONES COMERCIALES (Paso 3 certificación) ────── -->
-      <div id="fiscal-tab-acecf" class="fiscal-tab-content" style="display:none">
-        <div style="background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1rem">
-          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem">
-            <div>
-              <div style="font-size:1.1rem;font-weight:900">Aprobaciones Comerciales — Paso 3 Certificación DGII</div>
-              <div style="font-size:.8rem;color:var(--text3);margin-top:.2rem">Descarga el Excel del portal DGII → "DESCARGAR APROBACIONES COMERCIALES", cárgalo aquí y envía las 11 respuestas ACECF firmadas.</div>
-            </div>
-          </div>
-
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-            <div style="padding:.9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
-              <div style="font-weight:800;margin-bottom:.7rem">Enviar Aprobaciones Comerciales</div>
-              <div class="form-group" style="margin-bottom:.6rem">
-                <label style="font-size:.78rem">Excel de Aprobaciones Comerciales (descargado de DGII)</label>
-                <input type="file" id="acecf-excel" accept=".xlsx,.xls,.ods" class="form-input" style="padding:.45rem">
-              </div>
-              <div class="form-group" style="margin-bottom:.75rem">
-                <label style="font-size:.78rem">Ambiente</label>
-                <select id="acecf-environment" class="form-input">
-                  <option value="certecf" selected>Certificación (CerteCF)</option>
-                  <option value="testecf">Test (TesteCF)</option>
-                </select>
-              </div>
-              <div style="font-size:.76rem;color:var(--text3);margin-bottom:.65rem">Usa el certificado P12 ya almacenado en el sistema. Genera, firma y envía todas las ACECF al endpoint DGII.</div>
-              <button id="acecf-process-btn" class="btn-primary" style="width:100%;padding:.75rem" onclick="processAcecf()">Enviar Aprobaciones Comerciales</button>
-            </div>
-
-            <div style="padding:.9rem;border:1px solid var(--border);border-radius:8px;background:var(--bg)">
-              <div style="font-weight:800;margin-bottom:.5rem">Resultado</div>
-              <div id="acecf-result" style="font-size:.8rem;color:var(--text3)">Sin resultados aún.</div>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <!-- ── TAB: SECUENCIAS e-NCF ──────────────────────────── -->
       <div id="fiscal-tab-sequences" class="fiscal-tab-content" style="display:none">

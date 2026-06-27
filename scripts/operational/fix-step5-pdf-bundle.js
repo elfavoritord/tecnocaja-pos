@@ -56,6 +56,27 @@ async function main() {
   const puppeteer = require('puppeteer');
   const { generateReprImpresaHtml } = require('./modules/ecf/controllers/repr-impresa');
 
+  // Cargar emisor real para que la RI muestre la razón social del RNC (Norma General 06-2018)
+  const [[emitterRow]] = await conn.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => [[null]]);
+  const [[configRow]] = await conn.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => [[null]]);
+  const rawNombreComercial = emitterRow?.nombre_comercial ?? '';
+  const emitter = {
+    rnc: (emitterRow?.rnc || configRow?.rnc || '').replace(/\D/g, ''),
+    razon_social: emitterRow?.razon_social || configRow?.business_name || '',
+    // Los valores "DOCUMENTOS ELECTRONICOS DE XX" son placeholders del set de pruebas DGII.
+    nombre_comercial: /documentos electronicos/i.test(rawNombreComercial) ? '' : rawNombreComercial,
+    direccion: emitterRow?.direccion || configRow?.address || '',
+    telefono: emitterRow?.telefono || configRow?.phone || '',
+    correo: emitterRow?.correo || '',
+  };
+  console.log('Emisor real:', { rnc: emitter.rnc, razon_social: emitter.razon_social, nombre_comercial: emitter.nombre_comercial });
+
+  // Limpiar el placeholder del set de pruebas de la BD si aún está guardado
+  if (/documentos electronicos/i.test(rawNombreComercial)) {
+    await conn.query('UPDATE ecf_emitters SET nombre_comercial = ? WHERE business_id = 1', ['']).catch(() => {});
+    console.log('⚠ nombre_comercial era un placeholder DGII — limpiado en BD.\n');
+  }
+
   const outDir = path.resolve('ecf/DGII_CARGAR_AHORA_4_XML_VERIFICADOS');
   fs.mkdirSync(outDir, { recursive: true });
   const outPath = path.join(outDir, 'representaciones-impresas-DGII.zip');
@@ -72,7 +93,7 @@ async function main() {
     const filename = String(idx).padStart(2,'0') + '-' + label + '-' + row.encf + '.pdf';
     process.stdout.write('  ' + filename + ' ... ');
     try {
-      const html = await generateReprImpresaHtml(row.signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
+      const html = await generateReprImpresaHtml(row.signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter });
       await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
       const pdfRaw = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
       const pdf = Buffer.isBuffer(pdfRaw) ? pdfRaw : Buffer.from(pdfRaw);

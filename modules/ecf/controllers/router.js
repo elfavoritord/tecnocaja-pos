@@ -293,10 +293,21 @@ function createEcfRouter(deps) {
       const archive = archiver('zip', { zlib: { level: 6 } });
       archive.pipe(res);
 
+      const emitterRows = await deps.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => []);
+      const configRows = await deps.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+      const emitterForRi = {
+        rnc: (emitterRows[0]?.rnc || configRows[0]?.rnc || '').replace(/\D/g, ''),
+        razon_social: emitterRows[0]?.razon_social || configRows[0]?.business_name || '',
+        nombre_comercial: /documentos electronicos/i.test(emitterRows[0]?.nombre_comercial ?? '') ? '' : (emitterRows[0]?.nombre_comercial ?? ''),
+        direccion: emitterRows[0]?.direccion || configRows[0]?.address || '',
+        telefono: emitterRows[0]?.telefono || configRows[0]?.phone || '',
+        correo: emitterRows[0]?.correo || '',
+      };
+
       for (const { key, idx, row } of selected) {
         const label = TYPE_LABELS[key] || key;
         const filename = `${String(idx).padStart(2,'0')}-${label}-${row.encf}.pdf`;
-        const html = await generateReprImpresaHtml(row.signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
+        const html = await generateReprImpresaHtml(row.signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter: emitterForRi });
         await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
         const pdfRaw = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
         archive.append(Buffer.isBuffer(pdfRaw) ? pdfRaw : Buffer.from(pdfRaw), { name: filename });
@@ -314,12 +325,21 @@ function createEcfRouter(deps) {
   router.get('/print/repr-impresa/:encf', async (req, res) => {
     try {
       const { generateReprImpresaHtml } = require('./repr-impresa');
-      const rows = await deps.query(
-        `SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`,
-        [req.params.encf],
-      );
+      const [rows, emitterRows, configRows] = await Promise.all([
+        deps.query(`SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`, [req.params.encf]),
+        deps.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => []),
+        deps.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []),
+      ]);
       if (!rows.length) return res.status(404).json({ error: 'Documento no encontrado o sin XML firmado.' });
-      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
+      const emitter = {
+        rnc: (emitterRows[0]?.rnc || configRows[0]?.rnc || '').replace(/\D/g, ''),
+        razon_social: emitterRows[0]?.razon_social || configRows[0]?.business_name || '',
+        nombre_comercial: /documentos electronicos/i.test(emitterRows[0]?.nombre_comercial ?? '') ? '' : (emitterRows[0]?.nombre_comercial ?? ''),
+        direccion: emitterRows[0]?.direccion || configRows[0]?.address || '',
+        telefono: emitterRows[0]?.telefono || configRows[0]?.phone || '',
+        correo: emitterRows[0]?.correo || '',
+      };
+      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter });
       res.type('text/html').send(html);
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -331,12 +351,21 @@ function createEcfRouter(deps) {
     try {
       const { generateReprImpresaHtml } = require('./repr-impresa');
       const puppeteer = require('puppeteer');
-      const rows = await deps.query(
-        `SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`,
-        [req.params.encf],
-      );
+      const [rows, emitterRows, configRows] = await Promise.all([
+        deps.query(`SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`, [req.params.encf]),
+        deps.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => []),
+        deps.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []),
+      ]);
       if (!rows.length) return res.status(404).json({ error: 'Documento no encontrado o sin XML firmado.' });
-      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
+      const emitter = {
+        rnc: (emitterRows[0]?.rnc || configRows[0]?.rnc || '').replace(/\D/g, ''),
+        razon_social: emitterRows[0]?.razon_social || configRows[0]?.business_name || '',
+        nombre_comercial: /documentos electronicos/i.test(emitterRows[0]?.nombre_comercial ?? '') ? '' : (emitterRows[0]?.nombre_comercial ?? ''),
+        direccion: emitterRows[0]?.direccion || configRows[0]?.address || '',
+        telefono: emitterRows[0]?.telefono || configRows[0]?.phone || '',
+        correo: emitterRows[0]?.correo || '',
+      };
+      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter });
       browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle0' });

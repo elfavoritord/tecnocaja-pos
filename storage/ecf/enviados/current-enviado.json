@@ -1,11 +1,11 @@
 {
-  "id": "20260623-212948",
-  "fecha": "2026-06-24T01:29:48.046Z",
+  "id": "20260627-003354",
+  "fecha": "2026-06-27T04:33:54.560Z",
   "environment": "certecf",
   "estado": "ENVIADO",
-  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260623-212948.xml",
-  "filename": "ecf-enviado-20260623-212948.xml",
-  "dgiiFileName": "40211932609E470000000127.xml",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260627-003354.xml",
+  "filename": "ecf-enviado-20260627-003354.xml",
+  "dgiiFileName": "40211932609E470000000014.xml",
   "sourcePath": null,
-  "sizeBytes": 8743
+  "sizeBytes": 7434
 }

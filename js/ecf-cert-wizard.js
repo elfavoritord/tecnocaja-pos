@@ -748,12 +748,19 @@ const ECF_CERT_WIZARD = (() => {
 
       if (resultEl) {
         resultEl.style.display = '';
+        const autoMsg = res.autoFilledFields?.length
+          ? `<div style="margin-top:.4rem;font-size:.76rem;color:#86efac">✔ Auto-completado desde DGII: ${res.autoFilledFields.join(', ')}</div>`
+          : '';
         resultEl.innerHTML = `
           <div style="background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.25);border-radius:8px;padding:.6rem .85rem;font-size:.8rem;color:#4ade80">
             ✅ <strong>postulacion-firmada.xml</strong> descargado — súbelo en DGII → <strong>ENVIAR ARCHIVO</strong>
+            ${autoMsg}
           </div>
         `;
       }
+
+      // Refrescar tabla de datos del emisor (correo/provincia pueden haberse auto-poblado)
+      initStep1().catch(() => {});
 
       // Mostrar botón confirmar sin tener que hacer scroll
       const confirmBtn = document.getElementById('ecf-wz-step1-confirm-btn');
@@ -836,6 +843,10 @@ const ECF_CERT_WIZARD = (() => {
             <div style="background:rgba(255,255,255,.04);border-radius:8px;padding:.7rem .9rem">
               <div id="ecf-wz-s2-rfce-count" style="font-size:2rem;font-weight:900;color:var(--text);line-height:1.1">0/4</div>
               <div id="ecf-wz-s2-rfce-subtitle" style="font-size:.8rem;color:var(--text3);margin-top:.2rem">Resúmenes de Consumo Aceptados</div>
+              <button id="ecf-wz-s2-rfce-resend-btn" class="ecf-wz-action-btn"
+                style="font-size:.75rem;padding:.3rem .7rem;margin-top:.5rem"
+                onclick="ECF_CERT_WIZARD._resendRfce()">🔄 Reenviar RFCE</button>
+              <div id="ecf-wz-s2-rfce-resend-log" style="font-size:.72rem;margin-top:.3rem;color:var(--text3)"></div>
             </div>
           </div>
         </div>
@@ -1233,6 +1244,25 @@ const ECF_CERT_WIZARD = (() => {
       _showPortalE32Result(r);
       await _pollStep2();
     } catch (_) {}
+  }
+
+  async function _resendRfce() {
+    const btn = document.getElementById('ecf-wz-s2-rfce-resend-btn');
+    const logEl = document.getElementById('ecf-wz-s2-rfce-resend-log');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando…'; }
+    if (logEl) logEl.textContent = '';
+    try {
+      if (logEl) logEl.textContent = 'Generando XMLs…';
+      await fiscalApi('POST', '/certification-center/rfce/generate');
+      if (logEl) logEl.textContent = 'Enviando a DGII…';
+      const r = await fiscalApi('POST', '/certification-center/rfce/submit');
+      if (logEl) { logEl.textContent = `✅ ${r.aceptados||0} aceptados, ${r.rechazados||0} rechazados.`; logEl.style.color = (r.rechazados||0) > 0 ? '#f87171' : '#4ade80'; }
+      await _pollStep2();
+    } catch (err) {
+      if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔄 Reenviar RFCE'; }
+    }
   }
 
   async function runStep2PreparePortal() {
@@ -3305,6 +3335,7 @@ const ECF_CERT_WIZARD = (() => {
     _onStep2ExcelDrop,
     _resetAndRetry2,
     _pollStep2,
+    _resendRfce,
 
     // Step 4 — Simulación e-CF
     runStep4,

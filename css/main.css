@@ -174,9 +174,10 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
   flex-direction:column;
   justify-content:center;
 }
-.login-logo { display:flex; align-items:center; gap:10px; margin-bottom:0.5rem; }
+.login-logo { display:flex; align-items:center; gap:16px; margin-bottom:0.5rem; }
 .login-logo .logo-icon { font-size:2rem; }
 .login-logo .logo-text { font-size:1.8rem; font-weight:800; background:linear-gradient(135deg,var(--accent),var(--accent-light)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+.login-logo .brand-logo-image { width:90px; height:90px; border-radius:18px; }
 .brand-logo-image { width:42px; height:42px; object-fit:cover; border-radius:12px; border:1px solid var(--border); background:var(--bg3); flex-shrink:0; }
 .login-subtitle { color:var(--text2); margin-bottom:1rem; font-size:0.88rem; line-height:1.55; max-width:32ch; }
 .form-group { margin-bottom:1.2rem; }
@@ -599,10 +600,10 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .sidebar-logo { display:flex; align-items:center; gap:12px; padding:1.4rem 1.35rem 1.1rem; border-bottom:1px solid var(--border); }
 .sidebar-logo .logo-icon { font-size:1.65rem; }
 .sidebar-logo .logo-name { font-size:1.28rem; font-weight:800; background:linear-gradient(135deg,var(--accent),var(--accent-light)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-.sidebar-logo .brand-logo-image { width:40px; height:40px; border-radius:12px; }
+.sidebar-logo .brand-logo-image { width:58px; height:58px; border-radius:14px; }
 .sidebar.collapsed .sidebar-logo { justify-content:center; padding-left:0.75rem; padding-right:0.75rem; }
 .sidebar.collapsed .logo-name { display:none; }
-.sidebar.collapsed .brand-logo-image { width:32px; height:32px; }
+.sidebar.collapsed .brand-logo-image { width:42px; height:42px; }
 
 .sidebar-nav { flex:1; padding:0.95rem 0.85rem; display:flex; flex-direction:column; gap:0.35rem; overflow-y:auto; }
 .nav-item {
@@ -646,7 +647,9 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .btn-menu:hover { background:var(--bg3); color:var(--text); }
 .breadcrumb { font-size:1rem; font-weight:700; color:var(--text); }
 .topbar-right { display:flex; align-items:center; gap:1rem; margin-left:auto; flex-shrink:0; }
-.topbar-time { font-family:var(--font-mono); font-size:0.85rem; color:var(--text2); }
+.topbar-time { display:flex; flex-direction:column; align-items:flex-end; gap:1px; padding:.3rem .75rem; background:var(--bg3); border:1px solid var(--border); border-radius:10px; line-height:1; }
+.topbar-time-clock { font-family:var(--font-mono); font-size:.92rem; font-weight:700; color:var(--accent); letter-spacing:.03em; }
+.topbar-time-date { font-size:.68rem; font-weight:600; color:var(--text3); text-transform:uppercase; letter-spacing:.07em; }
 .license-pill {
   display:inline-flex; align-items:center; gap:0.45rem; padding:0.4rem 0.8rem; border-radius:999px;
   border:1px solid var(--border); background:rgba(255,255,255,0.04); font-size:0.78rem; font-weight:800;
@@ -4234,18 +4237,43 @@ textarea.form-input { resize:vertical; min-height:80px; }
   margin-left:0.25rem;
 }
 .settings-checkbox-list {
-  display:grid;
-  gap:0.55rem;
-  margin-top:0.4rem;
+  display:flex;
+  flex-direction:column;
+  gap:0;
+  margin-top:0.5rem;
+  border:1px solid var(--border);
+  border-radius:10px;
+  overflow:hidden;
 }
 .settings-checkbox-list label {
   display:flex;
-  align-items:flex-start;
-  gap:0.6rem;
-  color:var(--text1);
+  align-items:center;
+  gap:0.75rem;
+  padding:0.65rem 0.9rem;
+  cursor:pointer;
+  font-size:0.85rem;
+  font-weight:500;
+  color:var(--text);
+  transition:background 0.14s;
+  border-bottom:1px solid var(--border);
+}
+.settings-checkbox-list label:last-child {
+  border-bottom:none;
+}
+.settings-checkbox-list label:hover {
+  background:var(--bg3);
 }
 .settings-checkbox-list input[type="checkbox"] {
-  margin-top:0.18rem;
+  width:16px !important;
+  height:16px !important;
+  min-width:16px;
+  padding:0 !important;
+  border:1px solid var(--border) !important;
+  background:var(--bg2) !important;
+  border-radius:4px;
+  flex-shrink:0;
+  cursor:pointer;
+  accent-color:var(--accent,#6366f1);
 }
 .config-section-body {
   margin:0;

@@ -102,7 +102,11 @@
       "Bash(curl -s -X POST \"http://127.0.0.1:3399/api/ecf/certification/run-sequential\" -H \"Content-Type: application/json\" -d \"{\\\\\"limit\\\\\":20,\\\\\"delayMs\\\\\":200}\" --max-time 5)",
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(i.get\\('encf'\\), i.get\\('estado'\\), i.get\\('localPath',''\\)\\) for i in d.get\\('items',[]\\)]\")",
       "Bash(node fix-e310000000002-send.js)",
-      "PowerShell(cd \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\"; $p = Get-Content package.json | ConvertFrom-Json; Write-Host \"Scripts:\" \\($p.scripts.PSObject.Properties.Name -join \", \"\\); Write-Host \"Dependencies:\" \\($p.dependencies.PSObject.Properties.Name -join \", \"\\))"
+      "PowerShell(cd \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\"; $p = Get-Content package.json | ConvertFrom-Json; Write-Host \"Scripts:\" \\($p.scripts.PSObject.Properties.Name -join \", \"\\); Write-Host \"Dependencies:\" \\($p.dependencies.PSObject.Properties.Name -join \", \"\\))",
+      "PowerShell(ls \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\tecno-caja-bot\" | Where-Object { $_.Name -ne 'node_modules' })",
+      "Bash(node -e \"require\\('whatsapp-web.js'\\)\")",
+      "Bash(node -e \"require\\('qrcode'\\)\")",
+      "Bash(node -e \"require\\('@anthropic-ai/sdk'\\)\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",

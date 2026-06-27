@@ -961,17 +961,13 @@ async function showEmitterXmlPreview() {
     panel = document.createElement('div');
     panel.id = 'emitter-xml-preview-panel';
     panel.style.cssText = `
-      background:#1e293b; color:#e2e8f0; border-radius:10px; padding:16px 20px;
-      margin:12px 0; font-size:13px; line-height:1.7; position:relative;
-      border:2px solid #3b82f6; font-family:monospace;
+      position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+      background:#1e293b; color:#e2e8f0; border-radius:10px; padding:12px 16px;
+      font-size:11px; line-height:1.55; border:1.5px solid #3b82f6;
+      font-family:monospace; z-index:9999; max-width:400px; width:90vw;
+      box-shadow:0 8px 32px rgba(0,0,0,.55);
     `;
-    // Insertar después del botón de guardar
-    const saveBtn = document.getElementById('fiscal-btn-save-biz');
-    if (saveBtn && saveBtn.parentNode) {
-      saveBtn.parentNode.insertBefore(panel, saveBtn.nextSibling);
-    } else {
-      document.querySelector('.fiscal-business-section')?.appendChild(panel);
-    }
+    document.body.appendChild(panel);
   }
 
   panel.innerHTML = '<div style="color:#94a3b8">⏳ Cargando vista previa del XML del emisor…</div>';
@@ -985,8 +981,8 @@ async function showEmitterXmlPreview() {
       const isOmitted = val.includes('(no se incluirá)');
       const color = isOmitted ? '#64748b' : '#4ade80';
       return `<tr>
-        <td style="color:#94a3b8;padding:2px 8px 2px 0">&lt;${tag}&gt;</td>
-        <td style="color:${color};padding:2px 0">${val}</td>
+        <td style="color:#94a3b8;padding:1px 6px 1px 0;white-space:nowrap">&lt;${tag}&gt;</td>
+        <td style="color:${color};padding:1px 0;word-break:break-all">${val}</td>
       </tr>`;
     }).join('');
 
@@ -995,17 +991,16 @@ async function showEmitterXmlPreview() {
     ).join('');
 
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <strong style="color:#3b82f6;font-size:14px">🔍 Vista previa — datos del emisor en el XML</strong>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
+        <strong style="color:#3b82f6;font-size:11px">🔍 Vista previa — emisor en el XML</strong>
         <button onclick="document.getElementById('emitter-xml-preview-panel').remove()"
-          style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:16px">✕</button>
+          style="background:none;border:none;color:#94a3b8;cursor:pointer;font-size:14px;line-height:1;padding:0 2px">✕</button>
       </div>
-      <div style="color:#64748b;font-size:11px;margin-bottom:8px">Fuente: <strong style="color:#94a3b8">${source}</strong></div>
+      <div style="color:#64748b;font-size:10px;margin-bottom:6px">Fuente: <strong style="color:#94a3b8">${source}</strong></div>
       <table style="border-collapse:collapse;width:100%">${tagRows}</table>
       ${warningHtml}
-      <div style="margin-top:10px;color:#64748b;font-size:11px">
-        Los campos "(no se incluirá en el XML)" son correctos si DGII no tiene ese dato registrado para el RNC.<br>
-        Si DGII espera ese campo vacío, dejarlo en blanco es la configuración correcta.
+      <div style="margin-top:7px;color:#64748b;font-size:10px;line-height:1.4">
+        Los campos "(no se incluirá en el XML)" son correctos si DGII no tiene ese dato registrado para el RNC.
       </div>
     `;
   } catch (e) {

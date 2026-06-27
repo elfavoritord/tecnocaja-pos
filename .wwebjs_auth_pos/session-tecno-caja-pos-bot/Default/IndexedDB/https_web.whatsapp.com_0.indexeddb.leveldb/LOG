@@ -1,0 +1,50 @@
+2026/06/27-00:30:23.809 1d58 Reusing MANIFEST C:\Users\Emilio Coding IA\Desktop\sistema pos completo\.wwebjs_auth_pos\session-tecno-caja-pos-bot\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000296
+2026/06/27-00:30:23.810 1d58 Recovering log #757
+2026/06/27-00:30:23.950 1d58 Reusing old log C:\Users\Emilio Coding IA\Desktop\sistema pos completo\.wwebjs_auth_pos\session-tecno-caja-pos-bot\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000757.log 
+2026/06/27-03:32:47.459 240c Level-0 table #782: started
+2026/06/27-03:32:47.573 240c Level-0 table #782: 1266756 bytes OK
+2026/06/27-03:32:47.580 240c Delete type=0 #757
+2026/06/27-03:33:04.801 c80 Compacting 1@0 + 0@1 files
+2026/06/27-03:33:04.826 c80 Generated table #783@0: 11898 keys, 240605 bytes
+2026/06/27-03:33:04.838 c80 Generated table #784@0: 1603 keys, 176102 bytes
+2026/06/27-03:33:04.838 c80 Compacted 1@0 + 0@1 files => 416707 bytes
+2026/06/27-03:33:04.840 c80 compacted to: files[ 0 2 19 0 0 0 0 ]
+2026/06/27-03:33:04.841 c80 Delete type=2 #782
+2026/06/27-03:47:46.318 240c Compacting 1@1 + 10@2 files
+2026/06/27-03:47:46.390 240c Generated table #785@1: 16446 keys, 2139285 bytes
+2026/06/27-03:47:46.525 240c Generated table #786@1: 102710 keys, 2253464 bytes
+2026/06/27-03:47:46.634 240c Generated table #787@1: 100208 keys, 2249584 bytes
+2026/06/27-03:47:46.743 240c Generated table #788@1: 66854 keys, 2254919 bytes
+2026/06/27-03:47:46.812 240c Generated table #789@1: 15721 keys, 2180448 bytes
+2026/06/27-03:47:46.867 240c Generated table #790@1: 1709 keys, 2149767 bytes
+2026/06/27-03:47:46.923 240c Generated table #791@1: 2020 keys, 2154901 bytes
+2026/06/27-03:47:46.976 240c Generated table #792@1: 1930 keys, 2142303 bytes
+2026/06/27-03:47:47.029 240c Generated table #793@1: 1824 keys, 2147116 bytes
+2026/06/27-03:47:47.085 240c Generated table #794@1: 1836 keys, 2047775 bytes
+2026/06/27-03:47:47.085 240c Compacted 1@1 + 10@2 files => 21719562 bytes
+2026/06/27-03:47:47.087 240c compacted to: files[ 0 1 19 0 0 0 0 ]
+2026/06/27-03:47:47.089 240c Delete type=2 #770
+2026/06/27-03:47:47.089 240c Delete type=2 #771
+2026/06/27-03:47:47.089 240c Delete type=2 #772
+2026/06/27-03:47:47.089 240c Delete type=2 #773
+2026/06/27-03:47:47.090 240c Delete type=2 #774
+2026/06/27-03:47:47.090 240c Delete type=2 #775
+2026/06/27-03:47:47.090 240c Delete type=2 #776
+2026/06/27-03:47:47.091 240c Delete type=2 #777
+2026/06/27-03:47:47.092 240c Delete type=2 #778
+2026/06/27-03:47:47.092 240c Delete type=2 #779
+2026/06/27-03:47:47.093 240c Delete type=2 #783
+2026/06/27-05:07:35.082 240c Compacting 1@1 + 5@2 files
+2026/06/27-05:07:35.169 240c Generated table #795@1: 5736 keys, 2144818 bytes
+2026/06/27-05:07:35.301 240c Generated table #796@1: 37084 keys, 2253334 bytes
+2026/06/27-05:07:35.424 240c Generated table #797@1: 31558 keys, 2255825 bytes
+2026/06/27-05:07:35.526 240c Generated table #798@1: 24641 keys, 2243488 bytes
+2026/06/27-05:07:35.556 240c Generated table #799@1: 5946 keys, 461532 bytes
+2026/06/27-05:07:35.556 240c Compacted 1@1 + 5@2 files => 9358997 bytes
+2026/06/27-05:07:35.559 240c compacted to: files[ 0 0 19 0 0 0 0 ]
+2026/06/27-05:07:35.561 240c Delete type=2 #765
+2026/06/27-05:07:35.561 240c Delete type=2 #766
+2026/06/27-05:07:35.562 240c Delete type=2 #767
+2026/06/27-05:07:35.563 240c Delete type=2 #768
+2026/06/27-05:07:35.563 240c Delete type=2 #769
+2026/06/27-05:07:35.563 240c Delete type=2 #784

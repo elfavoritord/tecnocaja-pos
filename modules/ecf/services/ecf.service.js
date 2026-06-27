@@ -373,6 +373,21 @@ function isDgiiSequenceUsedResponse(payload) {
   return structuredText.includes('1209') || (structuredText.includes('secuencia') && structuredText.includes('utiliz'));
 }
 
+// DGII certecf registra los eNCF de RFCE (E32 RecepcionFC) enviados incluso si son rechazados.
+// Si se reinician las pruebas y se vuelve a enviar el mismo eNCF de RFCE, DGII lo rechaza con
+// "ya ha sido utilizado previamente". Este error NO es el mismo que isDgiiSequenceUsedResponse
+// (que aplica a ECF normales y se interpreta como "ya aceptado"). Para RFCE significa que ese
+// eNCF está quemado y hay que rotar a uno nuevo desde la secuencia.
+function isRfceEncfAlreadyUsedError(responseOrError) {
+  const obj = (responseOrError && typeof responseOrError === 'object') ? responseOrError : {};
+  const text = [
+    obj.mensaje, obj.message, obj.descripcion, obj.Descripcion, obj.error,
+    ...(Array.isArray(obj.mensajes) ? obj.mensajes.map((m) => m?.valor || m?.descripcion || '') : []),
+    obj.details?.mensaje, obj.details?.message, obj.details?.descripcion, obj.details?.error,
+  ].filter(Boolean).join(' ').toLowerCase();
+  return (text.includes('utilizado') || text.includes('utiliz')) && text.includes('resumen') && !text.includes('secuencia');
+}
+
 // TesteCF y CerteCF son ambientes separados en DGII — no compartir estado de secuencias.
 // El bloqueo se determina en tiempo real por la respuesta de DGII, no por lista estática.
 const CERTIFICATION_BLOCKED_ENCFS = new Set([]);
@@ -4986,6 +5001,48 @@ class EcfService {
     };
   }
 
+  // Cuando DGII certecf rechaza un RFCE con "ya utilizado previamente", el eNCF queda
+  // permanentemente quemado en ese entorno. Este método rota el eNCF: asigna uno nuevo
+  // desde la secuencia, actualiza la BD y regenera los XMLs del paso 4.
+  async _rotateAndRegenerateRfce(oldEncf, req) {
+    try {
+      const seqResult = await this.generateNextENCF({ body: { tipoComprobante: 'E32' } });
+      const newEncf = seqResult.encf;
+      if (seqResult.sequence?.id && seqResult.numero) {
+        await this.repository.query(
+          'UPDATE ecf_sequences SET proximo_numero = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND proximo_numero <= ?',
+          [seqResult.numero + 1, seqResult.sequence.id, seqResult.numero]
+        );
+      }
+      const docs = await this.repository.query(
+        'SELECT id, certification_original_xml FROM ecf_documents WHERE business_id = 1 AND encf = ? AND tipo_ecf = ? AND submission_mode = ?',
+        [oldEncf.toUpperCase(), 'E32', 'rfce']
+      );
+      if (!docs.length) return { ok: false };
+      const doc = docs[0];
+      let certSrc;
+      try { certSrc = JSON.parse(doc.certification_original_xml || '{}'); } catch (_) { return { ok: false }; }
+      const patchEncf = (row) => {
+        if (!row || typeof row !== 'object') return row;
+        const u = { ...row };
+        if (u.ENCF && String(u.ENCF).toUpperCase() === oldEncf.toUpperCase()) u.ENCF = newEncf;
+        if (u.eNCF && String(u.eNCF).toUpperCase() === oldEncf.toUpperCase()) u.eNCF = newEncf;
+        return u;
+      };
+      certSrc = { ...certSrc, row: patchEncf(certSrc.row), linkedRawRow: patchEncf(certSrc.linkedRawRow) };
+      await this.repository.query(
+        'UPDATE ecf_documents SET encf = ?, certification_original_xml = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [newEncf, JSON.stringify(certSrc), doc.id]
+      );
+      await this.step4RfceGenerate(req);
+      console.log(`[ECF] RFCE rotado por "ya utilizado": ${oldEncf} → ${newEncf}`);
+      return { ok: true, oldEncf, newEncf };
+    } catch (err) {
+      console.warn('[ECF] _rotateAndRegenerateRfce falló:', err.message);
+      return { ok: false };
+    }
+  }
+
   async step4RfceSubmit(req) {
     await this.ensureReady();
     if (req) await this.getCurrentActor(req, { adminOnly: true });
@@ -5000,102 +5057,124 @@ class EcfService {
     const updatedItems = [...(state.items || [])];
     const results = [];
     for (let index = 0; index < updatedItems.length; index += 1) {
-      const item = updatedItems[index];
+      let item = updatedItems[index];
       if (['aceptado', 'aceptado_condicional'].includes(String(item.estado || '').toLowerCase())) {
         results.push({ encf: item.encf, ok: true, estado: item.estado, skipped: true });
         continue;
       }
-      const filePath = path.resolve(process.cwd(), String(item.localPath || ''));
-      if (!item.localPath || !fs.existsSync(filePath)) {
-        const mensajeDgii = 'RFCE no encontrado. Genera los resúmenes del paso 4 primero.';
-        updatedItems[index] = { ...item, estado: 'error', mensajeDgii };
-        results.push({ encf: item.encf, ok: false, error: mensajeDgii });
-        continue;
-      }
+      let rfceRetry = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const filePath = path.resolve(process.cwd(), String(item.localPath || ''));
+        if (!item.localPath || !fs.existsSync(filePath)) {
+          const mensajeDgii = 'RFCE no encontrado. Genera los resúmenes del paso 4 primero.';
+          updatedItems[index] = { ...item, estado: 'error', mensajeDgii };
+          results.push({ encf: item.encf, ok: false, error: mensajeDgii });
+          break;
+        }
+        try {
+          const signedXml = fs.readFileSync(filePath, 'utf8').replace(/^﻿/, '');
+          const response = await this.fcService.sendConsumptionSummary({
+            signedXml,
+            filename: item.fileName,
+            localEcfPath: item.localEcfFile || null,
+          });
+          const trackId = response.trackId || response.trackid || response.TrackId || null;
+          const sequenceUsed = isDgiiSequenceUsedResponse(response);
+          const estado = sequenceUsed ? 'aceptado' : (trackId ? 'enviado' : normalizeDgiiState(response));
+          const mensajeDgii = response.mensaje || response.message || response.descripcion || response.error || null;
 
-      try {
-        const signedXml = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
-        const response = await this.fcService.sendConsumptionSummary({
-          signedXml,
-          filename: item.fileName,
-          localEcfPath: item.localEcfFile || null,
-        });
-        const trackId = response.trackId || response.trackid || response.TrackId || null;
-        const sequenceUsed = isDgiiSequenceUsedResponse(response);
-        const estado = sequenceUsed ? 'aceptado' : (trackId ? 'enviado' : normalizeDgiiState(response));
-        const mensajeDgii = response.mensaje || response.message || response.descripcion || response.error || null;
-        updatedItems[index] = {
-          ...item,
-          estado,
-          trackId,
-          fechaEnviado: new Date().toISOString(),
-          mensajeDgii,
-          dgiiResponse: response,
-        };
-        await this.repository.query(
-          `UPDATE ecf_documents
-              SET estado_dgii = ?,
-                  track_id = ?,
-                  dgii_response_json = ?,
-                  error_message = ?,
-                  certification_sent_xml_path = ?,
-                  certification_dgii_file_name = ?,
-                  sent_at = CURRENT_TIMESTAMP,
-                  updated_at = CURRENT_TIMESTAMP
-            WHERE business_id = 1
-              AND certification_case_key IS NOT NULL
-              AND encf = ?`,
-          [
-            estado,
-            trackId,
-            JSON.stringify(response),
-            ['rechazado', 'error'].includes(estado) ? mensajeDgii : null,
-            response.xmlPath || response.archivoEnviado || filePath,
-            response.dgiiFileName || item.fileName,
-            item.encf,
-          ]
-        ).catch(err => console.warn('[ECF] UPDATE batch cert envío falló:', err.message));
-        results.push({ encf: item.encf, ok: !['rechazado', 'error'].includes(estado), estado, trackId, mensaje: mensajeDgii });
-      } catch (error) {
-        if (isDgiiSequenceUsedResponse(error)) {
-          const dgiiResponse = error?.details && typeof error.details === 'object'
-            ? error.details
-            : { error: error.message };
-          const mensajeDgii = dgiiResponse.error || dgiiResponse.descripcion || dgiiResponse.mensaje || error.message;
+          // DGII certecf quema el eNCF aunque rechace el RFCE. Si detectamos "ya utilizado"
+          // rotamos al siguiente número de secuencia y reintentamos (máx 3 veces por item).
+          if (estado === 'rechazado' && isRfceEncfAlreadyUsedError(response) && rfceRetry < 3) {
+            rfceRetry += 1;
+            const rotated = await this._rotateAndRegenerateRfce(item.encf, req);
+            if (rotated.ok) {
+              const newState = this._step4RfceReadState();
+              const newItem = (newState.items || []).find((i) => i.encf === rotated.newEncf);
+              if (newItem) {
+                updatedItems[index] = newItem;
+                item = newItem;
+                continue;
+              }
+            }
+          }
+
           updatedItems[index] = {
             ...item,
-            estado: 'aceptado',
-            mensajeDgii,
+            estado,
+            trackId,
             fechaEnviado: new Date().toISOString(),
-            dgiiResponse: { ...dgiiResponse, reconciled: true, reason: 'dgii-sequence-used' },
+            mensajeDgii,
+            dgiiResponse: response,
           };
           await this.repository.query(
             `UPDATE ecf_documents
-                SET estado_dgii = 'aceptado',
-                    error_message = NULL,
+                SET estado_dgii = ?,
+                    track_id = ?,
+                    dgii_response_json = ?,
+                    error_message = ?,
+                    certification_sent_xml_path = ?,
+                    certification_dgii_file_name = ?,
+                    sent_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+              WHERE business_id = 1
+                AND certification_case_key IS NOT NULL
+                AND encf = ?`,
+            [
+              estado,
+              trackId,
+              JSON.stringify(response),
+              ['rechazado', 'error'].includes(estado) ? mensajeDgii : null,
+              response.xmlPath || response.archivoEnviado || filePath,
+              response.dgiiFileName || item.fileName,
+              item.encf,
+            ]
+          ).catch(err => console.warn('[ECF] UPDATE batch cert envío falló:', err.message));
+          results.push({ encf: item.encf, ok: !['rechazado', 'error'].includes(estado), estado, trackId, mensaje: mensajeDgii });
+          break;
+        } catch (error) {
+          if (isDgiiSequenceUsedResponse(error)) {
+            const dgiiResponse = error?.details && typeof error.details === 'object'
+              ? error.details
+              : { error: error.message };
+            const mensajeDgii = dgiiResponse.error || dgiiResponse.descripcion || dgiiResponse.mensaje || error.message;
+            updatedItems[index] = {
+              ...item,
+              estado: 'aceptado',
+              mensajeDgii,
+              fechaEnviado: new Date().toISOString(),
+              dgiiResponse: { ...dgiiResponse, reconciled: true, reason: 'dgii-sequence-used' },
+            };
+            await this.repository.query(
+              `UPDATE ecf_documents
+                  SET estado_dgii = 'aceptado',
+                      error_message = NULL,
+                      dgii_response_json = ?,
+                      updated_at = CURRENT_TIMESTAMP
+                WHERE business_id = 1
+                  AND certification_case_key IS NOT NULL
+                  AND encf = ?`,
+              [JSON.stringify(updatedItems[index].dgiiResponse), item.encf]
+            ).catch(err => console.warn('[ECF] UPDATE batch cert reconciled falló:', err.message));
+            results.push({ encf: item.encf, ok: true, estado: 'aceptado', mensaje: mensajeDgii });
+            break;
+          }
+          updatedItems[index] = { ...item, estado: 'error', mensajeDgii: error.message, fechaEnviado: new Date().toISOString() };
+          await this.repository.query(
+            `UPDATE ecf_documents
+                SET estado_dgii = 'error',
+                    error_message = ?,
                     dgii_response_json = ?,
                     updated_at = CURRENT_TIMESTAMP
               WHERE business_id = 1
                 AND certification_case_key IS NOT NULL
                 AND encf = ?`,
-            [JSON.stringify(updatedItems[index].dgiiResponse), item.encf]
-          ).catch(err => console.warn('[ECF] UPDATE batch cert reconciled falló:', err.message));
-          results.push({ encf: item.encf, ok: true, estado: 'aceptado', mensaje: mensajeDgii });
-          continue;
+            [error.message, JSON.stringify({ error: error.message, details: error.details || null }), item.encf]
+          ).catch(err => console.warn('[ECF] UPDATE batch cert error falló:', err.message));
+          results.push({ encf: item.encf, ok: false, error: error.message });
+          break;
         }
-        updatedItems[index] = { ...item, estado: 'error', mensajeDgii: error.message, fechaEnviado: new Date().toISOString() };
-        await this.repository.query(
-          `UPDATE ecf_documents
-              SET estado_dgii = 'error',
-                  error_message = ?,
-                  dgii_response_json = ?,
-                  updated_at = CURRENT_TIMESTAMP
-            WHERE business_id = 1
-              AND certification_case_key IS NOT NULL
-              AND encf = ?`,
-          [error.message, JSON.stringify({ error: error.message, details: error.details || null }), item.encf]
-        ).catch(err => console.warn('[ECF] UPDATE batch cert error falló:', err.message));
-        results.push({ encf: item.encf, ok: false, error: error.message });
       }
     }
 
@@ -5461,12 +5540,9 @@ class EcfService {
       || String(document.submission_mode || '').toLowerCase() === 'rfce';
 
     const errors = [];
-    if (expectedRncEmisor && actualRncEmisor !== expectedRncEmisor) {
-      errors.push(`RNCEmisor inválido para ${expectedEncf}: XML="${actualRncEmisor}", dataset="${expectedRncEmisor}".`);
-    }
-    if (expectedRazonSocialEmisor && actualRazonSocialEmisor !== expectedRazonSocialEmisor) {
-      errors.push(`RazonSocialEmisor inválida para ${expectedEncf}: XML="${actualRazonSocialEmisor}", dataset="${expectedRazonSocialEmisor}".`);
-    }
+    // RNCEmisor y RazonSocialEmisor NO se validan contra el dataset DGII:
+    // deben ser los datos REALES del contribuyente (NG 06-2018), independientemente
+    // de los placeholders que usa el set de pruebas ("DOCUMENTOS ELECTRONICOS DE 02").
     if (expectedFechaEmision && actualFechaEmision !== expectedFechaEmision) {
       errors.push(`FechaEmision inválida para ${expectedEncf}: XML="${actualFechaEmision}", dataset="${expectedFechaEmision}".`);
     }
@@ -6479,7 +6555,45 @@ class EcfService {
       throw new EcfError(`Error al firmar el XML: ${signErr.message}`, { statusCode: 422 });
     }
 
-    return { ok: true, signedXml };
+    // Auto-poblar todos los campos del Contribuyente en ecf_emitters desde el XML de DGII
+    const autoFilledFields = [];
+    try {
+      const emitter = await this.repository.getEmitter(1);
+      const doc = parseXml(rawXml);
+      const tag = (name) => doc.getElementsByTagName(name)[0]?.textContent?.trim() || '';
+
+      const fromXml = {
+        rnc:          tag('RNCContribuyente'),
+        razon_social: tag('RazonSocial'),
+        telefono:     tag('Telefono'),
+        direccion:    tag('Direccion'),
+        provincia:    tag('Provincia'),
+        municipio:    tag('Municipio'),
+        correo:       tag('CorreoElectronico'),
+      };
+
+      const labels = {
+        rnc: 'RNC', razon_social: 'Razón Social', telefono: 'Teléfono',
+        direccion: 'Dirección', provincia: 'Provincia', municipio: 'Municipio', correo: 'Correo',
+      };
+
+      const updates = {};
+      for (const [field, val] of Object.entries(fromXml)) {
+        if (val) {
+          updates[field] = val;
+          autoFilledFields.push(labels[field]);
+        }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await this.repository.upsertEmitter(1, updates);
+        this.logger.info('[signPostulation] Auto-poblados desde XML de DGII:', updates);
+      }
+    } catch (autoFillErr) {
+      this.logger.warn('[signPostulation] No se pudo auto-poblar datos del emisor:', autoFillErr.message);
+    }
+
+    return { ok: true, signedXml, autoFilledFields };
   }
 
   // ── Wizard de certificación: estado persistido en disco ───────────────────────

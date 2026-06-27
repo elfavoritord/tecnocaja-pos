@@ -562,6 +562,29 @@ class LicenseService {
 
   async mirrorStateToConfig(state) {
     const planCode = String(state.planCode || 'basico').trim().toLowerCase() || 'basico';
+    const now = asDate(this.now()) || new Date();
+    const incomingEndsAt = asDate(state.trialEndsAt);
+
+    let statusToWrite = state.status;
+    let trialStartedAt = toSqlDateTime(state.trialStartedAt);
+    let trialEndsAt = toSqlDateTime(state.trialEndsAt);
+
+    // Si Firebase devuelve fechas vencidas, verificar si el DB local tiene fechas
+    // frescas (ej: recién reseteadas por restauración de backup). Si la fecha local
+    // es futura, conservarla en lugar de sobreescribirla con el dato vencido de Firebase.
+    if (!incomingEndsAt || incomingEndsAt < now) {
+      const localRows = await this.query(
+        'SELECT trial_started_at, trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1'
+      ).catch(() => []);
+      const cfg = localRows[0] || {};
+      const localEndsAt = asDate(cfg.trial_ends_at);
+      if (localEndsAt && localEndsAt >= now) {
+        statusToWrite = String(cfg.license_status || 'trial');
+        trialStartedAt = toSqlDateTime(asDate(cfg.trial_started_at));
+        trialEndsAt = toSqlDateTime(localEndsAt);
+      }
+    }
+
     await this.query(
       `UPDATE config
        SET license_status = ?,
@@ -573,12 +596,12 @@ class LicenseService {
            license_last_remote_check_at = ?
        WHERE id = 1`,
       [
-        state.status,
+        statusToWrite,
         planCode,
         plans.PLAN_NAMES[planCode] || planCode,
         plans.modeForPlan(planCode),
-        toSqlDateTime(state.trialStartedAt),
-        toSqlDateTime(state.trialEndsAt),
+        trialStartedAt,
+        trialEndsAt,
         toSqlDateTime(state.lastValidatedAt || this.now()),
       ]
     ).catch(() => {});
@@ -736,6 +759,12 @@ class LicenseService {
     if (options.allowRemote !== false) {
       try {
         result = await this.syncWithRemote(options);
+        // En instalación nueva (wizard aún no se ha ejecutado) ignorar una licencia
+        // expirada en Firebase: puede ser un doc antiguo del mismo negocio.
+        // El wizard se encarga de crear una licencia fresca cuando se complete.
+        if (result && !context.setupCompleted && result.license?.canEnter === false) {
+          result = null;
+        }
       } catch (error) {
         remoteError = error;
       }

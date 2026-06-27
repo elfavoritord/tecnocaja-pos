@@ -1448,6 +1448,7 @@ const httpServer = http.createServer(app);
 const io = new Server(httpServer, {
   cors: CORS_OPTIONS
 });
+app.locals.io = io;
 
 // === Helmet + rate limiter (extraído a server/config/security.js) ===
 const { helmetMiddleware, loginLimiter, bindHost: DEFAULT_BIND_HOST } = require('./server/config/security');
@@ -1563,6 +1564,11 @@ function getOfflineRouter() {
   return _offlineRouter;
 }
 app.use('/api/offline', (req, res, next) => getOfflineRouter()(req, res, next));
+
+// ── WhatsApp Bot ──────────────────────────────────────────────────────────────
+const waBotRoutes = require('./server/routes/whatsapp-bot.routes');
+app.locals.queryFn = query;
+app.use('/api/wa-bot', waBotRoutes);
 
 // Caché en memoria para sesiones autenticadas — permite que los tokens válidos
 // sigan funcionando cuando MySQL no está disponible (modo offline multicaja).
@@ -2646,15 +2652,30 @@ async function trySyncAllPosClientsToFirebase() {
   return { synced: true, ...result };
 }
 
-async function trySyncAllPosAccountsToFirebase() {
+async function trySyncAllPosAccountsToFirebase(overrides = {}) {
   const status = getFirebaseConfigStatus();
   if (!status.adminEnabled) {
     return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
   }
-  const [userRows, config] = await Promise.all([
+  const [userRows, baseConfig, trialRows] = await Promise.all([
     query('SELECT * FROM users ORDER BY rol = "Administrador" DESC, id ASC'),
-    getConfig({ syncRemote: false })
+    getConfig({ syncRemote: false }),
+    query('SELECT trial_started_at, trial_ends_at FROM config WHERE id = 1 LIMIT 1').catch(() => [])
   ]);
+
+  // El estado bootstrap no incluye trialEndsAt/trialStartedAt — leer del DB como fallback
+  // para que la licencia en Firestore siempre tenga fechas correctas desde el primer sync.
+  const trialRow = trialRows[0] || {};
+  const config = {
+    ...baseConfig,
+    trialEndsAt: baseConfig.trialEndsAt
+      || (overrides.trialEndsAt instanceof Date ? overrides.trialEndsAt.toISOString() : overrides.trialEndsAt)
+      || (trialRow.trial_ends_at ? new Date(trialRow.trial_ends_at).toISOString() : null),
+    trialStartedAt: baseConfig.trialStartedAt
+      || (overrides.trialStartedAt instanceof Date ? overrides.trialStartedAt.toISOString() : overrides.trialStartedAt)
+      || (trialRow.trial_started_at ? new Date(trialRow.trial_started_at).toISOString() : null),
+  };
+
   const result = await syncPosAccountsToFirestore(userRows, config);
   const canonicalLicenseUid = String(result?.licenseDocId || '').trim();
   if (canonicalLicenseUid && canonicalLicenseUid !== String(process.env.TECNO_CAJA_LICENSE_UID || '').trim()) {
@@ -5976,6 +5997,7 @@ async function restoreBackupPayload(backup) {
       await conn.query('DELETE FROM delivery_locations');
       await conn.query('DELETE FROM users');
       await conn.query('DELETE FROM config');
+      await conn.query('DELETE FROM license_cache').catch(() => {});
 
       for (const row of data.config || []) {
         await conn.query(
@@ -6020,6 +6042,25 @@ async function restoreBackupPayload(backup) {
           ]
         );
       }
+
+      // Si las fechas de trial del backup ya vencieron (o no existen), resetear a 30 días
+      // desde ahora para que una reinstalación no arranque con licencia expirada.
+      {
+        const cfgRows = await conn.query('SELECT trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1');
+        const cfg = cfgRows[0] || {};
+        const now = new Date();
+        const savedEndsAt = cfg.trial_ends_at ? new Date(cfg.trial_ends_at) : null;
+        if (!savedEndsAt || savedEndsAt < now || String(cfg.license_status || '').toLowerCase() === 'expired') {
+          const trialEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+          const nowStr = now.toISOString().slice(0, 19).replace('T', ' ');
+          const trialEndStr = trialEnd.toISOString().slice(0, 19).replace('T', ' ');
+          await conn.query(
+            'UPDATE config SET trial_started_at = ?, trial_ends_at = ?, license_status = ? WHERE id = 1',
+            [nowStr, trialEndStr, 'trial']
+          );
+        }
+      }
+
       for (const row of data.users || []) {
         await conn.query(
           `INSERT INTO users
@@ -7069,14 +7110,15 @@ app.post('/api/login/google/link', async (req, res) => {
 // ─── Registro de licencia POS en Firestore ──────────────────────────────────
 async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEndsAt, businessStructureMode }) {
   try {
-    const { getFirestore } = require('./modules/firebase-admin');
+    const { getFirestore, buildPosBusinessKey } = require('./modules/firebase-admin');
     const db = getFirestore();
     if (!db) return null;
 
     const { FieldValue } = require('firebase-admin/firestore');
-    const slug = businessName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const businessKey = `pos:${slug}`;
-    const uid = `pos_${crypto.randomBytes(6).toString('hex')}`;
+    const businessKey = buildPosBusinessKey(businessName);
+    // Reusar el UID que ya estableció syncPosAccountsToFirestore; si no existe, usar businessKey
+    const existingUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    const uid = existingUid || businessKey;
     const planCode = { monocaja: 'basico', multicaja: 'pro', multisucursal: 'plus' }[businessStructureMode] || 'basico';
     const publicUrl = String(process.env.POS_PUBLIC_BASE_URL || '').trim();
     const mobileCode = await query('SELECT mobile_connection_code FROM config WHERE id = 1').then(r => r[0]?.mobile_connection_code || '').catch(() => '');
@@ -7108,21 +7150,22 @@ async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEn
       createdAt:      FieldValue.serverTimestamp(),
     };
 
-    // usuarios: lo que muestra la app admin en la sección Usuarios/Clientes
+    // usuarios: record del negocio para el panel admin (merge para no pisar docs de usuarios)
     await db.collection('usuarios').doc(uid).set({
       ...sharedData,
       recordKind: 'account',
       nombre:     businessName,
-    });
+    }, { merge: true });
 
-    // licencias: lo que usa el sistema de planes y syncLicenseFromFirebase
-    await db.collection('licencias').doc(uid).set(sharedData);
+    // licencias: actualizar el doc existente con las fechas correctas (merge: true)
+    await db.collection('licencias').doc(uid).set(sharedData, { merge: true });
 
-    // Persistir el UID en la configuración editable del usuario para que la
-    // licencia siga sincronizando incluso con la app instalada.
-    persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: uid });
+    // Solo persistir el UID si no estaba ya establecido por syncPosAccountsToFirestore
+    if (!existingUid) {
+      persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: uid });
+    }
 
-    console.log(`[setup] Licencia POS registrada en Firestore: ${uid} (${businessName})`);
+    console.log(`[setup] Licencia POS actualizada en Firestore: ${uid} (${businessName})`);
     return uid;
   } catch (err) {
     console.warn('[setup] No se pudo registrar licencia en Firestore:', err.message);
@@ -7405,7 +7448,7 @@ app.post('/api/setup/complete', async (req, res) => {
       };
     }
   }
-  await trySyncAllPosAccountsToFirebase().catch((error) => {
+  await trySyncAllPosAccountsToFirebase({ trialEndsAt, trialStartedAt: now }).catch((error) => {
     console.warn('No se pudieron sincronizar los usuarios POS a Firebase:', error.message);
   });
   if (!forceReset) {
@@ -7416,6 +7459,9 @@ app.post('/api/setup/complete', async (req, res) => {
       businessStructureMode,
     });
   }
+  await trySyncAllStaffToFirebaseAuth().catch((error) => {
+    console.warn('No se pudieron crear cuentas Firebase Auth para el staff:', error.message);
+  });
   await writeAuditLog({
     userId: sessionData.userId,
     userName: adminName,
@@ -16248,6 +16294,25 @@ async function startHttpServer(port, bindHost) {
     httpServer.listen(port, finalBindHost, () => {
       console.log('[Tecno Caja] Servidor escuchando en ' + finalBindHost + ':' + port);
       resolve();
+      // Auto-arranque del bot WhatsApp si estaba activo antes
+      setTimeout(async () => {
+        try {
+          const rows = await query(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_autostart','wabot_owner_phone','wabot_owner_phone2','wabot_provider','wabot_claude_key','wabot_chatgpt_key')`);
+          const cfg = {};
+          rows.forEach(r => { cfg[r.config_key] = r.config_value; });
+          if (cfg.wabot_autostart === '1' && cfg.wabot_owner_phone) {
+            const waBotMod = require('./server/integrations/whatsapp-bot');
+            let apiKey = null;
+            if (cfg.wabot_provider === 'claude' && cfg.wabot_claude_key) {
+              try { const [ivHex,data] = cfg.wabot_claude_key.split(':'); const crypto=require('crypto'); const d=crypto.createDecipheriv('aes-256-cbc',(process.env.TECNO_CAJA_SECRET||'tecnocaja2026').padEnd(32,'0').slice(0,32),Buffer.from(ivHex,'hex')); apiKey=Buffer.concat([d.update(Buffer.from(data,'hex')),d.final()]).toString(); } catch {}
+            } else if (cfg.wabot_provider === 'chatgpt' && cfg.wabot_chatgpt_key) {
+              try { const [ivHex,data] = cfg.wabot_chatgpt_key.split(':'); const crypto=require('crypto'); const d=crypto.createDecipheriv('aes-256-cbc',(process.env.TECNO_CAJA_SECRET||'tecnocaja2026').padEnd(32,'0').slice(0,32),Buffer.from(ivHex,'hex')); apiKey=Buffer.concat([d.update(Buffer.from(data,'hex')),d.final()]).toString(); } catch {}
+            }
+            console.log('[wa-bot] Auto-arranque activado, iniciando bot...');
+            await waBotMod.start({ db: query, io, ownerPhone: cfg.wabot_owner_phone, ownerPhone2: cfg.wabot_owner_phone2 || null, provider: cfg.wabot_provider || 'gemini', apiKey });
+          }
+        } catch (e) { console.warn('[wa-bot] Error en auto-arranque:', e.message); }
+      }, 3000); // espera 3s a que la BD esté lista
     });
     httpServer.once('error', reject);
   });

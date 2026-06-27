@@ -1423,7 +1423,7 @@ function getBusinessRuntimeConfig() {
     return window.getBusinessConfig(DB.config?.tipoNegocio || DB.config?.businessProfile?.key || 'pizzeria');
   }
   return {
-    modules: ['ventas', 'productos', 'inventario', 'clientes', 'proveedores', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery'],
+    modules: ['ventas', 'productos', 'inventario', 'clientes', 'proveedores', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
     productFields: [],
     features: [],
     salesFlow: {},
@@ -3638,7 +3638,12 @@ function initApp() {
 
 function updateClock() {
   const el = document.getElementById('topbar-time');
-  if (el) el.textContent = new Date().toLocaleString(getCurrentLocale(), {weekday:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  if (!el) return;
+  const now = new Date();
+  const locale = getCurrentLocale();
+  const time = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const date = now.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
+  el.innerHTML = `<span class="topbar-time-clock">${time}</span><span class="topbar-time-date">${date}</span>`;
 }
 
 function showModule(name, el) {
@@ -3677,6 +3682,7 @@ function showModule(name, el) {
     if (typeof syncMovimientosModuleFilter === 'function') syncMovimientosModuleFilter();
     if (typeof renderMovimientosSistema === 'function') renderMovimientosSistema();
   }
+  if (name === 'wabot') { waBotRefresh(); waBotLoadSavedKeys(); waBotLoadInstructions(); }
   if (name === 'ventas') {
     // Limpiar búsqueda y resetear filtro de stock al entrar al módulo,
     // para evitar que valores persistidos por el navegador dejen el catálogo vacío.
@@ -3842,6 +3848,212 @@ const CONFIG_SECTION_CARD_META = {
   }
 };
 
+const CONFIG_GROUPS = {
+  negocio: {
+    icon: '🏬', color: '#6366f1', bg: 'rgba(99,102,241,0.13)',
+    title: 'Mi Negocio', desc: 'Nombre, logo, RNC y tipo de negocio',
+    find: ['h3#cfg-section-business-title', 'h3#cfg-section-branches-title', '#cfg-admin-delete-section'],
+  },
+  ventas: {
+    icon: '💳', color: '#f59e0b', bg: 'rgba(245,158,11,0.13)',
+    title: 'Ventas y Facturación', desc: 'Moneda, ITBIS y comprobantes NCF',
+    find: ['h3#cfg-section-billing-title', '#cfg-ncf-section', 'h3#cfg-business-guide-heading'],
+  },
+  hardware: {
+    icon: '🖨️', color: '#10b981', bg: 'rgba(16,185,129,0.13)',
+    title: 'Periféricos', desc: 'Gaveta, báscula TCP y báscula digital',
+    find: ['h3#cfg-section-drawer-title', '#cfg-bascula-section', 'text:Báscula Digital'],
+  },
+  sistema: {
+    icon: '🌐', color: '#3b82f6', bg: 'rgba(59,130,246,0.13)',
+    title: 'Sistema y Red', desc: 'Apariencia, red, nube y actualizaciones',
+    find: ['h3#cfg-section-appearance-title', '#cfg-network-section', '#cfg-cloud-sync-section', '#cfg-sync-diag-section', '#cfg-update-section'],
+  },
+  seguridad: {
+    icon: '🔐', color: '#ef4444', bg: 'rgba(239,68,68,0.13)',
+    title: 'Acceso y Seguridad', desc: 'Contraseña, respaldo y zona de peligro',
+    find: ['#cfg-backup-section', 'h3#cfg-section-access-title', 'h3#cfg-section-security-title', 'h3#cfg-section-danger-title'],
+  },
+};
+
+function _cfgFindSection(sel, root) {
+  if (sel.startsWith('text:')) {
+    const text = sel.slice(5);
+    for (const h3 of root.querySelectorAll('.config-section h3')) {
+      const t = (h3.dataset.cardTitle || h3.textContent || '').replace(/[^\p{L}\p{N}\s]/gu, '').trim();
+      if (t === text) return h3.closest('.config-section');
+    }
+    return null;
+  }
+  const el = root.querySelector(sel);
+  if (!el) return null;
+  return el.classList.contains('config-section') ? el : el.closest('.config-section');
+}
+
+let _cfgGroupOpen = null; // { groupKey, group, sections, snapshots }
+let _cfgDrillOpen = null; // { sectionEl, bodyEl, title }
+
+function setupCfgGroupCards(root) {
+  if (root.dataset.groupCardsSetup === 'true') return;
+  root.dataset.groupCardsSetup = 'true';
+
+  const grid = root.querySelector('.config-grid');
+  if (!grid) return;
+
+  if (!document.getElementById('cfg-group-style')) {
+    const style = document.createElement('style');
+    style.id = 'cfg-group-style';
+    style.textContent = [
+      '.cfg-group-active .config-section{display:none!important}',
+      '#cfg-group-card-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem;align-items:stretch}',
+      '.cfg-group-card{display:flex;align-items:center;gap:1.1rem;padding:1.5rem 1.4rem;background:var(--bg2);border:1px solid var(--border);border-radius:16px;cursor:pointer;transition:border-color .18s,box-shadow .18s,transform .18s;min-height:120px;text-align:left;width:100%}',
+      '.cfg-group-card:hover{border-color:var(--accent,#6366f1);box-shadow:0 6px 24px rgba(0,0,0,.12);transform:translateY(-3px)}',
+      '.cfg-group-card__icon{width:62px;height:62px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:1.75rem;flex-shrink:0}',
+      '.cfg-group-card__body{flex:1;min-width:0;display:flex;flex-direction:column;gap:.3rem}',
+      '.cfg-group-card__title{font-size:1rem;font-weight:700;color:var(--text);line-height:1.25}',
+      '.cfg-group-card__desc{font-size:.8rem;color:var(--text3);line-height:1.4}',
+      '.cfg-group-card__arrow{color:var(--text3);font-size:1.3rem;flex-shrink:0;font-weight:300}',
+    ].join('');
+    document.head.appendChild(style);
+  }
+
+  const makeCard = ({ icon, color, bg, title, desc }, onClick) => {
+    const card = document.createElement('div');
+    card.className = 'cfg-group-card';
+    card.innerHTML = `<div class="cfg-group-card__icon" style="background:${bg};color:${color}">${icon}</div><div class="cfg-group-card__body"><span class="cfg-group-card__title">${title}</span><span class="cfg-group-card__desc">${desc}</span></div><span class="cfg-group-card__arrow">›</span>`;
+    card.addEventListener('click', onClick);
+    return card;
+  };
+
+  // Grid de tarjetas de grupo (se inserta ANTES del grid original)
+  const groupGrid = document.createElement('div');
+  groupGrid.id = 'cfg-group-card-grid';
+
+  Object.entries(CONFIG_GROUPS).forEach(([key, g]) => {
+    if (!g.find.some(sel => _cfgFindSection(sel, root))) return;
+    groupGrid.appendChild(makeCard(g, () => openCfgGroupModal(key)));
+  });
+
+  // Tarjeta DGII
+  groupGrid.appendChild(makeCard(
+    { icon: '🏛️', color: '#8b5cf6', bg: 'rgba(139,92,246,0.13)', title: 'e-CF · DGII', desc: 'Certificado, ambiente y estado fiscal' },
+    () => openFiscalConfigModal()
+  ));
+
+  grid.parentNode.insertBefore(groupGrid, grid);
+
+  // Ocultar el grid original (sus secciones individuales)
+  grid.classList.add('cfg-group-active');
+}
+
+function _cfgSectionTitle(section) {
+  const h3 = section.querySelector('h3');
+  return h3?.dataset.cardTitle
+    || h3?.querySelector('.config-section-card-title')?.textContent?.trim()
+    || h3?.textContent?.replace(/[^\p{L}\p{N}\s]/gu, '').trim()
+    || 'Sección';
+}
+
+function _cfgRenderGroupList() {
+  if (!_cfgGroupOpen) return;
+  const { group, sections } = _cfgGroupOpen;
+  const body = document.getElementById('cfg-group-modal-body');
+  body.innerHTML = '';
+  document.getElementById('cfg-group-modal-title').textContent = `${group.icon} ${group.title}`;
+
+  sections.forEach(s => {
+    const h3 = s.querySelector('h3');
+    const icon = h3?.querySelector('.config-section-card-icon')?.textContent?.trim() || '⚙️';
+    const title = _cfgSectionTitle(s);
+
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.style.cssText = 'display:flex;align-items:center;gap:.85rem;width:100%;padding:.9rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:10px;cursor:pointer;text-align:left;color:var(--text);transition:background .15s;margin-bottom:.4rem';
+    row.onmouseenter = () => { row.style.background = 'var(--bg2)'; };
+    row.onmouseleave = () => { row.style.background = 'var(--bg)'; };
+    row.innerHTML = `<span style="font-size:1.3rem;width:1.8rem;text-align:center">${icon}</span><span style="flex:1;font-size:.9rem;font-weight:600">${title}</span><span style="color:var(--text3);font-size:1rem">›</span>`;
+    row.addEventListener('click', () => _cfgDrillSection(s));
+    body.appendChild(row);
+  });
+}
+
+function openCfgGroupModal(groupKey) {
+  const group = CONFIG_GROUPS[groupKey];
+  if (!group) return;
+  const modal = document.getElementById('cfg-group-modal');
+  if (!modal) return;
+
+  if (_cfgGroupOpen) _closeCfgGroupModalInternal();
+
+  const root = document.getElementById('module-configuracion');
+  const seen = new Set();
+  const sections = group.find
+    .map(sel => _cfgFindSection(sel, root))
+    .filter(s => s && !seen.has(s) && seen.add(s));
+
+  if (!sections.length) return;
+
+  _cfgGroupOpen = { groupKey, group, sections };
+  _cfgDrillOpen = null;
+  _cfgRenderGroupList();
+  modal.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function _cfgDrillSection(sectionEl) {
+  if (!_cfgGroupOpen) return;
+  const { group } = _cfgGroupOpen;
+
+  // Tomar solo el body de contenido (sin el h3 card)
+  const bodyEl = sectionEl.querySelector('.config-section-body');
+  if (!bodyEl) return;
+
+  const title = _cfgSectionTitle(sectionEl);
+  _cfgDrillOpen = { sectionEl, bodyEl, title };
+
+  const titleEl = document.getElementById('cfg-group-modal-title');
+  titleEl.innerHTML = '';
+  const backBtn = document.createElement('button');
+  backBtn.type = 'button';
+  backBtn.style.cssText = 'background:none;border:none;color:var(--accent,#6366f1);cursor:pointer;font-size:.85rem;font-weight:600;padding:0;margin-right:.6rem;display:inline-flex;align-items:center;gap:.25rem';
+  backBtn.innerHTML = `‹ ${group.title}`;
+  backBtn.addEventListener('click', _cfgDrillBack);
+  titleEl.appendChild(backBtn);
+  titleEl.appendChild(document.createTextNode(title));
+
+  const modalBody = document.getElementById('cfg-group-modal-body');
+  modalBody.innerHTML = '';
+  modalBody.appendChild(bodyEl); // mover solo el contenido
+}
+
+function _cfgDrillBack() {
+  if (!_cfgDrillOpen) return;
+  const { sectionEl, bodyEl } = _cfgDrillOpen;
+  // Restaurar body al section original
+  sectionEl.appendChild(bodyEl);
+  _cfgDrillOpen = null;
+  _cfgRenderGroupList();
+}
+
+function _closeCfgGroupModalInternal() {
+  // Si estamos en drill, restaurar el body del section primero
+  if (_cfgDrillOpen) {
+    const { sectionEl, bodyEl } = _cfgDrillOpen;
+    sectionEl.appendChild(bodyEl);
+    _cfgDrillOpen = null;
+  }
+  _cfgGroupOpen = null;
+}
+
+function closeCfgGroupModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  const modal = document.getElementById('cfg-group-modal');
+  if (!modal) return;
+  _closeCfgGroupModalInternal();
+  modal.style.display = 'none';
+  document.body.style.overflow = '';
+}
+
 function getConfigSectionCardMeta(section, heading) {
   const key = heading?.id || section?.id || '';
   const title = String(heading?.textContent || '').trim();
@@ -3953,6 +4165,7 @@ function initConfigAccordions(rootSelector = '#module-configuracion') {
     });
   });
   decorateConfigSectionCards(rootSelector);
+  if (isConfigRoot) setupCfgGroupCards(root);
 }
 
 function hexToRgb(hex) {
@@ -5171,6 +5384,7 @@ function connectLicenseSocket() {
   if (_licenseSocket || typeof io === 'undefined') return;
   try {
     _licenseSocket = io();
+    if (typeof window._waBotSocketListen === 'function') window._waBotSocketListen(_licenseSocket);
     _licenseSocket.on('license:status-changed', async (data) => {
       if (data.licenseUid) _lbsLicenseUid = data.licenseUid;
       applyLicenseSnapshot({
@@ -8913,3 +9127,264 @@ async function confirmPlanPasswordAndApply() {
     showToast(err.message || 'Error al cambiar el plan.', 'error');
   }
 }
+
+// ════════════════════════════════════════════ BOT WHATSAPP ════════════════════
+
+function waBotRenderState(s) {
+  // Badge de estado
+  const badge = document.getElementById('wabot-status-badge');
+  const labels = { stopped:'Detenido', starting:'Iniciando…', qr:'Escanear QR', ready:'Conectado', disconnected:'Desconectado' };
+  if (badge) {
+    badge.className = `wabot-status-badge ${s.status}`;
+    badge.textContent = labels[s.status] || s.status;
+  }
+
+  // Punto verde en sidebar
+  const dot = document.getElementById('nav-wa-dot');
+  if (dot) dot.style.display = s.status === 'ready' ? 'block' : 'none';
+
+  // QR / estado de conexión
+  const box = document.getElementById('wabot-qr-box');
+  if (!box) return;
+  if (s.status === 'qr' && s.qrDataUrl) {
+    box.innerHTML = `
+      <img src="${s.qrDataUrl}" alt="QR WhatsApp">
+      <p class="wabot-qr-hint">Abre WhatsApp en el número del negocio → ⋮ → Dispositivos vinculados → Escanear QR</p>`;
+  } else if (s.status === 'ready') {
+    box.innerHTML = `
+      <div class="wabot-connected-info">
+        <p>✅ <strong>${s.connectedAs || 'Conectado'}</strong></p>
+        <span>Tu número: ${s.ownerPhone || '—'}</span>
+        <span style="margin-top:.5rem;color:var(--text3)">El bot responde mensajes de tu WhatsApp personal en tiempo real.</span>
+      </div>`;
+  } else if (s.status === 'starting') {
+    box.innerHTML = `<div class="wabot-log-empty">⏳ Iniciando… espera el QR.</div>`;
+  } else if (s.status === 'disconnected') {
+    box.innerHTML = `<div class="wabot-log-empty" style="color:#ef4444">⚠️ Desconectado. Presiona <strong>Iniciar Bot</strong> para reconectar.</div>`;
+  } else {
+    box.innerHTML = `<div class="wabot-log-empty">Bot detenido.<br>Configura y presiona <strong>Iniciar Bot</strong>.</div>`;
+  }
+
+  // Log de mensajes
+  const log = document.getElementById('wabot-log');
+  const empty = document.getElementById('wabot-log-empty');
+  if (!log) return;
+  if (!s.messages || !s.messages.length) {
+    if (empty) empty.style.display = 'block';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  const msgs = [...s.messages].reverse();
+  log.innerHTML = msgs.map(m => {
+    const t = new Date(m.ts).toLocaleTimeString('es-DO', { hour:'2-digit', minute:'2-digit' });
+    return `<div class="wabot-log-msg ${m.dir}">
+      <div class="wabot-log-bubble">${m.text?.replace(/\n/g,'<br>') || ''}</div>
+      <div class="wabot-log-time">${t}</div>
+    </div>`;
+  }).join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+async function waBotRefresh() {
+  try {
+    const res = await fetch('/api/wa-bot/status');
+    if (!res.ok) return;
+    waBotRenderState(await res.json());
+  } catch {}
+}
+
+async function waBotLoadSavedKeys() {
+  try {
+    const data = await fetch('/api/wa-bot/saved-keys').then(r => r.json());
+
+    // Cargar números guardados en los campos
+    const el1 = document.getElementById('wabot-owner-phone');
+    const el2 = document.getElementById('wabot-owner-phone2');
+    if (el1 && data.ownerPhone && !el1.value) el1.value = data.ownerPhone;
+    if (el2 && data.ownerPhone2) el2.value = data.ownerPhone2;
+    // Preseleccionar proveedor guardado
+    if (data.provider && data.provider !== 'none') {
+      const radio = document.querySelector(`input[name="wabot-ai"][value="${data.provider}"]`);
+      if (radio) {
+        radio.checked = true;
+        waBotSelectAI(data.provider, radio.closest('.wabot-ai-option'));
+      }
+    }
+    // Mostrar indicador de key guardada
+    const saved = document.getElementById('wabot-apikey-saved');
+    const input = document.getElementById('wabot-api-key');
+    if (data.provider === 'claude' && data.hasClaudeKey) {
+      if (saved) saved.style.display = 'block';
+      if (input) input.placeholder = '(key guardada — deja vacío para usar la guardada)';
+    } else if (data.provider === 'chatgpt' && data.hasChatgptKey) {
+      if (saved) saved.style.display = 'block';
+      if (input) input.placeholder = '(key guardada — deja vacío para usar la guardada)';
+    }
+    if (data.provider === 'gemini') waBotCheckGoogleStatus();
+  } catch {}
+}
+
+async function waBotSaveKey() {
+  const provider = document.querySelector('input[name="wabot-ai"]:checked')?.value;
+  const apiKey   = document.getElementById('wabot-api-key')?.value?.trim();
+  if (!provider || provider === 'none' || provider === 'gemini') return;
+  if (!apiKey) { showToast('Ingresa la API Key primero', 'warning'); return; }
+  try {
+    const res = await fetch('/api/wa-bot/save-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, apiKey }),
+    });
+    if (!res.ok) throw new Error('Error guardando');
+    showToast('✅ API Key guardada de forma segura', 'success');
+    const saved = document.getElementById('wabot-apikey-saved');
+    if (saved) saved.style.display = 'block';
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function waBotSaveInstructions() {
+  const text = document.getElementById('wabot-instructions')?.value?.trim() || '';
+  try {
+    const res = await fetch('/api/wa-bot/instructions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions: text }),
+    });
+    if (!res.ok) throw new Error('Error guardando');
+    showToast('✅ Instrucciones guardadas — el bot las usará desde ahora', 'success');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function waBotLoadInstructions() {
+  try {
+    const data = await fetch('/api/wa-bot/instructions').then(r => r.json());
+    const ta = document.getElementById('wabot-instructions');
+    if (ta && data.instructions) ta.value = data.instructions;
+  } catch {}
+}
+
+const _waBotAiInfo = {
+  gemini:  { label: 'API Key de Google AI Studio', placeholder: 'AIza...', hint: 'Obtén tu key gratis en aistudio.google.com' },
+  claude:  { label: 'API Key de Anthropic',         placeholder: 'sk-ant-...', hint: 'Obtén tu key en console.anthropic.com' },
+  chatgpt: { label: 'API Key de OpenAI',            placeholder: 'sk-...', hint: 'Obtén tu key en platform.openai.com' },
+  none:    { label: '', placeholder: '', hint: '' },
+};
+
+function waBotSelectAI(provider, el) {
+  document.querySelectorAll('.wabot-ai-option').forEach(o => o.classList.remove('selected'));
+  if (el) el.classList.add('selected');
+  const info    = _waBotAiInfo[provider] || _waBotAiInfo.none;
+  const row     = document.getElementById('wabot-apikey-row');
+  const lbl     = document.getElementById('wabot-apikey-label');
+  const input   = document.getElementById('wabot-api-key');
+  const hint    = document.getElementById('wabot-apikey-hint');
+  const gSignin = document.getElementById('wabot-google-signin');
+
+  // Ocultar todo primero
+  if (row)     row.style.display     = 'none';
+  if (gSignin) gSignin.style.display = 'none';
+
+  if (provider === 'gemini') {
+    if (gSignin) gSignin.style.display = 'flex';
+    gSignin.style.flexDirection = 'column';
+    waBotCheckGoogleStatus();
+  } else if (provider !== 'none') {
+    if (row)   row.style.display   = 'flex';
+    row.style.flexDirection = 'column';
+    if (lbl)   lbl.textContent     = info.label;
+    if (input) input.placeholder   = info.placeholder;
+    if (hint)  hint.textContent    = info.hint;
+  }
+}
+
+async function waBotCheckGoogleStatus() {
+  try {
+    const res = await fetch('/api/wa-bot/google-status');
+    const { connected } = await res.json();
+    const connDiv = document.getElementById('wabot-google-connected');
+    const btnDiv  = document.getElementById('wabot-google-btn');
+    if (connDiv) connDiv.style.display = connected ? 'flex' : 'none';
+    if (btnDiv)  btnDiv.style.display  = connected ? 'none' : 'flex';
+  } catch {}
+}
+
+async function waBotGoogleLogin() {
+  try {
+    const res = await fetch('/api/wa-bot/google-auth-url');
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
+    // Abrir en ventana del sistema (Electron abre el navegador o una ventana interna)
+    window.open(data.url, '_blank', 'width=500,height=650,menubar=no,toolbar=no');
+    // Polling hasta que Google confirme el login
+    showToast('Completa el login en la ventana de Google…', 'info');
+    const poll = setInterval(async () => {
+      const s = await fetch('/api/wa-bot/google-status').then(r => r.json());
+      if (s.connected) {
+        clearInterval(poll);
+        showToast('¡Conectado con Google! 🎉', 'success');
+        waBotCheckGoogleStatus();
+      }
+    }, 2000);
+    setTimeout(() => clearInterval(poll), 120000); // 2 min timeout
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function waBotGoogleDisconnect() {
+  await fetch('/api/wa-bot/google-disconnect', { method: 'POST' });
+  waBotCheckGoogleStatus();
+  showToast('Desconectado de Google', 'info');
+}
+
+async function waBotStart() {
+  const ownerPhone  = document.getElementById('wabot-owner-phone')?.value?.trim();
+  const ownerPhone2 = document.getElementById('wabot-owner-phone2')?.value?.trim() || null;
+  const provider    = document.querySelector('input[name="wabot-ai"]:checked')?.value || 'none';
+  const apiKey      = document.getElementById('wabot-api-key')?.value?.trim();
+  if (!ownerPhone) { showToast('Ingresa tu número personal primero', 'warning'); return; }
+  if (provider !== 'none' && provider !== 'gemini' && !apiKey) { showToast('Ingresa la API Key para usar IA', 'warning'); return; }
+  try {
+    showToast('Iniciando bot…', 'info');
+    const res = await fetch('/api/wa-bot/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ownerPhone, ownerPhone2, provider, apiKey }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error);
+    showToast('Bot iniciado — espera el QR', 'success');
+    setTimeout(waBotRefresh, 2000);
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function waBotStop() {
+  try {
+    await fetch('/api/wa-bot/stop', { method: 'POST' });
+    showToast('Bot detenido', 'info');
+    waBotRefresh();
+  } catch (e) {
+    showToast('Error al detener: ' + e.message, 'error');
+  }
+}
+
+// Actualizar panel via Socket.IO + polling
+function _waBotSocketListen(sock) {
+  sock.on('wa_bot_state', (s) => {
+    waBotRenderState(s);
+    const dot = document.getElementById('nav-wa-dot');
+    if (dot) dot.style.display = s.status === 'ready' ? 'block' : 'none';
+  });
+}
+// Se conecta cuando _licenseSocket esté disponible (ver initLicenseWatcher)
+window._waBotSocketListen = _waBotSocketListen;
+
+// Polling cada 4s cuando el módulo wabot está abierto
+setInterval(() => {
+  if (document.getElementById('module-wabot')?.classList.contains('active')) {
+    waBotRefresh();
+  }
+}, 4000);
+
+// ═════════════════════════════════════════════════════════════════════════════
