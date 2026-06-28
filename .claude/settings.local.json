@@ -138,7 +138,10 @@
       "Bash(curl -s \"http://127.0.0.1:3399/api/ecf/certification/status\" -b /tmp/pos_cookies.txt)",
       "Bash(grep -v \"//\\\\|log\\\\|err\\\\|send\\\\|status\\\\|emit\\\\|res\\\\.\")",
       "Bash(python3 -m json.tool)",
-      "Bash(node -e \"const fs=require\\('fs'\\); const lines=fs.readFileSync\\('modules/ecf/services/ecf.service.js','utf8'\\).split\\('\\\\n'\\); console.log\\(JSON.stringify\\(lines[5074]\\)\\);\")"
+      "Bash(node -e \"const fs=require\\('fs'\\); const lines=fs.readFileSync\\('modules/ecf/services/ecf.service.js','utf8'\\).split\\('\\\\n'\\); console.log\\(JSON.stringify\\(lines[5074]\\)\\);\")",
+      "Bash(grep -v \"//\\\\|safePos\\\\|payload\\\\|firestore\\\\|param\\\\|Limit\\\\b\")",
+      "Bash(powershell -Command \"\\(Get-Date\\).ToUniversalTime\\(\\).ToString\\('yyyy-MM-dd HH:mm:ss'\\)\")",
+      "PowerShell(w32tm /query /status 2>&1)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

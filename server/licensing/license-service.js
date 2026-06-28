@@ -349,7 +349,7 @@ class LicenseService {
     );
     const issuedAt = toIsoString(remote.issuedAt || raw.issuedAt || raw.issued_at || raw.trialStartedAt || remote.trialStartedAt || raw.createdAt || raw.syncedAt || remote.syncedAt);
     const expiresAt = toIsoString(remote.expiresAt || raw.expiresAt || raw.expires_at || raw.trialEndsAt || remote.trialEndsAt);
-    const deviceLimit = safePositiveInteger(remote.deviceLimit || raw.deviceLimit || raw.device_limit, 1);
+    const deviceLimit = safePositiveInteger(remote.deviceLimit || raw.deviceLimit || raw.device_limit, 0);
     const offlineGraceDays = safePositiveInteger(remote.offlineGraceDays || raw.offlineGraceDays || raw.offline_grace_days, this.defaultOfflineGraceDays());
     const devices = normalizeRegisteredDevices(remote.devices || raw.devices || raw.deviceRegistry || raw.registeredDevices);
     const deviceSignatureMap = raw.deviceSignatures || raw.device_signatures || {};
@@ -569,12 +569,12 @@ class LicenseService {
     let trialStartedAt = toSqlDateTime(state.trialStartedAt);
     let trialEndsAt = toSqlDateTime(state.trialEndsAt);
 
-    // Si Firebase devuelve fechas vencidas, verificar si el DB local tiene fechas
-    // frescas (ej: recién reseteadas por restauración de backup). Si la fecha local
-    // es futura, conservarla en lugar de sobreescribirla con el dato vencido de Firebase.
+    // Si Firebase devuelve fechas vencidas o nulas, verificar el DB local.
+    // Si el local tiene fechas futuras (recién instalado o restaurado de backup), conservarlas.
+    // Si el local tampoco tiene fechas (instalación nueva sin setup completo), dar 30 días.
     if (!incomingEndsAt || incomingEndsAt < now) {
       const localRows = await this.query(
-        'SELECT trial_started_at, trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1'
+        'SELECT trial_started_at, trial_ends_at, license_status, setup_completed FROM config WHERE id = 1 LIMIT 1'
       ).catch(() => []);
       const cfg = localRows[0] || {};
       const localEndsAt = asDate(cfg.trial_ends_at);
@@ -582,6 +582,13 @@ class LicenseService {
         statusToWrite = String(cfg.license_status || 'trial');
         trialStartedAt = toSqlDateTime(asDate(cfg.trial_started_at));
         trialEndsAt = toSqlDateTime(localEndsAt);
+      } else if (statusToWrite === 'expired' || statusToWrite === 'trial') {
+        // Instalación nueva (sin fechas locales ni en Firebase): dar 30 días gratis
+        const freshStart = now;
+        const freshEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        statusToWrite = 'trial';
+        trialStartedAt = toSqlDateTime(freshStart);
+        trialEndsAt = toSqlDateTime(freshEnd);
       }
     }
 
@@ -609,12 +616,13 @@ class LicenseService {
 
   async defaultUpdateRemoteDevice(remoteLicense, _context = {}, options = {}) {
     if (!remoteLicense?.licenseId) {
-      return { allowed: true, activeCount: 0, limit: remoteLicense?.deviceLimit || 1 };
+      return { allowed: true, activeCount: 0, limit: 0 };
     }
 
     const existingDevices = normalizeRegisteredDevices(remoteLicense.devices);
     const currentDevice = existingDevices.find((entry) => entry.deviceId === this.device.deviceId);
-    const limit = safePositiveInteger(remoteLicense.deviceLimit, 1);
+    // deviceLimit=0 significa ilimitado. Solo bloquear si el límite es explícito y > 0.
+    const limit = safePositiveInteger(remoteLicense.deviceLimit, 0);
     if (!currentDevice && limit > 0 && existingDevices.length >= limit) {
       return { allowed: false, activeCount: existingDevices.length, limit };
     }

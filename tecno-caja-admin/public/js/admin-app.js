@@ -371,9 +371,10 @@ let _currentNegocioId = null;
 async function openNegocio(id) {
   _currentNegocioId = id;
   try {
-    const [neg, hist] = await Promise.all([
+    const [neg, hist, devData] = await Promise.all([
       api('GET', `/api/negocios/${id}`),
       api('GET', `/api/licencias/${id}`).catch(() => []),
+      api('GET', `/api/negocios/${id}/dispositivos`).catch(() => ({ deviceLimit: 1, devices: [] })),
     ]);
 
     setText('det-nombre', neg.businessName || neg.businessKey || id);
@@ -417,6 +418,42 @@ async function openNegocio(id) {
         </tr>`).join('') || '<tr><td colspan="4" style="opacity:.6">Sin historial</td></tr>';
     }
 
+    const devSection = $id('dispositivos-section');
+    if (devSection) {
+      const devices = devData?.devices || [];
+      const limit   = devData?.deviceLimit ?? 1;
+      devSection.innerHTML = `
+        <h4 style="margin:0 0 .75rem;color:#94a3b8;font-size:.85rem;letter-spacing:.05em;text-transform:uppercase">
+          Dispositivos registrados (${devices.length}/${limit})
+        </h4>
+        <div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem">
+          <label style="font-size:.82rem;color:#94a3b8">Límite de dispositivos:</label>
+          <input id="inp-device-limit" type="number" min="1" max="50" value="${limit}"
+            style="width:70px;padding:.3rem .5rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#e2e8f0;font-size:.85rem">
+          <button class="btn-sm btn-warning" onclick="adminApp.saveDeviceLimit()">Guardar límite</button>
+        </div>
+        ${devices.length === 0 ? '<p style="opacity:.5;font-size:.83rem">Ningún dispositivo registrado aún.</p>' : `
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem">
+          <thead><tr style="color:#64748b;border-bottom:1px solid rgba(255,255,255,.07)">
+            <th style="text-align:left;padding:.4rem .6rem">Host</th>
+            <th style="text-align:left;padding:.4rem .6rem">Plataforma</th>
+            <th style="text-align:left;padding:.4rem .6rem">Último acceso</th>
+            <th style="padding:.4rem .6rem"></th>
+          </tr></thead>
+          <tbody>${devices.map(dv => `
+            <tr style="border-bottom:1px solid rgba(255,255,255,.05)">
+              <td style="padding:.4rem .6rem">${dv.hostname}</td>
+              <td style="padding:.4rem .6rem">${dv.platform}</td>
+              <td style="padding:.4rem .6rem">${fmtDate(dv.lastSeenAt)}</td>
+              <td style="padding:.4rem .6rem;text-align:right">
+                <button class="btn-sm btn-danger" style="font-size:.75rem;padding:.2rem .5rem"
+                  onclick="adminApp.removeDevice('${dv.deviceId}')">Eliminar</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}`;
+    }
+
     document.querySelectorAll('.module').forEach(m => m.classList.add('hidden'));
     show('mod-negocio-detalle');
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
@@ -453,6 +490,27 @@ async function buscarContadorAsignar(q) {
         </div>`).join('');
     } catch (e) { res.innerHTML = `<p style="color:#ef4444;font-size:.8rem">${e.message}</p>`; }
   }, 350);
+}
+
+async function saveDeviceLimit() {
+  if (!_currentNegocioId) return;
+  const limit = Number($id('inp-device-limit')?.value);
+  if (!Number.isFinite(limit) || limit < 1) { showToast('Ingresa un número válido (mín. 1)', 'error'); return; }
+  try {
+    await api('PUT', `/api/negocios/${_currentNegocioId}/device-limit`, { limit });
+    showToast(`Límite actualizado a ${limit} dispositivo(s).`, 'success');
+    openNegocio(_currentNegocioId);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function removeDevice(deviceId) {
+  if (!_currentNegocioId) return;
+  if (!confirm('¿Eliminar este dispositivo? El equipo quedará bloqueado hasta que se reconecte.')) return;
+  try {
+    await api('DELETE', `/api/negocios/${_currentNegocioId}/dispositivos/${deviceId}`);
+    showToast('Dispositivo eliminado.', 'success');
+    openNegocio(_currentNegocioId);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 async function confirmarAsignarContador(contadorId, nombre) {
@@ -712,6 +770,7 @@ window.adminApp = {
   loadDashboard,
   loadNegocios, filterNegocios, openNegocio, backToNegocios,
   showAsignarContador, hideAsignarContador, buscarContadorAsignar, confirmarAsignarContador,
+  saveDeviceLimit, removeDevice,
   accionLicencia, showRenovar,
   loadLicencias, goNegociosByStatus,
   loadContadores, openNuevoContador, guardarContador,

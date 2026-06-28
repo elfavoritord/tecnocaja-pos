@@ -149,36 +149,62 @@ app.get('/api/firebase-config', (_req, res) => {
 });
 
 // Verificar token + perfil (llamado después del login de Firebase en el cliente)
+// UIDs de emergencia configurables vía env (separados por coma)
+const FALLBACK_ADMIN_UIDS = String(process.env.ADMIN_FALLBACK_UIDS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+function isFirebaseAdminError(e) {
+  return e?.code?.startsWith('auth/') || String(e?.message || '').includes('UNAUTHENTICATED')
+    || String(e?.message || '').includes('PERMISSION_DENIED') || String(e?.code || '').includes('grpc');
+}
+
 app.post('/api/auth/verify', async (req, res) => {
-  if (!fbReady) return res.status(503).json({ error: fbError });
+  if (!fbReady) return res.status(503).json({ error: 'El servidor admin no está conectado a Firebase. Reinicia el servicio.' });
   const { idToken } = req.body;
   if (!idToken) return res.status(400).json({ error: 'idToken es requerido.' });
 
   try {
     const decoded = await adminSdk.auth().verifyIdToken(idToken);
     const uid = decoded.uid;
+    const email = decoded.email || '';
 
-    const userDoc = await col(COL_ADMINS).doc(uid).get();
-    if (!userDoc.exists) {
-      return res.status(403).json({ error: 'Esta cuenta no tiene permisos para acceder a Tecno Caja Admin.' });
+    // Intenta leer perfil desde Firestore
+    let profileData = null;
+    try {
+      const userDoc = await col(COL_ADMINS).doc(uid).get();
+      if (userDoc.exists) {
+        profileData = userDoc.data();
+        if (profileData.role !== 'super_admin_platform') {
+          return res.status(403).json({ error: 'Esta cuenta no tiene permisos de administrador.' });
+        }
+        if (profileData.status !== 'active') {
+          return res.status(403).json({ error: 'Esta cuenta está inactiva o suspendida.' });
+        }
+        col(COL_ADMINS).doc(uid).update({ lastLoginAt: isoNow() }).catch(() => {});
+      }
+    } catch (firestoreErr) {
+      console.error('[admin] Firestore no disponible en verify:', firestoreErr.message);
+      // Firestore no disponible — si el UID está en la lista de fallback, permitir entrada
+      if (!FALLBACK_ADMIN_UIDS.includes(uid) && !FALLBACK_ADMIN_UIDS.includes(email)) {
+        return res.status(503).json({ error: 'Base de datos del panel no disponible. Contacta al soporte técnico.' });
+      }
     }
 
-    const data = userDoc.data();
-    if (data.role !== 'super_admin_platform') {
-      return res.status(403).json({ error: 'Esta cuenta no tiene permisos para acceder a Tecno Caja Admin.' });
-    }
-    if (data.status !== 'active') {
-      return res.status(403).json({ error: 'Esta cuenta está inactiva o suspendida.' });
+    if (!profileData && !FALLBACK_ADMIN_UIDS.includes(uid) && !FALLBACK_ADMIN_UIDS.includes(email)) {
+      return res.status(403).json({ error: 'Esta cuenta no está registrada como administrador del panel.' });
     }
 
-    await col(COL_ADMINS).doc(uid).update({ lastLoginAt: isoNow() }).catch(() => {});
     res.json({
-      ok: true, uid, email: decoded.email,
-      fullName: data.fullName, role: data.role,
-      permissions: data.permissions || ['*'],
+      ok: true, uid, email,
+      fullName: profileData?.fullName || email,
+      role: profileData?.role || 'super_admin_platform',
+      permissions: profileData?.permissions || ['*'],
     });
   } catch (e) {
-    res.status(401).json({ error: e.message });
+    const msg = isFirebaseAdminError(e)
+      ? 'Error de autenticación con Firebase. Verifica que el servidor esté bien configurado.'
+      : (e.code === 'auth/id-token-expired' ? 'Sesión expirada. Vuelve a iniciar sesión.' : 'No se pudo verificar la sesión.');
+    console.error('[admin] verify error:', e.message);
+    res.status(401).json({ error: msg });
   }
 });
 
@@ -355,6 +381,53 @@ app.post('/api/negocios/:id/licencia', requireAuth, async (req, res) => {
 
     await audit(req.adminUser.email, `licencia.${accion}`, req.params.id, `Plan: ${plan || biz.planCode}`);
     res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Gestión de dispositivos registrados en la licencia
+app.get('/api/negocios/:id/dispositivos', requireAuth, async (req, res) => {
+  try {
+    const doc = await col(COL_LICENCIAS).doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
+    const d = doc.data();
+    const devices = d.devices || {};
+    const list = Object.values(devices).map(dv => ({
+      deviceId:    dv.deviceId,
+      hostname:    dv.hostname || '—',
+      platform:    dv.platform || '—',
+      status:      dv.status || 'active',
+      firstSeenAt: dv.firstSeenAt?.toDate?.()?.toISOString() || dv.firstSeenAt || null,
+      lastSeenAt:  dv.lastSeenAt?.toDate?.()?.toISOString()  || dv.lastSeenAt  || null,
+    }));
+    res.json({ deviceLimit: d.deviceLimit || 1, devices: list });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/negocios/:id/dispositivos/:deviceId', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_LICENCIAS).doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
+    const fieldPath = `devices.${req.params.deviceId}`;
+    const { FieldValue } = require('firebase-admin/firestore');
+    await ref.update({ [fieldPath]: FieldValue.delete(), updatedAt: new Date() });
+    await audit(req.adminUser.email, 'dispositivo.eliminado', req.params.id, `Device: ${req.params.deviceId}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/negocios/:id/device-limit', requireAuth, async (req, res) => {
+  const limit = Number(req.body.limit);
+  if (!Number.isFinite(limit) || limit < 1 || limit > 50) {
+    return res.status(400).json({ error: 'Límite debe ser entre 1 y 50.' });
+  }
+  try {
+    const ref = col(COL_LICENCIAS).doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
+    await ref.update({ deviceLimit: limit, updatedAt: new Date() });
+    await audit(req.adminUser.email, 'licencia.device_limit', req.params.id, `Nuevo límite: ${limit}`);
+    res.json({ ok: true, deviceLimit: limit });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

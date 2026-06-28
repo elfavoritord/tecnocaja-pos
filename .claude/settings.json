@@ -106,7 +106,14 @@
       "PowerShell(ls \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\tecno-caja-bot\" | Where-Object { $_.Name -ne 'node_modules' })",
       "Bash(node -e \"require\\('whatsapp-web.js'\\)\")",
       "Bash(node -e \"require\\('qrcode'\\)\")",
-      "Bash(node -e \"require\\('@anthropic-ai/sdk'\\)\")"
+      "Bash(node -e \"require\\('@anthropic-ai/sdk'\\)\")",
+      "Bash(grep -v \"//\\\\|comment\")",
+      "Bash(node -e \"const k=require\\('./firebase-key.json'\\); console.log\\('project_id:', k.project_id, '\\\\nclient_email:', k.client_email\\);\")",
+      "Bash(grep -v \"//\\\\|comment\\\\|example\\\\|PEGA\")",
+      "Bash(grep -v \"PEGA\\\\|placeholder\\\\|comment\\\\|//\\\\|example\")",
+      "Bash(node --check server/integrations/whatsapp-bot.js)",
+      "Bash(node --check tecno-caja-admin/server.js)",
+      "PowerShell(Start-Process powershell -Verb RunAs -ArgumentList @\\('-Command', 'w32tm /config /update /manualpeerlist:\"time.google.com\" /syncfromflags:manual; w32tm /resync /force; Write-Host DONE'\\) -Wait 2>&1)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",

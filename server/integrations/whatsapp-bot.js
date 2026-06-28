@@ -315,11 +315,43 @@ async function responder(mensaje) {
 }
 
 // ── Cliente WhatsApp ───────────────────────────────────────────────────────────
+function resolveChromePath() {
+  // 1. Respeta variable de entorno explícita
+  if (process.env.WHATSAPP_CHROME_PATH) return process.env.WHATSAPP_CHROME_PATH;
+
+  // 2. Busca Chrome del sistema en rutas comunes de Windows
+  const candidates = [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe` : '',
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    if (require('fs').existsSync(c)) {
+      console.log('[wa-bot] Usando Chrome del sistema:', c);
+      return c;
+    }
+  }
+
+  // 3. Usa el Chromium de puppeteer (puede requerir descarga en primera ejecución)
+  try {
+    const puppeteer = require('puppeteer');
+    const chromePath = puppeteer.executablePath();
+    if (require('fs').existsSync(chromePath)) return chromePath;
+    console.warn('[wa-bot] Chromium de puppeteer no encontrado en:', chromePath);
+    console.warn('[wa-bot] En PC nueva, puppeteer descarga ~170MB de Chromium en primer uso.');
+  } catch (_e) {}
+
+  return undefined;
+}
+
 function buildClient() {
+  const executablePath = resolveChromePath();
   return new Client({
     authStrategy: new LocalAuth({ clientId: 'tecno-caja-pos-bot', dataPath: '.wwebjs_auth_pos' }),
     puppeteer: {
       headless: true,
+      executablePath,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
