@@ -4354,6 +4354,8 @@ function openBillingModal() {
     _showCajaRequiredModal();
     return;
   }
+  // Limpiar cualquier estado colgado de una sesión anterior
+  _billingSubmitting = false;
   const billingCaps = window.TecnoCajaBilling?.getEffectiveBillingCapabilities
     ? window.TecnoCajaBilling.getEffectiveBillingCapabilities()
     : { canCreateSales: true, forcePendingCharge: false };
@@ -6369,16 +6371,12 @@ async function processSale(action = 'print') {
   }
   _billingSubmitting = true;
   syncBillingModalFooter();
-  const venta = buildSalePayload();
-  if (!venta) {
-    _billingSubmitting = false;
-    syncBillingModalFooter();
-    return;
-  }
-
-  pendingSaleConfirmation = venta;
-  closeAllModals(true, 'success');
   try {
+    const venta = buildSalePayload();
+    if (!venta) return;
+
+    pendingSaleConfirmation = venta;
+    closeAllModals(true, 'success');
     await finalizePendingSale(action);
   } finally {
     _billingSubmitting = false;

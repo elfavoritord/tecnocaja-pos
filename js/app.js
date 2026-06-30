@@ -2103,7 +2103,7 @@ function applyAppTranslations() {
 
   setTextBySelector('#module-usuarios .module-header h2', translateCatalogText('Usuarios y Permisos'));
   setTextBySelector('#module-usuarios .module-header .btn-primary', `+ ${translateCatalogText('Nuevo Usuario')}`);
-  ['Usuario', 'Nombre', 'Rol', 'Estado', 'Último Acceso', 'Acciones'].forEach((text, index) => {
+  ['Usuario', 'Nombre', 'Rol', 'Estado', 'Firebase', 'Último Acceso', 'Acciones'].forEach((text, index) => {
     const el = document.querySelectorAll('#module-usuarios table thead th')[index];
     if (el) el.textContent = translateCatalogText(text);
   });
@@ -2370,6 +2370,9 @@ function showLoginScreen() {
   }
 
   setLoginMode(setupState?.setupRequired ? 'new' : 'existing');
+  if (!setupState?.setupRequired && !setupState?.setupCorrupted) {
+    loadLoginUsers({ preferCache: true });
+  }
 }
 
 function normalizePhoneForWhatsApp(rawPhone, defaultCountryCode = '1') {
@@ -2656,12 +2659,7 @@ function setLoginMode(mode = 'existing') {
         : copy.loginHint;
   }
   if (loginMode === 'existing') {
-    // El picker de usuario maneja el foco — no usar el fallback de texto aquí
-    // loadLoginUsers se llama desde showLoginScreen; aquí solo recargamos si el grid está vacío
-    const grid = document.getElementById('login-user-grid');
-    if (grid && !grid.querySelector('.login-user-card')) {
-      loadLoginUsers({ preferCache: true });
-    }
+    loadLoginUsers({ preferCache: true });
   }
 }
 
@@ -3127,7 +3125,49 @@ function applyLoginUsersList(users, { autoSelect = true } = {}) {
 
 async function loadLoginUsers(options = {}) {
   const preferCache = options.preferCache !== false;
-  const force = Boolean(options.force);
+  const POS_EXCLUDED_ROLES = ['superadmin', 'contador_asociado'];
+
+  // Si hay caché válida, mostrar de inmediato (no esperar a la red)
+  const cachedUsers = preferCache ? getCachedLoginUsers() : [];
+  if (cachedUsers.length) {
+    applyLoginUsersList(cachedUsers, { autoSelect: true });
+    // Aún así actualizamos en segundo plano sin bloquear
+    _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES);
+    return cachedUsers;
+  }
+
+  // Sin caché: mostrar spinner y esperar a la red
+  const grid = _ensureLoginGrid();
+  if (grid) grid.innerHTML = '<div class="login-user-grid-loading">Cargando usuarios…</div>';
+  return _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES);
+}
+
+async function _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES) {
+  // Reintentar hasta 6 veces en 1s, 2s, 3s, 4s, 5s
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1000));
+      const res = await fetch('/api/public/users-list');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const users = (Array.isArray(data?.users) ? data.users : [])
+        .filter(u => !POS_EXCLUDED_ROLES.includes(String(u.rol || u.role_code || u.roleCode || '')));
+      if (users.length) {
+        setCachedLoginUsers(users);
+        applyLoginUsersList(users, { autoSelect: true });
+        return users;
+      }
+      // El servidor responde pero no hay usuarios aún — reintentar
+    } catch (_e) {
+      // Error de red — reintentar
+    }
+  }
+  // Todos los intentos fallaron
+  _showLoginTextFallback();
+  return [];
+}
+
+function _ensureLoginGrid() {
   let grid = document.getElementById('login-user-grid');
   if (!grid) {
     const pickerSection = document.getElementById('login-user-picker-section');
@@ -3139,50 +3179,7 @@ async function loadLoginUsers(options = {}) {
       grid = document.getElementById('login-user-grid');
     }
   }
-  if (!grid) return;
-
-  const cachedUsers = preferCache ? getCachedLoginUsers() : [];
-  if (cachedUsers.length) {
-    applyLoginUsersList(cachedUsers, { autoSelect: true });
-  } else if (!force) {
-    grid.innerHTML = '<div class="login-user-grid-loading">Cargando usuarios…</div>';
-  }
-
-  if (loginUsersLoadPromise) {
-    return loginUsersLoadPromise;
-  }
-
-  loginUsersLoadPromise = (async () => {
-    try {
-      const data = await api.request('/api/public/users-list', { _timeoutMs: 5000 });
-      const POS_EXCLUDED_ROLES = ['superadmin', 'contador_asociado'];
-      const users = (Array.isArray(data?.users) ? data.users : [])
-        .filter(u => !POS_EXCLUDED_ROLES.includes(u.role_code || u.roleCode || ''));
-      if (!users.length) {
-        if (!cachedUsers.length) _showLoginTextFallback();
-        return users;
-      }
-      setCachedLoginUsers(users);
-
-      const loginVisible = !document.getElementById('login-screen')?.classList.contains('hidden');
-      if (loginVisible && loginMode === 'existing') {
-        const selectedUser = String(document.getElementById('login-user')?.value || '').trim();
-        applyLoginUsersList(users, { autoSelect: !selectedUser });
-      }
-      return users;
-    } catch (e) {
-      if (!cachedUsers.length) _showLoginTextFallback();
-      return cachedUsers;
-    } finally {
-      loginUsersLoadPromise = null;
-    }
-  })();
-
-  try {
-    return await loginUsersLoadPromise;
-  } catch (_error) {
-    return cachedUsers;
-  }
+  return grid;
 }
 
 function _renderLoginUserGrid(users) {
@@ -5785,6 +5782,67 @@ function updateSetupStepUi() {
   if (finishBtn) finishBtn.classList.toggle('hidden', setupWizard.step < 5);
 }
 
+// ── Búsqueda DGII en el wizard de primer inicio ───────────────────────────
+function setupDgiiFormat(input) {
+  // Deja pasar solo dígitos y guiones, máx 14 chars
+  let v = String(input.value || '').replace(/[^\d-]/g, '');
+  input.value = v;
+}
+
+async function setupDgiiLookup() {
+  const rncInput  = document.getElementById('setup-business-rnc');
+  const nameInput = document.getElementById('setup-business-name');
+  const statusDiv = document.getElementById('setup-rnc-status');
+  const btn       = document.getElementById('setup-rnc-lookup-btn');
+  if (!rncInput || !statusDiv) return;
+
+  const raw = String(rncInput.value || '').replace(/\D/g, '');
+  if (raw.length < 9) {
+    statusDiv.textContent = '';
+    return;
+  }
+
+  statusDiv.innerHTML = '<span style="color:#64748b">Consultando DGII…</span>';
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+  try {
+    const res  = await fetch(`/api/rnc/lookup?id=${encodeURIComponent(raw)}`);
+    const data = await res.json();
+
+    if (data.found) {
+      const nombre = data.nombre || data.nombreComercial || '';
+      const tipo   = data.tipo   || '';
+      const estado = data.estado || '';
+
+      // Autocompletar nombre si el campo está vacío o tiene el placeholder
+      if (nameInput && (!nameInput.value.trim() || nameInput.value.trim() === 'Mi negocio')) {
+        nameInput.value = nombre;
+      }
+
+      // Formatear RNC con guiones (9 dígitos → 000-00000-0, 11 dígitos → 000-0000000-0)
+      if (raw.length === 9) {
+        rncInput.value = `${raw.slice(0,3)}-${raw.slice(3,8)}-${raw.slice(8)}`;
+      } else if (raw.length === 11) {
+        rncInput.value = `${raw.slice(0,3)}-${raw.slice(3,10)}-${raw.slice(10)}`;
+      }
+
+      const estadoColor = estado.toLowerCase() === 'activo' ? '#10b981' : '#f59e0b';
+      statusDiv.innerHTML = `<span style="color:${estadoColor}">✓ ${nombre} &nbsp;·&nbsp; ${tipo} &nbsp;·&nbsp; Estado: <b>${estado}</b></span>`;
+
+      // Enfocar dirección para que el usuario continúe llenando
+      setTimeout(() => document.getElementById('setup-business-address')?.focus(), 80);
+    } else {
+      statusDiv.innerHTML = '<span style="color:#f59e0b">⚠ No encontrado en el padrón DGII. Escribe el nombre manualmente.</span>';
+      if (nameInput) nameInput.focus();
+    }
+  } catch (_) {
+    statusDiv.innerHTML = '<span style="color:#ef4444">Error consultando DGII. Escribe el nombre manualmente.</span>';
+    if (nameInput) nameInput.focus();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Buscar DGII'; }
+  }
+}
+
 function validateSetupStep(step = setupWizard.step) {
   if (step === 2) {
     const adminName = document.getElementById('setup-admin-name')?.value.trim() || '';
@@ -6022,7 +6080,10 @@ async function initializeStartupFlow() {
       }
       return;
     }
-    showLoginScreen();
+    // Pre-cargar usuarios en background antes de mostrar el login
+    // (así están en caché cuando showLoginScreen los necesita)
+    _fetchAndRenderLoginUsers(['superadmin', 'contador_asociado']).catch(() => {});
+    await _tryAutoLogin();
   } catch (error) {
     showLoginScreen();
     if (typeof showToast === 'function') {
@@ -6030,6 +6091,59 @@ async function initializeStartupFlow() {
     } else {
       console.error(error);
     }
+  }
+}
+
+async function _tryAutoLogin() {
+  const token = typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '';
+  if (!token) { showLoginScreen(); return; }
+  try {
+    const res = await fetch('/api/auth/me', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.status === 401) {
+      if (typeof setStoredAuthToken === 'function') setStoredAuthToken('');
+      showLoginScreen();
+      return;
+    }
+    if (!res.ok) {
+      // Error del servidor (ej: endpoint no existe aún) — mostrar login sin borrar token
+      if (typeof showToast === 'function') showToast(`Auto-login: servidor respondió ${res.status}`, 'warning');
+      showLoginScreen();
+      return;
+    }
+    const data = await res.json();
+    if (!data?.user) {
+      if (typeof showToast === 'function') showToast('Auto-login: respuesta sin usuario', 'warning');
+      showLoginScreen();
+      return;
+    }
+    const currentUser = data.user;
+    DB.currentUser = currentUser;
+    DB.authToken   = data.token || token;
+    if (typeof window.setTecnoCajaAuthToken === 'function') {
+      window.setTecnoCajaAuthToken(DB.authToken || '');
+    }
+    // Cargar bootstrap completo antes de mostrar la app
+    let bootstrapData = null;
+    try {
+      bootstrapData = await api.getBootstrap();
+    } catch (_) {}
+    if (bootstrapData) hydrateDB(bootstrapData);
+    // hydrateDB hace Object.assign(DB, bootstrap) y el bootstrap tiene currentUser:null
+    // lo que sobreescribe al usuario que acabamos de setear — restaurarlo aquí
+    DB.currentUser = currentUser;
+    DB.authToken   = data.token || token;
+    // Ocultar login y mostrar la app
+    document.getElementById('login-screen')?.classList.add('hidden');
+    const loginScreen = document.getElementById('login-screen');
+    if (loginScreen) loginScreen.style.display = 'none';
+    document.getElementById('setup-screen')?.classList.add('hidden');
+    document.getElementById('app')?.classList.remove('hidden');
+    initApp();
+  } catch (err) {
+    if (typeof showToast === 'function') showToast(`Auto-login error: ${err.message}`, 'error');
+    showLoginScreen();
   }
 }
 
@@ -6410,44 +6524,82 @@ function openResetSystemModal() {
   const body = document.getElementById('modal-body');
   const footer = document.getElementById('modal-footer');
 
-  title.textContent = 'Eliminar todo';
+  title.textContent = '';
   body.innerHTML = `
-    <div class="form-group">
-      <label>Confirmación obligatoria</label>
-      <p style="color:var(--danger);font-size:0.84rem;line-height:1.5;margin-bottom:0.75rem">
-        Esta acción limpiará la app completa. Si no marcas Firebase, se conservarán la configuración actual y tu usuario administrador para que puedas seguir entrando.
-      </p>
-      <p style="color:var(--text2);font-size:0.82rem;line-height:1.5;margin-bottom:0.75rem">
-        Si también marcas Firebase, Tecno Caja dejará la base local en modo primera instalación para que al reinstalar empiece desde cero. Antes de borrar, Tecno Caja guardará una copia segura automática.
-      </p>
-      <input type="text" id="reset-system-confirmation" class="form-input" placeholder="Escribe ELIMINAR TODO">
-      <div style="height:0.75rem"></div>
-      <label>Clave de seguridad</label>
-      <div class="password-field">
-        <input type="password" id="reset-system-password" class="form-input" placeholder="Ingresa la clave de seguridad">
-        <button class="password-toggle" type="button" onclick="togglePasswordVisibility('reset-system-password', this)" aria-label="Mostrar clave">👁</button>
+    <div style="display:flex;flex-direction:column;gap:1.1rem">
+
+      <!-- Encabezado de peligro -->
+      <div style="display:flex;align-items:flex-start;gap:0.85rem;padding:1rem 1.1rem;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.22);border-radius:14px">
+        <div style="font-size:1.6rem;line-height:1;flex-shrink:0">🗑️</div>
+        <div>
+          <div style="font-weight:700;font-size:1rem;color:var(--danger);margin-bottom:0.3rem">Eliminar todo</div>
+          <div style="font-size:0.82rem;color:var(--text2);line-height:1.55">
+            Borrará todas las ventas, productos, clientes e inventario. Se guardará una copia de seguridad automática antes de proceder.
+            La configuración y tu usuario administrador se conservarán para que puedas volver a entrar.
+          </div>
+        </div>
       </div>
-      <div style="height:1rem"></div>
-      <label style="display:flex;align-items:flex-start;gap:0.6rem;cursor:pointer">
-        <input type="checkbox" id="reset-system-purge-firebase" onchange="toggleResetFirebaseFields()" style="margin-top:0.15rem">
-        <span>
-          <strong>También borrar Firebase</strong><br>
-          <small style="color:var(--text2)">Elimina la licencia, usuarios remotos, reportes, clientes sincronizados y códigos móviles del negocio. Usa esto solo en la terminal principal.</small>
-        </span>
+
+      <!-- Confirmación de texto -->
+      <div>
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:0.45rem">
+          Confirmación obligatoria
+        </label>
+        <input type="text" id="reset-system-confirmation" class="form-input"
+          placeholder="Escribe: ELIMINAR TODO"
+          style="font-family:monospace;letter-spacing:.03em">
+      </div>
+
+      <!-- Clave de seguridad -->
+      <div>
+        <label style="font-size:0.78rem;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:0.45rem">
+          Clave de seguridad
+        </label>
+        <div class="password-field">
+          <input type="password" id="reset-system-password" class="form-input" placeholder="Ingresa la clave de seguridad">
+          <button class="password-toggle" type="button" onclick="togglePasswordVisibility('reset-system-password', this)" aria-label="Mostrar clave">👁</button>
+        </div>
+      </div>
+
+      <!-- Separador -->
+      <div style="border-top:1px solid var(--border,#e2e8f0)"></div>
+
+      <!-- Opción Firebase -->
+      <label style="display:flex;align-items:flex-start;gap:0.75rem;cursor:pointer;padding:0.85rem 1rem;border:1px solid var(--border,#e2e8f0);border-radius:12px;transition:background .15s"
+        onmouseover="this.style.background='rgba(0,0,0,.03)'" onmouseout="this.style.background=''">
+        <input type="checkbox" id="reset-system-purge-firebase" onchange="toggleResetFirebaseFields()"
+          style="width:1rem;height:1rem;margin-top:0.12rem;accent-color:var(--danger);flex-shrink:0">
+        <div>
+          <div style="font-weight:600;font-size:0.9rem;margin-bottom:0.2rem">También borrar en la nube (Firebase)</div>
+          <div style="font-size:0.79rem;color:var(--text2);line-height:1.5">
+            Elimina la licencia, usuarios remotos, reportes y códigos móviles del negocio en Firebase.
+            Úsalo solo desde la terminal principal.
+          </div>
+        </div>
       </label>
-      <div id="reset-system-firebase-fields" class="hidden" style="margin-top:0.85rem;padding:0.85rem;border:1px solid rgba(239,68,68,0.28);border-radius:12px;background:rgba(239,68,68,0.08)">
-        <label>Confirmación remota</label>
-        <input type="text" id="reset-system-cloud-confirmation" class="form-input" placeholder="Escribe BORRAR FIREBASE">
-        <p style="color:var(--text2);font-size:0.8rem;line-height:1.5;margin-top:0.65rem;margin-bottom:0">
-          Después de borrar Firebase, la base local quedará en cero. Luego desinstala Tecno Caja desde Windows y acepta eliminar también los archivos locales de esta PC.
-        </p>
+
+      <!-- Campos Firebase (condicional) -->
+      <div id="reset-system-firebase-fields" class="hidden"
+        style="padding:1rem;border:1.5px solid rgba(239,68,68,0.3);border-radius:14px;background:rgba(239,68,68,0.05);display:flex;flex-direction:column;gap:0.65rem">
+        <div style="display:flex;align-items:center;gap:0.5rem;font-size:0.8rem;font-weight:600;color:var(--danger)">
+          <span>☁️</span> Confirmación de borrado en la nube
+        </div>
+        <input type="text" id="reset-system-cloud-confirmation" class="form-input"
+          placeholder="Escribe: BORRAR FIREBASE"
+          style="font-family:monospace;letter-spacing:.03em">
+        <div style="font-size:0.78rem;color:var(--text2);line-height:1.5">
+          Después de borrar Firebase, desinstala Tecno Caja desde Windows y acepta eliminar también los archivos locales.
+        </div>
       </div>
-      <div id="reset-system-status" style="margin-top:0.75rem;color:var(--text2);font-size:0.85rem"></div>
+
+      <!-- Estado de progreso -->
+      <div id="reset-system-status" style="font-size:0.83rem;color:var(--text2);min-height:1.2em;text-align:center"></div>
     </div>
   `;
   footer.innerHTML = `
     <button class="btn-secondary" onclick="closeAllModals()">Cancelar</button>
-    <button class="btn-primary" onclick="executeResetSystem()" style="background:var(--danger)">Eliminar todo</button>
+    <button class="btn-primary" onclick="executeResetSystem()"
+      style="background:var(--danger);border-color:var(--danger)">🗑️ Eliminar todo</button>
   `;
   overlay.classList.remove('hidden');
   translateDynamicUi(overlay);
@@ -6470,25 +6622,25 @@ async function executeResetSystem() {
   const password = passwordInput?.value?.trim() || '';
 
   if (confirmation.toUpperCase() !== 'ELIMINAR TODO') {
-    if (status) status.textContent = 'Debes escribir exactamente ELIMINAR TODO.';
+    if (status) status.innerHTML = '<span style="color:var(--danger)">⚠ Escribe exactamente: <b>ELIMINAR TODO</b></span>';
     showToast('Debes escribir exactamente ELIMINAR TODO.', 'warning');
     return;
   }
   if (!password) {
-    if (status) status.textContent = 'Debes ingresar la clave de seguridad.';
+    if (status) status.innerHTML = '<span style="color:var(--danger)">⚠ Ingresa la clave de seguridad.</span>';
     showToast('Debes ingresar la clave de seguridad.', 'warning');
     return;
   }
   if (purgeFirebase && cloudConfirmation.toUpperCase() !== 'BORRAR FIREBASE') {
-    if (status) status.textContent = 'Debes escribir exactamente BORRAR FIREBASE para limpiar la nube.';
+    if (status) status.innerHTML = '<span style="color:var(--danger)">⚠ Escribe exactamente: <b>BORRAR FIREBASE</b></span>';
     showToast('Debes escribir exactamente BORRAR FIREBASE para limpiar la nube.', 'warning');
     return;
   }
 
   if (status) {
-    status.textContent = purgeFirebase
-      ? 'Guardando copia segura, borrando Firebase y dejando la base local en estado inicial...'
-      : 'Guardando copia segura y limpiando la app...';
+    status.innerHTML = purgeFirebase
+      ? '<span style="color:var(--danger)">⏳ Borrando datos locales y Firebase…</span>'
+      : '<span style="color:var(--text2)">⏳ Guardando copia segura y limpiando la app…</span>';
   }
 
   try {
@@ -7817,6 +7969,20 @@ function syncCajaState() {
   }
 }
 
+async function refreshCajaData() {
+  try {
+    const freshData = await api.getBootstrap();
+    if (freshData) {
+      hydrateDB(freshData);
+      syncCajaState();
+      loadVentasHistory();
+    }
+    showToast('Datos de caja actualizados.', 'success');
+  } catch (err) {
+    showToast('No se pudo actualizar: ' + (err?.message || 'error'), 'error');
+  }
+}
+
 async function toggleCaja() {
   if (!currentUserCan('abrir_caja') && !currentUserCan('cerrar_caja')) {
     showToast('No tienes permiso para operar la caja.', 'error');
@@ -9130,13 +9296,62 @@ async function confirmPlanPasswordAndApply() {
 
 // ════════════════════════════════════════════ BOT WHATSAPP ════════════════════
 
+let _waBotLastStatus = 'stopped';
+let _waBotPollTimer  = null;
+
+function _waBotSchedulePoll() {
+  if (_waBotPollTimer) { clearTimeout(_waBotPollTimer); _waBotPollTimer = null; }
+  if (!document.getElementById('module-wabot')?.classList.contains('active')) return;
+  const delay = (_waBotLastStatus === 'starting' || _waBotLastStatus === 'qr') ? 1000 : 4000;
+  // waBotRefresh() re-programa sola al terminar; el timer solo la dispara
+  _waBotPollTimer = setTimeout(() => waBotRefresh(), delay);
+}
+
 function waBotRenderState(s) {
+  _waBotLastStatus = s.status || 'stopped';
   // Badge de estado
   const badge = document.getElementById('wabot-status-badge');
   const labels = { stopped:'Detenido', starting:'Iniciando…', qr:'Escanear QR', ready:'Conectado', disconnected:'Desconectado' };
   if (badge) {
     badge.className = `wabot-status-badge ${s.status}`;
     badge.textContent = labels[s.status] || s.status;
+  }
+
+  // Botones de control — texto y estado según el status
+  const btnStart = document.querySelector('.wabot-btn-start');
+  const btnStop  = document.querySelector('.wabot-btn-stop');
+  if (btnStart && btnStop) {
+    const st = s.status;
+    if (st === 'ready') {
+      btnStart.textContent = '✅ Bot Activo';
+      btnStart.disabled = true;
+      btnStart.style.opacity = '0.5';
+      btnStop.textContent  = '■ Detener';
+      btnStop.disabled = false;
+      btnStop.style.opacity = '';
+    } else if (st === 'starting') {
+      btnStart.textContent = '⏳ Iniciando…';
+      btnStart.disabled = true;
+      btnStart.style.opacity = '0.5';
+      btnStop.textContent  = '■ Cancelar';
+      btnStop.disabled = false;
+      btnStop.style.opacity = '';
+    } else if (st === 'qr') {
+      btnStart.textContent = '⏳ Esperando escaneo…';
+      btnStart.disabled = true;
+      btnStart.style.opacity = '0.5';
+      btnStop.textContent  = '■ Cancelar';
+      btnStop.disabled = false;
+      btnStop.style.opacity = '';
+    } else {
+      // stopped / disconnected
+      btnStart.textContent = st === 'disconnected' ? '▶ Reconectar' : '▶ Iniciar Bot';
+      btnStart.disabled = false;
+      btnStart.style.opacity = '';
+      btnStop.textContent  = '■ Detener';
+      btnStop.disabled = true;
+      btnStop.style.opacity = '0.4';
+    }
   }
 
   // Punto verde en sidebar
@@ -9158,7 +9373,7 @@ function waBotRenderState(s) {
         <span style="margin-top:.5rem;color:var(--text3)">El bot responde mensajes de tu WhatsApp personal en tiempo real.</span>
       </div>`;
   } else if (s.status === 'starting') {
-    box.innerHTML = `<div class="wabot-log-empty">⏳ Iniciando… espera el QR.</div>`;
+    box.innerHTML = `<div class="wabot-log-empty" style="display:flex;flex-direction:column;align-items:center;gap:.75rem"><div class="wabot-spinner"></div><span>Iniciando Chrome… el QR aparece en unos segundos.</span></div>`;
   } else if (s.status === 'disconnected') {
     box.innerHTML = `<div class="wabot-log-empty" style="color:#ef4444">⚠️ Desconectado. Presiona <strong>Iniciar Bot</strong> para reconectar.</div>`;
   } else {
@@ -9191,6 +9406,8 @@ async function waBotRefresh() {
     if (!res.ok) return;
     waBotRenderState(await res.json());
   } catch {}
+  // Re-programar siguiente poll si el módulo sigue abierto
+  _waBotSchedulePoll();
 }
 
 async function waBotLoadSavedKeys() {
@@ -9345,6 +9562,8 @@ async function waBotStart() {
   if (!ownerPhone) { showToast('Ingresa tu número personal primero', 'warning'); return; }
   if (provider !== 'none' && provider !== 'gemini' && !apiKey) { showToast('Ingresa la API Key para usar IA', 'warning'); return; }
   try {
+    // Feedback visual inmediato antes de la llamada HTTP
+    waBotRenderState({ status: 'starting', qrDataUrl: null, connectedAs: null, messages: [] });
     showToast('Iniciando bot…', 'info');
     const res = await fetch('/api/wa-bot/start', {
       method: 'POST',
@@ -9352,15 +9571,20 @@ async function waBotStart() {
       body: JSON.stringify({ ownerPhone, ownerPhone2, provider, apiKey }),
     });
     if (!res.ok) throw new Error((await res.json()).error);
-    showToast('Bot iniciado — espera el QR', 'success');
-    setTimeout(waBotRefresh, 2000);
+    showToast('Bot iniciado — el QR aparece en segundos', 'success');
+    // Socket.IO actualiza el QR en cuanto Chrome lo genera; el poll es respaldo
+    _waBotSchedulePoll();
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
+    waBotRefresh();
   }
 }
 
 async function waBotStop() {
   try {
+    // Feedback inmediato
+    waBotRenderState({ status: 'stopped', qrDataUrl: null, connectedAs: null, messages: [] });
+    showToast('Deteniendo bot…', 'info');
     await fetch('/api/wa-bot/stop', { method: 'POST' });
     showToast('Bot detenido', 'info');
     waBotRefresh();
@@ -9375,16 +9599,14 @@ function _waBotSocketListen(sock) {
     waBotRenderState(s);
     const dot = document.getElementById('nav-wa-dot');
     if (dot) dot.style.display = s.status === 'ready' ? 'block' : 'none';
+    // Reajustar cadencia del poll tras actualización por socket
+    _waBotSchedulePoll();
   });
 }
 // Se conecta cuando _licenseSocket esté disponible (ver initLicenseWatcher)
 window._waBotSocketListen = _waBotSocketListen;
 
-// Polling cada 4s cuando el módulo wabot está abierto
-setInterval(() => {
-  if (document.getElementById('module-wabot')?.classList.contains('active')) {
-    waBotRefresh();
-  }
-}, 4000);
+// Polling dinámico: 1s durante starting/qr, 4s en reposo
+// Arranca cuando el módulo se abre (ver switchModule) y se autorregula via _waBotSchedulePoll
 
 // ═════════════════════════════════════════════════════════════════════════════

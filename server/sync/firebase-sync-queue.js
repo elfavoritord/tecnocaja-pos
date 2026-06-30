@@ -61,17 +61,18 @@ class FirebaseSyncQueue {
     try {
       const payloadJson = JSON.stringify(payload);
 
-      // Intenta actualizar si ya existe, sino crea uno nuevo
+      // Busca cualquier fila existente para este entity (pending, error o synced)
       const existing = await query(
-        'SELECT id FROM firebase_sync_queue WHERE entity_type = ? AND entity_id = ? AND status IN (?, ?)',
-        [entityType, entityId, SYNC_STATUS.PENDING, SYNC_STATUS.ERROR]
+        'SELECT id, status FROM firebase_sync_queue WHERE entity_type = ? AND entity_id = ? ORDER BY id DESC LIMIT 1',
+        [entityType, entityId]
       );
 
       if (Array.isArray(existing) && existing.length > 0) {
-        // Actualizar existente
+        // Reusar la fila existente (cualquier estado) para evitar duplicados en uq_fsq_pending
         await query(
           `UPDATE firebase_sync_queue
-           SET data_payload = ?, status = ?, error_message = NULL, retry_count = 0, updated_at = datetime('now')
+           SET data_payload = ?, status = ?, error_message = NULL, retry_count = 0,
+               synced_at = NULL, next_retry_at = NULL, updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
           [payloadJson, SYNC_STATUS.PENDING, existing[0].id]
         );
@@ -115,9 +116,20 @@ class FirebaseSyncQueue {
    */
   static async markSynced(id) {
     try {
+      const rows = await query(
+        'SELECT entity_type, entity_id FROM firebase_sync_queue WHERE id = ?',
+        [id]
+      );
+      if (rows[0]) {
+        // Eliminar filas 'synced' anteriores del mismo entity para evitar violar uq_fsq_pending
+        await query(
+          `DELETE FROM firebase_sync_queue WHERE entity_type = ? AND entity_id = ? AND status = ? AND id != ?`,
+          [rows[0].entity_type, rows[0].entity_id, SYNC_STATUS.SYNCED, id]
+        ).catch(() => {});
+      }
       await query(
         `UPDATE firebase_sync_queue
-         SET status = ?, synced_at = datetime('now'), updated_at = datetime('now')
+         SET status = ?, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [SYNC_STATUS.SYNCED, id]
       );

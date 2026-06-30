@@ -165,7 +165,9 @@ router.post('/start', async (req, res) => {
       if (rows[0]?.config_value) apiKey = decryptKey(rows[0].config_value);
     }
 
-    await bot.start({ db, io, ownerPhone, ownerPhone2: ownerPhone2 || null, provider, apiKey });
+    // Fire-and-forget — Chrome arranca en background; estado llega vía Socket.IO
+    bot.start({ db, io, ownerPhone, ownerPhone2: ownerPhone2 || null, provider, apiKey })
+      .catch(e => console.error('[wa-bot route] start error:', e.message));
 
     // Guardar config para auto-arranque
     await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_autostart','1') ON DUPLICATE KEY UPDATE config_value='1'`);

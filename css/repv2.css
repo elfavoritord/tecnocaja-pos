@@ -302,6 +302,20 @@
 }
 
 /* ── Estado badges ── */
+.repv2-reprint-btn {
+  background: rgba(99,102,241,.12);
+  border: 1px solid rgba(99,102,241,.3);
+  border-radius: 7px;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: .8rem;
+  padding: .25rem .55rem;
+  transition: background .15s, transform .1s;
+  white-space: nowrap;
+}
+.repv2-reprint-btn:hover { background: rgba(99,102,241,.25); transform: scale(1.05); }
+.repv2-reprint-btn:active { transform: scale(.97); }
+
 .repv2-estado { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.68rem; font-weight: 700; }
 .repv2-estado-emitida  { background: rgba(0,229,160,0.15); color: #00e5a0; }
 .repv2-estado-cancelada { background: rgba(255,75,110,0.15); color: #ff4b6e; }

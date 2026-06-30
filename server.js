@@ -449,12 +449,16 @@ function startReportAppProductSync() {
     try {
       await syncPendingReportAppProducts();
     } catch (error) {
+      const code = error?.code ?? error?.details ?? '';
+      // UNAUTHENTICATED (16) al arrancar = token OAuth aún no listo; se reintenta en 60s
+      if (String(code) === '16' || String(error?.message).includes('UNAUTHENTICATED')) return;
       console.warn('[reports-app-products] sync falló:', error?.message || error);
     } finally {
       reportAppProductSyncRunning = false;
     }
   };
-  run();
+  // Espera 15s para que Firebase Admin obtenga su primer token antes del primer intento
+  setTimeout(run, 15_000);
   reportAppProductSyncTimer = setInterval(run, 60 * 1000);
 }
 
@@ -2873,15 +2877,27 @@ function mapSupplierRow(row) {
   return {
     id: row.id,
     nombre: row.nombre,
+    razonSocial: row.razon_social || '',
+    nombreComercial: row.nombre_comercial || '',
     empresa: row.empresa,
     telefono: row.telefono,
+    telefono2: row.telefono2 || '',
     email: row.email,
+    email2: row.email2 || '',
     rnc: row.rnc,
     contacto: row.contacto,
     direccion: row.direccion,
+    ciudad: row.ciudad || '',
+    provincia: row.provincia || '',
+    pais: row.pais || 'República Dominicana',
+    web: row.web || '',
     diasVisita: row.visit_days || '',
     terminosPagoDias: Number(row.payment_terms_days || 30),
-    estado: row.estado
+    tipoProveedor: row.tipo_proveedor || '',
+    limiteCredito: Number(row.limite_credito || 0),
+    observaciones: row.observaciones || '',
+    estado: row.estado,
+    createdAt: row.created_at || null,
   };
 }
 
@@ -2896,8 +2912,12 @@ function mapSupplierInvoiceRow(row) {
     montoTotal: Number(row.total_amount || 0),
     montoPagado: Number(row.paid_amount || 0),
     montoPendiente: Number(row.pending_amount || 0),
+    itbisAmount: Number(row.itbis_amount || 0),
+    ncf: row.ncf || '',
+    tipoNcf: row.tipo_ncf || '',
     estado: row.status,
-    notas: row.notes || ''
+    notas: row.notes || '',
+    createdAt: row.created_at || null,
   };
 }
 
@@ -4314,6 +4334,18 @@ async function ensureSuppliersTable() {
   `);
   await addColumnIfMissing('suppliers', 'visit_days', 'VARCHAR(120) DEFAULT NULL');
   await addColumnIfMissing('suppliers', 'payment_terms_days', 'INT NOT NULL DEFAULT 30');
+  // Campos extendidos del perfil completo
+  await addColumnIfMissing('suppliers', 'razon_social', 'VARCHAR(200) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'nombre_comercial', 'VARCHAR(200) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'telefono2', 'VARCHAR(40) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'email2', 'VARCHAR(160) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'ciudad', 'VARCHAR(100) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'provincia', 'VARCHAR(100) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'pais', "VARCHAR(100) NOT NULL DEFAULT 'República Dominicana'");
+  await addColumnIfMissing('suppliers', 'web', 'VARCHAR(255) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'tipo_proveedor', 'VARCHAR(50) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'limite_credito', 'DECIMAL(12,2) DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'observaciones', 'TEXT DEFAULT NULL');
   await query(`UPDATE suppliers SET visit_days = 'Lunes,Miércoles,Viernes', payment_terms_days = 15 WHERE nombre = 'Distribuidora Central' AND (visit_days IS NULL OR visit_days = '')`);
   await query(`UPDATE suppliers SET visit_days = 'Martes,Jueves', payment_terms_days = 30 WHERE nombre = 'Almacenes del Caribe' AND (visit_days IS NULL OR visit_days = '')`);
   await query(`UPDATE suppliers SET visit_days = 'Sábado', payment_terms_days = 21 WHERE nombre = 'Suplidora La Nacional' AND (visit_days IS NULL OR visit_days = '')`);
@@ -4432,7 +4464,9 @@ async function ensureMultiempresaExtensions() {
   // Columnas nuevas en config
   await addColumnIfMissing('config', 'business_mode', "VARCHAR(30) NOT NULL DEFAULT 'independent'");
   await addColumnIfMissing('config', 'cloud_business_id', 'VARCHAR(64) DEFAULT NULL');
-  await addColumnIfMissing('config', 'accountant_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('config', 'accountant_id', 'VARCHAR(64) DEFAULT NULL');
+  // Migrar de INT a VARCHAR si ya existe como INT (para soportar IDs de Firestore)
+  await query(`ALTER TABLE config MODIFY COLUMN accountant_id VARCHAR(64) DEFAULT NULL`).catch(() => {});
   await addColumnIfMissing('config', 'accountant_name', 'VARCHAR(200) DEFAULT NULL');
 
   // Roles superadmin y contador_asociado
@@ -4650,6 +4684,28 @@ async function ensureSupplierInvoicesTable() {
        AND COALESCE(si1.notes, '') = COALESCE(si2.notes, '')
     )
   `);
+  await addColumnIfMissing('supplier_invoices', 'ncf', 'VARCHAR(30) DEFAULT NULL');
+  await addColumnIfMissing('supplier_invoices', 'tipo_ncf', 'VARCHAR(10) DEFAULT NULL');
+  await addColumnIfMissing('supplier_invoices', 'itbis_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
+}
+
+async function ensureSupplierPaymentsTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INT NOT NULL,
+      invoice_id INT DEFAULT NULL,
+      monto DECIMAL(12,2) NOT NULL,
+      metodo_pago VARCHAR(50) NOT NULL DEFAULT 'Efectivo',
+      fecha_pago DATE NOT NULL,
+      notas VARCHAR(255) DEFAULT NULL,
+      created_by VARCHAR(120) DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_sp_supplier (supplier_id),
+      CONSTRAINT fk_sp_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+    )
+  `).catch(() => {});
+  await addColumnIfMissing('supplier_payments', 'metodo_pago', "VARCHAR(50) NOT NULL DEFAULT 'Efectivo'").catch(() => {});
 }
 
 async function getBranchRows() {
@@ -5888,6 +5944,12 @@ async function seedFactoryResetDefaults(conn) {
   );
 }
 
+async function _ensureAllTableMigrations() {
+  await ensureSuppliersTable();
+  await ensureSupplierInvoicesTable();
+  await ensureSupplierPaymentsTable();
+}
+
 async function resetSystemData({ keepUserId = null, factoryReset = false } = {}) {
   await ensureAuditTable();
   await ensureRolesTable();
@@ -6564,6 +6626,16 @@ async function getBootstrapData(actorUser = null) {
            ORDER BY s.id DESC LIMIT 500`,
           [effectiveBranchId]
         )
+      : effectiveBranchId
+      ? query(
+          `SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone
+           FROM sales s
+           LEFT JOIN users u ON u.id = s.user_id
+           LEFT JOIN clients c ON c.id = s.client_id
+           WHERE COALESCE(s.inventory_branch_id, s.billed_branch_id, s.branch_id, ?) = ?
+           ORDER BY s.id DESC LIMIT 500`,
+          [effectiveBranchId, effectiveBranchId]
+        )
       : query('SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id ORDER BY s.id DESC LIMIT 500'),
     query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE si.sale_id IN (SELECT id FROM (SELECT id FROM sales ORDER BY id DESC LIMIT 500) AS _recent)'),
     scopedCashRegisterId
@@ -6571,7 +6643,7 @@ async function getBootstrapData(actorUser = null) {
       : branchScopedUser
       ? query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements WHERE branch_id = ? ORDER BY id DESC LIMIT 50', [effectiveBranchId])
       : effectiveCashRegisterId
-      ? query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements WHERE cash_register_id = ? ORDER BY id DESC LIMIT 50', [effectiveCashRegisterId])
+      ? query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements WHERE COALESCE(cash_register_id, ?) = ? ORDER BY id DESC LIMIT 50', [effectiveCashRegisterId, effectiveCashRegisterId])
       : query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements ORDER BY id DESC LIMIT 50'),
     // Sesión activa: incluimos operative_date para que el frontend filtre por turno
     scopedCashRegisterId
@@ -6738,7 +6810,7 @@ function clearPublicUsersListCache() {
   publicUsersListCache = { expiresAt: 0, payload: null };
 }
 
-app.get('/api/public/users-list', loginLimiter, async (req, res) => {
+app.get('/api/public/users-list', async (req, res) => {
   try {
     if (publicUsersListCache.payload && publicUsersListCache.expiresAt > Date.now()) {
       res.setHeader('Cache-Control', 'private, max-age=10');
@@ -7448,17 +7520,25 @@ app.post('/api/setup/complete', async (req, res) => {
       };
     }
   }
+  // En un reset, limpiar el UID anterior para que este negocio genere su propio
+  // documento en Firestore en lugar de reutilizar/contaminar el del install anterior.
+  if (forceReset) {
+    const oldUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (oldUid) {
+      persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: '' });
+      process.env.TECNO_CAJA_LICENSE_UID = '';
+    }
+  }
   await trySyncAllPosAccountsToFirebase({ trialEndsAt, trialStartedAt: now }).catch((error) => {
     console.warn('No se pudieron sincronizar los usuarios POS a Firebase:', error.message);
   });
-  if (!forceReset) {
-    await registerPosLicenseInFirestore({
-      businessName,
-      adminEmail,
-      trialEndsAt,
-      businessStructureMode,
-    });
-  }
+  // Siempre registrar/actualizar la licencia en Firestore (incluso en reset)
+  await registerPosLicenseInFirestore({
+    businessName,
+    adminEmail,
+    trialEndsAt,
+    businessStructureMode,
+  });
   await trySyncAllStaffToFirebaseAuth().catch((error) => {
     console.warn('No se pudieron crear cuentas Firebase Auth para el staff:', error.message);
   });
@@ -8214,6 +8294,20 @@ async function generateOfflineInvoiceId(terminalId) {
 }
 
 // Cachear usuario después de login exitoso (para login offline futuro)
+// Verificar sesión activa — usado por el auto-login al recargar la página
+app.get('/api/auth/me', async (req, res) => {
+  try {
+    if (!req.authUser) return res.status(401).json({ error: 'Sin sesión activa.' });
+    // Renovar TTL de la sesión para mantenerla activa mientras se usa la app
+    if (req.authToken) await touchAuthSession(req.authToken).catch(() => {});
+    // mapUserRow convierte snake_case a camelCase (roleCode, roleName, etc.)
+    // igual que el endpoint de login, para que el frontend pueda leer los permisos
+    res.json({ ok: true, user: mapUserRow(req.authUser), token: req.authToken });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/auth/cache-offline', async (req, res) => {
   try {
     const user = await resolveRequestActorUser(req, { required: false });
@@ -9530,6 +9624,12 @@ app.post('/api/categories', async (req, res) => {
   });
   fireReportSync(() => syncCategoriesToReports());
   res.status(201).json(mapCategoryRow(rows[0]));
+});
+
+app.get('/api/products', async (req, res) => {
+  await resolveRequestActorUser(req, { required: true });
+  const rows = await query('SELECT * FROM products ORDER BY nombre');
+  res.json({ products: rows });
 });
 
 app.post('/api/products', async (req, res) => {
@@ -10994,29 +11094,39 @@ app.post('/api/suppliers', async (req, res) => {
   }
 
   const result = await query(
-    `INSERT INTO suppliers (nombre, empresa, telefono, email, rnc, contacto, direccion, visit_days, payment_terms_days, estado)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO suppliers
+      (nombre, razon_social, nombre_comercial, empresa, telefono, telefono2, email, email2,
+       rnc, contacto, direccion, ciudad, provincia, pais, web,
+       visit_days, payment_terms_days, tipo_proveedor, limite_credito, observaciones, estado)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       nombre,
+      data.razonSocial || null,
+      data.nombreComercial || null,
       data.empresa || null,
       data.telefono || null,
+      data.telefono2 || null,
       data.email || null,
+      data.email2 || null,
       data.rnc || null,
       data.contacto || null,
       data.direccion || null,
+      data.ciudad || null,
+      data.provincia || null,
+      data.pais || 'República Dominicana',
+      data.web || null,
       data.diasVisita || null,
       Number(data.terminosPagoDias || 30),
+      data.tipoProveedor || null,
+      data.limiteCredito ? Number(data.limiteCredito) : null,
+      data.observaciones || null,
       data.estado || 'Activo'
     ]
   );
   const rows = await query('SELECT * FROM suppliers WHERE id = ?', [result.insertId]);
   const actor = getActor(req);
-  await writeAuditLog({
-    ...actor,
-    moduleName: 'Proveedores',
-    actionName: 'Proveedor creado',
-    detail: nombre
-  });
+  await writeAuditLog({ ...actor, moduleName: 'Proveedores', actionName: 'Proveedor creado', detail: nombre });
+  addToSyncQueue('proveedores', 'proveedor_creado', { id: result.insertId, nombre, rnc: data.rnc || null });
   res.status(201).json(mapSupplierRow(rows[0]));
 });
 
@@ -11030,18 +11140,32 @@ app.put('/api/suppliers/:id', async (req, res) => {
 
   await query(
     `UPDATE suppliers
-     SET nombre = ?, empresa = ?, telefono = ?, email = ?, rnc = ?, contacto = ?, direccion = ?, visit_days = ?, payment_terms_days = ?, estado = ?
+     SET nombre=?, razon_social=?, nombre_comercial=?, empresa=?,
+         telefono=?, telefono2=?, email=?, email2=?,
+         rnc=?, contacto=?, direccion=?, ciudad=?, provincia=?, pais=?, web=?,
+         visit_days=?, payment_terms_days=?, tipo_proveedor=?, limite_credito=?, observaciones=?, estado=?
      WHERE id = ?`,
     [
       nombre,
+      data.razonSocial || null,
+      data.nombreComercial || null,
       data.empresa || null,
       data.telefono || null,
+      data.telefono2 || null,
       data.email || null,
+      data.email2 || null,
       data.rnc || null,
       data.contacto || null,
       data.direccion || null,
+      data.ciudad || null,
+      data.provincia || null,
+      data.pais || 'República Dominicana',
+      data.web || null,
       data.diasVisita || null,
       Number(data.terminosPagoDias || 30),
+      data.tipoProveedor || null,
+      data.limiteCredito ? Number(data.limiteCredito) : null,
+      data.observaciones || null,
       data.estado || 'Activo',
       req.params.id
     ]
@@ -11054,7 +11178,76 @@ app.put('/api/suppliers/:id', async (req, res) => {
     actionName: 'Proveedor actualizado',
     detail: nombre
   });
+  addToSyncQueue('proveedores', 'proveedor_actualizado', { id: req.params.id, nombre });
   res.json(mapSupplierRow(rows[0]));
+});
+
+// ── Detalle completo del proveedor ────────────────────────────────────────────
+app.get('/api/suppliers/:id/detail', async (req, res) => {
+  await ensureSuppliersTable();
+  await ensureSupplierInvoicesTable();
+  const supplierId = Number(req.params.id);
+  const [supplier] = await query('SELECT * FROM suppliers WHERE id = ?', [supplierId]);
+  if (!supplier) return res.status(404).json({ error: 'Proveedor no encontrado.' });
+
+  const today = new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const monthStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+  const yearStr = `${now.getFullYear()}-01-01`;
+
+  const invoices = await query(
+    'SELECT * FROM supplier_invoices WHERE supplier_id = ? ORDER BY issued_at DESC, id DESC',
+    [supplierId]
+  );
+
+  let payments = [];
+  try {
+    payments = await query(
+      'SELECT * FROM supplier_payments WHERE supplier_id = ? ORDER BY fecha_pago DESC, id DESC LIMIT 100',
+      [supplierId]
+    );
+  } catch (_) {}
+
+  const totalComprado = invoices.reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const comprasMes   = invoices.filter(i => String(i.issued_at).slice(0, 10) >= monthStr).reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const comprasAnio  = invoices.filter(i => String(i.issued_at).slice(0, 10) >= yearStr).reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const factPend     = invoices.filter(i => i.status === 'Pendiente');
+  const factVenc     = invoices.filter(i => i.status === 'Vencida');
+  const montoPend    = factPend.reduce((s, i) => s + Number(i.pending_amount || 0), 0);
+  const montoVenc    = factVenc.reduce((s, i) => s + Number(i.pending_amount || 0), 0);
+  const ultimaFact   = invoices[0]?.issued_at || null;
+  const totalITBIS   = invoices.reduce((s, i) => s + Number(i.itbis_amount || 0), 0);
+
+  const alertas = [];
+  if (factVenc.length > 0) alertas.push({ tipo: 'danger', mensaje: `${factVenc.length} factura(s) vencida(s) — RD$ ${montoVenc.toFixed(2)}` });
+  const proxVencer = invoices.filter(i => {
+    if (i.status !== 'Pendiente') return false;
+    const due = String(i.due_at || '').slice(0, 10);
+    if (!due) return false;
+    const dl = Math.ceil((new Date(due) - new Date(today)) / 86400000);
+    return dl >= 0 && dl <= 7;
+  });
+  if (proxVencer.length > 0) alertas.push({ tipo: 'warning', mensaje: `${proxVencer.length} factura(s) vencen en los próximos 7 días` });
+  if (supplier.limite_credito && montoPend > Number(supplier.limite_credito)) {
+    alertas.push({ tipo: 'warning', mensaje: `Balance pendiente supera el límite de crédito (RD$ ${Number(supplier.limite_credito).toFixed(2)})` });
+  }
+
+  res.json({
+    proveedor: mapSupplierRow(supplier),
+    indicadores: {
+      totalComprado, comprasMes, comprasAnio,
+      totalFacturas: invoices.length,
+      facturasPendientesCount: factPend.length,
+      facturasVencidasCount: factVenc.length,
+      montoPendiente: montoPend,
+      montoVencido: montoVenc,
+      ultimaFactura: ultimaFact,
+      totalITBIS,
+    },
+    facturas: invoices.map(i => mapSupplierInvoiceRow({ ...i, supplier_name: supplier.nombre })),
+    pagos: payments,
+    alertas,
+  });
 });
 
 app.delete('/api/suppliers/:id', async (req, res) => {
@@ -11106,10 +11299,12 @@ app.post('/api/supplier-invoices', async (req, res) => {
 
   const dueAt = String(data.fechaVencimiento || '').trim() || null;
   const status = pendingAmount <= 0 ? 'Pagada' : (dueAt && dueAt < new Date().toISOString().slice(0, 10) ? 'Vencida' : 'Pendiente');
+  const itbisAmount = Number(data.itbisAmount || data.itbis_amount || 0);
   const result = await query(
-    `INSERT INTO supplier_invoices (supplier_id, invoice_number, issued_at, due_at, total_amount, paid_amount, pending_amount, status, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [supplierId, invoiceNumber, issuedAt, dueAt, totalAmount, paidAmount, pendingAmount, status, data.notas || null]
+    `INSERT INTO supplier_invoices (supplier_id, invoice_number, issued_at, due_at, total_amount, paid_amount, pending_amount, status, notes, ncf, tipo_ncf, itbis_amount)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [supplierId, invoiceNumber, issuedAt, dueAt, totalAmount, paidAmount, pendingAmount, status, data.notas || null,
+     data.ncf || null, data.tipoNcf || null, itbisAmount]
   );
   const rows = await query(
     'SELECT si.*, s.nombre AS supplier_name FROM supplier_invoices si LEFT JOIN suppliers s ON s.id = si.supplier_id WHERE si.id = ?',
@@ -11153,11 +11348,26 @@ app.post('/api/supplier-invoices/:id/payment', async (req, res) => {
     'UPDATE supplier_invoices SET paid_amount = ?, pending_amount = ?, status = ? WHERE id = ?',
     [newPaid, newPending, status, invoiceId]
   );
+  // Registrar pago en supplier_payments
+  await ensureSupplierPaymentsTable().catch(() => {});
+  const actor = getActor(req);
+  await query(
+    `INSERT INTO supplier_payments (supplier_id, invoice_id, monto, metodo_pago, fecha_pago, notas, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      invoice.supplier_id,
+      invoiceId,
+      amount,
+      req.body?.metodoPago || 'Efectivo',
+      new Date().toISOString().slice(0, 10),
+      req.body?.notas || null,
+      actor?.actorName || null
+    ]
+  ).catch(() => {});
   const updatedRows = await query(
     'SELECT si.*, s.nombre AS supplier_name FROM supplier_invoices si LEFT JOIN suppliers s ON s.id = si.supplier_id WHERE si.id = ?',
     [invoiceId]
   );
-  const actor = getActor(req);
   await writeAuditLog({
     ...actor,
     moduleName: 'Proveedores',
@@ -13540,6 +13750,43 @@ app.post('/api/sales', async (req, res) => {
   });
 });
 
+// GET /api/sales/:invoiceNumber/receipt — datos completos para reimprimir un comprobante
+app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
+  try {
+    await ensureSalesExtensions();
+    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    const invoiceNumber = String(req.params.invoiceNumber || '').trim();
+    if (!invoiceNumber) return res.status(400).json({ error: 'Número de factura requerido.' });
+
+    const rows = await query(
+      `SELECT s.*,
+              COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS cashier_name_join,
+              COALESCE(u.nombre, u.usuario, 'Sistema') AS cashier_name,
+              COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS client_name
+       FROM sales s
+       LEFT JOIN clients c ON c.id = s.client_id
+       LEFT JOIN users u ON u.id = COALESCE(s.billed_by_user_id, s.user_id)
+       WHERE s.invoice_number = ? LIMIT 1`,
+      [invoiceNumber]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'Factura no encontrada.' });
+
+    const items = await query(
+      `SELECT si.*, COALESCE(p.nombre, 'Producto eliminado') AS product_name, p.codigo AS product_code
+       FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
+       WHERE si.sale_id = ?`,
+      [rows[0].id]
+    );
+
+    const sale = mapSaleRows(rows, items)[0];
+    if (!sale) return res.status(404).json({ error: 'No se pudo construir el comprobante.' });
+    res.json({ sale });
+  } catch (e) {
+    console.error('[receipt reprint]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/sales/delivery-cash-pending', async (req, res) => {
   await ensureBusinessStructureExtensions();
   await ensureSalesExtensions();
@@ -14403,7 +14650,7 @@ app.get('/api/reports/sales-by-branch', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
-  const { desde, hasta } = getDefaultRange(req);
+  const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
   const rows = await query(
     `SELECT b.id, b.nombre, COUNT(s.id) AS total_sales, COALESCE(SUM(s.total), 0) AS total_amount
      FROM branches b
@@ -14413,7 +14660,7 @@ app.get('/api/reports/sales-by-branch', async (req, res) => {
      ${scopedBranchId ? 'WHERE b.id = ?' : ''}
      GROUP BY b.id, b.nombre
      ORDER BY b.nombre`,
-    scopedBranchId ? [`${desde} 00:00:00`, `${hasta} 23:59:59`, scopedBranchId] : [`${desde} 00:00:00`, `${hasta} 23:59:59`]
+    scopedBranchId ? [desdeDatetime, hastaDatetime, scopedBranchId] : [desdeDatetime, hastaDatetime]
   );
   res.json(rows.map((row) => ({
     sucursalId: Number(row.id),
@@ -14427,7 +14674,7 @@ app.get('/api/reports/sales-by-cash-register', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
-  const { desde, hasta } = getDefaultRange(req);
+  const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
   const rows = await query(
     `SELECT cr.id, cr.nombre, b.nombre AS branch_name, COUNT(s.id) AS total_sales, COALESCE(SUM(s.total), 0) AS total_amount
      FROM cash_registers cr
@@ -14438,7 +14685,7 @@ app.get('/api/reports/sales-by-cash-register', async (req, res) => {
      ${scopedBranchId ? 'WHERE cr.branch_id = ?' : ''}
      GROUP BY cr.id, cr.nombre, b.nombre
      ORDER BY b.nombre, cr.nombre`,
-    scopedBranchId ? [`${desde} 00:00:00`, `${hasta} 23:59:59`, scopedBranchId] : [`${desde} 00:00:00`, `${hasta} 23:59:59`]
+    scopedBranchId ? [desdeDatetime, hastaDatetime, scopedBranchId] : [desdeDatetime, hastaDatetime]
   );
   res.json(rows.map((row) => ({
     cajaId: Number(row.id),
@@ -14453,7 +14700,7 @@ app.get('/api/reports/sales-by-cashier', async (req, res) => {
   await ensureBusinessRulesExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
   const scopedBranchId = getUserScopeBranchId(actorUser);
-  const { desde, hasta } = getDefaultRange(req);
+  const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
   const rows = await query(
     `SELECT u.id, u.nombre, u.usuario, COUNT(s.id) AS total_sales, COALESCE(SUM(s.total), 0) AS total_amount
      FROM users u
@@ -14463,7 +14710,7 @@ app.get('/api/reports/sales-by-cashier', async (req, res) => {
      ${scopedBranchId ? 'WHERE COALESCE(u.sucursal_id, u.branch_id, 0) = ?' : ''}
      GROUP BY u.id, u.nombre, u.usuario
      ORDER BY total_amount DESC, u.nombre`,
-    scopedBranchId ? [`${desde} 00:00:00`, `${hasta} 23:59:59`, scopedBranchId] : [`${desde} 00:00:00`, `${hasta} 23:59:59`]
+    scopedBranchId ? [desdeDatetime, hastaDatetime, scopedBranchId] : [desdeDatetime, hastaDatetime]
   );
   res.json(rows.map((row) => ({
     usuarioId: Number(row.id),
@@ -14726,10 +14973,10 @@ app.get('/api/reports/dashboard', async (req, res) => {
 // REPORTES AVANZADOS v2.0
 // ============================================================
 
-function buildDateWhere(desde, hasta, alias = 's') {
+function buildDateWhere(desdeDatetime, hastaDatetime, alias = 's') {
   return {
     clause: `${alias}.created_at BETWEEN ? AND ?`,
-    params: [`${desde} 00:00:00`, `${hasta} 23:59:59`]
+    params: [desdeDatetime, hastaDatetime]
   };
 }
 
@@ -14741,7 +14988,9 @@ function getDefaultRange(req) {
   const today = getTodayDateKey();
   const desde = String(req.query?.desde || '').trim() || today;
   const hasta = String(req.query?.hasta || '').trim() || today;
-  return { desde, hasta };
+  const desdeHora = String(req.query?.desdeHora || '').trim();
+  const desdeTime = /^\d{1,2}:\d{2}(:\d{2})?$/.test(desdeHora) ? desdeHora : '00:00:00';
+  return { desde, hasta, desdeDatetime: `${desde} ${desdeTime}`, hastaDatetime: `${hasta} 23:59:59` };
 }
 
 function buildSaleActiveClause(alias = 's') {
@@ -14749,9 +14998,9 @@ function buildSaleActiveClause(alias = 's') {
     AND COALESCE(${alias}.sale_status,'pagada') = 'pagada'`;
 }
 
-function appendDateRangeFilter(where, params, { desde, hasta, alias = 's', field = 'created_at' }) {
+function appendDateRangeFilter(where, params, { desdeDatetime, hastaDatetime, alias = 's', field = 'created_at' }) {
   where += ` AND ${alias}.${field} BETWEEN ? AND ?`;
-  params.push(`${desde} 00:00:00`, `${hasta} 23:59:59`);
+  params.push(desdeDatetime, hastaDatetime);
   return where;
 }
 
@@ -14760,13 +15009,13 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
     const cajaId = Number(req.query?.cajaId || 0) || null;
     const userId = Number(req.query?.userId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
     if (cajaId) { w += ' AND COALESCE(s.billed_cash_register_id,s.cash_register_id)=?'; p.push(cajaId); }
@@ -14808,11 +15057,11 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
 
@@ -14841,12 +15090,12 @@ app.get('/api/reports/advanced/productos', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
     const limit = Math.min(Number(req.query?.limit || 20), 100);
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
 
@@ -14888,10 +15137,10 @@ app.get('/api/reports/advanced/clientes', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND s.client_id IS NOT NULL AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(scopedBranchId); }
 
     const rows = await query(`
@@ -14929,13 +15178,13 @@ app.get('/api/reports/advanced/metodos-pago', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
     const cajaId  = Number(req.query?.cajaId   || 0) || null;
     const userId  = Number(req.query?.userId   || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef)     { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
     if (cajaId) { w += ' AND COALESCE(s.billed_cash_register_id,s.cash_register_id)=?'; p.push(cajaId); }
@@ -14965,11 +15214,11 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
 
@@ -15003,12 +15252,12 @@ app.get('/api/reports/advanced/por-sucursal', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const params = [
-      `${desde} 00:00:00`,
-      `${hasta} 23:59:59`,
-      `${desde} 00:00:00`,
-      `${hasta} 23:59:59`,
+      desdeDatetime,
+      hastaDatetime,
+      desdeDatetime,
+      hastaDatetime,
     ];
     const branchWhere = scopedBranchId
       ? 'WHERE b.estado <> "Eliminada" AND b.id = ?'
@@ -15059,10 +15308,10 @@ app.get('/api/reports/advanced/ganancias', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
 
     let where = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const baseParams = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const baseParams = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) {
       where += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?';
       baseParams.push(scopedBranchId);
@@ -15147,11 +15396,11 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || scopedBranchId;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     if (branchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(branchId); }
 
     const rows = await query(`
@@ -15186,7 +15435,7 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
     const cajaId = Number(req.query?.cajaId || 0) || null;
     const userId = Number(req.query?.userId || 0) || null;
@@ -15196,7 +15445,7 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
     const offset = (page - 1) * limit;
 
     let w = `WHERE s.created_at BETWEEN ? AND ?`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
     if (cajaId) { w += ' AND COALESCE(s.billed_cash_register_id,s.cash_register_id)=?'; p.push(cajaId); }
@@ -15257,12 +15506,12 @@ app.get('/api/reports/advanced/devoluciones', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     await ensureReturnTables();
 
     // ── Parte 1: devoluciones del sistema sale_returns (parciales y totales) ──
     let w1 = `WHERE sr.returned_at BETWEEN ? AND ?`;
-    const p1 = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p1 = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) { w1 += ' AND sr.branch_id = ?'; p1.push(scopedBranchId); }
 
     const returnRows = await query(`
@@ -15291,7 +15540,7 @@ app.get('/api/reports/advanced/devoluciones', async (req, res) => {
               AND s.id NOT IN (
                 SELECT COALESCE(original_sale_id,0) FROM sale_returns WHERE original_sale_id IS NOT NULL
               )`;
-    const p2 = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p2 = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) { w2 += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p2.push(scopedBranchId); }
 
     const cancelRows = await query(`
@@ -15339,11 +15588,11 @@ app.get('/api/reports/advanced/dgii', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
     const branchId = Number(req.query?.branchId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
-    const p = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
 
@@ -15378,7 +15627,7 @@ app.get('/api/reports/advanced/dgii', async (req, res) => {
       SELECT COALESCE(SUM(itbis_amount),0) AS itbis_credito
       FROM supplier_invoices
       WHERE created_at BETWEEN ? AND ? AND status <> 'cancelada'`,
-      [`${desde} 00:00:00`, `${hasta} 23:59:59`]).catch(() => [{ itbis_credito: 0 }]);
+      [desdeDatetime, hastaDatetime]).catch(() => [{ itbis_credito: 0 }]);
 
     const itbisCobrado = Number(resumen[0]?.itbis_cobrado || 0);
     const itbisCredito = Number(creditoFiscalRows[0]?.itbis_credito || 0);
@@ -15408,10 +15657,10 @@ app.get('/api/reports/advanced/gastos', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
-    const { desde, hasta } = getDefaultRange(req);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
 
     let where = `WHERE cm.happened_at BETWEEN ? AND ?`;
-    const params = [`${desde} 00:00:00`, `${hasta} 23:59:59`];
+    const params = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) {
       where += ' AND cm.branch_id = ?';
       params.push(scopedBranchId);
@@ -16001,6 +16250,7 @@ async function prepareServerRuntime() {
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
+        ensureSyncQueueTable().catch(e => console.warn('[sync-queue] init fallo:', e.message)),
       ]);
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);
@@ -16317,5 +16567,216 @@ async function startHttpServer(port, bindHost) {
     httpServer.once('error', reject);
   });
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// MÓDULO: COLA DE SINCRONIZACIÓN (Sync Queue)
+// Persiste en MariaDB los eventos que deben subirse a Firebase.
+// Si Firebase falla, reintenta automáticamente con back-off exponencial.
+// ════════════════════════════════════════════════════════════════════════════
+
+async function ensureSyncQueueTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS sync_queue (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      modulo      VARCHAR(60)  NOT NULL,
+      operacion   VARCHAR(60)  NOT NULL,
+      payload     LONGTEXT     DEFAULT NULL,
+      estado      VARCHAR(20)  NOT NULL DEFAULT 'pendiente',
+      intentos    INT          NOT NULL DEFAULT 0,
+      siguiente_intento DATETIME DEFAULT NULL,
+      error_msg   TEXT         DEFAULT NULL,
+      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      synced_at   DATETIME     DEFAULT NULL,
+      KEY idx_sq_estado (estado),
+      KEY idx_sq_siguiente (siguiente_intento)
+    )
+  `).catch(() => {});
+}
+
+async function addToSyncQueue(modulo, operacion, payload) {
+  try {
+    await query(
+      `INSERT INTO sync_queue (modulo, operacion, payload) VALUES (?, ?, ?)`,
+      [modulo, operacion, JSON.stringify(payload)]
+    );
+  } catch (e) {
+    console.warn('[sync-queue] No se pudo encolar:', e.message);
+  }
+}
+
+let _syncWorkerRunning = false;
+
+async function processSyncQueue() {
+  if (_syncWorkerRunning) return;
+  _syncWorkerRunning = true;
+  try {
+    const db = (() => { try { const { getFirestore } = require('./modules/firebase-admin'); return getFirestore(); } catch { return null; } })();
+    if (!db) return;
+
+    const [cfg] = await query('SELECT cloud_business_id FROM config WHERE id=1').catch(()=>[null]);
+    const bizId = cfg?.cloud_business_id;
+
+    const now = new Date().toISOString().replace('T',' ').slice(0,19);
+    const items = await query(
+      `SELECT * FROM sync_queue
+       WHERE estado = 'pendiente'
+         AND (siguiente_intento IS NULL OR siguiente_intento <= ?)
+       ORDER BY id ASC LIMIT 50`,
+      [now]
+    ).catch(() => []);
+
+    for (const item of items) {
+      try {
+        let payload = {};
+        try { payload = JSON.parse(item.payload || '{}'); } catch {}
+
+        const colBase = bizId ? `businesses/${bizId}/sync` : `sync_global`;
+
+        // Guardar evento en Firestore
+        await db.collection(colBase).add({
+          modulo:    item.modulo,
+          operacion: item.operacion,
+          payload,
+          created_at: item.created_at,
+          synced_at:  new Date().toISOString(),
+        });
+
+        await query(
+          `UPDATE sync_queue SET estado='completado', synced_at=NOW(), error_msg=NULL WHERE id=?`,
+          [item.id]
+        );
+      } catch (e) {
+        const intentos = (item.intentos || 0) + 1;
+        const delayMin = Math.min(Math.pow(2, intentos), 60);
+        const nextAttempt = new Date(Date.now() + delayMin * 60000).toISOString().replace('T',' ').slice(0,19);
+        const estado = intentos >= 10 ? 'fallido' : 'pendiente';
+        await query(
+          `UPDATE sync_queue SET intentos=?, siguiente_intento=?, estado=?, error_msg=? WHERE id=?`,
+          [intentos, nextAttempt, estado, String(e.message).slice(0,500), item.id]
+        ).catch(() => {});
+      }
+    }
+
+    // Limpiar completados con más de 7 días
+    await query(
+      `DELETE FROM sync_queue WHERE estado='completado' AND synced_at < DATE_SUB(NOW(), INTERVAL 7 DAY)`
+    ).catch(() => {});
+  } finally {
+    _syncWorkerRunning = false;
+  }
+}
+
+function startSyncQueueWorker() {
+  setTimeout(() => processSyncQueue().catch(() => {}), 5000);
+  setInterval(() => processSyncQueue().catch(() => {}), 60000); // cada 60 segundos
+}
+
+// ── Snapshot diario a Firebase (resúmenes, no transacciones crudas) ──────────
+async function uploadDailySnapshotToFirestore() {
+  try {
+    const db = (() => { try { const { getFirestore } = require('./modules/firebase-admin'); return getFirestore(); } catch { return null; } })();
+    if (!db) return;
+    const [cfg] = await query('SELECT cloud_business_id, nombre_negocio FROM config WHERE id=1').catch(() => [null]);
+    const bizId = cfg?.cloud_business_id;
+    if (!bizId) return;
+
+    const today = new Date().toISOString().slice(0, 10);
+    const monthStart = today.slice(0, 7) + '-01';
+
+    const [ventasHoy]  = await query(`SELECT COUNT(*) AS cnt, COALESCE(SUM(total),0) AS total FROM sales WHERE DATE(created_at)=?`, [today]).catch(() => [{}]);
+    const [ventasMes]  = await query(`SELECT COUNT(*) AS cnt, COALESCE(SUM(total),0) AS total FROM sales WHERE DATE(created_at)>=?`, [monthStart]).catch(() => [{}]);
+    const [clientes]   = await query(`SELECT COUNT(*) AS cnt FROM clients WHERE estado='Activo'`).catch(() => [{}]);
+    const [productos]  = await query(`SELECT COUNT(*) AS cnt FROM products WHERE estado='Activo'`).catch(() => [{}]);
+    const [syncPend]   = await query(`SELECT COUNT(*) AS cnt FROM sync_queue WHERE estado='pendiente'`).catch(() => [{}]);
+
+    await db.collection(`businesses/${bizId}/daily_snapshots`).doc(today).set({
+      fecha:         today,
+      ventas_hoy:    { cantidad: ventasHoy?.cnt||0, total: Number(ventasHoy?.total||0) },
+      ventas_mes:    { cantidad: ventasMes?.cnt||0, total: Number(ventasMes?.total||0) },
+      clientes_activos: Number(clientes?.cnt||0),
+      productos_activos: Number(productos?.cnt||0),
+      sync_pendientes: Number(syncPend?.cnt||0),
+      nombre_negocio: cfg?.nombre_negocio || '',
+      generado_at: new Date().toISOString(),
+    }, { merge: true });
+
+    console.log('[sync] Snapshot diario subido a Firebase para', bizId, 'fecha', today);
+  } catch (e) {
+    console.warn('[sync] Error subiendo snapshot diario:', e.message);
+  }
+}
+
+function startDailySnapshotWorker() {
+  const now = new Date();
+  const msToMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()+1, 0, 5, 0) - now;
+  setTimeout(() => {
+    uploadDailySnapshotToFirestore();
+    setInterval(uploadDailySnapshotToFirestore, 24 * 60 * 60 * 1000);
+  }, msToMidnight);
+  // También sube al arranque (con delay)
+  setTimeout(() => uploadDailySnapshotToFirestore().catch(()=>{}), 15000);
+}
+
+// ── API: estado de sincronización ─────────────────────────────────────────────
+app.get('/api/sync/status', async (req, res) => {
+  try {
+    const [pending]   = await query(`SELECT COUNT(*) AS cnt FROM sync_queue WHERE estado='pendiente'`).catch(() => [{ cnt:0 }]);
+    const [failed]    = await query(`SELECT COUNT(*) AS cnt FROM sync_queue WHERE estado='fallido'`).catch(() => [{ cnt:0 }]);
+    const [lastSync]  = await query(`SELECT MAX(synced_at) AS last FROM sync_queue WHERE estado='completado'`).catch(() => [{ last:null }]);
+    const [totalDone] = await query(`SELECT COUNT(*) AS cnt FROM sync_queue WHERE estado='completado'`).catch(() => [{ cnt:0 }]);
+
+    const db = (() => { try { const { getFirestore } = require('./modules/firebase-admin'); return getFirestore(); } catch { return null; } })();
+    const fbOk = !!db;
+
+    const pendingCount  = Number(pending?.cnt   || 0);
+    const failedCount   = Number(failed?.cnt    || 0);
+    const completedCount= Number(totalDone?.cnt || 0);
+    const lastSyncAt    = lastSync?.last || null;
+
+    res.json({
+      // Formato compatible con SyncStatusWidget existente
+      isOnline:      fbOk,
+      firebaseReady: fbOk,
+      hasInternet:   fbOk,
+      isSyncing:     _syncWorkerRunning,
+      lastSyncAt,
+      queue: {
+        pending: pendingCount,
+        errors:  failedCount,
+        synced:  completedCount,
+      },
+      // Campos extendidos para el nuevo monitor
+      firebase_disponible: fbOk,
+      pendientes:   pendingCount,
+      fallidos:     failedCount,
+      completados:  completedCount,
+      ultimo_sync:  lastSyncAt,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message, isOnline: false, queue: { pending:0, errors:0, synced:0 } });
+  }
+});
+
+app.post('/api/sync/retry-failed', async (req, res) => {
+  try {
+    await query(`UPDATE sync_queue SET estado='pendiente', siguiente_intento=NULL, intentos=0 WHERE estado='fallido'`);
+    processSyncQueue().catch(() => {});
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Alias para el sync-status-widget.js legacy
+app.post('/api/sync/now', async (req, res) => {
+  processSyncQueue().catch(() => {});
+  res.json({ ok: true, message: 'Sincronización iniciada.' });
+});
+
+// Iniciar workers de sync al cargar el módulo
+setImmediate(() => {
+  startSyncQueueWorker();
+  startDailySnapshotWorker();
+});
 
 module.exports = { startHttpServer };

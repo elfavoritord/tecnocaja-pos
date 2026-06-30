@@ -9,7 +9,7 @@
   const RV2 = {
     tab: 'dashboard',
     subtab: 'facturas',
-    filtros: { desde: '', hasta: '', sucursalId: '', cajaId: '', usuarioId: '' },
+    filtros: { desde: '', hasta: '', sucursalId: '', cajaId: '', usuarioId: '', desdeHora: '' },
     // caché de datos cargados
     kpis: null,
     ventas_dia: [],
@@ -56,6 +56,7 @@
     const p = new URLSearchParams();
     if (f.desde)      p.set('desde', f.desde);
     if (f.hasta)      p.set('hasta', f.hasta);
+    if (f.desdeHora)  p.set('desdeHora', f.desdeHora);
     if (f.sucursalId) p.set('branchId', f.sucursalId);
     if (f.cajaId)     p.set('cajaId', f.cajaId);
     if (f.usuarioId)  p.set('userId', f.usuarioId);
@@ -71,17 +72,33 @@
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
+  function getCajaOpenedAt() {
+    try {
+      const session = typeof DB !== 'undefined' ? DB?.caja?.activeSession : null;
+      if (session?.openedAt) {
+        const d = new Date(session.openedAt);
+        if (!isNaN(d.getTime())) {
+          return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
   function calcFiltros() {
-    const periodo = el('repv2-periodo')?.value || 'hoy';
+    const periodo = el('repv2-periodo')?.value || 'turno';
     const now = new Date();
-    let desde, hasta;
+    let desde, hasta, desdeHora = '';
 
     if (periodo === 'custom') {
       desde = el('repv2-desde')?.value || '';
       hasta = el('repv2-hasta')?.value || '';
     } else {
-      hasta = localDateStr(now);           // Fecha LOCAL, no UTC
-      if (periodo === 'hoy') {
+      hasta = localDateStr(now);
+      if (periodo === 'turno') {
+        desde = hasta;
+        desdeHora = getCajaOpenedAt() || '00:00:00';
+      } else if (periodo === 'hoy') {
         desde = hasta;
       } else if (periodo === 'ayer') {
         const ayer = new Date(now);
@@ -90,7 +107,7 @@
       } else if (periodo === 'semana') {
         const d = new Date(now);
         d.setDate(d.getDate() - 6);
-        desde = localDateStr(d);           // Fecha LOCAL, no UTC
+        desde = localDateStr(d);
       } else if (periodo === 'mes') {
         desde = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
       } else if (periodo === 'año') {
@@ -100,6 +117,7 @@
 
     RV2.filtros.desde      = desde || '';
     RV2.filtros.hasta      = hasta || '';
+    RV2.filtros.desdeHora  = desdeHora;
     RV2.filtros.sucursalId = el('repv2-sucursal')?.value || '';
     RV2.filtros.cajaId     = el('repv2-caja')?.value || '';
     RV2.filtros.usuarioId  = el('repv2-usuario')?.value || '';
@@ -589,6 +607,7 @@
         <td style="font-family:var(--font-mono)">${fmt(r.itbis)}</td>
         <td style="font-family:var(--font-mono);font-weight:800">${fmt(r.total)}</td>
         <td><span class="repv2-estado repv2-estado-${r.estado}">${r.estado}</span></td>
+        <td><button class="repv2-reprint-btn" onclick="repV2ReprintSale('${r.factura}')" title="Reimprimir comprobante">🖨️</button></td>
       </tr>`).join('');
 
     const totals = rows.reduce((a, r) => ({ sub: a.sub + r.subtotal, itbis: a.itbis + r.itbis, total: a.total + r.total }), { sub: 0, itbis: 0, total: 0 });
@@ -599,11 +618,27 @@
         <td>${fmt(totals.itbis)}</td>
         <td>${fmt(totals.total)}</td>
         <td></td>
+        <td></td>
       </tr>`;
     }
 
     renderPager('det-facturas-pager', page, pages, p => repV2LoadFacturas(p));
   }
+
+  window.repV2ReprintSale = async function(invoiceNumber) {
+    try {
+      if (typeof showToast === 'function') showToast('Cargando comprobante…', 'info');
+      const data = await apiGet(`/api/sales/${encodeURIComponent(invoiceNumber)}/receipt`);
+      if (!data?.sale) throw new Error('Comprobante no encontrado.');
+      if (typeof showReceipt === 'function') {
+        showReceipt(data.sale, { title: `Reimpresión — ${invoiceNumber}` });
+      } else {
+        if (typeof showToast === 'function') showToast('Función de impresión no disponible.', 'error');
+      }
+    } catch (e) {
+      if (typeof showToast === 'function') showToast('Error: ' + e.message, 'error');
+    }
+  };
 
   function fmtMetodo(m) {
     return { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transfer.', credito: 'Crédito', contra_entrega: 'C.Entrega' }[m] || m || '—';

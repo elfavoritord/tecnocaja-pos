@@ -322,15 +322,24 @@
       <!-- Panel 4: Datos del negocio + moneda (solo monocaja) -->
       <section class="setup-step-panel" data-step="4">
         <h3>Datos del negocio</h3>
-        <p>Estos datos saldrán en comprobantes, configuración general y reportes.</p>
+        <p>Ingresa tu RNC o Cédula y los datos se completarán automáticamente desde la DGII.</p>
         <div class="setup-form-grid">
-          <div class="form-group">
-            <label id="setup-business-name-label">Nombre del negocio</label>
-            <input type="text" id="setup-business-name" class="form-input" placeholder="Mi negocio">
+          <!-- RNC / Cédula PRIMERO — dispara búsqueda DGII -->
+          <div class="form-group span-2">
+            <label id="setup-business-rnc-label">RNC / Cédula <span style="color:var(--primary,#3b82f6);font-size:.8em">(escribe y presiona Enter o Tab)</span></label>
+            <div style="display:flex;gap:.5rem;align-items:center">
+              <input type="text" id="setup-business-rnc" class="form-input" placeholder="000-00000-0 ó 000-0000000-0"
+                style="flex:1" maxlength="14" oninput="setupDgiiFormat(this)" onblur="setupDgiiLookup()" onkeydown="if(event.key==='Enter'){event.preventDefault();setupDgiiLookup();}">
+              <button type="button" id="setup-rnc-lookup-btn" onclick="setupDgiiLookup()"
+                style="padding:.55rem 1rem;border-radius:8px;border:none;background:var(--primary,#3b82f6);color:#fff;font-size:.85rem;cursor:pointer;white-space:nowrap;min-width:90px">
+                Buscar DGII
+              </button>
+            </div>
+            <div id="setup-rnc-status" style="font-size:.78rem;margin-top:.35rem;min-height:1.1em"></div>
           </div>
-          <div class="form-group">
-            <label id="setup-business-rnc-label">RNC / Cédula</label>
-            <input type="text" id="setup-business-rnc" class="form-input" placeholder="000-00000-0">
+          <div class="form-group span-2">
+            <label id="setup-business-name-label">Nombre del negocio</label>
+            <input type="text" id="setup-business-name" class="form-input" placeholder="Se completará desde la DGII o escribe manualmente">
           </div>
           <div class="form-group span-2">
             <label id="setup-business-address-label">Dirección</label>
@@ -728,6 +737,11 @@
           <span class="whatsapp-access-badge" aria-hidden="true">WA</span>
         </button>
         <button id="topbar-theme-toggle" class="btn-theme" onclick="toggleTheme()">🌙</button>
+        <button id="sync-status-btn" onclick="openSyncMonitor()" title="Estado de sincronización"
+          style="background:none;border:1px solid rgba(34,197,94,.25);border-radius:6px;padding:4px 9px;cursor:pointer;font-size:.72rem;display:flex;align-items:center;gap:5px;color:var(--text)">
+          <span id="sync-dot" style="width:7px;height:7px;border-radius:50%;background:#22c55e;display:inline-block"></span>
+          <span id="sync-label">Sync</span>
+        </button>
         <div class="topbar-notif" id="topbar-notif" onclick="toggleNotifications(event)">
           🔔 <span class="notif-badge" id="notif-badge">0</span>
           <div class="notif-panel hidden" id="notif-panel">
@@ -1011,67 +1025,71 @@
       <div class="module-header">
         <h2>Proveedores</h2>
         <div class="module-actions">
-          <input type="text" id="proveedores-search" placeholder="Buscar proveedor, empresa o RNC..." class="mod-search" oninput="filterProveedores(this.value)">
+          <input type="text" id="proveedores-search" placeholder="Nombre, RNC, teléfono, email…" class="mod-search" oninput="filterProveedores(this.value)">
+          <select id="prov-filter-estado" class="form-input" style="width:auto;padding:6px 10px" onchange="filterProveedores()">
+            <option value="">Todos</option>
+            <option value="Activo">Activos</option>
+            <option value="Inactivo">Inactivos</option>
+            <option value="con_pendientes">Con pendientes</option>
+            <option value="con_vencidas">Con vencidas</option>
+          </select>
           <button class="btn-primary" onclick="openProveedorModal()">+ Nuevo Proveedor</button>
-          <button class="btn-secondary" onclick="openSupplierInvoiceModal()">+ Factura</button>
+          <button class="btn-secondary" onclick="openSupplierInvoiceModal()">📄 Registrar Factura</button>
         </div>
       </div>
-      <div class="reportes-grid" style="margin-bottom:1.25rem">
+
+      <!-- Stats -->
+      <div class="reportes-grid" style="margin-bottom:1rem;grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">
         <div class="report-card">
-          <div class="report-card-header">Total Proveedores</div>
+          <div class="report-card-header">Total</div>
           <div class="report-card-val" id="prov-total">0</div>
-          <div class="report-card-sub">Registrados en el sistema</div>
+          <div class="report-card-sub">Proveedores</div>
         </div>
         <div class="report-card">
           <div class="report-card-header">Activos</div>
           <div class="report-card-val text-success" id="prov-activos">0</div>
-          <div class="report-card-sub">Disponibles para compras</div>
+          <div class="report-card-sub">Disponibles</div>
         </div>
         <div class="report-card">
-          <div class="report-card-header">Facturas Pendientes</div>
-          <div class="report-card-val" id="prov-pendientes">RD$ 0.00</div>
-          <div class="report-card-sub">Saldo por pagar</div>
+          <div class="report-card-header">Con Alertas</div>
+          <div class="report-card-val text-danger" id="prov-con-alertas">0</div>
+          <div class="report-card-sub">Requieren atención</div>
         </div>
         <div class="report-card">
-          <div class="report-card-header">Facturas Vencidas</div>
-          <div class="report-card-val text-danger" id="prov-vencidas">RD$ 0.00</div>
+          <div class="report-card-header">Total Comprado</div>
+          <div class="report-card-val" id="prov-balance-total">RD$ 0</div>
+          <div class="report-card-sub">Historial acumulado</div>
+        </div>
+        <div class="report-card">
+          <div class="report-card-header">Por Pagar</div>
+          <div class="report-card-val" id="prov-pendientes">RD$ 0</div>
+          <div class="report-card-sub">Facturas pendientes</div>
+        </div>
+        <div class="report-card">
+          <div class="report-card-header">Vencido</div>
+          <div class="report-card-val text-danger" id="prov-vencidas">RD$ 0</div>
           <div class="report-card-sub">Requieren atención</div>
         </div>
       </div>
-      <div class="proveedores-workspace">
-        <div class="proveedores-panel">
-          <div class="proveedores-panel-header">
-            <div>
-              <div class="proveedores-panel-title">Directorio de Proveedores</div>
-              <div class="proveedores-panel-subtitle">Controla rutas, estado y cuentas por pagar por proveedor.</div>
-            </div>
-          </div>
-          <div class="proveedores-table-wrap">
-            <table class="data-table proveedores-directory-table">
-              <thead>
-                <tr><th>Proveedor</th><th>Próxima visita</th><th>Pendiente</th><th>Estado</th><th>Ver</th></tr>
-              </thead>
-              <tbody id="proveedores-tbody"></tbody>
-            </table>
-          </div>
+
+      <!-- Workspace master-detail -->
+      <div id="prov-workspace" style="display:grid;grid-template-columns:330px 1fr;gap:1rem;height:calc(100vh - 295px);overflow:hidden">
+        <!-- Lista izquierda -->
+        <div style="display:flex;flex-direction:column;overflow:hidden;gap:.5rem">
+          <div id="prov-list-body" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:.4rem;padding-right:2px"></div>
         </div>
-        <div class="proveedores-panel">
-          <div class="proveedores-panel-header">
-            <div>
-              <div class="proveedores-panel-title">Facturas de Proveedores</div>
-              <div class="proveedores-panel-subtitle">Revisa emisión, vencimiento, pagos y saldos abiertos.</div>
-            </div>
-          </div>
-          <div class="proveedores-table-wrap">
-            <table class="data-table proveedores-invoices-table">
-              <thead>
-                <tr><th>Proveedor</th><th>Factura</th><th>Pendiente</th><th>Estado</th><th>Acción</th></tr>
-              </thead>
-              <tbody id="proveedores-facturas-tbody"></tbody>
-            </table>
+
+        <!-- Panel de detalle derecho -->
+        <div id="prov-detail-panel" style="overflow:hidden;border:1px solid var(--border,#374151);border-radius:10px;background:var(--bg2,#1f2937);display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:.75rem;color:var(--text3)">
+            <div style="font-size:3rem">🚚</div>
+            <div style="font-size:.9rem">Selecciona un proveedor para ver su perfil completo</div>
           </div>
         </div>
       </div>
+
+      <!-- Tabla oculta para compatibilidad con código legacy (renderSupplierInvoicesTable) -->
+      <table style="display:none"><tbody id="proveedores-tbody"></tbody><tbody id="proveedores-facturas-tbody"></tbody></table>
     </div>
 
     <!-- CAJA MODULE -->
@@ -1081,6 +1099,7 @@
         <div class="module-actions">
           <button class="btn-primary" type="button" onclick="openCashIncomeModal()">↗ Registrar ingreso</button>
           <button class="btn-secondary" type="button" onclick="openCashExpenseModal()">↘ Registrar egreso</button>
+          <button class="btn-ghost" type="button" onclick="refreshCajaData()" title="Recargar datos de caja">↻ Sincronizar</button>
         </div>
       </div>
 
@@ -1265,7 +1284,8 @@
         </div>
         <div class="repv2-filters">
           <select class="repv2-filter-select" id="repv2-periodo" onchange="repV2OnPeriodoChange()">
-            <option value="hoy" selected>Hoy</option>
+            <option value="turno" selected>Turno actual</option>
+            <option value="hoy">Hoy (desde medianoche)</option>
             <option value="ayer">Ayer</option>
             <option value="semana">Esta semana</option>
             <option value="mes">Este mes</option>
@@ -1421,7 +1441,7 @@
               <thead><tr>
                 <th>Factura</th><th>NCF</th><th>Fecha</th>
                 <th>Cliente</th><th>Cajero</th><th>Sucursal</th>
-                <th>Método</th><th>Subtotal</th><th>ITBIS</th><th>Total</th><th>Estado</th>
+                <th>Método</th><th>Subtotal</th><th>ITBIS</th><th>Total</th><th>Estado</th><th></th>
               </tr></thead>
               <tbody id="det-facturas-tbody"></tbody>
               <tfoot id="det-facturas-tfoot"></tfoot>
@@ -2814,6 +2834,8 @@
         .wabot-log-time { font-size:.7rem; color:var(--text3); white-space:nowrap; padding-top:.25rem; }
         .wabot-log-empty { color:var(--text3); font-size:.85rem; text-align:center; padding:2rem 0; }
         .nav-wa-dot { width:7px; height:7px; border-radius:50%; background:#10b981; margin-left:auto; flex-shrink:0; }
+        .wabot-spinner { width:36px; height:36px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:wabot-spin .8s linear infinite; }
+        @keyframes wabot-spin { to { transform:rotate(360deg); } }
       </style>
 
       <div class="wabot-header">
@@ -3833,6 +3855,7 @@
 <script src="js/offline-status-bar.js"></script>
 <script src="js/offline-pending-panel.js"></script>
 <script src="js/sync-status-widget.js"></script>
+<script src="js/sync-monitor.js"></script>
 <script src="js/productos.js"></script>
 <script src="js/rnc-lookup.js"></script>
 <script src="js/clientes.js"></script>
@@ -3959,6 +3982,24 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
 <!-- ═══════════════════════════════════════════════
      MODAL: ABRIR GAVETA MANUALMENTE
 ═══════════════════════════════════════════════ -->
+<!-- SYNC MONITOR MODAL -->
+<div id="sync-monitor-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" style="z-index:3000" onclick="if(event.target===this)closeSyncMonitor()">
+  <div class="modal-card" style="max-width:520px;width:95%">
+    <div class="modal-header">
+      <h3 class="modal-title">🔄 Monitor de Sincronización</h3>
+      <button class="btn-ghost" onclick="closeSyncMonitor()" aria-label="Cerrar">✕</button>
+    </div>
+    <div class="modal-body" id="sync-monitor-body" style="padding:1rem">
+      <div style="text-align:center;padding:1.5rem;color:var(--text3)">Cargando…</div>
+    </div>
+    <div class="modal-footer" style="display:flex;gap:.5rem;justify-content:flex-end">
+      <button class="btn-secondary" onclick="retrySyncFailed()">↩ Reintentar fallidos</button>
+      <button class="btn-secondary" onclick="refreshSyncMonitor()">🔄 Actualizar</button>
+      <button class="btn-primary" onclick="closeSyncMonitor()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
 <div id="gaveta-modal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="gaveta-modal-title">
   <div class="modal-card gaveta-modal-card">
     <div class="modal-card-header">
