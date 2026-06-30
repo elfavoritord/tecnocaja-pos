@@ -18,6 +18,7 @@ import '../../features/reports/expenses/screens/expenses_report_screen.dart';
 import '../../features/reports/fiscal/screens/fiscal_report_screen.dart';
 import '../../features/reports/customers/screens/customers_report_screen.dart';
 import '../../features/reports/branches/screens/branches_report_screen.dart';
+import '../../features/reports/live/screens/live_sales_screen.dart';
 import '../../features/reports/pdf_export/screens/pdf_export_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 
@@ -38,16 +39,29 @@ class AppRoutes {
   static const String customers = '/reports/customers';
   static const String branches = '/reports/branches';
   static const String reportsPdf = '/reports/pdf';
+  static const String liveSales = '/reports/live';
   static const String settings = '/settings';
 }
 
-final routerProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authStateProvider);
-  final profileAsync = ref.watch(currentUserProfileProvider);
+/// Notifier that triggers GoRouter to re-evaluate redirects when auth state
+/// changes, without recreating the entire router (which would reset navigation).
+class _RouterNotifier extends ChangeNotifier {
+  _RouterNotifier(Ref ref) {
+    ref.listen(authStateProvider, (prev, next) => notifyListeners());
+    ref.listen(currentUserProfileProvider, (prev, next) => notifyListeners());
+  }
+}
 
-  return GoRouter(
+final routerProvider = Provider<GoRouter>((ref) {
+  final notifier = _RouterNotifier(ref);
+
+  final router = GoRouter(
     initialLocation: AppRoutes.splash,
+    refreshListenable: notifier,
     redirect: (context, state) {
+      final authState = ref.read(authStateProvider);
+      final profileAsync = ref.read(currentUserProfileProvider);
+
       final firebaseUser = authState.valueOrNull;
       final isSplash = state.matchedLocation == AppRoutes.splash;
       final isAuth =
@@ -154,11 +168,22 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const PdfExportScreen(),
       ),
       GoRoute(
+        path: AppRoutes.liveSales,
+        builder: (context, state) => const LiveSalesScreen(),
+      ),
+      GoRoute(
         path: AppRoutes.settings,
         builder: (context, state) => const SettingsScreen(),
       ),
     ],
   );
+
+  ref.onDispose(() {
+    notifier.dispose();
+    router.dispose();
+  });
+
+  return router;
 });
 
 Widget _fadeTransition(

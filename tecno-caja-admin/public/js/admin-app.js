@@ -24,6 +24,9 @@ async function initFirebaseClient() {
     firebase.initializeApp(cfg);
     _auth = firebase.auth();
 
+    // Siempre usar persistencia LOCAL para que la sesión sobreviva reinicios de la app
+    await _auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+
     // Renovar token automáticamente en background
     _auth.onIdTokenChanged(async user => {
       if (user) { _idToken = await user.getIdToken(); _currentUser = user; }
@@ -107,8 +110,24 @@ function showLoginScreen() {
 function showAppShell() {
   hide('login-screen');
   show('app-shell');
-  setText('admin-name-display', _adminProfile?.fullName || _adminProfile?.email || 'Admin');
-  navigateTo('dashboard');
+
+  const name = _adminProfile?.fullName || _adminProfile?.email?.split('@')[0] || 'Admin';
+  setText('admin-name-display', name);
+  setText('dash-admin-name', name.split(' ')[0]);
+
+  // Avatar: primera letra del nombre
+  const avatarEl = document.getElementById('admin-avatar');
+  if (avatarEl) avatarEl.textContent = name[0].toUpperCase();
+
+  // Fecha en el dashboard
+  const dateEl = document.getElementById('dash-date');
+  if (dateEl) {
+    const now = new Date();
+    dateEl.textContent = now.toLocaleDateString('es-DO', { weekday:'long', day:'numeric', month:'long' });
+  }
+
+  // Pequeño delay para que el DOM termine de renderizar el app-shell
+  setTimeout(() => navigateTo('dashboard'), 150);
 }
 
 function showLoginError(msg) {
@@ -296,16 +315,22 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
-async function loadDashboard() {
+async function loadDashboard(attempt = 0) {
+  // Mostrar estado de carga en las tarjetas de stats
+  ['s-negocios','s-activas','s-prueba','s-pendientes','s-vencidas','s-contadores']
+    .forEach(id => setText(id, '…'));
+  const tbody = $id('dash-negocios-list');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="opacity:.5;text-align:center">Cargando…</td></tr>';
+
   try {
     const data = await api('GET', '/api/dashboard');
     const t    = data.totales || {};
-    setText('s-negocios',   t.negocios   ?? '—');
-    setText('s-activas',    t.activas    ?? '—');
-    setText('s-prueba',     t.prueba     ?? '—');
-    setText('s-pendientes', t.pendientes ?? '—');
-    setText('s-vencidas',   t.vencidas   ?? '—');
-    setText('s-contadores', t.contadores ?? '—');
+    setText('s-negocios',   t.negocios   ?? '0');
+    setText('s-activas',    t.activas    ?? '0');
+    setText('s-prueba',     t.prueba     ?? '0');
+    setText('s-pendientes', t.pendientes ?? '0');
+    setText('s-vencidas',   t.vencidas   ?? '0');
+    setText('s-contadores', t.contadores ?? '0');
 
     const badge = $id('sol-badge');
     if (badge) {
@@ -314,7 +339,6 @@ async function loadDashboard() {
       badge.classList.toggle('hidden', sol === 0);
     }
 
-    const tbody = $id('dash-negocios-list');
     if (tbody) {
       tbody.innerHTML = (data.ultimosNegocios || []).map(n => `
         <tr>
@@ -323,9 +347,18 @@ async function loadDashboard() {
           <td>${n.planCode || n.plan_code || '—'}</td>
           <td><span class="badge badge-${n.status || 'trial'}">${n.status || 'trial'}</span></td>
           <td>${fmtDate(n.syncedAt || n.updatedAt)}</td>
-        </tr>`).join('');
+        </tr>`).join('') || '<tr><td colspan="5" style="opacity:.5;text-align:center">Sin negocios registrados</td></tr>';
     }
-  } catch (e) { showToast('Error cargando dashboard: ' + e.message, 'error'); }
+  } catch (e) {
+    // Retry automático hasta 3 veces (cubre race conditions de inicio)
+    if (attempt < 3) {
+      setTimeout(() => loadDashboard(attempt + 1), 800 * (attempt + 1));
+      return;
+    }
+    ['s-negocios','s-activas','s-prueba','s-pendientes','s-vencidas','s-contadores']
+      .forEach(id => setText(id, '—'));
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" style="color:#ef4444;text-align:center">Error cargando datos. <button class="btn-sm" onclick="adminApp.loadDashboard()" style="margin-left:.5rem">Reintentar</button></td></tr>`;
+  }
 }
 
 // ── Negocios ───────────────────────────────────────────────────────────────
@@ -390,7 +423,7 @@ async function openNegocio(id) {
         <dt>Contador</dt><dd>${contadorHtml}</dd>
         <dt>Trial inicia</dt><dd>${fmtDate(neg.trialStartedAt)}</dd>
         <dt>Trial vence</dt><dd>${fmtDate(neg.trialEndsAt)}</dd>
-        <dt>Expira</dt><dd>${fmtDate(neg.expiresAt)}</dd>
+        <dt>Expira</dt><dd>${neg.expiresAt ? fmtDate(neg.expiresAt) : '<span style="color:#10b981;font-size:.8rem">Licencia perpetua</span>'}</dd>
         <dt>Último sync</dt><dd>${fmtDate(neg.syncedAt)}</dd>
       </dl>
       <div id="form-asignar-contador" class="hidden" style="margin-top:1rem;padding:1rem;background:rgba(255,255,255,.04);border-radius:10px;border:1px solid rgba(255,255,255,.1)">
@@ -462,6 +495,76 @@ async function openNegocio(id) {
 function backToNegocios() {
   _currentNegocioId = null;
   navigateTo('negocios');
+}
+
+async function eliminarNegocio() {
+  const id = _currentNegocioId;
+  if (!id) return;
+
+  const nombre = $id('det-nombre')?.textContent || id;
+
+  // Modal de confirmación
+  const overlay = document.createElement('div');
+  overlay.id = 'confirm-delete-negocio';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:#1e2435;border:1px solid rgba(239,68,68,.35);border-radius:18px;padding:1.75rem 2rem;width:min(420px,92vw);display:flex;flex-direction:column;gap:1.1rem">
+      <div style="display:flex;align-items:flex-start;gap:.85rem">
+        <span style="font-size:1.6rem;line-height:1;flex-shrink:0">🗑️</span>
+        <div>
+          <div style="font-weight:700;font-size:1rem;color:#ef4444;margin-bottom:.3rem">Eliminar negocio de Firebase</div>
+          <div style="font-size:.82rem;color:#94a3b8;line-height:1.55">
+            Esto borrará <strong style="color:#e2e8f0">${nombre}</strong> de
+            <code style="font-size:.78rem;background:rgba(255,255,255,.06);padding:.1rem .3rem;border-radius:4px">licencias</code>,
+            <code style="font-size:.78rem;background:rgba(255,255,255,.06);padding:.1rem .3rem;border-radius:4px">usuarios</code> y
+            <code style="font-size:.78rem;background:rgba(255,255,255,.06);padding:.1rem .3rem;border-radius:4px">businesses</code>.
+            <br><br>
+            Si esa PC sigue corriendo Tecno Caja, en el próximo arranque generará un documento <em>nuevo</em> con un UID diferente.
+          </div>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:.78rem;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:.4rem">
+          Escribe el ID para confirmar
+        </label>
+        <input id="confirm-del-input" type="text" placeholder="${id}"
+          style="width:100%;padding:.55rem .8rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#e2e8f0;font-size:.83rem;font-family:monospace">
+        <div id="confirm-del-status" style="font-size:.78rem;min-height:1.1em;margin-top:.35rem;color:#ef4444"></div>
+      </div>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button onclick="document.getElementById('confirm-delete-negocio').remove()"
+          style="padding:.55rem 1.1rem;border-radius:8px;border:1px solid rgba(255,255,255,.12);background:transparent;color:#94a3b8;cursor:pointer;font-size:.85rem">
+          Cancelar
+        </button>
+        <button id="confirm-del-btn" onclick="confirmarEliminarNegocio('${id}')"
+          style="padding:.55rem 1.2rem;border-radius:8px;border:none;background:#ef4444;color:#fff;font-weight:600;cursor:pointer;font-size:.85rem">
+          🗑️ Eliminar
+        </button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  setTimeout(() => $id('confirm-del-input')?.focus(), 80);
+}
+
+async function confirmarEliminarNegocio(id) {
+  const input  = $id('confirm-del-input');
+  const status = $id('confirm-del-status');
+  const btn    = $id('confirm-del-btn');
+  if (!input || input.value.trim() !== id) {
+    if (status) status.textContent = `Escribe exactamente: ${id}`;
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = 'Eliminando…'; }
+  try {
+    await api('DELETE', `/api/negocios/${id}`);
+    document.getElementById('confirm-delete-negocio')?.remove();
+    showToast('Negocio eliminado de Firebase correctamente.', 'success');
+    backToNegocios();
+    await loadNegocios();
+  } catch (e) {
+    if (status) status.textContent = 'Error: ' + e.message;
+    if (btn) { btn.disabled = false; btn.textContent = '🗑️ Eliminar'; }
+  }
 }
 
 function showAsignarContador() {
@@ -575,33 +678,147 @@ async function loadContadores() {
         <td>${c.correo || '—'}</td>
         <td><span class="badge badge-${c.estado==='activo'?'active':'suspended'}">${c.estado}</span></td>
         <td>
+          <button class="btn-sm" onclick="adminApp.editarContador('${c.id}')">Editar</button>
           ${c.estado === 'activo'
-            ? `<button class="btn-sm btn-warning" onclick="adminApp.suspenderContador('${c.id}')">Suspender</button>`
-            : `<button class="btn-sm btn-success" onclick="adminApp.reactivarContador('${c.id}')">Reactivar</button>`}
+            ? `<button class="btn-sm btn-warning" onclick="adminApp.suspenderContador('${c.id}')" style="margin-left:4px">Suspender</button>`
+            : `<button class="btn-sm btn-success" onclick="adminApp.reactivarContador('${c.id}')" style="margin-left:4px">Reactivar</button>`}
           <button class="btn-sm btn-danger" onclick="adminApp.eliminarContador('${c.id}','${(c.nombre_firma||'').replace(/'/g,'&#39;')}')" style="margin-left:4px">Eliminar</button>
         </td>
       </tr>`).join('') || '<tr><td colspan="6" style="text-align:center;opacity:.6">Sin contadores</td></tr>';
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
+let _editingContadorId = null;
+
 function openNuevoContador() {
+  _editingContadorId = null;
   ['cont-nombre-firma','cont-responsable','cont-rnc','cont-telefono','cont-correo','cont-email-acceso','cont-password']
     .forEach(id => { const el=$id(id); if(el) el.value=''; });
+  const st = $id('cont-rnc-status'); if (st) { st.textContent = ''; st.style.color = '#64748b'; }
+  const title = $id('modal-cont-title'); if (title) title.textContent = 'Nuevo Contador';
+  const acceso = document.querySelector('#modal-contador [data-seccion="acceso"]');
+  if (acceso) acceso.style.display = '';
+  const saveBtn = document.querySelector('#modal-contador .btn-primary');
+  if (saveBtn) saveBtn.textContent = 'Guardar contador';
   hide('cont-error');
   show('modal-contador');
+  setTimeout(() => $id('cont-rnc')?.focus(), 80);
+}
+
+async function editarContador(id) {
+  try {
+    const list = await api('GET', '/api/contadores');
+    const c    = list.find(x => x.id === id);
+    if (!c) { showToast('Contador no encontrado.', 'error'); return; }
+
+    _editingContadorId = id;
+    _contRncLast = '';
+
+    const set = (elId, val) => { const el = $id(elId); if (el) el.value = val || ''; };
+    set('cont-nombre-firma', c.nombre_firma);
+    set('cont-responsable',  c.responsable);
+    set('cont-rnc',          c.rnc);
+    set('cont-telefono',     c.telefono);
+    set('cont-correo',       c.correo);
+    $id('cont-email-acceso') && ($id('cont-email-acceso').value = c.email_acceso || '');
+    $id('cont-password')     && ($id('cont-password').value     = '');
+
+    const st = $id('cont-rnc-status'); if (st) { st.textContent = ''; st.style.color = '#64748b'; }
+    const title = $id('modal-cont-title'); if (title) title.textContent = 'Editar Contador';
+
+    // En edición el correo y contraseña son opcionales (no cambiarlos si se dejan vacíos)
+    const emailRow = $id('cont-email-acceso')?.closest('.form-group');
+    const passRow  = $id('cont-password')?.closest('.form-group');
+    if (emailRow) emailRow.querySelector('label').textContent = 'Correo de acceso (dejar igual si no cambia)';
+    if (passRow)  passRow.querySelector('label').textContent  = 'Contraseña (dejar vacía para no cambiar)';
+
+    const saveBtn = document.querySelector('#modal-contador .btn-primary');
+    if (saveBtn) saveBtn.textContent = 'Actualizar contador';
+
+    hide('cont-error');
+    show('modal-contador');
+    setTimeout(() => $id('cont-nombre-firma')?.focus(), 80);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+function contRncFormat(input) {
+  let v = input.value.replace(/[^\d-]/g, '');
+  input.value = v;
+}
+
+let _contRncLast = '';
+async function contRncLookup() {
+  const input  = $id('cont-rnc');
+  const status = $id('cont-rnc-status');
+  const btn    = $id('cont-rnc-btn');
+  if (!input || !status) return;
+
+  const raw = input.value.replace(/\D/g, '');
+  if (raw.length < 9 || raw === _contRncLast) return;
+  _contRncLast = raw;
+
+  status.style.color = '#64748b';
+  status.textContent = '⏳ Consultando DGII…';
+  if (btn) btn.disabled = true;
+
+  try {
+    const data = await api('GET', `/api/rnc/lookup?id=${raw}`);
+    if (!data.found) {
+      status.style.color = '#f59e0b';
+      status.textContent = '⚠ RNC/Cédula no encontrado en el registro DGII.';
+      return;
+    }
+    const nombre = data.nombre || data.nombreComercial || '';
+    const nombreFirma = $id('cont-nombre-firma');
+    if (nombreFirma && !nombreFirma.value.trim()) nombreFirma.value = nombre;
+
+    // Formatear RNC con guiones
+    let fmt = raw;
+    if (raw.length === 9)       fmt = `${raw.slice(0,3)}-${raw.slice(3,8)}-${raw.slice(8)}`;
+    else if (raw.length === 11) fmt = `${raw.slice(0,3)}-${raw.slice(3,10)}-${raw.slice(10)}`;
+    input.value = fmt;
+
+    const estadoColor = (data.estado || '').toLowerCase().includes('activo') ? '#10b981' : '#f59e0b';
+    status.style.color = estadoColor;
+    status.textContent = `✓ ${nombre}${data.estado ? ' — ' + data.estado : ''}`;
+  } catch (e) {
+    status.style.color = '#ef4444';
+    status.textContent = '✗ Error al consultar: ' + e.message;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function guardarContador() {
   const showErr = msg => { const e=$id('cont-error'); if(e){e.textContent=msg;e.classList.remove('hidden');} };
-  const g       = id  => ($id(id)?.value || '').trim();
+  const g = id => ($id(id)?.value || '').trim();
   const nombre_firma    = g('cont-nombre-firma');
   const email_acceso    = g('cont-email-acceso');
   const password_acceso = $id('cont-password')?.value || '';
-  if (!nombre_firma || !email_acceso || !password_acceso) {
-    showErr('Nombre de firma, correo de acceso y contraseña son obligatorios.'); return;
+
+  if (!nombre_firma) { showErr('El nombre de la firma es obligatorio.'); return; }
+
+  if (_editingContadorId) {
+    // Modo edición: solo actualiza datos básicos
+    try {
+      await api('PUT', `/api/contadores/${_editingContadorId}`, {
+        nombre_firma, responsable: g('cont-responsable'),
+        rnc: g('cont-rnc'), telefono: g('cont-telefono'),
+        correo: g('cont-correo'),
+      });
+      closeModal('modal-contador');
+      showToast('Contador actualizado correctamente.', 'success');
+      loadContadores();
+    } catch (e) { showErr(e.message); }
+    return;
+  }
+
+  // Modo creación
+  if (!email_acceso || !password_acceso) {
+    showErr('Correo de acceso y contraseña son obligatorios.'); return;
   }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email_acceso)) {
-    showErr('El correo de acceso no tiene un formato válido. Ejemplo: contador@firma.com'); return;
+    showErr('El correo de acceso no tiene un formato válido.'); return;
   }
   if (password_acceso.length < 6) {
     showErr('La contraseña debe tener al menos 6 caracteres.'); return;
@@ -737,6 +954,89 @@ async function loadAuditoria() {
 }
 
 // ── Configuración ──────────────────────────────────────────────────────────
+let _papeleraVisible = false;
+async function togglePapelera() {
+  _papeleraVisible = !_papeleraVisible;
+  const section = $id('papelera-section');
+  const btn     = $id('btn-ver-papelera');
+  if (!section) return;
+  if (_papeleraVisible) {
+    section.style.display = 'block';
+    if (btn) btn.textContent = '✕ Cerrar papelera';
+    await loadPapelera();
+  } else {
+    section.style.display = 'none';
+    if (btn) btn.textContent = '🗑️ Papelera';
+  }
+}
+
+async function loadPapelera() {
+  const tbody = $id('papelera-list');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="5" style="opacity:.5">Cargando…</td></tr>';
+  try {
+    const items = await api('GET', '/api/papelera');
+    if (!items.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="opacity:.5;text-align:center">Papelera vacía</td></tr>';
+      return;
+    }
+    tbody.innerHTML = items.map(n => `
+      <tr>
+        <td><code style="font-size:.75rem">${n._papeleraId || n.id}</code></td>
+        <td>${n.businessName || n.businessKey || '—'}</td>
+        <td style="font-size:.78rem;color:#94a3b8">${n._papeleraPor || '—'}</td>
+        <td style="font-size:.78rem;color:#94a3b8">${n._papeleraFecha ? new Date(n._papeleraFecha).toLocaleString('es-DO') : '—'}</td>
+        <td style="display:flex;gap:.4rem;justify-content:flex-end">
+          <button class="btn-sm" style="color:#10b981;border-color:rgba(16,185,129,.4)"
+            onclick="adminApp.restaurarNegocio('${n._papeleraId || n.id}')">↩ Restaurar</button>
+          <button class="btn-sm btn-danger" style="font-size:.75rem"
+            onclick="adminApp.eliminarPermanente('${n._papeleraId || n.id}', '${(n.businessName||'').replace(/'/g,"\\'")}')">
+            Borrar definitivo
+          </button>
+        </td>
+      </tr>`).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:#ef4444">Error: ${e.message}</td></tr>`;
+  }
+}
+
+async function restaurarNegocio(id) {
+  try {
+    await api('POST', `/api/negocios/${id}/restaurar`);
+    showToast('Negocio restaurado correctamente.', 'success');
+    await Promise.all([loadPapelera(), loadNegocios()]);
+  } catch (e) { showToast('Error al restaurar: ' + e.message, 'error'); }
+}
+
+async function eliminarPermanente(id, nombre) {
+  if (!confirm(`¿Borrar permanentemente "${nombre}"?\n\nEsto eliminará la licencia, usuarios y datos del negocio de Firebase. NO se puede deshacer.`)) return;
+  try {
+    await api('DELETE', `/api/papelera/${id}`);
+    showToast('Negocio eliminado definitivamente.', 'success');
+    await loadPapelera();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function limpiarHuerfanos() {
+  const btn = document.querySelector('[onclick="adminApp.limpiarHuerfanos()"]');
+  const result = $id('cleanup-result');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Limpiando…'; }
+  if (result) result.textContent = '';
+  try {
+    const data = await api('DELETE', '/api/cleanup/huerfanos');
+    if (result) {
+      result.style.color = data.deleted > 0 ? '#10b981' : '#94a3b8';
+      result.textContent = data.deleted > 0
+        ? `✓ ${data.deleted} documento(s) huérfano(s) eliminados correctamente.`
+        : 'No se encontraron documentos huérfanos.';
+    }
+  } catch (e) {
+    if (result) { result.style.color = '#ef4444'; result.textContent = 'Error: ' + e.message; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🧹 Limpiar documentos huérfanos'; }
+  }
+}
+
 async function loadConfigPerfil() {
   try {
     const data = await api('GET', '/api/perfil');
@@ -757,10 +1057,17 @@ async function loadConfigPerfil() {
 function fmtDate(v) {
   if (!v) return '—';
   try {
-    const d = v?.toDate ? v.toDate() : new Date(v);
-    if (isNaN(d.getTime())) return String(v);
+    let d;
+    if (v?.toDate) {
+      d = v.toDate(); // Firestore Timestamp en memoria
+    } else if (typeof v === 'object' && (v._seconds != null || v.seconds != null)) {
+      d = new Date((v._seconds ?? v.seconds) * 1000); // Timestamp serializado como JSON
+    } else {
+      d = new Date(v);
+    }
+    if (isNaN(d.getTime())) return '—';
     return d.toLocaleString('es-DO', { dateStyle: 'short', timeStyle: 'short' });
-  } catch { return String(v); }
+  } catch { return '—'; }
 }
 
 // ── Exponer al HTML ────────────────────────────────────────────────────────
@@ -770,10 +1077,11 @@ window.adminApp = {
   loadDashboard,
   loadNegocios, filterNegocios, openNegocio, backToNegocios,
   showAsignarContador, hideAsignarContador, buscarContadorAsignar, confirmarAsignarContador,
-  saveDeviceLimit, removeDevice,
+  saveDeviceLimit, removeDevice, eliminarNegocio, confirmarEliminarNegocio, limpiarHuerfanos,
+  togglePapelera, loadPapelera, restaurarNegocio, eliminarPermanente,
   accionLicencia, showRenovar,
   loadLicencias, goNegociosByStatus,
-  loadContadores, openNuevoContador, guardarContador,
+  loadContadores, openNuevoContador, editarContador, guardarContador, contRncFormat, contRncLookup,
   suspenderContador, reactivarContador, eliminarContador,
   loadSolicitudes, abrirSolicitud, responderSolicitud,
   loadActualizaciones, openNuevaVersion, publicarVersion,

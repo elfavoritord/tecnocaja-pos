@@ -138,6 +138,9 @@ function goto(mod) {
   if (mod === 'reportes')         loadReportes();
   if (mod === 'facturacion')      loadFacturacion();
   if (mod === 'colaboradores')    loadColaboradores();
+  if (mod === 'analisis-global')  loadAnalisisGlobal();
+  if (mod === 'centro-fiscal')    loadCentroFiscal();
+  if (mod === 'alertas')          loadAlertas();
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -235,6 +238,14 @@ function showApp(profile) {
   _applyPermisos(profile);
 
   goto('dashboard');
+
+  // Iniciar pollers en background
+  setTimeout(() => {
+    _startSolicitudesPoller();
+    _startAlertasPoller();
+    // Cargar badge de alertas inicial sin abrir el módulo
+    apiCall('GET', '/api/alertas').then(d => _actualizarBadgeAlertas(d.critico + d.urgente)).catch(() => {});
+  }, 3000);
 }
 
 function _applyPermisos(profile) {
@@ -419,6 +430,30 @@ async function loadDashboard() {
           </div>`).join('');
       }
     }
+
+    // Cargar KPIs extra en background (análisis global + alertas críticas + obligaciones)
+    Promise.all([
+      apiCall('GET', '/api/analisis-global').catch(() => null),
+      apiCall('GET', '/api/alertas').catch(() => null),
+      apiCall('GET', '/api/centro-fiscal/obligaciones').catch(() => null),
+    ]).then(([ag, al, obl]) => {
+      if (ag) {
+        setText('dash-ventas-mes', fmtMoney(ag.resumen.totalVentasMes));
+        setText('dash-itbis-mes',  fmtMoney(ag.resumen.totalItbisMes));
+      }
+      if (al) {
+        const cnt = al.critico + al.urgente;
+        setText('dash-alertas-critico', cnt);
+        const el = $id('dash-alertas-critico');
+        if (el) el.style.color = cnt > 0 ? '#ef4444' : 'inherit';
+      }
+      if (obl) {
+        const proximas = obl.filter(o => o.diasRestantes >= 0 && o.diasRestantes <= 7).length;
+        setText('dash-obl-proximas', proximas);
+        const el = $id('dash-obl-proximas');
+        if (el) el.style.color = proximas > 0 ? '#f59e0b' : 'inherit';
+      }
+    });
   } catch (e) {
     toast('Error cargando dashboard: ' + e.message, 'error');
   }
@@ -2558,6 +2593,405 @@ async function asignarNegocio(businessId, businessName) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// ANÁLISIS GLOBAL
+// ══════════════════════════════════════════════════════════════════════
+
+async function loadAnalisisGlobal() {
+  const sub = $id('ag-sub');
+  if (sub) sub.textContent = 'Cargando datos agregados…';
+  try {
+    await refreshToken();
+    const data = await apiCall('GET', '/api/analisis-global');
+    const { resumen, topClientes } = data;
+    const fmt = v => fmtMoney(v);
+
+    setText('ag-ventas-mes', fmt(resumen.totalVentasMes));
+    setText('ag-ventas-hoy', fmt(resumen.totalVentasHoy));
+    setText('ag-itbis-mes',  fmt(resumen.totalItbisMes));
+    setText('ag-facturas',   resumen.totalFacturasEmitidas.toLocaleString());
+    setText('ag-cxc',        fmt(resumen.totalCxcPendiente));
+    setText('ag-con-datos',  `${resumen.clientesConPosData} / ${resumen.totalClientes}`);
+    setText('ag-sin-sync',   resumen.clientesSinSync7dias);
+    setText('ag-total',      resumen.totalClientes);
+
+    const topWrap = $id('ag-top-wrap');
+    const sinDatos = $id('ag-sin-datos');
+
+    if (topClientes.length === 0) {
+      if (topWrap)  topWrap.style.display  = 'none';
+      if (sinDatos) sinDatos.style.display = '';
+    } else {
+      if (topWrap)  topWrap.style.display  = '';
+      if (sinDatos) sinDatos.style.display = 'none';
+      const tbody = $id('ag-top-tbody');
+      if (tbody) {
+        tbody.innerHTML = topClientes.map((c, i) => {
+          const posCls = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
+          return `<tr>
+            <td><span class="ag-top-pos ${posCls}">${i + 1}</span></td>
+            <td style="font-weight:600">${esc(c.businessName)}</td>
+            <td>${statusBadge(c.status)}</td>
+            <td class="td-amount">${fmtMoney(c.ventasMes)}</td>
+            <td class="td-amount" style="color:#f59e0b">${fmtMoney(c.itbisMes)}</td>
+            <td style="text-align:center">${c.facturas}</td>
+            <td><button class="btn btn-xs btn-secondary" onclick="app.verCliente('${c.id}')">Ver</button></td>
+          </tr>`;
+        }).join('');
+      }
+    }
+
+    if (sub) sub.textContent = `Último actualización: ${new Date().toLocaleTimeString('es-DO')}`;
+  } catch (e) {
+    toast('Error cargando análisis global: ' + e.message, 'error');
+    if (sub) sub.textContent = 'Error al cargar datos.';
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// CENTRO FISCAL
+// ══════════════════════════════════════════════════════════════════════
+
+let _cfObligaciones = [];
+let _cfTareas       = [];
+let _cfFilObl  = 'todos';
+let _cfFilTarea = 'pendiente';
+
+async function loadCentroFiscal() {
+  // Inicializar selector de año
+  const sel = $id('cf-anio-sel');
+  if (sel && !sel.children.length) {
+    const anioActual = new Date().getFullYear();
+    for (let y = anioActual - 1; y <= anioActual + 1; y++) {
+      const opt = document.createElement('option');
+      opt.value = y; opt.textContent = y;
+      if (y === anioActual) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  // Populate tarea-negocio select if empty
+  const tnSel = $id('tarea-negocio');
+  if (tnSel && tnSel.options.length <= 1 && _allClientes.length) {
+    _allClientes.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.businessName || c.businessKey || c.id;
+      tnSel.appendChild(opt);
+    });
+  }
+
+  await Promise.all([_cargarObligaciones(), _cargarTareas()]);
+}
+
+async function _cargarObligaciones() {
+  const anio = $id('cf-anio-sel')?.value || new Date().getFullYear();
+  try {
+    await refreshToken();
+    _cfObligaciones = await apiCall('GET', `/api/centro-fiscal/obligaciones?anio=${anio}`);
+    _renderObligaciones();
+  } catch (e) {
+    const el = $id('cf-obligaciones-list');
+    if (el) el.innerHTML = `<div style="color:#ef4444;padding:12px">${e.message}</div>`;
+  }
+}
+
+async function _cargarTareas() {
+  try {
+    await refreshToken();
+    _cfTareas = await apiCall('GET', '/api/centro-fiscal/tareas');
+    _renderTareas();
+  } catch (e) {
+    const el = $id('cf-tareas-list');
+    if (el) el.innerHTML = `<div style="color:#ef4444;padding:12px">${e.message}</div>`;
+  }
+}
+
+function filtrarObligaciones(fil, btn) {
+  _cfFilObl = fil;
+  document.querySelectorAll('.cf-fil').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  _renderObligaciones();
+}
+
+function filtrarTareas(fil, btn) {
+  _cfFilTarea = fil;
+  document.querySelectorAll('.cf-tfil').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  _renderTareas();
+}
+
+function _renderObligaciones() {
+  const el = $id('cf-obligaciones-list');
+  if (!el) return;
+
+  let lista = _cfObligaciones;
+  if (_cfFilObl !== 'todos') {
+    const isTipo = ['mensual','trimestral','anual'].includes(_cfFilObl);
+    lista = lista.filter(o => isTipo ? o.tipo === _cfFilObl : o.estado === _cfFilObl);
+  }
+
+  if (!lista.length) {
+    el.innerHTML = '<div style="text-align:center;padding:24px;color:#5a7099">Sin obligaciones para el filtro seleccionado.</div>';
+    return;
+  }
+
+  const iconEstado = { urgente: '🔴', proxima: '🟡', vencida: '⚫', pendiente: '🟢' };
+  const labelEstado = { urgente: 'Urgente', proxima: 'Próxima', vencida: 'Vencida', pendiente: 'Al día' };
+
+  el.innerHTML = lista.map(o => {
+    let diasTxt = '';
+    if (o.diasRestantes < 0)     diasTxt = `<span class="obl-dias-vencida">Vencida hace ${Math.abs(o.diasRestantes)}d</span>`;
+    else if (o.diasRestantes <= 7)  diasTxt = `<span class="obl-dias-urgente">⚡ ${o.diasRestantes}d restantes</span>`;
+    else if (o.diasRestantes <= 30) diasTxt = `<span class="obl-dias-proxima">⚠ ${o.diasRestantes}d restantes</span>`;
+    else                            diasTxt = `<span class="obl-dias-pendiente">${o.diasRestantes}d</span>`;
+
+    return `<div class="obl-item ${o.estado}">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:2px">
+          <span class="obl-form">${o.form}</span>
+          <span class="obl-badge">${o.tipo}</span>
+        </div>
+        <div class="obl-desc">${o.desc}</div>
+        <div class="obl-date">📅 Vence: ${o.fecha}</div>
+      </div>
+      <div style="text-align:right;flex-shrink:0">
+        <div style="font-size:16px">${iconEstado[o.estado] || '⚪'}</div>
+        <div style="font-size:10px;color:var(--text-sub)">${labelEstado[o.estado] || ''}</div>
+        <div style="margin-top:4px">${diasTxt}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _renderTareas() {
+  const el = $id('cf-tareas-list');
+  if (!el) return;
+
+  let lista = _cfTareas;
+  if (_cfFilTarea !== 'todos') {
+    lista = lista.filter(t => t.estado === _cfFilTarea);
+  }
+
+  if (!lista.length) {
+    el.innerHTML = `<div style="text-align:center;padding:32px;color:#5a7099">
+      <div style="font-size:28px;margin-bottom:8px">✅</div>
+      <div>${_cfFilTarea === 'pendiente' ? 'Sin tareas pendientes' : 'Sin tareas completadas'}</div>
+      <button class="btn btn-secondary" style="margin-top:12px" onclick="app.abrirModalTarea(null)">+ Agregar tarea</button>
+    </div>`;
+    return;
+  }
+
+  const hoy = new Date().toISOString().slice(0, 10);
+  el.innerHTML = lista.map(t => {
+    const vencida = t.fecha_vencimiento && t.fecha_vencimiento < hoy && t.estado !== 'completada';
+    const chkState = t.estado === 'completada' ? 'checked' : '';
+    const chkAction = t.estado === 'completada'
+      ? `app.reabrirTarea('${t.id}')`
+      : `app.completarTarea('${t.id}')`;
+    const tipoColors = { itbis:'#f59e0b', tss:'#10b981', '606':'#60a5fa', '607':'#a78bfa', ir:'#fb923c', ncf:'#34d399', auditoria:'#f87171', general:'#94a3b8' };
+    const tipoColor = tipoColors[t.tipo] || '#94a3b8';
+
+    return `<div class="tarea-item ${t.estado} ${vencida ? 'vencida-task' : ''}">
+      <input type="checkbox" class="tarea-chk" ${chkState} onchange="${chkAction}" />
+      <div style="flex:1">
+        <div class="tarea-desc" style="${t.estado === 'completada' ? 'text-decoration:line-through;' : ''}">${esc(t.titulo)}</div>
+        <div class="tarea-meta">
+          <span style="background:${tipoColor}22;color:${tipoColor};padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">${(t.tipo||'general').toUpperCase()}</span>
+          ${t.fecha_vencimiento ? `<span style="margin-left:6px;${vencida ? 'color:#ef4444;font-weight:600' : ''}">📅 ${t.fecha_vencimiento}</span>` : ''}
+          ${t.businessName ? `<span class="tarea-negocio" style="margin-left:6px">🏪 ${esc(t.businessName)}</span>` : ''}
+        </div>
+        ${t.notas ? `<div style="font-size:11px;color:var(--text-sub);margin-top:3px;font-style:italic">${esc(t.notas)}</div>` : ''}
+      </div>
+      <button class="btn btn-xs btn-danger" style="flex-shrink:0" onclick="app.eliminarTarea('${t.id}')">🗑</button>
+    </div>`;
+  }).join('');
+}
+
+let _tareaEditId = null;
+
+function abrirModalTarea() {
+  _tareaEditId = null;
+  ['tarea-titulo','tarea-notas'].forEach(id => { const el = $id(id); if (el) el.value = ''; });
+  const tipoEl = $id('tarea-tipo'); if (tipoEl) tipoEl.value = 'general';
+  const fechaEl = $id('tarea-fecha'); if (fechaEl) fechaEl.value = '';
+  const negEl = $id('tarea-negocio');
+  if (negEl) {
+    negEl.innerHTML = '<option value="">— Ninguno —</option>';
+    _allClientes.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c.id;
+      opt.textContent = c.businessName || c.businessKey || c.id;
+      negEl.appendChild(opt);
+    });
+  }
+  show('modal-tarea');
+}
+
+function cerrarModalTarea() { hide('modal-tarea'); }
+
+async function guardarTarea() {
+  const titulo = $id('tarea-titulo')?.value?.trim();
+  if (!titulo) { toast('El título es requerido.', 'error'); return; }
+
+  const negEl = $id('tarea-negocio');
+  const bizId = negEl?.value || null;
+  const bizName = bizId ? negEl.options[negEl.selectedIndex]?.text : null;
+
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/centro-fiscal/tareas', {
+      titulo,
+      tipo:              $id('tarea-tipo')?.value  || 'general',
+      fecha_vencimiento: $id('tarea-fecha')?.value || null,
+      businessId:  bizId,
+      businessName: bizName,
+      notas: $id('tarea-notas')?.value?.trim() || null,
+    });
+    toast('Tarea guardada.', 'success');
+    cerrarModalTarea();
+    _cargarTareas();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function completarTarea(id) {
+  try {
+    await refreshToken();
+    await apiCall('PUT', `/api/centro-fiscal/tareas/${id}/completar`);
+    toast('Tarea marcada como completada.', 'success');
+    _cargarTareas();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function reabrirTarea(id) {
+  try {
+    await refreshToken();
+    await apiCall('PUT', `/api/centro-fiscal/tareas/${id}/reabrir`);
+    _cargarTareas();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function eliminarTarea(id) {
+  if (!confirm('¿Eliminar esta tarea?')) return;
+  try {
+    await refreshToken();
+    await apiCall('DELETE', `/api/centro-fiscal/tareas/${id}`);
+    toast('Tarea eliminada.', 'success');
+    _cargarTareas();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ALERTAS
+// ══════════════════════════════════════════════════════════════════════
+
+let _alertasPollTimer = null;
+
+async function loadAlertas() {
+  const sub = $id('alertas-sub');
+  if (sub) sub.textContent = 'Actualizando alertas…';
+  try {
+    await refreshToken();
+    const data = await apiCall('GET', '/api/alertas');
+    _renderAlertas(data);
+    if (sub) sub.textContent = `${data.total} alerta(s) · Actualizado ${new Date().toLocaleTimeString('es-DO')}`;
+  } catch (e) {
+    toast('Error cargando alertas: ' + e.message, 'error');
+    if (sub) sub.textContent = 'Error al cargar alertas.';
+  }
+}
+
+function _renderAlertas(data) {
+  const empty = $id('alertas-empty');
+  const body  = $id('alertas-body');
+
+  if (!data.alertas.length) {
+    if (empty) empty.style.display = '';
+    if (body)  body.style.display  = 'none';
+    _actualizarBadgeAlertas(0);
+    return;
+  }
+
+  if (empty) empty.style.display = 'none';
+  if (body)  body.style.display  = '';
+
+  const nivelIcon = { critico: '🔴', urgente: '🟠', advertencia: '🟡', info: '🔵' };
+  const tipoIcon  = {
+    licencia_vencida:   '📛', licencia_proxima: '⏰',
+    sin_sync:           '🔄', solicitud_pendiente: '📋',
+  };
+
+  ['critico','urgente','advertencia','info'].forEach(nivel => {
+    const sec  = $id(`alertas-${nivel}-sec`);
+    const list = $id(`alertas-${nivel}-list`);
+    const items = data.alertas.filter(a => a.nivel === nivel);
+    if (!items.length) {
+      if (sec) sec.style.display = 'none';
+      return;
+    }
+    if (sec) sec.style.display = '';
+    if (list) {
+      list.innerHTML = items.map(a => `
+        <div class="alert-item ${nivel}">
+          <div class="alert-icon">${tipoIcon[a.tipo] || nivelIcon[nivel]}</div>
+          <div class="alert-content">
+            <div class="alert-bname">${esc(a.businessName || '—')}</div>
+            <div class="alert-msg">${esc(a.msg)}</div>
+          </div>
+          ${a.businessId ? `<button class="btn btn-xs btn-secondary" onclick="app.verCliente('${a.businessId}')">Ver</button>` : ''}
+        </div>`).join('');
+    }
+  });
+
+  _actualizarBadgeAlertas(data.critico + data.urgente);
+}
+
+function _actualizarBadgeAlertas(count) {
+  const badge = $id('nav-badge-alertas');
+  if (!badge) return;
+  if (count > 0) {
+    badge.textContent = count;
+    badge.classList.remove('hidden');
+    badge.style.background = '#ef4444';
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+// Auto-polling de alertas cada 3 minutos
+function _startAlertasPoller() {
+  if (_alertasPollTimer) return;
+  _alertasPollTimer = setInterval(async () => {
+    if (!_token) return;
+    try {
+      await refreshToken();
+      const data = await apiCall('GET', '/api/alertas');
+      _actualizarBadgeAlertas(data.critico + data.urgente);
+      // Si el módulo está visible, actualizar tabla también
+      if ($id('mod-alertas')?.classList.contains('active')) _renderAlertas(data);
+    } catch (_) {}
+  }, 3 * 60 * 1000);
+}
+
+// Auto-refresh solicitudes badge cada 60s
+let _solPollTimer = null;
+function _startSolicitudesPoller() {
+  if (_solPollTimer) return;
+  _solPollTimer = setInterval(async () => {
+    if (!_token) return;
+    try {
+      await refreshToken();
+      const list = await apiCall('GET', '/api/solicitudes?status=pendiente');
+      const cnt = list.length;
+      const badge = $id('nav-badge-sol');
+      if (badge) {
+        if (cnt > 0) { badge.textContent = cnt; badge.classList.remove('hidden'); }
+        else           badge.classList.add('hidden');
+      }
+    } catch (_) {}
+  }, 60 * 1000);
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // EXPORT — accesible desde HTML (onclick)
 // ══════════════════════════════════════════════════════════════════════
 
@@ -2599,6 +3033,14 @@ window.app = {
   abrirModalColab, cerrarModalColab, guardarColab, toggleTipoColab, cambiarPwColab, eliminarColab,
   verColabDetalle, quitarCliente,
   abrirModalAsignar, cerrarModalAsignar, filtrarNegociosAsignar, asignarNegocio,
+  // análisis global
+  loadAnalisisGlobal,
+  // centro fiscal
+  loadCentroFiscal, filtrarObligaciones, filtrarTareas,
+  abrirModalTarea, cerrarModalTarea, guardarTarea,
+  completarTarea, reabrirTarea, eliminarTarea,
+  // alertas
+  loadAlertas,
   // estado
   get currentClienteId() { return _currentClienteId; },
 };

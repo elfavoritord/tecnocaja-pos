@@ -1065,6 +1065,26 @@ async function fetchRemotePosLicenseState(config) {
   }
 
   const data = doc.data() || {};
+
+  // Si el admin marcó este documento como eliminado, limpiar el UID local
+  // para que el POS genere un documento nuevo en el próximo arranque.
+  if (data.deleted === true) {
+    console.warn('[firebase-admin] Documento marcado como eliminado por admin. Se generará nuevo UID en el próximo arranque.');
+    if (process.env.TECNO_CAJA_LICENSE_UID) {
+      process.env.TECNO_CAJA_LICENSE_UID = '';
+      try {
+        const fs = require('fs'); const path = require('path');
+        const envPath = path.join(process.cwd(), '.env');
+        if (fs.existsSync(envPath)) {
+          let raw = fs.readFileSync(envPath, 'utf8');
+          raw = raw.replace(/^TECNO_CAJA_LICENSE_UID=.*/m, 'TECNO_CAJA_LICENSE_UID=');
+          fs.writeFileSync(envPath, raw, 'utf8');
+        }
+      } catch (_) {}
+    }
+    return null; // Tratar como "no encontrado" → próximo sync genera nuevo doc
+  }
+
   const remotePlanCode = String(data.planCode || data.plan_code || '').trim().toLowerCase();
   return {
     id: doc.id,

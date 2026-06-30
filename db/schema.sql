@@ -161,7 +161,7 @@ CREATE TABLE config (
   exclusive_cashier_per_register TINYINT(1) NOT NULL DEFAULT 1,
   business_mode VARCHAR(30) NOT NULL DEFAULT 'independent',
   cloud_business_id VARCHAR(64) DEFAULT NULL,
-  accountant_id INT DEFAULT NULL,
+  accountant_id VARCHAR(64) DEFAULT NULL,
   accountant_name VARCHAR(200) DEFAULT NULL,
   CONSTRAINT fk_config_business FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE SET NULL,
   CONSTRAINT fk_config_active_branch FOREIGN KEY (active_branch_id) REFERENCES branches(id) ON DELETE SET NULL,

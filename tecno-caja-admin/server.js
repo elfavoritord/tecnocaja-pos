@@ -355,7 +355,15 @@ app.post('/api/negocios/:id/licencia', requireAuth, async (req, res) => {
     if (plan) { update.planCode = plan; update.plan_code = plan; }
 
     switch (accion) {
-      case 'activar':   update.status = 'active'; break;
+      case 'activar':
+        update.status = 'active';
+        // Planes de pago único no tienen fecha de expiración
+        if (plan === 'standalone') {
+          update.expiresAt      = null;
+          update.trialEndsAt    = null;
+          update.trialStartedAt = null;
+        }
+        break;
       case 'suspender': update.status = 'suspended'; break;
       case 'cancelar':  update.status = 'cancelled'; break;
       case 'pendiente': update.status = 'pending'; break;
@@ -428,6 +436,130 @@ app.put('/api/negocios/:id/device-limit', requireAuth, async (req, res) => {
     await ref.update({ deviceLimit: limit, updatedAt: new Date() });
     await audit(req.adminUser.email, 'licencia.device_limit', req.params.id, `Nuevo límite: ${limit}`);
     res.json({ ok: true, deviceLimit: limit });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Borrado suave: mueve el negocio a la papelera (no borra de verdad).
+// La instalación POS detecta deleted:true y genera un UID nuevo en el próximo arranque.
+app.delete('/api/negocios/:id', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const licRef = col(COL_LICENCIAS).doc(id);
+    const licDoc = await licRef.get();
+    if (!licDoc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
+
+    const data = licDoc.data() || {};
+    const db   = admin.firestore();
+
+    // Guardar copia en papelera ANTES de marcar como eliminado
+    const snapshot = { ...data, _papeleraId: id, _papeleraFecha: new Date().toISOString(), _papeleraPor: req.adminUser.email };
+    await db.collection('papelera').doc(id).set(snapshot);
+
+    // Marcar como eliminado (el POS lo detecta y genera nuevo UID)
+    await licRef.update({ deleted: true, deletedAt: new Date(), deletedBy: req.adminUser.email });
+
+    await audit(req.adminUser.email, 'negocio.papelera', id, `businessKey: ${data.businessKey || id}`);
+    res.json({ ok: true, inPapelera: id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Restaurar negocio desde la papelera
+app.post('/api/negocios/:id/restaurar', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const db        = admin.firestore();
+    const trashRef  = db.collection('papelera').doc(id);
+    const trashDoc  = await trashRef.get();
+    if (!trashDoc.exists) return res.status(404).json({ error: 'No se encontró en la papelera.' });
+
+    const snapshot = trashDoc.data() || {};
+    delete snapshot._papeleraId; delete snapshot._papeleraFecha; delete snapshot._papeleraPor;
+
+    // Restaurar documento de licencia sin el flag deleted
+    delete snapshot.deleted; delete snapshot.deletedAt; delete snapshot.deletedBy;
+    await col(COL_LICENCIAS).doc(id).set(snapshot, { merge: true });
+
+    // Borrar de la papelera
+    await trashRef.delete();
+
+    await audit(req.adminUser.email, 'negocio.restaurado', id, `Restaurado desde papelera`);
+    res.json({ ok: true, restaurado: id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Listar papelera
+app.get('/api/papelera', requireAuth, async (req, res) => {
+  try {
+    const snap = await admin.firestore().collection('papelera').get();
+    res.json(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Eliminar permanentemente desde papelera (borra licencia, usuarios y businesses)
+app.delete('/api/papelera/:id', requireAuth, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const db       = admin.firestore();
+    const trashDoc = await db.collection('papelera').doc(id).get();
+    const bKey     = trashDoc.exists ? (trashDoc.data().businessKey || id) : id;
+
+    const batch = db.batch();
+
+    // Borrar licencia (puede que ya esté marcada, la borramos definitivamente)
+    const licRef = col(COL_LICENCIAS).doc(id);
+    if ((await licRef.get()).exists) batch.delete(licRef);
+
+    // Borrar usuarios relacionados
+    const usersSnap = await col(COL_USUARIOS).where('businessKey', '==', bKey).get();
+    usersSnap.docs.forEach(d => batch.delete(d.ref));
+
+    // Borrar businesses
+    const bizRef = db.collection('businesses').doc(bKey);
+    if ((await bizRef.get()).exists) batch.delete(bizRef);
+
+    // Borrar de papelera
+    batch.delete(db.collection('papelera').doc(id));
+
+    await batch.commit();
+    await audit(req.adminUser.email, 'negocio.eliminado_permanente', id, `businessKey: ${bKey}`);
+    res.json({ ok: true, eliminado: id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Borrar documentos huérfanos en businesses y usuarios (sin licencia activa)
+app.delete('/api/cleanup/huerfanos', requireAuth, async (req, res) => {
+  try {
+    const db = admin.firestore();
+    const licSnap = await col(COL_LICENCIAS).get();
+    const licIds = new Set(licSnap.docs.map(d => d.id));
+    // Obtener todos los businessKey válidos de las licencias
+    const licKeys = new Set(licSnap.docs.map(d => d.data().businessKey).filter(Boolean));
+
+    let deleted = 0;
+    const batch = db.batch();
+
+    // Limpiar businesses huérfanos
+    const bizSnap = await db.collection('businesses').get();
+    bizSnap.docs.forEach(d => {
+      if (!licIds.has(d.id) && !licKeys.has(d.id)) {
+        batch.delete(d.ref);
+        deleted++;
+      }
+    });
+
+    // Limpiar usuarios huérfanos
+    const usrSnap = await col(COL_USUARIOS).get();
+    usrSnap.docs.forEach(d => {
+      const bk = d.data().businessKey || d.id;
+      if (!licIds.has(d.id) && !licKeys.has(bk) && !licIds.has(bk)) {
+        batch.delete(d.ref);
+        deleted++;
+      }
+    });
+
+    if (deleted > 0) await batch.commit();
+    await audit(req.adminUser.email, 'cleanup.huerfanos', 'system', `${deleted} documentos eliminados`);
+    res.json({ ok: true, deleted });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -526,6 +658,19 @@ app.post('/api/contadores/:id/reactivar', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.put('/api/contadores/:id', requireAuth, async (req, res) => {
+  const { nombre_firma, responsable, rnc, telefono, correo } = req.body;
+  if (!nombre_firma) return res.status(400).json({ error: 'El nombre de la firma es obligatorio.' });
+  try {
+    const ref = col(COL_CONTADORES).doc(req.params.id);
+    if (!(await ref.get()).exists) return res.status(404).json({ error: 'Contador no encontrado.' });
+    const update = { nombre_firma, responsable: responsable || null, rnc: rnc || null, telefono: telefono || null, correo: correo || null, updated_at: isoNow() };
+    await ref.update(update);
+    await audit(req.adminUser.email, 'contador.actualizado', req.params.id, nombre_firma);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/contadores/:id', requireAuth, async (req, res) => {
   try {
     const doc = await col(COL_CONTADORES).doc(req.params.id).get();
@@ -591,6 +736,46 @@ app.get('/api/auditoria', requireAuth, async (_req, res) => {
     const snap = await col(COL_AUDITORIA).get();
     const sorted = snap.docs.map(docData).sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || ''))).slice(0, 200);
     res.json(sorted);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── RNC / Cédula lookup (DGII) ────────────────────────────────────────────
+let _rncHandler = null;
+let _rncReady   = false;
+
+function getRncHandler() {
+  if (_rncHandler) return _rncHandler;
+  try {
+    const mod = require('dgii-rnc');
+    _rncHandler = new mod.RNCHandler();
+    _rncHandler.checkFile().then(() => { _rncReady = true; }).catch(() => {});
+  } catch (_) {}
+  return _rncHandler;
+}
+getRncHandler(); // pre-cargar al iniciar
+
+app.get('/api/rnc/lookup', requireAuth, async (req, res) => {
+  const raw = String(req.query.id || '').replace(/\D/g, '');
+  if (!raw || raw.length < 9) return res.status(400).json({ error: 'RNC inválido.' });
+  const h = getRncHandler();
+  if (!h || !_rncReady) return res.status(503).json({ error: 'Servicio RNC no disponible aún, espera unos segundos.' });
+  try {
+    const candidates = [raw];
+    if (raw.length === 10) candidates.push('0' + raw);
+    let record = null;
+    for (const id of candidates) {
+      const results = await h.search({ ID: id });
+      if (results && results.length > 0) { record = results[0]; break; }
+    }
+    if (!record) return res.json({ found: false });
+    res.json({
+      found: true,
+      rnc: record.ID || raw,
+      nombre: record.NOMBRE || '',
+      nombreComercial: record.NOMBRE_COMERCIAL || record.NOMBRE || '',
+      estado: record.ESTADO || '',
+      tipo: record.TIPO || '',
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

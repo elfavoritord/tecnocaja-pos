@@ -882,6 +882,12 @@ function filterProducts() {
 }
 
 async function reloadProductsModule() {
+  try {
+    const result = await api.getProducts();
+    if (Array.isArray(result?.products)) {
+      DB.productos = result.products;
+    }
+  } catch (_) {}
   await syncReportAppProductsNow({ silent: false, minIntervalMs: 0 });
   refreshProductCategoryFilter();
   filterProducts();

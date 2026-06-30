@@ -141,7 +141,20 @@
       "Bash(node -e \"const fs=require\\('fs'\\); const lines=fs.readFileSync\\('modules/ecf/services/ecf.service.js','utf8'\\).split\\('\\\\n'\\); console.log\\(JSON.stringify\\(lines[5074]\\)\\);\")",
       "Bash(grep -v \"//\\\\|safePos\\\\|payload\\\\|firestore\\\\|param\\\\|Limit\\\\b\")",
       "Bash(powershell -Command \"\\(Get-Date\\).ToUniversalTime\\(\\).ToString\\('yyyy-MM-dd HH:mm:ss'\\)\")",
-      "PowerShell(w32tm /query /status 2>&1)"
+      "PowerShell(w32tm /query /status 2>&1)",
+      "Bash(grep -v \"//\\\\|comment\\\\|push\\\\|upload\\\\|upload\\\\|sendTo\")",
+      "Bash(wc -l public/css/admin.css)",
+      "Bash(ls public/css/)",
+      "Bash(grep -n \"getStoredAuthToken\\\\|autoLogin\\\\|restoreSession\\\\|\\\\/api\\\\/auth\\\\/me\\\\|\\\\/api\\\\/session\" js/app.js)",
+      "Bash(grep -n \"app.get.*\\\\/api\\\\/setup\\\\/status\\\\|setupStatus\\\\|setup\\\\/status\" server.js)",
+      "Bash(node -e \"require\\('./tecno-caja-contadores/server.js'\\); console.log\\('Server OK'\\)\")",
+      "Bash(dir /b /s \"c:\\\\Users\\\\Emilio Coding IA\\\\Desktop\\\\sistema pos completo\\\\reporte app\\\\lib\")",
+      "Bash(grep -v \"//\\\\|function\\\\|catch\\\\|try\")",
+      "Bash(grep -n \"app\\\\.get.*\\\\/api\\\\/sales\\\\/\" \"c:/Users/Emilio Coding IA/Desktop/sistema pos completo/server.js\")",
+      "Bash(grep -v \"//\\\\|console\\\\|req\\\\.\\\\|res\\\\.\")",
+      "Bash(grep -v \"//\\\\|console\\\\|actorUser\\\\|newUser\\\\|updatedUser\\\\|existingUser\\\\|matchedUser\\\\|fallbackUser\\\\|manageUser\\\\|currentUserCan\\\\|currentUserIs\\\\|currentUserHas\")",
+      "Bash(git commit -m ' *)",
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release.ps1 -Bump patch)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/utils/format_helpers.dart';
 import '../../../data/models/reports_dashboard_model.dart';
 import '../../../data/repositories/firestore_dashboard_repository.dart';
 import '../../../data/repositories/sales_repository.dart';
@@ -33,6 +34,19 @@ final liveTodayRevenueProvider = StreamProvider.autoDispose<double>((ref) {
   if (businessId == null || businessId.isEmpty) return const Stream.empty();
   return ref.watch(salesRepositoryProvider).watchTodayRevenue(businessId);
 });
+
+/// Stream en tiempo real: total de ventas de ayer (para calcular % vs hoy).
+final liveYesterdayRevenueProvider = StreamProvider.autoDispose<double>((ref) {
+  ref.keepAlive();
+  final businessId = ref.watch(activeBusinessIdProvider);
+  if (businessId == null || businessId.isEmpty) return const Stream.empty();
+  return ref.watch(salesRepositoryProvider).watchDayRevenue(
+    businessId,
+    from: DateHelpers.yesterdayStart,
+    to: DateHelpers.todayStart,
+  );
+});
+
 
 final dashboardRangePresetProvider = StateProvider<ReportsRangePreset>(
   (ref) => ReportsRangePreset.today,

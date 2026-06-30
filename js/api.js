@@ -143,6 +143,10 @@ const api = {
     return this.request('/api/bootstrap');
   },
 
+  getProducts() {
+    return this.request('/api/products');
+  },
+
   getBusinessTemplates() {
     return this.request('/api/business-templates');
   },

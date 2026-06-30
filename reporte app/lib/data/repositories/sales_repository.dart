@@ -46,10 +46,13 @@ class SalesRepository {
           'createdAt',
           isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart),
         )
-        .where('status', isEqualTo: 'completed')
         .limit(1000)
         .snapshots()
-        .map((snap) => snap.docs.length);
+        .map(
+          (snap) => snap.docs
+              .where((d) => d.data()['status'] == 'completed')
+              .length,
+        );
   }
 
   /// Stream en tiempo real del total de ventas (monto) de HOY completadas.
@@ -64,11 +67,12 @@ class SalesRepository {
           'createdAt',
           isGreaterThanOrEqualTo: Timestamp.fromDate(todayStart),
         )
-        .where('status', isEqualTo: 'completed')
         .limit(1000)
         .snapshots()
         .map(
-          (snap) => snap.docs.fold<double>(0, (runningTotal, doc) {
+          (snap) => snap.docs
+              .where((d) => d.data()['status'] == 'completed')
+              .fold<double>(0, (runningTotal, doc) {
             final data = doc.data();
             final total = (data['total'] as num?)?.toDouble() ?? 0;
             return runningTotal + total;
@@ -112,6 +116,54 @@ class SalesRepository {
 
     final snap = await ref.get().timeout(_queryTimeout);
     return snap.docs.map(SaleModel.fromFirestore).toList();
+  }
+
+  /// Stream en tiempo real de ventas completadas en un rango de fechas arbitrario.
+  Stream<List<SaleModel>> watchSales(
+    String businessId, {
+    required DateTime from,
+    required DateTime to,
+    int limit = 150,
+  }) {
+    return _db
+        .collection('businesses')
+        .doc(businessId)
+        .collection('sales')
+        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+        .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(to))
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .snapshots()
+        .map(
+          (snap) => snap.docs
+              .map(SaleModel.fromFirestore)
+              .where((s) => s.status == SaleStatus.completed)
+              .toList(),
+        );
+  }
+
+  /// Stream en tiempo real del total de ventas (monto) en un rango de fechas.
+  Stream<double> watchDayRevenue(
+    String businessId, {
+    required DateTime from,
+    required DateTime to,
+  }) {
+    return _db
+        .collection('businesses')
+        .doc(businessId)
+        .collection('sales')
+        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(from))
+        .where('createdAt', isLessThan: Timestamp.fromDate(to))
+        .limit(1000)
+        .snapshots()
+        .map(
+          (snap) => snap.docs
+              .where((d) => d.data()['status'] == 'completed')
+              .fold<double>(0, (acc, doc) {
+            final data = doc.data();
+            return acc + ((data['total'] as num?)?.toDouble() ?? 0);
+          }),
+        );
   }
 
   Future<SalesSummary> getSalesSummary({

@@ -140,6 +140,8 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
     final profile = ref.watch(currentUserProfileProvider).valueOrNull;
     final liveCount = ref.watch(liveTodaySalesCountProvider).valueOrNull;
     final liveRevenue = ref.watch(liveTodayRevenueProvider).valueOrNull;
+    final yesterdayRevenue =
+        ref.watch(liveYesterdayRevenueProvider).valueOrNull;
 
     return Scaffold(
       backgroundColor: _dashboardShellColor,
@@ -197,7 +199,11 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
                 children: [
                   if (liveCount != null)
-                    _LiveSalesBanner(count: liveCount, revenue: liveRevenue),
+                    _LiveSalesBanner(
+                      count: liveCount,
+                      revenue: liveRevenue,
+                      yesterdayRevenue: yesterdayRevenue,
+                    ),
                   _buildFilterPanel(context, data, dashboardAsync.isLoading),
                   const SizedBox(height: 14),
                   _buildKpiGrid(data),
@@ -1394,13 +1400,26 @@ String _axisCompactLabel(double value) {
 
 /// Banner superior que muestra ventas del día en tiempo real (vía Firestore).
 class _LiveSalesBanner extends StatelessWidget {
-  const _LiveSalesBanner({required this.count, this.revenue});
+  const _LiveSalesBanner({
+    required this.count,
+    this.revenue,
+    this.yesterdayRevenue,
+  });
 
   final int count;
   final double? revenue;
+  final double? yesterdayRevenue;
 
   @override
   Widget build(BuildContext context) {
+    final hasTrend = revenue != null &&
+        yesterdayRevenue != null &&
+        yesterdayRevenue! > 0;
+    final isPositive = hasTrend && revenue! >= yesterdayRevenue!;
+    final trendLabel = hasTrend
+        ? FormatHelpers.trend(revenue!, yesterdayRevenue!)
+        : null;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -1445,6 +1464,43 @@ class _LiveSalesBanner extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
             ),
           ),
+          if (trendLabel != null) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              decoration: BoxDecoration(
+                color: isPositive
+                    ? const Color(0xFF166534).withValues(alpha: 0.6)
+                    : const Color(0xFF991B1B).withValues(alpha: 0.6),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isPositive
+                        ? Icons.arrow_upward_rounded
+                        : Icons.arrow_downward_rounded,
+                    size: 10,
+                    color: isPositive
+                        ? const Color(0xFF4ADE80)
+                        : const Color(0xFFF87171),
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    trendLabel,
+                    style: TextStyle(
+                      color: isPositive
+                          ? const Color(0xFF4ADE80)
+                          : const Color(0xFFF87171),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );

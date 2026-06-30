@@ -113,7 +113,18 @@
       "Bash(grep -v \"PEGA\\\\|placeholder\\\\|comment\\\\|//\\\\|example\")",
       "Bash(node --check server/integrations/whatsapp-bot.js)",
       "Bash(node --check tecno-caja-admin/server.js)",
-      "PowerShell(Start-Process powershell -Verb RunAs -ArgumentList @\\('-Command', 'w32tm /config /update /manualpeerlist:\"time.google.com\" /syncfromflags:manual; w32tm /resync /force; Write-Host DONE'\\) -Wait 2>&1)"
+      "PowerShell(Start-Process powershell -Verb RunAs -ArgumentList @\\('-Command', 'w32tm /config /update /manualpeerlist:\"time.google.com\" /syncfromflags:manual; w32tm /resync /force; Write-Host DONE'\\) -Wait 2>&1)",
+      "Bash(grep -iv \"//\\\\|comment\")",
+      "Bash(grep -v \"node_modules\\\\|//\\\\|backup\")",
+      "Bash(grep -n \"fetch.*session\\\\|\\\\/api\\\\/auth\\\\|\\\\/api\\\\/session\\\\|cookie\\\\|token.*local\\\\|localStorage.*token\\\\|sessionUser\\\\|currentUser\\\\s*=\" js/app.js)",
+      "Bash(grep -n \"app.get.*\\\\/api\\\\/auth\\\\|app.post.*\\\\/api\\\\/auth\\\\|app.get.*\\\\/api\\\\/me\\\\|app.get.*\\\\/api\\\\/session\" server.js)",
+      "Bash(grep -v \"^.*function\\\\|^.*//\\\\|loadLoginUsers\")",
+      "Bash(grep -n \"mod-colaboradores\\\\|mod-facturacion\\\\|mod-reportes\\\\|mod-actualizaciones\\\\|mod-configuracion\\\\|mod-ayuda\\\\|\\\\/main\\\\|\\\\/div.*screen-app\\\\|Chart.js\\\\|contadores-app\\\\|</body\" index.html)",
+      "Bash(dir /b /s *.dart)",
+      "Read(//c/Users/Emilio Coding IA/AppData/Local/Pub/Cache/hosted/pub.dev/google_fonts-6.3.3/lib/**)",
+      "Bash(grep -n \"GET.*\\\\/api\\\\/sales\\\\/\" \"c:/Users/Emilio Coding IA/Desktop/sistema pos completo/server.js\")",
+      "Bash(grep -n \"app\\\\.post.*\\\\/api\\\\/sales\\\\b\" \"c:/Users/Emilio Coding IA/Desktop/sistema pos completo/server.js\")",
+      "Bash(grep -n \"GET.*reprint\\\\|reprint.*GET\\\\|\\\\/receipt\\\\b\\\\|receipt.*GET\" \"c:/Users/Emilio Coding IA/Desktop/sistema pos completo/server.js\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",

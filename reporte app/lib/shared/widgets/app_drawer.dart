@@ -5,8 +5,10 @@ import 'package:go_router/go_router.dart';
 import '../../core/config/routes.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_modules.dart';
+import '../../core/utils/format_helpers.dart';
 import '../../data/models/user_model.dart';
 import '../../features/auth/providers/auth_provider.dart';
+import '../../features/dashboard/providers/dashboard_provider.dart';
 
 class AppDrawer extends ConsumerWidget {
   const AppDrawer({super.key});
@@ -14,11 +16,14 @@ class AppDrawer extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final profile = ref.watch(currentUserProfileProvider).valueOrNull;
+    final todayRevenue = ref.watch(liveTodayRevenueProvider).valueOrNull;
+    final todayCount = ref.watch(liveTodaySalesCountProvider).valueOrNull;
 
     return Drawer(
       child: SafeArea(
         child: Column(
           children: [
+            // Header con info del usuario + resumen en vivo
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(20),
@@ -26,19 +31,58 @@ class AppDrawer extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  CircleAvatar(
-                    radius: 28,
-                    backgroundColor: Colors.white.withValues(alpha: 0.2),
-                    child: Text(
-                      profile?.displayName.isNotEmpty == true
-                          ? profile!.displayName[0].toUpperCase()
-                          : 'A',
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
+                  Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 28,
+                        backgroundColor: Colors.white.withValues(alpha: 0.2),
+                        child: Text(
+                          profile?.displayName.isNotEmpty == true
+                              ? profile!.displayName[0].toUpperCase()
+                              : 'A',
+                          style: const TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
-                    ),
+                      const Spacer(),
+                      // Indicador en vivo
+                      if (todayCount != null)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 7,
+                                height: 7,
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFF4ADE80),
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                '$todayCount ventas hoy',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                    ],
                   ),
                   const SizedBox(height: 12),
                   Text(
@@ -57,6 +101,46 @@ class AppDrawer extends ConsumerWidget {
                       fontSize: 12,
                     ),
                   ),
+                  if (todayRevenue != null && todayRevenue > 0) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.trending_up_rounded,
+                            color: Colors.white,
+                            size: 14,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            FormatHelpers.currency(todayRevenue),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            'hoy',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.75),
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   if (profile?.hasMultipleBusinesses == true) ...[
                     const SizedBox(height: 8),
                     Text(
@@ -73,7 +157,8 @@ class AppDrawer extends ConsumerWidget {
             ),
             Expanded(
               child: ListView(
-                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+                padding:
+                    const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
                 children: _visibleItems(profile),
               ),
             ),
@@ -116,6 +201,8 @@ class AppDrawer extends ConsumerWidget {
         route: AppRoutes.dashboard,
         moduleKey: AppModules.dashboard,
       ),
+      const _SectionLabel(label: 'EN VIVO'),
+      const _LiveNavItem(),
       const _SectionLabel(label: 'REPORTES'),
       const _NavItem(
         icon: Icons.point_of_sale_rounded,
@@ -201,6 +288,78 @@ class AppDrawer extends ConsumerWidget {
   }
 }
 
+/// Ítem especial para el feed en vivo con dot animado.
+class _LiveNavItem extends ConsumerWidget {
+  const _LiveNavItem();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(liveTodaySalesCountProvider).valueOrNull ?? 0;
+    final current = GoRouter.of(
+      context,
+    ).routeInformationProvider.value.uri.path;
+    final isActive = current == AppRoutes.liveSales;
+
+    return ListTile(
+      leading: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Icon(
+            Icons.sensors_rounded,
+            color: isActive ? AppColors.success : AppColors.success.withValues(alpha: 0.7),
+            size: 20,
+          ),
+          if (count > 0)
+            Positioned(
+              top: -4,
+              right: -4,
+              child: Container(
+                width: 14,
+                height: 14,
+                alignment: Alignment.center,
+                decoration: const BoxDecoration(
+                  color: AppColors.success,
+                  shape: BoxShape.circle,
+                ),
+                child: Text(
+                  count > 99 ? '99+' : '$count',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 8,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+      title: Text(
+        'Feed en Vivo',
+        style: TextStyle(
+          fontSize: 14,
+          fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
+          color: isActive ? AppColors.success : null,
+        ),
+      ),
+      subtitle: count > 0
+          ? Text(
+              '$count venta${count == 1 ? '' : 's'} hoy',
+              style: const TextStyle(fontSize: 11, color: AppColors.success),
+            )
+          : null,
+      tileColor: isActive
+          ? AppColors.success.withValues(alpha: 0.08)
+          : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      onTap: () {
+        Navigator.pop(context);
+        context.go(AppRoutes.liveSales);
+      },
+      dense: true,
+    );
+  }
+}
+
 class _NavItem extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -222,7 +381,11 @@ class _NavItem extends StatelessWidget {
     final isActive = current == route;
 
     return ListTile(
-      leading: Icon(icon, color: isActive ? AppColors.primary : null, size: 20),
+      leading: Icon(
+        icon,
+        color: isActive ? AppColors.primary : null,
+        size: 20,
+      ),
       title: Text(
         label,
         style: TextStyle(

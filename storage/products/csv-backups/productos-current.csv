@@ -1,2 +1,2 @@
 Código,Nombre,Marca,Categoría,Unidad,Modo Venta,Costo,Precio,Stock,Stock Mínimo,Estado,Tipo Producto,Aplica ITBIS,Rastrea Stock,Es Combo,Tiempo Preparación,Imagen URL,Imagen Local
-0001,prueba 1,,Accesorios,Unidad,unidad,100,150,10,5,Activo,general,No,Sí,No,15,,
+0001,prueba,,,unidad,unidad,100,150,100,5,Activo,general,No,Sí,No,15,,

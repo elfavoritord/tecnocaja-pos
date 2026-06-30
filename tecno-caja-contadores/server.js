@@ -1222,6 +1222,241 @@ app.post('/api/colaboradores/:id/cambiar-password', requireAuth, requirePrincipa
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ══════════════════════════════════════════════════════════════════════
+// ANÁLISIS GLOBAL — Agregados de toda la cartera del contador
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/analisis-global', requireAuth, async (req, res) => {
+  try {
+    const snap = await col(COL_LICENCIAS)
+      .where('contadorId', '==', req.contador.contadorDocId)
+      .get();
+
+    const clientes = snap.docs.map(docData);
+    const ahora = Date.now();
+
+    let totalVentasMes = 0, totalVentasHoy = 0, totalItbisMes = 0;
+    let totalFacturasEmitidas = 0, totalCxcPendiente = 0;
+    let clientesSinSync7dias = 0, clientesConPosData = 0;
+    const topClientes = [];
+
+    for (const c of clientes) {
+      const stats = c.posStats || {};
+      totalVentasMes        += Number(stats.ventasMes        || 0);
+      totalVentasHoy        += Number(stats.ventasHoy        || 0);
+      totalItbisMes         += Number(stats.itbisMes         || 0);
+      totalFacturasEmitidas += Number(stats.facturasEmitidas || 0);
+      totalCxcPendiente     += Number(stats.cxcPendiente     || 0);
+      if (stats.ventasMes !== undefined) clientesConPosData++;
+
+      if (c.syncedAt) {
+        const d = c.syncedAt.toDate ? c.syncedAt.toDate() : new Date(c.syncedAt);
+        if ((ahora - d.getTime()) / 86400000 > 7) clientesSinSync7dias++;
+      } else {
+        clientesSinSync7dias++;
+      }
+
+      topClientes.push({
+        id:           c.id,
+        businessName: c.businessName || c.businessKey || '—',
+        ventasMes:    Number(stats.ventasMes  || 0),
+        itbisMes:     Number(stats.itbisMes   || 0),
+        facturas:     Number(stats.facturasEmitidas || 0),
+        status:       c.status || 'trial',
+        syncedAt:     c.syncedAt || null,
+      });
+    }
+
+    topClientes.sort((a, b) => b.ventasMes - a.ventasMes);
+
+    res.json({
+      resumen: {
+        totalClientes: clientes.length,
+        totalVentasMes, totalVentasHoy, totalItbisMes,
+        totalFacturasEmitidas, totalCxcPendiente,
+        clientesSinSync7dias, clientesConPosData,
+      },
+      topClientes: topClientes.slice(0, 10),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// CENTRO FISCAL — Calendario DGII RD + tareas de cumplimiento
+// ══════════════════════════════════════════════════════════════════════
+
+const _OBL_MESES = ['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const _OBL_BASE = [];
+
+// IT-1 (ITBIS) — vence el 20 de cada mes
+for (let m = 1; m <= 12; m++) {
+  _OBL_BASE.push({ mes: m, dia: 20, form: 'IT-1', desc: `ITBIS — mes de ${_OBL_MESES[m]}`, tipo: 'mensual' });
+}
+// TSS — vence el 30 de cada mes
+for (let m = 1; m <= 12; m++) {
+  _OBL_BASE.push({ mes: m, dia: 30, form: 'TSS', desc: `TSS Seguridad Social — ${_OBL_MESES[m]}`, tipo: 'mensual' });
+}
+// 606/607 trimestral
+_OBL_BASE.push(
+  { mes: 4,  dia: 30, form: '606', desc: '606 Compras (Trim. 1 Ene-Mar)', tipo: 'trimestral' },
+  { mes: 7,  dia: 31, form: '606', desc: '606 Compras (Trim. 2 Abr-Jun)', tipo: 'trimestral' },
+  { mes: 10, dia: 31, form: '606', desc: '606 Compras (Trim. 3 Jul-Sep)', tipo: 'trimestral' },
+  { mes: 1,  dia: 31, form: '606', desc: '606 Compras (Trim. 4 Oct-Dic)', tipo: 'trimestral' },
+  { mes: 4,  dia: 30, form: '607', desc: '607 Ventas NCF (Trim. 1 Ene-Mar)', tipo: 'trimestral' },
+  { mes: 7,  dia: 31, form: '607', desc: '607 Ventas NCF (Trim. 2 Abr-Jun)', tipo: 'trimestral' },
+  { mes: 10, dia: 31, form: '607', desc: '607 Ventas NCF (Trim. 3 Jul-Sep)', tipo: 'trimestral' },
+  { mes: 1,  dia: 31, form: '607', desc: '607 Ventas NCF (Trim. 4 Oct-Dic)', tipo: 'trimestral' }
+);
+// IR anuales
+_OBL_BASE.push(
+  { mes: 3, dia: 31, form: 'IR-2', desc: 'IR-2 Renta Personas Jurídicas (año anterior)', tipo: 'anual' },
+  { mes: 3, dia: 31, form: 'IR-1', desc: 'IR-1 Renta Personas Físicas (año anterior)',    tipo: 'anual' }
+);
+// Pagos a cuenta IR
+_OBL_BASE.push(
+  { mes: 5,  dia: 15, form: 'IR-PA', desc: 'Pago a Cuenta Renta — 1er pago', tipo: 'trimestral' },
+  { mes: 8,  dia: 15, form: 'IR-PA', desc: 'Pago a Cuenta Renta — 2do pago', tipo: 'trimestral' },
+  { mes: 11, dia: 15, form: 'IR-PA', desc: 'Pago a Cuenta Renta — 3er pago', tipo: 'trimestral' }
+);
+
+function _obligacionesAnio(anio) {
+  const now = new Date();
+  return _OBL_BASE.map((o, i) => {
+    const fecha = new Date(anio, o.mes - 1, o.dia);
+    const diasRestantes = Math.ceil((fecha - now) / 86400000);
+    return {
+      id: `${anio}-${String(o.mes).padStart(2,'0')}-${o.dia}-${o.form}-${i}`,
+      fecha: fecha.toISOString().slice(0, 10),
+      form: o.form, desc: o.desc, tipo: o.tipo, mes: o.mes, dia: o.dia,
+      diasRestantes,
+      estado: diasRestantes < 0 ? 'vencida'
+            : diasRestantes <= 7  ? 'urgente'
+            : diasRestantes <= 30 ? 'proxima' : 'pendiente',
+    };
+  }).sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+
+app.get('/api/centro-fiscal/obligaciones', requireAuth, (req, res) => {
+  const anio = parseInt(req.query.anio) || new Date().getFullYear();
+  res.json(_obligacionesAnio(anio));
+});
+
+app.get('/api/centro-fiscal/tareas', requireAuth, async (req, res) => {
+  try {
+    const snap = await col(COL_CONTADORES)
+      .doc(req.contador.contadorDocId)
+      .collection('tareas_fiscales')
+      .orderBy('created_at', 'desc')
+      .limit(200)
+      .get();
+    res.json(snap.docs.map(docData));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/centro-fiscal/tareas', requireAuth, async (req, res) => {
+  const { titulo, businessId, businessName, fecha_vencimiento, tipo, notas } = req.body;
+  if (!titulo?.trim()) return res.status(400).json({ error: 'El título es requerido.' });
+  try {
+    const ref = await col(COL_CONTADORES)
+      .doc(req.contador.contadorDocId)
+      .collection('tareas_fiscales')
+      .add({
+        titulo: titulo.trim(),
+        businessId:        businessId        || null,
+        businessName:      businessName      || null,
+        fecha_vencimiento: fecha_vencimiento || null,
+        tipo:  tipo  || 'general',
+        notas: notas || null,
+        estado:     'pendiente',
+        created_at: isoNow(),
+        updated_at: isoNow(),
+      });
+    res.json({ ok: true, id: ref.id });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/centro-fiscal/tareas/:id/completar', requireAuth, async (req, res) => {
+  try {
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('tareas_fiscales').doc(req.params.id)
+      .update({ estado: 'completada', completado_at: isoNow(), updated_at: isoNow() });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/centro-fiscal/tareas/:id/reabrir', requireAuth, async (req, res) => {
+  try {
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('tareas_fiscales').doc(req.params.id)
+      .update({ estado: 'pendiente', completado_at: null, updated_at: isoNow() });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/centro-fiscal/tareas/:id', requireAuth, async (req, res) => {
+  try {
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('tareas_fiscales').doc(req.params.id).delete();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ALERTAS — Centro de alertas de toda la cartera
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/alertas', requireAuth, async (req, res) => {
+  try {
+    const [licSnap, solSnap] = await Promise.all([
+      col(COL_LICENCIAS).where('contadorId', '==', req.contador.contadorDocId).get(),
+      col(COL_SOLICITUDES).where('contadorId', '==', req.contador.contadorDocId)
+        .where('status', '==', 'pendiente').get(),
+    ]);
+
+    const alertas = [];
+    const ahora = Date.now();
+
+    licSnap.docs.forEach(doc => {
+      const c = docData(doc);
+      const vence = vencimientoDate(c);
+      if (vence) {
+        const d = vence.toDate ? vence.toDate() : new Date(vence);
+        const dias = Math.ceil((d - ahora) / 86400000);
+        const bname = c.businessName || c.businessKey || '—';
+        if (dias < 0) {
+          alertas.push({ tipo: 'licencia_vencida', nivel: 'critico', businessId: c.id, businessName: bname, msg: `Licencia vencida hace ${Math.abs(dias)} día(s)`, dias });
+        } else if (dias <= 7) {
+          alertas.push({ tipo: 'licencia_proxima', nivel: 'urgente', businessId: c.id, businessName: bname, msg: `Licencia vence en ${dias} día(s)`, dias });
+        } else if (dias <= 30) {
+          alertas.push({ tipo: 'licencia_proxima', nivel: 'advertencia', businessId: c.id, businessName: bname, msg: `Licencia vence en ${dias} días`, dias });
+        }
+      }
+      if (c.syncedAt) {
+        const s = c.syncedAt.toDate ? c.syncedAt.toDate() : new Date(c.syncedAt);
+        const diasSinSync = (ahora - s.getTime()) / 86400000;
+        if (diasSinSync > 7) {
+          alertas.push({ tipo: 'sin_sync', nivel: 'info', businessId: c.id, businessName: c.businessName || c.businessKey || '—', msg: `Sin sincronización: ${Math.floor(diasSinSync)} días sin enviar datos` });
+        }
+      }
+    });
+
+    solSnap.docs.forEach(doc => {
+      const s = docData(doc);
+      alertas.push({ tipo: 'solicitud_pendiente', nivel: 'info', businessId: s.businessId, businessName: s.businessName || '—', msg: `Solicitud pendiente: ${s.tipo || 'sin tipo'}` });
+    });
+
+    const orden = { critico: 0, urgente: 1, advertencia: 2, info: 3 };
+    alertas.sort((a, b) => (orden[a.nivel] ?? 9) - (orden[b.nivel] ?? 9));
+
+    res.json({
+      alertas, total: alertas.length,
+      critico:     alertas.filter(a => a.nivel === 'critico').length,
+      urgente:     alertas.filter(a => a.nivel === 'urgente').length,
+      advertencia: alertas.filter(a => a.nivel === 'advertencia').length,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── SPA fallback ───────────────────────────────────────────────────────────
 app.get(/(.*)/, (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

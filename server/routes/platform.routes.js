@@ -23,6 +23,39 @@ function getFirestoreDb() {
   }
 }
 
+// Actualiza contadorId/contadorNombre en el documento Firestore licencias del negocio
+async function _syncContadorToFirestore(query, contadorId, contadorNombre) {
+  const db = getFirestoreDb();
+  if (!db) return;
+  const [cfg] = await query('SELECT cloud_business_id FROM config WHERE id=1');
+  const bizId = cfg?.cloud_business_id;
+  if (!bizId) return;
+
+  const COL_LICENCIAS = process.env.FIREBASE_ADMIN_LICENSES_COLLECTION || 'licencias';
+
+  if (contadorId) {
+    // Obtener nombre desde Firestore si no tenemos uno
+    let nombre = contadorNombre;
+    if (!nombre) {
+      try {
+        const cDoc = await db.collection('contadores').doc(String(contadorId)).get();
+        if (cDoc.exists) nombre = cDoc.data().nombre_firma || '';
+      } catch (_) {}
+    }
+    await db.collection(COL_LICENCIAS).doc(bizId).update({
+      contadorId: String(contadorId),
+      contadorNombre: nombre || '',
+      businessStructureMode: 'accountant_client',
+    });
+  } else {
+    await db.collection(COL_LICENCIAS).doc(bizId).update({
+      contadorId: null,
+      contadorNombre: null,
+      businessStructureMode: 'independent',
+    });
+  }
+}
+
 function createPlatformRouter({ query }) {
   const router = express.Router();
 
@@ -220,6 +253,41 @@ function createPlatformRouter({ query }) {
         nombre:  cfg.accountant_name || '',
         verified: false,
       });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Asignar contador al negocio ───────────────────────────────────────────
+  router.post('/asignar-contador', async (req, res) => {
+    try {
+      const { contador_id, nombre_firma } = req.body || {};
+      if (!contador_id) return res.status(400).json({ error: 'contador_id requerido.' });
+
+      // 1. Guardar en config local
+      await query(
+        'UPDATE config SET accountant_id=?, accountant_name=? WHERE id=1',
+        [contador_id, nombre_firma || '']
+      );
+
+      // 2. Sincronizar con Firestore licencias (para que el Admin lo vea)
+      _syncContadorToFirestore(query, contador_id, nombre_firma || '').catch(() => {});
+
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Desvincular contador ────────────────────────────────────────────────
+  router.post('/desvincular-contador', async (req, res) => {
+    try {
+      await query('UPDATE config SET accountant_id=NULL, accountant_name=NULL WHERE id=1');
+
+      // Sincronizar con Firestore
+      _syncContadorToFirestore(query, null, null).catch(() => {});
+
+      res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

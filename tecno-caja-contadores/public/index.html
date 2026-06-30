@@ -99,8 +99,18 @@
       <a class="nav-item" data-mod="reportes" onclick="app.goto('reportes')">
         <span class="nav-icon">📈</span> Reportes
       </a>
+      <a class="nav-item" data-mod="analisis-global" onclick="app.goto('analisis-global')">
+        <span class="nav-icon">📉</span> Análisis Global
+      </a>
 
       <div class="nav-section-label" style="margin-top:8px">Gestión</div>
+      <a class="nav-item" data-mod="alertas" onclick="app.goto('alertas')">
+        <span class="nav-icon">🔔</span> Alertas
+        <span id="nav-badge-alertas" class="nav-badge hidden">0</span>
+      </a>
+      <a class="nav-item" data-mod="centro-fiscal" onclick="app.goto('centro-fiscal')">
+        <span class="nav-icon">🗓️</span> Centro Fiscal
+      </a>
       <a class="nav-item" data-mod="solicitudes" onclick="app.goto('solicitudes')">
         <span class="nav-icon">📋</span> Solicitudes
         <span id="nav-badge-sol" class="nav-badge hidden">0</span>
@@ -155,6 +165,7 @@
         </div>
       </div>
 
+      <!-- Fila 1: Estado de cartera -->
       <div class="stats-grid">
         <div class="stat-card">
           <div class="stat-icon blue">👥</div>
@@ -172,13 +183,45 @@
           <div class="stat-icon red">🔴</div>
           <div><div class="stat-label">Vencidas</div><div class="stat-value" id="dash-vencidas">—</div></div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card" style="cursor:pointer" onclick="app.goto('solicitudes')">
           <div class="stat-icon purple">📋</div>
           <div><div class="stat-label">Sol. Pendientes</div><div class="stat-value" id="dash-sol">—</div></div>
         </div>
         <div class="stat-card">
           <div class="stat-icon orange">📅</div>
           <div><div class="stat-label">Próx. a Vencer</div><div class="stat-value" id="dash-proximos">—</div></div>
+        </div>
+      </div>
+
+      <!-- Fila 2: Datos financieros agregados -->
+      <div style="margin-top:12px;margin-bottom:20px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('analisis-global')">
+          <div class="stat-icon green" style="font-size:18px;width:36px;height:36px">💰</div>
+          <div style="flex:1;min-width:0">
+            <div class="stat-label" style="white-space:nowrap;font-size:11px">Ventas Mes</div>
+            <div class="stat-value" id="dash-ventas-mes" style="font-size:15px;white-space:nowrap">—</div>
+          </div>
+        </div>
+        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('analisis-global')">
+          <div class="stat-icon orange" style="font-size:18px;width:36px;height:36px">🧾</div>
+          <div style="flex:1;min-width:0">
+            <div class="stat-label" style="white-space:nowrap;font-size:11px">ITBIS Mes</div>
+            <div class="stat-value" id="dash-itbis-mes" style="font-size:15px;white-space:nowrap">—</div>
+          </div>
+        </div>
+        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('alertas')">
+          <div class="stat-icon red" style="font-size:18px;width:36px;height:36px">🔔</div>
+          <div style="flex:1;min-width:0">
+            <div class="stat-label" style="white-space:nowrap;font-size:11px">Alertas Críticas</div>
+            <div class="stat-value" id="dash-alertas-critico" style="font-size:15px;white-space:nowrap">—</div>
+          </div>
+        </div>
+        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('centro-fiscal')">
+          <div class="stat-icon blue" style="font-size:18px;width:36px;height:36px">🗓️</div>
+          <div style="flex:1;min-width:0">
+            <div class="stat-label" style="white-space:nowrap;font-size:11px">Oblig. 7 días</div>
+            <div class="stat-value" id="dash-obl-proximas" style="font-size:15px;white-space:nowrap">—</div>
+          </div>
         </div>
       </div>
 
@@ -769,7 +812,206 @@
       </div>
     </div>
 
+    <!-- ── ANÁLISIS GLOBAL ────────────────────────────────────────────────── -->
+    <div id="mod-analisis-global" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Análisis Global</div>
+          <div class="mod-sub" id="ag-sub">Resumen agregado de toda tu cartera de clientes</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadAnalisisGlobal()">↺ Actualizar</button>
+        </div>
+      </div>
+
+      <!-- KPI Grid -->
+      <div class="stats-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat-card rep-sc">
+          <div class="stat-icon green">💰</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">Ventas Mes (total)</div><div class="stat-value" id="ag-ventas-mes" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon blue">💰</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">Ventas Hoy (total)</div><div class="stat-value" id="ag-ventas-hoy" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon orange">🧾</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">ITBIS Mes (total)</div><div class="stat-value" id="ag-itbis-mes" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon purple">📄</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">Facturas Emitidas</div><div class="stat-value" id="ag-facturas" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon red">💳</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">CxC Pendiente</div><div class="stat-value" id="ag-cxc" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon blue">🏪</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">Negocios con Datos</div><div class="stat-value" id="ag-con-datos" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon red">⚠️</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">Sin Sync (7+ días)</div><div class="stat-value" id="ag-sin-sync" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+        <div class="stat-card rep-sc">
+          <div class="stat-icon green">👥</div>
+          <div style="min-width:0;flex:1"><div class="stat-label" style="white-space:nowrap;font-size:11px">Total Negocios</div><div class="stat-value" id="ag-total" style="white-space:nowrap;font-size:15px">—</div></div>
+        </div>
+      </div>
+
+      <div id="ag-sin-datos" class="section-card" style="display:none;text-align:center;padding:40px;color:#5a7099">
+        <div style="font-size:36px;margin-bottom:8px">📊</div>
+        <div style="font-size:15px;margin-bottom:4px">Sin datos sincronizados aún</div>
+        <div style="font-size:12px">Los negocios deben sincronizarse desde Tecno Caja POS para ver datos aquí.</div>
+      </div>
+
+      <!-- Top Clientes -->
+      <div id="ag-top-wrap" class="section-card" style="display:none">
+        <div class="section-card-title">🏆 Top Negocios por Ventas del Mes</div>
+        <table>
+          <thead>
+            <tr><th>#</th><th>Negocio</th><th>Estado</th><th style="text-align:right">Ventas Mes</th><th style="text-align:right">ITBIS Mes</th><th style="text-align:right">Facturas</th><th>Acción</th></tr>
+          </thead>
+          <tbody id="ag-top-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── CENTRO FISCAL ───────────────────────────────────────────────────── -->
+    <div id="mod-centro-fiscal" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Centro Fiscal</div>
+          <div class="mod-sub">Calendario DGII y tareas de cumplimiento fiscal</div>
+        </div>
+        <div class="mod-actions">
+          <select id="cf-anio-sel" class="form-select" style="width:100px" onchange="app.loadCentroFiscal()">
+            <!-- populated by JS -->
+          </select>
+          <button class="btn btn-primary" onclick="app.abrirModalTarea(null)">+ Nueva Tarea</button>
+          <button class="btn btn-secondary" onclick="app.loadCentroFiscal()">↺ Actualizar</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <!-- Obligaciones DGII -->
+        <div class="section-card">
+          <div class="section-card-title">📅 Obligaciones DGII — República Dominicana</div>
+          <div class="cf-filtros" style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <button class="btn btn-xs btn-secondary cf-fil active" data-fil="todos" onclick="app.filtrarObligaciones('todos',this)">Todas</button>
+            <button class="btn btn-xs btn-secondary cf-fil" data-fil="proxima" onclick="app.filtrarObligaciones('proxima',this)">Próximas</button>
+            <button class="btn btn-xs btn-secondary cf-fil" data-fil="urgente" onclick="app.filtrarObligaciones('urgente',this)">Urgentes</button>
+            <button class="btn btn-xs btn-secondary cf-fil" data-fil="vencida" onclick="app.filtrarObligaciones('vencida',this)">Vencidas</button>
+            <button class="btn btn-xs btn-secondary cf-fil" data-fil="mensual" onclick="app.filtrarObligaciones('mensual',this)">Mensuales</button>
+            <button class="btn btn-xs btn-secondary cf-fil" data-fil="trimestral" onclick="app.filtrarObligaciones('trimestral',this)">Trimestrales</button>
+          </div>
+          <div id="cf-obligaciones-list" style="max-height:520px;overflow-y:auto">
+            <div style="text-align:center;padding:24px;color:#5a7099">Cargando…</div>
+          </div>
+        </div>
+
+        <!-- Tareas fiscales personalizadas -->
+        <div class="section-card">
+          <div class="section-card-title">✅ Mis Tareas Fiscales</div>
+          <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+            <button class="btn btn-xs btn-secondary cf-tfil active" data-fil="pendiente" onclick="app.filtrarTareas('pendiente',this)">Pendientes</button>
+            <button class="btn btn-xs btn-secondary cf-tfil" data-fil="completada" onclick="app.filtrarTareas('completada',this)">Completadas</button>
+            <button class="btn btn-xs btn-secondary cf-tfil" data-fil="todos" onclick="app.filtrarTareas('todos',this)">Todas</button>
+          </div>
+          <div id="cf-tareas-list" style="max-height:520px;overflow-y:auto">
+            <div style="text-align:center;padding:24px;color:#5a7099">Cargando…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ALERTAS ─────────────────────────────────────────────────────────── -->
+    <div id="mod-alertas" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Centro de Alertas</div>
+          <div class="mod-sub" id="alertas-sub">Alertas activas de toda tu cartera</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadAlertas()">↺ Actualizar</button>
+        </div>
+      </div>
+
+      <div id="alertas-empty" style="display:none;text-align:center;padding:60px;color:#5a7099">
+        <div style="font-size:48px;margin-bottom:12px">🎉</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:4px">Sin alertas activas</div>
+        <div style="font-size:13px">Todos tus negocios están al día.</div>
+      </div>
+
+      <div id="alertas-body">
+        <div id="alertas-critico-sec" style="display:none">
+          <div class="alert-sec-title alert-critico-title">🔴 Crítico</div>
+          <div id="alertas-critico-list"></div>
+        </div>
+        <div id="alertas-urgente-sec" style="display:none">
+          <div class="alert-sec-title alert-urgente-title">🟠 Urgente</div>
+          <div id="alertas-urgente-list"></div>
+        </div>
+        <div id="alertas-advertencia-sec" style="display:none">
+          <div class="alert-sec-title alert-advertencia-title">🟡 Advertencia</div>
+          <div id="alertas-advertencia-list"></div>
+        </div>
+        <div id="alertas-info-sec" style="display:none">
+          <div class="alert-sec-title alert-info-title">🔵 Informativo</div>
+          <div id="alertas-info-list"></div>
+        </div>
+      </div>
+    </div>
+
   </main>
+</div>
+
+<!-- ── MODAL: Nueva Tarea Fiscal ───────────────────────────────────────── -->
+<div id="modal-tarea" class="modal-overlay hidden">
+  <div class="modal-card">
+    <button class="btn-modal-close" onclick="app.cerrarModalTarea()">✕</button>
+    <div class="modal-title">✅ Nueva Tarea Fiscal</div>
+    <div class="modal-sub">Agrega una tarea de cumplimiento para tu agenda</div>
+
+    <div class="form-group" style="margin-bottom:12px">
+      <label class="form-label">Título *</label>
+      <input id="tarea-titulo" class="form-input" placeholder="Ej: Declarar ITBIS de Mayo para Colmado Pérez" />
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <div class="form-group">
+        <label class="form-label">Tipo</label>
+        <select id="tarea-tipo" class="form-select">
+          <option value="general">General</option>
+          <option value="itbis">ITBIS</option>
+          <option value="tss">TSS</option>
+          <option value="606">Formato 606</option>
+          <option value="607">Formato 607</option>
+          <option value="ir">Renta (IR)</option>
+          <option value="ncf">NCF / e-CF</option>
+          <option value="auditoria">Auditoría</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Vence</label>
+        <input id="tarea-fecha" type="date" class="form-input" />
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:12px">
+      <label class="form-label">Negocio asociado (opcional)</label>
+      <select id="tarea-negocio" class="form-select">
+        <option value="">— Ninguno (tarea general) —</option>
+      </select>
+    </div>
+    <div class="form-group" style="margin-bottom:16px">
+      <label class="form-label">Notas</label>
+      <textarea id="tarea-notas" class="form-textarea" rows="3" placeholder="Detalles adicionales…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarModalTarea()">Cancelar</button>
+      <button class="btn btn-primary" onclick="app.guardarTarea()">Guardar Tarea</button>
+    </div>
+  </div>
 </div>
 
 <!-- ── MODAL: Nueva Solicitud ──────────────────────────────────────────── -->

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:intl/intl.dart';
 
@@ -14,6 +15,11 @@ import 'features/settings/providers/theme_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // On native platforms disable runtime fetching to support offline use.
+  // On web, Firebase already requires internet so we allow it.
+  if (!kIsWeb) {
+    GoogleFonts.config.allowRuntimeFetching = false;
+  }
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     debugPrint(details.exceptionAsString());

@@ -5,7 +5,7 @@
  */
 const path  = require('path');
 const http  = require('http');
-const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, shell } = require('electron');
 
 // Resolver node_modules del proyecto padre (comparte dependencias)
 const ROOT = path.resolve(__dirname, '..');
@@ -14,13 +14,39 @@ require('module').globalPaths.push(path.join(ROOT, 'node_modules'));
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const PORT = Number(process.env.ADMIN_PORT || 3400);
-let mainWindow = null;
-let serverReady = false;
+let mainWindow   = null;
+let splashWindow = null;
 
 app.commandLine.appendSwitch('disable-features', [
   'PrivateNetworkAccessSendPreflights',
   'BlockInsecurePrivateNetworkRequests',
 ].join(','));
+
+// ── Splash screen ──────────────────────────────────────────────────────────
+function createSplash() {
+  splashWindow = new BrowserWindow({
+    width: 420,
+    height: 280,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    center: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    icon: path.join(__dirname, 'public', 'icon.png'),
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  splashWindow.loadFile(path.join(__dirname, 'public', 'splash.html'));
+  splashWindow.on('closed', () => { splashWindow = null; });
+}
+
+function closeSplash() {
+  if (!splashWindow) return;
+  // Pequeño delay para que el usuario vea el 100% antes de cerrar
+  setTimeout(() => {
+    if (splashWindow && !splashWindow.isDestroyed()) splashWindow.close();
+  }, 500);
+}
 
 // ── Lanzar servidor Express ────────────────────────────────────────────────
 function startAdminServer() {
@@ -67,12 +93,17 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
     },
-    backgroundColor: '#1a2234',
+    backgroundColor: '#0f1623',
     show: false,
   });
 
   mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+
+  mainWindow.once('ready-to-show', () => {
+    closeSplash();
+    // Pequeño delay para que el splash cierre antes de mostrar la app
+    setTimeout(() => mainWindow.show(), 300);
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
@@ -83,12 +114,23 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  createSplash();
+
+  // Tiempo mínimo de splash (para que sea visible aunque el servidor arranque rápido)
+  const MIN_SPLASH_MS = 5000;
+  const splashStart   = Date.now();
+
   try {
     await startAdminServer();
     await waitForServer();
   } catch (e) {
     console.error('[admin] Error al iniciar servidor:', e.message);
   }
+
+  const elapsed  = Date.now() - splashStart;
+  const waitLeft = Math.max(0, MIN_SPLASH_MS - elapsed);
+  if (waitLeft > 0) await new Promise(r => setTimeout(r, waitLeft));
+
   createWindow();
 });
 

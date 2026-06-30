@@ -396,44 +396,145 @@ async function loadContadorSection() {
   panel.innerHTML = '<div class="loading-text">Cargando…</div>';
   try {
     const token = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '') || DB?.authToken || '';
-    const userId = DB?.currentUser?.id;
-    const r = await fetch(`/api/platform/mi-contador${userId ? `?actorUserId=${userId}` : ''}`,
-      { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch('/api/platform/mi-contador', { headers: { Authorization: `Bearer ${token}` } });
     const data = await r.json();
-    if (!data || !data.found) {
-      panel.innerHTML = `
-        <div style="text-align:center;padding:40px 20px;max-width:460px;margin:0 auto">
-          <div style="font-size:48px;margin-bottom:16px">👨‍💼</div>
-          <div style="font-size:1.1rem;font-weight:700;margin-bottom:8px">¿Necesitas ayuda con tus obligaciones fiscales?</div>
-          <div style="font-size:.9rem;color:var(--text3);margin-bottom:24px">
-            Conecta con un contador verificado Tecno Caja para gestionar tu DGII, e-CF y obligaciones tributarias desde aquí mismo.
-          </div>
-          <button class="btn-primary" onclick="openWizardStep('wizard-contador')">🔍 Buscar Contador Verificado</button>
-        </div>`;
+    if (!data?.found) {
+      _renderContadorBuscador(panel, token);
+    } else {
+      _renderContadorAsignado(panel, data, token);
+    }
+  } catch (e) {
+    _renderContadorBuscador(panel, '');
+  }
+}
+
+function _renderContadorBuscador(panel, token) {
+  panel.innerHTML = `
+    <div style="max-width:560px;margin:0 auto;padding:8px 0">
+      <div style="text-align:center;padding:20px 0 24px">
+        <div style="font-size:44px;margin-bottom:10px">👨‍💼</div>
+        <div style="font-size:1.05rem;font-weight:700;margin-bottom:6px">Conecta con tu contador verificado</div>
+        <div style="font-size:.85rem;color:var(--text3)">Busca por nombre, RNC, correo o teléfono</div>
+      </div>
+
+      <div style="position:relative;margin-bottom:16px">
+        <input id="cont-search-input" type="text" placeholder="Ej: Manaurys Contador, 101-12345-6, contador@email.com…"
+          style="width:100%;padding:10px 40px 10px 14px;border:1px solid var(--border,#374151);border-radius:8px;background:var(--bg,#111827);color:var(--text,#e5e7eb);font-size:.9rem;outline:none;box-sizing:border-box"
+          oninput="contBuscarDebounce(this.value)"
+          onkeydown="if(event.key==='Enter')contBuscar()">
+        <button onclick="contBuscar()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1.1rem">🔍</button>
+      </div>
+
+      <div id="cont-search-results" style="min-height:80px"></div>
+    </div>`;
+
+  // Debounce
+  let _contTimer = null;
+  window.contBuscarDebounce = (val) => {
+    clearTimeout(_contTimer);
+    if (val.trim().length < 2) {
+      document.getElementById('cont-search-results').innerHTML = '';
       return;
     }
-    const c = data;
-    const badge = c.verified ? '<span style="background:#065f46;color:#6ee7b7;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700">✅ Verificado DGII</span>' : '';
-    panel.innerHTML = `
-      <div style="display:grid;grid-template-columns:auto 1fr;gap:20px;align-items:start;max-width:640px">
-        <div style="width:80px;height:80px;border-radius:50%;background:var(--bg2);border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:36px;flex-shrink:0">
+    _contTimer = setTimeout(() => contBuscar(), 500);
+  };
+
+  window.contBuscar = async () => {
+    const q = document.getElementById('cont-search-input')?.value?.trim() || '';
+    if (q.length < 2) return;
+    const results = document.getElementById('cont-search-results');
+    results.innerHTML = '<div style="color:var(--text3);font-size:.85rem;padding:8px 0">Buscando…</div>';
+    try {
+      const res = await fetch(`/api/platform/contadores/buscar?q=${encodeURIComponent(q)}`);
+      const list = await res.json();
+      if (!list.length) {
+        results.innerHTML = '<div style="color:var(--text3);font-size:.85rem;padding:8px 0">No se encontraron contadores con ese criterio.</div>';
+        return;
+      }
+      results.innerHTML = list.map(c => `
+        <div style="display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--border,#374151);border-radius:8px;margin-bottom:8px;cursor:pointer;transition:background .15s"
+          onmouseover="this.style.background='rgba(34,197,94,.07)'" onmouseout="this.style.background=''"
+          onclick="contSeleccionar('${escapeHtml(c.id)}','${escapeHtml(c.nombre_firma)}')">
+          <div style="width:44px;height:44px;border-radius:50%;background:var(--bg2,#1f2937);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">
+            ${c.logo_url ? `<img src="${escapeHtml(c.logo_url)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">` : '👨‍💼'}
+          </div>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:.9rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.nombre_firma || c.responsable || '—')}</div>
+            <div style="font-size:.78rem;color:var(--text3)">
+              ${c.rnc ? `RNC: ${escapeHtml(c.rnc)}` : ''}
+              ${c.telefono ? ` · ${escapeHtml(c.telefono)}` : ''}
+              ${c.correo ? ` · ${escapeHtml(c.correo)}` : ''}
+            </div>
+          </div>
+          <button style="padding:6px 14px;background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.8rem;font-weight:600;white-space:nowrap">
+            Seleccionar
+          </button>
+        </div>`).join('');
+    } catch (e) {
+      results.innerHTML = '<div style="color:var(--text3);font-size:.85rem;padding:8px 0">Error al buscar. Intenta de nuevo.</div>';
+    }
+  };
+
+  window.contSeleccionar = async (id, nombre) => {
+    if (!confirm(`¿Asignar a "${nombre}" como tu contador?`)) return;
+    try {
+      const tok = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '') || DB?.authToken || '';
+      const res = await fetch('/api/platform/asignar-contador', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify({ contador_id: id, nombre_firma: nombre })
+      });
+      const d = await res.json();
+      if (d.ok) {
+        if (typeof showFiscalToast === 'function') showFiscalToast('✅ Contador asignado correctamente', 'success');
+        setTimeout(() => loadContadorSection(), 400);
+      } else {
+        if (typeof showFiscalToast === 'function') showFiscalToast(d.error || 'Error al asignar', 'error');
+      }
+    } catch (e) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('Error de conexión', 'error');
+    }
+  };
+}
+
+function _renderContadorAsignado(panel, c, token) {
+  const nombre  = escapeHtml(c.nombre || c.nombre_firma || '—');
+  const badge   = c.verified ? '<span style="background:#065f46;color:#6ee7b7;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;margin-left:8px">✅ Verificado</span>' : '';
+  panel.innerHTML = `
+    <div style="max-width:540px;margin:0 auto">
+      <div style="display:flex;align-items:flex-start;gap:16px;padding:16px;background:var(--bg2,#1f2937);border:1px solid var(--border,#374151);border-radius:10px;margin-bottom:16px">
+        <div style="width:64px;height:64px;border-radius:50%;background:var(--bg,#111827);border:2px solid var(--green,#22c55e);display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0">
           ${c.logo_url ? `<img src="${escapeHtml(c.logo_url)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">` : '👨‍💼'}
         </div>
-        <div>
-          <div style="font-size:1.1rem;font-weight:700;margin-bottom:4px">${escapeHtml(c.nombre || c.nombre_firma || '—')}</div>
-          ${badge}
-          ${c.especialidad ? `<div style="font-size:.85rem;color:var(--text3);margin-top:6px">${escapeHtml(c.especialidad)}</div>` : ''}
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px">
-            ${c.telefono ? `<a href="tel:${escapeHtml(c.telefono)}" class="btn-secondary" style="text-decoration:none;text-align:center">📞 ${escapeHtml(c.telefono)}</a>` : ''}
-            ${c.whatsapp ? `<a href="https://wa.me/${String(c.whatsapp).replace(/\D/g,'')}" target="_blank" class="btn-secondary" style="text-decoration:none;text-align:center">💬 WhatsApp</a>` : ''}
-            ${c.email || c.correo ? `<a href="mailto:${escapeHtml(c.email || c.correo)}" class="btn-secondary" style="text-decoration:none;text-align:center">📧 Correo</a>` : ''}
-            <button class="btn-secondary" onclick="showFiscalToast('Funcionalidad próximamente disponible.','info')">🔄 Solicitar cambio</button>
+        <div style="flex:1">
+          <div style="font-size:1.05rem;font-weight:700">${nombre}${badge}</div>
+          ${c.responsable ? `<div style="font-size:.83rem;color:var(--text3);margin-top:2px">${escapeHtml(c.responsable)}</div>` : ''}
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
+            ${c.telefono ? `<a href="tel:${escapeHtml(c.telefono)}" class="btn-secondary" style="text-decoration:none;font-size:.8rem;padding:6px 12px">📞 ${escapeHtml(c.telefono)}</a>` : ''}
+            ${c.whatsapp ? `<a href="https://wa.me/${String(c.whatsapp).replace(/\D/g,'')}" target="_blank" class="btn-secondary" style="text-decoration:none;font-size:.8rem;padding:6px 12px">💬 WhatsApp</a>` : ''}
+            ${c.email || c.correo ? `<a href="mailto:${escapeHtml(c.email||c.correo)}" class="btn-secondary" style="text-decoration:none;font-size:.8rem;padding:6px 12px">📧 Correo</a>` : ''}
           </div>
         </div>
-      </div>`;
-  } catch (e) {
-    panel.innerHTML = `<div style="color:var(--text3);padding:24px">No se pudo cargar la información del contador asignado.</div>`;
-  }
+      </div>
+      <div style="text-align:right">
+        <button onclick="contDesvincular()" style="padding:6px 14px;background:none;border:1px solid var(--border,#374151);border-radius:6px;color:var(--text3);cursor:pointer;font-size:.8rem">
+          🔄 Cambiar contador
+        </button>
+      </div>
+    </div>`;
+
+  window.contDesvincular = async () => {
+    if (!confirm('¿Desvincular este contador de tu negocio?')) return;
+    try {
+      const tok = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '') || DB?.authToken || '';
+      await fetch('/api/platform/desvincular-contador', {
+        method: 'POST', headers: { Authorization: `Bearer ${tok}` }
+      });
+      loadContadorSection();
+    } catch (_) {
+      loadContadorSection();
+    }
+  };
 }
 
 // ── Centro Fiscal ────────────────────────────────────────────────────────────
