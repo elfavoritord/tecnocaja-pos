@@ -1,0 +1,9 @@
+{
+  "appId": "com.tecnocaja.pos",
+  "appName": "Tecno Caja",
+  "webDir": "www",
+  "server": {
+    "url": "http://192.168.100.62:3000",
+    "cleartext": true
+  }
+}

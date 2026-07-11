@@ -1423,7 +1423,7 @@ function getBusinessRuntimeConfig() {
     return window.getBusinessConfig(DB.config?.tipoNegocio || DB.config?.businessProfile?.key || 'pizzeria');
   }
   return {
-    modules: ['ventas', 'productos', 'inventario', 'clientes', 'proveedores', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
+    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
     productFields: [],
     features: [],
     salesFlow: {},
@@ -1786,7 +1786,10 @@ function applyRolePermissions() {
 
 async function refreshAuditLogs() {
   try {
-    DB.movimientosSistema = await api.getAuditLogs();
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    DB.movimientosSistema = isOffline
+      ? await api.request('/api/offline/audit-cache')
+      : await api.getAuditLogs();
     if (typeof syncMovimientosModuleFilter === 'function') syncMovimientosModuleFilter();
     if (typeof renderMovimientosSistema === 'function') renderMovimientosSistema();
     updateNotifications();
@@ -3142,11 +3145,15 @@ async function loadLoginUsers(options = {}) {
   return _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES);
 }
 
+// El backend embebido puede tardar en aceptar conexiones justo tras el arranque
+// de Electron (MariaDB terminando de inicializar). Reintentos cortos al inicio
+// para no hacer esperar al usuario si el servidor ya está listo en 1-2 intentos.
+const LOGIN_USERS_RETRY_DELAYS_MS = [300, 600, 1000, 1500, 2000];
+
 async function _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES) {
-  // Reintentar hasta 6 veces en 1s, 2s, 3s, 4s, 5s
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < LOGIN_USERS_RETRY_DELAYS_MS.length + 1; attempt++) {
     try {
-      if (attempt > 0) await new Promise(r => setTimeout(r, attempt * 1000));
+      if (attempt > 0) await new Promise(r => setTimeout(r, LOGIN_USERS_RETRY_DELAYS_MS[attempt - 1]));
       const res = await fetch('/api/public/users-list');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -3451,6 +3458,9 @@ async function doLogin() {
             cajasSucursal: bootstrap.cajasSucursal || [],
             config: bootstrap.config || {},
             metodosPago: bootstrap.metodosPago || [],
+            ventas: bootstrap.ventas || [],
+            proveedores: bootstrap.proveedores || [],
+            facturasProveedores: bootstrap.facturasProveedores || [],
           }
         };
         setTimeout(() => showToast('Modo offline activo — las ventas se guardan localmente y se sincronizarán al restaurarse la conexión.', 'warning'), 600);
@@ -3619,6 +3629,17 @@ function initApp() {
   if (window.OfflineManager && !window.offlineManager) {
     window.offlineManager = new OfflineManager({ healthCheckInterval: 5000 });
     window.offlineManager.initialize();
+    // Refrescar los avisos "modo offline" de Reportes/Movimientos apenas
+    // cambia el estado de conexión, sin esperar a que el usuario reabra esos
+    // módulos manualmente.
+    window.offlineManager.on('online', () => {
+      if (document.getElementById('module-reportes')?.classList.contains('active')) updateReportes();
+      if (document.getElementById('module-movimientos')?.classList.contains('active')) renderMovimientosSistema();
+    });
+    window.offlineManager.on('syncComplete', () => {
+      if (document.getElementById('module-reportes')?.classList.contains('active')) updateReportes();
+      if (document.getElementById('module-movimientos')?.classList.contains('active')) renderMovimientosSistema();
+    });
     // Poblar caché local con productos/clientes/usuarios (fire and forget)
     fetch('/api/offline/init-cache', {
       method: 'POST',
@@ -3675,11 +3696,14 @@ function showModule(name, el) {
     if (typeof refreshProductCategoryFilter === 'function') refreshProductCategoryFilter();
     if (typeof loadProductsTable === 'function') loadProductsTable();
   }
+  if (name === 'promociones') {
+    if (typeof switchPromotionsTab === 'function') switchPromotionsTab('dashboard');
+  }
   if (name === 'movimientos') {
     if (typeof syncMovimientosModuleFilter === 'function') syncMovimientosModuleFilter();
     if (typeof renderMovimientosSistema === 'function') renderMovimientosSistema();
   }
-  if (name === 'wabot') { waBotRefresh(); waBotLoadSavedKeys(); waBotLoadInstructions(); }
+  if (name === 'wabot') { waBotRefresh(); waBotLoadSavedKeys(); waBotLoadInstructions(); waBotLoadBusinessHours(); waBotLoadCustomerSettings(); }
   if (name === 'ventas') {
     // Limpiar búsqueda y resetear filtro de stock al entrar al módulo,
     // para evitar que valores persistidos por el navegador dejen el catálogo vacío.
@@ -3689,6 +3713,7 @@ function showModule(name, el) {
     if (_catalogCategoryFilter) _catalogCategoryFilter.value = '';
     if (typeof refreshSaleClientOptions === 'function') refreshSaleClientOptions();
     if (typeof syncSaleFiscalControls === 'function') syncSaleFiscalControls();
+    if (typeof loadActivePromotionsMap === 'function') loadActivePromotionsMap();
     if (typeof renderSalesCatalog === 'function') renderSalesCatalog();
     // Re-render diferido por si el DOM todavía está acomodándose en la carga inicial
     setTimeout(() => { if (typeof renderSalesCatalog === 'function') renderSalesCatalog(); }, 250);
@@ -3710,6 +3735,7 @@ function showModule(name, el) {
     loadInventoryTable();
   }
   if (name === 'caja') { refreshCajaFromServer(); }
+  if (name === 'monedas') { if (typeof loadMonedasModule === 'function') loadMonedasModule(); }
   if (name === 'colacobro') { loadColaCobro(); }
   if (name === 'delivery') { if (typeof initDeliveryPanel === 'function') initDeliveryPanel(); }
   if (name !== 'delivery') { if (typeof stopDeliveryPanel === 'function') stopDeliveryPanel(); }
@@ -4313,6 +4339,7 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     scaleReadPattern: document.getElementById('cfg-scale-read-pattern')?.value || DB.config?.scaleReadPattern || '',
     scaleRoundingDecimals: Number(document.getElementById('cfg-scale-rounding-decimals')?.value ?? DB.config?.scaleRoundingDecimals ?? 2),
     scaleAutoRead: Boolean(document.getElementById('cfg-scale-auto-read')?.checked ?? DB.config?.scaleAutoRead ?? true),
+    roundingMode: document.getElementById('cfg-rounding-mode')?.value || DB.config?.roundingMode || 'none',
   };
 }
 
@@ -4492,6 +4519,11 @@ function syncConfigForm() {
     scaleSerialPort.dataset.selectedPort = cfg.scaleSerialPort || '';
   }
   syncScaleMethodFields();
+
+  const roundingModeSelect = document.getElementById('cfg-rounding-mode');
+  if (roundingModeSelect && roundingModeSelect !== activeElement) {
+    roundingModeSelect.value = cfg.roundingMode || 'none';
+  }
 
   syncWhatsAppButtons(cfg.whatsappWebEnabled);
   const accessUser = document.getElementById('cfg-access-user');
@@ -5668,8 +5700,15 @@ function syncCashStartupGate() {
     DB.config.cajaMonto = 0;
     const amountInput = document.getElementById('cash-gate-amount');
     const notesInput = document.getElementById('cash-gate-notes');
+    const rateInput = document.getElementById('cash-gate-exchange-rate');
     if (amountInput && !amountInput.matches(':focus')) amountInput.value = '';
     if (notesInput && !notesInput.matches(':focus')) notesInput.value = '';
+    // Prellenar con la última tasa conocida (conveniencia) — sigue siendo editable,
+    // quien abra caja puede confirmarla o corregirla si el dólar cambió hoy.
+    if (rateInput && !rateInput.matches(':focus') && !rateInput.value) {
+      const knownRate = Number(DB.config?.exchangeRateUsdDop || 0);
+      rateInput.value = knownRate > 0 ? knownRate : '';
+    }
   }
   gate.classList.toggle('hidden', !shouldBlock);
 }
@@ -5997,10 +6036,16 @@ async function completeInitialSetup() {
 async function submitCashGate() {
   const amount = Number(document.getElementById('cash-gate-amount')?.value || 0);
   const obs = document.getElementById('cash-gate-notes')?.value?.trim() || 'Apertura de caja';
+  const exchangeRate = Number(document.getElementById('cash-gate-exchange-rate')?.value || 0);
+  if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
+    showToast('Debes indicar el tipo de cambio USD → DOP del día para abrir caja.', 'error');
+    return;
+  }
   try {
     const result = await api.openCash({
       monto: amount,
       obs,
+      exchangeRate,
       ...getBusinessStructurePayload(),
       ...getActorPayload()
     });
@@ -6124,12 +6169,28 @@ async function _tryAutoLogin() {
     if (typeof window.setTecnoCajaAuthToken === 'function') {
       window.setTecnoCajaAuthToken(DB.authToken || '');
     }
-    // Cargar bootstrap completo antes de mostrar la app
+    // Cargar bootstrap completo antes de mostrar la app. Mismo motivo/patrón
+    // de reintento que _fetchAndRenderLoginUsers (LOGIN_USERS_RETRY_DELAYS_MS):
+    // el backend embebido puede tardar en aceptar conexiones justo tras el
+    // arranque de Electron. Antes, un solo intento fallido dejaba DB.productos
+    // (y el resto de DB.*) vacío en silencio para toda la sesión — la app se
+    // mostraba igual, y solo un F5 manual (que reintenta todo desde cero)
+    // lo arreglaba.
     let bootstrapData = null;
-    try {
-      bootstrapData = await api.getBootstrap();
-    } catch (_) {}
-    if (bootstrapData) hydrateDB(bootstrapData);
+    for (let attempt = 0; attempt < LOGIN_USERS_RETRY_DELAYS_MS.length + 1; attempt++) {
+      try {
+        if (attempt > 0) await new Promise(r => setTimeout(r, LOGIN_USERS_RETRY_DELAYS_MS[attempt - 1]));
+        bootstrapData = await api.getBootstrap();
+        if (bootstrapData) break;
+      } catch (_e) {
+        // Error de red/servidor — reintentar
+      }
+    }
+    if (bootstrapData) {
+      hydrateDB(bootstrapData);
+    } else if (typeof showToast === 'function') {
+      showToast('No se pudieron cargar los datos del sistema. Recarga la página (F5).', 'error');
+    }
     // hydrateDB hace Object.assign(DB, bootstrap) y el bootstrap tiene currentUser:null
     // lo que sobreescribe al usuario que acabamos de setear — restaurarlo aquí
     DB.currentUser = currentUser;
@@ -7262,6 +7323,12 @@ function openCashCierreModal() {
     showToast('La caja no está abierta.', 'warning');
     return;
   }
+  const pendingDeliveries = getPendingDeliveryCashSales();
+  if (pendingDeliveries.length) {
+    const facturas = pendingDeliveries.map((s) => s.id).join(', ');
+    showToast(`No puedes cerrar caja: hay ${pendingDeliveries.length} pedido(s) contra entrega sin validar (${facturas}). Valídalos primero.`, 'error');
+    return;
+  }
   const d = _getCorteData();
   document.getElementById('cierre-cajero').textContent       = d.cajero;
   document.getElementById('cierre-hora-apertura').textContent = d.horaApertura;
@@ -7326,6 +7393,13 @@ function calcCierreDiff() {
 async function executeCashCierre({ print = false } = {}) {
   if (!currentUserCan('cerrar_caja')) {
     showToast('No tienes permiso para cerrar caja.', 'error');
+    return;
+  }
+  const pendingDeliveries = getPendingDeliveryCashSales();
+  if (pendingDeliveries.length) {
+    const facturas = pendingDeliveries.map((s) => s.id).join(', ');
+    showToast(`No puedes cerrar caja: hay ${pendingDeliveries.length} pedido(s) contra entrega sin validar (${facturas}). Valídalos primero.`, 'error');
+    closeCashCierreModal();
     return;
   }
 
@@ -7935,6 +8009,17 @@ function syncCajaState() {
       ? appText('cash.closeHint', 'Registra el monto final y una observación antes de cerrar.')
       : appText('cash.openHint', 'Indica el monto inicial y deja una nota para la apertura.');
   }
+  // El campo de tipo de cambio solo aplica al abrir (el cierre usa su propio modal) —
+  // se oculta con caja abierta y se prellena con la última tasa conocida al abrir.
+  const exchangeRateGroup = document.getElementById('caja-exchange-rate-group');
+  if (exchangeRateGroup) {
+    exchangeRateGroup.style.display = cajaAbierta ? 'none' : '';
+    const rateInput = document.getElementById('caja-input-exchange-rate');
+    if (!cajaAbierta && rateInput && !rateInput.matches(':focus') && !rateInput.value) {
+      const knownRate = Number(DB.config?.exchangeRateUsdDop || 0);
+      rateInput.value = knownRate > 0 ? knownRate : '';
+    }
+  }
 
   // ── Fecha operativa y advertencia de turno largo ──────────────────────────
   const operativeDateEl = document.getElementById('caja-operative-date');
@@ -7999,10 +8084,16 @@ async function toggleCaja() {
   const inputMonto = document.getElementById('caja-input-monto');
   if (!cajaAbierta) {
     const monto = parseFloat(inputMonto.value) || 0;
+    const exchangeRate = Number(document.getElementById('caja-input-exchange-rate')?.value || 0);
+    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
+      showToast('Debes indicar el tipo de cambio USD → DOP del día para abrir caja.', 'error');
+      return;
+    }
     try {
       const response = await api.openCash({
         monto,
         obs: document.getElementById('caja-obs').value || 'Apertura de caja',
+        exchangeRate,
         ...getBusinessStructurePayload(),
         ...getActorPayload()
       });
@@ -8371,7 +8462,7 @@ function openCashExpenseModal(defaultType = 'gasto') {
         <label>Tipo de egreso</label>
         <select id="cash-expense-type" class="form-input" onchange="syncCashExpenseFields()">
           <option value="gasto" ${defaultType === 'gasto' ? 'selected' : ''}>Gastos</option>
-          <option value="pago_suplidor" ${defaultType === 'pago_suplidor' ? 'selected' : ''}>Pago a suplidor</option>
+          <option value="pago_suplidor" ${defaultType === 'pago_suplidor' ? 'selected' : ''} ${window.offlineManager?.getState?.()?.isOnline === false ? 'disabled title="Requiere conexión"' : ''}>Pago a suplidor${window.offlineManager?.getState?.()?.isOnline === false ? ' (requiere conexión)' : ''}</option>
           <option value="devolucion" ${defaultType === 'devolucion' ? 'selected' : ''}>Devolución</option>
           <option value="retiro_efectivo" ${defaultType === 'retiro_efectivo' ? 'selected' : ''}>Retiro de efectivo</option>
         </select>
@@ -8458,6 +8549,10 @@ async function saveCashExpense() {
     showToast('Selecciona una factura pendiente del suplidor.', 'error');
     return;
   }
+  if (type === 'pago_suplidor' && window.offlineManager?.getState?.()?.isOnline === false) {
+    showToast('Los pagos a suplidor requieren conexión para verificar el balance de la factura.', 'warning');
+    return;
+  }
 
   try {
     const response = await api.createCashExpense({
@@ -8485,7 +8580,10 @@ async function saveCashExpense() {
     updateReportes();
     refreshAuditLogs();
     updateNotifications();
-    showToast('Egreso registrado correctamente', 'success');
+    showToast(
+      response.offlineMode ? 'Egreso guardado localmente — se sincronizará al reconectar' : 'Egreso registrado correctamente',
+      response.offlineMode ? 'warning' : 'success'
+    );
   } catch (error) {
     showToast(error.message || 'No se pudo registrar el egreso.', 'error');
   }
@@ -8562,7 +8660,10 @@ async function saveCashIncome() {
     updateReportes();
     refreshAuditLogs();
     updateNotifications();
-    showToast('Ingreso registrado correctamente', 'success');
+    showToast(
+      response.offlineMode ? 'Ingreso guardado localmente — se sincronizará al reconectar' : 'Ingreso registrado correctamente',
+      response.offlineMode ? 'warning' : 'success'
+    );
   } catch (error) {
     showToast(error.message || 'No se pudo registrar el ingreso.', 'error');
   }
@@ -8591,6 +8692,9 @@ function renderPendingDeliveryCash() {
         <div class="cash-movement-title">${sale.id}</div>
         <div class="cash-movement-meta">${sale.repartidor || 'Delivery sin asignar'} · ${sale.cliente || 'Consumidor Final'}</div>
         <div class="cash-movement-notes">${sale.direccionDelivery || 'Sin dirección'}${sale.telefonoDelivery ? ` · ${sale.telefonoDelivery}` : ''}</div>
+        ${Number(sale.montoClienteEntrega || 0) > 0 ? `
+          <div class="cash-movement-notes">🛵 Cliente paga con <strong>${fmt(sale.montoClienteEntrega)}</strong> · Cambio a llevar: <strong>${fmt(sale.cambioRepartidor || 0)}</strong></div>
+        ` : ''}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.5rem">
         <div class="cash-movement-amount">${fmt(sale.total)}</div>
@@ -8744,6 +8848,24 @@ function buildNotifications() {
     });
   }
 
+  const expiringSequences = DB.config?.ecfSequencesWarning || [];
+  if (expiringSequences.length) {
+    const mostUrgent = expiringSequences[0]; // ya viene ordenado por urgencia desde el servidor
+    const severity = mostUrgent.diasParaVencer < 0 || mostUrgent.diasParaVencer <= 7
+      ? 'danger'
+      : mostUrgent.diasParaVencer <= 15 ? 'warning' : 'info';
+    const detailText = expiringSequences
+      .slice(0, 3)
+      .map((item) => `${item.tipoComprobante} (${item.diasParaVencer < 0 ? 'vencida' : `${item.diasParaVencer}d`})`)
+      .join(', ');
+    notifications.push({
+      severity,
+      title: mostUrgent.diasParaVencer < 0 ? 'Secuencia e-NCF vencida' : 'Secuencia e-NCF por vencer',
+      text: `${detailText}${expiringSequences.length > 3 ? ` y ${expiringSequences.length - 3} más` : ''}. Solicita la renovación a DGII.`,
+      time: 'Facturación electrónica'
+    });
+  }
+
   if (DB.ventasPendientes.length) {
     notifications.push({
       severity: 'warning',
@@ -8770,6 +8892,10 @@ function buildNotifications() {
       text: `${pendingDeliveryCash.length} pedido(s) delivery siguen sin liquidar en caja.`,
       time: 'Caja'
     });
+  }
+
+  if (typeof buildPromotionNotifications === 'function') {
+    notifications.push(...buildPromotionNotifications());
   }
 
   const recentAudit = (DB.movimientosSistema || []).slice(0, 4).map((item) => ({
@@ -9480,6 +9606,66 @@ async function waBotLoadInstructions() {
   } catch {}
 }
 
+async function waBotLoadCustomerSettings() {
+  try {
+    const [instr, toggle] = await Promise.all([
+      fetch('/api/wa-bot/customer-instructions').then(r => r.json()),
+      fetch('/api/wa-bot/customer-ai-toggle').then(r => r.json()),
+    ]);
+    const ta = document.getElementById('wabot-customer-instructions');
+    if (ta && instr.instructions) ta.value = instr.instructions;
+    const cb = document.getElementById('wabot-customer-ai-enabled');
+    if (cb) cb.checked = !!toggle.enabled;
+  } catch {}
+}
+
+async function waBotSaveCustomerInstructions() {
+  const text = document.getElementById('wabot-customer-instructions')?.value?.trim() || '';
+  try {
+    const res = await fetch('/api/wa-bot/customer-instructions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instructions: text }),
+    });
+    if (!res.ok) throw new Error('Error guardando');
+    showToast('✅ Instrucciones de clientes guardadas', 'success');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function waBotSaveCustomerAiToggle() {
+  const enabled = document.getElementById('wabot-customer-ai-enabled')?.checked || false;
+  try {
+    const res = await fetch('/api/wa-bot/customer-ai-toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) throw new Error('Error guardando');
+    showToast(enabled ? '✅ IA para clientes activada' : 'IA para clientes desactivada', 'success');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function waBotSaveBusinessHours() {
+  const text = document.getElementById('wabot-business-hours')?.value?.trim() || '';
+  try {
+    const res = await fetch('/api/wa-bot/business-hours', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ businessHours: text }),
+    });
+    if (!res.ok) throw new Error('Error guardando');
+    showToast('✅ Horario guardado — el bot lo usará con los clientes', 'success');
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function waBotLoadBusinessHours() {
+  try {
+    const data = await fetch('/api/wa-bot/business-hours').then(r => r.json());
+    const input = document.getElementById('wabot-business-hours');
+    if (input && data.businessHours) input.value = data.businessHours;
+  } catch {}
+}
+
 const _waBotAiInfo = {
   gemini:  { label: 'API Key de Google AI Studio', placeholder: 'AIza...', hint: 'Obtén tu key gratis en aistudio.google.com' },
   claude:  { label: 'API Key de Anthropic',         placeholder: 'sk-ant-...', hint: 'Obtén tu key en console.anthropic.com' },
@@ -9601,6 +9787,31 @@ function _waBotSocketListen(sock) {
     if (dot) dot.style.display = s.status === 'ready' ? 'block' : 'none';
     // Reajustar cadencia del poll tras actualización por socket
     _waBotSchedulePoll();
+  });
+  sock.on('wa_bot:new_order', (data) => {
+    if (typeof showWhatsAppOrderAlert === 'function') showWhatsAppOrderAlert(data);
+    if (typeof updateNotifications === 'function') updateNotifications();
+    // La cotización se creó en el servidor sin pasar por el navegador — sin esto,
+    // DB.cotizaciones (cacheado en memoria desde el login) no se entera y la
+    // cotización no aparece en "Recuperar venta o cotización" hasta recargar.
+    if (data?.quotation?.id) {
+      DB.cotizaciones = [
+        data.quotation,
+        ...(DB.cotizaciones || []).filter((item) => item.id !== data.quotation.id)
+      ];
+    }
+  });
+  sock.on('wa_bot:order_cancelled', (data) => {
+    const motivo = data?.reason ? ` — Motivo: ${data.reason}` : '';
+    showToast(`❌ Pedido de WhatsApp cancelado (${data?.customerName || 'cliente'})${motivo}`, 'warning', 8000);
+  });
+  sock.on('wa_bot:client_saved', (data) => {
+    // Mismo motivo que 'wa_bot:new_order': el cliente se crea/actualiza 100%
+    // en el servidor, DB.clientes (cacheado desde el login) no se entera solo.
+    if (!data?.client?.id) return;
+    const idx = (DB.clientes || []).findIndex((c) => c.id === data.client.id);
+    if (idx >= 0) DB.clientes[idx] = data.client;
+    else DB.clientes = [data.client, ...(DB.clientes || [])];
   });
 }
 // Se conecta cuando _licenseSocket esté disponible (ver initLicenseWatcher)

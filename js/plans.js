@@ -30,6 +30,7 @@
     reportes:      'basico',
     usuarios:      'basico',
     configuracion: 'basico',
+    monedas:       'basico',
     // Pro
     posmovil:   'pro',
     movimientos:'basico',

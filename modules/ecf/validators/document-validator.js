@@ -1,71 +1,73 @@
 'use strict';
 
-function toNumber(value) {
-  const n = Number(String(value ?? 0).replace(',', '.'));
-  return Number.isFinite(n) ? n : 0;
-}
+const { getDocumentType } = require('../config/document-types');
 
 function hasTaxId(value) {
-  return /\d{9,11}/.test(String(value || '').replace(/\D/g, ''));
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length === 9 || digits.length === 11;
 }
 
-function validateSaleForEcf({ sale = {}, items = [], emitter = {}, sequence = {}, certificateStatus = {}, requestedType = 'E32' } = {}) {
+function validateEmitterForEcf(emitter = {}) {
   const errors = [];
-  const type = String(requestedType || 'E32').trim().toUpperCase();
+  if (!String(emitter.rnc || '').trim()) {
+    errors.push('El RNC del emisor no está configurado.');
+  }
+  if (!String(emitter.razon_social || emitter.razonSocial || '').trim()) {
+    errors.push('La razón social del emisor no está configurada.');
+  }
+  return errors;
+}
 
-  if (!emitter.rnc) errors.push('El RNC del emisor es obligatorio.');
-  if (!emitter.razon_social && !emitter.nombre_comercial) errors.push('La razón social del emisor es obligatoria.');
-  if (!sequence.activo || sequence.isExpired || sequence.isExhausted) errors.push('La secuencia e-CF no está disponible.');
-  if (!certificateStatus.hasCertificate || certificateStatus.isExpired) errors.push('El certificado digital no está disponible o está vencido.');
-  if (!Array.isArray(items) || !items.length) errors.push('La factura debe tener al menos un producto.');
+function validateCertificateForEcf(certificateStatus = {}) {
+  const errors = [];
+  if (!certificateStatus.hasCertificate) {
+    errors.push('No hay certificado digital configurado.');
+  } else if (certificateStatus.isExpired) {
+    errors.push('El certificado digital está vencido.');
+  } else if (certificateStatus.status === 'error') {
+    errors.push(`El certificado digital no se pudo cargar (revisa el archivo .p12 y su contraseña): ${certificateStatus.error || 'error desconocido'}.`);
+  }
+  return errors;
+}
 
-  const buyerTaxId = sale.client_tax_id_snapshot || sale.rncComprador || sale.rnc || sale.clienteRnc || '';
-  if (type === 'E31' && !hasTaxId(buyerTaxId)) {
-    errors.push('RNC/Cédula del comprador es obligatorio para crédito fiscal E31.');
+function validateBuyerForEcf({ tipoEcf, buyerTaxId, buyerName, documentType } = {}) {
+  const errors = [];
+  const type = documentType || getDocumentType(tipoEcf);
+  if (!type) return errors;
+
+  if (type.buyerTaxIdRequired && !hasTaxId(buyerTaxId)) {
+    errors.push(`El comprador debe tener RNC o Cédula válida para emitir un ${type.label} (${type.code}).`);
   }
 
-  let taxable = 0;
-  let exempt = 0;
-  let itemTax = 0;
-  let discount = 0;
-
-  for (const item of items || []) {
-    const qty = toNumber(item.qty ?? item.cantidad ?? 1);
-    const price = toNumber(item.precio ?? item.price ?? item.precio_unitario);
-    const itemDiscount = toNumber(item.descuento ?? item.discount);
-    const tax = toNumber(item.itbis ?? item.tax);
-    const base = Math.max(0, (qty * price) - itemDiscount);
-
-    discount += itemDiscount;
-    itemTax += tax;
-    if (tax > 0) taxable += base;
-    else exempt += base;
+  if (!type.allowsConsumerFinal) {
+    const name = String(buyerName || '').trim();
+    if (!name || name === 'Consumidor Final') {
+      errors.push(`Debe indicar la razón social o nombre completo del comprador para emitir un ${type.label} (${type.code}).`);
+    }
   }
 
-  const subtotal = toNumber(sale.subtotal);
-  const saleDiscount = toNumber(sale.descuento ?? sale.discount);
-  const taxTotal = toNumber(sale.itbis ?? sale.tax);
-  const total = toNumber(sale.total);
-  const expectedTotal = subtotal - saleDiscount + taxTotal;
+  return errors;
+}
 
-  if (total && Math.abs(total - expectedTotal) > 1) {
-    errors.push('El total de la factura no coincide con subtotal, descuento e ITBIS.');
-  }
-
-  return {
-    ok: errors.length === 0,
-    errors,
-    type,
-    totals: {
-      taxable,
-      exempt,
-      discount: saleDiscount || discount,
-      tax: taxTotal || itemTax,
-      total: total || expectedTotal,
-    },
-  };
+/**
+ * Validación previa al envío a DGII. Solo cubre lo que puede verificarse con
+ * datos fiables (emisor, certificado, identificación del comprador) — no
+ * recalcula totales de la venta porque eso ya lo hace ecf-generator.js con
+ * los montos reales de la venta.
+ */
+function validateSaleForEcf({ emitter = {}, certificateStatus = {}, tipoEcf, buyerTaxId, buyerName, documentType } = {}) {
+  const errors = [
+    ...validateEmitterForEcf(emitter),
+    ...validateCertificateForEcf(certificateStatus),
+    ...validateBuyerForEcf({ tipoEcf, buyerTaxId, buyerName, documentType }),
+  ];
+  return { ok: errors.length === 0, errors };
 }
 
 module.exports = {
+  hasTaxId,
+  validateBuyerForEcf,
+  validateCertificateForEcf,
+  validateEmitterForEcf,
   validateSaleForEcf,
 };

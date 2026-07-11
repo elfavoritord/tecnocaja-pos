@@ -68,6 +68,12 @@ function renderMovimientosSistema() {
   const salesCountEl = document.getElementById('movimientos-sales-count');
   if (!tbody || !totalEl || !todayEl || !usersEl) return;
 
+  const offlineBanner = document.getElementById('movimientos-offline-banner');
+  if (offlineBanner) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    offlineBanner.classList.toggle('hidden', !isOffline);
+  }
+
   const list = getFilteredMovimientos();
   const today = new Date().toISOString().slice(0, 10);
   const activeSales = (DB.ventas || []).filter((sale) => !sale.cancelada);

@@ -166,7 +166,7 @@ $writer.Close()
 `;
 }
 
-function signXmlWithWindows(xmlContent, certificateContext) {
+function signXmlWithWindowsOnce(xmlContent, certificateContext) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tecnocaja-ecf-sign-'));
   const inputPath = path.join(tempDir, 'semilla.xml');
   const outputPath = path.join(tempDir, 'semilla-firmada.xml');
@@ -209,6 +209,34 @@ function signXmlWithWindows(xmlContent, certificateContext) {
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * `Add-Type` compila C# dinámicamente en cada invocación de PowerShell, y bajo
+ * ráfagas de llamadas seguidas (como al certificar 20+ comprobantes) el CLR de
+ * Windows a veces falla con un "Internal CLR error" transitorio (0x80131506)
+ * que no tiene relación con el certificado ni el XML — es un fallo del propio
+ * runtime .NET, no un problema de datos. Firmar es una operación pura sobre un
+ * archivo temporal (sin efectos secundarios), así que reintentar es seguro: si
+ * el problema es real (cert vencido, password incorrecto), fallará igual las
+ * 3 veces y el mensaje de error se preserva sin cambios.
+ *
+ * No se agrega una espera artificial entre intentos: esta función es
+ * síncrona (execFileSync bloquea el hilo) y este módulo no puede volverse
+ * async sin tocar todos sus llamadores, así que un sleep real requeriría un
+ * busy-wait que bloquearía el servidor completo — el propio arranque del
+ * proceso de PowerShell (cientos de ms) ya da un respiro natural entre intentos.
+ */
+function signXmlWithWindows(xmlContent, certificateContext, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return signXmlWithWindowsOnce(xmlContent, certificateContext);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 function buildInheritedNamespaces(rootElement) {

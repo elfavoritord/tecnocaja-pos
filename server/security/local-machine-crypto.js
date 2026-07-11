@@ -1,7 +1,7 @@
 ﻿'use strict';
 
 const crypto = require('crypto');
-const { getMachineFingerprint } = require('./machine-identity');
+const { getStableMachineFingerprint } = require('./machine-identity');
 
 const DB_MAGIC = Buffer.from('NVPDB1', 'utf8');
 const DB_VERSION = 1;
@@ -29,11 +29,11 @@ function resolveSecret(secretEnvKeys = []) {
     process.env.TECNO_CAJA_LICENSE_STORAGE_SECRET
       || process.env.TECNO_CAJA_DB_KEY_SALT
       || `${process.env.TECNO_CAJA_USER_DATA || ''}:${process.env.TECNO_CAJA_APP_ROOT || ''}`
-  ).trim() || getMachineFingerprint();
+  ).trim() || getStableMachineFingerprint();
 }
 
 function deriveMachineBoundKey({ purpose, secretEnvKeys }) {
-  const fingerprint = getMachineFingerprint();
+  const fingerprint = getStableMachineFingerprint();
   const secret = resolveSecret(secretEnvKeys);
   return crypto.scryptSync(`${fingerprint}:${String(purpose || 'tecnocaja-local')}`, secret, 32);
 }

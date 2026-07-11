@@ -51,11 +51,34 @@ function getMachineDescriptor() {
   return cachedDescriptor;
 }
 
+// Huella COMPLETA (incluye MAC) — es la base histórica de deriveDeviceId().
+// NO cambiarla: el deviceId ya registrado en Firestore para instalaciones
+// existentes depende de que esto se mantenga estable, o el servidor de
+// licencias las trata como "otro dispositivo" (bloqueo por límite excedido —
+// esto pasó de verdad al intentar excluir las MAC de aquí directamente).
 function getMachineFingerprint() {
   if (!cachedMachineFingerprint) {
     cachedMachineFingerprint = sha256Hex(JSON.stringify(getMachineDescriptor()));
   }
   return cachedMachineFingerprint;
+}
+
+let cachedStableMachineFingerprint = null;
+
+// Huella ESTABLE (sin MAC) — solo para derivar claves de almacenamiento LOCAL
+// (cifrado de la BD SQLite, hash de integridad del caché de licencia). Las
+// direcciones MAC cambian cuando se apaga WiFi/red (p. ej. al probar modo
+// offline), lo que hacía que el chequeo de integridad del caché de licencia
+// se disparara como falso positivo de "cambio no autorizado". A diferencia
+// de getMachineFingerprint(), esta NO se usa para el deviceId remoto —
+// cambiar el deviceId rompe el registro de dispositivos ya autorizados en
+// Firestore (deviceLimit), que es un problema real y distinto del caché local.
+function getStableMachineFingerprint() {
+  if (!cachedStableMachineFingerprint) {
+    const { macs, macHash, ...stableDescriptor } = getMachineDescriptor();
+    cachedStableMachineFingerprint = sha256Hex(JSON.stringify(stableDescriptor));
+  }
+  return cachedStableMachineFingerprint;
 }
 
 function deriveDeviceId() {
@@ -97,5 +120,6 @@ module.exports = {
   getDeviceId,
   getMachineDescriptor,
   getMachineFingerprint,
+  getStableMachineFingerprint,
   sha256Hex,
 };

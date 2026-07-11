@@ -322,7 +322,9 @@ const api = {
   },
 
   adjustInventory(data) {
-    return this.request('/api/inventory/adjust', {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    const endpoint = isOffline ? '/api/offline/inventory-adjust' : '/api/inventory/adjust';
+    return this.request(endpoint, {
       method: 'POST',
       body: JSON.stringify(data)
     });
@@ -341,6 +343,13 @@ const api = {
   },
 
   createSupplier(data) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/supplier-save', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+    }
     return this.request('/api/suppliers', {
       method: 'POST',
       body: JSON.stringify(data)
@@ -348,6 +357,13 @@ const api = {
   },
 
   updateSupplier(id, data) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/supplier-save', {
+        method: 'POST',
+        body: JSON.stringify({ ...data, id })
+      });
+    }
     return this.request(`/api/suppliers/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data)
@@ -368,8 +384,18 @@ const api = {
     });
   },
 
-  deleteSupplier(id) {
-    return this.request(`/api/suppliers/${id}`, { method: 'DELETE' });
+  deleteSupplier(id, actorPayload = {}) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/supplier-delete', {
+        method: 'POST',
+        body: JSON.stringify({ id, ...actorPayload })
+      });
+    }
+    return this.request(`/api/suppliers/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify(actorPayload)
+    });
   },
 
   updateClient(id, data) {
@@ -444,6 +470,13 @@ const api = {
   },
 
   createCashExpense(data) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/cash-movement', {
+        method: 'POST',
+        body: JSON.stringify({ tipo: data.tipo, monto: data.monto, obs: data.obs })
+      });
+    }
     return this.request('/api/cash/expense', {
       method: 'POST',
       body: JSON.stringify(data)
@@ -451,6 +484,13 @@ const api = {
   },
 
   createCashIncome(data) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/cash-movement', {
+        method: 'POST',
+        body: JSON.stringify({ tipo: 'ingreso', monto: data.monto, obs: data.obs })
+      });
+    }
     return this.request('/api/cash/income', {
       method: 'POST',
       body: JSON.stringify(data)
@@ -495,6 +535,13 @@ const api = {
 
   updateKitchenStatus(invoiceNumber, data) {
     return this.request(`/api/sales/${encodeURIComponent(invoiceNumber)}/kitchen-status`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    });
+  },
+
+  updateDeliveryStatus(invoiceNumber, data) {
+    return this.request(`/api/sales/${encodeURIComponent(invoiceNumber)}/delivery-status`, {
       method: 'PATCH',
       body: JSON.stringify(data)
     });

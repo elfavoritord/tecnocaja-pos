@@ -655,6 +655,17 @@ function syncProductBusinessFields() {
     if (stockInput) stockInput.value = '0';
     if (stockMinInput) stockMinInput.value = '0';
   }
+
+  // "Hasta agotar existencia" depende de que el producto controle stock —
+  // sin eso no hay un número que pueda llegar a 0.
+  const descuentoAgotarWrap = document.getElementById('mp-descuento-hasta-agotar-wrap');
+  if (descuentoAgotarWrap) {
+    descuentoAgotarWrap.style.display = tracksStock ? 'flex' : 'none';
+    if (!tracksStock) {
+      const descuentoAgotarInput = document.getElementById('mp-descuento-hasta-agotar');
+      if (descuentoAgotarInput) descuentoAgotarInput.checked = false;
+    }
+  }
 }
 
 function showProductsDebug(message) {
@@ -1272,6 +1283,18 @@ function openProductModal(id) {
       </div>
       <div class="form-group" id="mp-stock-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Actual</label><input type="number" id="mp-stock" class="form-input" value="${prod?prod.stock:0}" min="0"></div>
       <div class="form-group" id="mp-stockmin-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Mínimo</label><input type="number" id="mp-stockmin" class="form-input" value="${prod?prod.stockMin:5}" min="0"></div>
+      <div class="form-group span-full compact-toggle-card" id="mp-descuento-group">
+        <label>Descuento (%)</label>
+        <input type="number" id="mp-descuento" class="form-input" style="max-width:160px" value="${prod?.descuentoPct ? prod.descuentoPct : ''}" min="0" max="100" step="0.01" placeholder="0">
+        <label class="toggle-switch" id="mp-descuento-hasta-agotar-wrap"
+          style="display:${prod?.tracksStock === false ? 'none' : 'flex'};align-items:center;gap:0.5rem;cursor:pointer;user-select:none;margin-top:0.6rem">
+          <input type="checkbox" id="mp-descuento-hasta-agotar" ${prod?.descuentoHastaAgotar ? 'checked' : ''} style="width:auto">
+          <span>Descuento hasta agotar existencia (se apaga solo cuando el stock llegue a 0)</span>
+        </label>
+        <p style="margin:0.4rem 0 0;color:var(--text2);font-size:0.78rem;line-height:1.4">
+          Si no marcas la casilla, el descuento se mantiene activo hasta que lo quites manualmente.
+        </p>
+      </div>
     </div>
 
     <!-- TAB 1: Config. avanzada -->
@@ -1475,6 +1498,8 @@ async function saveProduct(id) {
     esCombo: document.getElementById('mp-combo').value === 'si',
     aplicaItbis: document.getElementById('mp-aplica-itbis')?.checked ?? false,
     tracksStock: document.getElementById('mp-tracks-stock')?.checked !== false,
+    descuentoPct: Math.min(100, Math.max(0, parseFloat(document.getElementById('mp-descuento')?.value) || 0)),
+    descuentoHastaAgotar: document.getElementById('mp-descuento-hasta-agotar')?.checked ?? false,
     metaNegocio: readDynamicProductFields(profile)
   };
   if (data.precioVenta < data.precioCompra) {
@@ -1810,7 +1835,10 @@ async function saveAjuste() {
     const response = await api.adjustInventory({ productId: id, tipo, qty, notes, ...getActorPayload() });
     const updated = response.product;
     const idx = DB.productos.findIndex(p => p.id === id);
-    if (idx >= 0) DB.productos[idx] = updated;
+    // Merge en vez de reemplazar: en modo offline el caché local no guarda
+    // todos los campos del producto (marca, imagen, aplicaItbis, etc.), así
+    // que un reemplazo completo los borraría del objeto en memoria.
+    if (idx >= 0) Object.assign(DB.productos[idx], updated);
     if (response.movement) {
       DB.movimientosInventario = [response.movement, ...(DB.movimientosInventario || [])].slice(0, 300);
     }
@@ -1821,7 +1849,12 @@ async function saveAjuste() {
     updateInventoryStats();
     if (typeof refreshAuditLogs === 'function') await refreshAuditLogs();
     if (typeof updateNotifications === 'function') updateNotifications();
-    showToast('Ajuste aplicado a: ' + updated.nombre, 'success');
+    showToast(
+      response.offlineMode
+        ? 'Ajuste guardado localmente — se sincronizará al reconectar'
+        : 'Ajuste aplicado a: ' + updated.nombre,
+      response.offlineMode ? 'warning' : 'success'
+    );
   } catch (error) {
     showToast(error.message, 'error');
   }

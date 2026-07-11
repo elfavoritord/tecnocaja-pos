@@ -71,10 +71,10 @@ function loadClientesTable(filter) {
   tbody.innerHTML = list.map(c => `
     <tr>
       <td style="font-weight:600">${c.nombre}</td>
-      <td style="font-family:var(--font-mono)">${c.telefono}</td>
+      <td style="font-family:var(--font-mono)">${c.telefono || '—'}</td>
       <td>${c.referencia || '—'}</td>
       <td>${c.linkUbicacion ? `<a href="${c.linkUbicacion}" target="_blank" rel="noopener">${clientText('Abrir mapa')}</a>` : '—'}</td>
-      <td style="font-family:var(--font-mono)">${c.cedula}</td>
+      <td style="font-family:var(--font-mono)">${c.cedula || '—'}</td>
       <td style="font-family:var(--font-mono);color:${(balances.get(c.id) || 0)>0?'var(--warning)':'var(--success)'};font-weight:700">${fmt(balances.get(c.id) || 0)}</td>
       <td style="font-family:var(--font-mono)">${fmt(c.limiteCredito)}</td>
       <td>
@@ -116,10 +116,10 @@ function openClienteModal(id) {
   document.getElementById('modal-body').innerHTML = `
     <div class="modal-grid">
       <div id="client-modal-error" class="span-full inline-form-alert hidden"></div>
-      <div class="form-group span-full"><label>${clientText('Nombre Completo')}</label><input type="text" id="cl-nombre" class="form-input" value="${c?c.nombre:''}" placeholder="${clientText('Nombre del cliente')}"></div>
-      <div class="form-group"><label>${clientText('Teléfono')}</label><input type="text" id="cl-tel" class="form-input" value="${c?c.telefono:''}" placeholder="809-000-0000"></div>
-      <div class="form-group"><label>${clientText('Cédula / RNC')}</label><input type="text" id="cl-cedula" class="form-input" value="${c?c.cedula:''}" placeholder="000-0000000-0"></div>
-      <div class="form-group span-full"><label>${clientText('Dirección')}</label><input type="text" id="cl-dir" class="form-input" value="${c?c.direccion:''}"></div>
+      <div class="form-group span-full"><label>${clientText('Nombre Completo')}</label><input type="text" id="cl-nombre" class="form-input" value="${c?c.nombre||'':''}" placeholder="${clientText('Nombre del cliente')}"></div>
+      <div class="form-group"><label>${clientText('Teléfono')}</label><input type="text" id="cl-tel" class="form-input" value="${c?c.telefono||'':''}" placeholder="809-000-0000"></div>
+      <div class="form-group"><label>${clientText('Cédula / RNC')}</label><input type="text" id="cl-cedula" class="form-input" value="${c?c.cedula||'':''}" placeholder="000-0000000-0"></div>
+      <div class="form-group span-full"><label>${clientText('Dirección')}</label><input type="text" id="cl-dir" class="form-input" value="${c?c.direccion||'':''}"></div>
       <div class="form-group span-full"><label>${clientText('Referencia')}</label><input type="text" id="cl-ref" class="form-input" value="${c?c.referencia||'':''}" placeholder="${clientText('Casa azul, frente al parque')}"></div>
       <div class="form-group span-full"><label>${clientText('Link de ubicación')}</label><input type="text" id="cl-mapa" class="form-input" value="${c?c.linkUbicacion||'':''}" placeholder="https://maps.google.com/..."></div>
       <div class="form-group span-full">
@@ -668,6 +668,12 @@ async function deleteCliente(id) {
 
 // ===== REPORTES =====
 function updateReportes() {
+  const offlineBanner = document.getElementById('reportes-offline-banner');
+  if (offlineBanner) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    offlineBanner.classList.toggle('hidden', !isOffline);
+  }
+
   const period = document.getElementById('reporte-periodo')?.value || 'hoy';
   const ventasPeriodo = getReportSales(period);
   const metrics = getReportMetrics(ventasPeriodo);

@@ -413,8 +413,16 @@ function buildReceipt(data) {
   p.separator('=');
   p.bold(true).size(1, 2).row2('TOTAL', fmtAmt(venta.total)).size(1, 1).bold(false);
 
+  const isUsdPayment = String(venta.paymentCurrency || '') === 'USD';
+
+  if (isUsdPayment) {
+    p.row2('Recibido US$:', Number(venta.usdAmountReceived || 0).toFixed(2));
+    p.row2('Tasa US$:', Number(venta.exchangeRateUsed || 0).toFixed(4));
+    p.row2('Recibido RD$:', fmtAmt(venta.recibido));
+  }
+
   if (Number(venta.cambio) > 0) {
-    p.row2('Cambio:', fmtAmt(venta.cambio));
+    p.row2(isUsdPayment ? 'Devuelta RD$:' : 'Cambio:', fmtAmt(venta.cambio));
   }
 
   // ── QR ────────────────────────────────────────────────────────────────────

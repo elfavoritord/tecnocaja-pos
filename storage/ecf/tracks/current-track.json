@@ -1,14 +1,14 @@
 {
   "trackId": "",
-  "fecha": "2026-06-27T04:34:59.162Z",
+  "fecha": "2026-07-11T02:45:02.763Z",
   "estado": "ENVIADO",
   "environment": "certecf",
   "codigo": "1",
   "descripcion": null,
   "mensaje": null,
   "error": null,
-  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260627-003459.xml",
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260710-224502.xml",
   "httpStatus": 200,
-  "responseBody": "{\"codigo\":1,\"estado\":\"Aceptado\",\"mensajes\":null,\"encf\":\"E320000000027\",\"secuenciaUtilizada\":true}",
-  "trackPath": "storage/ecf/tracks/track-20260627-003459.json"
+  "responseBody": "{\"codigo\":1,\"estado\":\"Aceptado\",\"mensajes\":null,\"encf\":\"E320000001124\",\"secuenciaUtilizada\":true}",
+  "trackPath": "storage/ecf/tracks/track-20260710-224502.json"
 }

@@ -58,6 +58,10 @@ const { createEcfModule } = require('./modules/ecf');
 const { listDgiiReceived } = require('./server/routes/dgii-public.routes');
 const createRncRouter  = require('./server/routes/rnc.routes');
 
+// 📢 Centro de Promociones
+const createPromotionsRouter = require('./server/routes/promotions.routes');
+const { resolvePriceForSaleItem } = require('./server/services/promotion-engine');
+
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
 const createNetworkRouter = require('./server/routes/network.routes');
 const { ensureNetworkExtensions, markOfflineBySocket, registerTerminal, getLocalIPs } = require('./server/network/terminalRegistry');
@@ -67,6 +71,7 @@ const createOfflineRouter = require('./server/routes/offline.routes');
 const {
   localQuery,
   generateOfflineInvoiceId: generateOfflineId,
+  generateOfflineRef,
   logLocalSyncEvent: logLocalSync,
   getLocalCacheStatus
 } = require('./db-local');
@@ -173,6 +178,55 @@ async function syncProductsToReportsByIds(productIds, options = {}) {
   return { synced };
 }
 
+// Sincroniza una venta ya guardada hacia la App de Reporte (Firebase) —
+// extraído del flujo normal de POST /api/sales para poder reusarlo también
+// desde la reconciliación de ventas offline (_insertSaleToMain en
+// offline.routes.js), que antes guardaba la venta en la BD principal pero
+// nunca la mandaba a Firebase — la app de reportes simplemente nunca se
+// enteraba de esas ventas. Fire-and-forget: nunca debe bloquear ni tumbar al
+// que llama si Firebase está lento o caído.
+function syncSaleToReports(saleRow, items, { productIds = [], branchId = null, branchName = '' } = {}) {
+  if (!saleRow) return;
+  fireReportSync(async () => {
+    const cfg = await getReportSyncConfig();
+    const branches = await getReportSyncBranchesMap();
+    const itemsForSync = (items || []).map((it) => ({
+      product_id: it.product_id,
+      nombre: it.product_name || '',
+      qty: it.qty,
+      price: it.price,
+      discount_rate: it.discount_rate,
+      precio_compra: it.precio_compra,
+    }));
+    await reportsSync.syncSale(saleRow, {
+      config: cfg,
+      branches,
+      cashier: saleRow.cashier_name || '',
+      items: itemsForSync,
+    });
+    if (productIds?.length) {
+      await syncProductsToReportsByIds(productIds, { branchId });
+    }
+    // Resumen diario KPI (para que la app de reportes no necesite el servidor)
+    await reportsSync.syncDailySummary(saleRow, { config: cfg });
+    // Venta a crédito o pendiente → receivable
+    const status = String(saleRow.sale_status || '').toLowerCase();
+    const payment = String(saleRow.payment_method || '').toLowerCase();
+    if (status === 'pendiente' || payment === 'credito') {
+      await reportsSync.syncReceivable({
+        id: saleRow.id,
+        customerId: saleRow.client_id,
+        customerName: saleRow.client_name_snapshot || saleRow.client_name,
+        branchId: saleRow.branch_id,
+        branchName,
+        total: saleRow.total,
+        paid: Number(saleRow.received_amount || 0),
+        createdAt: saleRow.created_at,
+      }, { config: cfg });
+    }
+  });
+}
+
 async function deleteProductsFromReportsByIds(productIds) {
   const normalizedIds = normalizeReportSyncIds(productIds);
   if (!normalizedIds.length) return { deleted: 0 };
@@ -258,6 +312,9 @@ async function writeReportAppProductSyncLog(conn, entry = {}) {
 
 async function syncPendingReportAppProducts(options = {}) {
   if (!reportsSync.isEnabled()) return { synced: 0, skipped: true };
+  // Sin internet no hay forma de alcanzar Firestore — evita intentos que solo
+  // producen timeouts de gRPC (varios segundos cada uno) y ruido en el log.
+  if (!getSyncService().isOnline) return { synced: 0, skipped: true, reason: 'offline' };
   const { getFirestore } = require('./modules/firebase-admin');
   const { FieldValue } = require('firebase-admin/firestore');
   const firestore = getFirestore();
@@ -447,7 +504,11 @@ function startReportAppProductSync() {
     if (reportAppProductSyncRunning) return;
     reportAppProductSyncRunning = true;
     try {
-      await syncPendingReportAppProducts();
+      // Un reintento corto absorbe el típico ECONNRESET de una conexión del
+      // pool reciclada justo cuando este job (cada 60s) la reutiliza — sin
+      // esto, cada hipo transitorio quedaba como un error en consola aunque
+      // el siguiente ciclo lo fuera a resolver solo de todos modos.
+      await withRetryOnTransient(() => syncPendingReportAppProducts(), { maxAttempts: 2, baseDelayMs: 1500, label: 'reports-app-products sync' });
     } catch (error) {
       const code = error?.code ?? error?.details ?? '';
       // UNAUTHENTICATED (16) al arrancar = token OAuth aún no listo; se reintenta en 60s
@@ -1560,19 +1621,72 @@ function getOfflineRouter() {
       localQuery,
       localCacheStatus: getLocalCacheStatus,
       generateOfflineId,
+      generateOfflineRef,
       logSyncEvent: logLocalSync,
       resolveUser: resolveRequestActorUser,
-      getTerminalConfig
+      getTerminalConfig,
+      // Ventas reconciliadas desde una terminal offline no llegaban nunca a
+      // la App de Reporte — se guardaban en la BD principal pero nada las
+      // mandaba a Firebase. Mismo sync que usa POST /api/sales.
+      syncSaleToReports,
+      ensureSuppliersTable,
+      mapSupplierRow,
+      insertSupplierRow,
+      updateSupplierRow,
+      deleteSupplierIfNoPendingInvoices,
+      getActor,
+      writeAuditLog,
+      // Inventario offline (Fase 2 de la extensión offline)
+      mapProductRow,
+      ensureBranchInventoryTable,
+      ensureInventoryMovementsTable,
+      resolveInventoryBranchId,
+      changeBranchInventoryStock,
+      registerInventoryMovement,
+      mapInventoryMovementRow,
+      // Caja offline (Fase 3 de la extensión offline)
+      withTransaction,
+      ensureCashMovementExtensions,
+      ensureBusinessStructureExtensions,
+      ensurePendingCashMovementExtensions,
+      // Movimientos (auditoría, solo lectura) offline (Fase 4 de la extensión offline)
+      ensureAuditTable,
+      userCanAccessGlobalAudit,
+      // 📢 Centro de Promociones — caché offline de solo lectura
+      ensurePromotionsExtensions
     });
   }
   return _offlineRouter;
 }
 app.use('/api/offline', (req, res, next) => getOfflineRouter()(req, res, next));
 
+// ── Configuración de Monedas (Fase 1 multi-moneda USD/DOP) ────────────────────
+const createCurrencyRouter = require('./server/routes/currency.routes');
+app.use('/api/currency', createCurrencyRouter({
+  query,
+  resolveRequestActorUser,
+  ensureAdministrator,
+  getActor,
+  writeAuditLog,
+  ensureCurrencyExtensions,
+  ensureExchangeRateHistoryTable,
+  recordExchangeRate,
+}));
+
 // ── WhatsApp Bot ──────────────────────────────────────────────────────────────
 const waBotRoutes = require('./server/routes/whatsapp-bot.routes');
 app.locals.queryFn = query;
 app.use('/api/wa-bot', waBotRoutes);
+// insertQuotationRow/writeAuditLog viven en este archivo; el bot no puede
+// hacer require() de vuelta hacia server.js (circular), así que se inyectan
+// una sola vez aquí — antes de cualquier bot.start(), sea por auto-arranque
+// o por la ruta POST /api/wa-bot/start — en vez de pasarlas por cada llamada.
+require('./server/integrations/whatsapp-bot').setDependencies({
+  insertQuotationRow, writeAuditLog, mapQuotationRow,
+  insertClientRow, findClientByPhone, updateClientAddress, updateClientLocation, updateClientPhone,
+  getClientById: getClientByIdMapped,
+  findClientByJid, updateClientJid
+});
 
 // Caché en memoria para sesiones autenticadas — permite que los tokens válidos
 // sigan funcionando cuando MySQL no está disponible (modo offline multicaja).
@@ -1629,6 +1743,19 @@ app.use(async (req, _res, next) => {
     next(error);
   }
 });
+
+// 📢 Centro de Promociones — montado DESPUÉS del middleware de arriba a
+// propósito: ese middleware es el que resuelve req.authUser a partir del
+// Bearer token, y resolveRequestActorUser() de este router depende de que ya
+// esté seteado. Montarlo antes (como estaba originalmente) hacía que TODAS
+// las peticiones a /api/promotions fallaran con 401 "Debes iniciar sesión",
+// sin importar que el usuario sí tuviera sesión activa.
+app.use('/api/promotions', createPromotionsRouter({
+  query,
+  resolveRequestActorUser,
+  userRoleHasPermission,
+  ensurePromotionsExtensions,
+}));
 
 // Plataforma Multiempresa — solo rutas públicas del wizard (buscar contador)
 app.use('/api/platform', createPlatformRouter({ query }));
@@ -1824,7 +1951,8 @@ const BRANCH_ADMIN_ALLOWED_PERMISSIONS = [
   'consultar_stock_sucursal',
   'ver_arqueos_caja_sucursal',
   'ver_historial_inventario_sucursal',
-  'clientes'
+  'clientes',
+  'promociones'
 ];
 const BRANCH_ADMIN_DENIED_PERMISSIONS = [
   'crear_sucursales',
@@ -2357,7 +2485,9 @@ function mapProductRow(row) {
     tiempoPreparacion: Number(row.preparation_time_minutes || 15),
     saleMode: normalizeProductSaleMode(row.sale_mode),
     metaNegocio: parseJsonObjectField(row.business_metadata, {}),
-    tracksStock: Boolean(row.tracks_stock ?? 1)
+    tracksStock: Boolean(row.tracks_stock ?? 1),
+    descuentoPct: Number(row.discount_percent || 0),
+    descuentoHastaAgotar: Boolean(row.discount_until_stock_out)
   };
 }
 
@@ -2441,6 +2571,12 @@ function sanitizeScaleRoundingDecimals(value) {
   return Math.max(0, Math.min(2, Math.floor(numeric)));
 }
 
+const VALID_ROUNDING_MODES = ['none', '1', '5', '10'];
+function sanitizeRoundingMode(value) {
+  const normalized = String(value ?? 'none').trim();
+  return VALID_ROUNDING_MODES.includes(normalized) ? normalized : 'none';
+}
+
 function mapClientRow(row) {
   return {
     id: row.id,
@@ -2506,6 +2642,15 @@ async function getClientRowsWithComputedBalance(clientId = null, executor = quer
 async function getClientRowWithComputedBalance(clientId, executor = query) {
   const rows = await getClientRowsWithComputedBalance(clientId, executor);
   return rows[0] || null;
+}
+
+// Cliente mapeado (camelCase, con balance calculado) por id — usado por el
+// bot de WhatsApp para avisarle al frontend (vía socket) que guardó/actualizó
+// un cliente, ya que DB.clientes se cachea en el navegador desde el login y
+// un cambio hecho 100% en el servidor no le llega si no se empuja.
+async function getClientByIdMapped(clientId) {
+  const row = await getClientRowWithComputedBalance(clientId);
+  return row ? mapClientRow(row) : null;
 }
 
 function buildClientPendingCreditMapFromSaleRows(saleRows = []) {
@@ -2582,7 +2727,8 @@ function sanitizeClientPayload(data = {}) {
     latitud: data.latitud === undefined || data.latitud === null || data.latitud === '' ? null : Number(data.latitud),
     longitud: data.longitud === undefined || data.longitud === null || data.longitud === '' ? null : Number(data.longitud),
     limiteCredito: Number(data.limiteCredito || 0),
-    balance: Number(data.balance || 0)
+    balance: Number(data.balance || 0),
+    whatsappJid: String(data.whatsappJid || '').trim()
   };
 }
 
@@ -2608,6 +2754,85 @@ async function resolveClientRowAfterInsert(clientId, data = {}) {
   );
   if (!rows[0]?.id) return null;
   return getClientRowWithComputedBalance(rows[0].id);
+}
+
+// Busca un cliente por teléfono comparando solo los últimos 10 dígitos —
+// para no depender de si el número está guardado con código de país, guiones
+// o espacios (usado por el bot de WhatsApp para reconocer clientes que ya
+// pidieron antes, sin volver a pedirles el nombre).
+async function findClientByPhone(phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  const suffix = digits.slice(-10);
+  if (suffix.length < 7) return null;
+  const rows = await query(`SELECT * FROM clients WHERE telefono IS NOT NULL AND telefono <> ''`);
+  const match = rows.find((row) => String(row.telefono || '').replace(/\D/g, '').endsWith(suffix));
+  return match ? mapClientRow(match) : null;
+}
+
+// Busca un cliente por su JID de WhatsApp (msg.from) en vez de por teléfono.
+// WhatsApp a veces entrega el remitente como un ID interno "@lid" en vez del
+// número real — sobre todo hablándole a un número de negocio — y ese @lid no
+// tiene relación con los dígitos del teléfono real, así que findClientByPhone
+// nunca puede encontrar coincidencia para esos clientes (se les preguntaba
+// nombre y teléfono en cada pedido). El JID en sí sí es estable por
+// conversación, así que se usa como llave de reconocimiento más confiable.
+async function findClientByJid(jid) {
+  const value = String(jid || '').trim();
+  if (!value) return null;
+  const rows = await query('SELECT * FROM clients WHERE whatsapp_jid = ? LIMIT 1', [value]);
+  return rows[0] ? mapClientRow(rows[0]) : null;
+}
+
+// Graba/actualiza el JID de WhatsApp de un cliente ya existente — se llama en
+// cuanto se reconoce o crea un cliente desde el bot, para que la próxima vez
+// se le encuentre por findClientByJid sin depender del teléfono.
+async function updateClientJid(clientId, jid) {
+  const value = normalizeOptionalText(jid);
+  if (!clientId || !value) return;
+  await query('UPDATE clients SET whatsapp_jid = ? WHERE id = ?', [value, clientId]);
+}
+
+// Actualiza solo la dirección de un cliente existente — usado por el bot de
+// WhatsApp para mantener al día la última dirección de entrega usada.
+async function updateClientAddress(clientId, direccion) {
+  const value = normalizeOptionalText(direccion);
+  if (!clientId || !value) return;
+  await query('UPDATE clients SET direccion = ? WHERE id = ?', [value, clientId]);
+  syncUpdatedClientToRemote(clientId);
+}
+
+// Actualiza el link/coordenadas de ubicación de un cliente existente — usado
+// por el bot de WhatsApp cuando el cliente comparte su pin de ubicación o un
+// link de Google Maps para que el delivery llegue más preciso.
+async function updateClientLocation(clientId, link, latitud, longitud) {
+  const value = normalizeOptionalText(link);
+  if (!clientId || !value) return;
+  await query(
+    'UPDATE clients SET location_link = ?, latitude = ?, longitude = ? WHERE id = ?',
+    [value, Number.isFinite(latitud) ? latitud : null, Number.isFinite(longitud) ? longitud : null, clientId]
+  );
+  syncUpdatedClientToRemote(clientId);
+}
+
+// Actualiza solo el teléfono de un cliente existente — usado por el bot de
+// WhatsApp cuando el número guardado antes resultó inválido (ej. un ID
+// interno @lid de WhatsApp guardado por error) y el cliente confirma uno real.
+async function updateClientPhone(clientId, telefono) {
+  const value = normalizeOptionalText(telefono);
+  if (!clientId || !value) return;
+  await query('UPDATE clients SET telefono = ? WHERE id = ?', [value, clientId]);
+  syncUpdatedClientToRemote(clientId);
+}
+
+// Helper para las 3 funciones de arriba — vuelve a leer el cliente completo
+// (syncClientToRemote/reportsSync.syncCustomer necesitan la fila entera, no
+// solo el campo que cambió) y dispara el mismo sync que insertClientRow().
+// Fire-and-forget a propósito: nunca debe demorar la respuesta al cliente de
+// WhatsApp que está esperando el siguiente paso del pedido.
+function syncUpdatedClientToRemote(clientId) {
+  getClientRowsWithComputedBalance(clientId)
+    .then((rows) => syncClientToRemote(rows[0]))
+    .catch(() => {});
 }
 
 function buildCustomerUsername(email, firebaseUid, clientId) {
@@ -2898,6 +3123,7 @@ function mapSupplierRow(row) {
     observaciones: row.observaciones || '',
     estado: row.estado,
     createdAt: row.created_at || null,
+    updatedAt: row.updated_at || row.created_at || null,
   };
 }
 
@@ -3165,6 +3391,7 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'scale_read_pattern', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('config', 'scale_rounding_decimals', 'INT NOT NULL DEFAULT 2');
   await addColumnIfMissing('config', 'scale_auto_read', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing('config', 'rounding_mode', `VARCHAR(10) NOT NULL DEFAULT 'none'`);
   await addColumnIfMissing('config', 'whatsapp_web_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('config', 'whatsapp_paste_guide_enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'sales_split_view_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
@@ -3261,6 +3488,62 @@ async function ensureConfigExtensions() {
   if (Number(productCountRows[0]?.total || 0) > 0 && !Number(currentConfig.starter_catalog_seeded || 0)) {
     await query('UPDATE config SET starter_catalog_seeded = 1 WHERE id = 1');
   }
+}
+
+// ── Multi-moneda USD/DOP (Fase 1: tipo de cambio + Configuración de Monedas) ──
+async function ensureCurrencyExtensions() {
+  await addColumnIfMissing('config', 'exchange_rate_usd_dop', 'DECIMAL(10,4) DEFAULT NULL');
+  await addColumnIfMissing('config', 'exchange_rate_updated_at', 'DATETIME DEFAULT NULL');
+  await addColumnIfMissing('config', 'exchange_rate_updated_by_user_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('config', 'exchange_rate_updated_by_user_name', 'VARCHAR(120) DEFAULT NULL');
+  await addColumnIfMissing('cash_sessions', 'exchange_rate_usd_dop', 'DECIMAL(10,4) DEFAULT NULL');
+}
+
+async function ensureExchangeRateHistoryTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS exchange_rate_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      previous_rate DECIMAL(10,4) DEFAULT NULL,
+      new_rate DECIMAL(10,4) NOT NULL,
+      changed_by_user_id INT DEFAULT NULL,
+      changed_by_user_name VARCHAR(120) NOT NULL DEFAULT 'Sistema',
+      changed_by_user_role VARCHAR(60) DEFAULT NULL,
+      source VARCHAR(20) NOT NULL DEFAULT 'cash_open',
+      change_reason VARCHAR(255) DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+// Guarda una tasa nueva (config + historial) — compartido entre la apertura de
+// caja (source='cash_open', cualquiera que abra caja) y el cambio manual desde
+// Configuración de Monedas (source='manual', solo administrador_general).
+// `executor` permite pasar la conexión de una transacción activa (apertura de
+// caja) o usar `query` normal (cambio manual fuera de una transacción propia).
+async function recordExchangeRate({ executor, newRate, previousRate, actor, actorUser, source, reason }) {
+  const runQuery = executor?.query ? executor.query.bind(executor) : query;
+  const now = new Date();
+  await runQuery(
+    `UPDATE config SET exchange_rate_usd_dop = ?, exchange_rate_updated_at = ?,
+            exchange_rate_updated_by_user_id = ?, exchange_rate_updated_by_user_name = ?
+     WHERE id = 1`,
+    [newRate, now, actor?.userId || null, actor?.userName || 'Sistema']
+  );
+  await runQuery(
+    `INSERT INTO exchange_rate_history
+       (previous_rate, new_rate, changed_by_user_id, changed_by_user_name, changed_by_user_role, source, change_reason, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      previousRate,
+      newRate,
+      actor?.userId || null,
+      actor?.userName || 'Sistema',
+      actorUser?.role_code || actorUser?.rol || null,
+      source,
+      reason || null,
+      now
+    ]
+  );
 }
 
 async function ensureBranchesTable() {
@@ -3522,7 +3805,7 @@ const DEFAULT_ROLE_DEFINITIONS = [
   {
     codigo: 'supervisor',
     nombre: 'Supervisor',
-    permisos: ['ventas', 'caja', 'reportes_sucursal', 'inventario', 'abrir_caja', 'cerrar_caja', 'hacer_corte_caja', 'abrir_gaveta', 'anular_ventas', 'devolver_ventas', 'ver_reportes_caja', 'ver_cierres_caja', 'ver_ganancias']
+    permisos: ['ventas', 'caja', 'reportes_sucursal', 'inventario', 'abrir_caja', 'cerrar_caja', 'hacer_corte_caja', 'abrir_gaveta', 'anular_ventas', 'devolver_ventas', 'ver_reportes_caja', 'ver_cierres_caja', 'ver_ganancias', 'promociones']
   },
   {
     codigo: 'repartidor',
@@ -3536,7 +3819,8 @@ const DEFAULT_PAYMENT_METHODS = [
   { codigo: 'tarjeta', nombre: 'Tarjeta' },
   { codigo: 'transferencia', nombre: 'Transferencia' },
   { codigo: 'credito', nombre: 'Crédito' },
-  { codigo: 'contra_entrega', nombre: 'Contra entrega' }
+  { codigo: 'contra_entrega', nombre: 'Contra entrega' },
+  { codigo: 'usd', nombre: 'Dólares (USD)' }
 ];
 
 async function ensureBusinessesTable() {
@@ -3767,6 +4051,8 @@ async function ensureCashAuditTables() {
   await addColumnIfMissing('cash_sessions', 'expected_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
   await addColumnIfMissing('cash_sessions', 'counted_amount', 'DECIMAL(12,2) DEFAULT NULL');
   await addColumnIfMissing('cash_sessions', 'difference_amount', 'DECIMAL(12,2) DEFAULT NULL');
+  // Fase 3 multi-moneda: total recibido en USD durante el turno, para el resumen de cierre
+  await addColumnIfMissing('cash_closings', 'usd_total_received', 'DECIMAL(12,2) DEFAULT NULL');
 }
 
 async function ensureBusinessRulesExtensions() {
@@ -3930,7 +4216,19 @@ async function updateProductAggregateStock(executor, productId) {
     ? executor.query.bind(executor)
     : query;
   const rows = await runQuery('SELECT COALESCE(SUM(stock), 0) AS total_stock FROM inventory_by_branch WHERE product_id = ?', [productId]);
-  await runQuery('UPDATE products SET stock = ? WHERE id = ?', [Number(rows[0]?.total_stock || 0), productId]);
+  const totalStock = Number(rows[0]?.total_stock || 0);
+  await runQuery('UPDATE products SET stock = ? WHERE id = ?', [totalStock, productId]);
+
+  // Descuento "hasta agotar existencia" — se apaga solo apenas el stock total
+  // (sumando todas las sucursales) llega a 0. Si el dueño no marcó esa
+  // opción, discount_until_stock_out queda en 0 y esta condición nunca
+  // aplica, así que el descuento se mantiene hasta que lo quiten a mano.
+  if (totalStock <= 0) {
+    await runQuery(
+      'UPDATE products SET discount_percent = 0 WHERE id = ? AND discount_until_stock_out = 1 AND discount_percent > 0',
+      [productId]
+    );
+  }
 }
 
 async function changeBranchInventoryStock(executor, { productId, branchId, quantityDelta = 0, absoluteStock = null, stockMin = null, preventNegative = false }) {
@@ -4141,6 +4439,8 @@ async function ensureProductExtensions() {
   await addColumnIfMissing('products', 'preparation_time_minutes', 'INT NOT NULL DEFAULT 15');
   await addColumnIfMissing('products', 'business_metadata', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing('products', 'discount_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0.00');
+  await addColumnIfMissing('products', 'discount_until_stock_out', 'TINYINT(1) NOT NULL DEFAULT 0');
   await query(`UPDATE products SET sale_mode = 'unidad' WHERE sale_mode IS NULL OR sale_mode = ''`).catch(() => {});
   await query('CREATE INDEX idx_products_barcode ON products (barcode)').catch(() => {});
   await query('CREATE INDEX idx_products_remote_report_product_id ON products (remote_report_product_id)').catch(() => {});
@@ -4167,6 +4467,7 @@ async function ensureClientExtensions() {
   await addColumnIfMissing('clients', 'location_link', 'VARCHAR(500) DEFAULT NULL');
   await addColumnIfMissing('clients', 'latitude', 'DECIMAL(10,7) DEFAULT NULL');
   await addColumnIfMissing('clients', 'longitude', 'DECIMAL(10,7) DEFAULT NULL');
+  await addColumnIfMissing('clients', 'whatsapp_jid', 'VARCHAR(64) DEFAULT NULL');
 }
 
 async function ensureSalesExtensions() {
@@ -4188,6 +4489,7 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sales', 'order_type', `VARCHAR(30) NOT NULL DEFAULT 'mostrador'`);
   await addColumnIfMissing('sales', 'kitchen_status', `VARCHAR(30) NOT NULL DEFAULT 'pendiente'`);
   await addColumnIfMissing('sales', 'delivery_user_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('sales', 'delivery_status', `VARCHAR(20) NOT NULL DEFAULT 'pendiente'`);
   await addColumnIfMissing('sales', 'delivery_name_snapshot', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_email_snapshot', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_phone_snapshot', 'VARCHAR(40) DEFAULT NULL');
@@ -4201,6 +4503,8 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sales', 'canceled_by_user_name', 'VARCHAR(120) DEFAULT NULL');
   await addColumnIfMissing('sales', 'cancel_reason', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_cash_status', `VARCHAR(30) NOT NULL DEFAULT 'na'`);
+  await addColumnIfMissing('sales', 'delivery_client_pay_amount', 'DECIMAL(12,2) DEFAULT NULL');
+  await addColumnIfMissing('sales', 'delivery_change_amount', 'DECIMAL(12,2) DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_cash_received_at', 'DATETIME DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_cash_received_by_user_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('sales', 'delivery_cash_received_by_user_name', 'VARCHAR(120) DEFAULT NULL');
@@ -4217,6 +4521,11 @@ async function ensureSalesExtensions() {
     SET created_time = TIME(created_at)
     WHERE created_time IS NULL AND created_at IS NOT NULL
   `).catch(() => {});
+
+  // Fase 3 multi-moneda: pago en efectivo USD
+  await addColumnIfMissing('sales', 'payment_currency', "VARCHAR(3) NOT NULL DEFAULT 'DOP'");
+  await addColumnIfMissing('sales', 'usd_amount_received', 'DECIMAL(12,2) DEFAULT NULL');
+  await addColumnIfMissing('sales', 'exchange_rate_used', 'DECIMAL(10,4) DEFAULT NULL');
 }
 
 // ── NCF / Comprobantes fiscales ────────────────────────────────────────────────
@@ -4247,6 +4556,81 @@ async function ensureNcfExtensions() {
   await addColumnIfMissing('clients', 'rnc', 'VARCHAR(11) DEFAULT NULL');
   await addColumnIfMissing('clients', 'razon_social', 'VARCHAR(150) DEFAULT NULL');
   await addColumnIfMissing('clients', 'tipo_cliente', `VARCHAR(20) NOT NULL DEFAULT 'persona'`);
+}
+
+// ── Centro de Promociones ──────────────────────────────────────────────────
+async function ensurePromotionsExtensions() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS promotions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      codigo_interno VARCHAR(20) NOT NULL UNIQUE,
+      nombre VARCHAR(150) NOT NULL,
+      tipo VARCHAR(30) NOT NULL DEFAULT 'oferta_precio',
+      descripcion TEXT,
+      deshabilitada TINYINT(1) NOT NULL DEFAULT 0,
+      prioridad INT NOT NULL DEFAULT 0,
+      permanente TINYINT(1) NOT NULL DEFAULT 0,
+      fecha_inicio DATE DEFAULT NULL,
+      fecha_fin DATE DEFAULT NULL,
+      hora_inicio TIME DEFAULT NULL,
+      hora_fin TIME DEFAULT NULL,
+      color VARCHAR(7) DEFAULT NULL,
+      texto_promocion VARCHAR(80) DEFAULT NULL,
+      acumulable TINYINT(1) NOT NULL DEFAULT 0,
+      exclusiva TINYINT(1) NOT NULL DEFAULT 0,
+      sucursal_id INT DEFAULT NULL,
+      creado_por INT DEFAULT NULL,
+      actualizado_por INT DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await query(`
+    CREATE TABLE IF NOT EXISTS promotion_products (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      promotion_id INT NOT NULL,
+      producto_id INT NOT NULL,
+      precio_original DECIMAL(12,2) NOT NULL,
+      precio_promocion DECIMAL(12,2) NOT NULL
+    )
+  `);
+  // El log de auditoría nunca se borra — ni siquiera cuando se elimina la promoción
+  // referenciada, por eso guarda un snapshot del nombre en vez de depender de un JOIN.
+  await query(`
+    CREATE TABLE IF NOT EXISTS promotion_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      promotion_id INT NOT NULL,
+      promotion_nombre_snapshot VARCHAR(150) NOT NULL,
+      accion VARCHAR(20) NOT NULL,
+      usuario_id INT DEFAULT NULL,
+      detalle TEXT,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  // Caché offline (solo lectura) — usada por las cajas sin internet para seguir
+  // aplicando promociones activas; ver server/routes/offline.routes.js.
+  await query(`
+    CREATE TABLE IF NOT EXISTS offline_cache_promotions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INT NOT NULL UNIQUE,
+      promotion_id INT NOT NULL,
+      nombre VARCHAR(150) NOT NULL,
+      precio_promocion DECIMAL(12,2) NOT NULL,
+      precio_original DECIMAL(12,2) NOT NULL,
+      texto_promocion VARCHAR(80) DEFAULT NULL,
+      color VARCHAR(7) DEFAULT NULL,
+      last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await addColumnIfMissing('sale_items', 'promotion_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('sale_items', 'original_price', 'DECIMAL(12,2) DEFAULT NULL');
+  await addColumnIfMissing('sales', 'ahorro_promociones', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
+  // Configuración del Centro de Promociones (pestaña Configuración)
+  await addColumnIfMissing('config', 'promotions_enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing('config', 'promotions_allow_permanent', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing('config', 'promotions_allow_future', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing('config', 'promotions_default_priority', 'INT NOT NULL DEFAULT 0');
+  await addColumnIfMissing('config', 'promotions_default_color', `VARCHAR(7) NOT NULL DEFAULT '#22c55e'`);
 }
 
 // Generate the next NCF for a given type, respecting branch sequences
@@ -4346,6 +4730,10 @@ async function ensureSuppliersTable() {
   await addColumnIfMissing('suppliers', 'tipo_proveedor', 'VARCHAR(50) DEFAULT NULL');
   await addColumnIfMissing('suppliers', 'limite_credito', 'DECIMAL(12,2) DEFAULT NULL');
   await addColumnIfMissing('suppliers', 'observaciones', 'TEXT DEFAULT NULL');
+  await addColumnIfMissing('suppliers', 'updated_at', 'DATETIME DEFAULT NULL');
+  // Backfill: sin esto, filas viejas se verían como "nunca modificadas" y el
+  // modo offline las trataría como conflicto falso en el primer sync.
+  await query(`UPDATE suppliers SET updated_at = created_at WHERE updated_at IS NULL`);
   await query(`UPDATE suppliers SET visit_days = 'Lunes,Miércoles,Viernes', payment_terms_days = 15 WHERE nombre = 'Distribuidora Central' AND (visit_days IS NULL OR visit_days = '')`);
   await query(`UPDATE suppliers SET visit_days = 'Martes,Jueves', payment_terms_days = 30 WHERE nombre = 'Almacenes del Caribe' AND (visit_days IS NULL OR visit_days = '')`);
   await query(`UPDATE suppliers SET visit_days = 'Sábado', payment_terms_days = 21 WHERE nombre = 'Suplidora La Nacional' AND (visit_days IS NULL OR visit_days = '')`);
@@ -4382,6 +4770,18 @@ async function ensureInventoryMovementsTable() {
 async function ensureCashMovementExtensions() {
   await addColumnIfMissing('cash_movements', 'created_by_user_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('cash_movements', 'created_by_user_name', 'VARCHAR(120) DEFAULT NULL');
+}
+
+// Fase 3 de la extensión offline: pending_cash_movements ya existía (ventas
+// offline), se le agregan columnas para soportar movimientos standalone
+// (retiro/gasto/ingreso sin venta asociada). Solo aplica en modo standalone
+// (DB_CLIENT=sqlite), donde localQuery() delega a la BD principal — en modo
+// mysql, db-local.js migra su propio archivo SQLite con _addLocalColumnIfMissing.
+async function ensurePendingCashMovementExtensions() {
+  await addColumnIfMissing('pending_cash_movements', 'expense_type', 'VARCHAR(30) DEFAULT NULL');
+  await addColumnIfMissing('pending_cash_movements', 'supplier_invoice_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('pending_cash_movements', 'branch_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('pending_cash_movements', 'cash_register_id', 'INT DEFAULT NULL');
 }
 
 /**
@@ -6317,6 +6717,8 @@ function mapSaleRows(sales, items) {
     estadoCobroDelivery: sale.delivery_cash_status || 'na',
     cobroDeliveryValidadoEn: sale.delivery_cash_received_at || null,
     cobroDeliveryValidadoPor: sale.delivery_cash_received_by_user_name || '',
+    montoClienteEntrega: sale.delivery_client_pay_amount === null || sale.delivery_client_pay_amount === undefined ? null : Number(sale.delivery_client_pay_amount),
+    cambioRepartidor: sale.delivery_change_amount === null || sale.delivery_change_amount === undefined ? null : Number(sale.delivery_change_amount),
     tipoComprobante: sale.document_type || 'ticket',
     estadoFiscal: sale.fiscal_status || 'emitida',
     estadoDgii,
@@ -6330,6 +6732,7 @@ function mapSaleRows(sales, items) {
     canceladaEn: sale.canceled_at || null,
     tipoPedido: sale.order_type || 'mostrador',
     estadoCocina: sale.kitchen_status || 'pendiente',
+    estadoEntrega: sale.delivery_status || 'pendiente',
     repartidorId: sale.delivery_user_id || null,
     repartidor: sale.delivery_name_snapshot || '',
     repartidorCorreo: sale.delivery_email_snapshot || '',
@@ -6373,19 +6776,26 @@ function mapSaleRows(sales, items) {
         scaleMeasuredValue: item.scale_measured_value === null || item.scale_measured_value === undefined ? null : Number(item.scale_measured_value),
         scaleMeasuredUnit: item.scale_measured_unit || '',
         scaleSource: item.scale_source || '',
-        scaleRawReading: item.scale_raw_reading || ''
+        scaleRawReading: item.scale_raw_reading || '',
+        promotionId: item.promotion_id === null || item.promotion_id === undefined ? null : Number(item.promotion_id),
+        originalPrice: item.original_price === null || item.original_price === undefined ? null : Number(item.original_price)
       })),
     subtotal: Number(sale.subtotal || 0),
     descuento: Number(sale.discount || 0),
     itbis: Number(sale.tax || 0),
     total: Number(sale.total || 0),
+    ahorroPromociones: Number(sale.ahorro_promociones || 0),
     recibido: Number(sale.received_amount || 0),
-    cambio: Number(sale.change_amount || 0)
+    cambio: Number(sale.change_amount || 0),
+    paymentCurrency: sale.payment_currency || 'DOP',
+    usdAmountReceived: sale.usd_amount_received === null || sale.usd_amount_received === undefined ? 0 : Number(sale.usd_amount_received),
+    exchangeRateUsed: sale.exchange_rate_used === null || sale.exchange_rate_used === undefined ? null : Number(sale.exchange_rate_used)
   })});
 }
 
 async function getConfig(options = {}) {
   await ensureBusinessStructureExtensions();
+  await ensureCurrencyExtensions();
   const licenseResult = options.licenseResult || await secureLicenseService.resolveState({
     force: Boolean(options.forceLicenseSync),
     allowRemote: options.syncRemote !== false,
@@ -6422,6 +6832,9 @@ async function getConfig(options = {}) {
       )
     : [];
   const activeSession = activeSessionRows[0] || null;
+  const ecfSequencesWarning = row.e_invoice_enabled
+    ? await ecfModule.service.getExpiringSequencesSummary(1, 30).catch(() => [])
+    : [];
   return {
     nombre: row.business_name,
     logo: row.app_logo || '',
@@ -6429,6 +6842,9 @@ async function getConfig(options = {}) {
     direccion: row.address,
     telefono: row.phone,
     moneda: row.currency,
+    exchangeRateUsdDop: row.exchange_rate_usd_dop !== null && row.exchange_rate_usd_dop !== undefined
+      ? Number(row.exchange_rate_usd_dop) : null,
+    exchangeRateUpdatedAt: row.exchange_rate_updated_at || null,
     itbis: Number(row.tax_rate ?? 18),
     taxCalculateAtInvoiceEnd: Boolean(row.tax_calculate_at_invoice_end ?? 1),
     taxIncludeInProductPrice: Boolean(row.tax_include_in_product_price ?? 0),
@@ -6439,6 +6855,7 @@ async function getConfig(options = {}) {
     eInvoiceEnabled: Boolean(row.e_invoice_enabled),
     eInvoicePrefix: row.e_invoice_prefix || 'ECF-',
     eInvoiceNextNumber: Number(row.e_invoice_next_number || 1),
+    ecfSequencesWarning,
     mensaje: row.receipt_message,
     receiptPrintMode: row.receipt_print_mode || 'dialog',
     receiptPrinterName: row.receipt_printer_name || '',
@@ -6457,6 +6874,7 @@ async function getConfig(options = {}) {
     scaleReadPattern: row.scale_read_pattern || '',
     scaleRoundingDecimals: sanitizeScaleRoundingDecimals(row.scale_rounding_decimals),
     scaleAutoRead: Boolean(row.scale_auto_read ?? 1),
+    roundingMode: sanitizeRoundingMode(row.rounding_mode),
     whatsappWebEnabled: Boolean(row.whatsapp_web_enabled),
     whatsappPasteGuideEnabled: Boolean(row.whatsapp_paste_guide_enabled ?? 1),
     salesSplitViewEnabled: Boolean(row.sales_split_view_enabled ?? 0),
@@ -6647,12 +7065,12 @@ async function getBootstrapData(actorUser = null) {
       : query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements ORDER BY id DESC LIMIT 50'),
     // Sesión activa: incluimos operative_date para que el frontend filtre por turno
     scopedCashRegisterId
-      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [scopedCashRegisterId])
+      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date, exchange_rate_usd_dop FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [scopedCashRegisterId])
       : branchScopedUser
-      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" AND branch_id = ? ORDER BY id DESC LIMIT 1', [effectiveBranchId])
+      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date, exchange_rate_usd_dop FROM cash_sessions WHERE status = "open" AND branch_id = ? ORDER BY id DESC LIMIT 1', [effectiveBranchId])
       : effectiveCashRegisterId
-      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [effectiveCashRegisterId])
-      : query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date FROM cash_sessions WHERE status = "open" ORDER BY id DESC LIMIT 1'),
+      ? query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date, exchange_rate_usd_dop FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [effectiveCashRegisterId])
+      : query('SELECT id, opened_amount, current_amount, opened_at, opened_by_user_name, operative_date, exchange_rate_usd_dop FROM cash_sessions WHERE status = "open" ORDER BY id DESC LIMIT 1'),
     canAccessGlobalAudit
       ? query('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 200')
       : Promise.resolve([]),
@@ -6704,6 +7122,9 @@ async function getBootstrapData(actorUser = null) {
       operativeDate,
       hoursOpen,
       staleWarning: hoursOpen > STALE_SESSION_HOURS,
+      exchangeRateUsdDop: openSession.exchange_rate_usd_dop !== null && openSession.exchange_rate_usd_dop !== undefined
+        ? Number(openSession.exchange_rate_usd_dop)
+        : null,
     };
   }
 
@@ -9068,8 +9489,13 @@ app.post('/api/firebase-reports/sync-products-from-app', async (req, res) => {
   if (!userCanManageGlobalProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para sincronizar productos desde la App de Reporte.' });
   }
-  const result = await syncPendingReportAppProducts({ force: req.body?.force === true });
-  res.json({ ok: true, ...result });
+  try {
+    const result = await syncPendingReportAppProducts({ force: req.body?.force === true });
+    res.json({ ok: true, ...result });
+  } catch (error) {
+    console.warn('[firebase-reports/sync-products-from-app]', error?.message || error);
+    res.status(503).json({ ok: false, error: error?.message || 'No se pudo sincronizar con la App de Reporte.' });
+  }
 });
 
 app.get('/api/firebase-reports/product-sync-logs', async (req, res) => {
@@ -9176,10 +9602,10 @@ app.post('/api/suspended-sales', async (req, res) => {
   });
 });
 
-app.post('/api/quotations', async (req, res) => {
-  await resolveRequestActorUser(req, { required: true });
-  await ensureQuotationsTable();
-  const payload = req.body || {};
+// Compartida entre la ruta online y el bot de WhatsApp (pedidos de clientes,
+// server/integrations/whatsapp-bot.js) — recibe un runner ({ query }) para
+// poder llamarse sin pasar por un req/resolveRequestActorUser.
+async function insertQuotationRow(runner, payload) {
   const id = String(payload.id || '').trim() || `COT-${Date.now()}`;
   const nombre = String(payload.nombre || '').trim() || 'Cotización';
   const clientName = String(payload.clientName || '').trim();
@@ -9187,12 +9613,8 @@ app.post('/api/quotations', async (req, res) => {
   const total = Math.max(0, Number(payload.total || 0));
   const itemCount = Math.max(0, Number(payload.itemCount || items.reduce((sum, item) => sum + Number(item.qty || 0), 0)));
 
-  if (!items.length) {
-    return res.status(400).json({ error: 'Debes incluir al menos un producto para guardar la cotización.' });
-  }
-  if (!clientName) {
-    return res.status(400).json({ error: 'El nombre del cliente es obligatorio para la cotización.' });
-  }
+  if (!items.length) throw createHttpError('Debes incluir al menos un producto para guardar la cotización.', 400);
+  if (!clientName) throw createHttpError('El nombre del cliente es obligatorio para la cotización.', 400);
 
   const draft = {
     id,
@@ -9216,7 +9638,7 @@ app.post('/api/quotations', async (req, res) => {
     items
   };
 
-  await query(
+  await runner.query(
     `INSERT INTO quotations
       (id, quotation_name, client_name, draft_payload, total, item_count, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -9230,16 +9652,26 @@ app.post('/api/quotations', async (req, res) => {
     [id, nombre, clientName, JSON.stringify(draft), total, itemCount]
   );
 
+  return id;
+}
+
+app.post('/api/quotations', async (req, res) => {
+  await resolveRequestActorUser(req, { required: true });
+  await ensureQuotationsTable();
+  const id = await insertQuotationRow({ query }, req.body || {});
+
+  const rows = await query('SELECT * FROM quotations WHERE id = ? LIMIT 1', [id]);
+  const saved = rows[0] || null;
+
   await writeAuditLog({
     ...getActor(req),
     moduleName: 'Ventas',
     actionName: 'Cotización guardada',
-    detail: `${clientName} · ${itemCount} item(s) · RD$ ${total.toFixed(2)}`
+    detail: `${saved?.client_name || ''} · ${saved?.item_count || 0} item(s) · RD$ ${Number(saved?.total || 0).toFixed(2)}`
   });
 
-  const rows = await query('SELECT * FROM quotations WHERE id = ? LIMIT 1', [id]);
   res.status(201).json({
-    quotation: rows[0] ? mapQuotationRow(rows[0]) : draft
+    quotation: saved ? mapQuotationRow(saved) : null
   });
 });
 
@@ -9657,8 +10089,8 @@ app.post('/api/products', async (req, res) => {
 
     const result = await conn.query(
       `INSERT INTO products
-        (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock, discount_percent, discount_until_stock_out)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         data.codigo,
         data.barcode || data.codigo,
@@ -9684,7 +10116,9 @@ app.post('/api/products', async (req, res) => {
         data.aplicaItbis ? 1 : 0,
         Number(data.tiempoPreparacion || 15),
         JSON.stringify(data.metaNegocio || {}),
-        data.tracksStock === false ? 0 : 1
+        data.tracksStock === false ? 0 : 1,
+        Math.min(100, Math.max(0, Number(data.descuentoPct || 0))),
+        data.descuentoHastaAgotar ? 1 : 0
       ]
     );
 
@@ -10253,7 +10687,7 @@ app.put('/api/products/:id', async (req, res) => {
            precio_venta = ?, stock = ?, stock_min = ?, estado = ?, image_url = ?, image_local = ?, product_type = ?,
            size_options = ?, dough_options = ?, border_options = ?, extra_options = ?,
            allow_half_and_half = ?, is_combo = ?, aplica_itbis = ?, preparation_time_minutes = ?, business_metadata = ?,
-           tracks_stock = ?, barcode = ?
+           tracks_stock = ?, barcode = ?, discount_percent = ?, discount_until_stock_out = ?
        WHERE id = ?`,
       [
         data.codigo,
@@ -10281,6 +10715,8 @@ app.put('/api/products/:id', async (req, res) => {
         JSON.stringify(data.metaNegocio || {}),
         data.tracksStock === false ? 0 : 1,
         data.barcode || data.codigo,
+        Math.min(100, Math.max(0, Number(data.descuentoPct || 0))),
+        data.descuentoHastaAgotar ? 1 : 0,
         id
       ]
     );
@@ -10573,16 +11009,51 @@ app.get('/api/inventory/movements', async (req, res) => {
   res.json(rows.map(mapInventoryMovementRow));
 });
 
-app.post('/api/clients', async (req, res) => {
-  const data = sanitizeClientPayload(req.body);
-  await ensureClientExtensions();
-  if (!data.nombre) {
-    return res.status(400).json({ error: 'El nombre del cliente es requerido.' });
+// Sincroniza un cliente (creado o actualizado) hacia Firebase — antes esta
+// lógica solo vivía inline en las rutas POST/PUT /api/clients, así que
+// cualquier otro llamador de insertClientRow()/updateClient*() (como el bot
+// de WhatsApp, que llama estas funciones directo sin pasar por las rutas)
+// nunca disparaba ningún sync. Centralizado aquí para que todo llamador
+// presente y futuro quede cubierto igual. Fire-and-forget — nunca debe
+// bloquear ni tumbar al que llama (un pedido de WhatsApp, un guardado desde
+// el POS, etc.) si Firebase está lento o caído.
+async function syncClientToRemote(clientRow) {
+  if (!clientRow?.id) return;
+  try {
+    await trySyncPosClientToFirebaseById(clientRow.id);
+  } catch (error) {
+    console.warn('No se pudo sincronizar el cliente a Firebase:', error.message);
   }
-  const result = await query(
+  fireReportSync(async () => {
+    const cfg = await getReportSyncConfig();
+    await reportsSync.syncCustomer(clientRow, { config: cfg });
+  });
+  try {
+    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (_lic) {
+      getSyncService().enqueueAndSync('client', clientRow.id, {
+        businessId: _lic,
+        nombre: clientRow.nombre || '', telefono: clientRow.telefono || '',
+        email: clientRow.email || '', cedula: clientRow.cedula || '',
+        rnc: clientRow.rnc || '', direccion: clientRow.direccion || '',
+        limiteCredito: Number(clientRow.limite_credito || 0),
+        balance: Number(clientRow.balance || 0),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  } catch (_e) {}
+}
+
+async function insertClientRow(runner, rawData) {
+  await ensureClientExtensions();
+  const data = sanitizeClientPayload(rawData);
+  if (!data.nombre) {
+    throw createHttpError('El nombre del cliente es requerido.', 400);
+  }
+  const result = await runner.query(
     `INSERT INTO clients
-      (nombre, telefono, email, direccion, cedula, rnc, limite_credito, balance, reference_note, location_link, latitude, longitude)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (nombre, telefono, email, direccion, cedula, rnc, limite_credito, balance, reference_note, location_link, latitude, longitude, whatsapp_jid)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.nombre,
       normalizeOptionalText(data.telefono),
@@ -10595,43 +11066,30 @@ app.post('/api/clients', async (req, res) => {
       normalizeOptionalText(data.referencia),
       normalizeOptionalText(data.linkUbicacion),
       Number.isFinite(data.latitud) ? data.latitud : null,
-      Number.isFinite(data.longitud) ? data.longitud : null
+      Number.isFinite(data.longitud) ? data.longitud : null,
+      normalizeOptionalText(data.whatsappJid)
     ]
   );
   const createdRow = await resolveClientRowAfterInsert(result.insertId, data);
   if (!createdRow) {
-    return res.status(500).json({ error: 'El cliente se guardó, pero no se pudo leer el registro creado.' });
+    throw createHttpError('El cliente se guardó, pero no se pudo leer el registro creado.', 500);
   }
+  syncClientToRemote(createdRow).catch(() => {});
+  return createdRow;
+}
+
+app.post('/api/clients', async (req, res) => {
+  // insertClientRow() ya dispara syncClientToRemote() internamente — así
+  // cualquier otro llamador (el bot de WhatsApp incluido) queda cubierto
+  // igual, sin tener que repetir este bloque en cada sitio que cree clientes.
+  const createdRow = await insertClientRow({ query }, req.body || {});
   const actor = getActor(req);
   await writeAuditLog({
     ...actor,
     moduleName: 'Clientes',
     actionName: 'Cliente creado',
-    detail: data.nombre
+    detail: createdRow.nombre
   });
-  await trySyncPosClientToFirebaseById(createdRow.id).catch((error) => {
-    console.warn('No se pudo sincronizar el cliente nuevo a Firebase:', error.message);
-  });
-  // ── Sync reporte-sistema-pos (cliente creado) ──
-  fireReportSync(async () => {
-    const cfg = await getReportSyncConfig();
-    await reportsSync.syncCustomer(createdRow, { config: cfg });
-  });
-  // ── Sync nuevo sistema Firebase (inmediato) ──
-  try {
-    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-    if (_lic && createdRow) {
-      getSyncService().enqueueAndSync('client', createdRow.id, {
-        businessId: _lic,
-        nombre: createdRow.nombre || '', telefono: createdRow.telefono || '',
-        email: createdRow.email || '', cedula: createdRow.cedula || '',
-        rnc: createdRow.rnc || '', direccion: createdRow.direccion || '',
-        limiteCredito: Number(createdRow.limite_credito || 0),
-        balance: Number(createdRow.balance || 0),
-        updatedAt: new Date().toISOString(),
-      });
-    }
-  } catch (_e) {}
   res.status(201).json(mapClientRow(createdRow));
 });
 
@@ -10670,30 +11128,7 @@ app.put('/api/clients/:id', async (req, res) => {
     actionName: 'Cliente actualizado',
     detail: data.nombre
   });
-  await trySyncPosClientToFirebaseById(id).catch((error) => {
-    console.warn('No se pudo sincronizar el cliente actualizado a Firebase:', error.message);
-  });
-  // ── Sync reporte-sistema-pos (cliente actualizado) ──
-  fireReportSync(async () => {
-    const cfg = await getReportSyncConfig();
-    if (rows[0]) await reportsSync.syncCustomer(rows[0], { config: cfg });
-  });
-  // ── Sync nuevo sistema Firebase (inmediato) ──
-  try {
-    const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-    if (_lic && rows[0]) {
-      const _c = rows[0];
-      getSyncService().enqueueAndSync('client', id, {
-        businessId: _lic,
-        nombre: _c.nombre || '', telefono: _c.telefono || '',
-        email: _c.email || '', cedula: _c.cedula || '',
-        rnc: _c.rnc || '', direccion: _c.direccion || '',
-        limiteCredito: Number(_c.limite_credito || 0),
-        balance: Number(_c.balance || 0),
-        updatedAt: new Date().toISOString(),
-      });
-    }
-  } catch (_e) {}
+  syncClientToRemote(rows[0]).catch(() => {});
   res.json(mapClientRow(rows[0]));
 });
 
@@ -11085,20 +11520,16 @@ app.post('/api/mobile/customer-auth/firebase', async (req, res) => {
   });
 });
 
-app.post('/api/suppliers', async (req, res) => {
-  await ensureSuppliersTable();
-  const data = req.body || {};
+// Compartido entre la ruta online y el sync offline (_syncSupplierChanges en
+// offline.routes.js) para que ambos caminos escriban exactamente las mismas columnas.
+async function insertSupplierRow(runner, data) {
   const nombre = String(data.nombre || '').trim();
-  if (!nombre) {
-    return res.status(400).json({ error: 'El nombre del proveedor es obligatorio.' });
-  }
-
-  const result = await query(
+  const result = await runner.query(
     `INSERT INTO suppliers
       (nombre, razon_social, nombre_comercial, empresa, telefono, telefono2, email, email2,
        rnc, contacto, direccion, ciudad, provincia, pais, web,
-       visit_days, payment_terms_days, tipo_proveedor, limite_credito, observaciones, estado)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       visit_days, payment_terms_days, tipo_proveedor, limite_credito, observaciones, estado, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
     [
       nombre,
       data.razonSocial || null,
@@ -11123,27 +11554,18 @@ app.post('/api/suppliers', async (req, res) => {
       data.estado || 'Activo'
     ]
   );
-  const rows = await query('SELECT * FROM suppliers WHERE id = ?', [result.insertId]);
-  const actor = getActor(req);
-  await writeAuditLog({ ...actor, moduleName: 'Proveedores', actionName: 'Proveedor creado', detail: nombre });
-  addToSyncQueue('proveedores', 'proveedor_creado', { id: result.insertId, nombre, rnc: data.rnc || null });
-  res.status(201).json(mapSupplierRow(rows[0]));
-});
+  return Number(result.insertId);
+}
 
-app.put('/api/suppliers/:id', async (req, res) => {
-  await ensureSuppliersTable();
-  const data = req.body || {};
+async function updateSupplierRow(runner, id, data) {
   const nombre = String(data.nombre || '').trim();
-  if (!nombre) {
-    return res.status(400).json({ error: 'El nombre del proveedor es obligatorio.' });
-  }
-
-  await query(
+  await runner.query(
     `UPDATE suppliers
      SET nombre=?, razon_social=?, nombre_comercial=?, empresa=?,
          telefono=?, telefono2=?, email=?, email2=?,
          rnc=?, contacto=?, direccion=?, ciudad=?, provincia=?, pais=?, web=?,
-         visit_days=?, payment_terms_days=?, tipo_proveedor=?, limite_credito=?, observaciones=?, estado=?
+         visit_days=?, payment_terms_days=?, tipo_proveedor=?, limite_credito=?, observaciones=?, estado=?,
+         updated_at=datetime('now')
      WHERE id = ?`,
     [
       nombre,
@@ -11167,9 +11589,36 @@ app.put('/api/suppliers/:id', async (req, res) => {
       data.limiteCredito ? Number(data.limiteCredito) : null,
       data.observaciones || null,
       data.estado || 'Activo',
-      req.params.id
+      id
     ]
   );
+}
+
+app.post('/api/suppliers', async (req, res) => {
+  await ensureSuppliersTable();
+  const data = req.body || {};
+  const nombre = String(data.nombre || '').trim();
+  if (!nombre) {
+    return res.status(400).json({ error: 'El nombre del proveedor es obligatorio.' });
+  }
+
+  const insertId = await insertSupplierRow({ query }, data);
+  const rows = await query('SELECT * FROM suppliers WHERE id = ?', [insertId]);
+  const actor = getActor(req);
+  await writeAuditLog({ ...actor, moduleName: 'Proveedores', actionName: 'Proveedor creado', detail: nombre });
+  addToSyncQueue('proveedores', 'proveedor_creado', { id: insertId, nombre, rnc: data.rnc || null });
+  res.status(201).json(mapSupplierRow(rows[0]));
+});
+
+app.put('/api/suppliers/:id', async (req, res) => {
+  await ensureSuppliersTable();
+  const data = req.body || {};
+  const nombre = String(data.nombre || '').trim();
+  if (!nombre) {
+    return res.status(400).json({ error: 'El nombre del proveedor es obligatorio.' });
+  }
+
+  await updateSupplierRow({ query }, req.params.id, data);
   const rows = await query('SELECT * FROM suppliers WHERE id = ?', [req.params.id]);
   const actor = getActor(req);
   await writeAuditLog({
@@ -11250,29 +11699,39 @@ app.get('/api/suppliers/:id/detail', async (req, res) => {
   });
 });
 
+// Compartido entre la ruta online y _syncSupplierChanges (offline.routes.js).
+// Devuelve { ok: true, nombre } o { ok: false, error } sin lanzar, para que el
+// sync offline pueda marcar el pendiente como error en vez de tumbar el loop.
+async function deleteSupplierIfNoPendingInvoices(runner, id) {
+  const rows = await runner.query('SELECT nombre FROM suppliers WHERE id = ?', [id]);
+  if (!rows.length) {
+    return { ok: false, error: 'Proveedor no encontrado.' };
+  }
+  const pendingRows = await runner.query(
+    'SELECT COUNT(*) AS total FROM supplier_invoices WHERE supplier_id = ? AND pending_amount > 0',
+    [id]
+  );
+  if (Number(pendingRows[0]?.total || 0) > 0) {
+    return { ok: false, error: 'No puedes eliminar este proveedor porque tiene facturas pendientes.' };
+  }
+  await runner.query('DELETE FROM suppliers WHERE id = ?', [id]);
+  return { ok: true, nombre: rows[0]?.nombre || `ID ${id}` };
+}
+
 app.delete('/api/suppliers/:id', async (req, res) => {
   await ensureSuppliersTable();
   await ensureSupplierInvoicesTable();
-  const rows = await query('SELECT nombre FROM suppliers WHERE id = ?', [req.params.id]);
-  if (!rows.length) {
-    return res.status(404).json({ error: 'Proveedor no encontrado.' });
+  const result = await deleteSupplierIfNoPendingInvoices({ query }, req.params.id);
+  if (!result.ok) {
+    const status = result.error === 'Proveedor no encontrado.' ? 404 : 409;
+    return res.status(status).json({ error: result.error });
   }
-  const pendingRows = await query(
-    'SELECT COUNT(*) AS total FROM supplier_invoices WHERE supplier_id = ? AND pending_amount > 0',
-    [req.params.id]
-  );
-  if (Number(pendingRows[0]?.total || 0) > 0) {
-    return res.status(409).json({
-      error: 'No puedes eliminar este proveedor porque tiene facturas pendientes.'
-    });
-  }
-  await query('DELETE FROM suppliers WHERE id = ?', [req.params.id]);
   const actor = getActor(req);
   await writeAuditLog({
     ...actor,
     moduleName: 'Proveedores',
     actionName: 'Proveedor eliminado',
-    detail: rows[0]?.nombre || `ID ${req.params.id}`
+    detail: result.nombre
   });
   res.status(204).end();
 });
@@ -11648,6 +12107,7 @@ app.put('/api/config', async (req, res) => {
   const scaleReadPattern = String(data.scaleReadPattern || '').trim();
   const scaleRoundingDecimals = sanitizeScaleRoundingDecimals(data.scaleRoundingDecimals);
   const scaleAutoRead = data.scaleAutoRead !== false;
+  const roundingMode = sanitizeRoundingMode(data.roundingMode);
   const cashierRegisterRequired = businessStructureMode === 'monocaja'
     ? true
     : data.cashierRegisterRequired !== false;
@@ -11684,6 +12144,7 @@ app.put('/api/config', async (req, res) => {
       e_invoice_next_number = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?,
          cash_drawer_enabled = ?, cash_drawer_method = ?, cash_drawer_printer_name = ?, cash_drawer_pin = ?, cash_drawer_network_host = ?, cash_drawer_network_port = ?, cash_drawer_serial_port = ?,
          scale_type = ?, scale_serial_port = ?, scale_serial_baud_rate = ?, scale_default_unit = ?, scale_read_pattern = ?, scale_rounding_decimals = ?, scale_auto_read = ?,
+         rounding_mode = ?,
          whatsapp_web_enabled = ?, whatsapp_paste_guide_enabled = ?, sales_split_view_enabled = ?, app_logo = ?, language = ?, sales_operation_mode = ?, business_structure_mode = ?, cashier_register_required = ?, exclusive_cashier_per_register = ?
      WHERE id = 1`,
     [
@@ -11720,6 +12181,7 @@ app.put('/api/config', async (req, res) => {
       scaleReadPattern || null,
       scaleRoundingDecimals,
       scaleAutoRead ? 1 : 0,
+      roundingMode,
       data.whatsappWebEnabled ? 1 : 0,
       data.whatsappPasteGuideEnabled !== false ? 1 : 0,
       data.salesSplitViewEnabled ? 1 : 0,
@@ -12494,7 +12956,7 @@ async function getActiveSessionForRegister(cashRegisterId) {
   const rows = await query(
     `SELECT id, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name,
             opened_amount, current_amount, expected_amount,
-            opened_at, operative_date, status
+            opened_at, operative_date, status, exchange_rate_usd_dop
      FROM cash_sessions
      WHERE status = 'open' AND cash_register_id = ?
      ORDER BY id DESC LIMIT 1`,
@@ -12523,6 +12985,9 @@ async function getActiveSessionForRegister(cashRegisterId) {
       : toLocalDateKeyRD(openedAt || new Date()),
     hoursOpen,
     staleWarning: hoursOpen > STALE_HOURS,
+    exchangeRateUsdDop: session.exchange_rate_usd_dop !== null && session.exchange_rate_usd_dop !== undefined
+      ? Number(session.exchange_rate_usd_dop)
+      : null,
   };
 }
 
@@ -12530,11 +12995,17 @@ app.post('/api/cash/open', async (req, res) => {
   await ensureBusinessRulesExtensions();
   await ensureCashMovementExtensions();
   await ensureOperativeDateExtensions();
+  await ensureCurrencyExtensions();
+  await ensureExchangeRateHistoryTable();
   const amount = Number(req.body?.monto || 0);
   const notes = req.body?.obs || 'Apertura de caja';
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanOpenCash(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para abrir caja.' });
+  }
+  const exchangeRate = Number(req.body?.exchangeRate);
+  if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
+    return res.status(400).json({ error: 'Debes indicar el tipo de cambio USD → DOP del día para abrir caja.' });
   }
   const actor = getActor(req);
 
@@ -12569,9 +13040,9 @@ app.post('/api/cash/open', async (req, res) => {
       const openedAtStr = nowRDString();
       const operativeDateStr = toLocalDateKeyRD(openedAtStr); // 'YYYY-MM-DD'
       const sessionResult = await conn.query(
-        `INSERT INTO cash_sessions (opened_amount, current_amount, status, opened_at, operative_date, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name)
-         VALUES (?, ?, "open", ?, ?, ?, ?, ?, ?)`,
-        [amount, amount, openedAtStr, operativeDateStr, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema']
+        `INSERT INTO cash_sessions (opened_amount, current_amount, status, opened_at, operative_date, branch_id, cash_register_id, opened_by_user_id, opened_by_user_name, exchange_rate_usd_dop)
+         VALUES (?, ?, "open", ?, ?, ?, ?, ?, ?, ?)`,
+        [amount, amount, openedAtStr, operativeDateStr, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema', exchangeRate]
       );
       await conn.query(
         `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Apertura", ?, ?, ?, ?, ?, ?, ?)`,
@@ -12583,6 +13054,22 @@ app.post('/api/cash/open', async (req, res) => {
         [sessionResult.insertId, structure.branchId, structure.cashRegisterId, amount, notes, actor.userId || null, actor.userName || 'Sistema', openedAtStr]
       );
       await conn.query('UPDATE config SET cash_open = 1, cash_amount = ?, active_branch_id = ?, active_cash_register_id = ? WHERE id = 1', [amount, structure.branchId, structure.cashRegisterId]);
+
+      // Tipo de cambio del día: se registra en config + historial cada vez que se
+      // abre una sesión nueva (aunque el valor sea el mismo que ayer) — es el
+      // registro diario normal, no una "modificación" excepcional.
+      const previousRateRows = await conn.query('SELECT exchange_rate_usd_dop FROM config WHERE id = 1 LIMIT 1');
+      const previousRate = previousRateRows[0]?.exchange_rate_usd_dop !== null && previousRateRows[0]?.exchange_rate_usd_dop !== undefined
+        ? Number(previousRateRows[0].exchange_rate_usd_dop) : null;
+      await recordExchangeRate({
+        executor: conn,
+        newRate: exchangeRate,
+        previousRate,
+        actor,
+        actorUser,
+        source: 'cash_open'
+      });
+
       return Number(sessionResult.insertId);
     });
 
@@ -12590,7 +13077,7 @@ app.post('/api/cash/open', async (req, res) => {
       ...actor,
       moduleName: 'Caja',
       actionName: 'Apertura de caja',
-      detail: `${structure.branch.nombre} · ${structure.cashRegister.nombre} · ${notes} · monto ${amount.toFixed(2)}`
+      detail: `${structure.branch.nombre} · ${structure.cashRegister.nombre} · ${notes} · monto ${amount.toFixed(2)} · tasa USD ${exchangeRate.toFixed(4)}`
     });
     firebaseSync.syncEstadoCaja({
       cajaId: structure.cashRegisterId,
@@ -12701,6 +13188,7 @@ app.post('/api/cash/close', async (req, res) => {
 
   let structure;
   let session = null;
+  let usdTotalReceived = 0;
   try {
     structure = await resolveScopedBusinessStructureSelection(req, null, req.body?.branchId, req.body?.cashRegisterId);
     const sessions = await query('SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [structure.cashRegisterId]);
@@ -12710,7 +13198,23 @@ app.post('/api/cash/close', async (req, res) => {
       return res.status(400).json({ error: 'No hay una caja abierta.' });
     }
 
-    const [saleCountRows, cashSaleMovementRows] = await Promise.all([
+    const pendingDeliveryRows = await query(
+      `SELECT id, invoice_number FROM sales
+       WHERE order_type = 'delivery'
+         AND payment_method = 'contra_entrega'
+         AND COALESCE(delivery_cash_status, 'pendiente') = 'pendiente'
+         AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
+         AND COALESCE(cash_register_id, 0) = ?`,
+      [structure.cashRegisterId]
+    ).catch(() => []);
+    if (pendingDeliveryRows.length) {
+      const facturas = pendingDeliveryRows.map((r) => r.invoice_number || r.id).join(', ');
+      return res.status(400).json({
+        error: `No puedes cerrar caja: hay ${pendingDeliveryRows.length} pedido(s) contra entrega sin validar (${facturas}). Valida el pago o cancela el pedido antes de cerrar.`
+      });
+    }
+
+    const [saleCountRows, cashSaleMovementRows, usdTotalRows] = await Promise.all([
       query(
         `SELECT COUNT(*) AS total
          FROM sales
@@ -12724,9 +13228,17 @@ app.post('/api/cash/close', async (req, res) => {
          WHERE session_id = ? AND movement_type = 'Venta'`,
         [session.id]
       ).catch(() => [{ total: 0 }]),
+      query(
+        `SELECT COALESCE(SUM(usd_amount_received), 0) AS usd_total
+         FROM sales
+         WHERE cash_session_id = ? AND payment_currency = 'USD'
+           AND ${buildSaleActiveClause('sales')}`,
+        [session.id]
+      ).catch(() => [{ usd_total: 0 }]),
     ]);
     const hasSalesInTurn = Number(saleCountRows[0]?.total || 0) > 0
       || Number(cashSaleMovementRows[0]?.total || 0) > 0;
+    usdTotalReceived = Number(usdTotalRows[0]?.usd_total || 0);
     if (hasSalesInTurn && !amountWasCaptured) {
       return res.status(400).json({
         error: 'Para cerrar caja con ventas debes escribir manualmente el monto contado/vendido.'
@@ -12754,9 +13266,9 @@ app.post('/api/cash/close', async (req, res) => {
         [session.id, countedAmount, notes, actor.userId || null, actor.userName || 'Sistema', structure.branchId, structure.cashRegisterId]
       );
       await conn.query(
-        `INSERT INTO cash_closings (cash_session_id, branch_id, cash_register_id, expected_amount, counted_amount, difference_amount, notes, closed_by_user_id, closed_by_user_name, closed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        [session.id, structure.branchId, structure.cashRegisterId, expectedAmount, countedAmount, differenceAmount, notes, actor.userId || null, actor.userName || 'Sistema']
+        `INSERT INTO cash_closings (cash_session_id, branch_id, cash_register_id, expected_amount, counted_amount, difference_amount, notes, closed_by_user_id, closed_by_user_name, closed_at, usd_total_received)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
+        [session.id, structure.branchId, structure.cashRegisterId, expectedAmount, countedAmount, differenceAmount, notes, actor.userId || null, actor.userName || 'Sistema', usdTotalReceived]
       );
       await conn.query('UPDATE config SET cash_open = 0, cash_amount = 0 WHERE id = 1');
     });
@@ -12828,7 +13340,7 @@ app.post('/api/cash/close', async (req, res) => {
       totalWithdrawals: Number(totals[0]?.totalWithdrawals || 0),
     });
   });
-  res.json({ config: await getConfig() });
+  res.json({ config: await getConfig(), usdTotalReceived });
 });
 
 app.post('/api/cash/expense', async (req, res) => {
@@ -13121,6 +13633,7 @@ app.post('/api/sales', async (req, res) => {
   await ensureClientExtensions();
   await ensureInventoryMovementsTable();
   await ensureNcfExtensions();
+  await ensurePromotionsExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true });
   const sale = req.body;
   const created = await withTransaction(async (conn) => {
@@ -13140,7 +13653,7 @@ app.post('/api/sales', async (req, res) => {
     // Buscar el turno abierto para esta caja. Si require_cash_open_before_use=1
     // y no hay turno, bloquear la venta — el cajero debe abrir caja primero.
     const activeSessionRows = await conn.query(
-      `SELECT id, operative_date, opened_by_user_id
+      `SELECT id, operative_date, opened_by_user_id, exchange_rate_usd_dop
        FROM cash_sessions
        WHERE status = 'open' AND cash_register_id = ?
        ORDER BY id DESC LIMIT 1`,
@@ -13251,9 +13764,38 @@ app.post('/api/sales', async (req, res) => {
     const orderType = ['mostrador', 'delivery', 'recoger', 'mesa'].includes(String(sale.tipoPedido || '').trim())
       ? String(sale.tipoPedido).trim()
       : 'mostrador';
-    const paymentMethod = ['efectivo', 'tarjeta', 'transferencia', 'mixto', 'credito', 'contra_entrega'].includes(String(sale.metodo || '').trim())
+    const paymentMethod = ['efectivo', 'tarjeta', 'transferencia', 'mixto', 'credito', 'contra_entrega', 'usd'].includes(String(sale.metodo || '').trim())
       ? String(sale.metodo).trim()
       : 'efectivo';
+
+    // Fase 3 multi-moneda: pago en efectivo USD — la tasa fuente de verdad es
+    // siempre la de la sesión de caja activa, nunca la que mande el cliente.
+    const paymentCurrency = (String(sale.paymentCurrency || 'DOP').trim().toUpperCase() === 'USD' && paymentMethod === 'usd')
+      ? 'USD'
+      : 'DOP';
+    let sessionExchangeRate = (activeSession && activeSession.exchange_rate_usd_dop !== null && activeSession.exchange_rate_usd_dop !== undefined)
+      ? Number(activeSession.exchange_rate_usd_dop)
+      : null;
+    if (paymentMethod === 'usd') {
+      if (!sessionExchangeRate || sessionExchangeRate <= 0) {
+        const error = new Error('No hay un tipo de cambio USD a DOP válido para el turno actual.');
+        error.statusCode = 400;
+        throw error;
+      }
+      // El valor que manda el cliente NUNCA es la fuente de verdad — solo se compara para detectar manipulación/soporte.
+      const clientClaimedRate = Number(sale.exchangeRateUsed || 0);
+      if (clientClaimedRate > 0 && Math.abs(clientClaimedRate - sessionExchangeRate) > 0.0001) {
+        console.warn('[ventas][usd] Tasa enviada por el cliente difiere de la tasa de sesión. Se usa la de sesión.', clientClaimedRate, sessionExchangeRate);
+      }
+    }
+    const usdAmountReceived = paymentMethod === 'usd' ? Number(sale.usdAmountReceived || 0) : 0;
+    const exchangeRateUsed = paymentMethod === 'usd' ? sessionExchangeRate : null;
+    if (paymentMethod === 'usd' && usdAmountReceived <= 0) {
+      const error = new Error('Debes indicar el monto recibido en dólares.');
+      error.statusCode = 400;
+      throw error;
+    }
+
     const kitchenStatus = ['pendiente', 'en preparacion', 'en horno', 'lista', 'entregada'].includes(String(sale.estadoCocina || '').trim())
       ? String(sale.estadoCocina).trim()
       : 'pendiente';
@@ -13278,12 +13820,23 @@ app.post('/api/sales', async (req, res) => {
     const pendingCreditAmount = paymentMethod === 'credito'
       ? Math.max(0, saleTotal - receivedAmount)
       : 0;
+    const deliveryClientPayAmount = paymentMethod === 'contra_entrega'
+      ? Number(sale.montoClienteEntrega || 0)
+      : null;
+    const deliveryChangeAmount = paymentMethod === 'contra_entrega'
+      ? Math.max(0, deliveryClientPayAmount - saleTotal)
+      : null;
     const nowSql = nowRDString();
     const createdDate = toLocalDateKeyRD(nowSql);
     const createdTime = String(nowSql).slice(11, 19);
 
     if (paymentMethod === 'contra_entrega' && orderType !== 'delivery') {
       const error = new Error('Pago contra entrega solo está disponible para pedidos delivery.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (paymentMethod === 'contra_entrega' && deliveryClientPayAmount < saleTotal) {
+      const error = new Error('El monto con que pagará el cliente es menor al total de la venta.');
       error.statusCode = 400;
       throw error;
     }
@@ -13374,10 +13927,12 @@ app.post('/api/sales', async (req, res) => {
          sale_status, sale_mode, document_type,
          client_name_snapshot, client_phone_snapshot, client_tax_id_snapshot,
          payment_method, subtotal, discount, tax, total, received_amount, change_amount,
+         payment_currency, usd_amount_received, exchange_rate_used,
          fiscal_status, fiscal_payload, created_at, created_date, created_time,
          order_type, kitchen_status,
          delivery_user_id, delivery_name_snapshot, delivery_email_snapshot, delivery_phone_snapshot,
          delivery_address_snapshot, delivery_reference_snapshot, delivery_location_link_snapshot,
+         delivery_client_pay_amount, delivery_change_amount,
          table_label, order_notes,
          ncf, ncf_type, ncf_referencia, factura_referencia_id, razon_social_cliente, es_electronica, fecha_emision_fiscal,
          cash_session_id, operative_date)
@@ -13388,10 +13943,12 @@ app.post('/api/sales', async (req, res) => {
                ?, ?, ?,
                ?, ?, ?,
                ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?,
                ?, ?, ?, ?, ?,
                ?, ?,
                ?, ?, ?, ?,
                ?, ?, ?,
+               ?, ?,
                ?, ?,
                ?, ?, ?, ?, ?, ?, ?,
                ?, ?)`,
@@ -13427,6 +13984,9 @@ app.post('/api/sales', async (req, res) => {
         saleTotal,
         receivedAmount,
         changeAmount,
+        paymentCurrency,
+        paymentMethod === 'usd' ? usdAmountReceived : null,
+        paymentMethod === 'usd' ? exchangeRateUsed : null,
         'emitida',
         fiscalPayload,
         nowSql,
@@ -13443,6 +14003,8 @@ app.post('/api/sales', async (req, res) => {
         deliveryAddress || null,
         deliveryReference || null,
         deliveryLocationLink || null,
+        deliveryClientPayAmount,
+        deliveryChangeAmount,
         String(sale.mesa || '').trim() || null,
         String(sale.notasPedido || '').trim() || null,
         // NCF
@@ -13483,19 +14045,36 @@ app.post('/api/sales', async (req, res) => {
     }
 
     const affectedProductIds = new Set();
+    let ahorroPromociones = 0;
     for (const item of sale.items) {
       affectedProductIds.add(Number(item.id || 0) || 0);
       const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
       const product = productRows[0];
+
+      // El precio que manda el cliente para un producto en promoción NUNCA es la
+      // fuente de verdad — se vuelve a resolver la promoción activa server-side
+      // (mismo principio que la tasa de cambio USD más arriba) y esa es la que
+      // se guarda. Si el cliente no mandaba ninguna promoción, esto no cambia nada.
+      const activePromo = await resolvePriceForSaleItem({
+        query: conn.query.bind(conn),
+        productoId: item.id,
+        sucursalId: structure.branchId,
+      });
+      const effectivePrice = activePromo ? activePromo.precioPromocion : item.precio;
+      const effectiveLineTotal = activePromo
+        ? Number((effectivePrice * Number(item.qty || 0)).toFixed(2))
+        : item.total;
+      if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
+
       await conn.query(
         `INSERT INTO sale_items
-          (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.insertId,
           item.id,
           item.qty,
-          item.precio,
+          effectivePrice,
           item.descuento || 0,
           item.itbis || 0,
           normalizeProductSaleMode(item.saleMode),
@@ -13506,7 +14085,9 @@ app.post('/api/sales', async (req, res) => {
           String(item.scaleMeasuredUnit || '').trim() || null,
           String(item.scaleSource || '').trim() || null,
           String(item.scaleRawReading || '').trim() || null,
-          item.total
+          effectiveLineTotal,
+          activePromo ? activePromo.promotionId : null,
+          activePromo ? activePromo.precioOriginal : null,
         ]
       );
 
@@ -13534,6 +14115,13 @@ app.post('/api/sales', async (req, res) => {
           usuarioNombre: actorUser.nombre || actorUser.usuario || 'Sistema'
         });
       }
+    }
+
+    if (ahorroPromociones > 0) {
+      await conn.query('UPDATE sales SET ahorro_promociones = ? WHERE id = ?', [
+        Number(ahorroPromociones.toFixed(2)),
+        result.insertId,
+      ]);
     }
 
     if (paymentMethod === 'credito' && clientId && pendingCreditAmount > 0) {
@@ -13628,7 +14216,7 @@ app.post('/api/sales', async (req, res) => {
     userRole: actorUser.rol || 'Sistema',
     moduleName: 'Ventas',
     actionName: created.saleStatus === 'pendiente' ? 'Factura pendiente creada' : 'Venta registrada',
-    detail: `${created.branchName || 'Sucursal'} · ${created.cashRegisterName || 'Caja'} · ${rows[0]?.invoice_number || 'Venta'} · ${created.saleMode || 'directa'} · ${created.saleStatus || 'pagada'} · RD$ ${Number(sale.total || 0).toFixed(2)}`
+    detail: `${created.branchName || 'Sucursal'} · ${created.cashRegisterName || 'Caja'} · ${rows[0]?.invoice_number || 'Venta'} · ${created.saleMode || 'directa'} · ${created.saleStatus || 'pagada'} · Pago: ${rows[0]?.payment_method || 'efectivo'} · RD$ ${Number(sale.total || 0).toFixed(2)}`
   }).catch((err) => console.warn('[audit] Falló al registrar venta:', err.message));
   if (created.saleStatus === 'pagada') {
     firebaseSync.syncVentaDia({
@@ -13656,6 +14244,9 @@ app.post('/api/sales', async (req, res) => {
           cashierId:     _saleRow?.user_id || null,
           cashierName:   _saleRow?.cashier_name || '',
           paymentMethod: _saleRow?.payment_method || '',
+          paymentCurrency:   _saleRow?.payment_currency || 'DOP',
+          usdAmountReceived: Number(_saleRow?.usd_amount_received || 0),
+          exchangeRateUsed:  _saleRow?.exchange_rate_used === null || _saleRow?.exchange_rate_used === undefined ? null : Number(_saleRow.exchange_rate_used),
           subtotal:      Number(_saleRow?.subtotal || 0),
           discount:      Number(_saleRow?.discount || 0),
           tax:           Number(_saleRow?.tax || 0),
@@ -13700,45 +14291,10 @@ app.post('/api/sales', async (req, res) => {
     }
   }
   // ── Sync reporte-sistema-pos (fire-and-forget) ──
-  fireReportSync(async () => {
-    const cfg = await getReportSyncConfig();
-    const branches = await getReportSyncBranchesMap();
-    const saleRow = rows[0];
-    if (!saleRow) return;
-    const itemsForSync = items.map((it) => ({
-      product_id: it.product_id,
-      nombre: it.product_name,
-      qty: it.qty,
-      price: it.price,
-      discount_rate: it.discount_rate,
-      precio_compra: it.precio_compra,
-    }));
-    await reportsSync.syncSale(saleRow, {
-      config: cfg,
-      branches,
-      cashier: saleRow.cashier_name || '',
-      items: itemsForSync,
-    });
-    await syncProductsToReportsByIds(created.productIds, {
-      branchId: created.branchId,
-    });
-    // Resumen diario KPI (para que la app de reportes no necesite el servidor)
-    await reportsSync.syncDailySummary(saleRow, { config: cfg });
-    // Venta a crédito o pendiente → receivable
-    const status = String(saleRow.sale_status || '').toLowerCase();
-    const payment = String(saleRow.payment_method || '').toLowerCase();
-    if (status === 'pendiente' || payment === 'credito') {
-      await reportsSync.syncReceivable({
-        id: saleRow.id,
-        customerId: saleRow.client_id,
-        customerName: saleRow.client_name_snapshot || saleRow.client_name,
-        branchId: saleRow.branch_id,
-        branchName: created.branchName,
-        total: saleRow.total,
-        paid: Number(saleRow.received_amount || 0),
-        createdAt: saleRow.created_at,
-      }, { config: cfg });
-    }
+  syncSaleToReports(rows[0], items, {
+    productIds: created.productIds,
+    branchId: created.branchId,
+    branchName: created.branchName,
   });
   res.status(201).json({
     sale: mapSaleRows(rows, items)[0],
@@ -14290,6 +14846,62 @@ app.patch('/api/sales/:invoiceNumber/kitchen-status', async (req, res) => {
     moduleName: 'Cocina',
     actionName: 'Estado de pedido actualizado',
     detail: `${invoiceNumber} · ${kitchenStatus}`
+  });
+  res.json(mapSaleRows(rows, items)[0]);
+});
+
+// Cambia el estado de entrega (pendiente/en camino/entregado/incidencia) y,
+// opcionalmente, reasigna el repartidor — la única forma de tocar estos datos
+// después de facturada, ya que delivery_user_id hasta ahora solo se escribía
+// una vez, al crear la venta.
+app.patch('/api/sales/:invoiceNumber/delivery-status', async (req, res) => {
+  await ensureSalesExtensions();
+  const invoiceNumber = String(req.params.invoiceNumber || '').trim();
+  const deliveryStatus = String(req.body?.estadoEntrega || '').trim();
+  const deliveryUserIdRaw = req.body?.repartidorId;
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!['pendiente', 'en_camino', 'entregado', 'incidencia'].includes(deliveryStatus)) {
+    return res.status(400).json({ error: 'Estado de entrega no válido.' });
+  }
+  const existingRows = await query('SELECT * FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]);
+  if (!existingRows.length) return res.status(404).json({ error: 'Factura no encontrada.' });
+  const existing = existingRows[0];
+  if (String(existing.order_type || '') !== 'delivery') {
+    return res.status(400).json({ error: 'Esta factura no es un pedido de delivery.' });
+  }
+  assertActorCanAccessBranch(actorUser, Number(existing.inventory_branch_id || existing.billed_branch_id || existing.branch_id || 0), 'No puedes actualizar pedidos de otra sucursal.');
+
+  let deliveryUserId = existing.delivery_user_id || null;
+  let deliveryName = existing.delivery_name_snapshot || null;
+  let deliveryEmail = existing.delivery_email_snapshot || null;
+  if (deliveryUserIdRaw !== undefined) {
+    deliveryUserId = deliveryUserIdRaw ? Number(deliveryUserIdRaw) : null;
+    deliveryName = null;
+    deliveryEmail = null;
+    if (deliveryUserId) {
+      const deliveryRows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [deliveryUserId]);
+      const deliveryUser = deliveryRows[0];
+      if (!deliveryUser) return res.status(400).json({ error: 'Repartidor no encontrado.' });
+      deliveryName = deliveryUser.nombre;
+      deliveryEmail = deliveryUser.email || '';
+    }
+  }
+
+  await query(
+    'UPDATE sales SET delivery_status = ?, delivery_user_id = ?, delivery_name_snapshot = ?, delivery_email_snapshot = ? WHERE invoice_number = ?',
+    [deliveryStatus, deliveryUserId, deliveryName, deliveryEmail, invoiceNumber]
+  );
+  const rows = await query(
+    'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.invoice_number = ? LIMIT 1',
+    [invoiceNumber]
+  );
+  const items = await query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?', [rows[0].id]);
+  const actor = getActor(req);
+  await writeAuditLog({
+    ...actor,
+    moduleName: 'Delivery',
+    actionName: 'Estado de entrega actualizado',
+    detail: `${invoiceNumber} · ${deliveryStatus}${deliveryName ? ` · ${deliveryName}` : ''}`
   });
   res.json(mapSaleRows(rows, items)[0]);
 });
@@ -15032,7 +15644,9 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
         COALESCE(SUM(CASE WHEN s.payment_method='tarjeta' THEN s.total ELSE 0 END),0) AS tarjeta,
         COALESCE(SUM(CASE WHEN s.payment_method='transferencia' THEN s.total ELSE 0 END),0) AS transferencia,
         COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito,
-        COALESCE(SUM(CASE WHEN s.payment_method='contra_entrega' THEN s.total ELSE 0 END),0) AS contra_entrega
+        COALESCE(SUM(CASE WHEN s.payment_method='contra_entrega' THEN s.total ELSE 0 END),0) AS contra_entrega,
+        COALESCE(SUM(CASE WHEN s.payment_method='usd' THEN s.total ELSE 0 END),0) AS usd,
+        COALESCE(SUM(CASE WHEN s.payment_method='usd' THEN s.usd_amount_received ELSE 0 END),0) AS usd_recibido_total
       FROM sales s ${w}`, p);
 
     // costo estimado de lo vendido
@@ -15893,7 +16507,9 @@ app.post('/api/reports/auto-save-daily', async (req, res) => {
              COALESCE(SUM(tax),0) AS total_itbis, COALESCE(AVG(total),0) AS ticket_promedio,
              COALESCE(SUM(CASE WHEN payment_method='efectivo' THEN total ELSE 0 END),0) AS efectivo,
              COALESCE(SUM(CASE WHEN payment_method='tarjeta' THEN total ELSE 0 END),0) AS tarjeta,
-             COALESCE(SUM(CASE WHEN payment_method='transferencia' THEN total ELSE 0 END),0) AS transferencia
+             COALESCE(SUM(CASE WHEN payment_method='transferencia' THEN total ELSE 0 END),0) AS transferencia,
+             COALESCE(SUM(CASE WHEN payment_method='usd' THEN total ELSE 0 END),0) AS usd,
+             COALESCE(SUM(CASE WHEN payment_method='usd' THEN usd_amount_received ELSE 0 END),0) AS usd_recibido_total
              FROM sales s WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`, p),
       query(`SELECT b.nombre AS sucursal, COUNT(s.id) AS facturas, COALESCE(SUM(s.total),0) AS total
              FROM sales s JOIN branches b ON COALESCE(s.billed_branch_id,s.branch_id)=b.id
@@ -16255,7 +16871,16 @@ async function prepareServerRuntime() {
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);
       // Sync license first so the signed secure cache is validated before the app accepts traffic.
-      await syncRemoteLicenseToLocalConfig({ force: true }).catch(() => {});
+      // Con un límite de tiempo: sin internet, syncRemoteLicenseToLocalConfig intenta hasta
+      // 4 consultas secuenciales a Firestore (por LICENSE_UID, principalFirebaseUid, businessKey,
+      // businessName) que pueden tardar decenas de segundos en fallar una por una — eso bloqueaba
+      // el arranque completo del servidor. La sincronización real sigue corriendo en segundo plano
+      // (el singleton remoteLicenseSyncPromise evita que se duplique) y actualizará el estado de
+      // licencia normalmente en cuanto termine; aquí solo dejamos de ESPERARLA para no colgar el boot.
+      await Promise.race([
+        syncRemoteLicenseToLocalConfig({ force: true }),
+        new Promise((resolve) => setTimeout(resolve, 5000))
+      ]).catch(() => {});
       // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
       trySyncAllPosAccountsToFirebase().catch(() => {});
       // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
@@ -16267,7 +16892,13 @@ async function prepareServerRuntime() {
       tryRepairPendingDeliveryOrdersInFirebase().catch(() => {});
       // Bootstrap inicial de la data histórica para la app de reportes.
       tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
-      await ensureLicenseBackgroundSync();
+      // Mismo límite de tiempo que arriba: ensureLicenseBackgroundSync() intenta abrir un
+      // listener de Firestore (startFirestoreLicenseWatcher) y puede intentar resolver el
+      // licenseUid contra Firestore si no está en .env — ambos pueden tardar sin internet.
+      await Promise.race([
+        ensureLicenseBackgroundSync(),
+        new Promise((resolve) => setTimeout(resolve, 5000))
+      ]).catch(() => {});
       // Si Firebase se habilita después del arranque, reintenta el bootstrap histórico.
       setInterval(() => {
         tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
@@ -16416,7 +17047,13 @@ async function startFirestoreLicenseWatcher() {
         `SELECT firebase_uid FROM users WHERE rol IN ('admin','super_admin','administrador') AND firebase_uid IS NOT NULL AND firebase_uid != '' ORDER BY id ASC LIMIT 1`
       ).catch(() => []);
       const principalFirebaseUid = adminRows[0]?.firebase_uid || null;
-      const remoteState = await fetchRemotePosLicenseState({ business_name: cfg.nombre, principalFirebaseUid }).catch(() => null);
+      // Mismo límite de tiempo que en prepareServerRuntime: sin internet, fetchRemotePosLicenseState
+      // intenta varias consultas secuenciales a Firestore que pueden tardar decenas de segundos.
+      // Esto solo afecta a instalaciones sin TECNO_CAJA_LICENSE_UID configurado en .env.
+      const remoteState = await Promise.race([
+        fetchRemotePosLicenseState({ business_name: cfg.nombre, principalFirebaseUid }),
+        new Promise((resolve) => setTimeout(() => resolve(null), 5000))
+      ]).catch(() => null);
       licenseUid = remoteState?.licenseUid || '';
     }
 
@@ -16544,10 +17181,19 @@ async function startHttpServer(port, bindHost) {
     httpServer.listen(port, finalBindHost, () => {
       console.log('[Tecno Caja] Servidor escuchando en ' + finalBindHost + ':' + port);
       resolve();
-      // Auto-arranque del bot WhatsApp si estaba activo antes
+      // Auto-arranque del bot WhatsApp si estaba activo antes.
+      // A diferencia de prepareServerRuntime() (que ya se esperó arriba y
+      // reintenta con withRetryOnTransient), esta única query nunca tuvo
+      // reintento — un hipo transitorio de conexión aquí abandonaba el
+      // auto-arranque en silencio por el resto de la sesión, sin aviso
+      // visible para Emilio (solo un console.warn que nadie ve en la app
+      // empaquetada).
       setTimeout(async () => {
         try {
-          const rows = await query(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_autostart','wabot_owner_phone','wabot_owner_phone2','wabot_provider','wabot_claude_key','wabot_chatgpt_key')`);
+          const rows = await withRetryOnTransient(
+            () => query(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_autostart','wabot_owner_phone','wabot_owner_phone2','wabot_provider','wabot_claude_key','wabot_chatgpt_key')`),
+            { label: 'wa-bot autostart config' }
+          );
           const cfg = {};
           rows.forEach(r => { cfg[r.config_key] = r.config_value; });
           if (cfg.wabot_autostart === '1' && cfg.wabot_owner_phone) {

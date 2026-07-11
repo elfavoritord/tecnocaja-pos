@@ -849,13 +849,19 @@ const ECF_CERT_WIZARD = (() => {
               <div id="ecf-wz-s2-rfce-resend-log" style="font-size:.72rem;margin-top:.3rem;color:var(--text3)"></div>
             </div>
           </div>
+          <div style="border-top:1px solid rgba(255,255,255,.08);margin-top:.75rem;padding-top:.6rem">
+            <button id="ecf-wz-s2-reset-all-btn" class="ecf-wz-action-btn secondary"
+              style="font-size:.78rem;padding:.4rem .8rem;width:100%"
+              onclick="ECF_CERT_WIZARD._resetStep2Completely()">🧹 Reiniciar Paso 2 por completo (21 comprobantes + 4 RFCE)</button>
+            <div id="ecf-wz-s2-reset-all-log" style="font-size:.72rem;margin-top:.3rem;color:var(--text3)"></div>
+          </div>
         </div>
 
         <!-- Alerta rechazados (oculta) -->
         <div id="ecf-wz-step2-blocked-alert" style="display:none">
           <div style="background:rgba(220,38,38,.07);border:1px solid rgba(220,38,38,.3);border-radius:10px;padding:.75rem 1rem;margin-bottom:.5rem;display:flex;align-items:center;gap:.65rem;flex-wrap:wrap">
             <span style="font-size:1.2rem">⚠️</span>
-            <span style="font-weight:700;color:#f87171;font-size:.85rem;flex:1">Comprobantes rechazados — resetear y reintentar</span>
+            <span id="ecf-wz-step2-blocked-text" style="font-weight:700;color:#f87171;font-size:.85rem;flex:1">Comprobantes rechazados — resetear y reintentar</span>
             <button id="ecf-wz-step2-reset-btn" class="ecf-wz-action-btn" style="font-size:.8rem;padding:.4rem .8rem"
               onclick="ECF_CERT_WIZARD._resetAndRetry2()">🔄 Resetear y reintentar</button>
           </div>
@@ -1034,17 +1040,11 @@ const ECF_CERT_WIZARD = (() => {
         logLine('⚠ Hay documentos con problemas — usa "Resetear y reintentar".', 'err');
         if (alertEl) alertEl.style.display = '';
       } else {
-        // Auto-generar y enviar RFCE si los 21 comprobantes están bien
-        try {
-          logLine('Generando resúmenes RFCE <250Mil…');
-          await fiscalApi('POST', '/certification-center/rfce/generate');
-          logLine('Enviando RFCE a DGII…');
-          const rfceRes = await fiscalApi('POST', '/certification-center/rfce/submit');
-          logLine(`RFCE: ${rfceRes.aceptados||0} aceptados, ${rfceRes.rechazados||0} rechazados.`,
-            (rfceRes.rechazados||0) > 0 ? 'warn' : 'ok');
-        } catch (rfceErr) {
-          logLine(`RFCE: ${rfceErr.message}`, 'warn');
-        }
+        // El envío de RFCE ya NO es automático: se disparaba a la vez que un envío manual
+        // ("Reenviar RFCE") podía estar en curso, reenviando los 4 resúmenes por partida
+        // doble y re-quemando eNCF del set fijo DGII sin que el usuario pudiera controlarlo.
+        // Ahora es 100% manual — usa el botón "Reenviar RFCE" cuando estés listo.
+        logLine('✅ 21/21 comprobantes listos. Usa "Reenviar RFCE" cuando quieras enviar los resúmenes <250Mil.', 'ok');
       }
     } catch (err) {
       clearTimeout(hangTimeout);
@@ -1085,9 +1085,24 @@ const ECF_CERT_WIZARD = (() => {
         if (rej  > 0) parts.push(`${rej} rechazados`);
         logLine(parts.join(' · ') + '…');
       }
-      if ((counts.blocked||0) > 0 || (counts.rejected||0) > 0) {
+      // "Resetear y reintentar" (run-sequential) excluye RFCE por diseño — nunca toca esos
+      // documentos. Si el único rechazo es RFCE, ese botón no hace nada útil; mostrarlo igual
+      // confunde (y antes de este fix, además reenviaba de gratis los ya aceptados). Separamos
+      // el conteo para no ofrecer una acción que no puede resolver el caso mostrado.
+      const rfceRejected = rfceItems.filter((i) => String(i.estado || '').toLowerCase().includes('rechaz')).length;
+      const nonRfceRejected = Math.max(0, (counts.rejected || 0) - rfceRejected);
+      if ((counts.blocked||0) > 0 || nonRfceRejected > 0 || rfceRejected > 0) {
         const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
+        const textEl = document.getElementById('ecf-wz-step2-blocked-text');
+        const resetBtn = document.getElementById('ecf-wz-step2-reset-btn');
         if (alertEl) alertEl.style.display = '';
+        if (nonRfceRejected > 0) {
+          if (textEl) textEl.textContent = 'Comprobantes rechazados — resetear y reintentar';
+          if (resetBtn) resetBtn.style.display = '';
+        } else if (rfceRejected > 0) {
+          if (textEl) textEl.textContent = 'RFCE con e-NCF ya quemado en el set fijo DGII — usa "Reenviar RFCE" arriba o descarga un set nuevo. "Resetear y reintentar" no aplica a RFCE.';
+          if (resetBtn) resetBtn.style.display = 'none';
+        }
       }
     } catch (_) {}
   }
@@ -1231,7 +1246,10 @@ const ECF_CERT_WIZARD = (() => {
     setBtnState('ecf-wz-step2-rfce-send', true, 'Enviando…');
     try {
       const r = await fiscalApi('POST', '/certification-center/rfce/submit');
-      appendLog('ecf-wz-step2-log', `RFCE enviados: ${r.aceptados||0} aceptados.`, 'ok');
+      appendLog('ecf-wz-step2-log', `RFCE enviados: ${r.aceptados||0} aceptados${r.rechazados ? `, ${r.rechazados} rechazado(s)` : ''}.`, r.rechazados ? 'warn' : 'ok');
+      if (r.bloqueados > 0) {
+        appendLog('ecf-wz-step2-log', `⚠ ${r.bloqueados} resumen(es) con e-NCF del set fijo DGII ya quemado — no reintentes, descarga un set de comprobantes nuevo en el portal DGII.`, 'warn');
+      }
       _showPortalE32Result(r);
       await _pollStep2();
     } catch (err) { appendLog('ecf-wz-step2-log', `Error RFCE: ${err.message}`, 'err'); }
@@ -1256,12 +1274,43 @@ const ECF_CERT_WIZARD = (() => {
       await fiscalApi('POST', '/certification-center/rfce/generate');
       if (logEl) logEl.textContent = 'Enviando a DGII…';
       const r = await fiscalApi('POST', '/certification-center/rfce/submit');
-      if (logEl) { logEl.textContent = `✅ ${r.aceptados||0} aceptados, ${r.rechazados||0} rechazados.`; logEl.style.color = (r.rechazados||0) > 0 ? '#f87171' : '#4ade80'; }
+      if (logEl) {
+        const blockedHint = r.bloqueados > 0
+          ? ` — ${r.bloqueados} con e-NCF ya quemado en el set fijo DGII: descarga un set nuevo, no reintentes.`
+          : '';
+        logEl.textContent = `✅ ${r.aceptados||0} aceptados, ${r.rechazados||0} rechazados.${blockedHint}`;
+        logEl.style.color = (r.rechazados||0) > 0 ? '#f87171' : '#4ade80';
+      }
       await _pollStep2();
     } catch (err) {
       if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '🔄 Reenviar RFCE'; }
+    }
+  }
+
+  async function _resetStep2Completely() {
+    const ok = confirm(
+      '⚠️ Esto borra el estado de los 21 comprobantes Y los 4 RFCE del lote actual ' +
+      '(incluyendo los ya aceptados) y los deja listos para regenerar desde cero.\n\n' +
+      'Úsalo después de descargar un set de datos NUEVO en el portal DGII (esos 25 documentos pueden ' +
+      'traer eNCF distintos), o si el proceso quedó en un estado confuso.\n\n' +
+      '¿Continuar?'
+    );
+    if (!ok) return;
+    const btn = document.getElementById('ecf-wz-s2-reset-all-btn');
+    const logEl = document.getElementById('ecf-wz-s2-reset-all-log');
+    const btnLabel = '🧹 Reiniciar Paso 2 por completo (21 comprobantes + 4 RFCE)';
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Reiniciando…'; }
+    if (logEl) { logEl.textContent = 'Reiniciando Paso 2…'; logEl.style.color = 'var(--text3)'; }
+    try {
+      const r = await fiscalApi('POST', '/certification-center/reset-step2-completely');
+      if (logEl) { logEl.textContent = `✅ ${r.message || 'Paso 2 reiniciado.'}`; logEl.style.color = '#4ade80'; }
+      await _pollStep2();
+    } catch (err) {
+      if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = btnLabel; }
     }
   }
 
@@ -1511,11 +1560,11 @@ const ECF_CERT_WIZARD = (() => {
       const statusEl = document.getElementById('ecf-wz-step3-status');
       if (statusEl) statusEl.innerHTML = `<span style="color:${isOk?'#4ade80':'#f87171'}">${accepted}/${total}</span>`;
 
-      // Detectar si el Excel está desactualizado
-      const hasStaleData = results.some((r) =>
-        String(r.mensaje || '').toLowerCase().includes('no existe en nuestra colecci') ||
-        String(r.mensaje || '').toLowerCase().includes('fechahora') ||
-        String(r.mensaje || '').toLowerCase().includes('no es válida')
+      // Detectar si el Excel está desactualizado (fechas ya corregidas automáticamente cuentan
+      // como resueltas — solo lo marcamos "desactualizado" si algo quedó sin poder arreglarse).
+      const hasStaleDataset = results.some((r) => r.staleDataset);
+      const hasUnresolvedMismatch = results.some((r) =>
+        !r.ok && !r.correctedFechaHoraAC && String(r.mensaje || '').toLowerCase().includes('fechahora')
       );
 
       if (resultEl) {
@@ -1525,10 +1574,11 @@ const ECF_CERT_WIZARD = (() => {
             <div style="font-weight:700;color:${isOk?'#4ade80':'#f87171'};margin-bottom:.5rem">
               ${isOk ? '✅' : '❌'} ${accepted}/${total} Aprobaciones Comerciales ${isOk ? 'aceptadas' : 'con errores'}
             </div>
-            ${hasStaleData ? `
+            ${(hasStaleDataset || hasUnresolvedMismatch) ? `
               <div style="background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);border-radius:6px;padding:.6rem .75rem;margin-bottom:.55rem;font-size:.78rem;color:#fbbf24">
-                ⚠ <strong>El Excel está desactualizado.</strong> DGII reinició las pruebas y cambió los datos.
-                Ve al portal DGII → Paso 3 → descarga el Excel <strong>más reciente</strong> y sube de nuevo.
+                ⚠ <strong>DGII reinició el lote de pruebas</strong> (pasa cuando rechaza cualquier fila del Excel).
+                Los e-NCF marcados "no existe en nuestra colección" ya no pertenecen al lote activo — no se pueden reenviar con este archivo.
+                <br>Ve al portal DGII → Paso 3, descarga el Excel <strong>más reciente</strong> (no reuses el actual) y súbelo aquí de inmediato, sin esperar.
               </div>
             ` : ''}
             <div style="display:grid;gap:.3rem">
@@ -1539,6 +1589,8 @@ const ECF_CERT_WIZARD = (() => {
                   ${r.trackId ? ` · Track: ${h(r.trackId)}` : ''}
                   ${r.mensaje ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:${r.ok?'#86efac':'#fca5a5'}">${h(r.mensaje)}</span>` : ''}
                   ${r.error ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#fbbf24">${h(r.error)}</span>` : ''}
+                  ${r.correctedFechaHoraAC ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#93c5fd">↻ FechaHoraAprobacionComercial autocorregida (DGII indicó el valor correcto en el rechazo).</span>` : ''}
+                  ${r.staleDataset ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#fbbf24">⚠ Este e-NCF ya no está en el lote activo de DGII — requiere Excel nuevo, no reintentar.</span>` : ''}
                 </div>
               `).join('')}
             </div>
@@ -2197,6 +2249,12 @@ const ECF_CERT_WIZARD = (() => {
                 onclick="ECF_CERT_WIZARD._step5StartZipDownload(this)"
                 style="font-size:.75rem;padding:.25rem .65rem;background:rgba(22,163,74,.12);border:1px solid rgba(22,163,74,.35);border-radius:6px;color:#4ade80;text-decoration:none;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:.3rem">
                 📦 Descargar todos en ZIP
+              </a>
+              <a href="/api/ecf/print/step5-xml-bundle"
+                download="xml-documentos-DGII.zip"
+                title="Descarga el XML firmado de todos los documentos del lote — útil para verificar los datos sin reenviar"
+                style="font-size:.75rem;padding:.25rem .65rem;background:rgba(108,99,255,.12);border:1px solid rgba(108,99,255,.35);border-radius:6px;color:var(--accent);text-decoration:none;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:.3rem">
+                📄 Descargar XML de todos
               </a>
               <button class="ecf-wz-action-btn secondary" style="padding:.25rem .65rem;font-size:.75rem;min-width:auto"
                 onclick="ECF_CERT_WIZARD._step5LoadDocs()">🔄 Recargar</button>
@@ -3336,6 +3394,7 @@ const ECF_CERT_WIZARD = (() => {
     _resetAndRetry2,
     _pollStep2,
     _resendRfce,
+    _resetStep2Completely,
 
     // Step 4 — Simulación e-CF
     runStep4,

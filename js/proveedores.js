@@ -498,11 +498,17 @@ async function saveProveedor(id) {
       const updated = await api.updateSupplier(id, { ...data, ...getActorPayload() });
       const idx = DB.proveedores.findIndex(x=>x.id===id);
       if (idx>=0) DB.proveedores[idx] = updated;
-      showToast('Proveedor actualizado', 'success');
+      showToast(
+        updated.offlineMode ? 'Proveedor guardado localmente — se sincronizará al reconectar' : 'Proveedor actualizado',
+        updated.offlineMode ? 'warning' : 'success'
+      );
     } else {
       const created = await api.createSupplier({ ...data, ...getActorPayload() });
       DB.proveedores.push(created);
-      showToast('Proveedor creado', 'success');
+      showToast(
+        created.offlineMode ? 'Proveedor guardado localmente — se sincronizará al reconectar' : 'Proveedor creado',
+        created.offlineMode ? 'warning' : 'success'
+      );
     }
   } catch(e) { showToast(e.message, 'error'); return; }
 
@@ -661,7 +667,11 @@ async function deleteProveedor(id) {
   }
   if (!await showDeleteConfirm('¿Eliminar este proveedor? Esta acción no se puede deshacer.')) return;
   try {
-    await api.request(`/api/suppliers/${id}`, { method:'DELETE', body: JSON.stringify(getActorPayload()) });
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      showToast('Sin conexión: se verificará al reconectar si tiene facturas pendientes antes de eliminarlo definitivamente.', 'warning');
+    }
+    const result = await api.deleteSupplier(id, getActorPayload());
     closeAllModals();
     DB.proveedores = (DB.proveedores||[]).filter(p=>Number(p.id)!==Number(id));
     DB.facturasProveedores = (DB.facturasProveedores||[]).filter(i=>Number(i.supplierId)!==Number(id));
@@ -670,7 +680,7 @@ async function deleteProveedor(id) {
     if (detailPanel) detailPanel.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:.75rem;color:var(--text3)"><div style="font-size:3rem">🚚</div><div style="font-size:.9rem">Selecciona un proveedor para ver su perfil completo</div></div>`;
     renderProveedoresList();
     if (typeof refreshAuditLogs === 'function') refreshAuditLogs().catch(()=>{});
-    showToast('Proveedor eliminado', 'success');
+    if (!(result && result.offlineMode)) showToast('Proveedor eliminado', 'success');
   } catch(e) { showToast(e.message, 'error'); }
 }
 

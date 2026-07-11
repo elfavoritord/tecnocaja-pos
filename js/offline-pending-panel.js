@@ -128,15 +128,25 @@
       const pending = listData.pending || [];
       const errors = listData.errors || [];
       const lastSync = listData.lastSync || null;
+      const pendingSuppliers = (listData.pendingSuppliers || []).filter(s => s.status === 'pending');
+      const supplierErrors = (listData.pendingSuppliers || []).filter(s => s.status === 'error');
+      const pendingAdjustments = (listData.pendingInventoryAdjustments || []).filter(a => a.status === 'pending');
+      const adjustmentErrors = (listData.pendingInventoryAdjustments || []).filter(a => a.status === 'error');
+      const pendingCashMovements = (listData.pendingCashMovements || []).filter(m => m.status === 'pending');
+      const cashMovementErrors = (listData.pendingCashMovements || []).filter(m => m.status === 'error');
 
       if (subtitle) {
-        const cnt = status.pendingSalesCount || pending.length;
+        const cnt = (status.pendingSalesCount || pending.length) + pendingSuppliers.length
+          + pendingAdjustments.length + pendingCashMovements.length;
         subtitle.textContent = cnt > 0
-          ? `${cnt} venta${cnt !== 1 ? 's' : ''} pendiente${cnt !== 1 ? 's' : ''} de sincronizar`
-          : 'Sin ventas pendientes';
+          ? `${cnt} pendiente${cnt !== 1 ? 's' : ''} de sincronizar`
+          : 'Sin pendientes';
       }
 
-      renderBody(body, pending, errors, status);
+      renderBody(body, pending, errors, status, {
+        pendingSuppliers, supplierErrors, pendingAdjustments, adjustmentErrors,
+        pendingCashMovements, cashMovementErrors
+      });
       renderFooter(lastSync, status);
     } catch (err) {
       if (body) body.innerHTML = `
@@ -146,8 +156,111 @@
     }
   }
 
-  function renderBody(container, pending, errors, status) {
+  function renderPendingSupplierCard(item) {
+    const fecha = new Date(item.created_at).toLocaleString('es-DO', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+    });
+    const labels = { create: 'Nuevo proveedor', update: 'Edición de proveedor', delete: 'Eliminación de proveedor' };
+    return `
+      <div style="
+        border:1px solid #ddd;border-radius:8px;padding:12px;
+        margin-bottom:8px;background:#fff;position:relative
+      ">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-weight:600;font-size:14px;color:#2c3e50">
+              ${labels[item.change_type] || item.change_type}
+            </div>
+            <div style="font-size:12px;color:#7f8c8d;margin-top:2px">${fecha}</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;justify-content:flex-end">
+          <button
+            data-cancel-supplier-ref="${item.offline_ref}"
+            style="
+              background:none;border:1px solid #e74c3c;color:#e74c3c;
+              padding:3px 10px;border-radius:4px;font-size:12px;cursor:pointer
+            "
+          >Cancelar</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderPendingAdjustmentCard(item) {
+    const fecha = new Date(item.created_at).toLocaleString('es-DO', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+    });
+    const labels = { entrada: 'Entrada de mercancía', salida: 'Salida / merma', ajuste: 'Ajuste manual' };
+    return `
+      <div style="
+        border:1px solid #ddd;border-radius:8px;padding:12px;
+        margin-bottom:8px;background:#fff;position:relative
+      ">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-weight:600;font-size:14px;color:#2c3e50">
+              ${labels[item.tipo] || item.tipo} · ${item.product_name || 'Producto'}
+            </div>
+            <div style="font-size:12px;color:#7f8c8d;margin-top:2px">${fecha} · cantidad ${item.qty}</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;justify-content:flex-end">
+          <button
+            data-cancel-adjustment-ref="${item.offline_ref}"
+            style="
+              background:none;border:1px solid #e74c3c;color:#e74c3c;
+              padding:3px 10px;border-radius:4px;font-size:12px;cursor:pointer
+            "
+          >Cancelar</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderPendingCashMovementCard(item) {
+    const fecha = new Date(item.created_at).toLocaleString('es-DO', {
+      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+    });
+    const labels = { retiro_efectivo: 'Retiro de efectivo', gasto: 'Gasto', devolucion: 'Devolución', ingreso: 'Ingreso adicional' };
+    const amount = Number(item.amount || 0);
+    const amountColor = amount < 0 ? '#e74c3c' : '#27ae60';
+    return `
+      <div style="
+        border:1px solid #ddd;border-radius:8px;padding:12px;
+        margin-bottom:8px;background:#fff;position:relative
+      ">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div>
+            <div style="font-weight:600;font-size:14px;color:#2c3e50">
+              ${labels[item.expense_type] || item.expense_type}
+            </div>
+            <div style="font-size:12px;color:#7f8c8d;margin-top:2px">${fecha}</div>
+          </div>
+          <div style="font-weight:700;color:${amountColor}">RD$ ${Math.abs(amount).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</div>
+        </div>
+        <div style="margin-top:8px;display:flex;justify-content:flex-end">
+          <button
+            data-cancel-cash-movement-id="${item.id}"
+            style="
+              background:none;border:1px solid #e74c3c;color:#e74c3c;
+              padding:3px 10px;border-radius:4px;font-size:12px;cursor:pointer
+            "
+          >Cancelar</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderBody(container, pending, errors, status, extra) {
     if (!container) return;
+    extra = extra || {};
+    const pendingSuppliers = extra.pendingSuppliers || [];
+    const supplierErrors = extra.supplierErrors || [];
+    const pendingAdjustments = extra.pendingAdjustments || [];
+    const adjustmentErrors = extra.adjustmentErrors || [];
+    const pendingCashMovements = extra.pendingCashMovements || [];
+    const cashMovementErrors = extra.cashMovementErrors || [];
 
     let html = '';
 
@@ -169,12 +282,14 @@
     `;
 
     // Ventas pendientes
-    if (pending.length === 0 && errors.length === 0) {
+    if (pending.length === 0 && errors.length === 0 && pendingSuppliers.length === 0 && supplierErrors.length === 0
+        && pendingAdjustments.length === 0 && adjustmentErrors.length === 0
+        && pendingCashMovements.length === 0 && cashMovementErrors.length === 0) {
       html += `
         <div style="text-align:center;padding:40px 0;color:#27ae60">
           <div style="font-size:36px">✓</div>
           <div style="font-weight:600;margin-top:8px">Todo sincronizado</div>
-          <div style="color:#7f8c8d;font-size:13px;margin-top:4px">No hay ventas pendientes</div>
+          <div style="color:#7f8c8d;font-size:13px;margin-top:4px">No hay pendientes</div>
         </div>
       `;
     } else {
@@ -237,9 +352,180 @@
           `;
         }
       }
+
+      // Proveedores pendientes
+      if (pendingSuppliers.length > 0) {
+        html += `<div style="font-weight:700;margin:16px 0 10px;color:#2c3e50">
+          Proveedores pendientes (${pendingSuppliers.length})
+        </div>`;
+        for (const item of pendingSuppliers) {
+          html += renderPendingSupplierCard(item);
+        }
+      }
+
+      // Errores de proveedores (conflictos detectados en sync)
+      if (supplierErrors.length > 0) {
+        html += `<div style="font-weight:700;margin:16px 0 10px;color:#e74c3c">
+          Errores de proveedores (${supplierErrors.length})
+        </div>`;
+        for (const item of supplierErrors) {
+          html += `
+            <div style="
+              border:1px solid #e74c3c44;border-radius:8px;padding:10px;
+              margin-bottom:6px;background:#fdedec
+            ">
+              <div style="font-size:12px;font-weight:600;color:#c0392b">Proveedor — ${item.change_type}</div>
+              <div style="font-size:12px;color:#7f8c8d;margin-top:2px">${item.error_message || 'Error desconocido'}</div>
+            </div>
+          `;
+        }
+      }
+
+      // Ajustes de inventario pendientes
+      if (pendingAdjustments.length > 0) {
+        html += `<div style="font-weight:700;margin:16px 0 10px;color:#2c3e50">
+          Ajustes de inventario pendientes (${pendingAdjustments.length})
+        </div>`;
+        for (const item of pendingAdjustments) {
+          html += renderPendingAdjustmentCard(item);
+        }
+      }
+
+      // Errores de ajustes de inventario (conflictos detectados en sync)
+      if (adjustmentErrors.length > 0) {
+        html += `<div style="font-weight:700;margin:16px 0 10px;color:#e74c3c">
+          Errores de inventario (${adjustmentErrors.length})
+        </div>`;
+        for (const item of adjustmentErrors) {
+          html += `
+            <div style="
+              border:1px solid #e74c3c44;border-radius:8px;padding:10px;
+              margin-bottom:6px;background:#fdedec
+            ">
+              <div style="font-size:12px;font-weight:600;color:#c0392b">${item.product_name || 'Producto'} — ${item.tipo}</div>
+              <div style="font-size:12px;color:#7f8c8d;margin-top:2px">${item.error_message || 'Error desconocido'}</div>
+            </div>
+          `;
+        }
+      }
+
+      // Movimientos de caja pendientes (standalone, sin venta asociada)
+      if (pendingCashMovements.length > 0) {
+        html += `<div style="font-weight:700;margin:16px 0 10px;color:#2c3e50">
+          Movimientos de caja pendientes (${pendingCashMovements.length})
+        </div>`;
+        for (const item of pendingCashMovements) {
+          html += renderPendingCashMovementCard(item);
+        }
+      }
+
+      // Errores de movimientos de caja (pueden ser rechazados si la caja cambió)
+      if (cashMovementErrors.length > 0) {
+        html += `<div style="font-weight:700;margin:16px 0 10px;color:#e74c3c">
+          Errores de caja (${cashMovementErrors.length})
+        </div>`;
+        for (const item of cashMovementErrors) {
+          html += `
+            <div style="
+              border:1px solid #e74c3c44;border-radius:8px;padding:10px;
+              margin-bottom:6px;background:#fdedec
+            ">
+              <div style="font-size:12px;font-weight:600;color:#c0392b">${item.expense_type}</div>
+              <div style="font-size:12px;color:#7f8c8d;margin-top:2px">${item.error_message || 'Error desconocido'}</div>
+            </div>
+          `;
+        }
+      }
     }
 
     container.innerHTML = html;
+
+    // Agregar listeners para cancelar cambios de proveedores pendientes
+    container.querySelectorAll('[data-cancel-supplier-ref]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const offlineRef = btn.getAttribute('data-cancel-supplier-ref');
+        if (!await showDeleteConfirm('¿Cancelar este cambio de proveedor pendiente?')) return;
+        btn.disabled = true;
+        btn.textContent = 'Cancelando...';
+        try {
+          const resp = await fetch('/api/offline/supplier-cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ offlineRef })
+          });
+          const result = await resp.json();
+          if (result.ok) {
+            loadData();
+          } else {
+            alert('Error al cancelar: ' + (result.error || 'Error desconocido'));
+            btn.disabled = false;
+            btn.textContent = 'Cancelar';
+          }
+        } catch (e) {
+          alert('Error de conexión: ' + e.message);
+          btn.disabled = false;
+          btn.textContent = 'Cancelar';
+        }
+      });
+    });
+
+    // Agregar listeners para cancelar ajustes de inventario pendientes
+    container.querySelectorAll('[data-cancel-adjustment-ref]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const offlineRef = btn.getAttribute('data-cancel-adjustment-ref');
+        if (!await showDeleteConfirm('¿Cancelar este ajuste de inventario pendiente?')) return;
+        btn.disabled = true;
+        btn.textContent = 'Cancelando...';
+        try {
+          const resp = await fetch('/api/offline/inventory-cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ offlineRef })
+          });
+          const result = await resp.json();
+          if (result.ok) {
+            loadData();
+          } else {
+            alert('Error al cancelar: ' + (result.error || 'Error desconocido'));
+            btn.disabled = false;
+            btn.textContent = 'Cancelar';
+          }
+        } catch (e) {
+          alert('Error de conexión: ' + e.message);
+          btn.disabled = false;
+          btn.textContent = 'Cancelar';
+        }
+      });
+    });
+
+    // Agregar listeners para cancelar movimientos de caja pendientes
+    container.querySelectorAll('[data-cancel-cash-movement-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-cancel-cash-movement-id');
+        if (!await showDeleteConfirm('¿Cancelar este movimiento de caja pendiente?')) return;
+        btn.disabled = true;
+        btn.textContent = 'Cancelando...';
+        try {
+          const resp = await fetch('/api/offline/cash-movement-cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+          });
+          const result = await resp.json();
+          if (result.ok) {
+            loadData();
+          } else {
+            alert('Error al cancelar: ' + (result.error || 'Error desconocido'));
+            btn.disabled = false;
+            btn.textContent = 'Cancelar';
+          }
+        } catch (e) {
+          alert('Error de conexión: ' + e.message);
+          btn.disabled = false;
+          btn.textContent = 'Cancelar';
+        }
+      });
+    });
 
     // Agregar listeners para cancelar ventas
     container.querySelectorAll('[data-cancel-id]').forEach(btn => {

@@ -147,6 +147,63 @@ router.post('/instructions', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Instrucciones + toggle de IA del flujo de clientes ────────────────────────
+router.get('/customer-instructions', async (req, res) => {
+  try {
+    const db = req.app.locals.queryFn;
+    const rows = await db(`SELECT config_value FROM offline_cache_config WHERE config_key='wabot_customer_instructions'`);
+    res.json({ instructions: rows[0]?.config_value || '' });
+  } catch { res.json({ instructions: '' }); }
+});
+
+router.post('/customer-instructions', async (req, res) => {
+  try {
+    const { instructions } = req.body;
+    const db = req.app.locals.queryFn;
+    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_customer_instructions',?) ON DUPLICATE KEY UPDATE config_value=?`, [instructions, instructions]);
+    bot.setCustomerInstructions(instructions);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/customer-ai-toggle', async (req, res) => {
+  try {
+    const db = req.app.locals.queryFn;
+    const rows = await db(`SELECT config_value FROM offline_cache_config WHERE config_key='wabot_customer_ai_enabled'`);
+    res.json({ enabled: rows[0]?.config_value === '1' });
+  } catch { res.json({ enabled: false }); }
+});
+
+router.post('/customer-ai-toggle', async (req, res) => {
+  try {
+    const { enabled } = req.body;
+    const value = enabled ? '1' : '0';
+    const db = req.app.locals.queryFn;
+    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_customer_ai_enabled',?) ON DUPLICATE KEY UPDATE config_value=?`, [value, value]);
+    bot.setCustomerAiEnabled(!!enabled);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Horario de atención (para el flujo de clientes) ───────────────────────────
+router.get('/business-hours', async (req, res) => {
+  try {
+    const db = req.app.locals.queryFn;
+    const rows = await db(`SELECT config_value FROM offline_cache_config WHERE config_key='wabot_business_hours'`);
+    res.json({ businessHours: rows[0]?.config_value || '' });
+  } catch { res.json({ businessHours: '' }); }
+});
+
+router.post('/business-hours', async (req, res) => {
+  try {
+    const { businessHours } = req.body;
+    const db = req.app.locals.queryFn;
+    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_business_hours',?) ON DUPLICATE KEY UPDATE config_value=?`, [businessHours, businessHours]);
+    bot.setBusinessHours(businessHours);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Bot ───────────────────────────────────────────────────────────────────────
 router.get('/status', (req, res) => res.json(bot.getSafeState()));
 
@@ -182,6 +239,27 @@ router.post('/start', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('[wa-bot route] start error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/wa-bot/send-receipt — envía la imagen de una factura ya cobrada
+// al cliente por WhatsApp (usado tras facturar un pedido recibido por el bot).
+router.post('/send-receipt', async (req, res) => {
+  try {
+    const { phone, imageDataUrl, caption } = req.body || {};
+    console.log('[wa-bot route] send-receipt: solicitud recibida', {
+      phone,
+      imageDataUrlLength: String(imageDataUrl || '').length
+    });
+    if (!phone) return res.status(400).json({ error: 'phone requerido' });
+    if (!imageDataUrl) return res.status(400).json({ error: 'imageDataUrl requerido' });
+    const result = await bot.sendReceiptImage(phone, imageDataUrl, caption || '');
+    console.log('[wa-bot route] send-receipt: resultado', result);
+    if (!result.ok) return res.status(400).json(result);
+    res.json(result);
+  } catch (e) {
+    console.error('[wa-bot route] send-receipt error:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

@@ -123,10 +123,22 @@ storage/ecf/cert-wizard-state.json
 storage/products/csv-backups/
 
 # Scripts de operación one-shot (datos específicos de negocio)
-ecf/
+/ecf/
 scripts/250mil-upload/
 scripts/portal-250mil-upload/
 
 # Contadores app — archivos de build local
 tecno-caja-contadores/node_modules/
 tecno-caja-contadores/dist/
+
+# Capacitor / Android — build local y config específica de máquina
+capacitor/android/local.properties
+capacitor/android/.gradle/
+capacitor/android/build/
+capacitor/android/app/build/
+capacitor/android/**/*.iml
+capacitor/android/.idea/
+capacitor/android/captures/
+capacitor/android/app/release/
+*.keystore
+*.jks

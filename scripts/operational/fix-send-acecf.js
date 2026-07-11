@@ -1,33 +1,33 @@
 'use strict';
 /**
- * Envía las 7 Aprobaciones Comerciales (ACECF) válidas a DGII Paso 3.
+ * Envía las Aprobaciones Comerciales (ACECF) válidas a DGII Paso 3.
  *
  * FechaHoraAprobacionComercial fija al valor exacto del dataset DGII:
- *   6/23/2026 8:19:36 PM → 23-06-2026 20:19:36
+ *   7/6/2026 8:05:00 AM → 06-07-2026 08:05:00
  *
  * eNCFs "no existe en la colección" se excluyen automáticamente.
  */
 process.env.NODE_ENV = 'production';
 const path = require('path');
 const fs = require('fs');
-process.chdir(path.resolve(__dirname));
+const projectRoot = path.resolve(__dirname, '..', '..');
+process.chdir(projectRoot);
 try { require('dotenv').config(); } catch (_) {}
 
-const { createEcfService } = require('./modules/ecf/services/ecf.service');
-const mysql2 = require('./node_modules/mysql2/promise');
+const { createEcfService } = require(path.join(projectRoot, 'modules/ecf/services/ecf.service'));
+const mysql2 = require(path.join(projectRoot, 'node_modules/mysql2/promise'));
 
 // ─── Datos exactos del dataset DGII (del mensaje de error DGII) ─────────────
-const FECHA_HORA_AC = '23-06-2026 20:19:36'; // 6/23/2026 8:19:36 PM → hora local RD
+const FECHA_HORA_AC = process.env.DGII_ACECF_FECHA_HORA || '06-07-2026 08:05:00';
 
 // eNCFs que SÍ existen en el dataset DGII Paso 3:
 const ENCFS_VALIDOS = [
-  'E310000000002',
+  'E310000000001',
   'E310000000034',
   'E330000000001',
   'E340000000002',
-  'E340000000013',
-  'E440000000013',
-  'E450000000009',
+  'E440000000008',
+  'E450000000001',
 ];
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -59,7 +59,11 @@ async function main() {
 
   // Obtener datos de los docs de certificación para los 7 eNCFs válidos
   const docs = await query(
-    'SELECT encf, tipo_ecf, rnc_comprador, monto_total, certification_original_xml FROM ecf_documents WHERE encf IN (?) AND certification_case_key IS NOT NULL',
+    `SELECT encf, tipo_ecf, rnc_comprador, monto_total, certification_original_xml
+       FROM ecf_documents
+      WHERE encf IN (?)
+        AND certification_case_key IS NOT NULL
+        AND estado_dgii IN ('aceptado', 'aceptado_condicional')`,
     [ENCFS_VALIDOS]
   );
 
@@ -69,6 +73,7 @@ async function main() {
   const ordered = ENCFS_VALIDOS.map((e) => docsMap[e]).filter(Boolean);
 
   console.log(`Docs encontrados en DB: ${ordered.length}/${ENCFS_VALIDOS.length}`);
+  console.log(`FechaHoraAprobacionComercial: ${FECHA_HORA_AC}`);
   if (ordered.length !== ENCFS_VALIDOS.length) {
     const missing = ENCFS_VALIDOS.filter((e) => !docsMap[e]);
     console.error('Faltan en DB:', missing.join(', '));
@@ -135,7 +140,7 @@ async function main() {
     // Guardar copia local
     const outDir = path.resolve('storage/ecf/acecf-enviados');
     fs.mkdirSync(outDir, { recursive: true });
-    const filename = `${rncComprador}${doc.encf}.xml`;
+    const filename = `${acecfRncComprador}${doc.encf}.xml`;
     fs.writeFileSync(path.join(outDir, filename), signedXml, 'utf8');
 
     // Enviar a DGII

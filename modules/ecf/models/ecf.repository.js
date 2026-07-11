@@ -910,6 +910,7 @@ class EcfRepository {
     const rncEmisor  = String(params.rncEmisor || params.rnc_emisor || '').trim();
     const seqNum     = toSqlInteger(params.sequenceNumber ?? params.sequence_number, 0) || 0;
     const status     = String(params.status || 'SENT').toUpperCase();
+    const sentAt     = toSqlDateTime(params.sentAt);
     const existing   = await this.query(
       'SELECT id FROM ecf_sequence_usage WHERE business_id=? AND tipo_ecf=? AND encf=? LIMIT 1',
       [businessId, tipoEcf, encf]
@@ -932,7 +933,7 @@ class EcfRepository {
         params.xmlHash        || null, params.saleId      || null,
         params.ecfDocumentId  || null, params.userId      || null,
         params.environment    || null,
-        params.sentAt || null, params.sentAt || null,
+        sentAt, sentAt,
         businessId, tipoEcf, encf,
       ]);
       return { updated: true };
@@ -949,7 +950,7 @@ class EcfRepository {
       params.dgiiMessage   || null, params.xmlFileName || null,
       params.xmlHash       || null, params.saleId      || null,
       params.ecfDocumentId || null, params.userId      || null,
-      params.environment   || 'testecf', params.sentAt || null,
+      params.environment   || 'testecf', sentAt,
     ]);
     return { inserted: true };
   }
@@ -1538,9 +1539,15 @@ class EcfRepository {
     return rows[0] || null;
   }
 
-  // Recuperación de certificación: cuando DGII reinicia el dataset, el portal vuelve a
-  // esperar los mismos 21 e-CF y los mismos 4 RFCE desde cero. Por eso este reset vuelve
-  // TODO el batch actual a 'firmado', incluyendo aceptados y RFCE, sin rotar eNCF.
+  // Recuperación de certificación: cuando el panel "Estado actual de las pruebas" de DGII
+  // vuelve el contador visible a 0 tras un rechazo, NO significa que los ya aceptados dejaron
+  // de estar aceptados en el backend de DGII — es solo el tablero de esa corrida. Verificado
+  // en vivo (ConsultaResultado por TrackId) el 2026-07-06: un e-CF marcado localmente como
+  // "aceptado" seguía respondiendo codigo:1/"Aceptado" en DGII aunque el panel mostrara 0/21.
+  // Antes este reset volvía TODO el batch a 'firmado' (incluyendo aceptados), lo que hacía que
+  // run-sequential reenviara innecesariamente los ya aceptados cada vez que había que lidiar
+  // con un solo comprobante realmente quemado — desperdiciando intentos contra el sandbox DGII
+  // sin ningún beneficio. Por eso NUNCA se tocan 'aceptado'/'aceptado_condicional' aquí.
   async resetSentCertificationCasesToFirmado() {
     const batchId = await this.getLatestCertificationBatchId();
     const params = [];
@@ -1571,7 +1578,8 @@ class EcfRepository {
            updated_at  = CURRENT_TIMESTAMP
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
-         ${batchClause}`,
+         ${batchClause}
+         AND estado_dgii NOT IN ('aceptado', 'aceptado_condicional')`,
       params
     );
     return { reset: result.affectedRows || 0, batchId };
@@ -1602,6 +1610,52 @@ class EcfRepository {
          ${batchClause}
          AND estado_dgii IN ('rechazado', 'error')
          AND (submission_mode IS NULL OR submission_mode != 'rfce')`,
+      params
+    );
+    return { reset: result.affectedRows || 0, batchId };
+  }
+
+  /**
+   * Reinicio COMPLETO del Paso 2 (los 21 comprobantes normales Y los 4 RFCE del lote de
+   * certificación actual) — a diferencia de resetSentCertificationCasesToFirmado/
+   * resetRejectedCertificationCasesToFirmado, esta SÍ toca 'aceptado'/'aceptado_condicional'
+   * a propósito: es la acción explícita "Reiniciar Paso 2 por completo" para dejar los 25
+   * documentos en blanco y reintentar desde cero (p.ej. tras descargar un set de datos NUEVO
+   * de DGII, que puede traer eNCF distintos tanto para los 21 como para los 4 RFCE — no solo
+   * para el RFCE). NO borra certification_original_xml (la fila del Excel DGII que
+   * generate250MilXmls / certificationCenterProcess necesitan para regenerar el XML).
+   */
+  async resetCertificationBatchCompletely() {
+    const batchId = await this.getLatestCertificationBatchId();
+    const params = [];
+    let batchClause = '';
+    if (batchId) {
+      batchClause = ' AND certification_batch_id = ?';
+      params.push(batchId);
+    }
+    const result = await this.query(
+      `UPDATE ecf_documents
+       SET estado_dgii = 'firmado',
+           track_id    = NULL,
+           mensajes_dgii = NULL,
+           error_message = NULL,
+           response_payload = NULL,
+           dgii_response_json = NULL,
+           xml_content = NULL,
+           signed_xml_content = NULL,
+           xml_path = NULL,
+           signed_xml_path = NULL,
+           certification_sent_xml_path = NULL,
+           certification_signed_xml_path = NULL,
+           certification_response_path = NULL,
+           certification_dgii_file_name = NULL,
+           is_sent = 0,
+           sent_at = NULL,
+           last_checked_at = NULL,
+           updated_at  = CURRENT_TIMESTAMP
+       WHERE business_id = 1
+         AND certification_case_key IS NOT NULL
+         ${batchClause}`,
       params
     );
     return { reset: result.affectedRows || 0, batchId };

@@ -48,7 +48,8 @@ const SALE_PAYMENT_TYPES = {
   transferencia: 'Transferencia',
   mixto: 'Mixto (Tarjeta + Efectivo)',
   credito: 'Crédito',
-  contra_entrega: 'Contra entrega'
+  contra_entrega: 'Contra entrega',
+  usd: 'Dólares (USD)'
 };
 const BILLING_STEP_FLOW = ['order', 'client', 'payment', 'confirm'];
 const BILLING_LAST_CLIENT_KEY = 'tecnocaja-billing-last-client-id';
@@ -460,14 +461,36 @@ function normalizeCartSaleItems() {
   return DB.saleItems;
 }
 
+// Si el producto tiene una Oferta de Precio activa (ver js/promociones.js,
+// DB.activePromotions cargado al entrar a Ventas), sobreescribe el precio de
+// línea con el de la promoción — nunca toca product.precioVenta ni el campo
+// de descuento manual (item.descuento), son sistemas independientes.
+function getActivePromotionForProduct(productId) {
+  const promo = DB.activePromotions?.[productId];
+  return promo || null;
+}
+
 function buildSaleItem(product, qty = 1, extra = {}) {
+  const promo = getActivePromotionForProduct(product.id);
   const item = normalizeSaleItem({
     id: product.id,
     codigo: product.codigo,
     nombre: product.nombre,
-    precio: Number(product.precioVenta || 0),
+    precio: promo ? Number(promo.precioPromocion) : Number(product.precioVenta || 0),
+    promoAplicada: promo ? {
+      promotionId: promo.promotionId,
+      nombre: promo.nombre,
+      precioOriginal: Number(promo.precioOriginal),
+      ahorro: Number(promo.ahorro),
+      texto: promo.texto || '',
+      color: promo.color || '',
+    } : null,
     qty,
-    descuento: Number(extra.descuento ?? 0),
+    // El % de descuento configurado en la ficha del producto se precarga
+    // aquí — es lo mismo que ya usa el descuento general de la venta
+    // (calculateSaleItemDiscount), así que no hace falta tocar el resto del
+    // cálculo de totales/ITBIS/recibo, ya lo respetan automáticamente.
+    descuento: Number(extra.descuento ?? product.descuentoPct ?? 0),
     itbis: product.aplicaItbis ? Number(DB.config.itbis || 0) : 0,
     saleMode: extra.saleMode || product.saleMode || 'unidad',
     unitLabel: extra.unitLabel || product.unidad || 'Unidad',
@@ -1106,6 +1129,14 @@ function roundSaleMoney(value) {
   return Number((Number(value || 0)).toFixed(2));
 }
 
+// Redondeo configurable del total final — siempre hacia arriba al múltiplo
+// configurado (ej. RD$1000.20 con modo '5' -> RD$1005.00). Nunca reduce el total.
+function applyRoundingUp(total, mode) {
+  const increment = Number(mode);
+  if (!Number.isFinite(increment) || increment <= 0) return roundSaleMoney(total);
+  return roundSaleMoney(Math.ceil(roundSaleMoney(total) / increment) * increment);
+}
+
 function getSaleTaxConfig(config = DB.config || {}) {
   const rate = Number(config?.itbis ?? 18);
   const taxRate = Number.isFinite(rate) ? Math.max(0, rate) : 18;
@@ -1189,7 +1220,23 @@ function calcularTotales(items = [], options = {}) {
 
   const subtotal = roundSaleMoney(subtotalGravado + subtotalExento);
   const subtotalFinal = roundSaleMoney(subtotalGravadoFinal + subtotalExentoFinal);
-  const total = roundSaleMoney(subtotalFinal + (behavior.calculateAtEnd ? itbis : itbis));
+
+  // Pago con tarjeta: se factura siempre con NCF fiscal (B01/B02), así que se cobra
+  // el 18% de ITBIS sobre el monto — sin importar si los productos tienen ITBIS propio
+  // configurado (0% en ventas informales por Ticket). Reemplaza el ITBIS por ítem en vez
+  // de sumarse a él para no cobrar doble impuesto sobre el mismo producto.
+  if (options.cardSurcharge) {
+    itbis = roundSaleMoney(subtotalFinal * 0.18);
+    subtotalGravado = subtotal;
+    subtotalGravadoFinal = subtotalFinal;
+    subtotalExento = 0;
+    subtotalExentoFinal = 0;
+  }
+
+  const totalBeforeRounding = roundSaleMoney(subtotalFinal + (behavior.calculateAtEnd ? itbis : itbis));
+  const roundingMode = String(options.config?.roundingMode || 'none');
+  const total = applyRoundingUp(totalBeforeRounding, roundingMode);
+  const roundingAdjustment = roundSaleMoney(total - totalBeforeRounding);
 
   return {
     subtotal,
@@ -1200,6 +1247,8 @@ function calcularTotales(items = [], options = {}) {
     subtotalExentoFinal,
     itbis,
     discount,
+    totalBeforeRounding,
+    roundingAdjustment,
     total,
     itemCount
   };
@@ -1209,7 +1258,8 @@ function calculateCurrentSaleTotals() {
   normalizeCartSaleItems();
   return calcularTotales(DB.saleItems, {
     generalDiscountRate: parseFloat(DB.saleGeneralDiscount || 0) || 0,
-    config: DB.config
+    config: DB.config,
+    cardSurcharge: DB.payMethod === 'tarjeta'
   });
 }
 
@@ -1307,6 +1357,12 @@ function setSaleDeliveryLink(value) {
   syncBillingConfirmSummary();
 }
 
+function setSaleDeliveryPayAmount(value) {
+  DB.saleDeliveryPayAmount = parseFloat(value) || 0;
+  calcCambioContraEntrega();
+  syncBillingConfirmSummary();
+}
+
 function setSaleOrderNotes(value) {
   DB.saleOrderNotes = String(value || '');
   syncBillingConfirmSummary();
@@ -1331,6 +1387,7 @@ function buildSuspendedSaleDraft(name) {
     deliveryAddress: String(DB.saleDeliveryAddress || '').trim(),
     deliveryReference: String(DB.saleDeliveryReference || '').trim(),
     deliveryLink: String(DB.saleDeliveryLink || '').trim(),
+    deliveryPayAmount: Number(DB.saleDeliveryPayAmount || 0) || 0,
     orderNotes: String(DB.saleOrderNotes || '').trim(),
     total: totals.total,
     itemCount: totals.itemCount,
@@ -1366,6 +1423,7 @@ function buildQuotationDraft({ name = '', clientName = '' } = {}) {
     deliveryAddress: String(DB.saleDeliveryAddress || '').trim(),
     deliveryReference: String(DB.saleDeliveryReference || '').trim(),
     deliveryLink: String(DB.saleDeliveryLink || '').trim(),
+    deliveryPayAmount: Number(DB.saleDeliveryPayAmount || 0) || 0,
     orderNotes: String(DB.saleOrderNotes || '').trim(),
     total: totals.total,
     itemCount: totals.itemCount,
@@ -1392,6 +1450,7 @@ function applyRecoveredSuspendedSale(pending) {
   DB.saleDeliveryAddress = pending.deliveryAddress || '';
   DB.saleDeliveryReference = pending.deliveryReference || '';
   DB.saleDeliveryLink = pending.deliveryLink || '';
+  DB.saleDeliveryPayAmount = Number(pending.deliveryPayAmount || 0) || 0;
   DB.saleOrderNotes = pending.orderNotes || '';
 
   renderSaleTable();
@@ -1513,6 +1572,7 @@ function renderRecoverSalesModalContent() {
     <button class="btn-secondary" onclick="closeAllModals()">Cerrar</button>
   `;
   document.getElementById('modal-box').classList.remove('billing-modal');
+  document.getElementById('modal-box').classList.add('recover-sales-modal');
   document.getElementById('modal-overlay').classList.remove('hidden');
   if (typeof translateDynamicUi === 'function') translateDynamicUi(document.getElementById('modal-overlay'));
 }
@@ -1807,6 +1867,7 @@ function resetBillingCheckoutDraft({ preserveRememberedClient = false } = {}) {
   DB.saleDeliveryAddress = '';
   DB.saleDeliveryReference = '';
   DB.saleDeliveryLink = '';
+  DB.saleDeliveryPayAmount = 0;
   DB.saleOrderNotes = '';
   DB.payMethod = 'efectivo';
   DB.saleDeliveryUserId = null;
@@ -2703,6 +2764,7 @@ function buildBillingCompactModalMarkup() {
   const printMode = getBillingPrintMode();
   const hasProducts = Array.isArray(DB.saleItems) && DB.saleItems.length > 0 && total > 0;
   const discountVal = parseFloat(DB.saleGeneralDiscount || 0) || 0;
+  const orderType = String(DB.saleOrderType || 'mostrador');
 
   const mainDocs = [
     { key: 'ticket',              label: 'Ticket', hint: 'Ticket rápido' },
@@ -2711,12 +2773,16 @@ function buildBillingCompactModalMarkup() {
     { key: 'factura-electronica', label: 'e-CF',   hint: 'Electrónica' }
   ];
 
+  const sessionExchangeRate = Number(DB.caja?.activeSession?.exchangeRateUsdDop || 0);
   const paymentMethodButtons = [
     { key: 'efectivo',      icon: '💵',   label: 'Efectivo',  shortcut: 'F2' },
     { key: 'tarjeta',       icon: '💳',   label: 'Tarjeta',   shortcut: 'F3' },
     { key: 'transferencia', icon: '🏦',   label: 'Transfer.', shortcut: 'F4' },
     { key: 'mixto',         icon: '💵💳', label: 'Mixto',     shortcut: 'F5' },
-    { key: 'credito',       icon: '📄',   label: 'Crédito',   shortcut: 'F6' }
+    { key: 'credito',       icon: '📄',   label: 'Crédito',   shortcut: 'F6' },
+    { key: 'contra_entrega',icon: '🛵',   label: 'Contra entrega', shortcut: 'F8' },
+    // Solo si el turno activo tiene una tasa de cambio válida (Fase 1 multi-moneda)
+    ...(sessionExchangeRate > 0 ? [{ key: 'usd', icon: '💵', label: 'Dólares', shortcut: 'F7' }] : [])
   ];
 
   const clientChips = selectedClient ? `
@@ -2826,6 +2892,43 @@ function buildBillingCompactModalMarkup() {
         </div>
       </div>
 
+      <!-- ══ Tipo de pedido + datos de entrega ══ -->
+      <div class="billing-v3-order-row">
+        <div class="billing-v3-order-pills">
+          <button type="button" class="billing-v3-order-pill ${orderType === 'mostrador' ? 'is-active' : ''}"
+            onclick="setSaleOrderType('mostrador')">🏬 Mostrador</button>
+          <button type="button" class="billing-v3-order-pill ${orderType === 'delivery' ? 'is-active' : ''}"
+            onclick="setSaleOrderType('delivery')">🛵 Delivery</button>
+          <button type="button" class="billing-v3-order-pill ${orderType === 'recoger' ? 'is-active' : ''}"
+            onclick="setSaleOrderType('recoger')">🥡 Para llevar</button>
+        </div>
+        <div id="billing-delivery-fields" class="billing-v3-delivery-fields ${orderType === 'delivery' ? '' : 'hidden'}">
+          <div class="billing-step-grid billing-step-grid-tight">
+            <div class="billing-step-field">
+              <label>Repartidor</label>
+              <select id="sale-delivery-user" class="form-input billing-step-input" onchange="setSaleDeliveryUser(this.value)">
+                ${buildDeliveryUserOptions()}
+              </select>
+            </div>
+            <div class="billing-step-field">
+              <label>Teléfono</label>
+              <input type="text" id="sale-delivery-phone" class="form-input billing-step-input" placeholder="809-000-0000"
+                value="${escapeHtml(DB.saleDeliveryPhone || '')}" oninput="setSaleDeliveryPhone(this.value)">
+            </div>
+            <div class="billing-step-field billing-step-field-wide">
+              <label>Dirección</label>
+              <input type="text" id="sale-delivery-address" class="form-input billing-step-input" placeholder="Calle, número, sector..."
+                value="${escapeHtml(DB.saleDeliveryAddress || '')}" oninput="setSaleDeliveryAddress(this.value)">
+            </div>
+            <div class="billing-step-field billing-step-field-wide">
+              <label>Referencia</label>
+              <input type="text" id="sale-delivery-reference" class="form-input billing-step-input" placeholder="Punto de referencia (opcional)"
+                value="${escapeHtml(DB.saleDeliveryReference || '')}" oninput="setSaleDeliveryReference(this.value)">
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ══ LAYOUT: 2 columnas ══ -->
       <div class="billing-v3-layout">
 
@@ -2881,6 +2984,7 @@ function buildBillingCompactModalMarkup() {
           <div class="billing-v3-methods">
             ${paymentMethodButtons.map((m) => `
               <button type="button"
+                ${m.key === 'contra_entrega' ? 'id="pay-method-cod"' : ''}
                 class="billing-v3-method-btn pay-method ${paymentMethod === m.key ? 'active' : ''}"
                 onclick="setPayMethod('${m.key}', this)"
                 title="${m.shortcut ? m.shortcut + ': ' : ''}${m.label}">
@@ -2997,6 +3101,48 @@ function buildBillingCompactModalMarkup() {
           <!-- Contra entrega -->
           <div class="payment-amount-area" id="contra-entrega-area" style="display:none">
             <div class="sale-fiscal-ok">Pendiente hasta que el delivery entregue el dinero.</div>
+            <label class="billing-v3-recibido-label">¿Con cuánto pagará el cliente?</label>
+            <input type="number" id="monto-recibido-contra-entrega" placeholder="0.00"
+              value="${escapeHtml(String(DB.saleDeliveryPayAmount || ''))}"
+              oninput="setSaleDeliveryPayAmount(this.value)" class="billing-v3-amount-input" autocomplete="off" step="0.01" min="0">
+            <div class="billing-v3-quick-row">
+              <button type="button" class="billing-v3-quick-btn billing-v3-quick-exact" onclick="setMontoExactoContraEntrega(this)" title="Cliente paga el monto exacto">Exacto</button>
+              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(100, this)">100</button>
+              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(200, this)">200</button>
+              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(500, this)">500</button>
+              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(1000, this)">1,000</button>
+              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(2000, this)">2,000</button>
+            </div>
+            <div class="billing-v3-cambio-card" id="billing-cambio-card-contra-entrega">
+              <div class="billing-cambio-card-top">
+                <span class="billing-cambio-card-icon">🛵</span>
+                <span class="billing-cambio-card-label">CAMBIO A LLEVAR POR EL REPARTIDOR</span>
+              </div>
+              <strong id="cambio-val-contra-entrega" class="billing-cambio-card-amount">RD$ 0.00</strong>
+              <div id="billing-cambio-faltan-contra-entrega" class="billing-cambio-card-faltan hidden"></div>
+            </div>
+          </div>
+
+          <!-- Área dólares (USD) -->
+          <div class="payment-amount-area" id="usd-area" style="display:none">
+            <div class="billing-usd-equiv-row">
+              <span class="billing-usd-equiv-label">Equivalente a cobrar</span>
+              <strong id="billing-usd-equiv-val" class="billing-usd-equiv-amount">US$ 0.00</strong>
+              <span class="billing-usd-equiv-rate" id="billing-usd-rate-label"></span>
+            </div>
+            <label class="billing-v3-recibido-label">Recibido (US$)</label>
+            <input type="number" id="monto-recibido-usd" placeholder="0.00"
+              oninput="calcCambioUsd()" class="billing-v3-amount-input" autocomplete="off" step="0.01" min="0">
+            <!-- Tarjeta de cambio propia — NO reutilizar #cambio-val/#billing-cambio-card,
+                 anidados dentro de #efectivo-area y quedarían ocultos con método 'usd'. -->
+            <div class="billing-v3-cambio-card" id="billing-cambio-card-usd">
+              <div class="billing-cambio-card-top">
+                <span class="billing-cambio-card-icon">💵</span>
+                <span class="billing-cambio-card-label">DEVUELTA AL CLIENTE (RD$)</span>
+              </div>
+              <strong id="cambio-val-usd" class="billing-cambio-card-amount">RD$ 0.00</strong>
+              <div id="billing-cambio-faltan-usd" class="billing-cambio-card-faltan hidden"></div>
+            </div>
           </div>
 
           <!-- ── Elementos ocultos para compatibilidad ── -->
@@ -3015,7 +3161,6 @@ function buildBillingCompactModalMarkup() {
             <option value="recoger"   ${String(DB.saleOrderType || '') === 'recoger'   ? 'selected' : ''}>Para llevar</option>
           </select>
           <select id="sale-kitchen-status" style="display:none" onchange="setSaleKitchenStatus(this.value)"></select>
-          <select id="sale-delivery-user" style="display:none" onchange="setSaleDeliveryUser(this.value)"></select>
           <input type="text" id="sale-table-label" style="display:none"
             value="${escapeHtml(DB.saleTableLabel || '')}" oninput="setSaleTableLabel(this.value)">
           <textarea id="sale-order-notes" style="display:none"
@@ -3530,6 +3675,9 @@ function buildBillingValidationBuckets() {
     if (!DB.saleDeliveryUserId) buckets.payment.push('Debes asignar un delivery.');
     if (!String(DB.saleDeliveryAddress || '').trim()) buckets.payment.push('La dirección de entrega es obligatoria.');
     if (!String(DB.saleDeliveryPhone || '').trim()) buckets.payment.push('El teléfono de entrega es obligatorio.');
+    if (Number(DB.saleDeliveryPayAmount || 0) < total) {
+      buckets.payment.push('El monto con que pagará el cliente es menor al total.');
+    }
   }
 
   buckets.confirm = [...buckets.order, ...buckets.client, ...buckets.payment];
@@ -3606,7 +3754,17 @@ function syncBillingConfirmSummary() {
   const codButton = document.getElementById('billing-cod-option');
   if (codButton) codButton.classList.toggle('is-active', DB.payMethod === 'contra_entrega');
   const methodNote = document.getElementById('billing-compact-method-note');
-  if (methodNote) methodNote.classList.toggle('hidden', DB.payMethod !== 'contra_entrega');
+  if (methodNote) {
+    methodNote.classList.toggle('hidden', DB.payMethod !== 'contra_entrega');
+    if (DB.payMethod === 'contra_entrega') {
+      const totalNow = parseFmt(totalText);
+      const montoCliente = Number(DB.saleDeliveryPayAmount || 0);
+      const cambioRepartidor = Math.max(0, montoCliente - totalNow);
+      methodNote.innerHTML = montoCliente > 0
+        ? `Cliente paga con <strong>${fmt(montoCliente)}</strong> · Cambio a llevar: <strong>${fmt(cambioRepartidor)}</strong>`
+        : 'Contra entrega activo — indica con cuánto pagará el cliente.';
+    }
+  }
 
   // ── V2: Pill de estado (reemplaza la tarjeta grande) ──
   const pill = document.getElementById('billing-v2-status-pill');
@@ -3669,6 +3827,7 @@ function syncBillingModalFooter() {
     const subtotalText = document.getElementById('s-subtotal')?.textContent || fmt(0);
     const itbisText    = document.getElementById('s-itbis')?.textContent    || fmt(0);
     const descText     = document.getElementById('s-descuento')?.textContent || `- ${fmt(0)}`;
+    const roundingAdjustment = parseFmt(document.getElementById('s-redondeo')?.textContent || fmt(0));
     const totalText    = document.getElementById('s-total')?.textContent    || fmt(0);
 
     footer.innerHTML = `
@@ -3677,6 +3836,7 @@ function syncBillingModalFooter() {
           <span>Subtotal <strong>${subtotalText}</strong></span>
           <span>ITBIS <strong>${itbisText}</strong></span>
           <span>Desc. <strong>${descText}</strong></span>
+          ${Math.abs(roundingAdjustment) >= 0.01 ? `<span>Redondeo <strong>+ ${fmt(roundingAdjustment)}</strong></span>` : ''}
           <span class="billing-v3-footer-total">Total <strong>${totalText}</strong></span>
         </div>
         <div class="billing-v3-footer-actions">
@@ -4565,6 +4725,31 @@ function setSaleOrderType(value) {
     const defaultMethod = document.querySelector('.pay-method');
     if (defaultMethod) setPayMethod('efectivo', defaultMethod);
   }
+  // Si se sale de "Delivery" hay que soltar el repartidor/teléfono/dirección
+  // que se hubieran cargado — si no, quedan pegados en DB.sale* y la venta se
+  // guarda con delivery_user_id aunque tipoPedido ya no sea 'delivery', lo
+  // que hace que la factura no muestre esos datos (exige tipoPedido==='delivery')
+  // pero el repartidor sí quede asignado en la base — inconsistente y confuso.
+  if (DB.saleOrderType !== 'delivery') {
+    DB.saleDeliveryUserId = null;
+    DB.saleDeliveryPhone = '';
+    DB.saleDeliveryAddress = '';
+    DB.saleDeliveryReference = '';
+    DB.saleDeliveryLink = '';
+    DB.saleDeliveryPayAmount = 0;
+    const deliveryUserSelect = document.getElementById('sale-delivery-user');
+    if (deliveryUserSelect) deliveryUserSelect.value = '';
+    ['sale-delivery-phone', 'sale-delivery-address', 'sale-delivery-reference'].forEach((id) => {
+      const field = document.getElementById(id);
+      if (field) field.value = '';
+    });
+  }
+  document.querySelectorAll('.billing-v3-order-pill').forEach((button) => {
+    button.classList.toggle('is-active', button.getAttribute('onclick') === `setSaleOrderType('${DB.saleOrderType}')`);
+  });
+  document.getElementById('billing-delivery-fields')?.classList.toggle('hidden', DB.saleOrderType !== 'delivery');
+  const orderTypeSelect = document.getElementById('sale-order-type');
+  if (orderTypeSelect) orderTypeSelect.value = DB.saleOrderType;
   syncContraEntregaAvailability();
   syncBillingModalFooter();
   syncBillingConfirmSummary();
@@ -5048,8 +5233,14 @@ function renderSaleTable() {
       <td style="font-family:var(--font-mono);font-size:0.7rem;line-height:1.15;white-space:normal;word-break:break-word">${item.codigo}</td>
       <td style="white-space:normal;word-break:break-word">
         <span style="font-weight:600;line-height:1.2">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre}</span>
+        ${item.promoAplicada ? `
+          <div style="margin-top:.2rem">
+            <span style="display:inline-block;font-size:.68rem;font-weight:700;color:#fff;background:${item.promoAplicada.color || '#22c55e'};border-radius:4px;padding:.05rem .4rem">🏷 ${escapeHtml(item.promoAplicada.texto || item.promoAplicada.nombre || 'OFERTA')}</span>
+          </div>
+        ` : ''}
       </td>
       <td>
+        ${item.promoAplicada ? `<div style="font-size:.72rem;color:var(--text3);text-decoration:line-through">${fmt(item.promoAplicada.precioOriginal)}</div>` : ''}
         <input id="sale-item-price-${idx}" class="price-input is-readonly" type="number" value="${item.precio}" min="0" step="0.01" readonly disabled tabindex="-1">
       </td>
       <td>
@@ -5204,7 +5395,8 @@ function updateTotals() {
   normalizeCartSaleItems();
   const totals = calcularTotales(DB.saleItems, {
     generalDiscountRate: getGeneralDiscountValue(),
-    config: DB.config
+    config: DB.config,
+    cardSurcharge: DB.payMethod === 'tarjeta'
   });
   const taxBehavior = getSaleTaxConfig();
 
@@ -5213,6 +5405,8 @@ function updateTotals() {
   document.getElementById('s-subtotal-exento').textContent = fmt(totals.subtotalExento);
   document.getElementById('s-descuento').textContent = '- ' + fmt(totals.discount);
   document.getElementById('s-itbis').textContent = fmt(totals.itbis);
+  const redondeoEl = document.getElementById('s-redondeo');
+  if (redondeoEl) redondeoEl.textContent = '+ ' + fmt(totals.roundingAdjustment || 0);
   document.getElementById('s-total').textContent = fmt(totals.total);
   document.getElementById('cobrar-total').textContent = fmt(totals.total);
   const taxLabelEl = document.getElementById('sale-tax-label');
@@ -5258,6 +5452,16 @@ function setPayMethod(method, el) {
   DB.payMethod = method;
   document.querySelectorAll('.pay-method').forEach(b => b.classList.remove('active'));
   el?.classList.add('active');
+  // Pago con tarjeta siempre se factura con NCF fiscal — por defecto B02 (Consumidor
+  // Final), salvo que el cajero ya haya puesto B01 porque el cliente lo pidió con RNC
+  // (no se sobreescribe). Sigue siendo editable: el cajero puede cambiarlo después.
+  if (method === 'tarjeta' && DB.saleNcfType !== 'B01') {
+    setSaleNcfType('B02');
+  }
+  // Recalcular totales ANTES de prellenar el monto a cobrar más abajo — el pago con
+  // tarjeta suma 18% de ITBIS (ver calcularTotales/cardSurcharge), así que el monto
+  // exacto a cobrar debe reflejar ya ese recargo.
+  updateTotals();
   const efArea = document.getElementById('efectivo-area');
   const qaArea = document.getElementById('quick-amounts');
   const codArea = document.getElementById('contra-entrega-area');
@@ -5265,6 +5469,7 @@ function setPayMethod(method, el) {
   const tarjetaArea = document.getElementById('tarjeta-area');
   const transferenciaArea = document.getElementById('transferencia-area');
   const creditoArea = document.getElementById('credito-area');
+  const usdArea = document.getElementById('usd-area');
   if (efArea) efArea.style.display = method === 'efectivo' ? 'flex' : 'none';
   if (efArea) efArea.style.flexDirection = 'column';
   if (efArea) efArea.style.gap = '6px';
@@ -5275,11 +5480,17 @@ function setPayMethod(method, el) {
   if (tarjetaArea) tarjetaArea.style.display = method === 'tarjeta' ? 'grid' : 'none';
   if (transferenciaArea) transferenciaArea.style.display = method === 'transferencia' ? 'grid' : 'none';
   if (creditoArea) creditoArea.style.display = method === 'credito' ? 'grid' : 'none';
+  if (usdArea) usdArea.style.display = method === 'usd' ? 'flex' : 'none';
+  if (usdArea) usdArea.style.flexDirection = 'column';
+  if (usdArea) usdArea.style.gap = '6px';
   if (method !== 'efectivo') {
     document.querySelectorAll('.quick-amount-btn').forEach((button) => button.classList.remove('active'));
   }
   const amountInput = document.getElementById('monto-recibido');
-  if (amountInput) {
+  const amountInputUsd = document.getElementById('monto-recibido-usd');
+  if (method === 'usd') {
+    if (amountInputUsd) amountInputUsd.value = '';
+  } else if (amountInput) {
     if (method === 'efectivo') {
       // Limpiar — el cajero pone el monto con botones rápidos o teclado
       amountInput.value = '';
@@ -5304,6 +5515,16 @@ function setPayMethod(method, el) {
     if (mixtoTransferencia) mixtoTransferencia.value = String(billingModalState.mixedTransferAmount || '');
     calcMixto();
     mixtoTarjeta?.focus();
+  } else if (method === 'usd') {
+    calcCambioUsd();
+    amountInputUsd?.focus();
+  } else if (method === 'contra_entrega') {
+    const codAmountInput = document.getElementById('monto-recibido-contra-entrega');
+    if (codAmountInput) {
+      codAmountInput.value = DB.saleDeliveryPayAmount ? String(DB.saleDeliveryPayAmount) : '';
+    }
+    calcCambioContraEntrega();
+    codAmountInput?.focus();
   } else {
     calcCambio();
   }
@@ -5362,6 +5583,135 @@ function calcCambio() {
   } else {
     // Monto insuficiente — mostrar el faltante en el card amount (no cero)
     cambioVal.textContent = fmt(Math.abs(diferencia));
+    _setCambioCardState(cambioCard, faltanEl, 'insuf', '');
+  }
+
+  syncBillingModalFooter();
+  syncBillingConfirmSummary();
+}
+
+// Cambio que debe llevar el repartidor en pago contra entrega — el cliente
+// le paga en efectivo al momento de la entrega, no en caja.
+function calcCambioContraEntrega() {
+  const modalBox = document.getElementById('modal-box');
+  const billingTotalEl = (modalBox && modalBox.querySelector('#billing-total'))
+    || document.getElementById('billing-total');
+  const total = parseFmt(billingTotalEl?.textContent || document.getElementById('s-total')?.textContent || fmt(0));
+
+  const cambioVal = document.getElementById('cambio-val-contra-entrega');
+  const cambioCard = document.getElementById('billing-cambio-card-contra-entrega');
+  const faltanEl = document.getElementById('billing-cambio-faltan-contra-entrega');
+  if (!cambioVal) return;
+
+  const montoCliente = Number(DB.saleDeliveryPayAmount || 0);
+  const diferencia = montoCliente - total;
+  const labelEl = cambioCard?.querySelector('.billing-cambio-card-label');
+
+  cambioCard?.classList.remove('cambio-ok', 'cambio-exacto', 'cambio-insuf', 'cambio-neutral');
+  if (montoCliente <= 0) {
+    cambioVal.textContent = fmt(0);
+    cambioCard?.classList.add('cambio-neutral');
+    if (labelEl) labelEl.textContent = 'CAMBIO A LLEVAR POR EL REPARTIDOR';
+    faltanEl?.classList.add('hidden');
+  } else if (diferencia > 0.004) {
+    cambioVal.textContent = fmt(diferencia);
+    cambioCard?.classList.add('cambio-ok');
+    if (labelEl) labelEl.textContent = 'CAMBIO A LLEVAR POR EL REPARTIDOR';
+    faltanEl?.classList.add('hidden');
+  } else if (Math.abs(diferencia) <= 0.004) {
+    cambioVal.textContent = fmt(0);
+    cambioCard?.classList.add('cambio-exacto');
+    if (labelEl) labelEl.textContent = 'PAGO EXACTO — SIN CAMBIO';
+    faltanEl?.classList.add('hidden');
+  } else {
+    cambioVal.textContent = fmt(Math.abs(diferencia));
+    cambioCard?.classList.add('cambio-insuf');
+    if (labelEl) labelEl.textContent = 'MONTO INSUFICIENTE';
+    if (faltanEl) {
+      faltanEl.textContent = `Falta ${fmt(Math.abs(diferencia))}`;
+      faltanEl.classList.remove('hidden');
+    }
+  }
+
+  syncBillingModalFooter();
+  syncBillingConfirmSummary();
+}
+
+function setMontoRapidoContraEntrega(val, button = null) {
+  const amountInput = document.getElementById('monto-recibido-contra-entrega');
+  if (!amountInput) return;
+  amountInput.value = Number(val).toFixed(2);
+  DB.saleDeliveryPayAmount = Number(val) || 0;
+  document.querySelectorAll('#contra-entrega-area .billing-v3-quick-btn').forEach((quickButton) => {
+    quickButton.classList.remove('active');
+  });
+  if (button) button.classList.add('active');
+  amountInput.focus();
+  calcCambioContraEntrega();
+}
+
+function setMontoExactoContraEntrega(button = null) {
+  const totalEl = document.getElementById('billing-total')?.textContent || fmt(0);
+  const total = parseFmt(totalEl);
+  const amountInput = document.getElementById('monto-recibido-contra-entrega');
+  if (!amountInput) return;
+  amountInput.value = total.toFixed(2);
+  DB.saleDeliveryPayAmount = total;
+  document.querySelectorAll('#contra-entrega-area .billing-v3-quick-btn').forEach((quickButton) => {
+    quickButton.classList.toggle('active', quickButton === button);
+  });
+  calcCambioContraEntrega();
+}
+
+function calcCambioUsd() {
+  const modalBox = document.getElementById('modal-box');
+  const billingTotalEl = (modalBox && modalBox.querySelector('#billing-total'))
+    || document.getElementById('billing-total');
+  const total = parseFmt(billingTotalEl?.textContent || document.getElementById('s-total')?.textContent || fmt(0));
+
+  const rate = Number(DB.caja?.activeSession?.exchangeRateUsdDop || 0);
+  const equivEl = document.getElementById('billing-usd-equiv-val');
+  const rateLabelEl = document.getElementById('billing-usd-rate-label');
+  const amountInputUsd = document.getElementById('monto-recibido-usd');
+  const cambioVal = document.getElementById('cambio-val-usd');
+  const cambioCard = document.getElementById('billing-cambio-card-usd');
+  const faltanEl = document.getElementById('billing-cambio-faltan-usd');
+
+  if (!rate || rate <= 0) {
+    if (equivEl) equivEl.textContent = 'US$ --';
+    if (rateLabelEl) rateLabelEl.textContent = 'Sin tasa de cambio para este turno';
+    if (cambioVal) cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'neutral', '');
+    return;
+  }
+
+  const usdEquivalent = total / rate;
+  if (equivEl) equivEl.textContent = 'US$ ' + usdEquivalent.toFixed(2);
+  if (rateLabelEl) rateLabelEl.textContent = 'Tasa del turno: RD$ ' + rate.toFixed(4) + ' por US$1';
+  if (!amountInputUsd || !cambioVal) return;
+
+  const rawVal = String(amountInputUsd.value || '').trim();
+  const usdRecibido = rawVal === '' ? 0 : (parseFloat(rawVal) || 0);
+
+  if (isNaN(usdRecibido)) {
+    cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'neutral', '');
+    return;
+  }
+
+  const cambioDop = (usdRecibido * rate) - total;
+
+  if (usdRecibido <= 0) {
+    cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'neutral', '');
+  } else if (cambioDop > 0.004) {
+    cambioVal.textContent = fmt(cambioDop);
+    _setCambioCardState(cambioCard, faltanEl, 'ok', '');
+  } else if (Math.abs(cambioDop) <= 0.004) {
+    cambioVal.textContent = fmt(0);
+    _setCambioCardState(cambioCard, faltanEl, 'exacto', '');
+  } else {
+    cambioVal.textContent = fmt(Math.abs(cambioDop));
     _setCambioCardState(cambioCard, faltanEl, 'insuf', '');
   }
 
@@ -5756,6 +6106,12 @@ async function generateReceiptFallbackImageDataUrl(venta) {
     ['TELEFONO', venta.clienteTelefono || '-'],
     ['TEL. DELIVERY', venta.telefonoDelivery || '-'],
     ['DIRECCION', venta.direccionDelivery || '-'],
+    (venta.tipoPedido === 'delivery' && venta.metodo === 'contra_entrega' && Number(venta.montoClienteEntrega || 0) > 0)
+      ? ['CLIENTE PAGA CON', fmt(Number(venta.montoClienteEntrega || 0))]
+      : null,
+    (venta.tipoPedido === 'delivery' && venta.metodo === 'contra_entrega' && Number(venta.montoClienteEntrega || 0) > 0)
+      ? ['CAMBIO A LLEVAR', fmt(Number(venta.cambioRepartidor || 0))]
+      : null,
     ['RNC / CEDULA', clientTaxId || '-']
   ].filter(Boolean);
 
@@ -5987,6 +6343,10 @@ async function generateReceiptFallbackImageDataUrl(venta) {
   totals.push(['PAGADO', fmt(Number(venta.recibido || 0))]);
   totals.push(['CAMBIO', fmt(Number(venta.cambio || 0))]);
   totals.push(['METODO', SALE_PAYMENT_TYPES[venta.metodo] || venta.metodo || 'Efectivo']);
+  if (venta.paymentCurrency === 'USD') {
+    totals.push(['RECIBIDO USD', 'US$ ' + Number(venta.usdAmountReceived || 0).toFixed(2)]);
+    totals.push(['TASA USD', Number(venta.exchangeRateUsed || 0).toFixed(4)]);
+  }
 
   totals.forEach(([label, value]) => {
     const isTotal = label === 'TOTAL';
@@ -6098,6 +6458,10 @@ async function generateReceiptPdf(venta, options = {}) {
   if (venta.clienteTelefono) drawKeyValue('Teléfono:', venta.clienteTelefono);
   if (venta.clienteRncCedula) drawKeyValue('RNC / Céd.:', venta.clienteRncCedula);
   if (venta.direccionDelivery) drawKeyValue('Dirección:', venta.direccionDelivery);
+  if (venta.tipoPedido === 'delivery' && venta.metodo === 'contra_entrega' && Number(venta.montoClienteEntrega || 0) > 0) {
+    drawKeyValue('Cliente paga con:', fmt(Number(venta.montoClienteEntrega || 0)));
+    drawKeyValue('Cambio a llevar:', fmt(Number(venta.cambioRepartidor || 0)));
+  }
   if (venta.notasPedido) drawKeyValue('Notas:', venta.notasPedido);
 
   drawDivider();
@@ -6184,7 +6548,8 @@ function buildSalePayload() {
   const generalDisc = getGeneralDiscountValue();
   const saleTotals = calcularTotales(DB.saleItems, {
     generalDiscountRate: generalDisc,
-    config: DB.config
+    config: DB.config,
+    cardSurcharge: DB.payMethod === 'tarjeta'
   });
   const total = saleTotals.total;
   if (!(total > 0)) {
@@ -6195,6 +6560,8 @@ function buildSalePayload() {
   let montoTarjeta = 0;
   let montoEfectivo = 0;
   let montoTransferencia = 0;
+  let usdRecibido = 0;
+  let usdRate = 0;
   if (DB.payMethod === 'mixto') {
     montoTarjeta = parseFloat(document.getElementById('mixto-tarjeta')?.value) || 0;
     montoEfectivo = parseFloat(document.getElementById('mixto-efectivo')?.value) || 0;
@@ -6202,12 +6569,26 @@ function buildSalePayload() {
     recibido = montoTarjeta + montoEfectivo + montoTransferencia;
   } else if (DB.payMethod === 'contra_entrega' || DB.payMethod === 'credito') {
     recibido = 0;
+  } else if (DB.payMethod === 'usd') {
+    usdRate = Number(DB.caja?.activeSession?.exchangeRateUsdDop || 0);
+    usdRecibido = parseFloat(document.getElementById('monto-recibido-usd')?.value) || 0;
+    recibido = usdRecibido * usdRate;
   } else {
     recibido = parseFloat(document.getElementById('monto-recibido')?.value) || 0;
   }
 
-  if (DB.payMethod === 'efectivo' && recibido < total) {
-    showToast('Monto recibido insuficiente', 'error'); return null;
+  if (DB.payMethod === 'usd' && (!usdRate || usdRate <= 0)) {
+    showToast('No hay un tipo de cambio válido para este turno. No se puede cobrar en dólares.', 'error');
+    return null;
+  }
+  if ((DB.payMethod === 'efectivo' || DB.payMethod === 'usd') && recibido < total) {
+    showToast(
+      DB.payMethod === 'usd'
+        ? 'Monto en dólares insuficiente. Faltan US$ ' + ((total - recibido) / usdRate).toFixed(2)
+        : 'Monto recibido insuficiente',
+      'error'
+    );
+    return null;
   }
   if (DB.payMethod === 'mixto') {
     if (montoTarjeta <= 0 && montoEfectivo <= 0) {
@@ -6230,6 +6611,10 @@ function buildSalePayload() {
     }
     if (!String(DB.saleDeliveryPhone || '').trim()) {
       showToast('El teléfono es obligatorio para contra entrega.', 'error');
+      return null;
+    }
+    if (Number(DB.saleDeliveryPayAmount || 0) < total) {
+      showToast('El monto con que pagará el cliente es menor al total. Corrígelo antes de cobrar.', 'error');
       return null;
     }
   }
@@ -6349,6 +6734,11 @@ function buildSalePayload() {
     total: saleTotals.total,
     recibido: recibido,
     cambio: (DB.payMethod === 'contra_entrega' || DB.payMethod === 'credito') ? 0 : Math.max(0, recibido - total),
+    montoClienteEntrega: DB.payMethod === 'contra_entrega' ? Number(DB.saleDeliveryPayAmount || 0) : 0,
+    cambioRepartidor: DB.payMethod === 'contra_entrega' ? Math.max(0, Number(DB.saleDeliveryPayAmount || 0) - total) : 0,
+    paymentCurrency: DB.payMethod === 'usd' ? 'USD' : 'DOP',
+    usdAmountReceived: DB.payMethod === 'usd' ? usdRecibido : 0,
+    exchangeRateUsed: DB.payMethod === 'usd' ? usdRate : null,
     sourceQuotationId: activeRecoveredQuotationId || null,
     sourceQuotationName: activeRecoveredQuotationName || '',
     ...(typeof getBusinessStructurePayload === 'function' ? getBusinessStructurePayload() : {}),
@@ -6507,6 +6897,14 @@ async function finalizePendingSale(action = 'charge') {
     }
 
     showReceipt(savedVenta, { pending: false });
+
+    // Pedido facturado por completo: si venía de una cotización del bot de
+    // WhatsApp (con teléfono del cliente), enviarle la factura ya lista.
+    console.log('[wa-bot] Venta finalizada, ¿venía de cotización?', { sourceQuotationId });
+    if (sourceQuotationId) {
+      sendReceiptToWhatsAppBotAuto(savedVenta);
+    }
+
     cancelSale();
     loadProductsTable();
     loadInventoryTable();
@@ -6708,6 +7106,10 @@ async function buildReceiptPdfForWhatsApp(venta) {
   if (Number(venta?.descuento || 0) > 0) {
     writeLine(`Descuento: -${fmt(Number(venta.descuento || 0))}`, { bold: true });
   }
+  const pdfRedondeo = getReceiptSummaryBreakdown(venta).redondeo;
+  if (Math.abs(pdfRedondeo) >= 0.01) {
+    writeLine(`Redondeo: +${fmt(pdfRedondeo)}`, { bold: true });
+  }
   writeLine(`Total: ${fmt(Number(venta?.total || 0))}`, { size: 13, bold: true, gap: 20 });
   writeLine(`Método: ${SALE_PAYMENT_TYPES[venta?.metodo] || venta?.metodo || 'Efectivo'}`, { bold: true });
   writeLine(cfg.mensaje || 'Gracias por su compra.', { size: 10, gap: 14 });
@@ -6838,6 +7240,84 @@ async function sendReceiptToWhatsApp(venta) {
       : 'Chat del cliente abierto. La factura ya está copiada: pega con Ctrl+V y envíala.',
     'success'
   );
+}
+
+// Envío automático: cuando se factura un pedido que llegó por el bot de
+// WhatsApp (tiene sourceQuotationId + teléfono), le mandamos la factura ya
+// lista sin que el cajero tenga que copiarla/pegarla a mano. Es "fire and
+// forget" — si falla, solo se avisa en consola/toast, nunca bloquea la venta.
+async function sendReceiptToWhatsAppBotAuto(venta) {
+  const phone = getReceiptWhatsAppPhone(venta);
+  console.log('[wa-bot] Auto-envío factura: iniciando', {
+    factura: getReceiptInvoiceId(venta),
+    clienteTelefono: venta?.clienteTelefono,
+    telefonoDelivery: venta?.telefonoDelivery,
+    phoneResuelto: phone
+  });
+  if (!phone) {
+    console.warn('[wa-bot] Auto-envío factura: cancelado, no hay teléfono en la venta.');
+    return;
+  }
+
+  // El bot puede estar reconectando justo cuando se cobra la venta (recién
+  // arrancó, o el WhatsApp del celular perdió señal un momento) — unos
+  // reintentos cortos evitan perder el envío por un hipo pasajero, sin
+  // bloquear la venta (que ya quedó cobrada de todos modos).
+  const RETRY_DELAYS_MS = [3000, 8000, 15000];
+  let lastError = 'error desconocido';
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      console.log(`[wa-bot] Auto-envío factura: reintento ${attempt}/${RETRY_DELAYS_MS.length} en ${RETRY_DELAYS_MS[attempt - 1]}ms...`);
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]));
+    }
+    try {
+      const result = await _attemptSendReceiptToWhatsAppBot(venta, phone);
+      if (result.ok) {
+        showToast('Factura enviada al cliente por WhatsApp.', 'success');
+        return;
+      }
+      lastError = result.error;
+      if (!result.retryable) break;
+    } catch (error) {
+      lastError = error?.message || String(error);
+    }
+  }
+
+  console.warn('[wa-bot] Auto-envío factura: agotados los reintentos.', lastError);
+  showToast(
+    `No se pudo enviar la factura por WhatsApp (${lastError}). Ábrela y usa "Copiar para WhatsApp" para reenviarla.`,
+    'error',
+    12000
+  );
+}
+
+// Un solo intento de auto-envío — separado de sendReceiptToWhatsAppBotAuto()
+// para poder reintentarlo con backoff sin duplicar toda la lógica. Distingue
+// fallos pasajeros (bot reconectando, 5xx) de fallos permanentes (imagen no
+// generable, número inválido) para no reintentar algo que nunca va a mejorar.
+async function _attemptSendReceiptToWhatsAppBot(venta, phone) {
+  const status = await fetch('/api/wa-bot/status').then((r) => r.json()).catch(() => null);
+  if (status?.status !== 'ready') {
+    return { ok: false, retryable: true, error: `bot no está listo (${status?.status || 'desconocido'})` };
+  }
+
+  if (isElectronicReceipt(venta)) {
+    try { await ensureReceiptQrData(venta); } catch (_error) { /* seguir sin QR */ }
+  }
+  const imageDataUrl = await generateReceiptImageDataUrl(venta);
+  if (!String(imageDataUrl || '').startsWith('data:image/')) {
+    return { ok: false, retryable: false, error: 'no se pudo generar la imagen del recibo' };
+  }
+
+  const response = await fetch('/api/wa-bot/send-receipt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, imageDataUrl, caption: buildReceiptWhatsAppMessage(venta) })
+  });
+  const result = await response.json().catch(() => ({}));
+  console.log('[wa-bot] Auto-envío factura: respuesta del backend', { httpStatus: response.status, result });
+  if (result?.ok) return { ok: true };
+  return { ok: false, retryable: response.status >= 500, error: result?.error || `HTTP ${response.status}` };
 }
 
 async function sendCurrentReceiptToWhatsApp() {
@@ -6980,6 +7460,11 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       total: Number(venta?.total || 0),
       pagos: payments,
       cambio: Number(venta?.cambio || 0),
+      recibido: Number(venta?.recibido || 0),
+      // Fase 3 multi-moneda: pago en efectivo USD
+      paymentCurrency: String(venta?.paymentCurrency || 'DOP'),
+      usdAmountReceived: Number(venta?.usdAmountReceived || 0),
+      exchangeRateUsed: Number(venta?.exchangeRateUsed || 0),
       documentTitle: normalizeReceiptText(venta?.receiptDocumentTitle || ''),
       documentNumber: normalizeReceiptText(venta?.receiptDocumentNumber || ''),
       dataSectionTitle: normalizeReceiptText(venta?.receiptDataSectionTitle || ''),
@@ -7143,11 +7628,85 @@ function renderReceiptFooter(options = {}) {
     return;
   }
 
+  const venta = currentReceiptSale;
+  const deliveryBtn = venta && String(venta.tipoPedido || '') === 'delivery'
+    ? `<button class="btn-secondary" onclick="toggleReceiptDeliveryPanel()">🛵 Estado de entrega</button>`
+    : '';
   footer.innerHTML = `
+    ${deliveryBtn}
     <button class="btn-secondary" onclick="sendCurrentReceiptToWhatsApp()">📋 Copiar para WhatsApp</button>
     <button class="btn-secondary" onclick="printReceipt()">🖨️ Imprimir factura</button>
     <button class="btn-primary" onclick="closeReceipt()">Cerrar</button>
   `;
+  const panel = document.getElementById('receipt-delivery-panel');
+  if (panel) panel.classList.add('hidden');
+}
+
+const RECEIPT_DELIVERY_STATUS_LABELS = {
+  pendiente: 'Pendiente de salir',
+  en_camino: 'En camino',
+  entregado: 'Entregado',
+  incidencia: 'Incidencia'
+};
+
+function toggleReceiptDeliveryPanel() {
+  const panel = document.getElementById('receipt-delivery-panel');
+  if (!panel) return;
+  const willShow = panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !willShow);
+  if (willShow) renderReceiptDeliveryPanel();
+}
+
+function renderReceiptDeliveryPanel() {
+  const panel = document.getElementById('receipt-delivery-panel');
+  const venta = currentReceiptSale;
+  if (!panel || !venta) return;
+  const currentStatus = venta.estadoEntrega || 'pendiente';
+  panel.innerHTML = `
+    <div class="billing-step-grid billing-step-grid-tight">
+      <div class="billing-step-field">
+        <label>Repartidor</label>
+        <select id="receipt-delivery-user" class="form-input billing-step-input">
+          <option value="">Sin asignar</option>
+          ${getDeliveryUsers().map((user) => `
+            <option value="${user.id}" ${Number(venta.repartidorId) === user.id ? 'selected' : ''}>${user.nombre}${user.email ? ` · ${user.email}` : ''}</option>
+          `).join('')}
+        </select>
+      </div>
+      <div class="billing-step-field">
+        <label>Estado</label>
+        <select id="receipt-delivery-status" class="form-input billing-step-input">
+          ${Object.entries(RECEIPT_DELIVERY_STATUS_LABELS).map(([value, label]) => `
+            <option value="${value}" ${currentStatus === value ? 'selected' : ''}>${label}</option>
+          `).join('')}
+        </select>
+      </div>
+      <div class="billing-step-field billing-step-field-action">
+        <button type="button" class="btn-primary" onclick="saveReceiptDeliveryStatus()">Guardar</button>
+      </div>
+    </div>
+  `;
+}
+
+async function saveReceiptDeliveryStatus() {
+  const venta = currentReceiptSale;
+  const invoiceNumber = getReceiptInvoiceId(venta);
+  if (!venta || !invoiceNumber) return;
+  const repartidorId = document.getElementById('receipt-delivery-user')?.value || '';
+  const estadoEntrega = document.getElementById('receipt-delivery-status')?.value || 'pendiente';
+  try {
+    const updated = await api.updateDeliveryStatus(invoiceNumber, {
+      estadoEntrega,
+      repartidorId: repartidorId ? Number(repartidorId) : null
+    });
+    currentReceiptSale = { ...venta, ...updated };
+    const recibo = document.getElementById('receipt-content');
+    if (recibo) recibo.innerHTML = getReceiptContentMarkup(currentReceiptSale);
+    showToast('Estado de entrega actualizado.', 'success');
+    toggleReceiptDeliveryPanel();
+  } catch (e) {
+    showToast(e.message || 'No se pudo actualizar el estado de entrega.', 'error');
+  }
 }
 
 function getReceiptSummaryBreakdown(venta) {
@@ -7167,13 +7726,23 @@ function getReceiptSummaryBreakdown(venta) {
     }
   });
 
+  const subtotal = roundSaleMoney(venta?.subtotal ?? (subtotalGravado + subtotalExento));
+  const descuento = roundSaleMoney(venta?.descuento || 0);
+  const itbis = roundSaleMoney(venta?.itbis || 0);
+  const total = roundSaleMoney(venta?.total || 0);
+  // El redondeo no se persiste en columna propia — se deriva de los totales ya
+  // guardados (total incluye el ajuste de redondeo aplicado al cobrar).
+  const redondeo = roundSaleMoney(total - (subtotal - descuento + itbis));
+
   return {
     subtotalGravado: roundSaleMoney(venta?.subtotalGravado ?? subtotalGravado),
     subtotalExento: roundSaleMoney(venta?.subtotalExento ?? subtotalExento),
-    subtotal: roundSaleMoney(venta?.subtotal ?? (subtotalGravado + subtotalExento)),
-    descuento: roundSaleMoney(venta?.descuento || 0),
-    itbis: roundSaleMoney(venta?.itbis || 0),
-    total: roundSaleMoney(venta?.total || 0)
+    subtotal,
+    descuento,
+    itbis,
+    redondeo,
+    total,
+    ahorroPromociones: roundSaleMoney(venta?.ahorroPromociones || 0)
   };
 }
 
@@ -7191,6 +7760,12 @@ function buildReceiptSummaryRows(venta) {
   }
   if (taxBehavior.showBreakdownOnReceipts && breakdown.itbis > 0) {
     rows.push([`ITBIS (${taxBehavior.taxRate.toFixed(2).replace(/\.00$/, '')}%)`, fmt(breakdown.itbis)]);
+  }
+  if (Math.abs(breakdown.redondeo) >= 0.01) {
+    rows.push(['Redondeo', `+${fmt(breakdown.redondeo)}`]);
+  }
+  if (breakdown.ahorroPromociones > 0) {
+    rows.push(['★ USTED AHORRÓ', fmt(breakdown.ahorroPromociones)]);
   }
 
   return rows;
@@ -7231,6 +7806,7 @@ function getReceiptTemplateData(venta) {
   const pendienteCredito = venta.metodo === 'credito'
     ? Math.max(0, Number((Number(venta.total || 0) - Number(venta.recibido || 0)).toFixed(2)))
     : 0;
+  const isDeliveryOrder = String(venta.tipoPedido || '') === 'delivery';
   const detailRows = [
     [primaryDocumentLabel, factura],
     ...(electronicReceipt && electronicNumber ? [['e-NCF', electronicNumber]] : []),
@@ -7243,6 +7819,17 @@ function getReceiptTemplateData(venta) {
     ...(dgiiStatus ? [['Estado DGII', dgiiStatus]] : []),
     [methodRowLabel, metodoLabel],
     ...(pendienteCredito > 0 ? [['Pendiente', Number(pendienteCredito).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })]] : []),
+    // Solo se muestran en pedidos de delivery — en mostrador/para llevar no aportan nada.
+    ...(isDeliveryOrder ? [
+      ['Repartidor', normalizeReceiptText(venta.repartidor || 'Sin asignar')],
+      ['Tel. entrega', normalizeReceiptText(venta.telefonoDelivery || '')],
+      ['Dirección', normalizeReceiptText(venta.direccionDelivery || '')],
+      ['Referencia', normalizeReceiptText(venta.referenciaDelivery || '')],
+    ] : []),
+    ...(isDeliveryOrder && venta.metodo === 'contra_entrega' && Number(venta.montoClienteEntrega || 0) > 0 ? [
+      ['Cliente paga con', fmt(Number(venta.montoClienteEntrega || 0))],
+      ['Cambio a llevar', fmt(Number(venta.cambioRepartidor || 0))],
+    ] : []),
   ].filter(([, value]) => Boolean(String(value || '').trim()));
   const normalizedItems = (venta.items || []).map((item) => {
     const normalizedItem = normalizeSaleItem(item);
@@ -7295,7 +7882,9 @@ function getReceiptTemplateData(venta) {
           <div class="receipt-item-main">
             <div class="receipt-item-name" title="${escapeReceiptHtml(item.nombre)}">${escapeReceiptHtml(fmtReceiptQty(item))} x ${escapeReceiptHtml(itemName)}</div>
             <div class="receipt-item-meta">
-              ${escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)}
+              ${item.promotionId
+                ? `<s>${escapeReceiptHtml(fmtReceiptValue(item.originalPrice))}</s> ${escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)} · 🏷 Oferta`
+                : escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)}
               ${receiptSimpleMode ? '' : ` · ${escapeReceiptHtml(`ITBIS ${item.itbisRate.toFixed(2)}%`)}`}
             </div>
           </div>
@@ -7695,6 +8284,16 @@ function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
       pushSummaryLine('Cambio', fmtThermal(venta.cambio));
     }
     pushSummaryLine('Método', 'Mixto (Tarjeta + Efectivo)');
+  } else if (venta.paymentCurrency === 'USD') {
+    // Fase 3 multi-moneda: mostrar monto cobrado en US$ y su equivalente/vuelto en RD$
+    const usdRecibidoAmt = Number(venta.usdAmountReceived || 0);
+    const recibidoAmt = Number(venta.recibido || 0);
+    const cambioAmt   = Number(venta.cambio   || 0);
+    pushSummaryLine('Recibido US$', usdRecibidoAmt.toFixed(2));
+    pushSummaryLine('Recibido RD$', fmtThermal(recibidoAmt));
+    if (cambioAmt > 0) {
+      pushSummaryLine('Devuelta RD$', fmtThermal(cambioAmt), 'total');
+    }
   } else {
     // Mostrar recibido y devuelta cuando el cliente pagó más del total
     const recibidoAmt = Number(venta.recibido || 0);

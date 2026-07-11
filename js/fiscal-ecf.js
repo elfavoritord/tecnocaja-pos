@@ -1741,7 +1741,7 @@ function renderSequencesTable(container, seqs) {
 async function initEcfSequenceForm() {
   const branchSel = document.getElementById('fiscal-seq-branch');
   const cajaSel = document.getElementById('fiscal-seq-caja');
-  const typeSelect = document.getElementById('fiscal-seq-type');
+  const typesGrid = document.getElementById('fiscal-seq-types-grid');
 
   if (!FISCAL_UI_STATE.branches.length) {
     try {
@@ -1766,25 +1766,31 @@ async function initEcfSequenceForm() {
 
   populateSequenceCashRegisterOptions(branchSel?.value || '');
 
-  if (typeSelect && typeSelect.children.length <= 1) {
+  if (typesGrid && !typesGrid.dataset.loaded) {
+    let types;
     try {
-      const types = await fiscalApi('GET', '/sequences/types');
-      typeSelect.innerHTML = '<option value="">— Selecciona tipo —</option>' +
-        types.map((type) => `<option value="${type.code}">${type.code} — ${escapeHtml(type.label)}</option>`).join('');
+      types = await fiscalApi('GET', '/sequences/types');
     } catch (_) {
-      typeSelect.innerHTML = `
-        <option value="">— Selecciona tipo —</option>
-        <option value="E31">E31 — Crédito Fiscal</option>
-        <option value="E32">E32 — Consumidor Final</option>
-        <option value="E33">E33 — Nota de Débito</option>
-        <option value="E34">E34 — Nota de Crédito</option>
-        <option value="E41">E41 — Compras</option>
-        <option value="E43">E43 — Gastos Menores</option>
-        <option value="E44">E44 — Regímenes Especiales</option>
-        <option value="E45">E45 — Gubernamental</option>
-        <option value="E46">E46 — Exportaciones</option>
-        <option value="E47">E47 — Pagos al Exterior</option>`;
+      types = [
+        { code: 'E31', label: 'Crédito Fiscal' },
+        { code: 'E32', label: 'Consumidor Final' },
+        { code: 'E33', label: 'Nota de Débito' },
+        { code: 'E34', label: 'Nota de Crédito' },
+        { code: 'E41', label: 'Compras' },
+        { code: 'E43', label: 'Gastos Menores' },
+        { code: 'E44', label: 'Regímenes Especiales' },
+        { code: 'E45', label: 'Gubernamental' },
+        { code: 'E46', label: 'Exportaciones' },
+        { code: 'E47', label: 'Pagos al Exterior' },
+      ];
     }
+    typesGrid.innerHTML = types.map((type) => `
+      <label style="display:flex;align-items:center;gap:.35rem;font-size:.8rem;font-weight:400;cursor:pointer">
+        <input type="checkbox" class="fiscal-seq-type-check" value="${type.code}" checked>
+        ${type.code} — ${escapeHtml(type.label)}
+      </label>
+    `).join('');
+    typesGrid.dataset.loaded = '1';
   }
 
   if (cajaSel && !cajaSel.value) {
@@ -1807,8 +1813,14 @@ function populateSequenceCashRegisterOptions(branchId) {
     }).join('');
 }
 
-async function saveEcfSequence() {
-  const tipo = document.getElementById('fiscal-seq-type')?.value;
+function toggleAllSequenceTypes(checked) {
+  document.querySelectorAll('.fiscal-seq-type-check').forEach((checkbox) => {
+    checkbox.checked = checked;
+  });
+}
+
+async function saveEcfSequences() {
+  const tipos = Array.from(document.querySelectorAll('.fiscal-seq-type-check:checked')).map((cb) => cb.value);
   const branchId = document.getElementById('fiscal-seq-branch')?.value || null;
   const cashRegisterId = document.getElementById('fiscal-seq-caja')?.value || null;
   const desde = parseInt(document.getElementById('fiscal-seq-desde')?.value, 10) || 1;
@@ -1816,8 +1828,8 @@ async function saveEcfSequence() {
   const fechaAutorizacion = document.getElementById('fiscal-seq-fecha-aut')?.value || null;
   const fechaVencimiento = document.getElementById('fiscal-seq-fecha-ven')?.value || null;
 
-  if (!tipo) {
-    showFiscalToast('Selecciona el tipo de comprobante.', 'warning');
+  if (!tipos.length) {
+    showFiscalToast('Marca al menos un tipo de comprobante.', 'warning');
     return;
   }
   if (hasta < desde) {
@@ -1826,27 +1838,46 @@ async function saveEcfSequence() {
   }
 
   const btn = document.getElementById('fiscal-btn-save-seq');
-  setBtnLoading(btn, true, 'Guardando…');
-  try {
-    await fiscalApi('POST', '/sequences', {
-      tipoComprobante: tipo,
-      branchId: branchId || null,
-      cashRegisterId: cashRegisterId || null,
-      desde,
-      hasta,
-      fechaAutorizacion,
-      fechaVencimiento
-    });
-    showFiscalToast('Secuencia e-NCF creada correctamente.', 'success');
+  setBtnLoading(btn, true, `Guardando 0/${tipos.length}…`);
+  const created = [];
+  const failed = [];
+  for (let i = 0; i < tipos.length; i++) {
+    const tipo = tipos[i];
+    setBtnLoading(btn, true, `Guardando ${i + 1}/${tipos.length}…`);
+    try {
+      await fiscalApi('POST', '/sequences', {
+        tipoComprobante: tipo,
+        branchId: branchId || null,
+        cashRegisterId: cashRegisterId || null,
+        desde,
+        hasta,
+        fechaAutorizacion,
+        fechaVencimiento
+      });
+      created.push(tipo);
+    } catch (e) {
+      failed.push(`${tipo} (${e.message})`);
+    }
+  }
+
+  if (created.length) {
+    showFiscalToast(
+      failed.length
+        ? `${created.length} secuencia(s) creada(s). Fallaron: ${failed.join(', ')}`
+        : `${created.length} secuencia(s) e-NCF creada(s) correctamente.`,
+      failed.length ? 'warning' : 'success'
+    );
+  } else {
+    showFiscalToast(`No se pudo crear ninguna secuencia: ${failed.join(', ')}`, 'error');
+  }
+
+  if (created.length) {
     const details = document.getElementById('fiscal-seq-add-details');
     if (details) details.open = false;
-    await loadFiscalSequences();
-    await loadFiscalStatus();
-  } catch (e) {
-    showFiscalToast(`Error: ${e.message}`, 'error');
-  } finally {
-    setBtnLoading(btn, false, 'Guardar secuencia');
   }
+  await loadFiscalSequences();
+  await loadFiscalStatus();
+  setBtnLoading(btn, false, 'Guardar secuencia(s)');
 }
 
 async function setEcfSequenceNext(id, currentNext, tipo) {

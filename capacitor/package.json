@@ -1,0 +1,18 @@
+{
+  "name": "tecnocaja-capacitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Wrapper Capacitor (Android) para Tecno Caja POS. Carga el frontend existente (js/, css/, index.html) contra el Express ya corriente, no lo empaqueta.",
+  "scripts": {
+    "open:android": "cap open android",
+    "sync": "cap sync android",
+    "build:debug": "cd android && gradlew.bat assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/core": "^6.2.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.1"
+  }
+}

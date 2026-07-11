@@ -664,6 +664,9 @@
       <a href="#" class="nav-item" onclick="showModule('productos', this)" data-module="productos" data-deny-role="Cajero">
         <span class="nav-icon">📦</span><span class="nav-label">Productos</span>
       </a>
+      <a href="#" class="nav-item" onclick="showModule('promociones', this)" data-module="promociones" data-deny-role="Cajero">
+        <span class="nav-icon">📢</span><span class="nav-label">Promociones</span>
+      </a>
       <a href="#" class="nav-item" onclick="showModule('inventario', this)" data-module="inventario" data-deny-role="Cajero">
         <span class="nav-icon">📊</span><span class="nav-label">Inventario</span>
       </a>
@@ -696,6 +699,9 @@
       </a>
       <a href="#" class="nav-item" onclick="showModule('configuracion', this)" data-module="configuracion" data-deny-role="Cajero">
         <span class="nav-icon">⚙️</span><span class="nav-label">Configuración</span>
+      </a>
+      <a href="#" class="nav-item" onclick="showModule('monedas', this)" data-module="monedas" data-deny-role="Cajero">
+        <span class="nav-icon">💱</span><span class="nav-label">Configuración de Monedas</span>
       </a>
       <a href="#" class="nav-item" onclick="showModule('wabot', this)" data-module="wabot" data-deny-role="Cajero">
         <span class="nav-icon">💬</span><span class="nav-label">Bot WhatsApp</span>
@@ -872,6 +878,7 @@
                 <span id="s-subtotal-exento">RD$ 0.00</span>
                 <span id="s-descuento">- RD$ 0.00</span>
                 <span id="s-itbis">RD$ 0.00</span>
+                <span id="s-redondeo">RD$ 0.00</span>
                 <span id="s-total">RD$ 0.00</span>
                 <span id="s-separate-tax-breakdown">1</span>
               </div>
@@ -933,6 +940,166 @@
       </div>
       <div class="products-grid-wrap" id="products-grid-wrap">
         <div class="products-grid" id="products-grid"></div>
+      </div>
+    </div>
+
+    <!-- 📢 CENTRO DE PROMOCIONES MODULE -->
+    <div id="module-promociones" class="module hidden">
+      <div class="module-header">
+        <h2>📢 Centro de Promociones</h2>
+        <div class="module-actions" id="promociones-tab-actions">
+          <input type="text" id="promotions-search" placeholder="Buscar por nombre o producto..." class="mod-search" oninput="filterPromotions()">
+          <select class="mod-select" id="promotions-status-filter" onchange="filterPromotions()">
+            <option value="">Todos los estados</option>
+            <option value="activa">🟢 Activa</option>
+            <option value="programada">🟡 Programada</option>
+            <option value="vencida">🔴 Vencida</option>
+            <option value="deshabilitada">⚫ Deshabilitada</option>
+          </select>
+          <button class="btn-primary" id="btn-promotions-new" onclick="openPromotionModal()">+ Nueva Promoción</button>
+          <button class="btn-ghost" onclick="loadPromotionsTable()">↻ Recargar</button>
+        </div>
+      </div>
+
+      <div class="billing-pane-switch" style="display:flex;gap:.4rem;margin:.6rem 0 1rem;flex-wrap:wrap">
+        <button type="button" class="pill-tab active" id="promo-tab-btn-dashboard" onclick="switchPromotionsTab('dashboard')">📊 Dashboard</button>
+        <button type="button" class="pill-tab" id="promo-tab-btn-activas" onclick="switchPromotionsTab('activas')">🏷 Promociones Activas</button>
+        <button type="button" class="pill-tab" id="promo-tab-btn-estadisticas" onclick="switchPromotionsTab('estadisticas')">📈 Estadísticas</button>
+        <button type="button" class="pill-tab" id="promo-tab-btn-historial" onclick="switchPromotionsTab('historial')">🕘 Historial</button>
+        <button type="button" class="pill-tab" id="promo-tab-btn-config" onclick="switchPromotionsTab('config')">⚙️ Configuración</button>
+      </div>
+
+      <!-- Panel: Dashboard -->
+      <div id="promo-panel-dashboard" class="promo-tab-panel">
+        <div class="products-stats" id="promo-dashboard-kpis">
+          <div class="stat-card"><div class="stat-val" id="pd-activas">0</div><div class="stat-label">Promociones activas</div></div>
+          <div class="stat-card stat-warning"><div class="stat-val" id="pd-programadas">0</div><div class="stat-label">Programadas</div></div>
+          <div class="stat-card stat-danger"><div class="stat-val" id="pd-vencidas">0</div><div class="stat-label">Vencidas</div></div>
+          <div class="stat-card"><div class="stat-val" id="pd-permanentes">0</div><div class="stat-label">Permanentes</div></div>
+          <div class="stat-card"><div class="stat-val" id="pd-productos">0</div><div class="stat-label">Productos en promoción</div></div>
+          <div class="stat-card"><div class="stat-val" id="pd-ventas">0</div><div class="stat-label">Ventas con promoción</div></div>
+          <div class="stat-card stat-success"><div class="stat-val" id="pd-descontado">RD$ 0.00</div><div class="stat-label">Monto total descontado</div></div>
+          <div class="stat-card stat-success"><div class="stat-val" id="pd-ganancia">RD$ 0.00</div><div class="stat-label">Ganancia obtenida</div></div>
+        </div>
+        <div class="products-grid-wrap" style="padding:1rem;display:flex;gap:1rem;flex-wrap:wrap">
+          <div class="product-form-card" style="flex:1;min-width:260px">
+            <label>🏆 Promoción más utilizada</label>
+            <div id="pd-mas-utilizada" style="margin-top:.4rem;font-weight:700">—</div>
+          </div>
+          <div class="product-form-card" style="flex:1;min-width:260px">
+            <label>⏰ Próxima a vencer</label>
+            <div id="pd-proxima-vencer" style="margin-top:.4rem;font-weight:700">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel: Promociones Activas -->
+      <div id="promo-panel-activas" class="promo-tab-panel hidden">
+        <div class="products-stats">
+          <div class="stat-card">
+            <div class="stat-val" id="promotions-active-count">0</div>
+            <div class="stat-label">Promociones activas</div>
+          </div>
+          <div class="stat-card stat-warning">
+            <div class="stat-val" id="promotions-scheduled-count">0</div>
+            <div class="stat-label">Programadas</div>
+          </div>
+          <div class="stat-card stat-danger">
+            <div class="stat-val" id="promotions-expired-count">0</div>
+            <div class="stat-label">Vencidas</div>
+          </div>
+        </div>
+        <div class="products-grid-wrap" id="promotions-list-wrap">
+          <table class="data-table" style="width:100%">
+            <thead>
+              <tr>
+                <th>Estado</th>
+                <th>Promoción</th>
+                <th>Producto</th>
+                <th>Precio normal</th>
+                <th>Precio oferta</th>
+                <th>Vigencia</th>
+                <th>Prioridad</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="promotions-table-body">
+              <tr><td colspan="8" style="text-align:center;color:var(--text3);padding:1.5rem">Cargando…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel: Estadísticas -->
+      <div id="promo-panel-estadisticas" class="promo-tab-panel hidden">
+        <div class="module-actions" style="padding:0 0 .8rem">
+          <button class="btn-secondary" onclick="exportPromotionStats('pdf')">⬇ PDF</button>
+          <button class="btn-secondary" onclick="exportPromotionStats('excel')">⬇ Excel</button>
+          <button class="btn-secondary" onclick="exportPromotionStats('csv')">⬇ CSV</button>
+          <button class="btn-ghost" onclick="window.print()">🖨 Imprimir</button>
+        </div>
+        <div class="products-grid-wrap">
+          <table class="data-table" style="width:100%">
+            <thead>
+              <tr>
+                <th>Promoción</th>
+                <th>Producto</th>
+                <th>Ventas</th>
+                <th>Unidades</th>
+                <th>Descontado</th>
+                <th>Ganancia</th>
+                <th>Clientes</th>
+              </tr>
+            </thead>
+            <tbody id="promo-stats-table-body">
+              <tr><td colspan="7" style="text-align:center;color:var(--text3);padding:1.5rem">Cargando…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="promo-stats-never-used" style="padding:1rem"></div>
+      </div>
+
+      <!-- Panel: Historial -->
+      <div id="promo-panel-historial" class="promo-tab-panel hidden">
+        <div class="products-grid-wrap">
+          <table class="data-table" style="width:100%">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Promoción</th>
+                <th>Acción</th>
+                <th>Usuario</th>
+              </tr>
+            </thead>
+            <tbody id="promo-audit-table-body">
+              <tr><td colspan="4" style="text-align:center;color:var(--text3);padding:1.5rem">Cargando…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel: Configuración -->
+      <div id="promo-panel-config" class="promo-tab-panel hidden">
+        <div class="product-form-card" style="max-width:520px;margin:1rem">
+          <div class="form-group span-full">
+            <label><input type="checkbox" id="pc-enabled"> Activar el Centro de Promociones</label>
+          </div>
+          <div class="form-group span-full">
+            <label><input type="checkbox" id="pc-allow-permanent"> Permitir promociones permanentes</label>
+          </div>
+          <div class="form-group span-full">
+            <label><input type="checkbox" id="pc-allow-future"> Permitir promociones programadas a futuro</label>
+          </div>
+          <div class="form-group">
+            <label>Prioridad por defecto</label>
+            <input type="number" id="pc-default-priority" class="form-input" min="0" step="1">
+          </div>
+          <div class="form-group">
+            <label>Color por defecto</label>
+            <input type="color" id="pc-default-color" class="form-input" style="height:42px">
+          </div>
+          <button class="btn-primary" style="margin-top:.8rem" onclick="savePromotionsConfig()">💾 Guardar Configuración</button>
+        </div>
       </div>
     </div>
 
@@ -1148,6 +1315,11 @@
                 <label>Monto Inicial / Final</label>
                 <input type="number" id="caja-input-monto" placeholder="0.00" class="form-input">
               </div>
+              <div class="form-group" id="caja-exchange-rate-group">
+                <label>Tipo de cambio USD → DOP (hoy)</label>
+                <input type="number" id="caja-input-exchange-rate" placeholder="Ej: 58.50" class="form-input" min="0.0001" step="0.0001">
+                <small class="helper-text">Obligatorio para abrir caja. Solo un administrador puede cambiarlo después (Configuración de Monedas).</small>
+              </div>
             <div class="form-group">
                 <label>Observaciones</label>
                 <textarea id="caja-obs" class="form-input" rows="3" placeholder="Notas..."></textarea>
@@ -1265,6 +1437,10 @@
 
     <!-- REPORTES MODULE v2 -->
     <div id="module-reportes" class="module hidden">
+
+      <div id="reportes-offline-banner" class="hidden" style="background:#fff3cd;border:1px solid #ffe69c;color:#664d03;border-radius:8px;padding:10px 14px;margin-bottom:1rem;font-size:0.85rem">
+        Sin conexión: mostrando solo lo vendido sin sincronizar en esta sesión. Los reportes históricos completos (DGII, rangos de fecha) requieren conexión.
+      </div>
 
       <!-- BARRA SUPERIOR: TABS + FILTROS -->
       <div class="repv2-topbar">
@@ -1693,6 +1869,9 @@
           </select>
         </div>
       </div>
+      <div id="movimientos-offline-banner" class="hidden" style="background:#fff3cd;border:1px solid #ffe69c;color:#664d03;border-radius:8px;padding:10px 14px;margin-bottom:1rem;font-size:0.85rem">
+        Sin conexión: mostrando los últimos eventos guardados en caché. Es posible que falten eventos recientes de otras terminales.
+      </div>
       <div class="reportes-grid" style="margin-bottom:1.25rem">
         <div class="report-card">
           <div class="report-card-header">Movimientos visibles</div>
@@ -1941,6 +2120,15 @@
               <label><input type="checkbox" id="cfg-tax-show-breakdown" checked> Mostrar desglose de ITBIS en recibos</label>
               <label><input type="checkbox" id="cfg-tax-separate-subtotals" checked> Separar subtotal gravado y exento</label>
             </div>
+          </div>
+          <div class="form-group">
+            <label>Redondeo automático del total</label>
+            <select class="form-input" id="cfg-rounding-mode">
+              <option value="none">Sin redondeo</option>
+              <option value="1">Redondear al peso (RD$1)</option>
+              <option value="5">Redondear a RD$5</option>
+              <option value="10">Redondear a RD$10</option>
+            </select>
           </div>
           <div class="form-group"><label id="cfg-label-prefix">Prefijo Factura</label><input type="text" id="cfg-prefix" class="form-input" value="FAC-"></div>
           <div class="form-group"><label id="cfg-label-next-ticket">Próximo Ticket</label><input type="number" id="cfg-next-invoice" class="form-input" value="1001" min="1"></div>
@@ -2785,6 +2973,47 @@
     </div><!-- /module-delivery -->
 
     <!-- ══════════════════════════════════════════ BOT WHATSAPP ══ -->
+    <!-- CONFIGURACIÓN DE MONEDAS MODULE -->
+    <div id="module-monedas" class="module hidden" style="flex-direction:column;overflow-y:auto;padding:2rem">
+      <style>
+        #module-monedas { gap: 1.25rem; }
+        .monedas-rate-card { background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:1.25rem 1.5rem; display:flex; flex-direction:column; gap:.35rem; }
+        .monedas-rate-card strong { font-size:1.3rem; }
+        .monedas-rate-card small { color:var(--text3); font-size:.8rem; }
+        .monedas-section { background:var(--bg2); border:1px solid var(--border); border-radius:14px; padding:1.25rem 1.5rem; margin-top:1.25rem; }
+        .monedas-section h3 { font-size:.9rem; font-weight:700; color:var(--text2); text-transform:uppercase; letter-spacing:.05em; margin:0 0 1rem; }
+        .monedas-section .form-group { margin-bottom:.85rem; max-width:360px; }
+      </style>
+      <div class="module-header">
+        <h2>Configuración de Monedas</h2>
+      </div>
+
+      <div class="monedas-rate-card" id="monedas-current-rate-card">Cargando tipo de cambio...</div>
+
+      <div class="monedas-section" id="monedas-cambiar-tasa-section">
+        <h3>Cambiar tipo de cambio</h3>
+        <div class="form-group">
+          <label>Nuevo valor (1 USD = X DOP)</label>
+          <input type="number" id="monedas-nueva-tasa" class="form-input" min="0.0001" step="0.0001" placeholder="Ej: 58.50">
+        </div>
+        <div class="form-group">
+          <label>Motivo (opcional)</label>
+          <input type="text" id="monedas-motivo-cambio" class="form-input" placeholder="Ej: ajuste según tasa BanReservas">
+        </div>
+        <button class="btn-primary" onclick="submitExchangeRateChange()">Guardar nueva tasa</button>
+      </div>
+
+      <div class="monedas-section">
+        <h3>Historial de cambios</h3>
+        <table class="data-table">
+          <thead>
+            <tr><th>Fecha y hora</th><th>Usuario</th><th>Origen</th><th>Tasa anterior</th><th>Tasa nueva</th><th>Motivo</th></tr>
+          </thead>
+          <tbody id="monedas-history-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
     <div id="module-wabot" class="module hidden" style="flex-direction:column;overflow-y:auto;padding:2rem">
 
       <style>
@@ -2861,10 +3090,49 @@
             <label>Número secundario <span style="font-size:.75rem;color:var(--text3)">(opcional — también puede hablar con el bot)</span></label>
             <input type="tel" id="wabot-owner-phone2" placeholder="18091234567 (opcional)">
           </div>
-          <!-- Selector IA oculto (modo solo comandos fijo por ahora) -->
-          <input type="radio" name="wabot-ai" value="none" checked style="display:none">
+          <!-- Motor de respuestas (IA) — mismo proveedor lo usan el bot del dueño y, si se activa, el de clientes -->
+          <div class="wabot-form-row">
+            <label>Motor de respuestas</label>
+            <div class="wabot-ai-selector">
+              <label class="wabot-ai-option selected">
+                <input type="radio" name="wabot-ai" value="none" checked onchange="waBotSelectAI('none', this.closest('.wabot-ai-option'))">
+                <span>Ninguna (Modo Solo Comandos)</span>
+                <span class="wabot-ai-badge free">GRATIS</span>
+              </label>
+              <label class="wabot-ai-option">
+                <input type="radio" name="wabot-ai" value="gemini" onchange="waBotSelectAI('gemini', this.closest('.wabot-ai-option'))">
+                <span>Google Gemini</span>
+                <span class="wabot-ai-badge free">GRATIS</span>
+              </label>
+              <label class="wabot-ai-option">
+                <input type="radio" name="wabot-ai" value="claude" onchange="waBotSelectAI('claude', this.closest('.wabot-ai-option'))">
+                <span>Claude (Anthropic)</span>
+                <span class="wabot-ai-badge paid">DE PAGO</span>
+              </label>
+              <label class="wabot-ai-option">
+                <input type="radio" name="wabot-ai" value="chatgpt" onchange="waBotSelectAI('chatgpt', this.closest('.wabot-ai-option'))">
+                <span>ChatGPT (OpenAI)</span>
+                <span class="wabot-ai-badge paid">DE PAGO</span>
+              </label>
+            </div>
+          </div>
           <div id="wabot-apikey-row" style="display:none">
-            <input type="password" id="wabot-api-key">
+            <label id="wabot-apikey-label" style="font-size:.8rem;font-weight:600;color:var(--text2)"></label>
+            <input type="password" id="wabot-api-key" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.5rem .75rem;font-size:.85rem">
+            <small id="wabot-apikey-hint" style="color:var(--text3);font-size:.75rem"></small>
+            <div style="display:flex;align-items:center;gap:.6rem;margin-top:.4rem">
+              <button type="button" onclick="waBotSaveKey()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.4rem 1rem;font-weight:600;font-size:.82rem;cursor:pointer">Guardar API Key</button>
+              <span id="wabot-apikey-saved" style="display:none;color:#10b981;font-size:.78rem">✅ Key guardada</span>
+            </div>
+          </div>
+          <div id="wabot-google-signin" style="display:none">
+            <div id="wabot-google-btn" style="display:flex">
+              <button type="button" onclick="waBotGoogleLogin()" style="background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.4rem 1rem;font-weight:600;font-size:.82rem;cursor:pointer">Conectar con Google</button>
+            </div>
+            <div id="wabot-google-connected" style="display:none;align-items:center;gap:.6rem">
+              <span style="color:#10b981;font-size:.85rem">✅ Conectado con Google</span>
+              <button type="button" onclick="waBotGoogleDisconnect()" style="background:transparent;color:var(--text3);border:1px solid var(--border);border-radius:8px;padding:.35rem .8rem;font-size:.78rem;cursor:pointer">Desconectar</button>
+            </div>
           </div>
           <div class="wabot-btn-row">
             <button class="wabot-btn wabot-btn-start" onclick="waBotStart()">▶ Iniciar Bot</button>
@@ -2887,6 +3155,30 @@
           </div>
         </div>
 
+        <!-- IA para el bot de clientes -->
+        <div class="wabot-card" style="grid-column:1/-1">
+          <h3 style="margin-bottom:.6rem">🤖 IA para Clientes</h3>
+          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem">Con esto activo, el bot de clientes responde de forma natural (usando el motor de arriba) cuando el cliente no escribe 1, 2 o 3 — el pedido en sí siempre lo sigue armando el sistema paso a paso, nunca la IA. Úsalo para adaptar el tono y las reglas a tu tipo de negocio.</p>
+          <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer;font-size:.85rem;font-weight:600">
+            <input type="checkbox" id="wabot-customer-ai-enabled" onchange="waBotSaveCustomerAiToggle()" style="width:16px;height:16px;accent-color:var(--accent)">
+            Activar IA para clientes
+          </label>
+          <textarea id="wabot-customer-instructions" rows="4" placeholder="Ej: Somos una farmacia. Menciona que los antibióticos requieren receta médica. Nunca prometas entregas en menos de 30 minutos." style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.85rem;resize:vertical;font-family:inherit"></textarea>
+          <div style="display:flex;justify-content:flex-end;margin-top:.5rem">
+            <button onclick="waBotSaveCustomerInstructions()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:.5rem 1.2rem;font-weight:600;font-size:.85rem;cursor:pointer">Guardar</button>
+          </div>
+        </div>
+
+        <!-- Horario de atención (para el flujo de clientes) -->
+        <div class="wabot-card" style="grid-column:1/-1">
+          <h3 style="margin-bottom:.6rem">🕒 Horario de Atención</h3>
+          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem">Se le muestra a los clientes cuando preguntan por el horario. Ej: "Lunes a Sábado 8:00am-8:00pm".</p>
+          <input type="text" id="wabot-business-hours" placeholder="Ej: Lunes a Sábado 8:00am-8:00pm" style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.85rem;font-family:inherit">
+          <div style="display:flex;justify-content:flex-end;margin-top:.5rem">
+            <button onclick="waBotSaveBusinessHours()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:.5rem 1.2rem;font-weight:600;font-size:.85rem;cursor:pointer">Guardar horario</button>
+          </div>
+        </div>
+
         <div class="wabot-card" style="grid-column:1/-1">
           <h3>Conversación Reciente</h3>
           <div class="wabot-log" id="wabot-log">
@@ -2904,71 +3196,80 @@
 #module-delivery { display:flex; flex-direction:column; gap:1rem; padding:1.5rem; overflow-y:auto; }
 
 .dp-stats-row { display:flex; gap:1rem; flex-wrap:wrap; }
-.dp-stat { flex:1; min-width:100px; background:var(--surface2, #1e2535); border-radius:10px; padding:1rem; text-align:center; }
+.dp-stat { flex:1; min-width:100px; background:var(--bg3); border-radius:10px; padding:1rem; text-align:center; box-shadow:var(--card-shadow); }
 .dp-stat-num { display:block; font-size:2rem; font-weight:700; line-height:1; }
 .dp-stat-label { display:block; font-size:0.75rem; color:var(--text2); margin-top:0.3rem; }
-.dp-stat--asignado .dp-stat-num { color:#60a5fa; }
-.dp-stat--camino .dp-stat-num { color:#fbbf24; }
-.dp-stat--entregado .dp-stat-num { color:#34d399; }
-.dp-stat--incidencia .dp-stat-num { color:#f87171; }
+.dp-stat--asignado .dp-stat-num { color:#2563eb; }
+.dp-stat--camino .dp-stat-num { color:#d97706; }
+.dp-stat--entregado .dp-stat-num { color:#059669; }
+.dp-stat--incidencia .dp-stat-num { color:#dc2626; }
+[data-theme="dark"] .dp-stat--asignado .dp-stat-num { color:#60a5fa; }
+[data-theme="dark"] .dp-stat--camino .dp-stat-num { color:#fbbf24; }
+[data-theme="dark"] .dp-stat--entregado .dp-stat-num { color:#34d399; }
+[data-theme="dark"] .dp-stat--incidencia .dp-stat-num { color:#f87171; }
 
 .dp-body { display:grid; grid-template-columns:380px 1fr; gap:1rem; flex:1; min-height:0; }
 
 .dp-orders-panel { display:flex; flex-direction:column; gap:0.5rem; min-height:0; }
-.dp-tabs { display:flex; gap:0.25rem; border-bottom:1px solid var(--border,#2a3347); padding-bottom:0.5rem; }
+.dp-tabs { display:flex; gap:0.25rem; border-bottom:1px solid var(--border); padding-bottom:0.5rem; }
 .dp-tab { background:none; border:none; padding:0.4rem 0.9rem; border-radius:6px; cursor:pointer; color:var(--text2); font-size:0.85rem; }
-.dp-tab--active { background:var(--accent,#00d4c8); color:#000; font-weight:600; }
+.dp-tab--active { background:var(--accent); color:#fff; font-weight:600; }
 
 .dp-orders-list { overflow-y:auto; display:flex; flex-direction:column; gap:0.6rem; padding-right:4px; flex:1; }
 .dp-empty { color:var(--text2); text-align:center; padding:2rem; font-size:0.9rem; }
 
-.dp-card { background:var(--surface2,#1e2535); border-radius:10px; padding:0.85rem 1rem; cursor:pointer; border:1px solid transparent; transition:border-color .15s; }
-.dp-card:hover { border-color:var(--accent,#00d4c8); }
-.dp-card--incidencia { border-color:#f87171 !important; }
+.dp-card { background:var(--bg3); border-radius:10px; padding:0.85rem 1rem; cursor:pointer; border:1px solid transparent; transition:border-color .15s; box-shadow:var(--card-shadow); }
+.dp-card:hover { border-color:var(--accent); }
+.dp-card--incidencia { border-color:#dc2626 !important; }
 .dp-card-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem; }
-.dp-invoice { font-weight:700; font-size:0.9rem; }
-.dp-card-client { font-size:0.85rem; display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; }
+.dp-invoice { font-weight:700; font-size:0.9rem; color:var(--text); }
+.dp-card-client { font-size:0.85rem; display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center; color:var(--text); }
 .dp-phone { color:var(--text2); font-size:0.8rem; }
 .dp-card-address { font-size:0.78rem; color:var(--text2); margin:0.3rem 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .dp-card-footer { display:flex; gap:0.75rem; align-items:center; font-size:0.78rem; color:var(--text2); flex-wrap:wrap; }
 .dp-rep { flex:1; }
-.dp-total { font-weight:600; color:var(--text1); }
-.dp-inc-alert { margin-top:0.4rem; font-size:0.78rem; color:#f87171; font-weight:600; }
+.dp-total { font-weight:600; color:var(--text); }
+.dp-inc-alert { margin-top:0.4rem; font-size:0.78rem; color:#dc2626; font-weight:600; }
+[data-theme="dark"] .dp-inc-alert { color:#f87171; }
 
 .dp-badge { display:inline-block; padding:0.2rem 0.55rem; border-radius:20px; font-size:0.72rem; font-weight:700; }
-.dp-badge--asignado { background:#1e3a5f; color:#60a5fa; }
-.dp-badge--camino { background:#3d2e00; color:#fbbf24; }
-.dp-badge--entregado { background:#052e16; color:#34d399; }
-.dp-badge--incidencia { background:#3d0000; color:#f87171; }
+.dp-badge--asignado { background:#dbeafe; color:#1d4ed8; }
+.dp-badge--camino { background:#fef3c7; color:#b45309; }
+.dp-badge--entregado { background:#d1fae5; color:#047857; }
+.dp-badge--incidencia { background:#fee2e2; color:#b91c1c; }
+[data-theme="dark"] .dp-badge--asignado { background:#1e3a5f; color:#60a5fa; }
+[data-theme="dark"] .dp-badge--camino { background:#3d2e00; color:#fbbf24; }
+[data-theme="dark"] .dp-badge--entregado { background:#052e16; color:#34d399; }
+[data-theme="dark"] .dp-badge--incidencia { background:#3d0000; color:#f87171; }
 
 .dp-map-panel { display:flex; flex-direction:column; gap:0.5rem; }
 .dp-map-header { display:flex; justify-content:space-between; align-items:center; }
 .dp-map { height:100%; min-height:420px; border-radius:10px; overflow:hidden; z-index:0; }
 
-.dp-map-pin { background:var(--surface2,#1e2535); border:2px solid var(--accent,#00d4c8); border-radius:8px; padding:3px 6px; font-size:0.9rem; display:flex; align-items:center; gap:4px; white-space:nowrap; }
-.dp-map-pin-name { font-size:0.68rem; font-weight:600; color:var(--text1,#f0f4ff); }
+.dp-map-pin { background:var(--bg3); border:2px solid var(--accent); border-radius:8px; padding:3px 6px; font-size:0.9rem; display:flex; align-items:center; gap:4px; white-space:nowrap; }
+.dp-map-pin-name { font-size:0.68rem; font-weight:600; color:var(--text); }
 
 /* Modal */
 .dp-modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:9999; display:flex; align-items:center; justify-content:center; }
-.dp-modal { background:var(--surface1,#141927); border-radius:14px; width:min(680px,95vw); max-height:85vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.5); }
-.dp-modal-header { display:flex; align-items:center; gap:0.75rem; padding:1.25rem 1.5rem; border-bottom:1px solid var(--border,#2a3347); }
+.dp-modal { background:var(--bg2); color:var(--text); border-radius:14px; width:min(680px,95vw); max-height:85vh; overflow-y:auto; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+.dp-modal-header { display:flex; align-items:center; gap:0.75rem; padding:1.25rem 1.5rem; border-bottom:1px solid var(--border); }
 .dp-modal-header h3 { flex:1; margin:0; font-size:1.1rem; }
 .dp-modal-close { background:none; border:none; font-size:1.2rem; cursor:pointer; color:var(--text2); margin-left:auto; }
 .dp-modal-body { padding:1.25rem 1.5rem; display:flex; flex-direction:column; gap:1rem; }
 .dp-detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; }
 .dp-detail-block h4 { margin:0 0 0.5rem; font-size:0.8rem; text-transform:uppercase; letter-spacing:.05em; color:var(--text2); }
-.dp-maps-link { font-size:0.82rem; color:var(--accent,#00d4c8); }
+.dp-maps-link { font-size:0.82rem; color:var(--accent); }
 .dp-prod-table { width:100%; border-collapse:collapse; font-size:0.85rem; }
-.dp-prod-table th { text-align:left; color:var(--text2); font-size:0.75rem; padding:0.3rem 0; border-bottom:1px solid var(--border,#2a3347); }
-.dp-prod-table td { padding:0.35rem 0; border-bottom:1px solid var(--border,#1e2535); }
+.dp-prod-table th { text-align:left; color:var(--text2); font-size:0.75rem; padding:0.3rem 0; border-bottom:1px solid var(--border); }
+.dp-prod-table td { padding:0.35rem 0; border-bottom:1px solid var(--border); }
 .dp-total-row { text-align:right; padding-top:0.5rem; font-size:0.95rem; }
-.dp-detail-inc { background:var(--surface2,#1e2535); border-radius:8px; padding:0.6rem 0.8rem; margin-bottom:0.4rem; }
+.dp-detail-inc { background:var(--bg3); border-radius:8px; padding:0.6rem 0.8rem; margin-bottom:0.4rem; }
 .dp-detail-inc p { margin:0.2rem 0 0; font-size:0.85rem; color:var(--text2); }
 .dp-detail-inc small { font-size:0.75rem; color:var(--text2); }
 
-.dp-rep-local { display:flex; align-items:center; justify-content:space-between; padding:0.45rem 0.6rem; background:var(--surface2,#1e2535); border-radius:8px; margin-bottom:0.35rem; gap:0.5rem; }
+.dp-rep-local { display:flex; align-items:center; justify-content:space-between; padding:0.45rem 0.6rem; background:var(--bg3); border-radius:8px; margin-bottom:0.35rem; gap:0.5rem; }
 .dp-rep-local-info { display:flex; flex-direction:column; min-width:0; }
-.dp-rep-local-name { font-size:0.85rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; }
+.dp-rep-local-name { font-size:0.85rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:6px; color:var(--text); }
 .dp-rep-local-sub { font-size:0.72rem; color:var(--text2); }
 
 .dp-gps-dot { width:8px; height:8px; border-radius:50%; background:var(--text2); display:inline-block; flex-shrink:0; }
@@ -2985,6 +3286,11 @@
       <div class="form-group">
         <label>Monto inicial</label>
         <input type="number" id="cash-gate-amount" class="form-input" placeholder="0.00" min="0" step="0.01">
+      </div>
+      <div class="form-group">
+        <label>Tipo de cambio USD → DOP (hoy)</label>
+        <input type="number" id="cash-gate-exchange-rate" class="form-input" placeholder="Ej: 58.50" min="0.0001" step="0.0001">
+        <small class="helper-text">Obligatorio. Una vez abierta la caja, solo un administrador puede cambiarlo (Configuración de Monedas).</small>
       </div>
       <div class="form-group span-2">
         <label>Observaciones</label>
@@ -3034,6 +3340,7 @@
     </div>
     <div class="modal-body">
       <div id="receipt-content" class="receipt"></div>
+      <div id="receipt-delivery-panel" class="receipt-delivery-panel hidden"></div>
     </div>
     <div class="modal-footer" id="receipt-footer">
       <button class="btn-secondary" onclick="printReceipt()">🖨️ Imprimir</button>
@@ -3571,13 +3878,24 @@
         </div>
 
         <details id="fiscal-seq-add-details" style="margin-top:.8rem">
-          <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Agregar secuencia e-NCF</summary>
+          <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Agregar secuencia(s) e-NCF</summary>
           <div style="background:var(--bg2);padding:1rem;border-radius:8px;margin-top:.6rem">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
-              <div class="form-group">
-                <label>Tipo de comprobante *</label>
-                <select id="fiscal-seq-type" class="form-input"><option value="">— Selecciona —</option></select>
+            <p style="font-size:.8rem;color:var(--text2);margin:0 0 .7rem">
+              Marca los tipos de comprobante que DGII te autorizó y llena los datos una sola vez — se crean todas juntas al guardar.
+            </p>
+            <div class="form-group" style="margin-bottom:.8rem">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.35rem">
+                <label style="margin:0">Tipos de comprobante a crear *</label>
+                <span style="font-size:.75rem">
+                  <a href="#" onclick="event.preventDefault();toggleAllSequenceTypes(true)">Marcar todos</a> ·
+                  <a href="#" onclick="event.preventDefault();toggleAllSequenceTypes(false)">Ninguno</a>
+                </span>
               </div>
+              <div id="fiscal-seq-types-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem">
+                <span class="loading-text" style="font-size:.8rem">Cargando tipos…</span>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:.6rem">
               <div class="form-group">
                 <label>Sucursal (vacío = global)</label>
                 <select id="fiscal-seq-branch" class="form-input"><option value="">Global</option></select>
@@ -3603,7 +3921,7 @@
                 <input type="date" id="fiscal-seq-fecha-ven" class="form-input">
               </div>
             </div>
-            <button id="fiscal-btn-save-seq" class="btn-primary" onclick="saveEcfSequence()">Guardar secuencia</button>
+            <button id="fiscal-btn-save-seq" class="btn-primary" onclick="saveEcfSequences()">Guardar secuencia(s)</button>
           </div>
         </details>
       </div>
@@ -3845,6 +4163,22 @@
 <!-- jsPDF — generación de reportes PDF -->
 <script src="node_modules/jspdf/dist/jspdf.umd.min.js"></script>
 
+<!-- SheetJS (xlsx) — exportar Excel desde el navegador, ej. Estadísticas de Promociones -->
+<script src="node_modules/xlsx/dist/xlsx.full.min.js"></script>
+
+<!-- html2canvas — captura el comprobante HTML real (buildReceiptSheetMarkup) como
+     imagen para WhatsApp. Sin esto, window.html2canvas nunca existe y el envío por
+     WhatsApp cae siempre al dibujo de respaldo en generateReceiptFallbackImageDataUrl,
+     que no es la misma factura que se imprime. -->
+<script src="node_modules/html2canvas/dist/html2canvas.min.js"></script>
+
+<!-- Socket.IO cliente — servido por el propio servidor local (sin CDN, funciona
+     offline). Sin este script, io() nunca existe en la página: connectLicenseSocket()
+     (js/app.js) siempre retorna de inmediato por "typeof io === 'undefined'", y
+     TODOS los eventos en tiempo real (estado del bot WhatsApp, licencia, avisos de
+     pedidos) quedan sin funcionar aunque el servidor sí los emita — hasta ahora
+     nunca se notó porque esas pantallas tienen respaldo por sondeo (polling). -->
+<script src="/socket.io/socket.io.js"></script>
 <script src="js/toast.js"></script>
 <script src="js/i18n.js"></script>
 <script src="js/api.js"></script>
@@ -3857,6 +4191,7 @@
 <script src="js/sync-status-widget.js"></script>
 <script src="js/sync-monitor.js"></script>
 <script src="js/productos.js"></script>
+<script src="js/promociones.js"></script>
 <script src="js/rnc-lookup.js"></script>
 <script src="js/clientes.js"></script>
 <script src="js/proveedores.js"></script>
@@ -3866,6 +4201,7 @@
 <script src="js/reportes-v2.js"></script>
 <script src="js/ncf-config.js"></script>
 <script src="js/business-config.js"></script>
+<script src="js/monedas.js"></script>
 <script src="js/plans.js"></script>
 <script src="js/mobile-pos.js"></script>
 <script type="module" src="js/firebase-web-auth.js"></script>

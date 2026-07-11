@@ -131,6 +131,7 @@ function createEcfRouter(deps) {
   router.post('/certification-center/rfce/submit', wrap((req) => service.step4RfceSubmit(req)));
   router.post('/certification-center/rfce/poll', wrap(() => service.step4RfcePollStatuses()));
   router.post('/certification-center/rfce/prepare-portal', wrap((req) => service.step4RfcePreparePortal(req)));
+  router.post('/certification-center/reset-step2-completely', wrap((req) => service.step2ResetCompletely(req)));
   router.get('/certification/cases', wrap((req) => service.listCertificationCases(req.query || {})));
   router.get('/certification/summary', wrap(() => service.getCertificationSummary()));
   router.post('/certification/import', wrap((req) => service.importCertificationSet(req)));
@@ -228,10 +229,20 @@ function createEcfRouter(deps) {
         '47-normal': 'Comprobante para Pagos al Exterior (E47)',
       };
       const ORDER = ['31-normal','32-normal','32-rfce','33-normal','34-normal','41-normal','43-normal','44-normal','45-normal','46-normal','47-normal'];
+      // Cuando un lote tiene más de un documento del mismo tipo (ej. reintentos
+      // tras un rechazo), preferir uno que NO esté rechazado en vez de tomar
+      // el primero por orden de eNCF — de lo contrario el Paso 5 puede mostrar
+      // un comprobante rechazado para subir al portal DGII aunque exista uno
+      // válido del mismo tipo en el mismo lote.
+      const ESTADO_RANK = { aceptado: 0, aceptado_condicional: 1, firmado: 2, enviado: 3, rechazado: 4 };
+      const rankOf = (estado) => ESTADO_RANK[estado] ?? 3;
       const byKey = {};
       rows.forEach((r) => {
         const k = `${r.tipo_ecf.replace('E','')}-${(r.submission_mode||'normal').toLowerCase()}`;
-        if (!byKey[k]) byKey[k] = { key: k, tipo: r.tipo_ecf, label: TYPE_LABELS[k] || k, encf: r.encf, estado: r.estado_dgii };
+        const candidate = { key: k, tipo: r.tipo_ecf, label: TYPE_LABELS[k] || k, encf: r.encf, estado: r.estado_dgii };
+        if (!byKey[k] || rankOf(candidate.estado) < rankOf(byKey[k].estado)) {
+          byKey[k] = candidate;
+        }
       });
       const docs = ORDER.map((k) => byKey[k]).filter(Boolean);
       res.json({ docs });
@@ -248,7 +259,7 @@ function createEcfRouter(deps) {
       const { generateReprImpresaHtml } = require('./repr-impresa');
 
       const rows = await deps.query(
-        `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, estado_dgii
+        `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, estado_dgii, rnc_comprador
          FROM ecf_documents
          WHERE certification_batch_id = (
            SELECT certification_batch_id FROM ecf_documents
@@ -274,11 +285,16 @@ function createEcfRouter(deps) {
       };
       const ORDER = ['31-normal','32-normal','32-rfce','33-normal','34-normal','41-normal','43-normal','44-normal','45-normal','46-normal','47-normal'];
 
-      // Pick one representative per type
+      // Pick one representative per type — preferir el que esté realmente aceptado en DGII
+      // en vez del primero por orden de eNCF (que puede ser uno rechazado o aún sin
+      // confirmar si hay varios intentos del mismo tipo en el lote, ej. E31 con un
+      // rechazo seguido de reintentos aceptados).
+      const ESTADO_RANK = { aceptado: 0, aceptado_condicional: 1, firmado: 2, enviado: 3, rechazado: 4 };
+      const rankOf = (estado) => ESTADO_RANK[estado] ?? 3;
       const byKey = {};
       rows.forEach((r) => {
         const k = `${r.tipo_ecf.replace('E','')}-${(r.submission_mode||'normal').toLowerCase()}`;
-        if (!byKey[k]) byKey[k] = r;
+        if (!byKey[k] || rankOf(r.estado_dgii) < rankOf(byKey[k].estado_dgii)) byKey[k] = r;
       });
       const selected = ORDER.map((k, i) => ({ key: k, idx: i + 1, row: byKey[k] })).filter((x) => x.row);
 
@@ -293,21 +309,14 @@ function createEcfRouter(deps) {
       const archive = archiver('zip', { zlib: { level: 6 } });
       archive.pipe(res);
 
-      const emitterRows = await deps.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => []);
-      const configRows = await deps.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []);
-      const emitterForRi = {
-        rnc: (emitterRows[0]?.rnc || configRows[0]?.rnc || '').replace(/\D/g, ''),
-        razon_social: emitterRows[0]?.razon_social || configRows[0]?.business_name || '',
-        nombre_comercial: /documentos electronicos/i.test(emitterRows[0]?.nombre_comercial ?? '') ? '' : (emitterRows[0]?.nombre_comercial ?? ''),
-        direccion: emitterRows[0]?.direccion || configRows[0]?.address || '',
-        telefono: emitterRows[0]?.telefono || configRows[0]?.phone || '',
-        correo: emitterRows[0]?.correo || '',
-      };
-
+      // La Representación Impresa debe mostrar exactamente lo que se transmitió a la DGII —
+      // durante certificación esos datos vienen fijos del set de pruebas de la DGII (incluida
+      // su empresa de ejemplo), no del emisor/comprador real configurado localmente. Por eso no
+      // se sobreescribe emitter/buyer aquí: se deja que generateReprImpresaHtml lea el XML tal cual.
       for (const { key, idx, row } of selected) {
         const label = TYPE_LABELS[key] || key;
         const filename = `${String(idx).padStart(2,'0')}-${label}-${row.encf}.pdf`;
-        const html = await generateReprImpresaHtml(row.signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter: emitterForRi });
+        const html = await generateReprImpresaHtml(row.signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
         await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
         const pdfRaw = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
         archive.append(Buffer.isBuffer(pdfRaw) ? pdfRaw : Buffer.from(pdfRaw), { name: filename });
@@ -322,24 +331,50 @@ function createEcfRouter(deps) {
     }
   });
 
+  // Descarga el XML firmado de TODOS los documentos del lote de certificación activo, en un
+  // solo ZIP — útil para verificar rápido (ej. RazonSocialEmisor/Comprador) sin tener que
+  // reenviar cada uno a la DGII solo para chequear el contenido.
+  router.get('/print/step5-xml-bundle', async (req, res) => {
+    try {
+      const archiver = require('archiver');
+      const rows = await deps.query(
+        `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, xml_content
+         FROM ecf_documents
+         WHERE certification_batch_id = (
+           SELECT certification_batch_id FROM ecf_documents
+           WHERE certification_batch_id IS NOT NULL
+           ORDER BY created_at DESC LIMIT 1
+         )
+           AND (signed_xml_content IS NOT NULL OR xml_content IS NOT NULL)
+         ORDER BY tipo_ecf, submission_mode, encf`,
+      );
+
+      if (!rows.length) return res.status(404).json({ error: 'No hay documentos con XML en el lote activo.' });
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="xml-documentos-DGII.zip"');
+
+      const archive = archiver('zip', { zlib: { level: 6 } });
+      archive.pipe(res);
+
+      for (const row of rows) {
+        const xml = row.signed_xml_content || row.xml_content || '';
+        const suffix = (row.submission_mode || 'normal').toLowerCase() === 'rfce' ? '-rfce' : '';
+        archive.append(xml, { name: `${row.tipo_ecf}${suffix}-${row.encf}.xml` });
+      }
+
+      await archive.finalize();
+    } catch (e) {
+      if (!res.headersSent) res.status(500).json({ error: e.message });
+    }
+  });
+
   router.get('/print/repr-impresa/:encf', async (req, res) => {
     try {
       const { generateReprImpresaHtml } = require('./repr-impresa');
-      const [rows, emitterRows, configRows] = await Promise.all([
-        deps.query(`SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`, [req.params.encf]),
-        deps.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => []),
-        deps.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []),
-      ]);
+      const rows = await deps.query(`SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`, [req.params.encf]);
       if (!rows.length) return res.status(404).json({ error: 'Documento no encontrado o sin XML firmado.' });
-      const emitter = {
-        rnc: (emitterRows[0]?.rnc || configRows[0]?.rnc || '').replace(/\D/g, ''),
-        razon_social: emitterRows[0]?.razon_social || configRows[0]?.business_name || '',
-        nombre_comercial: /documentos electronicos/i.test(emitterRows[0]?.nombre_comercial ?? '') ? '' : (emitterRows[0]?.nombre_comercial ?? ''),
-        direccion: emitterRows[0]?.direccion || configRows[0]?.address || '',
-        telefono: emitterRows[0]?.telefono || configRows[0]?.phone || '',
-        correo: emitterRows[0]?.correo || '',
-      };
-      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter });
+      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
       res.type('text/html').send(html);
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -351,21 +386,9 @@ function createEcfRouter(deps) {
     try {
       const { generateReprImpresaHtml } = require('./repr-impresa');
       const puppeteer = require('puppeteer');
-      const [rows, emitterRows, configRows] = await Promise.all([
-        deps.query(`SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`, [req.params.encf]),
-        deps.query('SELECT * FROM ecf_emitters WHERE business_id = 1 LIMIT 1').catch(() => []),
-        deps.query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []),
-      ]);
+      const rows = await deps.query(`SELECT signed_xml_content FROM ecf_documents WHERE encf = ? AND signed_xml_content IS NOT NULL LIMIT 1`, [req.params.encf]);
       if (!rows.length) return res.status(404).json({ error: 'Documento no encontrado o sin XML firmado.' });
-      const emitter = {
-        rnc: (emitterRows[0]?.rnc || configRows[0]?.rnc || '').replace(/\D/g, ''),
-        razon_social: emitterRows[0]?.razon_social || configRows[0]?.business_name || '',
-        nombre_comercial: /documentos electronicos/i.test(emitterRows[0]?.nombre_comercial ?? '') ? '' : (emitterRows[0]?.nombre_comercial ?? ''),
-        direccion: emitterRows[0]?.direccion || configRows[0]?.address || '',
-        telefono: emitterRows[0]?.telefono || configRows[0]?.phone || '',
-        correo: emitterRows[0]?.correo || '',
-      };
-      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf', emitter });
+      const html = await generateReprImpresaHtml(rows[0].signed_xml_content, { env: process.env.DGII_ENV || 'certecf' });
       browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle0' });

@@ -385,6 +385,94 @@ function correctIscEspecificoCerveza(rawRow) {
   return corrected || rawRow;
 }
 
+// Quita por completo una línea de Impuesto Adicional (ej. TipoImpuesto=006, ISC específico
+// cerveza) de una fila clonada del set de pruebas, para el caso de Paso 4 (Simulación) donde
+// el documento debe representar la operación REAL del contribuyente — si el negocio no vende
+// el producto gravado con ese impuesto, no tiene sentido adivinar la tasa vigente (a diferencia
+// de correctIscEspecificoCerveza, que sigue existiendo para cuando SÍ aplica y solo hace falta
+// actualizar la tasa). Recalcula ITBIS y MontoTotal con la misma fórmula en cascada
+// (ITBIS = tasa% * (base + impuestos adicionales)) para que el documento quede consistente.
+function removeIscEspecificoTax(rawRow, tipoImpuestoCode) {
+  let corrected = null;
+  let totalDelta = 0;
+
+  for (let i = 1; i <= 4; i++) {
+    if (String(rawRow[`TipoImpuesto[${i}]`] || '').trim() !== tipoImpuestoCode) continue;
+    const tasa = parseFloat(String(rawRow[`TasaImpuestoAdicional[${i}]`] || '').replace(',', '.')) || 0;
+    if (tasa <= 0) continue;
+    const amountFields = [
+      'MontoImpuestoSelectivoConsumoEspecifico',
+      'MontoImpuestoSelectivoConsumoAdvalorem',
+      'OtrosImpuestosAdicionales',
+    ];
+    if (!corrected) corrected = { ...rawRow };
+    for (const field of amountFields) {
+      const key = `${field}[${i}]`;
+      const oldAmount = parseFloat(String(corrected[key] || '').replace(',', '.')) || 0;
+      if (oldAmount > 0) totalDelta -= oldAmount;
+      if (key in corrected) corrected[key] = '';
+    }
+    corrected[`TasaImpuestoAdicional[${i}]`] = '0';
+    corrected[`TipoImpuesto[${i}]`] = '';
+  }
+
+  if (!corrected || totalDelta === 0) return rawRow;
+
+  const newMia = round2((parseFloat(String(corrected['MontoImpuestoAdicional'] || '').replace(',', '.')) || 0) + totalDelta);
+  // Si no queda ningún impuesto adicional, quitar la clave por completo en vez de dejar "0"
+  // — así el documento queda igual que cualquier otro tipo que nunca tuvo ImpuestosAdicionales
+  // (comportamiento ya verificado con DGII en los otros 24/25 documentos del lote).
+  if (newMia <= 0) delete corrected['MontoImpuestoAdicional'];
+  else corrected['MontoImpuestoAdicional'] = String(newMia);
+
+  const itbis1Rate = (parseFloat(String(corrected['ITBIS1'] || '').replace(',', '.')) || 0) / 100;
+  const base1 = parseFloat(String(corrected['MontoGravadoI1'] || '').replace(',', '.')) || 0;
+  let newTotal = base1 + newMia;
+  if (itbis1Rate > 0) {
+    const newTotalItbis = round2((base1 + newMia) * itbis1Rate);
+    corrected['TotalITBIS'] = String(newTotalItbis);
+    corrected['TotalITBIS1'] = String(newTotalItbis);
+    newTotal = round2(base1 + newTotalItbis + newMia);
+  } else {
+    newTotal = round2(newTotal);
+  }
+  const oldTotal = parseFloat(String(corrected['MontoTotal'] || '').replace(',', '.')) || 0;
+  corrected['MontoTotal'] = String(newTotal);
+
+  // Reflejar el nuevo total en los campos que lo duplican (forma de pago única, período,
+  // valor a pagar) — en el set de pruebas suelen ser iguales al MontoTotal original.
+  if (oldTotal > 0) {
+    for (let j = 1; j <= 4; j++) {
+      const key = `MontoPago[${j}]`;
+      const oldPago = parseFloat(String(corrected[key] || '').replace(',', '.')) || 0;
+      if (oldPago > 0 && Math.abs(oldPago - oldTotal) < 0.01) corrected[key] = String(newTotal);
+    }
+    if (corrected['MontoPeriodo'] && Math.abs((parseFloat(String(corrected['MontoPeriodo']).replace(',', '.')) || 0) - oldTotal) < 0.01) {
+      corrected['MontoPeriodo'] = String(newTotal);
+    }
+    if (corrected['ValorPagar'] && Math.abs((parseFloat(String(corrected['ValorPagar']).replace(',', '.')) || 0) - oldTotal) < 0.01) {
+      corrected['ValorPagar'] = String(newTotal);
+    }
+  }
+
+  // Quitar la referencia al tipo de impuesto removido en la tabla por-ítem
+  // (TablaImpuestoAdicional de DetallesItems) para no dejar un TipoImpuesto huérfano
+  // que ya no aparece en Totales/ImpuestosAdicionales.
+  for (let lineIndex = 1; lineIndex <= 50; lineIndex++) {
+    let touchedLine = false;
+    for (let j = 1; j <= 4; j++) {
+      const key = `TipoImpuesto[${lineIndex}][${j}]`;
+      if (String(corrected[key] || '').trim() === tipoImpuestoCode) {
+        corrected[key] = '';
+        touchedLine = true;
+      }
+    }
+    if (!touchedLine && !(`TipoImpuesto[${lineIndex}][1]` in rawRow)) break;
+  }
+
+  return corrected;
+}
+
 function buildCertificationEcfXml(testCase, issueDate) {
   // DGII certecf valida cada campo contra el valor EXACTO del conjunto de datos entregados
   // en la postulación — no contra el catálogo de tasas actual. No aplicar correcciones de
@@ -433,10 +521,15 @@ function buildCertificationEcfXml(testCase, issueDate) {
     .forEach((field) => appendSimple(idDoc, field, row[field]));
 
   const emisor = encabezado.ele('Emisor');
-  [
-    'RNCEmisor',
-    'RazonSocialEmisor',
-  ].forEach((field) => appendSimple(emisor, field, row[field]));
+  // RNCEmisor/RazonSocialEmisor: por defecto vienen tal cual del Excel del set de pruebas de
+  // la DGII — confirmado en vivo que "Pruebas de Datos e-CF" (Paso 2) valida contra el valor
+  // EXACTO entregado en su conjunto de datos (incluye su empresa de ejemplo, ej. "DOCUMENTOS
+  // ELECTRONICOS DE 02") y rechaza el nombre real del emisor ahí.
+  // Solo se sustituyen por el emisor real cuando el llamador pasa emitterRnc/emitterRazonSocial
+  // explícitamente en testCase — usado para Paso 4/5 (simulación/Representación Impresa), donde
+  // un representante de la DGII confirmó que SÍ debe mostrarse la razón social real.
+  appendSimple(emisor, 'RNCEmisor', ('emitterRnc' in testCase) ? testCase.emitterRnc : row.RNCEmisor);
+  appendSimple(emisor, 'RazonSocialEmisor', ('emitterRazonSocial' in testCase) ? testCase.emitterRazonSocial : row.RazonSocialEmisor);
 
   // NombreComercial del emisor: DGII valida este campo contra el valor registrado en su BD para el RNC.
   // Si el Excel del set de pruebas tiene un valor diferente al registrado en DGII, la validación falla.
@@ -503,7 +596,17 @@ function buildCertificationEcfXml(testCase, issueDate) {
   const hasCompradorData = compradorFields.some((f) => rowHasValue(row, f));
   if (hasCompradorData) {
     const comprador = encabezado.ele('Comprador');
-    compradorFields.forEach((field) => appendSimple(comprador, field, row[field]));
+    compradorFields.forEach((field) => {
+      // RazonSocialComprador: por defecto de la fila, salvo que el llamador pase
+      // buyerRazonSocial explícitamente (Paso 4/5 simulación — corrige inconsistencias del
+      // set de pruebas DGII, que reutiliza el mismo RNC comprador con nombres distintos
+      // entre filas; confirmado contra el padrón oficial de la DGII).
+      if (field === 'RazonSocialComprador' && ('buyerRazonSocial' in testCase) && testCase.buyerRazonSocial) {
+        appendSimple(comprador, field, testCase.buyerRazonSocial);
+        return;
+      }
+      appendSimple(comprador, field, row[field]);
+    });
   }
 
   const informacionAdicionalFields = [
@@ -821,10 +924,20 @@ function buildCertificationRfceXml(testCase, issueDate) {
   }
 
   const emisor = encabezado.ele('Emisor');
-  ['RNCEmisor', 'RazonSocialEmisor', 'FechaEmision'].forEach((field) => appendSimple(emisor, field, row[field]));
+  // Mismo criterio que en buildCertificationEcfXml: por defecto del Excel, salvo que el
+  // llamador pase emitterRnc/emitterRazonSocial explícitamente (Paso 4/5, simulación).
+  appendSimple(emisor, 'RNCEmisor', ('emitterRnc' in testCase) ? testCase.emitterRnc : row.RNCEmisor);
+  appendSimple(emisor, 'RazonSocialEmisor', ('emitterRazonSocial' in testCase) ? testCase.emitterRazonSocial : row.RazonSocialEmisor);
+  appendSimple(emisor, 'FechaEmision', row.FechaEmision);
 
   const comprador = encabezado.ele('Comprador');
-  ['RNCComprador', 'IdentificadorExtranjero', 'RazonSocialComprador'].forEach((field) => appendSimple(comprador, field, row[field]));
+  ['RNCComprador', 'IdentificadorExtranjero', 'RazonSocialComprador'].forEach((field) => {
+    if (field === 'RazonSocialComprador' && ('buyerRazonSocial' in testCase) && testCase.buyerRazonSocial) {
+      appendSimple(comprador, field, testCase.buyerRazonSocial);
+      return;
+    }
+    appendSimple(comprador, field, row[field]);
+  });
 
   const totalsNode = encabezado.ele('Totales');
   [
@@ -1317,6 +1430,7 @@ async function importTestSet({
 module.exports = {
   buildTransmissionFromSpreadsheetRow,
   correctIscEspecificoCerveza,
+  removeIscEspecificoTax,
   importTestCases,
   importTestSet,
   parseTestSetBuffer,

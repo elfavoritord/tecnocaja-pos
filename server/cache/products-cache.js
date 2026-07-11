@@ -74,7 +74,7 @@ async function loadAll() {
               stock, stock_min, estado, image_url, image_local,
               unidad, sale_mode, marca, product_type, size_options, dough_options,
               border_options, extra_options, allow_half_and_half, is_combo,
-              preparation_time_minutes
+              preparation_time_minutes, discount_percent, discount_until_stock_out
        FROM products
        WHERE LOWER(estado) IN ('activo', 'active', 'enabled') OR estado IS NULL
        ORDER BY nombre ASC`,
@@ -357,6 +357,8 @@ function normalizeProduct(row) {
     permiteMitades: Boolean(row.allow_half_and_half),
     esCombo:       Boolean(row.is_combo),
     tiempoPreparacion: Number(row.preparation_time_minutes || 0),
+    descuentoPct: Number(row.discount_percent ?? row.descuentoPct ?? 0),
+    descuentoHastaAgotar: Boolean(row.discount_until_stock_out ?? row.descuentoHastaAgotar ?? false),
   };
 }
 

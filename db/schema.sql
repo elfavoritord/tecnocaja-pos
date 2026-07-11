@@ -163,9 +163,28 @@ CREATE TABLE config (
   cloud_business_id VARCHAR(64) DEFAULT NULL,
   accountant_id VARCHAR(64) DEFAULT NULL,
   accountant_name VARCHAR(200) DEFAULT NULL,
+  exchange_rate_usd_dop DECIMAL(10,4) DEFAULT NULL,
+  exchange_rate_updated_at DATETIME DEFAULT NULL,
+  exchange_rate_updated_by_user_id INT DEFAULT NULL,
+  exchange_rate_updated_by_user_name VARCHAR(120) DEFAULT NULL,
   CONSTRAINT fk_config_business FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE SET NULL,
   CONSTRAINT fk_config_active_branch FOREIGN KEY (active_branch_id) REFERENCES branches(id) ON DELETE SET NULL,
   CONSTRAINT fk_config_active_cash_register FOREIGN KEY (active_cash_register_id) REFERENCES cash_registers(id) ON DELETE SET NULL
+);
+
+-- Historial de cambios del tipo de cambio USD->DOP (Fase 1 multi-moneda).
+-- Una fila por cada apertura de caja (source='cash_open', el registro diario
+-- normal) y por cada cambio manual de un administrador (source='manual').
+CREATE TABLE exchange_rate_history (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  previous_rate DECIMAL(10,4) DEFAULT NULL,
+  new_rate DECIMAL(10,4) NOT NULL,
+  changed_by_user_id INT DEFAULT NULL,
+  changed_by_user_name VARCHAR(120) NOT NULL DEFAULT 'Sistema',
+  changed_by_user_role VARCHAR(60) DEFAULT NULL,
+  source VARCHAR(20) NOT NULL DEFAULT 'cash_open',
+  change_reason VARCHAR(255) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE users (
@@ -244,6 +263,8 @@ CREATE TABLE products (
   preparation_time_minutes INT NOT NULL DEFAULT 15,
   business_metadata LONGTEXT DEFAULT NULL,
   tracks_stock TINYINT(1) NOT NULL DEFAULT 1,
+  discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0.00,
+  discount_until_stock_out TINYINT(1) NOT NULL DEFAULT 0,
   KEY idx_products_categoria (categoria),
   KEY idx_products_estado (estado)
 );
@@ -259,6 +280,7 @@ CREATE TABLE clients (
   location_link VARCHAR(500) DEFAULT NULL,
   latitude DECIMAL(10,7) DEFAULT NULL,
   longitude DECIMAL(10,7) DEFAULT NULL,
+  whatsapp_jid VARCHAR(64) DEFAULT NULL,
   limite_credito DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   balance DECIMAL(12,2) NOT NULL DEFAULT 0.00
 );
@@ -329,6 +351,8 @@ CREATE TABLE cash_sessions (
   closed_by_user_name VARCHAR(120) DEFAULT NULL,
   -- Duración del turno en horas (calculada al cerrar)
   duration_hours DECIMAL(6,2) DEFAULT NULL,
+  -- Tipo de cambio USD->DOP del día, fijo para todo este turno (Fase 1 multi-moneda)
+  exchange_rate_usd_dop DECIMAL(10,4) DEFAULT NULL,
   KEY idx_cash_sessions_register_status (cash_register_id, status),
   KEY idx_cash_sessions_branch (branch_id),
   KEY idx_cash_sessions_operative_date (operative_date),
@@ -385,6 +409,7 @@ CREATE TABLE cash_closings (
   closed_by_user_id INT DEFAULT NULL,
   closed_by_user_name VARCHAR(120) DEFAULT NULL,
   closed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  usd_total_received DECIMAL(12,2) DEFAULT NULL,
   KEY idx_cash_closings_session (cash_session_id),
   CONSTRAINT fk_cash_closings_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id) ON DELETE CASCADE,
   CONSTRAINT fk_cash_closings_branch FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
@@ -419,11 +444,16 @@ CREATE TABLE sales (
   total DECIMAL(12,2) NOT NULL,
   received_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   change_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  payment_currency VARCHAR(3) NOT NULL DEFAULT 'DOP',
+  usd_amount_received DECIMAL(12,2) DEFAULT NULL,
+  exchange_rate_used DECIMAL(10,4) DEFAULT NULL,
+  ahorro_promociones DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   fiscal_status VARCHAR(30) NOT NULL DEFAULT 'emitida',
   fiscal_payload LONGTEXT DEFAULT NULL,
   order_type VARCHAR(30) NOT NULL DEFAULT 'mostrador',
   kitchen_status VARCHAR(30) NOT NULL DEFAULT 'pendiente',
   delivery_user_id INT DEFAULT NULL,
+  delivery_status VARCHAR(20) NOT NULL DEFAULT 'pendiente',
   delivery_name_snapshot VARCHAR(160) DEFAULT NULL,
   delivery_email_snapshot VARCHAR(160) DEFAULT NULL,
   delivery_phone_snapshot VARCHAR(40) DEFAULT NULL,
@@ -492,10 +522,72 @@ CREATE TABLE sale_items (
   scale_source VARCHAR(20) DEFAULT NULL,
   scale_raw_reading VARCHAR(255) DEFAULT NULL,
   line_total DECIMAL(12,2) NOT NULL,
+  promotion_id INT DEFAULT NULL,
+  original_price DECIMAL(12,2) DEFAULT NULL,
   KEY idx_sale_items_sale (sale_id),
   KEY idx_sale_items_product (product_id),
+  KEY idx_sale_items_promotion (promotion_id),
   CONSTRAINT fk_sale_items_sale FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   CONSTRAINT fk_sale_items_product FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CENTRO DE PROMOCIONES
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE promotions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  codigo_interno VARCHAR(20) NOT NULL UNIQUE,
+  nombre VARCHAR(150) NOT NULL,
+  tipo VARCHAR(30) NOT NULL DEFAULT 'oferta_precio',
+  descripcion TEXT DEFAULT NULL,
+  deshabilitada TINYINT(1) NOT NULL DEFAULT 0,
+  prioridad INT NOT NULL DEFAULT 0,
+  permanente TINYINT(1) NOT NULL DEFAULT 0,
+  fecha_inicio DATE DEFAULT NULL,
+  fecha_fin DATE DEFAULT NULL,
+  hora_inicio TIME DEFAULT NULL,
+  hora_fin TIME DEFAULT NULL,
+  color VARCHAR(7) DEFAULT NULL,
+  texto_promocion VARCHAR(80) DEFAULT NULL,
+  acumulable TINYINT(1) NOT NULL DEFAULT 0,
+  exclusiva TINYINT(1) NOT NULL DEFAULT 0,
+  sucursal_id INT DEFAULT NULL,
+  creado_por INT DEFAULT NULL,
+  actualizado_por INT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_promotions_sucursal (sucursal_id),
+  KEY idx_promotions_tipo (tipo),
+  CONSTRAINT fk_promotions_branch FOREIGN KEY (sucursal_id) REFERENCES branches(id) ON DELETE SET NULL,
+  CONSTRAINT fk_promotions_creado_por FOREIGN KEY (creado_por) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE promotion_products (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  promotion_id INT NOT NULL,
+  producto_id INT NOT NULL,
+  precio_original DECIMAL(12,2) NOT NULL,
+  precio_promocion DECIMAL(12,2) NOT NULL,
+  KEY idx_promo_products_promo (promotion_id),
+  KEY idx_promo_products_producto (producto_id),
+  CONSTRAINT fk_promo_products_promo FOREIGN KEY (promotion_id) REFERENCES promotions(id) ON DELETE CASCADE,
+  CONSTRAINT fk_promo_products_producto FOREIGN KEY (producto_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+-- El log de auditoría nunca se borra, ni siquiera cuando se elimina la promoción
+-- referenciada — por eso no lleva FK con ON DELETE CASCADE, solo guarda un
+-- snapshot del nombre de la promoción al momento de cada acción.
+CREATE TABLE promotion_audit_log (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  promotion_id INT NOT NULL,
+  promotion_nombre_snapshot VARCHAR(150) NOT NULL,
+  accion VARCHAR(20) NOT NULL,
+  usuario_id INT DEFAULT NULL,
+  detalle TEXT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_promo_audit_promo (promotion_id),
+  KEY idx_promo_audit_created (created_at)
 );
 
 CREATE TABLE inventory_movements (
@@ -689,6 +781,21 @@ CREATE TABLE offline_cache_products (
   KEY idx_codigo (codigo)
 );
 
+-- Caché local de promociones activas (solo lectura offline — crear/editar
+-- promociones requiere conexión, ver server/routes/promotions.routes.js)
+CREATE TABLE offline_cache_promotions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  product_id INT NOT NULL UNIQUE,
+  promotion_id INT NOT NULL,
+  nombre VARCHAR(150) NOT NULL,
+  precio_promocion DECIMAL(12,2) NOT NULL,
+  precio_original DECIMAL(12,2) NOT NULL,
+  texto_promocion VARCHAR(80) DEFAULT NULL,
+  color VARCHAR(7) DEFAULT NULL,
+  last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_offline_promo_product (product_id)
+);
+
 -- Caché local de clientes
 CREATE TABLE offline_cache_clients (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -793,6 +900,78 @@ CREATE TABLE pending_cash_movements (
   KEY idx_status (status),
   KEY idx_movement_type (movement_type),
   KEY idx_created_at (created_at)
+);
+
+-- Caché local de proveedores (modo offline)
+CREATE TABLE offline_cache_suppliers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  supplier_id INT NOT NULL UNIQUE,
+  nombre VARCHAR(160) NOT NULL,
+  data_json LONGTEXT NOT NULL COMMENT 'JSON serializado de mapSupplierRow()',
+  updated_at DATETIME DEFAULT NULL,
+  last_cached DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_supplier_id (supplier_id)
+);
+
+-- Cambios a proveedores hechos offline, en espera de sincronizar
+CREATE TABLE pending_supplier_changes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  terminal_id VARCHAR(40) NOT NULL,
+  change_type VARCHAR(20) NOT NULL COMMENT 'create/update/delete',
+  supplier_id INT DEFAULT NULL,
+  offline_ref VARCHAR(80) NOT NULL UNIQUE,
+  base_updated_at DATETIME DEFAULT NULL,
+  payload_json LONGTEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'pending/syncing/synced/error',
+  error_message VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  synced_at DATETIME DEFAULT NULL,
+  KEY idx_terminal_id (terminal_id),
+  KEY idx_status (status)
+);
+
+-- Caché local de inventario por sucursal (modo offline, acotado a la
+-- sucursal de esta terminal)
+CREATE TABLE offline_cache_inventory_by_branch (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  branch_id INT NOT NULL,
+  product_id INT NOT NULL,
+  stock DECIMAL(12,2) NOT NULL DEFAULT 0,
+  stock_min DECIMAL(12,2) NOT NULL DEFAULT 0,
+  updated_at DATETIME DEFAULT NULL,
+  last_cached DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_branch_product (branch_id, product_id)
+);
+
+-- Ajustes de stock hechos offline, en espera de sincronizar
+CREATE TABLE pending_inventory_adjustments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  terminal_id VARCHAR(40) NOT NULL,
+  offline_ref VARCHAR(80) NOT NULL UNIQUE,
+  product_id INT NOT NULL,
+  branch_id INT NOT NULL,
+  tipo VARCHAR(20) NOT NULL COMMENT 'entrada/salida/ajuste',
+  qty DECIMAL(12,3) NOT NULL,
+  notes VARCHAR(255) DEFAULT NULL,
+  base_updated_at DATETIME DEFAULT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'pending/syncing/synced/error',
+  error_message VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  synced_at DATETIME DEFAULT NULL,
+  KEY idx_terminal_id (terminal_id),
+  KEY idx_status (status)
+);
+
+-- Caché de solo lectura del log de auditoría (modo offline)
+CREATE TABLE offline_cache_audit_logs (
+  id INT PRIMARY KEY,
+  user_name VARCHAR(120) NOT NULL,
+  user_role VARCHAR(40) NOT NULL,
+  module_name VARCHAR(60) NOT NULL,
+  action_name VARCHAR(120) NOT NULL,
+  detail TEXT,
+  created_at DATETIME NOT NULL,
+  last_cached DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Histórico de sincronizaciones
@@ -962,9 +1141,9 @@ CREATE TABLE sale_return_items (
 
 INSERT INTO roles (id, codigo, nombre, permisos, estado) VALUES
 (1, 'administrador_general', 'Administrador general', '["*"]', 'Activo'),
-(2, 'administrador_sucursal', 'Administrador de sucursal', '["dashboard_sucursal","ver_dashboard_sucursal","caja","cajas","ver_cajas_sucursal","crear_cajas_sucursal","editar_cajas_sucursal","activar_cajas_sucursal","asignar_cajeros_sucursal","usuarios","usuarios_crear","usuarios_editar","ver_usuarios_sucursal","crear_cajeros_sucursal","crear_supervisores_sucursal","editar_usuarios_sucursal","activar_usuarios_sucursal","resetear_password_usuarios_sucursal","ventas","ver_ventas_sucursal","ver_cierres_caja_sucursal","ver_aperturas_caja_sucursal","reportes_sucursal","ver_reportes_sucursal","inventario","ver_inventario_sucursal","registrar_movimientos_internos_sucursal","ver_productos_sucursal","consultar_stock_sucursal","ver_arqueos_caja_sucursal","ver_historial_inventario_sucursal"]', 'Activo'),
+(2, 'administrador_sucursal', 'Administrador de sucursal', '["dashboard_sucursal","ver_dashboard_sucursal","caja","cajas","ver_cajas_sucursal","crear_cajas_sucursal","editar_cajas_sucursal","activar_cajas_sucursal","asignar_cajeros_sucursal","usuarios","usuarios_crear","usuarios_editar","ver_usuarios_sucursal","crear_cajeros_sucursal","crear_supervisores_sucursal","editar_usuarios_sucursal","activar_usuarios_sucursal","resetear_password_usuarios_sucursal","ventas","ver_ventas_sucursal","ver_cierres_caja_sucursal","ver_aperturas_caja_sucursal","reportes_sucursal","ver_reportes_sucursal","inventario","ver_inventario_sucursal","registrar_movimientos_internos_sucursal","ver_productos_sucursal","consultar_stock_sucursal","ver_arqueos_caja_sucursal","ver_historial_inventario_sucursal","promociones"]', 'Activo'),
 (3, 'cajero', 'Cajero', '["ventas","caja","clientes","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta"]', 'Activo'),
-(4, 'supervisor', 'Supervisor', '["ventas","caja","reportes_sucursal","inventario","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta","anular_ventas","devolver_ventas","ver_reportes_caja","ver_cierres_caja","ver_ganancias"]', 'Activo'),
+(4, 'supervisor', 'Supervisor', '["ventas","caja","reportes_sucursal","inventario","abrir_caja","cerrar_caja","hacer_corte_caja","abrir_gaveta","anular_ventas","devolver_ventas","ver_reportes_caja","ver_cierres_caja","ver_ganancias","promociones"]', 'Activo'),
 (5, 'repartidor', 'Repartidor (Delivery)', '[]', 'Activo'),
 (6, 'superadmin', 'Super Administrador', '["*"]', 'Activo'),
 (7, 'contador_asociado', 'Contador Asociado', '["contador.ver_clientes","contador.registrar_negocio","contador.ver_reportes","contador.config","contador.solicitudes"]', 'Activo');

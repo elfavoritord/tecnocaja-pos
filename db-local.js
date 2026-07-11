@@ -99,6 +99,19 @@ CREATE TABLE IF NOT EXISTS offline_cache_payment_methods (
   last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 📢 Centro de Promociones — solo lectura offline (ver server/routes/promotions.routes.js)
+CREATE TABLE IF NOT EXISTS offline_cache_promotions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL UNIQUE,
+  promotion_id INTEGER NOT NULL,
+  nombre VARCHAR(255) NOT NULL,
+  precio_promocion DECIMAL(12,2) NOT NULL,
+  precio_original DECIMAL(12,2) NOT NULL,
+  texto_promocion VARCHAR(80) DEFAULT NULL,
+  color VARCHAR(7) DEFAULT NULL,
+  last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS pending_sales (
   id VARCHAR(80) PRIMARY KEY,
   terminal_id VARCHAR(40) NOT NULL,
@@ -163,7 +176,92 @@ CREATE TABLE IF NOT EXISTS offline_sync_map (
   cash_register_id INTEGER NOT NULL,
   synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Caché local de proveedores (modo offline, Fase 1 de la extensión offline)
+CREATE TABLE IF NOT EXISTS offline_cache_suppliers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  supplier_id INTEGER NOT NULL UNIQUE,
+  nombre VARCHAR(160) NOT NULL,
+  data_json TEXT NOT NULL,
+  updated_at DATETIME DEFAULT NULL,
+  last_cached DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Cambios a proveedores hechos offline, en espera de sincronizar
+CREATE TABLE IF NOT EXISTS pending_supplier_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  terminal_id VARCHAR(40) NOT NULL,
+  change_type VARCHAR(20) NOT NULL,
+  supplier_id INTEGER DEFAULT NULL,
+  offline_ref VARCHAR(80) NOT NULL UNIQUE,
+  base_updated_at DATETIME DEFAULT NULL,
+  payload_json TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  error_message VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  synced_at DATETIME DEFAULT NULL
+);
+
+-- Caché local de inventario por sucursal (Fase 2 de la extensión offline).
+-- Acotado a la sucursal de esta terminal — solo se usa para detectar
+-- conflictos y mostrar "stock al último sync" en el ajuste offline.
+CREATE TABLE IF NOT EXISTS offline_cache_inventory_by_branch (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  branch_id INTEGER NOT NULL,
+  product_id INTEGER NOT NULL,
+  stock DECIMAL(12,2) NOT NULL DEFAULT 0,
+  stock_min DECIMAL(12,2) NOT NULL DEFAULT 0,
+  updated_at DATETIME DEFAULT NULL,
+  last_cached DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(branch_id, product_id)
+);
+
+-- Ajustes de stock (entrada/salida/ajuste) hechos offline, pendientes de sincronizar
+CREATE TABLE IF NOT EXISTS pending_inventory_adjustments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  terminal_id VARCHAR(40) NOT NULL,
+  offline_ref VARCHAR(80) NOT NULL UNIQUE,
+  product_id INTEGER NOT NULL,
+  branch_id INTEGER NOT NULL,
+  tipo VARCHAR(20) NOT NULL,
+  qty DECIMAL(12,3) NOT NULL,
+  notes VARCHAR(255) DEFAULT NULL,
+  base_updated_at DATETIME DEFAULT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  error_message VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  synced_at DATETIME DEFAULT NULL
+);
+
+-- Caché de solo lectura del log de auditoría (Fase 4 de la extensión offline).
+-- id refleja el id real de audit_logs (no autoincrement local) para que el
+-- upsert sea estable entre sincronizaciones repetidas.
+CREATE TABLE IF NOT EXISTS offline_cache_audit_logs (
+  id INTEGER PRIMARY KEY,
+  user_name VARCHAR(120) NOT NULL,
+  user_role VARCHAR(40) NOT NULL,
+  module_name VARCHAR(60) NOT NULL,
+  action_name VARCHAR(120) NOT NULL,
+  detail TEXT,
+  created_at DATETIME NOT NULL,
+  last_cached DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `;
+
+// CREATE TABLE IF NOT EXISTS no agrega columnas nuevas a una BD local que ya
+// existía en disco de una versión anterior — a diferencia de la BD principal
+// (que tiene addColumnIfMissing en server.js), este archivo SQLite no pasa por
+// ningún runner de migraciones, así que necesita su propio guard idempotente.
+function _addLocalColumnIfMissing(db, table, column, definition) {
+  try {
+    const info = db.exec(`PRAGMA table_info(${table})`);
+    const columns = info?.[0]?.values?.map((row) => row[1]) || [];
+    if (columns.includes(column)) return;
+    db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  } catch (err) {
+    console.error(`[db-local] Error agregando columna ${column} a ${table}:`, err.message);
+  }
+}
 
 async function _initLocalDb() {
   const SQL = await initSqlJs();
@@ -172,6 +270,15 @@ async function _initLocalDb() {
   const db = new SQL.Database(buffer);
   // Ejecutar el esquema (CREATE TABLE IF NOT EXISTS es idempotente)
   db.run(LOCAL_SCHEMA);
+
+  // Fase 3 de la extensión offline: pending_cash_movements ya existía para
+  // movimientos ligados a ventas; se le agregan columnas para soportar
+  // movimientos de caja standalone (retiro/gasto/ingreso sin venta asociada).
+  _addLocalColumnIfMissing(db, 'pending_cash_movements', 'expense_type', 'VARCHAR(30) DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'pending_cash_movements', 'supplier_invoice_id', 'INTEGER DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'pending_cash_movements', 'branch_id', 'INTEGER DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'pending_cash_movements', 'cash_register_id', 'INTEGER DEFAULT NULL');
+
   _saveLocalDb(db);
   return db;
 }
@@ -265,6 +372,19 @@ async function generateOfflineInvoiceId(terminalId) {
 }
 
 /**
+ * Genera una referencia única para una cola offline genérica (proveedores,
+ * ajustes de inventario, movimientos de caja standalone). A diferencia de
+ * generateOfflineInvoiceId, no necesita ser secuencial/legible para el
+ * usuario — solo única — así que combina timestamp + aleatorio en vez de
+ * consultar la última fila (evita acoplar este helper a una tabla concreta).
+ * Formato: {prefix}{terminalId}#{timestamp}#{random}
+ */
+function generateOfflineRef(terminalId, prefix) {
+  const rand = Math.floor(Math.random() * 100000);
+  return `${prefix}${terminalId}#${Date.now()}#${rand}`;
+}
+
+/**
  * Registra evento de sync en el log local.
  */
 async function logLocalSyncEvent(terminalId, phase, uploaded = 0, downloaded = 0, result = 'ok', errorDetail = null) {
@@ -318,6 +438,7 @@ async function getLocalCacheStatus(terminalId) {
 module.exports = {
   localQuery,
   generateOfflineInvoiceId,
+  generateOfflineRef,
   logLocalSyncEvent,
   getLocalCacheStatus,
   LOCAL_OFFLINE_DB_FILE

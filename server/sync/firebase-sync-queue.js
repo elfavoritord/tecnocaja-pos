@@ -7,6 +7,27 @@
 
 const { query, withTransaction } = require('../../db');
 
+// ECONNRESET/ECONNREFUSED/etc. en una conexión reciclada del pool de mysql2
+// — típicamente MariaDB cerró una conexión inactiva del pool justo cuando
+// esta consulta (que corre cada 30s) intentó reutilizarla. Es transitorio:
+// un solo reintento corto casi siempre alcanza, y si no, el próximo ciclo de
+// todos modos lo vuelve a intentar solo.
+function isTransientDbError(err) {
+  const code = String(err?.code || '').toUpperCase();
+  return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'PROTOCOL_CONNECTION_LOST'].includes(code);
+}
+
+async function queryWithRetry(sql, params, { attempts = 2, delayMs = 500 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await query(sql, params);
+    } catch (err) {
+      if (attempt === attempts || !isTransientDbError(err)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
 // Estados posibles de un item en la cola
 const SYNC_STATUS = {
   PENDING: 'pending',
@@ -97,7 +118,7 @@ class FirebaseSyncQueue {
    */
   static async getPending(limit = 10) {
     try {
-      const results = await query(
+      const results = await queryWithRetry(
         `SELECT * FROM firebase_sync_queue
          WHERE status IN (?, ?) AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
          ORDER BY created_at ASC

@@ -28,6 +28,18 @@ function getFirebaseProjectId() {
   return String(process.env.FIREBASE_PROJECT_ID || '').trim();
 }
 
+// Sin internet, una llamada a Firestore (.get()) puede tardar decenas de
+// segundos en rechazar mientras gRPC agota sus propios reintentos/resolución
+// DNS internos. fetchRemotePosLicenseState() encadena hasta 4 de estas
+// llamadas de forma secuencial durante el arranque — sin este límite, cada
+// una suma tiempo y el arranque completo del servidor queda bloqueado.
+function withFirestoreTimeout(promise, ms = 2500) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Firestore timeout (sin conexión)')), ms))
+  ]);
+}
+
 function resolveConfiguredFilePath(candidate) {
   const rawPath = String(candidate || '').trim();
   if (!rawPath) return '';
@@ -998,7 +1010,7 @@ async function fetchRemotePosLicenseState(config) {
   const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
   if (licenseUid) {
     try {
-      const directDoc = await licensesCollection.doc(licenseUid).get();
+      const directDoc = await withFirestoreTimeout(licensesCollection.doc(licenseUid).get());
       if (directDoc.exists) {
         doc = directDoc;
         console.log('[firebase-admin] Licencia obtenida por TECNO_CAJA_LICENSE_UID:', licenseUid);
@@ -1014,7 +1026,7 @@ async function fetchRemotePosLicenseState(config) {
     const principalUid = String(config?.principalFirebaseUid || '').trim();
     if (principalUid) {
       try {
-        const directDoc = await licensesCollection.doc(principalUid).get();
+        const directDoc = await withFirestoreTimeout(licensesCollection.doc(principalUid).get());
         if (directDoc.exists) {
           doc = directDoc;
           console.log('[firebase-admin] Licencia obtenida por firebase_uid del admin:', principalUid, '— agrega TECNO_CAJA_LICENSE_UID=' + principalUid + ' a .env');
@@ -1028,9 +1040,9 @@ async function fetchRemotePosLicenseState(config) {
   // 3. Query por businessKey (sin filtro de source — funciona aunque el doc lo creó el admin app)
   if (!doc) {
     try {
-      const snapshot = await licensesCollection
+      const snapshot = await withFirestoreTimeout(licensesCollection
         .where('businessKey', '==', businessKey)
-        .get();
+        .get());
       if (!snapshot.empty) {
         doc = chooseBestLicenseDocument(snapshot.docs, { preferredUid });
         if (snapshot.docs.length > 1 && doc) {
@@ -1045,9 +1057,9 @@ async function fetchRemotePosLicenseState(config) {
   // 4. Fallback: query por businessName
   if (!doc) {
     try {
-      const snapshot = await licensesCollection
+      const snapshot = await withFirestoreTimeout(licensesCollection
         .where('businessName', '==', businessName)
-        .get();
+        .get());
       if (!snapshot.empty) {
         doc = chooseBestLicenseDocument(snapshot.docs, { preferredUid });
         if (snapshot.docs.length > 1 && doc) {

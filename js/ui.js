@@ -1,6 +1,6 @@
 ﻿// ===== TECNO_CAJA - UI HELPERS =====
 
-function showToast(msg, type = 'success') {
+function showToast(msg, type = 'success', durationMs = null) {
   let t = document.getElementById('toast');
   if (!t) {
     t = document.createElement('div');
@@ -12,9 +12,41 @@ function showToast(msg, type = 'success') {
   t.className = 'toast toast-' + type;
   t.classList.remove('hidden');
   clearTimeout(t._timer);
-  const timeoutMs = type === 'error' ? 7000 : type === 'warning' ? 5500 : 3200;
+  const timeoutMs = durationMs || (type === 'error' ? 7000 : type === 'warning' ? 5500 : 3200);
   t._timer = setTimeout(() => t.classList.add('hidden'), timeoutMs);
   if (typeof window.scheduleUiTranslation === 'function') window.scheduleUiTranslation(t);
+}
+
+// Alerta dedicada para pedidos entrantes por WhatsApp — separada del toast
+// genérico (que se reemplaza con cualquier otra acción) para que se mantenga
+// visible los 15 segundos completos sin que otro toast la tape a mitad de camino.
+function showWhatsAppOrderAlert({ customerName, total, itemCount } = {}) {
+  let el = document.getElementById('wa-order-alert');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'wa-order-alert';
+    el.style.cssText = [
+      'position: fixed', 'top: 76px', 'right: 20px', 'z-index: 99999',
+      'background: #25D366', 'color: #fff', 'padding: 14px 18px',
+      'border-radius: 10px', 'box-shadow: 0 6px 20px rgba(0,0,0,0.25)',
+      'font-family: system-ui, sans-serif', 'max-width: 320px',
+      'display: flex', 'align-items: flex-start', 'gap: 10px', 'cursor: pointer'
+    ].join('; ');
+    el.addEventListener('click', () => { clearTimeout(el._timer); el.remove(); });
+    document.body?.appendChild(el);
+  }
+  const money = `RD$ ${Number(total || 0).toLocaleString('es-DO', { minimumFractionDigits: 2 })}`;
+  el.innerHTML = `
+    <div style="font-size:22px;line-height:1">🛒</div>
+    <div style="flex:1">
+      <div style="font-weight:700;font-size:14px">Nuevo pedido por WhatsApp</div>
+      <div style="font-size:13px;opacity:0.95;margin-top:2px">${customerName || 'Cliente'} · ${itemCount || 0} item(s) · ${money}</div>
+      <div style="font-size:11px;opacity:0.85;margin-top:4px">Revísalo en Cotizaciones · clic para cerrar</div>
+    </div>
+  `;
+  el.style.display = 'flex';
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.style.display = 'none'; }, 15000);
 }
 
 function closeModal(e) {
@@ -48,6 +80,7 @@ function closeAllModals(force = false, source = 'generic') {
   }
   modalBox?.classList.remove('billing-modal');
   modalBox?.classList.remove('product-modal');
+  modalBox?.classList.remove('recover-sales-modal');
   modalBox?.style.removeProperty('width');
   modalBox?.style.removeProperty('max-width');
   modalBox?.style.removeProperty('height');
