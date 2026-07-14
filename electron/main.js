@@ -2030,6 +2030,35 @@ async function createWindow() {
 
   mainWindow.webContents.loadURL(currentAppUrl, { userAgent: 'Tecno Caja-Electron' });
   mainWindow.once('ready-to-show', () => mainWindow.show());
+
+  // server.js corre en este mismo proceso (ver bootstrapServer). Cuando algo
+  // ahí adentro bloquea el event loop por varios segundos seguidos (ej. Puppeteer
+  // levantando Chrome para el bot de WhatsApp), Chromium a veces deja la ventana
+  // pintada en blanco de forma PERMANENTE — invalidate() no basta para
+  // recomponer el frame; hace falta un resize real para forzar el pipeline
+  // completo de layout+paint de Chromium (el mismo efecto que minimizar y
+  // restaurar a mano). global.__forceRepaint la expone para que server.js
+  // (mismo proceso, sin depender de electron) la dispare justo cuando termina
+  // una operación pesada — ver pushState() en whatsapp-bot.js.
+  global.__forceRepaint = () => {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) return;
+    const b = mainWindow.getBounds();
+    mainWindow.setBounds({ ...b, width: b.width + 1 });
+    setImmediate(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBounds(b);
+    });
+  };
+  // Watchdog liviano de respaldo, por si algo distinto al bot de WhatsApp
+  // congela la pintura sin pasar por pushState().
+  const repaintWatchdog = setInterval(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+      mainWindow.webContents.invalidate();
+    }
+  }, 2000);
+  mainWindow.on('closed', () => {
+    clearInterval(repaintWatchdog);
+    global.__forceRepaint = null;
+  });
 }
 
 async function getAvailablePrinters() {

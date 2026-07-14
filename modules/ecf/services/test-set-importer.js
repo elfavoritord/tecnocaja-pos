@@ -370,16 +370,16 @@ function correctIscEspecificoCerveza(rawRow) {
     const newAmount = round2(TASA_006_CURRENT * (oldAmount / oldTasa));
     const delta = round2(newAmount - oldAmount);
     corrected[`TasaImpuestoAdicional[${i}]`] = String(TASA_006_CURRENT);
-    corrected[`MontoImpuestoSelectivoConsumoEspecifico[${i}]`] = String(newAmount);
+    corrected[`MontoImpuestoSelectivoConsumoEspecifico[${i}]`] = newAmount.toFixed(2);
     const newMia = round2((parseFloat(String(corrected['MontoImpuestoAdicional'] || '').replace(',', '.')) || 0) + delta);
-    corrected['MontoImpuestoAdicional'] = String(newMia);
+    corrected['MontoImpuestoAdicional'] = newMia.toFixed(2);
     const itbis1Rate = (parseFloat(String(corrected['ITBIS1'] || '').replace(',', '.')) || 0) / 100;
     if (itbis1Rate > 0) {
       const base1 = parseFloat(String(corrected['MontoGravadoI1'] || '').replace(',', '.')) || 0;
       const newTotalItbis = round2((base1 + newMia) * itbis1Rate);
-      corrected['TotalITBIS'] = String(newTotalItbis);
-      corrected['TotalITBIS1'] = String(newTotalItbis);
-      corrected['MontoTotal'] = String(round2(base1 + newTotalItbis + newMia));
+      corrected['TotalITBIS'] = newTotalItbis.toFixed(2);
+      corrected['TotalITBIS1'] = newTotalItbis.toFixed(2);
+      corrected['MontoTotal'] = round2(base1 + newTotalItbis + newMia).toFixed(2);
     }
   }
   return corrected || rawRow;
@@ -423,21 +423,21 @@ function removeIscEspecificoTax(rawRow, tipoImpuestoCode) {
   // — así el documento queda igual que cualquier otro tipo que nunca tuvo ImpuestosAdicionales
   // (comportamiento ya verificado con DGII en los otros 24/25 documentos del lote).
   if (newMia <= 0) delete corrected['MontoImpuestoAdicional'];
-  else corrected['MontoImpuestoAdicional'] = String(newMia);
+  else corrected['MontoImpuestoAdicional'] = newMia.toFixed(2);
 
   const itbis1Rate = (parseFloat(String(corrected['ITBIS1'] || '').replace(',', '.')) || 0) / 100;
   const base1 = parseFloat(String(corrected['MontoGravadoI1'] || '').replace(',', '.')) || 0;
   let newTotal = base1 + newMia;
   if (itbis1Rate > 0) {
     const newTotalItbis = round2((base1 + newMia) * itbis1Rate);
-    corrected['TotalITBIS'] = String(newTotalItbis);
-    corrected['TotalITBIS1'] = String(newTotalItbis);
+    corrected['TotalITBIS'] = newTotalItbis.toFixed(2);
+    corrected['TotalITBIS1'] = newTotalItbis.toFixed(2);
     newTotal = round2(base1 + newTotalItbis + newMia);
   } else {
     newTotal = round2(newTotal);
   }
   const oldTotal = parseFloat(String(corrected['MontoTotal'] || '').replace(',', '.')) || 0;
-  corrected['MontoTotal'] = String(newTotal);
+  corrected['MontoTotal'] = newTotal.toFixed(2);
 
   // Reflejar el nuevo total en los campos que lo duplican (forma de pago única, período,
   // valor a pagar) — en el set de pruebas suelen ser iguales al MontoTotal original.
@@ -445,13 +445,13 @@ function removeIscEspecificoTax(rawRow, tipoImpuestoCode) {
     for (let j = 1; j <= 4; j++) {
       const key = `MontoPago[${j}]`;
       const oldPago = parseFloat(String(corrected[key] || '').replace(',', '.')) || 0;
-      if (oldPago > 0 && Math.abs(oldPago - oldTotal) < 0.01) corrected[key] = String(newTotal);
+      if (oldPago > 0 && Math.abs(oldPago - oldTotal) < 0.01) corrected[key] = newTotal.toFixed(2);
     }
     if (corrected['MontoPeriodo'] && Math.abs((parseFloat(String(corrected['MontoPeriodo']).replace(',', '.')) || 0) - oldTotal) < 0.01) {
-      corrected['MontoPeriodo'] = String(newTotal);
+      corrected['MontoPeriodo'] = newTotal.toFixed(2);
     }
     if (corrected['ValorPagar'] && Math.abs((parseFloat(String(corrected['ValorPagar']).replace(',', '.')) || 0) - oldTotal) < 0.01) {
-      corrected['ValorPagar'] = String(newTotal);
+      corrected['ValorPagar'] = newTotal.toFixed(2);
     }
   }
 

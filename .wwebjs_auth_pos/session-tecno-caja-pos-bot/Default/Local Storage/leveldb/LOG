@@ -1,3 +1,6 @@
-2026/07/11-19:22:46.785 400c Reusing MANIFEST C:\Users\Emilio Coding IA\Desktop\sistema pos completo\.wwebjs_auth_pos\session-tecno-caja-pos-bot\Default\Local Storage\leveldb/MANIFEST-000001
-2026/07/11-19:22:46.853 400c Recovering log #5
-2026/07/11-19:22:46.862 400c Reusing old log C:\Users\Emilio Coding IA\Desktop\sistema pos completo\.wwebjs_auth_pos\session-tecno-caja-pos-bot\Default\Local Storage\leveldb/000005.log 
+2026/07/14-00:52:00.779 38b0 Reusing MANIFEST C:\Users\Emilio Coding IA\Desktop\sistema pos completo\.wwebjs_auth_pos\session-tecno-caja-pos-bot\Default\Local Storage\leveldb/MANIFEST-000001
+2026/07/14-00:52:00.783 38b0 Recovering log #8
+2026/07/14-00:52:00.788 38b0 Reusing old log C:\Users\Emilio Coding IA\Desktop\sistema pos completo\.wwebjs_auth_pos\session-tecno-caja-pos-bot\Default\Local Storage\leveldb/000008.log 
+2026/07/14-00:54:01.922 38b0 Level-0 table #12: started
+2026/07/14-00:54:01.931 38b0 Level-0 table #12: 15417 bytes OK
+2026/07/14-00:54:01.936 38b0 Delete type=0 #8

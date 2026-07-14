@@ -20,216 +20,22 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 const crypto = require('crypto');
-const zlib   = require('zlib');
-const { promisify } = require('util');
 
-// Acceso directo a withTransaction y getDbClient para garantizar misma conexión
-// durante la restauración (SET FOREIGN_KEY_CHECKS = 0 debe estar en la misma
-// conexión que los INSERTs; con pool.query() cada llamada puede usar conexión distinta).
-const { withTransaction: _withDbTransaction, getDbClient } = require('../../db');
+// Lógica de construcción/lectura/restauración de .tcbak compartida con la
+// recuperación automática al arrancar (server/services/auto-recovery.js).
+const {
+  BACKUP_MAGIC,
+  getDefaultBackupDir,
+  ensureDir,
+  generateFilename,
+  listLocalBackups,
+  buildFullPayload,
+  createTcbakBuffer,
+  parseTcbakBuffer,
+  restorePayloadToDb,
+} = require('../services/backup-core');
 
-const gzip   = promisify(zlib.gzip);
-const gunzip = promisify(zlib.gunzip);
-
-// ─── Constantes ─────────────────────────────────────────────────────────────
-const BACKUP_MAGIC          = 'TECNOCAJA_BACKUP_V1';
-const BACKUP_FORMAT_VERSION = '2';
 const DEFAULT_BACKUP_RETENTION = 5; // cuántos .tcbak conservar automáticamente
-
-// ─── Helper de dirs ──────────────────────────────────────────────────────────
-function getDefaultBackupDir() {
-  return path.join(os.homedir(), 'Documents', 'TecnoCaja', 'Backups');
-}
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-// ─── Nombre de archivo .tcbak ────────────────────────────────────────────────
-function generateFilename(businessName, version) {
-  const tz  = 'America/Santo_Domingo';
-  const now = new Date();
-  const fecha = now.toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: tz })
-                   .replace(/\//g, '-');
-  const hora  = now.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: tz })
-                   .replace(':', 'h');
-  const safe  = (businessName || 'TecnoCaja')
-                  .normalize('NFD').replace(/[̀-ͯ]/g, '') // quitar acentos
-                  .replace(/[^a-zA-Z0-9\-_]/g, '_')
-                  .replace(/_+/g, '_')
-                  .slice(0, 30);
-  const ver   = String(version || '1.0.0').replace(/[^0-9.]/g, '');
-  return `TecnoCaja_Backup_${safe}_${fecha}_${hora}_v${ver}.tcbak`;
-}
-
-// ─── Construir payload completo ──────────────────────────────────────────────
-async function buildFullPayload(query) {
-  const safeQuery = async (sql, params = []) => {
-    try { return await query(sql, params); }
-    catch (_) { return []; }
-  };
-
-  const [
-    config, users, categories, products, clients,
-    suppliers, supplierInvoices,
-    cashSessions, cashMovements,
-    sales, saleItems,
-    auditLogs, suspendedSales, quotations,
-    ncfSequences, pendingSales,
-    tables, paymentMethods, branches, cashRegisters,
-    inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
-  ] = await Promise.all([
-    safeQuery('SELECT * FROM config'),
-    safeQuery('SELECT * FROM users'),
-    safeQuery('SELECT * FROM categories'),
-    safeQuery('SELECT * FROM products'),
-    safeQuery('SELECT * FROM clients'),
-    safeQuery('SELECT * FROM suppliers LIMIT 5000'),
-    safeQuery('SELECT * FROM supplier_invoices LIMIT 10000'),
-    safeQuery('SELECT * FROM cash_sessions LIMIT 3000'),
-    safeQuery('SELECT * FROM cash_movements LIMIT 50000'),
-    safeQuery('SELECT * FROM sales LIMIT 200000'),
-    safeQuery('SELECT * FROM sale_items LIMIT 500000'),
-    safeQuery('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 5000'),
-    safeQuery('SELECT * FROM suspended_sales LIMIT 1000'),
-    safeQuery('SELECT * FROM quotations LIMIT 3000'),
-    safeQuery('SELECT * FROM ncf_sequences LIMIT 1000'),
-    safeQuery('SELECT * FROM pending_sales LIMIT 2000'),
-    safeQuery('SELECT * FROM dining_tables LIMIT 500'),
-    safeQuery('SELECT * FROM payment_methods'),
-    safeQuery('SELECT * FROM branches'),
-    safeQuery('SELECT * FROM cash_registers'),
-    safeQuery('SELECT * FROM inventory_by_branch LIMIT 200000'),
-    safeQuery('SELECT * FROM inventory_movements LIMIT 500000'),
-    safeQuery('SELECT * FROM branch_transfers LIMIT 50000'),
-    safeQuery('SELECT * FROM branch_transfer_items LIMIT 200000'),
-  ]);
-
-  // Config como mapa para metadatos
-  const cfgMap = {};
-  (config || []).forEach(r => {
-    const k = r.clave || r.config_key || '';
-    const v = r.valor || r.config_value || r.value || '';
-    if (k) cfgMap[k] = v;
-    // columnas directas del row (tabla config tiene columnas planas)
-    Object.keys(r).forEach(col => { if (!cfgMap[col]) cfgMap[col] = r[col]; });
-  });
-
-  const businessName = cfgMap.business_name || cfgMap.nombre_negocio || cfgMap.businessName || 'TecnoCaja';
-  const businessId   = cfgMap.business_id   || cfgMap.businessId    || '';
-  const rnc          = cfgMap.rnc            || '';
-  const sysVersion   = process.env.npm_package_version || '1.0.0';
-
-  return {
-    magic:          BACKUP_MAGIC,
-    formatVersion:  BACKUP_FORMAT_VERSION,
-    exportedAt:     new Date().toISOString(),
-    timezone:       'America/Santo_Domingo',
-    businessName,
-    businessId,
-    rnc,
-    systemVersion:  sysVersion,
-    stats: {
-      productos:   (products    || []).length,
-      clientes:    (clients     || []).length,
-      ventas:      (sales       || []).length,
-      usuarios:    (users       || []).length,
-      categorias:  (categories  || []).length,
-      facturas:    (saleItems   || []).length,
-      proveedores: (suppliers   || []).length,
-      inventario:  (inventoryByBranch || []).length,
-      movimientosInventario: (inventoryMovements || []).length,
-    },
-    data: {
-      config, users, categories, products, clients,
-      suppliers, supplierInvoices,
-      cashSessions, cashMovements,
-      sales, saleItems,
-      auditLogs, suspendedSales, quotations,
-      ncfSequences, pendingSales,
-      tables, paymentMethods, branches, cashRegisters,
-      inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
-    },
-  };
-}
-
-// ─── Crear buffer .tcbak cifrado + comprimido ────────────────────────────────
-async function createTcbakBuffer(payload, password) {
-  const payloadJson = JSON.stringify(payload);
-  const sha256      = crypto.createHash('sha256').update(payloadJson, 'utf8').digest('hex');
-
-  // 1. Comprimir
-  const compressed  = await gzip(Buffer.from(payloadJson, 'utf8'));
-  // 2. Cifrar (AES-256-GCM vía backup-crypto.js)
-  const { encryptBackupPayload } = require('../security/backup-crypto');
-  const encContent  = encryptBackupPayload(compressed.toString('base64'), password);
-
-  const tcbak = {
-    magic:         BACKUP_MAGIC,
-    formatVersion: BACKUP_FORMAT_VERSION,
-    sha256,
-    createdAt:     payload.exportedAt,
-    metadata: {
-      businessName:  payload.businessName,
-      businessId:    payload.businessId,
-      rnc:           payload.rnc,
-      systemVersion: payload.systemVersion,
-      stats:         payload.stats,
-    },
-    encrypted: encContent,
-  };
-
-  return Buffer.from(JSON.stringify(tcbak), 'utf8');
-}
-
-// ─── Parsear y descifrar .tcbak ──────────────────────────────────────────────
-async function parseTcbakBuffer(fileBuffer, password) {
-  let tcbak;
-  try {
-    tcbak = JSON.parse(fileBuffer.toString('utf8'));
-  } catch (_) {
-    throw new Error('El archivo no es un respaldo válido de Tecno Caja (formato inválido).');
-  }
-
-  if (tcbak.magic !== BACKUP_MAGIC) {
-    throw new Error('Este archivo no es un respaldo de Tecno Caja.');
-  }
-
-  // Descifrar
-  const { decryptBackupPayload } = require('../security/backup-crypto');
-  let decryptedBase64;
-  try {
-    decryptedBase64 = decryptBackupPayload(tcbak.encrypted, password);
-  } catch (_) {
-    throw new Error('Contraseña incorrecta o archivo corrupto. No se pudo descifrar el respaldo.');
-  }
-
-  // Descomprimir
-  let payloadJson;
-  try {
-    const compressed = Buffer.from(decryptedBase64, 'base64');
-    const decompressed = await gunzip(compressed);
-    payloadJson = decompressed.toString('utf8');
-  } catch (_) {
-    throw new Error('Error al descomprimir el respaldo. El archivo puede estar dañado.');
-  }
-
-  // Verificar SHA-256
-  const sha256Actual = crypto.createHash('sha256').update(payloadJson, 'utf8').digest('hex');
-  if (sha256Actual !== tcbak.sha256) {
-    throw new Error('El respaldo está corrupto o fue modificado (SHA-256 no coincide). Restauración cancelada.');
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(payloadJson);
-  } catch (_) {
-    throw new Error('Error al procesar el contenido del respaldo.');
-  }
-
-  return { payload, metadata: tcbak.metadata, sha256: tcbak.sha256 };
-}
 
 // ─── R2 Storage helpers ───────────────────────────────────────────────────────
 const r2 = require('../services/r2-storage');
@@ -265,19 +71,6 @@ function signCloudToken(payload) {
 }
 function verifyCloudToken(token) {
   return jwt.verify(token, CLOUD_TOKEN_SECRET);
-}
-
-// ─── Listar archivos .tcbak en carpeta local ─────────────────────────────────
-function listLocalBackups(dir) {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter(f => f.endsWith('.tcbak') || f.endsWith('.novaseguro'))
-    .map(f => {
-      const fp    = path.join(dir, f);
-      const stats = fs.statSync(fp);
-      return { name: f, path: fp, size: stats.size, mtime: stats.mtime };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
 }
 
 // ─── Registrar en backup_history ─────────────────────────────────────────────
@@ -355,12 +148,18 @@ async function pruneCloudBackups(businessId, keepCount = DEFAULT_BACKUP_RETENTIO
 async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = false } = {}) {
   const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
 
-  // Verificar si auto-backup está habilitado. Los triggers críticos pueden
-  // forzar respaldo aunque el respaldo diario esté apagado.
-  const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_auto_diario']).catch(() => []);
-  const autoEnabled = (cfgRows[0]?.config_value || '1') !== '0';
-  if (!autoEnabled && !forceCloud && trigger === 'cierre_dia') {
-    return { ok: true, skipped: true, reason: 'Auto-backup deshabilitado.' };
+  // Verificar si el auto-backup del trigger específico está habilitado.
+  // 'cierre_dia' se rige por backup_auto_diario; 'cierre_caja' por
+  // backup_al_cerrar_caja. El resto de triggers (cierre_app, cambios de
+  // producto/cliente) siempre corren — son eventos puntuales, no un cron.
+  const TRIGGER_CONFIG_KEY = { cierre_dia: 'backup_auto_diario', cierre_caja: 'backup_al_cerrar_caja' };
+  const cfgKey = TRIGGER_CONFIG_KEY[trigger];
+  if (cfgKey && !forceCloud) {
+    const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', [cfgKey]).catch(() => []);
+    const autoEnabled = (cfgRows[0]?.config_value || '1') !== '0';
+    if (!autoEnabled) {
+      return { ok: true, skipped: true, reason: `Auto-backup (${trigger}) deshabilitado.` };
+    }
   }
 
   const payload    = await buildFullPayload(query);
@@ -442,187 +241,6 @@ async function uploadPendingCloudBackups(query, limit = 5) {
   }
 
   return resultados;
-}
-
-// ─── Restaurar payload en la base de datos ───────────────────────────────────
-//
-// IMPORTANTE: Para MySQL/MariaDB usamos withTransaction (misma conexión dedicada)
-// para que SET FOREIGN_KEY_CHECKS = 0 aplique a TODOS los queries del proceso.
-// Con pool.query() cada llamada puede obtener una conexión diferente del pool,
-// lo que hace que el FK check deshabilita no tenga efecto en los INSERTs siguientes.
-//
-// Para SQLite (sql.js): insertamos fila a fila porque sql.js NO soporta el
-// formato bulk VALUES ? con array 2D que usa mysql2.
-/**
- * Normaliza un valor datetime al formato que acepta MariaDB/MySQL: 'YYYY-MM-DD HH:MM:SS'.
- * Los backups almacenan fechas como ISO 8601 ('2026-05-24T21:00:40.000Z') que MariaDB rechaza.
- */
-function _normalizeDbDateTime(value) {
-  if (value === null || value === undefined) return null;
-  if (value instanceof Date) {
-    if (isNaN(value.getTime())) return null;
-    return value.toISOString().slice(0, 19).replace('T', ' ');
-  }
-  const text = String(value).trim();
-  if (!text) return null;
-  // Ya en formato SQL correcto
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) return text;
-  // Solo fecha
-  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
-  // ISO con T (con o sin Z / offset)
-  if (text.includes('T')) return text.slice(0, 19).replace('T', ' ');
-  return text;
-}
-
-/**
- * Aplica _normalizeDbDateTime a todos los valores de una fila que parezcan datetimes.
- * Los detectamos por: valor string que contiene 'T' + dígitos, o que coincida con
- * el patrón de fecha ISO, o que sea una instancia de Date.
- */
-function _normalizeDateTimesInRow(row) {
-  const normalized = {};
-  for (const [key, val] of Object.entries(row)) {
-    if (val instanceof Date) {
-      normalized[key] = _normalizeDbDateTime(val);
-    } else if (typeof val === 'string' && val.length >= 10 && (
-      /^\d{4}-\d{2}-\d{2}[T ]/.test(val) ||  // ISO fecha-hora
-      /^\d{4}-\d{2}-\d{2}$/.test(val)          // Solo fecha
-    )) {
-      normalized[key] = _normalizeDbDateTime(val);
-    } else {
-      normalized[key] = val;
-    }
-  }
-  return normalized;
-}
-
-async function restorePayloadToDb(payload, query) {
-  const { data } = payload;
-  if (!data) throw new Error('El respaldo no contiene datos.');
-
-  // Tablas a restaurar en orden (respetar FK)
-  const tableOrder = [
-    ['config',            data.config           || []],
-    ['categories',        data.categories       || []],
-    ['users',             data.users            || []],
-    ['products',          data.products         || []],
-    ['clients',           data.clients          || []],
-    ['suppliers',         data.suppliers        || []],
-    ['payment_methods',   data.paymentMethods   || []],
-    ['branches',          data.branches         || []],
-    ['cash_registers',    data.cashRegisters    || []],
-    ['inventory_by_branch', data.inventoryByBranch || []],
-    ['cash_sessions',     data.cashSessions     || []],
-    ['cash_movements',    data.cashMovements    || []],
-    ['sales',             data.sales            || []],
-    ['sale_items',        data.saleItems        || []],
-    ['inventory_movements', data.inventoryMovements || []],
-    ['branch_transfers',  data.branchTransfers  || []],
-    ['branch_transfer_items', data.branchTransferItems || []],
-    ['supplier_invoices', data.supplierInvoices || []],
-    ['suspended_sales',   data.suspendedSales   || []],
-    ['quotations',        data.quotations       || []],
-    ['ncf_sequences',     data.ncfSequences     || []],
-    ['pending_sales',     data.pendingSales     || []],
-    ['dining_tables',     data.tables           || []],
-  ];
-
-  const isMySQL = getDbClient() === 'mysql';
-
-  // Función interna que ejecuta toda la restauración usando la función `q` dada.
-  // `q` puede ser la txQuery de withTransaction (MySQL) o query directo (SQLite).
-  async function _doRestore(q) {
-    const safeQ = async (sql, params) => {
-      try {
-        return await q(sql, params);
-      } catch (e) {
-        console.warn(`[respaldos][restore] query omitida: ${String(sql).slice(0, 80)} — ${e.message}`);
-      }
-    };
-
-    // Deshabilitar verificación de FK en esta conexión
-    await safeQ('SET FOREIGN_KEY_CHECKS = 0', []);
-
-    for (const [table, rows] of tableOrder) {
-      if (!rows.length) continue;
-
-      // Vaciar tabla
-      await safeQ(`DELETE FROM \`${table}\``, []);
-
-      // Normalizar datetimes en todas las filas antes de insertar.
-      // MariaDB rechaza el formato ISO 8601 ('2026-05-24T21:00:40.000Z');
-      // el formato correcto es 'YYYY-MM-DD HH:MM:SS'.
-      const normalizedRows = rows.map(_normalizeDateTimesInRow);
-      const cols = Object.keys(normalizedRows[0]);
-
-      if (isMySQL) {
-        // mysql2: bulk INSERT con VALUES ? y array 2D (más eficiente)
-        const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ?`;
-        for (let i = 0; i < normalizedRows.length; i += 200) {
-          const chunk = normalizedRows.slice(i, i + 200).map(r => cols.map(c => r[c] !== undefined ? r[c] : null));
-          await safeQ(insert, [chunk]);
-        }
-      } else {
-        // SQLite (sql.js): NO soporta VALUES ? con array 2D → fila a fila
-        const placeholders = `(${cols.map(() => '?').join(',')})`;
-        const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ${placeholders}`;
-        for (const row of normalizedRows) {
-          const values = cols.map(c => row[c] !== undefined ? row[c] : null);
-          await safeQ(insert, values);
-        }
-      }
-    }
-
-    // Re-habilitar FK
-    await safeQ('SET FOREIGN_KEY_CHECKS = 1', []);
-
-    // ── Garantizar setup_completed = 1 (SIEMPRE, sin importar el valor en el backup) ──
-    // Un sistema restaurado debe arrancar en modo "configurado", no en modo wizard.
-    await safeQ('UPDATE `config` SET `setup_completed` = 1 WHERE `id` = 1', []);
-
-    // Fallback: si config quedó vacía (INSERT del backup falló silenciosamente)
-    const cfgCheck = await safeQ('SELECT id FROM `config` WHERE id = 1 LIMIT 1');
-    if (!cfgCheck || !cfgCheck.length) {
-      console.warn('[respaldos][restore] config quedó vacía tras restauración; insertando fila mínima.');
-      await safeQ("INSERT IGNORE INTO `config` (id, setup_completed) VALUES (1, 1)", []);
-    }
-
-    // Verificar usuarios restaurados
-    const userCheck = await safeQ('SELECT COUNT(*) AS total FROM `users`');
-    const userCount = Number(userCheck?.[0]?.total || 0);
-    if (userCount === 0) {
-      console.warn('[respaldos][restore] ¡ADVERTENCIA! La tabla users quedó vacía tras restauración.');
-      // Si el backup no tiene usuarios, configurar setup_completed = 0 para que
-      // el usuario vea el wizard de primer inicio en lugar del overlay "corrompido".
-      // Esto permite hacer una instalación limpia sin quedar atrapado.
-      await safeQ('UPDATE `config` SET `setup_completed` = 0 WHERE `id` = 1', []);
-      console.warn('[respaldos][restore] setup_completed → 0 para evitar estado "corrompido". El usuario verá el wizard inicial.');
-    } else {
-      console.log(`[respaldos][restore] ✅ ${userCount} usuario(s) restaurado(s) correctamente.`);
-    }
-  }
-
-  // Ejecutar restauración
-  let restoreResult = { userCount: 0 };
-  if (isMySQL) {
-    // MySQL: withTransaction garantiza UNA SOLA conexión dedicada para todo el proceso.
-    // safeQ captura errores individuales → withTransaction siempre hace COMMIT al final.
-    await _withDbTransaction(async ({ query: txQ }) => {
-      await _doRestore(txQ);
-    });
-  } else {
-    // SQLite: single-threaded, no hay problema de conexiones distintas
-    await _doRestore(query);
-  }
-
-  // Verificar el resultado final fuera de la transacción (para MySQL, asegura que el
-  // COMMIT se completó correctamente antes de responder al cliente)
-  try {
-    const finalCheck = await query('SELECT COUNT(*) AS total FROM users');
-    restoreResult.userCount = Number(finalCheck?.[0]?.total || 0);
-  } catch (_) {}
-
-  return restoreResult;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -1056,12 +674,22 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       // Parsear y validar
       const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
 
-      // Crear respaldo del estado actual ANTES de restaurar
-      const currentPayload = await buildFullPayload(query);
-      const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
-      const preRestoreName = generateFilename(currentPayload.businessName + '_PRE-RESTAURACION', currentPayload.systemVersion);
-      const backupDir      = ensureDir(getDefaultBackupDir());
-      fs.writeFileSync(path.join(backupDir, preRestoreName), currentBuf);
+      // Crear respaldo del estado actual ANTES de restaurar. Es una red de
+      // seguridad, no el objetivo de esta ruta — si la BD actual está en un
+      // estado tan malo que ni siquiera se puede leer para respaldarla (la
+      // razón misma por la que alguien restauraría), NO debe bloquear la
+      // restauración real. buildFullPayload() aborta si config/users/products/
+      // clients fallan; aquí eso solo significa "sin pre-backup", no "cancelar".
+      let preRestoreName = null;
+      try {
+        const currentPayload = await buildFullPayload(query);
+        const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
+        preRestoreName = generateFilename(currentPayload.businessName + '_PRE-RESTAURACION', currentPayload.systemVersion);
+        const backupDir = ensureDir(getDefaultBackupDir());
+        fs.writeFileSync(path.join(backupDir, preRestoreName), currentBuf);
+      } catch (preBackupErr) {
+        console.warn('[respaldos][restaurar-local] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):', preBackupErr.message);
+      }
 
       // Restaurar
       await restorePayloadToDb(payload, query);
@@ -1069,7 +697,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       await writeAuditLog({
         userId: actor.userId, userName: actor.userName, userRole: actor.userRole,
         moduleName: 'respaldos', actionName: 'restaurar_local',
-        detail: `Restauración desde: ${fileName || fp}. Pre-backup: ${preRestoreName}`,
+        detail: `Restauración desde: ${fileName || fp}.${preRestoreName ? ` Pre-backup: ${preRestoreName}.` : ' Sin pre-backup (no se pudo generar).'}`,
       });
 
       res.json({
@@ -1112,12 +740,18 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       // Parsear y validar
       const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
 
-      // Pre-backup del estado actual
-      const currentPayload = await buildFullPayload(query);
-      const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
-      const preRestoreName = generateFilename(currentPayload.businessName + '_PRE-REST-NUBE', currentPayload.systemVersion);
-      const backupDir      = ensureDir(getDefaultBackupDir());
-      fs.writeFileSync(path.join(backupDir, preRestoreName), currentBuf);
+      // Pre-backup del estado actual — igual que en restaurar-local, no debe
+      // bloquear la restauración si la BD actual no se puede leer.
+      let preRestoreName = null;
+      try {
+        const currentPayload = await buildFullPayload(query);
+        const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
+        preRestoreName = generateFilename(currentPayload.businessName + '_PRE-REST-NUBE', currentPayload.systemVersion);
+        const backupDir = ensureDir(getDefaultBackupDir());
+        fs.writeFileSync(path.join(backupDir, preRestoreName), currentBuf);
+      } catch (preBackupErr) {
+        console.warn('[respaldos][restaurar-nube] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):', preBackupErr.message);
+      }
 
       // Restaurar
       await restorePayloadToDb(payload, query);
@@ -1125,7 +759,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       await writeAuditLog({
         userId: actor.userId, userName: actor.userName, userRole: actor.userRole,
         moduleName: 'respaldos', actionName: 'restaurar_nube',
-        detail: `Restauración desde R2: ${storageKey}. Pre-backup: ${preRestoreName}`,
+        detail: `Restauración desde R2: ${storageKey}.${preRestoreName ? ` Pre-backup: ${preRestoreName}.` : ' Sin pre-backup (no se pudo generar).'}`,
       });
 
       res.json({

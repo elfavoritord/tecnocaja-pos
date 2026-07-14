@@ -103,7 +103,7 @@ function decryptKey(enc) {
 router.get('/saved-keys', async (req, res) => {
   try {
     const db = req.app.locals.queryFn;
-    const rows = await db(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_claude_key','wabot_chatgpt_key','wabot_provider','wabot_owner_phone','wabot_owner_phone2')`);
+    const rows = await db(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_claude_key','wabot_chatgpt_key','wabot_gemini_key','wabot_provider','wabot_owner_phone','wabot_owner_phone2')`);
     const map = {};
     rows.forEach(r => { map[r.config_key] = r.config_value; });
     res.json({
@@ -112,15 +112,18 @@ router.get('/saved-keys', async (req, res) => {
       ownerPhone2:   map.wabot_owner_phone2 || '',
       hasClaudeKey:  !!(map.wabot_claude_key),
       hasChatgptKey: !!(map.wabot_chatgpt_key),
+      hasGeminiKey:  !!(map.wabot_gemini_key),
     });
-  } catch (e) { res.json({ provider: 'none', ownerPhone: '', ownerPhone2: '', hasClaudeKey: false, hasChatgptKey: false }); }
+  } catch (e) { res.json({ provider: 'none', ownerPhone: '', ownerPhone2: '', hasClaudeKey: false, hasChatgptKey: false, hasGeminiKey: false }); }
 });
+
+const WABOT_KEY_COLUMNS = { claude: 'wabot_claude_key', chatgpt: 'wabot_chatgpt_key', gemini: 'wabot_gemini_key' };
 
 router.post('/save-key', async (req, res) => {
   try {
     const { provider, apiKey } = req.body;
     const db = req.app.locals.queryFn;
-    const colKey = provider === 'claude' ? 'wabot_claude_key' : 'wabot_chatgpt_key';
+    const colKey = WABOT_KEY_COLUMNS[provider] || 'wabot_chatgpt_key';
     const encrypted = encryptKey(apiKey);
     await db(`INSERT INTO offline_cache_config (config_key, config_value) VALUES (?,?) ON DUPLICATE KEY UPDATE config_value=?`, [colKey, encrypted, encrypted]);
     await db(`INSERT INTO offline_cache_config (config_key, config_value) VALUES ('wabot_provider',?) ON DUPLICATE KEY UPDATE config_value=?`, [provider, provider]);
@@ -216,9 +219,8 @@ router.post('/start', async (req, res) => {
     const io = req.app.locals.io;
 
     // Si no vino key, leer la guardada en DB
-    if (!apiKey && provider && provider !== 'none' && provider !== 'gemini') {
-      const colKey = provider === 'claude' ? 'wabot_claude_key' : 'wabot_chatgpt_key';
-      const rows = await db(`SELECT config_value FROM offline_cache_config WHERE config_key=?`, [colKey]);
+    if (!apiKey && provider && provider !== 'none' && WABOT_KEY_COLUMNS[provider]) {
+      const rows = await db(`SELECT config_value FROM offline_cache_config WHERE config_key=?`, [WABOT_KEY_COLUMNS[provider]]);
       if (rows[0]?.config_value) apiKey = decryptKey(rows[0].config_value);
     }
 

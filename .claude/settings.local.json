@@ -222,7 +222,24 @@
       "Bash(curl -s \"http://127.0.0.1:3399/api/ecf/documents/5006/status\" --max-time 15)",
       "Bash(curl -s \"http://127.0.0.1:3399/api/ecf/documents/5007/status\" --max-time 15)",
       "Bash(node -c server/services/promotion-engine.js)",
-      "Bash(node -c js/promociones.js)"
+      "Bash(node -c js/promociones.js)",
+      "Bash(node --check modules/firebase-sync.js)",
+      "Bash(node -e \"console.log\\(require\\('child_process'\\).execSync\\('npm ls sharp 2>&1 || true'\\).toString\\(\\)\\)\")",
+      "Bash(npx firebase *)",
+      "Bash(xxd build/ensure-mariadb-service.ps1)",
+      "Bash(curl -s -m 15 \"http://127.0.0.1:3399/api/ecf/documents/5162/status\")",
+      "Bash(curl -s -m 15 \"http://127.0.0.1:3399/api/ecf/documents/5177/status\")",
+      "Bash(find / -iname \"*E310000000095*\" -o -iname \"*E320000001119*\" 2>/dev/null | grep -v \"Permission denied\" | head -50)",
+      "Read(//c//**)",
+      "Bash(powershell -NoProfile -Command \"Get-Process -Name mariadbd -ErrorAction SilentlyContinue | Select-Object Id,ProcessName\")",
+      "Bash(powershell -NoProfile -Command \"Test-NetConnection -ComputerName 127.0.0.1 -Port 3306 -InformationLevel Quiet\")",
+      "Bash(node -c \"server/integrations/whatsapp-bot.js\")",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('status:',j.status,'connectedAs:',j.connectedAs\\)}\\)\")",
+      "Bash(node -c \"server.js\")",
+      "Bash(node -c server.js)",
+      "Bash(node -c server/routes/respaldos.routes.js)",
+      "Bash(node -e \"require\\('./server/routes/respaldos.routes.js'\\); console.log\\('require OK'\\)\")",
+      "Bash(node \"/c/Users/EMILIO~1/AppData/Local/Temp/claude/c--Users-Emilio-Coding-IA-Desktop-sistema-pos-completo/527763d6-b7c2-4814-b6eb-05856dc6f27c/scratchpad/test-backup-roundtrip.js\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

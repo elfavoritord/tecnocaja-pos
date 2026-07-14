@@ -141,7 +141,7 @@ function getOrCreateSession(jid) {
     clientId: null, knownAddress: '', knownPhone: '',
     locationLink: '', locationLat: null, locationLng: null, knownLocationLink: '',
     paymentMethodPreference: '', paymentMethodLabel: '', knownCreditLimit: 0,
-    voucherCode: ''
+    voucherCode: '', customerNote: ''
   };
   customerSessions.set(jid, fresh);
   return fresh;
@@ -169,6 +169,10 @@ _sessionSweepInterval.unref?.();
 
 function pushState() {
   if (_io) _io.emit('wa_bot_state', getSafeState());
+  // Bajo Electron, lanzar Chrome via Puppeteer puede dejar la ventana pintada
+  // en blanco de forma permanente (ver electron/main.js). global.__forceRepaint
+  // es un no-op fuera de Electron (ej. `npm start` standalone).
+  global.__forceRepaint?.();
 }
 
 function addMessage(dir, text) {
@@ -729,7 +733,7 @@ async function callGeminiRaw(body) {
   if (_googleTokens?.access_token) {
     // OAuth — Bearer token via REST API
     const http = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent',
       {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${_googleTokens.access_token}`, 'Content-Type': 'application/json' },
@@ -741,7 +745,7 @@ async function callGeminiRaw(body) {
   } else if (apiKey) {
     // API Key — query param
     const http = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
     );
     geminiRes = await http.json();
@@ -793,7 +797,7 @@ async function callAi(system, messages) {
       return await callGeminiRaw({
         contents,
         systemInstruction: { parts: [{ text: system }] },
-        generationConfig: { maxOutputTokens: 600 },
+        generationConfig: { maxOutputTokens: 600, thinkingConfig: { thinkingBudget: 0 } },
       });
     }
   } catch (e) {
@@ -877,7 +881,7 @@ async function transcribeAudio(media) {
           { text: 'Transcribe exactamente lo que dice este audio. Responde SOLO con la transcripción en texto plano, sin comentarios ni comillas.' },
           { inlineData: { mimeType: mimetype, data: media.data } },
         ] }],
-        generationConfig: { maxOutputTokens: 200 },
+        generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 } },
       });
       return text?.trim() || null;
     }
@@ -923,7 +927,7 @@ async function identifyProductFromImage(media) {
           { text: IMAGE_IDENTIFY_PROMPT },
           { inlineData: { mimeType: mimetype, data: media.data } },
         ] }],
-        generationConfig: { maxOutputTokens: 60 },
+        generationConfig: { maxOutputTokens: 60, thinkingConfig: { thinkingBudget: 0 } },
       });
     }
 
@@ -934,6 +938,55 @@ async function identifyProductFromImage(media) {
     console.error('[wa-bot] Error identificando imagen:', e.message);
     return null;
   }
+}
+
+// Igual que identifyProductFromImage pero para el dueño: describe la foto en
+// vez de limitarse a un nombre corto de producto — el dueño puede mandar
+// cualquier cosa (etiqueta, factura, anaquel) y luego responder() decide qué
+// hacer con la descripción (ej. buscarlo en el catálogo si es un producto).
+const OWNER_IMAGE_DESCRIBE_PROMPT = 'Describe en una oración breve y concreta qué aparece en esta foto (producto, etiqueta, factura, anaquel, etc.), pensando en que la ve el dueño de una tienda. Si reconoces un producto, menciona su nombre y marca si son visibles.';
+
+async function describeImageForOwner(media) {
+  const { provider, apiKey } = _aiConfig || {};
+  const mimetype = String(media?.mimetype || 'image/jpeg').split(';')[0].trim();
+  try {
+    if (provider === 'claude' && apiKey) {
+      const client = new Anthropic({ apiKey });
+      const res = await client.messages.create({
+        model: 'claude-haiku-4-5-20251001', max_tokens: 200,
+        messages: [{ role: 'user', content: [
+          { type: 'image', source: { type: 'base64', media_type: mimetype, data: media.data } },
+          { type: 'text', text: OWNER_IMAGE_DESCRIBE_PROMPT },
+        ] }],
+      });
+      return res.content[0].text?.trim() || null;
+
+    } else if (provider === 'chatgpt' && apiKey) {
+      const { OpenAI } = require('openai');
+      const openai = new OpenAI({ apiKey });
+      const res = await openai.chat.completions.create({
+        model: 'gpt-4o-mini', max_tokens: 200,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: OWNER_IMAGE_DESCRIBE_PROMPT },
+          { type: 'image_url', image_url: { url: `data:${mimetype};base64,${media.data}` } },
+        ] }],
+      });
+      return res.choices[0].message.content?.trim() || null;
+
+    } else if (provider === 'gemini') {
+      const text = await callGeminiRaw({
+        contents: [{ role: 'user', parts: [
+          { text: OWNER_IMAGE_DESCRIBE_PROMPT },
+          { inlineData: { mimeType: mimetype, data: media.data } },
+        ] }],
+        generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 } },
+      });
+      return text?.trim() || null;
+    }
+  } catch (e) {
+    console.error('[wa-bot] Error describiendo imagen (dueño):', e.message);
+  }
+  return null;
 }
 
 // Un "turno" del historial empieza en un mensaje de usuario en texto plano.
@@ -1660,7 +1713,8 @@ async function finalizeCustomerOrder(jid, session, opts = {}) {
     deliveryAddress,
     deliveryLink: locationLink,
     orderNotes: `Pedido recibido por WhatsApp Bot. Cliente: ${session.customerName}, Tel: ${phone}. Pago preferido: ${session.paymentMethodLabel || 'Efectivo'}.`
-      + (depositoConfirmado ? ' Depósito por transferencia ya confirmado por el dueño — solo falta facturar.' : ' Pendiente de confirmar por un cajero.'),
+      + (depositoConfirmado ? ' Depósito por transferencia ya confirmado por el dueño — solo falta facturar.' : ' Pendiente de confirmar por un cajero.')
+      + (session.customerNote ? `\n\n📌 Nota del cliente: ${session.customerNote}` : ''),
     // El carrito ya tiene exactamente la forma que espera la pantalla de
     // Ventas al cargar una cotización (buildSaleItem() en js/ventas.js) — se
     // pasa tal cual, sin remapear a otro shape.
@@ -1707,6 +1761,7 @@ async function finalizeCustomerOrder(jid, session, opts = {}) {
         `Entrega: ${session.orderType === 'delivery' ? 'Delivery' : 'Recoger en tienda'}`,
         session.orderType === 'delivery' ? `Dirección: ${session.address}` : null,
         session.orderType === 'delivery' && locationLink ? `Ubicación: ${locationLink}` : null,
+        session.customerNote ? `📌 Nota del cliente: ${session.customerNote}` : null,
         '',
         ...session.cart.map((item) => `• ${item.qty} x ${item.nombre} — ${fmt(item.precio * item.qty)}`),
         '',
@@ -2201,8 +2256,8 @@ async function handleCustomerMessage(msg) {
 
     case 'confirm': {
       if (/^confirmar$/i.test(text)) {
-        session.step = 'awaiting_payment_method';
-        await msg.reply(renderPaymentMethodMenu(session));
+        session.step = 'awaiting_customer_note';
+        await msg.reply('¿Algo que debamos saber sobre tu pedido? Por ejemplo: cambio a traer, instrucciones para el delivery, alguna referencia, etc.\n\nSi no hay nada, escribe *ninguna*.');
       } else if (/^(agregar|otro|a[ñn]adir|modificar)$/i.test(text)) {
         session.step = 'browsing';
         session.ordering = true;
@@ -2210,6 +2265,13 @@ async function handleCustomerMessage(msg) {
       } else {
         await msg.reply('Responde *confirmar* para continuar, *agregar* para sumar otro producto, o *cancelar* para descartarlo.');
       }
+      break;
+    }
+
+    case 'awaiting_customer_note': {
+      session.customerNote = /^(ninguna|ninguno|no|nada)$/i.test(text) ? '' : text.slice(0, 300);
+      session.step = 'awaiting_payment_method';
+      await msg.reply(renderPaymentMethodMenu(session));
       break;
     }
 
@@ -2482,13 +2544,42 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
     if (!msg.body?.trim() && !isLocationMsg && !isVoiceMsg && !isImageMsg) return;
 
     if (isAuth) {
-      // El dueño no tiene flujo que espere ubicación/audio/imagen (fuera de alcance elegido).
-      if (isLocationMsg || isVoiceMsg || isImageMsg) return;
+      // Ubicación: sin caso de uso para el dueño (a diferencia de audio/imagen,
+      // no hay nada sensato que hacer con un pin de GPS aquí).
+      if (isLocationMsg) return;
+
+      // Nota de voz o foto del dueño — se convierten a texto (transcripción o
+      // descripción por IA) y de ahí en adelante se procesan exactamente igual
+      // que si las hubiera escrito, igual que ya hace el flujo de clientes.
+      let mensajeEntrante = msg.body;
+      if (isVoiceMsg || isImageMsg) {
+        if (!_aiConfig?.provider || _aiConfig.provider === 'none') {
+          await msg.reply(`Activa una IA en Configuración → Bot WhatsApp para que pueda ${isVoiceMsg ? 'escuchar notas de voz' : 'leer fotos'}. 🙏`);
+          return;
+        }
+        const media = await msg.downloadMedia().catch(() => null);
+        if (isVoiceMsg) {
+          mensajeEntrante = media ? await transcribeAudio(media).catch(() => null) : null;
+          if (!mensajeEntrante) {
+            await msg.reply('No pude entender la nota de voz. ¿Me lo escribes, por favor? 🙏');
+            return;
+          }
+        } else {
+          const description = media ? await describeImageForOwner(media).catch(() => null) : null;
+          if (!description) {
+            await msg.reply('No pude leer esa imagen. ¿Puedes describir lo que necesitas? 🙏');
+            return;
+          }
+          mensajeEntrante = msg.body?.trim()
+            ? `${msg.body.trim()} (adjunté una foto: ${description})`
+            : `Envié esta foto: ${description}. ¿Qué me puedes decir sobre esto?`;
+        }
+      }
 
       // ── Confirmar/rechazar comprobante de transferencia ─────────────────────
       // Se revisa ANTES de la IA/Modo Comandos porque "confirmar"/"rechazar" no
       // son palabras que ese flujo use — interceptarlas aquí no le quita nada.
-      const voucherCmd = /^(confirmar|rechazar)(?:\s+(\S+))?$/i.exec(msg.body.trim());
+      const voucherCmd = /^(confirmar|rechazar)(?:\s+(\S+))?$/i.exec(mensajeEntrante.trim());
       if (voucherCmd) {
         const action = voucherCmd[1].toLowerCase();
         let code = voucherCmd[2] ? voucherCmd[2].toUpperCase() : null;
@@ -2524,11 +2615,11 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
       }
 
       // ── Flujo del dueño (IA / Modo Solo Comandos) — sin cambios ──────────────
-      console.log(`[wa-bot] 📨 "${msg.body?.substring(0, 60)}"`);
-      addMessage('in', msg.body);
+      console.log(`[wa-bot] 📨 "${mensajeEntrante?.substring(0, 60)}"`);
+      addMessage('in', mensajeEntrante);
 
       try {
-        const respuesta = await responder(msg.body, msg.from);
+        const respuesta = await responder(mensajeEntrante, msg.from);
         await msg.reply(respuesta);
         addMessage('out', respuesta);
       } catch (e) {

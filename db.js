@@ -104,11 +104,36 @@ let _savePending = false;
 let _saveTimer = null;
 const _SAVE_DEBOUNCE_MS = 80;
 
+// Escritura atómica: nunca tocamos dbFile directamente. Se escribe primero a
+// un archivo temporal, se fuerza fsync (bytes ya en disco, no solo en el
+// buffer del SO) y recién entonces se hace rename sobre dbFile. Si la PC
+// pierde energía en cualquier punto antes del rename, dbFile original queda
+// intacto — sin esto, un corte de luz a mitad del fs.writeFile truncaba el
+// archivo cifrado y el sistema arrancaba con una BD nueva en blanco.
 async function _writeToDisk() {
   const db = await getSqlitePromise();
   const encrypted = encryptSqliteBuffer(Buffer.from(db.export()));
-  return new Promise(function(resolve, reject) {
-    fs.writeFile(dbFile, encrypted, function(err) {
+  const tmpFile = dbFile + '.tmp-' + process.pid;
+
+  await new Promise(function(resolve, reject) {
+    fs.writeFile(tmpFile, encrypted, function(err) {
+      if (err) reject(err); else resolve();
+    });
+  });
+
+  await new Promise(function(resolve, reject) {
+    fs.open(tmpFile, 'r+', function(err, fd) {
+      if (err) return reject(err);
+      fs.fsync(fd, function(fsyncErr) {
+        fs.close(fd, function() {
+          if (fsyncErr) reject(fsyncErr); else resolve();
+        });
+      });
+    });
+  });
+
+  await new Promise(function(resolve, reject) {
+    fs.rename(tmpFile, dbFile, function(err) {
       if (err) reject(err); else resolve();
     });
   });

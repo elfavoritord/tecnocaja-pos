@@ -205,6 +205,8 @@ async function syncPedidoDelivery({
   total,
   productos,
   notasInternas,
+  montoClienteEntrega,
+  cambioRepartidor,
 }) {
   if (!_tryInit()) return;
   if (!invoiceNumber || !repartidorId) return;
@@ -216,6 +218,8 @@ async function syncPedidoDelivery({
     const clienteDireccionNormalized = _normalizeOptionalText(clienteDireccion);
     const clienteReferenciaNormalized = _normalizeOptionalText(clienteReferencia);
     const clienteLocationLinkNormalized = _normalizeOptionalText(clienteLocationLink);
+    const montoClienteEntregaNormalized = montoClienteEntrega === null || montoClienteEntrega === undefined ? null : Number(montoClienteEntrega);
+    const cambioRepartidorNormalized = cambioRepartidor === null || cambioRepartidor === undefined ? null : Number(cambioRepartidor);
     await _db.collection('pedidos_delivery').doc(docId).set({
       numeroFactura: String(invoiceNumber),
       repartidorId: String(repartidorId),
@@ -235,6 +239,8 @@ async function syncPedidoDelivery({
         precio: Number(p.precio || 0),
       })),
       notasInternas: _normalizeOptionalText(notasInternas) || null,
+      montoClienteEntrega: montoClienteEntregaNormalized,
+      cambioRepartidor: cambioRepartidorNormalized,
       incidencias: [],
       estado: 'asignado',
       creadoEn: now,

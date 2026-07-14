@@ -55,3 +55,16 @@ if ($LASTEXITCODE -ne 0) { Fail "prepare-mariadb-bundle.js fallo" }
 
 npx electron-builder --win nsis --publish always
 if ($LASTEXITCODE -ne 0) { Fail "electron-builder fallo (codigo $LASTEXITCODE)" }
+
+# ── Limpiar instaladores viejos de dist/ ──────────────────────
+# Evita que quedes con varias versiones mezcladas y agarres la equivocada
+# al ir a instalar en la PC de un cliente.
+$currentVer = (Get-Content (Join-Path $root 'package.json') -Raw | ConvertFrom-Json).version
+$distDir = Join-Path $root 'dist'
+$currentInstaller = "TecnoCaja-Setup-$currentVer.exe"
+Get-ChildItem -Path $distDir -Filter 'TecnoCaja-Setup-*.exe*' -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -notlike "$currentInstaller*" } |
+  ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+    Ok "Eliminado instalador viejo: $($_.Name)"
+  }

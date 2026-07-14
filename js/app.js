@@ -9562,6 +9562,9 @@ async function waBotLoadSavedKeys() {
     } else if (data.provider === 'chatgpt' && data.hasChatgptKey) {
       if (saved) saved.style.display = 'block';
       if (input) input.placeholder = '(key guardada — deja vacío para usar la guardada)';
+    } else if (data.provider === 'gemini' && data.hasGeminiKey) {
+      if (saved) saved.style.display = 'block';
+      if (input) input.placeholder = '(key guardada — deja vacío para usar la guardada)';
     }
     if (data.provider === 'gemini') waBotCheckGoogleStatus();
   } catch {}
@@ -9570,7 +9573,7 @@ async function waBotLoadSavedKeys() {
 async function waBotSaveKey() {
   const provider = document.querySelector('input[name="wabot-ai"]:checked')?.value;
   const apiKey   = document.getElementById('wabot-api-key')?.value?.trim();
-  if (!provider || provider === 'none' || provider === 'gemini') return;
+  if (!provider || provider === 'none') return;
   if (!apiKey) { showToast('Ingresa la API Key primero', 'warning'); return; }
   try {
     const res = await fetch('/api/wa-bot/save-key', {
@@ -9691,6 +9694,11 @@ function waBotSelectAI(provider, el) {
     if (gSignin) gSignin.style.display = 'flex';
     gSignin.style.flexDirection = 'column';
     waBotCheckGoogleStatus();
+    if (row)   row.style.display   = 'flex';
+    row.style.flexDirection = 'column';
+    if (lbl)   lbl.textContent     = info.label + ' (opcional si conectas con Google)';
+    if (input) input.placeholder   = info.placeholder;
+    if (hint)  hint.textContent    = info.hint;
   } else if (provider !== 'none') {
     if (row)   row.style.display   = 'flex';
     row.style.flexDirection = 'column';

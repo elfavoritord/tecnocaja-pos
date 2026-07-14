@@ -2507,13 +2507,13 @@ async function persistProductsCsvBackup(reason = 'auto') {
 }
 
 let _silentProductBackupTimer = null;
-function scheduleSilentProductBackup(trigger = 'producto_cambiado') {
+function scheduleSilentProductBackup(trigger = 'producto_cambiado', forceCloud = true) {
   if (_silentProductBackupTimer) clearTimeout(_silentProductBackupTimer);
   _silentProductBackupTimer = setTimeout(() => {
     _silentProductBackupTimer = null;
     const createBackup = app.locals && app.locals.createAutomaticBackup;
     if (typeof createBackup !== 'function') return;
-    createBackup({ trigger, forceCloud: true }).catch((error) => {
+    createBackup({ trigger, forceCloud }).catch((error) => {
       console.warn(`[respaldos-auto] No se pudo completar respaldo silencioso (${trigger}):`, error.message);
     });
   }, 2500);
@@ -11075,6 +11075,7 @@ async function insertClientRow(runner, rawData) {
     throw createHttpError('El cliente se guardó, pero no se pudo leer el registro creado.', 500);
   }
   syncClientToRemote(createdRow).catch(() => {});
+  scheduleSilentProductBackup('cliente_creado');
   return createdRow;
 }
 
@@ -11129,6 +11130,7 @@ app.put('/api/clients/:id', async (req, res) => {
     detail: data.nombre
   });
   syncClientToRemote(rows[0]).catch(() => {});
+  scheduleSilentProductBackup('cliente_actualizado');
   res.json(mapClientRow(rows[0]));
 });
 
@@ -13340,6 +13342,7 @@ app.post('/api/cash/close', async (req, res) => {
       totalWithdrawals: Number(totals[0]?.totalWithdrawals || 0),
     });
   });
+  scheduleSilentProductBackup('cierre_caja', false);
   res.json({ config: await getConfig(), usdTotalReceived });
 });
 
@@ -14287,6 +14290,8 @@ app.post('/api/sales', async (req, res) => {
         total: Number(rows[0].total || 0),
         productos: productosDelivery,
         notasInternas: rows[0].order_notes || null,
+        montoClienteEntrega: rows[0].delivery_client_pay_amount === null || rows[0].delivery_client_pay_amount === undefined ? null : Number(rows[0].delivery_client_pay_amount),
+        cambioRepartidor: rows[0].delivery_change_amount === null || rows[0].delivery_change_amount === undefined ? null : Number(rows[0].delivery_change_amount),
       }).catch(() => {});
     }
   }
@@ -16916,6 +16921,12 @@ async function prepareServerRuntime() {
 
     const dbFile = process.env.DB_FILE || path.join(__dirname, 'data', 'tecnocaja.db');
     let needsInit = !fs.existsSync(dbFile);
+    // Capturado ANTES de que needsInit se ponga en false abajo: nos dice si el
+    // archivo de BD ya existía al arrancar. Si existía pero terminamos sin
+    // tablas/esquema válido, es corrupción real (no una instalación nueva) y
+    // vale la pena intentar restaurar desde el último respaldo automáticamente.
+    const dbFileExistedAtBoot = !needsInit;
+    let dbWasCorruptAndRebuilt = false;
     if (needsInit) {
       console.log('Inicializando base de datos SQLite...');
       await initializeDatabase();
@@ -16931,6 +16942,7 @@ async function prepareServerRuntime() {
       if (!isBrokenDatabaseError(error)) {
         throw error;
       }
+      dbWasCorruptAndRebuilt = true;
       const brokenBackupPath = moveBrokenDatabaseAside(dbFile);
       console.warn(
         'La base de datos local estaba dañada y fue apartada automáticamente.' +
@@ -16943,6 +16955,7 @@ async function prepareServerRuntime() {
     }
 
     if (!schemaState.hasRequiredTables) {
+      if (dbFileExistedAtBoot) dbWasCorruptAndRebuilt = true;
       const brokenBackupPath = moveBrokenDatabaseAside(dbFile);
       console.warn(
         `La base de datos local estaba incompleta o usaba un esquema no compatible.` +
@@ -16974,6 +16987,28 @@ async function prepareServerRuntime() {
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]);
+
+    // ── Recuperación automática tras corrupción ──────────────────────────────
+    // Si la BD existente resultó dañada (ej. corte de luz a mitad de escritura)
+    // y tuvo que recrearse en blanco, intentamos restaurar el último respaldo
+    // .tcbak disponible (local primero, nube como respaldo) ANTES de que el
+    // usuario vea el wizard de "instalación nueva". Nunca corre en una
+    // instalación legítimamente nueva (dbWasCorruptAndRebuilt solo se marca
+    // cuando el archivo de BD ya existía y perdió su esquema).
+    if (dbWasCorruptAndRebuilt) {
+      try {
+        const { attemptAutoRestoreFromBackup } = require('./server/services/auto-recovery');
+        const recovery = await attemptAutoRestoreFromBackup({ query });
+        if (recovery.restored) {
+          console.log(`[auto-recovery] ✅ Base de datos restaurada automáticamente desde respaldo (${recovery.source}): ${recovery.fileName}`);
+        } else {
+          console.warn('[auto-recovery] No se encontró ningún respaldo utilizable. El sistema quedó con una base de datos nueva vacía.');
+        }
+      } catch (e) {
+        console.warn('[auto-recovery] Falló el intento de restauración automática:', e.message);
+      }
+    }
+
     const setup = await getSetupStatus();
     await ensureStarterCatalogSeededIfNeeded(setup.config);
     // Sync license first so the signed secure cache is validated before the app accepts traffic.
@@ -17191,7 +17226,7 @@ async function startHttpServer(port, bindHost) {
       setTimeout(async () => {
         try {
           const rows = await withRetryOnTransient(
-            () => query(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_autostart','wabot_owner_phone','wabot_owner_phone2','wabot_provider','wabot_claude_key','wabot_chatgpt_key')`),
+            () => query(`SELECT config_key, config_value FROM offline_cache_config WHERE config_key IN ('wabot_autostart','wabot_owner_phone','wabot_owner_phone2','wabot_provider','wabot_claude_key','wabot_chatgpt_key','wabot_gemini_key')`),
             { label: 'wa-bot autostart config' }
           );
           const cfg = {};
@@ -17199,10 +17234,10 @@ async function startHttpServer(port, bindHost) {
           if (cfg.wabot_autostart === '1' && cfg.wabot_owner_phone) {
             const waBotMod = require('./server/integrations/whatsapp-bot');
             let apiKey = null;
-            if (cfg.wabot_provider === 'claude' && cfg.wabot_claude_key) {
-              try { const [ivHex,data] = cfg.wabot_claude_key.split(':'); const crypto=require('crypto'); const d=crypto.createDecipheriv('aes-256-cbc',(process.env.TECNO_CAJA_SECRET||'tecnocaja2026').padEnd(32,'0').slice(0,32),Buffer.from(ivHex,'hex')); apiKey=Buffer.concat([d.update(Buffer.from(data,'hex')),d.final()]).toString(); } catch {}
-            } else if (cfg.wabot_provider === 'chatgpt' && cfg.wabot_chatgpt_key) {
-              try { const [ivHex,data] = cfg.wabot_chatgpt_key.split(':'); const crypto=require('crypto'); const d=crypto.createDecipheriv('aes-256-cbc',(process.env.TECNO_CAJA_SECRET||'tecnocaja2026').padEnd(32,'0').slice(0,32),Buffer.from(ivHex,'hex')); apiKey=Buffer.concat([d.update(Buffer.from(data,'hex')),d.final()]).toString(); } catch {}
+            const WABOT_AUTOSTART_KEY_COLUMN = { claude: 'wabot_claude_key', chatgpt: 'wabot_chatgpt_key', gemini: 'wabot_gemini_key' };
+            const encryptedKey = cfg[WABOT_AUTOSTART_KEY_COLUMN[cfg.wabot_provider]];
+            if (encryptedKey) {
+              try { const [ivHex,data] = encryptedKey.split(':'); const crypto=require('crypto'); const d=crypto.createDecipheriv('aes-256-cbc',(process.env.TECNO_CAJA_SECRET||'tecnocaja2026').padEnd(32,'0').slice(0,32),Buffer.from(ivHex,'hex')); apiKey=Buffer.concat([d.update(Buffer.from(data,'hex')),d.final()]).toString(); } catch {}
             }
             console.log('[wa-bot] Auto-arranque activado, iniciando bot...');
             await waBotMod.start({ db: query, io, ownerPhone: cfg.wabot_owner_phone, ownerPhone2: cfg.wabot_owner_phone2 || null, provider: cfg.wabot_provider || 'gemini', apiKey });

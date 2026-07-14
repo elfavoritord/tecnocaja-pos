@@ -122,6 +122,18 @@ if ($LASTEXITCODE -ne 0) { Fail "electron-builder fallo (codigo $LASTEXITCODE)" 
 Step '4/5' 'Publicando en GitHub Releases...'
 Ok "Release v$newVer publicada"
 
+# ── Limpiar instaladores viejos de dist/ ──────────────────────
+# Evita que quedes con 5-6 versiones mezcladas y agarres la equivocada
+# al ir a instalar en la PC de un cliente.
+$distDir = Join-Path $root 'dist'
+$currentInstaller = "TecnoCaja-Setup-$newVer.exe"
+Get-ChildItem -Path $distDir -Filter 'TecnoCaja-Setup-*.exe*' -File -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -notlike "$currentInstaller*" } |
+  ForEach-Object {
+    Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+    Info "Eliminado instalador viejo: $($_.Name)"
+  }
+
 Step '5/5' 'Listo!'
 Write-Host ""
 Write-Host "  ----------------------------------------------------------" -ForegroundColor Green

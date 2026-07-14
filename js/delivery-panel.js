@@ -242,6 +242,10 @@ async function dpShowDetail(pedidoId) {
               <tbody>${prods}</tbody>
             </table>
             <div class="dp-total-row">Total: <strong>RD$ ${Number(p.total || 0).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</strong></div>
+            ${p.cambioRepartidor !== null && p.cambioRepartidor !== undefined ? `
+            <div class="dp-total-row" style="color:#b45309;font-weight:600">
+              💵 Cliente paga con RD$ ${Number(p.montoClienteEntrega || 0).toLocaleString('es-DO', { minimumFractionDigits: 2 })} · Cambio a llevar: RD$ ${Number(p.cambioRepartidor).toLocaleString('es-DO', { minimumFractionDigits: 2 })}
+            </div>` : ''}
 
             ${incs ? `<h4 style="margin:1rem 0 0.5rem">⚠️ Incidencias</h4><div class="dp-incs">${incs}</div>` : ''}
             ${p.notasInternas ? `<h4 style="margin:1rem 0 0.5rem">Notas internas</h4><p>${escapeHtml(p.notasInternas)}</p>` : ''}

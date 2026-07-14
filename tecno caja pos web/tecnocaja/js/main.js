@@ -67,12 +67,31 @@ document.querySelectorAll('.reveal').forEach(el=> io.observe(el));
 document.querySelectorAll('.faq-item').forEach(item=>{
   const q = item.querySelector('.faq-q');
   const a = item.querySelector('.faq-a');
-  q.addEventListener('click',()=>{
+  const toggle = ()=>{
     const open = item.classList.contains('open');
-    document.querySelectorAll('.faq-item').forEach(i=>{ i.classList.remove('open'); i.querySelector('.faq-a').style.maxHeight=null; });
-    if(!open){ item.classList.add('open'); a.style.maxHeight = a.scrollHeight + 'px'; }
+    document.querySelectorAll('.faq-item').forEach(i=>{
+      i.classList.remove('open');
+      i.querySelector('.faq-a').style.maxHeight=null;
+      i.querySelector('.faq-q').setAttribute('aria-expanded','false');
+    });
+    if(!open){
+      item.classList.add('open');
+      a.style.maxHeight = a.scrollHeight + 'px';
+      q.setAttribute('aria-expanded','true');
+    }
+  };
+  q.addEventListener('click', toggle);
+  q.addEventListener('keydown', (ev)=>{
+    if(ev.key === 'Enter' || ev.key === ' '){ ev.preventDefault(); toggle(); }
   });
 });
+
+/* service worker (offline + caché de estáticos) */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
+}
 
 /* parallax suave del cluster de dispositivos */
 const devices = document.querySelector('.devices');

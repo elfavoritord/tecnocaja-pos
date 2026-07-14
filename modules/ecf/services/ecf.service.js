@@ -5255,8 +5255,12 @@ class EcfService {
             localEcfPath: item.localEcfFile || null,
           });
           const trackId = response.trackId || response.trackid || response.TrackId || null;
-          const sequenceUsed = isDgiiSequenceUsedResponse(response);
-          const estado = sequenceUsed ? 'aceptado' : (trackId ? 'enviado' : normalizeDgiiState(response));
+          // Para RFCE, "secuencia ya utilizada" se detecta con isRfceEncfAlreadyUsedError
+          // (no isDgiiSequenceUsedResponse, que es para e-CF normales y significa "ya aceptado" —
+          // ver comentario en la definición de ambas funciones). Un RFCE con secuencia quemada
+          // está rechazado y hay que rotar, no aceptado.
+          const sequenceUsed = isRfceEncfAlreadyUsedError(response);
+          const estado = sequenceUsed ? 'rechazado' : (trackId ? 'enviado' : normalizeDgiiState(response));
           let mensajeDgii = response.mensaje || response.message || response.descripcion || response.error || null;
           let permanentlyBlocked = false;
 
@@ -5316,30 +5320,56 @@ class EcfService {
           results.push({ encf: item.encf, ok: !['rechazado', 'error'].includes(estado), estado, trackId, mensaje: mensajeDgii });
           break;
         } catch (error) {
-          if (isDgiiSequenceUsedResponse(error)) {
-            const dgiiResponse = error?.details && typeof error.details === 'object'
-              ? error.details
-              : { error: error.message };
-            const mensajeDgii = dgiiResponse.error || dgiiResponse.descripcion || dgiiResponse.mensaje || error.message;
+          const dgiiResponse = error?.details && typeof error.details === 'object'
+            ? error.details
+            : { error: error.message };
+          // Mismo criterio que en la rama de éxito de arriba: para RFCE, "secuencia ya
+          // utilizada" (venga como respuesta normal o como excepción) significa e-NCF
+          // quemado/rechazado, no aceptado. Antes esto se detectaba con
+          // isDgiiSequenceUsedResponse (la función para e-CF normales) y se marcaba
+          // 'aceptado' sin trackId ni confirmación real de DGII — quedaba como aceptado
+          // localmente un documento que el portal de verificación de DGII nunca indexó.
+          if (isRfceEncfAlreadyUsedError(dgiiResponse)) {
+            let mensajeDgii = dgiiResponse.error || dgiiResponse.descripcion || dgiiResponse.mensaje || error.message;
+            let permanentlyBlocked = false;
+
+            if (rfceRetry < 3) {
+              rfceRetry += 1;
+              const rotated = await this._rotateAndRegenerateRfce(item.encf, req);
+              if (rotated.ok) {
+                const newState = this._step4RfceReadState();
+                const newItem = (newState.items || []).find((i) => i.encf === rotated.newEncf);
+                if (newItem) {
+                  updatedItems[index] = newItem;
+                  item = newItem;
+                  continue;
+                }
+              } else if (rotated.blocked) {
+                permanentlyBlocked = true;
+                mensajeDgii = `${mensajeDgii ? mensajeDgii + ' — ' : ''}Este e-NCF pertenece al set fijo de datos DGII (Paso 2) y no se puede rotar localmente: el portal valida contra el e-NCF exacto entregado. Ve al portal DGII, descarga un set de comprobantes nuevo y reimpórtalo — no reintentes con el mismo e-NCF.`;
+              }
+            }
+
             updatedItems[index] = {
               ...item,
-              estado: 'aceptado',
+              estado: 'rechazado',
               mensajeDgii,
               fechaEnviado: new Date().toISOString(),
-              dgiiResponse: { ...dgiiResponse, reconciled: true, reason: 'dgii-sequence-used' },
+              dgiiResponse: { ...dgiiResponse, reconciled: false, reason: 'dgii-sequence-used' },
+              permanentlyBlocked,
             };
             await this.repository.query(
               `UPDATE ecf_documents
-                  SET estado_dgii = 'aceptado',
-                      error_message = NULL,
+                  SET estado_dgii = 'rechazado',
+                      error_message = ?,
                       dgii_response_json = ?,
                       updated_at = CURRENT_TIMESTAMP
                 WHERE business_id = 1
                   AND certification_case_key IS NOT NULL
                   AND encf = ?`,
-              [JSON.stringify(updatedItems[index].dgiiResponse), item.encf]
+              [mensajeDgii, JSON.stringify(updatedItems[index].dgiiResponse), item.encf]
             ).catch(err => console.warn('[ECF] UPDATE batch cert reconciled falló:', err.message));
-            results.push({ encf: item.encf, ok: true, estado: 'aceptado', mensaje: mensajeDgii });
+            results.push({ encf: item.encf, ok: false, estado: 'rechazado', mensaje: mensajeDgii, permanentlyBlocked });
             break;
           }
           updatedItems[index] = { ...item, estado: 'error', mensajeDgii: error.message, fechaEnviado: new Date().toISOString() };
@@ -5427,8 +5457,10 @@ class EcfService {
     const polled = await mapWithConcurrency(candidates, 4, async ({ item, index }) => {
       try {
         const dgii = await this.statusService.getTrackStatus(item.trackId);
-        const sequenceUsed = isDgiiSequenceUsedResponse(dgii);
-        const estado = sequenceUsed ? 'aceptado' : normalizeDgiiState(dgii);
+        // Mismo criterio RFCE que en step4RfceSendBatch: secuencia ya utilizada = rechazado,
+        // no aceptado (ver isRfceEncfAlreadyUsedError arriba).
+        const sequenceUsed = isRfceEncfAlreadyUsedError(dgii);
+        const estado = sequenceUsed ? 'rechazado' : normalizeDgiiState(dgii);
         const mensajesArr = Array.isArray(dgii.mensajes) ? dgii.mensajes : [];
         const mensajeDgii = dgii.mensaje
           || mensajesArr.map((m) => String(m?.valor || m?.descripcion || '').trim()).filter(Boolean).join(' | ')

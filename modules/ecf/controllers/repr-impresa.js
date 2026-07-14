@@ -39,7 +39,14 @@ function xmlAll(xml, tag) {
 }
 
 function parseEcfXml(xml) {
-  const isRfce = /^<RFCE[\s>]/i.test(xml.trim());
+  // El XML firmado siempre trae la declaración <?xml ...?> antes de la raíz,
+  // así que hay que quitarla antes de probar si la raíz es <RFCE> — de lo
+  // contrario esta prueba nunca coincide y todo RFCE se trata como no-RFCE,
+  // generando un QR que apunta al portal equivocado (ecf.dgii.gov.do en vez
+  // de fc.dgii.gov.do/ConsultaTimbreFC) y DGII responde "No fue encontrada
+  // la factura (e-CF)" al escanearlo.
+  const xmlSinDeclaracion = xml.trim().replace(/^<\?xml[^>]*\?>\s*/i, '');
+  const isRfce = /^<RFCE[\s>]/i.test(xmlSinDeclaracion);
   const enc = (xml.match(/<Encabezado>([\s\S]*?)<\/Encabezado>/i) || [])[1] || '';
   const idDoc = (enc.match(/<IdDoc>([\s\S]*?)<\/IdDoc>/i) || [])[1] || '';
   const emisor = (enc.match(/<Emisor>([\s\S]*?)<\/Emisor>/i) || [])[1] || '';
