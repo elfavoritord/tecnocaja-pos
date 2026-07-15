@@ -1,6 +1,6 @@
 {
   "name": "tecno-caja-contadores",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Panel de contadores asociados — Tecno Caja",
   "main": "main.js",
   "private": true,
