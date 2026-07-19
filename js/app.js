@@ -3396,6 +3396,10 @@ async function activateAuthenticatedSession(response, sessionLanguage, options =
   if (salesNav) {
     showModule('ventas', salesNav);
   }
+  if (response.linkedContadorProfile) {
+    const nombreFirma = response.linkedContadorProfile.nombreFirma || 'tu firma contable';
+    setTimeout(() => showToast(`También tienes acceso al Portal del Contador como ${nombreFirma}.`, 'info'), 800);
+  }
 }
   
 async function doLogin() {
@@ -3806,7 +3810,12 @@ const CONFIG_SECTION_CARD_META = {
   'cfg-section-billing-title': {
     icon: '🧾',
     eyebrow: 'Ventas',
-    desc: 'Moneda, ITBIS, numeración, recibos e impresoras.'
+    desc: 'Moneda, ITBIS, numeración y mensaje de recibo.'
+  },
+  'cfg-section-printer-title': {
+    icon: '🖨️',
+    eyebrow: 'Impresora',
+    desc: 'Modo de impresión, tamaño de papel e impresora de recibos (solo esta terminal).'
   },
   'cfg-ecf-section': {
     icon: '⚡',
@@ -3871,6 +3880,46 @@ const CONFIG_SECTION_CARD_META = {
   }
 };
 
+// ── Config local de periféricos (impresora/gaveta/báscula) ────────────────
+// Vive en config/peripherals-config.json de ESTA terminal (vía IPC de
+// Electron), no en la BD compartida. Permite que cada caja física tenga su
+// propia impresora/gaveta/báscula sin afectar a las demás. Si no existe
+// (instalación nueva o terminal que aún no la ha guardado), queda {} y
+// getEffectiveConfig() se comporta igual que DB.config solo, sin cambios.
+const PERIPHERALS_CONFIG_FIELDS = [
+  'receiptPrintMode', 'receiptPaperSize', 'receiptPrinterName', 'labelsPrinterName', 'labelsPrintMode', 'labelsBarcodeOffsetMm',
+  'cashDrawerEnabled', 'cashDrawerMethod', 'cashDrawerPrinterName', 'cashDrawerPin',
+  'cashDrawerNetworkHost', 'cashDrawerNetworkPort', 'cashDrawerSerialPort',
+  'scaleType', 'scaleSerialPort', 'scaleSerialBaudRate', 'scaleReadPattern',
+  'scaleDefaultUnit', 'scaleRoundingDecimals', 'scaleAutoRead',
+];
+window.LocalPeripheralsFlat = window.LocalPeripheralsFlat || {};
+
+async function loadLocalPeripheralsConfig() {
+  try {
+    window.LocalPeripheralsFlat = (await window.novaDesktop?.getPeripheralsConfig?.()) || {};
+  } catch (_e) {
+    window.LocalPeripheralsFlat = {};
+  }
+}
+
+function saveLocalPeripheralsConfig(sourceConfig) {
+  if (!window.novaDesktop?.savePeripheralsConfig) return;
+  const subset = {};
+  PERIPHERALS_CONFIG_FIELDS.forEach((field) => {
+    if (sourceConfig[field] !== undefined) subset[field] = sourceConfig[field];
+  });
+  window.novaDesktop.savePeripheralsConfig(subset)
+    .then((merged) => { if (merged && !merged.error) window.LocalPeripheralsFlat = merged; })
+    .catch(() => {});
+}
+
+function getEffectiveConfig() {
+  return { ...DB.config, ...(window.LocalPeripheralsFlat || {}) };
+}
+
+document.addEventListener('DOMContentLoaded', loadLocalPeripheralsConfig);
+
 const CONFIG_GROUPS = {
   negocio: {
     icon: '🏬', color: '#6366f1', bg: 'rgba(99,102,241,0.13)',
@@ -3884,8 +3933,8 @@ const CONFIG_GROUPS = {
   },
   hardware: {
     icon: '🖨️', color: '#10b981', bg: 'rgba(16,185,129,0.13)',
-    title: 'Periféricos', desc: 'Gaveta, báscula TCP y báscula digital',
-    find: ['h3#cfg-section-drawer-title', '#cfg-bascula-section', 'text:Báscula Digital'],
+    title: 'Periféricos', desc: 'Impresora, gaveta, báscula TCP y báscula digital',
+    find: ['h3#cfg-section-printer-title', 'h3#cfg-section-drawer-title', '#cfg-bascula-section', 'text:Báscula Digital'],
   },
   sistema: {
     icon: '🌐', color: '#3b82f6', bg: 'rgba(59,130,246,0.13)',
@@ -4240,6 +4289,8 @@ function saveConfig() {
     ...getConfigPreviewValues(parsedTax)
   };
 
+  saveLocalPeripheralsConfig(nextConfig);
+
   api.saveConfig({ ...nextConfig, ...getActorPayload() })
     .then((config) => {
       DB.config = { ...DB.config, ...config };
@@ -4290,7 +4341,9 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     nombre: document.getElementById('cfg-nombre')?.value || DB.config?.nombre || '',
     logo: document.getElementById('cfg-logo-input')?.dataset.logoData || DB.config?.logo || '',
     rnc: document.getElementById('cfg-rnc')?.value || DB.config?.rnc || '',
+    razonSocial: document.getElementById('cfg-razon-social')?.value || DB.config?.razonSocial || '',
     direccion: document.getElementById('cfg-dir')?.value || DB.config?.direccion || '',
+    provincia: document.getElementById('cfg-provincia')?.value || DB.config?.provincia || '',
     telefono: document.getElementById('cfg-tel')?.value || DB.config?.telefono || '',
     businessStructureMode: normalizeBusinessStructureMode(document.getElementById('cfg-business-structure-mode')?.value || DB.config?.businessStructureMode),
     idioma: document.getElementById('cfg-language')?.value || DB.config?.idioma || 'es',
@@ -4318,6 +4371,11 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     mensaje: document.getElementById('cfg-msg')?.value || DB.config?.mensaje || '',
     receiptPrintMode: document.getElementById('cfg-print-mode')?.value || DB.config?.receiptPrintMode || 'dialog',
     receiptPrinterName: document.getElementById('cfg-printer-name')?.value || DB.config?.receiptPrinterName || '',
+    labelsPrinterName: document.getElementById('cfg-labels-printer-name')?.value || window.LocalPeripheralsFlat?.labelsPrinterName || '',
+    labelsPrintMode: document.getElementById('cfg-labels-print-mode')?.value || window.LocalPeripheralsFlat?.labelsPrintMode || 'dialog',
+    labelsBarcodeOffsetMm: document.getElementById('cfg-labels-barcode-offset')?.value !== ''
+      ? Number(document.getElementById('cfg-labels-barcode-offset')?.value || 0)
+      : (window.LocalPeripheralsFlat?.labelsBarcodeOffsetMm || 0),
     receiptPaperSize: document.getElementById('cfg-paper-size')?.value || DB.config?.receiptPaperSize || '80mm',
     cashierRegisterRequired: Boolean(document.getElementById('cfg-cashier-register-required')?.checked ?? DB.config?.cashierRegisterRequired ?? true),
     exclusiveCashierPerRegister: Boolean(document.getElementById('cfg-exclusive-cashier-register')?.checked ?? DB.config?.exclusiveCashierPerRegister ?? true),
@@ -4360,7 +4418,7 @@ function syncTaxConfigToggles(changedId = '') {
 }
 
 function syncConfigForm() {
-  const cfg = DB.config;
+  const cfg = getEffectiveConfig();
   const languageSelect = document.getElementById('cfg-language');
   if (languageSelect) {
     languageSelect.innerHTML = getAvailableLanguages().map((item) => `<option value="${item.value}">${item.label}</option>`).join('');
@@ -4370,7 +4428,9 @@ function syncConfigForm() {
   const fields = {
     'cfg-nombre': cfg.nombre,
     'cfg-rnc': cfg.rnc,
+    'cfg-razon-social': cfg.razonSocial,
     'cfg-dir': cfg.direccion,
+    'cfg-provincia': cfg.provincia,
     'cfg-tel': cfg.telefono,
     'cfg-itbis': cfg.itbis,
     'cfg-prefix': cfg.prefix,
@@ -4434,6 +4494,18 @@ function syncConfigForm() {
   const printerSelect = document.getElementById('cfg-printer-name');
   if (printerSelect) {
     printerSelect.dataset.selectedPrinter = cfg.receiptPrinterName || '';
+  }
+  const labelsPrinterSelect = document.getElementById('cfg-labels-printer-name');
+  if (labelsPrinterSelect) {
+    labelsPrinterSelect.dataset.selectedPrinter = cfg.labelsPrinterName || '';
+  }
+  const labelsPrintModeSelect = document.getElementById('cfg-labels-print-mode');
+  if (labelsPrintModeSelect && labelsPrintModeSelect !== activeElement) {
+    labelsPrintModeSelect.value = cfg.labelsPrintMode || 'dialog';
+  }
+  const labelsBarcodeOffsetInput = document.getElementById('cfg-labels-barcode-offset');
+  if (labelsBarcodeOffsetInput && labelsBarcodeOffsetInput !== activeElement) {
+    labelsBarcodeOffsetInput.value = cfg.labelsBarcodeOffsetMm ?? 0;
   }
   const themeSelect = document.getElementById('cfg-theme');
   if (themeSelect && themeSelect !== activeElement) {
@@ -4555,6 +4627,7 @@ function syncConfigForm() {
   syncTrialBusinessPill();
   refreshPrinterOptions();
   refreshDrawerPrinterOptions();
+  refreshLabelsPrinterOptions();
   refreshScaleSerialPorts();
   renderPlanSection();
 }
@@ -5068,6 +5141,34 @@ async function refreshDrawerPrinterOptions(forceToast = false) {
       return `<option value="${p.name}">${p.name}${suffix}</option>`;
     }).join('');
     const saved = select.dataset.selectedPrinter ?? DB.config?.cashDrawerPrinterName ?? '';
+    select.value = printers.some(p => p.name === saved) ? saved : '';
+    if (forceToast) {
+      showToast(printers.length ? 'Impresoras actualizadas.' : 'No se encontraron impresoras.', printers.length ? 'success' : 'warning');
+    }
+  } catch (err) {
+    select.innerHTML = `${fallback}<option value="" disabled>Error al cargar impresoras</option>`;
+    if (forceToast) {
+      showToast(err.message || 'Error cargando impresoras.', 'error');
+    }
+  }
+}
+
+async function refreshLabelsPrinterOptions(forceToast = false) {
+  const select = document.getElementById('cfg-labels-printer-name');
+  if (!select) return;
+  const fallback = '<option value="">Elegir en el diálogo de impresión</option>';
+  if (!window.novaDesktop?.listPrinters) {
+    select.innerHTML = `${fallback}<option value="" disabled>Solo disponible en la app de escritorio</option>`;
+    return;
+  }
+  try {
+    const result = await window.novaDesktop.listPrinters();
+    const printers = Array.isArray(result?.printers) ? result.printers : [];
+    select.innerHTML = fallback + printers.map(p => {
+      const suffix = p.isDefault ? ' (Predeterminada)' : '';
+      return `<option value="${p.name}">${p.name}${suffix}</option>`;
+    }).join('');
+    const saved = select.dataset.selectedPrinter ?? getEffectiveConfig().labelsPrinterName ?? '';
     select.value = printers.some(p => p.name === saved) ? saved : '';
     if (forceToast) {
       showToast(printers.length ? 'Impresoras actualizadas.' : 'No se encontraron impresoras.', printers.length ? 'success' : 'warning');
@@ -8896,6 +8997,10 @@ function buildNotifications() {
 
   if (typeof buildPromotionNotifications === 'function') {
     notifications.push(...buildPromotionNotifications());
+  }
+
+  if (typeof buildCrmNotifications === 'function') {
+    notifications.push(...buildCrmNotifications());
   }
 
   const recentAudit = (DB.movimientosSistema || []).slice(0, 4).map((item) => ({

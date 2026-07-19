@@ -11,7 +11,7 @@ const { formidable } = require('formidable');
 const QRCode = require('qrcode');
 const sharp = require('sharp');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
-const { query, withTransaction, reloadDatabase, getDbClient } = require('./db');
+const { query, withTransaction, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
 const productsCache = require('./server/cache/products-cache');
 const {
   PRODUCTS_CSV_CURRENT_FILE,
@@ -49,6 +49,13 @@ const createSuperAdminRouter = require('./server/routes/superadmin.routes');
 
 // Panel Contador Asociado
 const createContadorRouter = require('./server/routes/contador.routes');
+
+// CRM — Seguimientos, tareas y recordatorios de clientes
+const { createCrmRouter, ensureSchema: ensureCrmSchema } = require('./server/routes/crm.routes');
+
+// RRHH — Empleados, asistencia y permisos (sin cálculo de nómina)
+const { createRrhhRouter, ensureSchema: ensureRrhhSchema } = require('./server/routes/rrhh.routes');
+const { createLabelsRouter, ensureSchema: ensureLabelsSchema } = require('./server/routes/labels.routes');
 
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
@@ -1766,6 +1773,15 @@ app.use('/api/superadmin', createSuperAdminRouter({ query, resolveRequestActorUs
 // Panel Contador Asociado — solo accesible con role_code = 'contador_asociado'
 app.use('/api/contador', createContadorRouter({ query, resolveRequestActorUser }));
 
+// CRM — Seguimientos, tareas y recordatorios de clientes
+app.use('/api/crm', createCrmRouter({ query, resolveRequestActorUser }));
+
+// RRHH — Empleados, asistencia y permisos
+app.use('/api/rrhh', createRrhhRouter({ query, resolveRequestActorUser, userRoleHasPermission }));
+
+// Centro de Etiquetas — impresión de etiquetas de productos
+app.use('/api/labels', createLabelsRouter({ query, resolveRequestActorUser, userRoleHasPermission }));
+
 // ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
 //    req.authUser esté disponible en las rutas de respaldo.
 createRespaldosRouter({
@@ -3419,6 +3435,8 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'cashier_register_required', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'exclusive_cashier_per_register', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'install_network_key', 'VARCHAR(255) DEFAULT NULL');
+  await addColumnIfMissing('config', 'razon_social', 'VARCHAR(160) DEFAULT NULL');
+  await addColumnIfMissing('config', 'provincia', 'VARCHAR(80) DEFAULT NULL');
   await query(
     `INSERT OR IGNORE INTO config
       (id, business_name, rnc, address, phone, currency, tax_rate, invoice_prefix, invoice_next_number, e_invoice_enabled, e_invoice_prefix, e_invoice_next_number, receipt_message, receipt_print_mode, receipt_printer_name, receipt_paper_size, cash_drawer_enabled, cash_drawer_method, cash_drawer_printer_name, cash_drawer_pin, cash_drawer_network_host, cash_drawer_network_port, cash_drawer_serial_port, app_logo, security_password, cash_open, cash_amount, language, business_type, business_structure_mode, cashier_register_required, exclusive_cashier_per_register, starter_catalog_seeded, setup_completed, setup_completed_at, trial_started_at, trial_ends_at, license_status, license_activated_at, license_activated_by, require_cash_open_before_use)
@@ -3522,7 +3540,11 @@ async function ensureExchangeRateHistoryTable() {
 // caja) o usar `query` normal (cambio manual fuera de una transacción propia).
 async function recordExchangeRate({ executor, newRate, previousRate, actor, actorUser, source, reason }) {
   const runQuery = executor?.query ? executor.query.bind(executor) : query;
-  const now = new Date();
+  // nowRDString(), no `new Date()` crudo: sql.js (motor SQLite) no acepta un
+  // objeto Date como parámetro bindeado y lanza "Error interno del servidor"
+  // — reventaba aquí la primera vez que se abría caja tras el wizard (el
+  // wizard inserta la sesión inicial directo, sin pasar por esta función).
+  const now = nowRDString();
   await runQuery(
     `UPDATE config SET exchange_rate_usd_dop = ?, exchange_rate_updated_at = ?,
             exchange_rate_updated_by_user_id = ?, exchange_rate_updated_by_user_name = ?
@@ -6839,7 +6861,9 @@ async function getConfig(options = {}) {
     nombre: row.business_name,
     logo: row.app_logo || '',
     rnc: row.rnc,
+    razonSocial: row.razon_social || '',
     direccion: row.address,
+    provincia: row.provincia || '',
     telefono: row.phone,
     moneda: row.currency,
     exchangeRateUsdDop: row.exchange_rate_usd_dop !== null && row.exchange_rate_usd_dop !== undefined
@@ -7265,6 +7289,31 @@ app.get('/api/public/users-list', async (req, res) => {
   }
 });
 
+// ── Tecno Caja ID: enlace opcional al Portal del Contador ───────────────────
+// Búsqueda de solo lectura en Firestore, aislada de la lógica de login: si
+// Firebase no está configurado, no hay red, o no hay perfil, simplemente no
+// se muestra el enlace. Nunca lanza, nunca afecta si el login tiene éxito.
+async function findLinkedContadorProfile(firebaseUid) {
+  if (!firebaseUid) return null;
+  try {
+    const { getFirestore } = require('./modules/firebase-admin');
+    const db = getFirestore();
+    const timeout = new Promise((_resolve, reject) => setTimeout(() => reject(new Error('timeout')), 3000));
+    const snap = await Promise.race([
+      db.collection('contadores').where('firebase_uid', '==', firebaseUid).limit(1).get(),
+      timeout,
+    ]);
+    if (snap.empty) return null;
+    const data = snap.docs[0].data() || {};
+    return {
+      nombreFirma: data.nombre_firma || '',
+      rnc: data.rnc || '',
+    };
+  } catch (_e) {
+    return null;
+  }
+}
+
 app.post('/api/login', loginLimiter, async (req, res) => {
   const setupStatus = await getSetupStatus();
   if (setupStatus.setupRequired) {
@@ -7321,11 +7370,13 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   const token = await createAuthSession(user, req.ip, req.headers['user-agent']);
   resetLoginRateLimit(String(req.ip) + ':' + usuario);
   try { await query('INSERT INTO login_attempts (usuario, ip_address, success) VALUES (?, ?, 1)', [usuario, req.ip]); } catch (_e) {}
+  const linkedContadorProfile = await findLinkedContadorProfile(user.firebase_uid);
 
   res.json({
     token,
     user: currentUser,
-    data: bootstrap
+    data: bootstrap,
+    linkedContadorProfile
   });
 });
 
@@ -7505,11 +7556,13 @@ app.post('/api/login/google', loginLimiter, async (req, res) => {
   const currentUser = mapUserRow({ ...currentUserRows[0], last_login: now });
   bootstrap.currentUser = currentUser;
   const token = await createAuthSession(currentUserRows[0], req.ip, req.headers['user-agent']);
+  const linkedContadorProfile = await findLinkedContadorProfile(decodedToken.uid);
 
   res.json({
     token,
     user: currentUser,
-    data: bootstrap
+    data: bootstrap,
+    linkedContadorProfile
   });
 });
 
@@ -7987,13 +8040,15 @@ app.post('/api/setup/complete', async (req, res) => {
   };
 
   const token = await createAuthSession(currentUserRows[0], req.ip, req.headers['user-agent']);
+  const linkedContadorProfile = await findLinkedContadorProfile(currentUserRows[0].firebase_uid);
 
   res.status(201).json({
     ok: true,
     token,
     user: currentUser,
     data: normalizeJsonValue(bootstrap),
-    networkHosting
+    networkHosting,
+    linkedContadorProfile
   });
 });
 
@@ -12147,7 +12202,8 @@ app.put('/api/config', async (req, res) => {
          cash_drawer_enabled = ?, cash_drawer_method = ?, cash_drawer_printer_name = ?, cash_drawer_pin = ?, cash_drawer_network_host = ?, cash_drawer_network_port = ?, cash_drawer_serial_port = ?,
          scale_type = ?, scale_serial_port = ?, scale_serial_baud_rate = ?, scale_default_unit = ?, scale_read_pattern = ?, scale_rounding_decimals = ?, scale_auto_read = ?,
          rounding_mode = ?,
-         whatsapp_web_enabled = ?, whatsapp_paste_guide_enabled = ?, sales_split_view_enabled = ?, app_logo = ?, language = ?, sales_operation_mode = ?, business_structure_mode = ?, cashier_register_required = ?, exclusive_cashier_per_register = ?
+         whatsapp_web_enabled = ?, whatsapp_paste_guide_enabled = ?, sales_split_view_enabled = ?, app_logo = ?, language = ?, sales_operation_mode = ?, business_structure_mode = ?, cashier_register_required = ?, exclusive_cashier_per_register = ?,
+         razon_social = ?, provincia = ?
      WHERE id = 1`,
     [
       data.nombre,
@@ -12192,7 +12248,9 @@ app.put('/api/config', async (req, res) => {
       salesOperationMode,
       businessStructureMode,
       cashierRegisterRequired ? 1 : 0,
-      exclusiveCashierPerRegister ? 1 : 0
+      exclusiveCashierPerRegister ? 1 : 0,
+      String(data.razonSocial || '').trim() || null,
+      String(data.provincia || '').trim() || null
     ]
   );
   // Sincronizar plan_code con el nuevo business_structure_mode
@@ -16271,6 +16329,100 @@ app.get('/api/reports/advanced/dgii', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Exportación fiscal para el contador (606/607/608) ────────
+// Genera el detalle línea por línea (no solo el resumen) para que el
+// Portal del Contador pueda construir los formatos oficiales de envío DGII.
+app.get('/api/reports/advanced/dgii/exportar-contador', async (req, res) => {
+  try {
+    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    const scopedBranchId = getUserScopeBranchId(actorUser);
+    const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
+    const branchId = Number(req.query?.branchId || 0) || null;
+    const ef = scopedBranchId || branchId;
+
+    const tipoIdentificacion = (valor) => {
+      const digitos = String(valor || '').replace(/\D/g, '');
+      if (digitos.length === 9) return 1;  // RNC
+      if (digitos.length === 11) return 2; // Cédula
+      return digitos ? 3 : null;           // Pasaporte / otro / desconocido
+    };
+    const tipoNcfDe = (ncf) => String(ncf || '').trim().slice(0, 3).toUpperCase() || null;
+    const soloFecha = (valor) => {
+      if (!valor) return null;
+      const s = valor instanceof Date ? valor.toISOString() : String(valor);
+      return s.slice(0, 10);
+    };
+
+    const configRows = await query('SELECT business_name, rnc, address, phone, accountant_id, accountant_name FROM config LIMIT 1');
+    const negocio = configRows[0] || {};
+
+    // 607 — Ventas con NCF fiscal válido (no anuladas)
+    let wVentas = `WHERE s.created_at BETWEEN ? AND ? AND s.ncf IS NOT NULL AND s.ncf <> '' AND ${buildSaleActiveClause('s')}`;
+    const pVentas = [desdeDatetime, hastaDatetime];
+    if (ef) { wVentas += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; pVentas.push(ef); }
+    const ventas = await query(`
+      SELECT s.ncf, s.created_at, s.client_tax_id_snapshot, s.total, s.subtotal, s.tax
+      FROM sales s ${wVentas}
+      ORDER BY s.created_at ASC`, pVentas);
+
+    // 608 — NCF anulados en el período
+    let wAnulados = `WHERE s.created_at BETWEEN ? AND ? AND s.ncf IS NOT NULL AND s.ncf <> '' AND COALESCE(s.fiscal_status,'emitida') = 'cancelada'`;
+    const pAnulados = [desdeDatetime, hastaDatetime];
+    if (ef) { wAnulados += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; pAnulados.push(ef); }
+    const anulados = await query(`
+      SELECT s.ncf, s.created_at
+      FROM sales s ${wAnulados}
+      ORDER BY s.created_at ASC`, pAnulados);
+
+    // 606 — Compras a suplidores con NCF registrado
+    const compras = await query(`
+      SELECT si.ncf, si.issued_at, si.total_amount, si.itbis_amount, s.rnc AS supplier_rnc
+      FROM supplier_invoices si
+      LEFT JOIN suppliers s ON s.id = si.supplier_id
+      WHERE si.issued_at BETWEEN ? AND ? AND si.ncf IS NOT NULL AND si.ncf <> ''
+      ORDER BY si.issued_at ASC`, [desde, hasta]);
+
+    res.json({
+      tipo: 'tecno_caja_export_fiscal',
+      version: 1,
+      generadoEn: new Date().toISOString(),
+      negocio: {
+        nombre: negocio.business_name || '',
+        rnc: negocio.rnc || '',
+        direccion: negocio.address || '',
+        telefono: negocio.phone || '',
+        accountantId: negocio.accountant_id || null,
+        accountantName: negocio.accountant_name || null,
+      },
+      periodo: { desde, hasta },
+      ventas607: ventas.map((r) => ({
+        ncf: r.ncf,
+        tipoNcf: tipoNcfDe(r.ncf),
+        fecha: soloFecha(r.created_at),
+        rncCedula: r.client_tax_id_snapshot || '',
+        tipoIdentificacion: tipoIdentificacion(r.client_tax_id_snapshot),
+        montoFacturado: Number(r.total || 0),
+        montoExento: Number(r.tax || 0) === 0 ? Number(r.total || 0) : 0,
+        itbisFacturado: Number(r.tax || 0),
+      })),
+      compras606: compras.map((r) => ({
+        ncf: r.ncf,
+        tipoNcf: tipoNcfDe(r.ncf),
+        rncProveedor: r.supplier_rnc || '',
+        tipoIdentificacion: tipoIdentificacion(r.supplier_rnc),
+        fechaComprobante: soloFecha(r.issued_at),
+        montoFacturado: Number(r.total_amount || 0),
+        itbisFacturado: Number(r.itbis_amount || 0),
+      })),
+      anulados608: anulados.map((r) => ({
+        ncf: r.ncf,
+        tipoNcf: tipoNcfDe(r.ncf),
+        fechaAnulacion: soloFecha(r.created_at),
+      })),
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Gastos / egresos ────────────────────────────────────────
 app.get('/api/reports/advanced/gastos', async (req, res) => {
   try {
@@ -16868,6 +17020,9 @@ async function prepareServerRuntime() {
         ensureMobileTables(query),
         plans.ensurePlanExtensions(query),
         ecfModule.ensureSchema().catch(e => console.warn('[ecf] init fallo:', e.message)),
+        ensureCrmSchema(query).catch(e => console.warn('[crm] init fallo:', e.message)),
+        ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
+        ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
@@ -16984,6 +17139,9 @@ async function prepareServerRuntime() {
       ensureMobileTables(query),
       plans.ensurePlanExtensions(query),
       ecfModule.ensureSchema().catch(e => console.warn('[ecf] init fallo:', e.message)),
+      ensureCrmSchema(query).catch(e => console.warn('[crm] init fallo:', e.message)),
+      ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
+      ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]);
@@ -17249,6 +17407,21 @@ async function startHttpServer(port, bindHost) {
   });
 }
 
+// electron/main.js llama a esto en 'before-quit' (ver stopServer() ahí). Antes
+// no existía: `serverRuntime?.stopHttpServer` siempre era undefined, así que
+// el guardado diferido de SQLite (debounce de 80ms en db.js) solo se forzaba
+// a disco con SIGTERM/SIGINT — señales que Electron NUNCA envía al cerrar la
+// ventana. Si el último cierre de caja quedaba dentro de esa ventana de 80ms,
+// el cambio se perdía silenciosamente al matar el proceso.
+async function stopHttpServer() {
+  await flushPendingSave();
+  await new Promise((resolve) => {
+    httpServer.close(() => resolve());
+    // No bloquear el cierre de la app si quedó alguna conexión socket.io abierta.
+    setTimeout(resolve, 2000);
+  });
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO: COLA DE SINCRONIZACIÓN (Sync Queue)
 // Persiste en MariaDB los eventos que deben subirse a Firebase.
@@ -17460,4 +17633,4 @@ setImmediate(() => {
   startDailySnapshotWorker();
 });
 
-module.exports = { startHttpServer };
+module.exports = { startHttpServer, stopHttpServer };

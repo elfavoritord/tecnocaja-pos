@@ -197,7 +197,19 @@
       "PowerShell(node -c server\\\\routes\\\\respaldos.routes.js)",
       "PowerShell(node -c server\\\\services\\\\backup-core.js)",
       "PowerShell(if \\($LASTEXITCODE -eq 0\\) { \"OK\" })",
-      "Bash(node -c server/routes/respaldos.routes.js)"
+      "Bash(node -c server/routes/respaldos.routes.js)",
+      "Bash(node --require dotenv/config \"/c/Users/EMILIO~1/AppData/Local/Temp/claude/c--Users-Emilio-Coding-IA-Desktop-sistema-pos-completo/527763d6-b7c2-4814-b6eb-05856dc6f27c/scratchpad/real-restore-test.js\" \"c:/Users/Emilio Coding IA/Downloads/backblaze_download_20260714_223044/backups/pos_tecno-caja-a-f-liquor-store/TecnoCaja_Backup_A_F_LIQUOR_STORE_11-07-2026_19h40_v1.0.0.tcbak\")",
+      "Bash(node --require dotenv/config -e ' *)",
+      "Bash(node -c scripts/runtime-bootstrap.js)",
+      "Bash(node --check js/business-config.js)",
+      "Bash(awk '/CREATE TABLE inventory_movements/,/^\\\\\\);/' db/schema.sql)",
+      "Bash(node --check tecno-caja-contadores/public/js/contadores-app.js)",
+      "Bash(grep -n \"res.json\\({ ok: true, utilidadNeta: pl.utilidadNeta, asientoCierreId\\\\|res.status\\(201\\).json\\({ ok: true, id: ref.id }\\);\\\\|res.json\\({ ok: true, resultado, asientoBajaId\\\\|res.json\\({ ok: true, asientoCreado: true, totalDepreciacion\" server.js)",
+      "Bash(grep -n \"res.json\\({ ok: true, asientosCreados: creados\" server.js)",
+      "Bash(curl -s -m 5 http://127.0.0.1:3399/api/health)",
+      "PowerShell(Get-NetTCPConnection -OwningProcess 12920 -ErrorAction SilentlyContinue)",
+      "Bash(node -c electron/tspl-printer.js)",
+      "Bash(npx eslint *)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\AppData\\Roaming\\pos-system\\config",

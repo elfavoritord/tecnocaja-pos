@@ -239,7 +239,21 @@
       "Bash(node -c server.js)",
       "Bash(node -c server/routes/respaldos.routes.js)",
       "Bash(node -e \"require\\('./server/routes/respaldos.routes.js'\\); console.log\\('require OK'\\)\")",
-      "Bash(node \"/c/Users/EMILIO~1/AppData/Local/Temp/claude/c--Users-Emilio-Coding-IA-Desktop-sistema-pos-completo/527763d6-b7c2-4814-b6eb-05856dc6f27c/scratchpad/test-backup-roundtrip.js\")"
+      "Bash(node \"/c/Users/EMILIO~1/AppData/Local/Temp/claude/c--Users-Emilio-Coding-IA-Desktop-sistema-pos-completo/527763d6-b7c2-4814-b6eb-05856dc6f27c/scratchpad/test-backup-roundtrip.js\")",
+      "Bash(node -c server/services/r2-storage.js)",
+      "Bash(node -c scripts/runtime-bootstrap.js)",
+      "Bash(node -c js/wizard.js)",
+      "Bash(awk '/CREATE TABLE roles/,/^\\\\\\);/' db/schema.sql)",
+      "Bash(node --check tecno-caja-contadores/main.js)",
+      "Bash(node --check server/sync/sync-pos-stats.js)",
+      "Bash(awk '/<!-- ── MODAL: Dar de Baja Activo/{flag=1} flag{print} /<!-- ── MODAL: Nuevo Asiento Manual/{exit}' tecno-caja-contadores/public/index.html)",
+      "Bash(grep -n \"res.json\\({ ok: true, asientoCreado: true, totalDepreciacion\" server.js)",
+      "Bash(node --check server/routes/platform.routes.js)",
+      "Bash(node --check js/fiscal-ecf.js)",
+      "PowerShell(Get-Process node -ErrorAction SilentlyContinue)",
+      "Bash(node -c js/business-config.js)",
+      "Bash(node -c electron/tspl-printer.js)",
+      "Bash(node \"C:\\\\Users\\\\EMILIO~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-Emilio-Coding-IA-Desktop-sistema-pos-completo\\\\de898e55-1ac6-47e5-9a37-3d6e18c1ca35\\\\scratchpad\\\\test-depreciacion.js\")"
     ],
     "additionalDirectories": [
       "C:\\Users\\Emilio Coding IA\\.cloudflared"

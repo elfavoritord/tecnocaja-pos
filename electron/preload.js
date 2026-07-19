@@ -23,6 +23,21 @@ contextBridge.exposeInMainWorld('novaDesktop', {
   printReceiptHtml(html, options) {
     return ipcRenderer.invoke('receipt:print-html', html, options);
   },
+  printLabelsHtml(html, options) {
+    return ipcRenderer.invoke('labels:print-html', html, options);
+  },
+  saveLabelsPdf(html, options) {
+    return ipcRenderer.invoke('labels:save-pdf', html, options);
+  },
+  printLabelsDirect(data) {
+    return ipcRenderer.invoke('labels:print-direct', data);
+  },
+  getPeripheralsConfig() {
+    return ipcRenderer.invoke('peripherals:get-config');
+  },
+  savePeripheralsConfig(partial) {
+    return ipcRenderer.invoke('peripherals:save-config', partial);
+  },
   copyImageToClipboard(dataUrl) {
     return ipcRenderer.invoke('receipt-image:copy', dataUrl);
   },

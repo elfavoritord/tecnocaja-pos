@@ -1122,6 +1122,27 @@
     saveReportToSistemaData(doc, 'reporte_general', _fn9);
   };
 
+  // Exporta el detalle línea por línea (606/607/608) para que el contador
+  // lo importe en el Portal del Contador y genere los formatos oficiales DGII.
+  window.repV2ExportarParaContador = async function () {
+    try {
+      if (typeof showToast === 'function') showToast('Preparando archivo fiscal para el contador...', 'info');
+      const data = await apiGet('/api/reports/advanced/dgii/exportar-contador' + buildQS());
+      const rncNegocio = (data?.negocio?.rnc || 'negocio').replace(/[^\w-]/g, '');
+      const filename = `TecnoCaja_Fiscal_${rncNegocio}_${RV2.filtros.desde}_${RV2.filtros.hasta}.json`;
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      if (typeof showToast === 'function') showToast('Archivo fiscal exportado. Envíalo a tu contador.', 'success');
+    } catch (e) {
+      console.error('[Reportes] repV2ExportarParaContador:', e.message);
+      if (typeof showToast === 'function') showToast('No se pudo exportar el archivo fiscal.', 'error');
+    }
+  };
+
   window.repV2ExportConsolidadoPDF = async function () {
     if (typeof showToast === 'function') showToast('Generando reporte consolidado...', 'info');
     // Asegurar que todos los datos estén cargados

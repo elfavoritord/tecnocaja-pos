@@ -142,3 +142,14 @@ capacitor/android/captures/
 capacitor/android/app/release/
 *.keystore
 *.jks
+
+# Contadores mobile (Capacitor) — misma razón que capacitor/android arriba
+contadores-mobile/android/.gradle/
+contadores-mobile/android/local.properties
+contadores-mobile/android/build/
+contadores-mobile/android/app/build/
+
+# Config de periféricos por terminal — se regenera localmente en cada
+# instalación (impresora/gaveta/báscula de ESA caja física), no debe
+# empaquetarse con un valor fijo para todos los clientes.
+config/peripherals-config.json

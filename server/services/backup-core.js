@@ -34,6 +34,23 @@ function ensureDir(dir) {
   return dir;
 }
 
+// Escritura atómica de un .tcbak: escribe a un temporal, fuerza fsync (bytes
+// ya en disco) y recién entonces hace rename sobre el archivo final. Si la
+// PC pierde energía en cualquier punto antes del rename, el .tcbak nunca
+// queda truncado/corrupto a medias — o el archivo final no existe todavía,
+// o existe completo. Mismo patrón que la escritura de la BD en db.js.
+function writeFileAtomic(filePath, buffer) {
+  const tmpFile = filePath + '.tmp-' + process.pid;
+  fs.writeFileSync(tmpFile, buffer);
+  const fd = fs.openSync(tmpFile, 'r+');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpFile, filePath);
+}
+
 function generateFilename(businessName, version) {
   const tz  = 'America/Santo_Domingo';
   const now = new Date();
@@ -387,6 +404,7 @@ module.exports = {
   BACKUP_FORMAT_VERSION,
   getDefaultBackupDir,
   ensureDir,
+  writeFileAtomic,
   generateFilename,
   listLocalBackups,
   buildFullPayload,

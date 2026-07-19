@@ -6,6 +6,7 @@ const http = require('http');
 const net = require('net');
 const os = require('os');
 const { printReceipt, printCorteReceipt, openCashDrawer: escposOpenDrawer } = require('./thermal-printer');
+const { printLabelsTspl } = require('./tspl-printer');
 const { openDrawer: openCashDrawerAll, testDrawer } = require('./cash-drawer');
 const { listSerialPorts, readWeightFromSerial } = require('./scale-reader');
 
@@ -2186,6 +2187,69 @@ function buildPrintShell(html, layout) {
   </html>`;
 }
 
+// ─── Etiquetas: layout/shell de impresión aislado del flujo de facturas ──────
+// No reutiliza resolvePaperLayout/buildPrintShell a propósito: esas funciones
+// están acopladas a layouts de ticket térmico (clases .ticket-print,
+// .receipt-sheet--*, isThermalPrint) y cualquier ajuste para grillas de
+// etiquetas en A4 arriesgaría el flujo de impresión de facturas.
+// El tamaño de página ES el tamaño físico de la etiqueta (impresora térmica
+// de etiquetas dedicada, no una hoja A4 con varias etiquetas dibujadas) —
+// cada etiqueta es su propia "página" que la impresora avanza automáticamente.
+function resolveLabelLayout(tamanoKey) {
+  const presets = {
+    '30x20': { widthMm: 30, heightMm: 20 },
+    '50x30': { widthMm: 50, heightMm: 30 },
+  };
+  const preset = presets[String(tamanoKey || '').toLowerCase()] || presets['50x30'];
+  return {
+    widthMm: preset.widthMm,
+    heightMm: preset.heightMm,
+    pageCssSize: `${preset.widthMm}mm ${preset.heightMm}mm`,
+    pageMargin: '0',
+    pageSize: {
+      width: Math.round(preset.widthMm * 1000),
+      height: Math.round(preset.heightMm * 1000)
+    },
+    previewWidth: Math.max(220, Math.round(preset.widthMm * 8)),
+    previewHeight: Math.max(220, Math.round(preset.heightMm * 8)),
+  };
+}
+
+function buildLabelPrintShell(html, layout) {
+  return `<!DOCTYPE html>
+  <html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Etiquetas</title>
+    <style>
+      @page {
+        size: ${layout.pageCssSize};
+        margin: ${layout.pageMargin};
+      }
+      :root { color-scheme: light; }
+      * {
+        box-sizing: border-box;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+        color: #111827;
+        font-family: "Segoe UI", Arial, sans-serif;
+      }
+      .print-root img { max-width: 100%; height: auto; }
+    </style>
+  </head>
+  <body>
+    <div class="print-root">${html}</div>
+  </body>
+  </html>`;
+}
+
 async function waitForPrintWindowReady(printWindow) {
   if (!printWindow || printWindow.isDestroyed()) {
     return;
@@ -2290,6 +2354,22 @@ function resolveTerminalConfigPath(appRoot) {
     path.join(appRoot, '..', 'config', 'terminal-config.json'),
     path.join(appRoot, '..', '..', 'config', 'terminal-config.json'),
     path.join(process.cwd(), 'config', 'terminal-config.json')
+  ];
+
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  return found || candidates[0];
+}
+
+// Config local de periféricos (impresora/gaveta/báscula serial) — separado de
+// terminal-config.json a propósito: ese archivo lo escribe el flujo thin-client
+// (sobrescribe todo el JSON) y no queremos que un guardado de periféricos
+// pise terminalId/branchId/cashRegisterId ni viceversa.
+function resolvePeripheralsConfigPath(appRoot) {
+  const candidates = [
+    path.join(appRoot, 'config', 'peripherals-config.json'),
+    path.join(appRoot, '..', 'config', 'peripherals-config.json'),
+    path.join(appRoot, '..', '..', 'config', 'peripherals-config.json'),
+    path.join(process.cwd(), 'config', 'peripherals-config.json')
   ];
 
   const found = candidates.find((candidate) => fs.existsSync(candidate));
@@ -3063,6 +3143,139 @@ ipcMain.handle('receipt:print-html', async (_event, html, options = {}) => {
   }
 });
 
+// ─── Etiquetas: impresión a impresora térmica de etiquetas dedicada ──────────
+// El tamaño de página es el tamaño físico real de la etiqueta (resolveLabelLayout),
+// no A4 — cada etiqueta es su propia página, la impresora avanza el rollo sola.
+ipcMain.handle('labels:print-html', async (_event, html, options = {}) => {
+  let printWindow = null;
+  let tempPrintFile = null;
+  try {
+    const layout = resolveLabelLayout(options?.tamanoKey);
+    const printableHtml = buildLabelPrintShell(String(html || ''), layout);
+    tempPrintFile = path.join(os.tmpdir(), `tecnocaja-labels-${Date.now()}-${Math.random().toString(16).slice(2)}.html`);
+    fs.writeFileSync(tempPrintFile, printableHtml, 'utf8');
+    printWindow = new BrowserWindow({
+      show: false,
+      width: layout.previewWidth || 400,
+      height: layout.previewHeight || 400,
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false
+      }
+    });
+
+    await printWindow.loadFile(tempPrintFile);
+    await waitForPrintWindowReady(printWindow);
+
+    const mode = String(options?.mode || 'dialog').toLowerCase();
+    const printerName = String(options?.printerName || '').trim();
+    // Tamaño de página explícito (no usePrinterDefaultPageSize) — de lo
+    // contrario Chromium usa el tamaño por defecto del driver de la
+    // impresora, casi nunca el tamaño real de la etiqueta cargada.
+    // color:false/printBackground:false igual que el papel térmico de
+    // recibos (isThermalPrint más abajo) — impresoras de etiquetas
+    // dedicadas son monocromáticas; forzar color en modo silencioso hace
+    // que algunos drivers GDI genéricos devuelvan la etiqueta en blanco.
+    const printOptions = {
+      silent: mode === 'direct',
+      printBackground: false,
+      deviceName: printerName || undefined,
+      color: false,
+      pageSize: layout.pageSize,
+      margins: { marginType: 'none' },
+      scaleFactor: 100,
+      copies: 1,
+      collate: false,
+      duplexMode: 'simplex',
+      landscape: false
+    };
+
+    const result = await new Promise((resolve) => {
+      printWindow.webContents.print(printOptions, (success, failureReason) => {
+        resolve({ ok: success, error: success ? null : (failureReason || 'No se pudo imprimir las etiquetas.') });
+      });
+    });
+
+    printWindow.close();
+    if (tempPrintFile && fs.existsSync(tempPrintFile)) {
+      fs.unlinkSync(tempPrintFile);
+    }
+    return result;
+  } catch (error) {
+    if (printWindow && !printWindow.isDestroyed()) {
+      printWindow.close();
+    }
+    if (tempPrintFile && fs.existsSync(tempPrintFile)) {
+      fs.unlinkSync(tempPrintFile);
+    }
+    return { ok: false, error: error.message || 'No se pudo preparar la impresión de etiquetas.' };
+  }
+});
+
+// ─── Etiquetas: guardar como PDF (diagnóstico + exportar) ────────────────────
+// Usa printToPDF en vez de print() — no depende de ningún driver de
+// impresora, sirve para confirmar que el contenido se genera bien cuando la
+// impresión silenciosa a la impresora física sale en blanco.
+ipcMain.handle('labels:save-pdf', async (_event, html, options = {}) => {
+  let pdfWindow = null;
+  let tempPrintFile = null;
+  try {
+    const layout = resolveLabelLayout(options?.tamanoKey);
+    const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Guardar etiquetas como PDF',
+      defaultPath: path.join(app.getPath('documents'), 'etiquetas.pdf'),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+
+    const printableHtml = buildLabelPrintShell(String(html || ''), layout);
+    tempPrintFile = path.join(os.tmpdir(), `tecnocaja-labels-pdf-${Date.now()}-${Math.random().toString(16).slice(2)}.html`);
+    fs.writeFileSync(tempPrintFile, printableHtml, 'utf8');
+
+    pdfWindow = new BrowserWindow({
+      show: false,
+      width: layout.previewWidth || 400,
+      height: layout.previewHeight || 400,
+      backgroundColor: '#ffffff',
+      webPreferences: { contextIsolation: true, nodeIntegration: false }
+    });
+    await pdfWindow.loadFile(tempPrintFile);
+    await waitForPrintWindowReady(pdfWindow);
+
+    const pdfBuffer = await pdfWindow.webContents.printToPDF({
+      printBackground: false,
+      pageSize: layout.pageSize,
+      landscape: false,
+      margins: { marginType: 'none' },
+    });
+
+    pdfWindow.close();
+    pdfWindow = null;
+    fs.unlinkSync(tempPrintFile);
+    tempPrintFile = null;
+
+    fs.writeFileSync(filePath, pdfBuffer);
+    return { ok: true, filePath };
+  } catch (error) {
+    if (pdfWindow && !pdfWindow.isDestroyed()) pdfWindow.close();
+    if (tempPrintFile && fs.existsSync(tempPrintFile)) fs.unlinkSync(tempPrintFile);
+    return { ok: false, error: error.message || 'No se pudo guardar el PDF.' };
+  }
+});
+
+// ─── Etiquetas: impresión directa vía comandos TSPL (sin Chromium) ───────────
+// Usado en modo 'directo' — Chromium no maneja bien tamaños de página tan
+// pequeños (ver labels:print-html/labels:save-pdf), así que la impresión
+// silenciosa le habla a la impresora directo en su lenguaje nativo.
+ipcMain.handle('labels:print-direct', async (_event, data = {}) => {
+  const printerName = String(data?.printerName || '').trim();
+  if (!printerName) {
+    return { ok: false, error: 'Selecciona una impresora de etiquetas en Configuración → Periféricos para usar el modo directo.' };
+  }
+  return printLabelsTspl(printerName, data);
+});
+
 // ─── ESC/POS: Impresión térmica directa (sin HTML/Chromium) ──────────────────
 ipcMain.handle('receipt:print-escpos', async (_event, receiptData, options = {}) => {
   try {
@@ -3374,6 +3587,34 @@ ipcMain.handle('terminal:reset-config', async function() {
     setTimeout(function() { app.relaunch(); app.quit(); }, 800);
     return { ok: true };
   } catch(e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// IPC: Leer config local de periféricos de ESTA terminal (impresora/gaveta/báscula).
+// {} si no existe todavía — el frontend hace fallback a la config global de la BD.
+ipcMain.handle('peripherals:get-config', async function() {
+  try {
+    var p = resolvePeripheralsConfigPath(app.getAppPath());
+    if (!fs.existsSync(p)) return {};
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (_) { return {}; }
+});
+
+// IPC: Guardar (merge superficial) config local de periféricos de ESTA terminal.
+ipcMain.handle('peripherals:save-config', async function(_event, partial) {
+  try {
+    var p = resolvePeripheralsConfigPath(app.getAppPath());
+    var dir = path.dirname(p);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    var existing = {};
+    if (fs.existsSync(p)) {
+      try { existing = JSON.parse(fs.readFileSync(p, 'utf8')) || {}; } catch (_) { existing = {}; }
+    }
+    var merged = Object.assign({}, existing, partial || {}, { savedAt: new Date().toISOString() });
+    fs.writeFileSync(p, JSON.stringify(merged, null, 2));
+    return merged;
+  } catch (e) {
     return { ok: false, error: e.message };
   }
 });

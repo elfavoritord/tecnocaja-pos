@@ -265,6 +265,34 @@ function openClienteDetailModal(id) {
         </div>
       </div>` : ''}
 
+      <div class="cliente-detail-section">
+        <div class="cliente-detail-section-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>📋 ${clientText('Seguimientos')}</span>
+          <button class="btn-secondary" style="padding:2px 10px;font-size:.78rem" onclick="toggleFormSeguimiento(${id})">+ ${clientText('Agregar')}</button>
+        </div>
+        <div id="cliente-seg-form" style="display:none;margin:10px 0;padding:10px;border:1px solid var(--border);border-radius:8px">
+          <div class="modal-grid">
+            <div class="form-group"><label>${clientText('Tipo')}</label>
+              <select id="cliente-seg-tipo" class="form-input">
+                <option value="nota">Nota</option>
+                <option value="llamada">Llamada</option>
+                <option value="visita">Visita</option>
+                <option value="tarea">Tarea</option>
+                <option value="recordatorio">Recordatorio</option>
+              </select>
+            </div>
+            <div class="form-group"><label>${clientText('Fecha (opcional)')}</label><input type="date" id="cliente-seg-fecha" class="form-input"></div>
+            <div class="form-group span-full"><label>${clientText('Título')} *</label><input type="text" id="cliente-seg-titulo" class="form-input" placeholder="Ej. Llamar para confirmar pedido"></div>
+            <div class="form-group span-full"><label>${clientText('Descripción')}</label><textarea id="cliente-seg-desc" class="form-input" rows="2"></textarea></div>
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:8px">
+            <button class="btn-secondary" onclick="toggleFormSeguimiento(${id})">${clientText('Cancelar')}</button>
+            <button class="btn-primary" onclick="guardarSeguimiento(${id})">${clientText('Guardar')}</button>
+          </div>
+        </div>
+        <div id="cliente-seg-list" style="font-size:.85rem;color:var(--text3)">${clientText('Cargando…')}</div>
+      </div>
+
     </div>
   `;
   document.getElementById('modal-footer').innerHTML = `
@@ -274,6 +302,129 @@ function openClienteDetailModal(id) {
   `;
   document.getElementById('modal-overlay').classList.remove('hidden');
   if (typeof translateDynamicUi === 'function') translateDynamicUi(document.getElementById('modal-overlay'));
+  loadClienteSeguimientos(id);
+}
+
+function toggleFormSeguimiento(clientId) {
+  const form = document.getElementById('cliente-seg-form');
+  if (!form) return;
+  const showing = form.style.display !== 'none';
+  form.style.display = showing ? 'none' : '';
+  if (!showing) {
+    const fechaEl = document.getElementById('cliente-seg-fecha');
+    const tituloEl = document.getElementById('cliente-seg-titulo');
+    const descEl = document.getElementById('cliente-seg-desc');
+    if (fechaEl) fechaEl.value = '';
+    if (tituloEl) tituloEl.value = '';
+    if (descEl) descEl.value = '';
+  }
+}
+
+async function loadClienteSeguimientos(clientId) {
+  const list = document.getElementById('cliente-seg-list');
+  if (!list) return;
+  try {
+    const items = await api.getClientFollowups(clientId);
+    renderSeguimientosList(clientId, items);
+  } catch (e) {
+    list.innerHTML = `<span style="color:var(--danger,#f87171)">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+const SEG_TIPO_ICON = { nota: '📝', llamada: '📞', visita: '🚶', tarea: '✅', recordatorio: '⏰' };
+
+function renderSeguimientosList(clientId, items) {
+  const list = document.getElementById('cliente-seg-list');
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = `<span>${clientText('Sin seguimientos registrados todavía.')}</span>`;
+    return;
+  }
+  list.innerHTML = items.map(it => `
+    <div style="display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);${it.completado ? 'opacity:.55' : ''}">
+      <span>${SEG_TIPO_ICON[it.tipo] || '📝'}</span>
+      <div style="flex:1">
+        <div style="font-weight:600;${it.completado ? 'text-decoration:line-through' : ''}">${escapeHtml(it.titulo)}</div>
+        ${it.descripcion ? `<div style="font-size:.8rem;color:var(--text3)">${escapeHtml(it.descripcion)}</div>` : ''}
+        <div style="font-size:.75rem;color:var(--text3)">
+          ${it.fechaProgramada ? `📅 ${escapeHtml(it.fechaProgramada)} · ` : ''}${escapeHtml(it.createdByUserName || '')}
+        </div>
+      </div>
+      <button class="btn-ghost" style="font-size:.75rem" onclick="${it.completado ? `reabrirSeguimiento(${it.id},${clientId})` : `completarSeguimiento(${it.id},${clientId})`}">
+        ${it.completado ? clientText('Reabrir') : clientText('Completar')}
+      </button>
+      <button class="btn-ghost" style="font-size:.75rem;color:#f87171" onclick="eliminarSeguimiento(${it.id},${clientId})">🗑</button>
+    </div>
+  `).join('');
+}
+
+async function guardarSeguimiento(clientId) {
+  const titulo = document.getElementById('cliente-seg-titulo')?.value.trim();
+  if (!titulo) { showToast(clientText('El título es requerido.'), 'warning'); return; }
+  const data = {
+    clientId,
+    tipo: document.getElementById('cliente-seg-tipo')?.value || 'nota',
+    titulo,
+    descripcion: document.getElementById('cliente-seg-desc')?.value.trim() || '',
+    fechaProgramada: document.getElementById('cliente-seg-fecha')?.value || null,
+  };
+  try {
+    await api.createFollowup(data);
+    toggleFormSeguimiento(clientId);
+    loadClienteSeguimientos(clientId);
+    showToast(clientText('Seguimiento agregado.'), 'success');
+  } catch (e) { showToast(e.message, 'error'); }
+}
+
+async function completarSeguimiento(id, clientId) {
+  try { await api.completeFollowup(id); loadClienteSeguimientos(clientId); } catch (e) { showToast(e.message, 'error'); }
+}
+async function reabrirSeguimiento(id, clientId) {
+  try { await api.reopenFollowup(id); loadClienteSeguimientos(clientId); } catch (e) { showToast(e.message, 'error'); }
+}
+async function eliminarSeguimiento(id, clientId) {
+  if (!confirm(clientText('¿Eliminar este seguimiento?'))) return;
+  try { await api.deleteFollowup(id); loadClienteSeguimientos(clientId); } catch (e) { showToast(e.message, 'error'); }
+}
+
+// ── Agenda: pendientes de todos los clientes ──────────────────────────────
+async function abrirAgendaCrm() {
+  document.getElementById('modal-title').textContent = clientText('Agenda');
+  document.getElementById('modal-body').innerHTML = `<div id="crm-agenda-list" style="color:var(--text3)">${clientText('Cargando…')}</div>`;
+  document.getElementById('modal-footer').innerHTML = `<button class="btn-secondary" onclick="closeAllModals()">${clientText('Cerrar')}</button>`;
+  document.getElementById('modal-overlay').classList.remove('hidden');
+  try {
+    const items = await api.getCrmAgenda({ soloPendientes: true });
+    renderAgendaCrm(items);
+  } catch (e) {
+    const list = document.getElementById('crm-agenda-list');
+    if (list) list.innerHTML = `<span style="color:#f87171">${escapeHtml(e.message)}</span>`;
+  }
+}
+
+function renderAgendaCrm(items) {
+  const list = document.getElementById('crm-agenda-list');
+  if (!list) return;
+  if (!items.length) {
+    list.innerHTML = `<div style="text-align:center;padding:24px">🎉 ${clientText('No hay pendientes.')}</div>`;
+    return;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  list.innerHTML = items.map(it => {
+    const overdue = it.fechaProgramada && it.fechaProgramada < today;
+    return `
+      <div style="display:flex;align-items:flex-start;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <span>${SEG_TIPO_ICON[it.tipo] || '📝'}</span>
+        <div style="flex:1;cursor:pointer" onclick="closeAllModals();openClienteDetailModal(${it.clientId})">
+          <div style="font-weight:600">${escapeHtml(it.titulo)} <span style="font-weight:400;color:var(--text3)">— ${escapeHtml(it.clientName)}</span></div>
+          ${it.descripcion ? `<div style="font-size:.8rem;color:var(--text3)">${escapeHtml(it.descripcion)}</div>` : ''}
+          <div style="font-size:.75rem;${overdue ? 'color:#f87171;font-weight:700' : 'color:var(--text3)'}">
+            ${it.fechaProgramada ? `📅 ${escapeHtml(it.fechaProgramada)}${overdue ? ' · Vencido' : ''}` : clientText('Sin fecha')}
+          </div>
+        </div>
+        <button class="btn-ghost" style="font-size:.75rem" onclick="completarSeguimiento(${it.id},${it.clientId});abrirAgendaCrm()">${clientText('Completar')}</button>
+      </div>`;
+  }).join('');
 }
 
 function editCliente(id) { openClienteDetailModal(id); }
@@ -2050,7 +2201,7 @@ const EU_STATE = {
 };
 
 const EU_ROLE_META = {
-  administrador_general:  { icon: '🌐', name: 'Administrador General',   desc: 'Acceso completo al sistema.',            perms: ['ventas','caja','inventario','clientes','reportes','usuarios','configuracion','facturacion_electronica','delivery'] },
+  administrador_general:  { icon: '🌐', name: 'Administrador General',   desc: 'Acceso completo al sistema.',            perms: ['ventas','caja','inventario','clientes','reportes','usuarios','configuracion','facturacion_electronica','delivery','rrhh'] },
   administrador_sucursal: { icon: '🏪', name: 'Admin. Sucursal',         desc: 'Gestiona su sucursal asignada.',         perms: ['ventas','caja','inventario','clientes','reportes','usuarios'] },
   cajero:                 { icon: '💰', name: 'Cajero',                  desc: 'Solo ventas y cobros.',                  perms: ['ventas','caja','clientes'] },
   supervisor:             { icon: '👁',  name: 'Supervisor',              desc: 'Supervisa sin configurar.',              perms: ['ventas','caja','inventario','reportes'] },
@@ -2068,6 +2219,7 @@ const EU_PERM_META = {
   configuracion:          { icon: '⚙',  label: 'Configuración' },
   facturacion_electronica:{ icon: '🧾', label: 'Facturación electrónica' },
   delivery:               { icon: '🛵', label: 'App Delivery' },
+  rrhh:                   { icon: '🧑‍💼', label: 'Recursos Humanos' },
 };
 
 function openCreateUserModal() {
@@ -2933,3 +3085,49 @@ function euValidateDuplicateFields() {
   document.getElementById('eu-email-duplicate-error')?.classList.toggle('hidden', !duplicateEmail);
   return !duplicateUser && !duplicateEmail;
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// CRM — recordatorios en la campanita de notificaciones
+// ══════════════════════════════════════════════════════════════════════
+
+let _crmAgendaCache = [];
+
+async function refreshCrmAgendaCache() {
+  try {
+    _crmAgendaCache = await api.getCrmAgenda({ soloPendientes: true });
+  } catch (_e) {
+    // Silencioso: la campanita simplemente no mostrará recordatorios si falla.
+  }
+}
+
+function buildCrmNotifications() {
+  const notifications = [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayKey = today.toISOString().slice(0, 10);
+
+  const overdue = _crmAgendaCache.filter(it => it.fechaProgramada && it.fechaProgramada < todayKey);
+  const dueToday = _crmAgendaCache.filter(it => it.fechaProgramada === todayKey);
+
+  if (overdue.length) {
+    notifications.push({
+      severity: 'danger',
+      title: 'Seguimientos vencidos',
+      text: `${overdue.length} seguimiento(s) de clientes están vencidos.`,
+      time: 'CRM'
+    });
+  }
+  if (dueToday.length) {
+    notifications.push({
+      severity: 'warning',
+      title: 'Seguimientos para hoy',
+      text: `${dueToday.length} seguimiento(s) programado(s) para hoy.`,
+      time: 'CRM'
+    });
+  }
+  return notifications;
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  refreshCrmAgendaCache();
+  setInterval(refreshCrmAgendaCache, 5 * 60 * 1000);
+});

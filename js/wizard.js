@@ -1395,14 +1395,15 @@
   //  FLUJO: RESTAURAR NUBE (R2 + email)
   // ══════════════════════════════════════════════════════════════════════════
 
-  /** Panel A → busca backups en R2 por email */
+  /**
+   * Panel A → lista los backups en R2 de ESTE dispositivo (por su
+   * TECNO_CAJA_LICENSE_UID, resuelto en el backend). El correo ya no se usa
+   * para buscar entre negocios — cada llave de Backblaze está restringida al
+   * prefijo de un solo negocio — pero se conserva para la verificación de
+   * identidad del panel B antes de restaurar.
+   */
   window.wzRestoreCloudLogin = async function wzRestoreCloudLogin() {
     const email = (document.getElementById('wzrc-email') || {}).value.trim();
-    if (!email) {
-      _wzShow('wzrc-login-error');
-      _wzText('wzrc-login-error', 'Ingresa tu correo electrónico.');
-      return;
-    }
 
     const btn = document.getElementById('wzrc-login-btn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando…'; }
@@ -1421,7 +1422,7 @@
 
       if (!data.ok) {
         _wzShow('wzrc-login-error');
-        _wzText('wzrc-login-error', data.error || 'No se encontraron respaldos para este correo.');
+        _wzText('wzrc-login-error', data.error || 'No se encontraron respaldos en la nube para este dispositivo.');
         return;
       }
 
@@ -1441,7 +1442,7 @@
       _wzShow('wzrc-login-error');
       _wzText('wzrc-login-error', err.message || 'Error de red al buscar respaldos.');
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '🔍 Buscar mis respaldos en la nube'; }
+      if (btn) { btn.disabled = false; btn.textContent = '☁️ Ver respaldos en la nube'; }
     }
   };
 

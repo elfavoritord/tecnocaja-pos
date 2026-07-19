@@ -486,7 +486,11 @@ function _renderContadorBuscador(panel, token) {
       });
       const d = await res.json();
       if (d.ok) {
-        if (typeof showFiscalToast === 'function') showFiscalToast('✅ Contador asignado correctamente', 'success');
+        if (d.syncWarning) {
+          if (typeof showFiscalToast === 'function') showFiscalToast(`⚠️ Se guardó localmente, pero no se pudo sincronizar con la nube: ${d.syncWarning}`, 'error');
+        } else {
+          if (typeof showFiscalToast === 'function') showFiscalToast('✅ Contador asignado correctamente', 'success');
+        }
         setTimeout(() => loadContadorSection(), 400);
       } else {
         if (typeof showFiscalToast === 'function') showFiscalToast(d.error || 'Error al asignar', 'error');

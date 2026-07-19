@@ -23,15 +23,29 @@ function getFirestoreDb() {
   }
 }
 
-// Actualiza contadorId/contadorNombre en el documento Firestore licencias del negocio
+// Actualiza contadorId/contadorNombre en el documento Firestore licencias del
+// negocio. El doc real de licencias vive en licencias/{TECNO_CAJA_LICENSE_UID}
+// (así lo crea registerPosLicenseInFirestore y así lo escribe en cada venta
+// sync-pos-stats.js) — NO en licencias/{cloud_business_id}, que es un
+// identificador de un flujo distinto (registrar-negocio) y puede no
+// coincidir. Se prioriza TECNO_CAJA_LICENSE_UID y solo se cae a
+// cloud_business_id si esa variable no está configurada.
 async function _syncContadorToFirestore(query, contadorId, contadorNombre) {
   const db = getFirestoreDb();
-  if (!db) return;
-  const [cfg] = await query('SELECT cloud_business_id FROM config WHERE id=1');
-  const bizId = cfg?.cloud_business_id;
-  if (!bizId) return;
+  if (!db) return { skipped: true, reason: 'getFirestoreDb() devolvió null — Firebase Admin no disponible en este proceso.' };
+
+  const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+  let bizId = licenseUid;
+  let bizIdSource = 'TECNO_CAJA_LICENSE_UID';
+  if (!bizId) {
+    const [cfg] = await query('SELECT cloud_business_id FROM config WHERE id=1');
+    bizId = cfg?.cloud_business_id;
+    bizIdSource = 'cloud_business_id';
+  }
+  if (!bizId) return { skipped: true, reason: 'No hay TECNO_CAJA_LICENSE_UID ni cloud_business_id configurado — no se sabe a qué documento escribir.' };
 
   const COL_LICENCIAS = process.env.FIREBASE_ADMIN_LICENSES_COLLECTION || 'licencias';
+  const docPath = `${COL_LICENCIAS}/${bizId}`;
 
   if (contadorId) {
     // Obtener nombre desde Firestore si no tenemos uno
@@ -42,18 +56,20 @@ async function _syncContadorToFirestore(query, contadorId, contadorNombre) {
         if (cDoc.exists) nombre = cDoc.data().nombre_firma || '';
       } catch (_) {}
     }
-    await db.collection(COL_LICENCIAS).doc(bizId).update({
+    await db.collection(COL_LICENCIAS).doc(bizId).set({
       contadorId: String(contadorId),
       contadorNombre: nombre || '',
       businessStructureMode: 'accountant_client',
-    });
-  } else {
-    await db.collection(COL_LICENCIAS).doc(bizId).update({
-      contadorId: null,
-      contadorNombre: null,
-      businessStructureMode: 'independent',
-    });
+    }, { merge: true });
+    return { skipped: false, bizId, bizIdSource, docPath, wrote: { contadorId: String(contadorId), contadorNombre: nombre || '' } };
   }
+
+  await db.collection(COL_LICENCIAS).doc(bizId).set({
+    contadorId: null,
+    contadorNombre: null,
+    businessStructureMode: 'independent',
+  }, { merge: true });
+  return { skipped: false, bizId, bizIdSource, docPath, wrote: { contadorId: null } };
 }
 
 function createPlatformRouter({ query }) {
@@ -258,6 +274,69 @@ function createPlatformRouter({ query }) {
     }
   });
 
+  // ── Diagnóstico: qué hay realmente en Firestore vs. config local ──────────
+  // Solo lectura, temporal — para depurar por qué un negocio no aparece en el
+  // Portal del Contador aunque "Mi Contador" lo muestre asignado localmente.
+  router.get('/diagnostico-contador', async (req, res) => {
+    try {
+      const [cfg] = await query(`
+        SELECT accountant_id, accountant_name, cloud_business_id,
+               license_status, trial_started_at, trial_ends_at, plan_expires_at
+        FROM config WHERE id=1
+      `);
+      const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      const diag = {
+        config_local: {
+          accountant_id: cfg?.accountant_id ?? null,
+          accountant_name: cfg?.accountant_name ?? null,
+          cloud_business_id: cfg?.cloud_business_id ?? null,
+          license_status: cfg?.license_status ?? null,
+          trial_started_at: cfg?.trial_started_at ?? null,
+          trial_ends_at: cfg?.trial_ends_at ?? null,
+          plan_expires_at: cfg?.plan_expires_at ?? null,
+        },
+        env_license_uid: licenseUid || null,
+        firestore: null,
+      };
+
+      const db = getFirestoreDb();
+      if (db && licenseUid) {
+        const COL_LICENCIAS = process.env.FIREBASE_ADMIN_LICENSES_COLLECTION || 'licencias';
+        const doc = await db.collection(COL_LICENCIAS).doc(licenseUid).get();
+        const docFields = doc.exists ? doc.data() : {};
+        const asIso = (v) => (v && typeof v.toDate === 'function') ? v.toDate().toISOString() : (v ?? null);
+        diag.firestore = {
+          doc_path: `${COL_LICENCIAS}/${licenseUid}`,
+          exists: doc.exists,
+          contadorId: docFields.contadorId ?? null,
+          contadorNombre: docFields.contadorNombre ?? null,
+          businessStructureMode: docFields.businessStructureMode ?? null,
+          status: docFields.status ?? null,
+          trialStartedAt: asIso(docFields.trialStartedAt),
+          trialEndsAt: asIso(docFields.trialEndsAt),
+          expiresAt: asIso(docFields.expiresAt),
+        };
+
+        // ¿Ese contadorId existe de verdad en la colección contadores de Firestore?
+        if (diag.firestore.contadorId) {
+          try {
+            const contDoc = await db.collection('contadores').doc(String(diag.firestore.contadorId)).get();
+            diag.firestore.contadorIdExisteEnColeccionContadores = contDoc.exists;
+            if (contDoc.exists) diag.firestore.contadorNombreReal = contDoc.data().nombre_firma || null;
+          } catch (_) {}
+        }
+      } else if (!db) {
+        diag.firestore = { error: 'Firebase Admin no disponible desde este proceso.' };
+      } else if (!licenseUid) {
+        diag.firestore = { error: 'TECNO_CAJA_LICENSE_UID no está configurado en este .env.' };
+      }
+
+      res.json(diag);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Asignar contador al negocio ───────────────────────────────────────────
   router.post('/asignar-contador', async (req, res) => {
     try {
@@ -270,10 +349,19 @@ function createPlatformRouter({ query }) {
         [contador_id, nombre_firma || '']
       );
 
-      // 2. Sincronizar con Firestore licencias (para que el Admin lo vea)
-      _syncContadorToFirestore(query, contador_id, nombre_firma || '').catch(() => {});
+      // 2. Sincronizar con Firestore licencias (para que el Portal del
+      // Contador lo vea). Se espera el resultado y se reporta si falla — antes
+      // se tragaba el error en silencio y la asignación local parecía exitosa
+      // aunque Firestore nunca se hubiera actualizado.
+      let syncWarning = null;
+      try {
+        await _syncContadorToFirestore(query, contador_id, nombre_firma || '');
+      } catch (syncErr) {
+        console.error('[platform] Error sincronizando contador a Firestore:', syncErr.message);
+        syncWarning = syncErr.message;
+      }
 
-      res.json({ ok: true });
+      res.json({ ok: true, syncWarning });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -284,10 +372,17 @@ function createPlatformRouter({ query }) {
     try {
       await query('UPDATE config SET accountant_id=NULL, accountant_name=NULL WHERE id=1');
 
-      // Sincronizar con Firestore
-      _syncContadorToFirestore(query, null, null).catch(() => {});
+      // Sincronizar con Firestore — igual que arriba, ahora se espera y se
+      // reporta cualquier error en vez de tragarlo en silencio.
+      let syncWarning = null;
+      try {
+        await _syncContadorToFirestore(query, null, null);
+      } catch (syncErr) {
+        console.error('[platform] Error desvinculando contador en Firestore:', syncErr.message);
+        syncWarning = syncErr.message;
+      }
 
-      res.json({ ok: true });
+      res.json({ ok: true, syncWarning });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

@@ -1355,6 +1355,7 @@ function openProductModal(id) {
       </div>
       <div class="product-footer-actions">
         <button class="btn-secondary" onclick="closeAllModals()">Cancelar</button>
+        ${id ? `<button class="btn-ghost" onclick="openLabelQuickPrintForProduct(${id})">🖨 Imprimir etiqueta</button>` : ''}
         ${id ? `<button class="btn-ghost" style="color:var(--warning,#f59e0b)" onclick="closeAllModals();toggleProductStatus(${id})">${prod?.estado === 'Activo' ? 'Pausar' : 'Activar'}</button>` : ''}
         ${id ? `<button class="btn-ghost" style="color:var(--danger,#ef4444)" onclick="closeAllModals();deleteProduct(${id})">Eliminar</button>` : ''}
         <button class="btn-primary" onclick="saveProduct(${id||'null'})">💾 Guardar</button>

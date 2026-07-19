@@ -277,14 +277,15 @@ function addProductByScaleBarcode(scanned) {
 
 function getSaleScaleConfig() {
   const utils = getSaleScaleUtils();
+  const cfg = getEffectiveConfig();
   return {
-    type: String(DB.config?.scaleType || 'none').trim().toLowerCase() || 'none',
-    serialPort: String(DB.config?.scaleSerialPort || '').trim(),
-    baudRate: Math.max(300, Number(DB.config?.scaleSerialBaudRate || 9600) || 9600),
-    pattern: String(DB.config?.scaleReadPattern || '').trim(),
-    defaultUnit: utils.normalizeWeightUnit(DB.config?.scaleDefaultUnit || 'kg', 'kg') || 'kg',
-    roundingDecimals: utils.sanitizeDecimals(DB.config?.scaleRoundingDecimals ?? 2, 2),
-    autoRead: Boolean(DB.config?.scaleAutoRead ?? true)
+    type: String(cfg.scaleType || 'none').trim().toLowerCase() || 'none',
+    serialPort: String(cfg.scaleSerialPort || '').trim(),
+    baudRate: Math.max(300, Number(cfg.scaleSerialBaudRate || 9600) || 9600),
+    pattern: String(cfg.scaleReadPattern || '').trim(),
+    defaultUnit: utils.normalizeWeightUnit(cfg.scaleDefaultUnit || 'kg', 'kg') || 'kg',
+    roundingDecimals: utils.sanitizeDecimals(cfg.scaleRoundingDecimals ?? 2, 2),
+    autoRead: Boolean(cfg.scaleAutoRead ?? true)
   };
 }
 
@@ -7031,7 +7032,7 @@ function getReceiptConfigOverride() {
 }
 
 function getReceiptConfigValue(field) {
-  return getReceiptConfigOverride()?.[field] ?? DB.config?.[field] ?? '';
+  return getReceiptConfigOverride()?.[field] ?? getEffectiveConfig()[field] ?? '';
 }
 
 function buildReceiptWhatsAppMessage(venta) {

@@ -589,9 +589,9 @@
       <div class="wz-auth-icon-wrap" style="font-size:1.8rem">☁️</div>
       <h3>Restaurar desde la nube</h3>
 
-      <!-- Panel A: buscar por correo electrónico -->
+      <!-- Panel A: lista los respaldos en la nube de este dispositivo -->
       <div id="wzrc-panel-login">
-        <p style="color:var(--text3);font-size:.83rem;margin-bottom:1.1rem;line-height:1.5">Ingresa el correo electrónico con el que registraste tu negocio para ver tus respaldos en la nube.</p>
+        <p style="color:var(--text3);font-size:.83rem;margin-bottom:1.1rem;line-height:1.5">Vamos a buscar los respaldos en la nube de este dispositivo. Ingresa el correo con el que inicias sesión en Tecno Caja — se usará después para confirmar tu identidad antes de restaurar.</p>
         <div style="margin-bottom:.8rem">
           <label for="wzrc-email" style="display:block;font-size:.8rem;color:var(--text3);margin-bottom:.3rem">Correo electrónico</label>
           <input type="email" id="wzrc-email" class="form-input" placeholder="correo@ejemplo.com"
@@ -599,7 +599,7 @@
             onkeydown="if(event.key==='Enter') wzRestoreCloudLogin()">
         </div>
         <button type="button" class="btn-primary" onclick="wzRestoreCloudLogin()" id="wzrc-login-btn" style="width:100%;margin-bottom:.6rem">
-          🔍 Buscar mis respaldos en la nube
+          ☁️ Ver respaldos en la nube
         </button>
         <div id="wzrc-list-loading" style="display:none;text-align:center;color:var(--text3);font-size:.82rem;padding:.4rem 0">Buscando respaldos…</div>
         <div id="wzrc-login-error" class="wz-auth-error wz-hidden" style="margin-top:.5rem"></div>
@@ -687,6 +687,12 @@
       </a>
       <a href="#" class="nav-item" onclick="showModule('reportes', this)" data-module="reportes">
         <span class="nav-icon">📈</span><span class="nav-label">Reportes</span>
+      </a>
+      <a href="#" class="nav-item" onclick="showModule('rrhh', this)" data-module="rrhh">
+        <span class="nav-icon">🧑‍💼</span><span class="nav-label">Recursos Humanos</span>
+      </a>
+      <a href="#" class="nav-item" onclick="showModule('labels', this)" data-module="labels">
+        <span class="nav-icon">🏷️</span><span class="nav-label">Etiquetas</span>
       </a>
       <a href="#" class="nav-item" onclick="showModule('movimientos', this)" data-module="movimientos" data-plan-required="basico">
         <span class="nav-icon">🧾</span><span class="nav-label">Movimientos</span>
@@ -1166,6 +1172,7 @@
         <h2>Clientes</h2>
         <div class="module-actions">
           <input type="text" placeholder="Buscar cliente..." class="mod-search" oninput="filterClientes(this.value)">
+          <button class="btn-secondary" onclick="abrirAgendaCrm()">📅 Agenda</button>
           <button class="btn-primary" onclick="openClienteModal()">+ Nuevo Cliente</button>
         </div>
       </div>
@@ -1432,6 +1439,176 @@
           </thead>
           <tbody id="cola-cobro-tbody"></tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- RECURSOS HUMANOS MODULE -->
+    <style>
+      .rrhh-tabs { display: flex; gap: 0.25rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 4px; margin-bottom: 1rem; }
+      .rrhh-tab { display: flex; align-items: center; gap: 0.4rem; padding: 0.42rem 0.9rem; border: none; border-radius: 9px; background: transparent; color: var(--text2); font-family: var(--font); font-size: 0.85rem; font-weight: 700; cursor: pointer; }
+      .rrhh-tab:hover { color: var(--text); background: var(--bg4); }
+      .rrhh-tab.active { background: var(--accent); color: #fff; }
+      .rrhh-pane { display: none; }
+      .rrhh-pane.active { display: block; }
+    </style>
+    <div id="module-rrhh" class="module hidden">
+      <div class="rrhh-tabs">
+        <button class="rrhh-tab active" data-rrhhtab="empleados" onclick="rrhhSwitchTab('empleados')">🧑‍💼 Empleados</button>
+        <button class="rrhh-tab" data-rrhhtab="asistencia" onclick="rrhhSwitchTab('asistencia')">🕒 Asistencia</button>
+        <button class="rrhh-tab" data-rrhhtab="permisos" onclick="rrhhSwitchTab('permisos')">📋 Permisos</button>
+      </div>
+
+      <div id="rrhh-tab-empleados" class="rrhh-pane active">
+        <div class="repv2-panel-head" style="margin-bottom:0.75rem">
+          <div><h3>Empleados</h3><p>Registro de personal del negocio</p></div>
+          <button class="btn-primary" onclick="rrhhAbrirEmpleado(null)">+ Nuevo Empleado</button>
+        </div>
+        <div class="repv2-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Nombre</th><th>Cargo</th><th>Departamento</th><th>Teléfono</th><th>Ingreso</th><th>Estado</th></tr></thead>
+            <tbody id="rrhh-empleados-body"><tr><td colspan="6" style="padding:12px;color:var(--text3)">Cargando…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="rrhh-tab-asistencia" class="rrhh-pane hidden">
+        <div class="repv2-panel-head" style="margin-bottom:0.75rem">
+          <div><h3>Asistencia</h3><p>Marcar y consultar asistencia por empleado</p></div>
+          <select class="repv2-filter-select" id="rrhh-asis-empleado" onchange="rrhhLoadAsistencia()"><option value="">-- Selecciona un empleado --</option></select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+          <input type="date" class="repv2-filter-date" id="rrhh-asis-marcar-fecha">
+          <select class="repv2-filter-select" id="rrhh-asis-estado">
+            <option value="presente">Presente</option>
+            <option value="ausente">Ausente</option>
+            <option value="tardanza">Tardanza</option>
+            <option value="permiso">Permiso</option>
+          </select>
+          <button class="btn-primary" onclick="rrhhMarcarAsistencia()">Marcar</button>
+        </div>
+        <div class="repv2-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Fecha</th><th>Estado</th><th>Nota</th></tr></thead>
+            <tbody id="rrhh-asis-body"><tr><td colspan="3" style="padding:12px;color:var(--text3)">Selecciona un empleado.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="rrhh-tab-permisos" class="rrhh-pane hidden">
+        <div class="repv2-panel-head" style="margin-bottom:0.75rem">
+          <div><h3>Permisos</h3><p>Solicitudes de vacaciones, personal y otros</p></div>
+          <button class="btn-primary" onclick="rrhhAbrirNuevoPermiso()">+ Nueva Solicitud</button>
+        </div>
+        <div class="repv2-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Empleado</th><th>Tipo</th><th>Período</th><th>Motivo</th><th>Estado</th></tr></thead>
+            <tbody id="rrhh-permisos-body"><tr><td colspan="5" style="padding:12px;color:var(--text3)">Cargando…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTRO DE ETIQUETAS MODULE -->
+    <style>
+      .labels-tabs { display: flex; gap: 0.25rem; background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 4px; margin-bottom: 1rem; }
+      .labels-tab { display: flex; align-items: center; gap: 0.4rem; padding: 0.42rem 0.9rem; border: none; border-radius: 9px; background: transparent; color: var(--text2); font-family: var(--font); font-size: 0.85rem; font-weight: 700; cursor: pointer; }
+      .labels-tab:hover { color: var(--text); background: var(--bg4); }
+      .labels-tab.active { background: var(--accent); color: #fff; }
+      .labels-pane { display: none; }
+      .labels-pane.active { display: block; }
+      .labels-quick-grid { display: grid; grid-template-columns: 360px 1fr; gap: 1rem; align-items: start; }
+      .labels-search-row { padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; gap: 0.5rem; }
+      .labels-search-row:hover { background: var(--bg4); }
+      .labels-preview-box { background: #f3f4f6; border: 1px solid var(--border); border-radius: 10px; padding: 1rem; min-height: 160px; overflow: auto; }
+      .labels-quick-field-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.3rem 0; }
+      .labels-quick-field-check { display: flex; align-items: center; gap: 0.4rem; color: var(--text2); font-size: 0.85rem; cursor: pointer; }
+      .labels-quick-size-input { max-width: 70px; padding: 0.3rem 0.4rem; text-align: center; }
+      .labels-template-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem; margin-bottom: 0.6rem; }
+      .labels-template-card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; }
+    </style>
+    <div id="module-labels" class="module hidden">
+      <div class="labels-tabs">
+        <button class="labels-tab active" data-labelstab="rapida" onclick="labelsSwitchTab('rapida')">⚡ Impresión rápida</button>
+        <button class="labels-tab" data-labelstab="masiva" onclick="labelsSwitchTab('masiva')">📦 Impresión masiva</button>
+        <button class="labels-tab" data-labelstab="plantillas" onclick="labelsSwitchTab('plantillas')">🎨 Plantillas</button>
+        <button class="labels-tab" data-labelstab="historial" onclick="labelsSwitchTab('historial')">🕒 Historial</button>
+      </div>
+
+      <div id="labels-tab-rapida" class="labels-pane active">
+        <div class="labels-quick-grid">
+          <div>
+            <div class="form-group">
+              <label>Buscar producto</label>
+              <input type="text" id="labels-quick-search" class="form-input" placeholder="Nombre, código o categoría" oninput="labelsQuickSearchInput()">
+              <div id="labels-quick-results" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin-top:4px"></div>
+            </div>
+            <div class="form-group">
+              <label>Plantilla</label>
+              <select id="labels-quick-template" class="form-input" onchange="labelsQuickOnTemplateChange()"></select>
+            </div>
+            <div class="form-group">
+              <label>Personalizar campos</label>
+              <div class="labels-quick-field-row">
+                <label class="labels-quick-field-check"><input type="checkbox" id="labels-quick-show-nombre" onchange="labelsQuickOnConfigChange()"> Nombre</label>
+                <input type="number" id="labels-quick-size-nombre" class="form-input labels-quick-size-input" min="6" max="40" title="Tamaño de letra (px)" oninput="labelsQuickOnConfigChange()">
+              </div>
+              <div class="labels-quick-field-row">
+                <label class="labels-quick-field-check"><input type="checkbox" id="labels-quick-show-precio" onchange="labelsQuickOnConfigChange()"> Precio</label>
+                <input type="number" id="labels-quick-size-precio" class="form-input labels-quick-size-input" min="6" max="40" title="Tamaño de letra (px)" oninput="labelsQuickOnConfigChange()">
+              </div>
+              <div class="labels-quick-field-row">
+                <label class="labels-quick-field-check"><input type="checkbox" id="labels-quick-show-codigo" onchange="labelsQuickOnConfigChange()"> Código</label>
+                <input type="number" id="labels-quick-size-codigo" class="form-input labels-quick-size-input" min="6" max="40" title="Tamaño de letra (px)" oninput="labelsQuickOnConfigChange()">
+              </div>
+              <small class="helper-text">Tamaño de letra en px. Solo afecta la vista previa, el PDF y la impresión por diálogo — la impresora térmica directa usa su propia fuente.</small>
+            </div>
+            <div class="form-group">
+              <label>Cantidad</label>
+              <input type="number" id="labels-quick-cantidad" class="form-input" min="1" value="1" oninput="labelsQuickOnConfigChange()">
+            </div>
+            <button class="btn-secondary" style="width:100%;margin-bottom:0.5rem" onclick="labelsQuickRenderPreview()">👁 Vista previa</button>
+            <button class="btn-primary" style="width:100%" onclick="labelsQuickPrint()">🖨 Imprimir</button>
+            <button class="btn-secondary" style="width:100%;margin-top:0.5rem" onclick="labelsQuickSavePdf()">🗎 Guardar como PDF (diagnóstico)</button>
+          </div>
+          <div>
+            <label style="display:block;margin-bottom:0.4rem;color:var(--text2)">Vista previa</label>
+            <div id="labels-quick-preview" class="labels-preview-box"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="labels-tab-masiva" class="labels-pane hidden">
+        <div class="repv2-panel-head" style="margin-bottom:0.75rem">
+          <div><h3>Impresión masiva</h3><p>Busca productos, indica cantidad por producto e imprime todo junto</p></div>
+          <select class="repv2-filter-select" id="labels-bulk-template" onchange="labelsBulkOnTemplateChange()"></select>
+        </div>
+        <input type="text" id="labels-bulk-search" class="form-input" placeholder="Buscar productos por nombre, código o categoría" oninput="labelsBulkSearchInput()" style="margin-bottom:0.75rem">
+        <div class="repv2-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Nombre</th><th>Código</th><th>Precio</th><th>Cantidad</th></tr></thead>
+            <tbody id="labels-bulk-body"><tr><td colspan="4" style="padding:12px;color:var(--text3)">Busca productos para agregarlos.</td></tr></tbody>
+          </table>
+        </div>
+        <button class="btn-primary" style="margin-top:0.75rem" onclick="labelsBulkPrintAll()">🖨 Imprimir Todo</button>
+      </div>
+
+      <div id="labels-tab-plantillas" class="labels-pane hidden">
+        <div class="repv2-panel-head" style="margin-bottom:0.75rem">
+          <div><h3>Plantillas</h3><p>Plantillas predefinidas disponibles para imprimir</p></div>
+        </div>
+        <div id="labels-templates-gallery"></div>
+      </div>
+
+      <div id="labels-tab-historial" class="labels-pane hidden">
+        <div class="repv2-panel-head" style="margin-bottom:0.75rem">
+          <div><h3>Historial de Impresiones</h3><p>Qué se imprimió, cuándo y con qué plantilla</p></div>
+        </div>
+        <div class="repv2-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Fecha</th><th>Plantilla</th><th>Tamaño</th><th>Productos</th><th>Etiquetas</th><th>Usuario</th><th></th></tr></thead>
+            <tbody id="labels-history-body"><tr><td colspan="7" style="padding:12px;color:var(--text3)">Cargando…</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -1740,6 +1917,7 @@
             <p>Resumen de comprobantes fiscales, ITBIS cobrado y estimado a pagar</p>
           </div>
           <button class="repv2-btn-export repv2-btn-export-lg" onclick="repV2ExportDGIIPDF()">⬇ Exportar PDF Fiscal</button>
+          <button class="repv2-btn-export repv2-btn-export-lg" onclick="repV2ExportarParaContador()" title="Genera un archivo con el detalle línea por línea (606/607/608) para que tu contador lo importe en el Portal del Contador">📤 Exportar para el Contador</button>
         </div>
 
         <!-- Resumen fiscal -->
@@ -2017,7 +2195,9 @@
             <input type="file" id="cfg-logo-input" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="hidden" onchange="handleLogoUpload(event)">
           </div>
           <div class="form-group"><label id="cfg-label-rnc">RNC / Cédula</label><input type="text" id="cfg-rnc" class="form-input" placeholder="000-00000-0"></div>
+          <div class="form-group"><label id="cfg-label-razon-social">Razón Social</label><input type="text" id="cfg-razon-social" class="form-input" placeholder="Nombre legal registrado (si es distinto al comercial)"></div>
           <div class="form-group"><label id="cfg-label-address">Dirección</label><input type="text" id="cfg-dir" class="form-input" placeholder="Calle, Ciudad, País"></div>
+          <div class="form-group"><label id="cfg-label-provincia">Provincia</label><input type="text" id="cfg-provincia" class="form-input" placeholder="Ej. Santo Domingo, Santiago"></div>
           <div class="form-group"><label id="cfg-label-phone">Teléfono</label><input type="text" id="cfg-tel" class="form-input" placeholder="809-000-0000"></div>
           <div class="form-group"><label id="cfg-label-business-type">Tipo de negocio</label><input type="text" id="cfg-business-type-readonly" class="form-input" disabled></div>
           <div class="form-group">
@@ -2136,6 +2316,14 @@
           <div class="form-group"><label id="cfg-label-e-prefix">Prefijo Factura Electrónica</label><input type="text" id="cfg-e-prefix" class="form-input" value="ECF-"></div>
           <div class="form-group"><label id="cfg-label-next-einvoice">Próxima Factura Electrónica</label><input type="number" id="cfg-next-einvoice" class="form-input" value="1" min="1"></div>
           <div class="form-group"><label id="cfg-label-receipt-message">Mensaje en Recibo</label><input type="text" id="cfg-msg" class="form-input" value="¡Gracias por su compra!"></div>
+        </div>
+
+        <!-- ══════════ IMPRESORA DE RECIBOS (Periféricos — local por terminal) ══════════ -->
+        <div class="config-section">
+          <h3 id="cfg-section-printer-title">🖨️ Impresora de Recibos</h3>
+          <p class="helper-text" style="margin:0.25rem 0 0.75rem">
+            Esta configuración es local a esta terminal/caja — cada caja física puede tener su propia impresora.
+          </p>
           <div class="form-group">
             <label id="cfg-label-print-method">Método de impresión</label>
             <select class="form-input" id="cfg-print-mode">
@@ -2160,6 +2348,28 @@
               <button id="cfg-btn-refresh-printers" class="btn-secondary compact-btn" type="button" onclick="refreshPrinterOptions(true)">↻ Actualizar</button>
             </div>
             <small id="cfg-printer-helper" class="helper-text">Puedes elegir la impresora térmica o dejar la predeterminada del sistema.</small>
+          </div>
+          <div class="form-group">
+            <label>Método de impresión de etiquetas</label>
+            <select class="form-input" id="cfg-labels-print-mode">
+              <option value="dialog">Mostrar diálogo antes de imprimir</option>
+              <option value="direct">Imprimir directo (sin diálogo)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Impresora de Etiquetas</label>
+            <div class="inline-config-actions">
+              <select class="form-input" id="cfg-labels-printer-name">
+                <option value="">Elegir en el diálogo de impresión</option>
+              </select>
+              <button class="btn-secondary compact-btn" type="button" onclick="refreshLabelsPrinterOptions(true)">↻ Actualizar</button>
+            </div>
+            <small class="helper-text">En modo directo, esta impresora es obligatoria — si la dejas vacía se usará la predeterminada de Windows.</small>
+          </div>
+          <div class="form-group">
+            <label>Ajuste horizontal del código de barras (mm)</label>
+            <input type="number" class="form-input" id="cfg-labels-barcode-offset" value="0" step="0.5" style="max-width:140px">
+            <small class="helper-text">Solo para modo Directo. Si el código de barras/QR no sale centrado en tu impresora, ajusta este número (negativo = mueve a la izquierda, positivo = a la derecha) e imprime de nuevo hasta que quede centrado.</small>
           </div>
           <div class="form-group">
             <label id="cfg-label-preview">Vista previa</label>
@@ -4163,6 +4373,9 @@
 <!-- jsPDF — generación de reportes PDF -->
 <script src="node_modules/jspdf/dist/jspdf.umd.min.js"></script>
 
+<!-- JsBarcode — genera códigos de barra (CODE128) para el Centro de Etiquetas -->
+<script src="node_modules/jsbarcode/dist/JsBarcode.all.min.js"></script>
+
 <!-- SheetJS (xlsx) — exportar Excel desde el navegador, ej. Estadísticas de Promociones -->
 <script src="node_modules/xlsx/dist/xlsx.full.min.js"></script>
 
@@ -4199,6 +4412,8 @@
 <script src="js/movimientos.js"></script>
 <script src="js/reportes.js"></script>
 <script src="js/reportes-v2.js"></script>
+<script src="js/rrhh.js"></script>
+<script src="js/label-manager.js"></script>
 <script src="js/ncf-config.js"></script>
 <script src="js/business-config.js"></script>
 <script src="js/monedas.js"></script>

@@ -671,5 +671,37 @@ const api = {
 
   getReturnsHistory(params = {}) {
     return this.request(`/api/sales/returns-history?desde=${params.desde || ''}&hasta=${params.hasta || ''}`);
+  },
+
+  // ── CRM: seguimientos de clientes ──────────────────────────────────────
+  getClientFollowups(clientId) {
+    return this.request(`/api/crm/seguimientos?clienteId=${encodeURIComponent(clientId)}`);
+  },
+
+  createFollowup(data) {
+    return this.request('/api/crm/seguimientos', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  completeFollowup(id) {
+    return this.request(`/api/crm/seguimientos/${id}/completar`, { method: 'PUT' });
+  },
+
+  reopenFollowup(id) {
+    return this.request(`/api/crm/seguimientos/${id}/reabrir`, { method: 'PUT' });
+  },
+
+  deleteFollowup(id) {
+    return this.request(`/api/crm/seguimientos/${id}`, { method: 'DELETE' });
+  },
+
+  getCrmAgenda(params = {}) {
+    const qs = new URLSearchParams();
+    if (params.desde) qs.set('desde', params.desde);
+    if (params.hasta) qs.set('hasta', params.hasta);
+    if (params.soloPendientes !== undefined) qs.set('soloPendientes', params.soloPendientes ? '1' : '0');
+    return this.request(`/api/crm/agenda${qs.toString() ? '?' + qs.toString() : ''}`);
   }
 };

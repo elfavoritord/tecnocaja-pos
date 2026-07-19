@@ -28,8 +28,6 @@ const {
   HeadObjectCommand,
 } = require('@aws-sdk/client-s3');
 
-const crypto = require('crypto');
-
 // ─── Singleton del cliente ────────────────────────────────────────────────────
 let _client = null;
 
@@ -203,12 +201,6 @@ async function getJson(key) {
   }
 }
 
-// ─── Derivar clave de índice desde email ─────────────────────────────────────
-function emailIndexKey(email) {
-  const hash = crypto.createHash('sha256').update(email.toLowerCase().trim()).digest('hex');
-  return `idx/email/${hash}.json`;
-}
-
 // ─── Ruta del negocio ─────────────────────────────────────────────────────────
 function backupPrefix(businessId) {
   return `backups/${businessId}/`;
@@ -233,7 +225,6 @@ module.exports = {
   exists,
   putJson,
   getJson,
-  emailIndexKey,
   backupPrefix,
   backupKey,
   getBucket,

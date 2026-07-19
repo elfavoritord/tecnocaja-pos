@@ -27,6 +27,7 @@ const {
   BACKUP_MAGIC,
   getDefaultBackupDir,
   ensureDir,
+  writeFileAtomic,
   generateFilename,
   listLocalBackups,
   buildFullPayload,
@@ -169,7 +170,7 @@ async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = f
   const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
   const backupDir  = ensureDir(getDefaultBackupDir());
   const filePath   = path.join(backupDir, fileName);
-  fs.writeFileSync(filePath, fileBuffer);
+  writeFileAtomic(filePath, fileBuffer);
   pruneLocalBackups(backupDir, retentionCount);
 
   // Verificar si hay nube configurada y auto-subida habilitada.
@@ -424,7 +425,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         || null;
       const backupDir = ensureDir(customDir || getDefaultBackupDir());
       const filePath  = path.join(backupDir, fileName);
-      fs.writeFileSync(filePath, fileBuffer);
+      writeFileAtomic(filePath, fileBuffer);
 
       const fileSize = fs.statSync(filePath).size;
 
@@ -557,7 +558,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         // Guardar copia local también
         const backupDir = ensureDir(getDefaultBackupDir());
         const localPath = path.join(backupDir, fileName);
-        fs.writeFileSync(localPath, fileBuffer);
+        writeFileAtomic(localPath, fileBuffer);
         pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
       }
 
@@ -572,21 +573,6 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         exportedAt:    payload.exportedAt || new Date().toISOString(),
       });
       await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
-
-      // Actualizar índice email → businessId en R2
-      try {
-        const emailRows = await query(
-          'SELECT email FROM users WHERE role = ? LIMIT 1', ['admin']
-        ).catch(() => []);
-        if (emailRows[0]?.email) {
-          const idxKey  = r2.emailIndexKey(emailRows[0].email);
-          const current = (await r2.getJson(idxKey)) || { businessIds: [] };
-          if (!current.businessIds.includes(businessId)) {
-            current.businessIds.push(businessId);
-            await r2.putJson(idxKey, current);
-          }
-        }
-      } catch (_) { /* non-fatal */ }
 
       // Historial local
       await recordHistory(query, {
@@ -686,7 +672,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
         preRestoreName = generateFilename(currentPayload.businessName + '_PRE-RESTAURACION', currentPayload.systemVersion);
         const backupDir = ensureDir(getDefaultBackupDir());
-        fs.writeFileSync(path.join(backupDir, preRestoreName), currentBuf);
+        writeFileAtomic(path.join(backupDir, preRestoreName), currentBuf);
       } catch (preBackupErr) {
         console.warn('[respaldos][restaurar-local] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):', preBackupErr.message);
       }
@@ -748,7 +734,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
         preRestoreName = generateFilename(currentPayload.businessName + '_PRE-REST-NUBE', currentPayload.systemVersion);
         const backupDir = ensureDir(getDefaultBackupDir());
-        fs.writeFileSync(path.join(backupDir, preRestoreName), currentBuf);
+        writeFileAtomic(path.join(backupDir, preRestoreName), currentBuf);
       } catch (preBackupErr) {
         console.warn('[respaldos][restaurar-nube] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):', preBackupErr.message);
       }
@@ -886,22 +872,6 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         uploadedBy:  actor.userName || 'sistema',
       });
       await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
-
-      // Actualizar índice email → businessId en R2 (igual que subir-nube)
-      // Necesario para que el wizard de restauración pueda encontrar el backup por email.
-      try {
-        const emailRows = await query(
-          'SELECT email FROM users WHERE role = ? LIMIT 1', ['admin']
-        ).catch(() => []);
-        if (emailRows[0]?.email) {
-          const idxKey  = r2.emailIndexKey(emailRows[0].email);
-          const current = (await r2.getJson(idxKey)) || { businessIds: [] };
-          if (!current.businessIds.includes(businessId)) {
-            current.businessIds.push(businessId);
-            await r2.putJson(idxKey, current);
-          }
-        }
-      } catch (_) { /* non-fatal — no impide el upload */ }
 
       // Registrar en historial
       await recordHistory(query, {
@@ -1105,67 +1075,35 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
 
   // ──────────────────────────────────────────────────────────────────────
   //  POST /api/respaldos/setup/cloud/auth
-  //  Busca backups en R2 por email (sin sesión — wizard de primera instalación).
-  //  Body: { email }
+  //  Lista los respaldos en R2 de ESTE dispositivo (sin sesión — wizard de
+  //  primera instalación). Resuelve el negocio únicamente por
+  //  TECNO_CAJA_LICENSE_UID: ya no hay búsqueda cruzada por correo, porque
+  //  cada llave de Backblaze queda restringida al prefijo backups/<businessId>/
+  //  de un solo negocio y no puede leer el de otros.
+  //  Body: { email } (opcional, solo se conserva para la verificación de
+  //         identidad posterior en /setup/restaurar-nube, no se usa aquí)
   //  Retorna: { businessId, businessIds, backups, email }
   // ──────────────────────────────────────────────────────────────────────
   app.post('/api/respaldos/setup/cloud/auth', setupOnly, async (req, res) => {
     try {
       const { email } = req.body || {};
-      if (!email) return res.status(400).json({ ok: false, error: 'Email requerido.' });
 
-      // Verificar R2 disponible
       const nubeOk = await r2.isR2Available();
       if (!nubeOk) {
         return res.status(503).json({ ok: false, error: 'La nube no está disponible o no está configurada en este dispositivo.' });
       }
 
-      // ── Paso 1: Buscar businessId en índice R2 por email ────────────────
-      const idxKey = r2.emailIndexKey(email);
-      const idx    = await r2.getJson(idxKey);
-
-      let resolvedBusinessIds = idx?.businessIds?.length ? idx.businessIds : null;
-
-      // ── Paso 2: Fallback por TECNO_CAJA_LICENSE_UID ──────────────────────
-      // El índice email→businessId se crea solo cuando se sube un backup desde
-      // este dispositivo. Si el backup fue subido en otro dispositivo o la
-      // primera instalación nunca creó el índice, el lookup por email falla.
-      // En ese caso intentamos directamente con la UID de licencia del .env.
-      if (!resolvedBusinessIds) {
-        const envUid = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-        if (envUid) {
-          console.log(`[respaldos][setup/cloud/auth] Índice email no encontrado. Probando fallback con TECNO_CAJA_LICENSE_UID="${envUid}"`);
-          try {
-            const fallbackObjects = await r2.listObjects(r2.backupPrefix(envUid));
-            const fallbackBackups = fallbackObjects.filter(o => (o.Key || '').endsWith('.tcbak'));
-            if (fallbackBackups.length > 0) {
-              console.log(`[respaldos][setup/cloud/auth] Fallback exitoso: ${fallbackBackups.length} respaldo(s) encontrado(s) con UID de licencia.`);
-              resolvedBusinessIds = [envUid];
-              // Registrar el índice en R2 para futuros lookups por email
-              try {
-                const newIdx = { businessIds: [envUid], createdByFallback: true, createdAt: new Date().toISOString() };
-                await r2.putJson(idxKey, newIdx);
-                console.log(`[respaldos][setup/cloud/auth] Índice email actualizado en R2 para futuros lookups.`);
-              } catch (_) { /* non-fatal */ }
-            }
-          } catch (fallbackErr) {
-            console.warn(`[respaldos][setup/cloud/auth] Fallback con UID de licencia también falló: ${fallbackErr.message}`);
-          }
-        }
-      }
-
-      if (!resolvedBusinessIds) {
+      const businessId = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      if (!businessId) {
         return res.status(404).json({
           ok: false,
-          error: 'No se encontraron respaldos en la nube para este correo. Si subiste el respaldo desde otro dispositivo, asegúrate de usar el mismo correo con el que creaste la cuenta en ese dispositivo.',
+          error: 'Este dispositivo no tiene una licencia configurada (TECNO_CAJA_LICENSE_UID). No se puede identificar el negocio para buscar respaldos en la nube.',
         });
       }
 
-      // ── Paso 3: Listar backups del primer businessId (el principal) ──────
-      const businessId = resolvedBusinessIds[0];
-      const prefix     = r2.backupPrefix(businessId);
-      const objects    = await r2.listObjects(prefix);
-      const backups    = objects
+      const prefix  = r2.backupPrefix(businessId);
+      const objects = await r2.listObjects(prefix);
+      const backups = objects
         .filter(o => (o.Key || '').endsWith('.tcbak'))
         .map(o => ({
           key:          o.Key,
@@ -1177,7 +1115,11 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         .sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified))
         .slice(0, 20);
 
-      res.json({ ok: true, businessId, businessIds: resolvedBusinessIds, backups, email });
+      if (!backups.length) {
+        return res.status(404).json({ ok: false, error: 'No se encontraron respaldos en la nube para este dispositivo.' });
+      }
+
+      res.json({ ok: true, businessId, businessIds: [businessId], backups, email: email || '' });
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });
     }
