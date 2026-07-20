@@ -47,6 +47,16 @@
         Iniciar sesión
       </button>
       <div id="login-err" class="login-error hidden" style="margin-top:10px"></div>
+
+      <div style="display:flex;align-items:center;gap:10px;margin:16px 0;color:#5a7099;font-size:12px">
+        <div style="flex:1;height:1px;background:#2a3550"></div>
+        o
+        <div style="flex:1;height:1px;background:#2a3550"></div>
+      </div>
+      <button id="btn-login-google" class="btn-login" style="background:#1f2937" onclick="app.doLoginGoogle()">
+        🔐 Iniciar con Google
+      </button>
+
       <p style="text-align:center;margin-top:14px">
         <button class="login-link" onclick="app.showForgot()">¿Olvidaste tu contraseña?</button>
       </p>
@@ -110,6 +120,9 @@
       </a>
       <a class="nav-item" data-mod="centro-fiscal" onclick="app.goto('centro-fiscal')">
         <span class="nav-icon">🗓️</span> Centro Fiscal
+      </a>
+      <a class="nav-item" data-mod="contabilidad" onclick="app.goto('contabilidad')">
+        <span class="nav-icon">📒</span> Contabilidad
       </a>
       <a class="nav-item" data-mod="solicitudes" onclick="app.goto('solicitudes')">
         <span class="nav-icon">📋</span> Solicitudes
@@ -440,14 +453,26 @@
 
         <!-- Gráfico de ventas -->
         <div class="section-card rep-chart-wrap" style="margin-bottom:14px">
-          <div class="section-card-title" style="display:flex;justify-content:space-between;align-items:center">
-            <span>📈 Ventas últimos 30 días</span>
-            <span id="rep-chart-total" style="font-size:12px;color:var(--text-sub)"></span>
+          <div class="rep-chart-header">
+            <div class="rep-chart-heading">
+              <div class="rep-chart-icon">📈</div>
+              <div>
+                <div class="rep-chart-title">Ventas últimos 30 días</div>
+                <div class="rep-chart-sub" id="rep-chart-sub">Tendencia diaria de ingresos</div>
+              </div>
+            </div>
+            <div class="rep-chart-total-box">
+              <div class="rep-chart-total-lbl">Total del período</div>
+              <div class="rep-chart-total" id="rep-chart-total">—</div>
+            </div>
           </div>
-          <div style="position:relative;height:160px">
+          <div class="rep-chart-canvas-wrap">
             <canvas id="rep-sales-chart"></canvas>
           </div>
-          <div id="rep-chart-empty" style="display:none;text-align:center;padding:32px;color:var(--text-muted);font-size:13px">Sin datos de ventas para mostrar</div>
+          <div id="rep-chart-empty" class="rep-chart-empty-state" style="display:none">
+            <div class="rep-chart-empty-icon">📉</div>
+            <div>Sin datos de ventas para mostrar</div>
+          </div>
         </div>
 
         <!-- Botón Ver Reportes -->
@@ -924,6 +949,332 @@
           </div>
         </div>
       </div>
+
+      <!-- Generador 606/607/608 desde archivo exportado del negocio -->
+      <div class="section-card" style="margin-top:20px">
+        <div class="section-card-title">📁 Generar 606/607/608 desde archivo del negocio</div>
+        <p style="color:#5a7099;font-size:13px;margin:0 0 12px">
+          Pide a tu cliente que exporte el archivo fiscal desde Tecno Caja POS
+          (Reportes → Fiscal DGII → "📤 Exportar para el Contador") y súbelo aquí
+          para generar los formatos de envío 606, 607 y 608.
+        </p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="cf-dgii-file" accept="application/json" onchange="app.cargarArchivoFiscal(event)">
+          <span id="cf-dgii-status" style="font-size:13px;color:#5a7099"></span>
+        </div>
+        <div id="cf-dgii-resultado" style="display:none;margin-top:16px">
+          <div id="cf-dgii-resumen" style="margin-bottom:12px;font-size:13px;line-height:1.6"></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-secondary" onclick="app.descargarDGII('606')">⬇ 606.txt (Compras)</button>
+            <button class="btn btn-secondary" onclick="app.descargarDGII('607')">⬇ 607.txt (Ventas)</button>
+            <button class="btn btn-secondary" onclick="app.descargarDGII('608')">⬇ 608.txt (Anulados)</button>
+            <button class="btn btn-primary" onclick="app.descargarDGIIExcel()">⬇ Excel (606+607+608)</button>
+          </div>
+          <p style="color:#94733f;font-size:11.5px;margin-top:10px">
+            ⚠️ Verifica el formato contra la Guía de Envío vigente de la DGII antes de presentar.
+            Algunas columnas (retenciones, ISC, tipo de bienes/servicios) se completan en 0 porque
+            el POS aún no las captura por transacción — revísalas con el cliente antes de enviar.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CONTABILIDAD (Sistema Contable, Fase 1) ─────────────────────────── -->
+    <div id="mod-contabilidad" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">Contabilidad</div>
+          <div class="mod-sub">Se genera automáticamente desde las ventas/compras/gastos que el POS sincroniza en vivo</div>
+        </div>
+        <select id="ctb-negocio-select" class="form-select" style="width:260px" onchange="app.selNegocioContabilidad(this.value)">
+          <option value="">— Selecciona un negocio —</option>
+        </select>
+      </div>
+
+      <div id="ctb-state-empty" style="text-align:center;padding:48px;color:#5a7099">
+        Selecciona un negocio arriba para ver su contabilidad.
+      </div>
+
+      <div id="ctb-state-data" style="display:none">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center">
+          <button class="btn btn-xs btn-secondary ctb-vfil active" data-vista="plan" onclick="app.ctbSwitchVista('plan', this)">Plan de Cuentas</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="diario" onclick="app.ctbSwitchVista('diario', this)">Diario General</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="mayor" onclick="app.ctbSwitchVista('mayor', this)">Mayor General</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="balance" onclick="app.ctbSwitchVista('balance', this)">Balance de Comprobación</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="er" onclick="app.ctbSwitchVista('er', this)">Estado de Resultados</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="bg" onclick="app.ctbSwitchVista('bg', this)">Balance General</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="fe" onclick="app.ctbSwitchVista('fe', this)">Flujo de Efectivo</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="indicadores" onclick="app.ctbSwitchVista('indicadores', this)">Indicadores</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="cierre" onclick="app.ctbSwitchVista('cierre', this)">Cierre Contable</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="activos" onclick="app.ctbSwitchVista('activos', this)">Activos Fijos</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="centros" onclick="app.ctbSwitchVista('centros', this)">Centros de Costo</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="presupuesto" onclick="app.ctbSwitchVista('presupuesto', this)">Presupuesto</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="auditoria" onclick="app.ctbSwitchVista('auditoria', this)">Auditoría</button>
+          <button class="btn btn-xs btn-secondary ctb-vfil" data-vista="config" onclick="app.ctbSwitchVista('config', this)">Configuración</button>
+          <button class="btn btn-secondary" onclick="app.abrirModalAsiento()">+ Asiento Manual</button>
+          <button id="ctb-btn-generar" class="btn btn-primary" onclick="app.ctbGenerarAsientos()" style="margin-left:auto">⚡ Generar Asientos</button>
+        </div>
+
+        <div id="ctb-vista-plan" class="section-card">
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Código</th><th>Nombre</th><th>Tipo</th></tr></thead>
+            <tbody id="ctb-plan-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="ctb-vista-diario" class="section-card" style="display:none">
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Fecha</th><th>Descripción</th><th>Cuenta</th><th style="text-align:right">Debe</th><th style="text-align:right">Haber</th><th style="width:40px"></th></tr></thead>
+            <tbody id="ctb-diario-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="ctb-vista-mayor" class="section-card" style="display:none">
+          <select id="ctb-mayor-select" class="form-select" style="margin-bottom:12px" onchange="app.ctbCargarMayor()"></select>
+          <div style="margin-bottom:10px;font-size:13px">Saldo inicial: <b id="ctb-mayor-apertura">0.00</b> &nbsp;·&nbsp; Saldo final: <b id="ctb-mayor-cierre">0.00</b></div>
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Fecha</th><th>Descripción</th><th style="text-align:right">Debe</th><th style="text-align:right">Haber</th><th style="text-align:right">Saldo</th></tr></thead>
+            <tbody id="ctb-mayor-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="ctb-vista-balance" class="section-card" style="display:none">
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Código</th><th>Cuenta</th><th style="text-align:right">Debe</th><th style="text-align:right">Haber</th><th style="text-align:right">Saldo</th></tr></thead>
+            <tbody id="ctb-balance-tbody"></tbody>
+          </table>
+          <div id="ctb-balance-totales" style="margin-top:10px;font-size:13px;font-weight:600"></div>
+        </div>
+
+        <div id="ctb-vista-er" class="section-card" style="display:none">
+          <div class="section-card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>📈 Estado de Resultados</span>
+            <button class="btn btn-xs btn-secondary" onclick="app.ctbExportarER()">⬇ Exportar PDF</button>
+          </div>
+          <div id="ctb-er-body" style="max-width:480px"></div>
+        </div>
+
+        <div id="ctb-vista-bg" class="section-card" style="display:none">
+          <div class="section-card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>⚖️ Balance General</span>
+            <button class="btn btn-xs btn-secondary" onclick="app.ctbExportarBG()">⬇ Exportar PDF</button>
+          </div>
+          <div id="ctb-bg-body"></div>
+        </div>
+
+        <div id="ctb-vista-fe" class="section-card" style="display:none">
+          <div class="section-card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>💵 Flujo de Efectivo</span>
+            <button class="btn btn-xs btn-secondary" onclick="app.ctbExportarFE()">⬇ Exportar PDF</button>
+          </div>
+          <div id="ctb-fe-body" style="max-width:480px"></div>
+        </div>
+
+        <div id="ctb-vista-indicadores" class="section-card" style="display:none">
+          <div class="section-card-title" style="display:flex;justify-content:space-between;align-items:center">
+            <span>📐 Indicadores Financieros</span>
+            <button class="btn btn-xs btn-secondary" onclick="app.ctbExportarIndicadores()">⬇ Exportar PDF</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:8px">
+            <div>
+              <h4>💧 Liquidez</h4>
+              <div id="ctb-ind-liquidez"></div>
+            </div>
+            <div>
+              <h4>📈 Rentabilidad</h4>
+              <div id="ctb-ind-rentabilidad"></div>
+            </div>
+            <div>
+              <h4>⚖️ Endeudamiento</h4>
+              <div id="ctb-ind-endeudamiento"></div>
+            </div>
+          </div>
+
+          <div class="section-card-title" style="margin-top:24px">📊 Comparativo Mensual (últimos 12 meses)</div>
+          <div style="position:relative;height:220px;margin-bottom:20px">
+            <canvas id="ctb-ind-chart-mensual"></canvas>
+          </div>
+
+          <div class="section-card-title">📅 Comparativo Anual</div>
+          <table class="data-table" style="width:100%;margin-bottom:20px">
+            <thead><tr><th>Año</th><th style="text-align:right">Ventas Netas</th><th style="text-align:right">Gastos Operativos</th><th style="text-align:right">Utilidad Neta</th></tr></thead>
+            <tbody id="ctb-ind-anual-tbody"></tbody>
+          </table>
+
+          <div class="section-card-title">💵 Flujo de Caja Proyectado (próximo mes)</div>
+          <p style="color:#5a7099;font-size:13px;margin:0 0 8px">Estimado como el promedio del flujo neto de caja de los últimos 3 meses con movimiento — no es un pronóstico contable formal.</p>
+          <div id="ctb-ind-proyeccion" style="font-size:22px;font-weight:700"></div>
+        </div>
+
+        <div id="ctb-vista-cierre" class="section-card" style="display:none">
+          <div class="section-card-title">🔒 Períodos Contables</div>
+          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Un período cerrado bloquea nuevos asientos con fecha dentro de ese mes.</p>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+            <input type="month" id="ctb-periodo-input" class="form-input" style="width:auto">
+            <button class="btn btn-secondary" onclick="app.ctbCerrarPeriodo()">Cerrar Período</button>
+          </div>
+          <div id="ctb-periodos-body"></div>
+
+          <div class="section-card-title" style="margin-top:24px">📅 Cierre Anual</div>
+          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Salda las cuentas de ingresos/costos/gastos del año a Utilidades Retenidas y cierra los 12 meses. No se puede deshacer automáticamente.</p>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+            <input type="number" id="ctb-anio-input" class="form-input" style="width:100px" placeholder="2026">
+            <button class="btn btn-primary" onclick="app.ctbCerrarAnio()">Cerrar Ejercicio</button>
+          </div>
+          <div id="ctb-cierres-body"></div>
+        </div>
+
+        <div id="ctb-vista-activos" class="section-card" style="display:none">
+          <div class="section-card-title">🏢 Activos Fijos</div>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;align-items:end;margin-bottom:16px">
+            <div class="form-group"><label class="form-label">Nombre</label><input id="activo-nombre" class="form-input" placeholder="Ej. Vitrina refrigerada"></div>
+            <div class="form-group"><label class="form-label">Fecha de compra</label><input id="activo-fecha" type="date" class="form-input"></div>
+            <div class="form-group"><label class="form-label">Costo</label><input id="activo-costo" type="number" class="form-input" placeholder="0.00"></div>
+            <div class="form-group"><label class="form-label">Vida útil (meses)</label><input id="activo-vida" type="number" class="form-input" placeholder="60"></div>
+            <button class="btn btn-primary" onclick="app.ctbGuardarActivo()">+ Registrar</button>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+            <input id="activo-residual" type="number" class="form-input" style="width:220px" placeholder="Valor residual (opcional, 0 si no aplica)">
+            <select id="activo-metodo" class="form-select" style="width:240px">
+              <option value="linea_recta">Depreciación: Línea Recta</option>
+              <option value="saldo_decreciente">Depreciación: Saldo Decreciente (doble)</option>
+            </select>
+          </div>
+
+          <div class="table-wrap">
+            <table class="data-table" style="width:100%">
+              <thead><tr><th>Nombre</th><th>Compra</th><th style="text-align:right">Costo</th><th>Método</th><th style="text-align:right">Meses Dep.</th><th style="text-align:right">Valor en Libros</th><th>Estado</th><th></th></tr></thead>
+              <tbody id="ctb-activos-tbody"></tbody>
+            </table>
+          </div>
+
+          <div style="display:flex;gap:8px;align-items:center;margin-top:16px">
+            <input type="month" id="ctb-depreciar-hasta" class="form-input" style="width:auto">
+            <button class="btn btn-secondary" onclick="app.ctbDepreciar()">⚡ Generar Depreciación</button>
+          </div>
+        </div>
+
+        <div id="ctb-vista-centros" class="section-card" style="display:none">
+          <div class="section-card-title">🏷️ Centros de Costo</div>
+          <div style="display:flex;gap:8px;align-items:end;margin-bottom:16px">
+            <div class="form-group"><label class="form-label">Nombre</label><input id="centro-nombre" class="form-input" placeholder="Ej. Sucursal Norte"></div>
+            <div class="form-group"><label class="form-label">Tipo</label>
+              <select id="centro-tipo" class="form-select">
+                <option value="departamento">Departamento</option>
+                <option value="sucursal">Sucursal</option>
+                <option value="proyecto">Proyecto</option>
+              </select>
+            </div>
+            <button class="btn btn-primary" onclick="app.ctbGuardarCentroCosto()">+ Agregar</button>
+          </div>
+          <table class="data-table" style="width:100%;margin-bottom:20px">
+            <thead><tr><th>Nombre</th><th>Tipo</th></tr></thead>
+            <tbody id="ctb-centros-tbody"></tbody>
+          </table>
+          <div class="section-card-title">Comparativo por Centro de Costo</div>
+          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Solo asientos manuales pueden asignarse a un centro de costo.</p>
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Centro</th><th style="text-align:right">Debe</th><th style="text-align:right">Haber</th></tr></thead>
+            <tbody id="ctb-comparativo-centros-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="ctb-vista-presupuesto" class="section-card" style="display:none">
+          <div class="section-card-title">📊 Presupuesto</div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+            <input type="number" id="ctb-presupuesto-anio" class="form-input" style="width:100px" placeholder="2026" onchange="app.ctbCargarPresupuesto()">
+            <button class="btn btn-primary" onclick="app.ctbGuardarPresupuesto()">💾 Guardar Presupuesto</button>
+          </div>
+          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Monto anual esperado por cuenta — se prorratea automáticamente si comparas solo parte del año.</p>
+          <div id="ctb-presupuesto-form" style="max-width:500px;margin-bottom:20px"></div>
+          <div class="section-card-title">Comparativo Presupuesto vs. Real</div>
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Cuenta</th><th style="text-align:right">Presupuestado</th><th style="text-align:right">Real</th><th style="text-align:right">Variación</th></tr></thead>
+            <tbody id="ctb-comparativo-presupuesto-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="ctb-vista-auditoria" class="section-card" style="display:none">
+          <div class="section-card-title">🕵️ Auditoría</div>
+          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Historial de acciones clave: quién, qué y cuándo.</p>
+          <table class="data-table" style="width:100%">
+            <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th></tr></thead>
+            <tbody id="ctb-auditoria-tbody"></tbody>
+          </table>
+        </div>
+
+        <div id="ctb-vista-config" class="section-card" style="display:none">
+          <div class="section-card-title">⚙️ Configuración Contable</div>
+          <div class="form-group" style="max-width:300px;margin-bottom:12px">
+            <label class="form-label">Moneda</label>
+            <input class="form-input" value="DOP — Peso Dominicano" disabled>
+          </div>
+          <div class="form-group" style="max-width:300px;margin-bottom:16px">
+            <label class="form-label">Mes de inicio del año fiscal</label>
+            <select id="ctb-config-inicio-anio" class="form-select">
+              <option value="1">Enero</option><option value="2">Febrero</option><option value="3">Marzo</option>
+              <option value="4">Abril</option><option value="5">Mayo</option><option value="6">Junio</option>
+              <option value="7">Julio</option><option value="8">Agosto</option><option value="9">Septiembre</option>
+              <option value="10">Octubre</option><option value="11">Noviembre</option><option value="12">Diciembre</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="app.ctbGuardarConfiguracion()">💾 Guardar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MODAL: Dar de Baja Activo ────────────────────────────────────────── -->
+    <div id="modal-baja-activo" class="modal-overlay hidden">
+      <div class="modal-card">
+        <button class="btn-modal-close" onclick="app.cerrarModalBajaActivo()">✕</button>
+        <div class="modal-title">📤 Dar de Baja Activo</div>
+        <div class="modal-sub">Registra la salida del activo — por venta o descarte</div>
+        <div class="form-group" style="margin-bottom:12px"><label class="form-label">Fecha</label><input id="baja-fecha" type="date" class="form-input"></div>
+        <div class="form-group" style="margin-bottom:12px"><label class="form-label">Valor de venta (0 si es descarte)</label><input id="baja-valor-venta" type="number" class="form-input" placeholder="0.00"></div>
+        <div class="form-group" style="margin-bottom:16px"><label class="form-label">Motivo</label><input id="baja-motivo" class="form-input" placeholder="Ej. Vendido, dañado, obsoleto"></div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="app.cerrarModalBajaActivo()">Cancelar</button>
+          <button class="btn btn-primary" onclick="app.ctbGuardarBajaActivo()">Confirmar Baja</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MODAL: Revalorizar Activo ────────────────────────────────────────── -->
+    <div id="modal-revalorizar-activo" class="modal-overlay hidden">
+      <div class="modal-card">
+        <button class="btn-modal-close" onclick="app.cerrarModalRevalorizarActivo()">✕</button>
+        <div class="modal-title">📐 Revalorizar Activo</div>
+        <div class="modal-sub">Ajusta el activo a su valor de mercado actual — genera un asiento de superávit (o deterioro) automáticamente</div>
+        <div style="font-size:13px;color:#8fa3c2;margin-bottom:12px">Valor en libros actual: <b id="reval-valor-actual">—</b></div>
+        <div class="form-group" style="margin-bottom:12px"><label class="form-label">Fecha</label><input id="reval-fecha" type="date" class="form-input"></div>
+        <div class="form-group" style="margin-bottom:12px"><label class="form-label">Nuevo valor</label><input id="reval-valor-nuevo" type="number" class="form-input" placeholder="0.00"></div>
+        <div class="form-group" style="margin-bottom:16px"><label class="form-label">Motivo</label><input id="reval-motivo" class="form-input" placeholder="Ej. Tasación de mercado, mejora del inmueble"></div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="app.cerrarModalRevalorizarActivo()">Cancelar</button>
+          <button class="btn btn-primary" onclick="app.ctbGuardarRevalorizacion()">Confirmar Revalorización</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MODAL: Nuevo Asiento Manual ─────────────────────────────────────── -->
+    <div id="modal-asiento" class="modal-overlay hidden">
+      <div class="modal-card">
+        <button class="btn-modal-close" onclick="app.cerrarModalAsiento()">✕</button>
+        <div class="modal-title">📝 Nuevo Asiento Manual</div>
+        <div class="modal-sub">Para ajustes sin equivalente en el POS (depreciación, correcciones, cierres)</div>
+
+        <div style="display:grid;grid-template-columns:1fr 2fr;gap:12px;margin-bottom:12px">
+          <div class="form-group"><label class="form-label">Fecha</label><input id="asiento-fecha" type="date" class="form-input"></div>
+          <div class="form-group"><label class="form-label">Descripción</label><input id="asiento-descripcion" class="form-input" placeholder="Ej. Depreciación mensual de equipo"></div>
+        </div>
+        <div id="asiento-lineas" style="margin-bottom:8px"></div>
+        <button class="btn btn-secondary" onclick="app.ctbAgregarLineaAsiento()">+ Agregar línea</button>
+
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="app.cerrarModalAsiento()">Cancelar</button>
+          <button class="btn btn-primary" onclick="app.guardarAsiento()">Guardar Asiento</button>
+        </div>
+      </div>
     </div>
 
     <!-- ── ALERTAS ─────────────────────────────────────────────────────────── -->
@@ -1059,6 +1410,7 @@
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
         <button class="btn btn-secondary btn-sm" onclick="app.actualizarReporte()">↺ Actualizar</button>
         <button class="btn btn-secondary btn-sm" onclick="app.exportarCSV()">📊 CSV</button>
+        <button class="btn btn-secondary btn-sm" onclick="app.exportarExcel()">📗 Excel</button>
         <button class="btn btn-secondary btn-sm" onclick="app.imprimirTabReporte()">🖨 Imprimir pestaña</button>
         <button class="btn btn-primary btn-sm"   onclick="app.imprimirReporteMensual()">📄 Reporte mensual</button>
       </div>
@@ -1443,6 +1795,8 @@
 <div id="toast" class="hidden"></div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="vendor/xlsx/xlsx.full.min.js"></script>
+<script src="vendor/jspdf/jspdf.umd.min.js"></script>
 <script src="js/rnc-lookup.js"></script>
 <script src="js/contadores-app.js"></script>
 </body>

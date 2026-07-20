@@ -1,6 +1,6 @@
 {
   "name": "tecno-caja-contadores",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Panel de contadores asociados — Tecno Caja",
   "main": "main.js",
   "private": true,
@@ -23,6 +23,8 @@
     "express": "^5.2.1",
     "express-rate-limit": "^7.4.0",
     "firebase-admin": "^10.3.0",
-    "helmet": "^8.0.0"
+    "helmet": "^8.0.0",
+    "jspdf": "^4.2.1",
+    "xlsx": "^0.18.5"
   }
 }

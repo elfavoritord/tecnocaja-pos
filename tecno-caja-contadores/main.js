@@ -89,6 +89,11 @@ function createWindow() {
   mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
   mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Permitir el popup nativo de "Iniciar con Google" (Firebase Auth) — todo
+    // lo demás se sigue abriendo en el navegador externo por seguridad.
+    if (/^https:\/\/accounts\.google\.com\//.test(url) || /^https:\/\/[^/]+\.firebaseapp\.com\//.test(url)) {
+      return { action: 'allow' };
+    }
     shell.openExternal(url);
     return { action: 'deny' };
   });

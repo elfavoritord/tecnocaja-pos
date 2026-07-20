@@ -141,6 +141,7 @@ function goto(mod) {
   if (mod === 'analisis-global')  loadAnalisisGlobal();
   if (mod === 'centro-fiscal')    loadCentroFiscal();
   if (mod === 'alertas')          loadAlertas();
+  if (mod === 'contabilidad')     loadContabilidad();
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -211,17 +212,15 @@ function showLoginScreen() {
   hide('screen-app');
   show('screen-login');
 
-  // Restaurar credenciales guardadas si "Mantener sesión" estaba activo
+  // Restaurar el correo (no la contraseña — nunca se guarda) si "Mantener
+  // sesión" estaba activo. Firebase persiste la sesión real por su cuenta.
   const savedEmail = localStorage.getItem('tc_saved_email') || '';
-  const savedPass  = localStorage.getItem('tc_saved_pass')  || '';
   const savedRemember = localStorage.getItem('tc_cont_persist') !== 'false';
 
   const emailEl = $id('inp-email');
-  const passEl  = $id('inp-password');
   const chkEl   = $id('chk-remember');
 
   if (emailEl && savedEmail) emailEl.value = savedEmail;
-  if (passEl  && savedPass)  passEl.value  = atob(savedPass);
   if (chkEl)                 chkEl.checked = savedRemember;
 }
 
@@ -308,14 +307,11 @@ async function doLogin() {
       remember ? firebase.auth.Auth.Persistence.LOCAL : firebase.auth.Auth.Persistence.SESSION
     );
     await _fbAuth.signInWithEmailAndPassword(email, pass);
-    // Guardar credenciales si "Mantener sesión" activo
-    if (remember) {
-      localStorage.setItem('tc_saved_email', email);
-      localStorage.setItem('tc_saved_pass',  btoa(pass));
-    } else {
-      localStorage.removeItem('tc_saved_email');
-      localStorage.removeItem('tc_saved_pass');
-    }
+    // Recordar el correo (no la contraseña) si "Mantener sesión" está activo.
+    // Firebase ya persiste la sesión real vía setPersistence — no hace falta
+    // cachear la contraseña, y guardarla en base64 no es cifrado real.
+    if (remember) localStorage.setItem('tc_saved_email', email);
+    else localStorage.removeItem('tc_saved_email');
     // onAuthStateChanged lo toma desde aquí
   } catch (e) {
     let msg = e.message;
@@ -325,6 +321,32 @@ async function doLogin() {
     if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Iniciar sesión'; }
+  }
+}
+
+async function doLoginGoogle() {
+  const errEl = $id('login-err');
+  if (errEl) errEl.classList.add('hidden');
+
+  const btn = $id('btn-login-google');
+  if (btn) { btn.disabled = true; btn.textContent = 'Conectando con Google…'; }
+
+  try {
+    const remember = $id('chk-remember')?.checked !== false;
+    localStorage.setItem('tc_cont_persist', String(remember));
+    await _fbAuth.setPersistence(
+      remember ? firebase.auth.Auth.Persistence.LOCAL : firebase.auth.Auth.Persistence.SESSION
+    );
+    await _fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+    // onAuthStateChanged verifica el token contra /api/auth/verify y muestra
+    // un error claro si esa cuenta de Google no tiene perfil de contador.
+  } catch (e) {
+    let msg = e.message;
+    if (e.code === 'auth/popup-closed-by-user') { msg = null; }
+    if (e.code === 'auth/popup-blocked') msg = 'El navegador bloqueó la ventana de Google. Intenta de nuevo.';
+    if (msg && errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔐 Iniciar con Google'; }
   }
 }
 
@@ -503,10 +525,10 @@ function renderClientes(list) {
       <td class="td-small ${diasClass(dias)}">${fmtDate(vence)}</td>
       <td class="td-small">${fmtDate(c.syncedAt)}</td>
       <td>
-        <div style="display:flex;gap:5px;flex-wrap:wrap">
-          <button class="btn btn-xs btn-secondary" onclick="app.verCliente('${c.id}')">Ver</button>
-          <button class="btn btn-xs btn-secondary" onclick="app.abrirSolicitudModal('${c.id}')">Solicitud</button>
-          ${c.telefono ? `<button class="btn btn-xs btn-secondary" onclick="app.contactarNegocio('${(c.telefono||'').replace(/[^0-9]/g,'')}','${(c.businessName||'').replace(/'/g,'')}')">Contactar</button>` : ''}
+        <div style="display:flex;gap:6px;flex-wrap:nowrap;justify-content:flex-end">
+          <button class="btn btn-xs btn-secondary" style="padding:4px 8px" title="Ver detalle" onclick="app.verCliente('${c.id}')">👁</button>
+          <button class="btn btn-xs btn-secondary" style="padding:4px 8px" title="Nueva solicitud" onclick="app.abrirSolicitudModal('${c.id}')">📋</button>
+          ${c.telefono ? `<button class="btn btn-xs btn-secondary" style="padding:4px 8px" title="Contactar por WhatsApp" onclick="app.contactarNegocio('${(c.telefono||'').replace(/[^0-9]/g,'')}','${(c.businessName||'').replace(/'/g,'')}')">📞</button>` : ''}
         </div>
       </td>
     </tr>`;
@@ -1270,6 +1292,57 @@ function exportarCSV() {
   toast('CSV exportado correctamente.', 'success');
 }
 
+function exportarExcel() {
+  const table = $id('rep-table-inner')?.querySelector('table');
+  if (!table) { toast('No hay datos para exportar.', 'error'); return; }
+  if (!window.XLSX) { toast('Librería de Excel no disponible.', 'error'); return; }
+
+  const neg   = _allClientes.find(c => c.id === _repNegocioId);
+  const title = _REP_TAB_LABELS[_repTab] || _repTab || 'Reporte';
+  const fecha = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: 'long', year: 'numeric' });
+
+  // Encabezado con contexto del negocio, igual que en el PDF
+  const aoa = [
+    [neg?.businessName || 'Negocio'],
+    [`RNC: ${neg?.rnc || '—'}  ·  ${title}  ·  Generado: ${fecha}`],
+    [],
+  ];
+
+  const headerRow = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+  aoa.push(headerRow);
+
+  table.querySelectorAll('tbody tr').forEach(tr => {
+    const row = [...tr.querySelectorAll('td')].map(td => {
+      const v = td.textContent.trim();
+      // Solo montos "RD$ 1,234.56" se convierten a número real — todo lo demás
+      // (RNC, teléfono, NCF, cédula) se deja como texto para no perder ceros a la izquierda.
+      const m = v.match(/^RD\$\s*([\d.,]+)$/);
+      if (m) return Number(m[1].replace(/,/g, ''));
+      return v === '—' ? '' : v;
+    });
+    aoa.push(row);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: headerRow.length - 1 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: headerRow.length - 1 } },
+  ];
+  ws['!cols'] = headerRow.map((h, i) => {
+    const maxLen = aoa.reduce((max, row) => Math.max(max, String(row[i] ?? '').length), h.length);
+    return { wch: Math.min(Math.max(maxLen + 2, 10), 40) };
+  });
+
+  const wb = XLSX.utils.book_new();
+  const sheetName = title.replace(/[:\\/?*[\]]/g, '').slice(0, 31);
+  XLSX.utils.book_append_sheet(wb, ws, sheetName || 'Reporte');
+
+  const nombre = (neg?.businessName || 'negocio').replace(/[^a-zA-Z0-9]/g, '_');
+  const fechaArchivo = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `reporte_${_repTab}_${nombre}_${fechaArchivo}.xlsx`);
+  toast('Excel exportado correctamente.', 'success');
+}
+
 function imprimirReporte() {
   window.print();
 }
@@ -1309,6 +1382,8 @@ function renderRepChart(rows) {
   if (!labels.length) {
     canvas.style.display = 'none';
     if (emptyEl) emptyEl.style.display = '';
+    setText('rep-chart-total', fmtMoney(0));
+    setText('rep-chart-sub', 'Tendencia diaria de ingresos');
     return;
   }
   canvas.style.display = '';
@@ -1316,34 +1391,57 @@ function renderRepChart(rows) {
 
   const values = labels.map(d => Math.round(byDate[d] * 100) / 100);
   const total  = values.reduce((a, b) => a + b, 0);
-  setText('rep-chart-total', 'Total: ' + fmtMoney(total));
+  const diasConVenta = values.filter(v => v > 0).length;
+  const promedio = diasConVenta ? total / diasConVenta : 0;
+  setText('rep-chart-total', fmtMoney(total));
+  setText('rep-chart-sub', diasConVenta === 1
+    ? '1 día con ventas en el período'
+    : `${diasConVenta} días con ventas · promedio ${fmtMoney(promedio)}/día`);
 
   const fmt = d => {
     try { return new Date(d + 'T12:00:00').toLocaleDateString('es-DO', { day: '2-digit', month: 'short' }); }
     catch { return d; }
   };
 
+  const ctx2d = canvas.getContext('2d');
+  const gradient = ctx2d.createLinearGradient(0, 0, 0, canvas.clientHeight || 200);
+  gradient.addColorStop(0, 'rgba(59,130,246,0.38)');
+  gradient.addColorStop(1, 'rgba(59,130,246,0)');
+
   if (_repChart) { _repChart.destroy(); _repChart = null; }
   _repChart = new Chart(canvas, {
-    type: 'bar',
+    type: 'line',
     data: {
       labels: labels.map(fmt),
       datasets: [{
         label: 'Ventas',
         data: values,
-        backgroundColor: 'rgba(59,130,246,0.45)',
+        fill: true,
+        backgroundColor: gradient,
         borderColor: '#3b82f6',
-        borderWidth: 1,
-        borderRadius: 4,
-        hoverBackgroundColor: 'rgba(59,130,246,0.7)',
+        borderWidth: 2.5,
+        tension: 0.35,
+        pointRadius: labels.length <= 1 ? 5 : 0,
+        pointHoverRadius: 5,
+        pointHitRadius: 16,
+        pointBackgroundColor: '#3b82f6',
+        pointHoverBackgroundColor: '#3b82f6',
+        pointHoverBorderColor: '#e8edf5',
+        pointHoverBorderWidth: 2,
       }],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { display: false },
         tooltip: {
+          displayColors: false,
+          padding: 10,
+          cornerRadius: 8,
+          titleFont: { size: 12, weight: '700' },
+          bodyFont: { size: 12 },
           callbacks: {
             label: ctx => 'RD$ ' + (ctx.parsed.y || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
           },
@@ -1356,15 +1454,17 @@ function renderRepChart(rows) {
       },
       scales: {
         x: {
-          ticks: { color: '#8fa3c2', font: { size: 10 }, maxRotation: 45, minRotation: 0 },
-          grid:  { color: 'rgba(71,100,148,0.15)' },
+          ticks: { color: '#8fa3c2', font: { size: 10 }, maxRotation: 0, minRotation: 0, autoSkip: true, maxTicksLimit: 7 },
+          grid:  { display: false },
+          border: { display: false },
         },
         y: {
           ticks: {
-            color: '#8fa3c2', font: { size: 10 },
+            color: '#8fa3c2', font: { size: 10 }, maxTicksLimit: 4,
             callback: v => 'RD$ ' + (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v),
           },
-          grid: { color: 'rgba(71,100,148,0.15)' },
+          grid: { color: 'rgba(71,100,148,0.12)', borderDash: [4, 4] },
+          border: { display: false },
           beginAtZero: true,
         },
       },
@@ -2881,6 +2981,1034 @@ async function eliminarTarea(id) {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// GENERADOR 606/607/608 DESDE ARCHIVO EXPORTADO DEL NEGOCIO
+// ══════════════════════════════════════════════════════════════════════
+// El negocio exporta su detalle fiscal desde Tecno Caja POS (Reportes →
+// Fiscal DGII → "Exportar para el Contador"). Aquí se importa ese JSON y
+// se generan los .txt de envío + un Excel de trabajo. No hay conexión en
+// vivo al POS del cliente — el flujo es exportar/importar por diseño.
+
+let _dgiiImport = null;
+
+function _dgiiFecha(iso) {
+  const s = String(iso || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.replace(/-/g, '') : '';
+}
+
+function _dgiiMonto(n) {
+  return (Number(n) || 0).toFixed(2);
+}
+
+// Formatos pipe-delimited basados en la Guía de Envío de Datos de la DGII.
+// Columnas que el POS aún no captura por transacción (retenciones, ISC,
+// tipo de bienes/servicios) quedan en 0/valor por defecto — revisar antes
+// de presentar.
+function _buildLinea606(c) {
+  return [
+    c.rncProveedor || '', c.tipoIdentificacion || '', '11', c.ncf || '', '',
+    _dgiiFecha(c.fechaComprobante), _dgiiFecha(c.fechaComprobante),
+    _dgiiMonto(c.montoFacturado), _dgiiMonto(c.itbisFacturado),
+    '0.00', '0.00', '0.00', '0.00', '0.00', '', '0.00', '0.00', '0.00', '0.00', '',
+  ].join('|');
+}
+
+function _buildLinea607(v) {
+  return [
+    v.rncCedula || '', v.tipoIdentificacion || '', v.ncf || '', '', '01',
+    _dgiiFecha(v.fecha), '',
+    _dgiiMonto(v.montoFacturado), _dgiiMonto(v.itbisFacturado),
+    '0.00', '0.00', '0.00', '0.00', '0.00', '0.00',
+    _dgiiMonto(v.montoFacturado), '0.00', '0.00',
+  ].join('|');
+}
+
+function _buildLinea608(a) {
+  return [a.ncf || '', _dgiiFecha(a.fechaAnulacion)].join('|');
+}
+
+function cargarArchivoFiscal(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+  const statusEl = $id('cf-dgii-status');
+  const resultEl = $id('cf-dgii-resultado');
+  if (statusEl) statusEl.textContent = 'Leyendo archivo…';
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (data?.tipo !== 'tecno_caja_export_fiscal') {
+        throw new Error('Este archivo no es un export fiscal válido de Tecno Caja.');
+      }
+      _dgiiImport = data;
+      const resumenEl = $id('cf-dgii-resumen');
+      if (resumenEl) {
+        resumenEl.innerHTML = `
+          <strong>${esc(data.negocio?.nombre || 'Negocio')}</strong> (RNC ${esc(data.negocio?.rnc || '—')})<br>
+          Período: ${esc(data.periodo?.desde || '?')} a ${esc(data.periodo?.hasta || '?')}<br>
+          607 Ventas: ${data.ventas607?.length || 0} registro(s) &nbsp;·&nbsp;
+          606 Compras: ${data.compras606?.length || 0} registro(s) &nbsp;·&nbsp;
+          608 Anulados: ${data.anulados608?.length || 0} registro(s)
+        `;
+      }
+      if (resultEl) resultEl.style.display = '';
+      if (statusEl) statusEl.textContent = `Archivo cargado: ${file.name}`;
+    } catch (e) {
+      _dgiiImport = null;
+      if (resultEl) resultEl.style.display = 'none';
+      if (statusEl) statusEl.textContent = '';
+      toast(e.message || 'No se pudo leer el archivo.', 'error');
+    }
+  };
+  reader.onerror = () => toast('No se pudo leer el archivo.', 'error');
+  reader.readAsText(file);
+}
+
+function _descargarTexto(nombre, contenido) {
+  const blob = new Blob([contenido], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = nombre;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function descargarDGII(formato) {
+  if (!_dgiiImport) { toast('Primero carga el archivo fiscal del negocio.', 'warning'); return; }
+  const rnc = (_dgiiImport.negocio?.rnc || 'negocio').replace(/[^\w-]/g, '');
+  if (formato === '606') {
+    _descargarTexto(`606_${rnc}.txt`, (_dgiiImport.compras606 || []).map(_buildLinea606).join('\r\n'));
+  } else if (formato === '607') {
+    _descargarTexto(`607_${rnc}.txt`, (_dgiiImport.ventas607 || []).map(_buildLinea607).join('\r\n'));
+  } else if (formato === '608') {
+    _descargarTexto(`608_${rnc}.txt`, (_dgiiImport.anulados608 || []).map(_buildLinea608).join('\r\n'));
+  }
+}
+
+function descargarDGIIExcel() {
+  if (!_dgiiImport) { toast('Primero carga el archivo fiscal del negocio.', 'warning'); return; }
+  const rnc = (_dgiiImport.negocio?.rnc || 'negocio').replace(/[^\w-]/g, '');
+  const wb = XLSX.utils.book_new();
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((_dgiiImport.ventas607 || []).map(v => ({
+    NCF: v.ncf, Tipo: v.tipoNcf, Fecha: v.fecha, 'RNC/Cédula': v.rncCedula,
+    'Monto Facturado': v.montoFacturado, 'ITBIS Facturado': v.itbisFacturado,
+  }))), '607 Ventas');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((_dgiiImport.compras606 || []).map(c => ({
+    NCF: c.ncf, Tipo: c.tipoNcf, 'RNC Proveedor': c.rncProveedor, Fecha: c.fechaComprobante,
+    'Monto Facturado': c.montoFacturado, 'ITBIS Facturado': c.itbisFacturado,
+  }))), '606 Compras');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet((_dgiiImport.anulados608 || []).map(a => ({
+    NCF: a.ncf, Tipo: a.tipoNcf, 'Fecha Anulación': a.fechaAnulacion,
+  }))), '608 Anulados');
+
+  XLSX.writeFile(wb, `DGII_606_607_608_${rnc}.xlsx`);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// CONTABILIDAD — Sistema Contable (Fase 1, en vivo vía Firestore)
+// ══════════════════════════════════════════════════════════════════════
+// A diferencia del generador 606/607/608 (que sigue siendo importar un
+// archivo), esto lee datos que sync-pos-stats.js del POS ya sincroniza
+// automáticamente en cada venta/cierre de caja — no hace falta que el
+// negocio exporte nada. "Generar Asientos" llama al backend, que crea los
+// asientos nuevos de forma idempotente y los guarda en Firestore.
+
+let _ctbNegocioId = null;
+let _ctbVista = 'plan';
+let _ctbCuentas = [];
+
+async function loadContabilidad() {
+  const sel = $id('ctb-negocio-select');
+  if (!sel) return;
+  if (!_allClientes.length) {
+    try {
+      await refreshToken();
+      _allClientes = await apiCall('GET', '/api/clientes');
+    } catch (e) {
+      toast('Error cargando negocios: ' + e.message, 'error');
+    }
+  }
+  sel.innerHTML = '<option value="">— Selecciona un negocio —</option>' +
+    _allClientes.map(c => `<option value="${c.id}">${esc(c.businessName || c.businessKey || c.id)}</option>`).join('');
+
+  if (_ctbNegocioId) {
+    sel.value = _ctbNegocioId;
+    selNegocioContabilidad(_ctbNegocioId);
+  } else {
+    $id('ctb-state-empty').style.display = '';
+    $id('ctb-state-data').style.display = 'none';
+  }
+}
+
+async function selNegocioContabilidad(id) {
+  if (!id) {
+    _ctbNegocioId = null;
+    $id('ctb-state-empty').style.display = '';
+    $id('ctb-state-data').style.display = 'none';
+    return;
+  }
+  _ctbNegocioId = id;
+  $id('ctb-state-empty').style.display = 'none';
+  $id('ctb-state-data').style.display = '';
+  _ctbCuentas = [];
+  await ctbSwitchVista(_ctbVista);
+}
+
+async function ctbGenerarAsientos() {
+  if (!_ctbNegocioId) return;
+  const btn = $id('ctb-btn-generar');
+  if (btn) { btn.disabled = true; btn.textContent = 'Generando…'; }
+  try {
+    const res = await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/generar`);
+    toast(res.asientosCreados > 0 ? `${res.asientosCreados} asiento(s) nuevo(s) generado(s).` : 'Todo al día — no había movimientos nuevos.', 'success');
+    if (res.omitidosPorDesbalance > 0) {
+      toast(`${res.omitidosPorDesbalance} movimiento(s) no se contabilizaron por venir desbalanceados (debe ≠ haber) — revisa el dato de origen y vuelve a generar.`, 'warning');
+    }
+    await ctbSwitchVista(_ctbVista);
+  } catch (e) {
+    toast(e.message || 'No se pudo generar.', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Generar Asientos'; }
+  }
+}
+
+async function ctbSwitchVista(vista, btn) {
+  _ctbVista = vista;
+  document.querySelectorAll('.ctb-vfil').forEach(b => b.classList.toggle('active', b.dataset.vista === vista));
+  ['plan', 'asientos', 'diario', 'mayor', 'balance', 'er', 'bg', 'fe', 'indicadores', 'cierre', 'activos', 'centros', 'presupuesto', 'auditoria', 'config'].forEach(v => {
+    const el = $id(`ctb-vista-${v}`);
+    if (el) el.style.display = v === vista ? '' : 'none';
+  });
+  if (!_ctbNegocioId) return;
+  if (!_ctbCuentas.length) await ctbCargarCuentas();
+  if (vista === 'plan') ctbRenderPlan();
+  if (vista === 'diario') await ctbCargarDiario();
+  if (vista === 'mayor') ctbRenderMayorSelect();
+  if (vista === 'balance') await ctbCargarBalance();
+  if (vista === 'er') await ctbCargarEstadoResultados();
+  if (vista === 'bg') await ctbCargarBalanceGeneral();
+  if (vista === 'fe') await ctbCargarFlujoEfectivo();
+  if (vista === 'indicadores') await ctbCargarIndicadores();
+  if (vista === 'cierre') await ctbCargarCierre();
+  if (vista === 'activos') await ctbCargarActivosFijos();
+  if (vista === 'centros') await ctbCargarCentrosCosto();
+  if (vista === 'presupuesto') await ctbCargarPresupuesto();
+  if (vista === 'auditoria') await ctbCargarAuditoria();
+  if (vista === 'config') await ctbCargarConfiguracion();
+}
+
+async function ctbCargarCuentas() {
+  try {
+    _ctbCuentas = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/cuentas`);
+  } catch (e) {
+    toast('Error cargando plan de cuentas: ' + e.message, 'error');
+  }
+}
+
+function ctbRenderPlan() {
+  const tbody = $id('ctb-plan-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = _ctbCuentas.map(c => `
+    <tr><td>${esc(c.code)}</td><td>${c.parentCode ? '&nbsp;&nbsp;&nbsp;' : '<b>'}${esc(c.name)}${c.parentCode ? '' : '</b>'}</td><td>${esc(c.accountType)}</td></tr>
+  `).join('') || '<tr><td colspan="3">Sin cuentas.</td></tr>';
+}
+
+function ctbCuentaOptions() {
+  return _ctbCuentas.map(c => `<option value="${esc(c.code)}">${esc(c.code)} — ${esc(c.name)}</option>`).join('');
+}
+
+let _ctbUltimoDiario = [];
+
+async function ctbCargarDiario() {
+  const tbody = $id('ctb-diario-tbody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="6">Cargando…</td></tr>';
+  try {
+    const asientos = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/diario`);
+    _ctbUltimoDiario = asientos;
+    const cuentasByCode = new Map(_ctbCuentas.map(c => [c.code, c]));
+    if (!tbody) return;
+    tbody.innerHTML = asientos.flatMap(a => (a.lineas || []).map((l, i) => `
+      <tr>
+        <td>${esc(String(a.fecha || '').slice(0, 10))}</td>
+        <td>${esc(a.descripcion)}${a.origen === 'automatico' ? ' <span style="font-size:11px;color:#5a7099;border:1px solid #2a3550;border-radius:4px;padding:1px 5px">auto</span>' : ''}</td>
+        <td>${esc(l.cuenta)} — ${esc(cuentasByCode.get(l.cuenta)?.name || '')}</td>
+        <td style="text-align:right">${l.debe ? Number(l.debe).toFixed(2) : ''}</td>
+        <td style="text-align:right">${l.haber ? Number(l.haber).toFixed(2) : ''}</td>
+        ${i === 0 ? `<td rowspan="${(a.lineas || []).length}" style="text-align:center;vertical-align:middle"><button class="btn btn-xs btn-secondary" style="padding:2px 6px" title="Copiar este asiento" onclick="app.ctbCopiarAsiento('${a.id}')">⧉</button></td>` : ''}
+      </tr>`)).join('') || '<tr><td colspan="6">Sin movimientos.</td></tr>';
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="6">${esc(e.message)}</td></tr>`;
+  }
+}
+
+function ctbCopiarAsiento(id) {
+  const original = _ctbUltimoDiario.find(a => a.id === id);
+  if (!original) { toast('No se encontró el asiento original.', 'error'); return; }
+  _ctbLineas = (original.lineas || []).map(l => ({
+    cuenta: l.cuenta || '', debe: l.debe || '', haber: l.haber || '', centroCosto: l.centroCosto || '',
+  }));
+  $id('asiento-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('asiento-descripcion').value = (original.descripcion || '') + ' (copia)';
+  ctbRenderLineasAsiento();
+  $id('modal-asiento').classList.remove('hidden');
+  toast('Asiento copiado — revisa fecha y montos antes de guardar.', 'info');
+}
+
+function ctbRenderMayorSelect() {
+  const sel = $id('ctb-mayor-select');
+  if (!sel) return;
+  sel.innerHTML = ctbCuentaOptions();
+  ctbCargarMayor();
+}
+
+async function ctbCargarMayor() {
+  const sel = $id('ctb-mayor-select');
+  const tbody = $id('ctb-mayor-tbody');
+  if (!sel || !tbody || !sel.value) { if (tbody) tbody.innerHTML = ''; return; }
+  tbody.innerHTML = '<tr><td colspan="4">Cargando…</td></tr>';
+  try {
+    const data = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/mayor/${sel.value}`);
+    setText('ctb-mayor-apertura', Number(data.openingBalance).toFixed(2));
+    setText('ctb-mayor-cierre', Number(data.closingBalance).toFixed(2));
+    tbody.innerHTML = data.rows.map(r => `
+      <tr>
+        <td>${esc(String(r.fecha || '').slice(0, 10))}</td>
+        <td>${esc(r.descripcion)}</td>
+        <td style="text-align:right">${r.debe ? Number(r.debe).toFixed(2) : ''}</td>
+        <td style="text-align:right">${r.haber ? Number(r.haber).toFixed(2) : ''}</td>
+        <td style="text-align:right">${Number(r.saldo).toFixed(2)}</td>
+      </tr>`).join('') || '<tr><td colspan="5">Sin movimientos para esta cuenta.</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="5">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function ctbCargarBalance() {
+  const tbody = $id('ctb-balance-tbody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="5">Cargando…</td></tr>';
+  try {
+    const data = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/balance-comprobacion`);
+    if (tbody) {
+      tbody.innerHTML = data.rows.map(r => `
+        <tr>
+          <td>${esc(r.code)}</td><td>${esc(r.name)}</td>
+          <td style="text-align:right">${Number(r.totalDebe).toFixed(2)}</td>
+          <td style="text-align:right">${Number(r.totalHaber).toFixed(2)}</td>
+          <td style="text-align:right">${Number(r.saldo).toFixed(2)}</td>
+        </tr>`).join('') || '<tr><td colspan="5">Sin movimientos en este período.</td></tr>';
+    }
+    const cuadra = Math.abs(data.totales.totalDebe - data.totales.totalHaber) < 0.01;
+    setText('ctb-balance-totales', `Debe: ${data.totales.totalDebe.toFixed(2)} · Haber: ${data.totales.totalHaber.toFixed(2)} · ${cuadra ? '✓ Cuadrado' : '✗ Descuadrado'}`);
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function ctbCargarEstadoResultados() {
+  const wrap = $id('ctb-er-body');
+  if (wrap) wrap.innerHTML = 'Cargando…';
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/estado-resultados`);
+    const fila = (label, val, fuerte) => `
+      <div style="display:flex;justify-content:space-between;padding:6px 0;${fuerte ? 'font-weight:700;border-top:1px solid #2a3550' : ''}">
+        <span>${esc(label)}</span><span>${Number(val).toFixed(2)}</span>
+      </div>`;
+    if (wrap) wrap.innerHTML = `
+      ${fila('Ventas Netas', d.ventasNetas)}
+      ${fila('Costo de Ventas', d.costoVentas)}
+      ${fila('Utilidad Bruta', d.utilidadBruta, true)}
+      ${fila('Gastos Operativos', d.gastosOperativos)}
+      ${fila('Utilidad Operativa', d.utilidadOperativa, true)}
+      ${fila('Otros Ingresos', d.otrosIngresos)}
+      ${fila('Otros Gastos', d.otrosGastos)}
+      ${fila('Utilidad Neta', d.utilidadNeta, true)}
+    `;
+  } catch (e) {
+    if (wrap) wrap.innerHTML = esc(e.message);
+  }
+}
+
+async function ctbCargarBalanceGeneral() {
+  const wrap = $id('ctb-bg-body');
+  if (wrap) wrap.innerHTML = 'Cargando…';
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/balance-general`);
+    const lista = (rows) => rows.map(r => `
+      <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px">
+        <span>${esc(r.code)} — ${esc(r.name)}</span><span>${Number(r.saldo).toFixed(2)}</span>
+      </div>`).join('') || '<div style="color:#5a7099;font-size:13px">Sin saldo.</div>';
+    if (wrap) wrap.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <div>
+          <h4>Activos Corrientes</h4>${lista(d.activos.corrientes)}
+          <h4 style="margin-top:12px">Activos No Corrientes</h4>${lista(d.activos.noCorrientes)}
+          <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px">Total Activos: ${d.activos.total.toFixed(2)}</div>
+        </div>
+        <div>
+          <h4>Pasivos Corrientes</h4>${lista(d.pasivos.corrientes)}
+          <h4 style="margin-top:12px">Pasivos Largo Plazo</h4>${lista(d.pasivos.largoPlazo)}
+          <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px">Total Pasivos: ${d.pasivos.total.toFixed(2)}</div>
+          <h4 style="margin-top:16px">Patrimonio</h4>${lista(d.patrimonio.cuentas)}
+          <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px">Total Patrimonio: ${d.patrimonio.total.toFixed(2)}</div>
+        </div>
+      </div>
+      <div style="margin-top:16px;font-weight:700;${d.cuadra ? 'color:#22c55e' : 'color:#ef4444'}">
+        Activos: ${d.activos.total.toFixed(2)} ${d.cuadra ? '=' : '≠'} Pasivos + Patrimonio: ${d.totalPasivoPatrimonio.toFixed(2)} ${d.cuadra ? '✓' : '✗'}
+      </div>`;
+  } catch (e) {
+    if (wrap) wrap.innerHTML = esc(e.message);
+  }
+}
+
+async function ctbCargarFlujoEfectivo() {
+  const wrap = $id('ctb-fe-body');
+  if (wrap) wrap.innerHTML = 'Cargando…';
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/flujo-efectivo`);
+    const fila = (label, val) => `<div style="display:flex;justify-content:space-between;padding:6px 0"><span>${esc(label)}</span><span>${Number(val).toFixed(2)}</span></div>`;
+    if (wrap) wrap.innerHTML = `
+      ${fila('Flujo de Operación', d.operacion)}
+      ${fila('Flujo de Inversión', d.inversion)}
+      ${fila('Flujo de Financiamiento', d.financiamiento)}
+      <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px;display:flex;justify-content:space-between">
+        <span>Cambio Neto en Efectivo</span><span>${Number(d.neto).toFixed(2)}</span>
+      </div>`;
+  } catch (e) {
+    if (wrap) wrap.innerHTML = esc(e.message);
+  }
+}
+
+// ── Exportar Estados Financieros a PDF ──────────────────────────────────────
+// Reusa el mismo mecanismo ya usado por Reportes/Facturas (_savePdf → IPC →
+// Electron printToPDF nativo) — no depende de ninguna librería nueva.
+function _ctbPdfDoc(neg, badge, bodyHtml) {
+  const fecha = new Date().toLocaleDateString('es-DO', { day: '2-digit', month: 'long', year: 'numeric' });
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+  <title>${esc(badge)} — ${esc(neg?.businessName || '')}</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#1a1a2e;padding:24px}
+    .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:12px;border-bottom:3px solid #3b82f6;margin-bottom:18px}
+    h1{font-size:18px;font-weight:800;margin-bottom:3px}
+    h2{font-size:13px;color:#5a7099;font-weight:400}
+    .badge{display:inline-block;background:#3b82f6;color:#fff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:.3px;text-transform:uppercase}
+    .row{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid #e2e8f0}
+    .row.strong{font-weight:700;border-bottom:2px solid #1a1a2e;font-size:13px}
+    h4{font-size:12px;color:#3b82f6;margin:14px 0 4px}
+    table{width:100%;border-collapse:collapse;margin-top:4px}
+    th{background:#3b82f6;color:#fff;padding:7px 10px;font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.3px}
+    td{padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px}
+    tr:nth-child(even) td{background:#f8fafc}
+    .footer{text-align:center;font-size:10px;color:#94a3b8;margin-top:20px;padding-top:10px;border-top:1px solid #e2e8f0}
+  </style></head><body>
+  <div class="hdr">
+    <div>
+      <h1>${esc(neg?.businessName || '—')}</h1>
+      <h2>RNC: ${esc(neg?.rnc || '—')}</h2>
+    </div>
+    <div style="text-align:right">
+      <div class="badge">${esc(badge)}</div>
+      <div style="font-size:11px;color:#5a7099;margin-top:5px">Generado: ${fecha}</div>
+    </div>
+  </div>
+  ${bodyHtml}
+  <div class="footer">Tecno Caja Contadores — Portal de Contadores Asociados</div>
+  </body></html>`;
+}
+
+function _pdfFila(label, val, strong) {
+  return `<div class="row${strong ? ' strong' : ''}"><span>${esc(label)}</span><span>RD$ ${Number(val).toFixed(2)}</span></div>`;
+}
+
+function _ctbPdfSlug(neg) {
+  return (neg?.businessName || 'negocio').replace(/\s+/g, '_').slice(0, 30);
+}
+
+async function ctbExportarER() {
+  if (!_ctbNegocioId) return;
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/estado-resultados`);
+    const neg = _allClientes.find(c => c.id === _ctbNegocioId);
+    const body = `
+      ${_pdfFila('Ventas Netas', d.ventasNetas)}
+      ${_pdfFila('Costo de Ventas', d.costoVentas)}
+      ${_pdfFila('Utilidad Bruta', d.utilidadBruta, true)}
+      ${_pdfFila('Gastos Operativos', d.gastosOperativos)}
+      ${_pdfFila('Utilidad Operativa', d.utilidadOperativa, true)}
+      ${_pdfFila('Otros Ingresos', d.otrosIngresos)}
+      ${_pdfFila('Otros Gastos', d.otrosGastos)}
+      ${_pdfFila('Utilidad Neta', d.utilidadNeta, true)}
+    `;
+    const html = _ctbPdfDoc(neg, 'Estado de Resultados', body);
+    await _savePdf(html, `EstadoResultados_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+  } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
+}
+
+async function ctbExportarBG() {
+  if (!_ctbNegocioId) return;
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/balance-general`);
+    const neg = _allClientes.find(c => c.id === _ctbNegocioId);
+    const lista = (rows) => rows.map(r => `<div class="row"><span>${esc(r.code)} — ${esc(r.name)}</span><span>RD$ ${Number(r.saldo).toFixed(2)}</span></div>`).join('') || '<div style="color:#94a3b8;font-size:11px">Sin saldo.</div>';
+    const body = `
+      <div style="display:flex;gap:24px">
+        <div style="flex:1">
+          <h4>Activos Corrientes</h4>${lista(d.activos.corrientes)}
+          <h4>Activos No Corrientes</h4>${lista(d.activos.noCorrientes)}
+          <div class="row strong"><span>Total Activos</span><span>RD$ ${d.activos.total.toFixed(2)}</span></div>
+        </div>
+        <div style="flex:1">
+          <h4>Pasivos Corrientes</h4>${lista(d.pasivos.corrientes)}
+          <h4>Pasivos Largo Plazo</h4>${lista(d.pasivos.largoPlazo)}
+          <div class="row strong"><span>Total Pasivos</span><span>RD$ ${d.pasivos.total.toFixed(2)}</span></div>
+          <h4>Patrimonio</h4>${lista(d.patrimonio.cuentas)}
+          <div class="row strong"><span>Total Patrimonio</span><span>RD$ ${d.patrimonio.total.toFixed(2)}</span></div>
+        </div>
+      </div>
+      <div class="row strong" style="margin-top:10px;${d.cuadra ? 'color:#16a34a' : 'color:#dc2626'}">
+        <span>Activos ${d.cuadra ? '=' : '≠'} Pasivos + Patrimonio</span>
+        <span>RD$ ${d.activos.total.toFixed(2)} / RD$ ${d.totalPasivoPatrimonio.toFixed(2)}</span>
+      </div>
+    `;
+    const html = _ctbPdfDoc(neg, 'Balance General', body);
+    await _savePdf(html, `BalanceGeneral_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+  } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
+}
+
+async function ctbExportarFE() {
+  if (!_ctbNegocioId) return;
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/flujo-efectivo`);
+    const neg = _allClientes.find(c => c.id === _ctbNegocioId);
+    const body = `
+      ${_pdfFila('Flujo de Operación', d.operacion)}
+      ${_pdfFila('Flujo de Inversión', d.inversion)}
+      ${_pdfFila('Flujo de Financiamiento', d.financiamiento)}
+      ${_pdfFila('Cambio Neto en Efectivo', d.neto, true)}
+    `;
+    const html = _ctbPdfDoc(neg, 'Flujo de Efectivo', body);
+    await _savePdf(html, `FlujoEfectivo_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+  } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
+}
+
+async function ctbExportarIndicadores() {
+  if (!_ctbNegocioId) return;
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/indicadores`);
+    const neg = _allClientes.find(c => c.id === _ctbNegocioId);
+    const pct = (v) => v === null || v === undefined ? '—' : (v * 100).toFixed(1) + '%';
+    const vez = (v) => v === null || v === undefined ? '—' : Number(v).toFixed(2) + 'x';
+    const filaTxt = (label, txt) => `<div class="row"><span>${esc(label)}</span><span>${txt}</span></div>`;
+    const body = `
+      <div style="display:flex;gap:20px">
+        <div style="flex:1">
+          <h4>Liquidez</h4>
+          ${filaTxt('Razón Corriente', vez(d.liquidez.razonCorriente))}
+          ${filaTxt('Prueba Ácida', vez(d.liquidez.pruebaAcida))}
+          ${filaTxt('Capital de Trabajo', 'RD$ ' + Number(d.liquidez.capitalTrabajo).toFixed(2))}
+        </div>
+        <div style="flex:1">
+          <h4>Rentabilidad</h4>
+          ${filaTxt('Margen Bruto', pct(d.rentabilidad.margenBruto))}
+          ${filaTxt('Margen Operativo', pct(d.rentabilidad.margenOperativo))}
+          ${filaTxt('Margen Neto', pct(d.rentabilidad.margenNeto))}
+          ${filaTxt('ROA', pct(d.rentabilidad.roa))}
+          ${filaTxt('ROE', pct(d.rentabilidad.roe))}
+        </div>
+        <div style="flex:1">
+          <h4>Endeudamiento</h4>
+          ${filaTxt('Razón de Endeudamiento', pct(d.endeudamiento.razonEndeudamiento))}
+          ${filaTxt('Deuda / Patrimonio', vez(d.endeudamiento.deudaPatrimonio))}
+          ${filaTxt('Autonomía Financiera', pct(d.endeudamiento.autonomia))}
+        </div>
+      </div>
+      <h4 style="margin-top:16px">Comparativo Anual</h4>
+      <table>
+        <thead><tr><th>Año</th><th>Ventas Netas</th><th>Gastos Operativos</th><th>Utilidad Neta</th></tr></thead>
+        <tbody>
+          ${d.comparativoAnual.map(a => `<tr><td>${esc(a.anio)}</td><td>RD$ ${a.ventasNetas.toFixed(2)}</td><td>RD$ ${a.gastosOperativos.toFixed(2)}</td><td>RD$ ${a.utilidadNeta.toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="4">Sin datos.</td></tr>'}
+        </tbody>
+      </table>
+      <div class="row strong" style="margin-top:12px"><span>Flujo de Caja Proyectado (próximo mes)</span><span>RD$ ${Number(d.flujoProyectado).toFixed(2)}</span></div>
+    `;
+    const html = _ctbPdfDoc(neg, 'Indicadores Financieros', body);
+    await _savePdf(html, `Indicadores_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+  } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
+}
+
+let _ctbIndChart = null;
+
+async function ctbCargarIndicadores() {
+  const wrapLiq   = $id('ctb-ind-liquidez');
+  const wrapRent  = $id('ctb-ind-rentabilidad');
+  const wrapDeuda = $id('ctb-ind-endeudamiento');
+  const anualBody = $id('ctb-ind-anual-tbody');
+  const proyEl    = $id('ctb-ind-proyeccion');
+  if (wrapLiq) wrapLiq.innerHTML = 'Cargando…';
+  try {
+    const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/indicadores`);
+
+    const fila = (label, val, tipo) => {
+      let txt = '—';
+      if (val !== null && val !== undefined) {
+        txt = tipo === 'pct' ? (val * 100).toFixed(1) + '%'
+          : tipo === 'money' ? fmtMoney(val)
+          : Number(val).toFixed(2) + 'x';
+      }
+      return `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px"><span>${esc(label)}</span><span style="font-weight:600">${txt}</span></div>`;
+    };
+
+    if (wrapLiq) wrapLiq.innerHTML =
+      fila('Razón Corriente', d.liquidez.razonCorriente, 'veces') +
+      fila('Prueba Ácida', d.liquidez.pruebaAcida, 'veces') +
+      fila('Capital de Trabajo', d.liquidez.capitalTrabajo, 'money');
+
+    if (wrapRent) wrapRent.innerHTML =
+      fila('Margen Bruto', d.rentabilidad.margenBruto, 'pct') +
+      fila('Margen Operativo', d.rentabilidad.margenOperativo, 'pct') +
+      fila('Margen Neto', d.rentabilidad.margenNeto, 'pct') +
+      fila('ROA (retorno s/ activos)', d.rentabilidad.roa, 'pct') +
+      fila('ROE (retorno s/ patrimonio)', d.rentabilidad.roe, 'pct');
+
+    if (wrapDeuda) wrapDeuda.innerHTML =
+      fila('Razón de Endeudamiento', d.endeudamiento.razonEndeudamiento, 'pct') +
+      fila('Deuda / Patrimonio', d.endeudamiento.deudaPatrimonio, 'veces') +
+      fila('Autonomía Financiera', d.endeudamiento.autonomia, 'pct');
+
+    if (anualBody) {
+      anualBody.innerHTML = d.comparativoAnual.map(a => `
+        <tr>
+          <td>${esc(a.anio)}</td>
+          <td style="text-align:right">${fmtMoney(a.ventasNetas)}</td>
+          <td style="text-align:right">${fmtMoney(a.gastosOperativos)}</td>
+          <td style="text-align:right;font-weight:600">${fmtMoney(a.utilidadNeta)}</td>
+        </tr>`).join('') || '<tr><td colspan="4">Sin datos anuales todavía.</td></tr>';
+    }
+
+    if (proyEl) proyEl.textContent = fmtMoney(d.flujoProyectado);
+
+    ctbRenderIndicadoresChart(d.comparativoMensual || []);
+  } catch (e) {
+    if (wrapLiq) wrapLiq.innerHTML = esc(e.message);
+  }
+}
+
+function ctbRenderIndicadoresChart(rows) {
+  const canvas = $id('ctb-ind-chart-mensual');
+  if (!canvas || !window.Chart) return;
+
+  const fmt = (m) => {
+    try { return new Date(m + '-01T12:00:00').toLocaleDateString('es-DO', { month: 'short', year: '2-digit' }); }
+    catch { return m; }
+  };
+
+  if (_ctbIndChart) { _ctbIndChart.destroy(); _ctbIndChart = null; }
+  _ctbIndChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => fmt(r.mes)),
+      datasets: [
+        { label: 'Ventas Netas', data: rows.map(r => r.ventasNetas), backgroundColor: 'rgba(59,130,246,0.55)', borderRadius: 4 },
+        { label: 'Utilidad Neta', data: rows.map(r => r.utilidadNeta), backgroundColor: 'rgba(16,185,129,0.55)', borderRadius: 4 },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8fa3c2', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: RD$ ` + (ctx.parsed.y || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: '#8fa3c2', font: { size: 10 } }, grid: { display: false } },
+        y: {
+          ticks: {
+            color: '#8fa3c2', font: { size: 10 },
+            callback: v => 'RD$ ' + (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v),
+          },
+          grid: { color: 'rgba(71,100,148,0.12)' },
+        },
+      },
+    },
+  });
+}
+
+// ── Períodos Contables y Cierre ─────────────────────────────────────────────
+async function ctbCargarCierre() {
+  await Promise.all([ctbCargarPeriodos(), ctbCargarHistorialCierres()]);
+}
+
+async function ctbCargarPeriodos() {
+  const wrap = $id('ctb-periodos-body');
+  if (wrap) wrap.innerHTML = 'Cargando…';
+  try {
+    const periodos = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/periodos`);
+    if (!wrap) return;
+    if (!periodos.length) {
+      wrap.innerHTML = '<div style="color:#5a7099;font-size:13px">No hay períodos cerrados todavía — todo el historial está abierto.</div>';
+      return;
+    }
+    wrap.innerHTML = periodos.map(p => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a2238">
+        <span>${esc(p.periodo)} ${p.tipo === 'anual' ? '<span style="font-size:11px;color:#5a7099">(cierre anual)</span>' : ''}</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="badge badge-active">Cerrado</span>
+          <button class="btn btn-xs btn-secondary" onclick="app.ctbReabrirPeriodo('${p.periodo}')">Reabrir</button>
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    if (wrap) wrap.innerHTML = esc(e.message);
+  }
+}
+
+async function ctbCerrarPeriodo() {
+  const yyyymm = $id('ctb-periodo-input').value;
+  if (!yyyymm) { toast('Selecciona un mes.', 'warning'); return; }
+  try {
+    await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/periodos/${yyyymm}/cerrar`);
+    toast(`Período ${yyyymm} cerrado.`, 'success');
+    ctbCargarPeriodos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ctbReabrirPeriodo(yyyymm) {
+  if (!confirm(`¿Reabrir el período ${yyyymm}? Podrán registrarse asientos nuevos en esas fechas.`)) return;
+  try {
+    await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/periodos/${yyyymm}/reabrir`);
+    toast(`Período ${yyyymm} reabierto.`, 'success');
+    ctbCargarPeriodos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ctbCargarHistorialCierres() {
+  const wrap = $id('ctb-cierres-body');
+  if (wrap) wrap.innerHTML = 'Cargando…';
+  try {
+    const cierres = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/cierres`);
+    if (!wrap) return;
+    wrap.innerHTML = cierres.map(c => `
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a2238">
+        <span>Ejercicio ${esc(String(c.year))}</span>
+        <span>Utilidad Neta: ${Number(c.utilidadNeta).toFixed(2)} · Cerrado ${esc(String(c.cerradoEn || '').slice(0, 10))} por ${esc(c.cerradoPor || '')}</span>
+      </div>`).join('') || '<div style="color:#5a7099;font-size:13px">Ningún año cerrado todavía.</div>';
+  } catch (e) {
+    if (wrap) wrap.innerHTML = esc(e.message);
+  }
+}
+
+async function ctbCerrarAnio() {
+  const year = $id('ctb-anio-input').value;
+  if (!year) { toast('Indica el año a cerrar.', 'warning'); return; }
+  if (!confirm(`¿Cerrar el ejercicio ${year}? Esto genera un asiento de cierre que salda las cuentas de ingresos/costos/gastos y bloquea los 12 meses de ${year}. No se puede deshacer automáticamente.`)) return;
+  try {
+    const res = await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/cierre-anual/${year}`);
+    toast(`Año ${year} cerrado — Utilidad Neta transferida: ${Number(res.utilidadNeta).toFixed(2)}.`, 'success');
+    ctbCargarCierre();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Activos Fijos y Depreciaciones ──────────────────────────────────────────
+let _ctbActivos = [];
+
+function ctbValorLibros(a) {
+  // Prefiere el acumulado guardado por el servidor (correcto también para
+  // saldo decreciente); el cálculo con mesesDepreciados es solo respaldo para
+  // activos creados antes de que este campo existiera (siempre línea recta).
+  const depAcumulada = a.depreciacionAcumulada != null
+    ? a.depreciacionAcumulada
+    : ctbRound2ClientSide((a.mesesDepreciados || 0) * ((a.costo - a.valorResidual) / a.vidaUtilMeses));
+  return ctbRound2ClientSide(a.costo - depAcumulada);
+}
+function ctbRound2ClientSide(n) { return Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100; }
+
+const _CTB_METODO_DEP_LABEL = { linea_recta: 'Línea Recta', saldo_decreciente: 'Saldo Decreciente' };
+
+async function ctbCargarActivosFijos() {
+  const tbody = $id('ctb-activos-tbody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="8">Cargando…</td></tr>';
+  try {
+    _ctbActivos = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/activos-fijos`);
+    if (!tbody) return;
+    tbody.innerHTML = _ctbActivos.map(a => `
+      <tr>
+        <td>${esc(a.nombre)}</td>
+        <td>${esc(a.fechaCompra)}</td>
+        <td style="text-align:right">${Number(a.costo).toFixed(2)}</td>
+        <td style="font-size:11px;color:#8fa3c2">${esc(_CTB_METODO_DEP_LABEL[a.metodoDepreciacion] || 'Línea Recta')}</td>
+        <td style="text-align:right">${a.mesesDepreciados}/${a.vidaUtilMeses}</td>
+        <td style="text-align:right">${ctbValorLibros(a).toFixed(2)}</td>
+        <td>${a.estado === 'activo' ? '<span class="badge badge-active">Activo</span>' : '<span class="badge badge-expired">Dado de baja</span>'}</td>
+        <td>${a.estado === 'activo' ? `
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-xs btn-secondary" onclick="app.ctbAbrirRevalorizarActivo('${a.id}')">Revalorizar</button>
+            <button class="btn btn-xs btn-secondary" onclick="app.ctbAbrirBajaActivo('${a.id}')">Dar de baja</button>
+          </div>` : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="8">Sin activos fijos registrados.</td></tr>';
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="8">${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function ctbGuardarActivo() {
+  const nombre = $id('activo-nombre').value.trim();
+  const fechaCompra = $id('activo-fecha').value;
+  const costo = Number($id('activo-costo').value);
+  const valorResidual = Number($id('activo-residual').value) || 0;
+  const vidaUtilMeses = Number($id('activo-vida').value);
+  const metodoDepreciacion = $id('activo-metodo').value;
+  if (!nombre || !fechaCompra || !(costo > 0) || !(vidaUtilMeses > 0)) {
+    toast('Completa nombre, fecha, costo y vida útil.', 'warning'); return;
+  }
+  try {
+    await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/activos-fijos`, { nombre, fechaCompra, costo, valorResidual, vidaUtilMeses, metodoDepreciacion });
+    $id('activo-nombre').value = ''; $id('activo-costo').value = ''; $id('activo-residual').value = ''; $id('activo-vida').value = '';
+    $id('activo-metodo').value = 'linea_recta';
+    toast('Activo registrado.', 'success');
+    ctbCargarActivosFijos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ctbDepreciar() {
+  const hasta = $id('ctb-depreciar-hasta').value;
+  try {
+    const res = await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/activos-fijos/depreciar`, hasta ? { hasta } : {});
+    toast(res.asientoCreado ? `Depreciación generada: ${Number(res.totalDepreciacion).toFixed(2)} (${res.activosActualizados} activo(s)).` : res.mensaje, res.asientoCreado ? 'success' : 'info');
+    ctbCargarActivosFijos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+let _ctbActivoBajaId = null;
+function ctbAbrirBajaActivo(id) {
+  _ctbActivoBajaId = id;
+  $id('baja-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('baja-valor-venta').value = '';
+  $id('baja-motivo').value = '';
+  $id('modal-baja-activo').classList.remove('hidden');
+}
+function cerrarModalBajaActivo() { $id('modal-baja-activo').classList.add('hidden'); }
+
+async function ctbGuardarBajaActivo() {
+  const fecha = $id('baja-fecha').value;
+  const valorVenta = Number($id('baja-valor-venta').value) || 0;
+  const motivo = $id('baja-motivo').value.trim();
+  if (!fecha) { toast('Fecha de baja requerida.', 'warning'); return; }
+  try {
+    const res = await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/activos-fijos/${_ctbActivoBajaId}/baja`, { fecha, valorVenta, motivo });
+    cerrarModalBajaActivo();
+    toast(`Activo dado de baja — ${res.resultado >= 0 ? 'ganancia' : 'pérdida'} de ${Math.abs(res.resultado).toFixed(2)}.`, 'success');
+    ctbCargarActivosFijos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+let _ctbActivoRevalId = null;
+function ctbAbrirRevalorizarActivo(id) {
+  const activo = _ctbActivos.find(a => a.id === id);
+  if (!activo) return;
+  _ctbActivoRevalId = id;
+  setText('reval-valor-actual', fmtMoney(ctbValorLibros(activo)));
+  $id('reval-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('reval-valor-nuevo').value = '';
+  $id('reval-motivo').value = '';
+  $id('modal-revalorizar-activo').classList.remove('hidden');
+}
+function cerrarModalRevalorizarActivo() { $id('modal-revalorizar-activo').classList.add('hidden'); }
+
+async function ctbGuardarRevalorizacion() {
+  const fecha = $id('reval-fecha').value;
+  const valorNuevo = Number($id('reval-valor-nuevo').value);
+  const motivo = $id('reval-motivo').value.trim();
+  if (!fecha || !(valorNuevo > 0)) { toast('Fecha y nuevo valor son requeridos.', 'warning'); return; }
+  try {
+    const res = await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/activos-fijos/${_ctbActivoRevalId}/revalorizar`, { fecha, valorNuevo, motivo });
+    cerrarModalRevalorizarActivo();
+    toast(`Activo revalorizado — ${res.ajuste >= 0 ? 'superávit' : 'deterioro'} de ${fmtMoney(Math.abs(res.ajuste))}.`, 'success');
+    ctbCargarActivosFijos();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Centros de Costo ─────────────────────────────────────────────────────
+let _ctbCentrosCosto = [];
+
+async function ctbCargarCentrosCosto() {
+  try {
+    _ctbCentrosCosto = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/centros-costo`);
+    const tbody = $id('ctb-centros-tbody');
+    if (tbody) {
+      tbody.innerHTML = _ctbCentrosCosto.map(c => `<tr><td>${esc(c.nombre)}</td><td>${esc(c.tipo)}</td></tr>`).join('') || '<tr><td colspan="2">Sin centros de costo registrados.</td></tr>';
+    }
+    await ctbCargarComparativoCentros();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ctbGuardarCentroCosto() {
+  const nombre = $id('centro-nombre').value.trim();
+  const tipo = $id('centro-tipo').value;
+  if (!nombre) { toast('Indica un nombre.', 'warning'); return; }
+  try {
+    await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/centros-costo`, { nombre, tipo });
+    $id('centro-nombre').value = '';
+    toast('Centro de costo agregado.', 'success');
+    ctbCargarCentrosCosto();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ctbCargarComparativoCentros() {
+  const tbody = $id('ctb-comparativo-centros-tbody');
+  if (!tbody) return;
+  try {
+    const rows = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/centros-costo/comparativo`);
+    tbody.innerHTML = rows.map(r => `
+      <tr><td>${esc(r.centro)}</td><td style="text-align:right">${Number(r.debe).toFixed(2)}</td><td style="text-align:right">${Number(r.haber).toFixed(2)}</td></tr>
+    `).join('') || '<tr><td colspan="3">Sin movimientos con centro de costo asignado.</td></tr>';
+  } catch (e) { tbody.innerHTML = esc(e.message); }
+}
+
+// ── Presupuesto ──────────────────────────────────────────────────────────
+async function ctbCargarPresupuesto() {
+  const year = $id('ctb-presupuesto-anio').value || new Date().getFullYear().toString();
+  $id('ctb-presupuesto-anio').value = year;
+  const wrap = $id('ctb-presupuesto-form');
+  if (wrap) wrap.innerHTML = 'Cargando…';
+  try {
+    const [pres, comparativo] = await Promise.all([
+      apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/presupuesto/${year}`),
+      apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/presupuesto/${year}/comparativo`),
+    ]);
+    const cuentasEditable = _ctbCuentas.filter(c => ['ingreso', 'costo', 'gasto'].includes(c.accountType) && c.parentCode);
+    if (wrap) {
+      wrap.innerHTML = cuentasEditable.map(c => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+          <span style="font-size:13px">${esc(c.code)} — ${esc(c.name)}</span>
+          <input type="number" class="form-input" style="width:140px" id="pres-${c.code}" value="${pres.cuentas?.[c.code] ?? ''}" placeholder="0.00">
+        </div>`).join('');
+    }
+    const tbody = $id('ctb-comparativo-presupuesto-tbody');
+    if (tbody) {
+      tbody.innerHTML = comparativo.rows.map(r => `
+        <tr>
+          <td>${esc(r.code)} — ${esc(r.name)}</td>
+          <td style="text-align:right">${r.presupuestado.toFixed(2)}</td>
+          <td style="text-align:right">${r.real.toFixed(2)}</td>
+          <td style="text-align:right;color:${r.variacion > 0 ? '#ef4444' : '#22c55e'}">${r.variacion.toFixed(2)}</td>
+        </tr>`).join('') || '<tr><td colspan="4">Sin presupuesto definido para este año.</td></tr>';
+    }
+  } catch (e) {
+    if (wrap) wrap.innerHTML = esc(e.message);
+  }
+}
+
+async function ctbGuardarPresupuesto() {
+  const year = $id('ctb-presupuesto-anio').value;
+  const cuentasEditable = _ctbCuentas.filter(c => ['ingreso', 'costo', 'gasto'].includes(c.accountType) && c.parentCode);
+  const cuentas = {};
+  for (const c of cuentasEditable) {
+    const val = $id(`pres-${c.code}`)?.value;
+    if (val) cuentas[c.code] = Number(val);
+  }
+  try {
+    await apiCall('PUT', `/api/contabilidad/${_ctbNegocioId}/presupuesto/${year}`, { cuentas });
+    toast('Presupuesto guardado.', 'success');
+    ctbCargarPresupuesto();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Auditoría ────────────────────────────────────────────────────────────
+async function ctbCargarAuditoria() {
+  const tbody = $id('ctb-auditoria-tbody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="3">Cargando…</td></tr>';
+  try {
+    const log = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/auditoria`);
+    if (tbody) {
+      tbody.innerHTML = log.map(l => `
+        <tr><td>${esc(String(l.fecha || '').slice(0, 19).replace('T', ' '))}</td><td>${esc(l.usuario)}</td><td>${esc(l.accion)} — ${esc(l.detalle || '')}</td></tr>
+      `).join('') || '<tr><td colspan="3">Sin actividad registrada todavía.</td></tr>';
+    }
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="3">${esc(e.message)}</td></tr>`;
+  }
+}
+
+// ── Configuración Contable ───────────────────────────────────────────────
+async function ctbCargarConfiguracion() {
+  try {
+    const cfg = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/configuracion`);
+    $id('ctb-config-inicio-anio').value = cfg.inicioAnioFiscal || 1;
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function ctbGuardarConfiguracion() {
+  try {
+    await apiCall('PUT', `/api/contabilidad/${_ctbNegocioId}/configuracion`, { inicioAnioFiscal: $id('ctb-config-inicio-anio').value });
+    toast('Configuración guardada.', 'success');
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Asiento manual (ajustes sin equivalente en el POS) ─────────────────────
+let _ctbLineas = [];
+
+function abrirModalAsiento() {
+  if (!_ctbNegocioId) { toast('Selecciona un negocio primero.', 'warning'); return; }
+  _ctbLineas = [{ cuenta: '', debe: '', haber: '', centroCosto: '' }, { cuenta: '', debe: '', haber: '', centroCosto: '' }];
+  $id('asiento-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('asiento-descripcion').value = '';
+  ctbRenderLineasAsiento();
+  $id('modal-asiento').classList.remove('hidden');
+}
+
+function cerrarModalAsiento() {
+  $id('modal-asiento').classList.add('hidden');
+}
+
+function ctbRenderLineasAsiento() {
+  const wrap = $id('asiento-lineas');
+  if (!wrap) return;
+  wrap.innerHTML = _ctbLineas.map((l, i) => `
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:6px;margin-bottom:6px">
+      <select class="form-select" onchange="app.ctbLineaAsiento(${i},'cuenta',this.value)">
+        <option value="">-- Cuenta --</option>${ctbCuentaOptions()}
+      </select>
+      <input type="number" class="form-input" placeholder="Debe" value="${l.debe}" oninput="app.ctbLineaAsiento(${i},'debe',this.value)">
+      <input type="number" class="form-input" placeholder="Haber" value="${l.haber}" oninput="app.ctbLineaAsiento(${i},'haber',this.value)">
+      <input type="text" class="form-input" placeholder="Centro de costo (opcional)" value="${esc(l.centroCosto || '')}" oninput="app.ctbLineaAsiento(${i},'centroCosto',this.value)">
+      <button class="btn btn-secondary" onclick="app.ctbQuitarLineaAsiento(${i})">✕</button>
+    </div>`).join('');
+}
+
+function ctbLineaAsiento(i, campo, valor) {
+  _ctbLineas[i][campo] = valor;
+  if (campo === 'debe' && Number(valor) > 0) _ctbLineas[i].haber = '';
+  if (campo === 'haber' && Number(valor) > 0) _ctbLineas[i].debe = '';
+}
+function ctbAgregarLineaAsiento() { _ctbLineas.push({ cuenta: '', debe: '', haber: '', centroCosto: '' }); ctbRenderLineasAsiento(); }
+function ctbQuitarLineaAsiento(i) {
+  if (_ctbLineas.length <= 2) { toast('Un asiento necesita al menos dos líneas.', 'warning'); return; }
+  _ctbLineas.splice(i, 1); ctbRenderLineasAsiento();
+}
+
+async function guardarAsiento() {
+  const fecha = $id('asiento-fecha').value;
+  const descripcion = $id('asiento-descripcion').value.trim();
+  const lineas = _ctbLineas.filter(l => l.cuenta && (Number(l.debe) > 0 || Number(l.haber) > 0))
+    .map(l => ({ cuenta: l.cuenta, debe: Number(l.debe) || 0, haber: Number(l.haber) || 0, centroCosto: l.centroCosto || null }));
+  if (!fecha || !descripcion || lineas.length < 2) {
+    toast('Completa fecha, descripción y al menos dos líneas.', 'warning'); return;
+  }
+  try {
+    await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/asientos`, { fecha, descripcion, lineas });
+    cerrarModalAsiento();
+    toast('Asiento guardado.', 'success');
+    ctbSwitchVista(_ctbVista);
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // ALERTAS
 // ══════════════════════════════════════════════════════════════════════
 
@@ -2997,7 +4125,7 @@ function _startSolicitudesPoller() {
 
 window.app = {
   // auth
-  doLogin, showForgot, showLogin, sendReset, togglePw, logout,
+  doLogin, doLoginGoogle, showForgot, showLogin, sendReset, togglePw, logout,
   // nav
   goto,
   // dashboard
@@ -3015,7 +4143,7 @@ window.app = {
   loadActualizaciones, verificarActualizacion, descargarActualizacion, instalarActualizacion,
   // reportes
   loadReportes, selNegocioReporte, cambiarTabReporte, cargarDatosReporte,
-  aplicarFiltros, limpiarFiltros, exportarCSV, imprimirReporte, actualizarReporte,
+  aplicarFiltros, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
   abrirRepDetalle, cerrarRepDetalle, imprimirTabReporte, imprimirReporteMensual,
   // facturación — dashboard
   loadFacturacion, filtrarFacturas, limpiarFiltrosFac,
@@ -3039,6 +4167,17 @@ window.app = {
   loadCentroFiscal, filtrarObligaciones, filtrarTareas,
   abrirModalTarea, cerrarModalTarea, guardarTarea,
   completarTarea, reabrirTarea, eliminarTarea,
+  // centro fiscal — generador 606/607/608
+  cargarArchivoFiscal, descargarDGII, descargarDGIIExcel,
+  // contabilidad — visor del Libro Mayor manual
+  // contabilidad — Sistema Contable en vivo
+  loadContabilidad, selNegocioContabilidad, ctbGenerarAsientos, ctbSwitchVista, ctbCargarMayor,
+  abrirModalAsiento, cerrarModalAsiento, ctbLineaAsiento, ctbAgregarLineaAsiento, ctbQuitarLineaAsiento, guardarAsiento,
+  ctbCerrarPeriodo, ctbReabrirPeriodo, ctbCerrarAnio,
+  ctbGuardarActivo, ctbDepreciar, ctbAbrirBajaActivo, cerrarModalBajaActivo, ctbGuardarBajaActivo,
+  ctbAbrirRevalorizarActivo, cerrarModalRevalorizarActivo, ctbGuardarRevalorizacion,
+  ctbGuardarCentroCosto, ctbCargarPresupuesto, ctbGuardarPresupuesto, ctbGuardarConfiguracion,
+  ctbCopiarAsiento, ctbExportarER, ctbExportarBG, ctbExportarFE, ctbExportarIndicadores,
   // alertas
   loadAlertas,
   // estado
