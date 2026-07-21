@@ -210,7 +210,12 @@ function getMysqlConfig() {
     connectionLimit: Number(process.env.DB_POOL_LIMIT || 10),
     queueLimit: 0,
     charset: 'utf8mb4',
-    multipleStatements: false
+    multipleStatements: false,
+    // Sin esto, un DB_HOST inalcanzable (terminal secundaria multicaja con
+    // la principal apagada) puede tardar mucho más de lo esperado por
+    // intento (timeouts TCP de Windows) antes de fallar. Acota cada intento
+    // de conexión para que el arranque degradado a modo offline sea rápido.
+    connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT_MS || 5000)
   };
 }
 

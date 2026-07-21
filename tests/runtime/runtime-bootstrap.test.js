@@ -44,6 +44,54 @@ describe('scripts/runtime-bootstrap', () => {
     expect(fs.readFileSync(runtime.userEnvFile, 'utf8')).toContain(`FIREBASE_SERVICE_ACCOUNT_PATH=${bundledKeyPath}`);
   });
 
+  it('revierte un DB_HOST remoto obsoleto a loopback aunque no exista .env de proyecto (build empaquetado)', () => {
+    const appRoot = makeTempDir('tecnocaja-app-'); // sin .env — simula el instalador real
+    const userDataPath = makeTempDir('tecnocaja-user-');
+    const envFile = path.join(userDataPath, 'config', 'app.env');
+    fs.mkdirSync(path.dirname(envFile), { recursive: true });
+    fs.writeFileSync(envFile, [
+      'DB_CLIENT=mysql',
+      'DB_HOST=100.64.1.5',
+      'DB_PORT=3306',
+      'POS_BIND_HOST=0.0.0.0',
+      ''
+    ].join('\n'), 'utf8');
+
+    const { prepareRuntimeEnvironment } = require('../../scripts/runtime-bootstrap');
+    const runtime = prepareRuntimeEnvironment({ appRoot, userDataPath });
+
+    expect(process.env.DB_HOST).toBe('127.0.0.1');
+    expect(process.env.POS_BIND_HOST).toBe('127.0.0.1');
+    expect(runtime.warnings.some((w) => w.includes('anti-LAN-stale'))).toBe(true);
+
+    const stored = fs.readFileSync(envFile, 'utf8');
+    expect(stored).toContain('DB_HOST=127.0.0.1');
+  });
+
+  it('NO revierte DB_HOST remoto cuando terminal-config.json marca esta PC como secundaria deliberada (isMain:false)', () => {
+    const appRoot = makeTempDir('tecnocaja-app-'); // sin .env — simula el instalador real
+    const userDataPath = makeTempDir('tecnocaja-user-');
+    const envFile = path.join(userDataPath, 'config', 'app.env');
+    fs.mkdirSync(path.dirname(envFile), { recursive: true });
+    fs.writeFileSync(envFile, [
+      'DB_CLIENT=mysql',
+      'DB_HOST=192.168.100.62',
+      'DB_PORT=3306',
+      ''
+    ].join('\n'), 'utf8');
+
+    fs.mkdirSync(path.join(appRoot, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(appRoot, 'config', 'terminal-config.json'), JSON.stringify({
+      terminalId: 'abc123', setupMode: 'multisucursal', isMain: false
+    }), 'utf8');
+
+    const { prepareRuntimeEnvironment } = require('../../scripts/runtime-bootstrap');
+    const runtime = prepareRuntimeEnvironment({ appRoot, userDataPath });
+
+    expect(process.env.DB_HOST).toBe('192.168.100.62');
+    expect(runtime.warnings.some((w) => w.includes('anti-LAN-stale'))).toBe(false);
+  });
+
   it('persiste variables en el app.env del usuario sin duplicar claves', () => {
     const userDataPath = makeTempDir('tecnocaja-user-');
     const envFile = path.join(userDataPath, 'config', 'app.env');

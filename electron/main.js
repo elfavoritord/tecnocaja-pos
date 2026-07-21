@@ -2316,13 +2316,13 @@ function waitForServer(url, attempts = 40) {
     const tryConnect = (remaining) => {
       const req = http.get(`${url}/api/health`, (res) => {
         res.resume();
-        if (res.statusCode === 200) {
-          resolve();
-        } else if (remaining > 0) {
-          setTimeout(() => tryConnect(remaining - 1), 500);
-        } else {
-          reject(new Error(`Servidor respondió con código ${res.statusCode}`));
-        }
+        // Cualquier respuesta HTTP (200 o 503) prueba que Express ya está
+        // escuchando — este chequeo es solo sobre el servidor, no sobre la
+        // salud de la BD. /api/health devuelve 503 a propósito cuando MySQL
+        // no responde (arranque degradado de terminal secundaria); exigir
+        // 200 aquí agotaba los reintentos y disparaba el diálogo fatal
+        // aunque el servidor sí hubiera arrancado bien.
+        resolve();
       });
 
       req.on('error', () => {

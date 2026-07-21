@@ -1660,7 +1660,10 @@ function getOfflineRouter() {
       ensureAuditTable,
       userCanAccessGlobalAudit,
       // 📢 Centro de Promociones — caché offline de solo lectura
-      ensurePromotionsExtensions
+      ensurePromotionsExtensions,
+      // Asignación real de NCF al sincronizar una venta offline — mismo
+      // helper que usa POST /api/sales online, con FOR UPDATE en MySQL.
+      getNextNcfFromSequence
     });
   }
   return _offlineRouter;
@@ -8058,9 +8061,16 @@ app.post('/api/setup/complete', async (req, res) => {
       };
     }
   }
-  // En un reset, limpiar el UID anterior para que este negocio genere su propio
-  // documento en Firestore en lugar de reutilizar/contaminar el del install anterior.
-  if (forceReset) {
+  // Limpiar el UID anterior SIEMPRE que se llegue hasta aquí — este endpoint
+  // borra la base local entera (DELETE FROM users/branches/...) y siempre
+  // significa "negocio nuevo", ya sea por forceReset explícito o porque el
+  // wizard volvió a aparecer en una PC que ya tenía otro negocio instalado.
+  // Antes esto solo se limpiaba si forceReset===true — en cualquier otro caso
+  // (p. ej. configurar un negocio nuevo en una PC que ya tenía uno distinto)
+  // el UID viejo sobrevivía y registerPosLicenseInFirestore() lo reutilizaba,
+  // sobreescribiendo el documento de Firestore del negocio anterior con los
+  // datos del nuevo. Debe limpiarse ANTES de cualquier sync a Firebase.
+  {
     const oldUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
     if (oldUid) {
       persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: '' });
@@ -8962,6 +8972,10 @@ app.get('/api/health', async (req, res) => {
     if (!dbCheck || !Array.isArray(dbCheck)) {
       return res.status(503).json({ error: 'BD no disponible', ok: false });
     }
+    // Si esta terminal arrancó en modo degradado (principal inalcanzable al
+    // iniciar) y la BD acaba de responder, completar en segundo plano la
+    // inicialización que se saltó al arrancar — sin bloquear esta respuesta.
+    completeDeferredMysqlInitIfNeeded().catch(() => {});
     const configRows = await query(
       'SELECT business_name, business_structure_mode FROM config WHERE id = 1 LIMIT 1'
     ).catch(() => []);
@@ -17156,6 +17170,30 @@ function isTransientConnectionError(error) {
   );
 }
 
+// DB_HOST no-loopback = terminal secundaria multicaja apuntando a la PC
+// principal por LAN/Tailscale (mismo criterio que ya usa
+// scripts/ensure-local-mysql.js para decidir si esta PC administra su
+// propio MariaDB local).
+function isLoopbackDbHost() {
+  const host = String(process.env.DB_HOST || '127.0.0.1').trim().toLowerCase();
+  return host === '' || host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '0.0.0.0';
+}
+
+// Errores de host genuinamente inalcanzable (principal apagada/sin red) —
+// distinto de credenciales incorrectas o "unknown database", que siguen
+// siendo errores reales que deben fallar fuerte, no degradar en silencio.
+function isUnreachableHostError(error) {
+  if (!error || isUnknownDatabaseError(error)) return false;
+  const code = String(error.code || '').toUpperCase();
+  const message = String(error.message || '').toLowerCase();
+  if (code === 'ER_ACCESS_DENIED_ERROR' || message.includes('access denied')) return false;
+  return [
+    'ETIMEDOUT', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH',
+    'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNABORTED',
+    'PROTOCOL_CONNECTION_LOST'
+  ].includes(code);
+}
+
 /**
  * Ejecuta `fn` con reintentos automáticos cuando el error es transitorio
  * (ECONNRESET, ECONNREFUSED, etc.). Útil en el arranque cuando MariaDB
@@ -17182,41 +17220,21 @@ async function withRetryOnTransient(fn, { maxAttempts = 5, baseDelayMs = 800, la
   throw lastError;
 }
 
-async function prepareServerRuntime() {
-  try {
-    if (getDbClient() === 'mysql') {
-      let schemaState;
-      try {
-        // Primer intento con reintentos para errores transitorios de arranque
-        // (MariaDB abre el puerto TCP ~1s antes de estar lista para queries).
-        schemaState = await withRetryOnTransient(
-          () => inspectCoreSchema(),
-          { maxAttempts: 6, baseDelayMs: 1000, label: 'inspectCoreSchema' }
-        );
-      } catch (inspectError) {
-        if (!isUnknownDatabaseError(inspectError)) throw inspectError;
-        console.log('La base de datos MySQL no existe todavía. Creándola desde cero...');
-        await initializeMySqlDatabase();
-        await reloadDatabase();
-        schemaState = await withRetryOnTransient(
-          () => inspectCoreSchema(),
-          { maxAttempts: 4, baseDelayMs: 800, label: 'inspectCoreSchema (post-init)' }
-        );
-      }
-      if (!schemaState.hasRequiredTables) {
-        console.log('Inicializando base de datos MySQL...');
-        await initializeMySqlDatabase();
-        await reloadDatabase();
-        schemaState = await withRetryOnTransient(
-          () => inspectCoreSchema(),
-          { maxAttempts: 4, baseDelayMs: 800, label: 'inspectCoreSchema (post-repair)' }
-        );
-        if (!schemaState.hasRequiredTables) {
-          throw new Error('La base MySQL no pudo inicializarse correctamente.');
-        }
-      }
+// Arranque degradado: la terminal secundaria no pudo alcanzar la principal
+// al iniciar, así que se saltó toda la inicialización dependiente de MySQL
+// (finishMysqlRuntimeInit) para poder abrir igual en modo offline. Estas
+// banderas dejan que el próximo /api/health exitoso complete esa
+// inicialización sola, sin reiniciar la app.
+let degradedBootPending = false;
+let mysqlRuntimeFullyPrepared = false;
+let _deferredMysqlInitInFlight = false;
 
-      await Promise.all([
+// Todo lo que antes vivía inline al final de la rama mysql de
+// prepareServerRuntime() — requiere una conexión MySQL viva. Se saltea por
+// completo en arranque degradado y se completa después, perezosamente,
+// cuando la principal vuelve a responder (ver completeDeferredMysqlInitIfNeeded).
+async function finishMysqlRuntimeInit() {
+  await Promise.all([
         ensureConfigExtensions(),
         ensureUserExtensions(),
         ensureProductExtensions(),
@@ -17283,6 +17301,85 @@ async function prepareServerRuntime() {
       startReportAppProductSync();
       fileManagerService.initStructure().catch(e => console.warn('[file-manager] init falló:', e.message));
       console.log('Runtime de Tecno Caja preparado correctamente en MySQL.');
+}
+
+// Si el arranque quedó degradado (principal inalcanzable al iniciar), el
+// mismo /api/health que OfflineManager ya sondea cada pocos segundos
+// dispara esto en cuanto un SELECT 1 tiene éxito — completa la
+// inicialización pendiente sin necesidad de reiniciar la app.
+async function completeDeferredMysqlInitIfNeeded() {
+  if (!degradedBootPending || mysqlRuntimeFullyPrepared || _deferredMysqlInitInFlight) return;
+  _deferredMysqlInitInFlight = true;
+  try {
+    await inspectCoreSchema();
+    await finishMysqlRuntimeInit();
+    mysqlRuntimeFullyPrepared = true;
+    degradedBootPending = false;
+    console.log('[startup] Conexión con MySQL principal restaurada — inicialización completada.');
+  } catch (_e) {
+    // Sigue caída — se reintenta en el próximo health check exitoso.
+  } finally {
+    _deferredMysqlInitInFlight = false;
+  }
+}
+
+async function prepareServerRuntime() {
+  try {
+    if (getDbClient() === 'mysql') {
+      const remoteSecondary = !isLoopbackDbHost();
+      let schemaState;
+      try {
+        // Primer intento con reintentos para errores transitorios de arranque
+        // (MariaDB abre el puerto TCP ~1s antes de estar lista para queries).
+        // Terminal secundaria (DB_HOST remoto): menos reintentos — si la
+        // principal está apagada, cuanto antes se caiga a modo degradado
+        // mejor (ver rama isUnreachableHostError abajo).
+        schemaState = await withRetryOnTransient(
+          () => inspectCoreSchema(),
+          remoteSecondary
+            ? { maxAttempts: 3, baseDelayMs: 1000, label: 'inspectCoreSchema (terminal secundaria)' }
+            : { maxAttempts: 6, baseDelayMs: 1000, label: 'inspectCoreSchema' }
+        );
+      } catch (inspectError) {
+        if (isUnknownDatabaseError(inspectError)) {
+          console.log('La base de datos MySQL no existe todavía. Creándola desde cero...');
+          await initializeMySqlDatabase();
+          await reloadDatabase();
+          schemaState = await withRetryOnTransient(
+            () => inspectCoreSchema(),
+            { maxAttempts: 4, baseDelayMs: 800, label: 'inspectCoreSchema (post-init)' }
+          );
+        } else if (remoteSecondary && isUnreachableHostError(inspectError)) {
+          // La principal no responde (apagada/sin red) — no es un problema
+          // de ESTA PC. Arrancar igual: el servidor HTTP sí levanta, y el
+          // login offline (server/routes/offline.routes.js) toma el control
+          // desde ahí, exactamente como ya pasa si MySQL se cae a mitad de
+          // sesión.
+          console.warn(
+            `[startup] MySQL principal inaccesible (${inspectError.code || inspectError.message}). ` +
+            'Arrancando en modo degradado — login offline tomará el control.'
+          );
+          degradedBootPending = true;
+          return;
+        } else {
+          throw inspectError;
+        }
+      }
+      if (!schemaState.hasRequiredTables) {
+        console.log('Inicializando base de datos MySQL...');
+        await initializeMySqlDatabase();
+        await reloadDatabase();
+        schemaState = await withRetryOnTransient(
+          () => inspectCoreSchema(),
+          { maxAttempts: 4, baseDelayMs: 800, label: 'inspectCoreSchema (post-repair)' }
+        );
+        if (!schemaState.hasRequiredTables) {
+          throw new Error('La base MySQL no pudo inicializarse correctamente.');
+        }
+      }
+
+      await finishMysqlRuntimeInit();
+      mysqlRuntimeFullyPrepared = true;
       return;
     }
 

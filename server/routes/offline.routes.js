@@ -65,7 +65,9 @@ module.exports = function createOfflineRouter(deps) {
     ensureAuditTable,
     userCanAccessGlobalAudit,
     // 📢 Centro de Promociones
-    ensurePromotionsExtensions
+    ensurePromotionsExtensions,
+    // Asignación real de NCF al sincronizar (mismo helper que POST /api/sales online)
+    getNextNcfFromSequence
   } = deps;
 
   const router = express.Router();
@@ -1447,146 +1449,218 @@ module.exports = function createOfflineRouter(deps) {
    */
   async function _insertSaleToMain(query, saleData, pendingSale, tc) {
     await ensurePromotionsExtensions();
-    const configRows = await query('SELECT * FROM config WHERE id = 1 LIMIT 1');
-    const config = configRows[0] || {};
 
-    // Generar número de factura real (incremento atómico)
-    await query(`UPDATE config SET invoice_next_number = invoice_next_number + 1 WHERE id = 1`);
-    const seqRows = await query(`SELECT invoice_next_number AS seq FROM config WHERE id = 1`);
-    const nextNumber = Number(seqRows[0]?.seq || 1);
-    const prefix = config.invoice_prefix || 'FAC-';
-    const invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
-
-    const nowSql = new Date().toISOString().slice(0, 19).replace('T', ' ');
-    const subtotal = Number(saleData.subtotal || pendingSale.subtotal || pendingSale.total || 0);
-    const discount = Number(saleData.descuento || pendingSale.discount || 0);
-    const tax = Number(saleData.itbis || pendingSale.tax || 0);
-    const total = Number(pendingSale.total || saleData.total || 0);
-    const paymentMethod = String(saleData.metodo || pendingSale.payment_method || 'efectivo');
     const branchId = Number(pendingSale.branch_id || tc.branchId || 1);
     const cashRegisterId = Number(pendingSale.cash_register_id || tc.cashRegisterId || 1);
     const userId = Number(pendingSale.user_id || 0);
     const clientId = pendingSale.client_id ? Number(pendingSale.client_id) : null;
 
-    let clientName = 'Consumidor Final';
-    if (clientId) {
-      const clientRows = await query('SELECT nombre FROM clients WHERE id = ? LIMIT 1', [clientId]).catch(() => []);
-      if (clientRows?.[0]) clientName = clientRows[0].nombre;
+    // NCF real: el payload offline (js/ventas.js) ya manda ncfType/tipoComprobante
+    // igual que una venta online — solo que nunca se leía aquí. La e-CF
+    // (factura-electronica) necesita someter el documento a DGII en el momento
+    // de la venta, algo que no se puede hacer sin conexión — esas ventas se
+    // dejan como ticket normal (con nota) en vez de fingir un e-CF que nunca
+    // se transmitió; el dueño puede revisarlas y refacturar manualmente.
+    const requestedDocumentType = String(saleData.documentType || saleData.tipoComprobante || 'ticket').trim();
+    const ncfType = String(saleData.ncfType || '').trim().toUpperCase() || null;
+    const wantsEcf = requestedDocumentType === 'factura-electronica';
+    let extraNotes = '';
+    if (wantsEcf) {
+      extraNotes = ' [ADVERTENCIA: se pidió e-CF durante desconexión — no se puede emitir e-CF sin internet; quedó como ticket, revisar y refacturar manualmente si aplica.]';
     }
 
-    // Insertar en tabla sales (usando nombres de columna exactos del schema)
-    const insertResult = await query(
-      `INSERT INTO sales
-         (invoice_number, total, discount, tax, subtotal, payment_method,
-          sale_status, client_id, client_name_snapshot, branch_id, cash_register_id,
-          user_id, document_type, order_type, order_notes,
-          received_amount, change_amount, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pagada', ?, ?, ?, ?, ?, 'ticket', 'mostrador', ?,
-               ?, 0, ?)`,
-      [
-        invoiceNumber,
-        total,
-        discount,
-        tax,
-        subtotal,
-        paymentMethod,
-        clientId,
-        clientName,
-        branchId,
-        cashRegisterId,
-        userId,
-        String(saleData.notes || saleData.orderNotes || `Origen: terminal offline ${pendingSale.terminal_id}`).slice(0, 500),
-        Number(saleData.recibido || total),
-        nowSql
-      ]
-    );
+    const result = await withTransaction(async (conn) => {
+      const configRows = await conn.query('SELECT * FROM config WHERE id = 1 LIMIT 1');
+      const config = configRows[0] || {};
 
-    const saleId = insertResult?.insertId;
+      // Generar número de factura interno (incremento atómico dentro de la transacción)
+      await conn.query(`UPDATE config SET invoice_next_number = invoice_next_number + 1 WHERE id = 1`);
+      const seqRows = await conn.query(`SELECT invoice_next_number AS seq FROM config WHERE id = 1`);
+      const nextNumber = Number(seqRows[0]?.seq || 1);
+      const prefix = config.invoice_prefix || 'FAC-';
+      const invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
 
-    // Insertar items y descontar inventario
-    const items = Array.isArray(saleData.items) ? saleData.items : [];
-    const productIds = [];
-    const itemsForReportSync = [];
-    let ahorroPromociones = 0;
-    for (let i = 0; i < items.length; i++) {
-      const item = items[i];
-      const productId = Number(item.id || item.producto_id || 0);
-      const qty = Number(item.qty || item.cantidad || 1);
-      const unitPrice = Number(item.price || item.precio || item.precio_venta || 0);
-      const lineTotal = Number(item.subtotal || item.total || item.line_total || qty * unitPrice);
-      const discountRate = Number(item.discount_rate || item.descuento || 0);
-      const taxRate = Number(item.tax_rate || item.itbis || 0);
-
-      if (saleId && productId) {
-        // Igual que en POST /api/sales: el precio de la venta offline se capturó
-        // con la caché local (pudo quedar desactualizada mientras la terminal
-        // estuvo sin conexión) — al sincronizar, con conexión real a la BD
-        // principal, se vuelve a resolver la promoción activa y esa es la que
-        // se guarda de verdad.
-        const activePromo = await resolvePriceForSaleItem({ query, productoId: productId, sucursalId: branchId }).catch(() => null);
-        const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;
-        const effectiveLineTotal = activePromo ? Number((effectiveUnitPrice * qty).toFixed(2)) : lineTotal;
-        if (activePromo) ahorroPromociones += activePromo.ahorro * qty;
-
-        await query(
-          `INSERT INTO sale_items (sale_id, product_id, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
-          [saleId, productId, qty, effectiveUnitPrice, effectiveLineTotal, discountRate, taxRate,
-           activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null]
-        ).catch(() => {});
-
-        // Descontar stock en la BD principal
-        await query(
-          `UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?`,
-          [qty, productId]
-        ).catch(() => {});
-
-        // Registrar movimiento de inventario (columnas del schema real)
-        await query(
-          `INSERT INTO inventory_movements
-             (product_id, movement_type, quantity_change, previous_stock, new_stock,
-              reference_type, reference_id, notes, branch_id, sale_id, created_at)
-           VALUES (?, 'salida', ?, 0, 0, 'venta_offline', ?, ?, ?, ?, ?)`,
-          [productId, qty, invoiceNumber,
-           `Venta offline sincronizada (${pendingSale.offline_invoice_id})`,
-           branchId, saleId || null, nowSql]
-        ).catch(() => {});
-
-        productIds.push(productId);
-        itemsForReportSync.push({
-          product_id: productId,
-          product_name: item.nombre || item.name || '',
-          qty, price: unitPrice, discount_rate: discountRate,
-          precio_compra: Number(item.precio_compra || 0)
-        });
+      // Asignar NCF real (con FOR UPDATE en MySQL vía getNextNcfFromSequence) —
+      // si no hay secuencia configurada o está agotada, no se bloquea el resto
+      // del sync: la venta queda como ticket y se avisa para revisión manual.
+      let generatedNcf = null;
+      let ncfAssignError = '';
+      if (ncfType && !wantsEcf) {
+        try {
+          generatedNcf = await getNextNcfFromSequence(conn, ncfType, branchId);
+        } catch (ncfErr) {
+          ncfAssignError = ` [ADVERTENCIA: no se pudo asignar NCF ${ncfType} al sincronizar (${ncfErr.message}) — quedó como ticket, revisar manualmente.]`;
+        }
       }
-    }
+      const documentType = generatedNcf ? 'comprobante-fiscal' : 'ticket';
+      const fiscalTimestamp = new Date().toISOString();
 
-    if (ahorroPromociones > 0 && saleId) {
-      await query('UPDATE sales SET ahorro_promociones = ? WHERE id = ?', [Number(ahorroPromociones.toFixed(2)), saleId]).catch(() => {});
-    }
+      const nowSql = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const subtotal = Number(saleData.subtotal || pendingSale.subtotal || pendingSale.total || 0);
+      const discount = Number(saleData.descuento || pendingSale.discount || 0);
+      const tax = Number(saleData.itbis || pendingSale.tax || 0);
+      const total = Number(pendingSale.total || saleData.total || 0);
+      const paymentMethod = String(saleData.metodo || pendingSale.payment_method || 'efectivo');
 
-    // Sync a la App de Reporte — antes esta ruta guardaba la venta en la BD
-    // principal pero nunca la mandaba a Firebase, así que una venta hecha en
-    // una terminal offline nunca aparecía en la app de reportes.
-    if (typeof syncSaleToReports === 'function' && saleId) {
+      let clientName = 'Consumidor Final';
+      if (clientId) {
+        const clientRows = await conn.query('SELECT nombre FROM clients WHERE id = ? LIMIT 1', [clientId]).catch(() => []);
+        if (clientRows?.[0]) clientName = clientRows[0].nombre;
+      }
+
+      const fiscalPayload = generatedNcf ? JSON.stringify({
+        numero: generatedNcf,
+        tipo: ncfType,
+        estado: 'emitida',
+        cliente: saleData.razonSocialCliente || clientName,
+        clienteRncCedula: saleData.rncCliente || '',
+        total,
+        itbis: tax,
+        fecha: fiscalTimestamp,
+        ncfReferencia: saleData.ncfReferencia || null,
+        origen: 'sync_offline'
+      }) : null;
+
+      // Insertar en tabla sales (usando nombres de columna exactos del schema)
+      const insertResult = await conn.query(
+        `INSERT INTO sales
+           (invoice_number, ncf, ncf_type, ncf_referencia, fiscal_status, fiscal_payload,
+            razon_social_cliente, total, discount, tax, subtotal, payment_method,
+            sale_status, client_id, client_name_snapshot, branch_id, cash_register_id,
+            user_id, document_type, order_type, order_notes,
+            received_amount, change_amount, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pagada', ?, ?, ?, ?, ?, ?, 'mostrador', ?,
+                 ?, 0, ?)`,
+        [
+          invoiceNumber,
+          generatedNcf,
+          generatedNcf ? ncfType : null,
+          generatedNcf ? (saleData.ncfReferencia || null) : null,
+          // El resto del sistema usa 'emitida' como estado universal, incluso
+          // para tickets sin NCF (server.js sigue el mismo patrón) — no
+          // inventar un estado nuevo que otras queries no reconocerían.
+          'emitida',
+          fiscalPayload,
+          saleData.razonSocialCliente || null,
+          total,
+          discount,
+          tax,
+          subtotal,
+          paymentMethod,
+          clientId,
+          clientName,
+          branchId,
+          cashRegisterId,
+          userId,
+          documentType,
+          String(saleData.notes || saleData.orderNotes || `Origen: terminal offline ${pendingSale.terminal_id}`).slice(0, 500) + extraNotes + ncfAssignError,
+          Number(saleData.recibido || total),
+          nowSql
+        ]
+      );
+
+      const saleId = insertResult?.insertId;
+
+      // Insertar items y descontar inventario POR SUCURSAL (antes descontaba
+      // la columna global products.stock, que no es la fuente de verdad en
+      // modo multisucursal — inventory_by_branch sí lo es).
+      const items = Array.isArray(saleData.items) ? saleData.items : [];
+      const productIds = [];
+      const itemsForReportSync = [];
+      let ahorroPromociones = 0;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const productId = Number(item.id || item.producto_id || 0);
+        const qty = Number(item.qty || item.cantidad || 1);
+        const unitPrice = Number(item.price || item.precio || item.precio_venta || 0);
+        const lineTotal = Number(item.subtotal || item.total || item.line_total || qty * unitPrice);
+        const discountRate = Number(item.discount_rate || item.descuento || 0);
+        const taxRate = Number(item.tax_rate || item.itbis || 0);
+
+        if (saleId && productId) {
+          // Igual que en POST /api/sales: el precio de la venta offline se capturó
+          // con la caché local (pudo quedar desactualizada mientras la terminal
+          // estuvo sin conexión) — al sincronizar, con conexión real a la BD
+          // principal, se vuelve a resolver la promoción activa y esa es la que
+          // se guarda de verdad.
+          const activePromo = await resolvePriceForSaleItem({ query: conn.query, productoId: productId, sucursalId: branchId }).catch(() => null);
+          const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;
+          const effectiveLineTotal = activePromo ? Number((effectiveUnitPrice * qty).toFixed(2)) : lineTotal;
+          if (activePromo) ahorroPromociones += activePromo.ahorro * qty;
+
+          await conn.query(
+            `INSERT INTO sale_items (sale_id, product_id, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
+            [saleId, productId, qty, effectiveUnitPrice, effectiveLineTotal, discountRate, taxRate,
+             activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null]
+          ).catch(() => {});
+
+          // Descontar stock de ESTA sucursal (no el agregado global)
+          let previousStock = 0;
+          let newStock = 0;
+          try {
+            const inventoryChange = await changeBranchInventoryStock({ query: conn.query }, {
+              productId,
+              branchId,
+              quantityDelta: -Math.abs(qty)
+            });
+            previousStock = inventoryChange.previousStock;
+            newStock = inventoryChange.nextStock;
+          } catch (stockErr) {
+            console.warn(`[offline-sync] No se pudo descontar inventario por sucursal para producto ${productId}:`, stockErr.message);
+          }
+
+          // Registrar movimiento de inventario (columnas del schema real)
+          await conn.query(
+            `INSERT INTO inventory_movements
+               (product_id, movement_type, quantity_change, previous_stock, new_stock,
+                reference_type, reference_id, notes, branch_id, sale_id, created_at)
+             VALUES (?, 'salida', ?, ?, ?, 'venta_offline', ?, ?, ?, ?, ?)`,
+            [productId, qty, previousStock, newStock, invoiceNumber,
+             `Venta offline sincronizada (${pendingSale.offline_invoice_id})`,
+             branchId, saleId || null, nowSql]
+          ).catch(() => {});
+
+          productIds.push(productId);
+          itemsForReportSync.push({
+            product_id: productId,
+            product_name: item.nombre || item.name || '',
+            qty, price: unitPrice, discount_rate: discountRate,
+            precio_compra: Number(item.precio_compra || 0)
+          });
+        }
+      }
+
+      if (ahorroPromociones > 0 && saleId) {
+        await conn.query('UPDATE sales SET ahorro_promociones = ? WHERE id = ?', [Number(ahorroPromociones.toFixed(2)), saleId]).catch(() => {});
+      }
+
+      return { invoiceNumber, saleId, branchId, userId, productIds, itemsForReportSync };
+    });
+
+    // Sync a la App de Reporte (fuera de la transacción — es un side-effect a
+    // Firestore, no parte de la escritura SQL atómica). Antes esta ruta
+    // guardaba la venta en la BD principal pero nunca la mandaba a Firebase,
+    // así que una venta hecha en una terminal offline nunca aparecía en la
+    // app de reportes.
+    if (typeof syncSaleToReports === 'function' && result.saleId) {
       const [cashierRows, branchRows, saleRows] = await Promise.all([
-        query('SELECT nombre FROM users WHERE id = ? LIMIT 1', [userId]).catch(() => []),
-        query('SELECT nombre FROM branches WHERE id = ? LIMIT 1', [branchId]).catch(() => []),
-        query('SELECT * FROM sales WHERE id = ? LIMIT 1', [saleId]).catch(() => [])
+        query('SELECT nombre FROM users WHERE id = ? LIMIT 1', [result.userId]).catch(() => []),
+        query('SELECT nombre FROM branches WHERE id = ? LIMIT 1', [result.branchId]).catch(() => []),
+        query('SELECT * FROM sales WHERE id = ? LIMIT 1', [result.saleId]).catch(() => [])
       ]);
       const saleRow = saleRows?.[0];
       if (saleRow) {
         saleRow.cashier_name = cashierRows?.[0]?.nombre || '';
-        syncSaleToReports(saleRow, itemsForReportSync, {
-          productIds,
-          branchId,
+        syncSaleToReports(saleRow, result.itemsForReportSync, {
+          productIds: result.productIds,
+          branchId: result.branchId,
           branchName: branchRows?.[0]?.nombre || ''
         });
       }
     }
 
-    return invoiceNumber;
+    return result.invoiceNumber;
   }
 
   /**

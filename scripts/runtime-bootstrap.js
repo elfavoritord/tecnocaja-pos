@@ -237,8 +237,34 @@ function prepareRuntimeEnvironment(options = {}) {
   // ── Guardia anti-LAN-stale: si el config/app.env de AppData dejó DB_HOST
   // apuntando a una IP remota (vinculación LAN anterior) pero el .env del
   // proyecto especifica localhost, revertir todo a la config local embebida.
-  // Esto evita el error "connect ENETUNREACH <IP>:3306" al reiniciar sin red.
-  {
+  // Esto evita el error "connect ENETUNREACH/ETIMEDOUT <IP>:3306" al
+  // reiniciar sin red.
+  //
+  // El instalador NUNCA empaqueta el .env del proyecto (tiene secretos y
+  // está en .gitignore/fuera de "files" en electron-builder) — en una
+  // instalación real appRoot/.env no existe, así que projectDbHost siempre
+  // daba null y esta guardia nunca se activaba fuera de "npm run desktop".
+  // La arquitectura del sistema siempre asume MariaDB local embebida por PC
+  // (nunca una base de datos compartida remota), así que si no hay .env de
+  // proyecto para comparar (build empaquetado), igual se asume loopback.
+  //
+  // EXCEPCIÓN: si config/terminal-config.json marca esta PC explícitamente
+  // como terminal secundaria (isMain:false) de una configuración multicaja,
+  // un DB_HOST remoto es intencional y permanente, no un residuo de una
+  // prueba — no revertirlo aquí. La resiliencia para cuando la principal no
+  // responde la da el arranque degradado de server.js (prepareServerRuntime/
+  // isUnreachableHostError), no este guardia.
+  const isExplicitSecondaryTerminal = (() => {
+    try {
+      const tcRaw = fs.readFileSync(path.join(appRoot, 'config', 'terminal-config.json'), 'utf8');
+      const tc = JSON.parse(tcRaw);
+      return tc && tc.isMain === false;
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  if (!isExplicitSecondaryTerminal) {
     const LOOPBACK_HOSTS = new Set(['', '127.0.0.1', 'localhost', '::1', '0.0.0.0']);
     const projectEnvRaw  = (() => {
       try { return fs.readFileSync(path.join(appRoot, '.env'), 'utf8'); } catch (_) { return ''; }
@@ -251,21 +277,29 @@ function prepareRuntimeEnvironment(options = {}) {
 
     const projectDbHost   = parseProjectEnvKey('DB_HOST');
     const currentDbHost   = String(process.env.DB_HOST || '').trim();
-    const hostIsStale     = projectDbHost !== null &&
-                            LOOPBACK_HOSTS.has(projectDbHost) &&
-                            !LOOPBACK_HOSTS.has(currentDbHost);
+    const expectsLoopback = projectDbHost !== null ? LOOPBACK_HOSTS.has(projectDbHost) : true;
+    const hostIsStale     = expectsLoopback && !LOOPBACK_HOSTS.has(currentDbHost);
 
     if (hostIsStale) {
-      // AppData sobreescribió DB_HOST con IP remota → revertir a valores del proyecto
+      // AppData sobreescribió DB_HOST con IP remota → revertir a valores del proyecto.
+      // Si no hay .env de proyecto (build empaquetado), usar el loopback por
+      // defecto solo para las claves de host — el resto (puerto/usuario/etc.)
+      // se deja como está, no hay base para adivinarlo.
+      const PACKAGED_FALLBACK_DEFAULTS = {
+        DB_HOST: '127.0.0.1',
+        POS_BIND_HOST: '127.0.0.1',
+        TECNO_CAJA_MYSQL_BIND_HOST: '127.0.0.1',
+      };
       const resetValues = {};
 
       for (const key of ['DB_CLIENT', 'DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME',
                          'POS_ALLOW_LAN', 'POS_BIND_HOST',
                          'TECNO_CAJA_MYSQL_ALLOW_LAN', 'TECNO_CAJA_MYSQL_BIND_HOST']) {
         const projectVal = parseProjectEnvKey(key);
-        if (projectVal !== null) {
-          process.env[key] = projectVal;
-          resetValues[key] = projectVal;
+        const effectiveVal = projectVal !== null ? projectVal : (PACKAGED_FALLBACK_DEFAULTS[key] ?? null);
+        if (effectiveVal !== null) {
+          process.env[key] = effectiveVal;
+          resetValues[key] = effectiveVal;
         }
       }
 
