@@ -9,6 +9,7 @@ const PRODUCTS_CSV_CURRENT_FILE = path.join(PRODUCTS_CSV_DIR, 'productos-current
 const PRODUCT_CSV_COLUMNS = [
   { key: 'codigo', label: 'Código' },
   { key: 'nombre', label: 'Nombre' },
+  { key: 'sucursal', label: 'Sucursal' },
   { key: 'marca', label: 'Marca' },
   { key: 'categoria', label: 'Categoría' },
   { key: 'unidad', label: 'Unidad' },
@@ -35,6 +36,11 @@ const HEADER_ALIASES = {
   nombre: 'nombre',
   producto: 'nombre',
   nombreproducto: 'nombre',
+  sucursal: 'sucursal',
+  branch: 'sucursal',
+  branchid: 'sucursal',
+  branch_id: 'sucursal',
+  idsucursal: 'sucursal',
   marca: 'marca',
   categoria: 'categoria',
   unidad: 'unidad',
@@ -229,6 +235,10 @@ function normalizeProductCsvRow(rawRow = {}, rowNumber = 0, providedFields = [])
     providedFields: [...new Set(providedFields)],
     codigo: String(rawRow.codigo || '').trim(),
     nombre: String(rawRow.nombre || '').trim(),
+    // Vacío = producto global. Puede venir como ID numérico o nombre de
+    // sucursal — se resuelve contra la tabla branches en el import handler
+    // (este servicio es puro parseo, sin acceso a la base de datos).
+    sucursal: String(rawRow.sucursal || '').trim(),
     marca: String(rawRow.marca || '').trim(),
     categoria: String(rawRow.categoria || '').trim() || 'General',
     unidad: String(rawRow.unidad || '').trim() || 'Unidad',
@@ -293,6 +303,7 @@ function mapProductRowToCsvRecord(row = {}) {
   return {
     codigo: row.codigo || '',
     nombre: row.nombre || '',
+    sucursal: row.branch_id === null || row.branch_id === undefined || row.branch_id === '' ? '' : String(row.branch_id),
     marca: row.marca || '',
     categoria: row.categoria || '',
     unidad: row.unidad || 'Unidad',

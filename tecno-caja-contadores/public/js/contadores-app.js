@@ -967,6 +967,7 @@ async function loadActualizaciones() {
 let _repNegocioId = null;
 let _repTab       = 'ventas';
 let _repLoading   = false;
+let _repNegocioSucursales = []; // [{id, nombre}] del negocio seleccionado — sincronizadas por el POS
 
 const REP_TABS = {
   ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Cajero','Cliente','Método','Total','ITBIS'] },
@@ -1020,8 +1021,10 @@ async function selNegocioReporte(id) {
   $id('rep-biz-status').style.display = 'none';
   if (!id) {
     _repNegocioId = null;
+    _repNegocioSucursales = [];
     $id('rep-state-empty').style.display = '';
     $id('rep-state-data').style.display  = 'none';
+    loadProductosPendientes();
     return;
   }
 
@@ -1038,6 +1041,7 @@ async function selNegocioReporte(id) {
   try {
     await refreshToken();
     const data = await apiCall('GET', `/api/reportes/${id}`);
+    _repNegocioSucursales = Array.isArray(data.negocio?.sucursales) ? data.negocio.sucursales : [];
     renderBizBar(data.negocio);
     renderRepStats(data.stats, data.negocio.hasPosData);
     cargarChartVentas();
@@ -1053,6 +1057,7 @@ async function selNegocioReporte(id) {
     if (syncEl) syncEl.textContent = 'Sync: ' + fmtDate(data.negocio.syncedAt);
     $id('rep-biz-status').style.display = '';
 
+    loadProductosPendientes();
     await cargarDatosReporte();
   } catch (e) {
     $id('rep-table-inner').innerHTML = `<div class="rep-no-sync"><div class="rep-no-sync-icon">⚠️</div><div class="rep-no-sync-title">Error al cargar datos</div><div class="rep-no-sync-sub">${e.message}</div></div>`;
@@ -1093,6 +1098,7 @@ function cambiarTabReporte(tab) {
   const ncfGroup = $id('rep-f-ncf-group');
   if (ncfGroup) ncfGroup.style.display = (tab === 'facturas' || tab === 'itbis') ? '' : 'none';
 
+  loadProductosPendientes();
   if (_repNegocioId) cargarDatosReporte();
 }
 
@@ -1349,6 +1355,167 @@ function imprimirReporte() {
 
 function actualizarReporte() {
   if (_repNegocioId) selNegocioReporte(_repNegocioId);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PRODUCTOS PENDIENTES (agregados desde este Portal)
+// El POS de cada cliente corre local en su propia PC — esto no llega al
+// instante. Queda en cola en Firestore y el POS del cliente lo aplica la
+// próxima vez que sincronice (abrir/cerrar caja o una venta). Siempre queda
+// global (visible en todas las sucursales de ese negocio) en esta versión.
+// ══════════════════════════════════════════════════════════════════════
+
+let _productosPendientes = [];
+let _apImagenDataUrl = null; // imagen del producto en el modal Agregar Producto (base64, opcional)
+
+// Mismo patrón que handleProductImageSelect() del POS (js/productos.js):
+// redimensiona en el navegador a 900px máx y comprime a JPEG antes de
+// mandarla — así el documento en Firestore no se acerca al límite de 1MB.
+function handleAgregarProductoImagen(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('Selecciona un archivo de imagen válido.', 'error'); return; }
+  if (file.size > 15 * 1024 * 1024) { toast('La imagen debe pesar menos de 15 MB.', 'error'); return; }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 900;
+      let { width, height } = img;
+      if (width > MAX || height > MAX) {
+        const ratio = Math.min(MAX / width, MAX / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      _apImagenDataUrl = canvas.toDataURL('image/jpeg', 0.82);
+
+      const preview = $id('ap-image-preview');
+      const placeholder = $id('ap-image-placeholder');
+      const box = preview?.closest('.ap-image-box');
+      if (preview) { preview.src = _apImagenDataUrl; preview.style.display = 'block'; }
+      if (placeholder) placeholder.style.display = 'none';
+      if (box) box.classList.add('has-image');
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function loadProductosPendientes() {
+  const panel = $id('rep-productos-pendientes-panel');
+  const visible = _repTab === 'productos' && Boolean(_repNegocioId);
+  if (panel) panel.style.display = visible ? '' : 'none';
+  if (!visible) return;
+
+  const listEl = $id('rep-productos-pendientes-list');
+  if (listEl) listEl.innerHTML = `<div class="rep-loading"><div class="rep-spinner"></div>Cargando…</div>`;
+  try {
+    await refreshToken();
+    _productosPendientes = await apiCall('GET', `/api/productos-pendientes/${_repNegocioId}`);
+    renderProductosPendientes();
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<div class="rep-no-sync-sub">Error cargando productos pendientes: ${e.message}</div>`;
+  }
+}
+
+function renderProductosPendientes() {
+  const listEl = $id('rep-productos-pendientes-list');
+  if (!listEl) return;
+  // Ya aplicados no se muestran aquí — la tabla es "qué falta por sincronizar",
+  // no un historial. Un producto aplicado ya aparece en la tabla de catálogo
+  // de abajo, mostrarlo dos veces confundía.
+  const pendientes = _productosPendientes.filter((p) => p.status !== 'aplicado');
+  if (!pendientes.length) {
+    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">No hay productos pendientes por sincronizar.</div>`;
+    return;
+  }
+  const badges = { pendiente: '🟡 Pendiente de sincronizar', error: '🔴 Error' };
+  listEl.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Código</th><th>Nombre</th><th>Sucursal</th><th>Precio</th><th>Estado</th><th>Detalle</th></tr></thead>
+      <tbody>
+        ${pendientes.map(p => `
+          <tr>
+            <td>${p.codigo || '—'}</td>
+            <td>${p.nombre || '—'}${p.tieneImagen ? ' 📷' : ''}</td>
+            <td>${p.branchNombre || '🌐 Global'}</td>
+            <td>${fmtMoney(p.precioVenta)}</td>
+            <td>${badges[p.status] || p.status || '—'}</td>
+            <td>${p.status === 'error' ? (p.errorMessage || '') : ''}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirAgregarProductoModal() {
+  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  ['ap-codigo', 'ap-nombre', 'ap-categoria', 'ap-marca', 'ap-unidad', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min'].forEach((id) => {
+    const el = $id(id);
+    if (el) el.value = '';
+  });
+  const itbisEl = $id('ap-aplica-itbis');
+  if (itbisEl) itbisEl.checked = false;
+
+  const sucursalEl = $id('ap-sucursal');
+  if (sucursalEl) {
+    sucursalEl.innerHTML = '<option value="">🌐 Global (todas las sucursales)</option>' +
+      _repNegocioSucursales.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join('');
+  }
+
+  _apImagenDataUrl = null;
+  const preview = $id('ap-image-preview');
+  const placeholder = $id('ap-image-placeholder');
+  const box = preview?.closest('.ap-image-box');
+  if (preview) { preview.src = ''; preview.style.display = 'none'; }
+  if (placeholder) placeholder.style.display = '';
+  if (box) box.classList.remove('has-image');
+  const fileInput = $id('ap-image-file');
+  if (fileInput) fileInput.value = '';
+
+  show('modal-agregar-producto');
+}
+
+function cerrarAgregarProductoModal() { hide('modal-agregar-producto'); }
+
+async function guardarProductoPendiente() {
+  const codigo = $id('ap-codigo')?.value?.trim();
+  const nombre = $id('ap-nombre')?.value?.trim();
+  const precioVenta = Number($id('ap-precio-venta')?.value || 0);
+  if (!codigo) { toast('El código es obligatorio.', 'error'); return; }
+  if (!nombre) { toast('El nombre es obligatorio.', 'error'); return; }
+  if (!precioVenta || precioVenta <= 0) { toast('Indica un precio de venta válido.', 'error'); return; }
+
+  const sucursalEl = $id('ap-sucursal');
+  const branchId = sucursalEl?.value ? Number(sucursalEl.value) : null;
+
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/productos-pendientes', {
+      businessId:   _repNegocioId,
+      codigo,
+      nombre,
+      categoria:    $id('ap-categoria')?.value?.trim() || 'General',
+      marca:        $id('ap-marca')?.value?.trim() || '',
+      unidad:       $id('ap-unidad')?.value?.trim() || 'Unidad',
+      precioCompra: Number($id('ap-precio-compra')?.value || 0),
+      precioVenta,
+      stock:        Number($id('ap-stock')?.value || 0),
+      stockMin:     Number($id('ap-stock-min')?.value || 0),
+      aplicaItbis:  Boolean($id('ap-aplica-itbis')?.checked),
+      branchId,
+      imagenData:   _apImagenDataUrl || null,
+    });
+    toast('Producto agregado — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    cerrarAgregarProductoModal();
+    loadProductosPendientes();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -4145,6 +4312,8 @@ window.app = {
   loadReportes, selNegocioReporte, cambiarTabReporte, cargarDatosReporte,
   aplicarFiltros, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
   abrirRepDetalle, cerrarRepDetalle, imprimirTabReporte, imprimirReporteMensual,
+  // productos pendientes (agregados desde este Portal)
+  abrirAgregarProductoModal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen,
   // facturación — dashboard
   loadFacturacion, filtrarFacturas, limpiarFiltrosFac,
   // facturación — nueva factura

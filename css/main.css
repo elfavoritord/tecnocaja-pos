@@ -19,6 +19,11 @@
   --radius: 12px;
   --radius-sm: 8px;
   --sidebar-w: 250px;
+  /* Tamaño universal de imagen de producto — Configuración → Apariencia.
+     Gobierna Gestión de Productos y el catálogo de Ventas; NO el thumbnail
+     compacto del buscador de ventas (46px fijo, es una fila de lista, no
+     una tarjeta de producto — forzarlo al mismo tamaño rompería ese layout). */
+  --product-image-size: 100px;
   --font: 'Plus Jakarta Sans', sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
   --transition: all 0.18s ease;
@@ -1074,8 +1079,8 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .sales-product-image {
   width:100%;
   height:100%;
-  max-width:86px;
-  max-height:86px;
+  max-width:var(--product-image-size, 86px);
+  max-height:var(--product-image-size, 86px);
   object-fit:contain;
   display:block;
   transition:transform 0.3s ease;
@@ -1119,6 +1124,15 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
   font-family:var(--font-mono);
   white-space:nowrap;
 }
+.sales-product-stock {
+  font-size:0.66rem;
+  font-weight:700;
+  color:#7b8698;
+  letter-spacing:0.01em;
+}
+.sales-product-stock.is-low { color:#c98a12; }
+.sales-product-stock.is-out { color:#e0475f; }
+[data-theme="light"] .sales-product-stock { color:#8a94a6; }
 @media (max-width:1400px) {
   .ventas-workspace.ventas-workspace--split {
     grid-template-columns:minmax(360px, 1.08fr) minmax(420px, 0.92fr);
@@ -2603,7 +2617,7 @@ body.is-electron .modal:not(.billing-modal),
 }
 .products-grid {
   display:grid;
-  grid-template-columns:repeat(auto-fill, minmax(100px, 1fr));
+  grid-template-columns:repeat(auto-fill, minmax(var(--product-image-size, 100px), 1fr));
   gap:10px;
 }
 /* Compact catalog card overrides */
@@ -4329,6 +4343,31 @@ textarea.form-input { resize:vertical; min-height:80px; }
 .color-options { display:flex; gap:0.75rem; flex-wrap:wrap; }
 .color-dot { width:32px; height:32px; border-radius:50%; border:3px solid transparent; cursor:pointer; transition:var(--transition); }
 .color-dot:hover { border-color:#fff; transform:scale(1.1); }
+
+/* ===== TAMAÑO DE IMAGEN DE PRODUCTO (Apariencia) ===== */
+.image-size-control { display:flex; align-items:center; gap:1rem; flex-wrap:wrap; }
+.image-size-control input[type="range"] { flex:1; min-width:160px; accent-color:var(--accent); }
+.image-size-preview-box {
+  flex-shrink:0;
+  width:110px;
+  height:110px;
+  border-radius:var(--radius-sm);
+  background:var(--bg3);
+  border:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  overflow:hidden;
+}
+.image-size-preview-box .image-size-preview-thumb {
+  border-radius:8px;
+  background:linear-gradient(135deg, var(--accent), var(--accent-light));
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:1.6rem;
+  transition:width 0.1s ease, height 0.1s ease;
+}
 
 /* ===== COBRAR FACTURA MODAL ===== */
 .cobrar-modal-box {

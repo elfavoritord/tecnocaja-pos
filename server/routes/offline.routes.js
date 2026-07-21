@@ -151,7 +151,9 @@ module.exports = function createOfflineRouter(deps) {
       let usersCached = 0;
       let methodsCached = 0;
 
-      // 1. Productos activos
+      // 1. Productos activos — solo globales + los exclusivos de la sucursal
+      // de esta terminal (una terminal no necesita cachear el catálogo
+      // exclusivo de otras sucursales que nunca va a vender).
       const productos = await query(
         `SELECT id, codigo, nombre,
                 COALESCE(categoria, 'Sin categoría') as categoria,
@@ -159,7 +161,9 @@ module.exports = function createOfflineRouter(deps) {
                 COALESCE(stock_min, 0) as stock_min, estado
          FROM products
          WHERE estado = 'Activo'
-         LIMIT 5000`
+           AND (branch_id IS NULL OR branch_id = ?)
+         LIMIT 5000`,
+        [branchId]
       );
       for (const p of (productos || [])) {
         await localQuery(
@@ -1828,14 +1832,18 @@ module.exports = function createOfflineRouter(deps) {
    */
   async function _downloadUpdates(query, localQuery, tc, terminalId) {
     try {
-      // Actualizar precios de productos más recientes
+      // Actualizar precios de productos más recientes — solo globales + los
+      // exclusivos de la sucursal de esta terminal (mismo criterio que init-cache).
+      const branchId = tc?.branchId || null;
       const productos = await query(
         `SELECT id, codigo, nombre,
                 COALESCE(categoria, 'Sin categoría') as categoria,
                 precio_venta, COALESCE(stock, 0) as stock, estado
          FROM products
          WHERE estado = 'Activo'
-         LIMIT 2000`
+           AND (branch_id IS NULL OR branch_id = ?)
+         LIMIT 2000`,
+        [branchId]
       ).catch(() => []);
 
       for (const p of (productos || [])) {

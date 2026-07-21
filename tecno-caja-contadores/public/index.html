@@ -1466,9 +1466,110 @@
       <button class="btn btn-xs btn-secondary" onclick="app.limpiarFiltros()" style="align-self:flex-end">✕ Limpiar</button>
     </div>
 
+    <!-- Productos agregados desde este Portal — se aplican en el POS del
+         cliente la próxima vez que sincronice (abrir/cerrar caja o venta),
+         no al instante. Solo visible en la pestaña "Productos". -->
+    <div id="rep-productos-pendientes-panel" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;gap:12px;flex-wrap:wrap">
+        <div class="rep-filter-label" style="font-weight:600">Productos agregados desde el Portal</div>
+        <button class="btn btn-xs btn-primary" onclick="app.abrirAgregarProductoModal()">+ Agregar producto</button>
+      </div>
+      <div id="rep-productos-pendientes-list" style="margin-bottom:16px"></div>
+    </div>
+
     <!-- Tabla -->
     <div id="rep-table-inner" style="min-height:200px;overflow-x:auto">
       <div class="rep-loading"><div class="rep-spinner"></div>Selecciona una pestaña</div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Agregar producto (queda pendiente, se aplica en el POS del
+     cliente en su próxima sincronización — no es instantáneo) -->
+<div id="modal-agregar-producto" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarAgregarProductoModal()">✕</button>
+    <div class="modal-title">📦 Agregar Producto</div>
+    <div class="modal-sub">Se aplicará en el sistema del cliente la próxima vez que sincronice (no es instantáneo).</div>
+
+    <div class="fac-form-section">
+      <div class="fac-section-lbl">Producto</div>
+      <div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:8px">
+        <div class="ap-image-box" onclick="document.getElementById('ap-image-file').click()" title="Clic para subir imagen">
+          <img id="ap-image-preview" class="ap-image-preview" style="display:none">
+          <div class="ap-image-placeholder" id="ap-image-placeholder">
+            <span>📷</span>
+            <small>Imagen</small>
+          </div>
+          <input type="file" id="ap-image-file" accept="image/*" style="display:none" onchange="app.handleAgregarProductoImagen(this)">
+        </div>
+        <div style="flex:1;min-width:0">
+          <div class="form-group">
+            <label class="form-label">Código *</label>
+            <input type="text" id="ap-codigo" class="form-input" placeholder="Ej: 0001" />
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Nombre *</label>
+            <input type="text" id="ap-nombre" class="form-input" placeholder="Nombre del producto" />
+          </div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Alcance del producto</label>
+        <select id="ap-sucursal" class="form-select">
+          <option value="">🌐 Global (todas las sucursales)</option>
+        </select>
+        <small style="display:block;margin-top:3px;color:var(--text-muted);font-size:10.5px">Un producto de sucursal específica solo lo ve y vende esa sucursal.</small>
+      </div>
+
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Categoría</label>
+          <input type="text" id="ap-categoria" class="form-input" placeholder="General" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Marca</label>
+          <input type="text" id="ap-marca" class="form-input" placeholder="Opcional" />
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Unidad</label>
+        <input type="text" id="ap-unidad" class="form-input" placeholder="Unidad" />
+      </div>
+    </div>
+
+    <div class="fac-form-section">
+      <div class="fac-section-lbl">Precios &amp; Inventario</div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Precio de compra</label>
+          <input type="number" id="ap-precio-compra" class="form-input" min="0" step="0.01" placeholder="0.00" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Precio de venta *</label>
+          <input type="number" id="ap-precio-venta" class="form-input" min="0" step="0.01" placeholder="0.00" />
+        </div>
+      </div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Stock inicial</label>
+          <input type="number" id="ap-stock" class="form-input" min="0" step="1" placeholder="0" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Stock mínimo</label>
+          <input type="number" id="ap-stock-min" class="form-input" min="0" step="1" placeholder="0" />
+        </div>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px;margin-bottom:0">
+        <input type="checkbox" id="ap-aplica-itbis" style="width:auto" />
+        <label class="form-label" style="margin:0" for="ap-aplica-itbis">Aplica ITBIS</label>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarAgregarProductoModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="app.guardarProductoPendiente()">Agregar Producto</button>
     </div>
   </div>
 </div>

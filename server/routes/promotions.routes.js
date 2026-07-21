@@ -197,11 +197,18 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
       }
 
       const productRows = await query(
-        'SELECT id, nombre, precio_venta, precio_compra FROM products WHERE id = ? LIMIT 1',
+        'SELECT id, nombre, precio_venta, precio_compra, branch_id FROM products WHERE id = ? LIMIT 1',
         [productoId],
       );
       if (!productRows.length) return res.status(404).json({ error: 'El producto seleccionado no existe.' });
       const product = productRows[0];
+
+      const sucursalId = body.sucursalId ? Number(body.sucursalId) : null;
+      if (sucursalId && product.branch_id && Number(product.branch_id) !== sucursalId) {
+        return res.status(400).json({
+          error: 'El producto seleccionado pertenece a otra sucursal — no coincide con la sucursal de esta promoción.',
+        });
+      }
 
       if (precioPromocion >= Number(product.precio_venta)) {
         return res.status(400).json({ error: 'El precio de oferta debe ser menor al precio normal del producto.' });
@@ -236,7 +243,7 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
           String(body.textoPromocion || '').trim() || null,
           body.acumulable ? 1 : 0,
           body.exclusiva ? 1 : 0,
-          body.sucursalId ? Number(body.sucursalId) : null,
+          sucursalId,
           actor.id || null,
           actor.id || null,
         ],
@@ -288,11 +295,18 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
       const productoId = Number(productRows[0].producto_id);
 
       const productInfoRows = await query(
-        'SELECT nombre, precio_venta, precio_compra FROM products WHERE id = ? LIMIT 1',
+        'SELECT nombre, precio_venta, precio_compra, branch_id FROM products WHERE id = ? LIMIT 1',
         [productoId],
       );
       const product = productInfoRows[0];
       if (!product) return res.status(404).json({ error: 'El producto de esta promoción ya no existe.' });
+
+      const sucursalId = body.sucursalId ? Number(body.sucursalId) : null;
+      if (sucursalId && product.branch_id && Number(product.branch_id) !== sucursalId) {
+        return res.status(400).json({
+          error: 'El producto de esta promoción pertenece a otra sucursal — no coincide con la sucursal que quieres asignarle.',
+        });
+      }
 
       if (precioPromocion >= Number(product.precio_venta)) {
         return res.status(400).json({ error: 'El precio de oferta debe ser menor al precio normal del producto.' });
@@ -326,7 +340,7 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
           String(body.textoPromocion || '').trim() || null,
           body.acumulable ? 1 : 0,
           body.exclusiva ? 1 : 0,
-          body.sucursalId ? Number(body.sucursalId) : null,
+          sucursalId,
           actor.id || null,
           promotionId,
         ],

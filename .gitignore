@@ -113,6 +113,7 @@ tecnocaja-license-*.json
 
 # Storage ECF — solo trackear directorio base, no archivos generados
 storage/ecf/certification/signed/
+storage/ecf/certification/step4-rfce-status.json
 storage/ecf/enviados/
 storage/ecf/rfce-enviados/
 storage/ecf/tracks/
@@ -153,3 +154,9 @@ contadores-mobile/android/app/build/
 # instalación (impresora/gaveta/báscula de ESA caja física), no debe
 # empaquetarse con un valor fijo para todos los clientes.
 config/peripherals-config.json
+config/terminal-config.json
+
+# Claude Code — settings locales de esta máquina/sesión (allowlist de
+# comandos, directorios adicionales), no es código del proyecto.
+.claude/settings.json
+.claude/settings.local.json

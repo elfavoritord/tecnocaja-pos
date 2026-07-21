@@ -3,6 +3,17 @@
 const crypto = require('crypto');
 const { normalizeEnvironmentKey } = require('../config/ecf.config');
 const { EcfError, assertCondition } = require('../utils/errors');
+const { getDbClient } = require('../../../db');
+
+// SQLite serializa escritores con BEGIN IMMEDIATE (ver db.js withTransaction),
+// así que no soporta ni necesita FOR UPDATE. MySQL sí lo necesita: sin esto,
+// dos cajas/sucursales pidiendo un e-NCF al mismo tiempo pueden leer el mismo
+// proximo_numero bajo REPEATABLE READ antes de que cualquiera confirme,
+// generando el mismo número dos veces (solo lo atajaría el UNIQUE de último
+// recurso, como un error de inserción en vez de una reserva limpia).
+function lockingSuffix() {
+  return getDbClient() === 'mysql' ? ' FOR UPDATE' : '';
+}
 
 function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '');
@@ -730,7 +741,7 @@ class EcfRepository {
        ORDER BY
          CASE WHEN cash_register_id = ? THEN 0 WHEN cash_register_id IS NULL THEN 1 ELSE 2 END,
          CASE WHEN branch_id = ? THEN 0 WHEN branch_id IS NULL THEN 1 ELSE 2 END,
-         id DESC`,
+         id DESC${lockingSuffix()}`,
       [
         businessId,
         tipoComprobante,
@@ -803,7 +814,7 @@ class EcfRepository {
 
     let sequence = null;
     if (options.sequenceId) {
-      const rows = await conn.query('SELECT * FROM ecf_sequences WHERE id = ? AND business_id = ? LIMIT 1', [
+      const rows = await conn.query(`SELECT * FROM ecf_sequences WHERE id = ? AND business_id = ? LIMIT 1${lockingSuffix()}`, [
         Number(options.sequenceId),
         businessId,
       ]);
@@ -869,7 +880,7 @@ class EcfRepository {
   async advanceSequenceAfterUse(sequenceId, encfOrNumber) {
     assertCondition(sequenceId, 'Debe indicar la secuencia a consumir.', { statusCode: 422 });
     return this.withTransaction(async (conn) => {
-      const rows = await conn.query('SELECT * FROM ecf_sequences WHERE id = ? LIMIT 1', [Number(sequenceId)]);
+      const rows = await conn.query(`SELECT * FROM ecf_sequences WHERE id = ? LIMIT 1${lockingSuffix()}`, [Number(sequenceId)]);
       const sequence = rows[0] || null;
       assertCondition(sequence, `No se encontró la secuencia ${sequenceId}.`, { statusCode: 404 });
 

@@ -892,17 +892,19 @@ function filterProducts() {
   loadProductsTable();
 }
 
+// Mismo mecanismo que refreshCajaData() (js/app.js) — recarga el bootstrap
+// completo y re-hidrata DB, en vez de pedir solo /api/products por separado
+// (evita depender de dos caminos distintos de mapeo de datos).
 async function reloadProductsModule() {
   try {
-    const result = await api.getProducts();
-    if (Array.isArray(result?.products)) {
-      DB.productos = result.products;
-    }
+    const freshData = await api.getBootstrap();
+    if (freshData) hydrateDB(freshData);
   } catch (_) {}
   await syncReportAppProductsNow({ silent: false, minIntervalMs: 0 });
   refreshProductCategoryFilter();
   filterProducts();
   hideProductsFallback();
+  showToast('Productos actualizados.', 'success');
 }
 
 function triggerProductsCsvImport() {
@@ -1053,12 +1055,31 @@ function getCurrentProductModalId() {
   return Number.isFinite(numericId) && numericId > 0 ? numericId : null;
 }
 
+// Misma regla de colisión que el backend (ensureUniqueProductCode/Name):
+// un producto global choca con cualquier cosa; uno de sucursal específica
+// choca con lo global y con su propia sucursal, nunca con otra distinta.
+// selectedBranchId es la sucursal elegida AHORA en el formulario (no la ya
+// guardada del producto en edición, porque el usuario puede cambiarla antes
+// de guardar).
+function productCollidesWithBranchScope(product, selectedBranchId) {
+  const productBranchId = product?.branchId ? Number(product.branchId) : null;
+  const selected = selectedBranchId ? Number(selectedBranchId) : null;
+  return productBranchId === null || selected === null || productBranchId === selected;
+}
+
+function getSelectedProductBranchId() {
+  const branchScopeInput = document.getElementById('mp-branch');
+  return branchScopeInput ? (Number(branchScopeInput.value || 0) || null) : null;
+}
+
 function findDuplicateProductByField(fieldName, value, currentId = null) {
   const normalizedValue = normalizeProductIdentityValue(value);
   if (!normalizedValue) return null;
+  const selectedBranchId = getSelectedProductBranchId();
   return (DB.productos || []).find((product) => (
     normalizeProductIdentityValue(product?.[fieldName]) === normalizedValue
     && Number(product?.id || 0) !== Number(currentId || 0)
+    && productCollidesWithBranchScope(product, selectedBranchId)
   )) || null;
 }
 
@@ -1176,6 +1197,34 @@ function handleProductCodeEnter(event) {
   focusProductNameField();
 }
 
+// Selector "Global vs sucursal específica" — solo visible para quien puede
+// manejar el catálogo global (un admin de sucursal siempre queda forzado a
+// su propia sucursal en el backend sin importar este campo, así que no vale
+// la pena mostrárselo). Si el negocio tiene 1 sola sucursal, tampoco aplica.
+function renderProductBranchScopeField(prod) {
+  const canManageGlobal = currentUserCan('crear_productos_globales') || getCurrentUserRoleCode() === 'administrador_general';
+  const sucursales = DB.sucursales || [];
+  if (!canManageGlobal || sucursales.length < 2) return '';
+
+  const currentBranchId = prod?.branchId ?? '';
+  const options = sucursales.map((branch) => `
+    <option value="${branch.id}" ${Number(currentBranchId) === Number(branch.id) ? 'selected' : ''}>${escapeProductIdentityHtml(branch.nombre)}</option>
+  `).join('');
+
+  return `
+    <div class="form-group span-full">
+      <label>Alcance del producto</label>
+      <select id="mp-branch" class="form-input">
+        <option value="" ${currentBranchId === '' || currentBranchId === null ? 'selected' : ''}>🌐 Global (todas las sucursales)</option>
+        ${options}
+      </select>
+      <small style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)">
+        Un producto de sucursal específica solo lo ve y vende esa sucursal.
+      </small>
+    </div>
+  `;
+}
+
 function openProductModal(id) {
   const prod = id ? DB.productos.find(p => p.id === id) : null;
   const profile = getProductFormProfile();
@@ -1222,6 +1271,8 @@ function openProductModal(id) {
       <small id="mp-name-feedback" style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)"></small>
       <div id="mp-name-suggestions" class="hidden"></div>
     </div>
+
+    ${renderProductBranchScopeField(prod)}
 
     <!-- Campos básicos siempre visibles -->
     <div class="modal-grid mp-basics-grid">
@@ -1476,8 +1527,10 @@ async function saveProduct(id) {
     return;
   }
 
+  const branchScopeInput = document.getElementById('mp-branch');
   const data = {
     codigo, nombre,
+    branchId: branchScopeInput ? (Number(branchScopeInput.value || 0) || null) : undefined,
     categoria: document.getElementById('mp-categoria').value,
     imagen: currentProduct?.imagen || currentProduct?.imagenUrl || '',
     imagenLocal: currentProduct?.imagenLocal || null,
@@ -1652,6 +1705,7 @@ function exportProducts() {
   const rows = [[
     'Código',
     'Nombre',
+    'Sucursal',
     'Marca',
     'Categoría',
     'Unidad',
@@ -1673,6 +1727,7 @@ function exportProducts() {
   getFilteredProducts().forEach((p) => rows.push([
     p.codigo,
     p.nombre,
+    p.branchId ? ((DB.sucursales || []).find((b) => Number(b.id) === Number(p.branchId))?.nombre || p.branchId) : '',
     p.marca || '',
     p.categoria,
     p.unidad || '',

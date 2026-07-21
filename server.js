@@ -2145,6 +2145,23 @@ function userCanManageGlobalProductCatalog(user) {
   return isGlobalAdministratorUser(user) || userRoleHasPermission(user, 'crear_productos_globales', 'editar_productos_globales');
 }
 
+// Un admin de sucursal puede crear/editar productos EXCLUSIVOS de su propia
+// sucursal (products.branch_id = su sucursal), sin necesitar el permiso
+// global de arriba. El branchId a forzar sale de getProductCatalogBranchScope().
+function userCanManageProductCatalog(user) {
+  return userCanManageGlobalProductCatalog(user) || isBranchAdministratorUser(user);
+}
+
+// Sucursal a la que debe quedar forzado un producto creado/editado por este
+// actor: null si puede manejar el catálogo global (admin general o permiso
+// explícito), o su propia sucursal si es admin de sucursal (nunca puede crear
+// productos globales ni de otra sucursal, sin importar lo que mande el body).
+function getProductCatalogBranchScope(user) {
+  if (userCanManageGlobalProductCatalog(user)) return null;
+  if (isBranchAdministratorUser(user)) return getUserBranchIdValue(user);
+  return null;
+}
+
 function userCanManageCashRegisters(user) {
   return isGlobalAdministratorUser(user)
     || isBranchAdministratorUser(user)
@@ -2471,9 +2488,15 @@ async function saveProductImageBuffer({ productId, productName, buffer }) {
 }
 
 function mapProductRow(row) {
+  // catalog_branch_id (alias explícito de p.branch_id) existe solo en queries
+  // que hacen JOIN con inventory_by_branch, donde el ib.branch_id sin alias
+  // pisaría a row.branch_id en el objeto resultante. Fuera de esos joins,
+  // row.branch_id ya es inequívocamente products.branch_id.
+  const rawCatalogBranchId = row.catalog_branch_id !== undefined ? row.catalog_branch_id : row.branch_id;
   return {
     id: row.id,
     codigo: row.codigo,
+    branchId: rawCatalogBranchId === null || rawCatalogBranchId === undefined ? null : Number(rawCatalogBranchId),
     barcode: row.barcode || row.codigo || '',
     nombre: row.nombre,
     categoria: row.categoria,
@@ -4463,9 +4486,15 @@ async function ensureProductExtensions() {
   await addColumnIfMissing('products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('products', 'discount_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0.00');
   await addColumnIfMissing('products', 'discount_until_stock_out', 'TINYINT(1) NOT NULL DEFAULT 0');
+  // branch_id nulo = producto global (visible/vendible en todas las sucursales).
+  // No lleva FK real: el borrado de sucursal ya es soft-delete (estado='Eliminada')
+  // y SQLite no soporta agregar constraints FK vía ALTER TABLE — la protección
+  // real está en el handler de borrado de sucursal (ver DELETE /api/branches/:id).
+  await addColumnIfMissing('products', 'branch_id', 'INT DEFAULT NULL');
   await query(`UPDATE products SET sale_mode = 'unidad' WHERE sale_mode IS NULL OR sale_mode = ''`).catch(() => {});
   await query('CREATE INDEX idx_products_barcode ON products (barcode)').catch(() => {});
   await query('CREATE INDEX idx_products_remote_report_product_id ON products (remote_report_product_id)').catch(() => {});
+  await query('CREATE INDEX idx_products_branch_codigo ON products (branch_id, codigo)').catch(() => {});
 }
 
 async function ensureReportAppProductSyncLogTable() {
@@ -4655,12 +4684,16 @@ async function ensurePromotionsExtensions() {
   await addColumnIfMissing('config', 'promotions_default_color', `VARCHAR(7) NOT NULL DEFAULT '#22c55e'`);
 }
 
-// Generate the next NCF for a given type, respecting branch sequences
+// Generate the next NCF for a given type, respecting branch sequences.
+// FOR UPDATE (solo MySQL, dentro de la transacción del llamador) evita que
+// dos terminales pidiendo el mismo tipo de NCF casi al mismo tiempo lean el
+// mismo siguiente_numero antes de que cualquiera confirme — mismo bug que ya
+// se corrigió para las secuencias de e-CF en modules/ecf/models/ecf.repository.js.
 async function getNextNcfFromSequence(conn, ncfType, branchId) {
   const seqs = await conn.query(
     `SELECT * FROM ncf_sequences WHERE ncf_type = ? AND activa = 1
      AND (branch_id = ? OR branch_id IS NULL)
-     ORDER BY branch_id DESC LIMIT 1`,
+     ORDER BY branch_id DESC LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
     [ncfType, branchId || null]
   );
   if (!seqs[0]) {
@@ -6965,13 +6998,19 @@ async function getLatestDeliveryLocations() {
   }));
 }
 
-async function ensureUniqueProductCode(codigo, ignoreId = null, executor = query) {
+// Regla de colisión: un producto GLOBAL (branch_id IS NULL) colisiona con
+// cualquier cosa; un producto de sucursal específica colisiona con lo global
+// y con su propia sucursal, nunca con otra sucursal distinta.
+const PRODUCT_BRANCH_COLLISION_CLAUSE = '(branch_id IS NULL OR ? IS NULL OR branch_id = ?)';
+
+async function ensureUniqueProductCode(codigo, ignoreId = null, executor = query, branchId = null) {
   const runQuery = typeof executor?.query === 'function'
     ? executor.query.bind(executor)
     : query;
+  const baseParams = [codigo, branchId, branchId];
   const rows = ignoreId
-    ? await runQuery('SELECT id FROM products WHERE LOWER(codigo) = LOWER(?) AND id <> ? LIMIT 1', [codigo, ignoreId])
-    : await runQuery('SELECT id FROM products WHERE LOWER(codigo) = LOWER(?) LIMIT 1', [codigo]);
+    ? await runQuery(`SELECT id FROM products WHERE LOWER(codigo) = LOWER(?) AND ${PRODUCT_BRANCH_COLLISION_CLAUSE} AND id <> ? LIMIT 1`, [...baseParams, ignoreId])
+    : await runQuery(`SELECT id FROM products WHERE LOWER(codigo) = LOWER(?) AND ${PRODUCT_BRANCH_COLLISION_CLAUSE} LIMIT 1`, baseParams);
   if (rows.length) {
     const error = new Error('Ya existe un producto con ese código.');
     error.statusCode = 409;
@@ -6979,13 +7018,14 @@ async function ensureUniqueProductCode(codigo, ignoreId = null, executor = query
   }
 }
 
-async function ensureUniqueProductName(nombre, ignoreId = null, executor = query) {
+async function ensureUniqueProductName(nombre, ignoreId = null, executor = query, branchId = null) {
   const runQuery = typeof executor?.query === 'function'
     ? executor.query.bind(executor)
     : query;
+  const baseParams = [nombre, branchId, branchId];
   const rows = ignoreId
-    ? await runQuery('SELECT id FROM products WHERE LOWER(nombre) = LOWER(?) AND id <> ? LIMIT 1', [nombre, ignoreId])
-    : await runQuery('SELECT id FROM products WHERE LOWER(nombre) = LOWER(?) LIMIT 1', [nombre]);
+    ? await runQuery(`SELECT id FROM products WHERE LOWER(nombre) = LOWER(?) AND ${PRODUCT_BRANCH_COLLISION_CLAUSE} AND id <> ? LIMIT 1`, [...baseParams, ignoreId])
+    : await runQuery(`SELECT id FROM products WHERE LOWER(nombre) = LOWER(?) AND ${PRODUCT_BRANCH_COLLISION_CLAUSE} LIMIT 1`, baseParams);
   if (rows.length) {
     const error = new Error('Ya existe un producto con ese nombre.');
     error.statusCode = 409;
@@ -6993,7 +7033,7 @@ async function ensureUniqueProductName(nombre, ignoreId = null, executor = query
   }
 }
 
-async function ensureUniqueProductBarcode(barcode, ignoreId = null, executor = query) {
+async function ensureUniqueProductBarcode(barcode, ignoreId = null, executor = query, branchId = null) {
   const normalized = String(barcode || '').trim();
   if (!normalized) return;
   const runQuery = typeof executor?.query === 'function'
@@ -7003,8 +7043,10 @@ async function ensureUniqueProductBarcode(barcode, ignoreId = null, executor = q
                WHERE (
                  LOWER(COALESCE(barcode, "")) = LOWER(?)
                  OR LOWER(COALESCE(codigo, "")) = LOWER(?)
-               )${ignoreId ? ' AND id <> ?' : ''} LIMIT 1`;
-  const params = ignoreId ? [normalized, normalized, ignoreId] : [normalized, normalized];
+               ) AND ${PRODUCT_BRANCH_COLLISION_CLAUSE}${ignoreId ? ' AND id <> ?' : ''} LIMIT 1`;
+  const params = ignoreId
+    ? [normalized, normalized, branchId, branchId, ignoreId]
+    : [normalized, normalized, branchId, branchId];
   const rows = await runQuery(sql, params);
   if (rows.length) {
     const error = new Error('Ya existe un producto con ese código de barra.');
@@ -7045,11 +7087,12 @@ async function getBootstrapData(actorUser = null) {
     getCategories(),
     effectiveBranchId
       ? query(
-          `SELECT p.*, ib.id AS inventory_branch_id, ib.branch_id, ib.stock AS stock_in_branch, ib.stock_min AS stock_min_in_branch
+          `SELECT p.*, p.branch_id AS catalog_branch_id, ib.id AS inventory_branch_id, ib.branch_id, ib.stock AS stock_in_branch, ib.stock_min AS stock_min_in_branch
            FROM products p
            LEFT JOIN inventory_by_branch ib ON ib.product_id = p.id AND ib.branch_id = ?
+           WHERE p.branch_id IS NULL OR p.branch_id = ?
            ORDER BY p.nombre`,
-          [effectiveBranchId]
+          [effectiveBranchId, effectiveBranchId]
         )
       : query('SELECT * FROM products ORDER BY nombre'),
     getClientRowsWithComputedBalance(),
@@ -7262,14 +7305,32 @@ app.get('/api/public/users-list', async (req, res) => {
       return res.json(publicUsersListCache.payload);
     }
 
+    // Cada terminal solo muestra el personal de SU propia sucursal (más el
+    // administrador general, que puede entrar desde cualquier lado) — en un
+    // negocio multisucursal con varias terminales compartiendo la misma base,
+    // mostrar a TODO el personal de TODAS las sucursales en cada pantalla de
+    // login es confuso e innecesario. Si esta terminal no tiene sucursal
+    // asignada (negocio de una sola sucursal), no se filtra nada — mismo
+    // comportamiento de siempre.
+    const terminalBranchId = Number(getTerminalScopeSelection()?.branchId || 0) || null;
     const users = await query(
-      `SELECT id, nombre, usuario, rol
-       FROM users
-       WHERE LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '')
-          OR estado IS NULL
-       ORDER BY nombre ASC
-       LIMIT 50`,
-      []
+      terminalBranchId
+        ? `SELECT id, nombre, usuario, rol
+           FROM users
+           WHERE (LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '') OR estado IS NULL)
+             AND (
+               LOWER(COALESCE(rol, '')) IN ('administrador', 'administrador_general', 'admin', 'admin general', 'admin_general')
+               OR COALESCE(sucursal_id, branch_id) = ?
+             )
+           ORDER BY nombre ASC
+           LIMIT 50`
+        : `SELECT id, nombre, usuario, rol
+           FROM users
+           WHERE LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '')
+              OR estado IS NULL
+           ORDER BY nombre ASC
+           LIMIT 50`,
+      terminalBranchId ? [terminalBranchId] : []
     );
     const safeUsers = users.map(u => ({
       id: Number(u.id),
@@ -7662,9 +7723,12 @@ async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEn
 
     const { FieldValue } = require('firebase-admin/firestore');
     const businessKey = buildPosBusinessKey(businessName);
-    // Reusar el UID que ya estableció syncPosAccountsToFirestore; si no existe, usar businessKey
+    // Reusar el UID que ya estableció syncPosAccountsToFirestore; si no existe,
+    // generar uno aleatorio — NUNCA usar businessKey (derivado del nombre) como
+    // ID de documento: dos negocios con nombre igual o parecido colisionarían
+    // en el mismo doc de Firestore y se mezclarían sus datos en cada sync.
     const existingUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-    const uid = existingUid || businessKey;
+    const uid = existingUid || `pos_${crypto.randomBytes(8).toString('hex')}`;
     const planCode = { monocaja: 'basico', multicaja: 'pro', multisucursal: 'plus' }[businessStructureMode] || 'basico';
     const publicUrl = String(process.env.POS_PUBLIC_BASE_URL || '').trim();
     const mobileCode = await query('SELECT mobile_connection_code FROM config WHERE id = 1').then(r => r[0]?.mobile_connection_code || '').catch(() => '');
@@ -8110,11 +8174,12 @@ app.get('/api/network/identify', async (_req, res) => {
       if (branchRows[0]) branchName = String(branchRows[0].nombre || branchName).trim() || branchName;
     }
 
+    const isMain = isMainTerminalConfig(getTerminalConfig());
     return res.json({
       ok: true,
       app: 'Tecno Caja',
-      role: isMainTerminalConfig() ? 'principal' : 'terminal',
-      isMain: isMainTerminalConfig(),
+      role: isMain ? 'principal' : 'terminal',
+      isMain,
       businessName: String(config.business_name || 'Tecno Caja').trim() || 'Tecno Caja',
       branchName,
       serverPort: Number(process.env.PORT || 3000),
@@ -10114,21 +10179,161 @@ app.post('/api/categories', async (req, res) => {
 });
 
 app.get('/api/products', async (req, res) => {
-  await resolveRequestActorUser(req, { required: true });
-  const rows = await query('SELECT * FROM products ORDER BY nombre');
-  res.json({ products: rows });
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+
+  const wantsAllBranches = String(req.query?.todasLasSucursales || '') === '1';
+  if (wantsAllBranches && userCanManageGlobalProductCatalog(actorUser)) {
+    const rows = await query('SELECT * FROM products ORDER BY nombre');
+    return res.json({ products: rows.map(mapProductRow) });
+  }
+
+  // Prioridad: rol escopeado a sucursal (manda siempre) > query param >
+  // sucursal de la terminal > sucursal activa configurada. Si no se resuelve
+  // ninguna (negocio de una sola sucursal), no-op: catálogo completo, igual
+  // que siempre.
+  const scopedBranchId = getUserScopeBranchId(actorUser);
+  let branchId = scopedBranchId;
+  if (!branchId) {
+    const terminalScope = getTerminalScopeSelection();
+    const configRows = await query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+    branchId = Number(req.query?.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
+  }
+
+  const rows = branchId
+    ? await query('SELECT * FROM products WHERE branch_id IS NULL OR branch_id = ? ORDER BY nombre', [branchId])
+    : await query('SELECT * FROM products ORDER BY nombre');
+  res.json({ products: rows.map(mapProductRow) });
 });
+
+// Cuerpo reusable de "crear producto" — usado tanto por POST /api/products
+// (un usuario logueado, con req) como por el consumidor de productos
+// pendientes que llegan del Portal del Contador (server/sync/apply-pending-products.js,
+// sin req/sesión HTTP, solo un actor sintético para el log de auditoría).
+async function createProductInTransaction(conn, { data, catalogBranchId, actor }) {
+  await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
+  await ensureUniqueProductCode(data.codigo, null, conn, catalogBranchId);
+  await ensureUniqueProductBarcode(data.barcode || data.codigo, null, conn, catalogBranchId);
+  await ensureUniqueProductName(data.nombre, null, conn, catalogBranchId);
+
+  const result = await conn.query(
+    `INSERT INTO products
+      (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock, discount_percent, discount_until_stock_out, branch_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      data.codigo,
+      data.barcode || data.codigo,
+      data.nombre,
+      data.categoria,
+      data.marca,
+      data.unidad,
+      normalizeProductSaleMode(data.saleMode),
+      data.precioCompra,
+      data.precioVenta,
+      data.stock,
+      data.stockMin,
+      data.estado || 'Activo',
+      data.imagen || null,
+      data.imagenLocal || null,
+      data.tipoProducto || 'general',
+      JSON.stringify(data.tamanos || []),
+      JSON.stringify(data.masas || []),
+      JSON.stringify(data.bordes || []),
+      JSON.stringify(data.extras || []),
+      data.permiteMitades ? 1 : 0,
+      data.esCombo ? 1 : 0,
+      data.aplicaItbis ? 1 : 0,
+      Number(data.tiempoPreparacion || 15),
+      JSON.stringify(data.metaNegocio || {}),
+      data.tracksStock === false ? 0 : 1,
+      Math.min(100, Math.max(0, Number(data.descuentoPct || 0))),
+      data.descuentoHastaAgotar ? 1 : 0,
+      catalogBranchId
+    ]
+  );
+
+  const productId = Number(result.insertId || 0);
+  const terminalScope = getTerminalScopeSelection();
+  const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
+  const preferredBranchId = Number(catalogBranchId || data.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
+  const branchId = await resolveInventoryBranchId(conn, preferredBranchId);
+
+  await ensureBranchInventoryCoverageForProduct(conn, {
+    productId,
+    branchId,
+    stock: Number(data.stock || 0),
+    stockMin: Number(data.stockMin || 0)
+  });
+
+  let stockChange = null;
+  if (branchId) {
+    stockChange = await changeBranchInventoryStock(conn, {
+      productId,
+      branchId,
+      absoluteStock: Number(data.stock || 0),
+      stockMin: Number(data.stockMin || 0)
+    });
+  }
+
+  if (Number(data.stock || 0) > 0 && branchId) {
+    await registerInventoryMovement(conn, {
+      productId,
+      branchId,
+      tipo: 'inicial',
+      cantidad: Number(data.stock || 0),
+      stockAnterior: stockChange?.previousStock ?? 0,
+      stockNuevo: stockChange?.nextStock ?? Number(data.stock || 0),
+      costoUnitario: Number(data.precioCompra || 0),
+      referenciaTipo: 'producto',
+      referenciaId: data.codigo,
+      notas: 'Stock inicial al crear producto',
+      usuarioId: actor.userId,
+      usuarioNombre: actor.userName
+    });
+  }
+
+  const rows = await conn.query('SELECT * FROM products WHERE id = ?', [productId]);
+  return {
+    row: rows[0],
+    branchId
+  };
+}
+
+// Aplica productos pendientes que un contador haya agregado desde el Portal
+// del Contador (fire-and-forget, mismos disparadores que syncPosStatsToFirestore:
+// abrir caja, cerrar caja, crear venta — ver server/sync/apply-pending-products.js).
+function applyPendingProductsFireAndForget() {
+  require('./server/sync/apply-pending-products')
+    .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
+    .applyPendingProductRequests()
+    .catch(() => {});
+}
+
+// Versión awaitable, expuesta vía app.locals para que el botón manual
+// "Sincronizar reportes" (server/routes/sync.routes.js → POST /api/sync/pos-stats,
+// router montado ANTES de que esta función exista, línea 1536) pueda llamarla
+// sin necesitar un require circular hacia este archivo — Express ya resuelve
+// app.locals en tiempo de request, no de registro de rutas.
+app.locals.applyPendingProductRequests = () => require('./server/sync/apply-pending-products')
+  .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
+  .applyPendingProductRequests();
 
 app.post('/api/products', async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!userCanManageGlobalProductCatalog(actorUser)) {
-    return res.status(403).json({ error: 'No tienes permiso para crear productos globales.' });
+  if (!userCanManageProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para crear productos.' });
   }
   const data = req.body;
   if (!data?.codigo || !data?.nombre) {
     return res.status(400).json({ error: 'Código y nombre son obligatorios.' });
   }
+  // Un admin de sucursal queda forzado a SU sucursal (ignora lo que mande el
+  // body); un admin con permiso de catálogo global elige libremente, con null
+  // = producto global (visible en todas las sucursales).
+  const scopedCatalogBranchId = getProductCatalogBranchScope(actorUser);
+  const catalogBranchId = scopedCatalogBranchId !== null
+    ? scopedCatalogBranchId
+    : (Number(data.branchId || 0) || null);
   await ensureCategoriesTable();
   await ensureProductExtensions();
   const actor = getActor(req);
@@ -10136,93 +10341,7 @@ app.post('/api/products', async (req, res) => {
   await ensureBranchInventoryTable();
   await ensureInventoryMovementsTable();
 
-  const createdResult = await withTransaction(async (conn) => {
-    await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
-    await ensureUniqueProductCode(data.codigo, null, conn);
-    await ensureUniqueProductBarcode(data.barcode || data.codigo, null, conn);
-    await ensureUniqueProductName(data.nombre, null, conn);
-
-    const result = await conn.query(
-      `INSERT INTO products
-        (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock, discount_percent, discount_until_stock_out)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        data.codigo,
-        data.barcode || data.codigo,
-        data.nombre,
-        data.categoria,
-        data.marca,
-        data.unidad,
-        normalizeProductSaleMode(data.saleMode),
-        data.precioCompra,
-        data.precioVenta,
-        data.stock,
-        data.stockMin,
-        data.estado || 'Activo',
-        data.imagen || null,
-        data.imagenLocal || null,
-        data.tipoProducto || 'general',
-        JSON.stringify(data.tamanos || []),
-        JSON.stringify(data.masas || []),
-        JSON.stringify(data.bordes || []),
-        JSON.stringify(data.extras || []),
-        data.permiteMitades ? 1 : 0,
-        data.esCombo ? 1 : 0,
-        data.aplicaItbis ? 1 : 0,
-        Number(data.tiempoPreparacion || 15),
-        JSON.stringify(data.metaNegocio || {}),
-        data.tracksStock === false ? 0 : 1,
-        Math.min(100, Math.max(0, Number(data.descuentoPct || 0))),
-        data.descuentoHastaAgotar ? 1 : 0
-      ]
-    );
-
-    const productId = Number(result.insertId || 0);
-    const terminalScope = getTerminalScopeSelection();
-    const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
-    const preferredBranchId = Number(data.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
-    const branchId = await resolveInventoryBranchId(conn, preferredBranchId);
-
-    await ensureBranchInventoryCoverageForProduct(conn, {
-      productId,
-      branchId,
-      stock: Number(data.stock || 0),
-      stockMin: Number(data.stockMin || 0)
-    });
-
-    let stockChange = null;
-    if (branchId) {
-      stockChange = await changeBranchInventoryStock(conn, {
-        productId,
-        branchId,
-        absoluteStock: Number(data.stock || 0),
-        stockMin: Number(data.stockMin || 0)
-      });
-    }
-
-    if (Number(data.stock || 0) > 0 && branchId) {
-      await registerInventoryMovement(conn, {
-        productId,
-        branchId,
-        tipo: 'inicial',
-        cantidad: Number(data.stock || 0),
-        stockAnterior: stockChange?.previousStock ?? 0,
-        stockNuevo: stockChange?.nextStock ?? Number(data.stock || 0),
-        costoUnitario: Number(data.precioCompra || 0),
-        referenciaTipo: 'producto',
-        referenciaId: data.codigo,
-        notas: 'Stock inicial al crear producto',
-        usuarioId: actor.userId,
-        usuarioNombre: actor.userName
-      });
-    }
-
-    const rows = await conn.query('SELECT * FROM products WHERE id = ?', [productId]);
-    return {
-      row: rows[0],
-      branchId
-    };
-  });
+  const createdResult = await withTransaction((conn) => createProductInTransaction(conn, { data, catalogBranchId, actor }));
 
   try {
     await writeAuditLog({
@@ -10271,9 +10390,15 @@ app.post('/api/products', async (req, res) => {
 app.post('/api/products/import-csv', async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!userCanManageGlobalProductCatalog(actorUser)) {
-    return res.status(403).json({ error: 'No tienes permiso para importar productos globales.' });
+  if (!userCanManageProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para importar productos.' });
   }
+  // Admin de sucursal → todas las filas quedan forzadas a SU sucursal, sin
+  // importar la columna "Sucursal" del CSV (no puede colarse y crear
+  // productos globales ni de otra sucursal por esta vía). Admin con permiso
+  // global → cada fila resuelve su propia sucursal (columna vacía = global,
+  // mismo comportamiento que antes de este cambio).
+  const scopedImportBranchId = getProductCatalogBranchScope(actorUser);
 
   await ensureCategoriesTable();
   await ensureProductExtensions();
@@ -10325,6 +10450,22 @@ app.post('/api/products/import-csv', async (req, res) => {
     const branchId = await resolveInventoryBranchId(conn, preferredBranchId);
     report.branchId = branchId;
 
+    // Para resolver la columna "Sucursal" del CSV (ID o nombre) sin golpear
+    // la base fila por fila.
+    const allBranchesForImport = await conn.query('SELECT id, nombre FROM branches WHERE estado <> "Eliminada"');
+    function resolveCsvBranchId(rawValue) {
+      const raw = String(rawValue || '').trim();
+      if (!raw) return { branchId: null, error: null };
+      const asNumber = Number(raw);
+      if (Number.isFinite(asNumber) && asNumber > 0) {
+        const byId = allBranchesForImport.find((b) => Number(b.id) === asNumber);
+        if (byId) return { branchId: Number(byId.id), error: null };
+      }
+      const byName = allBranchesForImport.find((b) => String(b.nombre || '').trim().toLowerCase() === raw.toLowerCase());
+      if (byName) return { branchId: Number(byName.id), error: null };
+      return { branchId: null, error: `sucursal "${raw}" no encontrada` };
+    }
+
     for (const record of importedRows) {
       try {
         if (!record.codigo || !record.nombre) {
@@ -10333,8 +10474,26 @@ app.post('/api/products/import-csv', async (req, res) => {
           continue;
         }
 
+        let catalogBranchId = null;
+        if (scopedImportBranchId !== null) {
+          catalogBranchId = scopedImportBranchId;
+        } else if (record.sucursal) {
+          const resolved = resolveCsvBranchId(record.sucursal);
+          if (resolved.error) {
+            report.skipped += 1;
+            report.errors.push(`Fila ${record.rowNumber}: ${resolved.error}.`);
+            continue;
+          }
+          catalogBranchId = resolved.branchId;
+        }
+
         await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [record.categoria || 'General']);
-        const existingRows = await conn.query('SELECT * FROM products WHERE LOWER(codigo) = LOWER(?) LIMIT 1', [record.codigo]);
+        const existingRows = await conn.query(
+          `SELECT * FROM products
+           WHERE LOWER(codigo) = LOWER(?) AND ((branch_id IS NULL AND ? IS NULL) OR branch_id = ?)
+           LIMIT 1`,
+          [record.codigo, catalogBranchId, catalogBranchId]
+        );
         const existing = existingRows[0];
 
         if (existing) {
@@ -10359,13 +10518,14 @@ app.post('/api/products/import-csv', async (req, res) => {
             tiempoPreparacion: Math.max(0, Math.round(resolveImportedProductNumber(record, 'tiempoPreparacion', existing.preparation_time_minutes, 15))),
           };
 
-          await ensureUniqueProductCode(payload.codigo, existing.id, conn);
-          await ensureUniqueProductName(payload.nombre, existing.id, conn);
+          await ensureUniqueProductCode(payload.codigo, existing.id, conn, catalogBranchId);
+          await ensureUniqueProductName(payload.nombre, existing.id, conn, catalogBranchId);
           await conn.query(
             `UPDATE products
              SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?, sale_mode = ?, precio_compra = ?,
                  precio_venta = ?, stock = ?, stock_min = ?, estado = ?, image_url = ?, image_local = ?,
-                 product_type = ?, aplica_itbis = ?, tracks_stock = ?, is_combo = ?, preparation_time_minutes = ?
+                 product_type = ?, aplica_itbis = ?, tracks_stock = ?, is_combo = ?, preparation_time_minutes = ?,
+                 branch_id = ?
              WHERE id = ?`,
             [
               payload.codigo,
@@ -10386,6 +10546,7 @@ app.post('/api/products/import-csv', async (req, res) => {
               payload.tracksStock,
               payload.esCombo,
               payload.tiempoPreparacion,
+              catalogBranchId,
               existing.id,
             ]
           );
@@ -10428,13 +10589,13 @@ app.post('/api/products/import-csv', async (req, res) => {
           continue;
         }
 
-        await ensureUniqueProductCode(record.codigo, null, conn);
-        await ensureUniqueProductName(record.nombre, null, conn);
+        await ensureUniqueProductCode(record.codigo, null, conn, catalogBranchId);
+        await ensureUniqueProductName(record.nombre, null, conn, catalogBranchId);
 
         const result = await conn.query(
           `INSERT INTO products
-            (codigo, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (codigo, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock, branch_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             record.codigo,
             record.nombre,
@@ -10460,6 +10621,7 @@ app.post('/api/products/import-csv', async (req, res) => {
             Number(record.tiempoPreparacion || 15),
             JSON.stringify({}),
             record.tracksStock === false ? 0 : 1,
+            catalogBranchId,
           ]
         );
 
@@ -10558,10 +10720,20 @@ app.post('/api/products/import-csv', async (req, res) => {
 
 app.get('/api/products/cache-search', async (req, res) => {
   try {
+    const actorUser = await resolveRequestActorUser(req, { required: true });
     const q         = String(req.query.q || '').trim();
     const categoria = String(req.query.categoria || '').trim() || undefined;
     const limit     = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
-    const results   = await productsCache.search(q, { categoria, limit });
+
+    const scopedBranchId = getUserScopeBranchId(actorUser);
+    let branchId = scopedBranchId;
+    if (!branchId) {
+      const terminalScope = getTerminalScopeSelection();
+      const configRows = await query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+      branchId = Number(req.query?.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
+    }
+
+    const results = await productsCache.search(q, { categoria, limit, branchId });
     res.json({ ok: true, products: results, source: 'cache', stats: productsCache.stats() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -10621,8 +10793,8 @@ app.get('/api/products/image-search', async (req, res) => {
 app.post('/api/products/:id/image', express.json({ limit: '20mb' }), async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!userCanManageGlobalProductCatalog(actorUser)) {
-    return res.status(403).json({ error: 'No tienes permiso para modificar imágenes del catálogo global.' });
+  if (!userCanManageProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para modificar imágenes del catálogo.' });
   }
   await ensureProductExtensions();
   const productId = Number(req.params.id);
@@ -10633,6 +10805,10 @@ app.post('/api/products/:id/image', express.json({ limit: '20mb' }), async (req,
   const product = productRows[0];
   if (!product) {
     return res.status(404).json({ error: 'Producto no encontrado.' });
+  }
+  const scopedImageBranchId = getProductCatalogBranchScope(actorUser);
+  if (scopedImageBranchId !== null && Number(product.branch_id || 0) !== scopedImageBranchId) {
+    return res.status(403).json({ error: 'No tienes permiso para modificar un producto que no pertenece a tu sucursal.' });
   }
 
   let saved = null;
@@ -10682,8 +10858,8 @@ app.post('/api/products/:id/image', express.json({ limit: '20mb' }), async (req,
 app.delete('/api/products/:id/image', async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!userCanManageGlobalProductCatalog(actorUser)) {
-    return res.status(403).json({ error: 'No tienes permiso para modificar imágenes del catálogo global.' });
+  if (!userCanManageProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para modificar imágenes del catálogo.' });
   }
   await ensureProductExtensions();
   const productId = Number(req.params.id);
@@ -10691,6 +10867,10 @@ app.delete('/api/products/:id/image', async (req, res) => {
   const product = rows[0];
   if (!product) {
     return res.status(404).json({ error: 'Producto no encontrado.' });
+  }
+  const scopedImageBranchId = getProductCatalogBranchScope(actorUser);
+  if (scopedImageBranchId !== null && Number(product.branch_id || 0) !== scopedImageBranchId) {
+    return res.status(403).json({ error: 'No tienes permiso para modificar un producto que no pertenece a tu sucursal.' });
   }
   await removeLocalProductImage(product.image_local);
   await query('UPDATE products SET image_url = NULL, image_local = NULL WHERE id = ?', [productId]);
@@ -10709,14 +10889,15 @@ app.delete('/api/products/:id/image', async (req, res) => {
 app.put('/api/products/:id', async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!userCanManageGlobalProductCatalog(actorUser)) {
-    return res.status(403).json({ error: 'No tienes permiso para editar productos globales.' });
+  if (!userCanManageProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para editar productos.' });
   }
   const { id } = req.params;
   const data = req.body;
   if (!data?.codigo || !data?.nombre) {
     return res.status(400).json({ error: 'Código y nombre son obligatorios.' });
   }
+  const scopedCatalogBranchId = getProductCatalogBranchScope(actorUser);
   await ensureCategoriesTable();
   await ensureProductExtensions();
   await ensureBusinessStructureExtensions();
@@ -10732,17 +10913,30 @@ app.put('/api/products/:id', async (req, res) => {
       throw error;
     }
 
+    // Un admin de sucursal solo puede editar productos que ya son de SU
+    // sucursal — nunca productos globales ni de otra sucursal, aunque tenga
+    // el id. El branchId final queda forzado a su propia sucursal (no puede
+    // "mover" el producto a otro lado ni volverlo global vía el body).
+    if (scopedCatalogBranchId !== null && Number(previous.branch_id || 0) !== scopedCatalogBranchId) {
+      const error = new Error('No tienes permiso para editar un producto que no pertenece a tu sucursal.');
+      error.statusCode = 403;
+      throw error;
+    }
+    const catalogBranchId = scopedCatalogBranchId !== null
+      ? scopedCatalogBranchId
+      : (Number(data.branchId ?? previous.branch_id ?? 0) || null);
+
     await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
-    await ensureUniqueProductCode(data.codigo, id, conn);
-    await ensureUniqueProductBarcode(data.barcode || data.codigo, id, conn);
-    await ensureUniqueProductName(data.nombre, id, conn);
+    await ensureUniqueProductCode(data.codigo, id, conn, catalogBranchId);
+    await ensureUniqueProductBarcode(data.barcode || data.codigo, id, conn, catalogBranchId);
+    await ensureUniqueProductName(data.nombre, id, conn, catalogBranchId);
     await conn.query(
       `UPDATE products
        SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?, sale_mode = ?, precio_compra = ?,
            precio_venta = ?, stock = ?, stock_min = ?, estado = ?, image_url = ?, image_local = ?, product_type = ?,
            size_options = ?, dough_options = ?, border_options = ?, extra_options = ?,
            allow_half_and_half = ?, is_combo = ?, aplica_itbis = ?, preparation_time_minutes = ?, business_metadata = ?,
-           tracks_stock = ?, barcode = ?, discount_percent = ?, discount_until_stock_out = ?
+           tracks_stock = ?, barcode = ?, discount_percent = ?, discount_until_stock_out = ?, branch_id = ?
        WHERE id = ?`,
       [
         data.codigo,
@@ -10772,13 +10966,14 @@ app.put('/api/products/:id', async (req, res) => {
         data.barcode || data.codigo,
         Math.min(100, Math.max(0, Number(data.descuentoPct || 0))),
         data.descuentoHastaAgotar ? 1 : 0,
+        catalogBranchId,
         id
       ]
     );
 
     const terminalScope = getTerminalScopeSelection();
     const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
-    const preferredBranchId = Number(data.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
+    const preferredBranchId = Number(catalogBranchId || data.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
     const branchId = await resolveInventoryBranchId(conn, preferredBranchId);
 
     await ensureBranchInventoryCoverageForProduct(conn, {
@@ -10869,13 +11064,17 @@ app.put('/api/products/:id', async (req, res) => {
 app.delete('/api/products/:id', async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!userCanManageGlobalProductCatalog(actorUser)) {
-    return res.status(403).json({ error: 'No tienes permiso para eliminar productos globales.' });
+  if (!userCanManageProductCatalog(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para eliminar productos.' });
   }
-  const productRows = await query('SELECT id, codigo, nombre, stock, image_local FROM products WHERE id = ?', [req.params.id]);
+  const productRows = await query('SELECT id, codigo, nombre, stock, image_local, branch_id FROM products WHERE id = ?', [req.params.id]);
   const product = productRows[0];
   if (!product) {
     return res.status(404).json({ error: 'Producto no encontrado.' });
+  }
+  const scopedDeleteBranchId = getProductCatalogBranchScope(actorUser);
+  if (scopedDeleteBranchId !== null && Number(product.branch_id || 0) !== scopedDeleteBranchId) {
+    return res.status(403).json({ error: 'No tienes permiso para eliminar un producto que no pertenece a tu sucursal.' });
   }
   if (Number(product.stock || 0) > 0) {
     return res.status(409).json({ error: 'No puedes eliminar este producto porque tiene stock pendiente.' });
@@ -12835,6 +13034,16 @@ app.delete('/api/branches/:id', async (req, res) => {
     return res.status(409).json({ error: 'Esta sucursal está en uso como sucursal activa. Cambia la sucursal activa antes de eliminarla.' });
   }
 
+  const ownProductsRows = await query(
+    `SELECT COUNT(*) AS cnt FROM products WHERE branch_id = ? AND estado = 'Activo'`,
+    [id]
+  ).catch(() => [{ cnt: 0 }]);
+  if (Number(ownProductsRows[0]?.cnt || 0) > 0) {
+    return res.status(409).json({
+      error: 'Esta sucursal tiene productos propios activos. Reasígnalos a otra sucursal o a global (o desactívalos) antes de eliminarla.'
+    });
+  }
+
   // Cerrar sesiones huérfanas de todas las cajas de esta sucursal
   await query(
     `UPDATE cash_sessions cs
@@ -13162,6 +13371,7 @@ app.post('/api/cash/open', async (req, res) => {
     });
     // Actualizar KPIs del Portal de Contadores al abrir caja (fire & forget)
     require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
+    applyPendingProductsFireAndForget();
     const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
     return res.status(201).json({ sessionId: result, activeSession, config: await getConfig() });
   } catch (err) {
@@ -13362,6 +13572,7 @@ app.post('/api/cash/close', async (req, res) => {
   }).catch(() => {});
   // Actualizar KPIs del Portal de Contadores al cerrar caja (fire & forget)
   require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
+  applyPendingProductsFireAndForget();
   // ── Sync reporte-sistema-pos (cierre) ──
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
@@ -14289,6 +14500,7 @@ app.post('/api/sales', async (req, res) => {
     // Actualizar KPIs del Portal de Contadores en tiempo real (fire & forget)
     const { syncPosStatsToFirestore } = require('./server/sync/sync-pos-stats');
     syncPosStatsToFirestore().catch(() => {});
+    applyPendingProductsFireAndForget();
     // Encolar venta en el nuevo sync service y procesar inmediatamente (<3s)
     try {
       const _syncSvc = getSyncService();

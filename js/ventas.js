@@ -514,6 +514,15 @@ function findMergeableSaleItemIndex(product, saleMode) {
   });
 }
 
+// Suma la cantidad de un producto que ya está en el carrito (aún no facturada),
+// para poder mostrar disponibilidad en vivo y evitar agregar más de lo que hay.
+function getCartQtyForProduct(productId, excludeIdx = -1) {
+  return (DB.saleItems || []).reduce((sum, item, idx) => {
+    if (idx === excludeIdx) return sum;
+    return Number(item.id || 0) === Number(productId) ? sum + Number(item.qty || 0) : sum;
+  }, 0);
+}
+
 function focusSaleQuantityInput(index, options = {}) {
   setTimeout(() => {
     const input = document.getElementById(`sale-item-qty-${index}`);
@@ -1715,7 +1724,12 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
     const stock = Number(product.stock || 0);
     const stockMin = Number(product.stockMin || 0);
     const tracksStock = product.tracksStock !== false;
-    const stockClass = tracksStock && stock === 0 ? 'is-out' : tracksStock && stock <= stockMin ? 'is-low' : '';
+    // El stock mostrado descuenta lo que ya está en el carrito (aún no vendido)
+    // para que baje en vivo al agregar y vuelva a la normalidad si se quita.
+    const cartQty = tracksStock ? getCartQtyForProduct(product.id) : 0;
+    const availableStock = tracksStock ? Math.max(0, stock - cartQty) : stock;
+    const stockClass = tracksStock && availableStock === 0 ? 'is-out' : tracksStock && availableStock <= stockMin ? 'is-low' : '';
+    const stockLabel = !tracksStock ? '' : availableStock === 0 ? 'Agotado' : `Disp: ${availableStock}`;
     return `
     <article class="sales-product-card ${stockClass}" onclick="addProductById(${product.id})" title="${nombre}">
       <div class="sales-product-media">
@@ -1724,6 +1738,7 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
       <div class="sales-product-body">
         <div class="sales-product-name">${nombre}</div>
         <div class="sales-product-price">${fmt(product.precioVenta)}</div>
+        ${stockLabel ? `<div class="sales-product-stock ${stockClass}">${stockLabel}</div>` : ''}
       </div>
     </article>`;
   }).join('');
@@ -5026,7 +5041,7 @@ function _doSearchProduct(query) {
       </div>
       <div style="text-align:right">
         <div class="sri-price">${fmt(p.precioVenta)}</div>
-        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${p.tracksStock===false?'':(p.stock===0?'⚠ Agotado':'Stock: '+p.stock)}</div>
+        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${p.tracksStock===false?'':(p.stock===0?(!p.branchId?'⚠ Sin stock en esta sucursal':'⚠ Agotado'):'Stock: '+p.stock)}</div>
       </div>
     </div>
   `).join('');
@@ -5156,7 +5171,6 @@ function highlightSearch() {
 async function addProductById(id) {
   const prod = DB.productos.find(p => p.id === id);
   if (!prod) return;
-  if (prod.tracksStock !== false && prod.stock === 0) { showToast('Producto agotado', 'warning'); }
 
   const saleMode = getSaleItemSaleMode(prod, prod);
   let nextQty = 1;
@@ -5180,6 +5194,30 @@ async function addProductById(id) {
       scaleSource: weightReading.scaleSource,
       scaleRawReading: weightReading.scaleRawReading
     };
+  }
+
+  // Tope de disponibilidad: no dejar agregar más de lo que realmente hay
+  // (stock real menos lo que ya está en el carrito), avisando antes de que
+  // llegue a facturarse.
+  if (prod.tracksStock !== false) {
+    const alreadyInCart = getCartQtyForProduct(prod.id);
+    const available = Number(prod.stock || 0) - alreadyInCart;
+    if (available <= 0) {
+      showToast(
+        !prod.branchId
+          ? 'Este producto es global pero no tiene stock recibido en tu sucursal — pídelo por transferencia o edítalo para agregar la cantidad de aquí.'
+          : `Ya no quedan más unidades disponibles de "${prod.nombre}".`,
+        'warning'
+      );
+      focusSalesSearchInput({ force: true });
+      return;
+    }
+    if (nextQty > available) {
+      const availableLabel = Number.isInteger(available) ? available : available.toFixed(3);
+      showToast(`Solo quedan ${availableLabel} disponibles de "${prod.nombre}".`, 'warning');
+      focusSalesSearchInput({ force: true });
+      return;
+    }
   }
 
   const existIdx = findMergeableSaleItemIndex(prod, saleMode);
@@ -5350,9 +5388,25 @@ function updateItemQty(idx, val) {
     return;
   }
 
+  let qty = sanitizeSaleItemQty(item, val);
+  const product = DB.productos.find(p => Number(p.id) === Number(item.id));
+  if (product && product.tracksStock !== false) {
+    const otherCartQty = getCartQtyForProduct(product.id, idx);
+    const available = Number(product.stock || 0) - otherCartQty;
+    if (qty > available) {
+      qty = Math.max(0, available);
+      showToast(
+        available > 0
+          ? `Solo quedan ${available} disponibles de "${product.nombre}".`
+          : `Ya no quedan más unidades disponibles de "${product.nombre}".`,
+        'warning'
+      );
+    }
+  }
+
   const nextItem = normalizeSaleItem({
     ...item,
-    qty: sanitizeSaleItemQty(item, val)
+    qty
   });
   nextItem.total = calcItemTotal(nextItem);
   DB.saleItems[idx] = nextItem;

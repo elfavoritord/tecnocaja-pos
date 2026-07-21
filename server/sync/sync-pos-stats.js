@@ -51,7 +51,7 @@ function normalize(rows) {
 // para que se autocorrija sin tener que rehacer el asistente.
 
 async function buildBusinessProfile() {
-  const [cfgRow, adminRow] = await Promise.all([
+  const [cfgRow, adminRow, branchRows] = await Promise.all([
     query(`
       SELECT business_name, rnc, razon_social, address, provincia, phone, business_type,
              trial_started_at, trial_ends_at, license_status, plan_expires_at
@@ -63,6 +63,9 @@ async function buildBusinessProfile() {
       WHERE r.codigo = 'administrador_general' AND u.estado = 'Activo'
       ORDER BY u.id ASC LIMIT 1
     `).catch(() => []),
+    // Lista de sucursales — el Portal del Contador la usa para dejar elegir
+    // sucursal destino al agregar un producto (ver apply-pending-products.js).
+    query(`SELECT id, nombre FROM branches WHERE estado <> 'Eliminada' ORDER BY nombre`).catch(() => []),
   ]);
   const cfg = cfgRow?.[0] || {};
   const admin = adminRow?.[0] || {};
@@ -93,8 +96,16 @@ async function buildBusinessProfile() {
   // (reusaba trial_ends_at) y hay que poder limpiarlo, no solo evitar que se
   // repita.
   profile.expiresAt = cfg.plan_expires_at ? isoDate(cfg.plan_expires_at) : null;
-  if (cfg.license_status) profile.status = cfg.license_status;
+  // NO sincronizar cfg.license_status hacia Firestore: el flujo correcto es
+  // Firestore (fuente de verdad, controlada desde el panel admin) → POS local,
+  // nunca al revés. Si el POS resuelve mal su propio estado (bug local,
+  // condición de carrera entre terminales, etc.) y lo empuja aquí, contamina
+  // el documento maestro para SIEMPRE — cada sync posterior (de cualquier
+  // terminal) vuelve a leer el estado ya envenenado y lo re-confirma, sin
+  // forma de autocorregirse. Ver server/licensing/license-service.js para el
+  // único camino legítimo que debe decidir el status remoto.
   if (cfg.business_type) profile.tipo_negocio = cfg.business_type;
+  profile.sucursales = (branchRows || []).map((b) => ({ id: Number(b.id), nombre: b.nombre }));
   if (cfg.phone) profile.telefono = cfg.phone;
   if (admin.nombre) profile.propietario = admin.nombre;
   if (admin.email) profile.correo = admin.email;

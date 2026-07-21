@@ -207,17 +207,13 @@ function createPlatformRouter({ query }) {
         await query('UPDATE config SET business_mode=?, accountant_id=?, accountant_name=?, cloud_business_id=? WHERE id=1',
           [business_mode, contador_id, contNombre, cloudId]);
 
-        // Parchar el doc de Firestore licencias con contadorId/contadorNombre
-        const db3 = getFirestoreDb();
-        if (db3) {
-          const businessKey = `pos:tecno-caja-${(nombre_negocio || '').toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')}`;
-          try {
-            const licSnap = await db3.collection('licencias').where('businessKey', '==', businessKey).limit(1).get();
-            if (!licSnap.empty) {
-              await licSnap.docs[0].ref.update({ contadorId: String(contador_id), contadorNombre: contNombre || null });
-            }
-          } catch (e) { console.warn('[platform] No se pudo parchar licencia Firestore:', e.message); }
-        }
+        // Parchar el doc de Firestore licencias con contadorId/contadorNombre.
+        // Usa _syncContadorToFirestore (resuelve el doc por TECNO_CAJA_LICENSE_UID,
+        // no por nombre de negocio) para no arriesgarse a escribir en el doc de
+        // otro negocio con un nombre igual o parecido.
+        await _syncContadorToFirestore(query, contador_id, contNombre || '').catch(e => {
+          console.warn('[platform] No se pudo parchar licencia Firestore:', e.message);
+        });
       } else {
         await query('UPDATE config SET business_mode=?, cloud_business_id=? WHERE id=1',
           [business_mode || 'independent', cloudId]);

@@ -1,5 +1,6 @@
 ﻿const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 let firebaseIdentity = null;
 try {
@@ -797,28 +798,22 @@ async function syncPosAccountsToFirestore(users, config) {
   const ownerDocId = `pos_user_${ownerUser.id}`;
   const configuredLicenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
 
-  // SEGURIDAD: usar TECNO_CAJA_LICENSE_UID solo si NO es un hash legado (pos_XXXXXXXX).
-  // Si es legado, usar el businessKey canónico (pos:tecno-caja-nombre) como licenseDocId.
-  // Así evitamos escribir en un doc con ID ilegible y podemos migrar el doc antiguo.
+  // SEGURIDAD: usar TECNO_CAJA_LICENSE_UID solo si NO es un hash legado (npd_XXXXXXXX).
+  // Si es legado o no está configurado, generar un ID aleatorio nuevo — NUNCA
+  // usar businessKey (derivado del nombre del negocio) como ID de documento:
+  // dos negocios con nombre igual o parecido colisionarían en el mismo doc de
+  // Firestore y se mezclarían sus datos (usuarios, plan, fechas de trial, etc.)
+  // en cada sincronización. El llamador persiste el ID devuelto como
+  // TECNO_CAJA_LICENSE_UID para que quede fijo desde la próxima sincronización.
   const configuredIsLegacy = configuredLicenseUid ? isLegacyLicenseUid(configuredLicenseUid) : false;
 
   let licenseDocId;
   if (configuredLicenseUid && !configuredIsLegacy) {
     // UID configurado y canónico → usarlo directamente
     licenseDocId = configuredLicenseUid;
-  } else if (businessKey) {
-    // Sin UID canónico configurado (o es hash legado) → usar el businessKey como doc ID
-    licenseDocId = businessKey;
   } else {
-    // Fallback absoluto (no debería ocurrir)
-    const existingLicenseDocs = await licensesCollection
-      .where('businessKey', '==', businessKey)
-      .where('source', '==', 'pos')
-      .get().catch(() => null);
-    const ownDoc = findLicenseDocByUid(existingLicenseDocs?.docs || [], ownerDocId)
-               || existingLicenseDocs?.docs?.[0]
-               || null;
-    licenseDocId = ownDoc?.id || ownerDocId;
+    // Sin UID canónico configurado (o es hash legado) → generar uno nuevo, único
+    licenseDocId = `pos_${crypto.randomBytes(8).toString('hex')}`;
   }
   const desiredUserIds = new Set(activeUsers.map((user) => `pos_user_${user.id}`));
   const userBatch = firestore.batch();

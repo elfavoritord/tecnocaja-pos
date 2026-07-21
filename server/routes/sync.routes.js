@@ -196,14 +196,28 @@ router.get('/pending', async (req, res) => {
 
 /**
  * POST /api/sync/pos-stats
- * Sincroniza KPIs y datos recientes del POS al Portal de Contadores via Firestore.
+ * Sincroniza KPIs y datos recientes del POS al Portal de Contadores via Firestore,
+ * y de paso aplica cualquier producto pendiente que el contador haya agregado
+ * desde el Portal (en vez de esperar a la próxima apertura/cierre de caja o venta).
  * No requiere body — usa TECNO_CAJA_LICENSE_UID del .env.
  */
 router.post('/pos-stats', async (req, res) => {
   try {
     const result = await syncPosStatsToFirestore();
+
+    let productosPendientes = null;
+    if (typeof req.app.locals.applyPendingProductRequests === 'function') {
+      productosPendientes = await req.app.locals.applyPendingProductRequests()
+        .catch((e) => ({ ok: false, reason: e.message }));
+    }
+
     if (result.ok) {
-      res.json({ ok: true, message: 'KPIs sincronizados al Portal de Contadores.', posStats: result.posStats });
+      res.json({
+        ok: true,
+        message: 'KPIs sincronizados al Portal de Contadores.',
+        posStats: result.posStats,
+        productosPendientes,
+      });
     } else {
       res.status(503).json({ ok: false, error: result.reason });
     }

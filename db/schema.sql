@@ -239,7 +239,7 @@ CREATE TABLE categories (
 
 CREATE TABLE products (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  codigo VARCHAR(40) NOT NULL UNIQUE,
+  codigo VARCHAR(40) NOT NULL,
   nombre VARCHAR(160) NOT NULL,
   categoria VARCHAR(60) NOT NULL,
   marca VARCHAR(80) DEFAULT NULL,
@@ -265,8 +265,10 @@ CREATE TABLE products (
   tracks_stock TINYINT(1) NOT NULL DEFAULT 1,
   discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0.00,
   discount_until_stock_out TINYINT(1) NOT NULL DEFAULT 0,
+  branch_id INT DEFAULT NULL,
   KEY idx_products_categoria (categoria),
-  KEY idx_products_estado (estado)
+  KEY idx_products_estado (estado),
+  KEY idx_products_branch_codigo (branch_id, codigo)
 );
 
 CREATE TABLE clients (

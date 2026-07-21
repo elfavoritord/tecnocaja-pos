@@ -2006,7 +2006,7 @@ function applyAppTranslations() {
   setTextBySelector('#btn-products-new', `+ ${translateCatalogText('Nuevo Producto')}`);
   setTextBySelector('#btn-products-import', `⬆ ${translateCatalogText('Importar CSV')}`);
   setTextBySelector('#btn-products-export', `⬇ ${translateCatalogText('Exportar')}`);
-  setTextBySelector('#btn-products-reload', `↻ ${translateCatalogText('Recargar')}`);
+  setTextBySelector('#btn-products-reload', `↻ ${translateCatalogText('Actualizar')}`);
   ['Productos visibles', 'Con stock bajo', 'Agotados', 'Utilidad potencial'].forEach((text, index) => {
     const el = document.querySelectorAll('#module-productos .stat-label')[index];
     if (el) el.textContent = translateCatalogText(text);
@@ -3790,6 +3790,37 @@ function setAccent(color, light) {
   saveUiPreferences();
 }
 
+// ── Tamaño de imagen de producto (Apariencia) ──────────────────────────────
+// A diferencia de tema/color (que aplican al instante), esto es
+// deliberadamente "vista previa primero, aplicar después": mover el slider
+// solo actualiza la miniatura de muestra dentro del modal; nada cambia en
+// el resto del sistema hasta que se aprieta "Aplicar tamaño".
+function previewProductImageSize(px) {
+  const label = document.getElementById('cfg-product-image-size-label');
+  if (label) label.textContent = `${px}px`;
+  const thumb = document.getElementById('image-size-preview-thumb');
+  if (thumb) {
+    const size = Math.max(60, Math.min(160, Number(px)));
+    thumb.style.width = `${size}px`;
+    thumb.style.height = `${size}px`;
+  }
+}
+
+function applyProductImageSize() {
+  const slider = document.getElementById('cfg-product-image-size');
+  const px = Number(slider?.value || 100);
+  document.documentElement.style.setProperty('--product-image-size', `${px}px`);
+  saveUiPreferences();
+  showToast(`Tamaño de imagen aplicado (${px}px) en todo el sistema.`, 'success');
+}
+
+function syncProductImageSizeControl() {
+  const saved = parseInt(getUiPreferences().productImageSize, 10) || 100;
+  const slider = document.getElementById('cfg-product-image-size');
+  if (slider) slider.value = saved;
+  previewProductImageSize(saved);
+}
+
 const CONFIG_SECTION_CARD_META = {
   'cfg-section-business-title': {
     icon: '🏪',
@@ -4260,7 +4291,8 @@ function saveUiPreferences() {
       ...currentPrefs,
       theme: document.documentElement.getAttribute('data-theme') || 'dark',
       accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#6C63FF',
-      accentLight: getComputedStyle(document.documentElement).getPropertyValue('--accent-light').trim() || '#8B85FF'
+      accentLight: getComputedStyle(document.documentElement).getPropertyValue('--accent-light').trim() || '#8B85FF',
+      productImageSize: getComputedStyle(document.documentElement).getPropertyValue('--product-image-size').trim() || '100px'
     }));
   } catch (_error) {
     // Keep the UI usable even if localStorage is unavailable.
@@ -4278,6 +4310,9 @@ function applyUiPreferences() {
     }
   }
   setTheme(prefs.theme || document.documentElement.getAttribute('data-theme') || 'dark');
+  if (prefs.productImageSize) {
+    document.documentElement.style.setProperty('--product-image-size', prefs.productImageSize);
+  }
 }
 
 function saveConfig() {
@@ -4419,6 +4454,7 @@ function syncTaxConfigToggles(changedId = '') {
 
 function syncConfigForm() {
   const cfg = getEffectiveConfig();
+  syncProductImageSizeControl();
   const languageSelect = document.getElementById('cfg-language');
   if (languageSelect) {
     languageSelect.innerHTML = getAvailableLanguages().map((item) => `<option value="${item.value}">${item.label}</option>`).join('');
@@ -4916,6 +4952,15 @@ async function createBranchFromConfig() {
     document.getElementById('cfg-new-branch-name').value = '';
     document.getElementById('cfg-new-branch-code').value = '';
     syncBusinessStructureControls();
+    // Seleccionar la sucursal recién creada en el dropdown — si no, se queda
+    // en la sucursal que estaba activa antes, y la próxima caja que crees
+    // (o usuario que asignes) cae ahí en vez de en la nueva por accidente.
+    const newBranchId = response.sucursal?.id;
+    const branchSelectAfterCreate = document.getElementById('cfg-active-branch');
+    if (newBranchId && branchSelectAfterCreate) {
+      branchSelectAfterCreate.value = String(newBranchId);
+      branchSelectAfterCreate.dispatchEvent(new Event('change'));
+    }
     showToast(`Sucursal creada: ${response.sucursal?.nombre || nombre}`, 'success');
   } catch (error) {
     showToast(error.message || 'No se pudo crear la sucursal.', 'error');
@@ -4941,6 +4986,18 @@ async function createCashRegisterFromConfig() {
     document.getElementById('cfg-new-cash-register-name').value = '';
     document.getElementById('cfg-new-cash-register-code').value = '';
     syncBusinessStructureControls();
+    // syncBusinessStructureControls() resetea el dropdown de sucursal a la
+    // sucursal ACTIVA aplicada (no a la que se acaba de usar aquí) — si son
+    // distintas (ej. creando varias cajas seguidas para una sucursal nueva
+    // que aún no has "aplicado" como activa), hay que devolverlo a branchId
+    // y volver a sincronizar, o la lista de cajas que se ve queda armada
+    // contra la sucursal equivocada y la siguiente caja que crees también
+    // cae mal sin avisar.
+    const branchSelectAfterCreate = document.getElementById('cfg-active-branch');
+    if (branchSelectAfterCreate && Number(branchSelectAfterCreate.value) !== branchId) {
+      branchSelectAfterCreate.value = String(branchId);
+      syncBusinessStructureControls();
+    }
     showToast(`Caja creada: ${response.caja?.nombre || nombre}`, 'success');
   } catch (error) {
     showToast(error.message || 'No se pudo crear la caja.', 'error');
@@ -5470,6 +5527,12 @@ function applyBusinessProfile() {
   }
 }
 
+// Códigos de bloqueo que NO significan "se acabaron los 30 días de prueba"
+// (dispositivo no autorizado, límite de equipos, reloj alterado, etc.) —
+// mostrarlos como "Prueba vencida" confunde al usuario sobre la causa real.
+// Misma lista que usa showLicenseBlockedScreen() para la pantalla completa.
+const LICENSE_VALIDATION_BLOCKED_CODES = ['tamper', 'clock_rollback', 'offline_grace', 'device_limit', 'invalid_signature', 'missing_signature'];
+
 function applyLicenseSnapshot(license = {}) {
   const status = String(license.status || DB.config?.licenseStatus || 'trial').trim().toLowerCase();
   DB.config.licenseStatus = status;
@@ -5477,6 +5540,9 @@ function applyLicenseSnapshot(license = {}) {
   DB.config.trialEndsAt = license.trialEndsAt ?? null;
   DB.config.trialDaysLeft = Number(license.daysLeft ?? DB.config?.trialDaysLeft ?? 0) || 0;
   DB.config.trialExpired = Boolean(license.expired || status === 'expired');
+  DB.config.licenseBlockedCode = String(license.blockedCode || '').trim().toLowerCase() || null;
+  DB.config.licenseMessage = license.message || null;
+  DB.config.licenseValidationBlocked = LICENSE_VALIDATION_BLOCKED_CODES.includes(DB.config.licenseBlockedCode || '');
 }
 
 function getLicenseUiVariant() {
@@ -5759,10 +5825,14 @@ function updateLicenseUI() {
   const variant = getLicenseUiVariant();
   let text = '';
 
+  const validationBlocked = Boolean(DB.config?.licenseValidationBlocked);
+
   if (status === 'active') {
     text = appText('license.active', 'Licencia activa');
   } else if (status === 'suspended') {
     text = appText('license.suspended', 'Licencia suspendida');
+  } else if (validationBlocked) {
+    text = appText('license.validationRequired', 'Verificación requerida');
   } else if (DB.config?.trialExpired) {
     text = appText('license.expired', 'Prueba vencida');
   } else {
@@ -5780,9 +5850,11 @@ function updateLicenseUI() {
       ? appText('license.active', 'Licencia activa')
       : (status === 'suspended'
           ? appText('license.suspendedLong', 'La licencia fue suspendida desde tu app de administrador.')
-          : (DB.config?.trialExpired
-              ? appText('license.expiredLong', 'La prueba del sistema expiró.')
-              : fillText(appText('license.trialLong', 'Prueba completa disponible por {days} día(s).'), { days: daysLeft })));
+          : (validationBlocked
+              ? (DB.config?.licenseMessage || appText('license.validationRequiredLong', 'Este equipo no está autorizado todavía en la licencia. No es que la prueba haya vencido — contacta a soporte o autoriza este dispositivo.'))
+              : (DB.config?.trialExpired
+                  ? appText('license.expiredLong', 'La prueba del sistema expiró.')
+                  : fillText(appText('license.trialLong', 'Prueba completa disponible por {days} día(s).'), { days: daysLeft }))));
     loginHint.className = `login-status-pill ${variant}`;
     loginHint.classList.remove('hidden');
   }
@@ -6656,13 +6728,17 @@ async function forcePosStatsSync() {
   if (btn) { btn.disabled = true; btn.textContent = '⏳ Calculando...'; }
   if (res) { res.style.display = 'none'; }
   try {
-    await api.request('/api/sync/pos-stats', { method: 'POST', body: JSON.stringify({}) });
+    const response = await api.request('/api/sync/pos-stats', { method: 'POST', body: JSON.stringify({}) });
+    const pp = response?.productosPendientes;
+    const ppText = pp?.ok && (pp.applied || pp.failed)
+      ? ` · ${pp.applied || 0} producto(s) del contador aplicado(s)${pp.failed ? `, ${pp.failed} con error` : ''}.`
+      : '';
     if (res) {
       res.style.display = 'block';
       res.style.color = 'var(--success, #10b981)';
-      res.textContent = '✅ Reportes sincronizados al Portal de Contadores.';
+      res.textContent = `✅ Reportes sincronizados al Portal de Contadores.${ppText}`;
     }
-    showToast('Reportes enviados al Portal de Contadores.', 'success');
+    showToast(`Reportes enviados al Portal de Contadores.${ppText}`, 'success');
   } catch (err) {
     if (res) {
       res.style.display = 'block';

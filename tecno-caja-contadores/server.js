@@ -577,6 +577,99 @@ app.put('/api/solicitudes/:id/cancelar', requireAuth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
+// PRODUCTOS PENDIENTES
+// El contador agrega un producto nuevo aquí, pero el POS del cliente corre
+// local en su propia computadora — no hay forma de escribirle directo. Esto
+// queda en cola bajo el propio doc de licencias del negocio
+// (licencias/{businessId}/productos_pendientes) y lo aplica el POS del
+// cliente la próxima vez que sincronice (abrir/cerrar caja o una venta —
+// ver server/sync/apply-pending-products.js del POS). Solo "agregar
+// producto nuevo" por ahora — no edición/eliminación en esta primera
+// versión. branchId es opcional (vacío = global, visible en todas las
+// sucursales); las opciones de sucursal vienen del campo `sucursales` que
+// el POS ya sincroniza en el doc de licencias (server/sync/sync-pos-stats.js).
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) => {
+  try {
+    const bizDoc = await col(COL_LICENCIAS).doc(req.params.businessId).get();
+    if (!bizDoc.exists || bizDoc.data().contadorId !== req.contador.contadorDocId) {
+      return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+    }
+    const snap = await col(COL_LICENCIAS).doc(req.params.businessId).collection('productos_pendientes').get();
+    // No mandar imagenData completa en la lista (payload pesado, innecesario
+    // para la tabla de estado) — solo si tiene o no.
+    const sorted = snap.docs.map((d) => {
+      const row = docData(d);
+      row.tieneImagen = Boolean(row.imagenData);
+      delete row.imagenData;
+      return row;
+    }).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    res.json(sorted);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
+  const { businessId, codigo, nombre, categoria, marca, unidad, saleMode,
+          precioCompra, precioVenta, stock, stockMin, aplicaItbis, branchId, imagenData } = req.body;
+
+  if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  if (!codigo || !String(codigo).trim())   return res.status(400).json({ error: 'El código es obligatorio.' });
+  if (!nombre || !String(nombre).trim())   return res.status(400).json({ error: 'El nombre es obligatorio.' });
+  // Firestore rechaza documentos de más de 1 MB — el navegador ya redimensiona
+  // a 900px/JPEG antes de mandarla, así que si aun así pasa de ~700KB (base64
+  // infla ~33% el tamaño real) algo salió mal; mejor avisar claro que dejar
+  // que falle la escritura entera sin explicación.
+  if (imagenData && String(imagenData).length > 700_000) {
+    return res.status(400).json({ error: 'La imagen es demasiado grande. Intenta con otra más pequeña.' });
+  }
+
+  try {
+    const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
+    if (!bizDoc.exists || bizDoc.data().contadorId !== req.contador.contadorDocId) {
+      return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+    }
+
+    // Si eligieron sucursal, validar contra la lista real sincronizada por el
+    // POS (no confiar en lo que mande el navegador) — evita guardar un
+    // branchId inventado o de una sucursal ya eliminada.
+    let branchNombre = null;
+    const normalizedBranchId = branchId ? Number(branchId) : null;
+    if (normalizedBranchId) {
+      const sucursales = Array.isArray(bizDoc.data().sucursales) ? bizDoc.data().sucursales : [];
+      const match = sucursales.find((s) => Number(s.id) === normalizedBranchId);
+      if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
+      branchNombre = match.nombre;
+    }
+
+    const ref = await col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').add({
+      codigo:        String(codigo).trim(),
+      nombre:        String(nombre).trim(),
+      categoria:     categoria || 'General',
+      marca:         marca || '',
+      unidad:        unidad || 'Unidad',
+      saleMode:      saleMode || 'unidad',
+      precioCompra:  Number(precioCompra || 0),
+      precioVenta:   Number(precioVenta || 0),
+      stock:         Number(stock || 0),
+      stockMin:      Number(stockMin || 0),
+      aplicaItbis:   Boolean(aplicaItbis),
+      branchId:      normalizedBranchId,
+      branchNombre,
+      imagenData:    imagenData || null,
+      status:        'pendiente',
+      contadorId:    req.contador.contadorDocId,
+      contadorNombre: req.contador.nombre_firma,
+      createdAt:     isoNow(),
+      updatedAt:     isoNow(),
+    });
+
+    const doc = await ref.get();
+    res.status(201).json(docData(doc));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
 // PERFIL
 // ══════════════════════════════════════════════════════════════════════
 
@@ -678,6 +771,7 @@ app.get('/api/reportes/:businessId', requireAuth, async (req, res) => {
         planCode:     data.planCode     || data.plan_code || '—',
         syncedAt:     data.syncedAt     || data.updatedAt || null,
         hasPosData:   !!data.posStats,
+        sucursales:   Array.isArray(data.sucursales) ? data.sucursales : [],
       },
       stats: {
         ventasHoy:       stats.ventasHoy       ?? 0,

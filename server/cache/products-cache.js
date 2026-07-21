@@ -39,6 +39,19 @@ const byId = new LRUCache({
 let searchIndex = [];
 let searchIndexReady = false;
 
+// ─── Claves compuestas por sucursal ───────────────────────────────────────────
+// byCode se guarda con clave `${branchKey}::${codigo}` porque dos sucursales
+// pueden tener el MISMO código para productos DISTINTOS (branch_id nulo =
+// producto global, marcador "g"). Sin esto, el segundo upsert/loadAll pisa al
+// primero en memoria y un cajero podría ver/vender el producto de otra
+// sucursal al escanear, aunque la base de datos esté correcta.
+function branchKey(branchId) {
+  return branchId ? String(branchId) : 'g';
+}
+function codeCacheKey(codigo, branchId) {
+  return `${branchKey(branchId)}::${String(codigo || '').toLowerCase().trim()}`;
+}
+
 // ─── Estado ───────────────────────────────────────────────────────────────────
 let _queryFn = null;   // función db query inyectada
 let _loading  = false;
@@ -71,7 +84,7 @@ async function loadAll() {
   try {
     const rows = await _queryFn(
       `SELECT id, codigo, nombre, categoria, precio_venta, precio_compra,
-              stock, stock_min, estado, image_url, image_local,
+              stock, stock_min, estado, image_url, image_local, branch_id,
               unidad, sale_mode, marca, product_type, size_options, dough_options,
               border_options, extra_options, allow_half_and_half, is_combo,
               preparation_time_minutes, discount_percent, discount_until_stock_out
@@ -87,7 +100,7 @@ async function loadAll() {
     for (const row of rows) {
       const product = normalizeProduct(row);
       if (product.codigo) {
-        byCode.set(product.codigo.toLowerCase().trim(), product);
+        byCode.set(codeCacheKey(product.codigo, product.branchId), product);
       }
       byId.set(String(product.id), product);
     }
@@ -111,31 +124,42 @@ async function loadAll() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Busca un producto por código de barra
- * Instantáneo si está en caché, fallback a DB si no
+ * Busca un producto por código de barra, dentro del alcance de una sucursal
+ * (o el catálogo global si no se indica). Prioriza el producto EXCLUSIVO de
+ * la sucursal por encima del global si ambos existen con el mismo código.
+ * Instantáneo si está en caché, fallback a DB si no.
  *
  * @param {string} codigo
+ * @param {number|null} branchId — sucursal del que consulta; null = solo global
  * @returns {Promise<object|null>}
  */
-async function getByCode(codigo) {
+async function getByCode(codigo, branchId = null) {
   if (!codigo) return null;
 
   await ensureLoaded();
 
-  const key = String(codigo).toLowerCase().trim();
-  const cached = byCode.get(key);
-  if (cached) return cached;
+  const normalizedCodigo = String(codigo).toLowerCase().trim();
+  if (branchId) {
+    const ownBranch = byCode.get(codeCacheKey(normalizedCodigo, branchId));
+    if (ownBranch) return ownBranch;
+  }
+  const global = byCode.get(codeCacheKey(normalizedCodigo, null));
+  if (global) return global;
 
-  // Fallback: buscar en DB directamente (para productos nuevos)
+  // Fallback: buscar en DB directamente (para productos nuevos), priorizando
+  // el producto de la sucursal del que consulta sobre el global.
   if (_queryFn) {
     try {
       const rows = await _queryFn(
-        'SELECT * FROM products WHERE LOWER(codigo) = ? LIMIT 1',
-        [key]
+        `SELECT * FROM products
+         WHERE LOWER(codigo) = ? AND (branch_id IS NULL OR branch_id = ?)
+         ORDER BY CASE WHEN branch_id = ? THEN 0 WHEN branch_id IS NULL THEN 1 ELSE 2 END
+         LIMIT 1`,
+        [normalizedCodigo, branchId, branchId]
       );
       if (rows && rows.length > 0) {
         const product = normalizeProduct(rows[0]);
-        byCode.set(key, product);
+        byCode.set(codeCacheKey(product.codigo, product.branchId), product);
         byId.set(String(product.id), product);
         return product;
       }
@@ -165,7 +189,7 @@ async function getById(id) {
       const rows = await _queryFn('SELECT * FROM products WHERE id = ? LIMIT 1', [id]);
       if (rows && rows.length > 0) {
         const product = normalizeProduct(rows[0]);
-        byCode.set((product.codigo || '').toLowerCase().trim(), product);
+        if (product.codigo) byCode.set(codeCacheKey(product.codigo, product.branchId), product);
         byId.set(key, product);
         return product;
       }
@@ -183,6 +207,7 @@ async function getById(id) {
  * @param {object}  options
  * @param {number}  options.limit     — máximo de resultados (default 25)
  * @param {string}  options.categoria — filtrar por categoría
+ * @param {number|null} options.branchId — solo productos globales o de esta sucursal
  * @returns {Promise<object[]>}
  */
 async function search(query, options = {}) {
@@ -190,14 +215,19 @@ async function search(query, options = {}) {
 
   const limit = options.limit || SEARCH_MAX;
   const q = String(query || '').toLowerCase().trim();
+  const branchId = options.branchId || null;
+
+  const scoped = branchId
+    ? searchIndex.filter((p) => !p.branchId || p.branchId === branchId)
+    : searchIndex;
 
   if (!q && !options.categoria) {
-    return searchIndex.slice(0, limit);
+    return scoped.slice(0, limit);
   }
 
   const results = [];
 
-  for (const product of searchIndex) {
+  for (const product of scoped) {
     if (results.length >= limit) break;
 
     // Filtrar por categoría
@@ -240,8 +270,8 @@ async function search(query, options = {}) {
 /**
  * Obtiene todos los productos de una categoría
  */
-async function getByCategory(categoria) {
-  return search('', { categoria, limit: 500 });
+async function getByCategory(categoria, branchId = null) {
+  return search('', { categoria, limit: 500, branchId });
 }
 
 /**
@@ -271,12 +301,22 @@ function stats() {
  * Invalida un producto específico (al crear/editar/eliminar)
  * El próximo acceso recargará desde DB
  *
- * @param {object} product — producto con id y codigo
+ * @param {object} product — producto con id y codigo (branchId opcional; si no
+ *   se manda, se recupera del propio caché por id para poder borrar la clave
+ *   compuesta correcta)
  */
 function invalidate(product) {
   if (!product) return;
-  if (product.id)     byId.delete(String(product.id));
-  if (product.codigo) byCode.delete(String(product.codigo).toLowerCase().trim());
+  const idKey = product.id != null ? String(product.id) : null;
+  const cached = idKey ? byId.get(idKey) : null;
+  const branchId = product.branchId !== undefined ? product.branchId : (cached ? cached.branchId : null);
+
+  if (idKey) byId.delete(idKey);
+  if (product.codigo) byCode.delete(codeCacheKey(product.codigo, branchId));
+  // El código pudo haber cambiado en la edición — también limpiar la entrada vieja.
+  if (cached && cached.codigo && cached.codigo !== product.codigo) {
+    byCode.delete(codeCacheKey(cached.codigo, cached.branchId));
+  }
 
   // Actualizar índice de búsqueda
   if (searchIndex.length > 0) {
@@ -294,9 +334,17 @@ function upsert(product) {
   if (!product || !product.id) return;
   const normalized = normalizeProduct(product);
 
+  // Si el producto cambió de sucursal o de código, limpiar la entrada vieja
+  // (que quedaría con una clave compuesta distinta) antes de escribir la nueva.
+  const previous = byId.get(String(normalized.id));
+  if (previous && previous.codigo &&
+      (previous.codigo !== normalized.codigo || previous.branchId !== normalized.branchId)) {
+    byCode.delete(codeCacheKey(previous.codigo, previous.branchId));
+  }
+
   byId.set(String(normalized.id), normalized);
   if (normalized.codigo) {
-    byCode.set(normalized.codigo.toLowerCase().trim(), normalized);
+    byCode.set(codeCacheKey(normalized.codigo, normalized.branchId), normalized);
   }
 
   // Actualizar índice de búsqueda
@@ -336,6 +384,7 @@ function normalizeProduct(row) {
   return {
     id:           row.id,
     codigo:       row.codigo || '',
+    branchId:     row.branch_id === null || row.branch_id === undefined ? (row.branchId ?? null) : Number(row.branch_id),
     nombre:       row.nombre || '',
     categoria:    row.categoria || '',
     marca:        row.marca || '',
