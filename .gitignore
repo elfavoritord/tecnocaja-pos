@@ -55,6 +55,12 @@ uploads/
 public/uploads/
 productos-uploads/
 
+# Sesión del bot de WhatsApp (whatsapp-web.js) — perfil de Chromium con
+# caché/cookies/IndexedDB de la sesión ya vinculada, se regenera local en
+# cada instalación, nunca debe versionarse.
+.wwebjs_auth_pos/
+.wwebjs_cache/
+
 # Logs
 logs/
 *.log

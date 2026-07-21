@@ -627,7 +627,22 @@ async function sendRawToPrinter(printerName, data) {
       (err, stdout, stderr) => {
         cleanup();
         if (err) {
-          const msg = (stderr || err.message || 'Error desconocido').trim();
+          // El mensaje que mostraba antes ("Command failed: powershell.exe...")
+          // era el wrapper genérico de execFile — inútil para diagnosticar sin
+          // ver la consola. Distinguir los casos reales para que el toast diga
+          // algo accionable en vez de repetir el comando completo.
+          let msg = String(stderr || '').trim() || String(stdout || '').trim();
+          if (!msg) {
+            if (err.killed || err.signal) {
+              msg = 'PowerShell no respondió a tiempo (12s) — revisa si un antivirus lo está bloqueando o si el spooler de impresión está colgado.';
+            } else if (err.code === 'ENOENT') {
+              msg = 'No se encontró powershell.exe en esta PC.';
+            } else {
+              msg = `PowerShell terminó sin explicación (código ${err.code ?? 'desconocido'}) y sin mensaje de error — ` +
+                'probablemente un antivirus o una política de Windows está bloqueando la ejecución del script de impresión. ' +
+                `Prueba corriendo manualmente: powershell.exe -ExecutionPolicy Bypass -File "${helperPath}" "${printerName}" "${binFile}"`;
+            }
+          }
           resolve({ ok: false, error: msg });
         } else {
           resolve({ ok: true });
