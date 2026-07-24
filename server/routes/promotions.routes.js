@@ -11,7 +11,10 @@ const express = require('express');
 const {
   computePromotionStatus,
   resolveActivePromotions,
+  resolveActiveQuantityRules,
 } = require('../services/promotion-engine');
+
+const PROMOTION_TIPOS = ['oferta_precio', 'descuento_por_cantidad'];
 
 function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPermission, ensurePromotionsExtensions }) {
   const router = express.Router();
@@ -119,6 +122,7 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
       productoCodigo: row.producto_codigo,
       precioOriginal: row.precio_original !== undefined ? Number(row.precio_original) : null,
       precioPromocion: row.precio_promocion !== undefined ? Number(row.precio_promocion) : null,
+      cantidadMinima: row.cantidad_minima !== undefined && row.cantidad_minima !== null ? Number(row.cantidad_minima) : null,
       estado: computePromotionStatus(row),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -130,7 +134,7 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
     try {
       await requireManagePermission(req);
       const rows = await query(
-        `SELECT p.*, pp.producto_id, pp.precio_original, pp.precio_promocion,
+        `SELECT p.*, pp.producto_id, pp.precio_original, pp.precio_promocion, pp.cantidad_minima,
                 pr.nombre AS producto_nombre, pr.codigo AS producto_codigo
          FROM promotions p
          LEFT JOIN promotion_products pp ON pp.promotion_id = p.id
@@ -154,8 +158,11 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
     try {
       await resolveRequestActorUser(req, { required: true });
       const sucursalId = req.query.sucursalId ? Number(req.query.sucursalId) : null;
-      const activeMap = await resolveActivePromotions({ query, sucursalId });
-      res.json({ activeMap });
+      const [activeMap, quantityMap] = await Promise.all([
+        resolveActivePromotions({ query, sucursalId }),
+        resolveActiveQuantityRules({ query, sucursalId }),
+      ]);
+      res.json({ activeMap, quantityMap });
     } catch (err) {
       res.status(err.statusCode || 500).json({ error: err.message });
     }
@@ -166,7 +173,7 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
     try {
       await requireManagePermission(req);
       const rows = await query(
-        `SELECT p.*, pp.producto_id, pp.precio_original, pp.precio_promocion,
+        `SELECT p.*, pp.producto_id, pp.precio_original, pp.precio_promocion, pp.cantidad_minima,
                 pr.nombre AS producto_nombre, pr.codigo AS producto_codigo
          FROM promotions p
          LEFT JOIN promotion_products pp ON pp.promotion_id = p.id
@@ -190,10 +197,22 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
       const nombre = String(body.nombre || '').trim();
       const productoId = Number(body.productoId || 0);
       const precioPromocion = Number(body.precioPromocion);
+      const tipo = String(body.tipo || 'oferta_precio').trim();
       if (!nombre) return res.status(400).json({ error: 'El nombre de la promoción es obligatorio.' });
+      if (!PROMOTION_TIPOS.includes(tipo)) {
+        return res.status(400).json({ error: 'Tipo de promoción no reconocido.' });
+      }
       if (!productoId) return res.status(400).json({ error: 'Debes seleccionar un producto.' });
       if (!Number.isFinite(precioPromocion) || precioPromocion <= 0) {
         return res.status(400).json({ error: 'El precio de oferta debe ser mayor a 0.' });
+      }
+
+      let cantidadMinima = null;
+      if (tipo === 'descuento_por_cantidad') {
+        cantidadMinima = Number(body.cantidadMinima);
+        if (!Number.isInteger(cantidadMinima) || cantidadMinima < 2) {
+          return res.status(400).json({ error: 'La cantidad mínima debe ser un número entero de 2 o más.' });
+        }
       }
 
       const productRows = await query(
@@ -220,6 +239,19 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
         });
       }
 
+      if (tipo === 'descuento_por_cantidad') {
+        const existingRuleRows = await query(
+          `SELECT p.id FROM promotions p JOIN promotion_products pp ON pp.promotion_id = p.id
+           WHERE p.tipo = 'descuento_por_cantidad' AND p.deshabilitada = 0 AND pp.producto_id = ? LIMIT 1`,
+          [productoId],
+        );
+        if (existingRuleRows.length) {
+          return res.status(400).json({
+            error: 'Este producto ya tiene un Descuento por Cantidad activo. Desactívalo o edítalo en vez de crear otro.',
+          });
+        }
+      }
+
       const permanente = Boolean(body.permanente);
       await assertAgainstPromotionConfig({ permanente, fechaInicio: body.fechaInicio });
       const codigoInterno = await nextCodigoInterno();
@@ -228,10 +260,11 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
           (codigo_interno, nombre, tipo, descripcion, deshabilitada, prioridad, permanente,
            fecha_inicio, fecha_fin, hora_inicio, hora_fin, color, texto_promocion,
            acumulable, exclusiva, sucursal_id, creado_por, actualizado_por)
-         VALUES (?, ?, 'oferta_precio', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           codigoInterno,
           nombre,
+          tipo,
           String(body.descripcion || '').trim() || null,
           Number(body.prioridad || 0),
           permanente ? 1 : 0,
@@ -251,9 +284,9 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
       const promotionId = Number(result.insertId);
 
       await query(
-        `INSERT INTO promotion_products (promotion_id, producto_id, precio_original, precio_promocion)
-         VALUES (?, ?, ?, ?)`,
-        [promotionId, productoId, Number(product.precio_venta), precioPromocion],
+        `INSERT INTO promotion_products (promotion_id, producto_id, precio_original, precio_promocion, cantidad_minima)
+         VALUES (?, ?, ?, ?, ?)`,
+        [promotionId, productoId, Number(product.precio_venta), precioPromocion, cantidadMinima],
       );
 
       await writeAuditLog({
@@ -261,7 +294,7 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
         nombre,
         accion: 'creada',
         usuarioId: actor.id,
-        detalle: { productoId, precioOriginal: Number(product.precio_venta), precioPromocion },
+        detalle: { productoId, precioOriginal: Number(product.precio_venta), precioPromocion, tipo, cantidadMinima },
       });
 
       res.json({ ok: true, promotionId, codigoInterno });
@@ -282,9 +315,18 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
 
       const nombre = String(body.nombre || '').trim();
       const precioPromocion = Number(body.precioPromocion);
+      const tipo = existing.tipo || 'oferta_precio'; // el tipo es inmutable tras crear la promoción — se ignora body.tipo
       if (!nombre) return res.status(400).json({ error: 'El nombre de la promoción es obligatorio.' });
       if (!Number.isFinite(precioPromocion) || precioPromocion <= 0) {
         return res.status(400).json({ error: 'El precio de oferta debe ser mayor a 0.' });
+      }
+
+      let cantidadMinima = null;
+      if (tipo === 'descuento_por_cantidad') {
+        cantidadMinima = Number(body.cantidadMinima);
+        if (!Number.isInteger(cantidadMinima) || cantidadMinima < 2) {
+          return res.status(400).json({ error: 'La cantidad mínima debe ser un número entero de 2 o más.' });
+        }
       }
 
       const productRows = await query(
@@ -346,8 +388,8 @@ function createPromotionsRouter({ query, resolveRequestActorUser, userRoleHasPer
         ],
       );
       await query(
-        'UPDATE promotion_products SET precio_original = ?, precio_promocion = ? WHERE promotion_id = ?',
-        [Number(product.precio_venta), precioPromocion, promotionId],
+        'UPDATE promotion_products SET precio_original = ?, precio_promocion = ?, cantidad_minima = ? WHERE promotion_id = ?',
+        [Number(product.precio_venta), precioPromocion, cantidadMinima, promotionId],
       );
 
       await writeAuditLog({

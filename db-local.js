@@ -112,6 +112,21 @@ CREATE TABLE IF NOT EXISTS offline_cache_promotions (
   last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Espejo de offline_cache_promotions para "descuento_por_cantidad" (precio
+-- especial por unidad condicionado a una cantidad mínima en el carrito).
+CREATE TABLE IF NOT EXISTS offline_cache_quantity_promotions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL UNIQUE,
+  promotion_id INTEGER NOT NULL,
+  nombre VARCHAR(255) NOT NULL,
+  precio_promocion DECIMAL(12,2) NOT NULL,
+  precio_original DECIMAL(12,2) NOT NULL,
+  cantidad_minima INTEGER NOT NULL,
+  texto_promocion VARCHAR(80) DEFAULT NULL,
+  color VARCHAR(7) DEFAULT NULL,
+  last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS pending_sales (
   id VARCHAR(80) PRIMARY KEY,
   terminal_id VARCHAR(40) NOT NULL,

@@ -255,12 +255,8 @@ function addProductByScaleBarcode(scanned) {
 
   const existIdx = findMergeableSaleItemIndex(prod, saleMode);
   if (existIdx >= 0) {
-    const updatedItem = normalizeSaleItem({
-      ...DB.saleItems[existIdx],
-      qty: Number(DB.saleItems[existIdx]?.qty || 0) + nextQty
-    });
-    updatedItem.total = calcItemTotal(updatedItem);
-    DB.saleItems[existIdx] = updatedItem;
+    const nextTotalQty = Number(DB.saleItems[existIdx]?.qty || 0) + nextQty;
+    DB.saleItems[existIdx] = recalcSaleItemForQty(DB.saleItems[existIdx], nextTotalQty);
   } else {
     DB.saleItems.push(buildSaleItem(prod, nextQty, lineExtra));
   }
@@ -462,17 +458,59 @@ function normalizeCartSaleItems() {
   return DB.saleItems;
 }
 
-// Si el producto tiene una Oferta de Precio activa (ver js/promociones.js,
-// DB.activePromotions cargado al entrar a Ventas), sobreescribe el precio de
-// línea con el de la promoción — nunca toca product.precioVenta ni el campo
-// de descuento manual (item.descuento), son sistemas independientes.
-function getActivePromotionForProduct(productId) {
-  const promo = DB.activePromotions?.[productId];
-  return promo || null;
+// Espejo liviano de isBetterCandidate() en server/services/promotion-engine.js
+// — solo para pintar el precio en el carrito; el servidor SIEMPRE vuelve a
+// resolver la promoción al cerrar la venta (server.js y offline.routes.js),
+// así que una discrepancia aquí nunca compromete el precio realmente cobrado.
+function isBetterPromotionCandidateClient(candidate, current) {
+  if (candidate.prioridad !== current.prioridad) return candidate.prioridad > current.prioridad;
+  const cs = candidate.precioOriginal - candidate.precioPromocion;
+  const us = current.precioOriginal - current.precioPromocion;
+  if (cs !== us) return cs > us;
+  return new Date(candidate.createdAt || 0).getTime() > new Date(current.createdAt || 0).getTime();
+}
+
+// Decide qué promoción aplica a una línea del carrito según su cantidad.
+// Si el producto tiene una Oferta de Precio y/o un Descuento por Cantidad
+// activos (ver js/promociones.js, DB.activePromotions/DB.quantityPromotions
+// cargados al entrar a Ventas), resuelve cuál gana — nunca toca
+// product.precioVenta ni el campo de descuento manual (item.descuento), son
+// sistemas independientes.
+function resolvePromotionForCartLine(productId, qty) {
+  const oferta = DB.activePromotions?.[productId] || null;
+  const cantidad = DB.quantityPromotions?.[productId] || null;
+  const qtyQualifies = Boolean(cantidad) && Number(qty) >= Number(cantidad.cantidadMinima);
+  if (qtyQualifies && oferta) return isBetterPromotionCandidateClient(cantidad, oferta) ? cantidad : oferta;
+  if (qtyQualifies) return cantidad;
+  return oferta;
+}
+
+// Recalcula precio + promoAplicada + total de una línea del carrito para su
+// cantidad final — necesario porque, a diferencia de Oferta de Precio, un
+// Descuento por Cantidad depende de cuánto termine habiendo en el carrito.
+function recalcSaleItemForQty(item, qty) {
+  const promo = resolvePromotionForCartLine(Number(item.id), qty);
+  const product = findProductForSaleItem(item);
+  const updated = normalizeSaleItem({
+    ...item,
+    qty,
+    precio: promo ? Number(promo.precioPromocion) : Number(product?.precioVenta ?? item.precio ?? 0),
+    promoAplicada: promo ? {
+      promotionId: promo.promotionId,
+      nombre: promo.nombre,
+      precioOriginal: Number(promo.precioOriginal),
+      ahorro: Number(promo.ahorro),
+      texto: promo.texto || '',
+      color: promo.color || '',
+      cantidadMinima: promo.cantidadMinima ?? null,
+    } : null,
+  });
+  updated.total = calcItemTotal(updated);
+  return updated;
 }
 
 function buildSaleItem(product, qty = 1, extra = {}) {
-  const promo = getActivePromotionForProduct(product.id);
+  const promo = resolvePromotionForCartLine(product.id, qty);
   const item = normalizeSaleItem({
     id: product.id,
     codigo: product.codigo,
@@ -485,6 +523,7 @@ function buildSaleItem(product, qty = 1, extra = {}) {
       ahorro: Number(promo.ahorro),
       texto: promo.texto || '',
       color: promo.color || '',
+      cantidadMinima: promo.cantidadMinima ?? null,
     } : null,
     qty,
     // El % de descuento configurado en la ficha del producto se precarga
@@ -5225,12 +5264,7 @@ async function addProductById(id) {
 
   if (existIdx >= 0) {
     const currentQty = Number(DB.saleItems[existIdx]?.qty || 0);
-    const updatedItem = normalizeSaleItem({
-      ...DB.saleItems[existIdx],
-      qty: currentQty + nextQty
-    });
-    updatedItem.total = calcItemTotal(updatedItem);
-    DB.saleItems[existIdx] = updatedItem;
+    DB.saleItems[existIdx] = recalcSaleItemForQty(DB.saleItems[existIdx], currentQty + nextQty);
   } else {
     const item = buildSaleItem(prod, nextQty, lineExtra);
     DB.saleItems.push(item);
@@ -5274,7 +5308,7 @@ function renderSaleTable() {
         <span style="font-weight:600;line-height:1.2">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre}</span>
         ${item.promoAplicada ? `
           <div style="margin-top:.2rem">
-            <span style="display:inline-block;font-size:.68rem;font-weight:700;color:#fff;background:${item.promoAplicada.color || '#22c55e'};border-radius:4px;padding:.05rem .4rem">🏷 ${escapeHtml(item.promoAplicada.texto || item.promoAplicada.nombre || 'OFERTA')}</span>
+            <span style="display:inline-block;font-size:.68rem;font-weight:700;color:#fff;background:${item.promoAplicada.color || '#22c55e'};border-radius:4px;padding:.05rem .4rem">${item.promoAplicada.cantidadMinima ? `🔢 ${item.promoAplicada.cantidadMinima}+ uds` : '🏷'} ${escapeHtml(item.promoAplicada.texto || item.promoAplicada.nombre || 'OFERTA')}</span>
           </div>
         ` : ''}
       </td>
@@ -5404,12 +5438,7 @@ function updateItemQty(idx, val) {
     }
   }
 
-  const nextItem = normalizeSaleItem({
-    ...item,
-    qty
-  });
-  nextItem.total = calcItemTotal(nextItem);
-  DB.saleItems[idx] = nextItem;
+  DB.saleItems[idx] = recalcSaleItemForQty(item, qty);
   syncSaleOrderCount();
   syncSaleRowDisplay(idx);
   updateTotals();
@@ -5895,29 +5924,20 @@ function getElectronicReceiptNumber(venta) {
 }
 
 function buildReceiptQrPayload(venta) {
+  // La URL de verificación DGII SOLO puede construirse correctamente desde el
+  // XML realmente firmado y enviado (RncEmisor, RncComprador, ENCF,
+  // FechaEmision, MontoTotal, FechaFirma, CodigoSeguridad deben coincidir
+  // exactamente con lo que DGII tiene registrado). El backend la calcula una
+  // sola vez (server/.../ecf.repository.js attachSaleSummary, misma lógica
+  // que modules/ecf/controllers/repr-impresa.js) y la guarda en venta.qrUrl.
+  // Antes existía aquí un generador propio con nombres de parámetro
+  // equivocados, ambiente hardcodeado y un "CodigoSeguridad" inventado — DGII
+  // nunca podía encontrar esas facturas ("No fue encontrada la factura
+  // (e-CF)"). Mejor no mostrar QR que mostrar uno que DGII nunca verificará.
   if (venta?.qrUrl) {
     return String(venta.qrUrl).trim();
   }
-
-  const baseUrl = 'https://ecf.dgii.gov.do/testecf/ConsultaTimbre';
-  const invoiceId = getElectronicReceiptNumber(venta) || getReceiptInvoiceId(venta);
-  const rawDate = String(venta.fiscalFechaIso || venta.fecha || '').trim();
-  const fecha = rawDate
-    ? rawDate.replace(' ', 'T').slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
-  const codigo = String(
-    venta.codigoSeguridadFiscal
-    || invoiceId.replace(/[^A-Za-z0-9]/g, '').slice(-16)
-    || 'TECNO_CAJA'
-  ).trim();
-  const params = new URLSearchParams({
-    RNC: String(venta?.rncEmisor || DB.config?.rnc || '').trim(),
-    eNCF: invoiceId,
-    Fecha: fecha,
-    Monto: Number(venta.total || 0).toFixed(2),
-    CodigoSeguridad: codigo
-  });
-  return `${baseUrl}?${params.toString()}`;
+  return '';
 }
 
 async function ensureReceiptQrData(venta) {
@@ -6584,10 +6604,12 @@ async function renderReceiptQr(venta) {
 
   try {
     const dataUrl = await ensureReceiptQrData(venta);
-    qrBox.innerHTML = `
-      <img src="${dataUrl}" alt="Código QR de factura electrónica">
-      <small>Escaneo de verificación DGII para ${getElectronicReceiptNumber(venta) || getReceiptInvoiceId(venta)}</small>
-    `;
+    qrBox.innerHTML = dataUrl
+      ? `
+        <img src="${dataUrl}" alt="Código QR de factura electrónica">
+        <small>Escaneo de verificación DGII para ${getElectronicReceiptNumber(venta) || getReceiptInvoiceId(venta)}</small>
+      `
+      : '<small>DGII aún no ha confirmado este e-CF — el QR aparecerá cuando esté aceptado.</small>';
   } catch (_error) {
     qrBox.innerHTML = '<small>No se pudo generar el código QR fiscal.</small>';
   }
@@ -7938,7 +7960,7 @@ function getReceiptTemplateData(venta) {
             <div class="receipt-item-name" title="${escapeReceiptHtml(item.nombre)}">${escapeReceiptHtml(fmtReceiptQty(item))} x ${escapeReceiptHtml(itemName)}</div>
             <div class="receipt-item-meta">
               ${item.promotionId
-                ? `<s>${escapeReceiptHtml(fmtReceiptValue(item.originalPrice))}</s> ${escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)} · 🏷 Oferta`
+                ? `<s>${escapeReceiptHtml(fmtReceiptValue(item.originalPrice))}</s> ${escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)} · 🏷 Promo`
                 : escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)}
               ${receiptSimpleMode ? '' : ` · ${escapeReceiptHtml(`ITBIS ${item.itbisRate.toFixed(2)}%`)}`}
             </div>
@@ -9190,9 +9212,7 @@ function addBasculaTcpWeightToProduct(prod) {
 
   const existIdx = findMergeableSaleItemIndex(prod, saleMode);
   if (existIdx >= 0) {
-    const updated = normalizeSaleItem({ ...DB.saleItems[existIdx], qty: nextQty });
-    updated.total = calcItemTotal(updated);
-    DB.saleItems[existIdx] = updated;
+    DB.saleItems[existIdx] = recalcSaleItemForQty(DB.saleItems[existIdx], nextQty);
   } else {
     DB.saleItems.push(buildSaleItem(prod, nextQty, lineExtra));
   }

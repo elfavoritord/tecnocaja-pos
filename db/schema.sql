@@ -571,6 +571,7 @@ CREATE TABLE promotion_products (
   producto_id INT NOT NULL,
   precio_original DECIMAL(12,2) NOT NULL,
   precio_promocion DECIMAL(12,2) NOT NULL,
+  cantidad_minima INT DEFAULT NULL,
   KEY idx_promo_products_promo (promotion_id),
   KEY idx_promo_products_producto (producto_id),
   CONSTRAINT fk_promo_products_promo FOREIGN KEY (promotion_id) REFERENCES promotions(id) ON DELETE CASCADE,
@@ -796,6 +797,22 @@ CREATE TABLE offline_cache_promotions (
   color VARCHAR(7) DEFAULT NULL,
   last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_offline_promo_product (product_id)
+);
+
+-- Espejo de offline_cache_promotions para el tipo "descuento_por_cantidad"
+-- (precio especial por unidad condicionado a una cantidad mínima en el carrito).
+CREATE TABLE offline_cache_quantity_promotions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  product_id INT NOT NULL UNIQUE,
+  promotion_id INT NOT NULL,
+  nombre VARCHAR(150) NOT NULL,
+  precio_promocion DECIMAL(12,2) NOT NULL,
+  precio_original DECIMAL(12,2) NOT NULL,
+  cantidad_minima INT NOT NULL,
+  texto_promocion VARCHAR(80) DEFAULT NULL,
+  color VARCHAR(7) DEFAULT NULL,
+  last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_offline_qty_promo_product (product_id)
 );
 
 -- Caché local de clientes

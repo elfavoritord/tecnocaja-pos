@@ -77,6 +77,7 @@ function renderPromotionsTable(promotions) {
       <td>
         <strong ${p.color ? `style="color:${escapeHtml(p.color)}"` : ''}>${escapeHtml(p.nombre)}</strong>
         ${p.textoPromocion ? `<div style="font-size:.72rem;color:var(--text3)">${escapeHtml(p.textoPromocion)}</div>` : ''}
+        ${p.tipo === 'descuento_por_cantidad' ? `<div style="font-size:.7rem;color:var(--text3)">🔢 Desde ${p.cantidadMinima || '?'} unidades</div>` : ''}
       </td>
       <td>${escapeHtml(p.productoNombre || '—')}<div style="font-size:.72rem;color:var(--text3);font-family:var(--font-mono)">${escapeHtml(p.productoCodigo || '')}</div></td>
       <td style="text-decoration:line-through;color:var(--text3)">${fmt(p.precioOriginal || 0)}</td>
@@ -140,7 +141,17 @@ async function openPromotionModal(id) {
 
   document.getElementById('modal-box').classList.add('product-modal');
   document.getElementById('modal-title').textContent = promo ? 'Editar Promoción' : 'Nueva Promoción';
+  const tipoActual = promo?.tipo || 'oferta_precio';
   document.getElementById('modal-body').innerHTML = `
+    <div class="form-group span-full">
+      <label>Tipo de promoción</label>
+      <select id="promo-tipo" class="form-input" onchange="syncPromotionTypeFieldsVisibility()" ${promo ? 'disabled' : ''}>
+        <option value="oferta_precio" ${tipoActual === 'oferta_precio' ? 'selected' : ''}>Oferta de Precio — precio fijo de oferta</option>
+        <option value="descuento_por_cantidad" ${tipoActual === 'descuento_por_cantidad' ? 'selected' : ''}>Descuento por Cantidad — precio especial al comprar X+ unidades</option>
+      </select>
+      ${promo ? '<small style="display:block;margin-top:.3rem;color:var(--text3)">El tipo de una promoción no se puede cambiar — elimina y crea una nueva si necesitas otro tipo.</small>' : ''}
+    </div>
+
     <div class="form-group span-full">
       <label>Nombre de la promoción</label>
       <input type="text" id="promo-nombre" class="form-input" value="${promo ? escapeHtml(promo.nombre) : ''}" placeholder="Ej. Oferta de fin de semana">
@@ -167,8 +178,14 @@ async function openPromotionModal(id) {
         <input type="text" id="promo-precio-normal" class="form-input is-readonly" value="${promo ? fmt(promo.precioOriginal) : ''}" readonly disabled>
       </div>
       <div class="form-group">
-        <label>Precio de oferta</label>
+        <label id="promo-precio-oferta-label">${tipoActual === 'descuento_por_cantidad' ? 'Precio especial por unidad' : 'Precio de oferta'}</label>
         <input type="number" id="promo-precio-oferta" class="form-input" min="0" step="0.01" value="${promo ? promo.precioPromocion : ''}" oninput="updatePromotionPreview()">
+      </div>
+    </div>
+    <div class="modal-grid" id="promo-cantidad-fields" style="${tipoActual === 'descuento_por_cantidad' ? '' : 'display:none'}">
+      <div class="form-group">
+        <label>Cantidad mínima <small style="color:var(--text3)">(unidades en el mismo carrito)</small></label>
+        <input type="number" id="promo-cantidad-minima" class="form-input" min="2" step="1" value="${promo?.cantidadMinima || ''}">
       </div>
     </div>
     <div id="promo-savings-preview" style="margin:.4rem 0 .8rem"></div>
@@ -298,18 +315,38 @@ function syncPromotionDateFieldsVisibility() {
   if (dateFields) dateFields.style.display = permanente ? 'none' : '';
 }
 
+function syncPromotionTypeFieldsVisibility() {
+  const tipo = document.getElementById('promo-tipo')?.value || 'oferta_precio';
+  const cantidadFields = document.getElementById('promo-cantidad-fields');
+  if (cantidadFields) cantidadFields.style.display = tipo === 'descuento_por_cantidad' ? '' : 'none';
+  const precioLabel = document.getElementById('promo-precio-oferta-label');
+  if (precioLabel) precioLabel.textContent = tipo === 'descuento_por_cantidad' ? 'Precio especial por unidad' : 'Precio de oferta';
+}
+
 async function savePromotion(id) {
   const nombre = document.getElementById('promo-nombre')?.value.trim();
   const precioPromocion = Number(document.getElementById('promo-precio-oferta')?.value || 0);
+  const tipo = document.getElementById('promo-tipo')?.value || 'oferta_precio';
   if (!nombre) { showToast('Ingresa un nombre para la promoción.', 'warning'); return; }
   if (!_promotionModalProduct) { showToast('Selecciona un producto.', 'warning'); return; }
   if (!(precioPromocion > 0)) { showToast('Ingresa un precio de oferta válido.', 'warning'); return; }
 
+  let cantidadMinima = null;
+  if (tipo === 'descuento_por_cantidad') {
+    cantidadMinima = Number(document.getElementById('promo-cantidad-minima')?.value || 0);
+    if (!Number.isInteger(cantidadMinima) || cantidadMinima < 2) {
+      showToast('Ingresa una cantidad mínima entera de 2 o más.', 'warning');
+      return;
+    }
+  }
+
   const permanente = Boolean(document.getElementById('promo-permanente')?.checked);
   const payload = {
     nombre,
+    tipo,
     productoId: _promotionModalProduct.id,
     precioPromocion,
+    cantidadMinima,
     permanente,
     fechaInicio: permanente ? null : (document.getElementById('promo-fecha-inicio')?.value || null),
     fechaFin: permanente ? null : (document.getElementById('promo-fecha-fin')?.value || null),
@@ -354,9 +391,11 @@ async function loadActivePromotionsMap() {
     const endpoint = isOffline ? '/api/offline/promotions/active-map' : '/api/promotions/active-map';
     const res = await apiGet(endpoint);
     DB.activePromotions = res.activeMap || {};
+    DB.quantityPromotions = res.quantityMap || {};
   } catch (_e) {
     // Sin promociones no se rompe la venta — el POS sigue funcionando a precio normal.
     DB.activePromotions = DB.activePromotions || {};
+    DB.quantityPromotions = DB.quantityPromotions || {};
   }
   if (typeof renderSaleTable === 'function') renderSaleTable();
   if (!_activePromotionsPollTimer) {

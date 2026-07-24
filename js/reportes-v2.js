@@ -14,6 +14,7 @@
     kpis: null,
     ventas_dia: [],
     metodos: [],
+    topProductos: [],
     productos: [],
     clientes: [],
     por_sucursal: [],
@@ -147,8 +148,8 @@
     });
     // lazy load
     if (subtab === 'facturas'    && !RV2.facturas.rows.length)    repV2LoadFacturas(1);
-    if (subtab === 'productos'   && !RV2.productos.length)        loadProductosDetallado();
-    if (subtab === 'sucursal'    && !RV2.por_sucursal.length)     loadPorSucursalDetallado();
+    if (subtab === 'productos') { if (!RV2.productos.length) loadProductosDetallado(); else renderProductosTable(); }
+    if (subtab === 'sucursal')  { if (!RV2.por_sucursal.length) loadPorSucursalDetallado(); else renderSucursalTable(); }
     if (subtab === 'caja'        && !RV2.por_caja.length)         loadPorCaja();
     if (subtab === 'usuario'     && !RV2.por_usuario.length)      loadPorUsuario();
     if (subtab === 'metodos'     )                                 renderMetodosTable();
@@ -184,6 +185,7 @@
     RV2.kpis = null;
     RV2.ventas_dia = [];
     RV2.metodos = [];
+    RV2.topProductos = [];
     RV2.productos = [];
     RV2.clientes = [];
     RV2.por_sucursal = [];
@@ -303,6 +305,8 @@
     } catch (e) { console.error('[Reportes] loadVentasDia:', e.message); RV2.ventas_dia = []; }
   }
 
+  const CHART_FONT = "'Plus Jakarta Sans', sans-serif";
+
   function renderChartTendencia() {
     const canvas = el('repv2-chart-tendencia');
     if (!canvas) return;
@@ -322,92 +326,151 @@
       return d.toLocaleDateString('es-DO', { day: '2-digit', month: 'short' });
     });
     const values = rows.map(r => Number(r.total));
-    const maxV = Math.max(...values, 1);
+    const rawMax = Math.max(...values, 1);
+    // 20% de aire arriba del pico — evita que la línea/barra quede pegada
+    // al borde superior del panel, y le da lugar a la etiqueta de valor.
+    const maxV = rawMax * 1.2;
 
+    const dpr = window.devicePixelRatio || 1;
     const W = canvas.offsetWidth || 600;
     const H = 220;
-    canvas.width = W;
-    canvas.height = H;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.height = `${H}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, W, H);
 
-    const padL = 60, padR = 20, padT = 20, padB = 40;
+    const padL = 60, padR = 20, padT = 24, padB = 40;
     const chartW = W - padL - padR;
     const chartH = H - padT - padB;
     const n = labels.length;
 
+    const isDark = document.documentElement.dataset.theme !== 'light';
+
     if (n === 0) {
-      ctx.fillStyle = 'rgba(150,150,150,0.5)';
-      ctx.font = '14px sans-serif';
+      ctx.fillStyle = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)';
+      ctx.font = `14px ${CHART_FONT}`;
       ctx.textAlign = 'center';
-      ctx.fillText('Sin datos en el período', W / 2, H / 2);
+      ctx.fillText('Sin ventas registradas en este período', W / 2, H / 2);
       setText('dash-trend-label', 'Sin datos');
       return;
     }
 
-    // Gradiente de fondo bajo la línea
-    const isDark = document.documentElement.dataset.theme !== 'light';
-    const gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
-    const textColor = isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.4)';
+    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
+    const textColor = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.5)';
     const accentColor = '#6C63FF';
 
     // Grid lines
-    const gridLines = 5;
+    const gridLines = 4;
     ctx.strokeStyle = gridColor;
     ctx.lineWidth = 1;
+    ctx.font = `10.5px ${CHART_FONT}`;
+    ctx.textAlign = 'right';
     for (let i = 0; i <= gridLines; i++) {
       const y = padT + (chartH / gridLines) * i;
       ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
       const val = maxV - (maxV / gridLines) * i;
       ctx.fillStyle = textColor;
-      ctx.font = '10px sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(val >= 1000 ? `${(val/1000).toFixed(0)}k` : val.toFixed(0), padL - 5, y + 4);
+      ctx.fillText(val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val.toFixed(0), padL - 10, y + 4);
+    }
+
+    // ── Un solo día: barra centrada en vez de una línea degenerada ──
+    if (n === 1) {
+      const barW = Math.min(64, chartW * 0.16);
+      const barX = padL + chartW / 2 - barW / 2;
+      const barTopY = padT + chartH - (values[0] / maxV) * chartH;
+      const barH = padT + chartH - barTopY;
+      const grad = ctx.createLinearGradient(0, barTopY, 0, padT + chartH);
+      grad.addColorStop(0, accentColor);
+      grad.addColorStop(1, 'rgba(108,99,255,0.35)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.roundRect(barX, barTopY, barW, barH, [8, 8, 0, 0]);
+      ctx.fill();
+
+      ctx.fillStyle = isDark ? '#fff' : '#1a1e30';
+      ctx.font = `700 13px ${CHART_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(fmt(values[0]), barX + barW / 2, barTopY - 12);
+
+      ctx.fillStyle = textColor;
+      ctx.font = `10.5px ${CHART_FONT}`;
+      ctx.fillText(labels[0], barX + barW / 2, H - padB + 18);
+
+      setText('dash-trend-label', `${fmtNum(rows[0]?.facturas || 0)} facturas · ${fmt(values[0])}`);
+      return;
     }
 
     // X labels
     const step = n > 14 ? Math.ceil(n / 7) : 1;
     ctx.fillStyle = textColor;
-    ctx.font = '10px sans-serif';
+    ctx.font = `10.5px ${CHART_FONT}`;
     ctx.textAlign = 'center';
     labels.forEach((l, i) => {
       if (i % step !== 0 && i !== n - 1) return;
       const x = padL + (i / Math.max(n - 1, 1)) * chartW;
-      ctx.fillText(l, x, H - padB + 16);
+      ctx.fillText(l, x, H - padB + 18);
     });
 
-    // Area gradient
     const xPts = values.map((_, i) => padL + (i / Math.max(n - 1, 1)) * chartW);
     const yPts = values.map(v => padT + chartH - (v / maxV) * chartH);
 
+    // Curva suavizada (Catmull-Rom vía puntos medios) — se ve mucho más pulida
+    // que segmentos rectos cuando hay varios días.
+    function smoothPath() {
+      ctx.moveTo(xPts[0], yPts[0]);
+      for (let i = 1; i < n; i++) {
+        const xMid = (xPts[i - 1] + xPts[i]) / 2;
+        const yMid = (yPts[i - 1] + yPts[i]) / 2;
+        ctx.quadraticCurveTo(xPts[i - 1], yPts[i - 1], xMid, yMid);
+      }
+      ctx.lineTo(xPts[n - 1], yPts[n - 1]);
+    }
+
+    // Área bajo la curva
     const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH);
-    grad.addColorStop(0, 'rgba(108,99,255,0.25)');
+    grad.addColorStop(0, 'rgba(108,99,255,0.28)');
     grad.addColorStop(1, 'rgba(108,99,255,0.01)');
     ctx.beginPath();
     ctx.moveTo(xPts[0], padT + chartH);
-    xPts.forEach((x, i) => ctx.lineTo(x, yPts[i]));
+    ctx.lineTo(xPts[0], yPts[0]);
+    smoothPath();
     ctx.lineTo(xPts[n - 1], padT + chartH);
     ctx.closePath();
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // Line
+    // Línea con brillo sutil
     ctx.beginPath();
-    xPts.forEach((x, i) => i === 0 ? ctx.moveTo(x, yPts[i]) : ctx.lineTo(x, yPts[i]));
+    smoothPath();
+    ctx.shadowColor = 'rgba(108,99,255,0.45)';
+    ctx.shadowBlur = 8;
     ctx.strokeStyle = accentColor;
     ctx.lineWidth = 2.5;
     ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
     ctx.stroke();
+    ctx.shadowBlur = 0;
 
-    // Dots
+    // Puntos — discretos en el trayecto, destacado en el último (el más reciente)
     xPts.forEach((x, i) => {
+      const isLast = i === n - 1;
       ctx.beginPath();
-      ctx.arc(x, yPts[i], 4, 0, Math.PI * 2);
+      ctx.arc(x, yPts[i], isLast ? 5 : 3, 0, Math.PI * 2);
       ctx.fillStyle = accentColor;
       ctx.fill();
       ctx.strokeStyle = isDark ? '#1e2435' : '#fff';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = isLast ? 2.5 : 1.5;
       ctx.stroke();
     });
+
+    // Etiqueta flotante con el valor del último día
+    const lastX = xPts[n - 1];
+    const lastY = yPts[n - 1];
+    ctx.fillStyle = isDark ? '#fff' : '#1a1e30';
+    ctx.font = `700 12px ${CHART_FONT}`;
+    ctx.textAlign = lastX > W - padR - 60 ? 'right' : 'center';
+    ctx.fillText(fmt(values[n - 1]), lastX + (ctx.textAlign === 'right' ? 8 : 0), Math.max(lastY - 14, padT + 10));
 
     const total = values.reduce((s, v) => s + v, 0);
     setText('dash-trend-label', `${n} días · ${fmt(total)}`);
@@ -491,16 +554,21 @@
   }
 
   // ── Top productos ─────────────────────────────────────────
+  // Caché propia (RV2.topProductos), separada de RV2.productos — esa la usa
+  // la tabla completa de Detallados > Productos (hasta 50 filas). Compartir
+  // la misma caché hacía que, al entrar a Detallados, el guard de "ya hay
+  // datos" viera el top-10 del dashboard y nunca disparara la carga/render
+  // de la tabla completa, dejándola en blanco.
   async function loadProductos() {
     try {
-      RV2.productos = await apiGet('/api/reports/advanced/productos' + buildQS({ limit: 10 }));
-    } catch (e) { console.error('[Reportes] loadProductos:', e.message); RV2.productos = []; }
+      RV2.topProductos = await apiGet('/api/reports/advanced/productos' + buildQS({ limit: 10 }));
+    } catch (e) { console.error('[Reportes] loadProductos:', e.message); RV2.topProductos = []; }
   }
 
   function renderTopProductos() {
     const c = el('repv2-top-productos');
     if (!c) return;
-    const rows = RV2.productos.slice(0, 10);
+    const rows = RV2.topProductos.slice(0, 10);
     if (!rows.length) { c.innerHTML = '<p style="color:var(--text3);font-size:0.82rem;padding:.5rem">Sin datos</p>'; return; }
     c.innerHTML = rows.map((r, i) => `
       <div class="repv2-rank-item">
@@ -700,6 +768,11 @@
     const tbody = el('det-sucursal-tbody');
     const tfoot = el('det-sucursal-tfoot');
     if (!tbody) return;
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text3)">Sin datos</td></tr>`;
+      if (tfoot) tfoot.innerHTML = '';
+      return;
+    }
     const totalGeneral = rows.reduce((s, r) => s + Number(r.total), 0);
     tbody.innerHTML = rows.map(r => `
       <tr>
@@ -981,7 +1054,7 @@
     y += 6;
     doc.setFont(undefined, 'bold'); doc.setFontSize(9);
     doc.text('TOP PRODUCTOS', 14, y); y += 7;
-    const prodRows = RV2.productos.slice(0, 10).map((r, i) => [i + 1, r.nombre, fmtNum(r.cantidad), fmt(r.totalVendido), `${r.participacion}%`]);
+    const prodRows = RV2.topProductos.slice(0, 10).map((r, i) => [i + 1, r.nombre, fmtNum(r.cantidad), fmt(r.totalVendido), `${r.participacion}%`]);
     y = pdfTable(doc, y, ['#', 'Producto', 'Cantidad', 'Total Vendido', '% Mix'], prodRows, [8, 80, 25, 40, 20]);
 
     const _fn1 = `Dashboard_Ejecutivo_${RV2.filtros.desde}_${RV2.filtros.hasta}.pdf`;
@@ -1185,11 +1258,11 @@
     }
 
     // Top productos
-    if (RV2.productos.length) {
+    if (RV2.topProductos.length) {
       doc.addPage(); y = 14;
       doc.setFont(undefined, 'bold'); doc.setFontSize(10); doc.text('4. TOP PRODUCTOS', 14, y); y += 8;
       y = pdfTable(doc, y, ['#', 'Producto', 'Cant.', 'Total', '% Mix'],
-        RV2.productos.slice(0, 20).map((r, i) => [i + 1, r.nombre.substring(0, 50), fmtNum(r.cantidad), fmt(r.totalVendido), `${r.participacion}%`]),
+        RV2.topProductos.slice(0, 20).map((r, i) => [i + 1, r.nombre.substring(0, 50), fmtNum(r.cantidad), fmt(r.totalVendido), `${r.participacion}%`]),
         [8, 90, 20, 36, 16]);
     }
 

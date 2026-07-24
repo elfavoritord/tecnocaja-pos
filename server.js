@@ -67,11 +67,16 @@ const createRncRouter  = require('./server/routes/rnc.routes');
 
 // 📢 Centro de Promociones
 const createPromotionsRouter = require('./server/routes/promotions.routes');
-const { resolvePriceForSaleItem } = require('./server/services/promotion-engine');
+const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('./server/services/promotion-engine');
 
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
 const createNetworkRouter = require('./server/routes/network.routes');
 const { ensureNetworkExtensions, markOfflineBySocket, registerTerminal, getLocalIPs } = require('./server/network/terminalRegistry');
+
+// ✅ App móvil Android (Tecno_Caja_POS_Android_Pro) — vinculación por Tecno
+// Caja ID (Google) + sincronización de solo lectura (catálogo/clientes/proveedores)
+const createMobileAuthRouter = require('./server/routes/mobile-auth.routes');
+const createMobileSyncRouter = require('./server/routes/mobile-sync.routes');
 
 // ✅ Modo offline multicaja
 const createOfflineRouter = require('./server/routes/offline.routes');
@@ -1682,6 +1687,20 @@ app.use('/api/currency', createCurrencyRouter({
   ensureExchangeRateHistoryTable,
   recordExchangeRate,
 }));
+
+// ── App móvil Android (Tecno_Caja_POS_Android_Pro) ─────────────────────────────
+// Auth propia (Bearer opaco emitido en /login), independiente de
+// `sesiones_activas` — no depende del middleware que resuelve req.authUser.
+app.use('/api/mobile-auth', createMobileAuthRouter({
+  query,
+  verifyFirebaseIdToken,
+  getFirebaseConfigStatus,
+  writeAuditLog,
+  userPasswordMatches,
+  checkLoginRateLimit,
+  resetLoginRateLimit,
+}));
+app.use('/api/mobile-sync', createMobileSyncRouter({ query }));
 
 // ── WhatsApp Bot ──────────────────────────────────────────────────────────────
 const waBotRoutes = require('./server/routes/whatsapp-bot.routes');
@@ -4645,7 +4664,8 @@ async function ensurePromotionsExtensions() {
       promotion_id INT NOT NULL,
       producto_id INT NOT NULL,
       precio_original DECIMAL(12,2) NOT NULL,
-      precio_promocion DECIMAL(12,2) NOT NULL
+      precio_promocion DECIMAL(12,2) NOT NULL,
+      cantidad_minima INT DEFAULT NULL
     )
   `);
   // El log de auditoría nunca se borra — ni siquiera cuando se elimina la promoción
@@ -4676,6 +4696,23 @@ async function ensurePromotionsExtensions() {
       last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // Espejo de offline_cache_promotions para "descuento_por_cantidad" (precio
+  // especial por unidad condicionado a una cantidad mínima en el carrito).
+  await query(`
+    CREATE TABLE IF NOT EXISTS offline_cache_quantity_promotions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INT NOT NULL UNIQUE,
+      promotion_id INT NOT NULL,
+      nombre VARCHAR(150) NOT NULL,
+      precio_promocion DECIMAL(12,2) NOT NULL,
+      precio_original DECIMAL(12,2) NOT NULL,
+      cantidad_minima INT NOT NULL,
+      texto_promocion VARCHAR(80) DEFAULT NULL,
+      color VARCHAR(7) DEFAULT NULL,
+      last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await addColumnIfMissing('promotion_products', 'cantidad_minima', 'INT DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'promotion_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'original_price', 'DECIMAL(12,2) DEFAULT NULL');
   await addColumnIfMissing('sales', 'ahorro_promociones', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
@@ -14187,8 +14224,12 @@ app.post('/api/sales', async (req, res) => {
     }
 
     const fiscalTimestamp = new Date().toISOString();
+    // Nota: para factura-electronica (e-CF) este código NO es el que se
+    // verifica contra DGII — ese sale del XML firmado real y se guarda aparte
+    // en sales.qr_data (ver ecf.repository.js attachSaleSummary). Este campo
+    // solo aplica como código de seguridad de NCF no electrónico.
     const fiscalSecurityCode = (documentType === 'factura-electronica' || effectiveNcfType)
-      ? `NOVA${crypto.randomBytes(6).toString('hex').toUpperCase()}`
+      ? `TCJ${crypto.randomBytes(6).toString('hex').toUpperCase()}`
       : '';
     const fiscalPayload = JSON.stringify({
       numero: generatedNcf || invoiceNumber,
@@ -14332,6 +14373,13 @@ app.post('/api/sales', async (req, res) => {
 
     const affectedProductIds = new Set();
     let ahorroPromociones = 0;
+    // Resuelto UNA vez para toda la venta (no por ítem) — pickWinningPromotion
+    // es puro/sin I/O, así que decidir la promo de cada línea dentro del loop
+    // no vuelve a golpear la BD.
+    const [ofertaMap, quantityMap] = await Promise.all([
+      resolveActivePromotions({ query: conn.query.bind(conn), sucursalId: structure.branchId }),
+      resolveActiveQuantityRules({ query: conn.query.bind(conn), sucursalId: structure.branchId }),
+    ]);
     for (const item of sale.items) {
       affectedProductIds.add(Number(item.id || 0) || 0);
       const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
@@ -14341,11 +14389,7 @@ app.post('/api/sales', async (req, res) => {
       // fuente de verdad — se vuelve a resolver la promoción activa server-side
       // (mismo principio que la tasa de cambio USD más arriba) y esa es la que
       // se guarda. Si el cliente no mandaba ninguna promoción, esto no cambia nada.
-      const activePromo = await resolvePriceForSaleItem({
-        query: conn.query.bind(conn),
-        productoId: item.id,
-        sucursalId: structure.branchId,
-      });
+      const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
       const effectivePrice = activePromo ? activePromo.precioPromocion : item.precio;
       const effectiveLineTotal = activePromo
         ? Number((effectivePrice * Number(item.qty || 0)).toFixed(2))

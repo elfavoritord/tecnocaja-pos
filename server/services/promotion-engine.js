@@ -77,17 +77,19 @@ function isBetterCandidate(candidate, current) {
 }
 
 // Trae TODAS las filas promoción×producto vigentes por fecha (sin filtrar por
-// hora todavía) para la sucursal indicada — una sola consulta, sin N+1.
-async function fetchDateActiveRows(query, { sucursalId = null } = {}) {
+// hora todavía) para la sucursal indicada y el tipo dado — una sola consulta,
+// sin N+1. `tipo` se parametriza (placeholder `?`) para reutilizar la misma
+// consulta tanto para 'oferta_precio' como para 'descuento_por_cantidad'.
+async function fetchDateActiveRows(query, { sucursalId = null, tipo = 'oferta_precio' } = {}) {
   const today = todayDateKey();
   return query(
     `SELECT p.id AS promotion_id, p.nombre, p.prioridad, p.color, p.texto_promocion,
             p.hora_inicio, p.hora_fin, p.permanente, p.created_at,
-            pp.producto_id, pp.precio_original, pp.precio_promocion
+            pp.producto_id, pp.precio_original, pp.precio_promocion, pp.cantidad_minima
      FROM promotions p
      JOIN promotion_products pp ON pp.promotion_id = p.id
      WHERE p.deshabilitada = 0
-       AND p.tipo = 'oferta_precio'
+       AND p.tipo = ?
        AND (p.sucursal_id IS NULL OR p.sucursal_id = ?)
        AND (
          p.permanente = 1
@@ -96,7 +98,7 @@ async function fetchDateActiveRows(query, { sucursalId = null } = {}) {
            AND (p.fecha_fin IS NULL OR p.fecha_fin >= ?)
          )
        )`,
-    [sucursalId || null, today, today],
+    [tipo, sucursalId || null, today, today],
   );
 }
 
@@ -109,7 +111,7 @@ async function resolveActivePromotions({ query, sucursalId = null, now = new Dat
   const configRows = await query('SELECT promotions_enabled FROM config WHERE id = 1 LIMIT 1').catch(() => []);
   if (configRows.length && Number(configRows[0].promotions_enabled) === 0) return {};
 
-  const rows = await fetchDateActiveRows(query, { sucursalId });
+  const rows = await fetchDateActiveRows(query, { sucursalId, tipo: 'oferta_precio' });
   const byProduct = {};
 
   for (const row of rows) {
@@ -135,20 +137,79 @@ async function resolveActivePromotions({ query, sucursalId = null, now = new Dat
   return byProduct;
 }
 
+// Resuelve el mapa { producto_id: reglaInfo } de reglas "descuento_por_cantidad"
+// vigentes AHORA MISMO — mismo criterio de fecha/hora/prioridad/config que
+// resolveActivePromotions, pero para el tipo condicionado a cantidad mínima.
+// El precio solo se activa si la cantidad en el carrito llega a `cantidadMinima`
+// (eso lo decide pickWinningPromotion, no esta función).
+async function resolveActiveQuantityRules({ query, sucursalId = null, now = new Date() }) {
+  const configRows = await query('SELECT promotions_enabled FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+  if (configRows.length && Number(configRows[0].promotions_enabled) === 0) return {};
+
+  const rows = await fetchDateActiveRows(query, { sucursalId, tipo: 'descuento_por_cantidad' });
+  const byProduct = {};
+
+  for (const row of rows) {
+    if (!isWithinTimeWindow(row, now)) continue;
+    const candidate = {
+      promotionId: Number(row.promotion_id),
+      nombre: row.nombre,
+      precioOriginal: Number(row.precio_original),
+      precioPromocion: Number(row.precio_promocion),
+      ahorro: Number((Number(row.precio_original) - Number(row.precio_promocion)).toFixed(2)),
+      cantidadMinima: Number(row.cantidad_minima),
+      texto: row.texto_promocion || '',
+      color: row.color || '',
+      prioridad: Number(row.prioridad || 0),
+      createdAt: row.created_at,
+    };
+    const productoId = Number(row.producto_id);
+    const current = byProduct[productoId];
+    if (!current || isBetterCandidate(candidate, current)) {
+      byProduct[productoId] = candidate;
+    }
+  }
+
+  return byProduct;
+}
+
+// Decide qué promoción aplica a una línea del carrito, dado cuántas unidades
+// tiene esa línea. Sin I/O — pensada para llamarse dentro de un loop de items
+// sin golpear la BD por cada uno (los mapas ya se resolvieron una sola vez
+// antes del loop). Si el umbral de cantidad se cumple, compite con la oferta
+// plana por el criterio ya usado para desempatar entre promociones del mismo
+// tipo (mayor prioridad → mayor ahorro → más reciente) — así un descuento por
+// cantidad nunca deja al cliente pagando más de lo que pagaría con una oferta
+// de precio ya activa.
+function pickWinningPromotion({ ofertaMap, quantityMap, productoId, qty }) {
+  const oferta = ofertaMap?.[Number(productoId)] || null;
+  const cantidad = quantityMap?.[Number(productoId)] || null;
+  const qtyQualifies = Boolean(cantidad) && Number(qty) >= Number(cantidad.cantidadMinima);
+  if (qtyQualifies && oferta) return isBetterCandidate(cantidad, oferta) ? cantidad : oferta;
+  if (qtyQualifies) return cantidad;
+  return oferta;
+}
+
 // Usado en el momento de guardar la venta: NUNCA confiar en el precio que
 // manda el cliente para un producto en promoción — se vuelve a resolver la
-// promoción activa server-side y esa es la fuente de verdad.
-async function resolvePriceForSaleItem({ query, productoId, sucursalId = null, now = new Date() }) {
-  const activeMap = await resolveActivePromotions({ query, sucursalId, now });
-  const promo = activeMap[Number(productoId)];
-  if (!promo) return null;
-  return promo;
+// promoción activa server-side y esa es la fuente de verdad. Wrapper de
+// conveniencia para un solo ítem; los checkouts reales (server.js, offline
+// sync-pending) resuelven ambos mapas una vez fuera del loop y llaman a
+// pickWinningPromotion directamente para no golpear la BD por cada línea.
+async function resolvePriceForSaleItem({ query, productoId, sucursalId = null, qty = 1, now = new Date() }) {
+  const [ofertaMap, quantityMap] = await Promise.all([
+    resolveActivePromotions({ query, sucursalId, now }),
+    resolveActiveQuantityRules({ query, sucursalId, now }),
+  ]);
+  return pickWinningPromotion({ ofertaMap, quantityMap, productoId, qty });
 }
 
 module.exports = {
   computePromotionStatus,
   isWithinTimeWindow,
   resolveActivePromotions,
+  resolveActiveQuantityRules,
+  pickWinningPromotion,
   resolvePriceForSaleItem,
   todayDateKey,
   nowTimeKey,

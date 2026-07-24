@@ -17,7 +17,7 @@ const express = require('express');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
-const { resolveActivePromotions, resolvePriceForSaleItem } = require('../services/promotion-engine');
+const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('../services/promotion-engine');
 
 /**
  * @param {object} deps - Dependencias inyectadas desde server.js
@@ -131,7 +131,21 @@ module.exports = function createOfflineRouter(deps) {
           color: row.color || '',
         };
       }
-      res.json({ activeMap });
+      const quantityRows = await localQuery('SELECT * FROM offline_cache_quantity_promotions');
+      const quantityMap = {};
+      for (const row of (quantityRows || [])) {
+        quantityMap[row.product_id] = {
+          promotionId: row.promotion_id,
+          nombre: row.nombre,
+          precioOriginal: Number(row.precio_original),
+          precioPromocion: Number(row.precio_promocion),
+          ahorro: Number((Number(row.precio_original) - Number(row.precio_promocion)).toFixed(2)),
+          cantidadMinima: Number(row.cantidad_minima),
+          texto: row.texto_promocion || '',
+          color: row.color || '',
+        };
+      }
+      res.json({ activeMap, quantityMap });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -204,6 +218,29 @@ module.exports = function createOfflineRouter(deps) {
         promotionsCached++;
       }
       await pruneStaleCache('offline_cache_promotions', 'product_id', activePromotionsRows, 'producto_id');
+
+      // 1b. Reglas de Descuento por Cantidad activas (mismo patrón que 1a)
+      let quantityPromotionsCached = 0;
+      const activeQuantityRulesMap = await resolveActiveQuantityRules({ query, sucursalId: branchId });
+      const activeQuantityRulesRows = Object.entries(activeQuantityRulesMap).map(([productoId, promo]) => ({
+        producto_id: Number(productoId),
+        ...promo,
+      }));
+      for (const row of activeQuantityRulesRows) {
+        await localQuery(
+          `INSERT INTO offline_cache_quantity_promotions
+             (product_id, promotion_id, nombre, precio_promocion, precio_original, cantidad_minima, texto_promocion, color, last_updated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+           ON CONFLICT(product_id) DO UPDATE SET
+             promotion_id=excluded.promotion_id, nombre=excluded.nombre,
+             precio_promocion=excluded.precio_promocion, precio_original=excluded.precio_original,
+             cantidad_minima=excluded.cantidad_minima,
+             texto_promocion=excluded.texto_promocion, color=excluded.color, last_updated=excluded.last_updated`,
+          [row.producto_id, row.promotionId, row.nombre, row.precioPromocion, row.precioOriginal, row.cantidadMinima, row.texto || null, row.color || null]
+        );
+        quantityPromotionsCached++;
+      }
+      await pruneStaleCache('offline_cache_quantity_promotions', 'product_id', activeQuantityRulesRows, 'producto_id');
 
       // 1b. Inventario por sucursal — solo la sucursal de esta terminal (una
       // terminal física vende para una sola sucursal, no necesita ver otras).
@@ -435,6 +472,7 @@ module.exports = function createOfflineRouter(deps) {
         inventoryCached,
         auditCached,
         promotionsCached,
+        quantityPromotionsCached,
         cachedAt: new Date().toISOString()
       });
     } catch (err) {
@@ -1568,6 +1606,13 @@ module.exports = function createOfflineRouter(deps) {
       const productIds = [];
       const itemsForReportSync = [];
       let ahorroPromociones = 0;
+      // Resuelto UNA vez para toda la venta — mismo motivo que en POST /api/sales
+      // de server.js: pickWinningPromotion es puro/sin I/O, evita una consulta
+      // por cada línea de la venta offline que se está sincronizando.
+      const [ofertaMap, quantityMap] = await Promise.all([
+        resolveActivePromotions({ query: conn.query.bind(conn), sucursalId: branchId }),
+        resolveActiveQuantityRules({ query: conn.query.bind(conn), sucursalId: branchId }),
+      ]);
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         const productId = Number(item.id || item.producto_id || 0);
@@ -1583,7 +1628,7 @@ module.exports = function createOfflineRouter(deps) {
           // estuvo sin conexión) — al sincronizar, con conexión real a la BD
           // principal, se vuelve a resolver la promoción activa y esa es la que
           // se guarda de verdad.
-          const activePromo = await resolvePriceForSaleItem({ query: conn.query, productoId: productId, sucursalId: branchId }).catch(() => null);
+          const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
           const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;
           const effectiveLineTotal = activePromo ? Number((effectiveUnitPrice * qty).toFixed(2)) : lineTotal;
           if (activePromo) ahorroPromociones += activePromo.ahorro * qty;

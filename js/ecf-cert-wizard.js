@@ -2035,6 +2035,13 @@ const ECF_CERT_WIZARD = (() => {
     }
     setBtnState('ecf-wz-step4-regen-btn', true, 'Regenerando…');
     setBtnState('ecf-wz-step4-regen-main-btn', true, 'Regenerando…');
+    // Igual que runStep4(): si el paso 4 se había reiniciado a mano, esa bandera
+    // bloquea _completeStep4IfAccepted() para siempre (nunca se limpiaba aquí),
+    // así que aunque el lote nuevo quedara 100% aceptado el wizard nunca
+    // avanzaba solo a Paso 5.
+    if ((WZ.state?.manualResetSteps || []).includes(4)) {
+      await saveState({ manualResetSteps: (WZ.state.manualResetSteps || []).filter((id) => id !== 4) });
+    }
     try {
       logLine('Borrando documentos anteriores y asignando nuevos eNCFs desde la secuencia…');
       const result = await fiscalApi('POST', '/certification-center/simulate/generate');
@@ -2080,6 +2087,11 @@ const ECF_CERT_WIZARD = (() => {
   async function _resetAndRetry4() {
     setBtnState('ecf-wz-step4-rotate-btn', true, 'Reseteando…');
     function logLine(msg, type='info') { appendLog('ecf-wz-step4-log', msg, type); }
+    // Mismo fix que _regenerateWithNewEncfs(): limpiar la bandera de reinicio
+    // manual para que el paso pueda auto-completarse si el reintento funciona.
+    if ((WZ.state?.manualResetSteps || []).includes(4)) {
+      await saveState({ manualResetSteps: (WZ.state.manualResetSteps || []).filter((id) => id !== 4) });
+    }
 
     try {
       logLine('Reseteando documentos enviados/rechazados a estado pendiente…');

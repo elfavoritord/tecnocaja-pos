@@ -4,6 +4,13 @@ const crypto = require('crypto');
 const { normalizeEnvironmentKey } = require('../config/ecf.config');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { getDbClient } = require('../../../db');
+const { buildQrVerificationUrl } = require('../utils/qr-url.util');
+
+// Solo se calcula el QR real cuando DGII ya confirmó el documento — un QR
+// generado con un estado "enviado"/pendiente puede apuntar a un e-CF que
+// DGII todavía no indexó en su servicio público de verificación, o que
+// termine rechazado (ver requerimiento "QR generado antes de la aceptación").
+const QR_ELIGIBLE_STATES = new Set(['aceptado', 'aceptado_condicional']);
 
 // SQLite serializa escritores con BEGIN IMMEDIATE (ver db.js withTransaction),
 // así que no soporta ni necesita FOR UPDATE. MySQL sí lo necesita: sin esto,
@@ -1286,10 +1293,27 @@ class EcfRepository {
   }
 
   async attachSaleSummary(saleId, payload) {
+    let qrData = null;
+    if (payload.documentId && QR_ELIGIBLE_STATES.has(String(payload.estado || '').toLowerCase())) {
+      try {
+        const docRows = await this.query(
+          'SELECT signed_xml_content, environment FROM ecf_documents WHERE id = ? LIMIT 1',
+          [payload.documentId]
+        );
+        const signedXml = docRows[0]?.signed_xml_content;
+        if (signedXml) {
+          qrData = buildQrVerificationUrl(signedXml, docRows[0].environment) || null;
+        }
+      } catch (err) {
+        console.warn('[ECF] No se pudo calcular qr_data en attachSaleSummary:', err.message);
+      }
+    }
+
     await this.query(
       `UPDATE sales
        SET encf = ?, tipo_ecf = ?, ecf_document_id = ?, ecf_estado = ?, ecf_track_id = ?, ecf_error = ?, ecf_xml_generado_at = COALESCE(ecf_xml_generado_at, CURRENT_TIMESTAMP),
-           ecf_enviado_at = CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE ecf_enviado_at END
+           ecf_enviado_at = CASE WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP ELSE ecf_enviado_at END,
+           qr_data = COALESCE(?, qr_data)
        WHERE id = ?`,
       [
         payload.encf || null,
@@ -1299,6 +1323,7 @@ class EcfRepository {
         payload.trackId || null,
         payload.error || null,
         payload.trackId || null,
+        qrData,
         saleId,
       ]
     ).catch(() => {});

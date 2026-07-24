@@ -1,0 +1,14 @@
+# Copiar este archivo a "key.properties" (sin .example) en esta misma carpeta (android/)
+# y completar con los datos reales del keystore de release. NUNCA subir key.properties
+# ni el archivo .jks a git -- ya estan en android/.gitignore.
+#
+# Como generar el keystore (una sola vez, guardarlo en un lugar seguro con backup):
+#   keytool -genkey -v -keystore upload-keystore.jks -keyalg RSA -keysize 2048 \
+#     -validity 10000 -alias upload
+#
+# Ver docs/BUILD_RELEASE.md para el flujo completo de firma y publicacion.
+
+storePassword=CAMBIA_ESTA_CLAVE
+keyPassword=CAMBIA_ESTA_CLAVE
+keyAlias=upload
+storeFile=../upload-keystore.jks
