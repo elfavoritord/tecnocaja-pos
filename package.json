@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -92,6 +92,7 @@
   "build": {
     "appId": "com.emilio.possystem",
     "productName": "Tecno Caja",
+    "executableName": "Tecno Caja",
     "copyright": "Copyright 2026 Emilio. Todos los derechos reservados.",
     "directories": {
       "output": "dist",
@@ -141,7 +142,7 @@
     "extraMetadata": {
       "main": "electron/main.js"
     },
-    "asar": false,
+    "asar": true,
     "win": {
       "icon": "build/icon.ico",
       "target": [
@@ -152,7 +153,7 @@
           ]
         }
       ],
-      "requestedExecutionLevel": "requireAdministrator",
+      "requestedExecutionLevel": "asInvoker",
       "artifactName": "TecnoCaja-Setup-${version}.exe",
       "fileAssociations": [],
       "verifyUpdateCodeSignature": false

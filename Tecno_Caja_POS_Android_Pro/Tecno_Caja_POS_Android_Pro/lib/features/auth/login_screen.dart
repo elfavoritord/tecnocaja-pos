@@ -60,7 +60,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   }
 
   void _mostrarError(String mensaje) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensaje)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(mensaje)));
   }
 
   @override
@@ -79,7 +80,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   children: [
                     const AppLogo(size: 88),
                     const SizedBox(height: 16),
-                    Text('Tecno Caja POS', style: Theme.of(context).textTheme.headlineMedium),
+                    Text('Tecno Caja POS',
+                        style: Theme.of(context).textTheme.headlineMedium),
                     const SizedBox(height: 4),
                     Text(
                       'La tecnología que impulsa tus ventas',
@@ -90,7 +92,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       controller: _correoCtrl,
                       keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Correo electrónico'),
+                      decoration: const InputDecoration(
+                          labelText: 'Correo electrónico'),
                       validator: Validators.email,
                     ),
                     const SizedBox(height: 14),
@@ -102,11 +105,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       decoration: InputDecoration(
                         labelText: 'Contraseña',
                         suffixIcon: IconButton(
-                          icon: Icon(_ocultarContrasena ? Icons.visibility_off : Icons.visibility),
-                          onPressed: () => setState(() => _ocultarContrasena = !_ocultarContrasena),
+                          icon: Icon(_ocultarContrasena
+                              ? Icons.visibility_off
+                              : Icons.visibility),
+                          onPressed: () => setState(
+                              () => _ocultarContrasena = !_ocultarContrasena),
                         ),
                       ),
-                      validator: (v) => Validators.required(v, label: 'La contraseña'),
+                      validator: (v) =>
+                          Validators.required(v, label: 'La contraseña'),
                     ),
                     Align(
                       alignment: Alignment.centerRight,
@@ -116,7 +123,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
                     ),
                     const SizedBox(height: 8),
-                    LoadingButton(label: 'Iniciar sesión', isLoading: _cargando, onPressed: _iniciarSesion),
+                    LoadingButton(
+                        label: 'Iniciar sesión sin POS',
+                        isLoading: _cargando,
+                        onPressed: _iniciarSesion),
                     const SizedBox(height: 12),
                     LoadingButton(
                       label: 'Continuar con Google',
@@ -128,16 +138,19 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     const SizedBox(height: 8),
                     TextButton.icon(
                       icon: const Icon(Icons.point_of_sale_outlined, size: 18),
-                      label: const Text('Entrar con un usuario del POS'),
+                      label: const Text('Usar credenciales locales de Windows'),
                       onPressed: () => Navigator.of(context).push<void>(
-                        MaterialPageRoute(builder: (_) => const PosLocalLoginScreen()),
+                        MaterialPageRoute(
+                            builder: (_) => const PosLocalLoginScreen()),
                       ),
                     ),
                     const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text('¿No tienes cuenta?', style: Theme.of(context).textTheme.bodyMedium),
+                        Text('¿No tienes cuenta?',
+                            style: Theme.of(context).textTheme.bodyMedium),
                         TextButton(
                           onPressed: () => context.push('/registro'),
                           child: const Text('Crear una cuenta'),
@@ -145,12 +158,17 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ],
                     ),
                     const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Icon(Icons.cloud_off, size: 18, color: Theme.of(context).textTheme.bodySmall?.color),
+                        Icon(Icons.cloud_off,
+                            size: 18,
+                            color:
+                                Theme.of(context).textTheme.bodySmall?.color),
                         const SizedBox(width: 8),
-                        Text('También funciona sin conexión', style: Theme.of(context).textTheme.bodySmall),
+                        Text('También funciona sin conexión',
+                            style: Theme.of(context).textTheme.bodySmall),
                       ],
                     ),
                   ],

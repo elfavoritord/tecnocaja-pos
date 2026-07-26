@@ -1003,6 +1003,20 @@ function getSalesSearchInput() {
   return document.getElementById('product-search');
 }
 
+let salesPhysicalKeyboardUntil = 0;
+
+function isTouchCapableSalesDevice() {
+  return Number(navigator.maxTouchPoints || 0) > 0
+    || window.matchMedia?.('(pointer: coarse)')?.matches === true;
+}
+
+// En un POS táctil nunca abrir el teclado de Windows por un focus()
+// programático. Si el usuario toca directamente un input, el navegador lo
+// enfoca normalmente. Un teclado físico o lector de código sigue funcionando.
+document.addEventListener('keydown', () => {
+  salesPhysicalKeyboardUntil = Date.now() + 1500;
+}, true);
+
 function isVentasModuleActive() {
   const module = document.getElementById('module-ventas');
   return Boolean(module && module.classList.contains('active') && !module.classList.contains('hidden'));
@@ -1034,6 +1048,13 @@ function canAutoFocusSalesSearch(options = {}) {
   const searchInput = getSalesSearchInput();
   if (!searchInput || !isVentasModuleActive() || isSalesOverlayOpen()) return false;
   if (searchInput.disabled || searchInput.readOnly) return false;
+  if (
+    isTouchCapableSalesDevice()
+    && !options.allowTouch
+    && Date.now() > salesPhysicalKeyboardUntil
+  ) {
+    return false;
+  }
   if (options.force) return true;
   const activeElement = document.activeElement;
   if (activeElement && activeElement !== searchInput && isEditableSalesTarget(activeElement)) {
@@ -1101,7 +1122,7 @@ function shouldRouteKeyToSalesSearch(event) {
 }
 
 function routeKeyToSalesSearch(event) {
-  const searchInput = focusSalesSearchInput({ force: true });
+  const searchInput = focusSalesSearchInput({ force: true, allowTouch: true });
   if (!searchInput) return;
   event.preventDefault();
   const rawStart = typeof searchInput.selectionStart === 'number' ? searchInput.selectionStart : searchInput.value.length;
@@ -4565,6 +4586,10 @@ function _syncBillingV3DiscountBtn() {
 }
 
 function openBillingModal() {
+  // El cajero suele tardar unos segundos escogiendo método de pago; usar ese
+  // tiempo para dejar lista la impresora y el logo elimina la preparación
+  // posterior al botón Facturar.
+  warmReceiptPrintPipeline().catch(() => {});
   if (!(DB.config?.cajaAbierta || DB.caja?.abierta || cajaAbierta)) {
     _showCajaRequiredModal();
     return;
@@ -6018,7 +6043,7 @@ async function waitForReceiptCaptureAssets(element) {
 }
 
 async function generateReceiptHtmlImageDataUrl(venta) {
-  if (typeof window._loadPdfLibs === 'function') await window._loadPdfLibs();
+  await window.VendorLoader.load('html2canvas');
   if (typeof window.html2canvas !== 'function') {
     throw new Error('html2canvas no está disponible para capturar el comprobante.');
   }
@@ -6066,6 +6091,7 @@ async function generateReceiptHtmlImageDataUrl(venta) {
 }
 
 async function generateRenderedReceiptImageDataUrl() {
+  await window.VendorLoader.load('html2canvas');
   if (typeof window.html2canvas !== 'function') {
     throw new Error('html2canvas no está disponible para capturar el comprobante.');
   }
@@ -6915,12 +6941,32 @@ async function finalizePendingSale(action = 'charge') {
       salePayload.pendienteCobro = true;
     }
 
+    // Preparar impresora y logo mientras el servidor guarda la venta. Así,
+    // al recibir el número de factura solo queda enviar los bytes.
+    if (action === 'print') {
+      warmReceiptPrintPipeline().catch(() => {});
+    }
     const response = await api.createSale(salePayload);
     const savedVenta = {
       ...response.sale,
       clienteTelefono: response.sale?.clienteTelefono || salePayload?.clienteTelefono || ''
     };
     DB.config = { ...DB.config, ...(response.config || {}) };
+
+    // Enviar el trabajo a la impresora en cuanto el servidor confirma la
+    // venta. Antes se esperaba a refrescar productos, inventario, reportes,
+    // auditoría y notificaciones; en equipos modestos eso agregaba varios
+    // segundos aunque la impresora estuviera lista. La impresión continúa en
+    // paralelo y nunca bloquea al cajero ni el cierre visual de la venta.
+    let receiptPrintStarted = false;
+    if (action === 'print') {
+      receiptPrintStarted = true;
+      printReceipt(savedVenta).catch((err) => {
+        console.warn('[venta] Error imprimiendo recibo:', err);
+        showToast('No se pudo imprimir el recibo. Revisa la impresora.', 'error');
+      });
+    }
+
     if (response.updatedClient?.id) {
       const clientIndex = DB.clientes.findIndex((client) => client.id === response.updatedClient.id);
       if (clientIndex >= 0) {
@@ -6973,7 +7019,16 @@ async function finalizePendingSale(action = 'charge') {
       return;
     }
 
-    showReceipt(savedVenta, { pending: false });
+    if (action === 'print') {
+      // En impresión directa no detener al cajero en el modal mientras el
+      // spooler de Windows tarda uno o dos segundos en mover el papel.
+      // Conservamos el comprobante actual para el botón Reimprimir.
+      currentReceiptSale = savedVenta;
+      currentReceiptOptions = { pending: false };
+      closeReceipt();
+    } else {
+      showReceipt(savedVenta, { pending: false });
+    }
 
     // Pedido facturado por completo: si venía de una cotización del bot de
     // WhatsApp (con teléfono del cliente), enviarle la factura ya lista.
@@ -7000,7 +7055,7 @@ async function finalizePendingSale(action = 'charge') {
     // ── Guardar PDF automáticamente en disco (no bloquea el flujo) ──
     _tryAutoSaveInvoicePdf(savedVenta);
 
-    if (action === 'print') {
+    if (action === 'print' && !receiptPrintStarted) {
       // Fire-and-forget: la impresión corre en background para que el cajero
       // pueda seguir con la próxima venta sin esperar a la impresora.
       // printReceipt ya maneja errores internamente con toasts.
@@ -7131,6 +7186,7 @@ function getReceiptWhatsAppPhone(venta) {
 }
 
 async function buildReceiptPdfForWhatsApp(venta) {
+  await window.VendorLoader.load('jspdf');
   const jsPdfApi = window.jspdf?.jsPDF;
   if (!jsPdfApi) {
     throw new Error('La librería PDF no está disponible para WhatsApp.');
@@ -7437,8 +7493,22 @@ function shouldUseReceiptMirrorPrint() {
   return false;
 }
 
+const receiptLogoMonoCache = new Map();
+
 async function convertLogoToEscposMonochrome(logoDataUrl, maxWidthPx) {
   if (!logoDataUrl || !maxWidthPx) return null;
+  const cacheKey = `${maxWidthPx}:${logoDataUrl}`;
+  if (receiptLogoMonoCache.has(cacheKey)) {
+    return receiptLogoMonoCache.get(cacheKey);
+  }
+  const conversion = convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx);
+  receiptLogoMonoCache.set(cacheKey, conversion);
+  const result = await conversion;
+  receiptLogoMonoCache.set(cacheKey, Promise.resolve(result));
+  return result;
+}
+
+async function convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx) {
   try {
     return await new Promise((resolve) => {
       const img = new Image();
@@ -7479,6 +7549,21 @@ async function convertLogoToEscposMonochrome(logoDataUrl, maxWidthPx) {
       img.src = logoDataUrl;
     });
   } catch (_e) { return null; }
+}
+
+async function warmReceiptPrintPipeline() {
+  const paperSize = String(getReceiptConfigValue('receiptPaperSize') || '80mm').toLowerCase();
+  const configuredPrinterName = String(getReceiptConfigValue('receiptPrinterName') || '').trim();
+  const logoDataUrl = getReceiptConfigValue('logo') || '';
+  const maxLogoPx = paperSize === '58mm' ? 280 : 400;
+  await Promise.all([
+    configuredPrinterName
+      ? Promise.resolve(configuredPrinterName)
+      : resolveReceiptPrinterName(''),
+    logoDataUrl
+      ? convertLogoToEscposMonochrome(logoDataUrl, maxLogoPx)
+      : Promise.resolve(null),
+  ]);
 }
 
 async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptConfigValue('receiptPaperSize') || '80mm').toLowerCase()) {

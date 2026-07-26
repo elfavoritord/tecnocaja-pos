@@ -1,8 +1,6 @@
 'use strict';
 const express = require('express');
 const crypto  = require('crypto');
-const { google } = require('googleapis');
-const bot     = require('../integrations/whatsapp-bot');
 
 const router = express.Router();
 
@@ -14,6 +12,7 @@ let _pendingState    = null;
 let _googleTokens    = null; // { access_token, refresh_token, expiry_date }
 
 function getOAuth2() {
+  const { google } = require('googleapis');
   return new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
@@ -48,7 +47,7 @@ router.get('/google-callback', async (req, res) => {
     _googleTokens = tokens;
     _pendingState = null;
     // setGoogleTokens persiste en BD si hay _db disponible (se conecta tras el primer start)
-    await bot.setGoogleTokens(tokens);
+    await req.app.locals.ensureWaBot().setGoogleTokens(tokens);
     // También guardar directamente desde la ruta por si el bot no arrancó aún
     try {
       const db = req.app.locals.queryFn;
@@ -75,7 +74,7 @@ router.get('/google-status', (req, res) => {
 // POST /api/wa-bot/google-disconnect
 router.post('/google-disconnect', async (req, res) => {
   _googleTokens = null;
-  await bot.setGoogleTokens(null);
+  await req.app.locals.ensureWaBot().setGoogleTokens(null);
   try {
     const db = req.app.locals.queryFn;
     await db(`DELETE FROM offline_cache_config WHERE config_key='wabot_google_tokens'`);
@@ -145,7 +144,7 @@ router.post('/instructions', async (req, res) => {
     const { instructions } = req.body;
     const db = req.app.locals.queryFn;
     await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_instructions',?) ON DUPLICATE KEY UPDATE config_value=?`, [instructions, instructions]);
-    bot.setInstructions(instructions);
+    req.app.locals.ensureWaBot().setInstructions(instructions);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -164,7 +163,7 @@ router.post('/customer-instructions', async (req, res) => {
     const { instructions } = req.body;
     const db = req.app.locals.queryFn;
     await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_customer_instructions',?) ON DUPLICATE KEY UPDATE config_value=?`, [instructions, instructions]);
-    bot.setCustomerInstructions(instructions);
+    req.app.locals.ensureWaBot().setCustomerInstructions(instructions);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -183,7 +182,7 @@ router.post('/customer-ai-toggle', async (req, res) => {
     const value = enabled ? '1' : '0';
     const db = req.app.locals.queryFn;
     await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_customer_ai_enabled',?) ON DUPLICATE KEY UPDATE config_value=?`, [value, value]);
-    bot.setCustomerAiEnabled(!!enabled);
+    req.app.locals.ensureWaBot().setCustomerAiEnabled(!!enabled);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -202,13 +201,13 @@ router.post('/business-hours', async (req, res) => {
     const { businessHours } = req.body;
     const db = req.app.locals.queryFn;
     await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_business_hours',?) ON DUPLICATE KEY UPDATE config_value=?`, [businessHours, businessHours]);
-    bot.setBusinessHours(businessHours);
+    req.app.locals.ensureWaBot().setBusinessHours(businessHours);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── Bot ───────────────────────────────────────────────────────────────────────
-router.get('/status', (req, res) => res.json(bot.getSafeState()));
+router.get('/status', (req, res) => res.json(req.app.locals.ensureWaBot().getSafeState()));
 
 router.post('/start', async (req, res) => {
   try {
@@ -225,7 +224,7 @@ router.post('/start', async (req, res) => {
     }
 
     // Fire-and-forget — Chrome arranca en background; estado llega vía Socket.IO
-    bot.start({ db, io, ownerPhone, ownerPhone2: ownerPhone2 || null, provider, apiKey })
+    req.app.locals.ensureWaBot().start({ db, io, ownerPhone, ownerPhone2: ownerPhone2 || null, provider, apiKey })
       .catch(e => console.error('[wa-bot route] start error:', e.message));
 
     // Guardar config para auto-arranque
@@ -256,7 +255,7 @@ router.post('/send-receipt', async (req, res) => {
     });
     if (!phone) return res.status(400).json({ error: 'phone requerido' });
     if (!imageDataUrl) return res.status(400).json({ error: 'imageDataUrl requerido' });
-    const result = await bot.sendReceiptImage(phone, imageDataUrl, caption || '');
+    const result = await req.app.locals.ensureWaBot().sendReceiptImage(phone, imageDataUrl, caption || '');
     console.log('[wa-bot route] send-receipt: resultado', result);
     if (!result.ok) return res.status(400).json(result);
     res.json(result);
@@ -268,7 +267,7 @@ router.post('/send-receipt', async (req, res) => {
 
 router.post('/stop', async (req, res) => {
   try {
-    await bot.stop();
+    await req.app.locals.ensureWaBot().stop();
     // Limpiar auto-arranque cuando el usuario detiene manualmente
     try {
       const db = req.app.locals.queryFn;

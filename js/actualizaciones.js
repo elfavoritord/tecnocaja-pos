@@ -22,7 +22,7 @@
     unsub      : null,       // función para desuscribirse de eventos IPC
     preferences: {
       autoCheck         : true,
-      autoDownload      : false,
+      autoDownload      : true,
       autoCritical      : true,
       backupBeforeUpdate: true,
       showBeta          : false,
@@ -92,6 +92,12 @@
           UPD.latestInfo = data;
           _setStatus('available');
           _showUpdateCard(data);
+          // En Electron la descarga diferencial ya comienza en segundo plano.
+          // Reflejarlo inmediatamente evita pedir un clic que no es necesario.
+          if (UPD.isPackaged && UPD.preferences.autoDownload) {
+            _setStatus('downloading');
+            _showProgress();
+          }
           break;
 
         case 'not-available':
@@ -231,7 +237,6 @@
         if (!backupRes.ok || backupData?.ok === false) {
           throw new Error(backupData?.error || 'No se pudo crear el respaldo completo.');
         }
-        await _sleep(1500);
       } catch (err) {
         _setStatus('error');
         _setStepState('us-backup', 'error');
@@ -242,15 +247,12 @@
       _setStepState('us-backup', 'done');
 
       _setStepState('us-update', 'active');
-      await _sleep(800);
       _setStepState('us-update', 'done');
 
       _setStepState('us-verify', 'active');
-      await _sleep(600);
       _setStepState('us-verify', 'done');
 
       _setStepState('us-restart', 'active');
-      await _sleep(500);
       // Instala y reinicia — la app se cierra aquí
       const installResult = await window.novaDesktop.updaterInstall({ backupAlreadyDone: true });
       if (installResult?.ok === false) {

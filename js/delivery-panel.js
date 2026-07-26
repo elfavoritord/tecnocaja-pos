@@ -16,7 +16,7 @@ function initDeliveryPanel() {
   _setTabActive('activos');
 
   if (!_dpMap) {
-    _dpInitMap();
+    _dpInitMap().then(() => _dpRenderRepartidoresLocales()).catch(() => {});
   } else {
     setTimeout(() => _dpMap.invalidateSize(), 200);
   }
@@ -264,9 +264,16 @@ function dpCloseModal() {
 
 // ── Map ───────────────────────────────────────────────────────────────────────
 
-function _dpInitMap() {
+async function _dpInitMap() {
   const el = document.getElementById('dp-map');
-  if (!el || !window.L) return;
+  if (!el) return;
+  try {
+    await window.VendorLoader.load('leaflet');
+  } catch (error) {
+    console.warn('[delivery] Mapa no disponible:', error.message);
+    return;
+  }
+  if (_dpMap || !window.L) return;
   _dpMap = window.L.map('dp-map').setView([18.735, -70.163], 12);
   window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '© OpenStreetMap',

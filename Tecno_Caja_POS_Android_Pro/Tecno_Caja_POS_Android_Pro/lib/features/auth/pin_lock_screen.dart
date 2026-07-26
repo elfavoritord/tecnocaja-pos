@@ -46,7 +46,9 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
       _error = null;
     });
     try {
-      await ref.read(authControllerProvider.notifier).desbloquearConPin(_pinCtrl.text);
+      await ref
+          .read(authControllerProvider.notifier)
+          .desbloquearConPin(_pinCtrl.text);
     } on AppException catch (e) {
       setState(() => _error = e.message);
       _pinCtrl.clear();
@@ -71,10 +73,12 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                 children: [
                   const AppLogo(size: 72),
                   const SizedBox(height: 16),
-                  Text('Sesión bloqueada', style: Theme.of(context).textTheme.titleLarge),
+                  Text('Sesión bloqueada',
+                      style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: 4),
                   if (usuario != null)
-                    Text(usuario.nombreCompleto, style: Theme.of(context).textTheme.bodyMedium),
+                    Text(usuario.nombreCompleto,
+                        style: Theme.of(context).textTheme.bodyMedium),
                   const SizedBox(height: 24),
                   TextField(
                     controller: _pinCtrl,
@@ -92,7 +96,10 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                     onSubmitted: (_) => _desbloquear(),
                   ),
                   const SizedBox(height: 12),
-                  LoadingButton(label: 'Desbloquear', isLoading: _cargando, onPressed: _desbloquear),
+                  LoadingButton(
+                      label: 'Desbloquear',
+                      isLoading: _cargando,
+                      onPressed: _desbloquear),
                   const SizedBox(height: 12),
                   TextButton.icon(
                     onPressed: _intentarBiometria,
@@ -100,7 +107,20 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                     label: const Text('Usar huella / rostro'),
                   ),
                   TextButton(
-                    onPressed: () => ref.read(authControllerProvider.notifier).cerrarSesion(),
+                    onPressed: () async {
+                      final closed = await ref
+                          .read(authControllerProvider.notifier)
+                          .cerrarSesion();
+                      if (!closed && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Desbloquea la aplicación y cierra la caja antes de cerrar sesión.',
+                            ),
+                          ),
+                        );
+                      }
+                    },
                     child: const Text('Cerrar sesión'),
                   ),
                 ],

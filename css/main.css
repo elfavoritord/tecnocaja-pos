@@ -24,8 +24,8 @@
      compacto del buscador de ventas (46px fijo, es una fila de lista, no
      una tarjeta de producto — forzarlo al mismo tamaño rompería ese layout). */
   --product-image-size: 100px;
-  --font: 'Plus Jakarta Sans', sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font: 'Segoe UI Variable', 'Segoe UI', Arial, sans-serif;
+  --font-mono: Consolas, 'Courier New', monospace;
   --transition: all 0.18s ease;
   color-scheme: dark;
 }

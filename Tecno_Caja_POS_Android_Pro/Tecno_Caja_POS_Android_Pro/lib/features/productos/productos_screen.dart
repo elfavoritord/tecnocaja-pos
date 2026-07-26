@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/utils/formatters.dart';
+import '../../core/constants/permisos.dart';
 import '../../data/auth/auth_controller.dart';
+import '../../data/providers/contexto_operativo_provider.dart';
 import '../../data/repositories/producto_repository.dart';
 import '../../domain/entities/producto.dart';
 import 'producto_form_screen.dart';
@@ -36,19 +38,33 @@ class _ProductosScreenState extends ConsumerState<ProductosScreen> {
     if (empresaId == null) return;
     setState(() => _cargando = true);
     final repo = ref.read(productoRepositoryProvider);
-    final productos = termino.isEmpty ? await repo.deEmpresa(empresaId) : await repo.buscar(empresaId, termino);
-    if (mounted) setState(() { _productos = productos; _cargando = false; });
+    final productos = termino.isEmpty
+        ? await repo.deEmpresa(empresaId)
+        : await repo.buscar(empresaId, termino);
+    if (mounted) {
+      setState(() {
+        _productos = productos;
+        _cargando = false;
+      });
+    }
   }
 
   Future<void> _abrirFormulario([Producto? producto]) async {
     final guardado = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(builder: (context) => ProductoFormScreen(producto: producto)),
+      MaterialPageRoute(
+          builder: (context) => ProductoFormScreen(producto: producto)),
     );
-    if (guardado == true) await _cargar(_busquedaCtrl.text);
+    if (guardado == true) {
+      await _cargar(_busquedaCtrl.text);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final permisos =
+        ref.watch(permisosUsuarioActualProvider).valueOrNull ?? <Permiso>{};
+    final canCreate = permisos.contains(Permiso.crearProductos);
+    final canEdit = permisos.contains(Permiso.editarProductos);
     return Scaffold(
       appBar: AppBar(
         title: const Text('Productos'),
@@ -68,11 +84,13 @@ class _ProductosScreenState extends ConsumerState<ProductosScreen> {
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _abrirFormulario(),
-        icon: const Icon(Icons.add),
-        label: const Text('Producto'),
-      ),
+      floatingActionButton: canCreate
+          ? FloatingActionButton.extended(
+              onPressed: () => _abrirFormulario(),
+              icon: const Icon(Icons.add),
+              label: const Text('Producto'),
+            )
+          : null,
       body: _cargando
           ? const Center(child: CircularProgressIndicator())
           : _productos.isEmpty
@@ -83,18 +101,23 @@ class _ProductosScreenState extends ConsumerState<ProductosScreen> {
                     final producto = _productos[index];
                     return ListTile(
                       leading: CircleAvatar(
-                        child: Text(producto.nombre.isNotEmpty ? producto.nombre[0].toUpperCase() : '?'),
+                        child: Text(producto.nombre.isNotEmpty
+                            ? producto.nombre[0].toUpperCase()
+                            : '?'),
                       ),
                       title: Text(producto.nombre),
                       subtitle: Text([
-                        if (producto.sku != null && producto.sku!.isNotEmpty) 'SKU: ${producto.sku}',
-                        if (producto.codigoBarras != null && producto.codigoBarras!.isNotEmpty) producto.codigoBarras!,
+                        if (producto.sku != null && producto.sku!.isNotEmpty)
+                          'SKU: ${producto.sku}',
+                        if (producto.codigoBarras != null &&
+                            producto.codigoBarras!.isNotEmpty)
+                          producto.codigoBarras!,
                       ].join(' · ')),
                       trailing: Text(
                         Formatters.currency(producto.precioVenta),
                         style: Theme.of(context).textTheme.titleSmall,
                       ),
-                      onTap: () => _abrirFormulario(producto),
+                      onTap: canEdit ? () => _abrirFormulario(producto) : null,
                     );
                   },
                 ),

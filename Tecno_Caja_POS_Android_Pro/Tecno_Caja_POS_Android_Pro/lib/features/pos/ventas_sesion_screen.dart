@@ -6,7 +6,7 @@ import '../../core/errors/app_exception.dart';
 import '../../core/providers/service_providers.dart';
 import '../../core/utils/formatters.dart';
 import '../../data/auth/auth_controller.dart';
-import '../../data/printing/bluetooth_printer_service.dart';
+import '../../data/printing/unified_printer_service.dart';
 import '../../data/providers/contexto_operativo_provider.dart';
 import '../../data/repositories/empresa_repository.dart';
 import '../../data/repositories/producto_repository.dart';
@@ -15,15 +15,16 @@ import '../../domain/entities/sesion_caja.dart';
 import '../../domain/entities/venta.dart';
 import 'carrito_controller.dart';
 
-final ventasSuspendidasProvider = FutureProvider.family<List<Venta>, String>((ref, empresaId) {
+final ventasSuspendidasProvider =
+    FutureProvider.family<List<Venta>, String>((ref, empresaId) {
   return ref.watch(ventaRepositoryProvider).ventasSuspendidas(empresaId);
 });
 
-/// `deSesion` trae todo lo que paso por esta sesion de caja, incluidas las
-/// suspendidas -- se filtran aqui porque ya tienen su propia pestaña.
-final historialVentasSesionProvider = FutureProvider.family<List<Venta>, String>((ref, sesionCajaId) async {
-  final todas = await ref.watch(ventaRepositoryProvider).deSesion(sesionCajaId);
-  return todas.where((v) => v.estado != EstadoVenta.suspendida).toList();
+/// Historial permanente de facturas de la empresa. No depende del turno que
+/// esté abierto al entrar a esta pantalla.
+final historialVentasEmpresaProvider =
+    FutureProvider.family<List<Venta>, String>((ref, empresaId) async {
+  return ref.watch(ventaRepositoryProvider).deEmpresa(empresaId);
 });
 
 class VentasSesionScreen extends ConsumerStatefulWidget {
@@ -35,7 +36,8 @@ class VentasSesionScreen extends ConsumerStatefulWidget {
   ConsumerState<VentasSesionScreen> createState() => _VentasSesionScreenState();
 }
 
-class _VentasSesionScreenState extends ConsumerState<VentasSesionScreen> with SingleTickerProviderStateMixin {
+class _VentasSesionScreenState extends ConsumerState<VentasSesionScreen>
+    with SingleTickerProviderStateMixin {
   late final _tabController = TabController(length: 2, vsync: this);
 
   @override
@@ -49,8 +51,10 @@ class _VentasSesionScreenState extends ConsumerState<VentasSesionScreen> with Si
     final empresaId = ref.watch(authControllerProvider).empresaId;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Ventas del turno'),
-        bottom: TabBar(controller: _tabController, tabs: const [Tab(text: 'En espera'), Tab(text: 'Historial')]),
+        title: const Text('Ventas y facturas'),
+        bottom: TabBar(
+            controller: _tabController,
+            tabs: const [Tab(text: 'En espera'), Tab(text: 'Historial')]),
       ),
       body: empresaId == null
           ? const SizedBox.shrink()
@@ -58,7 +62,7 @@ class _VentasSesionScreenState extends ConsumerState<VentasSesionScreen> with Si
               controller: _tabController,
               children: [
                 _ListaSuspendidas(empresaId: empresaId),
-                _ListaHistorial(sesion: widget.sesion),
+                _ListaHistorial(empresaId: empresaId),
               ],
             ),
     );
@@ -104,7 +108,8 @@ class _ListaSuspendidas extends ConsumerWidget {
     );
   }
 
-  Future<void> _recuperar(BuildContext context, WidgetRef ref, Venta venta) async {
+  Future<void> _recuperar(
+      BuildContext context, WidgetRef ref, Venta venta) async {
     final items = await ref.read(ventaRepositoryProvider).itemsDe(venta.id);
     final productoRepo = ref.read(productoRepositoryProvider);
     final lineas = <LineaCarrito>[];
@@ -116,33 +121,43 @@ class _ListaSuspendidas extends ConsumerWidget {
         cantidad: item.cantidad,
         descuentoMonto: item.descuentoMonto,
         descuentoPorcentaje: item.descuentoPorcentaje,
-        precioOverride: item.precioUnitario == producto.precioVenta ? null : item.precioUnitario,
+        precioOverride: item.precioUnitario == producto.precioVenta
+            ? null
+            : item.precioUnitario,
         nota: item.nota,
       ));
     }
     if (lineas.isEmpty) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Los productos de esta venta ya no existen.')),
+          const SnackBar(
+              content: Text('Los productos de esta venta ya no existen.')),
         );
       }
       return;
     }
-    ref.read(carritoControllerProvider.notifier).cargarLineas(lineas, clienteId: venta.clienteId);
+    ref
+        .read(carritoControllerProvider.notifier)
+        .cargarLineas(lineas, clienteId: venta.clienteId);
     await ref.read(ventaRepositoryProvider).recuperar(venta);
     ref.invalidate(ventasSuspendidasProvider(venta.empresaId));
     if (context.mounted) Navigator.of(context).pop();
   }
 
-  Future<void> _descartar(BuildContext context, WidgetRef ref, Venta venta) async {
+  Future<void> _descartar(
+      BuildContext context, WidgetRef ref, Venta venta) async {
     final confirmado = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Descartar venta'),
         content: const Text('Esta venta en espera se eliminará. ¿Continuar?'),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Descartar')),
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancelar')),
+          FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Descartar')),
         ],
       ),
     );
@@ -153,18 +168,18 @@ class _ListaSuspendidas extends ConsumerWidget {
 }
 
 class _ListaHistorial extends ConsumerWidget {
-  const _ListaHistorial({required this.sesion});
-  final SesionCaja sesion;
+  const _ListaHistorial({required this.empresaId});
+  final String empresaId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final ventasAsync = ref.watch(historialVentasSesionProvider(sesion.id));
+    final ventasAsync = ref.watch(historialVentasEmpresaProvider(empresaId));
     return ventasAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => Center(child: Text('Error: $e')),
       data: (ventas) {
         if (ventas.isEmpty) {
-          return const Center(child: Text('Aún no hay ventas en este turno.'));
+          return const Center(child: Text('Aún no hay facturas guardadas.'));
         }
         return ListView.separated(
           padding: const EdgeInsets.all(12),
@@ -181,9 +196,12 @@ class _ListaHistorial extends ConsumerWidget {
                 ),
                 title: Text(
                   Formatters.currency(venta.total),
-                  style: anulada ? const TextStyle(decoration: TextDecoration.lineThrough) : null,
+                  style: anulada
+                      ? const TextStyle(decoration: TextDecoration.lineThrough)
+                      : null,
                 ),
-                subtitle: Text('${Formatters.time(venta.creadoEn)} · ${anulada ? "Anulada" : "Completada"}'),
+                subtitle: Text(
+                    '${Formatters.time(venta.creadoEn)} · ${anulada ? "Anulada" : "Completada"}'),
                 onTap: () => showModalBottomSheet<void>(
                   context: context,
                   isScrollControlled: true,
@@ -211,7 +229,8 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
 
   @override
   Widget build(BuildContext context) {
-    final permisos = ref.watch(permisosUsuarioActualProvider).valueOrNull ?? <Permiso>{};
+    final permisos =
+        ref.watch(permisosUsuarioActualProvider).valueOrNull ?? <Permiso>{};
     final venta = widget.venta;
 
     return DraggableScrollableSheet(
@@ -228,7 +247,8 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text('Venta · ${Formatters.dateTime(venta.creadoEn)}', style: Theme.of(context).textTheme.titleMedium),
+                  Text('Venta · ${Formatters.dateTime(venta.creadoEn)}',
+                      style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 12),
                   Expanded(
                     child: ListView.builder(
@@ -239,8 +259,10 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
                         return ListTile(
                           dense: true,
                           title: Text(item.nombreProductoSnapshot),
-                          trailing: Text(Formatters.currency(item.subtotalLinea, currency: venta.moneda)),
-                          subtitle: Text('${item.cantidad} x ${Formatters.currency(item.precioUnitario, currency: venta.moneda)}'),
+                          trailing: Text(Formatters.currency(item.subtotalLinea,
+                              currency: venta.moneda)),
+                          subtitle: Text(
+                              '${item.cantidad} x ${Formatters.currency(item.precioUnitario, currency: venta.moneda)}'),
                         );
                       },
                     ),
@@ -251,7 +273,8 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
                     children: [
                       const Text('Total'),
                       Text(
-                        Formatters.currency(venta.total, currency: venta.moneda),
+                        Formatters.currency(venta.total,
+                            currency: venta.moneda),
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
                     ],
@@ -264,16 +287,19 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
                           child: OutlinedButton.icon(
                             icon: const Icon(Icons.print_outlined),
                             label: const Text('Reimprimir'),
-                            onPressed: _procesando ? null : () => _reimprimir(items),
+                            onPressed:
+                                _procesando ? null : () => _reimprimir(items),
                           ),
                         ),
-                      if (permisos.contains(Permiso.anularVentas) && venta.estado == EstadoVenta.completada) ...[
+                      if (permisos.contains(Permiso.anularVentas) &&
+                          venta.estado == EstadoVenta.completada) ...[
                         const SizedBox(width: 8),
                         Expanded(
                           child: FilledButton.icon(
                             icon: const Icon(Icons.cancel_outlined),
                             label: const Text('Anular'),
-                            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                            style: FilledButton.styleFrom(
+                                backgroundColor: Colors.red),
                             onPressed: _procesando ? null : _anular,
                           ),
                         ),
@@ -295,17 +321,21 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
       final empresa = await ref.read(empresaRepositoryProvider).actual();
       final usuario = ref.read(authControllerProvider).usuario;
       if (empresa == null || usuario == null) return;
-      await ref.read(bluetoothPrinterServiceProvider).imprimirVenta(
+      await ref.read(unifiedPrinterServiceProvider).printSale(
             venta: widget.venta,
             items: items,
             empresa: empresa,
             nombreCajero: usuario.nombreCompleto,
           );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Recibo reimpreso.')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Recibo reimpreso.')));
       }
     } on AppException catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
     } finally {
       if (mounted) setState(() => _procesando = false);
     }
@@ -320,33 +350,45 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
         content: TextField(
           controller: motivoCtrl,
           autofocus: true,
-          decoration: const InputDecoration(labelText: 'Motivo de la anulación'),
+          decoration:
+              const InputDecoration(labelText: 'Motivo de la anulación'),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Anular venta')),
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancelar')),
+          FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Anular venta')),
         ],
       ),
     );
     if (confirmado != true || !mounted) return;
     if (motivoCtrl.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe un motivo para anular.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Escribe un motivo para anular.')));
       return;
     }
 
     setState(() => _procesando = true);
     try {
-      final deviceId = await ref.read(secureSessionServiceProvider).obtenerOCrearDeviceId();
+      final deviceId =
+          await ref.read(secureSessionServiceProvider).obtenerOCrearDeviceId();
       await ref.read(ventaRepositoryProvider).anular(
             venta: widget.venta,
             motivo: motivoCtrl.text.trim(),
             dispositivoId: deviceId,
           );
-      ref.invalidate(historialVentasSesionProvider(widget.venta.sesionCajaId ?? ''));
+      ref.invalidate(historialVentasEmpresaProvider(widget.venta.empresaId));
       ref.invalidate(sesionCajaActivaProvider);
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
     } on AppException catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
     } finally {
       if (mounted) setState(() => _procesando = false);
     }

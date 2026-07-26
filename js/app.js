@@ -24,6 +24,44 @@ let setupWizard = {
 let loginMode = 'existing';
 let loginTransitionLock = false;
 let loginUsersLoadPromise = null;
+
+function applyTouchKeyboardHints(root = document) {
+  const inputs = [];
+  if (root?.matches?.('input, textarea')) inputs.push(root);
+  if (root?.querySelectorAll) inputs.push(...root.querySelectorAll('input, textarea'));
+
+  for (const input of inputs) {
+    const type = String(input.getAttribute('type') || 'text').toLowerCase();
+    const identity = `${input.id || ''} ${input.name || ''} ${input.placeholder || ''}`.toLowerCase();
+    if (type === 'number') {
+      const step = String(input.getAttribute('step') || '').trim().toLowerCase();
+      input.inputMode = step === '1' ? 'numeric' : 'decimal';
+    } else if (/telefono|teléfono|phone|whatsapp|celular/.test(identity)) {
+      input.inputMode = 'tel';
+    } else if (/rnc|cedula|cédula|documento|secuencia|cantidad/.test(identity)) {
+      input.inputMode = 'numeric';
+    }
+  }
+}
+
+function initializeTouchKeyboardHints() {
+  applyTouchKeyboardHints(document);
+  const observer = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE) applyTouchKeyboardHints(node);
+      }
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initializeTouchKeyboardHints, { once: true });
+} else {
+  initializeTouchKeyboardHints();
+}
+
 let trialBusinessCatalog = [];
 let trialBusinessState = {
   active: false,
@@ -3627,7 +3665,9 @@ function initApp() {
   syncTrialBusinessPill();
   ensureTrialBusinessCatalog();
   if (typeof window.scheduleUiTranslation === 'function') window.scheduleUiTranslation(document.body);
-  document.getElementById('product-search').focus();
+  if (typeof window.scheduleSalesSearchFocus === 'function') {
+    window.scheduleSalesSearchFocus();
+  }
 
   // Iniciar el gestor de conexión offline (multicaja)
   if (window.OfflineManager && !window.offlineManager) {
@@ -3691,7 +3731,9 @@ function showModule(name, el) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   document.getElementById('breadcrumb').textContent = el ? el.querySelector('.nav-label').textContent : name;
-  if (name === 'ventas') document.getElementById('product-search').focus();
+  if (name === 'ventas' && typeof window.scheduleSalesSearchFocus === 'function') {
+    window.scheduleSalesSearchFocus();
+  }
   if (name === 'productos') {
     if (typeof startReportAppProductsPolling === 'function') startReportAppProductsPolling();
     if (typeof syncReportAppProductsNow === 'function') {

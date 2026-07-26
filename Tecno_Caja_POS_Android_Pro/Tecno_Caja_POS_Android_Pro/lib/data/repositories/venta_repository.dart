@@ -41,7 +41,8 @@ class LineaVentaSolicitada {
 }
 
 class VentaRepository {
-  VentaRepository(this._db, this._ventaDao, this._ventaItemDao, this._inventarioRepo);
+  VentaRepository(
+      this._db, this._ventaDao, this._ventaItemDao, this._inventarioRepo);
 
   final Database _db;
   final VentaDao _ventaDao;
@@ -95,11 +96,15 @@ class VentaRepository {
       redondeoPaso: redondeoPaso,
     );
 
-    final cambio = montoRecibido != null ? CalculadoraVenta.calcularCambio(montoRecibido, calculo.total) : null;
+    final cambio = montoRecibido != null
+        ? CalculadoraVenta.calcularCambio(montoRecibido, calculo.total)
+        : null;
 
     final now = DateTime.now();
+    final numeroFactura = await _siguienteNumeroFactura(empresaId);
     final venta = Venta(
       id: IdGenerator.newId(),
+      numeroFactura: numeroFactura,
       tipoDocumento: tipoDocumento,
       clienteId: clienteId,
       sesionCajaId: sesionCajaId,
@@ -185,6 +190,39 @@ class VentaRepository {
     return venta;
   }
 
+  Future<String> _siguienteNumeroFactura(String empresaId) async {
+    final configRows = await _db.query(
+      'configuracion',
+      columns: ['prefijo_factura', 'secuencia_factura_actual'],
+      where: 'id = 1',
+      limit: 1,
+    );
+    final prefix =
+        configRows.firstOrNull?['prefijo_factura']?.toString().trim();
+    final safePrefix = prefix == null || prefix.isEmpty ? 'FAC-' : prefix;
+    final configured =
+        (configRows.firstOrNull?['secuencia_factura_actual'] as int?) ?? 1;
+    final maxRows = await _db.rawQuery(
+      '''
+      SELECT MAX(CAST(SUBSTR(numero_factura, ?) AS INTEGER)) AS ultimo
+      FROM ventas
+      WHERE empresa_id = ? AND numero_factura LIKE ?
+      ''',
+      [safePrefix.length + 1, empresaId, '$safePrefix%'],
+    );
+    final current = (maxRows.first['ultimo'] as num?)?.toInt() ?? 0;
+    final next = current >= configured ? current + 1 : configured;
+    await _db.update(
+      'configuracion',
+      {
+        'secuencia_factura_actual': next + 1,
+        'actualizado_en': DateTime.now().toIso8601String(),
+      },
+      where: 'id = 1',
+    );
+    return '$safePrefix${next.toString().padLeft(8, '0')}';
+  }
+
   Future<Venta> suspender({
     required String empresaId,
     required String sucursalId,
@@ -263,7 +301,8 @@ class VentaRepository {
     return venta;
   }
 
-  Future<List<Venta>> ventasSuspendidas(String empresaId) => _ventaDao.suspendidas(empresaId);
+  Future<List<Venta>> ventasSuspendidas(String empresaId) =>
+      _ventaDao.suspendidas(empresaId);
 
   /// Consume una venta suspendida: sus lineas ya se cargaron de vuelta al
   /// carrito (ver CarritoController.cargarLineas), asi que el borrador queda
@@ -287,7 +326,8 @@ class VentaRepository {
     });
   }
 
-  Future<List<VentaItem>> itemsDe(String ventaId) => _ventaItemDao.deVenta(ventaId);
+  Future<List<VentaItem>> itemsDe(String ventaId) =>
+      _ventaItemDao.deVenta(ventaId);
 
   /// Revierte el stock de cada linea (entra de vuelta) y marca la venta como
   /// anulada. No borra la venta -- queda en el historial con estado
@@ -300,10 +340,12 @@ class VentaRepository {
     if (venta.estado == EstadoVenta.anulada) return;
 
     await _db.transaction((txn) async {
-      final items = await txn.query('venta_items', where: 'venta_id = ?', whereArgs: [venta.id]);
+      final items = await txn
+          .query('venta_items', where: 'venta_id = ?', whereArgs: [venta.id]);
       for (final row in items) {
         final item = VentaItem.fromMap(row);
-        if (venta.estado == EstadoVenta.completada && venta.sucursalId != null) {
+        if (venta.estado == EstadoVenta.completada &&
+            venta.sucursalId != null) {
           await _inventarioRepo.registrarMovimientoEnTransaccion(
             txn,
             productoId: item.productoId,
@@ -319,25 +361,41 @@ class VentaRepository {
         }
       }
 
-      if (venta.metodoPago == MetodoPago.credito && venta.clienteId != null && venta.estado == EstadoVenta.completada) {
+      if (venta.metodoPago == MetodoPago.credito &&
+          venta.clienteId != null &&
+          venta.estado == EstadoVenta.completada) {
         await txn.rawUpdate(
           'UPDATE clientes SET balance = balance - ?, actualizado_en = ?, sync_estado = ? WHERE id = ?',
-          [venta.total, DateTime.now().toIso8601String(), 'pendiente', venta.clienteId],
+          [
+            venta.total,
+            DateTime.now().toIso8601String(),
+            'pendiente',
+            venta.clienteId
+          ],
         );
       }
 
-      final actualizada = venta.copyWith(estado: EstadoVenta.anulada, motivoAnulacion: motivo);
-      await txn.update('ventas', actualizada.toMap(), where: 'id = ?', whereArgs: [venta.id]);
+      final actualizada =
+          venta.copyWith(estado: EstadoVenta.anulada, motivoAnulacion: motivo);
+      await txn.update('ventas', actualizada.toMap(),
+          where: 'id = ?', whereArgs: [venta.id]);
     });
   }
 
   Future<Venta?> porId(String id) => _ventaDao.findById(id);
 
-  Future<List<Venta>> deSesion(String sesionCajaId) => _ventaDao.deSesion(sesionCajaId);
+  Future<List<Venta>> deSesion(String sesionCajaId) =>
+      _ventaDao.deSesion(sesionCajaId);
 
-  Future<List<Venta>> deRango(String empresaId, DateTime desde, DateTime hasta) => _ventaDao.deRango(empresaId, desde, hasta);
+  Future<List<Venta>> deEmpresa(String empresaId, {int limit = 500}) =>
+      _ventaDao.deEmpresa(empresaId, limit: limit);
 
-  Future<List<Venta>> deCliente(String clienteId) => _ventaDao.deCliente(clienteId);
+  Future<List<Venta>> deRango(
+          String empresaId, DateTime desde, DateTime hasta) =>
+      _ventaDao.deRango(empresaId, desde, hasta);
+
+  Future<List<Venta>> deCliente(String clienteId) =>
+      _ventaDao.deCliente(clienteId);
 }
 
 final ventaRepositoryProvider = Provider<VentaRepository>((ref) {

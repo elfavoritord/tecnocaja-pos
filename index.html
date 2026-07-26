@@ -8,8 +8,6 @@
 <link rel="stylesheet" href="css/main.css">
 <link rel="stylesheet" href="css/repv2.css">
 <link rel="stylesheet" href="css/superadmin.css">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
 <!-- LOGIN SCREEN -->
@@ -4381,24 +4379,10 @@
 <!-- ═══════════════════════════════════════════════════════════
      SCRIPTS
      ═══════════════════════════════════════════════════════════ -->
-<!-- Leaflet — mapa repartidores delivery -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-
-<!-- jsPDF — generación de reportes PDF -->
-<script src="node_modules/jspdf/dist/jspdf.umd.min.js"></script>
-
 <!-- JsBarcode — genera códigos de barra (CODE128) para el Centro de Etiquetas -->
 <script src="node_modules/jsbarcode/dist/JsBarcode.all.min.js"></script>
 
-<!-- SheetJS (xlsx) — exportar Excel desde el navegador, ej. Estadísticas de Promociones -->
-<script src="node_modules/xlsx/dist/xlsx.full.min.js"></script>
-
-<!-- html2canvas — captura el comprobante HTML real (buildReceiptSheetMarkup) como
-     imagen para WhatsApp. Sin esto, window.html2canvas nunca existe y el envío por
-     WhatsApp cae siempre al dibujo de respaldo en generateReceiptFallbackImageDataUrl,
-     que no es la misma factura que se imprime. -->
-<script src="node_modules/html2canvas/dist/html2canvas.min.js"></script>
+<!-- XLSX, html2canvas y Leaflet se cargan solo cuando se usan. -->
 
 <!-- Socket.IO cliente — servido por el propio servidor local (sin CDN, funciona
      offline). Sin este script, io() nunca existe en la página: connectLicenseSocket()
@@ -4407,6 +4391,7 @@
      pedidos) quedan sin funcionar aunque el servidor sí los emita — hasta ahora
      nunca se notó porque esas pantallas tienen respaldo por sondeo (polling). -->
 <script src="/socket.io/socket.io.js"></script>
+<script src="js/vendor-loader.js"></script>
 <script src="js/toast.js"></script>
 <script src="js/i18n.js"></script>
 <script src="js/api.js"></script>
@@ -4448,6 +4433,7 @@
 <script src="js/sync-diagnostic.js"></script>
 <script src="js/superadmin.js"></script>
 <script src="js/contador.js"></script>
+<script src="js/deferred-vendors.js"></script>
 
 <script>
 // ── Inyectar config de terminal desde el servidor ──────────────

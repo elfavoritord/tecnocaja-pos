@@ -582,6 +582,7 @@ async function syncProduct(product, ctx = {}) {
     const businessId = getBusinessId(ctx.config || {});
     const productId = String(product.id || product.codigo);
     const data = stripNulls({
+      businessId,
       name: product.nombre || product.name || '',
       category: product.categoria || product.category || '',
       sku: product.codigo || product.sku || null,
@@ -682,6 +683,7 @@ async function syncCustomer(customer, ctx = {}) {
     const businessId = getBusinessId(ctx.config || {});
     const customerId = String(customer.id);
     const data = stripNulls({
+      businessId,
       name: customer.nombre || customer.name || '',
       email: customer.email || null,
       phone: customer.telefono || null,

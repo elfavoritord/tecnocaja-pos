@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/utils/validators.dart';
 import '../../data/auth/auth_controller.dart';
+import '../../data/auth/auth_repository.dart';
 import '../../widgets/loading_button.dart';
 
 /// Login con el mismo usuario/contraseña con el que un cajero ya entra en
@@ -14,7 +15,8 @@ class PosLocalLoginScreen extends ConsumerStatefulWidget {
   const PosLocalLoginScreen({super.key});
 
   @override
-  ConsumerState<PosLocalLoginScreen> createState() => _PosLocalLoginScreenState();
+  ConsumerState<PosLocalLoginScreen> createState() =>
+      _PosLocalLoginScreenState();
 }
 
 class _PosLocalLoginScreenState extends ConsumerState<PosLocalLoginScreen> {
@@ -35,14 +37,25 @@ class _PosLocalLoginScreenState extends ConsumerState<PosLocalLoginScreen> {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _cargando = true);
     try {
-      await ref.read(authControllerProvider.notifier).iniciarSesionLocalPos(
-            usuario: _usuarioCtrl.text.trim(),
-            password: _contrasenaCtrl.text,
-          );
+      final usuario = _usuarioCtrl.text.trim();
+      if (usuario.contains('@')) {
+        // Un correo identifica una cuenta Tecno Caja móvil/Firebase y jamás
+        // debe intentar conectarse a una computadora Windows.
+        await ref.read(authRepositoryProvider).iniciarSesionConCorreo(
+              correo: usuario,
+              contrasena: _contrasenaCtrl.text,
+            );
+      } else {
+        await ref.read(authControllerProvider.notifier).iniciarSesionLocalPos(
+              usuario: usuario,
+              password: _contrasenaCtrl.text,
+            );
+      }
       // El router redirige solo al ver AuthStatus.autenticado.
     } on AppException catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
       }
     } finally {
       if (mounted) setState(() => _cargando = false);
@@ -52,7 +65,7 @@ class _PosLocalLoginScreenState extends ConsumerState<PosLocalLoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Usuario del POS')),
+      appBar: AppBar(title: const Text('Iniciar sesión')),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -66,16 +79,22 @@ class _PosLocalLoginScreenState extends ConsumerState<PosLocalLoginScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      'Entra con el mismo usuario y contraseña que usas en la computadora del POS.',
+                      'Usa tu correo para entrar sin computadora. Solo los nombres de usuario del POS requieren conexión con Windows.',
                       style: Theme.of(context).textTheme.bodyMedium,
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 28),
                     TextFormField(
                       controller: _usuarioCtrl,
+                      keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Usuario'),
-                      validator: (v) => Validators.required(v, label: 'El usuario'),
+                      decoration: const InputDecoration(
+                        labelText: 'Correo o usuario del POS',
+                        helperText:
+                            'Con correo no necesitas tener el POS encendido',
+                      ),
+                      validator: (v) =>
+                          Validators.required(v, label: 'El correo o usuario'),
                     ),
                     const SizedBox(height: 14),
                     TextFormField(
@@ -86,14 +105,22 @@ class _PosLocalLoginScreenState extends ConsumerState<PosLocalLoginScreen> {
                       decoration: InputDecoration(
                         labelText: 'Contraseña',
                         suffixIcon: IconButton(
-                          icon: Icon(_ocultarContrasena ? Icons.visibility_off : Icons.visibility),
-                          onPressed: () => setState(() => _ocultarContrasena = !_ocultarContrasena),
+                          icon: Icon(_ocultarContrasena
+                              ? Icons.visibility_off
+                              : Icons.visibility),
+                          onPressed: () => setState(
+                              () => _ocultarContrasena = !_ocultarContrasena),
                         ),
                       ),
-                      validator: (v) => Validators.required(v, label: 'La contraseña'),
+                      validator: (v) =>
+                          Validators.required(v, label: 'La contraseña'),
                     ),
                     const SizedBox(height: 24),
-                    LoadingButton(label: 'Iniciar sesión', isLoading: _cargando, onPressed: _iniciarSesion),
+                    LoadingButton(
+                      label: 'Iniciar sesión',
+                      isLoading: _cargando,
+                      onPressed: _iniciarSesion,
+                    ),
                   ],
                 ),
               ),

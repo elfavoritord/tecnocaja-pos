@@ -1,4 +1,5 @@
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
+import 'package:intl/intl.dart';
 
 import '../../core/utils/formatters.dart';
 import '../../domain/entities/empresa.dart';
@@ -21,69 +22,174 @@ class ReceiptFormatter {
     final paperSize = anchoMm >= 80 ? PaperSize.mm80 : PaperSize.mm58;
     final generator = Generator(paperSize, profile);
     final moneda = venta.moneda;
+    final lineWidth = anchoMm >= 80 ? 48 : 32;
+
+    final subtotal = _redondearMoneda(venta.subtotal, 'Subtotal');
+    final descuento = _redondearMoneda(venta.descuentoMonto, 'Descuento');
+    final impuesto = _redondearMoneda(venta.itbis, 'Impuesto');
+    final redondeo = _redondearMoneda(venta.redondeoAplicado, 'Redondeo');
+    final total = _redondearMoneda(venta.total, 'Total');
+    final recibido = venta.montoRecibido == null
+        ? null
+        : _redondearMoneda(venta.montoRecibido!, 'Monto recibido');
+    final cambio = recibido == null
+        ? null
+        : _redondearMoneda(
+            (recibido - total).clamp(0, double.infinity).toDouble(),
+            'Cambio',
+          );
 
     List<int> bytes = [];
 
     bytes += generator.text(
       empresa.nombreComercial ?? empresa.nombre,
-      styles: const PosStyles(align: PosAlign.center, bold: true, height: PosTextSize.size2, width: PosTextSize.size2),
+      styles: const PosStyles(
+          align: PosAlign.center,
+          bold: true,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2),
     );
+    if (empresa.nombreComercial != null &&
+        empresa.nombreComercial!.trim().isNotEmpty &&
+        empresa.nombreComercial!.trim() != empresa.nombre.trim()) {
+      bytes += generator.text(empresa.nombre,
+          styles: const PosStyles(align: PosAlign.center));
+    }
     if (empresa.rncCedula != null && empresa.rncCedula!.isNotEmpty) {
-      bytes += generator.text('RNC: ${empresa.rncCedula}', styles: const PosStyles(align: PosAlign.center));
+      bytes += generator.text('RNC: ${empresa.rncCedula}',
+          styles: const PosStyles(align: PosAlign.center));
     }
     if (empresa.direccion != null && empresa.direccion!.isNotEmpty) {
-      bytes += generator.text(empresa.direccion!, styles: const PosStyles(align: PosAlign.center));
+      bytes += generator.text(empresa.direccion!,
+          styles: const PosStyles(align: PosAlign.center));
     }
     if (empresa.telefono != null && empresa.telefono!.isNotEmpty) {
-      bytes += generator.text('Tel: ${empresa.telefono}', styles: const PosStyles(align: PosAlign.center));
+      bytes += generator.text('Tel: ${empresa.telefono}',
+          styles: const PosStyles(align: PosAlign.center));
+    }
+    if (empresa.email != null && empresa.email!.isNotEmpty) {
+      bytes += generator.text(empresa.email!,
+          styles: const PosStyles(align: PosAlign.center));
     }
     bytes += generator.hr();
 
-    bytes += generator.text('Ticket: ${venta.numeroFactura ?? venta.id.substring(0, 8).toUpperCase()}');
+    bytes += generator.text(
+      venta.estado == EstadoVenta.anulada
+          ? 'FACTURA ANULADA'
+          : 'FACTURA DE VENTA',
+      styles: const PosStyles(align: PosAlign.center, bold: true),
+    );
+    bytes += generator.text('Numero: ${_numeroFactura(venta)}');
     if (venta.encf != null && venta.encf!.isNotEmpty) {
       bytes += generator.text('e-NCF: ${venta.encf}');
     }
     bytes += generator.text('Fecha: ${Formatters.dateTime(venta.creadoEn)}');
+    if (venta.cajaId != null && venta.cajaId!.isNotEmpty) {
+      bytes += generator.text('Caja: ${_idCorto(venta.cajaId!)}');
+    }
+    if (venta.sesionCajaId != null && venta.sesionCajaId!.isNotEmpty) {
+      bytes += generator.text('Turno: ${_idCorto(venta.sesionCajaId!)}');
+    }
     bytes += generator.text('Cajero: $nombreCajero');
-    bytes += generator.text('Cliente: ${nombreCliente ?? "Venta anónima"}');
-    if (venta.estado == EstadoVenta.anulada) {
-      bytes += generator.text('*** ANULADA ***', styles: const PosStyles(align: PosAlign.center, bold: true));
-    }
+    bytes += generator.text(
+        'Condicion: ${venta.metodoPago == MetodoPago.credito ? "Credito" : "Contado"}');
+    bytes += generator.text('Moneda: $moneda');
+    bytes += generator.text(
+        'Cliente: ${nombreCliente?.trim().isNotEmpty == true ? nombreCliente : "Consumidor final"}');
     bytes += generator.hr();
 
-    for (final item in items) {
-      bytes += generator.text(item.nombreProductoSnapshot, styles: const PosStyles(bold: true));
+    if (anchoMm >= 80) {
       bytes += generator.row([
-        PosColumn(text: '${_cantidad(item.cantidad)} x ${Formatters.currency(item.precioUnitario, currency: moneda)}', width: 8),
+        PosColumn(text: 'CANT', width: 2, styles: const PosStyles(bold: true)),
         PosColumn(
-          text: Formatters.currency(item.subtotalLinea, currency: moneda),
-          width: 4,
-          styles: const PosStyles(align: PosAlign.right),
-        ),
+            text: 'DESCRIPCION', width: 5, styles: const PosStyles(bold: true)),
+        PosColumn(
+            text: 'PRECIO',
+            width: 2,
+            styles: const PosStyles(align: PosAlign.right, bold: true)),
+        PosColumn(
+            text: 'TOTAL',
+            width: 3,
+            styles: const PosStyles(align: PosAlign.right, bold: true)),
       ]);
+      for (final item in items) {
+        bytes += generator.row([
+          PosColumn(text: _cantidad(item.cantidad), width: 2),
+          PosColumn(text: item.nombreProductoSnapshot, width: 5),
+          PosColumn(
+            text: _importe(item.precioUnitario),
+            width: 2,
+            styles: const PosStyles(align: PosAlign.right),
+          ),
+          PosColumn(
+            text: _importe(item.subtotalLinea),
+            width: 3,
+            styles: const PosStyles(align: PosAlign.right),
+          ),
+        ]);
+      }
+    } else {
+      for (final item in items) {
+        bytes += generator.text(
+            '${_cantidad(item.cantidad)}  ${item.nombreProductoSnapshot}',
+            styles: const PosStyles(bold: true));
+        bytes += generator.row([
+          PosColumn(
+              text:
+                  '${_cantidad(item.cantidad)} x ${_importe(item.precioUnitario)}',
+              width: 8),
+          PosColumn(
+            text: _importe(item.subtotalLinea),
+            width: 4,
+            styles: const PosStyles(align: PosAlign.right),
+          ),
+        ]);
+        if (item.descuentoMonto > 0) {
+          bytes += generator.text(
+              'Descuento: -${Formatters.currency(item.descuentoMonto, currency: moneda)}');
+        }
+      }
     }
     bytes += generator.hr();
 
-    bytes += _fila(generator, 'Subtotal', venta.subtotal, moneda);
-    if (venta.descuentoMonto > 0) bytes += _fila(generator, 'Descuento', -venta.descuentoMonto, moneda);
-    bytes += _fila(generator, 'ITBIS', venta.itbis, moneda);
-    if (venta.redondeoAplicado != 0) bytes += _fila(generator, 'Redondeo', venta.redondeoAplicado, moneda);
-
-    bytes += generator.row([
-      PosColumn(text: 'TOTAL', width: 6, styles: const PosStyles(bold: true, height: PosTextSize.size2)),
-      PosColumn(
-        text: Formatters.currency(venta.total, currency: moneda),
-        width: 6,
-        styles: const PosStyles(bold: true, align: PosAlign.right, height: PosTextSize.size2),
-      ),
-    ]);
-    bytes += generator.hr();
-
-    bytes += generator.text('Método de pago: ${_etiquetaMetodoPago(venta.metodoPago)}');
-    if (venta.montoRecibido != null) {
-      bytes += _fila(generator, 'Recibido', venta.montoRecibido!, moneda);
-      bytes += _fila(generator, 'Devuelta', venta.cambio ?? 0, moneda);
+    bytes += generator.text(
+      _lineaMonto('Subtotal:', subtotal, lineWidth),
+    );
+    if (descuento > 0) {
+      bytes += generator.text(
+        _lineaMonto('Descuento:', -descuento, lineWidth),
+      );
     }
+    if (impuesto > 0) {
+      bytes += generator.text(
+        _lineaMonto(_etiquetaImpuesto(empresa), impuesto, lineWidth),
+      );
+    }
+    if (redondeo != 0) {
+      bytes += generator.text(
+        _lineaMonto('Redondeo:', redondeo, lineWidth),
+      );
+    }
+
+    bytes += generator.text('=' * lineWidth);
+    bytes += generator.text(
+      _lineaMonto('TOTAL:', total, lineWidth),
+      styles: const PosStyles(bold: true),
+    );
+    bytes += generator.text('=' * lineWidth);
+
+    bytes += generator.text(
+      'Forma de pago: ${_etiquetaMetodoPago(venta.metodoPago)}',
+    );
+    if (recibido != null) {
+      bytes += generator.text(
+        _lineaMonto('Recibido:', recibido, lineWidth),
+      );
+      bytes += generator.text(
+        _lineaMonto('Cambio:', cambio ?? 0, lineWidth),
+      );
+    }
+    bytes += generator.hr();
 
     if (venta.ecfQrUrl != null && venta.ecfQrUrl!.isNotEmpty) {
       bytes += generator.feed(1);
@@ -91,23 +197,64 @@ class ReceiptFormatter {
     }
 
     bytes += generator.feed(1);
-    bytes += generator.text('¡Gracias por su compra!', styles: const PosStyles(align: PosAlign.center));
-    bytes += generator.text('Tecno Caja POS', styles: const PosStyles(align: PosAlign.center));
+    bytes += generator.text('Gracias por su compra.',
+        styles: const PosStyles(align: PosAlign.center));
+    bytes += generator.text('Conserve este comprobante.',
+        styles: const PosStyles(align: PosAlign.center));
     bytes += generator.feed(2);
     bytes += generator.cut();
 
     return bytes;
   }
 
-  static List<int> _fila(Generator generator, String etiqueta, double monto, String moneda) {
-    return generator.row([
-      PosColumn(text: etiqueta, width: 6),
-      PosColumn(text: Formatters.currency(monto, currency: moneda), width: 6, styles: const PosStyles(align: PosAlign.right)),
-    ]);
+  static final NumberFormat _moneyFormat = NumberFormat('#,##0.00', 'en_US');
+
+  static double _redondearMoneda(double valor, String campo) {
+    if (!valor.isFinite) {
+      throw StateError('El valor de $campo no es válido.');
+    }
+    return (valor * 100).round() / 100;
+  }
+
+  static String _formatearMonto(double valor) {
+    final seguro = valor.isFinite ? _redondearMoneda(valor, 'importe') : 0.0;
+    return _moneyFormat.format(seguro);
+  }
+
+  static String _lineaMonto(String etiqueta, double valor, int ancho) {
+    final limpia = etiqueta.trim();
+    final monto = _formatearMonto(valor);
+    final espacios = ancho - limpia.length - monto.length;
+    if (espacios < 1) {
+      final maxLabel = (ancho - monto.length - 1).clamp(0, ancho).toInt();
+      return '${limpia.substring(0, maxLabel)} $monto';
+    }
+    return '$limpia${' ' * espacios}$monto';
   }
 
   static String _cantidad(double cantidad) {
-    return cantidad.truncateToDouble() == cantidad ? cantidad.toStringAsFixed(0) : cantidad.toStringAsFixed(2);
+    return cantidad.truncateToDouble() == cantidad
+        ? cantidad.toStringAsFixed(0)
+        : cantidad.toStringAsFixed(2);
+  }
+
+  static String _importe(double value) => value.toStringAsFixed(2);
+
+  static String _numeroFactura(Venta venta) {
+    final numero = venta.numeroFactura?.trim();
+    if (numero != null && numero.isNotEmpty) return numero;
+    return _idCorto(venta.id);
+  }
+
+  static String _idCorto(String id) {
+    final length = id.length < 8 ? id.length : 8;
+    return id.substring(0, length).toUpperCase();
+  }
+
+  static String _etiquetaImpuesto(Empresa empresa) {
+    if (empresa.pais.toUpperCase() != 'RD') return 'Impuesto:';
+    final porcentaje = (empresa.tasaItbisDefault * 100).round();
+    return 'ITBIS $porcentaje%:';
   }
 
   static String _etiquetaMetodoPago(String metodo) => switch (metodo) {

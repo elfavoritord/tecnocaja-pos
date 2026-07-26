@@ -16,7 +16,10 @@ class CategoriaDao extends BaseDao<Categoria> {
   String idOf(Categoria entity) => entity.id;
 
   Future<List<Categoria>> deEmpresa(String empresaId) {
-    return findAll(where: 'empresa_id = ? AND activa = 1', whereArgs: [empresaId], orderBy: 'orden ASC, nombre ASC');
+    return findAll(
+        where: 'empresa_id = ? AND activa = 1',
+        whereArgs: [empresaId],
+        orderBy: 'orden ASC, nombre ASC');
   }
 }
 
@@ -30,11 +33,12 @@ class ProductoDao extends BaseDao<Producto> {
   @override
   String idOf(Producto entity) => entity.id;
 
-  Future<List<Producto>> deEmpresa(String empresaId, {bool soloActivos = true}) {
+  Future<List<Producto>> deEmpresa(String empresaId,
+      {bool soloActivos = true}) {
     return findAll(
       where: soloActivos ? 'empresa_id = ? AND activo = 1' : 'empresa_id = ?',
       whereArgs: [empresaId],
-      orderBy: 'nombre ASC',
+      orderBy: 'nombre ASC, actualizado_en DESC',
     );
   }
 
@@ -50,15 +54,19 @@ class ProductoDao extends BaseDao<Producto> {
   Future<List<Producto>> buscar(String empresaId, String termino) {
     final like = '%$termino%';
     return findAll(
-      where: 'empresa_id = ? AND activo = 1 AND (nombre LIKE ? OR sku LIKE ? OR codigo_barras LIKE ?)',
+      where:
+          'empresa_id = ? AND activo = 1 AND (nombre LIKE ? OR sku LIKE ? OR codigo_barras LIKE ?)',
       whereArgs: [empresaId, like, like, like],
-      orderBy: 'nombre ASC',
+      orderBy: 'nombre ASC, actualizado_en DESC',
       limit: 50,
     );
   }
 
   Future<List<Producto>> favoritos(String empresaId) {
-    return findAll(where: 'empresa_id = ? AND activo = 1 AND favorito = 1', whereArgs: [empresaId], orderBy: 'nombre ASC');
+    return findAll(
+        where: 'empresa_id = ? AND activo = 1 AND favorito = 1',
+        whereArgs: [empresaId],
+        orderBy: 'nombre ASC');
   }
 }
 
@@ -68,12 +76,17 @@ class InventarioSucursalDao extends BaseDao<InventarioSucursal> {
   @override
   Map<String, Object?> toMap(InventarioSucursal entity) => entity.toMap();
   @override
-  InventarioSucursal fromMap(Map<String, Object?> map) => InventarioSucursal.fromMap(map);
+  InventarioSucursal fromMap(Map<String, Object?> map) =>
+      InventarioSucursal.fromMap(map);
   @override
   String idOf(InventarioSucursal entity) => entity.id;
 
-  Future<InventarioSucursal?> deProductoEnSucursal(String productoId, String sucursalId) async {
-    final rows = await findAll(where: 'producto_id = ? AND sucursal_id = ?', whereArgs: [productoId, sucursalId], limit: 1);
+  Future<InventarioSucursal?> deProductoEnSucursal(
+      String productoId, String sucursalId) async {
+    final rows = await findAll(
+        where: 'producto_id = ? AND sucursal_id = ?',
+        whereArgs: [productoId, sucursalId],
+        limit: 1);
     return rows.isEmpty ? null : rows.first;
   }
 
@@ -95,11 +108,17 @@ class MovimientoInventarioDao extends BaseDao<MovimientoInventario> {
   @override
   Map<String, Object?> toMap(MovimientoInventario entity) => entity.toMap();
   @override
-  MovimientoInventario fromMap(Map<String, Object?> map) => MovimientoInventario.fromMap(map);
+  MovimientoInventario fromMap(Map<String, Object?> map) =>
+      MovimientoInventario.fromMap(map);
   @override
   String idOf(MovimientoInventario entity) => entity.id;
 
-  Future<List<MovimientoInventario>> deProducto(String productoId, {int limit = 100}) {
-    return findAll(where: 'producto_id = ?', whereArgs: [productoId], orderBy: 'creado_en DESC', limit: limit);
+  Future<List<MovimientoInventario>> deProducto(String productoId,
+      {int limit = 100}) {
+    return findAll(
+        where: 'producto_id = ?',
+        whereArgs: [productoId],
+        orderBy: 'creado_en DESC',
+        limit: limit);
   }
 }

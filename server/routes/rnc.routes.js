@@ -27,11 +27,16 @@ function getRncHandler() {
   return handler;
 }
 
-// Iniciar carga al importar el módulo (no esperar el primer request)
-getRncHandler();
-
 function createRncRouter() {
   const router = express.Router();
+  // El paquete puede descargar y procesar el dataset completo de la DGII.
+  // Calentarlo al importar server.js añadía varios segundos al arranque. Se
+  // difiere hasta que la interfaz ya tuvo tiempo de abrir; una consulta hecha
+  // antes igualmente lo inicializa bajo demanda mediante getRncHandler().
+  const warmupTimer = setTimeout(() => {
+    getRncHandler();
+  }, 15_000);
+  warmupTimer.unref?.();
 
   // GET /api/rnc/lookup?id=130000000
   router.get('/api/rnc/lookup', async (req, res) => {

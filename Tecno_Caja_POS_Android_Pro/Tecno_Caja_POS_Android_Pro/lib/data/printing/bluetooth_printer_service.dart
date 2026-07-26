@@ -27,7 +27,8 @@ class BluetoothPrinterService {
   /// que imprimen de verdad).
   Future<bool> permisosConcedidos() async {
     if (kIsWeb) return false;
-    final resultados = await [Permission.bluetoothConnect, Permission.bluetoothScan].request();
+    final resultados =
+        await [Permission.bluetoothConnect, Permission.bluetoothScan].request();
     return resultados.values.every((estado) => estado.isGranted);
   }
 
@@ -68,7 +69,24 @@ class BluetoothPrinterService {
     return conectar(mac);
   }
 
-  Future<bool> imprimirBytes(List<int> bytes) => PrintBluetoothThermal.writeBytes(bytes);
+  Future<bool> imprimirBytes(List<int> bytes) =>
+      PrintBluetoothThermal.writeBytes(bytes);
+
+  Future<void> imprimirBytesConectando(List<int> bytes) async {
+    if (kIsWeb) {
+      throw const PrinterException(
+        message: 'La impresión Bluetooth solo está disponible en Android.',
+      );
+    }
+    if (!await _asegurarConectada()) {
+      throw const PrinterException(
+          message: 'No hay una impresora Bluetooth conectada.');
+    }
+    if (!await imprimirBytes(bytes)) {
+      throw const PrinterException(
+          message: 'Fallo al enviar datos a la impresora.');
+    }
+  }
 
   Future<void> imprimirVenta({
     required Venta venta,
@@ -79,14 +97,16 @@ class BluetoothPrinterService {
   }) async {
     if (kIsWeb) {
       throw const PrinterException(
-        message: 'La impresión Bluetooth no está disponible en la vista web. Pruébala en el emulador o un Android real.',
+        message:
+            'La impresión Bluetooth no está disponible en la vista web. Pruébala en el emulador o un Android real.',
       );
     }
     final config = await _configRepo.obtener();
     final conectada = await _asegurarConectada();
     if (!conectada) {
       throw const PrinterException(
-        message: 'No hay una impresora conectada. Configúrala en Ajustes > Impresora.',
+        message:
+            'No hay una impresora conectada. Configúrala en Ajustes > Impresora.',
       );
     }
     final bytes = await ReceiptFormatter.ticketDeVenta(
@@ -99,14 +119,16 @@ class BluetoothPrinterService {
     );
     final ok = await imprimirBytes(bytes);
     if (!ok) {
-      throw const PrinterException(message: 'Fallo al enviar el recibo a la impresora.');
+      throw const PrinterException(
+          message: 'Fallo al enviar el recibo a la impresora.');
     }
   }
 
   Future<void> imprimirPrueba(int anchoMm) async {
     if (kIsWeb) {
       throw const PrinterException(
-        message: 'La impresión Bluetooth no está disponible en la vista web. Pruébala en el emulador o un Android real.',
+        message:
+            'La impresión Bluetooth no está disponible en la vista web. Pruébala en el emulador o un Android real.',
       );
     }
     final conectada = await _asegurarConectada();
@@ -114,27 +136,37 @@ class BluetoothPrinterService {
       throw const PrinterException(message: 'No hay una impresora conectada.');
     }
     final profile = await CapabilityProfile.load();
-    final generator = Generator(anchoMm >= 80 ? PaperSize.mm80 : PaperSize.mm58, profile);
+    final generator =
+        Generator(anchoMm >= 80 ? PaperSize.mm80 : PaperSize.mm58, profile);
 
     List<int> bytes = [];
     bytes += generator.text(
       'Tecno Caja POS',
-      styles: const PosStyles(align: PosAlign.center, bold: true, height: PosTextSize.size2, width: PosTextSize.size2),
+      styles: const PosStyles(
+          align: PosAlign.center,
+          bold: true,
+          height: PosTextSize.size2,
+          width: PosTextSize.size2),
     );
-    bytes += generator.text('Prueba de impresión', styles: const PosStyles(align: PosAlign.center));
-    bytes += generator.text('Papel: ${anchoMm}mm', styles: const PosStyles(align: PosAlign.center));
+    bytes += generator.text('Prueba de impresión',
+        styles: const PosStyles(align: PosAlign.center));
+    bytes += generator.text('Papel: ${anchoMm}mm',
+        styles: const PosStyles(align: PosAlign.center));
     bytes += generator.hr();
-    bytes += generator.text('Si puedes leer esto con claridad, la impresora quedó bien configurada.');
+    bytes += generator.text(
+        'Si puedes leer esto con claridad, la impresora quedó bien configurada.');
     bytes += generator.feed(2);
     bytes += generator.cut();
 
     final ok = await imprimirBytes(bytes);
     if (!ok) {
-      throw const PrinterException(message: 'Fallo al enviar la prueba a la impresora.');
+      throw const PrinterException(
+          message: 'Fallo al enviar la prueba a la impresora.');
     }
   }
 }
 
-final bluetoothPrinterServiceProvider = Provider<BluetoothPrinterService>((ref) {
+final bluetoothPrinterServiceProvider =
+    Provider<BluetoothPrinterService>((ref) {
   return BluetoothPrinterService(ref.watch(configuracionRepositoryProvider));
 });

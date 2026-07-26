@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
 const os = require('os');
+const { performance } = require('perf_hooks');
 const { spawnSync } = require('child_process');
 const express = require('express');
 const cors = require('cors');
@@ -268,8 +269,8 @@ async function syncCategoriesToReports(options = {}) {
   return { synced };
 }
 
-async function resolveReportAppCategoryName(category) {
-  const raw = String(category || '').trim();
+async function resolveReportAppCategoryName(category, { allowCreate = false } = {}) {
+  const raw = String(category || '').trim() || (allowCreate ? 'General' : '');
   if (!raw) {
     const error = new Error('El producto no tiene categoría sincronizada desde el POS.');
     error.statusCode = 400;
@@ -278,6 +279,10 @@ async function resolveReportAppCategoryName(category) {
   await ensureCategoriesTable();
   const rows = await query('SELECT nombre FROM categories WHERE LOWER(nombre) = LOWER(?) LIMIT 1', [raw]);
   if (!rows[0]) {
+    if (allowCreate) {
+      await query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [raw]);
+      return raw;
+    }
     const error = new Error(`La categoría "${raw}" no existe en Tecno Caja POS.`);
     error.statusCode = 400;
     throw error;
@@ -341,7 +346,7 @@ async function syncPendingReportAppProducts(options = {}) {
     .collection('businesses')
     .doc(businessId)
     .collection('products')
-    .where('origen', '==', 'app_reporte')
+    .where('origen', 'in', ['app_reporte', 'app_movil'])
     .limit(60)
     .get();
 
@@ -357,7 +362,12 @@ async function syncPendingReportAppProducts(options = {}) {
     const name = normalizeReportAppText(data.nombre ?? data.name);
     const sku = normalizeReportAppText(data.codigo ?? data.sku ?? data.barcode ?? doc.id);
     const barcode = normalizeReportAppText(data.barcode ?? sku);
-    const userName = normalizeReportAppText(data.creadoPor ?? data.createdByName ?? data.updatedByName, 'App Reporte');
+    const sourceOrigin = normalizeReportAppText(data.origen ?? data.origin, 'app_reporte');
+    const sourceLabel = sourceOrigin === 'app_movil' ? 'App Móvil' : 'App Reporte';
+    const userName = normalizeReportAppText(
+      data.creadoPor ?? data.createdByName ?? data.updatedByName,
+      sourceLabel
+    );
 
     try {
       if (!name) throw new Error('El producto no tiene nombre.');
@@ -367,7 +377,10 @@ async function syncPendingReportAppProducts(options = {}) {
       if (price <= 0) throw new Error('El precio debe ser mayor que cero.');
       if (cost < 0) throw new Error('El costo no puede ser negativo.');
       if (stock < 0) throw new Error('El stock inicial no puede ser negativo.');
-      const canonicalCategory = await resolveReportAppCategoryName(data.categoria ?? data.category);
+      const canonicalCategory = await resolveReportAppCategoryName(
+        data.categoria ?? data.category,
+        { allowCreate: sourceOrigin === 'app_movil' }
+      );
 
       const result = await withTransaction(async (conn) => {
         const existingByRemote = await conn.query(
@@ -402,7 +415,7 @@ async function syncPendingReportAppProducts(options = {}) {
           normalizeReportAppBool(data.aplicaItbis ?? data.appliesTax, false) ? 1 : 0,
           barcode || sku,
           doc.id,
-          'app_reporte',
+          sourceOrigin,
         ];
 
         let productId;
@@ -469,10 +482,9 @@ async function syncPendingReportAppProducts(options = {}) {
       const productRows = await query('SELECT * FROM products WHERE id = ? LIMIT 1', [result.productId]);
       if (productRows[0]) {
         productsCache.upsert(mapProductRow(productRows[0]));
-        await reportsSync.syncProduct(productRows[0], { config: cfg, branchId: result.branchId });
       }
       io.emit('reports-app:product-received', {
-        message: 'Nuevo producto recibido desde la App de Reporte',
+        message: `Producto recibido desde ${sourceLabel}`,
         productName: name,
         productId: result.productId,
       });
@@ -501,10 +513,289 @@ async function syncPendingReportAppProducts(options = {}) {
 
   if (synced) {
     await productsCache.loadAll().catch(() => {});
-    await persistProductsCsvBackup('sync_app_reporte').catch(() => {});
-    scheduleSilentProductBackup('sync_app_reporte');
+    await persistProductsCsvBackup('sync_apps').catch(() => {});
+    scheduleSilentProductBackup('sync_apps');
   }
 
+  return { synced, errors };
+}
+
+async function syncPendingMobileCustomers() {
+  if (!reportsSync.isEnabled() || !getSyncService().isOnline) {
+    return { synced: 0, skipped: true };
+  }
+  const { getFirestore } = require('./modules/firebase-admin');
+  const { FieldValue } = require('firebase-admin/firestore');
+  const firestore = getFirestore();
+  if (!firestore) return { synced: 0, skipped: true };
+
+  await ensureClientExtensions();
+  const cfg = await getReportSyncConfig();
+  const businessId = reportsSync.getBusinessId(cfg);
+  const snapshot = await firestore
+    .collection('businesses')
+    .doc(businessId)
+    .collection('customers')
+    .where('origen', '==', 'app_movil')
+    .limit(60)
+    .get();
+
+  let synced = 0;
+  let errors = 0;
+  for (const doc of snapshot.docs) {
+    const data = doc.data() || {};
+    if (data.syncStatus === 'synced' || data.synced === true) continue;
+    try {
+      const name = normalizeReportAppText(data.name ?? data.nombre);
+      if (!name) throw new Error('El cliente no tiene nombre.');
+      const taxId = normalizeReportAppText(data.taxId ?? data.cedulaRnc);
+      const phone = normalizeReportAppText(data.phone ?? data.telefono);
+      const email = normalizeReportAppText(data.email).toLowerCase();
+
+      const result = await withTransaction(async (conn) => {
+        const byRemote = await conn.query(
+          'SELECT * FROM clients WHERE remote_mobile_client_id = ? LIMIT 1',
+          [doc.id]
+        );
+        const byTaxId = byRemote[0] || !taxId ? [] : await conn.query(
+          'SELECT * FROM clients WHERE cedula = ? OR rnc = ? LIMIT 1',
+          [taxId, taxId]
+        );
+        const byEmail = byRemote[0] || byTaxId[0] || !email ? [] : await conn.query(
+          'SELECT * FROM clients WHERE LOWER(COALESCE(email, "")) = ? LIMIT 1',
+          [email]
+        );
+        const byPhone = byRemote[0] || byTaxId[0] || byEmail[0] || !phone ? [] : await conn.query(
+          'SELECT * FROM clients WHERE telefono = ? LIMIT 1',
+          [phone]
+        );
+        const existing = byRemote[0] || byTaxId[0] || byEmail[0] || byPhone[0] || null;
+        const values = [
+          name,
+          phone || null,
+          email || null,
+          normalizeReportAppText(data.address ?? data.direccion) || null,
+          taxId || null,
+          normalizeReportAppNumber(data.creditLimit ?? data.limiteCredito, 0),
+          normalizeReportAppNumber(data.totalDebt ?? data.balance, 0),
+          doc.id,
+          'app_movil',
+        ];
+        if (existing) {
+          await conn.query(
+            `UPDATE clients
+             SET nombre = ?, telefono = ?, email = ?, direccion = ?, cedula = ?,
+                 limite_credito = ?, balance = ?, remote_mobile_client_id = ?, sync_origin = ?
+             WHERE id = ?`,
+            [...values, existing.id]
+          );
+          return Number(existing.id);
+        }
+        const inserted = await conn.query(
+          `INSERT INTO clients
+            (nombre, telefono, email, direccion, cedula, limite_credito, balance,
+             remote_mobile_client_id, sync_origin)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          values
+        );
+        return Number(inserted.insertId || 0);
+      });
+
+      await doc.ref.set({
+        synced: true,
+        sincronizado: true,
+        syncStatus: 'synced',
+        syncError: null,
+        posCustomerId: result,
+        syncedAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      io.emit('mobile-sync:customer-received', { customerId: result, customerName: name });
+      synced += 1;
+    } catch (error) {
+      errors += 1;
+      await doc.ref.set({
+        synced: false,
+        syncStatus: 'error',
+        syncError: error?.message || String(error),
+        lastSyncErrorAt: FieldValue.serverTimestamp(),
+      }, { merge: true }).catch(() => {});
+    }
+  }
+  return { synced, errors };
+}
+
+async function syncPendingMobileSales() {
+  if (!reportsSync.isEnabled() || !getSyncService().isOnline) {
+    return { synced: 0, skipped: true };
+  }
+  const { getFirestore } = require('./modules/firebase-admin');
+  const { FieldValue } = require('firebase-admin/firestore');
+  const firestore = getFirestore();
+  if (!firestore) return { synced: 0, skipped: true };
+
+  await ensureSalesExtensions();
+  await ensureInventoryMovementsTable();
+  await ensureBranchInventoryTable();
+  const cfg = await getReportSyncConfig();
+  const businessId = reportsSync.getBusinessId(cfg);
+  const snapshot = await firestore
+    .collection('businesses').doc(businessId).collection('sales')
+    .where('origen', '==', 'app_movil')
+    .limit(60).get();
+
+  let synced = 0;
+  let errors = 0;
+  for (const doc of snapshot.docs) {
+    const data = doc.data() || {};
+    if (data.posSaleId || data.syncStatus === 'synced') continue;
+    try {
+      const items = Array.isArray(data.items) ? data.items : [];
+      if (!items.length) throw new Error('La venta móvil no contiene productos.');
+      const result = await withTransaction(async (conn) => {
+        const duplicate = await conn.query(
+          'SELECT id FROM sales WHERE remote_mobile_sale_id = ? LIMIT 1', [doc.id]
+        );
+        if (duplicate[0]) return { saleId: Number(duplicate[0].id), productIds: [] };
+
+        const users = await conn.query(
+          `SELECT id, nombre FROM users
+           WHERE estado = 'Activo' OR estado IS NULL
+           ORDER BY CASE WHEN LOWER(COALESCE(rol, '')) = 'administrador' THEN 0 ELSE 1 END, id LIMIT 1`
+        );
+        if (!users[0]) throw new Error('El POS no tiene un usuario activo para registrar la venta.');
+        const branches = await conn.query('SELECT id, nombre FROM branches ORDER BY id LIMIT 1');
+        const branchId = Number(branches[0]?.id || 0);
+        if (!branchId) throw new Error('El POS no tiene una sucursal configurada.');
+        const registers = await conn.query(
+          'SELECT id FROM cash_registers WHERE branch_id = ? ORDER BY id LIMIT 1', [branchId]
+        );
+        const cashRegisterId = Number(registers[0]?.id || 0) || null;
+
+        let invoiceNumber = normalizeReportAppText(data.invoiceNumber, `MOB-${doc.id.slice(0, 12)}`);
+        const invoiceOwner = await conn.query(
+          'SELECT remote_mobile_sale_id FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]
+        );
+        if (invoiceOwner[0] && invoiceOwner[0].remote_mobile_sale_id !== doc.id) {
+          invoiceNumber = `MOB-${doc.id.slice(0, 24)}`;
+        }
+        const importedSequence = invoiceNumber.match(/^FAC-(\d+)$/i);
+        if (importedSequence) {
+          const importedNumber = Number(importedSequence[1] || 0);
+          await conn.query(
+            `UPDATE config
+             SET invoice_next_number = CASE
+               WHEN invoice_next_number < ? THEN ?
+               ELSE invoice_next_number
+             END
+             WHERE id = 1`,
+            [importedNumber, importedNumber]
+          );
+        }
+        const created = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || Date.now());
+        const createdAt = Number.isNaN(created.getTime())
+          ? nowRDString()
+          : created.toISOString().slice(0, 19).replace('T', ' ');
+        const status = String(data.status || 'completed') === 'cancelled' ? 'anulada' : 'pagada';
+        const paymentMethod = normalizeReportAppText(data.paymentMethod, 'efectivo').toLowerCase();
+        const total = normalizeReportAppNumber(data.total, 0);
+        const saleInsert = await conn.query(
+          `INSERT INTO sales
+            (invoice_number, user_id, branch_id, cash_register_id,
+             billed_branch_id, billed_cash_register_id, billed_by_user_id,
+             charged_branch_id, charged_cash_register_id, charged_by_user_id, charged_at,
+             inventory_branch_id, inventory_discounted_at, sale_status, sale_mode,
+             document_type, client_name_snapshot, payment_method, subtotal, discount,
+             tax, total, received_amount, change_amount, payment_currency,
+             fiscal_status, created_at, created_date, created_time, order_type,
+             kitchen_status, operative_date, remote_mobile_sale_id, sync_origin)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'directa',
+                   'ticket', 'Consumidor Final', ?, ?, ?, ?, ?, ?, 0, ?, 'emitida',
+                   ?, DATE(?), TIME(?), 'mostrador', 'pendiente', DATE(?), ?, 'app_movil')`,
+          [
+            invoiceNumber, users[0].id, branchId, cashRegisterId,
+            branchId, cashRegisterId, users[0].id,
+            status === 'pagada' ? branchId : null,
+            status === 'pagada' ? cashRegisterId : null,
+            status === 'pagada' ? users[0].id : null,
+            status === 'pagada' ? createdAt : null,
+            branchId, status === 'pagada' ? createdAt : null, status,
+            paymentMethod,
+            normalizeReportAppNumber(data.subtotal, total),
+            normalizeReportAppNumber(data.discount, 0),
+            normalizeReportAppNumber(data.tax, 0),
+            total, status === 'pagada' ? total : 0,
+            normalizeReportAppText(data.currency, 'DOP'),
+            createdAt, createdAt, createdAt, createdAt, doc.id,
+          ]
+        );
+
+        const productIds = [];
+        for (const item of items) {
+          const remoteProductId = normalizeReportAppText(item.productId);
+          const products = await conn.query(
+            `SELECT id, nombre, precio_compra, tracks_stock
+             FROM products
+             WHERE remote_report_product_id = ?
+                OR CAST(id AS CHAR) = ?
+             LIMIT 1`,
+            [remoteProductId, remoteProductId]
+          );
+          const product = products[0];
+          if (!product) {
+            throw new Error(`No se encontró en el POS el producto móvil "${item.productName || remoteProductId}".`);
+          }
+          const qty = Math.abs(normalizeReportAppNumber(item.quantity, 0));
+          if (qty <= 0) throw new Error(`Cantidad inválida en "${item.productName || product.nombre}".`);
+          const price = normalizeReportAppNumber(item.price, 0);
+          const lineTotal = normalizeReportAppNumber(item.total, price * qty);
+          await conn.query(
+            `INSERT INTO sale_items
+              (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, line_total)
+             VALUES (?, ?, ?, ?, ?, ?, 'unidad', 'Unidad', ?)`,
+            [
+              saleInsert.insertId, product.id, qty, price,
+              normalizeReportAppNumber(item.discount, 0),
+              normalizeReportAppNumber(item.taxRate, 0), lineTotal,
+            ]
+          );
+          productIds.push(Number(product.id));
+          if (status === 'pagada' && Number(product.tracks_stock ?? 1) !== 0) {
+            const stockChange = await changeBranchInventoryStock(conn, {
+              productId: product.id, branchId, quantityDelta: -qty, preventNegative: true,
+            });
+            await registerInventoryMovement(conn, {
+              productId: product.id, branchId, cashRegisterId,
+              saleId: Number(saleInsert.insertId), tipo: 'venta', cantidad: -qty,
+              stockAnterior: stockChange.previousStock, stockNuevo: stockChange.nextStock,
+              costoUnitario: Number(product.precio_compra || 0),
+              referenciaTipo: 'venta_movil', referenciaId: doc.id,
+              notas: `Salida por venta móvil ${invoiceNumber}`,
+              usuarioId: users[0].id, usuarioNombre: users[0].nombre || 'App Móvil',
+            });
+          }
+        }
+        return { saleId: Number(saleInsert.insertId), productIds, branchId };
+      });
+
+      await doc.ref.set({
+        synced: true, sincronizado: true, syncStatus: 'synced',
+        syncError: null, posSaleId: result.saleId,
+        syncedToPosAt: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      if (result.productIds.length) {
+        await syncProductsToReportsByIds(result.productIds, { branchId: result.branchId });
+      }
+      io.emit('mobile-sync:sale-received', { saleId: result.saleId, remoteSaleId: doc.id });
+      synced += 1;
+    } catch (error) {
+      errors += 1;
+      await doc.ref.set({
+        synced: false, syncStatus: 'error',
+        syncError: error?.message || String(error),
+        lastSyncErrorAt: FieldValue.serverTimestamp(),
+      }, { merge: true }).catch(() => {});
+    }
+  }
   return { synced, errors };
 }
 
@@ -520,7 +811,11 @@ function startReportAppProductSync() {
       // pool reciclada justo cuando este job (cada 60s) la reutiliza — sin
       // esto, cada hipo transitorio quedaba como un error en consola aunque
       // el siguiente ciclo lo fuera a resolver solo de todos modos.
-      await withRetryOnTransient(() => syncPendingReportAppProducts(), { maxAttempts: 2, baseDelayMs: 1500, label: 'reports-app-products sync' });
+      await withRetryOnTransient(async () => {
+        await syncPendingReportAppProducts();
+        await syncPendingMobileCustomers();
+        await syncPendingMobileSales();
+      }, { maxAttempts: 2, baseDelayMs: 1500, label: 'apps cloud sync' });
     } catch (error) {
       const code = error?.code ?? error?.details ?? '';
       // UNAUTHENTICATED (16) al arrancar = token OAuth aún no listo; se reintenta en 60s
@@ -1710,12 +2005,18 @@ app.use('/api/wa-bot', waBotRoutes);
 // hacer require() de vuelta hacia server.js (circular), así que se inyectan
 // una sola vez aquí — antes de cualquier bot.start(), sea por auto-arranque
 // o por la ruta POST /api/wa-bot/start — en vez de pasarlas por cada llamada.
-require('./server/integrations/whatsapp-bot').setDependencies({
-  insertQuotationRow, writeAuditLog, mapQuotationRow,
-  insertClientRow, findClientByPhone, updateClientAddress, updateClientLocation, updateClientPhone,
-  getClientById: getClientByIdMapped,
-  findClientByJid, updateClientJid
-});
+let waBotModule = null;
+app.locals.ensureWaBot = function ensureWaBot() {
+  if (waBotModule) return waBotModule;
+  waBotModule = require('./server/integrations/whatsapp-bot');
+  waBotModule.setDependencies({
+    insertQuotationRow, writeAuditLog, mapQuotationRow,
+    insertClientRow, findClientByPhone, updateClientAddress, updateClientLocation, updateClientPhone,
+    getClientById: getClientByIdMapped,
+    findClientByJid, updateClientJid
+  });
+  return waBotModule;
+};
 
 // Caché en memoria para sesiones autenticadas — permite que los tokens válidos
 // sigan funcionando cuando MySQL no está disponible (modo offline multicaja).
@@ -3426,6 +3727,43 @@ async function addColumnIfMissing(tableName, columnName, definition) {
   }
 }
 
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-2`;
+
+async function runCoreSchemaMigrations(migrate) {
+  await query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      migration_key VARCHAR(120) PRIMARY KEY,
+      applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  const rows = await query(
+    'SELECT migration_key FROM schema_migrations WHERE migration_key = ? LIMIT 1',
+    [CORE_SCHEMA_VERSION]
+  );
+  if (rows.length) {
+    console.log(`[performance] ${JSON.stringify({
+      phase: 'schema-migrations',
+      status: 'current',
+      version: CORE_SCHEMA_VERSION
+    })}`);
+    return false;
+  }
+
+  const startedAt = performance.now();
+  await migrate();
+  await query(
+    'INSERT INTO schema_migrations (migration_key) VALUES (?)',
+    [CORE_SCHEMA_VERSION]
+  );
+  console.log(`[performance] ${JSON.stringify({
+    phase: 'schema-migrations',
+    status: 'applied',
+    version: CORE_SCHEMA_VERSION,
+    elapsedMs: Math.round(performance.now() - startedAt)
+  })}`);
+  return true;
+}
+
 async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'tax_calculate_at_invoice_end', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'tax_include_in_product_price', 'TINYINT(1) NOT NULL DEFAULT 0');
@@ -4541,6 +4879,9 @@ async function ensureClientExtensions() {
   await addColumnIfMissing('clients', 'latitude', 'DECIMAL(10,7) DEFAULT NULL');
   await addColumnIfMissing('clients', 'longitude', 'DECIMAL(10,7) DEFAULT NULL');
   await addColumnIfMissing('clients', 'whatsapp_jid', 'VARCHAR(64) DEFAULT NULL');
+  await addColumnIfMissing('clients', 'remote_mobile_client_id', 'VARCHAR(191) DEFAULT NULL');
+  await addColumnIfMissing('clients', 'sync_origin', 'VARCHAR(40) DEFAULT NULL');
+  await query('CREATE INDEX idx_clients_remote_mobile_id ON clients (remote_mobile_client_id)').catch(() => {});
 }
 
 async function ensureSalesExtensions() {
@@ -4584,6 +4925,9 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sales', 'pdf_path', 'VARCHAR(512) DEFAULT NULL');
   await addColumnIfMissing('sales', 'created_date', 'DATE DEFAULT NULL');
   await addColumnIfMissing('sales', 'created_time', 'TIME DEFAULT NULL');
+  await addColumnIfMissing('sales', 'remote_mobile_sale_id', 'VARCHAR(191) DEFAULT NULL');
+  await addColumnIfMissing('sales', 'sync_origin', 'VARCHAR(40) DEFAULT NULL');
+  await query('CREATE UNIQUE INDEX idx_sales_remote_mobile_id ON sales (remote_mobile_sale_id)').catch(() => {});
   await query(`
     UPDATE sales
     SET created_date = DATE(created_at)
@@ -14022,8 +14366,22 @@ app.post('/api/sales', async (req, res) => {
     const prefix        = config[prefixField] || (documentType === 'factura-electronica' ? 'ECF-' : 'FAC-');
     await conn.query(`UPDATE config SET ${sequenceField} = ${sequenceField} + 1 WHERE id = 1`);
     const seqRows = await conn.query(`SELECT ${sequenceField} AS seq FROM config WHERE id = 1`);
-    const nextNumber = Number(seqRows[0]?.seq || 1);
-    const invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
+    let nextNumber = Number(seqRows[0]?.seq || 1);
+    let invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
+    // Una venta importada desde la app móvil puede haber reservado el próximo
+    // FAC antes que esta caja. Nunca confiar solamente en el contador: bajo la
+    // misma transacción se salta cualquier número que ya exista.
+    for (let attempts = 0; attempts < 100; attempts += 1) {
+      const invoiceCollision = await conn.query(
+        'SELECT id FROM sales WHERE invoice_number = ? LIMIT 1',
+        [invoiceNumber]
+      );
+      if (!invoiceCollision[0]) break;
+      await conn.query(`UPDATE config SET ${sequenceField} = ${sequenceField} + 1 WHERE id = 1`);
+      const retryRows = await conn.query(`SELECT ${sequenceField} AS seq FROM config WHERE id = 1`);
+      nextNumber = Number(retryRows[0]?.seq || (nextNumber + 1));
+      invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
+    }
 
     let clientId = sale.clientId || null;
     let clientName = 'Consumidor Final';
@@ -17272,13 +17630,29 @@ async function withRetryOnTransient(fn, { maxAttempts = 5, baseDelayMs = 800, la
 let degradedBootPending = false;
 let mysqlRuntimeFullyPrepared = false;
 let _deferredMysqlInitInFlight = false;
+let licenseStartupPromise = null;
+
+function startLicenseServicesInBackground() {
+  if (licenseStartupPromise) return licenseStartupPromise;
+  licenseStartupPromise = Promise.allSettled([
+    syncRemoteLicenseToLocalConfig({ force: true }),
+    ensureLicenseBackgroundSync(),
+  ]).then((results) => {
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        console.warn('[startup] Servicio remoto de licencia no disponible:', result.reason?.message || result.reason);
+      }
+    }
+  });
+  return licenseStartupPromise;
+}
 
 // Todo lo que antes vivía inline al final de la rama mysql de
 // prepareServerRuntime() — requiere una conexión MySQL viva. Se saltea por
 // completo en arranque degradado y se completa después, perezosamente,
 // cuando la principal vuelve a responder (ver completeDeferredMysqlInitIfNeeded).
 async function finishMysqlRuntimeInit() {
-  await Promise.all([
+  await runCoreSchemaMigrations(() => Promise.all([
         ensureConfigExtensions(),
         ensureUserExtensions(),
         ensureProductExtensions(),
@@ -17301,20 +17675,13 @@ async function finishMysqlRuntimeInit() {
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
         ensureSyncQueueTable().catch(e => console.warn('[sync-queue] init fallo:', e.message)),
-      ]);
+      ]));
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);
-      // Sync license first so the signed secure cache is validated before the app accepts traffic.
-      // Con un límite de tiempo: sin internet, syncRemoteLicenseToLocalConfig intenta hasta
-      // 4 consultas secuenciales a Firestore (por LICENSE_UID, principalFirebaseUid, businessKey,
-      // businessName) que pueden tardar decenas de segundos en fallar una por una — eso bloqueaba
-      // el arranque completo del servidor. La sincronización real sigue corriendo en segundo plano
-      // (el singleton remoteLicenseSyncPromise evita que se duplique) y actualizará el estado de
-      // licencia normalmente en cuanto termine; aquí solo dejamos de ESPERARLA para no colgar el boot.
-      await Promise.race([
-        syncRemoteLicenseToLocalConfig({ force: true }),
-        new Promise((resolve) => setTimeout(resolve, 5000))
-      ]).catch(() => {});
+      // La licencia local firmada se usa inmediatamente. La consulta remota no
+      // bloquea el arranque: el singleton evita duplicados y actualiza el estado
+      // en cuanto Firebase responda.
+      startLicenseServicesInBackground();
       // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
       trySyncAllPosAccountsToFirebase().catch(() => {});
       // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
@@ -17326,13 +17693,6 @@ async function finishMysqlRuntimeInit() {
       tryRepairPendingDeliveryOrdersInFirebase().catch(() => {});
       // Bootstrap inicial de la data histórica para la app de reportes.
       tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
-      // Mismo límite de tiempo que arriba: ensureLicenseBackgroundSync() intenta abrir un
-      // listener de Firestore (startFirestoreLicenseWatcher) y puede intentar resolver el
-      // licenseUid contra Firestore si no está en .env — ambos pueden tardar sin internet.
-      await Promise.race([
-        ensureLicenseBackgroundSync(),
-        new Promise((resolve) => setTimeout(resolve, 5000))
-      ]).catch(() => {});
       // Si Firebase se habilita después del arranque, reintenta el bootstrap histórico.
       setInterval(() => {
         tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
@@ -17476,7 +17836,7 @@ async function prepareServerRuntime() {
       console.log('Base de datos reparada automáticamente.');
     }
 
-    await Promise.all([
+    await runCoreSchemaMigrations(() => Promise.all([
       ensureConfigExtensions(),
       ensureUserExtensions(),
       ensureProductExtensions(),
@@ -17497,7 +17857,7 @@ async function prepareServerRuntime() {
       ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
-    ]);
+    ]));
 
     // ── Recuperación automática tras corrupción ──────────────────────────────
     // Si la BD existente resultó dañada (ej. corte de luz a mitad de escritura)
@@ -17522,8 +17882,9 @@ async function prepareServerRuntime() {
 
     const setup = await getSetupStatus();
     await ensureStarterCatalogSeededIfNeeded(setup.config);
-    // Sync license first so the signed secure cache is validated before the app accepts traffic.
-    await syncRemoteLicenseToLocalConfig({ force: true }).catch(() => {});
+    // Validación remota en segundo plano; el estado local firmado sigue
+    // disponible de inmediato para los controles de licencia.
+    startLicenseServicesInBackground();
     // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
     trySyncAllPosAccountsToFirebase().catch(() => {});
     // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
@@ -17535,7 +17896,6 @@ async function prepareServerRuntime() {
     tryRepairPendingDeliveryOrdersInFirebase().catch(() => {});
     // Bootstrap inicial de la data histórica para la app de reportes.
     tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
-    await ensureLicenseBackgroundSync();
     // Si Firebase se habilita después del arranque, reintenta el bootstrap histórico.
     setInterval(() => {
       tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
@@ -17699,7 +18059,13 @@ app.get('/api/update/check', (req, res) => {
 });
 
 async function startHttpServer(port, bindHost) {
+  const runtimeStartedAt = performance.now();
   await prepareServerRuntime();
+  console.log(`[performance] ${JSON.stringify({
+    phase: 'server-runtime-ready',
+    elapsedMs: Math.round(performance.now() - runtimeStartedAt),
+    dbClient: getDbClient()
+  })}`);
   
   // Detectar si terminal-config.json indica multicaja principal → usar 0.0.0.0 para LAN
   let finalBindHost = bindHost || '127.0.0.1';
@@ -17726,6 +18092,12 @@ async function startHttpServer(port, bindHost) {
   return new Promise((resolve, reject) => {
     httpServer.listen(port, finalBindHost, () => {
       console.log('[Tecno Caja] Servidor escuchando en ' + finalBindHost + ':' + port);
+      console.log(`[performance] ${JSON.stringify({
+        phase: 'http-listening',
+        elapsedMs: Math.round(performance.now() - runtimeStartedAt),
+        port,
+        bindHost: finalBindHost
+      })}`);
       resolve();
       // Auto-arranque del bot WhatsApp si estaba activo antes.
       // A diferencia de prepareServerRuntime() (que ya se esperó arriba y
@@ -17743,7 +18115,7 @@ async function startHttpServer(port, bindHost) {
           const cfg = {};
           rows.forEach(r => { cfg[r.config_key] = r.config_value; });
           if (cfg.wabot_autostart === '1' && cfg.wabot_owner_phone) {
-            const waBotMod = require('./server/integrations/whatsapp-bot');
+            const waBotMod = app.locals.ensureWaBot();
             let apiKey = null;
             const WABOT_AUTOSTART_KEY_COLUMN = { claude: 'wabot_claude_key', chatgpt: 'wabot_chatgpt_key', gemini: 'wabot_gemini_key' };
             const encryptedKey = cfg[WABOT_AUTOSTART_KEY_COLUMN[cfg.wabot_provider]];

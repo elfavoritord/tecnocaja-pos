@@ -9,23 +9,46 @@ import '../local/daos/catalogo_dao.dart';
 import 'inventario_repository.dart';
 
 class ProductoRepository {
-  ProductoRepository(this._productoDao, this._categoriaDao, this._inventarioRepo);
+  ProductoRepository(
+      this._productoDao, this._categoriaDao, this._inventarioRepo);
 
   final ProductoDao _productoDao;
   final CategoriaDao _categoriaDao;
   final InventarioRepository _inventarioRepo;
 
-  Future<List<Producto>> deEmpresa(String empresaId, {bool soloActivos = true}) {
-    return _productoDao.deEmpresa(empresaId, soloActivos: soloActivos);
+  Future<List<Producto>> deEmpresa(String empresaId,
+      {bool soloActivos = true}) async {
+    return _sinDuplicados(
+      await _productoDao.deEmpresa(empresaId, soloActivos: soloActivos),
+    );
   }
 
   Future<Producto?> porId(String id) => _productoDao.findById(id);
 
-  Future<Producto?> porCodigoBarras(String empresaId, String codigo) => _productoDao.porCodigoBarras(empresaId, codigo);
+  Future<Producto?> porCodigoBarras(String empresaId, String codigo) =>
+      _productoDao.porCodigoBarras(empresaId, codigo);
 
-  Future<List<Producto>> buscar(String empresaId, String termino) => _productoDao.buscar(empresaId, termino);
+  Future<List<Producto>> buscar(String empresaId, String termino) async =>
+      _sinDuplicados(await _productoDao.buscar(empresaId, termino));
 
-  Future<List<Producto>> favoritos(String empresaId) => _productoDao.favoritos(empresaId);
+  Future<List<Producto>> favoritos(String empresaId) async =>
+      _sinDuplicados(await _productoDao.favoritos(empresaId));
+
+  List<Producto> _sinDuplicados(List<Producto> productos) {
+    final vistos = <String>{};
+    return productos.where((producto) {
+      final barcode = producto.codigoBarras?.trim().toLowerCase();
+      final sku = producto.sku?.trim().toLowerCase();
+      final nombre = producto.nombre.trim().toLowerCase();
+      final clave = barcode?.isNotEmpty == true
+          ? 'barcode:$barcode'
+          : sku?.isNotEmpty == true
+              ? 'sku:$sku'
+              : 'producto:$nombre|${producto.precioVenta.toStringAsFixed(2)}|'
+                  '${producto.unidadMedida.trim().toLowerCase()}';
+      return vistos.add(clave);
+    }).toList();
+  }
 
   Future<Producto> crear({
     required String empresaId,
@@ -92,9 +115,11 @@ class ProductoRepository {
 
   Future<void> actualizar(Producto producto) => _productoDao.update(producto);
 
-  Future<void> desactivar(String id) => _productoDao.softDelete(id, nowIso: DateTime.now().toIso8601String());
+  Future<void> desactivar(String id) =>
+      _productoDao.softDelete(id, nowIso: DateTime.now().toIso8601String());
 
-  Future<Producto> duplicar(Producto original, {required String dispositivoId}) async {
+  Future<Producto> duplicar(Producto original,
+      {required String dispositivoId}) async {
     final now = DateTime.now();
     final copia = Producto(
       id: IdGenerator.newId(),
@@ -124,9 +149,14 @@ class ProductoRepository {
 
   // Categorias
 
-  Future<List<Categoria>> categoriasDe(String empresaId) => _categoriaDao.deEmpresa(empresaId);
+  Future<List<Categoria>> categoriasDe(String empresaId) =>
+      _categoriaDao.deEmpresa(empresaId);
 
-  Future<Categoria> crearCategoria({required String empresaId, required String nombre, String? color, String? dispositivoId}) async {
+  Future<Categoria> crearCategoria(
+      {required String empresaId,
+      required String nombre,
+      String? color,
+      String? dispositivoId}) async {
     final now = DateTime.now();
     final categoria = Categoria(
       id: IdGenerator.newId(),

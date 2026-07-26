@@ -144,7 +144,12 @@ service cloud.firestore {
       match /products/{productId} {
         allow read:   if isEmployee(businessId);
         allow create: if isBranchAdmin(businessId) && validBusiness(businessId);
-        allow update: if isBranchAdmin(businessId) && immutable(['businessId', 'createdBy', 'createdAt']);
+        // Algunos documentos POS legacy no tenían businessId. Se permite
+        // agregar/corregir ese campo únicamente al valor de la ruta actual;
+        // nunca mover el documento a otra empresa.
+        allow update: if isBranchAdmin(businessId)
+                      && validBusiness(businessId)
+                      && immutable(['createdBy', 'createdAt']);
         allow delete: if false;
       }
 
@@ -157,6 +162,22 @@ service cloud.firestore {
 
       // ── Clientes ───────────────────────────────────────────────────────────
       match /customers/{customerId} {
+        allow read:   if isEmployee(businessId);
+        allow create: if isEmployee(businessId) && validBusiness(businessId);
+        allow update: if isEmployee(businessId)
+                      && validBusiness(businessId)
+                      && immutable(['createdBy', 'createdAt']);
+        allow delete: if false;
+      }
+
+      // ── Clientes (alias legacy) ────────────────────────────────────────────
+      // server/sync/firebase-sync-service.js empuja clientes del POS a
+      // "clients" (no "customers"). Estas reglas idénticas cierran el hueco de
+      // acceso para lo que YA está escrito ahí sin tocar el código en producción
+      // ni migrar datos. Nuevo código (Cloud Functions, app móvil) debe escribir
+      // en "customers" — unificar el nombre queda pendiente de revisar contra
+      // tecno-caja-contadores antes de eliminar este alias.
+      match /clients/{customerId} {
         allow read:   if isEmployee(businessId);
         allow create: if isEmployee(businessId) && validBusiness(businessId);
         allow update: if isEmployee(businessId)  && immutable(['businessId', 'createdBy', 'createdAt']);
@@ -258,9 +279,14 @@ service cloud.firestore {
 
       // ── Usuarios del negocio (subdocumentos espejo) ────────────────────────
       match /users/{empUid} {
-        // Dueño/admin ve todos; empleado solo se ve a sí mismo
-        allow read:   if isOwnerOrAdmin(businessId)
-                      || (isAuth() && uid() == empUid && belongsToBusiness(businessId));
+        // Un usuario siempre puede verse a sí mismo. Los administradores
+        // solo ven personal asignado a alguna de sus sucursales; esto evita
+        // exponer perfiles de otra instalación si un businessId legado fue
+        // reutilizado accidentalmente.
+        allow read:   if (isAuth() && uid() == empUid && belongsToBusiness(businessId))
+                      || (isOwnerOrAdmin(businessId)
+                          && resource.data.get('branchIds', [])
+                             .hasAny(me().get('branchIds', [])));
         allow write:  if false;
       }
 
@@ -289,6 +315,21 @@ service cloud.firestore {
       // ── Cola de sincronización (visible para diagnóstico) ──────────────────
       match /syncQueue/{syncId} {
         allow read:   if isOwnerOrAdmin(businessId);
+        allow write:  if false;
+      }
+
+      // ── Secuencias fiscales NCF/e-CF ────────────────────────────────────────
+      // Solo el servicio fiscal central (Cloud Function con Admin SDK) puede
+      // leer y escribir esto. Ningún cliente (POS ni móvil) puede tocarlo
+      // directamente — es la garantía de que nunca se emiten dos NCF iguales.
+      match /ncfSequences/{sequenceId} {
+        allow read, write: if false;
+      }
+
+      // ── Dispositivos autorizados (POS y móviles vinculados) ────────────────
+      match /devices/{deviceId} {
+        allow read:   if isOwnerOrAdmin(businessId)
+                      || (isAuth() && resource.data.ownerUid == uid());
         allow write:  if false;
       }
 

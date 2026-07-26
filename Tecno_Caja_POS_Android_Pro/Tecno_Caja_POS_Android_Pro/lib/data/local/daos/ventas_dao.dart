@@ -15,10 +15,23 @@ class VentaDao extends BaseDao<Venta> {
   String idOf(Venta entity) => entity.id;
 
   Future<List<Venta>> deSesion(String sesionCajaId) {
-    return findAll(where: 'sesion_caja_id = ?', whereArgs: [sesionCajaId], orderBy: 'creado_en DESC');
+    return findAll(
+        where: 'sesion_caja_id = ?',
+        whereArgs: [sesionCajaId],
+        orderBy: 'creado_en DESC');
   }
 
-  Future<List<Venta>> deRango(String empresaId, DateTime desde, DateTime hasta) {
+  Future<List<Venta>> deEmpresa(String empresaId, {int limit = 500}) {
+    return findAll(
+      where: "empresa_id = ? AND estado != 'suspendida'",
+      whereArgs: [empresaId],
+      orderBy: 'creado_en DESC',
+      limit: limit,
+    );
+  }
+
+  Future<List<Venta>> deRango(
+      String empresaId, DateTime desde, DateTime hasta) {
     return findAll(
       where: 'empresa_id = ? AND creado_en >= ? AND creado_en <= ?',
       whereArgs: [empresaId, desde.toIso8601String(), hasta.toIso8601String()],
@@ -27,11 +40,18 @@ class VentaDao extends BaseDao<Venta> {
   }
 
   Future<List<Venta>> deCliente(String clienteId, {int limit = 100}) {
-    return findAll(where: 'cliente_id = ?', whereArgs: [clienteId], orderBy: 'creado_en DESC', limit: limit);
+    return findAll(
+        where: 'cliente_id = ?',
+        whereArgs: [clienteId],
+        orderBy: 'creado_en DESC',
+        limit: limit);
   }
 
   Future<List<Venta>> suspendidas(String empresaId) {
-    return findAll(where: "empresa_id = ? AND estado = 'suspendida'", whereArgs: [empresaId], orderBy: 'creado_en DESC');
+    return findAll(
+        where: "empresa_id = ? AND estado = 'suspendida'",
+        whereArgs: [empresaId],
+        orderBy: 'creado_en DESC');
   }
 }
 
@@ -61,12 +81,19 @@ class SesionCajaDao extends BaseDao<SesionCaja> {
   String idOf(SesionCaja entity) => entity.id;
 
   Future<SesionCaja?> abiertaEn(String cajaId) async {
-    final rows = await findAll(where: "caja_id = ? AND estado = 'abierta'", whereArgs: [cajaId], limit: 1);
+    final rows = await findAll(
+        where: "caja_id = ? AND estado = 'abierta'",
+        whereArgs: [cajaId],
+        limit: 1);
     return rows.isEmpty ? null : rows.first;
   }
 
   Future<List<SesionCaja>> historial(String sucursalId, {int limit = 50}) {
-    return findAll(where: 'sucursal_id = ?', whereArgs: [sucursalId], orderBy: 'abierta_en DESC', limit: limit);
+    return findAll(
+        where: 'sucursal_id = ?',
+        whereArgs: [sucursalId],
+        orderBy: 'abierta_en DESC',
+        limit: limit);
   }
 }
 
@@ -76,11 +103,15 @@ class MovimientoCajaDao extends BaseDao<MovimientoCaja> {
   @override
   Map<String, Object?> toMap(MovimientoCaja entity) => entity.toMap();
   @override
-  MovimientoCaja fromMap(Map<String, Object?> map) => MovimientoCaja.fromMap(map);
+  MovimientoCaja fromMap(Map<String, Object?> map) =>
+      MovimientoCaja.fromMap(map);
   @override
   String idOf(MovimientoCaja entity) => entity.id;
 
   Future<List<MovimientoCaja>> deSesion(String sesionCajaId) {
-    return findAll(where: 'sesion_caja_id = ?', whereArgs: [sesionCajaId], orderBy: 'ocurrido_en ASC');
+    return findAll(
+        where: 'sesion_caja_id = ?',
+        whereArgs: [sesionCajaId],
+        orderBy: 'ocurrido_en ASC');
   }
 }

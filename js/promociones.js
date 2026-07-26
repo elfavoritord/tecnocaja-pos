@@ -480,7 +480,7 @@ async function loadPromotionStats() {
   }
 }
 
-function exportPromotionStats(format) {
+async function exportPromotionStats(format) {
   const rows = _promotionStatsCache.promotions || [];
   if (!rows.length) { showToast('No hay datos de estadísticas para exportar.', 'warning'); return; }
   const headers = ['Promoción', 'Producto', 'Ventas', 'Unidades', 'Descontado', 'Ganancia', 'Clientes'];
@@ -497,6 +497,9 @@ function exportPromotionStats(format) {
   }
 
   if (format === 'excel') {
+    await window.VendorLoader.load('xlsx').catch((error) => {
+      showToast(error.message, 'error');
+    });
     if (typeof XLSX === 'undefined') { showToast('Librería de Excel no disponible.', 'error'); return; }
     const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
     const wb = XLSX.utils.book_new();
@@ -506,6 +509,9 @@ function exportPromotionStats(format) {
   }
 
   if (format === 'pdf') {
+    await window.VendorLoader.load('jspdf').catch((error) => {
+      showToast(error.message, 'error');
+    });
     const jsPDFCtor = (typeof jspdf !== 'undefined' && jspdf.jsPDF) ? jspdf.jsPDF : window.jsPDF;
     if (!jsPDFCtor) { showToast('Librería de PDF no disponible.', 'error'); return; }
     const doc = new jsPDFCtor();

@@ -125,12 +125,17 @@ FunctionEnd
 
 ; ── Hook principal de instalación ─────────────────────────────────────────────
 !macro customInstall
-  ${ifNot} ${isUpdated}
+  ${if} ${isUpdated}
+    ; En una actualización los datos, MariaDB, VC++ y el firewall ya existen.
+    ; Reconfigurarlos en cada versión hacía que una actualización pequeña
+    ; tardara casi lo mismo que una instalación completa.
+    DetailPrint "Actualización rápida: conservando base de datos y configuración existentes."
+  ${else}
     Call EnsureVCRedistReady
+    Call CreateAppDataFolders
+    Call EnsureMariaDbService
+    Call AddFirewallRule
   ${endIf}
-  Call CreateAppDataFolders
-  Call EnsureMariaDbService
-  Call AddFirewallRule
 !macroend
 
 ; ── Hook de desinstalación ────────────────────────────────────────────────────

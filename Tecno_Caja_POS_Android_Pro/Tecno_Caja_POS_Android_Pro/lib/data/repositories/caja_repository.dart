@@ -40,7 +40,22 @@ class CajaRepository {
   final MovimientoCajaDao _movimientoDao;
   final VentaDao _ventaDao;
 
-  Future<SesionCaja?> sesionAbiertaDe(String cajaId) => _sesionDao.abiertaEn(cajaId);
+  Future<SesionCaja?> sesionAbiertaDe(String cajaId) =>
+      _sesionDao.abiertaEn(cajaId);
+
+  Future<SesionCaja?> sesionAbiertaDeUsuario(
+    String usuarioId, {
+    String? empresaId,
+  }) async {
+    final companyFilter = empresaId == null ? '' : ' AND empresa_id = ?';
+    final sesiones = await _sesionDao.findAll(
+      where: "usuario_apertura_id = ? AND estado = 'abierta'$companyFilter",
+      whereArgs: [usuarioId, if (empresaId != null) empresaId],
+      orderBy: 'abierta_en DESC',
+      limit: 1,
+    );
+    return sesiones.isEmpty ? null : sesiones.first;
+  }
 
   Future<SesionCaja> abrir({
     required String empresaId,
@@ -53,7 +68,8 @@ class CajaRepository {
   }) async {
     final abiertaExistente = await _sesionDao.abiertaEn(cajaId);
     if (abiertaExistente != null) {
-      throw const ValidationException(message: 'Esta caja ya tiene un turno abierto.');
+      throw const ValidationException(
+          message: 'Esta caja ya tiene un turno abierto.');
     }
 
     final now = DateTime.now();
@@ -63,6 +79,34 @@ class CajaRepository {
       montoApertura: montoApertura,
       abiertaEn: now,
       tasaCambioUsd: tasaCambioUsd,
+      empresaId: empresaId,
+      sucursalId: sucursalId,
+      cajaId: cajaId,
+      dispositivoId: dispositivoId,
+      creadoEn: now,
+      actualizadoEn: now,
+    );
+    await _sesionDao.insert(sesion);
+    return sesion;
+  }
+
+  Future<SesionCaja> recuperarTurnoNube({
+    required String empresaId,
+    required String sucursalId,
+    required String cajaId,
+    required String usuarioId,
+    required double montoApertura,
+    required DateTime abiertaEn,
+    required String dispositivoId,
+  }) async {
+    final existente = await _sesionDao.abiertaEn(cajaId);
+    if (existente != null) return existente;
+    final now = DateTime.now();
+    final sesion = SesionCaja(
+      id: IdGenerator.newId(),
+      usuarioAperturaId: usuarioId,
+      montoApertura: montoApertura,
+      abiertaEn: abiertaEn,
       empresaId: empresaId,
       sucursalId: sucursalId,
       cajaId: cajaId,
@@ -109,7 +153,8 @@ class CajaRepository {
       }
     }
 
-    final montoEsperado = sesion.montoApertura + efectivo + entradas - salidas - gastos;
+    final montoEsperado =
+        sesion.montoApertura + efectivo + entradas - salidas - gastos;
 
     return ResumenCierreCaja(
       montoApertura: sesion.montoApertura,
@@ -179,9 +224,11 @@ class CajaRepository {
     return movimiento;
   }
 
-  Future<List<MovimientoCaja>> movimientosDe(String sesionCajaId) => _movimientoDao.deSesion(sesionCajaId);
+  Future<List<MovimientoCaja>> movimientosDe(String sesionCajaId) =>
+      _movimientoDao.deSesion(sesionCajaId);
 
-  Future<List<SesionCaja>> historial(String sucursalId) => _sesionDao.historial(sucursalId);
+  Future<List<SesionCaja>> historial(String sucursalId) =>
+      _sesionDao.historial(sucursalId);
 }
 
 final cajaRepositoryProvider = Provider<CajaRepository>((ref) {

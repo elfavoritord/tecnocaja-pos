@@ -16,6 +16,8 @@ class EmpresaRepository {
 
   Future<Empresa?> actual() => _empresaDao.actual();
 
+  Future<Empresa?> porId(String id) => _empresaDao.findById(id);
+
   Future<Empresa> crear({
     required String nombre,
     String? nombreComercial,
@@ -76,7 +78,8 @@ class EmpresaRepository {
     return sucursal;
   }
 
-  Future<List<Sucursal>> sucursalesDe(String empresaId) => _sucursalDao.deEmpresa(empresaId);
+  Future<List<Sucursal>> sucursalesDe(String empresaId) =>
+      _sucursalDao.deEmpresa(empresaId);
 
   Future<Caja> crearCaja({
     required String empresaId,
@@ -100,7 +103,8 @@ class EmpresaRepository {
     return caja;
   }
 
-  Future<List<Caja>> cajasDe(String sucursalId) => _cajaDao.deSucursal(sucursalId);
+  Future<List<Caja>> cajasDe(String sucursalId) =>
+      _cajaDao.deSucursal(sucursalId);
 }
 
 final empresaRepositoryProvider = Provider<EmpresaRepository>((ref) {

@@ -5,6 +5,7 @@ const { app, BrowserWindow, dialog, ipcMain, shell, clipboard, nativeImage, scre
 const http = require('http');
 const net = require('net');
 const os = require('os');
+const { performance } = require('perf_hooks');
 const { printReceipt, printCorteReceipt, openCashDrawer: escposOpenDrawer } = require('./thermal-printer');
 const { printLabelsTspl } = require('./tspl-printer');
 const { openDrawer: openCashDrawerAll, testDrawer } = require('./cash-drawer');
@@ -43,6 +44,15 @@ let currentAppUrl = `http://127.0.0.1:${currentServerPort}`;
 let mysqlWatchdogTimer = null;
 const MIN_BACKUP_NOTICE_MS = 5000;
 const STARTUP_LOG_FILE = path.join(process.env.TEMP || __dirname, 'tecnocaja-electron-startup.log');
+const startupStartedAt = performance.now();
+const startupMarks = new Map([['electron', startupStartedAt]]);
+
+function markStartup(name, startedAt = startupStartedAt) {
+  const elapsedMs = Math.round(performance.now() - startedAt);
+  startupMarks.set(name, performance.now());
+  logStartup(`[performance] ${JSON.stringify({ phase: name, elapsedMs })}`);
+  return elapsedMs;
+}
 // Switches de Chromium deben ir ANTES de app.whenReady().
 // Previene el crash "Network service crashed" en Electron 41 / Chromium 130+:
 // Chromium bloquea solicitudes de páginas web a localhost (Private Network Access)
@@ -52,7 +62,6 @@ app.commandLine.appendSwitch('disable-features', [
   'BlockInsecurePrivateNetworkRequests',
   'NetworkServiceInProcess2',
 ].join(','));
-app.commandLine.appendSwitch('disable-http-cache');
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -1927,6 +1936,7 @@ window._setError    = _setError;
 }
 
 async function createWindow() {
+  const createWindowStartedAt = performance.now();
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -2030,7 +2040,11 @@ async function createWindow() {
   });
 
   mainWindow.webContents.loadURL(currentAppUrl, { userAgent: 'Tecno Caja-Electron' });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show();
+    markStartup('window-ready-to-show', createWindowStartedAt);
+    markStartup('pos-visible');
+  });
 
   // server.js corre en este mismo proceso (ver bootstrapServer). Cuando algo
   // ahí adentro bloquea el event loop por varios segundos seguidos (ej. Puppeteer
@@ -2049,15 +2063,13 @@ async function createWindow() {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBounds(b);
     });
   };
-  // Watchdog liviano de respaldo, por si algo distinto al bot de WhatsApp
-  // congela la pintura sin pasar por pushState().
-  const repaintWatchdog = setInterval(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-      mainWindow.webContents.invalidate();
-    }
-  }, 2000);
+  // Repintar solo cuando Chromium reporta que la vista dejó de responder.
+  // El watchdog anterior invalidaba toda la ventana cada 2 segundos durante
+  // toda la sesión, incluso cuando el POS estaba inactivo.
+  const handleUnresponsive = () => global.__forceRepaint?.();
+  mainWindow.webContents.on('unresponsive', handleUnresponsive);
   mainWindow.on('closed', () => {
-    clearInterval(repaintWatchdog);
+    mainWindow?.webContents?.removeListener('unresponsive', handleUnresponsive);
     global.__forceRepaint = null;
   });
 }
@@ -2468,6 +2480,7 @@ async function canReuseExistingServerForBind(port, bindHost) {
 
 async function startServer() {
   if (serverRuntime) return;
+  const serverStartedAt = performance.now();
   const appRoot = app.getAppPath();
   const { prepareRuntimeEnvironment } = require(path.join(appRoot, 'scripts', 'runtime-bootstrap'));
   const runtime = prepareRuntimeEnvironment({
@@ -2516,6 +2529,7 @@ async function startServer() {
     currentServerPort = targetPort;
     currentAppUrl = buildLocalUrl(targetPort);
     logStartup(`Internal server ready on port ${targetPort}`);
+    markStartup('express-ready', serverStartedAt);
     startMySqlWatchdog(appRoot);
     if (isServeoTunnelEnabled()) {
       startServeoTunnel();
@@ -3653,7 +3667,9 @@ function setupAutoUpdater() {
   if (!updaterReady || !autoUpdater) return;
 
   // ── Configuración ──────────────────────────────────────────────────────
-  autoUpdater.autoDownload        = false;  // El usuario decide cuándo descargar
+  // Descarga en segundo plano. electron-updater usa el .blockmap publicado
+  // para bajar únicamente los bloques que cambiaron entre versiones.
+  autoUpdater.autoDownload        = true;
   autoUpdater.autoInstallOnAppQuit = false; // Solo instalar cuando el usuario confirme
   autoUpdater.allowDowngrade      = false;  // No permite versiones menores
 
@@ -3716,6 +3732,15 @@ function setupAutoUpdater() {
     logStartup('[updater] Error: ' + msg);
     sendUpdaterEvent('error', { message: msg });
   });
+
+  // No competir con el arranque, la base de datos ni la primera pantalla.
+  // La comprobación y descarga ocurren cuando la aplicación ya está lista.
+  setTimeout(() => {
+    if (app.isQuitting || isInstallingUpdate) return;
+    autoUpdater.checkForUpdates().catch((err) => {
+      logStartup('[updater] Verificación automática omitida: ' + (err?.message || err));
+    });
+  }, 30000);
 }
 
 /** Convierte releaseNotes (string HTML o array) a array de strings limpios */
@@ -3807,6 +3832,7 @@ ipcMain.handle('updater:get-version', () => ({
 
 app.whenReady().then(async function() {
   try {
+    markStartup('electron-ready');
     // ── Detección de modo thin-client ───────────────────────────────────────
     var thinCfg = readThinClientConfig();
     if (thinCfg) {
@@ -3858,7 +3884,10 @@ app.whenReady().then(async function() {
         webPreferences: { nodeIntegration: false, contextIsolation: true },
       });
       splashWin.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(splashHtml)}`);
-      splashWin.once('ready-to-show', () => splashWin.show());
+      splashWin.once('ready-to-show', () => {
+        splashWin.show();
+        markStartup('splash-visible');
+      });
 
       // Arrancar servidor
       await startServer();
