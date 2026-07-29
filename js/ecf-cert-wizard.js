@@ -500,7 +500,7 @@ const ECF_CERT_WIZARD = (() => {
       renderStep8recv,// 8  Inicio Prueba Recepción e-CF
       renderStep9ecf, // 9  Recepción e-CF
       renderStep10inicio,// 10 Inicio Prueba Recep. ACECF
-      renderStep6,    // 11 Recepción Aprobación Comercial
+      renderStep11,   // 11 Recepción Aprobación Comercial
       renderStep12prod,// 12 URL Servicios Producción
       renderStep13decl,// 13 Declaración Jurada
       renderStep14verify,// 14 Verificación Estatus
@@ -1402,28 +1402,6 @@ const ECF_CERT_WIZARD = (() => {
     }
   }
 
-  // ── Placeholder para pasos aún no implementados ───────────────────────────────
-  function renderStepTodo() {
-    const step = STEPS[WZ.activeStep - 1] || {};
-    return `
-      ${stepHeader(WZ.activeStep)}
-      <div class="ecf-wz-card" style="text-align:center;padding:2rem">
-        <div style="font-size:2.5rem;margin-bottom:.75rem">🔜</div>
-        <div style="font-weight:800;font-size:1rem;color:var(--text);margin-bottom:.4rem">${h(step.label)}</div>
-        <div style="font-size:.85rem;color:var(--text2);margin-bottom:1.2rem;max-width:400px;margin-left:auto;margin-right:auto">
-          Este paso se activará en el wizard cuando llegues a él en el portal DGII. Comparte el screenshot para implementarlo.
-        </div>
-        <button class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD._confirmTodoStep()">
-          ✅ Marcar como completado manualmente →
-        </button>
-      </div>
-    `;
-  }
-
-  async function _confirmTodoStep() {
-    await markDone(WZ.activeStep, { manual: true, confirmedAt: new Date().toISOString() });
-  }
-
   async function validateStoredCertificate() {
     try {
       const result = await fiscalApi('POST', '/certificate/validate-stored');
@@ -2317,6 +2295,9 @@ const ECF_CERT_WIZARD = (() => {
           <div style="flex:1;min-width:0">
             <div style="font-size:.82rem;color:var(--text1);font-weight:600">${h(doc.label)}</div>
             <div style="font-size:.73rem;color:var(--text3);font-family:monospace">${h(doc.encf)} <span style="color:${doc.estado==='aceptado'?'#4ade80':'#fbbf24'};font-family:sans-serif;font-size:.7rem">${doc.estado}</span></div>
+            <div style="font-size:.7rem;font-family:sans-serif;color:${doc.dgiiVerificado?'#4ade80':'#fbbf24'}" title="Si escaneas el QR de este PDF ahora mismo, ¿el portal público de DGII ya lo reconoce como aceptado?">
+              ${doc.dgiiVerificado ? `✅ QR verificado en DGII (${h(doc.dgiiEstadoPublico||'Aceptado')})` : '⏳ DGII aún no indexó el QR públicamente — puede tardar'}
+            </div>
           </div>
           <div style="display:flex;gap:.4rem;flex-shrink:0">
             <a href="/api/ecf/print/repr-impresa/${encodeURIComponent(doc.encf)}" target="_blank"
@@ -2374,8 +2355,26 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function runStep5() {
-    setBtnState('ecf-wz-step5-btn', true, 'Confirmando…');
+    if (!_step5Docs || !_step5Docs.length) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('Aún no se cargan los comprobantes del Paso 4/5. Espera a que terminen de cargar o pulsa "Recargar".', 'warning');
+      return;
+    }
     const checked = WZ.state?.steps?.[5]?.data?.checked || {};
+    const noAceptado = _step5Docs.filter((d) => d.estado !== 'aceptado');
+    const noSubido = _step5Docs.filter((d) => d.estado === 'aceptado' && !checked[d.key]);
+    if (noAceptado.length) {
+      if (typeof showFiscalToast === 'function') {
+        showFiscalToast(`Falta que DGII acepte: ${noAceptado.map((d) => d.label || d.encf).join(', ')}`, 'error');
+      }
+      return;
+    }
+    if (noSubido.length) {
+      if (typeof showFiscalToast === 'function') {
+        showFiscalToast(`Falta marcar como subido: ${noSubido.map((d) => d.label || d.encf).join(', ')}`, 'warning');
+      }
+      return;
+    }
+    setBtnState('ecf-wz-step5-btn', true, 'Confirmando…');
     await markDone(5, { confirmed: true, checked, confirmedAt: new Date().toISOString() });
   }
 
@@ -2512,8 +2511,28 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function runStep7url() {
-    setBtnState('ecf-wz-step7url-btn', true, 'Confirmando…');
-    await markDone(7, { confirmed: true, urls: WZ._step7Urls || {}, confirmedAt: new Date().toISOString() });
+    const urls = WZ._step7Urls || {};
+    if (!urls.semillaUrl || !urls.recepcionUrl || !urls.aprobacionUrl) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('Configura primero la URL base en Configuración → DGII.', 'warning');
+      return;
+    }
+    setBtnState('ecf-wz-step7url-btn', true, 'Validando URLs…');
+    try {
+      const check = await fiscalApi('POST', '/certification/validate-service-urls', {
+        urls: { semilla: urls.semillaUrl, recepcion: urls.recepcionUrl, aprobacion: urls.aprobacionUrl },
+      });
+      if (!check.ok) {
+        const msg = (check.errors || []).map((e) => `${e.name}: ${e.reason}`).join(' · ');
+        if (typeof showFiscalToast === 'function') showFiscalToast(`URLs inválidas — ${msg}`, 'error');
+        setBtnState('ecf-wz-step7url-btn', false, '✅ Confirmar URLs actualizadas en portal →');
+        return;
+      }
+    } catch (err) {
+      if (typeof showFiscalToast === 'function') showFiscalToast(`Error al validar URLs: ${err.message}`, 'error');
+      setBtnState('ecf-wz-step7url-btn', false, '✅ Confirmar URLs actualizadas en portal →');
+      return;
+    }
+    await markDone(7, { confirmed: true, urls, confirmedAt: new Date().toISOString() });
   }
 
   // ── PASO 8: Inicio Prueba Recepción e-CF ──────────────────────────────────────
@@ -2663,9 +2682,20 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function runStep9ecf() {
-    setBtnState('ecf-wz-step9-btn', true, 'Guardando…');
+    const startedAt = WZ.state?.steps?.[8]?.data?.startedAt;
     const result = await fiscalApi('GET', '/reception/received').catch(() => ({ items: [] }));
-    const received = (result?.items || []).filter(i => i.type === 'recepcion-ecf').length;
+    const received = (result?.items || []).filter((i) => {
+      if (i.type !== 'recepcion-ecf') return false;
+      if (!startedAt) return true;
+      return new Date(i.receivedAt).getTime() >= new Date(startedAt).getTime();
+    }).length;
+    if (received === 0) {
+      if (typeof showFiscalToast === 'function') {
+        showFiscalToast('Todavía no hay ningún e-CF recibido de DGII desde que iniciaste la prueba en el Paso 8. Espera a que DGII envíe.', 'warning');
+      }
+      return;
+    }
+    setBtnState('ecf-wz-step9-btn', true, 'Guardando…');
     await markDone(9, { received, completedAt: new Date().toISOString() });
   }
 
@@ -2787,9 +2817,38 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function runStep12prod() {
-    setBtnState('ecf-wz-step12-btn', true, 'Guardando…');
     const input = document.getElementById('step12-base-url');
     const baseUrl = String(input?.value || '').trim().replace(/\/+$/, '');
+    if (!baseUrl) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('Ingresa la URL base de producción.', 'warning');
+      return;
+    }
+    setBtnState('ecf-wz-step12-btn', true, 'Validando URLs…');
+    try {
+      const check = await fiscalApi('POST', '/certification/validate-service-urls', {
+        urls: {
+          semilla: `${baseUrl}/fe/autenticacion/api/semilla`,
+          recepcion: `${baseUrl}/fe/recepcion/api/ecf`,
+          aprobacion: `${baseUrl}/fe/aprobacioncomercial/api/ecf`,
+        },
+      });
+      if (!check.ok) {
+        const msg = (check.errors || []).map((e) => `${e.name}: ${e.reason}`).join(' · ');
+        if (typeof showFiscalToast === 'function') showFiscalToast(`URLs inválidas — ${msg}`, 'error');
+        setBtnState('ecf-wz-step12-btn', false, '✅ Confirmar URLs de producción registradas en portal →');
+        return;
+      }
+    } catch (err) {
+      if (typeof showFiscalToast === 'function') showFiscalToast(`Error al validar URLs: ${err.message}`, 'error');
+      setBtnState('ecf-wz-step12-btn', false, '✅ Confirmar URLs de producción registradas en portal →');
+      return;
+    }
+    setBtnState('ecf-wz-step12-btn', true, 'Guardando…');
+    try {
+      await fiscalApi('POST', '/wizard/set-production-base-url', { publicBaseUrl: baseUrl });
+    } catch (err) {
+      if (typeof showFiscalToast === 'function') showFiscalToast(`URLs validadas pero no se pudo guardar en configuración: ${err.message}`, 'warning');
+    }
     await markDone(12, { baseUrl, confirmedAt: new Date().toISOString() });
   }
 
@@ -2867,7 +2926,7 @@ const ECF_CERT_WIZARD = (() => {
     try {
       const form = new FormData();
       form.append('xml', fileInput.files[0]);
-      const result = await fiscalApi('POST', '/wizard/sign-postulation-xml', form, true);
+      const result = await fiscalApi('POST', '/wizard/sign-declaration-xml', form, true);
       if (result?.ok && result?.signedXml) {
         const blob = new Blob([result.signedXml], { type: 'application/xml' });
         const url = URL.createObjectURL(blob);
@@ -2910,6 +2969,7 @@ const ECF_CERT_WIZARD = (() => {
   // ── PASO 14: Verificación Estatus ─────────────────────────────────────────────
   function renderStep14verify() {
     const completed = isCompleted(14);
+    const savedData = WZ.state?.steps?.[14]?.data || {};
     return `
       ${stepHeader(14)}
       ${completed ? `
@@ -2917,8 +2977,10 @@ const ECF_CERT_WIZARD = (() => {
           <div style="background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.25);border-radius:10px;padding:1rem;display:flex;align-items:center;gap:.85rem">
             <span style="font-size:2rem">✅</span>
             <div>
-              <div style="font-weight:800;color:#4ade80">Verificación de estatus aprobada por DGII</div>
-              <div style="font-size:.78rem;color:var(--text3);margin-top:.2rem">Completado el ${h(fmtDateTime(WZ.state?.steps?.[14]?.completedAt))}</div>
+              <div style="font-weight:800;color:#4ade80">Verificación de estatus confirmada</div>
+              <div style="font-size:.78rem;color:var(--text3);margin-top:.2rem">
+                Confirmado por ${h(savedData.confirmedBy||'—')} el ${h(fmtDateTime(WZ.state?.steps?.[14]?.completedAt))}
+              </div>
             </div>
           </div>
           <button class="ecf-wz-action-btn" style="margin-top:.85rem" onclick="ECF_CERT_WIZARD.goToStep(15)">
@@ -2933,30 +2995,77 @@ const ECF_CERT_WIZARD = (() => {
             y en condiciones de ser emisor electrónico. Este proceso es automático — puede tomar hasta <strong>24 horas hábiles</strong>.
           </div>
           <div style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:8px;padding:.75rem .9rem;font-size:.82rem;color:#fbbf24;margin-bottom:.75rem">
-            ⏳ Monitorea el portal DGII CerteCF. Cuando el paso 14 esté en verde, confirma aquí.
+            ⏳ Monitorea el portal DGII CerteCF. Cuando el paso 14 esté en verde ahí, sube la evidencia aquí abajo.
           </div>
-          <div style="background:rgba(108,99,255,.06);border:1px solid rgba(108,99,255,.2);border-radius:8px;padding:.75rem .9rem;font-size:.82rem;color:var(--text2);margin-bottom:.85rem">
-            📋 Asegúrate de que el RNC esté activo en DGII, sin deudas fiscales pendientes.
+        </div>
+        <div class="ecf-wz-card">
+          <div class="ecf-wz-card-title">Evidencia de verificación manual</div>
+          <div style="display:grid;gap:.75rem;max-width:420px">
+            <div>
+              <label style="font-size:.78rem;color:var(--text3);display:block;margin-bottom:.3rem">Confirmado por</label>
+              <input id="step14-confirmed-by" type="text" placeholder="Tu nombre"
+                style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem;color:var(--text);font-size:.83rem;box-sizing:border-box">
+            </div>
+            <label class="ecf-wz-dropzone" for="ecf-wz-step14-input" id="ecf-wz-step14-label">
+              <div style="font-size:1.5rem;margin-bottom:.3rem">📸</div>
+              <div>Subir captura del portal DGII CerteCF</div>
+              <div style="font-size:.71rem;color:var(--text3);margin-top:.15rem">Muestra el Paso 14 en verde/aprobado</div>
+            </label>
+            <input type="file" id="ecf-wz-step14-input" accept="image/*,.pdf" style="display:none"
+              onchange="ECF_CERT_WIZARD._onStep14FileChange(this)">
+            <button id="ecf-wz-step14-btn" class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD.runStep14verify()">
+              ✅ Guardar evidencia y confirmar →
+            </button>
           </div>
-          <button id="ecf-wz-step14-btn" class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD.runStep14verify()">
-            ✅ DGII aprobó la verificación de estatus →
-          </button>
         </div>
       `}
     `;
   }
 
-  async function runStep14verify() {
-    setBtnState('ecf-wz-step14-btn', true, 'Guardando…');
-    await markDone(14, { verified: true, verifiedAt: new Date().toISOString() });
+  function _onStep14FileChange(input) {
+    const label = document.getElementById('ecf-wz-step14-label');
+    if (label && input.files?.[0]) {
+      label.classList.add('has-file');
+      label.innerHTML = `<div style="font-size:1.2rem">✓</div>
+        <div style="font-weight:600">${h(input.files[0].name)}</div>
+        <div style="font-size:.71rem;color:var(--text3)">${(input.files[0].size/1024).toFixed(0)} KB</div>`;
+    }
   }
 
-  // ── PASO 6/11: Aprobaciones Comerciales ─────────────────────────────────────────
-  function renderStep6() {
-    const completed = isCompleted(6);
-    const savedData = WZ.state?.steps?.[6]?.data || {};
+  async function runStep14verify() {
+    const confirmedBy = String(document.getElementById('step14-confirmed-by')?.value || '').trim();
+    const fileInput = document.getElementById('ecf-wz-step14-input');
+    if (!confirmedBy) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('Escribe quién confirmó la verificación.', 'warning');
+      return;
+    }
+    if (!fileInput?.files?.[0]) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('Sube la captura del portal DGII como evidencia.', 'warning');
+      return;
+    }
+    setBtnState('ecf-wz-step14-btn', true, 'Guardando…');
+    try {
+      const form = new FormData();
+      form.append('evidence', fileInput.files[0]);
+      const upload = await fiscalApi('POST', '/wizard/step14-evidence', form, true);
+      await markDone(14, {
+        verificationSource: 'manual',
+        confirmedBy,
+        confirmedAt: new Date().toISOString(),
+        portalEvidence: upload.path,
+      });
+    } catch (err) {
+      setBtnState('ecf-wz-step14-btn', false, '✅ Guardar evidencia y confirmar →');
+      if (typeof showFiscalToast === 'function') showFiscalToast(`Error: ${err.message}`, 'error');
+    }
+  }
+
+  // ── PASO 11: Recepción Aprobación Comercial (ACECF) ─────────────────────────────
+  function renderStep11() {
+    const completed = isCompleted(11);
+    const savedData = WZ.state?.steps?.[11]?.data || {};
     return `
-      ${stepHeader(6)}
+      ${stepHeader(11)}
       ${completed ? `
         <div class="ecf-wz-card">
           <div style="background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.25);border-radius:10px;padding:1rem;display:flex;align-items:center;gap:.85rem">
@@ -2964,12 +3073,12 @@ const ECF_CERT_WIZARD = (() => {
             <div>
               <div style="font-weight:800;color:#4ade80">Aprobaciones Comerciales enviadas</div>
               <div style="font-size:.78rem;color:var(--text3);margin-top:.2rem">
-                ${h(savedData.accepted||'—')}/${h(savedData.total||'—')} aceptadas · ${h(fmtDateTime(WZ.state?.steps?.[6]?.completedAt))}
+                ${h(savedData.accepted||'—')}/${h(savedData.total||'—')} aceptadas · ${h(fmtDateTime(WZ.state?.steps?.[11]?.completedAt))}
               </div>
             </div>
           </div>
-          <button class="ecf-wz-action-btn" style="margin-top:.85rem" onclick="ECF_CERT_WIZARD.goToStep(7)">
-            Ir al Paso 7 →
+          <button class="ecf-wz-action-btn" style="margin-top:.85rem" onclick="ECF_CERT_WIZARD.goToStep(12)">
+            Ir al Paso 12 →
           </button>
         </div>
       ` : `
@@ -2992,8 +3101,8 @@ const ECF_CERT_WIZARD = (() => {
             </label>
             <input type="file" id="ecf-wz-acecf-input" accept=".xlsx,.xls,.ods" style="display:none"
               onchange="ECF_CERT_WIZARD._onAcecfFileChange(this)">
-            <div id="ecf-wz-step6-result" style="display:none"></div>
-            <button id="ecf-wz-step6-btn" class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD.runStep6()">
+            <div id="ecf-wz-step11-result" style="display:none"></div>
+            <button id="ecf-wz-step11-btn" class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD.runStep11()">
               ✅ Enviar Aprobaciones Comerciales →
             </button>
           </div>
@@ -3012,15 +3121,15 @@ const ECF_CERT_WIZARD = (() => {
     }
   }
 
-  async function runStep6() {
+  async function runStep11() {
     const fileInput = document.getElementById('ecf-wz-acecf-input');
-    const resultEl = document.getElementById('ecf-wz-step6-result');
+    const resultEl = document.getElementById('ecf-wz-step11-result');
     if (!fileInput?.files?.[0]) {
       if (typeof showFiscalToast === 'function') showFiscalToast('Selecciona el Excel de Aprobaciones Comerciales.', 'warning');
       return;
     }
 
-    setBtnState('ecf-wz-step6-btn', true, 'Enviando Aprobaciones…');
+    setBtnState('ecf-wz-step11-btn', true, 'Enviando Aprobaciones…');
     if (resultEl) resultEl.style.display = 'none';
 
     try {
@@ -3054,190 +3163,14 @@ const ECF_CERT_WIZARD = (() => {
       }
 
       if (isOk) {
-        await markDone(6, { accepted, total, message: result.message });
+        await markDone(11, { accepted, total, message: result.message });
       } else {
-        setBtnState('ecf-wz-step6-btn', false, '✅ Enviar Aprobaciones Comerciales →');
+        setBtnState('ecf-wz-step11-btn', false, '✅ Enviar Aprobaciones Comerciales →');
       }
     } catch (err) {
-      setBtnState('ecf-wz-step6-btn', false, '✅ Enviar Aprobaciones Comerciales →');
+      setBtnState('ecf-wz-step11-btn', false, '✅ Enviar Aprobaciones Comerciales →');
       if (typeof showFiscalToast === 'function') showFiscalToast(`Error: ${err.message}`, 'error');
     }
-  }
-
-  // ── PASO 7: Representación Impresa ────────────────────────────────────────────
-  function renderStep7() {
-    const completed = isCompleted(7);
-    return `
-      ${stepHeader(7)}
-      ${completed ? `
-        <div class="ecf-wz-card">
-          <div style="background:rgba(22,163,74,.08);border:1px solid rgba(22,163,74,.25);border-radius:10px;padding:1rem;display:flex;align-items:center;gap:.85rem">
-            <span style="font-size:2rem">✅</span>
-            <div>
-              <div style="font-weight:800;color:#4ade80">Representación Impresa confirmada</div>
-              <div style="font-size:.78rem;color:var(--text3);margin-top:.2rem">
-                Completado el ${h(fmtDateTime(WZ.state?.steps?.[7]?.completedAt))}
-              </div>
-            </div>
-          </div>
-          <button class="ecf-wz-action-btn" style="margin-top:.85rem" onclick="ECF_CERT_WIZARD.goToStep(8)">
-            Ver certificación completada 🎉
-          </button>
-        </div>
-      ` : `
-        <div class="ecf-wz-card">
-          <div class="ecf-wz-card-title">Requisitos DGII para la representación impresa</div>
-          <div style="font-size:.82rem;color:var(--text2);line-height:1.8;margin-bottom:.85rem">
-            <p style="margin:0 0 .5rem">La representación impresa (RI) es el comprobante en papel o PDF que el comercio entrega al cliente. Debe incluir:</p>
-            <div style="display:grid;gap:.3rem">
-              ${['eNCF (código del comprobante)', 'RNC del emisor y del comprador', 'Fecha y hora de emisión',
-                 'Detalle de artículos/servicios', 'ITBIS desglosado', 'Total pagado',
-                 'Código QR DGII (para validación)', 'Nombre del negocio y dirección'].map(r =>
-                `<div style="display:flex;align-items:center;gap:.5rem"><span style="color:#4ade80">✓</span>${r}</div>`
-              ).join('')}
-            </div>
-          </div>
-          <div style="background:rgba(108,99,255,.06);border:1px solid rgba(108,99,255,.2);border-radius:8px;padding:.75rem .9rem;font-size:.82rem;color:var(--text2);margin-bottom:.85rem">
-            💡 Tecno Caja genera automáticamente la representación fiscal con todos los campos requeridos al imprimir cualquier factura e-CF.
-          </div>
-          <div id="ecf-wz-step7-preview" style="margin-bottom:.85rem"></div>
-          <div style="display:flex;gap:.65rem;flex-wrap:wrap">
-            <button id="ecf-wz-step7-preview-btn" class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD.runStep7Preview()">
-              🖨️ Ver vista previa de muestra
-            </button>
-            <button id="ecf-wz-step7-confirm-btn" class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD.runStep7()">
-              ✅ Confirmar representación impresa →
-            </button>
-          </div>
-        </div>
-      `}
-    `;
-  }
-
-  async function runStep7Preview() {
-    const previewEl = document.getElementById('ecf-wz-step7-preview');
-    if (!previewEl) return;
-    setBtnState('ecf-wz-step7-preview-btn', true, 'Cargando vista previa…');
-    try {
-      const docs = await fiscalApi('GET', '/documents');
-      const lastDoc = (docs.documents || docs || []).find(d => d.estado_dgii === 'aceptado' || d.estado_dgii === 'aceptado_condicional');
-      if (lastDoc) {
-        previewEl.innerHTML = `
-          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.85rem;font-family:var(--font-mono);font-size:.75rem;color:var(--text2);line-height:1.8">
-            <div style="text-align:center;font-weight:700;margin-bottom:.5rem;color:var(--text)">── TECNO CAJA ──</div>
-            <div>eNCF: <strong>${h(lastDoc.encf||'—')}</strong></div>
-            <div>RNC:  ${h(lastDoc.rnc_emisor||'—')}</div>
-            <div>Fecha: ${h(fmtDateTime(lastDoc.created_at||''))}</div>
-            <div>Total: ${h(lastDoc.monto_total||'0.00')} DOP</div>
-            <div style="text-align:center;margin-top:.5rem;color:var(--accent)">[QR DGII]</div>
-          </div>
-        `;
-      } else {
-        previewEl.innerHTML = `<div style="font-size:.8rem;color:var(--text3)">Sin documentos aceptados para mostrar vista previa. Puedes confirmar directamente.</div>`;
-      }
-    } catch (_) {
-      previewEl.innerHTML = `<div style="font-size:.8rem;color:var(--text3)">Vista previa no disponible. Puedes confirmar directamente.</div>`;
-    } finally {
-      setBtnState('ecf-wz-step7-preview-btn', false, '🖨️ Ver vista previa de muestra');
-    }
-  }
-
-  async function runStep7() {
-    setBtnState('ecf-wz-step7-confirm-btn', true, 'Confirmando…');
-    await markDone(7, { confirmed: true, confirmedAt: new Date().toISOString() });
-  }
-
-  // ── PASO 8: Certificación Completada ──────────────────────────────────────────
-  function renderStep8() {
-    const steps = WZ.state?.steps || {};
-    const biz = steps[1]?.data || {};
-    const cert = steps[2]?.data || {};
-    const ecf21 = steps[4]?.data || {};
-    const rfce4 = steps[5]?.data || {};
-    const acecf = steps[6]?.data || {};
-    const env = WZ.state?.environment || 'certecf';
-    const envLabel = env === 'certecf' ? 'CerteCF — Certificación' : 'TesteCF — Pruebas';
-
-    return `
-      ${stepHeader(8, '🎉')}
-      <div class="ecf-wz-done-screen">
-        <div class="done-icon">🎉</div>
-        <h1>¡Certificación DGII Completada!</h1>
-        <p style="color:var(--text2);font-size:.9rem;max-width:480px;margin:.5rem auto 1.5rem;line-height:1.6">
-          Tu negocio ha completado exitosamente el proceso de certificación e-CF con la DGII.
-          Ahora puedes emitir comprobantes fiscales electrónicos en producción.
-        </p>
-
-        <div class="ecf-wz-info-grid" style="max-width:520px;margin:0 auto 1.5rem;text-align:left">
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Estado</div>
-            <div class="info-val" style="color:#4ade80">✅ APROBADO</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Ambiente</div>
-            <div class="info-val" style="font-size:.82rem">${h(envLabel)}</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Inicio</div>
-            <div class="info-val">${h(fmtDate(WZ.state?.startedAt))}</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Finalización</div>
-            <div class="info-val" style="color:#4ade80">${h(fmtDate(WZ.state?.finishedAt||new Date().toISOString()))}</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">RNC</div>
-            <div class="info-val">${h(biz.rnc||'—')}</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Razón Social</div>
-            <div class="info-val" style="font-size:.82rem">${h(biz.razonSocial||'—')}</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Comprobantes ECF</div>
-            <div class="info-val" style="color:#4ade80">${ecf21.accepted||'—'}/${ecf21.total||'—'} aceptados</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Resúmenes RFCE</div>
-            <div class="info-val" style="color:#4ade80">${rfce4.aceptados||4}/4 aceptados</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Aprobaciones Comerciales</div>
-            <div class="info-val" style="color:#4ade80">${acecf.accepted||'—'}/${acecf.total||'—'} enviadas</div>
-          </div>
-          <div class="ecf-wz-info-cell">
-            <div class="info-label">Certificado Digital</div>
-            <div class="info-val" style="font-size:.82rem">Válido hasta ${h(cert.validTo||'—')}</div>
-          </div>
-        </div>
-
-        <div style="display:flex;justify-content:center;gap:.85rem;flex-wrap:wrap">
-          <button class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD._resetWizard()">
-            Iniciar nueva certificación
-          </button>
-        </div>
-      </div>
-
-      <!-- Summary of all steps -->
-      <div class="ecf-wz-card" style="max-width:100%">
-        <div class="ecf-wz-card-title">Resumen del proceso</div>
-        <div style="display:grid;gap:.35rem">
-          ${STEPS.map(step => {
-            const done = isCompleted(step.id);
-            const stepData = steps[step.id] || {};
-            return `
-              <div class="ecf-wz-summary-row">
-                <span style="font-size:1rem">${done?'✅':'⏸'}</span>
-                <span style="font-weight:600;min-width:180px">Paso ${step.id}: ${h(step.label)}</span>
-                <span style="font-size:.76rem;color:var(--text3);flex:1">
-                  ${done ? `Completado el ${h(fmtDateTime(stepData.completedAt))}` : 'Pendiente'}
-                </span>
-              </div>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    `;
   }
 
   // ── PASO 15: Finalizado — Certificación DGII Aprobada ─────────────────────────
@@ -3249,21 +3182,34 @@ const ECF_CERT_WIZARD = (() => {
     const acecf = steps[11]?.data || {};
     const env   = WZ.state?.environment || 'certecf';
     const envLabel = env === 'certecf' ? 'CerteCF — Certificación' : 'TesteCF — Pruebas';
+    const finalized = isCompleted(15);
 
     return `
       ${stepHeader(15, '🎉')}
       <div class="ecf-wz-done-screen">
-        <div class="done-icon">🎉</div>
-        <h1>¡Certificación DGII Completada!</h1>
+        <div class="done-icon">${finalized ? '🎉' : '📋'}</div>
+        <h1>${finalized ? '¡Certificación DGII Completada!' : 'Todos los pasos 1-14 están completos'}</h1>
         <p style="color:var(--text2);font-size:.9rem;max-width:480px;margin:.5rem auto 1.5rem;line-height:1.6">
-          Tu negocio ha completado exitosamente el proceso de certificación e-CF con la DGII.
-          Ahora puedes emitir comprobantes fiscales electrónicos en producción.
+          ${finalized
+            ? 'Tu negocio ha completado exitosamente el proceso de certificación e-CF con la DGII.'
+            : 'Revisa el resumen debajo. Cuando DGII confirme la aprobación final en el portal CerteCF, marca la certificación como finalizada.'}
         </p>
+
+        ${finalized ? `
+          <div class="ecf-wz-card" style="max-width:520px;margin:0 auto 1.5rem;text-align:left;border-color:#f59e0b">
+            <div class="ecf-wz-card-title" style="color:#f59e0b">⚠ Activar producción DGII</div>
+            <p style="font-size:.82rem;color:var(--text2);margin:.4rem 0 0;line-height:1.6">
+              Terminar este wizard NO activa producción automáticamente. Para empezar a emitir e-CF con
+              efectos fiscales reales, ve a <b>Configuración Fiscal → DGII → "Activar producción DGII"</b>,
+              donde se te pedirá confirmación reforzada y se verificará la autenticación real con DGII.
+            </p>
+          </div>
+        ` : ''}
 
         <div class="ecf-wz-info-grid" style="max-width:520px;margin:0 auto 1.5rem;text-align:left">
           <div class="ecf-wz-info-cell">
             <div class="info-label">Estado</div>
-            <div class="info-val" style="color:#4ade80">✅ APROBADO</div>
+            <div class="info-val" style="color:${finalized?'#4ade80':'#f59e0b'}">${finalized ? '✅ APROBADO' : '⏳ Pendiente de finalizar'}</div>
           </div>
           <div class="ecf-wz-info-cell">
             <div class="info-label">Ambiente</div>
@@ -3283,7 +3229,7 @@ const ECF_CERT_WIZARD = (() => {
           </div>
           <div class="ecf-wz-info-cell">
             <div class="info-label">Finalización</div>
-            <div class="info-val" style="color:#4ade80">${h(fmtDate(WZ.state?.finishedAt||new Date().toISOString()))}</div>
+            <div class="info-val" style="color:${finalized?'#4ade80':'var(--text3)'}">${finalized ? h(fmtDate(WZ.state?.finishedAt)) : 'Pendiente'}</div>
           </div>
           <div class="ecf-wz-info-cell">
             <div class="info-label">Datos e-CF enviados</div>
@@ -3320,12 +3266,22 @@ const ECF_CERT_WIZARD = (() => {
         </div>
 
         <div style="display:flex;justify-content:center;gap:.85rem;flex-wrap:wrap">
+          ${finalized ? '' : `
+            <button id="ecf-wz-step15-btn" class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD.runStep15()">
+              ✅ Marcar certificación como finalizada
+            </button>
+          `}
           <button class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD._resetWizard()">
             Iniciar nueva certificación
           </button>
         </div>
       </div>
     `;
+  }
+
+  async function runStep15() {
+    setBtnState('ecf-wz-step15-btn', true, 'Guardando…');
+    await markDone(15, { finalizedAt: new Date().toISOString() });
   }
 
   // ── Step initializers (called after render) ────────────────────────────────────
@@ -3451,8 +3407,8 @@ const ECF_CERT_WIZARD = (() => {
     // Step 10 — Inicio Prueba Recep. ACECF
     runStep10inicio,
 
-    // Step 11 — Aprobaciones Comerciales (renderStep6)
-    runStep6,
+    // Step 11 — Recepción Aprobación Comercial (ACECF)
+    runStep11,
     _onAcecfFileChange,
 
     // Step 12 — URL Servicios Producción
@@ -3466,10 +3422,13 @@ const ECF_CERT_WIZARD = (() => {
 
     // Step 14 — Verificación Estatus
     runStep14verify,
+    _onStep14FileChange,
+
+    // Step 15 — Finalizado
+    runStep15,
 
     // Misc
     validateStoredCertificate,
-    _confirmTodoStep,
     _unlockStep1,
     _unlockStep2,
     _togglePass,

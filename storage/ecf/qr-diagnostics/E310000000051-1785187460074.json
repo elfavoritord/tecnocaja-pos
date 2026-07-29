@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E31",
+  "eNCF": "E310000000051",
+  "trackId": "36afd3e1-f643-4131-a4b4-b321022dee3f",
+  "fechaEnvio": "2026-07-27T21:24:20.046Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": "1",
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "27-07-2026",
+  "montoTotalXML": "7080.00",
+  "fechaFirmaXML": "27-07-2026 14:40:41",
+  "signatureValueCompleto": "XlbsthrXRxGXWL0QCr7reBP6RWXWzYBRRKYsjJrwap1bKoN06sw6JYYnNR/tW3DlZexryJnoF1T7O++Q+4oNjGGNYxJFZ+YlOmYAyNQXgFvRuGC40pRN99x2Ejx33SXsUZDRj48ADXpv+VPmonp0hG89ZTOOThoqxnjsuKmXnoipUGkJ0SyAmUEG2JGpA0wsG3TeaSYozBA4kYomsRIH8KZNaIaVqGuj7JwHY8Bpo1qIGAnAFwsCeP6fmrZZniElsHPly7J+nwjEpqET1TGskD/tOOq5CMvwHU5f6xjeSNXNqfek9MQCxweR1UoTeRuWJrxjL552j9qYFMUerrFHUw==",
+  "codigoSeguridadGenerado": "Xlbsth",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E310000000051&FechaEmision=27-07-2026&MontoTotal=7080.00&FechaFirma=27-07-2026%2014%3A40%3A41&CodigoSeguridad=Xlbsth",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": null,
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

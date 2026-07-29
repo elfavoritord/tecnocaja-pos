@@ -81,18 +81,27 @@ function validateCertificate(certificateContext, { expectedRnc = null } = {}) {
   };
 }
 
+// `Add-Type -TypeDefinition` recompila la clase C# con Roslyn EN CADA INVOCACIÓN de
+// PowerShell — es el costo dominante al firmar en ráfaga (certificación con 20+
+// comprobantes): varios segundos por documento solo en compilar, no en firmar. La clase
+// nunca cambia, así que se compila UNA VEZ a un .dll persistido en disco (-OutputAssembly)
+// y las siguientes firmas lo cargan con `Add-Type -Path` (carga de assembly ya compilado,
+// sin JIT/Roslyn de por medio) — mismo algoritmo, mismo resultado, solo se salta la
+// recompilación. Si el .dll cacheado no carga (corrupto, versión de .NET distinta tras
+// una actualización de Windows), se recompila una vez y se vuelve a guardar.
 function buildPowerShellSignerScript() {
   return `
 param(
   [string]$InputXmlPath,
   [string]$OutputXmlPath,
   [string]$PfxPath,
-  [string]$PfxPassword
+  [string]$PfxPassword,
+  [string]$AssemblyCachePath
 )
 
 $ErrorActionPreference = 'Stop'
 
-Add-Type -TypeDefinition @"
+$csharpSource = @"
 using System;
 using System.Security.Cryptography;
 public class RSAPKCS1SHA256SignatureDescription : SignatureDescription {
@@ -113,7 +122,24 @@ public class RSAPKCS1SHA256SignatureDescription : SignatureDescription {
     return formatter;
   }
 }
-"@ -IgnoreWarnings -ErrorAction SilentlyContinue
+"@
+
+$loadedFromCache = $false
+if ($AssemblyCachePath -and (Test-Path $AssemblyCachePath)) {
+  try {
+    Add-Type -Path $AssemblyCachePath -ErrorAction Stop
+    $loadedFromCache = $true
+  } catch {
+    Remove-Item $AssemblyCachePath -Force -ErrorAction SilentlyContinue
+  }
+}
+if (-not $loadedFromCache) {
+  if ($AssemblyCachePath) {
+    Add-Type -TypeDefinition $csharpSource -OutputAssembly $AssemblyCachePath -IgnoreWarnings -ErrorAction SilentlyContinue
+  } else {
+    Add-Type -TypeDefinition $csharpSource -IgnoreWarnings -ErrorAction SilentlyContinue
+  }
+}
 
 [System.Security.Cryptography.CryptoConfig]::AddAlgorithm(
   [RSAPKCS1SHA256SignatureDescription],
@@ -166,12 +192,22 @@ $writer.Close()
 `;
 }
 
+// Persistido fuera del temp dir por invocación (que se borra al final de cada firma) para
+// que sobreviva entre firmas y entre reinicios de la app — ver comentario en
+// buildPowerShellSignerScript sobre por qué esto elimina la recompilación C# por documento.
+function getAssemblyCachePath() {
+  const dir = path.join(process.cwd(), 'storage', 'ecf', 'sign-cache');
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, 'RSAPKCS1SHA256SignatureDescription.dll');
+}
+
 function signXmlWithWindowsOnce(xmlContent, certificateContext) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tecnocaja-ecf-sign-'));
   const inputPath = path.join(tempDir, 'semilla.xml');
   const outputPath = path.join(tempDir, 'semilla-firmada.xml');
   const scriptPath = path.join(tempDir, 'sign-semilla.ps1');
   const shellBinary = fs.existsSync('C:\\Program Files\\PowerShell\\7\\pwsh.exe') ? 'pwsh.exe' : 'powershell.exe';
+  const assemblyCachePath = getAssemblyCachePath();
 
   try {
     fs.writeFileSync(inputPath, String(xmlContent || ''), 'utf8');
@@ -190,6 +226,7 @@ function signXmlWithWindowsOnce(xmlContent, certificateContext) {
         outputPath,
         String(certificateContext.certPath || ''),
         String(certificateContext.certPassword || ''),
+        assemblyCachePath,
       ],
       { stdio: 'pipe' }
     );

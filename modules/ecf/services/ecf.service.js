@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const nodeCrypto = require('crypto');
 const XLSX = require('xlsx');
 const { execFile } = require('child_process');
@@ -436,6 +437,15 @@ class EcfService {
     this.resolveRequestActorUser = resolveRequestActorUser;
     this.runtimeState = {
       lastConnection: null,
+      // Candado de reentrancia para el envío de RFCE (ver step4RfceSubmit). El wizard tiene
+      // dos botones distintos que disparan el mismo envío ("Enviar RFCE" y "🔄 Reenviar RFCE"),
+      // cada uno con su propio disabled-state en el DOM — si el primero tarda (firma lenta
+      // por PowerShell/.NET) y el usuario pulsa el otro mientras el primero sigue corriendo en
+      // el servidor, ambas invocaciones leen el mismo estado inicial y reenvían los mismos
+      // eNCF a DGII en paralelo, y la que termine última pisa el resultado de la otra al
+      // escribir el estado. Este flag evita que una segunda invocación arranque mientras la
+      // primera sigue en curso, sin importar qué botón la disparó.
+      rfceSubmitInFlight: false,
     };
     this.config = buildEcfConfig();
     this.logger = createLogger('ecf', { debug: this.config.DEBUG_ECF });
@@ -870,8 +880,19 @@ class EcfService {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     const body = req.body || {};
+    const targetEnvironment = normalizeEnvironmentKey(body.environment || this.config.DGII_ENV);
+    const currentEmitter = await this.repository.getResolvedEmitter(1);
+    // El selector genérico de ambiente NUNCA debe poder saltar directo a producción — activarla
+    // exige el flujo dedicado (checklist + confirmación reforzada + autenticación DGII real).
+    // Salir de producción (revertir) sí pasa por aquí de forma simple, sin ceremonia adicional.
+    if (targetEnvironment === 'ecf' && currentEmitter.environment !== 'ecf') {
+      throw new EcfError(
+        'Para activar el ambiente de producción DGII use "Activar producción DGII" (requiere confirmación reforzada), no este selector.',
+        { statusCode: 409 },
+      );
+    }
     const emitter = await this.repository.upsertEmitter(1, {
-      environment: normalizeEnvironmentKey(body.environment || this.config.DGII_ENV),
+      environment: targetEnvironment,
       certificate_type: String(body.certificateMode || 'p12').trim().toLowerCase(),
       public_base_url: String(body.publicBaseUrl || '').trim(),
       allowed_origins: String(body.allowedOrigins || '').trim(),
@@ -899,6 +920,25 @@ class EcfService {
       body: {
         ...(req.body || {}),
         certificateMode: (await this.repository.getResolvedEmitter(1)).certificate_type,
+      },
+    });
+  }
+
+  // ── Wizard Paso 12: persiste la URL de producción validada en la configuración
+  //    real del sistema (ecf_emitters.public_base_url), no solo en el estado del
+  //    wizard. Rellena el resto de campos con los valores actuales para no
+  //    resetearlos (saveDgiiSettings sobreescribe cualquier campo no enviado) ────
+  async setProductionBaseUrl(req) {
+    const current = await this.repository.getResolvedEmitter(1);
+    return this.saveDgiiSettings({
+      ...req,
+      body: {
+        environment: current?.environment,
+        certificateMode: current?.certificate_type,
+        allowedOrigins: current?.allowed_origins,
+        requireInternalToken: !!current?.require_internal_token,
+        notes: current?.notes,
+        publicBaseUrl: String(req.body?.publicBaseUrl || '').trim(),
       },
     });
   }
@@ -1031,6 +1071,236 @@ class EcfService {
       detail: 'Desactivó la facturación electrónica.',
     });
     return { ok: true };
+  }
+
+  // ── Activación de producción DGII (ambiente 'ecf') ────────────────────────────
+  // Independiente de is_active (que solo prende/apaga el módulo e-CF en general) y
+  // del cambio de ambiente genérico (saveEnvironment/saveDgiiSettings). Terminar el
+  // wizard de certificación (Paso 15) o guardar la URL productiva (Paso 12) NUNCA
+  // debe activar esto por sí solo — ver docs/plan de activación segura.
+
+  _readCertWizardState() {
+    const stateFile = path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
+    try {
+      return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async getProductionActivationStatus() {
+    await this.ensureReady();
+    const emitter = await this.repository.getResolvedEmitter(1);
+    const certificate = await this.getCertificateStatus();
+    const wizardState = this._readCertWizardState();
+    const step15Done = Boolean(wizardState?.completedSteps?.includes(15));
+
+    const batchId = await this.repository.getLatestCertificationBatchId();
+    let pendingCertificationSends = 0;
+    if (batchId) {
+      const pendingRows = await this.repository.query(
+        `SELECT COUNT(*) AS total FROM ecf_documents
+         WHERE certification_batch_id = ? AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')`,
+        [batchId],
+      );
+      pendingCertificationSends = Number(pendingRows?.[0]?.total || 0);
+    }
+
+    const hasRnc = [9, 11].includes(digitsOnly(emitter.rnc).length);
+    const items = [
+      {
+        key: 'environment_certecf',
+        label: 'Ambiente actual',
+        status: emitter.environment === 'certecf' ? 'ok' : 'error',
+        message: emitter.environment === 'certecf'
+          ? 'El ambiente activo es CerteCF.'
+          : `El ambiente activo es "${emitter.environment}" — solo se puede activar producción desde CerteCF.`,
+      },
+      {
+        key: 'wizard_step15',
+        label: 'Certificación finalizada (Paso 15)',
+        status: step15Done ? 'ok' : 'error',
+        message: step15Done
+          ? 'El wizard de certificación marca el Paso 15 como completado.'
+          : 'El Paso 15 (Finalizado) del wizard de certificación todavía no está completado.',
+      },
+      {
+        key: 'production_url',
+        label: 'URL productiva registrada (Paso 12)',
+        status: emitter.public_base_url ? 'ok' : 'error',
+        message: emitter.public_base_url
+          ? `URL productiva guardada: ${emitter.public_base_url}`
+          : 'Falta registrar la URL de servicios de producción (Paso 12).',
+      },
+      {
+        key: 'certificate',
+        label: 'Certificado digital',
+        status: certificate.hasCertificate && certificate.status !== 'error'
+          ? (certificate.isExpired ? 'error' : 'ok')
+          : 'error',
+        message: certificate.status === 'error'
+          ? `No se pudo validar el certificado: ${certificate.error || 'error desconocido'}.`
+          : certificate.hasCertificate
+            ? (certificate.isExpired ? 'El certificado está vencido.' : `Certificado válido hasta ${certificate.validTo}.`)
+            : 'No hay certificado cargado.',
+      },
+      {
+        key: 'emitter_profile',
+        label: 'RNC y razón social del emisor',
+        status: hasRnc && emitter.razon_social ? 'ok' : 'error',
+        message: hasRnc && emitter.razon_social
+          ? `RNC ${digitsOnly(emitter.rnc)} — ${emitter.razon_social}`
+          : 'Faltan RNC o razón social del emisor.',
+      },
+      {
+        key: 'no_pending_sends',
+        label: 'Sin envíos de certificación en curso',
+        status: pendingCertificationSends === 0 ? 'ok' : 'error',
+        message: pendingCertificationSends === 0
+          ? 'No hay documentos de certificación pendientes de respuesta DGII.'
+          : `Hay ${pendingCertificationSends} documento(s) de certificación todavía en proceso.`,
+      },
+      {
+        key: 'not_already_active',
+        label: 'Producción todavía no activa',
+        status: emitter.production_status !== 'active' ? 'ok' : 'error',
+        message: emitter.production_status !== 'active'
+          ? 'Producción no está activa todavía.'
+          : 'Producción ya está activa — no hace falta activarla de nuevo.',
+      },
+    ];
+
+    const ready = items.every((item) => item.status === 'ok');
+    return {
+      ready,
+      checklist: { items },
+      productionStatus: emitter.production_status,
+      environment: emitter.environment,
+      productionActivatedAt: emitter.production_activated_at,
+      productionActivatedBy: emitter.production_activated_by,
+    };
+  }
+
+  async activateProduction(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+
+    const confirmed = req.body?.confirmed === true;
+    const confirmationText = String(req.body?.confirmationText || '');
+    if (!confirmed) {
+      throw new EcfError('Debe confirmar el checkbox de autorización DGII antes de activar producción.', { statusCode: 422 });
+    }
+    if (confirmationText !== 'ACTIVAR PRODUCCION') {
+      throw new EcfError('El texto de confirmación no coincide. Debe escribir exactamente: ACTIVAR PRODUCCION', { statusCode: 422 });
+    }
+
+    const readiness = await this.getProductionActivationStatus();
+    if (!readiness.ready) {
+      const blockers = readiness.checklist.items.filter((item) => item.status !== 'ok').map((item) => item.message);
+      throw new EcfError(`No se puede activar producción todavía: ${blockers.join(' | ')}`, { statusCode: 422 });
+    }
+
+    const previousEnvironment = readiness.environment;
+    const previousProductionStatus = readiness.productionStatus;
+
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      actionName: 'production_activation_requested',
+      status: 'info',
+      detail: `Solicitó activar producción DGII (ambiente previo: ${previousEnvironment}).`,
+    });
+
+    this.applyRuntimeConfig('ecf');
+    await this.repository.upsertEmitter(1, { environment: 'ecf' });
+
+    let authResult = null;
+    let authError = null;
+    try {
+      authResult = await this.authService.authenticate({ forceRefresh: true });
+    } catch (error) {
+      authError = error;
+    }
+
+    const authOk = Boolean(authResult?.token) && authResult?.environment === 'ecf';
+
+    if (authOk) {
+      await this.repository.upsertEmitter(1, {
+        production_status: 'active',
+        production_activated_at: new Date(),
+        production_activated_by: actor.nombre || actor.usuario || 'admin',
+      });
+      await this.repository.saveAudit({
+        userId: actor.id,
+        userName: actor.nombre || actor.usuario,
+        userRole: actor.rol || actor.role_code,
+        actionName: 'production_activated',
+        status: 'ok',
+        detail: `Producción DGII activada. RNC ${readiness.checklist.items.find((i) => i.key === 'emitter_profile')?.message || ''}`,
+        responsePayload: {
+          previousEnvironment,
+          newEnvironment: 'ecf',
+          previousProductionStatus,
+          newProductionStatus: 'active',
+          tokenExpira: authResult?.expira || null,
+          publicBaseUrl: (await this.repository.getResolvedEmitter(1)).public_base_url,
+        },
+      });
+      return {
+        ok: true,
+        message: 'Producción DGII activada y autenticación verificada correctamente.',
+        production: await this.getProductionActivationStatus(),
+      };
+    }
+
+    await this.repository.upsertEmitter(1, { production_status: 'authentication_failed' });
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      actionName: 'production_activation_auth_failed',
+      status: 'warning',
+      detail: `Ambiente cambiado a producción pero la autenticación DGII falló: ${authError?.message || 'sin token'}`,
+      responsePayload: { previousEnvironment, newEnvironment: 'ecf', previousProductionStatus, newProductionStatus: 'authentication_failed' },
+    });
+    return {
+      ok: false,
+      message: 'El ambiente productivo fue configurado, pero no fue posible autenticarse ante la DGII. La emisión de e-CF permanece bloqueada.',
+      production: await this.getProductionActivationStatus(),
+    };
+  }
+
+  async revertProductionToCertification(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+
+    const reason = String(req.body?.reason || '').trim();
+    const confirmationText = String(req.body?.confirmationText || '');
+    if (!reason) {
+      throw new EcfError('Debe indicar un motivo para volver a CerteCF.', { statusCode: 422 });
+    }
+    if (confirmationText !== 'VOLVER A CERTIFICACION') {
+      throw new EcfError('El texto de confirmación no coincide. Debe escribir exactamente: VOLVER A CERTIFICACION', { statusCode: 422 });
+    }
+
+    const emitter = await this.repository.getResolvedEmitter(1);
+    this.applyRuntimeConfig('certecf');
+    await this.repository.upsertEmitter(1, { environment: 'certecf', production_status: 'suspended' });
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      actionName: 'production_reverted',
+      status: 'warning',
+      detail: `Volvió de producción a CerteCF. Motivo: ${reason}`,
+      responsePayload: { previousEnvironment: emitter.environment, newEnvironment: 'certecf', reason },
+    });
+    return {
+      ok: true,
+      message: 'Ambiente vuelto a CerteCF. Esto no anula ni modifica documentos fiscales ya emitidos en producción.',
+      production: await this.getProductionActivationStatus(),
+    };
   }
 
   async listSequences() {
@@ -1768,6 +2038,16 @@ class EcfService {
   }
 
   async sendPreparedDocument(document) {
+    // Choke point único de envío (normal + RFCE) — bloquear aquí cubre todos los caminos.
+    // Terminar el wizard o guardar la URL de producción NUNCA activa esto; solo
+    // activateProduction() lo hace, tras autenticación DGII verificada.
+    if (String(document.environment || '').toLowerCase() === 'ecf') {
+      const emitter = await this.repository.getResolvedEmitter(document.business_id || 1);
+      if (emitter.production_status !== 'active') {
+        throw new EcfError('La producción DGII no está activa o autenticada. Emisión bloqueada.', { statusCode: 409 });
+      }
+    }
+
     if (String(document.submission_mode || '').toLowerCase() === 'rfce') {
       return this.fcService.sendConsumptionSummary({
         signedXml: document.signed_xml_content,
@@ -3222,11 +3502,19 @@ class EcfService {
       if ('FechaLimitePago' in updated && normalizeDatasetValue(updated.FechaLimitePago)) updated.FechaLimitePago = todayStr;
       if (updated.ENCF && String(updated.ENCF).toUpperCase() === oldEncf) updated.ENCF = newEncf;
       if (updated.eNCF && String(updated.eNCF).toUpperCase() === oldEncf) updated.eNCF = newEncf;
+      // IndicadorNotaCredito (solo E34) codifica si FechaEmision está a <=30 días (0) o
+      // >30 días (1) calendario de FechaNCFModificado (la factura original). Como aquí
+      // ambas fechas se fuerzan siempre al mismo "hoy" simulado, la brecha real es
+      // siempre 0 días — el valor "1" que traiga el Excel original de DGII (calculado
+      // contra sus fechas originales, no las de hoy) queda contradictorio y DGII lo
+      // rechaza con "El campo IndicadorNotaCredito... no es válido". Se fuerza a '0'
+      // junto con el resto de la fecha simulada para que quede consistente.
       if (updated.NCFModificado) {
         const ref = String(updated.NCFModificado).toUpperCase().trim();
         if (encfMap[ref]) {
           updated.NCFModificado = encfMap[ref];
           if ('FechaNCFModificado' in updated) updated.FechaNCFModificado = todayStr;
+          if ('IndicadorNotaCredito' in updated) updated.IndicadorNotaCredito = '0';
         }
       }
       if (updated.eNCFModificado) {
@@ -3234,6 +3522,7 @@ class EcfService {
         if (encfMap[ref]) {
           updated.eNCFModificado = encfMap[ref];
           if ('FechaNCFModificado' in updated) updated.FechaNCFModificado = todayStr;
+          if ('IndicadorNotaCredito' in updated) updated.IndicadorNotaCredito = '0';
         }
       }
       // NO adivinar una tasa nueva de TasaImpuestoAdicional (ISC específico, TipoImpuesto 006)
@@ -5215,6 +5504,22 @@ class EcfService {
     await this.ensureReady();
     if (req) await this.getCurrentActor(req, { adminOnly: true });
 
+    // Candado de reentrancia — ver comentario en el constructor (runtimeState.rfceSubmitInFlight).
+    // Dos botones distintos del wizard disparan este mismo método; sin esto, un envío lento
+    // (firma por PowerShell) más un segundo click mientras el primero sigue en curso reenvía
+    // los mismos eNCF a DGII dos veces en paralelo.
+    if (this.runtimeState.rfceSubmitInFlight) {
+      throw new EcfError('Ya hay un envío de RFCE en curso — espera a que termine antes de reintentar.', { statusCode: 409 });
+    }
+    this.runtimeState.rfceSubmitInFlight = true;
+    try {
+      return await this._step4RfceSubmitInner(req);
+    } finally {
+      this.runtimeState.rfceSubmitInFlight = false;
+    }
+  }
+
+  async _step4RfceSubmitInner(req) {
     let state = this._step4RfceReadState();
     if (!state.items?.length) {
       const generated = await this.step4RfceGenerate(req);
@@ -6989,6 +7294,132 @@ class EcfService {
     }
 
     return { ok: true, signedXml, autoFilledFields };
+  }
+
+  // ── Wizard: firma XML de Declaración Jurada (Paso 13) — sin auto-relleno de
+  //    emisor, que es específico de la postulación y no aplica aquí ────────────
+  async signDeclarationXml(req) {
+    const form = formidable({ multiples: false, maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
+    const { files } = await new Promise((resolve, reject) => {
+      form.parse(req, (err, parsedFields, parsedFiles) => {
+        if (err) reject(err);
+        else resolve({ fields: parsedFields, files: parsedFiles });
+      });
+    });
+
+    const raw = files.xml || files.file;
+    const uploaded = Array.isArray(raw) ? raw[0] : raw;
+    if (!uploaded?.filepath) {
+      throw new EcfError('No se recibió el archivo XML (campo "xml").', { statusCode: 400 });
+    }
+
+    const rawXml = fs.readFileSync(path.resolve(uploaded.filepath), 'utf8');
+    const trimmedXml = rawXml.replace(/^﻿/, '').trimStart();
+    if (!trimmedXml.startsWith('<')) {
+      throw new EcfError(
+        'El archivo seleccionado no es un XML válido. Debes subir el archivo XML de la declaración jurada.',
+        { statusCode: 400 }
+      );
+    }
+
+    const certificate = await this.resolveCertificate();
+
+    let signedXml;
+    try {
+      signedXml = signatureService.signXML(rawXml, certificate);
+    } catch (signErr) {
+      throw new EcfError(`Error al firmar el XML: ${signErr.message}`, { statusCode: 422 });
+    }
+
+    const verification = signatureService.verifySignature(signedXml);
+    if (!verification.ok) {
+      throw new EcfError('La firma generada no pasó la verificación local.', { statusCode: 422 });
+    }
+
+    return { ok: true, signedXml };
+  }
+
+  // ── Wizard: valida URLs de servicios (Pasos 7 y 12) — HTTPS, no localhost/IP
+  //    privada, y alcanzabilidad real del endpoint ──────────────────────────────
+  async validateServiceUrls(req) {
+    const urls = req.body?.urls;
+    if (!urls || typeof urls !== 'object' || !Object.keys(urls).length) {
+      throw new EcfError('Se requiere { urls: { <nombre>: "https://..." } }.', { statusCode: 400 });
+    }
+
+    const isPrivateHost = (hostname) => {
+      const h = String(hostname || '').toLowerCase();
+      if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '0.0.0.0') return true;
+      const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (!m) return false;
+      const [a, b] = [Number(m[1]), Number(m[2])];
+      if (a === 10) return true;
+      if (a === 172 && b >= 16 && b <= 31) return true;
+      if (a === 192 && b === 168) return true;
+      if (a === 169 && b === 254) return true;
+      return false;
+    };
+
+    const probe = (url) => new Promise((resolve) => {
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch (_) {
+        resolve({ ok: false, reason: 'URL inválida.' });
+        return;
+      }
+      if (parsed.protocol !== 'https:') {
+        resolve({ ok: false, reason: 'Debe usar HTTPS.' });
+        return;
+      }
+      if (isPrivateHost(parsed.hostname)) {
+        resolve({ ok: false, reason: 'No se permite localhost ni IP privada — debe ser una URL pública.' });
+        return;
+      }
+      const req2 = https.get(url, { timeout: 8000, rejectUnauthorized: true }, (res) => {
+        res.resume();
+        if (res.statusCode >= 500) {
+          resolve({ ok: false, reason: `El servidor respondió con error ${res.statusCode}.` });
+        } else {
+          resolve({ ok: true });
+        }
+      });
+      req2.on('timeout', () => { req2.destroy(); resolve({ ok: false, reason: 'Tiempo de espera agotado (timeout).' }); });
+      req2.on('error', (err) => resolve({ ok: false, reason: `No se pudo conectar: ${err.message}` }));
+    });
+
+    const entries = Object.entries(urls);
+    const results = await Promise.all(entries.map(async ([name, url]) => {
+      const r = await probe(url);
+      return { name, url, ok: r.ok, reason: r.reason || null };
+    }));
+
+    const ok = results.every((r) => r.ok);
+    return { ok, results, errors: results.filter((r) => !r.ok) };
+  }
+
+  // ── Wizard Paso 14: guarda la captura del portal DGII como evidencia de la
+  //    verificación manual (no se marca aprobado automáticamente) ───────────────
+  async saveStep14Evidence(req) {
+    const form = formidable({ multiples: false, maxFileSize: 8 * 1024 * 1024, keepExtensions: true });
+    const { files } = await new Promise((resolve, reject) => {
+      form.parse(req, (err, parsedFields, parsedFiles) => {
+        if (err) reject(err);
+        else resolve({ fields: parsedFields, files: parsedFiles });
+      });
+    });
+    const raw = files.evidence || files.file;
+    const uploaded = Array.isArray(raw) ? raw[0] : raw;
+    if (!uploaded?.filepath) {
+      throw new EcfError('No se recibió el archivo de evidencia (campo "evidence").', { statusCode: 400 });
+    }
+    const dir = path.join(process.cwd(), 'storage', 'ecf', 'step14-evidence');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const ext = path.extname(uploaded.originalFilename || uploaded.newFilename || '') || '.png';
+    const destName = `evidencia-${Date.now()}${ext}`;
+    const destPath = path.join(dir, destName);
+    fs.copyFileSync(path.resolve(uploaded.filepath), destPath);
+    return { ok: true, path: `storage/ecf/step14-evidence/${destName}` };
   }
 
   // ── Wizard de certificación: estado persistido en disco ───────────────────────

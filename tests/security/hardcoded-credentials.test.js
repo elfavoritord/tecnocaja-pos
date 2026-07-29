@@ -60,7 +60,7 @@ describe('hardcoded-credentials', () => {
     }
 
     if (violations.length > 0) {
-      fail(
+      throw new Error(
         `Se encontraron credenciales hardcodeadas en ${violations.length} lugar(es):\n` +
         violations.map(v => `  ${v}`).join('\n') +
         '\n\nUsa variables de entorno: process.env.DB_USER || "root"'

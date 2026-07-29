@@ -159,9 +159,12 @@ async function generateReprImpresaHtml(signedXml, opts = {}) {
   // los 7 parámetros del portal ecf.dgii.gov.do/CerteCF/ConsultaTimbre
   // (verificado en vivo también) — faltaban RncComprador, FechaEmision y
   // FechaFirma, por eso el validador de DGII marcaba la URL como inválida.
-  // Solo el espacio de FechaFirma se codifica (como '+'); ':' y '-' se dejan
-  // tal cual porque son válidos sin escapar en un query string y así aparecen
-  // en el enlace real de DGII.
+  // FechaFirma se codifica completa con encodeURIComponent (espacio -> %20, ':' -> %3A),
+  // igual que el resto de los parámetros — mismo criterio que qr-url.util.js (mantener
+  // ambos sincronizados). Antes solo se codificaba el espacio (como '+'), dejando ':' y '-'
+  // literales; ambas formas son válidas para un query string y DGII acepta las dos (verificado
+  // en vivo: los e-CF ya aceptados y confirmados en ConsultaTimbre usaban la forma con '+'),
+  // pero se estandariza a la codificación RFC 3986 completa para no dejar dudas.
   const qrUrl = d.isRfce
     ? `https://fc.dgii.gov.do/${envSegment}/ConsultaTimbreFC?` +
       `RncEmisor=${encodeURIComponent(issuerRnc)}` +
@@ -174,7 +177,7 @@ async function generateReprImpresaHtml(signedXml, opts = {}) {
       `&ENCF=${encodeURIComponent(d.encf)}` +
       `&FechaEmision=${encodeURIComponent(d.fechaEmision || '')}` +
       `&MontoTotal=${encodeURIComponent(d.montoTotal || '')}` +
-      `&FechaFirma=${fechaFirma.replace(/ /g, '+')}` +
+      `&FechaFirma=${encodeURIComponent(fechaFirma)}` +
       `&CodigoSeguridad=${encodeURIComponent(codigoSeguridad)}`;
 
   const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 160, margin: 1, color: { dark: '#000', light: '#fff' } });

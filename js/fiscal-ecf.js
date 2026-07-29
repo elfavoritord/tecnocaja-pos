@@ -176,6 +176,7 @@ function renderFiscalStatus(status, bundle) {
   renderPublicUrls(dgiiSettings.publicUrls);
   renderInternalTokenStatus(dgiiSettings.internalToken);
   _renderEcfStatusCards(status, bundle);
+  loadProductionStatus();
 }
 
 function buildConnectionStatusHtml(status) {
@@ -1246,6 +1247,12 @@ async function saveDgiiSettings() {
   const qscdConfigJson = document.getElementById('fiscal-dgii-qscd-config')?.value.trim() || '';
   if (qscdConfigJson) body.qscdConfigJson = qscdConfigJson;
 
+  if (selectedEnvironment === 'ecf' && currentEnvironment !== 'ecf') {
+    showFiscalToast('Para pasar a producción DGII use el botón "Activar producción DGII" (requiere confirmación reforzada).', 'error');
+    document.getElementById('fiscal-dgii-environment').value = currentEnvironment;
+    return;
+  }
+
   setBtnLoading(btn, true, 'Guardando…');
   try {
     if (selectedEnvironment !== currentEnvironment) {
@@ -1590,6 +1597,163 @@ async function deactivateFiscalMode() {
     showFiscalToast(`Error: ${e.message}`, 'error');
   } finally {
     setBtnLoading(btn, false, '✗ Desactivar facturación electrónica');
+  }
+}
+
+// ── Activación segura de producción DGII (ambiente 'ecf') ─────────────────────
+// Acción independiente del wizard de certificación y del selector genérico de
+// ambiente — nunca se dispara sola al terminar el Paso 15 ni al guardar la URL
+// productiva (Paso 12). Ver /api/ecf/production/* en modules/ecf/controllers/router.js.
+
+async function loadProductionStatus() {
+  const badge = document.getElementById('fiscal-production-badge');
+  if (!badge) return null;
+  try {
+    const data = await fiscalApi('GET', '/production/status');
+    renderProductionStatus(data);
+    return data;
+  } catch (e) {
+    badge.style.display = 'none';
+    return null;
+  }
+}
+
+function renderProductionStatus(data) {
+  const badge = document.getElementById('fiscal-production-badge');
+  const btnActivate = document.getElementById('fiscal-btn-activate-production');
+  const btnRevert = document.getElementById('fiscal-btn-revert-production');
+  if (!badge) return;
+
+  const isProd = data.environment === 'ecf';
+  const isActive = isProd && data.productionStatus === 'active';
+  const authFailed = isProd && data.productionStatus === 'authentication_failed';
+
+  badge.style.display = 'inline-flex';
+  if (isActive) {
+    badge.textContent = '🟢 PRODUCCIÓN DGII';
+    badge.className = 'fiscal-badge-green';
+  } else if (authFailed) {
+    badge.textContent = '🔴 PRODUCCIÓN — AUTENTICACIÓN FALLIDA';
+    badge.className = 'fiscal-badge-red';
+  } else if (data.environment === 'certecf') {
+    badge.textContent = '🟠 CERTECF (pruebas)';
+    badge.className = 'fiscal-badge-gray';
+  } else {
+    badge.textContent = '⚪ TESTECF';
+    badge.className = 'fiscal-badge-gray';
+  }
+
+  if (btnActivate) btnActivate.style.display = (!isProd && data.environment === 'certecf') ? 'inline-flex' : 'none';
+  if (btnRevert) btnRevert.style.display = isProd ? 'inline-flex' : 'none';
+
+  FISCAL_UI_STATE.productionStatus = data;
+}
+
+function buildProductionChecklistHtml(items) {
+  return items.map((item) => {
+    const ok = item.status === 'ok';
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:4px 0;font-size:.82rem">
+      <span>${ok ? '✅' : '⛔'}</span>
+      <span style="color:${ok ? 'var(--text2)' : 'var(--danger,#e5484d)'}">${escapeHtml(item.message)}</span>
+    </div>`;
+  }).join('');
+}
+
+async function openActivateProductionModal() {
+  const status = await loadProductionStatus();
+  if (!status) {
+    showFiscalToast('No se pudo cargar el estado de producción.', 'error');
+    return;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(6,8,16,0.88);z-index:3000;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem 1.75rem;max-width:460px;width:92%;box-shadow:var(--card-shadow);max-height:88vh;overflow:auto">
+      <h3 style="margin:0 0 .5rem;color:#e5484d">⚠ Activación de producción DGII</h3>
+      <p style="margin:0 0 .85rem;font-size:.85rem;line-height:1.6;color:var(--text2)">
+        Esta acción cambiará el sistema del ambiente de certificación CerteCF al ambiente productivo eCF.
+        A partir de ese momento, los e-CF generados podrán tener efectos fiscales reales y utilizarán
+        secuencias autorizadas por la DGII.<br><br>
+        Confirma únicamente si la DGII ya autorizó oficialmente a este contribuyente como Emisor Electrónico.
+      </p>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:.6rem .75rem;margin-bottom:.85rem;background:var(--bg1)">
+        ${buildProductionChecklistHtml(status.checklist.items)}
+      </div>
+      <label style="display:flex;align-items:flex-start;gap:.5rem;margin-bottom:.75rem;font-size:.82rem;cursor:pointer">
+        <input type="checkbox" id="prod-activate-checkbox" style="margin-top:2px">
+        <span>Confirmo que la DGII autorizó oficialmente este RNC como Emisor Electrónico.</span>
+      </label>
+      <label style="display:block;font-size:.78rem;color:var(--text3);margin-bottom:.3rem">Escriba <b>ACTIVAR PRODUCCION</b> para confirmar:</label>
+      <input type="text" id="prod-activate-text" class="form-input" style="margin-bottom:1rem" autocomplete="off">
+      <div style="display:flex;gap:.75rem;justify-content:flex-end">
+        <button class="btn-secondary" data-action="cancel">Cancelar</button>
+        <button class="btn-danger" data-action="ok" id="prod-activate-confirm-btn" disabled>Activar ambiente eCF</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const checkbox = overlay.querySelector('#prod-activate-checkbox');
+  const textInput = overlay.querySelector('#prod-activate-text');
+  const confirmBtn = overlay.querySelector('#prod-activate-confirm-btn');
+  const updateEnabled = () => {
+    confirmBtn.disabled = !(checkbox.checked && textInput.value === 'ACTIVAR PRODUCCION');
+  };
+  checkbox.addEventListener('change', updateEnabled);
+  textInput.addEventListener('input', updateEnabled);
+
+  function close() {
+    if (overlay.parentNode) document.body.removeChild(overlay);
+  }
+  overlay.querySelector('[data-action="cancel"]').addEventListener('click', close);
+  confirmBtn.addEventListener('click', async () => {
+    setBtnLoading(confirmBtn, true, 'Activando…');
+    try {
+      const result = await fiscalApi('POST', '/production/activate', {
+        confirmed: true,
+        confirmationText: textInput.value,
+      });
+      close();
+      if (result.ok) {
+        showFiscalToast('✅ Producción DGII activada y autenticación verificada.', 'success');
+      } else {
+        showFiscalToast(result.message || 'El ambiente productivo se configuró pero la autenticación DGII falló. Emisión bloqueada.', 'error');
+      }
+      await loadFiscalStatus();
+      await loadProductionStatus();
+    } catch (e) {
+      setBtnLoading(confirmBtn, false, 'Activar ambiente eCF');
+      updateEnabled();
+      showFiscalToast(`Error: ${e.message}`, 'error');
+    }
+  });
+}
+
+async function revertProductionEnvironment() {
+  const reason = prompt('Motivo para volver de Producción a CerteCF (obligatorio):');
+  if (!reason || !reason.trim()) return;
+  const ok = await showDeleteConfirm(
+    'Volver a CerteCF no anula ni modifica los documentos fiscales ya emitidos en producción. Escriba VOLVER A CERTIFICACION en el siguiente paso para confirmar.',
+    { confirmText: 'Continuar' }
+  );
+  if (!ok) return;
+  const confirmationText = prompt('Escriba exactamente: VOLVER A CERTIFICACION');
+  if (confirmationText !== 'VOLVER A CERTIFICACION') {
+    showFiscalToast('Texto de confirmación incorrecto. Operación cancelada.', 'error');
+    return;
+  }
+  const btn = document.getElementById('fiscal-btn-revert-production');
+  setBtnLoading(btn, true, 'Volviendo a CerteCF…');
+  try {
+    await fiscalApi('POST', '/production/revert', { reason: reason.trim(), confirmationText });
+    showFiscalToast('Ambiente vuelto a CerteCF.', 'success');
+    await loadFiscalStatus();
+    await loadProductionStatus();
+  } catch (e) {
+    showFiscalToast(`Error: ${e.message}`, 'error');
+  } finally {
+    setBtnLoading(btn, false, '↩ Volver a certificación');
   }
 }
 

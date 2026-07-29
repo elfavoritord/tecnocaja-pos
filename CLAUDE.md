@@ -29,7 +29,7 @@ Diagrama completo: `docs/ARCHITECTURE.md`.
 - `server/config/cors.js` — Política CORS (allowlist localhost + LAN opcional).
 - `server/config/security.js` — Helmet + rate limiter + bind host.
 - `server/security/backup-crypto.js` — AES-256-GCM para respaldos `.novaseguro` (extensión legacy, no renombrar).
-- `server/middleware/dgii-auth.js` — Middleware de token interno para rutas DGII/e-CF (`DGII_REQUIRE_INTERNAL_TOKEN`).
+- `server/middleware/dgii-auth.js` — **No activo** (solo existe en `backups/`/`backup_ecf_antiguo/`). No se reconecta a propósito: `/fe/*` lo llama DGII directamente y DGII no puede enviar un token secreto nuestro.
 - `server/routes/dgiiRoutes.js` — Rutas públicas DGII (`/fe/recepcion`, `/fe/aprobacioncomercial`, `/fe/autenticacion`).
 - `server/cache/products-cache.js` — Cache LRU de productos.
 - `db/schema.sql` — Esquema MariaDB completo con seeds.
@@ -120,8 +120,7 @@ El backend corre en `127.0.0.1:3399`. Para exponer las rutas `/fe/*` a internet 
 
 Variables clave en `.env`:
 - `POS_BIND_HOST=127.0.0.1` — NO cambiar aunque uses el túnel.
-- `DGII_REQUIRE_INTERNAL_TOKEN=true` — protege `/fe/*` con token.
-- `DGII_INTERNAL_TOKEN=<token>` — token secreto, rotar si se filtra.
+- `DGII_REQUIRE_INTERNAL_TOKEN=false` — debe quedar en `false`. `/fe/*` es un webhook que llama DGII directamente; no hay forma de que DGII envíe un token secreto nuestro, así que activarlo bloquea el 100% del tráfico real de DGII.
 
 ## Documentos de referencia
 

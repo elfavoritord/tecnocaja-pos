@@ -65,7 +65,7 @@ function buildQrVerificationUrl(signedXml, environment) {
     `&ENCF=${encodeURIComponent(d.encf)}` +
     `&FechaEmision=${encodeURIComponent(d.fechaEmision || '')}` +
     `&MontoTotal=${encodeURIComponent(d.montoTotal || '')}` +
-    `&FechaFirma=${fechaFirma.replace(/ /g, '+')}` +
+    `&FechaFirma=${encodeURIComponent(fechaFirma)}` +
     `&CodigoSeguridad=${encodeURIComponent(d.codigoSeguridad)}`;
 }
 

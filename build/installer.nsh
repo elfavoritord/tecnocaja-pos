@@ -17,9 +17,12 @@
 ; package.json "name"=pos-system → dev-builds y versiones antiguas usaban este path
 !define APP_LEGACY_ROAMING_DIR  "$APPDATA\pos-system"
 ; ProgramData con espacio → ensure-local-mysql.js  getManagedMariaDbRoot()
-!define APP_PROGRAMDATA_DIR     "$PROGRAMDATA\Tecno Caja"
+; NOTA: $PROGRAMDATA NO es una constante nativa de NSIS (a diferencia de
+; $APPDATA/$DOCUMENTS arriba) — hay que leerla como variable de entorno con
+; $%PROGRAMDATA%, si no NSIS la trata como "unknown variable/constant".
+!define APP_PROGRAMDATA_DIR     "$%PROGRAMDATA%\Tecno Caja"
 ; ProgramData sin espacio → ensure-mariadb-service.ps1  $programDataRoot
-!define APP_PROGRAMDATA_NOSPACE "$PROGRAMDATA\TecnoCaja"
+!define APP_PROGRAMDATA_NOSPACE "$%PROGRAMDATA%\TecnoCaja"
 ; Documentos → electron/main.js  path.join(documents, 'TecnoCaja', 'Backups')
 !define APP_DOCS_DIR            "$DOCUMENTS\TecnoCaja"
 ; Log de instalación MariaDB (siempre limpiable)
@@ -136,8 +139,8 @@ FunctionEnd
 ; administrador. Se otorga explícitamente a BUILTIN\Users (SID fijo, no depende
 ; del idioma de Windows) para que esto no dependa de quién creó la carpeta.
 Function FixProgramDataPermissions
-  DetailPrint "Ajustando permisos de $PROGRAMDATA\Tecno Caja para usuarios normales..."
-  nsExec::ExecToLog 'icacls "$PROGRAMDATA\Tecno Caja" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
+  DetailPrint "Ajustando permisos de ${APP_PROGRAMDATA_DIR} para usuarios normales..."
+  nsExec::ExecToLog 'icacls "${APP_PROGRAMDATA_DIR}" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
   Pop $0
   ${If} $0 = 0
     DetailPrint "Permisos de ProgramData ajustados correctamente."

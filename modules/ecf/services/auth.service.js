@@ -28,6 +28,10 @@ class AuthService {
     return Boolean(
       this.tokenCache?.token &&
       this.tokenCache?.expiresAt &&
+      // Defensa en profundidad: applyRuntimeConfig() ya llama clearToken() al cambiar de
+      // ambiente, pero si algo lo saltara, un token cacheado de otro ambiente nunca debe
+      // considerarse válido para el ambiente activo actual (ej. testecf reusado en producción).
+      this.tokenCache?.environment === this.config.DGII_ENV &&
       this.tokenCache.expiresAt.getTime() - Date.now() > minimumMs
     );
   }
@@ -84,6 +88,7 @@ class AuthService {
         token: this.tokenCache.token,
         expedido: this.tokenCache.issuedAt?.toISOString() || null,
         expira: this.tokenCache.expiresAt?.toISOString() || null,
+        environment: this.tokenCache.environment,
         source: 'cache',
       };
     }
@@ -177,6 +182,7 @@ class AuthService {
       token: auth.token,
       issuedAt,
       expiresAt,
+      environment: this.config.DGII_ENV,
       signedSeedXml: signedSeed,
       seedXml: seed.xml,
       semilla: seed.value,
@@ -195,6 +201,7 @@ class AuthService {
       token: auth.token,
       expedido: issuedAt.toISOString(),
       expira: expiresAt.toISOString(),
+      environment: this.config.DGII_ENV,
       signedSeedXml: signedSeed,
       seedXml: seed.xml,
       semilla: seed.value,

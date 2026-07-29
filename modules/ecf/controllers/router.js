@@ -1,7 +1,12 @@
 'use strict';
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const { createEcfService } = require('../services/ecf.service');
+const { buildQrVerificationUrl } = require('../utils/qr-url.util');
+const { checkQrResolves } = require('../utils/dgii-live-check.util');
+const { recordQrDiagnostic } = require('../utils/qr-diagnostic.util');
 
 function wrap(handler) {
   return async (req, res) => {
@@ -195,6 +200,16 @@ function createEcfRouter(deps) {
   router.post('/wizard/state', wrap((req) => service.saveWizardState(req)));
   // Firma un XML de postulación con el P12 almacenado y devuelve el XML firmado
   router.post('/wizard/sign-postulation-xml', wrap((req) => service.signPostulationXml(req)));
+  router.post('/wizard/sign-declaration-xml', wrap((req) => service.signDeclarationXml(req)));
+  router.post('/certification/validate-service-urls', wrap((req) => service.validateServiceUrls(req)));
+  router.post('/wizard/set-production-base-url', wrap((req) => service.setProductionBaseUrl(req)));
+  router.post('/wizard/step14-evidence', wrap((req) => service.saveStep14Evidence(req)));
+
+  // ── Activación segura de producción DGII (ambiente 'ecf') — acción independiente,
+  //    nunca disparada automáticamente por el wizard. Ver docs/plan de activación segura.
+  router.get('/production/status', wrap(() => service.getProductionActivationStatus()));
+  router.post('/production/activate', wrap((req) => service.activateProduction(req)));
+  router.post('/production/revert', wrap((req) => service.revertProductionToCertification(req)));
 
   router.get('/reports/summary', wrap(() => service.getSummaryReport()));
   // DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación
@@ -206,7 +221,7 @@ function createEcfRouter(deps) {
   router.get('/print/step5-docs', async (req, res) => {
     try {
       const rows = await deps.query(
-        `SELECT encf, tipo_ecf, submission_mode, estado_dgii
+        `SELECT encf, tipo_ecf, submission_mode, estado_dgii, environment, signed_xml_content
          FROM ecf_documents
          WHERE certification_batch_id = (
            SELECT certification_batch_id FROM ecf_documents
@@ -236,15 +251,47 @@ function createEcfRouter(deps) {
       // válido del mismo tipo en el mismo lote.
       const ESTADO_RANK = { aceptado: 0, aceptado_condicional: 1, firmado: 2, enviado: 3, rechazado: 4 };
       const rankOf = (estado) => ESTADO_RANK[estado] ?? 3;
-      const byKey = {};
+      const byKeyCandidates = {};
       rows.forEach((r) => {
         const k = `${r.tipo_ecf.replace('E','')}-${(r.submission_mode||'normal').toLowerCase()}`;
-        const candidate = { key: k, tipo: r.tipo_ecf, label: TYPE_LABELS[k] || k, encf: r.encf, estado: r.estado_dgii };
-        if (!byKey[k] || rankOf(candidate.estado) < rankOf(byKey[k].estado)) {
-          byKey[k] = candidate;
-        }
+        (byKeyCandidates[k] = byKeyCandidates[k] || []).push(r);
       });
-      const docs = ORDER.map((k) => byKey[k]).filter(Boolean);
+      Object.values(byKeyCandidates).forEach((list) => list.sort((a, b) => rankOf(a.estado_dgii) - rankOf(b.estado_dgii)));
+
+      // DGII puede aceptar un documento en la recepción y aun así tardar (o nunca llegar) a
+      // indexarlo en su portal público ConsultaTimbre/ConsultaTimbreFC — el Paso 5/6 exige
+      // "la correcta conformación de los QR", que DGII valida escaneando. Por eso, entre los
+      // candidatos aceptados del mismo tipo, se prueba en vivo cuál YA resuelve ahí antes de
+      // elegirlo como representante, en vez de tomar el primero por eNCF a ciegas — ver
+      // dgii-live-check.util.js.
+      const docs = [];
+      for (const k of ORDER) {
+        const candidates = byKeyCandidates[k];
+        if (!candidates || !candidates.length) continue;
+        let chosen = candidates[0];
+        let dgiiVerificado = false;
+        let dgiiEstadoPublico = null;
+        for (const candidate of candidates) {
+          if (!['aceptado', 'aceptado_condicional'].includes(String(candidate.estado_dgii || '').toLowerCase())) break;
+          const qrUrl = buildQrVerificationUrl(candidate.signed_xml_content, candidate.environment);
+          const result = await checkQrResolves(qrUrl);
+          if (result.indexed) {
+            chosen = candidate;
+            dgiiVerificado = true;
+            dgiiEstadoPublico = result.estado;
+            break;
+          }
+        }
+        docs.push({
+          key: k,
+          tipo: chosen.tipo_ecf,
+          label: TYPE_LABELS[k] || k,
+          encf: chosen.encf,
+          estado: chosen.estado_dgii,
+          dgiiVerificado,
+          dgiiEstadoPublico,
+        });
+      }
       res.json({ docs });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -259,7 +306,7 @@ function createEcfRouter(deps) {
       const { generateReprImpresaHtml } = require('./repr-impresa');
 
       const rows = await deps.query(
-        `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, estado_dgii, rnc_comprador
+        `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, estado_dgii, rnc_comprador, environment
          FROM ecf_documents
          WHERE certification_batch_id = (
            SELECT certification_batch_id FROM ecf_documents
@@ -291,12 +338,42 @@ function createEcfRouter(deps) {
       // rechazo seguido de reintentos aceptados).
       const ESTADO_RANK = { aceptado: 0, aceptado_condicional: 1, firmado: 2, enviado: 3, rechazado: 4 };
       const rankOf = (estado) => ESTADO_RANK[estado] ?? 3;
-      const byKey = {};
+      const byKeyCandidates = {};
       rows.forEach((r) => {
         const k = `${r.tipo_ecf.replace('E','')}-${(r.submission_mode||'normal').toLowerCase()}`;
-        if (!byKey[k] || rankOf(r.estado_dgii) < rankOf(byKey[k].estado_dgii)) byKey[k] = r;
+        (byKeyCandidates[k] = byKeyCandidates[k] || []).push(r);
       });
-      const selected = ORDER.map((k, i) => ({ key: k, idx: i + 1, row: byKey[k] })).filter((x) => x.row);
+      Object.values(byKeyCandidates).forEach((list) => list.sort((a, b) => rankOf(a.estado_dgii) - rankOf(b.estado_dgii)));
+
+      // DGII puede aceptar un documento en la recepción y aun así tardar (o nunca llegar) a
+      // indexarlo en su portal público de verificación — el Paso 5/6 exige "la correcta
+      // conformación de los QR", que DGII valida escaneando. Entre los candidatos aceptados
+      // del mismo tipo, probar en vivo cuál YA resuelve ahí antes de elegirlo como
+      // representante — ver dgii-live-check.util.js. Si ninguno resuelve, se usa igual el
+      // mejor rankeado (no hay otra opción) pero queda marcado en el resumen del ZIP.
+      const selected = [];
+      const verificationSummary = [];
+      for (let i = 0; i < ORDER.length; i += 1) {
+        const key = ORDER[i];
+        const candidates = byKeyCandidates[key];
+        if (!candidates || !candidates.length) continue;
+        let row = candidates[0];
+        let dgiiVerificado = false;
+        let dgiiEstadoPublico = null;
+        for (const candidate of candidates) {
+          if (!['aceptado', 'aceptado_condicional'].includes(String(candidate.estado_dgii || '').toLowerCase())) break;
+          const qrUrl = buildQrVerificationUrl(candidate.signed_xml_content, candidate.environment);
+          const result = await checkQrResolves(qrUrl);
+          if (result.indexed) {
+            row = candidate;
+            dgiiVerificado = true;
+            dgiiEstadoPublico = result.estado;
+            break;
+          }
+        }
+        selected.push({ key, idx: selected.length + 1, row });
+        verificationSummary.push({ key, encf: row.encf, dgiiVerificado, dgiiEstadoPublico });
+      }
 
       if (!selected.length) return res.status(404).json({ error: 'No hay documentos de simulación con XML firmado.' });
 
@@ -320,7 +397,24 @@ function createEcfRouter(deps) {
         await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
         const pdfRaw = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
         archive.append(Buffer.isBuffer(pdfRaw) ? pdfRaw : Buffer.from(pdfRaw), { name: filename });
+        recordQrDiagnostic({
+          tipoEcf: row.tipo_ecf,
+          signedXml: row.signed_xml_content,
+          environment: row.environment,
+          estadoConsultaResultado: row.estado_dgii,
+          pdfGeneradoPath: filename,
+        });
       }
+
+      const resumenLines = [
+        'Verificación en vivo contra el portal público de DGII (ConsultaTimbre/ConsultaTimbreFC) al momento de generar este ZIP.',
+        'Un "NO" no significa que el documento esté mal — DGII lo aceptó igual en la recepción — significa que su índice',
+        'público de verificación aún no lo tiene indexado. Si DGII rechaza este comprobante en el Paso 6 por el QR,',
+        'espera un poco y vuelve a generar el ZIP: puede que ya haya un candidato del mismo tipo que sí resuelva.',
+        '',
+        ...verificationSummary.map((v) => `Tipo ${v.key}: eNCF ${v.encf} — verificado en DGII: ${v.dgiiVerificado ? 'SI (' + v.dgiiEstadoPublico + ')' : 'NO'}`),
+      ];
+      archive.append(resumenLines.join('\n'), { name: '00-RESUMEN-VERIFICACION-DGII.txt' });
 
       await browser.close();
       browser = null;
@@ -366,6 +460,27 @@ function createEcfRouter(deps) {
       await archive.finalize();
     } catch (e) {
       if (!res.headersSent) res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Lista los diagnósticos QR-vs-XML más recientes (ver qr-diagnostic.util.js) — uno por
+  // cada e-CF para el que se generó un QR (venta real o Paso 5 de certificación), con la
+  // comparación campo por campo y el SignatureValue completo. Útil para auditar sin acceso
+  // directo al filesystem del servidor.
+  router.get('/print/qr-diagnostics', async (req, res) => {
+    try {
+      const dir = path.join(process.cwd(), 'storage', 'ecf', 'qr-diagnostics');
+      if (!fs.existsSync(dir)) return res.json({ diagnostics: [] });
+      const limit = Math.max(1, Math.min(Number(req.query.limit || 50), 200));
+      const files = fs.readdirSync(dir)
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, limit);
+      const diagnostics = files.map(({ f }) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+      res.json({ diagnostics });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
   });
 

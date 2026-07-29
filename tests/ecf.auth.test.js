@@ -83,6 +83,20 @@ describe('auth.service', () => {
     });
   });
 
+  test('un token cacheado de otro ambiente nunca se considera válido, aunque no haya expirado', async () => {
+    await authService.authenticate({ forceRefresh: true });
+    // El fixture de dgiiClient.validateSeed trae una fecha de expiración fija — se sobreescribe
+    // aquí con una fecha futura real para que la prueba no dependa de cuándo se ejecute.
+    authService.tokenCache.expiresAt = new Date(Date.now() + 3600000);
+    expect(authService.isTokenValid()).toBe(true);
+
+    // Simula un cambio de ambiente sin pasar por clearToken() (defensa en profundidad:
+    // applyRuntimeConfig() en ecf.service.js ya llama clearToken(), pero el token cacheado
+    // por sí solo nunca debe validarse contra un ambiente distinto al que fue emitido).
+    authService.config = { ...authService.config, DGII_ENV: 'ecf' };
+    expect(authService.isTokenValid()).toBe(false);
+  });
+
   test('lanza error claro cuando DGII no devuelve xml de semilla', async () => {
     dgiiClient.getSeed.mockResolvedValueOnce({
       xml: '',

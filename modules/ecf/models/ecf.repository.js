@@ -5,6 +5,7 @@ const { normalizeEnvironmentKey } = require('../config/ecf.config');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { getDbClient } = require('../../../db');
 const { buildQrVerificationUrl } = require('../utils/qr-url.util');
+const { recordQrDiagnostic } = require('../utils/qr-diagnostic.util');
 
 // Solo se calcula el QR real cuando DGII ya confirmó el documento — un QR
 // generado con un estado "enviado"/pendiente puede apuntar a un e-CF que
@@ -264,6 +265,11 @@ class EcfRepository {
       ['internal_token_hash', 'VARCHAR(255) DEFAULT NULL'],
       ['notes', 'TEXT DEFAULT NULL'],
       ['is_active', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      // Activación de producción DGII (ambiente 'ecf') — independiente de is_active,
+      // que solo prende/apaga el módulo e-CF en general. Ver docs/plan de activación segura.
+      ['production_status', "VARCHAR(30) NOT NULL DEFAULT 'not_configured'"],
+      ['production_activated_at', 'DATETIME DEFAULT NULL'],
+      ['production_activated_by', 'VARCHAR(150) DEFAULT NULL'],
     ];
     for (const [columnName, definitionSql] of emitterColumns) {
       await addColumnIfMissing(this.query, 'ecf_emitters', columnName, definitionSql).catch(() => {});
@@ -407,6 +413,9 @@ class EcfRepository {
       internal_token_hash: emitter?.internal_token_hash || '',
       notes: emitter?.notes || '',
       is_active: Boolean(Number(emitter?.is_active || 0)),
+      production_status: emitter?.production_status || 'not_configured',
+      production_activated_at: emitter?.production_activated_at || null,
+      production_activated_by: emitter?.production_activated_by || '',
     };
   }
 
@@ -433,6 +442,9 @@ class EcfRepository {
       internal_token_hash: payload.internal_token_hash ?? current?.internal_token_hash ?? null,
       notes: payload.notes ?? current?.notes ?? null,
       is_active: payload.is_active === undefined ? Number(current?.is_active || 0) : (payload.is_active ? 1 : 0),
+      production_status: payload.production_status ?? current?.production_status ?? 'not_configured',
+      production_activated_at: payload.production_activated_at ?? current?.production_activated_at ?? null,
+      production_activated_by: payload.production_activated_by ?? current?.production_activated_by ?? null,
     };
 
     if (current) {
@@ -440,7 +452,8 @@ class EcfRepository {
         `UPDATE ecf_emitters
          SET rnc=?, razon_social=?, nombre_comercial=?, direccion=?, provincia=?, municipio=?, telefono=?, correo=?,
              environment=?, certificate_type=?, certificate_expires_at=?, validation_status=?, public_base_url=?, allowed_origins=?,
-             require_internal_token=?, internal_token_hash=?, notes=?, is_active=?, updated_at=CURRENT_TIMESTAMP
+             require_internal_token=?, internal_token_hash=?, notes=?, is_active=?,
+             production_status=?, production_activated_at=?, production_activated_by=?, updated_at=CURRENT_TIMESTAMP
          WHERE id=?`,
         [
           data.rnc,
@@ -461,6 +474,9 @@ class EcfRepository {
           data.internal_token_hash,
           data.notes,
           data.is_active,
+          data.production_status,
+          data.production_activated_at,
+          data.production_activated_by,
           current.id,
         ]
       );
@@ -469,8 +485,9 @@ class EcfRepository {
         `INSERT INTO ecf_emitters
         (business_id, rnc, razon_social, nombre_comercial, direccion, provincia, municipio, telefono, correo,
          environment, certificate_type, certificate_expires_at, validation_status, public_base_url, allowed_origins,
-         require_internal_token, internal_token_hash, notes, is_active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+         require_internal_token, internal_token_hash, notes, is_active,
+         production_status, production_activated_at, production_activated_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
         [
           businessId,
           data.rnc,
@@ -491,6 +508,9 @@ class EcfRepository {
           data.internal_token_hash,
           data.notes,
           data.is_active,
+          data.production_status,
+          data.production_activated_at,
+          data.production_activated_by,
         ]
       );
     }
@@ -1275,12 +1295,20 @@ class EcfRepository {
   }
 
   async markDocumentStatus(documentId, payload = {}) {
+    // error_message NO usa COALESCE: cuando el caller confirma que ya no hay
+    // error (p.ej. al reconciliar el estado a 'aceptado' vía ConsultaResultado,
+    // ver ecf.service.js ~2589) pasa error_message: null queriendo decir "ya no
+    // hay error" — con COALESCE eso se ignoraba y dejaba pegado el mensaje de un
+    // rechazo previo (aparecía literalmente "[object Object]" en documentos ya
+    // aceptados). estado_dgii y dgii_response_json sí usan COALESCE a propósito:
+    // el único caller que omite esos campos (rfce_resend, ecf.service.js ~7558)
+    // sí quiere preservarlos hasta el próximo envío.
     await this.query(
       `UPDATE ecf_documents
        SET estado_dgii = COALESCE(?, estado_dgii),
            dgii_response_json = COALESCE(?, dgii_response_json),
            last_checked_at = CURRENT_TIMESTAMP,
-           error_message = COALESCE(?, error_message),
+           error_message = ?,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -1303,6 +1331,13 @@ class EcfRepository {
         const signedXml = docRows[0]?.signed_xml_content;
         if (signedXml) {
           qrData = buildQrVerificationUrl(signedXml, docRows[0].environment) || null;
+          recordQrDiagnostic({
+            tipoEcf: payload.tipoEcf,
+            signedXml,
+            environment: docRows[0].environment,
+            trackId: payload.trackId || null,
+            estadoConsultaResultado: payload.estado || null,
+          });
         }
       } catch (err) {
         console.warn('[ECF] No se pudo calcular qr_data en attachSaleSummary:', err.message);
