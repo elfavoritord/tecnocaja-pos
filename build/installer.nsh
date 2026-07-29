@@ -123,17 +123,44 @@ Function EnsureMariaDbService
   ${EndIf}
 FunctionEnd
 
+; ── Permisos de escritura en ProgramData para usuarios normales ───────────────
+; El instalador usa requestedExecutionLevel=asInvoker (no eleva), así que la
+; carpeta ProgramData\Tecno Caja queda con el dueño que sea el proceso que la
+; creó primero. Si ese proceso corrió alguna vez como Administrador (instalación
+; anterior, "Ejecutar como administrador" manual, etc.), la carpeta hereda una
+; ACL que solo permite escritura a Administradores/SYSTEM. El servicio de
+; Windows de MariaDB corre como SYSTEM y no lo nota, pero el flujo de respaldo
+; en ensure-local-mysql.js (que arranca mariadbd.exe directo como el usuario
+; actual si el servicio no está corriendo) sí necesita escribir ahí — y sin
+; este permiso, la app solo conecta a la base de datos si se abre como
+; administrador. Se otorga explícitamente a BUILTIN\Users (SID fijo, no depende
+; del idioma de Windows) para que esto no dependa de quién creó la carpeta.
+Function FixProgramDataPermissions
+  DetailPrint "Ajustando permisos de $PROGRAMDATA\Tecno Caja para usuarios normales..."
+  nsExec::ExecToLog 'icacls "$PROGRAMDATA\Tecno Caja" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
+  Pop $0
+  ${If} $0 = 0
+    DetailPrint "Permisos de ProgramData ajustados correctamente."
+  ${Else}
+    DetailPrint "Advertencia: no se pudieron ajustar permisos de ProgramData (código $0). Puede requerir 'Ejecutar como administrador' una vez."
+  ${EndIf}
+FunctionEnd
+
 ; ── Hook principal de instalación ─────────────────────────────────────────────
 !macro customInstall
   ${if} ${isUpdated}
     ; En una actualización los datos, MariaDB, VC++ y el firewall ya existen.
     ; Reconfigurarlos en cada versión hacía que una actualización pequeña
-    ; tardara casi lo mismo que una instalación completa.
+    ; tardara casi lo mismo que una instalación completa. Los permisos sí se
+    ; reintentan siempre: instalaciones viejas pueden tener la carpeta con
+    ; ACL restrictiva de una ejecución elevada anterior.
     DetailPrint "Actualización rápida: conservando base de datos y configuración existentes."
+    Call FixProgramDataPermissions
   ${else}
     Call EnsureVCRedistReady
     Call CreateAppDataFolders
     Call EnsureMariaDbService
+    Call FixProgramDataPermissions
     Call AddFirewallRule
   ${endIf}
 !macroend

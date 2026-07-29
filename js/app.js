@@ -3982,6 +3982,13 @@ function saveLocalPeripheralsConfig(sourceConfig) {
   PERIPHERALS_CONFIG_FIELDS.forEach((field) => {
     if (sourceConfig[field] !== undefined) subset[field] = sourceConfig[field];
   });
+  // Aplicar de inmediato (optimista): saveConfig() llama a esto y luego a
+  // api.saveConfig(), cuyo .then() dispara syncConfigForm() → getEffectiveConfig().
+  // Si esperáramos solo a que resuelva el IPC de abajo, esa síntesis podía
+  // ganar la carrera con el valor viejo todavía en window.LocalPeripheralsFlat
+  // y pisar el valor recién guardado (ej. la impresora seleccionada se veía
+  // "limpiarse" sola después de Guardar).
+  window.LocalPeripheralsFlat = { ...window.LocalPeripheralsFlat, ...subset };
   window.novaDesktop.savePeripheralsConfig(subset)
     .then((merged) => { if (merged && !merged.error) window.LocalPeripheralsFlat = merged; })
     .catch(() => {});

@@ -1142,6 +1142,16 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 @media (max-width:1100px) {
   .ventas-workspace.ventas-workspace--split {
     grid-template-columns:minmax(0, 1fr);
+    overflow-y:auto;
+  }
+  /* En una sola columna el catálogo y el pedido se apilan como dos filas;
+     height:100% (pensado para lado a lado) los aplastaba dentro de la
+     altura fija del workspace. Cada uno toma su alto natural y el
+     workspace scrollea. */
+  .ventas-workspace.ventas-workspace--split .sales-catalog-panel,
+  .ventas-workspace.ventas-workspace--split .sale-order-panel {
+    height:auto;
+    min-height:420px;
   }
   .sales-catalog-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
