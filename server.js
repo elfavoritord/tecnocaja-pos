@@ -4024,7 +4024,19 @@ async function ensureCashRegisterTypeExtension() {
 }
 
 // ─── Terminal config — identificador local por máquina ────────────────────
-const TERMINAL_CONFIG_PATH = path.join(__dirname, 'config', 'terminal-config.json');
+// Debe vivir en runtime.userDataPath (%APPDATA%/Tecno Caja), NO en __dirname:
+// en una instalación empaquetada __dirname apunta dentro de app.asar, que es
+// de solo lectura, y fs.writeFileSync ahí falla en silencio (ver
+// saveTerminalConfig). Se prefiere la ruta legacy solo si ya existe, para no
+// romper instalaciones en modo desarrollo (npm run desktop) que ya guardaron
+// su config ahí, donde __dirname sí es una carpeta real escribible.
+const TERMINAL_CONFIG_PATH = (() => {
+  const writablePath = path.join(runtime.userDataPath, 'config', 'terminal-config.json');
+  const legacyPath = path.join(__dirname, 'config', 'terminal-config.json');
+  if (fs.existsSync(writablePath)) return writablePath;
+  if (fs.existsSync(legacyPath)) return legacyPath;
+  return writablePath;
+})();
 
 function getTerminalConfig() {
   try {
@@ -7474,6 +7486,44 @@ async function ensureUniqueProductBarcode(barcode, ignoreId = null, executor = q
   }
 }
 
+// Estas funciones "ensureX" hacen CREATE TABLE IF NOT EXISTS / ADD COLUMN IF
+// MISSING — son idempotentes, pero se llaman en decenas de sitios del archivo
+// (incluyendo getBootstrapData, que corre en CADA login). El esquema no
+// cambia mientras el proceso sigue corriendo, así que repetir esas consultas
+// en cada request es puro tiempo perdido — memoizamos por proceso: la primera
+// vez que cada una corre y termina bien, las siguientes llamadas devuelven la
+// misma promesa sin volver a tocar la base de datos. Si falla, se limpia el
+// caché para permitir reintentar (ej. la base no estaba lista todavía).
+function memoizeEnsureOnce(fn) {
+  let pending = null;
+  return function memoized(...args) {
+    if (!pending) {
+      pending = Promise.resolve(fn.apply(this, args)).catch((err) => {
+        pending = null;
+        throw err;
+      });
+    }
+    return pending;
+  };
+}
+
+ensureAuditTable = memoizeEnsureOnce(ensureAuditTable);
+ensureCategoriesTable = memoizeEnsureOnce(ensureCategoriesTable);
+ensureBusinessStructureExtensions = memoizeEnsureOnce(ensureBusinessStructureExtensions);
+ensureBusinessRulesExtensions = memoizeEnsureOnce(ensureBusinessRulesExtensions);
+ensureUserExtensions = memoizeEnsureOnce(ensureUserExtensions);
+ensureProductExtensions = memoizeEnsureOnce(ensureProductExtensions);
+ensureClientExtensions = memoizeEnsureOnce(ensureClientExtensions);
+ensureSalesExtensions = memoizeEnsureOnce(ensureSalesExtensions);
+ensureSuppliersTable = memoizeEnsureOnce(ensureSuppliersTable);
+ensureSupplierInvoicesTable = memoizeEnsureOnce(ensureSupplierInvoicesTable);
+ensureInventoryMovementsTable = memoizeEnsureOnce(ensureInventoryMovementsTable);
+ensureCashMovementExtensions = memoizeEnsureOnce(ensureCashMovementExtensions);
+ensureDiningTables = memoizeEnsureOnce(ensureDiningTables);
+ensureDeliveryTrackingTable = memoizeEnsureOnce(ensureDeliveryTrackingTable);
+ensureSuspendedSalesTable = memoizeEnsureOnce(ensureSuspendedSalesTable);
+ensureQuotationsTable = memoizeEnsureOnce(ensureQuotationsTable);
+
 async function getBootstrapData(actorUser = null) {
   await ensureAuditTable();
   await ensureCategoriesTable();
@@ -7795,7 +7845,14 @@ async function findLinkedContadorProfile(firebaseUid) {
 }
 
 app.post('/api/login', loginLimiter, async (req, res) => {
+  // Instrumentación temporal de diagnóstico (2026-07-30): mide cada fase del
+  // login para encontrar dónde se va el tiempo cuando un cliente reporta
+  // "tarda mucho en entrar". Quitar una vez confirmada/corregida la causa.
+  const _loginT0 = Date.now();
+  const _lap = (label) => console.log(`[login-timing] ${label}: ${Date.now() - _loginT0}ms`);
+
   const setupStatus = await getSetupStatus();
+  _lap('getSetupStatus');
   if (setupStatus.setupRequired) {
     return res.status(423).json({ error: 'Debes completar el asistente inicial antes de iniciar sesión.' });
   }
@@ -7828,11 +7885,13 @@ app.post('/api/login', loginLimiter, async (req, res) => {
      LIMIT 1`,
     [usuario]
   );
+  _lap('buscarUsuario');
   const user = rows[0];
   if (!user || !userPasswordMatches(user, password)) {
     try { await query('INSERT INTO login_attempts (usuario, ip_address, success) VALUES (?, ?, 0)', [usuario, req.ip]); } catch (_e) {}
     return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
   }
+  _lap('verificarPassword');
 
   const now = new Date().toLocaleString('sv-SE').replace(' ', ' ');
   await query('UPDATE users SET last_login = ?, auth_provider = ? WHERE id = ?', [now, 'local', user.id]);
@@ -7844,13 +7903,16 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     actionName: 'Inicio de sesión',
     detail: `Acceso al sistema con usuario ${user.usuario}`
   });
+  _lap('auditLog');
   const bootstrap = await getBootstrapData(user);
+  _lap('getBootstrapData');
   const currentUser = { ...mapUserRow({ ...user, last_login: now }) };
   bootstrap.currentUser = currentUser;
   const token = await createAuthSession(user, req.ip, req.headers['user-agent']);
   resetLoginRateLimit(String(req.ip) + ':' + usuario);
   try { await query('INSERT INTO login_attempts (usuario, ip_address, success) VALUES (?, ?, 1)', [usuario, req.ip]); } catch (_e) {}
   const linkedContadorProfile = await findLinkedContadorProfile(user.firebase_uid);
+  _lap('total');
 
   res.json({
     token,
@@ -18107,7 +18169,11 @@ async function startFirestoreLicenseWatcher() {
 
     licenseWatcherUnsubscribe = docRef.onSnapshot(
       () => {
-        syncRemoteLicenseToLocalConfig({ allowRemoteWrite: false }).catch(() => {});
+        // force:true — este callback solo dispara cuando Firestore avisa un
+        // cambio real (o el snapshot inicial); no debe quedar bloqueado por
+        // el caché de resolveState() (stateCacheTtlMs), que ahora es más
+        // largo para evitar pagar el costo de un login normal repetidas veces.
+        syncRemoteLicenseToLocalConfig({ force: true, allowRemoteWrite: false }).catch(() => {});
       },
       err => {
         console.warn('[license-watcher] Error en listener Firestore:', err.message);

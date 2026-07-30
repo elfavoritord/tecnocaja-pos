@@ -174,7 +174,8 @@ module.exports = function createOfflineRouter(deps) {
         `SELECT id, codigo, nombre,
                 COALESCE(categoria, 'Sin categoría') as categoria,
                 precio_venta, COALESCE(stock, 0) as stock,
-                COALESCE(stock_min, 0) as stock_min, estado
+                COALESCE(stock_min, 0) as stock_min, estado,
+                COALESCE(tracks_stock, 1) as tracks_stock
          FROM products
          WHERE estado = 'Activo'
            AND (branch_id IS NULL OR branch_id = ?)
@@ -184,13 +185,14 @@ module.exports = function createOfflineRouter(deps) {
       for (const p of (productos || [])) {
         await localQuery(
           `INSERT INTO offline_cache_products
-             (product_id, codigo, nombre, categoria, precio_venta, stock_cached, stock_min, estado, last_updated)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+             (product_id, codigo, nombre, categoria, precio_venta, stock_cached, stock_min, estado, tracks_stock, last_updated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(product_id) DO UPDATE SET
              codigo=excluded.codigo, nombre=excluded.nombre, categoria=excluded.categoria,
              precio_venta=excluded.precio_venta, stock_cached=excluded.stock_cached,
-             stock_min=excluded.stock_min, estado=excluded.estado, last_updated=excluded.last_updated`,
-          [p.id, p.codigo, p.nombre, p.categoria, p.precio_venta, p.stock, p.stock_min, p.estado]
+             stock_min=excluded.stock_min, estado=excluded.estado, tracks_stock=excluded.tracks_stock,
+             last_updated=excluded.last_updated`,
+          [p.id, p.codigo, p.nombre, p.categoria, p.precio_venta, p.stock, p.stock_min, p.estado, Number(p.tracks_stock ?? 1) ? 1 : 0]
         );
         productsCached++;
       }
@@ -1334,9 +1336,13 @@ module.exports = function createOfflineRouter(deps) {
       // RD$0.00 en modo offline aunque el caché tenga el precio correcto.
       const productos = await localQuery(
         `SELECT product_id as id, codigo, nombre, categoria,
-                precio_venta as precioVenta, stock_cached as stock, stock_min as stockMin, estado
+                precio_venta as precioVenta, stock_cached as stock, stock_min as stockMin, estado,
+                tracks_stock as tracksStock
          FROM offline_cache_products WHERE estado = 'Activo' ORDER BY nombre LIMIT 5000`
       );
+      for (const p of (productos || [])) {
+        p.tracksStock = Number(p.tracksStock ?? 1) !== 0;
+      }
 
       const clientes = await localQuery(
         `SELECT client_id as id, nombre, cedula, telefono, email,
@@ -1957,7 +1963,8 @@ module.exports = function createOfflineRouter(deps) {
       const productos = await query(
         `SELECT id, codigo, nombre,
                 COALESCE(categoria, 'Sin categoría') as categoria,
-                precio_venta, COALESCE(stock, 0) as stock, estado
+                precio_venta, COALESCE(stock, 0) as stock, estado,
+                COALESCE(tracks_stock, 1) as tracks_stock
          FROM products
          WHERE estado = 'Activo'
            AND (branch_id IS NULL OR branch_id = ?)
@@ -1968,12 +1975,12 @@ module.exports = function createOfflineRouter(deps) {
       for (const p of (productos || [])) {
         await localQuery(
           `INSERT INTO offline_cache_products
-             (product_id, codigo, nombre, categoria, precio_venta, stock_cached, estado, last_updated)
-           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+             (product_id, codigo, nombre, categoria, precio_venta, stock_cached, estado, tracks_stock, last_updated)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(product_id) DO UPDATE SET
              precio_venta=excluded.precio_venta, stock_cached=excluded.stock_cached,
-             estado=excluded.estado, last_updated=excluded.last_updated`,
-          [p.id, p.codigo, p.nombre, p.categoria, p.precio_venta, p.stock, p.estado]
+             estado=excluded.estado, tracks_stock=excluded.tracks_stock, last_updated=excluded.last_updated`,
+          [p.id, p.codigo, p.nombre, p.categoria, p.precio_venta, p.stock, p.estado, Number(p.tracks_stock ?? 1) ? 1 : 0]
         );
       }
     } catch (err) {

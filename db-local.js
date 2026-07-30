@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS offline_cache_products (
   stock_cached DECIMAL(12,3) NOT NULL DEFAULT 0,
   stock_min DECIMAL(12,3) NOT NULL DEFAULT 0,
   estado VARCHAR(20) NOT NULL DEFAULT 'Activo',
+  tracks_stock TINYINT(1) NOT NULL DEFAULT 1,
   last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -293,6 +294,12 @@ async function _initLocalDb() {
   _addLocalColumnIfMissing(db, 'pending_cash_movements', 'supplier_invoice_id', 'INTEGER DEFAULT NULL');
   _addLocalColumnIfMissing(db, 'pending_cash_movements', 'branch_id', 'INTEGER DEFAULT NULL');
   _addLocalColumnIfMissing(db, 'pending_cash_movements', 'cash_register_id', 'INTEGER DEFAULT NULL');
+
+  // Sin esta columna, todo producto cacheado offline se trataba como si
+  // controlara inventario (tracksStock llegaba undefined al frontend, que
+  // por defecto asume "sí controla"), bloqueando la venta de productos
+  // "no maneja stock" con stock_cached=0 en modo offline.
+  _addLocalColumnIfMissing(db, 'offline_cache_products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
 
   _saveLocalDb(db);
   return db;

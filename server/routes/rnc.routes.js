@@ -3,28 +3,43 @@
 const express = require('express');
 
 let handler = null;
-let scheduleUpdates = null;
 let rncReady = false;
 let rncError = null;
+let warmedUp = false;
 
 function getRncHandler() {
   if (handler) return handler;
   try {
     const mod = require('dgii-rnc');
     handler = new mod.RNCHandler();
-    scheduleUpdates = mod.scheduleUpdates;
-    // Pre-cargar dataset en background al iniciar
-    handler.checkFile()
-      .then(() => {
-        rncReady = true;
-        // Actualizar una vez por día silenciosamente (no bloquear requests)
-        scheduleUpdates({ handler, intervalMs: 24 * 60 * 60 * 1000 });
-      })
-      .catch((err) => { rncError = err.message; });
   } catch (err) {
     rncError = 'Paquete dgii-rnc no disponible: ' + err.message;
   }
   return handler;
+}
+
+// Pre-cargar el dataset en background al iniciar. IMPORTANTE: no usar
+// scheduleUpdates() del paquete dgii-rnc — esa función llama a checkFile()
+// de inmediato al programarse (además de su propio setInterval diario), y
+// checkFile() SIEMPRE re-lee y re-parsea el archivo completo (~784k líneas,
+// fs.readFileSync síncrono y bloqueante) sin importar si cambió o no. Eso
+// duplicaba el bloqueo del event loop en cada arranque de la app (dos
+// congelamientos seguidos en vez de uno). Aquí se programa un solo chequeo
+// diario propio, sin la llamada inmediata extra.
+function warmupRncDataset() {
+  if (warmedUp) return;
+  warmedUp = true;
+  const h = getRncHandler();
+  if (!h) return;
+  h.checkFile()
+    .then(() => {
+      rncReady = true;
+      const dailyTimer = setInterval(() => {
+        h.checkFile().catch((err) => { rncError = err.message; });
+      }, 24 * 60 * 60 * 1000);
+      dailyTimer.unref?.();
+    })
+    .catch((err) => { rncError = err.message; });
 }
 
 function createRncRouter() {
@@ -34,7 +49,7 @@ function createRncRouter() {
   // difiere hasta que la interfaz ya tuvo tiempo de abrir; una consulta hecha
   // antes igualmente lo inicializa bajo demanda mediante getRncHandler().
   const warmupTimer = setTimeout(() => {
-    getRncHandler();
+    warmupRncDataset();
   }, 15_000);
   warmupTimer.unref?.();
 

@@ -17,7 +17,18 @@ const {
 const CACHE_ROW_ID = 1;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_STATE_CACHE_TTL_MS = 10 * 1000;
+// Antes 10s: en la práctica, cualquier login que llegara más de 10s después
+// del último resolveState() (casi siempre, ya que un arranque normal +
+// abrir la pantalla de login + escribir la contraseña toma más que eso)
+// volvía a pagar el costo completo de syncWithRemote() — incluyendo su
+// timeout de REMOTE_SYNC_TIMEOUT_MS cuando Firebase respondía lento (el caso
+// típico: la primera llamada después de un arranque en frío del SDK). El
+// listener en tiempo real de Firestore (ver startFirestoreLicenseWatcher en
+// server.js) ya es la vía real de frescura ante cambios de licencia — ese
+// listener SIEMPRE debe pasar { force: true } a syncRemoteLicenseToLocalConfig
+// para no quedar bloqueado por este mismo caché. Este TTL solo debe evitar
+// ráfagas de llamadas redundantes, no ser la única fuente de actualización.
+const DEFAULT_STATE_CACHE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_REMOTE_HEARTBEAT_MS = 15 * 60 * 1000;
 // Si Firebase no responde (o responde muy lento) en este tiempo, resolveState
 // debe caer al snapshot local en vez de dejar el arranque/login colgado

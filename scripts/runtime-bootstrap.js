@@ -256,15 +256,20 @@ function prepareRuntimeEnvironment(options = {}) {
   // prueba — no revertirlo aquí. La resiliencia para cuando la principal no
   // responde la da el arranque degradado de server.js (prepareServerRuntime/
   // isUnreachableHostError), no este guardia.
-  const isExplicitSecondaryTerminal = (() => {
+  // Revisa primero la ruta escribible real (userData) y cae a la ruta legacy
+  // de appRoot solo para instalaciones en modo desarrollo que ya guardaron
+  // ahí su config (ver TERMINAL_CONFIG_PATH en server.js para el mismo criterio).
+  const isExplicitSecondaryTerminal = [
+    path.join(userDataPath, 'config', 'terminal-config.json'),
+    path.join(appRoot, 'config', 'terminal-config.json'),
+  ].some((candidate) => {
     try {
-      const tcRaw = fs.readFileSync(path.join(appRoot, 'config', 'terminal-config.json'), 'utf8');
-      const tc = JSON.parse(tcRaw);
-      return tc && tc.isMain === false;
+      const tc = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      return Boolean(tc && tc.isMain === false);
     } catch (_) {
       return false;
     }
-  })();
+  });
 
   if (!isExplicitSecondaryTerminal) {
     const LOOPBACK_HOSTS = new Set(['', '127.0.0.1', 'localhost', '::1', '0.0.0.0']);

@@ -2360,16 +2360,30 @@ function isAddressInUseError(error) {
  * - Si POS_ALLOW_LAN=true: 0.0.0.0 (expone a LAN, necesario para mobile POS QR).
  * - Permite override explícito con POS_BIND_HOST.
  */
+// Carpeta de datos de usuario (%APPDATA%/Tecno Caja) — a diferencia de appRoot,
+// SIEMPRE es escribible, incluso cuando la app corre empaquetada desde
+// app.asar (de solo lectura). Sin esto, guardar terminal-config.json o
+// peripherals-config.json fallaba en silencio en cualquier instalación real
+// (.exe), aunque funcionara en desarrollo (npm run desktop, appRoot es una
+// carpeta normal en disco).
+function getTerminalConfigUserDataDir() {
+  return String(process.env.TECNO_CAJA_USER_DATA || '').trim() || app.getPath('userData');
+}
+
 function resolveTerminalConfigPath(appRoot) {
-  const candidates = [
+  const writablePath = path.join(getTerminalConfigUserDataDir(), 'config', 'terminal-config.json');
+  if (fs.existsSync(writablePath)) return writablePath;
+
+  // Candidatos legacy: instalaciones ya configuradas en modo desarrollo
+  // (appRoot es una carpeta real, no asar) siguen leyéndose de aquí.
+  const legacyCandidates = [
     path.join(appRoot, 'config', 'terminal-config.json'),
     path.join(appRoot, '..', 'config', 'terminal-config.json'),
     path.join(appRoot, '..', '..', 'config', 'terminal-config.json'),
     path.join(process.cwd(), 'config', 'terminal-config.json')
   ];
-
-  const found = candidates.find((candidate) => fs.existsSync(candidate));
-  return found || candidates[0];
+  const legacyFound = legacyCandidates.find((candidate) => fs.existsSync(candidate));
+  return legacyFound || writablePath;
 }
 
 // Config local de periféricos (impresora/gaveta/báscula serial) — separado de
@@ -2377,15 +2391,17 @@ function resolveTerminalConfigPath(appRoot) {
 // (sobrescribe todo el JSON) y no queremos que un guardado de periféricos
 // pise terminalId/branchId/cashRegisterId ni viceversa.
 function resolvePeripheralsConfigPath(appRoot) {
-  const candidates = [
+  const writablePath = path.join(getTerminalConfigUserDataDir(), 'config', 'peripherals-config.json');
+  if (fs.existsSync(writablePath)) return writablePath;
+
+  const legacyCandidates = [
     path.join(appRoot, 'config', 'peripherals-config.json'),
     path.join(appRoot, '..', 'config', 'peripherals-config.json'),
     path.join(appRoot, '..', '..', 'config', 'peripherals-config.json'),
     path.join(process.cwd(), 'config', 'peripherals-config.json')
   ];
-
-  const found = candidates.find((candidate) => fs.existsSync(candidate));
-  return found || candidates[0];
+  const legacyFound = legacyCandidates.find((candidate) => fs.existsSync(candidate));
+  return legacyFound || writablePath;
 }
 
 function inferBindHostFromTerminalConfig(appRoot) {
