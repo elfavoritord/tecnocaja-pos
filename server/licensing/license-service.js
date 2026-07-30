@@ -19,6 +19,28 @@ const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STATE_CACHE_TTL_MS = 10 * 1000;
 const DEFAULT_REMOTE_HEARTBEAT_MS = 15 * 60 * 1000;
+// Si Firebase no responde (o responde muy lento) en este tiempo, resolveState
+// debe caer al snapshot local en vez de dejar el arranque/login colgado
+// esperando una red lenta o caída. syncWithRemote() ya maneja errores duros de
+// Firebase (los captura resolveState más abajo); esto cubre el caso de que la
+// llamada simplemente tarde mucho sin llegar a fallar.
+// getSetupStatus() (que llama resolveState) se ejecuta en CADA /api/login, y
+// el frontend le da solo 8s en total a esa llamada (api.js: login() usa
+// _timeoutMs: 8000) — con un margen corto aquí, una Firebase lenta ya no se
+// come ese presupuesto y hace que el login "parezca offline" sin estarlo.
+const REMOTE_SYNC_TIMEOUT_MS = 2500;
+
+function withTimeout(promise, ms, timeoutMessage) {
+  let timer = null;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(timeoutMessage || `Tiempo de espera agotado (${ms}ms).`);
+      error.code = 'REMOTE_SYNC_TIMEOUT';
+      reject(error);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 function normalizeLicenseStatus(value) {
   const normalized = String(value || 'trial').trim().toLowerCase();
@@ -809,7 +831,11 @@ class LicenseService {
 
     if (options.allowRemote !== false) {
       try {
-        result = await this.syncWithRemote(options);
+        result = await withTimeout(
+          this.syncWithRemote(options),
+          REMOTE_SYNC_TIMEOUT_MS,
+          'La verificación de licencia con Firebase tardó demasiado.'
+        );
         // En instalación nueva (wizard aún no se ha ejecutado) ignorar una licencia
         // expirada en Firebase: puede ser un doc antiguo del mismo negocio.
         // El wizard se encarga de crear una licencia fresca cuando se complete.

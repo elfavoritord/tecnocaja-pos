@@ -643,6 +643,13 @@ async function sendRawToPrinter(printerName, data) {
                 `Prueba corriendo manualmente: powershell.exe -ExecutionPolicy Bypass -File "${helperPath}" "${printerName}" "${binFile}"`;
             }
           }
+          // "OpenPrinter fallo" = Windows no reconoce ese nombre exacto de impresora
+          // (la causa más común: un driver se actualizó y renombró la cola, ej. de
+          // "EPSON TM-T20" a "EPSON TM-T20 (Copia 1)"). El error de Windows por sí
+          // solo no deja claro qué hacer, así que se le agrega la acción concreta.
+          if (/OpenPrinter fallo/i.test(msg)) {
+            msg += ' - Es probable que el nombre de la impresora haya cambiado en Windows. Ve a Configuracion, Impresora de Recibos, revisa la lista y vuelve a seleccionarla.';
+          }
           resolve({ ok: false, error: msg });
         } else {
           resolve({ ok: true });

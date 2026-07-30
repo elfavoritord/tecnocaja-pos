@@ -136,6 +136,7 @@
     // Lazy-load tab data
     if (tab === 'dgii' && !RV2.dgii) loadDGII();
     if (tab === 'detallados') repV2SwitchSubtab(RV2.subtab);
+    if (tab === 'caja-general' && typeof window.tesoreriaOnTabOpen === 'function') window.tesoreriaOnTabOpen();
   };
 
   window.repV2SwitchSubtab = function (subtab) {

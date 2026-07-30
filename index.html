@@ -1632,6 +1632,9 @@
           <button class="repv2-tab" data-tab="exportar" onclick="repV2SwitchTab('exportar')">
             <span class="repv2-tab-icon">📄</span> Exportar
           </button>
+          <button class="repv2-tab hidden" id="repv2-tab-btn-caja-general" data-tab="caja-general" onclick="repV2SwitchTab('caja-general')">
+            <span class="repv2-tab-icon">💰</span> Caja General
+          </button>
         </div>
         <div class="repv2-filters">
           <select class="repv2-filter-select" id="repv2-periodo" onchange="repV2OnPeriodoChange()">
@@ -2033,6 +2036,276 @@
         </div>
       </div><!-- /exportar -->
 
+      <style>
+        /* ── Identidad visual propia de Caja General (verde/esmeralda, distinta del acento morado del resto de la app) ── */
+        :root { --tes-accent: #16a34a; --tes-accent-light: #22c55e; --tes-accent-glow: rgba(22,163,74,0.16); }
+        [data-theme="light"] { --tes-accent: #15803d; }
+
+        .tesoreria-subtab { padding: 0.42rem 1rem; border: 1px solid var(--border); border-radius: 999px; background: var(--bg3); color: var(--text2); font-family: var(--font); font-size: 0.8rem; font-weight: 700; cursor: pointer; transition: var(--transition); }
+        .tesoreria-subtab:hover { color: var(--text); border-color: var(--tes-accent); }
+        .tesoreria-subtab.active { background: var(--tes-accent); border-color: var(--tes-accent); color: #fff; box-shadow: 0 2px 10px var(--tes-accent-glow); }
+        @media (max-width: 900px) { .tesoreria-charts-grid { grid-template-columns: 1fr !important; } .tesoreria-charts-grid .repv2-panel-head[style*="grid-column"] { grid-column: 1 !important; } }
+
+        /* Barra de acciones: primarias + menú "Más acciones" */
+        .tes-toolbar { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+        .tes-btn { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1rem; border-radius: 10px; border: 1px solid transparent; font-family: var(--font); font-size: 0.82rem; font-weight: 700; cursor: pointer; transition: var(--transition); white-space: nowrap; }
+        .tes-btn-primary-income { background: var(--tes-accent); color: #fff; box-shadow: 0 2px 10px var(--tes-accent-glow); }
+        .tes-btn-primary-income:hover { background: var(--tes-accent-light); }
+        .tes-btn-primary-expense { background: var(--danger); color: #fff; box-shadow: 0 2px 10px rgba(255,75,110,0.18); }
+        .tes-btn-primary-expense:hover { filter: brightness(1.08); }
+        .tes-btn-ghost { background: var(--bg3); border-color: var(--border); color: var(--text2); }
+        .tes-btn-ghost:hover { background: var(--bg4); color: var(--text); border-color: var(--tes-accent); }
+        .tes-more-wrap { position: relative; display: inline-block; }
+        .tes-more-menu { display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 240px; background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.25); padding: 0.4rem; }
+        .tes-more-menu.open { display: block; }
+        .tes-more-menu button { width: 100%; text-align: left; display: flex; align-items: center; gap: 0.55rem; padding: 0.55rem 0.7rem; border: none; background: none; border-radius: 8px; color: var(--text); font-family: var(--font); font-size: 0.82rem; font-weight: 600; cursor: pointer; }
+        .tes-more-menu button:hover { background: var(--bg3); }
+        .tes-more-menu .tes-menu-icon { font-size: 1rem; width: 1.3rem; text-align: center; }
+
+        /* Tarjetas de resumen con acento por tipo */
+        .tes-stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1.25rem; position: relative; overflow: hidden; }
+        .tes-stat-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--stat-color, var(--tes-accent)); }
+        .tes-stat-icon { font-size: 1.1rem; margin-bottom: 0.5rem; display: block; }
+        .tes-stat-label { font-size: 0.74rem; font-weight: 700; color: var(--text3); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
+        .tes-stat-val { font-size: 1.5rem; font-weight: 800; font-family: var(--font-mono); color: var(--text); }
+
+        /* Tarjetas de fondos (reemplazan la tabla plana) */
+        .tes-fund-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0.9rem; }
+        .tes-fund-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1.1rem; border-left: 4px solid var(--fund-color, var(--tes-accent)); transition: var(--transition); }
+        .tes-fund-card:hover { border-color: var(--tes-accent); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+        .tes-fund-card-top { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+        .tes-fund-icon { font-size: 1.3rem; }
+        .tes-fund-name { font-weight: 700; font-size: 0.9rem; color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tes-fund-default-badge { font-size: 0.62rem; background: var(--tes-accent-glow); color: var(--tes-accent); padding: 0.1rem 0.4rem; border-radius: 999px; font-weight: 700; }
+        .tes-fund-meta { font-size: 0.74rem; color: var(--text3); margin-bottom: 0.5rem; }
+        .tes-fund-balance { font-size: 1.35rem; font-weight: 800; font-family: var(--font-mono); color: var(--text); }
+        .tes-empty-state { grid-column: 1 / -1; text-align: center; padding: 2.5rem 1rem; color: var(--text3); }
+        .tes-empty-state .tes-empty-icon { font-size: 2rem; margin-bottom: 0.5rem; display: block; }
+        .tes-empty-state a { color: var(--tes-accent); font-weight: 700; }
+
+        /* Badges de estado para movimientos */
+        .tes-badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.72rem; font-weight: 700; }
+        .tes-badge-confirmado { background: rgba(22,163,74,0.14); color: var(--tes-accent); }
+        .tes-badge-anulado { background: rgba(139,146,168,0.16); color: var(--text3); }
+        .tes-badge-rechazado { background: rgba(255,75,110,0.14); color: var(--danger); }
+        .tes-badge-pendiente_aprobacion { background: rgba(255,179,0,0.16); color: var(--warning); }
+
+        /* Modal con encabezado a color según el tipo de acción */
+        .tes-modal-card .modal-card-header { background: var(--modal-tint, transparent); }
+        .tes-modal-icon-badge { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 1.05rem; background: var(--modal-accent, var(--tes-accent-glow)); flex-shrink: 0; }
+        .tes-section-label { font-size: 0.72rem; font-weight: 700; color: var(--text3); text-transform: uppercase; letter-spacing: 0.05em; margin: 1rem 0 0.5rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+        .tes-section-label:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+      </style>
+
+      <!-- ══════════════ TAB: CAJA GENERAL (TESORERÍA) ══════════════ -->
+      <div id="repv2-tab-caja-general" class="repv2-pane hidden">
+
+        <div id="tesoreria-locked" style="text-align:center;padding:3rem 1rem">
+          <div style="font-size:2.5rem;margin-bottom:0.5rem">🔒</div>
+          <p style="margin-bottom:1rem;color:var(--text3)">Caja General está protegida. Ingresa tu contraseña de inicio de sesión para continuar.</p>
+          <button class="repv2-btn-apply" onclick="tesoreriaUnlock()">Desbloquear Caja General</button>
+        </div>
+
+        <div id="tesoreria-content" class="hidden">
+
+          <div class="repv2-table-toolbar" style="flex-wrap:wrap">
+            <div class="repv2-table-info" style="display:flex;gap:0.5rem;align-items:center">
+              <select class="repv2-filter-select" id="tesoreria-scope-select" onchange="tesoreriaOnScopeChange()">
+                <option value="">Vista consolidada</option>
+              </select>
+            </div>
+            <div class="tes-toolbar">
+              <button class="tes-btn tes-btn-primary-income" id="tesoreria-btn-income" onclick="tesoreriaOpenMovementModal('ingreso')">➕ Ingreso</button>
+              <button class="tes-btn tes-btn-primary-expense" id="tesoreria-btn-expense" onclick="tesoreriaOpenMovementModal('gasto')">➖ Gasto</button>
+              <div class="tes-more-wrap">
+                <button class="tes-btn tes-btn-ghost" onclick="tesoreriaToggleMoreMenu(event)">⋯ Más acciones</button>
+                <div class="tes-more-menu" id="tesoreria-more-menu">
+                  <button id="tesoreria-btn-withdrawal" onclick="tesoreriaCloseMoreMenu();tesoreriaOpenMovementModal('retiro_propietario')"><span class="tes-menu-icon">🏦</span> Retiro del Propietario</button>
+                  <button id="tesoreria-btn-fund-transfer" onclick="tesoreriaCloseMoreMenu();tesoreriaOpenFundTransferModal()"><span class="tes-menu-icon">🔁</span> Transferir entre Fondos</button>
+                  <button id="tesoreria-btn-branch-transfer" onclick="tesoreriaCloseMoreMenu();tesoreriaOpenBranchTransferModal()"><span class="tes-menu-icon">🏢</span> Transferir a otra Sucursal</button>
+                  <button id="tesoreria-btn-supplier-payment" onclick="tesoreriaCloseMoreMenu();tesoreriaOpenSupplierPaymentModal()"><span class="tes-menu-icon">🧾</span> Pagar Suplidor</button>
+                  <button id="tesoreria-btn-employee-payment" onclick="tesoreriaCloseMoreMenu();tesoreriaOpenEmployeePaymentModal()"><span class="tes-menu-icon">👤</span> Pagar Empleado</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="reportes-grid" id="tesoreria-summary-cards" style="margin-bottom:1.25rem"></div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.25rem" class="tesoreria-charts-grid">
+            <div>
+              <div class="repv2-panel-head" style="margin-bottom:0.5rem"><h4 style="margin:0">Ingresos vs Gastos (30 días)</h4></div>
+              <canvas id="tesoreria-chart-tendencia" style="width:100%"></canvas>
+            </div>
+            <div>
+              <div class="repv2-panel-head" style="margin-bottom:0.5rem"><h4 style="margin:0">Gastos por categoría</h4></div>
+              <canvas id="tesoreria-chart-categorias" style="width:100%"></canvas>
+            </div>
+            <div>
+              <div class="repv2-panel-head" style="margin-bottom:0.5rem"><h4 style="margin:0">Evolución del balance (30 días)</h4></div>
+              <canvas id="tesoreria-chart-evolucion" style="width:100%"></canvas>
+            </div>
+            <div>
+              <div class="repv2-panel-head" style="margin-bottom:0.5rem"><h4 style="margin:0">Dinero por tipo de fondo</h4></div>
+              <canvas id="tesoreria-chart-por-fondo" style="width:100%"></canvas>
+            </div>
+            <div style="grid-column:1 / -1">
+              <div class="repv2-panel-head" style="margin-bottom:0.5rem"><h4 style="margin:0">Ingresos, gastos y rentabilidad por sucursal</h4></div>
+              <canvas id="tesoreria-chart-por-sucursal" style="width:100%"></canvas>
+            </div>
+          </div>
+
+          <div class="tesoreria-subtabs" style="display:flex;gap:0.5rem;margin-bottom:0.75rem;flex-wrap:wrap">
+            <button class="tesoreria-subtab active" data-subtab="fondos" onclick="tesoreriaSwitchSubtab('fondos')">Fondos</button>
+            <button class="tesoreria-subtab" data-subtab="movimientos" onclick="tesoreriaSwitchSubtab('movimientos')">Movimientos</button>
+            <button class="tesoreria-subtab" data-subtab="cierres" onclick="tesoreriaSwitchSubtab('cierres')">Cierres pendientes de transferir</button>
+            <button class="tesoreria-subtab" data-subtab="transferencias" onclick="tesoreriaSwitchSubtab('transferencias')">Transferencias entre sucursales</button>
+            <button class="tesoreria-subtab" data-subtab="aprobaciones" onclick="tesoreriaSwitchSubtab('aprobaciones')">Pendientes de aprobación</button>
+            <button class="tesoreria-subtab" data-subtab="ventas-dia" onclick="tesoreriaSwitchSubtab('ventas-dia')">Ventas del Día</button>
+            <button class="tesoreria-subtab" data-subtab="reportes" onclick="tesoreriaSwitchSubtab('reportes')">Reportes</button>
+          </div>
+
+          <!-- Fondos -->
+          <div id="tesoreria-subtab-fondos" class="tesoreria-subpane active">
+            <div class="tes-fund-grid" id="tesoreria-funds-grid"></div>
+          </div>
+
+          <!-- Movimientos -->
+          <div id="tesoreria-subtab-movimientos" class="tesoreria-subpane hidden">
+            <div class="repv2-table-toolbar">
+              <div class="repv2-table-info" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                <input type="date" class="repv2-filter-date" id="tesoreria-mov-desde" />
+                <input type="date" class="repv2-filter-date" id="tesoreria-mov-hasta" />
+                <select class="repv2-filter-select" id="tesoreria-mov-tipo" onchange="tesoreriaLoadMovements()">
+                  <option value="">Todos los tipos</option>
+                  <option value="ingreso">Ingreso</option>
+                  <option value="gasto">Gasto</option>
+                  <option value="retiro_propietario">Retiro del propietario</option>
+                  <option value="pago_suplidor">Pago a suplidor</option>
+                  <option value="pago_empleado">Pago a empleado</option>
+                  <option value="transferencia_cierre">Transferencia de cierre</option>
+                  <option value="transferencia_fondo">Transferencia entre fondos</option>
+                  <option value="transferencia_sucursal_salida">Transferencia a otra sucursal (enviada)</option>
+                  <option value="transferencia_sucursal_entrada">Transferencia de otra sucursal (recibida)</option>
+                  <option value="ajuste_anulacion">Ajuste por anulación</option>
+                </select>
+                <button class="repv2-btn-export" onclick="tesoreriaLoadMovements()">🔍 Filtrar</button>
+              </div>
+            </div>
+            <div class="repv2-table-wrap">
+              <table class="repv2-table">
+                <thead><tr>
+                  <th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Monto</th><th>Método</th>
+                  <th>Usuario</th><th>Estado</th><th></th>
+                </tr></thead>
+                <tbody id="tesoreria-movements-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Cierres pendientes -->
+          <div id="tesoreria-subtab-cierres" class="tesoreria-subpane hidden">
+            <div class="repv2-table-wrap">
+              <table class="repv2-table">
+                <thead><tr>
+                  <th>Turno</th><th>Sucursal</th><th>Cerrado por</th><th>Fecha de cierre</th>
+                  <th>Contado</th><th>Diferencia</th><th></th>
+                </tr></thead>
+                <tbody id="tesoreria-closings-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Transferencias entre sucursales pendientes de confirmar -->
+          <div id="tesoreria-subtab-transferencias" class="tesoreria-subpane hidden">
+            <div class="repv2-table-wrap">
+              <table class="repv2-table">
+                <thead><tr>
+                  <th>#</th><th>De sucursal</th><th>A sucursal</th><th>Monto</th>
+                  <th>Enviado por</th><th>Fecha</th><th></th>
+                </tr></thead>
+                <tbody id="tesoreria-branch-transfers-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Movimientos pendientes de aprobación -->
+          <div id="tesoreria-subtab-aprobaciones" class="tesoreria-subpane hidden">
+            <div class="repv2-table-wrap">
+              <table class="repv2-table">
+                <thead><tr>
+                  <th>Fecha</th><th>Tipo</th><th>Descripción</th><th>Monto</th>
+                  <th>Registrado por</th><th></th>
+                </tr></thead>
+                <tbody id="tesoreria-approvals-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Ventas del día (se genera automáticamente al cerrar la última caja del día) -->
+          <div id="tesoreria-subtab-ventas-dia" class="tesoreria-subpane hidden">
+            <p class="helper-text" style="margin:0 0 0.75rem">Se genera automáticamente cuando cierra la última caja abierta de la sucursal en un día operativo. Es solo informativo — no mueve dinero.</p>
+            <div class="repv2-table-wrap">
+              <table class="repv2-table">
+                <thead><tr>
+                  <th>Fecha</th><th>Sucursal</th><th>Turnos</th><th>Facturas</th><th>Total Ventas</th><th>Gastos</th><th></th>
+                </tr></thead>
+                <tbody id="tesoreria-daily-closings-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Reportes -->
+          <div id="tesoreria-subtab-reportes" class="tesoreria-subpane hidden">
+            <div class="repv2-table-toolbar" style="margin-bottom:1rem">
+              <div class="repv2-table-info" style="display:flex;gap:0.5rem;flex-wrap:wrap">
+                <input type="date" class="repv2-filter-date" id="tesoreria-rep-desde" />
+                <input type="date" class="repv2-filter-date" id="tesoreria-rep-hasta" />
+              </div>
+            </div>
+            <div class="repv2-export-grid">
+              <div class="repv2-export-card" onclick="tesoreriaExportBalancePDF()">
+                <div class="repv2-export-icon">💰</div>
+                <h4>Balance de Fondos</h4>
+                <p>Balance actual de cada fondo, con sucursal y moneda.</p>
+                <button class="repv2-btn-export-card">Exportar PDF</button>
+              </div>
+              <div class="repv2-export-card" onclick="tesoreriaExportMovementsExcel()">
+                <div class="repv2-export-icon">📋</div>
+                <h4>Movimientos</h4>
+                <p>Historial completo con los filtros aplicados en la pestaña Movimientos.</p>
+                <button class="repv2-btn-export-card">Exportar Excel</button>
+              </div>
+              <div class="repv2-export-card" onclick="tesoreriaExportGastosCategoriaPDF()">
+                <div class="repv2-export-icon">📕</div>
+                <h4>Gastos por Categoría</h4>
+                <p>Total gastado en cada categoría en el rango de fechas seleccionado.</p>
+                <button class="repv2-btn-export-card">Exportar PDF</button>
+              </div>
+              <div class="repv2-export-card" onclick="tesoreriaExportPorSucursalPDF()">
+                <div class="repv2-export-icon">🏢</div>
+                <h4>Gastos y Rentabilidad por Sucursal</h4>
+                <p>Ingresos, gastos (directos + distribuidos) y rentabilidad de cada sucursal.</p>
+                <button class="repv2-btn-export-card">Exportar PDF</button>
+              </div>
+              <div class="repv2-export-card" onclick="tesoreriaExportCuentasPorPagarPDF()">
+                <div class="repv2-export-icon">🧾</div>
+                <h4>Cuentas por Pagar a Suplidores</h4>
+                <p>Facturas de suplidores con saldo pendiente.</p>
+                <button class="repv2-btn-export-card">Exportar PDF</button>
+              </div>
+              <div class="repv2-export-card" onclick="tesoreriaPrintBalanceTermico()">
+                <div class="repv2-export-icon">🖨️</div>
+                <h4>Imprimir Balance</h4>
+                <p>Recibo del balance actual de fondos, para impresora térmica o de sistema.</p>
+                <button class="repv2-btn-export-card">Imprimir</button>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /tesoreria-content -->
+      </div><!-- /caja-general -->
+
     </div><!-- /module-reportes -->
 
     <div id="module-movimientos" class="module hidden">
@@ -2433,6 +2706,46 @@
           </div>
           <small class="helper-text" style="margin-top:0.5rem;display:block">
             Si no sabes el puerto, revisa el menú de red de tu báscula o prueba los puertos comunes: 3001, 8000, 10001.
+          </small>
+        </div>
+
+        <!-- ══════════ CONFIGURACIÓN DE CAJA GENERAL (TESORERÍA) ══════════ -->
+        <div class="config-section" id="cfg-tesoreria-section">
+          <h3>💰 Configuración de Caja General</h3>
+          <p class="helper-text" style="margin:0.25rem 0 0.75rem">
+            Módulo opcional para concentrar y controlar el dinero de la empresa, separado de la caja operativa.
+            Si lo desactivas, el botón desaparece de Reportes pero no se borra ningún dato histórico.
+          </p>
+          <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-tesoreria-enabled"> Activar Caja General</label>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-tesoreria-show-button"> Mostrar botón en Reportes</label>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-tesoreria-allow-negative"> Permitir que un fondo quede en balance negativo</label>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-tesoreria-pass-expenses"> Exigir la contraseña de inicio de sesión de quien registra para registrar gastos</label>
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-tesoreria-pass-withdrawals"> Exigir la contraseña de inicio de sesión de quien registra para retiros del propietario</label>
+          </div>
+          <div class="form-group">
+            <label>Exigir aprobación para movimientos mayores a (RD$, 0 = desactivado)</label>
+            <input type="number" id="cfg-tesoreria-approval-threshold" class="form-input" min="0" step="1" placeholder="Ej: 20000">
+          </div>
+          <div class="form-group">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-tesoreria-auto-transfer"> Transferir automáticamente el efectivo al cerrar un turno de caja</label>
+          </div>
+          <small class="helper-text" style="margin:-0.25rem 0 0.75rem;display:block">
+            El modo automático solo transfiere efectivo (hoy el cierre de caja no desglosa tarjeta/transferencia); esos montos se siguen transfiriendo manualmente. Cada sucursal necesita un fondo de tipo Efectivo marcado como "predeterminado" para que esto funcione.
+          </small>
+          <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-top:0.25rem">
+            <button class="btn-primary compact-btn" type="button" onclick="saveTesoreriaConfig()">💾 Guardar configuración</button>
+          </div>
+          <small class="helper-text" style="margin-top:0.5rem;display:block">
+            Los fondos (efectivo, banco, tarjetas, etc.) y las categorías de ingresos/gastos se crean directamente dentro de Reportes → Caja General.
           </small>
         </div>
 
@@ -4418,6 +4731,7 @@
 <script src="js/movimientos.js"></script>
 <script src="js/reportes.js"></script>
 <script src="js/reportes-v2.js"></script>
+<script src="js/tesoreria.js"></script>
 <script src="js/rrhh.js"></script>
 <script src="js/label-manager.js"></script>
 <script src="js/ncf-config.js"></script>
@@ -4799,6 +5113,7 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
     <div class="modal-card-footer" style="flex-wrap:wrap;gap:0.5rem">
       <button class="btn-secondary" type="button" onclick="printCloseSummary()">🖨️ Imprimir</button>
       <button class="btn-secondary" type="button" onclick="closePostCloseScreen(); openCajaModule()">🗂️ Ver ventas</button>
+      <button class="btn-secondary hidden" id="btn-transferir-caja-general" type="button">↗ Transferir a Caja General</button>
       <button class="btn-primary" type="button" onclick="closePostCloseScreen()">↗ Nuevo turno / Continuar</button>
       <button class="btn-danger" type="button" onclick="closePostCloseScreen(); doLogout()">🚪 Cerrar sesión</button>
     </div>

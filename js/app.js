@@ -3771,7 +3771,10 @@ function showModule(name, el) {
   if (name === 'posmovil') {
     if (typeof refreshMobilePosModule === 'function') refreshMobilePosModule();
   }
-  if (name === 'reportes') { loadVentasHistory(); updateReportes(); }
+  if (name === 'reportes') {
+    loadVentasHistory(); updateReportes();
+    if (typeof tesoreriaOnReportesOpen === 'function') tesoreriaOnReportesOpen();
+  }
   if (name === 'inventario') {
     if (typeof startReportAppProductsPolling === 'function') startReportAppProductsPolling();
     if (typeof syncReportAppProductsNow === 'function') {
@@ -3790,6 +3793,7 @@ function showModule(name, el) {
   if (name === 'configuracion') {
     if (typeof loadNcfSequences === 'function') loadNcfSequences();
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
+    if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     // Inicializar módulo de actualización del sistema
     if (typeof window.Actualizaciones?.init === 'function') window.Actualizaciones.init();
   }
@@ -3904,6 +3908,11 @@ const CONFIG_SECTION_CARD_META = {
     icon: '⚖️',
     eyebrow: 'TCP',
     desc: 'Conexión por IP y puerto para básculas en red.'
+  },
+  'cfg-tesoreria-section': {
+    icon: '💰',
+    eyebrow: 'Tesorería',
+    desc: 'Activar Caja General, balances negativos y contraseñas para gastos/retiros.'
   },
   'cfg-ncf-section': {
     icon: '🔢',
@@ -4025,6 +4034,11 @@ const CONFIG_GROUPS = {
     icon: '🔐', color: '#ef4444', bg: 'rgba(239,68,68,0.13)',
     title: 'Acceso y Seguridad', desc: 'Contraseña, respaldo y zona de peligro',
     find: ['#cfg-backup-section', 'h3#cfg-section-access-title', 'h3#cfg-section-security-title', 'h3#cfg-section-danger-title'],
+  },
+  tesoreria: {
+    icon: '💰', color: '#22c55e', bg: 'rgba(34,197,94,0.13)',
+    title: 'Caja General', desc: 'Activar Tesorería, fondos y contraseñas',
+    find: ['#cfg-tesoreria-section'],
   },
 };
 
@@ -4909,8 +4923,8 @@ function showSuperAdminPasswordModal(title, message, onConfirm) {
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:9999;display:flex;align-items:center;justify-content:center';
   overlay.innerHTML = `
-    <div style="background:var(--panel);border:1px solid var(--border);border-radius:1rem;padding:2rem;max-width:420px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.5)">
-      <h3 style="margin:0 0 0.4rem;font-size:1.1rem">🔐 ${title}</h3>
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:1rem;padding:2rem;max-width:420px;width:90%;box-shadow:0 24px 64px rgba(0,0,0,0.5)">
+      <h3 style="margin:0 0 0.4rem;font-size:1.1rem;color:var(--text)">🔐 ${title}</h3>
       <p style="color:var(--text2);margin:0 0 1.25rem;font-size:0.88rem;line-height:1.5">${message}</p>
       <input type="password" id="super-admin-pwd-input" class="form-input" placeholder="Contraseña de super administrador" style="margin-bottom:1rem;width:100%;box-sizing:border-box">
       <div style="display:flex;gap:0.75rem;justify-content:flex-end">
@@ -5184,8 +5198,17 @@ async function refreshPrinterOptions(forceToast = false) {
       return `<option value="${printer.name}">${printer.name}${isDefault}</option>`;
     }).join('');
 
-    select.value = printers.some((printer) => printer.name === selectedPrinter) ? selectedPrinter : '';
+    const stillExists = printers.some((printer) => printer.name === selectedPrinter);
+    select.value = stillExists ? selectedPrinter : '';
     select.dataset.selectedPrinter = select.value;
+
+    // Aviso específico: había una impresora configurada y ya no aparece en la
+    // lista de Windows (nombre de cola cambiado, ej. tras actualizar el driver).
+    // Sin esto, la selección se limpiaba en silencio y solo se notaba cuando
+    // fallaba una impresión real, con un error críptico de Windows.
+    if (selectedPrinter && !stillExists) {
+      showToast(`La impresora "${selectedPrinter}" ya no aparece en Windows. Selecciónala de nuevo en la lista si sigue conectada.`, 'warning');
+    }
 
     if (forceToast) {
       showToast(printers.length ? 'Lista de impresoras actualizada.' : 'No se encontraron impresoras disponibles.', printers.length ? 'success' : 'warning');
@@ -7716,6 +7739,8 @@ async function executeCashCierre({ print = false } = {}) {
       contado,
       diferencia,
       notas,
+      cashSessionId: response.sessionId || null,
+      tesoreriaInfo: response.tesoreria || null,
     });
 
   } catch (err) {
@@ -7776,6 +7801,8 @@ function showPostCloseScreen(summary) {
 
   // Guardar datos para poder imprimir desde la pantalla de resumen
   showPostCloseScreen._lastSummary = summary;
+
+  if (window.tesoreriaMaybeShowTransferButton) window.tesoreriaMaybeShowTransferButton(summary);
 
   document.getElementById('cash-cierre-summary')?.classList.remove('hidden');
 }

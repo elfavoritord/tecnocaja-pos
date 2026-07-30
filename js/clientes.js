@@ -2911,6 +2911,8 @@ async function euSave(options = {}) {
         if (typeof applyRolePermissions === 'function') applyRolePermissions();
       }
     }
+    try { localStorage.removeItem('tecnocaja-login-users-cache'); } catch (_error) {}
+
     if (normalizedRole === 'repartidor' && saved?.id) {
       syncRepartidorToFirestore(saved.id).catch(() => {});
     }

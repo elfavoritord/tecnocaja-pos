@@ -13,7 +13,12 @@ class OfflineManager {
   constructor(config = {}) {
     this.config = {
       healthCheckInterval: 2000, // ms entre health checks
-      healthCheckTimeout: 3000, // timeout para cada health check
+      // El propio /api/health del servidor tiene un timeout interno de 4000ms
+      // para su query a la BD, más una segunda query antes de responder. Si
+      // este timeout del cliente es menor que eso (antes: 3000ms), el cliente
+      // se rinde y marca "offline" justo cuando el servidor todavía iba a
+      // responder bien — falso positivo frecuente con la BD bajo carga.
+      healthCheckTimeout: 6000, // timeout para cada health check
       syncDebounceDelay: 1000, // esperar antes de disparar sync después de reconexión
       statusUpdateInterval: 1000, // actualizar UI cada 1s
       ...config

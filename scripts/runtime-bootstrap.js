@@ -73,6 +73,7 @@ function ensureUserEnvTemplate(userDataPath) {
       'SQLITE_SOURCE_FILE=',
       'PRODUCT_UPLOAD_DIR=',
       'SECURE_BACKUP_DIR=',
+      'TREASURY_ATTACHMENTS_DIR=',
       '# Respaldos en la nube (Backblaze B2) — llave restringida solo al prefijo',
       '# backups/<businessId>/ de ESTE negocio. Generar con:',
       '#   node scripts/create-business-b2-key.js --businessId <uid> --name "<Negocio>"',
@@ -219,7 +220,8 @@ function resolveRuntimePaths({ appRoot, userDataPath }) {
   const dbFile = ensureAbsolutePath(process.env.DB_FILE, appRoot) || path.join(runtimeRoot, 'data', 'tecnocaja.db');
   const productUploadDir = ensureAbsolutePath(process.env.PRODUCT_UPLOAD_DIR, appRoot) || path.join(runtimeRoot, 'uploads', 'productos');
   const secureBackupDir = ensureAbsolutePath(process.env.SECURE_BACKUP_DIR, appRoot) || path.join(runtimeRoot, 'secure-backups');
-  return { runtimeRoot, dbFile, productUploadDir, secureBackupDir };
+  const treasuryAttachmentsDir = ensureAbsolutePath(process.env.TREASURY_ATTACHMENTS_DIR, appRoot) || path.join(runtimeRoot, 'uploads', 'comprobantes');
+  return { runtimeRoot, dbFile, productUploadDir, secureBackupDir, treasuryAttachmentsDir };
 }
 
 function prepareRuntimeEnvironment(options = {}) {
@@ -315,7 +317,7 @@ function prepareRuntimeEnvironment(options = {}) {
     }
   }
 
-  const { runtimeRoot, dbFile, productUploadDir, secureBackupDir } = resolveRuntimePaths({
+  const { runtimeRoot, dbFile, productUploadDir, secureBackupDir, treasuryAttachmentsDir } = resolveRuntimePaths({
     appRoot,
     userDataPath
   });
@@ -323,11 +325,13 @@ function prepareRuntimeEnvironment(options = {}) {
   fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   fs.mkdirSync(productUploadDir, { recursive: true });
   fs.mkdirSync(secureBackupDir, { recursive: true });
+  fs.mkdirSync(treasuryAttachmentsDir, { recursive: true });
   fs.mkdirSync(path.join(userDataPath, 'logs'), { recursive: true });
 
   process.env.DB_FILE = dbFile;
   process.env.PRODUCT_UPLOAD_DIR = productUploadDir;
   process.env.SECURE_BACKUP_DIR = secureBackupDir;
+  process.env.TREASURY_ATTACHMENTS_DIR = treasuryAttachmentsDir;
   ensureGeneratedRuntimeSecrets(userEnvFile, warnings);
 
   const resolvedServiceAccountPath = sanitizeOptionalFileEnv('FIREBASE_SERVICE_ACCOUNT_PATH', appRoot, warnings);
@@ -352,6 +356,7 @@ function prepareRuntimeEnvironment(options = {}) {
     dbFile,
     productUploadDir,
     secureBackupDir,
+    treasuryAttachmentsDir,
     warnings
   };
 }

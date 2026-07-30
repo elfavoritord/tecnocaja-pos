@@ -58,6 +58,9 @@ const { createCrmRouter, ensureSchema: ensureCrmSchema } = require('./server/rou
 const { createRrhhRouter, ensureSchema: ensureRrhhSchema } = require('./server/routes/rrhh.routes');
 const { createLabelsRouter, ensureSchema: ensureLabelsSchema } = require('./server/routes/labels.routes');
 
+// Tesorería — Caja General (separada de la caja operativa)
+const { createTesoreriaRouter, ensureSchema: ensureTesoreriaSchema } = require('./server/routes/tesoreria.routes');
+
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
 
@@ -1416,6 +1419,8 @@ const SECURE_BACKUP_DIR = runtime.secureBackupDir;
 const SECURE_BACKUP_FILE = 'tecnocaja-secure-backup.novaseguro';
 const PRODUCT_UPLOAD_DIR = runtime.productUploadDir;
 const PRODUCT_UPLOAD_WEB_PATH = '/uploads/productos';
+const TREASURY_ATTACHMENTS_DIR = runtime.treasuryAttachmentsDir;
+const TREASURY_ATTACHMENTS_WEB_PATH = '/uploads/comprobantes';
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || '';
 const PIZZERIA_CATEGORY_LIST = [
   'Pizzas',
@@ -1831,6 +1836,7 @@ app.use(cors(CORS_OPTIONS));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname)));
 app.use(PRODUCT_UPLOAD_WEB_PATH, express.static(PRODUCT_UPLOAD_DIR));
+app.use(TREASURY_ATTACHMENTS_WEB_PATH, express.static(TREASURY_ATTACHMENTS_DIR));
 
 // ✅ Rutas de sincronización Firebase
 app.use('/api/sync', syncRoutes);
@@ -2105,6 +2111,14 @@ app.use('/api/rrhh', createRrhhRouter({ query, resolveRequestActorUser, userRole
 // Centro de Etiquetas — impresión de etiquetas de productos
 app.use('/api/labels', createLabelsRouter({ query, resolveRequestActorUser, userRoleHasPermission }));
 
+// Tesorería — Caja General (Fase 1)
+const tesoreriaRouter = createTesoreriaRouter({
+  query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, withTransaction, getUserScopeBranchId,
+  attachmentsDir: TREASURY_ATTACHMENTS_DIR, attachmentsWebPath: TREASURY_ATTACHMENTS_WEB_PATH,
+  verifyUserPassword: verifyUserAccountPassword,
+});
+app.use('/api/tesoreria', tesoreriaRouter);
+
 // ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
 //    req.authUser esté disponible en las rutas de respaldo.
 createRespaldosRouter({
@@ -2291,7 +2305,19 @@ const BRANCH_ADMIN_ALLOWED_PERMISSIONS = [
   'ver_arqueos_caja_sucursal',
   'ver_historial_inventario_sucursal',
   'clientes',
-  'promociones'
+  'promociones',
+  // Caja General / Tesorería — solo su propia sucursal (sin ver_todas_sucursales_caja_general)
+  'ver_caja_general',
+  'registrar_ingresos_caja_general',
+  'registrar_gastos_caja_general',
+  'transferir_cierres_caja_general',
+  'transferir_fondos_caja_general',
+  'transferir_entre_sucursales_caja_general',
+  'recibir_transferencias_caja_general',
+  'pagar_suplidores_caja_general',
+  'pagar_empleados_caja_general',
+  'aprobar_movimientos_caja_general',
+  'rechazar_movimientos_caja_general'
 ];
 const BRANCH_ADMIN_DENIED_PERMISSIONS = [
   'crear_sucursales',
@@ -2653,6 +2679,15 @@ function userPasswordMatches(user, password) {
     return verifyLocalPasswordHash(password, storedHash);
   }
   return String(user?.password || '') === String(password ?? '');
+}
+
+// Verifica la contraseña de LA CUENTA de un usuario específico (login), no una
+// clave maestra aparte. Usado por Tesorería para confirmar acciones sensibles
+// con la propia contraseña de quien las hace.
+async function verifyUserAccountPassword(userId, password) {
+  if (!userId || !password) return false;
+  const rows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [userId]);
+  return rows[0] ? userPasswordMatches(rows[0], password) : false;
 }
 
 function mapUserRow(row) {
@@ -10421,6 +10456,22 @@ app.post('/api/account/access-password', async (req, res) => {
   res.json(mapUserRow(updatedRows[0]));
 });
 
+// Verifica la contraseña de la cuenta del usuario ACTUALMENTE logueado (no una
+// clave maestra aparte). Usado por Caja General/Tesorería para el candado de
+// entrada y para confirmar acciones sensibles (gastos, retiros, anulaciones).
+app.post('/api/account/verify-password', async (req, res) => {
+  await ensureUserExtensions();
+  const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true }).catch(() => null);
+  if (!actorUser) return res.status(401).json({ error: 'Debes iniciar sesión.' });
+  const password = String(req.body?.password || '');
+  const rows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [actorUser.id]);
+  const user = rows[0];
+  if (!user || !userPasswordMatches(user, password)) {
+    return res.status(403).json({ error: 'Contraseña incorrecta.' });
+  }
+  res.json({ ok: true });
+});
+
 app.post('/api/system/reset', async (req, res) => {
   const isFactoryReset = Boolean(req.body?.factoryReset === true);
   if (!isFactoryReset) {
@@ -14007,7 +14058,88 @@ app.post('/api/cash/close', async (req, res) => {
     });
   });
   scheduleSilentProductBackup('cierre_caja', false);
-  res.json({ config: await getConfig(), usdTotalReceived });
+
+  // Caja General / Tesorería (Fase 2): si el módulo está activo, o bien se
+  // transfiere solo (modo automático) o se le pregunta al cajero si quiere
+  // transferir (modo "preguntar", sin contraseña ni selección de fondos —
+  // usa el fondo predeterminado de la sucursal). Hoy solo se conoce el
+  // efectivo contado en este punto (cash_sessions no desglosa por método de
+  // pago), así que solo se transfiere efectivo; tarjeta/transferencia se
+  // siguen transfiriendo manualmente desde dentro de Caja General.
+  let tesoreriaInfo = { enabled: false, askTransfer: false };
+  try {
+    const tesSettings = await tesoreriaRouter.getPublicSettingsSnapshot();
+    tesoreriaInfo = { enabled: tesSettings.enabled, askTransfer: tesSettings.enabled && !tesSettings.autoTransferEnabled };
+    if (tesSettings.enabled && tesSettings.autoTransferEnabled) {
+      tesoreriaRouter.autoTransferClosing({
+        cashSessionId: session.id,
+        branchId: structure.branchId,
+        efectivo: amount,
+        tarjeta: 0,
+        transferencia: 0,
+        actorId: actor.userId || null,
+        actorName: actor.userName || 'Sistema',
+      }).catch((e) => console.warn('[tesoreria] auto-transfer de cierre falló:', e.message));
+    }
+  } catch (e) {
+    console.warn('[tesoreria] no se pudo consultar configuración:', e.message);
+  }
+
+  // "Cierre de caja completa del día" (distinto de este cierre de turno):
+  // cuando ya no queda ninguna caja de la sucursal abierta para ese día
+  // operativo, se genera automáticamente el reporte de ventas por vendedor +
+  // gastos del día en Caja General (fire-and-forget, solo informativo).
+  (async () => {
+    try {
+      const [openCountRow] = await query(`
+        SELECT COUNT(*) AS total FROM cash_registers cr
+        JOIN cash_sessions cs ON cs.cash_register_id = cr.id AND cs.status = 'open'
+        WHERE cr.branch_id = ? AND cr.estado <> 'Eliminada'
+      `, [structure.branchId]);
+      const isFullDayClose = Number(openCountRow?.total || 0) === 0;
+      if (isFullDayClose) {
+        await tesoreriaRouter.generateDailyClosingReport({ branchId: structure.branchId, operativeDate: session.operative_date });
+      }
+    } catch (e) {
+      console.warn('[tesoreria] detección de cierre completo del día falló:', e.message);
+    }
+  })();
+
+  res.json({
+    config: await getConfig(), usdTotalReceived, sessionId: session.id, branchId: structure.branchId, cashRegisterId: structure.cashRegisterId,
+    tesoreria: tesoreriaInfo,
+  });
+});
+
+// Transferencia rápida a Caja General de un cierre específico, disparada por
+// el cajero al confirmar "sí, transferir" en el resumen post-cierre. Sin
+// contraseña ni selección manual de fondos (usa el fondo predeterminado de
+// la sucursal) — cualquiera que pueda cerrar caja puede confirmarla, ya que
+// solo mueve el efectivo de SU PROPIO cierre, no da acceso a ver ni
+// administrar Caja General.
+app.post('/api/cash/closings/:sessionId/transfer-to-tesoreria', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanCloseCash(actorUser)) {
+    return res.status(403).json({ error: 'No tienes permiso para esta acción.' });
+  }
+  const sessionId = Number(req.params.sessionId);
+  const rows = await query('SELECT * FROM cash_sessions WHERE id = ? AND status = "closed"', [sessionId]);
+  const session = rows[0];
+  if (!session) return res.status(404).json({ error: 'Cierre no encontrado o todavía no está cerrado.' });
+  const actor = getActor(req);
+  try {
+    const result = await tesoreriaRouter.quickTransferClosing({
+      cashSessionId: session.id,
+      branchId: session.branch_id,
+      efectivo: Number(session.counted_amount || 0),
+      tarjeta: 0,
+      transferencia: 0,
+      actor: { id: actor.userId, usuario: actor.userName },
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(Number(e.statusCode) || 400).json({ error: e.message });
+  }
 });
 
 app.post('/api/cash/expense', async (req, res) => {
@@ -17671,6 +17803,7 @@ async function finishMysqlRuntimeInit() {
         ensureCrmSchema(query).catch(e => console.warn('[crm] init fallo:', e.message)),
         ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
         ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
+        ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
@@ -17855,6 +17988,7 @@ async function prepareServerRuntime() {
       ensureCrmSchema(query).catch(e => console.warn('[crm] init fallo:', e.message)),
       ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
       ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
+      ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]));

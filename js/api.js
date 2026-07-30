@@ -139,6 +139,15 @@ const api = {
     });
   },
 
+  // Verifica la contraseña de LA CUENTA del usuario actualmente logueado
+  // (su propia contraseña de inicio de sesión), no una clave maestra aparte.
+  verifyAccountPassword(data) {
+    return this.request('/api/account/verify-password', {
+      method: 'POST',
+      body: JSON.stringify({ ...data, ...getActorPayload() })
+    });
+  },
+
   getBootstrap() {
     return this.request('/api/bootstrap');
   },
