@@ -634,7 +634,7 @@ async function sendRawToPrinter(printerName, data) {
           let msg = String(stderr || '').trim() || String(stdout || '').trim();
           if (!msg) {
             if (err.killed || err.signal) {
-              msg = 'PowerShell no respondió a tiempo (12s) — revisa si un antivirus lo está bloqueando o si el spooler de impresión está colgado.';
+              msg = 'La impresora no respondió en 12 segundos — normalmente es el servicio de "Cola de impresión" de Windows colgado. Solución: abre el Panel de control > Herramientas administrativas > Servicios, busca "Cola de impresión" (Print Spooler), y dale clic derecho > Reiniciar. Si el problema sigue, revisa que el antivirus no esté bloqueando powershell.exe.';
             } else if (err.code === 'ENOENT') {
               msg = 'No se encontró powershell.exe en esta PC.';
             } else {

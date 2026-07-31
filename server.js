@@ -14488,6 +14488,16 @@ app.post('/api/cash/corte', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Detecta la violación de UNIQUE sobre sales.invoice_number sin importar el
+// motor (SQLite: "UNIQUE constraint failed: sales.invoice_number" / MySQL:
+// errno 1062 "Duplicate entry ... for key ... invoice_number").
+function isInvoiceNumberCollisionError(err) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!msg.includes('invoice_number')) return false;
+  return msg.includes('unique constraint') || msg.includes('duplicate entry')
+    || err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062;
+}
+
 app.post('/api/sales', async (req, res) => {
   await ensureBusinessRulesExtensions();
   await ensureSalesExtensions();
@@ -14797,8 +14807,7 @@ app.post('/api/sales', async (req, res) => {
       ecfEstado: shouldUseEcfFlow ? 'pendiente' : null
     });
 
-    const result = await conn.query(
-      `INSERT INTO sales
+    const saleInsertSql = `INSERT INTO sales
         (invoice_number, user_id, client_id, branch_id, cash_register_id,
          billed_branch_id, billed_cash_register_id, billed_by_user_id,
          charged_branch_id, charged_cash_register_id, charged_by_user_id, charged_at,
@@ -14830,8 +14839,8 @@ app.post('/api/sales', async (req, res) => {
                ?, ?,
                ?, ?,
                ?, ?, ?, ?, ?, ?, ?,
-               ?, ?)`,
-      [
+               ?, ?)`;
+    const saleInsertParams = [
         invoiceNumber,
         sale.userId,
         clientId,
@@ -14897,8 +14906,30 @@ app.post('/api/sales', async (req, res) => {
         // Turno — NUNCA usar para e-CF (usar created_at/fecha_emision_fiscal)
         saleSessionId,
         saleOperativeDate,
-      ]
-    );
+    ];
+
+    let result;
+    for (let insertAttempts = 0; ; insertAttempts += 1) {
+      try {
+        result = await conn.query(saleInsertSql, saleInsertParams);
+        break;
+      } catch (insertError) {
+        // El chequeo de colisión de más arriba (línea ~14568) no bloquea la
+        // fila mientras tanto — dos cajas facturando casi al mismo tiempo (o
+        // un reintento del cajero tras un cuelgue de impresora) pueden pasar
+        // ese chequeo ambas y solo una gana la UNIQUE constraint real al
+        // insertar. En vez de tumbar la venta completa con un error crudo de
+        // base de datos, se toma el siguiente número y se reintenta.
+        if (!isInvoiceNumberCollisionError(insertError) || insertAttempts >= 20) {
+          throw insertError;
+        }
+        await conn.query(`UPDATE config SET ${sequenceField} = ${sequenceField} + 1 WHERE id = 1`);
+        const retryRows = await conn.query(`SELECT ${sequenceField} AS seq FROM config WHERE id = 1`);
+        nextNumber = Number(retryRows[0]?.seq || (nextNumber + 1));
+        invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
+        saleInsertParams[0] = invoiceNumber;
+      }
+    }
 
     await conn.query('UPDATE sales SET delivery_cash_status = ? WHERE id = ?', [deliveryCashStatus, result.insertId]);
 
