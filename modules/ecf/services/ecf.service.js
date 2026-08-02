@@ -29,9 +29,17 @@ const { parseXml } = require('../utils/xml.util');
 const { detectXmlRoot, getDgiiXmlDispatchType, generarNombreArchivoDGII } = require('../utils/dgii-file.util');
 const { assertValidRfceXml } = require('../utils/rfce-xsd.util');
 
-const CERT_STORAGE_DIR = path.resolve(__dirname, '..', 'certificates');
+// Base escribible: en instalaciones empaquetadas (.exe), __dirname y process.cwd()
+// pueden caer dentro de app.asar (archivo de solo lectura), y fs.mkdirSync ahí
+// revienta con ENOTDIR. TECNO_CAJA_USER_DATA siempre apunta a una carpeta real
+// en disco (electron/main.js y scripts/runtime-bootstrap.js la fijan al arrancar).
+// Mismo patrón que ya se usó para terminal-config.json/peripherals-config.json.
+const ECF_WRITABLE_BASE_DIR = process.env.TECNO_CAJA_USER_DATA
+  ? path.resolve(process.env.TECNO_CAJA_USER_DATA)
+  : process.cwd();
+const CERT_STORAGE_DIR = path.join(ECF_WRITABLE_BASE_DIR, 'ecf', 'certificates');
 const DEFAULT_DOWNLOADS_DIR = path.join(process.env.USERPROFILE || process.env.HOME || process.cwd(), 'Downloads');
-const LOCAL_ECF_WORK_DIR = path.join(process.cwd(), 'ecf');
+const LOCAL_ECF_WORK_DIR = path.join(ECF_WRITABLE_BASE_DIR, 'ecf');
 
 function nowIso() {
   return new Date().toISOString();
@@ -450,9 +458,11 @@ class EcfService {
     this.config = buildEcfConfig();
     this.logger = createLogger('ecf', { debug: this.config.DEBUG_ECF });
     this.seedStorage = new SeedStorageService({
+      baseDir: ECF_WRITABLE_BASE_DIR,
       logger: createLogger('ecf.seed', { debug: this.config.DEBUG_ECF }),
     });
     this.receptionStorage = new ReceptionStorageService({
+      baseDir: ECF_WRITABLE_BASE_DIR,
       logger: createLogger('ecf.reception.storage', { debug: this.config.DEBUG_ECF }),
     });
     this.dgiiClient = new DgiiClient({ config: this.config, logger: createLogger('ecf.dgii', { debug: this.config.DEBUG_ECF }) });
@@ -485,7 +495,7 @@ class EcfService {
       config: this.config,
       storageService: this.receptionStorage,
     });
-    this.certificationDir = path.resolve(process.cwd(), 'storage', 'ecf', 'certification');
+    this.certificationDir = path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'certification');
     this.certificationSignedDir = path.join(this.certificationDir, 'signed');
   }
 
@@ -3590,8 +3600,15 @@ class EcfService {
     fs.rmSync(this._step4RfceStatusPath(), { force: true });
 
     await this.repository.withTransaction(async (conn) => {
+      // SOLO borrar simulaciones de un batch anterior de ESTE MISMO paso (certification_test_type
+      // empieza con 'simulation-', asignado más abajo). Antes borraba TODO certification_case_key
+      // IS NOT NULL sin condición — eso incluía los 21+4 casos ya aceptados del Paso 2 y las
+      // Aprobaciones Comerciales del Paso 3, así que cada vez que se regeneraba el Paso 4 se
+      // destruía silenciosamente el progreso de los pasos anteriores (el wizard seguía
+      // mostrándolos "completados" porque esa bandera vive aparte, en el estado local del
+      // wizard, no se revalida contra la BD).
       await conn.query(
-        'DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
+        `DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL AND certification_test_type LIKE 'simulation-%'`
       );
       for (let i = 0; i < orderedTemplates.length; i += 1) {
         const t = orderedTemplates[i];
@@ -4420,7 +4437,16 @@ class EcfService {
       }
     }
 
-    // Obtener todos los docs E32 RFCE del batch actual de certificación
+    // Obtener todos los docs E32 RFCE del batch actual de certificación.
+    // A diferencia de otras consultas de este archivo (getCertificationSummary,
+    // deleteCurrentBatchCertificationCases), esta NO filtraba por
+    // certification_batch_id — si quedaba alguna fila de un import/batch viejo
+    // sin limpiar, se firmaba y reenviaba junto con las 4 actuales, y DGII la
+    // rechazaba como "ya utilizado" (quemada) aunque el usuario creyera que
+    // trabajaba con un set 100% nuevo.
+    const rfceBatchId = await this.repository.getLatestCertificationBatchId();
+    const rfceBatchClause = rfceBatchId ? ' AND certification_batch_id = ?' : '';
+    const rfceBatchParams = rfceBatchId ? [rfceBatchId] : [];
     let rfceDocs = await this.repository.query(
       `SELECT id, encf, certification_original_xml
        FROM ecf_documents
@@ -4428,7 +4454,9 @@ class EcfService {
          AND certification_case_key IS NOT NULL
          AND submission_mode='rfce'
          AND tipo_ecf='E32'
-       ORDER BY encf ASC`
+         ${rfceBatchClause}
+       ORDER BY encf ASC`,
+      rfceBatchParams
     );
 
     if (!rfceDocs.length) {
@@ -5511,15 +5539,16 @@ class EcfService {
     if (this.runtimeState.rfceSubmitInFlight) {
       throw new EcfError('Ya hay un envío de RFCE en curso — espera a que termine antes de reintentar.', { statusCode: 409 });
     }
+    const force = String(req?.body?.force ?? '').toLowerCase() === 'true' || req?.body?.force === true;
     this.runtimeState.rfceSubmitInFlight = true;
     try {
-      return await this._step4RfceSubmitInner(req);
+      return await this._step4RfceSubmitInner(req, { force });
     } finally {
       this.runtimeState.rfceSubmitInFlight = false;
     }
   }
 
-  async _step4RfceSubmitInner(req) {
+  async _step4RfceSubmitInner(req, { force = false } = {}) {
     let state = this._step4RfceReadState();
     if (!state.items?.length) {
       const generated = await this.step4RfceGenerate(req);
@@ -5538,7 +5567,11 @@ class EcfService {
       // No reintentar un RFCE del Paso 2 ya marcado como permanentemente bloqueado —
       // cada reenvío vuelve a golpear DGII con el mismo eNCF muerto y dispara de nuevo
       // el "las pruebas han sido reiniciadas" en el portal, sin ninguna posibilidad de éxito.
-      if (item.permanentlyBlocked) {
+      // EXCEPCIÓN: con force=true (botón "Forzar reintento") se reenvía a propósito — el
+      // usuario quiere provocar deliberadamente ese "las pruebas han sido reiniciadas" para
+      // ver si el portal DGII libera el contador. Sigue sin haber garantía de que el e-NCF
+      // en sí quede aceptado (ver comentario de isRfceEncfAlreadyUsedError).
+      if (item.permanentlyBlocked && !force) {
         results.push({ encf: item.encf, ok: false, estado: item.estado, skipped: true, permanentlyBlocked: true });
         continue;
       }
@@ -5587,6 +5620,15 @@ class EcfService {
             } else if (rotated.blocked) {
               permanentlyBlocked = true;
               mensajeDgii = `${mensajeDgii ? mensajeDgii + ' — ' : ''}Este e-NCF pertenece al set fijo de datos DGII (Paso 2) y no se puede rotar localmente: el portal valida contra el e-NCF exacto entregado. Ve al portal DGII, descarga un set de comprobantes nuevo y reimpórtalo — no reintentes con el mismo e-NCF.`;
+            } else {
+              // rotated = {ok:false} sin blocked=true: la rotación falló por una razón NO
+              // clasificada (no encontró la fila, JSON inválido, error de secuencia, etc.).
+              // Antes esto no marcaba nada y el siguiente envío reintentaba con el MISMO
+              // e-NCF ya rechazado — reproduciendo el mismo "ya utilizado" para siempre
+              // (reportado en vivo: siempre los mismos 2 e-NCF, nunca cambiaban). Bloquear
+              // aquí también evita el loop infinito, aunque no sepamos la causa exacta.
+              permanentlyBlocked = true;
+              mensajeDgii = `${mensajeDgii ? mensajeDgii + ' — ' : ''}No se pudo rotar este e-NCF automáticamente. Usa "Regenerar todos los docs con nuevos eNCFs" para reintentar desde cero.`;
             }
           }
 
@@ -5652,6 +5694,11 @@ class EcfService {
               } else if (rotated.blocked) {
                 permanentlyBlocked = true;
                 mensajeDgii = `${mensajeDgii ? mensajeDgii + ' — ' : ''}Este e-NCF pertenece al set fijo de datos DGII (Paso 2) y no se puede rotar localmente: el portal valida contra el e-NCF exacto entregado. Ve al portal DGII, descarga un set de comprobantes nuevo y reimpórtalo — no reintentes con el mismo e-NCF.`;
+              } else {
+                // Mismo caso que en la rama de éxito arriba: rotación fallida sin razón
+                // clasificada — bloquear para no reintentar por siempre el mismo e-NCF muerto.
+                permanentlyBlocked = true;
+                mensajeDgii = `${mensajeDgii ? mensajeDgii + ' — ' : ''}No se pudo rotar este e-NCF automáticamente. Usa "Regenerar todos los docs con nuevos eNCFs" para reintentar desde cero.`;
               }
             }
 
@@ -5705,6 +5752,82 @@ class EcfService {
       enviados: updatedItems.filter((item) => String(item.estado || '').toLowerCase() === 'enviado').length,
       rechazados: updatedItems.filter((item) => String(item.estado || '').toLowerCase() === 'rechazado').length,
       bloqueados: updatedItems.filter((item) => item.permanentlyBlocked).length,
+    };
+  }
+
+  // Documento "señuelo": un E32/RFCE inventado, generado con NUESTRA PROPIA secuencia
+  // e-NCF (nunca uno de los 25 documentos fijos que entrega DGII), enviado dos veces
+  // seguidas a propósito. El primer envío queda aceptado (e-NCF nuevo); el segundo,
+  // al repetir el mismo e-NCF, DGII lo rechaza con "ya utilizado" — el mismo tipo de
+  // rechazo que ya vimos disparar el reinicio del contador del lote en el portal
+  // CerteCF (ver comentarios de isRfceEncfAlreadyUsedError e
+  // _rotateAndRegenerateRfce). Como el e-NCF es nuestro y desechable, esto NUNCA
+  // arriesga ni consume ninguno de los 25 casos reales de la certificación.
+  //
+  // Esto es un experimento para provocar deliberadamente algo que hasta ahora pasaba
+  // por accidente — no hay garantía documentada por DGII de que este reinicio de
+  // contador ocurra siempre, ni de que libere e-NCF ya quemados del set fijo.
+  async sendDecoyRfceToForceReset(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const emitter = await this.repository.getResolvedEmitter(1);
+    if (normalizeEnvironmentKey(emitter.environment) === 'ecf') {
+      throw new EcfError(
+        'No se puede enviar el documento señuelo en ambiente de Producción. Cambia a CerteCF/TesteCF primero.',
+        { statusCode: 409 }
+      );
+    }
+
+    const certificate = await this.resolveCertificate();
+    const emitterForXml = await this.getEmitterForXml(1);
+    const seqResult = await this.generateNextENCF({ body: { tipoComprobante: 'E32' } });
+    const encf = seqResult.encf;
+
+    const totals = buildTotals([{ name: 'Documento señuelo — forzar reinicio DGII', quantity: 1, unitPrice: 1, taxRate: 18 }]);
+    const codigoSeguridad = nodeCrypto.randomBytes(3).toString('hex').toUpperCase();
+    const rawXml = generateRfceXml({
+      emitter: emitterForXml,
+      document: { tipoeCF: 'E32', eNCF: encf, codigoSeguridad },
+      totals,
+      issueDate: new Date(),
+    });
+    const signedXml = signatureService.signXML(rawXml, certificate);
+
+    const sendOnce = () => this.fcService.sendConsumptionSummary({ signedXml, filename: `${encf}-senuelo.xml` });
+
+    const firstAttempt = await sendOnce().catch((error) => ({ ok: false, error: error.message, details: error.details || null }));
+    let secondAttempt = null;
+    try {
+      secondAttempt = await sendOnce();
+    } catch (error) {
+      secondAttempt = { ok: false, error: error.message, details: error.details || null };
+    }
+
+    const secondWasBurnRejection = isRfceEncfAlreadyUsedError(secondAttempt) || isRfceEncfAlreadyUsedError(secondAttempt?.details || {});
+
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      documentId: null,
+      sequenceId: null,
+      tipoComprobante: 'E32',
+      encf,
+      actionName: 'certification_decoy_rfce_sent',
+      status: secondWasBurnRejection ? 'ok' : 'warning',
+      detail: `Documento señuelo ${encf} enviado 2 veces a propósito para forzar reinicio del contador DGII. 2do envío ${secondWasBurnRejection ? 'sí' : 'no'} fue rechazado como "ya utilizado".`,
+      responsePayload: { firstAttempt, secondAttempt },
+    });
+
+    return {
+      ok: true,
+      encf,
+      firstAttempt,
+      secondAttempt,
+      secondWasBurnRejection,
+      message: secondWasBurnRejection
+        ? `Señuelo ${encf} enviado y rechazado como "ya utilizado" en el segundo intento. Revisa el portal DGII para ver si el contador del lote se reinició.`
+        : `Señuelo ${encf} enviado, pero el segundo intento no dio el rechazo esperado — revisa firstAttempt/secondAttempt para más detalle.`,
     };
   }
 
@@ -6140,14 +6263,56 @@ class EcfService {
     return { ok: true, message: `Caso #${documentId} eliminado.` };
   }
 
+  // Reinicio TOTAL del wizard de certificación. A propósito mucho más agresivo que
+  // el viejo "borra el batch actual": el usuario pidió explícitamente que "Reiniciar"
+  // deje todo como recién instalado — incluyendo el certificado .p12 subido — para
+  // poder re-certificar desde cero sin arrastrar nada de un intento anterior.
+  // Bloqueado en ambiente Producción ('ecf') a propósito: este botón solo tiene
+  // sentido en CerteCF/TesteCF; en Producción borraría casos y certificado reales.
   async resetCertificationData(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
-    const result = await this.repository.deleteCurrentBatchCertificationCases();
-    fs.rmSync(this.certificationSignedDir, { recursive: true, force: true });
+    const emitter = await this.repository.getResolvedEmitter(1);
+    if (normalizeEnvironmentKey(emitter.environment) === 'ecf') {
+      throw new EcfError(
+        'No se puede reiniciar la certificación estando en ambiente de Producción. Cambia a CerteCF/TesteCF primero.',
+        { statusCode: 409 }
+      );
+    }
+
+    const casesResult = await this.repository.deleteAllCertificationCases();
+    const certResult = await this.repository.deleteCertificate(1);
+    const testRunsResult = await this.repository.deleteAllTestRuns(1);
+
+    const wipeDir = (dirPath) => {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+      fs.mkdirSync(dirPath, { recursive: true });
+    };
+
+    // Certificado .p12 subido + estado de certificación (incluye
+    // 250mil-portal-status.json y step4-rfce-status.json, que viven dentro de
+    // certificationDir).
+    wipeDir(CERT_STORAGE_DIR);
+    wipeDir(this.certificationDir);
     fs.mkdirSync(this.certificationSignedDir, { recursive: true });
-    fs.rmSync(this._portal250MilStatusPath(), { force: true });
-    fs.rmSync(this._step4RfceStatusPath(), { force: true });
+
+    // Carpetas de trabajo: XMLs originales/generados, RFCE, evidencia, ACECF,
+    // temporales y el set de subida <250Mil. Todo se regenera al re-certificar.
+    wipeDir(LOCAL_ECF_WORK_DIR);
+    wipeDir(path.join(process.cwd(), 'scripts', '250mil-upload'));
+    wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'ecf-originales-locales'));
+    wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'tmp'));
+    wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'step14-evidence'));
+    wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'acecf-enviados'));
+
+    // Datos "viejos" de DGII: semillas de autenticación y documentos/RFCE/tracks
+    // enviados en corridas anteriores.
+    this.seedStorage.clearHistory();
+    this.receptionStorage.clearAll();
+
+    // Progreso del wizard guardado en disco (15 pasos, checkboxes, archivos adjuntos).
+    fs.rmSync(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'cert-wizard-state.json'), { force: true });
+
     await this.repository.saveAudit({
       userId: actor.id,
       userName: actor.nombre || actor.usuario,
@@ -6156,16 +6321,16 @@ class EcfService {
       sequenceId: null,
       tipoComprobante: null,
       encf: null,
-      actionName: 'certification_reset',
+      actionName: 'certification_reset_total',
       status: 'ok',
-      detail: `Se eliminaron ${result.deleted} caso(s) de certificación del batch ${result.batchId || '—'}.`,
-      responsePayload: result,
+      detail: `Reinicio TOTAL del wizard: ${casesResult.deleted} caso(s), certificado ${certResult.deleted ? 'eliminado' : 'no había'}, ${testRunsResult.deleted} test run(s) borrados. Todos los archivos de trabajo y datos DGII viejos fueron eliminados.`,
+      responsePayload: { casesResult, certResult, testRunsResult },
     });
+
     return {
       ok: true,
-      message: `Se eliminaron ${result.deleted} caso(s) de certificación. Importa el set nuevamente para empezar de cero.`,
-      deleted: result.deleted,
-      batchId: result.batchId,
+      message: `Wizard reiniciado por completo: ${casesResult.deleted} caso(s) de certificación, el certificado .p12 y todos los archivos/datos de intentos anteriores fueron eliminados. Empieza desde el Paso 1.`,
+      deleted: casesResult.deleted,
     };
   }
 

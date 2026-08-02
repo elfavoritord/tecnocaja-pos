@@ -386,7 +386,7 @@ function httpError(message, statusCode = 400) {
 
 function createTesoreriaRouter({
   query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, withTransaction, verifyUserPassword, getUserScopeBranchId,
-  attachmentsDir, attachmentsWebPath = '/uploads/comprobantes',
+  attachmentsDir, attachmentsWebPath = '/uploads/comprobantes', isMysqlDeployment,
 }) {
   const router = express.Router();
 
@@ -475,8 +475,15 @@ function createTesoreriaRouter({
 
   // Actualiza el balance de un fondo dentro de la transacción actual y
   // devuelve balance_anterior/balance_posterior para dejarlos en el ledger.
+  // FOR UPDATE (solo MySQL): esta función la comparten gasto, void, approve y
+  // transferencias — sin el lock, dos operaciones concurrentes sobre el MISMO
+  // fondo (ej. aprobar un gasto mientras se confirma una transferencia) leen
+  // el mismo current_balance y la segunda UPDATE pisa el delta de la primera.
   async function applyFundDelta(conn, fundId, delta, settings) {
-    const [fund] = await conn.query('SELECT id, current_balance FROM treasury_funds WHERE id = ?', [fundId]);
+    const [fund] = await conn.query(
+      `SELECT id, current_balance FROM treasury_funds WHERE id = ?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+      [fundId]
+    );
     if (!fund) throw httpError('El fondo indicado no existe.', 404);
     const balanceAnterior = Number(fund.current_balance || 0);
     const balancePosterior = Number((balanceAnterior + delta).toFixed(2));
@@ -980,9 +987,21 @@ function createTesoreriaRouter({
       const actor = req.authUser;
       const settings = await getSettings();
       const result = await withTransaction(async (conn) => {
-        const [original] = await conn.query('SELECT * FROM treasury_movements WHERE id=?', [req.params.id]);
+        // FOR UPDATE (solo MySQL): doble clic en "Anular" disparaba dos
+        // transacciones que leían status='confirmado' antes de que la primera
+        // confirmara, generando dos reversos del mismo movimiento.
+        const [original] = await conn.query(
+          `SELECT * FROM treasury_movements WHERE id=?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+          [req.params.id]
+        );
         if (!original) throw httpError('Movimiento no encontrado.', 404);
         if (original.status !== 'confirmado') throw httpError('Solo se pueden anular movimientos confirmados (este está anulado, rechazado o pendiente de aprobación).', 400);
+        // A diferencia de approve/reject, esta ruta no validaba la sucursal
+        // del actor contra la del movimiento — un usuario con permiso de
+        // anular pero restringido a su sucursal podía anular movimientos de
+        // OTRA sucursal solo conociendo el id.
+        if (original.branch_id) resolveBranchScope(actor, original.branch_id);
+        else if (!isAdminGeneral(actor)) throw httpError('Solo el administrador general puede anular movimientos corporativos.', 403);
 
         let reverseFundId = null;
         let reverseDelta = 0;
@@ -1020,7 +1039,12 @@ function createTesoreriaRouter({
     try {
       const actor = req.authUser;
       const result = await withTransaction(async (conn) => {
-        const [m] = await conn.query('SELECT * FROM treasury_movements WHERE id=?', [req.params.id]);
+        // FOR UPDATE (solo MySQL): doble aprobación simultánea del mismo
+        // movimiento aplicaba el delta al fondo dos veces.
+        const [m] = await conn.query(
+          `SELECT * FROM treasury_movements WHERE id=?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+          [req.params.id]
+        );
         if (!m) throw httpError('Movimiento no encontrado.', 404);
         if (m.status !== 'pendiente_aprobacion') throw httpError('Este movimiento no está pendiente de aprobación.', 400);
         if (m.branch_id) resolveBranchScope(actor, m.branch_id);
@@ -1059,7 +1083,15 @@ function createTesoreriaRouter({
       if (m.branch_id) resolveBranchScope(actor, m.branch_id);
       else if (!isAdminGeneral(actor)) return res.status(403).json({ error: 'Solo el administrador general puede rechazar movimientos corporativos.' });
 
-      await query("UPDATE treasury_movements SET status='rechazado', observaciones=?, updated_at=datetime('now') WHERE id=?", [reason, req.params.id]);
+      // WHERE status='pendiente_aprobacion' hace el check-then-act atómico:
+      // si dos rechazos llegan casi juntos, solo uno actualiza filas.
+      const updateResult = await query(
+        "UPDATE treasury_movements SET status='rechazado', observaciones=?, updated_at=datetime('now') WHERE id=? AND status='pendiente_aprobacion'",
+        [reason, req.params.id]
+      );
+      if (!updateResult.affectedRows) {
+        return res.status(400).json({ error: 'Este movimiento no está pendiente de aprobación.' });
+      }
       await writeAuditLog({
         userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
         moduleName: 'Tesoreria', actionName: 'Rechazar movimiento', detail: JSON.stringify({ movementId: req.params.id, reason }),
@@ -1446,7 +1478,12 @@ function createTesoreriaRouter({
     try {
       const actor = req.authUser;
       const result = await withTransaction(async (conn) => {
-        const [t] = await conn.query('SELECT * FROM treasury_branch_transfers WHERE id = ?', [req.params.id]);
+        // FOR UPDATE (solo MySQL): doble confirmación simultánea desde dos
+        // pestañas podía acreditar dos veces el fondo destino.
+        const [t] = await conn.query(
+          `SELECT * FROM treasury_branch_transfers WHERE id = ?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+          [req.params.id]
+        );
         if (!t) throw httpError('Transferencia no encontrada.', 404);
         if (t.status !== 'pendiente') throw httpError('Esta transferencia ya fue resuelta.', 400);
         resolveBranchScope(actor, t.to_branch_id);
@@ -1481,7 +1518,11 @@ function createTesoreriaRouter({
     try {
       const actor = req.authUser;
       const result = await withTransaction(async (conn) => {
-        const [t] = await conn.query('SELECT * FROM treasury_branch_transfers WHERE id = ?', [req.params.id]);
+        // FOR UPDATE (solo MySQL) — misma razón que en /confirm.
+        const [t] = await conn.query(
+          `SELECT * FROM treasury_branch_transfers WHERE id = ?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+          [req.params.id]
+        );
         if (!t) throw httpError('Transferencia no encontrada.', 404);
         if (t.status !== 'pendiente') throw httpError('Esta transferencia ya fue resuelta.', 400);
         resolveBranchScope(actor, t.to_branch_id);

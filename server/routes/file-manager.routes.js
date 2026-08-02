@@ -7,9 +7,32 @@ const express = require('express');
 const fs      = require('fs');
 const path    = require('path');
 
-function createFileManagerRouter({ fileManagerService, query }) {
+function createFileManagerRouter({ fileManagerService, query, resolveRequestActorUser }) {
   const router = express.Router();
   const svc    = fileManagerService;
+
+  // Este router no tenía NINGÚN chequeo de sesión/permiso — cualquiera que
+  // llegara al servidor podía descargar facturas/comprobantes por id
+  // secuencial, o borrar/limpiar archivos en masa. router.use aquí exige una
+  // sesión real (o actorUserId verificado, mismo criterio que el resto de la
+  // app) para TODAS las rutas de abajo.
+  async function requireAuth(req, res, next) {
+    try {
+      req.authUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+      next();
+    } catch (e) {
+      res.status(e.statusCode || 401).json({ error: e.message || 'Sesión inválida o expirada.' });
+    }
+  }
+  router.use(requireAuth);
+
+  function requireNotCashier(req, res, next) {
+    const roleCode = String(req.authUser?.role_code || req.authUser?.rol || '').trim().toLowerCase();
+    if (roleCode === 'cajero') {
+      return res.status(403).json({ error: 'No tienes permiso para gestionar archivos del sistema.' });
+    }
+    next();
+  }
 
   // ── GET /api/files/structure ───────────────────────────────────────────────
   router.get('/structure', (_req, res) => {
@@ -134,7 +157,7 @@ function createFileManagerRouter({ fileManagerService, query }) {
   });
 
   // ── POST /api/files/cleanup ────────────────────────────────────────────────
-  router.post('/cleanup', async (req, res) => {
+  router.post('/cleanup', requireNotCashier, async (req, res) => {
     try {
       const { daysOld = 365 } = req.body;
       const result = await svc.cleanupOldFiles(Number(daysOld));
@@ -145,7 +168,7 @@ function createFileManagerRouter({ fileManagerService, query }) {
   });
 
   // ── DELETE /api/files/:id ──────────────────────────────────────────────────
-  router.delete('/:id', async (req, res) => {
+  router.delete('/:id', requireNotCashier, async (req, res) => {
     try {
       const result = await svc.deleteFile(parseInt(req.params.id), req.query.permanent === 'true');
       res.json(result);

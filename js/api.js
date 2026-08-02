@@ -393,6 +393,63 @@ const api = {
     });
   },
 
+  createPurchase(data) {
+    return this.request('/api/purchases', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  getPurchases(params = {}) {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString();
+    return this.request(`/api/purchases${qs ? `?${qs}` : ''}`);
+  },
+
+  getPurchase(id) {
+    return this.request(`/api/purchases/${id}`);
+  },
+
+  voidPurchase(id, data = {}) {
+    return this.request(`/api/purchases/${id}/void`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  getAccountsPayable(params = {}) {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString();
+    return this.request(`/api/purchases/accounts-payable${qs ? `?${qs}` : ''}`);
+  },
+
+  createExpense(data) {
+    return this.request('/api/expenses', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  getExpenses(params = {}) {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString();
+    return this.request(`/api/expenses${qs ? `?${qs}` : ''}`);
+  },
+
+  getExpense(id) {
+    return this.request(`/api/expenses/${id}`);
+  },
+
+  voidExpense(id, data = {}) {
+    return this.request(`/api/expenses/${id}/void`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
   deleteSupplier(id, actorPayload = {}) {
     const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
     if (isOffline) {

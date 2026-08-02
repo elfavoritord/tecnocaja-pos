@@ -6196,6 +6196,7 @@ async function generateReceiptFallbackImageDataUrl(venta) {
   const rows = [
     ['FACTURA', factura],
     ncfDisplay ? ['NCF', ncfDisplay] : null,
+    ncfDisplay && venta.ncfVencimiento ? ['NCF VENCE', formatReceiptDateForPaper(venta.ncfVencimiento, '58mm')] : null,
     ncfTypeLabel ? ['TIPO NCF', ncfTypeLabel] : null,
     venta.ncfReferencia ? ['NCF REF', venta.ncfReferencia] : null,
     ['TIPO', SALE_DOCUMENT_TYPES[venta.tipoComprobante] || 'Ticket / Factura'],
@@ -7147,6 +7148,13 @@ function formatReceiptDateForPaper(value, paperVariant) {
     }
   }
 
+  // Fecha sin hora (columnas DATE tipo ncfVencimiento): "2027-12-31" → "31/12/2027".
+  const dateOnlyMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const [, yyyy, mm, dd] = dateOnlyMatch;
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
   return normalized
     .replace(/,\s*/g, ' ')
     .replace(/:(\d{2})(?=\s*(a\. m\.|p\. m\.|am|pm)?$)/i, '')
@@ -7605,6 +7613,7 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       estadoFiscal: normalizeReceiptText(venta?.estadoDgii || venta?.estadoFiscal || ''),
       metodo: normalizeReceiptText(SALE_PAYMENT_TYPES[venta?.metodo] || venta?.metodo || 'Efectivo'),
       ncf: normalizeReceiptText(venta?.encf || venta?.ncf || ''),
+      ncfVencimiento: normalizeReceiptText(venta?.ncfVencimiento || ''),
       items: (venta?.items || []).map((item) => ({
         cantidad: Number(item?.qty || item?.cantidad || 1),
         cantidadTexto: formatReceiptSaleItemQuantity(item, { compactUnit: true }),
@@ -8250,6 +8259,7 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
     venta.clienteRncCedula ? ['RNC / Cédula', venta.clienteRncCedula || ''] : null,
     isElectronicReceipt(venta) ? ['e-NCF', getElectronicReceiptNumber(venta)] : null,
     !isElectronicReceipt(venta) && venta.ncf ? ['NCF', venta.ncf] : null,
+    !isElectronicReceipt(venta) && venta.ncf && venta.ncfVencimiento ? ['NCF Vence', formatReceiptDateForPaper(venta.ncfVencimiento, 'a4')] : null,
     venta.ncfType ? ['Tipo NCF', `${venta.ncfType} · ${NCF_LABELS_FE[venta.ncfType] || ''}`] : null,
     venta.tipoEcf ? ['Tipo e-CF', venta.tipoEcf] : null,
     venta.estadoDgii ? ['Estado DGII', venta.estadoDgii] : null,
@@ -8269,7 +8279,7 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
   `).join('');
   const totalsRows = [
     ...buildReceiptSummaryRows(venta),
-    venta.metodo === 'credito'
+    venta.metodo === 'credito' && !isCreditFullyPaid(venta)
       ? ['A crédito', fmt(Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0)))]
       : Number(venta.recibido || 0) > 0 ? ['Pagado', fmt(venta.recibido)] : null,
     venta.metodo !== 'credito' && Number(venta.cambio || 0) > 0 ? ['Cambio', fmt(venta.cambio)] : null,
@@ -8429,12 +8439,15 @@ function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
   });
   pushMonoLine(strongDivider, 'divider-strong');
   pushSummaryLine('TOTAL', fmtThermal(venta.total), 'total');
-  if (venta.metodo === 'credito') {
+  if (venta.metodo === 'credito' && !isCreditFullyPaid(venta)) {
     const pendiente = Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0));
     const abonado = Number(venta.recibido || 0);
     if (abonado > 0) pushSummaryLine('Abonado', fmtThermal(abonado));
     pushSummaryLine('PENDIENTE', fmtThermal(pendiente), 'meta-strong');
     pushSummaryLine('Método', 'A CRÉDITO');
+  } else if (venta.metodo === 'credito') {
+    pushSummaryLine('Pagado', fmtThermal(venta.recibido));
+    pushSummaryLine('Método', 'CRÉDITO — PAGADO');
   } else if (venta.metodo === 'mixto') {
     if (Number(venta.montoTarjeta || 0) > 0) {
       pushSummaryLine('Tarjeta', fmtThermal(venta.montoTarjeta));

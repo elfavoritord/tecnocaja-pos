@@ -846,6 +846,16 @@ const ECF_CERT_WIZARD = (() => {
               <button id="ecf-wz-s2-rfce-resend-btn" class="ecf-wz-action-btn"
                 style="font-size:.75rem;padding:.3rem .7rem;margin-top:.5rem"
                 onclick="ECF_CERT_WIZARD._resendRfce()">🔄 Reenviar RFCE</button>
+              <button id="ecf-wz-s2-rfce-force-btn" class="ecf-wz-action-btn secondary"
+                style="font-size:.7rem;padding:.3rem .7rem;margin-top:.35rem"
+                onclick="ECF_CERT_WIZARD._forceResendRfce()"
+                title="Reenvía también los RFCE marcados como quemados, a propósito, para probar si DGII libera el contador del lote">
+                🔓 Forzar reintento (incluye quemados)</button>
+              <button id="ecf-wz-s2-rfce-decoy-btn" class="ecf-wz-action-btn secondary"
+                style="font-size:.7rem;padding:.3rem .7rem;margin-top:.35rem"
+                onclick="ECF_CERT_WIZARD._sendDecoyReset()"
+                title="Envía un E32 inventado con un e-NCF propio (nunca uno de los 25 reales) dos veces seguidas, para forzar el 'ya utilizado' que reinicia el contador del portal DGII">
+                🎯 Enviar señuelo (reiniciar contador DGII)</button>
               <div id="ecf-wz-s2-rfce-resend-log" style="font-size:.72rem;margin-top:.3rem;color:var(--text3)"></div>
             </div>
           </div>
@@ -1289,6 +1299,72 @@ const ECF_CERT_WIZARD = (() => {
     }
   }
 
+  // Botón experimental: reenvía a propósito incluso los RFCE marcados como
+  // "permanentemente bloqueados" (e-NCF ya quemado en el set fijo DGII). No hay
+  // garantía de que ESE e-NCF quede aceptado — DGII normalmente no libera un e-NCF
+  // ya usado — pero el rechazo repetido es lo que dispara el reinicio de contador
+  // que se observa en el portal ("las pruebas han sido reiniciadas"). Sirve para
+  // forzar ese reinicio de forma controlada en vez de que ocurra por accidente.
+  async function _forceResendRfce() {
+    const ok = confirm(
+      '¿Reenviar también los RFCE ya marcados como quemados?\n\n' +
+      'Esto vuelve a enviar a DGII un e-NCF que ya fue rechazado como "ya utilizado". ' +
+      'Lo más probable es que DGII lo rechace de nuevo — pero ese rechazo es lo que ' +
+      'provoca que el portal reinicie el contador del lote. No hay garantía de que ' +
+      'el e-NCF en sí quede aceptado.\n\n¿Continuar?'
+    );
+    if (!ok) return;
+    const btn = document.getElementById('ecf-wz-s2-rfce-force-btn');
+    const logEl = document.getElementById('ecf-wz-s2-rfce-resend-log');
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando…'; }
+    if (logEl) logEl.textContent = 'Forzando reenvío (incluye quemados)…';
+    try {
+      await fiscalApi('POST', '/certification-center/rfce/generate');
+      const r = await fiscalApi('POST', '/certification-center/rfce/submit', { force: true });
+      if (logEl) {
+        logEl.textContent = `✅ ${r.aceptados||0} aceptados, ${r.rechazados||0} rechazados (incluyendo quemados reenviados).`;
+        logEl.style.color = (r.rechazados||0) > 0 ? '#f87171' : '#4ade80';
+      }
+      await _pollStep2();
+    } catch (err) {
+      if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔓 Forzar reintento (incluye quemados)'; }
+    }
+  }
+
+  // Envía un E32/RFCE inventado con un e-NCF de NUESTRA propia secuencia (nunca uno de
+  // los 25 casos reales de DGII) dos veces seguidas: la primera queda aceptada, la
+  // segunda DGII la rechaza como "ya utilizado" — el mismo tipo de rechazo que ya vimos
+  // reiniciar el contador del lote en el portal CerteCF. Experimental: no hay garantía
+  // de que esto libere e-NCF ya quemados del set fijo, solo provoca a propósito algo
+  // que antes pasaba por accidente.
+  async function _sendDecoyReset({ btnId = 'ecf-wz-s2-rfce-decoy-btn', logId = 'ecf-wz-s2-rfce-resend-log', label = '🎯 Enviar señuelo (reiniciar contador DGII)' } = {}) {
+    const ok = confirm(
+      '¿Enviar un documento señuelo para forzar el reinicio del contador DGII?\n\n' +
+      'Se genera un E32 con un e-NCF propio (nunca uno de tus casos reales), se envía dos ' +
+      'veces seguidas — la segunda vez DGII lo rechaza como "ya utilizado" a propósito. ' +
+      'Es el mismo tipo de rechazo que ya vimos reiniciar el contador del portal.\n\n' +
+      'No hay garantía de que esto libere e-NCF ya quemados del set fijo — es un experimento.\n\n¿Continuar?'
+    );
+    if (!ok) return;
+    const btn = document.getElementById(btnId);
+    const logEl = document.getElementById(logId);
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando señuelo…'; }
+    if (logEl) logEl.textContent = 'Generando y enviando documento señuelo (2 envíos)…';
+    try {
+      const r = await fiscalApi('POST', '/certification-center/rfce/send-decoy-reset');
+      if (logEl) {
+        logEl.textContent = `${r.secondWasBurnRejection ? '✅' : '⚠️'} ${r.message}`;
+        logEl.style.color = r.secondWasBurnRejection ? '#4ade80' : '#f59e0b';
+      }
+    } catch (err) {
+      if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  }
+
   async function _resetStep2Completely() {
     const ok = confirm(
       '⚠️ Esto borra el estado de los 21 comprobantes Y los 4 RFCE del lote actual ' +
@@ -1662,6 +1738,11 @@ const ECF_CERT_WIZARD = (() => {
             onclick="ECF_CERT_WIZARD._preparePortalFiles()" disabled>
             📁 Generar 4 archivos para el portal
           </button>
+          <button id="ecf-wz-step4-rfce-decoy-btn" class="ecf-wz-action-btn secondary"
+            style="font-size:.78rem;padding:.5rem .9rem"
+            onclick="ECF_CERT_WIZARD._sendDecoyReset({ btnId: 'ecf-wz-step4-rfce-decoy-btn', logId: 'ecf-wz-rfce-log', label: '🎯 Enviar señuelo (reiniciar contador DGII)' })"
+            title="Envía un E32 inventado con un e-NCF propio dos veces seguidas, para forzar el 'ya utilizado' que reinicia el contador del portal DGII">
+            🎯 Enviar señuelo (reiniciar contador DGII)</button>
           <div class="ecf-wz-log" id="ecf-wz-rfce-log" style="min-height:36px;margin-top:.1rem"></div>
         </div>
 
@@ -1978,12 +2059,24 @@ const ECF_CERT_WIZARD = (() => {
   function _isStep4FullyAccepted(status) {
     const counts = status?.counts || {};
     const total = Number(counts.total || 0);
-    return total > 0
+    const baseOk = total > 0
       && Number(counts.accepted || 0) >= total
       && Number(counts.pending || 0) === 0
       && Number(counts.sent || 0) === 0
       && Number(counts.rejected || 0) === 0
       && Number(counts.blocked || 0) === 0;
+    if (!baseOk) return false;
+    // Guardia extra: se reportó el wizard avanzando solo al Paso 5 mientras el
+    // portal DGII todavía mostraba el RFCE <250Mil con error — counts.* a veces
+    // no refleja a tiempo el rechazo del RFCE. No completar si CUALQUIER tipo
+    // RFCE del desglose no está 100% aceptado o tiene rechazos.
+    const rfceTypes = (status?.byType || []).filter((t) => t.isRfce);
+    return rfceTypes.every((t) =>
+      Number(t.total || 0) > 0
+      && Number(t.accepted || 0) >= Number(t.total || 0)
+      && Number(t.rejected || 0) === 0
+      && Number(t.sent || 0) === 0
+    );
   }
 
   async function _completeStep4IfAccepted(status, logLine = null) {
@@ -3310,13 +3403,18 @@ const ECF_CERT_WIZARD = (() => {
 
   // ── Reset wizard ──────────────────────────────────────────────────────────────
   async function _resetWizard() {
+    const confirmMsg = '¿Reiniciar TODO el wizard de certificación desde cero?\n\nEsto borra: los 15 pasos y su progreso, todos los casos de prueba, el certificado .p12 subido, XMLs generados, RFCE/ACECF enviados y cualquier dato viejo de DGII (semillas, tracks). No se puede deshacer.';
     const ok = typeof showDeleteConfirm === 'function'
-      ? await showDeleteConfirm('¿Reiniciar completamente el wizard de certificación? Se borrarán todos los estados locales.')
-      : confirm('¿Reiniciar el wizard de certificación? Se borrarán todos los estados locales.');
+      ? await showDeleteConfirm(confirmMsg)
+      : confirm(confirmMsg);
     if (!ok) return;
     try {
       await fiscalApi('DELETE', '/certification/reset', {});
-    } catch (_) {}
+    } catch (err) {
+      if (typeof showToast === 'function') showToast(`No se pudo reiniciar: ${err.message}`, 'error');
+      else alert(`No se pudo reiniciar: ${err.message}`);
+      return;
+    }
     WZ.state = defaultState();
     WZ.activeStep = 1;
     await saveState(WZ.state);
@@ -3362,6 +3460,8 @@ const ECF_CERT_WIZARD = (() => {
     _resetAndRetry2,
     _pollStep2,
     _resendRfce,
+    _forceResendRfce,
+    _sendDecoyReset,
     _resetStep2Completely,
 
     // Step 4 — Simulación e-CF

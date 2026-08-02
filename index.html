@@ -674,6 +674,9 @@
       <a href="#" class="nav-item" onclick="showModule('proveedores', this)" data-module="proveedores">
         <span class="nav-icon">🚚</span><span class="nav-label">Proveedores</span>
       </a>
+      <a href="#" class="nav-item" onclick="showModule('compras', this)" data-module="compras">
+        <span class="nav-icon">🧾</span><span class="nav-label">Compras y Gastos</span>
+      </a>
       <a href="#" class="nav-item" onclick="showModule('caja', this)" data-module="caja">
         <span class="nav-icon">💰</span><span class="nav-label">Caja</span>
       </a>
@@ -1264,6 +1267,48 @@
       <table style="display:none"><tbody id="proveedores-tbody"></tbody><tbody id="proveedores-facturas-tbody"></tbody></table>
     </div>
 
+    <!-- COMPRAS Y GASTOS MODULE (Fase 1: Compras + Cuentas por pagar) -->
+    <style>
+      .compras-tab-btn { display: flex; align-items: center; gap: 0.4rem; padding: 0.42rem 0.9rem; border: none; border-radius: 9px; background: transparent; color: var(--text2); font-family: var(--font); font-size: 0.85rem; font-weight: 700; cursor: pointer; }
+      .compras-tab-btn:hover { color: var(--text); background: var(--bg4); }
+      .compras-tab-btn.active { background: var(--accent); color: #fff; }
+      .cxp-filter-btn { padding: 0.32rem 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text2); font-size: 0.8rem; font-weight: 600; cursor: pointer; }
+      .cxp-filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    </style>
+    <div id="module-compras" class="module hidden">
+      <div class="module-header">
+        <h2>Compras y Gastos</h2>
+        <div class="module-actions">
+          <button class="btn-primary" onclick="openNuevaCompraModal()">+ Nueva Compra</button>
+          <button class="btn-primary" onclick="openNuevoGastoModal()">+ Nuevo Gasto</button>
+        </div>
+      </div>
+
+      <div class="rrhh-tabs">
+        <button class="compras-tab-btn active" data-tab="compras" onclick="showComprasTab('compras')">🧾 Compras</button>
+        <button class="compras-tab-btn" data-tab="cuentas-por-pagar" onclick="showComprasTab('cuentas-por-pagar')">💳 Cuentas por pagar</button>
+        <button class="compras-tab-btn" data-tab="gastos" onclick="showComprasTab('gastos')">💸 Gastos</button>
+      </div>
+
+      <div id="compras-tab-compras" class="compras-tab-pane">
+        <div id="compras-list"><div class="loading-text">Cargando…</div></div>
+      </div>
+
+      <div id="compras-tab-cuentas-por-pagar" class="compras-tab-pane hidden">
+        <div id="cuentas-por-pagar-resumen" class="inv-stats" style="margin-bottom:1rem"></div>
+        <div style="display:flex;gap:0.4rem;margin-bottom:0.8rem">
+          <button class="cxp-filter-btn active" data-filtro="todas" onclick="filterCuentasPorPagar('todas')">Todas</button>
+          <button class="cxp-filter-btn" data-filtro="vencidas" onclick="filterCuentasPorPagar('vencidas')">Vencidas</button>
+          <button class="cxp-filter-btn" data-filtro="proximos7" onclick="filterCuentasPorPagar('proximos7')">Próximos 7 días</button>
+        </div>
+        <div id="cuentas-por-pagar-list"><div class="loading-text">Cargando…</div></div>
+      </div>
+
+      <div id="compras-tab-gastos" class="compras-tab-pane hidden">
+        <div id="gastos-list"><div class="loading-text">Cargando…</div></div>
+      </div>
+    </div>
+
     <!-- CAJA MODULE -->
     <div id="module-caja" class="module hidden">
       <div class="module-header">
@@ -1398,6 +1443,7 @@
             <div class="resumen-row"><span>Ventas en Efectivo</span><span id="res-efectivo">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Ventas con Tarjeta</span><span id="res-tarjeta">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Transferencias</span><span id="res-transfer">RD$ 0.00</span></div>
+            <div class="resumen-row"><span>Crédito (fiado del turno)</span><span id="res-credito">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Total Ventas</span><span id="res-total" class="text-success">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Devoluciones</span><span id="res-devoluciones" class="text-danger">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Gastos</span><span id="res-gastos" class="text-danger">RD$ 0.00</span></div>
@@ -1795,7 +1841,7 @@
               <thead><tr>
                 <th>Factura</th><th>NCF</th><th>Fecha</th>
                 <th>Cliente</th><th>Cajero</th><th>Sucursal</th>
-                <th>Método</th><th>Subtotal</th><th>ITBIS</th><th>Total</th><th>Estado</th><th></th>
+                <th>Método</th><th>Subtotal</th><th>ITBIS</th><th>Total</th><th>Estado</th><th>Cobro</th><th></th>
               </tr></thead>
               <tbody id="det-facturas-tbody"></tbody>
               <tfoot id="det-facturas-tfoot"></tfoot>
@@ -2769,8 +2815,13 @@
                   <option value="B02">B02 — Consumidor Final</option>
                   <option value="B03">B03 — Nota de Débito</option>
                   <option value="B04">B04 — Nota de Crédito</option>
+                  <option value="B11">B11 — Comprobante de Compras</option>
+                  <option value="B12">B12 — Registro Único de Ingresos</option>
+                  <option value="B13">B13 — Gastos Menores</option>
                   <option value="B14">B14 — Régimen Especial</option>
                   <option value="B15">B15 — Gubernamental</option>
+                  <option value="B16">B16 — Comprobante para Exportaciones</option>
+                  <option value="B17">B17 — Comprobante para Pagos al Exterior</option>
                 </select>
               </div>
               <div class="form-group">
@@ -2788,6 +2839,10 @@
                   <label>Hasta (límite máximo)</label>
                   <input type="number" id="ncf-seq-hasta" class="form-input" value="99999999" min="1">
                 </div>
+              </div>
+              <div class="form-group">
+                <label>Fecha de vencimiento (la que dio la DGII en la aprobación)</label>
+                <input type="date" id="ncf-seq-vencimiento" class="form-input">
               </div>
               <button class="btn-primary" type="button" onclick="saveNcfSequence()">Guardar secuencia</button>
             </div>
@@ -4727,6 +4782,7 @@
 <script src="js/rnc-lookup.js"></script>
 <script src="js/clientes.js"></script>
 <script src="js/proveedores.js"></script>
+<script src="js/compras.js"></script>
 <script src="js/ventas.js"></script>
 <script src="js/movimientos.js"></script>
 <script src="js/reportes.js"></script>
@@ -5205,7 +5261,7 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
                           padding:0.5rem 0.75rem;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb">
               <input type="checkbox" id="devolucion-refund-cash" checked
                      style="width:16px;height:16px;accent-color:#6d28d9">
-              <span>Registrar salida de efectivo en caja</span>
+              <span id="devolucion-refund-cash-label">Registrar salida de efectivo en caja</span>
             </label>
           </div>
         </div>

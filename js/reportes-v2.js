@@ -293,10 +293,14 @@
     setText('kpi-transferencia', fmt(k.transferencia || 0));
     setText('kpi-credito',   fmt(k.credito || 0));
 
-    const total = ventas || 1;
-    setText('kpi-efectivo-pct',     `${((Number(k.efectivo||0)/total)*100).toFixed(1)}% de ventas`);
-    setText('kpi-tarjeta-pct',      `${((Number(k.tarjeta||0)/total)*100).toFixed(1)}% de ventas`);
-    setText('kpi-transferencia-pct',`${((Number(k.transferencia||0)/total)*100).toFixed(1)}% de ventas`);
+    // Base para el % de cada método: lo efectivamente cobrado (efectivo+tarjeta+
+    // transferencia), NO total_ventas — desde que estas cifras incluyen cobros de
+    // crédito de facturas de otros días, pueden superar total_ventas del período
+    // filtrado (ej. "Turno actual" sin ventas nuevas pero con un cobro cobrado).
+    const totalCobrado = (Number(k.efectivo||0) + Number(k.tarjeta||0) + Number(k.transferencia||0)) || 1;
+    setText('kpi-efectivo-pct',     `${((Number(k.efectivo||0)/totalCobrado)*100).toFixed(1)}% de lo cobrado`);
+    setText('kpi-tarjeta-pct',      `${((Number(k.tarjeta||0)/totalCobrado)*100).toFixed(1)}% de lo cobrado`);
+    setText('kpi-transferencia-pct',`${((Number(k.transferencia||0)/totalCobrado)*100).toFixed(1)}% de lo cobrado`);
   }
 
   // ── Ventas por día ────────────────────────────────────────
@@ -657,29 +661,33 @@
     if (!tbody) return;
 
     if (!rows.length) {
-      tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:2rem">Sin facturas en el período</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:2rem">Sin facturas en el período</td></tr>`;
       if (tfoot) tfoot.innerHTML = '';
       el('det-facturas-pager').innerHTML = '';
       return;
     }
 
     tbody.innerHTML = rows.map(r => `
-      <tr>
-        <td><strong>${r.factura}</strong></td>
+      <tr${r.tipo === 'cobro' ? ' class="repv2-row-cobro"' : ''}>
+        <td><strong>${r.factura}</strong>${r.tipo === 'cobro' ? `<div class="products-subtle">Cobro de crédito${r.vendedorOriginal ? ` · vendida por ${r.vendedorOriginal}` : ''}</div>` : ''}</td>
         <td>${r.ncf || '—'}</td>
         <td>${new Date(r.fecha).toLocaleDateString('es-DO')}</td>
         <td>${r.cliente || '—'}</td>
-        <td>${r.cajero || '—'}</td>
+        <td>${r.cajero || '—'}${r.tipo === 'cobro' ? ' <span class="products-subtle">(cobró)</span>' : ''}</td>
         <td>${r.sucursal || '—'}</td>
         <td>${fmtMetodo(r.metodo)}</td>
         <td style="font-family:var(--font-mono)">${fmt(r.subtotal)}</td>
         <td style="font-family:var(--font-mono)">${fmt(r.itbis)}</td>
         <td style="font-family:var(--font-mono);font-weight:800">${fmt(r.total)}</td>
-        <td><span class="repv2-estado repv2-estado-${r.estado}">${r.estado}</span></td>
-        <td><button class="repv2-reprint-btn" onclick="repV2ReprintSale('${r.factura}')" title="Reimprimir comprobante">🖨️</button></td>
+        <td>${r.tipo === 'cobro' ? '—' : `<span class="repv2-estado repv2-estado-${r.estado}">${r.estado}</span>`}</td>
+        <td>${fmtEstadoCobro(r)}</td>
+        <td><button class="repv2-reprint-btn" onclick="repV2ReprintSale('${r.tipo === 'cobro' ? 'cobro:' + r.paymentId : r.factura}')" title="Reimprimir comprobante">🖨️</button></td>
       </tr>`).join('');
 
-    const totals = rows.reduce((a, r) => ({ sub: a.sub + r.subtotal, itbis: a.itbis + r.itbis, total: a.total + r.total }), { sub: 0, itbis: 0, total: 0 });
+    // Filas de cobro cuya factura original también está en este rango se
+    // excluyen del subtotal — ya están contadas una vez como venta.
+    const totals = rows.filter(r => !r.excluirDeSubtotal)
+      .reduce((a, r) => ({ sub: a.sub + r.subtotal, itbis: a.itbis + r.itbis, total: a.total + r.total }), { sub: 0, itbis: 0, total: 0 });
     if (tfoot) {
       tfoot.innerHTML = `<tr>
         <td colspan="7">Subtotales (página ${page})</td>
@@ -688,19 +696,23 @@
         <td>${fmt(totals.total)}</td>
         <td></td>
         <td></td>
+        <td></td>
       </tr>`;
     }
 
     renderPager('det-facturas-pager', page, pages, p => repV2LoadFacturas(p));
   }
 
-  window.repV2ReprintSale = async function(invoiceNumber) {
+  window.repV2ReprintSale = async function(invoiceNumberOrCobro) {
     try {
       if (typeof showToast === 'function') showToast('Cargando comprobante…', 'info');
-      const data = await apiGet(`/api/sales/${encodeURIComponent(invoiceNumber)}/receipt`);
+      const isCobro = String(invoiceNumberOrCobro || '').startsWith('cobro:');
+      const data = isCobro
+        ? await apiGet(`/api/clients/credit-payments/${encodeURIComponent(invoiceNumberOrCobro.slice(6))}/receipt`)
+        : await apiGet(`/api/sales/${encodeURIComponent(invoiceNumberOrCobro)}/receipt`);
       if (!data?.sale) throw new Error('Comprobante no encontrado.');
       if (typeof showReceipt === 'function') {
-        showReceipt(data.sale, { title: `Reimpresión — ${invoiceNumber}` });
+        showReceipt(data.sale, { title: isCobro ? 'Reimpresión — Recibo de Cobro' : `Reimpresión — ${invoiceNumberOrCobro}` });
       } else {
         if (typeof showToast === 'function') showToast('Función de impresión no disponible.', 'error');
       }
@@ -710,7 +722,21 @@
   };
 
   function fmtMetodo(m) {
-    return { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transfer.', credito: 'Crédito', contra_entrega: 'C.Entrega' }[m] || m || '—';
+    return {
+      efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transfer.', credito: 'Crédito', contra_entrega: 'C.Entrega',
+      cobro_efectivo: 'Cobro crédito · Efectivo', cobro_tarjeta: 'Cobro crédito · Tarjeta', cobro_transferencia: 'Cobro crédito · Transfer.'
+    }[m] || m || '—';
+  }
+
+  function fmtEstadoCobro(row) {
+    if (row.tipo === 'cobro') return '<span class="repv2-estado repv2-estado-emitida">✅ Cobro</span>';
+    if (!row.estadoCobro) return '—';
+    const map = {
+      pagada: '<span class="repv2-estado repv2-estado-emitida">✅ Pagada</span>',
+      parcial: `<span class="repv2-estado repv2-estado-pendiente">🟡 Parcial (${fmt(row.recibido)}/${fmt(row.total)})</span>`,
+      pendiente: '<span class="repv2-estado repv2-estado-cancelada">🔴 Pendiente</span>'
+    };
+    return map[row.estadoCobro] || '—';
   }
 
   function renderPager(containerId, page, pages, cb) {

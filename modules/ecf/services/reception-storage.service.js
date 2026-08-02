@@ -233,6 +233,14 @@ class ReceptionStorageService {
     };
   }
 
+  clearAll() {
+    for (const dir of [this.enviadosDir, this.rfceEnviadosDir, this.tracksDir]) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    this.ensureStorage();
+    return { ok: true };
+  }
+
   #writeJson(filePath, payload) {
     fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   }

@@ -673,6 +673,12 @@ async function saveClienteCobro(id) {
       const clientIdx = DB.clientes.findIndex((item) => Number(item.id) === Number(id));
       if (clientIdx >= 0) DB.clientes[clientIdx] = response.client;
     }
+    if (response.movement) {
+      DB.movimientosCaja = [response.movement, ...(DB.movimientosCaja || [])];
+    }
+    if (response.payment) {
+      DB.cobrosCredito = [response.payment, ...(DB.cobrosCredito || [])];
+    }
     const appliedSales = response.appliedSales || [];
     for (const applied of appliedSales) {
       const saleIdx = (DB.ventas || []).findIndex((sale) => String(sale.id) === String(applied.invoiceNumber));
@@ -861,38 +867,13 @@ function updateReportes() {
   renderOperationalStats(metrics);
   loadVentasHistory(ventasPeriodo);
 
-  syncCajaReportSummary();
+  // El "Resumen del Día" de Caja (res-efectivo/res-total/res-gastos/etc.) lo
+  // gestiona renderCajaDaySummary() en app.js — antes había una copia vieja
+  // aquí (syncCajaReportSummary) que escribía sobre los mismos IDs con
+  // lógica desactualizada (no conocía cobros de crédito), pisando los
+  // valores correctos cada vez que se refrescaban los Reportes.
+  if (typeof renderCajaDaySummary === 'function') renderCajaDaySummary();
   if (typeof translateDynamicUi === 'function') translateDynamicUi(document.getElementById('module-reportes'));
-}
-
-function syncCajaReportSummary() {
-  const ventasHoy = getReportSales('hoy');
-  const total = ventasHoy.reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const ef = ventasHoy.filter((sale) => sale.metodo === 'efectivo').reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const tj = ventasHoy.filter((sale) => sale.metodo === 'tarjeta').reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const tr = ventasHoy.filter((sale) => sale.metodo === 'transferencia').reduce((sum, sale) => sum + Number(sale.total || 0), 0);
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const gastos = (DB.movimientosCaja || []).reduce((sum, mov) => {
-    const amount = Number(mov.monto || 0);
-    if (amount >= 0) return sum;
-    const parsed = new Date(mov.hora);
-    const movementDay = Number.isNaN(parsed.getTime()) ? String(mov.hora || '').slice(0, 10) : parsed.toISOString().slice(0, 10);
-    if (movementDay !== todayKey) return sum;
-    return sum + Math.abs(amount);
-  }, 0);
-  const efectivoEl = document.getElementById('res-efectivo');
-  const tarjetaEl = document.getElementById('res-tarjeta');
-  const transferEl = document.getElementById('res-transfer');
-  const totalEl = document.getElementById('res-total');
-  const gastosEl = document.getElementById('res-gastos');
-  const balanceEl = document.getElementById('res-balance');
-
-  if (efectivoEl) efectivoEl.textContent = fmt(ef);
-  if (tarjetaEl) tarjetaEl.textContent = fmt(tj);
-  if (transferEl) transferEl.textContent = fmt(tr);
-  if (totalEl) totalEl.textContent = fmt(total);
-  if (gastosEl) gastosEl.textContent = fmt(gastos);
-  if (balanceEl) balanceEl.textContent = fmt(DB.config?.cajaMonto || 0);
 }
 
 function loadReporte() {
@@ -915,14 +896,18 @@ function loadVentasHistory(ventas = null) {
         </div>
       </td>
       <td style="color:var(--text2)">${v.cajero}</td>
-      <td>${getMetodoBadge(v.metodo)}</td>
+      <td>${getMetodoBadge(v)}</td>
       <td style="font-family:var(--font-mono);font-weight:700">${fmt(v.total)}</td>
       <td><button class="btn-edit" onclick="showReceiptFromHistory('${v.id}')">🧾 ${appText('reports.action', 'Ver')}</button></td>
     </tr>
   `).join('') || `<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text3)">${reportText('No hay ventas registradas en este periodo')}</td></tr>`;
 }
 
-function getMetodoBadge(m) {
+function getMetodoBadge(venta) {
+  const m = typeof venta === 'string' ? venta : String(venta?.metodo || '').trim();
+  if (m === 'credito' && typeof venta === 'object' && isCreditFullyPaid(venta)) {
+    return `<span class="badge badge-success">✅ ${reportText('Crédito pagado')}</span>`;
+  }
   const map = {efectivo:'badge-success',tarjeta:'badge-info',transferencia:'badge-warning',credito:'badge-danger',contra_entrega:'badge-warning'};
   const labels = {
     efectivo: `💵 ${reportText('Efectivo')}`,

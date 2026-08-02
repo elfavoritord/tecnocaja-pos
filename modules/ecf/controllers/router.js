@@ -137,6 +137,10 @@ function createEcfRouter(deps) {
   router.post('/certification-center/rfce/poll', wrap(() => service.step4RfcePollStatuses()));
   router.post('/certification-center/rfce/prepare-portal', wrap((req) => service.step4RfcePreparePortal(req)));
   router.post('/certification-center/reset-step2-completely', wrap((req) => service.step2ResetCompletely(req)));
+  // Envía un E32/RFCE inventado (e-NCF propio, nunca uno de los 25 fijos de DGII) dos veces
+  // seguidas a propósito, para provocar el rechazo "ya utilizado" que se observó reiniciando
+  // el contador del lote en el portal CerteCF. Experimental — ver comentario en el servicio.
+  router.post('/certification-center/rfce/send-decoy-reset', wrap((req) => service.sendDecoyRfceToForceReset(req)));
   router.get('/certification/cases', wrap((req) => service.listCertificationCases(req.query || {})));
   router.get('/certification/summary', wrap(() => service.getCertificationSummary()));
   router.post('/certification/import', wrap((req) => service.importCertificationSet(req)));

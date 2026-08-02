@@ -1588,6 +1588,28 @@ class EcfRepository {
     return { deleted: result.affectedRows || 0, batchId };
   }
 
+  // Reinicio total del wizard: a diferencia de deleteCurrentBatchCertificationCases
+  // (que solo limpia el batch más reciente), esto borra TODOS los casos de
+  // certificación de TODOS los batches. Sigue protegido por
+  // "certification_case_key IS NOT NULL", así que nunca toca e-CF/NCF reales
+  // emitidos fuera del wizard.
+  async deleteAllCertificationCases() {
+    const result = await this.query(
+      `DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL`
+    );
+    return { deleted: result.affectedRows || 0 };
+  }
+
+  async deleteCertificate(businessId = 1) {
+    const result = await this.query('DELETE FROM ecf_certificates WHERE business_id = ?', [businessId]);
+    return { deleted: result.affectedRows || 0 };
+  }
+
+  async deleteAllTestRuns(businessId = 1) {
+    const result = await this.query('DELETE FROM ecf_test_runs WHERE business_id = ?', [businessId]);
+    return { deleted: result.affectedRows || 0 };
+  }
+
   async getActiveCertificationDocument() {
     const batchId = await this.getLatestCertificationBatchId();
     const params = [];

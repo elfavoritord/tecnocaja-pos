@@ -166,3 +166,11 @@ config/terminal-config.json
 # comandos, directorios adicionales), no es código del proyecto.
 .claude/settings.json
 .claude/settings.local.json
+
+# Certificados fiscales DGII (.p12/.pfx) — NUNCA deben ir al repo, ni
+# siquiera privado. Se purgó uno real del historial el 2026-08-01
+# (modules/ecf/certificates/business-1-active.p12 estaba commiteado
+# desde el commit inicial en un repo público de GitHub).
+*.p12
+*.pfx
+modules/ecf/certificates/

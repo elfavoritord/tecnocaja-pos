@@ -2039,6 +2039,16 @@ async function createWindow() {
     mainWindow = null;
   });
 
+  // El frontend (HTML/JS/CSS) se sirve vía HTTP desde server.js y cambia
+  // seguido durante desarrollo/soporte. Electron reutiliza su caché de disco
+  // entre arranques de la app (no es como refrescar una pestaña de
+  // navegador), así que sin esto un reinicio normal puede seguir sirviendo
+  // JS/HTML viejo aunque el archivo en disco ya se haya actualizado.
+  try {
+    await mainWindow.webContents.session.clearCache();
+  } catch (_cacheError) {
+    // No bloquear el arranque si falla — el peor caso es servir caché vieja.
+  }
   mainWindow.webContents.loadURL(currentAppUrl, { userAgent: 'Tecno Caja-Electron' });
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();

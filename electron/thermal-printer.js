@@ -301,6 +301,12 @@ function formatEscPosDate(value) {
       return `${dd}/${mm}/${yyyy} ${hh}:${min}`;
     }
   }
+  // Fecha sin hora (columnas DATE tipo ncf_vencimiento): "2027-12-31" → "31/12/2027".
+  const dateOnlyMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const [, yyyy, mm, dd] = dateOnlyMatch;
+    return `${dd}/${mm}/${yyyy}`;
+  }
   return str;
 }
 
@@ -363,6 +369,7 @@ function buildReceipt(data) {
     [String(venta.methodRowLabel || 'METODO').toUpperCase(), venta.metodo || 'Efectivo'],
   ];
   if (venta.ncf) detailRows.push(['NCF', venta.ncf]);
+  if (venta.ncf && venta.ncfVencimiento) detailRows.push(['NCF VENCE', formatEscPosDate(venta.ncfVencimiento)]);
   detailRows.filter(([, v]) => String(v || '').trim()).forEach(([lbl, val]) => {
     p.row2(lbl, String(val));
   });

@@ -8,8 +8,13 @@ const NCF_TYPE_LABELS = {
   B02: 'Consumidor Final',
   B03: 'Nota de Débito',
   B04: 'Nota de Crédito',
+  B11: 'Comprobante de Compras',
+  B12: 'Registro Único de Ingresos',
+  B13: 'Gastos Menores',
   B14: 'Régimen Especial',
-  B15: 'Gubernamental'
+  B15: 'Gubernamental',
+  B16: 'Comprobante para Exportaciones',
+  B17: 'Comprobante para Pagos al Exterior'
 };
 
 async function loadNcfSequences() {
@@ -25,17 +30,22 @@ async function loadNcfSequences() {
         </div>`;
       return;
     }
+    const todayIso = new Date().toISOString().slice(0, 10);
     container.innerHTML = `
       <table class="compact-table" style="width:100%;font-size:0.82rem">
         <thead><tr>
           <th>Tipo</th><th>Descripción</th><th>Sucursal</th>
-          <th>Siguiente</th><th>Máximo</th><th>Restantes</th><th>Estado</th><th></th>
+          <th>Siguiente</th><th>Máximo</th><th>Restantes</th><th>Vence</th><th>Estado</th><th></th>
         </tr></thead>
         <tbody>
           ${rows.map(r => {
             const restantes = r.maximo - r.siguienteNumero + 1;
             const pct = Math.max(0, (restantes / r.maximo) * 100);
             const alertCls = pct < 10 ? 'color:#e53e3e;font-weight:700' : pct < 25 ? 'color:#dd6b20' : '';
+            const vencido = r.fechaVencimiento && r.fechaVencimiento < todayIso;
+            const vencimientoTexto = r.fechaVencimiento
+              ? new Date(r.fechaVencimiento + 'T00:00:00').toLocaleDateString('es-DO')
+              : '—';
             return `<tr>
               <td><strong style="color:var(--accent)">${r.ncfType}</strong></td>
               <td>${NCF_TYPE_LABELS[r.ncfType] || r.ncfType}</td>
@@ -43,6 +53,7 @@ async function loadNcfSequences() {
               <td>${r.siguienteNumero.toLocaleString()}</td>
               <td>${r.maximo.toLocaleString()}</td>
               <td style="${alertCls}">${restantes > 0 ? restantes.toLocaleString() : '⚠ Agotada'}</td>
+              <td style="${vencido ? 'color:#e53e3e;font-weight:700' : ''}">${vencimientoTexto}${vencido ? ' ⚠' : ''}</td>
               <td><span class="badge-${r.activa ? 'green' : 'gray'}" style="font-size:0.7rem">${r.activa ? 'Activa' : 'Inactiva'}</span></td>
               <td>
                 <button class="btn-xs btn-danger" type="button" onclick="deleteNcfSequence(${r.id})" title="Eliminar">🗑</button>
@@ -61,10 +72,11 @@ async function saveNcfSequence() {
   const branchId = document.getElementById('ncf-seq-branch')?.value || null;
   const desde = parseInt(document.getElementById('ncf-seq-desde')?.value) || 1;
   const hasta = parseInt(document.getElementById('ncf-seq-hasta')?.value) || 99999999;
+  const fechaVencimiento = document.getElementById('ncf-seq-vencimiento')?.value || null;
   if (!ncfType) { showToast('Selecciona el tipo de NCF.', 'warning'); return; }
   if (hasta < desde) { showToast('El límite máximo debe ser mayor al número inicial.', 'warning'); return; }
   try {
-    await apiPost('/api/ncf/sequences', { ncfType, branchId: branchId || null, siguienteNumero: desde, maximo: hasta, activa: true });
+    await apiPost('/api/ncf/sequences', { ncfType, branchId: branchId || null, siguienteNumero: desde, maximo: hasta, activa: true, fechaVencimiento });
     showToast('Secuencia guardada correctamente.', 'success');
     // Close the details and reload list
     const details = document.querySelector('#cfg-ncf-section details');

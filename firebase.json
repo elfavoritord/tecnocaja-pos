@@ -7,6 +7,6 @@
     "rules": "storage.rules"
   },
   "functions": {
-    "source": "functions"
+    "source": "Tecno_Caja_POS_Android_Pro/Tecno_Caja_POS_Android_Pro/functions"
   }
 }

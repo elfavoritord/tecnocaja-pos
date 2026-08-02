@@ -65,6 +65,7 @@ const DB = {
   ventasPendientes: [],
   cotizaciones: [],
   movimientosCaja: [],
+  cobrosCredito: [],
   nextInvoice: 1001,
   saleItems: [],
   payMethod: 'efectivo',

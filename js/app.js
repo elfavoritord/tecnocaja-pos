@@ -1368,7 +1368,7 @@ function currentUserCan(permission) {
 function getVisibleModulesForCurrentRole() {
   const roleCode = getCurrentUserRoleCode();
   if (roleCode === 'administrador_sucursal') {
-    return new Set(['ventas', 'inventario', 'caja', 'colacobro', 'reportes', 'usuarios', 'delivery']);
+    return new Set(['ventas', 'inventario', 'caja', 'colacobro', 'reportes', 'usuarios', 'delivery', 'compras']);
   }
   if (roleCode === 'cajero') {
     return new Set(['ventas', 'clientes', 'caja', 'colacobro', 'reportes', 'delivery']);
@@ -1461,7 +1461,7 @@ function getBusinessRuntimeConfig() {
     return window.getBusinessConfig(DB.config?.tipoNegocio || DB.config?.businessProfile?.key || 'pizzeria');
   }
   return {
-    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
+    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'compras', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
     productFields: [],
     features: [],
     salesFlow: {},
@@ -3767,6 +3767,9 @@ function showModule(name, el) {
   if (name === 'proveedores') {
     if (typeof loadProveedoresTable === 'function') loadProveedoresTable();
     if (typeof updateProveedoresStats === 'function') updateProveedoresStats();
+  }
+  if (name === 'compras') {
+    if (typeof initComprasModule === 'function') initComprasModule();
   }
   if (name === 'posmovil') {
     if (typeof refreshMobilePosModule === 'function') refreshMobilePosModule();
@@ -7402,11 +7405,30 @@ function _getCorteData() {
     }
   }
 
-  // Movimientos del turno activo
+  // Cobros de crédito del turno — se suman a Efectivo/Tarjeta/Transferencia
+  // igual que una venta directa (es dinero que entró), NO a "Entradas" (esa
+  // línea es solo para ingresos manuales de caja tipo "Ingreso adicional").
+  for (const cobro of DB.cobrosCredito || []) {
+    const metodo = String(cobro?.metodo || '').trim();
+    if (!['efectivo', 'tarjeta', 'transferencia'].includes(metodo)) continue;
+    if (session) {
+      if (!_isMovementInActiveSession(cobro)) continue;
+    } else {
+      if (getDateKeyFromValue(cobro.hora) !== todayKey) continue;
+    }
+    const monto = Number(cobro.monto || 0);
+    if (metodo === 'efectivo') efectivo += monto;
+    else if (metodo === 'tarjeta') tarjeta += monto;
+    else if (metodo === 'transferencia') transferencia += monto;
+  }
+
+  // Movimientos del turno activo — "Entradas" queda reservado para ingresos
+  // manuales (ej. "Ingreso adicional"), no para dinero ya contado arriba.
   let entradas = 0, salidas = 0, devoluciones = 0;
   for (const mov of DB.movimientosCaja || []) {
     const monto = Number(mov.monto || 0);
     if (monto === 0) continue; // gaveta eventos
+    if (mov.tipo === 'Cobro crédito cliente') continue; // ya sumado arriba como Efectivo
     if (session) {
       if (!_isMovementInActiveSession(mov)) continue;
     } else {
@@ -8013,6 +8035,7 @@ async function buscarFacturaDevolucion() {
           : '<span style="color:#28a745;font-size:0.75rem">• Válida</span>';
       const fmtDate = s.created_at ? new Date(s.created_at).toLocaleDateString('es-DO') : '—';
       const canReturn = s.fiscal_status !== 'cancelada' && s.sale_status !== 'devuelta';
+      const invoiceNumberSafe = escapeHtml(s.invoice_number);
       return `
         <div style="display:flex;justify-content:space-between;align-items:center;
                     padding:0.75rem 1rem;border:1px solid ${canReturn ? '#e0d9f7' : '#e5e7eb'};
@@ -8022,14 +8045,14 @@ async function buscarFacturaDevolucion() {
                     transition:box-shadow 0.15s,background 0.15s"
              ${canReturn ? `onmouseover="this.style.boxShadow='0 2px 12px #6d28d920';this.style.background='#faf5ff'"
                            onmouseout="this.style.boxShadow='none';this.style.background='#fff'"
-                           onclick="seleccionarFacturaDevolucion('${s.invoice_number}')"` : ''}>
+                           onclick="seleccionarFacturaDevolucion('${invoiceNumberSafe}')"` : ''}>
           <div>
             <div style="display:flex;align-items:center;gap:0.5rem">
-              <strong style="font-size:0.95rem;color:#111827">${s.invoice_number}</strong>
+              <strong style="font-size:0.95rem;color:#111827">${invoiceNumberSafe}</strong>
               ${statusBadge}
             </div>
-            <div style="font-size:0.8rem;color:#374151;margin-top:1px">${s.client_name || 'Sin cliente'}</div>
-            <div style="font-size:0.76rem;color:#9ca3af;margin-top:1px">📅 ${fmtDate} &nbsp;·&nbsp; 🧾 ${s.cashier_name || '—'}</div>
+            <div style="font-size:0.8rem;color:#374151;margin-top:1px">${escapeHtml(s.client_name || 'Sin cliente')}</div>
+            <div style="font-size:0.76rem;color:#9ca3af;margin-top:1px">📅 ${fmtDate} &nbsp;·&nbsp; 🧾 ${escapeHtml(s.cashier_name || '—')}</div>
           </div>
           <div style="text-align:right;flex-shrink:0;margin-left:1rem">
             <div style="font-weight:700;font-size:1rem;color:#111827">${fmt(s.total)}</div>
@@ -8059,19 +8082,41 @@ async function seleccionarFacturaDevolucion(invoiceNumber) {
     document.getElementById('devolucion-cashier').textContent = data.sale.cashierName || '—';
     document.getElementById('devolucion-method').textContent = data.sale.paymentMethod || '—';
 
+    // El reembolso de efectivo solo tiene sentido si ese dinero realmente entró a la caja:
+    // efectivo siempre; contra entrega solo si ya se cobró; tarjeta/transferencia/crédito nunca
+    // salen de la gaveta física (crédito reduce lo que debe el cliente, ver procesarDevolucion).
+    const method = data.sale.paymentMethod;
+    const cashWasCollected = method === 'efectivo'
+      || (method === 'contra_entrega' && data.sale.deliveryCashStatus === 'validado');
+    const refundCashEl = document.getElementById('devolucion-refund-cash');
+    const refundCashLabel = document.getElementById('devolucion-refund-cash-label');
+    if (refundCashEl) {
+      refundCashEl.checked = cashWasCollected;
+      refundCashEl.disabled = !cashWasCollected;
+    }
+    if (refundCashLabel) {
+      refundCashLabel.textContent = cashWasCollected
+        ? 'Registrar salida de efectivo en caja'
+        : method === 'credito'
+          ? 'Esta venta fue a crédito — no sale efectivo de caja, se rebaja el saldo del cliente'
+          : 'Este pago no se cobró en efectivo — no aplica salida de caja';
+    }
+
     // Renderizar items
     const listEl = document.getElementById('devolucion-items-list');
     listEl.innerHTML = data.items.map((item, idx) => {
       const disponible = item.qtyDisponible;
       const disabled = disponible <= 0 ? 'disabled' : '';
       const style = disponible <= 0 ? 'opacity:0.5' : '';
+      const isFractional = item.saleMode && item.saleMode !== 'unidad';
+      const qtyStep = isFractional ? '0.01' : '1';
       return `
         <div style="display:grid;grid-template-columns:1fr auto auto;gap:0.75rem;align-items:center;
                     padding:0.75rem 1rem;border:1px solid ${disponible > 0 ? '#e5e7eb' : '#fde8e8'};
                     border-left:3px solid ${disponible > 0 ? '#6d28d9' : '#d1d5db'};
                     border-radius:10px;background:#fff;${style}" data-item-idx="${idx}">
           <div>
-            <div style="font-weight:600;font-size:0.9rem;color:#111827">${item.productName}</div>
+            <div style="font-weight:600;font-size:0.9rem;color:#111827">${escapeHtml(item.productName)}</div>
             <div style="font-size:0.77rem;color:#6b7280;margin-top:2px">
               Precio: <strong style="color:#374151">${fmt(item.price)}</strong> &nbsp;·&nbsp;
               Vendidos: ${item.qty} &nbsp;·&nbsp;
@@ -8089,7 +8134,7 @@ async function seleccionarFacturaDevolucion(invoiceNumber) {
                    data-product-id="${item.productId}"
                    data-price="${item.price}"
                    data-qty-max="${disponible}"
-                   min="0" max="${disponible}" step="1" value="0"
+                   min="0" max="${disponible}" step="${qtyStep}" value="0"
                    style="width:80px;padding:4px 6px;border-radius:6px;border:1px solid var(--border-color,#555);
                           background:var(--bg-input,#2a2a3e);color:var(--text,#fff);text-align:center;font-size:0.9rem"
                    oninput="recalcDevolucionTotal(this)" placeholder="0">
@@ -8390,25 +8435,39 @@ async function toggleCaja() {
 function renderMovimientosCaja() {
   const box = document.getElementById('movimientos-tbody');
   if (!box) return;
-  if (!DB.movimientosCaja.length) {
+  // Los cobros de crédito ya se ven reflejados en "Ventas en Efectivo/Tarjeta/
+  // Transferencia" del Resumen del Día — no se listan aparte aquí para no
+  // duplicar la misma plata como si fuera un movimiento manual de caja.
+  const movimientosVisibles = DB.movimientosCaja.filter((mov) => mov.tipo !== 'Cobro crédito cliente');
+  if (!movimientosVisibles.length) {
     box.innerHTML = `<p class="text-muted">${appText('cash.noMovements', 'No hay movimientos registrados')}</p>`;
     return;
   }
-  box.innerHTML = DB.movimientosCaja.map((mov) => `
-    <div class="cash-movement-item ${Number(mov.monto || 0) < 0 ? 'cash-movement-item-out' : 'cash-movement-item-in'}">
+  box.innerHTML = movimientosVisibles.map((mov) => {
+    // "Apertura"/"Cierre" son fotos del monto contado en ese momento (con
+    // cuánto abrió / con cuánto cerró la caja ese turno), no dinero nuevo
+    // entrando — el título ("Apertura"/"Cierre") ya lo distingue, así que no
+    // llevan chip de Entrada/Salida (mostrarlos con el mismo rótulo genérico
+    // es justo lo confuso que se reportó).
+    const esSnapshot = mov.tipo === 'Apertura' || mov.tipo === 'Cierre';
+    const esSalida = !esSnapshot && Number(mov.monto || 0) < 0;
+    const itemClass = esSnapshot ? '' : (esSalida ? 'cash-movement-item-out' : 'cash-movement-item-in');
+    const chip = esSnapshot ? '' : `<span class="cash-movement-chip ${esSalida ? 'cash-movement-chip-out' : 'cash-movement-chip-in'}">${esSalida ? 'Salida' : 'Entrada'}</span>`;
+    const amountClass = esSnapshot ? '' : (esSalida ? 'cash-movement-amount-out' : 'cash-movement-amount-in');
+    return `
+    <div class="cash-movement-item ${itemClass}">
       <div class="cash-movement-main">
         <div class="cash-movement-title-row">
           <div class="cash-movement-title">${mov.tipo}</div>
-          <span class="cash-movement-chip ${Number(mov.monto || 0) < 0 ? 'cash-movement-chip-out' : 'cash-movement-chip-in'}">
-            ${Number(mov.monto || 0) < 0 ? 'Salida' : 'Entrada'}
-          </span>
+          ${chip}
         </div>
         <div class="cash-movement-meta">${mov.usuarioNombre || 'Sistema'} · ${formatCashMovementDate(mov.hora)}</div>
         <div class="cash-movement-notes">${mov.obs || 'Sin observaciones'}</div>
       </div>
-      <div class="cash-movement-amount ${Number(mov.monto || 0) < 0 ? 'cash-movement-amount-out' : 'cash-movement-amount-in'}">${fmt(mov.monto)}</div>
+      <div class="cash-movement-amount ${amountClass}">${fmt(mov.monto)}</div>
     </div>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function formatDateKey(date) {
@@ -8532,6 +8591,19 @@ function _isMovementInActiveSession(mov) {
   return getDateKeyFromValue(mov.hora) === operativeDate;
 }
 
+/**
+ * true si una venta a crédito ya fue cobrada por completo (recibido >= total),
+ * incluyendo abonos posteriores a la venta. Antes de este helper, todo lo que
+ * revisaba `venta.metodo === 'credito'` asumía "pendiente" para siempre.
+ */
+function isCreditFullyPaid(venta) {
+  if (String(venta?.metodo || '').trim() !== 'credito') return false;
+  const total = Number(venta?.total || 0);
+  const recibido = Number(venta?.recibido || 0);
+  return recibido >= total - 0.01;
+}
+window.isCreditFullyPaid = isCreditFullyPaid;
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function getCajaExpenseBreakdown() {
@@ -8610,7 +8682,8 @@ function getCajaDaySalesSummary() {
   const totals = {
     efectivo: 0,
     tarjeta: 0,
-    transferencia: 0
+    transferencia: 0,
+    credito: 0
   };
   const session = _getActiveCajaSession();
   const todayKey = getDateKeyFromValue(new Date());
@@ -8626,7 +8699,19 @@ function getCajaDaySalesSummary() {
       if (String(sale.estadoCobroDelivery || 'pendiente').trim() !== 'validado') continue;
       method = 'efectivo';
       saleDate = sale.cobroDeliveryValidadoEn || sale.cobradaEn || sale.fecha;
-    } else if (saleStatus !== 'pagada') {
+    } else if (method !== 'credito' && saleStatus !== 'pagada') {
+      continue;
+    }
+
+    if (method === 'credito') {
+      // Fiado nuevo del turno (devengado) — no depende de si ya se cobró o
+      // no, igual que la tarjeta "Crédito" del Dashboard.
+      if (session) {
+        if (!_isSaleInActiveSession(sale)) continue;
+      } else {
+        if (getDateKeyFromValue(saleDate) !== todayKey) continue;
+      }
+      totals.credito += Number(sale.total || 0);
       continue;
     }
 
@@ -8640,6 +8725,19 @@ function getCajaDaySalesSummary() {
     }
 
     totals[method] += Number(sale.total || 0);
+  }
+
+  // Cobros de crédito — dinero recibido HOY, aunque la venta original sea
+  // de otra fecha. Ver [[bug de reportes/caja no viendo cobros de crédito]].
+  for (const cobro of DB.cobrosCredito || []) {
+    const method = String(cobro?.metodo || '').trim();
+    if (!['efectivo', 'tarjeta', 'transferencia'].includes(method)) continue;
+    if (session) {
+      if (!_isMovementInActiveSession(cobro)) continue;
+    } else {
+      if (getDateKeyFromValue(cobro.hora) !== todayKey) continue;
+    }
+    totals[method] += Number(cobro.monto || 0);
   }
 
   return totals;
@@ -8661,6 +8759,7 @@ function renderCajaDaySummary() {
   const efectivoEl    = document.getElementById('res-efectivo');
   const tarjetaEl     = document.getElementById('res-tarjeta');
   const transferEl    = document.getElementById('res-transfer');
+  const creditoEl     = document.getElementById('res-credito');
   const totalEl       = document.getElementById('res-total');
   const devolucionEl  = document.getElementById('res-devoluciones');
   const gastosEl      = document.getElementById('res-gastos');
@@ -8669,6 +8768,8 @@ function renderCajaDaySummary() {
   if (efectivoEl)   efectivoEl.textContent = fmt(salesTotals.efectivo);
   if (tarjetaEl)    tarjetaEl.textContent = fmt(salesTotals.tarjeta);
   if (transferEl)   transferEl.textContent = fmt(salesTotals.transferencia);
+  // Fiado del turno: informativo, no suma al total de ventas cobradas ni al balance.
+  if (creditoEl)    creditoEl.textContent = fmt(salesTotals.credito);
   if (totalEl)      totalEl.textContent = fmt(totalVentas);
   if (devolucionEl) devolucionEl.textContent = fmt(totalDevoluciones);
   // "Gastos" muestra solo egresos operativos (sin devoluciones)

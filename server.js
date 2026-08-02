@@ -61,6 +61,17 @@ const { createLabelsRouter, ensureSchema: ensureLabelsSchema } = require('./serv
 // Tesorería — Caja General (separada de la caja operativa)
 const { createTesoreriaRouter, ensureSchema: ensureTesoreriaSchema } = require('./server/routes/tesoreria.routes');
 
+// Compras — Compras + Cuentas por pagar (Fase 1). NO incluye Gastos, DGII 606
+// ni integración contable (eso vive en tecno-caja-contadores).
+const { createComprasRouter, ensureSchema: ensureComprasSchema } = require('./server/routes/compras.routes');
+
+// Gastos — registro fiscal de gastos operativos (Fase 2 de Compras y Gastos).
+// NO descuenta Tesorería/Caja General a propósito (ver comentario en el archivo).
+const { createGastosRouter, ensureSchema: ensureGastosSchema } = require('./server/routes/gastos.routes');
+
+// Cobro de crédito a clientes — extraído de server.js con fix de caja/reportes/factura.
+const { createClientesCreditosRouter, ensureSchema: ensureClientesCreditosSchema } = require('./server/routes/clientes-creditos.routes');
+
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
 
@@ -1414,7 +1425,16 @@ if (DEFAULT_SECURITY_PASSWORD === LEGACY_DEFAULT_SECURITY_PASSWORD) {
   console.warn('[security] ADVERTENCIA: estás usando la contraseña maestra por defecto.');
   console.warn('[security] Define TECNO_CAJA_SECURITY_PASSWORD en el .env o cámbiala desde el wizard.');
 }
-const DEFAULT_LICENSE_ACTIVATION_KEY = process.env.ADMIN_LICENSE_KEY || 'NOVA-LIC-2026';
+// 'NOVA-LIC-2026' era un literal fijo embebido en cada copia del .exe
+// distribuido — cualquiera que decompilara/leyera el bundle podía usarlo en
+// /api/license/activate. El impacto real es bajo (solo fuerza una
+// resincronización con Firebase, no otorga ningún plan), pero sigue siendo un
+// secreto público sin razón: si no se configura ADMIN_LICENSE_KEY, se genera
+// una clave aleatoria distinta por arranque del servidor.
+const DEFAULT_LICENSE_ACTIVATION_KEY = process.env.ADMIN_LICENSE_KEY || crypto.randomBytes(16).toString('hex');
+if (!process.env.ADMIN_LICENSE_KEY) {
+  console.warn(`[license] ADMIN_LICENSE_KEY no configurada — clave temporal de esta sesión: ${DEFAULT_LICENSE_ACTIVATION_KEY}`);
+}
 const SECURE_BACKUP_DIR = runtime.secureBackupDir;
 const SECURE_BACKUP_FILE = 'tecnocaja-secure-backup.novaseguro';
 const PRODUCT_UPLOAD_DIR = runtime.productUploadDir;
@@ -1834,7 +1854,17 @@ if (helmetMiddleware) app.use(helmetMiddleware);
 
 app.use(cors(CORS_OPTIONS));
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(path.join(__dirname), {
+  // El frontend cambia seguido durante desarrollo/soporte y Electron reusa su
+  // caché de disco entre reinicios de la app (no es una pestaña de navegador
+  // normal) — forzamos revalidación en cada carga para HTML/JS/CSS, si no,
+  // reiniciar `npm run desktop` puede seguir sirviendo el JS viejo.
+  setHeaders(res, filePath) {
+    if (/\.(html?|js|css)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
 app.use(PRODUCT_UPLOAD_WEB_PATH, express.static(PRODUCT_UPLOAD_DIR));
 app.use(TREASURY_ATTACHMENTS_WEB_PATH, express.static(TREASURY_ATTACHMENTS_DIR));
 
@@ -1846,7 +1876,7 @@ const fileManagerService = createFileManagerService({
   query,
   userDataPath: process.env.TECNO_CAJA_USER_DATA || os.homedir(),
 });
-app.use('/api/files', createFileManagerRouter({ fileManagerService, query }));
+app.use('/api/files', createFileManagerRouter({ fileManagerService, query, resolveRequestActorUser }));
 
 // ✅ Rutas de Delivery — app repartidores Tecno Caja
 app.use('/api/delivery', createDeliveryRouter({ query }));
@@ -1969,7 +1999,13 @@ function getOfflineRouter() {
       ensurePromotionsExtensions,
       // Asignación real de NCF al sincronizar una venta offline — mismo
       // helper que usa POST /api/sales online, con FOR UPDATE en MySQL.
-      getNextNcfFromSequence
+      getNextNcfFromSequence,
+      // El fix de colisión de número de factura (reintento con el siguiente
+      // número al chocar contra el UNIQUE) solo existía en POST /api/sales
+      // online — la sincronización offline generaba el número una sola vez
+      // y dejaba la venta en error si dos terminales chocaban al sincronizar
+      // casi al mismo tiempo.
+      isInvoiceNumberCollisionError
     });
   }
   return _offlineRouter;
@@ -2037,7 +2073,26 @@ setInterval(() => {
 app.use(async (req, _res, next) => {
   try {
     const token = readAuthToken(req);
-    if (!token) { next(); return; }
+    if (!token) {
+      // Sin Bearer token: algunas pantallas del propio POS (modo multicaja/LAN)
+      // identifican al actor mandando actorUserId en el body/query en vez de
+      // un token de sesión. Se resuelve aquí, verificando contra la base de
+      // datos que ese usuario existe y está activo, para que TODA la app
+      // (incluyendo ensureAdministrator/ensureNotCashier más abajo) trabaje
+      // sobre un req.authUser real — antes esas dos funciones leían
+      // actorUserRole tal cual viniera en el body, sin verificar nada, así
+      // que cualquiera podía mandar {"actorUserRole":"administrador_general"}
+      // sin sesión y pasar por administrador general.
+      const fallbackId = getRequestActorFallbackId(req);
+      if (fallbackId) {
+        const fallbackUser = await getUserWithRoleContextById(fallbackId).catch(() => null);
+        if (fallbackUser && String(fallbackUser.estado || '').trim().toLowerCase() === 'activo') {
+          req.authUser = fallbackUser;
+        }
+      }
+      next();
+      return;
+    }
 
     const sessionRow = await getDbSession(token);
     if (!sessionRow) {
@@ -2115,9 +2170,33 @@ app.use('/api/labels', createLabelsRouter({ query, resolveRequestActorUser, user
 const tesoreriaRouter = createTesoreriaRouter({
   query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, withTransaction, getUserScopeBranchId,
   attachmentsDir: TREASURY_ATTACHMENTS_DIR, attachmentsWebPath: TREASURY_ATTACHMENTS_WEB_PATH,
-  verifyUserPassword: verifyUserAccountPassword,
+  verifyUserPassword: verifyUserAccountPassword, isMysqlDeployment,
 });
 app.use('/api/tesoreria', tesoreriaRouter);
+
+// Compras — Compras + Cuentas por pagar (Fase 1)
+const comprasRouter = createComprasRouter({
+  query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
+  changeBranchInventoryStock, registerInventoryMovement, mapSupplierInvoiceRow, resolveSupplierInvoiceStatus,
+  isMysqlDeployment,
+});
+app.use('/api/purchases', comprasRouter);
+
+// Gastos — registro fiscal (Fase 2)
+const gastosRouter = createGastosRouter({
+  query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
+});
+app.use('/api/expenses', gastosRouter);
+
+// Cobro de crédito a clientes
+const clientesCreditosRouter = createClientesCreditosRouter({
+  query, withTransaction, getActor, resolveScopedBusinessStructureSelection,
+  normalizeCurrencyAmount, mapClientRow, getClientRowWithComputedBalance,
+  writeAuditLog, getConfig, ensureClientExtensions, ensureSalesExtensions,
+  ensureCashMovementExtensions, fireReportSync, getReportSyncConfig, getReportSyncBranchesMap,
+  resolveRequestActorUser,
+});
+app.use('/api/clients', clientesCreditosRouter);
 
 // ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
 //    req.authUser esté disponible en las rutas de respaldo.
@@ -2317,7 +2396,17 @@ const BRANCH_ADMIN_ALLOWED_PERMISSIONS = [
   'pagar_suplidores_caja_general',
   'pagar_empleados_caja_general',
   'aprobar_movimientos_caja_general',
-  'rechazar_movimientos_caja_general'
+  'rechazar_movimientos_caja_general',
+  // Compras — solo su propia sucursal (resolveBranchScope en compras.routes.js)
+  'compras.ver',
+  'compras.crear',
+  'compras.anular',
+  'cuentas_por_pagar.ver',
+  'cuentas_por_pagar.pagar',
+  // Gastos — solo su propia sucursal (resolveBranchScope en gastos.routes.js)
+  'gastos.ver',
+  'gastos.crear',
+  'gastos.anular'
 ];
 const BRANCH_ADMIN_DENIED_PERMISSIONS = [
   'crear_sucursales',
@@ -2469,13 +2558,14 @@ function getUserScopeCashRegisterId(user) {
   return isCashierUser(user) ? getUserCashRegisterIdValue(user) : null;
 }
 
+// OJO: NO agregar un fallback a req.body/req.query.actorUserRole aquí. Ese
+// string lo manda el cliente sin ninguna verificación — permitía a cualquiera
+// sin sesión pasar ensureAdministrator()/ensureNotCashier() con solo mandar
+// {"actorUserRole":"administrador_general"}. req.authUser ya viene resuelto
+// (por token o por actorUserId verificado contra la BD) desde el middleware
+// global de arriba — esa es la única fuente de verdad para el rol del actor.
 function getRequestRoleCode(req) {
-  return normalizeLegacyUserRoleCode(
-    req.authUser?.role_code
-    || req.authUser?.rol
-    || req.body?.actorUserRole
-    || req.query?.actorUserRole
-  );
+  return normalizeLegacyUserRoleCode(req.authUser?.role_code || req.authUser?.rol);
 }
 
 function getRequestActorFallbackId(req) {
@@ -3762,7 +3852,9 @@ async function addColumnIfMissing(tableName, columnName, definition) {
   }
 }
 
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-2`;
+// -5: agrega client_credit_payments / client_credit_payment_allocations
+// (fix cobro de crédito a clientes no reflejado en caja/reportes/factura).
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-5`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -5007,9 +5099,18 @@ async function ensureNcfExtensions() {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  // Fecha de vencimiento del rango autorizado por la DGII (columna en
+  // Oficina Virtual → Comprobantes → Consulta de Solicitudes). Se imprime en
+  // cada factura porque la norma exige mostrarla para que el receptor pueda
+  // validar que el NCF sigue vigente.
+  await addColumnIfMissing('ncf_sequences', 'fecha_vencimiento', 'DATE DEFAULT NULL');
   // NCF columns on sales
   await addColumnIfMissing('sales', 'ncf', 'VARCHAR(19) DEFAULT NULL');
   await addColumnIfMissing('sales', 'ncf_type', 'VARCHAR(5) DEFAULT NULL');
+  // Snapshot de la fecha de vencimiento vigente AL MOMENTO de emitir — si la
+  // secuencia se actualiza después (nuevo rango, otra vigencia), las facturas
+  // ya emitidas deben conservar la fecha que era válida cuando se imprimieron.
+  await addColumnIfMissing('sales', 'ncf_vencimiento', 'DATE DEFAULT NULL');
   await addColumnIfMissing('sales', 'ncf_referencia', 'VARCHAR(19) DEFAULT NULL');
   await addColumnIfMissing('sales', 'factura_referencia_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('sales', 'razon_social_cliente', 'VARCHAR(150) DEFAULT NULL');
@@ -5144,7 +5245,7 @@ async function getNextNcfFromSequence(conn, ncfType, branchId) {
     'UPDATE ncf_sequences SET siguiente_numero = siguiente_numero + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [seq.id]
   );
-  return ncf;
+  return { ncf, fechaVencimiento: seq.fecha_vencimiento || null };
 }
 
 const NCF_LABELS = {
@@ -5152,8 +5253,13 @@ const NCF_LABELS = {
   B02: 'Consumidor Final',
   B03: 'Nota de Débito',
   B04: 'Nota de Crédito',
+  B11: 'Comprobante de Compras',
+  B12: 'Registro Único de Ingresos',
+  B13: 'Gastos Menores',
   B14: 'Régimen Especial',
-  B15: 'Gubernamental'
+  B15: 'Gubernamental',
+  B16: 'Comprobante para Exportaciones',
+  B17: 'Comprobante para Pagos al Exterior'
 };
 
 async function ensureSuspendedSalesTable() {
@@ -6650,15 +6756,20 @@ function getSecureBackupFilePath() {
 }
 
 // Cifrado/descifrado de respaldos (extraído a server/security/backup-crypto.js).
-// Los wrappers mantienen la firma con default = DEFAULT_SECURITY_PASSWORD para
-// no romper callers existentes dentro de server.js.
+// SIN default de password aquí a propósito — backup-crypto.js exige password
+// explícito y lanza si falta; los dos wrappers tenían `= DEFAULT_SECURITY_PASSWORD`
+// como default, una trampa para el día en que alguien agregue un nuevo caller
+// y se le olvide pasar la clave real: en vez de fallar, cifraría/descifraría
+// en silencio con la clave pública conocida. Los dos callers actuales
+// (saveLatestSecureBackup/restoreLatestSecureBackup) ya pasan la clave real
+// explícita, así que esto no cambia ningún comportamiento existente.
 const backupCrypto = require('./server/security/backup-crypto');
 
-function encryptBackupPayload(payload, password = DEFAULT_SECURITY_PASSWORD) {
+function encryptBackupPayload(payload, password) {
   return backupCrypto.encryptBackupPayload(payload, password);
 }
 
-function decryptBackupPayload(encryptedContent, password = DEFAULT_SECURITY_PASSWORD) {
+function decryptBackupPayload(encryptedContent, password) {
   return backupCrypto.decryptBackupPayload(encryptedContent, password);
 }
 
@@ -7234,6 +7345,7 @@ function mapSaleRows(sales, items) {
     ncf: sale.ncf || '',
     ncfType: sale.ncf_type || '',
     ncfLabel: NCF_LABELS[sale.ncf_type] || '',
+    ncfVencimiento: sale.ncf_vencimiento || '',
     ncfReferencia: sale.ncf_referencia || '',
     encf: sale.encf || sale.ncf || '',
     tipoEcf: sale.tipo_ecf || fiscalPayload.tipoEcf || '',
@@ -7632,6 +7744,19 @@ async function getBootstrapData(actorUser = null) {
     query('SELECT * FROM payment_methods WHERE estado = "Activo" ORDER BY nombre')
   ]);
 
+  // Cobros de crédito recientes — mismo scoping que movementRows, para que
+  // _getCorteData()/getCajaDaySalesSummary() en el frontend puedan sumarlos
+  // por sesión/fecha del cobro (no de la venta original).
+  const creditPaymentRows = await (
+    scopedCashRegisterId
+      ? query('SELECT payment_method AS metodo, amount AS monto, created_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM client_credit_payments WHERE cash_register_id = ? ORDER BY id DESC LIMIT 50', [scopedCashRegisterId])
+      : branchScopedUser
+      ? query('SELECT payment_method AS metodo, amount AS monto, created_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM client_credit_payments WHERE branch_id = ? ORDER BY id DESC LIMIT 50', [effectiveBranchId])
+      : effectiveCashRegisterId
+      ? query('SELECT payment_method AS metodo, amount AS monto, created_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM client_credit_payments WHERE COALESCE(cash_register_id, ?) = ? ORDER BY id DESC LIMIT 50', [effectiveCashRegisterId, effectiveCashRegisterId])
+      : query('SELECT payment_method AS metodo, amount AS monto, created_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM client_credit_payments ORDER BY id DESC LIMIT 50')
+  ).catch(() => []);
+
   const ventas = mapSaleRows(saleRows, saleItemRows);
   const pendingCreditByClient = buildClientPendingCreditMapFromSaleRows(saleRows);
   const activeBranch = branchRows.find((item) => Number(item.id || 0) === Number(effectiveBranchId || 0)) || branchRows[0] || null;
@@ -7728,6 +7853,15 @@ async function getBootstrapData(actorUser = null) {
       obs: movement.obs,
       usuarioId: movement.created_by_user_id === null ? null : Number(movement.created_by_user_id),
       usuarioNombre: movement.created_by_user_name || 'Sistema'
+    })),
+    cobrosCredito: creditPaymentRows.map((payment) => ({
+      tipo: 'Cobro crédito cliente',
+      metodo: payment.metodo,
+      monto: Number(payment.monto || 0),
+      hora: payment.hora,
+      obs: payment.obs,
+      usuarioId: payment.created_by_user_id === null ? null : Number(payment.created_by_user_id),
+      usuarioNombre: payment.created_by_user_name || 'Sistema'
     })),
     nextInvoice: config.nextInvoice,
     saleItems: [],
@@ -9874,6 +10008,7 @@ app.get('/api/firebase-sync/status', async (_req, res) => {
 });
 
 app.post('/api/firebase-sync/clients', async (req, res) => {
+  ensureNotCashier(req);
   const actor = getActor(req);
   const status = getFirebaseConfigStatus();
   if (!status.adminEnabled) {
@@ -9894,6 +10029,7 @@ app.post('/api/firebase-sync/clients', async (req, res) => {
 });
 
 app.post('/api/firebase-sync/accounts', async (req, res) => {
+  ensureNotCashier(req);
   const actor = getActor(req);
   const status = getFirebaseConfigStatus();
   if (!status.adminEnabled) {
@@ -11953,177 +12089,8 @@ app.delete('/api/clients/:id', async (req, res) => {
   res.status(204).end();
 });
 
-app.get('/api/clients/:id/credit-sales', async (req, res) => {
-  await ensureClientExtensions();
-  await ensureSalesExtensions();
-
-  const clientId = Number(req.params.id || 0);
-  if (!clientId) {
-    return res.status(400).json({ error: 'Cliente no válido.' });
-  }
-
-  const clientRow = await getClientRowWithComputedBalance(clientId);
-  if (!clientRow) {
-    return res.status(404).json({ error: 'Cliente no encontrado.' });
-  }
-
-  const sales = await query(
-    `SELECT id, invoice_number, document_type, created_at, total, received_amount
-     FROM sales
-     WHERE client_id = ?
-       AND payment_method = 'credito'
-       AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
-       AND COALESCE(total, 0) > COALESCE(received_amount, 0)
-     ORDER BY created_at ASC, id ASC`,
-    [clientId]
-  );
-
-  const mappedSales = sales.map((sale) => {
-    const total = normalizeCurrencyAmount(sale.total || 0);
-    const receivedAmount = normalizeCurrencyAmount(sale.received_amount || 0);
-    const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount));
-    return {
-      id: Number(sale.id || 0),
-      invoiceNumber: sale.invoice_number,
-      documentType: sale.document_type || 'ticket',
-      fecha: sale.created_at,
-      total,
-      recibido: receivedAmount,
-      pendiente: pendingAmount
-    };
-  });
-
-  res.json({
-    client: mapClientRow(clientRow),
-    sales: mappedSales,
-    totalPending: normalizeCurrencyAmount(mappedSales.reduce((sum, sale) => sum + Number(sale.pendiente || 0), 0))
-  });
-});
-
-app.post('/api/clients/:id/credit-payments', async (req, res) => {
-  await ensureClientExtensions();
-  await ensureSalesExtensions();
-  await ensureCashMovementExtensions();
-
-  const clientId = Number(req.params.id || 0);
-  const amount = normalizeCurrencyAmount(req.body?.monto || 0);
-  const paymentMethod = ['efectivo', 'tarjeta', 'transferencia'].includes(String(req.body?.metodo || '').trim())
-    ? String(req.body.metodo).trim()
-    : 'efectivo';
-  const notes = String(req.body?.obs || '').trim() || 'Cobro de crédito a cliente';
-  const actor = getActor(req);
-
-  if (!clientId) {
-    return res.status(400).json({ error: 'Cliente no válido.' });
-  }
-  if (amount <= 0) {
-    return res.status(400).json({ error: 'El monto del cobro debe ser mayor que cero.' });
-  }
-
-  const result = await withTransaction(async (conn) => {
-    const clientRow = await getClientRowWithComputedBalance(clientId, conn);
-    if (!clientRow) {
-      const error = new Error('Cliente no encontrado.');
-      error.statusCode = 404;
-      throw error;
-    }
-
-    const pendingSales = await conn.query(
-      `SELECT id, invoice_number, total, received_amount, created_at
-       FROM sales
-       WHERE client_id = ?
-         AND payment_method = 'credito'
-         AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
-         AND COALESCE(total, 0) > COALESCE(received_amount, 0)
-       ORDER BY created_at ASC, id ASC`,
-      [clientId]
-    );
-
-    if (!pendingSales.length) {
-      const error = new Error('Este cliente no tiene facturas a crédito pendientes.');
-      error.statusCode = 409;
-      throw error;
-    }
-
-    const totalPending = normalizeCurrencyAmount(
-      pendingSales.reduce((sum, sale) => sum + Math.max(0, Number(sale.total || 0) - Number(sale.received_amount || 0)), 0)
-    );
-    if (amount > totalPending) {
-      const error = new Error('El monto supera el balance pendiente del cliente.');
-      error.statusCode = 409;
-      throw error;
-    }
-
-    let sessionId = null;
-    if (paymentMethod === 'efectivo') {
-      const sessions = await conn.query('SELECT * FROM cash_sessions WHERE status = "open" ORDER BY id DESC LIMIT 1');
-      const session = sessions[0];
-      if (!session) {
-        const error = new Error('Debes tener una caja abierta para registrar cobros en efectivo.');
-        error.statusCode = 409;
-        throw error;
-      }
-      sessionId = Number(session.id || 0);
-    }
-
-    let remaining = amount;
-    const appliedSales = [];
-
-    for (const sale of pendingSales) {
-      if (remaining <= 0) break;
-      const total = normalizeCurrencyAmount(sale.total || 0);
-      const receivedAmount = normalizeCurrencyAmount(sale.received_amount || 0);
-      const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount));
-      const appliedAmount = normalizeCurrencyAmount(Math.min(remaining, pendingAmount));
-      if (appliedAmount <= 0) continue;
-
-      const newReceivedAmount = normalizeCurrencyAmount(receivedAmount + appliedAmount);
-      await conn.query(
-        'UPDATE sales SET received_amount = ?, change_amount = 0 WHERE id = ?',
-        [newReceivedAmount, sale.id]
-      );
-
-      appliedSales.push({
-        invoiceNumber: sale.invoice_number,
-        appliedAmount,
-        pendienteAnterior: pendingAmount,
-        pendienteActual: normalizeCurrencyAmount(Math.max(0, pendingAmount - appliedAmount))
-      });
-      remaining = normalizeCurrencyAmount(Math.max(0, remaining - appliedAmount));
-    }
-
-    const updatedPendingTotal = normalizeCurrencyAmount(Math.max(0, totalPending - amount));
-    await conn.query('UPDATE clients SET balance = ? WHERE id = ?', [updatedPendingTotal, clientId]);
-
-    if (paymentMethod === 'efectivo') {
-      await conn.query(
-        `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at)
-         VALUES (?, "Cobro crédito cliente", ?, ?, ?, ?, datetime('now'))`,
-        [sessionId, amount, notes, actor.userId || null, actor.userName || 'Sistema']
-      );
-      await conn.query('UPDATE config SET cash_amount = cash_amount + ? WHERE id = 1', [amount]);
-    }
-
-    return {
-      client: mapClientRow(await getClientRowWithComputedBalance(clientId, conn)),
-      appliedSales,
-      totalPaid: amount,
-      totalPending: updatedPendingTotal
-    };
-  });
-
-  await writeAuditLog({
-    ...actor,
-    moduleName: 'Clientes',
-    actionName: 'Cobro de crédito registrado',
-    detail: `${result.client.nombre} · ${paymentMethod} · abono ${amount.toFixed(2)}`
-  });
-
-  res.json({
-    ...result,
-    config: await getConfig()
-  });
-});
+// GET /api/clients/:id/credit-sales y POST /api/clients/:id/credit-payments
+// se movieron a server/routes/clientes-creditos.routes.js (fix de caja/reportes/factura).
 
 app.post('/api/mobile/customer-auth/firebase', async (req, res) => {
   await ensureMobileTables(query);
@@ -12421,15 +12388,19 @@ app.get('/api/suppliers/:id/detail', async (req, res) => {
     );
   } catch (_) {}
 
-  const totalComprado = invoices.reduce((s, i) => s + Number(i.total_amount || 0), 0);
-  const comprasMes   = invoices.filter(i => String(i.issued_at).slice(0, 10) >= monthStr).reduce((s, i) => s + Number(i.total_amount || 0), 0);
-  const comprasAnio  = invoices.filter(i => String(i.issued_at).slice(0, 10) >= yearStr).reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  // Excluye facturas Anuladas (ej. por anular una compra vinculada) — si no
+  // seguirían inflando "Total comprado" aunque ya no representen una compra
+  // real. factPend/factVenc ya las excluyen naturalmente por el filtro de status.
+  const invoicesForTotals = invoices.filter(i => i.status !== 'Anulada');
+  const totalComprado = invoicesForTotals.reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const comprasMes   = invoicesForTotals.filter(i => String(i.issued_at).slice(0, 10) >= monthStr).reduce((s, i) => s + Number(i.total_amount || 0), 0);
+  const comprasAnio  = invoicesForTotals.filter(i => String(i.issued_at).slice(0, 10) >= yearStr).reduce((s, i) => s + Number(i.total_amount || 0), 0);
   const factPend     = invoices.filter(i => i.status === 'Pendiente');
   const factVenc     = invoices.filter(i => i.status === 'Vencida');
   const montoPend    = factPend.reduce((s, i) => s + Number(i.pending_amount || 0), 0);
   const montoVenc    = factVenc.reduce((s, i) => s + Number(i.pending_amount || 0), 0);
   const ultimaFact   = invoices[0]?.issued_at || null;
-  const totalITBIS   = invoices.reduce((s, i) => s + Number(i.itbis_amount || 0), 0);
+  const totalITBIS   = invoicesForTotals.reduce((s, i) => s + Number(i.itbis_amount || 0), 0);
 
   const alertas = [];
   if (factVenc.length > 0) alertas.push({ tipo: 'danger', mensaje: `${factVenc.length} factura(s) vencida(s) — RD$ ${montoVenc.toFixed(2)}` });
@@ -13140,6 +13111,7 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
         paymentMethod: sale.payment_method,
         saleStatus: sale.sale_status,
         fiscalStatus: sale.fiscal_status,
+        deliveryCashStatus: sale.delivery_cash_status || 'na',
         inventoryBranchId: Number(sale.inventory_branch_id || sale.branch_id || 0),
       },
       items: items.map(i => ({
@@ -13191,11 +13163,14 @@ app.post('/api/sales/return', async (req, res) => {
     }
 
     const result = await withTransaction(async (conn) => {
-      // Cargar la venta original
+      // Cargar la venta original. FOR UPDATE (solo MySQL) bloquea la fila para que dos
+      // devoluciones simultáneas de la misma factura (doble clic, dos cajeros) no lean
+      // ambas el mismo "ya devuelto" antes de que la primera confirme — mismo patrón que
+      // getNextNcfFromSequence.
       const saleRows = await conn.query(
         `SELECT s.*, COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS client_name
          FROM sales s LEFT JOIN clients c ON c.id = s.client_id
-         WHERE s.invoice_number = ? LIMIT 1`,
+         WHERE s.invoice_number = ? LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
         [invoiceNumber]
       );
       if (!saleRows.length) throw Object.assign(new Error('Factura no encontrada.'), { statusCode: 404 });
@@ -13203,6 +13178,9 @@ app.post('/api/sales/return', async (req, res) => {
 
       if (String(sale.fiscal_status || '').trim() === 'cancelada') {
         throw Object.assign(new Error('Esta venta ya fue cancelada. No se puede devolver.'), { statusCode: 409 });
+      }
+      if (String(sale.sale_status || '').trim() === 'pendiente') {
+        throw Object.assign(new Error('Esta venta aún no está pagada/entregada. No se puede devolver.'), { statusCode: 409 });
       }
 
       const inventoryBranchId = Number(sale.inventory_branch_id || sale.branch_id || structure.branchId || 0);
@@ -13265,6 +13243,14 @@ app.post('/api/sales/return', async (req, res) => {
 
       returnedAmount = Number(returnedAmount.toFixed(2));
 
+      // "Total" vs "parcial" se decide por CANTIDAD devuelta acumulada (incluyendo devoluciones
+      // previas), no por cuántas líneas de producto distintas toca esta devolución — una
+      // devolución parcial que roza todas las líneas de la factura no es una devolución total.
+      const totalItemsQty = originalItems.reduce((s, i) => s + Number(i.qty || 0), 0);
+      const totalDevueltaQty = validatedItems.reduce((s, i) => s + i.qty, 0) +
+        Object.values(devueltoMap).reduce((s, v) => s + v, 0);
+      const isFullyReturned = totalDevueltaQty >= totalItemsQty;
+
       // Insertar registro de devolución
       const returnInsert = await conn.query(
         `INSERT INTO sale_returns
@@ -13274,7 +13260,7 @@ app.post('/api/sales/return', async (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
         [
           sale.id, invoiceNumber,
-          validatedItems.length === originalItems.length ? 'total' : 'parcial',
+          isFullyReturned ? 'total' : 'parcial',
           reason, returnedAmount,
           actor.userId || null, actor.userName || 'Sistema',
           structure.branchId || null, structure.cashRegisterId || null,
@@ -13308,14 +13294,37 @@ app.post('/api/sales/return', async (req, res) => {
         }
       }
 
+      // Repartir el monto devuelto entre "efectivo de caja" y "saldo de crédito del cliente"
+      // según cómo se cobró realmente la venta — igual que ya hace /api/sales/:invoiceNumber/cancel.
+      // Sin esto, devolver una venta a crédito nunca bajaba lo que el cliente debía, y devolver
+      // una venta pagada con tarjeta/transferencia sacaba dinero de la caja física sin haberlo
+      // recibido ahí nunca.
+      const saleTotal = Number(sale.total || 0);
+      const receivedAmount = Number(sale.received_amount || 0);
+      const proportion = saleTotal > 0 ? returnedAmount / saleTotal : 0;
+
+      let cashPortion = 0;
+      let creditBalancePortion = 0;
+      if (sale.payment_method === 'credito') {
+        // Lo que se abonó en efectivo al momento de la venta se reembolsa en efectivo;
+        // el resto reduce lo que el cliente debe.
+        cashPortion = Number((receivedAmount * proportion).toFixed(2));
+        creditBalancePortion = Number((returnedAmount - cashPortion).toFixed(2));
+      } else if (sale.payment_method === 'contra_entrega') {
+        const collected = String(sale.delivery_cash_status || '').trim() === 'validado';
+        cashPortion = collected ? returnedAmount : 0;
+      } else {
+        cashPortion = returnedAmount;
+      }
+
       // Registrar egreso de caja si aplica
       let cashMovementId = null;
-      if (refundCash && structure.cashRegisterId) {
+      if (refundCash && cashPortion > 0 && structure.cashRegisterId) {
         const cashInsert = await conn.query(
           `INSERT INTO cash_movements
            (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id)
            VALUES (NULL, 'Devolución', ?, ?, ?, ?, datetime('now'), ?, ?)`,
-          [-returnedAmount, `Devolución ${invoiceNumber} — ${reason}`,
+          [-cashPortion, `Devolución ${invoiceNumber} — ${reason}`,
            actor.userId || null, actor.userName || 'Sistema',
            structure.branchId || null, structure.cashRegisterId]
         );
@@ -13332,18 +13341,23 @@ app.post('/api/sales/return', async (req, res) => {
         if (openSessions.length) {
           await conn.query(
             'UPDATE cash_sessions SET current_amount = current_amount - ? WHERE id = ?',
-            [returnedAmount, openSessions[0].id]
+            [cashPortion, openSessions[0].id]
           );
         }
         // Actualizar también el campo legacy config.cash_amount
-        await conn.query('UPDATE config SET cash_amount = cash_amount - ? WHERE id = 1', [returnedAmount]);
+        await conn.query('UPDATE config SET cash_amount = cash_amount - ? WHERE id = 1', [cashPortion]);
+      }
+
+      // Reducir el saldo adeudado del cliente si la venta (o parte de ella) fue a crédito
+      if (creditBalancePortion > 0 && sale.client_id) {
+        await conn.query(
+          'UPDATE clients SET balance = MAX(COALESCE(balance, 0) - ?, 0) WHERE id = ?',
+          [creditBalancePortion, sale.client_id]
+        );
       }
 
       // Si todos los items fueron devueltos, marcar venta como devuelta
-      const totalItemsQty = originalItems.reduce((s, i) => s + Number(i.qty || 0), 0);
-      const totalDevueltaQty = validatedItems.reduce((s, i) => s + i.qty, 0) +
-        Object.values(devueltoMap).reduce((s, v) => s + v, 0);
-      if (totalDevueltaQty >= totalItemsQty) {
+      if (isFullyReturned) {
         await conn.query(
           `UPDATE sales SET sale_status = 'devuelta', fiscal_status = 'cancelada',
                             canceled_at = datetime('now'), canceled_by_user_id = ?, canceled_by_user_name = ?,
@@ -13354,22 +13368,27 @@ app.post('/api/sales/return', async (req, res) => {
         );
       }
 
-      return { returnId, returnedAmount, itemsCount: validatedItems.length, cashMovementId };
+      return { returnId, returnedAmount, itemsCount: validatedItems.length, cashMovementId, cashPortion, creditBalancePortion };
     });
 
+    const creditNote = result.creditBalancePortion > 0
+      ? ` — RD$ ${result.creditBalancePortion.toFixed(2)} rebajado del saldo a crédito del cliente`
+      : '';
     await writeAuditLog({
       ...actor,
       moduleName: 'Ventas',
       actionName: 'Devolución procesada',
-      detail: `Factura ${invoiceNumber} — ${result.itemsCount} producto(s) — RD$ ${result.returnedAmount.toFixed(2)} — ${reason}`
+      detail: `Factura ${invoiceNumber} — ${result.itemsCount} producto(s) — RD$ ${result.returnedAmount.toFixed(2)} — ${reason}${creditNote}`
     });
 
     res.status(201).json({
       ok: true,
       returnId: result.returnId,
       returnedAmount: result.returnedAmount,
+      cashPortion: result.cashPortion,
+      creditBalancePortion: result.creditBalancePortion,
       itemsCount: result.itemsCount,
-      message: `Devolución procesada: RD$ ${result.returnedAmount.toFixed(2)} por ${result.itemsCount} producto(s).`,
+      message: `Devolución procesada: RD$ ${result.returnedAmount.toFixed(2)} por ${result.itemsCount} producto(s).${creditNote}`,
     });
   } catch (err) {
     const code = err.statusCode || 500;
@@ -13799,6 +13818,15 @@ app.post('/api/cash/open', async (req, res) => {
 
   try {
     const result = await withTransaction(async (conn) => {
+      // Bloquea la fila de la caja registradora (no hay una sesión aún que
+      // bloquear cuando se va a CREAR una) para serializar dos aperturas
+      // simultáneas de la misma caja — sin esto, dos clics casi a la vez
+      // podían leer "sin sesión abierta" ambos y crear dos cash_sessions
+      // 'open' para la misma caja registradora, dejando la más vieja huérfana
+      // para siempre y confundiendo el cierre de turno.
+      if (isMysqlDeployment()) {
+        await conn.query('SELECT id FROM cash_registers WHERE id = ? FOR UPDATE', [structure.cashRegisterId]);
+      }
       const existingSessions = await conn.query(
         'SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1',
         [structure.cashRegisterId]
@@ -14024,21 +14052,36 @@ app.post('/api/cash/close', async (req, res) => {
     }
 
     await withTransaction(async (conn) => {
-      const expectedAmount = Number(session.current_amount || 0);
+      // FOR UPDATE (solo MySQL) + revalidar status: session se leyó arriba
+      // FUERA de la transacción con un query() plano, así que dos cierres
+      // simultáneos de la misma caja (doble clic) podían pasar ambos la
+      // validación antes de que el primero confirmara, duplicando el
+      // movimiento "Cierre", el registro en cash_closings y el audit log.
+      const [lockedSession] = await conn.query(
+        `SELECT * FROM cash_sessions WHERE id = ?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+        [session.id]
+      );
+      if (!lockedSession || lockedSession.status !== 'open') {
+        throw Object.assign(new Error('Esta caja ya fue cerrada.'), { statusCode: 409 });
+      }
+      const expectedAmount = Number(lockedSession.current_amount || 0);
       const countedAmount = amount;
       const differenceAmount = Number((countedAmount - expectedAmount).toFixed(2));
       // Calcular duración del turno en horas
       const openedAtMs = session.opened_at ? new Date(session.opened_at).getTime() : Date.now();
       const durationHours = Number(((Date.now() - openedAtMs) / 3600000).toFixed(2));
-      await conn.query(
+      const closeResult = await conn.query(
         `UPDATE cash_sessions
          SET closed_amount = ?, current_amount = ?, expected_amount = ?, counted_amount = ?, difference_amount = ?,
              closed_at = datetime('now'), status = "closed",
              closed_by_user_id = ?, closed_by_user_name = ?, duration_hours = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'open'`,
         [countedAmount, expectedAmount, expectedAmount, countedAmount, differenceAmount,
          actor.userId || null, actor.userName || 'Sistema', durationHours, session.id]
       );
+      if (!closeResult.affectedRows) {
+        throw Object.assign(new Error('Esta caja ya fue cerrada.'), { statusCode: 409 });
+      }
       await conn.query(
         `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Cierre", ?, ?, ?, ?, datetime('now'), ?, ?)`,
         [session.id, countedAmount, notes, actor.userId || null, actor.userName || 'Sistema', structure.branchId, structure.cashRegisterId]
@@ -14735,6 +14778,28 @@ app.post('/api/sales', async (req, res) => {
       error.statusCode = 400;
       throw error;
     }
+    // No existía ningún tope: un cliente con límite de crédito configurado
+    // podía acumular balance infinito repitiendo ventas a crédito. limite_credito
+    // = 0 significa "sin límite" (mismo criterio que js/clientes.js).
+    if (paymentMethod === 'credito' && clientId && pendingCreditAmount > 0) {
+      const clientRow = await getClientRowWithComputedBalance(clientId, conn);
+      if (!clientRow) {
+        const error = new Error('El cliente seleccionado no existe.');
+        error.statusCode = 404;
+        throw error;
+      }
+      const creditLimit = Number(clientRow.limite_credito || 0);
+      if (creditLimit > 0) {
+        const currentBalance = Number(clientRow.balance || 0);
+        if (currentBalance + pendingCreditAmount > creditLimit) {
+          const error = new Error(
+            `${clientRow.nombre} superaría su límite de crédito de RD$ ${creditLimit.toFixed(2)} (saldo actual RD$ ${currentBalance.toFixed(2)}).`
+          );
+          error.statusCode = 409;
+          throw error;
+        }
+      }
+    }
 
     if (documentType === 'factura-electronica') {
       if (!config.e_invoice_enabled) {
@@ -14746,6 +14811,7 @@ app.post('/api/sales', async (req, res) => {
 
     // ── NCF validations ──────────────────────────────────────────
     let generatedNcf = null;
+    let generatedNcfVencimiento = null;
     let ncfReferenciaVal = null;
     let facturaReferenciaId = null;
 
@@ -14782,7 +14848,9 @@ app.post('/api/sales', async (req, res) => {
         ncfReferenciaVal = refNcf;
         facturaReferenciaId = Number(refRows[0].id);
       }
-      generatedNcf = await getNextNcfFromSequence(conn, effectiveNcfType, structure.branchId);
+      const ncfResult = await getNextNcfFromSequence(conn, effectiveNcfType, structure.branchId);
+      generatedNcf = ncfResult.ncf;
+      generatedNcfVencimiento = ncfResult.fechaVencimiento;
     }
 
     const fiscalTimestamp = new Date().toISOString();
@@ -14823,6 +14891,7 @@ app.post('/api/sales', async (req, res) => {
          delivery_client_pay_amount, delivery_change_amount,
          table_label, order_notes,
          ncf, ncf_type, ncf_referencia, factura_referencia_id, razon_social_cliente, es_electronica, fecha_emision_fiscal,
+         ncf_vencimiento,
          cash_session_id, operative_date)
        VALUES (?, ?, ?, ?, ?,
                ?, ?, ?,
@@ -14839,6 +14908,7 @@ app.post('/api/sales', async (req, res) => {
                ?, ?,
                ?, ?,
                ?, ?, ?, ?, ?, ?, ?,
+               ?,
                ?, ?)`;
     const saleInsertParams = [
         invoiceNumber,
@@ -14903,6 +14973,7 @@ app.post('/api/sales', async (req, res) => {
         razonSocialCliente || null,
         shouldUseEcfFlow ? 1 : 0,
         nowSql,
+        generatedNcfVencimiento || null,
         // Turno — NUNCA usar para e-CF (usar created_at/fecha_emision_fiscal)
         saleSessionId,
         saleOperativeDate,
@@ -14956,6 +15027,7 @@ app.post('/api/sales', async (req, res) => {
 
     const affectedProductIds = new Set();
     let ahorroPromociones = 0;
+    let computedSubtotal = 0;
     // Resuelto UNA vez para toda la venta (no por ítem) — pickWinningPromotion
     // es puro/sin I/O, así que decidir la promo de cada línea dentro del loop
     // no vuelve a golpear la BD.
@@ -14965,18 +15037,27 @@ app.post('/api/sales', async (req, res) => {
     ]);
     for (const item of sale.items) {
       affectedProductIds.add(Number(item.id || 0) || 0);
-      const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
+      const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
       const product = productRows[0];
+      if (!product) {
+        const missingError = new Error(`El producto ID ${item.id} no existe.`);
+        missingError.statusCode = 400;
+        throw missingError;
+      }
 
-      // El precio que manda el cliente para un producto en promoción NUNCA es la
-      // fuente de verdad — se vuelve a resolver la promoción activa server-side
-      // (mismo principio que la tasa de cambio USD más arriba) y esa es la que
-      // se guarda. Si el cliente no mandaba ninguna promoción, esto no cambia nada.
+      // El precio que manda el cliente NUNCA es la fuente de verdad — ni en
+      // promoción ni fuera de ella. Antes solo se re-resolvía server-side el
+      // precio de PROMOCIÓN; fuera de promoción se guardaba item.precio/
+      // item.total tal cual venían del body, así que cualquiera podía mandar
+      // {"precio":0.01,"total":0.01} y "vender" cualquier producto a ese
+      // precio (el input de precio del carrito es readonly en la UI real —
+      // nunca lo llena el cajero a mano, así que esto no cambia nada para el
+      // flujo legítimo, incluida la venta con precio de catálogo desactualizado
+      // en el carrito: aquí siempre se usa el precio ACTUAL de products).
       const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
-      const effectivePrice = activePromo ? activePromo.precioPromocion : item.precio;
-      const effectiveLineTotal = activePromo
-        ? Number((effectivePrice * Number(item.qty || 0)).toFixed(2))
-        : item.total;
+      const effectivePrice = activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0);
+      const effectiveLineTotal = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
+      computedSubtotal += effectiveLineTotal;
       if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
 
       await conn.query(
@@ -15028,6 +15109,40 @@ app.post('/api/sales', async (req, res) => {
           usuarioNombre: actorUser.nombre || actorUser.usuario || 'Sistema'
         });
       }
+    }
+
+    // El precio por renglón ya está anclado al catálogo (arriba), pero el
+    // servidor seguía aceptando subtotal/descuento/itbis/total TAL CUAL los
+    // mandara el cliente para la fila de `sales` — un atacante con items
+    // correctamente valuados podía igual declarar un total desconectado de
+    // esos items (ej. total=0.01 con paymentMethod=credito para casi no
+    // deberle nada al negocio). Esto no reemplaza el motor de descuentos/
+    // impuestos del cliente (el descuento general de hasta 100% ya es una
+    // función legítima, sin PIN de gerente) — solo verifica que las cifras
+    // sean ARITMÉTICAMENTE consistentes entre sí y con los renglones reales.
+    const subtotalTolerance = Math.max(0.5, 0.05 * sale.items.length);
+    const subtotalDeclared = Number(sale.subtotal || 0);
+    const descuentoDeclared = Number(sale.descuento || 0);
+    const itbisDeclared = Number(sale.itbis || 0);
+    if (!Number.isFinite(subtotalDeclared) || Math.abs(subtotalDeclared - computedSubtotal) > subtotalTolerance) {
+      throw Object.assign(
+        new Error('El subtotal de la venta no coincide con los productos enviados. Actualiza la página e intenta de nuevo.'),
+        { statusCode: 409 }
+      );
+    }
+    if (!Number.isFinite(descuentoDeclared) || descuentoDeclared < -0.01 || descuentoDeclared > computedSubtotal + subtotalTolerance) {
+      throw Object.assign(new Error('El descuento de la venta no es válido.'), { statusCode: 409 });
+    }
+    const maxTaxRate = Number(config.tax_rate || 18);
+    if (!Number.isFinite(itbisDeclared) || itbisDeclared < -0.01 || itbisDeclared > (computedSubtotal * (maxTaxRate / 100)) + subtotalTolerance) {
+      throw Object.assign(new Error('El ITBIS de la venta no es válido.'), { statusCode: 409 });
+    }
+    const expectedTotal = Number((subtotalDeclared - descuentoDeclared + itbisDeclared).toFixed(2));
+    if (!Number.isFinite(saleTotal) || Math.abs(saleTotal - expectedTotal) > subtotalTolerance) {
+      throw Object.assign(
+        new Error('El total de la venta no coincide con subtotal/descuento/ITBIS. Actualiza la página e intenta de nuevo.'),
+        { statusCode: 409 }
+      );
     }
 
     if (ahorroPromociones > 0) {
@@ -15380,7 +15495,14 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
   }
 
   const collectedSale = await withTransaction(async (conn) => {
-    const saleRows = await conn.query('SELECT * FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]);
+    // FOR UPDATE (solo MySQL) evita que dos cobros simultáneos de la misma
+    // factura pendiente (doble clic) pasen ambos el chequeo de sale_status
+    // antes de que el primero confirme y duplique el descuento de inventario
+    // y el ingreso de caja.
+    const saleRows = await conn.query(
+      `SELECT * FROM sales WHERE invoice_number = ? LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+      [invoiceNumber]
+    );
     const sale = saleRows[0];
     if (!sale) {
       const error = new Error('Factura pendiente no encontrada.');
@@ -15523,7 +15645,13 @@ app.patch('/api/sales/:invoiceNumber/settle-delivery-cash', async (req, res) => 
   const actor = getActor(req);
 
   const settledSale = await withTransaction(async (conn) => {
-    const saleRows = await conn.query('SELECT * FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]);
+    // FOR UPDATE (solo MySQL) — misma razón que en /collect: dos validaciones
+    // simultáneas del mismo cobro contra entrega podían pasar ambas el
+    // chequeo de delivery_cash_status antes de que la primera confirmara.
+    const saleRows = await conn.query(
+      `SELECT * FROM sales WHERE invoice_number = ? LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+      [invoiceNumber]
+    );
     const sale = saleRows[0];
     if (!sale) {
       const error = new Error('Factura delivery no encontrada.');
@@ -15599,7 +15727,14 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
   const reason = String(req.body?.reason || '').trim() || 'Cancelada desde movimientos';
 
   const result = await withTransaction(async (conn) => {
-    const saleRows = await conn.query('SELECT * FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]);
+    // FOR UPDATE (solo MySQL) — misma razón que en devoluciones (/api/sales/return):
+    // dos cancelaciones simultáneas de la misma factura podían pasar ambas el
+    // chequeo de fiscal_status antes de que la primera confirmara, reintegrando
+    // inventario y ajustando caja/crédito del cliente dos veces.
+    const saleRows = await conn.query(
+      `SELECT * FROM sales WHERE invoice_number = ? LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+      [invoiceNumber]
+    );
     const sale = saleRows[0];
     if (!sale) {
       const error = new Error('Factura o pedido no encontrado.');
@@ -16565,6 +16700,35 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
         COALESCE(SUM(CASE WHEN s.payment_method='usd' THEN s.usd_amount_received ELSE 0 END),0) AS usd_recibido_total
       FROM sales s ${w}`, p);
 
+    // Cobros de crédito dentro del rango — se suman a efectivo/tarjeta/transferencia
+    // por la FECHA DEL COBRO (no la de la venta original a crédito). Ver
+    // client_credit_payments (server/routes/clientes-creditos.routes.js).
+    let wCobros = 'WHERE ccp.created_at BETWEEN ? AND ?';
+    const pCobros = [desdeDatetime, hastaDatetime];
+    if (ef) { wCobros += ' AND ccp.branch_id=?'; pCobros.push(ef); }
+    if (cajaId) { wCobros += ' AND ccp.cash_register_id=?'; pCobros.push(cajaId); }
+    if (userId) { wCobros += ' AND ccp.created_by_user_id=?'; pCobros.push(userId); }
+    const cobrosRows = await query(`
+      SELECT
+        COALESCE(SUM(CASE WHEN ccp.payment_method='efectivo' THEN ccp.amount ELSE 0 END),0) AS efectivo,
+        COALESCE(SUM(CASE WHEN ccp.payment_method='tarjeta' THEN ccp.amount ELSE 0 END),0) AS tarjeta,
+        COALESCE(SUM(CASE WHEN ccp.payment_method='transferencia' THEN ccp.amount ELSE 0 END),0) AS transferencia
+      FROM client_credit_payments ccp ${wCobros}`, pCobros).catch(() => [{ efectivo: 0, tarjeta: 0, transferencia: 0 }]);
+    const cobrosCredito = cobrosRows[0] || { efectivo: 0, tarjeta: 0, transferencia: 0 };
+
+    // Para la tarjeta "Crédito" (fiado pendiente) hace falta saber cuánto de
+    // las ventas a crédito DE ESTE PERÍODO ya se cobró en este mismo período,
+    // para no seguir mostrándolo como pendiente si ya se pagó.
+    const cobrosDeEstePeriodoRows = await query(`
+      SELECT COALESCE(SUM(ccpa.applied_amount),0) AS total
+      FROM client_credit_payments ccp
+      JOIN client_credit_payment_allocations ccpa ON ccpa.payment_id = ccp.id
+      JOIN sales s ON s.id = ccpa.sale_id
+      ${wCobros} AND s.created_at BETWEEN ? AND ?`,
+      [...pCobros, desdeDatetime, hastaDatetime]
+    ).catch(() => [{ total: 0 }]);
+    const cobrosDeEstePeriodo = Number(cobrosDeEstePeriodoRows[0]?.total || 0);
+
     // costo estimado de lo vendido
     const costoRows = await query(`
       SELECT COALESCE(SUM(si.qty * COALESCE(p.precio_compra,0)),0) AS costo_total
@@ -16574,11 +16738,39 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
       ${w.replace('WHERE s.','WHERE s.')}`, p);
 
     const costo = Number(costoRows[0]?.costo_total || 0);
+    // "ventas" (para ganancia/margen) es SOLO lo facturado en el período —
+    // el costo de lo vendido ya se reconoció ahí. No debe inflarse con cobros.
     const ventas = Number(kpis[0]?.total_ventas || 0);
     const ganancia = ventas - costo;
     const margen = ventas > 0 ? ((ganancia / ventas) * 100).toFixed(1) : '0.0';
 
-    res.json({ ...kpis[0], costo_total: costo, ganancia, margen, desde, hasta });
+    const creditoAccrual = Number(kpis[0]?.credito || 0);
+    const cobrosTotalPeriodo = Number(cobrosCredito.efectivo || 0) + Number(cobrosCredito.tarjeta || 0) + Number(cobrosCredito.transferencia || 0);
+    // "Total Ventas" = SOLO dinero que realmente entró a caja: lo facturado
+    // en métodos que cobran de una vez (efectivo/tarjeta/transferencia/etc.)
+    // MENOS el valor de las ventas a crédito de este período (que todavía no
+    // es caja) MÁS lo que sí se cobró de crédito en este período (sea de una
+    // factura de este período o de una anterior). Así nunca se duplica: si
+    // se vende y se cobra a crédito en el mismo período, "ventas" ya incluía
+    // esa venta, se le resta como crédito y se le vuelve a sumar como cobro.
+    const totalVentasCaja = (ventas - creditoAccrual) + cobrosTotalPeriodo;
+    // "Crédito" (fiado pendiente) = lo vendido a crédito este período que
+    // TODAVÍA no se ha cobrado — no el valor bruto vendido.
+    const creditoPendiente = Math.max(0, Number((creditoAccrual - cobrosDeEstePeriodo).toFixed(2)));
+
+    res.json({
+      ...kpis[0],
+      total_ventas: totalVentasCaja,
+      total_facturado: ventas,
+      credito: creditoPendiente,
+      efectivo: Number(kpis[0]?.efectivo || 0) + Number(cobrosCredito.efectivo || 0),
+      tarjeta: Number(kpis[0]?.tarjeta || 0) + Number(cobrosCredito.tarjeta || 0),
+      transferencia: Number(kpis[0]?.transferencia || 0) + Number(cobrosCredito.transferencia || 0),
+      cobros_credito_efectivo: Number(cobrosCredito.efectivo || 0),
+      cobros_credito_tarjeta: Number(cobrosCredito.tarjeta || 0),
+      cobros_credito_transferencia: Number(cobrosCredito.transferencia || 0),
+      costo_total: costo, ganancia, margen, desde, hasta
+    });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16600,18 +16792,41 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
         DATE(s.created_at) AS dia,
         COUNT(*) AS facturas,
         COALESCE(SUM(s.total),0) AS total,
+        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         COALESCE(SUM(s.tax),0) AS itbis
       FROM sales s ${w}
       GROUP BY DATE(s.created_at)
       ORDER BY dia ASC`, p);
 
-    res.json(rows.map(r => ({
-      // Normalizar a string YYYY-MM-DD para evitar Invalid Date en el frontend
-      dia: r.dia instanceof Date ? r.dia.toISOString().slice(0, 10) : String(r.dia || '').slice(0, 10),
-      facturas: Number(r.facturas),
-      total: Number(r.total),
-      itbis: Number(r.itbis)
-    })));
+    // Cobros de crédito por día — dinero que sí entró ese día, sea de una
+    // factura del mismo día o de una anterior. Sin esto, un día en el que
+    // solo se cobró fiado viejo (sin ventas nuevas) sale vacío del gráfico.
+    let wCobros = 'WHERE ccp.created_at BETWEEN ? AND ?';
+    const pCobros = [desdeDatetime, hastaDatetime];
+    if (ef) { wCobros += ' AND ccp.branch_id=?'; pCobros.push(ef); }
+    const cobroRows = await query(`
+      SELECT DATE(ccp.created_at) AS dia, COALESCE(SUM(ccp.amount),0) AS total_cobros
+      FROM client_credit_payments ccp ${wCobros}
+      GROUP BY DATE(ccp.created_at)`, pCobros).catch(() => []);
+
+    const byDia = new Map();
+    for (const r of rows) {
+      const dia = r.dia instanceof Date ? r.dia.toISOString().slice(0, 10) : String(r.dia || '').slice(0, 10);
+      byDia.set(dia, {
+        dia,
+        facturas: Number(r.facturas),
+        total: Number(r.total) - Number(r.credito_accrual || 0),
+        itbis: Number(r.itbis)
+      });
+    }
+    for (const r of cobroRows) {
+      const dia = r.dia instanceof Date ? r.dia.toISOString().slice(0, 10) : String(r.dia || '').slice(0, 10);
+      const existing = byDia.get(dia);
+      if (existing) existing.total += Number(r.total_cobros || 0);
+      else byDia.set(dia, { dia, facturas: 0, total: Number(r.total_cobros || 0), itbis: 0 });
+    }
+
+    res.json([...byDia.values()].sort((a, b) => a.dia.localeCompare(b.dia)));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16729,13 +16944,55 @@ app.get('/api/reports/advanced/metodos-pago', async (req, res) => {
       GROUP BY metodo
       ORDER BY total DESC`, p);
 
-    const totalGeneral = rows.reduce((s, r) => s + Number(r.total || 0), 0);
-    res.json(rows.map(r => ({
-      metodo: r.metodo,
-      facturas: Number(r.facturas),
-      total: Number(r.total),
-      porcentaje: totalGeneral > 0 ? ((Number(r.total) / totalGeneral) * 100).toFixed(1) : '0.0'
-    })));
+    // Cobros de crédito del período — se muestran como filas "cobro_<método>"
+    // APARTE (no mezcladas con Efectivo/Tarjeta/Transferencia de ventas
+    // directas), para poder ver de un vistazo cuánto entró por cobro de
+    // fiado viejo vs. venta directa. Solo se listan los cobros de facturas
+    // que NO son de este mismo período — si la venta a crédito se hizo Y se
+    // cobró en este mismo rango, ya está contada en "credito" (neteada abajo)
+    // y listarla de nuevo aquí la duplicaría.
+    let wCobros = 'WHERE ccp.created_at BETWEEN ? AND ?';
+    const pCobros = [desdeDatetime, hastaDatetime];
+    if (ef)     { wCobros += ' AND ccp.branch_id=?'; pCobros.push(ef); }
+    if (cajaId) { wCobros += ' AND ccp.cash_register_id=?'; pCobros.push(cajaId); }
+    if (userId) { wCobros += ' AND ccp.created_by_user_id=?'; pCobros.push(userId); }
+    const cobroRows = await query(`
+      SELECT ccp.payment_method AS metodo, COUNT(DISTINCT ccp.id) AS facturas, SUM(ccpa.applied_amount) AS total
+      FROM client_credit_payments ccp
+      JOIN client_credit_payment_allocations ccpa ON ccpa.payment_id = ccp.id
+      JOIN sales s2 ON s2.id = ccpa.sale_id
+      ${wCobros} AND NOT (s2.created_at BETWEEN ? AND ?)
+      GROUP BY metodo
+      ORDER BY total DESC`, [...pCobros, desdeDatetime, hastaDatetime]).catch(() => []);
+    const cobrosDentroRows = await query(`
+      SELECT COALESCE(SUM(ccpa.applied_amount),0) AS total
+      FROM client_credit_payments ccp
+      JOIN client_credit_payment_allocations ccpa ON ccpa.payment_id = ccp.id
+      JOIN sales s2 ON s2.id = ccpa.sale_id
+      ${wCobros} AND s2.created_at BETWEEN ? AND ?`, [...pCobros, desdeDatetime, hastaDatetime]).catch(() => [{ total: 0 }]);
+    const cobrosDentroDePeriodo = Number(cobrosDentroRows[0]?.total || 0);
+
+    const byMetodo = new Map();
+    for (const r of rows) {
+      byMetodo.set(r.metodo, { metodo: r.metodo, facturas: Number(r.facturas), total: Number(r.total) });
+    }
+    // "credito" neto: lo vendido a crédito este período menos lo que de eso
+    // ya se cobró en este mismo período (si no, se vería pendiente algo que
+    // ya se pagó).
+    const creditoRow = byMetodo.get('credito');
+    if (creditoRow) {
+      creditoRow.total = Math.max(0, Number((creditoRow.total - cobrosDentroDePeriodo).toFixed(2)));
+    }
+    for (const r of cobroRows) {
+      if (Number(r.total || 0) <= 0) continue;
+      byMetodo.set(`cobro_${r.metodo}`, { metodo: `cobro_${r.metodo}`, facturas: Number(r.facturas), total: Number(r.total) });
+    }
+
+    const allRows = [...byMetodo.values()].filter((r) => r.total > 0 || r.metodo !== 'credito');
+    const totalGeneral = allRows.reduce((s, r) => s + r.total, 0);
+    res.json(allRows
+      .map(r => ({ ...r, porcentaje: totalGeneral > 0 ? ((r.total / totalGeneral) * 100).toFixed(1) : '0.0' }))
+      .sort((a, b) => b.total - a.total));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16757,6 +17014,7 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
         u.id, COALESCE(u.nombre, u.usuario, 'Sin cajero') AS nombre, u.usuario,
         COUNT(s.id) AS facturas,
         SUM(s.total) AS total,
+        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         AVG(s.total) AS ticket_promedio,
         COALESCE(SUM(s.tax),0) AS itbis
       FROM sales s
@@ -16765,15 +17023,39 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
       GROUP BY u.id, nombre, u.usuario
       ORDER BY total DESC`, p);
 
-    res.json(rows.map(r => ({
-      usuarioId: r.id,
-      nombre: r.nombre,
-      usuario: r.usuario || '',
-      facturas: Number(r.facturas),
-      total: Number(r.total),
-      ticketPromedio: Number(r.ticket_promedio),
-      itbis: Number(r.itbis)
-    })));
+    // Cobros de crédito del período por cajero — dinero que sí entró, sea de
+    // una factura de este período o de una anterior. "total" se arma como
+    // (facturado - crédito devengado) + cobrado, así nunca se duplica.
+    let wCobros = 'WHERE ccp.created_at BETWEEN ? AND ?';
+    const pCobros = [desdeDatetime, hastaDatetime];
+    if (ef) { wCobros += ' AND ccp.branch_id=?'; pCobros.push(ef); }
+    const cobroRows = await query(`
+      SELECT ccp.created_by_user_id AS id, ccp.created_by_user_name AS nombre, SUM(ccp.amount) AS total_cobros
+      FROM client_credit_payments ccp ${wCobros}
+      GROUP BY ccp.created_by_user_id, ccp.created_by_user_name`, pCobros).catch(() => []);
+
+    const byUser = new Map();
+    for (const r of rows) {
+      byUser.set(Number(r.id || 0), {
+        usuarioId: r.id, nombre: r.nombre, usuario: r.usuario || '',
+        facturas: Number(r.facturas), total: Number(r.total || 0) - Number(r.credito_accrual || 0),
+        ticketPromedio: Number(r.ticket_promedio || 0), itbis: Number(r.itbis || 0)
+      });
+    }
+    for (const r of cobroRows) {
+      const key = Number(r.id || 0);
+      const existing = byUser.get(key);
+      if (existing) {
+        existing.total += Number(r.total_cobros || 0);
+      } else {
+        byUser.set(key, {
+          usuarioId: r.id, nombre: r.nombre || 'Sin cajero', usuario: '',
+          facturas: 0, total: Number(r.total_cobros || 0), ticketPromedio: 0, itbis: 0
+        });
+      }
+    }
+
+    res.json([...byUser.values()].sort((a, b) => b.total - a.total));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16801,9 +17083,11 @@ app.get('/api/reports/advanced/por-sucursal', async (req, res) => {
         b.id, b.nombre AS sucursal, b.estado,
         COUNT(s.id) AS facturas,
         COALESCE(SUM(s.total),0) AS total,
+        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         COALESCE(SUM(s.tax),0) AS itbis,
         COALESCE(AVG(s.total),0) AS ticket_promedio,
-        COALESCE(eg.total_gastos, 0) AS total_gastos
+        COALESCE(eg.total_gastos, 0) AS total_gastos,
+        COALESCE(cc.total_cobros, 0) AS total_cobros
       FROM branches b
       LEFT JOIN sales s
         ON COALESCE(s.billed_branch_id,s.branch_id)=b.id
@@ -16816,19 +17100,29 @@ app.get('/api/reports/advanced/por-sucursal', async (req, res) => {
           AND movement_type IN ('Gasto', 'Pago suplidor', 'Devolución', 'Retiro de efectivo', 'Egreso', 'salida', 'gasto', 'expense')
         GROUP BY branch_id
       ) eg ON eg.branch_id = b.id
+      LEFT JOIN (
+        SELECT branch_id, SUM(amount) AS total_cobros
+        FROM client_credit_payments
+        WHERE created_at BETWEEN ? AND ?
+        GROUP BY branch_id
+      ) cc ON cc.branch_id = b.id
       ${branchWhere}
-      GROUP BY b.id, b.nombre, b.estado, eg.total_gastos
-      ORDER BY total DESC, b.nombre ASC`, params);
+      GROUP BY b.id, b.nombre, b.estado, eg.total_gastos, cc.total_cobros
+      ORDER BY total DESC, b.nombre ASC`, [...params.slice(0, 4), desdeDatetime, hastaDatetime, ...params.slice(4)]);
 
     res.json(rows.map(r => ({
       sucursalId: r.id,
       sucursal: r.sucursal,
       estado: r.estado || 'Activa',
       facturas: Number(r.facturas),
-      total: Number(r.total),
+      // "total" = dinero que realmente entró: facturado menos crédito
+      // devengado (todavía no es caja) más lo cobrado de crédito en el
+      // período (de facturas de este período o de uno anterior).
+      total: (Number(r.total) - Number(r.credito_accrual || 0)) + Number(r.total_cobros || 0),
       itbis: Number(r.itbis),
       ticketPromedio: Number(r.ticket_promedio),
-      totalGastos: Number(r.total_gastos || 0)
+      totalGastos: Number(r.total_gastos || 0),
+      totalCobrosCredito: Number(r.total_cobros || 0)
     })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -16939,6 +17233,7 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
         b.nombre AS sucursal,
         COUNT(s.id) AS facturas,
         COALESCE(SUM(s.total),0) AS total,
+        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         COALESCE(SUM(s.tax),0) AS itbis,
         COALESCE(AVG(s.total),0) AS ticket_promedio
       FROM sales s
@@ -16948,15 +17243,41 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
       GROUP BY cr.id, cr.nombre, b.nombre
       ORDER BY total DESC`, p);
 
-    res.json(rows.map(r => ({
-      cajaId: r.id,
-      caja: r.caja,
-      sucursal: r.sucursal,
-      facturas: Number(r.facturas),
-      total: Number(r.total),
-      itbis: Number(r.itbis),
-      ticketPromedio: Number(r.ticket_promedio)
-    })));
+    // Cobros de crédito del período por caja — dinero que sí entró, sea de
+    // una factura de este período o de una anterior.
+    let wCobros = 'WHERE ccp.created_at BETWEEN ? AND ? AND ccp.cash_register_id IS NOT NULL';
+    const pCobros = [desdeDatetime, hastaDatetime];
+    if (branchId) { wCobros += ' AND ccp.branch_id=?'; pCobros.push(branchId); }
+    const cobroRows = await query(`
+      SELECT ccp.cash_register_id AS id, cr.nombre AS caja, b.nombre AS sucursal, SUM(ccp.amount) AS total_cobros
+      FROM client_credit_payments ccp
+      JOIN cash_registers cr ON cr.id = ccp.cash_register_id
+      LEFT JOIN branches b ON b.id = ccp.branch_id
+      ${wCobros}
+      GROUP BY ccp.cash_register_id, cr.nombre, b.nombre`, pCobros).catch(() => []);
+
+    const byCaja = new Map();
+    for (const r of rows) {
+      byCaja.set(Number(r.id), {
+        cajaId: r.id, caja: r.caja, sucursal: r.sucursal,
+        facturas: Number(r.facturas), total: Number(r.total) - Number(r.credito_accrual || 0),
+        itbis: Number(r.itbis), ticketPromedio: Number(r.ticket_promedio)
+      });
+    }
+    for (const r of cobroRows) {
+      const key = Number(r.id);
+      const existing = byCaja.get(key);
+      if (existing) {
+        existing.total += Number(r.total_cobros || 0);
+      } else {
+        byCaja.set(key, {
+          cajaId: r.id, caja: r.caja, sucursal: r.sucursal || '',
+          facturas: 0, total: Number(r.total_cobros || 0), itbis: 0, ticketPromedio: 0
+        });
+      }
+    }
+
+    res.json([...byCaja.values()].sort((a, b) => b.total - a.total));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -16972,7 +17293,6 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
     const metodo = String(req.query?.metodo || '').trim() || null;
     const page = Math.max(1, Number(req.query?.page || 1));
     const limit = Math.min(Number(req.query?.limit || 50), 200);
-    const offset = (page - 1) * limit;
 
     let w = `WHERE s.created_at BETWEEN ? AND ?`;
     const p = [desdeDatetime, hastaDatetime];
@@ -16982,10 +17302,7 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
     if (userId) { w += ' AND s.billed_by_user_id=?'; p.push(userId); }
     if (metodo) { w += ' AND s.payment_method=?'; p.push(metodo); }
 
-    const countRows = await query(`SELECT COUNT(*) AS total_count FROM sales s ${w}`, p);
-    const total_count = Number(countRows[0]?.total_count || 0);
-
-    const rows = await query(`
+    const saleRows = await query(`
       SELECT
         s.id, s.invoice_number, s.ncf,
         COALESCE(s.fiscal_status,'emitida') AS estado,
@@ -16996,6 +17313,7 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
         cr.nombre AS caja,
         s.payment_method AS metodo,
         s.subtotal, s.discount AS discount_amount, s.tax AS itbis_amount, s.total,
+        s.received_amount,
         s.order_type
       FROM sales s
       LEFT JOIN clients c ON s.client_id=c.id
@@ -17004,17 +17322,22 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
       LEFT JOIN cash_registers cr ON COALESCE(s.billed_cash_register_id,s.cash_register_id)=cr.id
       ${w}
       ORDER BY s.created_at DESC
-      LIMIT ? OFFSET ?`, [...p, limit, offset]);
+      LIMIT 1000`, p);
 
-    res.json({
-      total: Number(total_count),
-      page, limit,
-      pages: Math.ceil(Number(total_count) / limit),
-      rows: rows.map(r => ({
+    const saleItems = saleRows.map(r => {
+      const total = Number(r.total || 0);
+      const receivedAmount = Number(r.received_amount || 0);
+      const isCredito = String(r.metodo || '') === 'credito';
+      const estadoCobro = !isCredito ? null : (receivedAmount >= total - 0.01 ? 'pagada' : (receivedAmount > 0 ? 'parcial' : 'pendiente'));
+      return {
+        tipo: 'venta',
         id: r.id,
         factura: r.invoice_number || `#${r.id}`,
         ncf: r.ncf || '',
         estado: r.estado,
+        estadoCobro,
+        recibido: receivedAmount,
+        pendiente: isCredito ? Math.max(0, Number((total - receivedAmount).toFixed(2))) : 0,
         fecha: r.created_at,
         cliente: r.cliente,
         cajero: r.cajero,
@@ -17024,9 +17347,87 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
         subtotal: Number(r.subtotal || 0),
         descuento: Number(r.discount_amount || 0),
         itbis: Number(r.itbis_amount || 0),
-        total: Number(r.total || 0),
+        total,
         tipoPedido: r.order_type || ''
-      }))
+      };
+    });
+
+    // Cobros de crédito registrados en el rango — se listan como su propia
+    // "factura" (recibo de cobro), aparte de la venta original a crédito que
+    // los generó. Ver server/routes/clientes-creditos.routes.js.
+    let cobroItems = [];
+    if (!metodo || ['efectivo', 'tarjeta', 'transferencia'].includes(metodo)) {
+      let wCobros = 'WHERE ccp.created_at BETWEEN ? AND ?';
+      const pCobros = [desdeDatetime, hastaDatetime];
+      if (ef) { wCobros += ' AND ccp.branch_id=?'; pCobros.push(ef); }
+      if (cajaId) { wCobros += ' AND ccp.cash_register_id=?'; pCobros.push(cajaId); }
+      if (userId) { wCobros += ' AND ccp.created_by_user_id=?'; pCobros.push(userId); }
+      if (metodo) { wCobros += ' AND ccp.payment_method=?'; pCobros.push(metodo); }
+
+      const cobroRows = await query(`
+        SELECT
+          ccp.id, ccp.amount, ccp.payment_method, ccp.created_at, ccp.created_by_user_name,
+          cl.nombre AS cliente,
+          b.nombre AS sucursal,
+          cr.nombre AS caja,
+          GROUP_CONCAT(s.invoice_number) AS facturas_cubiertas,
+          GROUP_CONCAT(DISTINCT vendedor.nombre) AS vendedores_originales,
+          MAX(CASE WHEN s.created_at BETWEEN ? AND ? THEN 1 ELSE 0 END) AS overlaps_period
+        FROM client_credit_payments ccp
+        LEFT JOIN clients cl ON cl.id = ccp.client_id
+        LEFT JOIN branches b ON b.id = ccp.branch_id
+        LEFT JOIN cash_registers cr ON cr.id = ccp.cash_register_id
+        LEFT JOIN client_credit_payment_allocations ccpa ON ccpa.payment_id = ccp.id
+        LEFT JOIN sales s ON s.id = ccpa.sale_id
+        LEFT JOIN users vendedor ON vendedor.id = s.billed_by_user_id
+        ${wCobros}
+        GROUP BY ccp.id, ccp.amount, ccp.payment_method, ccp.created_at, ccp.created_by_user_name, cl.nombre, b.nombre, cr.nombre
+        ORDER BY ccp.created_at DESC
+        LIMIT 500`, [desdeDatetime, hastaDatetime, ...pCobros]).catch(() => []);
+
+      cobroItems = cobroRows.map(r => {
+        const facturasCubiertas = String(r.facturas_cubiertas || '').split(',').filter(Boolean);
+        return {
+        tipo: 'cobro',
+        id: `cobro-${r.id}`,
+        factura: facturasCubiertas.length ? facturasCubiertas.join(', ') : `Cobro #${r.id}`,
+        ncf: '',
+        estado: 'cobro',
+        estadoCobro: 'pagada',
+        recibido: Number(r.amount || 0),
+        pendiente: 0,
+        fecha: r.created_at,
+        cliente: r.cliente || '',
+        cajero: r.created_by_user_name || 'Sistema',
+        sucursal: r.sucursal || '',
+        caja: r.caja || '',
+        metodo: r.payment_method || 'efectivo',
+        subtotal: Number(r.amount || 0),
+        descuento: 0,
+        itbis: 0,
+        total: Number(r.amount || 0),
+        tipoPedido: '',
+        facturasCubiertas,
+        vendedorOriginal: String(r.vendedores_originales || '').split(',').filter(Boolean).join(', '),
+        paymentId: Number(r.id),
+        // La factura original que este cobro cubre también aparece como fila
+        // "venta" en este mismo rango — no sumar este monto en subtotales de
+        // página para no duplicar la misma plata.
+        excluirDeSubtotal: Number(r.overlaps_period || 0) === 1
+        };
+      });
+    }
+
+    const merged = [...saleItems, ...cobroItems].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+    const total_count = merged.length;
+    const offset = (page - 1) * limit;
+    const pageRows = merged.slice(offset, offset + limit);
+
+    res.json({
+      total: total_count,
+      page, limit,
+      pages: Math.max(1, Math.ceil(total_count / limit)),
+      rows: pageRows
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -17567,6 +17968,7 @@ app.get('/api/ncf/sequences', async (req, res) => {
     res.json(rows.map(r => ({
       id: r.id, ncfType: r.ncf_type, branchId: r.branch_id, branchName: r.branch_name || 'Global',
       siguienteNumero: r.siguiente_numero, maximo: r.maximo, activa: !!r.activa,
+      fechaVencimiento: r.fecha_vencimiento || null,
       label: NCF_LABELS[r.ncf_type] || r.ncf_type
     })));
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -17578,22 +17980,25 @@ app.post('/api/ncf/sequences', async (req, res) => {
     await ensureNcfExtensions();
     const actorUser = await resolveRequestActorUser(req, { required: true });
     if (!isGlobalAdministratorUser(actorUser) && !isBranchAdministratorUser(actorUser) && !userRoleHasPermission(actorUser, 'gestionar_configuracion_fiscal', 'fiscal.sequence.create', 'fiscal.config.edit')) return res.status(403).json({ error: 'Sin permiso para crear secuencias fiscales.' });
-    const { ncfType, branchId, siguienteNumero, maximo, activa, id } = req.body;
-    const validTypes = ['B01', 'B02', 'B03', 'B04', 'B14', 'B15'];
+    const { ncfType, branchId, siguienteNumero, maximo, activa, id, fechaVencimiento } = req.body;
+    const validTypes = ['B01', 'B02', 'B03', 'B04', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17'];
     if (!validTypes.includes(ncfType)) return res.status(400).json({ error: 'Tipo de NCF inválido.' });
     const desde = Math.max(1, Number(siguienteNumero) || 1);
     const hasta = Math.max(desde, Number(maximo) || 99999999);
     const isActiva = activa !== false && activa !== 0 ? 1 : 0;
     const branchIdVal = branchId ? Number(branchId) : null;
+    // Fecha límite de vigencia que la DGII asigna a cada rango aprobado — se
+    // imprime en cada factura para que el receptor pueda validar el NCF.
+    const vencimientoVal = /^\d{4}-\d{2}-\d{2}$/.test(String(fechaVencimiento || '')) ? fechaVencimiento : null;
     if (id) {
       await query(
-        'UPDATE ncf_sequences SET ncf_type=?, branch_id=?, siguiente_numero=?, maximo=?, activa=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
-        [ncfType, branchIdVal, desde, hasta, isActiva, id]
+        'UPDATE ncf_sequences SET ncf_type=?, branch_id=?, siguiente_numero=?, maximo=?, activa=?, fecha_vencimiento=?, updated_at=CURRENT_TIMESTAMP WHERE id=?',
+        [ncfType, branchIdVal, desde, hasta, isActiva, vencimientoVal, id]
       );
     } else {
       await query(
-        'INSERT INTO ncf_sequences (ncf_type, branch_id, siguiente_numero, maximo, activa) VALUES (?,?,?,?,?)',
-        [ncfType, branchIdVal, desde, hasta, isActiva]
+        'INSERT INTO ncf_sequences (ncf_type, branch_id, siguiente_numero, maximo, activa, fecha_vencimiento) VALUES (?,?,?,?,?,?)',
+        [ncfType, branchIdVal, desde, hasta, isActiva, vencimientoVal]
       );
     }
     res.json({ ok: true });
@@ -17877,6 +18282,14 @@ function startLicenseServicesInBackground() {
 // completo en arranque degradado y se completa después, perezosamente,
 // cuando la principal vuelve a responder (ver completeDeferredMysqlInitIfNeeded).
 async function finishMysqlRuntimeInit() {
+  // ensureComprasSchema crea `purchases` con una FK hacia supplier_invoices —
+  // esas tablas se crean perezosamente (on-demand) en las rutas de
+  // Proveedores, así que hay que garantizarlas ANTES del Promise.all de abajo
+  // (que corre todo en paralelo sin orden) o la FK falla si nadie ha entrado
+  // a Proveedores todavía.
+  await ensureSuppliersTable();
+  await ensureSupplierInvoicesTable();
+  await ensureSupplierPaymentsTable();
   await runCoreSchemaMigrations(() => Promise.all([
         ensureConfigExtensions(),
         ensureUserExtensions(),
@@ -17897,6 +18310,9 @@ async function finishMysqlRuntimeInit() {
         ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
         ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
         ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
+        ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
+        ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
+        ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
@@ -18062,6 +18478,13 @@ async function prepareServerRuntime() {
       console.log('Base de datos reparada automáticamente.');
     }
 
+    // ensureComprasSchema crea `purchases` con una FK hacia supplier_invoices —
+    // esas tablas se crean perezosamente en las rutas de Proveedores, así que
+    // hay que garantizarlas ANTES del Promise.all de abajo (que corre todo en
+    // paralelo sin orden) o la FK falla si nadie ha entrado a Proveedores todavía.
+    await ensureSuppliersTable();
+    await ensureSupplierInvoicesTable();
+    await ensureSupplierPaymentsTable();
     await runCoreSchemaMigrations(() => Promise.all([
       ensureConfigExtensions(),
       ensureUserExtensions(),
@@ -18082,6 +18505,9 @@ async function prepareServerRuntime() {
       ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
       ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
       ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
+      ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
+      ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
+      ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]));

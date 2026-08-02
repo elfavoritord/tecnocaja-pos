@@ -4,9 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/errors/app_exception.dart';
 
-/// Puente a las Cloud Functions del backend central (`functions/` en el repo
-/// del POS Windows) — el servicio fiscal y la creación de empresa 100%
-/// móvil viven ahí, no en `mobile-auth.routes.js`/`mobile-sync.routes.js`
+/// Puente a las Cloud Functions del backend central (carpeta hermana
+/// `functions/`, junto a este proyecto Flutter) — el servicio fiscal y la
+/// creación de empresa 100% móvil viven ahí, no en
+/// `mobile-auth.routes.js`/`mobile-sync.routes.js`
 /// (esas son REST contra Windows, esto es Firestore/Firebase directo, sin
 /// pasar por Windows en absoluto). Ver plan de sincronización en memoria del
 /// proyecto ("Plataforma móvil multiempresa").

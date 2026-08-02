@@ -67,7 +67,8 @@ module.exports = function createOfflineRouter(deps) {
     // 📢 Centro de Promociones
     ensurePromotionsExtensions,
     // Asignación real de NCF al sincronizar (mismo helper que POST /api/sales online)
-    getNextNcfFromSequence
+    getNextNcfFromSequence,
+    isInvoiceNumberCollisionError
   } = deps;
 
   const router = express.Router();
@@ -1520,9 +1521,9 @@ module.exports = function createOfflineRouter(deps) {
       // Generar número de factura interno (incremento atómico dentro de la transacción)
       await conn.query(`UPDATE config SET invoice_next_number = invoice_next_number + 1 WHERE id = 1`);
       const seqRows = await conn.query(`SELECT invoice_next_number AS seq FROM config WHERE id = 1`);
-      const nextNumber = Number(seqRows[0]?.seq || 1);
+      let nextNumber = Number(seqRows[0]?.seq || 1);
       const prefix = config.invoice_prefix || 'FAC-';
-      const invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
+      let invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
 
       // Asignar NCF real (con FOR UPDATE en MySQL vía getNextNcfFromSequence) —
       // si no hay secuencia configurada o está agotada, no se bloquea el resto
@@ -1566,42 +1567,62 @@ module.exports = function createOfflineRouter(deps) {
       }) : null;
 
       // Insertar en tabla sales (usando nombres de columna exactos del schema)
-      const insertResult = await conn.query(
-        `INSERT INTO sales
+      const insertSql = `INSERT INTO sales
            (invoice_number, ncf, ncf_type, ncf_referencia, fiscal_status, fiscal_payload,
             razon_social_cliente, total, discount, tax, subtotal, payment_method,
             sale_status, client_id, client_name_snapshot, branch_id, cash_register_id,
             user_id, document_type, order_type, order_notes,
             received_amount, change_amount, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pagada', ?, ?, ?, ?, ?, ?, 'mostrador', ?,
-                 ?, 0, ?)`,
-        [
-          invoiceNumber,
-          generatedNcf,
-          generatedNcf ? ncfType : null,
-          generatedNcf ? (saleData.ncfReferencia || null) : null,
-          // El resto del sistema usa 'emitida' como estado universal, incluso
-          // para tickets sin NCF (server.js sigue el mismo patrón) — no
-          // inventar un estado nuevo que otras queries no reconocerían.
-          'emitida',
-          fiscalPayload,
-          saleData.razonSocialCliente || null,
-          total,
-          discount,
-          tax,
-          subtotal,
-          paymentMethod,
-          clientId,
-          clientName,
-          branchId,
-          cashRegisterId,
-          userId,
-          documentType,
-          String(saleData.notes || saleData.orderNotes || `Origen: terminal offline ${pendingSale.terminal_id}`).slice(0, 500) + extraNotes + ncfAssignError,
-          Number(saleData.recibido || total),
-          nowSql
-        ]
-      );
+                 ?, 0, ?)`;
+      const insertParams = [
+        invoiceNumber,
+        generatedNcf,
+        generatedNcf ? ncfType : null,
+        generatedNcf ? (saleData.ncfReferencia || null) : null,
+        // El resto del sistema usa 'emitida' como estado universal, incluso
+        // para tickets sin NCF (server.js sigue el mismo patrón) — no
+        // inventar un estado nuevo que otras queries no reconocerían.
+        'emitida',
+        fiscalPayload,
+        saleData.razonSocialCliente || null,
+        total,
+        discount,
+        tax,
+        subtotal,
+        paymentMethod,
+        clientId,
+        clientName,
+        branchId,
+        cashRegisterId,
+        userId,
+        documentType,
+        String(saleData.notes || saleData.orderNotes || `Origen: terminal offline ${pendingSale.terminal_id}`).slice(0, 500) + extraNotes + ncfAssignError,
+        Number(saleData.recibido || total),
+        nowSql
+      ];
+
+      // Mismo fix de colisión que POST /api/sales online: si dos terminales
+      // sincronizan casi al mismo tiempo y ambas calculan el mismo
+      // invoice_number antes de que la primera confirme, en vez de tumbar la
+      // venta con un error crudo de UNIQUE constraint se toma el siguiente
+      // número y se reintenta.
+      let insertResult;
+      for (let insertAttempts = 0; ; insertAttempts += 1) {
+        try {
+          insertResult = await conn.query(insertSql, insertParams);
+          break;
+        } catch (insertError) {
+          if (!isInvoiceNumberCollisionError(insertError) || insertAttempts >= 20) {
+            throw insertError;
+          }
+          await conn.query(`UPDATE config SET invoice_next_number = invoice_next_number + 1 WHERE id = 1`);
+          const retryRows = await conn.query(`SELECT invoice_next_number AS seq FROM config WHERE id = 1`);
+          nextNumber = Number(retryRows[0]?.seq || (nextNumber + 1));
+          invoiceNumber = `${prefix}${String(nextNumber).padStart(8, '0')}`;
+          insertParams[0] = invoiceNumber;
+        }
+      }
 
       const saleId = insertResult?.insertId;
 

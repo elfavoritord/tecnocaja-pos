@@ -323,6 +323,9 @@
 .repv2-estado-cancelada { background: rgba(255,75,110,0.15); color: #ff4b6e; }
 .repv2-estado-pendiente { background: rgba(255,179,0,0.15); color: #ffb300; }
 
+/* Fila de cobro de crédito — distinta de una venta, sangrada con ↳ en Factura */
+.repv2-row-cobro { background: rgba(99,102,241,.05); }
+
 /* ── Pagination ── */
 .repv2-pagination { display: flex; justify-content: center; gap: 0.4rem; margin-top: 0.85rem; flex-wrap: wrap; }
 .repv2-page-btn {
