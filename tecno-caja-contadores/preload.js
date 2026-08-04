@@ -12,6 +12,11 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
     return ipcRenderer.invoke('report:save-pdf', { html, filename, landscape: false });
   },
 
+  // ── Perfil (caché local para el splash pre-login) ──────────────────────────
+  cacheProfile(data) {
+    return ipcRenderer.invoke('profile:cache', data);
+  },
+
   // ── Actualizaciones ───────────────────────────────────────────────────────
   updaterCheck()    { return ipcRenderer.invoke('updater:check'); },
   updaterDownload() { return ipcRenderer.invoke('updater:download'); },

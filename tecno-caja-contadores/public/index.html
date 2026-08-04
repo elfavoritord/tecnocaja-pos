@@ -11,6 +11,16 @@
 </head>
 <body>
 
+<!-- Aviso global de actualización descargada — visible en cualquier pantalla
+     (incluso antes de iniciar sesión), no solo dentro del módulo
+     "Actualizaciones". Se muestra/oculta desde _initGlobalUpdaterListener()
+     en contadores-app.js. -->
+<div id="global-update-banner" style="display:none;position:fixed;bottom:16px;right:16px;z-index:9999;background:#1e293b;color:#fff;border-radius:10px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.35);align-items:center;gap:12px;max-width:360px">
+  <span style="font-size:20px">🎉</span>
+  <span id="global-update-banner-text" style="flex:1;font-size:13px">Nueva versión lista para instalar.</span>
+  <button class="btn btn-primary btn-xs" onclick="app.instalarActualizacionGlobal()">⚡ Instalar</button>
+</div>
+
 <!-- ════════════════════════════════════════════════════════════════════
   LOGIN SCREEN
 ══════════════════════════════════════════════════════════════════════ -->
@@ -84,9 +94,9 @@
   <aside id="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-brand">
-        <div class="sidebar-brand-icon">🧮</div>
+        <div class="sidebar-brand-icon" id="sidebar-brand-icon">🧮</div>
         <div>
-          <div class="sidebar-brand-name">Tecno Caja</div>
+          <div class="sidebar-brand-name" id="sidebar-brand-name">Tecno Caja</div>
           <div class="sidebar-brand-sub">Portal Contadores</div>
         </div>
       </div>
@@ -744,8 +754,23 @@
             <input id="cfg-whatsapp" type="tel" class="form-input" placeholder="809-000-0000" />
           </div>
           <div class="form-group">
-            <label class="form-label">URL del Logo</label>
-            <input id="cfg-logo" type="url" class="form-input" placeholder="https://…" />
+            <label class="form-label">Logo de la firma</label>
+            <div style="display:flex;align-items:center;gap:14px">
+              <div class="ap-image-box" onclick="document.getElementById('cfg-logo-file').click()" title="Clic para subir el logo">
+                <img id="cfg-logo-preview" class="ap-image-preview" style="display:none">
+                <div class="ap-image-placeholder" id="cfg-logo-placeholder">
+                  <span>🏢</span>
+                  <small>Logo</small>
+                </div>
+                <input type="file" id="cfg-logo-file" accept="image/*" style="display:none" onchange="app.handleCfgLogoUpload(this)">
+              </div>
+              <div>
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('cfg-logo-file').click()">📤 Subir logo</button>
+                <button type="button" class="btn btn-secondary" onclick="app.quitarCfgLogo()">🗑 Quitar</button>
+                <div style="font-size:11px;color:var(--text-sub);margin-top:6px">Se ve en este portal y cuando tus clientes te buscan desde el POS (Facturación Electrónica → Mi Contador).</div>
+              </div>
+            </div>
+            <input id="cfg-logo" type="hidden" />
           </div>
         </div>
       </div>
@@ -761,40 +786,69 @@
       <div class="mod-header">
         <div>
           <div class="mod-title">Actualizaciones</div>
-          <div class="mod-sub">Tecno Caja Contadores — versión instalada: <strong id="upd-ver-actual">—</strong></div>
-        </div>
-        <div class="mod-actions">
-          <button class="btn btn-secondary" onclick="app.verificarActualizacion()" id="upd-btn-verificar">🔍 Verificar ahora</button>
+          <div class="mod-sub">Mantén el Portal Contadores al día</div>
         </div>
       </div>
 
-      <!-- Estado del updater -->
-      <div id="upd-status-card" class="section-card" style="margin-bottom:14px;display:flex;align-items:center;gap:16px;padding:16px 20px">
-        <div id="upd-status-icon" style="font-size:28px">🔄</div>
-        <div style="flex:1">
-          <div id="upd-status-titulo" style="font-weight:700;font-size:15px;margin-bottom:3px">Verificando actualizaciones…</div>
-          <div id="upd-status-sub" style="font-size:13px;color:var(--text-sub)"></div>
-        </div>
-        <div id="upd-status-actions" style="display:flex;gap:8px;flex-shrink:0"></div>
+      <!-- Tabs de navegación (misma estructura que Tecno Caja POS) -->
+      <div class="upd-tabs" role="tablist">
+        <button class="upd-tab-btn active" data-tab="main"    role="tab" onclick="app.updSwitchTab('main')">🏠 Principal</button>
+        <button class="upd-tab-btn"        data-tab="history" role="tab" onclick="app.updSwitchTab('history')">📋 Historial</button>
       </div>
 
-      <!-- Barra de progreso (descarga) -->
-      <div id="upd-progress-wrap" class="section-card hidden" style="margin-bottom:14px;padding:14px 20px">
-        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:8px">
-          <span>Descargando actualización…</span>
-          <span id="upd-progress-pct" style="font-weight:700;color:var(--blue)">0%</span>
+      <!-- ── TAB: PRINCIPAL ── -->
+      <div class="upd-tab-panel" data-panel="main">
+
+        <!-- Hero card -->
+        <div class="upd-hero">
+          <div class="upd-hero-logo">🧮</div>
+          <div class="upd-hero-info">
+            <div class="upd-hero-app-name">Tecno Caja Contadores</div>
+            <div class="upd-hero-ver-label">Versión instalada</div>
+            <div class="upd-hero-ver" id="upd-current-version">v1.0.0</div>
+            <div class="upd-hero-meta">
+              <div class="upd-hero-meta-item">
+                <span class="upd-hero-meta-label">Última actualización</span>
+                <span class="upd-hero-meta-val" id="upd-last-date">—</span>
+              </div>
+            </div>
+          </div>
+          <div class="upd-hero-actions">
+            <div id="upd-status-badge" class="upd-status-badge upd-badge-idle">
+              <span>⚪</span><span>Sin verificar</span>
+            </div>
+            <button class="upd-btn-check" id="upd-btn-check" onclick="app.verificarActualizacion()">
+              🔍 Buscar actualizaciones
+            </button>
+          </div>
         </div>
-        <div style="background:var(--border);border-radius:99px;height:8px;overflow:hidden">
-          <div id="upd-progress-bar" style="height:100%;background:var(--blue);border-radius:99px;width:0%;transition:width .3s"></div>
+
+        <!-- Caja de resultados (vacía hasta verificar) -->
+        <div id="upd-info-box" class="upd-info-box hidden"></div>
+
+        <!-- Barra de progreso de descarga -->
+        <div id="upd-progress-wrap" class="upd-progress-wrap hidden">
+          <div class="upd-prog-header">
+            <span class="upd-prog-label" id="upd-prog-label">Iniciando…</span>
+            <span class="upd-prog-pct"   id="upd-prog-pct">0% completado</span>
+          </div>
+          <div class="upd-prog-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+            <div class="upd-prog-bar" id="upd-prog-bar"></div>
+          </div>
+          <div class="upd-prog-footer">
+            <span class="upd-prog-speed" id="upd-prog-speed"></span>
+          </div>
         </div>
-        <div id="upd-progress-speed" style="font-size:11px;color:var(--text-muted);margin-top:6px"></div>
+
+      </div><!-- /TAB PRINCIPAL -->
+
+      <!-- ── TAB: HISTORIAL (releases reales publicados en GitHub) ── -->
+      <div class="upd-tab-panel hidden" data-panel="history">
+        <div id="actualizaciones-list">
+          <div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>
+        </div>
       </div>
 
-      <!-- Historial de releases -->
-      <div class="section-card-title" style="margin-bottom:8px">Historial de versiones</div>
-      <div id="actualizaciones-list">
-        <div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>
-      </div>
     </div>
 
     <!-- ── CENTRO DE AYUDA ────────────────────────────────────────────────── -->
@@ -1477,6 +1531,23 @@
       <div id="rep-productos-pendientes-list" style="margin-bottom:16px"></div>
     </div>
 
+    <!-- Secuencias NCF registradas desde este Portal — se aplican en el POS
+         del cliente la próxima vez que sincronice, no al instante. Solo
+         visible en la pestaña "🏛 ITBIS / DGII". Solo NCF tradicional
+         (B01-B17); el e-CF ya se certifica aparte, no aplica aquí. -->
+    <div id="rep-ncf-pendientes-panel" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;gap:12px;flex-wrap:wrap">
+        <div class="rep-filter-label" style="font-weight:600">Secuencias activas en el POS del cliente</div>
+      </div>
+      <div id="rep-ncf-aplicadas-list" style="margin-bottom:16px"></div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;gap:12px;flex-wrap:wrap">
+        <div class="rep-filter-label" style="font-weight:600">Secuencias NCF registradas desde el Portal</div>
+        <button class="btn btn-xs btn-primary" onclick="app.abrirAgregarNcfModal()">+ Registrar secuencia NCF</button>
+      </div>
+      <div id="rep-ncf-pendientes-list" style="margin-bottom:16px"></div>
+    </div>
+
     <!-- Tabla -->
     <div id="rep-table-inner" style="min-height:200px;overflow-x:auto">
       <div class="rep-loading"><div class="rep-spinner"></div>Selecciona una pestaña</div>
@@ -1570,6 +1641,134 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="app.cerrarAgregarProductoModal()">Cancelar</button>
       <button class="btn btn-primary" onclick="app.guardarProductoPendiente()">Agregar Producto</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Registrar secuencia NCF (queda pendiente, se aplica en el POS
+     del cliente en su próxima sincronización — no es instantáneo) -->
+<div id="modal-agregar-ncf" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarAgregarNcfModal()">✕</button>
+    <div class="modal-title">🏛 Registrar Secuencia NCF</div>
+    <div class="modal-sub">Registra aquí el rango exacto que la DGII autorizó (con referencia y documento). Se aplicará en el POS del cliente la próxima vez que sincronice.</div>
+
+    <div class="fac-form-section">
+      <div class="fac-section-lbl">Comprobante</div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Tipo de comprobante *</label>
+          <select id="an-tipo" class="form-select"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Sucursal</label>
+          <select id="an-sucursal" class="form-select">
+            <option value="">🌐 Global (todas las sucursales)</option>
+          </select>
+        </div>
+      </div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Número inicial autorizado *</label>
+          <input type="number" id="an-desde" class="form-input" min="1" placeholder="1" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Número final autorizado *</label>
+          <input type="number" id="an-hasta" class="form-input" min="1" placeholder="500" />
+        </div>
+      </div>
+    </div>
+
+    <div class="fac-form-section">
+      <div class="fac-section-lbl">Autorización DGII</div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Fecha de autorización</label>
+          <input type="date" id="an-fecha-autorizacion" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de vencimiento</label>
+          <input type="date" id="an-fecha-vencimiento" class="form-input" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Referencia / número de autorización DGII *</label>
+        <input type="text" id="an-referencia" class="form-input" placeholder="Ej: consulta de solicitudes DGII #..." />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Documento de autorización (PDF, XML, imagen)</label>
+        <input type="file" id="an-adjunto-file" accept=".pdf,.xml,image/*" onchange="app.handleAgregarNcfAdjunto(this)" />
+        <small id="an-adjunto-nombre" style="display:block;margin-top:3px;color:var(--text-muted);font-size:10.5px"></small>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Notas</label>
+        <input type="text" id="an-notas" class="form-input" placeholder="Opcional" />
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarAgregarNcfModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="app.guardarNcfPendiente()">Registrar Secuencia</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Editar secuencia NCF ya aplicada — queda como solicitud, el POS
+     del cliente la revalida y aplica en su próxima sincronización. -->
+<div id="modal-editar-ncf" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarEditarNcfModal()">✕</button>
+    <div class="modal-title" id="ane-titulo">🏛 Editar Secuencia NCF</div>
+    <div class="modal-sub">No se puede cambiar el número inicial ni bajar el final por debajo de lo ya usado. Se aplica cuando el POS del cliente sincronice.</div>
+
+    <div class="fac-form-section">
+      <div class="form-group">
+        <label class="form-label">Nombre del comprobante</label>
+        <input type="text" id="ane-nombre" class="form-input" placeholder="Opcional" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Número final autorizado</label>
+        <input type="number" id="ane-hasta" class="form-input" min="1" />
+      </div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Fecha de autorización</label>
+          <input type="date" id="ane-fecha-autorizacion" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de vencimiento</label>
+          <input type="date" id="ane-fecha-vencimiento" class="form-input" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Referencia / número de autorización DGII</label>
+        <input type="text" id="ane-referencia" class="form-input" />
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Motivo de la edición</label>
+        <input type="text" id="ane-notas" class="form-input" placeholder="Opcional pero recomendado" />
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarEditarNcfModal()">Cancelar</button>
+      <button class="btn btn-primary" onclick="app.guardarEdicionNcf()">Guardar Edición</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Motivo (reemplaza window.prompt, que Electron no soporta) ──── -->
+<div id="modal-motivo-ncf" class="modal-overlay hidden">
+  <div class="modal-card">
+    <button class="btn-modal-close" onclick="app.cancelarMotivoNcf()">✕</button>
+    <div class="modal-title" id="mtv-titulo">Motivo</div>
+    <div class="modal-sub" id="mtv-sub"></div>
+    <div class="form-group" style="margin-bottom:0">
+      <textarea id="mtv-input" class="form-input" rows="3" placeholder="Escribe el motivo aquí…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cancelarMotivoNcf()">Cancelar</button>
+      <button class="btn btn-danger" onclick="app.confirmarMotivoNcf()">Confirmar</button>
     </div>
   </div>
 </div>

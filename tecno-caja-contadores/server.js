@@ -405,7 +405,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
       else if (status === 'expired' || status === 'cancelled') stats.vencidas++;
       else if (status === 'suspended') stats.suspendidas++;
 
-      const vence = c.trialEndsAt || c.expiresAt;
+      const vence = vencimientoDate(c);
       if (vence) {
         const d = vence.toDate ? vence.toDate() : new Date(vence);
         const dias = Math.ceil((d - now) / 86_400_000);
@@ -483,7 +483,7 @@ app.get('/api/clientes/:id', requireAuth, async (req, res) => {
     if (data.contadorId !== req.contador.contadorDocId) {
       return res.status(403).json({ error: 'No tienes acceso a este cliente.' });
     }
-    data.diasRestantes = daysFromNow(data.trialEndsAt || data.expiresAt);
+    data.diasRestantes = daysFromNow(vencimientoDate(data));
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -670,6 +670,213 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════
+// SECUENCIAS NCF PENDIENTES
+// Mismo patrón que PRODUCTOS PENDIENTES arriba: el contador registra aquí
+// un rango NCF tradicional (B01-B17, catálogo completo — e-CF no aplica,
+// ese se certifica aparte) autorizado por la DGII para un negocio cliente.
+// Queda en cola en licencias/{businessId}/ncf_pendientes y lo aplica el POS
+// del cliente la próxima vez que sincronice (ver server/sync/apply-pending-ncf.js
+// del POS, mismo mecanismo que apply-pending-products.js).
+// ══════════════════════════════════════════════════════════════════════
+
+const NCF_DOCUMENT_TYPES = [
+  { code: 'B01', label: 'Crédito Fiscal' }, { code: 'B02', label: 'Consumidor Final' },
+  { code: 'B03', label: 'Nota de Débito' }, { code: 'B04', label: 'Nota de Crédito' },
+  { code: 'B11', label: 'Comprobante de Compras' }, { code: 'B12', label: 'Registro Único de Ingresos' },
+  { code: 'B13', label: 'Gastos Menores' }, { code: 'B14', label: 'Régimen Especial' },
+  { code: 'B15', label: 'Gubernamental' }, { code: 'B16', label: 'Comprobante para Exportaciones' },
+  { code: 'B17', label: 'Comprobante para Pagos al Exterior' },
+];
+const NCF_DOCUMENT_TYPE_CODES = NCF_DOCUMENT_TYPES.map((t) => t.code);
+
+app.get('/api/ncf-pendientes/:businessId', requireAuth, async (req, res) => {
+  try {
+    await ctbCheckAccess(req, req.params.businessId);
+    const snap = await col(COL_LICENCIAS).doc(req.params.businessId).collection('ncf_pendientes').get();
+    const sorted = snap.docs.map((d) => {
+      const row = docData(d);
+      row.tieneAdjunto = Boolean(row.attachmentData);
+      delete row.attachmentData;
+      return row;
+    }).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    res.json(sorted);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
+  const { businessId, branchId, documentType, startNumber, endNumber,
+          authorizationDate, expirationDate, authorizationReference, notes, attachmentData } = req.body;
+
+  if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  const tipo = String(documentType || '').toUpperCase().trim();
+  if (!NCF_DOCUMENT_TYPE_CODES.includes(tipo)) return res.status(400).json({ error: 'Tipo de comprobante inválido.' });
+  const desde = Number(startNumber);
+  const hasta = Number(endNumber);
+  if (!Number.isFinite(desde) || !Number.isFinite(hasta) || desde < 1 || desde > hasta) {
+    return res.status(400).json({ error: 'El rango de números no es válido.' });
+  }
+  if (!authorizationReference || !String(authorizationReference).trim()) {
+    return res.status(400).json({ error: 'Indica la referencia de autorización de la DGII.' });
+  }
+  // Mismo guardia de tamaño que productos_pendientes (límite de 1MB por
+  // documento de Firestore, con margen porque base64 infla ~33%).
+  if (attachmentData && String(attachmentData).length > 700_000) {
+    return res.status(400).json({ error: 'El archivo es demasiado grande. Usa uno más liviano (máx. ~500KB).' });
+  }
+
+  try {
+    const bizData = await ctbCheckAccess(req, businessId);
+
+    let branchNombre = null;
+    const normalizedBranchId = branchId ? Number(branchId) : null;
+    if (normalizedBranchId) {
+      const sucursales = Array.isArray(bizData.sucursales) ? bizData.sucursales : [];
+      const match = sucursales.find((s) => Number(s.id) === normalizedBranchId);
+      if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
+      branchNombre = match.nombre;
+    }
+
+    const ref = await col(COL_LICENCIAS).doc(businessId).collection('ncf_pendientes').add({
+      action: 'create',
+      documentType: tipo,
+      branchId: normalizedBranchId,
+      branchNombre,
+      startNumber: desde,
+      endNumber: hasta,
+      authorizationDate: authorizationDate || null,
+      expirationDate: expirationDate || null,
+      authorizationReference: String(authorizationReference).trim(),
+      notes: notes || '',
+      attachmentData: attachmentData || null,
+      status: 'pendiente',
+      contadorId: req.contador.contadorDocId,
+      contadorNombre: req.contador.nombre_firma,
+      createdAt: isoNow(),
+      updatedAt: isoNow(),
+    });
+
+    const doc = await ref.get();
+    res.status(201).json(docData(doc));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+app.delete('/api/ncf-pendientes/:businessId/:pendienteId', requireAuth, async (req, res) => {
+  try {
+    await ctbCheckAccess(req, req.params.businessId);
+    const ref = col(COL_LICENCIAS).doc(req.params.businessId).collection('ncf_pendientes').doc(req.params.pendienteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Registro no encontrado.' });
+    // 'error' también se puede cancelar/limpiar — nunca llegó a crear nada en
+    // el POS del cliente (se rechazó en validación), solo 'aplicado' es
+    // irreversible desde aquí porque ya generó datos reales del otro lado.
+    if (!['pendiente', 'error'].includes(doc.data().status)) {
+      return res.status(409).json({ error: 'Ya fue procesado por el POS del cliente, no se puede cancelar.' });
+    }
+    await ref.delete();
+    res.json({ ok: true });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// Espejo de solo lectura de las secuencias YA aplicadas en el POS del cliente
+// (licencias/{businessId}/ncf_aplicadas, escrito por server/sync/sync-pos-stats.js
+// del POS). Nunca se escribe aquí — solo se lee para que el contador vea el
+// estado real antes de pedir una edición/suspensión.
+app.get('/api/ncf-aplicadas/:businessId', requireAuth, async (req, res) => {
+  try {
+    await ctbCheckAccess(req, req.params.businessId);
+    const snap = await col(COL_LICENCIAS).doc(req.params.businessId).collection('ncf_aplicadas').get();
+    res.json(snap.docs.map(docData).sort((a, b) => String(a.documentType || '').localeCompare(String(b.documentType || ''))));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// Pide editar una secuencia YA aplicada — mismos campos y mismas reglas que
+// PUT /:id en fiscal-sequences.routes.js del POS (no se puede tocar el
+// número inicial, y el final no puede bajar de lo ya usado). El POS
+// revalida todo esto de nuevo al aplicar — esto solo deja la solicitud en
+// cola, nunca escribe directo sobre la base del cliente.
+app.post('/api/ncf-pendientes/editar', requireAuth, async (req, res) => {
+  const { businessId, targetLocalSequenceId, documentName, endNumber,
+          authorizationDate, expirationDate, authorizationReference, notes } = req.body;
+  if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  if (!targetLocalSequenceId) return res.status(400).json({ error: 'Falta indicar qué secuencia editar.' });
+
+  try {
+    await ctbCheckAccess(req, businessId);
+    const ref = await col(COL_LICENCIAS).doc(businessId).collection('ncf_pendientes').add({
+      action: 'edit',
+      targetLocalSequenceId: String(targetLocalSequenceId),
+      documentName: documentName || null,
+      endNumber: endNumber ? Number(endNumber) : null,
+      authorizationDate: authorizationDate || null,
+      expirationDate: expirationDate || null,
+      authorizationReference: authorizationReference || null,
+      notes: notes || '',
+      status: 'pendiente',
+      contadorId: req.contador.contadorDocId,
+      contadorNombre: req.contador.nombre_firma,
+      createdAt: isoNow(),
+      updatedAt: isoNow(),
+    });
+    const doc = await ref.get();
+    res.status(201).json(docData(doc));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// Pide suspender una secuencia YA aplicada — igual que POST /:id/suspend del
+// POS, exige motivo. Nunca reactiva/elimina/cambia el próximo número — eso
+// se queda exclusivo del dueño en el POS (requiere su propia contraseña ahí).
+app.post('/api/ncf-pendientes/suspender', requireAuth, async (req, res) => {
+  const { businessId, targetLocalSequenceId, reason } = req.body;
+  if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  if (!targetLocalSequenceId) return res.status(400).json({ error: 'Falta indicar qué secuencia suspender.' });
+  if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'Indica el motivo de la suspensión.' });
+
+  try {
+    await ctbCheckAccess(req, businessId);
+    const ref = await col(COL_LICENCIAS).doc(businessId).collection('ncf_pendientes').add({
+      action: 'suspend',
+      targetLocalSequenceId: String(targetLocalSequenceId),
+      reason: String(reason).trim(),
+      status: 'pendiente',
+      contadorId: req.contador.contadorDocId,
+      contadorNombre: req.contador.nombre_firma,
+      createdAt: isoNow(),
+      updatedAt: isoNow(),
+    });
+    const doc = await ref.get();
+    res.status(201).json(docData(doc));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// Pide eliminar una secuencia YA aplicada — igual que DELETE /:id del POS,
+// que solo permite eliminar si nunca se consumió ningún número de esa
+// secuencia (si ya se usó, el POS rechaza la solicitud y pide suspenderla en
+// vez de eliminarla). Nunca reactiva/cambia el próximo número — eso sigue
+// exclusivo del dueño en el POS.
+app.post('/api/ncf-pendientes/eliminar', requireAuth, async (req, res) => {
+  const { businessId, targetLocalSequenceId, reason } = req.body;
+  if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  if (!targetLocalSequenceId) return res.status(400).json({ error: 'Falta indicar qué secuencia eliminar.' });
+  if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'Indica el motivo de la eliminación.' });
+
+  try {
+    await ctbCheckAccess(req, businessId);
+    const ref = await col(COL_LICENCIAS).doc(businessId).collection('ncf_pendientes').add({
+      action: 'delete',
+      targetLocalSequenceId: String(targetLocalSequenceId),
+      reason: String(reason).trim(),
+      status: 'pendiente',
+      contadorId: req.contador.contadorDocId,
+      contadorNombre: req.contador.nombre_firma,
+      createdAt: isoNow(),
+      updatedAt: isoNow(),
+    });
+    const doc = await ref.get();
+    res.status(201).json(docData(doc));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
 // PERFIL
 // ══════════════════════════════════════════════════════════════════════
 
@@ -688,6 +895,12 @@ app.put('/api/perfil', requireAuth, async (req, res) => {
     if (req.body[campo] !== undefined) updates[campo] = req.body[campo] || null;
   }
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'No hay campos válidos para actualizar.' });
+  // Mismo guardia de tamaño que otros campos base64 guardados en un doc de
+  // Firestore (límite real es 1MB por documento, con margen porque base64
+  // infla ~33% el tamaño original).
+  if (updates.logo_url && updates.logo_url.length > 700_000) {
+    return res.status(400).json({ error: 'El logo es demasiado grande. Usa una imagen más liviana.' });
+  }
   updates.updated_at = isoNow();
 
   try {

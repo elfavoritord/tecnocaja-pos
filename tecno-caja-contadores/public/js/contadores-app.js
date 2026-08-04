@@ -162,7 +162,36 @@ async function _verifyWithRetry(token, attempts = 4, delay = 1200) {
   }
 }
 
+// Aviso global de actualización — a diferencia de _initUpdaterUI() (que solo
+// se suscribe cuando el usuario entra a la pantalla "Actualizaciones"), esto
+// corre desde que arranca la app, en cualquier pantalla (incluso antes de
+// iniciar sesión), igual que el POS: si el aviso llega mientras el usuario
+// está en otro módulo, no se pierde. Con autoDownload=true (main.js) el
+// evento 'downloaded' puede llegar minutos después de abrir la app sin que
+// el usuario haya tocado nada.
+function _initGlobalUpdaterListener() {
+  if (!window.contadoresAPI?.onUpdaterEvent) return;
+  window.contadoresAPI.onUpdaterEvent((event, data) => {
+    const banner = $id('global-update-banner');
+    if (!banner) return;
+    if (event === 'downloaded') {
+      $id('global-update-banner-text').textContent = `Nueva versión v${data.version || ''} lista para instalar.`;
+      banner.style.display = 'flex';
+    } else if (event === 'error' && banner.style.display !== 'none') {
+      // Si ya se estaba mostrando el aviso de descarga y algo falló, no lo
+      // ocultamos a la fuerza — el usuario puede reintentar desde ahí mismo.
+    }
+  });
+}
+
+function instalarActualizacionGlobal() {
+  const banner = $id('global-update-banner');
+  if (banner) banner.style.display = 'none';
+  instalarActualizacion();
+}
+
 async function initApp() {
+  _initGlobalUpdaterListener();
   try {
     const cfg = await fetch('/api/firebase-config').then(r => r.json());
     if (cfg.error) {
@@ -224,6 +253,35 @@ function showLoginScreen() {
   if (chkEl)                 chkEl.checked = savedRemember;
 }
 
+// Muestra el logo de la firma en el avatar del sidebar (abajo) y en el
+// ícono de marca (arriba) si el contador tiene uno subido (Configuración →
+// Logo de la firma); si no, cae al ícono/inicial genérico de Tecno Caja.
+function _setSidebarAvatar(nombre, logoUrl) {
+  const avatarEl = $id('user-avatar-letter');
+  if (avatarEl) {
+    if (logoUrl) {
+      avatarEl.innerHTML = `<img src="${logoUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
+    } else {
+      avatarEl.textContent = (nombre || '?').charAt(0).toUpperCase();
+    }
+  }
+
+  const brandIcon = $id('sidebar-brand-icon');
+  if (brandIcon) {
+    brandIcon.innerHTML = logoUrl
+      ? `<img src="${logoUrl}" style="width:100%;height:100%;border-radius:10px;object-fit:cover">`
+      : '🧮';
+  }
+  const brandName = $id('sidebar-brand-name');
+  if (brandName) brandName.textContent = nombre || 'Tecno Caja';
+
+  // Se guarda en disco (vía Electron) para que el PRÓXIMO arranque, antes de
+  // iniciar sesión, el splash ya sepa qué nombre/logo mostrar — hoy no
+  // existe sesión todavía en ese punto, así que no hay forma de saberlo en
+  // el momento, solo de recordarlo del login anterior.
+  window.contadoresAPI?.cacheProfile?.({ nombre_firma: nombre || '', logo_url: logoUrl || '' });
+}
+
 function showApp(profile) {
   hide('screen-login');
   show('screen-app');
@@ -231,7 +289,7 @@ function showApp(profile) {
   const nombre = profile.nombre_firma || profile.fullName || profile.email || 'Contador';
   setText('sidebar-nombre', nombre);
   setText('sidebar-email', profile.email || '');
-  setText('user-avatar-letter', nombre.charAt(0).toUpperCase());
+  _setSidebarAvatar(nombre, profile.logo_url);
 
   // Permisos según tipo de usuario
   _applyPermisos(profile);
@@ -777,14 +835,74 @@ async function loadPerfil() {
     setVal('cfg-telefono',   p.telefono);
     setVal('cfg-whatsapp',   p.whatsapp);
     setVal('cfg-logo',       p.logo_url);
+    _setCfgLogoPreview(p.logo_url);
   } catch (e) {
     toast('Error cargando perfil: ' + e.message, 'error');
   }
 }
 
+function _setCfgLogoPreview(url) {
+  const preview = $id('cfg-logo-preview');
+  const placeholder = $id('cfg-logo-placeholder');
+  const box = preview?.closest('.ap-image-box');
+  if (url) {
+    if (preview) { preview.src = url; preview.style.display = 'block'; }
+    if (placeholder) placeholder.style.display = 'none';
+    if (box) box.classList.add('has-image');
+  } else {
+    if (preview) { preview.src = ''; preview.style.display = 'none'; }
+    if (placeholder) placeholder.style.display = '';
+    if (box) box.classList.remove('has-image');
+  }
+}
+
+// Mismo patrón que handleAgregarProductoImagen: redimensiona en el navegador
+// (más chico que el de productos, es solo un avatar/logo) y comprime a JPEG
+// antes de guardarlo, para no acercarse al límite de 1MB por documento de
+// Firestore.
+function handleCfgLogoUpload(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (!file.type.startsWith('image/')) { toast('Selecciona un archivo de imagen válido.', 'error'); return; }
+  if (file.size > 15 * 1024 * 1024) { toast('La imagen debe pesar menos de 15 MB.', 'error'); return; }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 400;
+      let { width, height } = img;
+      if (width > MAX || height > MAX) {
+        const ratio = Math.min(MAX / width, MAX / height);
+        width = Math.round(width * ratio);
+        height = Math.round(height * ratio);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      const logoInput = $id('cfg-logo');
+      if (logoInput) logoInput.value = dataUrl;
+      _setCfgLogoPreview(dataUrl);
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function quitarCfgLogo() {
+  const logoInput = $id('cfg-logo');
+  if (logoInput) logoInput.value = '';
+  const fileInput = $id('cfg-logo-file');
+  if (fileInput) fileInput.value = '';
+  _setCfgLogoPreview(null);
+}
+
 async function savePerfil() {
   try {
     await refreshToken();
+    const logoUrl = $id('cfg-logo')?.value?.trim() || null;
     await apiCall('PUT', '/api/perfil', {
       nombre_firma: $id('cfg-nombre-firma')?.value?.trim() || null,
       responsable:  $id('cfg-responsable')?.value?.trim()  || null,
@@ -792,11 +910,12 @@ async function savePerfil() {
       correo:       $id('cfg-correo')?.value?.trim()       || null,
       telefono:     $id('cfg-telefono')?.value?.trim()     || null,
       whatsapp:     $id('cfg-whatsapp')?.value?.trim()     || null,
-      logo_url:     $id('cfg-logo')?.value?.trim()         || null,
+      logo_url:     logoUrl,
     });
     toast('Perfil actualizado correctamente.', 'success');
     const nombre = $id('cfg-nombre-firma')?.value?.trim();
-    if (nombre) { setText('sidebar-nombre', nombre); setText('user-avatar-letter', nombre.charAt(0).toUpperCase()); }
+    if (nombre) setText('sidebar-nombre', nombre);
+    _setSidebarAvatar(nombre, logoUrl);
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -805,31 +924,42 @@ async function savePerfil() {
 // ══════════════════════════════════════════════════════════════════════
 
 // ── Estado del auto-updater ───────────────────────────────────────────────
-let _updUnsub       = null;
-let _updDownloaded  = false;
-let _updNewVersion  = null;
+// Misma estructura/estados que actualizaciones.js del POS (hero + badge +
+// tarjeta de resultado + barra de progreso), adaptado a window.contadoresAPI
+// en vez de window.novaDesktop. No hay "Opciones avanzadas" (el portal no
+// tiene preferencias de auto-descarga/backup que configurar — main.js ya
+// deja autoDownload siempre activo) ni pasos de instalación con respaldo
+// (no hay datos de negocio locales que respaldar aquí, todo vive en
+// Firestore) — se omiten a propósito en vez de mostrar controles que no
+// hacen nada.
+let _updUnsub      = null;
+let _updState      = 'idle';
+let _updLatestInfo = null;
+let _updVersion    = '1.0.0';
 
-function _updSetStatus(icon, titulo, sub, actions = '') {
-  setText('upd-status-icon',   icon);
-  setText('upd-status-titulo', titulo);
-  setText('upd-status-sub',    sub);
-  const el = $id('upd-status-actions');
-  if (el) el.innerHTML = actions;
+const UPD_STATUS_MAP = {
+  idle        : { dot: '⚪', text: 'Sin verificar',            cls: 'upd-badge-idle'  },
+  dev         : { dot: '🛠', text: 'Modo desarrollo',           cls: 'upd-badge-idle'  },
+  checking    : { dot: '⏳', text: 'Verificando…',             cls: 'upd-badge-info'  },
+  uptodate    : { dot: '🟢', text: 'Sistema actualizado',      cls: 'upd-badge-ok'    },
+  available   : { dot: '🟡', text: 'Actualización disponible', cls: 'upd-badge-warn'  },
+  downloading : { dot: '🔵', text: 'Descargando…',             cls: 'upd-badge-info'  },
+  ready       : { dot: '🟣', text: 'Lista para instalar',      cls: 'upd-badge-ready' },
+  installing  : { dot: '🔵', text: 'Instalando…',              cls: 'upd-badge-info'  },
+  error       : { dot: '🔴', text: 'Error de actualización',   cls: 'upd-badge-error' },
+};
+
+function _updSetStatus(s) {
+  _updState = s;
+  const el = $id('upd-status-badge');
+  if (!el) return;
+  const m = UPD_STATUS_MAP[s] || UPD_STATUS_MAP.idle;
+  el.className = `upd-status-badge ${m.cls}`;
+  el.innerHTML = `<span>${m.dot}</span><span>${m.text}</span>`;
 }
 
-function _updShowProgress(show) {
-  const el = $id('upd-progress-wrap');
-  if (el) el.classList.toggle('hidden', !show);
-}
-
-function _updSetProgress(pct, speed) {
-  const bar = $id('upd-progress-bar');
-  if (bar) bar.style.width = pct + '%';
-  setText('upd-progress-pct', pct + '%');
-  if (speed !== undefined) {
-    const mb = (speed / 1024 / 1024).toFixed(1);
-    setText('upd-progress-speed', mb + ' MB/s');
-  }
+function _updRefreshHero() {
+  setText('upd-current-version', 'v' + _updVersion);
 }
 
 function _fmtBytes(b) {
@@ -838,95 +968,180 @@ function _fmtBytes(b) {
   return (b / 1024).toFixed(0) + ' KB';
 }
 
+function _updClearInfoBox() {
+  const box = $id('upd-info-box');
+  if (box) { box.innerHTML = ''; box.classList.add('hidden'); }
+  _updShowProgress(false);
+}
+
+function _updShowUpdateCard(info) {
+  const box = $id('upd-info-box');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="upd-card-available">
+      <div class="upd-version-jump">
+        <div class="upd-vjump-block">
+          <span class="upd-vjump-label">Versión actual</span>
+          <span class="upd-vjump-ver">v${esc(_updVersion)}</span>
+        </div>
+        <div class="upd-vjump-arrow">→</div>
+        <div class="upd-vjump-block">
+          <span class="upd-vjump-label">Nueva versión</span>
+          <span class="upd-vjump-ver upd-vjump-new-ver">v${esc(info.version || '')}</span>
+        </div>
+      </div>
+      <div class="upd-action-row">
+        <div class="upd-warn-box" style="font-size:.8rem;color:var(--text2)">
+          La descarga arranca sola en segundo plano — no hace falta hacer nada más.
+        </div>
+      </div>
+    </div>`;
+  box.classList.remove('hidden');
+}
+
+function _updShowUpToDate() {
+  const box = $id('upd-info-box');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="upd-uptodate">
+      <span class="upd-uptodate-icon">🎉</span>
+      <div>
+        <strong>¡Estás al día!</strong>
+        <p>Tienes la versión más reciente instalada — <b>v${esc(_updVersion)}</b>.</p>
+        <p style="font-size:0.78rem;color:var(--text3);margin-top:0.25rem">
+          Última verificación: ${new Date().toLocaleString('es-DO')}
+        </p>
+      </div>
+    </div>`;
+  box.classList.remove('hidden');
+}
+
+function _updShowError(msg) {
+  const box = $id('upd-info-box');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="upd-error-card">
+      <span class="upd-error-icon">❌</span>
+      <div>
+        <strong>No se pudo verificar la actualización</strong>
+        <p>${esc(msg)}</p>
+        <button class="upd-btn-sec" onclick="app.verificarActualizacion()">↻ Reintentar</button>
+      </div>
+    </div>`;
+  box.classList.remove('hidden');
+}
+
+function _updShowInstallAction(version) {
+  const box = $id('upd-info-box');
+  if (!box) return;
+  $id('upd-install-action-wrap')?.remove();
+  const d = document.createElement('div');
+  d.id = 'upd-install-action-wrap';
+  d.className = 'upd-action-row';
+  d.style.marginTop = '1rem';
+  d.innerHTML = `
+    <div class="upd-ready-msg">✅ Descarga completa — versión v${esc(version)} lista para instalar</div>
+    <button class="upd-btn-main upd-btn-install-pulse" id="upd-btn-install" onclick="app.instalarActualizacion()">
+      ⚙️ Instalar y reiniciar
+    </button>`;
+  box.appendChild(d);
+}
+
+function _updShowProgress(show) {
+  const el = $id('upd-progress-wrap');
+  if (el) el.classList.toggle('hidden', !show);
+}
+
+function _updSetProgress(pct, label, transferred, total) {
+  const bar   = $id('upd-prog-bar');
+  const pctEl = $id('upd-prog-pct');
+  const lblEl = $id('upd-prog-label');
+  const spdEl = $id('upd-prog-speed');
+  if (bar)   bar.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = Math.round(pct) + '% completado';
+  if (lblEl) lblEl.textContent = label || 'Descargando actualización…';
+  if (spdEl) spdEl.textContent = (transferred != null && total != null) ? `${_fmtBytes(transferred)} de ${_fmtBytes(total)}` : '';
+}
+
+function _setBtnLoading(loading) {
+  const btn = $id('upd-btn-check');
+  if (!btn) return;
+  btn.disabled = loading;
+  btn.innerHTML = loading
+    ? '<span style="display:inline-block;animation:upd-spin 1s linear infinite">⏳</span> Verificando…'
+    : '🔍 Buscar actualizaciones';
+}
+
 async function _initUpdaterUI() {
   if (!window.contadoresAPI?.updaterGetVersion) {
-    _updSetStatus('🌐', 'Modo web', 'El actualizador automático solo funciona en la app de escritorio.');
+    _updSetStatus('dev');
     return;
   }
 
   const info = await window.contadoresAPI.updaterGetVersion();
-  setText('upd-ver-actual', 'v' + info.version);
+  _updVersion = info.version || '1.0.0';
+  _updRefreshHero();
 
   if (!info.isPackaged) {
-    _updSetStatus('🛠', 'Modo desarrollo', 'El actualizador está deshabilitado en modo desarrollo.');
+    _updSetStatus('dev');
     return;
   }
 
-  // Suscribir a eventos del main process
   if (_updUnsub) _updUnsub();
   _updUnsub = window.contadoresAPI.onUpdaterEvent((event, data) => {
     if (event === 'available') {
-      _updNewVersion = data.version;
-      _updSetStatus(
-        '⬆️',
-        `Nueva versión disponible: v${data.version}`,
-        'Descarga e instala la actualización para obtener las últimas mejoras.',
-        `<button class="btn btn-primary" onclick="app.descargarActualizacion()">⬇ Descargar ahora</button>`
-      );
+      _updLatestInfo = data;
+      _updSetStatus('available');
+      _updShowUpdateCard(data);
+      _updSetStatus('downloading'); // autoDownload:true en main.js — arranca sola
+      _updShowProgress(true);
     } else if (event === 'not-available') {
-      _updSetStatus('✅', 'Estás al día', 'No hay nuevas versiones disponibles.');
+      _updSetStatus('uptodate');
+      _updShowUpToDate();
+      _setBtnLoading(false);
     } else if (event === 'progress') {
       _updShowProgress(true);
-      _updSetProgress(data.percent || 0, data.bytesPerSecond);
-      _updSetStatus(
-        '⬇️',
-        `Descargando v${_updNewVersion || ''}…`,
-        `${_fmtBytes(data.transferred)} de ${_fmtBytes(data.total)}`
-      );
+      _updSetProgress(data.percent || 0, `Descargando v${_updLatestInfo?.version || ''}…`, data.transferred, data.total);
     } else if (event === 'downloaded') {
-      _updDownloaded = true;
       _updShowProgress(false);
-      _updSetProgress(100);
-      _updSetStatus(
-        '🎉',
-        `v${data.version || _updNewVersion} lista para instalar`,
-        'La actualización se descargó. Haz clic para instalar y reiniciar la app.',
-        `<button class="btn btn-primary" onclick="app.instalarActualizacion()">⚡ Instalar y reiniciar</button>`
-      );
+      _updSetStatus('ready');
+      _updShowInstallAction(data.version || _updLatestInfo?.version || '');
     } else if (event === 'error') {
       _updShowProgress(false);
-      _updSetStatus('❌', 'Error al actualizar', data.message || 'Intenta verificar de nuevo.',
-        `<button class="btn btn-secondary" onclick="app.verificarActualizacion()">↺ Reintentar</button>`
-      );
+      _updSetStatus('error');
+      _updShowError(data.message || 'Intenta verificar de nuevo.');
+      _setBtnLoading(false);
     }
   });
 
-  _updSetStatus('✅', 'App actualizada', 'Haz clic en "Verificar ahora" para buscar actualizaciones.');
+  _updSetStatus('idle');
 }
 
 async function verificarActualizacion() {
   if (!window.contadoresAPI?.updaterCheck) return;
-  _updSetStatus('🔍', 'Verificando…', 'Buscando nuevas versiones en GitHub…');
-  const btn = $id('upd-btn-verificar');
-  if (btn) btn.disabled = true;
+  _updSetStatus('checking');
+  _setBtnLoading(true);
+  _updClearInfoBox();
   try {
-    await window.contadoresAPI.updaterCheck();
-  } catch {
-    _updSetStatus('❌', 'Error de conexión', 'No se pudo conectar a GitHub para verificar.');
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-async function descargarActualizacion() {
-  if (!window.contadoresAPI?.updaterDownload) return;
-  _updShowProgress(true);
-  _updSetProgress(0);
-  _updSetStatus('⬇️', 'Iniciando descarga…', '');
-  try {
-    await window.contadoresAPI.updaterDownload();
-  } catch {
-    _updShowProgress(false);
-    _updSetStatus('❌', 'Error al descargar', 'No se pudo iniciar la descarga.',
-      `<button class="btn btn-secondary" onclick="app.descargarActualizacion()">↺ Reintentar</button>`
-    );
+    const r = await window.contadoresAPI.updaterCheck();
+    if (r?.devMode) { _updSetStatus('dev'); _setBtnLoading(false); }
+    // si no es devMode, los eventos IPC (arriba) manejan el resultado
+  } catch (e) {
+    _updSetStatus('error');
+    _updShowError(e.message || 'No se pudo conectar al servidor de actualizaciones.');
+    _setBtnLoading(false);
   }
 }
 
 function instalarActualizacion() {
   if (!window.contadoresAPI?.updaterInstall) return;
-  _updSetStatus('⚡', 'Instalando…', 'La app se cerrará y se instalará la nueva versión.');
+  _updSetStatus('installing');
   window.contadoresAPI.updaterInstall();
+}
+
+function updSwitchTab(name) {
+  document.querySelectorAll('#mod-actualizaciones .upd-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('#mod-actualizaciones .upd-tab-panel').forEach(p => p.classList.toggle('hidden', p.dataset.panel !== name));
 }
 
 async function loadActualizaciones() {
@@ -942,6 +1157,11 @@ async function loadActualizaciones() {
       container.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><div class="empty-text">Sin versiones publicadas aún</div></div>';
       return;
     }
+    // Última actualización real de ESTE instalador, si su versión aparece en
+    // la lista de releases publicados.
+    const instalada = list.find(v => v.version === _updVersion);
+    if (instalada) setText('upd-last-date', fmtDate(instalada.created_at));
+
     container.innerHTML = list.map((v, i) => `
       <div class="ver-card">
         <div style="flex:1;min-width:0">
@@ -969,16 +1189,29 @@ let _repTab       = 'ventas';
 let _repLoading   = false;
 let _repNegocioSucursales = []; // [{id, nombre}] del negocio seleccionado — sincronizadas por el POS
 
+// `aligns` es paralelo a `cols` — debe calzar 1 a 1 con la alineación real
+// que usa cada <td> en renderFila() (clases td-amount → right, style
+// text-align:center → center) para que el encabezado quede sobre su columna
+// en vez de pegado a la izquierda mientras los datos se van a la derecha.
 const REP_TABS = {
-  ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Cajero','Cliente','Método','Total','ITBIS'] },
-  facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Cliente','RNC','Total','ITBIS','Estado'] },
-  productos:  { label: 'Productos', cols: ['Código','Nombre','Categoría','Precio','Costo','Stock','Vendidos'] },
-  inventario: { label: 'Inventario', cols: ['Código','Nombre','Stock','Mínimo','Estado','Última Compra'] },
-  itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Base Imponible','ITBIS 18%','Total'] },
-  cxc:        { label: 'C×Cobrar', cols: ['Cliente','RNC','Teléfono','Deuda','Última Compra','Estado'] },
-  clientes:   { label: 'Clientes', cols: ['Nombre','RNC','Teléfono','Correo','Compras','Última Visita'] },
-  cierres:    { label: 'Cierres', cols: ['Apertura','Cierre','Caja','Cajero','Monto Apertura','Ventas','Contado','Diferencia','Estado'] },
-  mensual:    { label: 'Mensual', cols: ['Mes','Ventas','Facturas','ITBIS','Clientes Nuevos'] },
+  ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Cajero','Cliente','Método','Total','ITBIS'],
+                aligns: ['left','left','left','left','left','right','right'] },
+  facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Cliente','RNC','Total','ITBIS','Estado'],
+                aligns: ['left','left','left','left','left','right','right','left'] },
+  productos:  { label: 'Productos', cols: ['Código','Nombre','Categoría','Precio','Costo','Stock','Vendidos'],
+                aligns: ['left','left','left','right','right','center','center'] },
+  inventario: { label: 'Inventario', cols: ['Código','Nombre','Stock','Mínimo','Estado','Última Compra'],
+                aligns: ['left','left','center','center','left','left'] },
+  itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Base Imponible','ITBIS 18%','Total'],
+                aligns: ['left','left','left','right','right','right'] },
+  cxc:        { label: 'C×Cobrar', cols: ['Cliente','RNC','Teléfono','Deuda','Última Compra','Estado'],
+                aligns: ['left','left','left','right','left','left'] },
+  clientes:   { label: 'Clientes', cols: ['Nombre','RNC','Teléfono','Correo','Compras','Última Visita'],
+                aligns: ['left','left','left','left','center','left'] },
+  cierres:    { label: 'Cierres', cols: ['Apertura','Cierre','Caja','Cajero','Monto Apertura','Ventas','Contado','Diferencia','Estado'],
+                aligns: ['left','left','left','left','right','right','right','right','left'] },
+  mensual:    { label: 'Mensual', cols: ['Mes','Ventas','Facturas','ITBIS','Clientes Nuevos'],
+                aligns: ['left','right','center','right','center'] },
 };
 
 function fmtMoney(v) {
@@ -1025,6 +1258,8 @@ async function selNegocioReporte(id) {
     $id('rep-state-empty').style.display = '';
     $id('rep-state-data').style.display  = 'none';
     loadProductosPendientes();
+    loadNcfPendientes();
+    loadNcfAplicadas();
     return;
   }
 
@@ -1058,6 +1293,8 @@ async function selNegocioReporte(id) {
     $id('rep-biz-status').style.display = '';
 
     loadProductosPendientes();
+    loadNcfPendientes();
+    loadNcfAplicadas();
     await cargarDatosReporte();
   } catch (e) {
     $id('rep-table-inner').innerHTML = `<div class="rep-no-sync"><div class="rep-no-sync-icon">⚠️</div><div class="rep-no-sync-title">Error al cargar datos</div><div class="rep-no-sync-sub">${e.message}</div></div>`;
@@ -1099,6 +1336,8 @@ function cambiarTabReporte(tab) {
   if (ncfGroup) ncfGroup.style.display = (tab === 'facturas' || tab === 'itbis') ? '' : 'none';
 
   loadProductosPendientes();
+  loadNcfPendientes();
+  loadNcfAplicadas();
   if (_repNegocioId) cargarDatosReporte();
 }
 
@@ -1148,6 +1387,7 @@ function renderTablaReporte(data) {
   }
 
   const cols = REP_TABS[_repTab]?.cols || [];
+  const aligns = REP_TABS[_repTab]?.aligns || [];
   if (!data.rows || !data.rows.length) {
     inner.innerHTML = `<div class="rep-no-sync">
       <div class="rep-no-sync-icon">📭</div>
@@ -1157,9 +1397,9 @@ function renderTablaReporte(data) {
     return;
   }
 
-  const thead = `<thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}</tr></thead>`;
+  const thead = `<thead><tr>${cols.map((c, i) => `<th style="text-align:${aligns[i] || 'left'}">${c}</th>`).join('')}</tr></thead>`;
   const tbody = `<tbody>${data.rows.map(row => renderFila(row, _repTab)).join('')}</tbody>`;
-  inner.innerHTML = `<table class="data-table">${thead}${tbody}</table>`;
+  inner.innerHTML = `<table class="data-table" style="table-layout:auto">${thead}${tbody}</table>`;
 }
 
 function renderFila(row, tab) {
@@ -1515,6 +1755,343 @@ async function guardarProductoPendiente() {
     toast('Producto agregado — se aplicará cuando el sistema del cliente sincronice.', 'success');
     cerrarAgregarProductoModal();
     loadProductosPendientes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// SECUENCIAS NCF PENDIENTES (registradas desde este Portal)
+// Mismo mecanismo que Productos Pendientes: el POS del cliente corre local,
+// esto queda en cola en Firestore y se aplica la próxima vez que ese POS
+// sincroniza. Solo NCF tradicional (B01-B17) — el e-CF ya se certifica aparte.
+// Visible en la pestaña "🏛 ITBIS / DGII".
+// ══════════════════════════════════════════════════════════════════════
+
+const NCF_DOCUMENT_TYPES = [
+  { code: 'B01', label: 'B01 — Crédito Fiscal' }, { code: 'B02', label: 'B02 — Consumidor Final' },
+  { code: 'B03', label: 'B03 — Nota de Débito' }, { code: 'B04', label: 'B04 — Nota de Crédito' },
+  { code: 'B11', label: 'B11 — Comprobante de Compras' }, { code: 'B12', label: 'B12 — Registro Único de Ingresos' },
+  { code: 'B13', label: 'B13 — Gastos Menores' }, { code: 'B14', label: 'B14 — Régimen Especial' },
+  { code: 'B15', label: 'B15 — Gubernamental' }, { code: 'B16', label: 'B16 — Comprobante para Exportaciones' },
+  { code: 'B17', label: 'B17 — Comprobante para Pagos al Exterior' },
+];
+
+let _ncfPendientes = [];
+let _anAdjuntoDataUrl = null; // documento de autorización DGII (base64), opcional
+
+// El adjunto puede ser PDF/XML/imagen — a diferencia de la imagen de producto
+// no se puede "redimensionar", solo se valida tamaño antes de convertir a base64.
+function handleAgregarNcfAdjunto(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (file.size > 700 * 1024) { toast('El archivo debe pesar menos de 700 KB.', 'error'); return; }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    _anAdjuntoDataUrl = e.target.result;
+    const label = $id('an-adjunto-nombre');
+    if (label) label.textContent = `📎 ${file.name}`;
+  };
+  reader.readAsDataURL(file);
+}
+
+async function loadNcfPendientes() {
+  const panel = $id('rep-ncf-pendientes-panel');
+  const visible = _repTab === 'itbis' && Boolean(_repNegocioId);
+  if (panel) panel.style.display = visible ? '' : 'none';
+  if (!visible) return;
+
+  const listEl = $id('rep-ncf-pendientes-list');
+  if (listEl) listEl.innerHTML = `<div class="rep-loading"><div class="rep-spinner"></div>Cargando…</div>`;
+  try {
+    await refreshToken();
+    _ncfPendientes = await apiCall('GET', `/api/ncf-pendientes/${_repNegocioId}`);
+    renderNcfPendientes();
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<div class="rep-no-sync-sub">Error cargando secuencias NCF pendientes: ${e.message}</div>`;
+  }
+}
+
+function renderNcfPendientes() {
+  const listEl = $id('rep-ncf-pendientes-list');
+  if (!listEl) return;
+  if (!_ncfPendientes.length) {
+    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">No hay secuencias NCF registradas desde el Portal todavía.</div>`;
+    return;
+  }
+  const badges = { pendiente: '🔵 Pendiente de sincronizar', aplicado: '🟢 Aplicado en el POS', error: '🔴 Error' };
+  const ACTION_LABELS = { create: 'Registrar', edit: 'Editar', suspend: 'Suspender', delete: 'Eliminar' };
+  listEl.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Acción</th><th>Tipo</th><th>Rango</th><th>Sucursal</th><th>Referencia / motivo</th><th>Estado</th><th>Detalle</th><th></th></tr></thead>
+      <tbody>
+        ${_ncfPendientes.map(n => {
+          const action = n.action || 'create';
+          const target = action !== 'create' ? _ncfAplicadas.find((s) => String(s.id) === String(n.targetLocalSequenceId)) : null;
+          const tipo = action === 'create' ? (n.documentType || '—') : (target?.documentType || `Secuencia #${n.targetLocalSequenceId}`);
+          const rango = action === 'create' ? `${n.startNumber}–${n.endNumber}` : (target ? `${target.startNumber}–${target.endNumber}` : '—');
+          const sucursal = action === 'create' ? (n.branchNombre || '🌐 Global') : (target?.branchName || '—');
+          const refMotivo = action === 'create'
+            ? `${n.authorizationReference || '—'}${n.tieneAdjunto ? ' 📎' : ''}`
+            : (n.reason || '—');
+          return `
+          <tr>
+            <td>${ACTION_LABELS[action] || action}</td>
+            <td>${tipo}</td>
+            <td>${rango}</td>
+            <td>${sucursal}</td>
+            <td>${refMotivo}</td>
+            <td>${badges[n.status] || n.status || '—'}</td>
+            <td>${n.status === 'error' ? (n.errorMessage || '') : ''}</td>
+            <td>${['pendiente', 'error'].includes(n.status) ? `<button class="btn btn-xs btn-secondary" onclick="app.cancelarNcfPendiente('${n.id}')">✕ ${n.status === 'error' ? 'Descartar' : 'Cancelar'}</button>` : ''}</td>
+          </tr>
+        `; }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+async function cancelarNcfPendiente(pendienteId) {
+  if (!confirm('¿Cancelar este registro? Todavía no se ha aplicado en el POS del cliente.')) return;
+  try {
+    await refreshToken();
+    await apiCall('DELETE', `/api/ncf-pendientes/${_repNegocioId}/${pendienteId}`);
+    toast('Registro cancelado.', 'success');
+    loadNcfPendientes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function abrirAgregarNcfModal() {
+  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  const tipoEl = $id('an-tipo');
+  if (tipoEl) tipoEl.innerHTML = NCF_DOCUMENT_TYPES.map((t) => `<option value="${t.code}">${t.label}</option>`).join('');
+  ['an-desde', 'an-hasta', 'an-fecha-autorizacion', 'an-fecha-vencimiento', 'an-referencia', 'an-notas'].forEach((id) => {
+    const el = $id(id);
+    if (el) el.value = '';
+  });
+  const sucursalEl = $id('an-sucursal');
+  if (sucursalEl) {
+    sucursalEl.innerHTML = '<option value="">🌐 Global (todas las sucursales)</option>' +
+      _repNegocioSucursales.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join('');
+  }
+  _anAdjuntoDataUrl = null;
+  const label = $id('an-adjunto-nombre');
+  if (label) label.textContent = '';
+  const fileInput = $id('an-adjunto-file');
+  if (fileInput) fileInput.value = '';
+
+  show('modal-agregar-ncf');
+}
+
+function cerrarAgregarNcfModal() { hide('modal-agregar-ncf'); }
+
+async function guardarNcfPendiente() {
+  const documentType = $id('an-tipo')?.value;
+  const startNumber = Number($id('an-desde')?.value || 0);
+  const endNumber = Number($id('an-hasta')?.value || 0);
+  const authorizationReference = $id('an-referencia')?.value?.trim();
+
+  if (!documentType) { toast('Selecciona el tipo de comprobante.', 'error'); return; }
+  if (!startNumber || !endNumber || startNumber > endNumber) { toast('Indica un rango válido.', 'error'); return; }
+  if (!authorizationReference) { toast('Indica la referencia de autorización de la DGII.', 'error'); return; }
+
+  const sucursalEl = $id('an-sucursal');
+  const branchId = sucursalEl?.value ? Number(sucursalEl.value) : null;
+
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/ncf-pendientes', {
+      businessId: _repNegocioId,
+      documentType,
+      branchId,
+      startNumber,
+      endNumber,
+      authorizationDate: $id('an-fecha-autorizacion')?.value || null,
+      expirationDate: $id('an-fecha-vencimiento')?.value || null,
+      authorizationReference,
+      notes: $id('an-notas')?.value?.trim() || '',
+      attachmentData: _anAdjuntoDataUrl || null,
+    });
+    toast('Secuencia NCF registrada — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    cerrarAgregarNcfModal();
+    loadNcfPendientes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// ── Secuencias ya aplicadas en el POS (espejo de solo lectura) ─────────
+// Editar/Suspender no escriben directo — quedan como solicitud en la misma
+// cola de pendientes (action:'edit'|'suspend'), el POS las revalida y aplica.
+
+let _ncfAplicadas = [];
+let _ncfEditTargetId = null;
+
+async function loadNcfAplicadas() {
+  const visible = _repTab === 'itbis' && Boolean(_repNegocioId);
+  const listEl = $id('rep-ncf-aplicadas-list');
+  if (!listEl) return;
+  if (!visible) { listEl.innerHTML = ''; return; }
+  listEl.innerHTML = `<div class="rep-loading"><div class="rep-spinner"></div>Cargando…</div>`;
+  try {
+    await refreshToken();
+    _ncfAplicadas = await apiCall('GET', `/api/ncf-aplicadas/${_repNegocioId}`);
+    renderNcfAplicadas();
+  } catch (e) {
+    listEl.innerHTML = `<div class="rep-no-sync-sub">Error cargando secuencias del POS: ${e.message}</div>`;
+  }
+}
+
+function renderNcfAplicadas() {
+  const listEl = $id('rep-ncf-aplicadas-list');
+  if (!listEl) return;
+  if (!_ncfAplicadas.length) {
+    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">Todavía no hay secuencias activas en el POS de este negocio.</div>`;
+    return;
+  }
+  const colores = {
+    activo: '#22C55E', proximo_agotarse: '#f59e0b', agotado: '#ef4444', vencido: '#ef4444',
+    suspendido: '#6b7280', pendiente: '#6b7280', legacy_unverified: '#3b82f6',
+  };
+  const ESTADO_LABELS = {
+    activo: 'Activo', proximo_agotarse: 'Por agotarse', agotado: 'Agotado', vencido: 'Vencido',
+    suspendido: 'Suspendido', pendiente: 'Pendiente de activar', legacy_unverified: 'Migrado — sin verificar',
+  };
+  listEl.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Tipo</th><th>Rango</th><th>Próximo</th><th>Disponibles</th><th>Sucursal</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${_ncfAplicadas.map(s => `
+          <tr>
+            <td>${s.documentType || '—'}</td>
+            <td>${s.startNumber}–${s.endNumber}</td>
+            <td>${s.nextNumber}</td>
+            <td>${s.totalAvailable}</td>
+            <td>${s.branchName || '🌐 Global'}</td>
+            <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${colores[s.effectiveStatus] || colores[s.status] || '#6b7280'}">${ESTADO_LABELS[s.effectiveStatus] || ESTADO_LABELS[s.status] || s.effectiveStatus || s.status}</span></td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-xs btn-secondary" onclick="app.abrirEditarNcfModal('${s.id}')">✎ Editar</button>
+              ${s.status === 'activo' ? `<button class="btn btn-xs btn-secondary" onclick="app.abrirSuspenderNcfModal('${s.id}')">⏸ Suspender</button>` : ''}
+              <button class="btn btn-xs btn-danger" onclick="app.eliminarNcfAplicada('${s.id}')">🗑 Eliminar</button>
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function abrirEditarNcfModal(localSequenceId) {
+  const seq = _ncfAplicadas.find((s) => String(s.id) === String(localSequenceId));
+  if (!seq) return;
+  _ncfEditTargetId = localSequenceId;
+  $id('ane-titulo').textContent = `Editar ${seq.documentType} · ${seq.startNumber}–${seq.endNumber}`;
+  $id('ane-nombre').value = seq.documentName || '';
+  $id('ane-hasta').value = seq.endNumber || '';
+  $id('ane-hasta').min = seq.nextNumber || seq.startNumber || 1;
+  $id('ane-fecha-autorizacion').value = (seq.authorizationDate || '').slice(0, 10);
+  $id('ane-fecha-vencimiento').value = (seq.expirationDate || '').slice(0, 10);
+  $id('ane-referencia').value = seq.authorizationReference || '';
+  $id('ane-notas').value = '';
+  show('modal-editar-ncf');
+}
+
+function cerrarEditarNcfModal() { hide('modal-editar-ncf'); }
+
+async function guardarEdicionNcf() {
+  if (!_ncfEditTargetId) return;
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/ncf-pendientes/editar', {
+      businessId: _repNegocioId,
+      targetLocalSequenceId: _ncfEditTargetId,
+      documentName: $id('ane-nombre')?.value?.trim() || null,
+      endNumber: Number($id('ane-hasta')?.value || 0) || null,
+      authorizationDate: $id('ane-fecha-autorizacion')?.value || null,
+      expirationDate: $id('ane-fecha-vencimiento')?.value || null,
+      authorizationReference: $id('ane-referencia')?.value?.trim() || null,
+      notes: $id('ane-notas')?.value?.trim() || '',
+    });
+    toast('Edición registrada — se aplicará en unos segundos.', 'success');
+    cerrarEditarNcfModal();
+    loadNcfPendientes();
+    scheduleNcfRefresh();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+// Electron no implementa window.prompt() (funciona en un navegador normal
+// pero en la app se queda en silencio, sin mostrar nada ni lanzar error) —
+// este modal lo reemplaza para cualquier acción que necesite pedir un
+// motivo de texto libre antes de continuar.
+let _motivoNcfResolve = null;
+
+function pedirMotivoNcf(titulo, subtitulo) {
+  return new Promise((resolve) => {
+    _motivoNcfResolve = resolve;
+    $id('mtv-titulo').textContent = titulo;
+    $id('mtv-sub').textContent = subtitulo || '';
+    $id('mtv-input').value = '';
+    show('modal-motivo-ncf');
+    setTimeout(() => $id('mtv-input')?.focus(), 50);
+  });
+}
+
+function confirmarMotivoNcf() {
+  const val = $id('mtv-input')?.value?.trim() || '';
+  if (!val) { toast('Escribe un motivo antes de confirmar.', 'error'); return; }
+  hide('modal-motivo-ncf');
+  if (_motivoNcfResolve) { _motivoNcfResolve(val); _motivoNcfResolve = null; }
+}
+
+function cancelarMotivoNcf() {
+  hide('modal-motivo-ncf');
+  if (_motivoNcfResolve) { _motivoNcfResolve(null); _motivoNcfResolve = null; }
+}
+
+// El POS tiene un listener en tiempo real sobre la cola de pendientes, así
+// que normalmente aplica la solicitud en pocos segundos (no hay que esperar
+// los 5 minutos del sync de respaldo). Este refresco solo le da tiempo a
+// llegar antes de repintar, para que el contador vea el resultado sin tener
+// que darle a "Actualizar" a mano.
+function scheduleNcfRefresh() {
+  setTimeout(() => { loadNcfAplicadas(); loadNcfPendientes(); }, 4000);
+}
+
+async function abrirSuspenderNcfModal(localSequenceId) {
+  const seq = _ncfAplicadas.find((s) => String(s.id) === String(localSequenceId));
+  if (!seq) return;
+  const reason = await pedirMotivoNcf(
+    `Suspender ${seq.documentType} ${seq.startNumber}–${seq.endNumber}`,
+    'El motivo es obligatorio. Se aplicará cuando el POS del cliente sincronice.'
+  );
+  if (!reason) return;
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/ncf-pendientes/suspender', {
+      businessId: _repNegocioId,
+      targetLocalSequenceId: localSequenceId,
+      reason,
+    });
+    toast('Suspensión registrada — se aplicará en unos segundos.', 'success');
+    loadNcfPendientes();
+    scheduleNcfRefresh();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function eliminarNcfAplicada(localSequenceId) {
+  const seq = _ncfAplicadas.find((s) => String(s.id) === String(localSequenceId));
+  if (!seq) return;
+  const reason = await pedirMotivoNcf(
+    `Eliminar ${seq.documentType} ${seq.startNumber}–${seq.endNumber}`,
+    'El motivo es obligatorio. Se eliminará aunque ya tenga números usados — no se puede deshacer desde aquí.'
+  );
+  if (!reason) return;
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/ncf-pendientes/eliminar', {
+      businessId: _repNegocioId,
+      targetLocalSequenceId: localSequenceId,
+      reason,
+    });
+    toast('Eliminación registrada — se aplicará en unos segundos.', 'success');
+    loadNcfPendientes();
+    scheduleNcfRefresh();
   } catch (e) { toast(e.message, 'error'); }
 }
 
@@ -4305,15 +4882,20 @@ window.app = {
   loadSolicitudes, cancelarSolicitud,
   abrirSolicitudModal, cerrarSolicitudModal, selSolTipo, enviarSolicitud,
   // perfil
-  loadPerfil, savePerfil,
+  loadPerfil, savePerfil, handleCfgLogoUpload, quitarCfgLogo,
   // actualizaciones
-  loadActualizaciones, verificarActualizacion, descargarActualizacion, instalarActualizacion,
+  loadActualizaciones, verificarActualizacion, instalarActualizacion, instalarActualizacionGlobal, updSwitchTab,
   // reportes
   loadReportes, selNegocioReporte, cambiarTabReporte, cargarDatosReporte,
   aplicarFiltros, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
   abrirRepDetalle, cerrarRepDetalle, imprimirTabReporte, imprimirReporteMensual,
   // productos pendientes (agregados desde este Portal)
   abrirAgregarProductoModal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen,
+  // secuencias NCF pendientes (registradas desde este Portal)
+  abrirAgregarNcfModal, cerrarAgregarNcfModal, guardarNcfPendiente, handleAgregarNcfAdjunto, cancelarNcfPendiente,
+  // secuencias NCF ya aplicadas (editar/suspender/eliminar remoto)
+  abrirEditarNcfModal, cerrarEditarNcfModal, guardarEdicionNcf, abrirSuspenderNcfModal, eliminarNcfAplicada,
+  confirmarMotivoNcf, cancelarMotivoNcf,
   // facturación — dashboard
   loadFacturacion, filtrarFacturas, limpiarFiltrosFac,
   // facturación — nueva factura
