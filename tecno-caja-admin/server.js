@@ -356,13 +356,15 @@ app.post('/api/negocios/:id/licencia', requireAuth, async (req, res) => {
 
     switch (accion) {
       case 'activar':
-        update.status = 'active';
-        // Planes de pago único no tienen fecha de expiración
-        if (plan === 'standalone') {
-          update.expiresAt      = null;
-          update.trialEndsAt    = null;
-          update.trialStartedAt = null;
-        }
+        // "Activar" siempre deja la licencia sin fecha de vencimiento —
+        // queda activa hasta que se suspenda/cancele a mano, sin importar
+        // el plan. Decisión explícita de Emilio (2026-08-04): si algún
+        // negocio necesita vencer en una fecha concreta, usar "Confirmar
+        // renovación" (accion:'renovar'), que sí fija expiresAt.
+        update.status          = 'active';
+        update.expiresAt       = null;
+        update.trialEndsAt     = null;
+        update.trialStartedAt  = null;
         break;
       case 'suspender': update.status = 'suspended'; break;
       case 'cancelar':  update.status = 'cancelled'; break;

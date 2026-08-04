@@ -297,6 +297,12 @@ class EcfRepository {
     const sequenceColumns = [
       ['fecha_autorizacion', 'DATE DEFAULT NULL'],
       ['updated_at', 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP'],
+      // Aditivo — panel unificado de secuencias fiscales (Fase 1, ver
+      // server/routes/fiscal-sequences.routes.js). Solo metadata de
+      // autorización DGII; NO se toca generateNextENCFInConnection ni
+      // advanceSequenceAfterUse, ya certificados con la DGII.
+      ['authorization_reference', 'VARCHAR(60) DEFAULT NULL'],
+      ['authorization_file_url', 'VARCHAR(255) DEFAULT NULL'],
     ];
     for (const [columnName, definitionSql] of sequenceColumns) {
       await addColumnIfMissing(this.query, 'ecf_sequences', columnName, definitionSql).catch(() => {});

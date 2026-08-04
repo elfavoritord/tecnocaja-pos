@@ -12,6 +12,7 @@
  */
 
 const { query } = require('../../db');
+const { mapSequence } = require('../routes/fiscal-sequences.routes');
 
 const MAX_ROWS = 150;
 
@@ -177,13 +178,17 @@ async function buildPosStats() {
          AND stock <= stock_min`
     ),
 
-    // CxC: ventas a crédito sin cobrar
+    // CxC: ventas a crédito con saldo pendiente (total - lo ya cobrado, no
+    // el total completo — mismo criterio que buildReportesTabs()'s tab
+    // 'cxc'; delivery_cash_status es de otro flujo, no refleja pagos
+    // parciales/abonos hechos vía client_credit_payments).
     query(
-      `SELECT COALESCE(SUM(total),0) AS total
+      `SELECT COALESCE(SUM(total - received_amount),0) AS total
        FROM sales
        WHERE payment_method = 'credito'
          AND sale_status = 'pagada'
-         AND delivery_cash_status IN ('pendiente','na')`
+         AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
+         AND COALESCE(total,0) > COALESCE(received_amount,0)`
     ),
   ]);
 
@@ -268,20 +273,27 @@ async function buildReportesTabs() {
        LIMIT ${MAX_ROWS}`
     ),
 
-    // Tab CxC
+    // Tab CxC — deuda real es total - received_amount (lo que el cliente ya
+    // pagó vía client_credit_payments actualiza received_amount, ver
+    // server/routes/clientes-creditos.routes.js). El filtro anterior usaba
+    // delivery_cash_status (un campo de logística de delivery, no de cobro
+    // de crédito) y sumaba s.total completo sin restar los pagos — por eso
+    // un cliente ya saldado seguía apareciendo con la deuda íntegra aquí,
+    // aunque el propio POS (Fase 1 de créditos) ya lo mostraba en $0.
     query(
       `SELECT
          COALESCE(s.client_name_snapshot, c.nombre, '—')       AS cliente,
          COALESCE(s.client_tax_id_snapshot, c.cedula, '—')     AS rnc,
          COALESCE(s.client_phone_snapshot, c.telefono, '—')    AS telefono,
-         SUM(s.total)                                           AS deuda,
+         SUM(COALESCE(s.total,0) - COALESCE(s.received_amount,0)) AS deuda,
          MAX(s.created_at)                                      AS ultima_compra,
          'Pendiente'                                            AS estado
        FROM sales s
        LEFT JOIN clients c ON s.client_id = c.id
        WHERE s.payment_method = 'credito'
          AND s.sale_status = 'pagada'
-         AND s.delivery_cash_status IN ('pendiente','na')
+         AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
+         AND COALESCE(s.total,0) > COALESCE(s.received_amount,0)
        GROUP BY s.client_id, s.client_name_snapshot, s.client_tax_id_snapshot, s.client_phone_snapshot
        ORDER BY deuda DESC
        LIMIT ${MAX_ROWS}`
@@ -431,23 +443,55 @@ async function buildContabilidadFeed() {
        LIMIT ${MAX_ROWS}`
     ).catch(() => []),
 
-    // Gastos — mismo origen que /api/reports/advanced/gastos del POS. No hay
-    // categoría contable real (Alquiler/Sueldos/etc.), solo 4 tipos genéricos
-    // + texto libre — el sistema contable los clasifica en "Gastos por Clasificar".
-    query(
-      `SELECT
-         cm.id,
-         cm.happened_at                                                 AS fecha,
-         cm.movement_type                                                AS categoria,
-         cm.notes                                                       AS descripcion,
-         ABS(cm.amount)                                                  AS monto,
-         cm.created_by_user_name                                        AS registrado_por
-       FROM cash_movements cm
-       WHERE cm.movement_type IN ('Gasto','Pago suplidor','Devolución','Retiro de efectivo','Egreso','salida','gasto','expense')
-         AND DATE(cm.happened_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-       ORDER BY cm.happened_at DESC
-       LIMIT ${MAX_ROWS}`
-    ).catch(() => []),
+    // Gastos — dos fuentes distintas que se combinan porque no se solapan:
+    // (a) retiros/salidas de la caja operativa (cash_movements), sin NCF ni
+    //     categoría fiscal real, solo texto libre — el sistema contable los
+    //     clasifica en "Gastos por Clasificar";
+    // (b) el registro FISCAL de Gastos (server/routes/gastos.routes.js,
+    //     tabla `expenses`) con categoría real, NCF, ITBIS y retenciones —
+    //     antes NO viajaba a Firestore, así que el 606 del contador quedaba
+    //     incompleto (Compras sí llegaba vía supplier_invoices, Gastos no).
+    Promise.all([
+      query(
+        `SELECT
+           cm.id,
+           cm.happened_at                                                 AS fecha,
+           cm.movement_type                                                AS categoria,
+           cm.notes                                                       AS descripcion,
+           ABS(cm.amount)                                                  AS monto,
+           cm.created_by_user_name                                        AS registrado_por,
+           'caja_operativa'                                                AS origen
+         FROM cash_movements cm
+         WHERE cm.movement_type IN ('Gasto','Pago suplidor','Devolución','Retiro de efectivo','Egreso','salida','gasto','expense')
+           AND DATE(cm.happened_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         ORDER BY cm.happened_at DESC
+         LIMIT ${MAX_ROWS}`
+      ).catch(() => []),
+      query(
+        `SELECT
+           e.id,
+           e.fecha                                                        AS fecha,
+           e.categoria                                                    AS categoria,
+           e.descripcion                                                  AS descripcion,
+           e.total                                                        AS monto,
+           e.created_by_user_name                                         AS registrado_por,
+           'gastos_fiscal'                                                AS origen,
+           e.ncf, e.tipo_ncf AS tipoNcf, e.ncf_modificado AS ncfModificado,
+           e.subtotal, e.itbis, e.retencion_isr AS retencionIsr, e.retencion_itbis AS retencionItbis,
+           e.forma_pago AS formaPago, e.isr_tipo_retencion AS isrTipoRetencion,
+           sup.rnc AS proveedorRnc
+         FROM expenses e
+         LEFT JOIN suppliers sup ON sup.id = e.supplier_id
+         WHERE e.estado <> 'anulado'
+           AND DATE(e.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         ORDER BY e.fecha DESC
+         LIMIT ${MAX_ROWS}`
+      ).catch(() => []),
+    ]).then(([cajaOperativa, gastosFiscal]) =>
+      [...cajaOperativa, ...gastosFiscal]
+        .sort((a, b) => new Date(b.fecha) - new Date(a.fecha))
+        .slice(0, MAX_ROWS)
+    ),
 
     // Cierres de caja — una fila por (sesión, método de pago) para poder
     // aislar cuánto efectivo real vs. tarjeta/transferencia se cobró.
@@ -500,6 +544,20 @@ async function buildContabilidadFeed() {
   };
 }
 
+// ── Espejo de secuencias NCF (solo lectura para el Portal del Contador) ────
+// Nunca es la fuente de verdad — el contador la usa para ver el estado real
+// antes de pedir una edición/suspensión (ver server/sync/apply-pending-ncf.js
+// y las acciones 'edit'/'suspend' de licencias/{uid}/ncf_pendientes).
+async function buildNcfSequencesSnapshot() {
+  const rows = await query(
+    `SELECT fs.*, b.nombre AS branch_name FROM ncf_authorized_sequences fs
+     LEFT JOIN branches b ON b.id = fs.branch_id
+     WHERE fs.deleted_at IS NULL
+     ORDER BY fs.document_type, fs.branch_id`
+  );
+  return rows.map(mapSequence);
+}
+
 // ── Escritura a Firestore ──────────────────────────────────────────────────
 
 async function syncPosStatsToFirestore() {
@@ -519,7 +577,7 @@ async function syncPosStatsToFirestore() {
 
   try {
     console.log('[sync-pos-stats] Calculando KPIs...');
-    const [posStats, tabs, contabilidad, businessProfile] = await Promise.all([
+    const [posStats, tabs, contabilidad, businessProfile, ncfSequences] = await Promise.all([
       buildPosStats(),
       buildReportesTabs(),
       buildContabilidadFeed().catch((e) => {
@@ -529,6 +587,10 @@ async function syncPosStatsToFirestore() {
       buildBusinessProfile().catch((e) => {
         console.warn('[sync-pos-stats] Perfil de negocio falló (no bloquea el resto):', e.message);
         return {};
+      }),
+      buildNcfSequencesSnapshot().catch((e) => {
+        console.warn('[sync-pos-stats] Espejo de secuencias NCF falló (no bloquea el resto):', e.message);
+        return null;
       }),
     ]);
 
@@ -557,6 +619,24 @@ async function syncPosStatsToFirestore() {
         ctbBatch.set(ctbCol.doc(tab), { rows, updatedAt: new Date().toISOString() });
       }
       await ctbBatch.commit();
+    }
+
+    // 4. Espejo de secuencias NCF aplicadas — un doc por secuencia, keyed por
+    // su id local (así el Portal referencia `targetLocalSequenceId` directo
+    // al pedir una edición/suspensión). Se sincroniza el set completo: los
+    // docs de secuencias eliminadas localmente desde la última vez se borran
+    // del espejo también, para no dejar basura obsoleta que confunda al contador.
+    if (ncfSequences) {
+      const ncfCol = licRef.collection('ncf_aplicadas');
+      const [existingSnap, ncfBatch] = await Promise.all([ncfCol.get(), Promise.resolve(db.batch())]);
+      const currentIds = new Set(ncfSequences.map((s) => String(s.id)));
+      for (const doc of existingSnap.docs) {
+        if (!currentIds.has(doc.id)) ncfBatch.delete(doc.ref);
+      }
+      for (const seq of ncfSequences) {
+        ncfBatch.set(ncfCol.doc(String(seq.id)), { ...seq, updatedAt: new Date().toISOString() });
+      }
+      await ncfBatch.commit();
     }
 
     console.log(`[sync-pos-stats] ✅ OK — ${licenseUid} | hoy: RD$${posStats.ventasHoy.toFixed(2)} | mes: RD$${posStats.ventasMes.toFixed(2)}`);

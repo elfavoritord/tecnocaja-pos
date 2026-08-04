@@ -221,7 +221,8 @@ function resolveRuntimePaths({ appRoot, userDataPath }) {
   const productUploadDir = ensureAbsolutePath(process.env.PRODUCT_UPLOAD_DIR, appRoot) || path.join(runtimeRoot, 'uploads', 'productos');
   const secureBackupDir = ensureAbsolutePath(process.env.SECURE_BACKUP_DIR, appRoot) || path.join(runtimeRoot, 'secure-backups');
   const treasuryAttachmentsDir = ensureAbsolutePath(process.env.TREASURY_ATTACHMENTS_DIR, appRoot) || path.join(runtimeRoot, 'uploads', 'comprobantes');
-  return { runtimeRoot, dbFile, productUploadDir, secureBackupDir, treasuryAttachmentsDir };
+  const fiscalAttachmentsDir = ensureAbsolutePath(process.env.FISCAL_ATTACHMENTS_DIR, appRoot) || path.join(runtimeRoot, 'uploads', 'comprobantes-fiscales');
+  return { runtimeRoot, dbFile, productUploadDir, secureBackupDir, treasuryAttachmentsDir, fiscalAttachmentsDir };
 }
 
 function prepareRuntimeEnvironment(options = {}) {
@@ -322,7 +323,7 @@ function prepareRuntimeEnvironment(options = {}) {
     }
   }
 
-  const { runtimeRoot, dbFile, productUploadDir, secureBackupDir, treasuryAttachmentsDir } = resolveRuntimePaths({
+  const { runtimeRoot, dbFile, productUploadDir, secureBackupDir, treasuryAttachmentsDir, fiscalAttachmentsDir } = resolveRuntimePaths({
     appRoot,
     userDataPath
   });
@@ -331,12 +332,14 @@ function prepareRuntimeEnvironment(options = {}) {
   fs.mkdirSync(productUploadDir, { recursive: true });
   fs.mkdirSync(secureBackupDir, { recursive: true });
   fs.mkdirSync(treasuryAttachmentsDir, { recursive: true });
+  fs.mkdirSync(fiscalAttachmentsDir, { recursive: true });
   fs.mkdirSync(path.join(userDataPath, 'logs'), { recursive: true });
 
   process.env.DB_FILE = dbFile;
   process.env.PRODUCT_UPLOAD_DIR = productUploadDir;
   process.env.SECURE_BACKUP_DIR = secureBackupDir;
   process.env.TREASURY_ATTACHMENTS_DIR = treasuryAttachmentsDir;
+  process.env.FISCAL_ATTACHMENTS_DIR = fiscalAttachmentsDir;
   ensureGeneratedRuntimeSecrets(userEnvFile, warnings);
 
   const resolvedServiceAccountPath = sanitizeOptionalFileEnv('FIREBASE_SERVICE_ACCOUNT_PATH', appRoot, warnings);
@@ -362,6 +365,7 @@ function prepareRuntimeEnvironment(options = {}) {
     productUploadDir,
     secureBackupDir,
     treasuryAttachmentsDir,
+    fiscalAttachmentsDir,
     warnings
   };
 }

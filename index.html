@@ -1965,6 +1965,7 @@
           </div>
           <button class="repv2-btn-export repv2-btn-export-lg" onclick="repV2ExportDGIIPDF()">⬇ Exportar PDF Fiscal</button>
           <button class="repv2-btn-export repv2-btn-export-lg" onclick="repV2ExportarParaContador()" title="Genera un archivo con el detalle línea por línea (606/607/608) para que tu contador lo importe en el Portal del Contador">📤 Exportar para el Contador</button>
+          <button class="repv2-btn-export repv2-btn-export-lg" onclick="repV2ExportarFormato606()" title="Genera un Excel con las 23 columnas del Formato 606 de la DGII, listo para pegar en la herramienta oficial de la DGII">🧾 Exportar Formato 606</button>
         </div>
 
         <!-- Resumen fiscal -->
@@ -2797,20 +2798,25 @@
 
         <!-- ══════════ SECUENCIAS NCF ══════════ -->
         <div class="config-section" id="cfg-ncf-section">
-          <h3>Secuencias de Comprobantes Fiscales (NCF)</h3>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:0.8rem;flex-wrap:wrap">
+            <h3 style="margin:0">Secuencias de Comprobantes Fiscales (NCF)</h3>
+            <button class="btn-secondary" type="button" id="ncf-auth-seq-sync-btn" onclick="ncfAuthSeqSyncContador()" title="Aplica ahora las secuencias que tu contador haya registrado desde su portal">🔄 Sincronizar con mi contador</button>
+          </div>
           <p class="helper-text" style="margin-bottom:0.8rem">
-            Configura los rangos de numeración autorizados por la DGII para cada tipo de comprobante.
-            Cada sucursal puede tener su propia secuencia o usar una global.
+            El sistema NO inventa rangos de NCF. Registra aquí el rango exacto que la DGII autorizó
+            (con la referencia de la aprobación y el documento adjunto) y actívalo — solo entonces
+            el cajero podrá usar ese tipo de comprobante al facturar. Tu contador también puede
+            registrarlas desde su portal; llegan solas al abrir/cerrar caja o facturar, o usa el botón de arriba.
           </p>
-          <div id="ncf-seq-list" style="margin-bottom:0.8rem">
+          <div id="ncf-auth-seq-list" style="margin-bottom:0.8rem">
             <div class="loading-text">Cargando secuencias…</div>
           </div>
           <details style="margin-top:0.5rem">
-            <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Agregar secuencia</summary>
-            <div class="ncf-seq-form" id="ncf-seq-add-form" style="margin-top:0.6rem">
+            <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Registrar secuencia autorizada</summary>
+            <div class="ncf-seq-form" id="ncf-auth-seq-add-form" style="margin-top:0.6rem">
               <div class="form-group">
                 <label>Tipo de comprobante</label>
-                <select id="ncf-seq-type" class="form-input">
+                <select id="ncf-auth-seq-type" class="form-input">
                   <option value="B01">B01 — Crédito Fiscal</option>
                   <option value="B02">B02 — Consumidor Final</option>
                   <option value="B03">B03 — Nota de Débito</option>
@@ -2826,25 +2832,46 @@
               </div>
               <div class="form-group">
                 <label>Sucursal (dejar vacío = global)</label>
-                <select id="ncf-seq-branch" class="form-input">
+                <select id="ncf-auth-seq-branch" class="form-input">
                   <option value="">Global (todas las sucursales)</option>
                 </select>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
                 <div class="form-group">
-                  <label>Desde (número inicial)</label>
-                  <input type="number" id="ncf-seq-desde" class="form-input" value="1" min="1">
+                  <label>Número inicial autorizado</label>
+                  <input type="number" id="ncf-auth-seq-desde" class="form-input" value="1" min="1">
                 </div>
                 <div class="form-group">
-                  <label>Hasta (límite máximo)</label>
-                  <input type="number" id="ncf-seq-hasta" class="form-input" value="99999999" min="1">
+                  <label>Número final autorizado</label>
+                  <input type="number" id="ncf-auth-seq-hasta" class="form-input" min="1">
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div class="form-group">
+                  <label>Fecha de autorización</label>
+                  <input type="date" id="ncf-auth-seq-fecha-autorizacion" class="form-input">
+                </div>
+                <div class="form-group">
+                  <label>Fecha de vencimiento</label>
+                  <input type="date" id="ncf-auth-seq-vencimiento" class="form-input">
                 </div>
               </div>
               <div class="form-group">
-                <label>Fecha de vencimiento (la que dio la DGII en la aprobación)</label>
-                <input type="date" id="ncf-seq-vencimiento" class="form-input">
+                <label>Referencia / número de autorización DGII</label>
+                <input type="text" id="ncf-auth-seq-referencia" class="form-input" placeholder="Ej: consulta de solicitudes DGII #...">
               </div>
-              <button class="btn-primary" type="button" onclick="saveNcfSequence()">Guardar secuencia</button>
+              <div class="form-group">
+                <label>Documento de autorización (PDF, XML, imagen, CSV, XLS/XLSX)</label>
+                <input type="file" id="ncf-auth-seq-file" class="form-input" accept=".pdf,.xml,.csv,.xls,.xlsx,image/*">
+              </div>
+              <div class="form-group">
+                <label>Notas (opcional)</label>
+                <textarea id="ncf-auth-seq-notas" class="form-input" rows="2"></textarea>
+              </div>
+              <div class="form-group">
+                <label class="checkbox-label"><input type="checkbox" id="ncf-auth-seq-rnc-confirm"> Confirmo que esta autorización corresponde al RNC de mi empresa</label>
+              </div>
+              <button class="btn-primary" type="button" onclick="saveNcfAuthSequence()">Guardar secuencia</button>
             </div>
           </details>
         </div>
@@ -4790,7 +4817,7 @@
 <script src="js/tesoreria.js"></script>
 <script src="js/rrhh.js"></script>
 <script src="js/label-manager.js"></script>
-<script src="js/ncf-config.js"></script>
+<script src="js/fiscal-sequences-config.js"></script>
 <script src="js/business-config.js"></script>
 <script src="js/monedas.js"></script>
 <script src="js/plans.js"></script>

@@ -1554,7 +1554,7 @@ module.exports = function createOfflineRouter(deps) {
       }
 
       const fiscalPayload = generatedNcf ? JSON.stringify({
-        numero: generatedNcf,
+        numero: generatedNcf.ncf,
         tipo: ncfType,
         estado: 'emitida',
         cliente: saleData.razonSocialCliente || clientName,
@@ -1568,18 +1568,19 @@ module.exports = function createOfflineRouter(deps) {
 
       // Insertar en tabla sales (usando nombres de columna exactos del schema)
       const insertSql = `INSERT INTO sales
-           (invoice_number, ncf, ncf_type, ncf_referencia, fiscal_status, fiscal_payload,
+           (invoice_number, ncf, ncf_type, ncf_referencia, ncf_vencimiento, fiscal_status, fiscal_payload,
             razon_social_cliente, total, discount, tax, subtotal, payment_method,
             sale_status, client_id, client_name_snapshot, branch_id, cash_register_id,
             user_id, document_type, order_type, order_notes,
             received_amount, change_amount, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pagada', ?, ?, ?, ?, ?, ?, 'mostrador', ?,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pagada', ?, ?, ?, ?, ?, ?, 'mostrador', ?,
                  ?, 0, ?)`;
       const insertParams = [
         invoiceNumber,
-        generatedNcf,
+        generatedNcf ? generatedNcf.ncf : null,
         generatedNcf ? ncfType : null,
         generatedNcf ? (saleData.ncfReferencia || null) : null,
+        generatedNcf ? (generatedNcf.fechaVencimiento || null) : null,
         // El resto del sistema usa 'emitida' como estado universal, incluso
         // para tickets sin NCF (server.js sigue el mismo patrón) — no
         // inventar un estado nuevo que otras queries no reconocerían.

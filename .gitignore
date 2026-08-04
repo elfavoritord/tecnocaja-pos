@@ -174,3 +174,7 @@ config/terminal-config.json
 *.p12
 *.pfx
 modules/ecf/certificates/
+
+# Material de referencia personal (plantilla oficial DGII + guía PDF),
+# no es código del proyecto — no debe ir al repo.
+llenado B06/

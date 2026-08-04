@@ -1243,6 +1243,55 @@
     }
   };
 
+  // Excel con las 23 columnas oficiales del Formato 606 de la DGII, en el
+  // mismo orden que la "Herramienta de Envío Formato 606" — se arma a partir
+  // de Compras y Gastos con NCF del período (mismo endpoint que el export
+  // para el contador). No genera el TXT final: Emilio pega estas filas en el
+  // Excel oficial de la DGII y usa sus propios botones "Validar"/"Generar
+  // Archivo", porque ese formato TXT puede cambiar de versión y las macros
+  // oficiales ya lo validan/generan correctamente.
+  window.repV2ExportarFormato606 = async function () {
+    try {
+      if (window.VendorLoader) await window.VendorLoader.load('xlsx');
+      if (typeof window.XLSX === 'undefined') { if (typeof showToast === 'function') showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
+      if (typeof showToast === 'function') showToast('Preparando Formato 606...', 'info');
+      const data = await apiGet('/api/reports/advanced/dgii/exportar-contador' + buildQS());
+      const rows = data?.compras606 || [];
+      if (!rows.length) {
+        if (typeof showToast === 'function') showToast('No hay compras/gastos con NCF en el período seleccionado.', 'warning');
+        return;
+      }
+      const headers = [
+        'RNC o Cédula', 'Tipo Id', 'Tipo de Bienes y Servicios Comprados', 'NCF', 'NCF o Documento Modificado',
+        'Fecha Comprobante', 'Fecha Pago', 'Monto Facturado en Servicios', 'Monto Facturado en Bienes',
+        'Total Monto Facturado', 'ITBIS Facturado', 'ITBIS Retenido', 'ITBIS sujeto a Proporcionalidad (Art. 349)',
+        'ITBIS llevado al Costo', 'ITBIS por Adelantar', 'ITBIS percibido en compras', 'Tipo de Retención en ISR',
+        'Monto Retención Renta', 'ISR Percibido en compras', 'Impuesto Selectivo al Consumo', 'Otros Impuestos/Tasas',
+        'Monto Propina Legal', 'Forma de Pago',
+      ];
+      // La DGII espera las fechas como AAAAMMDD dentro de la herramienta oficial.
+      const fmtFecha606 = (iso) => (iso ? String(iso).slice(0, 10).replace(/-/g, '') : '');
+      const body = rows.map((r) => [
+        r.rncProveedor || '', r.tipoIdentificacion || '', r.tipoBienesServicios || '', r.ncf || '', r.ncfModificado || '',
+        fmtFecha606(r.fechaComprobante), fmtFecha606(r.fechaPago), r.montoServicios || 0, r.montoBienes || 0,
+        r.montoFacturado || 0, r.itbisFacturado || 0, r.itbisRetenido || 0, 0,
+        0, '', 0, r.isrTipoRetencion || '',
+        r.montoRetencionRenta || 0, 0, 0, 0,
+        0, r.formaPago || '',
+      ]);
+      const ws = window.XLSX.utils.aoa_to_sheet([headers, ...body]);
+      const wb = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(wb, ws, 'Formato 606');
+      const rncNegocio = (data?.negocio?.rnc || 'negocio').replace(/[^\w-]/g, '');
+      const periodo = `${String(RV2.filtros.desde || '').replace(/-/g, '')}_${String(RV2.filtros.hasta || '').replace(/-/g, '')}`;
+      window.XLSX.writeFile(wb, `Formato606_${rncNegocio}_${periodo}.xlsx`);
+      if (typeof showToast === 'function') showToast('Excel generado. Copia las filas al Excel oficial de la DGII y valida ahí.', 'success');
+    } catch (e) {
+      console.error('[Reportes] repV2ExportarFormato606:', e.message);
+      if (typeof showToast === 'function') showToast('No se pudo exportar el Formato 606.', 'error');
+    }
+  };
+
   window.repV2ExportConsolidadoPDF = async function () {
     if (typeof showToast === 'function') showToast('Generando reporte consolidado...', 'info');
     // Asegurar que todos los datos estén cargados

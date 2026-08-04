@@ -2932,7 +2932,7 @@ function buildBillingCompactModalMarkup() {
             <label class="billing-v3-sh-label">Tipo</label>
             <div class="billing-v3-doc-pills">
               ${mainDocs.map((doc) => `
-                <button type="button"
+                <button type="button" data-preset="${doc.key}"
                   class="billing-v3-doc-pill ${activePreset === doc.key ? 'is-active' : ''}"
                   onclick="setSaleDocumentPreset('${doc.key}')"
                   title="${doc.hint}"><span>${doc.label}</span></button>
@@ -3642,6 +3642,38 @@ function _buildBillingCompactModalMarkup_legacy() {
   `;
 }
 
+// Tipos de comprobante NCF (serie B) con secuencia activa y números
+// disponibles, según el registro manual de Configuración → Comprobantes
+// fiscales (server/routes/fiscal-sequences.routes.js). null = todavía no se
+// consultó esta sesión de facturación (no bloquea, solo no colorea aún).
+let _availableNcfDocTypes = null;
+
+async function refreshAvailableNcfDocTypes() {
+  try {
+    const branchId = DB.currentUser?.sucursalId || DB.config?.activeBranchId || '';
+    const res = await fetch(`/api/fiscal-sequences/available${branchId ? `?branchId=${encodeURIComponent(branchId)}` : ''}`, {
+      headers: { Authorization: `Bearer ${DB.authToken || ''}` }
+    });
+    if (!res.ok) return;
+    const rows = await res.json();
+    _availableNcfDocTypes = new Set((rows || []).map((r) => String(r.documentType || '').toUpperCase()));
+    _applyAvailableNcfDocTypesToPills();
+  } catch (_) { /* si falla, no se bloquea la venta — solo no se colorea el pill */ }
+}
+
+// Solo aplica a los presets que son un tipo NCF real (B01/B02/...) — ticket
+// y factura-electronica no dependen de fiscal_sequences.
+function _applyAvailableNcfDocTypesToPills() {
+  if (!_availableNcfDocTypes) return;
+  document.querySelectorAll('.billing-v3-doc-pill[data-preset]').forEach((btn) => {
+    const preset = String(btn.dataset.preset || '').toUpperCase();
+    if (!/^B\d{2}$/.test(preset)) return;
+    const available = _availableNcfDocTypes.has(preset);
+    btn.classList.toggle('is-unavailable', !available);
+    btn.title = available ? btn.title : 'Sin secuencia activa para este comprobante — regístrala en Configuración → Comprobantes fiscales.';
+  });
+}
+
 function setSaleDocumentPreset(preset) {
   const normalized = String(preset || 'ticket').trim();
   if (normalized === 'factura-electronica') {
@@ -3651,8 +3683,13 @@ function setSaleDocumentPreset(preset) {
     DB.saleDocumentType = 'ticket';
     setSaleNcfType('');
   } else {
+    const upper = normalized.toUpperCase();
+    if (_availableNcfDocTypes && /^B\d{2}$/.test(upper) && !_availableNcfDocTypes.has(upper)) {
+      showToast(`No existen secuencias disponibles para ${upper}. Regístrala en Configuración → Comprobantes fiscales.`, 'warning');
+      return;
+    }
     DB.saleDocumentType = 'ticket';
-    setSaleNcfType(normalized.toUpperCase());
+    setSaleNcfType(upper);
   }
   syncSaleFiscalControls();
 }
@@ -4620,6 +4657,8 @@ function openBillingModal() {
   syncBillingModalFooter();
   syncSaleFiscalControls();
   setSaleNcfType(DB.saleNcfType || '');
+  refreshAvailableNcfDocTypes();
+  _applyAvailableNcfDocTypesToPills();
   syncBillingModalTotals();
   syncBillingClientSnapshot();
   const amountInput = document.getElementById('monto-recibido');

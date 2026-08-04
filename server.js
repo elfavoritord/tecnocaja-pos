@@ -1,4 +1,4 @@
-﻿const fs = require('fs');
+const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const http = require('http');
@@ -60,6 +60,9 @@ const { createLabelsRouter, ensureSchema: ensureLabelsSchema } = require('./serv
 
 // Tesorería — Caja General (separada de la caja operativa)
 const { createTesoreriaRouter, ensureSchema: ensureTesoreriaSchema } = require('./server/routes/tesoreria.routes');
+
+// Secuencias fiscales NCF — registro manual de rangos autorizados por la DGII (Fase 1)
+const { createFiscalSequencesRouter, ensureSchema: ensureFiscalSequencesSchema } = require('./server/routes/fiscal-sequences.routes');
 
 // Compras — Compras + Cuentas por pagar (Fase 1). NO incluye Gastos, DGII 606
 // ni integración contable (eso vive en tecno-caja-contadores).
@@ -1441,6 +1444,8 @@ const PRODUCT_UPLOAD_DIR = runtime.productUploadDir;
 const PRODUCT_UPLOAD_WEB_PATH = '/uploads/productos';
 const TREASURY_ATTACHMENTS_DIR = runtime.treasuryAttachmentsDir;
 const TREASURY_ATTACHMENTS_WEB_PATH = '/uploads/comprobantes';
+const FISCAL_ATTACHMENTS_DIR = runtime.fiscalAttachmentsDir;
+const FISCAL_ATTACHMENTS_WEB_PATH = '/uploads/comprobantes-fiscales';
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || '';
 const PIZZERIA_CATEGORY_LIST = [
   'Pizzas',
@@ -1867,6 +1872,7 @@ app.use(express.static(path.join(__dirname), {
 }));
 app.use(PRODUCT_UPLOAD_WEB_PATH, express.static(PRODUCT_UPLOAD_DIR));
 app.use(TREASURY_ATTACHMENTS_WEB_PATH, express.static(TREASURY_ATTACHMENTS_DIR));
+app.use(FISCAL_ATTACHMENTS_WEB_PATH, express.static(FISCAL_ATTACHMENTS_DIR));
 
 // ✅ Rutas de sincronización Firebase
 app.use('/api/sync', syncRoutes);
@@ -2173,6 +2179,15 @@ const tesoreriaRouter = createTesoreriaRouter({
   verifyUserPassword: verifyUserAccountPassword, isMysqlDeployment,
 });
 app.use('/api/tesoreria', tesoreriaRouter);
+
+// Secuencias fiscales NCF — Administración de rangos autorizados por la DGII (Fase 1)
+const fiscalSequencesRouter = createFiscalSequencesRouter({
+  query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
+  isGlobalAdministratorUser, isBranchAdministratorUser,
+  attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH,
+  verifyUserPassword: verifyUserAccountPassword, isMysqlDeployment,
+});
+app.use('/api/fiscal-sequences', fiscalSequencesRouter);
 
 // Compras — Compras + Cuentas por pagar (Fase 1)
 const comprasRouter = createComprasRouter({
@@ -3854,7 +3869,13 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 
 // -5: agrega client_credit_payments / client_credit_payment_allocations
 // (fix cobro de crédito a clientes no reflejado en caja/reportes/factura).
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-5`;
+// -6: agrega ncf_authorized_sequences / ncf_authorized_sequence_audit y
+// migra los rangos activos de ncf_sequences hacia la nueva tabla (Fase 1 de
+// secuencias fiscales, ver server/routes/fiscal-sequences.routes.js).
+// -7: agrega columnas del Formato 606 DGII a purchases/expenses (tipo de
+// bienes/servicios, forma de pago, retenciones, NCF modificado) — ver
+// server/routes/compras.routes.js y gastos.routes.js.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-7`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -4829,6 +4850,7 @@ let remoteLicenseSyncAt = 0;
 const DEFAULT_LICENSE_FALLBACK_POLL_MS = 5 * 60 * 1000;
 let licenseWatcherUnsubscribe = null;
 let licenseFallbackPollTimer = null;
+let ncfPendientesWatcherUnsubscribe = null;
 
 function buildLicenseSocketPayload(license = {}, licenseUid = null) {
   return {
@@ -5221,7 +5243,22 @@ async function ensurePromotionsExtensions() {
 // dos terminales pidiendo el mismo tipo de NCF casi al mismo tiempo lean el
 // mismo siguiente_numero antes de que cualquiera confirme — mismo bug que ya
 // se corrigió para las secuencias de e-CF en modules/ecf/models/ecf.repository.js.
+//
+// Delega a ncf_authorized_sequences (registro manual con autorización DGII real,
+// ver server/routes/fiscal-sequences.routes.js) o al sistema legacy
+// ncf_sequences según el flag config.ncf_authorized_sequences_v2_enabled — salvaguarda
+// de reversión sin redeploy mientras se confirma en producción real. Misma
+// firma y mismo retorno { ncf, fechaVencimiento } en ambos casos para no
+// tocar los call-sites (server.js POST /api/sales, offline.routes.js).
 async function getNextNcfFromSequence(conn, ncfType, branchId) {
+  const [cfg] = await conn.query('SELECT ncf_authorized_sequences_v2_enabled FROM config WHERE id = 1 LIMIT 1');
+  if (cfg && Number(cfg.ncf_authorized_sequences_v2_enabled)) {
+    return getNextNcfFromFiscalSequences(conn, ncfType, branchId);
+  }
+  return getNextNcfFromLegacyNcfSequence(conn, ncfType, branchId);
+}
+
+async function getNextNcfFromLegacyNcfSequence(conn, ncfType, branchId) {
   const seqs = await conn.query(
     `SELECT * FROM ncf_sequences WHERE ncf_type = ? AND activa = 1
      AND (branch_id = ? OR branch_id IS NULL)
@@ -5246,6 +5283,42 @@ async function getNextNcfFromSequence(conn, ncfType, branchId) {
     [seq.id]
   );
   return { ncf, fechaVencimiento: seq.fecha_vencimiento || null };
+}
+
+async function getNextNcfFromFiscalSequences(conn, ncfType, branchId) {
+  const seqs = await conn.query(
+    `SELECT * FROM ncf_authorized_sequences WHERE document_type = ? AND status = 'activo' AND deleted_at IS NULL
+     AND (branch_id = ? OR branch_id IS NULL)
+     ORDER BY branch_id DESC LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
+    [ncfType, branchId || null]
+  );
+  if (!seqs[0]) {
+    const err = new Error(`No hay secuencia activa para ${ncfType}. Regístrala y actívala en Configuración → Comprobantes fiscales.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  const seq = seqs[0];
+  const today = new Date().toISOString().slice(0, 10);
+  if (seq.expiration_date && String(seq.expiration_date) < today) {
+    const err = new Error(`La secuencia ${ncfType} venció el ${seq.expiration_date}. Solicita una nueva autorización a la DGII.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  if (seq.next_number > seq.end_number) {
+    await conn.query("UPDATE ncf_authorized_sequences SET status = 'agotado', updated_at = datetime('now') WHERE id = ?", [seq.id]);
+    const err = new Error(`La secuencia ${ncfType} se agotó (rango ${seq.start_number}-${seq.end_number}). Registra una nueva autorización de la DGII.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  const ncfNumber = seq.next_number;
+  const ncf = `${ncfType}${String(ncfNumber).padStart(8, '0')}`;
+  const nextAfter = ncfNumber + 1;
+  const newStatus = nextAfter > seq.end_number ? 'agotado' : seq.status;
+  await conn.query(
+    "UPDATE ncf_authorized_sequences SET next_number = ?, last_used_number = ?, status = ?, updated_at = datetime('now') WHERE id = ?",
+    [nextAfter, ncfNumber, newStatus, seq.id]
+  );
+  return { ncf, fechaVencimiento: seq.expiration_date || null };
 }
 
 const NCF_LABELS = {
@@ -10961,6 +11034,37 @@ app.locals.applyPendingProductRequests = () => require('./server/sync/apply-pend
   .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
   .applyPendingProductRequests();
 
+// Mismo mecanismo que productos pendientes, para secuencias NCF que un
+// contador haya registrado desde su Portal (ver server/sync/apply-pending-ncf.js).
+//
+// Aplicar la solicitud (create/edit/suspend/delete) y actualizar el espejo
+// de solo lectura que ve el portal (licencias/{uid}/ncf_aplicadas) son dos
+// pasos distintos — sin este segundo paso, el POS ya había borrado/editado
+// la secuencia realmente, pero el portal seguía mostrando el dato viejo
+// hasta el próximo sync completo de 5 minutos, dando la falsa impresión de
+// que "no pasó nada". Se refresca el espejo aquí mismo, apenas se aplicó
+// algo de verdad (nunca si la cola estaba vacía, para no gastar una
+// escritura a Firestore de balde).
+function refreshNcfMirrorIfApplied(result) {
+  if (result?.ok && result.applied > 0) {
+    require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
+  }
+  return result;
+}
+
+function applyPendingNcfFireAndForget() {
+  require('./server/sync/apply-pending-ncf')
+    .createApplyPendingNcfService({ query, withTransaction, writeAuditLog, isMysqlDeployment, attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH })
+    .applyPendingNcfRequests()
+    .then(refreshNcfMirrorIfApplied)
+    .catch(() => {});
+}
+
+app.locals.applyPendingNcfRequests = () => require('./server/sync/apply-pending-ncf')
+  .createApplyPendingNcfService({ query, withTransaction, writeAuditLog, isMysqlDeployment, attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH })
+  .applyPendingNcfRequests()
+  .then(refreshNcfMirrorIfApplied);
+
 app.post('/api/products', async (req, res) => {
   ensureNotCashier(req);
   const actorUser = await resolveRequestActorUser(req, { required: true });
@@ -13908,6 +14012,7 @@ app.post('/api/cash/open', async (req, res) => {
     // Actualizar KPIs del Portal de Contadores al abrir caja (fire & forget)
     require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
     applyPendingProductsFireAndForget();
+    applyPendingNcfFireAndForget();
     const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
     return res.status(201).json({ sessionId: result, activeSession, config: await getConfig() });
   } catch (err) {
@@ -14124,6 +14229,7 @@ app.post('/api/cash/close', async (req, res) => {
   // Actualizar KPIs del Portal de Contadores al cerrar caja (fire & forget)
   require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
   applyPendingProductsFireAndForget();
+  applyPendingNcfFireAndForget();
   // ── Sync reporte-sistema-pos (cierre) ──
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
@@ -15257,6 +15363,7 @@ app.post('/api/sales', async (req, res) => {
     const { syncPosStatsToFirestore } = require('./server/sync/sync-pos-stats');
     syncPosStatsToFirestore().catch(() => {});
     applyPendingProductsFireAndForget();
+    applyPendingNcfFireAndForget();
     // Encolar venta en el nuevo sync service y procesar inmediatamente (<3s)
     try {
       const _syncSvc = getSyncService();
@@ -17628,13 +17735,59 @@ app.get('/api/reports/advanced/dgii/exportar-contador', async (req, res) => {
       FROM sales s ${wAnulados}
       ORDER BY s.created_at ASC`, pAnulados);
 
-    // 606 — Compras a suplidores con NCF registrado
-    const compras = await query(`
-      SELECT si.ncf, si.issued_at, si.total_amount, si.itbis_amount, s.rnc AS supplier_rnc
-      FROM supplier_invoices si
-      LEFT JOIN suppliers s ON s.id = si.supplier_id
-      WHERE si.issued_at BETWEEN ? AND ? AND si.ncf IS NOT NULL AND si.ncf <> ''
-      ORDER BY si.issued_at ASC`, [desde, hasta]);
+    // 606 — Compras (mercancía) y Gastos con NCF registrado. Se leen ambas
+    // tablas por separado (cada una tiene su propio set de columnas del 606,
+    // ver server/routes/compras.routes.js y gastos.routes.js) y se combinan
+    // abajo al mapear — evita el JOIN artificial entre dos tablas con
+    // estructura distinta.
+    const comprasMercancia = await query(`
+      SELECT p.ncf, p.ncf_modificado, p.fecha_comprobante AS fecha, p.fecha_vencimiento AS fecha_pago,
+             p.subtotal AS monto_bienes, 0 AS monto_servicios, p.itbis AS itbis_facturado,
+             p.itbis_retenido, p.isr_tipo_retencion, p.isr_monto_retencion,
+             p.tipo_bienes_servicios, p.forma_pago, s.rnc AS supplier_rnc
+      FROM purchases p
+      LEFT JOIN suppliers s ON s.id = p.supplier_id
+      WHERE p.fecha_comprobante BETWEEN ? AND ? AND p.ncf IS NOT NULL AND p.ncf <> '' AND p.estado = 'activa'
+      ORDER BY p.fecha_comprobante ASC`, [desde, hasta]);
+
+    // Mismo mapa que EXPENSE_CATEGORY_TO_DGII_CODE en gastos.routes.js —
+    // duplicado a propósito (constante pequeña) para no acoplar server.js a
+    // los internals de ese router. Mantener sincronizado si cambia allá.
+    const EXPENSE_CATEGORY_TO_DGII_CODE_606 = {
+      'Alquiler': 3, 'Electricidad': 2, 'Internet': 2, 'Agua': 2, 'Servicios': 2, 'Mantenimiento': 2,
+      'Seguridad': 2, 'Limpieza': 2, 'Combustible': 2, 'Publicidad': 5, 'Papelería': 6, 'Nómina': 1,
+      'Honorarios': 2, 'Impuestos': 6, 'Caja Chica': 6, 'Otros': 6,
+    };
+    const gastosConNcf = await query(`
+      SELECT e.ncf, e.ncf_modificado, e.fecha, e.fecha_pago,
+             0 AS monto_bienes, e.subtotal AS monto_servicios, e.itbis AS itbis_facturado,
+             e.retencion_itbis AS itbis_retenido, e.isr_tipo_retencion, e.retencion_isr AS isr_monto_retencion,
+             e.categoria, e.forma_pago, s.rnc AS supplier_rnc
+      FROM expenses e
+      LEFT JOIN suppliers s ON s.id = e.supplier_id
+      WHERE e.fecha BETWEEN ? AND ? AND e.ncf IS NOT NULL AND e.ncf <> '' AND e.estado <> 'anulado'
+      ORDER BY e.fecha ASC`, [desde, hasta]);
+
+    const mapCompra606 = (r) => ({
+      ncf: r.ncf,
+      tipoNcf: tipoNcfDe(r.ncf),
+      ncfModificado: r.ncf_modificado || '',
+      rncProveedor: r.supplier_rnc || '',
+      tipoIdentificacion: tipoIdentificacion(r.supplier_rnc),
+      tipoBienesServicios: Number(r.tipo_bienes_servicios || EXPENSE_CATEGORY_TO_DGII_CODE_606[r.categoria] || 9),
+      fechaComprobante: soloFecha(r.fecha),
+      fechaPago: soloFecha(r.fecha_pago),
+      montoServicios: Number(r.monto_servicios || 0),
+      montoBienes: Number(r.monto_bienes || 0),
+      montoFacturado: Number(r.monto_servicios || 0) + Number(r.monto_bienes || 0),
+      itbisFacturado: Number(r.itbis_facturado || 0),
+      itbisRetenido: Number(r.itbis_retenido || 0),
+      isrTipoRetencion: r.isr_tipo_retencion || null,
+      montoRetencionRenta: Number(r.isr_monto_retencion || 0),
+      formaPago: r.forma_pago || null,
+    });
+    const compras606 = [...comprasMercancia.map(mapCompra606), ...gastosConNcf.map(mapCompra606)]
+      .sort((a, b) => String(a.fechaComprobante).localeCompare(String(b.fechaComprobante)));
 
     res.json({
       tipo: 'tecno_caja_export_fiscal',
@@ -17659,15 +17812,7 @@ app.get('/api/reports/advanced/dgii/exportar-contador', async (req, res) => {
         montoExento: Number(r.tax || 0) === 0 ? Number(r.total || 0) : 0,
         itbisFacturado: Number(r.tax || 0),
       })),
-      compras606: compras.map((r) => ({
-        ncf: r.ncf,
-        tipoNcf: tipoNcfDe(r.ncf),
-        rncProveedor: r.supplier_rnc || '',
-        tipoIdentificacion: tipoIdentificacion(r.supplier_rnc),
-        fechaComprobante: soloFecha(r.issued_at),
-        montoFacturado: Number(r.total_amount || 0),
-        itbisFacturado: Number(r.itbis_amount || 0),
-      })),
+      compras606,
       anulados608: anulados.map((r) => ({
         ncf: r.ncf,
         tipoNcf: tipoNcfDe(r.ncf),
@@ -18267,6 +18412,7 @@ function startLicenseServicesInBackground() {
   licenseStartupPromise = Promise.allSettled([
     syncRemoteLicenseToLocalConfig({ force: true }),
     ensureLicenseBackgroundSync(),
+    startFirestoreNcfPendientesWatcher(),
   ]).then((results) => {
     for (const result of results) {
       if (result.status === 'rejected') {
@@ -18310,6 +18456,7 @@ async function finishMysqlRuntimeInit() {
         ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
         ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
         ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
+        ensureFiscalSequencesSchema(query).catch(e => console.warn('[fiscal-sequences] init fallo:', e.message)),
         ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
         ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
         ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
@@ -18505,6 +18652,7 @@ async function prepareServerRuntime() {
       ensureRrhhSchema(query).catch(e => console.warn('[rrhh] init fallo:', e.message)),
       ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
       ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
+      ensureFiscalSequencesSchema(query).catch(e => console.warn('[fiscal-sequences] init fallo:', e.message)),
       ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
       ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
       ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
@@ -18647,6 +18795,48 @@ async function startFirestoreLicenseWatcher() {
   }
 }
 
+// ─── Listener Firestore en tiempo real para NCF pendientes del contador ──────
+// Sin esto, una solicitud de crear/editar/suspender/eliminar hecha desde el
+// Portal del Contador se quedaba "pendiente" hasta el próximo sync de 5
+// minutos (o hasta abrir/cerrar caja/vender) — con este listener se aplica
+// en segundos, apenas Firestore avisa que hay un doc nuevo con
+// status:'pendiente'. No hace falta auto-descubrir el UID como en el
+// watcher de licencia: apply-pending-ncf.js ya requiere
+// TECNO_CAJA_LICENSE_UID en env para funcionar, así que si no está
+// configurado tampoco hay nada que escuchar aquí — el timer de 5 min sigue
+// como red de respaldo si este listener nunca llega a conectar.
+async function startFirestoreNcfPendientesWatcher() {
+  const firebaseStatus = getFirebaseConfigStatus();
+  if (!firebaseStatus.adminEnabled) return false;
+  if (ncfPendientesWatcherUnsubscribe) return true;
+
+  const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+  if (!licenseUid) return false;
+
+  try {
+    const { getFirestore: _getFs } = require('./modules/firebase-admin');
+    const db = _getFs();
+    const pendingQuery = db.collection('licencias').doc(licenseUid).collection('ncf_pendientes')
+      .where('status', '==', 'pendiente');
+
+    ncfPendientesWatcherUnsubscribe = pendingQuery.onSnapshot(
+      (snap) => {
+        if (!snap.empty) applyPendingNcfFireAndForget();
+      },
+      err => {
+        console.warn('[ncf-pendientes-watcher] Error en listener Firestore:', err.message);
+        ncfPendientesWatcherUnsubscribe = null;
+      }
+    );
+
+    console.log('[ncf-pendientes-watcher] Listener en tiempo real activo para licenseUid:', licenseUid);
+    return true;
+  } catch (err) {
+    console.warn('[ncf-pendientes-watcher] No se pudo iniciar listener Firestore:', err.message);
+    return false;
+  }
+}
+
 // ─── Iniciar HTTP server (llamado desde electron/main.js) ────────────────────
 /* ─────────────────────────────────────────────────────────────────────────────
    MÓDULO: ACTUALIZACIÓN DEL SISTEMA
@@ -18784,6 +18974,22 @@ async function startHttpServer(port, bindHost) {
           }
         } catch (e) { console.warn('[wa-bot] Error en auto-arranque:', e.message); }
       }, 3000); // espera 3s a que la BD esté lista
+
+      // Sincronización periódica con el Portal del Contador (posStats +
+      // colas de productos/NCF pendientes) — temporizador propio, fijo cada
+      // 5 minutos, DESACOPLADO del chequeo de licencia (antes colgaba de ahí
+      // y era impredecible: el listener en tiempo real de licencia solo
+      // dispara cuando la licencia cambia, no cuando hay ventas/caja nuevas).
+      // Con un intervalo fijo el consumo de Firestore queda acotado y fácil
+      // de razonar, sin depender de qué tan seguido cambia otra cosa.
+      const PORTAL_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+      const runPortalSync = () => {
+        require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
+        applyPendingProductsFireAndForget();
+        applyPendingNcfFireAndForget();
+      };
+      setTimeout(runPortalSync, 30000); // primer sync a los 30s de arrancar
+      setInterval(runPortalSync, PORTAL_SYNC_INTERVAL_MS).unref();
     });
     httpServer.once('error', reject);
   });

@@ -95,6 +95,20 @@ async function ensureSchema(query) {
   // Enlace de vuelta desde la cuenta por pagar/pago hacia la compra que los generó.
   await addColumnIfMissing(query, 'supplier_invoices', 'purchase_id', 'INT DEFAULT NULL');
   await addColumnIfMissing(query, 'supplier_payments', 'purchase_id', 'INT DEFAULT NULL');
+
+  // Campos para poder armar el Formato 606 de la DGII sin pedirle a Emilio
+  // que los transcriba a mano cada mes (ver server.js GET
+  // /api/reports/advanced/dgii/exportar-contador). Todos opcionales con
+  // default sensato para no romper el flujo rápido de registrar una compra.
+  // tipo_bienes_servicios: código 1-11 del campo 3 del 606 — 9 por defecto
+  // ("Compras y gastos que formarán parte del costo de venta"), el caso
+  // típico de un colmado/tienda comprando mercancía para revender.
+  await addColumnIfMissing(query, 'purchases', 'tipo_bienes_servicios', 'INT NOT NULL DEFAULT 9');
+  await addColumnIfMissing(query, 'purchases', 'forma_pago', 'INT DEFAULT NULL');
+  await addColumnIfMissing(query, 'purchases', 'itbis_retenido', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
+  await addColumnIfMissing(query, 'purchases', 'isr_tipo_retencion', 'INT DEFAULT NULL');
+  await addColumnIfMissing(query, 'purchases', 'isr_monto_retencion', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
+  await addColumnIfMissing(query, 'purchases', 'ncf_modificado', 'VARCHAR(30) DEFAULT NULL');
 }
 
 function httpError(message, statusCode = 400) {
@@ -122,6 +136,13 @@ function mapPurchaseRow(row) {
     descuento: Number(row.descuento || 0),
     itbis: Number(row.itbis || 0),
     total: Number(row.total || 0),
+    // Formato 606 DGII
+    tipoBienesServicios: row.tipo_bienes_servicios != null ? Number(row.tipo_bienes_servicios) : 9,
+    formaPago: row.forma_pago != null ? Number(row.forma_pago) : null,
+    itbisRetenido: Number(row.itbis_retenido || 0),
+    isrTipoRetencion: row.isr_tipo_retencion != null ? Number(row.isr_tipo_retencion) : null,
+    isrMontoRetencion: Number(row.isr_monto_retencion || 0),
+    ncfModificado: row.ncf_modificado || '',
     estado: row.estado,
     notas: row.notas || '',
     motivoAnulacion: row.motivo_anulacion || '',
@@ -262,16 +283,30 @@ function createComprasRouter({
       if (!Number.isFinite(total)) throw httpError('Revisa los montos ingresados: hay un valor no numérico en la compra.');
       if (total <= 0) throw httpError('El total de la compra debe ser mayor a 0.');
 
+      // Datos opcionales para el Formato 606 DGII — no bloquean el registro
+      // rápido de la compra si Emilio no los llena, quedan con default.
+      const tipoBienesServicios = Number.isInteger(Number(data.tipoBienesServicios)) && Number(data.tipoBienesServicios) >= 1 && Number(data.tipoBienesServicios) <= 11
+        ? Number(data.tipoBienesServicios) : 9;
+      const formaPago = Number.isInteger(Number(data.formaPago)) && Number(data.formaPago) >= 1 && Number(data.formaPago) <= 7
+        ? Number(data.formaPago) : (condicionPago === 'credito' ? 4 : null);
+      const itbisRetenido = Math.max(0, Number(data.itbisRetenido || 0));
+      const isrTipoRetencion = Number.isInteger(Number(data.isrTipoRetencion)) && Number(data.isrTipoRetencion) >= 1 && Number(data.isrTipoRetencion) <= 9
+        ? Number(data.isrTipoRetencion) : null;
+      const isrMontoRetencion = Math.max(0, Number(data.isrMontoRetencion || 0));
+      const ncfModificado = String(data.ncfModificado || '').trim() || null;
+
       const result = await withTransaction(async (conn) => {
         const purchaseInsert = await conn.query(
           `INSERT INTO purchases
             (supplier_id, branch_id, numero_documento, ncf, tipo_ncf, fecha_comprobante, fecha_recepcion,
              condicion_pago, fecha_vencimiento, subtotal, descuento, itbis, total, estado, notas,
-             created_by_user_id, created_by_user_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'activa', ?, ?, ?)`,
+             created_by_user_id, created_by_user_name,
+             tipo_bienes_servicios, forma_pago, itbis_retenido, isr_tipo_retencion, isr_monto_retencion, ncf_modificado)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'activa', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [supplierId, branchId, numeroDocumento, data.ncf || null, data.tipoNcf || null, fechaComprobante, fechaRecepcion,
            condicionPago, fechaVencimiento, subtotal, descuento, itbisTotal, total, data.notas || null,
-           actor.id, actorName(actor)]
+           actor.id, actorName(actor),
+           tipoBienesServicios, formaPago, itbisRetenido, isrTipoRetencion, isrMontoRetencion, ncfModificado]
         );
         const purchaseId = purchaseInsert.insertId;
 

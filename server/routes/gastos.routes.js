@@ -29,6 +29,38 @@ const EXPENSE_CATEGORIES = [
   'Impuestos', 'Servicios', 'Caja Chica', 'Otros',
 ];
 
+// Default del campo 3 ("Tipo de Bienes y Servicios Comprados", código 1-11)
+// del Formato 606 DGII por categoría de gasto — editable por el usuario al
+// capturar el gasto, ver server.js GET /api/reports/advanced/dgii/exportar-contador.
+const EXPENSE_CATEGORY_TO_DGII_CODE = {
+  'Alquiler': 3,       // Arrendamientos
+  'Electricidad': 2, 'Internet': 2, 'Agua': 2, 'Servicios': 2, 'Mantenimiento': 2, 'Seguridad': 2, 'Limpieza': 2,
+  'Combustible': 2,
+  'Publicidad': 5,     // Gastos de representación
+  'Papelería': 6,      // Otras deducciones admitidas
+  'Nómina': 1,         // Gastos de personal
+  'Honorarios': 2,     // Gastos por trabajos, suministros y servicios
+  'Impuestos': 6,
+  'Caja Chica': 6,
+  'Otros': 6,
+};
+
+async function hasColumn(query, tableName, columnName) {
+  const rows = await query(`PRAGMA table_info(${tableName})`).catch(() => []);
+  return rows.some((row) => String(row.name || row.Field || '').toLowerCase() === String(columnName).toLowerCase());
+}
+
+async function addColumnIfMissing(query, tableName, columnName, definition) {
+  try {
+    if (await hasColumn(query, tableName, columnName)) return;
+    await query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
+  } catch (error) {
+    const message = String(error?.message || '').toLowerCase();
+    const isMissingTable = message.includes('no such table') || message.includes("doesn't exist");
+    if (!isMissingTable) throw error;
+  }
+}
+
 async function ensureSchema(query) {
   await query(`
     CREATE TABLE IF NOT EXISTS expenses (
@@ -59,6 +91,12 @@ async function ensureSchema(query) {
       CONSTRAINT fk_expenses_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL
     )
   `);
+
+  // Campos que faltaban para el Formato 606 DGII (ver EXPENSE_CATEGORY_TO_DGII_CODE
+  // arriba y server.js GET /api/reports/advanced/dgii/exportar-contador).
+  await addColumnIfMissing(query, 'expenses', 'forma_pago', 'INT DEFAULT NULL');
+  await addColumnIfMissing(query, 'expenses', 'isr_tipo_retencion', 'INT DEFAULT NULL');
+  await addColumnIfMissing(query, 'expenses', 'ncf_modificado', 'VARCHAR(30) DEFAULT NULL');
 }
 
 function httpError(message, statusCode = 400) {
@@ -87,6 +125,10 @@ function mapExpenseRow(row) {
     itbis: Number(row.itbis || 0),
     retencionIsr: Number(row.retencion_isr || 0),
     retencionItbis: Number(row.retencion_itbis || 0),
+    formaPago: row.forma_pago != null ? Number(row.forma_pago) : null,
+    isrTipoRetencion: row.isr_tipo_retencion != null ? Number(row.isr_tipo_retencion) : null,
+    ncfModificado: row.ncf_modificado || '',
+    tipoBienesServicios: EXPENSE_CATEGORY_TO_DGII_CODE[row.categoria] || 6,
     total,
     montoNetoBeneficiario: Number((total - retenciones).toFixed(2)),
     estado: row.estado,
@@ -186,16 +228,23 @@ function createGastosRouter({
         if (!supplier) throw httpError('Proveedor no encontrado.', 404);
       }
 
+      // Formato 606 DGII — opcionales, no bloquean el registro rápido del gasto.
+      const formaPago = Number.isInteger(Number(data.formaPago)) && Number(data.formaPago) >= 1 && Number(data.formaPago) <= 7
+        ? Number(data.formaPago) : null;
+      const isrTipoRetencion = Number.isInteger(Number(data.isrTipoRetencion)) && Number(data.isrTipoRetencion) >= 1 && Number(data.isrTipoRetencion) <= 9
+        ? Number(data.isrTipoRetencion) : null;
+      const ncfModificado = String(data.ncfModificado || '').trim() || null;
+
       const result = await query(
         `INSERT INTO expenses
           (branch_id, categoria, descripcion, supplier_id, beneficiario, ncf, tipo_ncf, fecha, fecha_pago,
            subtotal, itbis, retencion_isr, retencion_itbis, total, estado, notas,
-           created_by_user_id, created_by_user_name)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           created_by_user_id, created_by_user_name, forma_pago, isr_tipo_retencion, ncf_modificado)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [branchId, categoria, descripcion, supplierId, String(data.beneficiario || '').trim() || null,
          data.ncf || null, data.tipoNcf || null, fecha, estado === 'pagado' ? (data.fechaPago || fecha) : (data.fechaPago || null),
          subtotal, itbis, retencionIsr, retencionItbis, total, estado, data.notas || null,
-         actor.id, actorName(actor)]
+         actor.id, actorName(actor), formaPago, isrTipoRetencion, ncfModificado]
       );
 
       await writeAuditLog({

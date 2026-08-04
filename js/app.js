@@ -3794,7 +3794,7 @@ function showModule(name, el) {
   if (name === 'archivos') { if (typeof FileManager !== 'undefined') FileManager.init(); }
   if (name === 'configuracion') { if (typeof RespaldosMod !== 'undefined') RespaldosMod.init(); }
   if (name === 'configuracion') {
-    if (typeof loadNcfSequences === 'function') loadNcfSequences();
+    if (typeof loadNcfAuthSequences === 'function') loadNcfAuthSequences();
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     // Inicializar módulo de actualización del sistema

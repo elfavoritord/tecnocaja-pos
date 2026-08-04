@@ -22,6 +22,13 @@ function comprasLocale() {
   return typeof getCurrentLocale === 'function' ? getCurrentLocale() : 'es-DO';
 }
 
+// Usar componentes de fecha LOCAL (getFullYear/getMonth/getDate), NO
+// toISOString() que devuelve UTC — en RD (UTC-4) después de las 8 PM eso da
+// la fecha de mañana (mismo bug ya documentado y corregido en reportes-v2.js).
+function localDateStrCompras(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 function fmtCompraFecha(v) {
   if (!v) return '—';
   const d = new Date(String(v).length <= 10 ? `${v}T00:00:00` : v);
@@ -101,7 +108,7 @@ function openNuevaCompraModal() {
   purchaseItemsDraft = [];
   const suppliers = (DB.proveedores || []).filter((p) => p.estado === 'Activo');
   const branches = DB.sucursales || [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStrCompras(new Date());
   const defaultBranchId = Number(DB.config?.activeBranchId || 0) || Number(branches[0]?.id || 0) || '';
 
   document.getElementById('modal-title').textContent = 'Nueva Compra';
@@ -132,6 +139,55 @@ function openNuevaCompraModal() {
       </div>
       <div class="form-group span-full"><label>Notas</label><input type="text" id="compra-notas" class="form-input" placeholder="Observaciones de la compra"></div>
     </div>
+    <details style="margin-top:0.8rem">
+      <summary style="cursor:pointer;font-weight:600;color:var(--accent)">Datos para Formato 606 DGII (opcional)</summary>
+      <div class="modal-grid" style="margin-top:0.6rem">
+        <div class="form-group"><label>Tipo de bien/servicio comprado</label>
+          <select id="compra-606-tipo" class="form-input">
+            <option value="1">1. Gastos de personal</option>
+            <option value="2">2. Gastos por trabajos, suministros y servicios</option>
+            <option value="3">3. Arrendamientos</option>
+            <option value="4">4. Gastos de activos fijos</option>
+            <option value="5">5. Gastos de representación</option>
+            <option value="6">6. Otras deducciones admitidas</option>
+            <option value="7">7. Gastos financieros</option>
+            <option value="8">8. Gastos extraordinarios</option>
+            <option value="9" selected>9. Compras y gastos que formarán parte del costo de venta</option>
+            <option value="10">10. Adquisiciones de activos</option>
+            <option value="11">11. Gastos de seguros</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Forma de pago</label>
+          <select id="compra-606-forma-pago" class="form-input">
+            <option value="">— usar según condición de pago —</option>
+            <option value="1">1. Efectivo</option>
+            <option value="2">2. Cheques/Transferencias/Depósito</option>
+            <option value="3">3. Tarjeta crédito/débito</option>
+            <option value="4">4. Compra a crédito</option>
+            <option value="5">5. Permuta</option>
+            <option value="6">6. Notas de crédito</option>
+            <option value="7">7. Mixto</option>
+          </select>
+        </div>
+        <div class="form-group"><label>ITBIS Retenido</label><input type="number" id="compra-606-itbis-retenido" class="form-input" value="0" min="0" step="0.01"></div>
+        <div class="form-group"><label>Tipo de Retención ISR</label>
+          <select id="compra-606-isr-tipo" class="form-input">
+            <option value="">— no aplica —</option>
+            <option value="1">1. Alquileres</option>
+            <option value="2">2. Honorarios por servicios</option>
+            <option value="3">3. Otras rentas</option>
+            <option value="4">4. Otras rentas (rentas presuntas)</option>
+            <option value="5">5. Intereses a personas jurídicas residentes</option>
+            <option value="6">6. Intereses a personas físicas residentes</option>
+            <option value="7">7. Retención por proveedores del Estado</option>
+            <option value="8">8. Juegos telefónicos</option>
+            <option value="9">9. Retenciones subsector ganadería de carne bovina</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Monto Retención Renta</label><input type="number" id="compra-606-isr-monto" class="form-input" value="0" min="0" step="0.01"></div>
+        <div class="form-group"><label>NCF o Documento Modificado</label><input type="text" id="compra-606-ncf-modificado" class="form-input" placeholder="Si esta compra es una Nota de Débito/Crédito"></div>
+      </div>
+    </details>
     <div style="margin-top:1rem">
       <label style="font-weight:600">Productos</label>
       <div style="position:relative;margin:0.4rem 0">
@@ -174,9 +230,9 @@ function syncCompraFechaVencimiento() {
   const fecha = document.getElementById('compra-fecha')?.value;
   const vencInput = document.getElementById('compra-vencimiento');
   if (!fecha || !vencInput) return;
-  const d = new Date(fecha);
+  const d = new Date(`${fecha}T00:00:00`);
   d.setDate(d.getDate() + Number(supplier?.terminosPagoDias || 30));
-  vencInput.value = d.toISOString().slice(0, 10);
+  vencInput.value = localDateStrCompras(d);
 }
 
 function _searchCompraProducts(q) {
@@ -302,6 +358,12 @@ async function guardarCompra() {
       fechaVencimiento: condicionPago === 'credito' ? fechaVencimiento : null,
       descuento: Number(document.getElementById('compra-descuento')?.value || 0),
       notas: document.getElementById('compra-notas')?.value.trim() || '',
+      tipoBienesServicios: Number(document.getElementById('compra-606-tipo')?.value || 9),
+      formaPago: document.getElementById('compra-606-forma-pago')?.value ? Number(document.getElementById('compra-606-forma-pago').value) : null,
+      itbisRetenido: Number(document.getElementById('compra-606-itbis-retenido')?.value || 0),
+      isrTipoRetencion: document.getElementById('compra-606-isr-tipo')?.value ? Number(document.getElementById('compra-606-isr-tipo').value) : null,
+      isrMontoRetencion: Number(document.getElementById('compra-606-isr-monto')?.value || 0),
+      ncfModificado: document.getElementById('compra-606-ncf-modificado')?.value.trim() || '',
       items: purchaseItemsDraft.map((it) => ({
         productId: it.productId, codigo: it.codigo, nombre: it.nombre,
         cantidad: Number(it.cantidad), costoUnitario: Number(it.costoUnitario), itbisPct: Number(it.itbisPct || 0),
@@ -513,7 +575,7 @@ async function openNuevoGastoModal() {
   const categories = await getExpenseCategories();
   const suppliers = (DB.proveedores || []).filter((p) => p.estado === 'Activo');
   const branches = DB.sucursales || [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateStrCompras(new Date());
   const defaultBranchId = Number(DB.config?.activeBranchId || 0) || Number(branches[0]?.id || 0) || '';
 
   document.getElementById('modal-title').textContent = 'Nuevo Gasto';
@@ -552,6 +614,38 @@ async function openNuevoGastoModal() {
       <div class="form-group"><label>Retención ITBIS</label><input type="number" id="gasto-retencion-itbis" class="form-input" min="0" step="0.01" value="0" oninput="recalcGastoTotales()"></div>
       <div class="form-group span-full"><label>Notas</label><input type="text" id="gasto-notas" class="form-input" placeholder="Observaciones"></div>
     </div>
+    <details style="margin-top:0.8rem">
+      <summary style="cursor:pointer;font-weight:600;color:var(--accent)">Datos para Formato 606 DGII (opcional)</summary>
+      <div class="modal-grid" style="margin-top:0.6rem">
+        <div class="form-group"><label>Forma de pago</label>
+          <select id="gasto-606-forma-pago" class="form-input">
+            <option value="">— no especificada —</option>
+            <option value="1">1. Efectivo</option>
+            <option value="2">2. Cheques/Transferencias/Depósito</option>
+            <option value="3">3. Tarjeta crédito/débito</option>
+            <option value="4">4. Compra a crédito</option>
+            <option value="5">5. Permuta</option>
+            <option value="6">6. Notas de crédito</option>
+            <option value="7">7. Mixto</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Tipo de Retención ISR</label>
+          <select id="gasto-606-isr-tipo" class="form-input">
+            <option value="">— no aplica —</option>
+            <option value="1">1. Alquileres</option>
+            <option value="2">2. Honorarios por servicios</option>
+            <option value="3">3. Otras rentas</option>
+            <option value="4">4. Otras rentas (rentas presuntas)</option>
+            <option value="5">5. Intereses a personas jurídicas residentes</option>
+            <option value="6">6. Intereses a personas físicas residentes</option>
+            <option value="7">7. Retención por proveedores del Estado</option>
+            <option value="8">8. Juegos telefónicos</option>
+            <option value="9">9. Retenciones subsector ganadería de carne bovina</option>
+          </select>
+        </div>
+        <div class="form-group"><label>NCF o Documento Modificado</label><input type="text" id="gasto-606-ncf-modificado" class="form-input" placeholder="Si este gasto es una Nota de Débito/Crédito"></div>
+      </div>
+    </details>
     <div style="text-align:right;margin-top:0.6rem;font-size:0.9rem">
       <div>Total gasto: <strong id="gasto-total-total">${fmt(0)}</strong></div>
       <div>Neto a pagar al beneficiario: <strong id="gasto-total-neto">${fmt(0)}</strong></div>
@@ -610,6 +704,9 @@ async function guardarGasto() {
       retencionIsr: Number(document.getElementById('gasto-retencion-isr')?.value || 0),
       retencionItbis: Number(document.getElementById('gasto-retencion-itbis')?.value || 0),
       notas: document.getElementById('gasto-notas')?.value.trim() || '',
+      formaPago: document.getElementById('gasto-606-forma-pago')?.value ? Number(document.getElementById('gasto-606-forma-pago').value) : null,
+      isrTipoRetencion: document.getElementById('gasto-606-isr-tipo')?.value ? Number(document.getElementById('gasto-606-isr-tipo').value) : null,
+      ncfModificado: document.getElementById('gasto-606-ncf-modificado')?.value.trim() || '',
     });
     closeAllModals();
     showToast('Gasto registrado correctamente.', 'success');
