@@ -115,6 +115,13 @@ window.contadorPanel = (() => {
     });
     document.getElementById('cont-cli-plan').value = 'basico';
     document.getElementById('cont-cli-modal').classList.remove('hidden');
+    if (window.RNCLookup) {
+      const rncEl = document.getElementById('cont-cli-rnc');
+      if (rncEl && !rncEl.dataset.rncAttached) {
+        rncEl.dataset.rncAttached = '1';
+        RNCLookup.attach(rncEl, { nameEl: document.getElementById('cont-cli-nombre'), mode: 'both' });
+      }
+    }
   }
 
   function closeNuevoClienteModal() {
@@ -178,6 +185,13 @@ window.contadorPanel = (() => {
       document.getElementById('cont-perfil-correo').value = p.correo || '';
       document.getElementById('cont-perfil-whatsapp').value = p.whatsapp || '';
       document.getElementById('cont-perfil-direccion').value = p.direccion || '';
+      if (window.RNCLookup) {
+        const rncEl = document.getElementById('cont-perfil-rnc');
+        if (rncEl && !rncEl.dataset.rncAttached) {
+          rncEl.dataset.rncAttached = '1';
+          RNCLookup.attach(rncEl, { nameEl: document.getElementById('cont-perfil-firma'), mode: 'both' });
+        }
+      }
     } catch (e) {
       showToastCont('Error al cargar perfil: ' + e.message, 'error');
     }

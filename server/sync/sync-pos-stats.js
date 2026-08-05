@@ -116,9 +116,10 @@ async function buildBusinessProfile() {
 // ── KPIs agregados ─────────────────────────────────────────────────────────
 
 async function buildPosStats() {
-  // Usar CURDATE() y DATE_FORMAT de MariaDB para que la comparación de fechas
-  // ocurra en la zona horaria del servidor (DR, UTC-4), no en UTC del proceso Node.js.
-  // Esto evita el bug donde ventas de la tarde no aparecen como "hoy".
+  // Usar date('now') (sintaxis SQLite canónica del proyecto — db.js la traduce
+  // a CURDATE()/DATE_FORMAT() automáticamente cuando dbClient='mysql', ver
+  // normalizeMySqlSql()) en vez de calcular la fecha en JS, para que "hoy" lo
+  // calcule siempre la base de datos y no el proceso Node.js.
 
   const [
     [ventasHoyRow],
@@ -130,13 +131,13 @@ async function buildPosStats() {
     [cxcRow],
   ] = await Promise.all([
 
-    // Ventas hoy — usa CURDATE() de MariaDB, no fecha JS/UTC
+    // Ventas hoy — usa date('now') de la BD, no fecha JS/UTC
     query(
       `SELECT COALESCE(SUM(total),0) AS total
        FROM sales
        WHERE sale_status = 'pagada'
          AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) = CURDATE()`
+         AND DATE(created_at) = date('now')`
     ),
 
     // Ventas mes — primer día del mes según MariaDB
@@ -145,7 +146,7 @@ async function buildPosStats() {
        FROM sales
        WHERE sale_status = 'pagada'
          AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')`
+         AND DATE(created_at) >= date('now','start of month')`
     ),
 
     // Facturas mes
@@ -154,7 +155,7 @@ async function buildPosStats() {
        FROM sales
        WHERE sale_status = 'pagada'
          AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')`
+         AND DATE(created_at) >= date('now','start of month')`
     ),
 
     // ITBIS mes
@@ -163,7 +164,7 @@ async function buildPosStats() {
        FROM sales
        WHERE sale_status = 'pagada'
          AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')`
+         AND DATE(created_at) >= date('now','start of month')`
     ),
 
     // Productos activos (usa estado con capital A según schema)
@@ -207,9 +208,9 @@ async function buildPosStats() {
 // ── Datos tabulares por tab ────────────────────────────────────────────────
 
 async function buildReportesTabs() {
-  // Usar DATE_SUB(CURDATE(), INTERVAL 30 DAY) en las queries en lugar de
+  // Usar date('now','-30 days') en las queries en lugar de
   // calcular la fecha en JS/UTC, para respetar la zona horaria del servidor.
-  const since30 = null; // se usa DATE_SUB(CURDATE(), INTERVAL 30 DAY) inline
+  const since30 = null; // se usa date('now','-30 days') inline
 
   const [ventas, productos, inventario, cxc, clientes, cierres] = await Promise.all([
 
@@ -228,7 +229,7 @@ async function buildReportesTabs() {
        LEFT JOIN clients c ON s.client_id = c.id
        WHERE s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(s.created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         AND DATE(s.created_at) >= date('now','-30 days')
        ORDER BY s.created_at DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -247,7 +248,7 @@ async function buildReportesTabs() {
        LEFT JOIN sale_items si ON si.product_id = p.id
        LEFT JOIN sales s ON si.sale_id = s.id
          AND s.sale_status = 'pagada'
-         AND DATE(s.created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         AND DATE(s.created_at) >= date('now','-30 days')
        WHERE LOWER(p.estado) = 'activo'
        GROUP BY p.id, p.codigo, p.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock
        ORDER BY vendidos DESC
@@ -311,7 +312,7 @@ async function buildReportesTabs() {
        FROM clients c
        LEFT JOIN sales s ON s.client_id = c.id
          AND s.sale_status = 'pagada'
-         AND DATE(s.created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         AND DATE(s.created_at) >= date('now','-30 days')
        GROUP BY c.id, c.nombre, c.cedula, c.telefono, c.email
        ORDER BY compras DESC
        LIMIT ${MAX_ROWS}`
@@ -338,7 +339,7 @@ async function buildReportesTabs() {
          END                                                          AS estado
        FROM cash_sessions cs
        LEFT JOIN cash_registers cr ON cs.cash_register_id = cr.id
-       WHERE DATE(cs.opened_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+       WHERE DATE(cs.opened_at) >= date('now','-30 days')
        ORDER BY cs.opened_at DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -418,7 +419,7 @@ async function buildContabilidadFeed() {
        LEFT JOIN inventory_movements im ON im.sale_id = s.id AND im.movement_type = 'venta'
        WHERE s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(s.created_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         AND DATE(s.created_at) >= date('now','-30 days')
        GROUP BY s.id, s.created_at, s.invoice_number, s.payment_method, s.cash_session_id, s.subtotal, s.tax, s.total, cliente
        ORDER BY s.created_at DESC
        LIMIT ${MAX_ROWS}`
@@ -438,7 +439,7 @@ async function buildContabilidadFeed() {
            WHERE sp.invoice_id = si.id ORDER BY sp.fecha_pago DESC LIMIT 1)    AS metodo_pago
        FROM supplier_invoices si
        LEFT JOIN suppliers sup ON si.supplier_id = sup.id
-       WHERE si.issued_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+       WHERE si.issued_at >= date('now','-30 days')
        ORDER BY si.issued_at DESC
        LIMIT ${MAX_ROWS}`
     ).catch(() => []),
@@ -463,7 +464,7 @@ async function buildContabilidadFeed() {
            'caja_operativa'                                                AS origen
          FROM cash_movements cm
          WHERE cm.movement_type IN ('Gasto','Pago suplidor','Devolución','Retiro de efectivo','Egreso','salida','gasto','expense')
-           AND DATE(cm.happened_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+           AND DATE(cm.happened_at) >= date('now','-30 days')
          ORDER BY cm.happened_at DESC
          LIMIT ${MAX_ROWS}`
       ).catch(() => []),
@@ -483,7 +484,7 @@ async function buildContabilidadFeed() {
          FROM expenses e
          LEFT JOIN suppliers sup ON sup.id = e.supplier_id
          WHERE e.estado <> 'anulado'
-           AND DATE(e.fecha) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+           AND DATE(e.fecha) >= date('now','-30 days')
          ORDER BY e.fecha DESC
          LIMIT ${MAX_ROWS}`
       ).catch(() => []),
@@ -507,7 +508,7 @@ async function buildContabilidadFeed() {
          AND s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
        WHERE cs.status = 'closed'
-         AND DATE(cs.opened_at) >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+         AND DATE(cs.opened_at) >= date('now','-30 days')
        GROUP BY cs.id, cs.opened_at, cs.closed_at, cs.status, cs.expected_amount, cs.counted_amount, cs.difference_amount, s.payment_method
        ORDER BY cs.opened_at DESC
        LIMIT ${MAX_ROWS}`

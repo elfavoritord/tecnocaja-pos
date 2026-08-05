@@ -4108,6 +4108,17 @@ function toggleBillingQuickClient(forceState = null) {
   panel.classList.toggle('hidden', !shouldShow);
   if (shouldShow) {
     document.getElementById('billing-qc-nombre')?.focus();
+    if (window.RNCLookup) {
+      // La plantilla del panel varía según el flujo de facturación: a veces
+      // solo hay un campo "Documento" (cédula), a veces cédula + RNC separados.
+      ['billing-qc-cedula', 'billing-qc-rnc'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.rncAttached) {
+          el.dataset.rncAttached = '1';
+          RNCLookup.attach(el, { nameEl: document.getElementById('billing-qc-nombre'), mode: 'both' });
+        }
+      });
+    }
   }
   ensureBillingModalFitsContent();
 }

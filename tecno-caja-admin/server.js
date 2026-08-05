@@ -7,12 +7,18 @@
  */
 const path    = require('path');
 const express = require('express');
+const { createFacturacionRouter } = require('./routes/facturacion.routes');
+const { createComprasRouter } = require('./routes/compras.routes');
+const { createGastosRouter } = require('./routes/gastos.routes');
+const { createAdjuntosRouter } = require('./routes/adjuntos.routes');
+const { createFlujoFinancieroRouter } = require('./routes/flujo-financiero.routes');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // ── Firebase Admin SDK ─────────────────────────────────────────────────────
 let adminSdk   = null;
 let db         = null;
+let bucket     = null;
 let fbReady    = false;
 let fbError    = null;
 
@@ -23,6 +29,7 @@ function initFirebase() {
     if (admin.apps.length) {
       adminSdk = admin;
       db = admin.apps[0].firestore();
+      try { bucket = admin.storage().bucket(process.env.FIREBASE_STORAGE_BUCKET); } catch { bucket = null; }
       fbReady = true;
       return;
     }
@@ -42,9 +49,14 @@ function initFirebase() {
       return;
     }
 
-    admin.initializeApp({ credential, projectId: process.env.FIREBASE_PROJECT_ID });
+    admin.initializeApp({
+      credential,
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
+    });
     adminSdk = admin;
     db = admin.firestore();
+    try { bucket = admin.storage().bucket(process.env.FIREBASE_STORAGE_BUCKET); } catch { bucket = null; }
     fbReady = true;
     console.log('[admin] Firebase Admin conectado — proyecto:', process.env.FIREBASE_PROJECT_ID);
   } catch (e) {
@@ -67,7 +79,11 @@ const COL_VERSIONES   = 'app_versions';
 
 // ── Express ────────────────────────────────────────────────────────────────
 const app = express();
-app.use(express.json());
+// 15mb (no 10mb): /api/adjuntos manda el archivo como dataBase64 dentro del
+// JSON — base64 infla ~33% el tamaño real, así que un límite global de
+// exactamente 10mb rechazaría (413) cualquier adjunto de más de ~7.5MB reales
+// antes de que la ruta llegara a validar su propio tope de 10MB decodificado.
+app.use(express.json({ limit: '15mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -146,6 +162,18 @@ app.get('/api/firebase-config', (_req, res) => {
     });
   }
   res.json(cfg);
+});
+
+// Logo de la empresa para el branding del panel (sidebar + pantalla de login) —
+// público a propósito: el login se ve ANTES de autenticarse, y un logo no es
+// información sensible.
+app.get('/api/branding/logo', async (_req, res) => {
+  try {
+    const doc = await col('admin_config').doc('facturacion').get();
+    res.json({ logoDataUrl: doc.exists ? (doc.data().logoDataUrl || null) : null });
+  } catch (_e) {
+    res.json({ logoDataUrl: null });
+  }
 });
 
 // Verificar token + perfil (llamado después del login de Firebase en el cliente)
@@ -740,6 +768,18 @@ app.get('/api/auditoria', requireAuth, async (_req, res) => {
     res.json(sorted);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── Facturación de servicios ───────────────────────────────────────────────
+app.use('/api/facturas', createFacturacionRouter({
+  col, docData, isoNow, audit, requireAuth,
+  licenciasCollection: COL_LICENCIAS,
+}));
+
+// ── Compras y gastos de la empresa ─────────────────────────────────────────
+app.use('/api/compras', createComprasRouter({ col, docData, isoNow, audit, requireAuth }));
+app.use('/api/gastos', createGastosRouter({ col, docData, isoNow, audit, requireAuth }));
+app.use('/api/adjuntos', createAdjuntosRouter({ col, docData, isoNow, requireAuth, getBucket: () => bucket }));
+app.use('/api/flujo-financiero', createFlujoFinancieroRouter({ col, docData, requireAuth }));
 
 // ── RNC / Cédula lookup (DGII) ────────────────────────────────────────────
 let _rncHandler = null;

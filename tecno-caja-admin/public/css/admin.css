@@ -227,6 +227,15 @@ body {
   border-color: rgba(255,255,255,.12);
 }
 
+/* El <select> hereda --text (claro) para pintarse bien sobre el fondo oscuro
+   del formulario, pero el popup nativo de opciones no hereda ese fondo — sin
+   esto, las opciones quedan con texto claro sobre blanco y son ilegibles. */
+.form-group select option,
+.header-actions select option {
+  background: var(--surface3);
+  color: var(--text);
+}
+
 /* Password wrap */
 .password-wrap { position: relative; display: flex; align-items: center; }
 .password-wrap input { padding-right: 44px; }
@@ -627,7 +636,7 @@ body {
 /* Stats grid */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 14px;
   margin-bottom: 28px;
 }
@@ -669,12 +678,15 @@ body {
 .stat-card.blue::before   { display: none; }
 
 .stat-num {
-  font-size: 2rem;
+  font-size: 1.65rem;
   font-weight: 800;
   line-height: 1;
   margin-bottom: 6px;
   letter-spacing: -.03em;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .stat-label {
@@ -756,6 +768,10 @@ body {
 .badge-pendiente { background: rgba(249,115,22,.1); color: #FCA47A;  border: 1px solid rgba(249,115,22,.2); }
 .badge-en_proceso{ background: rgba(59,130,246,.1); color: #93C5FD;  border: 1px solid rgba(59,130,246,.2); }
 .badge-resuelto  { background: rgba(34,197,94,.1);  color: #4ADE80;  border: 1px solid rgba(34,197,94,.2); }
+.badge-parcial   { background: rgba(245,158,11,.1); color: #FCD34D;  border: 1px solid rgba(245,158,11,.2); }
+.badge-pagada    { background: rgba(34,197,94,.1);  color: #4ADE80;  border: 1px solid rgba(34,197,94,.2); }
+.badge-vencida   { background: rgba(239,68,68,.1);  color: #FCA5A5;  border: 1px solid rgba(239,68,68,.2); }
+.badge-anulada   { background: rgba(100,116,139,.1);color: #94A3B8;  border: 1px solid rgba(100,116,139,.2); }
 
 /* ══════════════════════════════════════════════════════════
    DETAIL CARDS

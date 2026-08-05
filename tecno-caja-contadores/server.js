@@ -2601,15 +2601,183 @@ const NCF_TIPOS = {
   B16: 'Exportación',
 };
 
-async function getNextNcf(contadorRef, tipo) {
-  const field = `ncf_seq.${tipo}`;
-  let seq = 1;
-  await db.runTransaction(async t => {
-    const snap = await t.get(contadorRef);
-    seq = (snap.data()?.ncf_seq?.[tipo] || 0) + 1;
-    t.update(contadorRef, { [field]: seq });
+// ══════════════════════════════════════════════════════════════════════
+// MIS SECUENCIAS NCF (facturación propia del contador)
+// A diferencia de "Secuencias NCF" (que el contador REGISTRA para el POS de
+// sus clientes, vía cola ncf_pendientes), esto son los rangos que la DGII
+// le autorizó al PROPIO contador para facturar sus servicios contables —
+// se guardan en contadores/{id}/mis_secuencias_ncf y se consumen
+// directamente aquí mismo (no hay ningún POS remoto de por medio).
+// ══════════════════════════════════════════════════════════════════════
+
+function mapMisSecuencia(d) {
+  const today = new Date().toISOString().slice(0, 10);
+  const totalAuthorized = d.endNumber - d.startNumber + 1;
+  const totalUsed = Math.max(0, d.nextNumber - d.startNumber);
+  const totalAvailable = Math.max(0, d.endNumber - d.nextNumber + 1);
+  let effectiveStatus = d.status;
+  if (d.status === 'activo') {
+    if (d.expirationDate && d.expirationDate < today) effectiveStatus = 'vencido';
+    else if (totalAvailable <= 0) effectiveStatus = 'agotado';
+  }
+  return { ...d, totalAuthorized, totalUsed, totalAvailable, effectiveStatus };
+}
+
+async function findOverlappingMisSecuencia(contadorRef, documentType, startNumber, endNumber, excludeId) {
+  const snap = await contadorRef.collection('mis_secuencias_ncf').where('documentType', '==', documentType).get();
+  return snap.docs.find((doc) => {
+    if (excludeId && doc.id === excludeId) return false;
+    const x = doc.data();
+    if (!['activo', 'agotado', 'vencido'].includes(x.status)) return false; // suspendidas no bloquean
+    return startNumber <= x.endNumber && endNumber >= x.startNumber;
   });
-  return `${tipo}${String(seq).padStart(8, '0')}`;
+}
+
+app.get('/api/mis-secuencias-ncf', requireAuth, async (req, res) => {
+  try {
+    const snap = await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('mis_secuencias_ncf').orderBy('documentType').get();
+    res.json(snap.docs.map((d) => mapMisSecuencia(docData(d))));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/mis-secuencias-ncf', requireAuth, async (req, res) => {
+  const { documentType, startNumber, endNumber, authorizationDate, expirationDate, authorizationReference, attachmentData, notes } = req.body;
+  const tipo = String(documentType || '').toUpperCase().trim();
+  if (!NCF_TIPOS[tipo]) return res.status(400).json({ error: 'Tipo de comprobante inválido.' });
+  const desde = Number(startNumber);
+  const hasta = Number(endNumber);
+  if (!Number.isFinite(desde) || !Number.isFinite(hasta) || desde < 1 || desde > hasta) {
+    return res.status(400).json({ error: 'El rango de números no es válido.' });
+  }
+  if (!authorizationReference || !String(authorizationReference).trim()) {
+    return res.status(400).json({ error: 'Indica la referencia de autorización de la DGII.' });
+  }
+  if (!attachmentData) {
+    return res.status(400).json({ error: 'Sube el documento de autorización de la DGII.' });
+  }
+  if (String(attachmentData).length > 700_000) {
+    return res.status(400).json({ error: 'El archivo es demasiado grande. Usa uno más liviano (máx. ~500KB).' });
+  }
+
+  try {
+    const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+    const overlap = await findOverlappingMisSecuencia(contadorRef, tipo, desde, hasta, null);
+    if (overlap) {
+      const o = overlap.data();
+      const fmt = (n) => `${tipo}${String(n).padStart(8, '0')}`;
+      return res.status(409).json({ error: `Se cruza con la secuencia ya registrada ${fmt(o.startNumber)}–${fmt(o.endNumber)}.` });
+    }
+
+    const ref = await contadorRef.collection('mis_secuencias_ncf').add({
+      documentType: tipo,
+      startNumber: desde, endNumber: hasta, nextNumber: desde,
+      authorizationDate: authorizationDate || null,
+      expirationDate: expirationDate || null,
+      authorizationReference: String(authorizationReference).trim(),
+      attachmentData,
+      notes: notes || '',
+      status: 'activo',
+      createdAt: isoNow(), updatedAt: isoNow(),
+    });
+    const doc = await ref.get();
+    res.status(201).json(mapMisSecuencia(docData(doc)));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/mis-secuencias-ncf/:id', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('mis_secuencias_ncf').doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Secuencia no encontrada.' });
+    const d = doc.data();
+
+    // Mismas reglas que el POS: no se toca el número inicial, y el final no
+    // puede bajar de lo ya usado.
+    const wasUsed = d.nextNumber > d.startNumber;
+    const endNumber = req.body.endNumber != null ? Number(req.body.endNumber) : d.endNumber;
+    if (wasUsed && endNumber < d.nextNumber - 1) {
+      return res.status(400).json({ error: 'No se puede reducir el rango por debajo de los números ya utilizados.' });
+    }
+    if (d.startNumber > endNumber) return res.status(400).json({ error: 'El número final no puede ser menor que el inicial.' });
+
+    await ref.update({
+      endNumber,
+      authorizationDate: req.body.authorizationDate || d.authorizationDate,
+      expirationDate: req.body.expirationDate || d.expirationDate,
+      authorizationReference: req.body.authorizationReference ? String(req.body.authorizationReference).trim() : d.authorizationReference,
+      notes: req.body.notes != null ? req.body.notes : d.notes,
+      updatedAt: isoNow(),
+    });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/mis-secuencias-ncf/:id/suspender', requireAuth, async (req, res) => {
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'Indica el motivo de la suspensión.' });
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('mis_secuencias_ncf').doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Secuencia no encontrada.' });
+    await ref.update({ status: 'suspendido', suspendReason: reason, updatedAt: isoNow() });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/mis-secuencias-ncf/:id/activar', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('mis_secuencias_ncf').doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Secuencia no encontrada.' });
+    await ref.update({ status: 'activo', updatedAt: isoNow() });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/mis-secuencias-ncf/:id', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('mis_secuencias_ncf').doc(req.params.id);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Secuencia no encontrada.' });
+    const d = doc.data();
+    if (d.nextNumber !== d.startNumber) {
+      return res.status(409).json({ error: 'Esta secuencia ya fue utilizada. Suspéndela en vez de eliminarla.' });
+    }
+    await ref.delete();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Reserva atómica del próximo número dentro de una secuencia real y activa
+// del contador (transacción de Firestore — mismo patrón que las
+// reservas NCF del POS con FOR UPDATE, adaptado a Firestore). Si no hay
+// ninguna secuencia activa/vigente/con cupo para ese tipo, se bloquea la
+// factura — decisión explícita: nunca inventar un NCF sin respaldo real.
+async function getNextNcf(contadorRef, tipo) {
+  const today = new Date().toISOString().slice(0, 10);
+  const seqCol = contadorRef.collection('mis_secuencias_ncf');
+  return db.runTransaction(async (t) => {
+    const snap = await t.get(seqCol.where('documentType', '==', tipo).where('status', '==', 'activo'));
+    const candidate = snap.docs.find((doc) => {
+      const x = doc.data();
+      if (x.expirationDate && x.expirationDate < today) return false;
+      if (x.nextNumber > x.endNumber) return false;
+      return true;
+    });
+    if (!candidate) {
+      const err = new Error(`No tienes una secuencia NCF activa para comprobantes ${tipo}. Regístrala en "🏛 Mis Secuencias NCF" antes de facturar.`);
+      err.status = 409;
+      throw err;
+    }
+    const x = candidate.data();
+    const used = x.nextNumber;
+    const newNext = used + 1;
+    const updates = { nextNumber: newNext, updatedAt: isoNow() };
+    if (newNext > x.endNumber) updates.status = 'agotado';
+    t.update(candidate.ref, updates);
+    return `${tipo}${String(used).padStart(8, '0')}`;
+  });
 }
 
 app.get('/api/facturacion/stats', requireAuth, async (req, res) => {
@@ -2698,12 +2866,13 @@ app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
       contador_rnc:    req.contador.rnc,
       contador_tel:    req.contador.telefono,
       contador_correo: req.contador.correo,
+      contador_logo:   req.contador.logo_url || null,
       createdAt: isoNow(), updatedAt: isoNow(),
     };
 
     const ref = await contadorRef.collection('facturas').add(data);
     res.json({ id: ref.id, ...data });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 app.get('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {

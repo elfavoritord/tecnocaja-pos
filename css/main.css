@@ -182,7 +182,7 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .login-logo { display:flex; align-items:center; gap:16px; margin-bottom:0.5rem; }
 .login-logo .logo-icon { font-size:2rem; }
 .login-logo .logo-text { font-size:1.8rem; font-weight:800; background:linear-gradient(135deg,var(--accent),var(--accent-light)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-.login-logo .brand-logo-image { width:90px; height:90px; border-radius:18px; }
+.login-logo .brand-logo-image { width:136px; height:136px; border-radius:26px; }
 .brand-logo-image { width:42px; height:42px; object-fit:cover; border-radius:12px; border:1px solid var(--border); background:var(--bg3); flex-shrink:0; }
 .login-subtitle { color:var(--text2); margin-bottom:1rem; font-size:0.88rem; line-height:1.55; max-width:32ch; }
 .form-group { margin-bottom:1.2rem; }
@@ -625,7 +625,7 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .sidebar-logo { display:flex; align-items:center; gap:12px; padding:1.4rem 1.35rem 1.1rem; border-bottom:1px solid var(--border); }
 .sidebar-logo .logo-icon { font-size:1.65rem; }
 .sidebar-logo .logo-name { font-size:1.28rem; font-weight:800; background:linear-gradient(135deg,var(--accent),var(--accent-light)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-.sidebar-logo .brand-logo-image { width:58px; height:58px; border-radius:14px; }
+.sidebar-logo .brand-logo-image { width:72px; height:72px; border-radius:17px; }
 .sidebar.collapsed .sidebar-logo { justify-content:center; padding-left:0.75rem; padding-right:0.75rem; }
 .sidebar.collapsed .logo-name { display:none; }
 .sidebar.collapsed .brand-logo-image { width:42px; height:42px; }

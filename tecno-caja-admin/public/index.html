@@ -135,6 +135,18 @@
       <li class="nav-item" data-module="contadores">
         <span class="nav-icon">◎</span> Contadores
       </li>
+      <li class="nav-item" data-module="facturacion">
+        <span class="nav-icon">🧾</span> Facturación
+      </li>
+      <li class="nav-item" data-module="compras">
+        <span class="nav-icon">🛒</span> Compras
+      </li>
+      <li class="nav-item" data-module="gastos">
+        <span class="nav-icon">💸</span> Gastos
+      </li>
+      <li class="nav-item" data-module="flujo">
+        <span class="nav-icon">📈</span> Flujo Financiero
+      </li>
       <li class="nav-item" data-module="solicitudes">
         <span class="nav-icon">◉</span> Solicitudes
         <span id="sol-badge" class="nav-badge hidden">0</span>
@@ -362,9 +374,9 @@
               <input id="cont-rnc" type="text" maxlength="14" placeholder="000-00000-0 ó 000-0000000-0"
                 style="flex:1;padding:.55rem .75rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:8px;color:#e2e8f0;font-size:.88rem"
                 oninput="adminApp.contRncFormat(this)"
-                onkeydown="if(event.key==='Enter'){event.preventDefault();adminApp.contRncLookup();}"
-                onblur="adminApp.contRncLookup()">
-              <button id="cont-rnc-btn" onclick="adminApp.contRncLookup()"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();adminApp.rncLookup('cont-rnc','cont-rnc-status','cont-nombre-firma','cont-rnc-btn');}"
+                onblur="adminApp.rncLookup('cont-rnc','cont-rnc-status','cont-nombre-firma','cont-rnc-btn')">
+              <button id="cont-rnc-btn" onclick="adminApp.rncLookup('cont-rnc','cont-rnc-status','cont-nombre-firma','cont-rnc-btn')"
                 style="padding:.52rem .9rem;border-radius:8px;border:1px solid rgba(59,130,246,.4);background:rgba(59,130,246,.12);color:#3b82f6;font-size:.8rem;font-weight:600;cursor:pointer;white-space:nowrap;transition:all .15s"
                 onmouseover="this.style.background='rgba(59,130,246,.22)'" onmouseout="this.style.background='rgba(59,130,246,.12)'">
                 Buscar DGII
@@ -422,6 +434,489 @@
             <button class="btn-outline" onclick="adminApp.closeModal('modal-contador')">Cancelar</button>
             <button class="btn-primary" onclick="adminApp.guardarContador()">Guardar contador</button>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Facturación -->
+    <section id="mod-facturacion" class="module hidden">
+      <div class="module-header">
+        <h1>Facturación</h1>
+        <div class="header-actions">
+          <input id="fac-search" type="search" placeholder="Buscar # o cliente..." onkeyup="adminApp.filterFacturas(this.value)" />
+          <select id="fac-filter-estado" onchange="adminApp.loadFacturas()">
+            <option value="">Todos los estados</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="parcial">Pago parcial</option>
+            <option value="pagada">Pagada</option>
+            <option value="anulada">Anulada</option>
+          </select>
+          <button class="btn-sm" onclick="adminApp.loadFacturas()">↺</button>
+          <button class="btn-primary" onclick="adminApp.openNuevaFactura()">+ Nueva factura</button>
+        </div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>No.</th><th>Cliente</th><th>Total</th><th>Estado</th><th>Emisión</th><th>Vencimiento</th><th>Acciones</th></tr></thead>
+        <tbody id="facturas-list"></tbody>
+      </table>
+    </section>
+
+    <!-- Detalle factura -->
+    <section id="mod-factura-detalle" class="module hidden">
+      <div class="module-header">
+        <button class="btn-back" onclick="adminApp.backToFacturas()">← Facturación</button>
+        <h1 id="fdet-numero">—</h1>
+      </div>
+      <div class="detail-grid">
+        <div class="detail-card">
+          <h3>Cliente</h3>
+          <div id="fdet-info"></div>
+          <h3 style="margin-top:16px">Ítems</h3>
+          <table class="data-table small">
+            <thead><tr><th>Cant.</th><th>Descripción</th><th>Precio</th><th>Monto</th></tr></thead>
+            <tbody id="fdet-items"></tbody>
+          </table>
+          <div id="fdet-totales" style="margin-top:12px;font-size:.85rem"></div>
+        </div>
+        <div class="detail-card">
+          <h3>Acciones</h3>
+          <div class="lic-actions">
+            <button class="btn-success" onclick="adminApp.openRegistrarPago()">Registrar pago</button>
+            <button class="btn-outline" onclick="adminApp.editarFacturaActual()">Editar</button>
+            <button class="btn-sm" onclick="adminApp.descargarFacturaPdf()">⬇ Descargar PDF</button>
+            <button class="btn-sm" onclick="adminApp.abrirFacturaHtml()">🖨 Imprimir / Vista previa</button>
+            <button class="btn-danger" onclick="adminApp.openAnularFactura()">Anular</button>
+          </div>
+          <h3 style="margin-top:16px">Historial de pagos</h3>
+          <table class="data-table small">
+            <thead><tr><th>Monto</th><th>Método</th><th>Fecha</th><th>Nota</th></tr></thead>
+            <tbody id="fdet-pagos"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Modal: Nueva/Editar factura -->
+    <div id="modal-factura" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:640px;width:95vw">
+        <h2 id="modal-factura-title">Nueva factura</h2>
+
+        <div class="form-group">
+          <label>Negocio / Cliente *</label>
+          <select id="fac-negocio" onchange="adminApp.onFacNegocioChange()">
+            <option value="">Selecciona un negocio…</option>
+          </select>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Nombre del cliente *</label>
+            <input id="fac-cliente-nombre" type="text" />
+          </div>
+          <div class="form-group">
+            <label>RNC / Cédula</label>
+            <div style="display:flex;gap:.4rem">
+              <input id="fac-cliente-rnc" type="text" maxlength="14" placeholder="000-00000-0"
+                oninput="adminApp.contRncFormat(this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();adminApp.rncLookup('fac-cliente-rnc','fac-cliente-rnc-status','fac-cliente-nombre','fac-cliente-rnc-btn');}"
+                onblur="adminApp.rncLookup('fac-cliente-rnc','fac-cliente-rnc-status','fac-cliente-nombre','fac-cliente-rnc-btn')" />
+              <button type="button" id="fac-cliente-rnc-btn"
+                onclick="adminApp.rncLookup('fac-cliente-rnc','fac-cliente-rnc-status','fac-cliente-nombre','fac-cliente-rnc-btn')"
+                style="padding:.5rem .7rem;border-radius:8px;border:1px solid rgba(59,130,246,.4);background:rgba(59,130,246,.12);color:#3b82f6;font-size:.75rem;font-weight:600;cursor:pointer;white-space:nowrap">
+                DGII
+              </button>
+            </div>
+            <div id="fac-cliente-rnc-status" style="font-size:.72rem;min-height:1.1em;color:#64748b"></div>
+          </div>
+          <div class="form-group">
+            <label>Teléfono</label>
+            <input id="fac-cliente-telefono" type="text" />
+          </div>
+          <div class="form-group">
+            <label>Dirección</label>
+            <input id="fac-cliente-direccion" type="text" />
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:.78rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:.5rem">Ítems</label>
+          <div id="fac-items"></div>
+          <button type="button" class="btn-sm" onclick="adminApp.agregarItemFactura()">+ Agregar ítem</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+          <div class="form-group checkbox-group">
+            <label><input id="fac-aplica-itbis" type="checkbox" checked onchange="adminApp.recalcularTotalesFactura()" /> Aplica ITBIS (18%)</label>
+          </div>
+          <div class="form-group">
+            <label>Descuento (RD$)</label>
+            <input id="fac-descuento" type="number" min="0" step="0.01" value="0" oninput="adminApp.recalcularTotalesFactura()" />
+          </div>
+          <div class="form-group">
+            <label>Método de pago</label>
+            <select id="fac-metodo-pago">
+              <option value="efectivo">Efectivo</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Fecha de vencimiento</label>
+            <input id="fac-fecha-vencimiento" type="date" />
+          </div>
+          <div class="form-group">
+            <label>Notas</label>
+            <input id="fac-notas" type="text" placeholder="Opcional…" />
+          </div>
+        </div>
+
+        <div id="fac-totales-preview" style="text-align:right;font-size:.9rem;padding:.5rem 0"></div>
+
+        <div id="fac-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-factura')">Cancelar</button>
+          <button class="btn-primary" onclick="adminApp.guardarFactura()">Guardar factura</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Registrar pago -->
+    <div id="modal-pago" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:380px">
+        <h2>Registrar pago</h2>
+        <div class="form-group">
+          <label>Monto (RD$) *</label>
+          <input id="pago-monto" type="number" min="0.01" step="0.01" />
+        </div>
+        <div class="form-group">
+          <label>Método</label>
+          <select id="pago-metodo">
+            <option value="efectivo">Efectivo</option>
+            <option value="transferencia">Transferencia</option>
+            <option value="tarjeta">Tarjeta</option>
+            <option value="otro">Otro</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Nota</label>
+          <input id="pago-nota" type="text" placeholder="Opcional…" />
+        </div>
+        <div id="pago-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-pago')">Cancelar</button>
+          <button class="btn-primary" onclick="adminApp.registrarPago()">Registrar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Anular factura -->
+    <div id="modal-anular-factura" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:420px">
+        <h2>Anular factura</h2>
+        <p style="font-size:.82rem;color:#94a3b8">La factura no se borra — queda marcada como anulada en el historial.</p>
+        <div class="form-group">
+          <label>Motivo *</label>
+          <textarea id="anular-motivo" rows="3" placeholder="Ej: Error en el monto, cliente canceló el servicio…"></textarea>
+        </div>
+        <div id="anular-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-anular-factura')">Cancelar</button>
+          <button class="btn-danger" onclick="adminApp.anularFactura()">Anular factura</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compras -->
+    <section id="mod-compras" class="module hidden">
+      <div class="module-header">
+        <h1>Compras</h1>
+        <div class="header-actions">
+          <input id="compra-search" type="search" placeholder="Buscar suplidor o factura..." onkeyup="adminApp.filterCompras(this.value)" />
+          <select id="compra-filter-estado" onchange="adminApp.loadCompras()">
+            <option value="">Todos los estados</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="parcial">Pago parcial</option>
+            <option value="pagada">Pagada</option>
+          </select>
+          <button class="btn-sm" onclick="adminApp.loadCompras()">↺</button>
+          <button class="btn-primary" onclick="adminApp.openNuevaCompra()">+ Nueva compra</button>
+        </div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Suplidor</th><th># Factura</th><th>Total</th><th>Tipo</th><th>Estado</th><th>Fecha</th><th>Acciones</th></tr></thead>
+        <tbody id="compras-list"></tbody>
+      </table>
+    </section>
+
+    <!-- Modal: Nueva/Editar compra -->
+    <div id="modal-compra" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:640px;width:95vw">
+        <h2 id="modal-compra-title">Nueva compra</h2>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Suplidor *</label>
+            <input id="compra-suplidor-nombre" type="text" />
+          </div>
+          <div class="form-group">
+            <label>RNC / Cédula</label>
+            <div style="display:flex;gap:.4rem">
+              <input id="compra-suplidor-rnc" type="text" maxlength="14" placeholder="000-00000-0"
+                oninput="adminApp.contRncFormat(this)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();adminApp.rncLookup('compra-suplidor-rnc','compra-suplidor-rnc-status','compra-suplidor-nombre','compra-suplidor-rnc-btn');}"
+                onblur="adminApp.rncLookup('compra-suplidor-rnc','compra-suplidor-rnc-status','compra-suplidor-nombre','compra-suplidor-rnc-btn')" />
+              <button type="button" id="compra-suplidor-rnc-btn"
+                onclick="adminApp.rncLookup('compra-suplidor-rnc','compra-suplidor-rnc-status','compra-suplidor-nombre','compra-suplidor-rnc-btn')"
+                style="padding:.5rem .7rem;border-radius:8px;border:1px solid rgba(59,130,246,.4);background:rgba(59,130,246,.12);color:#3b82f6;font-size:.75rem;font-weight:600;cursor:pointer;white-space:nowrap">
+                DGII
+              </button>
+            </div>
+            <div id="compra-suplidor-rnc-status" style="font-size:.72rem;min-height:1.1em;color:#64748b"></div>
+          </div>
+          <div class="form-group">
+            <label># Factura del suplidor</label>
+            <input id="compra-numero-factura" type="text" />
+          </div>
+          <div class="form-group">
+            <label>Comprobante fiscal (NCF del suplidor)</label>
+            <input id="compra-comprobante-fiscal" type="text" />
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:.78rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.04em;display:block;margin-bottom:.5rem">Ítems</label>
+          <div id="compra-items"></div>
+          <button type="button" class="btn-sm" onclick="adminApp.agregarItemCompra()">+ Agregar ítem</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+          <div class="form-group checkbox-group">
+            <label><input id="compra-aplica-itbis" type="checkbox" checked onchange="adminApp.recalcularTotalesCompra()" /> Aplica ITBIS (18%)</label>
+          </div>
+          <div class="form-group">
+            <label>Tipo de pago</label>
+            <select id="compra-tipo-pago" onchange="adminApp.onCompraTipoPagoChange()">
+              <option value="contado">Contado</option>
+              <option value="credito">Crédito</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Método de pago</label>
+            <select id="compra-metodo-pago">
+              <option value="efectivo">Efectivo</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Fecha de compra</label>
+            <input id="compra-fecha" type="date" />
+          </div>
+          <div class="form-group" id="compra-fecha-vencimiento-group" style="display:none">
+            <label>Fecha de vencimiento (crédito)</label>
+            <input id="compra-fecha-vencimiento" type="date" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Notas</label>
+          <input id="compra-notas" type="text" placeholder="Opcional…" />
+        </div>
+
+        <div id="compra-totales-preview" style="text-align:right;font-size:.9rem;padding:.5rem 0"></div>
+
+        <div id="compra-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-compra')">Cancelar</button>
+          <button class="btn-primary" onclick="adminApp.guardarCompra()">Guardar compra</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Registrar pago de compra -->
+    <div id="modal-pago-compra" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:380px">
+        <h2>Registrar pago</h2>
+        <div class="form-group">
+          <label>Monto (RD$) *</label>
+          <input id="pago-compra-monto" type="number" min="0.01" step="0.01" />
+        </div>
+        <div class="form-group">
+          <label>Método</label>
+          <select id="pago-compra-metodo">
+            <option value="efectivo">Efectivo</option>
+            <option value="transferencia">Transferencia</option>
+            <option value="tarjeta">Tarjeta</option>
+            <option value="otro">Otro</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Nota</label>
+          <input id="pago-compra-nota" type="text" placeholder="Opcional…" />
+        </div>
+        <div id="pago-compra-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-pago-compra')">Cancelar</button>
+          <button class="btn-primary" onclick="adminApp.registrarPagoCompra()">Registrar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Gastos -->
+    <section id="mod-gastos" class="module hidden">
+      <div class="module-header">
+        <h1>Gastos</h1>
+        <div class="header-actions">
+          <input id="gasto-search" type="search" placeholder="Buscar proveedor o comprobante..." onkeyup="adminApp.filterGastos(this.value)" />
+          <select id="gasto-filter-categoria" onchange="adminApp.loadGastos()">
+            <option value="">Todas las categorías</option>
+            <option value="luz">Luz</option>
+            <option value="internet">Internet</option>
+            <option value="alquiler">Alquiler</option>
+            <option value="combustible">Combustible</option>
+            <option value="transporte">Transporte</option>
+            <option value="nomina">Nómina</option>
+            <option value="mantenimiento">Mantenimiento</option>
+            <option value="publicidad">Publicidad</option>
+            <option value="equipos">Equipos</option>
+            <option value="servicios_profesionales">Servicios profesionales</option>
+            <option value="impuestos">Impuestos</option>
+            <option value="oficina">Gastos de oficina</option>
+            <option value="otros">Otros</option>
+          </select>
+          <button class="btn-sm" onclick="adminApp.loadGastos()">↺</button>
+          <button class="btn-primary" onclick="adminApp.openNuevoGasto()">+ Nuevo gasto</button>
+        </div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Categoría</th><th>Proveedor</th><th>Monto</th><th>Método</th><th>Fecha</th><th>Acciones</th></tr></thead>
+        <tbody id="gastos-list"></tbody>
+      </table>
+    </section>
+
+    <!-- Modal: Nuevo/Editar gasto -->
+    <div id="modal-gasto" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:460px">
+        <h2 id="modal-gasto-title">Nuevo gasto</h2>
+
+        <div class="form-group">
+          <label>Categoría *</label>
+          <select id="gasto-categoria">
+            <option value="luz">Luz</option>
+            <option value="internet">Internet</option>
+            <option value="alquiler">Alquiler</option>
+            <option value="combustible">Combustible</option>
+            <option value="transporte">Transporte</option>
+            <option value="nomina">Nómina</option>
+            <option value="mantenimiento">Mantenimiento</option>
+            <option value="publicidad">Publicidad</option>
+            <option value="equipos">Equipos</option>
+            <option value="servicios_profesionales">Servicios profesionales</option>
+            <option value="impuestos">Impuestos</option>
+            <option value="oficina">Gastos de oficina</option>
+            <option value="otros">Otros</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Proveedor</label>
+            <input id="gasto-proveedor" type="text" placeholder="Opcional…" />
+          </div>
+          <div class="form-group">
+            <label>Comprobante</label>
+            <input id="gasto-comprobante" type="text" placeholder="Opcional…" />
+          </div>
+          <div class="form-group">
+            <label>Monto (RD$) *</label>
+            <input id="gasto-monto" type="number" min="0.01" step="0.01" />
+          </div>
+          <div class="form-group">
+            <label>Fecha</label>
+            <input id="gasto-fecha" type="date" />
+          </div>
+          <div class="form-group">
+            <label>Método de pago</label>
+            <select id="gasto-metodo-pago">
+              <option value="efectivo">Efectivo</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Notas</label>
+          <input id="gasto-notas" type="text" placeholder="Opcional…" />
+        </div>
+
+        <div id="gasto-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-gasto')">Cancelar</button>
+          <button class="btn-primary" onclick="adminApp.guardarGasto()">Guardar gasto</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Adjuntos (compartido entre Compras y Gastos) -->
+    <div id="modal-adjuntos" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:460px">
+        <h2 id="modal-adjuntos-title">Adjuntos</h2>
+        <div class="form-group">
+          <label>Subir archivo (imagen o PDF, máx. 10MB)</label>
+          <input id="adj-file-input" type="file" accept="image/*,application/pdf" onchange="adminApp.handleAdjuntoFileChange(this)" />
+        </div>
+        <div id="adj-upload-status" style="font-size:.8rem;color:#94a3b8;min-height:1.2em"></div>
+        <div id="adj-list" style="margin-top:.5rem"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-adjuntos')">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Flujo Financiero -->
+    <section id="mod-flujo" class="module hidden">
+      <div class="module-header">
+        <h1>Flujo Financiero</h1>
+        <button class="btn-sm" onclick="adminApp.loadFlujoFinanciero()">↺ Actualizar</button>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card green"><div class="stat-num" id="fl-facturado" style="color:var(--green-light)">—</div><div class="stat-label">Facturado (mes)</div></div>
+        <div class="stat-card blue"><div class="stat-num" id="fl-cobrado" style="color:#93C5FD">—</div><div class="stat-label">Cobrado (mes)</div></div>
+        <div class="stat-card orange"><div class="stat-num" id="fl-compras" style="color:#FCA47A">—</div><div class="stat-label">Compras (mes)</div></div>
+        <div class="stat-card orange"><div class="stat-num" id="fl-gastos" style="color:#FCA47A">—</div><div class="stat-label">Gastos (mes)</div></div>
+        <div class="stat-card" style="border-top:2px solid var(--green)"><div class="stat-num" id="fl-ganancia" style="color:var(--green)">—</div><div class="stat-label">Ganancia estimada (mes)</div></div>
+        <div class="stat-card yellow"><div class="stat-num" id="fl-cxc" style="color:#FCD34D">—</div><div class="stat-label">Cuentas por cobrar</div></div>
+        <div class="stat-card red"><div class="stat-num" id="fl-cxp" style="color:#FCA5A5">—</div><div class="stat-label">Cuentas por pagar</div></div>
+      </div>
+
+      <div class="section-title" style="margin-top:1.5rem">Ingresos vs. compras + gastos (últimos 6 meses)</div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1rem">
+        <canvas id="flujo-chart-mensual" style="width:100%;height:220px"></canvas>
+      </div>
+
+      <div class="detail-grid" style="margin-top:1.5rem">
+        <div class="detail-card">
+          <h3>Cuentas por cobrar</h3>
+          <table class="data-table small">
+            <thead><tr><th>Factura</th><th>Cliente</th><th>Saldo</th><th>Vence</th></tr></thead>
+            <tbody id="fl-cxc-list"></tbody>
+          </table>
+        </div>
+        <div class="detail-card">
+          <h3>Cuentas por pagar</h3>
+          <table class="data-table small">
+            <thead><tr><th>Suplidor</th><th>Saldo</th><th>Vence</th></tr></thead>
+            <tbody id="fl-cxp-list"></tbody>
+          </table>
         </div>
       </div>
     </section>
@@ -527,6 +1022,27 @@
           <button class="btn-sm btn-warning" onclick="adminApp.limpiarHuerfanos()">
             🧹 Limpiar documentos huérfanos
           </button>
+        </div>
+      </div>
+
+      <!-- Logo de facturación -->
+      <div class="config-section">
+        <h2 class="config-section-title">Logo de facturación</h2>
+        <div class="detail-card" style="max-width:480px">
+          <p style="font-size:.83rem;color:#94a3b8;margin-bottom:1rem;line-height:1.55">
+            Aparece en el encabezado de las facturas que le emites a tus clientes de Tecno Caja POS (vista previa y PDF).
+          </p>
+          <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+            <div style="width:120px;height:60px;border:1px dashed rgba(255,255,255,.15);border-radius:8px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:rgba(255,255,255,.03)">
+              <img id="logo-preview" class="hidden" style="max-width:100%;max-height:100%;object-fit:contain" />
+              <span id="logo-preview-empty" style="font-size:.72rem;color:#64748b">Sin logo</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:.5rem">
+              <input id="logo-file-input" type="file" accept="image/png,image/jpeg,image/webp" onchange="adminApp.handleLogoFileChange(this)" style="font-size:.8rem" />
+              <button id="logo-quitar-btn" class="btn-sm btn-danger hidden" style="align-self:flex-start" onclick="adminApp.quitarLogo()">Quitar logo</button>
+            </div>
+          </div>
+          <div id="logo-status" style="font-size:.78rem;min-height:1.1em;color:#64748b"></div>
         </div>
       </div>
 

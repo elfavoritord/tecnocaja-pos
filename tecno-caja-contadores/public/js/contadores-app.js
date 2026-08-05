@@ -2432,6 +2432,199 @@ function limpiarFiltrosFac() {
   renderFacturas(_facFacturas);
 }
 
+// ── Mis Secuencias NCF (facturación propia del contador) ───────────────
+// A diferencia de "Secuencias NCF" (que el contador registra PARA sus
+// clientes, vía cola ncf_pendientes que aplica el POS del cliente), esto
+// son los rangos que la DGII le autorizó al propio contador para facturar
+// sus servicios — se guarda y se consume directo aquí, sin ningún POS de
+// por medio. Sin una secuencia activa, guardarFactura() en el backend
+// rechaza la emisión (ver POST /api/mis-secuencias-ncf y getNextNcf en
+// server.js) — nunca se inventa un NCF sin respaldo real.
+
+const MIS_NCF_TIPOS = [
+  { code: 'B02', label: 'B02 — Consumidor Final' },
+  { code: 'B01', label: 'B01 — Crédito Fiscal' },
+  { code: 'B14', label: 'B14 — Régimen Especial' },
+  { code: 'B15', label: 'B15 — Gubernamental' },
+  { code: 'B16', label: 'B16 — Exportación' },
+];
+
+let _misNcf = [];
+let _mnAdjuntoDataUrl = null;
+let _mnEditTargetId = null;
+
+async function abrirMisSecuenciasNcf() {
+  show('modal-mis-ncf-lista');
+  await loadMisSecuenciasNcf();
+}
+
+function cerrarMisSecuenciasNcf() { hide('modal-mis-ncf-lista'); }
+
+async function loadMisSecuenciasNcf() {
+  const body = $id('mis-ncf-lista-body');
+  if (body) body.innerHTML = `<div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>`;
+  try {
+    await refreshToken();
+    _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf');
+    renderMisSecuenciasNcf();
+  } catch (e) {
+    if (body) body.innerHTML = `<div class="empty-state"><div style="color:#ef4444">Error: ${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderMisSecuenciasNcf() {
+  const body = $id('mis-ncf-lista-body');
+  if (!body) return;
+  if (!_misNcf.length) {
+    body.innerHTML = `<div class="empty-state"><div class="empty-icon">🏛</div><div class="empty-text">No tienes secuencias NCF registradas todavía.</div></div>`;
+    return;
+  }
+  const colores = { activo: '#22C55E', agotado: '#ef4444', vencido: '#ef4444', suspendido: '#6b7280' };
+  const labels  = { activo: 'Activo', agotado: 'Agotado', vencido: 'Vencido', suspendido: 'Suspendido' };
+  body.innerHTML = `
+    <table class="data-table">
+      <thead><tr><th>Tipo</th><th>Rango</th><th>Próximo</th><th>Disponibles</th><th>Vencimiento</th><th>Estado</th><th></th></tr></thead>
+      <tbody>
+        ${_misNcf.map(s => `
+          <tr>
+            <td>${esc(s.documentType)}</td>
+            <td>${s.startNumber}–${s.endNumber}</td>
+            <td>${s.nextNumber}</td>
+            <td>${s.totalAvailable}</td>
+            <td>${s.expirationDate ? fmtDate(s.expirationDate) : '—'}</td>
+            <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${colores[s.effectiveStatus] || '#6b7280'}">${labels[s.effectiveStatus] || s.effectiveStatus}</span></td>
+            <td style="white-space:nowrap">
+              <button class="btn btn-xs btn-secondary" onclick="app.abrirRegistrarMiNcfModal('${s.id}')">✎ Editar</button>
+              ${s.status === 'activo' ? `<button class="btn btn-xs btn-secondary" onclick="app.suspenderMiNcf('${s.id}')">⏸ Suspender</button>` : ''}
+              ${s.status === 'suspendido' ? `<button class="btn btn-xs btn-secondary" onclick="app.activarMiNcf('${s.id}')">▶ Activar</button>` : ''}
+              ${s.nextNumber === s.startNumber ? `<button class="btn btn-xs btn-danger" onclick="app.eliminarMiNcf('${s.id}')">🗑 Eliminar</button>` : ''}
+            </td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function handleMiNcfAdjunto(input) {
+  const file = input?.files?.[0];
+  if (!file) return;
+  if (file.size > 700 * 1024) { toast('El archivo debe pesar menos de 700 KB.', 'error'); return; }
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    _mnAdjuntoDataUrl = e.target.result;
+    const label = $id('mn-adjunto-nombre');
+    if (label) label.textContent = `📎 ${file.name}`;
+  };
+  reader.readAsDataURL(file);
+}
+
+function abrirRegistrarMiNcfModal(editId) {
+  _mnEditTargetId = editId || null;
+  const seq = editId ? _misNcf.find((s) => String(s.id) === String(editId)) : null;
+  _mnAdjuntoDataUrl = null;
+
+  const tipoEl = $id('mn-tipo');
+  if (tipoEl) tipoEl.innerHTML = MIS_NCF_TIPOS.map((t) => `<option value="${t.code}">${t.label}</option>`).join('');
+
+  const set = (id, v) => { const el = $id(id); if (el) el.value = v || ''; };
+  if (seq) {
+    setText('mn-titulo', `🏛 Editar ${seq.documentType} · ${seq.startNumber}–${seq.endNumber}`);
+    if (tipoEl) { tipoEl.value = seq.documentType; tipoEl.disabled = true; }
+    set('mn-desde', seq.startNumber);
+    $id('mn-desde').disabled = true;
+    set('mn-hasta', seq.endNumber);
+    set('mn-fecha-autorizacion', (seq.authorizationDate || '').slice(0, 10));
+    set('mn-fecha-vencimiento', (seq.expirationDate || '').slice(0, 10));
+    set('mn-referencia', seq.authorizationReference);
+    set('mn-notas', seq.notes);
+    // El adjunto no se reemplaza al editar (opcional) — se mantiene el ya guardado.
+    const label = $id('mn-adjunto-nombre');
+    if (label) label.textContent = seq.attachmentData ? '📎 Ya tiene documento adjunto (no se reemplaza al editar)' : '';
+    $id('mn-adjunto-file').required = false;
+  } else {
+    setText('mn-titulo', '🏛 Registrar Mi Secuencia NCF');
+    if (tipoEl) tipoEl.disabled = false;
+    ['mn-desde','mn-hasta','mn-fecha-autorizacion','mn-fecha-vencimiento','mn-referencia','mn-notas'].forEach((id) => set(id, ''));
+    $id('mn-desde').disabled = false;
+    const label = $id('mn-adjunto-nombre');
+    if (label) label.textContent = '';
+    $id('mn-adjunto-file').value = '';
+  }
+  show('modal-registrar-mi-ncf');
+}
+
+function cerrarRegistrarMiNcfModal() { hide('modal-registrar-mi-ncf'); }
+
+async function guardarMiNcf() {
+  const get = (id) => $id(id)?.value?.trim() || '';
+  try {
+    await refreshToken();
+    if (_mnEditTargetId) {
+      await apiCall('PUT', `/api/mis-secuencias-ncf/${_mnEditTargetId}`, {
+        endNumber: Number(get('mn-hasta')) || null,
+        authorizationDate: get('mn-fecha-autorizacion') || null,
+        expirationDate: get('mn-fecha-vencimiento') || null,
+        authorizationReference: get('mn-referencia') || null,
+        notes: get('mn-notas'),
+      });
+      toast('Secuencia actualizada.', 'success');
+    } else {
+      if (!_mnAdjuntoDataUrl) { toast('Sube el documento de autorización de la DGII.', 'error'); return; }
+      await apiCall('POST', '/api/mis-secuencias-ncf', {
+        documentType: get('mn-tipo'),
+        startNumber: Number(get('mn-desde')) || 0,
+        endNumber: Number(get('mn-hasta')) || 0,
+        authorizationDate: get('mn-fecha-autorizacion') || null,
+        expirationDate: get('mn-fecha-vencimiento') || null,
+        authorizationReference: get('mn-referencia'),
+        attachmentData: _mnAdjuntoDataUrl,
+        notes: get('mn-notas'),
+      });
+      toast('Secuencia registrada y activa.', 'success');
+    }
+    cerrarRegistrarMiNcfModal();
+    loadMisSecuenciasNcf();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function suspenderMiNcf(id) {
+  const seq = _misNcf.find((s) => String(s.id) === String(id));
+  if (!seq) return;
+  const reason = await pedirMotivoNcf(
+    `Suspender ${seq.documentType} ${seq.startNumber}–${seq.endNumber}`,
+    'El motivo es obligatorio. No podrás facturar con este rango hasta que la actives de nuevo.'
+  );
+  if (!reason) return;
+  try {
+    await refreshToken();
+    await apiCall('POST', `/api/mis-secuencias-ncf/${id}/suspender`, { reason });
+    toast('Secuencia suspendida.', 'success');
+    loadMisSecuenciasNcf();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function activarMiNcf(id) {
+  try {
+    await refreshToken();
+    await apiCall('POST', `/api/mis-secuencias-ncf/${id}/activar`, {});
+    toast('Secuencia activada.', 'success');
+    loadMisSecuenciasNcf();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+async function eliminarMiNcf(id) {
+  const seq = _misNcf.find((s) => String(s.id) === String(id));
+  if (!seq) return;
+  if (!confirm(`¿Eliminar la secuencia ${seq.documentType} ${seq.startNumber}–${seq.endNumber}? Nunca se usó, así que se puede borrar sin problema.`)) return;
+  try {
+    await refreshToken();
+    await apiCall('DELETE', `/api/mis-secuencias-ncf/${id}`);
+    toast('Secuencia eliminada.', 'success');
+    loadMisSecuenciasNcf();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
 // ── Nueva Factura ─────────────────────────────────────────────────────
 
 async function nuevaFactura() {
@@ -2758,6 +2951,8 @@ async function imprimirFactura() {
     body{font-family:'Segoe UI',Arial,sans-serif;font-size:13px;color:#1a1a2e;padding:24px}
     .inv{max-width:740px;margin:0 auto}
     .inv-top{display:flex;justify-content:space-between;margin-bottom:24px;padding-bottom:16px;border-bottom:3px solid #3b82f6;gap:20px}
+    .inv-firma{display:flex;align-items:center;gap:12px}
+    .inv-firma-logo{width:56px;height:56px;border-radius:10px;object-fit:cover;flex-shrink:0}
     .inv-firma h1{font-size:22px;font-weight:800;color:#1a1a2e;margin-bottom:4px}
     .inv-firma p{margin:2px 0;color:#5a7099;font-size:12px}
     .inv-meta{text-align:right}
@@ -2784,10 +2979,13 @@ async function imprimirFactura() {
   <div class="inv">
     <div class="inv-top">
       <div class="inv-firma">
-        <h1>${esc(f.contador_nombre || '')}</h1>
-        ${f.contador_rnc    ? `<p>RNC: ${f.contador_rnc}</p>` : ''}
-        ${f.contador_tel    ? `<p>Tel: ${f.contador_tel}</p>` : ''}
-        ${f.contador_correo ? `<p>${f.contador_correo}</p>`   : ''}
+        ${f.contador_logo ? `<img src="${f.contador_logo}" class="inv-firma-logo">` : ''}
+        <div>
+          <h1>${esc(f.contador_nombre || '')}</h1>
+          ${f.contador_rnc    ? `<p>RNC: ${f.contador_rnc}</p>` : ''}
+          ${f.contador_tel    ? `<p>Tel: ${f.contador_tel}</p>` : ''}
+          ${f.contador_correo ? `<p>${f.contador_correo}</p>`   : ''}
+        </div>
       </div>
       <div class="inv-meta">
         <h2>FACTURA</h2>
@@ -4896,6 +5094,9 @@ window.app = {
   // secuencias NCF ya aplicadas (editar/suspender/eliminar remoto)
   abrirEditarNcfModal, cerrarEditarNcfModal, guardarEdicionNcf, abrirSuspenderNcfModal, eliminarNcfAplicada,
   confirmarMotivoNcf, cancelarMotivoNcf,
+  // facturación — mis secuencias NCF propias (para facturar sus servicios)
+  abrirMisSecuenciasNcf, cerrarMisSecuenciasNcf, abrirRegistrarMiNcfModal, cerrarRegistrarMiNcfModal,
+  handleMiNcfAdjunto, guardarMiNcf, suspenderMiNcf, activarMiNcf, eliminarMiNcf,
   // facturación — dashboard
   loadFacturacion, filtrarFacturas, limpiarFiltrosFac,
   // facturación — nueva factura

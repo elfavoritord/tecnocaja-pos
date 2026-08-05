@@ -35,6 +35,8 @@ function normalizeMySqlSql(sql) {
     .replace(/\bINTEGER PRIMARY KEY AUTOINCREMENT\b/gi, 'INT AUTO_INCREMENT PRIMARY KEY')
     .replace(/datetime\(\s*'now'\s*,\s*'\s*\+30 days'\s*\)/gi, 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 30 DAY)')
     .replace(/datetime\(\s*'now'\s*\)/gi, 'CURRENT_TIMESTAMP')
+    .replace(/date\(\s*'now'\s*,\s*'start of month'\s*\)/gi, "DATE_FORMAT(CURDATE(), '%Y-%m-01')")
+    .replace(/date\(\s*'now'\s*,\s*'-(\d+)\s*days?'\s*\)/gi, 'DATE_SUB(CURDATE(), INTERVAL $1 DAY)')
     .replace(/date\(\s*'now'\s*\)/gi, 'CURRENT_DATE')
     .replace(/\bstrftime\('%H:00',\s*([^)]+)\)/gi, "DATE_FORMAT($1, '%H:00')")
     .replace(/\bINSERT\s+OR\s+IGNORE\s+INTO\b/gi, 'INSERT IGNORE INTO')

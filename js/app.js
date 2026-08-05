@@ -4549,6 +4549,20 @@ function syncConfigForm() {
     if (el === activeElement) return;
     el.value = val ?? '';
   });
+  if (window.RNCLookup) {
+    const rncEl = document.getElementById('cfg-rnc');
+    if (rncEl && !rncEl.dataset.rncAttached) {
+      rncEl.dataset.rncAttached = '1';
+      RNCLookup.attach(rncEl, {
+        nameEl: document.getElementById('cfg-razon-social'),
+        onSelect(data) {
+          const nombreEl = document.getElementById('cfg-nombre');
+          if (nombreEl && data.nombreComercial) nombreEl.value = data.nombreComercial;
+        },
+        mode: 'both',
+      });
+    }
+  }
   const moneda = document.getElementById('cfg-moneda');
   if (moneda && moneda !== activeElement) {
     moneda.value = cfg.moneda || 'RD$';

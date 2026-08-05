@@ -537,6 +537,7 @@
           <div class="mod-sub">Emite facturas por tus servicios contables</div>
         </div>
         <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.abrirMisSecuenciasNcf()">🏛 Mis Secuencias NCF</button>
           <button class="btn btn-secondary" onclick="app.abrirClientesFac()">👥 Mis Clientes</button>
           <button class="btn btn-primary"   onclick="app.nuevaFactura()">＋ Nueva Factura</button>
         </div>
@@ -1769,6 +1770,76 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="app.cancelarMotivoNcf()">Cancelar</button>
       <button class="btn btn-danger" onclick="app.confirmarMotivoNcf()">Confirmar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Mis Secuencias NCF (facturación propia del contador) ────────── -->
+<div id="modal-mis-ncf-lista" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarMisSecuenciasNcf()">✕</button>
+    <div class="modal-title">🏛 Mis Secuencias NCF</div>
+    <div class="modal-sub">Rangos que la DGII te autorizó a ti para facturar tus servicios contables. Sin una secuencia activa aquí, no se puede emitir factura de ese tipo.</div>
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+      <button class="btn btn-primary" onclick="app.abrirRegistrarMiNcfModal()">＋ Registrar secuencia</button>
+    </div>
+    <div id="mis-ncf-lista-body">
+      <div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Registrar / Editar Mi Secuencia NCF ──────────────────────────── -->
+<div id="modal-registrar-mi-ncf" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarRegistrarMiNcfModal()">✕</button>
+    <div class="modal-title" id="mn-titulo">🏛 Registrar Mi Secuencia NCF</div>
+    <div class="modal-sub">Registra el rango exacto que la DGII te autorizó, con referencia y documento de respaldo.</div>
+
+    <div class="fac-form-section">
+      <div class="fac-section-lbl">Comprobante</div>
+      <div class="form-group">
+        <label class="form-label">Tipo de comprobante *</label>
+        <select id="mn-tipo" class="form-select"></select>
+      </div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Número inicial autorizado *</label>
+          <input type="number" id="mn-desde" class="form-input" min="1" placeholder="1" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Número final autorizado *</label>
+          <input type="number" id="mn-hasta" class="form-input" min="1" placeholder="500" />
+        </div>
+      </div>
+      <div class="fac-grid-2">
+        <div class="form-group">
+          <label class="form-label">Fecha de autorización</label>
+          <input type="date" id="mn-fecha-autorizacion" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de vencimiento</label>
+          <input type="date" id="mn-fecha-vencimiento" class="form-input" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Referencia / número de autorización DGII *</label>
+        <input type="text" id="mn-referencia" class="form-input" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Documento de autorización DGII (PDF/imagen) *</label>
+        <input type="file" id="mn-adjunto-file" accept=".pdf,image/*" onchange="app.handleMiNcfAdjunto(this)" />
+        <span id="mn-adjunto-nombre" style="font-size:12px;color:var(--text-sub);display:block;margin-top:4px"></span>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">Notas</label>
+        <input type="text" id="mn-notas" class="form-input" placeholder="Opcional" />
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarRegistrarMiNcfModal()">Cancelar</button>
+      <button class="btn btn-primary" id="mn-btn-guardar" onclick="app.guardarMiNcf()">Guardar</button>
     </div>
   </div>
 </div>
