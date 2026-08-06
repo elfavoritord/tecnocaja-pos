@@ -32,6 +32,8 @@
 
   const PREFS_KEY   = 'tecnocaja_update_prefs';
   const HISTORY_KEY = 'tecnocaja_update_history';
+  let initialized = false;
+  let setupOverlayState = null;
 
   const TYPE_MAP = {
     bugfix      : { label: 'Corrección de errores',  icon: '🐛', color: '#f59e0b' },
@@ -43,6 +45,14 @@
 
   /* ─── Inicialización ────────────────────────────────────────────────────── */
   async function init() {
+    if (initialized) {
+      _syncPrefsUI();
+      _renderHistory();
+      _refreshHero();
+      return;
+    }
+    initialized = true;
+
     _loadPrefs();
     _loadHistory();
     _syncPrefsUI();
@@ -215,9 +225,10 @@
     _setStatus('installing');
     const installBtn = document.getElementById('upd-btn-install');
     if (installBtn) installBtn.disabled = true;
+    const skipBackup = await _shouldSkipBackupForSetupUpdater();
 
     const STEPS = [
-      { id: 'us-backup',  label: 'Creando respaldo (BD + Configuración + Ventas + Clientes + Inventario)…' },
+      { id: 'us-backup',  label: skipBackup ? 'Preparando actualización inicial…' : 'Creando respaldo (BD + Configuración + Ventas + Clientes + Inventario)…' },
       { id: 'us-update',  label: 'Aplicando actualización del sistema…' },
       { id: 'us-verify',  label: 'Verificando integridad de los archivos…' },
       { id: 'us-restart', label: 'Reiniciando Tecno Caja POS…' },
@@ -228,14 +239,18 @@
       // Crear respaldo antes de instalar
       _setStepState('us-backup', 'active');
       try {
-        const backupRes = await fetch('/api/respaldos/auto', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trigger: 'actualizacion_sistema', forceCloud: true })
-        });
-        const backupData = await backupRes.json().catch(() => ({}));
-        if (!backupRes.ok || backupData?.ok === false) {
-          throw new Error(backupData?.error || 'No se pudo crear el respaldo completo.');
+        if (skipBackup) {
+          await _sleep(350);
+        } else {
+          const backupRes = await fetch('/api/respaldos/auto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trigger: 'actualizacion_sistema', forceCloud: true })
+          });
+          const backupData = await backupRes.json().catch(() => ({}));
+          if (!backupRes.ok || backupData?.ok === false) {
+            throw new Error(backupData?.error || 'No se pudo crear el respaldo completo.');
+          }
         }
       } catch (err) {
         _setStatus('error');
@@ -546,6 +561,81 @@
     _savePrefs();
   }
 
+  /* ─── Actualizador disponible desde wizard inicial ──────────────────────── */
+  async function openSetupUpdater() {
+    await init();
+
+    const section = document.getElementById('cfg-update-section');
+    if (!section) {
+      if (window.showToast) showToast('No se encontró el módulo de actualizaciones.', 'error');
+      else alert('No se encontró el módulo de actualizaciones.');
+      return;
+    }
+
+    const existing = document.getElementById('setup-update-overlay');
+    if (existing) {
+      existing.classList.remove('hidden');
+      switchTab('main');
+      return;
+    }
+
+    if (!setupOverlayState) {
+      setupOverlayState = {
+        section,
+        parent: section.parentNode,
+        nextSibling: section.nextSibling,
+        display: section.style.display,
+        className: section.className,
+      };
+    }
+
+    const overlay = document.createElement('div');
+    overlay.id = 'setup-update-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,.68);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:18px;';
+    overlay.innerHTML = `
+      <div style="width:min(1040px,96vw);max-height:92vh;background:var(--surface,#fff);border:1px solid var(--border,#e5e7eb);border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.28);display:flex;flex-direction:column;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--border,#e5e7eb);background:linear-gradient(135deg,rgba(108,99,255,.12),rgba(0,229,160,.08));">
+          <div>
+            <div style="font-size:1.05rem;font-weight:800;color:var(--text,#111827);">Actualización del sistema</div>
+            <div style="font-size:.82rem;color:var(--text2,#64748b);">Busca e instala correcciones antes de configurar la empresa.</div>
+          </div>
+          <button type="button" onclick="window.Actualizaciones?.closeSetupUpdater()" aria-label="Cerrar actualizador" style="width:38px;height:38px;border:1px solid var(--border,#d8d8ef);border-radius:10px;background:var(--bg,#f8fafc);color:var(--text,#111827);font-size:1.2rem;cursor:pointer;">×</button>
+        </div>
+        <div data-setup-update-body style="padding:16px;overflow:auto;"></div>
+      </div>`;
+
+    document.body.appendChild(overlay);
+    const body = overlay.querySelector('[data-setup-update-body]');
+    body.appendChild(section);
+    section.classList.remove('span-full');
+    section.classList.add('upd-setup-embedded');
+    section.style.display = 'block';
+
+    switchTab('main');
+    _syncPrefsUI();
+    _renderHistory();
+    _refreshHero();
+    if (UPD.status === 'idle') setTimeout(checkForUpdates, 250);
+  }
+
+  function closeSetupUpdater() {
+    const overlay = document.getElementById('setup-update-overlay');
+    const state = setupOverlayState;
+    if (state?.section && state.parent) {
+      if (state.nextSibling && state.nextSibling.parentNode === state.parent) {
+        state.parent.insertBefore(state.section, state.nextSibling);
+      } else {
+        state.parent.appendChild(state.section);
+      }
+      state.section.className = state.className;
+      state.section.style.display = state.display;
+    }
+    overlay?.remove();
+    setupOverlayState = null;
+  }
+
   /* ─── Restaurar versión anterior ─────────────────────────────────────────── */
   function openRestoreModal() {
     const prev = UPD.history.slice(1);
@@ -653,6 +743,16 @@
   }
   function _saveHistory() { localStorage.setItem(HISTORY_KEY, JSON.stringify(UPD.history.slice(0, 50))); }
 
+  async function _shouldSkipBackupForSetupUpdater() {
+    if (!document.getElementById('setup-update-overlay')) return false;
+    try {
+      const data = await fetch(`/api/setup/status?_=${Date.now()}`).then(r => r.json());
+      return Boolean(data?.setupRequired || data?.needsSetup || data?.requiresSetup);
+    } catch (_) {
+      return true;
+    }
+  }
+
   /* ─── API pública ────────────────────────────────────────────────────────── */
   window.Actualizaciones = {
     init,
@@ -660,6 +760,8 @@
     checkForUpdates,
     startDownload,
     installUpdate,
+    openSetupUpdater,
+    closeSetupUpdater,
     openRestoreModal,
     _doRestore,
     togglePref,
