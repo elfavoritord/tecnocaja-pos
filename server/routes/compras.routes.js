@@ -27,6 +27,15 @@
 
 const express = require('express');
 
+function syncContabilidadFireAndForget(reason) {
+  try {
+    require('../sync/sync-pos-stats').syncPosStatsToFirestore()
+      .catch((error) => console.warn(`[compras][sync-contable] ${reason}:`, error.message));
+  } catch (error) {
+    console.warn(`[compras][sync-contable] ${reason}:`, error.message);
+  }
+}
+
 async function hasColumn(query, tableName, columnName) {
   const rows = await query(`PRAGMA table_info(${tableName})`).catch(() => []);
   return rows.some((row) => String(row.name || row.Field || '').toLowerCase() === String(columnName).toLowerCase());
@@ -370,6 +379,7 @@ function createComprasRouter({
         `SELECT p.*, s.nombre AS supplier_name FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id WHERE p.id = ?`,
         [result.purchaseId]
       );
+      syncContabilidadFireAndForget('compra registrada');
       res.status(201).json(mapPurchaseRow(row));
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
@@ -541,6 +551,7 @@ function createComprasRouter({
         detail: `Compra #${purchaseId}${motivo ? ' · ' + motivo : ''}`,
       });
 
+      syncContabilidadFireAndForget('compra anulada');
       res.json({ ok: true, message: `Compra #${purchaseId} anulada.` });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });

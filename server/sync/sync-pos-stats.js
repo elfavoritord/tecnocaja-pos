@@ -581,10 +581,7 @@ async function syncPosStatsToFirestore() {
     const [posStats, tabs, contabilidad, businessProfile, ncfSequences] = await Promise.all([
       buildPosStats(),
       buildReportesTabs(),
-      buildContabilidadFeed().catch((e) => {
-        console.warn('[sync-pos-stats] Feed contable falló (no bloquea el resto):', e.message);
-        return null;
-      }),
+      buildContabilidadFeed(),
       buildBusinessProfile().catch((e) => {
         console.warn('[sync-pos-stats] Perfil de negocio falló (no bloquea el resto):', e.message);
         return {};
@@ -611,16 +608,14 @@ async function syncPosStatsToFirestore() {
 
     // 3. Escribir el detalle crudo para el Sistema Contable en
     //    contabilidad_raw/{tab} — lo consume tecno-caja-contadores para
-    //    generar asientos automáticamente. Si falló el cálculo, no se toca
-    //    (los otros dos bloques ya se guardaron igual).
-    if (contabilidad) {
-      const ctbCol = licRef.collection('contabilidad_raw');
-      const ctbBatch = db.batch();
-      for (const [tab, rows] of Object.entries(contabilidad)) {
-        ctbBatch.set(ctbCol.doc(tab), { rows, updatedAt: new Date().toISOString() });
-      }
-      await ctbBatch.commit();
+    //    generar asientos automáticamente. Si esto falla, el sync completo
+    //    debe reportar error para no aparentar datos contables frescos.
+    const ctbCol = licRef.collection('contabilidad_raw');
+    const ctbBatch = db.batch();
+    for (const [tab, rows] of Object.entries(contabilidad)) {
+      ctbBatch.set(ctbCol.doc(tab), { rows, updatedAt: new Date().toISOString() });
     }
+    await ctbBatch.commit();
 
     // 4. Espejo de secuencias NCF aplicadas — un doc por secuencia, keyed por
     // su id local (así el Portal referencia `targetLocalSequenceId` directo

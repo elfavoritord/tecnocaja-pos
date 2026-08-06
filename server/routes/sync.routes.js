@@ -161,7 +161,8 @@ router.post('/last-n-days', async (req, res) => {
     const { businessId, branchId } = ids;
 
     const days = Math.min(Math.max(Number(req.body?.days) || 7, 1), 90);
-    res.json({ status: 'syncing' });
+    await syncLastNDays(businessId, branchId, days);
+    res.json({ status: 'syncing', days });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

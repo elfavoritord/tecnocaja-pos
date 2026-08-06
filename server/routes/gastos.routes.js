@@ -23,6 +23,15 @@
 
 const express = require('express');
 
+function syncContabilidadFireAndForget(reason) {
+  try {
+    require('../sync/sync-pos-stats').syncPosStatsToFirestore()
+      .catch((error) => console.warn(`[gastos][sync-contable] ${reason}:`, error.message));
+  } catch (error) {
+    console.warn(`[gastos][sync-contable] ${reason}:`, error.message);
+  }
+}
+
 const EXPENSE_CATEGORIES = [
   'Alquiler', 'Electricidad', 'Internet', 'Agua', 'Combustible', 'Publicidad',
   'Papelería', 'Nómina', 'Seguridad', 'Limpieza', 'Mantenimiento', 'Honorarios',
@@ -259,6 +268,7 @@ function createGastosRouter({
          WHERE e.id = ?`,
         [result.insertId]
       );
+      syncContabilidadFireAndForget('gasto registrado');
       res.status(201).json(mapExpenseRow(row));
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
@@ -338,6 +348,7 @@ function createGastosRouter({
         detail: `Gasto #${expenseId}${motivo ? ' · ' + motivo : ''}`,
       });
 
+      syncContabilidadFireAndForget('gasto anulado');
       res.json({ ok: true, message: `Gasto #${expenseId} anulado.` });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
