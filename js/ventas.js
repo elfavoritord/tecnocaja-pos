@@ -429,7 +429,8 @@ function normalizeSaleItem(item = {}) {
     saleMode,
     unitLabel,
     weightUnit,
-    qty: sanitizeSaleItemQty({ ...item, saleMode }, item.qty)
+    qty: sanitizeSaleItemQty({ ...item, saleMode }, item.qty),
+    descuento: Math.max(0, Number(item.descuento ?? item.discountAmount ?? 0) || 0)
   };
 
   if (saleMode === 'peso') {
@@ -511,11 +512,15 @@ function recalcSaleItemForQty(item, qty) {
 
 function buildSaleItem(product, qty = 1, extra = {}) {
   const promo = resolvePromotionForCartLine(product.id, qty);
+  const unitPrice = promo ? Number(promo.precioPromocion) : Number(product.precioVenta || 0);
+  const defaultDiscountAmount = extra.descuento !== undefined
+    ? Number(extra.descuento || 0)
+    : roundSaleMoney((unitPrice * Number(qty || 0)) * (Number(product.descuentoPct || 0) / 100));
   const item = normalizeSaleItem({
     id: product.id,
     codigo: product.codigo,
     nombre: product.nombre,
-    precio: promo ? Number(promo.precioPromocion) : Number(product.precioVenta || 0),
+    precio: unitPrice,
     promoAplicada: promo ? {
       promotionId: promo.promotionId,
       nombre: promo.nombre,
@@ -526,11 +531,10 @@ function buildSaleItem(product, qty = 1, extra = {}) {
       cantidadMinima: promo.cantidadMinima ?? null,
     } : null,
     qty,
-    // El % de descuento configurado en la ficha del producto se precarga
-    // aquí — es lo mismo que ya usa el descuento general de la venta
-    // (calculateSaleItemDiscount), así que no hace falta tocar el resto del
-    // cálculo de totales/ITBIS/recibo, ya lo respetan automáticamente.
-    descuento: Number(extra.descuento ?? product.descuentoPct ?? 0),
+    // En el carrito el descuento se maneja como monto RD$ por línea. Si el
+    // producto trae un descuento porcentual configurado, se convierte una vez
+    // a monto para que el cajero vea dinero real, no porcentaje.
+    descuento: defaultDiscountAmount,
     itbis: product.aplicaItbis ? Number(DB.config.itbis || 0) : 0,
     saleMode: extra.saleMode || product.saleMode || 'unidad',
     unitLabel: extra.unitLabel || product.unidad || 'Unidad',
@@ -1227,12 +1231,32 @@ function calculateSaleItemBase(item = {}) {
 
 function calculateSaleItemDiscount(item = {}) {
   const base = calculateSaleItemBase(item);
-  const rate = Math.max(0, Number(item?.descuento || 0));
-  return roundSaleMoney(base * (rate / 100));
+  const amount = Math.max(0, Number(item?.descuento ?? item?.discountAmount ?? 0));
+  return roundSaleMoney(Math.min(base, amount));
 }
 
 function calculateSaleItemNet(item = {}) {
   return roundSaleMoney(calculateSaleItemBase(item) - calculateSaleItemDiscount(item));
+}
+
+function getGeneralDiscountAmountFromOptions(options = {}) {
+  const raw = options.generalDiscountAmount ?? options.generalDiscountRate ?? 0;
+  return Math.max(0, Number(raw || 0));
+}
+
+function getAllocatedGeneralDiscountForItem(item = {}, options = {}) {
+  const generalDiscountAmount = getGeneralDiscountAmountFromOptions(options);
+  if (!(generalDiscountAmount > 0)) return 0;
+  const items = Array.isArray(options.saleItems) && options.saleItems.length ? options.saleItems : [item];
+  const nets = items.map((raw) => calculateSaleItemNet(normalizeSaleItem(raw)));
+  const totalNet = roundSaleMoney(nets.reduce((sum, n) => sum + n, 0));
+  if (!(totalNet > 0)) return 0;
+  const explicitIndex = Number(options.itemIndex);
+  const targetIndex = Number.isInteger(explicitIndex) && explicitIndex >= 0
+    ? Math.min(explicitIndex, items.length - 1)
+    : Math.max(0, items.indexOf(item));
+  const itemNet = targetIndex >= 0 ? nets[targetIndex] : calculateSaleItemNet(item);
+  return roundSaleMoney(Math.min(itemNet, Math.min(generalDiscountAmount, totalNet) * (itemNet / totalNet)));
 }
 
 function calculateSaleItemTax(item = {}, options = {}) {
@@ -1241,14 +1265,15 @@ function calculateSaleItemTax(item = {}, options = {}) {
   const itemRate = Number(item?.itbis || 0);
   const taxRate = Number.isFinite(itemRate) ? Math.max(0, itemRate) : behavior.taxRate;
   if (!(taxRate > 0) || !(net > 0)) return 0;
-  const discountRate = Math.max(0, Number(options.generalDiscountRate ?? 0));
-  const taxableBase = roundSaleMoney(net - (net * (discountRate / 100)));
+  const taxableBase = roundSaleMoney(net - getAllocatedGeneralDiscountForItem(item, options));
   return roundSaleMoney(taxableBase * (taxRate / 100));
 }
 
 function calcularTotales(items = [], options = {}) {
   const behavior = getSaleTaxConfig(options.config);
-  const generalDiscountRate = Math.max(0, Number(options.generalDiscountRate ?? 0));
+  const normalizedItems = (Array.isArray(items) ? items : []).map((rawItem) => normalizeSaleItem(rawItem));
+  const totalNetBeforeGeneralDiscount = roundSaleMoney(normalizedItems.reduce((sum, item) => sum + calculateSaleItemNet(item), 0));
+  const generalDiscountTarget = roundSaleMoney(Math.min(getGeneralDiscountAmountFromOptions(options), totalNetBeforeGeneralDiscount));
   let subtotalGravado = 0;
   let subtotalExento = 0;
   let subtotalGravadoFinal = 0;
@@ -1256,12 +1281,21 @@ function calcularTotales(items = [], options = {}) {
   let itbis = 0;
   let discount = 0;
   let itemCount = 0;
+  let allocatedGeneralDiscount = 0;
 
-  (Array.isArray(items) ? items : []).forEach((rawItem) => {
-    const item = normalizeSaleItem(rawItem);
+  normalizedItems.forEach((item, index) => {
     const qty = Number(item.qty || 0);
-    const net = calculateSaleItemNet(item);
-    const generalDiscountAmount = roundSaleMoney(net * (generalDiscountRate / 100));
+    const base = calculateSaleItemBase(item);
+    const lineDiscountAmount = calculateSaleItemDiscount(item);
+    const net = roundSaleMoney(base - lineDiscountAmount);
+    let generalDiscountAmount = totalNetBeforeGeneralDiscount > 0
+      ? roundSaleMoney(generalDiscountTarget * (net / totalNetBeforeGeneralDiscount))
+      : 0;
+    if (index === normalizedItems.length - 1) {
+      generalDiscountAmount = roundSaleMoney(generalDiscountTarget - allocatedGeneralDiscount);
+    }
+    generalDiscountAmount = Math.max(0, Math.min(net, generalDiscountAmount));
+    allocatedGeneralDiscount = roundSaleMoney(allocatedGeneralDiscount + generalDiscountAmount);
     const lineNetAfterGeneralDiscount = roundSaleMoney(net - generalDiscountAmount);
     const itemTaxRate = Math.max(0, Number(item.itbis || 0));
     const itemTax = itemTaxRate > 0
@@ -1269,15 +1303,15 @@ function calcularTotales(items = [], options = {}) {
       : 0;
 
     if (itemTaxRate > 0) {
-      subtotalGravado += net;
+      subtotalGravado += base;
       subtotalGravadoFinal += lineNetAfterGeneralDiscount;
       itbis += itemTax;
     } else {
-      subtotalExento += net;
+      subtotalExento += base;
       subtotalExentoFinal += lineNetAfterGeneralDiscount;
     }
 
-    discount += generalDiscountAmount;
+    discount += lineDiscountAmount + generalDiscountAmount;
     itemCount += qty;
   });
 
@@ -1327,7 +1361,7 @@ function calcularTotales(items = [], options = {}) {
 function calculateCurrentSaleTotals() {
   normalizeCartSaleItems();
   return calcularTotales(DB.saleItems, {
-    generalDiscountRate: parseFloat(DB.saleGeneralDiscount || 0) || 0,
+    generalDiscountAmount: parseFloat(DB.saleGeneralDiscount || 0) || 0,
     config: DB.config,
     cardSurcharge: DB.payMethod === 'tarjeta'
   });
@@ -2317,8 +2351,8 @@ function buildBillingModalMarkup() {
             </div>
 
             <div class="discount-area">
-              <label>Descuento general del pedido (%)</label>
-              <input type="number" id="desc-general" min="0" max="100" placeholder="0" value="${parseFloat(DB.saleGeneralDiscount || 0) || 0}" oninput="applyGeneralDiscount()" class="discount-input">
+              <label>Descuento global de la factura (RD$)</label>
+              <input type="number" id="desc-general" min="0" step="0.01" placeholder="0.00" value="${parseFloat(DB.saleGeneralDiscount || 0) || 0}" oninput="applyGeneralDiscount()" class="discount-input">
             </div>
           </div>
         </div>
@@ -2763,8 +2797,8 @@ function buildBillingStepModalMarkup() {
           </div>
 
           <div class="discount-area">
-            <label>Descuento general del pedido (%)</label>
-            <input type="number" id="desc-general" min="0" max="100" placeholder="0" value="${parseFloat(DB.saleGeneralDiscount || 0) || 0}" oninput="applyGeneralDiscount()" class="discount-input billing-step-input">
+            <label>Descuento global de la factura (RD$)</label>
+            <input type="number" id="desc-general" min="0" step="0.01" placeholder="0.00" value="${parseFloat(DB.saleGeneralDiscount || 0) || 0}" oninput="applyGeneralDiscount()" class="discount-input billing-step-input">
           </div>
         </section>
 
@@ -2818,7 +2852,7 @@ function buildBillingCompactSummaryRowsMarkup() {
         </div>
         <div class="billing-compact-line-meta">${qty}</div>
         <div class="billing-compact-line-meta">${fmt(price)}</div>
-        <div class="billing-compact-line-meta">${discount}%</div>
+        <div class="billing-compact-line-meta">${discount > 0 ? `Desc. ${fmt(discount)}` : 'Sin descuento'}</div>
         <div class="billing-compact-line-meta">${tax}%</div>
         <div class="billing-compact-line-total">${fmt(total)}</div>
       </div>
@@ -2870,7 +2904,7 @@ function buildBillingCompactModalMarkup() {
   return `
     <div class="billing-v3-shell">
 
-      <!-- ══ SUBHEADER: Cliente + Tipo + [% Desc] ══ -->
+      <!-- ══ SUBHEADER: Cliente + Tipo + Descuento RD$ ══ -->
       <div class="billing-v3-subheader">
         <!-- Cliente -->
         <div class="billing-v3-client-wrap">
@@ -2939,8 +2973,8 @@ function buildBillingCompactModalMarkup() {
               `).join('')}
             </div>
           </div>
-          <button type="button" class="billing-v3-desc-btn" onclick="openBillingDiscountModal()" title="Descuento general (%)">
-            %${discountVal > 0 ? ` <strong>${discountVal}%</strong>` : ' Desc.'}
+          <button type="button" class="billing-v3-desc-btn" onclick="openBillingDiscountModal()" title="Descuento global de factura">
+            RD$${discountVal > 0 ? ` <strong>${fmt(discountVal).replace(/^RD\\$\\s*/, '')}</strong>` : ' Desc.'}
           </button>
         </div>
 
@@ -3263,13 +3297,13 @@ function buildBillingCompactModalMarkup() {
       <!-- Modal flotante de descuento -->
       <div id="billing-v3-discount-modal" class="billing-v3-discount-overlay hidden">
         <div class="billing-v3-discount-card">
-          <strong>Descuento general</strong>
+          <strong>Descuento global de la factura</strong>
           <div class="billing-v3-discount-body">
             <input type="number" id="desc-general" class="billing-v3-discount-input"
-              min="0" max="100" placeholder="0"
+              min="0" step="0.01" placeholder="0.00"
               value="${discountVal}"
               oninput="applyGeneralDiscount(); _syncBillingV3DiscountBtn()">
-            <span class="billing-v3-discount-pct-label">%</span>
+            <span class="billing-v3-discount-pct-label">RD$</span>
           </div>
           <div class="billing-v3-discount-actions">
             <button type="button" class="btn-secondary" onclick="closeBillingDiscountModal()">Cerrar</button>
@@ -4625,12 +4659,12 @@ function closeBillingDiscountModal() {
 window.openBillingDiscountModal  = openBillingDiscountModal;
 window.closeBillingDiscountModal = closeBillingDiscountModal;
 
-/** Actualiza el texto del botón [% Desc.] según el valor actual. */
+/** Actualiza el texto del botón de descuento global según el monto actual. */
 function _syncBillingV3DiscountBtn() {
   const btn = document.querySelector('.billing-v3-desc-btn');
   if (!btn) return;
   const val = parseFloat(DB.saleGeneralDiscount || 0) || 0;
-  btn.innerHTML = val > 0 ? `% <strong>${val}%</strong>` : '% Desc.';
+  btn.innerHTML = val > 0 ? `RD$ <strong>${fmt(val).replace(/^RD\$\s*/, '')}</strong>` : 'RD$ Desc.';
 }
 
 function openBillingModal() {
@@ -5403,7 +5437,7 @@ function renderSaleTable() {
             <input id="sale-item-qty-${idx}" class="qty-input" type="number" value="${item.qty}" oninput="updateItemQty(${idx},this.value)" onchange="updateItemQty(${idx},this.value)" onkeydown="handleQtyInputKey(event, ${idx})" min="${getSaleItemMinQuantity(item)}" step="${getSaleItemQuantityStep(item)}">
           `}
       </td>
-      <td><input id="sale-item-disc-${idx}" class="disc-input is-readonly" type="number" value="${item.descuento}" min="0" max="100" readonly disabled tabindex="-1"></td>
+      <td><input id="sale-item-disc-${idx}" class="disc-input" type="number" value="${item.descuento}" min="0" max="${calculateSaleItemBase(item)}" step="0.01" oninput="updateItemDisc(${idx},this.value)" onchange="updateItemDisc(${idx},this.value)" title="Descuento de este producto en RD$"></td>
       <td style="color:var(--text2);font-size:0.74rem">${item.itbis}%</td>
       <td id="sale-item-total-${idx}" style="font-weight:700;font-family:var(--font-mono);font-size:0.76rem;white-space:nowrap">${fmt(item.total)}</td>
       <td><button class="btn-remove" onclick="removeItem(${idx})">✕</button></td>
@@ -5526,7 +5560,8 @@ function updateItemPrice(idx, val) {
   updateTotals();
 }
 function updateItemDisc(idx, val) {
-  DB.saleItems[idx].descuento = Math.min(100, Math.max(0, parseFloat(val) || 0));
+  const base = calculateSaleItemBase(DB.saleItems[idx]);
+  DB.saleItems[idx].descuento = Math.min(base, Math.max(0, parseFloat(val) || 0));
   DB.saleItems[idx].total = calcItemTotal(DB.saleItems[idx]);
   syncSaleRowDisplay(idx);
   updateTotals();
@@ -5553,7 +5588,7 @@ function applyGeneralDiscount() {
 function updateTotals() {
   normalizeCartSaleItems();
   const totals = calcularTotales(DB.saleItems, {
-    generalDiscountRate: getGeneralDiscountValue(),
+    generalDiscountAmount: getGeneralDiscountValue(),
     config: DB.config,
     cardSurcharge: DB.payMethod === 'tarjeta'
   });
@@ -6701,7 +6736,7 @@ function buildSalePayload() {
   if (!validateSaleItemsBeforeCheckout()) return null;
   const generalDisc = getGeneralDiscountValue();
   const saleTotals = calcularTotales(DB.saleItems, {
-    generalDiscountRate: generalDisc,
+    generalDiscountAmount: generalDisc,
     config: DB.config,
     cardSurcharge: DB.payMethod === 'tarjeta'
   });
@@ -6858,7 +6893,7 @@ function buildSalePayload() {
       creditDueDate: billingModalState.creditDueDate || '',
       creditNotes: billingModalState.creditNotes || ''
     },
-    items: DB.saleItems.map((item) => {
+    items: DB.saleItems.map((item, index) => {
       const normalizedItem = normalizeSaleItem(item);
       return {
         id: normalizedItem.id,
@@ -6866,10 +6901,11 @@ function buildSalePayload() {
         qty: normalizedItem.qty,
         precio: normalizedItem.precio,
         descuento: normalizedItem.descuento,
+        descuentoMonto: calculateSaleItemDiscount(normalizedItem),
         itbis: normalizedItem.itbis,
         total: normalizedItem.total,
         subtotal: calculateSaleItemNet(normalizedItem),
-        impuestoMonto: calculateSaleItemTax(normalizedItem, { config: DB.config, generalDiscountRate: generalDisc }),
+        impuestoMonto: calculateSaleItemTax(normalizedItem, { config: DB.config, generalDiscountAmount: generalDisc, saleItems: DB.saleItems, itemIndex: index }),
         saleMode: normalizedItem.saleMode,
         unitLabel: normalizedItem.unitLabel,
         weightUnit: normalizedItem.weightUnit,
@@ -8917,7 +8953,7 @@ function buildPrintPreviewSale(configOverride = {}) {
     { nombre: 'Ingrediente adicional', qty: 1, precio: 75, total: 75, itbis: Number(configOverride.itbis || 0) }
   ];
   const totals = calcularTotales(items, {
-    generalDiscountRate: 4.7619,
+    generalDiscountAmount: 25,
     config: { ...DB.config, ...configOverride }
   });
 
@@ -9080,7 +9116,7 @@ function buildQuotationReceiptDocument(quotation) {
     };
   });
   const totals = calcularTotales(items, {
-    generalDiscountRate: Number(quotation?.generalDiscount || 0),
+    generalDiscountAmount: Number(quotation?.generalDiscount || 0),
     config: DB.config
   });
   const quoteId = String(quotation?.id || quotation?.nombre || 'COT').trim() || 'COT';

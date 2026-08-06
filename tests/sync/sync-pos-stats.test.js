@@ -90,12 +90,15 @@ jest.mock('../../db', () => ({
         cajero: 'Admin Demo',
         cliente: 'Consumidor Final',
         metodo_pago: 'efectivo',
+        descuento: 30,
+        descuento_productos: 10,
+        descuento_global: 20,
         total: 118,
         itbis: 18,
       }];
     }
     if (text.includes('FROM sales s') && text.includes('AS costo_venta')) {
-      return [{ id: 10, fecha: '2026-08-06 10:00:00', factura: 'FAC-10', metodo_pago: 'efectivo', subtotal: 100, itbis: 18, total: 118, cliente: 'Consumidor Final', costo_venta: 60 }];
+      return [{ id: 10, fecha: '2026-08-06 10:00:00', factura: 'FAC-10', metodo_pago: 'efectivo', subtotal: 100, descuento: 30, descuento_productos: 10, descuento_global: 20, itbis: 18, total: 88, cliente: 'Consumidor Final', costo_venta: 60 }];
     }
     if (text.includes('FROM supplier_invoices')) {
       return [{ id: 20, fecha: '2026-08-06', numero: 'SUP-20', ncf: 'B0100000001', total: 500, itbis: 76.27, proveedor: 'Proveedor Demo', metodo_pago: 'Efectivo' }];
@@ -151,7 +154,14 @@ describe('sync-pos-stats contabilidad', () => {
       expect.objectContaining({
         path: 'licencias/pos_demo_1/reportes/ventas',
         data: expect.objectContaining({
-          rows: [expect.objectContaining({ branch_id: 1, branchId: 1, sucursal: 'Principal' })],
+          rows: [expect.objectContaining({
+            branch_id: 1,
+            branchId: 1,
+            sucursal: 'Principal',
+            descuento: 30,
+            descuento_productos: 10,
+            descuento_global: 20,
+          })],
         }),
       }),
     ]));

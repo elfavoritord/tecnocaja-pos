@@ -1816,8 +1816,10 @@ module.exports = function createOfflineRouter(deps) {
         }
         const qty = Number(item.qty || item.cantidad || 1);
         const unitPrice = Number(item.price || item.precio || item.precio_venta || 0);
-        const lineTotal = Number(item.subtotal || item.total || item.line_total || qty * unitPrice);
-        const discountRate = Number(item.discount_rate || item.descuento || 0);
+        const lineBase = Number((qty * unitPrice).toFixed(2));
+        const discountAmount = Math.max(0, Math.min(lineBase, Number(item.discount_amount ?? item.discountAmount ?? item.descuentoMonto ?? item.descuento ?? 0) || 0));
+        const lineTotal = Number(item.subtotal || item.total || item.line_total || (lineBase - discountAmount));
+        const discountRate = Number(item.discount_rate || 0);
         const taxRate = Number(item.tax_rate || item.itbis || 0);
 
         if (saleId && productId) {
@@ -1828,13 +1830,15 @@ module.exports = function createOfflineRouter(deps) {
           // se guarda de verdad.
           const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
           const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;
-          const effectiveLineTotal = activePromo ? Number((effectiveUnitPrice * qty).toFixed(2)) : lineTotal;
+          const effectiveLineBase = Number((effectiveUnitPrice * qty).toFixed(2));
+          const effectiveDiscountAmount = Math.max(0, Math.min(effectiveLineBase, discountAmount));
+          const effectiveLineTotal = activePromo ? Number((effectiveLineBase - effectiveDiscountAmount).toFixed(2)) : lineTotal;
           if (activePromo) ahorroPromociones += activePromo.ahorro * qty;
 
           await conn.query(
-            `INSERT INTO sale_items (sale_id, product_id, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
-            [saleId, productId, qty, effectiveUnitPrice, effectiveLineTotal, discountRate, taxRate,
+            `INSERT INTO sale_items (sale_id, product_id, qty, price, line_total, discount_rate, discount_amount, tax_rate, sale_mode, promotion_id, original_price)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
+            [saleId, productId, qty, effectiveUnitPrice, effectiveLineTotal, discountRate, effectiveDiscountAmount, taxRate,
              activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null]
           ).catch(() => {});
 
@@ -1868,7 +1872,7 @@ module.exports = function createOfflineRouter(deps) {
           itemsForReportSync.push({
             product_id: productId,
             product_name: item.nombre || item.name || '',
-            qty, price: unitPrice, discount_rate: discountRate,
+            qty, price: unitPrice, discount_rate: discountRate, discount_amount: discountAmount,
             precio_compra: Number(item.precio_compra || 0)
           });
         }

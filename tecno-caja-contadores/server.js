@@ -1256,13 +1256,15 @@ function ctbCashOrArAccount(metodoPago) {
 function ctbBuildEntryFromRaw(tab, row) {
   if (tab === 'ventas') {
     const subtotal = ctbRound2(row.subtotal);
+    const descuento = ctbRound2(row.descuento);
+    const ventaNeta = ctbRound2(Math.max(0, subtotal - descuento));
     const itbis = ctbRound2(row.itbis);
     const total = ctbRound2(row.total);
     const costoVenta = ctbRound2(row.costo_venta);
     const esCredito = String(row.metodo_pago || '').toLowerCase() === 'credito';
     const lineas = [
       { cuenta: ctbCashOrArAccount(row.metodo_pago), debe: total, haber: 0 },
-      { cuenta: esCredito ? '4150' : '4100', debe: 0, haber: subtotal },
+      { cuenta: esCredito ? '4150' : '4100', debe: 0, haber: ventaNeta },
     ];
     if (itbis > 0) lineas.push({ cuenta: '2200', debe: 0, haber: itbis });
     if (costoVenta > 0) {

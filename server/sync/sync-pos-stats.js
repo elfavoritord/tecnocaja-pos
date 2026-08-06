@@ -262,6 +262,9 @@ async function buildReportesTabs() {
          u.nombre                                                       AS cajero,
          COALESCE(s.client_name_snapshot, c.nombre, 'Consumidor Final') AS cliente,
          s.payment_method                                               AS metodo_pago,
+         s.discount                                                     AS descuento,
+         s.discount_items_amount                                        AS descuento_productos,
+         s.discount_global_amount                                       AS descuento_global,
          s.total,
          s.tax                                                          AS itbis
        FROM sales s
@@ -412,6 +415,9 @@ async function buildReportesTabs() {
     sucursal: v.sucursal || '',
     cliente:  v.cliente,
     rnc:      null,
+    descuento: v.descuento || 0,
+    descuento_productos: v.descuento_productos || 0,
+    descuento_global: v.descuento_global || 0,
     total:    v.total,
     itbis:    v.itbis,
     estado:   'Emitida',
@@ -425,6 +431,9 @@ async function buildReportesTabs() {
     branch_id:      v.branch_id,
     branchId:       v.branch_id ? Number(v.branch_id) : null,
     sucursal:       v.sucursal || '',
+    descuento:      v.descuento || 0,
+    descuento_productos: v.descuento_productos || 0,
+    descuento_global: v.descuento_global || 0,
     base_imponible: safeNum(v.total) - safeNum(v.itbis),
     itbis:          v.itbis,
     total:          v.total,
@@ -436,8 +445,9 @@ async function buildReportesTabs() {
     const mes = isoDate(v.fecha)?.slice(0, 7) || '—';
     const branchId = v.branch_id ? Number(v.branch_id) : null;
     const key = `${mes}::${branchId || 'global'}`;
-    if (!byMonth[key]) byMonth[key] = { mes, branch_id: branchId, branchId, sucursal: v.sucursal || 'Global', ventas: 0, facturas: 0, itbis: 0, clientes_nuevos: 0 };
+    if (!byMonth[key]) byMonth[key] = { mes, branch_id: branchId, branchId, sucursal: v.sucursal || 'Global', ventas: 0, descuentos: 0, facturas: 0, itbis: 0, clientes_nuevos: 0 };
     byMonth[key].ventas   += safeNum(v.total);
+    byMonth[key].descuentos += safeNum(v.descuento);
     byMonth[key].facturas += 1;
     byMonth[key].itbis    += safeNum(v.itbis);
   }
@@ -477,6 +487,9 @@ async function buildContabilidadFeed() {
          b.nombre                                                        AS sucursal,
          s.cash_session_id                                               AS cash_session_id,
          s.subtotal,
+         s.discount                                                       AS descuento,
+         s.discount_items_amount                                          AS descuento_productos,
+         s.discount_global_amount                                         AS descuento_global,
          s.tax                                                          AS itbis,
          s.total,
          COALESCE(s.client_name_snapshot, c.nombre, 'Consumidor Final') AS cliente,
@@ -488,7 +501,7 @@ async function buildContabilidadFeed() {
        WHERE s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
          AND DATE(s.created_at) >= date('now','-30 days')
-       GROUP BY s.id, s.created_at, s.invoice_number, s.payment_method, s.branch_id, b.nombre, s.cash_session_id, s.subtotal, s.tax, s.total, cliente
+       GROUP BY s.id, s.created_at, s.invoice_number, s.payment_method, s.branch_id, b.nombre, s.cash_session_id, s.subtotal, s.discount, s.discount_items_amount, s.discount_global_amount, s.tax, s.total, cliente
        ORDER BY s.created_at DESC
        LIMIT ${MAX_ROWS}`
     ),
