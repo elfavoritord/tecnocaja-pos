@@ -119,6 +119,7 @@ async function buildBusinessProfile() {
     if (!cashRegistersByBranch.has(branchId)) cashRegistersByBranch.set(branchId, []);
     cashRegistersByBranch.get(branchId).push({
       id: Number(cashRegister.id),
+      branchId,
       nombre: cashRegister.nombre,
       codigo: cashRegister.codigo || '',
       estado: cashRegister.estado || 'Activa',
@@ -255,6 +256,9 @@ async function buildReportesTabs() {
       `SELECT
          s.created_at                                                   AS fecha,
          s.invoice_number                                               AS factura,
+         s.branch_id,
+         s.branch_id                                                    AS branchId,
+         b.nombre                                                        AS sucursal,
          u.nombre                                                       AS cajero,
          COALESCE(s.client_name_snapshot, c.nombre, 'Consumidor Final') AS cliente,
          s.payment_method                                               AS metodo_pago,
@@ -263,6 +267,7 @@ async function buildReportesTabs() {
        FROM sales s
        LEFT JOIN users   u ON s.user_id   = u.id
        LEFT JOIN clients c ON s.client_id = c.id
+       LEFT JOIN branches b ON b.id = s.branch_id
        WHERE s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
          AND DATE(s.created_at) >= date('now','-30 days')
@@ -275,18 +280,22 @@ async function buildReportesTabs() {
       `SELECT
          p.codigo                       AS codigo,
          p.nombre                       AS nombre,
+         p.branch_id,
+         p.branch_id                     AS branchId,
+         b.nombre                       AS sucursal,
          p.categoria                    AS categoria,
          p.precio_venta                 AS precio,
          p.precio_compra                AS costo,
          p.stock                        AS stock,
          COALESCE(SUM(si.qty), 0)       AS vendidos
        FROM products p
+       LEFT JOIN branches b ON b.id = p.branch_id
        LEFT JOIN sale_items si ON si.product_id = p.id
        LEFT JOIN sales s ON si.sale_id = s.id
          AND s.sale_status = 'pagada'
          AND DATE(s.created_at) >= date('now','-30 days')
        WHERE LOWER(p.estado) = 'activo'
-       GROUP BY p.id, p.codigo, p.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock
+       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock
        ORDER BY vendidos DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -296,6 +305,9 @@ async function buildReportesTabs() {
       `SELECT
          p.codigo                                               AS codigo,
          p.nombre                                               AS nombre,
+         p.branch_id,
+         p.branch_id                                             AS branchId,
+         b.nombre                                                AS sucursal,
          p.stock                                                AS stock,
          p.stock_min                                            AS minimo,
          CASE
@@ -305,6 +317,7 @@ async function buildReportesTabs() {
            ELSE 'Normal'
          END                                                    AS estado
        FROM products p
+       LEFT JOIN branches b ON b.id = p.branch_id
        WHERE LOWER(p.estado) = 'activo'
        ORDER BY p.stock ASC
        LIMIT ${MAX_ROWS}`
@@ -322,16 +335,20 @@ async function buildReportesTabs() {
          COALESCE(s.client_name_snapshot, c.nombre, '—')       AS cliente,
          COALESCE(s.client_tax_id_snapshot, c.cedula, '—')     AS rnc,
          COALESCE(s.client_phone_snapshot, c.telefono, '—')    AS telefono,
+         s.branch_id,
+         s.branch_id                                             AS branchId,
+         b.nombre                                              AS sucursal,
          SUM(COALESCE(s.total,0) - COALESCE(s.received_amount,0)) AS deuda,
          MAX(s.created_at)                                      AS ultima_compra,
          'Pendiente'                                            AS estado
        FROM sales s
        LEFT JOIN clients c ON s.client_id = c.id
+       LEFT JOIN branches b ON b.id = s.branch_id
        WHERE s.payment_method = 'credito'
          AND s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
          AND COALESCE(s.total,0) > COALESCE(s.received_amount,0)
-       GROUP BY s.client_id, s.client_name_snapshot, s.client_tax_id_snapshot, s.client_phone_snapshot
+       GROUP BY s.client_id, s.client_name_snapshot, s.client_tax_id_snapshot, s.client_phone_snapshot, s.branch_id, b.nombre
        ORDER BY deuda DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -359,6 +376,9 @@ async function buildReportesTabs() {
       `SELECT
          cs.opened_at                                                 AS fecha_apertura,
          COALESCE(cs.closed_at, NULL)                                 AS fecha_cierre,
+         cs.branch_id,
+         cs.branch_id                                                 AS branchId,
+         b.nombre                                                     AS sucursal,
          COALESCE(cr.nombre, 'Caja')                                  AS caja,
          COALESCE(cs.opened_by_user_name, '—')                        AS cajero_apertura,
          COALESCE(cs.closed_by_user_name, '—')                        AS cajero_cierre,
@@ -375,6 +395,7 @@ async function buildReportesTabs() {
          END                                                          AS estado
        FROM cash_sessions cs
        LEFT JOIN cash_registers cr ON cs.cash_register_id = cr.id
+       LEFT JOIN branches b ON b.id = cs.branch_id
        WHERE DATE(cs.opened_at) >= date('now','-30 days')
        ORDER BY cs.opened_at DESC
        LIMIT ${MAX_ROWS}`
@@ -386,6 +407,9 @@ async function buildReportesTabs() {
     fecha:    v.fecha,
     ncf:      v.factura,
     tipo_ncf: null,
+    branch_id: v.branch_id,
+    branchId: v.branch_id ? Number(v.branch_id) : null,
+    sucursal: v.sucursal || '',
     cliente:  v.cliente,
     rnc:      null,
     total:    v.total,
@@ -398,6 +422,9 @@ async function buildReportesTabs() {
     fecha:          v.fecha,
     ncf:            v.factura,
     tipo_ncf:       null,
+    branch_id:      v.branch_id,
+    branchId:       v.branch_id ? Number(v.branch_id) : null,
+    sucursal:       v.sucursal || '',
     base_imponible: safeNum(v.total) - safeNum(v.itbis),
     itbis:          v.itbis,
     total:          v.total,
@@ -407,12 +434,14 @@ async function buildReportesTabs() {
   const byMonth = {};
   for (const v of ventas) {
     const mes = isoDate(v.fecha)?.slice(0, 7) || '—';
-    if (!byMonth[mes]) byMonth[mes] = { mes, ventas: 0, facturas: 0, itbis: 0, clientes_nuevos: 0 };
-    byMonth[mes].ventas   += safeNum(v.total);
-    byMonth[mes].facturas += 1;
-    byMonth[mes].itbis    += safeNum(v.itbis);
+    const branchId = v.branch_id ? Number(v.branch_id) : null;
+    const key = `${mes}::${branchId || 'global'}`;
+    if (!byMonth[key]) byMonth[key] = { mes, branch_id: branchId, branchId, sucursal: v.sucursal || 'Global', ventas: 0, facturas: 0, itbis: 0, clientes_nuevos: 0 };
+    byMonth[key].ventas   += safeNum(v.total);
+    byMonth[key].facturas += 1;
+    byMonth[key].itbis    += safeNum(v.itbis);
   }
-  const mensual = Object.values(byMonth).sort((a, b) => b.mes.localeCompare(a.mes));
+  const mensual = Object.values(byMonth).sort((a, b) => b.mes.localeCompare(a.mes) || String(a.sucursal || '').localeCompare(String(b.sucursal || '')));
 
   return {
     ventas:     normalize(ventas),

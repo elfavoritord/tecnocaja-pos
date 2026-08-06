@@ -160,6 +160,13 @@ function createWindow() {
 
 // ── Auto-updater ────────────────────────────────────────────────────────────
 let autoUpdater = null;
+let updateDownloaded = false;
+let updateInfo = null;
+function sendUpdaterEvent(eventName, payload = {}) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(`updater:${eventName}`, payload);
+  }
+}
 function initUpdater() {
   if (!app.isPackaged) return;
   try {
@@ -167,33 +174,34 @@ function initUpdater() {
     // Igualado al POS (electron/main.js): la descarga arranca sola al
     // detectar versión nueva, sin esperar a que el usuario haga clic.
     autoUpdater.autoDownload    = true;
-    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.autoInstallOnAppQuit = false;
 
+    autoUpdater.on('checking-for-update', () => sendUpdaterEvent('checking'));
     autoUpdater.on('update-available', (info) => {
-      if (mainWindow && !mainWindow.isDestroyed())
-        mainWindow.webContents.send('updater:available', { version: info.version, releaseNotes: info.releaseNotes });
+      updateDownloaded = false;
+      updateInfo = info;
+      sendUpdaterEvent('available', { version: info.version, releaseNotes: info.releaseNotes });
     });
     autoUpdater.on('update-not-available', () => {
-      if (mainWindow && !mainWindow.isDestroyed())
-        mainWindow.webContents.send('updater:not-available');
+      updateDownloaded = false;
+      sendUpdaterEvent('not-available');
     });
     autoUpdater.on('download-progress', (p) => {
-      if (mainWindow && !mainWindow.isDestroyed())
-        mainWindow.webContents.send('updater:progress', {
-          percent:  Math.round(p.percent || 0),
-          transferred: p.transferred,
-          total:    p.total,
-          bytesPerSecond: p.bytesPerSecond,
-        });
+      sendUpdaterEvent('progress', {
+        percent:  Math.round(p.percent || 0),
+        transferred: p.transferred,
+        total:    p.total,
+        bytesPerSecond: p.bytesPerSecond,
+      });
     });
     autoUpdater.on('update-downloaded', (info) => {
-      if (mainWindow && !mainWindow.isDestroyed())
-        mainWindow.webContents.send('updater:downloaded', { version: info.version });
+      updateDownloaded = true;
+      updateInfo = info;
+      sendUpdaterEvent('downloaded', { version: info.version });
     });
     autoUpdater.on('error', (err) => {
       console.error('[updater]', err?.message || err);
-      if (mainWindow && !mainWindow.isDestroyed())
-        mainWindow.webContents.send('updater:error', { message: err?.message || 'Error desconocido' });
+      sendUpdaterEvent('error', { message: err?.message || 'Error desconocido' });
     });
 
     // Revisa al iniciar y cada 4 horas
@@ -205,17 +213,44 @@ function initUpdater() {
 }
 
 ipcMain.handle('updater:check', async () => {
-  if (!autoUpdater) return { devMode: true };
-  try { return await autoUpdater.checkForUpdates(); } catch { return { error: true }; }
+  if (!autoUpdater || !app.isPackaged) return { devMode: true, version: app.getVersion() };
+  try {
+    sendUpdaterEvent('checking');
+    const result = await autoUpdater.checkForUpdates();
+    return { ok: true, updateInfo: result?.updateInfo || null };
+  } catch (e) {
+    const message = e?.message || 'No se pudo verificar la actualización.';
+    sendUpdaterEvent('error', { message });
+    return { ok: false, error: message };
+  }
 });
 ipcMain.handle('updater:download', async () => {
-  if (!autoUpdater) return { devMode: true };
-  try { autoUpdater.downloadUpdate(); return { ok: true }; } catch { return { ok: false }; }
+  if (!autoUpdater || !app.isPackaged) return { devMode: true };
+  if (updateDownloaded) return { ok: true, alreadyDownloaded: true };
+  try {
+    await autoUpdater.downloadUpdate();
+    return { ok: true };
+  } catch (e) {
+    const message = e?.message || 'No se pudo descargar la actualización.';
+    sendUpdaterEvent('error', { message });
+    return { ok: false, error: message };
+  }
 });
 ipcMain.handle('updater:install', async () => {
-  if (!autoUpdater) return;
-  await stopServer();
-  autoUpdater.quitAndInstall(false, true);
+  if (!autoUpdater || !app.isPackaged) return { devMode: true };
+  if (!updateDownloaded) {
+    return { ok: false, error: 'La actualización todavía no terminó de descargarse.' };
+  }
+  try {
+    sendUpdaterEvent('installing', { version: updateInfo?.version || null });
+    await stopServer();
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return { ok: true };
+  } catch (e) {
+    const message = e?.message || 'No se pudo iniciar el instalador.';
+    sendUpdaterEvent('error', { message });
+    return { ok: false, error: message };
+  }
 });
 ipcMain.handle('updater:get-version', () => ({
   version: app.getVersion(),

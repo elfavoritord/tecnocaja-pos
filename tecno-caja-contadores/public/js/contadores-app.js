@@ -1047,6 +1047,24 @@ function _updShowInstallAction(version) {
   box.appendChild(d);
 }
 
+function _updShowInstallingOverlay(message = 'Cerrando Tecno Caja Contadores y abriendo el instalador…') {
+  let overlay = $id('upd-installing-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'upd-installing-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(15,23,42,.82);display:flex;align-items:center;justify-content:center;color:#fff;padding:24px';
+    overlay.innerHTML = `
+      <div style="width:min(440px,92vw);background:#111827;border:1px solid rgba(255,255,255,.18);border-radius:14px;padding:24px;text-align:center;box-shadow:0 24px 80px rgba(0,0,0,.4)">
+        <div style="font-size:34px;margin-bottom:10px">⚙️</div>
+        <div style="font-size:18px;font-weight:800;margin-bottom:8px">Instalando actualización</div>
+        <div id="upd-installing-overlay-text" style="font-size:13px;line-height:1.5;color:#cbd5e1"></div>
+      </div>`;
+    document.body.appendChild(overlay);
+  }
+  setText('upd-installing-overlay-text', message);
+  overlay.style.display = 'flex';
+}
+
 function _updShowProgress(show) {
   const el = $id('upd-progress-wrap');
   if (el) el.classList.toggle('hidden', !show);
@@ -1089,7 +1107,10 @@ async function _initUpdaterUI() {
 
   if (_updUnsub) _updUnsub();
   _updUnsub = window.contadoresAPI.onUpdaterEvent((event, data) => {
-    if (event === 'available') {
+    if (event === 'checking') {
+      _updSetStatus('checking');
+      _setBtnLoading(true);
+    } else if (event === 'available') {
       _updLatestInfo = data;
       _updSetStatus('available');
       _updShowUpdateCard(data);
@@ -1105,7 +1126,11 @@ async function _initUpdaterUI() {
     } else if (event === 'downloaded') {
       _updShowProgress(false);
       _updSetStatus('ready');
+      _setBtnLoading(false);
       _updShowInstallAction(data.version || _updLatestInfo?.version || '');
+    } else if (event === 'installing') {
+      _updSetStatus('installing');
+      _updShowInstallingOverlay();
     } else if (event === 'error') {
       _updShowProgress(false);
       _updSetStatus('error');
@@ -1133,10 +1158,28 @@ async function verificarActualizacion() {
   }
 }
 
-function instalarActualizacion() {
+async function instalarActualizacion() {
   if (!window.contadoresAPI?.updaterInstall) return;
   _updSetStatus('installing');
-  window.contadoresAPI.updaterInstall();
+  _updShowInstallingOverlay();
+  try {
+    const r = await window.contadoresAPI.updaterInstall();
+    if (r?.devMode) {
+      $id('upd-installing-overlay')?.remove();
+      _updSetStatus('dev');
+      toast('El instalador solo se abre en la versión instalada, no en desarrollo.', 'info');
+      return;
+    }
+    if (r?.ok === false) {
+      $id('upd-installing-overlay')?.remove();
+      _updSetStatus('error');
+      _updShowError(r.error || 'No se pudo iniciar el instalador.');
+    }
+  } catch (e) {
+    $id('upd-installing-overlay')?.remove();
+    _updSetStatus('error');
+    _updShowError(e.message || 'No se pudo iniciar el instalador.');
+  }
 }
 
 function updSwitchTab(name) {
@@ -1194,24 +1237,24 @@ let _repNegocioSucursales = []; // [{id, nombre}] del negocio seleccionado — s
 // text-align:center → center) para que el encabezado quede sobre su columna
 // en vez de pegado a la izquierda mientras los datos se van a la derecha.
 const REP_TABS = {
-  ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Cajero','Cliente','Método','Total','ITBIS'],
-                aligns: ['left','left','left','left','left','right','right'] },
-  facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Cliente','RNC','Total','ITBIS','Estado'],
-                aligns: ['left','left','left','left','left','right','right','left'] },
-  productos:  { label: 'Productos', cols: ['Código','Nombre','Categoría','Precio','Costo','Stock','Vendidos'],
-                aligns: ['left','left','left','right','right','center','center'] },
-  inventario: { label: 'Inventario', cols: ['Código','Nombre','Stock','Mínimo','Estado','Última Compra'],
-                aligns: ['left','left','center','center','left','left'] },
-  itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Base Imponible','ITBIS 18%','Total'],
-                aligns: ['left','left','left','right','right','right'] },
-  cxc:        { label: 'C×Cobrar', cols: ['Cliente','RNC','Teléfono','Deuda','Última Compra','Estado'],
-                aligns: ['left','left','left','right','left','left'] },
+  ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Sucursal','Cajero','Cliente','Método','Total','ITBIS'],
+                aligns: ['left','left','left','left','left','left','right','right'] },
+  facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Sucursal','Cliente','RNC','Total','ITBIS','Estado'],
+                aligns: ['left','left','left','left','left','left','right','right','left'] },
+  productos:  { label: 'Productos', cols: ['Código','Nombre','Sucursal','Categoría','Precio','Costo','Stock','Vendidos'],
+                aligns: ['left','left','left','left','right','right','center','center'] },
+  inventario: { label: 'Inventario', cols: ['Código','Nombre','Sucursal','Stock','Mínimo','Estado','Última Compra'],
+                aligns: ['left','left','left','center','center','left','left'] },
+  itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Sucursal','Base Imponible','ITBIS 18%','Total'],
+                aligns: ['left','left','left','left','right','right','right'] },
+  cxc:        { label: 'C×Cobrar', cols: ['Cliente','Sucursal','RNC','Teléfono','Deuda','Última Compra','Estado'],
+                aligns: ['left','left','left','left','right','left','left'] },
   clientes:   { label: 'Clientes', cols: ['Nombre','RNC','Teléfono','Correo','Compras','Última Visita'],
                 aligns: ['left','left','left','left','center','left'] },
-  cierres:    { label: 'Cierres', cols: ['Apertura','Cierre','Caja','Cajero','Monto Apertura','Ventas','Contado','Diferencia','Estado'],
-                aligns: ['left','left','left','left','right','right','right','right','left'] },
-  mensual:    { label: 'Mensual', cols: ['Mes','Ventas','Facturas','ITBIS','Clientes Nuevos'],
-                aligns: ['left','right','center','right','center'] },
+  cierres:    { label: 'Cierres', cols: ['Apertura','Cierre','Sucursal','Caja','Cajero','Monto Apertura','Ventas','Contado','Diferencia','Estado'],
+                aligns: ['left','left','left','left','left','right','right','right','right','left'] },
+  mensual:    { label: 'Mensual', cols: ['Mes','Sucursal','Ventas','Facturas','ITBIS','Clientes Nuevos'],
+                aligns: ['left','left','right','center','right','center'] },
 };
 
 function fmtMoney(v) {
@@ -1277,6 +1320,7 @@ async function selNegocioReporte(id) {
     await refreshToken();
     const data = await apiCall('GET', `/api/reportes/${id}`);
     _repNegocioSucursales = Array.isArray(data.negocio?.sucursales) ? data.negocio.sucursales : [];
+    renderSucursalReporteFilter();
     renderBizBar(data.negocio);
     renderRepStats(data.stats, data.negocio.hasPosData);
     cargarChartVentas();
@@ -1326,6 +1370,15 @@ function renderRepStats(stats, hasPosData) {
   setText('rs-sync',      fmtDate(stats.ultimaSync));
 }
 
+function renderSucursalReporteFilter() {
+  const select = $id('rep-f-sucursal');
+  if (!select) return;
+  const current = select.value || '';
+  select.innerHTML = '<option value="">Todas</option>' +
+    _repNegocioSucursales.map((s) => `<option value="${esc(s.id)}">${esc(s.nombre || 'Sucursal')}</option>`).join('');
+  select.value = _repNegocioSucursales.some((s) => String(s.id) === current) ? current : '';
+}
+
 function cambiarTabReporte(tab) {
   _repTab = tab;
   document.querySelectorAll('.rep-tab-btn').forEach(b => {
@@ -1354,11 +1407,15 @@ async function cargarDatosReporte() {
     const hasta  = $id('rep-f-hasta')?.value;
     const metodo = $id('rep-f-pago')?.value;
     const ncf    = $id('rep-f-ncf')?.value;
+    const cajero = $id('rep-f-cajero')?.value?.trim();
+    const sucursal = $id('rep-f-sucursal')?.value;
 
     if (desde)  params.set('desde', desde);
     if (hasta)  params.set('hasta', hasta);
     if (metodo) params.set('metodo', metodo);
     if (ncf)    params.set('ncf', ncf);
+    if (cajero) params.set('cajero', cajero);
+    if (sucursal) params.set('branchId', sucursal);
 
     await refreshToken();
     const data = await apiCall('GET', `/api/reportes/${_repNegocioId}/datos?${params}`);
@@ -1409,6 +1466,7 @@ function renderFila(row, tab) {
       cells = [
         `<td class="td-date">${fmtDate(row.fecha)}</td>`,
         `<td class="td-ncf">${row.factura || row.ncf || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.cajero || '—'}</td>`,
         `<td>${row.cliente || '—'}</td>`,
         `<td>${row.metodo_pago || '—'}</td>`,
@@ -1420,6 +1478,7 @@ function renderFila(row, tab) {
         `<td class="td-date">${fmtDate(row.fecha)}</td>`,
         `<td class="td-ncf">${row.ncf || '—'}</td>`,
         `<td>${row.tipo_ncf || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.cliente || '—'}</td>`,
         `<td class="td-ncf">${row.rnc || '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.total)}</td>`,
@@ -1430,6 +1489,7 @@ function renderFila(row, tab) {
       cells = [
         `<td class="td-ncf">${row.codigo || '—'}</td>`,
         `<td style="font-weight:600">${row.nombre || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.categoria || '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.precio)}</td>`,
         `<td class="td-amount">${fmtMoney(row.costo)}</td>`,
@@ -1440,6 +1500,7 @@ function renderFila(row, tab) {
       cells = [
         `<td class="td-ncf">${row.codigo || '—'}</td>`,
         `<td style="font-weight:600">${row.nombre || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td style="text-align:center">${row.stock ?? '—'}</td>`,
         `<td style="text-align:center">${row.minimo ?? '—'}</td>`,
         `<td>${row.estado || '—'}</td>`,
@@ -1450,6 +1511,7 @@ function renderFila(row, tab) {
         `<td class="td-date">${fmtDate(row.fecha)}</td>`,
         `<td class="td-ncf">${row.ncf || '—'}</td>`,
         `<td>${row.tipo_ncf || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-amount">${fmtMoney(row.base_imponible)}</td>`,
         `<td class="td-amount">${fmtMoney(row.itbis)}</td>`,
         `<td class="td-amount">${fmtMoney(row.total)}</td>`,
@@ -1457,6 +1519,7 @@ function renderFila(row, tab) {
     case 'cxc':
       cells = [
         `<td style="font-weight:600">${row.cliente || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-ncf">${row.rnc || '—'}</td>`,
         `<td>${row.telefono || '—'}</td>`,
         `<td class="td-amount" style="color:#f59e0b;font-weight:700">${fmtMoney(row.deuda)}</td>`,
@@ -1476,6 +1539,7 @@ function renderFila(row, tab) {
       cells = [
         `<td class="td-date">${fmtDate(row.fecha_apertura)}</td>`,
         `<td class="td-date">${row.fecha_cierre ? fmtDate(row.fecha_cierre) : '<span style="color:#10b981;font-size:11px">Abierta</span>'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.caja || '—'}</td>`,
         `<td>${row.cajero_apertura || row.cajero_cierre || '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.monto_apertura)}</td>`,
@@ -1487,6 +1551,7 @@ function renderFila(row, tab) {
     case 'mensual':
       cells = [
         `<td style="font-weight:600">${row.mes || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-amount">${fmtMoney(row.ventas)}</td>`,
         `<td style="text-align:center">${row.facturas ?? '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.itbis)}</td>`,
@@ -4061,6 +4126,7 @@ function descargarDGIIExcel() {
 let _ctbNegocioId = null;
 let _ctbVista = 'plan';
 let _ctbCuentas = [];
+let _ctbAutoSyncing = false;
 
 async function loadContabilidad() {
   const sel = $id('ctb-negocio-select');
@@ -4096,7 +4162,20 @@ async function selNegocioContabilidad(id) {
   $id('ctb-state-empty').style.display = 'none';
   $id('ctb-state-data').style.display = '';
   _ctbCuentas = [];
+  await ctbSincronizarAutomatico();
   await ctbSwitchVista(_ctbVista);
+}
+
+async function ctbSincronizarAutomatico() {
+  if (!_ctbNegocioId || _ctbAutoSyncing) return;
+  _ctbAutoSyncing = true;
+  try {
+    await apiCall('POST', `/api/contabilidad/${_ctbNegocioId}/generar`);
+  } catch (e) {
+    console.warn('[contabilidad] sync automático falló:', e?.message || e);
+  } finally {
+    _ctbAutoSyncing = false;
+  }
 }
 
 async function ctbGenerarAsientos() {

@@ -70,6 +70,7 @@ jest.mock('../../db', () => ({
       }];
     }
     if (text.includes('administrador_general')) return [{ nombre: 'Admin Demo', email: 'admin@demo.test' }];
+    if (text.includes('FROM cash_registers cr')) return [{ id: 7, branch_id: 1, nombre: 'Caja Principal', codigo: 'CP-1', estado: 'Activa', tipo_caja: 'mixta' }];
     if (text.includes('FROM branches')) return [{ id: 1, nombre: 'Principal' }];
     if (text.includes('FROM ncf_authorized_sequences')) return [];
 
@@ -79,6 +80,20 @@ jest.mock('../../db', () => ({
     if (text.includes('FROM products WHERE LOWER')) return [{ cnt: 2 }];
     if (text.includes('stock_min > 0')) return [{ cnt: 0 }];
 
+    if (text.includes('s.invoice_number') && text.includes('AS factura') && !text.includes('AS costo_venta')) {
+      return [{
+        fecha: '2026-08-06 10:00:00',
+        factura: 'FAC-10',
+        branch_id: 1,
+        branchId: 1,
+        sucursal: 'Principal',
+        cajero: 'Admin Demo',
+        cliente: 'Consumidor Final',
+        metodo_pago: 'efectivo',
+        total: 118,
+        itbis: 18,
+      }];
+    }
     if (text.includes('FROM sales s') && text.includes('AS costo_venta')) {
       return [{ id: 10, fecha: '2026-08-06 10:00:00', factura: 'FAC-10', metodo_pago: 'efectivo', subtotal: 100, itbis: 18, total: 118, cliente: 'Consumidor Final', costo_venta: 60 }];
     }
@@ -121,6 +136,24 @@ describe('sync-pos-stats contabilidad', () => {
       expect.objectContaining({ path: 'licencias/pos_demo_1/contabilidad_raw/compras' }),
       expect.objectContaining({ path: 'licencias/pos_demo_1/contabilidad_raw/gastos' }),
       expect.objectContaining({ path: 'licencias/pos_demo_1/contabilidad_raw/cierres' }),
+    ]));
+    expect(mockFirestoreState.writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: 'licencias/pos_demo_1',
+        data: expect.objectContaining({
+          sucursales: [expect.objectContaining({
+            id: 1,
+            nombre: 'Principal',
+            cajas: [expect.objectContaining({ id: 7, branchId: 1, nombre: 'Caja Principal' })],
+          })],
+        }),
+      }),
+      expect.objectContaining({
+        path: 'licencias/pos_demo_1/reportes/ventas',
+        data: expect.objectContaining({
+          rows: [expect.objectContaining({ branch_id: 1, branchId: 1, sucursal: 'Principal' })],
+        }),
+      }),
     ]));
   });
 

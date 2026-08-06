@@ -126,6 +126,61 @@ function docData(doc) {
   }
   return out;
 }
+function firstArray(...values) {
+  return values.find((v) => Array.isArray(v)) || [];
+}
+function normalizeBranchId(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+function normalizeBusinessBranches(data = {}) {
+  const rows = firstArray(data.sucursales, data.businessProfile?.sucursales, data.profile?.sucursales);
+  return rows.map((s) => ({
+    id: normalizeBranchId(s.id ?? s.branchId ?? s.branch_id),
+    nombre: s.nombre || s.name || s.branchName || 'Sucursal',
+    codigo: s.codigo || s.code || '',
+    direccion: s.direccion || s.address || '',
+    telefono: s.telefono || s.phone || '',
+    encargado: s.encargado || s.manager || '',
+    estado: s.estado || s.status || 'Activa',
+    cajas: firstArray(s.cajas, s.cashRegisters).map((c) => ({
+      id: normalizeBranchId(c.id),
+      branchId: normalizeBranchId(c.branchId ?? c.branch_id ?? s.id),
+      nombre: c.nombre || c.name || 'Caja',
+      codigo: c.codigo || c.code || '',
+      estado: c.estado || c.status || 'Activa',
+      tipoCaja: c.tipoCaja || c.tipo_caja || 'mixta',
+    })),
+  })).filter((s) => s.id);
+}
+function normalizeBusinessCashRegisters(data = {}) {
+  const direct = firstArray(data.cashRegisters, data.businessProfile?.cashRegisters, data.profile?.cashRegisters);
+  const nested = normalizeBusinessBranches(data).flatMap((s) => (s.cajas || []).map((c) => ({ ...c, branchId: c.branchId || s.id })));
+  const rows = direct.length ? direct : nested;
+  return rows.map((c) => ({
+    id: normalizeBranchId(c.id),
+    branchId: normalizeBranchId(c.branchId ?? c.branch_id),
+    nombre: c.nombre || c.name || 'Caja',
+    codigo: c.codigo || c.code || '',
+    estado: c.estado || c.status || 'Activa',
+    tipoCaja: c.tipoCaja || c.tipo_caja || 'mixta',
+  })).filter((c) => c.id);
+}
+function normalizeReportRow(row = {}) {
+  const branchId = normalizeBranchId(row.branchId ?? row.branch_id ?? row.sucursalId ?? row.sucursal_id);
+  return {
+    ...row,
+    branchId,
+    branch_id: branchId,
+    sucursal: row.sucursal || row.branchName || row.branch_name || '',
+  };
+}
+function rowMatchesBranch(row, branchId, tab = '') {
+  if (!branchId) return true;
+  const normalized = normalizeReportRow(row);
+  if (!normalized.branchId && ['productos', 'inventario'].includes(tab)) return true;
+  return normalized.branchId === branchId;
+}
 function isoNow() { return new Date().toISOString(); }
 function daysFromNow(date) {
   if (!date) return null;
@@ -456,10 +511,16 @@ app.get('/api/clientes', requireAuth, async (req, res) => {
       .where('contadorId', '==', req.contador.contadorDocId)
       .get();
 
-    const list = snap.docs.map(docData).map(c => ({
-      ...c,
-      diasRestantes: daysFromNow(vencimientoDate(c)),
-    })).sort((a, b) => String(a.businessName || '').localeCompare(String(b.businessName || '')));
+    const list = snap.docs.map(docData).map(c => {
+      const sucursales = normalizeBusinessBranches(c);
+      return {
+        ...c,
+        sucursales,
+        cashRegisters: normalizeBusinessCashRegisters(c),
+        cantidad_sucursales: sucursales.length || c.cantidad_sucursales || null,
+        diasRestantes: daysFromNow(vencimientoDate(c)),
+      };
+    }).sort((a, b) => String(a.businessName || '').localeCompare(String(b.businessName || '')));
 
     const q = String(req.query.q || '').trim().toLowerCase();
     const filtered = q
@@ -483,6 +544,9 @@ app.get('/api/clientes/:id', requireAuth, async (req, res) => {
     if (data.contadorId !== req.contador.contadorDocId) {
       return res.status(403).json({ error: 'No tienes acceso a este cliente.' });
     }
+    data.sucursales = normalizeBusinessBranches(data);
+    data.cashRegisters = normalizeBusinessCashRegisters(data);
+    data.cantidad_sucursales = data.sucursales.length || data.cantidad_sucursales || null;
     data.diasRestantes = daysFromNow(vencimientoDate(data));
     res.json(data);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -626,7 +690,8 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
 
   try {
     const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
-    if (!bizDoc.exists || bizDoc.data().contadorId !== req.contador.contadorDocId) {
+    const bizData = bizDoc.exists ? docData(bizDoc) : null;
+    if (!bizDoc.exists || bizData.contadorId !== req.contador.contadorDocId) {
       return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
     }
 
@@ -634,10 +699,10 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
     // POS (no confiar en lo que mande el navegador) — evita guardar un
     // branchId inventado o de una sucursal ya eliminada.
     let branchNombre = null;
-    const normalizedBranchId = branchId ? Number(branchId) : null;
+    const normalizedBranchId = normalizeBranchId(branchId);
     if (normalizedBranchId) {
-      const sucursales = Array.isArray(bizDoc.data().sucursales) ? bizDoc.data().sucursales : [];
-      const match = sucursales.find((s) => Number(s.id) === normalizedBranchId);
+      const sucursales = normalizeBusinessBranches(bizData);
+      const match = sucursales.find((s) => s.id === normalizedBranchId);
       if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
       branchNombre = match.nombre;
     }
@@ -688,6 +753,14 @@ const NCF_DOCUMENT_TYPES = [
   { code: 'B17', label: 'Comprobante para Pagos al Exterior' },
 ];
 const NCF_DOCUMENT_TYPE_CODES = NCF_DOCUMENT_TYPES.map((t) => t.code);
+function ncfScopesConflict(a, b) {
+  const left = normalizeBranchId(a);
+  const right = normalizeBranchId(b);
+  return left === null || right === null || left === right;
+}
+function ncfRangesOverlap(aStart, aEnd, bStart, bEnd) {
+  return Number(aStart) <= Number(bEnd) && Number(aEnd) >= Number(bStart);
+}
 
 app.get('/api/ncf-pendientes/:businessId', requireAuth, async (req, res) => {
   try {
@@ -728,15 +801,39 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
     const bizData = await ctbCheckAccess(req, businessId);
 
     let branchNombre = null;
-    const normalizedBranchId = branchId ? Number(branchId) : null;
+    const normalizedBranchId = normalizeBranchId(branchId);
     if (normalizedBranchId) {
-      const sucursales = Array.isArray(bizData.sucursales) ? bizData.sucursales : [];
-      const match = sucursales.find((s) => Number(s.id) === normalizedBranchId);
+      const sucursales = normalizeBusinessBranches(bizData);
+      const match = sucursales.find((s) => s.id === normalizedBranchId);
       if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
       branchNombre = match.nombre;
     }
 
-    const ref = await col(COL_LICENCIAS).doc(businessId).collection('ncf_pendientes').add({
+    const licRef = col(COL_LICENCIAS).doc(businessId);
+    const [aplicadasSnap, pendientesSnap] = await Promise.all([
+      licRef.collection('ncf_aplicadas').get(),
+      licRef.collection('ncf_pendientes').get(),
+    ]);
+    const aplicadaDuplicada = aplicadasSnap.docs.map(docData).find((seq) =>
+      String(seq.documentType || seq.document_type || '').toUpperCase() === tipo &&
+      ncfScopesConflict(seq.branchId ?? seq.branch_id, normalizedBranchId) &&
+      ncfRangesOverlap(desde, hasta, seq.startNumber ?? seq.start_number, seq.endNumber ?? seq.end_number)
+    );
+    if (aplicadaDuplicada) {
+      return res.status(409).json({ error: 'Ese rango NCF se cruza con una secuencia ya aplicada en el POS.' });
+    }
+    const pendienteDuplicada = pendientesSnap.docs.map(docData).find((seq) =>
+      (seq.action || 'create') === 'create' &&
+      !['aplicado', 'cancelado'].includes(String(seq.status || '').toLowerCase()) &&
+      String(seq.documentType || '').toUpperCase() === tipo &&
+      ncfScopesConflict(seq.branchId, normalizedBranchId) &&
+      ncfRangesOverlap(desde, hasta, seq.startNumber, seq.endNumber)
+    );
+    if (pendienteDuplicada) {
+      return res.status(409).json({ error: 'Ya existe una solicitud NCF pendiente que se cruza con ese rango.' });
+    }
+
+    const ref = await licRef.collection('ncf_pendientes').add({
       action: 'create',
       documentType: tipo,
       branchId: normalizedBranchId,
@@ -971,6 +1068,8 @@ app.get('/api/reportes/:businessId', requireAuth, async (req, res) => {
 
     // Extraer stats sincronizados desde el POS (campo 'posStats' en el doc de licencias)
     const stats = data.posStats || {};
+    const sucursales = normalizeBusinessBranches(data);
+    const cashRegisters = normalizeBusinessCashRegisters(data);
 
     res.json({
       negocio: {
@@ -984,7 +1083,8 @@ app.get('/api/reportes/:businessId', requireAuth, async (req, res) => {
         planCode:     data.planCode     || data.plan_code || '—',
         syncedAt:     data.syncedAt     || data.updatedAt || null,
         hasPosData:   !!data.posStats,
-        sucursales:   Array.isArray(data.sucursales) ? data.sucursales : [],
+        sucursales,
+        cashRegisters,
       },
       stats: {
         ventasHoy:       stats.ventasHoy       ?? 0,
@@ -1014,6 +1114,8 @@ app.get('/api/reportes/:businessId/datos', requireAuth, async (req, res) => {
     const hasta  = req.query.hasta  ? String(req.query.hasta)  : null;
     const metodo = req.query.metodo ? String(req.query.metodo) : null;
     const ncf    = req.query.ncf    ? String(req.query.ncf)    : null;
+    const cajero = req.query.cajero ? String(req.query.cajero).trim().toLowerCase() : null;
+    const branchId = normalizeBranchId(req.query.branchId || req.query.sucursal);
 
     // Leer desde sub-colección reportes/{tab} (escrita por sync-pos-stats.js del POS)
     const tabDoc = await col(COL_LICENCIAS)
@@ -1023,15 +1125,17 @@ app.get('/api/reportes/:businessId/datos', requireAuth, async (req, res) => {
       .get();
 
     const hasPosData = data.posStats || tabDoc.exists;
-    let rows = tabDoc.exists ? (tabDoc.data().rows || []) : [];
+    let rows = tabDoc.exists ? (tabDoc.data().rows || []).map(normalizeReportRow) : [];
 
     // Aplicar filtros del cliente
     if (desde) rows = rows.filter(r => r.fecha && r.fecha >= desde);
     if (hasta) rows = rows.filter(r => r.fecha && r.fecha <= hasta + 'T23:59:59');
+    if (branchId) rows = rows.filter(r => rowMatchesBranch(r, branchId, tab));
+    if (cajero) rows = rows.filter(r => String(r.cajero || r.cajero_apertura || r.cajero_cierre || '').toLowerCase().includes(cajero));
     if (metodo && tab === 'ventas')   rows = rows.filter(r => r.metodo_pago === metodo);
     if (ncf    && tab === 'facturas') rows = rows.filter(r => (r.ncf || '').startsWith(ncf));
 
-    res.json({ tab, total: rows.length, rows, hasPosData: !!hasPosData });
+    res.json({ tab, total: rows.length, rows, hasPosData: !!hasPosData, branchId });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

@@ -26,10 +26,12 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
     if (typeof callback !== 'function') return () => {};
     const wrap = (ev) => (_e, d) => callback(ev, d || {});
     const handlers = {
+      'updater:checking':      wrap('checking'),
       'updater:available':     wrap('available'),
       'updater:not-available': wrap('not-available'),
       'updater:progress':      wrap('progress'),
       'updater:downloaded':    wrap('downloaded'),
+      'updater:installing':    wrap('installing'),
       'updater:error':         wrap('error'),
     };
     Object.entries(handlers).forEach(([ch, fn]) => ipcRenderer.on(ch, fn));
