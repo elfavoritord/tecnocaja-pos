@@ -6716,7 +6716,12 @@ async function getSecurityPassword() {
 async function getSetupStatus() {
   await ensureConfigExtensions();
   await ensureUserExtensions();
-  const licenseResult = await secureLicenseService.resolveState({ allowRemote: true });
+  // El login/arranque no debe depender de internet. En PCs de clientes con
+  // DNS lento o sin salida, consultar Firebase/licencia aquí podía bloquear
+  // /api/setup/status y terminar en "servidor no responde" aunque la BD local
+  // estuviera bien. La sincronización remota se dispara en background durante
+  // prepareServerRuntime()/watchers; aquí usamos el estado local firmado.
+  const licenseResult = await secureLicenseService.resolveState({ allowRemote: false });
   const [configRows, userCountRows] = await Promise.all([
     query('SELECT * FROM config WHERE id = 1 LIMIT 1'),
     query('SELECT COUNT(*) AS total FROM users')
@@ -9688,6 +9693,67 @@ app.get('/api/health', async (req, res) => {
       time: new Date().toISOString()
     });
   }
+});
+
+app.get('/api/diagnostics/startup', async (_req, res) => {
+  const startedAt = new Date().toISOString();
+  const dbClient = String(getDbClient?.() || process.env.DB_CLIENT || 'sqlite').trim().toLowerCase();
+  const dbHost = String(process.env.DB_HOST || '').trim();
+  const dbPort = Number(process.env.DB_PORT || 0) || null;
+  const dbFile = String(process.env.DB_FILE || '').trim();
+  const userData = String(process.env.TECNO_CAJA_USER_DATA || '').trim();
+  let db = { ok: false, error: '' };
+  let config = {};
+
+  try {
+    await Promise.race([
+      query('SELECT 1 as ok'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DB query timeout')), 4000))
+    ]);
+    db = { ok: true, error: '' };
+    const rows = await query(
+      'SELECT business_name, business_structure_mode, setup_completed FROM config WHERE id = 1 LIMIT 1'
+    ).catch(() => []);
+    const row = rows[0] || {};
+    config = {
+      businessName: String(row.business_name || '').trim(),
+      businessStructureMode: normalizeBusinessStructureMode(row.business_structure_mode) || 'monocaja',
+      setupCompleted: Boolean(row.setup_completed)
+    };
+  } catch (error) {
+    db = { ok: false, error: error.message || String(error) };
+  }
+
+  return res.json({
+    ok: true,
+    checkedAt: startedAt,
+    version: packageJson.version,
+    process: {
+      pid: process.pid,
+      platform: process.platform,
+      arch: process.arch,
+      node: process.version,
+      uptimeSeconds: Math.round(process.uptime())
+    },
+    server: {
+      port: Number(process.env.PORT || 3000) || 3000,
+      lanAddresses: getLanIpv4Addresses()
+    },
+    database: {
+      client: dbClient,
+      host: dbHost,
+      port: dbPort,
+      file: dbFile,
+      ok: db.ok,
+      error: db.error
+    },
+    runtime: {
+      userData,
+      productUploadDir: String(process.env.PRODUCT_UPLOAD_DIR || '').trim(),
+      secureBackupDir: String(process.env.SECURE_BACKUP_DIR || '').trim()
+    },
+    config
+  });
 });
 
 // ✅ Los endpoints /api/offline/* ahora están en server/routes/offline.routes.js
@@ -12930,22 +12996,42 @@ app.put('/api/config', async (req, res) => {
   const data = req.body;
   await ensureConfigExtensions();
   await ensureBusinessRulesExtensions();
+  const currentConfigRows = await query('SELECT * FROM config WHERE id = 1 LIMIT 1');
+  const currentConfig = currentConfigRows[0] || {};
+  const hasConfigField = (field) => Object.prototype.hasOwnProperty.call(data || {}, field);
   const language = String(data.idioma || 'es').trim().toLowerCase();
   const salesOperationMode = String(data.salesOperationMode || data.modoOperacionVentas || 'directa').trim().toLowerCase();
   const businessStructureMode = normalizeBusinessStructureMode(data.businessStructureMode || data.estructuraNegocio || 'monocaja');
-  const cashDrawerMethod = ['escpos', 'network', 'serial'].includes(String(data.cashDrawerMethod || '').trim().toLowerCase())
-    ? String(data.cashDrawerMethod || '').trim().toLowerCase()
+  const cashDrawerMethodRaw = hasConfigField('cashDrawerMethod') ? data.cashDrawerMethod : currentConfig.cash_drawer_method;
+  const cashDrawerMethod = ['escpos', 'network', 'serial'].includes(String(cashDrawerMethodRaw || '').trim().toLowerCase())
+    ? String(cashDrawerMethodRaw || '').trim().toLowerCase()
     : 'escpos';
-  const cashDrawerPin = Number(data.cashDrawerPin) === 1 ? 1 : 0;
-  const cashDrawerNetworkPort = Math.max(1, Math.min(65535, Number(data.cashDrawerNetworkPort || 9100) || 9100));
-  const cashDrawerSerialPort = String(data.cashDrawerSerialPort || 'COM1').trim() || 'COM1';
-  const scaleType = normalizeScaleType(data.scaleType);
-  const scaleSerialPort = String(data.scaleSerialPort || '').trim();
-  const scaleSerialBaudRate = Math.max(300, Math.min(256000, Number(data.scaleSerialBaudRate || 9600) || 9600));
-  const scaleDefaultUnit = normalizeScaleDefaultUnit(data.scaleDefaultUnit);
-  const scaleReadPattern = String(data.scaleReadPattern || '').trim();
-  const scaleRoundingDecimals = sanitizeScaleRoundingDecimals(data.scaleRoundingDecimals);
-  const scaleAutoRead = data.scaleAutoRead !== false;
+  const cashDrawerPinRaw = hasConfigField('cashDrawerPin') ? data.cashDrawerPin : currentConfig.cash_drawer_pin;
+  const cashDrawerPin = Number(cashDrawerPinRaw) === 1 ? 1 : 0;
+  const cashDrawerNetworkPortRaw = hasConfigField('cashDrawerNetworkPort') ? data.cashDrawerNetworkPort : currentConfig.cash_drawer_network_port;
+  const cashDrawerNetworkPort = Math.max(1, Math.min(65535, Number(cashDrawerNetworkPortRaw || 9100) || 9100));
+  const cashDrawerSerialPortRaw = hasConfigField('cashDrawerSerialPort') ? data.cashDrawerSerialPort : currentConfig.cash_drawer_serial_port;
+  const cashDrawerSerialPort = String(cashDrawerSerialPortRaw || 'COM1').trim() || 'COM1';
+  const scaleType = normalizeScaleType(hasConfigField('scaleType') ? data.scaleType : currentConfig.scale_type);
+  const scaleSerialPort = String(hasConfigField('scaleSerialPort') ? data.scaleSerialPort : currentConfig.scale_serial_port || '').trim();
+  const scaleSerialBaudRateRaw = hasConfigField('scaleSerialBaudRate') ? data.scaleSerialBaudRate : currentConfig.scale_serial_baud_rate;
+  const scaleSerialBaudRate = Math.max(300, Math.min(256000, Number(scaleSerialBaudRateRaw || 9600) || 9600));
+  const scaleDefaultUnit = normalizeScaleDefaultUnit(hasConfigField('scaleDefaultUnit') ? data.scaleDefaultUnit : currentConfig.scale_default_unit);
+  const scaleReadPattern = String(hasConfigField('scaleReadPattern') ? data.scaleReadPattern : currentConfig.scale_read_pattern || '').trim();
+  const scaleRoundingDecimals = sanitizeScaleRoundingDecimals(hasConfigField('scaleRoundingDecimals') ? data.scaleRoundingDecimals : currentConfig.scale_rounding_decimals);
+  const scaleAutoRead = hasConfigField('scaleAutoRead') ? data.scaleAutoRead !== false : Boolean(currentConfig.scale_auto_read ?? 1);
+  const receiptPrintMode = hasConfigField('receiptPrintMode') ? data.receiptPrintMode : currentConfig.receipt_print_mode;
+  const receiptPrinterName = hasConfigField('receiptPrinterName') ? data.receiptPrinterName : currentConfig.receipt_printer_name;
+  const receiptPaperSize = hasConfigField('receiptPaperSize') ? data.receiptPaperSize : currentConfig.receipt_paper_size;
+  const cashDrawerEnabled = hasConfigField('cashDrawerEnabled')
+    ? data.cashDrawerEnabled ? 1 : 0
+    : Number(currentConfig.cash_drawer_enabled || 0);
+  const cashDrawerPrinterName = hasConfigField('cashDrawerPrinterName')
+    ? String(data.cashDrawerPrinterName || '').trim() || null
+    : (currentConfig.cash_drawer_printer_name || null);
+  const cashDrawerNetworkHost = hasConfigField('cashDrawerNetworkHost')
+    ? String(data.cashDrawerNetworkHost || '').trim() || null
+    : (currentConfig.cash_drawer_network_host || null);
   const roundingMode = sanitizeRoundingMode(data.roundingMode);
   const cashierRegisterRequired = businessStructureMode === 'monocaja'
     ? true
@@ -13004,14 +13090,14 @@ app.put('/api/config', async (req, res) => {
       data.eInvoicePrefix,
       data.eInvoiceNextNumber,
       data.mensaje,
-      data.receiptPrintMode || 'dialog',
-      data.receiptPrinterName || null,
-      data.receiptPaperSize || '80mm',
-      data.cashDrawerEnabled ? 1 : 0,
+      receiptPrintMode || 'dialog',
+      receiptPrinterName || null,
+      receiptPaperSize || '80mm',
+      cashDrawerEnabled,
       cashDrawerMethod,
-      String(data.cashDrawerPrinterName || '').trim() || null,
+      cashDrawerPrinterName,
       cashDrawerPin,
-      String(data.cashDrawerNetworkHost || '').trim() || null,
+      cashDrawerNetworkHost,
       cashDrawerNetworkPort,
       cashDrawerSerialPort,
       scaleType,

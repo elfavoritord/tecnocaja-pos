@@ -58,9 +58,12 @@ const api = {
     } catch (fetchErr) {
       clearTimeout(timeoutId);
       if (fetchErr.name === 'AbortError') {
-        throw new Error('El servidor no respondió a tiempo. Verifica que la app esté corriendo correctamente.');
+        throw new Error(`El servidor no respondió en ${Math.round(timeoutMs / 1000)} segundos. Puede estar iniciando, bloqueado por antivirus/firewall o esperando la base de datos.`);
       }
-      throw new Error('No se pudo conectar con el servidor local. Intenta nuevamente.');
+      const isRemoteUrl = /^https?:\/\//i.test(String(url || ''));
+      throw new Error(isRemoteUrl
+        ? 'No se pudo conectar con el servidor principal. Verifica la IP, la red y que Tecno Caja esté abierto en la PC principal.'
+        : 'No se pudo conectar con el servidor local. Cierra y abre Tecno Caja; si sigue pasando, revisa el servicio de base de datos y el firewall.');
     }
     clearTimeout(timeoutId);
 
@@ -102,8 +105,8 @@ const api = {
     });
   },
 
-  getSetupStatus() {
-    return this.request('/api/setup/status');
+  getSetupStatus(options = {}) {
+    return this.request('/api/setup/status', options);
   },
 
   completeInitialSetup(data) {

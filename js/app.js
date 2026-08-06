@@ -2545,11 +2545,11 @@ async function handleWhatsAppWebToggle(forceChecked = null) {
 
   try {
     const config = await api.saveConfig({
-      ...DB.config,
+      ...buildGlobalConfigPayload(DB.config),
       whatsappWebEnabled: nextEnabled,
       ...getActorPayload()
     });
-    DB.config = { ...DB.config, ...config };
+    DB.config = mergeConfigWithLocalPeripherals(config);
     if (whatsappToggle) whatsappToggle.checked = Boolean(DB.config?.whatsappWebEnabled);
     syncWhatsAppButtons(DB.config?.whatsappWebEnabled);
     showToast(nextEnabled ? 'WhatsApp Web activado correctamente.' : 'WhatsApp Web desactivado correctamente.', 'success');
@@ -2565,7 +2565,7 @@ async function refreshStartupStatus(showFeedback = true) {
   try {
     setupState = await api.getSetupStatus();
     if (setupState?.config) {
-      DB.config = { ...DB.config, ...setupState.config };
+      DB.config = mergeConfigWithLocalPeripherals(setupState.config);
     }
     setupWizard.language = DB.config?.idioma || 'es';
     setupWizard.businessType = DB.config?.tipoNegocio || 'pizzeria';
@@ -2713,7 +2713,7 @@ async function startNewUserFlow() {
     try {
       setupState = await api.getSetupStatus();
       if (setupState?.config) {
-        DB.config = { ...DB.config, ...setupState.config };
+        DB.config = mergeConfigWithLocalPeripherals(setupState.config);
       }
     } catch (_) {
       // Si la API falla, abrir wizard igual con datos mínimos
@@ -3978,6 +3978,7 @@ const PERIPHERALS_CONFIG_FIELDS = [
   'scaleType', 'scaleSerialPort', 'scaleSerialBaudRate', 'scaleReadPattern',
   'scaleDefaultUnit', 'scaleRoundingDecimals', 'scaleAutoRead',
 ];
+const PERIPHERALS_CONFIG_FIELD_SET = new Set(PERIPHERALS_CONFIG_FIELDS);
 window.LocalPeripheralsFlat = window.LocalPeripheralsFlat || {};
 
 async function loadLocalPeripheralsConfig() {
@@ -3986,6 +3987,22 @@ async function loadLocalPeripheralsConfig() {
   } catch (_e) {
     window.LocalPeripheralsFlat = {};
   }
+}
+
+function mergeConfigWithLocalPeripherals(config = {}) {
+  return { ...DB.config, ...(config || {}), ...(window.LocalPeripheralsFlat || {}) };
+}
+
+function stripLocalPeripheralsConfig(config = {}) {
+  return Object.fromEntries(
+    Object.entries(config || {}).filter(([key]) => !PERIPHERALS_CONFIG_FIELD_SET.has(key))
+  );
+}
+
+function buildGlobalConfigPayload(config = {}) {
+  return window.novaDesktop?.savePeripheralsConfig
+    ? stripLocalPeripheralsConfig(config)
+    : { ...(config || {}) };
 }
 
 function saveLocalPeripheralsConfig(sourceConfig) {
@@ -4009,8 +4026,6 @@ function saveLocalPeripheralsConfig(sourceConfig) {
 function getEffectiveConfig() {
   return { ...DB.config, ...(window.LocalPeripheralsFlat || {}) };
 }
-
-document.addEventListener('DOMContentLoaded', loadLocalPeripheralsConfig);
 
 const CONFIG_GROUPS = {
   negocio: {
@@ -4392,9 +4407,9 @@ function saveConfig() {
 
   saveLocalPeripheralsConfig(nextConfig);
 
-  api.saveConfig({ ...nextConfig, ...getActorPayload() })
+  api.saveConfig({ ...buildGlobalConfigPayload(nextConfig), ...getActorPayload() })
     .then((config) => {
-      DB.config = { ...DB.config, ...config };
+      DB.config = mergeConfigWithLocalPeripherals(config);
       setupWizard.language = DB.config?.idioma || setupWizard.language || 'es';
       const languageChanged = previousLanguage !== (DB.config?.idioma || 'es');
       renderStartupLanguageOptions();
@@ -6249,7 +6264,7 @@ async function completeInitialSetup() {
       try {
         setupState = await api.getSetupStatus();
         if (setupState?.config) {
-          DB.config = { ...DB.config, ...setupState.config };
+          DB.config = mergeConfigWithLocalPeripherals(setupState.config);
         }
         setupWizard.forceReset = false;
         setupWizard.securityPassword = '';
@@ -6313,7 +6328,7 @@ async function submitCashGate() {
     });
     // Actualizar solo el estado de caja sin recargar todo el bootstrap
     if (result?.config) {
-      DB.config = { ...DB.config, ...result.config };
+      DB.config = mergeConfigWithLocalPeripherals(result.config);
     } else {
       DB.config.cajaAbierta = true;
       DB.config.cajaMonto = amount;
@@ -6337,23 +6352,26 @@ async function submitCashGate() {
 async function initializeStartupFlow() {
   applyUiPreferences();
   applyBranding();
+  await loadLocalPeripheralsConfig();
   if (typeof window.observeUiTranslations === 'function') window.observeUiTranslations();
 
   // Intenta conectar al servidor local. En Electron puede haber una pequeña
   // ventana de tiempo entre que la app abre la ventana y el servidor Express
-  // está listo. Se reintenta una vez después de 800 ms antes de mostrar error.
+  // está listo, o mientras Windows/antivirus termina de soltar MariaDB.
+  // En equipos de cliente más lentos conviene aguantar unos segundos más antes
+  // de mandar al usuario al login con "servidor no responde".
   let setupState_; // variable local para no pisar la global hasta el éxito
   let connectError = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const startupRetryDelaysMs = [800, 1500, 3000, 5000];
+  for (let attempt = 0; attempt < startupRetryDelaysMs.length + 1; attempt++) {
     try {
-      setupState_ = await api.getSetupStatus();
+      setupState_ = await api.getSetupStatus({ _timeoutMs: 30000 });
       connectError = null;
       break; // éxito
     } catch (err) {
       connectError = err;
-      if (attempt === 0) {
-        // Esperar antes del segundo intento (el server puede estar arrancando)
-        await new Promise(resolve => setTimeout(resolve, 800));
+      if (attempt < startupRetryDelaysMs.length) {
+        await new Promise(resolve => setTimeout(resolve, startupRetryDelaysMs[attempt]));
       }
     }
   }
@@ -6362,7 +6380,7 @@ async function initializeStartupFlow() {
     // Ambos intentos fallaron — mostrar login igual y notificar discretamente
     showLoginScreen();
     if (typeof showToast === 'function') {
-      showToast(connectError.message || 'No se pudo preparar el inicio del sistema.', 'error');
+      showToast((connectError.message || 'No se pudo preparar el inicio del sistema.') + ' Cierra y abre Tecno Caja; si vuelve a pasar, ejecuta el diagnóstico de entorno.', 'error');
     }
     return;
   }
@@ -6370,7 +6388,7 @@ async function initializeStartupFlow() {
   try {
     setupState = setupState_;
     if (setupState?.config) {
-      DB.config = { ...DB.config, ...setupState.config };
+      DB.config = mergeConfigWithLocalPeripherals(setupState.config);
     }
     setupWizard.language = DB.config?.idioma || 'es';
     setupWizard.businessType = DB.config?.tipoNegocio || 'pizzeria';
@@ -8279,7 +8297,7 @@ async function refreshCajaFromServer() {
   try {
     const freshData = await api.getBootstrap();
     if (freshData?.config) {
-      DB.config = { ...DB.config, ...freshData.config };
+      DB.config = mergeConfigWithLocalPeripherals(freshData.config);
     }
     if (freshData?.caja) {
       DB.caja = { ...DB.caja, ...freshData.caja };
@@ -8409,7 +8427,7 @@ async function toggleCaja() {
         ...getBusinessStructurePayload(),
         ...getActorPayload()
       });
-      DB.config = { ...DB.config, ...response.config };
+      DB.config = mergeConfigWithLocalPeripherals(response.config);
       DB.caja = {
         ...DB.caja,
         sessionId: response.sessionId || response.activeSession?.id || DB.caja?.sessionId,
@@ -8931,7 +8949,7 @@ async function saveCashExpense() {
       ...getBusinessStructurePayload(),
       ...getActorPayload()
     });
-    if (response.config) DB.config = { ...DB.config, ...response.config };
+    if (response.config) DB.config = mergeConfigWithLocalPeripherals(response.config);
     if (response.movement) DB.movimientosCaja.unshift(response.movement);
     if (response.supplierInvoice) {
       const idx = (DB.facturasProveedores || []).findIndex((item) => item.id === response.supplierInvoice.id);
@@ -9021,7 +9039,7 @@ async function saveCashIncome() {
       ...getBusinessStructurePayload(),
       ...getActorPayload()
     });
-    if (response.config) DB.config = { ...DB.config, ...response.config };
+    if (response.config) DB.config = mergeConfigWithLocalPeripherals(response.config);
     if (response.movement) DB.movimientosCaja.unshift(response.movement);
     closeAllModals();
     syncCajaState();
@@ -9088,7 +9106,7 @@ async function settleDeliveryCash(invoiceNumber) {
     });
     const updatedSale = response.sale;
     DB.ventas = DB.ventas.map((item) => item.id === updatedSale.id ? updatedSale : item);
-    if (response.config) DB.config = { ...DB.config, ...response.config };
+    if (response.config) DB.config = mergeConfigWithLocalPeripherals(response.config);
     DB.movimientosCaja.unshift({
       tipo: 'Contra entrega validado',
       monto: Number(updatedSale.total || 0),
@@ -9528,7 +9546,7 @@ async function confirmarCobro(id, total, action = 'charge') {
     }
 
     if (response?.config) {
-      DB.config = { ...DB.config, ...response.config };
+      DB.config = mergeConfigWithLocalPeripherals(response.config);
     }
     upsertQueuedSaleInLocalState(savedVenta);
     closeCobrarModal();

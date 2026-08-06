@@ -3863,20 +3863,27 @@ app.whenReady().then(async function() {
     var thinCfg = readThinClientConfig();
     if (thinCfg) {
       logStartup('[thin-client] Modo terminal → servidor principal: ' + thinCfg.serverUrl);
-      var probe = await probeTecnoCajaServer(thinCfg.serverUrl, 8000);
-      if (!probe.ok) {
+      while (true) {
+        var probe = await probeTecnoCajaServer(thinCfg.serverUrl, 8000);
+        if (probe.ok) break;
+
         var choice = dialog.showMessageBoxSync({
           type: 'warning',
           title: 'Tecno Caja — Terminal',
           message: 'No se pudo conectar al servidor principal.\n\n' + thinCfg.serverUrl + '\n\nError: ' + probe.error,
+          detail: 'Si esta caja depende de otra PC, verifica que la PC principal esté encendida, Tecno Caja esté abierto y el Firewall permita el puerto 3399. Si la IP cambió, usa "Reconfigurar terminal".',
           buttons: ['Reintentar', 'Abrir de todas formas', 'Reconfigurar terminal'],
           defaultId: 0,
           cancelId: 2
         });
+        if (choice === 0) {
+          continue;
+        }
         if (choice === 2) {
           try { fs.unlinkSync(_getTerminalConfigPath()); } catch(_) {}
           app.relaunch(); app.quit(); return;
         }
+        break;
       }
       currentAppUrl = thinCfg.serverUrl;
       createWindow();
