@@ -424,21 +424,26 @@ class LicenseService {
     const planCode = String(context.configRow?.plan_code || 'basico').trim().toLowerCase() || 'basico';
     const now = asDate(this.now()) || new Date();
 
-    // Si el DB ya tiene fechas de trial válidas, usarlas. Si no, asignar 30 días desde hoy.
+    // Si el DB ya tiene fechas de trial, usarlas tal cual. Una actualización o
+    // reinstalación no debe mover el vencimiento hacia adelante.
     let trialEndsAt = asDate(context.configRow?.trial_ends_at);
     let trialStartedAt = asDate(context.configRow?.trial_started_at);
-    if (!trialEndsAt || trialEndsAt < now) {
+    if (!trialStartedAt && trialEndsAt) {
+      trialStartedAt = new Date(trialEndsAt.getTime() - 30 * DAY_MS);
+    }
+    if (!trialEndsAt) {
       trialStartedAt = now;
-      trialEndsAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+      trialEndsAt = new Date(now.getTime() + 30 * DAY_MS);
     }
 
     const daysLeft = Math.max(0, Math.ceil((trialEndsAt.getTime() - now.getTime()) / DAY_MS));
+    const expired = trialEndsAt.getTime() <= now.getTime();
 
     return {
       source: 'bootstrap',
       licenseId: null,
       businessName: context.businessName || 'Tecno Caja',
-      status: 'trial',
+      status: expired ? 'expired' : 'trial',
       planCode,
       planName: plans.PLAN_NAMES[planCode] || 'Tecno Caja Básico',
       deviceId: this.device.deviceId,
@@ -451,11 +456,11 @@ class LicenseService {
       offlineGraceDays: this.defaultOfflineGraceDays(),
       offlineDaysRemaining: this.defaultOfflineGraceDays(),
       daysLeft,
-      expired: false,
+      expired,
       suspended: false,
-      canEnter: true,
-      blockedCode: null,
-      message: null,
+      canEnter: !expired,
+      blockedCode: expired ? 'expired' : null,
+      message: expired ? buildBlockedMessage({ blockedCode: 'expired', status: 'expired' }) : null,
       clockRollbackDetected: false,
       validationMode: 'bootstrap',
     };
@@ -617,25 +622,29 @@ class LicenseService {
     let trialEndsAt = toSqlDateTime(state.trialEndsAt);
 
     // Si Firebase devuelve fechas vencidas o nulas, verificar el DB local.
-    // Si el local tiene fechas futuras (recién instalado o restaurado de backup), conservarlas.
-    // Si el local tampoco tiene fechas (instalación nueva sin setup completo), dar 30 días.
+    // Conservar las fechas locales aunque estén vencidas: actualizar/reinstalar
+    // no puede convertir una prueba vieja en 30 días nuevos.
     if (!incomingEndsAt || incomingEndsAt < now) {
       const localRows = await this.query(
         'SELECT trial_started_at, trial_ends_at, license_status, setup_completed FROM config WHERE id = 1 LIMIT 1'
       ).catch(() => []);
       const cfg = localRows[0] || {};
       const localEndsAt = asDate(cfg.trial_ends_at);
-      if (localEndsAt && localEndsAt >= now) {
-        statusToWrite = String(cfg.license_status || 'trial');
-        trialStartedAt = toSqlDateTime(asDate(cfg.trial_started_at));
-        trialEndsAt = toSqlDateTime(localEndsAt);
-      } else if (statusToWrite === 'expired' || statusToWrite === 'trial') {
-        // Instalación nueva (sin fechas locales ni en Firebase): dar 30 días gratis
+      if (localEndsAt) {
+        statusToWrite = localEndsAt < now && statusToWrite === 'trial'
+          ? 'expired'
+          : String(cfg.license_status || statusToWrite || 'trial');
+        trialStartedAt = String(cfg.trial_started_at || '').trim() || toSqlDateTime(asDate(cfg.trial_started_at));
+        trialEndsAt = String(cfg.trial_ends_at || '').trim() || toSqlDateTime(localEndsAt);
+      } else if (!Number(cfg.setup_completed || 0) && (statusToWrite === 'expired' || statusToWrite === 'trial')) {
+        // Instalación nueva sin setup completo ni fechas locales/remotas.
         const freshStart = now;
-        const freshEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const freshEnd = new Date(now.getTime() + 30 * DAY_MS);
         statusToWrite = 'trial';
         trialStartedAt = toSqlDateTime(freshStart);
         trialEndsAt = toSqlDateTime(freshEnd);
+      } else if (statusToWrite === 'trial') {
+        statusToWrite = 'expired';
       }
     }
 
@@ -661,8 +670,7 @@ class LicenseService {
     ).catch(() => {});
 
     // Devolver los valores reales que se escribieron, para que el estado que se
-    // devuelve al frontend refleje lo que hay en el DB (no los datos de Firebase
-    // que pueden ser distintos si se aplicó la protección de 30 días).
+    // devuelve al frontend refleje lo que hay en el DB.
     const correctedEndsAt = asDate(trialEndsAt);
     const correctedDaysLeft = correctedEndsAt
       ? Math.max(0, Math.ceil((correctedEndsAt.getTime() - now.getTime()) / DAY_MS))
@@ -794,8 +802,8 @@ class LicenseService {
 
       await this.writeCacheSnapshot(snapshot);
       const mirrored = await this.mirrorStateToConfig(state);
-      // Si Firebase devolvió "expired" pero el DB local tiene fechas frescas
-      // (protección de 30 días activada en mirrorStateToConfig), parchear el
+      // Si Firebase devolvió "expired" pero el DB local tiene fechas vigentes,
+      // mirrorStateToConfig las conserva; parchear el
       // estado para que el frontend muestre los días reales. Solo aplica cuando
       // el único bloqueo es 'expired'; no tocar device_limit, clock_rollback, etc.
       if (mirrored && mirrored.daysLeft > 0 && state.blockedCode === 'expired') {

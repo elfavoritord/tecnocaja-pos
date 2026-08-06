@@ -7180,20 +7180,31 @@ async function restoreBackupPayload(backup) {
         );
       }
 
-      // Si las fechas de trial del backup ya vencieron (o no existen), resetear a 30 días
-      // desde ahora para que una reinstalación no arranque con licencia expirada.
+      // Preservar el vencimiento de licencia del backup. Una reinstalación o
+      // restauración no debe sumar días; si falta la fecha en un backup antiguo,
+      // se calcula una sola vez desde trial_started_at/setup_completed_at.
       {
-        const cfgRows = await conn.query('SELECT trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1');
+        const cfgRows = await conn.query('SELECT trial_started_at, trial_ends_at, setup_completed_at, license_status FROM config WHERE id = 1 LIMIT 1');
         const cfg = cfgRows[0] || {};
-        const now = new Date();
         const savedEndsAt = cfg.trial_ends_at ? new Date(cfg.trial_ends_at) : null;
-        if (!savedEndsAt || savedEndsAt < now || String(cfg.license_status || '').toLowerCase() === 'expired') {
-          const trialEnd = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-          const nowStr = now.toISOString().slice(0, 19).replace('T', ' ');
-          const trialEndStr = trialEnd.toISOString().slice(0, 19).replace('T', ' ');
+        if (!savedEndsAt || Number.isNaN(savedEndsAt.getTime())) {
+          const savedStartAt = cfg.trial_started_at ? new Date(cfg.trial_started_at) : null;
+          const setupCompletedAt = cfg.setup_completed_at ? new Date(cfg.setup_completed_at) : null;
+          const anchor = savedStartAt && !Number.isNaN(savedStartAt.getTime())
+            ? savedStartAt
+            : (setupCompletedAt && !Number.isNaN(setupCompletedAt.getTime()) ? setupCompletedAt : new Date());
+          const trialEnd = new Date(anchor.getTime() + 30 * 24 * 60 * 60 * 1000);
           await conn.query(
-            'UPDATE config SET trial_started_at = ?, trial_ends_at = ?, license_status = ? WHERE id = 1',
-            [nowStr, trialEndStr, 'trial']
+            `UPDATE config
+             SET trial_started_at = COALESCE(trial_started_at, ?),
+                 trial_ends_at = ?,
+                 license_status = CASE WHEN license_status IS NULL OR license_status = '' THEN ? ELSE license_status END
+             WHERE id = 1`,
+            [
+              anchor.toISOString().slice(0, 19).replace('T', ' '),
+              trialEnd.toISOString().slice(0, 19).replace('T', ' '),
+              'trial'
+            ]
           );
         }
       }

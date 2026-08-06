@@ -2411,7 +2411,17 @@ function resolvePeripheralsConfigPath(appRoot) {
     path.join(process.cwd(), 'config', 'peripherals-config.json')
   ];
   const legacyFound = legacyCandidates.find((candidate) => fs.existsSync(candidate));
-  return legacyFound || writablePath;
+  if (legacyFound) {
+    try {
+      const dir = path.dirname(writablePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.copyFileSync(legacyFound, writablePath);
+      logStartup(`[peripherals-config] Migrado a AppData: ${writablePath}`);
+    } catch (error) {
+      logStartup(`[peripherals-config] No se pudo migrar desde ${legacyFound}: ${error.message}`);
+    }
+  }
+  return writablePath;
 }
 
 function inferBindHostFromTerminalConfig(appRoot) {

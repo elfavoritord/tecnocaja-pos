@@ -3996,18 +3996,36 @@ const PERIPHERALS_CONFIG_FIELDS = [
   'scaleType', 'scaleSerialPort', 'scaleSerialBaudRate', 'scaleReadPattern',
   'scaleDefaultUnit', 'scaleRoundingDecimals', 'scaleAutoRead',
 ];
-const PERIPHERALS_CONFIG_FIELD_SET = new Set(PERIPHERALS_CONFIG_FIELDS);
+const PERIPHERALS_CONFIG_FIELD_SET = new Set([
+  ...PERIPHERALS_CONFIG_FIELDS,
+  'terminalPeripheralsVersion',
+  'savedAt',
+]);
 window.LocalPeripheralsFlat = window.LocalPeripheralsFlat || {};
+
+function hasMeaningfulPeripheralsConfig(config = {}) {
+  const textFields = [
+    'receiptPrinterName', 'labelsPrinterName', 'cashDrawerPrinterName',
+    'cashDrawerNetworkHost', 'cashDrawerSerialPort', 'scaleSerialPort'
+  ];
+  if (textFields.some((field) => String(config[field] || '').trim())) return true;
+  if (config.cashDrawerEnabled === true) return true;
+  if (String(config.receiptPrintMode || '').trim() && String(config.receiptPrintMode).trim() !== 'dialog') return true;
+  if (String(config.scaleType || '').trim() && String(config.scaleType).trim() !== 'none') return true;
+  return false;
+}
 
 async function loadLocalPeripheralsConfig() {
   try {
-    window.LocalPeripheralsFlat = (await window.novaDesktop?.getPeripheralsConfig?.()) || {};
+    const localConfig = (await window.novaDesktop?.getPeripheralsConfig?.()) || {};
+    window.LocalPeripheralsFlat = hasMeaningfulPeripheralsConfig(localConfig) ? localConfig : {};
   } catch (_e) {
     window.LocalPeripheralsFlat = {};
   }
 }
 
 function mergeConfigWithLocalPeripherals(config = {}) {
+  seedLocalPeripheralsConfigFromServer(config || {});
   return { ...DB.config, ...(config || {}), ...(window.LocalPeripheralsFlat || {}) };
 }
 
@@ -4035,10 +4053,18 @@ function saveLocalPeripheralsConfig(sourceConfig) {
   // ganar la carrera con el valor viejo todavía en window.LocalPeripheralsFlat
   // y pisar el valor recién guardado (ej. la impresora seleccionada se veía
   // "limpiarse" sola después de Guardar).
-  window.LocalPeripheralsFlat = { ...window.LocalPeripheralsFlat, ...subset };
-  window.novaDesktop.savePeripheralsConfig(subset)
+  const payload = { ...subset, terminalPeripheralsVersion: 1 };
+  window.LocalPeripheralsFlat = { ...window.LocalPeripheralsFlat, ...payload };
+  window.novaDesktop.savePeripheralsConfig(payload)
     .then((merged) => { if (merged && !merged.error) window.LocalPeripheralsFlat = merged; })
     .catch(() => {});
+}
+
+function seedLocalPeripheralsConfigFromServer(config = {}) {
+  if (!window.novaDesktop?.savePeripheralsConfig) return;
+  if (hasMeaningfulPeripheralsConfig(window.LocalPeripheralsFlat || {})) return;
+  if (!hasMeaningfulPeripheralsConfig(config || {})) return;
+  saveLocalPeripheralsConfig(config);
 }
 
 function getEffectiveConfig() {

@@ -34,6 +34,10 @@ function createMockQuery(state) {
       return [state.configRow];
     }
 
+    if (normalized.includes('SELECT trial_started_at, trial_ends_at, license_status, setup_completed')) {
+      return [state.configRow];
+    }
+
     if (normalized.includes('SELECT firebase_uid')) {
       return state.adminUid ? [{ firebase_uid: state.adminUid }] : [];
     }
@@ -294,5 +298,60 @@ describe('server/licensing/license-service', () => {
       expect.any(Object),
       expect.objectContaining({ allowRemoteWrite: false })
     );
+  });
+
+  it('no extiende una prueba local vencida al caer en estado bloqueado', async () => {
+    const state = createMockQueryState();
+    state.configRow.trial_started_at = '2026-04-01 10:00:00';
+    state.configRow.trial_ends_at = '2026-05-01 10:00:00';
+    state.configRow.license_status = 'trial';
+    const query = createMockQuery(state);
+    const device = { deviceId: 'npd_test_7', hostname: 'POS-07', platform: 'win32', arch: 'x64' };
+
+    const service = createLicenseService({
+      query,
+      now: () => new Date('2026-05-10T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => {
+        const error = new Error('offline');
+        error.code = 'LICENSE_REMOTE_NOT_FOUND';
+        throw error;
+      },
+    });
+
+    const result = await service.resolveState({ force: true, allowRemote: true });
+    expect(result.license.canEnter).toBe(false);
+    expect(result.license.daysLeft).toBe(0);
+    expect(state.configRow.trial_ends_at).toBe('2026-05-01 10:00:00');
+  });
+
+  it('no suma 30 días cuando Firebase devuelve una licencia vencida para una instalación existente', async () => {
+    const state = createMockQueryState();
+    state.configRow.trial_started_at = '2026-04-01 10:00:00';
+    state.configRow.trial_ends_at = '2026-05-01 10:00:00';
+    state.configRow.license_status = 'trial';
+    const query = createMockQuery(state);
+    const device = { deviceId: 'npd_test_8', hostname: 'POS-08', platform: 'win32', arch: 'x64' };
+
+    const service = createLicenseService({
+      query,
+      now: () => new Date('2026-05-10T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+        overrides: {
+          status: 'trial',
+          issuedAt: new Date('2026-04-01T10:00:00.000Z'),
+          expiresAt: new Date('2026-05-01T10:00:00.000Z'),
+        },
+      }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    });
+
+    const result = await service.resolveState({ force: true, allowRemote: true });
+    expect(result.license.canEnter).toBe(false);
+    expect(result.license.daysLeft).toBe(0);
+    expect(state.configRow.trial_ends_at).toBe('2026-05-01 10:00:00');
   });
 });
