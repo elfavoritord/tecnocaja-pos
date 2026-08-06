@@ -9,6 +9,8 @@ DROP TABLE IF EXISTS cloud_businesses;
 DROP TABLE IF EXISTS contadores;
 DROP TABLE IF EXISTS sync_log;
 DROP TABLE IF EXISTS pending_cash_movements;
+DROP TABLE IF EXISTS pending_product_changes;
+DROP TABLE IF EXISTS offline_product_sync_map;
 DROP TABLE IF EXISTS pending_sale_items;
 DROP TABLE IF EXISTS pending_sales;
 DROP TABLE IF EXISTS offline_cache_payment_methods;
@@ -782,6 +784,35 @@ CREATE TABLE offline_cache_products (
   last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_producto_id (product_id),
   KEY idx_codigo (codigo)
+);
+
+CREATE TABLE offline_product_sync_map (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  offline_product_id INT NOT NULL UNIQUE,
+  real_product_id INT NOT NULL,
+  terminal_id VARCHAR(40) NOT NULL,
+  branch_id INT DEFAULT NULL,
+  synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_offline_product_id (offline_product_id),
+  KEY idx_real_product_id (real_product_id)
+);
+
+CREATE TABLE pending_product_changes (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  terminal_id VARCHAR(40) NOT NULL,
+  change_type VARCHAR(20) NOT NULL,
+  offline_product_id INT DEFAULT NULL,
+  product_id INT DEFAULT NULL,
+  branch_id INT DEFAULT NULL,
+  offline_ref VARCHAR(80) NOT NULL UNIQUE,
+  payload_json LONGTEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  error_message VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  synced_at DATETIME DEFAULT NULL,
+  KEY idx_terminal_id (terminal_id),
+  KEY idx_status (status),
+  KEY idx_branch_id (branch_id)
 );
 
 -- Caché local de promociones activas (solo lectura offline — crear/editar

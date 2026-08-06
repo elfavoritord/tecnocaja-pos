@@ -59,6 +59,30 @@ CREATE TABLE IF NOT EXISTS offline_cache_products (
   last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS offline_product_sync_map (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  offline_product_id INTEGER NOT NULL UNIQUE,
+  real_product_id INTEGER NOT NULL,
+  terminal_id VARCHAR(40) NOT NULL,
+  branch_id INTEGER DEFAULT NULL,
+  synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pending_product_changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  terminal_id VARCHAR(40) NOT NULL,
+  change_type VARCHAR(20) NOT NULL,
+  offline_product_id INTEGER DEFAULT NULL,
+  product_id INTEGER DEFAULT NULL,
+  branch_id INTEGER DEFAULT NULL,
+  offline_ref VARCHAR(80) NOT NULL UNIQUE,
+  payload_json TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  error_message VARCHAR(500) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  synced_at DATETIME DEFAULT NULL
+);
+
 CREATE TABLE IF NOT EXISTS offline_cache_clients (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   client_id INTEGER NOT NULL UNIQUE,
@@ -300,6 +324,9 @@ async function _initLocalDb() {
   // por defecto asume "sí controla"), bloqueando la venta de productos
   // "no maneja stock" con stock_cached=0 en modo offline.
   _addLocalColumnIfMissing(db, 'offline_cache_products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
+  _addLocalColumnIfMissing(db, 'pending_product_changes', 'offline_product_id', 'INTEGER DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'pending_product_changes', 'product_id', 'INTEGER DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'pending_product_changes', 'branch_id', 'INTEGER DEFAULT NULL');
 
   _saveLocalDb(db);
   return db;
@@ -437,8 +464,24 @@ async function getLocalCacheStatus(terminalId) {
     const pending = await localQuery(
       `SELECT COUNT(*) as cnt, SUM(total) as total_amount FROM pending_sales WHERE status IN ('pending', 'syncing')`
     );
+    const pendingProducts = await localQuery(
+      `SELECT COUNT(*) as cnt FROM pending_product_changes WHERE status IN ('pending', 'syncing')`
+    ).catch(() => [{ cnt: 0 }]);
+    const pendingSuppliers = await localQuery(
+      `SELECT COUNT(*) as cnt FROM pending_supplier_changes WHERE status IN ('pending', 'syncing')`
+    ).catch(() => [{ cnt: 0 }]);
+    const pendingInventory = await localQuery(
+      `SELECT COUNT(*) as cnt FROM pending_inventory_adjustments WHERE status IN ('pending', 'syncing')`
+    ).catch(() => [{ cnt: 0 }]);
+    const pendingCash = await localQuery(
+      `SELECT COUNT(*) as cnt FROM pending_cash_movements WHERE status IN ('pending', 'syncing')`
+    ).catch(() => [{ cnt: 0 }]);
 
     const tc = Array.isArray(terminal) && terminal[0] ? terminal[0] : {};
+    const pendingProductsCount = Number(pendingProducts[0]?.cnt || 0);
+    const pendingSuppliersCount = Number(pendingSuppliers[0]?.cnt || 0);
+    const pendingInventoryCount = Number(pendingInventory[0]?.cnt || 0);
+    const pendingCashMovementsCount = Number(pendingCash[0]?.cnt || 0);
 
     return {
       initialized: Array.isArray(terminal) && terminal.length > 0,
@@ -449,7 +492,12 @@ async function getLocalCacheStatus(terminalId) {
       clientsCached: Number(clients[0]?.cnt || 0),
       usersCached: Number(users[0]?.cnt || 0),
       pendingSalesCount: Number(pending[0]?.cnt || 0),
-      pendingSalesTotalAmount: Number(pending[0]?.total_amount || 0)
+      pendingSalesTotalAmount: Number(pending[0]?.total_amount || 0),
+      pendingProductsCount,
+      pendingSuppliersCount,
+      pendingInventoryCount,
+      pendingCashMovementsCount,
+      pendingChangesCount: Number(pending[0]?.cnt || 0) + pendingProductsCount + pendingSuppliersCount + pendingInventoryCount + pendingCashMovementsCount
     };
   } catch (err) {
     console.error('[db-local] Error obteniendo estado:', err.message);

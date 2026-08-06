@@ -20,6 +20,7 @@ class OfflineManager {
       // responder bien — falso positivo frecuente con la BD bajo carga.
       healthCheckTimeout: 6000, // timeout para cada health check
       syncDebounceDelay: 1000, // esperar antes de disparar sync después de reconexión
+      autoSyncInterval: 60000, // refrescar/subir cambios aunque no haya transición offline→online
       statusUpdateInterval: 1000, // actualizar UI cada 1s
       ...config
     };
@@ -30,6 +31,7 @@ class OfflineManager {
       lastHealthCheckAt: null,
       lastSyncAt: null,
       pendingSalesCount: 0,
+      pendingChangesCount: 0,
       pendingSalesTotal: 0,
       syncError: null
     };
@@ -51,6 +53,7 @@ class OfflineManager {
     this.timers = {
       healthCheck: null,
       syncDebounce: null,
+      autoSync: null,
       statusUpdate: null
     };
 
@@ -74,6 +77,7 @@ class OfflineManager {
 
     // Actualizar UI periódicamente
     this._startStatusUpdate();
+    this._startAutoSync();
 
     // Cargar estado inicial
     await this._updateCacheStatus();
@@ -88,6 +92,7 @@ class OfflineManager {
   destroy() {
     clearInterval(this.timers.healthCheck);
     clearTimeout(this.timers.syncDebounce);
+    clearInterval(this.timers.autoSync);
     clearInterval(this.timers.statusUpdate);
 
     this.listeners = {
@@ -262,6 +267,16 @@ class OfflineManager {
     }
   }
 
+  _startAutoSync() {
+    if (!Number(this.config.autoSyncInterval)) return;
+    clearInterval(this.timers.autoSync);
+    this.timers.autoSync = setInterval(() => {
+      if (this.state.isOnline && !this.state.isSyncing) {
+        this._triggerSync();
+      }
+    }, Number(this.config.autoSyncInterval));
+  }
+
   /**
    * Obtiene el estado actual del caché offline desde el servidor.
    */
@@ -271,6 +286,7 @@ class OfflineManager {
       if (response.ok) {
         const status = await response.json();
         this.state.pendingSalesCount = status.pendingSalesCount || 0;
+        this.state.pendingChangesCount = status.pendingChangesCount || status.pendingSalesCount || 0;
         this.state.pendingSalesTotal = status.pendingSalesTotalAmount || 0;
       }
     } catch (err) {
@@ -318,6 +334,7 @@ class OfflineManager {
         icon: '✕',
         color: 'red',
         pendingCount: this.state.pendingSalesCount,
+        pendingChangesCount: this.state.pendingChangesCount,
         pendingTotal: this.state.pendingSalesTotal
       };
     }

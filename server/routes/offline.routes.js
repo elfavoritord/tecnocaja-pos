@@ -100,6 +100,86 @@ module.exports = function createOfflineRouter(deps) {
     return String(value);
   }
 
+  function normalizeOfflineProductPayload(data = {}, branchId = null) {
+    const codigo = String(data.codigo || '').trim();
+    const nombre = String(data.nombre || '').trim();
+    if (!codigo || !nombre) {
+      const error = new Error('Código y nombre son obligatorios.');
+      error.statusCode = 400;
+      throw error;
+    }
+    return {
+      codigo,
+      barcode: String(data.barcode || codigo).trim() || codigo,
+      nombre,
+      categoria: String(data.categoria || 'GENERAL').trim() || 'GENERAL',
+      marca: String(data.marca || '').trim(),
+      unidad: String(data.unidad || 'unidad').trim() || 'unidad',
+      saleMode: String(data.saleMode || 'unidad').trim() || 'unidad',
+      precioCompra: Number(data.precioCompra || 0),
+      precioVenta: Number(data.precioVenta || 0),
+      stock: Number(data.stock || 0),
+      stockMin: Number(data.stockMin || 0),
+      estado: String(data.estado || 'Activo').trim() || 'Activo',
+      imagen: data.imagen || data.imagenUrl || null,
+      imagenLocal: data.imagenLocal || null,
+      tipoProducto: String(data.tipoProducto || 'general').trim() || 'general',
+      tamanos: Array.isArray(data.tamanos) ? data.tamanos : [],
+      masas: Array.isArray(data.masas) ? data.masas : [],
+      bordes: Array.isArray(data.bordes) ? data.bordes : [],
+      extras: Array.isArray(data.extras) ? data.extras : [],
+      permiteMitades: Boolean(data.permiteMitades),
+      esCombo: Boolean(data.esCombo),
+      aplicaItbis: Boolean(data.aplicaItbis),
+      tiempoPreparacion: Number(data.tiempoPreparacion || 15),
+      metaNegocio: data.metaNegocio && typeof data.metaNegocio === 'object' ? data.metaNegocio : {},
+      tracksStock: data.tracksStock === false ? false : true,
+      descuentoPct: Math.min(100, Math.max(0, Number(data.descuentoPct || 0))),
+      descuentoHastaAgotar: Boolean(data.descuentoHastaAgotar),
+      branchId: Number(data.branchId || branchId || 0) || null
+    };
+  }
+
+  function mapOfflineProductCacheRow(row, payload = {}) {
+    return {
+      id: Number(row.product_id),
+      codigo: row.codigo,
+      branchId: payload.branchId === undefined ? null : payload.branchId,
+      barcode: payload.barcode || row.codigo || '',
+      nombre: row.nombre,
+      categoria: row.categoria || '',
+      marca: payload.marca || '',
+      precioCompra: Number(payload.precioCompra || 0),
+      precioVenta: Number(row.precio_venta || 0),
+      stock: Number(row.stock_cached || 0),
+      stockMin: Number(row.stock_min || 0),
+      stockGlobal: Number(row.stock_cached || 0),
+      inventarioSucursalId: payload.branchId || null,
+      sucursalInventarioId: payload.branchId || null,
+      unidad: payload.unidad || 'unidad',
+      estado: row.estado || 'Activo',
+      imagenUrl: payload.imagen || '',
+      imagenLocal: payload.imagenLocal || '',
+      imagen: payload.imagenLocal || payload.imagen || '',
+      tipoProducto: payload.tipoProducto || 'general',
+      tamanos: payload.tamanos || [],
+      masas: payload.masas || [],
+      bordes: payload.bordes || [],
+      extras: payload.extras || [],
+      permiteMitades: Boolean(payload.permiteMitades),
+      esCombo: Boolean(payload.esCombo),
+      aplicaItbis: Boolean(payload.aplicaItbis),
+      tiempoPreparacion: Number(payload.tiempoPreparacion || 15),
+      saleMode: payload.saleMode || 'unidad',
+      metaNegocio: payload.metaNegocio || {},
+      tracksStock: payload.tracksStock !== false,
+      descuentoPct: Number(payload.descuentoPct || 0),
+      descuentoHastaAgotar: Boolean(payload.descuentoHastaAgotar),
+      offlineMode: true,
+      pendingSync: true
+    };
+  }
+
   // ─── GET /api/offline/status ────────────────────────────────────────────────
   router.get('/status', async (req, res) => {
     try {
@@ -597,6 +677,79 @@ module.exports = function createOfflineRouter(deps) {
     } catch (err) {
       console.error('[offline/save-sale]', err);
       return res.status(500).json({ error: 'Error al guardar venta offline', details: err.message });
+    }
+  });
+
+  // ─── POST /api/offline/product-save ─────────────────────────────────────────
+  // Crea/edita un producto de la sucursal local cuando la principal no responde.
+  // Se guarda en el caché local con un ID temporal negativo y se sincroniza antes
+  // de subir ventas, para que los tickets pendientes puedan referenciar el ID real.
+  router.post('/product-save', async (req, res) => {
+    try {
+      const user = await resolveUser(req, { required: false });
+      if (!user?.id) {
+        return res.status(401).json({ error: 'Sesión no válida para guardar producto offline.' });
+      }
+
+      const tc = getTerminalConfig() || {};
+      const terminalId = tc.terminalId || 'default';
+      const terminalBranchId = Number(tc.branchId || 0) || null;
+      const payload = normalizeOfflineProductPayload(req.body || {}, terminalBranchId);
+      payload.branchId = terminalBranchId || payload.branchId;
+
+      const requestedId = Number(req.body?.id || req.body?.productId || 0) || null;
+      const isLocalProduct = requestedId && requestedId < 0;
+      const offlineProductId = isLocalProduct
+        ? requestedId
+        : (requestedId || -Number(String(Date.now()).slice(-10)));
+      const changeType = requestedId && requestedId > 0 ? 'update' : 'create';
+      const offlineRef = typeof generateOfflineRef === 'function'
+        ? generateOfflineRef(terminalId, 'PROD-')
+        : `PROD-${terminalId}-${Date.now()}`;
+
+      await localQuery(
+        `INSERT INTO pending_product_changes
+           (terminal_id, change_type, offline_product_id, product_id, branch_id, offline_ref, payload_json, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', datetime('now'))
+         ON CONFLICT(offline_ref) DO UPDATE SET payload_json=excluded.payload_json`,
+        [
+          terminalId,
+          changeType,
+          offlineProductId,
+          requestedId && requestedId > 0 ? requestedId : null,
+          payload.branchId,
+          offlineRef,
+          JSON.stringify(payload)
+        ]
+      );
+
+      await localQuery(
+        `INSERT INTO offline_cache_products
+           (product_id, codigo, nombre, categoria, precio_venta, stock_cached, stock_min, estado, tracks_stock, last_updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(product_id) DO UPDATE SET
+           codigo=excluded.codigo, nombre=excluded.nombre, categoria=excluded.categoria,
+           precio_venta=excluded.precio_venta, stock_cached=excluded.stock_cached,
+           stock_min=excluded.stock_min, estado=excluded.estado, tracks_stock=excluded.tracks_stock,
+           last_updated=excluded.last_updated`,
+        [
+          offlineProductId,
+          payload.codigo,
+          payload.nombre,
+          payload.categoria,
+          payload.precioVenta,
+          payload.stock,
+          payload.stockMin,
+          payload.estado,
+          payload.tracksStock ? 1 : 0
+        ]
+      );
+
+      const rows = await localQuery('SELECT * FROM offline_cache_products WHERE product_id = ? LIMIT 1', [offlineProductId]);
+      return res.status(changeType === 'create' ? 201 : 200).json(mapOfflineProductCacheRow(rows[0], payload));
+    } catch (err) {
+      console.error('[offline/product-save]', err);
+      return res.status(Number(err.statusCode || 500)).json({ error: err.message || 'Error al guardar producto offline.' });
     }
   });
 
@@ -1134,6 +1287,8 @@ module.exports = function createOfflineRouter(deps) {
     const results = { synced: 0, failed: 0, skipped: 0, errors: [] };
 
     try {
+      await _syncProductChanges(query, localQuery, terminalId, tc);
+
       // 1. Obtener ventas pendientes del SQLite local
       const pendingSales = await localQuery(
         `SELECT * FROM pending_sales WHERE status = 'pending' ORDER BY created_at ASC LIMIT 100`
@@ -1200,7 +1355,7 @@ module.exports = function createOfflineRouter(deps) {
           }
 
           // Insertar en BD principal usando la misma lógica simplificada
-          const realInvoiceId = await _insertSaleToMain(query, saleData, ps, tc);
+          const realInvoiceId = await _insertSaleToMain(query, localQuery, saleData, ps, tc);
 
           // Registrar en offline_sync_map del SQLite local
           await localQuery(
@@ -1492,7 +1647,7 @@ module.exports = function createOfflineRouter(deps) {
    * Inserta una venta offline en la BD principal.
    * Genera un número de factura real y descuenta inventario.
    */
-  async function _insertSaleToMain(query, saleData, pendingSale, tc) {
+  async function _insertSaleToMain(query, localQuery, saleData, pendingSale, tc) {
     await ensurePromotionsExtensions();
 
     const branchId = Number(pendingSale.branch_id || tc.branchId || 1);
@@ -1643,7 +1798,17 @@ module.exports = function createOfflineRouter(deps) {
       ]);
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        const productId = Number(item.id || item.producto_id || 0);
+        let productId = Number(item.id || item.producto_id || 0);
+        if (productId < 0) {
+          const mappedRows = await localQuery(
+            'SELECT real_product_id FROM offline_product_sync_map WHERE offline_product_id = ? LIMIT 1',
+            [productId]
+          ).catch(() => []);
+          productId = Number(mappedRows?.[0]?.real_product_id || 0);
+          if (!productId) {
+            throw new Error(`El producto local ${item.nombre || item.name || item.codigo || ''} todavía no tiene ID real en la principal.`);
+          }
+        }
         const qty = Number(item.qty || item.cantidad || 1);
         const unitPrice = Number(item.price || item.precio || item.precio_venta || 0);
         const lineTotal = Number(item.subtotal || item.total || item.line_total || qty * unitPrice);
@@ -1734,6 +1899,172 @@ module.exports = function createOfflineRouter(deps) {
     }
 
     return result.invoiceNumber;
+  }
+
+  async function findMainProductCollision(conn, payload) {
+    const branchId = Number(payload.branchId || 0) || null;
+    const barcode = String(payload.barcode || payload.codigo || '').trim();
+    const rows = await conn.query(
+      `SELECT * FROM products
+       WHERE (LOWER(codigo) = LOWER(?) OR LOWER(nombre) = LOWER(?) OR LOWER(COALESCE(barcode, '')) = LOWER(?))
+         AND (branch_id IS NULL OR ? IS NULL OR branch_id = ?)
+       ORDER BY branch_id IS NULL DESC, id ASC
+       LIMIT 1`,
+      [payload.codigo, payload.nombre, barcode, branchId, branchId]
+    ).catch(() => []);
+    return rows?.[0] || null;
+  }
+
+  async function createMainProductFromOffline(conn, payload) {
+    await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [payload.categoria]).catch(() => {});
+    const result = await conn.query(
+      `INSERT INTO products
+        (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta,
+         stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options,
+         border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis,
+         preparation_time_minutes, business_metadata, tracks_stock, discount_percent,
+         discount_until_stock_out, branch_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        payload.codigo, payload.barcode || payload.codigo, payload.nombre, payload.categoria,
+        payload.marca || '', payload.unidad || 'unidad', payload.saleMode || 'unidad',
+        Number(payload.precioCompra || 0), Number(payload.precioVenta || 0),
+        Number(payload.stock || 0), Number(payload.stockMin || 0), payload.estado || 'Activo',
+        payload.imagen || null, payload.imagenLocal || null, payload.tipoProducto || 'general',
+        JSON.stringify(payload.tamanos || []), JSON.stringify(payload.masas || []),
+        JSON.stringify(payload.bordes || []), JSON.stringify(payload.extras || []),
+        payload.permiteMitades ? 1 : 0, payload.esCombo ? 1 : 0, payload.aplicaItbis ? 1 : 0,
+        Number(payload.tiempoPreparacion || 15), JSON.stringify(payload.metaNegocio || {}),
+        payload.tracksStock === false ? 0 : 1, Number(payload.descuentoPct || 0),
+        payload.descuentoHastaAgotar ? 1 : 0, Number(payload.branchId || 0) || null
+      ]
+    );
+    const productId = Number(result?.insertId || 0);
+    const branchId = Number(payload.branchId || 0) || null;
+    if (productId && branchId && typeof changeBranchInventoryStock === 'function') {
+      await changeBranchInventoryStock({ query: conn.query }, {
+        productId,
+        branchId,
+        absoluteStock: Number(payload.stock || 0),
+        stockMin: Number(payload.stockMin || 0)
+      }).catch(() => null);
+    }
+    const rows = productId ? await conn.query('SELECT * FROM products WHERE id = ? LIMIT 1', [productId]).catch(() => []) : [];
+    return rows?.[0] || { id: productId };
+  }
+
+  async function updateMainProductFromOffline(conn, productId, payload) {
+    const currentRows = await conn.query('SELECT * FROM products WHERE id = ? LIMIT 1', [productId]).catch(() => []);
+    if (!currentRows?.[0]) {
+      const error = new Error('Producto principal no encontrado para actualizar.');
+      error.statusCode = 404;
+      throw error;
+    }
+    const branchId = Number(payload.branchId || currentRows[0].branch_id || 0) || null;
+    await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [payload.categoria]).catch(() => {});
+    await conn.query(
+      `UPDATE products
+       SET codigo = ?, barcode = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?, sale_mode = ?,
+           precio_compra = ?, precio_venta = ?, stock = ?, stock_min = ?, estado = ?,
+           product_type = ?, size_options = ?, dough_options = ?, border_options = ?, extra_options = ?,
+           allow_half_and_half = ?, is_combo = ?, aplica_itbis = ?, preparation_time_minutes = ?,
+           business_metadata = ?, tracks_stock = ?, discount_percent = ?, discount_until_stock_out = ?,
+           branch_id = ?
+       WHERE id = ?`,
+      [
+        payload.codigo, payload.barcode || payload.codigo, payload.nombre, payload.categoria,
+        payload.marca || '', payload.unidad || 'unidad', payload.saleMode || 'unidad',
+        Number(payload.precioCompra || 0), Number(payload.precioVenta || 0),
+        Number(payload.stock || 0), Number(payload.stockMin || 0), payload.estado || 'Activo',
+        payload.tipoProducto || 'general', JSON.stringify(payload.tamanos || []),
+        JSON.stringify(payload.masas || []), JSON.stringify(payload.bordes || []),
+        JSON.stringify(payload.extras || []), payload.permiteMitades ? 1 : 0,
+        payload.esCombo ? 1 : 0, payload.aplicaItbis ? 1 : 0,
+        Number(payload.tiempoPreparacion || 15), JSON.stringify(payload.metaNegocio || {}),
+        payload.tracksStock === false ? 0 : 1, Number(payload.descuentoPct || 0),
+        payload.descuentoHastaAgotar ? 1 : 0, branchId, productId
+      ]
+    );
+    if (branchId && typeof changeBranchInventoryStock === 'function') {
+      await changeBranchInventoryStock({ query: conn.query }, {
+        productId,
+        branchId,
+        absoluteStock: Number(payload.stock || 0),
+        stockMin: Number(payload.stockMin || 0)
+      }).catch(() => null);
+    }
+    const rows = await conn.query('SELECT * FROM products WHERE id = ? LIMIT 1', [productId]).catch(() => []);
+    return rows?.[0] || { id: productId };
+  }
+
+  async function remapLocalProductId(localQuery, { offlineProductId, realProductId, terminalId, branchId }) {
+    if (!offlineProductId || !realProductId || Number(offlineProductId) === Number(realProductId)) return;
+    await localQuery(
+      `INSERT OR IGNORE INTO offline_product_sync_map
+         (offline_product_id, real_product_id, terminal_id, branch_id, synced_at)
+       VALUES (?, ?, ?, ?, datetime('now'))`,
+      [offlineProductId, realProductId, terminalId, branchId || null]
+    ).catch(() => {});
+
+    const existingRealRows = await localQuery('SELECT product_id FROM offline_cache_products WHERE product_id = ? LIMIT 1', [realProductId]).catch(() => []);
+    if (existingRealRows?.length) {
+      await localQuery('DELETE FROM offline_cache_products WHERE product_id = ?', [offlineProductId]).catch(() => {});
+    } else {
+      await localQuery('UPDATE offline_cache_products SET product_id = ? WHERE product_id = ?', [realProductId, offlineProductId]).catch(() => {});
+    }
+    await localQuery('UPDATE pending_sale_items SET product_id = ? WHERE product_id = ?', [realProductId, offlineProductId]).catch(() => {});
+  }
+
+  async function _syncProductChanges(query, localQuery, terminalId, tc) {
+    const pending = await localQuery(
+      `SELECT * FROM pending_product_changes WHERE status = 'pending' ORDER BY created_at ASC LIMIT 100`
+    ).catch(() => []);
+    if (!Array.isArray(pending) || !pending.length) return { synced: 0, failed: 0 };
+
+    const result = { synced: 0, failed: 0 };
+    for (const change of pending) {
+      try {
+        await localQuery('UPDATE pending_product_changes SET status = ? WHERE id = ?', ['syncing', change.id]);
+        const payload = normalizeOfflineProductPayload(JSON.parse(change.payload_json || '{}'), Number(change.branch_id || tc.branchId || 0) || null);
+        payload.branchId = Number(change.branch_id || payload.branchId || tc.branchId || 0) || null;
+
+        let mainProduct = null;
+        if (String(change.change_type) === 'update') {
+          const mappedRows = change.product_id
+            ? []
+            : await localQuery('SELECT real_product_id FROM offline_product_sync_map WHERE offline_product_id = ? LIMIT 1', [change.offline_product_id]).catch(() => []);
+          const realProductId = Number(change.product_id || mappedRows?.[0]?.real_product_id || 0);
+          mainProduct = realProductId
+            ? await updateMainProductFromOffline({ query }, realProductId, payload)
+            : await createMainProductFromOffline({ query }, payload);
+        } else {
+          const collision = await findMainProductCollision({ query }, payload);
+          mainProduct = collision || await createMainProductFromOffline({ query }, payload);
+        }
+
+        const realProductId = Number(mainProduct?.id || 0);
+        if (!realProductId) throw new Error('La principal no devolvió ID del producto sincronizado.');
+        await remapLocalProductId(localQuery, {
+          offlineProductId: Number(change.offline_product_id || 0),
+          realProductId,
+          terminalId,
+          branchId: payload.branchId
+        });
+        await localQuery(
+          `UPDATE pending_product_changes SET status = 'synced', synced_at = datetime('now'), product_id = ? WHERE id = ?`,
+          [realProductId, change.id]
+        );
+        result.synced++;
+      } catch (err) {
+        console.error(`[offline/sync-products] Error en ${change.offline_ref}:`, err.message);
+        await localQuery(
+          `UPDATE pending_product_changes SET status = 'error', error_message = ? WHERE id = ?`,
+          [String(err.message).slice(0, 490), change.id]
+        ).catch(() => {});
+        result.failed++;
+      }
+    }
+    return result;
   }
 
   /**

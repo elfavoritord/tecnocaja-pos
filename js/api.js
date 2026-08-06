@@ -280,6 +280,13 @@ const api = {
   },
 
   createProduct(data) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/product-save', {
+        method: 'POST',
+        body: JSON.stringify(data)
+      });
+    }
     return this.request('/api/products', {
       method: 'POST',
       body: JSON.stringify(data)
@@ -287,6 +294,13 @@ const api = {
   },
 
   updateProduct(id, data) {
+    const isOffline = window.offlineManager?.getState?.()?.isOnline === false;
+    if (isOffline) {
+      return this.request('/api/offline/product-save', {
+        method: 'POST',
+        body: JSON.stringify({ ...data, id })
+      });
+    }
     return this.request(`/api/products/${id}`, {
       method: 'PUT',
       body: JSON.stringify(data)
