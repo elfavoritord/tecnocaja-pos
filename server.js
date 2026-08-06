@@ -11099,10 +11099,14 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
 // Aplica productos pendientes que un contador haya agregado desde el Portal
 // del Contador (fire-and-forget, mismos disparadores que syncPosStatsToFirestore:
 // abrir caja, cerrar caja, crear venta — ver server/sync/apply-pending-products.js).
-function applyPendingProductsFireAndForget() {
-  require('./server/sync/apply-pending-products')
+function applyPendingProductsOnce() {
+  return require('./server/sync/apply-pending-products')
     .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
     .applyPendingProductRequests()
+}
+
+function applyPendingProductsFireAndForget() {
+  applyPendingProductsOnce()
     .catch(() => {});
 }
 
@@ -11111,9 +11115,7 @@ function applyPendingProductsFireAndForget() {
 // router montado ANTES de que esta función exista, línea 1536) pueda llamarla
 // sin necesitar un require circular hacia este archivo — Express ya resuelve
 // app.locals en tiempo de request, no de registro de rutas.
-app.locals.applyPendingProductRequests = () => require('./server/sync/apply-pending-products')
-  .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
-  .applyPendingProductRequests();
+app.locals.applyPendingProductRequests = () => applyPendingProductsOnce();
 
 // Mismo mecanismo que productos pendientes, para secuencias NCF que un
 // contador haya registrado desde su Portal (ver server/sync/apply-pending-ncf.js).
@@ -11133,18 +11135,40 @@ function refreshNcfMirrorIfApplied(result) {
   return result;
 }
 
-function applyPendingNcfFireAndForget() {
-  require('./server/sync/apply-pending-ncf')
+function applyPendingNcfOnce() {
+  return require('./server/sync/apply-pending-ncf')
     .createApplyPendingNcfService({ query, withTransaction, writeAuditLog, isMysqlDeployment, attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH })
     .applyPendingNcfRequests()
-    .then(refreshNcfMirrorIfApplied)
+    .then(refreshNcfMirrorIfApplied);
+}
+
+function applyPendingNcfFireAndForget() {
+  applyPendingNcfOnce()
     .catch(() => {});
 }
 
-app.locals.applyPendingNcfRequests = () => require('./server/sync/apply-pending-ncf')
-  .createApplyPendingNcfService({ query, withTransaction, writeAuditLog, isMysqlDeployment, attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH })
-  .applyPendingNcfRequests()
-  .then(refreshNcfMirrorIfApplied);
+app.locals.applyPendingNcfRequests = () => applyPendingNcfOnce();
+
+function syncPortalContableFireAndForget(reason = '') {
+  (async () => {
+    const { syncPosStatsToFirestore } = require('./server/sync/sync-pos-stats');
+    await syncPosStatsToFirestore().catch((error) => {
+      console.warn(`[portal-sync] ${reason || 'sync'}:`, error.message);
+      return null;
+    });
+    const [productsResult, ncfResult] = await Promise.all([
+      applyPendingProductsOnce().catch((error) => ({ ok: false, reason: error.message })),
+      applyPendingNcfOnce().catch((error) => ({ ok: false, reason: error.message })),
+    ]);
+    if (Number(productsResult?.applied || 0) > 0 || Number(ncfResult?.applied || 0) > 0) {
+      await syncPosStatsToFirestore().catch((error) => {
+        console.warn(`[portal-sync] ${reason || 'post-pending-refresh'}:`, error.message);
+      });
+    }
+  })().catch((error) => {
+    console.warn(`[portal-sync] ${reason || 'sync'}:`, error.message);
+  });
+}
 
 app.post('/api/products', async (req, res) => {
   ensureNotCashier(req);
@@ -13206,6 +13230,7 @@ app.post('/api/branches', plans.requirePlan('plus', query, () => secureLicenseSe
     const cfg = await getReportSyncConfig();
     await reportsSync.syncBranch(newBranchRow, { config: cfg });
   });
+  syncPortalContableFireAndForget('sucursal creada');
   res.status(201).json({
     sucursal: mapBranchRow(newBranchRow),
     sucursales: (await getBranchRows()).map(mapBranchRow)
@@ -13677,6 +13702,7 @@ app.post('/api/cash-registers', plans.requirePlan('pro', query, () => secureLice
       sessionStatus: 'closed',
     });
   });
+  syncPortalContableFireAndForget('caja creada');
   res.status(201).json({
     caja: mapCashRegisterRow(newCashRegisterRow),
     cajasSucursal: (await getCashRegisterRows()).map(mapCashRegisterRow)
@@ -13743,6 +13769,7 @@ app.put('/api/cash-registers/:id', async (req, res) => {
     const branches = await getReportSyncBranchesMap();
     if (updated[0]) await reportsSync.syncCashRegister(updated[0], { config: cfg, branches });
   });
+  syncPortalContableFireAndForget('caja actualizada');
   res.json({ caja: mapCashRegisterRow(updated[0]) });
 });
 
@@ -13795,6 +13822,7 @@ app.delete('/api/branches/:id', async (req, res) => {
     const cfg = await getReportSyncConfig();
     await reportsSync.syncBranch({ ...branch, estado: 'Eliminada' }, { config: cfg });
   });
+  syncPortalContableFireAndForget('sucursal eliminada');
   res.json({ ok: true, sucursales: (await getBranchRows()).map(mapBranchRow), cajasSucursal: (await getCashRegisterRows()).map(mapCashRegisterRow) });
 });
 
@@ -13830,6 +13858,7 @@ app.delete('/api/cash-registers/:id', async (req, res) => {
   await query('UPDATE cash_registers SET estado = "Eliminada" WHERE id = ?', [id]);
   const actor = getActor(req);
   await writeAuditLog({ ...actor, moduleName: 'Configuración', actionName: 'Caja eliminada', detail: `${caja.nombre} · sucursal ${caja.branch_nombre} (ID ${id})` });
+  syncPortalContableFireAndForget('caja eliminada');
   res.json({ ok: true, cajasSucursal: (await getCashRegisterRows()).map(mapCashRegisterRow) });
 });
 
@@ -13852,6 +13881,7 @@ app.put('/api/business-structure/active', async (req, res) => {
     actionName: 'Sucursal y caja activas actualizadas',
     detail: `${selection.branch.nombre} · ${selection.cashRegister.nombre}`
   });
+  syncPortalContableFireAndForget('sucursal/caja activa actualizada');
   res.json({
     config: await getConfig(),
     sucursales: (await getBranchRows()).map(mapBranchRow),
@@ -14110,10 +14140,8 @@ app.post('/api/cash/open', async (req, res) => {
         opened_by_user_name: actor.userName || 'Sistema',
       }, { config: cfg, branches });
     });
-    // Actualizar KPIs del Portal de Contadores al abrir caja (fire & forget)
-    require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
-    applyPendingProductsFireAndForget();
-    applyPendingNcfFireAndForget();
+    // Actualizar KPIs y aplicar pendientes del Portal de Contadores al abrir caja.
+    syncPortalContableFireAndForget('apertura de caja');
     const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
     return res.status(201).json({ sessionId: result, activeSession, config: await getConfig({ syncRemote: false }) });
   } catch (err) {
@@ -14327,10 +14355,8 @@ app.post('/api/cash/close', async (req, res) => {
     cajeroNombre: actor.userName,
     montoActual: amount,
   }).catch(() => {});
-  // Actualizar KPIs del Portal de Contadores al cerrar caja (fire & forget)
-  require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
-  applyPendingProductsFireAndForget();
-  applyPendingNcfFireAndForget();
+  // Actualizar KPIs y aplicar pendientes del Portal de Contadores al cerrar caja.
+  syncPortalContableFireAndForget('cierre de caja');
   // ── Sync reporte-sistema-pos (cierre) ──
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
@@ -15460,11 +15486,8 @@ app.post('/api/sales', async (req, res) => {
       sucursalId: created.branchId,
       sucursalNombre: created.branchName,
     }).catch(() => {});
-    // Actualizar KPIs del Portal de Contadores en tiempo real (fire & forget)
-    const { syncPosStatsToFirestore } = require('./server/sync/sync-pos-stats');
-    syncPosStatsToFirestore().catch(() => {});
-    applyPendingProductsFireAndForget();
-    applyPendingNcfFireAndForget();
+    // Actualizar KPIs y aplicar pendientes del Portal de Contadores en tiempo real.
+    syncPortalContableFireAndForget('venta registrada');
     // Encolar venta en el nuevo sync service y procesar inmediatamente (<3s)
     try {
       const _syncSvc = getSyncService();
@@ -19086,9 +19109,7 @@ async function startHttpServer(port, bindHost) {
       // de razonar, sin depender de qué tan seguido cambia otra cosa.
       const PORTAL_SYNC_INTERVAL_MS = 5 * 60 * 1000;
       const runPortalSync = () => {
-        require('./server/sync/sync-pos-stats').syncPosStatsToFirestore().catch(() => {});
-        applyPendingProductsFireAndForget();
-        applyPendingNcfFireAndForget();
+        syncPortalContableFireAndForget('intervalo automático');
       };
       setTimeout(runPortalSync, 30000); // primer sync a los 30s de arrancar
       setInterval(runPortalSync, PORTAL_SYNC_INTERVAL_MS).unref();

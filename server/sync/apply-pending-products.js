@@ -36,6 +36,30 @@ function getDb() {
  * @param {Function} saveProductImageBuffer — de server.js, redimensiona/optimiza y guarda el archivo
  */
 function createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer }) {
+  async function findExistingProductForRequest(data, catalogBranchId) {
+    const rows = await query(
+      `SELECT id, codigo, nombre, branch_id
+       FROM products
+       WHERE estado <> 'Eliminado'
+         AND (LOWER(codigo) = LOWER(?) OR LOWER(nombre) = LOWER(?))
+         AND (branch_id IS NULL OR ? IS NULL OR branch_id = ?)
+       ORDER BY CASE WHEN LOWER(codigo) = LOWER(?) THEN 0 ELSE 1 END, id
+       LIMIT 1`,
+      [data.codigo, data.nombre, catalogBranchId, catalogBranchId, data.codigo]
+    ).catch(() => []);
+    return rows[0] || null;
+  }
+
+  async function markRequestAppliedFromExisting(doc, existingProduct, message = '') {
+    await doc.ref.update({
+      status: 'aplicado',
+      localProductId: Number(existingProduct.id || 0) || null,
+      duplicateResolved: true,
+      duplicateMessage: message || 'El producto ya existía en el POS; solicitud vinculada automáticamente.',
+      appliedAt: new Date().toISOString(),
+    });
+  }
+
   async function applyPendingProductRequests() {
     const licenseUid = getLicenseUid();
     if (!licenseUid) {
@@ -113,6 +137,13 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
       }
 
       try {
+        const existingBeforeCreate = await findExistingProductForRequest(data, catalogBranchId);
+        if (existingBeforeCreate) {
+          await markRequestAppliedFromExisting(doc, existingBeforeCreate);
+          applied += 1;
+          continue;
+        }
+
         const result = await withTransaction((conn) => createProductInTransaction(conn, {
           data,
           catalogBranchId,
@@ -154,6 +185,15 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
 
         applied += 1;
       } catch (error) {
+        const isDuplicate = /Ya existe un producto/i.test(String(error?.message || ''));
+        if (isDuplicate) {
+          const existingAfterError = await findExistingProductForRequest(data, catalogBranchId);
+          if (existingAfterError) {
+            await markRequestAppliedFromExisting(doc, existingAfterError, error.message);
+            applied += 1;
+            continue;
+          }
+        }
         await doc.ref.update({
           status: 'error',
           errorMessage: error.message || 'No se pudo crear el producto.',

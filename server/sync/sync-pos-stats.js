@@ -52,7 +52,7 @@ function normalize(rows) {
 // para que se autocorrija sin tener que rehacer el asistente.
 
 async function buildBusinessProfile() {
-  const [cfgRow, adminRow, branchRows] = await Promise.all([
+  const [cfgRow, adminRow, branchRows, cashRegisterRows] = await Promise.all([
     query(`
       SELECT business_name, rnc, razon_social, address, provincia, phone, business_type,
              trial_started_at, trial_ends_at, license_status, plan_expires_at
@@ -66,7 +66,14 @@ async function buildBusinessProfile() {
     `).catch(() => []),
     // Lista de sucursales — el Portal del Contador la usa para dejar elegir
     // sucursal destino al agregar un producto (ver apply-pending-products.js).
-    query(`SELECT id, nombre FROM branches WHERE estado <> 'Eliminada' ORDER BY nombre`).catch(() => []),
+    query(`SELECT id, nombre, codigo, direccion, telefono, encargado, estado FROM branches WHERE estado <> 'Eliminada' ORDER BY nombre`).catch(() => []),
+    query(`
+      SELECT cr.id, cr.branch_id, cr.nombre, cr.codigo, cr.estado, cr.tipo_caja
+      FROM cash_registers cr
+      INNER JOIN branches b ON b.id = cr.branch_id
+      WHERE cr.estado <> 'Eliminada' AND b.estado <> 'Eliminada'
+      ORDER BY cr.branch_id, cr.nombre
+    `).catch(() => []),
   ]);
   const cfg = cfgRow?.[0] || {};
   const admin = adminRow?.[0] || {};
@@ -106,7 +113,36 @@ async function buildBusinessProfile() {
   // forma de autocorregirse. Ver server/licensing/license-service.js para el
   // único camino legítimo que debe decidir el status remoto.
   if (cfg.business_type) profile.tipo_negocio = cfg.business_type;
-  profile.sucursales = (branchRows || []).map((b) => ({ id: Number(b.id), nombre: b.nombre }));
+  const cashRegistersByBranch = new Map();
+  for (const cashRegister of cashRegisterRows || []) {
+    const branchId = Number(cashRegister.branch_id || 0);
+    if (!cashRegistersByBranch.has(branchId)) cashRegistersByBranch.set(branchId, []);
+    cashRegistersByBranch.get(branchId).push({
+      id: Number(cashRegister.id),
+      nombre: cashRegister.nombre,
+      codigo: cashRegister.codigo || '',
+      estado: cashRegister.estado || 'Activa',
+      tipoCaja: cashRegister.tipo_caja || 'mixta',
+    });
+  }
+  profile.sucursales = (branchRows || []).map((b) => ({
+    id: Number(b.id),
+    nombre: b.nombre,
+    codigo: b.codigo || '',
+    direccion: b.direccion || '',
+    telefono: b.telefono || '',
+    encargado: b.encargado || '',
+    estado: b.estado || 'Activa',
+    cajas: cashRegistersByBranch.get(Number(b.id)) || [],
+  }));
+  profile.cashRegisters = (cashRegisterRows || []).map((cashRegister) => ({
+    id: Number(cashRegister.id),
+    branchId: Number(cashRegister.branch_id),
+    nombre: cashRegister.nombre,
+    codigo: cashRegister.codigo || '',
+    estado: cashRegister.estado || 'Activa',
+    tipoCaja: cashRegister.tipo_caja || 'mixta',
+  }));
   if (cfg.phone) profile.telefono = cfg.phone;
   if (admin.nombre) profile.propietario = admin.nombre;
   if (admin.email) profile.correo = admin.email;
@@ -408,6 +444,8 @@ async function buildContabilidadFeed() {
          s.created_at                                                   AS fecha,
          s.invoice_number                                               AS factura,
          s.payment_method                                                AS metodo_pago,
+         s.branch_id,
+         b.nombre                                                        AS sucursal,
          s.cash_session_id                                               AS cash_session_id,
          s.subtotal,
          s.tax                                                          AS itbis,
@@ -416,11 +454,12 @@ async function buildContabilidadFeed() {
          COALESCE(SUM(im.quantity_change * im.unit_cost), 0) * -1        AS costo_venta
        FROM sales s
        LEFT JOIN clients c ON s.client_id = c.id
+       LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN inventory_movements im ON im.sale_id = s.id AND im.movement_type = 'venta'
        WHERE s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
          AND DATE(s.created_at) >= date('now','-30 days')
-       GROUP BY s.id, s.created_at, s.invoice_number, s.payment_method, s.cash_session_id, s.subtotal, s.tax, s.total, cliente
+       GROUP BY s.id, s.created_at, s.invoice_number, s.payment_method, s.branch_id, b.nombre, s.cash_session_id, s.subtotal, s.tax, s.total, cliente
        ORDER BY s.created_at DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -432,6 +471,8 @@ async function buildContabilidadFeed() {
          si.issued_at                                                   AS fecha,
          si.invoice_number                                              AS numero,
          si.ncf,
+         p.branch_id,
+         b.nombre                                                        AS sucursal,
          si.total_amount                                                AS total,
          si.itbis_amount                                                AS itbis,
          sup.nombre                                                     AS proveedor,
@@ -439,6 +480,8 @@ async function buildContabilidadFeed() {
            WHERE sp.invoice_id = si.id ORDER BY sp.fecha_pago DESC LIMIT 1)    AS metodo_pago
        FROM supplier_invoices si
        LEFT JOIN suppliers sup ON si.supplier_id = sup.id
+       LEFT JOIN purchases p ON p.supplier_invoice_id = si.id
+       LEFT JOIN branches b ON b.id = p.branch_id
        WHERE si.issued_at >= date('now','-30 days')
        ORDER BY si.issued_at DESC
        LIMIT ${MAX_ROWS}`
@@ -458,11 +501,14 @@ async function buildContabilidadFeed() {
            cm.id,
            cm.happened_at                                                 AS fecha,
            cm.movement_type                                                AS categoria,
+           cm.branch_id,
+           b.nombre                                                        AS sucursal,
            cm.notes                                                       AS descripcion,
            ABS(cm.amount)                                                  AS monto,
            cm.created_by_user_name                                        AS registrado_por,
            'caja_operativa'                                                AS origen
          FROM cash_movements cm
+         LEFT JOIN branches b ON b.id = cm.branch_id
          WHERE cm.movement_type IN ('Gasto','Pago suplidor','Devolución','Retiro de efectivo','Egreso','salida','gasto','expense')
            AND DATE(cm.happened_at) >= date('now','-30 days')
          ORDER BY cm.happened_at DESC
@@ -473,6 +519,8 @@ async function buildContabilidadFeed() {
            e.id,
            e.fecha                                                        AS fecha,
            e.categoria                                                    AS categoria,
+           e.branch_id                                                     AS branchId,
+           b.nombre                                                        AS sucursal,
            e.descripcion                                                  AS descripcion,
            e.total                                                        AS monto,
            e.created_by_user_name                                         AS registrado_por,
@@ -483,6 +531,7 @@ async function buildContabilidadFeed() {
            sup.rnc AS proveedorRnc
          FROM expenses e
          LEFT JOIN suppliers sup ON sup.id = e.supplier_id
+         LEFT JOIN branches b ON b.id = e.branch_id
          WHERE e.estado <> 'anulado'
            AND DATE(e.fecha) >= date('now','-30 days')
          ORDER BY e.fecha DESC
@@ -499,6 +548,10 @@ async function buildContabilidadFeed() {
     query(
       `SELECT
          cs.id                                                          AS session_id,
+         cs.branch_id,
+         b.nombre                                                       AS sucursal,
+         cs.cash_register_id,
+         cr.nombre                                                      AS caja,
          cs.opened_at, cs.closed_at, cs.status,
          cs.expected_amount, cs.counted_amount, cs.difference_amount,
          s.payment_method                                                AS metodo_pago,
@@ -507,9 +560,11 @@ async function buildContabilidadFeed() {
        LEFT JOIN sales s ON s.cash_session_id = cs.id
          AND s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
+       LEFT JOIN branches b ON b.id = cs.branch_id
+       LEFT JOIN cash_registers cr ON cr.id = cs.cash_register_id
        WHERE cs.status = 'closed'
          AND DATE(cs.opened_at) >= date('now','-30 days')
-       GROUP BY cs.id, cs.opened_at, cs.closed_at, cs.status, cs.expected_amount, cs.counted_amount, cs.difference_amount, s.payment_method
+       GROUP BY cs.id, cs.branch_id, b.nombre, cs.cash_register_id, cr.nombre, cs.opened_at, cs.closed_at, cs.status, cs.expected_amount, cs.counted_amount, cs.difference_amount, s.payment_method
        ORDER BY cs.opened_at DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -524,6 +579,10 @@ async function buildContabilidadFeed() {
     if (!cierresPorSesion.has(row.session_id)) {
       cierresPorSesion.set(row.session_id, {
         sessionId: row.session_id,
+        branchId: row.branch_id ? Number(row.branch_id) : null,
+        sucursal: row.sucursal || '',
+        cashRegisterId: row.cash_register_id ? Number(row.cash_register_id) : null,
+        caja: row.caja || '',
         openedAt: row.opened_at,
         closedAt: row.closed_at,
         expectedAmount: safeNum(row.expected_amount),
