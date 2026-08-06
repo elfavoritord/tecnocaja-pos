@@ -520,7 +520,8 @@ const api = {
   openCash(data) {
     return this.request('/api/cash/open', {
       method: 'POST',
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      _timeoutMs: 45000
     });
   },
 

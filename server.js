@@ -14104,7 +14104,7 @@ app.post('/api/cash/open', async (req, res) => {
     applyPendingProductsFireAndForget();
     applyPendingNcfFireAndForget();
     const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
-    return res.status(201).json({ sessionId: result, activeSession, config: await getConfig() });
+    return res.status(201).json({ sessionId: result, activeSession, config: await getConfig({ syncRemote: false }) });
   } catch (err) {
     if (req.authUser?.offlineSession) {
       await setOfflineCashState(true, amount, structure.branchId, structure.cashRegisterId);

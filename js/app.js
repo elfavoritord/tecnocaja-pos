@@ -5259,7 +5259,7 @@ async function refreshPrinterOptions(forceToast = false) {
     // lista de Windows (nombre de cola cambiado, ej. tras actualizar el driver).
     // Sin esto, la selección se limpiaba en silencio y solo se notaba cuando
     // fallaba una impresión real, con un error críptico de Windows.
-    if (selectedPrinter && !stillExists) {
+    if (forceToast && selectedPrinter && !stillExists) {
       showToast(`La impresora "${selectedPrinter}" ya no aparece en Windows. Selecciónala de nuevo en la lista si sigue conectada.`, 'warning');
     }
 
