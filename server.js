@@ -9785,6 +9785,236 @@ app.get('/api/diagnostics/startup', async (_req, res) => {
   });
 });
 
+async function buildSystemHealthReport() {
+  const checkedAt = new Date().toISOString();
+  const dbClient = String(getDbClient?.() || process.env.DB_CLIENT || 'sqlite').trim().toLowerCase();
+  const userData = String(process.env.TECNO_CAJA_USER_DATA || '').trim();
+  const terminalConfig = getTerminalConfig();
+  const checks = [];
+  const recommendations = [];
+
+  const pushCheck = (id, label, status, detail, extra = {}) => {
+    checks.push({ id, label, status, detail, ...extra });
+    if (status === 'error') recommendations.push(detail);
+  };
+
+  let dbOk = false;
+  let config = {};
+  try {
+    await Promise.race([
+      query('SELECT 1 AS ok'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('DB query timeout')), 4000)),
+    ]);
+    dbOk = true;
+    const cfgRows = await query(
+      `SELECT business_name, business_structure_mode, setup_completed, license_status,
+              receipt_printer_name, cash_drawer_enabled, cash_drawer_method, cash_drawer_printer_name,
+              active_branch_id, active_cash_register_id
+       FROM config WHERE id = 1 LIMIT 1`
+    ).catch(() => []);
+    config = cfgRows[0] || {};
+    pushCheck('database', 'Base de datos', 'ok', 'Base de datos responde correctamente.');
+  } catch (err) {
+    pushCheck('database', 'Base de datos', 'error', `Base de datos no responde: ${err.message || err}`);
+  }
+
+  const setupCompleted = config.setup_completed === 1 || config.setup_completed === '1' || config.setup_completed === true;
+  pushCheck(
+    'setup',
+    'Configuración inicial',
+    setupCompleted ? 'ok' : 'warning',
+    setupCompleted ? 'Empresa configurada.' : 'La empresa todavía no está configurada.'
+  );
+
+  const receiptPrinterName = String(config.receipt_printer_name || '').trim();
+  pushCheck(
+    'printer_config',
+    'Impresora configurada',
+    receiptPrinterName ? 'ok' : 'warning',
+    receiptPrinterName ? `Impresora guardada: ${receiptPrinterName}` : 'No hay impresora fija guardada; se usará la predeterminada de Windows.'
+  );
+
+  const drawerEnabled = config.cash_drawer_enabled === 1 || config.cash_drawer_enabled === '1' || config.cash_drawer_enabled === true;
+  const drawerPrinterName = String(config.cash_drawer_printer_name || receiptPrinterName || '').trim();
+  pushCheck(
+    'cash_drawer_config',
+    'Caja registradora',
+    drawerEnabled && drawerPrinterName ? 'ok' : drawerEnabled ? 'warning' : 'warning',
+    drawerEnabled
+      ? (drawerPrinterName ? `Caja activa por ${config.cash_drawer_method || 'escpos'} usando ${drawerPrinterName}.` : 'Caja activa, pero sin impresora/puerto definido.')
+      : 'Caja registradora desactivada en configuración.'
+  );
+
+  const mode = normalizeBusinessStructureMode(config.business_structure_mode) || 'monocaja';
+  const isMulti = mode === 'multicaja' || mode === 'multisucursal';
+  pushCheck(
+    'terminal',
+    'Terminal multisucursal',
+    isMulti && !terminalConfig ? 'warning' : 'ok',
+    isMulti
+      ? (terminalConfig ? `Terminal vinculada a sucursal ${terminalConfig.branchName || terminalConfig.branchId || '—'} y caja ${terminalConfig.cashRegisterName || terminalConfig.cashRegisterId || '—'}.` : 'Modo multisucursal activo, pero esta PC no tiene terminal/caja vinculada.')
+      : 'Modo monocaja.'
+  );
+
+  let syncStatus = null;
+  try {
+    syncStatus = await getSyncService().getStatus();
+    const q = syncStatus.queue || {};
+    const pending = Number(q.pending || 0);
+    const errors = Number(q.errors || q.error || 0);
+    pushCheck(
+      'sync',
+      'Sincronización automática',
+      errors > 0 ? 'error' : pending > 0 ? 'warning' : syncStatus.isOnline ? 'ok' : 'warning',
+      errors > 0
+        ? `${errors} evento(s) con error de sincronización.`
+        : pending > 0
+          ? `${pending} evento(s) pendiente(s) de sincronizar.`
+          : syncStatus.isOnline
+            ? 'Sincronización en línea y sin pendientes.'
+            : 'Sincronización remota no disponible; el POS puede seguir trabajando local.'
+    );
+  } catch (err) {
+    pushCheck('sync', 'Sincronización automática', 'warning', `No se pudo leer el servicio de sync: ${err.message || err}`);
+  }
+
+  const today = new Date();
+  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString().slice(0, 19).replace('T', ' ');
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString().slice(0, 19).replace('T', ' ');
+
+  const branches = await query(
+    `SELECT id, nombre, codigo, estado
+     FROM branches
+     WHERE estado <> 'Eliminada'
+     ORDER BY nombre`
+  ).catch(() => []);
+  const cashRegistersByBranch = await query(
+    `SELECT branch_id, COUNT(*) AS total
+     FROM cash_registers
+     WHERE estado <> 'Eliminada'
+     GROUP BY branch_id`
+  ).catch(() => []);
+  const openSessionsByBranch = await query(
+    `SELECT branch_id, COUNT(*) AS total
+     FROM cash_sessions
+     WHERE status = 'open'
+     GROUP BY branch_id`
+  ).catch(() => []);
+  const salesByBranch = await query(
+    `SELECT branch_id, COUNT(*) AS total, COALESCE(SUM(total), 0) AS amount
+     FROM sales
+     WHERE created_at >= ? AND created_at < ?
+     GROUP BY branch_id`,
+    [start, end]
+  ).catch(() => []);
+
+  const pendingByBranch = await query(
+    `SELECT branch_id, COUNT(*) AS pending
+     FROM pending_sales
+     WHERE status IN ('pending','error')
+     GROUP BY branch_id`
+  ).catch(() => []);
+  const cashRegisterMap = new Map((cashRegistersByBranch || []).map((r) => [Number(r.branch_id), Number(r.total || 0)]));
+  const openSessionMap = new Map((openSessionsByBranch || []).map((r) => [Number(r.branch_id), Number(r.total || 0)]));
+  const salesMap = new Map((salesByBranch || []).map((r) => [Number(r.branch_id), {
+    total: Number(r.total || 0),
+    amount: Number(r.amount || 0),
+  }]));
+  const pendingMap = new Map((pendingByBranch || []).map((r) => [Number(r.branch_id), Number(r.pending || 0)]));
+  const branchRows = (branches || []).map((b) => ({
+    id: Number(b.id),
+    nombre: b.nombre,
+    codigo: b.codigo || '',
+    estado: b.estado || 'Activa',
+    cashRegisters: cashRegisterMap.get(Number(b.id)) || 0,
+    openSessions: openSessionMap.get(Number(b.id)) || 0,
+    salesToday: salesMap.get(Number(b.id))?.total || 0,
+    amountToday: salesMap.get(Number(b.id))?.amount || 0,
+    pendingOffline: pendingMap.get(Number(b.id)) || 0,
+  }));
+
+  const ncfPending = await query(
+    `SELECT status, COUNT(*) AS total
+     FROM ncf_authorized_sequences
+     WHERE deleted_at IS NULL
+     GROUP BY status`
+  ).catch(() => []);
+
+  const errorCount = checks.filter((c) => c.status === 'error').length;
+  const warningCount = checks.filter((c) => c.status === 'warning').length;
+  const overallStatus = errorCount ? 'error' : warningCount ? 'warning' : 'ok';
+
+  return {
+    ok: true,
+    checkedAt,
+    version: packageJson.version,
+    overallStatus,
+    process: {
+      pid: process.pid,
+      platform: process.platform,
+      arch: process.arch,
+      node: process.version,
+      uptimeSeconds: Math.round(process.uptime()),
+    },
+    server: {
+      port: Number(process.env.PORT || 3000) || 3000,
+      lanAddresses: getLanIpv4Addresses(),
+    },
+    database: {
+      client: dbClient,
+      host: String(process.env.DB_HOST || '').trim(),
+      port: Number(process.env.DB_PORT || 0) || null,
+      file: String(process.env.DB_FILE || '').trim(),
+      ok: dbOk,
+    },
+    runtime: {
+      userData,
+      productUploadDir: String(process.env.PRODUCT_UPLOAD_DIR || '').trim(),
+      secureBackupDir: String(process.env.SECURE_BACKUP_DIR || '').trim(),
+    },
+    config: {
+      businessName: String(config.business_name || '').trim(),
+      businessStructureMode: mode,
+      setupCompleted,
+      licenseStatus: String(config.license_status || '').trim(),
+      receiptPrinterName,
+      cashDrawerEnabled: drawerEnabled,
+      cashDrawerMethod: config.cash_drawer_method || 'escpos',
+      cashDrawerPrinterName: String(config.cash_drawer_printer_name || '').trim(),
+      activeBranchId: Number(config.active_branch_id || 0) || null,
+      activeCashRegisterId: Number(config.active_cash_register_id || 0) || null,
+    },
+    terminalConfig,
+    sync: syncStatus,
+    branches: branchRows,
+    ncf: {
+      byStatus: Array.isArray(ncfPending) ? ncfPending : [],
+    },
+    checks,
+    recommendations: [...new Set(recommendations)],
+  };
+}
+
+app.get('/api/diagnostics/health', async (_req, res) => {
+  try {
+    return res.json(await buildSystemHealthReport());
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message || String(err), checkedAt: new Date().toISOString() });
+  }
+});
+
+app.get('/api/diagnostics/export', async (_req, res) => {
+  try {
+    const report = await buildSystemHealthReport();
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="tecnocaja-diagnostico-${stamp}.json"`);
+    return res.send(JSON.stringify(report, null, 2));
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: err.message || String(err) });
+  }
+});
+
 // ✅ Los endpoints /api/offline/* ahora están en server/routes/offline.routes.js
 // Registrados más arriba bajo app.use('/api/offline', offlineRouter)
 

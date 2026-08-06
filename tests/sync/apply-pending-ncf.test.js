@@ -106,4 +106,35 @@ describe('apply-pending-ncf', () => {
       errorMessage: expect.stringContaining('La sucursal seleccionada (2)'),
     }));
   });
+
+  it('rechaza una solicitud NCF local si se cruza con un rango global existente', async () => {
+    const { createApplyPendingNcfService } = require('../../server/sync/apply-pending-ncf');
+    const query = jest.fn(async (sql) => {
+      const text = String(sql || '');
+      if (text.includes('FROM branches')) return [{ id: 2 }];
+      if (text.includes('start_number = ?')) return [];
+      if (text.includes('NOT (end_number < ? OR start_number > ?)')) {
+        return [{ id: 77, branch_id: null, document_type: 'B01', start_number: 50, end_number: 150 }];
+      }
+      return [];
+    });
+
+    const service = createApplyPendingNcfService({
+      query,
+      withTransaction: jest.fn(),
+      writeAuditLog: jest.fn(),
+      isMysqlDeployment: () => true,
+      attachmentsDir: '',
+      attachmentsWebPath: '/uploads/comprobantes-fiscales',
+    });
+
+    const result = await service.applyPendingNcfRequests();
+
+    expect(result).toEqual({ ok: true, applied: 0, failed: 1 });
+    expect(query).not.toHaveBeenCalledWith(expect.stringMatching(/INSERT INTO ncf_authorized_sequences/i), expect.anything());
+    expect(pendingDoc.ref.update).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'error',
+      errorMessage: expect.stringContaining('Se cruza con la autorización'),
+    }));
+  });
 });

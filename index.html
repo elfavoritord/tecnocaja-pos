@@ -3357,6 +3357,35 @@
         </div>
         <!-- ── Fin Diagnóstico de Sincronización ─────────────────────────── -->
 
+        <!-- ── Centro de Salud del Sistema ───────────────────────────────── -->
+        <div class="config-section span-full" id="cfg-health-section">
+          <h3>🩺 Centro de Salud</h3>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+            <div id="health-summary-pill" style="display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:var(--card-bg,#1e2535);border:1px solid var(--border,#2d3748);font-weight:700;color:var(--text1,#f1f5f9)">
+              <span id="health-summary-dot" style="width:10px;height:10px;border-radius:50%;background:#6b7280"></span>
+              <span id="health-summary-text">Cargando estado...</span>
+            </div>
+            <button class="btn-secondary" type="button" onclick="SystemHealth.load()">↺ Actualizar</button>
+            <button class="btn-secondary" type="button" onclick="SystemHealth.export()">⬇ Exportar diagnóstico</button>
+            <span id="health-checked-at" style="font-size:.78rem;color:var(--text3,#64748b);margin-left:auto"></span>
+          </div>
+          <div id="health-checks-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px"></div>
+          <div style="display:grid;grid-template-columns:minmax(0,1.35fr) minmax(260px,.65fr);gap:12px">
+            <div style="background:var(--card-bg,#1e2535);border:1px solid var(--border,#2d3748);border-radius:8px;padding:12px;overflow:auto">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                <strong style="color:var(--text1,#f1f5f9)">Multisucursal</strong>
+                <button class="btn-secondary" style="padding:4px 10px;font-size:.78rem" type="button" onclick="SystemHealth.forceSync()">▶ Sync ahora</button>
+              </div>
+              <div id="health-branches-table" style="font-size:.82rem;color:var(--text2,#94a3b8)">Cargando sucursales...</div>
+            </div>
+            <div style="background:var(--card-bg,#1e2535);border:1px solid var(--border,#2d3748);border-radius:8px;padding:12px">
+              <strong style="color:var(--text1,#f1f5f9)">Recomendaciones</strong>
+              <div id="health-recommendations" style="margin-top:8px;font-size:.82rem;color:var(--text2,#94a3b8);line-height:1.5">Cargando...</div>
+            </div>
+          </div>
+        </div>
+        <!-- ── Fin Centro de Salud ───────────────────────────────────────── -->
+
         <div class="config-section">
           <h3 id="cfg-section-danger-title">Zona de Peligro</h3>
           <div class="form-group">
@@ -4806,6 +4835,7 @@
 <script src="js/offline-pending-panel.js"></script>
 <script src="js/sync-status-widget.js"></script>
 <script src="js/sync-monitor.js"></script>
+<script src="js/system-health.js"></script>
 <script src="js/productos.js"></script>
 <script src="js/promociones.js"></script>
 <script src="js/rnc-lookup.js"></script>

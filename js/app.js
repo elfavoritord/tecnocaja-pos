@@ -3980,6 +3980,11 @@ const CONFIG_SECTION_CARD_META = {
     icon: '🔄',
     eyebrow: 'Sistema',
     desc: 'Buscar, descargar e instalar nuevas versiones.'
+  },
+  'cfg-health-section': {
+    icon: '🩺',
+    eyebrow: 'Diagnóstico',
+    desc: 'Estado de servidor, base de datos, periféricos, licencia y sucursales.'
   }
 };
 
@@ -4090,7 +4095,7 @@ const CONFIG_GROUPS = {
   sistema: {
     icon: '🌐', color: '#3b82f6', bg: 'rgba(59,130,246,0.13)',
     title: 'Sistema y Red', desc: 'Apariencia, red, nube y actualizaciones',
-    find: ['h3#cfg-section-appearance-title', '#cfg-network-section', '#cfg-cloud-sync-section', '#cfg-sync-diag-section', '#cfg-update-section'],
+    find: ['h3#cfg-section-appearance-title', '#cfg-network-section', '#cfg-cloud-sync-section', '#cfg-sync-diag-section', '#cfg-health-section', '#cfg-update-section'],
   },
   seguridad: {
     icon: '🔐', color: '#ef4444', bg: 'rgba(239,68,68,0.13)',
