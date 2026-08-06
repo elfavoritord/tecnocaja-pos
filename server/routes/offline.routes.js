@@ -696,6 +696,11 @@ module.exports = function createOfflineRouter(deps) {
       const terminalBranchId = Number(tc.branchId || 0) || null;
       const payload = normalizeOfflineProductPayload(req.body || {}, terminalBranchId);
       payload.branchId = terminalBranchId || payload.branchId;
+      if (!payload.branchId) {
+        return res.status(409).json({
+          error: 'Para guardar productos sin conexión debes tener una sucursal local asignada. Los productos globales requieren conexión con la principal.'
+        });
+      }
 
       const requestedId = Number(req.body?.id || req.body?.productId || 0) || null;
       const isLocalProduct = requestedId && requestedId < 0;

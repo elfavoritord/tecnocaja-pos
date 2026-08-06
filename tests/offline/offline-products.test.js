@@ -87,6 +87,27 @@ describe('offline product sync', () => {
     });
   });
 
+  it('rechaza productos globales cuando la terminal offline no tiene sucursal asignada', async () => {
+    const localQuery = jest.fn(async () => []);
+    const app = buildRouter({
+      localQuery,
+      terminalConfig: {
+        terminalId: 'term-sin-sucursal',
+        branchId: null,
+        cashRegisterId: null,
+        isMain: false
+      }
+    });
+
+    const res = await request(app)
+      .post('/api/offline/product-save')
+      .send({ codigo: 'GLOBAL-1', nombre: 'Producto Global Offline', precioVenta: 100 })
+      .expect(409);
+
+    expect(res.body.error).toMatch(/productos globales requieren conexión/i);
+    expect(localQuery).not.toHaveBeenCalledWith(expect.stringMatching(/pending_product_changes/i), expect.anything());
+  });
+
   it('sincroniza productos locales antes de procesar ventas pendientes', async () => {
     const pending = [{
       id: 1,

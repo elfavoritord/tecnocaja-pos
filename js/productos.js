@@ -804,6 +804,7 @@ function loadProductsTable() {
     grid.innerHTML = prods.map((p) => {
       const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre;
       const tone = getProductVisualTone(p);
+      const scopeLabel = getProductScopeLabel(p);
       return `
       <article class="products-grid-card products-catalog-card ${tone}" onclick="editProduct(${p.id})" title="${nombre}">
         <div class="products-catalog-media">
@@ -811,6 +812,7 @@ function loadProductsTable() {
         </div>
         <div class="products-catalog-body">
           <div class="products-catalog-name">${nombre}</div>
+          <div class="products-catalog-scope" style="font-size:0.72rem;color:var(--text3);margin-top:0.15rem">${escapeProductIdentityHtml(scopeLabel)}</div>
           <div class="products-catalog-price">${fmt(p.precioVenta)}</div>
         </div>
       </article>`;
@@ -1055,6 +1057,25 @@ function getCurrentProductModalId() {
   return Number.isFinite(numericId) && numericId > 0 ? numericId : null;
 }
 
+function isOfflineBranchProductMode() {
+  return window.offlineManager?.getState?.()?.isOnline === false;
+}
+
+function getCurrentBranchIdForProductScope() {
+  return Number(
+    window._terminalConfig?.branchId
+    || DB.config?.activeBranchId
+    || DB.currentUser?.sucursalId
+    || 0
+  ) || null;
+}
+
+function getProductScopeLabel(product) {
+  if (!product?.branchId) return 'Global';
+  const branchName = (DB.sucursales || []).find((branch) => Number(branch.id) === Number(product.branchId))?.nombre;
+  return branchName ? `Local: ${branchName}` : `Local: ${product.branchId}`;
+}
+
 // Misma regla de colisión que el backend (ensureUniqueProductCode/Name):
 // un producto global choca con cualquier cosa; uno de sucursal específica
 // choca con lo global y con su propia sucursal, nunca con otra distinta.
@@ -1069,6 +1090,7 @@ function productCollidesWithBranchScope(product, selectedBranchId) {
 
 function getSelectedProductBranchId() {
   const branchScopeInput = document.getElementById('mp-branch');
+  if (isOfflineBranchProductMode()) return getCurrentBranchIdForProductScope();
   return branchScopeInput ? (Number(branchScopeInput.value || 0) || null) : null;
 }
 
@@ -1206,7 +1228,9 @@ function renderProductBranchScopeField(prod) {
   const sucursales = DB.sucursales || [];
   if (!canManageGlobal || sucursales.length < 2) return '';
 
-  const currentBranchId = prod?.branchId ?? '';
+  const offlineLocalMode = isOfflineBranchProductMode();
+  const forcedBranchId = offlineLocalMode ? getCurrentBranchIdForProductScope() : null;
+  const currentBranchId = offlineLocalMode ? forcedBranchId : (prod?.branchId ?? '');
   const options = sucursales.map((branch) => `
     <option value="${branch.id}" ${Number(currentBranchId) === Number(branch.id) ? 'selected' : ''}>${escapeProductIdentityHtml(branch.nombre)}</option>
   `).join('');
@@ -1214,12 +1238,15 @@ function renderProductBranchScopeField(prod) {
   return `
     <div class="form-group span-full">
       <label>Alcance del producto</label>
-      <select id="mp-branch" class="form-input">
-        <option value="" ${currentBranchId === '' || currentBranchId === null ? 'selected' : ''}>🌐 Global (todas las sucursales)</option>
+      <select id="mp-branch" class="form-input" ${offlineLocalMode ? 'disabled' : ''}>
+        <option value="" ${!offlineLocalMode && (currentBranchId === '' || currentBranchId === null) ? 'selected' : ''}>Global - todas las sucursales</option>
         ${options}
       </select>
+      ${offlineLocalMode ? `<input type="hidden" id="mp-branch-offline-forced" value="${forcedBranchId || ''}">` : ''}
       <small style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)">
-        Un producto de sucursal específica solo lo ve y vende esa sucursal.
+        ${offlineLocalMode
+          ? 'Sin conexion con la principal, el producto se guarda como local de esta sucursal y se sincroniza al reconectar.'
+          : 'Global aparece en todas las sucursales. Local solo aparece y se vende en la sucursal elegida.'}
       </small>
     </div>
   `;
@@ -1528,9 +1555,10 @@ async function saveProduct(id) {
   }
 
   const branchScopeInput = document.getElementById('mp-branch');
+  const offlineBranchId = isOfflineBranchProductMode() ? getCurrentBranchIdForProductScope() : null;
   const data = {
     codigo, nombre,
-    branchId: branchScopeInput ? (Number(branchScopeInput.value || 0) || null) : undefined,
+    branchId: offlineBranchId || (branchScopeInput ? (Number(branchScopeInput.value || 0) || null) : undefined),
     categoria: document.getElementById('mp-categoria').value,
     imagen: currentProduct?.imagen || currentProduct?.imagenUrl || '',
     imagenLocal: currentProduct?.imagenLocal || null,
@@ -1727,7 +1755,7 @@ function exportProducts() {
   getFilteredProducts().forEach((p) => rows.push([
     p.codigo,
     p.nombre,
-    p.branchId ? ((DB.sucursales || []).find((b) => Number(b.id) === Number(p.branchId))?.nombre || p.branchId) : '',
+    getProductScopeLabel(p),
     p.marca || '',
     p.categoria,
     p.unidad || '',
