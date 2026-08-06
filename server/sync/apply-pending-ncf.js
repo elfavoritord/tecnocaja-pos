@@ -127,9 +127,9 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
       throw new Error('Falta la referencia de autorización DGII.');
     }
 
-    // Revalidar la sucursal elegida contra la base local — si ya no existe
-    // (se eliminó después de que el contador la eligió), cae a global en vez
-    // de fallar todo el registro (mismo criterio que apply-pending-products.js).
+    // Revalidar la sucursal elegida contra la base local. Si ya no existe,
+    // no convertir a global: un rango NCF local no debe terminar disponible
+    // para todas las sucursales.
     let branchId = null;
     const requestedBranchId = Number(request.branchId || 0) || null;
     if (requestedBranchId) {
@@ -137,7 +137,10 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
         `SELECT id FROM branches WHERE id = ? AND estado <> 'Eliminada' LIMIT 1`,
         [requestedBranchId]
       ).catch(() => []);
-      branchId = branchRows.length ? requestedBranchId : null;
+      if (!branchRows.length) {
+        throw new Error(`La sucursal seleccionada (${requestedBranchId}) ya no existe o fue eliminada.`);
+      }
+      branchId = requestedBranchId;
     }
 
     const duplicate = await query(
@@ -146,7 +149,14 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
          AND start_number = ? AND end_number = ? AND deleted_at IS NULL`,
       [documentType, branchId, branchId, startNumber, endNumber]
     );
-    if (duplicate[0]) throw new Error('Ya existe una secuencia registrada con este mismo rango.');
+    if (duplicate[0]) {
+      return {
+        sequenceId: duplicate[0].id,
+        auditAction: 'duplicate_from_contador',
+        auditReason: 'La secuencia ya existía en el POS; solicitud vinculada automáticamente.',
+        duplicateResolved: true,
+      };
+    }
 
     const overlap = await findOverlappingSequence(query, { documentType, branchId, startNumber, endNumber });
     if (overlap) {
@@ -349,6 +359,8 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
         await doc.ref.update({
           status: 'aplicado',
           localSequenceId: outcome.sequenceId,
+          duplicateResolved: Boolean(outcome.duplicateResolved),
+          duplicateMessage: outcome.duplicateResolved ? outcome.auditReason : null,
           appliedAt: new Date().toISOString(),
         });
         applied += 1;

@@ -123,9 +123,9 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
         userName: `Contador: ${request.contadorNombre || 'sin nombre'}`,
       };
 
-      // Revalidar la sucursal elegida contra la base local — si ya no existe
-      // (se eliminó después de que el contador la eligió), cae a global en
-      // vez de fallar todo el producto.
+      // Revalidar la sucursal elegida contra la base local. Si ya no existe,
+      // no convertir a global: eso duplicaría/contaminaría el catálogo de
+      // todas las sucursales con un producto que el contador pidió local.
       let catalogBranchId = null;
       const requestedBranchId = Number(request.branchId || 0) || null;
       if (requestedBranchId) {
@@ -133,7 +133,16 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
           `SELECT id FROM branches WHERE id = ? AND estado <> 'Eliminada' LIMIT 1`,
           [requestedBranchId]
         ).catch(() => []);
-        catalogBranchId = branchRows.length ? requestedBranchId : null;
+        if (!branchRows.length) {
+          await doc.ref.update({
+            status: 'error',
+            errorMessage: `La sucursal seleccionada (${requestedBranchId}) ya no existe o fue eliminada.`,
+            appliedAt: new Date().toISOString(),
+          }).catch(() => {});
+          failed += 1;
+          continue;
+        }
+        catalogBranchId = requestedBranchId;
       }
 
       try {

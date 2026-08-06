@@ -9,19 +9,18 @@ function createPendingDoc(data) {
   };
 }
 
-describe('apply-pending-products', () => {
+describe('apply-pending-ncf', () => {
   let pendingDoc;
 
   beforeEach(() => {
     jest.resetModules();
     process.env.TECNO_CAJA_LICENSE_UID = 'pos_demo_1';
     pendingDoc = createPendingDoc({
-      codigo: '008',
-      nombre: 'prueba 8',
-      categoria: 'General',
-      precioCompra: 100,
-      precioVenta: 350,
-      stock: 1,
+      action: 'create',
+      documentType: 'B01',
+      startNumber: 1,
+      endNumber: 100,
+      authorizationReference: 'DGII-123',
       branchId: 2,
       contadorNombre: 'VICRIS',
     });
@@ -46,59 +45,62 @@ describe('apply-pending-products', () => {
     jest.dontMock('../../modules/firebase-admin');
   });
 
-  it('marca como aplicado un producto pendiente que ya existe en la sucursal', async () => {
-    const { createApplyPendingProductsService } = require('../../server/sync/apply-pending-products');
+  it('marca como aplicada una solicitud NCF si el mismo rango ya existe en la sucursal', async () => {
+    const { createApplyPendingNcfService } = require('../../server/sync/apply-pending-ncf');
     const query = jest.fn(async (sql) => {
       const text = String(sql || '');
       if (text.includes('FROM branches')) return [{ id: 2 }];
-      if (text.includes('FROM products')) return [{ id: 44, codigo: '008', nombre: 'prueba 8', branch_id: 2 }];
+      if (text.includes('FROM ncf_authorized_sequences') && text.includes('start_number = ?')) {
+        return [{ id: 88, branch_id: 2, document_type: 'B01', start_number: 1, end_number: 100 }];
+      }
       return [];
     });
-    const createProductInTransaction = jest.fn();
+    const writeAuditLog = jest.fn(async () => {});
 
-    const service = createApplyPendingProductsService({
-      createProductInTransaction,
-      withTransaction: jest.fn(),
-      writeAuditLog: jest.fn(),
+    const service = createApplyPendingNcfService({
       query,
-      decodeDataUrlImage: jest.fn(),
-      saveProductImageBuffer: jest.fn(),
+      withTransaction: jest.fn(),
+      writeAuditLog,
+      isMysqlDeployment: () => true,
+      attachmentsDir: '',
+      attachmentsWebPath: '/uploads/comprobantes-fiscales',
     });
 
-    const result = await service.applyPendingProductRequests();
+    const result = await service.applyPendingNcfRequests();
 
     expect(result).toEqual({ ok: true, applied: 1, failed: 0 });
-    expect(createProductInTransaction).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalledWith(expect.stringMatching(/INSERT INTO ncf_authorized_sequences/i), expect.anything());
     expect(pendingDoc.ref.update).toHaveBeenCalledWith(expect.objectContaining({
       status: 'aplicado',
-      localProductId: 44,
+      localSequenceId: 88,
       duplicateResolved: true,
+    }));
+    expect(writeAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      actionName: 'duplicate_from_contador',
     }));
   });
 
-  it('rechaza un producto local si la sucursal indicada ya no existe', async () => {
-    const { createApplyPendingProductsService } = require('../../server/sync/apply-pending-products');
+  it('rechaza una solicitud NCF local si la sucursal indicada ya no existe', async () => {
+    const { createApplyPendingNcfService } = require('../../server/sync/apply-pending-ncf');
     const query = jest.fn(async (sql) => {
       const text = String(sql || '');
       if (text.includes('FROM branches')) return [];
-      if (text.includes('FROM products')) return [];
       return [];
     });
-    const createProductInTransaction = jest.fn();
 
-    const service = createApplyPendingProductsService({
-      createProductInTransaction,
+    const service = createApplyPendingNcfService({
+      query,
       withTransaction: jest.fn(),
       writeAuditLog: jest.fn(),
-      query,
-      decodeDataUrlImage: jest.fn(),
-      saveProductImageBuffer: jest.fn(),
+      isMysqlDeployment: () => true,
+      attachmentsDir: '',
+      attachmentsWebPath: '/uploads/comprobantes-fiscales',
     });
 
-    const result = await service.applyPendingProductRequests();
+    const result = await service.applyPendingNcfRequests();
 
     expect(result).toEqual({ ok: true, applied: 0, failed: 1 });
-    expect(createProductInTransaction).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalledWith(expect.stringMatching(/INSERT INTO ncf_authorized_sequences/i), expect.anything());
     expect(pendingDoc.ref.update).toHaveBeenCalledWith(expect.objectContaining({
       status: 'error',
       errorMessage: expect.stringContaining('La sucursal seleccionada (2)'),
