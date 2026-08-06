@@ -4139,17 +4139,31 @@ async function ensureCashRegisterTypeExtension() {
 // ─── Terminal config — identificador local por máquina ────────────────────
 // Debe vivir en runtime.userDataPath (%APPDATA%/Tecno Caja), NO en __dirname:
 // en una instalación empaquetada __dirname apunta dentro de app.asar, que es
-// de solo lectura, y fs.writeFileSync ahí falla en silencio (ver
-// saveTerminalConfig). Se prefiere la ruta legacy solo si ya existe, para no
-// romper instalaciones en modo desarrollo (npm run desktop) que ya guardaron
-// su config ahí, donde __dirname sí es una carpeta real escribible.
+// de solo lectura. Si existe una config legacy junto a la app, se copia una vez
+// a AppData y desde ese momento se lee/escribe la ruta estable y escribible.
 const TERMINAL_CONFIG_PATH = (() => {
   const writablePath = path.join(runtime.userDataPath, 'config', 'terminal-config.json');
   const legacyPath = path.join(__dirname, 'config', 'terminal-config.json');
   if (fs.existsSync(writablePath)) return writablePath;
-  if (fs.existsSync(legacyPath)) return legacyPath;
+  if (fs.existsSync(legacyPath)) {
+    try {
+      fs.mkdirSync(path.dirname(writablePath), { recursive: true });
+      fs.copyFileSync(legacyPath, writablePath);
+      console.log('[terminal-config] Migrado a AppData:', writablePath);
+    } catch (error) {
+      console.warn('[terminal-config] No se pudo migrar legacy:', error.message);
+    }
+  }
   return writablePath;
 })();
+
+function getTerminalConfigResetPaths() {
+  return Array.from(new Set([
+    TERMINAL_CONFIG_PATH,
+    path.join(runtime.userDataPath, 'config', 'terminal-config.json'),
+    path.join(__dirname, 'config', 'terminal-config.json')
+  ]));
+}
 
 function getTerminalConfig() {
   try {
@@ -10867,9 +10881,7 @@ app.post('/api/system/reset', async (req, res) => {
       TECNO_CAJA_BUSINESS_ID: ''
     });
     await query('DELETE FROM license_cache').catch(() => {});
-    try {
-      if (fs.existsSync(TERMINAL_CONFIG_PATH)) fs.unlinkSync(TERMINAL_CONFIG_PATH);
-    } catch (_error) {}
+    removeTerminalConfigFiles();
   }
 
   // isFactoryReset controla QUÉ TAN PROFUNDO es el reset local (borrar todo vs. borrar solo datos).
@@ -11103,6 +11115,14 @@ function applyPendingProductsOnce() {
   return require('./server/sync/apply-pending-products')
     .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
     .applyPendingProductRequests()
+}
+
+function removeTerminalConfigFiles() {
+  for (const filePath of getTerminalConfigResetPaths()) {
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (_e) {}
+  }
 }
 
 function applyPendingProductsFireAndForget() {

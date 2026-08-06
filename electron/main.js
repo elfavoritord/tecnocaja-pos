@@ -2380,20 +2380,35 @@ function getTerminalConfigUserDataDir() {
   return String(process.env.TECNO_CAJA_USER_DATA || '').trim() || app.getPath('userData');
 }
 
-function resolveTerminalConfigPath(appRoot) {
-  const writablePath = path.join(getTerminalConfigUserDataDir(), 'config', 'terminal-config.json');
-  if (fs.existsSync(writablePath)) return writablePath;
-
-  // Candidatos legacy: instalaciones ya configuradas en modo desarrollo
-  // (appRoot es una carpeta real, no asar) siguen leyéndose de aquí.
-  const legacyCandidates = [
+function getTerminalConfigLegacyCandidates(appRoot) {
+  return [
     path.join(appRoot, 'config', 'terminal-config.json'),
     path.join(appRoot, '..', 'config', 'terminal-config.json'),
     path.join(appRoot, '..', '..', 'config', 'terminal-config.json'),
     path.join(process.cwd(), 'config', 'terminal-config.json')
   ];
+}
+
+function resolveTerminalConfigPath(appRoot) {
+  const writablePath = path.join(getTerminalConfigUserDataDir(), 'config', 'terminal-config.json');
+  if (fs.existsSync(writablePath)) return writablePath;
+
+  // Candidatos legacy: algunas instalaciones de desarrollo/versiones viejas
+  // guardaron este archivo junto a la app. Migrarlo evita que una actualizacion
+  // pierda el modo principal/secundario o la caja/sucursal asignada.
+  const legacyCandidates = getTerminalConfigLegacyCandidates(appRoot);
   const legacyFound = legacyCandidates.find((candidate) => fs.existsSync(candidate));
-  return legacyFound || writablePath;
+  if (legacyFound) {
+    try {
+      const dir = path.dirname(writablePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.copyFileSync(legacyFound, writablePath);
+      logStartup(`[terminal-config] Migrado a AppData: ${writablePath}`);
+    } catch (error) {
+      logStartup(`[terminal-config] No se pudo migrar desde ${legacyFound}: ${error.message}`);
+    }
+  }
+  return writablePath;
 }
 
 // Config local de periféricos (impresora/gaveta/báscula serial) — separado de
@@ -3632,8 +3647,14 @@ ipcMain.handle('terminal:get-config', async function() {
 // IPC: Resetear config (volver a modo principal)
 ipcMain.handle('terminal:reset-config', async function() {
   try {
-    var p = _getTerminalConfigPath();
-    if (fs.existsSync(p)) fs.unlinkSync(p);
+    var appRoot = app.getAppPath();
+    var paths = [
+      path.join(getTerminalConfigUserDataDir(), 'config', 'terminal-config.json'),
+      ...getTerminalConfigLegacyCandidates(appRoot)
+    ];
+    for (const p of Array.from(new Set(paths))) {
+      try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch (_) {}
+    }
     setTimeout(function() { app.relaunch(); app.quit(); }, 800);
     return { ok: true };
   } catch(e) {

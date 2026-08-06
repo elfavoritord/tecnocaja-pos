@@ -60,14 +60,15 @@ function createNetworkRouter({ query, resolveRequestActorUser }) {
       const dbClient    = String(process.env.DB_CLIENT || 'sqlite').toLowerCase();
       const mysqlLan    = String(process.env.TECNO_CAJA_MYSQL_ALLOW_LAN || 'false').toLowerCase() === 'true';
 
-      // Leer config del terminal actual
+      // Leer config del terminal actual desde la misma ruta estable que usa
+      // server.js/electron: %APPDATA%/Tecno Caja/config/terminal-config.json.
       let terminalConfig = null;
       try {
         const fs   = require('fs');
         const path = require('path');
         const tcPath = path.join(
           process.env.TECNO_CAJA_USER_DATA || require('os').homedir(),
-          '.tecnocaja', 'terminal.json'
+          'config', 'terminal-config.json'
         );
         if (fs.existsSync(tcPath)) terminalConfig = JSON.parse(fs.readFileSync(tcPath, 'utf8'));
       } catch (_) {}
