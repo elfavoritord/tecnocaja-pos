@@ -3183,18 +3183,32 @@ async function loadLoginUsers(options = {}) {
   return _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES);
 }
 
-// El backend embebido puede tardar en aceptar conexiones justo tras el arranque
-// de Electron (MariaDB terminando de inicializar). Reintentos cortos al inicio
-// para no hacer esperar al usuario si el servidor ya está listo en 1-2 intentos.
-const LOGIN_USERS_RETRY_DELAYS_MS = [300, 600, 1000, 1500, 2000];
+// El backend embebido puede tardar justo tras el arranque (MariaDB/antivirus).
+// Si tarda demasiado, caemos al login manual para que el usuario no quede
+// atrapado mirando "Cargando usuarios..." sin poder entrar.
+const LOGIN_USERS_RETRY_DELAYS_MS = [300, 800, 1500, 2500];
+
+async function fetchLoginUsersWithTimeout(timeoutMs = 6000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch('/api/public/users-list', {
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 async function _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES) {
+  let lastError = null;
   for (let attempt = 0; attempt < LOGIN_USERS_RETRY_DELAYS_MS.length + 1; attempt++) {
     try {
       if (attempt > 0) await new Promise(r => setTimeout(r, LOGIN_USERS_RETRY_DELAYS_MS[attempt - 1]));
-      const res = await fetch('/api/public/users-list');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await fetchLoginUsersWithTimeout();
       const users = (Array.isArray(data?.users) ? data.users : [])
         .filter(u => !POS_EXCLUDED_ROLES.includes(String(u.rol || u.role_code || u.roleCode || '')));
       if (users.length) {
@@ -3203,12 +3217,15 @@ async function _fetchAndRenderLoginUsers(POS_EXCLUDED_ROLES) {
         return users;
       }
       // El servidor responde pero no hay usuarios aún — reintentar
-    } catch (_e) {
+    } catch (e) {
+      lastError = e;
       // Error de red — reintentar
     }
   }
   // Todos los intentos fallaron
-  _showLoginTextFallback();
+  _showLoginTextFallback(lastError?.name === 'AbortError'
+    ? 'El listado tardó demasiado. Escribe tu usuario manualmente.'
+    : 'No se pudo cargar el listado. Escribe tu usuario manualmente.');
   return [];
 }
 
@@ -3292,13 +3309,14 @@ function deselectLoginUser() {
   document.querySelectorAll('.login-user-card').forEach(c => c.classList.remove('selected'));
 }
 
-function _showLoginTextFallback() {
+function _showLoginTextFallback(message = '') {
   const pickerSection = document.getElementById('login-user-picker-section');
   if (!pickerSection) return;
   pickerSection.innerHTML = `
     <div class="form-group">
       <label id="login-user-label">Usuario</label>
       <input type="text" id="login-user" placeholder="admin" autocomplete="username">
+      ${message ? `<small class="login-user-grid-loading">${message}</small>` : ''}
     </div>`;
   // Mostrar también la sección de contraseña
   const passSection = document.getElementById('login-pass-section');
@@ -5225,13 +5243,16 @@ async function refreshPrinterOptions(forceToast = false) {
   try {
     const result = await window.novaDesktop.listPrinters();
     const printers = Array.isArray(result?.printers) ? result.printers : [];
-    select.innerHTML = fallbackOption + printers.map((printer) => {
+    const stillExists = printers.some((printer) => printer.name === selectedPrinter);
+    const staleOption = selectedPrinter && !stillExists
+      ? `<option value="${selectedPrinter}">${selectedPrinter} (configurada, no detectada)</option>`
+      : '';
+    select.innerHTML = fallbackOption + staleOption + printers.map((printer) => {
       const isDefault = printer.isDefault ? ' (Predeterminada)' : '';
       return `<option value="${printer.name}">${printer.name}${isDefault}</option>`;
     }).join('');
 
-    const stillExists = printers.some((printer) => printer.name === selectedPrinter);
-    select.value = stillExists ? selectedPrinter : '';
+    select.value = selectedPrinter && (stillExists || staleOption) ? selectedPrinter : '';
     select.dataset.selectedPrinter = select.value;
 
     // Aviso específico: había una impresora configurada y ya no aparece en la
@@ -5294,15 +5315,19 @@ async function refreshDrawerPrinterOptions(forceToast = false) {
   try {
     const result = await window.novaDesktop.listPrinters();
     const printers = Array.isArray(result?.printers) ? result.printers : [];
-    select.innerHTML = fallback + printers.map(p => {
+    const saved = select.dataset.selectedPrinter ?? DB.config?.cashDrawerPrinterName ?? '';
+    const stillExists = printers.some(p => p.name === saved);
+    const staleOption = saved && !stillExists
+      ? `<option value="${saved}">${saved} (configurada, no detectada)</option>`
+      : '';
+    select.innerHTML = fallback + staleOption + printers.map(p => {
       const isGeneric = isGenericTextOnlyPrinter(p.name);
       const suffix = isGeneric
         ? ' (No recomendada para gaveta)'
         : (p.isDefault ? ' (Predeterminada)' : '');
       return `<option value="${p.name}">${p.name}${suffix}</option>`;
     }).join('');
-    const saved = select.dataset.selectedPrinter ?? DB.config?.cashDrawerPrinterName ?? '';
-    select.value = printers.some(p => p.name === saved) ? saved : '';
+    select.value = saved && (stillExists || staleOption) ? saved : '';
     if (forceToast) {
       showToast(printers.length ? 'Impresoras actualizadas.' : 'No se encontraron impresoras.', printers.length ? 'success' : 'warning');
     }

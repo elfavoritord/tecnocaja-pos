@@ -7994,7 +7994,7 @@ app.get('/api/public/users-list', async (req, res) => {
     // asignada (negocio de una sola sucursal), no se filtra nada — mismo
     // comportamiento de siempre.
     const terminalBranchId = Number(getTerminalScopeSelection()?.branchId || 0) || null;
-    const users = await query(
+    const usersQuery = query(
       terminalBranchId
         ? `SELECT id, nombre, usuario, rol
            FROM users
@@ -8013,6 +8013,10 @@ app.get('/api/public/users-list', async (req, res) => {
            LIMIT 50`,
       terminalBranchId ? [terminalBranchId] : []
     );
+    const users = await Promise.race([
+      usersQuery,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('users-list query timeout')), 5000))
+    ]);
     const safeUsers = users.map(u => ({
       id: Number(u.id),
       nombre: String(u.nombre || u.usuario || 'Usuario'),
