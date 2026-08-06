@@ -610,7 +610,24 @@ finally {
   return helperPath;
 }
 
-async function sendRawToPrinter(printerName, data) {
+// Timeout normal: OpenPrinter/WritePrinter son rápidos una vez que el
+// componente C# ya está compilado y cacheado en rawprint.dll.
+const PRINT_TIMEOUT_MS = 12000;
+// La PRIMERA impresión (sin rawprint.dll cacheado todavía) tiene que compilar
+// ese componente al vuelo (Add-Type invoca csc.exe) — en una PC lenta o con
+// el antivirus escaneando el compilador en tiempo real, eso solo puede tardar
+// más de 12s. Si el timeout normal mata el proceso en ese momento, csc.exe
+// puede quedar huérfano corriendo en segundo plano con rawprint.dll a medio
+// escribir y bloqueado — todas las impresiones siguientes fallan hasta que
+// alguien borra el archivo a mano. Un timeout más generoso solo para esta
+// primera vez evita matar la compilación a mitad de camino.
+const FIRST_COMPILE_TIMEOUT_MS = 45000;
+
+function rawPrintDllPath() {
+  return path.join(process.env.LOCALAPPDATA || os.tmpdir(), 'Tecno Caja', 'rawprint.dll');
+}
+
+function _sendRawToPrinterImpl(printerName, data) {
   const ts = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const binFile = path.join(os.tmpdir(), `tecnocaja-esc-${ts}.bin`);
   let helperPath = '';
@@ -627,10 +644,13 @@ async function sendRawToPrinter(printerName, data) {
       try { fs.unlinkSync(binFile); } catch {}
     };
 
+    const needsCompile = !fs.existsSync(rawPrintDllPath());
+    const timeout = needsCompile ? FIRST_COMPILE_TIMEOUT_MS : PRINT_TIMEOUT_MS;
+
     execFile(
       'powershell.exe',
       ['-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helperPath, printerName, binFile],
-      { timeout: 12000 },
+      { timeout },
       (err, stdout, stderr) => {
         cleanup();
         if (err) {
@@ -641,7 +661,9 @@ async function sendRawToPrinter(printerName, data) {
           let msg = String(stderr || '').trim() || String(stdout || '').trim();
           if (!msg) {
             if (err.killed || err.signal) {
-              msg = 'La impresora no respondió en 12 segundos — normalmente es el servicio de "Cola de impresión" de Windows colgado. Solución: abre el Panel de control > Herramientas administrativas > Servicios, busca "Cola de impresión" (Print Spooler), y dale clic derecho > Reiniciar. Si el problema sigue, revisa que el antivirus no esté bloqueando powershell.exe.';
+              msg = needsCompile
+                ? `La primera impresión no terminó de prepararse en ${Math.round(timeout / 1000)} segundos (compilando el componente de impresión). Puede ser el antivirus escaneando el proceso. Vuelve a intentar imprimir; si sigue fallando, borra "%LOCALAPPDATA%\\Tecno Caja\\rawprint.dll" y "rawprint-helper-v1.ps1" y vuelve a intentar.`
+                : 'La impresora no respondió en 12 segundos — normalmente es el servicio de "Cola de impresión" de Windows colgado. Solución: abre el Panel de control > Herramientas administrativas > Servicios, busca "Cola de impresión" (Print Spooler), y dale clic derecho > Reiniciar. Si el problema sigue, revisa que el antivirus no esté bloqueando powershell.exe.';
             } else if (err.code === 'ENOENT') {
               msg = 'No se encontró powershell.exe en esta PC.';
             } else {
@@ -664,6 +686,19 @@ async function sendRawToPrinter(printerName, data) {
       }
     );
   });
+}
+
+// Serializa todos los trabajos de impresión (recibos, cortes, gaveta,
+// etiquetas — todos pasan por acá). Sin esto, dos impresiones disparadas casi
+// juntas (ej. "imprimir recibo" + "abrir gaveta" desde botones distintos)
+// podían competir para compilar rawprint.dll al mismo tiempo la primera vez,
+// y una de las dos fallaba con el archivo bloqueado por la otra.
+let _printQueue = Promise.resolve();
+function sendRawToPrinter(printerName, data) {
+  const run = () => _sendRawToPrinterImpl(printerName, data);
+  const result = _printQueue.then(run, run);
+  _printQueue = result.then(() => {}, () => {});
+  return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

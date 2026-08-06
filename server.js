@@ -18915,16 +18915,17 @@ async function startHttpServer(port, bindHost) {
   })}`);
   
   // Detectar si terminal-config.json indica multicaja principal → usar 0.0.0.0 para LAN
+  // Usa getTerminalConfig() (mismo criterio que TERMINAL_CONFIG_PATH: prioriza la
+  // carpeta de datos del usuario, escribible en instalaciones empaquetadas). Antes
+  // esto buscaba el archivo con rutas relativas a __dirname/cwd, que en un .exe
+  // instalado caen dentro del ASAR de solo lectura — nunca encontraba el archivo
+  // ahí, así que tras cada reinicio la terminal principal volvía a arrancar en
+  // modo solo-local (127.0.0.1) aunque el usuario ya hubiera activado multicaja,
+  // dejándola invisible para las demás cajas de la red hasta reactivarla a mano.
   let finalBindHost = bindHost || '127.0.0.1';
   try {
-    const configPaths = [
-      path.join(__dirname, 'config', 'terminal-config.json'),
-      path.join(__dirname, '..', 'config', 'terminal-config.json'),
-      path.join(process.cwd(), 'config', 'terminal-config.json')
-    ];
-    const configPath = configPaths.find(p => fs.existsSync(p));
-    if (configPath) {
-      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const cfg = getTerminalConfig();
+    if (cfg) {
       const mode = String(cfg?.setupMode || '').toLowerCase().trim();
       const isMain = cfg?.isMain !== false;
       if (isMain && ['multicaja', 'multisucursal', 'sucursal'].includes(mode)) {
