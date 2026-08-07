@@ -211,7 +211,7 @@ async function syncSale(sale, ctx = {}) {
       quantity: toNumber(it.qty ?? it.quantity),
       price: toNumber(it.price),
       cost: toNumber(it.precio_compra ?? it.cost),
-      discount: toNumber(it.discount ?? it.discount_amount ?? (toNumber(it.price) * toNumber(it.qty) * toNumber(it.discount_rate) / 100)),
+      discount: toNumber(it.discount ?? (toNumber(it.price) * toNumber(it.qty) * toNumber(it.discount_rate) / 100)),
     }));
 
     const docId = String(sale.invoice_number || sale.id);

@@ -56,7 +56,7 @@ async function syncNewSales(businessId, branchId, opts = {}) {
 
     for (const sale of sales) {
       const items = await query(
-        `SELECT product_id, qty, price, discount_rate, discount_amount, tax_rate, line_total
+        `SELECT product_id, qty, price, discount_rate, tax_rate, line_total
          FROM sale_items WHERE sale_id = ?`,
         [sale.id]
       );

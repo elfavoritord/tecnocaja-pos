@@ -226,7 +226,6 @@ function syncSaleToReports(saleRow, items, { productIds = [], branchId = null, b
       qty: it.qty,
       price: it.price,
       discount_rate: it.discount_rate,
-      discount_amount: it.discount_amount,
       precio_compra: it.precio_compra,
     }));
     await reportsSync.syncSale(saleRow, {
@@ -765,16 +764,14 @@ async function syncPendingMobileSales() {
           const qty = Math.abs(normalizeReportAppNumber(item.quantity, 0));
           if (qty <= 0) throw new Error(`Cantidad inválida en "${item.productName || product.nombre}".`);
           const price = normalizeReportAppNumber(item.price, 0);
-          const lineBase = Number((price * qty).toFixed(2));
-          const discountAmount = Math.max(0, Math.min(lineBase, normalizeReportAppNumber(item.discountAmount ?? item.discount, 0)));
-          const lineTotal = normalizeReportAppNumber(item.total, lineBase - discountAmount);
+          const lineTotal = normalizeReportAppNumber(item.total, price * qty);
           await conn.query(
             `INSERT INTO sale_items
-              (sale_id, product_id, qty, price, discount_rate, discount_amount, tax_rate, sale_mode, unit_label, line_total)
-             VALUES (?, ?, ?, ?, 0, ?, ?, 'unidad', 'Unidad', ?)`,
+              (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, line_total)
+             VALUES (?, ?, ?, ?, ?, ?, 'unidad', 'Unidad', ?)`,
             [
               saleInsert.insertId, product.id, qty, price,
-              discountAmount,
+              normalizeReportAppNumber(item.discount, 0),
               normalizeReportAppNumber(item.taxRate, 0), lineTotal,
             ]
           );
@@ -5071,14 +5068,11 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sale_items', 'scale_measured_unit', 'VARCHAR(10) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'scale_source', 'VARCHAR(20) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'scale_raw_reading', 'VARCHAR(255) DEFAULT NULL');
-  await addColumnIfMissing('sale_items', 'discount_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
   await query(`UPDATE sale_items SET sale_mode = 'unidad' WHERE sale_mode IS NULL OR sale_mode = ''`).catch(() => {});
   await addColumnIfMissing('sales', 'document_type', `VARCHAR(30) NOT NULL DEFAULT 'ticket'`);
   await addColumnIfMissing('sales', 'client_name_snapshot', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('sales', 'client_phone_snapshot', 'VARCHAR(40) DEFAULT NULL');
   await addColumnIfMissing('sales', 'client_tax_id_snapshot', 'VARCHAR(40) DEFAULT NULL');
-  await addColumnIfMissing('sales', 'discount_items_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
-  await addColumnIfMissing('sales', 'discount_global_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
   await addColumnIfMissing('sales', 'fiscal_status', `VARCHAR(30) NOT NULL DEFAULT 'emitida'`);
   await addColumnIfMissing('sales', 'fiscal_payload', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('sales', 'order_type', `VARCHAR(30) NOT NULL DEFAULT 'mostrador'`);
@@ -7328,8 +7322,8 @@ async function restoreBackupPayload(backup) {
       }
       for (const row of data.saleItems || []) {
         await conn.query(
-          `INSERT INTO sale_items (id, sale_id, product_id, qty, price, discount_rate, discount_amount, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sale_items (id, sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             row.id,
             row.sale_id,
@@ -7337,7 +7331,6 @@ async function restoreBackupPayload(backup) {
             row.qty,
             row.price,
             row.discount_rate,
-            row.discount_amount || 0,
             row.tax_rate,
             row.sale_mode || 'unidad',
             row.unit_label || 'Unidad',
@@ -7475,7 +7468,6 @@ function mapSaleRows(sales, items) {
         nombre: item.product_name,
         qty: Number(item.qty || 0),
         precio: Number(item.price || 0),
-        descuento: Number(item.discount_amount || 0),
         itbis: Number(item.tax_rate || 0),
         total: Number(item.line_total || 0),
         saleMode: normalizeProductSaleMode(item.sale_mode),
@@ -7491,8 +7483,6 @@ function mapSaleRows(sales, items) {
       })),
     subtotal: Number(sale.subtotal || 0),
     descuento: Number(sale.discount || 0),
-    descuentoProductos: Number(sale.discount_items_amount || 0),
-    descuentoGlobal: Number(sale.discount_global_amount || 0),
     itbis: Number(sale.tax || 0),
     total: Number(sale.total || 0),
     ahorroPromociones: Number(sale.ahorro_promociones || 0),
@@ -13559,7 +13549,7 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
     assertActorCanAccessBranch(actorUser, Number(sale.inventory_branch_id || sale.branch_id || 0), 'No puedes ver ventas de otra sucursal.');
 
     const items = await query(
-      `SELECT si.id, si.product_id, si.qty, si.price, si.discount_rate, si.discount_amount, si.tax_rate,
+      `SELECT si.id, si.product_id, si.qty, si.price, si.discount_rate, si.tax_rate,
               si.line_total, si.sale_mode,
               COALESCE(p.nombre, 'Producto eliminado') AS product_name,
               p.codigo AS product_code
@@ -13612,7 +13602,6 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
         qty: Number(i.qty || 0),
         price: Number(i.price || 0),
         discountRate: Number(i.discount_rate || 0),
-        discountAmount: Number(i.discount_amount || 0),
         lineTotal: Number(i.line_total || 0),
         saleMode: i.sale_mode || 'unidad',
         qtyDevuelta: devueltoMap[i.product_id] || 0,
@@ -13716,12 +13705,8 @@ app.post('/api/sales/return', async (req, res) => {
         }
 
         const unitPrice = Number(original.price || 0);
-        const discountAmount = Number(original.discount_amount || 0);
         const discRate = Number(original.discount_rate || 0);
-        const discountPerUnit = discountAmount > 0
-          ? (discountAmount / qtyOriginal)
-          : (unitPrice * (discRate / 100));
-        const effectivePrice = Math.max(0, unitPrice - discountPerUnit);
+        const effectivePrice = unitPrice * (1 - discRate / 100);
         const lineTotal = effectivePrice * qtyReturn;
         returnedAmount += lineTotal;
 
@@ -15372,11 +15357,6 @@ app.post('/api/sales', async (req, res) => {
       ncfReferencia: ncfReferenciaVal || null,
       ecfEstado: shouldUseEcfFlow ? 'pendiente' : null
     });
-    const declaredItemsDiscount = Number((Array.isArray(sale.items) ? sale.items : [])
-      .reduce((sum, item) => sum + Math.max(0, Number(item.descuentoMonto ?? item.discountAmount ?? item.descuento ?? 0) || 0), 0)
-      .toFixed(2));
-    const declaredTotalDiscount = Math.max(0, Number(sale.descuento || 0) || 0);
-    const declaredGlobalDiscount = Number(Math.max(0, declaredTotalDiscount - declaredItemsDiscount).toFixed(2));
 
     const saleInsertSql = `INSERT INTO sales
         (invoice_number, user_id, client_id, branch_id, cash_register_id,
@@ -15385,7 +15365,7 @@ app.post('/api/sales', async (req, res) => {
          inventory_branch_id, inventory_discounted_at,
          sale_status, sale_mode, document_type,
          client_name_snapshot, client_phone_snapshot, client_tax_id_snapshot,
-         payment_method, subtotal, discount, discount_items_amount, discount_global_amount, tax, total, received_amount, change_amount,
+         payment_method, subtotal, discount, tax, total, received_amount, change_amount,
          payment_currency, usd_amount_received, exchange_rate_used,
          fiscal_status, fiscal_payload, created_at, created_date, created_time,
          order_type, kitchen_status,
@@ -15402,7 +15382,7 @@ app.post('/api/sales', async (req, res) => {
                ?, ?,
                ?, ?, ?,
                ?, ?, ?,
-               ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               ?, ?, ?, ?, ?, ?, ?,
                ?, ?, ?,
                ?, ?, ?, ?, ?,
                ?, ?,
@@ -15441,8 +15421,6 @@ app.post('/api/sales', async (req, res) => {
         paymentMethod,
         sale.subtotal,
         sale.descuento,
-        declaredItemsDiscount,
-        declaredGlobalDiscount,
         sale.itbis,
         saleTotal,
         receivedAmount,
@@ -15561,22 +15539,20 @@ app.post('/api/sales', async (req, res) => {
       // en el carrito: aquí siempre se usa el precio ACTUAL de products).
       const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
       const effectivePrice = activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0);
-      const effectiveLineBase = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
-      const itemDiscountAmount = Math.max(0, Math.min(effectiveLineBase, Number(item.descuentoMonto ?? item.discountAmount ?? item.descuento ?? 0) || 0));
-      const effectiveLineTotal = Number((effectiveLineBase - itemDiscountAmount).toFixed(2));
-      computedSubtotal += effectiveLineBase;
+      const effectiveLineTotal = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
+      computedSubtotal += effectiveLineTotal;
       if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
 
       await conn.query(
         `INSERT INTO sale_items
-          (sale_id, product_id, qty, price, discount_rate, discount_amount, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
-         VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.insertId,
           item.id,
           item.qty,
           effectivePrice,
-          itemDiscountAmount,
+          item.descuento || 0,
           item.itbis || 0,
           normalizeProductSaleMode(item.saleMode),
           String(item.unitLabel || 'Unidad').trim() || 'Unidad',
@@ -15792,7 +15768,6 @@ app.post('/api/sales', async (req, res) => {
             nombre:     it.product_name || '',
             qty:        Number(it.qty || 1),
             price:      Number(it.price || 0),
-            discount_amount: Number(it.discount_amount || 0),
             line_total: Number(it.line_total || 0),
           })),
         });

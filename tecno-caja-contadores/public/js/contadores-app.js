@@ -1237,24 +1237,24 @@ let _repNegocioSucursales = []; // [{id, nombre}] del negocio seleccionado — s
 // text-align:center → center) para que el encabezado quede sobre su columna
 // en vez de pegado a la izquierda mientras los datos se van a la derecha.
 const REP_TABS = {
-  ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Sucursal','Cajero','Cliente','Método','Descuento','Total','ITBIS'],
-                aligns: ['left','left','left','left','left','left','right','right','right'] },
-  facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Sucursal','Cliente','RNC','Descuento','Total','ITBIS','Estado'],
-                aligns: ['left','left','left','left','left','left','right','right','right','left'] },
+  ventas:     { label: 'Ventas', cols: ['Fecha','Factura','Sucursal','Cajero','Cliente','Método','Total','ITBIS'],
+                aligns: ['left','left','left','left','left','left','right','right'] },
+  facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Sucursal','Cliente','RNC','Total','ITBIS','Estado'],
+                aligns: ['left','left','left','left','left','left','right','right','left'] },
   productos:  { label: 'Productos', cols: ['Código','Nombre','Sucursal','Categoría','Precio','Costo','Stock','Vendidos'],
                 aligns: ['left','left','left','left','right','right','center','center'] },
   inventario: { label: 'Inventario', cols: ['Código','Nombre','Sucursal','Stock','Mínimo','Estado','Última Compra'],
                 aligns: ['left','left','left','center','center','left','left'] },
-  itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Sucursal','Base Imponible','Descuento','ITBIS 18%','Total'],
-                aligns: ['left','left','left','left','right','right','right','right'] },
+  itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Sucursal','Base Imponible','ITBIS 18%','Total'],
+                aligns: ['left','left','left','left','right','right','right'] },
   cxc:        { label: 'C×Cobrar', cols: ['Cliente','Sucursal','RNC','Teléfono','Deuda','Última Compra','Estado'],
                 aligns: ['left','left','left','left','right','left','left'] },
   clientes:   { label: 'Clientes', cols: ['Nombre','RNC','Teléfono','Correo','Compras','Última Visita'],
                 aligns: ['left','left','left','left','center','left'] },
   cierres:    { label: 'Cierres', cols: ['Apertura','Cierre','Sucursal','Caja','Cajero','Monto Apertura','Ventas','Contado','Diferencia','Estado'],
                 aligns: ['left','left','left','left','left','right','right','right','right','left'] },
-  mensual:    { label: 'Mensual', cols: ['Mes','Sucursal','Ventas','Descuentos','Facturas','ITBIS','Clientes Nuevos'],
-                aligns: ['left','left','right','right','center','right','center'] },
+  mensual:    { label: 'Mensual', cols: ['Mes','Sucursal','Ventas','Facturas','ITBIS','Clientes Nuevos'],
+                aligns: ['left','left','right','center','right','center'] },
 };
 
 function fmtMoney(v) {
@@ -1470,7 +1470,6 @@ function renderFila(row, tab) {
         `<td>${row.cajero || '—'}</td>`,
         `<td>${row.cliente || '—'}</td>`,
         `<td>${row.metodo_pago || '—'}</td>`,
-        `<td class="td-amount">${fmtMoney(row.descuento)}</td>`,
         `<td class="td-amount">${fmtMoney(row.total)}</td>`,
         `<td class="td-amount">${fmtMoney(row.itbis)}</td>`,
       ]; break;
@@ -1482,7 +1481,6 @@ function renderFila(row, tab) {
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.cliente || '—'}</td>`,
         `<td class="td-ncf">${row.rnc || '—'}</td>`,
-        `<td class="td-amount">${fmtMoney(row.descuento)}</td>`,
         `<td class="td-amount">${fmtMoney(row.total)}</td>`,
         `<td class="td-amount">${fmtMoney(row.itbis)}</td>`,
         `<td>${row.estado || '—'}</td>`,
@@ -1515,7 +1513,6 @@ function renderFila(row, tab) {
         `<td>${row.tipo_ncf || '—'}</td>`,
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-amount">${fmtMoney(row.base_imponible)}</td>`,
-        `<td class="td-amount">${fmtMoney(row.descuento)}</td>`,
         `<td class="td-amount">${fmtMoney(row.itbis)}</td>`,
         `<td class="td-amount">${fmtMoney(row.total)}</td>`,
       ]; break;
@@ -1556,7 +1553,6 @@ function renderFila(row, tab) {
         `<td style="font-weight:600">${row.mes || '—'}</td>`,
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-amount">${fmtMoney(row.ventas)}</td>`,
-        `<td class="td-amount">${fmtMoney(row.descuentos)}</td>`,
         `<td style="text-align:center">${row.facturas ?? '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.itbis)}</td>`,
         `<td style="text-align:center">${row.clientes_nuevos ?? '—'}</td>`,
