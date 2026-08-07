@@ -1367,9 +1367,6 @@ function currentUserCan(permission) {
 
 function getVisibleModulesForCurrentRole() {
   const roleCode = getCurrentUserRoleCode();
-  if (roleCode === 'administrador_sucursal') {
-    return new Set(['ventas', 'inventario', 'caja', 'colacobro', 'reportes', 'usuarios', 'delivery', 'compras']);
-  }
   if (roleCode === 'cajero') {
     return new Set(['ventas', 'clientes', 'caja', 'colacobro', 'reportes', 'delivery']);
   }

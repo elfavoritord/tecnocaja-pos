@@ -35,7 +35,22 @@ function getDb() {
  * @param {Function} decodeDataUrlImage — de server.js, decodifica un data:image/...;base64,... a Buffer
  * @param {Function} saveProductImageBuffer — de server.js, redimensiona/optimiza y guarda el archivo
  */
-function createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer }) {
+function createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage }) {
+  async function findConflictingProductForRequest(data, catalogBranchId, excludeId = null) {
+    const rows = await query(
+      `SELECT id, codigo, nombre, branch_id
+       FROM products
+       WHERE estado <> 'Eliminado'
+         AND (LOWER(codigo) = LOWER(?) OR LOWER(nombre) = LOWER(?))
+         AND (branch_id IS NULL OR ? IS NULL OR branch_id = ?)
+         AND (? IS NULL OR id <> ?)
+       ORDER BY CASE WHEN LOWER(codigo) = LOWER(?) THEN 0 ELSE 1 END, id
+       LIMIT 1`,
+      [data.codigo, data.nombre, catalogBranchId, catalogBranchId, excludeId, excludeId, data.codigo]
+    ).catch(() => []);
+    return rows[0] || null;
+  }
+
   async function findExistingProductForRequest(data, catalogBranchId) {
     const rows = await query(
       `SELECT id, codigo, nombre, branch_id
@@ -91,6 +106,66 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
 
     for (const doc of snapshot.docs) {
       const request = doc.data() || {};
+      const accion = ['editar', 'eliminar'].includes(request.accion) ? request.accion : 'crear';
+
+      const actorForRequest = {
+        userId: null,
+        userName: `Contador: ${request.contadorNombre || 'sin nombre'}`,
+      };
+
+      if (accion === 'eliminar') {
+        const productoId = Number(request.productoId || 0) || null;
+        if (!productoId) {
+          await doc.ref.update({ status: 'error', errorMessage: 'Falta el producto a eliminar.', appliedAt: new Date().toISOString() }).catch(() => {});
+          failed += 1;
+          continue;
+        }
+        try {
+          const rows = await query('SELECT id, codigo, nombre, stock, image_local FROM products WHERE id = ?', [productoId]);
+          const product = rows[0];
+          if (!product) {
+            // Ya no existe — el objetivo (que desaparezca) ya se cumplió.
+            await doc.ref.update({ status: 'aplicado', duplicateResolved: true, duplicateMessage: 'El producto ya no existía en el POS.', appliedAt: new Date().toISOString() });
+            applied += 1;
+            continue;
+          }
+          if (Number(product.stock || 0) > 0) {
+            await doc.ref.update({ status: 'error', errorMessage: 'No se puede eliminar: el producto tiene stock pendiente en el POS.', appliedAt: new Date().toISOString() }).catch(() => {});
+            failed += 1;
+            continue;
+          }
+          const saleHistoryRows = await query('SELECT 1 FROM sale_items WHERE product_id = ? LIMIT 1', [productoId]);
+          if (saleHistoryRows.length) {
+            await doc.ref.update({ status: 'error', errorMessage: 'No se puede eliminar: ya tiene historial de ventas. Márcalo inactivo en su lugar.', appliedAt: new Date().toISOString() }).catch(() => {});
+            failed += 1;
+            continue;
+          }
+
+          await withTransaction((conn) => conn.query('DELETE FROM products WHERE id = ?', [productoId]));
+          if (typeof removeLocalProductImage === 'function') {
+            await removeLocalProductImage(product.image_local).catch(() => {});
+          }
+          await doc.ref.update({ status: 'aplicado', appliedAt: new Date().toISOString() });
+
+          try {
+            await writeAuditLog({
+              ...actorForRequest,
+              userRole: 'Contador',
+              moduleName: 'Productos',
+              actionName: 'Producto eliminado por contador',
+              detail: `${product.codigo} · ${product.nombre} (vía Portal del Contador)`,
+            });
+          } catch (auditError) {
+            console.warn('[apply-pending-products] No se pudo registrar auditoría:', auditError.message);
+          }
+          applied += 1;
+        } catch (error) {
+          await doc.ref.update({ status: 'error', errorMessage: error.message || 'No se pudo eliminar el producto.', appliedAt: new Date().toISOString() }).catch(() => {});
+          failed += 1;
+        }
+        continue;
+      }
+
       const data = {
         codigo: String(request.codigo || '').trim(),
         nombre: String(request.nombre || '').trim(),
@@ -118,10 +193,7 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
         continue;
       }
 
-      const actor = {
-        userId: null,
-        userName: `Contador: ${request.contadorNombre || 'sin nombre'}`,
-      };
+      const actor = actorForRequest;
 
       // Revalidar la sucursal elegida contra la base local. Si ya no existe,
       // no convertir a global: eso duplicaría/contaminaría el catálogo de
@@ -143,6 +215,69 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
           continue;
         }
         catalogBranchId = requestedBranchId;
+      }
+
+      if (accion === 'editar') {
+        const productoId = Number(request.productoId || 0) || null;
+        if (!productoId) {
+          await doc.ref.update({ status: 'error', errorMessage: 'Falta el producto a editar.', appliedAt: new Date().toISOString() }).catch(() => {});
+          failed += 1;
+          continue;
+        }
+        try {
+          const existingRows = await query('SELECT id FROM products WHERE id = ?', [productoId]);
+          if (!existingRows.length) {
+            await doc.ref.update({ status: 'error', errorMessage: 'El producto ya no existe en el POS — puede que se haya eliminado.', appliedAt: new Date().toISOString() }).catch(() => {});
+            failed += 1;
+            continue;
+          }
+          const conflict = await findConflictingProductForRequest(data, catalogBranchId, productoId);
+          if (conflict) {
+            await doc.ref.update({ status: 'error', errorMessage: `Ya existe otro producto con ese código o nombre (${conflict.codigo} · ${conflict.nombre}).`, appliedAt: new Date().toISOString() }).catch(() => {});
+            failed += 1;
+            continue;
+          }
+
+          await withTransaction((conn) => conn.query(
+            `UPDATE products
+             SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?,
+                 precio_compra = ?, precio_venta = ?, stock = ?, stock_min = ?,
+                 aplica_itbis = ?, branch_id = ?
+             WHERE id = ?`,
+            [data.codigo, data.nombre, data.categoria, data.marca, data.unidad,
+             data.precioCompra, data.precioVenta, data.stock, data.stockMin,
+             data.aplicaItbis ? 1 : 0, catalogBranchId, productoId]
+          ));
+
+          if (request.imagenData) {
+            try {
+              const buffer = decodeDataUrlImage(request.imagenData);
+              const saved = await saveProductImageBuffer({ productId: productoId, productName: data.nombre, buffer });
+              await query('UPDATE products SET image_local = ? WHERE id = ?', [saved.imageLocal, productoId]);
+            } catch (imgError) {
+              console.warn('[apply-pending-products] No se pudo guardar la imagen:', imgError.message);
+            }
+          }
+
+          await doc.ref.update({ status: 'aplicado', localProductId: productoId, appliedAt: new Date().toISOString() });
+
+          try {
+            await writeAuditLog({
+              ...actor,
+              userRole: 'Contador',
+              moduleName: 'Productos',
+              actionName: 'Producto editado por contador',
+              detail: `${data.codigo} · ${data.nombre} (vía Portal del Contador)`,
+            });
+          } catch (auditError) {
+            console.warn('[apply-pending-products] No se pudo registrar auditoría:', auditError.message);
+          }
+          applied += 1;
+        } catch (error) {
+          await doc.ref.update({ status: 'error', errorMessage: error.message || 'No se pudo editar el producto.', appliedAt: new Date().toISOString() }).catch(() => {});
+          failed += 1;
+        }
+        continue;
       }
 
       try {

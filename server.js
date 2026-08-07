@@ -4865,6 +4865,7 @@ const DEFAULT_LICENSE_FALLBACK_POLL_MS = 5 * 60 * 1000;
 let licenseWatcherUnsubscribe = null;
 let licenseFallbackPollTimer = null;
 let ncfPendientesWatcherUnsubscribe = null;
+let productosPendientesWatcherUnsubscribe = null;
 
 function buildLicenseSocketPayload(license = {}, licenseUid = null) {
   return {
@@ -11343,7 +11344,7 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
 // abrir caja, cerrar caja, crear venta — ver server/sync/apply-pending-products.js).
 function applyPendingProductsOnce() {
   return require('./server/sync/apply-pending-products')
-    .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer })
+    .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage })
     .applyPendingProductRequests()
 }
 
@@ -18787,6 +18788,7 @@ function startLicenseServicesInBackground() {
     syncRemoteLicenseToLocalConfig({ force: true }),
     ensureLicenseBackgroundSync(),
     startFirestoreNcfPendientesWatcher(),
+    startFirestoreProductosPendientesWatcher(),
   ]).then((results) => {
     for (const result of results) {
       if (result.status === 'rejected') {
@@ -19207,6 +19209,42 @@ async function startFirestoreNcfPendientesWatcher() {
     return true;
   } catch (err) {
     console.warn('[ncf-pendientes-watcher] No se pudo iniciar listener Firestore:', err.message);
+    return false;
+  }
+}
+
+// Mismo patrón que startFirestoreNcfPendientesWatcher — el contador crea,
+// edita o elimina un producto desde el Portal (Reportes → tab Productos) y
+// este listener lo aplica en segundos en vez de esperar la próxima
+// venta/apertura/cierre de caja del cliente.
+async function startFirestoreProductosPendientesWatcher() {
+  const firebaseStatus = getFirebaseConfigStatus();
+  if (!firebaseStatus.adminEnabled) return false;
+  if (productosPendientesWatcherUnsubscribe) return true;
+
+  const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+  if (!licenseUid) return false;
+
+  try {
+    const { getFirestore: _getFs } = require('./modules/firebase-admin');
+    const db = _getFs();
+    const pendingQuery = db.collection('licencias').doc(licenseUid).collection('productos_pendientes')
+      .where('status', '==', 'pendiente');
+
+    productosPendientesWatcherUnsubscribe = pendingQuery.onSnapshot(
+      (snap) => {
+        if (!snap.empty) applyPendingProductsFireAndForget();
+      },
+      err => {
+        console.warn('[productos-pendientes-watcher] Error en listener Firestore:', err.message);
+        productosPendientesWatcherUnsubscribe = null;
+      }
+    );
+
+    console.log('[productos-pendientes-watcher] Listener en tiempo real activo para licenseUid:', licenseUid);
+    return true;
+  } catch (err) {
+    console.warn('[productos-pendientes-watcher] No se pudo iniciar listener Firestore:', err.message);
     return false;
   }
 }

@@ -152,56 +152,60 @@ async function buildBusinessProfile() {
 
 // ── KPIs agregados ─────────────────────────────────────────────────────────
 
-async function buildPosStats() {
-  // Usar date('now') (sintaxis SQLite canónica del proyecto — db.js la traduce
-  // a CURDATE()/DATE_FORMAT() automáticamente cuando dbClient='mysql', ver
-  // normalizeMySqlSql()) en vez de calcular la fecha en JS, para que "hoy" lo
-  // calcule siempre la base de datos y no el proceso Node.js.
+// Ventas hoy/mes/ITBIS/Facturas se derivan de las MISMAS filas que ya trae
+// buildReportesTabs() para el tab 'ventas' (últimos 30 días), en vez de
+// correr consultas SQL aparte. Antes se calculaban con su propia consulta
+// SUM/COUNT independiente — y en la práctica, cuando entraban ventas nuevas
+// justo mientras corría el sync, esa consulta y la del tab 'ventas' podían
+// leer un instante distinto de la tabla `sales` y devolver números que no
+// cuadraban entre sí (visto en producción: Dashboard/Análisis Global vs.
+// Reportes mostrando meses distintos desde el mismo sync). Sumando en JS
+// sobre el mismo array ya no hay dos lecturas separadas que puedan
+// desincronizarse. Limitación conocida y aceptada: el tab 'ventas' es una
+// ventana de 30 días con tope de MAX_ROWS filas, así que en un negocio de
+// muy alto volumen (150+ ventas/mes) esto podría subcontar levemente — mejor
+// eso que números que se contradicen entre pantallas.
+function computeVentasKpisFromRows(rows) {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const todayStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  const monthStr = todayStr.slice(0, 7);
+  let ventasHoy = 0, ventasMes = 0, itbisMes = 0, facturasEmitidas = 0;
+  for (const row of rows || []) {
+    const fecha = String(row.fecha || '').slice(0, 10);
+    if (!fecha) continue;
+    const total = Number(row.total) || 0;
+    if (fecha === todayStr) ventasHoy += total;
+    if (fecha.slice(0, 7) === monthStr) {
+      ventasMes += total;
+      itbisMes += Number(row.itbis) || 0;
+      facturasEmitidas += 1;
+    }
+  }
+  return {
+    ventasHoy:        Math.round(ventasHoy * 100) / 100,
+    ventasMes:        Math.round(ventasMes * 100) / 100,
+    itbisMes:         Math.round(itbisMes * 100) / 100,
+    facturasEmitidas,
+  };
+}
 
+async function buildPosStats(ventasRows = []) {
   const [
-    [ventasHoyRow],
-    [ventasMesRow],
-    [facturasRow],
-    [itbisRow],
+    [ventasTotalRow],
     [productosRow],
     [bajoInvRow],
     [cxcRow],
   ] = await Promise.all([
 
-    // Ventas hoy — usa date('now') de la BD, no fecha JS/UTC
+    // Ventas totales — acumulado histórico completo, sin filtro de fecha (sí
+    // amerita su propia consulta: va más allá de los 30 días que cubren las
+    // filas del tab 'ventas').
     query(
       `SELECT COALESCE(SUM(total),0) AS total
        FROM sales
        WHERE sale_status = 'pagada'
-         AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) = date('now')`
-    ),
-
-    // Ventas mes — primer día del mes según MariaDB
-    query(
-      `SELECT COALESCE(SUM(total),0) AS total
-       FROM sales
-       WHERE sale_status = 'pagada'
-         AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) >= date('now','start of month')`
-    ),
-
-    // Facturas mes
-    query(
-      `SELECT COUNT(*) AS cnt
-       FROM sales
-       WHERE sale_status = 'pagada'
-         AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) >= date('now','start of month')`
-    ),
-
-    // ITBIS mes
-    query(
-      `SELECT COALESCE(SUM(tax),0) AS total
-       FROM sales
-       WHERE sale_status = 'pagada'
-         AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND DATE(created_at) >= date('now','start of month')`
+         AND COALESCE(fiscal_status,'emitida') <> 'cancelada'`
     ),
 
     // Productos activos (usa estado con capital A según schema)
@@ -231,10 +235,8 @@ async function buildPosStats() {
   ]);
 
   return {
-    ventasHoy:        safeNum(ventasHoyRow?.total),
-    ventasMes:        safeNum(ventasMesRow?.total),
-    facturasEmitidas: safeNum(facturasRow?.cnt),
-    itbisMes:         safeNum(itbisRow?.total),
+    ...computeVentasKpisFromRows(ventasRows),
+    ventasTotal:      safeNum(ventasTotalRow?.total),
     productosActivos: safeNum(productosRow?.cnt),
     bajoInventario:   safeNum(bajoInvRow?.cnt),
     cxcPendiente:     safeNum(cxcRow?.total),
@@ -278,6 +280,7 @@ async function buildReportesTabs() {
     // Tab productos (top vendidos en últimos 30 días)
     query(
       `SELECT
+         p.id                            AS id,
          p.codigo                       AS codigo,
          p.nombre                       AS nombre,
          p.branch_id,
@@ -287,6 +290,10 @@ async function buildReportesTabs() {
          p.precio_venta                 AS precio,
          p.precio_compra                AS costo,
          p.stock                        AS stock,
+         p.stock_min                    AS stockMin,
+         p.marca                        AS marca,
+         p.unidad                       AS unidad,
+         p.aplica_itbis                 AS aplicaItbis,
          COALESCE(SUM(si.qty), 0)       AS vendidos
        FROM products p
        LEFT JOIN branches b ON b.id = p.branch_id
@@ -295,7 +302,7 @@ async function buildReportesTabs() {
          AND s.sale_status = 'pagada'
          AND DATE(s.created_at) >= date('now','-30 days')
        WHERE LOWER(p.estado) = 'activo'
-       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock
+       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock, p.stock_min, p.marca, p.unidad, p.aplica_itbis
        ORDER BY vendidos DESC
        LIMIT ${MAX_ROWS}`
     ),
@@ -648,8 +655,39 @@ async function buildNcfSequencesSnapshot() {
 }
 
 // ── Escritura a Firestore ──────────────────────────────────────────────────
+//
+// syncPosStatsToFirestore() se dispara "fire and forget" desde muchos
+// lugares (cada venta, apertura de caja, sucursal creada, etc. — ver
+// syncPortalContableFireAndForget en server.js). Escribe posStats y
+// reportes/{tab} en dos llamadas de red separadas (set() y batch.commit());
+// sin un candado, dos ejecuciones que se solapan pueden intercalar esas
+// escrituras — una ejecución vieja terminando su set() de posStats DESPUÉS
+// de que una ejecución más nueva ya hizo su batch.commit() de reportes —
+// dejando los dos documentos de épocas distintas (bug real, visto en
+// producción: Dashboard/Análisis Global mostraban un mes desactualizado
+// mientras Reportes, que lee directo, ya tenía el dato fresco). runSync()
+// hace el trabajo real; el wrapper de abajo serializa las llamadas para que
+// nunca dos ejecuciones estén escribiendo a la vez.
+let _syncInFlight = null;
+let _syncQueuedNext = null;
 
-async function syncPosStatsToFirestore() {
+function syncPosStatsToFirestore() {
+  if (_syncInFlight) {
+    if (!_syncQueuedNext) {
+      const runNext = () => {
+        _syncInFlight = runSync().finally(() => { _syncInFlight = null; });
+        _syncQueuedNext = null;
+        return _syncInFlight;
+      };
+      _syncQueuedNext = _syncInFlight.then(runNext, runNext);
+    }
+    return _syncQueuedNext;
+  }
+  _syncInFlight = runSync().finally(() => { _syncInFlight = null; });
+  return _syncInFlight;
+}
+
+async function runSync() {
   const licenseUid = getLicenseUid();
   if (!licenseUid) {
     console.warn('[sync-pos-stats] TECNO_CAJA_LICENSE_UID no configurado — sync omitido.');
@@ -666,9 +704,12 @@ async function syncPosStatsToFirestore() {
 
   try {
     console.log('[sync-pos-stats] Calculando KPIs...');
-    const [posStats, tabs, contabilidad, businessProfile, ncfSequences] = await Promise.all([
-      buildPosStats(),
-      buildReportesTabs(),
+    // buildReportesTabs() corre primero — buildPosStats() reusa sus filas del
+    // tab 'ventas' para las tarjetas Ventas hoy/mes/ITBIS/Facturas (ver
+    // computeVentasKpisFromRows), así que no pueden ir en paralelo sin más.
+    const tabs = await buildReportesTabs();
+    const [posStats, contabilidad, businessProfile, ncfSequences] = await Promise.all([
+      buildPosStats(tabs.ventas),
       buildContabilidadFeed(),
       buildBusinessProfile().catch((e) => {
         console.warn('[sync-pos-stats] Perfil de negocio falló (no bloquea el resto):', e.message);
