@@ -3826,11 +3826,28 @@ function toggleSidebar() {
   const sidebar = document.getElementById('sidebar');
   if (!sidebar) return;
   if (window.innerWidth <= 800) {
+    sidebar.classList.remove('collapsed');
     sidebar.classList.toggle('open');
     return;
   }
   sidebar.classList.toggle('collapsed');
 }
+
+(function initSidebarCollapsedDefault() {
+  const sidebar = document.getElementById('sidebar');
+  if (sidebar && window.innerWidth > 800) sidebar.classList.add('collapsed');
+})();
+
+document.addEventListener('pointerdown', (e) => {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  if (sidebar.contains(e.target) || e.target.closest('.btn-menu')) return;
+  if (window.innerWidth <= 800) {
+    if (sidebar.classList.contains('open')) sidebar.classList.remove('open');
+  } else if (!sidebar.classList.contains('collapsed')) {
+    sidebar.classList.add('collapsed');
+  }
+}, true);
 
 function toggleTheme() {
   const html = document.documentElement;

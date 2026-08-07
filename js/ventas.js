@@ -5403,7 +5403,7 @@ function renderSaleTable() {
             <input id="sale-item-qty-${idx}" class="qty-input" type="number" value="${item.qty}" oninput="updateItemQty(${idx},this.value)" onchange="updateItemQty(${idx},this.value)" onkeydown="handleQtyInputKey(event, ${idx})" min="${getSaleItemMinQuantity(item)}" step="${getSaleItemQuantityStep(item)}">
           `}
       </td>
-      <td><input id="sale-item-disc-${idx}" class="disc-input is-readonly" type="number" value="${item.descuento}" min="0" max="100" readonly disabled tabindex="-1"></td>
+      <td><input id="sale-item-disc-${idx}" class="disc-input" type="number" value="${item.descuento}" min="0" max="100" step="0.01" oninput="updateItemDisc(${idx},this.value)" onchange="updateItemDisc(${idx},this.value)" title="Descuento de este producto en %"></td>
       <td style="color:var(--text2);font-size:0.74rem">${item.itbis}%</td>
       <td id="sale-item-total-${idx}" style="font-weight:700;font-family:var(--font-mono);font-size:0.76rem;white-space:nowrap">${fmt(item.total)}</td>
       <td><button class="btn-remove" onclick="removeItem(${idx})">✕</button></td>
@@ -5547,6 +5547,7 @@ function applyGeneralDiscount() {
   const total = parseFmt(totalEl);
   if (amountInput && DB.payMethod !== 'contra_entrega') {
     amountInput.value = total.toFixed(2);
+    calcCambio();
   }
 }
 
