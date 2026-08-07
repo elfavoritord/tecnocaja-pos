@@ -104,7 +104,17 @@ const app = express();
 // 10mb rechazaba (413) cualquier adjunto de más de ~7.5MB reales antes de que
 // la ruta llegara a validar su propio tope de 10MB de contenido decodificado.
 app.use(express.json({ limit: '15mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+// Sin esto, Electron reutiliza su caché de disco entre reinicios de la app
+// (no es una pestaña de navegador normal) y puede seguir sirviendo HTML/JS
+// viejo aunque el proceso ya arrancó con el código actualizado — mismo fix
+// aplicado en el POS (server.js) por el mismo motivo.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders(res, filePath) {
+    if (/\.(html?|js|css)$/i.test(filePath)) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
 // SheetJS (xlsx) — exportar Excel real desde Reportes. Solo se expone el dist, no todo node_modules.
 app.use('/vendor/xlsx', express.static(path.join(__dirname, 'node_modules', 'xlsx', 'dist')));
 
@@ -647,11 +657,13 @@ app.put('/api/solicitudes/:id/cancelar', requireAuth, async (req, res) => {
 // queda en cola bajo el propio doc de licencias del negocio
 // (licencias/{businessId}/productos_pendientes) y lo aplica el POS del
 // cliente la próxima vez que sincronice (abrir/cerrar caja o una venta —
-// ver server/sync/apply-pending-products.js del POS). Solo "agregar
-// producto nuevo" por ahora — no edición/eliminación en esta primera
-// versión. branchId es opcional (vacío = global, visible en todas las
-// sucursales); las opciones de sucursal vienen del campo `sucursales` que
-// el POS ya sincroniza en el doc de licencias (server/sync/sync-pos-stats.js).
+// ver server/sync/apply-pending-products.js del POS). Editar/eliminar solo
+// tiene sentido mientras status !== 'aplicado' — una vez el POS ya lo
+// aplicó, el producto real vive en su base de datos local y esta cola ya no
+// tiene ningún efecto sobre él. branchId es opcional (vacío = global,
+// visible en todas las sucursales); las opciones de sucursal vienen del
+// campo `sucursales` que el POS ya sincroniza en el doc de licencias
+// (server/sync/sync-pos-stats.js).
 // ══════════════════════════════════════════════════════════════════════
 
 app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) => {
@@ -674,12 +686,18 @@ app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) =
 });
 
 app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
-  const { businessId, codigo, nombre, categoria, marca, unidad, saleMode,
+  const { businessId, accion, productoId, codigo, nombre, categoria, marca, unidad, saleMode,
           precioCompra, precioVenta, stock, stockMin, aplicaItbis, branchId, imagenData } = req.body;
+  const accionNorm = ['editar', 'eliminar'].includes(accion) ? accion : 'crear';
 
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
-  if (!codigo || !String(codigo).trim())   return res.status(400).json({ error: 'El código es obligatorio.' });
-  if (!nombre || !String(nombre).trim())   return res.status(400).json({ error: 'El nombre es obligatorio.' });
+  if (accionNorm === 'eliminar') {
+    if (!productoId) return res.status(400).json({ error: 'Falta el producto a eliminar.' });
+  } else {
+    if (accionNorm === 'editar' && !productoId) return res.status(400).json({ error: 'Falta el producto a editar.' });
+    if (!codigo || !String(codigo).trim())   return res.status(400).json({ error: 'El código es obligatorio.' });
+    if (!nombre || !String(nombre).trim())   return res.status(400).json({ error: 'El nombre es obligatorio.' });
+  }
   // Firestore rechaza documentos de más de 1 MB — el navegador ya redimensiona
   // a 900px/JPEG antes de mandarla, así que si aun así pasa de ~700KB (base64
   // infla ~33% el tamaño real) algo salió mal; mejor avisar claro que dejar
@@ -708,9 +726,11 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
     }
 
     const ref = await col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').add({
-      codigo:        String(codigo).trim(),
-      nombre:        String(nombre).trim(),
-      categoria:     categoria || 'General',
+      accion:        accionNorm,
+      productoId:    productoId ? Number(productoId) : null,
+      codigo:        codigo ? String(codigo).trim() : null,
+      nombre:        nombre ? String(nombre).trim() : null,
+      categoria:     accionNorm === 'eliminar' ? null : (categoria || 'General'),
       marca:         marca || '',
       unidad:        unidad || 'Unidad',
       saleMode:      saleMode || 'unidad',
@@ -731,6 +751,88 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
 
     const doc = await ref.get();
     res.status(201).json(docData(doc));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (req, res) => {
+  const { businessId, pendingId } = req.params;
+  const { codigo, nombre, categoria, marca, unidad, saleMode,
+          precioCompra, precioVenta, stock, stockMin, aplicaItbis, branchId, imagenData } = req.body;
+
+  if (!codigo || !String(codigo).trim()) return res.status(400).json({ error: 'El código es obligatorio.' });
+  if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
+  if (imagenData && String(imagenData).length > 700_000) {
+    return res.status(400).json({ error: 'La imagen es demasiado grande. Intenta con otra más pequeña.' });
+  }
+
+  try {
+    const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
+    const bizData = bizDoc.exists ? docData(bizDoc) : null;
+    if (!bizDoc.exists || bizData.contadorId !== req.contador.contadorDocId) {
+      return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+    }
+
+    const pendingRef = col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').doc(pendingId);
+    const pendingDoc = await pendingRef.get();
+    if (!pendingDoc.exists) return res.status(404).json({ error: 'Ese producto pendiente ya no existe.' });
+    if (pendingDoc.data().status === 'aplicado') {
+      return res.status(409).json({ error: 'Este producto ya se aplicó en el sistema del cliente — editarlo aquí no tendría efecto. Edítalo directo desde el módulo Productos del POS.' });
+    }
+
+    let branchNombre = null;
+    const normalizedBranchId = normalizeBranchId(branchId);
+    if (normalizedBranchId) {
+      const sucursales = normalizeBusinessBranches(bizData);
+      const match = sucursales.find((s) => s.id === normalizedBranchId);
+      if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
+      branchNombre = match.nombre;
+    }
+
+    // accion/productoId no se editan aquí — son de qué trata la solicitud
+    // (crear uno nuevo vs. modificar uno real ya existente), se conservan
+    // tal cual venían.
+    await pendingRef.update({
+      codigo:        String(codigo).trim(),
+      nombre:        String(nombre).trim(),
+      categoria:     categoria || 'General',
+      marca:         marca || '',
+      unidad:        unidad || 'Unidad',
+      saleMode:      saleMode || 'unidad',
+      precioCompra:  Number(precioCompra || 0),
+      precioVenta:   Number(precioVenta || 0),
+      stock:         Number(stock || 0),
+      stockMin:      Number(stockMin || 0),
+      aplicaItbis:   Boolean(aplicaItbis),
+      branchId:      normalizedBranchId,
+      branchNombre,
+      imagenData:    imagenData !== undefined ? (imagenData || null) : (pendingDoc.data().imagenData || null),
+      // Reintentar desde limpio — si estaba en error (ej. nombre duplicado),
+      // el POS debe volver a intentarlo con los datos corregidos.
+      status:        'pendiente',
+      errorMessage:  null,
+      updatedAt:     isoNow(),
+    });
+
+    const doc = await pendingRef.get();
+    res.json(docData(doc));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (req, res) => {
+  const { businessId, pendingId } = req.params;
+  try {
+    const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
+    if (!bizDoc.exists || bizDoc.data().contadorId !== req.contador.contadorDocId) {
+      return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+    }
+    const pendingRef = col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').doc(pendingId);
+    const pendingDoc = await pendingRef.get();
+    if (!pendingDoc.exists) return res.status(404).json({ error: 'Ese producto pendiente ya no existe.' });
+    if (pendingDoc.data().status === 'aplicado') {
+      return res.status(409).json({ error: 'Este producto ya se aplicó en el sistema del cliente — bórralo directo desde el módulo Productos del POS.' });
+    }
+    await pendingRef.delete();
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1088,6 +1190,7 @@ app.get('/api/reportes/:businessId', requireAuth, async (req, res) => {
       },
       stats: {
         ventasHoy:       stats.ventasHoy       ?? 0,
+        ventasTotal:     stats.ventasTotal     ?? 0,
         ventasMes:       stats.ventasMes       ?? 0,
         facturasEmitidas: stats.facturasEmitidas ?? 0,
         itbisMes:        stats.itbisMes        ?? 0,
@@ -1116,6 +1219,7 @@ app.get('/api/reportes/:businessId/datos', requireAuth, async (req, res) => {
     const ncf    = req.query.ncf    ? String(req.query.ncf)    : null;
     const cajero = req.query.cajero ? String(req.query.cajero).trim().toLowerCase() : null;
     const branchId = normalizeBranchId(req.query.branchId || req.query.sucursal);
+    const q = req.query.q ? String(req.query.q).trim().toLowerCase() : null;
 
     // Leer desde sub-colección reportes/{tab} (escrita por sync-pos-stats.js del POS)
     const tabDoc = await col(COL_LICENCIAS)
@@ -1134,6 +1238,9 @@ app.get('/api/reportes/:businessId/datos', requireAuth, async (req, res) => {
     if (cajero) rows = rows.filter(r => String(r.cajero || r.cajero_apertura || r.cajero_cierre || '').toLowerCase().includes(cajero));
     if (metodo && tab === 'ventas')   rows = rows.filter(r => r.metodo_pago === metodo);
     if (ncf    && tab === 'facturas') rows = rows.filter(r => (r.ncf || '').startsWith(ncf));
+    // Búsqueda libre — cualquier columna del tab activo (cliente, factura, NCF,
+    // producto, cajero...), sin tener que saber en qué campo está el dato.
+    if (q) rows = rows.filter(r => Object.values(r).some((v) => v != null && String(v).toLowerCase().includes(q)));
 
     res.json({ tab, total: rows.length, rows, hasPosData: !!hasPosData, branchId });
   } catch (e) { res.status(500).json({ error: e.message }); }

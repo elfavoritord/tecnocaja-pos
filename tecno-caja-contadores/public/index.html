@@ -291,6 +291,7 @@
           <thead>
             <tr>
               <th>Negocio</th>
+              <th>Sucursales</th>
               <th>Propietario</th>
               <th>RNC</th>
               <th>Plan</th>
@@ -301,7 +302,7 @@
             </tr>
           </thead>
           <tbody id="clientes-tbody">
-            <tr><td colspan="8" style="text-align:center;padding:30px;color:#5a7099">Cargando negocios…</td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:30px;color:#5a7099">Cargando negocios…</td></tr>
           </tbody>
         </table>
       </div>
@@ -452,12 +453,13 @@
         <!-- Stats compactas -->
         <div class="stats-grid rep-stats-compact" id="rep-stats-grid" style="margin-bottom:14px">
           <div class="stat-card rep-sc"><div class="stat-icon blue">💵</div><div><div class="stat-label">Ventas hoy</div><div class="stat-value rep-sv" id="rs-v-hoy">—</div></div></div>
-          <div class="stat-card rep-sc"><div class="stat-icon green">📅</div><div><div class="stat-label">Ventas del mes</div><div class="stat-value rep-sv" id="rs-v-mes">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon green">📅</div><div><div class="stat-label" title="Del 1 del mes en curso a hoy. No es lo mismo que 'Ventas últimos 30 días' del gráfico de abajo, que es una ventana móvil de 30 días.">Ventas del mes ⓘ</div><div class="stat-value rep-sv" id="rs-v-mes">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon green">📊</div><div><div class="stat-label" title="Acumulado histórico completo del negocio — no se desglosa por sucursal.">Ventas totales ⓘ</div><div class="stat-value rep-sv" id="rs-v-total">—</div></div></div>
           <div class="stat-card rep-sc"><div class="stat-icon blue">🧾</div><div><div class="stat-label">Facturas emitidas</div><div class="stat-value rep-sv" id="rs-facturas">—</div></div></div>
           <div class="stat-card rep-sc"><div class="stat-icon orange">🏛</div><div><div class="stat-label">ITBIS generado</div><div class="stat-value rep-sv" id="rs-itbis">—</div></div></div>
-          <div class="stat-card rep-sc"><div class="stat-icon green">📦</div><div><div class="stat-label">Productos vendidos</div><div class="stat-value rep-sv" id="rs-prod">—</div></div></div>
-          <div class="stat-card rep-sc"><div class="stat-icon red">⚠️</div><div><div class="stat-label">Bajo inventario</div><div class="stat-value rep-sv" id="rs-bajo-inv">—</div></div></div>
-          <div class="stat-card rep-sc"><div class="stat-icon orange">💳</div><div><div class="stat-label">Cuentas × cobrar</div><div class="stat-value rep-sv" id="rs-cxc">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon green">📦</div><div><div class="stat-label" title="Cifra del negocio completo — aún no se desglosa por sucursal.">Productos vendidos ⓘ</div><div class="stat-value rep-sv" id="rs-prod">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon red">⚠️</div><div><div class="stat-label" title="Cifra del negocio completo — aún no se desglosa por sucursal.">Bajo inventario ⓘ</div><div class="stat-value rep-sv" id="rs-bajo-inv">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon orange">💳</div><div><div class="stat-label" title="Cifra del negocio completo — aún no se desglosa por sucursal.">Cuentas × cobrar ⓘ</div><div class="stat-value rep-sv" id="rs-cxc">—</div></div></div>
           <div class="stat-card rep-sc"><div class="stat-icon blue">🔄</div><div><div class="stat-label">Última sync</div><div class="stat-value rep-sv" id="rs-sync" style="font-size:12px">—</div></div></div>
         </div>
 
@@ -949,6 +951,8 @@
       <!-- Top Clientes -->
       <div id="ag-top-wrap" class="section-card" style="display:none">
         <div class="section-card-title">🏆 Top Negocios por Ventas del Mes</div>
+        <input type="text" id="ag-f-buscar" class="search-input" style="margin-bottom:10px"
+          placeholder="🔍 Buscar negocio…" oninput="app.filtrarAnalisisGlobal(this.value)" />
         <table>
           <thead>
             <tr><th>#</th><th>Negocio</th><th>Estado</th><th style="text-align:right">Ventas Mes</th><th style="text-align:right">ITBIS Mes</th><th style="text-align:right">Facturas</th><th>Acción</th></tr>
@@ -1487,6 +1491,10 @@
     <!-- Filtros -->
     <div class="rep-filter-bar" id="rep-filter-bar">
       <div class="rep-filter-group">
+        <label class="rep-filter-label">Buscar</label>
+        <input type="text" id="rep-f-buscar" class="rep-filter-input" placeholder="Cliente, factura, NCF, producto..." oninput="app.aplicarFiltrosConDebounce()" />
+      </div>
+      <div class="rep-filter-group">
         <label class="rep-filter-label">Desde</label>
         <input type="date" id="rep-f-desde" class="rep-filter-input" onchange="app.aplicarFiltros()" />
       </div>
@@ -1496,7 +1504,7 @@
       </div>
       <div class="rep-filter-group">
         <label class="rep-filter-label">Sucursal</label>
-        <select id="rep-f-sucursal" class="rep-filter-input" onchange="app.aplicarFiltros()">
+        <select id="rep-f-sucursal" class="rep-filter-input" onchange="app.aplicarFiltros(); app.actualizarStatsPorSucursal()">
           <option value="">Todas</option>
         </select>
       </div>
@@ -1567,7 +1575,7 @@
 <div id="modal-agregar-producto" class="modal-overlay hidden">
   <div class="modal-card fac-modal-xl">
     <button class="btn-modal-close" onclick="app.cerrarAgregarProductoModal()">✕</button>
-    <div class="modal-title">📦 Agregar Producto</div>
+    <div class="modal-title" id="modal-agregar-producto-titulo">📦 Agregar Producto</div>
     <div class="modal-sub">Se aplicará en el sistema del cliente la próxima vez que sincronice (no es instantáneo).</div>
 
     <div class="fac-form-section">
@@ -1647,7 +1655,7 @@
 
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="app.cerrarAgregarProductoModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="app.guardarProductoPendiente()">Agregar Producto</button>
+      <button class="btn btn-primary" id="modal-agregar-producto-btn" onclick="app.guardarProductoPendiente()">Agregar Producto</button>
     </div>
   </div>
 </div>

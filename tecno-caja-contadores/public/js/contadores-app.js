@@ -561,7 +561,7 @@ function renderClientes(list) {
   const tbody = $id('clientes-tbody');
   if (!tbody) return;
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:48px;color:#5a7099">
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:48px;color:#5a7099">
       <div style="font-size:36px;margin-bottom:8px">🏪</div>
       <div>Aún no tienes negocios asociados.</div>
       <div style="font-size:12px;margin-top:4px">Los negocios se asocian desde Tecno Caja POS al elegir "Negocio bajo Contador Asociado".</div>
@@ -571,11 +571,16 @@ function renderClientes(list) {
   tbody.innerHTML = list.map(c => {
     const dias  = c.diasRestantes;
     const vence = vencimientoFecha(c);
+    const sucursales = Array.isArray(c.sucursales) ? c.sucursales : [];
+    const sucursalesCell = sucursales.length
+      ? `<span title="${esc(sucursales.map(s => s.nombre || 'Sucursal').join(', '))}" style="cursor:default">${sucursales.length} sucursal${sucursales.length === 1 ? '' : 'es'}</span>`
+      : '<span style="color:#5a7099">—</span>';
     return `<tr>
       <td>
         <div style="font-weight:600">${c.businessName || c.businessKey || '—'}</div>
         <div class="td-small" style="font-family:monospace;font-size:10px;color:#5a7099">${c.businessKey || ''}</div>
       </td>
+      <td class="td-small">${sucursalesCell}</td>
       <td class="td-small">${c.propietario || '—'}</td>
       <td class="td-small">${c.rnc || '—'}</td>
       <td><span style="font-size:12px;background:var(--surface2);padding:3px 8px;border-radius:6px">${c.planCode || c.plan_code || '—'}</span></td>
@@ -1231,6 +1236,10 @@ let _repNegocioId = null;
 let _repTab       = 'ventas';
 let _repLoading   = false;
 let _repNegocioSucursales = []; // [{id, nombre}] del negocio seleccionado — sincronizadas por el POS
+let _repProductosRows = []; // último data.rows del tab 'productos' — para poder editar/eliminar por id sin refetch
+let _repStatsGlobal  = null; // stats.* del negocio completo (posStats sincronizado por el POS), para volver a "Todas"
+let _repHasPosData   = false;
+let _repVentasRows   = []; // filas del tab 'ventas' (últimos 30 días) — reusadas por el gráfico y por las tarjetas al filtrar por sucursal
 
 // `aligns` es paralelo a `cols` — debe calzar 1 a 1 con la alineación real
 // que usa cada <td> en renderFila() (clases td-amount → right, style
@@ -1241,8 +1250,8 @@ const REP_TABS = {
                 aligns: ['left','left','left','left','left','left','right','right'] },
   facturas:   { label: 'Facturas', cols: ['Fecha','NCF','Tipo','Sucursal','Cliente','RNC','Total','ITBIS','Estado'],
                 aligns: ['left','left','left','left','left','left','right','right','left'] },
-  productos:  { label: 'Productos', cols: ['Código','Nombre','Sucursal','Categoría','Precio','Costo','Stock','Vendidos'],
-                aligns: ['left','left','left','left','right','right','center','center'] },
+  productos:  { label: 'Productos', cols: ['Código','Nombre','Sucursal','Categoría','Precio','Costo','Stock','Vendidos','Acciones'],
+                aligns: ['left','left','left','left','right','right','center','center','center'] },
   inventario: { label: 'Inventario', cols: ['Código','Nombre','Sucursal','Stock','Mínimo','Estado','Última Compra'],
                 aligns: ['left','left','left','center','center','left','left'] },
   itbis:      { label: 'ITBIS', cols: ['Fecha','NCF','Tipo','Sucursal','Base Imponible','ITBIS 18%','Total'],
@@ -1320,10 +1329,11 @@ async function selNegocioReporte(id) {
     await refreshToken();
     const data = await apiCall('GET', `/api/reportes/${id}`);
     _repNegocioSucursales = Array.isArray(data.negocio?.sucursales) ? data.negocio.sucursales : [];
+    _repStatsGlobal = data.stats;
+    _repHasPosData  = data.negocio.hasPosData;
     renderSucursalReporteFilter();
     renderBizBar(data.negocio);
-    renderRepStats(data.stats, data.negocio.hasPosData);
-    cargarChartVentas();
+    await actualizarStatsPorSucursal();
 
     // Selector bar status
     const badge = $id('rep-biz-badge');
@@ -1362,6 +1372,7 @@ function renderRepStats(stats, hasPosData) {
   const fmtn = v => hasPosData ? (v ?? '—') : '—';
   setText('rs-v-hoy',     fmt(stats.ventasHoy));
   setText('rs-v-mes',     fmt(stats.ventasMes));
+  setText('rs-v-total',   fmt(stats.ventasTotal));
   setText('rs-facturas',  fmtn(stats.facturasEmitidas));
   setText('rs-itbis',     fmt(stats.itbisMes));
   setText('rs-prod',      fmtn(stats.productosActivos));
@@ -1409,6 +1420,7 @@ async function cargarDatosReporte() {
     const ncf    = $id('rep-f-ncf')?.value;
     const cajero = $id('rep-f-cajero')?.value?.trim();
     const sucursal = $id('rep-f-sucursal')?.value;
+    const buscar = $id('rep-f-buscar')?.value?.trim();
 
     if (desde)  params.set('desde', desde);
     if (hasta)  params.set('hasta', hasta);
@@ -1416,6 +1428,7 @@ async function cargarDatosReporte() {
     if (ncf)    params.set('ncf', ncf);
     if (cajero) params.set('cajero', cajero);
     if (sucursal) params.set('branchId', sucursal);
+    if (buscar) params.set('q', buscar);
 
     await refreshToken();
     const data = await apiCall('GET', `/api/reportes/${_repNegocioId}/datos?${params}`);
@@ -1442,6 +1455,8 @@ function renderTablaReporte(data) {
     </div>`;
     return;
   }
+
+  if (_repTab === 'productos') _repProductosRows = data.rows || [];
 
   const cols = REP_TABS[_repTab]?.cols || [];
   const aligns = REP_TABS[_repTab]?.aligns || [];
@@ -1495,6 +1510,10 @@ function renderFila(row, tab) {
         `<td class="td-amount">${fmtMoney(row.costo)}</td>`,
         `<td style="text-align:center">${row.stock ?? '—'}</td>`,
         `<td style="text-align:center">${row.vendidos ?? '—'}</td>`,
+        `<td style="text-align:center;white-space:nowrap">
+           <button class="btn btn-xs btn-secondary" onclick="app.editarProductoReal('${row.id}')">✎</button>
+           <button class="btn btn-xs btn-secondary" onclick="app.eliminarProductoReal('${row.id}')">✕</button>
+         </td>`,
       ]; break;
     case 'inventario':
       cells = [
@@ -1567,14 +1586,20 @@ function aplicarFiltros() {
   if (_repNegocioId) cargarDatosReporte();
 }
 
+let _repBuscarDebounceTimer = null;
+function aplicarFiltrosConDebounce() {
+  clearTimeout(_repBuscarDebounceTimer);
+  _repBuscarDebounceTimer = setTimeout(aplicarFiltros, 300);
+}
+
 function limpiarFiltros() {
-  ['rep-f-desde','rep-f-hasta','rep-f-cajero'].forEach(id => {
+  ['rep-f-desde','rep-f-hasta','rep-f-cajero','rep-f-buscar'].forEach(id => {
     const el = $id(id); if (el) el.value = '';
   });
   ['rep-f-sucursal','rep-f-ncf','rep-f-pago'].forEach(id => {
     const el = $id(id); if (el) el.value = '';
   });
-  if (_repNegocioId) cargarDatosReporte();
+  if (_repNegocioId) { cargarDatosReporte(); actualizarStatsPorSucursal(); }
 }
 
 function exportarCSV() {
@@ -1740,27 +1765,52 @@ function renderProductosPendientes() {
     return;
   }
   const badges = { pendiente: '🟡 Pendiente de sincronizar', error: '🔴 Error' };
+  const accionBadges = { crear: '🆕 Crear', editar: '✎ Editar', eliminar: '🗑 Eliminar' };
   listEl.innerHTML = `
     <table class="data-table">
-      <thead><tr><th>Código</th><th>Nombre</th><th>Sucursal</th><th>Precio</th><th>Estado</th><th>Detalle</th></tr></thead>
+      <thead><tr><th>Acción</th><th>Código</th><th>Nombre</th><th>Sucursal</th><th>Precio</th><th>Stock</th><th>Estado</th><th>Detalle</th><th>Acciones</th></tr></thead>
       <tbody>
-        ${pendientes.map(p => `
+        ${pendientes.map(p => {
+          const accion = p.accion || 'crear';
+          const esEliminar = accion === 'eliminar';
+          return `
           <tr>
+            <td>${accionBadges[accion] || accion}</td>
             <td>${p.codigo || '—'}</td>
             <td>${p.nombre || '—'}${p.tieneImagen ? ' 📷' : ''}</td>
             <td>${p.branchNombre || '🌐 Global'}</td>
-            <td>${fmtMoney(p.precioVenta)}</td>
+            <td>${esEliminar ? '—' : fmtMoney(p.precioVenta)}</td>
+            <td>${esEliminar ? '—' : (p.stock ?? 0)}</td>
             <td>${badges[p.status] || p.status || '—'}</td>
             <td>${p.status === 'error' ? (p.errorMessage || '') : ''}</td>
+            <td style="display:flex;gap:6px">
+              ${esEliminar ? '' : `<button class="btn btn-xs btn-secondary" onclick="app.editarProductoPendiente('${p.id}')">✎ Editar</button>`}
+              <button class="btn btn-xs btn-secondary" onclick="app.eliminarProductoPendiente('${p.id}')">✕ ${esEliminar ? 'Cancelar' : 'Eliminar'}</button>
+            </td>
           </tr>
-        `).join('')}
+        `; }).join('')}
       </tbody>
     </table>
   `;
 }
 
+async function eliminarProductoPendiente(pendingId) {
+  if (!confirm('¿Eliminar este producto pendiente? Todavía no se ha aplicado en el POS del cliente.')) return;
+  try {
+    await refreshToken();
+    await apiCall('DELETE', `/api/productos-pendientes/${_repNegocioId}/${pendingId}`);
+    toast('Producto pendiente eliminado.', 'success');
+    loadProductosPendientes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+let _editingPendingProductId = null;
+let _targetRealProductId = null; // producto YA sincronizado que se está proponiendo editar (accion:'editar')
+
 function abrirAgregarProductoModal() {
   if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  _editingPendingProductId = null;
+  _targetRealProductId = null;
   ['ap-codigo', 'ap-nombre', 'ap-categoria', 'ap-marca', 'ap-unidad', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min'].forEach((id) => {
     const el = $id(id);
     if (el) el.value = '';
@@ -1784,10 +1834,88 @@ function abrirAgregarProductoModal() {
   const fileInput = $id('ap-image-file');
   if (fileInput) fileInput.value = '';
 
+  setText('modal-agregar-producto-titulo', '📦 Agregar Producto');
+  setText('modal-agregar-producto-btn', 'Agregar Producto');
   show('modal-agregar-producto');
 }
 
-function cerrarAgregarProductoModal() { hide('modal-agregar-producto'); }
+function editarProductoPendiente(pendingId) {
+  const p = _productosPendientes.find((item) => item.id === pendingId);
+  if (!p) { toast('No se encontró ese producto pendiente.', 'error'); return; }
+
+  abrirAgregarProductoModal();
+  _editingPendingProductId = pendingId;
+
+  const set = (id, val) => { const el = $id(id); if (el) el.value = val ?? ''; };
+  set('ap-codigo', p.codigo);
+  set('ap-nombre', p.nombre);
+  set('ap-categoria', p.categoria);
+  set('ap-marca', p.marca);
+  set('ap-unidad', p.unidad);
+  set('ap-precio-compra', p.precioCompra);
+  set('ap-precio-venta', p.precioVenta);
+  set('ap-stock', p.stock);
+  set('ap-stock-min', p.stockMin);
+  const itbisEl = $id('ap-aplica-itbis');
+  if (itbisEl) itbisEl.checked = Boolean(p.aplicaItbis);
+  const sucursalEl = $id('ap-sucursal');
+  if (sucursalEl) sucursalEl.value = p.branchId ? String(p.branchId) : '';
+
+  setText('modal-agregar-producto-titulo', '✎ Editar Producto Pendiente');
+  setText('modal-agregar-producto-btn', 'Guardar Cambios');
+}
+
+// Producto YA sincronizado (vive en el POS real, no en la cola pendiente) —
+// se abre el mismo modal precargado con sus datos actuales; al guardar se
+// crea una SOLICITUD de edición nueva (accion:'editar' + productoId), que el
+// POS aplica en su próxima sincronización (segundos, con el listener en
+// tiempo real activo).
+function editarProductoReal(productoId) {
+  const p = _repProductosRows.find((item) => String(item.id) === String(productoId));
+  if (!p) { toast('No se encontró ese producto. Actualiza la pestaña e intenta de nuevo.', 'error'); return; }
+
+  abrirAgregarProductoModal();
+  _targetRealProductId = productoId;
+
+  const set = (id, val) => { const el = $id(id); if (el) el.value = val ?? ''; };
+  set('ap-codigo', p.codigo);
+  set('ap-nombre', p.nombre);
+  set('ap-categoria', p.categoria);
+  set('ap-marca', p.marca);
+  set('ap-unidad', p.unidad);
+  set('ap-precio-compra', p.costo);
+  set('ap-precio-venta', p.precio);
+  set('ap-stock', p.stock);
+  set('ap-stock-min', p.stockMin);
+  const itbisEl = $id('ap-aplica-itbis');
+  if (itbisEl) itbisEl.checked = Boolean(p.aplicaItbis);
+  const sucursalEl = $id('ap-sucursal');
+  if (sucursalEl) sucursalEl.value = p.branchId ? String(p.branchId) : '';
+
+  setText('modal-agregar-producto-titulo', '✎ Solicitar edición de producto');
+  setText('modal-agregar-producto-btn', 'Enviar solicitud');
+}
+
+async function eliminarProductoReal(productoId) {
+  const p = _repProductosRows.find((item) => String(item.id) === String(productoId));
+  const nombre = p?.nombre || `#${productoId}`;
+  if (!confirm(`¿Solicitar eliminar "${nombre}"? Se aplicará en el POS del cliente en su próxima sincronización, y solo si no tiene stock pendiente ni ventas registradas — si tiene, quedará en Error y podrás marcarlo inactivo en su lugar.`)) return;
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/productos-pendientes', {
+      businessId: _repNegocioId,
+      accion: 'eliminar',
+      productoId,
+      codigo: p?.codigo || '',
+      nombre,
+      branchId: p?.branchId || null,
+    });
+    toast('Solicitud de eliminación enviada.', 'success');
+    loadProductosPendientes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function cerrarAgregarProductoModal() { _editingPendingProductId = null; _targetRealProductId = null; hide('modal-agregar-producto'); }
 
 async function guardarProductoPendiente() {
   const codigo = $id('ap-codigo')?.value?.trim();
@@ -1799,25 +1927,40 @@ async function guardarProductoPendiente() {
 
   const sucursalEl = $id('ap-sucursal');
   const branchId = sucursalEl?.value ? Number(sucursalEl.value) : null;
+  const payload = {
+    codigo,
+    nombre,
+    categoria:    $id('ap-categoria')?.value?.trim() || 'General',
+    marca:        $id('ap-marca')?.value?.trim() || '',
+    unidad:       $id('ap-unidad')?.value?.trim() || 'Unidad',
+    precioCompra: Number($id('ap-precio-compra')?.value || 0),
+    precioVenta,
+    stock:        Number($id('ap-stock')?.value || 0),
+    stockMin:     Number($id('ap-stock-min')?.value || 0),
+    aplicaItbis:  Boolean($id('ap-aplica-itbis')?.checked),
+    branchId,
+  };
+  // Si no se tocó la imagen al editar, no mandar el campo — el backend
+  // conserva la que ya había en vez de borrarla.
+  if (_apImagenDataUrl !== null || !_editingPendingProductId) {
+    payload.imagenData = _apImagenDataUrl || null;
+  }
+  if (_targetRealProductId) {
+    payload.accion = 'editar';
+    payload.productoId = _targetRealProductId;
+  }
 
   try {
     await refreshToken();
-    await apiCall('POST', '/api/productos-pendientes', {
-      businessId:   _repNegocioId,
-      codigo,
-      nombre,
-      categoria:    $id('ap-categoria')?.value?.trim() || 'General',
-      marca:        $id('ap-marca')?.value?.trim() || '',
-      unidad:       $id('ap-unidad')?.value?.trim() || 'Unidad',
-      precioCompra: Number($id('ap-precio-compra')?.value || 0),
-      precioVenta,
-      stock:        Number($id('ap-stock')?.value || 0),
-      stockMin:     Number($id('ap-stock-min')?.value || 0),
-      aplicaItbis:  Boolean($id('ap-aplica-itbis')?.checked),
-      branchId,
-      imagenData:   _apImagenDataUrl || null,
-    });
-    toast('Producto agregado — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    if (_editingPendingProductId) {
+      await apiCall('PUT', `/api/productos-pendientes/${_repNegocioId}/${_editingPendingProductId}`, payload);
+      toast('Producto pendiente actualizado — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    } else {
+      await apiCall('POST', '/api/productos-pendientes', { businessId: _repNegocioId, ...payload });
+      toast(_targetRealProductId
+        ? 'Solicitud de edición enviada — se aplicará cuando el sistema del cliente sincronice.'
+        : 'Producto agregado — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    }
     cerrarAgregarProductoModal();
     loadProductosPendientes();
   } catch (e) { toast(e.message, 'error'); }
@@ -2166,12 +2309,53 @@ async function eliminarNcfAplicada(localSequenceId) {
 
 let _repChart = null;
 
-async function cargarChartVentas() {
+async function cargarChartVentas(branchId) {
   if (!_repNegocioId) return;
   try {
-    const data = await apiCall('GET', `/api/reportes/${_repNegocioId}/datos?tab=ventas`);
-    renderRepChart(data.rows || []);
+    const params = new URLSearchParams({ tab: 'ventas' });
+    if (branchId) params.set('branchId', branchId);
+    const data = await apiCall('GET', `/api/reportes/${_repNegocioId}/datos?${params}`);
+    _repVentasRows = data.rows || [];
+    renderRepChart(_repVentasRows);
   } catch { /* chart not critical */ }
+}
+
+// Deriva Ventas hoy/mes, facturas e ITBIS a partir de las filas del tab
+// 'ventas' (ventana móvil de últimos 30 días), ya filtradas por sucursal en
+// el backend. Es "best effort": si el mes en curso lleva más de 30 días
+// (nunca pasa en un mes calendario), el día 1 podría quedar fuera de la
+// ventana — aceptable para esta vista filtrada por sucursal.
+function computeSalesStatsFromRows(rows) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const monthStr = todayStr.slice(0, 7);
+  let ventasHoy = 0, ventasMes = 0, itbisMes = 0, facturasEmitidas = 0;
+  for (const r of rows) {
+    const fecha = (r.fecha || '').slice(0, 10);
+    if (!fecha) continue;
+    const total = Number(r.total) || 0;
+    if (fecha === todayStr) ventasHoy += total;
+    if (fecha.slice(0, 7) === monthStr) {
+      ventasMes += total;
+      itbisMes += Number(r.itbis) || 0;
+      facturasEmitidas += 1;
+    }
+  }
+  return { ventasHoy, ventasMes, itbisMes, facturasEmitidas };
+}
+
+// Ventas hoy/mes, Facturas e ITBIS se calculan SIEMPRE desde las mismas
+// filas que pinta el gráfico (tab 'ventas', últimos 30 días) — no desde
+// posStats, el agregado que sincroniza el POS aparte. Los dos se escriben en
+// llamadas de red separadas y pueden quedar desfasados si una venta llega
+// justo entre medio, mostrando una tarjeta con un monto viejo mientras el
+// gráfico (más fresco) ya incluye la venta nueva. Productos vendidos/Bajo
+// inventario/Cuentas × cobrar sí vienen de posStats — no son sumas por
+// fecha, son el estado actual, y no hay desglose por sucursal sincronizado
+// todavía para esos tres.
+async function actualizarStatsPorSucursal() {
+  const branchId = $id('rep-f-sucursal')?.value || '';
+  await cargarChartVentas(branchId || undefined);
+  renderRepStats({ ...(_repStatsGlobal || {}), ...computeSalesStatsFromRows(_repVentasRows) }, _repHasPosData);
 }
 
 function renderRepChart(rows) {
@@ -3703,6 +3887,8 @@ async function asignarNegocio(businessId, businessName) {
 // ANÁLISIS GLOBAL
 // ══════════════════════════════════════════════════════════════════════
 
+let _agTopClientes = [];
+
 async function loadAnalisisGlobal() {
   const sub = $id('ag-sub');
   if (sub) sub.textContent = 'Cargando datos agregados…';
@@ -3721,37 +3907,51 @@ async function loadAnalisisGlobal() {
     setText('ag-sin-sync',   resumen.clientesSinSync7dias);
     setText('ag-total',      resumen.totalClientes);
 
-    const topWrap = $id('ag-top-wrap');
-    const sinDatos = $id('ag-sin-datos');
-
-    if (topClientes.length === 0) {
-      if (topWrap)  topWrap.style.display  = 'none';
-      if (sinDatos) sinDatos.style.display = '';
-    } else {
-      if (topWrap)  topWrap.style.display  = '';
-      if (sinDatos) sinDatos.style.display = 'none';
-      const tbody = $id('ag-top-tbody');
-      if (tbody) {
-        tbody.innerHTML = topClientes.map((c, i) => {
-          const posCls = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
-          return `<tr>
-            <td><span class="ag-top-pos ${posCls}">${i + 1}</span></td>
-            <td style="font-weight:600">${esc(c.businessName)}</td>
-            <td>${statusBadge(c.status)}</td>
-            <td class="td-amount">${fmtMoney(c.ventasMes)}</td>
-            <td class="td-amount" style="color:#f59e0b">${fmtMoney(c.itbisMes)}</td>
-            <td style="text-align:center">${c.facturas}</td>
-            <td><button class="btn btn-xs btn-secondary" onclick="app.verCliente('${c.id}')">Ver</button></td>
-          </tr>`;
-        }).join('');
-      }
-    }
+    _agTopClientes = topClientes;
+    const buscarEl = $id('ag-f-buscar');
+    if (buscarEl) buscarEl.value = '';
+    renderAnalisisGlobalTop(topClientes);
 
     if (sub) sub.textContent = `Último actualización: ${new Date().toLocaleTimeString('es-DO')}`;
   } catch (e) {
     toast('Error cargando análisis global: ' + e.message, 'error');
     if (sub) sub.textContent = 'Error al cargar datos.';
   }
+}
+
+function renderAnalisisGlobalTop(topClientes) {
+  const topWrap = $id('ag-top-wrap');
+  const sinDatos = $id('ag-sin-datos');
+
+  if (topClientes.length === 0) {
+    if (topWrap)  topWrap.style.display  = 'none';
+    if (sinDatos) sinDatos.style.display = '';
+    return;
+  }
+  if (topWrap)  topWrap.style.display  = '';
+  if (sinDatos) sinDatos.style.display = 'none';
+  const tbody = $id('ag-top-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = topClientes.map((c, i) => {
+    const posCls = i === 0 ? 'gold' : i === 1 ? 'silver' : i === 2 ? 'bronze' : '';
+    return `<tr>
+      <td><span class="ag-top-pos ${posCls}">${i + 1}</span></td>
+      <td style="font-weight:600">${esc(c.businessName)}</td>
+      <td>${statusBadge(c.status)}</td>
+      <td class="td-amount">${fmtMoney(c.ventasMes)}</td>
+      <td class="td-amount" style="color:#f59e0b">${fmtMoney(c.itbisMes)}</td>
+      <td style="text-align:center">${c.facturas}</td>
+      <td><button class="btn btn-xs btn-secondary" onclick="app.verCliente('${c.id}')">Ver</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function filtrarAnalisisGlobal(q) {
+  const lower = q.toLowerCase();
+  const filtered = lower
+    ? _agTopClientes.filter(c => (c.businessName || '').toLowerCase().includes(lower))
+    : _agTopClientes;
+  renderAnalisisGlobalTop(filtered);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -5164,10 +5364,10 @@ window.app = {
   loadActualizaciones, verificarActualizacion, instalarActualizacion, instalarActualizacionGlobal, updSwitchTab,
   // reportes
   loadReportes, selNegocioReporte, cambiarTabReporte, cargarDatosReporte,
-  aplicarFiltros, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
+  aplicarFiltros, aplicarFiltrosConDebounce, actualizarStatsPorSucursal, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
   abrirRepDetalle, cerrarRepDetalle, imprimirTabReporte, imprimirReporteMensual,
   // productos pendientes (agregados desde este Portal)
-  abrirAgregarProductoModal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen,
+  abrirAgregarProductoModal, editarProductoPendiente, eliminarProductoPendiente, editarProductoReal, eliminarProductoReal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen,
   // secuencias NCF pendientes (registradas desde este Portal)
   abrirAgregarNcfModal, cerrarAgregarNcfModal, guardarNcfPendiente, handleAgregarNcfAdjunto, cancelarNcfPendiente,
   // secuencias NCF ya aplicadas (editar/suspender/eliminar remoto)
@@ -5193,7 +5393,7 @@ window.app = {
   verColabDetalle, quitarCliente,
   abrirModalAsignar, cerrarModalAsignar, filtrarNegociosAsignar, asignarNegocio,
   // análisis global
-  loadAnalisisGlobal,
+  loadAnalisisGlobal, filtrarAnalisisGlobal,
   // centro fiscal
   loadCentroFiscal, filtrarObligaciones, filtrarTareas,
   abrirModalTarea, cerrarModalTarea, guardarTarea,
