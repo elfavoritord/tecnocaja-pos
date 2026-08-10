@@ -1,0 +1,23 @@
+{
+  "trackId": "7a1252b9-0f99-4b3e-9b36-b2f2241f3a01",
+  "fecha": "2026-06-19T16:33:37.222Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E340000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/19/2026 12:31:59 PM",
+  "mensajes": [
+    {
+      "valor": "Este número de secuencia ya ha sido utilizado.",
+      "codigo": 1209
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"7a1252b9-0f99-4b3e-9b36-b2f2241f3a01\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E340000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/19/2026 12:31:59 PM\",\"mensajes\":[{\"valor\":\"Este número de secuencia ya ha sido utilizado.\",\"codigo\":1209}]}",
+  "statusPath": "storage/ecf/tracks/estado-7a1252b9-0f99-4b3e-9b36-b2f2241f3a01.json"
+}

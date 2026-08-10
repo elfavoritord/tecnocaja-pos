@@ -88,7 +88,7 @@ async function main() {
   console.log(`Token OK (expira: ${auth.expira || '?'})\n`);
 
   const certificate = await service.resolveCertificate();
-  const { signXML } = require('./modules/ecf/signature/signature.service');
+  const { signXML } = require(path.join(projectRoot, 'modules/ecf/signature/signature.service'));
   const RNC_EMISOR = '40211932609';
 
   const results = [];

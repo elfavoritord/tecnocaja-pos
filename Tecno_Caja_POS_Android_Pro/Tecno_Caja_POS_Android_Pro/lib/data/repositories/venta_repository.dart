@@ -382,6 +382,23 @@ class VentaRepository {
     });
   }
 
+  /// Guarda el resultado de `requestNcf` en la venta local. No toca
+  /// `sync_estado`/`version`: `requestNcf` ya escribió el NCF directo en el
+  /// documento remoto de la venta dentro de su propia transacción, así que
+  /// no hace falta un re-sync para propagarlo.
+  Future<void> actualizarFiscal(
+    String ventaId, {
+    required String encf,
+    required String ecfEstado,
+  }) {
+    return _db.update(
+      'ventas',
+      {'encf': encf, 'ecf_estado': ecfEstado},
+      where: 'id = ?',
+      whereArgs: [ventaId],
+    );
+  }
+
   Future<Venta?> porId(String id) => _ventaDao.findById(id);
 
   Future<List<Venta>> deSesion(String sesionCajaId) =>

@@ -1,0 +1,23 @@
+{
+  "trackId": "883fb8dc-77d2-45c2-99e8-ebf64d39b3e8",
+  "fecha": "2026-06-14T21:32:31.888Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E330000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/14/2026 5:30:50 PM",
+  "mensajes": [
+    {
+      "valor": "El eNCF modificado no ha sido emitido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.La propiedad NombreComercial no es válida debido a que el valor enviado (DOCUMENTOS ELETRONICOS DE 02) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.",
+      "codigo": 614
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"883fb8dc-77d2-45c2-99e8-ebf64d39b3e8\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E330000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/14/2026 5:30:50 PM\",\"mensajes\":[{\"valor\":\"El eNCF modificado no ha sido emitido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.La propiedad NombreComercial no es válida debido a que el valor enviado (DOCUMENTOS ELETRONICOS DE 02) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.\",\"codigo\":614}]}",
+  "statusPath": "storage/ecf/tracks/estado-883fb8dc-77d2-45c2-99e8-ebf64d39b3e8.json"
+}

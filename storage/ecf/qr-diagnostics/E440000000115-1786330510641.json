@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E44",
+  "eNCF": "E440000000115",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:10.641Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "432000.00",
+  "fechaFirmaXML": "09-08-2026 22:41:37",
+  "signatureValueCompleto": "ruYxrZ7GBU1QnsODc7LlDTEZbHPu0kdFM5wS05NgMrZl+rsZztqgSyvY3kbb2aGbbs4gz1jTR6ilxc+zfwfPXTqW+tIYG64hjXSpOS53C0vUOF7NavkOZF3I2NhQabaHBSA82TWwuGiybdzGfXH8h3KqzMyuF5FnYZmy6OcpT3DSZ5iCeIx3LxUAyWF+rOCgpPcl2t6eLS3Z4eljdC3++qpYHF3giqX9Q/TS2Uho1PRBStRgjDMYaLcKd22oJ4jzYabPV60EOOZcwUxeIQO3JepP/qob0Kx1XV2bQpP5rtLUPHRO9OggUoR/3ILp5j9u3YRrbHXjPu92auNRS6cusQ==",
+  "codigoSeguridadGenerado": "ruYxrZ",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E440000000115&FechaEmision=09-08-2026&MontoTotal=432000.00&FechaFirma=09-08-2026%2022%3A41%3A37&CodigoSeguridad=ruYxrZ",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "08-Regimenes-Especiales-E440000000115.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

@@ -201,7 +201,9 @@ async function bootstrapAll(db, config = {}) {
   for (const sale of sales) {
     try {
       const itemsRows = await db.query(
-        `SELECT si.*, p.nombre, p.categoria, p.precio_compra
+        `SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS nombre,
+                COALESCE(p.categoria, CASE WHEN si.is_quick_sale = 1 THEN 'Venta rápida' END, '') AS categoria,
+                p.precio_compra
          FROM sale_items si
          LEFT JOIN products p ON p.id = si.product_id
          WHERE si.sale_id = ?`,

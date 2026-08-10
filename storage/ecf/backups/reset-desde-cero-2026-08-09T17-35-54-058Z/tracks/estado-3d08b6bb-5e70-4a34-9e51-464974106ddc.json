@@ -1,0 +1,23 @@
+{
+  "trackId": "3d08b6bb-5e70-4a34-9e51-464974106ddc",
+  "fecha": "2026-07-28T10:05:18.477Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E410000000030",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "7/28/2026 6:04:34 AM",
+  "mensajes": [
+    {
+      "valor": "No se encuentra en una fase válida dentro del proceso de certificación.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"3d08b6bb-5e70-4a34-9e51-464974106ddc\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E410000000030\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"7/28/2026 6:04:34 AM\",\"mensajes\":[{\"valor\":\"No se encuentra en una fase válida dentro del proceso de certificación.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-3d08b6bb-5e70-4a34-9e51-464974106ddc.json"
+}

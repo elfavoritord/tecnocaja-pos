@@ -7,12 +7,13 @@
 process.env.NODE_ENV = 'production';
 const path = require('path');
 const fs = require('fs');
-process.chdir(path.resolve(__dirname));
+const projectRoot = path.resolve(__dirname, '..', '..');
+process.chdir(projectRoot);
 
 try { require('dotenv').config(); } catch (_) {}
 
-const mysql2 = require('./node_modules/mysql2/promise');
-const { createEcfService } = require('./modules/ecf/services/ecf.service');
+const mysql2 = require(path.join(projectRoot, 'node_modules/mysql2/promise'));
+const { createEcfService } = require(path.join(projectRoot, 'modules/ecf/services/ecf.service'));
 
 async function main() {
   const conn = await mysql2.createConnection({

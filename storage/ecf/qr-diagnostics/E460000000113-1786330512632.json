@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E46",
+  "eNCF": "E460000000113",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:12.631Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "117500.00",
+  "fechaFirmaXML": "09-08-2026 22:41:47",
+  "signatureValueCompleto": "SYZ6+IsDaAdcmLYeYU4MpMwI6wLxpBb6dfObegfy3u2oQuyePtiLbVeiOILqFcOifpLq215okmg2o4h8Mgwjy9dRn+pxZ3E9MhZK3c8S8rJQ1JVgsoKJJO1UkXkBHc9QGUfgbw5MlIx2KSjSpuyoGjPy02NeLsyQrkvll5TvTqqIvun8wEPhkN/x3C7WU4bR69X5u9uiAAGXWWV8V14c6WDNFlDANYQXRX4qh4PaiGIRSEBwlhp/n5pAx8lA3WeydrTToD+GC/NyCWzsWVlxNYDI6zMe/ajd/kBUcG2FKv4TcvaOssmEmooeguPnQkm8zZekgCyGcnka1egF0G9eLw==",
+  "codigoSeguridadGenerado": "SYZ6+I",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E460000000113&FechaEmision=09-08-2026&MontoTotal=117500.00&FechaFirma=09-08-2026%2022%3A41%3A47&CodigoSeguridad=SYZ6%2BI",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "10-Exportaciones-E460000000113.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

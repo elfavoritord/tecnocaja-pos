@@ -846,16 +846,6 @@ const ECF_CERT_WIZARD = (() => {
               <button id="ecf-wz-s2-rfce-resend-btn" class="ecf-wz-action-btn"
                 style="font-size:.75rem;padding:.3rem .7rem;margin-top:.5rem"
                 onclick="ECF_CERT_WIZARD._resendRfce()">🔄 Reenviar RFCE</button>
-              <button id="ecf-wz-s2-rfce-force-btn" class="ecf-wz-action-btn secondary"
-                style="font-size:.7rem;padding:.3rem .7rem;margin-top:.35rem"
-                onclick="ECF_CERT_WIZARD._forceResendRfce()"
-                title="Reenvía también los RFCE marcados como quemados, a propósito, para probar si DGII libera el contador del lote">
-                🔓 Forzar reintento (incluye quemados)</button>
-              <button id="ecf-wz-s2-rfce-decoy-btn" class="ecf-wz-action-btn secondary"
-                style="font-size:.7rem;padding:.3rem .7rem;margin-top:.35rem"
-                onclick="ECF_CERT_WIZARD._sendDecoyReset()"
-                title="Envía un E32 inventado con un e-NCF propio (nunca uno de los 25 reales) dos veces seguidas, para forzar el 'ya utilizado' que reinicia el contador del portal DGII">
-                🎯 Enviar señuelo (reiniciar contador DGII)</button>
               <div id="ecf-wz-s2-rfce-resend-log" style="font-size:.72rem;margin-top:.3rem;color:var(--text3)"></div>
             </div>
           </div>
@@ -1299,69 +1289,21 @@ const ECF_CERT_WIZARD = (() => {
     }
   }
 
-  // Botón experimental: reenvía a propósito incluso los RFCE marcados como
-  // "permanentemente bloqueados" (e-NCF ya quemado en el set fijo DGII). No hay
-  // garantía de que ESE e-NCF quede aceptado — DGII normalmente no libera un e-NCF
-  // ya usado — pero el rechazo repetido es lo que dispara el reinicio de contador
-  // que se observa en el portal ("las pruebas han sido reiniciadas"). Sirve para
-  // forzar ese reinicio de forma controlada en vez de que ocurra por accidente.
   async function _forceResendRfce() {
-    const ok = confirm(
-      '¿Reenviar también los RFCE ya marcados como quemados?\n\n' +
-      'Esto vuelve a enviar a DGII un e-NCF que ya fue rechazado como "ya utilizado". ' +
-      'Lo más probable es que DGII lo rechace de nuevo — pero ese rechazo es lo que ' +
-      'provoca que el portal reinicie el contador del lote. No hay garantía de que ' +
-      'el e-NCF en sí quede aceptado.\n\n¿Continuar?'
-    );
-    if (!ok) return;
-    const btn = document.getElementById('ecf-wz-s2-rfce-force-btn');
     const logEl = document.getElementById('ecf-wz-s2-rfce-resend-log');
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando…'; }
-    if (logEl) logEl.textContent = 'Forzando reenvío (incluye quemados)…';
-    try {
-      await fiscalApi('POST', '/certification-center/rfce/generate');
-      const r = await fiscalApi('POST', '/certification-center/rfce/submit', { force: true });
-      if (logEl) {
-        logEl.textContent = `✅ ${r.aceptados||0} aceptados, ${r.rechazados||0} rechazados (incluyendo quemados reenviados).`;
-        logEl.style.color = (r.rechazados||0) > 0 ? '#f87171' : '#4ade80';
-      }
-      await _pollStep2();
-    } catch (err) {
-      if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '🔓 Forzar reintento (incluye quemados)'; }
+    if (logEl) {
+      logEl.textContent = 'Bloqueado: un RFCE ya quemado no debe reenviarse. Descarga un set nuevo en DGII e impórtalo desde cero.';
+      logEl.style.color = '#fbbf24';
     }
   }
 
-  // Envía un E32/RFCE inventado con un e-NCF de NUESTRA propia secuencia (nunca uno de
-  // los 25 casos reales de DGII) dos veces seguidas: la primera queda aceptada, la
-  // segunda DGII la rechaza como "ya utilizado" — el mismo tipo de rechazo que ya vimos
-  // reiniciar el contador del lote en el portal CerteCF. Experimental: no hay garantía
-  // de que esto libere e-NCF ya quemados del set fijo, solo provoca a propósito algo
-  // que antes pasaba por accidente.
   async function _sendDecoyReset({ btnId = 'ecf-wz-s2-rfce-decoy-btn', logId = 'ecf-wz-s2-rfce-resend-log', label = '🎯 Enviar señuelo (reiniciar contador DGII)' } = {}) {
-    const ok = confirm(
-      '¿Enviar un documento señuelo para forzar el reinicio del contador DGII?\n\n' +
-      'Se genera un E32 con un e-NCF propio (nunca uno de tus casos reales), se envía dos ' +
-      'veces seguidas — la segunda vez DGII lo rechaza como "ya utilizado" a propósito. ' +
-      'Es el mismo tipo de rechazo que ya vimos reiniciar el contador del portal.\n\n' +
-      'No hay garantía de que esto libere e-NCF ya quemados del set fijo — es un experimento.\n\n¿Continuar?'
-    );
-    if (!ok) return;
     const btn = document.getElementById(btnId);
     const logEl = document.getElementById(logId);
-    if (btn) { btn.disabled = true; btn.textContent = '⏳ Enviando señuelo…'; }
-    if (logEl) logEl.textContent = 'Generando y enviando documento señuelo (2 envíos)…';
-    try {
-      const r = await fiscalApi('POST', '/certification-center/rfce/send-decoy-reset');
-      if (logEl) {
-        logEl.textContent = `${r.secondWasBurnRejection ? '✅' : '⚠️'} ${r.message}`;
-        logEl.style.color = r.secondWasBurnRejection ? '#4ade80' : '#f59e0b';
-      }
-    } catch (err) {
-      if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = label; }
+    if (btn) btn.disabled = true;
+    if (logEl) {
+      logEl.textContent = 'Bloqueado: este flujo provocaba el error "e-NCF ya utilizado" en DGII.';
+      logEl.style.color = '#fbbf24';
     }
   }
 
@@ -1607,19 +1549,17 @@ const ECF_CERT_WIZARD = (() => {
 
       const accepted = result.accepted || 0;
       const total    = result.total || (result.results || []).length;
-      const isOk     = accepted > 0;
+      const isOk     = accepted === 11 && total === 11 && result.ok === true;
       const results  = result.results || [];
 
       // Actualizar contador
       const statusEl = document.getElementById('ecf-wz-step3-status');
       if (statusEl) statusEl.innerHTML = `<span style="color:${isOk?'#4ade80':'#f87171'}">${accepted}/${total}</span>`;
 
-      // Detectar si el Excel está desactualizado (fechas ya corregidas automáticamente cuentan
-      // como resueltas — solo lo marcamos "desactualizado" si algo quedó sin poder arreglarse).
+      // Un rechazo invalida el lote completo en DGII. Mostramos la causa y exigimos
+      // un Excel nuevo en vez de reintentar filas del conjunto anterior.
       const hasStaleDataset = results.some((r) => r.staleDataset);
-      const hasUnresolvedMismatch = results.some((r) =>
-        !r.ok && !r.correctedFechaHoraAC && String(r.mensaje || '').toLowerCase().includes('fechahora')
-      );
+      const hasUnresolvedMismatch = results.some((r) => !r.ok && r.expectedFechaHoraAC);
 
       if (resultEl) {
         resultEl.style.display = '';
@@ -1631,8 +1571,8 @@ const ECF_CERT_WIZARD = (() => {
             ${(hasStaleDataset || hasUnresolvedMismatch) ? `
               <div style="background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);border-radius:6px;padding:.6rem .75rem;margin-bottom:.55rem;font-size:.78rem;color:#fbbf24">
                 ⚠ <strong>DGII reinició el lote de pruebas</strong> (pasa cuando rechaza cualquier fila del Excel).
-                Los e-NCF marcados "no existe en nuestra colección" ya no pertenecen al lote activo — no se pueden reenviar con este archivo.
-                <br>Ve al portal DGII → Paso 3, descarga el Excel <strong>más reciente</strong> (no reuses el actual) y súbelo aquí de inmediato, sin esperar.
+                El sistema se detuvo en el primer rechazo y no envió las filas restantes sobre un lote inválido.
+                <br>Ve al portal DGII → Paso 3, descarga el Excel <strong>más reciente</strong> y súbelo aquí sin renombrarlo.
               </div>
             ` : ''}
             <div style="display:grid;gap:.3rem">
@@ -1643,7 +1583,7 @@ const ECF_CERT_WIZARD = (() => {
                   ${r.trackId ? ` · Track: ${h(r.trackId)}` : ''}
                   ${r.mensaje ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:${r.ok?'#86efac':'#fca5a5'}">${h(r.mensaje)}</span>` : ''}
                   ${r.error ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#fbbf24">${h(r.error)}</span>` : ''}
-                  ${r.correctedFechaHoraAC ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#93c5fd">↻ FechaHoraAprobacionComercial autocorregida (DGII indicó el valor correcto en el rechazo).</span>` : ''}
+                  ${r.expectedFechaHoraAC ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#93c5fd">Fecha usada: ${h(r.fechaHoraACUsed || 'N/A')} · DGII esperaba: ${h(r.expectedFechaHoraAC)}</span>` : ''}
                   ${r.staleDataset ? `<br><span style="padding-left:1.1rem;font-size:.72rem;color:#fbbf24">⚠ Este e-NCF ya no está en el lote activo de DGII — requiere Excel nuevo, no reintentar.</span>` : ''}
                 </div>
               `).join('')}
@@ -1666,6 +1606,10 @@ const ECF_CERT_WIZARD = (() => {
 
   async function _confirmStep3() {
     const data = WZ.state?.steps?.[3]?.data || {};
+    if (Number(data.accepted || 0) !== 11 || Number(data.total || 0) !== 11) {
+      if (typeof showFiscalToast === 'function') showFiscalToast('No se puede continuar: el Paso 3 debe estar 11/11 aceptado.', 'warning');
+      return;
+    }
     await markDone(3, { accepted: data.accepted || 0, total: data.total || 0, confirmedAt: new Date().toISOString() });
   }
 
@@ -1720,9 +1664,6 @@ const ECF_CERT_WIZARD = (() => {
           <div class="ecf-wz-log" id="ecf-wz-step4-log"></div>
           <div id="ecf-wz-step4-rfce-list"></div>
           <div id="ecf-wz-step4-rfce-counter"><span id="ecf-wz-step4-rfce-count-text"></span></div>
-          <button id="ecf-wz-rfce-gen-btn"></button>
-          <button id="ecf-wz-rfce-send-btn"></button>
-          <button id="ecf-wz-rfce-poll-btn"></button>
           <button id="ecf-wz-step4-manual-send-btn"></button>
         </div>
 
@@ -1733,16 +1674,33 @@ const ECF_CERT_WIZARD = (() => {
             onclick="ECF_CERT_WIZARD._regenerateWithNewEncfs()">
             🆕 Enviar todos los documentos a DGII
           </button>
+          <button id="ecf-wz-step4-reset-only-btn" class="ecf-wz-action-btn secondary"
+            style="font-size:.84rem;padding:.58rem .9rem;border-color:rgba(251,191,36,.45);color:#fbbf24"
+            onclick="ECF_CERT_WIZARD._resetStep4Only()">
+            Reiniciar solo Paso 4
+          </button>
+          <div style="display:flex;gap:.5rem;flex-wrap:wrap">
+            <button id="ecf-wz-rfce-gen-btn" class="ecf-wz-action-btn secondary"
+              style="font-size:.78rem;padding:.48rem .75rem;min-width:190px"
+              onclick="ECF_CERT_WIZARD._rfceGenerate()">
+              Generar RFCE
+            </button>
+            <button id="ecf-wz-rfce-send-btn" class="ecf-wz-action-btn secondary"
+              style="font-size:.78rem;padding:.48rem .75rem;min-width:170px;border-color:rgba(16,185,129,.45);color:#34d399"
+              onclick="ECF_CERT_WIZARD._rfceSubmit()">
+              Enviar RFCE por API
+            </button>
+            <button id="ecf-wz-rfce-poll-btn" class="ecf-wz-action-btn secondary"
+              style="font-size:.78rem;padding:.48rem .75rem;min-width:170px"
+              onclick="ECF_CERT_WIZARD._rfcePoll()">
+              Actualizar estado RFCE
+            </button>
+          </div>
           <button id="ecf-wz-portal-btn" class="ecf-wz-action-btn secondary"
             style="font-size:.88rem;padding:.65rem 1rem;opacity:.4;cursor:not-allowed"
             onclick="ECF_CERT_WIZARD._preparePortalFiles()" disabled>
             📁 Generar 4 archivos para el portal
           </button>
-          <button id="ecf-wz-step4-rfce-decoy-btn" class="ecf-wz-action-btn secondary"
-            style="font-size:.78rem;padding:.5rem .9rem"
-            onclick="ECF_CERT_WIZARD._sendDecoyReset({ btnId: 'ecf-wz-step4-rfce-decoy-btn', logId: 'ecf-wz-rfce-log', label: '🎯 Enviar señuelo (reiniciar contador DGII)' })"
-            title="Envía un E32 inventado con un e-NCF propio dos veces seguidas, para forzar el 'ya utilizado' que reinicia el contador del portal DGII">
-            🎯 Enviar señuelo (reiniciar contador DGII)</button>
           <div class="ecf-wz-log" id="ecf-wz-rfce-log" style="min-height:36px;margin-top:.1rem"></div>
         </div>
 
@@ -1804,7 +1762,33 @@ const ECF_CERT_WIZARD = (() => {
       if (await _completeStep4IfAccepted(latestStatus, logLine)) return;
 
       if (result.rfce > 0) {
-        logLine(`${result.rfce} RFCE pendientes — usa "Generar RFCE" en la sección de abajo.`, 'info');
+        logLine(`${result.rfce} RFCE pendientes. Generando y enviando RFCE por API automáticamente…`, 'info');
+        const rfceGen = await fiscalApi('POST', '/certification-center/rfce/generate').catch(e => ({ error: e.message }));
+        if (rfceGen?.error) {
+          logLine(`RFCE generate: ${rfceGen.error}`, 'warn');
+        } else {
+          logLine(`${rfceGen?.generated || rfceGen?.items?.length || 0} RFCE generados. Enviando a DGII…`, 'ok');
+          const rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit').catch(e => ({ error: e.message }));
+          if (rfceSend?.error) {
+            logLine(`RFCE envío: ${rfceSend.error}`, 'warn');
+          } else {
+            const total = rfceSend.items?.length || rfceSend.results?.length || result.rfce || 0;
+            const aceptados = rfceSend.aceptados || 0;
+            const enviados = rfceSend.enviados || 0;
+            const rechazados = rfceSend.rechazados || 0;
+            _renderStep4RfceList(rfceSend.items || []);
+            logLine(`RFCE API: ${enviados} enviados · ${aceptados}/${total} aceptados · ${rechazados} rechazados.`, rechazados ? 'warn' : 'ok');
+            if (rechazados) {
+              logLine('No reenvíes ese lote RFCE. Usa "Reiniciar solo Paso 4" para generar e-NCF nuevos.', 'warn');
+            } else {
+              const rfcePoll = await fiscalApi('POST', '/certification-center/rfce/poll').catch(() => null);
+              if (rfcePoll?.items) {
+                _renderStep4RfceList(rfcePoll.items || []);
+                logLine(`Consulta RFCE: ${rfcePoll.aceptados || 0}/${rfcePoll.items.length || total} aceptados.`, (rfcePoll.aceptados || 0) >= (rfcePoll.items.length || total) ? 'ok' : 'info');
+              }
+            }
+          }
+        }
       }
     } catch (err) {
       const latestStatus = await fiscalApi('GET', '/certification-center/status').catch(() => null);
@@ -1825,6 +1809,8 @@ const ECF_CERT_WIZARD = (() => {
       const result = await fiscalApi('POST', '/certification-center/rfce/generate');
       if (result.ok) {
         logLine(`✅ ${result.generated || result.items?.length || 0} RFCE generados.`, 'ok');
+        if (result.outDir) logLine(`Carpeta: ${result.outDir}`, 'info');
+        logLine('Ahora pulsa "Enviar RFCE por API" para completar el contador Tipo 32 RFCE.', 'info');
         _renderStep4RfceList(result.items || []);
       } else {
         logLine(`⚠ ${result.message || 'No se pudieron generar los RFCE.'}`, 'warn');
@@ -1842,23 +1828,28 @@ const ECF_CERT_WIZARD = (() => {
     try {
       logLine('Enviando RFCE a DGII vía RecepciónFC…');
       const result = await fiscalApi('POST', '/certification-center/rfce/submit');
-      const aceptados = result.aceptados ?? result.results?.filter(r=>r.ok)?.length ?? 0;
-      const total = result.enviados ?? result.results?.length ?? 0;
-      if (result.ok || aceptados > 0) {
-        logLine(`✅ ${aceptados}/${total} RFCE aceptados por DGII.`, 'ok');
-      } else {
-        logLine(`⚠ ${aceptados}/${total} aceptados. ${result.message || ''}`, 'warn');
-      }
-      (result.results || []).forEach(r => {
-        logLine(`  ${r.ok?'✓':'✗'} ${r.encf||'?'} — ${r.estado||r.error||''}`, r.ok?'ok':'err');
+      const items = result.items || [];
+      const results = result.results || [];
+      const aceptados = result.aceptados ?? items.filter(i => ['aceptado','aceptado_condicional'].includes(String(i.estado||'').toLowerCase())).length;
+      const enviados = result.enviados ?? items.filter(i => String(i.estado||'').toLowerCase() === 'enviado').length;
+      const rechazados = result.rechazados ?? items.filter(i => String(i.estado||'').toLowerCase() === 'rechazado').length;
+      const bloqueados = result.bloqueados ?? items.filter(i => i.permanentlyBlocked).length;
+      const total = items.length || results.length;
+      _renderStep4RfceList(items);
+      logLine(`RFCE enviados: ${enviados} · aceptados: ${aceptados}/${total} · rechazados: ${rechazados}.`, rechazados || bloqueados ? 'warn' : 'ok');
+      results.forEach((r) => {
+        if (r.ok) logLine(`✓ ${r.encf} — ${r.estado || 'enviado'}`, 'ok');
+        else logLine(`✗ ${r.encf || 'RFCE'} — ${r.mensaje || r.error || r.estado || 'rechazado'}`, 'err');
       });
-      // Refrescar lista con estado actualizado
-      const status = await fiscalApi('GET', '/certification-center/rfce/status').catch(() => ({ items: [] }));
-      _renderStep4RfceList(status.items || []);
+      if (rechazados > 0 || bloqueados > 0) {
+        logLine('Detenido: hay RFCE rechazados/quemados. No reenvíes este lote; usa "Reiniciar solo Paso 4" y regenera con e-NCF nuevos.', 'warn');
+      } else {
+        logLine('Luego pulsa "Actualizar estado RFCE" hasta que DGII marque 4/4 aceptados.', 'info');
+      }
     } catch (err) {
       logLine(`Error: ${err.message}`, 'err');
     } finally {
-      setBtnState('ecf-wz-rfce-send-btn', false, '📡 Enviar RFCE');
+      setBtnState('ecf-wz-rfce-send-btn', false, 'Enviar RFCE por API');
     }
   }
 
@@ -1873,6 +1864,9 @@ const ECF_CERT_WIZARD = (() => {
       const total = items.length;
       _renderStep4RfceList(items);
       logLine(`Estado RFCE: ${aceptados}/${total} aceptados.`, aceptados === total && total > 0 ? 'ok' : 'warn');
+      if (items.some((i) => String(i.estado || '').toLowerCase() === 'rechazado' || i.permanentlyBlocked)) {
+        logLine('Hay RFCE rechazados/quemados. No reenvíes este lote; reinicia Paso 4 y regenera e-NCF nuevos.', 'warn');
+      }
     } catch (err) {
       logLine(`Error: ${err.message}`, 'err');
     } finally {
@@ -2047,6 +2041,11 @@ const ECF_CERT_WIZARD = (() => {
 
   async function _confirmStep4() {
     const status = await fiscalApi('GET', '/certification-center/status').catch(() => null);
+    if (!_isStep4FullyAccepted(status)) {
+      appendLog('ecf-wz-step4-log', 'Aún no se puede continuar: el Paso 4 necesita todos los tipos aceptados, incluyendo Tipo 32 RFCE 4/4 confirmado.', 'warn');
+      if (typeof showFiscalToast === 'function') showFiscalToast('Falta completar RFCE 4/4 en el Paso 4.', 'warning');
+      return;
+    }
     const counts = status?.counts || {};
     await markDone(4, {
       accepted: counts.accepted || 0,
@@ -2080,17 +2079,10 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function _completeStep4IfAccepted(status, logLine = null) {
-    if ((WZ.state?.manualResetSteps || []).includes(4)) return false;
-    if (!_isStep4FullyAccepted(status) || isCompleted(4)) return false;
-    const counts = status?.counts || {};
-    if (logLine) logLine(`✅ ${counts.accepted}/${counts.total} aceptados. Paso 4 completado.`, 'ok');
-    await markDone(4, {
-      accepted: counts.accepted || 0,
-      total: counts.total || 0,
-      byType: status?.byType || [],
-      autoCompletedAt: new Date().toISOString(),
-    });
-    return true;
+    if (_isStep4FullyAccepted(status) && !isCompleted(4) && logLine) {
+      logLine('Todos los tipos están aceptados. Pulsa "Continuar al Paso 5" para confirmar.', 'ok');
+    }
+    return false;
   }
 
   async function _regenerateWithNewEncfs() {
@@ -2127,19 +2119,33 @@ const ECF_CERT_WIZARD = (() => {
       }
 
       if ((result.rfce || 0) > 0) {
-        logLine(`Generando ${result.rfce} RFCE con los nuevos eNCFs…`);
+        logLine(`${result.rfce} RFCE pendientes. Generando y enviando RFCE por API…`);
         const rfceGen = await fiscalApi('POST', '/certification-center/rfce/generate').catch(e => ({ error: e.message }));
         if (rfceGen?.error) {
           logLine(`RFCE generate: ${rfceGen.error}`, 'warn');
         } else {
-          logLine(`${rfceGen?.generated || rfceGen?.items?.length || 0} RFCE generados. Enviando a DGII…`);
+          logLine(`${rfceGen?.generated || rfceGen?.items?.length || 0} RFCE generados. Enviando a DGII…`, 'ok');
           const rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit').catch(e => ({ error: e.message }));
           if (rfceSend?.error) {
-            logLine(`RFCE submit: ${rfceSend.error}`, 'warn');
+            logLine(`RFCE envío: ${rfceSend.error}`, 'warn');
           } else {
-            const ok = rfceSend?.aceptados ?? rfceSend?.results?.filter(r => r.ok)?.length ?? 0;
-            const total = rfceSend?.enviados ?? rfceSend?.results?.length ?? 0;
-            logLine(`RFCE: ${ok}/${total} aceptados por DGII.`, ok > 0 ? 'ok' : 'warn');
+            const total = rfceSend.items?.length || rfceSend.results?.length || result.rfce || 0;
+            const aceptados = rfceSend.aceptados || 0;
+            const enviados = rfceSend.enviados || 0;
+            const rechazados = rfceSend.rechazados || 0;
+            _renderStep4RfceList(rfceSend.items || []);
+            logLine(`RFCE API: ${enviados} enviados · ${aceptados}/${total} aceptados · ${rechazados} rechazados.`, rechazados ? 'warn' : 'ok');
+            if (rechazados) {
+              logLine('No reenvíes ese lote RFCE. Usa "Reiniciar solo Paso 4" para generar e-NCF nuevos.', 'warn');
+            } else {
+              const rfcePoll = await fiscalApi('POST', '/certification-center/rfce/poll').catch(() => null);
+              if (rfcePoll?.items) {
+                _renderStep4RfceList(rfcePoll.items || []);
+                logLine(`Consulta RFCE: ${rfcePoll.aceptados || 0}/${rfcePoll.items.length || total} aceptados.`, (rfcePoll.aceptados || 0) >= (rfcePoll.items.length || total) ? 'ok' : 'info');
+              } else {
+                logLine('Pulsa "Actualizar estado RFCE" si el portal todavía no refleja 4/4.', 'info');
+              }
+            }
           }
         }
       }
@@ -2151,40 +2157,74 @@ const ECF_CERT_WIZARD = (() => {
       logLine(`Error: ${err.message}`, 'err');
     } finally {
       setBtnState('ecf-wz-step4-regen-btn', false, '🆕 Regenerar con nuevos eNCFs');
-      setBtnState('ecf-wz-step4-regen-main-btn', false, '🆕 Regenerar todos los docs con nuevos eNCFs');
+      setBtnState('ecf-wz-step4-regen-main-btn', false, '🆕 Enviar todos los documentos a DGII');
     }
   }
 
   async function _resetAndRetry4() {
-    setBtnState('ecf-wz-step4-rotate-btn', true, 'Reseteando…');
-    function logLine(msg, type='info') { appendLog('ecf-wz-step4-log', msg, type); }
-    // Mismo fix que _regenerateWithNewEncfs(): limpiar la bandera de reinicio
-    // manual para que el paso pueda auto-completarse si el reintento funciona.
-    if ((WZ.state?.manualResetSteps || []).includes(4)) {
-      await saveState({ manualResetSteps: (WZ.state.manualResetSteps || []).filter((id) => id !== 4) });
-    }
+    // Compatibilidad con vistas antiguas: en Paso 4 nunca se reutiliza un e-NCF
+    // rechazado. Toda acción de reintento debe regenerar el lote completo.
+    return _resetStep4Only();
+  }
+
+  async function _resetStep4Only() {
+    const ok = confirm(
+      '¿Reiniciar solo el Paso 4?\n\n' +
+      'Esto limpia el estado local de simulación/RFCE del Paso 4 y lo deja en proceso otra vez. ' +
+      'No toca los Pasos 1, 2 ni 3.'
+    );
+    if (!ok) return;
+
+    const btnLabel = 'Reiniciar solo Paso 4';
+    setBtnState('ecf-wz-step4-reset-only-btn', true, 'Reiniciando…');
+    appendLog('ecf-wz-step4-log', 'Reiniciando solo Paso 4…', 'info');
 
     try {
-      logLine('Reseteando documentos enviados/rechazados a estado pendiente…');
-      await fiscalApi('POST', '/certification/reset-sent').catch(() => {});
-      await fiscalApi('POST', '/certification/reset-rejected').catch(() => {});
-      logLine('Documentos reseteados. Los eNCFs originales se mantienen intactos.', 'ok');
+      const completedSteps = (WZ.state?.completedSteps || []).filter((id) => id !== 4 && id !== 5);
+      const steps = { ...(WZ.state?.steps || {}) };
+      delete steps[4];
+      delete steps[5];
+      await saveState({
+        completedSteps,
+        currentStep: 4,
+        manualResetSteps: [...new Set([...(WZ.state?.manualResetSteps || []), 4])],
+        steps,
+        finishedAt: null,
+      });
 
-      logLine('Iniciando envío secuencial…');
-      const seqResult = await fiscalApi('POST', '/certification/run-sequential').catch(e => ({ error: e.message }));
-      if (seqResult?.error) {
-        logLine(`Advertencia: ${seqResult.error}`, 'warn');
-      } else {
-        logLine(`Enviados: ${seqResult?.sent || 0} en esta ronda.`, 'ok');
+      appendLog('ecf-wz-step4-log', 'Regenerando lote completo del Paso 4 con e-NCF nuevos…', 'info');
+      const result = await fiscalApi('POST', '/certification-center/simulate/generate');
+      if (result.encfMapping?.length) {
+        appendLog('ecf-wz-step4-log', `Nuevos eNCFs: ${result.encfMapping.slice(0, 4).map(m => `${m.old}→${m.new}`).join(', ')}${result.encfMapping.length > 4 ? ' …' : ''}`, 'ok');
+      }
+      appendLog('ecf-wz-step4-log', `Lote creado: ${result.created || 0} comprobantes · enviados normales: ${result.sent || 0}/${result.normal || 0}.`, result.errors?.length ? 'warn' : 'ok');
+
+      if ((result.rfce || 0) > 0) {
+        appendLog('ecf-wz-step4-log', `Generando y enviando ${result.rfce} RFCE Tipo 32…`, 'info');
+        const rfceGen = await fiscalApi('POST', '/certification-center/rfce/generate').catch(e => ({ error: e.message }));
+        if (rfceGen?.error) {
+          appendLog('ecf-wz-step4-log', `RFCE generate: ${rfceGen.error}`, 'warn');
+        } else {
+          const rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit').catch(e => ({ error: e.message }));
+          if (rfceSend?.error) {
+            appendLog('ecf-wz-step4-log', `RFCE envío: ${rfceSend.error}`, 'warn');
+          } else {
+            const total = rfceSend.items?.length || rfceSend.results?.length || result.rfce || 0;
+            appendLog('ecf-wz-step4-log', `RFCE API: ${rfceSend.enviados || 0} enviados · ${rfceSend.aceptados || 0}/${total} aceptados · ${rfceSend.rechazados || 0} rechazados.`, (rfceSend.rechazados || 0) ? 'warn' : 'ok');
+            const rfcePoll = await fiscalApi('POST', '/certification-center/rfce/poll').catch(() => null);
+            if (rfcePoll?.items) _renderStep4RfceList(rfcePoll.items || []);
+          }
+        }
       }
 
-      _showBlockedAlert(false);
-      setBtnState('ecf-wz-step4-rotate-btn', false, '🔄 Resetear enviados y reintentar');
-      logLine('✅ Reiniciado. Usa "Actualizar estados" para seguir el progreso.', 'ok');
-      setTimeout(() => _pollStep4(), 3000);
+      appendLog('ecf-wz-step4-log', 'Paso 4 reiniciado y reenviado completo, incluyendo los 4 Tipo 32 RFCE.', 'ok');
+      await _pollStep4();
+      render();
     } catch (err) {
-      logLine(`Error: ${err.message}`, 'err');
-      setBtnState('ecf-wz-step4-rotate-btn', false, '🔄 Resetear enviados y reintentar');
+      appendLog('ecf-wz-step4-log', `Error reiniciando Paso 4: ${err.message}`, 'err');
+      if (typeof showFiscalToast === 'function') showFiscalToast(`Error: ${err.message}`, 'error');
+    } finally {
+      setBtnState('ecf-wz-step4-reset-only-btn', false, btnLabel);
     }
   }
 
@@ -2203,7 +2243,7 @@ const ECF_CERT_WIZARD = (() => {
       if (blocked > 0 || rejected > 0) {
         _showBlockedAlert(true);
         appendLog('ecf-wz-step4-log',
-          `⚠ ${rejected} rechazados${blocked > 0 ? `, ${blocked} bloqueados` : ''} — usa "Resetear enviados y reintentar".`,
+          `⚠ ${rejected} rechazados${blocked > 0 ? `, ${blocked} bloqueados` : ''} — usa "Reiniciar solo Paso 4" para regenerar el lote completo con e-NCF nuevos.`,
           'warn'
         );
         return;
@@ -2290,6 +2330,7 @@ const ECF_CERT_WIZARD = (() => {
 
   // ── PASO 5: Representación Impresa Simulación ────────────────────────────────
   let _step5Docs = null; // cache de docs por tipo cargados del servidor
+  let _step5Status = null;
 
   function renderStep5() {
     const completed = isCompleted(5);
@@ -2364,6 +2405,7 @@ const ECF_CERT_WIZARD = (() => {
     try {
       const res = await fiscalApi('GET', '/print/step5-docs');
       _step5Docs = res.docs || [];
+      _step5Status = res;
       _renderStep5List();
     } catch (e) {
       el.innerHTML = `<div style="font-size:.82rem;color:#f87171;padding:.5rem">Error al cargar documentos: ${h(e.message)}</div>`;
@@ -2378,11 +2420,21 @@ const ECF_CERT_WIZARD = (() => {
       el.innerHTML = '<div style="font-size:.82rem;color:#f87171;padding:.5rem">No se encontraron documentos de simulación. Asegúrate de haber completado el Paso 4.</div>';
       return;
     }
-    el.innerHTML = `<div style="display:grid;gap:.3rem;margin:.25rem 0">
+    const missing = _step5Status?.missing || [];
+    const invalid = _step5Status?.invalid || [];
+    const statusWarning = (!_step5Status?.complete)
+      ? `<div style="font-size:.78rem;color:#fbbf24;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);border-radius:7px;padding:.55rem .65rem;margin-bottom:.5rem">
+          El Paso 5 está bloqueado hasta tener los 11 tipos aceptados y sus representaciones válidas.
+          ${missing.length ? `<br>Faltan: ${h(missing.join(', '))}.` : ''}
+          ${invalid.length ? `<br>Pendientes o inválidos: ${h(invalid.join(', '))}.` : ''}
+        </div>`
+      : '';
+    el.innerHTML = `${statusWarning}<div style="display:grid;gap:.3rem;margin:.25rem 0">
       ${_step5Docs.map((doc) => {
         const isChecked = !!checked[doc.key];
+        const canUse = doc.accepted === true && doc.representationReady === true;
         return `<div style="display:flex;align-items:center;gap:.6rem;padding:.45rem .5rem;border-radius:7px;background:${isChecked ? 'rgba(22,163,74,.06)' : 'rgba(255,255,255,.02)'}">
-          <input type="checkbox" id="step5-chk-${doc.key}" ${isChecked ? 'checked' : ''}
+          <input type="checkbox" id="step5-chk-${doc.key}" ${isChecked ? 'checked' : ''} ${canUse ? '' : 'disabled'}
             onchange="ECF_CERT_WIZARD._step5Check('${doc.key}', this.checked)"
             style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex-shrink:0">
           <div style="flex:1;min-width:0">
@@ -2391,6 +2443,7 @@ const ECF_CERT_WIZARD = (() => {
             <div style="font-size:.7rem;font-family:sans-serif;color:${doc.dgiiVerificado?'#4ade80':'#fbbf24'}" title="Si escaneas el QR de este PDF ahora mismo, ¿el portal público de DGII ya lo reconoce como aceptado?">
               ${doc.dgiiVerificado ? `✅ QR verificado en DGII (${h(doc.dgiiEstadoPublico||'Aceptado')})` : '⏳ DGII aún no indexó el QR públicamente — puede tardar'}
             </div>
+            ${doc.representationReady ? '' : `<div style="font-size:.7rem;color:#f87171">Representación inválida: ${h(doc.representationError || 'falta el E32 completo vinculado')}</div>`}
           </div>
           <div style="display:flex;gap:.4rem;flex-shrink:0">
             <a href="/api/ecf/print/repr-impresa/${encodeURIComponent(doc.encf)}" target="_blank"
@@ -2436,7 +2489,7 @@ const ECF_CERT_WIZARD = (() => {
     if (!WZ.state.steps[5]) WZ.state.steps[5] = { data: {} };
     const checked = {};
     if (_step5Docs) {
-      _step5Docs.forEach((d) => { checked[d.key] = true; });
+      _step5Docs.forEach((d) => { checked[d.key] = d.accepted === true && d.representationReady === true; });
     } else {
       ['31-normal','32-normal','32-rfce','33-normal','34-normal','41-normal','43-normal','44-normal','45-normal','46-normal','47-normal']
         .forEach((k) => { checked[k] = true; });
@@ -2452,12 +2505,28 @@ const ECF_CERT_WIZARD = (() => {
       if (typeof showFiscalToast === 'function') showFiscalToast('Aún no se cargan los comprobantes del Paso 4/5. Espera a que terminen de cargar o pulsa "Recargar".', 'warning');
       return;
     }
+    if (!_step5Status?.complete || _step5Docs.length !== 11) {
+      const missing = _step5Status?.missing || [];
+      const invalid = _step5Status?.invalid || [];
+      const detail = [...missing, ...invalid].join(', ');
+      if (typeof showFiscalToast === 'function') {
+        showFiscalToast(`El Paso 5 requiere los 11 tipos válidos del lote de simulación${detail ? `: ${detail}` : '.'}`, 'error');
+      }
+      return;
+    }
     const checked = WZ.state?.steps?.[5]?.data?.checked || {};
-    const noAceptado = _step5Docs.filter((d) => d.estado !== 'aceptado');
-    const noSubido = _step5Docs.filter((d) => d.estado === 'aceptado' && !checked[d.key]);
+    const noAceptado = _step5Docs.filter((d) => d.accepted !== true);
+    const noRepresentacion = _step5Docs.filter((d) => d.representationReady !== true);
+    const noSubido = _step5Docs.filter((d) => d.accepted === true && d.representationReady === true && !checked[d.key]);
     if (noAceptado.length) {
       if (typeof showFiscalToast === 'function') {
         showFiscalToast(`Falta que DGII acepte: ${noAceptado.map((d) => d.label || d.encf).join(', ')}`, 'error');
+      }
+      return;
+    }
+    if (noRepresentacion.length) {
+      if (typeof showFiscalToast === 'function') {
+        showFiscalToast(`Representación inválida: ${noRepresentacion.map((d) => d.label || d.encf).join(', ')}`, 'error');
       }
       return;
     }
@@ -2681,7 +2750,12 @@ const ECF_CERT_WIZARD = (() => {
     if (!el) return;
     try {
       const status = await fiscalApi('GET', '/status');
-      const active = status?.checklist?.certificateLoaded && status?.checklist?.emitterConfigured;
+      const items = status?.checklist?.items || [];
+      const certificateLoaded = items.find((i) => i.key === 'certificate')?.status === 'ok';
+      const emitterConfigured = ['emitter_rnc', 'emitter_profile'].every(
+        (key) => items.find((i) => i.key === key)?.status === 'ok'
+      );
+      const active = certificateLoaded && emitterConfigured;
       el.innerHTML = `
         <div style="display:flex;align-items:center;gap:.65rem;padding:.6rem .9rem;background:rgba(${active?'22,163,74':'234,179,8'},.08);border:1px solid rgba(${active?'22,163,74':'234,179,8'},.25);border-radius:8px">
           <span style="font-size:1.1rem">${active?'🟢':'🟡'}</span>
@@ -2689,8 +2763,8 @@ const ECF_CERT_WIZARD = (() => {
             <div style="font-weight:700;color:${active?'#4ade80':'#fbbf24'};font-size:.83rem">Servidor: ${active?'LISTO':'CONFIGURACIÓN INCOMPLETA'}</div>
             <div style="font-size:.76rem;color:var(--text3)">
               Ambiente: ${h(status?.environment||'—')} ·
-              Certificado: ${status?.checklist?.certificateLoaded?'✅':'❌'} ·
-              Emisor: ${status?.checklist?.emitterConfigured?'✅':'❌'}
+              Certificado: ${certificateLoaded?'✅':'❌'} ·
+              Emisor: ${emitterConfigured?'✅':'❌'}
             </div>
           </div>
         </div>
@@ -3469,6 +3543,7 @@ const ECF_CERT_WIZARD = (() => {
     _pollStep4,
     _regenerateWithNewEncfs,
     _resetAndRetry4,
+    _resetStep4Only,
     _showBlockedAlert,
     _rfceGenerate,
     _rfceSubmit,

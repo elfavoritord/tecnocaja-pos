@@ -1,0 +1,502 @@
+[
+  {
+    "id": 6256,
+    "tipo_ecf": "E32",
+    "encf": "E320000000034",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:35.000Z"
+  },
+  {
+    "id": 6257,
+    "tipo_ecf": "E32",
+    "encf": "E320000000035",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6258,
+    "tipo_ecf": "E33",
+    "encf": "E330000000003",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e33",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6259,
+    "tipo_ecf": "E33",
+    "encf": "E330000000004",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e33",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6260,
+    "tipo_ecf": "E31",
+    "encf": "E310000000039",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6261,
+    "tipo_ecf": "E31",
+    "encf": "E310000000040",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6262,
+    "tipo_ecf": "E34",
+    "encf": "E340000000021",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e34",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6263,
+    "tipo_ecf": "E34",
+    "encf": "E340000000022",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e34",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6264,
+    "tipo_ecf": "E46",
+    "encf": "E460000000012",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e46",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6265,
+    "tipo_ecf": "E46",
+    "encf": "E460000000013",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e46",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6266,
+    "tipo_ecf": "E34",
+    "encf": "E340000000023",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e34",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6267,
+    "tipo_ecf": "E34",
+    "encf": "E340000000024",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e34",
+    "created_at": "2026-08-09T18:16:36.000Z"
+  },
+  {
+    "id": 6268,
+    "tipo_ecf": "E31",
+    "encf": "E310000000041",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6269,
+    "tipo_ecf": "E31",
+    "encf": "E310000000042",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6270,
+    "tipo_ecf": "E31",
+    "encf": "E310000000043",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6271,
+    "tipo_ecf": "E31",
+    "encf": "E310000000044",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6272,
+    "tipo_ecf": "E31",
+    "encf": "E310000000045",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6273,
+    "tipo_ecf": "E31",
+    "encf": "E310000000046",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e31",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6274,
+    "tipo_ecf": "E32",
+    "encf": "E320000000036",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6275,
+    "tipo_ecf": "E32",
+    "encf": "E320000000037",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6276,
+    "tipo_ecf": "E41",
+    "encf": "E410000000013",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e41",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6277,
+    "tipo_ecf": "E41",
+    "encf": "E410000000014",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e41",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6278,
+    "tipo_ecf": "E41",
+    "encf": "E410000000015",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e41",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6279,
+    "tipo_ecf": "E41",
+    "encf": "E410000000016",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e41",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6280,
+    "tipo_ecf": "E43",
+    "encf": "E430000000011",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e43",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6281,
+    "tipo_ecf": "E43",
+    "encf": "E430000000012",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e43",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6282,
+    "tipo_ecf": "E43",
+    "encf": "E430000000013",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e43",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6283,
+    "tipo_ecf": "E43",
+    "encf": "E430000000014",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e43",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6284,
+    "tipo_ecf": "E44",
+    "encf": "E440000000012",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e44",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6285,
+    "tipo_ecf": "E44",
+    "encf": "E440000000013",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e44",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6286,
+    "tipo_ecf": "E44",
+    "encf": "E440000000014",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e44",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6287,
+    "tipo_ecf": "E44",
+    "encf": "E440000000015",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e44",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6288,
+    "tipo_ecf": "E45",
+    "encf": "E450000000014",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e45",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6289,
+    "tipo_ecf": "E45",
+    "encf": "E450000000015",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e45",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6290,
+    "tipo_ecf": "E45",
+    "encf": "E450000000016",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e45",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6291,
+    "tipo_ecf": "E45",
+    "encf": "E450000000017",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e45",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6292,
+    "tipo_ecf": "E46",
+    "encf": "E460000000014",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e46",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6293,
+    "tipo_ecf": "E46",
+    "encf": "E460000000015",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e46",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6294,
+    "tipo_ecf": "E47",
+    "encf": "E470000000013",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e47",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6295,
+    "tipo_ecf": "E47",
+    "encf": "E470000000014",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e47",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6296,
+    "tipo_ecf": "E47",
+    "encf": "E470000000015",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e47",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6297,
+    "tipo_ecf": "E47",
+    "encf": "E470000000016",
+    "submission_mode": "normal",
+    "estado_dgii": "aceptado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e47",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6298,
+    "tipo_ecf": "E32",
+    "encf": "E320000000038",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6299,
+    "tipo_ecf": "E32",
+    "encf": "E320000000039",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6300,
+    "tipo_ecf": "E32",
+    "encf": "E320000000040",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6301,
+    "tipo_ecf": "E32",
+    "encf": "E320000000041",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6302,
+    "tipo_ecf": "E32",
+    "encf": "E320000000042",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6303,
+    "tipo_ecf": "E32",
+    "encf": "E320000000043",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6304,
+    "tipo_ecf": "E32",
+    "encf": "E320000000044",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  },
+  {
+    "id": 6305,
+    "tipo_ecf": "E32",
+    "encf": "E320000000045",
+    "submission_mode": "rfce",
+    "estado_dgii": "firmado",
+    "certification_batch_id": "sim-1786299361878",
+    "certification_test_type": "simulation-e32",
+    "created_at": "2026-08-09T18:16:37.000Z"
+  }
+]

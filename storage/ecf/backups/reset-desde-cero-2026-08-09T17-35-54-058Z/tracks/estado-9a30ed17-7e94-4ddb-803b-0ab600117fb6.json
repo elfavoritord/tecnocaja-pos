@@ -1,0 +1,23 @@
+{
+  "trackId": "9a30ed17-7e94-4ddb-803b-0ab600117fb6",
+  "fecha": "2026-06-15T04:31:07.858Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E330000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/15/2026 12:29:24 AM",
+  "mensajes": [
+    {
+      "valor": "El eNCF modificado no ha sido emitido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.",
+      "codigo": 614
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"9a30ed17-7e94-4ddb-803b-0ab600117fb6\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E330000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/15/2026 12:29:24 AM\",\"mensajes\":[{\"valor\":\"El eNCF modificado no ha sido emitido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.El eNCF: E320000000006 especificado en el campo NCFModificado de la sección información de referencia no es válido.\",\"codigo\":614}]}",
+  "statusPath": "storage/ecf/tracks/estado-9a30ed17-7e94-4ddb-803b-0ab600117fb6.json"
+}

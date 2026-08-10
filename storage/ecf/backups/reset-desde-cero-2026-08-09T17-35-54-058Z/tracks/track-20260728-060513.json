@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-07-28T10:05:13.521Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260728-060513.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"codigo\":2,\"estado\":\"Rechazado\",\"mensajes\":[{\"codigo\":null,\"valor\":\"No se encuentra en una fase válida dentro del proceso de certificación.\"}],\"encf\":\"E320000000081\",\"secuenciaUtilizada\":false}",
+  "trackPath": "storage/ecf/tracks/track-20260728-060513.json"
+}

@@ -9,6 +9,7 @@ const QRCode    = require('qrcode');
 const Anthropic = require('@anthropic-ai/sdk');
 const productsCache = require('../cache/products-cache');
 const { resolveActivePromotions, computePromotionStatus } = require('../services/promotion-engine');
+const { generateWhatsAppReport, resolveDateRange } = require('../services/whatsapp-report.service');
 
 const fs   = require('fs');
 const path = require('path');
@@ -27,6 +28,7 @@ let _customerInstructions = ''; // reglas/tono libres para el flujo de clientes 
 let _customerAiEnabled    = false; // toggle propio, independiente de la IA del dueño (wabot_customer_ai_enabled)
 let _chromePid      = null;
 let _startTimeoutId = null;
+let _readyTimeoutId = null;
 
 // Inyectadas desde server.js vía setDependencies() — insertQuotationRow y
 // writeAuditLog viven ahí y este módulo no puede hacer require() de vuelta
@@ -107,7 +109,8 @@ const state = {
   ownerPhone2: null,
   messages:    [],          // últimos 30 mensajes {dir, text, ts}
 };
-const historial = [];       // historial de conversación para Claude
+const historial = [];       // historial de conversacion del dueno
+const pendingOwnerAttachments = new Map(); // jid -> archivos generados localmente pendientes de envio
 
 // ── Sesiones de clientes (flujo de menú fijo, sin IA) ─────────────────────────
 const customerSessions = new Map(); // jid -> { step, cart, customerName, orderType, address, lastResults, lastActivityAt }
@@ -245,7 +248,7 @@ async function getBusinessData(msg = '') {
         /* ── Clientes ── */
         (SELECT COUNT(*) FROM clients)                                                                                                                                                        AS clientes_total,
         /* ── CxC ── */
-        COALESCE((SELECT SUM(total) FROM sales WHERE payment_method='credito' AND sale_status='pagada' AND delivery_cash_status IN ('pendiente','na')),0)                                    AS cxc_pendiente,
+        COALESCE((SELECT SUM(COALESCE(total,0)-COALESCE(received_amount,0)) FROM sales WHERE payment_method='credito' AND sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND COALESCE(total,0) > COALESCE(received_amount,0)),0) AS cxc_pendiente,
         /* ── Cajas ── */
         (SELECT COUNT(*) FROM cash_sessions WHERE status='open')                                                                                                                              AS cajas_abiertas
     `)]);
@@ -300,10 +303,11 @@ async function getBusinessData(msg = '') {
       extras.cxc = await q(`
         SELECT COALESCE(s.client_name_snapshot, c.nombre, '—') AS cliente,
                COALESCE(s.client_phone_snapshot, c.telefono, '—') AS telefono,
-               SUM(s.total) AS deuda
+               SUM(COALESCE(s.total,0)-COALESCE(s.received_amount,0)) AS deuda
         FROM sales s LEFT JOIN clients c ON s.client_id=c.id
         WHERE s.payment_method='credito' AND s.sale_status='pagada'
-          AND s.delivery_cash_status IN ('pendiente','na')
+          AND COALESCE(s.fiscal_status,'emitida')<>'cancelada'
+          AND COALESCE(s.total,0) > COALESCE(s.received_amount,0)
         GROUP BY s.client_id ORDER BY deuda DESC LIMIT 7`);
     }
     if (t.match(/proveedor|suplidor/)) {
@@ -345,6 +349,7 @@ async function getBusinessData(msg = '') {
     if (t.match(/cliente|comprador|frecuente/)) {
       extras.topClientes = await q(`
         SELECT COALESCE(s.client_name_snapshot, c.nombre, 'Sin nombre') AS cliente,
+               c.cedula AS cedula, c.telefono AS telefono,
                COUNT(*) AS compras, SUM(s.total) AS gastado
         FROM sales s LEFT JOIN clients c ON s.client_id=c.id
         WHERE s.sale_status='pagada' AND COALESCE(s.fiscal_status,'emitida')<>'cancelada'
@@ -406,7 +411,7 @@ async function getBusinessData(msg = '') {
     if (extras.cajeros?.length) extraText += `\nCAJEROS HOY:\n${extras.cajeros.map(r=>`- ${r.cajero}: ${r.facturas} fact. ${fmt(r.ventas)}`).join('\n')}`;
     if (extras.movimientos?.length) extraText += `\nEGRESOS HOY:\n${extras.movimientos.map(g=>`- ${g.tipo}: ${fmt(g.total)} (${g.cant} mov.)`).join('\n')}`;
     if (extras.horas?.length) { const pk=extras.horas.reduce((a,b)=>b.total>a.total?b:a,extras.horas[0]); extraText += `\nHORAS HOY:\n${extras.horas.map(h=>`- ${String(h.hora).padStart(2,'0')}:00 → ${h.facturas} fact. ${fmt(h.total)}`).join('\n')}\nPico: ${String(pk.hora).padStart(2,'0')}:00`; }
-    if (extras.topClientes?.length) extraText += `\nTOP CLIENTES MES:\n${extras.topClientes.map(c=>`- ${c.cliente}: ${c.compras} compras ${fmt(c.gastado)}`).join('\n')}`;
+    if (extras.topClientes?.length) extraText += `\nTOP CLIENTES MES:\n${extras.topClientes.map(c=>`- ${c.cliente} (cedula/RNC: ${c.cedula || 'no registrada'}, tel: ${c.telefono || '-'}): ${c.compras} compras ${fmt(c.gastado)}`).join('\n')}`;
     if (extras.cajas?.length) extraText += `\nCAJAS ABIERTAS:\n${extras.cajas.map(c=>`- ${c.caja_nombre||'Caja'}: ${c.opened_by_user_name} (${fmt(c.expected_amount)})`).join('\n')}`;
     if (extras.semana?.length) { const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']; extraText += `\nSEMANA:\n${extras.semana.map(d=>{const dt=new Date(d.dia);return `- ${dias[dt.getDay()]} ${dt.getDate()}: ${fmt(d.total)} (${d.facturas} fact.)`;}).join('\n')}`; }
     if (extras.ultimas?.length) extraText += `\nÚLTIMAS VENTAS:\n${extras.ultimas.map(v=>`- ${v.invoice_number}: ${fmt(v.total)} (${v.payment_method}) ${new Date(v.created_at).toLocaleTimeString('es-DO',{hour:'2-digit',minute:'2-digit'})}`).join('\n')}`;
@@ -470,7 +475,8 @@ Puedes crear, activar y desactivar promociones de precio directamente desde este
 - Si hay varios productos o promociones que coinciden con lo que pidió el dueño, pregúntale cuál es antes de ejecutar nada — no adivines.
 - Si falta el precio de oferta, o la fecha de fin cuando la promoción no es permanente, pregúntale al dueño antes de crear la promoción.
 - Después de ejecutar una herramienta, confirma en una frase clara qué se hizo (producto, precio anterior, precio nuevo, o si quedó activada/desactivada).
-- Si una herramienta devuelve un error, explícaselo al dueño en lenguaje simple y sugiere cómo corregirlo — no repitas la misma llamada sin corregir el dato que falló.`;
+- Si una herramienta devuelve un error, explícaselo al dueño en lenguaje simple y sugiere cómo corregirlo — no repitas la misma llamada sin corregir el dato que falló.
+- Usa evaluar_promociones cuando el dueño pregunte si una promoción vale la pena, si está funcionando, o si conviene cambiarla/quitarla. Si el resultado marca datosInsuficientes en true para algún producto, dilo claramente en vez de forzar una conclusión — no hay suficiente historial de ventas antes de la promoción para comparar con confianza.`;
 
 const PROMOTION_TOOLS = [
   {
@@ -527,7 +533,113 @@ const PROMOTION_TOOLS = [
       required: ['promotionId', 'activar'],
     },
   },
+  {
+    name: 'evaluar_promociones',
+    description: 'Compara, para una promocion de precio activa (o todas las activas si no se especifica), las unidades vendidas y el margen bruto durante la promocion contra un periodo equivalente inmediatamente anterior, para ayudar a decidir si vale la pena mantenerla. Usala cuando el dueno pregunte si una promocion vale la pena, esta funcionando, o si hay que cambiarla/quitarla.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        promotionId: { type: 'integer', description: 'ID de una promocion especifica (de listar_promociones). Si se omite, evalua todas las promociones activas de tipo oferta_precio.' },
+        dias: { type: 'integer', description: 'Tamano de la ventana de comparacion en dias. Por defecto 30, tope 90.' },
+      },
+    },
+  },
 ];
+
+const REPORT_TOOL_GUIDANCE = `
+
+HERRAMIENTAS DE REPORTES:
+- Cuando el dueno pida crear, preparar o enviar un reporte, usa generar_reporte.
+- Puedes generar reportes de ventas, inventario, clientes, cuentas por cobrar, caja o un reporte completo.
+- Respeta el formato solicitado: PDF, Excel o CSV. Si no indica formato, usa PDF.
+- Respeta el periodo solicitado. Para fechas exactas usa periodo "personalizado" y fechas YYYY-MM-DD.
+- Los reportes se crean dentro de Tecno Caja y se adjuntan al WhatsApp autorizado. No afirmes que se envio hasta que la herramienta confirme que fue preparado.
+- No uses esta herramienta para una pregunta simple que se pueda responder directamente en el chat.`;
+
+const REPORT_TOOLS = [
+  {
+    name: 'generar_reporte',
+    description: 'Genera y adjunta al WhatsApp del dueno un reporte del POS. Usala cuando pidan un archivo PDF, Excel/XLSX o CSV.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        tipo: {
+          type: 'string',
+          enum: ['ventas', 'inventario', 'clientes', 'cuentas_cobrar', 'caja', 'completo'],
+          description: 'Contenido principal del reporte.',
+        },
+        formato: {
+          type: 'string',
+          enum: ['pdf', 'xlsx', 'csv'],
+          description: 'Formato del archivo. Convierte la palabra Excel a xlsx.',
+        },
+        periodo: {
+          type: 'string',
+          enum: ['hoy', 'ayer', 'semana', 'mes', 'mes_anterior', 'personalizado'],
+          description: 'Periodo del reporte. Semana significa la semana actual desde el lunes.',
+        },
+        desde: { type: 'string', description: 'Fecha inicial YYYY-MM-DD, requerida solo para periodo personalizado.' },
+        hasta: { type: 'string', description: 'Fecha final YYYY-MM-DD, requerida solo para periodo personalizado.' },
+      },
+      required: ['tipo', 'formato', 'periodo'],
+    },
+  },
+];
+
+const LOOKUP_TOOL_GUIDANCE = `
+
+HERRAMIENTAS DE CONSULTA:
+- Usa buscar_cliente_facturas cuando el dueno de una cedula/RNC y pregunte por ese cliente o sus facturas.
+- Si hay varios clientes que coinciden o ninguno coincide exacto, dilo claramente y pide confirmar el numero — no adivines cual es.
+- Usa historial_caja cuando pregunten por errores, descuadres, sobrantes o faltantes de caja. Un difference_amount positivo es sobrante, negativo es faltante.
+- Usa auditoria_descuentos cuando pregunten por descuentos grandes, sospechosos o si los descuentos estuvieron justos. El sistema NO tiene un limite de descuento configurado — nunca digas que un descuento "excedio el limite autorizado" ni inventes un porcentaje maximo. Solo presenta el ranking y las estadisticas, y deja que el dueno juzgue.
+- No inventes facturas, montos, vendedores o cajeros que no vengan en el resultado de la herramienta.`;
+
+const LOOKUP_TOOLS = [
+  {
+    name: 'buscar_cliente_facturas',
+    description: 'Busca un cliente por su cedula o RNC y devuelve su informacion y el historial de sus facturas (fecha, hora, vendedor, metodo de pago, total, pendiente). Usala cuando el dueno pregunte por un cliente usando su numero de cedula/RNC.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        cedula: { type: 'string', description: 'Numero de cedula o RNC del cliente, con o sin guiones.' },
+        limite: { type: 'integer', description: 'Cuantas facturas recientes devolver como maximo. Por defecto 15, tope 30.' },
+      },
+      required: ['cedula'],
+    },
+  },
+  {
+    name: 'historial_caja',
+    description: 'Devuelve el historial de cierres de caja, marcando los que tuvieron diferencia entre lo esperado y lo contado (sobrante o faltante). Usala cuando el dueno pregunte por errores de caja, descuadres, sobrantes o faltantes.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        periodo: { type: 'string', enum: ['hoy', 'semana', 'mes', 'todos'], description: 'Periodo a revisar. Por defecto "mes".' },
+        soloConDiferencia: { type: 'boolean', description: 'Si es true (por defecto), solo devuelve cierres con diferencia distinta de cero.' },
+      },
+    },
+  },
+  {
+    name: 'auditoria_descuentos',
+    description: 'Muestra el ranking de las ventas con mayor descuento en un periodo, con su porcentaje de descuento, cliente y vendedor, mas estadisticas generales. No aplica ningun limite fijo — el sistema no tiene un limite de descuento configurado, el dueno decide que es razonable.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        periodo: { type: 'string', enum: ['hoy', 'semana', 'mes', 'todos'], description: 'Periodo a revisar. Por defecto "mes".' },
+        limite: { type: 'integer', description: 'Cuantas ventas devolver en el ranking. Por defecto 10, tope 30.' },
+      },
+    },
+  },
+];
+
+const OWNER_TOOLS = [...PROMOTION_TOOLS, ...REPORT_TOOLS, ...LOOKUP_TOOLS];
+
+const SYSTEM_KNOWLEDGE = `
+
+CONOCIMIENTO DEL SISTEMA:
+Tecno Caja incluye ventas y cotizaciones, venta rapida sin inventario, catalogo e inventario, clientes y credito, proveedores y compras, caja y tesoreria, promociones, reportes, usuarios, sucursales, delivery, facturacion fiscal NCF/e-CF DGII, respaldos y sincronizacion, y pedidos por WhatsApp.
+El bot de clientes solo puede consultar catalogo, armar su pedido, indicar entrega o recogida y elegir pago. Nunca puede consultar cifras internas ni datos de otros clientes.
+El bot del dueno puede consultar informacion administrativa en tiempo real, generar reportes, buscar un cliente por cedula/RNC con su historial completo de facturas (vendedor, fecha, hora), revisar el historial de cierres de caja para detectar sobrantes o faltantes, auditar los descuentos mas grandes de un periodo, y evaluar si una promocion activa esta funcionando (margen bruto antes vs. durante). No inventes pantallas, botones, permisos o datos que no aparezcan en este contexto o en el resultado de una herramienta.`;
 
 async function promoAssertConfig({ permanente, fechaInicio }) {
   const rows = await _db(
@@ -698,14 +810,412 @@ async function promoToolCambiarEstadoPromocion(input = {}) {
   return { ok: true, promotionId: id, nombre: rows[0].nombre, deshabilitada: Boolean(nextDisabled) };
 }
 
+function dateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+function addDays(date, days) {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+// Evita new Date('YYYY-MM-DD'), que MySQL/sqlite a veces devuelven como texto
+// y JS interpreta como medianoche UTC — desfasa un día en zonas horarias
+// negativas (RD es UTC-4). Si ya viene como Date (driver normal), se respeta tal cual.
+function parseDbDate(value) {
+  if (value instanceof Date) return value;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''));
+  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  return new Date(value);
+}
+
+async function promoToolEvaluarUnaPromocion(promotion, dias) {
+  const productos = await _db(
+    'SELECT producto_id, precio_original, precio_promocion FROM promotion_products WHERE promotion_id = ?',
+    [promotion.id],
+  );
+  if (!productos.length) return [];
+
+  const hoy = new Date();
+  const inicioPromoRaw = parseDbDate(promotion.fecha_inicio || promotion.created_at);
+  const ventanaMaxDesde = addDays(hoy, -(dias - 1));
+  const conPromoDesde = inicioPromoRaw > ventanaMaxDesde ? inicioPromoRaw : ventanaMaxDesde;
+  const longitud = Math.round((hoy - conPromoDesde) / 86400000) + 1;
+  const antesHasta = addDays(conPromoDesde, -1);
+  const antesDesde = addDays(antesHasta, -(longitud - 1));
+
+  const resultados = [];
+  for (const pp of productos) {
+    const productoRows = await _db('SELECT nombre FROM products WHERE id = ? LIMIT 1', [pp.producto_id]);
+    const productoNombre = productoRows[0]?.nombre || `Producto #${pp.producto_id}`;
+
+    const rows = await _db(
+      `SELECT
+         CASE WHEN si.promotion_id = ? THEN 'con_promo' ELSE 'antes' END AS periodo,
+         COALESCE(SUM(si.qty), 0) AS unidades,
+         COALESCE(SUM(si.line_total), 0) AS ingresos,
+         COALESCE(SUM(si.line_total - si.qty * p.precio_compra), 0) AS margen
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id
+       JOIN products p ON p.id = si.product_id
+       WHERE si.product_id = ?
+         AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
+         AND (
+           (si.promotion_id = ? AND s.operative_date BETWEEN ? AND ?)
+           OR (si.promotion_id IS NULL AND s.operative_date BETWEEN ? AND ?)
+         )
+       GROUP BY periodo`,
+      [promotion.id, pp.producto_id, promotion.id, dateKey(conPromoDesde), dateKey(hoy), dateKey(antesDesde), dateKey(antesHasta)],
+    );
+
+    const conPromoRow = rows.find((r) => r.periodo === 'con_promo');
+    const antesRow = rows.find((r) => r.periodo === 'antes');
+    const datosInsuficientes = !antesRow;
+
+    const conPromo = {
+      unidades: Number(conPromoRow?.unidades || 0),
+      ingresos: Number(conPromoRow?.ingresos || 0),
+      margen: Number(conPromoRow?.margen || 0),
+    };
+    const antes = {
+      unidades: Number(antesRow?.unidades || 0),
+      ingresos: Number(antesRow?.ingresos || 0),
+      margen: Number(antesRow?.margen || 0),
+    };
+    const deltaMargen = Number((conPromo.margen - antes.margen).toFixed(2));
+    const deltaUnidades = conPromo.unidades - antes.unidades;
+
+    resultados.push({
+      promocionId: promotion.id,
+      promocionNombre: promotion.nombre,
+      producto: productoNombre,
+      ventana: { desde: dateKey(conPromoDesde), hasta: dateKey(hoy), dias: longitud },
+      antes,
+      conPromo,
+      deltaMargen,
+      deltaUnidades,
+      datosInsuficientes,
+      veredicto: datosInsuficientes ? 'datos_insuficientes' : (deltaMargen >= 0 ? 'vale_la_pena' : 'revisar'),
+    });
+  }
+  return resultados;
+}
+
+async function promoToolEvaluarPromociones(input = {}) {
+  if (!_db) return { error: 'Sin conexion a la base de datos.' };
+  const dias = Math.min(Number(input.dias) || 30, 90);
+
+  let promociones;
+  if (input.promotionId) {
+    const rows = await _db('SELECT * FROM promotions WHERE id = ? LIMIT 1', [Number(input.promotionId)]);
+    if (!rows.length) return { error: 'No existe una promoción con ese ID.' };
+    promociones = rows;
+  } else {
+    const rows = await _db(
+      `SELECT * FROM promotions WHERE deshabilitada = 0 AND tipo = 'oferta_precio' ORDER BY created_at DESC LIMIT 10`,
+      [],
+    );
+    promociones = rows.filter((p) => computePromotionStatus(p) === 'activa');
+    if (!promociones.length) return { evaluaciones: [], mensaje: 'No hay promociones de precio activas ahora mismo.' };
+  }
+
+  const evaluaciones = [];
+  for (const promotion of promociones) {
+    evaluaciones.push(...(await promoToolEvaluarUnaPromocion(promotion, dias)));
+  }
+  return { evaluaciones };
+}
+
 async function ejecutarHerramientaPromocion(name, input, origen) {
   switch (name) {
     case 'buscar_productos': return await promoToolBuscarProductos(input);
     case 'listar_promociones': return await promoToolListarPromociones(input);
     case 'crear_promocion': return await promoToolCrearPromocion(input, origen);
     case 'cambiar_estado_promocion': return await promoToolCambiarEstadoPromocion(input);
+    case 'evaluar_promociones': return await promoToolEvaluarPromociones(input);
     default: return { error: `Herramienta desconocida: ${name}` };
   }
+}
+
+function queueOwnerAttachment(jid, attachment) {
+  if (!jid || !attachment?.buffer) return;
+  const queued = pendingOwnerAttachments.get(jid) || [];
+  queued.push(attachment);
+  pendingOwnerAttachments.set(jid, queued.slice(-5));
+}
+
+async function reportToolGenerate(input = {}, origin) {
+  if (!_db) return { error: 'Sin conexion a la base de datos.' };
+  const report = await generateWhatsAppReport({
+    query: _db,
+    reportType: input.tipo,
+    format: input.formato,
+    period: input.periodo,
+    from: input.desde,
+    to: input.hasta,
+  });
+  queueOwnerAttachment(origin, report);
+  return {
+    ok: true,
+    archivo: report.filename,
+    formato: String(input.formato || '').toUpperCase(),
+    desde: report.range.from,
+    hasta: report.range.to,
+    secciones: report.sections.map((item) => ({
+      nombre: item.title,
+      filas: item.rows.length,
+      resumen: item.summary,
+    })),
+    mensaje: 'El archivo fue preparado y se enviara como adjunto al terminar esta respuesta.',
+  };
+}
+
+async function lookupToolBuscarClienteFacturas(input = {}) {
+  if (!_db) return { error: 'Sin conexion a la base de datos.' };
+  const norm = String(input.cedula || '').replace(/\D/g, '');
+  if (!norm) return { error: 'Especifica un numero de cedula o RNC valido.' };
+
+  let cliente = (await _db(
+    `SELECT id, nombre, telefono, email, limite_credito, balance
+     FROM clients
+     WHERE REPLACE(REPLACE(cedula, '-', ''), ' ', '') = ?
+     LIMIT 1`,
+    [norm],
+  ))[0];
+
+  if (!cliente) {
+    const candidatos = await _db(
+      `SELECT id, nombre, telefono, cedula
+       FROM clients
+       WHERE REPLACE(REPLACE(cedula, '-', ''), ' ', '') LIKE ?
+       LIMIT 5`,
+      [`%${norm}%`],
+    );
+    if (candidatos.length > 1) {
+      return {
+        multiples: candidatos.map((c) => ({ nombre: c.nombre, telefono: c.telefono, cedula: c.cedula })),
+        mensaje: 'Hay varios clientes que coinciden con ese numero. Pide al dueño la cedula completa para precisar.',
+      };
+    }
+    if (candidatos.length === 1) {
+      cliente = (await _db(
+        'SELECT id, nombre, telefono, email, limite_credito, balance FROM clients WHERE id = ? LIMIT 1',
+        [candidatos[0].id],
+      ))[0];
+    }
+  }
+
+  if (!cliente) {
+    const huerfanas = await _db(
+      `SELECT s.invoice_number, s.created_at, s.payment_method, s.total,
+              COALESCE(s.client_name_snapshot, 'Sin nombre') AS cliente,
+              COALESCE(u.nombre, 'Desconocido') AS vendedor
+       FROM sales s
+       LEFT JOIN users u ON u.id = s.user_id
+       WHERE REPLACE(REPLACE(s.client_tax_id_snapshot, '-', ''), ' ', '') = ?
+       ORDER BY s.created_at DESC
+       LIMIT 15`,
+      [norm],
+    );
+    if (!huerfanas.length) {
+      return { encontrado: false, mensaje: `No se encontro ningun cliente ni factura con la cedula/RNC "${input.cedula}".` };
+    }
+    return {
+      encontrado: true,
+      clienteActivo: false,
+      mensaje: 'No hay un cliente activo con esa cedula, pero se encontraron facturas historicas con ese numero (cliente probablemente eliminado).',
+      facturas: huerfanas.map((f) => ({
+        factura: f.invoice_number, fecha: f.created_at, cliente: f.cliente,
+        vendedor: f.vendedor, metodoPago: f.payment_method, total: Number(f.total),
+      })),
+    };
+  }
+
+  const limite = Math.min(Number(input.limite) || 15, 30);
+  const facturas = await _db(
+    `SELECT s.invoice_number, s.created_at, s.payment_method, s.total, s.received_amount,
+            s.sale_status, s.fiscal_status,
+            COALESCE(u.nombre, 'Desconocido') AS vendedor
+     FROM sales s
+     LEFT JOIN users u ON u.id = s.user_id
+     WHERE s.client_id = ?
+     ORDER BY s.created_at DESC
+     LIMIT ?`,
+    [cliente.id, limite],
+  );
+
+  const resumenRows = await _db(
+    `SELECT
+       COALESCE(SUM(CASE WHEN sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' THEN total ELSE 0 END), 0) AS total_historico,
+       COALESCE(SUM(CASE WHEN payment_method='credito' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND COALESCE(total,0) > COALESCE(received_amount,0)
+                          THEN COALESCE(total,0) - COALESCE(received_amount,0) ELSE 0 END), 0) AS pendiente_actual,
+       COUNT(*) AS total_facturas
+     FROM sales WHERE client_id = ?`,
+    [cliente.id],
+  );
+  const resumen = resumenRows[0] || {};
+
+  return {
+    encontrado: true,
+    clienteActivo: true,
+    cliente: {
+      nombre: cliente.nombre, telefono: cliente.telefono, email: cliente.email,
+      limiteCredito: Number(cliente.limite_credito || 0), balance: Number(cliente.balance || 0),
+    },
+    resumen: {
+      totalFacturas: Number(resumen.total_facturas || 0),
+      totalHistorico: Number(resumen.total_historico || 0),
+      pendienteActual: Number(resumen.pendiente_actual || 0),
+    },
+    facturas: facturas.map((f) => ({
+      factura: f.invoice_number,
+      fecha: f.created_at,
+      vendedor: f.vendedor,
+      metodoPago: f.payment_method,
+      total: Number(f.total),
+      pendiente: f.payment_method === 'credito' ? Math.max(0, Number(f.total) - Number(f.received_amount || 0)) : 0,
+      estado: f.fiscal_status === 'cancelada' ? 'cancelada' : f.sale_status,
+    })),
+  };
+}
+
+async function lookupToolHistorialCaja(input = {}) {
+  if (!_db) return { error: 'Sin conexion a la base de datos.' };
+  const periodo = ['hoy', 'semana', 'mes', 'todos'].includes(input.periodo) ? input.periodo : 'mes';
+  const soloConDiferencia = input.soloConDiferencia !== false;
+
+  const conditions = [];
+  const params = [];
+  if (periodo !== 'todos') {
+    const range = resolveDateRange(periodo);
+    conditions.push('cc.closed_at BETWEEN ? AND ?');
+    params.push(range.fromDatetime, range.toDatetime);
+  }
+  if (soloConDiferencia) {
+    conditions.push('cc.difference_amount <> 0');
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const rows = await _db(
+    `SELECT cc.closed_at, cc.expected_amount, cc.counted_amount, cc.difference_amount,
+            cc.closed_by_user_name, cr.nombre AS caja, b.nombre AS sucursal, cc.notes
+     FROM cash_closings cc
+     LEFT JOIN cash_registers cr ON cc.cash_register_id = cr.id
+     LEFT JOIN branches b ON cc.branch_id = b.id
+     ${where}
+     ORDER BY cc.closed_at DESC
+     LIMIT 30`,
+    params,
+  );
+
+  const sumaDiferencias = rows.reduce((sum, r) => sum + Number(r.difference_amount || 0), 0);
+
+  return {
+    periodo,
+    cierresRevisados: rows.length,
+    cierresConDiferencia: rows.filter((r) => Number(r.difference_amount || 0) !== 0).length,
+    sumaDiferencias: Number(sumaDiferencias.toFixed(2)),
+    detalle: rows.map((r) => ({
+      fecha: r.closed_at,
+      caja: r.caja || '-',
+      sucursal: r.sucursal || '-',
+      esperado: Number(r.expected_amount),
+      contado: Number(r.counted_amount),
+      diferencia: Number(r.difference_amount),
+      cerradoPor: r.closed_by_user_name || 'Desconocido',
+      notas: r.notes || null,
+    })),
+  };
+}
+
+async function lookupToolAuditoriaDescuentos(input = {}) {
+  if (!_db) return { error: 'Sin conexion a la base de datos.' };
+  const periodo = ['hoy', 'semana', 'mes', 'todos'].includes(input.periodo) ? input.periodo : 'mes';
+  const limite = Math.min(Number(input.limite) || 10, 30);
+
+  const conditions = [`s.discount > 0`, `s.sale_status = 'pagada'`, `COALESCE(s.fiscal_status,'emitida') <> 'cancelada'`];
+  const params = [];
+  if (periodo !== 'todos') {
+    const range = resolveDateRange(periodo);
+    conditions.push('s.created_at BETWEEN ? AND ?');
+    params.push(range.fromDatetime, range.toDatetime);
+  }
+  const where = `WHERE ${conditions.join(' AND ')}`;
+
+  const top = await _db(
+    `SELECT s.invoice_number, s.created_at,
+            COALESCE(s.client_name_snapshot, c.nombre, 'Consumidor final') AS cliente,
+            COALESCE(u.nombre, 'Desconocido') AS vendedor,
+            s.subtotal, s.discount, s.total,
+            CASE WHEN s.subtotal > 0 THEN ROUND(s.discount / s.subtotal * 100, 2) ELSE 0 END AS descuento_pct
+     FROM sales s
+     LEFT JOIN clients c ON c.id = s.client_id
+     LEFT JOIN users u ON u.id = s.user_id
+     ${where}
+     ORDER BY descuento_pct DESC
+     LIMIT ?`,
+    [...params, limite],
+  );
+
+  const statsRows = await _db(
+    `SELECT COUNT(*) AS ventas_con_descuento,
+            AVG(CASE WHEN s.subtotal > 0 THEN s.discount/s.subtotal*100 ELSE 0 END) AS promedio_pct,
+            MAX(CASE WHEN s.subtotal > 0 THEN s.discount/s.subtotal*100 ELSE 0 END) AS maximo_pct,
+            SUM(s.discount) AS total_descontado
+     FROM sales s
+     ${where}`,
+    params,
+  );
+  const stats = statsRows[0] || {};
+
+  return {
+    periodo,
+    resumen: {
+      ventasConDescuento: Number(stats.ventas_con_descuento || 0),
+      promedioPct: Number(Number(stats.promedio_pct || 0).toFixed(2)),
+      maximoPct: Number(Number(stats.maximo_pct || 0).toFixed(2)),
+      totalDescontado: Number(stats.total_descontado || 0),
+    },
+    top: top.map((r) => ({
+      factura: r.invoice_number,
+      fecha: r.created_at,
+      cliente: r.cliente,
+      vendedor: r.vendedor,
+      subtotal: Number(r.subtotal),
+      descuento: Number(r.discount),
+      descuentoPct: Number(r.descuento_pct),
+      total: Number(r.total),
+    })),
+  };
+}
+
+async function executeOwnerTool(name, input, origin) {
+  if (name === 'generar_reporte') return reportToolGenerate(input, origin);
+  if (name === 'buscar_cliente_facturas') return lookupToolBuscarClienteFacturas(input);
+  if (name === 'historial_caja') return lookupToolHistorialCaja(input);
+  if (name === 'auditoria_descuentos') return lookupToolAuditoriaDescuentos(input);
+  return ejecutarHerramientaPromocion(name, input, origin);
+}
+
+async function sendPendingOwnerAttachments(jid) {
+  const queued = pendingOwnerAttachments.get(jid) || [];
+  pendingOwnerAttachments.delete(jid);
+  if (!_client || !queued.length) return [];
+
+  const sent = [];
+  for (const attachment of queued) {
+    const media = new MessageMedia(
+      attachment.mimeType,
+      attachment.buffer.toString('base64'),
+      attachment.filename,
+    );
+    await _client.sendMessage(jid, media, {
+      caption: `Reporte Tecno Caja: ${attachment.filename}`,
+    });
+    sent.push(attachment.filename);
+  }
+  return sent;
 }
 
 // Refresca el token OAuth de Google si está por vencer — compartido por toda
@@ -722,10 +1232,12 @@ async function ensureGeminiTokenFresh() {
   }
 }
 
-// Llamada HTTP cruda a generateContent — compartida por texto, audio e imagen;
-// cada caller arma el `body` (contents/systemInstruction/generationConfig) según
-// lo que necesite. Devuelve el texto de la primera respuesta, o null.
-async function callGeminiRaw(body) {
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+
+// Llamada HTTP cruda a generateContent. La variante de respuesta completa se
+// usa para function calling; callGeminiRaw conserva la API de texto usada por
+// chat, audio e imagen.
+async function callGeminiResponse(body) {
   const { apiKey } = _aiConfig || {};
   await ensureGeminiTokenFresh();
 
@@ -733,7 +1245,7 @@ async function callGeminiRaw(body) {
   if (_googleTokens?.access_token) {
     // OAuth — Bearer token via REST API
     const http = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent',
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
       {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${_googleTokens.access_token}`, 'Content-Type': 'application/json' },
@@ -743,10 +1255,14 @@ async function callGeminiRaw(body) {
     geminiRes = await http.json();
     if (!http.ok) throw new Error(geminiRes?.error?.message || `HTTP ${http.status}`);
   } else if (apiKey) {
-    // API Key — query param
+    // API Key en header para que no quede expuesta en URLs o logs intermedios.
     const http = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(body),
+      }
     );
     geminiRes = await http.json();
     if (!http.ok) throw new Error(geminiRes?.error?.message || `HTTP ${http.status}`);
@@ -754,6 +1270,12 @@ async function callGeminiRaw(body) {
     return null;
   }
 
+  return geminiRes;
+}
+
+async function callGeminiRaw(body) {
+  const geminiRes = await callGeminiResponse(body);
+  if (!geminiRes) return null;
   const respuesta = geminiRes?.candidates?.[0]?.content?.parts?.[0]?.text || null;
   if (!respuesta) console.error('[wa-bot] Gemini respuesta vacía:', JSON.stringify(geminiRes).substring(0, 300));
   return respuesta;
@@ -797,7 +1319,7 @@ async function callAi(system, messages) {
       return await callGeminiRaw({
         contents,
         systemInstruction: { parts: [{ text: system }] },
-        generationConfig: { maxOutputTokens: 600, thinkingConfig: { thinkingBudget: 0 } },
+        generationConfig: { maxOutputTokens: 600, thinkingConfig: { thinkingLevel: 'MINIMAL' } },
       });
     }
   } catch (e) {
@@ -806,8 +1328,69 @@ async function callAi(system, messages) {
   return null;
 }
 
-// Turno del dueño con tool use (solo Claude — es el único proveedor de este
-// bot con soporte de function calling). Corre el loop agente estándar:
+function toGeminiFunctionDeclaration(tool) {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.input_schema,
+  };
+}
+
+function ownerMessagesToGeminiContents(messages) {
+  return messages
+    .filter((message) => typeof message?.content === 'string')
+    .map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }],
+    }));
+}
+
+async function callGeminiOwnerTurn(system, messages, origin) {
+  const contents = ownerMessagesToGeminiContents(messages);
+  const MAX_TOOL_ITERATIONS = 5;
+
+  for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+    const response = await callGeminiResponse({
+      contents,
+      systemInstruction: { parts: [{ text: system }] },
+      tools: [{ functionDeclarations: OWNER_TOOLS.map(toGeminiFunctionDeclaration) }],
+      toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
+      generationConfig: { maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: 'MEDIUM' } },
+    });
+    const candidateContent = response?.candidates?.[0]?.content;
+    const parts = candidateContent?.parts || [];
+    const functionCalls = parts.filter((part) => part.functionCall).map((part) => part.functionCall);
+
+    if (!functionCalls.length) {
+      const text = parts.map((part) => part.text || '').join('').trim();
+      return text || 'No pude preparar una respuesta con los datos disponibles.';
+    }
+
+    contents.push(candidateContent);
+    const responseParts = [];
+    for (const functionCall of functionCalls) {
+      let result;
+      try {
+        result = await executeOwnerTool(functionCall.name, functionCall.args || {}, origin);
+      } catch (error) {
+        result = { error: error.message };
+      }
+      responseParts.push({
+        functionResponse: {
+          name: functionCall.name,
+          response: { result },
+          id: functionCall.id,
+        },
+      });
+    }
+    contents.push({ role: 'user', parts: responseParts });
+  }
+
+  return 'No pude completar la operacion en los pasos disponibles. Intenta de nuevo indicando tipo de reporte, formato y periodo.';
+}
+
+// Turno del dueño con tool use para Claude. Gemini usa el loop equivalente
+// de arriba sobre generateContent.
 // Claude responde con stop_reason 'tool_use' → ejecutamos las herramientas
 // pedidas → le devolvemos los resultados como tool_result → repetimos hasta
 // que responda con texto normal (stop_reason distinto de 'tool_use') o se
@@ -826,7 +1409,7 @@ async function callClaudeOwnerTurn(system, messages, origen) {
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       system,
-      tools: PROMOTION_TOOLS,
+      tools: OWNER_TOOLS,
       messages: workingMessages,
     });
 
@@ -842,7 +1425,7 @@ async function callClaudeOwnerTurn(system, messages, origen) {
     for (const block of toolUseBlocks) {
       let result;
       try {
-        result = await ejecutarHerramientaPromocion(block.name, block.input, origen);
+        result = await executeOwnerTool(block.name, block.input, origen);
       } catch (e) {
         result = { error: e.message };
       }
@@ -881,7 +1464,7 @@ async function transcribeAudio(media) {
           { text: 'Transcribe exactamente lo que dice este audio. Responde SOLO con la transcripción en texto plano, sin comentarios ni comillas.' },
           { inlineData: { mimeType: mimetype, data: media.data } },
         ] }],
-        generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 } },
+        generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingLevel: 'MINIMAL' } },
       });
       return text?.trim() || null;
     }
@@ -927,7 +1510,7 @@ async function identifyProductFromImage(media) {
           { text: IMAGE_IDENTIFY_PROMPT },
           { inlineData: { mimeType: mimetype, data: media.data } },
         ] }],
-        generationConfig: { maxOutputTokens: 60, thinkingConfig: { thinkingBudget: 0 } },
+        generationConfig: { maxOutputTokens: 60, thinkingConfig: { thinkingLevel: 'MINIMAL' } },
       });
     }
 
@@ -979,7 +1562,7 @@ async function describeImageForOwner(media) {
           { text: OWNER_IMAGE_DESCRIBE_PROMPT },
           { inlineData: { mimeType: mimetype, data: media.data } },
         ] }],
-        generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingBudget: 0 } },
+        generationConfig: { maxOutputTokens: 200, thinkingConfig: { thinkingLevel: 'MINIMAL' } },
       });
       return text?.trim() || null;
     }
@@ -1015,11 +1598,16 @@ async function responder(mensaje, fromJid) {
   trimHistorial(20);
 
   const { provider, apiKey } = _aiConfig || {};
+  const ownerSystem = SYSTEM_PROMPT(contextoTexto)
+    + SYSTEM_KNOWLEDGE
+    + PROMOTIONS_TOOL_GUIDANCE
+    + REPORT_TOOL_GUIDANCE
+    + LOOKUP_TOOL_GUIDANCE;
 
   if (provider === 'claude' && apiKey) {
     try {
       const resultado = await callClaudeOwnerTurn(
-        SYSTEM_PROMPT(contextoTexto) + PROMOTIONS_TOOL_GUIDANCE,
+        ownerSystem,
         historial,
         fromJid,
       );
@@ -1030,8 +1618,19 @@ async function responder(mensaje, fromJid) {
     } catch (e) {
       console.error('[wa-bot] Error IA (tools):', e.message);
     }
+  } else if (provider === 'gemini') {
+    try {
+      const respuesta = await callGeminiOwnerTurn(ownerSystem, historial, fromJid);
+      if (respuesta) {
+        historial.push({ role: 'assistant', content: respuesta });
+        trimHistorial(20);
+        return respuesta;
+      }
+    } catch (e) {
+      console.error('[wa-bot] Error Gemini (tools):', e.message);
+    }
   } else {
-    const respuesta = await callAi(SYSTEM_PROMPT(contextoTexto), historial);
+    const respuesta = await callAi(ownerSystem, historial);
     if (respuesta) {
       historial.push({ role: 'assistant', content: respuesta });
       trimHistorial(20);
@@ -1047,6 +1646,7 @@ async function responder(mensaje, fromJid) {
 
   // ── Menú / Ayuda ─────────────────────────────────────────────────────────────
   if (t.match(/^(hola|buenas|buenos|hey|ey|hi|inicio|ayuda|menu|menú|start|help|\?)$/)) {
+    const hasOwnerTools = (provider === 'claude' && apiKey) || provider === 'gemini';
     return [
       `👋 *Asistente Tecno Caja POS*`,
       `Conectado en tiempo real — ${hoy}`,
@@ -1060,9 +1660,12 @@ async function responder(mensaje, fromJid) {
       `👤 *Cajeros:* quién vendió más hoy`,
       `🏦 *Caja:* turnos abiertos, egresos`,
       `📈 *Tendencias:* tráfico por hora, pico del día`,
-      provider === 'claude' && apiKey
+      hasOwnerTools
         ? `📢 *Promociones:* crear, activar o desactivar ofertas`
-        : `📢 *Promociones:* crear, activar o desactivar ofertas _(activa la IA Claude en Configuración → Bot WhatsApp para usarlo)_`,
+        : `📢 *Promociones:* consulta desde el Centro de Promociones`,
+      hasOwnerTools
+        ? `📄 *Reportes:* PDF, Excel o CSV enviados por este chat`
+        : `📄 *Reportes:* activa Google Gemini o Claude para generarlos`,
       ``,
       `Escriba lo que necesita de forma natural.`,
       `Ej: _"¿Cuánto vendí hoy?"_ o _"¿qué está agotado?"_`,
@@ -2482,9 +3085,25 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
     // estaba sincronizando, justo cuando el teléfono ya estaba conectado.
     if (_startTimeoutId) { clearTimeout(_startTimeoutId); _startTimeoutId = null; }
     console.log('[wa-bot] Sesión autenticada — sincronizando...');
+
+    // Timeout de respaldo: si la sincronización post-autenticación se cuelga
+    // (pasa con caché vieja de Chrome o cortes de red) y 'ready' nunca llega,
+    // sin esto el bot se queda en "starting" para siempre sin ningún timeout
+    // activo que lo rescate — el de arriba ya se canceló en esta misma línea.
+    if (_readyTimeoutId) clearTimeout(_readyTimeoutId);
+    _readyTimeoutId = setTimeout(() => {
+      _readyTimeoutId = null;
+      if (state.status === 'starting') {
+        console.warn('[wa-bot] Timeout (120s) autenticado pero sin sincronizar — deteniendo bot');
+        state.status = 'disconnected';
+        pushState();
+        stop().catch(() => {});
+      }
+    }, 120000);
   });
 
   _client.on('ready', async () => {
+    if (_readyTimeoutId) { clearTimeout(_readyTimeoutId); _readyTimeoutId = null; }
     // Guardar PID del Chromium para poder matarlo al detener
     try {
       const browserProc = _client.pupBrowser?.process();
@@ -2557,9 +3176,16 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
           await msg.reply(`Activa una IA en Configuración → Bot WhatsApp para que pueda ${isVoiceMsg ? 'escuchar notas de voz' : 'leer fotos'}. 🙏`);
           return;
         }
-        const media = await msg.downloadMedia().catch(() => null);
+        const media = await msg.downloadMedia().catch((e) => {
+          console.error('[wa-bot] No se pudo descargar el media del dueño:', e.message);
+          return null;
+        });
+        if (!media) console.warn('[wa-bot] downloadMedia() devolvió vacío (mensaje del dueño)');
         if (isVoiceMsg) {
-          mensajeEntrante = media ? await transcribeAudio(media).catch(() => null) : null;
+          mensajeEntrante = media ? await transcribeAudio(media).catch((e) => {
+            console.error('[wa-bot] transcribeAudio lanzó excepción:', e.message);
+            return null;
+          }) : null;
           if (!mensajeEntrante) {
             await msg.reply('No pude entender la nota de voz. ¿Me lo escribes, por favor? 🙏');
             return;
@@ -2621,9 +3247,12 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
       try {
         const respuesta = await responder(mensajeEntrante, msg.from);
         await msg.reply(respuesta);
+        const sentFiles = await sendPendingOwnerAttachments(msg.from);
         addMessage('out', respuesta);
+        for (const filename of sentFiles) addMessage('out', `[Archivo] ${filename}`);
       } catch (e) {
         console.error('[wa-bot] Error:', e.message);
+        pendingOwnerAttachments.delete(msg.from);
         await msg.reply('⚠️ Error procesando tu consulta. Intenta de nuevo.');
       }
       return;
@@ -2641,6 +3270,7 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
 
   _client.on('disconnected', (reason) => {
     if (_startTimeoutId) { clearTimeout(_startTimeoutId); _startTimeoutId = null; }
+    if (_readyTimeoutId) { clearTimeout(_readyTimeoutId); _readyTimeoutId = null; }
     state.status = 'disconnected';
     state.connectedAs = null;
     console.warn('[wa-bot] Desconectado:', reason);
@@ -2670,6 +3300,7 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
 
 async function stop() {
   if (_startTimeoutId) { clearTimeout(_startTimeoutId); _startTimeoutId = null; }
+  if (_readyTimeoutId) { clearTimeout(_readyTimeoutId); _readyTimeoutId = null; }
   if (_client) {
     const c = _client;
     _client = null;

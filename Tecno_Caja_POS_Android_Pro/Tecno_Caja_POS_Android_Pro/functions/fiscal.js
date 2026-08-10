@@ -206,4 +206,46 @@ const configureNcfSequence = onCall({ cors: true }, async (request) => {
   return { ok: true };
 });
 
-module.exports = { requestNcf, configureNcfSequence, ESTADOS };
+/**
+ * listNcfSequences — lectura de las secuencias configuradas para una
+ * empresa. Necesaria porque las reglas de Firestore bloquean la lectura
+ * directa de `ncfSequences` a cualquier cliente (para que nadie falsifique
+ * el estado de una secuencia) — este es el único camino de solo-lectura,
+ * igual de restringido a admin/owner que `configureNcfSequence`.
+ */
+const listNcfSequences = onCall({ cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+
+  const db = admin.firestore();
+  const businessId = String(request.data?.businessId || '').trim();
+  if (!businessId) {
+    throw new HttpsError('invalid-argument', 'Falta businessId.');
+  }
+
+  const profile = await loadCallerProfile(db, uid);
+  assertBelongsToBusiness(profile, businessId);
+  if (!isOwnerOrAdmin(profile)) {
+    throw new HttpsError('permission-denied', 'Solo un administrador puede ver las secuencias fiscales.');
+  }
+
+  const snap = await db
+    .collection('businesses').doc(businessId)
+    .collection('ncfSequences')
+    .get();
+
+  return {
+    sequences: snap.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        ncfType: data.ncfType,
+        ambiente: data.ambiente,
+        siguienteNumero: data.siguienteNumero,
+        maximo: data.maximo,
+        activa: Boolean(data.activa),
+      };
+    }),
+  };
+});
+
+module.exports = { requestNcf, configureNcfSequence, listNcfSequences, ESTADOS };

@@ -1,0 +1,23 @@
+{
+  "trackId": "f4a8cac7-f138-4014-89d3-0fa1ba5b4067",
+  "fecha": "2026-06-14T21:32:33.571Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000001",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/14/2026 5:31:02 PM",
+  "mensajes": [
+    {
+      "valor": "La propiedad NombreComercial no es válida debido a que el valor enviado (DOCUMENTOS ELETRONICOS DE 02) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"f4a8cac7-f138-4014-89d3-0fa1ba5b4067\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000001\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/14/2026 5:31:02 PM\",\"mensajes\":[{\"valor\":\"La propiedad NombreComercial no es válida debido a que el valor enviado (DOCUMENTOS ELETRONICOS DE 02) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-f4a8cac7-f138-4014-89d3-0fa1ba5b4067.json"
+}

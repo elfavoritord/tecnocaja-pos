@@ -1,0 +1,23 @@
+{
+  "trackId": "47035dc9-c2c0-4401-a770-a09c996fbeb8",
+  "fecha": "2026-06-20T00:50:49.690Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E340000000084",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "6/19/2026 8:36:21 PM",
+  "mensajes": [
+    {
+      "valor": "El campo IndicadorNotaCredito del área IdDoc de la sección Encabezado no es válido",
+      "codigo": 156
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"47035dc9-c2c0-4401-a770-a09c996fbeb8\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E340000000084\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"6/19/2026 8:36:21 PM\",\"mensajes\":[{\"valor\":\"El campo IndicadorNotaCredito del área IdDoc de la sección Encabezado no es válido\",\"codigo\":156}]}",
+  "statusPath": "storage/ecf/tracks/estado-47035dc9-c2c0-4401-a770-a09c996fbeb8.json"
+}

@@ -1,0 +1,23 @@
+{
+  "trackId": "c2e35386-0d4c-46b7-b1e4-c2b67d1eb87b",
+  "fecha": "2026-06-14T14:10:16.086Z",
+  "estado": "ACEPTADO",
+  "environment": "certecf",
+  "codigo": "1",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000002",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/14/2026 10:07:47 AM",
+  "mensajes": [
+    {
+      "valor": "",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"c2e35386-0d4c-46b7-b1e4-c2b67d1eb87b\",\"codigo\":\"1\",\"estado\":\"Aceptado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000002\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/14/2026 10:07:47 AM\",\"mensajes\":[{\"valor\":\"\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-c2e35386-0d4c-46b7-b1e4-c2b67d1eb87b.json"
+}

@@ -1,0 +1,14 @@
+{
+  "trackId": "be137a56-2e2c-4906-90b0-d7a7af607ad8",
+  "fecha": "2026-07-28T10:32:02.313Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260728-063202.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"be137a56-2e2c-4906-90b0-d7a7af607ad8\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260728-063202.json"
+}

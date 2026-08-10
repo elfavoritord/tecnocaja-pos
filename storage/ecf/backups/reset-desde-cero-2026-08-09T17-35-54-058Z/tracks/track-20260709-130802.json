@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-07-09T17:08:02.761Z",
+  "estado": "ENVIADO",
+  "environment": "ecf",
+  "codigo": "4",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260709-130802.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"codigo\":4,\"estado\":\"Aceptado Condicional\",\"mensajes\":[{\"codigo\":\"75\",\"valor\":\"No existen rangos de secuencias disponibles.\"},{\"codigo\":\"3205\",\"valor\":\"El campo MontoTotal del área Totales de la sección Encabezado no es válido.El elemento MontoTotal no es correcto.\"}],\"encf\":\"E320000001094\",\"secuenciaUtilizada\":true}",
+  "trackPath": "storage/ecf/tracks/track-20260709-130802.json"
+}

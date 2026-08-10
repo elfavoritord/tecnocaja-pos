@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E32",
+  "eNCF": "E320000001127",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:04.321Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "47200.00",
+  "fechaFirmaXML": null,
+  "signatureValueCompleto": "cpC3uE7Zb+0fWXR06KYY9ygUNSH7I2f6rzIY3WlEDPYy9EscO4Hbt/xvcuP7y8pWrAxRz/ul1lkeRCPcB5xc9kEhuQeBu+wlEZTSh4cWeaylDlQgT56qaVUNQLXhciwiP1qAFJK1GAvpRR8JSDCeIMXw9xu8FeFkuxZUW98MDAqeOFkoWtkx5JGzLZgJ8MwrZnih3T/0IuLS4h/tOrcqY9k0Nut1Tzk5EbBNy+92/OSrfVAzPZbbTfMnr9PNrh9TeibZIDVFCw6a1YN6BA5uhXahXRTR0LT9SRXkCZe01PBHgZ/r7ublyJwHOOuMOMSpd9fC5CQ1eWbhkNay+BOqRw==",
+  "codigoSeguridadGenerado": "rsNb1H",
+  "urlQRGenerada": "https://fc.dgii.gov.do/CerteCF/ConsultaTimbreFC?RncEmisor=40211932609&ENCF=E320000001127&MontoTotal=47200.00&CodigoSeguridad=rsNb1H",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "03-Factura-Consumo-Menor250k-E320000001127.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": null,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": null,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": null,
+    "codigoSeguridadCoincide": true
+  }
+}

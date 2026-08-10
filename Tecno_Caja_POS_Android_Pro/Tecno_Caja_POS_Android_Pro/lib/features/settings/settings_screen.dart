@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../core/errors/app_exception.dart';
@@ -114,6 +115,19 @@ class SettingsScreen extends ConsumerWidget {
             onTap: () => Navigator.of(context).push<void>(
               MaterialPageRoute(builder: (_) => const PrinterSettingsScreen()),
             ),
+          ),
+          const Divider(),
+          const _SeccionTitulo('Facturación fiscal'),
+          ListTile(
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: const Text('NCF y comprobantes fiscales'),
+            subtitle: Text(
+              (configAsync.valueOrNull?.fiscalUsaComprobantes ?? false)
+                  ? 'Activado'
+                  : 'Desactivado',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/fiscal'),
           ),
           const Divider(),
           const _SeccionTitulo('Sincronización con Windows'),

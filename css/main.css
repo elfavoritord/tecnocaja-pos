@@ -885,6 +885,51 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 }
 .search-wrap input::placeholder { color:var(--text3); }
 .search-hint { font-size:0.75rem; color:var(--text3); white-space:nowrap; }
+.quick-sale-add-btn {
+  width:38px;
+  height:38px;
+  flex:0 0 38px;
+  display:grid;
+  place-items:center;
+  border:1px solid rgba(108,99,255,0.55);
+  border-radius:8px;
+  background:var(--accent);
+  color:#fff;
+  font-size:1.45rem;
+  font-weight:700;
+  line-height:1;
+  cursor:pointer;
+  transition:filter 0.16s ease, transform 0.16s ease;
+}
+.quick-sale-add-btn:hover { filter:brightness(1.1); transform:translateY(-1px); }
+.quick-sale-add-btn:focus-visible { outline:2px solid var(--accent-light); outline-offset:2px; }
+.quick-sale-form { display:grid; gap:0.9rem; }
+.quick-sale-fields { display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 0.7fr); gap:0.8rem; }
+.quick-sale-form .form-group { margin:0; }
+.quick-sale-total {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:1rem;
+  min-height:58px;
+  padding:0.8rem 0.95rem;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:rgba(108,99,255,0.08);
+}
+.quick-sale-total span { color:var(--text2); font-size:0.82rem; }
+.quick-sale-total strong { color:var(--accent-light); font-family:var(--font-mono); font-size:1.05rem; }
+.quick-sale-badge {
+  display:inline-block;
+  margin-top:0.22rem;
+  color:var(--accent-light);
+  font-size:0.65rem;
+  font-weight:700;
+}
+@media (max-width:620px) {
+  .search-hint { display:none; }
+  .quick-sale-fields { grid-template-columns:1fr; }
+}
 
 .search-dropdown {
   position:absolute; top:calc(100% + 8px); left:0; right:0; background:var(--bg2);

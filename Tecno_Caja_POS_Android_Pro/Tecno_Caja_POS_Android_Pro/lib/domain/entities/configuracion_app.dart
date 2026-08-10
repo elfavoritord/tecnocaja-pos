@@ -23,6 +23,11 @@ class ConfiguracionApp {
     this.windowsCodigoDispositivo,
     this.windowsNombreDispositivo,
     this.windowsVinculadoEn,
+    this.fiscalUsaComprobantes = false,
+    this.fiscalModoComprobante,
+    this.fiscalAmbiente = 'certificacion',
+    this.sucursalSeleccionadaId,
+    this.cajaSeleccionadaId,
     required this.actualizadoEn,
   });
 
@@ -47,6 +52,11 @@ class ConfiguracionApp {
   final String? windowsCodigoDispositivo;
   final String? windowsNombreDispositivo;
   final DateTime? windowsVinculadoEn;
+  final bool fiscalUsaComprobantes;
+  final String? fiscalModoComprobante;
+  final String fiscalAmbiente;
+  final String? sucursalSeleccionadaId;
+  final String? cajaSeleccionadaId;
   final DateTime actualizadoEn;
 
   static ConfiguracionApp inicial() => ConfiguracionApp(actualizadoEn: DateTime.now());
@@ -58,7 +68,8 @@ class ConfiguracionApp {
     String? impresoraPredeterminadaMac, int? impresoraAnchoMm, bool? imprimirAutomatico,
     bool? sonidoScanner, bool? vibrarScanner, bool? windowsVinculado, String? windowsModoConexion,
     String? windowsUrlLan, String? windowsCodigoDispositivo, String? windowsNombreDispositivo,
-    DateTime? windowsVinculadoEn,
+    DateTime? windowsVinculadoEn, bool? fiscalUsaComprobantes, String? fiscalModoComprobante,
+    String? fiscalAmbiente,
   }) {
     return ConfiguracionApp(
       empresaId: empresaId ?? this.empresaId,
@@ -82,6 +93,9 @@ class ConfiguracionApp {
       windowsCodigoDispositivo: windowsCodigoDispositivo ?? this.windowsCodigoDispositivo,
       windowsNombreDispositivo: windowsNombreDispositivo ?? this.windowsNombreDispositivo,
       windowsVinculadoEn: windowsVinculadoEn ?? this.windowsVinculadoEn,
+      fiscalUsaComprobantes: fiscalUsaComprobantes ?? this.fiscalUsaComprobantes,
+      fiscalModoComprobante: fiscalModoComprobante ?? this.fiscalModoComprobante,
+      fiscalAmbiente: fiscalAmbiente ?? this.fiscalAmbiente,
       actualizadoEn: DateTime.now(),
     );
   }
@@ -109,6 +123,9 @@ class ConfiguracionApp {
         'windows_codigo_dispositivo': windowsCodigoDispositivo,
         'windows_nombre_dispositivo': windowsNombreDispositivo,
         'windows_vinculado_en': windowsVinculadoEn?.toIso8601String(),
+        'fiscal_usa_comprobantes': fiscalUsaComprobantes ? 1 : 0,
+        'fiscal_modo_comprobante': fiscalModoComprobante,
+        'fiscal_ambiente': fiscalAmbiente,
         'actualizado_en': actualizadoEn.toIso8601String(),
       };
 
@@ -134,6 +151,9 @@ class ConfiguracionApp {
         windowsCodigoDispositivo: map['windows_codigo_dispositivo'] as String?,
         windowsNombreDispositivo: map['windows_nombre_dispositivo'] as String?,
         windowsVinculadoEn: map['windows_vinculado_en'] != null ? DateTime.parse(map['windows_vinculado_en'] as String) : null,
+        fiscalUsaComprobantes: (map['fiscal_usa_comprobantes'] as int? ?? 0) == 1,
+        fiscalModoComprobante: map['fiscal_modo_comprobante'] as String?,
+        fiscalAmbiente: map['fiscal_ambiente'] as String? ?? 'certificacion',
         actualizadoEn: DateTime.parse(map['actualizado_en'] as String),
       );
 }

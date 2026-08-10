@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E47",
+  "eNCF": "E470000000128",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:13.665Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": null,
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "66000.00",
+  "fechaFirmaXML": "09-08-2026 22:41:52",
+  "signatureValueCompleto": "qmTBNmxzNUHRLim0FXyQ1U092EjF265+dfbLUoPOh/HkwUFlJsH2cIYpVV1l2tQvAu4vKRmHRcftKrvs903VYm07FOn3G6akUevCbRHo/ILf0NPWNs+lZWQWDOnO2ArPH2pGUu71LUSQoyu6BSmdDZhulPg1GTD5whCV/rxTcrpvPbTuDz0XwxiaQH8JiUuJe97le6a9xcbl3Ivcfg3brKDdB89aRNbEUqUlAijDXH8MiHFRb5TWUkuSUy6WOc9WzFbwIqPdOI4LFQ1XGozUYyqw8BeRZJ8S+pe5Dk74xrtg9nuwmNrXhDmm6C12OHp+e9vNeQpSxgo5c8PzOVHkoA==",
+  "codigoSeguridadGenerado": "qmTBNm",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&ENCF=E470000000128&FechaEmision=09-08-2026&MontoTotal=66000.00&FechaFirma=09-08-2026%2022%3A41%3A52&CodigoSeguridad=qmTBNm",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "11-Pagos-Exterior-E470000000128.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": false,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

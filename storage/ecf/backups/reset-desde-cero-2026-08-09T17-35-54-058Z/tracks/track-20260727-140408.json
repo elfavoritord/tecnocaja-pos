@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-07-27T18:04:08.801Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260727-140407.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"codigo\":2,\"estado\":\"Rechazado\",\"mensajes\":[{\"codigo\":\"75\",\"valor\":\"El e-NCF de este Resumen de Factura de Consumo ya ha sido utilizado previamente.\"}],\"encf\":\"E320000000011\",\"secuenciaUtilizada\":false}",
+  "trackPath": "storage/ecf/tracks/track-20260727-140408.json"
+}

@@ -784,6 +784,7 @@
               <span class="search-icon">🔍</span>
               <input type="text" id="product-search" placeholder="Escanear código o buscar producto... (F2)" oninput="searchProduct(this.value)" onkeydown="handleSearchKey(event)" autocomplete="off">
               <span class="search-hint">Enter para agregar</span>
+              <button class="quick-sale-add-btn" type="button" onclick="openQuickSaleModal()" title="Agregar producto rápido" aria-label="Agregar producto rápido">+</button>
             </div>
             <div id="search-dropdown" class="search-dropdown hidden"></div>
           </div>
@@ -3748,7 +3749,7 @@
               <label class="wabot-ai-option">
                 <input type="radio" name="wabot-ai" value="gemini" onchange="waBotSelectAI('gemini', this.closest('.wabot-ai-option'))">
                 <span>Google Gemini</span>
-                <span class="wabot-ai-badge free">GRATIS</span>
+                <span class="wabot-ai-badge free">PLAN GRATIS</span>
               </label>
               <label class="wabot-ai-option">
                 <input type="radio" name="wabot-ai" value="claude" onchange="waBotSelectAI('claude', this.closest('.wabot-ai-option'))">
@@ -3787,14 +3788,14 @@
           <p style="font-size:.78rem;color:var(--text3);margin-top:1rem;line-height:1.5">
             Al iniciar, aparece un <strong>código QR</strong> aquí.<br>
             Escanéalo con el WhatsApp del número del negocio.<br>
-            Luego escríbele desde tu personal (<code>18292812877</code>).
+            Solo los números personales autorizados pueden consultar datos internos y recibir reportes.
           </p>
         </div>
 
         <!-- Instrucciones personalizadas -->
         <div class="wabot-card" style="grid-column:1/-1">
           <h3 style="margin-bottom:.6rem">📝 Instrucciones del Bot</h3>
-          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem">Personaliza cómo responde el bot. Ej: "Cuando saludes, menciona el nombre del negocio. Si hay bajo stock, ponlo primero siempre."</p>
+          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem">Personaliza cómo responde el bot. También puedes pedir por WhatsApp reportes de ventas, inventario, clientes, crédito o caja en PDF, Excel y CSV.</p>
           <textarea id="wabot-instructions" rows="4" placeholder="Escribe aquí las instrucciones para el bot..." style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.85rem;resize:vertical;font-family:inherit"></textarea>
           <div style="display:flex;justify-content:flex-end;margin-top:.5rem">
             <button onclick="waBotSaveInstructions()" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:.5rem 1.2rem;font-weight:600;font-size:.85rem;cursor:pointer">Guardar instrucciones</button>

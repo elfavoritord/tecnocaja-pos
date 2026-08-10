@@ -76,6 +76,26 @@ class CloudFunctionsService {
     });
   }
 
+  Future<Map<String, dynamic>> configureNcfSequence({
+    required String businessId,
+    required String ncfType,
+    required int desde,
+    required int maximo,
+    String ambiente = 'certificacion',
+  }) {
+    return _call('configureNcfSequence', {
+      'businessId': businessId,
+      'ncfType': ncfType,
+      'ambiente': ambiente,
+      'desde': desde,
+      'maximo': maximo,
+    });
+  }
+
+  Future<Map<String, dynamic>> listNcfSequences(String businessId) {
+    return _call('listNcfSequences', {'businessId': businessId});
+  }
+
   Future<Map<String, dynamic>> _call(
       String nombre, Map<String, dynamic> datos) async {
     // cloud_functions_web ha tenido bugs de interop con valores `null` dentro

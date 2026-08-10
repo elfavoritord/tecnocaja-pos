@@ -1049,7 +1049,7 @@ class EcfRepository {
     }
 
     const items = await this.query(
-      `SELECT si.*, p.nombre AS product_name
+      `SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        WHERE si.sale_id = ?

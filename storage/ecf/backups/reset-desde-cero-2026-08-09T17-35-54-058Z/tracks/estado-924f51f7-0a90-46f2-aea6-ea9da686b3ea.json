@@ -1,0 +1,23 @@
+{
+  "trackId": "924f51f7-0a90-46f2-aea6-ea9da686b3ea",
+  "fecha": "2026-06-19T01:19:52.551Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E470000000007",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/18/2026 9:19:35 PM",
+  "mensajes": [
+    {
+      "valor": "La propiedad TerminoPago no es válida debido a que el valor enviado () no coincide con el valor (6) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"924f51f7-0a90-46f2-aea6-ea9da686b3ea\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E470000000007\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/18/2026 9:19:35 PM\",\"mensajes\":[{\"valor\":\"La propiedad TerminoPago no es válida debido a que el valor enviado () no coincide con el valor (6) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-924f51f7-0a90-46f2-aea6-ea9da686b3ea.json"
+}

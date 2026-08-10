@@ -111,10 +111,35 @@ function fmt(n) {
 
 async function generateReprImpresaHtml(signedXml, opts = {}) {
   const d = parseEcfXml(signedXml);
+  const rfceSummary = opts.rfceSummaryXml ? parseEcfXml(opts.rfceSummaryXml) : null;
+  if (rfceSummary) {
+    if (!rfceSummary.isRfce) {
+      throw new Error('El XML vinculado como RFCE no tiene raíz <RFCE>.');
+    }
+    if (d.isRfce || d.tipoEcf !== '32') {
+      throw new Error('La representación de un RFCE requiere el e-CF completo Tipo 32 vinculado.');
+    }
+    if (!d.encf || d.encf !== rfceSummary.encf) {
+      throw new Error(`El e-NCF del E32 (${d.encf || 'ausente'}) no coincide con el RFCE (${rfceSummary.encf || 'ausente'}).`);
+    }
+    if (!d.codigoSeguridad || d.codigoSeguridad !== rfceSummary.codigoSeguridad) {
+      throw new Error(`El código de seguridad del E32 ${d.encf} no coincide con su RFCE.`);
+    }
+    if (d.rncEmisor && rfceSummary.rncEmisor && d.rncEmisor !== rfceSummary.rncEmisor) {
+      throw new Error(`El RNC emisor del E32 ${d.encf} no coincide con su RFCE.`);
+    }
+    const fullAmount = Number(d.montoTotal);
+    const summaryAmount = Number(rfceSummary.montoTotal);
+    if (Number.isFinite(fullAmount) && Number.isFinite(summaryAmount) && Math.abs(fullAmount - summaryAmount) > 0.01) {
+      throw new Error(`El monto total del E32 ${d.encf} no coincide con su RFCE.`);
+    }
+  }
+  const isRfceRepresentation = d.isRfce || Boolean(rfceSummary);
+  const qrData = rfceSummary || d;
   const typeLabel =
-    (d.isRfce ? 'FACTURA DE CONSUMO ELECTRÓNICA (RFCE) < RD$250,000' : ECF_TYPE_LABELS[d.tipoEcf]) ||
+    (isRfceRepresentation ? 'FACTURA DE CONSUMO ELECTRÓNICA (RFCE) < RD$250,000' : ECF_TYPE_LABELS[d.tipoEcf]) ||
     `COMPROBANTE ELECTRÓNICO TIPO ${d.tipoEcf}`;
-  const codigoSeguridad = d.codigoSeguridad || '------';
+  const codigoSeguridad = qrData.codigoSeguridad || '------';
   const env = opts.env || 'certecf';
 
   // opts.emitter permite sobreescribir los datos del emisor del XML con los
@@ -155,25 +180,29 @@ async function generateReprImpresaHtml(signedXml, opts = {}) {
   // parámetros — no lleva RncComprador/FechaEmision/FechaFirma porque un RFCE
   // por diseño no tiene FechaHoraFirma (ver rfce-xsd.util.js: "Un RFCE no debe
   // incluir FechaHoraFirma; solo firma XMLDSig"). Verificado en vivo contra
-  // fc.dgii.gov.do/CerteCF/ConsultaTimbreFC. Cualquier otro tipo de e-CF exige
-  // los 7 parámetros del portal ecf.dgii.gov.do/CerteCF/ConsultaTimbre
-  // (verificado en vivo también) — faltaban RncComprador, FechaEmision y
-  // FechaFirma, por eso el validador de DGII marcaba la URL como inválida.
+  // fc.dgii.gov.do/CerteCF/ConsultaTimbreFC. Los demás tipos usan el portal
+  // ecf.dgii.gov.do/CerteCF/ConsultaTimbre; RncComprador es condicional porque
+  // no corresponde para E43/E47. FechaEmision y FechaFirma sí deben incluirse.
   // FechaFirma se codifica completa con encodeURIComponent (espacio -> %20, ':' -> %3A),
   // igual que el resto de los parámetros — mismo criterio que qr-url.util.js (mantener
   // ambos sincronizados). Antes solo se codificaba el espacio (como '+'), dejando ':' y '-'
   // literales; ambas formas son válidas para un query string y DGII acepta las dos (verificado
   // en vivo: los e-CF ya aceptados y confirmados en ConsultaTimbre usaban la forma con '+'),
   // pero se estandariza a la codificación RFC 3986 completa para no dejar dudas.
-  const qrUrl = d.isRfce
+  // E43 y E47 no tienen RNCComprador. ConsultaTimbre exige que el parametro
+  // se omita en esos casos; enviarlo vacio hace que DGII responda "no encontrada".
+  const compradorParam = d.rncComprador
+    ? `&RncComprador=${encodeURIComponent(d.rncComprador)}`
+    : '';
+  const qrUrl = isRfceRepresentation
     ? `https://fc.dgii.gov.do/${envSegment}/ConsultaTimbreFC?` +
-      `RncEmisor=${encodeURIComponent(issuerRnc)}` +
-      `&ENCF=${encodeURIComponent(d.encf)}` +
-      `&MontoTotal=${encodeURIComponent(d.montoTotal || '')}` +
+      `RncEmisor=${encodeURIComponent(qrData.rncEmisor || issuerRnc)}` +
+      `&ENCF=${encodeURIComponent(qrData.encf)}` +
+      `&MontoTotal=${encodeURIComponent(qrData.montoTotal || '')}` +
       `&CodigoSeguridad=${encodeURIComponent(codigoSeguridad)}`
     : `${baseUrl}/ConsultaTimbre?` +
       `RncEmisor=${encodeURIComponent(issuerRnc)}` +
-      `&RncComprador=${encodeURIComponent(d.rncComprador || '')}` +
+      compradorParam +
       `&ENCF=${encodeURIComponent(d.encf)}` +
       `&FechaEmision=${encodeURIComponent(d.fechaEmision || '')}` +
       `&MontoTotal=${encodeURIComponent(d.montoTotal || '')}` +
@@ -288,7 +317,7 @@ async function generateReprImpresaHtml(signedXml, opts = {}) {
     </div>
 
     <div class="doc-box">
-      <div class="doc-type">${escapeHtml(typeLabel)}${d.isRfce ? ' <span class="rfce-badge">RFCE</span>' : ''}</div>
+      <div class="doc-type">${escapeHtml(typeLabel)}${isRfceRepresentation ? ' <span class="rfce-badge">RFCE</span>' : ''}</div>
       <div class="doc-meta">e-NCF: ${escapeHtml(d.encf)}</div>
       ${d.fechaVencimiento ? `<div class="doc-meta">Vencimiento Secuencia: ${escapeHtml(d.fechaVencimiento)}</div>` : ''}
       ${d.limitePago ? `<div class="doc-meta">Fecha Límite de Pago: ${escapeHtml(d.limitePago)}</div>` : ''}

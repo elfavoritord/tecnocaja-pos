@@ -1,0 +1,14 @@
+{
+  "trackId": "cab4f2ea-b800-4669-b1bf-507deb2eb617",
+  "fecha": "2026-06-14T15:24:21.633Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260614-112421.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"cab4f2ea-b800-4669-b1bf-507deb2eb617\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260614-112421.json"
+}

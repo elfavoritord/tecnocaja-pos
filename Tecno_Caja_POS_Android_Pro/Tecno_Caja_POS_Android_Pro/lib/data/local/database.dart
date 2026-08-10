@@ -19,7 +19,7 @@ class AppDatabase {
 
   static final AppDatabase instance = AppDatabase._();
 
-  static const int schemaVersion = 1;
+  static const int schemaVersion = 3;
   static const String fileName = 'tecno_caja_pos.db';
 
   Database? _db;
@@ -81,7 +81,22 @@ class AppDatabase {
   /// EXISTS incrementales cuando cambie el esquema. Nunca DROP de tablas con
   /// datos del usuario -- ver CLAUDE.md / seccion 31 del alcance ("no borrar
   /// datos existentes").
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {}
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute(
+          'ALTER TABLE configuracion ADD COLUMN fiscal_usa_comprobantes INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+          'ALTER TABLE configuracion ADD COLUMN fiscal_modo_comprobante TEXT');
+      await db.execute(
+          "ALTER TABLE configuracion ADD COLUMN fiscal_ambiente TEXT NOT NULL DEFAULT 'certificacion'");
+    }
+    if (oldVersion < 3) {
+      await db.execute(
+          'ALTER TABLE configuracion ADD COLUMN sucursal_seleccionada_id TEXT');
+      await db.execute(
+          'ALTER TABLE configuracion ADD COLUMN caja_seleccionada_id TEXT');
+    }
+  }
 
   Future<void> close() async {
     final db = _db;

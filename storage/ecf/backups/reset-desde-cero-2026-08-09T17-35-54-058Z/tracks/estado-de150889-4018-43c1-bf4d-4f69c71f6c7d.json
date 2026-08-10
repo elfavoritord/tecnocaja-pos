@@ -1,0 +1,23 @@
+{
+  "trackId": "de150889-4018-43c1-bf4d-4f69c71f6c7d",
+  "fecha": "2026-07-11T02:00:58.099Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E450000000036",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "7/10/2026 10:00:08 PM",
+  "mensajes": [
+    {
+      "valor": "El campo TasaImpuestoAdicional del área ImpuestosAdicionales de la sección Totales de la línea 1 de la tabla Encabezado (línea 1) no es válido.  La tasa del impuesto especificado no es válido",
+      "codigo": 11064
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"de150889-4018-43c1-bf4d-4f69c71f6c7d\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E450000000036\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"7/10/2026 10:00:08 PM\",\"mensajes\":[{\"valor\":\"El campo TasaImpuestoAdicional del área ImpuestosAdicionales de la sección Totales de la línea 1 de la tabla Encabezado (línea 1) no es válido.  La tasa del impuesto especificado no es válido\",\"codigo\":11064}]}",
+  "statusPath": "storage/ecf/tracks/estado-de150889-4018-43c1-bf4d-4f69c71f6c7d.json"
+}

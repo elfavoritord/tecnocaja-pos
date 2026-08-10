@@ -10,6 +10,7 @@ import '../../features/auth/register_screen.dart';
 import '../../features/caja/caja_screen.dart';
 import '../../features/clientes/clientes_screen.dart';
 import '../../features/dashboard/dashboard_screen.dart';
+import '../../features/fiscal/fiscal_config_screen.dart';
 import '../../features/inventario/inventario_screen.dart';
 import '../../features/modules/modules_screen.dart';
 import '../../features/onboarding/onboarding_screen.dart';
@@ -187,7 +188,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             path: '/etiquetas',
             builder: (context, state) => const LabelPrintScreen(),
           ),
-          GoRoute(path: '/fiscal', redirect: (context, state) => '/ajustes'),
+          GoRoute(
+              path: '/fiscal',
+              builder: (context, state) => const FiscalConfigScreen()),
           GoRoute(path: '/respaldos', redirect: (context, state) => '/ajustes'),
         ],
       ),

@@ -8233,7 +8233,8 @@ async function seleccionarFacturaDevolucion(invoiceNumber) {
             <input type="number" ${disabled}
                    id="devolucion-qty-${idx}"
                    data-item-idx="${idx}"
-                   data-product-id="${item.productId}"
+                   data-sale-item-id="${item.id}"
+                   data-product-id="${item.productId || ''}"
                    data-price="${item.price}"
                    data-qty-max="${disponible}"
                    min="0" max="${disponible}" step="${qtyStep}" value="0"
@@ -8283,6 +8284,7 @@ async function procesarDevolucion() {
     const qty = Number(el.value || 0);
     if (qty > 0) {
       items.push({
+        saleItemId: Number(el.dataset.saleItemId),
         productId: Number(el.dataset.productId),
         qty,
       });
@@ -10130,7 +10132,7 @@ async function waBotLoadBusinessHours() {
 }
 
 const _waBotAiInfo = {
-  gemini:  { label: 'API Key de Google AI Studio', placeholder: 'AIza...', hint: 'Obtén tu key gratis en aistudio.google.com' },
+  gemini:  { label: 'API Key de Google AI Studio', placeholder: 'AIza...', hint: 'Usa el plan gratuito de Gemini Flash-Lite; Google aplica cuotas de uso.' },
   claude:  { label: 'API Key de Anthropic',         placeholder: 'sk-ant-...', hint: 'Obtén tu key en console.anthropic.com' },
   chatgpt: { label: 'API Key de OpenAI',            placeholder: 'sk-...', hint: 'Obtén tu key en platform.openai.com' },
   none:    { label: '', placeholder: '', hint: '' },

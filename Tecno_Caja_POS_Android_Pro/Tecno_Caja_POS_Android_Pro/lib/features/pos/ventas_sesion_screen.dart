@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/constants/ncf.dart';
 import '../../core/constants/permisos.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/providers/service_providers.dart';
@@ -8,9 +9,12 @@ import '../../core/utils/formatters.dart';
 import '../../data/auth/auth_controller.dart';
 import '../../data/printing/unified_printer_service.dart';
 import '../../data/providers/contexto_operativo_provider.dart';
+import '../../data/repositories/configuracion_repository.dart';
 import '../../data/repositories/empresa_repository.dart';
+import '../../data/repositories/fiscal_repository.dart';
 import '../../data/repositories/producto_repository.dart';
 import '../../data/repositories/venta_repository.dart';
+import '../../data/sync/sales_sync_service.dart';
 import '../../domain/entities/sesion_caja.dart';
 import '../../domain/entities/venta.dart';
 import 'carrito_controller.dart';
@@ -226,12 +230,16 @@ class _DetalleVentaSheet extends ConsumerStatefulWidget {
 
 class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
   bool _procesando = false;
+  late Venta _venta = widget.venta;
 
   @override
   Widget build(BuildContext context) {
     final permisos =
         ref.watch(permisosUsuarioActualProvider).valueOrNull ?? <Permiso>{};
-    final venta = widget.venta;
+    final venta = _venta;
+    final requiereNcf = (venta.tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal ||
+            venta.tipoDocumento == TipoDocumentoVenta.facturaConsumo) &&
+        (venta.encf == null || venta.encf!.isEmpty);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.7,
@@ -279,6 +287,19 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
                       ),
                     ],
                   ),
+                  if (requiereNcf &&
+                      permisos.contains(Permiso.accederECF) &&
+                      venta.estado == EstadoVenta.completada) ...[
+                    const SizedBox(height: 8),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.confirmation_number_outlined),
+                        label: const Text('Asignar NCF'),
+                        onPressed: _procesando ? null : _asignarNcf,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   Row(
                     children: [
@@ -322,7 +343,7 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
       final usuario = ref.read(authControllerProvider).usuario;
       if (empresa == null || usuario == null) return;
       await ref.read(unifiedPrinterServiceProvider).printSale(
-            venta: widget.venta,
+            venta: _venta,
             items: items,
             empresa: empresa,
             nombreCajero: usuario.nombreCompleto,
@@ -330,6 +351,64 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('Recibo reimpreso.')));
+      }
+    } on AppException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } finally {
+      if (mounted) setState(() => _procesando = false);
+    }
+  }
+
+  /// Reintenta la reserva de NCF para una venta que quedó cobrada sin
+  /// comprobante (típicamente por falta de conexión en el momento del cobro
+  /// -- ver `_asignarNcf` en `checkout_sheet.dart`, mismo flujo).
+  Future<void> _asignarNcf() async {
+    setState(() => _procesando = true);
+    try {
+      final empresa =
+          await ref.read(empresaRepositoryProvider).porId(_venta.empresaId);
+      final businessId = empresa?.remotoId;
+      if (businessId == null || businessId.isEmpty) {
+        throw const ValidationException(
+            message: 'Necesitas estar sincronizado con la nube para emitir '
+                'comprobantes fiscales.');
+      }
+      final sincronizada = await ref
+          .read(salesSyncServiceProvider)
+          .syncSale(businessId, _venta.id);
+      if (!sincronizada) {
+        throw const NetworkException(
+            message: 'Necesitas conexión a internet para emitir el NCF.');
+      }
+      final sucursal = await ref.read(sucursalActivaProvider.future);
+      final config = ref.read(configuracionControllerProvider).valueOrNull;
+      final ncfType =
+          _venta.tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
+              ? NcfType.b01
+              : NcfType.b02;
+      final resultado = await ref.read(fiscalRepositoryProvider).solicitarNcf(
+            businessId: businessId,
+            branchId: sucursal?.remotoId ?? sucursal?.id ?? '',
+            saleId: _venta.id,
+            ncfType: ncfType,
+            ambiente: config?.fiscalAmbiente ?? 'certificacion',
+          );
+      final encf = resultado['ncf']?.toString();
+      final estado = resultado['estadoFiscal']?.toString();
+      if (encf != null && encf.isNotEmpty) {
+        await ref.read(ventaRepositoryProvider).actualizarFiscal(
+              _venta.id,
+              encf: encf,
+              ecfEstado: estado ?? 'ASIGNADO',
+            );
+        if (mounted) {
+          setState(() => _venta = _venta.copyWith(encf: encf, ecfEstado: estado));
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('NCF asignado: $encf')));
+        }
       }
     } on AppException catch (e) {
       if (mounted) {
@@ -375,11 +454,11 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
       final deviceId =
           await ref.read(secureSessionServiceProvider).obtenerOCrearDeviceId();
       await ref.read(ventaRepositoryProvider).anular(
-            venta: widget.venta,
+            venta: _venta,
             motivo: motivoCtrl.text.trim(),
             dispositivoId: deviceId,
           );
-      ref.invalidate(historialVentasEmpresaProvider(widget.venta.empresaId));
+      ref.invalidate(historialVentasEmpresaProvider(_venta.empresaId));
       ref.invalidate(sesionCajaActivaProvider);
       if (mounted) {
         Navigator.of(context).pop();

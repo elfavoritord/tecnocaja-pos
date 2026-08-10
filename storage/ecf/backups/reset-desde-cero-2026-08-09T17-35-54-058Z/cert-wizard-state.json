@@ -1,0 +1,44 @@
+{
+  "currentStep": 4,
+  "completedSteps": [
+    1,
+    2,
+    3
+  ],
+  "startedAt": "2026-08-01T00:04:40.826Z",
+  "updatedAt": "2026-08-01T01:14:59.438Z",
+  "finishedAt": null,
+  "progress": 27,
+  "environment": "certecf",
+  "steps": {
+    "1": {
+      "completedAt": "2026-08-01T00:06:25.020Z",
+      "data": {
+        "rnc": "40211932609",
+        "razonSocial": "EMILIO MANAURYS CABRERA",
+        "software": {
+          "nombre": "Tecno Caja Pos",
+          "version": "1.0",
+          "tipo": "PROPIO"
+        }
+      }
+    },
+    "2": {
+      "completedAt": "2026-08-01T01:01:53.135Z",
+      "data": {
+        "ecfAccepted": 25,
+        "ecfTotal": 25,
+        "rfceAccepted": 4
+      }
+    },
+    "3": {
+      "completedAt": "2026-08-01T01:14:03.646Z",
+      "data": {
+        "accepted": 11,
+        "total": 11,
+        "confirmedAt": "2026-08-01T01:14:03.646Z"
+      }
+    }
+  },
+  "manualResetSteps": []
+}

@@ -1,0 +1,14 @@
+{
+  "trackId": "c2cecafe-ec49-49b5-af95-d0e9fba625be",
+  "fecha": "2026-07-07T01:02:28.069Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260706-210227.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"c2cecafe-ec49-49b5-af95-d0e9fba625be\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260706-210228.json"
+}

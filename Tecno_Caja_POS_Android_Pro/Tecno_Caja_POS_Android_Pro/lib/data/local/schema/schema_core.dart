@@ -108,6 +108,11 @@ class SchemaCore {
       windows_codigo_dispositivo TEXT,
       windows_nombre_dispositivo TEXT,
       windows_vinculado_en TEXT,
+      fiscal_usa_comprobantes INTEGER NOT NULL DEFAULT 0,
+      fiscal_modo_comprobante TEXT,
+      fiscal_ambiente TEXT NOT NULL DEFAULT 'certificacion',
+      sucursal_seleccionada_id TEXT,
+      caja_seleccionada_id TEXT,
       actualizado_en TEXT NOT NULL
     )
   ''';

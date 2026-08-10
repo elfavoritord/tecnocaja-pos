@@ -1,0 +1,14 @@
+{
+  "trackId": "58858538-cebe-4550-98b2-e638ffac45d2",
+  "fecha": "2026-06-14T16:16:09.081Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260614-121607.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"58858538-cebe-4550-98b2-e638ffac45d2\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260614-121609.json"
+}

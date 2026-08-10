@@ -81,7 +81,9 @@ class ReceiptFormatter {
     );
     bytes += generator.text('Numero: ${_numeroFactura(venta)}');
     if (venta.encf != null && venta.encf!.isNotEmpty) {
-      bytes += generator.text('e-NCF: ${venta.encf}');
+      // NCF tradicional en esta fase (no e-CF: sin firma digital ni envío a
+      // la DGII todavía, ver functions/fiscal.js).
+      bytes += generator.text('NCF: ${venta.encf}');
     }
     bytes += generator.text('Fecha: ${Formatters.dateTime(venta.creadoEn)}');
     if (venta.cajaId != null && venta.cajaId!.isNotEmpty) {

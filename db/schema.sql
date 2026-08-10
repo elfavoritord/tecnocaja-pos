@@ -512,7 +512,9 @@ CREATE TABLE sales (
 CREATE TABLE sale_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   sale_id INT NOT NULL,
-  product_id INT NOT NULL,
+  product_id INT DEFAULT NULL,
+  item_name VARCHAR(255) DEFAULT NULL,
+  is_quick_sale TINYINT(1) NOT NULL DEFAULT 0,
   qty DECIMAL(10,2) NOT NULL,
   price DECIMAL(12,2) NOT NULL,
   discount_rate DECIMAL(5,2) NOT NULL DEFAULT 0.00,
@@ -1180,7 +1182,8 @@ CREATE TABLE sale_returns (
 CREATE TABLE sale_return_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   return_id INT NOT NULL,
-  product_id INT NOT NULL,
+  sale_item_id INT DEFAULT NULL,
+  product_id INT DEFAULT NULL,
   product_name VARCHAR(255) NOT NULL DEFAULT '',
   qty_returned DECIMAL(10,2) NOT NULL,
   price DECIMAL(12,2) NOT NULL DEFAULT 0.00,

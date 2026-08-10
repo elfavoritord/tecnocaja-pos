@@ -59,9 +59,16 @@ function buildQrVerificationUrl(signedXml, environment) {
       `&CodigoSeguridad=${encodeURIComponent(d.codigoSeguridad)}`;
   }
 
+  // E43 (Gastos Menores) y E47 (Pagos al Exterior) no llevan RNCComprador.
+  // DGII no trata "RncComprador=" como equivalente a omitir el dato: con el
+  // parametro vacio ConsultaTimbre responde que el e-CF no fue encontrado.
+  const compradorParam = d.rncComprador
+    ? `&RncComprador=${encodeURIComponent(d.rncComprador)}`
+    : '';
+
   return `${baseUrl}/ConsultaTimbre?` +
     `RncEmisor=${encodeURIComponent(d.rncEmisor)}` +
-    `&RncComprador=${encodeURIComponent(d.rncComprador || '')}` +
+    compradorParam +
     `&ENCF=${encodeURIComponent(d.encf)}` +
     `&FechaEmision=${encodeURIComponent(d.fechaEmision || '')}` +
     `&MontoTotal=${encodeURIComponent(d.montoTotal || '')}` +

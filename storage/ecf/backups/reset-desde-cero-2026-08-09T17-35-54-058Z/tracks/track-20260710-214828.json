@@ -1,0 +1,14 @@
+{
+  "trackId": "cfd66499-dada-4181-b768-3b6840093b0c",
+  "fecha": "2026-07-11T01:48:28.324Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260710-214827.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"cfd66499-dada-4181-b768-3b6840093b0c\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260710-214828.json"
+}

@@ -1,0 +1,23 @@
+{
+  "trackId": "ed87397a-a8b5-41fe-a829-7df64e768be2",
+  "fecha": "2026-07-09T22:40:50.355Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E430000000007",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "7/9/2026 6:40:26 PM",
+  "mensajes": [
+    {
+      "valor": "La propiedad RazonSocialEmisor no es válida debido a que el valor enviado (EMILIO MANAURYS CABRERA) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"ed87397a-a8b5-41fe-a829-7df64e768be2\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E430000000007\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"7/9/2026 6:40:26 PM\",\"mensajes\":[{\"valor\":\"La propiedad RazonSocialEmisor no es válida debido a que el valor enviado (EMILIO MANAURYS CABRERA) no coincide con el valor (DOCUMENTOS ELECTRONICOS DE 02) del conjunto de datos entregados.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-ed87397a-a8b5-41fe-a829-7df64e768be2.json"
+}

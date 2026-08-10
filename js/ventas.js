@@ -545,6 +545,101 @@ function buildSaleItem(product, qty = 1, extra = {}) {
   return item;
 }
 
+function buildQuickSaleItem({ nombre, precio, qty }) {
+  const item = normalizeSaleItem({
+    id: null,
+    codigo: 'RAPIDO',
+    nombre: String(nombre || '').trim(),
+    precio: Number(precio || 0),
+    qty: Number(qty || 1),
+    descuento: 0,
+    itbis: Number(getSaleTaxConfig().taxRate || 0),
+    saleMode: 'unidad',
+    unitLabel: 'Unidad',
+    quickSale: true,
+  });
+  item.total = calcItemTotal(item);
+  return item;
+}
+
+function syncQuickSaleTotal() {
+  const price = Number(document.getElementById('quick-sale-price')?.value || 0);
+  const qty = Number(document.getElementById('quick-sale-qty')?.value || 0);
+  const total = document.getElementById('quick-sale-total-value');
+  if (!total) return;
+  total.textContent = fmt(price > 0 && qty > 0
+    ? calcItemTotal(buildQuickSaleItem({ nombre: 'Producto rápido', precio: price, qty }))
+    : 0);
+}
+
+function openQuickSaleModal() {
+  const overlay = document.getElementById('modal-overlay');
+  const title = document.getElementById('modal-title');
+  const body = document.getElementById('modal-body');
+  const footer = document.getElementById('modal-footer');
+  if (!overlay || !title || !body || !footer) return;
+
+  title.textContent = 'Agregar producto rápido';
+  body.innerHTML = `
+    <form id="quick-sale-form" class="quick-sale-form" onsubmit="event.preventDefault();addQuickSaleItem()">
+      <div class="form-group">
+        <label for="quick-sale-name">Nombre del producto</label>
+        <input class="form-input" id="quick-sale-name" type="text" maxlength="150" autocomplete="off" placeholder="Ej. Cable especial" required>
+      </div>
+      <div class="quick-sale-fields">
+        <div class="form-group">
+          <label for="quick-sale-price">Precio unitario</label>
+          <input class="form-input" id="quick-sale-price" type="number" min="0.01" max="99999999.99" step="0.01" inputmode="decimal" oninput="syncQuickSaleTotal()" required>
+        </div>
+        <div class="form-group">
+          <label for="quick-sale-qty">Cantidad</label>
+          <input class="form-input" id="quick-sale-qty" type="number" min="1" max="999999" step="1" value="1" inputmode="numeric" oninput="syncQuickSaleTotal()" required>
+        </div>
+      </div>
+      <div class="quick-sale-total" aria-live="polite">
+        <span>Total del producto</span>
+        <strong id="quick-sale-total-value">${fmt(0)}</strong>
+      </div>
+    </form>`;
+  footer.innerHTML = `
+    <button class="btn-secondary" type="button" onclick="closeAllModals();focusSalesSearchInput({force:true})">Cancelar</button>
+    <button class="btn-primary" type="submit" form="quick-sale-form">Agregar al pedido</button>`;
+  overlay.classList.remove('hidden');
+  setTimeout(() => document.getElementById('quick-sale-name')?.focus(), 50);
+}
+
+function addQuickSaleItem() {
+  const nameInput = document.getElementById('quick-sale-name');
+  const priceInput = document.getElementById('quick-sale-price');
+  const qtyInput = document.getElementById('quick-sale-qty');
+  const nombre = String(nameInput?.value || '').trim();
+  const precio = Number(priceInput?.value || 0);
+  const qty = Number(qtyInput?.value || 0);
+
+  if (!nombre) {
+    showToast('Escribe el nombre del producto.', 'warning');
+    nameInput?.focus();
+    return;
+  }
+  if (!Number.isFinite(precio) || precio <= 0) {
+    showToast('El precio debe ser mayor que cero.', 'warning');
+    priceInput?.focus();
+    return;
+  }
+  if (!Number.isInteger(qty) || qty <= 0) {
+    showToast('La cantidad debe ser un número entero mayor que cero.', 'warning');
+    qtyInput?.focus();
+    return;
+  }
+
+  DB.saleItems.push(buildQuickSaleItem({ nombre, precio, qty }));
+  closeAllModals();
+  renderSaleTable();
+  updateTotals();
+  showToast(`Producto rápido agregado: ${nombre}`, 'success');
+  focusSalesSearchInput({ force: true });
+}
+
 function findMergeableSaleItemIndex(product, saleMode) {
   if (saleMode === 'peso') return -1;
   return (DB.saleItems || []).findIndex((item) => {
@@ -5381,6 +5476,7 @@ function renderSaleTable() {
       <td style="font-family:var(--font-mono);font-size:0.7rem;line-height:1.15;white-space:normal;word-break:break-word">${item.codigo}</td>
       <td style="white-space:normal;word-break:break-word">
         <span style="font-weight:600;line-height:1.2">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre}</span>
+        ${item.quickSale ? '<span class="quick-sale-badge">VENTA RÁPIDA · SIN INVENTARIO</span>' : ''}
         ${item.promoAplicada ? `
           <div style="margin-top:.2rem">
             <span style="display:inline-block;font-size:.68rem;font-weight:700;color:#fff;background:${item.promoAplicada.color || '#22c55e'};border-radius:4px;padding:.05rem .4rem">${item.promoAplicada.cantidadMinima ? `🔢 ${item.promoAplicada.cantidadMinima}+ uds` : '🏷'} ${escapeHtml(item.promoAplicada.texto || item.promoAplicada.nombre || 'OFERTA')}</span>
@@ -6863,6 +6959,7 @@ function buildSalePayload() {
       const normalizedItem = normalizeSaleItem(item);
       return {
         id: normalizedItem.id,
+        codigo: normalizedItem.codigo || '',
         nombre: normalizedItem.nombre,
         qty: normalizedItem.qty,
         precio: normalizedItem.precio,
@@ -6878,7 +6975,8 @@ function buildSalePayload() {
         scaleMeasuredValue: normalizedItem.scaleMeasuredValue,
         scaleMeasuredUnit: normalizedItem.scaleMeasuredUnit,
         scaleSource: normalizedItem.scaleSource,
-        scaleRawReading: normalizedItem.scaleRawReading
+        scaleRawReading: normalizedItem.scaleRawReading,
+        quickSale: normalizedItem.quickSale === true
       };
     }),
     subtotal: saleTotals.subtotal,

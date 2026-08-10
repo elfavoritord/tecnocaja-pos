@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E34",
+  "eNCF": "E340000000118",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:06.990Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "0.00",
+  "fechaFirmaXML": "09-08-2026 22:41:11",
+  "signatureValueCompleto": "kSC5lSXGW2XY3AoDUQ6dvfflu/LgN5ZxGDteW51byz/QKGyuUTH/XD7kYj958fjS0OBPS9vB3zsXLtWjMmtUg+FYpijAukbuLv3nAMicFYK9TkOr6urkVlcYIy+blq/M29W3iGUtJySbIcZhu1T70+WlBV+fIJtVCmFOYxpyYsMDLmpJcROSSlX8Kzal4Z7wiB/bKXAMOAc1hEeP0F55KjptdvkJgAzaiS//so8lpt7BQjWuCb3BtDlsZ11xU+mZukPox6cfse8Wfl7H5IFC+W0weIunMJ9c+iMyAOP90gS7O+4kJbB5FNT6MtgvEKdW9Kb318ILgmXB/QiGAV+E2Q==",
+  "codigoSeguridadGenerado": "kSC5lS",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E340000000118&FechaEmision=09-08-2026&MontoTotal=0.00&FechaFirma=09-08-2026%2022%3A41%3A11&CodigoSeguridad=kSC5lS",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "05-Nota-Credito-E340000000118.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

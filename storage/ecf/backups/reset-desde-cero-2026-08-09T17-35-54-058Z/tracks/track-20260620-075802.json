@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-06-20T11:58:02.699Z",
+  "estado": "ENVIADO",
+  "environment": "testecf",
+  "codigo": null,
+  "descripcion": "The element 'IdDoc' has invalid child element 'FechaLimitePago'. List of possible elements expected: 'TablaFormasPago, TipoCuentaPago, NumeroCuentaPago, BancoPago, FechaDesde, FechaHasta, TotalPaginas'.",
+  "mensaje": "The element 'IdDoc' has invalid child element 'FechaLimitePago'. List of possible elements expected: 'TablaFormasPago, TipoCuentaPago, NumeroCuentaPago, BancoPago, FechaDesde, FechaHasta, TotalPaginas'.",
+  "error": "Estructura del archivo XML inválida. ",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260620-075802.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Estructura del archivo XML inválida. \",\"mensaje\":\"The element 'IdDoc' has invalid child element 'FechaLimitePago'. List of possible elements expected: 'TablaFormasPago, TipoCuentaPago, NumeroCuentaPago, BancoPago, FechaDesde, FechaHasta, TotalPaginas'.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260620-075802.json"
+}

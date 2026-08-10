@@ -1,0 +1,14 @@
+{
+  "trackId": "baaf2280-cb10-4beb-8642-858fd31c4c25",
+  "fecha": "2026-06-18T03:36:51.676Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260617-233651.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"baaf2280-cb10-4beb-8642-858fd31c4c25\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260617-233651.json"
+}

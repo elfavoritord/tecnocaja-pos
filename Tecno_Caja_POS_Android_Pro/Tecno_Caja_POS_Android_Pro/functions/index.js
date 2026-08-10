@@ -39,9 +39,10 @@ const { getMyBusinessLicense } = require('./licenses');
 exports.getMyBusinessLicense = getMyBusinessLicense;
 
 // ── Servicio fiscal central: único árbitro de NCF/e-CF ─────────────────────
-const { requestNcf, configureNcfSequence } = require('./fiscal');
+const { requestNcf, configureNcfSequence, listNcfSequences } = require('./fiscal');
 exports.requestNcf = requestNcf;
 exports.configureNcfSequence = configureNcfSequence;
+exports.listNcfSequences = listNcfSequences;
 
 /**
  * dgiiLookup — Consulta RNC/Cédula en el registro DGII

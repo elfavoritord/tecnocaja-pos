@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-07-22T11:38:52.473Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": "1",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/rfce-enviados/rfce-enviado-20260722-073852.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"codigo\":1,\"estado\":\"Aceptado\",\"mensajes\":null,\"encf\":\"E320000000063\",\"secuenciaUtilizada\":true}",
+  "trackPath": "storage/ecf/tracks/track-20260722-073852.json"
+}

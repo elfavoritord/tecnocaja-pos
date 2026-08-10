@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E45",
+  "eNCF": "E450000000113",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:11.583Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "105000.00",
+  "fechaFirmaXML": "09-08-2026 22:41:42",
+  "signatureValueCompleto": "bZEiaACHrBiljj7GcNxU5FRWXn0JdjVlVu4nW175qLSnFyn9eQT+ZYUbxQnlV7wfYN5DgkikcWodpEqh98c09RU9vEkmJM13bI72QNpKC35yeWopdQYX854WqXizKIZoPJqvJCy/zPihhKpE0KclOSXaj3DpoO2tc/DCkcPaRlTcPfmE3XLHJYVC926fyzXAzW/cdC6RX33UcoePm4K2h2vbR3vKWF7ig2D2H86oD/4IakNulTDKlNHvtPor93PkIwBDRY5F7/oTc2Ry4ghr7HWCu4VGvULSa1ispbHhgRLQ7npJ8YsiWsFjOo/S2FDITs6x0K6JjH26v7b3F+dfEA==",
+  "codigoSeguridadGenerado": "bZEiaA",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E450000000113&FechaEmision=09-08-2026&MontoTotal=105000.00&FechaFirma=09-08-2026%2022%3A41%3A42&CodigoSeguridad=bZEiaA",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "09-Gubernamentales-E450000000113.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

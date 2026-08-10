@@ -61,6 +61,56 @@ function listDgiiReceived() {
   }
 }
 
+// Trae lo recibido por el Tecno Caja e-CF Gateway (Cloud Run), para que el
+// wizard de certificación (Pasos 9/11) vea los documentos aunque las URLs
+// del Paso 7 apunten al gateway en vez de a este servidor local.
+async function fetchGatewayReceived() {
+  const base = String(process.env.ECF_GATEWAY_BASE_URL || '').trim().replace(/\/+$/, '');
+  const token = String(process.env.ECF_GATEWAY_ADMIN_TOKEN || '').trim();
+  if (!base || !token) return { received: [], approvals: [] };
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`${base}/admin/received?limit=50`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!response.ok) return { received: [], approvals: [] };
+    const data = await response.json();
+    return { received: data.received || [], approvals: data.approvals || [] };
+  } catch (_) {
+    return { received: [], approvals: [] };
+  }
+}
+
+function gatewayReceivedToItems({ received, approvals }) {
+  const recepcionItems = received.map((r) => ({
+    id: `gw-recepcion-${r.rncEmisor}_${r.encf}`,
+    type: 'recepcion-ecf',
+    receivedAt: r.receivedAt,
+    meta: { rncEmisor: r.rncEmisor, rncComprador: r.rncComprador, encf: r.encf, source: 'gateway' },
+    payload: String(r.xml || '').slice(0, 50000),
+  }));
+  const aprobacionItems = approvals.map((a) => ({
+    id: `gw-aprobacion-${a.rncEmisor}_${a.encf}`,
+    type: 'aprobacion-comercial',
+    receivedAt: a.receivedAt,
+    meta: { rncEmisor: a.rncEmisor, encf: a.encf, source: 'gateway' },
+    payload: String(a.xml || '').slice(0, 50000),
+  }));
+  return [...recepcionItems, ...aprobacionItems];
+}
+
+async function listAllReceived() {
+  const local = listDgiiReceived();
+  const gateway = gatewayReceivedToItems(await fetchGatewayReceived());
+  return [...local, ...gateway].sort(
+    (a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime()
+  );
+}
+
 function createDgiiPublicRouter() {
   const router = express.Router();
   const xmlParser = express.text({ type: XML_CONTENT_TYPES, limit: '20mb' });
@@ -148,4 +198,4 @@ function createDgiiPublicRouter() {
   return router;
 }
 
-module.exports = { createDgiiPublicRouter, listDgiiReceived };
+module.exports = { createDgiiPublicRouter, listDgiiReceived, fetchGatewayReceived, listAllReceived };

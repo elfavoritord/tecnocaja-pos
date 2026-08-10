@@ -1,0 +1,18 @@
+{
+  "trackId": "79d336ac-c7e6-4578-8c8f-bb156cc9d860",
+  "fecha": "2026-06-20T15:27:22.429Z",
+  "estado": "NO ENCONTRADO.",
+  "environment": "certecf",
+  "codigo": 5000002,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": null,
+  "encf": null,
+  "secuenciaUtilizada": null,
+  "fechaRecepcion": null,
+  "mensajes": [],
+  "httpStatus": 200,
+  "raw": "{\"codigo\":5000002,\"estado\":\"No encontrado.\"}",
+  "statusPath": "storage/ecf/tracks/estado-79d336ac-c7e6-4578-8c8f-bb156cc9d860.json"
+}

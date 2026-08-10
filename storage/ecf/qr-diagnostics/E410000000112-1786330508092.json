@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E41",
+  "eNCF": "E410000000112",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:08.092Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "17654.00",
+  "fechaFirmaXML": "09-08-2026 22:41:09",
+  "signatureValueCompleto": "EHDndxNhGSIBoWCB1O58KL+ybFHb07ThkFc2ZCEqP6ehuKsVz7uRBXJebcr7T5YjOxQbaONSlQrkJaiApMrY2YQkfOKIq1KPMvg89N8EyPY7pf6k1W+yuS8BC91M78gBzhSuljUl/kXfjx5LH/pYXWViNFfwNVaTZKdAYN2eiSaB53iCK6FrmGlaMm7rNGBtJrURSFsCex0iUQpN+om0KkRKVSZh3E7RRdJksUlJvHHtC67K0OWOU62NGj7HsIOkgU6Zb2hVjVQv2UfKkYGrsZeP2btDIEyDeMf3MMeCn385ImlUgUlW7cvboG/1vRl/PtW4UPpqPBH8H9nhIYt+Dg==",
+  "codigoSeguridadGenerado": "EHDndx",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E410000000112&FechaEmision=09-08-2026&MontoTotal=17654.00&FechaFirma=09-08-2026%2022%3A41%3A09&CodigoSeguridad=EHDndx",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "06-Compras-E410000000112.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

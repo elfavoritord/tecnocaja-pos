@@ -1,0 +1,23 @@
+{
+  "trackId": "a37115de-bd77-470b-a802-ac959b80fb8a",
+  "fecha": "2026-06-23T23:28:54.208Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E310000000002",
+  "secuenciaUtilizada": false,
+  "fechaRecepcion": "6/23/2026 7:27:49 PM",
+  "mensajes": [
+    {
+      "valor": "El campo TasaImpuestoAdicional del área ImpuestosAdicionales de la sección Totales de la línea 1 de la tabla Encabezado (línea 1) no es válido.  La tasa del impuesto especificado no es válidoLa propiedad TotalITBIS no es válida debido a que el valor enviado (732.12) no coincide con el valor (713.04) del conjunto de datos entregados.La propiedad TotalITBIS1 no es válida debido a que el valor enviado (732.12) no coincide con el valor (713.04) del conjunto de datos entregados.La propiedad MontoImpuestoAdicional no es válida debido a que el valor enviado (837.32) no coincide con el valor (731.32) del conjunto de datos entregados.La propiedad TasaImpuestoAdicional no es válida debido a que el valor enviado (758.26) no coincide con el valor (633.85) del conjunto de datos entregados.La propiedad MontoImpuestoSelectivoConsumoEspecifico no es válida debido a que el valor enviado (646.04) no coincide con el valor (540.04) del conjunto de datos entregados.La propiedad MontoTotal no es válida debido a que el valor enviado (4799.44) no coincide con el valor (4674.35) del conjunto de datos entregados.",
+      "codigo": 11064
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"a37115de-bd77-470b-a802-ac959b80fb8a\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E310000000002\",\"secuenciaUtilizada\":false,\"fechaRecepcion\":\"6/23/2026 7:27:49 PM\",\"mensajes\":[{\"valor\":\"El campo TasaImpuestoAdicional del área ImpuestosAdicionales de la sección Totales de la línea 1 de la tabla Encabezado (línea 1) no es válido.  La tasa del impuesto especificado no es válidoLa propiedad TotalITBIS no es válida debido a que el valor enviado (732.12) no coincide con el valor (713.04) del conjunto de datos entregados.La propiedad TotalITBIS1 no es válida debido a que el valor enviado (732.12) no coincide con el valor (713.04) del conjunto de datos entregados.La propiedad MontoImpuestoAdicional no es válida debido a que el valor enviado (837.32) no coincide con el valor (731.32) del conjunto de datos entregados.La propiedad TasaImpuestoAdicional no es válida debido a que el valor enviado (758.26) no coincide con el valor (633.85) del conjunto de datos entregados.La propiedad MontoImpuestoSelectivoConsumoEspecifico no es válida debido a que el valor enviado (646.04) no coincide con el valor (540.04) del conjunto de datos entregados.La propiedad MontoTotal no es válida debido a que el valor enviado (4799.44) no coincide con el valor (4674.35) del conjunto de datos entregados.\",\"codigo\":11064}]}",
+  "statusPath": "storage/ecf/tracks/estado-a37115de-bd77-470b-a802-ac959b80fb8a.json"
+}

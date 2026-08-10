@@ -92,7 +92,7 @@ class WebPrinterService {
           ),
           pw.SizedBox(height: 4),
           _info('Número', invoiceNumber),
-          if (_nonEmpty(sale.encf) != null) _info('e-NCF', sale.encf!),
+          if (_nonEmpty(sale.encf) != null) _info('NCF', sale.encf!),
           _info('Fecha', Formatters.dateTime(sale.creadoEn)),
           _info('Caja', _shortId(sale.cajaId)),
           _info('Turno', _shortId(sale.sesionCajaId)),

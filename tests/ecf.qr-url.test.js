@@ -3,8 +3,9 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const QRCode = require('qrcode');
 const { parseEcfXmlForQr, buildQrVerificationUrl } = require('../modules/ecf/utils/qr-url.util');
-const { parseEcfXml } = require('../modules/ecf/controllers/repr-impresa');
+const { generateReprImpresaHtml, parseEcfXml } = require('../modules/ecf/controllers/repr-impresa');
 const { recordQrDiagnostic } = require('../modules/ecf/utils/qr-diagnostic.util');
 
 // Mismos valores del caso real reportado (E310000000051) — ver conversación de certificación.
@@ -47,26 +48,33 @@ function buildE31Xml({ signatureValue = SIGNATURE_VALUE } = {}) {
 </ECF>`;
 }
 
-function buildRfceXml() {
+function buildRfceXml({ encf = 'E320000000060', monto = '40120.00', codigo = 'YVoo0x' } = {}) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <RFCE xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <Encabezado>
     <IdDoc>
-      <eNCF>E320000000060</eNCF>
+      <eNCF>${encf}</eNCF>
     </IdDoc>
     <Emisor>
       <RNCEmisor>40211932609</RNCEmisor>
     </Emisor>
     <Totales>
-      <MontoTotal>40120.00</MontoTotal>
+      <MontoTotal>${monto}</MontoTotal>
     </Totales>
-    <CodigoSeguridadeCF>YVoo0x</CodigoSeguridadeCF>
+    <CodigoSeguridadeCF>${codigo}</CodigoSeguridadeCF>
   </Encabezado>
   <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
     <SignedInfo></SignedInfo>
     <SignatureValue>ThisSignatureValueMustNeverBeUsedForRfceCodigoSeguridad==</SignatureValue>
   </Signature>
 </RFCE>`;
+}
+
+function buildEcfWithoutBuyer(tipo, encf) {
+  return buildE31Xml()
+    .replace('<TipoeCF>31</TipoeCF>', `<TipoeCF>${tipo}</TipoeCF>`)
+    .replace('E310000000051', encf)
+    .replace(/\s*<Comprador>[\s\S]*?<\/Comprador>/, '');
 }
 
 describe('qr-url.util — CodigoSeguridad', () => {
@@ -149,6 +157,78 @@ describe('qr-url.util vs repr-impresa — deben coincidir siempre (mismo XML fir
     expect(forRepr.fechaEmision).toBe(forQr.fechaEmision);
     expect(forRepr.fechaHoraFirma).toBe(forQr.fechaHoraFirma);
     expect(forRepr.codigoSeguridad).toBe(forQr.codigoSeguridad);
+  });
+
+  test.each([
+    ['43', 'E430000000112'],
+    ['47', 'E470000000128'],
+  ])('E%s sin comprador omite por completo RncComprador', (tipo, encf) => {
+    const url = buildQrVerificationUrl(buildEcfWithoutBuyer(tipo, encf), 'certecf');
+    expect(url).toContain(`ENCF=${encf}`);
+    expect(url).not.toContain('RncComprador');
+  });
+
+  test('la RI de un RFCE usa los artículos del E32 completo y el QR de 4 parámetros del resumen', async () => {
+    const fullE32 = buildE31Xml({ signatureValue: 'YVoo0x' + SIGNATURE_VALUE.slice(6) })
+      .replace('<TipoeCF>31</TipoeCF>', '<TipoeCF>32</TipoeCF>')
+      .replace('E310000000051', 'E320000000060')
+      .replace('<MontoTotal>7080.00</MontoTotal>', '<MontoTotal>40120.00</MontoTotal>')
+      .replace(
+        '<Item><NumeroLinea>1</NumeroLinea></Item>',
+        '<Item><NumeroLinea>1</NumeroLinea><NombreItem>Servicio de prueba RFCE</NombreItem><CantidadItem>1</CantidadItem><MontoItem>40120.00</MontoItem></Item>',
+      );
+    const summary = buildRfceXml();
+    let generatedUrl = '';
+    const qrSpy = jest.spyOn(QRCode, 'toDataURL').mockImplementation(async (url) => {
+      generatedUrl = url;
+      return 'data:image/png;base64,AA==';
+    });
+
+    try {
+      const html = await generateReprImpresaHtml(fullE32, { env: 'certecf', rfceSummaryXml: summary });
+      expect(html).toContain('Servicio de prueba RFCE');
+      expect(html).toContain('FACTURA DE CONSUMO ELECTRÓNICA (RFCE)');
+      expect(generatedUrl).toBe(
+        'https://fc.dgii.gov.do/CerteCF/ConsultaTimbreFC?' +
+        'RncEmisor=40211932609' +
+        '&ENCF=E320000000060' +
+        '&MontoTotal=40120.00' +
+        '&CodigoSeguridad=YVoo0x'
+      );
+      expect(generatedUrl).not.toContain('RncComprador');
+      expect(generatedUrl).not.toContain('FechaFirma');
+    } finally {
+      qrSpy.mockRestore();
+    }
+  });
+
+  test('rechaza una RI RFCE cuando el código del E32 no coincide con el resumen', async () => {
+    const fullE32 = buildE31Xml({ signatureValue: 'ABCDEF' + SIGNATURE_VALUE.slice(6) })
+      .replace('<TipoeCF>31</TipoeCF>', '<TipoeCF>32</TipoeCF>')
+      .replace('E310000000051', 'E320000000060')
+      .replace('<MontoTotal>7080.00</MontoTotal>', '<MontoTotal>40120.00</MontoTotal>');
+    await expect(generateReprImpresaHtml(fullE32, { rfceSummaryXml: buildRfceXml() }))
+      .rejects.toThrow('código de seguridad');
+  });
+
+  test.each([
+    ['43', 'E430000000112'],
+    ['47', 'E470000000128'],
+  ])('la RI E%s no codifica RncComprador vacío en el QR', async (tipo, encf) => {
+    const xml = buildEcfWithoutBuyer(tipo, encf);
+    let generatedUrl = '';
+    const qrSpy = jest.spyOn(QRCode, 'toDataURL').mockImplementation(async (url) => {
+      generatedUrl = url;
+      return 'data:image/png;base64,AA==';
+    });
+
+    try {
+      await generateReprImpresaHtml(xml, { env: 'certecf' });
+      expect(generatedUrl).toBe(buildQrVerificationUrl(xml, 'certecf'));
+      expect(generatedUrl).not.toContain('RncComprador');
+    } finally {
+      qrSpy.mockRestore();
+    }
   });
 });
 

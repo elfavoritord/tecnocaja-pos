@@ -3,14 +3,17 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/constants/ncf.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/providers/service_providers.dart';
 import '../../core/utils/formatters.dart';
 import '../../data/auth/auth_controller.dart';
 import '../../data/printing/unified_printer_service.dart';
 import '../../data/providers/contexto_operativo_provider.dart';
+import '../../data/repositories/cliente_repository.dart';
 import '../../data/repositories/configuracion_repository.dart';
 import '../../data/repositories/empresa_repository.dart';
+import '../../data/repositories/fiscal_repository.dart';
 import '../../data/repositories/venta_repository.dart';
 import '../../data/sync/sales_sync_service.dart';
 import '../../domain/calculo_venta.dart';
@@ -40,6 +43,7 @@ class _CheckoutSheet extends ConsumerStatefulWidget {
 
 class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
   String _metodoPago = MetodoPago.efectivo;
+  String _tipoDocumento = TipoDocumentoVenta.ticket;
   final _montoRecibidoCtrl = TextEditingController();
   bool _cargando = false;
   bool? _imprimirOverride;
@@ -80,8 +84,10 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
     final cambio = _metodoPago == MetodoPago.efectivo && montoRecibido != null
         ? CalculadoraVenta.calcularCambio(montoRecibido, calculo.total)
         : null;
-    final requiereCliente =
-        _metodoPago == MetodoPago.credito && carrito.clienteId == null;
+    final usaComprobantesFiscales = config?.fiscalUsaComprobantes ?? false;
+    final requiereCliente = carrito.clienteId == null &&
+        (_metodoPago == MetodoPago.credito ||
+            _tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal);
     final imprimir = _imprimirOverride ?? (config?.imprimirAutomatico ?? false);
 
     return Padding(
@@ -116,6 +122,21 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
                   _chipMetodo(MetodoPago.credito, 'Crédito', Icons.event_note),
                 ],
               ),
+              if (usaComprobantesFiscales) ...[
+                const SizedBox(height: 16),
+                Text('Comprobante', style: Theme.of(context).textTheme.labelLarge),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    _chipDocumento(TipoDocumentoVenta.ticket, 'Ticket'),
+                    _chipDocumento(TipoDocumentoVenta.facturaCreditoFiscal,
+                        'Crédito Fiscal'),
+                    _chipDocumento(
+                        TipoDocumentoVenta.facturaConsumo, 'Consumidor Final'),
+                  ],
+                ),
+              ],
               if (_metodoPago == MetodoPago.efectivo) ...[
                 const SizedBox(height: 16),
                 TextField(
@@ -169,6 +190,14 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
     );
   }
 
+  Widget _chipDocumento(String valor, String etiqueta) {
+    return ChoiceChip(
+      label: Text(etiqueta),
+      selected: _tipoDocumento == valor,
+      onSelected: (_) => setState(() => _tipoDocumento = valor),
+    );
+  }
+
   Widget _filaTotal(BuildContext context, String etiqueta, double monto,
       {bool destacado = false}) {
     final estilo = destacado
@@ -189,6 +218,63 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
     );
   }
 
+  /// Reserva el NCF para una venta recién cobrada con comprobante fiscal.
+  /// La venta ya quedó guardada y cobrada antes de llamar esto -- si algo
+  /// falla (sin conexión, secuencia agotada) se avisa pero NO se revierte el
+  /// cobro; queda como ticket sin NCF y se puede reintentar luego desde el
+  /// historial ("Asignar NCF").
+  Future<Venta> _asignarNcf(Venta venta, String empresaId) async {
+    try {
+      final empresa =
+          await ref.read(empresaRepositoryProvider).porId(empresaId);
+      final businessId = empresa?.remotoId;
+      if (businessId == null || businessId.isEmpty) {
+        _avisar(
+            'Venta guardada sin NCF: necesitas estar sincronizado con la '
+            'nube para emitir comprobantes fiscales.');
+        return venta;
+      }
+      final sincronizada = await ref
+          .read(salesSyncServiceProvider)
+          .syncSale(businessId, venta.id);
+      if (!sincronizada) {
+        _avisar(
+            'Venta guardada sin NCF: necesitas conexión a internet para '
+            'emitirlo. Reintenta desde el historial.');
+        return venta;
+      }
+      final sucursal = await ref.read(sucursalActivaProvider.future);
+      final config = ref.read(configuracionControllerProvider).valueOrNull;
+      final ncfType = _tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
+          ? NcfType.b01
+          : NcfType.b02;
+      final resultado = await ref.read(fiscalRepositoryProvider).solicitarNcf(
+            businessId: businessId,
+            branchId: sucursal?.remotoId ?? sucursal?.id ?? '',
+            saleId: venta.id,
+            ncfType: ncfType,
+            ambiente: config?.fiscalAmbiente ?? 'certificacion',
+          );
+      final encf = resultado['ncf']?.toString();
+      final estado = resultado['estadoFiscal']?.toString();
+      if (encf == null || encf.isEmpty) return venta;
+      await ref.read(ventaRepositoryProvider).actualizarFiscal(
+            venta.id,
+            encf: encf,
+            ecfEstado: estado ?? 'ASIGNADO',
+          );
+      return venta.copyWith(encf: encf, ecfEstado: estado);
+    } on AppException catch (e) {
+      _avisar('Venta guardada sin NCF: ${e.message}');
+      return venta;
+    }
+  }
+
+  void _avisar(String mensaje) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensaje)));
+  }
+
   Future<void> _confirmar(ResultadoCalculoVenta calculo, bool imprimir) async {
     final auth = ref.read(authControllerProvider);
     final carrito = ref.read(carritoControllerProvider);
@@ -207,19 +293,35 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
       return;
     }
 
+    if (_tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal) {
+      final cliente = carrito.clienteId == null
+          ? null
+          : await ref.read(clienteRepositoryProvider).porId(carrito.clienteId!);
+      if (cliente?.cedulaRnc == null || cliente!.cedulaRnc!.trim().isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text(
+                  'El cliente seleccionado no tiene RNC/Cédula registrado, '
+                  'necesario para Crédito Fiscal.')));
+        }
+        return;
+      }
+    }
+
     setState(() => _cargando = true);
     try {
       final deviceId =
           await ref.read(secureSessionServiceProvider).obtenerOCrearDeviceId();
       final config = ref.read(configuracionControllerProvider).valueOrNull;
 
-      final venta = await ref.read(ventaRepositoryProvider).registrarVenta(
+      var venta = await ref.read(ventaRepositoryProvider).registrarVenta(
             empresaId: auth.empresaId!,
             sucursalId: widget.sesion.sucursalId,
             cajaId: widget.sesion.cajaId,
             sesionCajaId: widget.sesion.id,
             usuarioId: auth.usuario!.id,
             clienteId: carrito.clienteId,
+            tipoDocumento: _tipoDocumento,
             metodoPago: _metodoPago,
             montoRecibido: montoRecibido,
             descuentoGlobalMonto: carrito.descuentoGlobalMonto,
@@ -244,6 +346,10 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
                     ))
                 .toList(),
           );
+
+      if (_tipoDocumento != TipoDocumentoVenta.ticket) {
+        venta = await _asignarNcf(venta, auth.empresaId!);
+      }
 
       unawaited(
         ref.read(salesSyncServiceProvider).syncPendingSales(auth.empresaId!),

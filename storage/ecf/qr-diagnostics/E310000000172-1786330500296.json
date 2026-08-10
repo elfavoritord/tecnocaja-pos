@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E31",
+  "eNCF": "E310000000172",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:00.296Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "1505.00",
+  "fechaFirmaXML": "09-08-2026 22:41:20",
+  "signatureValueCompleto": "CKsq0oxWABeCH3b/KV6ow+bRATAB+J0/HmUtVszc4eDpQKUoA/99ekDNvJCeGQK/5GumBkNXKDtFODdQSffgPaZJcx9WDNOf8/66wG0QKPWcQiSOEzEK4HT7GqvaSQTL8UmigMew/GD0IfQ959ZchucajKkqSHdKrCgw08yprKyT9u1rXFGJboGZ9QWt8v4VMn51rLvJ1OlmNTro1UpMg6mVgwXU9MyIGVn7FnEyNe5iQ9jio1/WWQ+DpD17OU7FjcHCX/CPMBsoB2fgbV8oLVUXtwgqcBSyqe0qAETtZgNQQchF4wxLTDJVM2x2QmGqNyugNDwAKAil++UWyFAaGw==",
+  "codigoSeguridadGenerado": "CKsq0o",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E310000000172&FechaEmision=09-08-2026&MontoTotal=1505.00&FechaFirma=09-08-2026%2022%3A41%3A20&CodigoSeguridad=CKsq0o",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "01-Factura-Credito-Fiscal-E310000000172.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

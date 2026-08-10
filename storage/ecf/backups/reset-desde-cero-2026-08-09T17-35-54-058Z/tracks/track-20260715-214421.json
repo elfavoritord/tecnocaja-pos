@@ -1,0 +1,14 @@
+{
+  "trackId": "400a330e-4573-464c-bfb1-ba4801846aef",
+  "fecha": "2026-07-16T01:44:21.636Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260715-214421.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"400a330e-4573-464c-bfb1-ba4801846aef\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260715-214421.json"
+}

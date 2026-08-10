@@ -80,7 +80,7 @@ const bascula = require('./server/devices/bascula');
 
 // ✅ Módulo Fiscal e-CF / DGII
 const { createEcfModule } = require('./modules/ecf');
-const { listDgiiReceived } = require('./server/routes/dgii-public.routes');
+const { listAllReceived } = require('./server/routes/dgii-public.routes');
 const createRncRouter  = require('./server/routes/rnc.routes');
 
 // 📢 Centro de Promociones
@@ -1901,7 +1901,7 @@ app.use('/api/fiscal', ecfModule.legacyApiRouter);
 app.use(ecfModule.publicDgiiRouter);
 
 // Documentos recibidos de DGII (para el wizard de certificación)
-app.get('/api/ecf/reception/received', (_req, res) => res.json({ items: listDgiiReceived() }));
+app.get('/api/ecf/reception/received', async (_req, res) => res.json({ items: await listAllReceived() }));
 
 // ✅ Consulta RNC — dataset DGII local (dgii-rnc)
 app.use(createRncRouter());
@@ -4518,13 +4518,28 @@ async function ensureReturnTables() {
     CREATE TABLE IF NOT EXISTS sale_return_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       return_id INT NOT NULL,
-      product_id INT NOT NULL,
+      sale_item_id INT DEFAULT NULL,
+      product_id INT DEFAULT NULL,
       product_name VARCHAR(255) NOT NULL DEFAULT '',
       qty_returned DECIMAL(10,2) NOT NULL,
       price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
       line_total DECIMAL(12,2) NOT NULL DEFAULT 0.00
     )
   `);
+  await addColumnIfMissing('sale_return_items', 'sale_item_id', 'INT DEFAULT NULL');
+  if (isMysqlDeployment()) {
+    await query('ALTER TABLE sale_return_items MODIFY COLUMN product_id INT NULL').catch(() => {});
+  }
+  await query(`
+    UPDATE sale_return_items sri
+    SET sale_item_id = (
+      SELECT MIN(si.id)
+      FROM sale_returns sr
+      JOIN sale_items si ON si.sale_id = sr.original_sale_id
+      WHERE sr.id = sri.return_id AND si.product_id = sri.product_id
+    )
+    WHERE sri.sale_item_id IS NULL AND sri.product_id IS NOT NULL
+  `).catch(() => {});
 }
 
 async function ensurePaymentMethodsTable() {
@@ -5061,6 +5076,11 @@ async function ensureClientExtensions() {
 }
 
 async function ensureSalesExtensions() {
+  await addColumnIfMissing('sale_items', 'item_name', 'VARCHAR(255) DEFAULT NULL');
+  await addColumnIfMissing('sale_items', 'is_quick_sale', 'TINYINT(1) NOT NULL DEFAULT 0');
+  if (isMysqlDeployment()) {
+    await query('ALTER TABLE sale_items MODIFY COLUMN product_id INT NULL').catch(() => {});
+  }
   await addColumnIfMissing('sale_items', 'sale_mode', `VARCHAR(20) NOT NULL DEFAULT 'unidad'`);
   await addColumnIfMissing('sale_items', 'unit_label', 'VARCHAR(40) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'weight_unit', 'VARCHAR(10) DEFAULT NULL');
@@ -7323,12 +7343,14 @@ async function restoreBackupPayload(backup) {
       }
       for (const row of data.saleItems || []) {
         await conn.query(
-          `INSERT INTO sale_items (id, sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO sale_items (id, sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             row.id,
             row.sale_id,
             row.product_id,
+            row.item_name || null,
+            Number(row.is_quick_sale || 0),
             row.qty,
             row.price,
             row.discount_rate,
@@ -7465,7 +7487,8 @@ function mapSaleRows(sales, items) {
     items: items
       .filter((item) => item.sale_id === sale.id)
       .map((item) => ({
-        id: item.product_id,
+        id: item.product_id === null || item.product_id === undefined ? null : Number(item.product_id),
+        codigo: item.product_code || (Number(item.is_quick_sale || 0) === 1 ? 'RAPIDO' : ''),
         nombre: item.product_name,
         qty: Number(item.qty || 0),
         precio: Number(item.price || 0),
@@ -7480,7 +7503,8 @@ function mapSaleRows(sales, items) {
         scaleSource: item.scale_source || '',
         scaleRawReading: item.scale_raw_reading || '',
         promotionId: item.promotion_id === null || item.promotion_id === undefined ? null : Number(item.promotion_id),
-        originalPrice: item.original_price === null || item.original_price === undefined ? null : Number(item.original_price)
+        originalPrice: item.original_price === null || item.original_price === undefined ? null : Number(item.original_price),
+        quickSale: Number(item.is_quick_sale || 0) === 1
       })),
     subtotal: Number(sale.subtotal || 0),
     descuento: Number(sale.discount || 0),
@@ -7807,7 +7831,9 @@ async function getBootstrapData(actorUser = null) {
           [effectiveBranchId, effectiveBranchId]
         )
       : query('SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id ORDER BY s.id DESC LIMIT 500'),
-    query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE si.sale_id IN (SELECT id FROM (SELECT id FROM sales ORDER BY id DESC LIMIT 500) AS _recent)'),
+    query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+           FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
+           WHERE si.sale_id IN (SELECT id FROM (SELECT id FROM sales ORDER BY id DESC LIMIT 500) AS _recent)`),
     scopedCashRegisterId
       ? query('SELECT movement_type AS tipo, amount AS monto, happened_at AS hora, notes AS obs, created_by_user_id, created_by_user_name FROM cash_movements WHERE cash_register_id = ? ORDER BY id DESC LIMIT 50', [scopedCashRegisterId])
       : branchScopedUser
@@ -10284,7 +10310,8 @@ app.post('/api/cola-cobro/:id/cobrar', async (req, res) => {
       [ventaId]
     );
     const items = await query(
-      'SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?',
+      `SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+       FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`,
       [ventaId]
     );
 
@@ -13552,7 +13579,7 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
     const items = await query(
       `SELECT si.id, si.product_id, si.qty, si.price, si.discount_rate, si.tax_rate,
               si.line_total, si.sale_mode,
-              COALESCE(p.nombre, 'Producto eliminado') AS product_name,
+              COALESCE(si.item_name, p.nombre, 'Producto eliminado') AS product_name,
               p.codigo AS product_code
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
@@ -13562,15 +13589,15 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
 
     // Obtener cantidades ya devueltas por item
     const prevReturns = await query(
-      `SELECT sri.product_id, SUM(sri.qty_returned) AS total_devuelto
+      `SELECT sri.sale_item_id, SUM(sri.qty_returned) AS total_devuelto
        FROM sale_return_items sri
        JOIN sale_returns sr ON sr.id = sri.return_id
        WHERE sr.original_sale_id = ?
-       GROUP BY sri.product_id`,
+       GROUP BY sri.sale_item_id`,
       [sale.id]
     );
     const devueltoMap = {};
-    prevReturns.forEach(r => { devueltoMap[r.product_id] = Number(r.total_devuelto || 0); });
+    prevReturns.forEach(r => { devueltoMap[r.sale_item_id] = Number(r.total_devuelto || 0); });
 
     const returnHistory = await query(
       `SELECT sr.id, sr.returned_at, sr.return_type, sr.returned_amount,
@@ -13605,8 +13632,8 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
         discountRate: Number(i.discount_rate || 0),
         lineTotal: Number(i.line_total || 0),
         saleMode: i.sale_mode || 'unidad',
-        qtyDevuelta: devueltoMap[i.product_id] || 0,
-        qtyDisponible: Math.max(0, Number(i.qty || 0) - (devueltoMap[i.product_id] || 0)),
+        qtyDevuelta: devueltoMap[i.id] || 0,
+        qtyDisponible: Math.max(0, Number(i.qty || 0) - (devueltoMap[i.id] || 0)),
       })),
       returnHistory,
     });
@@ -13668,7 +13695,7 @@ app.post('/api/sales/return', async (req, res) => {
 
       // Cargar items originales
       const originalItems = await conn.query(
-        `SELECT si.*, COALESCE(p.nombre,'Producto') AS product_name
+        `SELECT si.*, COALESCE(si.item_name, p.nombre,'Producto') AS product_name
          FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
          WHERE si.sale_id = ?`,
         [sale.id]
@@ -13676,27 +13703,28 @@ app.post('/api/sales/return', async (req, res) => {
 
       // Cargar cantidades ya devueltas
       const prevReturns = await conn.query(
-        `SELECT sri.product_id, SUM(sri.qty_returned) AS total_devuelto
+        `SELECT sri.sale_item_id, SUM(sri.qty_returned) AS total_devuelto
          FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
-         WHERE sr.original_sale_id = ? GROUP BY sri.product_id`,
+         WHERE sr.original_sale_id = ? GROUP BY sri.sale_item_id`,
         [sale.id]
       );
       const devueltoMap = {};
-      prevReturns.forEach(r => { devueltoMap[r.product_id] = Number(r.total_devuelto || 0); });
+      prevReturns.forEach(r => { devueltoMap[r.sale_item_id] = Number(r.total_devuelto || 0); });
 
       // Validar cantidades a devolver
       let returnedAmount = 0;
       const validatedItems = [];
       for (const item of itemsToReturn) {
+        const saleItemId = Number(item.saleItemId || 0);
         const pid = Number(item.productId || 0);
         const qtyReturn = Number(item.qty || 0);
-        if (!pid || qtyReturn <= 0) continue;
+        if (!saleItemId || qtyReturn <= 0) continue;
 
-        const original = originalItems.find(o => Number(o.product_id) === pid);
-        if (!original) throw Object.assign(new Error(`Producto ID ${pid} no pertenece a esta factura.`), { statusCode: 400 });
+        const original = originalItems.find(o => Number(o.id) === saleItemId);
+        if (!original) throw Object.assign(new Error(`La línea ${saleItemId} no pertenece a esta factura.`), { statusCode: 400 });
 
         const qtyOriginal = Number(original.qty || 0);
-        const qtyYaDevuelta = devueltoMap[pid] || 0;
+        const qtyYaDevuelta = devueltoMap[saleItemId] || 0;
         const qtyDisponible = qtyOriginal - qtyYaDevuelta;
 
         if (qtyReturn > qtyDisponible) {
@@ -13712,7 +13740,8 @@ app.post('/api/sales/return', async (req, res) => {
         returnedAmount += lineTotal;
 
         validatedItems.push({
-          productId: pid,
+          saleItemId,
+          productId: original.product_id ? Number(original.product_id) : null,
           productName: original.product_name || '',
           qty: qtyReturn,
           price: effectivePrice,
@@ -13752,12 +13781,12 @@ app.post('/api/sales/return', async (req, res) => {
       // Insertar items devueltos y reintegrar al inventario
       for (const item of validatedItems) {
         await conn.query(
-          `INSERT INTO sale_return_items (return_id, product_id, product_name, qty_returned, price, line_total)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [returnId, item.productId, item.productName, item.qty, item.price, item.lineTotal]
+          `INSERT INTO sale_return_items (return_id, sale_item_id, product_id, product_name, qty_returned, price, line_total)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [returnId, item.saleItemId, item.productId, item.productName, item.qty, item.price, item.lineTotal]
         );
         // Reintegrar al inventario
-        if (inventoryBranchId) {
+        if (inventoryBranchId && item.productId) {
           await changeBranchInventoryStock(conn, {
             productId: item.productId,
             branchId: inventoryBranchId,
@@ -15495,17 +15524,27 @@ app.post('/api/sales', async (req, res) => {
       throw emptyError;
     }
     for (const item of sale.items) {
+      const isQuickSale = item.quickSale === true && !Number(item.id || 0);
       const itemQty = Number(item.qty);
       if (!Number.isFinite(itemQty) || itemQty <= 0) {
-        const qtyError = new Error(`Cantidad inválida para el producto ID ${item.id}: "${item.qty}". Debe ser mayor que cero.`);
+        const qtyError = new Error(`Cantidad inválida para ${isQuickSale ? 'el producto rápido' : `el producto ID ${item.id}`}: "${item.qty}". Debe ser mayor que cero.`);
         qtyError.statusCode = 400;
         throw qtyError;
       }
+      if (isQuickSale && !Number.isInteger(itemQty)) {
+        throw Object.assign(new Error('La cantidad del producto rápido debe ser un número entero.'), { statusCode: 400 });
+      }
       const itemPrice = Number(item.precio);
-      if (!Number.isFinite(itemPrice) || itemPrice < 0) {
-        const priceError = new Error(`Precio inválido para el producto ID ${item.id}: "${item.precio}".`);
+      if (!Number.isFinite(itemPrice) || itemPrice < 0 || (isQuickSale && itemPrice <= 0)) {
+        const priceError = new Error(`Precio inválido para ${isQuickSale ? 'el producto rápido' : `el producto ID ${item.id}`}: "${item.precio}".`);
         priceError.statusCode = 400;
         throw priceError;
+      }
+      if (isQuickSale) {
+        const quickName = String(item.nombre || '').trim();
+        if (!quickName || quickName.length > 150) {
+          throw Object.assign(new Error('El producto rápido requiere un nombre de hasta 150 caracteres.'), { statusCode: 400 });
+        }
       }
     }
 
@@ -15520,13 +15559,18 @@ app.post('/api/sales', async (req, res) => {
       resolveActiveQuantityRules({ query: conn.query.bind(conn), sucursalId: structure.branchId }),
     ]);
     for (const item of sale.items) {
-      affectedProductIds.add(Number(item.id || 0) || 0);
-      const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
-      const product = productRows[0];
-      if (!product) {
-        const missingError = new Error(`El producto ID ${item.id} no existe.`);
-        missingError.statusCode = 400;
-        throw missingError;
+      const isQuickSale = item.quickSale === true && !Number(item.id || 0);
+      const quickName = isQuickSale ? String(item.nombre || '').trim().slice(0, 150) : '';
+      let product = null;
+      if (!isQuickSale) {
+        affectedProductIds.add(Number(item.id || 0) || 0);
+        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
+        product = productRows[0];
+        if (!product) {
+          const missingError = new Error(`El producto ID ${item.id} no existe.`);
+          missingError.statusCode = 400;
+          throw missingError;
+        }
       }
 
       // El precio que manda el cliente NUNCA es la fuente de verdad — ni en
@@ -15538,19 +15582,25 @@ app.post('/api/sales', async (req, res) => {
       // nunca lo llena el cajero a mano, así que esto no cambia nada para el
       // flujo legítimo, incluida la venta con precio de catálogo desactualizado
       // en el carrito: aquí siempre se usa el precio ACTUAL de products).
-      const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
-      const effectivePrice = activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0);
+      const activePromo = isQuickSale
+        ? null
+        : pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
+      const effectivePrice = isQuickSale
+        ? Number(item.precio || 0)
+        : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
       const effectiveLineTotal = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
       computedSubtotal += effectiveLineTotal;
       if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
 
       await conn.query(
         `INSERT INTO sale_items
-          (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.insertId,
-          item.id,
+          isQuickSale ? null : item.id,
+          isQuickSale ? quickName : null,
+          isQuickSale ? 1 : 0,
           item.qty,
           effectivePrice,
           item.descuento || 0,
@@ -15569,7 +15619,7 @@ app.post('/api/sales', async (req, res) => {
         ]
       );
 
-      if (shouldDiscountInventoryNow && Number(product?.tracks_stock ?? 1) !== 0) {
+      if (!isQuickSale && shouldDiscountInventoryNow && Number(product?.tracks_stock ?? 1) !== 0) {
         const stockChange = await changeBranchInventoryStock(conn, {
           productId: item.id,
           branchId: structure.branchId,
@@ -15711,7 +15761,8 @@ app.post('/api/sales', async (req, res) => {
     [created.saleId]
   );
   const items = await query(
-    `SELECT si.*, p.nombre AS product_name, p.categoria, p.precio_compra
+    `SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name,
+            p.codigo AS product_code, p.categoria, p.precio_compra
      FROM sale_items si
      LEFT JOIN products p ON p.id = si.product_id
      WHERE sale_id = ?`,
@@ -15841,7 +15892,7 @@ app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Factura no encontrada.' });
 
     const items = await query(
-      `SELECT si.*, COALESCE(p.nombre, 'Producto eliminado') AS product_name, p.codigo AS product_code
+      `SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto eliminado') AS product_name, p.codigo AS product_code
        FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
        WHERE si.sale_id = ?`,
       [rows[0].id]
@@ -15892,7 +15943,8 @@ app.get('/api/sales/delivery-cash-pending', async (req, res) => {
          ORDER BY s.created_at DESC`,
         [activeCashRegisterId]
       );
-  const items = await query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id');
+  const items = await query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                             FROM sale_items si LEFT JOIN products p ON p.id = si.product_id`);
   res.json(mapSaleRows(rows, items));
 });
 
@@ -15936,7 +15988,9 @@ app.get('/api/sales/pending-collection', async (req, res) => {
 
   const salesIds = rows.map((r) => r.id);
   const items = salesIds.length
-    ? await query(`SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE si.sale_id IN (${salesIds.map(() => '?').join(',')})`, salesIds)
+    ? await query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                   FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
+                   WHERE si.sale_id IN (${salesIds.map(() => '?').join(',')})`, salesIds)
     : [];
 
   const result = mapSaleRows(rows, items).map((s, i) => ({
@@ -16011,7 +16065,8 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
     }
 
     const saleItems = await conn.query(
-      `SELECT si.*, p.codigo AS product_code, p.nombre AS product_name, p.precio_compra
+      `SELECT si.*, p.codigo AS product_code, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name,
+              p.precio_compra, p.tracks_stock
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        WHERE si.sale_id = ?`,
@@ -16020,6 +16075,7 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
 
     const affectedProductIds = new Set();
     for (const item of saleItems) {
+      if (!item.product_id || Number(item.tracks_stock ?? 1) === 0) continue;
       affectedProductIds.add(Number(item.product_id || 0) || 0);
       const qty = Number(item.qty || 0);
       const stockChange = await changeBranchInventoryStock(conn, {
@@ -16093,7 +16149,8 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
       'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.id = ?',
       [sale.id]
     );
-    const items = await conn.query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?', [sale.id]);
+    const items = await conn.query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                                    FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`, [sale.id]);
     return {
       sale: mapSaleRows(rows, items)[0],
       productIds: [...affectedProductIds].filter((value) => value > 0),
@@ -16180,7 +16237,8 @@ app.patch('/api/sales/:invoiceNumber/settle-delivery-cash', async (req, res) => 
       'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.id = ?',
       [sale.id]
     );
-    const items = await conn.query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?', [sale.id]);
+    const items = await conn.query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                                    FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`, [sale.id]);
     return mapSaleRows(rows, items)[0];
   });
 
@@ -16231,7 +16289,8 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
     }
 
     const saleItems = await conn.query(
-      `SELECT si.*, p.codigo AS product_code, p.nombre AS product_name, p.stock, p.precio_compra
+      `SELECT si.*, p.codigo AS product_code, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name,
+              p.stock, p.precio_compra, p.tracks_stock
        FROM sale_items si
        LEFT JOIN products p ON p.id = si.product_id
        WHERE si.sale_id = ?`,
@@ -16244,6 +16303,7 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
     const affectedProductIds = new Set();
     if (inventoryWasDiscounted && inventoryBranchId) {
       for (const item of saleItems) {
+        if (!item.product_id || Number(item.tracks_stock ?? 1) === 0) continue;
         affectedProductIds.add(Number(item.product_id || 0) || 0);
         const qty = Number(item.qty || 0);
         const stockChange = await changeBranchInventoryStock(conn, {
@@ -16305,7 +16365,8 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
       'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.id = ?',
       [sale.id]
     );
-    const items = await conn.query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?', [sale.id]);
+    const items = await conn.query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                                    FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`, [sale.id]);
     return {
       sale: mapSaleRows(rows, items)[0],
       productIds: [...affectedProductIds].filter((value) => value > 0),
@@ -16372,7 +16433,8 @@ app.patch('/api/sales/:invoiceNumber/kitchen-status', async (req, res) => {
     'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.invoice_number = ? LIMIT 1',
     [invoiceNumber]
   );
-  const items = await query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?', [rows[0].id]);
+  const items = await query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                             FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`, [rows[0].id]);
   const actor = getActor(req);
   await writeAuditLog({
     ...actor,
@@ -16428,7 +16490,8 @@ app.patch('/api/sales/:invoiceNumber/delivery-status', async (req, res) => {
     'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.invoice_number = ? LIMIT 1',
     [invoiceNumber]
   );
-  const items = await query('SELECT si.*, p.nombre AS product_name FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?', [rows[0].id]);
+  const items = await query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
+                             FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`, [rows[0].id]);
   const actor = getActor(req);
   await writeAuditLog({
     ...actor,
@@ -17329,7 +17392,7 @@ app.get('/api/reports/advanced/productos', async (req, res) => {
     const rows = await query(`
       SELECT
         si.product_id,
-        COALESCE(p.nombre, 'Producto') AS nombre,
+        COALESCE(si.item_name, p.nombre, 'Producto') AS nombre,
         p.codigo,
         COALESCE(p.categoria, '') AS categoria,
         SUM(si.qty) AS cantidad,
@@ -17656,7 +17719,7 @@ app.get('/api/reports/advanced/ganancias', async (req, res) => {
       query(`
         SELECT
           COALESCE(si.product_id, 0) AS product_id,
-          COALESCE(p.nombre, 'Producto') AS nombre,
+          COALESCE(si.item_name, p.nombre, 'Producto') AS nombre,
           COALESCE(p.categoria, 'Sin categoría') AS categoria,
           COALESCE(SUM(si.line_total),0) AS revenue,
           COALESCE(SUM((si.qty * si.price) - (si.qty * COALESCE(p.precio_compra,0))),0) AS profit,

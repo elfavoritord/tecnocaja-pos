@@ -28,7 +28,27 @@ class SalesSyncService {
       limit: limit,
     );
     if (sales.isEmpty) return 0;
+    return _sincronizar(sales);
+  }
 
+  /// Sincroniza una única venta y espera la confirmación del servidor --
+  /// usado antes de pedir un NCF (`requestNcf` exige que el documento ya
+  /// exista en Firestore). Sincroniza aunque la venta ya estuviera marcada
+  /// como sincronizada, para no depender de una carrera con
+  /// `syncPendingSales`.
+  Future<bool> syncSale(String businessId, String saleId) async {
+    final sales = await _db.query(
+      'ventas',
+      where: 'id = ? AND empresa_id = ? AND eliminado = 0',
+      whereArgs: [saleId, businessId],
+      limit: 1,
+    );
+    if (sales.isEmpty) return false;
+    final synced = await _sincronizar(sales);
+    return synced > 0;
+  }
+
+  Future<int> _sincronizar(List<Map<String, Object?>> sales) async {
     final payload = <Map<String, dynamic>>[];
     for (final sale in sales) {
       final items = await _db.query(

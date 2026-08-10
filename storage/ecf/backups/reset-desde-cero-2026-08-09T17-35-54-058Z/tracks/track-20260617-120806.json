@@ -1,0 +1,14 @@
+{
+  "trackId": "",
+  "fecha": "2026-06-17T16:08:06.042Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": "The element 'Emisor' has invalid child element 'FechaEmision'. List of possible elements expected: 'RazonSocialEmisor'.",
+  "mensaje": "The element 'Emisor' has invalid child element 'FechaEmision'. List of possible elements expected: 'RazonSocialEmisor'.",
+  "error": "Estructura del archivo XML inválida. ",
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260617-120805.xml",
+  "httpStatus": 400,
+  "responseBody": "{\"trackId\":null,\"error\":\"Estructura del archivo XML inválida. \",\"mensaje\":\"The element 'Emisor' has invalid child element 'FechaEmision'. List of possible elements expected: 'RazonSocialEmisor'.\"}",
+  "trackPath": "storage/ecf/tracks/track-20260617-120806.json"
+}

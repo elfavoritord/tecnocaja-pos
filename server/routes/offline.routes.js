@@ -1804,7 +1804,12 @@ module.exports = function createOfflineRouter(deps) {
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         let productId = Number(item.id || item.producto_id || 0);
-        if (productId < 0) {
+        const isQuickSale = item.quickSale === true && !productId;
+        const quickName = isQuickSale ? String(item.nombre || item.name || '').trim().slice(0, 150) : '';
+        if (isQuickSale && !quickName) {
+          throw new Error('Un producto rápido de la venta no tiene nombre.');
+        }
+        if (!isQuickSale && productId < 0) {
           const mappedRows = await localQuery(
             'SELECT real_product_id FROM offline_product_sync_map WHERE offline_product_id = ? LIMIT 1',
             [productId]
@@ -1820,41 +1825,46 @@ module.exports = function createOfflineRouter(deps) {
         const discountRate = Number(item.discount_rate || item.descuento || 0);
         const taxRate = Number(item.tax_rate || item.itbis || 0);
 
-        if (saleId && productId) {
+        if (saleId && (productId || isQuickSale)) {
           // Igual que en POST /api/sales: el precio de la venta offline se capturó
           // con la caché local (pudo quedar desactualizada mientras la terminal
           // estuvo sin conexión) — al sincronizar, con conexión real a la BD
           // principal, se vuelve a resolver la promoción activa y esa es la que
           // se guarda de verdad.
-          const activePromo = pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
+          const activePromo = isQuickSale
+            ? null
+            : pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
           const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;
           const effectiveLineTotal = activePromo ? Number((effectiveUnitPrice * qty).toFixed(2)) : lineTotal;
           if (activePromo) ahorroPromociones += activePromo.ahorro * qty;
 
           await conn.query(
-            `INSERT INTO sale_items (sale_id, product_id, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
-            [saleId, productId, qty, effectiveUnitPrice, effectiveLineTotal, discountRate, taxRate,
+            `INSERT INTO sale_items (sale_id, product_id, item_name, is_quick_sale, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
+            [saleId, isQuickSale ? null : productId, isQuickSale ? quickName : null, isQuickSale ? 1 : 0,
+             qty, effectiveUnitPrice, effectiveLineTotal, discountRate, taxRate,
              activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null]
-          ).catch(() => {});
+          );
 
           // Descontar stock de ESTA sucursal (no el agregado global)
           let previousStock = 0;
           let newStock = 0;
-          try {
-            const inventoryChange = await changeBranchInventoryStock({ query: conn.query }, {
-              productId,
-              branchId,
-              quantityDelta: -Math.abs(qty)
-            });
-            previousStock = inventoryChange.previousStock;
-            newStock = inventoryChange.nextStock;
-          } catch (stockErr) {
-            console.warn(`[offline-sync] No se pudo descontar inventario por sucursal para producto ${productId}:`, stockErr.message);
+          if (!isQuickSale) {
+            try {
+              const inventoryChange = await changeBranchInventoryStock({ query: conn.query }, {
+                productId,
+                branchId,
+                quantityDelta: -Math.abs(qty)
+              });
+              previousStock = inventoryChange.previousStock;
+              newStock = inventoryChange.nextStock;
+            } catch (stockErr) {
+              console.warn(`[offline-sync] No se pudo descontar inventario por sucursal para producto ${productId}:`, stockErr.message);
+            }
           }
 
           // Registrar movimiento de inventario (columnas del schema real)
-          await conn.query(
+          if (!isQuickSale) await conn.query(
             `INSERT INTO inventory_movements
                (product_id, movement_type, quantity_change, previous_stock, new_stock,
                 reference_type, reference_id, notes, branch_id, sale_id, created_at)
@@ -1864,10 +1874,10 @@ module.exports = function createOfflineRouter(deps) {
              branchId, saleId || null, nowSql]
           ).catch(() => {});
 
-          productIds.push(productId);
+          if (!isQuickSale) productIds.push(productId);
           itemsForReportSync.push({
-            product_id: productId,
-            product_name: item.nombre || item.name || '',
+            product_id: isQuickSale ? null : productId,
+            product_name: isQuickSale ? quickName : (item.nombre || item.name || ''),
             qty, price: unitPrice, discount_rate: discountRate,
             precio_compra: Number(item.precio_compra || 0)
           });

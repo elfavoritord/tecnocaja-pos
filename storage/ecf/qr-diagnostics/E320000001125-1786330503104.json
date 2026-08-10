@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E32",
+  "eNCF": "E320000001125",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:03.104Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "413785.30",
+  "fechaFirmaXML": "09-08-2026 22:41:01",
+  "signatureValueCompleto": "B2ZJTNCd8orNQhgC5Fz+IhuptOQR2t3JeqkBZ686Y+xYN3ew0X5V5znZ0hJGpW7A0Q/kprR7ms0tWIuFy+VwhwHtgpeEs4k/ZEtvXWHaYGEi9dUZcbq7p2kLaQm+zP+DMWLlVV5LW+TeRD69lPa6Yb3Eq29t2wryME8MK2mU37UyVyH5pH2H9cv70mT8BR16s7ESt+UUV/25UkwRuLo+Nq4tF44U2k7n2+Zp7Mu0anOVPRdDpwQ9T9xEQgtR6ukH0K5mbYS5MVkGFioP2PVV8NVR3iHzGUoWg15m+ZQvZ9pv+7DRe0wKDOZWy0TxpcDwviMc8tamh8q6ZIRreMJu7g==",
+  "codigoSeguridadGenerado": "B2ZJTN",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E320000001125&FechaEmision=09-08-2026&MontoTotal=413785.30&FechaFirma=09-08-2026%2022%3A41%3A01&CodigoSeguridad=B2ZJTN",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "02-Factura-Consumo-Mayor250k-E320000001125.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

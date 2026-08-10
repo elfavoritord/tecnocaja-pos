@@ -1,0 +1,23 @@
+{
+  "trackId": "b6652044-11dc-4392-9d6a-5f1fc7ef796f",
+  "fecha": "2026-07-11T02:13:17.343Z",
+  "estado": "RECHAZADO",
+  "environment": "certecf",
+  "codigo": "2",
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "rnc": "40211932609",
+  "encf": "E450000000038",
+  "secuenciaUtilizada": true,
+  "fechaRecepcion": "7/10/2026 10:12:28 PM",
+  "mensajes": [
+    {
+      "valor": "El campo MontoImpuestoSelectivoConsumoAdvalorem para el Tipo de Impuesto 023 del área ImpuestosAdicionales de la sección Totales no coincide con el detalle de la factura.",
+      "codigo": 0
+    }
+  ],
+  "httpStatus": 200,
+  "raw": "{\"trackId\":\"b6652044-11dc-4392-9d6a-5f1fc7ef796f\",\"codigo\":\"2\",\"estado\":\"Rechazado\",\"rnc\":\"40211932609\",\"encf\":\"E450000000038\",\"secuenciaUtilizada\":true,\"fechaRecepcion\":\"7/10/2026 10:12:28 PM\",\"mensajes\":[{\"valor\":\"El campo MontoImpuestoSelectivoConsumoAdvalorem para el Tipo de Impuesto 023 del área ImpuestosAdicionales de la sección Totales no coincide con el detalle de la factura.\",\"codigo\":0}]}",
+  "statusPath": "storage/ecf/tracks/estado-b6652044-11dc-4392-9d6a-5f1fc7ef796f.json"
+}

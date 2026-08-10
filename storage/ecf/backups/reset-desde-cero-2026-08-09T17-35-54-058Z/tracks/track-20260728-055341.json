@@ -1,0 +1,14 @@
+{
+  "trackId": "03ab824b-3268-466b-9335-0160ebba3238",
+  "fecha": "2026-07-28T09:53:41.449Z",
+  "estado": "ENVIADO",
+  "environment": "certecf",
+  "codigo": null,
+  "descripcion": null,
+  "mensaje": null,
+  "error": null,
+  "xmlPath": "storage/ecf/enviados/ecf-enviado-20260728-055341.xml",
+  "httpStatus": 200,
+  "responseBody": "{\"trackId\":\"03ab824b-3268-466b-9335-0160ebba3238\",\"error\":null,\"mensaje\":null}",
+  "trackPath": "storage/ecf/tracks/track-20260728-055341.json"
+}

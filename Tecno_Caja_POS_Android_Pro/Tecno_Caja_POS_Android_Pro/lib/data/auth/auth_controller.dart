@@ -7,8 +7,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/errors/app_exception.dart';
 import '../../core/providers/service_providers.dart';
 import '../../domain/entities/usuario.dart';
+import '../repositories/configuracion_repository.dart';
 import '../repositories/empresa_repository.dart';
 import '../repositories/caja_repository.dart';
+import '../repositories/fiscal_repository.dart';
 import '../repositories/usuario_repository.dart';
 import '../cloud/cloud_functions_service.dart';
 import '../sync/catalog_sync_repository.dart';
@@ -130,6 +132,7 @@ class AuthController extends Notifier<AuthState> {
             localBusinessId: reconciliado.empresaId,
             remoteBusinessId: remoteBusinessId,
           );
+      await _refrescarConfiguracionFiscal(remoteBusinessId);
       await ref
           .read(salesSyncServiceProvider)
           .syncPendingSales(reconciliado.empresaId);
@@ -261,10 +264,28 @@ class AuthController extends Notifier<AuthState> {
               localBusinessId: usuario.empresaId,
               remoteBusinessId: empresa.remotoId!,
             );
+        await _refrescarConfiguracionFiscal(empresa.remotoId!);
       }
     } catch (e) {
       debugPrint('[AuthController] _sincronizarCatalogoInicial falló: $e');
     }
+  }
+
+  /// Trae `settings/fiscal` de Firestore a la cache local (`ConfiguracionApp`)
+  /// para que el Checkout sepa si debe ofrecer NCF sin depender de una
+  /// llamada de red en cada render. Best-effort: si falla, el valor cacheado
+  /// anterior se mantiene (por defecto, sin comprobantes fiscales).
+  Future<void> _refrescarConfiguracionFiscal(String remoteBusinessId) async {
+    final fiscal =
+        await ref.read(fiscalRepositoryProvider).obtener(remoteBusinessId);
+    if (fiscal == null) return;
+    await ref.read(configuracionControllerProvider.notifier).actualizar(
+          (c) => c.copyWith(
+            fiscalUsaComprobantes: fiscal.usaComprobantesFiscales,
+            fiscalModoComprobante: fiscal.modoComprobante,
+            fiscalAmbiente: fiscal.ambiente,
+          ),
+        );
   }
 
   /// Llamado por el wizard de onboarding (Fase 5) al terminar de crear

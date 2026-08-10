@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E43",
+  "eNCF": "E430000000112",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:09.031Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": null,
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "253770.00",
+  "fechaFirmaXML": "09-08-2026 22:41:32",
+  "signatureValueCompleto": "KJZAim2blbTDtwSu8b8s/N+QP/cDvz6ItBos8uPUGvKJ9Tyb1PcBSB9hRZlJW2FYiNHTfTUtzRp2c3pGqRSpWjCZmKgVa+mgm9b+CxwzuwAm0bXSlO3K5fTMTiYPwCpOh6HJCk2bY14rCr51emSXncW1oIrO9dxf9i19c3Y4+MqYYaXSXgYSnsdmW9MFKd9lmio3QxL9A6361LzilB+LKA5Z3SY7wXGQVE6yEN9oVkwrj6JCCJ51fSJWvi+Ikk9CoQ9MmTCErBhCMtyKSFtFTLXXAuM42YPlx4cedAv2r/7AqTeJDxfpT0zFr6CzqXECOyFOcRKWG9N3EZcNdqoa1Q==",
+  "codigoSeguridadGenerado": "KJZAim",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&ENCF=E430000000112&FechaEmision=09-08-2026&MontoTotal=253770.00&FechaFirma=09-08-2026%2022%3A41%3A32&CodigoSeguridad=KJZAim",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "07-Gastos-Menores-E430000000112.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": false,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}

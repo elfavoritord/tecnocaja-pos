@@ -1,0 +1,27 @@
+{
+  "tipoECF": "E33",
+  "eNCF": "E330000000085",
+  "trackId": null,
+  "fechaEnvio": "2026-08-10T02:55:05.918Z",
+  "estadoConsultaResultado": "aceptado",
+  "codigoConsultaResultado": null,
+  "rncEmisorXML": "40211932609",
+  "rncCompradorXML": "131880681",
+  "fechaEmisionXML": "09-08-2026",
+  "montoTotalXML": "400000.00",
+  "fechaFirmaXML": "09-08-2026 22:41:07",
+  "signatureValueCompleto": "K3Rq7WLoCnh7+3VavYl21oA1Fi81O7N9Qx6wkb3eDydUCWHIAzoFdHsMxvRYmqtQXlFiFVPav6teO2nGGwjFKQaEe44UghYntEWIaRpNxZMs4Zayjpxla379G30awO2b76CxNk9+pSW3r8UvncZ1M0/j0Ggb1NQCWRRAqBMacLuIqdICwCd+LPrtN/uDMY+8god9AZARVRDNjk50AnBbuL6L+4eoUWKj18J6dih6gMza9pQ5hdny5QdhgSArYvvenZHiHAiAhDUmhbZAKgY+IKbG9d3lWdXVVG7TA0ueiZnLhqukRFmvEJgoOYc+v5VLiaHD7HYn5ilPSW+jKpP1Zg==",
+  "codigoSeguridadGenerado": "K3Rq7W",
+  "urlQRGenerada": "https://ecf.dgii.gov.do/CerteCF/ConsultaTimbre?RncEmisor=40211932609&RncComprador=131880681&ENCF=E330000000085&FechaEmision=09-08-2026&MontoTotal=400000.00&FechaFirma=09-08-2026%2022%3A41%3A07&CodigoSeguridad=K3Rq7W",
+  "xmlEnviadoPath": null,
+  "pdfGeneradoPath": "04-Nota-Debito-E330000000085.pdf",
+  "comparacion": {
+    "rncEmisorCoincide": true,
+    "rncCompradorCoincide": true,
+    "encfCoincide": true,
+    "fechaEmisionCoincide": true,
+    "montoTotalCoincide": true,
+    "fechaFirmaCoincide": true,
+    "codigoSeguridadCoincide": true
+  }
+}
