@@ -140,7 +140,7 @@ function getOrCreateSession(jid) {
   }
   const fresh = {
     step: 'menu', cart: [], customerName: '', customerPhone: '', orderType: '', address: '',
-    lastResults: [], ordering: false, lastActivityAt: now,
+    lastResults: [], ordering: false, lastActivityAt: now, pendingQty: null,
     clientId: null, knownAddress: '', knownPhone: '',
     locationLink: '', locationLat: null, locationLng: null, knownLocationLink: '',
     paymentMethodPreference: '', paymentMethodLabel: '', knownCreditLimit: 0,
@@ -2410,13 +2410,78 @@ async function finalizeCustomerOrder(jid, session, opts = {}) {
   resetSession(jid);
 }
 
+// Si el cliente escribe la cantidad junto con el producto en el mismo mensaje
+// (ej. "3 coca cola", "2x arroz"), se ahorra el turno de "¿Cuántas unidades?".
+// Requiere texto después del número — así una búsqueda que sea puramente un
+// número (raro, pero posible) no se interpreta como cantidad sin producto.
+const LEADING_QTY_RE = /^(\d+(?:[.,]\d+)?)\s*[xX]?\s+(.+)$/;
+function extractLeadingQty(text) {
+  const match = LEADING_QTY_RE.exec(text.trim());
+  if (!match) return null;
+  const qty = Number(match[1].replace(',', '.'));
+  if (!Number.isFinite(qty) || qty <= 0) return null;
+  return { qty, rest: match[2].trim() };
+}
+
+// Agrega un producto al carrito de la sesión — compartido por el flujo normal
+// ('awaiting_qty', cuando el cliente escribe la cantidad aparte) y por el atajo
+// de 'selecting' cuando ya venía una cantidad pegada al texto de búsqueda.
+function addProductToCart(session, product, qty) {
+  const promo = (session.lastPromoMap || {})[product.id];
+  const precio = getEffectiveProductPrice(product, promo);
+  // Misma forma que buildSaleItem() en js/ventas.js — es la que espera la
+  // pantalla de Ventas al cargar una cotización (código, itbis, saleMode,
+  // etc.); con menos campos que estos se veía "undefined" y total en $0.00.
+  session.cart.push({
+    id: product.id,
+    codigo: product.codigo || '',
+    nombre: product.nombre,
+    precio,
+    qty,
+    // El % de descuento del producto viaja igual que en buildSaleItem()
+    // (js/ventas.js) — así el cajero ve el mismo descuento cuando cargue
+    // esta cotización, en vez de que el bot cobre distinto que el POS.
+    // Si hay una Oferta de Precio activa, ya está incluida en `precio`
+    // arriba (tiene prioridad, igual que en buildSaleItem()), así que no
+    // se aplica también el % de descuento del producto — evita cobrar doble.
+    descuento: promo ? 0 : Math.max(0, Number(product.descuentoPct || 0)),
+    // Mismo campo/forma que usa js/ventas.js (buildSaleItem) para pintar
+    // el tache + badge 🏷 en el carrito del POS si el cajero abre esta
+    // cotización — así el descuento se ve igual en el chat y en la caja.
+    promoAplicada: promo ? {
+      promotionId: promo.promotionId,
+      nombre: promo.nombre,
+      precioOriginal: Number(promo.precioOriginal),
+      ahorro: Number(promo.ahorro),
+      texto: promo.texto || '',
+      color: promo.color || '',
+    } : null,
+    itbis: product.aplicaItbis ? _taxRate : 0,
+    saleMode: 'unidad',
+    unitLabel: product.unidad || 'Unidad',
+    weightUnit: '',
+    scaleWeight: null,
+    scaleMeasuredValue: null,
+    scaleMeasuredUnit: '',
+    scaleSource: '',
+    scaleRawReading: '',
+    total: precio * qty
+  });
+}
+
 // Busca en el catálogo real (productsCache) y avanza la sesión — compartida por
 // el texto tipeado en el paso 'browsing' y por la identificación de imágenes
 // (ambos casos deben mostrar exactamente el mismo precio/stock real, la IA
 // nunca inventa esos datos).
 async function runProductSearch(msg, session, query) {
+  // "3 coca cola" — cantidad pegada al texto de búsqueda: se guarda para que
+  // 'selecting' agregue al carrito de una vez, sin preguntar cantidad aparte.
+  const leadingQty = session.ordering ? extractLeadingQty(query) : null;
+  session.pendingQty = leadingQty ? leadingQty.qty : null;
+  const searchText = leadingQty ? leadingQty.rest : query;
+
   const [results, promoMap] = await Promise.all([
-    productsCache.search(query, { limit: 8 }),
+    productsCache.search(searchText, { limit: 8 }),
     getActivePromotionsMap(),
   ]);
   session.lastResults = results;
@@ -2619,9 +2684,19 @@ async function handleCustomerMessage(msg) {
         await msg.reply('No entendí esa opción. Responde con el número de la lista, o escribe *cancelar*.');
         break;
       }
-      session._pendingProduct = session.lastResults[idx - 1];
+      const product = session.lastResults[idx - 1];
+      // Si el cliente ya puso la cantidad junto al texto de búsqueda (ej. "3
+      // coca cola"), se agrega directo y se ahorra el turno de "¿Cuántas unidades?".
+      if (session.pendingQty) {
+        addProductToCart(session, product, session.pendingQty);
+        session.pendingQty = null;
+        session.step = 'building_order';
+        await msg.reply('Agregado. ✅\n\nEscribe *otro* para agregar más productos, o *listo* para continuar.');
+        break;
+      }
+      session._pendingProduct = product;
       session.step = 'awaiting_qty';
-      await msg.reply(`¿Cuántas unidades de *${session._pendingProduct.nombre}* quieres?`);
+      await msg.reply(`¿Cuántas unidades de *${product.nombre}* quieres?`);
       break;
     }
 
@@ -2631,47 +2706,7 @@ async function handleCustomerMessage(msg) {
         await msg.reply('No entendí esa cantidad. Escribe un número, por ejemplo 2.');
         break;
       }
-      const product = session._pendingProduct;
-      const promo = (session.lastPromoMap || {})[product.id];
-      const precio = getEffectiveProductPrice(product, promo);
-      // Misma forma que buildSaleItem() en js/ventas.js — es la que espera la
-      // pantalla de Ventas al cargar una cotización (código, itbis, saleMode,
-      // etc.); con menos campos que estos se veía "undefined" y total en $0.00.
-      session.cart.push({
-        id: product.id,
-        codigo: product.codigo || '',
-        nombre: product.nombre,
-        precio,
-        qty,
-        // El % de descuento del producto viaja igual que en buildSaleItem()
-        // (js/ventas.js) — así el cajero ve el mismo descuento cuando cargue
-        // esta cotización, en vez de que el bot cobre distinto que el POS.
-        // Si hay una Oferta de Precio activa, ya está incluida en `precio`
-        // arriba (tiene prioridad, igual que en buildSaleItem()), así que no
-        // se aplica también el % de descuento del producto — evita cobrar doble.
-        descuento: promo ? 0 : Math.max(0, Number(product.descuentoPct || 0)),
-        // Mismo campo/forma que usa js/ventas.js (buildSaleItem) para pintar
-        // el tache + badge 🏷 en el carrito del POS si el cajero abre esta
-        // cotización — así el descuento se ve igual en el chat y en la caja.
-        promoAplicada: promo ? {
-          promotionId: promo.promotionId,
-          nombre: promo.nombre,
-          precioOriginal: Number(promo.precioOriginal),
-          ahorro: Number(promo.ahorro),
-          texto: promo.texto || '',
-          color: promo.color || '',
-        } : null,
-        itbis: product.aplicaItbis ? _taxRate : 0,
-        saleMode: 'unidad',
-        unitLabel: product.unidad || 'Unidad',
-        weightUnit: '',
-        scaleWeight: null,
-        scaleMeasuredValue: null,
-        scaleMeasuredUnit: '',
-        scaleSource: '',
-        scaleRawReading: '',
-        total: precio * qty
-      });
+      addProductToCart(session, session._pendingProduct, qty);
       session._pendingProduct = null;
       session.step = 'building_order';
       await msg.reply('Agregado. ✅\n\nEscribe *otro* para agregar más productos, o *listo* para continuar.');
@@ -3258,7 +3293,12 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
       return;
     }
 
-    // ── Flujo de clientes (menú fijo, sin IA) ───────────────────────────────
+    // ── Flujo de clientes (menú fijo + IA opcional) ─────────────────────────
+    // "Activar IA para clientes" es el apagador general del bot de clientes:
+    // mientras esté desactivado, el bot no le contesta nada a nadie que no
+    // sea el dueño (ni el menú fijo, ni nada) — solo al activarlo empieza a
+    // atender pedidos.
+    if (!_customerAiEnabled) return;
     console.log(`[wa-bot] 📨 (cliente) "${msg.body?.substring(0, 60)}"`);
     try {
       await handleCustomerMessage(msg);

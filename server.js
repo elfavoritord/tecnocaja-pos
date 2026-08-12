@@ -8038,32 +8038,20 @@ app.get('/api/public/users-list', async (req, res) => {
       return res.json(publicUsersListCache.payload);
     }
 
-    // Cada terminal solo muestra el personal de SU propia sucursal (más el
-    // administrador general, que puede entrar desde cualquier lado) — en un
-    // negocio multisucursal con varias terminales compartiendo la misma base,
-    // mostrar a TODO el personal de TODAS las sucursales en cada pantalla de
-    // login es confuso e innecesario. Si esta terminal no tiene sucursal
-    // asignada (negocio de una sola sucursal), no se filtra nada — mismo
-    // comportamiento de siempre.
-    const terminalBranchId = Number(getTerminalScopeSelection()?.branchId || 0) || null;
+    // El selector de login muestra a todo el personal activo, sin filtrar por
+    // sucursal: en el modelo actual (una terminal principal atendiendo todas
+    // las cajas, con posibles terminales LAN secundarias) este endpoint no
+    // tiene forma de saber desde qué sucursal física se está pidiendo la
+    // lista — filtrar por la sucursal de ESTA terminal servidora escondía
+    // usuarios activos de otras sucursales en TODAS las pantallas de login,
+    // incluida la de esta misma terminal.
     const usersQuery = query(
-      terminalBranchId
-        ? `SELECT id, nombre, usuario, rol
-           FROM users
-           WHERE (LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '') OR estado IS NULL)
-             AND (
-               LOWER(COALESCE(rol, '')) IN ('administrador', 'administrador_general', 'admin', 'admin general', 'admin_general')
-               OR COALESCE(sucursal_id, branch_id) = ?
-             )
-           ORDER BY nombre ASC
-           LIMIT 50`
-        : `SELECT id, nombre, usuario, rol
-           FROM users
-           WHERE LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '')
-              OR estado IS NULL
-           ORDER BY nombre ASC
-           LIMIT 50`,
-      terminalBranchId ? [terminalBranchId] : []
+      `SELECT id, nombre, usuario, rol
+       FROM users
+       WHERE LOWER(COALESCE(estado, 'activo')) IN ('activo', 'active', '')
+          OR estado IS NULL
+       ORDER BY nombre ASC
+       LIMIT 50`
     );
     const users = await Promise.race([
       usersQuery,
@@ -9319,6 +9307,17 @@ async function ensureOfflineTables() {
       last_attempt_at DATETIME DEFAULT NULL,
       synced_at DATETIME DEFAULT NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    // Instalaciones viejas creadas antes de que se agregara esta tabla al
+    // schema nunca la reciben (no está en requiredTables de inspectCoreSchema,
+    // así que initializeMySqlDatabase() no vuelve a correr) — se auto-repara
+    // aquí. La usa el Bot WhatsApp (número, API keys, proveedor, horarios).
+    await query(`CREATE TABLE IF NOT EXISTS offline_cache_config (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      config_key VARCHAR(100) NOT NULL UNIQUE,
+      config_value TEXT DEFAULT NULL,
+      last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_config_key (config_key)
     )`);
   } catch (_e) { /* already exists */ }
 }
@@ -13255,6 +13254,63 @@ app.put('/api/users/:id', async (req, res) => {
       ? buildFirebaseAuthWarning(firebaseAuthResult.reason, 'actualizar')
       : ''
   });
+});
+
+app.delete('/api/users/:id', async (req, res) => {
+  const actorUser = await resolveUserManagementActor(req);
+  const id = Number(req.params.id);
+  const user = await getUserWithRoleContextById(id);
+  if (!user) {
+    return res.status(404).json({ error: 'Usuario no encontrado.' });
+  }
+  if (Number(actorUser.id) === id) {
+    return res.status(400).json({ error: 'No puedes eliminar tu propia cuenta.' });
+  }
+  const actorRoleCode = normalizeLegacyUserRoleCode(actorUser?.role_code || actorUser?.rol);
+  const targetRoleCode = normalizeLegacyUserRoleCode(user?.role_code || user?.rol);
+  const actorBranchId = getUserBranchIdValue(actorUser);
+  const targetBranchId = getUserBranchIdValue(user);
+  if (!canAssignManagedRole(actorUser, targetRoleCode)) {
+    return res.status(403).json({ error: 'No tienes permiso para eliminar este tipo de usuario.' });
+  }
+  if (actorRoleCode !== 'administrador_general' && actorBranchId && Number(targetBranchId || 0) !== Number(actorBranchId || 0)) {
+    return res.status(403).json({ error: 'No puedes eliminar usuarios fuera de tu sucursal.' });
+  }
+  if (targetRoleCode === 'administrador_general') {
+    const adminRows = await query(
+      `SELECT COUNT(*) AS total
+       FROM users u
+       LEFT JOIN roles r ON r.id = u.role_id
+       WHERE u.estado = 'Activo'
+         AND (COALESCE(r.codigo, '') = 'administrador_general' OR LOWER(COALESCE(u.rol, '')) = 'administrador')`
+    );
+    if (Number(adminRows[0]?.total || 0) <= 1) {
+      return res.status(409).json({ error: 'Debe quedar al menos un administrador general activo en el sistema.' });
+    }
+  }
+  const saleHistoryRows = await query('SELECT 1 FROM sales WHERE user_id = ? LIMIT 1', [id]);
+  if (saleHistoryRows.length) {
+    return res.status(409).json({
+      error: 'No puedes eliminar este usuario porque ya tiene ventas registradas a su nombre. Suspéndelo en su lugar para conservar el historial.'
+    });
+  }
+  await query('DELETE FROM users WHERE id = ?', [id]);
+  clearPublicUsersListCache();
+  await writeAuditLog({
+    userId: actorUser.id,
+    userName: actorUser.nombre,
+    userRole: actorUser.rol,
+    moduleName: 'Usuarios',
+    actionName: 'Usuario eliminado',
+    detail: `${user.usuario} · rol ${user.rol || ''}`
+  });
+  if (user.firebase_uid) {
+    fireReportSync(async () => {
+      const cfg = await getReportSyncConfig();
+      await reportsSync.deleteFirebaseUser(user.firebase_uid, { config: cfg });
+    });
+  }
+  res.status(204).end();
 });
 
 app.post('/api/users/:id/sync-firebase', async (req, res) => {

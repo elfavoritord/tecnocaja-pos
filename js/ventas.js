@@ -545,7 +545,7 @@ function buildSaleItem(product, qty = 1, extra = {}) {
   return item;
 }
 
-function buildQuickSaleItem({ nombre, precio, qty }) {
+function buildQuickSaleItem({ nombre, precio, qty, aplicaItbis = true }) {
   const item = normalizeSaleItem({
     id: null,
     codigo: 'RAPIDO',
@@ -553,7 +553,7 @@ function buildQuickSaleItem({ nombre, precio, qty }) {
     precio: Number(precio || 0),
     qty: Number(qty || 1),
     descuento: 0,
-    itbis: Number(getSaleTaxConfig().taxRate || 0),
+    itbis: aplicaItbis ? Number(getSaleTaxConfig().taxRate || 0) : 0,
     saleMode: 'unidad',
     unitLabel: 'Unidad',
     quickSale: true,
@@ -565,10 +565,11 @@ function buildQuickSaleItem({ nombre, precio, qty }) {
 function syncQuickSaleTotal() {
   const price = Number(document.getElementById('quick-sale-price')?.value || 0);
   const qty = Number(document.getElementById('quick-sale-qty')?.value || 0);
+  const aplicaItbis = document.getElementById('quick-sale-itbis')?.checked !== false;
   const total = document.getElementById('quick-sale-total-value');
   if (!total) return;
   total.textContent = fmt(price > 0 && qty > 0
-    ? calcItemTotal(buildQuickSaleItem({ nombre: 'Producto rápido', precio: price, qty }))
+    ? calcItemTotal(buildQuickSaleItem({ nombre: 'Producto rápido', precio: price, qty, aplicaItbis }))
     : 0);
 }
 
@@ -596,6 +597,12 @@ function openQuickSaleModal() {
           <input class="form-input" id="quick-sale-qty" type="number" min="1" max="999999" step="1" value="1" inputmode="numeric" oninput="syncQuickSaleTotal()" required>
         </div>
       </div>
+      <div class="form-group compact-toggle-card">
+        <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
+          <input type="checkbox" id="quick-sale-itbis" checked style="width:auto" onchange="syncQuickSaleTotal()">
+          <span>Aplicar ITBIS (${DB.config?.itbis ?? 18}%) a este producto</span>
+        </label>
+      </div>
       <div class="quick-sale-total" aria-live="polite">
         <span>Total del producto</span>
         <strong id="quick-sale-total-value">${fmt(0)}</strong>
@@ -612,6 +619,7 @@ function addQuickSaleItem() {
   const nameInput = document.getElementById('quick-sale-name');
   const priceInput = document.getElementById('quick-sale-price');
   const qtyInput = document.getElementById('quick-sale-qty');
+  const aplicaItbis = document.getElementById('quick-sale-itbis')?.checked !== false;
   const nombre = String(nameInput?.value || '').trim();
   const precio = Number(priceInput?.value || 0);
   const qty = Number(qtyInput?.value || 0);
@@ -632,7 +640,7 @@ function addQuickSaleItem() {
     return;
   }
 
-  DB.saleItems.push(buildQuickSaleItem({ nombre, precio, qty }));
+  DB.saleItems.push(buildQuickSaleItem({ nombre, precio, qty, aplicaItbis }));
   closeAllModals();
   renderSaleTable();
   updateTotals();

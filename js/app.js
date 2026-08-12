@@ -10005,7 +10005,7 @@ async function waBotLoadSavedKeys() {
     // Cargar números guardados en los campos
     const el1 = document.getElementById('wabot-owner-phone');
     const el2 = document.getElementById('wabot-owner-phone2');
-    if (el1 && data.ownerPhone && !el1.value) el1.value = data.ownerPhone;
+    if (el1 && data.ownerPhone) el1.value = data.ownerPhone;
     if (el2 && data.ownerPhone2) el2.value = data.ownerPhone2;
     // Preseleccionar proveedor guardado
     if (data.provider && data.provider !== 'none') {
@@ -10043,7 +10043,8 @@ async function waBotSaveKey() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, apiKey }),
     });
-    if (!res.ok) throw new Error('Error guardando');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Error guardando');
     showToast('✅ API Key guardada de forma segura', 'success');
     const saved = document.getElementById('wabot-apikey-saved');
     if (saved) saved.style.display = 'block';

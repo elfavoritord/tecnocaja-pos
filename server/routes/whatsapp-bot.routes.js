@@ -4,6 +4,29 @@ const crypto  = require('crypto');
 
 const router = express.Router();
 
+// offline_cache_config no está en la lista de "tablas requeridas" que decide
+// si server.js vuelve a correr schema.sql (ver inspectCoreSchema) — instalaciones
+// viejas que ya tenían config/users/products/etc. antes de que se agregara esta
+// tabla nunca la reciben. Se auto-repara aquí, antes de cualquier ruta del bot.
+let _configTableEnsured = false;
+router.use(async (req, res, next) => {
+  if (_configTableEnsured) return next();
+  try {
+    const db = req.app.locals.queryFn;
+    if (db) {
+      await db(`CREATE TABLE IF NOT EXISTS offline_cache_config (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        config_key VARCHAR(100) NOT NULL UNIQUE,
+        config_value TEXT DEFAULT NULL,
+        last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        KEY idx_config_key (config_key)
+      )`);
+      _configTableEnsured = true;
+    }
+  } catch (_e) { /* si falla, se reintenta en la próxima petición */ }
+  next();
+});
+
 // ── Google OAuth para Gemini ───────────────────────────────────────────────────
 const GEMINI_SCOPE   = 'https://www.googleapis.com/auth/generative-language';
 const CALLBACK_URL   = 'http://localhost:3399/api/wa-bot/google-callback';

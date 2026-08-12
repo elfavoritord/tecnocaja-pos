@@ -3731,7 +3731,7 @@
           <h3>Configuración</h3>
           <div class="wabot-form-row">
             <label>Número principal (recibirá y enviará mensajes al bot)</label>
-            <input type="tel" id="wabot-owner-phone" placeholder="18292812877" value="18292812877">
+            <input type="tel" id="wabot-owner-phone" placeholder="18292812877">
           </div>
           <div class="wabot-form-row">
             <label>Número secundario <span style="font-size:.75rem;color:var(--text3)">(opcional — también puede hablar con el bot)</span></label>
@@ -3805,10 +3805,10 @@
         <!-- IA para el bot de clientes -->
         <div class="wabot-card" style="grid-column:1/-1">
           <h3 style="margin-bottom:.6rem">🤖 IA para Clientes</h3>
-          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem">Con esto activo, el bot de clientes responde de forma natural (usando el motor de arriba) cuando el cliente no escribe 1, 2 o 3 — el pedido en sí siempre lo sigue armando el sistema paso a paso, nunca la IA. Úsalo para adaptar el tono y las reglas a tu tipo de negocio.</p>
+          <p style="font-size:.8rem;color:var(--text3);margin:0 0 .6rem"><strong>Apagador general del bot de clientes.</strong> Mientras esté desactivado, el bot NO le responde nada a ningún número que no sea el tuyo — ni el menú, ni pedidos, nada. Al activarlo, el bot empieza a atender pedidos con el menú 1/2/3 y, cuando el cliente escribe texto libre (usando el motor de arriba), responde de forma natural — el pedido en sí siempre lo sigue armando el sistema paso a paso, nunca la IA. Úsalo también para adaptar el tono y las reglas a tu tipo de negocio.</p>
           <label style="display:flex;align-items:center;gap:.5rem;margin-bottom:.75rem;cursor:pointer;font-size:.85rem;font-weight:600">
             <input type="checkbox" id="wabot-customer-ai-enabled" onchange="waBotSaveCustomerAiToggle()" style="width:16px;height:16px;accent-color:var(--accent)">
-            Activar IA para clientes
+            Activar bot para clientes
           </label>
           <textarea id="wabot-customer-instructions" rows="4" placeholder="Ej: Somos una farmacia. Menciona que los antibióticos requieren receta médica. Nunca prometas entregas en menos de 30 minutos." style="width:100%;box-sizing:border-box;background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:10px;padding:.75rem;font-size:.85rem;resize:vertical;font-family:inherit"></textarea>
           <div style="display:flex;justify-content:flex-end;margin-top:.5rem">

@@ -713,6 +713,34 @@ async function deleteCustomer(customerId, ctx = {}) {
   }
 }
 
+// ---------- USERS ----------
+
+/**
+ * Elimina por completo la cuenta Firebase Auth de un empleado/cajero y sus
+ * documentos de routing, para que un usuario borrado en el POS no conserve
+ * acceso a la app móvil / portal.
+ */
+async function deleteFirebaseUser(uid, ctx = {}) {
+  const auth = safeGetAuth();
+  const firestore = safeGetFirestore();
+  if (!auth || !uid) return;
+  try {
+    await auth.deleteUser(uid);
+  } catch (err) {
+    if (err?.code !== 'auth/user-not-found') {
+      console.warn('[reports-sync] deleteFirebaseUser (auth) falló:', err.message);
+    }
+  }
+  if (!firestore) return;
+  try {
+    const businessId = getBusinessId(ctx.config || {});
+    await firestore.collection('users').doc(uid).delete();
+    await firestore.collection('businesses').doc(businessId).collection('users').doc(uid).delete();
+  } catch (err) {
+    console.warn('[reports-sync] deleteFirebaseUser (firestore) falló:', err.message);
+  }
+}
+
 // ---------- RECEIVABLES (cuentas por cobrar) ----------
 
 /**
@@ -1023,6 +1051,7 @@ module.exports = {
   syncTaxReport,
   // Users
   ensureFirebaseUser,
+  deleteFirebaseUser,
   // Internal for bootstrap
   _internals: { col, safeGetFirestore, toTimestamp, toNumber },
 };

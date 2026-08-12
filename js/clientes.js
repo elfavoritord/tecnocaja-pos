@@ -1704,7 +1704,9 @@ function loadUsuariosTable() {
         <td style="text-align:center">${fbBadge}</td>
         <td style="color:var(--text2);font-size:0.82rem">${escapeUserFieldHtml(user.lastLogin || '—')}</td>
         <td>
-          ${canManage ? `<button class="btn-edit" style="margin-right:4px" onclick="openEditUserModal(${user.id})">✏ ${userText('Editar')}</button>` : `<span class="user-readonly-pill">${userText('Solo lectura')}</span>`}
+          ${canManage ? `<button class="btn-edit" style="margin-right:4px" onclick="openEditUserModal(${user.id})">✏ ${userText('Editar')}</button>` : ''}
+          ${canManage && Number(DB.currentUser?.id) !== Number(user.id) ? `<button class="btn-danger" onclick="deleteUsuarioRow(${user.id})">🗑 ${userText('Eliminar')}</button>` : ''}
+          ${!canManage ? `<span class="user-readonly-pill">${userText('Solo lectura')}</span>` : ''}
         </td>
       </tr>
     `;
@@ -2231,6 +2233,31 @@ function openEditUserModal(id) {
     return;
   }
   euOpenUserModal(user, { mode: 'edit' });
+}
+
+async function deleteUsuarioRow(id) {
+  if (!currentUserCanManageUsersUi()) {
+    showToast(userText('Tu cuenta no tiene permiso para eliminar usuarios.'), 'warning');
+    return;
+  }
+  const user = getScopedUsersForUserManagement().find(u => u.id === id);
+  if (!user) {
+    showToast(userText('No puedes eliminar este usuario.'), 'error');
+    return;
+  }
+  if (!await showDeleteConfirm(userText(`¿Eliminar por completo a "${user.nombre}"? Esta acción no se puede deshacer.`))) return;
+  try {
+    await api.request(`/api/users/${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify(getActorPayload())
+    });
+    DB.users = (DB.users || []).filter((item) => Number(item.id) !== Number(id));
+    loadUsuariosTable();
+    showToast(userText('Usuario eliminado.'), 'success');
+    if (typeof refreshAuditLogs === 'function') await refreshAuditLogs();
+  } catch (err) {
+    showToast(err.message || userText('No se pudo eliminar el usuario.'), 'error');
+  }
 }
 
 function euOpenUserModal(user, options = {}) {
