@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/providers/database_providers.dart';
+import '../../core/business/business_capabilities.dart';
+import '../../data/repositories/configuracion_repository.dart';
 import '../../core/constants/roles.dart';
 import '../../core/utils/formatters.dart';
 import '../../data/auth/auth_controller.dart';
@@ -16,17 +18,23 @@ class ModulesScreen extends StatelessWidget {
     _Module('Cotizaciones', '/cotizaciones', Icons.request_quote),
     _Module('Productos', '/productos', Icons.inventory_2),
     _Module('Inventario', '/inventario', Icons.warehouse),
+    _Module('Vencimientos', '/vencimientos', Icons.event_busy_outlined),
     _Module('Promociones y combos', '/promociones', Icons.local_offer),
     _Module('Clientes', '/clientes', Icons.people),
+    _Module('CRM y seguimientos', '/crm', Icons.support_agent),
     _Module('Cuentas por cobrar', '/cuentas-cobrar', Icons.account_balance),
     _Module('Proveedores', '/proveedores', Icons.local_shipping),
     _Module('Compras y cuentas por pagar', '/compras',
         Icons.shopping_cart_checkout),
+    _Module('Gastos', '/gastos', Icons.receipt),
     _Module('Caja', '/caja', Icons.account_balance_wallet),
     _Module('Movimientos', '/movimientos', Icons.swap_vert_circle),
+    _Module('Mesas y cocina', '/restaurante', Icons.restaurant),
     _Module('Reportes', '/reportes', Icons.analytics),
     _Module('Usuarios y permisos', '/usuarios', Icons.manage_accounts),
+    _Module('RRHH', '/rrhh', Icons.badge),
     _Module('Delivery', '/delivery', Icons.delivery_dining),
+    _Module('WhatsApp Bot', '/whatsapp-bot', Icons.chat),
     _Module('Auditoría', '/auditoria', Icons.fact_check),
     _Module('Configuración fiscal', '/fiscal', Icons.verified_user),
     _Module('Etiquetas', '/etiquetas', Icons.qr_code_2),
@@ -52,9 +60,18 @@ class ModulesGrid extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final role = ref.watch(authControllerProvider).usuario?.rol;
+    final config = ref.watch(configuracionControllerProvider).valueOrNull;
+    final configured = config != null &&
+        (config.businessType != null || config.businessCapabilities.isNotEmpty);
+    final capabilities = config == null
+        ? <String>{}
+        : config.businessCapabilities.isEmpty
+            ? BusinessCatalog.recommendedCodes(config.businessType)
+            : config.businessCapabilities;
     final visibleModules = ModulesScreen.modules
-        .where(
-            (module) => role == null || canRoleAccessRoute(role, module.route))
+        .where((module) =>
+            (role == null || canRoleAccessRoute(role, module.route)) &&
+            (!configured || module.isAvailableFor(capabilities)))
         .toList();
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -116,6 +133,7 @@ bool canRoleAccessRoute(RolBase role, String route) {
     '/cotizaciones',
     '/productos',
     '/clientes',
+    '/crm',
     '/cuentas-cobrar',
     '/caja',
     '/ajustes',
@@ -124,21 +142,29 @@ bool canRoleAccessRoute(RolBase role, String route) {
     ...cashierRoutes,
     '/inventario',
     '/movimientos',
+    '/vencimientos',
     '/promociones',
+    '/restaurante',
     '/reportes',
+    '/rrhh',
     '/delivery',
+    '/whatsapp-bot',
     '/etiquetas',
   };
   const accountantRoutes = {
     '/ventas',
     '/productos',
     '/inventario',
+    '/vencimientos',
     '/clientes',
+    '/crm',
     '/cuentas-cobrar',
     '/proveedores',
     '/compras',
+    '/gastos',
     '/caja',
     '/reportes',
+    '/rrhh',
     '/auditoria',
     '/fiscal',
     '/ajustes',
@@ -259,4 +285,15 @@ class _Module {
   final String label;
   final String route;
   final IconData icon;
+
+  bool isAvailableFor(Set<String> capabilities) {
+    return switch (route) {
+      '/restaurante' => capabilities.contains(BusinessCapability.tables.code) ||
+          capabilities.contains(BusinessCapability.kitchen.code),
+      '/delivery' => capabilities.contains(BusinessCapability.delivery.code),
+      '/vencimientos' =>
+        capabilities.contains(BusinessCapability.expiration.code),
+      _ => true,
+    };
+  }
 }

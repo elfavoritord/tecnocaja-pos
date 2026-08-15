@@ -1,3 +1,17 @@
+// No existía NINGÚN manejador global de errores no capturados en todo el
+// proyecto. Una promesa rechazada sin .catch() en cualquier dependencia
+// (ej. el Chrome de Puppeteer del bot de WhatsApp cerrándose a medio comando,
+// ver "Target closed" en los logs) podía escalar a excepción no capturada y
+// tumbar TODO el proceso — servidor, caja abierta, todo — porque Node ≥15
+// termina el proceso por defecto ante un unhandledRejection sin listener.
+// Loggear y seguir corriendo es la prioridad para un POS en producción.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.stack || reason.message : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err?.stack || err?.message || err);
+});
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -7763,6 +7777,11 @@ ensureDiningTables = memoizeEnsureOnce(ensureDiningTables);
 ensureDeliveryTrackingTable = memoizeEnsureOnce(ensureDeliveryTrackingTable);
 ensureSuspendedSalesTable = memoizeEnsureOnce(ensureSuspendedSalesTable);
 ensureQuotationsTable = memoizeEnsureOnce(ensureQuotationsTable);
+// ensureConfigExtensions quedó fuera de esta lista por descuido: son 55
+// ADD COLUMN IF MISSING corriendo sin memoizar en cada /api/login (vía
+// getSetupStatus) y en cada ciclo de sync de licencia — el mayor causante
+// de logins de 12-20s. Mismo tratamiento que sus hermanas de arriba.
+ensureConfigExtensions = memoizeEnsureOnce(ensureConfigExtensions);
 
 async function getBootstrapData(actorUser = null) {
   await ensureAuditTable();
@@ -9671,17 +9690,40 @@ app.post('/api/auth/offline-login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Contraseña incorrecta.' });
     }
 
+    // Este objeto sirve doble propósito: se manda tal cual al frontend como
+    // `user` (que lee camelCase: rolePermissions, sucursalId — ver
+    // currentUserCan() en js/app.js) Y se guarda en _authSessionCache como
+    // req.authUser para las peticiones siguientes (que leen snake_case:
+    // role_permissions, sucursal_id/branch_id, caja_id — ver
+    // userRoleHasPermission() y getUserBranchIdValue() en server.js). Antes
+    // quedaba con permisos vacíos en ambas formas, así que cualquier rol
+    // personalizado perdía acceso a todo al entrar sin internet.
+    const rolePermissionsArr = parseJsonArrayField(localUser.role_permissions);
+    const branchIdVal = localUser.branch_id === null || localUser.branch_id === undefined ? null : Number(localUser.branch_id);
+    const cashRegisterIdVal = localUser.cash_register_id === null || localUser.cash_register_id === undefined ? null : Number(localUser.cash_register_id);
+    const roleIdVal = localUser.role_id === null || localUser.role_id === undefined ? null : Number(localUser.role_id);
     const offlineUser = {
       id: Number(localUser.user_id),
       usuario: localUser.usuario,
       nombre: localUser.nombre,
       rol: localUser.rol,
-      role_code: localUser.rol,
-      role_name: localUser.rol,
-      role_permissions: [],
-      permisos: [],
-      branch_id: null,
-      caja_id: null,
+      // camelCase — consumido por el frontend
+      roleCode: localUser.role_code || localUser.rol,
+      roleName: localUser.role_name || localUser.rol,
+      roleId: roleIdVal,
+      rolePermissions: rolePermissionsArr,
+      sucursalId: branchIdVal,
+      cajaId: cashRegisterIdVal,
+      // snake_case — consumido por chequeos de permisos del backend sobre req.authUser
+      role_code: localUser.role_code || localUser.rol,
+      role_name: localUser.role_name || localUser.rol,
+      role_id: roleIdVal,
+      role_permissions: rolePermissionsArr,
+      permisos: rolePermissionsArr,
+      sucursal_id: branchIdVal,
+      branch_id: branchIdVal,
+      caja_id: cashRegisterIdVal,
+      cash_register_id: cashRegisterIdVal,
       estado: 'activo',
       offlineSession: true,
       offlineSince: new Date().toISOString()
@@ -17372,7 +17414,7 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
       cobros_credito_transferencia: Number(cobrosCredito.transferencia || 0),
       costo_total: costo, ganancia, margen, desde, hasta
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Ventas por día (tendencia) ───────────────────────────────
@@ -17428,7 +17470,7 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
     }
 
     res.json([...byDia.values()].sort((a, b) => a.dia.localeCompare(b.dia)));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Top productos vendidos ───────────────────────────────────
@@ -17475,7 +17517,7 @@ app.get('/api/reports/advanced/productos', async (req, res) => {
       enFacturas: Number(r.en_facturas),
       participacion: totalQty > 0 ? ((Number(r.cantidad) / totalQty) * 100).toFixed(1) : '0.0'
     })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Top clientes ─────────────────────────────────────────────
@@ -17491,7 +17533,7 @@ app.get('/api/reports/advanced/clientes', async (req, res) => {
 
     const rows = await query(`
       SELECT
-        c.id, c.nombre, c.telefono, c.cedula, c.created_at,
+        c.id, c.nombre, c.telefono, c.cedula,
         COALESCE(c.balance, 0) AS balance,
         COUNT(s.id) AS total_facturas,
         SUM(s.total) AS total_comprado,
@@ -17500,7 +17542,7 @@ app.get('/api/reports/advanced/clientes', async (req, res) => {
       FROM sales s
       JOIN clients c ON s.client_id=c.id
       ${w}
-      GROUP BY c.id, c.nombre, c.telefono, c.cedula, c.created_at, c.balance
+      GROUP BY c.id, c.nombre, c.telefono, c.cedula, c.balance
       ORDER BY total_comprado DESC
       LIMIT 20`, p);
 
@@ -17510,13 +17552,12 @@ app.get('/api/reports/advanced/clientes', async (req, res) => {
       telefono: r.telefono || '',
       cedula: r.cedula || '',
       balance: Number(r.balance || 0),
-      createdAt: r.created_at,
       facturas: Number(r.total_facturas),
       totalComprado: Number(r.total_comprado),
       ticketPromedio: Number(r.ticket_promedio),
       ultimaCompra: r.ultima_compra
     })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Ventas por método de pago ────────────────────────────────
@@ -17594,7 +17635,7 @@ app.get('/api/reports/advanced/metodos-pago', async (req, res) => {
     res.json(allRows
       .map(r => ({ ...r, porcentaje: totalGeneral > 0 ? ((r.total / totalGeneral) * 100).toFixed(1) : '0.0' }))
       .sort((a, b) => b.total - a.total));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Ventas por usuario/cajero ────────────────────────────────
@@ -17657,7 +17698,7 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
     }
 
     res.json([...byUser.values()].sort((a, b) => b.total - a.total));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Ventas por sucursal ──────────────────────────────────────
@@ -17725,7 +17766,7 @@ app.get('/api/reports/advanced/por-sucursal', async (req, res) => {
       totalGastos: Number(r.total_gastos || 0),
       totalCobrosCredito: Number(r.total_cobros || 0)
     })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Ganancias ────────────────────────────────────────────────
@@ -17813,7 +17854,7 @@ app.get('/api/reports/advanced/ganancias', async (req, res) => {
         quantity: Number(row.quantity || 0),
       })),
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Ventas por caja ──────────────────────────────────────────
@@ -17879,7 +17920,7 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
     }
 
     res.json([...byCaja.values()].sort((a, b) => b.total - a.total));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Detalle de facturas ──────────────────────────────────────
@@ -18030,7 +18071,7 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
       pages: Math.max(1, Math.ceil(total_count / limit)),
       rows: pageRows
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Devoluciones / cancelaciones ────────────────────────────
@@ -18112,7 +18153,7 @@ app.get('/api/reports/advanced/devoluciones', async (req, res) => {
         tipoRegistro:   r.tipo_registro || 'devolucion'
       }))
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Reporte DGII (fiscal) ────────────────────────────────────
@@ -18181,7 +18222,7 @@ app.get('/api/reports/advanced/dgii', async (req, res) => {
         itbis: Number(r.itbis)
       }))
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Exportación fiscal para el contador (606/607/608) ────────
@@ -18313,7 +18354,7 @@ app.get('/api/reports/advanced/dgii/exportar-contador', async (req, res) => {
         fechaAnulacion: soloFecha(r.created_at),
       })),
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Gastos / egresos ────────────────────────────────────────
@@ -18357,7 +18398,7 @@ app.get('/api/reports/advanced/gastos', async (req, res) => {
       createdBy: row.created_by_user_name || 'Sistema',
       createdAt: row.happened_at,
     })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 async function buildAccountsReceivableReportData(scopedBranchId) {
@@ -18497,7 +18538,7 @@ app.get('/api/reports/advanced/cuentas-cobrar', async (req, res) => {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
     const scopedBranchId = getUserScopeBranchId(actorUser);
     res.json(await buildAccountsReceivableReportData(scopedBranchId));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 app.get('/api/reports/advanced/cuentas-pagar-cobrar', async (req, res) => {
@@ -18522,7 +18563,7 @@ app.get('/api/reports/advanced/cuentas-pagar-cobrar', async (req, res) => {
         payablesScopedByBranch: false,
       },
     });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Lista de sucursales y cajas para filtros ─────────────────
@@ -18543,7 +18584,7 @@ app.get('/api/reports/advanced/filtros', async (req, res) => {
     const usuarios = await query(`SELECT id, nombre, usuario FROM users WHERE estado='Activo' ORDER BY nombre`);
 
     res.json({ sucursales, cajas, usuarios });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ── Guardar reporte diario en carpeta ───────────────────────
@@ -18585,7 +18626,7 @@ app.post('/api/reports/auto-save-daily', async (req, res) => {
 
     fs.writeFileSync(filePath, JSON.stringify(report, null, 2), 'utf8');
     res.json({ ok: true, filePath });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // ══════════════════════════════════════════════════════════
@@ -18610,7 +18651,7 @@ app.get('/api/ncf/sequences', async (req, res) => {
       fechaVencimiento: r.fecha_vencimiento || null,
       label: NCF_LABELS[r.ncf_type] || r.ncf_type
     })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // POST /api/ncf/sequences  — crear o actualizar secuencia
@@ -18641,7 +18682,7 @@ app.post('/api/ncf/sequences', async (req, res) => {
       );
     }
     res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // DELETE /api/ncf/sequences/:id  — desactivar secuencia (nunca borrar si fue usada)
@@ -18659,7 +18700,7 @@ app.delete('/api/ncf/sequences/:id', async (req, res) => {
     }
     await query('DELETE FROM ncf_sequences WHERE id = ?', [req.params.id]);
     res.json({ ok: true, action: 'deleted' });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // GET /api/ncf/preview/:type  — previsualizar próximo NCF sin consumirlo
@@ -18680,7 +18721,7 @@ app.get('/api/ncf/preview/:type', async (req, res) => {
     const disponible = seq.siguiente_numero <= seq.maximo;
     const ncf = disponible ? `${ncfType}${String(seq.siguiente_numero).padStart(8, '0')}` : null;
     res.json({ ncf, disponible, siguiente: seq.siguiente_numero, maximo: seq.maximo });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // GET /api/ncf/search-facturas  — buscar facturas para referencia en B03/B04
@@ -18710,7 +18751,7 @@ app.get('/api/ncf/search-facturas', async (req, res) => {
       fecha: r.created_at,
       estadoFiscal: r.fiscal_status
     })));
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
 });
 
 // Nota: /api/health ya está definido arriba con try/catch completo.
@@ -19532,6 +19573,16 @@ async function startHttpServer(port, bindHost) {
 // ventana. Si el último cierre de caja quedaba dentro de esa ventana de 80ms,
 // el cambio se perdía silenciosamente al matar el proceso.
 async function stopHttpServer() {
+  // Nada llamaba a waBotModule.stop() al cerrar la app — Chrome (hijo directo
+  // del proceso, sin detached:true) moría de golpe con comandos CDP en vuelo,
+  // produciendo "Target closed" / UnhandledPromiseRejectionWarning en cada
+  // cierre. stop() ya maneja destroy() con timeout de 8s + kill de respaldo,
+  // así que basta con invocarlo aquí antes de tumbar el proceso. Solo si el
+  // bot llegó a cargarse (app.locals.ensureWaBot ya lo puso en caché) — no
+  // tiene sentido requerirlo recién al cerrar si nunca arrancó.
+  if (waBotModule?.stop) {
+    await waBotModule.stop().catch(() => {});
+  }
   await flushPendingSave();
   await new Promise((resolve) => {
     httpServer.close(() => resolve());

@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
 
-const { getCertificateContext } = require('./certificate');
+const { getCertificateContextForRnc } = require('./certificate');
 const { signXmlDocument } = require('./xmlsign');
 
 const XML_CONTENT_TYPES = ['application/xml', 'text/xml', 'application/soap+xml'];
@@ -15,8 +15,8 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 // el POS local; si el certificado no está disponible, degradamos a enviar
 // sin firma en vez de tumbar el servicio — mejor una respuesta a tiempo que
 // ninguna, y el log deja claro que falta configurar el certificado.
-function signArecf(xml) {
-  const cert = getCertificateContext();
+async function signArecf(xml, recipientRnc, store) {
+  const cert = await getCertificateContextForRnc(recipientRnc, store);
   if (!cert) return xml;
   try {
     return signXmlDocument(xml, cert);
@@ -47,12 +47,27 @@ function resolveXmlBody(req) {
 // Misma lógica de extracción y formato de fecha que server/routes/dgii-public.routes.js
 // (POS local) — se porta tal cual, no se reinventa.
 function fmtDgiiDateTime(d = new Date()) {
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Santo_Domingo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  })
+    .formatToParts(d)
+    .reduce((acc, part) => {
+      acc[part.type] = part.value;
+      return acc;
+    }, {});
+  const dd = parts.day;
+  const mm = parts.month;
+  const yyyy = parts.year;
+  const hh = parts.hour === '24' ? '00' : parts.hour;
+  const mi = parts.minute;
+  const ss = parts.second;
   return `${dd}-${mm}-${yyyy} ${hh}:${mi}:${ss}`;
 }
 
@@ -62,22 +77,21 @@ function extractTagValue(xml, tag) {
 }
 
 function buildArecf({ rncEmisor, rncComprador, encf, estado = '0', codigoMotivo = '' }) {
+  const motivo = codigoMotivo ? `<CodigoMotivoNoRecibido>${codigoMotivo}</CodigoMotivoNoRecibido>` : '';
   return [
     '<?xml version="1.0" encoding="utf-8"?>',
-    '<ARECF>',
-    '  <DetalleAcusedeRecibo>',
-    '    <Version>1.0</Version>',
-    `    <RNCEmisor>${rncEmisor}</RNCEmisor>`,
-    `    <RNCComprador>${rncComprador}</RNCComprador>`,
-    `    <eNCF>${encf}</eNCF>`,
-    `    <Estado>${estado}</Estado>`,
-    codigoMotivo ? `    <CodigoMotivoNoRecibido>${codigoMotivo}</CodigoMotivoNoRecibido>` : '',
-    `    <FechaHoraAcuseRecibo>${fmtDgiiDateTime()}</FechaHoraAcuseRecibo>`,
-    '  </DetalleAcusedeRecibo>',
+    '<ARECF xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="schema.xsd">',
+    '<DetalleAcusedeRecibo>',
+    '<Version>1.0</Version>',
+    `<RNCEmisor>${rncEmisor}</RNCEmisor>`,
+    `<RNCComprador>${rncComprador}</RNCComprador>`,
+    `<eNCF>${encf}</eNCF>`,
+    `<Estado>${estado}</Estado>`,
+    motivo,
+    `<FechaHoraAcuseRecibo>${fmtDgiiDateTime()}</FechaHoraAcuseRecibo>`,
+    '</DetalleAcusedeRecibo>',
     '</ARECF>',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  ].join('');
 }
 
 function requireAdminToken(req, res, next) {
@@ -154,13 +168,13 @@ function createGatewayRouter({ store }) {
 
     if (!rncEmisor || !encf) {
       console.log(`[GATEWAY] recepcion/ecf RECHAZADO — body (300c): ${body.slice(0, 300) || '(vacío)'}`);
-      const arecf = signArecf(buildArecf({
+      const arecf = await signArecf(buildArecf({
         rncEmisor: rncEmisor || '00000000000',
         rncComprador: rncComprador || '00000000000',
         encf: encf || 'E000000000000',
         estado: '1',
         codigoMotivo: '1', // Error de Especificación
-      }));
+      }), rncComprador, store);
       return res.status(400).type('application/xml').send(arecf);
     }
 
@@ -168,12 +182,12 @@ function createGatewayRouter({ store }) {
     const existing = await store.findByKey('ecf_gateway_received', key);
     if (existing) {
       console.log(`[GATEWAY] recepcion/ecf duplicado — eNCF=${encf} RNC=${rncEmisor}`);
-      const arecf = signArecf(buildArecf({
+      const arecf = await signArecf(buildArecf({
         rncEmisor,
         rncComprador: rncComprador || existing.rncComprador || '',
         encf,
         estado: '0',
-      }));
+      }), rncComprador || existing.rncComprador, store);
       await store.save('ecf_gateway_received', key, {
         ...existing,
         rncComprador: rncComprador || existing.rncComprador || '',
@@ -183,7 +197,11 @@ function createGatewayRouter({ store }) {
       return res.type('application/xml').send(arecf);
     }
 
-    const arecf = signArecf(buildArecf({ rncEmisor, rncComprador, encf, estado: '0' }));
+    const arecf = await signArecf(
+      buildArecf({ rncEmisor, rncComprador, encf, estado: '0' }),
+      rncComprador,
+      store
+    );
     const record = {
       businessId,
       rncEmisor,

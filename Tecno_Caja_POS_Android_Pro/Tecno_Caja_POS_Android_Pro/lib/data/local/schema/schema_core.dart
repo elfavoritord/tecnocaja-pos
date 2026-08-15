@@ -113,6 +113,8 @@ class SchemaCore {
       fiscal_ambiente TEXT NOT NULL DEFAULT 'certificacion',
       sucursal_seleccionada_id TEXT,
       caja_seleccionada_id TEXT,
+      business_type TEXT,
+      business_capabilities_json TEXT NOT NULL DEFAULT '[]',
       actualizado_en TEXT NOT NULL
     )
   ''';
@@ -125,5 +127,13 @@ class SchemaCore {
         'CREATE INDEX IF NOT EXISTS idx_permisos_usuario ON permisos_usuario(usuario_id)',
       ];
 
-  static List<String> all() => [empresas, sucursales, cajas, usuarios, permisosUsuario, configuracion, ...indexes()];
+  static List<String> all() => [
+        empresas,
+        sucursales,
+        cajas,
+        usuarios,
+        permisosUsuario,
+        configuracion,
+        ...indexes()
+      ];
 }

@@ -1,17 +1,21 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sqflite/sqflite.dart';
 
+import '../../core/errors/app_exception.dart';
 import '../../core/providers/database_providers.dart';
 import '../../core/utils/id_generator.dart';
 import '../../domain/entities/categoria.dart';
 import '../../domain/entities/inventario.dart';
 import '../../domain/entities/producto.dart';
+import '../../domain/entities/producto_lote.dart';
 import '../local/daos/catalogo_dao.dart';
 import 'inventario_repository.dart';
 
 class ProductoRepository {
   ProductoRepository(
-      this._productoDao, this._categoriaDao, this._inventarioRepo);
+      this._db, this._productoDao, this._categoriaDao, this._inventarioRepo);
 
+  final Database _db;
   final ProductoDao _productoDao;
   final CategoriaDao _categoriaDao;
   final InventarioRepository _inventarioRepo;
@@ -71,7 +75,24 @@ class ProductoRepository {
     double stockInicial = 0,
     String? sucursalParaStock,
     String? usuarioId,
+    bool controlaVencimiento = false,
+    String? laboratorio,
+    String? principioActivo,
+    String? presentacion,
+    String? concentracion,
+    String? registroSanitario,
+    bool esControlado = false,
+    String? numeroLoteInicial,
+    DateTime? fechaFabricacionInicial,
+    DateTime? fechaVencimientoInicial,
   }) async {
+    if (controlaVencimiento &&
+        stockInicial > 0 &&
+        fechaVencimientoInicial == null) {
+      throw const ValidationException(
+        message: 'Indica la fecha de vencimiento del lote inicial.',
+      );
+    }
     final now = DateTime.now();
     final producto = Producto(
       id: IdGenerator.newId(),
@@ -92,6 +113,14 @@ class ProductoRepository {
       stockMinimo: stockMinimo,
       proveedorId: proveedorId,
       dispositivoId: dispositivoId,
+      tieneLotes: controlaVencimiento,
+      controlaVencimiento: controlaVencimiento,
+      laboratorio: laboratorio,
+      principioActivo: principioActivo,
+      presentacion: presentacion,
+      concentracion: concentracion,
+      registroSanitario: registroSanitario,
+      esControlado: esControlado,
       creadoEn: now,
       actualizadoEn: now,
     );
@@ -110,6 +139,21 @@ class ProductoRepository {
       );
     }
 
+    if (controlaVencimiento && stockInicial > 0) {
+      await crearLote(
+        producto: producto,
+        cantidad: stockInicial,
+        numeroLote: numeroLoteInicial,
+        fechaFabricacion: fechaFabricacionInicial,
+        fechaVencimiento: fechaVencimientoInicial!,
+        costoUnitario: precioCompra,
+        proveedorId: proveedorId,
+        sucursalId: sucursalParaStock,
+        dispositivoId: dispositivoId,
+        registrarInventario: false,
+      );
+    }
+
     return producto;
   }
 
@@ -117,6 +161,130 @@ class ProductoRepository {
 
   Future<void> desactivar(String id) =>
       _productoDao.softDelete(id, nowIso: DateTime.now().toIso8601String());
+
+  Future<List<ProductoLote>> lotesDe(
+    String productoId, {
+    String? sucursalId,
+    bool incluirAgotados = true,
+  }) async {
+    final conditions = <String>['producto_id = ?', 'eliminado = 0'];
+    final args = <Object?>[productoId];
+    if (sucursalId != null) {
+      conditions.add('(sucursal_id = ? OR sucursal_id IS NULL)');
+      args.add(sucursalId);
+    }
+    if (!incluirAgotados) conditions.add('cantidad > 0');
+    final rows = await _db.query(
+      'producto_lotes',
+      where: conditions.join(' AND '),
+      whereArgs: args,
+      orderBy:
+          'CASE WHEN fecha_vencimiento IS NULL THEN 1 ELSE 0 END, fecha_vencimiento ASC, creado_en ASC',
+    );
+    return rows.map(ProductoLote.fromMap).toList();
+  }
+
+  Future<ProductoLote> crearLote({
+    required Producto producto,
+    required double cantidad,
+    String? numeroLote,
+    DateTime? fechaFabricacion,
+    required DateTime fechaVencimiento,
+    double? costoUnitario,
+    String? proveedorId,
+    String? sucursalId,
+    String? dispositivoId,
+    bool registrarInventario = true,
+  }) async {
+    if (cantidad <= 0) {
+      throw const ValidationException(
+        message: 'La cantidad del lote debe ser mayor que cero.',
+      );
+    }
+    final now = DateTime.now();
+    final lote = ProductoLote(
+      id: IdGenerator.newId(),
+      productoId: producto.id,
+      numeroLote:
+          numeroLote?.trim().isEmpty == true ? null : numeroLote?.trim(),
+      fechaFabricacion: fechaFabricacion,
+      fechaVencimiento: fechaVencimiento,
+      cantidad: cantidad,
+      costoUnitario: costoUnitario,
+      proveedorId: proveedorId,
+      empresaId: producto.empresaId,
+      sucursalId: sucursalId,
+      dispositivoId: dispositivoId,
+      creadoEn: now,
+      actualizadoEn: now,
+    );
+    await _db.insert('producto_lotes', lote.toMap());
+    if (!producto.tieneLotes || !producto.controlaVencimiento) {
+      await _productoDao.update(producto.copyWith(
+        tieneLotes: true,
+        controlaVencimiento: true,
+      ));
+    }
+    if (registrarInventario && sucursalId != null) {
+      await _inventarioRepo.registrarMovimiento(
+        productoId: producto.id,
+        sucursalId: sucursalId,
+        empresaId: producto.empresaId,
+        tipoMovimiento: TipoMovimientoInventario.entradaManual,
+        cantidad: cantidad,
+        costoUnitario: costoUnitario,
+        nota: 'Entrada de lote ${lote.numeroLote ?? lote.id}',
+        dispositivoId: dispositivoId,
+      );
+    }
+    return lote;
+  }
+
+  Future<void> validarDisponibleParaVenta(
+    Producto producto, {
+    double cantidad = 1,
+    String? sucursalId,
+  }) async {
+    if (!producto.controlaVencimiento) return;
+    final today = _dateOnly(DateTime.now());
+    final conditions = <String>[
+      'producto_id = ?',
+      'eliminado = 0',
+      'cantidad > 0',
+    ];
+    final args = <Object?>[producto.id];
+    if (sucursalId != null) {
+      conditions.add('(sucursal_id = ? OR sucursal_id IS NULL)');
+      args.add(sucursalId);
+    }
+    final rows = await _db.query(
+      'producto_lotes',
+      columns: ['cantidad', 'fecha_vencimiento'],
+      where: conditions.join(' AND '),
+      whereArgs: args,
+    );
+    final valid = rows.where((row) {
+      final expiry = row['fecha_vencimiento']?.toString();
+      return expiry != null && expiry.compareTo(today) >= 0;
+    }).fold<double>(0, (sum, row) => sum + (row['cantidad'] as num).toDouble());
+    if (valid >= cantidad) return;
+    final hasExpired = rows.any((row) {
+      final expiry = row['fecha_vencimiento']?.toString();
+      return expiry != null && expiry.compareTo(today) < 0;
+    });
+    if (valid <= 0 && hasExpired) {
+      throw const ValidationException(
+        message: 'PRODUCTO VENCIDO — NO SE PUEDE VENDER',
+      );
+    }
+    throw ValidationException(
+      message:
+          'Existencia válida insuficiente. Disponible sin vencer: ${valid.toStringAsFixed(2)}.',
+    );
+  }
+
+  static String _dateOnly(DateTime value) =>
+      value.toIso8601String().substring(0, 10);
 
   Future<Producto> duplicar(Producto original,
       {required String dispositivoId}) async {
@@ -174,6 +342,7 @@ class ProductoRepository {
 
 final productoRepositoryProvider = Provider<ProductoRepository>((ref) {
   return ProductoRepository(
+    ref.watch(databaseProvider),
     ref.watch(productoDaoProvider),
     ref.watch(categoriaDaoProvider),
     ref.watch(inventarioRepositoryProvider),

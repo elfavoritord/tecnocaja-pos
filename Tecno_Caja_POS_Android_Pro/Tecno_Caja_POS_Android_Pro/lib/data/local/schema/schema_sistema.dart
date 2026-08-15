@@ -1,3 +1,5 @@
+import 'sync_columns.dart';
+
 /// Cola de sincronizacion, auditoria, notificaciones locales y cache de
 /// licencia. Estas tablas son "de sistema": no participan del modelo
 /// empresa/sucursal/caja igual que las de negocio, cada una tiene su propio
@@ -71,12 +73,26 @@ class SchemaSistema {
     )
   ''';
 
+  static const String rrhhAsistencias = '''
+    CREATE TABLE IF NOT EXISTS rrhh_asistencias (
+      id TEXT PRIMARY KEY,
+      usuario_id TEXT NOT NULL,
+      entrada_en TEXT NOT NULL,
+      salida_en TEXT,
+      nota TEXT,
+      ${SyncColumns.full}
+    )
+  ''';
+
   static List<String> indexes() => [
         'CREATE INDEX IF NOT EXISTS idx_cola_estado ON cola_sincronizacion(estado)',
         'CREATE INDEX IF NOT EXISTS idx_cola_entidad ON cola_sincronizacion(entidad_tipo, entidad_id)',
         'CREATE INDEX IF NOT EXISTS idx_auditoria_ocurrido ON registro_auditoria(ocurrido_en)',
         'CREATE INDEX IF NOT EXISTS idx_auditoria_sync ON registro_auditoria(sincronizado)',
         'CREATE INDEX IF NOT EXISTS idx_notificaciones_leida ON notificaciones_locales(leida)',
+        'CREATE INDEX IF NOT EXISTS idx_rrhh_usuario ON rrhh_asistencias(usuario_id)',
+        'CREATE INDEX IF NOT EXISTS idx_rrhh_entrada ON rrhh_asistencias(entrada_en)',
+        ...SyncColumns.commonIndexes('rrhh_asistencias'),
       ];
 
   static List<String> all() => [
@@ -84,6 +100,7 @@ class SchemaSistema {
         registroAuditoria,
         notificacionesLocales,
         licenciaCache,
+        rrhhAsistencias,
         ...indexes(),
       ];
 }

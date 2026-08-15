@@ -328,6 +328,19 @@ async function _initLocalDb() {
   _addLocalColumnIfMissing(db, 'pending_product_changes', 'product_id', 'INTEGER DEFAULT NULL');
   _addLocalColumnIfMissing(db, 'pending_product_changes', 'branch_id', 'INTEGER DEFAULT NULL');
 
+  // offline_cache_users solo guardaba el nombre de rol en texto plano —
+  // el login offline armaba la sesión SIN permisos granulares (role_permissions
+  // vacío), así que cualquier usuario con permisos personalizados los perdía
+  // por completo al entrar sin internet. Se agregan las columnas del rol para
+  // que /api/auth/offline-login pueda reconstruir la misma sesión que el login
+  // normal (ver mapUserRow() en server.js).
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'role_id', 'INTEGER DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'role_code', 'VARCHAR(60) DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'role_name', 'VARCHAR(120) DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'role_permissions', 'TEXT DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'branch_id', 'INTEGER DEFAULT NULL');
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'cash_register_id', 'INTEGER DEFAULT NULL');
+
   _saveLocalDb(db);
   return db;
 }

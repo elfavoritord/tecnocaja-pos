@@ -274,7 +274,19 @@ service cloud.firestore {
       // ── Configuración del negocio ──────────────────────────────────────────
       match /settings/{settingId} {
         allow read:   if isEmployee(businessId);
-        allow write:  if isOwnerOrAdmin(businessId);
+        // Los indicadores fiscales habilitan emisión de NCF/e-CF. Solo las
+        // Cloud Functions pueden cambiarlos después de validar certificación.
+        allow write:  if settingId != 'fiscal' && isOwnerOrAdmin(businessId);
+      }
+
+      // Estado y evidencias de certificación: exclusivamente servicio fiscal.
+      match /fiscalCertification/{processId} {
+        allow read, write: if false;
+      }
+
+      // Certificado y contraseña cifrados con Cloud KMS.
+      match /privateFiscal/{documentId} {
+        allow read, write: if false;
       }
 
       // ── Usuarios del negocio (subdocumentos espejo) ────────────────────────

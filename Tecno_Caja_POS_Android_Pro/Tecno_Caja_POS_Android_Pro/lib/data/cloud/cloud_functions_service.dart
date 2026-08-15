@@ -24,6 +24,24 @@ class CloudFunctionsService {
     return _call('getMyCompanyBootstrap', const {});
   }
 
+  Future<Map<String, dynamic>> dgiiLookup(String rncCedula) {
+    return _call('dgiiLookup', {'rnc': rncCedula});
+  }
+
+  Future<Map<String, dynamic>> updateBusinessCapabilities({
+    required String businessId,
+    required String businessType,
+    required String businessTypeCode,
+    required List<String> capabilities,
+  }) {
+    return _call('updateBusinessCapabilities', {
+      'businessId': businessId,
+      'businessType': businessType,
+      'businessTypeCode': businessTypeCode,
+      'capabilities': capabilities,
+    });
+  }
+
   Future<Map<String, dynamic>> createBusinessUser(Map<String, dynamic> data) {
     return _call('createBusinessUser', data);
   }
@@ -96,6 +114,74 @@ class CloudFunctionsService {
     return _call('listNcfSequences', {'businessId': businessId});
   }
 
+  Future<Map<String, dynamic>> getFiscalSettings(String businessId) {
+    return _call('getFiscalSettings', {'businessId': businessId});
+  }
+
+  Future<Map<String, dynamic>> updateFiscalSettings({
+    required String businessId,
+    required bool enabled,
+    required String mode,
+  }) {
+    return _call('updateFiscalSettings', {
+      'businessId': businessId,
+      'enabled': enabled,
+      'mode': mode,
+    });
+  }
+
+  Future<Map<String, dynamic>> startEcfCertification(
+    String businessId, {
+    bool restart = false,
+  }) {
+    return _call('startEcfCertification', {
+      'businessId': businessId,
+      'restart': restart,
+    });
+  }
+
+  Future<Map<String, dynamic>> getEcfCertificationStatus(String businessId) {
+    return _call('getEcfCertificationStatus', {'businessId': businessId});
+  }
+
+  Future<Map<String, dynamic>> confirmEcfCertificationStep({
+    required String businessId,
+    required int stepId,
+    required String reference,
+  }) {
+    return _call('confirmEcfCertificationStep', {
+      'businessId': businessId,
+      'stepId': stepId,
+      'reference': reference,
+    });
+  }
+
+  Future<Map<String, dynamic>> validateEcfServiceUrls({
+    required String businessId,
+    required int stepId,
+    required String baseUrl,
+  }) {
+    return _call('validateEcfServiceUrls', {
+      'businessId': businessId,
+      'stepId': stepId,
+      'baseUrl': baseUrl,
+    });
+  }
+
+  Future<Map<String, dynamic>> uploadEcfCertificate({
+    required String businessId,
+    required String fileName,
+    required String certificateBase64,
+    required String password,
+  }) {
+    return _call('uploadEcfCertificate', {
+      'businessId': businessId,
+      'fileName': fileName,
+      'certificateBase64': certificateBase64,
+      'password': password,
+    });
+  }
+
   Future<Map<String, dynamic>> _call(
       String nombre, Map<String, dynamic> datos) async {
     // cloud_functions_web ha tenido bugs de interop con valores `null` dentro
@@ -108,7 +194,16 @@ class CloudFunctionsService {
       datos.entries.where((e) => e.value != null),
     );
     final datosParaLog = Map<String, dynamic>.from(datosLimpios);
-    for (final key in ['password', 'contrasena', 'token', 'secret']) {
+    for (final key in [
+      'password',
+      'contrasena',
+      'token',
+      'secret',
+      'rnc',
+      'rncCedula',
+      'cedulaRnc',
+      'certificateBase64',
+    ]) {
       if (datosParaLog.containsKey(key)) datosParaLog[key] = '[REDACTED]';
     }
     debugPrint('[CloudFunctionsService] -> $nombre: $datosParaLog');

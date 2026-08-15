@@ -165,6 +165,14 @@ class VentaRepository {
         );
         await txn.insert('venta_items', ventaItem.toMap());
 
+        await _consumirLotesFefo(
+          txn,
+          venta: venta,
+          ventaItem: ventaItem,
+          cantidad: linea.cantidad,
+          dispositivoId: dispositivoId,
+        );
+
         await _inventarioRepo.registrarMovimientoEnTransaccion(
           txn,
           productoId: linea.productoId,
@@ -188,6 +196,106 @@ class VentaRepository {
     });
 
     return venta;
+  }
+
+  Future<void> _consumirLotesFefo(
+    Transaction txn, {
+    required Venta venta,
+    required VentaItem ventaItem,
+    required double cantidad,
+    String? dispositivoId,
+  }) async {
+    final productRows = await txn.query(
+      'productos',
+      columns: ['controla_vencimiento'],
+      where: 'id = ? AND eliminado = 0',
+      whereArgs: [ventaItem.productoId],
+      limit: 1,
+    );
+    if (productRows.isEmpty ||
+        (productRows.first['controla_vencimiento'] as int? ?? 0) != 1) {
+      return;
+    }
+
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    final lots = await txn.query(
+      'producto_lotes',
+      where: '''
+        producto_id = ? AND eliminado = 0 AND cantidad > 0
+        AND fecha_vencimiento IS NOT NULL AND fecha_vencimiento >= ?
+        AND (sucursal_id = ? OR sucursal_id IS NULL)
+      ''',
+      whereArgs: [ventaItem.productoId, today, venta.sucursalId],
+      orderBy: 'fecha_vencimiento ASC, creado_en ASC',
+    );
+    final available = lots.fold<double>(
+      0,
+      (sum, row) => sum + (row['cantidad'] as num).toDouble(),
+    );
+    if (available + 0.000001 < cantidad) {
+      final expired = await txn.rawQuery(
+        '''
+        SELECT COUNT(*) AS total
+        FROM producto_lotes
+        WHERE producto_id = ? AND eliminado = 0 AND cantidad > 0
+          AND fecha_vencimiento IS NOT NULL AND fecha_vencimiento < ?
+          AND (sucursal_id = ? OR sucursal_id IS NULL)
+        ''',
+        [ventaItem.productoId, today, venta.sucursalId],
+      );
+      final expiredCount = (expired.first['total'] as num?)?.toInt() ?? 0;
+      if (available <= 0 && expiredCount > 0) {
+        throw const ValidationException(
+          message: 'PRODUCTO VENCIDO — NO SE PUEDE VENDER',
+        );
+      }
+      throw ValidationException(
+        message:
+            'Existencia válida insuficiente para ${ventaItem.nombreProductoSnapshot}. Disponible sin vencer: ${available.toStringAsFixed(2)}.',
+      );
+    }
+
+    var remaining = cantidad;
+    final now = DateTime.now().toIso8601String();
+    for (final lot in lots) {
+      if (remaining <= 0.000001) break;
+      final lotQuantity = (lot['cantidad'] as num).toDouble();
+      final used = lotQuantity < remaining ? lotQuantity : remaining;
+      await txn.update(
+        'producto_lotes',
+        {
+          'cantidad': lotQuantity - used,
+          'actualizado_en': now,
+          'version': (lot['version'] as int? ?? 1) + 1,
+          'sync_estado': 'pendiente',
+        },
+        where: 'id = ?',
+        whereArgs: [lot['id']],
+      );
+      await txn.insert('venta_item_lotes', {
+        'id': IdGenerator.newId(),
+        'venta_id': venta.id,
+        'venta_item_id': ventaItem.id,
+        'producto_id': ventaItem.productoId,
+        'lote_id': lot['id'],
+        'numero_lote': lot['numero_lote'],
+        'fecha_vencimiento': lot['fecha_vencimiento'],
+        'cantidad': used,
+        'revertido': 0,
+        'empresa_id': venta.empresaId,
+        'sucursal_id': venta.sucursalId,
+        'caja_id': venta.cajaId,
+        'dispositivo_id': dispositivoId,
+        'creado_en': now,
+        'actualizado_en': now,
+        'version': 1,
+        'sync_estado': 'pendiente',
+        'sincronizado_en': null,
+        'remoto_id': null,
+        'eliminado': 0,
+      });
+      remaining -= used;
+    }
   }
 
   Future<String> _siguienteNumeroFactura(String empresaId) async {
@@ -340,6 +448,33 @@ class VentaRepository {
     if (venta.estado == EstadoVenta.anulada) return;
 
     await _db.transaction((txn) async {
+      final lotAllocations = await txn.query(
+        'venta_item_lotes',
+        where: 'venta_id = ? AND revertido = 0 AND eliminado = 0',
+        whereArgs: [venta.id],
+      );
+      for (final allocation in lotAllocations) {
+        final quantity = (allocation['cantidad'] as num).toDouble();
+        await txn.rawUpdate(
+          '''
+          UPDATE producto_lotes
+          SET cantidad = cantidad + ?, actualizado_en = ?,
+              version = version + 1, sync_estado = 'pendiente'
+          WHERE id = ?
+          ''',
+          [quantity, DateTime.now().toIso8601String(), allocation['lote_id']],
+        );
+        await txn.update(
+          'venta_item_lotes',
+          {
+            'revertido': 1,
+            'actualizado_en': DateTime.now().toIso8601String(),
+            'sync_estado': 'pendiente',
+          },
+          where: 'id = ?',
+          whereArgs: [allocation['id']],
+        );
+      }
       final items = await txn
           .query('venta_items', where: 'venta_id = ?', whereArgs: [venta.id]);
       for (final row in items) {

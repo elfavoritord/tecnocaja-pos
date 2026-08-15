@@ -28,6 +28,10 @@ class SchemaVentas {
       estado TEXT NOT NULL DEFAULT 'completada',
       motivo_anulacion TEXT,
       nota TEXT,
+      tipo_pedido TEXT NOT NULL DEFAULT 'mostrador',
+      cocina_estado TEXT NOT NULL DEFAULT 'na',
+      mesa_label TEXT,
+      order_notes TEXT,
       encf TEXT,
       tipo_ecf TEXT,
       ecf_estado TEXT,
@@ -125,6 +129,38 @@ class SchemaVentas {
     )
   ''';
 
+  static const String deliveryOrdenes = '''
+    CREATE TABLE IF NOT EXISTS delivery_ordenes (
+      id TEXT PRIMARY KEY,
+      venta_id TEXT NOT NULL,
+      repartidor_id TEXT,
+      estado TEXT NOT NULL DEFAULT 'pendiente',
+      cliente_nombre TEXT,
+      telefono TEXT,
+      direccion TEXT,
+      referencia TEXT,
+      ubicacion_url TEXT,
+      monto_cobrar REAL NOT NULL DEFAULT 0,
+      monto_recibido REAL,
+      cambio REAL,
+      entregado_en TEXT,
+      ${SyncColumns.full}
+    )
+  ''';
+
+  static const String mesasRestaurante = '''
+    CREATE TABLE IF NOT EXISTS mesas_restaurante (
+      id TEXT PRIMARY KEY,
+      etiqueta TEXT NOT NULL,
+      zona TEXT,
+      estado TEXT NOT NULL DEFAULT 'libre',
+      venta_id_actual TEXT,
+      capacidad INTEGER,
+      nota TEXT,
+      ${SyncColumns.full}
+    )
+  ''';
+
   static List<String> indexes() => [
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_ventas_factura ON ventas(numero_factura)',
         'CREATE INDEX IF NOT EXISTS idx_ventas_sesion ON ventas(sesion_caja_id)',
@@ -141,6 +177,14 @@ class SchemaVentas {
         ...SyncColumns.commonIndexes('sesiones_caja'),
         'CREATE INDEX IF NOT EXISTS idx_movimientos_caja_sesion ON movimientos_caja(sesion_caja_id)',
         'CREATE INDEX IF NOT EXISTS idx_movimientos_caja_tipo ON movimientos_caja(tipo)',
+        'CREATE INDEX IF NOT EXISTS idx_delivery_venta ON delivery_ordenes(venta_id)',
+        'CREATE INDEX IF NOT EXISTS idx_delivery_estado ON delivery_ordenes(estado)',
+        'CREATE INDEX IF NOT EXISTS idx_delivery_repartidor ON delivery_ordenes(repartidor_id)',
+        ...SyncColumns.commonIndexes('delivery_ordenes'),
+        'CREATE INDEX IF NOT EXISTS idx_ventas_tipo_pedido ON ventas(tipo_pedido)',
+        'CREATE INDEX IF NOT EXISTS idx_ventas_cocina_estado ON ventas(cocina_estado)',
+        'CREATE INDEX IF NOT EXISTS idx_mesas_estado ON mesas_restaurante(estado)',
+        ...SyncColumns.commonIndexes('mesas_restaurante'),
       ];
 
   static List<String> all() => [
@@ -150,6 +194,8 @@ class SchemaVentas {
         cotizacionItems,
         sesionesCaja,
         movimientosCaja,
+        deliveryOrdenes,
+        mesasRestaurante,
         ...indexes(),
       ];
 }

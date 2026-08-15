@@ -48,6 +48,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function compactXmlInterElementWhitespace(xml) {
+  return String(xml || '')
+    .replace(/^\uFEFF/, '')
+    .replace(/>\s+</g, '><')
+    .trim();
+}
+
 function collectEncfHighWatermarks(...values) {
   const maxima = {};
   for (const value of values) {
@@ -7692,7 +7699,10 @@ class EcfService {
 
     let signedXml;
     try {
-      signedXml = signatureService.signXML(rawXml, certificate);
+      const compactXml = compactXmlInterElementWhitespace(rawXml);
+      signedXml = typeof signatureService.signXMLWithWindows === 'function'
+        ? signatureService.signXMLWithWindows(compactXml, certificate)
+        : signatureService.signXML(compactXml, certificate);
     } catch (signErr) {
       throw new EcfError(`Error al firmar el XML: ${signErr.message}`, { statusCode: 422 });
     }
@@ -7768,7 +7778,7 @@ class EcfService {
 
     let signedXml;
     try {
-      signedXml = signatureService.signXML(rawXml, certificate);
+      signedXml = signatureService.signXML(compactXmlInterElementWhitespace(rawXml), certificate);
     } catch (signErr) {
       throw new EcfError(`Error al firmar el XML: ${signErr.message}`, { statusCode: 422 });
     }

@@ -6,9 +6,16 @@
 // el ARECF sin firmar (se loguea una sola advertencia) — no debe tumbar el servicio.
 
 const { loadCertificate } = require('../vendor/modules/ecf/signature/signature.service');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { KeyManagementServiceClient } = require('@google-cloud/kms');
 
 let cached = null;
 let warned = false;
+const tenantCache = new Map();
+const kmsClient = new KeyManagementServiceClient();
 
 function getCertificateContext() {
   if (cached) return cached;
@@ -37,4 +44,53 @@ function getCertificateContext() {
   }
 }
 
-module.exports = { getCertificateContext };
+async function decryptSecret(kmsKeyName, ciphertext) {
+  const [response] = await kmsClient.decrypt({
+    name: kmsKeyName,
+    ciphertext: Buffer.from(ciphertext, 'base64'),
+  });
+  if (!response.plaintext) throw new Error('KMS no devolvió el contenido descifrado.');
+  return Buffer.from(response.plaintext);
+}
+
+async function getCertificateContextForRnc(rnc, store) {
+  const normalized = String(rnc || '').replace(/\D/g, '');
+  if (!normalized || typeof store?.findCertificateByRecipientRnc !== 'function') {
+    return getCertificateContext();
+  }
+
+  const encrypted = await store.findCertificateByRecipientRnc(normalized);
+  if (!encrypted?.encryptedP12 || !encrypted?.encryptedPassword || !encrypted?.kmsKeyName) {
+    return getCertificateContext();
+  }
+  const cacheKey = `${encrypted.businessId}:${encrypted.fingerprintSha256 || encrypted.updatedAt || ''}`;
+  if (tenantCache.has(cacheKey)) return tenantCache.get(cacheKey);
+
+  let p12Buffer;
+  let passwordBuffer;
+  try {
+    [p12Buffer, passwordBuffer] = await Promise.all([
+      decryptSecret(encrypted.kmsKeyName, encrypted.encryptedP12),
+      decryptSecret(encrypted.kmsKeyName, encrypted.encryptedPassword),
+    ]);
+    const hash = crypto.createHash('sha256').update(cacheKey).digest('hex').slice(0, 20);
+    const certPath = path.join(os.tmpdir(), `tecno-caja-${hash}.p12`);
+    fs.writeFileSync(certPath, p12Buffer, { mode: 0o600 });
+    const context = loadCertificate({
+      certPath,
+      certPassword: passwordBuffer.toString('utf8'),
+    });
+    fs.rmSync(certPath, { force: true });
+    tenantCache.set(cacheKey, context);
+    console.log(`[GATEWAY] Certificado multiempresa cargado para businessId=${encrypted.businessId}`);
+    return context;
+  } catch (error) {
+    console.error(`[GATEWAY] No se pudo abrir el certificado cifrado para RNC receptor: ${error.message}`);
+    return null;
+  } finally {
+    p12Buffer?.fill(0);
+    passwordBuffer?.fill(0);
+  }
+}
+
+module.exports = { getCertificateContext, getCertificateContextForRnc };

@@ -25,6 +25,9 @@ function createMemoryStore() {
       docs.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
       return docs.slice(0, limit);
     },
+    async findCertificateByRecipientRnc() {
+      return null;
+    },
   };
 }
 
@@ -55,6 +58,18 @@ function createFirestoreStore() {
         .limit(limit)
         .get();
       return snap.docs.map((d) => d.data());
+    },
+    async findCertificateByRecipientRnc(rnc) {
+      const businesses = await db.collection('businesses')
+        .where('rncCedula', '==', String(rnc || ''))
+        .limit(1)
+        .get();
+      if (businesses.empty) return null;
+      const business = businesses.docs[0];
+      const certificate = await business.ref.collection('privateFiscal').doc('certificate').get();
+      return certificate.exists
+        ? { businessId: business.id, ...certificate.data() }
+        : null;
     },
   };
 }

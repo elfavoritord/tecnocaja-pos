@@ -32,8 +32,19 @@ const ALL_MODULES = [
   'ventas', 'cotizaciones', 'facturas', 'devoluciones', 'caja', 'cuentasPorCobrar',
   'cuentasPorPagar', 'compras', 'reportes', 'usuarios', 'sucursales', 'cajas',
   'configuracion', 'configuracionFiscal', 'sincronizacion', 'auditoria',
-  'respaldos', 'licencia',
+  'respaldos', 'licencia', 'promociones', 'delivery', 'mesasCocina', 'gastos',
+  'crm', 'rrhh', 'whatsappBot', 'etiquetas',
 ];
+
+const ALLOWED_CAPABILITIES = new Set([
+  'expiration', 'batches', 'medication', 'fefo', 'expiration_alerts',
+  'tables', 'kitchen', 'modifiers', 'combos', 'delivery', 'order_modes',
+  'serial_tracking', 'imei_tracking', 'warranty', 'variants', 'size_color',
+  'measurements', 'fractional_sale', 'unit_conversions', 'plu',
+  'weighted_products', 'wholesale_prices', 'services', 'commissions',
+  'appointments', 'work_orders', 'customer_assets', 'technicians',
+  'estimates', 'pets', 'recipes',
+]);
 
 const TRIAL_DAYS = 14;
 
@@ -72,7 +83,10 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
   const ownerNombre = requireString(d.ownerNombre, 'nombre del propietario');
   const ownerApellido = requireString(d.ownerApellido, 'apellido del propietario');
   const email = requireString(d.email, 'correo electrónico').toLowerCase();
-  const telefono = requireString(d.telefono, 'teléfono');
+  const telefonoPropietario = requireString(d.telefono, 'teléfono del propietario');
+  const telefonoNegocio = d.telefonoNegocio
+    ? requireString(d.telefonoNegocio, 'teléfono del negocio')
+    : telefonoPropietario;
   const nombreComercial = requireString(d.nombreComercial, 'nombre comercial');
   const razonSocial = requireString(d.razonSocial, 'razón social');
   const rncCedula = requireString(d.rncCedula, 'RNC o cédula');
@@ -80,6 +94,22 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
   const provincia = requireString(d.provincia, 'provincia');
   const municipio = requireString(d.municipio, 'municipio');
   const tipoNegocio = requireString(d.tipoNegocio, 'tipo de negocio');
+  const dgiiEstado = d.dgiiEstado ? String(d.dgiiEstado).trim() : null;
+  const dgiiTipoContribuyente = d.dgiiTipoContribuyente
+    ? String(d.dgiiTipoContribuyente).trim()
+    : null;
+  const dgiiCategoria = d.dgiiCategoria ? String(d.dgiiCategoria).trim() : null;
+  const dgiiConsultadoEn = d.dgiiConsultadoEn
+    ? new Date(String(d.dgiiConsultadoEn))
+    : null;
+  const tipoNegocioCode = d.tipoNegocioCode
+    ? requireString(d.tipoNegocioCode, 'código de tipo de negocio', { max: 80 })
+    : null;
+  const businessCapabilities = Array.from(new Set(
+    (Array.isArray(d.businessCapabilities) ? d.businessCapabilities : [])
+      .map((item) => String(item || '').trim())
+      .filter((item) => ALLOWED_CAPABILITIES.has(item))
+  )).sort();
   const monedaPrincipal = requireString(d.monedaPrincipal, 'moneda principal', { max: 10 });
   const tasaItbis = Number.isFinite(Number(d.tasaItbis)) ? Number(d.tasaItbis) : 0.18;
   const usaComprobantesFiscales = Boolean(d.usaComprobantesFiscales);
@@ -117,7 +147,8 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
     ownerNombre,
     ownerApellido,
     email,
-    telefono,
+    telefono: telefonoNegocio,
+    telefonoPropietario,
     nombreComercial,
     razonSocial,
     rncCedula,
@@ -125,6 +156,14 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
     provincia,
     municipio,
     tipoNegocio,
+    dgiiEstado,
+    dgiiTipoContribuyente,
+    dgiiCategoria,
+    dgiiConsultadoEn: dgiiConsultadoEn && !Number.isNaN(dgiiConsultadoEn.getTime())
+      ? dgiiConsultadoEn
+      : null,
+    tipoNegocioCode,
+    businessCapabilities,
     monedaPrincipal,
     tasaItbis,
     usaComprobantesFiscales,
@@ -177,7 +216,7 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
     nombre: 'Sucursal Principal',
     codigo: 'SUC-001',
     direccion,
-    telefono,
+    telefono: telefonoNegocio,
     activa: true,
     createdAt: now,
     createdBy: uid,
@@ -203,6 +242,16 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
     tasaItbis,
     redondeoActivo: false,
     redondeoPaso: 1.0,
+    tipoNegocio,
+    tipoNegocioCode,
+    businessCapabilities,
+    setupMode: String(d.setupMode || 'standalone'),
+    businessStructureMode: String(d.businessStructureMode || 'monocaja'),
+    receiptPrintMode: String(d.receiptPrintMode || 'dialogo'),
+    receiptPaperSizeMm: Number(d.receiptPaperSizeMm) === 80 ? 80 : 58,
+    requireCashOpenBeforeUse: d.requireCashOpenBeforeUse !== false,
+    seedStarterCatalog: d.seedStarterCatalog !== false,
+    mobileSetupWizardVersion: Number(d.mobileSetupWizardVersion) || 1,
     updatedAt: now,
     updatedBy: uid,
   });
@@ -259,4 +308,61 @@ const createMobileCompany = onCall({ cors: true }, async (request) => {
   };
 });
 
-module.exports = { createMobileCompany };
+const updateBusinessCapabilities = onCall({ cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) {
+    throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+  }
+
+  const db = admin.firestore();
+  const d = request.data || {};
+  const businessId = requireString(d.businessId, 'empresa');
+  const businessType = requireString(d.businessType, 'tipo de negocio');
+  const businessTypeCode = requireString(
+    d.businessTypeCode,
+    'código de tipo de negocio',
+    { max: 80 }
+  );
+  const capabilities = Array.from(new Set(
+    (Array.isArray(d.capabilities) ? d.capabilities : [])
+      .map((item) => String(item || '').trim())
+      .filter((item) => ALLOWED_CAPABILITIES.has(item))
+  )).sort();
+
+  const profileSnap = await db.collection('users').doc(uid).get();
+  const profile = profileSnap.exists ? profileSnap.data() : null;
+  const businessIds = profile?.businessIds || (profile?.businessId ? [profile.businessId] : []);
+  if (!businessIds.includes(businessId)) {
+    throw new HttpsError('permission-denied', 'No perteneces a esta empresa.');
+  }
+  const role = String(profile?.role || '');
+  if (!['superadmin', 'businessOwner', 'admin', 'administrador', 'Administrador', 'Administrador General']
+    .includes(role)) {
+    throw new HttpsError(
+      'permission-denied',
+      'Solo un administrador puede cambiar las capacidades del negocio.'
+    );
+  }
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const businessRef = db.collection('businesses').doc(businessId);
+  const batch = db.batch();
+  batch.set(businessRef, {
+    tipoNegocio: businessType,
+    tipoNegocioCode: businessTypeCode,
+    businessCapabilities: capabilities,
+    updatedAt: now,
+    updatedBy: uid,
+  }, { merge: true });
+  batch.set(businessRef.collection('settings').doc('comercial'), {
+    tipoNegocio: businessType,
+    tipoNegocioCode: businessTypeCode,
+    businessCapabilities: capabilities,
+    updatedAt: now,
+    updatedBy: uid,
+  }, { merge: true });
+  await batch.commit();
+  return { ok: true, capabilities };
+});
+
+module.exports = { createMobileCompany, updateBusinessCapabilities };

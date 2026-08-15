@@ -7,20 +7,33 @@ import '../../features/auth/forgot_password_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/pin_lock_screen.dart';
 import '../../features/auth/register_screen.dart';
+import '../../features/auditoria/auditoria_screen.dart';
 import '../../features/caja/caja_screen.dart';
 import '../../features/clientes/clientes_screen.dart';
+import '../../features/compras/compras_screen.dart';
+import '../../features/cotizaciones/cotizaciones_screen.dart';
+import '../../features/crm/crm_screen.dart';
 import '../../features/dashboard/dashboard_screen.dart';
+import '../../features/delivery/delivery_screen.dart';
 import '../../features/fiscal/fiscal_config_screen.dart';
+import '../../features/gastos/gastos_screen.dart';
 import '../../features/inventario/inventario_screen.dart';
+import '../../features/inventario/expiration_alerts_screen.dart';
 import '../../features/modules/modules_screen.dart';
-import '../../features/onboarding/onboarding_screen.dart';
+import '../../features/onboarding/startup_wizard_screen.dart';
 import '../../features/pos/pos_screen.dart';
 import '../../features/productos/productos_screen.dart';
+import '../../features/promociones/promociones_screen.dart';
 import '../../features/printing/label_print_screen.dart';
 import '../../features/proveedores/proveedores_screen.dart';
 import '../../features/reportes/reportes_screen.dart';
+import '../../features/respaldos/respaldos_screen.dart';
+import '../../features/restaurante/restaurante_screen.dart';
+import '../../features/rrhh/rrhh_screen.dart';
 import '../../features/settings/settings_screen.dart';
+import '../../features/settings/business_capabilities_screen.dart';
 import '../../features/usuarios/usuarios_screen.dart';
+import '../../features/whatsapp/whatsapp_bot_screen.dart';
 import '../../features/shell/app_shell.dart';
 import '../../features/splash/splash_screen.dart';
 
@@ -56,7 +69,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           builder: (context, state) => const ForgotPasswordScreen()),
       GoRoute(
           path: '/onboarding',
-          builder: (context, state) => const OnboardingScreen()),
+          builder: (context, state) => const StartupWizardScreen()),
       GoRoute(
           path: '/bloqueo', builder: (context, state) => const PinLockScreen()),
       ShellRoute(
@@ -75,11 +88,18 @@ final appRouterProvider = Provider<GoRouter>((ref) {
               path: '/ajustes',
               builder: (context, state) => const SettingsScreen()),
           GoRoute(
+              path: '/capacidades-negocio',
+              builder: (context, state) => const BusinessCapabilitiesScreen()),
+          GoRoute(
               path: '/clientes',
               builder: (context, state) => const ClientesScreen()),
+          GoRoute(path: '/crm', builder: (context, state) => const CrmScreen()),
           GoRoute(
               path: '/inventario',
               builder: (context, state) => const InventarioScreen()),
+          GoRoute(
+              path: '/vencimientos',
+              builder: (context, state) => const ExpirationAlertsScreen()),
           GoRoute(
               path: '/proveedores',
               builder: (context, state) => const ProveedoresScreen()),
@@ -100,25 +120,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/cotizaciones',
-            builder: (context, state) => const LocalDataModuleScreen(
-              title: 'Cotizaciones',
-              table: 'cotizaciones',
-              icon: Icons.request_quote,
-              primaryColumn: 'numero',
-              secondaryColumn: 'estado',
-              amountColumn: 'total',
-              ownUserOnly: true,
-            ),
+            builder: (context, state) => const CotizacionesScreen(),
           ),
           GoRoute(
             path: '/promociones',
-            builder: (context, state) => const LocalDataModuleScreen(
-              title: 'Promociones y combos',
-              table: 'ofertas',
-              icon: Icons.local_offer,
-              primaryColumn: 'nombre',
-              secondaryColumn: 'tipo',
-            ),
+            builder: (context, state) => const PromocionesScreen(),
           ),
           GoRoute(
             path: '/cuentas-cobrar',
@@ -134,14 +140,11 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           ),
           GoRoute(
             path: '/compras',
-            builder: (context, state) => const LocalDataModuleScreen(
-              title: 'Compras y cuentas por pagar',
-              table: 'compras',
-              icon: Icons.shopping_cart_checkout,
-              primaryColumn: 'numero_factura',
-              secondaryColumn: 'estado',
-              amountColumn: 'monto_pendiente',
-            ),
+            builder: (context, state) => const ComprasScreen(),
+          ),
+          GoRoute(
+            path: '/gastos',
+            builder: (context, state) => const GastosScreen(),
           ),
           GoRoute(
             path: '/movimientos',
@@ -155,34 +158,29 @@ final appRouterProvider = Provider<GoRouter>((ref) {
             ),
           ),
           GoRoute(
+            path: '/restaurante',
+            builder: (context, state) => const RestauranteScreen(),
+          ),
+          GoRoute(
             path: '/reportes',
             builder: (context, state) => const ReportesScreen(),
           ),
+          GoRoute(
+              path: '/rrhh', builder: (context, state) => const RrhhScreen()),
           GoRoute(
               path: '/usuarios',
               builder: (context, state) => const UsuariosScreen()),
           GoRoute(
             path: '/auditoria',
-            builder: (context, state) => const LocalDataModuleScreen(
-              title: 'Auditoría',
-              table: 'registro_auditoria',
-              icon: Icons.fact_check,
-              primaryColumn: 'accion',
-              secondaryColumn: 'ocurrido_en',
-              orderBy: 'ocurrido_en DESC',
-            ),
+            builder: (context, state) => const AuditoriaScreen(),
           ),
           GoRoute(
             path: '/delivery',
-            builder: (context, state) => const LocalDataModuleScreen(
-              title: 'Delivery',
-              table: 'ventas',
-              icon: Icons.delivery_dining,
-              primaryColumn: 'numero_factura',
-              secondaryColumn: 'nota',
-              amountColumn: 'total',
-              where: "nota LIKE '%delivery%'",
-            ),
+            builder: (context, state) => const DeliveryScreen(),
+          ),
+          GoRoute(
+            path: '/whatsapp-bot',
+            builder: (context, state) => const WhatsappBotScreen(),
           ),
           GoRoute(
             path: '/etiquetas',
@@ -191,7 +189,9 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           GoRoute(
               path: '/fiscal',
               builder: (context, state) => const FiscalConfigScreen()),
-          GoRoute(path: '/respaldos', redirect: (context, state) => '/ajustes'),
+          GoRoute(
+              path: '/respaldos',
+              builder: (context, state) => const RespaldosScreen()),
         ],
       ),
     ],

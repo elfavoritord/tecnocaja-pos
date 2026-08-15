@@ -81,7 +81,7 @@ describe('Firma del ARECF', () => {
     delete process.env.CERT_PASSWORD;
   }, 20000);
 
-  it('con un .p12 que trae CA intermedia, el ARECF incluye la cadena completa en KeyInfo', async () => {
+  it('con un .p12 que trae CA intermedia, el ARECF firma con el certificado hoja en KeyInfo', async () => {
     const testCert = createTestP12Chain();
     certPath = testCert.certPath;
     process.env.CERT_PATH = testCert.certPath;
@@ -97,14 +97,11 @@ describe('Firma del ARECF', () => {
       .send(sampleEcfXml({ encf: 'E320000000008' }));
 
     expect(res.status).toBe(200);
-    // DGII rechazó el ARECF real con "Error de Firma Digital" porque solo se
-    // incluía el certificado hoja — sin la CA intermedia, su validador no
-    // puede construir la cadena de confianza aunque la firma sea válida.
     const certCount = (res.text.match(/<X509Certificate>/g) || []).length;
-    expect(certCount).toBe(2);
+    expect(certCount).toBe(1);
 
     const testCertContext = loadCertificate({ certPath, certPassword: testCert.certPassword });
-    const verifier = new SignedXml({ publicCert: testCertContext.certificateChainPem });
+    const verifier = new SignedXml({ publicCert: testCertContext.certificatePem });
     verifier.loadSignature(res.text.match(/<Signature[\s\S]*<\/Signature>/)[0]);
     expect(verifier.checkSignature(res.text)).toBe(true);
 

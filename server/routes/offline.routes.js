@@ -385,20 +385,38 @@ module.exports = function createOfflineRouter(deps) {
       await pruneStaleCache('offline_cache_clients', 'client_id', clientes, 'id');
 
       // 3. Usuarios activos (para login offline)
+      // Se trae también el rol resuelto (código/nombre/permisos vía JOIN con
+      // roles, igual que /api/login) — sin esto, offline-login armaba la
+      // sesión con permisos vacíos y cualquier rol personalizado perdía
+      // acceso a todo al entrar sin internet.
       const usuarios = await query(
-        `SELECT id, usuario, nombre, rol,
-                COALESCE(password_hash, password) as password_hash
-         FROM users WHERE estado = 'Activo' LIMIT 500`
+        `SELECT u.id, u.usuario, u.nombre, u.rol,
+                COALESCE(u.password_hash, u.password) as password_hash,
+                u.role_id, r.codigo AS role_code, r.nombre AS role_name, r.permisos AS role_permissions,
+                COALESCE(u.sucursal_id, u.branch_id) AS branch_id,
+                u.caja_id AS cash_register_id
+         FROM users u
+         LEFT JOIN roles r ON r.id = u.role_id
+         WHERE u.estado = 'Activo' LIMIT 500`
       );
       for (const u of (usuarios || [])) {
         await localQuery(
           `INSERT INTO offline_cache_users
-             (user_id, usuario, nombre, rol, password_hash, puede_vender, puede_cobrar, puede_ver_reportes, last_updated)
-           VALUES (?, ?, ?, ?, ?, 1, 1, 1, datetime('now'))
+             (user_id, usuario, nombre, rol, password_hash, puede_vender, puede_cobrar, puede_ver_reportes,
+              role_id, role_code, role_name, role_permissions, branch_id, cash_register_id, last_updated)
+           VALUES (?, ?, ?, ?, ?, 1, 1, 1, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(user_id) DO UPDATE SET
              usuario=excluded.usuario, nombre=excluded.nombre, rol=excluded.rol,
-             password_hash=excluded.password_hash, last_updated=excluded.last_updated`,
-          [u.id, u.usuario, u.nombre, u.rol, u.password_hash || '']
+             password_hash=excluded.password_hash,
+             role_id=excluded.role_id, role_code=excluded.role_code, role_name=excluded.role_name,
+             role_permissions=excluded.role_permissions, branch_id=excluded.branch_id,
+             cash_register_id=excluded.cash_register_id, last_updated=excluded.last_updated`,
+          [
+            u.id, u.usuario, u.nombre, u.rol, u.password_hash || '',
+            u.role_id ?? null, u.role_code || null, u.role_name || null,
+            typeof u.role_permissions === 'string' ? u.role_permissions : JSON.stringify(u.role_permissions || []),
+            u.branch_id ?? null, u.cash_register_id ?? null
+          ]
         );
         usersCached++;
       }
@@ -492,7 +510,8 @@ module.exports = function createOfflineRouter(deps) {
           ['active_cash_register_id', String(activeCashReg || 1)],
           ['activeBranchName', activeBranchName],
           ['activeCashRegisterName', activeCashRegisterName],
-          ['requireCashOpenBeforeUse', String(cfg.require_cash_open_before_use ?? true)]
+          ['requireCashOpenBeforeUse', String(cfg.require_cash_open_before_use ?? true)],
+          ['sales_split_view_enabled', String(cfg.sales_split_view_enabled ?? 0)]
         ];
         for (const [k, v] of configItems) {
           await localQuery(
@@ -507,7 +526,7 @@ module.exports = function createOfflineRouter(deps) {
         // de caja standalone offline: retiro/gasto/ingreso sin venta asociada)
         if (activeCashReg) {
           const sessionRows = await query(
-            `SELECT id, current_amount FROM cash_sessions WHERE status = 'open' AND cash_register_id = ? ORDER BY id DESC LIMIT 1`,
+            `SELECT id, current_amount, exchange_rate_usd_dop FROM cash_sessions WHERE status = 'open' AND cash_register_id = ? ORDER BY id DESC LIMIT 1`,
             [activeCashReg]
           ).catch(() => []);
           const openSession = sessionRows?.[0] || null;
@@ -522,6 +541,17 @@ module.exports = function createOfflineRouter(deps) {
              VALUES ('cash_session_current_amount', ?, datetime('now'))
              ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value, last_updated=excluded.last_updated`,
             [String(Number(openSession?.current_amount || 0))]
+          );
+          // Tipo de cambio USD/DOP fijado al abrir caja — sin esto, el modo
+          // offline lo perdía por completo (no vivía en config, sino en la
+          // fila de cash_sessions, y nunca se copiaba al caché SQLite).
+          await localQuery(
+            `INSERT INTO offline_cache_config (config_key, config_value, last_updated)
+             VALUES ('exchange_rate_usd_dop', ?, datetime('now'))
+             ON CONFLICT(config_key) DO UPDATE SET config_value=excluded.config_value, last_updated=excluded.last_updated`,
+            [openSession?.exchange_rate_usd_dop !== null && openSession?.exchange_rate_usd_dop !== undefined
+              ? String(Number(openSession.exchange_rate_usd_dop))
+              : '']
           );
         }
       }
@@ -1537,8 +1567,15 @@ module.exports = function createOfflineRouter(deps) {
         activeCashRegisterName: rawCfg.activeCashRegisterName || '',
         requireCashOpenBeforeUse: rawCfg.requireCashOpenBeforeUse !== 'false',
         setupCompleted: true,
-        cajaAbierta: false,
-        cajaMonto: 0
+        // Antes venían fijos en false/0 sin mirar lo que init-cache ya
+        // guarda en cash_session_open/cash_session_current_amount — hacía
+        // que el modo offline pidiera abrir caja de nuevo aunque ya
+        // estuviera abierta en la sesión real.
+        cajaAbierta: rawCfg.cash_session_open === '1',
+        cajaMonto: Number(rawCfg.cash_session_current_amount || 0),
+        exchangeRateUsdDop: rawCfg.exchange_rate_usd_dop !== undefined && rawCfg.exchange_rate_usd_dop !== ''
+          ? Number(rawCfg.exchange_rate_usd_dop)
+          : null
       };
 
       const paymentMethods = await localQuery(

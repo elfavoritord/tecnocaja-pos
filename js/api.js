@@ -84,10 +84,14 @@ const api = {
   },
 
   login(usuario, password) {
+    // Antes tenía un timeout de 8s, más corto que el default de 15s de todo
+    // lo demás — justo al revés de lo que debía ser, porque /api/login es la
+    // ruta que más consultas de verificación de esquema hace. Eso disparaba
+    // el fallback a login offline por pura lentitud, no por falta de conexión
+    // real, perdiendo caja abierta/tipo de cambio/permisos en el camino.
     return this.request('/api/login', {
       method: 'POST',
-      body: JSON.stringify({ usuario, password }),
-      _timeoutMs: 8000
+      body: JSON.stringify({ usuario, password })
     });
   },
 

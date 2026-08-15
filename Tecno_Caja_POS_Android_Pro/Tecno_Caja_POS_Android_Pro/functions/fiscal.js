@@ -248,4 +248,71 @@ const listNcfSequences = onCall({ cors: true }, async (request) => {
   };
 });
 
-module.exports = { requestNcf, configureNcfSequence, listNcfSequences, ESTADOS };
+const getFiscalSettings = onCall({ cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+
+  const db = admin.firestore();
+  const businessId = String(request.data?.businessId || '').trim();
+  if (!businessId) {
+    throw new HttpsError('invalid-argument', 'Falta businessId.');
+  }
+  const profile = await loadCallerProfile(db, uid);
+  assertBelongsToBusiness(profile, businessId);
+
+  const snap = await db
+    .collection('businesses').doc(businessId)
+    .collection('settings').doc('fiscal')
+    .get();
+  const data = snap.exists ? snap.data() : {};
+  return {
+    settings: {
+      usaComprobantesFiscales: Boolean(data.usaComprobantesFiscales),
+      modoComprobante: data.modoComprobante || 'sin_comprobantes',
+      ambiente: data.ambiente || 'certificacion',
+      eCfActivo: Boolean(data.eCfActivo),
+      eCfValidado: Boolean(data.eCfValidado),
+    },
+  };
+});
+
+const updateFiscalSettings = onCall({ cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+
+  const db = admin.firestore();
+  const businessId = String(request.data?.businessId || '').trim();
+  const enabled = request.data?.enabled === true;
+  const mode = String(request.data?.mode || '').trim();
+  if (!businessId || !['ncf_tradicional', 'sin_comprobantes'].includes(mode)) {
+    throw new HttpsError('invalid-argument', 'Empresa o modo fiscal inválido.');
+  }
+  const profile = await loadCallerProfile(db, uid);
+  assertBelongsToBusiness(profile, businessId);
+  if (!isOwnerOrAdmin(profile)) {
+    throw new HttpsError(
+      'permission-denied',
+      'Solo un administrador puede cambiar la configuración fiscal.'
+    );
+  }
+
+  await db
+    .collection('businesses').doc(businessId)
+    .collection('settings').doc('fiscal')
+    .set({
+      usaComprobantesFiscales: enabled,
+      modoComprobante: enabled ? mode : 'sin_comprobantes',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: uid,
+    }, { merge: true });
+  return { ok: true };
+});
+
+module.exports = {
+  requestNcf,
+  configureNcfSequence,
+  listNcfSequences,
+  getFiscalSettings,
+  updateFiscalSettings,
+  ESTADOS,
+};

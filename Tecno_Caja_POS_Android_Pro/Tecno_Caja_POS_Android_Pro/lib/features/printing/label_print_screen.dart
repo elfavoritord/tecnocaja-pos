@@ -42,11 +42,12 @@ class _LabelPrintScreenState extends ConsumerState<LabelPrintScreen> {
     final products = query.trim().isEmpty
         ? await repository.deEmpresa(companyId)
         : await repository.buscar(companyId, query.trim());
-    if (mounted)
+    if (mounted) {
       setState(() {
         _products = products;
         _loading = false;
       });
+    }
   }
 
   Future<void> _print(Producto product) async {

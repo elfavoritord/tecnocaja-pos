@@ -43,6 +43,13 @@ class SchemaCatalogo {
       es_compuesto INTEGER NOT NULL DEFAULT 0,
       tiene_variantes INTEGER NOT NULL DEFAULT 0,
       tiene_lotes INTEGER NOT NULL DEFAULT 0,
+      controla_vencimiento INTEGER NOT NULL DEFAULT 0,
+      laboratorio TEXT,
+      principio_activo TEXT,
+      presentacion TEXT,
+      concentracion TEXT,
+      registro_sanitario TEXT,
+      es_controlado INTEGER NOT NULL DEFAULT 0,
       ubicacion TEXT,
       ${SyncColumns.full}
     )
@@ -67,9 +74,26 @@ class SchemaCatalogo {
       id TEXT PRIMARY KEY,
       producto_id TEXT NOT NULL,
       numero_lote TEXT,
+      fecha_fabricacion TEXT,
       fecha_vencimiento TEXT,
       cantidad REAL NOT NULL DEFAULT 0,
       costo_unitario REAL,
+      proveedor_id TEXT,
+      ${SyncColumns.full}
+    )
+  ''';
+
+  static const String ventaItemLotes = '''
+    CREATE TABLE IF NOT EXISTS venta_item_lotes (
+      id TEXT PRIMARY KEY,
+      venta_id TEXT NOT NULL,
+      venta_item_id TEXT NOT NULL,
+      producto_id TEXT NOT NULL,
+      lote_id TEXT NOT NULL,
+      numero_lote TEXT,
+      fecha_vencimiento TEXT,
+      cantidad REAL NOT NULL,
+      revertido INTEGER NOT NULL DEFAULT 0,
       ${SyncColumns.full}
     )
   ''';
@@ -126,6 +150,11 @@ class SchemaCatalogo {
         'CREATE INDEX IF NOT EXISTS idx_variantes_producto ON producto_variantes(producto_id)',
         'CREATE INDEX IF NOT EXISTS idx_lotes_producto ON producto_lotes(producto_id)',
         'CREATE INDEX IF NOT EXISTS idx_lotes_vencimiento ON producto_lotes(fecha_vencimiento)',
+        ...SyncColumns.commonIndexes('producto_lotes'),
+        'CREATE INDEX IF NOT EXISTS idx_venta_item_lotes_venta ON venta_item_lotes(venta_id)',
+        'CREATE INDEX IF NOT EXISTS idx_venta_item_lotes_item ON venta_item_lotes(venta_item_id)',
+        'CREATE INDEX IF NOT EXISTS idx_venta_item_lotes_lote ON venta_item_lotes(lote_id)',
+        ...SyncColumns.commonIndexes('venta_item_lotes'),
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_inventario_producto_sucursal ON inventario_sucursal(producto_id, sucursal_id)',
         'CREATE INDEX IF NOT EXISTS idx_movimientos_producto ON movimientos_inventario(producto_id)',
         'CREATE INDEX IF NOT EXISTS idx_movimientos_sucursal ON movimientos_inventario(sucursal_id)',
@@ -137,6 +166,7 @@ class SchemaCatalogo {
         productos,
         productoVariantes,
         productoLotes,
+        ventaItemLotes,
         productoComponentes,
         inventarioSucursal,
         movimientosInventario,

@@ -14,6 +14,7 @@ import '../../data/repositories/cliente_repository.dart';
 import '../../data/repositories/configuracion_repository.dart';
 import '../../data/repositories/empresa_repository.dart';
 import '../../data/repositories/fiscal_repository.dart';
+import '../../data/repositories/producto_repository.dart';
 import '../../data/repositories/venta_repository.dart';
 import '../../data/sync/sales_sync_service.dart';
 import '../../domain/calculo_venta.dart';
@@ -124,7 +125,8 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
               ),
               if (usaComprobantesFiscales) ...[
                 const SizedBox(height: 16),
-                Text('Comprobante', style: Theme.of(context).textTheme.labelLarge),
+                Text('Comprobante',
+                    style: Theme.of(context).textTheme.labelLarge),
                 const SizedBox(height: 8),
                 Wrap(
                   spacing: 8,
@@ -229,8 +231,7 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
           await ref.read(empresaRepositoryProvider).porId(empresaId);
       final businessId = empresa?.remotoId;
       if (businessId == null || businessId.isEmpty) {
-        _avisar(
-            'Venta guardada sin NCF: necesitas estar sincronizado con la '
+        _avisar('Venta guardada sin NCF: necesitas estar sincronizado con la '
             'nube para emitir comprobantes fiscales.');
         return venta;
       }
@@ -238,8 +239,7 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
           .read(salesSyncServiceProvider)
           .syncSale(businessId, venta.id);
       if (!sincronizada) {
-        _avisar(
-            'Venta guardada sin NCF: necesitas conexión a internet para '
+        _avisar('Venta guardada sin NCF: necesitas conexión a internet para '
             'emitirlo. Reintenta desde el historial.');
         return venta;
       }
@@ -272,7 +272,8 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
 
   void _avisar(String mensaje) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(mensaje)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(mensaje)));
   }
 
   Future<void> _confirmar(ResultadoCalculoVenta calculo, bool imprimir) async {
@@ -306,6 +307,27 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
         }
         return;
       }
+    }
+
+    try {
+      final productRepository = ref.read(productoRepositoryProvider);
+      for (final line in carrito.lineas) {
+        await productRepository.validarDisponibleParaVenta(
+          line.producto,
+          cantidad: line.cantidad,
+          sucursalId: widget.sesion.sucursalId,
+        );
+      }
+    } on AppException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.message),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+      return;
     }
 
     setState(() => _cargando = true);

@@ -102,12 +102,20 @@ class _ReportesScreenState extends ConsumerState<ReportesScreen> {
                   ],
                 ),
                 actions: [
-                  IconButton(
-                    tooltip: 'Exportar CSV',
-                    onPressed: snapshot.data == null
-                        ? null
-                        : () => _exportar(snapshot.data!),
+                  PopupMenuButton<String>(
+                    tooltip: 'Exportar',
                     icon: const Icon(Icons.download_outlined),
+                    enabled: snapshot.data != null,
+                    onSelected: (value) {
+                      if (value == 'ventas') _exportar(snapshot.data!);
+                      if (value == '607') _exportar607(snapshot.data!);
+                      if (value == '606') _exportar606();
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'ventas', child: Text('Ventas CSV')),
+                      PopupMenuItem(value: '607', child: Text('DGII 607')),
+                      PopupMenuItem(value: '606', child: Text('DGII 606')),
+                    ],
                   ),
                   IconButton(
                     tooltip: 'Actualizar',
@@ -377,7 +385,7 @@ class _ReportesScreenState extends ConsumerState<ReportesScreen> {
       args.addAll([like, like, like]);
     }
     final rows = await db.rawQuery('''
-      SELECT v.*, c.nombre AS cliente_nombre,
+      SELECT v.*, c.nombre AS cliente_nombre, c.cedula_rnc AS cliente_rnc,
              trim(coalesce(u.nombre, '') || ' ' || coalesce(u.apellido, '')) AS cajero_nombre,
              s.nombre AS sucursal_nombre, ca.nombre AS caja_nombre
       FROM ventas v
@@ -520,6 +528,161 @@ class _ReportesScreenState extends ConsumerState<ReportesScreen> {
       ].join(','));
     }
     await Share.share(buffer.toString(), subject: 'Reporte de ventas');
+  }
+
+  Future<void> _exportar607(_ReportData data) async {
+    final buffer = StringBuffer(
+      'RNC_CEDULA,Tipo_ID,NCF,NCF_MODIFICADO,Tipo_Ingreso,Fecha_Comprobante,'
+      'Fecha_Retencion,Monto_Facturado,ITBIS_Facturado,ITBIS_Retenido,'
+      'ITBIS_Percibido,Retencion_Renta,ISR_Percibido,Impuesto_Selectivo,'
+      'Otros_Impuestos,Propina_Legal,Efectivo,Cheque_Transferencia,'
+      'Tarjeta,Credito,Bonos,Permuta,Otras_Formas\n',
+    );
+    String csv(String value) => '"${value.replaceAll('"', '""')}"';
+    for (final sale in data.sales.where((s) =>
+        s.status == EstadoVenta.completada &&
+        (s.ncf?.trim().isNotEmpty ?? false))) {
+      final efectivo = sale.payment == MetodoPago.efectivo ? sale.total : 0;
+      final transferencia =
+          sale.payment == MetodoPago.transferencia ? sale.total : 0;
+      final tarjeta = sale.payment == MetodoPago.tarjeta ? sale.total : 0;
+      final credito = sale.payment == MetodoPago.credito ? sale.total : 0;
+      buffer.writeln([
+        csv(sale.customerTaxId ?? ''),
+        csv((sale.customerTaxId ?? '').length == 11 ? '2' : '1'),
+        csv(sale.ncf ?? ''),
+        csv(''),
+        csv('01'),
+        csv(_dgiiDate(sale.createdAt)),
+        csv(''),
+        sale.subtotal.toStringAsFixed(2),
+        sale.tax.toStringAsFixed(2),
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        efectivo.toStringAsFixed(2),
+        transferencia.toStringAsFixed(2),
+        tarjeta.toStringAsFixed(2),
+        credito.toStringAsFixed(2),
+        '0.00',
+        '0.00',
+        '0.00',
+      ].join(','));
+    }
+    await Share.share(buffer.toString(), subject: 'Formato DGII 607');
+  }
+
+  Future<void> _exportar606() async {
+    final auth = ref.read(authControllerProvider);
+    final empresaId = auth.empresaId;
+    if (empresaId == null) return;
+    final db = ref.read(databaseProvider);
+    final rows = await db.rawQuery(
+      '''
+      SELECT c.*, p.rnc, p.nombre AS proveedor_nombre
+      FROM compras c
+      LEFT JOIN proveedores p ON p.id = c.proveedor_id
+      WHERE c.empresa_id = ?
+        AND c.eliminado = 0
+        AND c.fecha_emision >= ?
+        AND c.fecha_emision < ?
+      ORDER BY c.fecha_emision ASC
+      ''',
+      [empresaId, _rango.start.toIso8601String(), _rango.end.toIso8601String()],
+    );
+    final gastos = await db.rawQuery(
+      '''
+      SELECT g.*, p.rnc, p.nombre AS proveedor_nombre
+      FROM gastos_operativos g
+      LEFT JOIN proveedores p ON p.id = g.proveedor_id
+      WHERE g.empresa_id = ?
+        AND g.eliminado = 0
+        AND g.estado != 'anulado'
+        AND g.fecha_comprobante >= ?
+        AND g.fecha_comprobante < ?
+      ORDER BY g.fecha_comprobante ASC
+      ''',
+      [empresaId, _rango.start.toIso8601String(), _rango.end.toIso8601String()],
+    );
+    final buffer = StringBuffer(
+      'RNC_CEDULA,Tipo_ID,Tipo_Bienes_Servicios,NCF,NCF_Modificado,'
+      'Fecha_Comprobante,Fecha_Pago,Monto_Facturado,ITBIS_Facturado,'
+      'ITBIS_Retenido,ITBIS_Sujeto_Proporcionalidad,ITBIS_Llevado_Costo,'
+      'ITBIS_Adelantar,ITBIS_Percibido_Compras,Tipo_Retencion_ISR,'
+      'Monto_Retencion_Renta,ISR_Percibido_Compras,Impuesto_Selectivo,'
+      'Otros_Impuestos,Tasa,Forma_Pago\n',
+    );
+    String csv(String value) => '"${value.replaceAll('"', '""')}"';
+    for (final row in rows) {
+      final rnc = row['rnc']?.toString() ?? '';
+      final fecha = DateTime.tryParse(row['fecha_emision']?.toString() ?? '');
+      final total = (row['monto_total'] as num?)?.toDouble() ?? 0;
+      buffer.writeln([
+        csv(rnc),
+        csv(rnc.length == 11 ? '2' : '1'),
+        csv('09'),
+        csv(row['numero_factura']?.toString() ?? ''),
+        csv(''),
+        csv(fecha == null ? '' : _dgiiDate(fecha)),
+        csv(''),
+        total.toStringAsFixed(2),
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        csv(''),
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        csv('04'),
+      ].join(','));
+    }
+    for (final row in gastos) {
+      final rnc = row['rnc']?.toString() ?? '';
+      final fecha =
+          DateTime.tryParse(row['fecha_comprobante']?.toString() ?? '');
+      final total = (row['monto_total'] as num?)?.toDouble() ?? 0;
+      final itbis = (row['itbis'] as num?)?.toDouble() ?? 0;
+      buffer.writeln([
+        csv(rnc),
+        csv(rnc.length == 11 ? '2' : '1'),
+        csv('09'),
+        csv(row['ncf']?.toString() ?? ''),
+        csv(''),
+        csv(fecha == null ? '' : _dgiiDate(fecha)),
+        csv(''),
+        total.toStringAsFixed(2),
+        itbis.toStringAsFixed(2),
+        '0.00',
+        '0.00',
+        '0.00',
+        itbis.toStringAsFixed(2),
+        '0.00',
+        csv(''),
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        '0.00',
+        csv('04'),
+      ].join(','));
+    }
+    await Share.share(buffer.toString(), subject: 'Formato DGII 606');
+  }
+
+  String _dgiiDate(DateTime date) {
+    final local = date.toLocal();
+    return '${local.year.toString().padLeft(4, '0')}'
+        '${local.month.toString().padLeft(2, '0')}'
+        '${local.day.toString().padLeft(2, '0')}';
   }
 
   String _periodLabel(_Periodo value) => switch (value) {
@@ -948,6 +1111,8 @@ class _ReportSale {
     required this.tax,
     required this.total,
     required this.syncStatus,
+    this.ncf,
+    this.customerTaxId,
   });
   final String id;
   final String number;
@@ -963,6 +1128,8 @@ class _ReportSale {
   final double tax;
   final double total;
   final String syncStatus;
+  final String? ncf;
+  final String? customerTaxId;
 
   factory _ReportSale.fromMap(Map<String, Object?> map) => _ReportSale(
         id: map['id']!.toString(),
@@ -984,6 +1151,8 @@ class _ReportSale {
         tax: (map['itbis'] as num?)?.toDouble() ?? 0,
         total: (map['total'] as num?)?.toDouble() ?? 0,
         syncStatus: map['sync_estado']?.toString() ?? 'pendiente',
+        ncf: map['encf']?.toString(),
+        customerTaxId: map['cliente_rnc']?.toString(),
       );
 }
 

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/providers/service_providers.dart';
+import '../../core/errors/app_exception.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/formatters.dart';
 import '../../data/auth/auth_controller.dart';
@@ -69,8 +70,9 @@ class PosScreen extends ConsumerWidget {
     final producto = await ref
         .read(productoRepositoryProvider)
         .porCodigoBarras(empresaId, codigo);
+    if (!context.mounted) return;
     if (producto != null) {
-      ref.read(carritoControllerProvider.notifier).agregarProducto(producto);
+      await _agregarProductoValidado(context, ref, producto);
       return;
     }
 
@@ -324,9 +326,8 @@ class _PosContenidoState extends ConsumerState<_PosContenido> {
                   final producto = _productos[index];
                   return _TarjetaProducto(
                     producto: producto,
-                    onTap: () => ref
-                        .read(carritoControllerProvider.notifier)
-                        .agregarProducto(producto),
+                    onTap: () =>
+                        _agregarProductoValidado(context, ref, producto),
                   );
                 },
               );
@@ -358,6 +359,34 @@ class _PosContenidoState extends ConsumerState<_PosContenido> {
           ],
         );
       },
+    );
+  }
+}
+
+Future<void> _agregarProductoValidado(
+  BuildContext context,
+  WidgetRef ref,
+  Producto producto,
+) async {
+  final carrito = ref.read(carritoControllerProvider);
+  final current = carrito.lineas
+      .where((line) => line.producto.id == producto.id)
+      .fold<double>(0, (sum, line) => sum + line.cantidad);
+  final branch = await ref.read(sucursalActivaProvider.future);
+  try {
+    await ref.read(productoRepositoryProvider).validarDisponibleParaVenta(
+          producto,
+          cantidad: current + 1,
+          sucursalId: branch?.id,
+        );
+    ref.read(carritoControllerProvider.notifier).agregarProducto(producto);
+  } on AppException catch (error) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(error.message),
+        backgroundColor: Theme.of(context).colorScheme.error,
+      ),
     );
   }
 }
@@ -499,8 +528,9 @@ class _PanelCarrito extends ConsumerWidget {
                 : () async {
                     final cliente =
                         await mostrarSelectorCliente(context, empresaId);
-                    if (cliente != null)
+                    if (cliente != null) {
                       notifier.establecerCliente(cliente.id, cliente.nombre);
+                    }
                   },
           ),
           const Divider(height: 1),

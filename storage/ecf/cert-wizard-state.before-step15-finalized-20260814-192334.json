@@ -1,0 +1,256 @@
+{
+  "currentStep": 15,
+  "completedSteps": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ],
+  "startedAt": "2026-08-10T01:12:12.587Z",
+  "updatedAt": "2026-08-14T23:22:06.080Z",
+  "finishedAt": null,
+  "progress": 93,
+  "environment": "certecf",
+  "steps": {
+    "1": {
+      "completedAt": "2026-08-10T01:17:00.204Z",
+      "data": {
+        "rnc": "40211932609",
+        "razonSocial": "EMILIO MANAURYS CABRERA",
+        "software": {
+          "nombre": "Tecno Caja Pos",
+          "version": "1.0",
+          "tipo": "PROPIO"
+        }
+      }
+    },
+    "2": {
+      "completedAt": "2026-08-10T01:58:34.591Z",
+      "data": {
+        "ecfAccepted": 25,
+        "ecfTotal": 25,
+        "rfceAccepted": 4
+      }
+    },
+    "3": {
+      "completedAt": "2026-08-10T02:17:57.915Z",
+      "data": {
+        "accepted": 11,
+        "total": 11,
+        "confirmedAt": "2026-08-10T02:17:57.915Z"
+      }
+    },
+    "4": {
+      "completedAt": "2026-08-10T02:44:03.965Z",
+      "data": {
+        "accepted": 25,
+        "total": 25,
+        "byType": [
+          {
+            "tipo": "E31",
+            "isRfce": false,
+            "total": 4,
+            "accepted": 4,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E32",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E33",
+            "isRfce": false,
+            "total": 1,
+            "accepted": 1,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E34",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E41",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E43",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E44",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E45",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E46",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E47",
+            "isRfce": false,
+            "total": 2,
+            "accepted": 2,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          },
+          {
+            "tipo": "E32",
+            "isRfce": true,
+            "total": 4,
+            "accepted": 4,
+            "rejected": 0,
+            "pending": 0,
+            "sent": 0
+          }
+        ],
+        "confirmedAt": "2026-08-10T02:44:03.964Z"
+      }
+    },
+    "5": {
+      "completedAt": "2026-08-10T02:57:21.111Z",
+      "data": {
+        "confirmed": true,
+        "checked": {
+          "31-normal": true,
+          "32-normal": true,
+          "32-rfce": true,
+          "33-normal": true,
+          "34-normal": true,
+          "41-normal": true,
+          "43-normal": true,
+          "44-normal": true,
+          "45-normal": true,
+          "46-normal": true,
+          "47-normal": true
+        },
+        "confirmedAt": "2026-08-10T02:57:21.111Z"
+      }
+    },
+    "6": {
+      "completedAt": "2026-08-10T15:12:18.537Z",
+      "data": {
+        "approved": true,
+        "approvedAt": "2026-08-10T15:12:18.537Z"
+      }
+    },
+    "7": {
+      "completedAt": "2026-08-10T16:03:49.831Z",
+      "data": {
+        "confirmed": true,
+        "urls": {
+          "baseUrl": "https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app",
+          "recepcionUrl": "https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app/fe/recepcion/api/ecf",
+          "aprobacionUrl": "https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app/fe/aprobacioncomercial/api/ecf",
+          "semillaUrl": "https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app/fe/autenticacion/api/semilla",
+          "validacionCertificadoUrl": "https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app/fe/autenticacion/api/validacioncertificado"
+        },
+        "confirmedAt": "2026-08-10T16:03:49.831Z"
+      }
+    },
+    "8": {
+      "completedAt": "2026-08-10T18:01:32.858Z",
+      "data": {
+        "startedAt": "2026-08-10T18:01:32.857Z"
+      }
+    },
+    "9": {
+      "completedAt": "2026-08-14T23:03:22.176Z",
+      "data": {
+        "received": 11,
+        "completedAt": "2026-08-14T23:03:22.176Z"
+      }
+    },
+    "10": {
+      "completedAt": "2026-08-14T23:03:30.318Z",
+      "data": {
+        "startedAt": "2026-08-14T23:03:30.318Z"
+      }
+    },
+    "11": {
+      "completedAt": "2026-08-14T23:09:33.8017808Z",
+      "data": {
+        "accepted": 9,
+        "total": 9,
+        "message": "Sincronizado con portal DGII: recepción de aprobaciones comerciales completada."
+      }
+    },
+    "12": {
+      "completedAt": "2026-08-14T23:09:33.8017808Z",
+      "data": {
+        "baseUrl": "https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app",
+        "confirmedAt": "2026-08-14T23:09:33.8017808Z",
+        "savedInEmitter": true
+      }
+    },
+    "13": {
+      "completedAt": "2026-08-14T23:21:19.660Z",
+      "data": {
+        "signed": true,
+        "confirmedAt": "2026-08-14T23:21:19.659Z"
+      }
+    },
+    "14": {
+      "completedAt": "2026-08-14T23:22:06.080Z",
+      "data": {
+        "verificationSource": "manual",
+        "confirmedBy": "Emilio Manaurys Cabrera",
+        "confirmedAt": "2026-08-14T23:22:06.079Z",
+        "portalEvidence": "storage/ecf/step14-evidence/evidencia-1786749726051.png"
+      }
+    }
+  },
+  "manualResetSteps": []
+}

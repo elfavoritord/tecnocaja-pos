@@ -14,13 +14,17 @@ class ClienteDao extends BaseDao<Cliente> {
   String idOf(Cliente entity) => entity.id;
 
   Future<List<Cliente>> deEmpresa(String empresaId) {
-    return findAll(where: 'empresa_id = ? AND activo = 1', whereArgs: [empresaId], orderBy: 'nombre ASC');
+    return findAll(
+        where: 'empresa_id = ? AND activo = 1',
+        whereArgs: [empresaId],
+        orderBy: 'nombre ASC');
   }
 
   Future<List<Cliente>> buscar(String empresaId, String termino) {
     final like = '%$termino%';
     return findAll(
-      where: 'empresa_id = ? AND activo = 1 AND (nombre LIKE ? OR telefono LIKE ? OR cedula_rnc LIKE ?)',
+      where:
+          'empresa_id = ? AND activo = 1 AND (nombre LIKE ? OR telefono LIKE ? OR cedula_rnc LIKE ?)',
       whereArgs: [empresaId, like, like, like],
       orderBy: 'nombre ASC',
       limit: 30,
@@ -28,6 +32,23 @@ class ClienteDao extends BaseDao<Cliente> {
   }
 
   Future<List<Cliente>> conBalancePendiente(String empresaId) {
-    return findAll(where: 'empresa_id = ? AND balance > 0', whereArgs: [empresaId], orderBy: 'balance DESC');
+    return findAll(
+        where: 'empresa_id = ? AND balance > 0',
+        whereArgs: [empresaId],
+        orderBy: 'balance DESC');
+  }
+
+  Future<Cliente?> porDocumento(String empresaId, String documento) async {
+    final rows = await db.query(
+      tableName,
+      where: '''
+        empresa_id = ?
+        AND REPLACE(REPLACE(cedula_rnc, '-', ''), ' ', '') = ?
+        AND eliminado = 0
+      ''',
+      whereArgs: [empresaId, documento],
+      limit: 1,
+    );
+    return rows.isEmpty ? null : fromMap(rows.first);
   }
 }

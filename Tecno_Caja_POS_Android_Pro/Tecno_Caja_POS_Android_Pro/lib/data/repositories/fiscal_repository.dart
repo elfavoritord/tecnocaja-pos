@@ -1,4 +1,3 @@
-import 'package:cloud_firestore/cloud_firestore.dart' hide Transaction;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../cloud/cloud_functions_service.dart';
@@ -63,6 +62,115 @@ class NcfSequenceInfo {
       );
 }
 
+class EcfCertificationStep {
+  const EcfCertificationStep({
+    required this.id,
+    required this.key,
+    required this.label,
+    required this.verification,
+    required this.status,
+    this.completedAt,
+    this.evidence = const {},
+  });
+
+  final int id;
+  final String key;
+  final String label;
+  final String verification;
+  final String status;
+  final DateTime? completedAt;
+  final Map<String, dynamic> evidence;
+
+  bool get completed => status == 'completed';
+
+  factory EcfCertificationStep.fromMap(Map<String, dynamic> map) {
+    final evidence = map['evidence'];
+    return EcfCertificationStep(
+      id: (map['id'] as num?)?.toInt() ?? 0,
+      key: map['key']?.toString() ?? '',
+      label: map['label']?.toString() ?? '',
+      verification: map['verification']?.toString() ?? 'engine',
+      status: map['status']?.toString() ?? 'pending',
+      completedAt: DateTime.tryParse(map['completedAt']?.toString() ?? ''),
+      evidence: evidence is Map
+          ? Map<String, dynamic>.from(evidence)
+          : const <String, dynamic>{},
+    );
+  }
+}
+
+class EcfCertificationProcess {
+  const EcfCertificationProcess({
+    required this.status,
+    required this.environment,
+    required this.rnc,
+    required this.razonSocial,
+    required this.progress,
+    required this.currentStep,
+    required this.steps,
+    required this.portalUrl,
+    required this.recommendedServiceBaseUrl,
+    required this.certificateStatus,
+    this.certificateSubject,
+    this.certificateValidTo,
+    this.startedAt,
+    this.finishedAt,
+  });
+
+  final String status;
+  final String environment;
+  final String rnc;
+  final String razonSocial;
+  final int progress;
+  final int currentStep;
+  final List<EcfCertificationStep> steps;
+  final String portalUrl;
+  final String recommendedServiceBaseUrl;
+  final String certificateStatus;
+  final String? certificateSubject;
+  final DateTime? certificateValidTo;
+  final DateTime? startedAt;
+  final DateTime? finishedAt;
+
+  bool get completed => status == 'completed';
+
+  factory EcfCertificationProcess.fromMap(Map<String, dynamic> map) {
+    final rawSteps = map['steps'];
+    final steps = <EcfCertificationStep>[];
+    if (rawSteps is Map) {
+      for (final value in rawSteps.values) {
+        if (value is Map) {
+          steps.add(
+              EcfCertificationStep.fromMap(Map<String, dynamic>.from(value)));
+        }
+      }
+    }
+    steps.sort((a, b) => a.id.compareTo(b.id));
+    final rawCertificate = map['certificate'];
+    final certificate = rawCertificate is Map
+        ? Map<String, dynamic>.from(rawCertificate)
+        : const <String, dynamic>{};
+    return EcfCertificationProcess(
+      status: map['status']?.toString() ?? 'in_progress',
+      environment: map['environment']?.toString() ?? 'certecf',
+      rnc: map['rnc']?.toString() ?? '',
+      razonSocial: map['razonSocial']?.toString() ?? '',
+      progress: (map['progress'] as num?)?.toInt() ?? 0,
+      currentStep: (map['currentStep'] as num?)?.toInt() ?? 1,
+      steps: steps,
+      portalUrl: map['portalUrl']?.toString() ?? '',
+      recommendedServiceBaseUrl:
+          map['recommendedServiceBaseUrl']?.toString() ?? '',
+      certificateStatus: certificate['status']?.toString() ?? 'not_configured',
+      certificateSubject: certificate['subject']?.toString(),
+      certificateValidTo:
+          DateTime.tryParse(certificate['validTo']?.toString() ?? ''),
+      startedAt: DateTime.tryParse(map['startedAt']?.toString() ?? ''),
+      finishedAt: DateTime.tryParse(map['finishedAt']?.toString() ?? ''),
+    );
+  }
+}
+
 /// Puente a la facturación fiscal (NCF tradicional en esta fase; e-CF con
 /// firma/envío a DGII queda para una fase posterior -- ver
 /// `functions/fiscal.js`). `settings/fiscal` se lee/escribe directo por
@@ -70,22 +178,15 @@ class NcfSequenceInfo {
 /// secuencias y la reserva de NCF pasan siempre por Cloud Functions porque
 /// las reglas no permiten tocarlas directo desde el cliente.
 class FiscalRepository {
-  FiscalRepository(this._firestore, this._cloud);
+  FiscalRepository(this._cloud);
 
-  final FirebaseFirestore _firestore;
   final CloudFunctionsService _cloud;
 
-  DocumentReference<Map<String, dynamic>> _fiscalDoc(String businessId) =>
-      _firestore
-          .collection('businesses')
-          .doc(businessId)
-          .collection('settings')
-          .doc('fiscal');
-
   Future<FiscalSettings?> obtener(String businessRemoteId) async {
-    final snap = await _fiscalDoc(businessRemoteId).get();
-    if (!snap.exists) return null;
-    return FiscalSettings.fromMap(snap.data()!);
+    final result = await _cloud.getFiscalSettings(businessRemoteId);
+    final raw = result['settings'];
+    if (raw is! Map) return null;
+    return FiscalSettings.fromMap(Map<String, dynamic>.from(raw));
   }
 
   Future<void> actualizarUsaComprobantes(
@@ -93,11 +194,11 @@ class FiscalRepository {
     required bool activo,
     required String modo,
   }) {
-    return _fiscalDoc(businessRemoteId).set({
-      'usaComprobantesFiscales': activo,
-      'modoComprobante': modo,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    return _cloud.updateFiscalSettings(
+      businessId: businessRemoteId,
+      enabled: activo,
+      mode: modo,
+    );
   }
 
   Future<List<NcfSequenceInfo>> listarSecuencias(
@@ -105,7 +206,8 @@ class FiscalRepository {
     final result = await _cloud.listNcfSequences(businessRemoteId);
     final raw = result['sequences'] as List? ?? const [];
     return raw
-        .map((e) => NcfSequenceInfo.fromMap(Map<String, dynamic>.from(e as Map)))
+        .map(
+            (e) => NcfSequenceInfo.fromMap(Map<String, dynamic>.from(e as Map)))
         .toList();
   }
 
@@ -140,11 +242,73 @@ class FiscalRepository {
       ambiente: ambiente,
     );
   }
+
+  Future<EcfCertificationProcess?> obtenerCertificacion(
+      String businessId) async {
+    final result = await _cloud.getEcfCertificationStatus(businessId);
+    final raw = result['process'];
+    if (raw is! Map) return null;
+    return EcfCertificationProcess.fromMap(Map<String, dynamic>.from(raw));
+  }
+
+  Future<EcfCertificationProcess> iniciarCertificacion(
+      String businessId) async {
+    final result = await _cloud.startEcfCertification(businessId);
+    return _certificationFromResult(result);
+  }
+
+  Future<EcfCertificationProcess> confirmarPasoCertificacion({
+    required String businessId,
+    required int stepId,
+    required String reference,
+  }) async {
+    final result = await _cloud.confirmEcfCertificationStep(
+      businessId: businessId,
+      stepId: stepId,
+      reference: reference,
+    );
+    return _certificationFromResult(result);
+  }
+
+  Future<EcfCertificationProcess> validarUrlsCertificacion({
+    required String businessId,
+    required int stepId,
+    required String baseUrl,
+  }) async {
+    final result = await _cloud.validateEcfServiceUrls(
+      businessId: businessId,
+      stepId: stepId,
+      baseUrl: baseUrl,
+    );
+    return _certificationFromResult(result);
+  }
+
+  Future<EcfCertificationProcess> cargarCertificado({
+    required String businessId,
+    required String fileName,
+    required String certificateBase64,
+    required String password,
+  }) async {
+    final result = await _cloud.uploadEcfCertificate(
+      businessId: businessId,
+      fileName: fileName,
+      certificateBase64: certificateBase64,
+      password: password,
+    );
+    return _certificationFromResult(result);
+  }
+
+  EcfCertificationProcess _certificationFromResult(
+      Map<String, dynamic> result) {
+    final raw = result['process'];
+    if (raw is! Map) {
+      throw const FormatException(
+          'El servidor no devolvió el proceso de certificación.');
+    }
+    return EcfCertificationProcess.fromMap(Map<String, dynamic>.from(raw));
+  }
 }
 
 final fiscalRepositoryProvider = Provider<FiscalRepository>((ref) {
-  return FiscalRepository(
-    FirebaseFirestore.instance,
-    ref.watch(cloudFunctionsServiceProvider),
-  );
+  return FiscalRepository(ref.watch(cloudFunctionsServiceProvider));
 });

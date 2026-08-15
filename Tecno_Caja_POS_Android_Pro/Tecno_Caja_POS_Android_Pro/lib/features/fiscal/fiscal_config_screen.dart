@@ -4,12 +4,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/ncf.dart';
 import '../../core/constants/permisos.dart';
 import '../../core/errors/app_exception.dart';
+import '../../core/providers/database_providers.dart';
 import '../../core/theme/app_colors.dart';
+import '../../core/utils/formatters.dart';
+import '../../data/auth/auth_controller.dart';
 import '../../data/providers/contexto_operativo_provider.dart';
 import '../../data/repositories/configuracion_repository.dart';
 import '../../data/repositories/empresa_repository.dart';
 import '../../data/repositories/fiscal_repository.dart';
 import '../../widgets/loading_button.dart';
+import 'ecf_certification_screen.dart';
 
 /// Configuración de facturación fiscal (NCF tradicional en esta fase --
 /// e-CF con firma digital y envío a la DGII queda para una fase posterior,
@@ -19,8 +23,7 @@ class FiscalConfigScreen extends ConsumerStatefulWidget {
   const FiscalConfigScreen({super.key});
 
   @override
-  ConsumerState<FiscalConfigScreen> createState() =>
-      _FiscalConfigScreenState();
+  ConsumerState<FiscalConfigScreen> createState() => _FiscalConfigScreenState();
 }
 
 class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
@@ -30,6 +33,7 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
   bool _cargando = true;
   bool _guardandoToggle = false;
   String? _error;
+  String? _warning;
 
   @override
   void initState() {
@@ -41,6 +45,7 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
     setState(() {
       _cargando = true;
       _error = null;
+      _warning = null;
     });
     try {
       final empresa = await ref.read(empresaRepositoryProvider).actual();
@@ -53,13 +58,38 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
         return;
       }
       final repo = ref.read(fiscalRepositoryProvider);
-      final settings = await repo.obtener(remoteId);
-      final secuencias = await repo.listarSecuencias(remoteId);
+      final localConfig =
+          await ref.read(configuracionRepositoryProvider).obtener();
+      var settings = FiscalSettings(
+        usaComprobantesFiscales: localConfig.fiscalUsaComprobantes,
+        modoComprobante:
+            localConfig.fiscalModoComprobante ?? 'sin_comprobantes',
+        ambiente: localConfig.fiscalAmbiente,
+        eCfActivo: false,
+        eCfValidado: false,
+      );
+      var secuencias = <NcfSequenceInfo>[];
+      final warnings = <String>[];
+      try {
+        settings = await repo.obtener(remoteId) ?? settings;
+      } catch (e) {
+        warnings.add(
+          'Se muestra la configuración guardada en este dispositivo porque el servicio fiscal remoto no respondió.',
+        );
+      }
+      try {
+        secuencias = await repo.listarSecuencias(remoteId);
+      } catch (e) {
+        warnings.add(
+          'No se pudieron consultar las secuencias NCF. Verifica conexión, funciones desplegadas y permisos administrativos.',
+        );
+      }
       if (!mounted) return;
       setState(() {
         _businessRemoteId = remoteId;
         _settings = settings;
         _secuencias = secuencias;
+        _warning = warnings.isEmpty ? null : warnings.join(' ');
         _cargando = false;
       });
     } catch (e) {
@@ -147,6 +177,24 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_warning != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.warning.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.cloud_off_outlined),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(_warning!)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           Card(
             child: SwitchListTile(
               title: const Text('Usar comprobantes fiscales (NCF)'),
@@ -170,13 +218,31 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'La facturación electrónica (e-CF) con firma digital y '
-                    'envío a la DGII todavía no está disponible en la app — '
-                    'próximamente. Por ahora se emiten NCF tradicionales.',
+                    'La reserva de NCF se realiza en el servicio fiscal central. '
+                    'La firma y el envío e-CF usan el módulo seguro del servidor, '
+                    'donde se protege el certificado digital.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.workspace_premium_outlined),
+              title: const Text('Certificación electrónica e-CF'),
+              subtitle: Text(
+                settings?.eCfValidado == true
+                    ? 'Certificación validada. Revisa el estado y la activación fiscal.'
+                    : 'Completa el proceso CerteCF antes de emitir comprobantes electrónicos.',
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const EcfCertificationScreen(),
+                ),
+              ),
             ),
           ),
           if (activo) ...[
@@ -209,8 +275,8 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
                             : Icons.confirmation_number_outlined,
                         color: s.agotada ? AppColors.danger : AppColors.success,
                       ),
-                      title:
-                          Text('${s.ncfType} — ${NcfType.etiquetaDe(s.ncfType)}'),
+                      title: Text(
+                          '${s.ncfType} — ${NcfType.etiquetaDe(s.ncfType)}'),
                       subtitle: Text(
                         'Ambiente: ${s.ambiente} · Próximo: ${s.siguienteNumero} '
                         'de ${s.maximo}${s.agotada ? " (agotada)" : ""}'
@@ -218,10 +284,83 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
                       ),
                     ),
                   )),
+            const SizedBox(height: 24),
+            const _MonitorFiscalLocal(),
           ],
         ],
       ),
     );
+  }
+}
+
+class _MonitorFiscalLocal extends ConsumerWidget {
+  const _MonitorFiscalLocal();
+
+  Future<List<Map<String, Object?>>> _ventas(WidgetRef ref) async {
+    final empresaId = ref.read(authControllerProvider).empresaId;
+    if (empresaId == null) return const [];
+    return ref.read(databaseProvider).query(
+          'ventas',
+          where:
+              "empresa_id = ? AND eliminado = 0 AND encf IS NOT NULL AND encf != ''",
+          whereArgs: [empresaId],
+          orderBy: 'creado_en DESC',
+          limit: 100,
+        );
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return FutureBuilder<List<Map<String, Object?>>>(
+      future: _ventas(ref),
+      builder: (context, snapshot) {
+        final ventas = snapshot.data ?? const <Map<String, Object?>>[];
+        final pendientes = ventas
+            .where((v) => v['ecf_estado']?.toString() == 'PENDIENTE_FIRMA')
+            .length;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Monitor fiscal local',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: const Icon(Icons.receipt_long_outlined),
+                title: Text('${ventas.length} comprobante(s) asignados'),
+                subtitle: Text('$pendientes pendiente(s) de firma/envío e-CF'),
+              ),
+            ),
+            if (ventas.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text('Todavía no hay ventas con NCF/e-CF local.'),
+              )
+            else
+              ...ventas.take(10).map(
+                    (venta) => Card(
+                      child: ListTile(
+                        title: Text(venta['encf']?.toString() ?? 'NCF'),
+                        subtitle: Text(
+                          [
+                            venta['numero_factura']?.toString() ?? '',
+                            _fecha(venta['creado_en']),
+                          ].where((e) => e.isNotEmpty).join(' · '),
+                        ),
+                        trailing:
+                            Text(venta['ecf_estado']?.toString() ?? 'ASIGNADO'),
+                      ),
+                    ),
+                  ),
+          ],
+        );
+      },
+    );
+  }
+
+  static String _fecha(Object? value) {
+    final parsed = DateTime.tryParse(value?.toString() ?? '');
+    return parsed == null ? '' : Formatters.dateTime(parsed);
   }
 }
 
@@ -411,8 +550,7 @@ class _DialogoNuevaSecuenciaState
       ),
       actions: [
         TextButton(
-          onPressed:
-              _guardando ? null : () => Navigator.of(context).pop(false),
+          onPressed: _guardando ? null : () => Navigator.of(context).pop(false),
           child: const Text('Cancelar'),
         ),
         LoadingButton(

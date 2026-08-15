@@ -72,6 +72,17 @@ class SettingsScreen extends ConsumerWidget {
             ),
           ),
           const Divider(),
+          const _SeccionTitulo('Negocio'),
+          ListTile(
+            leading: const Icon(Icons.tune),
+            title: const Text('Tipo de negocio y capacidades'),
+            subtitle: Text(
+              configAsync.valueOrNull?.businessType ?? 'Configurar rubro',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => context.push('/capacidades-negocio'),
+          ),
+          const Divider(),
           const _SeccionTitulo('Apariencia'),
           configAsync.when(
             data: (config) => RadioGroup<String>(

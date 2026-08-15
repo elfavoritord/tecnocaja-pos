@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../../core/providers/database_providers.dart';
+import '../../core/errors/app_exception.dart';
 import '../../core/utils/id_generator.dart';
 import '../../domain/entities/cliente.dart';
 import '../local/daos/cliente_dao.dart';
@@ -12,13 +13,19 @@ class ClienteRepository {
   final ClienteDao _dao;
   final Database _db;
 
-  Future<List<Cliente>> deEmpresa(String empresaId) => _dao.deEmpresa(empresaId);
+  Future<List<Cliente>> deEmpresa(String empresaId) =>
+      _dao.deEmpresa(empresaId);
 
-  Future<List<Cliente>> buscar(String empresaId, String termino) => _dao.buscar(empresaId, termino);
+  Future<List<Cliente>> buscar(String empresaId, String termino) =>
+      _dao.buscar(empresaId, termino);
 
-  Future<List<Cliente>> conBalancePendiente(String empresaId) => _dao.conBalancePendiente(empresaId);
+  Future<List<Cliente>> conBalancePendiente(String empresaId) =>
+      _dao.conBalancePendiente(empresaId);
 
   Future<Cliente?> porId(String id) => _dao.findById(id);
+
+  Future<Cliente?> porDocumento(String empresaId, String documento) =>
+      _dao.porDocumento(empresaId, normalizarDocumento(documento));
 
   Future<Cliente> crear({
     required String empresaId,
@@ -28,10 +35,17 @@ class ClienteRepository {
     String? email,
     String? direccion,
     String? cedulaRnc,
+    String? nombreComercial,
+    String? estadoDgii,
+    String? tipoContribuyente,
+    String? categoriaDgii,
+    DateTime? dgiiConsultadoEn,
     double limiteCredito = 0,
     String? notas,
     String? dispositivoId,
   }) async {
+    final documento = normalizarDocumento(cedulaRnc);
+    await _asegurarDocumentoDisponible(empresaId, documento);
     final now = DateTime.now();
     final cliente = Cliente(
       id: IdGenerator.newId(),
@@ -40,7 +54,12 @@ class ClienteRepository {
       whatsapp: whatsapp,
       email: email,
       direccion: direccion,
-      cedulaRnc: cedulaRnc,
+      cedulaRnc: documento.isEmpty ? null : documento,
+      nombreComercial: nombreComercial,
+      estadoDgii: estadoDgii,
+      tipoContribuyente: tipoContribuyente,
+      categoriaDgii: categoriaDgii,
+      dgiiConsultadoEn: dgiiConsultadoEn,
       limiteCredito: limiteCredito,
       notas: notas,
       empresaId: empresaId,
@@ -52,9 +71,35 @@ class ClienteRepository {
     return cliente;
   }
 
-  Future<void> actualizar(Cliente cliente) => _dao.update(cliente);
+  Future<void> actualizar(Cliente cliente) async {
+    final documento = normalizarDocumento(cliente.cedulaRnc);
+    await _asegurarDocumentoDisponible(
+      cliente.empresaId,
+      documento,
+      exceptClientId: cliente.id,
+    );
+    await _dao.update(cliente.copyWith(cedulaRnc: documento));
+  }
 
-  Future<void> desactivar(String id) => _dao.softDelete(id, nowIso: DateTime.now().toIso8601String());
+  Future<void> _asegurarDocumentoDisponible(
+    String empresaId,
+    String documento, {
+    String? exceptClientId,
+  }) async {
+    if (documento.isEmpty) return;
+    final existing = await _dao.porDocumento(empresaId, documento);
+    if (existing != null && existing.id != exceptClientId) {
+      throw ConflictException(
+        message: 'Ya existe el cliente ${existing.nombre} con esta cédula/RNC.',
+      );
+    }
+  }
+
+  static String normalizarDocumento(String? value) =>
+      (value ?? '').replaceAll(RegExp(r'\D'), '');
+
+  Future<void> desactivar(String id) =>
+      _dao.softDelete(id, nowIso: DateTime.now().toIso8601String());
 
   /// Abono a cuenta por cobrar: registra el pago y baja el balance en la
   /// misma transaccion. El historial de pagos (tabla cliente_pagos) se
@@ -74,8 +119,14 @@ class ClienteRepository {
         'UPDATE clientes SET balance = balance - ?, actualizado_en = ?, sync_estado = ? WHERE id = ?',
         [monto, now, 'pendiente', clienteId],
       );
-      final clienteRows = await txn.query('clientes', columns: ['empresa_id'], where: 'id = ?', whereArgs: [clienteId], limit: 1);
-      final empresaId = clienteRows.isEmpty ? null : clienteRows.first['empresa_id'] as String?;
+      final clienteRows = await txn.query('clientes',
+          columns: ['empresa_id'],
+          where: 'id = ?',
+          whereArgs: [clienteId],
+          limit: 1);
+      final empresaId = clienteRows.isEmpty
+          ? null
+          : clienteRows.first['empresa_id'] as String?;
       await txn.insert('cliente_pagos', {
         'id': idPago,
         'cliente_id': clienteId,
@@ -94,7 +145,8 @@ class ClienteRepository {
     });
   }
 
-  Future<List<Map<String, Object?>>> historialPagos(String clienteId, {int limit = 50}) {
+  Future<List<Map<String, Object?>>> historialPagos(String clienteId,
+      {int limit = 50}) {
     return _db.query(
       'cliente_pagos',
       where: 'cliente_id = ? AND eliminado = 0',
@@ -106,5 +158,6 @@ class ClienteRepository {
 }
 
 final clienteRepositoryProvider = Provider<ClienteRepository>((ref) {
-  return ClienteRepository(ref.watch(clienteDaoProvider), ref.watch(databaseProvider));
+  return ClienteRepository(
+      ref.watch(clienteDaoProvider), ref.watch(databaseProvider));
 });

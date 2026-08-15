@@ -4,6 +4,7 @@ process.env.NODE_ENV = 'test';
 
 const request = require('supertest');
 const { createApp } = require('../lib/app');
+const { buildArecf, fmtDgiiDateTime } = require('../lib/router');
 const { createMemoryStore } = require('../lib/store');
 
 function sampleEcfXml({ rncEmisor = '130000001', rncComprador = '101000001', encf = 'E320000000001' } = {}) {
@@ -34,7 +35,7 @@ describe('POST /fe/recepcion/api/ecf', () => {
 
     expect(res.status).toBe(200);
     expect(res.type).toBe('application/xml');
-    expect(res.text).toContain('<ARECF>');
+    expect(res.text).toContain('<ARECF');
     expect(res.text).toContain('<Estado>0</Estado>');
     expect(res.text).toContain('<eNCF>E320000000001</eNCF>');
     expect(res.text).toContain('<RNCEmisor>130000001</RNCEmisor>');
@@ -67,7 +68,7 @@ describe('POST /fe/recepcion/api/ecf', () => {
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(second.text).toContain('<ARECF>');
+    expect(second.text).toContain('<ARECF');
     expect(second.text).toContain('<Estado>0</Estado>');
   });
 
@@ -105,6 +106,28 @@ describe('POST /fe/recepcion/api/ecf', () => {
     expect(res.status).toBe(200);
     expect(res.text).toContain('<Estado>0</Estado>');
     expect(res.text).toContain('<eNCF>E320000000004</eNCF>');
+  });
+});
+
+describe('fmtDgiiDateTime', () => {
+  it('formatea la fecha del ARECF en hora de Republica Dominicana', () => {
+    const utc = new Date('2026-08-14T22:50:15.000Z');
+    expect(fmtDgiiDateTime(utc)).toBe('14-08-2026 18:50:15');
+  });
+});
+
+describe('buildArecf', () => {
+  it('genera XML compacto para que validadores sin PreserveWhitespace mantengan el digest', () => {
+    const xml = buildArecf({
+      rncEmisor: '131880681',
+      rncComprador: '40211932609',
+      encf: 'E310000000003',
+      estado: '0',
+    });
+
+    expect(xml).toContain('xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"');
+    expect(xml).toContain('xsi:noNamespaceSchemaLocation="schema.xsd"');
+    expect(xml).not.toMatch(/>\s+</);
   });
 });
 

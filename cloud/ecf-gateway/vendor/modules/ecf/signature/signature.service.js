@@ -373,5 +373,6 @@ module.exports = {
   loadCertificate,
   validateCertificate,
   signXML,
+  signXMLWithWindows: signXmlWithWindows,
   verifySignature,
 };

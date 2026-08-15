@@ -13,6 +13,11 @@ class SchemaComercial {
       email TEXT,
       direccion TEXT,
       cedula_rnc TEXT,
+      nombre_comercial TEXT,
+      estado_dgii TEXT,
+      tipo_contribuyente TEXT,
+      categoria_dgii TEXT,
+      dgii_consultado_en TEXT,
       tipo_comprobante_preferido TEXT,
       limite_credito REAL NOT NULL DEFAULT 0,
       balance REAL NOT NULL DEFAULT 0,
@@ -94,15 +99,53 @@ class SchemaComercial {
     )
   ''';
 
+  static const String gastosOperativos = '''
+    CREATE TABLE IF NOT EXISTS gastos_operativos (
+      id TEXT PRIMARY KEY,
+      proveedor_id TEXT,
+      categoria TEXT NOT NULL,
+      descripcion TEXT NOT NULL,
+      ncf TEXT,
+      fecha_comprobante TEXT NOT NULL,
+      monto_total REAL NOT NULL DEFAULT 0,
+      itbis REAL NOT NULL DEFAULT 0,
+      metodo_pago TEXT NOT NULL DEFAULT 'efectivo',
+      estado TEXT NOT NULL DEFAULT 'registrado',
+      documento_path TEXT,
+      ${SyncColumns.full}
+    )
+  ''';
+
+  static const String clienteSeguimientos = '''
+    CREATE TABLE IF NOT EXISTS cliente_seguimientos (
+      id TEXT PRIMARY KEY,
+      cliente_id TEXT NOT NULL,
+      tipo TEXT NOT NULL DEFAULT 'nota',
+      titulo TEXT NOT NULL,
+      detalle TEXT,
+      fecha_programada TEXT,
+      completado INTEGER NOT NULL DEFAULT 0,
+      completado_en TEXT,
+      ${SyncColumns.full}
+    )
+  ''';
+
   static List<String> indexes() => [
         ...SyncColumns.commonIndexes('clientes'),
         'CREATE INDEX IF NOT EXISTS idx_clientes_nombre ON clientes(nombre)',
+        'CREATE INDEX IF NOT EXISTS idx_clientes_documento ON clientes(empresa_id, cedula_rnc)',
         'CREATE INDEX IF NOT EXISTS idx_cliente_pagos_cliente ON cliente_pagos(cliente_id)',
         ...SyncColumns.commonIndexes('proveedores'),
         'CREATE INDEX IF NOT EXISTS idx_compras_proveedor ON compras(proveedor_id)',
         'CREATE INDEX IF NOT EXISTS idx_compras_estado ON compras(estado)',
         'CREATE INDEX IF NOT EXISTS idx_compra_items_compra ON compra_items(compra_id)',
         'CREATE INDEX IF NOT EXISTS idx_proveedor_pagos_proveedor ON proveedor_pagos(proveedor_id)',
+        'CREATE INDEX IF NOT EXISTS idx_gastos_fecha ON gastos_operativos(fecha_comprobante)',
+        'CREATE INDEX IF NOT EXISTS idx_gastos_categoria ON gastos_operativos(categoria)',
+        ...SyncColumns.commonIndexes('gastos_operativos'),
+        'CREATE INDEX IF NOT EXISTS idx_cliente_seguimientos_cliente ON cliente_seguimientos(cliente_id)',
+        'CREATE INDEX IF NOT EXISTS idx_cliente_seguimientos_programada ON cliente_seguimientos(fecha_programada)',
+        ...SyncColumns.commonIndexes('cliente_seguimientos'),
       ];
 
   static List<String> all() => [
@@ -112,6 +155,8 @@ class SchemaComercial {
         compras,
         compraItems,
         proveedorPagos,
+        gastosOperativos,
+        clienteSeguimientos,
         ...indexes(),
       ];
 }
