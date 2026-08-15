@@ -5296,14 +5296,26 @@ function handleSearchKey(e) {
     if (currentQuery) {
       clearTimeout(_searchDebounceTimer);
 
-      // BUG 12 fix: si el dropdown ya está visible con resultados y el usuario
-      // presiona Enter de nuevo, seleccionar el primero en lugar de re-buscar.
+      // Si el dropdown ya está visible con resultados de una búsqueda previa
+      // y hay un match EXACTO de código para lo que está escrito ahora mismo,
+      // agregarlo sin re-buscar (atajo seguro: el código sí corresponde a lo
+      // que se acaba de escanear/escribir).
+      // OJO: antes, si no había match exacto, caía a "searchResults[0]" —
+      // es decir, agregaba el primer resultado de la búsqueda ANTERIOR, que
+      // con frecuencia era de OTRO producto. El escáner manda el código y el
+      // Enter casi de inmediato: si el dropdown del escaneo previo (varios
+      // resultados, sin match exacto) seguía abierto cuando llegó el
+      // siguiente escaneo, este atajo agregaba a ciegas ese resultado viejo
+      // — un producto "aleatorio" que el cajero nunca eligió. Sin match
+      // exacto, ahora cae al flujo de búsqueda fresca de abajo en vez de
+      // adivinar.
       const ddVisible = !dd.classList.contains('hidden');
       if (ddVisible && searchResults.length > 0 && selectedSearchIdx < 0) {
-        // Buscar exacta primero; si no hay, seleccionar el primer resultado del dropdown
         const exactMatch = searchResults.find(p => p.codigo.toLowerCase() === currentQuery.toLowerCase());
-        addProductById((exactMatch || searchResults[0]).id);
-        return;
+        if (exactMatch) {
+          addProductById(exactMatch.id);
+          return;
+        }
       }
 
       _doSearchProduct(currentQuery);
@@ -5315,7 +5327,8 @@ function handleSearchKey(e) {
         if (exactMatch) {
           addProductById(exactMatch.id);
         }
-        // Si no hay exacta, el dropdown se muestra; siguiente Enter seleccionará el primero
+        // Si no hay exacta, el dropdown se muestra con los resultados frescos
+        // y no se agrega nada a ciegas — el cajero elige con clic o flechas+Enter.
       } else {
         // Sin resultados — sugerir registro del producto
         if (!addProductByScaleBarcode(currentQuery)) {

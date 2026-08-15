@@ -4938,14 +4938,19 @@ function syncUserProvisioningRulesDraftState(modeValue = null) {
 
   if (normalizedMode === 'monocaja') {
     cashierToggle.checked = true;
-    exclusiveToggle.checked = true;
+    // En monocaja solo existe UNA caja, así que todos los cajeros del negocio
+    // (turno mañana, tarde, fin de semana, etc.) necesariamente la comparten.
+    // Forzar esta regla en "true" aquí (como antes) hacía que, al haber una
+    // sola caja posible, JAMÁS se pudiera crear un segundo cajero activo —
+    // el negocio quedaba topado a un único usuario cajero para siempre.
+    exclusiveToggle.checked = false;
     cashierToggle.disabled = true;
     exclusiveToggle.disabled = true;
     if (cashierHelper) {
       cashierHelper.textContent = appText('settings.cashierRegisterRequiredHelperSingle', 'En monocaja la caja principal se asigna automáticamente, por eso esta regla queda fija.');
     }
     if (exclusiveHelper) {
-      exclusiveHelper.textContent = appText('settings.exclusiveCashierRegisterHelperSingle', 'En monocaja la caja principal es única y la asignación queda controlada automáticamente.');
+      exclusiveHelper.textContent = appText('settings.exclusiveCashierRegisterHelperSingle', 'En monocaja todos los cajeros comparten la única caja principal (por turnos), así que esta restricción queda desactivada automáticamente.');
     }
     return;
   }

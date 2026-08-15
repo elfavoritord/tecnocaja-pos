@@ -7063,7 +7063,11 @@ async function seedFactoryResetDefaults(conn) {
       0, 1,
       null, DEFAULT_SECURITY_PASSWORD, 'es', 'pizzeria', 0, 'trial', 1,
       'monocaja', 'directa', 1, 0, 0,
-      1, 1
+      // exclusive_cashier_per_register en 1 aquí + modo inicial 'monocaja'
+      // (única caja) dejaba instalaciones nuevas topadas a un solo cajero
+      // para siempre, apenas se creara el primero — ver el mismo fix en el
+      // guardado de configuración (businessStructureMode === 'monocaja').
+      1, 0
     ]
   );
 }
@@ -13451,8 +13455,14 @@ app.put('/api/config', async (req, res) => {
   const cashierRegisterRequired = businessStructureMode === 'monocaja'
     ? true
     : data.cashierRegisterRequired !== false;
+  // En monocaja hay UNA sola caja — forzar "exclusiva" en true (como antes)
+  // significaba que, tras el primer cajero, ya no se podía crear ningún otro
+  // (la única caja disponible "ya estaba tomada"). Todo negocio monocaja con
+  // más de un empleado en caja quedaba bloqueado para siempre. La regla de
+  // exclusividad solo tiene sentido cuando hay varias cajas físicas distintas
+  // (multicaja/multisucursal), así que en monocaja se fuerza a false.
   const exclusiveCashierPerRegister = businessStructureMode === 'monocaja'
-    ? true
+    ? false
     : data.exclusiveCashierPerRegister !== false;
   if (!LANGUAGE_OPTIONS.some((item) => item.value === language)) {
     return res.status(400).json({ error: 'El idioma seleccionado no es válido.' });
