@@ -4008,6 +4008,13 @@ async function ensureConfigExtensions() {
   await query('UPDATE config SET scale_rounding_decimals = 2 WHERE id = 1 AND scale_rounding_decimals IS NULL');
   await query('UPDATE config SET scale_auto_read = 1 WHERE id = 1 AND scale_auto_read IS NULL');
   await query('UPDATE config SET sales_split_view_enabled = 0 WHERE id = 1 AND sales_split_view_enabled IS NULL');
+  // Backfill: instalaciones existentes en Monocaja que ya tenían
+  // exclusive_cashier_per_register=1 guardado de ANTES de este fix quedaban
+  // topadas a un solo cajero para siempre — y ese valor viejo no se corregía
+  // solo con actualizar la app, porque el forzado a false solo corre cuando
+  // alguien vuelve a guardar Configuración. Corregirlo aquí, en cada arranque,
+  // lo aplica automáticamente sin que el dueño del negocio tenga que hacer nada.
+  await query(`UPDATE config SET exclusive_cashier_per_register = 0 WHERE id = 1 AND business_structure_mode = 'monocaja' AND exclusive_cashier_per_register = 1`);
   await query('UPDATE config SET security_password = ? WHERE id = 1 AND (security_password IS NULL OR security_password = "")', [DEFAULT_SECURITY_PASSWORD]);
   if (DEFAULT_SECURITY_PASSWORD !== LEGACY_DEFAULT_SECURITY_PASSWORD) {
     await query('UPDATE config SET security_password = ? WHERE id = 1 AND security_password = ?', [DEFAULT_SECURITY_PASSWORD, LEGACY_DEFAULT_SECURITY_PASSWORD]);

@@ -2001,6 +2001,15 @@ function updateStaticUiTexts() {
   if (cashGateTitle) cashGateTitle.textContent = copy.cashGateTitle;
   if (cashGateCopy) cashGateCopy.textContent = copy.cashGateCopy;
   applyAppTranslations();
+  // applyAppTranslations() acaba de pisar el texto de ayuda de "Caja
+  // obligatoria"/"Asignación exclusiva" con el genérico de idioma — initApp()
+  // llama syncConfigForm() (que sí pone el texto correcto para Monocaja, vía
+  // applyBusinessStructureDraftState) justo ANTES de updateStaticUiTexts(),
+  // así que ese texto correcto quedaba pisado de inmediato. Los toggles sí
+  // quedaban bloqueados bien (eso no lo toca applyAppTranslations), pero sin
+  // ninguna explicación de por qué, parecían rotos. Reaplicar aquí para que
+  // el texto correcto sea siempre lo último que se escribe.
+  if (typeof syncUserProvisioningRulesDraftState === 'function') syncUserProvisioningRulesDraftState();
   if (typeof window.scheduleUiTranslation === 'function') window.scheduleUiTranslation(document.body);
 }
 

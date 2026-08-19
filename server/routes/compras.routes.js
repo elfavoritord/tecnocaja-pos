@@ -26,6 +26,7 @@
  */
 
 const express = require('express');
+const { getDbClient } = require('../../db');
 
 function syncContabilidadFireAndForget(reason) {
   try {
@@ -37,8 +38,43 @@ function syncContabilidadFireAndForget(reason) {
 }
 
 async function hasColumn(query, tableName, columnName) {
-  const rows = await query(`PRAGMA table_info(${tableName})`).catch(() => []);
+  // PRAGMA table_info() es sintaxis exclusiva de SQLite — en MySQL/MariaDB
+  // (el motor real de toda instalación empaquetada) esa consulta fallaba
+  // siempre, el .catch(() => []) la volvía "columna no encontrada" a ciegas,
+  // y addColumnIfMissing() intentaba el ALTER TABLE en cada arranque. La
+  // primera vez funcionaba (columna no existía), pero de ahí en adelante
+  // fallaba con "Duplicate column name" — un error real que si no fuera
+  // "no such table" se relanzaba, tumbando el resto de ensureSchema().
+  const rows = getDbClient() === 'mysql'
+    ? await query(`SHOW COLUMNS FROM \`${tableName}\``).catch(() => [])
+    : await query(`PRAGMA table_info(${tableName})`).catch(() => []);
   return rows.some((row) => String(row.name || row.Field || '').toLowerCase() === String(columnName).toLowerCase());
+}
+
+// Defensivo: la creación "oficial" de esta tabla vive en server.js
+// (ensureSupplierPaymentsTable, parte de la cadena de migraciones al
+// arrancar), pero si esa cadena no llegó a correr completa en algún arranque
+// (ej. MariaDB tardó en responder), "Nueva Compra al contado" —que inserta
+// un pago automático aquí mismo— tronaba con "no such table:
+// supplier_payments" a mitad de la transacción. Crearla aquí también, justo
+// antes de usarla, hace que ese caso ya no pueda pasar.
+async function ensureSupplierPaymentsTableLocal(query) {
+  await query(`
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INT NOT NULL,
+      invoice_id INT DEFAULT NULL,
+      monto DECIMAL(12,2) NOT NULL,
+      metodo_pago VARCHAR(50) NOT NULL DEFAULT 'Efectivo',
+      fecha_pago DATE NOT NULL,
+      notas VARCHAR(255) DEFAULT NULL,
+      created_by VARCHAR(120) DEFAULT NULL,
+      purchase_id INT DEFAULT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_sp_supplier (supplier_id),
+      CONSTRAINT fk_sp_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
+    )
+  `).catch(() => {});
 }
 
 async function addColumnIfMissing(query, tableName, columnName, definition) {
@@ -358,6 +394,7 @@ function createComprasRouter({
         // Compra al contado: solo se marca pagada — NO se descuenta ningún
         // fondo de Tesorería/Caja General (decisión confirmada con Emilio).
         if (isContado) {
+          await ensureSupplierPaymentsTableLocal(query);
           await conn.query(
             `INSERT INTO supplier_payments (supplier_id, invoice_id, monto, metodo_pago, fecha_pago, notas, created_by, purchase_id)
              VALUES (?, ?, ?, 'Efectivo', ?, ?, ?, ?)`,

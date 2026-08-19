@@ -115,9 +115,15 @@ function openNuevaCompraModal() {
   document.getElementById('modal-body').innerHTML = `
     <div class="modal-grid">
       <div class="form-group"><label>Proveedor *</label>
-        <select id="compra-supplier" class="form-input" onchange="syncCompraFechaVencimiento()">
+        <select id="compra-supplier" class="form-input" onchange="handleCompraSupplierChange()">
+          <option value="">-- Seleccionar --</option>
           ${suppliers.map((p) => `<option value="${p.id}">${escapeHtml(p.nombre)}</option>`).join('')}
+          <option value="__new__">+ Crear nuevo proveedor…</option>
         </select>
+      </div>
+      <div class="form-group span-full hidden" id="compra-new-supplier-group" style="display:flex;gap:0.75rem;flex-wrap:wrap;background:var(--panel2);padding:0.75rem;border-radius:10px;border:1px solid var(--border)">
+        <div class="form-group" style="flex:2;min-width:200px;margin:0"><label>Nombre del nuevo proveedor *</label><input type="text" id="compra-new-supplier-nombre" class="form-input" placeholder="Nombre del proveedor"></div>
+        <div class="form-group" style="flex:1;min-width:150px;margin:0"><label>RNC (opcional)</label><input type="text" id="compra-new-supplier-rnc" class="form-input" placeholder="000-00000-0"></div>
       </div>
       <div class="form-group"><label>Sucursal *</label>
         <select id="compra-branch" class="form-input">
@@ -220,6 +226,19 @@ function toggleCompraVencimiento() {
   if (!group) return;
   group.style.display = condicion === 'credito' ? '' : 'none';
   if (condicion === 'credito') syncCompraFechaVencimiento();
+}
+
+// El cliente reportó que "Proveedor" solo dejaba elegir uno ya existente —
+// para registrar una compra de un proveedor nuevo tenía que salirse de este
+// modal, perder lo que llevaba capturado, crear el proveedor aparte y volver
+// a empezar la compra. La opción "+ Crear nuevo proveedor…" evita eso: pide
+// nombre (y RNC opcional) aquí mismo; guardarCompra() crea el proveedor
+// primero y usa su id, sin tocar el resto del formulario.
+function handleCompraSupplierChange() {
+  const value = document.getElementById('compra-supplier')?.value || '';
+  const group = document.getElementById('compra-new-supplier-group');
+  if (group) group.classList.toggle('hidden', value !== '__new__');
+  if (value !== '__new__') syncCompraFechaVencimiento();
 }
 
 function syncCompraFechaVencimiento() {
@@ -335,15 +354,19 @@ function recalcCompraTotals() {
 }
 
 async function guardarCompra() {
-  const supplierId = Number(document.getElementById('compra-supplier')?.value || 0);
+  const supplierSelectValue = document.getElementById('compra-supplier')?.value || '';
+  const isNewSupplier = supplierSelectValue === '__new__';
+  let supplierId = isNewSupplier ? 0 : Number(supplierSelectValue || 0);
   const branchId = Number(document.getElementById('compra-branch')?.value || 0);
   const numeroDocumento = document.getElementById('compra-numero')?.value.trim();
   const fechaComprobante = document.getElementById('compra-fecha')?.value;
   const fechaRecepcion = document.getElementById('compra-recepcion')?.value || fechaComprobante;
   const condicionPago = document.getElementById('compra-condicion')?.value || 'contado';
   const fechaVencimiento = document.getElementById('compra-vencimiento')?.value || null;
+  const newSupplierNombre = document.getElementById('compra-new-supplier-nombre')?.value.trim() || '';
 
-  if (!supplierId) return showToast('Selecciona un proveedor.', 'warning');
+  if (!supplierSelectValue) return showToast('Selecciona un proveedor.', 'warning');
+  if (isNewSupplier && !newSupplierNombre) return showToast('Indica el nombre del nuevo proveedor.', 'warning');
   if (!branchId) return showToast('Selecciona una sucursal.', 'warning');
   if (!numeroDocumento) return showToast('Indica el número de documento del proveedor.', 'warning');
   if (!fechaComprobante) return showToast('Indica la fecha del comprobante.', 'warning');
@@ -351,6 +374,18 @@ async function guardarCompra() {
   if (!purchaseItemsDraft.length) return showToast('Agrega al menos un producto.', 'warning');
 
   try {
+    if (isNewSupplier) {
+      const created = await api.createSupplier({
+        nombre: newSupplierNombre,
+        rnc: document.getElementById('compra-new-supplier-rnc')?.value.trim() || '',
+        estado: 'Activo',
+        ...getActorPayload(),
+      });
+      DB.proveedores = DB.proveedores || [];
+      DB.proveedores.push(created);
+      supplierId = Number(created.id);
+    }
+
     await api.createPurchase({
       supplierId, branchId, numeroDocumento,
       ncf: document.getElementById('compra-ncf')?.value.trim() || '',
