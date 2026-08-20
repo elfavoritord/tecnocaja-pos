@@ -968,6 +968,13 @@ async function handleProductsCsvImport(input) {
     }
   } catch (error) {
     showToast(error.message || 'No se pudo importar el CSV de productos.', 'error');
+    if (Array.isArray(error.details) && error.details.length) {
+      console.warn('[productos/import-csv] Detalle de filas rechazadas:', error.details);
+      showToast(`Motivo: ${error.details[0]}`, 'warning');
+      if (error.details.length > 1) {
+        showToast(`+${error.details.length - 1} fila(s) más con problemas — revisa la consola (F12) para verlas todas.`, 'warning');
+      }
+    }
   } finally {
     if (button) {
       button.disabled = false;

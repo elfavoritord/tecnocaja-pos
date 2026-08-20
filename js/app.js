@@ -2962,6 +2962,14 @@ async function submitFactoryResetModal() {
     closeAllModals();
     if (response.firebasePurged) {
       showToast('Reset completo realizado (local + Firebase). La aplicación se reiniciará.', 'success');
+      const fbSummary = response.firebaseSummary;
+      if (fbSummary) {
+        showToast(`Firebase: ${fbSummary.deleted || 0} documento(s) borrado(s)${fbSummary.authDeleted ? `, ${fbSummary.authDeleted} usuario(s) de Auth` : ''}.`, 'info');
+        if (fbSummary.failed) {
+          console.warn('[factory-reset] Rutas de Firebase que no se pudieron borrar:', fbSummary.failedPaths);
+          showToast(`⚠ ${fbSummary.failed} elemento(s) de Firebase NO se pudieron borrar — revisa la consola (F12).`, 'warning');
+        }
+      }
     } else {
       showToast('Reset local realizado. Firebase conservado. La aplicación se reiniciará.', 'success');
     }
@@ -3755,6 +3763,7 @@ function showModule(name, el) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   document.getElementById('breadcrumb').textContent = el ? el.querySelector('.nav-label').textContent : name;
+  window.TecnoAsistente?.setModuleContext(name);
   if (name === 'ventas' && typeof window.scheduleSalesSearchFocus === 'function') {
     window.scheduleSalesSearchFocus();
   }
@@ -4194,6 +4203,12 @@ function setupCfgGroupCards(root) {
   groupGrid.appendChild(makeCard(
     { icon: '🏛️', color: '#8b5cf6', bg: 'rgba(139,92,246,0.13)', title: 'e-CF · DGII', desc: 'Certificado, ambiente y estado fiscal' },
     () => openFiscalConfigModal()
+  ));
+
+  // Tarjeta Centro de Ayuda — igual que DGII, vista propia en vez de agrupar secciones
+  groupGrid.appendChild(makeCard(
+    { icon: '❓', color: '#06b6d4', bg: 'rgba(6,182,212,0.13)', title: 'Centro de Ayuda', desc: 'Artículos de ayuda y soporte' },
+    () => window.openHelpCenterModal?.()
   ));
 
   grid.parentNode.insertBefore(groupGrid, grid);
@@ -7083,6 +7098,17 @@ async function executeResetSystem() {
     closeAllModals();
     if (response.firebasePurged) {
       showToast(response.message || 'Firebase borrado correctamente. La base local quedó en cero; ahora desinstala Tecno Caja y elimina los archivos locales de esta PC.', 'success');
+      // Antes esto no se mostraba en ningún lado — un "éxito" con 0 documentos
+      // borrados (ej. por apuntar al ID de negocio equivocado) se veía
+      // idéntico a un borrado real, sin ninguna forma de notarlo desde la UI.
+      const fbSummary = response.firebaseSummary;
+      if (fbSummary) {
+        showToast(`Firebase: ${fbSummary.deleted || 0} documento(s) borrado(s)${fbSummary.authDeleted ? `, ${fbSummary.authDeleted} usuario(s) de Auth` : ''}.`, 'info');
+        if (fbSummary.failed) {
+          console.warn('[reset] Rutas de Firebase que no se pudieron borrar:', fbSummary.failedPaths);
+          showToast(`⚠ ${fbSummary.failed} elemento(s) de Firebase NO se pudieron borrar — revisa la consola (F12).`, 'warning');
+        }
+      }
       setTimeout(() => window.location.reload(), 900);
       return;
     }

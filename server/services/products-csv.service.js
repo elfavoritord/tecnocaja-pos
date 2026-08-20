@@ -258,8 +258,44 @@ function normalizeProductCsvRow(rawRow = {}, rowNumber = 0, providedFields = [])
   };
 }
 
+// Excel (sobre todo en Windows en espa\u00F1ol) suele arruinar el UTF-8 de un CSV
+// al reabrirlo/guardarlo: cada acento termina re-codificado como dos
+// caracteres Latin-1 ("C\u00F3digo" \u2192 "C\u00C3\u00B3digo", "Categor\u00EDa" \u2192 "Categor\u00C3\u00ADa"). El
+// resultado es texto UTF-8 V\u00C1LIDO, as\u00ED que no truena al leerlo \u2014 pero
+// encabezados como "C\u00F3digo" ya no calzan con ning\u00FAn alias conocido, esa
+// columna entera se descarta, y como c\u00F3digo es obligatorio TODAS las filas
+// se rechazan. Se detecta el patr\u00F3n (muy espec\u00EDfico, no deber\u00EDa dar falsos
+// positivos con texto normal) y se revierte antes de parsear encabezados/filas.
+function looksLikeMojibake(text) {
+  const marker = /\u00C3[\u0080-\u00BF]|\u00C2[\u0080-\u00BF]|\u00EF\u00BB\u00BF./;
+  const matches = text.match(new RegExp(marker.source, 'g')) || [];
+  return matches.length >= 2;
+}
+
+function fixMojibake(text) {
+  try {
+    const fixed = Buffer.from(text, 'latin1').toString('utf8');
+    // Un solo campo ya corrupto de antes (ej. una URL rota metida como
+    // c\u00F3digo) puede generar alg\u00FAn caracter de reemplazo aislado sin que eso
+    // signifique que el archivo entero no era UTF-8 doble-codificado. Antes
+    // CUALQUIER ocurrencia abortaba la correcci\u00F3n completa \u2014 un producto con
+    // datos basura en una columna bloqueaba la recuperaci\u00F3n de los otros
+    // cientos de filas v\u00E1lidas. Solo se descarta el arreglo si una fracci\u00F3n
+    // grande del texto qued\u00F3 en caracteres de reemplazo (se\u00F1al real de que
+    // no era el patr\u00F3n esperado).
+    const replacementCount = (fixed.match(/\uFFFD/g) || []).length;
+    if (replacementCount > 0 && replacementCount > text.length * 0.02) return text;
+    return fixed;
+  } catch (_e) {
+    return text;
+  }
+}
+
 function parseProductsCsvBuffer(buffer, originalName = 'productos.csv') {
-  const text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || '');
+  let text = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer || '');
+  if (looksLikeMojibake(text)) {
+    text = fixMojibake(text);
+  }
   const cleanText = text.replace(/^\uFEFF/, '').trim();
   if (!cleanText) {
     throw new Error(`El archivo ${originalName} está vacío.`);

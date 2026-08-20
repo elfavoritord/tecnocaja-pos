@@ -52,6 +52,19 @@ const loginLimiter = rateLimit
     })
   : (_req, _res, next) => next();
 
+// ----- Rate limiter para el Tecno Asistente (IA) -----
+// Ningún endpoint de IA tenía límite de tasa antes de esto (ni este ni el bot de
+// WhatsApp) — control de costo/abuso sobre llamadas que cuestan dinero por token.
+const assistantLimiter = rateLimit
+  ? rateLimit({
+      windowMs: 10 * 60 * 1000, // 10 minutos
+      max: 30, // máximo 30 preguntas/escalaciones por IP en esa ventana
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: 'Demasiadas preguntas seguidas. Espera unos minutos e intenta de nuevo.' }
+    })
+  : (_req, _res, next) => next();
+
 // ----- Host de binding -----
 // Por defecto solo localhost (seguro). Cambia POS_ALLOW_LAN=true o POS_BIND_HOST=0.0.0.0
 // para exponer a la red local (mobile POS).
@@ -61,5 +74,6 @@ const bindHost = process.env.POS_BIND_HOST
 module.exports = {
   helmetMiddleware,
   loginLimiter,
+  assistantLimiter,
   bindHost
 };

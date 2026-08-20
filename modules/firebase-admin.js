@@ -1126,8 +1126,17 @@ async function deleteDocRefs(refs = [], result = {}, bucket = 'deleted') {
   ).values());
 
   for (const ref of uniqueRefs) {
-    await ref.delete().catch(() => {});
-    result[bucket] = Number(result[bucket] || 0) + 1;
+    try {
+      await ref.delete();
+      result[bucket] = Number(result[bucket] || 0) + 1;
+    } catch (error) {
+      // Antes se tragaba el error en silencio — un permiso insuficiente en
+      // una sola ruta hacía que el borrado pareciera "exitoso" sin serlo,
+      // sin ninguna pista de qué falló ni por qué.
+      result.failed = Number(result.failed || 0) + 1;
+      result.failedPaths = result.failedPaths || [];
+      result.failedPaths.push(`${ref.path || ref.id}: ${error.message}`);
+    }
   }
 }
 
@@ -1147,8 +1156,14 @@ async function deleteCollectionRecursive(collectionRef, result = {}) {
     for (const subcollection of subcollections || []) {
       await deleteCollectionRecursive(subcollection, result);
     }
-    await doc.ref.delete().catch(() => {});
-    result.deleted = Number(result.deleted || 0) + 1;
+    try {
+      await doc.ref.delete();
+      result.deleted = Number(result.deleted || 0) + 1;
+    } catch (error) {
+      result.failed = Number(result.failed || 0) + 1;
+      result.failedPaths = result.failedPaths || [];
+      result.failedPaths.push(`${doc.ref.path || doc.ref.id}: ${error.message}`);
+    }
   }
 }
 

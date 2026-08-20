@@ -68,6 +68,9 @@ const createContadorRouter = require('./server/routes/contador.routes');
 // CRM — Seguimientos, tareas y recordatorios de clientes
 const { createCrmRouter, ensureSchema: ensureCrmSchema } = require('./server/routes/crm.routes');
 
+// Tecno Asistente + Centro de Ayuda
+const { createAssistantRouter, ensureSchema: ensureAssistantSchema } = require('./server/routes/assistant.routes');
+
 // RRHH — Empleados, asistencia y permisos (sin cálculo de nómina)
 const { createRrhhRouter, ensureSchema: ensureRrhhSchema } = require('./server/routes/rrhh.routes');
 const { createLabelsRouter, ensureSchema: ensureLabelsSchema } = require('./server/routes/labels.routes');
@@ -866,6 +869,7 @@ const {
   fetchRemotePosLicenseState,
   deletePosClientFromFirestore,
   getFirebaseConfigStatus,
+  getReportsBusinessId,
   purgePosBusinessFromFirebase,
   syncPosStaffAuthUser,
   syncPosAccountsToFirestore,
@@ -1867,7 +1871,7 @@ const io = new Server(httpServer, {
 app.locals.io = io;
 
 // === Helmet + rate limiter (extraído a server/config/security.js) ===
-const { helmetMiddleware, loginLimiter, bindHost: DEFAULT_BIND_HOST } = require('./server/config/security');
+const { helmetMiddleware, loginLimiter, assistantLimiter, bindHost: DEFAULT_BIND_HOST } = require('./server/config/security');
 app.set('trust proxy', 1);
 if (helmetMiddleware) app.use(helmetMiddleware);
 
@@ -2179,6 +2183,9 @@ app.use('/api/contador', createContadorRouter({ query, resolveRequestActorUser }
 
 // CRM — Seguimientos, tareas y recordatorios de clientes
 app.use('/api/crm', createCrmRouter({ query, resolveRequestActorUser }));
+
+// Tecno Asistente + Centro de Ayuda
+app.use('/api/assistant', createAssistantRouter({ query, resolveRequestActorUser, userRoleHasPermission, assistantLimiter }));
 
 // RRHH — Empleados, asistencia y permisos
 app.use('/api/rrhh', createRrhhRouter({ query, resolveRequestActorUser, userRoleHasPermission }));
@@ -11180,9 +11187,17 @@ app.post('/api/system/reset', async (req, res) => {
   if (purgeFirebase) {
     const config = await getConfig({ syncRemote: false }).catch(() => ({}));
     const userRows = await query('SELECT firebase_uid FROM users WHERE firebase_uid IS NOT NULL AND firebase_uid != ""').catch(() => []);
+    // businessId DEBE resolverse igual que getReportsBusinessId() — esa es la
+    // función que decide dónde escribe el sync real (ver comentario "Debe
+    // coincidir con getBusinessId()" en modules/firebase-admin.js). Antes
+    // este endpoint usaba TECNO_CAJA_LICENSE_UID crudo sin aplicar el mismo
+    // fallback a licencias "legacy" (formato npd_...) — en esos casos el
+    // sync escribía bajo un ID derivado del nombre del negocio, pero el
+    // borrado apuntaba al UID legacy: buscaba y borraba el documento
+    // equivocado, dejando intacta toda la data real en Firebase.
     firebaseSummary = await purgePosBusinessFromFirebase({
       businessName: config?.nombre || 'Tecno Caja',
-      businessId: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim() || null,
+      businessId: getReportsBusinessId(config),
       licenseUid: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim() || null,
       authUids: userRows.map((row) => row.firebase_uid).filter(Boolean),
     });
@@ -11192,6 +11207,12 @@ app.post('/api/system/reset', async (req, res) => {
     });
     await query('DELETE FROM license_cache').catch(() => {});
     removeTerminalConfigFiles();
+    // Borrar la tabla license_cache y el doc de Firebase no alcanza — el
+    // servicio de licencia guarda el último estado resuelto en memoria
+    // (stateMemo) hasta 5 minutos (ver license-service.js). Sin esto, la app
+    // seguía mostrando "licencia activa" un buen rato después del borrado,
+    // aunque tanto Firebase como la caché local ya estuvieran vacíos.
+    secureLicenseService.invalidateStateMemo();
   }
 
   // isFactoryReset controla QUÉ TAN PROFUNDO es el reset local (borrar todo vs. borrar solo datos).
@@ -11638,7 +11659,14 @@ app.post('/api/products/import-csv', async (req, res) => {
     const allBranchesForImport = await conn.query('SELECT id, nombre FROM branches WHERE estado <> "Eliminada"');
     function resolveCsvBranchId(rawValue) {
       const raw = String(rawValue || '').trim();
-      if (!raw) return { branchId: null, error: null };
+      // Celda vacía = producto global (así lo escribe el propio exportador,
+      // ver mapProductRowToCsvRecord en products-csv.service.js) — pero
+      // "Global" es justo la palabra que la UI le muestra al usuario para
+      // ese mismo caso, así que también se acepta como alias. Sin esto,
+      // cualquier CSV donde alguien haya escrito "Global" a mano (algo muy
+      // esperable, es lo que ve en pantalla) rechazaba TODAS las filas con
+      // "sucursal Global no encontrada".
+      if (!raw || raw.toLowerCase() === 'global') return { branchId: null, error: null };
       const asNumber = Number(raw);
       if (Number.isFinite(asNumber) && asNumber > 0) {
         const byId = allBranchesForImport.find((b) => Number(b.id) === asNumber);
@@ -14439,7 +14467,13 @@ app.post('/api/cash/open', async (req, res) => {
   try {
     structure = await resolveScopedBusinessStructureSelection(req, null, req.body?.branchId, req.body?.cashRegisterId);
   } catch (err) {
-    if (req.authUser?.offlineSession) {
+    // Antes esto solo caía al respaldo offline si el login YA había ocurrido
+    // sin conexión (offlineSession=true) — un cajero que se logueó con la
+    // principal viva y la perdió a media jornada no tenía forma de abrir/
+    // cerrar caja: el error de conexión se relanzaba tal cual. El respaldo
+    // debe activarse por lo que REALMENTE pasó (no se pudo alcanzar la
+    // principal), no por cómo empezó la sesión.
+    if (isUnreachableHostError(err)) {
       structure = await resolveOfflineBusinessStructureSelection(req);
     } else {
       throw err;
@@ -14540,7 +14574,7 @@ app.post('/api/cash/open', async (req, res) => {
     const activeSession = await getActiveSessionForRegister(structure.cashRegisterId);
     return res.status(201).json({ sessionId: result, activeSession, config: await getConfig({ syncRemote: false }) });
   } catch (err) {
-    if (req.authUser?.offlineSession) {
+    if (isUnreachableHostError(err)) {
       await setOfflineCashState(true, amount, structure.branchId, structure.cashRegisterId);
       return res.status(201).json({ sessionId: 'offline', activeSession: null, config: await getOfflineCashConfig() });
     }
@@ -14723,7 +14757,7 @@ app.post('/api/cash/close', async (req, res) => {
       await conn.query('UPDATE config SET cash_open = 0, cash_amount = 0 WHERE id = 1');
     });
   } catch (err) {
-    if (req.authUser?.offlineSession) {
+    if (isUnreachableHostError(err)) {
       const offlineConfig = await getOfflineCashConfig();
       structure = await resolveOfflineBusinessStructureSelection(req);
       if (!offlineConfig.cajaAbierta) {
@@ -18949,6 +18983,30 @@ async function withRetryOnTransient(fn, { maxAttempts = 5, baseDelayMs = 800, la
   throw lastError;
 }
 
+// connectTimeout (5s, ver db.js) debería acotar cada intento de conexión,
+// pero en Windows un host de verdad inalcanzable (PC principal apagada, IP
+// obsoleta en la caché ARP) a veces se cuelga bastante más allá de ese valor
+// a nivel de red, antes siquiera de llegar al timeout de mysql2 — la
+// terminal secundaria se quedaba con la ventana sin abrir, esperando
+// indefinidamente en vez de caer al modo degradado (login offline). Este
+// techo duro garantiza que, pase lo que pase por debajo, el arranque
+// continúa dentro de un tiempo acotado y predecible.
+async function withHardTimeout(fn, ms, label) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`${label} superó ${ms}ms sin responder — asumiendo host inalcanzable.`);
+      err.code = 'ETIMEDOUT';
+      reject(err);
+    }, ms);
+  });
+  try {
+    return await Promise.race([fn(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Arranque degradado: la terminal secundaria no pudo alcanzar la principal
 // al iniciar, así que se saltó toda la inicialización dependiente de MySQL
 // (finishMysqlRuntimeInit) para poder abrir igual en modo offline. Estas
@@ -19013,6 +19071,7 @@ async function finishMysqlRuntimeInit() {
         ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
         ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
         ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
+        ensureAssistantSchema(query).catch(e => console.warn('[assistant] init fallo:', e.message)),
         ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
@@ -19079,13 +19138,21 @@ async function prepareServerRuntime() {
         // (MariaDB abre el puerto TCP ~1s antes de estar lista para queries).
         // Terminal secundaria (DB_HOST remoto): menos reintentos — si la
         // principal está apagada, cuanto antes se caiga a modo degradado
-        // mejor (ver rama isUnreachableHostError abajo).
-        schemaState = await withRetryOnTransient(
-          () => inspectCoreSchema(),
-          remoteSecondary
-            ? { maxAttempts: 3, baseDelayMs: 1000, label: 'inspectCoreSchema (terminal secundaria)' }
-            : { maxAttempts: 6, baseDelayMs: 1000, label: 'inspectCoreSchema' }
-        );
+        // mejor (ver rama isUnreachableHostError abajo) — y con techo duro
+        // de 25s por si el intento se cuelga sin respetar connectTimeout.
+        schemaState = remoteSecondary
+          ? await withHardTimeout(
+              () => withRetryOnTransient(
+                () => inspectCoreSchema(),
+                { maxAttempts: 3, baseDelayMs: 1000, label: 'inspectCoreSchema (terminal secundaria)' }
+              ),
+              25_000,
+              'Conexión con la PC principal'
+            )
+          : await withRetryOnTransient(
+              () => inspectCoreSchema(),
+              { maxAttempts: 6, baseDelayMs: 1000, label: 'inspectCoreSchema' }
+            );
       } catch (inspectError) {
         if (isUnknownDatabaseError(inspectError)) {
           console.log('La base de datos MySQL no existe todavía. Creándola desde cero...');
@@ -19209,6 +19276,7 @@ async function prepareServerRuntime() {
       ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
       ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
       ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
+      ensureAssistantSchema(query).catch(e => console.warn('[assistant] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]));

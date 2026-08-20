@@ -77,7 +77,12 @@ const api = {
 
     if (!response.ok) {
       const message = body?.error || body || 'Error de comunicación con el servidor';
-      throw new Error(message);
+      const err = new Error(message);
+      // Algunas rutas (ej. import-csv de productos) mandan el detalle fila
+      // por fila en `details` — antes se descartaba aquí y solo llegaba el
+      // mensaje genérico al toast, sin forma de saber qué falló realmente.
+      if (body?.details !== undefined) err.details = body.details;
+      throw err;
     }
 
     return body;
@@ -791,5 +796,43 @@ const api = {
     if (params.hasta) qs.set('hasta', params.hasta);
     if (params.soloPendientes !== undefined) qs.set('soloPendientes', params.soloPendientes ? '1' : '0');
     return this.request(`/api/crm/agenda${qs.toString() ? '?' + qs.toString() : ''}`);
+  },
+
+  // ── Tecno Asistente + Centro de Ayuda ──────────────────────────────────
+  getHelpArticles(params = {}) {
+    const qs = new URLSearchParams();
+    if (params.module) qs.set('module', params.module);
+    if (params.planCode) qs.set('planCode', params.planCode);
+    if (params.businessType) qs.set('businessType', params.businessType);
+    return this.request(`/api/assistant/articles${qs.toString() ? '?' + qs.toString() : ''}`);
+  },
+
+  askAssistant(data) {
+    return this.request('/api/assistant/ask', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      _timeoutMs: 30000
+    });
+  },
+
+  escalateToSupport(data) {
+    return this.request('/api/assistant/escalate', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  getTutorials(params = {}) {
+    const qs = new URLSearchParams();
+    if (params.planCode) qs.set('planCode', params.planCode);
+    if (params.businessType) qs.set('businessType', params.businessType);
+    return this.request(`/api/assistant/tutorials${qs.toString() ? '?' + qs.toString() : ''}`);
+  },
+
+  getTutorial(slug, params = {}) {
+    const qs = new URLSearchParams();
+    if (params.planCode) qs.set('planCode', params.planCode);
+    if (params.businessType) qs.set('businessType', params.businessType);
+    return this.request(`/api/assistant/tutorials/${encodeURIComponent(slug)}${qs.toString() ? '?' + qs.toString() : ''}`);
   }
 };

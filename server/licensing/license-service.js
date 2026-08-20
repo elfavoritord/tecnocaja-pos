@@ -296,6 +296,16 @@ class LicenseService {
     this.syncPromise = null;
   }
 
+  // "Eliminar todo" borra license_cache (tabla) y Firebase, pero este objeto
+  // sigue vivo en memoria dentro del mismo proceso de Node — recargar la
+  // ventana no lo reinicia. Sin invalidar stateMemo explícitamente,
+  // resolveState() seguía devolviendo el último estado ("activa") durante
+  // hasta 5 minutos (stateCacheTtlMs) después del borrado, aunque Firebase y
+  // la base local ya estuvieran limpios.
+  invalidateStateMemo() {
+    this.stateMemo = { at: 0, value: null };
+  }
+
   signatureVerificationConfigured() {
     return Boolean(
       String(process.env.TECNO_CAJA_LICENSE_PUBLIC_KEY || '').trim()

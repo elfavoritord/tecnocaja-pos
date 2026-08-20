@@ -5267,6 +5267,18 @@ function _doSearchProduct(query) {
 }
 
 function handleSearchKey(e) {
+  // El comprobante (u otro modal/báscula) puede quedar abierto sobre la
+  // pantalla de ventas hasta que el cajero le haga clic a "Cerrar" — nada
+  // obliga a cerrarlo antes de seguir cobrando. Si en ese momento el cajero
+  // sigue escaneando (para ir más rápido), el foco a veces seguía en este
+  // input aunque estuviera tapado por el modal, así que el escaneo se
+  // procesaba igual y agregaba productos a la venta siguiente SIN que el
+  // cajero pudiera verlo (la pantalla estaba cubierta) — apareciendo luego
+  // como productos "fantasma" que nadie vio agregar. canAutoFocusSalesSearch()
+  // ya evita volver a enfocar este input mientras hay un overlay de venta
+  // abierto (ver isSalesOverlayOpen); este guard hace que tampoco proceses
+  // el Enter si el foco quedó aquí por cualquier otra razón.
+  if (typeof isSalesOverlayOpen === 'function' && isSalesOverlayOpen()) return;
   const dd = document.getElementById('search-dropdown');
   if (e.key === 'ArrowDown') {
     e.preventDefault();
@@ -9026,6 +9038,14 @@ function closeReceipt() {
   detachReceiptPendingKeyHandler();
   currentReceiptOptions = {};
   receiptPreviewContext = null;
+  // Mientras el comprobante estaba abierto, tipear/escanear en el buscador
+  // no agrega productos (ver guard en handleSearchKey), pero los caracteres
+  // sí podían quedar acumulados en el campo. Limpiarlo aquí evita que un
+  // escaneo posterior se concatene con esos restos.
+  const searchInput = document.getElementById('product-search');
+  if (searchInput) searchInput.value = '';
+  document.getElementById('search-dropdown')?.classList.add('hidden');
+  if (typeof searchResults !== 'undefined') searchResults = [];
   scheduleSalesSearchFocus({ force: true });
 }
 
