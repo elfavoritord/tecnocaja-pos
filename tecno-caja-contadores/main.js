@@ -75,8 +75,13 @@ ipcMain.handle('profile:cache', (_e, data) => {
 function startServer() {
   return new Promise((resolve, reject) => {
     try {
-      httpServer = require('./server');
-      httpServer.listen(PORT, '127.0.0.1', () => {
+      // require('./server') exporta la app de Express (module.exports = app),
+      // no el servidor HTTP real — app.listen() internamente crea y devuelve
+      // el http.Server. Antes se guardaba la app misma en `httpServer`, que
+      // no tiene .close(): stopServer() (llamado antes de instalar una
+      // actualización) fallaba con "httpServer.close is not a function".
+      const app = require('./server');
+      httpServer = app.listen(PORT, '127.0.0.1', () => {
         console.log(`[contadores] Servidor en puerto ${PORT}`);
         resolve();
       });
