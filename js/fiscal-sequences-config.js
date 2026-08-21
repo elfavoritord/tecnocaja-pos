@@ -83,11 +83,11 @@ async function loadNcfAuthSequences() {
   if (!container) return;
   container.innerHTML = '<div class="loading-text">Cargando…</div>';
   try {
-    const [ncfRows, ecfRows] = await Promise.all([
-      ncfAuthSeqApiGet('/api/fiscal-sequences'),
-      ncfAuthSeqApiGet('/api/fiscal-sequences?series=E').catch(() => []),
-    ]);
-    const rows = [...ncfRows, ...ecfRows];
+    // Solo NCF tradicional serie B — la facturación electrónica (e-CF, serie
+    // E) tiene su propia pantalla dedicada (Configuración → e-CF · DGII) con
+    // su propio flujo de certificación/firma/envío. Mezclarlas aquí solo
+    // confundía qué secuencia corresponde a qué sistema.
+    const rows = await ncfAuthSeqApiGet('/api/fiscal-sequences');
     if (!rows.length) {
       container.innerHTML = `
         <div class="empty-state-small" style="padding:0.8rem;text-align:center;color:var(--text3)">
@@ -114,10 +114,10 @@ function ncfAuthSeqRenderRow(r) {
   const meta = NCF_AUTH_SEQ_STATUS_META[r.effectiveStatus] || NCF_AUTH_SEQ_STATUS_META[r.status] || { label: r.status, color: '#6b7280' };
   const label = r.documentName || NCF_AUTH_SEQ_DOCUMENT_LABELS[r.documentType] || r.documentType;
   const rango = `${r.documentType}${String(r.startNumber).padStart(8, '0')}–${r.documentType}${String(r.endNumber).padStart(8, '0')}`;
-  const actions = r.readOnly ? `<span class="helper-text" style="font-size:0.72rem">Ver en Facturación Electrónica</span>` : ncfAuthSeqRenderActions(r);
+  const actions = ncfAuthSeqRenderActions(r);
   const historyRow = ncfAuthSeqExpandedHistoryId === r.id ? ncfAuthSeqRenderHistoryRow(r) : '';
   return `<tr>
-      <td><strong style="color:var(--accent)" title="${label}">${r.documentType}</strong>${r.series === 'E' ? ' <span title="e-CF">⚡</span>' : ''}</td>
+      <td><strong style="color:var(--accent)" title="${label}">${r.documentType}</strong></td>
       <td style="font-size:0.72rem">${rango}</td>
       <td>${ncfAuthSeqFormatNumber(r.nextNumber)}</td>
       <td>${ncfAuthSeqFormatNumber(r.totalUsed)}</td>

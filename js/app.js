@@ -4548,7 +4548,19 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     direccion: document.getElementById('cfg-dir')?.value || DB.config?.direccion || '',
     provincia: document.getElementById('cfg-provincia')?.value || DB.config?.provincia || '',
     telefono: document.getElementById('cfg-tel')?.value || DB.config?.telefono || '',
-    businessStructureMode: normalizeBusinessStructureMode(document.getElementById('cfg-business-structure-mode')?.value || DB.config?.businessStructureMode),
+    // Este campo queda bloqueado (disabled) casi siempre — solo se habilita
+    // tras la contraseña de super admin en unlockBusinessStructureMode(). Si
+    // está bloqueado, IGNORAR lo que muestre el <select> (pudo quedar
+    // desincronizado visualmente) y confiar siempre en el valor ya guardado;
+    // de lo contrario un desajuste de UI podía mandar "monocaja" por error y
+    // el servidor rechazaba CUALQUIER guardado de configuración con "No
+    // puedes cambiar a Monocaja mientras existan varias sucursales...".
+    businessStructureMode: (() => {
+      const el = document.getElementById('cfg-business-structure-mode');
+      return normalizeBusinessStructureMode(
+        (el && !el.disabled) ? el.value : DB.config?.businessStructureMode
+      );
+    })(),
     idioma: document.getElementById('cfg-language')?.value || DB.config?.idioma || 'es',
     moneda: document.getElementById('cfg-moneda')?.value || DB.config?.moneda || 'RD$',
     itbis: Number.isFinite(parsedTax) ? Math.max(0, parsedTax) : 0,
@@ -4571,6 +4583,8 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
       : Boolean(DB.config?.eInvoiceEnabled ?? true),
     eInvoicePrefix: document.getElementById('cfg-e-prefix')?.value || DB.config?.eInvoicePrefix || 'ECF-',
     eInvoiceNextNumber: Math.max(1, parseInt(document.getElementById('cfg-next-einvoice')?.value, 10) || 1),
+    ncfAlertExpiryDays: Math.max(1, parseInt(document.getElementById('ncf-alert-expiry-days')?.value, 10) || DB.config?.ncfAlertExpiryDays || 30),
+    ncfAlertLowCountThreshold: Math.max(1, parseInt(document.getElementById('ncf-alert-low-count')?.value, 10) || DB.config?.ncfAlertLowCountThreshold || 20),
     mensaje: document.getElementById('cfg-msg')?.value || DB.config?.mensaje || '',
     receiptPrintMode: document.getElementById('cfg-print-mode')?.value || DB.config?.receiptPrintMode || 'dialog',
     receiptPrinterName: document.getElementById('cfg-printer-name')?.value || DB.config?.receiptPrinterName || '',
@@ -4641,6 +4655,8 @@ function syncConfigForm() {
     'cfg-next-invoice': cfg.nextInvoice,
     'cfg-e-prefix': cfg.eInvoicePrefix,
     'cfg-next-einvoice': cfg.eInvoiceNextNumber,
+    'ncf-alert-expiry-days': cfg.ncfAlertExpiryDays ?? 30,
+    'ncf-alert-low-count': cfg.ncfAlertLowCountThreshold ?? 20,
     'cfg-msg': cfg.mensaje,
     'cfg-print-mode': cfg.receiptPrintMode || 'dialog',
     'cfg-paper-size': cfg.receiptPaperSize || '80mm'
@@ -9361,6 +9377,29 @@ function buildNotifications() {
       title: mostUrgent.diasParaVencer < 0 ? 'Secuencia e-NCF vencida' : 'Secuencia e-NCF por vencer',
       text: `${detailText}${expiringSequences.length > 3 ? ` y ${expiringSequences.length - 3} más` : ''}. Solicita la renovación a DGII.`,
       time: 'Facturación electrónica'
+    });
+  }
+
+  // Secuencias NCF tradicionales (serie B: B01/B02/etc.) por agotarse o
+  // vencer — mismo patrón que la alerta de e-CF de arriba, pero sobre
+  // ncf_authorized_sequences (ver ncfSequencesWarning en server.js getConfig()).
+  const ncfSequences = DB.config?.ncfSequencesWarning || [];
+  if (ncfSequences.length) {
+    const mostUrgentNcf = ncfSequences[0]; // ya viene ordenado por urgencia desde el servidor
+    const severityNcf = mostUrgentNcf.isExpired || mostUrgentNcf.disponibles <= 5
+      ? 'danger'
+      : (mostUrgentNcf.disponibles <= 10 || (mostUrgentNcf.diasParaVencer !== null && mostUrgentNcf.diasParaVencer <= 15))
+        ? 'warning'
+        : 'info';
+    const detailTextNcf = ncfSequences
+      .slice(0, 3)
+      .map((item) => `${item.tipoComprobante} (${item.isExpired ? 'vencida' : `${item.disponibles} disp.`})`)
+      .join(', ');
+    notifications.push({
+      severity: severityNcf,
+      title: mostUrgentNcf.isExpired ? 'Rango NCF vencido' : 'Advertencia DGII: pocos comprobantes',
+      text: `${detailTextNcf}${ncfSequences.length > 3 ? ` y ${ncfSequences.length - 3} más` : ''}. Registra una nueva autorización en Configuración → Secuencias NCF.`,
+      time: 'Comprobantes fiscales'
     });
   }
 

@@ -531,7 +531,9 @@ function buildSaleItem(product, qty = 1, extra = {}) {
     // (calculateSaleItemDiscount), así que no hace falta tocar el resto del
     // cálculo de totales/ITBIS/recibo, ya lo respetan automáticamente.
     descuento: Number(extra.descuento ?? product.descuentoPct ?? 0),
-    itbis: product.aplicaItbis ? Number(DB.config.itbis || 0) : 0,
+    itbisModo: (product.aplicaItbis && product.itbisModo === 'monto') ? 'monto' : 'porcentaje',
+    itbisMontoUnit: (product.aplicaItbis && product.itbisModo === 'monto') ? Number(product.itbisMonto || 0) : 0,
+    itbis: (product.aplicaItbis && product.itbisModo !== 'monto') ? Number(DB.config.itbis || 0) : 0,
     saleMode: extra.saleMode || product.saleMode || 'unidad',
     unitLabel: extra.unitLabel || product.unidad || 'Unidad',
     weightUnit: extra.weightUnit || '',
@@ -1340,13 +1342,28 @@ function calculateSaleItemNet(item = {}) {
 
 function calculateSaleItemTax(item = {}, options = {}) {
   const net = calculateSaleItemNet(item);
+  if (!(net > 0)) return 0;
+  const discountRate = Math.max(0, Number(options.generalDiscountRate ?? 0));
+  if (String(item?.itbisModo || 'porcentaje') === 'monto') {
+    // ITBIS de monto fijo por unidad — no se prorratea contra ninguna tasa,
+    // se multiplica directo por la cantidad de la línea (y se reduce por el
+    // descuento general de la venta, igual que el modo %, para que ambos
+    // modos se comporten consistentemente).
+    const montoUnit = Math.max(0, Number(item?.itbisMontoUnit || 0));
+    return roundSaleMoney(montoUnit * Number(item?.qty || 0) * (1 - discountRate / 100));
+  }
   const behavior = getSaleTaxConfig(options.config);
   const itemRate = Number(item?.itbis || 0);
   const taxRate = Number.isFinite(itemRate) ? Math.max(0, itemRate) : behavior.taxRate;
-  if (!(taxRate > 0) || !(net > 0)) return 0;
-  const discountRate = Math.max(0, Number(options.generalDiscountRate ?? 0));
+  if (!(taxRate > 0)) return 0;
   const taxableBase = roundSaleMoney(net - (net * (discountRate / 100)));
   return roundSaleMoney(taxableBase * (taxRate / 100));
+}
+
+function isSaleItemTaxable(item = {}) {
+  return String(item?.itbisModo || 'porcentaje') === 'monto'
+    ? Number(item?.itbisMontoUnit || 0) > 0
+    : Number(item?.itbis || 0) > 0;
 }
 
 function calcularTotales(items = [], options = {}) {
@@ -1366,12 +1383,9 @@ function calcularTotales(items = [], options = {}) {
     const net = calculateSaleItemNet(item);
     const generalDiscountAmount = roundSaleMoney(net * (generalDiscountRate / 100));
     const lineNetAfterGeneralDiscount = roundSaleMoney(net - generalDiscountAmount);
-    const itemTaxRate = Math.max(0, Number(item.itbis || 0));
-    const itemTax = itemTaxRate > 0
-      ? roundSaleMoney(lineNetAfterGeneralDiscount * (itemTaxRate / 100))
-      : 0;
+    const itemTax = calculateSaleItemTax(item, { config: options.config, generalDiscountRate });
 
-    if (itemTaxRate > 0) {
+    if (isSaleItemTaxable(item)) {
       subtotalGravado += net;
       subtotalGravadoFinal += lineNetAfterGeneralDiscount;
       itbis += itemTax;
@@ -1900,7 +1914,7 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
       </div>
       <div class="sales-product-body">
         <div class="sales-product-name">${nombre}</div>
-        <div class="sales-product-price">${fmt(product.precioVenta)}</div>
+        <div class="sales-product-price">${fmt(getProductFinalPriceWithItbis(product))}</div>
         ${stockLabel ? `<div class="sales-product-stock ${stockClass}">${stockLabel}</div>` : ''}
       </div>
     </article>`;
@@ -1974,6 +1988,16 @@ function syncBillingClientSnapshot() {
 }
 
 function getDocumentSequencePreview(type) {
+  // Si hay un NCF fiscal elegido (B01/B02/B03/B04/B14/B15), ESE es el
+  // documento que se va a emitir — nunca el contador interno FAC-/ECF-
+  // (ese es solo para Ticket/e-CF sin NCF tradicional). El número exacto lo
+  // asigna el servidor al cobrar (evita colisiones entre cajas/terminales
+  // vendiendo al mismo tiempo), así que aquí solo se previsualiza el tipo
+  // con el formato real de DGII (sin guion) y el número final pendiente.
+  const ncfType = DB.saleNcfType || '';
+  if (ncfType) {
+    return `${ncfType}········`;
+  }
   if (type === 'factura-electronica') {
     return `${DB.config.eInvoicePrefix || 'ECF-'}${String(DB.config.eInvoiceNextNumber || 1).padStart(8, '0')}`;
   }
@@ -2272,11 +2296,11 @@ function buildBillingModalMarkup() {
                     <span class="ncf-code">B15</span><span class="ncf-desc">Gob.</span>
                   </button>
                 </div>
-                <!-- B01/B14/B15: RNC fields -->
+                <!-- Cliente rápido por RNC/cédula: disponible en cualquier tipo salvo B03/B04 -->
                 <div class="ncf-extra-fields" id="ncf-rnc-fields" style="display:none">
-                  <input type="text" id="ncf-rnc-input" class="form-input" placeholder="RNC del cliente (9 dígitos)" maxlength="11"
+                  <input type="text" id="ncf-rnc-input" class="form-input" placeholder="RNC o cédula (opcional, autocompleta nombre)" maxlength="11"
                     oninput="DB.saleRncCliente=this.value.replace(/\D/g,'').slice(0,11); updateSaleFiscalPreview()">
-                  <input type="text" id="ncf-razon-input" class="form-input" placeholder="Razón social (opcional)"
+                  <input type="text" id="ncf-razon-input" class="form-input" placeholder="Nombre o razón social"
                     oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
                 </div>
                 <!-- B03/B04: reference invoice search -->
@@ -2658,8 +2682,8 @@ function buildBillingStepModalMarkup() {
             </div>
             <span class="ncf-none-badge" id="ncf-none-badge">Sin NCF</span>
             <div class="ncf-extra-fields" id="ncf-rnc-fields" style="display:none">
-              <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC del cliente (9 dígitos)" maxlength="11" oninput="DB.saleRncCliente=this.value.replace(/\\D/g,'').slice(0,11); updateSaleFiscalPreview()">
-              <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Razón social (opcional)" oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
+              <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC o cédula (opcional, autocompleta nombre)" maxlength="11" oninput="DB.saleRncCliente=this.value.replace(/\\D/g,'').slice(0,11); updateSaleFiscalPreview()">
+              <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Nombre o razón social" oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
             </div>
             <div class="ncf-extra-fields" id="ncf-ref-fields" style="display:none">
               <div class="ncf-ref-search-row">
@@ -2951,6 +2975,17 @@ function buildBillingCompactModalMarkup() {
     { key: 'B01',                 label: 'B01',    hint: 'Crédito fiscal' },
     { key: 'factura-electronica', label: 'e-CF',   hint: 'Electrónica' }
   ];
+  // Comprobantes menos frecuentes en un desplegable aparte, en vez de llenar
+  // la fila de pills — B11/B12/B13/B17 quedan fuera a propósito (esos son de
+  // Compras/Gastos, no de una venta del POS).
+  const extraDocs = [
+    { key: 'B14', label: 'B14 — Régimen Especial' },
+    { key: 'B15', label: 'B15 — Gubernamental' },
+    { key: 'B16', label: 'B16 — Exportaciones' },
+    { key: 'B03', label: 'B03 — Nota de Débito' },
+    { key: 'B04', label: 'B04 — Nota de Crédito' },
+  ];
+  const activeExtraDoc = extraDocs.find((doc) => doc.key === activePreset);
 
   const sessionExchangeRate = Number(DB.caja?.activeSession?.exchangeRateUsdDop || 0);
   const paymentMethodButtons = [
@@ -3040,6 +3075,11 @@ function buildBillingCompactModalMarkup() {
                   onclick="setSaleDocumentPreset('${doc.key}')"
                   title="${doc.hint}"><span>${doc.label}</span></button>
               `).join('')}
+              <select class="billing-v3-doc-pill billing-v3-doc-pill--select ${activeExtraDoc ? 'is-active' : ''}"
+                onchange="setSaleDocumentPreset(this.value)" title="Otros comprobantes fiscales">
+                <option value="" ${activeExtraDoc ? '' : 'selected'} disabled>Más ▾</option>
+                ${extraDocs.map((doc) => `<option value="${doc.key}" ${activePreset === doc.key ? 'selected' : ''}>${doc.label}</option>`).join('')}
+              </select>
             </div>
           </div>
           <button type="button" class="billing-v3-desc-btn" onclick="openBillingDiscountModal()" title="Descuento general (%)">
@@ -3051,9 +3091,9 @@ function buildBillingCompactModalMarkup() {
         <div class="billing-v3-ncf-strip" id="billing-v3-ncf-strip">
           <span class="ncf-none-badge" id="ncf-none-badge">Sin NCF</span>
           <div class="ncf-extra-fields" id="ncf-rnc-fields" style="display:none">
-            <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC" maxlength="11"
+            <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC o cédula (opcional)" maxlength="11"
               oninput="DB.saleRncCliente=this.value.replace(/\\D/g,'').slice(0,11); updateSaleFiscalPreview()">
-            <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Razón social"
+            <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Nombre o razón social"
               oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
           </div>
           <div class="ncf-extra-fields" id="ncf-ref-fields" style="display:none">
@@ -3593,8 +3633,8 @@ function _buildBillingCompactModalMarkup_legacy() {
               <div class="billing-step-section-title">Datos fiscales</div>
               <span class="ncf-none-badge" id="ncf-none-badge">Sin NCF</span>
               <div class="ncf-extra-fields" id="ncf-rnc-fields" style="display:none">
-                <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC del cliente" maxlength="11" oninput="DB.saleRncCliente=this.value.replace(/\\D/g,'').slice(0,11); updateSaleFiscalPreview()">
-                <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Razón social (opcional)" oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
+                <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC o cédula (opcional, autocompleta nombre)" maxlength="11" oninput="DB.saleRncCliente=this.value.replace(/\\D/g,'').slice(0,11); updateSaleFiscalPreview()">
+                <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Nombre o razón social" oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
               </div>
               <div class="ncf-extra-fields" id="ncf-ref-fields" style="display:none">
                 <div class="ncf-ref-search-row">
@@ -3863,9 +3903,11 @@ function buildBillingValidationBuckets() {
     }
   }
   if (ncfType === 'B01') {
-    if (!client) buckets.client.push('B01 requiere seleccionar un cliente.');
+    // B01 solo exige un RNC válido — no un cliente registrado en el sistema.
+    // Un "cliente rápido" (RNC/cédula escrito a mano, sin guardarlo antes en
+    // Clientes) es un caso legítimo, igual que ya lo permite el servidor.
     if (!(rnc.length === 9 || rnc.length === 11)) {
-      buckets.client.push('B01 requiere un RNC válido del cliente.');
+      buckets.client.push('B01 requiere un RNC válido (9 u 11 dígitos).');
     }
   }
   if (['B14', 'B15'].includes(ncfType) && !client) {
@@ -5112,19 +5154,24 @@ function setSaleNcfType(ncfType) {
   const badge = document.getElementById('ncf-none-badge');
   if (badge) badge.style.display = ncfType ? 'none' : 'inline';
 
-  // Show/hide extra fields
+  // Show/hide extra fields — el campo de RNC/cédula con autocompletado está
+  // disponible para CUALQUIER tipo de comprobante (Ticket, B02, B01, B14,
+  // B15), para poder facturarle a un cliente rápido por su RNC/cédula sin
+  // tener que crearlo antes en el sistema. Solo se oculta en B03/B04, que
+  // usan el buscador de factura original en su lugar.
+  const showsRncFields = !['B03', 'B04'].includes(ncfType);
   const rncFields = document.getElementById('ncf-rnc-fields');
   const refFields = document.getElementById('ncf-ref-fields');
-  if (rncFields) rncFields.style.display = ['B01','B14','B15'].includes(ncfType) ? '' : 'none';
-  if (refFields) refFields.style.display = ['B03','B04'].includes(ncfType) ? '' : 'none';
+  if (rncFields) rncFields.style.display = showsRncFields ? '' : 'none';
+  if (refFields) refFields.style.display = showsRncFields ? 'none' : '';
 
-  // Auto-fill RNC from client if B01
-  if (ncfType === 'B01') {
+  const rncInput = document.getElementById('ncf-rnc-input');
+  const razonInput = document.getElementById('ncf-razon-input');
+  if (showsRncFields) {
+    // Auto-fill desde el cliente ya seleccionado en el dropdown (si hay uno)
     const client = getSelectedSaleClient();
-    const rncInput = document.getElementById('ncf-rnc-input');
-    const razonInput = document.getElementById('ncf-razon-input');
-    if (rncInput && client) rncInput.value = client.rnc || client.cedula || '';
-    if (razonInput && client) razonInput.value = client.razon_social || client.nombre || '';
+    if (rncInput) rncInput.value = client ? (client.rnc || client.cedula || '') : '';
+    if (razonInput) razonInput.value = client ? (client.razon_social || client.nombre || '') : '';
     DB.saleRncCliente = rncInput?.value || '';
     DB.saleRazonSocial = razonInput?.value || '';
 
@@ -5140,15 +5187,10 @@ function setSaleNcfType(ncfType) {
         }
       });
     }
-  }
-
-  // If no NCF, also reset doc type display
-  if (!ncfType) {
-    const rncInput = document.getElementById('ncf-rnc-input');
-    const razonInput = document.getElementById('ncf-razon-input');
-    const refInput = document.getElementById('ncf-ref-input');
+  } else {
     if (rncInput) rncInput.value = '';
     if (razonInput) razonInput.value = '';
+    const refInput = document.getElementById('ncf-ref-input');
     if (refInput) refInput.value = '';
     clearNcfRef();
   }
@@ -5484,12 +5526,14 @@ async function addProductById(id) {
   focusSalesSearchInput({ force: true });
 }
 
+// El TOTAL de la línea en el carrito SIEMPRE incluye el ITBIS de esa línea
+// (precio a como se venderá), sin importar el modo de facturación
+// configurado (ese config solo afecta cómo se desglosa el ITBIS en el
+// recibo impreso, no esta vista interactiva) — así el cajero ve de una vez
+// cuánto va a cobrar por esa línea, igual que ya se ve en el catálogo y en
+// la grilla de Ventas.
 function calcItemTotal(item) {
   const net = calculateSaleItemNet(item);
-  const behavior = getSaleTaxConfig();
-  if (!behavior.includeInProductPrice) {
-    return net;
-  }
   return roundSaleMoney(net + calculateSaleItemTax(item));
 }
 
@@ -5533,7 +5577,7 @@ function renderSaleTable() {
           `}
       </td>
       <td><input id="sale-item-disc-${idx}" class="disc-input" type="number" value="${item.descuento}" min="0" max="100" step="0.01" oninput="updateItemDisc(${idx},this.value)" onchange="updateItemDisc(${idx},this.value)" title="Descuento de este producto en %"></td>
-      <td style="color:var(--text2);font-size:0.74rem">${item.itbis}%</td>
+      <td style="color:var(--text2);font-size:0.74rem">${item.itbisModo === 'monto' ? `RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}` : `${item.itbis}%`}</td>
       <td id="sale-item-total-${idx}" style="font-weight:700;font-family:var(--font-mono);font-size:0.76rem;white-space:nowrap">${fmt(item.total)}</td>
       <td><button class="btn-remove" onclick="removeItem(${idx})">✕</button></td>
     </tr>
@@ -6167,7 +6211,13 @@ function sanitizePhoneForWhatsApp(phone) {
 }
 
 function getReceiptInvoiceId(venta) {
-  return venta.id || venta.previewInvoiceNumber || getDocumentSequencePreview(venta.tipoComprobante || 'ticket');
+  // `documentoFiscal` (NCF real, ej. B0100000001) es lo que se debe MOSTRAR
+  // cuando la venta tiene un comprobante fiscal tradicional — `venta.id` es
+  // el contador interno FAC-/ECF- que además se usa como clave real de
+  // búsqueda en el servidor (reimpresión, devoluciones, pdf-path), así que
+  // ese campo no puede cambiar de formato; aquí solo se prioriza para
+  // MOSTRAR el número correcto en el recibo/factura impresa.
+  return venta.documentoFiscal || venta.id || venta.previewInvoiceNumber || getDocumentSequencePreview(venta.tipoComprobante || 'ticket');
 }
 
 function loadImageElement(src) {
@@ -6732,6 +6782,18 @@ async function generateReceiptPdf(venta, options = {}) {
   drawDivider();
   drawKeyValue('Factura:', invoiceId);
   drawKeyValue('Tipo:', SALE_DOCUMENT_TYPES[venta.tipoComprobante] || 'Ticket / Factura');
+  if (isElectronicReceipt(venta) && getElectronicReceiptNumber(venta)) {
+    drawKeyValue('e-NCF:', getElectronicReceiptNumber(venta));
+  }
+  if (!isElectronicReceipt(venta) && venta.ncf) {
+    drawKeyValue('NCF:', venta.ncf);
+  }
+  if (venta.ncfType) {
+    drawKeyValue('Tipo NCF:', `${venta.ncfType} · ${NCF_LABELS_FE[venta.ncfType] || venta.ncfType}`);
+  }
+  if (!isElectronicReceipt(venta) && venta.ncf && venta.ncfVencimiento) {
+    drawKeyValue('NCF vence:', formatReceiptDateForPaper(venta.ncfVencimiento, paperVariant));
+  }
   drawKeyValue('Pedido:', SALE_ORDER_TYPES[venta.tipoPedido] || venta.tipoPedido || 'Mostrador');
   drawKeyValue('Cocina:', venta.estadoCocina || 'pendiente');
   drawKeyValue('Fecha:', venta.fecha);
@@ -6925,13 +6987,12 @@ function buildSalePayload() {
 
   // Front-end NCF validations
   if (ncfType === 'B01') {
+    // El servidor (POST /api/sales) solo exige un RNC válido, NO un cliente
+    // registrado — B01 se puede facturar a un "cliente rápido" con solo su
+    // RNC/cédula, sin haberlo agregado antes al sistema.
     const rnc = (DB.saleRncCliente || '').trim() || (client?.rnc || '').trim() || (client?.cedula || '').trim();
-    if (!client) {
-      showToast('B01 (Crédito Fiscal) requiere seleccionar un cliente.', 'error');
-      return null;
-    }
     if (!(rnc && [9, 11].includes(String(rnc).replace(/\D/g, '').length))) {
-      showToast('B01 (Crédito Fiscal) requiere un RNC válido del cliente.', 'error');
+      showToast('B01 (Crédito Fiscal) requiere un RNC válido (9 u 11 dígitos).', 'error');
       return null;
     }
   }
@@ -6952,7 +7013,10 @@ function buildSalePayload() {
     id: getDocumentSequencePreview(tipoComprobante),
     previewInvoiceNumber: getDocumentSequencePreview(tipoComprobante),
     cajero: DB.currentUser.nombre,
-    cliente: client?.nombre || 'Consumidor Final',
+    // Si no hay cliente registrado pero sí se escribió un RNC/cédula con
+    // nombre (cliente rápido, sin crearlo en el sistema), ese nombre es el
+    // que se muestra en el ticket/recibo en vez de "Consumidor Final".
+    cliente: client?.nombre || DB.saleRazonSocial || 'Consumidor Final',
     clienteTelefono: client?.telefono || '',
     userId: DB.currentUser.id,
     clientId: client?.id || null,
@@ -6998,6 +7062,8 @@ function buildSalePayload() {
         precio: normalizedItem.precio,
         descuento: normalizedItem.descuento,
         itbis: normalizedItem.itbis,
+        itbisModo: normalizedItem.itbisModo || 'porcentaje',
+        itbisMontoUnit: normalizedItem.itbisModo === 'monto' ? Number(normalizedItem.itbisMontoUnit || 0) : 0,
         total: normalizedItem.total,
         subtotal: calculateSaleItemNet(normalizedItem),
         impuestoMonto: calculateSaleItemTax(normalizedItem, { config: DB.config, generalDiscountRate: generalDisc }),
@@ -8071,8 +8137,11 @@ function getReceiptSummaryBreakdown(venta) {
     const lineSubtotal = roundSaleMoney(
       Number(item?.subtotal ?? item?.total ?? ((Number(item?.precio || 0) * Number(item?.qty || item?.cantidad || 1)) || 0))
     );
-    const taxRate = Math.max(0, Number(item?.itbis || item?.taxRate || 0));
-    if (taxRate > 0) {
+    const isMontoFijo = String(item?.itbisModo || 'porcentaje') === 'monto';
+    const isTaxable = isMontoFijo
+      ? Number(item?.itbisMontoUnit ?? item?.impuestoMonto ?? 0) > 0
+      : Math.max(0, Number(item?.itbis || item?.taxRate || 0)) > 0;
+    if (isTaxable) {
       subtotalGravado += lineSubtotal;
     } else {
       subtotalExento += lineSubtotal;
@@ -8163,7 +8232,12 @@ function getReceiptTemplateData(venta) {
   const detailRows = [
     [primaryDocumentLabel, factura],
     ...(electronicReceipt && electronicNumber ? [['e-NCF', electronicNumber]] : []),
+    // NCF real de DGII (ej. B0100000012) — distinto del número de factura
+    // interno de arriba. Solo aplica a comprobante fiscal tradicional serie B,
+    // no a e-CF (ese ya muestra su propio "e-NCF" arriba).
+    ...(!electronicReceipt && venta.ncf ? [['NCF', venta.ncf]] : []),
     ...(venta.ncfType ? [['Tipo NCF', `${venta.ncfType} · ${NCF_LABELS_FE[venta.ncfType] || venta.ncfType}`]] : []),
+    ...(!electronicReceipt && venta.ncf && venta.ncfVencimiento ? [['NCF vence', formatReceiptDateForPaper(venta.ncfVencimiento, paperVariant)]] : []),
     ...(venta.tipoEcf ? [['Tipo e-CF', venta.tipoEcf]] : []),
     ['Fecha', formatReceiptDateForPaper(venta.fecha, paperVariant)],
     ['Cajero', normalizeReceiptText(venta.cajero || 'Sistema')],
@@ -8238,7 +8312,7 @@ function getReceiptTemplateData(venta) {
               ${item.promotionId
                 ? `<s>${escapeReceiptHtml(fmtReceiptValue(item.originalPrice))}</s> ${escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)} · 🏷 Promo`
                 : escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)}
-              ${receiptSimpleMode ? '' : ` · ${escapeReceiptHtml(`ITBIS ${item.itbisRate.toFixed(2)}%`)}`}
+              ${receiptSimpleMode ? '' : ` · ${escapeReceiptHtml(item.itbisModo === 'monto' ? `ITBIS RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}/u` : `ITBIS ${item.itbisRate.toFixed(2)}%`)}`}
             </div>
           </div>
           <div class="receipt-item-total">${escapeReceiptHtml(fmt(item.total))}</div>
@@ -8360,7 +8434,9 @@ function buildThermalKeyValueLines(label, value, width, labelWidth) {
 }
 
 function buildThermalItemLines(items, width, paperVariant) {
-  const hasAnyItbis = items.some((item) => Number(item.itbisRate || 0) > 0);
+  const hasAnyItbis = items.some((item) => (
+    item.itbisModo === 'monto' ? Number(item.itbisMontoUnit || 0) > 0 : Number(item.itbisRate || 0) > 0
+  ));
   const columns = paperVariant === '58mm'
     ? { name: hasAnyItbis ? 7 : 10, itbis: 4, qty: 2, price: 7, total: 7, qtyLabel: 'C', priceLabel: 'VALOR', totalLabel: 'TOTAL' }
     : { name: hasAnyItbis ? 12 : 17, itbis: 5, qty: 4, price: 8, total: hasAnyItbis ? 9 : 10, qtyLabel: 'CANT', priceLabel: 'VALOR', totalLabel: 'TOTAL' };
@@ -8377,9 +8453,10 @@ function buildThermalItemLines(items, width, paperVariant) {
 
   items.forEach((item) => {
     const nameLines = wrapThermalText(item.nombre, columns.name, paperVariant === '58mm' ? 3 : 4);
-    const itbisCol = hasAnyItbis
-      ? ` ${padThermalLeft(Number(item.itbisRate || 0) > 0 ? `${Number(item.itbisRate).toFixed(0)}%` : '', columns.itbis)}`
-      : '';
+    const itbisColText = item.itbisModo === 'monto'
+      ? (Number(item.itbisMontoUnit || 0) > 0 ? Number(item.itbisMontoUnit).toFixed(2) : '')
+      : (Number(item.itbisRate || 0) > 0 ? `${Number(item.itbisRate).toFixed(0)}%` : '');
+    const itbisCol = hasAnyItbis ? ` ${padThermalLeft(itbisColText, columns.itbis)}` : '';
     const qty = padThermalLeft(fmtQty(item), columns.qty);
     const price = padThermalLeft(fmtAmount(item.precio), columns.price);
     const total = padThermalLeft(fmtAmount(item.total), columns.total);
@@ -8455,7 +8532,7 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
     <div class="receipt-a4-table-row">
       <div>${escapeReceiptHtml(formatReceiptSaleItemQuantity(item))}</div>
       <div>${escapeReceiptHtml(item.nombre)}</div>
-      <div>${escapeReceiptHtml(item.itbisRate > 0 ? `${item.itbisRate.toFixed(2)}%` : '0.00')}</div>
+      <div>${escapeReceiptHtml(item.itbisModo === 'monto' ? `RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}` : (item.itbisRate > 0 ? `${item.itbisRate.toFixed(2)}%` : '0.00'))}</div>
       <div>${escapeReceiptHtml(fmt(item.total))}</div>
     </div>
   `).join('');

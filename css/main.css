@@ -3164,6 +3164,20 @@ body.is-electron .modal:not(.billing-modal),
 .compact-table tbody tr { transition:var(--transition); }
 .compact-table tbody tr:hover { background:var(--bg3); }
 
+/* Pantalla Secuencias NCF (Configuración → Ventas y Facturación) */
+.ncf-alert-thresholds-box {
+  background:var(--bg2); border:1px solid var(--border); border-radius:10px;
+  padding:0.75rem 0.9rem; margin-bottom:1rem;
+}
+.ncf-alert-thresholds-title { font-size:0.78rem; font-weight:700; color:var(--text2); margin-bottom:0.5rem; }
+.ncf-alert-thresholds-box .modal-grid { margin-bottom:0; }
+.ncf-seq-toolbar { display:flex; justify-content:flex-end; margin-bottom:0.6rem; }
+.ncf-auth-seq-table-wrap { overflow-x:auto; margin-bottom:0.8rem; border:1px solid var(--border); border-radius:10px; }
+.ncf-auth-seq-table-wrap .compact-table { min-width:760px; }
+.ncf-auth-seq-table-wrap .compact-table th:last-child,
+.ncf-auth-seq-table-wrap .compact-table td:last-child { position:sticky; right:0; background:var(--bg); }
+.ncf-auth-seq-table-wrap .compact-table thead th:last-child { background:var(--bg3); }
+
 .proveedores-table-wrap .data-table th,
 .proveedores-table-wrap .data-table td {
   padding:0.72rem 0.75rem;
@@ -5317,6 +5331,14 @@ textarea.form-input { resize:vertical; min-height:80px; }
   font-family:var(--font-mono, inherit);
   font-variant-numeric:tabular-nums;
 }
+.product-sale-price-note {
+  color:var(--text2);
+  font-size:0.7rem;
+  font-weight:500;
+  text-transform:none;
+  letter-spacing:normal;
+  white-space:nowrap;
+}
 .product-footer-actions {
   display:flex;
   align-items:center;
@@ -5328,6 +5350,37 @@ textarea.form-input { resize:vertical; min-height:80px; }
 .product-modal .modal-footer.product-modal-footer--edit .product-footer-actions {
   justify-content:flex-end;
   flex-wrap:wrap;
+}
+.product-footer-more {
+  position:relative;
+}
+.product-footer-more-menu {
+  position:absolute;
+  bottom:calc(100% + 0.35rem);
+  right:0;
+  display:flex;
+  flex-direction:column;
+  gap:0.15rem;
+  background:var(--panel, #fff);
+  border:1px solid var(--border);
+  border-radius:0.6rem;
+  box-shadow:0 8px 24px rgba(0,0,0,0.15);
+  padding:0.35rem;
+  min-width:170px;
+  z-index:50;
+}
+.product-footer-more-menu button {
+  text-align:left;
+  padding:0.5rem 0.6rem;
+  border:none;
+  background:transparent;
+  border-radius:0.4rem;
+  font-size:0.82rem;
+  cursor:pointer;
+  white-space:nowrap;
+}
+.product-footer-more-menu button:hover {
+  background:var(--panel2, rgba(0,0,0,0.05));
 }
 .product-modal .modal-grid {
   gap:0.5rem 0.62rem;
@@ -9749,6 +9802,14 @@ textarea.form-input { resize:vertical; min-height:80px; }
 .billing-v3-doc-pill.is-active span { color: #7dd3fc; }
 .billing-v3-doc-pill.is-unavailable { opacity: 0.45; border-style: dashed; }
 .billing-v3-doc-pill.is-unavailable span { color: var(--text3); }
+.billing-v3-doc-pill--select {
+  -webkit-appearance: none; appearance: none;
+  color: var(--text2); font-size: 0.7rem; font-weight: 700;
+  max-width: 88px;
+}
+.billing-v3-doc-pill--select:hover { color: var(--text); }
+.billing-v3-doc-pill--select.is-active { color: #7dd3fc; }
+.billing-v3-doc-pill--select option { color: var(--text); background: var(--bg2); font-weight: 600; }
 
 .billing-v3-desc-btn {
   height: 30px; padding: 0 0.68rem;

@@ -47,8 +47,11 @@ const DOCUMENT_LABELS = {
   B17: 'Comprobante para Pagos al Exterior',
 };
 const ACTIVATABLE_STATUSES = ['pendiente', 'legacy_unverified'];
-// Umbral por debajo del cual una secuencia 'activo' se muestra como
-// "próxima a agotarse" en el panel (no se persiste, se calcula al listar).
+// Umbral por defecto (fallback si config.ncf_alert_low_count_threshold no
+// está configurado) por debajo del cual una secuencia 'activo' se muestra
+// como "próxima a agotarse" en el panel — no se persiste, se calcula al
+// listar. El valor real usado normalmente viene de config (configurable
+// desde la misma pantalla de Secuencias NCF), ver GET '/' más abajo.
 const LOW_STOCK_THRESHOLD = 50;
 
 async function hasColumn(query, tableName, columnName) {
@@ -158,7 +161,7 @@ function httpError(message, statusCode = 400) {
   return error;
 }
 
-function mapSequence(row) {
+function mapSequence(row, lowStockThreshold = LOW_STOCK_THRESHOLD) {
   const totalAuthorized = row.end_number - row.start_number + 1;
   const totalUsed = Math.max(0, row.next_number - row.start_number);
   const totalAvailable = Math.max(0, row.end_number - row.next_number + 1);
@@ -169,7 +172,7 @@ function mapSequence(row) {
       effectiveStatus = 'vencido';
     } else if (totalAvailable <= 0) {
       effectiveStatus = 'agotado';
-    } else if (totalAvailable <= LOW_STOCK_THRESHOLD) {
+    } else if (totalAvailable <= lowStockThreshold) {
       effectiveStatus = 'proximo_agotarse';
     }
   }
@@ -419,7 +422,9 @@ function createFiscalSequencesRouter({
          ORDER BY fs.document_type, fs.branch_id`,
         params
       );
-      res.json(rows.map(mapSequence));
+      const [cfgRow] = await query('SELECT ncf_alert_low_count_threshold FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+      const lowStockThreshold = Number(cfgRow?.ncf_alert_low_count_threshold || LOW_STOCK_THRESHOLD);
+      res.json(rows.map((row) => mapSequence(row, lowStockThreshold)));
     } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
   });
 

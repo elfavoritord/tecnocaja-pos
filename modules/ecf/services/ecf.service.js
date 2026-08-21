@@ -14,6 +14,7 @@ const { EcfRepository, digitsOnly, parseJson, parseEncfNumber } = require('../mo
 const signatureService = require('../signature/signature.service');
 const { AuthService } = require('./auth.service');
 const { buildTotals, generateEcfXml, generateRfceXml, normalizeEcfXmlStructure, normalizeEncfValue } = require('./ecf-generator');
+const { nearestCatalogTaxRate } = require('../../../server/services/tax-catalog');
 const { importCertificationSet, previewCertificationSet } = require('./certification-importer');
 const { buildTransmissionFromSpreadsheetRow, importTestSet: importHomologationTestSet, removeIscEspecificoTax } = require('./test-set-importer');
 const { FcService } = require('./fc.service');
@@ -2728,17 +2729,23 @@ class EcfService {
       detalle: `buildPayloadForSale: venta ${saleId}, nombreComercial="${emitter.nombreComercial}"`,
     });
 
-    const preparedItems = items.map((item) => ({
-      name: item.product_name || item.nombre || 'Producto',
-      quantity: Number(item.qty || 0),
-      unitPrice: Number(item.price || 0),
-      discount: Number(item.discount_amount || 0) > 0
+    const preparedItems = items.map((item) => {
+      const quantity = Number(item.qty || 0);
+      const unitPrice = Number(item.price || 0);
+      const discount = Number(item.discount_amount || 0) > 0
         ? Number(item.discount_amount || 0)
         : Number(item.discount_rate || 0) > 0
-          ? Number(item.qty || 0) * Number(item.price || 0) * (Number(item.discount_rate || 0) / 100)
-          : 0,
-      taxRate: Number(item.tax_rate || item.itbis || 0),
-    }));
+          ? quantity * unitPrice * (Number(item.discount_rate || 0) / 100)
+          : 0;
+      // ITBIS de monto fijo (Ticket) no es una tasa de catálogo DGII — se
+      // declara con la tasa {0,16,18} más cercana solo para este comprobante
+      // fiscal. El monto real cobrado al cliente no cambia (eso vive en
+      // sale_items.tax_amount, ajeno al e-CF).
+      const taxRate = item.tax_mode === 'monto'
+        ? nearestCatalogTaxRate(item.tax_amount, (quantity * unitPrice) - discount)
+        : Number(item.tax_rate || item.itbis || 0);
+      return { name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate };
+    });
 
     const totals = buildTotals(preparedItems);
     const generated = generateEcfXml({

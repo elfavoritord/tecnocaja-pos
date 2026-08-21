@@ -28,6 +28,11 @@ const sharp = require('sharp');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
 const { query, withTransaction, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
 const productsCache = require('./server/cache/products-cache');
+const { createNcfSequenceService, NCF_LABELS } = require('./server/services/ncf-sequence.service');
+// isMysqlDeployment() está definida más abajo en este archivo — se puede
+// referenciar aquí porque las funciones declaradas con `function` se hoistean
+// por completo en el módulo antes de que corra cualquier código.
+const ncfSequenceService = createNcfSequenceService({ isMysqlDeployment });
 const {
   PRODUCTS_CSV_CURRENT_FILE,
   parseProductsCsvBuffer,
@@ -3005,6 +3010,8 @@ function mapProductRow(row) {
     permiteMitades: Boolean(row.allow_half_and_half),
     esCombo: Boolean(row.is_combo),
     aplicaItbis: Boolean(row.aplica_itbis),
+    itbisModo: row.itbis_modo === 'monto' ? 'monto' : 'porcentaje',
+    itbisMonto: Number(row.itbis_monto || 0),
     tiempoPreparacion: Number(row.preparation_time_minutes || 15),
     saleMode: normalizeProductSaleMode(row.sale_mode),
     metaNegocio: parseJsonObjectField(row.business_metadata, {}),
@@ -3896,7 +3903,14 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // -7: agrega columnas del Formato 606 DGII a purchases/expenses (tipo de
 // bienes/servicios, forma de pago, retenciones, NCF modificado) — ver
 // server/routes/compras.routes.js y gastos.routes.js.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-7`;
+// -8: agrega itbis_modo/itbis_monto a products y tax_mode/tax_amount a
+// sale_items (ITBIS por monto fijo en RD$ por producto, alternativa al %
+// global — ver ensureProductExtensions y ensureSalesExtensions).
+// -9: agrega ncf_alert_expiry_days/ncf_alert_low_count_threshold a config
+// (umbrales de la alerta de secuencias NCF serie B) y el índice único
+// idx_sales_ncf_unique en sales.ncf (defensa en profundidad) — ver
+// ensureConfigExtensions y ensureNcfExtensions.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-9`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -3942,6 +3956,11 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'e_invoice_enabled', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'e_invoice_prefix', `VARCHAR(20) NOT NULL DEFAULT 'ECF-'`);
   await addColumnIfMissing('config', 'e_invoice_next_number', 'INT NOT NULL DEFAULT 1');
+  // Umbrales configurables de la alerta de secuencias NCF serie B (Configuración →
+  // Secuencias NCF) — mismo concepto que ya existe para e-CF, pero para
+  // ncf_authorized_sequences en vez de ecf_sequences.
+  await addColumnIfMissing('config', 'ncf_alert_expiry_days', 'INT NOT NULL DEFAULT 30');
+  await addColumnIfMissing('config', 'ncf_alert_low_count_threshold', 'INT NOT NULL DEFAULT 20');
   await addColumnIfMissing('config', 'receipt_print_mode', `VARCHAR(20) NOT NULL DEFAULT 'dialog'`);
   await addColumnIfMissing('config', 'receipt_printer_name', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('config', 'receipt_paper_size', `VARCHAR(20) NOT NULL DEFAULT '80mm'`);
@@ -5060,6 +5079,8 @@ async function ensureProductExtensions() {
   await addColumnIfMissing('products', 'allow_half_and_half', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('products', 'is_combo', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('products', 'aplica_itbis', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing('products', 'itbis_modo', `VARCHAR(20) NOT NULL DEFAULT 'porcentaje'`);
+  await addColumnIfMissing('products', 'itbis_monto', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
   await addColumnIfMissing('products', 'preparation_time_minutes', 'INT NOT NULL DEFAULT 15');
   await addColumnIfMissing('products', 'business_metadata', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
@@ -5117,6 +5138,8 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sale_items', 'scale_measured_unit', 'VARCHAR(10) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'scale_source', 'VARCHAR(20) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'scale_raw_reading', 'VARCHAR(255) DEFAULT NULL');
+  await addColumnIfMissing('sale_items', 'tax_mode', `VARCHAR(20) NOT NULL DEFAULT 'porcentaje'`);
+  await addColumnIfMissing('sale_items', 'tax_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
   await query(`UPDATE sale_items SET sale_mode = 'unidad' WHERE sale_mode IS NULL OR sale_mode = ''`).catch(() => {});
   await addColumnIfMissing('sales', 'document_type', `VARCHAR(30) NOT NULL DEFAULT 'ticket'`);
   await addColumnIfMissing('sales', 'client_name_snapshot', 'VARCHAR(160) DEFAULT NULL');
@@ -5206,6 +5229,27 @@ async function ensureNcfExtensions() {
   await addColumnIfMissing('clients', 'rnc', 'VARCHAR(11) DEFAULT NULL');
   await addColumnIfMissing('clients', 'razon_social', 'VARCHAR(150) DEFAULT NULL');
   await addColumnIfMissing('clients', 'tipo_cliente', `VARCHAR(20) NOT NULL DEFAULT 'persona'`);
+
+  // Defensa en profundidad: el bloqueo transaccional de getNextNcfFromSequence
+  // ya evita duplicados en condiciones normales, pero nada en la tabla `sales`
+  // lo garantiza si algún día falla (bug, migración manual, edición directa).
+  // Se agrega el índice único solo si HOY no hay duplicados (una instalación
+  // vieja con NCF repetidos por un bug pasado no debe quedar rota al migrar —
+  // en ese caso se avisa y el índice queda pendiente hasta limpiarlos a mano).
+  try {
+    const dupes = await query(
+      `SELECT ncf FROM sales WHERE ncf IS NOT NULL GROUP BY ncf HAVING COUNT(*) > 1 LIMIT 1`
+    );
+    if (!dupes.length) {
+      await query('CREATE UNIQUE INDEX idx_sales_ncf_unique ON sales (ncf)').catch(() => {});
+    } else {
+      console.warn('[ncf] Se encontraron NCF duplicados en sales — no se crea el índice único hasta resolverlos manualmente.');
+    }
+  } catch (_) {
+    // Tabla sales aún no existe (instalación nueva) u otro error transitorio —
+    // el índice se reintentará en el próximo arranque, addColumnIfMissing ya
+    // sigue este mismo patrón defensivo en todo el archivo.
+  }
 }
 
 // ── Centro de Promociones ──────────────────────────────────────────────────
@@ -5314,89 +5358,8 @@ async function ensurePromotionsExtensions() {
 // firma y mismo retorno { ncf, fechaVencimiento } en ambos casos para no
 // tocar los call-sites (server.js POST /api/sales, offline.routes.js).
 async function getNextNcfFromSequence(conn, ncfType, branchId) {
-  const [cfg] = await conn.query('SELECT ncf_authorized_sequences_v2_enabled FROM config WHERE id = 1 LIMIT 1');
-  if (cfg && Number(cfg.ncf_authorized_sequences_v2_enabled)) {
-    return getNextNcfFromFiscalSequences(conn, ncfType, branchId);
-  }
-  return getNextNcfFromLegacyNcfSequence(conn, ncfType, branchId);
+  return ncfSequenceService.getNextNcf(conn, ncfType, branchId);
 }
-
-async function getNextNcfFromLegacyNcfSequence(conn, ncfType, branchId) {
-  const seqs = await conn.query(
-    `SELECT * FROM ncf_sequences WHERE ncf_type = ? AND activa = 1
-     AND (branch_id = ? OR branch_id IS NULL)
-     ORDER BY branch_id DESC LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
-    [ncfType, branchId || null]
-  );
-  if (!seqs[0]) {
-    const err = new Error(`No hay secuencia configurada para ${ncfType}. Créala en Configuración → Comprobantes.`);
-    err.statusCode = 409;
-    throw err;
-  }
-  const seq = seqs[0];
-  if (seq.siguiente_numero > seq.maximo) {
-    const err = new Error(`La secuencia ${ncfType} ha alcanzado su límite (${seq.maximo}). Solicita nuevas secuencias a la DGII.`);
-    err.statusCode = 409;
-    throw err;
-  }
-  const ncfNumber = seq.siguiente_numero;
-  const ncf = `${ncfType}${String(ncfNumber).padStart(8, '0')}`;
-  await conn.query(
-    'UPDATE ncf_sequences SET siguiente_numero = siguiente_numero + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [seq.id]
-  );
-  return { ncf, fechaVencimiento: seq.fecha_vencimiento || null };
-}
-
-async function getNextNcfFromFiscalSequences(conn, ncfType, branchId) {
-  const seqs = await conn.query(
-    `SELECT * FROM ncf_authorized_sequences WHERE document_type = ? AND status = 'activo' AND deleted_at IS NULL
-     AND (branch_id = ? OR branch_id IS NULL)
-     ORDER BY branch_id DESC LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
-    [ncfType, branchId || null]
-  );
-  if (!seqs[0]) {
-    const err = new Error(`No hay secuencia activa para ${ncfType}. Regístrala y actívala en Configuración → Comprobantes fiscales.`);
-    err.statusCode = 409;
-    throw err;
-  }
-  const seq = seqs[0];
-  const today = new Date().toISOString().slice(0, 10);
-  if (seq.expiration_date && String(seq.expiration_date) < today) {
-    const err = new Error(`La secuencia ${ncfType} venció el ${seq.expiration_date}. Solicita una nueva autorización a la DGII.`);
-    err.statusCode = 409;
-    throw err;
-  }
-  if (seq.next_number > seq.end_number) {
-    await conn.query("UPDATE ncf_authorized_sequences SET status = 'agotado', updated_at = datetime('now') WHERE id = ?", [seq.id]);
-    const err = new Error(`La secuencia ${ncfType} se agotó (rango ${seq.start_number}-${seq.end_number}). Registra una nueva autorización de la DGII.`);
-    err.statusCode = 409;
-    throw err;
-  }
-  const ncfNumber = seq.next_number;
-  const ncf = `${ncfType}${String(ncfNumber).padStart(8, '0')}`;
-  const nextAfter = ncfNumber + 1;
-  const newStatus = nextAfter > seq.end_number ? 'agotado' : seq.status;
-  await conn.query(
-    "UPDATE ncf_authorized_sequences SET next_number = ?, last_used_number = ?, status = ?, updated_at = datetime('now') WHERE id = ?",
-    [nextAfter, ncfNumber, newStatus, seq.id]
-  );
-  return { ncf, fechaVencimiento: seq.expiration_date || null };
-}
-
-const NCF_LABELS = {
-  B01: 'Crédito Fiscal',
-  B02: 'Consumidor Final',
-  B03: 'Nota de Débito',
-  B04: 'Nota de Crédito',
-  B11: 'Comprobante de Compras',
-  B12: 'Registro Único de Ingresos',
-  B13: 'Gastos Menores',
-  B14: 'Régimen Especial',
-  B15: 'Gubernamental',
-  B16: 'Comprobante para Exportaciones',
-  B17: 'Comprobante para Pagos al Exterior'
-};
 
 async function ensureSuspendedSalesTable() {
   await query(`
@@ -7449,7 +7412,13 @@ function mapSaleRows(sales, items) {
     const estadoDgii = sale.ecf_estado || fiscalPayload.ecfEstado || '';
 
     return ({
+    // `id` es la clave de búsqueda real (invoice_number interno FAC-/ECF-) —
+    // varios endpoints (/api/sales/:invoiceNumber/receipt, /return-detail,
+    // /pdf-path) buscan por este valor exacto en BD, así que NO puede
+    // cambiar de formato. El número que se debe MOSTRAR al usuario cuando
+    // hay NCF fiscal tradicional (B01/B02/etc.) es `documentoFiscal`.
     id: sale.invoice_number,
+    documentoFiscal: sale.ncf || sale.invoice_number,
     ventaId: sale.id === null || sale.id === undefined ? null : Number(sale.id),
     cashSessionId: sale.cash_session_id === null || sale.cash_session_id === undefined ? null : Number(sale.cash_session_id),
     operativeDate: sale.operative_date || null,
@@ -7525,6 +7494,13 @@ function mapSaleRows(sales, items) {
         qty: Number(item.qty || 0),
         precio: Number(item.price || 0),
         itbis: Number(item.tax_rate || 0),
+        itbisModo: item.tax_mode === 'monto' ? 'monto' : 'porcentaje',
+        // Solo para líneas de monto fijo: impuestoMonto ya resuelto en RD$.
+        // Para modo % se omite a propósito — ventas anteriores a esta
+        // migración tienen tax_amount=0.00 por el DEFAULT de la columna
+        // nueva, y el fallback existente en el front (subtotal*itbisRate/100)
+        // ya calcula el ITBIS histórico correctamente sin este campo.
+        ...(item.tax_mode === 'monto' ? { impuestoMonto: Number(item.tax_amount || 0) } : {}),
         total: Number(item.line_total || 0),
         saleMode: normalizeProductSaleMode(item.sale_mode),
         unitLabel: item.unit_label || 'Unidad',
@@ -7593,6 +7569,12 @@ async function getConfig(options = {}) {
   const ecfSequencesWarning = row.e_invoice_enabled
     ? await ecfModule.service.getExpiringSequencesSummary(1, 30).catch(() => [])
     : [];
+  const ncfSequencesWarning = Number(row.ncf_authorized_sequences_v2_enabled)
+    ? await ncfSequenceService.getSequencesWarningSummary(query, {
+        expiryThresholdDays: Number(row.ncf_alert_expiry_days || 30),
+        lowCountThreshold: Number(row.ncf_alert_low_count_threshold || 20)
+      }).catch(() => [])
+    : [];
   return {
     nombre: row.business_name,
     logo: row.app_logo || '',
@@ -7616,6 +7598,9 @@ async function getConfig(options = {}) {
     eInvoicePrefix: row.e_invoice_prefix || 'ECF-',
     eInvoiceNextNumber: Number(row.e_invoice_next_number || 1),
     ecfSequencesWarning,
+    ncfSequencesWarning,
+    ncfAlertExpiryDays: Number(row.ncf_alert_expiry_days || 30),
+    ncfAlertLowCountThreshold: Number(row.ncf_alert_low_count_threshold || 20),
     mensaje: row.receipt_message,
     receiptPrintMode: row.receipt_print_mode || 'dialog',
     receiptPrinterName: row.receipt_printer_name || '',
@@ -11358,8 +11343,8 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
 
   const result = await conn.query(
     `INSERT INTO products
-      (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, preparation_time_minutes, business_metadata, tracks_stock, discount_percent, discount_until_stock_out, branch_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (codigo, barcode, nombre, categoria, marca, unidad, sale_mode, precio_compra, precio_venta, stock, stock_min, estado, image_url, image_local, product_type, size_options, dough_options, border_options, extra_options, allow_half_and_half, is_combo, aplica_itbis, itbis_modo, itbis_monto, preparation_time_minutes, business_metadata, tracks_stock, discount_percent, discount_until_stock_out, branch_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.codigo,
       data.barcode || data.codigo,
@@ -11383,6 +11368,8 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
       data.permiteMitades ? 1 : 0,
       data.esCombo ? 1 : 0,
       data.aplicaItbis ? 1 : 0,
+      data.itbisModo === 'monto' ? 'monto' : 'porcentaje',
+      Math.max(0, Number(data.itbisMonto || 0)),
       Number(data.tiempoPreparacion || 15),
       JSON.stringify(data.metaNegocio || {}),
       data.tracksStock === false ? 0 : 1,
@@ -12146,7 +12133,7 @@ app.put('/api/products/:id', async (req, res) => {
        SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?, sale_mode = ?, precio_compra = ?,
            precio_venta = ?, stock = ?, stock_min = ?, estado = ?, image_url = ?, image_local = ?, product_type = ?,
            size_options = ?, dough_options = ?, border_options = ?, extra_options = ?,
-           allow_half_and_half = ?, is_combo = ?, aplica_itbis = ?, preparation_time_minutes = ?, business_metadata = ?,
+           allow_half_and_half = ?, is_combo = ?, aplica_itbis = ?, itbis_modo = ?, itbis_monto = ?, preparation_time_minutes = ?, business_metadata = ?,
            tracks_stock = ?, barcode = ?, discount_percent = ?, discount_until_stock_out = ?, branch_id = ?
        WHERE id = ?`,
       [
@@ -12171,6 +12158,8 @@ app.put('/api/products/:id', async (req, res) => {
         data.permiteMitades ? 1 : 0,
         data.esCombo ? 1 : 0,
         data.aplicaItbis ? 1 : 0,
+        data.itbisModo === 'monto' ? 'monto' : 'porcentaje',
+        Math.max(0, Number(data.itbisMonto || 0)),
         Number(data.tiempoPreparacion || 15),
         JSON.stringify(data.metaNegocio || {}),
         data.tracksStock === false ? 0 : 1,
@@ -13455,7 +13444,20 @@ app.put('/api/config', async (req, res) => {
   const hasConfigField = (field) => Object.prototype.hasOwnProperty.call(data || {}, field);
   const language = String(data.idioma || 'es').trim().toLowerCase();
   const salesOperationMode = String(data.salesOperationMode || data.modoOperacionVentas || 'directa').trim().toLowerCase();
-  const businessStructureMode = normalizeBusinessStructureMode(data.businessStructureMode || data.estructuraNegocio || 'monocaja');
+  // A diferencia de casi todo lo demás en esta función, este campo NO debe
+  // caer nunca en un default fijo — es un dato crítico que decide cuántas
+  // sucursales/cajas puede tener el negocio. Si el request no lo trae (o
+  // llega vacío) hay que conservar el valor YA guardado, igual que hacen
+  // cashDrawerMethod/scaleType/etc. de aquí abajo — antes caía directo a
+  // 'monocaja' y podía bloquear (o peor, degradar) un negocio multisucursal
+  // real con solo omitir el campo en el payload.
+  const businessStructureMode = normalizeBusinessStructureMode(
+    hasConfigField('businessStructureMode') && data.businessStructureMode
+      ? data.businessStructureMode
+      : (hasConfigField('estructuraNegocio') && data.estructuraNegocio
+          ? data.estructuraNegocio
+          : currentConfig.business_structure_mode)
+  );
   const cashDrawerMethodRaw = hasConfigField('cashDrawerMethod') ? data.cashDrawerMethod : currentConfig.cash_drawer_method;
   const cashDrawerMethod = ['escpos', 'network', 'serial'].includes(String(cashDrawerMethodRaw || '').trim().toLowerCase())
     ? String(cashDrawerMethodRaw || '').trim().toLowerCase()
@@ -13526,7 +13528,7 @@ app.put('/api/config', async (req, res) => {
      SET business_name = ?, rnc = ?, address = ?, phone = ?, currency = ?, tax_rate = ?,
          tax_calculate_at_invoice_end = ?, tax_include_in_product_price = ?, tax_show_breakdown_on_receipts = ?, tax_separate_taxable_and_exempt = ?,
          invoice_prefix = ?, invoice_next_number = ?, e_invoice_enabled = ?, e_invoice_prefix = ?,
-      e_invoice_next_number = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?,
+      e_invoice_next_number = ?, ncf_alert_expiry_days = ?, ncf_alert_low_count_threshold = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?,
          cash_drawer_enabled = ?, cash_drawer_method = ?, cash_drawer_printer_name = ?, cash_drawer_pin = ?, cash_drawer_network_host = ?, cash_drawer_network_port = ?, cash_drawer_serial_port = ?,
          scale_type = ?, scale_serial_port = ?, scale_serial_baud_rate = ?, scale_default_unit = ?, scale_read_pattern = ?, scale_rounding_decimals = ?, scale_auto_read = ?,
          rounding_mode = ?,
@@ -13549,6 +13551,8 @@ app.put('/api/config', async (req, res) => {
       data.eInvoiceEnabled ? 1 : 0,
       data.eInvoicePrefix,
       data.eInvoiceNextNumber,
+      Math.max(1, Number(data.ncfAlertExpiryDays || 30)),
+      Math.max(1, Number(data.ncfAlertLowCountThreshold || 20)),
       data.mensaje,
       receiptPrintMode || 'dialog',
       receiptPrinterName || null,
@@ -15330,9 +15334,15 @@ app.post('/api/sales', async (req, res) => {
       deliveryLongitude = deliveryLongitude ?? coordsFromLink.longitud;
     }
 
-    // Allow RNC/razon_social from payload (manual entry for B01 without saved client)
+    // Allow RNC/razon_social from payload (manual entry for un cliente rápido
+    // por RNC/cédula, sin cliente guardado — disponible en cualquier tipo de
+    // comprobante, no solo B01).
     if (!clientRnc && sale.rncCliente) clientRnc = String(sale.rncCliente).trim();
     if (!razonSocialCliente && sale.razonSocialCliente) razonSocialCliente = String(sale.razonSocialCliente).trim();
+    // client_name_snapshot (lo que se imprime como "Cliente" en el recibo)
+    // debe reflejar ese nombre rápido en vez de quedarse en "Consumidor
+    // Final" cuando no hay un cliente guardado seleccionado.
+    if (!clientId && razonSocialCliente) clientName = razonSocialCliente;
 
     const effectiveNcfType = requestedNcfType;
     const shouldUseEcfFlow = documentType === 'factura-electronica';
@@ -15700,6 +15710,12 @@ app.post('/api/sales', async (req, res) => {
     const affectedProductIds = new Set();
     let ahorroPromociones = 0;
     let computedSubtotal = 0;
+    // Techo de ITBIS acumulado por línea (para el anti-tamper de más abajo).
+    // Productos con ITBIS de monto fijo no tienen una "tasa" que aplicarle al
+    // subtotal — su techo es el monto fijo real (releído de BD) por la
+    // cantidad vendida, no un % del precio.
+    const maxTaxRate = Number(config.tax_rate || 18);
+    let maxTaxCeiling = 0;
     // Resuelto UNA vez para toda la venta (no por ítem) — pickWinningPromotion
     // es puro/sin I/O, así que decidir la promo de cada línea dentro del loop
     // no vuelve a golpear la BD.
@@ -15713,7 +15729,7 @@ app.post('/api/sales', async (req, res) => {
       let product = null;
       if (!isQuickSale) {
         affectedProductIds.add(Number(item.id || 0) || 0);
-        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock FROM products WHERE id = ? LIMIT 1', [item.id]);
+        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, aplica_itbis, itbis_modo, itbis_monto FROM products WHERE id = ? LIMIT 1', [item.id]);
         product = productRows[0];
         if (!product) {
           const missingError = new Error(`El producto ID ${item.id} no existe.`);
@@ -15741,10 +15757,29 @@ app.post('/api/sales', async (req, res) => {
       computedSubtotal += effectiveLineTotal;
       if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
 
+      // Modo/monto de ITBIS SIEMPRE releídos de products (nunca del payload
+      // del cliente) — igual que ya se hace con el precio de venta más
+      // arriba, para que el anti-tamper de más abajo sea real.
+      const isFixedTax = !isQuickSale && Boolean(product?.aplica_itbis) && String(product?.itbis_modo) === 'monto';
+      const effectiveTaxMode = isFixedTax ? 'monto' : 'porcentaje';
+      const effectiveTaxAmount = isFixedTax
+        ? Number((Number(product.itbis_monto || 0) * Number(item.qty || 0)).toFixed(2))
+        : Number((effectiveLineTotal * (Number(item.itbis || 0) / 100)).toFixed(2));
+      // El techo por línea es el mayor entre "% general sobre el subtotal de
+      // la línea" (el mismo techo generoso de siempre — cubre p.ej. el
+      // recargo de tarjeta, que en ventas.js fuerza 18% sobre TODO el
+      // subtotal sin importar si el producto tiene ITBIS propio) y, si el
+      // producto es de monto fijo, el monto real declarado en su catálogo —
+      // así un producto barato con ITBIS fijo desproporcionado no queda
+      // limitado por el techo pensado solo para %.
+      const percentCeiling = effectiveLineTotal * (maxTaxRate / 100);
+      const fixedCeiling = isFixedTax ? Number(product.itbis_monto || 0) * Number(item.qty || 0) : 0;
+      maxTaxCeiling += Math.max(percentCeiling, fixedCeiling);
+
       await conn.query(
         `INSERT INTO sale_items
-          (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, tax_mode, tax_amount, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.insertId,
           isQuickSale ? null : item.id,
@@ -15754,6 +15789,8 @@ app.post('/api/sales', async (req, res) => {
           effectivePrice,
           item.descuento || 0,
           item.itbis || 0,
+          effectiveTaxMode,
+          effectiveTaxAmount,
           normalizeProductSaleMode(item.saleMode),
           String(item.unitLabel || 'Unidad').trim() || 'Unidad',
           String(item.weightUnit || '').trim() || null,
@@ -15816,8 +15853,7 @@ app.post('/api/sales', async (req, res) => {
     if (!Number.isFinite(descuentoDeclared) || descuentoDeclared < -0.01 || descuentoDeclared > computedSubtotal + subtotalTolerance) {
       throw Object.assign(new Error('El descuento de la venta no es válido.'), { statusCode: 409 });
     }
-    const maxTaxRate = Number(config.tax_rate || 18);
-    if (!Number.isFinite(itbisDeclared) || itbisDeclared < -0.01 || itbisDeclared > (computedSubtotal * (maxTaxRate / 100)) + subtotalTolerance) {
+    if (!Number.isFinite(itbisDeclared) || itbisDeclared < -0.01 || itbisDeclared > maxTaxCeiling + subtotalTolerance) {
       throw Object.assign(new Error('El ITBIS de la venta no es válido.'), { statusCode: 409 });
     }
     const expectedTotal = Number((subtotalDeclared - descuentoDeclared + itbisDeclared).toFixed(2));

@@ -813,7 +813,7 @@ function loadProductsTable() {
         <div class="products-catalog-body">
           <div class="products-catalog-name">${nombre}</div>
           <div class="products-catalog-scope" style="font-size:0.72rem;color:var(--text3);margin-top:0.15rem">${escapeProductIdentityHtml(scopeLabel)}</div>
-          <div class="products-catalog-price">${fmt(p.precioVenta)}</div>
+          <div class="products-catalog-price">${fmt(getProductFinalPriceWithItbis(p))}</div>
         </div>
       </article>`;
     }).join('') || '<div class="products-grid-empty">No se encontraron productos</div>';
@@ -836,6 +836,19 @@ function loadProductsTable() {
     renderProductsFallback(Array.isArray(DB.productos) ? DB.productos : [], error.message);
     console.error('Error renderizando productos:', error);
   }
+}
+
+// Precio REAL con el que se vende el producto (precio de catálogo + ITBIS,
+// sea % global o monto fijo) — el mismo cálculo que "Se venderá en" del
+// modal de edición, para que la tarjeta del catálogo muestre de una vez
+// cuánto va a pagar el cliente, no solo el precio antes de impuesto.
+function getProductFinalPriceWithItbis(p) {
+  const precio = Number(p.precioVenta || 0);
+  if (!p.aplicaItbis) return precio;
+  const itbisAmount = p.itbisModo === 'monto'
+    ? Number(p.itbisMonto || 0)
+    : precio * (Number(DB.config?.itbis ?? 18) / 100);
+  return precio + itbisAmount;
 }
 
 function updateProductsStats(productsList = getFilteredProducts()) {
@@ -1361,9 +1374,28 @@ function openProductModal(id) {
         </div>
         <div class="form-group compact-toggle-card" id="mp-itbis-group">
           <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
-            <input type="checkbox" id="mp-aplica-itbis" ${prod?.aplicaItbis ? 'checked' : ''} style="width:auto">
-            <span>Aplicar ITBIS (${DB.config?.itbis ?? 18}%) a este producto</span>
+            <input type="checkbox" id="mp-aplica-itbis" ${prod?.aplicaItbis ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+            <span>Aplicar ITBIS a este producto</span>
           </label>
+          <div id="mp-itbis-modo-wrap" style="display:${prod?.aplicaItbis ? '' : 'none'};margin-top:0.55rem">
+            <div style="display:flex;gap:1rem;flex-wrap:wrap">
+              <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
+                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-pct" value="porcentaje" ${prod?.itbisModo !== 'monto' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+                <span>% global (${DB.config?.itbis ?? 18}%)</span>
+              </label>
+              <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
+                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-monto" value="monto" ${prod?.itbisModo === 'monto' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+                <span>Monto fijo (RD$)</span>
+              </label>
+            </div>
+            <div id="mp-itbis-monto-wrap" style="display:${prod?.itbisModo === 'monto' ? '' : 'none'};margin-top:0.5rem">
+              <label>ITBIS fijo por unidad (RD$)</label>
+              <input type="number" id="mp-itbis-monto" class="form-input" style="max-width:160px" value="${prod?.itbisMonto || ''}" min="0" step="0.01" placeholder="0.00">
+              <p style="margin:0.35rem 0 0;color:var(--text2);font-size:0.74rem;line-height:1.35">
+                Se cobra tal cual en Ticket. En NCF/e-CF se convierte a la tasa DGII más cercana (0/16/18%).
+              </p>
+            </div>
+          </div>
         </div>
       </div>
       <div class="form-group" id="mp-stock-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Actual</label><input type="number" id="mp-stock" class="form-input" value="${prod?prod.stock:0}" min="0"></div>
@@ -1437,12 +1469,19 @@ function openProductModal(id) {
       <div class="product-footer-sale">
         <label>Se venderá en</label>
         <strong id="product-sale-price-preview">RD$0.00</strong>
+        <small id="product-sale-price-note" style="display:none"></small>
       </div>
       <div class="product-footer-actions">
         <button class="btn-secondary" onclick="closeAllModals()">Cancelar</button>
-        ${id ? `<button class="btn-ghost" onclick="openLabelQuickPrintForProduct(${id})">🖨 Imprimir etiqueta</button>` : ''}
-        ${id ? `<button class="btn-ghost" style="color:var(--warning,#f59e0b)" onclick="closeAllModals();toggleProductStatus(${id})">${prod?.estado === 'Activo' ? 'Pausar' : 'Activar'}</button>` : ''}
-        ${id ? `<button class="btn-ghost" style="color:var(--danger,#ef4444)" onclick="closeAllModals();deleteProduct(${id})">Eliminar</button>` : ''}
+        ${id ? `
+        <div class="product-footer-more">
+          <button type="button" class="btn-ghost" onclick="toggleProductFooterMenu(event)">⋮ Más</button>
+          <div class="product-footer-more-menu hidden" id="product-footer-more-menu">
+            <button type="button" onclick="closeProductFooterMenu();openLabelQuickPrintForProduct(${id})">🖨 Imprimir etiqueta</button>
+            <button type="button" style="color:var(--warning,#f59e0b)" onclick="closeProductFooterMenu();closeAllModals();toggleProductStatus(${id})">${prod?.estado === 'Activo' ? '⏸ Pausar' : '▶ Activar'}</button>
+            <button type="button" style="color:var(--danger,#ef4444)" onclick="closeProductFooterMenu();closeAllModals();deleteProduct(${id})">🗑 Eliminar</button>
+          </div>
+        </div>` : ''}
         <button class="btn-primary" onclick="saveProduct(${id||'null'})">💾 Guardar</button>
       </div>
     </div>
@@ -1453,6 +1492,7 @@ function openProductModal(id) {
     document.getElementById(fieldId)?.addEventListener('input', updateProductPreview);
   });
   document.getElementById('mp-aplica-itbis')?.addEventListener('change', updateProductPreview);
+  document.getElementById('mp-itbis-monto')?.addEventListener('input', updateProductPreview);
   document.getElementById('mp-tipo')?.addEventListener('change', syncProductBusinessFields);
   document.getElementById('mp-sale-mode')?.addEventListener('change', syncProductBusinessFields);
   document.getElementById('mp-unidad')?.addEventListener('change', syncProductBusinessFields);
@@ -1464,7 +1504,37 @@ function openProductModal(id) {
   validateProductIdentity();
   updateProductPreview();
   syncProductBusinessFields();
+  syncProductItbisFields();
 }
+
+function syncProductItbisFields() {
+  const aplica = document.getElementById('mp-aplica-itbis')?.checked ?? false;
+  const modoWrap = document.getElementById('mp-itbis-modo-wrap');
+  if (modoWrap) modoWrap.style.display = aplica ? '' : 'none';
+  const esMonto = document.getElementById('mp-itbis-modo-monto')?.checked ?? false;
+  const montoWrap = document.getElementById('mp-itbis-monto-wrap');
+  if (montoWrap) montoWrap.style.display = esMonto ? '' : 'none';
+  updateProductPreview();
+}
+window.syncProductItbisFields = syncProductItbisFields;
+
+function closeProductFooterMenu() {
+  document.getElementById('product-footer-more-menu')?.classList.add('hidden');
+}
+window.closeProductFooterMenu = closeProductFooterMenu;
+
+function toggleProductFooterMenu(event) {
+  event?.stopPropagation();
+  document.getElementById('product-footer-more-menu')?.classList.toggle('hidden');
+}
+window.toggleProductFooterMenu = toggleProductFooterMenu;
+
+document.addEventListener('click', (event) => {
+  const menu = document.getElementById('product-footer-more-menu');
+  if (menu && !menu.classList.contains('hidden') && !event.target.closest('.product-footer-more')) {
+    menu.classList.add('hidden');
+  }
+});
 
 function switchProductTab(index) {
   document.querySelectorAll('.product-tab-btn').forEach((btn, i) => btn.classList.toggle('active', i === index));
@@ -1536,11 +1606,30 @@ function updateProductPreview() {
   const marginPreview = document.getElementById('product-margin-preview');
   const stockValuePreview = document.getElementById('product-stock-value-preview');
   const salePricePreview = document.getElementById('product-sale-price-preview');
+  const salePriceNote = document.getElementById('product-sale-price-note');
   if (profitPreview) profitPreview.textContent = fmt(utilidad);
   if (marginPreview) marginPreview.textContent = `${margen.toFixed(1)}%`;
   if (stockValuePreview) stockValuePreview.textContent = fmt(stock * compra);
   if (!salePricePreview) return;
-  salePricePreview.textContent = `RD$${Number(venta || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  // "Se venderá en" muestra el precio REAL que paga el cliente (precio +
+  // ITBIS), no solo el precio de catálogo — así se ve de una vez cuánto
+  // suma el ITBIS sin tener que probarlo primero en una venta.
+  const aplicaItbis = document.getElementById('mp-aplica-itbis')?.checked ?? false;
+  const esMontoFijo = document.getElementById('mp-itbis-modo-monto')?.checked ?? false;
+  const itbisMonto = esMontoFijo ? (Math.max(0, parseFloat(document.getElementById('mp-itbis-monto')?.value) || 0)) : 0;
+  const itbisAmount = !aplicaItbis ? 0 : (esMontoFijo ? itbisMonto : Number((venta * (Number(DB.config?.itbis ?? 18) / 100)).toFixed(2)));
+  const finalPrice = venta + itbisAmount;
+
+  salePricePreview.textContent = `RD$${finalPrice.toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (salePriceNote) {
+    if (itbisAmount > 0) {
+      salePriceNote.textContent = `RD$${venta.toFixed(2)} + ITBIS RD$${itbisAmount.toFixed(2)}`;
+      salePriceNote.style.display = '';
+    } else {
+      salePriceNote.style.display = 'none';
+    }
+  }
 }
 
 async function saveProduct(id) {
@@ -1586,6 +1675,8 @@ async function saveProduct(id) {
     permiteMitades: allowPizzaConfig && document.getElementById('mp-mitades').value === 'si',
     esCombo: document.getElementById('mp-combo').value === 'si',
     aplicaItbis: document.getElementById('mp-aplica-itbis')?.checked ?? false,
+    itbisModo: document.getElementById('mp-itbis-modo-monto')?.checked ? 'monto' : 'porcentaje',
+    itbisMonto: Math.max(0, parseFloat(document.getElementById('mp-itbis-monto')?.value) || 0),
     tracksStock: document.getElementById('mp-tracks-stock')?.checked !== false,
     descuentoPct: Math.min(100, Math.max(0, parseFloat(document.getElementById('mp-descuento')?.value) || 0)),
     descuentoHastaAgotar: document.getElementById('mp-descuento-hasta-agotar')?.checked ?? false,
