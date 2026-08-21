@@ -687,7 +687,7 @@ app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) =
 
 app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
   const { businessId, accion, productoId, codigo, nombre, categoria, marca, unidad, saleMode,
-          precioCompra, precioVenta, stock, stockMin, aplicaItbis, branchId, imagenData } = req.body;
+          precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData } = req.body;
   const accionNorm = ['editar', 'eliminar'].includes(accion) ? accion : 'crear';
 
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
@@ -739,6 +739,8 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
       stock:         Number(stock || 0),
       stockMin:      Number(stockMin || 0),
       aplicaItbis:   Boolean(aplicaItbis),
+      itbisModo:     itbisModo === 'monto' ? 'monto' : 'porcentaje',
+      itbisMonto:    Math.max(0, Number(itbisMonto || 0)),
       branchId:      normalizedBranchId,
       branchNombre,
       imagenData:    imagenData || null,
@@ -757,7 +759,7 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
 app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (req, res) => {
   const { businessId, pendingId } = req.params;
   const { codigo, nombre, categoria, marca, unidad, saleMode,
-          precioCompra, precioVenta, stock, stockMin, aplicaItbis, branchId, imagenData } = req.body;
+          precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData } = req.body;
 
   if (!codigo || !String(codigo).trim()) return res.status(400).json({ error: 'El código es obligatorio.' });
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
@@ -803,6 +805,8 @@ app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (
       stock:         Number(stock || 0),
       stockMin:      Number(stockMin || 0),
       aplicaItbis:   Boolean(aplicaItbis),
+      itbisModo:     itbisModo === 'monto' ? 'monto' : 'porcentaje',
+      itbisMonto:    Math.max(0, Number(itbisMonto || 0)),
       branchId:      normalizedBranchId,
       branchNombre,
       imagenData:    imagenData !== undefined ? (imagenData || null) : (pendingDoc.data().imagenData || null),

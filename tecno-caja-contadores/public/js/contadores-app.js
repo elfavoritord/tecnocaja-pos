@@ -1811,12 +1811,15 @@ function abrirAgregarProductoModal() {
   if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
   _editingPendingProductId = null;
   _targetRealProductId = null;
-  ['ap-codigo', 'ap-nombre', 'ap-categoria', 'ap-marca', 'ap-unidad', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min'].forEach((id) => {
+  ['ap-codigo', 'ap-nombre', 'ap-categoria', 'ap-marca', 'ap-unidad', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min', 'ap-itbis-monto'].forEach((id) => {
     const el = $id(id);
     if (el) el.value = '';
   });
   const itbisEl = $id('ap-aplica-itbis');
   if (itbisEl) itbisEl.checked = false;
+  const itbisPctEl = $id('ap-itbis-modo-pct');
+  if (itbisPctEl) itbisPctEl.checked = true;
+  syncProductoItbisFields();
 
   const sucursalEl = $id('ap-sucursal');
   if (sucursalEl) {
@@ -1858,6 +1861,13 @@ function editarProductoPendiente(pendingId) {
   set('ap-stock-min', p.stockMin);
   const itbisEl = $id('ap-aplica-itbis');
   if (itbisEl) itbisEl.checked = Boolean(p.aplicaItbis);
+  const itbisEsMonto = p.itbisModo === 'monto';
+  const itbisPctEl = $id('ap-itbis-modo-pct');
+  const itbisMontoModoEl = $id('ap-itbis-modo-monto');
+  if (itbisPctEl) itbisPctEl.checked = !itbisEsMonto;
+  if (itbisMontoModoEl) itbisMontoModoEl.checked = itbisEsMonto;
+  set('ap-itbis-monto', p.itbisMonto || '');
+  syncProductoItbisFields();
   const sucursalEl = $id('ap-sucursal');
   if (sucursalEl) sucursalEl.value = p.branchId ? String(p.branchId) : '';
 
@@ -1889,6 +1899,13 @@ function editarProductoReal(productoId) {
   set('ap-stock-min', p.stockMin);
   const itbisEl = $id('ap-aplica-itbis');
   if (itbisEl) itbisEl.checked = Boolean(p.aplicaItbis);
+  const itbisEsMonto = p.itbisModo === 'monto';
+  const itbisPctEl = $id('ap-itbis-modo-pct');
+  const itbisMontoModoEl = $id('ap-itbis-modo-monto');
+  if (itbisPctEl) itbisPctEl.checked = !itbisEsMonto;
+  if (itbisMontoModoEl) itbisMontoModoEl.checked = itbisEsMonto;
+  set('ap-itbis-monto', p.itbisMonto || '');
+  syncProductoItbisFields();
   const sucursalEl = $id('ap-sucursal');
   if (sucursalEl) sucursalEl.value = p.branchId ? String(p.branchId) : '';
 
@@ -1915,6 +1932,15 @@ async function eliminarProductoReal(productoId) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
+function syncProductoItbisFields() {
+  const aplica = $id('ap-aplica-itbis')?.checked ?? false;
+  const modoWrap = $id('ap-itbis-modo-wrap');
+  if (modoWrap) modoWrap.style.display = aplica ? '' : 'none';
+  const esMonto = $id('ap-itbis-modo-monto')?.checked ?? false;
+  const montoWrap = $id('ap-itbis-monto-wrap');
+  if (montoWrap) montoWrap.style.display = esMonto ? '' : 'none';
+}
+
 function cerrarAgregarProductoModal() { _editingPendingProductId = null; _targetRealProductId = null; hide('modal-agregar-producto'); }
 
 async function guardarProductoPendiente() {
@@ -1938,6 +1964,8 @@ async function guardarProductoPendiente() {
     stock:        Number($id('ap-stock')?.value || 0),
     stockMin:     Number($id('ap-stock-min')?.value || 0),
     aplicaItbis:  Boolean($id('ap-aplica-itbis')?.checked),
+    itbisModo:    $id('ap-itbis-modo-monto')?.checked ? 'monto' : 'porcentaje',
+    itbisMonto:   Math.max(0, Number($id('ap-itbis-monto')?.value || 0)),
     branchId,
   };
   // Si no se tocó la imagen al editar, no mandar el campo — el backend
@@ -5367,7 +5395,7 @@ window.app = {
   aplicarFiltros, aplicarFiltrosConDebounce, actualizarStatsPorSucursal, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
   abrirRepDetalle, cerrarRepDetalle, imprimirTabReporte, imprimirReporteMensual,
   // productos pendientes (agregados desde este Portal)
-  abrirAgregarProductoModal, editarProductoPendiente, eliminarProductoPendiente, editarProductoReal, eliminarProductoReal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen,
+  abrirAgregarProductoModal, editarProductoPendiente, eliminarProductoPendiente, editarProductoReal, eliminarProductoReal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen, syncProductoItbisFields,
   // secuencias NCF pendientes (registradas desde este Portal)
   abrirAgregarNcfModal, cerrarAgregarNcfModal, guardarNcfPendiente, handleAgregarNcfAdjunto, cancelarNcfPendiente,
   // secuencias NCF ya aplicadas (editar/suspender/eliminar remoto)

@@ -244,7 +244,19 @@ ipcMain.handle('updater:install', async () => {
   try {
     sendUpdaterEvent('installing', { version: updateInfo?.version || null });
     await stopServer();
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    // quitAndInstall corre en el siguiente tick (setImmediate) — el try/catch
+    // de afuera YA devolvió { ok: true } para entonces, así que un error
+    // síncrono al invocarlo (ej. instalador cacheado corrupto/ausente) nunca
+    // llegaba al renderer: el overlay "Instalando..." se quedaba pegado sin
+    // explicación. autoUpdater.on('error', ...) solo cubre errores async
+    // que electron-updater decide emitir como evento, no un throw directo.
+    setImmediate(() => {
+      try {
+        autoUpdater.quitAndInstall(false, true);
+      } catch (installError) {
+        sendUpdaterEvent('error', { message: installError?.message || 'No se pudo iniciar el instalador (quitAndInstall falló).' });
+      }
+    });
     return { ok: true };
   } catch (e) {
     const message = e?.message || 'No se pudo iniciar el instalador.';
