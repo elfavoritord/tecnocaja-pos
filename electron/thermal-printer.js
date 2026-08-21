@@ -65,6 +65,11 @@ class ESCPOSBuilder {
     this._push([ESC, 0x40]);
     // CP437 (default universal) — el CHAR_MAP usa valores reales de este codepage
     this._push([ESC, 0x74, 0x00]);
+    // Forzar Fuente A (12x24) explícitamente: sin este comando, algunas impresoras
+    // arrancan con su fuente por defecto (a menudo 42 columnas reales en 80mm en vez
+    // de las 48 que asume `this.cols`), causando que la impresora corte cada línea a
+    // mitad de palabra y el resto se imprima suelto en la línea siguiente sin sangría.
+    this._push([ESC, 0x4D, 0x00]);
     return this;
   }
 

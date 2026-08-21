@@ -7772,9 +7772,36 @@ async function convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx) {
       img.onload = () => {
         clearTimeout(timeout);
         try {
-          const scale = Math.min(1, maxWidthPx / img.width);
-          const w = Math.round(img.width * scale);
-          const h = Math.round(img.height * scale);
+          // Recortar el margen en blanco/transparente que trae el archivo del logo
+          // (habitual en íconos de app, que reservan área de seguridad alrededor del
+          // dibujo) — sin esto se imprime con mucho espacio vacío arriba/abajo.
+          const probeCanvas = document.createElement('canvas');
+          probeCanvas.width = img.width;
+          probeCanvas.height = img.height;
+          const probeCtx = probeCanvas.getContext('2d');
+          probeCtx.drawImage(img, 0, 0);
+          const probeData = probeCtx.getImageData(0, 0, img.width, img.height).data;
+          let minX = img.width, minY = img.height, maxX = -1, maxY = -1;
+          for (let y = 0; y < img.height; y++) {
+            for (let x = 0; x < img.width; x++) {
+              const i = (y * img.width + x) * 4;
+              if (probeData[i + 3] < 10) continue; // transparente
+              if (probeData[i] > 250 && probeData[i + 1] > 250 && probeData[i + 2] > 250) continue; // casi blanco puro
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+          const hasContent = maxX >= minX && maxY >= minY;
+          const cropX = hasContent ? minX : 0;
+          const cropY = hasContent ? minY : 0;
+          const cropW = hasContent ? (maxX - minX + 1) : img.width;
+          const cropH = hasContent ? (maxY - minY + 1) : img.height;
+
+          const scale = Math.min(1, maxWidthPx / cropW);
+          const w = Math.round(cropW * scale);
+          const h = Math.round(cropH * scale);
           const printW = Math.ceil(w / 8) * 8; // ancho múltiplo de 8 para ESC/POS
           const canvas = document.createElement('canvas');
           canvas.width = printW;
@@ -7782,7 +7809,7 @@ async function convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx) {
           const ctx = canvas.getContext('2d');
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(0, 0, printW, h);
-          ctx.drawImage(img, 0, 0, w, h);
+          ctx.drawImage(img, cropX, cropY, cropW, cropH, 0, 0, w, h);
           const { data } = ctx.getImageData(0, 0, printW, h);
           const bytesPerLine = printW / 8;
           const monoBytes = [];
