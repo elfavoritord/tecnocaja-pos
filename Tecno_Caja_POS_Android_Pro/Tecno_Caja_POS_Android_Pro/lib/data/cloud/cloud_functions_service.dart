@@ -182,6 +182,42 @@ class CloudFunctionsService {
     });
   }
 
+  /// Firma y envía a DGII el e-CF que `requestNcf` dejó en PENDIENTE_FIRMA.
+  /// Ver `functions/sign-and-send.js`.
+  Future<Map<String, dynamic>> signAndSend({
+    required String businessId,
+    required String branchId,
+    required String saleId,
+  }) {
+    return _call('signAndSend', {
+      'businessId': businessId,
+      'branchId': branchId,
+      'saleId': saleId,
+    });
+  }
+
+  /// Consulta el estado real en DGII de un e-CF ya enviado (sin re-firmar
+  /// ni reenviar).
+  Future<Map<String, dynamic>> consultarEstadoEcf({
+    required String businessId,
+    required String saleId,
+  }) {
+    return _call('consultarEstadoEcf', {
+      'businessId': businessId,
+      'saleId': saleId,
+    });
+  }
+
+  Future<Map<String, dynamic>> updateActividadEconomica({
+    required String businessId,
+    required String actividadEconomica,
+  }) {
+    return _call('updateActividadEconomica', {
+      'businessId': businessId,
+      'actividadEconomica': actividadEconomica,
+    });
+  }
+
   Future<Map<String, dynamic>> _call(
       String nombre, Map<String, dynamic> datos) async {
     // cloud_functions_web ha tenido bugs de interop con valores `null` dentro

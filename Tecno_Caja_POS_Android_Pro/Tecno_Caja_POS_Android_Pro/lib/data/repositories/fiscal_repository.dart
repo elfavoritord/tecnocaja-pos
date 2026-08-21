@@ -12,6 +12,7 @@ class FiscalSettings {
     required this.ambiente,
     required this.eCfActivo,
     required this.eCfValidado,
+    this.actividadEconomica = '',
   });
 
   final bool usaComprobantesFiscales;
@@ -19,6 +20,7 @@ class FiscalSettings {
   final String ambiente;
   final bool eCfActivo;
   final bool eCfValidado;
+  final String actividadEconomica;
 
   factory FiscalSettings.fromMap(Map<String, dynamic> map) => FiscalSettings(
         usaComprobantesFiscales:
@@ -28,6 +30,7 @@ class FiscalSettings {
         ambiente: map['ambiente'] as String? ?? 'certificacion',
         eCfActivo: map['eCfActivo'] as bool? ?? false,
         eCfValidado: map['eCfValidado'] as bool? ?? false,
+        actividadEconomica: map['actividadEconomica'] as String? ?? '',
       );
 }
 
@@ -281,6 +284,40 @@ class FiscalRepository {
       baseUrl: baseUrl,
     );
     return _certificationFromResult(result);
+  }
+
+  /// Firma y envía a DGII el e-CF que `solicitarNcf` dejó en
+  /// PENDIENTE_FIRMA -- ver `functions/sign-and-send.js`. Devuelve
+  /// `estadoFiscal`, `trackId` y `ecfQrUrl` cuando el envío se completa.
+  Future<Map<String, dynamic>> firmarYEnviar({
+    required String businessId,
+    required String branchId,
+    required String saleId,
+  }) {
+    return _cloud.signAndSend(
+      businessId: businessId,
+      branchId: branchId,
+      saleId: saleId,
+    );
+  }
+
+  /// Consulta el estado real en DGII de un e-CF ya enviado (botón
+  /// "Consultar estado en DGII"). No re-firma ni reenvía.
+  Future<Map<String, dynamic>> consultarEstadoEcf({
+    required String businessId,
+    required String saleId,
+  }) {
+    return _cloud.consultarEstadoEcf(businessId: businessId, saleId: saleId);
+  }
+
+  Future<void> actualizarActividadEconomica({
+    required String businessId,
+    required String actividadEconomica,
+  }) {
+    return _cloud.updateActividadEconomica(
+      businessId: businessId,
+      actividadEconomica: actividadEconomica,
+    );
   }
 
   Future<EcfCertificationProcess> cargarCertificado({

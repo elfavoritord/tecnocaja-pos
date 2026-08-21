@@ -180,6 +180,8 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
         estado: 'Activo',
         tipoProducto: 'general',
         aplicaItbis: Boolean(request.aplicaItbis),
+        itbisModo: request.itbisModo === 'monto' ? 'monto' : 'porcentaje',
+        itbisMonto: Math.max(0, Number(request.itbisMonto || 0)),
         tracksStock: true,
       };
 
@@ -242,11 +244,11 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
             `UPDATE products
              SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?,
                  precio_compra = ?, precio_venta = ?, stock = ?, stock_min = ?,
-                 aplica_itbis = ?, branch_id = ?
+                 aplica_itbis = ?, itbis_modo = ?, itbis_monto = ?, branch_id = ?
              WHERE id = ?`,
             [data.codigo, data.nombre, data.categoria, data.marca, data.unidad,
              data.precioCompra, data.precioVenta, data.stock, data.stockMin,
-             data.aplicaItbis ? 1 : 0, catalogBranchId, productoId]
+             data.aplicaItbis ? 1 : 0, data.itbisModo, data.itbisMonto, catalogBranchId, productoId]
           ));
 
           if (request.imagenData) {

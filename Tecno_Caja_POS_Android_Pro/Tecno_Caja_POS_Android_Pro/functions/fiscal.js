@@ -272,6 +272,7 @@ const getFiscalSettings = onCall({ cors: true }, async (request) => {
       ambiente: data.ambiente || 'certificacion',
       eCfActivo: Boolean(data.eCfActivo),
       eCfValidado: Boolean(data.eCfValidado),
+      actividadEconomica: data.actividadEconomica || '',
     },
   };
 });
@@ -308,11 +309,47 @@ const updateFiscalSettings = onCall({ cors: true }, async (request) => {
   return { ok: true };
 });
 
+/**
+ * updateActividadEconomica -- campo separado de updateFiscalSettings a
+ * propósito: ese endpoint valida `mode` contra una lista fija de NCF
+ * tradicional y no debe aflojarse para aceptar campos e-CF sueltos. La
+ * actividad económica del emisor es obligatoria para generar un XML e-CF
+ * válido (signAndSend la exige, ver functions/sign-and-send.js) y no existía
+ * en ningún lado de Firestore hasta ahora.
+ */
+const updateActividadEconomica = onCall({ cors: true }, async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+
+  const db = admin.firestore();
+  const businessId = String(request.data?.businessId || '').trim();
+  const actividadEconomica = String(request.data?.actividadEconomica || '').trim();
+  if (!businessId || !actividadEconomica) {
+    throw new HttpsError('invalid-argument', 'Empresa o actividad económica inválida.');
+  }
+  const profile = await loadCallerProfile(db, uid);
+  assertBelongsToBusiness(profile, businessId);
+  if (!isOwnerOrAdmin(profile)) {
+    throw new HttpsError('permission-denied', 'Solo un administrador puede cambiar la configuración fiscal.');
+  }
+
+  await db
+    .collection('businesses').doc(businessId)
+    .collection('settings').doc('fiscal')
+    .set({
+      actividadEconomica,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedBy: uid,
+    }, { merge: true });
+  return { ok: true };
+});
+
 module.exports = {
   requestNcf,
   configureNcfSequence,
   listNcfSequences,
   getFiscalSettings,
   updateFiscalSettings,
+  updateActividadEconomica,
   ESTADOS,
 };

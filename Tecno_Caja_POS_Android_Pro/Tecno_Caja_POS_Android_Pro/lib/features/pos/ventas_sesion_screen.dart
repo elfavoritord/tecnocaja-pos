@@ -237,9 +237,12 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
     final permisos =
         ref.watch(permisosUsuarioActualProvider).valueOrNull ?? <Permiso>{};
     final venta = _venta;
+    final necesitaFirma = (venta.encf?.isNotEmpty ?? false) &&
+        ['PENDIENTE_FIRMA', 'FIRMA_FALLIDA', 'ENVIO_FALLIDO']
+            .contains(venta.ecfEstado);
     final requiereNcf = (venta.tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal ||
             venta.tipoDocumento == TipoDocumentoVenta.facturaConsumo) &&
-        (venta.encf == null || venta.encf!.isEmpty);
+        ((venta.encf == null || venta.encf!.isEmpty) || necesitaFirma);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.7,
@@ -295,8 +298,25 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
                       width: double.infinity,
                       child: OutlinedButton.icon(
                         icon: const Icon(Icons.confirmation_number_outlined),
-                        label: const Text('Asignar NCF'),
+                        label: Text(necesitaFirma
+                            ? 'Reintentar firma y envío DGII'
+                            : 'Asignar NCF'),
                         onPressed: _procesando ? null : _asignarNcf,
+                      ),
+                    ),
+                  ],
+                  if ((venta.ecfTrackId?.isNotEmpty ?? false) &&
+                      permisos.contains(Permiso.accederECF)) ...[
+                    const SizedBox(height: 8),
+                    Text('e-CF: ${venta.encf} · ${venta.ecfEstado ?? ''}',
+                        style: Theme.of(context).textTheme.bodySmall),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.sync_outlined),
+                        label: const Text('Consultar estado en DGII'),
+                        onPressed:
+                            _procesando ? null : _consultarEstadoDgii,
                       ),
                     ),
                   ],
@@ -385,30 +405,114 @@ class _DetalleVentaSheetState extends ConsumerState<_DetalleVentaSheet> {
       }
       final sucursal = await ref.read(sucursalActivaProvider.future);
       final config = ref.read(configuracionControllerProvider).valueOrNull;
-      final ncfType =
-          _venta.tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
+      final branchId = sucursal?.remotoId ?? sucursal?.id ?? '';
+      final ambiente = config?.fiscalAmbiente ?? 'certificacion';
+
+      final fiscalSettings =
+          await ref.read(fiscalRepositoryProvider).obtener(businessId);
+      final usaECf = fiscalSettings?.eCfValidado ?? false;
+      final ncfType = usaECf
+          ? (_venta.tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
+              ? EcfType.e31
+              : EcfType.e32)
+          : (_venta.tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
               ? NcfType.b01
-              : NcfType.b02;
+              : NcfType.b02);
+
+      // solicitarNcf es idempotente por venta (sale_uuid) -- si ya tenía
+      // NCF/e-CF asignado, devuelve el mismo sin generar uno nuevo; esto
+      // deja reintentar solo la firma/envío sin duplicar la reserva.
       final resultado = await ref.read(fiscalRepositoryProvider).solicitarNcf(
             businessId: businessId,
-            branchId: sucursal?.remotoId ?? sucursal?.id ?? '',
+            branchId: branchId,
             saleId: _venta.id,
             ncfType: ncfType,
-            ambiente: config?.fiscalAmbiente ?? 'certificacion',
+            ambiente: ambiente,
           );
       final encf = resultado['ncf']?.toString();
-      final estado = resultado['estadoFiscal']?.toString();
-      if (encf != null && encf.isNotEmpty) {
-        await ref.read(ventaRepositoryProvider).actualizarFiscal(
-              _venta.id,
-              encf: encf,
-              ecfEstado: estado ?? 'ASIGNADO',
-            );
-        if (mounted) {
-          setState(() => _venta = _venta.copyWith(encf: encf, ecfEstado: estado));
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('NCF asignado: $encf')));
+      var estado = resultado['estadoFiscal']?.toString();
+      if (encf == null || encf.isEmpty) return;
+
+      String? trackId;
+      String? qrUrl;
+      String? errorFirma;
+      String mensaje = 'NCF asignado: $encf';
+      if (estado == 'PENDIENTE_FIRMA') {
+        try {
+          final firmaResultado =
+              await ref.read(fiscalRepositoryProvider).firmarYEnviar(
+                    businessId: businessId,
+                    branchId: branchId,
+                    saleId: _venta.id,
+                  );
+          estado = firmaResultado['estadoFiscal']?.toString() ?? estado;
+          trackId = firmaResultado['trackId']?.toString();
+          qrUrl = firmaResultado['ecfQrUrl']?.toString();
+          mensaje = 'e-CF $encf enviado a DGII.';
+        } on AppException catch (e) {
+          errorFirma = e.message;
+          estado = 'FIRMA_FALLIDA';
+          mensaje = 'NCF $encf asignado, pero DGII rechazó el envío: '
+              '${e.message}';
         }
+      }
+
+      await ref.read(ventaRepositoryProvider).actualizarFiscal(
+            _venta.id,
+            encf: encf,
+            ecfEstado: estado ?? 'ASIGNADO',
+            ecfTrackId: trackId,
+            ecfQrUrl: qrUrl,
+            ecfError: errorFirma,
+          );
+      if (mounted) {
+        setState(() => _venta = _venta.copyWith(
+              encf: encf,
+              ecfEstado: estado,
+              ecfTrackId: trackId,
+              ecfQrUrl: qrUrl,
+              ecfError: errorFirma,
+            ));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(mensaje)));
+      }
+    } on AppException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    } finally {
+      if (mounted) setState(() => _procesando = false);
+    }
+  }
+
+  /// Consulta el estado real de un e-CF ya enviado a DGII (TrackID) -- no
+  /// re-firma ni reenvía, solo refleja la respuesta oficial más reciente.
+  Future<void> _consultarEstadoDgii() async {
+    setState(() => _procesando = true);
+    try {
+      final empresa =
+          await ref.read(empresaRepositoryProvider).porId(_venta.empresaId);
+      final businessId = empresa?.remotoId;
+      if (businessId == null || businessId.isEmpty) {
+        throw const ValidationException(
+            message: 'Necesitas estar sincronizado con la nube.');
+      }
+      final resultado =
+          await ref.read(fiscalRepositoryProvider).consultarEstadoEcf(
+                businessId: businessId,
+                saleId: _venta.id,
+              );
+      final estado = resultado['estadoFiscal']?.toString();
+      await ref.read(ventaRepositoryProvider).actualizarFiscal(
+            _venta.id,
+            encf: _venta.encf ?? '',
+            ecfEstado: estado ?? _venta.ecfEstado ?? '',
+          );
+      if (mounted) {
+        setState(() => _venta = _venta.copyWith(ecfEstado: estado));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Estado DGII: ${estado ?? 'sin cambios'}')));
       }
     } on AppException catch (e) {
       if (mounted) {

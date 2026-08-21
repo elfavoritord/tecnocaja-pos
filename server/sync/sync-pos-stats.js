@@ -294,6 +294,8 @@ async function buildReportesTabs() {
          p.marca                        AS marca,
          p.unidad                       AS unidad,
          p.aplica_itbis                 AS aplicaItbis,
+         p.itbis_modo                   AS itbisModo,
+         p.itbis_monto                  AS itbisMonto,
          COALESCE(SUM(si.qty), 0)       AS vendidos
        FROM products p
        LEFT JOIN branches b ON b.id = p.branch_id
@@ -302,7 +304,7 @@ async function buildReportesTabs() {
          AND s.sale_status = 'pagada'
          AND DATE(s.created_at) >= date('now','-30 days')
        WHERE LOWER(p.estado) = 'activo'
-       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock, p.stock_min, p.marca, p.unidad, p.aplica_itbis
+       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock, p.stock_min, p.marca, p.unidad, p.aplica_itbis, p.itbis_modo, p.itbis_monto
        ORDER BY vendidos DESC
        LIMIT ${MAX_ROWS}`
     ),

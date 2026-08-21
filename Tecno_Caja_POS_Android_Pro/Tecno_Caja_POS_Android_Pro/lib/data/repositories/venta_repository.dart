@@ -525,10 +525,17 @@ class VentaRepository {
     String ventaId, {
     required String encf,
     required String ecfEstado,
+    String? ecfTrackId,
+    String? ecfQrUrl,
+    String? ecfError,
   }) {
+    final valores = <String, Object?>{'encf': encf, 'ecf_estado': ecfEstado};
+    if (ecfTrackId != null) valores['ecf_track_id'] = ecfTrackId;
+    if (ecfQrUrl != null) valores['ecf_qr_url'] = ecfQrUrl;
+    if (ecfError != null) valores['ecf_error'] = ecfError;
     return _db.update(
       'ventas',
-      {'encf': encf, 'ecf_estado': ecfEstado},
+      valores,
       where: 'id = ?',
       whereArgs: [ventaId],
     );

@@ -48,12 +48,14 @@ const {
   listNcfSequences,
   getFiscalSettings,
   updateFiscalSettings,
+  updateActividadEconomica,
 } = require('./fiscal');
 exports.requestNcf = requestNcf;
 exports.configureNcfSequence = configureNcfSequence;
 exports.listNcfSequences = listNcfSequences;
 exports.getFiscalSettings = getFiscalSettings;
 exports.updateFiscalSettings = updateFiscalSettings;
+exports.updateActividadEconomica = updateActividadEconomica;
 
 // ── Consulta de RNC/Cédula en el padrón descargable de la DGII ───────────
 const { dgiiLookup } = require('./dgii');
@@ -73,3 +75,9 @@ exports.validateEcfServiceUrls = validateEcfServiceUrls;
 
 const { uploadEcfCertificate } = require('./certificate-vault');
 exports.uploadEcfCertificate = uploadEcfCertificate;
+
+// ── Firma y envío real a DGII (cierra el ciclo que requestNcf deja en
+// PENDIENTE_FIRMA para e-CF) ────────────────────────────────────────────────
+const { signAndSend, consultarEstadoEcf } = require('./sign-and-send');
+exports.signAndSend = signAndSend;
+exports.consultarEstadoEcf = consultarEstadoEcf;

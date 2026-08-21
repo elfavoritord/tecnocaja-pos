@@ -220,11 +220,11 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
     );
   }
 
-  /// Reserva el NCF para una venta recién cobrada con comprobante fiscal.
-  /// La venta ya quedó guardada y cobrada antes de llamar esto -- si algo
-  /// falla (sin conexión, secuencia agotada) se avisa pero NO se revierte el
-  /// cobro; queda como ticket sin NCF y se puede reintentar luego desde el
-  /// historial ("Asignar NCF").
+  /// Reserva el NCF/e-CF para una venta recién cobrada con comprobante
+  /// fiscal. La venta ya quedó guardada y cobrada antes de llamar esto -- si
+  /// algo falla (sin conexión, secuencia agotada, DGII rechazó) se avisa
+  /// pero NO se revierte el cobro; queda reintentable desde el historial
+  /// ("Asignar NCF" / "Reintentar firma y envío DGII").
   Future<Venta> _asignarNcf(Venta venta, String empresaId) async {
     try {
       final empresa =
@@ -245,25 +245,72 @@ class _CheckoutSheetState extends ConsumerState<_CheckoutSheet> {
       }
       final sucursal = await ref.read(sucursalActivaProvider.future);
       final config = ref.read(configuracionControllerProvider).valueOrNull;
-      final ncfType = _tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
-          ? NcfType.b01
-          : NcfType.b02;
+      final branchId = sucursal?.remotoId ?? sucursal?.id ?? '';
+      final ambiente = config?.fiscalAmbiente ?? 'certificacion';
+
+      // Cuando la empresa ya validó e-CF (certificación DGII completada),
+      // Crédito Fiscal/Consumidor Final pasan a emitirse como e-CF real
+      // (firmado y enviado a DGII) en vez de NCF tradicional -- mismo
+      // comprobante de negocio, distinto mecanismo fiscal.
+      final fiscalSettings =
+          await ref.read(fiscalRepositoryProvider).obtener(businessId);
+      final usaECf = fiscalSettings?.eCfValidado ?? false;
+      final ncfType = usaECf
+          ? (_tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
+              ? EcfType.e31
+              : EcfType.e32)
+          : (_tipoDocumento == TipoDocumentoVenta.facturaCreditoFiscal
+              ? NcfType.b01
+              : NcfType.b02);
+
       final resultado = await ref.read(fiscalRepositoryProvider).solicitarNcf(
             businessId: businessId,
-            branchId: sucursal?.remotoId ?? sucursal?.id ?? '',
+            branchId: branchId,
             saleId: venta.id,
             ncfType: ncfType,
-            ambiente: config?.fiscalAmbiente ?? 'certificacion',
+            ambiente: ambiente,
           );
       final encf = resultado['ncf']?.toString();
-      final estado = resultado['estadoFiscal']?.toString();
+      var estado = resultado['estadoFiscal']?.toString();
       if (encf == null || encf.isEmpty) return venta;
+
+      String? trackId;
+      String? qrUrl;
+      String? errorFirma;
+      if (estado == 'PENDIENTE_FIRMA') {
+        try {
+          final firmaResultado =
+              await ref.read(fiscalRepositoryProvider).firmarYEnviar(
+                    businessId: businessId,
+                    branchId: branchId,
+                    saleId: venta.id,
+                  );
+          estado = firmaResultado['estadoFiscal']?.toString() ?? estado;
+          trackId = firmaResultado['trackId']?.toString();
+          qrUrl = firmaResultado['ecfQrUrl']?.toString();
+        } on AppException catch (e) {
+          errorFirma = e.message;
+          estado = 'FIRMA_FALLIDA';
+          _avisar('NCF $encf asignado, pero no se pudo firmar/enviar a '
+              'DGII: ${e.message}. Reintenta desde el historial.');
+        }
+      }
+
       await ref.read(ventaRepositoryProvider).actualizarFiscal(
             venta.id,
             encf: encf,
             ecfEstado: estado ?? 'ASIGNADO',
+            ecfTrackId: trackId,
+            ecfQrUrl: qrUrl,
+            ecfError: errorFirma,
           );
-      return venta.copyWith(encf: encf, ecfEstado: estado);
+      return venta.copyWith(
+        encf: encf,
+        ecfEstado: estado,
+        ecfTrackId: trackId,
+        ecfQrUrl: qrUrl,
+        ecfError: errorFirma,
+      );
     } on AppException catch (e) {
       _avisar('Venta guardada sin NCF: ${e.message}');
       return venta;

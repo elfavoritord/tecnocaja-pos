@@ -32,13 +32,48 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
   List<NcfSequenceInfo> _secuencias = const [];
   bool _cargando = true;
   bool _guardandoToggle = false;
+  bool _guardandoActividad = false;
   String? _error;
   String? _warning;
+  final _actividadCtrl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _cargar();
+  }
+
+  @override
+  void dispose() {
+    _actividadCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _guardarActividadEconomica() async {
+    final remoteId = _businessRemoteId;
+    final valor = _actividadCtrl.text.trim();
+    if (remoteId == null || valor.isEmpty) return;
+    setState(() => _guardandoActividad = true);
+    try {
+      await ref.read(fiscalRepositoryProvider).actualizarActividadEconomica(
+            businessId: remoteId,
+            actividadEconomica: valor,
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Actividad económica guardada.')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content:
+              Text(e is AppException ? e.message : 'No se pudo guardar: $e'),
+          backgroundColor: AppColors.danger,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _guardandoActividad = false);
+    }
   }
 
   Future<void> _cargar() async {
@@ -91,6 +126,7 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
         _secuencias = secuencias;
         _warning = warnings.isEmpty ? null : warnings.join(' ');
         _cargando = false;
+        _actividadCtrl.text = settings.actividadEconomica;
       });
     } catch (e) {
       if (!mounted) return;
@@ -242,6 +278,48 @@ class _FiscalConfigScreenState extends ConsumerState<FiscalConfigScreen> {
                 MaterialPageRoute<void>(
                   builder: (_) => const EcfCertificationScreen(),
                 ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Actividad económica',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Requerida por DGII para emitir e-CF (Encabezado/Emisor/'
+                    'ActividadEconomica del XML).',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _actividadCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Actividad económica',
+                      hintText: 'Ej. Venta al por menor de abarrotes',
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: FilledButton(
+                      onPressed:
+                          _guardandoActividad ? null : _guardarActividadEconomica,
+                      child: _guardandoActividad
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('Guardar'),
+                    ),
+                  ),
+                ],
               ),
             ),
           ),

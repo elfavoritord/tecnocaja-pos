@@ -289,6 +289,15 @@ service cloud.firestore {
         allow read, write: if false;
       }
 
+      // XML firmado + respuesta DGII por venta (signAndSend/consultarEstadoEcf,
+      // functions/sign-and-send.js). Es evidencia fiscal sensible, no
+      // operativa de caja -- solo contador/admin la leen, nunca un cajero;
+      // escritura exclusiva de las Cloud Functions.
+      match /ecfDocuments/{saleId} {
+        allow read:  if isAccountant(businessId);
+        allow write: if false;
+      }
+
       // ── Usuarios del negocio (subdocumentos espejo) ────────────────────────
       match /users/{empUid} {
         // Un usuario siempre puede verse a sí mismo. Los administradores
