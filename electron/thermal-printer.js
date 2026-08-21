@@ -51,10 +51,14 @@ function encodeText(str) {
 class ESCPOSBuilder {
   /**
    * @param {'58mm'|'80mm'} paperWidth
+   * @param {boolean} narrowCols — algunas impresoras económicas de 80mm imprimen
+   *   solo 42 columnas reales aun seleccionando la Fuente A estándar (cabezal más
+   *   angosto que el de una impresora de 80mm "completa"). Se activa por
+   *   configuración local de la terminal cuando el usuario reporta texto cortado.
    */
-  constructor(paperWidth = '80mm') {
+  constructor(paperWidth = '80mm', narrowCols = false) {
     this.paperWidth = paperWidth;
-    this.cols = paperWidth === '58mm' ? 32 : 48;
+    this.cols = paperWidth === '58mm' ? 32 : (narrowCols ? 42 : 48);
     this._chunks = [];
   }
 
@@ -318,7 +322,7 @@ function formatEscPosDate(value) {
 function buildReceipt(data) {
   const { negocio = {}, venta = {}, config = {} } = data;
   const paperWidth = config.paperWidth || '80mm';
-  const p = new ESCPOSBuilder(paperWidth);
+  const p = new ESCPOSBuilder(paperWidth, Boolean(config.narrowCols));
   const COLS = p.cols;
   const is58 = paperWidth === '58mm';
 
@@ -761,7 +765,7 @@ function buildCorteReceipt(data) {
   const { negocio = {}, corte = {}, config = {} } = data;
   const paperWidth = config.paperWidth || '80mm';
   const currency   = config.currency   || 'RD$';
-  const p = new ESCPOSBuilder(paperWidth);
+  const p = new ESCPOSBuilder(paperWidth, Boolean(config.narrowCols));
 
   const fmtN = (n) =>
     `${currency} ${Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

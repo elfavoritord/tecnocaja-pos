@@ -4027,7 +4027,7 @@ const CONFIG_SECTION_CARD_META = {
 // (instalación nueva o terminal que aún no la ha guardado), queda {} y
 // getEffectiveConfig() se comporta igual que DB.config solo, sin cambios.
 const PERIPHERALS_CONFIG_FIELDS = [
-  'receiptPrintMode', 'receiptPaperSize', 'receiptPrinterName', 'labelsPrinterName', 'labelsPrintMode', 'labelsBarcodeOffsetMm',
+  'receiptPrintMode', 'receiptPaperSize', 'receiptPrinterName', 'receiptNarrowCols', 'labelsPrinterName', 'labelsPrintMode', 'labelsBarcodeOffsetMm',
   'cashDrawerEnabled', 'cashDrawerMethod', 'cashDrawerPrinterName', 'cashDrawerPin',
   'cashDrawerNetworkHost', 'cashDrawerNetworkPort', 'cashDrawerSerialPort',
   'scaleType', 'scaleSerialPort', 'scaleSerialBaudRate', 'scaleReadPattern',
@@ -4594,6 +4594,7 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
       ? Number(document.getElementById('cfg-labels-barcode-offset')?.value || 0)
       : (window.LocalPeripheralsFlat?.labelsBarcodeOffsetMm || 0),
     receiptPaperSize: document.getElementById('cfg-paper-size')?.value || DB.config?.receiptPaperSize || '80mm',
+    receiptNarrowCols: Boolean(document.getElementById('cfg-receipt-narrow-cols')?.checked ?? DB.config?.receiptNarrowCols ?? false),
     cashierRegisterRequired: Boolean(document.getElementById('cfg-cashier-register-required')?.checked ?? DB.config?.cashierRegisterRequired ?? true),
     exclusiveCashierPerRegister: Boolean(document.getElementById('cfg-exclusive-cashier-register')?.checked ?? DB.config?.exclusiveCashierPerRegister ?? true),
     whatsappWebEnabled: Boolean(document.getElementById('cfg-whatsapp-web-enabled')?.checked),
@@ -4767,6 +4768,10 @@ function syncConfigForm() {
   const exclusiveCashierToggle = document.getElementById('cfg-exclusive-cashier-register');
   if (exclusiveCashierToggle && exclusiveCashierToggle !== activeElement) {
     exclusiveCashierToggle.checked = Boolean(cfg.exclusiveCashierPerRegister ?? true);
+  }
+  const narrowColsToggle = document.getElementById('cfg-receipt-narrow-cols');
+  if (narrowColsToggle && narrowColsToggle !== activeElement) {
+    narrowColsToggle.checked = Boolean(cfg.receiptNarrowCols);
   }
   // ── Gaveta registradora ──
   const drawerEnabledToggle = document.getElementById('cfg-drawer-enabled');
@@ -8062,6 +8067,7 @@ async function _printCashCorte(d, contado, diferencia, notas) {
       },
       config: {
         paperWidth,
+        narrowCols: Boolean(DB.config?.receiptNarrowCols),
         cortarPapel: true,
         currency,
       },

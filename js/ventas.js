@@ -7919,6 +7919,7 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
     },
     config: {
       paperWidth: normalizedPaperSize,
+      narrowCols: Boolean(getReceiptConfigValue('receiptNarrowCols')),
       cortarPapel: true,
       abrirGaveta: false,
       mostrarQR: Boolean(qrData),
