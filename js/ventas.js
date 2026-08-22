@@ -1408,18 +1408,6 @@ function calcularTotales(items = [], options = {}) {
   const subtotal = roundSaleMoney(subtotalGravado + subtotalExento);
   const subtotalFinal = roundSaleMoney(subtotalGravadoFinal + subtotalExentoFinal);
 
-  // Pago con tarjeta: se factura siempre con NCF fiscal (B01/B02), así que se cobra
-  // el 18% de ITBIS sobre el monto — sin importar si los productos tienen ITBIS propio
-  // configurado (0% en ventas informales por Ticket). Reemplaza el ITBIS por ítem en vez
-  // de sumarse a él para no cobrar doble impuesto sobre el mismo producto.
-  if (options.cardSurcharge) {
-    itbis = roundSaleMoney(subtotalFinal * 0.18);
-    subtotalGravado = subtotal;
-    subtotalGravadoFinal = subtotalFinal;
-    subtotalExento = 0;
-    subtotalExentoFinal = 0;
-  }
-
   const totalBeforeRounding = roundSaleMoney(subtotalFinal + (behavior.calculateAtEnd ? itbis : itbis));
   const roundingMode = String(options.config?.roundingMode || 'none');
   const total = applyRoundingUp(totalBeforeRounding, roundingMode);
@@ -1445,8 +1433,7 @@ function calculateCurrentSaleTotals() {
   normalizeCartSaleItems();
   return calcularTotales(DB.saleItems, {
     generalDiscountRate: parseFloat(DB.saleGeneralDiscount || 0) || 0,
-    config: DB.config,
-    cardSurcharge: DB.payMethod === 'tarjeta'
+    config: DB.config
   });
 }
 
@@ -1852,9 +1839,9 @@ function getSalesCatalogProducts() {
     ].some((value) => String(value).toLowerCase().includes(query));
     const matchesCategory = !category || product.categoria === category;
     const matchesStock = stockFilter === 'agotados'
-      ? Number(product.stock || 0) === 0
+      ? product.tracksStock !== false && Number(product.stock || 0) === 0
       : stockFilter === 'disponibles'
-        ? Number(product.stock || 0) > 0
+        ? product.tracksStock === false || Number(product.stock || 0) > 0
         : true;
 
     return matchesQuery && matchesCategory && matchesStock;
@@ -1996,6 +1983,10 @@ function getDocumentSequencePreview(type) {
   // con el formato real de DGII (sin guion) y el número final pendiente.
   const ncfType = DB.saleNcfType || '';
   if (ncfType) {
+    const knownNext = _availableNcfNextNumbers?.get(ncfType.toUpperCase());
+    if (Number.isFinite(knownNext)) {
+      return `${ncfType}${String(knownNext).padStart(8, '0')}`;
+    }
     return `${ncfType}········`;
   }
   if (type === 'factura-electronica') {
@@ -2054,13 +2045,30 @@ function resetBillingModalState() {
   _billingSubmitting = false;
 }
 
+// Tipo de comprobante con el que arranca cada venta nueva — Configuración →
+// Facturación → "Tipo de comprobante preferido para vender" (preferredBillingDocType).
+// El cajero puede seguir cambiándolo a mano para un cliente en particular; esto
+// solo define cuál llega ya seleccionado.
+function applyPreferredBillingDocumentType() {
+  const preferred = String(DB.config?.preferredBillingDocType || 'ticket').trim();
+  if (preferred === 'factura-electronica') {
+    DB.saleDocumentType = 'factura-electronica';
+    DB.saleNcfType = '';
+  } else if (!preferred || preferred === 'ticket') {
+    DB.saleDocumentType = 'ticket';
+    DB.saleNcfType = '';
+  } else {
+    DB.saleDocumentType = 'ticket';
+    DB.saleNcfType = preferred.toUpperCase();
+  }
+}
+
 function resetBillingCheckoutDraft({ preserveRememberedClient = false } = {}) {
   resetBillingModalState();
-  DB.saleDocumentType = 'ticket';
+  applyPreferredBillingDocumentType();
   DB.saleOrderType = 'mostrador';
   DB.saleKitchenStatus = 'pendiente';
   DB.saleGeneralDiscount = 0;
-  DB.saleNcfType = '';
   DB.saleRncCliente = '';
   DB.saleRazonSocial = '';
   DB.saleNcfReferencia = '';
@@ -3790,6 +3798,11 @@ function _buildBillingCompactModalMarkup_legacy() {
 // fiscales (server/routes/fiscal-sequences.routes.js). null = todavía no se
 // consultó esta sesión de facturación (no bloquea, solo no colorea aún).
 let _availableNcfDocTypes = null;
+// Próximo número real de cada tipo NCF activo (solo para previsualizar en el
+// título del modal — ver getDocumentSequencePreview) — el número final que de
+// verdad se asigna lo decide el servidor al cobrar, así que este puede quedar
+// desactualizado si otra caja vende primero. Igual es mejor que mostrar puntos.
+let _availableNcfNextNumbers = null;
 
 async function refreshAvailableNcfDocTypes() {
   try {
@@ -3800,8 +3813,12 @@ async function refreshAvailableNcfDocTypes() {
     if (!res.ok) return;
     const rows = await res.json();
     _availableNcfDocTypes = new Set((rows || []).map((r) => String(r.documentType || '').toUpperCase()));
+    _availableNcfNextNumbers = new Map((rows || [])
+      .filter((r) => r.nextNumber !== undefined && r.nextNumber !== null)
+      .map((r) => [String(r.documentType || '').toUpperCase(), Number(r.nextNumber)]));
     _applyAvailableNcfDocTypesToPills();
-  } catch (_) { /* si falla, no se bloquea la venta — solo no se colorea el pill */ }
+    if (typeof syncBillingModalHeader === 'function') syncBillingModalHeader();
+  } catch (_) { /* si falla, no se bloquea la venta — solo se sigue mostrando el placeholder */ }
 }
 
 // Solo aplica a los presets que son un tipo NCF real (B01/B02/...) — ticket
@@ -5728,8 +5745,7 @@ function updateTotals() {
   normalizeCartSaleItems();
   const totals = calcularTotales(DB.saleItems, {
     generalDiscountRate: getGeneralDiscountValue(),
-    config: DB.config,
-    cardSurcharge: DB.payMethod === 'tarjeta'
+    config: DB.config
   });
   const taxBehavior = getSaleTaxConfig();
 
@@ -5791,9 +5807,9 @@ function setPayMethod(method, el) {
   if (method === 'tarjeta' && DB.saleNcfType !== 'B01') {
     setSaleNcfType('B02');
   }
-  // Recalcular totales ANTES de prellenar el monto a cobrar más abajo — el pago con
-  // tarjeta suma 18% de ITBIS (ver calcularTotales/cardSurcharge), así que el monto
-  // exacto a cobrar debe reflejar ya ese recargo.
+  // Recalcular totales ANTES de prellenar el monto a cobrar más abajo — el ITBIS de
+  // cada producto es el mismo sin importar el método de pago, pero el total mostrado
+  // debe estar actualizado antes de copiarlo al campo de monto a cobrar.
   updateTotals();
   const efArea = document.getElementById('efectivo-area');
   const qaArea = document.getElementById('quick-amounts');
@@ -6894,8 +6910,7 @@ function buildSalePayload() {
   const generalDisc = getGeneralDiscountValue();
   const saleTotals = calcularTotales(DB.saleItems, {
     generalDiscountRate: generalDisc,
-    config: DB.config,
-    cardSurcharge: DB.payMethod === 'tarjeta'
+    config: DB.config
   });
   const total = saleTotals.total;
   if (!(total > 0)) {

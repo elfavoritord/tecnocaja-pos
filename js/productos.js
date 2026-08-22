@@ -725,7 +725,7 @@ function getFilteredProducts() {
     let matchesStatus = true;
     if (productFilters.status === 'activos') matchesStatus = p.estado === 'Activo';
     if (productFilters.status === 'stock-bajo') matchesStatus = p.estado === 'Activo' && p.stock > 0 && p.stock <= p.stockMin;
-    if (productFilters.status === 'agotados') matchesStatus = p.stock === 0;
+    if (productFilters.status === 'agotados') matchesStatus = p.tracksStock !== false && p.stock === 0;
     if (productFilters.status === 'inactivos') matchesStatus = p.estado !== 'Activo';
 
     return matchesSearch && matchesCategory && matchesStatus;
@@ -738,6 +738,7 @@ function getProductImageSrc(product) {
 
 function getProductVisualTone(product) {
   if (product.estado !== 'Activo') return 'is-paused';
+  if (product.tracksStock === false) return 'is-active';
   if (Number(product.stock || 0) === 0) return 'is-out';
   if (Number(product.stock || 0) <= Number(product.stockMin || 0)) return 'is-low';
   return 'is-active';
@@ -751,6 +752,7 @@ function getProductCompactCategory(product) {
 
 function getProductStockBadgeLabel(product) {
   if (product.estado !== 'Activo') return 'Pausado';
+  if (product.tracksStock === false) return 'Sin control de stock';
   if (Number(product.stock || 0) === 0) return 'Sin stock';
   return `Stock ${Number(product.stock || 0)}`;
 }
@@ -858,8 +860,8 @@ function updateProductsStats(productsList = getFilteredProducts()) {
   if (!totalEl || !lowEl || !outEl) return;
 
   totalEl.textContent = productsList.length;
-  lowEl.textContent = productsList.filter(p => p.estado === 'Activo' && p.stock > 0 && p.stock <= p.stockMin).length;
-  outEl.textContent = productsList.filter(p => p.stock === 0).length;
+  lowEl.textContent = productsList.filter(p => p.estado === 'Activo' && p.tracksStock !== false && p.stock > 0 && p.stock <= p.stockMin).length;
+  outEl.textContent = productsList.filter(p => p.tracksStock !== false && p.stock === 0).length;
   const totalRetail = productsList.reduce((sum, p) => sum + (Number(p.precioVenta || 0) * p.stock), 0);
   const totalCost   = productsList.reduce((sum, p) => sum + (Number(p.precioCompra || 0) * p.stock), 0);
   const potentialProfit = totalRetail - totalCost;
@@ -871,6 +873,7 @@ function updateProductsStats(productsList = getFilteredProducts()) {
 
 function getStockBadge(p) {
   if (p.estado !== 'Activo') return `<span class="badge badge-info">${translateCatalogText('Inactivo')}</span>`;
+  if (p.tracksStock === false) return `<span class="badge badge-success">${translateCatalogText('Activo')}</span>`;
   if (p.stock === 0) return `<span class="badge badge-danger">${translateCatalogText('Agotado')}</span>`;
   if (p.stock <= p.stockMin) return `<span class="badge badge-warning">${translateCatalogText('Stock Bajo')}</span>`;
   return `<span class="badge badge-success">${translateCatalogText('Activo')}</span>`;
@@ -1915,8 +1918,8 @@ function loadInventoryTable() {
 
 function updateInventoryStats() {
   document.getElementById('inv-total-products').textContent = DB.productos.length;
-  document.getElementById('inv-low-stock').textContent = DB.productos.filter(p => p.stock > 0 && p.stock <= p.stockMin).length;
-  document.getElementById('inv-out-stock').textContent = DB.productos.filter(p => p.stock === 0).length;
+  document.getElementById('inv-low-stock').textContent = DB.productos.filter(p => p.tracksStock !== false && p.stock > 0 && p.stock <= p.stockMin).length;
+  document.getElementById('inv-out-stock').textContent = DB.productos.filter(p => p.tracksStock !== false && p.stock === 0).length;
   const retailVal = DB.productos.reduce((s, p) => s + p.stock * Number(p.precioVenta || 0), 0);
   const costVal   = DB.productos.reduce((s, p) => s + p.stock * Number(p.precioCompra || 0), 0);
   document.getElementById('inv-total-value').textContent = fmt(retailVal);
@@ -1936,9 +1939,9 @@ function getFilteredInventoryProducts() {
     ].some((value) => String(value || '').toLowerCase().includes(search));
     const matchesCategory = !inventoryFilters.category || p.categoria === inventoryFilters.category;
     let matchesStatus = true;
-    if (inventoryFilters.status === 'stock-bajo') matchesStatus = p.stock > 0 && p.stock <= p.stockMin;
-    if (inventoryFilters.status === 'agotados') matchesStatus = p.stock === 0;
-    if (inventoryFilters.status === 'activos') matchesStatus = p.stock > 0;
+    if (inventoryFilters.status === 'stock-bajo') matchesStatus = p.tracksStock !== false && p.stock > 0 && p.stock <= p.stockMin;
+    if (inventoryFilters.status === 'agotados') matchesStatus = p.tracksStock !== false && p.stock === 0;
+    if (inventoryFilters.status === 'activos') matchesStatus = p.tracksStock === false || p.stock > 0;
     return matchesSearch && matchesCategory && matchesStatus;
   });
 }

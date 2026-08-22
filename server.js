@@ -3910,7 +3910,9 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // (umbrales de la alerta de secuencias NCF serie B) y el índice único
 // idx_sales_ncf_unique en sales.ncf (defensa en profundidad) — ver
 // ensureConfigExtensions y ensureNcfExtensions.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-9`;
+// -10: agrega preferred_billing_doc_type a config (tipo de comprobante que se
+// preselecciona al abrir una venta nueva) — ver ensureConfigExtensions.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-10`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -3961,6 +3963,10 @@ async function ensureConfigExtensions() {
   // ncf_authorized_sequences en vez de ecf_sequences.
   await addColumnIfMissing('config', 'ncf_alert_expiry_days', 'INT NOT NULL DEFAULT 30');
   await addColumnIfMissing('config', 'ncf_alert_low_count_threshold', 'INT NOT NULL DEFAULT 20');
+  // Tipo de comprobante que se preselecciona al abrir una venta nueva (ticket, B02,
+  // B01 o factura-electronica) — antes siempre arrancaba en 'ticket' sin poder
+  // cambiarlo; ver resetBillingCheckoutDraft() en js/ventas.js.
+  await addColumnIfMissing('config', 'preferred_billing_doc_type', `VARCHAR(30) NOT NULL DEFAULT 'ticket'`);
   await addColumnIfMissing('config', 'receipt_print_mode', `VARCHAR(20) NOT NULL DEFAULT 'dialog'`);
   await addColumnIfMissing('config', 'receipt_printer_name', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('config', 'receipt_paper_size', `VARCHAR(20) NOT NULL DEFAULT '80mm'`);
@@ -7601,6 +7607,8 @@ async function getConfig(options = {}) {
     ncfSequencesWarning,
     ncfAlertExpiryDays: Number(row.ncf_alert_expiry_days || 30),
     ncfAlertLowCountThreshold: Number(row.ncf_alert_low_count_threshold || 20),
+    ncfAuthorizedSequencesV2Enabled: Boolean(row.ncf_authorized_sequences_v2_enabled),
+    preferredBillingDocType: row.preferred_billing_doc_type || 'ticket',
     mensaje: row.receipt_message,
     receiptPrintMode: row.receipt_print_mode || 'dialog',
     receiptPrinterName: row.receipt_printer_name || '',
@@ -13501,6 +13509,9 @@ app.put('/api/config', async (req, res) => {
   const exclusiveCashierPerRegister = businessStructureMode === 'monocaja'
     ? false
     : data.exclusiveCashierPerRegister !== false;
+  const preferredBillingDocType = ['ticket', 'B02', 'B01', 'factura-electronica'].includes(data.preferredBillingDocType)
+    ? data.preferredBillingDocType
+    : 'ticket';
   if (!LANGUAGE_OPTIONS.some((item) => item.value === language)) {
     return res.status(400).json({ error: 'El idioma seleccionado no es válido.' });
   }
@@ -13528,7 +13539,7 @@ app.put('/api/config', async (req, res) => {
      SET business_name = ?, rnc = ?, address = ?, phone = ?, currency = ?, tax_rate = ?,
          tax_calculate_at_invoice_end = ?, tax_include_in_product_price = ?, tax_show_breakdown_on_receipts = ?, tax_separate_taxable_and_exempt = ?,
          invoice_prefix = ?, invoice_next_number = ?, e_invoice_enabled = ?, e_invoice_prefix = ?,
-      e_invoice_next_number = ?, ncf_alert_expiry_days = ?, ncf_alert_low_count_threshold = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?,
+      e_invoice_next_number = ?, ncf_alert_expiry_days = ?, ncf_alert_low_count_threshold = ?, ncf_authorized_sequences_v2_enabled = ?, preferred_billing_doc_type = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?,
          cash_drawer_enabled = ?, cash_drawer_method = ?, cash_drawer_printer_name = ?, cash_drawer_pin = ?, cash_drawer_network_host = ?, cash_drawer_network_port = ?, cash_drawer_serial_port = ?,
          scale_type = ?, scale_serial_port = ?, scale_serial_baud_rate = ?, scale_default_unit = ?, scale_read_pattern = ?, scale_rounding_decimals = ?, scale_auto_read = ?,
          rounding_mode = ?,
@@ -13553,6 +13564,8 @@ app.put('/api/config', async (req, res) => {
       data.eInvoiceNextNumber,
       Math.max(1, Number(data.ncfAlertExpiryDays || 30)),
       Math.max(1, Number(data.ncfAlertLowCountThreshold || 20)),
+      data.ncfAuthorizedSequencesV2Enabled ? 1 : 0,
+      preferredBillingDocType,
       data.mensaje,
       receiptPrintMode || 'dialog',
       receiptPrinterName || null,

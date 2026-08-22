@@ -2051,9 +2051,19 @@ async function createWindow() {
   }
   mainWindow.webContents.loadURL(currentAppUrl, { userAgent: 'Tecno Caja-Electron' });
   mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize();
     mainWindow.show();
     markStartup('window-ready-to-show', createWindowStartedAt);
     markStartup('pos-visible');
+  });
+  // Si la página se recarga (F5, Ctrl+R, o location.reload() desde el propio
+  // POS) el sistema operativo conserva el tamaño de la ventana tal cual
+  // estaba — esto solo cubre el caso de que el usuario la haya restaurado a
+  // tamaño normal antes de recargar, para que siempre vuelva a maximizada.
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMaximized()) {
+      mainWindow.maximize();
+    }
   });
 
   // server.js corre en este mismo proceso (ver bootstrapServer). Cuando algo

@@ -347,27 +347,40 @@ function createFiscalSequencesRouter({
       const [cfg] = await query('SELECT ncf_authorized_sequences_v2_enabled FROM config WHERE id = 1 LIMIT 1');
       if (!cfg || !Number(cfg.ncf_authorized_sequences_v2_enabled)) {
         const legacyRows = await query(
-          `SELECT ncf_type FROM ncf_sequences
+          `SELECT ncf_type, siguiente_numero FROM ncf_sequences
            WHERE activa = 1 AND siguiente_numero <= maximo
              AND (? IS NULL OR branch_id IS NULL OR branch_id = ?)
-           ORDER BY ncf_type`,
+           ORDER BY ncf_type, branch_id DESC`,
           [branchId, branchId]
         );
-        return res.json(legacyRows.map((r) => ({ documentType: r.ncf_type, documentName: DOCUMENT_LABELS[r.ncf_type] || r.ncf_type })));
+        // Si hay más de un rango activo para el mismo tipo, nos quedamos con el
+        // primero — mismo orden (branch_id DESC) que usa getNextNcfLegacy() al
+        // asignar de verdad, para que el número previsualizado sea el que
+        // realmente se va a usar.
+        const seen = new Set();
+        const uniqueRows = legacyRows.filter((r) => (seen.has(r.ncf_type) ? false : (seen.add(r.ncf_type), true)));
+        return res.json(uniqueRows.map((r) => ({
+          documentType: r.ncf_type,
+          documentName: DOCUMENT_LABELS[r.ncf_type] || r.ncf_type,
+          nextNumber: r.siguiente_numero,
+        })));
       }
 
       const rows = await query(
-        `SELECT document_type, document_name FROM ncf_authorized_sequences
+        `SELECT document_type, document_name, next_number FROM ncf_authorized_sequences
          WHERE series = 'B' AND status = 'activo' AND deleted_at IS NULL
            AND next_number <= end_number
            AND (expiration_date IS NULL OR expiration_date >= date('now'))
            AND (? IS NULL OR branch_id IS NULL OR branch_id = ?)
-         ORDER BY document_type`,
+         ORDER BY document_type, branch_id DESC`,
         [branchId, branchId]
       );
-      res.json(rows.map((r) => ({
+      const seen = new Set();
+      const uniqueRows = rows.filter((r) => (seen.has(r.document_type) ? false : (seen.add(r.document_type), true)));
+      res.json(uniqueRows.map((r) => ({
         documentType: r.document_type,
         documentName: r.document_name || DOCUMENT_LABELS[r.document_type] || r.document_type,
+        nextNumber: r.next_number,
       })));
     } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
   });

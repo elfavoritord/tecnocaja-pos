@@ -184,7 +184,7 @@ async function ncfAuthSeqActivate(id) {
 }
 
 async function ncfAuthSeqSuspend(id) {
-  const reason = window.prompt('Motivo de la suspensión:');
+  const reason = await showPromptModal('Motivo de la suspensión:');
   if (!reason || !reason.trim()) return;
   try {
     await ncfAuthSeqApiPost(`/api/fiscal-sequences/${id}/suspend`, { reason: reason.trim() });
@@ -196,11 +196,11 @@ async function ncfAuthSeqSuspend(id) {
 }
 
 async function ncfAuthSeqChangeNextNumber(id) {
-  const newNumber = window.prompt('Nuevo próximo número (debe estar dentro del rango autorizado):');
+  const newNumber = await showPromptModal('Nuevo próximo número (debe estar dentro del rango autorizado):', { inputType: 'number' });
   if (!newNumber) return;
-  const reason = window.prompt('Motivo del cambio (obligatorio):');
+  const reason = await showPromptModal('Motivo del cambio (obligatorio):');
   if (!reason || !reason.trim()) { showToast('Debes indicar un motivo.', 'warning'); return; }
-  const password = window.prompt('Confirma tu contraseña de acceso:');
+  const password = await showPromptModal('Confirma tu contraseña de acceso:', { inputType: 'password' });
   if (!password) return;
   try {
     await ncfAuthSeqApiPost(`/api/fiscal-sequences/${id}/change-next-number`, {

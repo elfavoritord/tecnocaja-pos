@@ -4483,7 +4483,7 @@ function applyUiPreferences() {
   }
 }
 
-function saveConfig() {
+function saveConfig(onSuccess) {
   const taxInput = document.getElementById('cfg-itbis').value.trim();
   const parsedTax = taxInput === '' ? 0 : Number(taxInput);
   const previousLanguage = DB.config?.idioma || 'es';
@@ -4525,6 +4525,7 @@ function saveConfig() {
       if (languageChanged) {
         setTimeout(() => window.location.reload(), 150);
       }
+      if (typeof onSuccess === 'function') onSuccess();
     })
     .catch((error) => showToast(error.message, 'error'));
 }
@@ -4583,8 +4584,10 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
       : Boolean(DB.config?.eInvoiceEnabled ?? true),
     eInvoicePrefix: document.getElementById('cfg-e-prefix')?.value || DB.config?.eInvoicePrefix || 'ECF-',
     eInvoiceNextNumber: Math.max(1, parseInt(document.getElementById('cfg-next-einvoice')?.value, 10) || 1),
+    preferredBillingDocType: document.getElementById('cfg-preferred-doc-type')?.value || DB.config?.preferredBillingDocType || 'ticket',
     ncfAlertExpiryDays: Math.max(1, parseInt(document.getElementById('ncf-alert-expiry-days')?.value, 10) || DB.config?.ncfAlertExpiryDays || 30),
     ncfAlertLowCountThreshold: Math.max(1, parseInt(document.getElementById('ncf-alert-low-count')?.value, 10) || DB.config?.ncfAlertLowCountThreshold || 20),
+    ncfAuthorizedSequencesV2Enabled: Boolean(document.getElementById('cfg-ncf-v2-enabled')?.checked ?? DB.config?.ncfAuthorizedSequencesV2Enabled ?? false),
     mensaje: document.getElementById('cfg-msg')?.value || DB.config?.mensaje || '',
     receiptPrintMode: document.getElementById('cfg-print-mode')?.value || DB.config?.receiptPrintMode || 'dialog',
     receiptPrinterName: document.getElementById('cfg-printer-name')?.value || DB.config?.receiptPrinterName || '',
@@ -4656,6 +4659,7 @@ function syncConfigForm() {
     'cfg-next-invoice': cfg.nextInvoice,
     'cfg-e-prefix': cfg.eInvoicePrefix,
     'cfg-next-einvoice': cfg.eInvoiceNextNumber,
+    'cfg-preferred-doc-type': cfg.preferredBillingDocType || 'ticket',
     'ncf-alert-expiry-days': cfg.ncfAlertExpiryDays ?? 30,
     'ncf-alert-low-count': cfg.ncfAlertLowCountThreshold ?? 20,
     'cfg-msg': cfg.mensaje,
@@ -4768,6 +4772,10 @@ function syncConfigForm() {
   const exclusiveCashierToggle = document.getElementById('cfg-exclusive-cashier-register');
   if (exclusiveCashierToggle && exclusiveCashierToggle !== activeElement) {
     exclusiveCashierToggle.checked = Boolean(cfg.exclusiveCashierPerRegister ?? true);
+  }
+  const ncfV2Toggle = document.getElementById('cfg-ncf-v2-enabled');
+  if (ncfV2Toggle && ncfV2Toggle !== activeElement) {
+    ncfV2Toggle.checked = Boolean(cfg.ncfAuthorizedSequencesV2Enabled);
   }
   const narrowColsToggle = document.getElementById('cfg-receipt-narrow-cols');
   if (narrowColsToggle && narrowColsToggle !== activeElement) {
@@ -9315,8 +9323,8 @@ function buildNotifications() {
     });
   }
 
-  const lowStock = DB.productos.filter((p) => p.estado === 'Activo' && p.stock > 0 && p.stock <= p.stockMin);
-  const outStock = DB.productos.filter((p) => p.stock === 0);
+  const lowStock = DB.productos.filter((p) => p.estado === 'Activo' && p.tracksStock !== false && p.stock > 0 && p.stock <= p.stockMin);
+  const outStock = DB.productos.filter((p) => p.tracksStock !== false && p.stock === 0);
 
   if (lowStock.length) {
     notifications.push({

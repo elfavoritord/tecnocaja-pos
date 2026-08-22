@@ -2633,6 +2633,20 @@
           <div class="form-group"><label id="cfg-label-einvoice-toggle"><input type="checkbox" id="cfg-einvoice-enabled"> Habilitar factura electrónica</label></div>
           <div class="form-group"><label id="cfg-label-e-prefix">Prefijo Factura Electrónica</label><input type="text" id="cfg-e-prefix" class="form-input" value="ECF-"></div>
           <div class="form-group"><label id="cfg-label-next-einvoice">Próxima Factura Electrónica</label><input type="number" id="cfg-next-einvoice" class="form-input" value="1" min="1"></div>
+          <div class="form-group span-full">
+            <label id="cfg-label-preferred-doc-type">Tipo de comprobante preferido para vender</label>
+            <select id="cfg-preferred-doc-type" class="form-input">
+              <option value="ticket">Ticket (rápido, sin NCF)</option>
+              <option value="B02">B02 · Consumidor Final</option>
+              <option value="B01">B01 · Crédito Fiscal</option>
+              <option value="factura-electronica">e-CF · Factura Electrónica</option>
+            </select>
+            <small class="helper-text" style="display:block;margin-top:0.35rem">
+              Cada venta nueva arranca con este tipo ya seleccionado. El cajero sigue pudiendo
+              cambiarlo a mano según lo que pida cada cliente — esto solo define cuál se
+              preselecciona de entrada.
+            </small>
+          </div>
           <div class="form-group"><label id="cfg-label-receipt-message">Mensaje en Recibo</label><input type="text" id="cfg-msg" class="form-input" value="¡Gracias por su compra!"></div>
         </div>
 
@@ -2809,6 +2823,16 @@
             el cajero podrá usar ese tipo de comprobante al facturar. Tu contador también puede
             registrarlas desde su portal; llegan solas al abrir/cerrar caja o facturar, o usa el botón de abajo.
           </p>
+          <div class="ncf-alert-thresholds-box" style="margin-bottom:0.85rem">
+            <label class="checkbox-label"><input type="checkbox" id="cfg-ncf-v2-enabled"> Usar los rangos registrados aquí arriba al facturar</label>
+            <small class="helper-text" style="display:block;margin-top:0.35rem">
+              Mientras esto esté desactivado, el sistema sigue asignando los números de comprobante
+              desde el registro anterior (Configuración → Comprobantes clásico), sin importar lo que
+              actives o registres en esta pantalla nueva. Actívalo una sola vez, cuando ya hayas
+              confirmado que los rangos de aquí arriba son correctos — a partir de ese momento el
+              cajero factura con estos rangos.
+            </small>
+          </div>
           <div class="ncf-alert-thresholds-box">
             <div class="ncf-alert-thresholds-title">🔔 Alertas de secuencias</div>
             <div class="modal-grid">
@@ -3978,7 +4002,7 @@
     </div>
     <div id="cfg-group-modal-body" style="flex:1;overflow-y:auto;padding:1rem 1.25rem;display:flex;flex-direction:column;gap:.5rem"></div>
     <div style="display:flex;gap:.6rem;justify-content:flex-end;padding:.75rem 1.25rem;border-top:1px solid var(--border);flex-shrink:0;background:var(--bg2)">
-      <button class="btn-secondary" onclick="saveConfig()">💾 Guardar</button>
+      <button class="btn-secondary" onclick="saveConfig(closeCfgGroupModal)">💾 Guardar</button>
       <button class="btn-primary" onclick="closeCfgGroupModal()">Cerrar</button>
     </div>
   </div>

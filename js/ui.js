@@ -118,7 +118,7 @@ function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Ca
     overlay.style.cssText = [
       'position:fixed', 'inset:0',
       'background:rgba(6,8,16,0.88)',
-      'z-index:3000',
+      'z-index:5000',
       'display:flex', 'align-items:center', 'justify-content:center',
     ].join(';');
     overlay.innerHTML = `
@@ -153,6 +153,57 @@ function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Ca
   });
 }
 window.showDeleteConfirm = showDeleteConfirm;
+
+/**
+ * Reemplaza window.prompt() — Electron no lo soporta (el diálogo nunca
+ * aparece y devuelve null de inmediato), a diferencia de alert/confirm que
+ * sí muestran un diálogo nativo. Mismo patrón en-página que showDeleteConfirm.
+ * Devuelve el texto ingresado, o null si se canceló.
+ */
+function showPromptModal(message, { defaultValue = '', inputType = 'text', confirmText = 'Aceptar', cancelText = 'Cancelar' } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0',
+      'background:rgba(6,8,16,0.88)',
+      'z-index:5000',
+      'display:flex', 'align-items:center', 'justify-content:center',
+    ].join(';');
+    overlay.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem 1.75rem;max-width:360px;width:92%;box-shadow:var(--card-shadow)">
+        <p style="margin:0 0 0.85rem;color:var(--text);line-height:1.6;font-size:0.95rem">${message}</p>
+        <input type="${inputType}" class="form-input" data-role="prompt-input" style="width:100%;margin-bottom:1.25rem" value="${defaultValue}">
+        <div style="display:flex;gap:0.75rem;justify-content:flex-end">
+          <button class="btn-secondary" data-action="cancel">${cancelText}</button>
+          <button class="btn-primary" data-action="ok">${confirmText}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const input = overlay.querySelector('[data-role="prompt-input"]');
+    const cancelBtn = overlay.querySelector('[data-action="cancel"]');
+    const okBtn = overlay.querySelector('[data-action="ok"]');
+    input.focus();
+    input.select();
+
+    function close(result) {
+      document.removeEventListener('keydown', onKey, true);
+      if (overlay.parentNode) document.body.removeChild(overlay);
+      resolve(result);
+    }
+
+    function onKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
+      if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); close(input.value); }
+    }
+
+    cancelBtn.addEventListener('click', () => close(null));
+    okBtn.addEventListener('click', () => close(input.value));
+    document.addEventListener('keydown', onKey, true);
+  });
+}
+window.showPromptModal = showPromptModal;
 
 // Keyboard shortcuts
 window.addEventListener('keydown', function(e) {

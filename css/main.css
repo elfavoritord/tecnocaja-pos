@@ -870,8 +870,10 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 }
 .ventas-workspace.ventas-workspace--split {
   /* Sin mínimos en px: las dos columnas se achican en proporción con la
-     ventana en vez de forzar overflow o apilarse una sobre otra. */
-  grid-template-columns:minmax(0, 1.18fr) minmax(0, 0.92fr);
+     ventana en vez de forzar overflow o apilarse una sobre otra. Catálogo
+     más angosto que antes para que la tabla del pedido (columna CÓDIGO)
+     tenga espacio real y no envuelva los códigos de barra a dos líneas. */
+  grid-template-columns:minmax(0, 1fr) minmax(0, 1.12fr);
 }
 
 /* Search bar */
@@ -1310,9 +1312,13 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .sale-table th:nth-child(1),
 .sale-table td:nth-child(1) { width:5%; }
 .sale-table th:nth-child(2),
-.sale-table td:nth-child(2) { width:14%; }
+.sale-table td:nth-child(2) {
+  width:17%;
+  /* Códigos de barra (9-13 dígitos) no deben partirse en dos líneas. */
+  white-space:nowrap;
+}
 .sale-table th:nth-child(3),
-.sale-table td:nth-child(3) { width:26%; }
+.sale-table td:nth-child(3) { width:23%; }
 .sale-table th:nth-child(4),
 .sale-table td:nth-child(4) { width:13%; }
 .sale-table th:nth-child(5),
@@ -1793,8 +1799,9 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 .billing-titlebar {
   display:flex;
   align-items:center;
-  gap:0.55rem;
+  gap:0.6rem;
   flex-wrap:wrap;
+  row-gap:0.3rem;
 }
 .billing-titlebar-main {
   color:var(--text);
@@ -1803,8 +1810,14 @@ html, body { height:100%; font-family: var(--font); background: var(--bg); color
 }
 .billing-titlebar-doc {
   color:var(--text2);
-  font-size:0.92rem;
+  font-size:0.88rem;
   font-weight:700;
+  font-family:"Courier New",Consolas,monospace;
+  letter-spacing:0.02em;
+  background:rgba(255,255,255,0.05);
+  border:1px solid rgba(255,255,255,0.08);
+  border-radius:6px;
+  padding:0.16rem 0.5rem;
 }
 .billing-titlebar-badge {
   display:inline-flex;
@@ -8120,9 +8133,12 @@ textarea.form-input { resize:vertical; min-height:80px; }
   padding: 0.95rem 1.15rem;
 }
 .billing-titlebar-pending {
+  display: inline-flex;
+  align-items: center;
   color: #fbbf24;
   font-size: 0.74rem;
   font-weight: 800;
+  line-height: 1;
 }
 .billing-step-shell {
   position: relative;
@@ -9831,6 +9847,30 @@ textarea.form-input { resize:vertical; min-height:80px; }
   align-items: center; gap: 0.38rem;
   margin-top: 0.05rem;
 }
+/* RNC/cédula + Nombre en línea (no apiladas a lo ancho completo) dentro de
+   la tira compacta — el .ncf-extra-fields original es de columnas para el
+   layout viejo por pasos, aquí queda demasiado grande y desalineado. */
+.billing-v3-ncf-strip .ncf-extra-fields {
+  flex: 0 1 380px;
+  flex-direction: row;
+  gap: 0.32rem;
+  margin-top: 0;
+  min-width: 220px;
+}
+.billing-v3-ncf-strip .ncf-extra-fields .form-input {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.76rem;
+}
+.billing-v3-ncf-strip .ncf-extra-fields #ncf-rnc-input {
+  flex: 0 1 130px;
+}
+/* Vista previa fiscal ("B02 · Consumidor Final · B0200000502") justo
+   después de los campos, no empujada al borde derecho. */
+.billing-v3-ncf-strip .sale-fiscal-preview {
+  margin-right: auto;
+}
 
 /* Dentro del v3 modal: quitar el "Comprobante listo para emitir" y
    hacer la preview fiscal de una sola línea compacta */
@@ -9841,7 +9881,7 @@ textarea.form-input { resize:vertical; min-height:80px; }
   padding: 0; border: none; background: transparent;
 }
 .billing-v3-shell .sale-fiscal-inline {
-  font-size: 0.7rem; gap: 0.28rem;
+  font-size: 0.66rem; gap: 0.28rem;
   background: rgba(255,255,255,0.04);
   border: 1px solid rgba(255,255,255,0.09);
   border-radius: 6px; padding: 0.12rem 0.45rem;
@@ -9993,19 +10033,24 @@ textarea.form-input { resize:vertical; min-height:80px; }
 
 /* Dos botones COBRAR — fila horizontal */
 .billing-v3-cobrar-group {
-  display: flex; flex-direction: row; gap: 0.28rem; flex-shrink: 0;
+  display: flex; flex-direction: row; gap: 0.32rem; flex-shrink: 0;
 }
 .billing-v3-cobrar-print,
 .billing-v3-cobrar-noprint {
-  flex: 1; padding: 0.44rem 0.6rem;
+  padding: 0.44rem 0.6rem;
   border-radius: 10px; font-size: 0.78rem; font-weight: 700;
   cursor: pointer; transition: var(--transition); border: none;
   display: flex; align-items: center; justify-content: center; gap: 0.3rem;
 }
+/* El botón principal es más grande y ocupa más espacio que el secundario
+   ("sin imprimir"), en vez de repartirse el ancho a mitades iguales. */
 .billing-v3-cobrar-print {
+  flex: 2.2; padding: 0.68rem 0.7rem;
+  font-size: 0.94rem;
   background: linear-gradient(135deg, #10b981, #059669);
   color: #fff; box-shadow: 0 2px 12px rgba(16,185,129,0.32);
 }
+.billing-v3-cobrar-noprint { flex: 1; }
 .billing-v3-cobrar-print:hover:not(:disabled) {
   background: linear-gradient(135deg, #34d399, #10b981);
   box-shadow: 0 4px 18px rgba(16,185,129,0.4);
@@ -10036,7 +10081,7 @@ textarea.form-input { resize:vertical; min-height:80px; }
   flex: 1; min-width: 46px;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
-  gap: 0.1rem; padding: 0.36rem 0.28rem;
+  gap: 0.1rem; padding: 0.3rem 0.24rem;
   border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.1);
   background: var(--bg2); cursor: pointer; transition: var(--transition);
@@ -10094,7 +10139,7 @@ textarea.form-input { resize:vertical; min-height:80px; }
   margin-bottom: 0.1rem;
 }
 .billing-v3-quick-btn {
-  padding: 0.42rem 0.18rem;
+  padding: 0.32rem 0.18rem;
   border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.1);
   background: var(--bg2); color: var(--text2);
@@ -10111,7 +10156,7 @@ textarea.form-input { resize:vertical; min-height:80px; }
 .billing-v3-cambio-card {
   margin-top: 0.1rem;
   border-radius: 14px;
-  padding: 0.62rem 0.75rem 0.58rem;
+  padding: 0.48rem 0.7rem 0.44rem;
   text-align: center;
   display: flex; flex-direction: column; align-items: center; gap: 0.14rem;
   border: 2px solid rgba(255,255,255,0.07);

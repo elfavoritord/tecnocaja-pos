@@ -31,10 +31,25 @@
     style.id = 'assistant-style';
     style.textContent = `
       #assistant-float{position:fixed;bottom:1.5rem;left:1.5rem;z-index:9990;width:56px;height:56px;
-        border-radius:50%;background:var(--accent,#6C63FF);color:#fff;border:none;cursor:pointer;
+        border-radius:50%;background:var(--accent,#6C63FF);color:#fff;border:none;cursor:grab;
         box-shadow:0 4px 20px rgba(0,0,0,0.35);font-size:1.5rem;display:flex;align-items:center;
-        justify-content:center;transition:transform .15s}
+        justify-content:center;transition:transform .15s;touch-action:none;user-select:none}
       #assistant-float:hover{transform:scale(1.07)}
+      #assistant-float.is-dragging{cursor:grabbing;transition:none}
+      #assistant-float.assistant-hidden{display:none!important}
+      #assistant-help-visibility-row{display:flex;align-items:center;justify-content:space-between;gap:.75rem;
+        margin:.85rem 1.25rem 0;padding:.65rem .85rem;background:var(--bg);border:1px solid var(--border);
+        border-radius:10px}
+      #assistant-help-visibility-row span{font-size:.82rem;color:var(--text2)}
+      #assistant-help-visibility-row small{display:block;font-size:.7rem;color:var(--text3);margin-top:.1rem}
+      .assistant-help-toggle{position:relative;width:40px;height:22px;flex-shrink:0}
+      .assistant-help-toggle input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+      .assistant-help-toggle-track{position:absolute;inset:0;background:var(--bg3);border:1px solid var(--border);
+        border-radius:999px;transition:background .15s}
+      .assistant-help-toggle-track::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;
+        border-radius:50%;background:#fff;transition:transform .15s}
+      .assistant-help-toggle input:checked ~ .assistant-help-toggle-track{background:var(--accent,#6C63FF)}
+      .assistant-help-toggle input:checked ~ .assistant-help-toggle-track::after{transform:translateX(18px)}
       #assistant-panel{position:fixed;bottom:1.5rem;left:1.5rem;z-index:9991;width:360px;max-width:92vw;
         height:520px;max-height:75vh;background:var(--bg2);border:1px solid var(--border);
         border-radius:var(--radius,12px);box-shadow:0 10px 40px rgba(0,0,0,0.45);display:none;
@@ -115,15 +130,142 @@
     document.head.appendChild(style);
   }
 
+  // ── Visibilidad y posición del botón flotante (persistentes) ───────────
+  const ASSISTANT_VISIBLE_KEY = 'tecnoAssistantVisible';
+  const ASSISTANT_POS_KEY = 'tecnoAssistantPos';
+
+  function isAssistantVisible() {
+    try {
+      return localStorage.getItem(ASSISTANT_VISIBLE_KEY) !== '0';
+    } catch (_e) { return true; }
+  }
+
+  function setAssistantVisible(visible) {
+    try { localStorage.setItem(ASSISTANT_VISIBLE_KEY, visible ? '1' : '0'); } catch (_e) { /* noop */ }
+    const btn = document.getElementById('assistant-float');
+    if (btn) btn.classList.toggle('assistant-hidden', !visible);
+    if (!visible) close();
+  }
+
+  function getSavedFloatPosition() {
+    try {
+      const raw = localStorage.getItem(ASSISTANT_POS_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (Number.isFinite(parsed?.left) && Number.isFinite(parsed?.top)) return parsed;
+    } catch (_e) { /* noop */ }
+    return null;
+  }
+
+  function saveFloatPosition(left, top) {
+    try { localStorage.setItem(ASSISTANT_POS_KEY, JSON.stringify({ left, top })); } catch (_e) { /* noop */ }
+  }
+
+  function applyFloatPosition(btn, pos) {
+    if (!pos) return;
+    btn.style.left = `${pos.left}px`;
+    btn.style.top = `${pos.top}px`;
+    btn.style.bottom = 'auto';
+    btn.style.right = 'auto';
+  }
+
+  function clampFloatPosition(left, top, size) {
+    const maxLeft = Math.max(0, window.innerWidth - size);
+    const maxTop = Math.max(0, window.innerHeight - size);
+    return { left: Math.min(Math.max(0, left), maxLeft), top: Math.min(Math.max(0, top), maxTop) };
+  }
+
+  // Arrastrar el botón flotante a cualquier parte de la pantalla — se
+  // distingue de un clic normal por la distancia recorrida (DRAG_THRESHOLD);
+  // por debajo de eso, se trata como clic y abre/cierra el chat como siempre.
+  function attachFloatDrag(btn) {
+    const DRAG_THRESHOLD = 6;
+    let dragging = false;
+    let moved = false;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+    btn.addEventListener('pointerdown', (e) => {
+      if (e.button !== undefined && e.button !== 0) return;
+      const rect = btn.getBoundingClientRect();
+      dragging = true;
+      moved = false;
+      startX = e.clientX; startY = e.clientY;
+      startLeft = rect.left; startTop = rect.top;
+      btn.setPointerCapture(e.pointerId);
+    });
+
+    btn.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+      moved = true;
+      btn.classList.add('is-dragging');
+      const size = btn.getBoundingClientRect().width || 56;
+      const { left, top } = clampFloatPosition(startLeft + dx, startTop + dy, size);
+      applyFloatPosition(btn, { left, top });
+      if (STATE.open) positionPanelNearFloat();
+    });
+
+    const endDrag = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      btn.classList.remove('is-dragging');
+      if (moved) {
+        const rect = btn.getBoundingClientRect();
+        saveFloatPosition(rect.left, rect.top);
+      }
+      try { btn.releasePointerCapture(e.pointerId); } catch (_e) { /* noop */ }
+    };
+    btn.addEventListener('pointerup', endDrag);
+    btn.addEventListener('pointercancel', endDrag);
+
+    btn.addEventListener('click', (e) => {
+      if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; return; }
+      toggle();
+    });
+  }
+
+  // Abre el panel de chat pegado al botón flotante donde haya quedado — si
+  // el usuario lo movió cerca de un borde, se acomoda hacia el lado
+  // contrario para no salirse de la pantalla.
+  function positionPanelNearFloat() {
+    const btn = document.getElementById('assistant-float');
+    const panel = document.getElementById('assistant-panel');
+    if (!btn || !panel) return;
+    const btnRect = btn.getBoundingClientRect();
+    const panelWidth = panel.offsetWidth || 360;
+    const panelHeight = panel.offsetHeight || 520;
+    const margin = 10;
+
+    const opensUp = btnRect.top + btnRect.height + margin + panelHeight > window.innerHeight;
+    const top = opensUp
+      ? Math.max(margin, btnRect.top - panelHeight - margin)
+      : Math.min(window.innerHeight - panelHeight - margin, btnRect.top + btnRect.height + margin);
+
+    const opensLeft = btnRect.left + panelWidth + margin > window.innerWidth;
+    const left = opensLeft
+      ? Math.max(margin, btnRect.right - panelWidth)
+      : btnRect.left;
+
+    panel.style.top = `${Math.max(margin, top)}px`;
+    panel.style.left = `${Math.max(margin, left)}px`;
+    panel.style.bottom = 'auto';
+    panel.style.right = 'auto';
+  }
+
   function ensureFloatButton() {
     if (document.getElementById('assistant-float')) return;
     const btn = document.createElement('button');
     btn.id = 'assistant-float';
     btn.type = 'button';
-    btn.title = 'Tecno Asistente';
+    btn.title = 'Tecno Asistente (arrástrame a cualquier parte)';
     btn.textContent = '🤖';
-    btn.addEventListener('click', toggle);
     document.body.appendChild(btn);
+    const savedPos = getSavedFloatPosition();
+    if (savedPos) applyFloatPosition(btn, clampFloatPosition(savedPos.left, savedPos.top, 56));
+    if (!isAssistantVisible()) btn.classList.add('assistant-hidden');
+    attachFloatDrag(btn);
   }
 
   function ensurePanel() {
@@ -307,6 +449,7 @@
     ensurePanel();
     document.getElementById('assistant-panel')?.classList.add('open');
     STATE.open = true;
+    positionPanelNearFloat();
     if (!STATE.history.length) {
       appendMessage('bot', isOffline()
         ? 'Estoy en modo local: puedo buscar en los artículos de ayuda guardados, aunque no haya conexión con la PC principal.'
@@ -379,6 +522,16 @@
           <h3>❓ Centro de Ayuda</h3>
           <button type="button" id="assistant-help-close" aria-label="Cerrar">✕</button>
         </div>
+        <div id="assistant-help-visibility-row">
+          <span>
+            Mostrar el botón 🤖 flotante en pantalla
+            <small>Se puede arrastrar a cualquier parte — recuerda dónde lo dejes.</small>
+          </span>
+          <label class="assistant-help-toggle">
+            <input type="checkbox" id="assistant-visibility-toggle">
+            <span class="assistant-help-toggle-track"></span>
+          </label>
+        </div>
         <input type="text" id="assistant-help-search" placeholder="Buscar en los artículos de ayuda…">
         <div id="assistant-help-tutorials-title">Tutoriales guiados</div>
         <div id="assistant-help-tutorials"></div>
@@ -391,6 +544,9 @@
     modal.querySelector('#assistant-help-search').addEventListener('input', (e) => {
       renderHelpArticles(filterArticles(e.target.value));
     });
+    const visibilityToggle = modal.querySelector('#assistant-visibility-toggle');
+    visibilityToggle.checked = isAssistantVisible();
+    visibilityToggle.addEventListener('change', (e) => setAssistantVisible(e.target.checked));
   }
 
   function filterArticles(term) {
@@ -460,6 +616,8 @@
   async function openHelpCenterModal() {
     ensureHelpCenterModal();
     document.getElementById('assistant-help-modal')?.classList.add('open');
+    const visibilityToggle = document.getElementById('assistant-visibility-toggle');
+    if (visibilityToggle) visibilityToggle.checked = isAssistantVisible();
     const list = document.getElementById('assistant-help-list');
     if (list) list.innerHTML = '<div class="assistant-help-empty">Cargando…</div>';
     const ctx = { planCode: currentPlanCode(), businessType: currentBusinessType() };
