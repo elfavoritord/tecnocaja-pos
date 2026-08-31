@@ -10,6 +10,9 @@ const express = require('express');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+const mailer = require('./mailer');
+const asistente = require('./asistente');
+
 // ── Firebase Admin SDK ─────────────────────────────────────────────────────
 let adminSdk = null;
 let db       = null;
@@ -2991,8 +2994,25 @@ async function getNextNcf(contadorRef, tipo) {
     const updates = { nextNumber: newNext, updatedAt: isoNow() };
     if (newNext > x.endNumber) updates.status = 'agotado';
     t.update(candidate.ref, updates);
-    return `${tipo}${String(used).padStart(8, '0')}`;
+    return {
+      ncf: `${tipo}${String(used).padStart(8, '0')}`,
+      ncfVencimiento: x.expirationDate || null,
+    };
   });
+}
+
+// Busca la fecha de vencimiento del NCF de una factura mirando las secuencias
+// del contador (para facturas viejas que no la guardaron).
+async function lookupNcfVencimiento(contadorRef, tipo_ncf, ncf) {
+  try {
+    const snap = await contadorRef.collection('mis_secuencias_ncf')
+      .where('documentType', '==', tipo_ncf).get();
+    if (snap.empty) return null;
+    const num = parseInt(String(ncf || '').replace(/\D/g, '').slice(-8), 10);
+    const seqs = snap.docs.map(d => d.data());
+    const match = seqs.find(s => Number.isFinite(num) && num >= s.startNumber && num <= s.endNumber) || seqs[0];
+    return match?.expirationDate || null;
+  } catch { return null; }
 }
 
 app.get('/api/facturacion/stats', requireAuth, async (req, res) => {
@@ -3006,7 +3026,7 @@ app.get('/api/facturacion/stats', requireAuth, async (req, res) => {
       if (f.estado === 'anulada') continue;
       totalGeneral += f.total || 0;
       if ((f.fecha || '').startsWith(mes)) totalMes += f.total || 0;
-      if (f.estado === 'pendiente') pendientes++;
+      if (f.estado === 'pendiente' || f.estado === 'parcial') pendientes++;
       if (f.estado === 'pagada')    pagadas++;
     }
     const r = v => Math.round(v * 100) / 100;
@@ -3029,6 +3049,37 @@ app.get('/api/facturacion/facturas', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Normaliza ítems y calcula totales de una factura (reutilizado por POST y PUT).
+function computeFacturaItems(items) {
+  const r = v => Math.round(v * 100) / 100;
+  let subtotal = 0, descuento_total = 0, itbis_total = 0;
+  const itemsCalc = (items || []).map(item => {
+    const precio     = Math.max(0, Number(item.precio)   || 0);
+    const cantidad   = Math.max(1, Number(item.cantidad) || 1);
+    const pct_desc   = Math.min(100, Math.max(0, Number(item.descuento) || 0));
+    const itbis_rate = Number(item.itbis_rate) || 0;
+    const base       = precio * cantidad;
+    const desc_amt   = base * (pct_desc / 100);
+    const gravable   = base - desc_amt;
+    const itbis_amt  = gravable * (itbis_rate / 100);
+    subtotal        += base;
+    descuento_total += desc_amt;
+    itbis_total     += itbis_amt;
+    return {
+      descripcion: String(item.descripcion || '').trim(),
+      cantidad, precio, descuento: pct_desc, itbis_rate,
+      itbis: r(itbis_amt), total: r(gravable + itbis_amt),
+    };
+  });
+  return {
+    itemsCalc,
+    subtotal: r(subtotal),
+    descuento_total: r(descuento_total),
+    itbis_total: r(itbis_total),
+    total: r(subtotal - descuento_total + itbis_total),
+  };
+}
+
 app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
   try {
     const { cliente, tipo_ncf, fecha, items, condicion_pago, metodo_pago, observacion } = req.body;
@@ -3037,32 +3088,13 @@ app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Debe agregar al menos un ítem.' });
 
     const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
-    const ncf = await getNextNcf(contadorRef, tipo_ncf);
+    const { ncf, ncfVencimiento } = await getNextNcf(contadorRef, tipo_ncf);
 
     const r = v => Math.round(v * 100) / 100;
-    let subtotal = 0, descuento_total = 0, itbis_total = 0;
-    const itemsCalc = items.map(item => {
-      const precio    = Math.max(0, Number(item.precio)   || 0);
-      const cantidad  = Math.max(1, Number(item.cantidad) || 1);
-      const pct_desc  = Math.min(100, Math.max(0, Number(item.descuento)  || 0));
-      const itbis_rate = Number(item.itbis_rate) || 0;
-      const base       = precio * cantidad;
-      const desc_amt   = base * (pct_desc / 100);
-      const gravable   = base - desc_amt;
-      const itbis_amt  = gravable * (itbis_rate / 100);
-      subtotal        += base;
-      descuento_total += desc_amt;
-      itbis_total     += itbis_amt;
-      return {
-        descripcion: String(item.descripcion || '').trim(),
-        cantidad, precio, descuento: pct_desc, itbis_rate,
-        itbis: r(itbis_amt), total: r(gravable + itbis_amt),
-      };
-    });
-
-    const total_general = subtotal - descuento_total + itbis_total;
+    const { itemsCalc, subtotal, descuento_total, itbis_total, total: total_general } = computeFacturaItems(items);
     const data = {
       ncf, tipo_ncf, tipo_ncf_label: NCF_TIPOS[tipo_ncf],
+      ncf_vencimiento: ncfVencimiento || null,
       fecha: fecha || new Date().toISOString().slice(0, 10),
       cliente: {
         nombre:    cliente.nombre.trim(), rnc:      cliente.rnc       || '',
@@ -3092,10 +3124,15 @@ app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
 
 app.get('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
   try {
-    const doc = await col(COL_CONTADORES)
-      .doc(req.contador.contadorDocId).collection('facturas').doc(req.params.id).get();
+    const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+    const doc = await contadorRef.collection('facturas').doc(req.params.id).get();
     if (!doc.exists) return res.status(404).json({ error: 'Factura no encontrada.' });
-    res.json(docData(doc));
+    const f = docData(doc);
+    // Facturas viejas sin la fecha guardada: buscarla en las secuencias.
+    if (!f.ncf_vencimiento && f.tipo_ncf && f.ncf) {
+      f.ncf_vencimiento = await lookupNcfVencimiento(contadorRef, f.tipo_ncf, f.ncf);
+    }
+    res.json(f);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3107,8 +3144,53 @@ app.put('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
     if (!snap.exists) return res.status(404).json({ error: 'Factura no encontrada.' });
     const cur = snap.data();
     if (cur.estado === 'anulada') return res.status(400).json({ error: 'No se puede modificar una factura anulada.' });
-    const { estado, monto_pagado } = req.body;
+    const { estado, monto_pagado, cliente, items, fecha, condicion_pago, metodo_pago, observacion, pago } = req.body;
     const upd = { updatedAt: isoNow() };
+
+    // Registrar un pago (parcial o total) — acumula en pagos[] como en el admin.
+    if (pago && Number(pago.monto) > 0) {
+      if (cur.estado === 'pagada') return res.status(400).json({ error: 'Esta factura ya está pagada.' });
+      const total = Number(cur.total || 0);
+      const yaPagado = Number(cur.monto_pagado || 0);
+      const monto = Math.round(Number(pago.monto) * 100) / 100;
+      if (monto > total - yaPagado + 0.01) {
+        return res.status(400).json({ error: `El pago no puede superar el saldo pendiente (RD$ ${(total - yaPagado).toFixed(2)}).` });
+      }
+      const nuevoPagado = Math.round((yaPagado + monto) * 100) / 100;
+      upd.pagos = [ ...(Array.isArray(cur.pagos) ? cur.pagos : []),
+        { monto, metodo: pago.metodo || 'efectivo', nota: pago.nota || '', fecha: isoNow() } ];
+      upd.monto_pagado = nuevoPagado;
+      upd.balance = Math.max(0, Math.round((total - nuevoPagado) * 100) / 100);
+      upd.estado = upd.balance <= 0.009 ? 'pagada' : 'parcial';
+      await ref.update(upd);
+      return res.json({ ok: true, estado: upd.estado, balance: upd.balance });
+    }
+
+    // Edición completa (contenido de la factura) — solo mientras esté pendiente
+    // y sin pagos registrados. El NCF y el tipo NO cambian.
+    if (Array.isArray(items) && items.length) {
+      if (cur.estado !== 'pendiente' || Number(cur.monto_pagado || 0) > 0) {
+        return res.status(400).json({ error: 'Solo se puede editar una factura pendiente y sin pagos registrados.' });
+      }
+      if (!cliente?.nombre?.trim()) return res.status(400).json({ error: 'Nombre del cliente requerido.' });
+      const c = computeFacturaItems(items);
+      upd.cliente = {
+        nombre: cliente.nombre.trim(), rnc: cliente.rnc || '',
+        direccion: cliente.direccion || '', telefono: cliente.telefono || '',
+        correo: cliente.correo || '',
+      };
+      upd.items = c.itemsCalc;
+      upd.subtotal = c.subtotal;
+      upd.descuento_total = c.descuento_total;
+      upd.itbis_total = c.itbis_total;
+      upd.total = c.total;
+      upd.balance = c.total;
+      if (fecha) upd.fecha = fecha;
+      if (condicion_pago) upd.condicion_pago = condicion_pago;
+      if (metodo_pago) upd.metodo_pago = metodo_pago;
+      upd.observacion = observacion || '';
+    }
+
     if (estado) upd.estado = estado;
     if (monto_pagado !== undefined) {
       upd.monto_pagado = Math.max(0, Number(monto_pagado));
@@ -3118,6 +3200,149 @@ app.put('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
     await ref.update(upd);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Lee la config de correo del contador (doc de Firestore) o el fallback del .env.
+async function getContadorEmailConfig(req) {
+  const doc = await col(COL_CONTADORES).doc(req.contador.contadorDocId).get();
+  const d = doc.exists ? doc.data() : {};
+  if (d.email_smtp_user && d.email_smtp_pass) {
+    return { user: d.email_smtp_user, pass: d.email_smtp_pass, fromName: d.email_from_name || req.contador.nombre_firma || d.email_smtp_user, source: 'contador' };
+  }
+  const env = mailer.envConfig();
+  return env ? { ...env, source: 'env' } : null;
+}
+
+// Estado de la config de correo (nunca devuelve la contraseña).
+app.get('/api/facturacion/config/email', requireAuth, async (req, res) => {
+  try {
+    const cfg = await getContadorEmailConfig(req);
+    res.json({
+      configured: !!cfg,
+      user: cfg?.user || '',
+      fromName: cfg?.fromName || (req.contador.nombre_firma || ''),
+      source: cfg?.source || null,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Guardar / actualizar la config de correo del contador (verifica antes de guardar).
+app.put('/api/facturacion/config/email', requireAuth, async (req, res) => {
+  try {
+    const cfg = mailer.normalizeConfig({
+      user: req.body.user, pass: req.body.pass,
+      fromName: req.body.fromName || req.contador.nombre_firma,
+    });
+    if (!cfg) return res.status(400).json({ error: 'Correo o contraseña de aplicación inválidos.' });
+    try {
+      await mailer.verifyConfig(cfg);
+    } catch (verr) {
+      return res.status(400).json({ error: 'Gmail rechazó las credenciales. Revisa el correo y la contraseña de aplicación (16 caracteres).' });
+    }
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId).set({
+      email_smtp_user: cfg.user,
+      email_smtp_pass: cfg.pass,
+      email_from_name: cfg.fromName,
+      email_updated_at: isoNow(),
+    }, { merge: true });
+    res.json({ ok: true, configured: true, user: cfg.user, fromName: cfg.fromName });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Desconectar el correo del contador.
+app.delete('/api/facturacion/config/email', requireAuth, async (req, res) => {
+  try {
+    const { FieldValue } = require('firebase-admin/firestore');
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId).update({
+      email_smtp_user: FieldValue.delete(),
+      email_smtp_pass: FieldValue.delete(),
+      email_from_name: FieldValue.delete(),
+      email_updated_at: FieldValue.delete(),
+    });
+    res.json({ ok: true, configured: false });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Enviar la factura por correo con el PDF adjunto.
+// El PDF lo genera el renderer (Electron printToPDF) y lo manda en base64.
+// Si el contador aún no tiene config y manda `smtp:{user,pass,fromName}`, se
+// guarda esa config (primera vez) y luego se envía.
+app.post('/api/facturacion/facturas/:id/enviar', requireAuth, async (req, res) => {
+  try {
+    let cfg = await getContadorEmailConfig(req);
+
+    if (!cfg && req.body.smtp) {
+      const nc = mailer.normalizeConfig({
+        user: req.body.smtp.user, pass: req.body.smtp.pass,
+        fromName: req.body.smtp.fromName || req.contador.nombre_firma,
+      });
+      if (!nc) return res.status(400).json({ error: 'Correo o contraseña de aplicación inválidos.' });
+      try { await mailer.verifyConfig(nc); }
+      catch { return res.status(400).json({ error: 'Gmail rechazó las credenciales. Revisa el correo y la contraseña de aplicación.' }); }
+      await col(COL_CONTADORES).doc(req.contador.contadorDocId).set({
+        email_smtp_user: nc.user, email_smtp_pass: nc.pass,
+        email_from_name: nc.fromName, email_updated_at: isoNow(),
+      }, { merge: true });
+      cfg = { ...nc, source: 'contador' };
+    }
+
+    if (!cfg) {
+      return res.status(503).json({ error: 'Configura tu correo en Configuración → Correo antes de enviar.' });
+    }
+
+    const ref = col(COL_CONTADORES)
+      .doc(req.contador.contadorDocId).collection('facturas').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Factura no encontrada.' });
+    const f = snap.data();
+
+    const to = String(req.body.to || f.cliente?.correo || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      return res.status(400).json({ error: 'Indica un correo de destino válido.' });
+    }
+    const pdfBase64 = String(req.body.pdfBase64 || '');
+    if (!pdfBase64) return res.status(400).json({ error: 'No se recibió el PDF de la factura.' });
+    const attachmentBuffer = Buffer.from(pdfBase64, 'base64');
+
+    const ncfDisp = (f.ncf && f.ncf.length >= 11) ? f.ncf.slice(0, 3) + '-' + f.ncf.slice(3) : (f.ncf || '');
+    const saldo = Number(f.balance ?? ((f.total || 0) - (f.monto_pagado || 0)));
+    const mensajeExtra = String(req.body.mensaje || '').trim();
+    const lineas = [
+      `Estimado(a) ${f.cliente?.nombre || 'cliente'},`,
+      '',
+      `Adjuntamos la factura ${ncfDisp} por un total de RD$ ${(f.total || 0).toFixed(2)}.`,
+      saldo > 0.01 && f.estado !== 'anulada' ? `Saldo pendiente: RD$ ${saldo.toFixed(2)}.` : '',
+      mensajeExtra ? `\n${mensajeExtra}` : '',
+      '',
+      'Gracias por confiar en nosotros.',
+      req.contador.nombre_firma || req.contador.fullName || '',
+      req.contador.telefono || '',
+      req.contador.correo || '',
+    ].filter(Boolean);
+
+    const result = await mailer.sendMail(cfg, {
+      to,
+      replyTo: req.contador.correo || undefined,
+      subject: `Factura ${ncfDisp} — ${req.contador.nombre_firma || req.contador.fullName || 'Tecno Caja Contadores'}`,
+      text: lineas.join('\n'),
+      html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">${lineas.map(l => l === '' ? '<br>' : `<p style="margin:0 0 6px">${String(l).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</p>`).join('')}</div>`,
+      attachmentBuffer,
+      attachmentName: `Factura_${(f.ncf || 'FACTURA').replace(/[^A-Z0-9]/gi, '')}.pdf`,
+    });
+
+    const now = isoNow();
+    await ref.update({
+      emailsEnviados: [ ...(Array.isArray(f.emailsEnviados) ? f.emailsEnviados : []),
+        { to, fecha: now, messageId: result.messageId || null } ],
+      ultimoEmailA: to,
+      ultimoEmailEn: now,
+      updatedAt: now,
+    });
+
+    res.json({ ok: true, to, messageId: result.messageId || null, savedConfig: cfg.source === 'contador' && !!req.body.smtp });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════
@@ -3670,6 +3895,346 @@ app.get('/api/alertas', requireAuth, async (req, res) => {
       advertencia: alertas.filter(a => a.nivel === 'advertencia').length,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ASISTENTE VIRTUAL (IA) — Gemini, con herramientas de solo lectura
+// ══════════════════════════════════════════════════════════════════════
+
+// Config de la API key (por contador). Nunca devuelve la key.
+app.get('/api/asistente/config', requireAuth, async (req, res) => {
+  try {
+    const doc = await col(COL_CONTADORES).doc(req.contador.contadorDocId).get();
+    res.json({ configured: !!(doc.exists && doc.data().gemini_api_key), model: asistente.MODEL });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/asistente/config', requireAuth, async (req, res) => {
+  const apiKey = String(req.body.apiKey || '').trim();
+  if (apiKey.length < 20) return res.status(400).json({ error: 'API key inválida.' });
+  try {
+    try { await asistente.testKey(apiKey); }
+    catch (e) { return res.status(400).json({ error: 'Google rechazó la API key: ' + e.message }); }
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId).set({
+      gemini_api_key: apiKey, gemini_updated_at: isoNow(),
+    }, { merge: true });
+    res.json({ ok: true, configured: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/asistente/config', requireAuth, async (req, res) => {
+  try {
+    const { FieldValue } = require('firebase-admin/firestore');
+    await col(COL_CONTADORES).doc(req.contador.contadorDocId).update({
+      gemini_api_key: FieldValue.delete(), gemini_updated_at: FieldValue.delete(),
+    });
+    res.json({ ok: true, configured: false });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Herramientas del asistente (solo lectura, alcance = clientes del contador) ──
+const ASISTENTE_TOOLS = [
+  {
+    name: 'listar_clientes',
+    description: 'Lista todos los negocios/clientes del contador con su plan, estado y días para vencer la licencia.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'resumen_pos_cliente',
+    description: 'Resumen de actividad del POS de un cliente: ventas de hoy/mes/total, ITBIS del mes, facturas emitidas, cuentas por cobrar, inventario bajo.',
+    parameters: { type: 'object', properties: { cliente: { type: 'string', description: 'Nombre o RNC del cliente' } }, required: ['cliente'] },
+  },
+  {
+    name: 'reporte_cliente',
+    description: 'Filas de un reporte sincronizado del POS de un cliente. tabs: ventas, facturas, itbis, productos, cxc, cierres, inventario.',
+    parameters: {
+      type: 'object',
+      properties: {
+        cliente: { type: 'string', description: 'Nombre o RNC del cliente' },
+        tab: { type: 'string', description: 'ventas | facturas | itbis | productos | cxc | cierres | inventario' },
+        desde: { type: 'string', description: 'Fecha desde YYYY-MM-DD (opcional)' },
+        hasta: { type: 'string', description: 'Fecha hasta YYYY-MM-DD (opcional)' },
+        buscar: { type: 'string', description: 'Texto libre para filtrar filas (opcional)' },
+      },
+      required: ['cliente', 'tab'],
+    },
+  },
+  {
+    name: 'honorarios',
+    description: 'Facturas de honorarios que el contador le emite a sus clientes. Filtra por estado (pendiente, parcial, pagada, anulada) o por nombre de cliente.',
+    parameters: {
+      type: 'object',
+      properties: {
+        estado: { type: 'string', description: 'pendiente | parcial | pagada | anulada (opcional)' },
+        cliente: { type: 'string', description: 'Nombre del cliente (opcional)' },
+      },
+    },
+  },
+  {
+    name: 'alertas',
+    description: 'Alertas del contador: licencias vencidas o por vencer, clientes sin sincronizar, solicitudes pendientes.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'secuencias_ncf',
+    description: 'Secuencias NCF del contador (sus rangos para facturar honorarios) y, si se indica un cliente, sus secuencias NCF pendientes y aplicadas en el POS.',
+    parameters: { type: 'object', properties: { cliente: { type: 'string', description: 'Nombre o RNC del cliente (opcional)' } } },
+  },
+  {
+    name: 'generar_pdf',
+    description: 'Prepara un reporte en PDF para que el usuario lo descargue. NO se genera solo: el usuario lo confirma. Úsalo solo cuando te pidan un PDF/reporte descargable.',
+    parameters: {
+      type: 'object',
+      properties: {
+        titulo: { type: 'string' },
+        subtitulo: { type: 'string' },
+        secciones: {
+          type: 'array',
+          description: 'Bloques del reporte, en orden.',
+          items: {
+            type: 'object',
+            properties: {
+              tipo: { type: 'string', description: 'parrafo | lista | tabla | kpis' },
+              titulo: { type: 'string', description: 'Encabezado del bloque (opcional)' },
+              texto: { type: 'string', description: 'Para tipo=parrafo' },
+              items: { type: 'array', items: { type: 'string' }, description: 'Para tipo=lista' },
+              kpis: { type: 'array', items: { type: 'object', properties: { etiqueta: { type: 'string' }, valor: { type: 'string' } } }, description: 'Para tipo=kpis' },
+              encabezados: { type: 'array', items: { type: 'string' }, description: 'Para tipo=tabla' },
+              filas: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Para tipo=tabla' },
+            },
+            required: ['tipo'],
+          },
+        },
+      },
+      required: ['titulo', 'secciones'],
+    },
+  },
+  {
+    name: 'enviar_correo',
+    description: 'Prepara un correo para que el usuario lo revise y lo envíe. NO se envía solo. Úsalo solo cuando te pidan enviar/redactar un correo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        para: { type: 'string', description: 'Correo del destinatario' },
+        asunto: { type: 'string' },
+        cuerpo: { type: 'string', description: 'Texto del mensaje' },
+        adjuntar_factura_ncf: { type: 'string', description: 'NCF de una factura de honorarios a adjuntar en PDF (opcional)' },
+      },
+      required: ['para', 'asunto', 'cuerpo'],
+    },
+  },
+];
+
+async function _asistenteClientes(req) {
+  const snap = await col(COL_LICENCIAS).where('contadorId', '==', req.contador.contadorDocId).get();
+  return snap.docs.map(docData);
+}
+function _matchCliente(lista, texto) {
+  const t = String(texto || '').trim().toLowerCase();
+  if (!t) return null;
+  return lista.find(c => c.id === texto)
+    || lista.find(c => String(c.rnc || '').toLowerCase() === t)
+    || lista.find(c => String(c.businessName || c.razon_social || '').toLowerCase().includes(t))
+    || lista.find(c => String(c.razon_social || '').toLowerCase().includes(t))
+    || null;
+}
+
+async function ejecutarHerramientaAsistente(req, name, args) {
+  const clientes = await _asistenteClientes(req);
+
+  if (name === 'listar_clientes') {
+    return clientes.map(c => ({
+      id: c.id,
+      nombre: c.razon_social || c.businessName || c.businessKey || '—',
+      rnc: c.rnc || null,
+      plan: c.planName || c.plan_name || c.planCode || c.plan_code || null,
+      estado: c.status || 'trial',
+      dias_para_vencer: daysFromNow(vencimientoDate(c)),
+      sucursales: normalizeBusinessBranches(c).length || null,
+      ultima_sync: c.syncedAt || c.updatedAt || null,
+    }));
+  }
+
+  if (name === 'resumen_pos_cliente') {
+    const c = _matchCliente(clientes, args.cliente);
+    if (!c) return { error: `No encontré un cliente que coincida con "${args.cliente}".` };
+    const s = c.posStats || {};
+    return {
+      cliente: c.razon_social || c.businessName, rnc: c.rnc || null,
+      tiene_datos_pos: !!c.posStats,
+      ventas_hoy: s.ventasHoy ?? 0, ventas_mes: s.ventasMes ?? 0, ventas_total: s.ventasTotal ?? 0,
+      itbis_mes: s.itbisMes ?? 0, facturas_emitidas: s.facturasEmitidas ?? 0,
+      cxc_pendiente: s.cxcPendiente ?? 0, productos_activos: s.productosActivos ?? 0,
+      bajo_inventario: s.bajoInventario ?? 0, ultima_sync: s.ultimaSync || c.syncedAt || null,
+    };
+  }
+
+  if (name === 'reporte_cliente') {
+    const c = _matchCliente(clientes, args.cliente);
+    if (!c) return { error: `No encontré un cliente que coincida con "${args.cliente}".` };
+    const tab = String(args.tab || 'ventas').toLowerCase();
+    const tabDoc = await col(COL_LICENCIAS).doc(c.id).collection('reportes').doc(tab).get();
+    if (!tabDoc.exists) return { cliente: c.businessName, tab, filas: [], nota: 'Ese cliente no tiene ese reporte sincronizado del POS.' };
+    let rows = (tabDoc.data().rows || []).map(normalizeReportRow);
+    if (args.desde) rows = rows.filter(r => r.fecha && r.fecha >= args.desde);
+    if (args.hasta) rows = rows.filter(r => r.fecha && r.fecha <= args.hasta + 'T23:59:59');
+    if (args.buscar) {
+      const q = String(args.buscar).toLowerCase();
+      rows = rows.filter(r => Object.values(r).some(v => v != null && String(v).toLowerCase().includes(q)));
+    }
+    const total = rows.length;
+    return { cliente: c.businessName, tab, total, mostrando: Math.min(total, 60), filas: rows.slice(0, 60) };
+  }
+
+  if (name === 'honorarios') {
+    const snap = await col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('facturas').get();
+    let list = snap.docs.map(docData);
+    if (args.estado) list = list.filter(f => f.estado === String(args.estado).toLowerCase());
+    if (args.cliente) {
+      const q = String(args.cliente).toLowerCase();
+      list = list.filter(f => String(f.cliente?.nombre || '').toLowerCase().includes(q));
+    }
+    list.sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+    return {
+      total: list.length,
+      total_facturado: list.reduce((s, f) => s + (Number(f.total) || 0), 0),
+      total_pendiente: list.reduce((s, f) => s + (Number(f.balance ?? ((f.total || 0) - (f.monto_pagado || 0))) || 0), 0),
+      facturas: list.slice(0, 80).map(f => ({
+        ncf: f.ncf, tipo: f.tipo_ncf, fecha: f.fecha, cliente: f.cliente?.nombre,
+        total: f.total, pagado: f.monto_pagado || 0,
+        balance: f.balance ?? ((f.total || 0) - (f.monto_pagado || 0)), estado: f.estado,
+      })),
+    };
+  }
+
+  if (name === 'alertas') {
+    const ahora = Date.now();
+    const alertas = [];
+    for (const c of clientes) {
+      const vence = vencimientoDate(c);
+      if (vence) {
+        const d = vence.toDate ? vence.toDate() : new Date(vence);
+        const dias = Math.ceil((d - ahora) / 86400000);
+        const nombre = c.razon_social || c.businessName || c.businessKey || '—';
+        if (dias < 0) alertas.push({ nivel: 'critico', cliente: nombre, mensaje: `Licencia vencida hace ${Math.abs(dias)} día(s)` });
+        else if (dias <= 7) alertas.push({ nivel: 'urgente', cliente: nombre, mensaje: `Licencia vence en ${dias} día(s)` });
+        else if (dias <= 30) alertas.push({ nivel: 'advertencia', cliente: nombre, mensaje: `Licencia vence en ${dias} días` });
+      }
+      if (c.syncedAt) {
+        const s = c.syncedAt.toDate ? c.syncedAt.toDate() : new Date(c.syncedAt);
+        const diasSinSync = (ahora - s.getTime()) / 86400000;
+        if (diasSinSync > 7) alertas.push({ nivel: 'info', cliente: c.businessName || '—', mensaje: `${Math.floor(diasSinSync)} días sin sincronizar` });
+      }
+    }
+    return { total: alertas.length, alertas };
+  }
+
+  if (name === 'secuencias_ncf') {
+    const misSnap = await col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('mis_secuencias_ncf').get();
+    const mias = misSnap.docs.map(d => {
+      const x = d.data();
+      const disp = Math.max(0, (x.endNumber || 0) - (x.nextNumber || 0) + 1);
+      return { tipo: x.documentType, rango: `${x.startNumber}-${x.endNumber}`, proximo: x.nextNumber, disponibles: disp, vence: x.expirationDate || null, estado: x.status };
+    });
+    const out = { mis_secuencias: mias };
+    if (args.cliente) {
+      const c = _matchCliente(clientes, args.cliente);
+      if (c) {
+        const [pend, apl] = await Promise.all([
+          col(COL_LICENCIAS).doc(c.id).collection('ncf_pendientes').get(),
+          col(COL_LICENCIAS).doc(c.id).collection('ncf_aplicadas').get(),
+        ]);
+        out.cliente = c.businessName;
+        out.pendientes = pend.docs.map(d => d.data());
+        out.aplicadas = apl.docs.map(d => d.data());
+      }
+    }
+    return out;
+  }
+
+  return { error: `Herramienta desconocida: ${name}` };
+}
+
+app.post('/api/asistente/chat', requireAuth, async (req, res) => {
+  try {
+    const doc = await col(COL_CONTADORES).doc(req.contador.contadorDocId).get();
+    const apiKey = doc.exists ? doc.data().gemini_api_key : null;
+    if (!apiKey) return res.status(503).json({ error: 'Configura tu API key de Google en Configuración → Asistente virtual.' });
+
+    const history = Array.isArray(req.body.history) ? req.body.history.slice(-24) : [];
+    if (!history.length || history[history.length - 1].role !== 'user') {
+      return res.status(400).json({ error: 'Falta el mensaje del usuario.' });
+    }
+
+    const hoy = new Date().toISOString().slice(0, 10);
+    const systemPrompt = [
+      `Eres el asistente virtual de "${req.contador.nombre_firma || req.contador.fullName || 'la firma contable'}", una firma de contabilidad en República Dominicana.`,
+      `Ayudas al contador a consultar información de SUS clientes (negocios que usan Tecno Caja POS), preparar resúmenes y responder dudas de contabilidad y fiscalidad dominicana (ITBIS, NCF, IR-17, IT-1, TSS, DGII).`,
+      `Hoy es ${hoy}.`,
+      `Usa SIEMPRE las herramientas de consulta para obtener datos reales — nunca inventes cifras, nombres ni fechas. Si una herramienta no devuelve datos, dilo.`,
+      `Sé eficiente: pide en un solo paso todas las herramientas que necesites y no repitas consultas.`,
+      `Responde en español, claro y directo. Montos en RD$ con separador de miles. Usa listas o tablas simples cuando ayuden.`,
+      `Puedes proponer un PDF (generar_pdf) o un correo (enviar_correo). NO se ejecutan solos: el usuario los revisa y confirma. Úsalos solo si te lo piden explícitamente. Después de proponerlos, dilo en una frase corta.`,
+    ].join('\n');
+
+    // Herramientas de acción (PDF/correo): no se ejecutan, se acumulan como
+    // propuestas que el usuario confirma en el chat.
+    const proposals = [];
+    const executeTool = async (name, args) => {
+      if (name === 'generar_pdf') {
+        const secciones = Array.isArray(args.secciones) ? args.secciones : [];
+        if (!args.titulo || !secciones.length) return { error: 'Faltan titulo o secciones.' };
+        proposals.push({ type: 'pdf', titulo: String(args.titulo), subtitulo: args.subtitulo || '', secciones });
+        return { ok: true, mensaje: 'PDF preparado. El usuario verá una tarjeta para descargarlo.' };
+      }
+      if (name === 'enviar_correo') {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(args.para || ''))) return { error: 'El correo de destino no es válido.' };
+        proposals.push({
+          type: 'email',
+          para: String(args.para), asunto: String(args.asunto || ''),
+          cuerpo: String(args.cuerpo || ''), adjuntar_factura_ncf: args.adjuntar_factura_ncf || null,
+        });
+        return { ok: true, mensaje: 'Correo preparado. El usuario lo revisará y confirmará el envío.' };
+      }
+      return ejecutarHerramientaAsistente(req, name, args);
+    };
+
+    const { reply, toolLog } = await asistente.runChat({
+      apiKey, systemPrompt, history, tools: ASISTENTE_TOOLS, executeTool,
+    });
+
+    res.json({ reply, toolLog, proposals });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// Envío de correo ad-hoc del asistente (el usuario ya lo confirmó en el chat).
+app.post('/api/asistente/enviar-correo', requireAuth, async (req, res) => {
+  try {
+    const cfg = await getContadorEmailConfig(req);
+    if (!cfg) return res.status(503).json({ error: 'Configura tu correo en Configuración → Correo antes de enviar.' });
+
+    const to = String(req.body.para || '').trim();
+    const asunto = String(req.body.asunto || '').trim();
+    const cuerpo = String(req.body.cuerpo || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return res.status(400).json({ error: 'Correo de destino inválido.' });
+    if (!asunto || !cuerpo) return res.status(400).json({ error: 'Falta el asunto o el cuerpo.' });
+
+    const attachmentBuffer = req.body.pdfBase64 ? Buffer.from(String(req.body.pdfBase64), 'base64') : null;
+
+    const result = await mailer.sendMail(cfg, {
+      to, replyTo: req.contador.correo || undefined,
+      subject: asunto,
+      text: cuerpo + `\n\n—\n${req.contador.nombre_firma || req.contador.fullName || ''}\n${req.contador.correo || ''}`,
+      html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">${cuerpo.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])).replace(/\n/g, '<br>')}<br><br>—<br>${String(req.contador.nombre_firma || req.contador.fullName || '').replace(/[<>&]/g, '')}<br>${String(req.contador.correo || '').replace(/[<>&]/g, '')}</div>`,
+      attachmentBuffer,
+      attachmentName: req.body.pdfNombre || 'documento.pdf',
+    });
+    res.json({ ok: true, to, messageId: result.messageId || null });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
 });
 
 // ── SPA fallback ───────────────────────────────────────────────────────────

@@ -145,6 +145,12 @@
         <span class="nav-icon">🤝</span> Colaboradores
         <span id="nav-badge-colab" class="nav-badge hidden">0</span>
       </a>
+      <!-- ASISTENTE IA — desactivado por ahora. Para reactivar: quitar este comentario
+           y el style="display:none" del #cfg-ia-card.
+      <a class="nav-item" data-mod="asistente" onclick="app.goto('asistente')">
+        <span class="nav-icon">🤖</span> Asistente
+      </a>
+      -->
 
       <div class="nav-section-label" style="margin-top:8px">Cuenta</div>
       <a class="nav-item" data-mod="configuracion" onclick="app.goto('configuracion')">
@@ -573,6 +579,7 @@
           <select id="fac-f-estado" class="fac-filter-select">
             <option value="">Todos los estados</option>
             <option value="pendiente">Pendiente</option>
+            <option value="parcial">Pago parcial</option>
             <option value="pagada">Pagada</option>
             <option value="anulada">Anulada</option>
           </select>
@@ -613,6 +620,51 @@
             <tbody id="fac-tbody">
               <tr><td colspan="8" class="td-empty">Cargando facturas...</td></tr>
             </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── DETALLE DE FACTURA (página completa, estilo admin) ──────────────── -->
+    <div id="mod-fac-detalle" class="module">
+      <div class="mod-header">
+        <div style="display:flex;align-items:center;gap:14px">
+          <button class="btn btn-ghost btn-sm" onclick="app.backToFacturas()">← Facturación</button>
+          <div class="mod-title" id="fd-numero">—</div>
+        </div>
+      </div>
+
+      <div class="detail-grid">
+        <div class="detail-card">
+          <div class="detail-card-title">Factura</div>
+          <div id="fd-info"></div>
+
+          <div class="detail-card-title" style="margin-top:18px">Ítems</div>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr>
+                <th style="width:52px;text-align:center">Cant.</th>
+                <th>Descripción</th>
+                <th style="text-align:right">Precio</th>
+                <th style="text-align:center">Desc.</th>
+                <th style="text-align:center">ITBIS</th>
+                <th style="text-align:right">Importe</th>
+              </tr></thead>
+              <tbody id="fd-items"></tbody>
+            </table>
+          </div>
+          <div id="fd-totales" style="margin-top:14px;font-size:13px;line-height:1.9"></div>
+        </div>
+
+        <div class="detail-card">
+          <div class="detail-card-title">Acciones</div>
+          <div id="fd-actions" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+          <div id="fd-email-info" style="font-size:12px;color:var(--text-sub);margin-top:10px"></div>
+
+          <div class="detail-card-title" style="margin-top:18px">Historial de pagos</div>
+          <table class="data-table">
+            <thead><tr><th style="text-align:right">Monto</th><th>Método</th><th>Fecha</th><th>Nota</th></tr></thead>
+            <tbody id="fd-pagos"></tbody>
           </table>
         </div>
       </div>
@@ -714,6 +766,39 @@
     </div>
 
     <!-- ── CONFIGURACIÓN ──────────────────────────────────────────────────── -->
+    <!-- ── ASISTENTE VIRTUAL (IA) ─────────────────────────────────────────── -->
+    <div id="mod-asistente" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">🤖 Asistente virtual</div>
+          <div class="mod-sub">Pregúntale sobre tus clientes, sus ventas, ITBIS, honorarios, NCF y alertas</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.nuevoChat()">＋ Nueva conversación</button>
+        </div>
+      </div>
+
+      <div id="asis-noconfig" class="section-card hidden" style="text-align:center;padding:32px">
+        <div style="font-size:40px;margin-bottom:8px">🤖</div>
+        <div style="font-weight:700;margin-bottom:6px">Conecta el asistente</div>
+        <p style="font-size:13px;color:var(--text-sub);max-width:420px;margin:0 auto 14px;line-height:1.6">
+          El asistente usa <strong>Google Gemini</strong>. Necesitas una API key gratuita de Google AI Studio.
+          Se configura una sola vez.
+        </p>
+        <button class="btn btn-primary" onclick="app.goto('configuracion');setTimeout(()=>document.getElementById('cfg-ia-card')?.scrollIntoView({behavior:'smooth'}),250)">Ir a configurarlo</button>
+      </div>
+
+      <div id="asis-chat-wrap" class="section-card hidden" style="display:flex;flex-direction:column;height:calc(100vh - 190px);padding:0;overflow:hidden">
+        <div id="asis-mensajes" style="flex:1;overflow-y:auto;padding:18px"></div>
+        <div style="border-top:1px solid var(--border);padding:12px 14px;display:flex;gap:8px;align-items:flex-end">
+          <textarea id="asis-input" class="form-textarea" rows="1" placeholder="Escribe tu pregunta…  (Enter para enviar)"
+            style="flex:1;min-height:40px;max-height:140px;resize:none"
+            onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();app.enviarChat();}"></textarea>
+          <button class="btn btn-primary" id="asis-send" onclick="app.enviarChat()">Enviar</button>
+        </div>
+      </div>
+    </div>
+
     <div id="mod-configuracion" class="module">
       <div class="mod-header">
         <div>
@@ -775,6 +860,90 @@
             </div>
             <input id="cfg-logo" type="hidden" />
           </div>
+        </div>
+      </div>
+
+      <div class="section-card" id="cfg-correo-card">
+        <div class="section-card-title">✉ Correo para enviar facturas</div>
+        <p style="font-size:13px;color:var(--text-sub);line-height:1.6;margin-bottom:14px">
+          Con esto, cada factura se le envía a tu cliente <strong>desde tu propio Gmail</strong>, con el PDF adjunto.
+          Se configura <strong>una sola vez</strong> y toma unos 3 minutos.
+        </p>
+
+        <div style="background:var(--surface2);border-radius:10px;padding:14px 16px;margin-bottom:16px">
+          <div style="font-weight:700;font-size:13px;margin-bottom:12px">📋 Cómo conseguir tu contraseña de aplicación (paso a paso)</div>
+          <ol style="margin:0;padding-left:22px;font-size:13px;line-height:1.6;color:var(--text)">
+            <li style="margin-bottom:14px">
+              <strong>Enciende la Verificación en 2 pasos</strong> de tu cuenta de Google.<br>
+              <span style="color:var(--text-sub)">Presiona el botón, inicia sesión con tu Gmail y sigue las instrucciones (te pedirá tu número de teléfono). Si ya la tienes activada, salta al paso 2.</span><br>
+              <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="app.abrirLink('https://myaccount.google.com/signinoptions/twosv')">🔒 Abrir el paso 1 en Google</button>
+            </li>
+            <li style="margin-bottom:14px">
+              <strong>Crea la contraseña de aplicación.</strong><br>
+              <span style="color:var(--text-sub)">Se abre una página. Donde dice "Nombre de la app" escribe <em>Tecno Caja</em> y presiona <strong>Crear</strong>.</span><br>
+              <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="app.abrirLink('https://myaccount.google.com/apppasswords')">🔑 Abrir el paso 2 en Google</button>
+            </li>
+            <li style="margin-bottom:14px">
+              <strong>Copia el código que te da Google.</strong><br>
+              <span style="color:var(--text-sub)">Son <strong>16 letras</strong> en 4 grupos, por ejemplo <code style="background:var(--surface3);padding:1px 5px;border-radius:4px">abcd efgh ijkl mnop</code>. Cópialas tal cual — no importa si llevan espacios.</span>
+            </li>
+            <li>
+              <strong>Llena el formulario de abajo</strong> (tu Gmail + el código + el nombre de tu firma) y presiona <strong>Guardar y probar</strong>. Si todo está bien, verás "✅ Conectado".
+            </li>
+          </ol>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:12px;line-height:1.5;border-top:1px solid var(--border);padding-top:10px">
+            ⚠️ ¿No te aparece la opción "Contraseñas de aplicaciones"? Es porque todavía no activaste la Verificación en 2 pasos (paso 1). Hazlo primero y vuelve a intentar.
+          </div>
+        </div>
+
+        <div id="cfg-email-estado" style="font-size:13px;margin-bottom:12px"></div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">1. Tu Gmail</label>
+            <input id="cfg-email-user" type="email" class="form-input" placeholder="tucorreo@gmail.com" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">2. Contraseña de aplicación (el código de 16 letras)</label>
+            <input id="cfg-email-pass" type="password" class="form-input" placeholder="abcd efgh ijkl mnop" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">3. Nombre del remitente (lo ve el cliente)</label>
+            <input id="cfg-email-from" type="text" class="form-input" placeholder="Nombre de tu firma" />
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:12px">
+          <button class="btn btn-primary" id="cfg-email-btn" onclick="app.guardarConfigCorreo()">Guardar y probar</button>
+          <button class="btn btn-secondary" id="cfg-email-del" onclick="app.desconectarConfigCorreo()" style="display:none">Desconectar</button>
+        </div>
+      </div>
+
+      <div class="section-card" id="cfg-ia-card" style="display:none">
+        <div class="section-card-title">🤖 Asistente virtual (IA)</div>
+        <p style="font-size:13px;color:var(--text-sub);line-height:1.6;margin-bottom:14px">
+          El asistente usa <strong>Google Gemini</strong>. Necesitas una <strong>API key gratuita</strong> de Google AI Studio.
+          Se configura una sola vez y solo tú la usas (tu propio consumo).
+        </p>
+
+        <div style="background:var(--surface2);border-radius:10px;padding:14px 16px;margin-bottom:16px">
+          <div style="font-weight:700;font-size:13px;margin-bottom:10px">📋 Cómo obtener tu API key (gratis, 1 minuto)</div>
+          <ol style="margin:0;padding-left:22px;font-size:13px;line-height:1.7;color:var(--text)">
+            <li style="margin-bottom:10px">
+              Abre <strong>Google AI Studio</strong> e inicia sesión con tu cuenta de Google.<br>
+              <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="app.abrirLink('https://aistudio.google.com/apikey')">🔑 Abrir Google AI Studio</button>
+            </li>
+            <li style="margin-bottom:10px">Presiona <strong>"Crear clave de API" / "Create API key"</strong>.</li>
+            <li>Copia la clave (empieza con <code style="background:var(--surface3);padding:1px 5px;border-radius:4px">AIza…</code>) y pégala abajo.</li>
+          </ol>
+        </div>
+
+        <div id="cfg-ia-estado" style="font-size:13px;margin-bottom:12px"></div>
+        <div class="form-group" style="max-width:520px">
+          <label class="form-label">API key de Google Gemini</label>
+          <input id="cfg-ia-key" type="password" class="form-input" placeholder="AIza..." autocomplete="off" />
+        </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn btn-primary" id="cfg-ia-btn" onclick="app.guardarConfigIA()">Guardar y probar</button>
+          <button class="btn btn-secondary" id="cfg-ia-del" onclick="app.desconectarConfigIA()" style="display:none">Desconectar</button>
         </div>
       </div>
 
@@ -1926,7 +2095,7 @@
           <div class="fac-grid-2">
             <div class="form-group">
               <label class="form-label">Tipo comprobante *</label>
-              <select id="nf-tipo-ncf" class="form-select">
+              <select id="nf-tipo-ncf" class="form-select" onchange="app.onNfTipoNcfChange()">
                 <option value="B02">B02 — Consumidor Final</option>
                 <option value="B01">B01 — Crédito Fiscal</option>
                 <option value="B14">B14 — Régimen Especial</option>
@@ -1939,6 +2108,7 @@
               <input id="nf-fecha" type="date" class="form-input" />
             </div>
           </div>
+          <div id="nf-ncf-hint" style="font-size:11px;min-height:1.2em;margin:-2px 0 4px;color:var(--text-sub)"></div>
           <div class="fac-grid-2">
             <div class="form-group">
               <label class="form-label">Condición de pago</label>
@@ -1974,17 +2144,17 @@
             <span>Servicios / Ítems</span>
             <button class="btn btn-secondary btn-sm" onclick="app.addItemFac()">＋ Agregar ítem</button>
           </div>
-          <div style="overflow-x:auto;margin-top:4px">
+          <div style="margin-top:4px">
             <table class="fac-items-table">
               <thead>
                 <tr>
-                  <th style="min-width:160px">Descripción</th>
-                  <th style="width:52px">Cant.</th>
-                  <th style="width:80px">Precio</th>
-                  <th style="width:58px">Desc.%</th>
-                  <th style="width:62px">ITBIS</th>
-                  <th style="width:80px;text-align:right">Total</th>
-                  <th style="width:28px"></th>
+                  <th>Descripción</th>
+                  <th style="width:42px">Cant.</th>
+                  <th style="width:70px">Precio</th>
+                  <th style="width:44px">Desc.%</th>
+                  <th style="width:52px">ITBIS</th>
+                  <th style="width:88px;text-align:right">Total</th>
+                  <th style="width:22px"></th>
                 </tr>
               </thead>
               <tbody id="nf-items-body"></tbody>
@@ -2021,20 +2191,55 @@
   </div>
 </div>
 
-<!-- ── MODAL: Ver Factura ────────────────────────────────────────────────── -->
-<div id="modal-ver-factura" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-lg">
-    <button class="btn-modal-close" onclick="app.cerrarVerFactura()">✕</button>
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:20px;flex-wrap:wrap">
-      <div>
-        <div style="font-size:18px;font-weight:700;font-family:monospace;margin-bottom:6px" id="vf-ncf">—</div>
-        <span id="vf-estado"></span>
-        <span style="font-size:12px;color:var(--text-muted);margin-left:10px" id="vf-fecha-lbl"></span>
-      </div>
-      <div id="vf-actions" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+<!-- ── MODAL: Enviar factura por correo ─────────────────────────────────── -->
+<div id="modal-fac-envio" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:440px">
+    <button class="btn-modal-close" onclick="app.cerrarEnvioFac()">✕</button>
+    <div class="modal-title">Enviar factura por correo</div>
+    <div class="modal-sub" id="fe-from">Se envía el PDF adjunto.</div>
+
+    <div class="form-group">
+      <label class="form-label">Para *</label>
+      <input id="fe-to" type="email" class="form-input" placeholder="cliente@correo.com" />
     </div>
-    <div id="vf-content">
-      <div style="text-align:center;padding:48px;color:var(--text-muted)">Cargando factura...</div>
+    <div class="form-group">
+      <label class="form-label">Mensaje adicional (opcional)</label>
+      <textarea id="fe-mensaje" class="form-textarea" rows="3" placeholder="Se agrega al cuerpo del correo…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarEnvioFac()">Cancelar</button>
+      <button class="btn btn-primary" id="fe-btn" onclick="app.confirmarEnvioFac()">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Registrar pago ─────────────────────────────────────────────── -->
+<div id="modal-fac-pago" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:380px">
+    <button class="btn-modal-close" onclick="app.cerrarRegistrarPagoFac()">✕</button>
+    <div class="modal-title">Registrar pago</div>
+    <div class="modal-sub" id="fp-saldo-lbl">—</div>
+    <div class="form-group">
+      <label class="form-label">Monto *</label>
+      <input id="fp-monto" type="number" class="form-input" min="0.01" step="0.01" placeholder="0.00" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Método</label>
+      <select id="fp-metodo" class="form-select">
+        <option value="efectivo">Efectivo</option>
+        <option value="transferencia">Transferencia</option>
+        <option value="tarjeta">Tarjeta</option>
+        <option value="cheque">Cheque</option>
+        <option value="otro">Otro</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Nota</label>
+      <input id="fp-nota" type="text" class="form-input" placeholder="Opcional" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarRegistrarPagoFac()">Cancelar</button>
+      <button class="btn btn-primary" id="fp-btn" onclick="app.registrarPagoFac()">Registrar</button>
     </div>
   </div>
 </div>

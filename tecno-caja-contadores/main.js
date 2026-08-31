@@ -316,6 +316,40 @@ ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'report
   }
 });
 
+// ── Renderizar HTML a PDF y devolverlo en base64 (para adjuntar a un correo) ──
+ipcMain.handle('report:render-pdf', async (_event, { html = '', landscape = false } = {}) => {
+  let pdfWindow = null;
+  let tempFile  = null;
+  try {
+    tempFile = path.join(os.tmpdir(), `tc-mail-${Date.now()}.html`);
+    fs.writeFileSync(tempFile, html, 'utf8');
+
+    pdfWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    await pdfWindow.loadFile(tempFile);
+
+    const pdfBuffer = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize:        'A4',
+      landscape:       landscape,
+      margins:         { marginType: 'printableArea' },
+    });
+
+    pdfWindow.close();
+    pdfWindow = null;
+    fs.unlinkSync(tempFile);
+    tempFile = null;
+
+    return { ok: true, base64: pdfBuffer.toString('base64') };
+  } catch (error) {
+    if (pdfWindow && !pdfWindow.isDestroyed()) pdfWindow.close();
+    if (tempFile && fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+    return { ok: false, error: error.message || 'No se pudo generar el PDF.' };
+  }
+});
+
 app.whenReady().then(async () => {
   const t0 = Date.now();
   console.log(`[splash] t=0ms whenReady`);

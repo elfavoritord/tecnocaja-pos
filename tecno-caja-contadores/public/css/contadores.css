@@ -476,6 +476,16 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .info-key  { color: var(--text-sub); }
 .info-val  { color: var(--text); font-weight: 500; text-align: right; }
 
+/* Lista de datos dt/dd (detalle de factura, estilo admin) */
+.info-dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 13px; margin: 0; }
+.info-dl dt { color: var(--text-sub); }
+.info-dl dd { color: var(--text); margin: 0; font-weight: 500; }
+.info-dl dd code { font-family: monospace; font-size: 12px; }
+
+.fac-estado.parcial { background: var(--blue-glow); color: var(--blue); }
+.badge-parcial { background: var(--blue-glow); color: var(--blue); }
+.badge-parcial::before { background: var(--blue); }
+
 /* ── Progress bar ──────────────────────────────────────────────────────── */
 .progress-wrap { background: var(--surface3); border-radius: 4px; height: 6px; overflow: hidden; margin-top: 6px; }
 .progress-bar  { height: 100%; border-radius: 4px; transition: width .6s ease; }
@@ -825,11 +835,12 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 
 /* Modal sizes */
 .fac-modal-xl {
-  max-width: 960px;
-  width: 97%;
-  max-height: 94vh;
+  max-width: 1080px;
+  width: 96%;
+  max-height: 92vh;
   overflow-y: auto;
-  padding: 18px 22px 16px !important;
+  overflow-x: hidden;
+  padding: 16px 20px 14px !important;
 }
 .fac-modal-lg {
   max-width: 720px;
@@ -843,18 +854,19 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .fac-modal-xl .modal-sub   { font-size: 12px; margin-bottom: 10px; }
 .fac-modal-xl .modal-footer { margin-top: 12px; }
 
-/* Form layout */
+/* Form layout — minmax(0,..) deja que las columnas se encojan y no
+   desborden horizontalmente el modal. */
 .fac-form-layout {
   display: grid;
-  grid-template-columns: 1fr 1.15fr;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
   gap: 14px;
-  margin: 6px 0 8px;
+  margin: 4px 0 6px;
 }
 .fac-form-section {
   background: var(--surface2);
   border-radius: 8px;
-  padding: 10px 12px;
-  margin-bottom: 8px;
+  padding: 9px 11px;
+  margin-bottom: 7px;
 }
 .fac-section-lbl {
   font-size: 10px;
@@ -899,14 +911,20 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .fac-modal-xl .form-input,
 .fac-modal-xl .form-select,
 .fac-modal-xl .form-textarea { padding: 5px 9px; font-size: 12.5px; }
-.fac-modal-xl .form-textarea { min-height: 54px; }
+.fac-modal-xl .form-textarea { min-height: 42px; }
 
-/* Items table */
+/* Items table — layout fijo para que no empuje el ancho del modal */
 .fac-items-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12.5px;
 }
+.fac-items-table td > input,
+.fac-items-table td > select { width: 100%; min-width: 0; }
+.fac-items-table td:first-child > input { text-overflow: ellipsis; }
+.fac-items-table .td-amount { font-size: 11.5px; white-space: nowrap; }
+.fac-items-table td { padding: 4px 3px; }
 .fac-items-table th {
   background: var(--surface3);
   padding: 6px 6px;
@@ -925,8 +943,8 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .fac-totals-box {
   background: var(--surface2);
   border-radius: 10px;
-  padding: 12px 16px;
-  margin-top: 10px;
+  padding: 10px 14px;
+  margin-top: 8px;
 }
 .fac-total-row {
   display: flex;
