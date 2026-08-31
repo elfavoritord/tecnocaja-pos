@@ -13,6 +13,8 @@ files:
   - main.js
   - preload.js
   - server.js
+  - mailer.js
+  - asistente.js
   - server/**/*
   - public/**/*
   - "!public/**/*.map"
