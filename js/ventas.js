@@ -6294,7 +6294,9 @@ async function generateReceiptHtmlImageDataUrl(venta) {
     throw new Error('html2canvas no está disponible para capturar el comprobante.');
   }
 
-  const paperVariant = getReceiptPaperVariant();
+  // La factura moderna siempre es A4 → capturar a tamaño A4 sin importar el
+  // ajuste de papel del negocio.
+  const paperVariant = 'a4';
   const captureWidth = getReceiptCaptureWidth(paperVariant);
   const captureScale = getReceiptCaptureScale(paperVariant);
   const mount = document.createElement('div');
@@ -6739,6 +6741,34 @@ async function getLogoDataUrl(src) {
 }
 
 async function generateReceiptPdf(venta, options = {}) {
+  // Preferir el render HTML → PDF: mismo diseño de la factura A4 moderna que se
+  // ve en pantalla y se imprime. Devuelve un objeto mínimo compatible con lo que
+  // esperan los llamadores (doc.output('datauristring') / doc.save(nombre)).
+  if (window.novaDesktop?.htmlToPdf) {
+    try {
+      const b64 = await window.novaDesktop.htmlToPdf(buildFormalInvoiceDocumentHtml(venta));
+      if (b64) {
+        const dataUri = `data:application/pdf;base64,${b64}`;
+        const shim = {
+          output: (kind) => (kind === 'datauristring' || kind === 'dataurlstring') ? dataUri : b64,
+          save: (filename) => {
+            try {
+              const a = document.createElement('a');
+              a.href = dataUri;
+              a.download = filename || `factura-${getReceiptInvoiceId(venta)}.pdf`;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            } catch (_e) { /* noop */ }
+          }
+        };
+        if (options.download !== false) shim.save(`factura-${getReceiptInvoiceId(venta)}.pdf`);
+        return shim;
+      }
+    } catch (bridgeErr) {
+      console.warn('htmlToPdf no disponible para la factura; usando layout jsPDF.', bridgeErr);
+    }
+  }
   if (typeof window._loadPdfLibs === 'function') await window._loadPdfLibs();
   const jsPdfApi = window.jspdf?.jsPDF;
   if (!jsPdfApi) {
@@ -7457,6 +7487,20 @@ function getReceiptWhatsAppPhone(venta) {
 }
 
 async function buildReceiptPdfForWhatsApp(venta) {
+  // Misma factura A4 moderna, vía el puente Electron htmlToPdf.
+  if (window.novaDesktop?.htmlToPdf) {
+    try {
+      const b64 = await window.novaDesktop.htmlToPdf(buildFormalInvoiceDocumentHtml(venta));
+      if (b64) {
+        return {
+          dataUrl: `data:application/pdf;base64,${b64}`,
+          fileName: `factura-${getReceiptInvoiceId(venta)}.pdf`
+        };
+      }
+    } catch (bridgeErr) {
+      console.warn('htmlToPdf no disponible para WhatsApp; usando PDF de texto.', bridgeErr);
+    }
+  }
   await window.VendorLoader.load('jspdf');
   const jsPdfApi = window.jspdf?.jsPDF;
   if (!jsPdfApi) {
@@ -8800,21 +8844,292 @@ function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
   `;
 }
 
-function buildReceiptSheetMarkup(venta) {
-  const templateData = getReceiptTemplateData(venta);
-  const paperVariant = getReceiptPaperVariant();
-  const qrMarkup = isElectronicReceipt(venta) && venta.qrDataUrl
-    ? `
-      <div class="receipt-qr" id="receipt-qr">
-        <img src="${venta.qrDataUrl}" alt="Código QR de factura electrónica">
-        <small>Escaneo de verificación DGII para ${escapeReceiptHtml(getElectronicReceiptNumber(venta) || templateData.factura)}</small>
-      </div>
-    `
-    : '<div class="receipt-qr hidden" id="receipt-qr"></div>';
-  if (paperVariant === 'a4') {
-    return buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup);
+// ─── Factura A4 moderna ──────────────────────────────────────────────────────
+// Mismo diseño formal del modo Empresa de Servicios (server/routes/servicios/
+// renderDoc.js → renderFormalA4), portado al navegador y adaptado a la venta del
+// POS. TODOS los selectores CSS cuelgan de .tcfac-root para poder inyectar el
+// bloque por innerHTML en el modal sin filtrar estilos al resto del app.
+// Decisión de Emilio (v1.3.29): toda venta usa esta factura, aunque el negocio
+// tenga impresora térmica. El ticket 58/80 mm queda en el archivo sin usar.
+const FAC_U = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE', 'DIEZ',
+  'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISÉIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE'];
+const FAC_D = ['', '', 'VEINTE', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
+const FAC_C = ['', 'CIENTO', 'DOSCIENTOS', 'TRESCIENTOS', 'CUATROCIENTOS', 'QUINIENTOS', 'SEISCIENTOS', 'SETECIENTOS', 'OCHOCIENTOS', 'NOVECIENTOS'];
+
+function facSeccion(n) {
+  if (n === 0) return '';
+  if (n < 20) return FAC_U[n];
+  if (n < 100) {
+    const d = Math.floor(n / 10); const u = n % 10;
+    if (n === 20) return 'VEINTE';
+    if (d === 2) return 'VEINTI' + FAC_U[u];
+    return FAC_D[d] + (u ? ' Y ' + FAC_U[u] : '');
   }
-  return buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup);
+  if (n === 100) return 'CIEN';
+  const c = Math.floor(n / 100); const r = n % 100;
+  return FAC_C[c] + (r ? ' ' + facSeccion(r) : '');
+}
+
+function facMontoEnLetras(valor) {
+  const num = Math.floor(Math.abs(Number(valor) || 0));
+  const cent = Math.round((Math.abs(Number(valor) || 0) - num) * 100);
+  let palabras;
+  if (num === 0) palabras = 'CERO';
+  else {
+    const mill = Math.floor(num / 1000000);
+    const miles = Math.floor((num % 1000000) / 1000);
+    const resto = num % 1000;
+    const p = [];
+    if (mill) p.push(mill === 1 ? 'UN MILLÓN' : facSeccion(mill) + ' MILLONES');
+    if (miles) p.push(miles === 1 ? 'MIL' : facSeccion(miles) + ' MIL');
+    if (resto) p.push(facSeccion(resto));
+    palabras = p.join(' ').trim() || 'CERO';
+  }
+  return `${palabras} PESOS DOMINICANOS CON ${String(cent).padStart(2, '0')}/100`;
+}
+
+function facMoney(n) {
+  return 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+const FORMAL_INVOICE_CSS = `
+.tcfac-root{ display:block; background:#eef1f4; padding:14px; overflow:auto;
+  font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; color:#1f2937; }
+.tcfac-root *{ margin:0; padding:0; box-sizing:border-box; }
+.tcfac-root .tcf-page{ position:relative; width:210mm; min-height:297mm; margin:0 auto;
+  padding:16mm 18mm; background:#fff; overflow:hidden; font-size:10.5px; color:#1f2937;
+  -webkit-print-color-adjust:exact; print-color-adjust:exact; box-shadow:0 1px 8px rgba(0,0,0,.14); }
+.tcfac-root .tcf-wm{ position:absolute; top:45%; left:50%;
+  transform:translate(-50%,-50%) rotate(-24deg); font-size:110px; font-weight:800;
+  letter-spacing:6px; white-space:nowrap; color:rgba(220,38,38,.09); pointer-events:none; z-index:0; }
+.tcfac-root .tcf-content{ position:relative; z-index:1; }
+.tcfac-root .tcf-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:14mm; padding-bottom:6mm; }
+.tcfac-root .tcf-logo{ max-height:26mm; max-width:70mm; display:block; margin-bottom:3mm; }
+.tcfac-root .tcf-brand-fallback{ font-size:20px; font-weight:800; color:#15803d; letter-spacing:.5px; margin-bottom:3mm; }
+.tcfac-root .tcf-em{ font-size:9.5px; line-height:1.5; color:#4b5563; }
+.tcfac-root .tcf-em strong{ color:#1f2937; }
+.tcfac-root .tcf-doc{ text-align:right; min-width:62mm; }
+.tcfac-root .tcf-title{ font-size:24px; font-weight:800; letter-spacing:4px; color:#15803d; line-height:1; }
+.tcfac-root .tcf-chip{ display:inline-block; margin-top:3mm; padding:2mm 3mm; border:1.5px solid #15803d;
+  border-radius:3px; font-size:12px; font-weight:800; letter-spacing:.5px; color:#111827; }
+.tcfac-root .tcf-chip span{ color:#15803d; font-weight:700; letter-spacing:1px; margin-right:1.5mm; }
+.tcfac-root .tcf-meta{ margin-top:4mm; font-size:10px; line-height:1.7; color:#374151; }
+.tcfac-root .tcf-meta b{ color:#111827; }
+.tcfac-root .tcf-stamp{ display:inline-block; margin-top:3mm; padding:3px 12px; border:2px solid;
+  border-radius:3px; font-size:10px; font-weight:800; letter-spacing:1.5px; transform:rotate(-3deg); }
+.tcfac-root .tcf-stamp.warn{ color:#b45309; border-color:#b45309; }
+.tcfac-root .tcf-stamp.ok{ color:#15803d; border-color:#15803d; }
+.tcfac-root .tcf-stamp.bad{ color:#b91c1c; border-color:#b91c1c; }
+.tcfac-root .tcf-rule{ height:2.5px; background:#15803d; margin:0 0 6mm; }
+.tcfac-root .tcf-parties{ display:grid; grid-template-columns:1fr 1fr; gap:12mm; margin-bottom:7mm; }
+.tcfac-root .tcf-blabel{ font-size:8.5px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase;
+  color:#6b7280; padding-bottom:2mm; border-bottom:1px solid #e5e7eb; margin-bottom:2.5mm; }
+.tcfac-root .tcf-pname{ font-size:12px; font-weight:700; color:#111827; margin-bottom:1mm; }
+.tcfac-root .tcf-pline{ font-size:9.5px; line-height:1.6; color:#4b5563; }
+.tcfac-root .tcf-pay{ display:flex; justify-content:space-between; font-size:9.5px; line-height:1.9; color:#4b5563; }
+.tcfac-root .tcf-pay span:last-child{ color:#111827; font-weight:600; }
+.tcfac-root .tcf-items{ width:100%; border-collapse:collapse; margin-bottom:4mm; }
+.tcfac-root .tcf-items thead th{ background:#f4f7f5; color:#374151; font-size:8.5px; font-weight:700;
+  letter-spacing:.6px; text-transform:uppercase; text-align:right; padding:3mm 2.5mm;
+  border-top:1.5px solid #15803d; border-bottom:1.5px solid #15803d; }
+.tcfac-root .tcf-items thead th.i{ text-align:center; width:9mm; }
+.tcfac-root .tcf-items thead th.d{ text-align:left; }
+.tcfac-root .tcf-items tbody td{ padding:2.6mm 2.5mm; font-size:10px; border-bottom:1px solid #edf0f2; vertical-align:top; }
+.tcfac-root .tcf-items tbody tr:last-child td{ border-bottom:1px solid #d1d5db; }
+.tcfac-root .tcf-ci{ text-align:center; color:#9ca3af; }
+.tcfac-root .tcf-cd{ text-align:left; color:#1f2937; }
+.tcfac-root .tcf-cn{ text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.tcfac-root .tcf-tw{ display:flex; justify-content:flex-end; }
+.tcfac-root .tcf-tot{ width:78mm; }
+.tcfac-root .tcf-tot .r{ display:flex; justify-content:space-between; padding:1.6mm 0; font-size:10px; color:#4b5563; }
+.tcfac-root .tcf-tot .r .v{ color:#111827; font-variant-numeric:tabular-nums; }
+.tcfac-root .tcf-tot .grand{ border-top:2px solid #111827; margin-top:1mm; padding-top:2.5mm;
+  font-size:14px; font-weight:800; color:#111827; }
+.tcfac-root .tcf-tot .paid{ color:#15803d; }
+.tcfac-root .tcf-tot .due{ font-weight:700; color:#b45309; }
+.tcfac-root .tcf-words{ margin:5mm 0 0; padding:2.5mm 3mm; background:#f9fafb; border:1px solid #e5e7eb;
+  border-radius:3px; font-size:9.5px; line-height:1.5; color:#374151; }
+.tcfac-root .tcf-words b{ color:#111827; letter-spacing:.3px; }
+.tcfac-root .tcf-note{ margin-top:6mm; font-size:9.5px; line-height:1.6; color:#4b5563; white-space:pre-wrap; }
+.tcfac-root .tcf-qr{ margin-top:6mm; display:flex; align-items:center; gap:4mm; }
+.tcfac-root .tcf-qr img{ width:30mm; height:30mm; }
+.tcfac-root .tcf-qr small{ font-size:8.5px; color:#6b7280; line-height:1.5; }
+.tcfac-root .tcf-foot{ margin-top:12mm; padding-top:5mm; border-top:1px solid #e5e7eb;
+  font-size:8.5px; line-height:1.6; color:#6b7280; }
+.tcfac-root .tcf-foot b{ display:block; color:#15803d; font-size:10px; margin-bottom:1mm; letter-spacing:.3px; }
+@media print{
+  .tcfac-root{ background:#fff; padding:0; overflow:visible; }
+  .tcfac-root .tcf-page{ margin:0; box-shadow:none; width:auto; min-height:auto; }
+}
+@media screen and (max-width:820px){
+  .tcfac-root .tcf-page{ transform:scale(.6); transform-origin:top left; }
+}
+`;
+
+function ventaToFormalDoc(venta) {
+  const td = getReceiptTemplateData(venta);
+  const bd = getReceiptSummaryBreakdown(venta);
+  const isCot = Boolean(venta.isQuotation);
+  const elec = isElectronicReceipt(venta);
+  const ncf = elec ? (getElectronicReceiptNumber(venta) || '') : (venta.ncf || '');
+  const totalNum = Number(bd.total || venta.total || 0);
+  const recibido = Number(venta.recibido || 0);
+  const esCredito = venta.metodo === 'credito';
+  const pagado = isCot ? 0
+    : esCredito ? recibido
+    : (recibido > 0 ? Math.min(recibido, totalNum) : totalNum);
+  const balance = Math.max(0, Number((totalNum - pagado).toFixed(2)));
+  const anulada = venta.anulada === true
+    || /anul/i.test(String(venta.estadoDgii || venta.estadoFiscal || venta.estado || ''));
+
+  let estadoLabel;
+  if (isCot) estadoLabel = 'COTIZACIÓN';
+  else if (anulada) estadoLabel = 'ANULADA';
+  else if (balance <= 0.01) estadoLabel = 'PAGADA';
+  else if (pagado > 0.01) estadoLabel = 'PAGO PARCIAL';
+  else estadoLabel = 'PENDIENTE DE PAGO';
+
+  return {
+    isCot, anulada, estadoLabel, pagado, balance,
+    empresa: {
+      nombre: getReceiptConfigValue('nombre') || 'Tecno Caja',
+      rnc: getReceiptConfigValue('rnc') || '',
+      direccion: getReceiptConfigValue('direccion') || '',
+      telefono: getReceiptConfigValue('telefono') || '',
+      logo: getReceiptConfigValue('logo') || ''
+    },
+    numero: getReceiptDisplayNumber(venta),
+    ncf,
+    fiscalMode: elec ? 'ecf' : 'ncf',
+    ncfVencimiento: (!elec && venta.ncf && venta.ncfVencimiento) ? venta.ncfVencimiento : '',
+    fecha: venta.fecha,
+    cajero: venta.cajero || '',
+    metodoPago: venta.receiptMethodLabelOverride || SALE_PAYMENT_TYPES[venta.metodo] || venta.metodo || 'Efectivo',
+    condicionPago: esCredito ? 'crédito' : 'contado',
+    cliente: {
+      nombre: venta.razonSocialCliente || venta.cliente || 'Consumidor Final',
+      rnc: venta.clienteRncCedula || venta.rncCliente || '',
+      tel: venta.clienteTelefono || venta.telefonoDelivery || '',
+      dir: venta.direccionDelivery || ''
+    },
+    items: (td.normalizedItems || []).map((it) => ({
+      descripcion: it.nombre,
+      cantidad: it.qty,
+      precio: it.precio,
+      itbisPct: Number(it.itbisRate || 0),
+      total: Number(it.total || 0)
+    })),
+    subtotal: bd.subtotal,
+    descuento: bd.descuento,
+    itbis: bd.itbis,
+    redondeo: bd.redondeo,
+    total: totalNum,
+    mensaje: venta.receiptFooterMessageOverride || getReceiptConfigValue('mensaje') || '',
+    qrDataUrl: (elec && venta.qrDataUrl) ? venta.qrDataUrl : ''
+  };
+}
+
+function buildFormalInvoiceMarkup(venta) {
+  const d = ventaToFormalDoc(venta);
+  const esc = escapeReceiptHtml;
+  const titulo = d.isCot ? 'COTIZACIÓN' : 'FACTURA';
+  const stampClass = (d.isCot || d.balance <= 0.01) ? 'ok' : (d.anulada ? 'bad' : 'warn');
+  const fecha = formatReceiptDateForPaper(d.fecha, 'a4') || '';
+  const venc = d.ncfVencimiento ? (formatReceiptDateForPaper(d.ncfVencimiento, 'a4') || '') : '';
+
+  const rows = d.items.map((it, i) => `
+      <tr>
+        <td class="tcf-ci">${i + 1}</td>
+        <td class="tcf-cd">${esc(it.descripcion)}</td>
+        <td class="tcf-cn">${Number(it.cantidad || 0)}</td>
+        <td class="tcf-cn">${facMoney(it.precio)}</td>
+        <td class="tcf-cn">${Number(it.itbisPct) ? Number(it.itbisPct).toFixed(0) + '%' : '—'}</td>
+        <td class="tcf-cn">${facMoney(it.total)}</td>
+      </tr>`).join('');
+
+  const logoHtml = d.empresa.logo
+    ? `<img src="${esc(d.empresa.logo)}" class="tcf-logo" alt="logo">`
+    : `<div class="tcf-brand-fallback">${esc(d.empresa.nombre)}</div>`;
+
+  const footNote = d.isCot
+    ? 'Cotización sin valor fiscal. Precios sujetos a cambio después de la fecha de validez. Documento generado electrónicamente.'
+    : 'Documento generado electrónicamente por Tecno Caja POS. Válido sin firma ni sello. Gracias por su compra.';
+
+  return `<div class="tcfac-root">
+  <style>${FORMAL_INVOICE_CSS}</style>
+  <div class="tcf-page">
+    ${d.anulada ? '<div class="tcf-wm">ANULADA</div>' : ''}
+    <div class="tcf-content">
+      <div class="tcf-head">
+        <div>
+          ${logoHtml}
+          ${d.empresa.rnc ? `<div class="tcf-em"><strong>RNC:</strong> ${esc(d.empresa.rnc)}</div>` : ''}
+          ${d.empresa.direccion ? `<div class="tcf-em">${esc(d.empresa.direccion)}</div>` : ''}
+          ${d.empresa.telefono ? `<div class="tcf-em"><strong>Tel:</strong> ${esc(d.empresa.telefono)}</div>` : ''}
+        </div>
+        <div class="tcf-doc">
+          <div class="tcf-title">${titulo}</div>
+          ${d.ncf ? `<div class="tcf-chip"><span>${d.fiscalMode === 'ecf' ? 'e-NCF' : 'NCF'}</span> ${esc(d.ncf)}</div>` : ''}
+          <div class="tcf-meta">
+            <div><b>No.:</b> ${esc(d.numero)}</div>
+            <div><b>Fecha:</b> ${esc(fecha)}</div>
+            ${venc ? `<div><b>NCF válido hasta:</b> ${esc(venc)}</div>` : ''}
+          </div>
+          <div class="tcf-stamp ${stampClass}">${esc(d.estadoLabel)}</div>
+        </div>
+      </div>
+      <div class="tcf-rule"></div>
+      <div class="tcf-parties">
+        <div>
+          <div class="tcf-blabel">${d.isCot ? 'Cliente' : 'Facturar a'}</div>
+          <div class="tcf-pname">${esc(d.cliente.nombre)}</div>
+          ${d.cliente.rnc ? `<div class="tcf-pline">RNC / Cédula: ${esc(d.cliente.rnc)}</div>` : ''}
+          ${d.cliente.dir ? `<div class="tcf-pline">${esc(d.cliente.dir)}</div>` : ''}
+          ${d.cliente.tel ? `<div class="tcf-pline">Tel: ${esc(d.cliente.tel)}</div>` : ''}
+        </div>
+        <div>
+          <div class="tcf-blabel">Detalles de pago</div>
+          <div class="tcf-pay"><span>Condición</span><span>${esc(d.condicionPago)}</span></div>
+          <div class="tcf-pay"><span>Método de pago</span><span>${esc(d.metodoPago)}</span></div>
+          <div class="tcf-pay"><span>Estado</span><span>${esc(d.estadoLabel)}</span></div>
+          ${d.cajero ? `<div class="tcf-pay"><span>Cajero</span><span>${esc(d.cajero)}</span></div>` : ''}
+        </div>
+      </div>
+      <table class="tcf-items">
+        <thead><tr>
+          <th class="i">#</th><th class="d">Descripción</th>
+          <th>Cant.</th><th>Precio unit.</th><th>ITBIS</th><th>Importe</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="tcf-tw"><div class="tcf-tot">
+        <div class="r"><span>Subtotal</span><span class="v">${facMoney(d.subtotal)}</span></div>
+        ${Number(d.descuento) ? `<div class="r"><span>Descuento</span><span class="v">- ${facMoney(d.descuento)}</span></div>` : ''}
+        ${Number(d.itbis) ? `<div class="r"><span>ITBIS</span><span class="v">${facMoney(d.itbis)}</span></div>` : ''}
+        ${Math.abs(Number(d.redondeo || 0)) >= 0.01 ? `<div class="r"><span>Redondeo</span><span class="v">${facMoney(d.redondeo)}</span></div>` : ''}
+        <div class="r grand"><span>TOTAL</span><span class="v">${facMoney(d.total)}</span></div>
+        ${Number(d.pagado) ? `<div class="r paid"><span>Pagado</span><span class="v">${facMoney(d.pagado)}</span></div>` : ''}
+        ${(Number(d.balance) > 0.01 && !d.anulada && !d.isCot) ? `<div class="r due"><span>Saldo pendiente</span><span class="v">${facMoney(d.balance)}</span></div>` : ''}
+      </div></div>
+      <div class="tcf-words"><b>Son:</b> ${esc(facMontoEnLetras(d.total))}</div>
+      ${d.qrDataUrl ? `<div class="tcf-qr"><img src="${esc(d.qrDataUrl)}" alt="QR"><small>Verificación DGII &middot; escanee el código para validar este comprobante fiscal electrónico.</small></div>` : ''}
+      ${d.mensaje ? `<div class="tcf-note">${esc(d.mensaje)}</div>` : ''}
+      <div class="tcf-foot"><b>${esc(d.empresa.nombre)}</b>${footNote}</div>
+    </div>
+  </div>
+</div>`;
+}
+
+function buildFormalInvoiceDocumentHtml(venta) {
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">`
+    + `<title>${escapeReceiptHtml(getReceiptDisplayNumber(venta))}</title></head>`
+    + `<body style="margin:0">${buildFormalInvoiceMarkup(venta)}</body></html>`;
+}
+
+function buildReceiptSheetMarkup(venta) {
+  // Siempre la factura A4 moderna. buildA4ReceiptSheetMarkup / buildThermal…
+  // quedan definidas abajo sin usar: revertir es cambiar esta línea.
+  return buildFormalInvoiceMarkup(venta);
 }
 
 function getReceiptContentMarkup(venta) {
@@ -8822,254 +9137,10 @@ function getReceiptContentMarkup(venta) {
 }
 
 function buildPrintableReceiptHtml(venta) {
-  const paperVariant = getReceiptPaperVariant();
-  const printLayout = paperVariant === '58mm'
-    ? { pageSize: null, pageMargin: '0', contentWidth: '100%' }
-    : paperVariant === 'a4'
-      ? { pageSize: '210mm 297mm', pageMargin: '6mm', contentWidth: '100%' }
-      : { pageSize: null, pageMargin: '0', contentWidth: '100%' };
-  const pageRule = printLayout.pageSize
-    ? `@page{size:${printLayout.pageSize};margin:${printLayout.pageMargin};}`
-    : `@page{margin:${printLayout.pageMargin};}`;
-  return `
-    <div class="ticket-print ticket-print--${paperVariant}">${buildReceiptSheetMarkup(venta)}</div>
-    <style>
-      ${pageRule}
-      html,body{margin:0;padding:0;background:#fff;width:100%;height:auto;min-height:0;min-width:0;max-width:none;overflow:hidden}
-      @media print{html,body{margin:0!important;padding:0!important;background:#fff!important;overflow:hidden!important}}
-      *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-      .ticket-print{font-family:"Segoe UI",Arial,sans-serif;color:#111827;line-height:1.5;padding:0;background:#fff;width:${printLayout.contentWidth};max-width:${printLayout.contentWidth};margin:0 auto;display:block;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
-      .ticket-print .receipt-sheet{display:flex;flex-direction:column;gap:.7rem;width:100%;max-width:none;margin:0 auto;padding:.9rem .85rem;background:#fff;border:1px solid #d1d5db;border-radius:0;box-shadow:none;box-sizing:border-box;break-inside:avoid-page;page-break-inside:avoid;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
-      .ticket-print .receipt-sheet--58mm{width:48mm;padding:.62rem .5rem}
-      .ticket-print .receipt-sheet--80mm{width:71mm;padding:.88rem .72rem}
-      .ticket-print .receipt-sheet--a4{width:min(100%,820px);max-width:100%;min-height:auto;padding:1.05rem 1.2rem}
-      .ticket-print .receipt-header,.ticket-print .receipt-section,.ticket-print .receipt-summary,.ticket-print .receipt-qr,.ticket-print .receipt-footer{width:100%;align-self:center;break-inside:avoid-page;page-break-inside:avoid}
-      .ticket-print .receipt-header{text-align:center;display:flex;flex-direction:column;gap:.38rem}
-      .ticket-print .receipt-brand{display:flex;align-items:center;justify-content:center;gap:.7rem}
-      .ticket-print .receipt-brand-mark{display:grid;place-items:center}
-      .ticket-print .receipt-brand-image{width:34px;height:34px;object-fit:cover;border-radius:10px;border:1px solid #111827}
-      .ticket-print .receipt-brand-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;border:1px solid #111827;background:#fff;color:#111827;font-size:.95rem}
-      .ticket-print .receipt-brand-copy{display:flex;flex-direction:column;align-items:flex-start;gap:.02rem}
-      .ticket-print .receipt-brand-name{font-size:1.38rem;font-weight:700;line-height:1;letter-spacing:.01em}
-      .ticket-print .receipt-brand-doc{font-size:.58rem;color:#374151;text-transform:uppercase;letter-spacing:.16em;font-weight:600}
-      .ticket-print .receipt-invoice-chip{align-self:center;margin-top:.12rem;padding:.28rem .7rem;border:1px solid #111827;border-radius:999px;font-size:.64rem;font-weight:700;letter-spacing:.08em;background:#fff}
-      .ticket-print .receipt-divider{border-top:1px dashed #9ca3af;margin:0}
-      .ticket-print .receipt-section{display:flex;flex-direction:column;gap:.45rem}
-      .ticket-print .receipt-section-title{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#111827}
-      .ticket-print .receipt-kv-list{display:grid;gap:.34rem}
-      .ticket-print .receipt-kv{display:grid;grid-template-columns:78px minmax(0,1fr);gap:.48rem;align-items:start}
-      .ticket-print .receipt-kv-label{font-size:.62rem;color:#374151;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;min-width:max-content;padding:0;align-self:start;font-weight:600}
-      .ticket-print .receipt-kv-value{text-align:right;font-weight:700;word-break:break-word;font-family:monospace;padding:0;align-self:start;line-height:1.35;font-size:.74rem;color:#111827}
-      .ticket-print .receipt-items-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:.62rem;color:#374151;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px dotted #9ca3af;padding-bottom:.3rem;font-weight:600}
-      .ticket-print .receipt-items-head span:not(:first-child){text-align:right}
-      .ticket-print .receipt-items-head--table,.ticket-print .receipt-item-grid--table{grid-template-columns:minmax(0,1.9fr) 34px 56px 58px}
-      .ticket-print .receipt-items-list{display:flex;flex-direction:column;gap:0}
-      .ticket-print .receipt-item{padding:.42rem 0;border-bottom:1px dotted #d1d5db}
-      .ticket-print .receipt-item:last-child{border-bottom:0;padding-bottom:0}
-      .ticket-print .receipt-item-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
-      .ticket-print .receipt-item-main{min-width:0}
-      .ticket-print .receipt-item-name{font-weight:700;color:#111827;font-size:.8rem;overflow-wrap:anywhere}
-      .ticket-print .receipt-item-qty,.ticket-print .receipt-item-price,.ticket-print .receipt-item-total{text-align:right;font-family:monospace;white-space:nowrap}
-      .ticket-print .receipt-item-qty,.ticket-print .receipt-item-price{font-weight:600;color:#111827;font-size:.76rem}
-      .ticket-print .receipt-item-total{text-align:right;min-width:0;color:#111827;font-weight:700;font-family:monospace;font-size:.76rem;white-space:nowrap}
-      .ticket-print .receipt-item-meta{display:block;margin-top:.12rem;color:#374151;font-size:.64rem;font-weight:600}
-      .ticket-print .receipt-summary{display:flex;flex-direction:column;gap:.22rem}
-      .ticket-print .receipt-row,.ticket-print .receipt-total-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;color:#111827;font-weight:700}
-      .ticket-print .receipt-row--danger{color:#b91c1c}
-      .ticket-print .receipt-row > :last-child,.ticket-print .receipt-total-row > :last-child{text-align:right;white-space:nowrap;font-family:monospace;font-weight:700}
-      .ticket-print .receipt-total-row{margin-top:.22rem;padding-top:.42rem;border-top:1px solid #111827;font-weight:800;font-size:1.04rem}
-      .ticket-print .receipt-footer{text-align:center;margin-top:.12rem;color:#374151;font-size:.66rem;font-weight:600}
-      .ticket-print .receipt-qr{margin-top:.4rem;padding-top:.45rem;border-top:1px dashed #9ca3af;display:flex;flex-direction:column;align-items:center;gap:.35rem}
-      .ticket-print .receipt-qr.hidden{display:none}
-      .ticket-print .receipt-qr img{width:118px;height:118px;background:#fff;padding:.28rem;image-rendering:pixelated;image-rendering:crisp-edges}
-      .ticket-print .receipt-qr small{color:#374151;font-size:.62rem;text-align:center;line-height:1.4;font-weight:600}
-      .ticket-print--58mm .receipt-brand{gap:.48rem}
-      .ticket-print--58mm .receipt-brand-image,.ticket-print--58mm .receipt-brand-icon{width:28px;height:28px;border-radius:8px}
-      .ticket-print--58mm .receipt-brand-name{font-size:1.05rem}
-      .ticket-print--58mm .receipt-brand-doc{font-size:.46rem}
-      .ticket-print--58mm .receipt-invoice-chip{font-size:.54rem;padding:.22rem .52rem}
-      .ticket-print--58mm .receipt-section-title{font-size:.58rem}
-      .ticket-print--58mm .receipt-kv{grid-template-columns:56px minmax(0,1fr);gap:.34rem}
-      .ticket-print--58mm .receipt-kv-label{font-size:.58rem}
-      .ticket-print--58mm .receipt-kv-value{font-size:.68rem}
-      .ticket-print--58mm .receipt-item-name{font-size:.72rem}
-      .ticket-print--58mm .receipt-item-total{min-width:32px;font-size:.66rem}
-      .ticket-print--58mm .receipt-item-meta{font-size:.58rem}
-      .ticket-print--58mm .receipt-total-row{font-size:.92rem}
-      .ticket-print--58mm .receipt-footer{font-size:.62rem}
-      .ticket-print--80mm .receipt-brand-name{font-size:1.46rem}
-      .ticket-print--80mm .receipt-kv-value{font-size:.76rem}
-      .ticket-print--80mm .receipt-item-name{font-size:.82rem}
-      .ticket-print--80mm .receipt-item-qty,.ticket-print--80mm .receipt-item-price,.ticket-print--80mm .receipt-item-total{font-size:.78rem}
-      .ticket-print--a4 .receipt-brand{gap:.9rem}
-      .ticket-print--a4 .receipt-brand-image,.ticket-print--a4 .receipt-brand-icon{width:42px;height:42px}
-      .ticket-print--a4 .receipt-brand-name{font-size:1.58rem}
-      .ticket-print--a4 .receipt-brand-doc{font-size:.66rem}
-      .ticket-print--a4 .receipt-invoice-chip{font-size:.78rem;padding:.36rem .86rem}
-      .ticket-print--a4 .receipt-section-title{font-size:.8rem}
-      .ticket-print--a4 .receipt-kv{grid-template-columns:160px minmax(0,1fr);gap:1rem}
-      .ticket-print--a4 .receipt-kv-label{font-size:.72rem}
-      .ticket-print--a4 .receipt-kv-value{font-size:.8rem}
-      .ticket-print--a4 .receipt-items-head--table,.ticket-print--a4 .receipt-item-grid--table{grid-template-columns:minmax(0,1.75fr) 64px 100px 110px}
-      .ticket-print--a4 .receipt-item-name{font-size:.92rem}
-      .ticket-print--a4 .receipt-item-total{min-width:84px;font-size:.9rem}
-      .ticket-print--a4 .receipt-item-meta{font-size:.74rem}
-      .ticket-print--a4 .receipt-total-row{font-size:1.2rem}
-      .ticket-print--a4 .receipt-footer{font-size:.78rem}
-      .ticket-print--58mm .receipt-sheet,.ticket-print--80mm .receipt-sheet{font-family:"Courier New",Consolas,monospace;letter-spacing:0;line-height:2.05;padding-top:1.1rem;padding-bottom:1.1rem}
-      .ticket-print--58mm .receipt-brand,.ticket-print--80mm .receipt-brand{justify-content:center}
-      .ticket-print--58mm .receipt-brand-mark,.ticket-print--80mm .receipt-brand-mark{display:none}
-      .ticket-print--58mm .receipt-brand-copy,.ticket-print--80mm .receipt-brand-copy{align-items:center;gap:.28rem}
-      .ticket-print--58mm .receipt-brand-name,.ticket-print--80mm .receipt-brand-name{font-size:1.5rem;font-weight:600;text-transform:lowercase}
-      .ticket-print--58mm .receipt-brand-doc,.ticket-print--80mm .receipt-brand-doc{font-size:.72rem;font-weight:500;letter-spacing:.1em}
-      .ticket-print--58mm .receipt-invoice-chip,.ticket-print--80mm .receipt-invoice-chip{border:0;padding:.12rem 0;margin-top:.38rem;border-radius:0;font-size:1rem;font-weight:600;letter-spacing:.02em}
-      .ticket-print--58mm .receipt-divider,.ticket-print--80mm .receipt-divider{border-top:1px solid #111827;margin:.16rem 0}
-      .ticket-print--58mm .receipt-section,.ticket-print--80mm .receipt-section{gap:.9rem}
-      .ticket-print--58mm .receipt-kv-list,.ticket-print--80mm .receipt-kv-list{gap:.76rem}
-      .ticket-print--58mm .receipt-section-title,.ticket-print--80mm .receipt-section-title{font-size:.8rem;font-weight:600;letter-spacing:.04em}
-      .ticket-print--58mm .receipt-kv{grid-template-columns:82px minmax(0,1fr);gap:.52rem}
-      .ticket-print--80mm .receipt-kv{grid-template-columns:98px minmax(0,1fr);gap:.62rem}
-      .ticket-print--58mm .receipt-kv-label,.ticket-print--80mm .receipt-kv-label{font-size:.78rem;font-weight:500;letter-spacing:.01em}
-      .ticket-print--58mm .receipt-kv-value,.ticket-print--80mm .receipt-kv-value{font-size:.84rem;font-weight:600}
-      .ticket-print--58mm .receipt-items-head,.ticket-print--80mm .receipt-items-head{font-size:.78rem;font-weight:600;letter-spacing:.01em;border-bottom:1px solid #111827;padding-bottom:.52rem}
-      .ticket-print--58mm .receipt-items-head--table,.ticket-print--58mm .receipt-item-grid--table{grid-template-columns:minmax(0,1.6fr) 34px 56px 56px}
-      .ticket-print--80mm .receipt-items-head--table,.ticket-print--80mm .receipt-item-grid--table{grid-template-columns:minmax(0,2fr) 44px 70px 70px}
-      .ticket-print--58mm .receipt-item,.ticket-print--80mm .receipt-item{padding:.92rem 0;border-bottom:1px dashed #b6bec8}
-      .ticket-print--58mm .receipt-item-name,.ticket-print--80mm .receipt-item-name{font-size:.86rem;font-weight:500;line-height:1.72;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-      .ticket-print--58mm .receipt-item-qty,.ticket-print--58mm .receipt-item-price,.ticket-print--58mm .receipt-item-total,.ticket-print--80mm .receipt-item-qty,.ticket-print--80mm .receipt-item-price,.ticket-print--80mm .receipt-item-total{font-size:.86rem;font-weight:500;line-height:1.72;white-space:nowrap;overflow:hidden;text-overflow:clip;min-width:0}
-      .ticket-print--58mm .receipt-summary,.ticket-print--80mm .receipt-summary{gap:.74rem}
-      .ticket-print--58mm .receipt-row,.ticket-print--80mm .receipt-row{font-size:.86rem;font-weight:500;line-height:1.85}
-      .ticket-print--58mm .receipt-total-row,.ticket-print--80mm .receipt-total-row{font-size:1.1rem;font-weight:700;line-height:1.95}
-      .ticket-print--58mm .receipt-footer,.ticket-print--80mm .receipt-footer{font-size:.76rem;font-weight:500;line-height:1.9;word-break:break-word}
-      .ticket-print--80mm .receipt-sheet{line-height:1.62;padding:.88rem .72rem}
-      .ticket-print--80mm .receipt-brand-copy{gap:.16rem}
-      .ticket-print--80mm .receipt-brand-name{font-size:18px;font-weight:600}
-      .ticket-print--80mm .receipt-brand-doc{font-size:10px;letter-spacing:.05em;font-weight:500}
-      .ticket-print--80mm .receipt-invoice-chip{font-size:15px;margin-top:.24rem;font-weight:600}
-      .ticket-print--80mm .receipt-section{gap:.52rem}
-      .ticket-print--80mm .receipt-kv-list{gap:.42rem}
-      .ticket-print--80mm .receipt-section-title{font-size:11px;font-weight:600}
-      .ticket-print--80mm .receipt-kv{grid-template-columns:76px minmax(0,1fr);gap:.42rem}
-      .ticket-print--80mm .receipt-kv-label{font-size:11px;font-weight:500}
-      .ticket-print--80mm .receipt-kv-value{font-size:11px;line-height:1.42;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
-      .ticket-print--80mm .receipt-items-head{font-size:11px;padding-bottom:.3rem;font-weight:600}
-      .ticket-print--80mm .receipt-items-head--table,.ticket-print--80mm .receipt-item-grid--table{grid-template-columns:minmax(0,1.85fr) 34px 58px 58px}
-      .ticket-print--80mm .receipt-item{padding:.46rem 0}
-      .ticket-print--80mm .receipt-item-name{font-size:11px;line-height:1.42;font-weight:500}
-      .ticket-print--80mm .receipt-item-qty,.ticket-print--80mm .receipt-item-price,.ticket-print--80mm .receipt-item-total{font-size:11px;line-height:1.42;font-weight:500}
-      .ticket-print--80mm .receipt-summary{gap:.38rem}
-      .ticket-print--80mm .receipt-row{font-size:11px;line-height:1.48;font-weight:500}
-      .ticket-print--80mm .receipt-total-row{font-size:14px;line-height:1.56;font-weight:700}
-      .ticket-print--80mm .receipt-footer{font-size:10px;line-height:1.46;font-weight:500}
-      .ticket-print .receipt-a4{border:0;box-shadow:none;border-radius:0;padding:1mm 2mm;background:#fff;display:flex;flex-direction:column;height:100%}
-      .ticket-print .receipt-a4-colorbar{height:10px;border-radius:0;background:#ff9800}
-      .ticket-print .receipt-a4-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(220px,.8fr);gap:8px;align-items:stretch}
-      .ticket-print .receipt-a4-brandblock{display:flex;flex-direction:column;gap:4px;padding:10px 10px;border:2px solid #ff9800;background:#fff3e0}
-      .ticket-print .receipt-a4-brandrow{display:flex;align-items:center;gap:10px}
-      .ticket-print .receipt-a4-businessline{font-size:11px;color:#333;font-weight:600}
-      .ticket-print .receipt-a4-docbox{display:flex;flex-direction:column;justify-content:center;gap:6px;padding:10px 12px;border:3px solid #ff9800;background:#fff3e0}
-      .ticket-print .receipt-a4-doclabel{font-size:22px;font-weight:900;line-height:1.05;color:#ff6f00}
-      .ticket-print .receipt-a4-docnumber,.ticket-print .receipt-a4-docstatus{font-size:11px;font-weight:700;color:#ff5722}
-      .ticket-print .receipt-a4-panels{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-      .ticket-print .receipt-a4-panel{border:1px solid #ddd;background:#fff}
-      .ticket-print .receipt-a4-panel-title{padding:6px 8px;background:#ff9800;color:#fff;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.06em}
-      .ticket-print .receipt-a4-panel-row{display:grid;grid-template-columns:100px minmax(0,1fr);gap:8px;padding:6px 8px;border-top:1px solid #eee;font-size:10px;align-items:start}
-      .ticket-print .receipt-a4-panel-row span{color:#666;text-transform:uppercase;font-weight:600}
-      .ticket-print .receipt-a4-panel-row strong{font-weight:800;color:#111827}
-      .ticket-print .receipt-a4-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
-      .ticket-print .receipt-a4-meta-card{padding:8px;border:1px solid #ddd;background:#f5f5f5}
-      .ticket-print .receipt-a4-meta-card span{display:block;font-size:10px;color:#666;text-transform:uppercase;font-weight:600}
-      .ticket-print .receipt-a4-meta-card strong{display:block;margin-top:4px;font-size:12px;color:#111827}
-      .ticket-print .receipt-a4-table{border:2px solid #ff9800;background:#fff;flex:1}
-      .ticket-print .receipt-a4-table-head,.ticket-print .receipt-a4-table-row{display:grid;grid-template-columns:55px minmax(0,1fr) 80px 110px}
-      .ticket-print .receipt-a4-table-head{background:#ff9800;color:#fff;font-size:11px;font-weight:800;text-transform:uppercase}
-      .ticket-print .receipt-a4-table-head > div,.ticket-print .receipt-a4-table-row > div{padding:8px}
-      .ticket-print .receipt-a4-table-row{font-size:11px;border-top:1px solid #eee}
-      .ticket-print .receipt-a4-table-row > div:nth-child(3),.ticket-print .receipt-a4-table-row > div:nth-child(4),.ticket-print .receipt-a4-table-head > div:nth-child(3),.ticket-print .receipt-a4-table-head > div:nth-child(4){text-align:right}
-      .ticket-print .receipt-a4-bottom{display:grid;grid-template-columns:minmax(0,.65fr) minmax(260px,.9fr);gap:8px;align-items:start;flex:1}
-      .ticket-print .receipt-a4-side{display:flex;flex-direction:column;gap:6px}
-      .ticket-print .receipt-a4-side .receipt-qr{margin-top:0;padding-top:0;border-top:0;align-items:flex-start}
-      .ticket-print .receipt-a4-side .receipt-qr img{width:100px;height:100px}
-      .ticket-print .receipt-a4-note{font-size:11px;color:#333;font-weight:600}
-      .ticket-print .receipt-a4-note--quotation{font-size:14px;color:#111827;font-weight:800;line-height:1.45;text-transform:uppercase}
-      .ticket-print .receipt-a4-totals{border:2px solid #ff9800;background:#fff;flex:1;display:flex;flex-direction:column}
-      .ticket-print .receipt-a4-total-row,.ticket-print .receipt-a4-grandtotal{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:10px 10px;font-size:11px;border-top:1px solid #eee}
-      .ticket-print .receipt-a4-total-row:first-child{border-top:0}
-      .ticket-print .receipt-a4-total-row--danger{color:#b91c1c}
-      .ticket-print .receipt-a4-grandtotal{background:#ff9800;font-size:18px;font-weight:900;color:#fff;padding:12px;margin-top:auto}
-      .ticket-print .receipt-sheet--58mm,.ticket-print .receipt-sheet--80mm{border:0;box-shadow:none;border-radius:0;background:#fff;font-family:"Courier New",Consolas,monospace;line-height:1.28;letter-spacing:0;gap:.38rem;padding:.4rem .34rem .6rem}
-      .ticket-print .receipt-sheet--58mm .receipt-header,.ticket-print .receipt-sheet--80mm .receipt-header{gap:.16rem}
-      .ticket-print .receipt-sheet--58mm .receipt-brand,.ticket-print .receipt-sheet--80mm .receipt-brand{justify-content:center}
-      .ticket-print .receipt-sheet--58mm .receipt-brand-mark,.ticket-print .receipt-sheet--80mm .receipt-brand-mark,.ticket-print .receipt-sheet--58mm .receipt-brand-doc,.ticket-print .receipt-sheet--80mm .receipt-brand-doc{display:none}
-      .ticket-print .receipt-sheet--58mm .receipt-brand-copy,.ticket-print .receipt-sheet--80mm .receipt-brand-copy{align-items:center;gap:.1rem}
-      .ticket-print .receipt-sheet--58mm .receipt-brand-name,.ticket-print .receipt-sheet--80mm .receipt-brand-name{font-size:15px;font-weight:700;line-height:1.12;letter-spacing:.04em;text-transform:uppercase}
-      .ticket-print .receipt-business-line{text-align:center;color:#111827;font-size:10px;line-height:1.22;font-weight:500}
-      .ticket-print .receipt-business-line--muted{color:#374151;letter-spacing:.04em;text-transform:uppercase}
-      .ticket-print .receipt-thermal-title{margin-top:.1rem;padding:.14rem 0;border-top:1px solid #111827;border-bottom:1px solid #111827;font-size:13px;font-weight:700;letter-spacing:.08em;text-align:center;text-transform:uppercase}
-      .ticket-print .receipt-thermal-ticket{font-size:12px;font-weight:700;letter-spacing:.03em;text-align:center}
-      .ticket-print .receipt-sheet--58mm .receipt-section,.ticket-print .receipt-sheet--80mm .receipt-section{gap:.22rem}
-      .ticket-print .receipt-sheet--58mm .receipt-section-title--thermal,.ticket-print .receipt-sheet--80mm .receipt-section-title--thermal{border-bottom:1px solid #111827;padding-bottom:.12rem;font-size:10px;font-weight:700;letter-spacing:.08em;text-align:left}
-      .ticket-print .receipt-sheet--58mm .receipt-kv-list,.ticket-print .receipt-sheet--80mm .receipt-kv-list{gap:.08rem}
-      .ticket-print .receipt-sheet--58mm .receipt-kv{grid-template-columns:52px minmax(0,1fr);gap:.28rem}
-      .ticket-print .receipt-sheet--80mm .receipt-kv{grid-template-columns:68px minmax(0,1fr);gap:.34rem}
-      .ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--80mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--80mm .receipt-kv-value{font-size:10px;line-height:1.22}
-      .ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--80mm .receipt-kv-label{color:#111827;font-weight:700;letter-spacing:.04em}
-      .ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--80mm .receipt-kv-value{font-weight:600;white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word}
-      .ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--80mm .receipt-items-head{border-bottom:1px solid #111827;padding-bottom:.18rem;font-size:10px;color:#111827;font-weight:700;letter-spacing:.05em}
-      .ticket-print .receipt-sheet--58mm .receipt-items-head--table,.ticket-print .receipt-sheet--58mm .receipt-item-grid--table{grid-template-columns:minmax(0,1.75fr) 28px 46px 48px}
-      .ticket-print .receipt-sheet--80mm .receipt-items-head--table,.ticket-print .receipt-sheet--80mm .receipt-item-grid--table{grid-template-columns:minmax(0,2fr) 34px 56px 58px}
-      .ticket-print .receipt-sheet--58mm .receipt-item,.ticket-print .receipt-sheet--80mm .receipt-item{padding:.16rem 0;border-bottom:1px dotted #9ca3af}
-      .ticket-print .receipt-sheet--58mm .receipt-item:last-child,.ticket-print .receipt-sheet--80mm .receipt-item:last-child{border-bottom:0}
-      .ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--80mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--80mm .receipt-item-qty,.ticket-print .receipt-sheet--80mm .receipt-item-price,.ticket-print .receipt-sheet--80mm .receipt-item-total{font-size:10px;line-height:1.22}
-      .ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--80mm .receipt-item-name{font-weight:600}
-      .ticket-print .receipt-sheet--58mm .receipt-summary,.ticket-print .receipt-sheet--80mm .receipt-summary{gap:.08rem;margin-top:.08rem}
-      .ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--80mm .receipt-row{font-size:10px;line-height:1.22;font-weight:600}
-      .ticket-print .receipt-sheet--58mm .receipt-total-row,.ticket-print .receipt-sheet--80mm .receipt-total-row{margin-top:.1rem;padding-top:.14rem;border-top:1px solid #111827;font-size:15px;line-height:1.24;font-weight:800}
-      .ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer{margin-top:.18rem;padding-top:.2rem;border-top:1px dashed #111827;color:#111827;font-size:10px;line-height:1.24;font-weight:500}
-      .ticket-print .receipt-sheet--58mm .receipt-qr,.ticket-print .receipt-sheet--80mm .receipt-qr{margin-top:.18rem;padding-top:.22rem;border-top:1px dashed #111827;gap:.22rem}
-      .ticket-print .receipt-sheet--58mm .receipt-qr img,.ticket-print .receipt-sheet--80mm .receipt-qr img{width:84px;height:84px}
-      .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:9px;line-height:1.2;color:#111827}
-      .ticket-print .receipt-sheet--58mm .receipt-brand-name{font-size:13px}
-      .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer{font-size:9px}
-      .ticket-print .receipt-sheet--58mm .receipt-thermal-title{font-size:11px}
-      .ticket-print .receipt-sheet--58mm .receipt-thermal-ticket{font-size:10px}
-      .ticket-print .receipt-sheet--58mm .receipt-total-row{font-size:13px}
-      .ticket-print .receipt-sheet--58mm,.ticket-print .receipt-sheet--80mm{color:#000!important;background:#fff!important;text-rendering:geometricPrecision}
-      .ticket-print .receipt-sheet--58mm *,.ticket-print .receipt-sheet--80mm *{color:#000!important;border-color:#000!important;box-shadow:none!important;text-shadow:none!important;opacity:1!important}
-      .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--80mm .receipt-business-line{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
-      .ticket-print .receipt-sheet--58mm .receipt-business-line--muted,.ticket-print .receipt-sheet--80mm .receipt-business-line--muted{letter-spacing:.02em!important}
-      .ticket-print .receipt-sheet--58mm .receipt-thermal-title,.ticket-print .receipt-sheet--80mm .receipt-thermal-title{padding:.2rem 0!important;border-top:1.2px solid #000!important;border-bottom:1.2px solid #000!important;font-size:14px!important;font-weight:800!important}
-      .ticket-print .receipt-sheet--58mm .receipt-thermal-ticket,.ticket-print .receipt-sheet--80mm .receipt-thermal-ticket{font-size:13px!important;font-weight:800!important}
-      .ticket-print .receipt-sheet--58mm .receipt-section-title--thermal,.ticket-print .receipt-sheet--80mm .receipt-section-title--thermal{padding-bottom:.16rem!important;border-bottom:1.2px solid #000!important;font-size:11px!important;font-weight:800!important}
-      .ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--80mm .receipt-kv-label,.ticket-print .receipt-sheet--80mm .receipt-kv-value{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
-      .ticket-print .receipt-sheet--58mm .receipt-kv,.ticket-print .receipt-sheet--80mm .receipt-kv{align-items:start}
-      .ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--80mm .receipt-items-head{padding-bottom:.22rem!important;border-bottom:1.2px solid #000!important;font-size:11px!important;font-weight:800!important}
-      .ticket-print .receipt-sheet--58mm .receipt-item,.ticket-print .receipt-sheet--80mm .receipt-item{padding:.22rem 0!important;border-bottom:1px solid #000!important}
-      .ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--80mm .receipt-item-name,.ticket-print .receipt-sheet--80mm .receipt-item-qty,.ticket-print .receipt-sheet--80mm .receipt-item-price,.ticket-print .receipt-sheet--80mm .receipt-item-total{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
-      .ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--80mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
-      .ticket-print .receipt-sheet--58mm .receipt-total-row,.ticket-print .receipt-sheet--80mm .receipt-total-row{padding-top:.18rem!important;border-top:1.4px solid #000!important;font-size:16px!important;font-weight:900!important}
-      .ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer,.ticket-print .receipt-sheet--58mm .receipt-qr,.ticket-print .receipt-sheet--80mm .receipt-qr{border-top:1px solid #000!important}
-      .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:9px!important;font-weight:500!important}
-      .ticket-print .receipt-mono-line--quotation-message{display:block;white-space:pre;font-size:1.12em;font-weight:900;line-height:1.26!important;letter-spacing:.01em;text-transform:uppercase}
-      .ticket-print .receipt-sheet--58mm .receipt-brand-name{font-size:14px!important}
-      .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer{font-size:10px!important}
-      .ticket-print .receipt-sheet--58mm .receipt-thermal-title{font-size:12px!important}
-      .ticket-print .receipt-sheet--58mm .receipt-thermal-ticket{font-size:11px!important}
-      .ticket-print .receipt-sheet--58mm .receipt-total-row{font-size:14px!important}
-      .ticket-print .receipt-sheet--58mm,.ticket-print .receipt-sheet--80mm{width:100%!important;max-width:100%!important;margin:0!important;height:auto!important;min-height:0!important;max-height:none!important}
-      .ticket-print .receipt-sheet--thermal-mono{padding:.3rem .28rem .46rem!important;line-height:1!important;gap:0!important}
-      .ticket-print .receipt-mono-block{margin:0;font-family:"Courier New",Consolas,monospace!important;font-size:10px;line-height:1.12!important;font-weight:400;letter-spacing:0;color:#000!important;font-variant-ligatures:none;font-feature-settings:"liga" 0,"tnum" 1;font-variant-numeric:tabular-nums lining-nums;display:block;width:100%}
-      .ticket-print .receipt-mono-line{display:block;white-space:pre}
-      .ticket-print .receipt-mono-line--spacer{height:1.12em}
-      .ticket-print .receipt-mono-line--brand{font-weight:700}
-      .ticket-print .receipt-mono-line--title{font-size:1.08em;font-weight:700}
-      .ticket-print .receipt-mono-line--meta-strong,.ticket-print .receipt-mono-line--section,.ticket-print .receipt-mono-line--items-head{font-weight:600}
-      .ticket-print .receipt-mono-line--total{font-size:1em;font-weight:800}
-      .ticket-print .receipt-sheet--58mm .receipt-mono-block{font-size:9px}
-      .ticket-print .receipt-sheet--80mm .receipt-mono-block{font-size:10px}
-      .ticket-print .receipt-sheet--thermal-mono .receipt-qr{margin-top:.24rem;padding-top:.24rem;border-top:1px solid #000!important}
-    </style>
-  `;
+  // La factura A4 moderna ya trae su CSS completo y su tamano A4 propio
+  // (.tcf-page: 210mm x 297mm). Solo hace falta un @page limpio.
+  return `${buildReceiptSheetMarkup(venta)}
+<style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#fff}</style>`;
 }
 
 function showReceipt(venta, options = {}) {
