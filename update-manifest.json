@@ -1,12 +1,13 @@
 {
-  "version": "1.3.27",
-  "stableVersion": "1.3.27",
+  "version": "1.3.28",
+  "stableVersion": "1.3.28",
   "date": "02/09/2026",
   "size": "47.3 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
+    "Nueva imagen de marca de Tecno Caja POS en el inicio de sesion, la barra lateral y el icono de la aplicacion.",
     "Nuevo modo Empresa de Servicios: consultoria, tecnologia, publicidad, arquitectura, limpieza, seguridad, mantenimiento y agencia de viajes, con flujo cotizacion, factura, cobro y reporte, sin caja de efectivo ni catalogo de productos.",
     "Las empresas de servicios pueden ser monocaja, multicaja o multisucursal; se elige en el asistente y la clave de red solo se pide en modo red.",
     "Elegir Multicaja o Multisucursal ahora pasa la PC principal a base de datos de red (MySQL) automaticamente.",

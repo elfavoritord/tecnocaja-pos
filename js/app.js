@@ -6197,25 +6197,23 @@ function syncCashStartupGate() {
   gate.classList.toggle('hidden', !shouldBlock);
 }
 
+// Logo de marca por defecto de Tecno Caja POS. Si un negocio sube su propio
+// logo en Configuración, ese tiene prioridad (llega como data URL en logoData).
+const DEFAULT_BRAND_LOGO = 'img/tcp-logo.png';
+
 function applyLogoState(imageId, fallbackId, logoData) {
   const image = document.getElementById(imageId);
   const fallback = document.getElementById(fallbackId);
   if (!image || !fallback) return;
-  if (logoData) {
-    image.src = logoData;
-    image.classList.remove('hidden');
-    fallback.classList.add('hidden');
-    return;
-  }
-  image.removeAttribute('src');
-  image.classList.add('hidden');
-  fallback.classList.remove('hidden');
+  image.src = logoData || DEFAULT_BRAND_LOGO;
+  image.classList.remove('hidden');
+  fallback.classList.add('hidden');
 }
 
 function updateLogoPreview(logoData) {
   const preview = document.getElementById('cfg-logo-preview');
   if (!preview) return;
-  preview.innerHTML = logoData ? `<img src="${logoData}" alt="Vista previa del logo">` : '⚡';
+  preview.innerHTML = `<img src="${logoData || DEFAULT_BRAND_LOGO}" alt="Vista previa del logo">`;
 }
 
 function renderSetupChoiceCards(containerId, items, selectedValue, type) {
