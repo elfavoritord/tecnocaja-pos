@@ -431,7 +431,9 @@
 [data-theme="light"] .repv2-chart-panel,
 [data-theme="light"] .repv2-dgii-kpi,
 [data-theme="light"] .repv2-export-card { background: #fff; }
-[data-theme="light"] .repv2-subtab { background: #f0f3ff; }
+[data-theme="light"] .repv2-subtab { background: #eef1ff; color: #3a4170; border-color: #d5daf0; }
+[data-theme="light"] .repv2-subtab:hover { color: #1a1e30; border-color: var(--accent); }
+[data-theme="light"] .repv2-subtab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 [data-theme="light"] .repv2-table thead th { background: #f0f3ff; color: #6b7494; }
 [data-theme="light"] .repv2-table tbody td { color: #1a1e30; }
 [data-theme="light"] .repv2-table tfoot td { background: #f0f3ff; }

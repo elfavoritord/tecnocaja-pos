@@ -108,6 +108,24 @@ function statusBadge(s) {
   return `<span class="badge ${cls}">${labels[s] || s}</span>`;
 }
 
+// Empresas de servicios (modo administrativo del POS, sin punto de venta).
+const SRV_VERTICALES = {
+  srv_consultoria: 'Consultoría', srv_tecnologia: 'Empresa de Tecnología', srv_publicidad: 'Agencia de Publicidad',
+  srv_arquitectura: 'Arquitectura e Ingeniería', srv_limpieza: 'Empresa de Limpieza', srv_seguridad: 'Empresa de Seguridad',
+  srv_mantenimiento: 'Empresa de Mantenimiento', srv_viajes: 'Agencia de Viajes',
+};
+function esServicios(c) {
+  return Boolean(c && (c.serviceCompany || String(c.vertical || c.tipo_negocio || '').startsWith('srv_')));
+}
+function verticalLabel(c) {
+  const v = (c && (c.vertical || c.tipo_negocio)) || '';
+  return SRV_VERTICALES[v] || (String(v).startsWith('srv_') ? 'Empresa de Servicios' : v || '—');
+}
+function verticalBadge(c) {
+  if (!esServicios(c)) return '';
+  return `<span class="badge" style="background:rgba(14,165,233,.14);color:#0369a1;border:1px solid rgba(14,165,233,.3)">🏢 ${verticalLabel(c)}</span>`;
+}
+
 function solBadge(s) {
   const m = {
     pendiente: 'badge-sol-pendiente', en_revision: 'badge-sol-revision',
@@ -579,6 +597,7 @@ function renderClientes(list) {
     return `<tr>
       <td>
         <div style="font-weight:600">${c.businessName || c.businessKey || '—'}</div>
+        ${esServicios(c) ? `<div style="margin:2px 0">${verticalBadge(c)}</div>` : ''}
         <div class="td-small" style="font-family:monospace;font-size:10px;color:#5a7099">${c.businessKey || ''}</div>
       </td>
       <td class="td-small">${sucursalesCell}</td>
@@ -625,22 +644,34 @@ async function verCliente(id) {
       apiCall('GET', `/api/licencias/${id}`).catch(() => []),
     ]);
 
-    setText('det-nombre', c.businessName || c.businessKey || id);
+    const nombreEl = $id('det-nombre');
+    if (nombreEl) {
+      nombreEl.innerHTML = esc(c.businessName || c.businessKey || id) + (esServicios(c) ? ' ' + verticalBadge(c) : '');
+    }
     setText('det-key', c.businessKey || id);
 
     const dias = c.diasRestantes;
     const pct  = dias !== null ? Math.min(100, Math.max(0, (dias / 30) * 100)) : 0;
     const barCls = dias <= 7 ? 'progress-red' : dias <= 15 ? 'progress-orange' : 'progress-green';
 
+    const svc = esServicios(c);
+    const s = (c.posStats && c.posStats.servicios) || {};
     const infoNeg = $id('det-info-negocio');
     if (infoNeg) infoNeg.innerHTML = [
       ['Nombre comercial', c.businessName || '—'],
       ['Razón social',     c.razon_social  || '—'],
       ['RNC / Cédula',     c.rnc           || '—'],
-      ['Tipo de negocio',  c.tipo_negocio  || '—'],
+      ['Tipo de negocio',  svc ? verticalLabel(c) : (c.tipo_negocio || '—')],
       ['Dirección',        c.direccion     || '—'],
       ['Provincia',        c.provincia     || '—'],
-    ].map(([k, v]) => `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`).join('');
+    ].map(([k, v]) => `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`).join('')
+      + (svc ? `
+        <div class="info-row" style="border-top:1px solid #e2e8f0;margin-top:6px;padding-top:8px"><span class="info-key" style="font-weight:700;color:#0369a1">Servicios (mes)</span><span class="info-val"></span></div>
+        <div class="info-row"><span class="info-key">Facturado</span><span class="info-val">${fmtMoney(s.facturadoMes || 0)} · ${Number(s.facturasMes || 0)} fact.</span></div>
+        <div class="info-row"><span class="info-key">Cobrado</span><span class="info-val">${fmtMoney(s.cobradoMes || 0)}</span></div>
+        <div class="info-row"><span class="info-key">Cuentas por cobrar</span><span class="info-val">${fmtMoney(s.cuentasPorCobrar || 0)}</span></div>
+        <div class="info-row"><span class="info-key">Facturas pendientes</span><span class="info-val">${Number(s.facturasPendientes || 0)}</span></div>
+        <div class="info-row"><span class="info-key">Cotizaciones abiertas</span><span class="info-val">${Number(s.cotizacionesAbiertas || 0)}</span></div>` : '');
 
     const infoLic = $id('det-info-licencia');
     if (infoLic) infoLic.innerHTML = `

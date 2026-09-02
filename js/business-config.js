@@ -444,6 +444,97 @@ const businessConfig = {
       orderTypeTitle: 'Despacho de repuestos'
     }
   },
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EMPRESAS DE SERVICIOS (verticales srv_*) — modo administrativo (no POS)
+  // No usan ventas/productos/caja de efectivo. Facturan servicios propios con
+  // el flujo Cotización → Orden → Factura → Cobro → Reporte. Multisucursal +
+  // multicaja (las "cajas" son terminales/puestos, no efectivo). El operador
+  // queda identificado en cada operación solo para auditoría.
+  // Ver docs: plan "Modo Empresas de Servicios".
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Claves de módulo: las srv-* son vistas nuevas del modo servicios (se agregan
+  // al sidebar en M1). clientes / proveedores / rrhh / reportes / usuarios /
+  // configuracion son módulos del POS que se reutilizan tal cual.
+  srv_consultoria: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '📊', label: 'Consultoría', tagline: 'Propuestas, proyectos, contratos y honorarios' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-propuestas', 'srv-cotizaciones',
+      'srv-proyectos', 'srv-contratos', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'cotizaciones', 'proyectos', 'contratos', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Proyectos activos', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_tecnologia: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '💻', label: 'Empresa de Tecnología', tagline: 'Proyectos, soporte, contratos y facturación' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-proyectos',
+      'srv-ordenes', 'srv-contratos', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'proyectos', 'ordenes', 'contratos', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Proyectos activos', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_publicidad: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '📣', label: 'Agencia de Publicidad', tagline: 'Campañas, proyectos creativos y presupuestos' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-campanas',
+      'srv-proyectos', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'campanas', 'proyectos', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Campañas activas', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_arquitectura: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '📐', label: 'Arquitectura e Ingeniería', tagline: 'Proyectos, obras, avances y presupuestos' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-proyectos',
+      'srv-obras', 'srv-contratos', 'proveedores', 'srv-facturas', 'srv-cobros', 'srv-cxc',
+      'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'proyectos', 'obras', 'contratos', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Obras en proceso', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_limpieza: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '🧹', label: 'Empresa de Limpieza', tagline: 'Contratos, servicios programados y personal' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-contratos', 'srv-ordenes',
+      'srv-calendario', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'contratos', 'ordenes', 'calendario', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Servicios pendientes', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_seguridad: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '🛡️', label: 'Empresa de Seguridad', tagline: 'Puestos, guardias, turnos y contratos' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-contratos', 'srv-seguridad',
+      'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'contratos', 'seguridad', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Puestos activos', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_mantenimiento: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '🔧', label: 'Empresa de Mantenimiento', tagline: 'Órdenes de trabajo, preventivo y equipos' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-contratos', 'srv-ordenes',
+      'srv-mantenimiento', 'srv-calendario', 'proveedores', 'srv-facturas', 'srv-cobros', 'srv-cxc',
+      'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'contratos', 'ordenes', 'mantenimiento', 'calendario', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Órdenes abiertas', taxTitle: 'Cuentas por cobrar' } }
+  },
+  srv_viajes: {
+    serviceCompany: true,
+    appMode: 'servicios',
+    verticalMeta: { icon: '✈️', label: 'Agencia de Viajes', tagline: 'Reservaciones, paquetes, anticipos y comisiones' },
+    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-reservaciones',
+      'proveedores', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+    features: ['servicios', 'reservaciones', 'cotizaciones', 'facturacion', 'cxc'],
+    dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Reservaciones activas', taxTitle: 'Cuentas por cobrar' } }
+  },
   veterinaria: {
     productFields: [
       { key: 'especie', label: 'Especie', type: 'select', options: ['Perro', 'Gato', 'Ave', 'Conejo', 'Otro'], highlight: true },
@@ -509,5 +600,21 @@ function getBusinessConfig(type) {
   return mergeBusinessConfig(base, current);
 }
 
+// ── Empresas de servicios ──────────────────────────────────────────────────
+// El prefijo srv_ y/o el flag serviceCompany identifican una instalación en
+// modo administrativo (ERP), no punto de venta.
+function isServiceBusiness(type) {
+  const key = String(type || '').trim().toLowerCase();
+  if (key.startsWith('srv_')) return true;
+  return Boolean(businessConfig[key] && businessConfig[key].serviceCompany);
+}
+
+// Metadatos de los 8 verticales para el sub-paso del wizard.
+const SERVICE_VERTICALS = Object.entries(businessConfig)
+  .filter(([key, cfg]) => key.startsWith('srv_') && cfg.verticalMeta)
+  .map(([key, cfg]) => ({ value: key, ...cfg.verticalMeta }));
+
 window.businessConfig = businessConfig;
 window.getBusinessConfig = getBusinessConfig;
+window.isServiceBusiness = isServiceBusiness;
+window.SERVICE_VERTICALS = SERVICE_VERTICALS;

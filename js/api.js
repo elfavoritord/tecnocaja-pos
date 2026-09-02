@@ -82,6 +82,12 @@ const api = {
       // por fila en `details` — antes se descartaba aquí y solo llegaba el
       // mensaje genérico al toast, sin forma de saber qué falló realmente.
       if (body?.details !== undefined) err.details = body.details;
+      // Señal del backend: hay que pasar a la base de datos de red (MySQL) antes
+      // de continuar — la manejan saveConfig() y completeInitialSetup().
+      if (body?.needsNetworkDbSwitch) {
+        err.needsNetworkDbSwitch = true;
+        err.switchMode = body.mode || '';
+      }
       throw err;
     }
 
@@ -122,6 +128,25 @@ const api = {
     return this.request('/api/setup/complete', {
       method: 'POST',
       body: JSON.stringify(data)
+    });
+  },
+
+  // Empresa nueva en el wizard: activar la base de datos de red (MySQL) antes de
+  // llenar los datos. Persiste el entorno y pide reiniciar; no toca la BD.
+  prepareNetworkDb(data) {
+    return this.request('/api/setup/prepare-network-db', {
+      method: 'POST',
+      body: JSON.stringify(data || {})
+    });
+  },
+
+  // Instalación con datos: switch a la base de datos de red. Hace respaldo del
+  // .db y deja una migración pendiente que corre en el próximo arranque.
+  switchToNetworkDb(data) {
+    return this.request('/api/network/switch-to-network-db', {
+      method: 'POST',
+      body: JSON.stringify({ ...(data || {}), ...getActorPayload() }),
+      _timeoutMs: 60000
     });
   },
 

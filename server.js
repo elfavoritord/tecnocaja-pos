@@ -97,6 +97,11 @@ const { createGastosRouter, ensureSchema: ensureGastosSchema } = require('./serv
 // Cobro de crédito a clientes — extraído de server.js con fix de caja/reportes/factura.
 const { createClientesCreditosRouter, ensureSchema: ensureClientesCreditosSchema } = require('./server/routes/clientes-creditos.routes');
 
+// Modo "Empresa de Servicios" (ERP administrativo, sin POS/caja) — M1 núcleo:
+// catálogo de servicios, cotizaciones, facturación A4/80/58 + correo, cobros/CxC,
+// dashboard y auditoría. Ver server/routes/servicios/ y js/business-config.js.
+const { createServiciosRouter, ensureServiciosSchema } = require('./server/routes/servicios');
+
 // ✅ Báscula TCP
 const bascula = require('./server/devices/bascula');
 
@@ -1427,6 +1432,52 @@ function buildRemoteTerminalConfig(data = {}) {
   };
 }
 
+// ── Switch a base de datos de red (MySQL) ───────────────────────────────────
+// Elegir multicaja/multisucursal implica MySQL centralizado. En la PC principal
+// eso NO era automático: había que editar app.env a mano, reiniciar y correr el
+// script de migración. Estas piezas lo hacen solas — ver:
+//   /api/setup/prepare-network-db      (wizard de empresa nueva, sin datos)
+//   /api/network/switch-to-network-db  (instalación existente con datos)
+//   electron/main.js  (ejecuta la migración en el arranque siguiente)
+const NETWORK_DB_MIGRATION_MARKER = path.join(runtime.userDataPath || __dirname, 'config', 'pending-db-migration.json');
+
+// Persiste en app.env (y process.env) todo lo necesario para que el PRÓXIMO
+// arranque use MariaDB local publicada en LAN. No toca ninguna base de datos.
+function persistNetworkDbRuntimeEnv() {
+  persistRuntimeEnvValues({
+    DB_CLIENT: 'mysql',
+    DB_HOST: '127.0.0.1',
+    DB_PORT: String(process.env.DB_PORT || 3306),
+    DB_NAME: String(process.env.DB_NAME || 'tecnocaja'),
+    DB_USER: String(process.env.DB_USER || 'root'),
+    DB_PASSWORD: String(process.env.DB_PASSWORD || ''),
+    POS_ALLOW_LAN: 'true',
+    POS_BIND_HOST: '0.0.0.0',
+    TECNO_CAJA_MYSQL_ALLOW_LAN: 'true',
+    TECNO_CAJA_MYSQL_BIND_HOST: '0.0.0.0'
+  });
+}
+
+// Revierte lo anterior — lo usa electron/main.js si la migración falla, para que
+// la app vuelva a arrancar sobre el SQLite intacto.
+function persistLocalDbRuntimeEnv() {
+  persistRuntimeEnvValues({
+    DB_CLIENT: 'sqlite',
+    DB_HOST: '127.0.0.1',
+    POS_ALLOW_LAN: 'false',
+    POS_BIND_HOST: '127.0.0.1',
+    TECNO_CAJA_MYSQL_ALLOW_LAN: 'false',
+    TECNO_CAJA_MYSQL_BIND_HOST: '127.0.0.1'
+  });
+}
+
+async function isNetworkDbReady() {
+  if (!isMysqlDeployment()) return false;
+  const port = Number(process.env.DB_PORT || 3306);
+  const host = String(process.env.DB_HOST || '127.0.0.1').trim() || '127.0.0.1';
+  return testTcpReachability(host, port, 1200);
+}
+
 const secureLicenseService = createLicenseService({
   query,
   persistRemoteUid: (licenseUid) => {
@@ -1864,8 +1915,47 @@ const BUSINESS_TEMPLATES = {
     quickMenuNote: 'Configura el catálogo a tu medida desde el módulo de productos.',
     categories: ['General', 'Servicios', 'Productos', 'Otros'],
     products: []
-  }
+  },
+  // ── Empresas de servicios (verticales srv_*) — modo administrativo, sin POS ──
+  // Ver js/business-config.js para la matriz de módulos por vertical y el plan
+  // "Modo Empresas de Servicios". Aquí solo va el branding; no llevan catálogo.
+  ...Object.fromEntries([
+    ['srv_consultoria', 'Consultoría'],
+    ['srv_tecnologia', 'Empresa de Tecnología'],
+    ['srv_publicidad', 'Agencia de Publicidad'],
+    ['srv_arquitectura', 'Arquitectura e Ingeniería'],
+    ['srv_limpieza', 'Empresa de Limpieza'],
+    ['srv_seguridad', 'Empresa de Seguridad'],
+    ['srv_mantenimiento', 'Empresa de Mantenimiento'],
+    ['srv_viajes', 'Agencia de Viajes'],
+  ].map(([key, label]) => [key, {
+    key,
+    label,
+    serviceCompany: true,
+    accent: '#0EA5E9',
+    accentLight: '#38BDF8',
+    loginSubtitle: `${label} — cotizaciones, facturación de servicios y cobros.`,
+    salesTitle: 'Servicios',
+    salesSubtitle: 'Gestión administrativa de servicios: cotización, factura, cobro y reporte.',
+    searchPlaceholder: 'Buscar cliente, servicio o factura...',
+    quickMenuTitle: 'Operación de servicios',
+    quickMenuItems: [
+      'Registra tus servicios y precios',
+      'Cotiza, factura y cobra desde un solo lugar',
+      'Controla cuentas por cobrar y reportes por sucursal',
+    ],
+    quickMenuNote: 'Modo administrativo: sin punto de venta ni caja de efectivo.',
+    categories: [],
+    products: [],
+  }])),
 };
+
+// True si el tipo de negocio es una empresa de servicios (modo ERP, no POS).
+function isServiceBusinessType(type) {
+  const key = String(type || '').trim().toLowerCase();
+  if (key.startsWith('srv_')) return true;
+  return Boolean(BUSINESS_TEMPLATES[key] && BUSINESS_TEMPLATES[key].serviceCompany);
+}
 // === CORS: allowlist segura (extraído a server/config/cors.js) ===
 const { corsOptions: CORS_OPTIONS } = require('./server/config/cors');
 
@@ -2228,6 +2318,13 @@ const gastosRouter = createGastosRouter({
   query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
 });
 app.use('/api/expenses', gastosRouter);
+
+// Modo Empresa de Servicios — núcleo M1 (solo activo si config.serviceCompany).
+app.use('/api/servicios', createServiciosRouter({
+  query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog,
+  getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
+  getConfig, getNextNcfFromSequence,
+}));
 
 // Cobro de crédito a clientes
 const clientesCreditosRouter = createClientesCreditosRouter({
@@ -3704,7 +3801,9 @@ function buildBusinessProfile(type = 'pizzeria') {
     searchPlaceholder: template.searchPlaceholder,
     quickMenuTitle: template.quickMenuTitle,
     quickMenuItems: template.quickMenuItems,
-    quickMenuNote: template.quickMenuNote
+    quickMenuNote: template.quickMenuNote,
+    serviceCompany: Boolean(template.serviceCompany || isServiceBusinessType(template.key)),
+    appMode: (template.serviceCompany || isServiceBusinessType(template.key)) ? 'servicios' : 'pos'
   };
 }
 
@@ -3912,7 +4011,12 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // ensureConfigExtensions y ensureNcfExtensions.
 // -10: agrega preferred_billing_doc_type a config (tipo de comprobante que se
 // preselecciona al abrir una venta nueva) — ver ensureConfigExtensions.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-10`;
+// -11: modo "Empresa de Servicios" — agrega service_company/service_vertical/
+// service_invoice_default_format/service_fiscal_mode a config y columnas de
+// contexto (branch_id, cash_register_id, client_id, document_type/ref, amount,
+// payment_method) a audit_logs — ver ensureConfigExtensions y
+// ensureServiciosCoreExtensions.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-11`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -4014,6 +4118,16 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'install_network_key', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('config', 'razon_social', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('config', 'provincia', 'VARCHAR(80) DEFAULT NULL');
+  // ── Modo "Empresa de Servicios" (ERP, sin POS) ──
+  // service_company: 1 cuando el business_type es un vertical srv_*.
+  // service_vertical: el vertical elegido (consultoria, seguridad, viajes, …).
+  // service_invoice_default_format: formato por defecto de impresión (a4/80mm/58mm);
+  //   el envío por correo siempre usa A4 sin importar este valor.
+  // service_fiscal_mode: 'ecf' (comprobante electrónico) o 'ncf' (tradicional).
+  await addColumnIfMissing('config', 'service_company', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing('config', 'service_vertical', 'VARCHAR(40) DEFAULT NULL');
+  await addColumnIfMissing('config', 'service_invoice_default_format', `VARCHAR(10) NOT NULL DEFAULT 'a4'`);
+  await addColumnIfMissing('config', 'service_fiscal_mode', `VARCHAR(10) NOT NULL DEFAULT 'ncf'`);
   await query(
     `INSERT OR IGNORE INTO config
       (id, business_name, rnc, address, phone, currency, tax_rate, invoice_prefix, invoice_next_number, e_invoice_enabled, e_invoice_prefix, e_invoice_next_number, receipt_message, receipt_print_mode, receipt_printer_name, receipt_paper_size, cash_drawer_enabled, cash_drawer_method, cash_drawer_printer_name, cash_drawer_pin, cash_drawer_network_host, cash_drawer_network_port, cash_drawer_serial_port, app_logo, security_password, cash_open, cash_amount, language, business_type, business_structure_mode, cashier_register_required, exclusive_cashier_per_register, starter_catalog_seeded, setup_completed, setup_completed_at, trial_started_at, trial_ends_at, license_status, license_activated_at, license_activated_by, require_cash_open_before_use)
@@ -4059,6 +4173,42 @@ async function ensureConfigExtensions() {
   await query('UPDATE config SET starter_catalog_seeded = 0 WHERE id = 1 AND starter_catalog_seeded IS NULL');
   await query(`UPDATE config SET license_status = 'trial' WHERE id = 1 AND (license_status IS NULL OR license_status = '')`);
   await query(`UPDATE config SET require_cash_open_before_use = 1 WHERE id = 1 AND require_cash_open_before_use IS NULL`);
+  // Salvaguarda: una prueba dura 30 días desde que se completó el asistente
+  // (setup_completed_at, que solo se escribe una vez). trial_ends_at derivaba
+  // de un round-trip DATETIME en el sync de licencia que sumaba el offset local
+  // cada arranque y hacía "crecer" la prueba. Aquí se re-ancla a
+  // setup_completed_at + 30 días si se desvió más de 1 día, y se limpia el
+  // caché de licencia para que se reconstruya limpio.
+  try {
+    const [lc] = await query(
+      `SELECT setup_completed_at, trial_started_at, trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1`
+    );
+    const isTrial = lc && String(lc.license_status || '').toLowerCase() === 'trial';
+    const anchorRaw = lc && (lc.setup_completed_at || lc.trial_started_at);
+    if (isTrial && anchorRaw) {
+      const parse = (v) => {
+        const s = String(v).trim().replace(' ', 'T');
+        return new Date(/\dZ$|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z');
+      };
+      const anchor = parse(anchorRaw);
+      const ends = lc.trial_ends_at ? parse(lc.trial_ends_at) : null;
+      if (!Number.isNaN(anchor.getTime())) {
+        const expected = new Date(anchor.getTime() + 30 * 86400000);
+        const driftDays = ends ? Math.abs(ends.getTime() - expected.getTime()) / 86400000 : Infinity;
+        if (driftDays > 1) {
+          const startSql = anchor.toISOString().slice(0, 19).replace('T', ' ');
+          const endSql = expected.toISOString().slice(0, 19).replace('T', ' ');
+          await query(
+            `UPDATE config SET trial_started_at = ?, trial_ends_at = ? WHERE id = 1`,
+            [startSql, endSql]
+          );
+          await query('DELETE FROM license_cache').catch(() => {});
+          const left = Math.max(0, Math.ceil((expected.getTime() - Date.now()) / 86400000));
+          console.log(`[license] prueba re-anclada a setup+30d (quedan ${left} días).`);
+        }
+      }
+    }
+  } catch (_) { /* si falta la columna o license_cache, no bloquea el arranque */ }
   const codeRows = await query('SELECT mobile_connection_code FROM config WHERE id = 1 LIMIT 1');
   const currentCode = String(codeRows[0]?.mobile_connection_code || '').trim();
   if (!normalizeMobileConnectionCode(currentCode)) {
@@ -4090,6 +4240,22 @@ async function ensureConfigExtensions() {
   if (Number(productCountRows[0]?.total || 0) > 0 && !Number(currentConfig.starter_catalog_seeded || 0)) {
     await query('UPDATE config SET starter_catalog_seeded = 1 WHERE id = 1');
   }
+}
+
+// ── Modo Empresas de Servicios: auditoría enriquecida ──────────────────────
+// El spec pide que cada operación (cotización, factura, cobro, envío por correo,
+// impresión…) quede registrada con sucursal + terminal + cliente + documento +
+// monto + método de pago, aunque no exista apertura/cierre de caja. Estas
+// columnas son opcionales (nullable) y no afectan el registro de auditoría del
+// POS tradicional.
+async function ensureServiciosCoreExtensions() {
+  await addColumnIfMissing('audit_logs', 'branch_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('audit_logs', 'cash_register_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('audit_logs', 'client_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('audit_logs', 'document_type', 'VARCHAR(40) DEFAULT NULL');
+  await addColumnIfMissing('audit_logs', 'document_ref', 'VARCHAR(80) DEFAULT NULL');
+  await addColumnIfMissing('audit_logs', 'amount', 'DECIMAL(12,2) DEFAULT NULL');
+  await addColumnIfMissing('audit_logs', 'payment_method', 'VARCHAR(30) DEFAULT NULL');
 }
 
 // ── Multi-moneda USD/DOP (Fase 1: tipo de cambio + Configuración de Monedas) ──
@@ -6219,7 +6385,13 @@ async function getCategories() {
   return rows.map(mapCategoryRow);
 }
 
-async function writeAuditLog({ userId = null, userName = 'Sistema', userRole = 'Sistema', moduleName, actionName, detail = '' }) {
+async function writeAuditLog({
+  userId = null, userName = 'Sistema', userRole = 'Sistema', moduleName, actionName, detail = '',
+  // Contexto opcional para el modo Empresas de Servicios (spec §3 y §20). Se
+  // guarda en columnas nullable agregadas por ensureServiciosCoreExtensions().
+  branchId = null, cashRegisterId = null, clientId = null,
+  documentType = null, documentRef = null, amount = null, paymentMethod = null,
+} = {}) {
   await ensureAuditTable();
   let safeUserId = userId;
   if (safeUserId !== null && safeUserId !== undefined && safeUserId !== '') {
@@ -6234,11 +6406,27 @@ async function writeAuditLog({ userId = null, userName = 'Sistema', userRole = '
   } else {
     safeUserId = null;
   }
-  await query(
+  const result = await query(
     `INSERT INTO audit_logs (user_id, user_name, user_role, module_name, action_name, detail, created_at)
      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
     [safeUserId, userName, userRole, moduleName, actionName, detail]
   );
+  const hasContext = branchId != null || cashRegisterId != null || clientId != null
+    || documentType != null || documentRef != null || amount != null || paymentMethod != null;
+  if (hasContext && result && result.insertId != null) {
+    try {
+      await query(
+        `UPDATE audit_logs SET branch_id = ?, cash_register_id = ?, client_id = ?,
+           document_type = ?, document_ref = ?, amount = ?, payment_method = ?
+         WHERE id = ?`,
+        [branchId, cashRegisterId, clientId, documentType, documentRef,
+         amount != null ? Number(amount) : null, paymentMethod, result.insertId]
+      );
+    } catch (err) {
+      // Columnas de contexto aún no migradas: la auditoría base ya quedó escrita.
+      console.warn('[audit] contexto de servicios no guardado:', err.message);
+    }
+  }
 }
 
 async function logWizardNetworkAttempt({
@@ -6791,6 +6979,10 @@ async function getSetupStatus() {
     setupCompleted,
     setupCorrupted,   // nuevo: true = configurado pero sin usuarios (error a mostrar en UI)
     hasUsers,
+    // Para que el wizard sepa si ya se hizo el switch a MySQL tras reiniciar
+    // (ver /api/setup/prepare-network-db y la reanudación en js/wizard.js).
+    dbClient: isMysqlDeployment() ? 'mysql' : 'sqlite',
+    networkDbReady: await isNetworkDbReady(),
     config: await getConfig({ syncRemote: false, licenseResult }),
     license,
     businessTypes: listBusinessTypes(),
@@ -7633,6 +7825,10 @@ async function getConfig(options = {}) {
     salesSplitViewEnabled: Boolean(row.sales_split_view_enabled ?? 0),
     idioma: row.language || 'es',
     tipoNegocio: businessType,
+    serviceCompany: Boolean(Number(row.service_company ?? 0)) || isServiceBusinessType(businessType),
+    serviceVertical: row.service_vertical || (isServiceBusinessType(businessType) ? businessType : null),
+    serviceInvoiceDefaultFormat: row.service_invoice_default_format || 'a4',
+    serviceFiscalMode: row.service_fiscal_mode || 'ncf',
     businessStructureMode: normalizeBusinessStructureMode(row.business_structure_mode) || 'monocaja',
     cashierRegisterRequired: Boolean(row.cashier_register_required ?? 1),
     exclusiveCashierPerRegister: Boolean(row.exclusive_cashier_per_register ?? 1),
@@ -8582,7 +8778,25 @@ app.post('/api/setup/complete', async (req, res) => {
 
   const language = String(payload.language || 'es').trim().toLowerCase();
   const businessType = String(payload.businessType || 'pizzeria').trim().toLowerCase();
+  const isServiceCompany = isServiceBusinessType(businessType);
+  // La estructura (monocaja/multicaja/multisucursal) la elige el usuario en el
+  // wizard, también para empresas de servicios. La clave de red solo se pide y
+  // se exige cuando la estructura es multi (ver validación más abajo).
   const businessStructureMode = normalizeBusinessStructureMode(payload.businessStructureMode || 'monocaja');
+
+  // Multicaja/multisucursal exige MySQL. Si el asistente llega hasta aquí sobre
+  // SQLite (p. ej. el usuario recargó y se saltó /api/setup/prepare-network-db),
+  // NO completar la configuración en la base equivocada: pedir el switch primero.
+  if (['multicaja', 'multisucursal'].includes(businessStructureMode) && !isMysqlDeployment()) {
+    persistNetworkDbRuntimeEnv();
+    saveTerminalConfig({ isMain: true, setupMode: businessStructureMode, language });
+    return res.status(409).json({
+      error: 'Se activará la base de datos de red. La app se reiniciará y podrás continuar la configuración.',
+      needsNetworkDbSwitch: true,
+      restartRequired: true
+    });
+  }
+
   const businessName = String(payload.businessName || '').trim();
   const businessRnc = String(payload.businessRnc || '').trim();
   const businessAddress = String(payload.businessAddress || '').trim();
@@ -8731,6 +8945,27 @@ app.post('/api/setup/complete', async (req, res) => {
         trialEndsSql
       ]
     );
+
+    // Modo Empresa de Servicios: sin apertura/cierre de caja de efectivo, sin
+    // cajero exclusivo por terminal, sin catálogo de arranque. El operador
+    // igual queda identificado en cada operación (auditoría).
+    if (isServiceCompany) {
+      await conn.query(
+        `UPDATE config
+           SET service_company = 1, service_vertical = ?,
+               service_invoice_default_format = ?, service_fiscal_mode = ?,
+               require_cash_open_before_use = 0, cashier_register_required = 0,
+               exclusive_cashier_per_register = 0, starter_catalog_seeded = 1
+         WHERE id = 1`,
+        [
+          businessType,
+          ['a4', '80mm', '58mm'].includes(String(payload.serviceInvoiceFormat || '').toLowerCase())
+            ? String(payload.serviceInvoiceFormat).toLowerCase() : 'a4',
+          ['ecf', 'ncf'].includes(String(payload.serviceFiscalMode || '').toLowerCase())
+            ? String(payload.serviceFiscalMode).toLowerCase() : 'ncf',
+        ]
+      );
+    }
 
     const branchResult = await conn.query(
       `INSERT INTO branches (business_id, nombre, codigo, direccion, telefono, encargado, estado, created_at)
@@ -8888,6 +9123,114 @@ app.post('/api/setup/complete', async (req, res) => {
     networkHosting,
     linkedContadorProfile
   });
+});
+
+// ─── Wizard (empresa nueva): activar la base de datos de red ────────────────
+// Se llama en cuanto el usuario elige multicaja/multisucursal + "negocio nuevo",
+// ANTES de llenar los datos del negocio. Persiste el entorno para que el próximo
+// arranque use MariaDB local en LAN y pide reiniciar. NO toca ninguna base de
+// datos (SQLite queda intacta y vacía). Tras el reinicio el wizard reanuda en el
+// paso "Tipo" y /api/setup/complete corre ya sobre MySQL.
+app.post('/api/setup/prepare-network-db', async (req, res) => {
+  try {
+    const mode = normalizeBusinessStructureMode(req.body?.structureMode || req.body?.businessStructureMode || '');
+    if (!['multicaja', 'multisucursal'].includes(mode)) {
+      return res.status(400).json({ error: 'Modo no válido para base de datos de red.' });
+    }
+    const status = await getSetupStatus();
+    if (!status.setupRequired) {
+      return res.status(409).json({ error: 'El sistema ya fue configurado; usa el asistente de red o Configuración.' });
+    }
+    if (isMysqlDeployment()) {
+      return res.json({ ok: true, alreadyReady: true, restartRequired: false });
+    }
+
+    persistNetworkDbRuntimeEnv();
+    saveTerminalConfig({
+      isMain: true,
+      setupMode: mode,
+      language: String(req.body?.language || 'es').trim().toLowerCase() || 'es'
+    });
+
+    return res.json({ ok: true, restartRequired: true });
+  } catch (err) {
+    console.error('[setup/prepare-network-db]', err);
+    return res.status(Number(err.statusCode || 500)).json({ error: err.message || 'No se pudo activar la base de datos de red.' });
+  }
+});
+
+// ─── Configuración/asistente: switch a red en una instalación CON datos ─────
+// Diferente de prepare-network-db: aquí ya hay datos en SQLite. Hace copia de
+// seguridad del .db, persiste el entorno y deja un marcador que electron/main.js
+// consume en el siguiente arranque para migrar SQLite → MySQL (con rollback).
+app.post('/api/network/switch-to-network-db', async (req, res) => {
+  try {
+    const actorUser = await resolveRequestActorUser(req, { required: true });
+    if (!userCanManageGlobalConfig(actorUser)) {
+      return res.status(403).json({ error: 'Solo el administrador general puede activar la base de datos de red.' });
+    }
+
+    const mode = normalizeBusinessStructureMode(req.body?.structureMode || req.body?.businessStructureMode || 'multicaja');
+    if (!['multicaja', 'multisucursal'].includes(mode)) {
+      return res.status(400).json({ error: 'Modo no válido para base de datos de red.' });
+    }
+    if (isMysqlDeployment()) {
+      return res.json({ ok: true, alreadyReady: true, restartRequired: false });
+    }
+
+    // Debe haber un motor MariaDB disponible (bundle embebido o de sistema).
+    let mariadbAvailable = false;
+    try {
+      const { findServerCandidate } = require('./scripts/ensure-local-mysql');
+      mariadbAvailable = Boolean(findServerCandidate());
+    } catch (_) { mariadbAvailable = false; }
+    if (!mariadbAvailable) {
+      return res.status(409).json({ error: 'No se encontró el motor MariaDB embebido. Reinstala Tecno Caja e inténtalo de nuevo.' });
+    }
+
+    // No dejar ventas offline sin sincronizar antes de cambiar de base.
+    try {
+      const pending = await localQuery("SELECT COUNT(*) AS c FROM pending_sales WHERE status IN ('pending','error')").catch(() => [{ c: 0 }]);
+      if (Number(pending?.[0]?.c || 0) > 0) {
+        return res.status(409).json({ error: 'Hay ventas offline sin sincronizar. Sincronízalas antes de activar la base de datos de red.' });
+      }
+    } catch (_) { /* si no hay tabla local, no hay pendientes */ }
+
+    const sqlitePath = String(process.env.DB_FILE || runtime.dbFile || '').trim();
+    if (!sqlitePath || !fs.existsSync(sqlitePath)) {
+      return res.status(500).json({ error: 'No se encontró el archivo de base de datos local.' });
+    }
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${sqlitePath}.pre-mysql-${stamp}.bak`;
+    fs.copyFileSync(sqlitePath, backupPath);
+
+    persistNetworkDbRuntimeEnv();
+
+    const markerDir = path.dirname(NETWORK_DB_MIGRATION_MARKER);
+    if (!fs.existsSync(markerDir)) fs.mkdirSync(markerDir, { recursive: true });
+    fs.writeFileSync(NETWORK_DB_MIGRATION_MARKER, JSON.stringify({
+      sqlitePath,
+      backupPath,
+      businessStructureMode: mode,
+      requestedAt: new Date().toISOString(),
+      requestedBy: actorUser?.usuario || actorUser?.nombre || 'admin'
+    }, null, 2));
+
+    await writeAuditLog({
+      userId: actorUser?.id || null,
+      userName: actorUser?.nombre || 'Administrador',
+      userRole: 'Administrador',
+      moduleName: 'Sistema',
+      actionName: 'Switch a base de datos de red',
+      detail: `Modo ${mode}. Respaldo: ${path.basename(backupPath)}. Migración pendiente al reiniciar.`
+    });
+
+    return res.json({ ok: true, restartRequired: true, backup: path.basename(backupPath) });
+  } catch (err) {
+    console.error('[network/switch-to-network-db]', err);
+    return res.status(Number(err.statusCode || 500)).json({ error: err.message || 'No se pudo activar la base de datos de red.' });
+  }
 });
 
 // ─── Wizard: validar credenciales (multicaja/multisucursal) ─────────────────
@@ -13534,6 +13877,27 @@ app.put('/api/config', async (req, res) => {
     }
   }
   await ensureBusinessStructureModeCompatibility(businessStructureMode);
+
+  // Pasar a multicaja/multisucursal exige MySQL centralizado. Si la instalación
+  // sigue en SQLite, NO escribir el modo aquí: el frontend debe disparar el
+  // switch (con respaldo + migración en el reinicio) vía
+  // /api/network/switch-to-network-db.
+  {
+    const currentModeRows = await query('SELECT business_structure_mode FROM config WHERE id = 1 LIMIT 1');
+    const currentMode = normalizeBusinessStructureMode(currentModeRows[0]?.business_structure_mode) || 'monocaja';
+    if (
+      ['multicaja', 'multisucursal'].includes(businessStructureMode) &&
+      !['multicaja', 'multisucursal'].includes(currentMode) &&
+      !isMysqlDeployment()
+    ) {
+      return res.status(409).json({
+        error: 'Para activar multicaja/multisucursal hay que pasar a la base de datos de red. Se hará una copia de seguridad y la app se reiniciará para migrar tus datos.',
+        needsNetworkDbSwitch: true,
+        mode: businessStructureMode
+      });
+    }
+  }
+
   await query(
     `UPDATE config
      SET business_name = ?, rnc = ?, address = ?, phone = ?, currency = ?, tax_rate = ?,
@@ -19098,6 +19462,8 @@ async function finishMysqlRuntimeInit() {
   await ensureSupplierPaymentsTable();
   await runCoreSchemaMigrations(() => Promise.all([
         ensureConfigExtensions(),
+        ensureServiciosCoreExtensions().catch(e => console.warn('[servicios] init fallo:', e.message)),
+        ensureServiciosSchema(query).catch(e => console.warn('[servicios-schema] init fallo:', e.message)),
         ensureUserExtensions(),
         ensureProductExtensions(),
         ensureReportAppProductSyncLogTable(),
@@ -19303,6 +19669,8 @@ async function prepareServerRuntime() {
     await ensureSupplierPaymentsTable();
     await runCoreSchemaMigrations(() => Promise.all([
       ensureConfigExtensions(),
+      ensureServiciosCoreExtensions().catch(e => console.warn('[servicios] init fallo:', e.message)),
+      ensureServiciosSchema(query).catch(e => console.warn('[servicios-schema] init fallo:', e.message)),
       ensureUserExtensions(),
       ensureProductExtensions(),
       ensureReportAppProductSyncLogTable(),

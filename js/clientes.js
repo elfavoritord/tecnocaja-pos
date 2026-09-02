@@ -59,6 +59,15 @@ function getClienteBalancePendiente(clienteId, fallbackBalance = 0) {
 function loadClientesTable(filter) {
   const tbody = document.getElementById('clientes-tbody');
   if (!tbody) return;
+  // En modo Empresa de Servicios se muestra Correo en vez de Referencia/Mapa.
+  const svc = document.documentElement.dataset.appMode === 'servicios';
+  const thead = document.querySelector('#clientes-table thead tr');
+  if (thead && thead.dataset.mode !== (svc ? 'svc' : 'pos')) {
+    thead.dataset.mode = svc ? 'svc' : 'pos';
+    thead.innerHTML = svc
+      ? `<th>${clientText('Nombre')}</th><th>${clientText('Teléfono')}</th><th>${clientText('Correo')}</th><th>${clientText('Cédula/RNC')}</th><th>${clientText('Balance')}</th><th>${clientText('Límite Crédito')}</th><th>${clientText('Acciones')}</th>`
+      : `<th>${clientText('Nombre')}</th><th>${clientText('Teléfono')}</th><th>${clientText('Referencia')}</th><th>${clientText('Mapa')}</th><th>${clientText('Cédula/RNC')}</th><th>${clientText('Balance')}</th><th>${clientText('Límite Crédito')}</th><th>${clientText('Acciones')}</th>`;
+  }
   let list = DB.clientes;
   if (filter) {
     const normalizedFilter = String(filter || '').toLowerCase();
@@ -68,12 +77,14 @@ function loadClientesTable(filter) {
     );
   }
   const balances = new Map(list.map((cliente) => [cliente.id, getClienteBalancePendiente(cliente.id, cliente.balance)]));
+  const midCols = (c) => svc
+    ? `<td>${c.email || '—'}</td>`
+    : `<td>${c.referencia || '—'}</td><td>${c.linkUbicacion ? `<a href="${c.linkUbicacion}" target="_blank" rel="noopener">${clientText('Abrir mapa')}</a>` : '—'}</td>`;
   tbody.innerHTML = list.map(c => `
     <tr>
       <td style="font-weight:600">${c.nombre}</td>
       <td style="font-family:var(--font-mono)">${c.telefono || '—'}</td>
-      <td>${c.referencia || '—'}</td>
-      <td>${c.linkUbicacion ? `<a href="${c.linkUbicacion}" target="_blank" rel="noopener">${clientText('Abrir mapa')}</a>` : '—'}</td>
+      ${midCols(c)}
       <td style="font-family:var(--font-mono)">${c.cedula || '—'}</td>
       <td style="font-family:var(--font-mono);color:${(balances.get(c.id) || 0)>0?'var(--warning)':'var(--success)'};font-weight:700">${fmt(balances.get(c.id) || 0)}</td>
       <td style="font-family:var(--font-mono)">${fmt(c.limiteCredito)}</td>
@@ -83,7 +94,7 @@ function loadClientesTable(filter) {
         <button class="btn-danger" onclick="deleteCliente(${c.id})">✕</button>
       </td>
     </tr>
-  `).join('') || `<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text3)">${clientText('No se encontraron clientes')}</td></tr>`;
+  `).join('') || `<tr><td colspan="${svc ? 7 : 8}" style="text-align:center;padding:2rem;color:var(--text3)">${clientText('No se encontraron clientes')}</td></tr>`;
 }
 
 function filterClientes(val) { loadClientesTable(val); }
@@ -109,6 +120,24 @@ function syncCreditLimitFields() {
 }
 window.syncCreditLimitFields = syncCreditLimitFields;
 
+// En modo "Empresa de Servicios" los datos de ubicación/referencia son
+// opcionales y van colapsados por defecto (el cliente factura servicios, no
+// pedidos a domicilio).
+function clienteModalIsServiceMode() {
+  return document.documentElement.dataset.appMode === 'servicios';
+}
+window.clienteModalIsServiceMode = clienteModalIsServiceMode;
+
+function toggleClienteExtraFields() {
+  const box = document.getElementById('cl-extra-fields');
+  const btn = document.getElementById('cl-extra-toggle');
+  if (!box) return;
+  const showing = box.style.display !== 'none';
+  box.style.display = showing ? 'none' : 'contents';
+  if (btn) btn.textContent = (showing ? '➕ ' : '➖ ') + clientText('Datos de ubicación (opcional)');
+}
+window.toggleClienteExtraFields = toggleClienteExtraFields;
+
 function openClienteModal(id) {
   const c = id ? DB.clientes.find(x => x.id === id) : null;
   const tieneLimit = c ? (Number(c.limiteCredito || 0) > 0) : false;
@@ -119,9 +148,16 @@ function openClienteModal(id) {
       <div class="form-group span-full"><label>${clientText('Nombre Completo')}</label><input type="text" id="cl-nombre" class="form-input" value="${c?c.nombre||'':''}" placeholder="${clientText('Nombre del cliente')}"></div>
       <div class="form-group"><label>${clientText('Teléfono')}</label><input type="text" id="cl-tel" class="form-input" value="${c?c.telefono||'':''}" placeholder="809-000-0000"></div>
       <div class="form-group"><label>${clientText('Cédula / RNC')}</label><input type="text" id="cl-cedula" class="form-input" value="${c?c.cedula||'':''}" placeholder="000-0000000-0"></div>
-      <div class="form-group span-full"><label>${clientText('Dirección')}</label><input type="text" id="cl-dir" class="form-input" value="${c?c.direccion||'':''}"></div>
-      <div class="form-group span-full"><label>${clientText('Referencia')}</label><input type="text" id="cl-ref" class="form-input" value="${c?c.referencia||'':''}" placeholder="${clientText('Casa azul, frente al parque')}"></div>
-      <div class="form-group span-full"><label>${clientText('Link de ubicación')}</label><input type="text" id="cl-mapa" class="form-input" value="${c?c.linkUbicacion||'':''}" placeholder="https://maps.google.com/..."></div>
+      <div class="form-group span-full"><label>${clientText('Correo electrónico')}</label><input type="email" id="cl-email" class="form-input" value="${c?c.email||'':''}" placeholder="cliente@correo.com"></div>
+      ${clienteModalIsServiceMode() ? `
+      <div class="form-group span-full">
+        <button type="button" class="btn-secondary" id="cl-extra-toggle" style="width:auto" onclick="toggleClienteExtraFields()">➕ ${clientText('Datos de ubicación (opcional)')}</button>
+      </div>` : ''}
+      <div id="cl-extra-fields" class="span-full" style="display:${clienteModalIsServiceMode() && !(c && (c.direccion || c.referencia || c.linkUbicacion)) ? 'none' : 'contents'}">
+        <div class="form-group span-full"><label>${clientText('Dirección')}</label><input type="text" id="cl-dir" class="form-input" value="${c?c.direccion||'':''}"></div>
+        <div class="form-group span-full"><label>${clientText('Referencia')}</label><input type="text" id="cl-ref" class="form-input" value="${c?c.referencia||'':''}" placeholder="${clientText('Casa azul, frente al parque')}"></div>
+        <div class="form-group span-full"><label>${clientText('Link de ubicación')}</label><input type="text" id="cl-mapa" class="form-input" value="${c?c.linkUbicacion||'':''}" placeholder="https://maps.google.com/..."></div>
+      </div>
       <div class="form-group span-full">
         <label>${clientText('Crédito')}</label>
         <div class="credit-limit-toggle">
@@ -753,13 +789,21 @@ async function saveCliente(id) {
     showToast(message, 'error');
     return;
   }
+  const emailVal = (document.getElementById('cl-email')?.value || '').trim();
+  if (emailVal && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailVal)) {
+    const message = clientText('El correo no tiene un formato válido.');
+    showClienteModalError(message);
+    showToast(message, 'error');
+    return;
+  }
   const data = {
     nombre,
     telefono: document.getElementById('cl-tel').value,
+    email: emailVal,
     cedula: document.getElementById('cl-cedula').value,
-    direccion: document.getElementById('cl-dir').value,
-    referencia: document.getElementById('cl-ref').value,
-    linkUbicacion: document.getElementById('cl-mapa').value,
+    direccion: document.getElementById('cl-dir')?.value || '',
+    referencia: document.getElementById('cl-ref')?.value || '',
+    linkUbicacion: document.getElementById('cl-mapa')?.value || '',
     limiteCredito: document.getElementById('cl-credit-nolimit')?.checked
       ? 0
       : (parseFloat(document.getElementById('cl-limite')?.value) || 0),

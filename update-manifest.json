@@ -1,19 +1,19 @@
 {
-  "version": "1.3.26",
-  "stableVersion": "1.3.26",
-  "date": "22/08/2026",
+  "version": "1.3.27",
+  "stableVersion": "1.3.27",
+  "date": "02/09/2026",
   "size": "47.3 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "âœ¨ Nuevo mÃ³dulo de facturaciÃ³n electrÃ³nica e-CF completo.",
-    "âš¡ Mejoras significativas en velocidad de facturaciÃ³n.",
-    "ðŸ› CorrecciÃ³n de errores en impresiÃ³n tÃ©rmica ESC/POS.",
-    "ðŸ“¦ OptimizaciÃ³n del mÃ³dulo de inventario y stock.",
-    "ðŸ“Š Nuevos reportes avanzados de ventas y rentabilidad.",
-    "ðŸ”’ Mayor seguridad en autenticaciÃ³n y manejo de sesiones.",
-    "ðŸ–¥ Interfaz de usuario rediseÃ±ada con mejor contraste.",
-    "ðŸ”„ SincronizaciÃ³n mÃ¡s rÃ¡pida en modo multicaja."
+    "Nuevo modo Empresa de Servicios: consultoria, tecnologia, publicidad, arquitectura, limpieza, seguridad, mantenimiento y agencia de viajes, con flujo cotizacion, factura, cobro y reporte, sin caja de efectivo ni catalogo de productos.",
+    "Las empresas de servicios pueden ser monocaja, multicaja o multisucursal; se elige en el asistente y la clave de red solo se pide en modo red.",
+    "Elegir Multicaja o Multisucursal ahora pasa la PC principal a base de datos de red (MySQL) automaticamente.",
+    "Empresa nueva en el asistente: cambia a MySQL sin migracion, reiniciando y continuando donde ibas.",
+    "Instalacion con datos: hace copia de seguridad de la base y migra al reiniciar; si algo falla, vuelve sola a la base local sin perder nada.",
+    "Las secuencias fiscales NCF ahora se migran correctamente al activar el modo red.",
+    "MariaDB se reinicia solo cuando hace falta publicar el puerto 3306 en la red local.",
+    "Corregido el contador de dias de la licencia de prueba, que en algunos equipos subia en lugar de bajar."
   ]
 }

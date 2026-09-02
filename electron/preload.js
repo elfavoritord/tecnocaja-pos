@@ -97,6 +97,17 @@ contextBridge.exposeInMainWorld('novaDesktop', {
   },
 
   /**
+   * Renderiza HTML a un PDF A4 y lo devuelve en base64 (sin diálogo).
+   * Usado para adjuntar facturas/cotizaciones formales en correos.
+   * @param {string} html
+   * @returns {Promise<string|null>} base64 del PDF, o null si falla
+   */
+  async htmlToPdf(html) {
+    const res = await ipcRenderer.invoke('app:html-to-pdf', { html });
+    return res && res.ok ? res.base64 : null;
+  },
+
+  /**
    * Imprime el Corte de Caja directo a la impresora térmica (ESC/POS)
    * @param {object} corteData — { negocio, corte, config }
    * @param {object} options   — { printerName, paperWidth }

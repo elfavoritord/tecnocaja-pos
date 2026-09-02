@@ -544,7 +544,11 @@
     ctx.fillText('TOTAL', cx, cy - 6);
     ctx.font = 'bold 12px monospace';
     const cur = (typeof DB !== 'undefined' && DB.config?.currency) || 'RD$';
-    ctx.fillText(`${cur} ${(total/1000).toFixed(1)}k`, cx, cy + 12);
+    // Mostrar el monto real; solo abreviar a M cuando es muy grande y no cabe.
+    const centerTxt = total >= 1000000
+      ? `${cur} ${(total / 1000000).toFixed(total >= 10000000 ? 0 : 1)}M`
+      : `${cur} ${Math.round(total).toLocaleString('es-DO')}`;
+    ctx.fillText(centerTxt, cx, cy + 12);
 
     // Legend
     if (legend) {

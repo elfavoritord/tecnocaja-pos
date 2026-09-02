@@ -65,7 +65,14 @@ function asDate(value) {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
   if (typeof value?.toDate === 'function') return value.toDate();
-  const parsed = new Date(value);
+  let str = String(value).trim();
+  // "YYYY-MM-DD HH:MM:SS" (formato DATETIME de MySQL, sin zona) se interpreta
+  // como UTC — es lo que escribió toSqlDateTime() desde .toISOString(). Sin
+  // esto V8 lo parsea como hora LOCAL y cada ciclo leer↔escribir suma el
+  // offset (la prueba "crecía" ~1 día por día en máquinas UTC-4).
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(\.\d+)?$/.exec(str);
+  if (m) str = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+  const parsed = new Date(str);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
@@ -446,6 +453,15 @@ class LicenseService {
       trialEndsAt = new Date(now.getTime() + 30 * DAY_MS);
     }
 
+    // Salvaguarda: una prueba dura 30 días. Si el valor guardado quedó inflado
+    // (reloj adelantado en un arranque previo, bucle de sync local↔nube, etc.)
+    // se recorta a 30 días desde ahora en vez de mostrar cientos de días.
+    const MAX_TRIAL_DAYS = 35;
+    if (trialEndsAt.getTime() - now.getTime() > MAX_TRIAL_DAYS * DAY_MS) {
+      trialStartedAt = now;
+      trialEndsAt = new Date(now.getTime() + 30 * DAY_MS);
+    }
+
     const daysLeft = Math.max(0, Math.ceil((trialEndsAt.getTime() - now.getTime()) / DAY_MS));
     const expired = trialEndsAt.getTime() <= now.getTime();
 
@@ -528,9 +544,12 @@ class LicenseService {
     }
 
     const canEnter = !blockedCode && (status === 'active' || status === 'trial');
-    const daysLeft = expiresAt
+    let daysLeft = expiresAt
       ? Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / DAY_MS))
       : 0;
+    // Una prueba nunca dura más de 30 días: recorta valores inflados por un
+    // reloj adelantado o un bucle de sincronización local↔nube.
+    if (status === 'trial' && daysLeft > 35) daysLeft = 30;
 
     if (!canEnter) {
       message = buildBlockedMessage({ blockedCode, status });
@@ -627,32 +646,46 @@ class LicenseService {
     const now = asDate(this.now()) || new Date();
     const incomingEndsAt = asDate(state.trialEndsAt);
 
-    let statusToWrite = state.status;
-    let trialStartedAt = toSqlDateTime(state.trialStartedAt);
-    let trialEndsAt = toSqlDateTime(state.trialEndsAt);
+    // Fecha de prueba ACTUAL del DB — es la referencia. NO se re-escribe en cada
+    // arranque: escribirla implica un round-trip DATETIME (naive UTC ↔ Date
+    // local) que suma el offset local cada vez y hacía "crecer" la prueba
+    // (visto: ~+1 día por día en máquinas UTC-4). Solo se toca cuando de verdad
+    // hay que corregir algo (recorte por valor inflado, recuperación local,
+    // instalación nueva).
+    const localRows = await this.query(
+      'SELECT trial_started_at, trial_ends_at, license_status, setup_completed FROM config WHERE id = 1 LIMIT 1'
+    ).catch(() => []);
+    const cfg = localRows[0] || {};
+    const localStartedAt = asDate(cfg.trial_started_at);
+    const localEndsAt = asDate(cfg.trial_ends_at);
 
-    // Si Firebase devuelve fechas vencidas o nulas, verificar el DB local.
-    // Conservar las fechas locales aunque estén vencidas: actualizar/reinstalar
-    // no puede convertir una prueba vieja en 30 días nuevos.
-    if (!incomingEndsAt || incomingEndsAt < now) {
-      const localRows = await this.query(
-        'SELECT trial_started_at, trial_ends_at, license_status, setup_completed FROM config WHERE id = 1 LIMIT 1'
-      ).catch(() => []);
-      const cfg = localRows[0] || {};
-      const localEndsAt = asDate(cfg.trial_ends_at);
+    let statusToWrite = state.status;
+    // Preserva la fecha local tal cual (string → asDate UTC → toSqlDateTime UTC
+    // es idempotente ahora que asDate trata el DATETIME naive como UTC). Solo se
+    // recalcula cuando de verdad hay que corregir (valor inflado o instalación
+    // nueva sin fechas).
+    let trialStartedAt = toSqlDateTime(localStartedAt || state.trialStartedAt);
+    let trialEndsAt = toSqlDateTime(localEndsAt || state.trialEndsAt);
+    let effectiveEndsAt = localEndsAt || incomingEndsAt;
+
+    // Salvaguarda: si el fin de prueba local está a más de 35 días (valor
+    // inflado por reloj adelantado o bucle de sync previo), recortarlo a 30.
+    if (statusToWrite === 'trial' && effectiveEndsAt && effectiveEndsAt.getTime() - now.getTime() > 35 * DAY_MS) {
+      trialStartedAt = toSqlDateTime(now);
+      trialEndsAt = toSqlDateTime(new Date(now.getTime() + 30 * DAY_MS));
+      effectiveEndsAt = new Date(now.getTime() + 30 * DAY_MS);
+    } else if (!incomingEndsAt || incomingEndsAt < now) {
+      // Firebase devolvió fecha vencida o nula: mandar el DB local.
       if (localEndsAt) {
         statusToWrite = localEndsAt < now && statusToWrite === 'trial'
           ? 'expired'
           : String(cfg.license_status || statusToWrite || 'trial');
-        trialStartedAt = String(cfg.trial_started_at || '').trim() || toSqlDateTime(asDate(cfg.trial_started_at));
-        trialEndsAt = String(cfg.trial_ends_at || '').trim() || toSqlDateTime(localEndsAt);
       } else if (!Number(cfg.setup_completed || 0) && (statusToWrite === 'expired' || statusToWrite === 'trial')) {
         // Instalación nueva sin setup completo ni fechas locales/remotas.
-        const freshStart = now;
-        const freshEnd = new Date(now.getTime() + 30 * DAY_MS);
         statusToWrite = 'trial';
-        trialStartedAt = toSqlDateTime(freshStart);
-        trialEndsAt = toSqlDateTime(freshEnd);
+        trialStartedAt = toSqlDateTime(now);
+        trialEndsAt = toSqlDateTime(new Date(now.getTime() + 30 * DAY_MS));
+        effectiveEndsAt = new Date(now.getTime() + 30 * DAY_MS);
       } else if (statusToWrite === 'trial') {
         statusToWrite = 'expired';
       }
@@ -679,16 +712,13 @@ class LicenseService {
       ]
     ).catch(() => {});
 
-    // Devolver los valores reales que se escribieron, para que el estado que se
-    // devuelve al frontend refleje lo que hay en el DB.
-    const correctedEndsAt = asDate(trialEndsAt);
-    const correctedDaysLeft = correctedEndsAt
-      ? Math.max(0, Math.ceil((correctedEndsAt.getTime() - now.getTime()) / DAY_MS))
+    const correctedDaysLeft = effectiveEndsAt
+      ? Math.max(0, Math.ceil((effectiveEndsAt.getTime() - now.getTime()) / DAY_MS))
       : 0;
     return {
       status: statusToWrite,
-      trialStartedAt: trialStartedAt ? new Date(trialStartedAt).toISOString() : null,
-      trialEndsAt: trialEndsAt ? new Date(trialEndsAt).toISOString() : null,
+      trialStartedAt: toIsoString(localStartedAt) || (trialStartedAt ? toIsoString(trialStartedAt) : null),
+      trialEndsAt: toIsoString(effectiveEndsAt),
       daysLeft: correctedDaysLeft,
     };
   }

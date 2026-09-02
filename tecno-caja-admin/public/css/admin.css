@@ -680,13 +680,19 @@ body {
 .stat-num {
   font-size: 1.65rem;
   font-weight: 800;
-  line-height: 1;
+  line-height: 1.05;
   margin-bottom: 6px;
   letter-spacing: -.03em;
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+}
+
+/* Tarjetas con montos (Flujo Financiero): que el número se vea completo,
+   sin recortar con "…". Se reduce un poco la tipografía y, si hiciera falta,
+   se parte en dos líneas en vez de truncarse. */
+#mod-flujo .stat-num {
+  font-size: 1.3rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .stat-label {

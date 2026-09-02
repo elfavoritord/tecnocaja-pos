@@ -1,0 +1,153 @@
+/* ============================================================================
+ * servicios.css — Reskin "Empresa de Servicios" (modo administrativo / ERP)
+ *
+ * Activo solo cuando <html data-app-mode="servicios"> (lo pone applyBusinessProfile()
+ * en js/app.js a partir de DB.config.serviceCompany).
+ *
+ * Objetivo (spec §23): que NO parezca una caja registradora. Oculta el chrome
+ * de punto de venta y da una identidad más sobria. Los módulos propios de
+ * servicios (srv-*) se agregan al sidebar en la fase M1.
+ * ============================================================================ */
+
+html[data-app-mode="servicios"] {
+  --accent: #0ea5e9;
+  --accent-light: #38bdf8;
+}
+
+/* Oculta módulos de punto de venta que no aplican a empresas de servicios.
+ * (Clientes, Reportes, RRHH, Usuarios y Configuración se reutilizan y quedan
+ * visibles.) */
+html[data-app-mode="servicios"] .nav-item[data-module="productos"],
+html[data-app-mode="servicios"] .nav-item[data-module="promociones"],
+html[data-app-mode="servicios"] .nav-item[data-module="inventario"],
+html[data-app-mode="servicios"] .nav-item[data-module="compras"],
+html[data-app-mode="servicios"] .nav-item[data-module="caja"],
+html[data-app-mode="servicios"] .nav-item[data-module="colacobro"],
+html[data-app-mode="servicios"] .nav-item[data-module="posmovil"],
+html[data-app-mode="servicios"] .nav-item[data-module="delivery"],
+html[data-app-mode="servicios"] .nav-item[data-module="wabot"],
+html[data-app-mode="servicios"] .nav-item[data-module="monedas"],
+html[data-app-mode="servicios"] .nav-item[data-module="movimientos"],
+html[data-app-mode="servicios"] .nav-item[data-module="ventas"] {
+  display: none !important;
+}
+
+/* Sin indicador ni acciones de caja abierta/cerrada en la barra superior. */
+html[data-app-mode="servicios"] #caja-status-indicator,
+html[data-app-mode="servicios"] .topbar-caja,
+html[data-app-mode="servicios"] [data-requires-caja] {
+  display: none !important;
+}
+
+/* El sidebar se lee como panel de gestión, no como POS. */
+html[data-app-mode="servicios"] .sidebar .logo-name::after {
+  content: " · Servicios";
+  font-weight: 500;
+  opacity: 0.6;
+}
+
+/* Sub-grid de verticales en el wizard (paso "Tipo"). */
+#setup-service-verticals {
+  display: none;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+#setup-service-verticals.is-visible { display: grid; }
+#setup-biztype-options.service-picking > .setup-choice-card:not([data-service-root]) { display: none; }
+
+/* Selección visible en las tarjetas del wizard: el JS marca .selected pero el
+   CSS base solo estilaba .active. Mirror del look de .active. */
+.setup-choice-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+  background: var(--bg4);
+}
+[data-theme="light"] .setup-choice-card.selected {
+  background: #F0EEFF;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+#setup-service-back {
+  display: none;
+  margin-top: 0.9rem;
+  background: none;
+  border: 0;
+  color: var(--text3, #7a8a9a);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+#setup-biztype-options.service-picking ~ #setup-service-back { display: inline-block; }
+
+/* ── Módulos srv-* (js/servicios/servicios.js) ──────────────────────────── */
+.srv-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.srv-body { padding: 4px 2px 40px; }
+.srv-loading, .srv-empty { padding: 24px; text-align: center; color: var(--text3, #7a8a9a); }
+.srv-err { padding: 16px; border: 1px solid #ef4444; border-radius: 8px; color: #b91c1c; background: rgba(239,68,68,.08); }
+.srv-h3 { margin: 22px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--text3, #7a8a9a); }
+
+.srv-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.srv-kpi { background: var(--surface2, #fff); border: 1px solid var(--border, #e2e8f0); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 4px; }
+.srv-kpi-t { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--text3, #7a8a9a); }
+.srv-kpi-v { font-size: 20px; font-weight: 700; color: var(--text1, #0f172a); }
+.srv-kpi-s { font-size: 11px; color: var(--text3, #7a8a9a); }
+
+.srv-table-wrap { overflow-x: auto; border: 1px solid var(--border, #e2e8f0); border-radius: 10px; }
+.srv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.srv-table th { background: var(--surface3, #f1f5f9); text-align: left; padding: 9px 12px; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--text3, #64748b); }
+.srv-table td { padding: 9px 12px; border-top: 1px solid var(--border, #e2e8f0); vertical-align: middle; }
+.srv-table td.num, .srv-table th.num { text-align: right; }
+.srv-table input { width: 100%; padding: 5px 7px; border: 1px solid var(--border, #cbd5e1); border-radius: 6px; background: var(--surface1, #fff); color: inherit; }
+
+.srv-link { background: none; border: 0; color: var(--accent, #0ea5e9); cursor: pointer; font-size: 12px; padding: 0; }
+.srv-link:hover { text-decoration: underline; }
+.srv-tot { margin-top: 10px; text-align: right; }
+.srv-hint { font-size: 11px; color: var(--text3, #7a8a9a); }
+
+.srv-badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: capitalize; background: #e2e8f0; color: #334155; }
+.srv-badge-aprobada, .srv-badge-pagada, .srv-badge-convertida { background: #dcfce7; color: #166534; }
+.srv-badge-enviada, .srv-badge-parcial { background: #dbeafe; color: #1e40af; }
+.srv-badge-rechazada, .srv-badge-anulada, .srv-badge-vencida { background: #fee2e2; color: #991b1b; }
+.srv-badge-pendiente, .srv-badge-borrador { background: #fef9c3; color: #854d0e; }
+
+.srv-modal-back { position: fixed; inset: 0; background: rgba(15,23,42,.55); display: flex; align-items: center; justify-content: center; z-index: 9999; padding: 24px; }
+.srv-modal { background: var(--surface1, #fff); color: var(--text1, #0f172a); border-radius: 14px; width: 480px; max-width: 100%; max-height: calc(100vh - 48px); display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.srv-modal-wide { width: 720px; }
+.srv-modal-head { flex: 0 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--border, #e2e8f0); }
+.srv-modal-head h3 { margin: 0; font-size: 15px; }
+.srv-modal-head [data-x] { background: none; border: 0; font-size: 16px; cursor: pointer; color: var(--text3, #64748b); }
+/* El body es el único que scrollea; head y foot quedan fijos y siempre visibles. */
+.srv-modal form[data-form] { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.srv-modal-body { flex: 1 1 auto; min-height: 0; padding: 14px 18px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+.srv-modal-body label { display: flex; flex-direction: column; gap: 3px; font-size: 11.5px; font-weight: 600; color: var(--text2, #475569); }
+.srv-modal-body input, .srv-modal-body select, .srv-modal-body textarea { padding: 7px 9px; border: 1px solid var(--border, #cbd5e1); border-radius: 8px; font: inherit; font-size: 13px; background: var(--surface1, #fff); color: inherit; width: 100%; }
+.srv-modal-body textarea { resize: vertical; min-height: 38px; }
+.srv-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.srv-row > label { flex: 1 1 140px; min-width: 140px; }
+.srv-check { flex-direction: row !important; align-items: center; gap: 8px !important; }
+.srv-hint:empty { display: none; }
+.srv-modal-foot { flex: 0 0 auto; padding: 12px 18px; border-top: 1px solid var(--border, #e2e8f0); background: var(--surface1, #fff); display: flex; justify-content: flex-end; gap: 8px; }
+.srv-lines .srv-table { font-size: 12px; }
+.srv-lines { border: 1px solid var(--border, #e2e8f0); border-radius: 8px; padding: 8px; }
+
+/* Encabezado de sección dentro de un formulario modal */
+.srv-form-sec {
+  font-size: 10px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase;
+  color: var(--accent, #0ea5e9); margin: 3px 0 0; padding-top: 6px;
+  border-top: 1px solid var(--border, #e2e8f0);
+}
+.srv-form-sec:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+
+.srv-panel-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 999px; font-size: 12px;
+  background: rgba(14,165,233,.12); border: 1px solid rgba(14,165,233,.3); color: #0369a1;
+}
+[data-theme="light"] .srv-panel-chip { color: #0369a1; }
+
+.srv-rep-block { margin-bottom: 18px; }
+.srv-rep-head { display: flex; justify-content: space-between; align-items: baseline; }
+.srv-cfg { max-width: 640px; display: flex; flex-direction: column; gap: 10px; }
+.srv-cfg label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text2, #475569); }
+.srv-cfg input, .srv-cfg select { padding: 8px 10px; border: 1px solid var(--border, #cbd5e1); border-radius: 8px; font: inherit; background: var(--surface1, #fff); color: inherit; }
+[data-theme="light"] .srv-cfg input, [data-theme="light"] .srv-cfg select { background: #fff; color: #1A1E30; }

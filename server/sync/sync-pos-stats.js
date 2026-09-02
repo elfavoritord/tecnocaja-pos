@@ -55,6 +55,7 @@ async function buildBusinessProfile() {
   const [cfgRow, adminRow, branchRows, cashRegisterRows] = await Promise.all([
     query(`
       SELECT business_name, rnc, razon_social, address, provincia, phone, business_type,
+             service_company, service_vertical,
              trial_started_at, trial_ends_at, license_status, plan_expires_at
       FROM config WHERE id = 1 LIMIT 1
     `),
@@ -113,6 +114,13 @@ async function buildBusinessProfile() {
   // forma de autocorregirse. Ver server/licensing/license-service.js para el
   // único camino legítimo que debe decidir el status remoto.
   if (cfg.business_type) profile.tipo_negocio = cfg.business_type;
+  // Modo "Empresa de Servicios": el Portal del Contador usa estos campos para
+  // etiquetar/filtrar el negocio por vertical (consultoría, seguridad, viajes…).
+  {
+    const isSrv = String(cfg.business_type || '').startsWith('srv_') || Number(cfg.service_company || 0) === 1;
+    profile.serviceCompany = isSrv;
+    if (isSrv) profile.vertical = cfg.service_vertical || cfg.business_type || null;
+  }
   const cashRegistersByBranch = new Map();
   for (const cashRegister of cashRegisterRows || []) {
     const branchId = Number(cashRegister.branch_id || 0);
@@ -234,12 +242,34 @@ async function buildPosStats(ventasRows = []) {
     ),
   ]);
 
+  // Modo "Empresa de Servicios" — KPIs de facturación de servicios para el
+  // Portal del Contador. Las tablas svc_* solo existen en instalaciones de
+  // servicios; en un POS normal estas consultas devuelven [] y el bloque
+  // queda en ceros (no molesta).
+  const [
+    [svcFactRow], [svcCobrRow], [svcCxcRow], [svcPendRow], [svcCotRow],
+  ] = await Promise.all([
+    query(`SELECT COALESCE(SUM(total),0) AS v, COUNT(*) AS c FROM svc_invoices WHERE estado <> 'anulada' AND fecha >= date('now','start of month')`).catch(() => [{}]),
+    query(`SELECT COALESCE(SUM(monto),0) AS v FROM svc_invoice_payments WHERE anulado_at IS NULL AND fecha >= date('now','start of month')`).catch(() => [{}]),
+    query(`SELECT COALESCE(SUM(balance),0) AS v FROM svc_invoices WHERE estado IN ('pendiente','parcial') AND balance > 0.009`).catch(() => [{}]),
+    query(`SELECT COUNT(*) AS c FROM svc_invoices WHERE estado IN ('pendiente','parcial')`).catch(() => [{}]),
+    query(`SELECT COUNT(*) AS c FROM svc_quotations WHERE estado IN ('borrador','enviada','aprobada')`).catch(() => [{}]),
+  ]);
+
   return {
     ...computeVentasKpisFromRows(ventasRows),
     ventasTotal:      safeNum(ventasTotalRow?.total),
     productosActivos: safeNum(productosRow?.cnt),
     bajoInventario:   safeNum(bajoInvRow?.cnt),
     cxcPendiente:     safeNum(cxcRow?.total),
+    servicios: {
+      facturadoMes:   safeNum(svcFactRow?.v),
+      facturasMes:    safeNum(svcFactRow?.c),
+      cobradoMes:     safeNum(svcCobrRow?.v),
+      cuentasPorCobrar: safeNum(svcCxcRow?.v),
+      facturasPendientes: safeNum(svcPendRow?.c),
+      cotizacionesAbiertas: safeNum(svcCotRow?.c),
+    },
     ultimaSync:       new Date().toISOString(),
   };
 }

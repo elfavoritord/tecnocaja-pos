@@ -23,14 +23,17 @@
     // Multi* nuevo: mismo flujo que monocaja (crea negocio desde cero)
     nuevo:         [0, 1, 2, 3, 4, 5, 6],
     // Multi* existente: vincula terminal a red ya existente
-    existente:     [0, 1, 3, 5, 6]
+    existente:     [0, 1, 3, 5, 6],
+    // Empresa de servicios: sin paso "Caja" (no hay apertura/cierre de efectivo)
+    servicios:     [0, 1, 2, 3, 4, 5]
   };
 
   // Etiquetas de los dots por flujo
   const DOT_LABELS = {
     monocaja:  ['Idioma', 'Plan', 'Tipo', 'Admin', 'Datos', 'Impresión', 'Caja'],
     nuevo:     ['Idioma', 'Plan', 'Tipo', 'Admin', 'Datos', 'Impresión', 'Caja'],
-    existente: ['Idioma', 'Plan', 'Asignación', 'Impresión', 'Caja']
+    existente: ['Idioma', 'Plan', 'Asignación', 'Impresión', 'Caja'],
+    servicios: ['Idioma', 'Plan', 'Tipo', 'Admin', 'Datos', 'Impresión']
   };
 
   // ─── Estado del wizard ────────────────────────────────────────────────────
@@ -70,7 +73,16 @@
       return WZ.isMulti && WZ.scenario === 'nuevo';
     },
 
+    get isServiceBiz() {
+      try {
+        const bt = (typeof setupWizard !== 'undefined' ? setupWizard.businessType : '') || WZ.selectedBizType || '';
+        return String(bt).startsWith('srv_');
+      } catch (_) { return false; }
+    },
+
     get flowKey() {
+      // Empresa de servicios: flujo sin paso "Caja" (una vez elegido el vertical).
+      if (WZ.isServiceBiz && WZ.scenario !== 'existente') return 'servicios';
       if (!WZ.isMulti) return 'monocaja';
       if (WZ.scenario === 'nuevo') return 'nuevo';
       if (WZ.scenario === 'existente') return 'existente';
@@ -291,8 +303,8 @@
       .setup-biztype-grid .setup-choice-card {
         display: flex; flex-direction: column; align-items: center;
         gap: .35rem; padding: 1rem .75rem; text-align: center;
-        background: var(--card2-bg, rgba(255,255,255,.04));
-        border: 2px solid transparent; border-radius: 12px; cursor: pointer;
+        background: var(--bg3, rgba(255,255,255,.04));
+        border: 2px solid var(--border, rgba(148,163,184,.25)); border-radius: 12px; cursor: pointer;
         transition: border-color .18s, background .18s;
       }
       .setup-biztype-grid .setup-choice-card:hover {
@@ -304,8 +316,15 @@
         background: rgba(108,92,231,.14);
       }
       .setup-biztype-grid .setup-choice-card .choice-icon { font-size:1.8rem; }
-      .setup-biztype-grid .setup-choice-card strong { font-size:.85rem; color:var(--text1,#f0f0f0); }
-      .setup-biztype-grid .setup-choice-card span:not(.choice-icon) { font-size:.75rem; color:var(--text3,#7a8a9a); line-height:1.4; }
+      .setup-biztype-grid .setup-choice-card strong { font-size:.85rem; color:var(--text, #1A1E30); }
+      .setup-biztype-grid .setup-choice-card span:not(.choice-icon) { font-size:.75rem; color:var(--text2, #4A5280); line-height:1.4; }
+      /* Modo día: forzar contraste legible (el <style> del wizard se inyecta
+         después de main.css y ganaba con un gris casi blanco). */
+      [data-theme="light"] .setup-biztype-grid .setup-choice-card { background:#F4F6FF; border-color:#D8DCF0; }
+      [data-theme="light"] .setup-biztype-grid .setup-choice-card:hover { background:#ECEEFF; }
+      [data-theme="light"] .setup-biztype-grid .setup-choice-card.selected { background:#E4E7FF; }
+      [data-theme="light"] .setup-biztype-grid .setup-choice-card strong { color:#1A1E30; }
+      [data-theme="light"] .setup-biztype-grid .setup-choice-card span:not(.choice-icon) { color:#4A5280; }
 
       /* Grid estructura más grande */
       .setup-structure-grid-full {
@@ -341,6 +360,15 @@
     if (!container) return null;
 
     const selectedValue = WZ.selectedBizType || (typeof setupWizard !== 'undefined' ? setupWizard.businessType : null);
+
+    // Empresa de servicios: la tarjeta vive en el sub-grid de verticales.
+    if (selectedValue && String(selectedValue).startsWith('srv_')) {
+      if (typeof populateServiceVerticals === 'function') populateServiceVerticals();
+      setServicePickingMode(true);
+      const vCard = document.querySelector(`#setup-service-verticals .setup-choice-card[data-biztype="${selectedValue}"]`);
+      if (vCard) { selectBizType(selectedValue, vCard, { service: true }); return selectedValue; }
+    }
+
     let selectedCard = null;
     if (selectedValue) {
       selectedCard = container.querySelector(`.setup-choice-card[data-biztype="${selectedValue}"]`);
@@ -383,6 +411,8 @@
     const labels = DOT_LABELS[WZ.flowKey] || DOT_LABELS.monocaja;
     const visibleDots = Array.from(dots).filter(d => !isExistente || !d.classList.contains('wz-dot-monocaja'));
     visibleDots.forEach((dot, i) => {
+      // Ocultar dots sobrantes cuando el flujo tiene menos pasos (ej. servicios sin "Caja").
+      dot.style.display = i < labels.length ? '' : 'none';
       dot.classList.toggle('active', i === WZ.virtualStep);
       if (labels[i]) dot.textContent = `${i + 1}. ${labels[i]}`;
     });
@@ -498,14 +528,118 @@
 
   function hideScenarioOverlay() { $scenarioOverlay()?.classList.add('wz-hidden'); }
 
-  window.wzScenarioSelect = function (scenario) {
+  // ─── Switch a base de datos de red (empresa nueva multi*) ────────────────
+  const WZ_RESUME_KEY = 'tc_wizard_resume';
+
+  function wzSaveResume() {
+    try {
+      localStorage.setItem(WZ_RESUME_KEY, JSON.stringify({
+        mode: WZ.mode,
+        scenario: 'nuevo',
+        language: (typeof setupWizard !== 'undefined' ? setupWizard.language : 'es') || 'es',
+        ts: Date.now()
+      }));
+    } catch (_) {}
+  }
+  function wzLoadResume() {
+    try {
+      const d = JSON.parse(localStorage.getItem(WZ_RESUME_KEY) || 'null');
+      if (!d || !['multicaja', 'multisucursal'].includes(d.mode)) return null;
+      if (d.ts && (Date.now() - d.ts) > 30 * 60 * 1000) { wzClearResume(); return null; }
+      return d;
+    } catch (_) { return null; }
+  }
+  function wzClearResume() { try { localStorage.removeItem(WZ_RESUME_KEY); } catch (_) {} }
+
+  function wzShowRestartOverlay(title, msg) {
+    let el = document.getElementById('wz-restart-overlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'wz-restart-overlay';
+      el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+      document.body.appendChild(el);
+    }
+    el.innerHTML =
+      '<div style="max-width:440px;padding:32px">' +
+        '<div style="font-size:20px;font-weight:700;margin-bottom:10px">' + title + '</div>' +
+        '<div style="font-size:13px;color:#94a3b8;line-height:1.55">' + msg + '</div>' +
+        '<div style="margin:24px auto 0;width:220px;height:3px;background:#1e293b;border-radius:99px;overflow:hidden">' +
+          '<div style="height:100%;width:40%;background:linear-gradient(90deg,#3B82F6,#60A5FA);animation:wzpulse 1.2s ease-in-out infinite"></div>' +
+        '</div>' +
+      '</div><style>@keyframes wzpulse{0%{margin-left:-40%}100%{margin-left:100%}}</style>';
+  }
+
+  window.wzScenarioSelect = async function (scenario) {
     WZ.scenario = scenario;
     hideScenarioOverlay();
-    if (scenario === 'nuevo') {
-      _doAdvance(1);
-    } else {
-      showAuthOverlay();
+    if (scenario !== 'nuevo') { showAuthOverlay(); return; }
+
+    // Multicaja/multisucursal + negocio nuevo ⇒ la base de datos debe ser MySQL
+    // (red). Si todavía es SQLite, activarla ahora: la app se reinicia y el
+    // wizard reanuda en el paso "Tipo" ya sobre MySQL.
+    if (WZ.isMulti) {
+      let st = {};
+      try { st = await fetch('/api/setup/status').then((r) => r.json()); } catch (_) {}
+      if (st && st.setupRequired && st.networkDbReady !== true) {
+        try {
+          const resp = await api.prepareNetworkDb({
+            structureMode: WZ.mode,
+            language: (typeof setupWizard !== 'undefined' ? setupWizard.language : 'es') || 'es'
+          });
+          if (resp && resp.restartRequired) {
+            wzSaveResume();
+            wzShowRestartOverlay(
+              'Activando la base de datos de red…',
+              'La aplicación se reiniciará (puede tardar 1–2 minutos la primera vez) y podrás continuar la configuración donde ibas.'
+            );
+            if (window.novaDesktop && window.novaDesktop.restartApp) { await window.novaDesktop.restartApp(); return; }
+            wzShowRestartOverlay('Base de datos de red activada', 'Cierra y vuelve a abrir Tecno Caja para continuar la configuración.');
+            return;
+          }
+          // alreadyReady → seguir normal
+        } catch (err) {
+          if (typeof showToast === 'function') showToast(err.message || 'No se pudo activar la base de datos de red.', 'error');
+          return;
+        }
+      }
     }
+    _doAdvance(1);
+  };
+
+  // Fallback: si /api/setup/complete respondió needsNetworkDbSwitch (el usuario
+  // se saltó la activación temprana, p. ej. recargó a mitad del wizard).
+  window.wzOnNeedsNetworkDbSwitch = function () {
+    wzSaveResume();
+    wzShowRestartOverlay(
+      'Activando la base de datos de red…',
+      'La aplicación se reiniciará y podrás continuar la configuración donde ibas.'
+    );
+    if (window.novaDesktop && window.novaDesktop.restartApp) { window.novaDesktop.restartApp(); }
+  };
+
+  // Reanudación tras el reinicio por switch a base de datos de red.
+  const _wzOrigStartSession = window.startSetupWizardSession;
+  window.startSetupWizardSession = function (opts) {
+    if (typeof _wzOrigStartSession === 'function') _wzOrigStartSession(opts);
+    const resume = wzLoadResume();
+    if (!resume) return;
+    fetch('/api/setup/status').then((r) => r.json()).then((st) => {
+      if (!st || !st.setupRequired || st.networkDbReady !== true) { wzClearResume(); return; }
+      if (typeof setupWizard !== 'undefined') {
+        setupWizard.businessStructureMode = resume.mode;
+        setupWizard.language = resume.language || setupWizard.language || 'es';
+      }
+      try {
+        document.querySelectorAll('#setup-structure-options .setup-choice-card').forEach((c) => {
+          c.classList.toggle('active', c.dataset && c.dataset.value === resume.mode);
+        });
+      } catch (_) {}
+      WZ.scenario = 'nuevo';
+      WZ.virtualStep = 2; // panel "Tipo" en FLOWS.nuevo = [0,1,2,3,4,5,6]
+      refreshUI();
+      wzClearResume();
+      if (typeof showToast === 'function') showToast('Base de datos de red lista. Continúa la configuración.', 'success');
+    }).catch(() => {});
   };
 
   window.wzScenarioCancel = function () {
@@ -1074,17 +1208,58 @@
   }
 
   // ─── Cards de tipo de negocio ─────────────────────────────────────────────
+  function populateServiceVerticals() {
+    const wrap = document.getElementById('setup-service-verticals');
+    if (!wrap || wrap.childElementCount) return;
+    const list = Array.isArray(window.SERVICE_VERTICALS) ? window.SERVICE_VERTICALS : [];
+    wrap.innerHTML = list.map(v => (
+      `<button type="button" class="setup-choice-card" data-biztype="${v.value}">` +
+        `<span class="choice-icon">${v.icon || '🏢'}</span>` +
+        `<strong>${v.label}</strong>` +
+        `<span>${v.tagline || ''}</span>` +
+      `</button>`
+    )).join('');
+    wrap.querySelectorAll('.setup-choice-card').forEach(card => {
+      card.addEventListener('click', () => selectBizType(card.dataset.biztype, card, { service: true }));
+    });
+  }
+
+  function setServicePickingMode(on) {
+    const grid = document.getElementById('setup-biztype-options');
+    const sub  = document.getElementById('setup-service-verticals');
+    const back = document.getElementById('setup-service-back');
+    const help = document.getElementById('setup-service-help');
+    grid?.classList.toggle('service-picking', on);
+    sub?.classList.toggle('is-visible', on);
+    if (back) back.style.display = on ? 'inline-block' : 'none';
+    if (help) help.style.display = on ? 'block' : 'none';
+  }
+
+  function selectBizType(bizType, card, opts = {}) {
+    if (!bizType) return;
+    document.querySelectorAll('#setup-biztype-options .setup-choice-card, #setup-service-verticals .setup-choice-card')
+      .forEach(c => c.classList.remove('selected'));
+    card?.classList.add('selected');
+    WZ.selectedBizType = bizType;
+    if (typeof setupWizard !== 'undefined') {
+      setupWizard.businessType = bizType;
+      // La estructura (monocaja/multicaja/multisucursal) es la que el usuario
+      // eligió en el paso "Plan"; las empresas de servicios NO se fuerzan a
+      // multicaja. La clave de red solo aparece si el modo es multi* nuevo
+      // (ver refreshUI → setup-netkey-group).
+    }
+  }
+
   function bindBizTypeCards() {
+    populateServiceVerticals();
     document.querySelectorAll('#setup-biztype-options .setup-choice-card').forEach(card => {
       card.addEventListener('click', () => {
-        document.querySelectorAll('#setup-biztype-options .setup-choice-card').forEach(c => c.classList.remove('selected'));
-        card.classList.add('selected');
-        WZ.selectedBizType = card.dataset.biztype;
-        if (WZ.selectedBizType && typeof setupWizard !== 'undefined') {
-          setupWizard.businessType = WZ.selectedBizType;
-        }
+        if (card.dataset.serviceRoot) { setServicePickingMode(true); return; }
+        setServicePickingMode(false);
+        selectBizType(card.dataset.biztype, card);
       });
     });
+    document.getElementById('setup-service-back')?.addEventListener('click', () => setServicePickingMode(false));
     syncBizTypeSelection();
   }
 

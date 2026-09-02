@@ -2539,6 +2539,128 @@ async function canReuseExistingServerForBind(port, bindHost) {
   return false;
 }
 
+// ── Migración SQLite → MySQL pendiente (switch a base de datos de red) ───────
+// La deja /api/network/switch-to-network-db al activar multicaja/multisucursal
+// en una instalación que YA tenía datos. Se ejecuta aquí, tras startServer()
+// (el server ya creó la BD + schema + tablas de runtime en MySQL vacío) y ANTES
+// de abrir la ventana. Si falla, revierte a SQLite y reinicia.
+function updateSplashStatus(splashWin, text) {
+  try {
+    if (splashWin && !splashWin.isDestroyed()) {
+      splashWin.webContents.executeJavaScript(
+        `(function(){var s=document.querySelector('.status');if(s)s.textContent=${JSON.stringify(String(text))};})()`
+      ).catch(() => {});
+    }
+  } catch (_) {}
+}
+
+async function runPendingNetworkDbMigration(splashWin) {
+  const userDataPath = app.getPath('userData');
+  const markerPath = path.join(userDataPath, 'config', 'pending-db-migration.json');
+  if (!fs.existsSync(markerPath)) return;
+
+  const appRoot = app.getAppPath();
+  const userEnvFile = path.join(userDataPath, 'config', 'app.env');
+  let marker = {};
+  try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')) || {}; } catch (_) {}
+
+  const { persistEnvFileValues } = require(path.join(appRoot, 'scripts', 'runtime-bootstrap'));
+  const revertToSqlite = () => {
+    try {
+      persistEnvFileValues(userEnvFile, {
+        DB_CLIENT: 'sqlite',
+        DB_HOST: '127.0.0.1',
+        POS_ALLOW_LAN: 'false',
+        POS_BIND_HOST: '127.0.0.1',
+        TECNO_CAJA_MYSQL_ALLOW_LAN: 'false',
+        TECNO_CAJA_MYSQL_BIND_HOST: '127.0.0.1',
+      });
+    } catch (err) {
+      logStartup(`[db-migration] No se pudo revertir a SQLite en app.env: ${err.message || err}`);
+    }
+  };
+  const failAndRestart = (detail) => {
+    logStartup(`[db-migration] FALLÓ: ${detail}`);
+    revertToSqlite();
+    try { fs.renameSync(markerPath, markerPath + '.failed'); } catch (_) {
+      try { fs.writeFileSync(markerPath + '.failed', JSON.stringify({ ...marker, error: String(detail) }, null, 2)); fs.unlinkSync(markerPath); } catch (_) {}
+    }
+    dialog.showErrorBox(
+      'Tecno Caja — Base de datos de red',
+      'No se pudo migrar los datos a la base de datos de red. La aplicación volverá a tu base local; no se perdió nada.\n\n' +
+      `Detalle: ${detail}\n\n` +
+      (marker.backupPath ? `Respaldo del .db: ${marker.backupPath}` : '')
+    );
+    app.relaunch();
+    app.exit(0);
+  };
+
+  logStartup('[db-migration] Marcador encontrado — migrando SQLite → MySQL.');
+  updateSplashStatus(splashWin, 'Migrando datos a la base de datos de red…');
+
+  let result;
+  try {
+    const { runMigration } = require(path.join(appRoot, 'scripts', 'lib', 'sqlite-to-mysql-migrator'));
+    result = await runMigration({
+      sqlitePath: marker.sqlitePath || process.env.DB_FILE,
+      forceIdentity: true,
+      log: {
+        info: (m) => logStartup(`[db-migration] ${m}`),
+        ok: (m) => logStartup(`[db-migration] ${m}`),
+        warn: (m) => logStartup(`[db-migration] ! ${m}`),
+        error: (m) => logStartup(`[db-migration] x ${m}`),
+      },
+      onProgress: (p) => {
+        if (p.phase === 'table' && p.total) {
+          updateSplashStatus(splashWin, `Migrando datos… ${p.done}/${p.total}`);
+        }
+      },
+    });
+  } catch (err) {
+    return failAndRestart(err && (err.message || err));
+  }
+
+  if (!result || result.incomplete) {
+    const missing = (result && result.summary && result.summary.missing || []).map((r) => r.table).join(', ');
+    const errored = (result && result.summary && result.summary.errors || []).map((r) => r.table).join(', ');
+    return failAndRestart(
+      'Migración incompleta.' +
+      (missing ? ` Tablas sin destino: ${missing}.` : '') +
+      (errored ? ` Tablas con error: ${errored}.` : '')
+    );
+  }
+
+  // Éxito — fijar el modo destino en MySQL (el .db de origen todavía decía
+  // 'monocaja', el switch no lo tocó) y borrar el marcador.
+  const targetMode = ['multicaja', 'multisucursal'].includes(marker.businessStructureMode)
+    ? marker.businessStructureMode
+    : 'multicaja';
+  try {
+    const mysql = require('mysql2/promise');
+    const conn = await mysql.createConnection({
+      host: process.env.DB_HOST || '127.0.0.1',
+      port: parseInt(process.env.DB_PORT || '3306', 10),
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD || '',
+      database: process.env.DB_NAME || 'tecnocaja',
+      connectTimeout: 10000,
+    });
+    const planCode = targetMode === 'multisucursal' ? 'plus' : 'pro';
+    const planName = targetMode === 'multisucursal' ? 'Tecno Caja Plus' : 'Tecno Caja Pro';
+    await conn.query(
+      'UPDATE config SET business_structure_mode = ?, plan_code = ?, plan_name = ? WHERE id = 1',
+      [targetMode, planCode, planName]
+    );
+    await conn.end();
+  } catch (err) {
+    return failAndRestart(`No se pudo fijar el modo ${targetMode} en MySQL: ${err.message || err}`);
+  }
+
+  try { fs.unlinkSync(markerPath); } catch (_) {}
+  logStartup(`[db-migration] OK — ${result.summary.totalInserted} registros migrados, modo ${targetMode}.`);
+  updateSplashStatus(splashWin, 'Base de datos de red lista.');
+}
+
 async function startServer() {
   if (serverRuntime) return;
   const serverStartedAt = performance.now();
@@ -3452,6 +3574,39 @@ ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'report
   }
 });
 
+// ── HTML → PDF A4 en base64 (sin diálogo) — usado para adjuntar en correos ────
+// (facturas/cotizaciones del modo Empresa de Servicios). Devuelve el PDF en
+// base64 para que el backend lo mande como adjunto vía nodemailer.
+ipcMain.handle('app:html-to-pdf', async (_event, { html = '', landscape = false } = {}) => {
+  let pdfWindow = null;
+  let tempFile = null;
+  try {
+    if (!html || typeof html !== 'string') return { ok: false, error: 'HTML vacío.' };
+    tempFile = path.join(os.tmpdir(), `tc-doc-${Date.now()}.html`);
+    fs.writeFileSync(tempFile, html, 'utf8');
+    pdfWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    await pdfWindow.loadFile(tempFile);
+    const pdfBuffer = await pdfWindow.webContents.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      landscape,
+      margins: { marginType: 'printableArea' },
+    });
+    pdfWindow.close();
+    pdfWindow = null;
+    fs.unlinkSync(tempFile);
+    tempFile = null;
+    return { ok: true, base64: pdfBuffer.toString('base64') };
+  } catch (error) {
+    if (pdfWindow && !pdfWindow.isDestroyed()) pdfWindow.close();
+    if (tempFile && fs.existsSync(tempFile)) { try { fs.unlinkSync(tempFile); } catch (_) {} }
+    return { ok: false, error: error.message || 'No se pudo generar el PDF.' };
+  }
+});
+
 // ── Abrir texto/XML en el editor predeterminado del sistema ──────────────────
 ipcMain.handle('report:open-text', async (_event, { content = '', filename = 'documento.txt' } = {}) => {
   let tempFile = null;
@@ -3965,6 +4120,11 @@ app.whenReady().then(async function() {
 
       // Arrancar servidor
       await startServer();
+
+      // Migración SQLite → MySQL pendiente (switch a base de datos de red en una
+      // instalación con datos). Corre tras startServer (schema ya creado) y
+      // antes de abrir la ventana. Si falla, revierte a SQLite y reinicia.
+      await runPendingNetworkDbMigration(splashWin);
 
       // Crear mainWindow PRIMERO (aunque oculta) — evita que window-all-closed
       // dispare app.quit() al destruir el splash

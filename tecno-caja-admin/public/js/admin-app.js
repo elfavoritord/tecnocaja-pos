@@ -300,6 +300,7 @@ function navigateTo(mod) {
   if (mod === 'licencias')       loadLicencias();
   if (mod === 'contadores')      loadContadores();
   if (mod === 'facturacion')     loadFacturas();
+  if (mod === 'suscripciones')   loadSuscripciones();
   if (mod === 'compras')         loadCompras();
   if (mod === 'gastos')          loadGastos();
   if (mod === 'flujo')           loadFlujoFinanciero();
@@ -363,6 +364,8 @@ async function loadDashboard(attempt = 0) {
       badge.textContent = sol;
       badge.classList.toggle('hidden', sol === 0);
     }
+
+    checkSuscripcionesPendientes();
 
     if (tbody) {
       tbody.innerHTML = (data.ultimosNegocios || []).map(n => `
@@ -889,6 +892,7 @@ let _currentFacturaCache = null;
 let _editingFacturaId   = null;
 let _facNegocios        = [];
 let _facItems           = [];
+let _facNcfConfig       = [];
 
 function fmtCurrency(n) {
   return 'RD$ ' + Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -908,14 +912,18 @@ function renderFacturasList(list) {
   if (!tbody) return;
   tbody.innerHTML = list.map(f => `
     <tr>
+      <td><code style="font-size:11px">${f.ncf || '—'}</code>${f.ncfTipo ? ` <span style="opacity:.55;font-size:10px">${f.ncfTipo}</span>` : ''}</td>
       <td><code style="font-size:11px">${f.numero}</code></td>
       <td>${f.clienteNombre || '—'}</td>
       <td>${fmtCurrency(f.total)}</td>
       <td><span class="badge badge-${f.estadoVisual || f.estado}">${f.estadoVisual || f.estado}</span></td>
       <td>${fmtDate(f.fechaEmision)}</td>
       <td>${f.fechaVencimiento ? fmtDate(f.fechaVencimiento) : '—'}</td>
-      <td><button class="btn-sm" onclick="adminApp.openFactura('${f.id}')">Ver</button></td>
-    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;opacity:.6">Sin facturas</td></tr>';
+      <td style="white-space:nowrap">
+        <button class="btn-sm" onclick="adminApp.openFactura('${f.id}')">Ver</button>
+        ${['pendiente','parcial'].includes(f.estado) ? `<button class="btn-sm btn-success" title="Marcar como pagada" onclick="adminApp.marcarFacturaPagada('${f.id}')">✓ Pagada</button>` : ''}
+      </td>
+    </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;opacity:.6">Sin facturas</td></tr>';
 }
 
 function filterFacturas(q) {
@@ -933,17 +941,50 @@ async function ensureFacNegocios() {
   return _facNegocios;
 }
 
+async function refreshFacNcfConfig() {
+  try { _facNcfConfig = await api('GET', '/api/facturas/config/ncf'); }
+  catch { _facNcfConfig = []; }
+  return _facNcfConfig;
+}
+
+// Actualiza el texto de disponibilidad de NCF bajo el selector del formulario.
+function onFacTipoNcfChange() {
+  const hint = $id('fac-ncf-hint');
+  if (!hint) return;
+  const sel = $id('fac-tipo-ncf');
+  if (_editingFacturaId) { return; } // en edición el NCF no cambia (hint fijado aparte)
+  const tipo = sel?.value || '';
+  const seqs = _facNcfConfig.filter(s => s.tipo === tipo);
+  const usable = seqs.filter(s => s.usable);
+  const otrosDisponibles = [...new Set(_facNcfConfig.filter(s => s.usable).map(s => s.tipo))].filter(t => t !== tipo);
+  const sugerencia = otrosDisponibles.length ? ` Disponibles: ${otrosDisponibles.join(', ')}.` : '';
+  if (!seqs.length) {
+    hint.innerHTML = `<span style="color:#f59e0b">⚠ Sin secuencia ${tipo} registrada.${sugerencia || ' Agrégala en Configuración → Comprobantes fiscales.'}</span>`;
+  } else if (!usable.length) {
+    hint.innerHTML = `<span style="color:#ef4444">✖ La secuencia ${tipo} está agotada o vencida.${sugerencia}</span>`;
+  } else {
+    const disp = usable.reduce((n, s) => n + (s.disponibles || 0), 0);
+    const s = usable[0];
+    hint.innerHTML = `<span style="color:${disp <= 10 ? '#f59e0b' : '#22c55e'}">Próximo: <code>${s.proximoNcf}</code> · ${disp} disponible${disp === 1 ? '' : 's'}${s.vencimiento ? ` · vence ${fmtDate(s.vencimiento)}` : ''}</span>`;
+  }
+}
+
 async function openFactura(id) {
   _currentFacturaId = id;
   try {
     const f = await api('GET', `/api/facturas/${id}`);
     _currentFacturaCache = f;
     setText('fdet-numero', f.numero);
+    const NCF_LABELS = { B01: 'Crédito Fiscal', B02: 'Consumo', B04: 'Nota de Crédito', B15: 'Gubernamental' };
     $id('fdet-info').innerHTML = `
       <dl class="info-dl">
+        <dt>NCF</dt><dd><code>${f.ncf || '—'}</code>${f.ncfTipo ? ` · ${NCF_LABELS[f.ncfTipo] || f.ncfTipo} (${f.ncfTipo})` : ''}</dd>
+        <dt>NCF válido hasta</dt><dd>${f.ncfVencimiento ? fmtDate(f.ncfVencimiento) : '—'}</dd>
+        <dt>No. interno</dt><dd>${f.numero || '—'}</dd>
         <dt>Cliente</dt><dd>${f.clienteNombre || '—'}</dd>
         <dt>RNC/Cédula</dt><dd>${f.clienteRnc || '—'}</dd>
         <dt>Teléfono</dt><dd>${f.clienteTelefono || '—'}</dd>
+        <dt>Correo</dt><dd>${f.clienteEmail || '—'}</dd>
         <dt>Estado</dt><dd><span class="badge badge-${f.estado}">${f.estado}</span></dd>
         <dt>Emisión</dt><dd>${fmtDate(f.fechaEmision)}</dd>
         <dt>Vencimiento</dt><dd>${f.fechaVencimiento ? fmtDate(f.fechaVencimiento) : '—'}</dd>
@@ -974,6 +1015,29 @@ async function openFactura(id) {
       `).join('') || '<tr><td colspan="4" style="opacity:.6">Sin pagos registrados</td></tr>';
     }
 
+    // "Marcar como pagada": solo si queda saldo
+    const btnPagada = $id('btn-marcar-pagada');
+    if (btnPagada) btnPagada.classList.toggle('hidden', !['pendiente', 'parcial'].includes(f.estado));
+
+    // Envío por correo: estado del último envío + habilitar/deshabilitar botón
+    const emailInfo = $id('fdet-email-info');
+    if (emailInfo) {
+      emailInfo.textContent = f.ultimoEmailA
+        ? `✉ Último envío: ${f.ultimoEmailA} · ${fmtDate(f.ultimoEmailEn)}`
+        : '';
+    }
+    ensureEmailConfig().then(cfg => {
+      const btn = $id('btn-enviar-factura');
+      if (!btn) return;
+      if (cfg && cfg.configured) {
+        btn.disabled = false;
+        btn.title = `Enviar desde ${cfg.from}`;
+      } else {
+        btn.disabled = true;
+        btn.title = 'Configura GMAIL_USER y GMAIL_APP_PASSWORD en el .env del panel';
+      }
+    });
+
     document.querySelectorAll('.module').forEach(m => m.classList.add('hidden'));
     show('mod-factura-detalle');
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
@@ -987,7 +1051,7 @@ function backToFacturas() {
 async function openNuevaFactura() {
   _editingFacturaId = null;
   _facItems = [{ descripcion: '', cantidad: 1, precioUnitario: 0 }];
-  ['fac-cliente-nombre','fac-cliente-rnc','fac-cliente-telefono','fac-cliente-direccion','fac-fecha-vencimiento','fac-notas']
+  ['fac-cliente-nombre','fac-cliente-rnc','fac-cliente-telefono','fac-cliente-direccion','fac-cliente-email','fac-fecha-vencimiento','fac-notas']
     .forEach(id => { const el = $id(id); if (el) el.value = ''; });
   $id('fac-descuento').value      = 0;
   $id('fac-aplica-itbis').checked = true;
@@ -996,6 +1060,11 @@ async function openNuevaFactura() {
   hide('fac-error');
   $id('fac-cliente-rnc-status').textContent = '';
   _rncLastByField['fac-cliente-rnc'] = '';
+
+  await refreshFacNcfConfig();
+  const ncfSel = $id('fac-tipo-ncf');
+  if (ncfSel) { ncfSel.disabled = false; ncfSel.value = pickDefaultNcfTipo({ conRnc: false }); }
+  onFacTipoNcfChange();
 
   const negocios = await ensureFacNegocios();
   const sel = $id('fac-negocio');
@@ -1010,12 +1079,50 @@ async function openNuevaFactura() {
   show('modal-factura');
 }
 
+// Preferencia de tipo de NCF: el primero (en este orden) que tenga secuencia
+// utilizable; si el cliente tiene RNC se prioriza B01. Cae en B02 si nada aplica.
+function pickDefaultNcfTipo({ conRnc = false } = {}) {
+  const orden = conRnc ? ['B01', 'B02', 'B15', 'B04'] : ['B02', 'B01', 'B15', 'B04'];
+  const usable = new Set(_facNcfConfig.filter(s => s.usable).map(s => s.tipo));
+  return orden.find(t => usable.has(t)) || (conRnc ? 'B01' : 'B02');
+}
+
 function onFacNegocioChange() {
   const sel     = $id('fac-negocio');
   const negocio = _facNegocios.find(n => n.id === sel?.value);
   if (!negocio) return;
+
   const nombreEl = $id('fac-cliente-nombre');
-  if (nombreEl && !nombreEl.value.trim()) nombreEl.value = negocio.businessName || negocio.businessKey || '';
+  if (nombreEl && !nombreEl.value.trim()) {
+    nombreEl.value = negocio.razon_social || negocio.businessName || negocio.businessKey || '';
+  }
+
+  const rncEl = $id('fac-cliente-rnc');
+  if (rncEl && !rncEl.value.trim() && negocio.rnc) {
+    rncEl.value = String(negocio.rnc);
+    if (typeof contRncFormat === 'function') contRncFormat(rncEl);
+  }
+  const telEl = $id('fac-cliente-telefono');
+  if (telEl && !telEl.value.trim() && (negocio.telefono || negocio.phone)) {
+    telEl.value = negocio.telefono || negocio.phone;
+  }
+  const dirEl = $id('fac-cliente-direccion');
+  if (dirEl && !dirEl.value.trim() && (negocio.direccion || negocio.address)) {
+    dirEl.value = negocio.direccion || negocio.address;
+  }
+  const emailEl = $id('fac-cliente-email');
+  if (emailEl && !emailEl.value.trim() && (negocio.email || negocio.correo)) {
+    emailEl.value = negocio.email || negocio.correo;
+  }
+
+  // Reajusta el tipo de NCF por defecto según si ya hay RNC.
+  if (!_editingFacturaId) {
+    const ncfSel = $id('fac-tipo-ncf');
+    if (ncfSel) {
+      ncfSel.value = pickDefaultNcfTipo({ conRnc: !!($id('fac-cliente-rnc')?.value || '').trim() });
+      onFacTipoNcfChange();
+    }
+  }
 }
 
 function renderFacItems() {
@@ -1032,7 +1139,7 @@ function renderFacItems() {
       <input type="number" min="0" step="0.01" placeholder="Precio" value="${it.precioUnitario}"
         oninput="adminApp.updateFacItem(${idx},'precioUnitario',this.value)"
         style="padding:.4rem .5rem;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#e2e8f0;font-size:.82rem" />
-      <div style="font-size:.8rem;color:#94a3b8;text-align:right">${fmtCurrency((Number(it.cantidad)||0)*(Number(it.precioUnitario)||0))}</div>
+      <div id="fac-item-total-${idx}" style="font-size:.8rem;color:#94a3b8;text-align:right">${fmtCurrency((Number(it.cantidad)||0)*(Number(it.precioUnitario)||0))}</div>
       <button type="button" onclick="adminApp.quitarItemFactura(${idx})"
         style="background:none;border:none;color:#ef4444;font-size:1rem;cursor:pointer;padding:0" title="Quitar">✕</button>
     </div>`).join('');
@@ -1041,7 +1148,11 @@ function renderFacItems() {
 function updateFacItem(idx, field, value) {
   if (!_facItems[idx]) return;
   _facItems[idx][field] = field === 'descripcion' ? value : Number(value);
-  if (field !== 'descripcion') renderFacItems();
+  // No re-renderizar aquí: destruiría el <input> en foco y el usuario perdería
+  // el cursor tras cada dígito. Solo actualizamos el total de la fila y el resumen.
+  const it = _facItems[idx];
+  const totEl = $id(`fac-item-total-${idx}`);
+  if (totEl) totEl.textContent = fmtCurrency((Number(it.cantidad) || 0) * (Number(it.precioUnitario) || 0));
   recalcularTotalesFactura();
 }
 
@@ -1097,6 +1208,7 @@ async function editarFacturaActual() {
     $id('fac-cliente-rnc').value       = f.clienteRnc || '';
     $id('fac-cliente-telefono').value  = f.clienteTelefono || '';
     $id('fac-cliente-direccion').value = f.clienteDireccion || '';
+    if ($id('fac-cliente-email')) $id('fac-cliente-email').value = f.clienteEmail || '';
     $id('fac-descuento').value         = f.descuento || 0;
     $id('fac-aplica-itbis').checked    = f.aplicaItbis !== false;
     $id('fac-metodo-pago').value       = f.metodoPago || 'efectivo';
@@ -1104,6 +1216,18 @@ async function editarFacturaActual() {
     $id('fac-notas').value             = f.notas || '';
     $id('fac-cliente-rnc-status').textContent = '';
     _rncLastByField['fac-cliente-rnc'] = '';
+
+    // El NCF ya está asignado y no se puede cambiar al editar.
+    const ncfSel = $id('fac-tipo-ncf');
+    if (ncfSel) {
+      if (f.ncfTipo && !Array.from(ncfSel.options).some(o => o.value === f.ncfTipo)) {
+        ncfSel.add(new Option(`${f.ncfTipo}`, f.ncfTipo));
+      }
+      ncfSel.value = f.ncfTipo || 'B02';
+      ncfSel.disabled = true;
+    }
+    const ncfHint = $id('fac-ncf-hint');
+    if (ncfHint) ncfHint.innerHTML = f.ncf ? `NCF asignado: <code>${f.ncf}</code> (no se modifica)` : '—';
 
     setText('modal-factura-title', `Editar factura ${f.numero}`);
     hide('fac-error');
@@ -1125,12 +1249,21 @@ async function guardarFactura() {
     showErr('Todos los ítems necesitan una descripción.'); return;
   }
 
+  const tipoNcf = $id('fac-tipo-ncf')?.value || '';
+  const clienteRnc = $id('fac-cliente-rnc')?.value || '';
+  if (!_editingFacturaId && !tipoNcf) { showErr('Selecciona el tipo de comprobante fiscal (NCF).'); return; }
+  if (!_editingFacturaId && ['B01','B15'].includes(tipoNcf) && !clienteRnc.trim()) {
+    showErr(`El comprobante ${tipoNcf} exige el RNC/Cédula del cliente.`); return;
+  }
+
   const payload = {
     negocioId,
     clienteNombre,
-    clienteRnc:          $id('fac-cliente-rnc')?.value || '',
+    clienteRnc,
     clienteTelefono:     $id('fac-cliente-telefono')?.value || '',
     clienteDireccion:    $id('fac-cliente-direccion')?.value || '',
+    clienteEmail:        $id('fac-cliente-email')?.value || '',
+    tipoNcf,
     items:               _facItems,
     aplicaItbis:         $id('fac-aplica-itbis')?.checked ?? true,
     tasaItbis:           0.18,
@@ -1179,6 +1312,28 @@ async function registrarPago() {
   } catch (e) { showErr(e.message); }
 }
 
+// Atajo: registra un pago por el saldo pendiente completo y deja la factura pagada.
+async function marcarFacturaPagada(id) {
+  const facturaId = id || _currentFacturaId;
+  if (!facturaId) return;
+  const f = _allFacturas.find(x => x.id === facturaId) || (_currentFacturaCache?.id === facturaId ? _currentFacturaCache : null);
+  if (!f) { showToast('No se pudo leer la factura.', 'error'); return; }
+  if (f.estado === 'anulada') { showToast('La factura está anulada.', 'error'); return; }
+
+  const saldo = Math.round(((f.total || 0) - (f.montoPagado || 0)) * 100) / 100;
+  if (saldo <= 0) { showToast('Esta factura ya está pagada.', 'info'); return; }
+  if (!confirm(`¿Marcar la factura ${f.numero} como PAGADA?\nSe registrará un pago de ${fmtCurrency(saldo)} (${f.metodoPago || 'efectivo'}).`)) return;
+
+  try {
+    await api('POST', `/api/facturas/${facturaId}/pagos`, {
+      monto: saldo, metodo: f.metodoPago || 'efectivo', nota: 'Pago completo',
+    });
+    showToast(`Factura ${f.numero} marcada como pagada.`, 'success');
+    loadFacturas();
+    if (_currentFacturaId === facturaId) openFactura(facturaId);
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
 function openAnularFactura() {
   if (!_currentFacturaId) return;
   $id('anular-motivo').value = '';
@@ -1199,16 +1354,18 @@ async function anularFactura() {
   } catch (e) { showErr(e.message); }
 }
 
-async function fetchFacturaBlob(kind) {
+async function fetchAuthBlob(path) {
   if (_currentUser) _idToken = await _currentUser.getIdToken();
-  const res = await fetch(`/api/facturas/${_currentFacturaId}/${kind}`, {
-    headers: { 'Authorization': `Bearer ${_idToken}` },
-  });
+  const res = await fetch(path, { headers: { 'Authorization': `Bearer ${_idToken}` } });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `HTTP ${res.status}`);
   }
   return res.blob();
+}
+
+async function fetchFacturaBlob(kind) {
+  return fetchAuthBlob(`/api/facturas/${_currentFacturaId}/${kind}`);
 }
 
 async function descargarFacturaPdf() {
@@ -1229,10 +1386,306 @@ async function descargarFacturaPdf() {
 async function abrirFacturaHtml() {
   if (!_currentFacturaId) return;
   try {
-    const blob = await fetchFacturaBlob('html');
+    const blob = await fetchFacturaBlob('html?print=1');
     const url  = URL.createObjectURL(blob);
     window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
   } catch (e) { showToast('Error generando vista previa: ' + e.message, 'error'); }
+}
+
+let _emailConfig = null;
+async function ensureEmailConfig() {
+  if (_emailConfig) return _emailConfig;
+  try { _emailConfig = await api('GET', '/api/facturas/config/email'); }
+  catch { _emailConfig = { configured: false }; }
+  return _emailConfig;
+}
+
+// Objetivo del modal de envío: qué factura mandar y qué hacer al terminar.
+let _envioTarget = null;
+
+async function abrirModalEnvio(facturaId, prefillEmail, onDone) {
+  if (!facturaId) return;
+  const cfg = await ensureEmailConfig();
+  if (!cfg || !cfg.configured) {
+    showToast('Falta configurar GMAIL_USER y GMAIL_APP_PASSWORD en el .env del panel.', 'error');
+    return;
+  }
+  _envioTarget = { facturaId, onDone: typeof onDone === 'function' ? onDone : null };
+  setText('env-from', cfg.from || 'tu Gmail');
+  $id('env-to').value = prefillEmail || '';
+  $id('env-mensaje').value = '';
+  hide('env-error');
+  show('modal-enviar-factura');
+}
+
+function enviarFacturaCorreo() {
+  if (!_currentFacturaId) return;
+  abrirModalEnvio(_currentFacturaId, _currentFacturaCache?.clienteEmail || '', () => openFactura(_currentFacturaId));
+}
+
+async function reenviarReciboSuscripcion(id) {
+  const s = _allSuscripciones.find(x => x.id === id);
+  if (!s) return;
+  if (!s.ultimaFacturaId) {
+    showToast('Esta suscripción todavía no ha generado ninguna factura.', 'info');
+    return;
+  }
+  abrirModalEnvio(s.ultimaFacturaId, s.clienteEmail || '', () => loadSuscripciones());
+}
+
+async function confirmarEnviarFactura() {
+  const showErr = m => { const e = $id('env-error'); if (e) { e.textContent = m; e.classList.remove('hidden'); } };
+  hide('env-error');
+  const to = ($id('env-to')?.value || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { showErr('Escribe un correo de destino válido.'); return; }
+  const target = _envioTarget || (_currentFacturaId ? { facturaId: _currentFacturaId, onDone: () => openFactura(_currentFacturaId) } : null);
+  if (!target || !target.facturaId) { showErr('No hay factura seleccionada.'); return; }
+
+  const btn = $id('env-send-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+  try {
+    const r = await api('POST', `/api/facturas/${target.facturaId}/enviar`, { to, mensaje: $id('env-mensaje')?.value || '' });
+    closeModal('modal-enviar-factura');
+    showToast(`Factura enviada a ${r.to}.`, 'success');
+    if (target.onDone) target.onDone();
+  } catch (e) { showErr(e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Enviar'; } }
+}
+
+// ── Suscripciones / pagos recurrentes ──────────────────────────────────────
+let _allSuscripciones = [];
+let _editingSusId     = null;
+
+function navigateToModule(mod) { navigateTo(mod); }
+
+const SUS_ESTADO_BADGE = { activa: 'active', pausada: 'trial', cancelada: 'suspended' };
+
+async function loadSuscripciones() {
+  const tbody = $id('suscripciones-list');
+  try {
+    _allSuscripciones = await api('GET', '/api/suscripciones');
+    renderSuscripcionesList(_allSuscripciones);
+    checkSuscripcionesPendientes();
+  } catch (e) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="color:#ef4444;text-align:center">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderSuscripcionesList(list) {
+  const tbody = $id('suscripciones-list');
+  if (!tbody) return;
+  tbody.innerHTML = list.map(s => {
+    const acciones = [`<button class="btn-sm" onclick="adminApp.openEditarSuscripcion('${s.id}')">Editar</button>`];
+    if (s.ultimaFacturaId) acciones.push(`<button class="btn-sm" title="Reenviar por correo la última factura generada" onclick="adminApp.reenviarReciboSuscripcion('${s.id}')">✉ Reenviar</button>`);
+    if (s.estado === 'activa')   acciones.push(`<button class="btn-sm" onclick="adminApp.cambiarEstadoSuscripcion('${s.id}','pausada')">Pausar</button>`);
+    if (s.estado === 'pausada')  acciones.push(`<button class="btn-sm" onclick="adminApp.cambiarEstadoSuscripcion('${s.id}','activa')">Reactivar</button>`);
+    if (s.estado !== 'cancelada') acciones.push(`<button class="btn-sm btn-danger" onclick="adminApp.cambiarEstadoSuscripcion('${s.id}','cancelada')">Cancelar</button>`);
+    acciones.push(`<button class="btn-sm btn-danger" onclick="adminApp.eliminarSuscripcion('${s.id}')">✕</button>`);
+    const prox = s.proximaFacturacion ? fmtDate(s.proximaFacturacion) : '—';
+    return `<tr>
+      <td>${s.clienteNombre || '—'}</td>
+      <td>${s.concepto || '—'}${s.enviarAutomatico ? ' <span title="Se envía por correo al generar" style="opacity:.7">✉</span>' : ''}</td>
+      <td>${fmtCurrency(s.monto)}</td>
+      <td><code style="font-size:11px">${s.tipoNcf || '—'}</code></td>
+      <td>día ${s.diaCorte || '—'}</td>
+      <td>${s.vencida ? `<span style="color:#f59e0b;font-weight:600">${prox} ⚠</span>` : prox}</td>
+      <td><span class="badge badge-${SUS_ESTADO_BADGE[s.estado] || 'trial'}">${s.estado}</span></td>
+      <td style="white-space:nowrap">${acciones.join(' ')}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="8" style="text-align:center;opacity:.6">Sin suscripciones. Crea una para facturar un plan cada mes.</td></tr>';
+}
+
+function filterSuscripciones(q) {
+  const l = q.toLowerCase();
+  renderSuscripcionesList(_allSuscripciones.filter(s =>
+    (s.clienteNombre || '').toLowerCase().includes(l) || (s.concepto || '').toLowerCase().includes(l)));
+}
+
+function _susSet(id, v) { const el = $id(id); if (el) el.value = v; }
+
+async function openNuevaSuscripcion() {
+  _editingSusId = null;
+  setText('modal-suscripcion-title', 'Nueva suscripción');
+  hide('sus-error');
+  ['sus-cliente-nombre','sus-cliente-rnc','sus-cliente-telefono','sus-cliente-email','sus-cliente-direccion','sus-concepto','sus-monto','sus-notas','sus-proxima']
+    .forEach(id => _susSet(id, ''));
+  _susSet('sus-descuento', '0');
+  _susSet('sus-dia-corte', '1');
+  _susSet('sus-dias-vencimiento', '0');
+  $id('sus-aplica-itbis').checked = true;
+  $id('sus-enviar-auto').checked = false;
+  _susSet('sus-tipo-ncf', 'B02');
+  _susSet('sus-metodo-pago', 'transferencia');
+
+  const negocios = await ensureFacNegocios();
+  const sel = $id('sus-negocio');
+  if (sel) {
+    sel.innerHTML = '<option value="">Selecciona un negocio…</option>' +
+      negocios.map(n => `<option value="${n.id}">${n.businessName || n.businessKey || n.id}</option>`).join('');
+    sel.value = '';
+  }
+  recalcSusPreview();
+  show('modal-suscripcion');
+}
+
+async function openEditarSuscripcion(id) {
+  const s = _allSuscripciones.find(x => x.id === id);
+  if (!s) return;
+  _editingSusId = id;
+  setText('modal-suscripcion-title', 'Editar suscripción');
+  hide('sus-error');
+
+  const negocios = await ensureFacNegocios();
+  const sel = $id('sus-negocio');
+  if (sel) {
+    sel.innerHTML = '<option value="">Selecciona un negocio…</option>' +
+      negocios.map(n => `<option value="${n.id}">${n.businessName || n.businessKey || n.id}</option>`).join('');
+    sel.value = s.negocioId || '';
+  }
+  _susSet('sus-cliente-nombre', s.clienteNombre || '');
+  _susSet('sus-cliente-rnc', s.clienteRnc || '');
+  _susSet('sus-cliente-telefono', s.clienteTelefono || '');
+  _susSet('sus-cliente-email', s.clienteEmail || '');
+  _susSet('sus-cliente-direccion', s.clienteDireccion || '');
+  _susSet('sus-concepto', s.concepto || '');
+  _susSet('sus-monto', s.monto ?? '');
+  _susSet('sus-descuento', s.descuento || 0);
+  $id('sus-aplica-itbis').checked = s.aplicaItbis !== false;
+  $id('sus-enviar-auto').checked = s.enviarAutomatico === true;
+  _susSet('sus-tipo-ncf', s.tipoNcf || 'B02');
+  _susSet('sus-metodo-pago', s.metodoPago || 'transferencia');
+  _susSet('sus-dia-corte', s.diaCorte || 1);
+  _susSet('sus-dias-vencimiento', s.diasVencimiento || 0);
+  _susSet('sus-proxima', s.proximaFacturacion ? String(s.proximaFacturacion).slice(0, 10) : '');
+  _susSet('sus-notas', s.notas || '');
+  recalcSusPreview();
+  show('modal-suscripcion');
+}
+
+function onSusNegocioChange() {
+  const sel = $id('sus-negocio');
+  const n = _facNegocios.find(x => x.id === sel?.value);
+  if (!n) return;
+  if (!$id('sus-cliente-nombre').value.trim()) $id('sus-cliente-nombre').value = n.razon_social || n.businessName || n.businessKey || '';
+  if (!$id('sus-cliente-rnc').value.trim() && n.rnc) $id('sus-cliente-rnc').value = String(n.rnc);
+  if (!$id('sus-cliente-telefono').value.trim() && (n.telefono || n.phone)) $id('sus-cliente-telefono').value = n.telefono || n.phone;
+  if (!$id('sus-cliente-email').value.trim() && (n.email || n.correo)) $id('sus-cliente-email').value = n.email || n.correo;
+  if (!$id('sus-cliente-direccion').value.trim() && (n.direccion || n.address)) $id('sus-cliente-direccion').value = n.direccion || n.address;
+  if ($id('sus-cliente-rnc').value.trim() && $id('sus-tipo-ncf').value === 'B02') $id('sus-tipo-ncf').value = 'B01';
+}
+
+function recalcSusPreview() {
+  const monto = Number($id('sus-monto')?.value) || 0;
+  const desc  = Math.max(0, Number($id('sus-descuento')?.value) || 0);
+  const itbis = ($id('sus-aplica-itbis')?.checked ? Math.max(0, monto - desc) * 0.18 : 0);
+  const total = Math.max(0, monto - desc) + itbis;
+  const el = $id('sus-preview');
+  if (el) el.innerHTML = `Cada mes: ${fmtCurrency(monto)}${desc ? ` − ${fmtCurrency(desc)}` : ''}${itbis ? ` + ITBIS ${fmtCurrency(itbis)}` : ''} = <strong style="color:#e2e8f0">${fmtCurrency(total)}</strong>`;
+}
+
+async function guardarSuscripcion() {
+  const showErr = m => { const e = $id('sus-error'); if (e) { e.textContent = m; e.classList.remove('hidden'); } };
+  hide('sus-error');
+  const negocioId = $id('sus-negocio')?.value || '';
+  const tipoNcf   = $id('sus-tipo-ncf')?.value || '';
+  const rnc       = $id('sus-cliente-rnc')?.value || '';
+  if (!negocioId) return showErr('Selecciona un negocio/cliente.');
+  if (!$id('sus-concepto')?.value.trim()) return showErr('Indica el concepto.');
+  if (!(Number($id('sus-monto')?.value) > 0)) return showErr('El monto mensual debe ser mayor a 0.');
+  if (['B01','B15'].includes(tipoNcf) && !rnc.trim()) return showErr(`El comprobante ${tipoNcf} exige el RNC/Cédula del cliente.`);
+
+  const payload = {
+    negocioId,
+    clienteNombre:    $id('sus-cliente-nombre')?.value || '',
+    clienteRnc:       rnc,
+    clienteTelefono:  $id('sus-cliente-telefono')?.value || '',
+    clienteEmail:     $id('sus-cliente-email')?.value || '',
+    clienteDireccion: $id('sus-cliente-direccion')?.value || '',
+    concepto:         $id('sus-concepto')?.value || '',
+    monto:            Number($id('sus-monto')?.value) || 0,
+    descuento:        Number($id('sus-descuento')?.value) || 0,
+    aplicaItbis:      $id('sus-aplica-itbis')?.checked ?? true,
+    tasaItbis:        0.18,
+    tipoNcf,
+    metodoPago:       $id('sus-metodo-pago')?.value || 'transferencia',
+    diaCorte:         Number($id('sus-dia-corte')?.value) || 1,
+    diasVencimiento:  Number($id('sus-dias-vencimiento')?.value) || 0,
+    enviarAutomatico: $id('sus-enviar-auto')?.checked === true,
+    notas:            $id('sus-notas')?.value || '',
+  };
+  const proxima = $id('sus-proxima')?.value || '';
+  if (proxima) { payload.primeraFacturacion = proxima; payload.proximaFacturacion = proxima; }
+
+  try {
+    if (_editingSusId) {
+      await api('PUT', `/api/suscripciones/${_editingSusId}`, payload);
+      showToast('Suscripción actualizada.', 'success');
+    } else {
+      await api('POST', '/api/suscripciones', payload);
+      showToast('Suscripción creada.', 'success');
+    }
+    closeModal('modal-suscripcion');
+    loadSuscripciones();
+  } catch (e) { showErr(e.message); }
+}
+
+async function cambiarEstadoSuscripcion(id, estado) {
+  const verbo = { pausada: 'pausar', activa: 'reactivar', cancelada: 'cancelar' }[estado] || estado;
+  if (estado === 'cancelada' && !confirm('¿Cancelar esta suscripción? Dejará de generar facturas.')) return;
+  try {
+    await api('POST', `/api/suscripciones/${id}/estado`, { estado });
+    showToast(`Suscripción: ${verbo} ✓`, 'success');
+    loadSuscripciones();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function eliminarSuscripcion(id) {
+  if (!confirm('¿Eliminar esta suscripción por completo? Las facturas ya generadas se conservan.')) return;
+  try {
+    await api('DELETE', `/api/suscripciones/${id}`);
+    showToast('Suscripción eliminada.', 'success');
+    loadSuscripciones();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function checkSuscripcionesPendientes() {
+  let data;
+  try { data = await api('GET', '/api/suscripciones/pendientes'); }
+  catch { return; }
+  const n = data.total || 0;
+
+  const badge = $id('sus-badge');
+  if (badge) { badge.textContent = n; badge.classList.toggle('hidden', n === 0); }
+
+  const setBanner = (bannerId, countId, textId) => {
+    const b = $id(bannerId);
+    if (!b) return;
+    b.classList.toggle('hidden', n === 0);
+    setText(countId, n);
+    setText(textId, n === 1 ? 'suscripción por facturar' : 'suscripciones por facturar');
+  };
+  setBanner('dash-sus-banner', 'dash-sus-count', 'dash-sus-text');
+  setBanner('sus-pendientes-banner', 'sus-pendientes-count', 'sus-pendientes-text');
+}
+
+async function generarFacturasRecurrentes() {
+  if (!confirm('Se generará una factura (con su NCF) por cada suscripción vencida. ¿Continuar?')) return;
+  try {
+    const r = await api('POST', '/api/suscripciones/generar', {});
+    if (r.generadas === 0 && r.errores === 0) {
+      showToast('No había suscripciones por facturar.', 'info');
+    } else {
+      showToast(`${r.generadas} factura(s) generada(s)${r.errores ? ` · ${r.errores} con error` : ''}.`, r.errores ? 'error' : 'success');
+    }
+    (r.resultados || []).filter(x => !x.ok).forEach(x => showToast(`${x.cliente}: ${x.error}`, 'error'));
+    const enviados = (r.resultados || []).filter(x => x.ok && x.correo && x.correo.enviado).length;
+    if (enviados) showToast(`${enviados} factura(s) enviada(s) por correo.`, 'success');
+    (r.resultados || []).filter(x => x.ok && x.correo && x.correo.enviado === false)
+      .forEach(x => showToast(`${x.cliente}: factura creada pero el correo falló — ${x.correo.error}`, 'error'));
+    loadSuscripciones();
+    if (typeof loadFacturas === 'function') loadFacturas();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
 // ── Compras ────────────────────────────────────────────────────────────────
@@ -1637,17 +2090,68 @@ async function eliminarAdjunto(id) {
 }
 
 // ── Flujo Financiero ─────────────────────────────────────────────────────────
+// Construye ?mes=... o ?desde=...&hasta=... según lo que haya en los filtros.
+function flujoQueryString() {
+  const desde = $id('fl-desde')?.value || '';
+  const hasta = $id('fl-hasta')?.value || '';
+  if (desde || hasta) {
+    const p = new URLSearchParams();
+    if (desde) p.set('desde', desde);
+    if (hasta) p.set('hasta', hasta);
+    return '?' + p.toString();
+  }
+  const mes = $id('fl-mes')?.value || '';
+  return mes ? `?mes=${mes}` : '';
+}
+
+// Al escribir en "mes" limpiamos "desde/hasta" y viceversa (son excluyentes).
+function onFlujoFiltroChange(cual) {
+  if (cual === 'mes' && $id('fl-mes')?.value) { $id('fl-desde').value = ''; $id('fl-hasta').value = ''; }
+  if (cual === 'rango' && ($id('fl-desde')?.value || $id('fl-hasta')?.value)) { $id('fl-mes').value = ''; }
+  loadFlujoFinanciero();
+}
+
+function limpiarFlujoFiltro() {
+  ['fl-mes', 'fl-desde', 'fl-hasta'].forEach(id => { const el = $id(id); if (el) el.value = ''; });
+  loadFlujoFinanciero();
+}
+
+async function imprimirFlujo() {
+  try {
+    const blob = await fetchAuthBlob(`/api/flujo-financiero/reporte${flujoQueryString() ? flujoQueryString() + '&' : '?'}print=1`);
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch (e) { showToast('Error generando el reporte: ' + e.message, 'error'); }
+}
+
+async function descargarFlujoPdf() {
+  try {
+    const blob = await fetchAuthBlob(`/api/flujo-financiero/reporte.pdf${flujoQueryString()}`);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'flujo-financiero.pdf';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (e) { showToast('Error generando el PDF: ' + e.message, 'error'); }
+}
+
 async function loadFlujoFinanciero() {
   try {
-    const data = await api('GET', '/api/flujo-financiero');
-    const r = data.resumenMes || {};
-    setText('fl-facturado', fmtCurrency(r.facturado));
-    setText('fl-cobrado',   fmtCurrency(r.cobrado));
-    setText('fl-compras',   fmtCurrency(r.compras));
-    setText('fl-gastos',    fmtCurrency(r.gastos));
-    setText('fl-ganancia',  fmtCurrency(r.gananciaEstimada));
-    setText('fl-cxc',       fmtCurrency(r.cuentasPorCobrar));
-    setText('fl-cxp',       fmtCurrency(r.cuentasPorPagar));
+    const data = await api('GET', '/api/flujo-financiero' + flujoQueryString());
+    const r = data.resumenMes || data.resumen || {};
+    const per = data.periodo;
+    setText('fl-periodo', per ? `Período: ${per.label}` : '');
+    setText('fl-facturado',        fmtCurrency(r.facturado));
+    setText('fl-cobrado',          fmtCurrency(r.cobrado));
+    setText('fl-compras',          fmtCurrency(r.compras));
+    setText('fl-gastos',           fmtCurrency(r.gastos));
+    setText('fl-ganancia',         fmtCurrency(r.gananciaEstimada));
+    setText('fl-itbis-facturado',  fmtCurrency(r.itbisFacturado));
+    setText('fl-itbis-compras',    fmtCurrency(r.itbisCompras));
+    setText('fl-itbis-neto',       fmtCurrency(r.itbisNeto));
+    setText('fl-cxc',              fmtCurrency(r.cuentasPorCobrar));
+    setText('fl-cxp',              fmtCurrency(r.cuentasPorPagar));
 
     renderFlujoChart(data.serieMensual || []);
 
@@ -1942,6 +2446,7 @@ async function loadConfigPerfil() {
       <dt>Creado</dt><dd>${fmtDate(data.createdAt)}</dd>`;
   } catch (e) { showToast('Error cargando perfil: ' + e.message, 'error'); }
   loadLogoPreview();
+  loadNcfSequences();
 }
 
 // ── Logo de facturación ──────────────────────────────────────────────────────
@@ -1985,7 +2490,7 @@ function handleLogoFileChange(input) {
   reader.onload = (e) => {
     const img = new Image();
     img.onload = async () => {
-      const MAX = 400;
+      const MAX = 600;
       let { width, height } = img;
       if (width > MAX || height > MAX) {
         const ratio = Math.min(MAX / width, MAX / height);
@@ -2025,6 +2530,91 @@ async function quitarLogo() {
   } catch (e) { showToast('Error: ' + e.message, 'error'); }
 }
 
+// ── Secuencias de NCF (DGII) ────────────────────────────────────────────────
+const NCF_TIPO_LABELS = { B01: 'Crédito Fiscal', B02: 'Consumo', B04: 'Nota de Crédito', B15: 'Gubernamental' };
+
+async function loadNcfSequences() {
+  const tbody = $id('ncf-seq-list');
+  if (!tbody) return;
+  try {
+    const list = await api('GET', '/api/facturas/config/ncf');
+    _facNcfConfig = list;
+    renderNcfSeqList(list);
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:#ef4444">Error: ${e.message}</td></tr>`;
+  }
+}
+
+function renderNcfSeqList(list) {
+  const tbody = $id('ncf-seq-list');
+  if (!tbody) return;
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="opacity:.6">Sin secuencias registradas. Agrega el rango autorizado por la DGII abajo.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(s => {
+    let estado, color;
+    if (s.vencida)            { estado = 'Vencida';   color = '#ef4444'; }
+    else if (s.disponibles <= 0) { estado = 'Agotada'; color = '#ef4444'; }
+    else if (s.activa === false)  { estado = 'Inactiva'; color = '#94a3b8'; }
+    else if (s.disponibles <= 10) { estado = 'Por agotarse'; color = '#f59e0b'; }
+    else                     { estado = 'Activa';    color = '#22c55e'; }
+    const toggleLabel = s.activa === false ? 'Activar' : 'Desactivar';
+    const canDelete = s.siguiente <= s.desde;
+    return `<tr>
+      <td><strong>${s.tipo}</strong><br><span style="opacity:.6;font-size:11px">${NCF_TIPO_LABELS[s.tipo] || ''}</span></td>
+      <td><code>${s.desde}</code> – <code>${s.hasta}</code></td>
+      <td>${s.proximoNcf ? `<code>${s.proximoNcf}</code>` : '—'}</td>
+      <td>${s.disponibles}</td>
+      <td>${s.vencimiento ? fmtDate(s.vencimiento) : '—'}</td>
+      <td><span style="color:${color};font-weight:600">${estado}</span></td>
+      <td style="white-space:nowrap">
+        <button class="btn-sm" onclick="adminApp.toggleNcfSecuencia('${s.id}', ${s.activa === false})">${toggleLabel}</button>
+        ${canDelete ? `<button class="btn-sm btn-danger" onclick="adminApp.eliminarNcfSecuencia('${s.id}')">Eliminar</button>` : ''}
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function crearNcfSecuencia() {
+  const status = $id('ncf-seq-status');
+  const set = m => { if (status) status.textContent = m; };
+  const tipo  = $id('ncf-new-tipo')?.value || '';
+  const desde = parseInt($id('ncf-new-desde')?.value, 10);
+  const hasta = parseInt($id('ncf-new-hasta')?.value, 10);
+  const vencimiento = $id('ncf-new-vence')?.value || '';
+  if (!Number.isInteger(desde) || desde < 1) return set('Indica el número "desde".');
+  if (!Number.isInteger(hasta) || hasta < desde) return set('El "hasta" debe ser mayor o igual al "desde".');
+  if (!vencimiento) return set('Indica la fecha de vencimiento de la autorización.');
+  set('Guardando…');
+  try {
+    await api('POST', '/api/facturas/config/ncf', { tipo, desde, hasta, vencimiento });
+    $id('ncf-new-desde').value = '';
+    $id('ncf-new-hasta').value = '';
+    $id('ncf-new-vence').value = '';
+    set('');
+    showToast(`Secuencia ${tipo} registrada.`, 'success');
+    loadNcfSequences();
+  } catch (e) { set('Error: ' + e.message); }
+}
+
+async function toggleNcfSecuencia(id, activar) {
+  try {
+    await api('PUT', `/api/facturas/config/ncf/${id}`, { activa: activar });
+    showToast(activar ? 'Secuencia activada.' : 'Secuencia desactivada.', 'success');
+    loadNcfSequences();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
+async function eliminarNcfSecuencia(id) {
+  if (!confirm('¿Eliminar esta secuencia de NCF? Solo se permite si aún no emitió comprobantes.')) return;
+  try {
+    await api('DELETE', `/api/facturas/config/ncf/${id}`);
+    showToast('Secuencia eliminada.', 'success');
+    loadNcfSequences();
+  } catch (e) { showToast('Error: ' + e.message, 'error'); }
+}
+
 // ── Utils ──────────────────────────────────────────────────────────────────
 function fmtDate(v) {
   if (!v) return '—';
@@ -2056,15 +2646,20 @@ window.adminApp = {
   loadContadores, openNuevoContador, editarContador, guardarContador, contRncFormat, rncLookup,
   suspenderContador, reactivarContador, eliminarContador,
   loadFacturas, filterFacturas, openFactura, backToFacturas, openNuevaFactura, editarFacturaActual,
-  onFacNegocioChange, updateFacItem, agregarItemFactura, quitarItemFactura, recalcularTotalesFactura,
-  guardarFactura, openRegistrarPago, registrarPago, openAnularFactura, anularFactura,
-  descargarFacturaPdf, abrirFacturaHtml,
+  onFacNegocioChange, onFacTipoNcfChange, updateFacItem, agregarItemFactura, quitarItemFactura, recalcularTotalesFactura,
+  guardarFactura, openRegistrarPago, registrarPago, marcarFacturaPagada, openAnularFactura, anularFactura,
+  descargarFacturaPdf, abrirFacturaHtml, enviarFacturaCorreo, confirmarEnviarFactura,
+  loadNcfSequences, crearNcfSecuencia, toggleNcfSecuencia, eliminarNcfSecuencia,
+  navigateToModule,
+  loadSuscripciones, filterSuscripciones, openNuevaSuscripcion, openEditarSuscripcion,
+  onSusNegocioChange, recalcSusPreview, guardarSuscripcion, cambiarEstadoSuscripcion,
+  eliminarSuscripcion, generarFacturasRecurrentes, reenviarReciboSuscripcion,
   loadCompras, filterCompras, openNuevaCompra, onCompraTipoPagoChange, updateCompraItem,
   agregarItemCompra, quitarItemCompra, recalcularTotalesCompra, editarCompra, guardarCompra,
   openPagoCompra, registrarPagoCompra,
   loadGastos, filterGastos, openNuevoGasto, editarGasto, guardarGasto, eliminarGasto,
   openAdjuntos, handleAdjuntoFileChange, eliminarAdjunto,
-  loadFlujoFinanciero,
+  loadFlujoFinanciero, onFlujoFiltroChange, limpiarFlujoFiltro, imprimirFlujo, descargarFlujoPdf,
   handleLogoFileChange, quitarLogo,
   loadSolicitudes, abrirSolicitud, responderSolicitud,
   loadActualizaciones, openNuevaVersion, publicarVersion,

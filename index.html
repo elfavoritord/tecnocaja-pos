@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="css/main.css">
 <link rel="stylesheet" href="css/repv2.css">
 <link rel="stylesheet" href="css/superadmin.css">
+<link rel="stylesheet" href="css/servicios.css">
 </head>
 <body>
 <!-- LOGIN SCREEN -->
@@ -180,6 +181,11 @@
         <h3>¿A qué se dedica el negocio?</h3>
         <p>Selecciona el rubro. Esto personaliza el catálogo de ejemplo, módulos activos e interfaz inicial.</p>
         <div class="setup-choice-grid setup-biztype-grid" id="setup-biztype-options">
+          <button type="button" class="setup-choice-card" data-service-root="1">
+            <span class="choice-icon">🏢</span>
+            <strong>Empresa de Servicios</strong>
+            <span>Consultoría, tecnología, publicidad, limpieza, seguridad, mantenimiento, viajes…</span>
+          </button>
           <button type="button" class="setup-choice-card" data-biztype="colmado">
             <span class="choice-icon">🛒</span>
             <strong>Colmado / Minimarket</strong>
@@ -261,6 +267,16 @@
             <span>Configuración general sin catálogo prearmado</span>
           </button>
         </div>
+        <!-- Sub-grid: verticales de empresa de servicios (se muestra al elegir
+             "Empresa de Servicios"). Las tarjetas las rellena js/wizard.js desde
+             window.SERVICE_VERTICALS. -->
+        <div class="setup-choice-grid" id="setup-service-verticals"></div>
+        <button type="button" id="setup-service-back">← Volver a los tipos de negocio</button>
+        <small id="setup-service-help" style="display:none;margin-top:.7rem;color:var(--text3)">
+          Las empresas de servicios funcionan en modo multicaja/multisucursal, sin
+          caja de efectivo ni catálogo de productos. Facturan sus servicios con
+          cotización → factura → cobro.
+        </small>
       </section>
 
       <!-- Panel 3: Admin (monocaja) / Asignación terminal (multi*) -->
@@ -4891,6 +4907,7 @@
 <script src="js/label-manager.js"></script>
 <script src="js/fiscal-sequences-config.js"></script>
 <script src="js/business-config.js"></script>
+<script src="js/servicios/servicios.js"></script>
 <script src="js/monedas.js"></script>
 <script src="js/plans.js"></script>
 <script src="js/mobile-pos.js"></script>

@@ -138,6 +138,10 @@
       <li class="nav-item" data-module="facturacion">
         <span class="nav-icon">🧾</span> Facturación
       </li>
+      <li class="nav-item" data-module="suscripciones">
+        <span class="nav-icon">🔁</span> Suscripciones
+        <span id="sus-badge" class="nav-badge hidden">0</span>
+      </li>
       <li class="nav-item" data-module="compras">
         <span class="nav-icon">🛒</span> Compras
       </li>
@@ -187,6 +191,14 @@
           <button class="btn-sm" onclick="adminApp.loadDashboard()" style="gap:6px">
             ↺ Actualizar
           </button>
+        </div>
+      </div>
+
+      <div id="dash-sus-banner" class="hidden" style="margin:0 0 1rem;padding:1rem 1.25rem;border-radius:12px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);display:flex;align-items:center;justify-content:space-between;gap:1rem">
+        <div style="font-size:.9rem;color:#fbbf24">🔁 <strong id="dash-sus-count">0</strong> <span id="dash-sus-text">suscripciones por facturar este mes</span></div>
+        <div style="display:flex;gap:.5rem">
+          <button class="btn-sm" onclick="adminApp.navigateToModule('suscripciones')">Ver</button>
+          <button class="btn-sm btn-warning" onclick="adminApp.generarFacturasRecurrentes()">Generar ahora</button>
         </div>
       </div>
 
@@ -456,10 +468,140 @@
         </div>
       </div>
       <table class="data-table">
-        <thead><tr><th>No.</th><th>Cliente</th><th>Total</th><th>Estado</th><th>Emisión</th><th>Vencimiento</th><th>Acciones</th></tr></thead>
+        <thead><tr><th>NCF</th><th>No.</th><th>Cliente</th><th>Total</th><th>Estado</th><th>Emisión</th><th>Vencimiento</th><th>Acciones</th></tr></thead>
         <tbody id="facturas-list"></tbody>
       </table>
     </section>
+
+    <!-- Suscripciones / pagos recurrentes -->
+    <section id="mod-suscripciones" class="module hidden">
+      <div class="module-header">
+        <h1>Suscripciones</h1>
+        <div class="header-actions">
+          <input id="sus-search" type="search" placeholder="Buscar cliente o concepto..." onkeyup="adminApp.filterSuscripciones(this.value)" />
+          <button class="btn-sm" onclick="adminApp.loadSuscripciones()">↺</button>
+          <button class="btn-primary" onclick="adminApp.openNuevaSuscripcion()">+ Nueva suscripción</button>
+        </div>
+      </div>
+
+      <div id="sus-pendientes-banner" class="hidden" style="margin-bottom:1rem;padding:1rem 1.25rem;border-radius:12px;background:rgba(245,158,11,.12);border:1px solid rgba(245,158,11,.35);display:flex;align-items:center;justify-content:space-between;gap:1rem">
+        <div style="font-size:.9rem;color:#fbbf24"><strong id="sus-pendientes-count">0</strong> <span id="sus-pendientes-text">suscripciones por facturar</span></div>
+        <button class="btn-sm btn-warning" onclick="adminApp.generarFacturasRecurrentes()">Generar facturas ahora</button>
+      </div>
+
+      <table class="data-table">
+        <thead><tr><th>Cliente</th><th>Concepto</th><th>Monto/mes</th><th>NCF</th><th>Corte</th><th>Próxima factura</th><th>Estado</th><th>Acciones</th></tr></thead>
+        <tbody id="suscripciones-list"><tr><td colspan="8" style="text-align:center;opacity:.6">Cargando…</td></tr></tbody>
+      </table>
+    </section>
+
+    <!-- Modal: Nueva/Editar suscripción -->
+    <div id="modal-suscripcion" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:600px;width:95vw">
+        <h2 id="modal-suscripcion-title">Nueva suscripción</h2>
+
+        <div class="form-group">
+          <label>Negocio / Cliente *</label>
+          <select id="sus-negocio" onchange="adminApp.onSusNegocioChange()">
+            <option value="">Selecciona un negocio…</option>
+          </select>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Nombre del cliente *</label>
+            <input id="sus-cliente-nombre" type="text" />
+          </div>
+          <div class="form-group">
+            <label>RNC / Cédula</label>
+            <input id="sus-cliente-rnc" type="text" maxlength="14" placeholder="000-00000-0" />
+          </div>
+          <div class="form-group">
+            <label>Teléfono</label>
+            <input id="sus-cliente-telefono" type="text" />
+          </div>
+          <div class="form-group">
+            <label>Correo electrónico</label>
+            <input id="sus-cliente-email" type="email" placeholder="cliente@correo.com" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Dirección</label>
+          <input id="sus-cliente-direccion" type="text" />
+        </div>
+
+        <div class="form-group">
+          <label>Concepto (texto del ítem en la factura) *</label>
+          <input id="sus-concepto" type="text" placeholder="Ej. Plan Plus — sync nube + app móvil" />
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Monto mensual (RD$) *</label>
+            <input id="sus-monto" type="number" min="0.01" step="0.01" placeholder="1100.00" oninput="adminApp.recalcSusPreview()" />
+          </div>
+          <div class="form-group">
+            <label>Descuento (RD$)</label>
+            <input id="sus-descuento" type="number" min="0" step="0.01" value="0" oninput="adminApp.recalcSusPreview()" />
+          </div>
+          <div class="form-group checkbox-group">
+            <label><input id="sus-aplica-itbis" type="checkbox" checked onchange="adminApp.recalcSusPreview()" /> Aplica ITBIS (18%)</label>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Tipo de comprobante (NCF) *</label>
+            <select id="sus-tipo-ncf">
+              <option value="B01">B01 — Crédito Fiscal</option>
+              <option value="B02">B02 — Consumo</option>
+              <option value="B04">B04 — Nota de Crédito</option>
+              <option value="B15">B15 — Gubernamental</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Método de pago</label>
+            <select id="sus-metodo-pago">
+              <option value="transferencia">Transferencia</option>
+              <option value="efectivo">Efectivo</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Día de corte (1–28) *</label>
+            <input id="sus-dia-corte" type="number" min="1" max="28" value="1" />
+          </div>
+          <div class="form-group">
+            <label>Vence a los (días)</label>
+            <input id="sus-dias-vencimiento" type="number" min="0" value="0" placeholder="0 = sin fecha" />
+          </div>
+          <div class="form-group">
+            <label>Próxima factura</label>
+            <input id="sus-proxima" type="date" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>Notas (opcional)</label>
+          <input id="sus-notas" type="text" placeholder="Aparece al pie de cada factura" />
+        </div>
+
+        <div class="form-group checkbox-group">
+          <label><input id="sus-enviar-auto" type="checkbox" /> Enviar la factura por correo automáticamente al generarla (requiere Gmail configurado y correo del cliente)</label>
+        </div>
+
+        <div id="sus-preview" style="text-align:right;font-size:.9rem;padding:.5rem 0;color:#94a3b8"></div>
+        <div id="sus-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-suscripcion')">Cancelar</button>
+          <button class="btn-primary" onclick="adminApp.guardarSuscripcion()">Guardar</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Detalle factura -->
     <section id="mod-factura-detalle" class="module hidden">
@@ -482,11 +624,14 @@
           <h3>Acciones</h3>
           <div class="lic-actions">
             <button class="btn-success" onclick="adminApp.openRegistrarPago()">Registrar pago</button>
+            <button id="btn-marcar-pagada" class="btn-success" onclick="adminApp.marcarFacturaPagada()">✓ Marcar como pagada</button>
             <button class="btn-outline" onclick="adminApp.editarFacturaActual()">Editar</button>
             <button class="btn-sm" onclick="adminApp.descargarFacturaPdf()">⬇ Descargar PDF</button>
             <button class="btn-sm" onclick="adminApp.abrirFacturaHtml()">🖨 Imprimir / Vista previa</button>
+            <button id="btn-enviar-factura" class="btn-sm" onclick="adminApp.enviarFacturaCorreo()">✉ Enviar por correo</button>
             <button class="btn-danger" onclick="adminApp.openAnularFactura()">Anular</button>
           </div>
+          <div id="fdet-email-info" style="font-size:.78rem;color:#64748b;margin-top:.5rem"></div>
           <h3 style="margin-top:16px">Historial de pagos</h3>
           <table class="data-table small">
             <thead><tr><th>Monto</th><th>Método</th><th>Fecha</th><th>Nota</th></tr></thead>
@@ -535,6 +680,26 @@
           <div class="form-group">
             <label>Dirección</label>
             <input id="fac-cliente-direccion" type="text" />
+          </div>
+          <div class="form-group">
+            <label>Correo electrónico</label>
+            <input id="fac-cliente-email" type="email" placeholder="cliente@correo.com" />
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div class="form-group">
+            <label>Tipo de comprobante fiscal (NCF) *</label>
+            <select id="fac-tipo-ncf" onchange="adminApp.onFacTipoNcfChange()">
+              <option value="B02">B02 — Consumo</option>
+              <option value="B01">B01 — Crédito Fiscal</option>
+              <option value="B04">B04 — Nota de Crédito</option>
+              <option value="B15">B15 — Gubernamental</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Disponibilidad de la secuencia</label>
+            <div id="fac-ncf-hint" style="font-size:.78rem;min-height:1.1em;color:#64748b;padding-top:.55rem"></div>
           </div>
         </div>
 
@@ -626,6 +791,27 @@
         <div class="modal-actions">
           <button class="btn-outline" onclick="adminApp.closeModal('modal-anular-factura')">Cancelar</button>
           <button class="btn-danger" onclick="adminApp.anularFactura()">Anular factura</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Enviar factura por correo -->
+    <div id="modal-enviar-factura" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width:460px">
+        <h2>Enviar factura por correo</h2>
+        <p style="font-size:.82rem;color:#94a3b8">Se envía el PDF de la factura adjunto, desde <span id="env-from" style="color:#e2e8f0">tu Gmail</span>.</p>
+        <div class="form-group">
+          <label>Para *</label>
+          <input id="env-to" type="email" placeholder="cliente@correo.com" />
+        </div>
+        <div class="form-group">
+          <label>Mensaje adicional (opcional)</label>
+          <textarea id="env-mensaje" rows="3" placeholder="Se agrega al cuerpo del correo…"></textarea>
+        </div>
+        <div id="env-error" class="error-text hidden"></div>
+        <div class="modal-actions">
+          <button class="btn-outline" onclick="adminApp.closeModal('modal-enviar-factura')">Cancelar</button>
+          <button class="btn-primary" id="env-send-btn" onclick="adminApp.confirmarEnviarFactura()">Enviar</button>
         </div>
       </div>
     </div>
@@ -885,8 +1071,23 @@
     <section id="mod-flujo" class="module hidden">
       <div class="module-header">
         <h1>Flujo Financiero</h1>
-        <button class="btn-sm" onclick="adminApp.loadFlujoFinanciero()">↺ Actualizar</button>
+        <div class="header-actions" style="flex-wrap:wrap">
+          <label style="font-size:.8rem;color:#94a3b8">Mes
+            <input id="fl-mes" type="month" onchange="adminApp.onFlujoFiltroChange('mes')" style="margin-left:.3rem" />
+          </label>
+          <label style="font-size:.8rem;color:#94a3b8">Desde
+            <input id="fl-desde" type="date" onchange="adminApp.onFlujoFiltroChange('rango')" style="margin-left:.3rem" />
+          </label>
+          <label style="font-size:.8rem;color:#94a3b8">Hasta
+            <input id="fl-hasta" type="date" onchange="adminApp.onFlujoFiltroChange('rango')" style="margin-left:.3rem" />
+          </label>
+          <button class="btn-sm" onclick="adminApp.loadFlujoFinanciero()">Aplicar</button>
+          <button class="btn-sm" onclick="adminApp.limpiarFlujoFiltro()">Mes actual</button>
+          <button class="btn-sm" onclick="adminApp.imprimirFlujo()">🖨 Imprimir</button>
+          <button class="btn-sm" onclick="adminApp.descargarFlujoPdf()">⬇ PDF</button>
+        </div>
       </div>
+      <div id="fl-periodo" style="font-size:.85rem;color:#94a3b8;margin-bottom:.75rem"></div>
 
       <div class="stats-grid">
         <div class="stat-card green"><div class="stat-num" id="fl-facturado" style="color:var(--green-light)">—</div><div class="stat-label">Facturado (mes)</div></div>
@@ -894,6 +1095,9 @@
         <div class="stat-card orange"><div class="stat-num" id="fl-compras" style="color:#FCA47A">—</div><div class="stat-label">Compras (mes)</div></div>
         <div class="stat-card orange"><div class="stat-num" id="fl-gastos" style="color:#FCA47A">—</div><div class="stat-label">Gastos (mes)</div></div>
         <div class="stat-card" style="border-top:2px solid var(--green)"><div class="stat-num" id="fl-ganancia" style="color:var(--green)">—</div><div class="stat-label">Ganancia estimada (mes)</div></div>
+        <div class="stat-card blue"><div class="stat-num" id="fl-itbis-facturado" style="color:#93C5FD">—</div><div class="stat-label">ITBIS facturado</div></div>
+        <div class="stat-card orange"><div class="stat-num" id="fl-itbis-compras" style="color:#FCA47A">—</div><div class="stat-label">ITBIS en compras</div></div>
+        <div class="stat-card" style="border-top:2px solid var(--yellow)"><div class="stat-num" id="fl-itbis-neto" style="color:#FCD34D">—</div><div class="stat-label">ITBIS neto a pagar</div></div>
         <div class="stat-card yellow"><div class="stat-num" id="fl-cxc" style="color:#FCD34D">—</div><div class="stat-label">Cuentas por cobrar</div></div>
         <div class="stat-card red"><div class="stat-num" id="fl-cxp" style="color:#FCA5A5">—</div><div class="stat-label">Cuentas por pagar</div></div>
       </div>
@@ -1043,6 +1247,38 @@
             </div>
           </div>
           <div id="logo-status" style="font-size:.78rem;min-height:1.1em;color:#64748b"></div>
+        </div>
+      </div>
+
+      <!-- Comprobantes fiscales (NCF) -->
+      <div class="config-section">
+        <h2 class="config-section-title">Comprobantes fiscales (NCF)</h2>
+        <div class="detail-card" style="max-width:760px">
+          <p style="font-size:.83rem;color:#94a3b8;margin-bottom:1rem;line-height:1.55">
+            Registra los rangos de NCF autorizados por la DGII. Al crear una factura se asigna
+            automáticamente el siguiente número disponible del tipo elegido. Cuando una secuencia
+            se agota o vence, deja de poder emitirse hasta que registres una nueva.
+          </p>
+          <table class="data-table small" style="margin-bottom:1.25rem">
+            <thead><tr><th>Tipo</th><th>Rango</th><th>Próximo NCF</th><th>Disp.</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
+            <tbody id="ncf-seq-list"><tr><td colspan="7" style="opacity:.6">Cargando…</td></tr></tbody>
+          </table>
+          <div style="display:grid;grid-template-columns:1.3fr .8fr .8fr 1fr auto;gap:.6rem;align-items:end">
+            <div class="form-group" style="margin:0">
+              <label>Tipo</label>
+              <select id="ncf-new-tipo">
+                <option value="B01">B01 — Crédito Fiscal</option>
+                <option value="B02">B02 — Consumo</option>
+                <option value="B04">B04 — Nota de Crédito</option>
+                <option value="B15">B15 — Gubernamental</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0"><label>Desde</label><input id="ncf-new-desde" type="number" min="1" placeholder="1" /></div>
+            <div class="form-group" style="margin:0"><label>Hasta</label><input id="ncf-new-hasta" type="number" min="1" placeholder="150" /></div>
+            <div class="form-group" style="margin:0"><label>Vence</label><input id="ncf-new-vence" type="date" /></div>
+            <button class="btn-sm btn-primary" onclick="adminApp.crearNcfSecuencia()">Agregar</button>
+          </div>
+          <div id="ncf-seq-status" style="font-size:.78rem;min-height:1.1em;color:#64748b;margin-top:.6rem"></div>
         </div>
       </div>
 

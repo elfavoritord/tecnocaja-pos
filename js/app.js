@@ -1847,7 +1847,10 @@ async function refreshOperationalData() {
 }
 
 function canExitApp() {
-  if (DB.currentUser && cajaAbierta) {
+  // Modo Empresa de Servicios: no hay caja de efectivo, se puede salir siempre.
+  const isServiceMode = Boolean(DB.config?.serviceCompany)
+    || document.documentElement.dataset.appMode === 'servicios';
+  if (!isServiceMode && DB.currentUser && cajaAbierta) {
     return {
       allowed: false,
       reason: 'Debes cerrar tu caja antes de salir del sistema.'
@@ -3833,6 +3836,13 @@ function showModule(name, el) {
     // Inicializar módulo de actualización del sistema
     if (typeof window.Actualizaciones?.init === 'function') window.Actualizaciones.init();
   }
+  // Módulos del modo Empresa de Servicios (js/servicios/servicios.js).
+  if (window.Servicios && typeof name === 'string') {
+    if (name.indexOf('srv-') === 0) window.Servicios.onShow(name);
+    else if (name === 'configuracion' && document.documentElement.dataset.appMode === 'servicios' && window.Servicios.onConfigOpen) {
+      window.Servicios.onConfigOpen();
+    }
+  }
   closeNotifications();
   if (typeof window.scheduleUiTranslation === 'function') window.scheduleUiTranslation(document.body);
 }
@@ -4483,6 +4493,54 @@ function applyUiPreferences() {
   }
 }
 
+// Pasar a la base de datos de red (MySQL) en una instalación que ya tiene datos.
+// El backend respondió needsNetworkDbSwitch. Confirma, dispara el switch (que
+// hace respaldo del .db + deja la migración pendiente) y reinicia la app.
+async function runNetworkDbSwitch(mode) {
+  const targetMode = normalizeBusinessStructureMode(mode) || 'multicaja';
+  const label = targetMode === 'multisucursal' ? 'Multisucursal' : 'Multicaja';
+  const ok = window.confirm(
+    `Para activar ${label} hay que pasar a la base de datos de red.\n\n` +
+    'Se hará una copia de seguridad de tu base de datos actual y la aplicación se ' +
+    'reiniciará para migrar tus datos. Puede tardar 1–2 minutos.\n\n¿Continuar?'
+  );
+  if (!ok) return;
+
+  let resp;
+  try {
+    resp = await api.switchToNetworkDb({ structureMode: targetMode });
+  } catch (err) {
+    showToast(err.message || 'No se pudo activar la base de datos de red.', 'error');
+    return;
+  }
+
+  if (resp && resp.alreadyReady) {
+    showToast('La base de datos de red ya estaba activa. Vuelve a guardar el cambio de modo.', 'info');
+    return;
+  }
+  if (resp && resp.restartRequired) {
+    let el = document.getElementById('netdb-switch-overlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'netdb-switch-overlay';
+      el.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;text-align:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+      document.body.appendChild(el);
+    }
+    el.innerHTML =
+      '<div style="max-width:460px;padding:32px">' +
+        '<div style="font-size:20px;font-weight:700;margin-bottom:10px">Migrando a la base de datos de red…</div>' +
+        '<div style="font-size:13px;color:#94a3b8;line-height:1.55">No cierres la aplicación. Se reiniciará sola y migrará tus datos. ' +
+        (resp.backup ? 'Respaldo creado: ' + resp.backup : '') + '</div>' +
+      '</div>';
+    if (window.novaDesktop && window.novaDesktop.restartApp) {
+      await window.novaDesktop.restartApp();
+    } else {
+      el.querySelector('div').insertAdjacentHTML('beforeend',
+        '<div style="margin-top:16px;font-size:12px;color:#f59e0b">Cierra y vuelve a abrir Tecno Caja para completar la migración.</div>');
+    }
+  }
+}
+
 function saveConfig(onSuccess) {
   const taxInput = document.getElementById('cfg-itbis').value.trim();
   const parsedTax = taxInput === '' ? 0 : Number(taxInput);
@@ -4527,7 +4585,13 @@ function saveConfig(onSuccess) {
       }
       if (typeof onSuccess === 'function') onSuccess();
     })
-    .catch((error) => showToast(error.message, 'error'));
+    .catch((error) => {
+      if (error && error.needsNetworkDbSwitch) {
+        runNetworkDbSwitch(error.switchMode || document.getElementById('cfg-business-structure-mode')?.value);
+        return;
+      }
+      showToast(error.message, 'error');
+    });
 }
 
 function getConfigPreviewValues(parsedTaxOverride = null) {
@@ -5688,6 +5752,21 @@ function applyBusinessProfile() {
     delete html.dataset.businessType;
   }
 
+  // Modo "Empresa de Servicios": reskin administrativo (ERP) y oculta el chrome
+  // de punto de venta. La bandera viene del backend (getConfig → serviceCompany)
+  // o del perfil de negocio (business-config.js).
+  const isServiceMode = Boolean(
+    DB.config?.serviceCompany ||
+    profile?.serviceCompany ||
+    config?.serviceCompany ||
+    (typeof window.isServiceBusiness === 'function' && window.isServiceBusiness(profile?.key || DB.config?.tipoNegocio))
+  );
+  if (isServiceMode) {
+    html.dataset.appMode = 'servicios';
+  } else {
+    delete html.dataset.appMode;
+  }
+
   const titleEl = document.querySelector('.sales-catalog-title');
   const subtitleEl = document.querySelector('.sales-catalog-subtitle');
   const searchInput = document.getElementById('product-search');
@@ -6388,6 +6467,15 @@ async function completeInitialSetup() {
       showToast('El modo en red quedó preparado. Reinicia Tecno Caja en la PC principal antes de vincular la segunda caja.', 'warning');
     }
   } catch (error) {
+    if (error && error.needsNetworkDbSwitch) {
+      if (typeof window.wzOnNeedsNetworkDbSwitch === 'function') {
+        window.wzOnNeedsNetworkDbSwitch();
+      } else {
+        showToast(error.message || 'Se activará la base de datos de red. Reinicia Tecno Caja.', 'warning');
+      }
+      if (finishBtn) finishBtn.disabled = false;
+      return;
+    }
     if (String(error?.message || '').includes('El sistema ya fue configurado')) {
       try {
         setupState = await api.getSetupStatus();

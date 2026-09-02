@@ -8,6 +8,7 @@
 const path    = require('path');
 const express = require('express');
 const { createFacturacionRouter } = require('./routes/facturacion.routes');
+const { createSuscripcionesRouter } = require('./routes/suscripciones.routes');
 const { createComprasRouter } = require('./routes/compras.routes');
 const { createGastosRouter } = require('./routes/gastos.routes');
 const { createAdjuntosRouter } = require('./routes/adjuntos.routes');
@@ -771,6 +772,12 @@ app.get('/api/auditoria', requireAuth, async (_req, res) => {
 
 // ── Facturación de servicios ───────────────────────────────────────────────
 app.use('/api/facturas', createFacturacionRouter({
+  col, docData, isoNow, audit, requireAuth,
+  licenciasCollection: COL_LICENCIAS,
+}));
+
+// ── Suscripciones / pagos recurrentes mensuales ───────────────────────────
+app.use('/api/suscripciones', createSuscripcionesRouter({
   col, docData, isoNow, audit, requireAuth,
   licenciasCollection: COL_LICENCIAS,
 }));

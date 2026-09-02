@@ -327,6 +327,20 @@ function writeManagedConfig(candidate, port) {
   }
 }
 
+// bind-address solo se lee al arrancar mysqld — un proceso/servicio ya vivo
+// no relee my.ini solo. Se usa para detectar cuando writeManagedConfig()
+// cambió el bind y por lo tanto hace falta reiniciar el motor para que
+// aplique (ver ensureLocalMysqlAvailable).
+function readConfiguredBindHost(candidate) {
+  try {
+    const content = fs.readFileSync(candidate.defaultsFile, 'utf8');
+    const match = content.match(/^bind-address\s*=\s*(.+)$/mi);
+    return match ? match[1].trim() : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function initializeBundledData(candidate, port, log) {
   const root = getManagedMariaDbRoot();
   const dataDir = path.join(root, 'data');
@@ -400,10 +414,24 @@ async function ensureLocalMysqlAvailable(options = {}) {
 
   if (await testPort(host, port)) {
     if (wantsLanBind && candidate?.kind === 'bundled') {
+      const previousBindHost = readConfiguredBindHost(candidate);
       try {
         writeManagedConfig(candidate, port);
       } catch (error) {
         log(`No se pudo actualizar my.ini para LAN mientras MariaDB seguía abierta: ${error.message || error}`);
+      }
+
+      // El bind cambió pero el motor ya estaba corriendo con el my.ini viejo
+      // (bind-address solo se lee al arrancar) — sin este reinicio, la
+      // terminal secundaria nunca puede alcanzar el puerto por LAN aunque el
+      // archivo ya diga 0.0.0.0.
+      if (previousBindHost && previousBindHost !== '0.0.0.0') {
+        log('bind-address cambio a 0.0.0.0 pero MariaDB seguia con la config anterior — reiniciando para aplicar LAN.');
+        const restarted = await restartManagedMysql(candidate, host, port, log);
+        if (restarted) {
+          return { status: 'ready', method: 'restarted-for-lan' };
+        }
+        log('No se pudo reiniciar MariaDB para aplicar el bind LAN — sigue accesible solo en localhost.');
       }
     }
     return { status: 'ready', method: 'already-running' };
@@ -524,8 +552,46 @@ async function stopLocalMysqlIfManaged(options = {}) {
   return { status: 'skipped', reason: 'No se encontro MariaDB local administrada por Tecno Caja.' };
 }
 
+// Detiene el motor (servicio o proceso suelto, lo que este corriendo) y lo
+// vuelve a levantar por el mismo medio, para que relea el my.ini ya
+// actualizado con el bind-address nuevo. Devuelve false sin lanzar si algo
+// falla — el caller decide como reportarlo.
+async function restartManagedMysql(candidate, host, port, log) {
+  try {
+    const stopResult = await stopLocalMysqlIfManaged({ log });
+    if (stopResult.status !== 'stopped') {
+      log(`No se pudo detener MariaDB para reiniciarlo: ${stopResult.reason || 'motivo desconocido'}.`);
+      return false;
+    }
+
+    if (stopResult.services.length) {
+      for (const serviceName of stopResult.services) {
+        startService(serviceName);
+      }
+    } else {
+      // El my.ini ya lo reescribió el caller con el bind nuevo; solo hay que
+      // relanzar el proceso. NO llamar initializeBundledData aquí: si sus
+      // checks de data-dir fallaran haría fs.rmSync(dataDir) y borraría la
+      // base — writeManagedConfig es lo único necesario y es inofensivo.
+      if (candidate.kind === 'bundled') {
+        writeManagedConfig(candidate, port);
+      }
+      startDetachedServer(candidate);
+    }
+
+    return await waitForPort(host, port, 20, 1000);
+  } catch (error) {
+    log(`Error reiniciando MariaDB para aplicar LAN: ${error.message || error}`);
+    return false;
+  }
+}
+
 module.exports = {
   ensureLocalMysqlAvailable,
   resolveMysqlBindHost,
-  stopLocalMysqlIfManaged
+  stopLocalMysqlIfManaged,
+  // Expuesto para que el switch a base de datos de red pueda comprobar que hay
+  // un motor MariaDB disponible (bundle o instalación de sistema) ANTES de
+  // persistir DB_CLIENT=mysql y reiniciar.
+  findServerCandidate
 };
