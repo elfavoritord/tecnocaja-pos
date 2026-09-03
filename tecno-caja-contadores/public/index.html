@@ -82,6 +82,49 @@
         <button class="login-link" onclick="app.showLogin()">← Volver al login</button>
       </p>
     </div>
+
+    <!-- Wizard de auto-registro: cuenta de Google sin perfil de contador -->
+    <div id="view-registro" class="hidden">
+      <p style="font-size:13px;color:#8fa3c2;margin-bottom:4px">
+        ¡Bienvenido/a! Escribe el RNC de tu firma y buscamos sus datos en la DGII.
+      </p>
+      <div id="reg-email-note" style="font-size:12px;color:#5a7099;margin-bottom:12px"></div>
+
+      <div class="form-group" style="margin-bottom:4px">
+        <label class="login-label">RNC de la firma *</label>
+        <input id="reg-rnc" class="login-input" inputmode="numeric" placeholder="1-31-88068-1"
+          onblur="app.buscarRncRegistro()"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();app.buscarRncRegistro();}" />
+      </div>
+      <div id="reg-dgii-info" style="font-size:12px;min-height:16px;margin-bottom:10px;color:#5a7099"></div>
+
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="login-label">Nombre de la firma *</label>
+        <input id="reg-firma" class="login-input" placeholder="Se completa con la DGII al escribir el RNC" />
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="login-label">Responsable *</label>
+        <input id="reg-responsable" class="login-input" placeholder="Nombre y apellido" />
+      </div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="login-label">Teléfono / WhatsApp</label>
+        <input id="reg-telefono" class="login-input" placeholder="809-000-0000"
+          onkeydown="if(event.key==='Enter') app.submitRegistroContador()" />
+      </div>
+      <div class="form-group" style="margin-bottom:14px">
+        <label class="login-label">Dirección</label>
+        <input id="reg-direccion" class="login-input" placeholder="Ciudad, sector"
+          onkeydown="if(event.key==='Enter') app.submitRegistroContador()" />
+      </div>
+
+      <button id="btn-reg" class="btn-login" onclick="app.submitRegistroContador()">
+        Crear mi cuenta de contador
+      </button>
+      <div id="reg-err" class="login-error hidden" style="margin-top:10px"></div>
+      <p style="text-align:center;margin-top:14px">
+        <button class="login-link" onclick="app.cancelRegistro()">← Usar otra cuenta</button>
+      </p>
+    </div>
   </div>
 </div>
 
@@ -551,40 +594,51 @@
         </div>
       </div>
 
-      <div class="fac-stats-grid">
-        <div class="fac-stat-card">
-          <div class="fac-stat-icon">📅</div>
-          <div class="fac-stat-lbl">Total este mes</div>
-          <div class="fac-stat-val blue" id="fac-s-mes">RD$ 0</div>
+      <!-- Filtro compartido -->
+      <div class="facr-filterbar">
+        <div class="facr-fgroup">
+          <label class="facr-flabel">Período</label>
+          <select id="facr-periodo" class="fac-filter-select" onchange="app.facROnPeriodoChange()">
+            <option value="hoy">Hoy</option>
+            <option value="ayer">Ayer</option>
+            <option value="semana">Esta semana</option>
+            <option value="mes" selected>Este mes</option>
+            <option value="mes_pasado">Mes pasado</option>
+            <option value="anio">Este año</option>
+            <option value="custom">Personalizado</option>
+          </select>
         </div>
-        <div class="fac-stat-card">
-          <div class="fac-stat-icon">⏳</div>
-          <div class="fac-stat-lbl">Pendientes de cobro</div>
-          <div class="fac-stat-val orange" id="fac-s-pend">0</div>
+        <div id="facr-custom" class="hidden" style="display:flex;align-items:flex-end;gap:6px">
+          <div class="facr-fgroup"><label class="facr-flabel">Desde</label><input type="date" id="facr-desde" class="fac-filter-date" /></div>
+          <span style="color:var(--text-muted);font-size:11px;padding-bottom:9px">→</span>
+          <div class="facr-fgroup"><label class="facr-flabel">Hasta</label><input type="date" id="facr-hasta" class="fac-filter-date" /></div>
         </div>
-        <div class="fac-stat-card">
-          <div class="fac-stat-icon">✅</div>
-          <div class="fac-stat-lbl">Facturas pagadas</div>
-          <div class="fac-stat-val green" id="fac-s-pag">0</div>
-        </div>
-        <div class="fac-stat-card">
-          <div class="fac-stat-icon">💰</div>
-          <div class="fac-stat-lbl">Total acumulado</div>
-          <div class="fac-stat-val" id="fac-s-gen">RD$ 0</div>
-        </div>
-      </div>
-
-      <div class="section-card" style="padding:12px 16px;margin-bottom:12px">
-        <div class="fac-filters">
-          <select id="fac-f-estado" class="fac-filter-select">
-            <option value="">Todos los estados</option>
+        <div class="facr-fgroup">
+          <label class="facr-flabel">Estado</label>
+          <select id="facr-estado" class="fac-filter-select">
+            <option value="">Todos</option>
             <option value="pendiente">Pendiente</option>
             <option value="parcial">Pago parcial</option>
             <option value="pagada">Pagada</option>
             <option value="anulada">Anulada</option>
           </select>
-          <select id="fac-f-tipo" class="fac-filter-select">
-            <option value="">Todos los tipos</option>
+        </div>
+        <div class="facr-fgroup">
+          <label class="facr-flabel">Método</label>
+          <select id="facr-metodo" class="fac-filter-select">
+            <option value="">Todos</option>
+            <option value="efectivo">Efectivo</option>
+            <option value="transferencia">Transferencia</option>
+            <option value="tarjeta">Tarjeta</option>
+            <option value="cheque">Cheque</option>
+            <option value="deposito">Depósito</option>
+            <option value="otro">Otro</option>
+          </select>
+        </div>
+        <div class="facr-fgroup">
+          <label class="facr-flabel">Comprobante</label>
+          <select id="facr-tipo" class="fac-filter-select">
+            <option value="">Todos</option>
             <option value="B01">B01 — Crédito Fiscal</option>
             <option value="B02">B02 — Consumidor Final</option>
             <option value="B03">B03 — Nota de Débito</option>
@@ -597,36 +651,102 @@
             <option value="B16">B16 — Comprobante para Exportaciones</option>
             <option value="B17">B17 — Comprobante para Pagos al Exterior</option>
           </select>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input type="date" id="fac-f-desde" class="fac-filter-date" />
-            <span style="color:var(--text-muted);font-size:11px">→</span>
-            <input type="date" id="fac-f-hasta" class="fac-filter-date" />
+        </div>
+        <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="app.facRApply()">🔍 Aplicar</button>
+      </div>
+
+      <!-- Pestañas -->
+      <div class="rep-tabs-nav" id="facr-tabs">
+        <button class="rep-tab-btn active" data-tab="dashboard"  onclick="app.facRSwitchTab('dashboard')">📊 Dashboard</button>
+        <button class="rep-tab-btn"        data-tab="detallados" onclick="app.facRSwitchTab('detallados')">📋 Detallados</button>
+        <button class="rep-tab-btn"        data-tab="dgii"       onclick="app.facRSwitchTab('dgii')">🏛 DGII</button>
+        <button class="rep-tab-btn"        data-tab="exportar"   onclick="app.facRSwitchTab('exportar')">📤 Exportar</button>
+      </div>
+
+      <!-- Panel: Dashboard -->
+      <div id="facr-pane-dashboard" class="facr-pane">
+        <div class="fac-stats-grid" id="facr-kpis"></div>
+      </div>
+
+      <!-- Panel: Detallados -->
+      <div id="facr-pane-detallados" class="facr-pane hidden">
+        <div class="facr-subtabs" id="facr-subtabs">
+          <button class="facr-subtab active" data-sub="facturas" onclick="app.facRSwitchSubtab('facturas')">Facturas</button>
+          <button class="facr-subtab" data-sub="cliente" onclick="app.facRSwitchSubtab('cliente')">Por Cliente</button>
+          <button class="facr-subtab" data-sub="tipo"    onclick="app.facRSwitchSubtab('tipo')">Por Tipo</button>
+          <button class="facr-subtab" data-sub="metodo"  onclick="app.facRSwitchSubtab('metodo')">Por Método</button>
+          <button class="facr-subtab" data-sub="estado"  onclick="app.facRSwitchSubtab('estado')">Por Estado</button>
+        </div>
+
+        <div id="facr-sub-facturas" class="facr-subpane">
+          <div class="facr-toolbar">
+            <span id="facr-fac-count">0 facturas</span>
+            <span style="display:flex;gap:8px;align-items:center">
+              <select id="facr-fac-metodo" class="fac-filter-select" onchange="app.facRFacMetodo(this.value)">
+                <option value="">Todos los métodos</option>
+                <option value="efectivo">Efectivo</option>
+                <option value="transferencia">Transferencia</option>
+                <option value="tarjeta">Tarjeta</option>
+                <option value="cheque">Cheque</option>
+                <option value="deposito">Depósito</option>
+                <option value="otro">Otro</option>
+              </select>
+              <button class="facr-btn-export" onclick="app.facRExportFacturas()">⬇ PDF</button>
+            </span>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="app.filtrarFacturas()">Filtrar</button>
-          <button class="btn btn-ghost btn-sm"     onclick="app.limpiarFiltrosFac()">Limpiar</button>
+          <div class="facr-table-wrap">
+            <table class="facr-table">
+              <thead><tr>
+                <th style="width:9%">NCF</th><th style="width:5%">Tipo</th><th style="width:8%">Fecha</th>
+                <th style="width:15%">Cliente</th><th style="width:9%">RNC</th><th style="width:8%">Método</th>
+                <th style="width:9%;text-align:right">Base</th><th style="width:8%;text-align:right">ITBIS</th><th style="width:9%;text-align:right">Total</th>
+                <th style="width:7%">Estado</th><th style="width:9%;text-align:right">Cobrado</th><th style="width:4%"></th>
+              </tr></thead>
+              <tbody id="facr-fac-tbody"></tbody>
+              <tfoot id="facr-fac-tfoot"></tfoot>
+            </table>
+          </div>
+          <div class="facr-pager" id="facr-fac-pager"></div>
+        </div>
+
+        <div id="facr-sub-cliente" class="facr-subpane hidden">
+          <div class="facr-toolbar"><span id="facr-cliente-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('cliente')">⬇ PDF</button></div>
+          <div class="facr-table-wrap"><table class="facr-table" id="facr-cliente-table"></table></div>
+        </div>
+        <div id="facr-sub-tipo" class="facr-subpane hidden">
+          <div class="facr-toolbar"><span id="facr-tipo-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('tipo')">⬇ PDF</button></div>
+          <div class="facr-table-wrap"><table class="facr-table" id="facr-tipo-table"></table></div>
+        </div>
+        <div id="facr-sub-metodo" class="facr-subpane hidden">
+          <div class="facr-toolbar"><span id="facr-metodo-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('metodo')">⬇ PDF</button></div>
+          <div class="facr-table-wrap"><table class="facr-table" id="facr-metodo-table"></table></div>
+        </div>
+        <div id="facr-sub-estado" class="facr-subpane hidden">
+          <div class="facr-toolbar"><span id="facr-estado-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('estado')">⬇ PDF</button></div>
+          <div class="facr-table-wrap"><table class="facr-table" id="facr-estado-table"></table></div>
         </div>
       </div>
 
-      <div class="section-card" style="overflow:hidden">
-        <div class="section-card-title">📄 Facturas emitidas</div>
-        <div style="overflow-x:auto">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Fecha</th>
-                <th>NCF</th>
-                <th>Cliente</th>
-                <th>RNC</th>
-                <th>Tipo</th>
-                <th style="text-align:right">Total</th>
-                <th>Estado</th>
-                <th style="text-align:center">Acciones</th>
-              </tr>
-            </thead>
-            <tbody id="fac-tbody">
-              <tr><td colspan="8" class="td-empty">Cargando facturas...</td></tr>
-            </tbody>
-          </table>
+      <!-- Panel: DGII -->
+      <div id="facr-pane-dgii" class="facr-pane hidden">
+        <div class="facr-dgii-kpis" id="facr-dgii-kpis"></div>
+        <div class="section-card">
+          <div class="section-card-title">🧾 Desglose por tipo de comprobante</div>
+          <div class="facr-table-wrap"><table class="facr-table" id="facr-dgii-table"></table></div>
+          <div style="margin-top:12px;text-align:right"><button class="facr-btn-export" onclick="app.facRExportDGII()">⬇ PDF DGII</button></div>
+        </div>
+        <p style="font-size:11px;color:var(--text-muted);margin-top:10px">Reporte orientativo de tus honorarios facturados. Verifica siempre con la DGII.</p>
+      </div>
+
+      <!-- Panel: Exportar -->
+      <div id="facr-pane-exportar" class="facr-pane hidden">
+        <div class="facr-export-grid">
+          <div class="facr-export-card" onclick="app.facRExportFacturas()"><div class="ico">🧾</div><h4>Detalle de Facturas</h4><p>Todas las facturas del período, con subtotales.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportGroup('cliente')"><div class="ico">👥</div><h4>Por Cliente</h4><p>Facturación agrupada por cliente.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportGroup('tipo')"><div class="ico">📑</div><h4>Por Tipo de Comprobante</h4><p>Totales por tipo de NCF.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportGroup('metodo')"><div class="ico">💳</div><h4>Por Método de Pago</h4><p>Cobros por método.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportDGII()"><div class="ico">🏛</div><h4>Reporte Fiscal DGII</h4><p>Gravado, exento, ITBIS y desglose por NCF.</p></div>
+          <div class="facr-export-card facr-export-card-full" onclick="app.facRExportConsolidado()"><div class="ico">📊</div><h4>Reporte Consolidado</h4><p>Resumen + por cliente + por tipo + DGII en un solo PDF.</p></div>
         </div>
       </div>
     </div>

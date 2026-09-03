@@ -238,6 +238,12 @@ async function initApp() {
         try {
           _token = await user.getIdToken();
           const profile = await _verifyWithRetry(_token);
+          if (profile?.needsRegistration) {
+            // Cuenta de Google sin perfil: abrir el wizard de auto-registro
+            // en vez de entrar. La sesión de Firebase se mantiene viva.
+            showRegistro(profile);
+            return;
+          }
           _perfil = profile;
           showApp(profile);
         } catch (e) {
@@ -259,6 +265,10 @@ async function initApp() {
 function showLoginScreen() {
   hide('screen-app');
   show('screen-login');
+  // Volver siempre a la vista de login (no dejar el wizard/olvidé colgados)
+  hide('view-registro');
+  hide('view-forgot');
+  show('view-login');
 
   // Restaurar el correo (no la contraseña — nunca se guarda) si "Mantener
   // sesión" estaba activo. Firebase persiste la sesión real por su cuenta.
@@ -457,6 +467,96 @@ function togglePw() {
   const inp = $id('inp-password');
   if (!inp) return;
   inp.type = inp.type === 'password' ? 'text' : 'password';
+}
+
+// ── Wizard de auto-registro de contador (cuenta de Google sin perfil) ───────
+function showRegistro(info) {
+  hide('screen-app');
+  show('screen-login');
+  hide('view-login');
+  hide('view-forgot');
+  show('view-registro');
+  $id('login-error-banner')?.classList.add('hidden');
+  setText('reg-dgii-info', '');
+  const firmaEl = $id('reg-firma');
+  if (firmaEl) delete firmaEl.dataset.fromDgii;
+
+  const email = info?.email || _fbAuth?.currentUser?.email || '';
+  const dn    = info?.displayName || _fbAuth?.currentUser?.displayName || '';
+  setText('reg-email-note', email ? `Cuenta: ${email}` : '');
+  const resp = $id('reg-responsable');
+  if (resp && !resp.value) resp.value = dn;
+}
+
+function _regErr(msg) {
+  const el = $id('reg-err');
+  if (el) { el.textContent = msg || 'No se pudo completar el registro.'; el.classList.remove('hidden'); }
+}
+
+// Consulta el RNC en la DGII y autollena el nombre de la firma.
+async function buscarRncRegistro() {
+  const rncEl  = $id('reg-rnc');
+  const infoEl = $id('reg-dgii-info');
+  const raw = (rncEl?.value || '').replace(/\D/g, '');
+  if (raw.length < 9) { if (infoEl) { infoEl.style.color = '#5a7099'; infoEl.textContent = ''; } return; }
+  if (infoEl) { infoEl.style.color = '#5a7099'; infoEl.textContent = 'Consultando la DGII…'; }
+  try {
+    const d = await apiCall('GET', `/api/rnc/consulta?id=${encodeURIComponent(raw)}`);
+    const firmaEl = $id('reg-firma');
+    if (d && d.found) {
+      if (firmaEl && (!firmaEl.value.trim() || firmaEl.dataset.fromDgii === '1')) {
+        firmaEl.value = d.nombre || d.nombreComercial || '';
+        firmaEl.dataset.fromDgii = '1';
+      }
+      if (infoEl) {
+        infoEl.style.color = '#22c55e';
+        infoEl.textContent = `✓ DGII: ${d.nombre || d.nombreComercial}${d.estado ? ' · ' + d.estado : ''}`;
+      }
+    } else if (infoEl) {
+      infoEl.style.color = '#f59e0b';
+      infoEl.textContent = 'Ese RNC no aparece en la DGII. Puedes escribir el nombre de la firma a mano.';
+    }
+  } catch (e) {
+    if (infoEl) { infoEl.style.color = '#f59e0b'; infoEl.textContent = 'No se pudo consultar la DGII ahora — escribe el nombre a mano.'; }
+  }
+}
+
+async function submitRegistroContador() {
+  const errEl = $id('reg-err');
+  if (errEl) errEl.classList.add('hidden');
+
+  const body = {
+    idToken:      _token,
+    nombre_firma: $id('reg-firma')?.value.trim() || '',
+    responsable:  $id('reg-responsable')?.value.trim() || '',
+    rnc:          $id('reg-rnc')?.value.trim() || '',
+    telefono:     $id('reg-telefono')?.value.trim() || '',
+    direccion:    $id('reg-direccion')?.value.trim() || '',
+  };
+  if (!body.rnc || !body.responsable) {
+    return _regErr('Escribe el RNC y el responsable de la firma.');
+  }
+
+  const btn = $id('btn-reg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creando…'; }
+  try {
+    const data = await apiCall('POST', '/api/auth/registro-contador', body);
+    _perfil = data;
+    // Restaurar la vista de login para la próxima vez y entrar al portal.
+    hide('view-registro');
+    show('view-login');
+    showApp(data);
+  } catch (e) {
+    _regErr(e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Crear mi cuenta de contador'; }
+  }
+}
+
+async function cancelRegistro() {
+  hide('view-registro');
+  show('view-login');
+  await _fbAuth?.signOut();
 }
 
 async function logout() {
@@ -3007,69 +3107,453 @@ function calcItemTotal(item) {
 
 async function loadFacturacion() {
   try {
-    const stats = await apiCall('GET', '/api/facturacion/stats');
-    setText('fac-s-mes',  fmtMoney(stats.totalMes));
-    setText('fac-s-pend', String(stats.pendientes));
-    setText('fac-s-pag',  String(stats.pagadas));
-    setText('fac-s-gen',  fmtMoney(stats.totalGeneral));
-  } catch { /* stats not critical */ }
-
-  try {
-    const list = await apiCall('GET', '/api/facturacion/facturas');
-    _facFacturas = list;
-    renderFacturas(_facFacturas);
+    _facFacturas = await apiCall('GET', '/api/facturacion/facturas');
   } catch (e) {
-    const tb = $id('fac-tbody');
-    if (tb) tb.innerHTML = `<tr><td colspan="8" class="td-empty" style="color:var(--red)">Error: ${e.message}</td></tr>`;
+    _facFacturas = [];
+    toast('No se pudieron cargar las facturas: ' + e.message, 'error');
   }
+  facRInit();
 }
 
-function renderFacturas(list) {
-  const tbody = $id('fac-tbody');
-  if (!tbody) return;
-  if (!list.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="td-empty">No hay facturas. Crea una con "＋ Nueva Factura".</td></tr>';
-    return;
-  }
-  tbody.innerHTML = list.map(f => {
-    const editable = f.estado === 'pendiente' && Number(f.monto_pagado || 0) === 0;
-    const cobrable = ['pendiente', 'parcial'].includes(f.estado);
-    return `<tr>
-    <td class="td-date">${fmtDate(f.fecha)}</td>
-    <td><span class="ncf-badge">${facNcfDisplay(f.ncf)}</span></td>
-    <td style="font-weight:500;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.cliente?.nombre)}">${esc(f.cliente?.nombre) || '—'}</td>
-    <td style="font-family:monospace;font-size:11px;color:var(--text-sub)">${f.cliente?.rnc || '—'}</td>
-    <td><span style="font-size:11px;background:var(--surface2);padding:2px 8px;border-radius:4px">${f.tipo_ncf || '—'}</span></td>
-    <td class="td-amount">${fmtMoney(f.total)}</td>
-    <td>${facEstadoBadge(f.estado)}</td>
-    <td style="text-align:right;white-space:nowrap">
-      <button class="btn btn-xs btn-secondary" onclick="app.verFactura('${f.id}')">Ver</button>
-      ${editable ? `<button class="btn btn-xs btn-secondary" title="Editar" onclick="app.editarFactura('${f.id}')">✏</button>` : ''}
-      <button class="btn btn-xs btn-secondary" title="Enviar por correo" onclick="app.enviarFacturaCorreoLista('${f.id}')">✉</button>
-      ${cobrable ? `<button class="btn btn-xs btn-secondary" title="Marcar como pagada" onclick="app.marcarPagadaLista('${f.id}')">✓</button>` : ''}
-    </td>
-  </tr>`;
-  }).join('');
+// ── Reporte de facturación en PDF — mismo estilo que el POS ────────────
+// (banda morada #6C63FF, tablas con cabecera lila y filas alternas). Usa
+// jsPDF (vendor/jspdf, ya incluido en index.html) y descarga el archivo,
+// igual que los reportes del POS.
+function _repPdfHeader(doc, title, periodo) {
+  const firma = _perfil?.nombre_firma || _perfil?.responsable || 'Tecno Caja Contadores';
+  const rnc   = _perfil?.rnc || '';
+  doc.setFillColor(108, 99, 255);
+  doc.rect(0, 0, 210, 22, 'F');
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(13); doc.setFont(undefined, 'bold');
+  doc.text(String(firma).slice(0, 60), 14, 10);
+  doc.setFontSize(8); doc.setFont(undefined, 'normal');
+  doc.text(`RNC: ${rnc || '—'}  |  ${title}`, 14, 16);
+  doc.text(`Período: ${periodo}  |  Generado: ${new Date().toLocaleDateString('es-DO')}`, 14, 21);
+  doc.setTextColor(30, 36, 53);
+  return 28;
 }
 
-function filtrarFacturas() {
-  const estado = ($id('fac-f-estado')?.value || '');
-  const tipo   = ($id('fac-f-tipo')?.value   || '');
-  const desde  = ($id('fac-f-desde')?.value  || '');
-  const hasta  = ($id('fac-f-hasta')?.value  || '');
-  let list = _facFacturas;
-  if (estado) list = list.filter(f => f.estado   === estado);
-  if (tipo)   list = list.filter(f => f.tipo_ncf === tipo);
-  if (desde)  list = list.filter(f => (f.fecha || '') >= desde);
-  if (hasta)  list = list.filter(f => (f.fecha || '') <= hasta);
-  renderFacturas(list);
-}
-
-function limpiarFiltrosFac() {
-  ['fac-f-estado','fac-f-tipo','fac-f-desde','fac-f-hasta'].forEach(id => {
-    const el = $id(id); if (el) el.value = '';
+function _repPdfTable(doc, y, headers, rows, colWidths) {
+  const pageW = 210, padL = 14, rowH = 7;
+  doc.setFillColor(240, 243, 255);
+  doc.rect(padL, y, pageW - padL * 2, rowH, 'F');
+  doc.setFontSize(7); doc.setFont(undefined, 'bold'); doc.setTextColor(100, 100, 130);
+  let x = padL;
+  headers.forEach((h, i) => { doc.text(String(h), x + 2, y + 5); x += colWidths[i]; });
+  y += rowH;
+  doc.setFont(undefined, 'normal'); doc.setTextColor(30, 36, 53);
+  rows.forEach((row, ri) => {
+    if (y > 275) { doc.addPage(); y = 14; }
+    if (ri % 2 === 0) { doc.setFillColor(248, 249, 255); doc.rect(padL, y, pageW - padL * 2, rowH, 'F'); }
+    x = padL;
+    row.forEach((cell, i) => { doc.text(String(cell ?? ''), x + 2, y + 5); x += colWidths[i]; });
+    y += rowH;
   });
-  renderFacturas(_facFacturas);
+  doc.setDrawColor(200, 204, 220);
+  doc.line(padL, y, pageW - padL, y);
+  return y + 4;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// MÓDULO DE REPORTES DE FACTURACIÓN — pestañas estilo POS (reportes-v2)
+// 100% cliente sobre _facFacturas. Pestañas: Dashboard · Detallados · DGII · Exportar.
+// ══════════════════════════════════════════════════════════════════════
+let _facR = { tab: 'dashboard', sub: 'facturas', periodo: 'mes', desde: '', hasta: '',
+              estado: '', metodo: '', tipo: '', facMetodo: '', page: 1 };
+const FACR_PAGE = 50;
+const FACR_ESTADO_LBL = { pendiente: 'Pendiente', parcial: 'Pago parcial', pagada: 'Pagada', anulada: 'Anulada' };
+const FACR_NCF_DESC = { B01: 'Crédito Fiscal', B02: 'Consumidor Final', B03: 'Nota de Débito', B04: 'Nota de Crédito',
+  B11: 'Comprobante de Compras', B12: 'Registro Único de Ingresos', B13: 'Gastos Menores',
+  B14: 'Régimen Especial', B15: 'Gubernamental', B16: 'Exportaciones', B17: 'Pagos al Exterior' };
+const _facN = v => Number(v || 0);
+const _facRMoneyPdf = v => 'RD$ ' + _facN(v).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function _facRMetodoLabel(m) {
+  return { efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta', cheque: 'Cheque', deposito: 'Depósito', otro: 'Otro' }[m] || m || '—';
+}
+function _facRNcfLabel(t) { return FACR_NCF_DESC[t] || t || '—'; }
+function _facRPeriodoLabel() {
+  const map = { hoy: 'Hoy', ayer: 'Ayer', semana: 'Esta semana', mes: 'Este mes', mes_pasado: 'Mes pasado', anio: 'Este año', custom: 'Personalizado' };
+  return `${map[_facR.periodo] || _facR.periodo} (${_facR.desde || '—'} a ${_facR.hasta || '—'})`;
+}
+
+function facRInit() {
+  const per = $id('facr-periodo');
+  if (per && !per.value) per.value = _facR.periodo;
+  _facR.facMetodo = ''; _facR.page = 1;
+  const fm = $id('facr-fac-metodo'); if (fm) fm.value = '';
+  facROnPeriodoChange();
+  facRCalcRange();
+  facRSwitchSubtab(_facR.sub);   // deja marcada la sub-pestaña sin renderizar aún
+  facRSwitchTab(_facR.tab);
+}
+
+function facROnPeriodoChange() {
+  const custom = $id('facr-custom');
+  if (custom) custom.classList.toggle('hidden', ($id('facr-periodo')?.value || 'mes') !== 'custom');
+}
+
+function facRCalcRange() {
+  const p = $id('facr-periodo')?.value || 'mes';
+  _facR.periodo = p;
+  const pad = n => String(n).padStart(2, '0');
+  const local = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const now = new Date();
+  let desde = '', hasta = '';
+  if (p === 'custom') { desde = $id('facr-desde')?.value || ''; hasta = $id('facr-hasta')?.value || ''; }
+  else if (p === 'hoy') { desde = hasta = local(now); }
+  else if (p === 'ayer') { const d = new Date(now); d.setDate(d.getDate() - 1); desde = hasta = local(d); }
+  else if (p === 'semana') { const d = new Date(now); d.setDate(d.getDate() - 6); desde = local(d); hasta = local(now); }
+  else if (p === 'mes') { desde = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-01`; hasta = local(now); }
+  else if (p === 'mes_pasado') {
+    desde = local(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    hasta = local(new Date(now.getFullYear(), now.getMonth(), 0));
+  } else if (p === 'anio') { desde = `${now.getFullYear()}-01-01`; hasta = local(now); }
+  _facR.desde = desde; _facR.hasta = hasta;
+  _facR.estado = $id('facr-estado')?.value || '';
+  _facR.metodo = $id('facr-metodo')?.value || '';
+  _facR.tipo   = $id('facr-tipo')?.value || '';
+}
+
+function facRFiltered() {
+  let l = _facFacturas.slice();
+  if (_facR.desde) l = l.filter(f => (f.fecha || '') >= _facR.desde);
+  if (_facR.hasta) l = l.filter(f => (f.fecha || '') <= _facR.hasta);
+  if (_facR.estado) l = l.filter(f => (f.estado || 'pendiente') === _facR.estado);
+  if (_facR.metodo) l = l.filter(f => (f.metodo_pago || 'efectivo') === _facR.metodo);
+  if (_facR.tipo)   l = l.filter(f => (f.tipo_ncf || '') === _facR.tipo);
+  return l;
+}
+
+function facRApply() { facRCalcRange(); _facR.page = 1; facRRenderActive(); }
+
+function facRSwitchTab(tab) {
+  _facR.tab = tab;
+  document.querySelectorAll('#facr-tabs .rep-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  ['dashboard', 'detallados', 'dgii', 'exportar'].forEach(t => {
+    const p = $id('facr-pane-' + t); if (p) p.classList.toggle('hidden', t !== tab);
+  });
+  facRRenderActive();
+}
+
+function facRSwitchSubtab(sub) {
+  _facR.sub = sub; _facR.page = 1;
+  document.querySelectorAll('#facr-subtabs .facr-subtab').forEach(b => b.classList.toggle('active', b.dataset.sub === sub));
+  ['facturas', 'cliente', 'tipo', 'metodo', 'estado'].forEach(s => {
+    const p = $id('facr-sub-' + s); if (p) p.classList.toggle('hidden', s !== sub);
+  });
+  if (_facR.tab === 'detallados') facRRenderDetalle();
+}
+
+function facRRenderActive() {
+  if (_facR.tab === 'dashboard') facRRenderDashboard();
+  else if (_facR.tab === 'detallados') facRRenderDetalle();
+  else if (_facR.tab === 'dgii') facRRenderDGII();
+}
+
+// ── Dashboard (solo tarjetas KPI) ─────────────────────────────────────
+function facRRenderDashboard() {
+  const list = facRFiltered();
+  const vig  = list.filter(f => (f.estado || 'pendiente') !== 'anulada');
+  const totalFact = vig.reduce((s, f) => s + _facN(f.total), 0);
+  const itbis     = vig.reduce((s, f) => s + _facN(f.itbis_total), 0);
+  const cobrado   = vig.reduce((s, f) => s + _facN(f.monto_pagado), 0);
+  const ticket    = vig.length ? totalFact / vig.length : 0;
+  const cobPor    = m => vig.filter(f => (f.metodo_pago || 'efectivo') === m).reduce((s, f) => s + _facN(f.monto_pagado), 0);
+
+  const kpis = [
+    ['💰', 'Total facturado', fmtMoney(totalFact), 'purple'],
+    ['🧾', 'Facturas', String(list.length), ''],
+    ['🎫', 'Ticket promedio', fmtMoney(ticket), 'blue'],
+    ['🏦', 'ITBIS facturado', fmtMoney(itbis), 'orange'],
+    ['✅', 'Cobrado', fmtMoney(cobrado), 'green'],
+    ['⏳', 'Por cobrar', fmtMoney(Math.max(0, totalFact - cobrado)), 'red'],
+    ['💵', 'Efectivo', fmtMoney(cobPor('efectivo')), ''],
+    ['🏧', 'Transferencia', fmtMoney(cobPor('transferencia')), ''],
+  ];
+  const box = $id('facr-kpis');
+  if (box) box.innerHTML = kpis.map(([ic, l, v, c]) =>
+    `<div class="fac-stat-card"><div class="fac-stat-icon">${ic}</div><div class="fac-stat-lbl">${l}</div><div class="fac-stat-val ${c}">${v}</div></div>`).join('');
+}
+
+// ── Detallados ────────────────────────────────────────────────────────
+function facRRenderDetalle() {
+  if (_facR.sub === 'facturas') facRRenderFacturas();
+  else facRRenderGroup(_facR.sub);
+}
+
+function facRRenderFacturas() {
+  let rows = facRFiltered();
+  if (_facR.facMetodo) rows = rows.filter(f => (f.metodo_pago || 'efectivo') === _facR.facMetodo);
+  const pages = Math.max(1, Math.ceil(rows.length / FACR_PAGE));
+  if (_facR.page > pages) _facR.page = pages;
+  const slice = rows.slice((_facR.page - 1) * FACR_PAGE, _facR.page * FACR_PAGE);
+
+  // En la tabla los montos van SIN "RD$" (los encabezados ya lo implican) para
+  // que las 12 columnas quepan sin scroll horizontal.
+  const mm = v => _facN(v).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  setText('facr-fac-count', `${rows.length} factura${rows.length === 1 ? '' : 's'}`);
+  const tb = $id('facr-fac-tbody');
+  if (tb) {
+    tb.innerHTML = slice.length ? slice.map(f => {
+      const base = _facN(f.subtotal) - _facN(f.descuento_total);
+      const pag  = _facN(f.monto_pagado);
+      const bal  = _facN(f.total) - pag;
+      return `<tr>
+        <td><span class="ncf-badge">${esc(facNcfDisplay(f.ncf))}</span></td>
+        <td>${esc(f.tipo_ncf || '—')}</td>
+        <td>${fmtDate(f.fecha)}</td>
+        <td title="${esc(f.cliente?.nombre || '')}">${esc(f.cliente?.nombre || '—')}</td>
+        <td style="font-family:var(--font-mono);font-size:10px;color:var(--text-sub)">${esc(f.cliente?.rnc || '—')}</td>
+        <td>${esc(_facRMetodoLabel(f.metodo_pago))}</td>
+        <td class="facr-td-r">${mm(base)}</td>
+        <td class="facr-td-r">${mm(f.itbis_total)}</td>
+        <td class="facr-td-r" style="font-weight:700">${mm(f.total)}</td>
+        <td>${facEstadoBadge(f.estado)}</td>
+        <td class="facr-td-r" title="${bal > 0.009 && (f.estado || '') !== 'anulada' ? 'Falta RD$ ' + mm(bal) : ''}">${mm(pag)}${bal > 0.009 && (f.estado || '') !== 'anulada' ? ` <span style="color:var(--orange)">·${mm(bal)}</span>` : ''}</td>
+        <td><button class="facr-reprint" title="Ver / imprimir factura" onclick="app.verFactura('${f.id}')">🖨</button></td>
+      </tr>`;
+    }).join('') : '<tr><td colspan="12" class="td-empty">Sin facturas en el período seleccionado.</td></tr>';
+  }
+
+  const tf = $id('facr-fac-tfoot');
+  if (tf) {
+    if (rows.length) {
+      const sB = rows.reduce((s, f) => s + (_facN(f.subtotal) - _facN(f.descuento_total)), 0);
+      const sI = rows.reduce((s, f) => s + _facN(f.itbis_total), 0);
+      const sT = rows.reduce((s, f) => s + _facN(f.total), 0);
+      const sP = rows.reduce((s, f) => s + _facN(f.monto_pagado), 0);
+      tf.innerHTML = `<tr>
+        <td colspan="6">Subtotales · pág. ${_facR.page}/${pages} · ${rows.length} facturas</td>
+        <td class="facr-td-r">${mm(sB)}</td>
+        <td class="facr-td-r">${mm(sI)}</td>
+        <td class="facr-td-r">${mm(sT)}</td>
+        <td></td>
+        <td class="facr-td-r">${mm(sP)}</td>
+        <td></td>
+      </tr>`;
+    } else tf.innerHTML = '';
+  }
+
+  const pg = $id('facr-fac-pager');
+  if (pg) {
+    if (pages <= 1) { pg.innerHTML = ''; return; }
+    const btns = [];
+    if (_facR.page > 1) btns.push(`<button class="facr-page-btn" onclick="app.facRFacPage(${_facR.page - 1})">‹</button>`);
+    const start = Math.max(1, _facR.page - 2), end = Math.min(pages, start + 4);
+    for (let i = start; i <= end; i++) btns.push(`<button class="facr-page-btn${i === _facR.page ? ' active' : ''}" onclick="app.facRFacPage(${i})">${i}</button>`);
+    if (_facR.page < pages) btns.push(`<button class="facr-page-btn" onclick="app.facRFacPage(${_facR.page + 1})">›</button>`);
+    pg.innerHTML = btns.join('');
+  }
+}
+function facRFacPage(p) { _facR.page = p; facRRenderFacturas(); }
+function facRFacMetodo(v) { _facR.facMetodo = v; _facR.page = 1; facRRenderFacturas(); }
+
+function _facRGroupData(kind) {
+  const list = facRFiltered();
+  const m = {};
+  list.forEach(f => {
+    let key;
+    if (kind === 'cliente') key = f.cliente?.nombre || '—';
+    else if (kind === 'tipo') key = f.tipo_ncf || '—';
+    else if (kind === 'metodo') key = f.metodo_pago || 'efectivo';
+    else key = f.estado || 'pendiente';
+    if (!m[key]) m[key] = { key, n: 0, base: 0, itbis: 0, total: 0, rnc: f.cliente?.rnc || '' };
+    m[key].n += 1;
+    m[key].base  += _facN(f.subtotal) - _facN(f.descuento_total);
+    m[key].itbis += _facN(f.itbis_total);
+    m[key].total += _facN(f.total);
+  });
+  const rows = Object.values(m).sort((a, b) => b.total - a.total);
+  const gt = rows.reduce((s, r) => s + r.total, 0);
+  rows.forEach(r => { r.pct = gt > 0 ? (r.total / gt * 100) : 0; });
+  return { rows, totals: {
+    n: rows.reduce((s, r) => s + r.n, 0),
+    base: rows.reduce((s, r) => s + r.base, 0),
+    itbis: rows.reduce((s, r) => s + r.itbis, 0),
+    total: gt,
+  } };
+}
+
+function facRRenderGroup(kind) {
+  const { rows, totals } = _facRGroupData(kind);
+  const noun = { cliente: 'cliente(s)', tipo: 'tipo(s)', metodo: 'método(s)', estado: 'estado(s)' }[kind];
+  setText(`facr-${kind}-count`, `${rows.length} ${noun}`);
+  const tbl = $id(`facr-${kind}-table`);
+  if (!tbl) return;
+  const M = fmtMoney;
+  let head, body, foot;
+  if (kind === 'cliente') {
+    head = `<tr><th>Cliente</th><th>RNC</th><th style="text-align:right">Facturas</th><th style="text-align:right">Base</th><th style="text-align:right">ITBIS</th><th style="text-align:right">Total</th><th style="text-align:right">%</th></tr>`;
+    body = rows.map(r => `<tr><td>${esc(r.key)}</td><td style="font-family:var(--font-mono);font-size:11px">${esc(r.rnc || '—')}</td><td class="facr-td-r">${r.n}</td><td class="facr-td-r">${M(r.base)}</td><td class="facr-td-r">${M(r.itbis)}</td><td class="facr-td-r" style="font-weight:700">${M(r.total)}</td><td class="facr-td-r">${r.pct.toFixed(1)}%</td></tr>`).join('');
+    foot = `<tr><td colspan="2">TOTAL</td><td class="facr-td-r">${totals.n}</td><td class="facr-td-r">${M(totals.base)}</td><td class="facr-td-r">${M(totals.itbis)}</td><td class="facr-td-r">${M(totals.total)}</td><td class="facr-td-r">100%</td></tr>`;
+  } else if (kind === 'tipo') {
+    head = `<tr><th>Tipo</th><th>Descripción</th><th style="text-align:right">Facturas</th><th style="text-align:right">Base</th><th style="text-align:right">ITBIS</th><th style="text-align:right">Total</th><th style="text-align:right">%</th></tr>`;
+    body = rows.map(r => `<tr><td><strong>${esc(r.key)}</strong></td><td>${esc(_facRNcfLabel(r.key))}</td><td class="facr-td-r">${r.n}</td><td class="facr-td-r">${M(r.base)}</td><td class="facr-td-r">${M(r.itbis)}</td><td class="facr-td-r" style="font-weight:700">${M(r.total)}</td><td class="facr-td-r">${r.pct.toFixed(1)}%</td></tr>`).join('');
+    foot = `<tr><td colspan="2">TOTAL</td><td class="facr-td-r">${totals.n}</td><td class="facr-td-r">${M(totals.base)}</td><td class="facr-td-r">${M(totals.itbis)}</td><td class="facr-td-r">${M(totals.total)}</td><td class="facr-td-r">100%</td></tr>`;
+  } else {
+    const lbl = kind === 'metodo' ? _facRMetodoLabel : (k => FACR_ESTADO_LBL[k] || k);
+    head = `<tr><th>${kind === 'metodo' ? 'Método' : 'Estado'}</th><th style="text-align:right">Facturas</th><th style="text-align:right">Total</th><th style="text-align:right">%</th></tr>`;
+    body = rows.map(r => `<tr><td>${esc(lbl(r.key))}</td><td class="facr-td-r">${r.n}</td><td class="facr-td-r" style="font-weight:700">${M(r.total)}</td><td class="facr-td-r">${r.pct.toFixed(1)}%</td></tr>`).join('');
+    foot = `<tr><td>TOTAL</td><td class="facr-td-r">${totals.n}</td><td class="facr-td-r">${M(totals.total)}</td><td class="facr-td-r">100%</td></tr>`;
+  }
+  const cols = kind === 'metodo' || kind === 'estado' ? 4 : 7;
+  tbl.innerHTML = `<thead>${head}</thead><tbody>${body || `<tr><td colspan="${cols}" class="td-empty">Sin datos en el período seleccionado.</td></tr>`}</tbody>${rows.length ? `<tfoot>${foot}</tfoot>` : ''}`;
+}
+
+// ── DGII ──────────────────────────────────────────────────────────────
+function _facRDGIIData() {
+  const list = facRFiltered().filter(f => (f.estado || 'pendiente') !== 'anulada');
+  let gravado = 0, exento = 0, itbis = 0, total = 0;
+  const m = {};
+  list.forEach(f => {
+    const base = _facN(f.subtotal) - _facN(f.descuento_total);
+    if (_facN(f.itbis_total) > 0) gravado += base; else exento += base;
+    itbis += _facN(f.itbis_total); total += _facN(f.total);
+    const k = f.tipo_ncf || '—';
+    if (!m[k]) m[k] = { n: 0, total: 0, itbis: 0 };
+    m[k].n += 1; m[k].total += _facN(f.total); m[k].itbis += _facN(f.itbis_total);
+  });
+  return { gravado, exento, itbis, total, porNcf: m };
+}
+
+function facRRenderDGII() {
+  const d = _facRDGIIData();
+  const kpis = [
+    ['Total facturado', fmtMoney(d.total), 'purple'],
+    ['Monto gravado', fmtMoney(d.gravado), 'blue'],
+    ['Monto exento', fmtMoney(d.exento), ''],
+    ['ITBIS facturado', fmtMoney(d.itbis), 'orange'],
+  ];
+  const box = $id('facr-dgii-kpis');
+  if (box) box.innerHTML = kpis.map(([l, v, c]) => `<div class="fac-stat-card"><div class="fac-stat-lbl">${l}</div><div class="fac-stat-val ${c}">${v}</div></div>`).join('');
+
+  const keys = Object.keys(d.porNcf).sort();
+  const gt = keys.reduce((s, k) => s + d.porNcf[k].total, 0);
+  const tbl = $id('facr-dgii-table');
+  if (tbl) {
+    tbl.innerHTML = `
+      <thead><tr><th>Tipo</th><th>Descripción</th><th style="text-align:right">Facturas</th><th style="text-align:right">Total</th><th style="text-align:right">ITBIS</th><th style="text-align:right">%</th></tr></thead>
+      <tbody>${keys.length ? keys.map(k => `<tr><td><strong>${esc(k)}</strong></td><td>${esc(_facRNcfLabel(k))}</td><td class="facr-td-r">${d.porNcf[k].n}</td><td class="facr-td-r" style="font-weight:700">${fmtMoney(d.porNcf[k].total)}</td><td class="facr-td-r">${fmtMoney(d.porNcf[k].itbis)}</td><td class="facr-td-r">${gt > 0 ? (d.porNcf[k].total / gt * 100).toFixed(1) : '0.0'}%</td></tr>`).join('') : '<tr><td colspan="6" class="td-empty">Sin facturas en el período seleccionado.</td></tr>'}</tbody>
+      ${keys.length ? `<tfoot><tr><td colspan="2">TOTAL</td><td class="facr-td-r">${keys.reduce((s, k) => s + d.porNcf[k].n, 0)}</td><td class="facr-td-r">${fmtMoney(gt)}</td><td class="facr-td-r">${fmtMoney(d.itbis)}</td><td class="facr-td-r">100%</td></tr></tfoot>` : ''}`;
+  }
+}
+
+// ── Exportar (jsPDF, estilo POS morado vía _repPdfHeader/_repPdfTable) ──
+function _facRPdfDoc() {
+  const J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF;
+  if (!J) { toast('No se pudo cargar el generador de PDF.', 'error'); return null; }
+  return new J({ orientation: 'p', unit: 'mm', format: 'a4' });
+}
+function _facRSave(doc, name) {
+  const slug = String(_perfil?.nombre_firma || 'firma').replace(/[^a-z0-9]+/gi, '_').slice(0, 30);
+  doc.save(`${name}_${slug}_${new Date().toISOString().slice(0, 10)}.pdf`);
+  toast('Reporte PDF generado', 'success');
+}
+
+function facRExportFacturas() {
+  const doc = _facRPdfDoc(); if (!doc) return;
+  let rows = facRFiltered();
+  if (_facR.facMetodo) rows = rows.filter(f => (f.metodo_pago || 'efectivo') === _facR.facMetodo);
+  let y = _repPdfHeader(doc, 'Detalle de Facturas', _facRPeriodoLabel());
+  y = _repPdfTable(doc, y,
+    ['NCF', 'Tipo', 'Fecha', 'Cliente', 'Método', 'Base', 'ITBIS', 'Total', 'Estado'],
+    rows.map(f => [
+      facNcfDisplay(f.ncf), f.tipo_ncf || '—', f.fecha || '—',
+      String(f.cliente?.nombre || '—').slice(0, 22), _facRMetodoLabel(f.metodo_pago),
+      _facRMoneyPdf(_facN(f.subtotal) - _facN(f.descuento_total)), _facRMoneyPdf(f.itbis_total), _facRMoneyPdf(f.total),
+      FACR_ESTADO_LBL[f.estado] || f.estado || '—',
+    ]),
+    [24, 12, 20, 34, 22, 22, 20, 22, 16]);
+  const sB = rows.reduce((s, f) => s + (_facN(f.subtotal) - _facN(f.descuento_total)), 0);
+  const sI = rows.reduce((s, f) => s + _facN(f.itbis_total), 0);
+  const sT = rows.reduce((s, f) => s + _facN(f.total), 0);
+  doc.setFont(undefined, 'bold'); doc.setFontSize(9);
+  doc.text(`Base: ${_facRMoneyPdf(sB)}   |   ITBIS: ${_facRMoneyPdf(sI)}   |   Total: ${_facRMoneyPdf(sT)}   (${rows.length} facturas)`, 14, y + 5);
+  _facRSave(doc, 'Detalle_Facturas');
+}
+
+function facRExportGroup(kind) {
+  const doc = _facRPdfDoc(); if (!doc) return;
+  const { rows, totals } = _facRGroupData(kind);
+  const titles = { cliente: 'Facturación por Cliente', tipo: 'Facturación por Tipo de Comprobante', metodo: 'Facturación por Método de Pago', estado: 'Facturación por Estado' };
+  let y = _repPdfHeader(doc, titles[kind] || 'Reporte', _facRPeriodoLabel());
+  if (kind === 'cliente') {
+    y = _repPdfTable(doc, y, ['Cliente', 'RNC', 'Facturas', 'Base', 'ITBIS', 'Total', '%'],
+      rows.map(r => [String(r.key).slice(0, 30), r.rnc || '—', r.n, _facRMoneyPdf(r.base), _facRMoneyPdf(r.itbis), _facRMoneyPdf(r.total), r.pct.toFixed(1) + '%']),
+      [46, 26, 18, 24, 22, 26, 20]);
+  } else if (kind === 'tipo') {
+    y = _repPdfTable(doc, y, ['Tipo', 'Descripción', 'Facturas', 'Base', 'ITBIS', 'Total', '%'],
+      rows.map(r => [r.key, _facRNcfLabel(r.key), r.n, _facRMoneyPdf(r.base), _facRMoneyPdf(r.itbis), _facRMoneyPdf(r.total), r.pct.toFixed(1) + '%']),
+      [16, 50, 18, 24, 22, 26, 16]);
+  } else {
+    const lbl = kind === 'metodo' ? _facRMetodoLabel : (k => FACR_ESTADO_LBL[k] || k);
+    y = _repPdfTable(doc, y, [kind === 'metodo' ? 'Método' : 'Estado', 'Facturas', 'Total', '%'],
+      rows.map(r => [lbl(r.key), r.n, _facRMoneyPdf(r.total), r.pct.toFixed(1) + '%']),
+      [70, 30, 46, 26]);
+  }
+  doc.setFont(undefined, 'bold'); doc.setFontSize(9);
+  doc.text(`TOTAL: ${_facRMoneyPdf(totals.total)}   (${totals.n} facturas)`, 14, y + 5);
+  _facRSave(doc, 'Reporte_' + kind);
+}
+
+function facRExportDGII() {
+  const doc = _facRPdfDoc(); if (!doc) return;
+  const d = _facRDGIIData();
+  let y = _repPdfHeader(doc, 'Reporte Fiscal DGII', _facRPeriodoLabel());
+  doc.setFontSize(9); doc.setFont(undefined, 'bold'); doc.text('RESUMEN FISCAL', 14, y); y += 7;
+  y = _repPdfTable(doc, y, ['Concepto', 'Monto', 'Concepto', 'Monto'], [
+    ['Total facturado', _facRMoneyPdf(d.total), 'ITBIS facturado', _facRMoneyPdf(d.itbis)],
+    ['Monto gravado', _facRMoneyPdf(d.gravado), 'Monto exento', _facRMoneyPdf(d.exento)],
+  ], [45, 51, 45, 41]);
+  y += 6;
+  doc.setFont(undefined, 'bold'); doc.setFontSize(9); doc.text('DESGLOSE POR NCF', 14, y); y += 7;
+  const keys = Object.keys(d.porNcf).sort();
+  const gt = keys.reduce((s, k) => s + d.porNcf[k].total, 0);
+  _repPdfTable(doc, y, ['Tipo', 'Descripción', 'Facturas', 'Total', 'ITBIS', '%'],
+    keys.map(k => [k, _facRNcfLabel(k), d.porNcf[k].n, _facRMoneyPdf(d.porNcf[k].total), _facRMoneyPdf(d.porNcf[k].itbis), gt > 0 ? (d.porNcf[k].total / gt * 100).toFixed(1) + '%' : '0.0%']),
+    [18, 55, 22, 30, 30, 27]);
+  _facRSave(doc, 'Reporte_Fiscal_DGII');
+}
+
+function facRExportConsolidado() {
+  const doc = _facRPdfDoc(); if (!doc) return;
+  const list = facRFiltered();
+  const vig  = list.filter(f => (f.estado || 'pendiente') !== 'anulada');
+  const totalFact = vig.reduce((s, f) => s + _facN(f.total), 0);
+  const cobrado   = vig.reduce((s, f) => s + _facN(f.monto_pagado), 0);
+  let y = _repPdfHeader(doc, 'Reporte Consolidado', _facRPeriodoLabel());
+  doc.setFontSize(9); doc.setFont(undefined, 'bold'); doc.text('1. RESUMEN', 14, y); y += 7;
+  y = _repPdfTable(doc, y, ['Métrica', 'Valor', 'Métrica', 'Valor'], [
+    ['Facturas', String(list.length), 'Total facturado', _facRMoneyPdf(totalFact)],
+    ['Cobrado', _facRMoneyPdf(cobrado), 'Por cobrar', _facRMoneyPdf(Math.max(0, totalFact - cobrado))],
+  ], [45, 51, 45, 41]);
+
+  const secc = (titulo, kind) => {
+    y += 6; if (y > 245) { doc.addPage(); y = 16; }
+    doc.setFont(undefined, 'bold'); doc.setFontSize(9); doc.setTextColor(30, 36, 53); doc.text(titulo, 14, y); y += 7;
+    const { rows } = _facRGroupData(kind);
+    if (kind === 'cliente') {
+      y = _repPdfTable(doc, y, ['Cliente', 'Facturas', 'Base', 'ITBIS', 'Total'],
+        rows.map(r => [String(r.key).slice(0, 32), r.n, _facRMoneyPdf(r.base), _facRMoneyPdf(r.itbis), _facRMoneyPdf(r.total)]),
+        [60, 22, 32, 30, 38]);
+    } else {
+      y = _repPdfTable(doc, y, ['Tipo', 'Descripción', 'Facturas', 'Total'],
+        rows.map(r => [r.key, _facRNcfLabel(r.key), r.n, _facRMoneyPdf(r.total)]),
+        [18, 70, 30, 64]);
+    }
+  };
+  secc('2. POR CLIENTE', 'cliente');
+  secc('3. POR TIPO DE COMPROBANTE', 'tipo');
+
+  y += 6; if (y > 245) { doc.addPage(); y = 16; }
+  doc.setFont(undefined, 'bold'); doc.setFontSize(9); doc.setTextColor(30, 36, 53); doc.text('4. FISCAL DGII', 14, y); y += 7;
+  const d = _facRDGIIData();
+  _repPdfTable(doc, y, ['Concepto', 'Monto', 'Concepto', 'Monto'], [
+    ['Total facturado', _facRMoneyPdf(d.total), 'ITBIS facturado', _facRMoneyPdf(d.itbis)],
+    ['Monto gravado', _facRMoneyPdf(d.gravado), 'Monto exento', _facRMoneyPdf(d.exento)],
+  ], [45, 51, 45, 41]);
+  _facRSave(doc, 'Reporte_Consolidado');
 }
 
 // ── Mis Secuencias NCF (facturación propia del contador) ───────────────
@@ -6079,6 +6563,7 @@ function _startSolicitudesPoller() {
 window.app = {
   // auth
   doLogin, doLoginGoogle, showForgot, showLogin, sendReset, togglePw, logout,
+  submitRegistroContador, cancelRegistro, buscarRncRegistro,
   // nav
   goto,
   // dashboard
@@ -6112,7 +6597,9 @@ window.app = {
   abrirMisSecuenciasNcf, cerrarMisSecuenciasNcf, abrirRegistrarMiNcfModal, cerrarRegistrarMiNcfModal,
   handleMiNcfAdjunto, guardarMiNcf, suspenderMiNcf, activarMiNcf, eliminarMiNcf,
   // facturación — dashboard
-  loadFacturacion, filtrarFacturas, limpiarFiltrosFac,
+  loadFacturacion,
+  facRApply, facROnPeriodoChange, facRSwitchTab, facRSwitchSubtab, facRFacPage, facRFacMetodo,
+  facRExportFacturas, facRExportGroup, facRExportDGII, facRExportConsolidado,
   // facturación — nueva factura
   nuevaFactura, cerrarNuevaFactura, selClienteFac, editarFactura, onNfTipoNcfChange,
   addItemFac, removeItemFac, facItemSet, guardarFactura,

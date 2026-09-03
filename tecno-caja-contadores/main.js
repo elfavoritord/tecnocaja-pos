@@ -386,7 +386,12 @@ app.whenReady().then(async () => {
 
   console.log(`[splash] t=${Date.now() - t0}ms navegando a la app real`);
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+    // Cargar por `localhost` (no `127.0.0.1`): Firebase Auth solo autoriza los
+    // dominios de su lista y `localhost` viene pre-autorizado en todo proyecto,
+    // mientras que `127.0.0.1` NO — con `127.0.0.1` el login con Google falla
+    // con auth/unauthorized-domain. El servidor local escucha en 127.0.0.1 y
+    // Windows resuelve `localhost` ahí, así que la carga funciona igual.
+    mainWindow.loadURL(`http://localhost:${PORT}`);
   }
   initUpdater();
 });

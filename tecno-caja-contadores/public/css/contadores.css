@@ -782,6 +782,8 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .fac-stat-val.blue   { color: var(--blue); }
 .fac-stat-val.green  { color: var(--green); }
 .fac-stat-val.orange { color: var(--orange); }
+.fac-stat-val.red    { color: var(--red, #ef4444); }
+.fac-stat-val.purple { color: #6C63FF; }
 
 /* Filters */
 .fac-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
@@ -1022,6 +1024,102 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
   .fac-view-grid     { grid-template-columns: 1fr; }
   .fac-modal-xl, .fac-modal-lg { max-width: 100%; max-height: 95vh; }
 }
+
+/* ── Módulo de Reportes de Facturación (estilo POS) ────────────────────── */
+.facr-filterbar {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; margin-bottom: 14px;
+}
+.facr-fgroup { display: flex; flex-direction: column; gap: 4px; }
+.facr-flabel {
+  font-size: 10px; font-weight: 700; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: .4px;
+}
+
+.facr-pane { display: block; }
+.facr-pane.hidden { display: none; }
+
+.facr-subtabs {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 14px;
+}
+.facr-subtab {
+  padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface2); color: var(--text-sub);
+  font-size: 12px; font-weight: 700; cursor: pointer; transition: color .15s, border-color .15s, background .15s;
+}
+.facr-subtab:hover { color: var(--text); border-color: var(--blue); }
+.facr-subtab.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.facr-subpane { display: block; }
+.facr-subpane.hidden { display: none; }
+
+.facr-toolbar {
+  display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;
+  gap: 8px; margin-bottom: 10px; font-size: 12.5px; color: var(--text-sub); font-weight: 600;
+}
+.facr-btn-export {
+  padding: 6px 14px; background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; color: var(--text-sub); font-size: 12px; font-weight: 700;
+  cursor: pointer; transition: color .15s, border-color .15s;
+}
+.facr-btn-export:hover { border-color: var(--blue); color: var(--blue); }
+
+.facr-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+table.facr-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table.facr-table thead th {
+  padding: 7px 6px; text-align: left; font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .2px; color: var(--text-muted);
+  background: var(--surface2); border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+table.facr-table tbody td {
+  padding: 6px 6px; font-size: 11px; color: var(--text);
+  border-bottom: 1px solid rgba(71,100,148,.15);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+table.facr-table tbody tr:hover td { background: var(--surface2); }
+table.facr-table tfoot td {
+  padding: 7px 6px; background: var(--surface2); font-weight: 800;
+  font-family: var(--font-mono); border-top: 2px solid var(--border); font-size: 10.5px;
+}
+.facr-td-r { text-align: right; font-family: var(--font-mono); }
+table.facr-table .fac-estado { font-size: 8.5px; padding: 2px 5px; letter-spacing: 0; }
+table.facr-table .ncf-badge { font-size: 10px; padding: 1px 5px; }
+table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
+/* Grupos (Por Cliente/Tipo/…) sí pueden hacer scroll: menos columnas, texto largo */
+#facr-cliente-table, #facr-tipo-table, #facr-metodo-table, #facr-estado-table, #facr-dgii-table { table-layout: auto; }
+#facr-cliente-table tbody td, #facr-tipo-table tbody td, #facr-metodo-table tbody td,
+#facr-estado-table tbody td, #facr-dgii-table tbody td { white-space: nowrap; overflow: visible; text-overflow: clip; }
+.facr-reprint {
+  background: var(--blue-glow); border: 1px solid var(--border); border-radius: 7px;
+  color: var(--blue); font-size: 13px; padding: 3px 8px; cursor: pointer; transition: transform .1s;
+}
+.facr-reprint:hover { transform: scale(1.08); }
+
+.facr-pager { display: flex; justify-content: center; gap: 6px; margin-top: 12px; flex-wrap: wrap; }
+.facr-page-btn {
+  padding: 5px 11px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--surface2); color: var(--text-sub); font-size: 12px; font-weight: 700; cursor: pointer;
+}
+.facr-page-btn:hover { border-color: var(--blue); color: var(--blue); }
+.facr-page-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+
+.facr-dgii-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+@media (max-width: 900px) { .facr-dgii-kpis { grid-template-columns: repeat(2, 1fr); } }
+
+.facr-export-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+@media (max-width: 900px) { .facr-export-grid { grid-template-columns: 1fr; } }
+.facr-export-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 22px 18px; text-align: center; cursor: pointer;
+  display: flex; flex-direction: column; gap: 8px; align-items: center;
+  transition: border-color .2s, transform .15s, box-shadow .2s;
+}
+.facr-export-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
+.facr-export-card .ico { font-size: 34px; }
+.facr-export-card h4 { font-size: 14px; font-weight: 800; margin: 0; }
+.facr-export-card p { font-size: 12px; color: var(--text-muted); margin: 0; }
+.facr-export-card-full { grid-column: 1 / -1; }
 
 /* ── RNC Lookup — Autocomplete DGII ────────────────────────────────────── */
 .rnc-dropdown {

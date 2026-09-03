@@ -91,6 +91,46 @@ function getRncHandler() {
 // Iniciar carga en background al arrancar
 getRncHandler();
 
+// Núcleo de consulta de RNC/cédula contra el dataset local de la DGII.
+// Devuelve { found:false, rnc } o { found:true, nombre, nombreComercial, ... }.
+// Lanza Error con .status en 400/503. Reutilizado por /api/rnc/lookup,
+// /api/rnc/consulta (wizard) y el auto-registro de contador.
+async function lookupRncRecord(rawInput) {
+  const raw = String(rawInput || '').replace(/\D/g, '');
+  if (!raw || raw.length < 9) {
+    const e = new Error('RNC/Cédula debe tener 9-11 dígitos.'); e.status = 400; throw e;
+  }
+  const h = getRncHandler();
+  if (!h) {
+    const e = new Error(_rncError || 'Módulo DGII no disponible.'); e.status = 503; throw e;
+  }
+  const candidates = [raw.slice(0, 11)];
+  if (raw.length === 10) candidates.push('0' + raw);
+
+  let record = null;
+  if (_rncReady && h.df && h.df.length > 0) {
+    for (const id of candidates) { record = h.df.find(r => r.ID === id) || null; if (record) break; }
+  } else {
+    for (const id of candidates) {
+      const results = await h.search({ ID: id });
+      if (results && results.length > 0) { record = results[0]; break; }
+    }
+    _rncReady = h.df && h.df.length > 0;
+  }
+
+  if (!record) return { found: false, rnc: raw };
+  return {
+    found:           true,
+    rnc:             record.ID || raw,
+    nombre:          record.NOMBRE          || '',
+    nombreComercial: record.NOMBRE_COMERCIAL || record.NOMBRE || '',
+    estado:          record.ESTADO          || '',
+    tipo:            (record.ID || '').length === 11 ? 'Persona Física' : 'Persona Jurídica',
+    categoria:       record.CATEGORIA       || '',
+    regimen:         record.REGIMEN_PAGO    || '',
+  };
+}
+
 // ── Colecciones ────────────────────────────────────────────────────────────
 const COL_ADMINS      = 'platform_admins';
 const COL_CONTADORES  = 'contadores';
@@ -210,6 +250,21 @@ function vencimientoDate(c) {
 }
 
 // ── Auth middleware ────────────────────────────────────────────────────────
+// Verifica SOLO que el idToken de Firebase sea válido — NO exige perfil de
+// contador. Para pasos previos al registro (wizard de alta con Google, que
+// necesita consultar la DGII antes de que exista el contador).
+async function requireFirebaseUser(req, res, next) {
+  if (!fbReady) return res.status(503).json({ error: fbError || 'Firebase no disponible.' });
+  const header = String(req.headers.authorization || '').trim();
+  if (!header.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado.' });
+  try {
+    req.fbUser = await adminSdk.auth().verifyIdToken(header.slice(7));
+    next();
+  } catch (_e) {
+    res.status(401).json({ error: 'Token inválido.' });
+  }
+}
+
 async function requireAuth(req, res, next) {
   if (!fbReady) return res.status(503).json({ error: fbError || 'Firebase no disponible.' });
 
@@ -353,6 +408,16 @@ app.post('/api/auth/verify', async (req, res) => {
 
     const adminDoc = await col(COL_ADMINS).doc(uid).get();
     if (!adminDoc.exists) {
+      // Cuenta autenticada (Google) sin perfil todavía: en vez de rechazar,
+      // el frontend abre un wizard corto para que se registre como contador.
+      // Se exige correo verificado (siempre true en logins con Google).
+      if (decoded.email_verified && decoded.email) {
+        return res.json({
+          needsRegistration: true,
+          email: decoded.email,
+          displayName: decoded.name || '',
+        });
+      }
       return res.status(403).json({ error: 'Esta cuenta no tiene acceso a Tecno Caja Contadores.' });
     }
 
@@ -430,6 +495,115 @@ app.post('/api/auth/verify', async (req, res) => {
     });
   } catch (e) {
     res.status(401).json({ error: e.message });
+  }
+});
+
+// Auto-registro de contador: una cuenta de Google ya autenticada (sin perfil)
+// pone solo su RNC; el nombre de la firma se completa desde la DGII. Queda
+// operativa al instante (estado 'activo'). El RNC debe ser único entre
+// contadores. Si la DGII reconoce el RNC, el contador queda dgii_verificado.
+app.post('/api/auth/registro-contador', async (req, res) => {
+  if (!fbReady) return res.status(503).json({ error: fbError });
+  const b = req.body || {};
+  const idToken = b.idToken || String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!idToken) return res.status(400).json({ error: 'idToken requerido.' });
+
+  const digits = (s) => String(s || '').replace(/\D/g, '');
+  let nombre_firma   = String(b.nombre_firma || '').trim();
+  const responsable  = String(b.responsable || '').trim();
+  const rnc          = String(b.rnc || '').trim();
+  const telefono     = String(b.telefono || '').trim();
+  const whatsapp     = String(b.whatsapp || b.telefono || '').trim();
+  const direccion    = String(b.direccion || '').trim();
+
+  if (!responsable || !rnc) {
+    return res.status(400).json({ error: 'El responsable y el RNC de la firma son obligatorios.' });
+  }
+  const rncNorm = digits(rnc);
+  if (rncNorm.length < 9) return res.status(400).json({ error: 'El RNC no es válido (debe tener al menos 9 dígitos).' });
+
+  try {
+    const decoded = await adminSdk.auth().verifyIdToken(idToken);
+    const uid = decoded.uid;
+    if (!decoded.email_verified || !decoded.email) {
+      return res.status(403).json({ error: 'Necesitas una cuenta de Google con el correo verificado.' });
+    }
+
+    const adminDoc = await col(COL_ADMINS).doc(uid).get();
+    if (adminDoc.exists) {
+      return res.status(409).json({ error: 'Esta cuenta ya está registrada. Cierra sesión y vuelve a entrar.' });
+    }
+
+    // Unicidad de RNC contra TODOS los contadores (comparación por dígitos,
+    // para que "1-31-88068-1" y "13188068 1" cuenten como iguales).
+    const allSnap = await col(COL_CONTADORES).get();
+    for (const d of allSnap.docs) {
+      const c = d.data() || {};
+      if (digits(c.rnc) && digits(c.rnc) === rncNorm) {
+        const mismoCorreo = String(c.correo || '').trim().toLowerCase() === String(decoded.email).toLowerCase();
+        const pista = mismoCorreo
+          ? ' Parece que ya tienes una firma registrada con este correo — inicia sesión con tu correo y contraseña.'
+          : '';
+        return res.status(409).json({ error: `Ya existe un contador registrado con el RNC ${rnc}.${pista}` });
+      }
+    }
+
+    // Consultar la DGII: completa el nombre de la firma si no vino y deja
+    // constancia de si el RNC está registrado (para el ✅ del directorio).
+    let dgii = null;
+    try { dgii = await lookupRncRecord(rnc); } catch (_) { dgii = null; }
+    if (dgii && dgii.found && !nombre_firma) nombre_firma = dgii.nombre || dgii.nombreComercial || '';
+    if (!nombre_firma) {
+      return res.status(400).json({ error: 'No encontramos ese RNC en la DGII. Escribe el nombre de la firma a mano.' });
+    }
+
+    const now = isoNow();
+    await col(COL_ADMINS).doc(uid).set({
+      uid,
+      email: decoded.email,
+      fullName: responsable,
+      role: 'contador_asociado',
+      status: 'active',
+      self_registered: true,
+      created_at: now,
+      lastLoginAt: now,
+    });
+
+    const contRef = await col(COL_CONTADORES).add({
+      firebase_uid: uid,
+      nombre_firma,
+      responsable,
+      rnc,
+      razon_social:    dgii && dgii.found ? (dgii.nombre || null) : null,
+      nombre_comercial: dgii && dgii.found ? (dgii.nombreComercial || null) : null,
+      dgii_verificado: !!(dgii && dgii.found),
+      dgii_estado:     dgii && dgii.found ? (dgii.estado || null) : null,
+      telefono: telefono || null,
+      whatsapp: whatsapp || null,
+      direccion: direccion || null,
+      correo: decoded.email,
+      estado: 'activo',
+      self_registered: true,
+      created_at: now,
+      updated_at: now,
+    });
+
+    return res.json({
+      ok: true,
+      uid,
+      email: decoded.email,
+      fullName: responsable,
+      nombre_firma,
+      responsable,
+      rnc,
+      telefono,
+      correo: decoded.email,
+      logo_url: null,
+      contadorDocId: contRef.id,
+      isColaborador: false,
+    });
+  } catch (e) {
+    return res.status(401).json({ error: e.message });
   }
 });
 
@@ -3350,50 +3524,17 @@ app.get('/api/rnc/status', (_req, res) => {
   res.json({ ready: _rncReady, error: _rncError });
 });
 
-// GET /api/rnc/lookup?id=XXXXXXXXX
+// GET /api/rnc/lookup?id=XXXXXXXXX  — contador ya autenticado
 app.get('/api/rnc/lookup', requireAuth, async (req, res) => {
-  const raw = String(req.query.id || '').replace(/\D/g, '');
-  if (!raw || raw.length < 9) {
-    return res.status(400).json({ error: 'RNC/Cédula debe tener 9-11 dígitos.' });
-  }
-  const h = getRncHandler();
-  if (!h) {
-    return res.status(503).json({ error: _rncError || 'Módulo DGII no disponible.' });
-  }
-  try {
-    // El dataset guarda cédulas con ceros a la izquierda (11 dígitos).
-    // Si el usuario escribe 10 dígitos (le falta el cero inicial), probar también con padding.
-    const candidates = [raw.slice(0, 11)];
-    if (raw.length === 10) candidates.push('0' + raw);
+  try { res.json(await lookupRncRecord(req.query.id)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
 
-    let record = null;
-    // Ruta rápida: buscar en memoria si el dataset ya está listo
-    if (_rncReady && h.df && h.df.length > 0) {
-      for (const id of candidates) {
-        record = h.df.find(r => r.ID === id) || null;
-        if (record) break;
-      }
-    } else {
-      // Fallback: h.search() carga el dataset on-demand si es necesario
-      for (const id of candidates) {
-        const results = await h.search({ ID: id });
-        if (results && results.length > 0) { record = results[0]; break; }
-      }
-      _rncReady = h.df && h.df.length > 0; // marcar listo tras la carga
-    }
-
-    if (!record) return res.json({ found: false, rnc: raw });
-    return res.json({
-      found:          true,
-      rnc:            record.ID || raw,
-      nombre:         record.NOMBRE          || '',
-      nombreComercial:record.NOMBRE_COMERCIAL || record.NOMBRE || '',
-      estado:         record.ESTADO          || '',
-      tipo:           (record.ID || '').length === 11 ? 'Persona Física' : 'Persona Jurídica',
-      categoria:      record.CATEGORIA       || '',
-      regimen:        record.REGIMEN_PAGO    || '',
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+// GET /api/rnc/consulta?id=XXXXXXXXX  — para el wizard de auto-registro
+// (sesión de Firebase válida, todavía sin perfil de contador).
+app.get('/api/rnc/consulta', requireFirebaseUser, async (req, res) => {
+  try { res.json(await lookupRncRecord(req.query.id)); }
+  catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 // GET /api/rnc/search?q=banco+popular&limit=8
