@@ -2811,13 +2811,10 @@ app.delete('/api/facturacion/clientes/:id', requireAuth, async (req, res) => {
 // FACTURACIÓN — Facturas
 // ══════════════════════════════════════════════════════════════════════
 
-const NCF_TIPOS = {
-  B01: 'Crédito Fiscal',
-  B02: 'Consumidor Final',
-  B14: 'Régimen Especial',
-  B15: 'Gubernamental',
-  B16: 'Exportación',
-};
+// Catálogo completo DGII de NCF tradicional (B01–B17). Se deriva de
+// NCF_DOCUMENT_TYPES para no mantener dos listas: valida el tipo al registrar
+// una secuencia propia y al emitir una factura de honorarios.
+const NCF_TIPOS = Object.fromEntries(NCF_DOCUMENT_TYPES.map((t) => [t.code, t.label]));
 
 // ══════════════════════════════════════════════════════════════════════
 // MIS SECUENCIAS NCF (facturación propia del contador)

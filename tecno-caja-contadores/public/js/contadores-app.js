@@ -3081,13 +3081,9 @@ function limpiarFiltrosFac() {
 // rechaza la emisión (ver POST /api/mis-secuencias-ncf y getNextNcf en
 // server.js) — nunca se inventa un NCF sin respaldo real.
 
-const MIS_NCF_TIPOS = [
-  { code: 'B02', label: 'B02 — Consumidor Final' },
-  { code: 'B01', label: 'B01 — Crédito Fiscal' },
-  { code: 'B14', label: 'B14 — Régimen Especial' },
-  { code: 'B15', label: 'B15 — Gubernamental' },
-  { code: 'B16', label: 'B16 — Exportación' },
-];
+// Catálogo completo DGII (B01–B17). Reusa NCF_DOCUMENT_TYPES (mismo shape) para
+// no mantener dos listas — antes solo tenía 5 tipos y faltaban B03/B04/B11–B13/B17.
+const MIS_NCF_TIPOS = NCF_DOCUMENT_TYPES;
 
 let _misNcf = [];
 let _mnAdjuntoDataUrl = null;
@@ -3345,7 +3341,9 @@ function _facNcfUsables() {
 
 function _facPickDefaultNcf(conRnc) {
   const usables = _facNcfUsables();
-  const orden = conRnc ? ['B01', 'B02', 'B15', 'B14', 'B16'] : ['B02', 'B01', 'B15', 'B14', 'B16'];
+  const orden = conRnc
+    ? ['B01', 'B02', 'B15', 'B14', 'B16', 'B03', 'B04', 'B11', 'B12', 'B13', 'B17']
+    : ['B02', 'B01', 'B15', 'B14', 'B16', 'B03', 'B04', 'B11', 'B12', 'B13', 'B17'];
   return orden.find(t => usables.includes(t)) || usables[0] || (conRnc ? 'B01' : 'B02');
 }
 
@@ -3572,7 +3570,9 @@ async function guardarFactura() {
 
 // ── Detalle de Factura (página completa, estilo panel admin) ───────────
 
-const _FAC_NCF_LABELS = { B01: 'Crédito Fiscal', B02: 'Consumidor Final', B14: 'Régimen Especial', B15: 'Gubernamental', B16: 'Exportación' };
+const _FAC_NCF_LABELS = Object.fromEntries(
+  NCF_DOCUMENT_TYPES.map((t) => [t.code, t.label.replace(/^B\d+\s*—\s*/, '')])
+);
 
 function _showFacDetalle() {
   document.querySelectorAll('.module').forEach(el => el.classList.remove('active'));
