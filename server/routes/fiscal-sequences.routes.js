@@ -639,10 +639,13 @@ function createFiscalSequencesRouter({
       const actor = req.authUser;
       const [seq] = await query('SELECT * FROM ncf_authorized_sequences WHERE id = ? AND deleted_at IS NULL', [req.params.id]);
       if (!seq) return res.status(404).json({ error: 'Secuencia no encontrada.' });
-      if (seq.next_number !== seq.start_number) {
-        return res.status(409).json({ error: 'Esta secuencia ya fue utilizada. Suspéndela en vez de eliminarla.' });
+      const yaUsada = seq.next_number !== seq.start_number;
+      const force = req.body?.force === true || req.body?.force === 'true' || req.query?.force === '1';
+      if (yaUsada && !force) {
+        return res.status(409).json({ error: 'Esta secuencia ya fue utilizada. Suspéndela en vez de eliminarla.', usada: true });
       }
-      const reason = String(req.body?.reason || '').trim() || 'Eliminada sin uso previo.';
+      const reason = String(req.body?.reason || '').trim()
+        || (yaUsada ? 'Eliminada forzada (tenía NCF usados).' : 'Eliminada sin uso previo.');
       await query("UPDATE ncf_authorized_sequences SET deleted_at = datetime('now'), deleted_by = ?, deletion_reason = ? WHERE id = ?", [actor.id, reason, seq.id]);
       await recordAudit(query, { fiscalSequenceId: seq.id, action: 'delete', reason, actor, req });
       res.json({ ok: true });

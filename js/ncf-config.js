@@ -87,16 +87,29 @@ async function saveNcfSequence() {
   }
 }
 
-async function deleteNcfSequence(id) {
-  if (!await showDeleteConfirm('¿Eliminar esta secuencia NCF? Esta acción no se puede deshacer.')) return;
+async function deleteNcfSequence(id, force = false) {
+  if (!force && !await showDeleteConfirm('¿Eliminar esta secuencia NCF? Esta acción no se puede deshacer.')) return;
   try {
     const resp = await fetch(`/api/ncf/sequences/${id}`, {
       method: 'DELETE',
-      headers: { Authorization: `Bearer ${DB.authToken || ''}` }
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${DB.authToken || ''}` },
+      body: JSON.stringify({ force })
     });
     const data = await resp.json();
-    if (data.ok) { showToast('Secuencia eliminada.', 'success'); loadNcfSequences(); }
-    else showToast(data.error || 'Error al eliminar.', 'error');
+    if (data.ok && data.action === 'deleted') {
+      showToast('Secuencia eliminada.', 'success'); loadNcfSequences(); return;
+    }
+    if (data.ok && data.action === 'deactivated' && data.usada && !force) {
+      const ok = await showDeleteConfirm(
+        'Esta secuencia ya fue utilizada. Se desactivó.\n\n'
+        + '¿Eliminarla por completo de todas formas? No se borran las ventas ya emitidas con esos NCF.'
+      );
+      if (ok) return deleteNcfSequence(id, true);
+      loadNcfSequences();
+      return;
+    }
+    if (data.ok) { showToast(data.msg || 'Listo.', 'success'); loadNcfSequences(); return; }
+    showToast(data.error || 'Error al eliminar.', 'error');
   } catch (e) {
     showToast('Error: ' + e.message, 'error');
   }

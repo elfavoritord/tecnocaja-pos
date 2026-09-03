@@ -230,12 +230,29 @@ async function ncfAuthSeqUploadAttachment(id, inputEl) {
 }
 
 async function ncfAuthSeqDelete(id) {
-  if (!await showDeleteConfirm('¿Eliminar esta secuencia? Solo es posible si nunca se usó.')) return;
+  if (!await showDeleteConfirm('¿Eliminar esta secuencia?')) return;
   try {
     await ncfAuthSeqApiDelete(`/api/fiscal-sequences/${id}`, {});
     showToast('Secuencia eliminada.', 'success');
     loadNcfAuthSequences();
   } catch (e) {
+    // El servidor bloquea eliminar una secuencia con NCF ya usados. Ofrecer
+    // forzar: no borra las ventas emitidas, solo quita la secuencia de la lista.
+    if (/ya fue utilizada/i.test(e.message || '')) {
+      const ok = await showDeleteConfirm(
+        'Esta secuencia ya tiene NCF usados. ¿Eliminarla de todas formas?\n\n'
+        + 'No se borran las ventas ya emitidas con esos NCF; solo se quita la secuencia de la lista.'
+      );
+      if (!ok) return;
+      try {
+        await ncfAuthSeqApiDelete(`/api/fiscal-sequences/${id}`, { force: true });
+        showToast('Secuencia eliminada.', 'success');
+        loadNcfAuthSequences();
+      } catch (e2) {
+        showToast('Error: ' + e2.message, 'error');
+      }
+      return;
+    }
     showToast('Error: ' + e.message, 'error');
   }
 }

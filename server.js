@@ -19158,9 +19158,10 @@ app.delete('/api/ncf/sequences/:id', async (req, res) => {
     const seqs = await query('SELECT * FROM ncf_sequences WHERE id = ?', [req.params.id]);
     if (!seqs[0]) return res.status(404).json({ error: 'Secuencia no encontrada.' });
     const seq = seqs[0];
-    if (seq.siguiente_numero > 1) {
+    const force = req.body?.force === true || req.body?.force === 'true' || req.query?.force === '1';
+    if (seq.siguiente_numero > 1 && !force) {
       await query('UPDATE ncf_sequences SET activa = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [req.params.id]);
-      return res.json({ ok: true, action: 'deactivated', msg: 'Secuencia desactivada (ya fue utilizada, no se puede eliminar).' });
+      return res.json({ ok: true, action: 'deactivated', usada: true, msg: 'Secuencia desactivada (ya fue utilizada, no se puede eliminar).' });
     }
     await query('DELETE FROM ncf_sequences WHERE id = ?', [req.params.id]);
     res.json({ ok: true, action: 'deleted' });
