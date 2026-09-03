@@ -105,8 +105,15 @@ window.platformInit = (() => {
       setResults(data.map(c => {
         const safe = JSON.stringify(c).replace(/'/g, '&#39;');
         const ini  = (c.nombre_firma || '?')[0].toUpperCase();
-        return `<div class="pi-resultado-item" onclick='platformInit._selectContador(${safe})'>
-          <div class="pi-res-avatar">${ini}</div>
+        const avatar = c.logo_url
+          ? `<img src="${String(c.logo_url).replace(/"/g, '&quot;')}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:inherit">`
+          : ini;
+        // sinNube: la búsqueda cayó al fallback local; el `id` no sirve para
+        // vincular en la nube, así que se muestra pero no se puede elegir.
+        const click = c.sinNube ? '' : `onclick='platformInit._selectContador(${safe})'`;
+        const dis   = c.sinNube ? 'style="opacity:.55;cursor:not-allowed"' : '';
+        return `<div class="pi-resultado-item" ${click} ${dis}>
+          <div class="pi-res-avatar">${avatar}</div>
           <div class="pi-res-info">
             <div class="pi-res-nombre">${c.nombre_firma}</div>
             <div class="pi-res-sub">
@@ -114,8 +121,9 @@ window.platformInit = (() => {
               ${c.rnc         ? `<span>RNC: ${c.rnc}</span>`    : ''}
               ${c.correo      ? `<span>${c.correo}</span>`       : ''}
             </div>
+            ${c.sinNube ? '<div class="pi-res-sub" style="color:#b45309">⚠ Sin conexión a la nube — conéctate a internet para elegirlo</div>' : ''}
           </div>
-          <div class="pi-res-select">Seleccionar</div>
+          ${c.sinNube ? '' : '<div class="pi-res-select">Seleccionar</div>'}
         </div>`;
       }).join(''));
       showResults();

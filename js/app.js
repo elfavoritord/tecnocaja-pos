@@ -6454,7 +6454,13 @@ async function completeInitialSetup() {
       openingNotes: document.getElementById('setup-opening-notes')?.value.trim(),
       forceReset: setupWizard.forceReset,
       securityPassword: setupWizard.securityPassword,
-      networkKey: setupWizard.networkKey || ''
+      networkKey: setupWizard.networkKey || '',
+      // Contador elegido en la pantalla de plataforma (platform-init). Antes se
+      // guardaba en setupWizard._platform* y nunca se enviaba: el negocio nuevo
+      // quedaba sin vincular aunque el usuario hubiera elegido su contador.
+      platformBusinessMode: setupWizard._platformBusinessMode || 'independent',
+      platformContadorId: setupWizard._platformContadorId || '',
+      platformContadorName: setupWizard._platformContadorName || ''
     });
     await activateAuthenticatedSession(response, sessionLanguage);
     setupWizard.forceReset = false;
@@ -6463,6 +6469,9 @@ async function completeInitialSetup() {
     showToast('Configuración inicial completada.', 'success');
     if (response?.networkHosting?.restartRequired) {
       showToast('El modo en red quedó preparado. Reinicia Tecno Caja en la PC principal antes de vincular la segunda caja.', 'warning');
+    }
+    if (response?.contadorSyncWarning) {
+      showToast(`Tu contador se guardó, pero no se pudo enlazar en la nube: ${response.contadorSyncWarning}`, 'warning');
     }
   } catch (error) {
     if (error && error.needsNetworkDbSwitch) {

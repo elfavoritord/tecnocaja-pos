@@ -519,10 +519,10 @@ const businessConfig = {
     serviceCompany: true,
     appMode: 'servicios',
     verticalMeta: { icon: '🔧', label: 'Empresa de Mantenimiento', tagline: 'Órdenes de trabajo, preventivo y equipos' },
-    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-contratos', 'srv-ordenes',
-      'srv-mantenimiento', 'srv-calendario', 'proveedores', 'srv-facturas', 'srv-cobros', 'srv-cxc',
+    modules: ['srv-facturas', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-ordenes',
+      'srv-mantenimiento', 'srv-calendario', 'proveedores', 'srv-cobros', 'srv-cxc',
       'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
-    features: ['servicios', 'contratos', 'ordenes', 'mantenimiento', 'calendario', 'facturacion', 'cxc'],
+    features: ['servicios', 'cotizaciones', 'ordenes', 'mantenimiento', 'calendario', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Órdenes abiertas', taxTitle: 'Cuentas por cobrar' } }
   },
   srv_viajes: {

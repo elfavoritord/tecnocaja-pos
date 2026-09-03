@@ -367,25 +367,35 @@
   }
 
   // Editor de líneas reutilizable (cotización / factura).
+  // Celdas de una fila: guarda el serviceId (si viene del catálogo) en un hidden.
+  function lineCells(it = {}) {
+    return `<td><input type="hidden" name="sid" value="${it.serviceId ? Number(it.serviceId) : ''}">
+        <input name="d" value="${esc(it.descripcion || '')}" placeholder="Servicio / concepto"></td>
+      <td><input name="c" type="number" step="0.01" min="0" value="${it.cantidad ?? 1}" style="width:70px"></td>
+      <td><input name="p" type="number" step="0.01" min="0" value="${it.precio ?? 0}" style="width:100px"></td>
+      <td><input name="dp" type="number" step="0.01" min="0" value="${it.descuentoPct ?? 0}" style="width:60px"></td>
+      <td><input name="ip" type="number" step="0.01" min="0" value="${it.itbisPct ?? 0}" style="width:60px"></td>
+      <td><button type="button" class="srv-link" data-rm>✕</button></td>`;
+  }
+
   function lineEditor(items) {
-    const rowsHtml = (its) => its.map((it, i) => `
-      <tr data-i="${i}">
-        <td><input name="d" value="${esc(it.descripcion || '')}" placeholder="Servicio / concepto"></td>
-        <td><input name="c" type="number" step="0.01" min="0" value="${it.cantidad ?? 1}" style="width:70px"></td>
-        <td><input name="p" type="number" step="0.01" min="0" value="${it.precio ?? 0}" style="width:100px"></td>
-        <td><input name="dp" type="number" step="0.01" min="0" value="${it.descuentoPct ?? 0}" style="width:60px"></td>
-        <td><input name="ip" type="number" step="0.01" min="0" value="${it.itbisPct ?? 0}" style="width:60px"></td>
-        <td><button type="button" class="srv-link" data-rm>✕</button></td>
-      </tr>`).join('');
+    const its = items && items.length ? items : [{}];
+    const rowsHtml = its.map((it, i) => `<tr data-i="${i}">${lineCells(it)}</tr>`).join('');
     return `<div class="srv-lines">
+      <div class="srv-catrow" style="margin:0 0 8px">
+        <select data-cat-sel style="width:100%;max-width:440px">
+          <option value="">+ Agregar desde el catálogo de servicios…</option>
+        </select>
+      </div>
       <table class="srv-table"><thead><tr><th>Descripción</th><th>Cant.</th><th>Precio</th><th>Desc%</th><th>ITBIS%</th><th></th></tr></thead>
-      <tbody data-lines>${rowsHtml(items && items.length ? items : [{}])}</tbody></table>
-      <button type="button" class="srv-link" data-add>+ Agregar línea</button>
+      <tbody data-lines>${rowsHtml}</tbody></table>
+      <button type="button" class="srv-link" data-add>+ Agregar línea manual</button>
     </div>`;
   }
 
   function collectLines(root) {
     return [...root.querySelectorAll('[data-lines] tr')].map((tr) => ({
+      serviceId: Number(tr.querySelector('[name=sid]')?.value || 0) || null,
       descripcion: tr.querySelector('[name=d]').value.trim(),
       cantidad: Number(tr.querySelector('[name=c]').value || 0),
       precio: Number(tr.querySelector('[name=p]').value || 0),
@@ -396,18 +406,56 @@
 
   function wireLines(root) {
     const tbody = root.querySelector('[data-lines]');
-    root.querySelector('[data-add]').onclick = () => {
+    const addRow = (it) => {
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td><input name="d" placeholder="Servicio / concepto"></td>
-        <td><input name="c" type="number" step="0.01" min="0" value="1" style="width:70px"></td>
-        <td><input name="p" type="number" step="0.01" min="0" value="0" style="width:100px"></td>
-        <td><input name="dp" type="number" step="0.01" min="0" value="0" style="width:60px"></td>
-        <td><input name="ip" type="number" step="0.01" min="0" value="0" style="width:60px"></td>
-        <td><button type="button" class="srv-link" data-rm>✕</button></td>`;
+      tr.innerHTML = lineCells(it || {});
       tbody.appendChild(tr);
       tr.querySelector('[data-rm]').onclick = () => tr.remove();
+      return tr;
     };
+    root.querySelector('[data-add]').onclick = () => addRow({});
     tbody.querySelectorAll('[data-rm]').forEach((el) => el.onclick = () => el.closest('tr').remove());
+
+    // Catálogo de servicios: elegir uno agrega (o rellena) una línea con su
+    // precio e ITBIS ya cargados. Las líneas manuales siguen igual.
+    const sel = root.querySelector('[data-cat-sel]');
+    if (sel) {
+      req('/catalogo?activo=1').then((rows) => {
+        (rows || []).forEach((s) => {
+          const o = document.createElement('option');
+          o.value = String(s.id);
+          o.textContent = `${s.codigo ? s.codigo + ' · ' : ''}${s.nombre} — ${money(s.precio)}${s.itbisPct ? ' + ' + s.itbisPct + '% ITBIS' : ''}`;
+          o.dataset.nombre = s.nombre;
+          o.dataset.precio = s.precio;
+          o.dataset.itbis = s.itbisPct || 0;
+          sel.appendChild(o);
+        });
+      }).catch(() => {});
+      sel.onchange = () => {
+        const o = sel.selectedOptions[0];
+        if (!o || !o.value) return;
+        const it = {
+          serviceId: Number(o.value), descripcion: o.dataset.nombre,
+          cantidad: 1, precio: Number(o.dataset.precio || 0),
+          descuentoPct: 0, itbisPct: Number(o.dataset.itbis || 0),
+        };
+        // Si la primera fila sigue vacía, reutilízala en vez de dejar una en blanco.
+        const first = tbody.querySelector('tr');
+        const firstEmpty = first
+          && !first.querySelector('[name=d]').value.trim()
+          && Number(first.querySelector('[name=p]').value || 0) === 0;
+        if (firstEmpty) {
+          first.querySelector('[name=sid]').value = it.serviceId;
+          first.querySelector('[name=d]').value = it.descripcion;
+          first.querySelector('[name=c]').value = it.cantidad;
+          first.querySelector('[name=p]').value = it.precio;
+          first.querySelector('[name=ip]').value = it.itbisPct;
+        } else {
+          addRow(it);
+        }
+        sel.value = '';
+      };
+    }
   }
 
   async function formCotizacion(q) {

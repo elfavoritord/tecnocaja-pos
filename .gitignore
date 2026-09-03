@@ -178,3 +178,7 @@ modules/ecf/certificates/
 # Material de referencia personal (plantilla oficial DGII + guía PDF),
 # no es código del proyecto — no debe ir al repo.
 llenado B06/
+
+# Vistas previas temporales de facturas/reportes (salida de trabajo, no código)
+_preview-*.html
+_preview-*.pdf

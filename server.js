@@ -63,6 +63,7 @@ const createRespaldosRouter = require('./server/routes/respaldos.routes');
 
 // Plataforma Multiempresa — referencia ligera para buscar contadores desde el wizard POS
 const createPlatformRouter = require('./server/routes/platform.routes');
+const { syncContadorToFirestore } = createPlatformRouter;
 
 // Panel SuperAdmin de Tecno Caja
 const createSuperAdminRouter = require('./server/routes/superadmin.routes');
@@ -9086,6 +9087,32 @@ app.post('/api/setup/complete', async (req, res) => {
     trialEndsAt,
     businessStructureMode,
   });
+
+  // Vincular el contador elegido en la pantalla de plataforma del asistente
+  // (platform-init → setupWizard._platform*). Debe ir DESPUÉS de
+  // registerPosLicenseInFirestore para que ya exista el doc licencias/{uid}.
+  let contadorSyncWarning = null;
+  const platformBusinessMode = String(payload.platformBusinessMode || '').trim();
+  const platformContadorId = String(payload.platformContadorId || '').trim();
+  const platformContadorName = String(payload.platformContadorName || '').trim();
+  if (platformBusinessMode === 'accountant_client' && platformContadorId) {
+    try {
+      await query('UPDATE config SET accountant_id = ?, accountant_name = ? WHERE id = 1',
+        [platformContadorId, platformContadorName || null]);
+      const r = typeof syncContadorToFirestore === 'function'
+        ? await syncContadorToFirestore(query, platformContadorId, platformContadorName)
+        : { skipped: true, reason: 'helper no disponible' };
+      if (r && r.skipped) {
+        contadorSyncWarning = r.reason || 'El contador se guardó localmente pero no se sincronizó con la nube.';
+        console.warn('[setup] Contador no sincronizado:', contadorSyncWarning);
+      } else {
+        console.log(`[setup] Negocio vinculado al contador ${platformContadorId} (${platformContadorName || 's/n'}).`);
+      }
+    } catch (e) {
+      contadorSyncWarning = e.message;
+      console.warn('[setup] Error vinculando contador:', e.message);
+    }
+  }
   await trySyncAllStaffToFirebaseAuth().catch((error) => {
     console.warn('No se pudieron crear cuentas Firebase Auth para el staff:', error.message);
   });
@@ -9121,7 +9148,8 @@ app.post('/api/setup/complete', async (req, res) => {
     user: currentUser,
     data: normalizeJsonValue(bootstrap),
     networkHosting,
-    linkedContadorProfile
+    linkedContadorProfile,
+    contadorSyncWarning
   });
 });
 

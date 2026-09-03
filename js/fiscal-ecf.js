@@ -453,9 +453,8 @@ function _renderContadorBuscador(panel, token) {
         return;
       }
       results.innerHTML = list.map(c => `
-        <div style="display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--border,#374151);border-radius:8px;margin-bottom:8px;cursor:pointer;transition:background .15s"
-          onmouseover="this.style.background='rgba(34,197,94,.07)'" onmouseout="this.style.background=''"
-          onclick="contSeleccionar('${escapeHtml(c.id)}','${escapeHtml(c.nombre_firma)}')">
+        <div style="display:flex;align-items:center;gap:12px;padding:12px;border:1px solid var(--border,#374151);border-radius:8px;margin-bottom:8px;transition:background .15s${c.sinNube ? ';opacity:.55;cursor:not-allowed' : ';cursor:pointer'}"
+          ${c.sinNube ? '' : `onmouseover="this.style.background='rgba(34,197,94,.07)'" onmouseout="this.style.background=''" onclick="contSeleccionar('${escapeHtml(c.id)}','${escapeHtml(c.nombre_firma)}')"`}>
           <div style="width:44px;height:44px;border-radius:50%;background:var(--bg2,#1f2937);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">
             ${c.logo_url ? `<img src="${escapeHtml(c.logo_url)}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">` : '👨‍💼'}
           </div>
@@ -466,10 +465,11 @@ function _renderContadorBuscador(panel, token) {
               ${c.telefono ? ` · ${escapeHtml(c.telefono)}` : ''}
               ${c.correo ? ` · ${escapeHtml(c.correo)}` : ''}
             </div>
+            ${c.sinNube ? '<div style="font-size:.75rem;color:#f59e0b;margin-top:2px">⚠ Sin conexión a la nube — conéctate a internet para elegirlo</div>' : ''}
           </div>
-          <button style="padding:6px 14px;background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.8rem;font-weight:600;white-space:nowrap">
+          ${c.sinNube ? '' : `<button style="padding:6px 14px;background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.8rem;font-weight:600;white-space:nowrap">
             Seleccionar
-          </button>
+          </button>`}
         </div>`).join('');
     } catch (e) {
       results.innerHTML = '<div style="color:var(--text3);font-size:.85rem;padding:8px 0">Error al buscar. Intenta de nuevo.</div>';

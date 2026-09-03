@@ -48,13 +48,20 @@ async function _syncContadorToFirestore(query, contadorId, contadorNombre) {
   const docPath = `${COL_LICENCIAS}/${bizId}`;
 
   if (contadorId) {
-    // Obtener nombre desde Firestore si no tenemos uno
+    // Verificar que el contador EXISTA en Firestore (y de paso traer su nombre).
+    // Si no existe, casi seguro llegó un id numérico de MariaDB porque la
+    // búsqueda cayó al fallback sin nube — escribir ese contadorId dejaría al
+    // negocio "vinculado" a un id que el Portal del Contador nunca podrá
+    // machear (busca por doc-id de Firestore). Mejor no escribir y avisar.
     let nombre = contadorNombre;
-    if (!nombre) {
-      try {
-        const cDoc = await db.collection('contadores').doc(String(contadorId)).get();
-        if (cDoc.exists) nombre = cDoc.data().nombre_firma || '';
-      } catch (_) {}
+    try {
+      const cDoc = await db.collection('contadores').doc(String(contadorId)).get();
+      if (!cDoc.exists) {
+        return { skipped: true, reason: `El contador "${contadorId}" no existe en la nube — no se vinculó (¿la búsqueda fue sin conexión?). Reintenta con internet.` };
+      }
+      nombre = cDoc.data().nombre_firma || nombre || '';
+    } catch (e) {
+      return { skipped: true, reason: `No se pudo verificar el contador en la nube: ${e.message}` };
     }
     await db.collection(COL_LICENCIAS).doc(bizId).set({
       contadorId: String(contadorId),
@@ -131,7 +138,10 @@ function createPlatformRouter({ query }) {
         LIMIT 20
       `, [like, like, like, like]);
       console.log('[platform/contadores/buscar] MariaDB resultados:', rows.length);
-      res.json(rows);
+      // `id` aquí es el PK numérico de MariaDB, NO el doc-id de Firestore que
+      // usa el Portal del Contador. Se marca para que el frontend no permita
+      // vincular a ciegas (quedaría un contadorId que nunca machea).
+      res.json(rows.map((r) => ({ ...r, sinNube: true })));
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -351,7 +361,8 @@ function createPlatformRouter({ query }) {
       // aunque Firestore nunca se hubiera actualizado.
       let syncWarning = null;
       try {
-        await _syncContadorToFirestore(query, contador_id, nombre_firma || '');
+        const r = await _syncContadorToFirestore(query, contador_id, nombre_firma || '');
+        if (r && r.skipped) syncWarning = r.reason || 'Se guardó localmente pero no se sincronizó con la nube.';
       } catch (syncErr) {
         console.error('[platform] Error sincronizando contador a Firestore:', syncErr.message);
         syncWarning = syncErr.message;
@@ -372,7 +383,8 @@ function createPlatformRouter({ query }) {
       // reporta cualquier error en vez de tragarlo en silencio.
       let syncWarning = null;
       try {
-        await _syncContadorToFirestore(query, null, null);
+        const r = await _syncContadorToFirestore(query, null, null);
+        if (r && r.skipped) syncWarning = r.reason || 'Se desvinculó localmente pero no se sincronizó con la nube.';
       } catch (syncErr) {
         console.error('[platform] Error desvinculando contador en Firestore:', syncErr.message);
         syncWarning = syncErr.message;
@@ -407,3 +419,6 @@ function createPlatformRouter({ query }) {
 }
 
 module.exports = createPlatformRouter;
+// Reutilizado por /api/setup/complete para vincular el contador elegido en el
+// asistente sin duplicar la lógica de resolución del doc de licencias.
+module.exports.syncContadorToFirestore = _syncContadorToFirestore;
