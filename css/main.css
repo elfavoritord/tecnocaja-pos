@@ -4812,11 +4812,18 @@ textarea.form-input { resize:vertical; min-height:80px; }
   justify-content:center;
   gap:0.6rem;
 }
-/* La factura A4 formal (.tcfac-root) es más alta que el modal: centrarla
-   verticalmente recorta el encabezado (flexbox + overflow deja el inicio
-   inalcanzable). Alinear al inicio y dejar que scrollee desde arriba. */
-.receipt-modal .modal-body:has(.tcfac-root) {
-  justify-content:flex-start;
+/* La factura A4 formal es más alta que el modal. Con el modal-body en
+   flex-column + justify-content:center el inicio (logo, "FACTURA", NCF)
+   queda inalcanzable al hacer scroll. Para el recibo normal (no el flujo
+   "pending") se usa layout de bloque: scroll natural de arriba a abajo. */
+.receipt-modal:not(.receipt-modal--pending) .modal-body {
+  display:block;
+  overflow:auto;
+  padding:12px;
+}
+.receipt-modal:not(.receipt-modal--pending) .modal-body > #receipt-content {
+  display:block;
+  width:100%;
 }
 .receipt-delivery-panel {
   width:100%;

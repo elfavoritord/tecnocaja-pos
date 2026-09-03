@@ -8893,7 +8893,7 @@ function facMoney(n) {
 }
 
 const FORMAL_INVOICE_CSS = `
-.tcfac-root{ display:block; background:#eef1f4; padding:14px; overflow:auto;
+.tcfac-root{ display:block; background:#eef1f4; padding:14px; overflow:visible;
   font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; color:#1f2937; }
 .tcfac-root *{ margin:0; padding:0; box-sizing:border-box; }
 .tcfac-root .tcf-page{ position:relative; width:210mm; min-height:297mm; margin:0 auto;
