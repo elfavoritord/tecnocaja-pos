@@ -8989,6 +8989,43 @@ function ventaToFormalDoc(venta) {
   else if (pagado > 0.01) estadoLabel = 'PAGO PARCIAL';
   else estadoLabel = 'PENDIENTE DE PAGO';
 
+  // ITBIS por línea. Muchas ventas guardan la tasa por ítem en 0 y solo el
+  // total de ITBIS a nivel de venta (precios con impuesto incluido, config
+  // global, etc.). Si es así, repartir el ITBIS de la venta proporcional al
+  // subtotal de cada línea para que la columna no quede vacía.
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const nItems = td.normalizedItems || [];
+  const sumSub = nItems.reduce((a, it) => a + Number(it.subtotal || it.total || 0), 0);
+  const saleItbis = Number(bd.itbis || 0);
+  const necesitaRepartir = saleItbis > 0.01 && nItems.every((it) => !(Number(it.itbisRate || 0) > 0) && !(Number(it.lineTax || 0) > 0));
+  let repartidoAcum = 0;
+  const items = nItems.map((it, idx) => {
+    const sub = Number(it.subtotal || it.total || 0);
+    let rate = Number(it.itbisRate || 0);
+    let monto = Number(it.lineTax || 0);
+    if (necesitaRepartir && sumSub > 0) {
+      monto = (idx === nItems.length - 1)
+        ? r2(saleItbis - repartidoAcum)
+        : r2(saleItbis * (sub / sumSub));
+      repartidoAcum = r2(repartidoAcum + monto);
+      if (rate <= 0 && sub > 0) rate = Math.round((monto / sub) * 100);
+    } else if (rate > 0 && monto <= 0 && sub > 0) {
+      monto = r2(sub * (rate / 100));
+    }
+    return {
+      descripcion: it.nombre,
+      cantidad: it.qty,
+      precio: it.precio,
+      itbisPct: rate,
+      itbisMonto: monto,
+      total: Number(it.total || 0)
+    };
+  });
+
+  const ncfTipoLabel = venta.ncfType
+    ? `${venta.ncfType} — ${venta.ncfLabel || NCF_LABELS_FE[venta.ncfType] || ''}`.replace(/ — $/, '')
+    : (venta.tipoEcf ? `e-CF ${venta.tipoEcf}` : '');
+
   return {
     isCot, anulada, estadoLabel, pagado, balance,
     empresa: {
@@ -9001,8 +9038,10 @@ function ventaToFormalDoc(venta) {
     numero: getReceiptDisplayNumber(venta),
     ncf,
     fiscalMode: elec ? 'ecf' : 'ncf',
-    ncfVencimiento: (!elec && venta.ncf && venta.ncfVencimiento) ? venta.ncfVencimiento : '',
+    ncfTipoLabel,
+    ncfVencimiento: (venta.ncf || venta.encf) ? (venta.ncfVencimiento || '') : '',
     fecha: venta.fecha,
+    fechaEmision: venta.fechaEmisionFiscal || venta.fiscalFechaIso || '',
     cajero: venta.cajero || '',
     metodoPago: venta.receiptMethodLabelOverride || SALE_PAYMENT_TYPES[venta.metodo] || venta.metodo || 'Efectivo',
     condicionPago: esCredito ? 'crédito' : 'contado',
@@ -9012,13 +9051,7 @@ function ventaToFormalDoc(venta) {
       tel: venta.clienteTelefono || venta.telefonoDelivery || '',
       dir: venta.direccionDelivery || ''
     },
-    items: (td.normalizedItems || []).map((it) => ({
-      descripcion: it.nombre,
-      cantidad: it.qty,
-      precio: it.precio,
-      itbisPct: Number(it.itbisRate || 0),
-      total: Number(it.total || 0)
-    })),
+    items,
     subtotal: bd.subtotal,
     descuento: bd.descuento,
     itbis: bd.itbis,
@@ -9037,13 +9070,18 @@ function buildFormalInvoiceMarkup(venta) {
   const fecha = formatReceiptDateForPaper(d.fecha, 'a4') || '';
   const venc = d.ncfVencimiento ? (formatReceiptDateForPaper(d.ncfVencimiento, 'a4') || '') : '';
 
+  const itbisCell = (it) => {
+    if (Number(it.itbisMonto) > 0.005) return facMoney(it.itbisMonto);
+    if (Number(it.itbisPct) > 0) return Number(it.itbisPct).toFixed(0) + '%';
+    return 'Exento';
+  };
   const rows = d.items.map((it, i) => `
       <tr>
         <td class="tcf-ci">${i + 1}</td>
         <td class="tcf-cd">${esc(it.descripcion)}</td>
         <td class="tcf-cn">${Number(it.cantidad || 0)}</td>
         <td class="tcf-cn">${facMoney(it.precio)}</td>
-        <td class="tcf-cn">${Number(it.itbisPct) ? Number(it.itbisPct).toFixed(0) + '%' : '—'}</td>
+        <td class="tcf-cn">${esc(itbisCell(it))}</td>
         <td class="tcf-cn">${facMoney(it.total)}</td>
       </tr>`).join('');
 
@@ -9071,8 +9109,9 @@ function buildFormalInvoiceMarkup(venta) {
           <div class="tcf-title">${titulo}</div>
           ${d.ncf ? `<div class="tcf-chip"><span>${d.fiscalMode === 'ecf' ? 'e-NCF' : 'NCF'}</span> ${esc(d.ncf)}</div>` : ''}
           <div class="tcf-meta">
+            ${d.ncfTipoLabel ? `<div><b>Tipo de comprobante:</b> ${esc(d.ncfTipoLabel)}</div>` : ''}
             <div><b>No.:</b> ${esc(d.numero)}</div>
-            <div><b>Fecha:</b> ${esc(fecha)}</div>
+            <div><b>Fecha de emisión:</b> ${esc(fecha)}</div>
             ${venc ? `<div><b>NCF válido hasta:</b> ${esc(venc)}</div>` : ''}
           </div>
           <div class="tcf-stamp ${stampClass}">${esc(d.estadoLabel)}</div>
@@ -9092,6 +9131,8 @@ function buildFormalInvoiceMarkup(venta) {
           <div class="tcf-pay"><span>Condición</span><span>${esc(d.condicionPago)}</span></div>
           <div class="tcf-pay"><span>Método de pago</span><span>${esc(d.metodoPago)}</span></div>
           <div class="tcf-pay"><span>Estado</span><span>${esc(d.estadoLabel)}</span></div>
+          ${Number(d.pagado) ? `<div class="tcf-pay"><span>Pagado</span><span>${facMoney(d.pagado)}</span></div>` : ''}
+          ${(Number(d.balance) > 0.01 && !d.isCot) ? `<div class="tcf-pay"><span>Saldo pendiente</span><span>${facMoney(d.balance)}</span></div>` : ''}
           ${d.cajero ? `<div class="tcf-pay"><span>Cajero</span><span>${esc(d.cajero)}</span></div>` : ''}
         </div>
       </div>
