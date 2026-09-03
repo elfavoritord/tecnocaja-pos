@@ -4812,6 +4812,12 @@ textarea.form-input { resize:vertical; min-height:80px; }
   justify-content:center;
   gap:0.6rem;
 }
+/* La factura A4 formal (.tcfac-root) es más alta que el modal: centrarla
+   verticalmente recorta el encabezado (flexbox + overflow deja el inicio
+   inalcanzable). Alinear al inicio y dejar que scrollee desde arriba. */
+.receipt-modal .modal-body:has(.tcfac-root) {
+  justify-content:flex-start;
+}
 .receipt-delivery-panel {
   width:100%;
   max-width:420px;
