@@ -33,6 +33,18 @@ async function ensureServiciosSchema(query) {
   await addColumnIfMissing(query, 'config', 'service_mail_user', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing(query, 'config', 'service_mail_pass', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing(query, 'config', 'service_mail_from', 'VARCHAR(160) DEFAULT NULL');
+  // Firma/sello del emisor (imagen data-URL) estampada en cotizaciones y facturas A4.
+  await addColumnIfMissing(query, 'config', 'service_signature', 'LONGTEXT DEFAULT NULL');
+  // Firma digital PAdES automática del PDF (cotización/factura) al verlo/imprimir/enviar.
+  await addColumnIfMissing(query, 'config', 'service_autosign', 'TINYINT(1) DEFAULT 0');
+  // PDF ya firmado, guardado al momento de crear el documento (base64).
+  await addColumnIfMissing(query, 'svc_invoices', 'signed_pdf', 'LONGTEXT DEFAULT NULL');
+  await addColumnIfMissing(query, 'svc_invoices', 'signed_at', 'DATETIME DEFAULT NULL');
+  await addColumnIfMissing(query, 'svc_quotations', 'signed_pdf', 'LONGTEXT DEFAULT NULL');
+  await addColumnIfMissing(query, 'svc_quotations', 'signed_at', 'DATETIME DEFAULT NULL');
+  // Texto de condiciones de pago por defecto de las cotizaciones (plantilla editable).
+  await addColumnIfMissing(query, 'config', 'service_quote_terms', 'LONGTEXT DEFAULT NULL');
+  await addColumnIfMissing(query, 'config', 'service_quote_advance_pct', 'DECIMAL(5,2) DEFAULT NULL');
   // Espejo de la factura de servicios en la tabla `sales` del POS (para que los
   // Reportes/Dashboard/sync del contador la vean como una venta normal).
   await addColumnIfMissing(query, 'svc_invoices', 'sale_id', 'INT DEFAULT NULL');
@@ -108,6 +120,11 @@ async function ensureServiciosSchema(query) {
       CONSTRAINT fk_svc_quoit_quo FOREIGN KEY (quotation_id) REFERENCES svc_quotations(id) ON DELETE CASCADE
     )
   `);
+
+  // Flujo simplificado: ya no hay borrador/enviada — lo pendiente pasa a "aprobada".
+  await query(
+    "UPDATE svc_quotations SET estado = 'aprobada', updated_at = datetime('now') WHERE estado IN ('borrador', 'enviada')"
+  ).catch(() => {});
 
   // ── Facturación de servicios ─────────────────────────────────────────────
   await query(`

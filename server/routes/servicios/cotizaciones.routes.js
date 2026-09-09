@@ -19,8 +19,10 @@ const {
 const { renderInvoiceDoc, renderEmailBody } = require('./renderDoc');
 const { sendInvoiceEmail } = require('./mailer');
 
-const ESTADOS = ['borrador', 'enviada', 'aprobada', 'rechazada', 'vencida', 'convertida'];
-const EDITABLE = ['borrador', 'enviada'];
+// Flujo simplificado: la cotización nace "aprobada" (sin borrador/enviada) y se
+// puede editar hasta que se factura ("convertida") o se rechaza.
+const ESTADOS = ['aprobada', 'rechazada', 'vencida', 'convertida', 'borrador', 'enviada'];
+const EDITABLE = ['aprobada', 'borrador', 'enviada'];
 
 function mapQuotation(row, items = []) {
   return {
@@ -60,7 +62,7 @@ function mapQuotation(row, items = []) {
 function createCotizacionesRouter(deps) {
   const {
     query, withTransaction, writeAuditLog, ensureSchema, nextServiceDocNumber,
-    getConfig, isGlobalAdministratorUser, getUserScopeBranchId,
+    getConfig, isGlobalAdministratorUser, getUserScopeBranchId, ecfService,
   } = deps;
   const guard = makeServiceGuard(deps);
   const router = express.Router();
@@ -124,24 +126,40 @@ function createCotizacionesRouter(deps) {
     }
   });
 
+  // Devuelve { nombre, rnc, fecha } si el PDF se va a firmar y hay un .p12 vigente.
+  async function resolveDigitalSign(cfg, want) {
+    if (!want || !ecfService || typeof ecfService.getCertificateStatus !== 'function') return null;
+    try {
+      if (typeof ecfService.ensureReady === 'function') await ecfService.ensureReady().catch(() => {});
+      const st = await ecfService.getCertificateStatus();
+      if (!st || !st.hasCertificate || st.isExpired || st.status === 'error') return null;
+      return { nombre: cfg.nombre || 'Tecno Caja', rnc: String(cfg.rnc || '').replace(/\D/g, ''), fecha: new Date() };
+    } catch (_) { return null; }
+  }
+
   // Ensambla el payload del documento A4/térmico.
-  async function buildDocPayload(full, cfg) {
+  async function buildDocPayload(full, cfg, { wantSign = false } = {}) {
     let contact = {};
     if (full.clientId) {
       const [c] = await query('SELECT email, telefono, direccion FROM clients WHERE id = ? LIMIT 1', [full.clientId]);
       if (c) contact = { clientEmail: c.email || '', clientTel: c.telefono || '', clientDir: c.direccion || '' };
     }
     let correo = '';
+    let firma = '';
+    let autosign = false;
     try {
-      const [mc] = await query('SELECT service_mail_user FROM config WHERE id = 1 LIMIT 1');
+      const [mc] = await query('SELECT service_mail_user, service_signature, service_autosign FROM config WHERE id = 1 LIMIT 1');
       correo = (mc && mc.service_mail_user) || '';
+      firma = (mc && mc.service_signature) || '';
+      autosign = Boolean(Number(mc && mc.service_autosign));
     } catch (_) { /* noop */ }
+    const digitalSign = await resolveDigitalSign(cfg, autosign || wantSign);
     return {
       empresa: {
         nombre: cfg.nombre || 'Tecno Caja', rnc: cfg.rnc || '', direccion: cfg.direccion || '',
-        telefono: cfg.telefono || '', correo, logo: cfg.logo || '',
+        telefono: cfg.telefono || '', correo, logo: cfg.logo || '', firma,
       },
-      invoice: { ...full, ...contact, docType: 'cotizacion' },
+      invoice: { ...full, ...contact, docType: 'cotizacion', digitalSign },
       items: full.items,
     };
   }
@@ -153,7 +171,8 @@ function createCotizacionesRouter(deps) {
       if (!full) return res.status(404).json({ error: 'Cotización no encontrada.' });
       const cfg = (getConfig ? await getConfig().catch(() => ({})) : {});
       const formato = String(req.query.formato || cfg.serviceInvoiceDefaultFormat || 'a4').toLowerCase();
-      const html = renderInvoiceDoc(await buildDocPayload(full, cfg), formato);
+      const wantSign = ['1', 'true', 'yes'].includes(String(req.query.firmar || '').toLowerCase());
+      const html = renderInvoiceDoc(await buildDocPayload(full, cfg, { wantSign }), formato);
       if (req.query.raw === '1') { res.type('html').send(html); return; }
       res.json({ formato, html, quotation: full });
     } catch (e) {
@@ -230,7 +249,7 @@ function createCotizacionesRouter(deps) {
       const branchId = resolveBranch(actor, req.body?.branchId, deps)
         || (req.body?.branchId ? Number(req.body.branchId) : null);
       const cashRegisterId = req.body?.cashRegisterId ? Number(req.body.cashRegisterId) : null;
-      const estado = EDITABLE.includes(req.body?.estado) ? req.body.estado : 'borrador';
+      const estado = 'aprobada';
 
       const saved = await withTransaction(async (conn) => {
         const numero = await nextServiceDocNumber(conn, 'quotation');
@@ -279,7 +298,8 @@ function createCotizacionesRouter(deps) {
       await withTransaction(async (conn) => {
         await conn.query(
           `UPDATE svc_quotations SET client_id=?, client_name=?, client_rnc=?, fecha=?, validez_dias=?,
-             subtotal=?, descuento=?, itbis=?, total=?, notas=?, condiciones=?, updated_at=datetime('now') WHERE id=?`,
+             subtotal=?, descuento=?, itbis=?, total=?, notas=?, condiciones=?,
+             signed_pdf=NULL, signed_at=NULL, updated_at=datetime('now') WHERE id=?`,
           [p.clientId, p.clientName, p.clientRnc, p.fecha, p.validezDias,
            p.totals.subtotal, p.totals.descuento, p.totals.itbis, p.totals.total, p.notas, p.condiciones, id]
         );
@@ -334,7 +354,7 @@ function createCotizacionesRouter(deps) {
     try {
       const [cur] = await query('SELECT * FROM svc_quotations WHERE id = ?', [id]);
       if (!cur) throw httpError('Cotización no encontrada.', 404);
-      if (cur.estado !== 'borrador') throw httpError('Solo se pueden eliminar cotizaciones en borrador. Usa "rechazada" para las demás.', 409);
+      if (cur.estado === 'convertida') throw httpError('No se puede eliminar una cotización ya facturada.', 409);
       await query('DELETE FROM svc_quotations WHERE id = ?', [id]);
       await writeAuditLog({
         userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),

@@ -1,0 +1,5 @@
+node_modules/
+.env
+.oauth-store.json
+.oauth-store.json.tmp
+*.log

@@ -677,6 +677,8 @@ function renderCertificateInfo(cert, dgiiSettings = {}) {
       ? 'color:#dd6b20;font-weight:700'
       : 'color:#38a169';
 
+  const esServicios = !!(typeof DB !== 'undefined' && DB && DB.config && DB.config.serviceCompany);
+
   box.innerHTML = `
     <div class="fiscal-cert-grid">
       <div class="fiscal-cert-row"><span class="fiscal-cert-label">Tipo</span><span class="fiscal-cert-val">${escapeHtml(dgiiSettings.certificateMode === 'qscd' ? 'QSCD / Cloud' : '.p12 local')}</span></div>
@@ -687,7 +689,67 @@ function renderCertificateInfo(cert, dgiiSettings = {}) {
       <div class="fiscal-cert-row"><span class="fiscal-cert-label">Vence</span><span class="fiscal-cert-val" style="${expClass}">${formatDate(cert.validTo)}${cert.daysRemaining !== null && cert.daysRemaining !== undefined ? ` (${cert.daysRemaining} días)` : ''}</span></div>
       <div class="fiscal-cert-row"><span class="fiscal-cert-label">Estado</span><span class="fiscal-cert-val"><span class="fiscal-badge-${isExpired ? 'red' : 'green'}">${isExpired ? 'Vencido' : 'Válido'}</span></span></div>
     </div>
+    ${esServicios ? `
+    <div id="fiscal-autosign-box" style="margin-top:12px;padding:12px 14px;border:1px solid var(--border,#e2e8f0);border-radius:10px;background:var(--bg2,#f8fafc)">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;margin:0">
+        <input type="checkbox" id="fiscal-autosign-toggle" style="width:18px;height:18px;margin-top:2px;flex:0 0 auto">
+        <span>
+          <strong>Firmar automáticamente los documentos</strong><br>
+          <span style="font-size:.8rem;color:var(--text3,#64748b)">Cotizaciones y facturas del modo Servicios se firman con este certificado al verlas, imprimirlas o enviarlas por correo — sin tener que descargar nada. No se envía nada a DGII.</span>
+        </span>
+      </label>
+      <div id="fiscal-autosign-status" style="font-size:.8rem;color:var(--text3,#64748b);margin-top:8px"></div>
+    </div>` : ''}
   `;
+
+  if (esServicios) wireAutoSignToggle(isExpired);
+}
+
+// Toggle "firmar automáticamente" — vive en config.service_autosign vía /api/servicios/config.
+async function serviciosConfigApi(method, body) {
+  const token = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '') || (typeof DB !== 'undefined' && DB && DB.authToken) || '';
+  const res = await fetch('/api/servicios/config', {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+    body: method === 'GET' ? undefined : JSON.stringify(body || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+
+async function wireAutoSignToggle(certExpired) {
+  const toggle = document.getElementById('fiscal-autosign-toggle');
+  const statusEl = document.getElementById('fiscal-autosign-status');
+  if (!toggle) return;
+  try {
+    const cfg = await serviciosConfigApi('GET');
+    toggle.checked = !!cfg.autoSign;
+  } catch (_) { /* deja el default sin marcar */ }
+  const paint = () => {
+    if (!statusEl) return;
+    if (toggle.checked && certExpired) {
+      statusEl.innerHTML = '<span style="color:#dd6b20">Activado, pero el certificado está vencido: los PDF saldrán sin firma hasta renovarlo.</span>';
+    } else if (toggle.checked) {
+      statusEl.innerHTML = '<span style="color:#38a169">Activado. Cada cotización/factura se firma sola.</span>';
+    } else {
+      statusEl.textContent = 'Desactivado. Se firma solo con el botón “Descargar PDF firmado”.';
+    }
+  };
+  paint();
+  toggle.onchange = async () => {
+    toggle.disabled = true;
+    try {
+      await serviciosConfigApi('PUT', { autoSign: toggle.checked });
+      if (typeof showFiscalToast === 'function') showFiscalToast(toggle.checked ? 'Auto-firma activada' : 'Auto-firma desactivada', 'success');
+    } catch (e) {
+      toggle.checked = !toggle.checked;
+      if (typeof showFiscalToast === 'function') showFiscalToast('No se pudo guardar: ' + e.message, 'error');
+    } finally {
+      toggle.disabled = false;
+      paint();
+    }
+  };
 }
 
 function renderConnectionPanel(bundle, status) {

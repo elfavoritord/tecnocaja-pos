@@ -200,6 +200,7 @@ function createFacturacionRouter(deps) {
   const {
     query, withTransaction, writeAuditLog, ensureSchema, nextServiceDocNumber,
     getNextNcfFromSequence, getConfig, isGlobalAdministratorUser, getUserScopeBranchId,
+    ecfService,
   } = deps;
   const guard = makeServiceGuard(deps);
   const router = express.Router();
@@ -226,25 +227,46 @@ function createFacturacionRouter(deps) {
 
   // Ensambla el payload para renderInvoiceDoc (empresa + factura con datos de
   // contacto del cliente). Reusado por /documento y /email.
-  async function buildDocPayload(full, cfg) {
+  async function buildDocPayload(full, cfg, { wantSign = false } = {}) {
     let contact = {};
     if (full.clientId) {
       const [c] = await query('SELECT email, telefono, direccion FROM clients WHERE id = ? LIMIT 1', [full.clientId]);
       if (c) contact = { clientEmail: c.email || '', clientTel: c.telefono || '', clientDir: c.direccion || '' };
     }
     let correo = '';
+    let firma = '';
+    let autosign = false;
     try {
-      const [mc] = await query('SELECT service_mail_from, service_mail_user FROM config WHERE id = 1 LIMIT 1');
+      const [mc] = await query('SELECT service_mail_from, service_mail_user, service_signature, service_autosign FROM config WHERE id = 1 LIMIT 1');
       correo = (mc && (mc.service_mail_user || '')) || '';
+      firma = (mc && (mc.service_signature || '')) || '';
+      autosign = Boolean(Number(mc && mc.service_autosign));
     } catch (_) { /* columnas aún no migradas */ }
+    const digitalSign = await resolveDigitalSign(cfg, autosign || wantSign);
     return {
       empresa: {
         nombre: cfg.nombre || 'Tecno Caja', rnc: cfg.rnc || '', direccion: cfg.direccion || '',
-        telefono: cfg.telefono || '', correo, logo: cfg.logo || '',
+        telefono: cfg.telefono || '', correo, logo: cfg.logo || '', firma,
       },
-      invoice: { ...full, ...contact, docType: 'factura' },
+      invoice: { ...full, ...contact, docType: 'factura', digitalSign },
       items: full.items,
     };
+  }
+
+  // Devuelve { nombre, rnc, fecha } si el PDF se va a firmar (auto-firma activa o
+  // el llamador lo pidió) y hay un certificado .p12 vigente; si no, null.
+  async function resolveDigitalSign(cfg, want) {
+    if (!want || !ecfService || typeof ecfService.getCertificateStatus !== 'function') return null;
+    try {
+      if (typeof ecfService.ensureReady === 'function') await ecfService.ensureReady().catch(() => {});
+      const st = await ecfService.getCertificateStatus();
+      if (!st || !st.hasCertificate || st.isExpired || st.status === 'error') return null;
+      return {
+        nombre: cfg.nombre || 'Tecno Caja',
+        rnc: String(cfg.rnc || '').replace(/\D/g, ''),
+        fecha: new Date(),
+      };
+    } catch (_) { return null; }
   }
 
   // Consume el comprobante fiscal según el modo. Corre dentro de la transacción.
@@ -528,7 +550,8 @@ function createFacturacionRouter(deps) {
       if (!full) return res.status(404).json({ error: 'Factura no encontrada.' });
       const cfg = await getConfig().catch(() => ({}));
       const formato = String(req.query.formato || cfg.serviceInvoiceDefaultFormat || 'a4').toLowerCase();
-      const html = renderInvoiceDoc(await buildDocPayload(full, cfg), formato);
+      const wantSign = ['1', 'true', 'yes'].includes(String(req.query.firmar || '').toLowerCase());
+      const html = renderInvoiceDoc(await buildDocPayload(full, cfg, { wantSign }), formato);
       if (req.query.raw === '1') { res.type('html').send(html); return; }
       res.json({ formato, html, invoice: full });
     } catch (e) {
@@ -593,7 +616,8 @@ function createFacturacionRouter(deps) {
       }
       const r = await query(
         `UPDATE svc_invoices SET estado = 'anulada', balance = 0, motivo_anulacion = ?, anulada_at = datetime('now'),
-           anulada_by_user_name = ?, updated_at = datetime('now') WHERE id = ? AND estado <> 'anulada'`,
+           anulada_by_user_name = ?, signed_pdf = NULL, signed_at = NULL, updated_at = datetime('now')
+         WHERE id = ? AND estado <> 'anulada'`,
         [motivo, actorName(actor), id]
       );
       if (!r.affectedRows) throw httpError('La factura ya está anulada.', 409);

@@ -38,6 +38,7 @@ Diagrama completo: `docs/ARCHITECTURE.md`.
 - `js/` — Renderer vanilla (no React, no Vue aún).
 - `modules/firebase-admin.js` — Firebase opcional.
 - `reporte app/` — Subproyecto Flutter independiente. **NO tocar desde aquí.**
+- `mcp-server/` — Servidor MCP (Model Context Protocol) **de solo lectura** para Claude/ChatGPT. Proceso aparte (ESM, puerto 3400), consulta el POS por HTTP reusando su auth; **no toca `server.js` ni la BD**. **OAuth 2.1 propio** (login usuario/clave del `.env`, DCR, PKCE) + token de máquina opcional. Ver `mcp-server/README.md`. Túnel con nombre fijo: `scripts/start-mcp-with-tunnel.ps1 -Tunnel <nombre>`.
 
 ## Convenciones que NO debes romper
 

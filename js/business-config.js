@@ -469,10 +469,11 @@ const businessConfig = {
     serviceCompany: true,
     appMode: 'servicios',
     verticalMeta: { icon: '💻', label: 'Empresa de Tecnología', tagline: 'Proyectos, soporte, contratos y facturación' },
-    modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-proyectos',
-      'srv-ordenes', 'srv-contratos', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
+    // srv-dashboard (Panel) y srv-servicios (catálogo) quitados a pedido — landing pasa a srv-facturas.
+    modules: ['srv-facturas', 'clientes', 'srv-cotizaciones', 'srv-proyectos',
+      'srv-ordenes', 'srv-contratos', 'srv-cobros', 'srv-cxc', 'srv-gastos',
       'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
-    features: ['servicios', 'proyectos', 'ordenes', 'contratos', 'facturacion', 'cxc'],
+    features: ['proyectos', 'ordenes', 'contratos', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Proyectos activos', taxTitle: 'Cuentas por cobrar' } }
   },
   srv_publicidad: {

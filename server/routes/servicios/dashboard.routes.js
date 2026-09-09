@@ -100,7 +100,7 @@ function createDashboardRouter(deps) {
         facturasPendientes: Number(pend.cant || 0),
         facturasVencidas: Number(venc.cant || 0),
         cotizaciones: {
-          borrador: cot.borrador || 0, enviada: cot.enviada || 0, aprobada: cot.aprobada || 0,
+          aprobada: (cot.aprobada || 0) + (cot.borrador || 0) + (cot.enviada || 0),
           rechazada: cot.rechazada || 0, convertida: cot.convertida || 0,
         },
         gastosPeriodo: gastosMonto,

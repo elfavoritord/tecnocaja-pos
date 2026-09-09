@@ -15,6 +15,30 @@ function esc(v) {
 function money(n) {
   return 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+// Notas del documento: escapa y resalta en negrita lo importante — títulos en
+// MAYÚSCULAS, montos "RD$ 1,234.56", porcentajes "75%" y el prefijo "Monto total:".
+// Devuelve párrafos compactos (colapsa líneas en blanco múltiples) para no
+// desperdiciar alto de página.
+function formatNotas(raw) {
+  const fmtLine = (ln) => {
+    const t = ln.trim();
+    if (t && /[A-ZÁÉÍÓÚÑ]/.test(t) && t === t.toUpperCase() && !/\d/.test(t.replace(/[.,%$/\s-]/g, ''))) {
+      return `<strong>${esc(ln)}</strong>`;
+    }
+    let s = esc(ln);
+    s = s.replace(/^(\s*monto\s+total[^:]*:)/i, '<strong>$1</strong>');
+    s = s.replace(/(RD\$\s?\d[\d,]*(?:\.\d{2})?)/g, '<strong>$1</strong>');
+    s = s.replace(/(\d+(?:[.,]\d+)?\s?%)/g, '<strong>$1</strong>');
+    return s;
+  };
+  return String(raw == null ? '' : raw)
+    .replace(/\r\n/g, '\n')
+    .split(/\n\s*\n+/)                       // párrafos = bloques separados por líneas en blanco
+    .map((par) => par.split('\n').map(fmtLine).join('<br>'))
+    .filter((p) => p.trim())
+    .map((p) => `<span class="np">${p}</span>`)
+    .join('');
+}
 function fdate(v) {
   if (!v) return '';
   // Acepta Date, "2026-09-02", "2026-09-02T04:00:00.000Z", timestamps, etc.
@@ -100,20 +124,36 @@ function renderFormalA4(doc) {
       <td class="c-num">${money(it.total)}</td>
     </tr>`).join('');
 
+  const firmaImg = empresa.firma
+    ? `<img src="${empresa.firma}" class="sign-img" alt="Firma y sello">`
+    : '';
+  // Bloque visible de firma digital — va donde antes iba "Firma y sello".
+  const ds = invoice.digitalSign;
+  let dsFecha = '';
+  if (ds && ds.fecha) {
+    const dt = ds.fecha instanceof Date ? ds.fecha : new Date(ds.fecha);
+    dsFecha = isNaN(dt) ? '' : dt.toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' });
+  }
+  const dsigHtml = ds ? `<div class="dsig">
+      <div class="dsig-h">✔ FIRMADO DIGITALMENTE</div>
+      <div class="dsig-n">${esc(ds.nombre || empresa.nombre || '')}</div>
+      ${ds.rnc ? `<div class="dsig-x">RNC ${esc(ds.rnc)}</div>` : ''}
+      ${dsFecha ? `<div class="dsig-x">${esc(dsFecha)}</div>` : ''}
+    </div>` : '';
   const footerNote = isCot
     ? 'Cotización sin valor fiscal. Precios sujetos a cambio después de la fecha de validez. Documento generado electrónicamente.'
-    : 'Factura por servicios profesionales. Documento generado electrónicamente; válido sin firma ni sello. Gracias por su preferencia.';
+    : `Factura por servicios profesionales. Documento generado electrónicamente${(firmaImg || ds) ? '' : '; válido sin firma ni sello'}. Gracias por su preferencia.`;
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <title>${esc(invoice.numero)} — ${titulo}</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   html, body { background:#eef1f4; }
-  body { font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; font-size:10.5px; color:#1f2937; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-  .page { position:relative; width:210mm; min-height:297mm; margin:0 auto; padding:16mm 18mm; background:#fff; overflow:hidden; }
+  body { font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; font-size:10px; color:#1f2937; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .page { position:relative; width:210mm; min-height:270mm; margin:0 auto; padding:9mm 18mm 6mm; background:#fff; overflow:hidden; }
   .watermark { position:absolute; top:45%; left:50%; transform:translate(-50%,-50%) rotate(-24deg); font-size:110px; font-weight:800; letter-spacing:6px; white-space:nowrap; color:rgba(220,38,38,.08); pointer-events:none; z-index:0; }
   .content { position:relative; z-index:1; }
-  .head { display:flex; justify-content:space-between; align-items:flex-start; gap:14mm; padding-bottom:6mm; }
+  .head { display:flex; justify-content:space-between; align-items:flex-start; gap:14mm; padding-bottom:3.5mm; }
   .logo { max-height:30mm; max-width:80mm; display:block; margin-bottom:3mm; }
   .brand-fallback { font-size:22px; font-weight:800; color:#15803d; letter-spacing:.5px; margin-bottom:3mm; }
   .emitter-line { font-size:9.5px; line-height:1.5; color:#4b5563; }
@@ -128,18 +168,18 @@ function renderFormalA4(doc) {
   .stamp.warn { color:#b45309; border-color:#b45309; }
   .stamp.ok { color:#15803d; border-color:#15803d; }
   .stamp.bad { color:#b91c1c; border-color:#b91c1c; }
-  .rule { height:2.5px; background:#15803d; margin:0 0 6mm; }
-  .parties { display:grid; grid-template-columns:1fr 1fr; gap:12mm; margin-bottom:7mm; }
+  .rule { height:2.5px; background:#15803d; margin:0 0 3.5mm; }
+  .parties { display:grid; grid-template-columns:1fr 1fr; gap:12mm; margin-bottom:4mm; }
   .block-label { font-size:8.5px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:#6b7280; padding-bottom:2mm; border-bottom:1px solid #e5e7eb; margin-bottom:2.5mm; }
   .party-name { font-size:12px; font-weight:700; color:#111827; margin-bottom:1mm; }
-  .party-line { font-size:9.5px; line-height:1.6; color:#4b5563; }
-  .pay-row { display:flex; justify-content:space-between; font-size:9.5px; line-height:1.9; color:#4b5563; }
+  .party-line { font-size:9px; line-height:1.5; color:#4b5563; }
+  .pay-row { display:flex; justify-content:space-between; font-size:9px; line-height:1.7; color:#4b5563; }
   .pay-row span:last-child { color:#111827; font-weight:600; }
-  .items { width:100%; border-collapse:collapse; margin-bottom:4mm; }
-  .items thead th { background:#f4f7f5; color:#374151; font-size:8.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; text-align:right; padding:3mm 2.5mm; border-top:1.5px solid #15803d; border-bottom:1.5px solid #15803d; }
+  .items { width:100%; border-collapse:collapse; margin-bottom:3mm; }
+  .items thead th { background:#f4f7f5; color:#374151; font-size:8px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; text-align:right; padding:1.8mm 2.5mm; border-top:1.5px solid #15803d; border-bottom:1.5px solid #15803d; }
   .items thead th.h-idx { text-align:center; width:9mm; }
   .items thead th.h-desc { text-align:left; }
-  .items tbody td { padding:2.6mm 2.5mm; font-size:10px; border-bottom:1px solid #edf0f2; vertical-align:top; }
+  .items tbody td { padding:1.5mm 2.5mm; font-size:9px; line-height:1.35; border-bottom:1px solid #edf0f2; vertical-align:top; }
   .items tbody tr:last-child td { border-bottom:1px solid #d1d5db; }
   .c-idx { text-align:center; color:#9ca3af; }
   .c-desc { text-align:left; color:#1f2937; }
@@ -151,14 +191,25 @@ function renderFormalA4(doc) {
   .totals .t-total { border-top:2px solid #111827; margin-top:1mm; padding-top:2.5mm; font-size:14px; font-weight:800; color:#111827; }
   .totals .t-paid { color:#15803d; }
   .totals .t-due { font-weight:700; color:#b45309; }
-  .amount-words { margin:5mm 0 0; padding:2.5mm 3mm; background:#f9fafb; border:1px solid #e5e7eb; border-radius:3px; font-size:9.5px; line-height:1.5; color:#374151; }
+  .amount-words { margin:3mm 0 0; padding:1.8mm 3mm; background:#f9fafb; border:1px solid #e5e7eb; border-radius:3px; font-size:9px; line-height:1.35; color:#374151; }
   .amount-words b { color:#111827; letter-spacing:.3px; }
-  .notes { margin-top:6mm; }
-  .notes p { font-size:9.5px; line-height:1.6; color:#4b5563; margin-top:2mm; white-space:pre-wrap; }
-  .foot { margin-top:12mm; padding-top:5mm; border-top:1px solid #e5e7eb; font-size:8.5px; line-height:1.6; color:#6b7280; }
-  .foot b { display:block; color:#15803d; font-size:10px; margin-bottom:1mm; letter-spacing:.3px; }
-  .sign { display:grid; grid-template-columns:1fr 1fr; gap:20mm; margin-top:14mm; }
+  .notes { margin-top:3mm; }
+  .notes p { font-size:9px; line-height:1.35; color:#4b5563; margin-top:1mm; }
+  .notes .np { display:block; }
+  .notes .np + .np { margin-top:1.2mm; }
+  .notes p strong { color:#1f2937; font-weight:700; }
+  .foot { margin-top:3.5mm; padding-top:2mm; border-top:1px solid #e5e7eb; font-size:8px; line-height:1.4; color:#6b7280; }
+  .foot b { display:block; color:#15803d; font-size:9.5px; margin-bottom:.6mm; letter-spacing:.3px; }
+  .sign { display:grid; grid-template-columns:1fr 1fr; gap:16mm; margin-top:5mm; align-items:end; page-break-inside:avoid; break-inside:avoid; }
+  .notes, .foot { page-break-inside:avoid; break-inside:avoid; }
+  .sign.sign-solo { grid-template-columns:74mm; }
+  .sign .cell { display:flex; flex-direction:column; justify-content:flex-end; }
+  .sign .sign-img { max-height:18mm; max-width:56mm; object-fit:contain; align-self:center; margin-bottom:1mm; }
   .sign .line { border-top:1px solid #9ca3af; padding-top:1.5mm; text-align:center; font-size:9px; color:#6b7280; }
+  .dsig { border:1px solid #15803d; border-radius:3px; background:#f0fdf4; padding:1.6mm 2.4mm; }
+  .dsig-h { font-size:7.5px; font-weight:800; letter-spacing:.5px; color:#15803d; }
+  .dsig-n { font-size:9px; font-weight:700; color:#111827; margin-top:.5mm; }
+  .dsig-x { font-size:8px; color:#4b5563; line-height:1.3; }
   @page { size:A4; margin:0; }
   @media print { html, body { background:#fff; } .page { margin:0; box-shadow:none; } }
 </style></head>
@@ -225,8 +276,11 @@ function renderFormalA4(doc) {
       ${Number(invoice.balance) > 0.01 && !anulada && !isCot ? `<div class="t-row t-due"><span>Saldo pendiente</span><span class="val">${money(invoice.balance)}</span></div>` : ''}
     </div></div>
     <div class="amount-words"><b>Son:</b> ${esc(numeroALetras(invoice.total))}</div>
-    ${invoice.notas ? `<div class="notes"><span class="block-label">Notas</span><p>${esc(invoice.notas)}</p></div>` : ''}
-    ${isCot ? `<div class="sign"><div class="line">Firma y sello ${esc(empresa.nombre || '')}</div><div class="line">Aceptación del cliente</div></div>` : ''}
+    ${invoice.notas ? `<div class="notes"><span class="block-label">Notas</span><p>${formatNotas(invoice.notas)}</p></div>` : ''}
+    ${(isCot || firmaImg || ds) ? `<div class="sign${isCot ? '' : ' sign-solo'}">
+      <div class="cell">${firmaImg}${dsigHtml || `<div class="line">Firma y sello ${esc(empresa.nombre || '')}</div>`}</div>
+      ${isCot ? '<div class="cell"><div class="line">Aceptación del cliente</div></div>' : ''}
+    </div>` : ''}
     <div class="foot"><b>${esc(empresa.nombre || '')}</b>${footerNote}</div>
   </div>
 </div></body></html>`;
@@ -273,6 +327,8 @@ function renderThermal(doc, width) {
   <div class="c">Son: ${esc(numeroALetras(invoice.total))}</div>
   ${['anulada', 'rechazada'].includes(String(invoice.estado || '').toLowerCase()) ? '<div class="c big">*** ' + esc(String(invoice.estado).toUpperCase()) + ' ***</div>' : ''}
   <div class="hr"></div>
+  ${empresa.firma ? `<div class="c"><img src="${empresa.firma}" style="max-width:${width === '58mm' ? '38mm' : '50mm'};max-height:16mm"></div><div class="c">Firma y sello ${esc(empresa.nombre || '')}</div><div class="hr"></div>` : ''}
+  ${invoice.digitalSign ? `<div class="c" style="font-weight:bold">FIRMADO DIGITALMENTE</div><div class="c">${esc(invoice.digitalSign.nombre || empresa.nombre || '')}${invoice.digitalSign.rnc ? ' - RNC ' + esc(invoice.digitalSign.rnc) : ''}</div><div class="hr"></div>` : ''}
   <div class="c">${isCot ? 'Cotización sin valor fiscal' : '¡Gracias por su preferencia!'}</div>
 </body></html>`;
 }

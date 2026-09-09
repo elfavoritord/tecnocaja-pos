@@ -30,7 +30,8 @@ function createConfigRouter(deps) {
     try {
       const [row = {}] = await query(
         `SELECT business_type, service_vertical, service_fiscal_mode, service_invoice_default_format,
-                service_mail_user, service_mail_from
+                service_mail_user, service_mail_from,
+                service_signature, service_quote_terms, service_quote_advance_pct, service_autosign
          FROM config WHERE id = 1 LIMIT 1`
       );
       res.json({
@@ -40,6 +41,11 @@ function createConfigRouter(deps) {
         mailUser: row.service_mail_user || '',
         mailFrom: row.service_mail_from || '',
         mailConfigured: Boolean(row.service_mail_user),
+        signature: row.service_signature || '',
+        hasSignature: Boolean(row.service_signature),
+        quoteTerms: row.service_quote_terms || '',
+        quoteAdvancePct: row.service_quote_advance_pct != null ? Number(row.service_quote_advance_pct) : null,
+        autoSign: Boolean(Number(row.service_autosign)),
       });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
@@ -63,6 +69,23 @@ function createConfigRouter(deps) {
       if (b.mailUser !== undefined) { sets.push('service_mail_user = ?'); params.push(String(b.mailUser).trim() || null); }
       if (b.mailPass !== undefined && b.mailPass !== '') { sets.push('service_mail_pass = ?'); params.push(String(b.mailPass).replace(/\s+/g, '')); }
       if (b.mailFrom !== undefined) { sets.push('service_mail_from = ?'); params.push(String(b.mailFrom).trim() || null); }
+      if (b.signatureClear) {
+        sets.push('service_signature = NULL');
+      } else if (b.signature !== undefined && b.signature !== '') {
+        const sig = String(b.signature);
+        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(sig)) throw httpError('La firma debe ser una imagen PNG o JPG.');
+        if (sig.length > 900000) throw httpError('La imagen de la firma es muy pesada (máx. ~600 KB). Recórtala o redúcela.');
+        sets.push('service_signature = ?'); params.push(sig);
+      }
+      if (b.quoteTerms !== undefined) { sets.push('service_quote_terms = ?'); params.push(String(b.quoteTerms).trim() || null); }
+      if (b.quoteAdvancePct !== undefined) {
+        const pct = b.quoteAdvancePct === '' || b.quoteAdvancePct === null ? null : Math.min(100, Math.max(0, Number(b.quoteAdvancePct) || 0));
+        sets.push('service_quote_advance_pct = ?'); params.push(pct);
+      }
+      if (b.autoSign !== undefined) {
+        sets.push('service_autosign = ?');
+        params.push(b.autoSign === true || b.autoSign === 1 || b.autoSign === '1' ? 1 : 0);
+      }
       if (!sets.length) throw httpError('Nada que actualizar.');
 
       await query(`UPDATE config SET ${sets.join(', ')} WHERE id = 1`, params);

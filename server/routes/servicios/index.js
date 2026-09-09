@@ -15,6 +15,7 @@
 const express = require('express');
 const { ensureServiciosSchema, nextServiceDocNumber } = require('./schema');
 const { createCatalogoRouter } = require('./catalogo.routes');
+const { createFirmaRouter } = require('./firma.routes');
 const { createCotizacionesRouter } = require('./cotizaciones.routes');
 const { createFacturacionRouter, recalcInvoice, backfillInvoiceMirror } = require('./facturacion.routes');
 const { createCobrosRouter } = require('./cobros.routes');
@@ -87,6 +88,7 @@ function createServiciosRouter(baseDeps) {
   router.use('/dashboard', createDashboardRouter(deps));
   router.use('/auditoria', createAuditoriaRouter(deps));
   router.use('/config', createConfigRouter(deps));
+  router.use('/documento', createFirmaRouter(deps));
   router.use('/recursos', createRecursosRouter(deps));
   router.use('/reportes', createReportesRouter(deps));
   // M2 — órdenes, proyectos, contratos, calendario

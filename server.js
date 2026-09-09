@@ -2325,6 +2325,7 @@ app.use('/api/servicios', createServiciosRouter({
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog,
   getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
   getConfig, getNextNcfFromSequence,
+  ecfService: ecfModule.service,
 }));
 
 // Cobro de crédito a clientes

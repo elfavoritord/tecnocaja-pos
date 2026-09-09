@@ -25,6 +25,34 @@
   // `DB` es un global léxico de js/data.js (const, no cuelga de window).
   const dbRef = () => (typeof DB !== 'undefined' ? DB : (window.DB || {}));
   const money = (n) => 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const n2 = (x) => Math.round((Number(x) || 0) * 100) / 100;
+
+  // Plantilla estándar de la nota "Condiciones de pago" de las cotizaciones.
+  // Marcadores: {pct} {restantePct} {anticipo} {restante} {total}
+  const DEFAULT_QUOTE_TERMS = `NOTA – CONDICIONES DE PAGO
+
+En caso de que el cliente esté interesado en adquirir la solución completa, incluyendo equipos, transporte, instalación, configuración e implementación del sistema, se requiere un anticipo del {pct}% del monto total cotizado, equivalente a {anticipo}.
+
+Este anticipo será utilizado para proceder con la adquisición y preparación de los equipos, así como cubrir los gastos de transporte y logística necesarios para la instalación.
+
+El {restantePct}% restante, equivalente a {restante}, deberá ser saldado al momento de completar la instalación, configuración y puesta en funcionamiento de la solución.
+
+Monto total de la cotización: {total}
+
+Condición: La compra de los equipos y la programación de la instalación estarán sujetas a la confirmación y recepción del anticipo correspondiente.`;
+
+  function buildQuoteTerms(total, pct, tpl) {
+    const p = Math.min(100, Math.max(0, Number(pct) || 0));
+    const anticipo = n2(total * p / 100);
+    const restante = n2(total - anticipo);
+    const base = (tpl && tpl.trim()) ? tpl : DEFAULT_QUOTE_TERMS;
+    return base
+      .split('{pct}').join(String(p % 1 ? p : Math.round(p)))
+      .split('{restantePct}').join(String((100 - p) % 1 ? n2(100 - p) : Math.round(100 - p)))
+      .split('{anticipo}').join(money(anticipo))
+      .split('{restante}').join(money(restante))
+      .split('{total}').join(money(n2(total)));
+  }
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const today = () => new Date().toISOString().slice(0, 10);
   const MESES_ES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -285,7 +313,7 @@
     } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
   }
 
-  async function formServicio(srv) {
+  async function formServicio(srv, onSaved) {
     let cats = [];
     try { cats = await req('/catalogo/categorias'); } catch (_) {}
     const opts = cats.map((c) => `<option value="${c.id}" ${srv && srv.categoriaId == c.id ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
@@ -305,8 +333,43 @@
       fd.categoriaId = fd.categoriaId || null;
       if (srv) await put('/catalogo/' + srv.id, fd); else await post('/catalogo', fd);
       toast('Servicio guardado', 'success');
-      renderServicios();
+      (typeof onSaved === 'function' ? onSaved : renderServicios)();
     });
+  }
+
+  // Gestión del catálogo de servicios en una ventana (sin ítem de menú propio).
+  // Se abre desde el botón "Catálogo de servicios" en Facturación / Cotizaciones.
+  async function abrirCatalogo() {
+    const m = modal('Catálogo de servicios', `
+      <div class="srv-actions" style="margin-bottom:10px">
+        <button type="button" class="btn btn-primary" data-new-srv>+ Nuevo servicio</button>
+      </div>
+      <div data-cat-list><div class="srv-loading">Cargando…</div></div>`,
+    async () => {}, { wide: true, submitLabel: 'Cerrar' });
+    const list = m.querySelector('[data-cat-list]');
+    const load = async () => {
+      list.innerHTML = '<div class="srv-loading">Cargando…</div>';
+      try {
+        const rows = await req('/catalogo');
+        list.innerHTML = table([
+          { label: 'Código', key: 'codigo' },
+          { label: 'Servicio', key: 'nombre' },
+          { label: 'Categoría', key: 'categoria' },
+          { label: 'Unidad', key: 'unidad' },
+          { label: 'Precio', num: true, render: (r) => money(r.precio) },
+          { label: 'ITBIS %', num: true, render: (r) => (r.itbisPct || 0) + '%' },
+          { label: '', render: (r) => `<button class="srv-link" data-edit="${r.id}">Editar</button> · <button class="srv-link" data-del="${r.id}">Baja</button>` },
+        ], rows);
+        list.querySelectorAll('[data-edit]').forEach((el) => el.onclick = () => formServicio(rows.find((x) => x.id == el.dataset.edit), load));
+        list.querySelectorAll('[data-del]').forEach((el) => el.onclick = async () => {
+          if (!confirm('¿Dar de baja este servicio?')) return;
+          try { await del('/catalogo/' + el.dataset.del); toast('Servicio dado de baja', 'success'); load(); }
+          catch (e) { toast(e.message, 'error'); }
+        });
+      } catch (e) { list.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
+    };
+    m.querySelector('[data-new-srv]').onclick = () => formServicio(null, load);
+    load();
   }
 
   // ═══ Cotizaciones ═════════════════════════════════════════════════════════
@@ -315,7 +378,9 @@
     const b = bodyOf('srv-cotizaciones');
     actionsOf('srv-cotizaciones').innerHTML = `
       <label style="font-size:12px;display:flex;align-items:center;gap:5px"><input type="checkbox" id="cot-todas"${_cotTodas ? ' checked' : ''}> Ver convertidas/rechazadas</label>
+      <button class="btn btn-ghost" data-catalogo>🧾 Catálogo de servicios</button>
       <button class="btn btn-primary" data-new>+ Nueva cotización</button>`;
+    actionsOf('srv-cotizaciones').querySelector('[data-catalogo]').onclick = () => abrirCatalogo();
     actionsOf('srv-cotizaciones').querySelector('[data-new]').onclick = () => formCotizacion();
     actionsOf('srv-cotizaciones').querySelector('#cot-todas').onchange = (e) => { _cotTodas = e.target.checked; renderCotizaciones(); };
     b.innerHTML = '<div class="srv-loading">Cargando…</div>';
@@ -330,10 +395,10 @@
         { label: '', render: (r) => {
           const acc = [`<button class="srv-link" data-view="${r.id}">Ver / Imprimir</button>`,
             `<button class="srv-link" data-mail="${r.id}">Correo</button>`];
-          if (['borrador', 'enviada'].includes(r.estado)) acc.push(`<button class="srv-link" data-edit="${r.id}">Editar</button>`);
-          if (['borrador', 'enviada', 'aprobada'].includes(r.estado)) acc.push(`<button class="srv-link" data-fact="${r.id}">Facturar</button>`);
-          if (r.estado === 'enviada') acc.push(`<button class="srv-link" data-ap="${r.id}">Aprobar</button>`);
-          if (r.estado === 'borrador') acc.push(`<button class="srv-link" data-send="${r.id}">Enviar</button>`);
+          if (!['convertida', 'rechazada'].includes(r.estado)) {
+            acc.push(`<button class="srv-link" data-edit="${r.id}">Editar</button>`);
+            acc.push(`<button class="srv-link" data-fact="${r.id}">Facturar</button>`);
+          }
           return acc.join(' · ');
         } },
       ], rows);
@@ -341,14 +406,7 @@
       b.querySelectorAll('[data-mail]').forEach((el) => el.onclick = () => enviarCorreoDoc('cotizaciones', el.dataset.mail, 'cotización'));
       b.querySelectorAll('[data-edit]').forEach((el) => el.onclick = async () => formCotizacion(await req('/cotizaciones/' + el.dataset.edit)));
       b.querySelectorAll('[data-fact]').forEach((el) => el.onclick = () => facturarCotizacion(el.dataset.fact));
-      b.querySelectorAll('[data-ap]').forEach((el) => el.onclick = () => cambiarEstadoCot(el.dataset.ap, 'aprobada'));
-      b.querySelectorAll('[data-send]').forEach((el) => el.onclick = () => cambiarEstadoCot(el.dataset.send, 'enviada'));
     } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
-  }
-
-  async function cambiarEstadoCot(id, estado) {
-    try { await post(`/cotizaciones/${id}/estado`, { estado }); toast('Cotización ' + estado, 'success'); renderCotizaciones(); }
-    catch (e) { toast(e.message, 'error'); }
   }
 
   async function viewCotizacion(id) {
@@ -369,27 +427,39 @@
   // Editor de líneas reutilizable (cotización / factura).
   // Celdas de una fila: guarda el serviceId (si viene del catálogo) en un hidden.
   function lineCells(it = {}) {
-    return `<td><input type="hidden" name="sid" value="${it.serviceId ? Number(it.serviceId) : ''}">
+    return `<td class="srv-l-desc"><input type="hidden" name="sid" value="${it.serviceId ? Number(it.serviceId) : ''}">
         <input name="d" value="${esc(it.descripcion || '')}" placeholder="Servicio / concepto"></td>
-      <td><input name="c" type="number" step="0.01" min="0" value="${it.cantidad ?? 1}" style="width:70px"></td>
-      <td><input name="p" type="number" step="0.01" min="0" value="${it.precio ?? 0}" style="width:100px"></td>
-      <td><input name="dp" type="number" step="0.01" min="0" value="${it.descuentoPct ?? 0}" style="width:60px"></td>
-      <td><input name="ip" type="number" step="0.01" min="0" value="${it.itbisPct ?? 0}" style="width:60px"></td>
-      <td><button type="button" class="srv-link" data-rm>✕</button></td>`;
+      <td><input name="c" type="number" step="0.01" min="0" value="${it.cantidad ?? 1}"></td>
+      <td><input name="p" type="number" step="0.01" min="0" value="${it.precio ?? 0}"></td>
+      <td><input name="dp" type="number" step="0.01" min="0" max="100" value="${it.descuentoPct ?? 0}"></td>
+      <td><input name="ip" type="number" step="0.01" min="0" value="${it.itbisPct ?? 0}"></td>
+      <td class="srv-l-imp" data-imp>—</td>
+      <td class="srv-l-rm"><button type="button" class="srv-icon-btn" data-rm title="Quitar línea">✕</button></td>`;
   }
 
   function lineEditor(items) {
     const its = items && items.length ? items : [{}];
     const rowsHtml = its.map((it, i) => `<tr data-i="${i}">${lineCells(it)}</tr>`).join('');
     return `<div class="srv-lines">
-      <div class="srv-catrow" style="margin:0 0 8px">
-        <select data-cat-sel style="width:100%;max-width:440px">
-          <option value="">+ Agregar desde el catálogo de servicios…</option>
-        </select>
+      <div class="srv-lines-cat">
+        <select data-cat-sel><option value="">+ Agregar desde el catálogo de servicios…</option></select>
+        <button type="button" class="btn btn-ghost srv-lines-add" data-add>+ Línea manual</button>
       </div>
-      <table class="srv-table"><thead><tr><th>Descripción</th><th>Cant.</th><th>Precio</th><th>Desc%</th><th>ITBIS%</th><th></th></tr></thead>
-      <tbody data-lines>${rowsHtml}</tbody></table>
-      <button type="button" class="srv-link" data-add>+ Agregar línea manual</button>
+      <div class="srv-lines-scroll">
+        <table class="srv-table srv-lines-table">
+          <thead><tr>
+            <th>Descripción</th><th class="num">Cant.</th><th class="num">Precio</th>
+            <th class="num">Desc&nbsp;%</th><th class="num">ITBIS&nbsp;%</th><th class="num">Importe</th><th></th>
+          </tr></thead>
+          <tbody data-lines>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div class="srv-lines-tot">
+        <span>Subtotal <b data-t-sub>${money(0)}</b></span>
+        <span>Descuento <b data-t-desc>${money(0)}</b></span>
+        <span>ITBIS <b data-t-itbis>${money(0)}</b></span>
+        <span class="srv-lines-tot-total">Total <b data-t-total>${money(0)}</b></span>
+      </div>
     </div>`;
   }
 
@@ -404,17 +474,49 @@
     })).filter((x) => x.descripcion);
   }
 
+  // Totales en vivo del editor de líneas (misma fórmula que computeTotals del backend).
+  // Actualiza el "Importe" de cada fila y devuelve { subtotal, descuento, itbis, total }.
+  function calcLineTotals(root) {
+    let subtotal = 0, descuento = 0, itbis = 0;
+    root.querySelectorAll('[data-lines] tr').forEach((tr) => {
+      const cant = Math.max(0, Number(tr.querySelector('[name=c]')?.value || 0));
+      const precio = Math.max(0, Number(tr.querySelector('[name=p]')?.value || 0));
+      const dPct = Math.min(100, Math.max(0, Number(tr.querySelector('[name=dp]')?.value || 0)));
+      const iPct = Math.max(0, Number(tr.querySelector('[name=ip]')?.value || 0));
+      const bruto = cant * precio;
+      const desc = bruto * dPct / 100;
+      const base = bruto - desc;
+      const tax = base * iPct / 100;
+      subtotal += bruto; descuento += desc; itbis += tax;
+      const cell = tr.querySelector('[data-imp]');
+      if (cell) cell.textContent = (bruto || base || tax) ? money(n2(base + tax)) : '—';
+    });
+    return { subtotal: n2(subtotal), descuento: n2(descuento), itbis: n2(itbis), total: n2(subtotal - descuento + itbis) };
+  }
+
+  function paintLineTotals(root) {
+    const t = calcLineTotals(root);
+    const set = (sel, v) => { const el = root.querySelector(sel); if (el) el.textContent = money(v); };
+    set('[data-t-sub]', t.subtotal); set('[data-t-desc]', t.descuento);
+    set('[data-t-itbis]', t.itbis); set('[data-t-total]', t.total);
+    return t;
+  }
+
   function wireLines(root) {
     const tbody = root.querySelector('[data-lines]');
+    const repaint = () => paintLineTotals(root);
     const addRow = (it) => {
       const tr = document.createElement('tr');
       tr.innerHTML = lineCells(it || {});
       tbody.appendChild(tr);
-      tr.querySelector('[data-rm]').onclick = () => tr.remove();
+      tr.querySelector('[data-rm]').onclick = () => { tr.remove(); repaint(); };
+      repaint();
       return tr;
     };
     root.querySelector('[data-add]').onclick = () => addRow({});
-    tbody.querySelectorAll('[data-rm]').forEach((el) => el.onclick = () => el.closest('tr').remove());
+    tbody.querySelectorAll('[data-rm]').forEach((el) => el.onclick = () => { el.closest('tr').remove(); repaint(); });
+    tbody.addEventListener('input', repaint);
+    repaint();
 
     // Catálogo de servicios: elegir uno agrega (o rellena) una línea con su
     // precio e ITBIS ya cargados. Las líneas manuales siguen igual.
@@ -450,6 +552,7 @@
           first.querySelector('[name=c]').value = it.cantidad;
           first.querySelector('[name=p]').value = it.precio;
           first.querySelector('[name=ip]').value = it.itbisPct;
+          repaint();
         } else {
           addRow(it);
         }
@@ -459,6 +562,9 @@
   }
 
   async function formCotizacion(q) {
+    let scfg = {};
+    try { scfg = await req('/config'); } catch (_) { /* opcional */ }
+    const antDefault = scfg.quoteAdvancePct != null ? scfg.quoteAdvancePct : '';
     const m = modal(q ? 'Editar cotización ' + q.numero : 'Nueva cotización', `
       ${clientPickerHtml(q)}
       <div class="srv-row">
@@ -466,16 +572,36 @@
         <label>Validez (días)<input name="validezDias" type="number" min="1" value="${q?.validezDias ?? 15}"></label>
       </div>
       ${lineEditor(q?.items)}
-      <label>Notas<textarea name="notas" rows="2">${esc(q?.notas || '')}</textarea></label>`, async (fd, root) => {
+      <div class="srv-form-sec">Condiciones de pago (opcional)</div>
+      <div class="srv-row srv-row-bottom">
+        <label style="flex:0 0 150px">Anticipo requerido (%)
+          <input name="__antpct" id="srv-cot-antpct" type="number" min="0" max="100" step="1" value="${esc(antDefault)}" placeholder="ej. 50"></label>
+        <button type="button" class="btn btn-ghost" id="srv-cot-gennota" style="flex:0 0 auto">Generar nota de condiciones</button>
+      </div>
+      <label>Notas<textarea name="notas" id="srv-cot-notas" rows="4">${esc(q?.notas || '')}</textarea></label>`, async (fd, root) => {
       const items = collectLines(root);
       if (!items.length) throw new Error('Agrega al menos una línea.');
+      delete fd.__antpct;
       const payload = { ...fd, clientId: fd.clientId || null, items };
-      if (q) await put('/cotizaciones/' + q.id, payload); else await post('/cotizaciones', payload);
+      const saved = q ? await put('/cotizaciones/' + q.id, payload) : await post('/cotizaciones', payload);
       toast('Cotización guardada', 'success');
       renderCotizaciones();
+      const cotId = (saved && (saved.id || saved.quotationId)) || (q && q.id);
+      if (cotId) firmarYGuardar('cotizaciones', cotId, { avisar: true });
     }, { wide: true });
     wireClientPicker(m);
     wireLines(m);
+    m.querySelector('#srv-cot-gennota').onclick = () => {
+      const pct = Number(m.querySelector('#srv-cot-antpct').value || 0);
+      if (!(pct > 0 && pct < 100)) { toast('Escribe un % de anticipo entre 1 y 99.', 'error'); return; }
+      const { total } = calcLineTotals(m);
+      if (!(total > 0)) { toast('Agrega al menos una línea con monto para calcular la nota.', 'error'); return; }
+      const box = m.querySelector('#srv-cot-notas');
+      if (box.value.trim() && !confirm('Esto reemplazará el texto actual de Notas. ¿Continuar?')) return;
+      box.value = buildQuoteTerms(total, pct, scfg.quoteTerms);
+      box.scrollTop = 0;
+      toast('Nota de condiciones generada. Puedes editarla antes de guardar.', 'success');
+    };
   }
 
   // Campos de facturación compartidos: comprobante (tipos NCF ya configurados),
@@ -540,6 +666,7 @@
       toast('Factura ' + inv.numero + (inv.ncf ? ' · ' + inv.ncf : '') + ' emitida', 'success');
       renderCotizaciones();
       window.showModule('srv-facturas', document.querySelector('.nav-item[data-module="srv-facturas"]'));
+      if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
     }, { submitLabel: 'Facturar' });
     bf.wire(m);
   }
@@ -550,7 +677,9 @@
     const b = bodyOf('srv-facturas');
     actionsOf('srv-facturas').innerHTML = `
       <label style="font-size:12px;display:flex;align-items:center;gap:5px"><input type="checkbox" id="fac-todas"${_facTodas ? ' checked' : ''}> Ver pagadas/anuladas</label>
+      <button class="btn btn-ghost" data-catalogo>🧾 Catálogo de servicios</button>
       <button class="btn btn-primary" data-new>+ Nueva factura</button>`;
+    actionsOf('srv-facturas').querySelector('[data-catalogo]').onclick = () => abrirCatalogo();
     actionsOf('srv-facturas').querySelector('[data-new]').onclick = () => formFactura();
     actionsOf('srv-facturas').querySelector('#fac-todas').onchange = (e) => { _facTodas = e.target.checked; renderFacturas(); };
     b.innerHTML = '<div class="srv-loading">Cargando…</div>';
@@ -591,44 +720,222 @@
       const inv = await post('/facturas', { ...fd, ...readBilling(fd), clientId: fd.clientId || null, items });
       toast('Factura ' + inv.numero + (inv.ncf ? ' · ' + inv.ncf : '') + (inv.estado === 'pagada' ? ' (pagada)' : '') + ' emitida', 'success');
       renderFacturas();
+      if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
     }, { wide: true, submitLabel: 'Emitir factura' });
     wireClientPicker(m);
     bf.wire(m);
     wireLines(m);
   }
 
+  // Firma el PDF (base64) con el .p12 del emisor si hay uno cargado y vigente.
+  // Nunca lanza: si no se puede firmar, devuelve el PDF original.
+  async function firmarPdfSiHay(pdfBase64, { silencioso } = {}) {
+    if (!pdfBase64) return { base64: pdfBase64, firmado: false };
+    try {
+      const r = await post('/documento/firmar', { pdfBase64 });
+      if (r && r.ok && r.signedBase64) return { base64: r.signedBase64, firmado: true };
+      if (r && r.reason && r.reason !== 'no-cert' && !silencioso) {
+        toast('El PDF se generó sin firma: ' + (r.message || r.reason), 'warning');
+      }
+    } catch (e) {
+      if (!silencioso) toast('No se pudo firmar el PDF (' + (e.message || 'error') + '). Se usa sin firma.', 'warning');
+    }
+    return { base64: pdfBase64, firmado: false };
+  }
+
+  // Devuelve el PDF firmado que se guardó al crear el documento, o null.
+  async function pdfFirmadoGuardado(base, id) {
+    try {
+      const r = await req(`/documento/${base}/${id}/firmado`);
+      return r && r.pdfBase64 ? r.pdfBase64 : null;
+    } catch (_) { return null; }
+  }
+
+  // Genera el PDF A4 del documento recién creado, lo firma y lo guarda pegado al
+  // documento para que al abrirlo salga firmado sin esperar.
+  async function firmarYGuardar(base, id, { avisar } = {}) {
+    if (!(await autosignActivo())) return;
+    const nd = window.novaDesktop;
+    if (!nd || !nd.htmlToPdf) return;
+    let s;
+    try {
+      const d = await req(`/${base}/${id}/documento?formato=a4&firmar=1`);
+      const pdf = await nd.htmlToPdf(d.html);
+      if (!pdf) return;
+      s = await firmarPdfSiHay(pdf, { silencioso: true });
+      if (!s.firmado) { if (avisar) toast('No se pudo firmar (revisa el certificado .p12).', 'warning'); return; }
+    } catch (_) { return; }
+    try {
+      await post(`/documento/${base}/${id}/guardar-firmado`, { pdfBase64: s.base64 });
+      if (avisar) toast('Documento firmado y guardado ✓', 'success');
+    } catch (e) {
+      toast('El documento se firmó pero no se pudo guardar (¿reiniciaste el servidor?): ' + (e.message || ''), 'warning');
+    }
+  }
+
+  // Genera el PDF A4 del documento, lo firma si hay certificado y lo guarda en
+  // la carpeta de facturas (año/mes). Devuelve true si se guardó.
+  async function guardarPdfDocumento(base, id, label) {
+    const nd = window.novaDesktop;
+    if (!nd || !nd.htmlToPdf || !nd.saveInvoicePdf) {
+      toast('Reinicia la app para habilitar la exportación a PDF.', 'warning');
+      return false;
+    }
+    let info;
+    try { info = await req(`/${base}/${id}`); } catch (e) { toast(e.message, 'error'); return false; }
+
+    // 1º intento: el PDF firmado que se guardó al crear el documento.
+    let base64 = await pdfFirmadoGuardado(base, id);
+    let firmado = !!base64;
+    if (!base64) {
+      toast('Generando PDF…', 'info');
+      let d;
+      try { d = await req(`/${base}/${id}/documento?formato=a4&firmar=1`); }
+      catch (e) { toast(e.message, 'error'); return false; }
+      let pdf = null;
+      try { pdf = await nd.htmlToPdf(d.html); } catch (_) {}
+      if (!pdf) { toast('No se pudo generar el PDF.', 'error'); return false; }
+      const s = await firmarPdfSiHay(pdf);
+      base64 = s.base64; firmado = s.firmado;
+      if (firmado) post(`/documento/${base}/${id}/guardar-firmado`, { pdfBase64: base64 }).catch(() => {});
+    }
+    try {
+      const r = await nd.saveInvoicePdf({
+        invoiceNumber: info.numero || label || 'DOC',
+        clientName: info.clientName || 'Cliente',
+        date: info.fecha || undefined,
+        businessName: (dbRef().config && dbRef().config.nombre) || 'Tecno Caja',
+        branchName: 'Principal',
+        pdfBase64: base64,
+      });
+      if (r && r.ok) {
+        toast((firmado ? '✅ PDF firmado guardado' : 'PDF guardado (sin firma digital)') + (r.filePath ? ': ' + r.filePath : ''), firmado ? 'success' : 'warning');
+        if (nd.openExternal && r.filePath) { try { nd.openExternal('file:///' + String(r.filePath).replace(/\\/g, '/')); } catch (_) {} }
+        return true;
+      }
+      toast('No se pudo guardar el PDF: ' + ((r && r.error) || 'error'), 'error');
+    } catch (e) { toast(e.message, 'error'); }
+    return false;
+  }
+
+  // ¿Está activada la firma automática? (config.service_autosign, editable desde
+  // el panel e-CF o Ajustes de Empresa de Servicios).
+  async function autosignActivo() {
+    try { const c = await req('/config'); return !!c.autoSign; }
+    catch (_) { return false; }
+  }
+
+  // base64 → blob URL en el realm del ABRIDOR (la ventana emergente es same-origin
+  // y puede cargarlo). Evita construir Blob en el realm del popup (frágil en Electron).
+  function pdfBlobUrl(b64) {
+    const bytes = Uint8Array.from(atob(String(b64).replace(/^data:application\/pdf;base64,/, '')), (c) => c.charCodeAt(0));
+    return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+  }
+
   // Abre un documento (factura/cotización) en una ventana con barra: selector de
-  // formato + Imprimir/Guardar PDF + Enviar por correo.
+  // formato + Imprimir + Guardar PDF + Enviar por correo.
+  // Prioriza el PDF firmado guardado al crear el documento; si no hay, y la
+  // auto-firma está activa, firma al vuelo.
   async function abrirDoc(base, id, label) {
+    const auto = await autosignActivo();
+    const canPdf = !!(window.novaDesktop && window.novaDesktop.htmlToPdf);
+    const storedPdf = (auto || canPdf) ? await pdfFirmadoGuardado(base, id) : null;
     let d;
-    try { d = await req(`/${base}/${id}/documento?formato=a4`); }
+    try { d = await req(`/${base}/${id}/documento?formato=a4${auto ? '&firmar=1' : ''}`); }
     catch (e) { toast(e.message, 'error'); return; }
     const w = window.open('', '_blank');
     if (!w) { toast('Permite las ventanas emergentes para ver el documento.', 'warning'); return; }
+    const modoPdf = !!(storedPdf || (auto && canPdf));
     w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(label)}</title>
       <style>body{margin:0;background:#eef1f4;font-family:system-ui,Segoe UI,sans-serif}
       .bar{position:sticky;top:0;display:flex;gap:8px;align-items:center;padding:9px 14px;background:#111827;color:#fff}
       .bar select,.bar button{font:inherit;padding:6px 10px;border-radius:6px;border:0;cursor:pointer}
       .bar button{background:#15803d;color:#fff}.bar .g{background:#374151}
+      .bar .sig{font-size:12px;color:#86efac;margin-left:auto}
       iframe{width:100%;border:0;height:calc(100vh - 50px)}</style></head>
       <body><div class="bar"><strong>${esc(label)}</strong>
         <select id="fmt"><option value="a4">A4</option><option value="80mm">80 mm</option><option value="58mm">58 mm</option></select>
-        <button class="g" id="pr">Imprimir / Guardar PDF</button>
-        <button id="ml">Enviar por correo</button></div>
+        <button class="g" id="pr">Imprimir</button>
+        <button id="pf">📥 Guardar PDF${modoPdf ? '' : ' firmado'}</button>
+        <button class="g" id="ml">Enviar por correo</button>
+        ${storedPdf ? '<button class="g" id="rg" title="Vuelve a generar el PDF firmado con el diseño actual">↻ Regenerar</button>' : ''}
+        <span class="sig" id="sig"></span></div>
       <iframe id="fr"></iframe></body></html>`);
     w.document.close();
+    let blobUrl = null;
+    const revoke = () => { if (blobUrl) { try { URL.revokeObjectURL(blobUrl); } catch (_) {} blobUrl = null; } };
+    const showPdf = (fr, sig, b64, firmado) => {
+      try {
+        blobUrl = pdfBlobUrl(b64);
+        fr.removeAttribute('srcdoc');
+        fr.src = blobUrl;
+        if (sig) {
+          sig.textContent = firmado ? '✓ Firmado digitalmente' : 'Sin firma — revisa el certificado';
+          sig.style.color = firmado ? '#86efac' : '#fbbf24';
+        }
+        return true;
+      } catch (_) { return false; }
+    };
+    let signedB64 = storedPdf || null;   // cache del PDF firmado dentro de esta ventana
+    // Firma en 2º plano y actualiza la vista SIN bloquear la apertura.
+    const bgSign = async (fr, sig, { force } = {}) => {
+      if ((signedB64 && !force) || !canPdf || (!auto && !force)) return;
+      if (sig) { sig.textContent = '⏳ firmando…'; sig.style.color = '#fbbf24'; }
+      try {
+        const fresh = force ? await req(`/${base}/${id}/documento?formato=a4&firmar=1`).then((r) => r.html).catch(() => d.html) : d.html;
+        const pdf = await window.novaDesktop.htmlToPdf(fresh);
+        if (!pdf) { if (sig) sig.textContent = ''; return; }
+        const s = await firmarPdfSiHay(pdf, { silencioso: true });
+        if (!s.firmado) { if (sig) { sig.textContent = 'sin firma — revisa el certificado'; sig.style.color = '#fbbf24'; } return; }
+        signedB64 = s.base64;
+        post(`/documento/${base}/${id}/guardar-firmado`, { pdfBase64: s.base64 }).catch(() => {});
+        // Solo cambio la vista si el usuario sigue en A4 y no navegó a otra cosa.
+        const selNow = w.document.getElementById('fmt');
+        if (fr && fr.isConnected && (!selNow || selNow.value === 'a4')) showPdf(fr, sig, s.base64, true);
+      } catch (_) { if (sig) sig.textContent = ''; }
+    };
     const load = async (fmt) => {
+      const fr = w.document.getElementById('fr');
+      const sig = w.document.getElementById('sig');
+      if (!fr) return;
+      revoke();
+      // A4 con PDF firmado ya disponible → se muestra al instante, sin espera.
+      if (fmt === 'a4' && signedB64 && showPdf(fr, sig, signedB64, true)) return;
+      // Sin PDF firmado: muestro el documento YA (HTML) y firmo en 2º plano.
       let doc = d;
       if (fmt !== 'a4') { try { doc = await req(`/${base}/${id}/documento?formato=${fmt}`); } catch (_) {} }
-      const fr = w.document.getElementById('fr'); if (fr) fr.srcdoc = doc.html;
+      fr.removeAttribute('src');
+      fr.srcdoc = doc.html;
+      if (sig) sig.textContent = '';
+      if (fmt === 'a4') bgSign(fr, sig);
     };
     setTimeout(() => {
       const sel = w.document.getElementById('fmt');
       if (sel) sel.onchange = () => load(sel.value);
       const pr = w.document.getElementById('pr');
-      if (pr) pr.onclick = () => { try { w.document.getElementById('fr').contentWindow.print(); } catch (_) {} };
+      if (pr) pr.onclick = () => {
+        const fr = w.document.getElementById('fr');
+        const sig = w.document.getElementById('sig');
+        // Si ya hay PDF firmado pero la vista aún es el HTML, cámbiala antes de imprimir.
+        if (signedB64 && fr && !blobUrl) showPdf(fr, sig, signedB64, true);
+        try { fr.contentWindow.print(); }
+        catch (_) { if (blobUrl) { try { w.open(blobUrl, '_blank'); } catch (_) {} } }
+      };
+      const pf = w.document.getElementById('pf');
+      if (pf) pf.onclick = () => { guardarPdfDocumento(base, id, label); };
+      const rg = w.document.getElementById('rg');
+      if (rg) rg.onclick = async () => {
+        rg.disabled = true; const sig = w.document.getElementById('sig');
+        if (sig) { sig.textContent = 'Regenerando…'; sig.style.color = '#fbbf24'; }
+        try { await req(`/documento/${base}/${id}/firmado`, { method: 'DELETE' }); } catch (_) {}
+        signedB64 = null;
+        await bgSign(w.document.getElementById('fr'), sig, { force: true });
+        rg.disabled = false;
+        toast('PDF firmado regenerado con el diseño actual', 'success');
+      };
       const ml = w.document.getElementById('ml');
-      if (ml) ml.onclick = () => { try { w.close(); } catch (_) {} enviarCorreoDoc(base, id, label.toLowerCase()); };
+      if (ml) ml.onclick = () => { try { revoke(); w.close(); } catch (_) {} enviarCorreoDoc(base, id, label.toLowerCase()); };
+      try { w.addEventListener('beforeunload', revoke); } catch (_) {}
       load('a4');
     }, 120);
   }
@@ -637,19 +944,33 @@
     let info;
     try { info = await req(`/${base}/${id}`); } catch (e) { toast(e.message, 'error'); return; }
     modal(`Enviar ${label} ${info.numero} por correo`, `
-      <p>Se enviará en <strong>formato A4 (PDF)</strong>.</p>
+      <p>Se enviará en <strong>formato A4 (PDF)</strong>, firmado digitalmente si hay certificado cargado.</p>
       <label>Correo destino<input name="to" type="email" value="${esc(info.clientEmail || '')}" placeholder="cliente@correo.com"></label>
       <label>Mensaje<textarea name="mensaje" rows="3"></textarea></label>
       <p class="srv-hint">Si el envío falla, revisa el Gmail y la contraseña de aplicación en Configuración → Empresa de Servicios.</p>`, async (fd) => {
       let pdfBase64 = null;
+      let firmado = false;
       try {
-        if (window.novaDesktop && window.novaDesktop.htmlToPdf) {
-          const d = await req(`/${base}/${id}/documento?formato=a4`);
+        pdfBase64 = await pdfFirmadoGuardado(base, id);
+        if (pdfBase64) {
+          firmado = true;
+        } else if (window.novaDesktop && window.novaDesktop.htmlToPdf) {
+          const d = await req(`/${base}/${id}/documento?formato=a4&firmar=1`);
           pdfBase64 = await window.novaDesktop.htmlToPdf(d.html);
+          if (pdfBase64) {
+            const s = await firmarPdfSiHay(pdfBase64, { silencioso: true });
+            pdfBase64 = s.base64; firmado = s.firmado;
+            if (firmado) post(`/documento/${base}/${id}/guardar-firmado`, { pdfBase64 }).catch(() => {});
+          }
         }
       } catch (_) {}
       await post(`/${base}/${id}/email`, { ...fd, pdfBase64 });
-      toast(pdfBase64 ? 'Enviado por correo con el PDF adjunto' : 'Enviado por correo (sin PDF adjunto — reinicia la app para habilitarlo)', pdfBase64 ? 'success' : 'warning');
+      toast(
+        pdfBase64
+          ? (firmado ? 'Enviado con el PDF firmado adjunto' : 'Enviado con el PDF adjunto (sin firma digital)')
+          : 'Enviado por correo (sin PDF adjunto — reinicia la app para habilitarlo)',
+        pdfBase64 ? 'success' : 'warning'
+      );
     }, { submitLabel: 'Enviar' });
   }
 
@@ -1453,7 +1774,7 @@
     card.className = 'cfg-group-card';
     card.innerHTML = `<div class="cfg-group-card__icon" style="background:rgba(14,165,233,.13);color:#0ea5e9">⚙️</div>
       <div class="cfg-group-card__body"><span class="cfg-group-card__title">Empresa de Servicios</span>
-      <span class="cfg-group-card__desc">Comprobante por defecto, formato de factura y correo (Gmail)</span></div>
+      <span class="cfg-group-card__desc">Comprobante, formato, correo (Gmail), firma/sello y condiciones de pago</span></div>
       <span class="cfg-group-card__arrow">›</span>`;
     card.addEventListener('click', openServiciosConfigModal);
     grid.appendChild(card);
@@ -1483,12 +1804,93 @@
       </div>
       <label>Contraseña de aplicación de Google
         <input name="mailPass" type="password" placeholder="${cfg.mailConfigured ? '•••••••• guardada (vacío = no cambiar)' : '16 caracteres'}"></label>
-      <p class="srv-hint">Cuenta de Google → Seguridad → Verificación en 2 pasos → <strong>Contraseñas de aplicaciones</strong>. No uses tu contraseña normal.</p>`,
+      <p class="srv-hint">Cuenta de Google → Seguridad → Verificación en 2 pasos → <strong>Contraseñas de aplicaciones</strong>. No uses tu contraseña normal.</p>
+
+      <div class="srv-form-sec">Firma y sello (imagen) en los documentos</div>
+      <p class="srv-hint">Se estampa en la cotización y la factura (A4). Ideal: PNG con fondo transparente, máx. ~600 KB.</p>
+      <div class="srv-sign-box">
+        <img id="srv-sign-prev" alt="Firma" src="${esc(cfg.signature || '')}"${cfg.hasSignature ? '' : ' hidden'}>
+        <span id="srv-sign-none" class="srv-hint"${cfg.hasSignature ? ' hidden' : ''}>Sin firma cargada</span>
+      </div>
+      <div class="srv-row srv-row-bottom">
+        <label style="flex:1 1 200px">Imagen de la firma
+          <input type="file" id="srv-sign-file" accept="image/png,image/jpeg,image/webp"></label>
+        <button type="button" class="btn btn-ghost" id="srv-sign-clear" style="flex:0 0 auto"${cfg.hasSignature ? '' : ' hidden'}>Quitar firma</button>
+      </div>
+      <input type="hidden" name="signature" id="srv-sign-data" value="">
+      <input type="hidden" name="signatureClear" id="srv-sign-clearflag" value="">
+
+      <div class="srv-form-sec">Firma digital (certificado .p12)</div>
+      <p class="srv-hint">El .p12 se sube en <strong>Facturación Electrónica e-CF (DGII)</strong>. No se envía nada a DGII.</p>
+      <div id="srv-cert-status" class="srv-sign-box"><span class="srv-hint">Consultando certificado…</span></div>
+      <label class="srv-check" style="margin-top:8px">
+        <input type="checkbox" name="autoSign"${cfg.autoSign ? ' checked' : ''}>
+        <span>Firmar automáticamente — la cotización y la factura salen firmadas al verlas, imprimirlas o enviarlas, sin descargar nada.</span>
+      </label>
+
+      <div class="srv-form-sec">Cotizaciones — condiciones de pago</div>
+      <label>Anticipo sugerido por defecto (%)
+        <input name="quoteAdvancePct" type="number" min="0" max="100" step="1" value="${esc(cfg.quoteAdvancePct ?? '')}" placeholder="ej. 50 (vacío = sin sugerencia)"></label>
+      <label>Texto base de la nota (opcional)
+        <textarea name="quoteTerms" rows="5" placeholder="Vacío = texto estándar. Marcadores: {pct} {restantePct} {anticipo} {restante} {total}">${esc(cfg.quoteTerms || '')}</textarea></label>
+      <p class="srv-hint">En cada cotización eliges el % y el botón <strong>Generar nota de condiciones</strong> arma el texto con los montos calculados.</p>`,
     async (fd) => {
       if (!fd.mailPass) delete fd.mailPass;
+      if (!fd.signature) delete fd.signature;
+      if (fd.signatureClear !== '1') delete fd.signatureClear;
+      fd.autoSign = fd.autoSign === 'on' || fd.autoSign === '1' || fd.autoSign === true;
       await put('/config', fd);
       toast('Ajustes guardados', 'success');
-    }, { submitLabel: 'Guardar' });
+    }, { submitLabel: 'Guardar', wide: true });
+
+    const fileInp = m.querySelector('#srv-sign-file');
+    const prev = m.querySelector('#srv-sign-prev');
+    const none = m.querySelector('#srv-sign-none');
+    const dataInp = m.querySelector('#srv-sign-data');
+    const clearFlag = m.querySelector('#srv-sign-clearflag');
+    const clearBtn = m.querySelector('#srv-sign-clear');
+    fileInp.onchange = () => {
+      const f = fileInp.files && fileInp.files[0];
+      if (!f) return;
+      if (f.size > 600 * 1024) { toast('La imagen pesa más de 600 KB. Redúcela o recórtala.', 'error'); fileInp.value = ''; return; }
+      const rd = new FileReader();
+      rd.onload = () => {
+        dataInp.value = rd.result;
+        clearFlag.value = '';
+        prev.src = rd.result; prev.hidden = false;
+        none.hidden = true; clearBtn.hidden = false;
+      };
+      rd.readAsDataURL(f);
+    };
+    clearBtn.onclick = () => {
+      dataInp.value = ''; clearFlag.value = '1';
+      prev.hidden = true; prev.src = '';
+      none.hidden = false; clearBtn.hidden = true; fileInp.value = '';
+    };
+
+    // Estado del certificado .p12 para firma digital.
+    (async () => {
+      const box = m.querySelector('#srv-cert-status');
+      if (!box) return;
+      try {
+        const st = await req('/documento/firma-estado');
+        if (st && st.hasCertificate && !st.isExpired && st.status !== 'error') {
+          const vto = st.validTo ? fdate(st.validTo) : null;
+          box.innerHTML = `<span style="color:#15803d;font-weight:600">✓ Certificado cargado y vigente</span>`
+            + (st.subject ? `<span class="srv-hint" style="display:block">${esc(String(st.subject).slice(0, 90))}</span>` : '')
+            + (vto ? `<span class="srv-hint" style="display:block">Válido hasta ${esc(vto)}</span>` : '');
+        } else if (st && st.hasCertificate && st.isExpired) {
+          box.innerHTML = `<span style="color:#b91c1c;font-weight:600">⚠ Certificado vencido</span><span class="srv-hint" style="display:block">Sube uno nuevo en Facturación Electrónica e-CF.</span>`;
+        } else if (st && st.status === 'error') {
+          box.innerHTML = `<span style="color:#b45309;font-weight:600">⚠ No se pudo leer el certificado</span><span class="srv-hint" style="display:block">${esc(st.error || '')}</span>`;
+        } else {
+          box.innerHTML = `<span class="srv-hint">Sin certificado. Los PDF saldrán <strong>sin firma digital</strong> hasta que subas un .p12 en Facturación Electrónica e-CF (DGII).</span>`;
+        }
+      } catch (e) {
+        box.innerHTML = `<span class="srv-hint">No se pudo consultar el certificado (${esc(e.message || 'error')}).</span>`;
+      }
+    })();
+
     return m;
   }
 

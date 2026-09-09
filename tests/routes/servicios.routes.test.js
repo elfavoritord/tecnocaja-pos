@@ -64,6 +64,27 @@ describe('servicios.routes — helpers puros', () => {
     expect(renderInvoiceDoc(doc, '80mm')).toContain('80mm');
     expect(renderInvoiceDoc(doc, '58mm')).toContain('58mm');
   });
+
+  it('renderInvoiceDoc estampa el bloque "FIRMADO DIGITALMENTE" cuando hay digitalSign', () => {
+    const base = {
+      empresa: { nombre: 'Firma X', rnc: '101' },
+      invoice: { numero: 'FAC-1', clientName: 'ACME', fecha: '2026-09-05', estado: 'pendiente', subtotal: 100, descuento: 0, itbis: 18, total: 118, pagado: 0, balance: 118 },
+      items: [{ descripcion: 'Servicio', cantidad: 1, precio: 100, total: 118 }],
+    };
+    // Cotización sin firma → línea simple "Firma y sello"; sin bloque digital.
+    const cotSin = renderInvoiceDoc({ ...base, invoice: { ...base.invoice, docType: 'cotizacion' } }, 'a4');
+    expect(cotSin).not.toContain('FIRMADO DIGITALMENTE');
+    expect(cotSin).toContain('Firma y sello');
+
+    // Factura + digitalSign → bloque "FIRMADO DIGITALMENTE" con nombre y RNC.
+    const con = renderInvoiceDoc(
+      { ...base, invoice: { ...base.invoice, digitalSign: { nombre: 'Firma X SRL', rnc: '40211932609', fecha: new Date('2026-09-05T17:18:00') } } },
+      'a4'
+    );
+    expect(con).toContain('FIRMADO DIGITALMENTE');
+    expect(con).toContain('Firma X SRL');
+    expect(con).toContain('RNC 40211932609');
+  });
 });
 
 describe('servicios.routes — gating', () => {
@@ -102,6 +123,27 @@ describe('servicios.routes — catálogo', () => {
     const res = await request(app).post('/api/servicios/catalogo').send({ nombre: 'Auditoría', precio: 5000, itbisPct: 18 });
     expect(res.status).toBe(201);
     expect(res.body.nombre).toBe('Auditoría');
+  });
+});
+
+describe('servicios.routes — cotizaciones', () => {
+  it('una cotización nueva nace en estado "aprobada" (sin borrador)', async () => {
+    let insertedEstado = null;
+    const mockQuery = jest.fn().mockImplementation(async (sql, params) => {
+      if (/^INSERT INTO svc_quotations/i.test(sql)) { insertedEstado = params[8]; return { insertId: 4 }; }
+      if (/FROM svc_quotations q/i.test(sql) && /q\.id = \?/.test(sql)) {
+        return [{ id: 4, numero: 'COT-000004', estado: insertedEstado || 'aprobada', client_id: null, client_name: 'emilio',
+          fecha: '2026-09-06', validez_dias: 15, subtotal: 100, descuento: 0, itbis: 18, total: 118 }];
+      }
+      return [];
+    });
+    const { app } = buildApp({ query: mockQuery });
+    const res = await request(app).post('/api/servicios/cotizaciones').send({
+      clientName: 'emilio', items: [{ descripcion: 'Servicio', cantidad: 1, precio: 100, itbisPct: 18 }],
+    });
+    expect(res.status).toBe(201);
+    expect(insertedEstado).toBe('aprobada');
+    expect(res.body.estado).toBe('aprobada');
   });
 });
 
@@ -230,5 +272,169 @@ describe('servicios.routes — M3 verticales', () => {
     const res = await request(app).post('/api/servicios/obras').send({ nombre: 'Casa 1', tipo: 'loquesea' });
     expect(res.status).toBe(201);
     expect(res.body.tipo).toBe('residencial');
+  });
+});
+
+describe('servicios.routes — firma digital del PDF', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const P12 = path.join(__dirname, '../../modules/ecf/certificates/business-1-active.p12');
+  const P12_PASS = 'TecnoCaja95';
+
+  function buildAppWithEcf(ecfService) {
+    const app = express();
+    app.use(express.json({ limit: '12mb' }));
+    app.use('/api/servicios', createServiciosRouter({
+      query: jest.fn().mockResolvedValue([]),
+      withTransaction: async (fn) => fn({ query: jest.fn().mockResolvedValue([]) }),
+      resolveRequestActorUser: jest.fn().mockResolvedValue({ id: 1, usuario: 'admin', role_code: 'administrador_general' }),
+      userRoleHasPermission: jest.fn().mockReturnValue(true),
+      writeAuditLog: jest.fn().mockResolvedValue(),
+      getUserScopeBranchId: () => null,
+      isGlobalAdministratorUser: () => true,
+      isBranchAdministratorUser: () => false,
+      getConfig: jest.fn().mockResolvedValue({ serviceCompany: true, nombre: 'TECNO SRL', rnc: '131-12345-6', direccion: 'SDQ' }),
+      getNextNcfFromSequence: jest.fn(),
+      ecfService,
+    }));
+    return app;
+  }
+
+  async function tinyPdfBase64() {
+    const { PDFDocument, StandardFonts } = require('pdf-lib');
+    const doc = await PDFDocument.create();
+    const f = await doc.embedFont(StandardFonts.Helvetica);
+    doc.addPage([300, 400]).drawText('Factura de prueba', { x: 20, y: 360, size: 12, font: f });
+    return Buffer.from(await doc.save()).toString('base64');
+  }
+
+  it('firma-estado indica que no hay certificado si el módulo e-CF no está disponible', async () => {
+    const app = buildAppWithEcf(undefined);
+    const res = await request(app).get('/api/servicios/documento/firma-estado');
+    expect(res.status).toBe(200);
+    expect(res.body.hasCertificate).toBe(false);
+  });
+
+  it('config acepta y persiste el flag autoSign', async () => {
+    const store = {};
+    const mockQuery = jest.fn().mockImplementation(async (sql, params) => {
+      if (/^UPDATE config SET/i.test(sql)) {
+        if (/service_autosign/i.test(sql)) store.autosign = params[params.length - 1];
+        return { affectedRows: 1 };
+      }
+      if (/^SELECT .*service_autosign.* FROM config/is.test(sql)) return [{ service_autosign: store.autosign ?? 0 }];
+      return [];
+    });
+    const { app } = buildApp({ query: mockQuery, config: { serviceCompany: true } });
+    const put = await request(app).put('/api/servicios/config').send({ autoSign: true });
+    expect(put.status).toBe(200);
+    expect(store.autosign).toBe(1);
+    const get = await request(app).get('/api/servicios/config');
+    expect(get.body.autoSign).toBe(true);
+  });
+
+  it('firmar sin pdfBase64 responde 400', async () => {
+    const app = buildAppWithEcf(undefined);
+    const res = await request(app).post('/api/servicios/documento/firmar').send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('firmar sin certificado devuelve ok:false reason no-cert (no 500)', async () => {
+    const app = buildAppWithEcf({ getCertificateStatus: async () => ({ hasCertificate: false }) });
+    const res = await request(app).post('/api/servicios/documento/firmar').send({ pdfBase64: await tinyPdfBase64() });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: false, reason: 'no-cert', message: expect.any(String) });
+  });
+
+  it('el documento con ?firmar=1 estampa el bloque de firma si el .p12 está vigente', async () => {
+    const mockQuery = jest.fn().mockImplementation(async (sql) => {
+      if (/FROM svc_quotations q/i.test(sql) && /q\.id = \?/.test(sql)) {
+        return [{ id: 7, numero: 'COT-000007', client_id: null, client_name: 'ACME', branch_id: null,
+          fecha: '2026-09-05', validez_dias: 15, estado: 'enviada', subtotal: 100, descuento: 0, itbis: 18, total: 118 }];
+      }
+      if (/FROM svc_quotation_items/i.test(sql)) return [{ id: 1, quotation_id: 7, descripcion: 'Servicio', cantidad: 1, precio: 100, itbis_pct: 18, total: 118 }];
+      if (/service_autosign/i.test(sql)) return [{ service_autosign: 0 }];
+      return [];
+    });
+    const app = express();
+    app.use(express.json());
+    app.use('/api/servicios', createServiciosRouter({
+      query: mockQuery,
+      withTransaction: async (fn) => fn({ query: mockQuery }),
+      resolveRequestActorUser: jest.fn().mockResolvedValue({ id: 1, role_code: 'administrador_general' }),
+      userRoleHasPermission: jest.fn().mockReturnValue(true),
+      writeAuditLog: jest.fn().mockResolvedValue(),
+      getUserScopeBranchId: () => null,
+      isGlobalAdministratorUser: () => true,
+      isBranchAdministratorUser: () => false,
+      getConfig: jest.fn().mockResolvedValue({ serviceCompany: true, nombre: 'TECNO SRL', rnc: '131-98765-4' }),
+      getNextNcfFromSequence: jest.fn(),
+      ecfService: { getCertificateStatus: async () => ({ hasCertificate: true, status: 'valido', isExpired: false }) },
+    }));
+    const res = await request(app).get('/api/servicios/cotizaciones/7/documento?formato=a4&firmar=1');
+    expect(res.status).toBe(200);
+    expect(res.body.html).toContain('FIRMADO DIGITALMENTE');
+    expect(res.body.html).toContain('TECNO SRL');
+    expect(res.body.html).toContain('RNC 131987654');
+  });
+
+  it('guardar-firmado rechaza un PDF sin firma y acepta uno firmado; luego GET lo devuelve', async () => {
+    const { PDFDocument } = require('pdf-lib');
+    const store = {};
+    const mockQuery = jest.fn().mockImplementation(async (sql, params) => {
+      if (/^UPDATE svc_invoices SET signed_pdf = \?/i.test(sql)) { store.pdf = params[0]; return { affectedRows: 1 }; }
+      if (/SELECT signed_pdf, signed_at FROM svc_invoices/i.test(sql)) return store.pdf ? [{ signed_pdf: store.pdf, signed_at: '2026-09-05 12:00:00' }] : [];
+      return [];
+    });
+    const app = express();
+    app.use(express.json({ limit: '12mb' }));
+    app.use('/api/servicios', createServiciosRouter({
+      query: mockQuery,
+      withTransaction: async (fn) => fn({ query: mockQuery }),
+      resolveRequestActorUser: jest.fn().mockResolvedValue({ id: 1, role_code: 'administrador_general' }),
+      userRoleHasPermission: jest.fn().mockReturnValue(true),
+      writeAuditLog: jest.fn().mockResolvedValue(),
+      getUserScopeBranchId: () => null,
+      isGlobalAdministratorUser: () => true,
+      isBranchAdministratorUser: () => false,
+      getConfig: jest.fn().mockResolvedValue({ serviceCompany: true }),
+      getNextNcfFromSequence: jest.fn(),
+    }));
+
+    const plain = Buffer.from(await (await PDFDocument.create()).save()).toString('base64');
+    const noSign = await request(app).post('/api/servicios/documento/facturas/5/guardar-firmado').send({ pdfBase64: plain });
+    expect(noSign.status).toBe(400);
+
+    // Un "PDF firmado" de mentira: base64 de bytes que empiezan por %PDF y traen /ByteRange [
+    const fakeSigned = Buffer.from('%PDF-1.7\n/Type /Sig /ByteRange [0 100 200 300]\n%%EOF').toString('base64');
+    const ok = await request(app).post('/api/servicios/documento/facturas/5/guardar-firmado').send({ pdfBase64: fakeSigned });
+    expect(ok.status).toBe(200);
+    expect(store.pdf).toBe(fakeSigned);
+
+    const got = await request(app).get('/api/servicios/documento/facturas/5/firmado');
+    expect(got.status).toBe(200);
+    expect(got.body.pdfBase64).toBe(fakeSigned);
+  });
+
+  it('firmado devuelve 404 si no hay PDF guardado', async () => {
+    const { app } = buildApp({ query: jest.fn().mockResolvedValue([]), config: { serviceCompany: true } });
+    const res = await request(app).get('/api/servicios/documento/cotizaciones/9/firmado');
+    expect(res.status).toBe(404);
+  });
+
+  (fs.existsSync(P12) ? it : it.skip)('firma el PDF con el .p12 y devuelve un PDF con /ByteRange resuelto', async () => {
+    const ecfService = {
+      getCertificateStatus: async () => ({ hasCertificate: true, status: 'valido', isExpired: false }),
+      resolveCertificate: async () => ({ certPath: P12, certPassword: P12_PASS }),
+    };
+    const app = buildAppWithEcf(ecfService);
+    const res = await request(app).post('/api/servicios/documento/firmar').send({ pdfBase64: await tinyPdfBase64() });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    const signed = Buffer.from(res.body.signedBase64, 'base64').toString('latin1');
+    expect(signed).toMatch(/\/Type\s*\/Sig/);
+    expect(signed).toMatch(/\/ByteRange\s*\[/);
+    expect(signed).not.toMatch(/\/ByteRange\s*\[[^\]]*\*/); // sin placeholder **
+    expect(signed).toContain('adbe.pkcs7.detached');
   });
 });

@@ -13,6 +13,7 @@ const { createComprasRouter } = require('./routes/compras.routes');
 const { createGastosRouter } = require('./routes/gastos.routes');
 const { createAdjuntosRouter } = require('./routes/adjuntos.routes');
 const { createFlujoFinancieroRouter } = require('./routes/flujo-financiero.routes');
+const { createRncRouter } = require('./routes/rnc.routes');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -789,44 +790,9 @@ app.use('/api/adjuntos', createAdjuntosRouter({ col, docData, isoNow, requireAut
 app.use('/api/flujo-financiero', createFlujoFinancieroRouter({ col, docData, requireAuth }));
 
 // ── RNC / Cédula lookup (DGII) ────────────────────────────────────────────
-let _rncHandler = null;
-let _rncReady   = false;
-
-function getRncHandler() {
-  if (_rncHandler) return _rncHandler;
-  try {
-    const mod = require('dgii-rnc');
-    _rncHandler = new mod.RNCHandler();
-    _rncHandler.checkFile().then(() => { _rncReady = true; }).catch(() => {});
-  } catch (_) {}
-  return _rncHandler;
-}
-getRncHandler(); // pre-cargar al iniciar
-
-app.get('/api/rnc/lookup', requireAuth, async (req, res) => {
-  const raw = String(req.query.id || '').replace(/\D/g, '');
-  if (!raw || raw.length < 9) return res.status(400).json({ error: 'RNC inválido.' });
-  const h = getRncHandler();
-  if (!h || !_rncReady) return res.status(503).json({ error: 'Servicio RNC no disponible aún, espera unos segundos.' });
-  try {
-    const candidates = [raw];
-    if (raw.length === 10) candidates.push('0' + raw);
-    let record = null;
-    for (const id of candidates) {
-      const results = await h.search({ ID: id });
-      if (results && results.length > 0) { record = results[0]; break; }
-    }
-    if (!record) return res.json({ found: false });
-    res.json({
-      found: true,
-      rnc: record.ID || raw,
-      nombre: record.NOMBRE || '',
-      nombreComercial: record.NOMBRE_COMERCIAL || record.NOMBRE || '',
-      estado: record.ESTADO || '',
-      tipo: record.TIPO || '',
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// El dataset (~784k líneas) se carga en un worker_thread aparte para no
+// bloquear el arranque del servidor — ver routes/rnc.routes.js.
+app.use('/api/rnc', createRncRouter({ requireAuth }));
 
 // ── SPA fallback ───────────────────────────────────────────────────────────
 app.get(/(.*)/, (_req, res) => {

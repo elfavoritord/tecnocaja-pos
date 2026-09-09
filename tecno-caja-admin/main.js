@@ -13,7 +13,8 @@ require('module').globalPaths.push(path.join(ROOT, 'node_modules'));
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-const PORT = Number(process.env.ADMIN_PORT || 3400);
+// 3400 es el puerto de mcp-server/ (MCP_PORT) — no reutilizarlo aquí.
+const PORT = Number(process.env.ADMIN_PORT || 3402);
 let mainWindow   = null;
 let splashWindow = null;
 
@@ -64,7 +65,7 @@ function startAdminServer() {
   });
 }
 
-function waitForServer(retries = 20) {
+function waitForServer(retries = 40) {
   return new Promise((resolve, reject) => {
     const check = (n) => {
       const req = http.get(`http://127.0.0.1:${PORT}/health`, (res) => {
