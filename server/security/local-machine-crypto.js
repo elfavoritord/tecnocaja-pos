@@ -32,8 +32,12 @@ function resolveSecret(secretEnvKeys = []) {
   ).trim() || getStableMachineFingerprint();
 }
 
-function deriveMachineBoundKey({ purpose, secretEnvKeys }) {
-  const fingerprint = getStableMachineFingerprint();
+function deriveMachineBoundKey({ purpose, secretEnvKeys, fingerprintOverride }) {
+  // fingerprintOverride: permite descifrar con una huella distinta a la viva —
+  // p.ej. la que quedó guardada en el sidecar `.fpr` la última vez que se
+  // guardó bien. Sin esto, una actualización de Windows / cambio de RAM rota
+  // la huella y la BD deja de descifrar (pasó 4 veces en un cliente real).
+  const fingerprint = String(fingerprintOverride || '').trim() || getStableMachineFingerprint();
   const secret = resolveSecret(secretEnvKeys);
   return crypto.scryptSync(`${fingerprint}:${String(purpose || 'tecnocaja-local')}`, secret, 32);
 }
@@ -89,6 +93,7 @@ function decryptSqliteBuffer(buffer, options = {}) {
   const key = deriveMachineBoundKey({
     purpose: 'sqlite-at-rest',
     secretEnvKeys: options.secretEnvKeys || ['TECNO_CAJA_DB_KEY_SALT', 'TECNO_CAJA_LICENSE_STORAGE_SECRET'],
+    fingerprintOverride: options.fingerprintOverride,
   });
 
   try {

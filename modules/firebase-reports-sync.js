@@ -88,17 +88,35 @@ function isLegacyUid(uid) {
   return /^pos_[a-f0-9]{8,}$/i.test(uid);
 }
 
+// Nombres genéricos que NO identifican un negocio real. Si el POS arranca con
+// la config en blanco (BD reconstruida tras corrupción), el nombre vuelve a
+// "Tecno Caja" y, sin este filtro, el businessId derivado (pos:tecno-caja) es
+// EL MISMO para todas las instalaciones en ese estado → se pisan los datos
+// entre negocios distintos en Firestore. Pasó de verdad con un cliente.
+const GENERIC_BUSINESS_NAMES = new Set([
+  '', 'tecno caja', 'tecno caja pos', 'mi negocio', 'negocio', 'mi tecno caja pos',
+]);
+
 function getBusinessId(config = {}) {
-  const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+  const licenseUid = String(
+    process.env.TECNO_CAJA_LICENSE_UID || config?.license_uid || config?.licenseUid || ''
+  ).trim();
   // Si está configurado y es formato legible (no hash legado) → usarlo
   if (licenseUid && !isLegacyUid(licenseUid)) return licenseUid;
 
-  // Generar ID legible desde el nombre del negocio
+  const rawName = String(config?.nombre || config?.business_name || '').trim();
+  if (GENERIC_BUSINESS_NAMES.has(rawName.toLowerCase())) {
+    // Sin licenseUid y con nombre genérico: NO inventar un businessId compartido.
+    // Devolver null hace que cada función de sync se salte la subida esta sesión.
+    return null;
+  }
+
+  // Generar ID legible desde el nombre del negocio (real)
   const mod = loadFirebaseAdmin();
   if (mod && typeof mod.buildPosBusinessKey === 'function') {
-    return mod.buildPosBusinessKey(config?.nombre || config?.business_name || 'Tecno Caja');
+    return mod.buildPosBusinessKey(rawName);
   }
-  return 'pos:tecno-caja-negocio';
+  return null;
 }
 
 // ---------- helpers de formato ----------
@@ -162,10 +180,16 @@ function normalizeBranchId(rawId, fallback = 'default') {
 // ---------- collection helpers ----------
 
 function col(firestore, businessId, name) {
+  if (!businessId) {
+    const e = new Error('reports-sync: businessId no resoluble (sin licenseUid y nombre genérico) — sync omitido');
+    e.code = 'SYNC_SKIP_NO_BUSINESS_ID';
+    throw e;
+  }
   return firestore.collection('businesses').doc(businessId).collection(name);
 }
 
 async function ensureBusinessDoc(firestore, businessId, config = {}) {
+  if (!businessId) return;
   try {
     const ref = firestore.collection('businesses').doc(businessId);
     await ref.set(
@@ -735,7 +759,9 @@ async function deleteFirebaseUser(uid, ctx = {}) {
   try {
     const businessId = getBusinessId(ctx.config || {});
     await firestore.collection('users').doc(uid).delete();
-    await firestore.collection('businesses').doc(businessId).collection('users').doc(uid).delete();
+    if (businessId) {
+      await firestore.collection('businesses').doc(businessId).collection('users').doc(uid).delete();
+    }
   } catch (err) {
     console.warn('[reports-sync] deleteFirebaseUser (firestore) falló:', err.message);
   }
@@ -860,6 +886,7 @@ async function ensureFirebaseUser(user, ctx = {}) {
     }
 
     const businessId = getBusinessId(ctx.config || {});
+    if (!businessId) { return authUser ? { uid: authUser.uid, email } : null; }
     const role = mapRole(user.rol);
     const posRoleLabel = String(
       user.rol_label || user.role_name || user.rol || 'Supervisor'
@@ -979,6 +1006,7 @@ async function syncDailySummary(sale, ctx = {}) {
     if (!FV) return;
 
     const businessId = getBusinessId(ctx.config || {});
+    if (!businessId) return;
     // Usar accounting_date si está disponible (turnos nocturnos), si no usar created_at
     const d = new Date(sale.accounting_date || sale.shift_date || sale.created_at || Date.now());
     const dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;

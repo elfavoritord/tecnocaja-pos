@@ -26,7 +26,7 @@ const { formidable } = require('formidable');
 const QRCode = require('qrcode');
 const sharp = require('sharp');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
-const { query, withTransaction, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
+const { query, withTransaction, withTransactionRetry, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
 const productsCache = require('./server/cache/products-cache');
 const { createNcfSequenceService, NCF_LABELS } = require('./server/services/ncf-sequence.service');
 // isMysqlDeployment() está definida más abajo en este archivo — se puede
@@ -15621,7 +15621,10 @@ app.post('/api/sales', async (req, res) => {
   await ensurePromotionsExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true });
   const sale = req.body;
-  const created = await withTransaction(async (conn) => {
+  // withTransactionRetry: en multicaja (varias PC → 1 MySQL) la asignación del
+  // número de factura y del NCF serializa sobre locks de fila; un tranque o
+  // deadlock transitorio se reintenta solo en vez de fallarle la venta al cajero.
+  const created = await withTransactionRetry(async (conn) => {
     const configRows = await conn.query('SELECT * FROM config WHERE id = 1');
     const config = configRows[0];
     const businessId = Number(config?.business_id || 1) || 1;
@@ -19734,6 +19737,11 @@ async function prepareServerRuntime() {
     // usuario vea el wizard de "instalación nueva". Nunca corre en una
     // instalación legítimamente nueva (dbWasCorruptAndRebuilt solo se marca
     // cuando el archivo de BD ya existía y perdió su esquema).
+    // Cuando la BD se reconstruyó en blanco y NO se pudo restaurar un respaldo,
+    // NO se debe subir nada a Firebase esta sesión: una BD vacía sincronizada
+    // pisa/duplica los datos buenos que ya están en la nube y genera negocios
+    // fantasma (le pasó a un cliente real: 4 docs de negocio para 1 farmacia).
+    let blankRebuildNoRestore = false;
     if (dbWasCorruptAndRebuilt) {
       try {
         const { attemptAutoRestoreFromBackup } = require('./server/services/auto-recovery');
@@ -19741,31 +19749,41 @@ async function prepareServerRuntime() {
         if (recovery.restored) {
           console.log(`[auto-recovery] ✅ Base de datos restaurada automáticamente desde respaldo (${recovery.source}): ${recovery.fileName}`);
         } else {
-          console.warn('[auto-recovery] No se encontró ningún respaldo utilizable. El sistema quedó con una base de datos nueva vacía.');
+          blankRebuildNoRestore = true;
+          console.error('[auto-recovery] ⚠️ BD reconstruida en blanco y sin respaldo utilizable. ' +
+            'Se DESACTIVA la sincronización de subida a Firebase esta sesión para no pisar los datos en la nube.');
         }
       } catch (e) {
+        blankRebuildNoRestore = true;
         console.warn('[auto-recovery] Falló el intento de restauración automática:', e.message);
       }
     }
+    global.__TECNO_CAJA_SKIP_FIREBASE_PUSH = blankRebuildNoRestore;
 
     const setup = await getSetupStatus();
     await ensureStarterCatalogSeededIfNeeded(setup.config);
     // Validación remota en segundo plano; el estado local firmado sigue
     // disponible de inmediato para los controles de licencia.
     startLicenseServicesInBackground();
-    // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
-    trySyncAllPosAccountsToFirebase().catch(() => {});
-    // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
-    // (crea cuentas Firebase para usuarios que aún no las tienen).
-    trySyncAllStaffToFirebaseAuth().catch(() => {});
-    // Asegura que los clientes existentes también se envíen al menos al arrancar.
-    trySyncAllPosClientsToFirebase().catch(() => {});
-    // Repara pedidos delivery ya creados para que mantengan link y referencia en Firestore.
-    tryRepairPendingDeliveryOrdersInFirebase().catch(() => {});
-    // Bootstrap inicial de la data histórica para la app de reportes.
-    tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
+    if (global.__TECNO_CAJA_SKIP_FIREBASE_PUSH) {
+      console.warn('[startup] Sincronización de subida a Firebase OMITIDA (BD reconstruida en blanco sin restaurar). ' +
+        'Se reactiva sola en el próximo arranque una vez que la BD tenga datos.');
+    } else {
+      // Re-sync POS accounts to Firestore on every startup (fixes silent failures during setup)
+      trySyncAllPosAccountsToFirebase().catch(() => {});
+      // Sincroniza TODOS los usuarios al Firebase Authentication en cada arranque
+      // (crea cuentas Firebase para usuarios que aún no las tienen).
+      trySyncAllStaffToFirebaseAuth().catch(() => {});
+      // Asegura que los clientes existentes también se envíen al menos al arrancar.
+      trySyncAllPosClientsToFirebase().catch(() => {});
+      // Repara pedidos delivery ya creados para que mantengan link y referencia en Firestore.
+      tryRepairPendingDeliveryOrdersInFirebase().catch(() => {});
+      // Bootstrap inicial de la data histórica para la app de reportes.
+      tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
+    }
     // Si Firebase se habilita después del arranque, reintenta el bootstrap histórico.
     setInterval(() => {
+      if (global.__TECNO_CAJA_SKIP_FIREBASE_PUSH) return;
       tryEnsureInitialFirebaseReportsBootstrap().catch(() => {});
     }, 5 * 60 * 1000);
     pruneExpiredAuthSessions().catch(() => {});

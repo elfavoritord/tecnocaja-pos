@@ -1032,35 +1032,63 @@ async function fetchRemotePosLicenseState(config) {
     }
   }
 
-  // 3. Query por businessKey (sin filtro de source — funciona aunque el doc lo creó el admin app)
+  // ── Pasos 3 y 4: matcheo por NOMBRE. Peligroso: dos negocios con el mismo
+  // nombre (o parecido, porque buildPosBusinessKey normaliza) caerían en la
+  // misma licencia y un negocio nuevo "suplicaría" la licencia de otro.
+  // Solo se adopta una licencia matcheada por nombre si además corrobora con
+  // una señal fuerte de PERTENENCIA: el firebase_uid del admin, el correo del
+  // dueño, el RNC, o que este equipo ya esté registrado en devices{}.
+  const ownerEmail = String(config?.correo || config?.ownerEmail || config?.email || '').trim().toLowerCase();
+  const ownerRnc = String(config?.rnc || '').replace(/\D/g, '');
+  const principalFirebaseUid = String(config?.principalFirebaseUid || '').trim();
+  let thisDeviceId = '';
+  try { thisDeviceId = require('../server/security/machine-identity').getDeviceId(); } catch (_) {}
+
+  function belongsToThisInstall(data = {}) {
+    if (principalFirebaseUid && String(data.principalUid || '').trim() === principalFirebaseUid) return true;
+    if (ownerEmail && String(data.correo || data.ownerEmail || data.email || '').trim().toLowerCase() === ownerEmail) return true;
+    if (ownerRnc && String(data.rnc || '').replace(/\D/g, '') === ownerRnc) return true;
+    if (thisDeviceId) {
+      const devs = data.devices || data.deviceRegistry || data.registeredDevices || {};
+      if (devs && typeof devs === 'object' && (devs[thisDeviceId] || Object.keys(devs).includes(thisDeviceId))) return true;
+      if (String(data.lastValidationDeviceId || data.deviceId || '').trim() === thisDeviceId) return true;
+    }
+    return false;
+  }
+
+  function adoptByNameIfMine(snapshot, label) {
+    if (!snapshot || snapshot.empty) return null;
+    const mine = snapshot.docs.filter((d) => belongsToThisInstall(d.data() || {}));
+    if (!mine.length) {
+      console.warn(
+        `[firebase-admin] ${snapshot.docs.length} licencia(s) con ${label} "${businessName}" pero NINGUNA pertenece a este install ` +
+        `(sin coincidir firebase_uid / correo / RNC / dispositivo). NO se adopta — se generará una licencia propia. ` +
+        `Si es un reinstalación legítima, configura TECNO_CAJA_LICENSE_UID en config/app.env.`
+      );
+      return null;
+    }
+    const chosen = chooseBestLicenseDocument(mine, { preferredUid });
+    if (mine.length > 1 && chosen) {
+      console.warn(`[firebase-admin] Varias licencias propias para ${label}:`, businessName, '— usando', describeLicenseSelection(chosen));
+    }
+    return chosen;
+  }
+
+  // 3. Query por businessKey (nombre normalizado) — solo si es de este install
   if (!doc) {
     try {
-      const snapshot = await withFirestoreTimeout(licensesCollection
-        .where('businessKey', '==', businessKey)
-        .get());
-      if (!snapshot.empty) {
-        doc = chooseBestLicenseDocument(snapshot.docs, { preferredUid });
-        if (snapshot.docs.length > 1 && doc) {
-          console.warn('[firebase-admin] Varias licencias para businessKey:', businessKey, '— usando', describeLicenseSelection(doc));
-        }
-      }
+      const snapshot = await withFirestoreTimeout(licensesCollection.where('businessKey', '==', businessKey).get());
+      doc = adoptByNameIfMine(snapshot, 'businessKey');
     } catch (err) {
       console.warn('[firebase-admin] Query por businessKey falló:', err.message);
     }
   }
 
-  // 4. Fallback: query por businessName
+  // 4. Fallback: query por businessName exacto — solo si es de este install
   if (!doc) {
     try {
-      const snapshot = await withFirestoreTimeout(licensesCollection
-        .where('businessName', '==', businessName)
-        .get());
-      if (!snapshot.empty) {
-        doc = chooseBestLicenseDocument(snapshot.docs, { preferredUid });
-        if (snapshot.docs.length > 1 && doc) {
-          console.warn('[firebase-admin] Varias licencias para businessName:', businessName, '— usando', describeLicenseSelection(doc));
-        }
-      }
+      const snapshot = await withFirestoreTimeout(licensesCollection.where('businessName', '==', businessName).get());
+      doc = adoptByNameIfMine(snapshot, 'businessName');
     } catch (err) {
       console.warn('[firebase-admin] Query por businessName falló:', err.message);
     }

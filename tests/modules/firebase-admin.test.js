@@ -218,6 +218,70 @@ describe('modules/firebase-admin', () => {
     expect(remoteState?.status).toBe('trial');
   });
 
+  it('NO adopta la licencia de otro negocio solo porque coincide el nombre (sin dueño en común)', async () => {
+    // Escenario: un negocio nuevo se llama igual/parecido a uno que ya existe.
+    // Sin TECNO_CAJA_LICENSE_UID, sin firebase_uid/correo/RNC/dispositivo en común
+    // -> NO debe heredar esa licencia (eso "suplicaba" la licencia ajena).
+    delete process.env.TECNO_CAJA_LICENSE_UID;
+    const mockFirestore = createMockFirestore({
+      licencias: {
+        pos_dueno_original: {
+          source: 'pos',
+          businessKey: 'pos:tecno-caja-farmacia-enrriqueta-srl',
+          businessName: 'FARMACIA ENRRIQUETA SRL',
+          status: 'active',
+          principalUid: 'firebase_uid_del_dueno_real',
+          correo: 'dueno.real@gmail.com',
+          rnc: '133350246',
+          devices: { npd_maquina_del_dueno: { hostname: 'PC-DUENO' } },
+        },
+      },
+    });
+
+    jest.doMock('firebase-admin', () => ({
+      apps: [{}],
+      app: () => ({ firestore: () => mockFirestore.firestore }),
+    }));
+
+    const { fetchRemotePosLicenseState } = require('../../modules/firebase-admin');
+    const remoteState = await fetchRemotePosLicenseState({
+      business_name: 'FARMACIA ENRRIQUETA SRL',
+      principalFirebaseUid: 'otro_firebase_uid_distinto',
+    });
+
+    expect(remoteState).toBeNull();
+  });
+
+  it('SÍ readopta la licencia por nombre si el firebase_uid del admin coincide (reinstalación legítima)', async () => {
+    delete process.env.TECNO_CAJA_LICENSE_UID;
+    const mockFirestore = createMockFirestore({
+      licencias: {
+        pos_mi_licencia: {
+          source: 'pos',
+          businessKey: 'pos:tecno-caja-mi-tienda',
+          businessName: 'Mi Tienda',
+          status: 'active',
+          planCode: 'plus',
+          principalUid: 'mi_firebase_uid',
+        },
+      },
+    });
+
+    jest.doMock('firebase-admin', () => ({
+      apps: [{}],
+      app: () => ({ firestore: () => mockFirestore.firestore }),
+    }));
+
+    const { fetchRemotePosLicenseState } = require('../../modules/firebase-admin');
+    const remoteState = await fetchRemotePosLicenseState({
+      business_name: 'Mi Tienda',
+      principalFirebaseUid: 'mi_firebase_uid',
+    });
+
+    expect(remoteState?.id).toBe('pos_mi_licencia');
+    expect(remoteState?.status).toBe('active');
+  });
+
   it('bloquea reutilizar el mismo nombre comercial si ya existe otra licencia en Firebase', async () => {
     const mockFirestore = createMockFirestore({
       licencias: {

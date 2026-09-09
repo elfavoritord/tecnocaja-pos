@@ -5,7 +5,14 @@ const { prepareRuntimeEnvironment } = require('./scripts/runtime-bootstrap');
 const {
   decryptSqliteBuffer,
   encryptSqliteBuffer,
+  isPlainSqliteBuffer,
 } = require('./server/security/local-machine-crypto');
+let getStableMachineFingerprint;
+try {
+  ({ getStableMachineFingerprint } = require('./server/security/machine-identity'));
+} catch (_) {
+  getStableMachineFingerprint = () => '';
+}
 
 const runtime = prepareRuntimeEnvironment({
   appRoot: __dirname,
@@ -69,26 +76,107 @@ function normalizeMySqlSql(sql) {
   return { type: 'sql', sql: normalized, params: [] };
 }
 
+// Sidecar con la huella de máquina que se usó la última vez que se guardó bien.
+// Se relee si la huella viva ya no descifra (actualización de Windows, cambio
+// de RAM, etc.) — así la BD no se pierde por algo tan trivial.
+const FPR_FILE = dbFile + '.fpr';
+
+function readSavedFingerprint() {
+  try {
+    const v = fs.readFileSync(FPR_FILE, 'utf8').trim();
+    return /^[a-f0-9]{16,128}$/i.test(v) ? v : '';
+  } catch (_) { return ''; }
+}
+
+function writeSavedFingerprint() {
+  try {
+    const fp = String(getStableMachineFingerprint() || '').trim();
+    if (fp && fp !== readSavedFingerprint()) fs.writeFileSync(FPR_FILE, fp, 'utf8');
+  } catch (_) {}
+}
+
+// Borra los .tmp-<pid> abandonados por procesos muertos (rename fallido por
+// bloqueo de antivirus). Un cliente real acumuló 106 de estos en 2 meses.
+function cleanupStaleTmpFiles() {
+  try {
+    const dir = path.dirname(dbFile);
+    const base = path.basename(dbFile);
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.startsWith(base + '.tmp-')) continue;
+      const full = path.join(dir, name);
+      try {
+        const age = Date.now() - fs.statSync(full).mtimeMs;
+        if (age > 5 * 60 * 1000) fs.unlinkSync(full); // > 5 min = huérfano seguro
+      } catch (_) {}
+    }
+  } catch (_) {}
+}
+
+// Intenta obtener un buffer SQLite usable de `raw`, probando varias llaves
+// antes de rendirse. Devuelve el buffer descifrado o lanza el último error.
+function tryDecryptWithFallbacks(raw) {
+  if (isPlainSqliteBuffer(raw)) return raw;
+  let lastErr;
+  try { return decryptSqliteBuffer(raw); } catch (e) { lastErr = e; }
+  const savedFp = readSavedFingerprint();
+  if (savedFp) {
+    try {
+      const buf = decryptSqliteBuffer(raw, { fingerprintOverride: savedFp });
+      console.warn('[db] BD descifrada con la huella guardada (.fpr) — la huella viva cambió (¿update de Windows?). Se re-cifrará con la nueva al guardar.');
+      return buf;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
 function createSqlitePromise() {
   return initSqlJs().then((SQL) => {
+    cleanupStaleTmpFiles();
     const fileExists = fs.existsSync(dbFile);
     if (!fileExists) {
       return new SQL.Database();
     }
+    const raw = fs.readFileSync(dbFile);
     let buffer;
     try {
-      buffer = decryptSqliteBuffer(fs.readFileSync(dbFile));
+      buffer = tryDecryptWithFallbacks(raw);
     } catch (decryptErr) {
+      // Último recurso ANTES de dar la BD por perdida: si hay un .tmp-* reciente
+      // y descifrable, usarlo (una escritura atómica que no alcanzó el rename).
+      const salvaged = salvageFromTmp(SQL);
+      if (salvaged) return salvaged;
       const corruptPath = dbFile + '.corrupt_' + Date.now();
       try { fs.renameSync(dbFile, corruptPath); } catch (_) {}
-      console.warn(
-        '[db] No se pudo descifrar ' + dbFile + ' (' + (decryptErr.code || decryptErr.message) + '). ' +
+      console.error(
+        '[db] ⚠️ No se pudo descifrar ' + dbFile + ' (' + (decryptErr.code || decryptErr.message) + '). ' +
         'Archivo movido a ' + corruptPath + '. Arrancando con BD nueva en blanco.'
       );
       return new SQL.Database();
     }
     return new SQL.Database(buffer);
   });
+}
+
+function salvageFromTmp(SQL) {
+  try {
+    const dir = path.dirname(dbFile);
+    const base = path.basename(dbFile);
+    const tmps = fs.readdirSync(dir)
+      .filter((n) => n.startsWith(base + '.tmp-'))
+      .map((n) => ({ n, p: path.join(dir, n), m: fs.statSync(path.join(dir, n)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    for (const t of tmps) {
+      try {
+        const buf = tryDecryptWithFallbacks(fs.readFileSync(t.p));
+        const db = new SQL.Database(buf);
+        // sanity: que tenga la tabla sales
+        db.exec('SELECT 1 FROM sales LIMIT 1');
+        console.warn('[db] BD recuperada desde ' + t.n + ' (escritura atómica sin completar). Se re-guardará al primer cambio.');
+        return db;
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return null;
 }
 
 function getSqlitePromise() {
@@ -134,11 +222,38 @@ async function _writeToDisk() {
     });
   });
 
-  await new Promise(function(resolve, reject) {
-    fs.rename(tmpFile, dbFile, function(err) {
-      if (err) reject(err); else resolve();
-    });
-  });
+  // El rename sobre un archivo abierto por el antivirus / indexador de Windows
+  // falla con EPERM/EBUSY. Reintentar con backoff corto resuelve el 99% de los
+  // casos transitorios. Un cliente real perdía guardados y acumulaba .tmp por
+  // esto (y terminaba con la BD a medio escribir = "corrupta").
+  let renamed = false;
+  let lastRenameErr = null;
+  for (let i = 0; i < 6 && !renamed; i++) {
+    try {
+      await new Promise(function(resolve, reject) {
+        fs.rename(tmpFile, dbFile, function(err) { if (err) reject(err); else resolve(); });
+      });
+      renamed = true;
+    } catch (err) {
+      lastRenameErr = err;
+      await new Promise(function(r) { setTimeout(r, 120 * (i + 1)); });
+    }
+  }
+
+  if (!renamed) {
+    // Último recurso: escritura directa NO atómica. Peor que el rename, pero
+    // muchísimo mejor que perder el guardado y dejar otro .tmp huérfano.
+    try {
+      fs.writeFileSync(dbFile, encrypted);
+      try { fs.unlinkSync(tmpFile); } catch (_) {}
+      console.error('[db] ⚠️ rename bloqueado tras 6 intentos (' + (lastRenameErr && lastRenameErr.code) +
+        '). Guardado con escritura directa. Revisar exclusión de antivirus para ' + path.dirname(dbFile));
+    } catch (writeErr) {
+      throw lastRenameErr || writeErr;
+    }
+  }
+
+  writeSavedFingerprint();
 }
 
 async function saveSqliteDb() {
@@ -323,10 +438,27 @@ async function query(sql, params) {
   return runSqliteStatement(sql, params, true);
 }
 
+// Multicaja (varias PC contra un MySQL por LAN/Tailscale): cada venta serializa
+// sobre los locks de fila del contador FAC y de ncf_sequences. Con el timeout
+// por defecto (50s) un peer colgado congela las otras cajas. Lo bajamos a
+// ~8s por conexión física (bandera para no repetir el round-trip) para que
+// falle rápido y withTransactionRetry pueda reintentar.
+const MYSQL_LOCK_WAIT_TIMEOUT = Number(process.env.DB_LOCK_WAIT_TIMEOUT_SECONDS || 8);
+async function ensureSessionTuning(connection) {
+  if (connection.__tcTuned) return;
+  try {
+    await connection.query('SET SESSION innodb_lock_wait_timeout = ?', [MYSQL_LOCK_WAIT_TIMEOUT]);
+  } catch (_) {
+    // Algunas variantes no permiten cambiarlo por sesión — no es crítico.
+  }
+  connection.__tcTuned = true;
+}
+
 async function withTransaction(work) {
   if (dbClient === 'mysql') {
     const connection = await getMysqlPool().getConnection();
     try {
+      await ensureSessionTuning(connection);
       await connection.beginTransaction();
       const result = await work({
         query: function(sql, params) { return runMysqlQueryWith(connection, sql, params); },
@@ -367,9 +499,54 @@ async function withTransaction(work) {
   }
 }
 
+// Errores transitorios de concurrencia MySQL que SÍ vale la pena reintentar:
+//  1205 ER_LOCK_WAIT_TIMEOUT · 1213 ER_LOCK_DEADLOCK · 1062 ER_DUP_ENTRY
+// (este último normalmente en invoice_number bajo carrera de varias cajas —
+//  al reintentar, el contador FAC asigna el siguiente número libre).
+function isTransientTxnError(error) {
+  const code = String(error && error.code || '').toUpperCase();
+  const errno = Number(error && error.errno || 0);
+  if (code === 'ER_LOCK_WAIT_TIMEOUT' || errno === 1205) return { retry: true, kind: 'lock_timeout' };
+  if (code === 'ER_LOCK_DEADLOCK' || errno === 1213) return { retry: true, kind: 'deadlock' };
+  if (code === 'ER_DUP_ENTRY' || errno === 1062) {
+    const msg = String(error && error.message || '').toLowerCase();
+    // Solo reintentar duplicados de número de factura / PK de sales; otros
+    // UNIQUE (cédula de cliente, etc.) no se resuelven reintentando.
+    if (msg.includes('invoice_number') || msg.includes("for key 'sales") || msg.includes('sales.invoice')) {
+      return { retry: true, kind: 'dup_invoice' };
+    }
+  }
+  return { retry: false };
+}
+
+// Igual que withTransaction pero reintenta ante tranques/deadlocks/duplicado
+// de factura. `work` se re-ejecuta desde cero (el rollback deshizo todo), así
+// que solo debe contener trabajo idempotente-al-reintento (los sync
+// fire-and-forget van FUERA, en el handler). No hace nada especial en SQLite:
+// ahí no hay concurrencia entre procesos.
+async function withTransactionRetry(work, options = {}) {
+  const maxAttempts = Math.max(1, Number(options.maxAttempts || 4));
+  let lastError = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await withTransaction(work);
+    } catch (error) {
+      lastError = error;
+      const verdict = dbClient === 'mysql' ? isTransientTxnError(error) : { retry: false };
+      if (!verdict.retry || attempt === maxAttempts) throw error;
+      const backoff = Math.min(400, 40 * attempt) + Math.floor(Math.random() * 60);
+      console.warn(`[db] transacción reintentable (${verdict.kind}), intento ${attempt}/${maxAttempts - 1} — reintenta en ${backoff}ms`);
+      await new Promise((r) => setTimeout(r, backoff));
+    }
+  }
+  throw lastError;
+}
+
 module.exports = {
   query: query,
   withTransaction: withTransaction,
+  withTransactionRetry: withTransactionRetry,
+  _isTransientTxnError: isTransientTxnError,
   reloadDatabase: reloadDatabase,
   dbFile: dbFile,
   getDbClient: function() { return dbClient; },
