@@ -20,6 +20,16 @@ const runtime = prepareRuntimeEnvironment({
 });
 
 const dbFile = runtime.dbFile;
+
+// Cifrado en reposo de la BD SQLite. Se puede desactivar por instalación con
+// TECNO_CAJA_DB_PLAINTEXT=1 — pensado para PCs donde el antivirus corrompe la
+// escritura atómica una y otra vez: sin la cabecera cifrada NVPDB1, una
+// escritura desgarrada deja un SQLite parcial (recuperable) en vez de un
+// archivo indescifrable. Además, si el archivo en disco YA está en texto
+// plano (p.ej. se restauró una reconstrucción), se mantiene así solo — nunca
+// se re-cifra en silencio.
+let _dbPlaintext = String(process.env.TECNO_CAJA_DB_PLAINTEXT || '').trim() === '1';
+function dbEncryptionDisabled() { return _dbPlaintext; }
 const dbClient = String(process.env.DB_CLIENT || 'sqlite').trim().toLowerCase() === 'mysql'
   ? 'mysql'
   : 'sqlite';
@@ -115,7 +125,15 @@ function cleanupStaleTmpFiles() {
 // Intenta obtener un buffer SQLite usable de `raw`, probando varias llaves
 // antes de rendirse. Devuelve el buffer descifrado o lanza el último error.
 function tryDecryptWithFallbacks(raw) {
-  if (isPlainSqliteBuffer(raw)) return raw;
+  if (isPlainSqliteBuffer(raw)) {
+    // El archivo en disco ya está sin cifrar → esta instalación se queda en
+    // texto plano; no re-cifrar en el próximo guardado.
+    if (!_dbPlaintext) {
+      _dbPlaintext = true;
+      console.warn('[db] BD en texto plano detectada — cifrado en reposo DESACTIVADO para esta instalación.');
+    }
+    return raw;
+  }
   let lastErr;
   try { return decryptSqliteBuffer(raw); } catch (e) { lastErr = e; }
   const savedFp = readSavedFingerprint();
@@ -202,7 +220,8 @@ const _SAVE_DEBOUNCE_MS = 80;
 // archivo cifrado y el sistema arrancaba con una BD nueva en blanco.
 async function _writeToDisk() {
   const db = await getSqlitePromise();
-  const encrypted = encryptSqliteBuffer(Buffer.from(db.export()));
+  const plainBuf = Buffer.from(db.export());
+  const encrypted = dbEncryptionDisabled() ? plainBuf : encryptSqliteBuffer(plainBuf);
   const tmpFile = dbFile + '.tmp-' + process.pid;
 
   await new Promise(function(resolve, reject) {
