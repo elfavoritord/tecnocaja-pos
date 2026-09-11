@@ -184,6 +184,9 @@
       <a class="nav-item" data-mod="facturacion" onclick="app.goto('facturacion')">
         <span class="nav-icon">💳</span> Facturación
       </a>
+      <a class="nav-item" data-mod="cotizaciones" onclick="app.goto('cotizaciones')">
+        <span class="nav-icon">🧾</span> Cotizaciones
+      </a>
       <a class="nav-item" id="nav-colaboradores" data-mod="colaboradores" onclick="app.goto('colaboradores')">
         <span class="nav-icon">🤝</span> Colaboradores
         <span id="nav-badge-colab" class="nav-badge hidden">0</span>
@@ -793,6 +796,36 @@
             <tbody id="fd-pagos"></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- ── COTIZACIONES ──────────────────────────────────────────────────── -->
+    <div id="mod-cotizaciones" class="module">
+      <div class="mod-header">
+        <div>
+          <div class="mod-title">🧾 Cotizaciones</div>
+          <div class="mod-sub">Cotiza tus servicios y conviértelas en factura con un clic</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-secondary" onclick="app.loadCotizaciones()">↺ Actualizar</button>
+          <button class="btn btn-primary" onclick="app.nuevaCotizacion()">＋ Nueva cotización</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="search-bar">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-sub)">
+            <input type="checkbox" id="cot-ver-todas" onchange="app.loadCotizaciones()" />
+            Ver convertidas/rechazadas
+          </label>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Número</th><th>Cliente</th><th>Fecha</th><th>Estado</th><th style="text-align:right">Total</th><th>Acción</th></tr>
+          </thead>
+          <tbody id="cotizaciones-tbody">
+            <tr><td colspan="6" style="text-align:center;padding:30px;color:#5a7099">Cargando…</td></tr>
+          </tbody>
+        </table>
       </div>
     </div>
 
@@ -2349,6 +2382,184 @@
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="app.cerrarEnvioFac()">Cancelar</button>
       <button class="btn btn-primary" id="fe-btn" onclick="app.confirmarEnvioFac()">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Nueva Cotización ───────────────────────────────────────────── -->
+<div id="modal-nueva-cotizacion" class="modal-overlay hidden">
+  <div class="modal-card fac-modal-xl">
+    <button class="btn-modal-close" onclick="app.cerrarNuevaCotizacion()">✕</button>
+    <div class="modal-title">＋ Nueva Cotización</div>
+    <div class="modal-sub">Completa los datos para cotizar tus servicios</div>
+
+    <div class="fac-form-layout">
+      <!-- Columna izquierda: cliente + condiciones -->
+      <div>
+        <div class="fac-form-section">
+          <div class="fac-section-lbl">Cliente</div>
+          <div class="form-group">
+            <label class="form-label">Cliente guardado / negocio asociado</label>
+            <select id="cot-cliente-sel" class="form-select" onchange="app.selClienteCot(this.value)">
+              <option value="">— Ingresar datos manualmente —</option>
+            </select>
+          </div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Nombre / Razón social *</label>
+              <input id="cot-cli-nombre" type="text" class="form-input" placeholder="Empresa o persona" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">RNC / Cédula</label>
+              <input id="cot-cli-rnc" type="text" class="form-input" placeholder="000-00000-0" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Dirección</label>
+            <input id="cot-cli-dir" type="text" class="form-input" placeholder="Calle, número, sector..." />
+          </div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Teléfono</label>
+              <input id="cot-cli-tel" type="text" class="form-input" placeholder="809-000-0000" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Correo</label>
+              <input id="cot-cli-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
+            </div>
+          </div>
+        </div>
+
+        <div class="fac-form-section">
+          <div class="fac-section-lbl">Validez &amp; Condiciones</div>
+          <div class="fac-grid-2">
+            <div class="form-group">
+              <label class="form-label">Fecha *</label>
+              <input id="cot-fecha" type="date" class="form-input" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">Validez (días)</label>
+              <input id="cot-validez-dias" type="number" class="form-input" min="1" value="30" />
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Condición de pago</label>
+            <select id="cot-condicion" class="form-select">
+              <option value="contado">Contado</option>
+              <option value="credito">Crédito</option>
+              <option value="adelanto">Adelanto</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Notas / condiciones</label>
+          <textarea id="cot-notas" class="form-textarea" rows="2" placeholder="Condiciones de la cotización..."></textarea>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Observación</label>
+          <textarea id="cot-observacion" class="form-textarea" rows="2" placeholder="Notas internas..."></textarea>
+        </div>
+      </div>
+
+      <!-- Columna derecha: ítems + totales -->
+      <div>
+        <div class="fac-form-section">
+          <div class="fac-section-lbl" style="display:flex;justify-content:space-between;align-items:center">
+            <span>Servicios / Ítems</span>
+            <button class="btn btn-secondary btn-sm" onclick="app.addItemCot()">＋ Agregar ítem</button>
+          </div>
+          <div style="margin-top:4px">
+            <table class="fac-items-table">
+              <thead>
+                <tr>
+                  <th>Descripción</th>
+                  <th style="width:42px">Cant.</th>
+                  <th style="width:70px">Precio</th>
+                  <th style="width:44px">Desc.%</th>
+                  <th style="width:52px">ITBIS</th>
+                  <th style="width:88px;text-align:right">Total</th>
+                  <th style="width:22px"></th>
+                </tr>
+              </thead>
+              <tbody id="cot-items-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="fac-totals-box">
+          <div class="fac-total-row"><span>Subtotal</span><span id="cot-t-sub">RD$ 0.00</span></div>
+          <div class="fac-total-row"><span>Descuento</span><span id="cot-t-desc" style="color:var(--red)">— RD$ 0.00</span></div>
+          <div class="fac-total-row"><span>ITBIS</span><span id="cot-t-itbis">RD$ 0.00</span></div>
+          <div class="fac-total-row fac-total-final"><span>TOTAL GENERAL</span><span id="cot-t-total">RD$ 0.00</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarNuevaCotizacion()">Cancelar</button>
+      <button class="btn btn-primary" id="cot-btn-guardar" onclick="app.guardarCotizacion()">💾 Guardar Cotización</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Facturar cotización (elegir tipo de comprobante) ─────────────── -->
+<div id="modal-cot-facturar" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:420px">
+    <button class="btn-modal-close" onclick="app.cerrarFacturarCotizacion()">✕</button>
+    <div class="modal-title">Convertir a factura</div>
+    <div class="modal-sub" id="cf-cot-numero">—</div>
+    <div class="form-group">
+      <label class="form-label">Tipo comprobante *</label>
+      <select id="cf-tipo-ncf" class="form-select">
+        <option value="B02">B02 — Consumidor Final</option>
+        <option value="B01">B01 — Crédito Fiscal</option>
+        <option value="B03">B03 — Nota de Débito</option>
+        <option value="B04">B04 — Nota de Crédito</option>
+        <option value="B11">B11 — Comprobante de Compras</option>
+        <option value="B12">B12 — Registro Único de Ingresos</option>
+        <option value="B13">B13 — Gastos Menores</option>
+        <option value="B14">B14 — Régimen Especial</option>
+        <option value="B15">B15 — Gubernamental</option>
+        <option value="B16">B16 — Comprobante para Exportaciones</option>
+        <option value="B17">B17 — Comprobante para Pagos al Exterior</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Método de pago</label>
+      <select id="cf-metodo" class="form-select">
+        <option value="efectivo">Efectivo</option>
+        <option value="transferencia">Transferencia</option>
+        <option value="tarjeta">Tarjeta</option>
+        <option value="cheque">Cheque</option>
+        <option value="otro">Otro</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarFacturarCotizacion()">Cancelar</button>
+      <button class="btn btn-primary" id="cf-btn" onclick="app.confirmarFacturarCotizacion()">Facturar</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── MODAL: Enviar cotización por correo ──────────────────────────────── -->
+<div id="modal-cot-envio" class="modal-overlay hidden">
+  <div class="modal-card" style="max-width:440px">
+    <button class="btn-modal-close" onclick="app.cerrarEnvioCot()">✕</button>
+    <div class="modal-title">Enviar cotización por correo</div>
+    <div class="modal-sub" id="ce-from">Se envía el PDF adjunto.</div>
+
+    <div class="form-group">
+      <label class="form-label">Para *</label>
+      <input id="ce-to" type="email" class="form-input" placeholder="cliente@correo.com" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Mensaje adicional (opcional)</label>
+      <textarea id="ce-mensaje" class="form-textarea" rows="3" placeholder="Se agrega al cuerpo del correo…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="app.cerrarEnvioCot()">Cancelar</button>
+      <button class="btn btn-primary" id="ce-btn" onclick="app.confirmarEnvioCot()">Enviar</button>
     </div>
   </div>
 </div>

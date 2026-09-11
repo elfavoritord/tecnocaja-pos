@@ -155,6 +155,7 @@ function goto(mod) {
   if (mod === 'actualizaciones')  loadActualizaciones();
   if (mod === 'reportes')         loadReportes();
   if (mod === 'facturacion')      loadFacturacion();
+  if (mod === 'cotizaciones')     loadCotizaciones();
   if (mod === 'asistente')        loadAsistente();
   if (mod === 'colaboradores')    loadColaboradores();
   if (mod === 'analisis-global')  loadAnalisisGlobal();
@@ -3076,6 +3077,13 @@ let _facEditClfId = null;
 let _facItems     = [];
 let _facEditId    = null;   // id de la factura en edición (null = nueva)
 
+let _cotCotizaciones = [];
+let _cotClientes     = [];
+let _cotItems         = [];
+let _cotEditId        = null;   // id de la cotización en edición (null = nueva)
+let _cotFacturarId    = null;   // cotización que se está convirtiendo a factura
+let _envioCot         = null;   // { id, data } — cotización en curso de envío por correo
+
 function esc(s) {
   return String(s || '')
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
@@ -4138,14 +4146,19 @@ async function verFactura(id) {
 }
 
 // Vista previa formal en ventana nueva + diálogo de impresión (A4).
-function imprimirFacturaPreview() {
+async function imprimirFacturaPreview() {
   if (!_facCurData) return;
-  const w = window.open('', '_blank');
-  if (!w) { toast('Permite las ventanas emergentes para la vista previa.', 'error'); return; }
-  w.document.write(facturaFormalHtml(_facCurData));
-  w.document.close();
-  w.focus();
-  setTimeout(() => { try { w.print(); } catch (_) {} }, 400);
+  if (!window.contadoresAPI?.isElectron) {
+    toast('Esta función solo está disponible en la app de escritorio.', 'error');
+    return;
+  }
+  try {
+    const ncfSlug = (_facCurData.ncf || 'FACTURA').replace(/[^A-Z0-9]/gi, '');
+    const clientSlug = (_facCurData.cliente?.nombre || 'cliente').replace(/\s+/g, '_').slice(0, 20);
+    const filename = `Factura_${ncfSlug}_${clientSlug}.pdf`;
+    const r = await window.contadoresAPI.previewPrint(facturaFormalHtml(_facCurData), `Factura ${facNcfDisplay(_facCurData.ncf)}`, filename);
+    if (!r?.ok) toast('Error al abrir la vista previa: ' + (r?.error || 'desconocido'), 'error');
+  } catch (e) { toast('Error al abrir la vista previa.', 'error'); }
 }
 
 // ── Registrar pago ───────────────────────────────────────────────────
@@ -4643,6 +4656,517 @@ async function eliminarClienteFac(id) {
     toast('Cliente eliminado.', 'success');
     await loadClientesFac();
   } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// COTIZACIONES — cotizar servicios y convertirlos en factura con un clic.
+// ══════════════════════════════════════════════════════════════════════
+
+function cotEstadoBadge(estado) {
+  const map = { aprobada: 'Aprobada', rechazada: 'Rechazada', vencida: 'Vencida', convertida: 'Convertida' };
+  const lbl = map[estado] || estado || '—';
+  return `<span class="cot-estado ${estado || 'aprobada'}">${lbl}</span>`;
+}
+
+async function loadCotizaciones() {
+  const tbody = $id('cotizaciones-tbody');
+  try {
+    const todas = $id('cot-ver-todas')?.checked ? '?todas=1' : '';
+    _cotCotizaciones = await apiCall('GET', '/api/cotizaciones/cotizaciones' + todas);
+  } catch (e) {
+    _cotCotizaciones = [];
+    toast('No se pudieron cargar las cotizaciones: ' + e.message, 'error');
+  }
+  if (!tbody) return;
+  if (!_cotCotizaciones.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:#5a7099">Sin cotizaciones.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = _cotCotizaciones.map(c => {
+    const acciones = [
+      `<a href="#" onclick="app.verCotizacionPreview('${c.id}');return false">Ver / Imprimir</a>`,
+      `<a href="#" onclick="app.abrirModalEnvioCot('${c.id}');return false">Correo</a>`,
+    ];
+    if (c.estado !== 'convertida') {
+      acciones.push(`<a href="#" onclick="app.editarCotizacion('${c.id}');return false">Editar</a>`);
+      acciones.push(`<a href="#" onclick="app.abrirFacturarCotizacion('${c.id}');return false">Facturar</a>`);
+    }
+    return `<tr>
+      <td>${esc(c.numero)}</td>
+      <td>${esc(c.cliente?.nombre) || '—'}</td>
+      <td>${fmtDate(c.fecha)}</td>
+      <td>${cotEstadoBadge(c.estado)}</td>
+      <td style="text-align:right">${fmtMoney(c.total)}</td>
+      <td>${acciones.join(' · ')}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function nuevaCotizacion() {
+  _cotEditId = null;
+  const tEl = $id('modal-nueva-cotizacion')?.querySelector('.modal-title');
+  if (tEl) tEl.textContent = '＋ Nueva Cotización';
+  const bEl = $id('cot-btn-guardar');
+  if (bEl) bEl.textContent = '💾 Guardar Cotización';
+
+  _cotItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
+  const today = new Date().toISOString().slice(0, 10);
+  const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
+  set('cot-fecha', today);
+  set('cot-validez-dias', 30);
+  set('cot-condicion', 'contado');
+  ['cot-cli-nombre', 'cot-cli-rnc', 'cot-cli-dir', 'cot-cli-tel', 'cot-cli-correo', 'cot-notas', 'cot-observacion']
+    .forEach(id => set(id, ''));
+
+  // Autocomplete DGII en el RNC del cliente, igual que en Facturación.
+  if (window.RNCLookup) {
+    const rncEl = $id('cot-cli-rnc');
+    const nombreEl = $id('cot-cli-nombre');
+    if (rncEl) RNCLookup.attach(rncEl, { nameEl: nombreEl, mode: 'both', onSelect() {} });
+  }
+
+  try {
+    const [clientes, negocios] = await Promise.all([
+      apiCall('GET', '/api/facturacion/clientes'),
+      _allClientes.length ? Promise.resolve(_allClientes) : apiCall('GET', '/api/clientes').catch(() => []),
+    ]);
+    _cotClientes = clientes;
+    if (!_allClientes.length && negocios.length) _allClientes = negocios;
+
+    const sel = $id('cot-cliente-sel');
+    if (sel) {
+      let html = '<option value="">— Ingresar datos manualmente —</option>';
+      if (clientes.length) {
+        html += `<optgroup label="Mis clientes de facturación">` +
+          clientes.map(c => `<option value="fac_${c.id}">${esc(c.nombre)}${c.rnc ? ' — ' + c.rnc : ''}</option>`).join('') +
+          `</optgroup>`;
+      }
+      if (negocios.length) {
+        html += `<optgroup label="Negocios asociados">` +
+          negocios.map(n => `<option value="neg_${n.id}">${esc(n.businessName || n.businessKey || n.id)}${n.rnc ? ' — ' + n.rnc : ''}</option>`).join('') +
+          `</optgroup>`;
+      }
+      sel.innerHTML = html;
+      sel.value = '';
+    }
+  } catch { /* no crítico */ }
+
+  renderCotItemsTable();
+  calcularTotalesCot();
+  show('modal-nueva-cotizacion');
+}
+
+function cerrarNuevaCotizacion() { _cotEditId = null; hide('modal-nueva-cotizacion'); }
+
+async function editarCotizacion(id) {
+  try {
+    const c = await apiCall('GET', `/api/cotizaciones/cotizaciones/${id}`);
+    if (c.estado === 'convertida') { toast('No se puede editar una cotización ya convertida a factura.', 'error'); return; }
+    await nuevaCotizacion();               // arranca el modal en limpio y carga los selects
+    _cotEditId = id;
+
+    const set = (fid, v) => { const el = $id(fid); if (el) el.value = v == null ? '' : v; };
+    set('cot-cli-nombre', c.cliente?.nombre);
+    set('cot-cli-rnc',    c.cliente?.rnc);
+    set('cot-cli-dir',    c.cliente?.direccion);
+    set('cot-cli-tel',    c.cliente?.telefono);
+    set('cot-cli-correo', c.cliente?.correo);
+    set('cot-fecha',      (c.fecha || '').slice(0, 10));
+    set('cot-validez-dias', c.validez_dias || 30);
+    set('cot-condicion', c.condicion_pago || 'contado');
+    set('cot-notas', c.notas || '');
+    set('cot-observacion', c.observacion || '');
+
+    _cotItems = (c.items || []).map(it => ({
+      descripcion: it.descripcion || '', cantidad: it.cantidad || 1,
+      precio: it.precio || 0, descuento: it.descuento || 0, itbis_rate: it.itbis_rate ?? 18,
+    }));
+    if (!_cotItems.length) _cotItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
+
+    const tEl = $id('modal-nueva-cotizacion')?.querySelector('.modal-title');
+    if (tEl) tEl.textContent = `✏ Editar Cotización ${esc(c.numero)}`;
+    const bEl = $id('cot-btn-guardar'); if (bEl) bEl.textContent = '💾 Guardar cambios';
+
+    renderCotItemsTable();
+    calcularTotalesCot();
+    show('modal-nueva-cotizacion');
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function selClienteCot(val) {
+  if (!val) return;
+  const set = (fid, v) => { const el = $id(fid); if (el) el.value = v || ''; };
+
+  if (val.startsWith('fac_')) {
+    const c = _cotClientes.find(x => x.id === val.slice(4));
+    if (!c) return;
+    set('cot-cli-nombre', c.nombre);
+    set('cot-cli-rnc',    c.rnc);
+    set('cot-cli-dir',    c.direccion);
+    set('cot-cli-tel',    c.telefono);
+    set('cot-cli-correo', c.correo);
+  } else if (val.startsWith('neg_')) {
+    const id = val.slice(4);
+    let n = _allClientes.find(x => x.id === id);
+    try { n = await apiCall('GET', `/api/clientes/${id}`); } catch { /* usa el de caché */ }
+    if (!n) return;
+    set('cot-cli-nombre', n.razon_social || n.businessName || n.businessKey || '');
+    set('cot-cli-rnc',    n.rnc || '');
+    set('cot-cli-dir',    n.direccion || n.businessAddress || '');
+    set('cot-cli-tel',    n.telefono || n.phone || '');
+    set('cot-cli-correo', n.correo || n.email || n.ownerEmail || '');
+  }
+}
+
+function renderCotItemsTable() {
+  const tbody = $id('cot-items-body');
+  if (!tbody) return;
+  tbody.innerHTML = _cotItems.map((item, idx) => `<tr id="cot-item-row-${idx}">
+    <td>
+      <input type="text" class="form-input fac-iinput" list="fac-servicios-list"
+        value="${esc(item.descripcion)}" placeholder="Descripción del servicio..."
+        oninput="app.cotItemSet(${idx},'descripcion',this.value)" />
+    </td>
+    <td>
+      <input type="number" class="form-input fac-iinput" value="${item.cantidad}" min="1" step="1"
+        oninput="app.cotItemSet(${idx},'cantidad',this.value)" />
+    </td>
+    <td>
+      <input type="number" class="form-input fac-iinput" value="${item.precio}" min="0" step="0.01"
+        oninput="app.cotItemSet(${idx},'precio',this.value)" />
+    </td>
+    <td>
+      <input type="number" class="form-input fac-iinput" value="${item.descuento}" min="0" max="100" step="1"
+        oninput="app.cotItemSet(${idx},'descuento',this.value)" />
+    </td>
+    <td>
+      <select class="form-select fac-iinput" onchange="app.cotItemSet(${idx},'itbis_rate',this.value)">
+        <option value="0"  ${item.itbis_rate ==  0 ? 'selected' : ''}>0%</option>
+        <option value="18" ${item.itbis_rate == 18 ? 'selected' : ''}>18%</option>
+      </select>
+    </td>
+    <td class="td-amount" id="cot-item-tot-${idx}">${fmtMoney(calcItemTotal(item))}</td>
+    <td>
+      <button class="btn-icon-danger" onclick="app.removeItemCot(${idx})" title="Eliminar">✕</button>
+    </td>
+  </tr>`).join('');
+}
+
+function cotItemSet(idx, field, value) {
+  if (!_cotItems[idx]) return;
+  _cotItems[idx][field] = field === 'descripcion' ? value : (Number(value) || 0);
+  const cell = $id(`cot-item-tot-${idx}`);
+  if (cell) cell.textContent = fmtMoney(calcItemTotal(_cotItems[idx]));
+  calcularTotalesCot();
+}
+
+function addItemCot() {
+  _cotItems.push({ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 });
+  renderCotItemsTable();
+  calcularTotalesCot();
+}
+
+function removeItemCot(idx) {
+  if (_cotItems.length <= 1) { toast('Debe tener al menos un ítem.', 'error'); return; }
+  _cotItems.splice(idx, 1);
+  renderCotItemsTable();
+  calcularTotalesCot();
+}
+
+function calcularTotalesCot() {
+  let sub = 0, desc = 0, itbis = 0;
+  for (const item of _cotItems) {
+    const base = (Number(item.precio) || 0) * Math.max(1, Number(item.cantidad) || 1);
+    const d    = base * ((Number(item.descuento) || 0) / 100);
+    const grav = base - d;
+    sub   += base;
+    desc  += d;
+    itbis += grav * ((Number(item.itbis_rate) || 0) / 100);
+  }
+  const total = sub - desc + itbis;
+  setText('cot-t-sub',   fmtMoney(sub));
+  setText('cot-t-desc',  '— ' + fmtMoney(desc));
+  setText('cot-t-itbis', fmtMoney(itbis));
+  setText('cot-t-total', fmtMoney(total));
+}
+
+async function guardarCotizacion() {
+  const btn = $id('cot-btn-guardar');
+  const esEdicion = !!_cotEditId;
+  const labelOrig = esEdicion ? '💾 Guardar cambios' : '💾 Guardar Cotización';
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  try {
+    const get = id => ($id(id)?.value || '').trim();
+    const cliente = {
+      nombre: get('cot-cli-nombre'), rnc:      get('cot-cli-rnc'),
+      direccion: get('cot-cli-dir'), telefono: get('cot-cli-tel'),
+      correo:    get('cot-cli-correo'),
+    };
+    if (!cliente.nombre) { toast('El nombre del cliente es requerido.', 'error'); return; }
+    if (!_cotItems.some(i => (Number(i.precio) || 0) > 0)) {
+      toast('Agrega al menos un ítem con precio mayor a 0.', 'error'); return;
+    }
+
+    const payload = {
+      cliente,
+      fecha:          get('cot-fecha'),
+      validez_dias:   Number(get('cot-validez-dias')) || 30,
+      condicion_pago: get('cot-condicion'),
+      observacion:    get('cot-observacion'),
+      notas:          get('cot-notas'),
+      items: _cotItems,
+    };
+
+    const editandoId = _cotEditId;
+    if (esEdicion) {
+      await apiCall('PUT', `/api/cotizaciones/cotizaciones/${editandoId}`, payload);
+      toast('Cotización actualizada.', 'success');
+    } else {
+      await apiCall('POST', '/api/cotizaciones/cotizaciones', payload);
+      toast('Cotización guardada.', 'success');
+    }
+
+    _cotEditId = null;
+    hide('modal-nueva-cotizacion');
+    loadCotizaciones();
+  } catch (e) {
+    toast('Error: ' + e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+  }
+}
+
+// ── Convertir a factura ─────────────────────────────────────────────────
+
+async function abrirFacturarCotizacion(id) {
+  const c = _cotCotizaciones.find(x => x.id === id);
+  if (!c) { toast('Cotización no encontrada en la lista actual.', 'error'); return; }
+  _cotFacturarId = id;
+  setText('cf-cot-numero', `${c.numero} — ${c.cliente?.nombre || ''} — ${fmtMoney(c.total)}`);
+  try { _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf'); } catch { _misNcf = _misNcf || []; }
+  const conRnc = !!(c.cliente?.rnc || '').trim();
+  const ncfEl = $id('cf-tipo-ncf'); if (ncfEl) ncfEl.value = _facPickDefaultNcf(conRnc);
+  const metEl = $id('cf-metodo'); if (metEl) metEl.value = 'efectivo';
+  show('modal-cot-facturar');
+}
+
+function cerrarFacturarCotizacion() { _cotFacturarId = null; hide('modal-cot-facturar'); }
+
+async function confirmarFacturarCotizacion() {
+  if (!_cotFacturarId) return;
+  const tipo_ncf = $id('cf-tipo-ncf')?.value;
+  if (!_facNcfUsables().includes(tipo_ncf)) {
+    toast(`No tienes una secuencia NCF activa para ${tipo_ncf}. Regístrala en "Mis Secuencias NCF" o elige otro tipo.`, 'error');
+    return;
+  }
+  const btn = $id('cf-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Facturando…'; }
+  try {
+    const r = await apiCall('POST', `/api/cotizaciones/cotizaciones/${_cotFacturarId}/facturar`, {
+      tipo_ncf, metodo_pago: $id('cf-metodo')?.value || 'efectivo',
+    });
+    hide('modal-cot-facturar');
+    toast(`Factura ${facNcfDisplay(r.factura?.ncf)} creada correctamente.`, 'success');
+    _cotFacturarId = null;
+    loadCotizaciones();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Facturar'; } }
+}
+
+// ── Ver / imprimir / enviar por correo ──────────────────────────────────
+
+async function verCotizacionPreview(id) {
+  const c = _cotCotizaciones.find(x => x.id === id);
+  if (!c) { toast('Cotización no encontrada en la lista actual.', 'error'); return; }
+  if (!window.contadoresAPI?.isElectron) {
+    toast('Esta función solo está disponible en la app de escritorio.', 'error');
+    return;
+  }
+  try {
+    const clientSlug = (c.cliente?.nombre || 'cliente').replace(/\s+/g, '_').slice(0, 20);
+    const filename = `Cotizacion_${(c.numero || 'COT').replace(/[^A-Z0-9]/gi, '')}_${clientSlug}.pdf`;
+    const r = await window.contadoresAPI.previewPrint(cotizacionFormalHtml(c), `Cotización ${c.numero}`, filename);
+    if (!r?.ok) toast('Error al abrir la vista previa: ' + (r?.error || 'desconocido'), 'error');
+  } catch (e) { toast('Error al abrir la vista previa.', 'error'); }
+}
+
+async function abrirModalEnvioCot(id) {
+  const cfg = await ensureEmailCfg();
+  const c = _cotCotizaciones.find(x => x.id === id);
+  if (!c) { toast('Cotización no encontrada en la lista actual.', 'error'); return; }
+
+  // Fuera de Electron no podemos generar el PDF → mailto: simple.
+  if (!window.contadoresAPI?.isElectron) {
+    const asunto = encodeURIComponent(`Cotización ${c.numero} — ${c.contador_nombre || ''}`);
+    const cuerpo = encodeURIComponent(`Estimado/a ${c.cliente?.nombre || 'cliente'},\n\nLe enviamos la cotización ${c.numero} por RD$ ${(c.total || 0).toFixed(2)}, válida hasta el ${c.fecha_vencimiento || '—'}.\n\nGracias por confiar en nosotros.`);
+    window.open(`mailto:${c.cliente?.correo || ''}?subject=${asunto}&body=${cuerpo}`);
+    return;
+  }
+
+  if (!cfg.configured) { irAConfigurarCorreo(); return; }
+
+  _envioCot = { id, data: c };
+  $id('ce-to').value = c.cliente?.correo || '';
+  $id('ce-mensaje').value = '';
+  setText('ce-from', `Se envía desde ${cfg.user || 'tu Gmail'} con el PDF adjunto.`);
+  show('modal-cot-envio');
+}
+function cerrarEnvioCot() { hide('modal-cot-envio'); }
+
+async function confirmarEnvioCot() {
+  if (!_envioCot) return;
+  const to = ($id('ce-to')?.value || '').trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { toast('Escribe un correo de destino válido.', 'error'); return; }
+
+  const btn = $id('ce-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+  try {
+    const html = cotizacionFormalHtml(_envioCot.data);
+    const pdf = await window.contadoresAPI.renderReportPdf(html, false);
+    if (!pdf?.ok) throw new Error(pdf?.error || 'No se pudo generar el PDF.');
+    const r = await apiCall('POST', `/api/cotizaciones/cotizaciones/${_envioCot.id}/enviar`, {
+      to, mensaje: $id('ce-mensaje')?.value || '', pdfBase64: pdf.base64,
+    });
+    hide('modal-cot-envio');
+    toast(`Cotización enviada a ${r.to}.`, 'success');
+    loadCotizaciones();
+  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = 'Enviar'; } }
+}
+
+// Documento A4 formal de la cotización — mismo estilo que facturaFormalHtml,
+// sin chip de NCF (las cotizaciones no llevan comprobante fiscal todavía).
+function cotizacionFormalHtml(c) {
+  const money = n => 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const cli = c.cliente || {};
+  const fechaEmision = typeof c.fecha === 'string' && c.fecha ? c.fecha : (fmtDate(c.fecha) || '—');
+  const estadoLabel = { aprobada: 'APROBADA', rechazada: 'RECHAZADA', vencida: 'VENCIDA', convertida: 'CONVERTIDA A FACTURA' }[c.estado] || String(c.estado || '').toUpperCase();
+
+  const logo = c.contador_logo
+    ? `<img src="${c.contador_logo}" class="logo" alt="${esc(c.contador_nombre || '')}" />`
+    : `<div class="brand">${esc(c.contador_nombre || 'Contador')}</div>`;
+
+  const itemsHtml = (c.items || []).map((it, i) => `
+    <tr>
+      <td class="c-idx">${i + 1}</td>
+      <td class="c-desc">${esc(it.descripcion) || '—'}</td>
+      <td class="c-num">${Number(it.cantidad) || 0}</td>
+      <td class="c-num">${money(it.precio)}</td>
+      <td class="c-num">${Number(it.descuento) > 0 ? Number(it.descuento) + '%' : '—'}</td>
+      <td class="c-num">${Number(it.itbis_rate) > 0 ? Number(it.itbis_rate) + '%' : '—'}</td>
+      <td class="c-num">${money(it.total)}</td>
+    </tr>`).join('');
+
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<title>Cotización ${esc(c.numero || '')}</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{background:#fff}
+  body{font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif;font-size:10.5px;color:#1f2937;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .page{position:relative;max-width:190mm;margin:0 auto;padding:4mm 0;overflow:hidden}
+  .content{position:relative;z-index:1}
+  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:14mm;padding-bottom:6mm}
+  .logo{max-height:26mm;max-width:78mm;display:block;margin-bottom:3mm}
+  .brand{font-size:22px;font-weight:800;color:#15803d;margin-bottom:3mm}
+  .emitter-line{font-size:9.5px;line-height:1.5;color:#4b5563}
+  .emitter-line b{color:#1f2937}
+  .doc{text-align:right;min-width:62mm}
+  .doc-title{font-size:24px;font-weight:800;letter-spacing:4px;color:#15803d;line-height:1}
+  .doc-meta{margin-top:4mm;font-size:10px;line-height:1.7;color:#374151}
+  .doc-meta b{color:#111827}
+  .stamp{display:inline-block;margin-top:3mm;padding:3px 12px;border:2px solid;border-radius:3px;font-size:10px;font-weight:800;letter-spacing:1.5px;transform:rotate(-3deg)}
+  .stamp.aprobada{color:#15803d;border-color:#15803d}
+  .stamp.rechazada{color:#b91c1c;border-color:#b91c1c}
+  .stamp.vencida{color:#b45309;border-color:#b45309}
+  .stamp.convertida{color:#1d4ed8;border-color:#1d4ed8}
+  .rule{height:2.5px;background:#15803d;margin:0 0 6mm}
+  .parties{display:grid;grid-template-columns:1fr 1fr;gap:12mm;margin-bottom:7mm}
+  .block-label{font-size:8.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#6b7280;padding-bottom:2mm;border-bottom:1px solid #e5e7eb;margin-bottom:2.5mm}
+  .party-name{font-size:12px;font-weight:700;color:#111827;margin-bottom:1mm}
+  .party-line{font-size:9.5px;line-height:1.6;color:#4b5563}
+  .pay-row{display:flex;justify-content:space-between;font-size:9.5px;line-height:1.9;color:#4b5563}
+  .pay-row span:last-child{color:#111827;font-weight:600}
+  .items{width:100%;border-collapse:collapse;margin-bottom:4mm}
+  .items thead th{background:#f4f7f5;color:#374151;font-size:8.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;text-align:right;padding:3mm 2mm;border-top:1.5px solid #15803d;border-bottom:1.5px solid #15803d}
+  .items thead th.h-idx{text-align:center;width:8mm}
+  .items thead th.h-desc{text-align:left}
+  .items tbody td{padding:2.5mm 2mm;font-size:9.5px;border-bottom:1px solid #edf0f2;vertical-align:top}
+  .items tbody tr:last-child td{border-bottom:1px solid #d1d5db}
+  .c-idx{text-align:center;color:#9ca3af}
+  .c-desc{text-align:left;color:#1f2937}
+  .c-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .totals-wrap{display:flex;justify-content:flex-end}
+  .totals{width:80mm}
+  .totals .t-row{display:flex;justify-content:space-between;padding:1.6mm 0;font-size:10px;color:#4b5563}
+  .totals .t-row .val{color:#111827;font-variant-numeric:tabular-nums}
+  .totals .t-total{border-top:2px solid #111827;margin-top:1mm;padding-top:2.5mm;font-size:14px;font-weight:800;color:#111827}
+  .amount-words{margin:5mm 0 0;padding:2.5mm 3mm;background:#f9fafb;border:1px solid #e5e7eb;border-radius:3px;font-size:9.5px;line-height:1.5;color:#374151}
+  .amount-words b{color:#111827}
+  .notes{margin-top:6mm}
+  .notes p{font-size:9.5px;line-height:1.6;color:#4b5563;margin-top:2mm;white-space:pre-wrap}
+  .foot{margin-top:12mm;padding-top:5mm;border-top:1px solid #e5e7eb;font-size:8.5px;line-height:1.6;color:#6b7280}
+  .foot b{display:block;color:#15803d;font-size:10px;margin-bottom:1mm}
+  @page{size:A4;margin:12mm}
+  @media print{.page{padding:0}}
+</style></head><body>
+<div class="page">
+  <div class="content">
+    <div class="head">
+      <div class="emitter">
+        ${logo}
+        ${c.contador_rnc ? `<div class="emitter-line"><b>RNC:</b> ${esc(c.contador_rnc)}</div>` : ''}
+        ${c.contador_tel ? `<div class="emitter-line"><b>Tel:</b> ${esc(c.contador_tel)}</div>` : ''}
+        ${c.contador_correo ? `<div class="emitter-line">${esc(c.contador_correo)}</div>` : ''}
+      </div>
+      <div class="doc">
+        <div class="doc-title">COTIZACIÓN</div>
+        <div class="doc-meta">
+          <div><b>Número:</b> ${esc(c.numero || '')}</div>
+          <div><b>Fecha de emisión:</b> ${esc(fechaEmision)}</div>
+          ${c.fecha_vencimiento ? `<div><b>Válida hasta:</b> ${esc(_fmtFechaSolo(c.fecha_vencimiento))}</div>` : ''}
+        </div>
+        <div class="stamp ${c.estado || 'aprobada'}">${esc(estadoLabel)}</div>
+      </div>
+    </div>
+    <div class="rule"></div>
+    <div class="parties">
+      <div>
+        <div class="block-label">Cotizar a</div>
+        <div class="party-name">${esc(cli.nombre) || '—'}</div>
+        ${cli.rnc ? `<div class="party-line">RNC / Cédula: ${esc(cli.rnc)}</div>` : ''}
+        ${cli.direccion ? `<div class="party-line">${esc(cli.direccion)}</div>` : ''}
+        ${cli.telefono ? `<div class="party-line">Tel: ${esc(cli.telefono)}</div>` : ''}
+        ${cli.correo ? `<div class="party-line">${esc(cli.correo)}</div>` : ''}
+      </div>
+      <div>
+        <div class="block-label">Condiciones</div>
+        ${c.condicion_pago ? `<div class="pay-row"><span>Condición de pago</span><span>${esc(c.condicion_pago)}</span></div>` : ''}
+        <div class="pay-row"><span>Estado</span><span>${esc(estadoLabel)}</span></div>
+      </div>
+    </div>
+    <table class="items">
+      <thead><tr>
+        <th class="h-idx">#</th><th class="h-desc">Descripción</th>
+        <th>Cant.</th><th>Precio unit.</th><th>Desc.</th><th>ITBIS</th><th>Importe</th>
+      </tr></thead>
+      <tbody>${itemsHtml}</tbody>
+    </table>
+    <div class="totals-wrap"><div class="totals">
+      <div class="t-row"><span>Subtotal</span><span class="val">${money(c.subtotal)}</span></div>
+      ${Number(c.descuento_total) > 0 ? `<div class="t-row"><span>Descuento</span><span class="val">- ${money(c.descuento_total)}</span></div>` : ''}
+      <div class="t-row"><span>ITBIS</span><span class="val">${money(c.itbis_total)}</span></div>
+      <div class="t-row t-total"><span>TOTAL</span><span class="val">${money(c.total)}</span></div>
+    </div></div>
+    <div class="amount-words"><b>Son:</b> ${esc(numeroALetras(c.total))}</div>
+    ${c.notas ? `<div class="notes"><span class="block-label">Condiciones / Notas</span><p>${esc(c.notas)}</p></div>` : ''}
+    ${c.observacion ? `<div class="notes"><span class="block-label">Observación</span><p>${esc(c.observacion)}</p></div>` : ''}
+    <div class="foot">
+      <b>${esc(c.contador_nombre || '')}</b>
+      Cotización de servicios profesionales. Documento generado electrónicamente; válido sin firma ni sello. Precios sujetos a cambio después de la fecha de vencimiento.
+    </div>
+  </div>
+</div>
+</body></html>`;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -6612,6 +7136,11 @@ window.app = {
   // facturación — clientes
   abrirClientesFac, cerrarClientesFac,
   nuevoClienteFac, editarClienteFac, guardarClienteFac, cancelarClienteFac, eliminarClienteFac,
+  // cotizaciones
+  loadCotizaciones, nuevaCotizacion, cerrarNuevaCotizacion, editarCotizacion, selClienteCot,
+  addItemCot, removeItemCot, cotItemSet, guardarCotizacion,
+  abrirFacturarCotizacion, cerrarFacturarCotizacion, confirmarFacturarCotizacion,
+  verCotizacionPreview, abrirModalEnvioCot, cerrarEnvioCot, confirmarEnvioCot,
   // colaboradores
   loadColaboradores, filtrarColaboradores,
   abrirModalColab, cerrarModalColab, guardarColab, toggleTipoColab, cambiarPwColab, eliminarColab,

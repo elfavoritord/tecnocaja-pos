@@ -350,6 +350,84 @@ ipcMain.handle('report:render-pdf', async (_event, { html = '', landscape = fals
   }
 });
 
+// ── Vista previa + impresión de un documento (factura/cotización) ───────────
+// window.open() del renderer no sirve aquí: setWindowOpenHandler (arriba)
+// deniega todo lo que no sea el popup de login de Google, así que el flujo
+// "Ver / Imprimir" tiene que abrir una ventana real desde el proceso
+// principal y disparar el diálogo de impresión nativo sobre ella.
+ipcMain.handle('report:preview-print', async (_event, { html = '', title = 'Vista previa', filename = 'documento.pdf' } = {}) => {
+  let tempFile = null;
+  try {
+    tempFile = path.join(os.tmpdir(), `tc-preview-${Date.now()}.html`);
+    fs.writeFileSync(tempFile, html, 'utf8');
+
+    const previewWindow = new BrowserWindow({
+      width: 900,
+      height: 1000,
+      title,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload-preview.js'),
+      },
+    });
+    await previewWindow.loadFile(tempFile);
+
+    // Botón flotante "Guardar PDF" inyectado sobre el documento — oculto en
+    // @media print para que nunca salga en el PDF/impresión resultante.
+    await previewWindow.webContents.executeJavaScript(`(function(){
+      var s = document.createElement('style');
+      s.textContent = '#tc-preview-save-btn{position:fixed;right:22px;bottom:22px;z-index:999999;padding:10px 18px;border-radius:8px;border:none;background:#15803d;color:#fff;font-size:13px;font-weight:700;font-family:Arial,Helvetica,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.25);cursor:pointer}#tc-preview-save-btn:hover{background:#14532d}#tc-preview-save-btn:disabled{opacity:.6;cursor:default}@media print{#tc-preview-save-btn{display:none!important}}';
+      document.head.appendChild(s);
+      var b = document.createElement('button');
+      b.id = 'tc-preview-save-btn';
+      b.type = 'button';
+      b.textContent = '💾 Guardar PDF';
+      b.onclick = async function(){
+        b.disabled = true; var orig = b.textContent; b.textContent = 'Guardando…';
+        try {
+          var r = await window.previewAPI.savePdf(${JSON.stringify(filename)});
+          if (r && !r.ok && !r.canceled) alert('No se pudo guardar: ' + (r.error || 'error desconocido'));
+        } catch (e) { alert('No se pudo guardar el PDF.'); }
+        finally { b.disabled = false; b.textContent = orig; }
+      };
+      document.body.appendChild(b);
+    })();`);
+
+    previewWindow.webContents.print({ printBackground: true }, () => {
+      if (tempFile && fs.existsSync(tempFile)) { try { fs.unlinkSync(tempFile); } catch (_) {} }
+    });
+    return { ok: true };
+  } catch (error) {
+    if (tempFile && fs.existsSync(tempFile)) { try { fs.unlinkSync(tempFile); } catch (_) {} }
+    return { ok: false, error: error.message || 'No se pudo abrir la vista previa.' };
+  }
+});
+
+// Guarda como PDF la propia ventana de vista previa (botón flotante) —
+// reutiliza su webContents ya cargado en vez de renderizar el HTML de nuevo.
+ipcMain.handle('preview:save-pdf', async (event, { suggestedName = 'documento.pdf' } = {}) => {
+  try {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const { filePath, canceled } = await dialog.showSaveDialog(win, {
+      title: 'Guardar como PDF',
+      defaultPath: path.join(app.getPath('documents'), suggestedName),
+      filters: [{ name: 'PDF', extensions: ['pdf'] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+
+    const pdfBuffer = await event.sender.printToPDF({
+      printBackground: true,
+      pageSize: 'A4',
+      margins: { marginType: 'printableArea' },
+    });
+    fs.writeFileSync(filePath, pdfBuffer);
+    return { ok: true, filePath };
+  } catch (error) {
+    return { ok: false, error: error.message || 'No se pudo guardar el PDF.' };
+  }
+});
+
 app.whenReady().then(async () => {
   const t0 = Date.now();
   console.log(`[splash] t=0ms whenReady`);

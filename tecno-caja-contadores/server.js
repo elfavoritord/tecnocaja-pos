@@ -3172,6 +3172,19 @@ async function getNextNcf(contadorRef, tipo) {
   });
 }
 
+// Reserva atómica del próximo número de cotización (COT-000001, COT-000002...).
+// Mismo mecanismo transaccional que getNextNcf, pero sin vigencia/tipo DGII:
+// solo incrementa un contador entero propio del contador.
+async function getNextCotizacionNumero(contadorRef) {
+  const ref = contadorRef.collection('contadores_docs').doc('cotizaciones');
+  return db.runTransaction(async (t) => {
+    const snap = await t.get(ref);
+    const next = snap.exists ? (snap.data().nextNumber || 1) : 1;
+    t.set(ref, { prefix: 'COT', nextNumber: next + 1, updatedAt: isoNow() }, { merge: true });
+    return `COT-${String(next).padStart(6, '0')}`;
+  });
+}
+
 // Busca la fecha de vencimiento del NCF de una factura mirando las secuencias
 // del contador (para facturas viejas que no la guardaron).
 async function lookupNcfVencimiento(contadorRef, tipo_ncf, ncf) {
@@ -3251,45 +3264,52 @@ function computeFacturaItems(items) {
   };
 }
 
+// Crea una factura y descuenta el NCF correspondiente. Usada tanto por
+// POST /api/facturacion/facturas como por la conversión de cotización a factura.
+async function crearFacturaInterna(req, datos) {
+  const { cliente, tipo_ncf, fecha, items, condicion_pago, metodo_pago, observacion } = datos;
+  if (!cliente?.nombre?.trim()) { const e = new Error('Nombre del cliente requerido.'); e.status = 400; throw e; }
+  if (!NCF_TIPOS[tipo_ncf])     { const e = new Error('Tipo de comprobante inválido.'); e.status = 400; throw e; }
+  if (!Array.isArray(items) || !items.length) { const e = new Error('Debe agregar al menos un ítem.'); e.status = 400; throw e; }
+
+  const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+  const { ncf, ncfVencimiento } = await getNextNcf(contadorRef, tipo_ncf);
+
+  const r = v => Math.round(v * 100) / 100;
+  const { itemsCalc, subtotal, descuento_total, itbis_total, total: total_general } = computeFacturaItems(items);
+  const data = {
+    ncf, tipo_ncf, tipo_ncf_label: NCF_TIPOS[tipo_ncf],
+    ncf_vencimiento: ncfVencimiento || null,
+    fecha: fecha || new Date().toISOString().slice(0, 10),
+    cliente: {
+      nombre:    cliente.nombre.trim(), rnc:      cliente.rnc       || '',
+      direccion: cliente.direccion || '',  telefono: cliente.telefono || '',
+      correo:    cliente.correo    || '',
+    },
+    items: itemsCalc,
+    subtotal: r(subtotal), descuento_total: r(descuento_total),
+    itbis_total: r(itbis_total), total: r(total_general),
+    monto_pagado: 0, balance: r(total_general),
+    condicion_pago: condicion_pago || 'contado',
+    metodo_pago:    metodo_pago    || 'efectivo',
+    observacion:    observacion    || '',
+    estado: 'pendiente',
+    contador_nombre: req.contador.nombre_firma || req.contador.fullName,
+    contador_rnc:    req.contador.rnc,
+    contador_tel:    req.contador.telefono,
+    contador_correo: req.contador.correo,
+    contador_logo:   req.contador.logo_url || null,
+    createdAt: isoNow(), updatedAt: isoNow(),
+  };
+
+  const ref = await contadorRef.collection('facturas').add(data);
+  return { id: ref.id, ...data };
+}
+
 app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
   try {
-    const { cliente, tipo_ncf, fecha, items, condicion_pago, metodo_pago, observacion } = req.body;
-    if (!cliente?.nombre?.trim()) return res.status(400).json({ error: 'Nombre del cliente requerido.' });
-    if (!NCF_TIPOS[tipo_ncf])     return res.status(400).json({ error: 'Tipo de comprobante inválido.' });
-    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Debe agregar al menos un ítem.' });
-
-    const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
-    const { ncf, ncfVencimiento } = await getNextNcf(contadorRef, tipo_ncf);
-
-    const r = v => Math.round(v * 100) / 100;
-    const { itemsCalc, subtotal, descuento_total, itbis_total, total: total_general } = computeFacturaItems(items);
-    const data = {
-      ncf, tipo_ncf, tipo_ncf_label: NCF_TIPOS[tipo_ncf],
-      ncf_vencimiento: ncfVencimiento || null,
-      fecha: fecha || new Date().toISOString().slice(0, 10),
-      cliente: {
-        nombre:    cliente.nombre.trim(), rnc:      cliente.rnc       || '',
-        direccion: cliente.direccion || '',  telefono: cliente.telefono || '',
-        correo:    cliente.correo    || '',
-      },
-      items: itemsCalc,
-      subtotal: r(subtotal), descuento_total: r(descuento_total),
-      itbis_total: r(itbis_total), total: r(total_general),
-      monto_pagado: 0, balance: r(total_general),
-      condicion_pago: condicion_pago || 'contado',
-      metodo_pago:    metodo_pago    || 'efectivo',
-      observacion:    observacion    || '',
-      estado: 'pendiente',
-      contador_nombre: req.contador.nombre_firma || req.contador.fullName,
-      contador_rnc:    req.contador.rnc,
-      contador_tel:    req.contador.telefono,
-      contador_correo: req.contador.correo,
-      contador_logo:   req.contador.logo_url || null,
-      createdAt: isoNow(), updatedAt: isoNow(),
-    };
-
-    const ref = await contadorRef.collection('facturas').add(data);
-    res.json({ id: ref.id, ...data });
+    const factura = await crearFacturaInterna(req, req.body);
+    res.json(factura);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
@@ -3508,6 +3528,236 @@ app.post('/api/facturacion/facturas/:id/enviar', requireAuth, async (req, res) =
       ultimoEmailA: to,
       ultimoEmailEn: now,
       updatedAt: now,
+    });
+
+    res.json({ ok: true, to, messageId: result.messageId || null, savedConfig: cfg.source === 'contador' && !!req.body.smtp });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// COTIZACIONES — cotizar honorarios y convertir a factura con un clic.
+// ══════════════════════════════════════════════════════════════════════
+
+app.get('/api/cotizaciones/cotizaciones', requireAuth, async (req, res) => {
+  try {
+    const snap = await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('cotizaciones').orderBy('createdAt', 'desc').get();
+    let list = snap.docs.map(docData);
+    if (req.query.todas !== '1') list = list.filter(c => !['convertida', 'rechazada'].includes(c.estado));
+    const { desde, hasta } = req.query;
+    if (desde) list = list.filter(c => (c.fecha || '') >= desde);
+    if (hasta) list = list.filter(c => (c.fecha || '') <= hasta);
+    res.json(list);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/cotizaciones/cotizaciones/:id', requireAuth, async (req, res) => {
+  try {
+    const doc = await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('cotizaciones').doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Cotización no encontrada.' });
+    res.json(docData(doc));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/cotizaciones/cotizaciones', requireAuth, async (req, res) => {
+  try {
+    const { cliente, fecha, validez_dias, items, condicion_pago, observacion, notas } = req.body;
+    if (!cliente?.nombre?.trim()) return res.status(400).json({ error: 'Nombre del cliente requerido.' });
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Debe agregar al menos un ítem.' });
+
+    const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+    const numero = await getNextCotizacionNumero(contadorRef);
+    const { itemsCalc, subtotal, descuento_total, itbis_total, total } = computeFacturaItems(items);
+    const fechaDoc = fecha || new Date().toISOString().slice(0, 10);
+    const dias = Math.max(1, Number(validez_dias) || 30);
+    const fecha_vencimiento = new Date(new Date(fechaDoc).getTime() + dias * 86400000).toISOString().slice(0, 10);
+
+    const data = {
+      numero, fecha: fechaDoc, validez_dias: dias, fecha_vencimiento,
+      cliente: {
+        nombre: cliente.nombre.trim(), rnc: cliente.rnc || '',
+        direccion: cliente.direccion || '', telefono: cliente.telefono || '',
+        correo: cliente.correo || '',
+      },
+      items: itemsCalc, subtotal, descuento_total, itbis_total, total,
+      condicion_pago: condicion_pago || 'contado',
+      observacion: observacion || '', notas: notas || '',
+      estado: 'aprobada',
+      converted_invoice_id: null, converted_at: null,
+      contador_nombre: req.contador.nombre_firma || req.contador.fullName,
+      contador_rnc:    req.contador.rnc,
+      contador_tel:    req.contador.telefono,
+      contador_correo: req.contador.correo,
+      contador_logo:   req.contador.logo_url || null,
+      emailsEnviados: [], ultimoEmailA: null, ultimoEmailEn: null,
+      createdAt: isoNow(), updatedAt: isoNow(),
+    };
+
+    const ref = await contadorRef.collection('cotizaciones').add(data);
+    res.json({ id: ref.id, ...data });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+app.put('/api/cotizaciones/cotizaciones/:id', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('cotizaciones').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Cotización no encontrada.' });
+    const cur = snap.data();
+    if (cur.estado === 'convertida') return res.status(400).json({ error: 'No se puede modificar una cotización ya convertida a factura.' });
+
+    const { cliente, fecha, validez_dias, items, condicion_pago, observacion, notas } = req.body;
+    const upd = { updatedAt: isoNow() };
+    if (cliente?.nombre?.trim()) {
+      upd.cliente = {
+        nombre: cliente.nombre.trim(), rnc: cliente.rnc || '',
+        direccion: cliente.direccion || '', telefono: cliente.telefono || '',
+        correo: cliente.correo || '',
+      };
+    }
+    if (Array.isArray(items) && items.length) {
+      const c = computeFacturaItems(items);
+      upd.items = c.itemsCalc;
+      upd.subtotal = c.subtotal; upd.descuento_total = c.descuento_total;
+      upd.itbis_total = c.itbis_total; upd.total = c.total;
+    }
+    if (fecha) upd.fecha = fecha;
+    if (validez_dias) upd.validez_dias = Math.max(1, Number(validez_dias));
+    if (upd.fecha || upd.validez_dias) {
+      const baseFecha = upd.fecha || cur.fecha;
+      const dias = upd.validez_dias || cur.validez_dias || 30;
+      upd.fecha_vencimiento = new Date(new Date(baseFecha).getTime() + dias * 86400000).toISOString().slice(0, 10);
+    }
+    if (condicion_pago) upd.condicion_pago = condicion_pago;
+    if (observacion !== undefined) upd.observacion = observacion;
+    if (notas !== undefined) upd.notas = notas;
+
+    await ref.update(upd);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/cotizaciones/cotizaciones/:id/estado', requireAuth, async (req, res) => {
+  try {
+    const estado = req.body.estado;
+    if (!['aprobada', 'rechazada', 'vencida'].includes(estado)) {
+      return res.status(400).json({ error: 'Estado inválido.' });
+    }
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('cotizaciones').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Cotización no encontrada.' });
+    if (snap.data().estado === 'convertida') return res.status(400).json({ error: 'Esta cotización ya fue convertida a factura.' });
+    await ref.update({ estado, updatedAt: isoNow() });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/cotizaciones/cotizaciones/:id', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('cotizaciones').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Cotización no encontrada.' });
+    if (snap.data().estado === 'convertida') return res.status(400).json({ error: 'No se puede eliminar una cotización ya convertida a factura.' });
+    await ref.delete();
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Convierte una cotización aprobada en una factura real (con NCF) del módulo de Facturación.
+app.post('/api/cotizaciones/cotizaciones/:id/facturar', requireAuth, async (req, res) => {
+  try {
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('cotizaciones').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Cotización no encontrada.' });
+    const c = snap.data();
+    if (c.estado === 'convertida') return res.status(400).json({ error: 'Esta cotización ya fue facturada.' });
+
+    const factura = await crearFacturaInterna(req, {
+      cliente: c.cliente,
+      tipo_ncf: req.body.tipo_ncf,
+      fecha: new Date().toISOString().slice(0, 10),
+      items: c.items,
+      condicion_pago: c.condicion_pago,
+      metodo_pago: req.body.metodo_pago || 'efectivo',
+      observacion: c.observacion,
+    });
+
+    await ref.update({
+      estado: 'convertida', converted_invoice_id: factura.id, converted_at: isoNow(), updatedAt: isoNow(),
+    });
+
+    res.json({ ok: true, factura });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+// Enviar la cotización por correo con el PDF adjunto (mismo mecanismo que facturas).
+app.post('/api/cotizaciones/cotizaciones/:id/enviar', requireAuth, async (req, res) => {
+  try {
+    let cfg = await getContadorEmailConfig(req);
+
+    if (!cfg && req.body.smtp) {
+      const nc = mailer.normalizeConfig({
+        user: req.body.smtp.user, pass: req.body.smtp.pass,
+        fromName: req.body.smtp.fromName || req.contador.nombre_firma,
+      });
+      if (!nc) return res.status(400).json({ error: 'Correo o contraseña de aplicación inválidos.' });
+      try { await mailer.verifyConfig(nc); }
+      catch { return res.status(400).json({ error: 'Gmail rechazó las credenciales. Revisa el correo y la contraseña de aplicación.' }); }
+      await col(COL_CONTADORES).doc(req.contador.contadorDocId).set({
+        email_smtp_user: nc.user, email_smtp_pass: nc.pass,
+        email_from_name: nc.fromName, email_updated_at: isoNow(),
+      }, { merge: true });
+      cfg = { ...nc, source: 'contador' };
+    }
+
+    if (!cfg) {
+      return res.status(503).json({ error: 'Configura tu correo en Configuración → Correo antes de enviar.' });
+    }
+
+    const ref = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('cotizaciones').doc(req.params.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Cotización no encontrada.' });
+    const c = snap.data();
+
+    const to = String(req.body.to || c.cliente?.correo || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      return res.status(400).json({ error: 'Indica un correo de destino válido.' });
+    }
+    const pdfBase64 = String(req.body.pdfBase64 || '');
+    if (!pdfBase64) return res.status(400).json({ error: 'No se recibió el PDF de la cotización.' });
+    const attachmentBuffer = Buffer.from(pdfBase64, 'base64');
+
+    const mensajeExtra = String(req.body.mensaje || '').trim();
+    const lineas = [
+      `Estimado(a) ${c.cliente?.nombre || 'cliente'},`,
+      '',
+      `Adjuntamos la cotización ${c.numero} por un total de RD$ ${(c.total || 0).toFixed(2)}, válida hasta el ${c.fecha_vencimiento}.`,
+      mensajeExtra ? `\n${mensajeExtra}` : '',
+      '',
+      'Gracias por confiar en nosotros.',
+      req.contador.nombre_firma || req.contador.fullName || '',
+      req.contador.telefono || '',
+      req.contador.correo || '',
+    ].filter(Boolean);
+
+    const result = await mailer.sendMail(cfg, {
+      to,
+      replyTo: req.contador.correo || undefined,
+      subject: `Cotización ${c.numero} — ${req.contador.nombre_firma || req.contador.fullName || 'Tecno Caja Contadores'}`,
+      text: lineas.join('\n'),
+      html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1f2937;line-height:1.6">${lineas.map(l => l === '' ? '<br>' : `<p style="margin:0 0 6px">${String(l).replace(/[<>&]/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[ch]))}</p>`).join('')}</div>`,
+      attachmentBuffer,
+      attachmentName: `Cotizacion_${(c.numero || 'COT').replace(/[^A-Z0-9]/gi, '')}.pdf`,
+    });
+
+    const now = isoNow();
+    await ref.update({
+      emailsEnviados: [ ...(Array.isArray(c.emailsEnviados) ? c.emailsEnviados : []),
+        { to, fecha: now, messageId: result.messageId || null } ],
+      ultimoEmailA: to, ultimoEmailEn: now, updatedAt: now,
     });
 
     res.json({ ok: true, to, messageId: result.messageId || null, savedConfig: cfg.source === 'contador' && !!req.body.smtp });

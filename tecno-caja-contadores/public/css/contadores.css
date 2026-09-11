@@ -835,6 +835,21 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .fac-estado.pagada    { background: var(--green-bg);  color: var(--green); }
 .fac-estado.anulada   { background: var(--red-bg);    color: var(--red); }
 
+.cot-estado {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  white-space: nowrap;
+}
+.cot-estado.aprobada   { background: var(--green-bg);  color: var(--green); }
+.cot-estado.rechazada  { background: var(--red-bg);    color: var(--red); }
+.cot-estado.vencida    { background: var(--orange-bg); color: var(--orange); }
+.cot-estado.convertida { background: var(--blue-glow); color: var(--blue); }
+
 /* Modal sizes */
 .fac-modal-xl {
   max-width: 1080px;

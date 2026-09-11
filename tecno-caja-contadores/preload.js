@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
   renderReportPdf(html, landscape) {
     return ipcRenderer.invoke('report:render-pdf', { html, landscape: !!landscape });
   },
+  previewPrint(html, title, filename) {
+    return ipcRenderer.invoke('report:preview-print', { html, title, filename });
+  },
 
   // ── Perfil (caché local para el splash pre-login) ──────────────────────────
   cacheProfile(data) {
