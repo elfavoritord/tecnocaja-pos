@@ -1101,10 +1101,12 @@ table.facr-table tfoot td {
 table.facr-table .fac-estado { font-size: 8.5px; padding: 2px 5px; letter-spacing: 0; }
 table.facr-table .ncf-badge { font-size: 10px; padding: 1px 5px; }
 table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
-/* Grupos (Por Cliente/Tipo/…) sí pueden hacer scroll: menos columnas, texto largo */
-#facr-cliente-table, #facr-tipo-table, #facr-metodo-table, #facr-estado-table, #facr-dgii-table { table-layout: auto; }
+/* Grupos (Por Cliente/Tipo/…) y la tabla de Facturas sí pueden hacer scroll:
+   se ven completos (NCF, cobrado, etc.) en vez de recortados con "…". */
+#facr-cliente-table, #facr-tipo-table, #facr-metodo-table, #facr-estado-table, #facr-dgii-table, #facr-fac-table { table-layout: auto; }
 #facr-cliente-table tbody td, #facr-tipo-table tbody td, #facr-metodo-table tbody td,
-#facr-estado-table tbody td, #facr-dgii-table tbody td { white-space: nowrap; overflow: visible; text-overflow: clip; }
+#facr-estado-table tbody td, #facr-dgii-table tbody td, #facr-fac-table tbody td { white-space: nowrap; overflow: visible; text-overflow: clip; }
+#facr-fac-table th, #facr-fac-table td { padding-left: 10px; padding-right: 10px; }
 .facr-reprint {
   background: var(--blue-glow); border: 1px solid var(--border); border-radius: 7px;
   color: var(--blue); font-size: 13px; padding: 3px 8px; cursor: pointer; transition: transform .1s;

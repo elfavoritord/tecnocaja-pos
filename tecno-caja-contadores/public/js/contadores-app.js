@@ -4127,6 +4127,7 @@ async function verFactura(id) {
     const acc = [];
     if (cobrable) acc.push(`<button class="btn btn-primary btn-sm" onclick="app.openRegistrarPagoFac()">Registrar pago</button>`);
     if (editable) acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.editarFactura('${f.id}')">✏ Editar</button>`);
+    acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.duplicarFactura('${f.id}')">⧉ Duplicar</button>`);
     acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.imprimirFactura()">⬇ Descargar PDF</button>`);
     acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.imprimirFacturaPreview()">🖨 Imprimir / Vista previa</button>`);
     acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.enviarPorCorreo()">✉ Enviar por correo</button>`);
@@ -4388,6 +4389,17 @@ async function marcarPagada() {
     verFactura(_facCurId);
     loadFacturacion();
   } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+async function duplicarFactura(id) {
+  if (!id) return;
+  if (!confirm('¿Duplicar esta factura? Se creará una nueva con un NCF distinto (el siguiente de tu secuencia), lista para editar.')) return;
+  try {
+    const nueva = await apiCall('POST', `/api/facturacion/facturas/${id}/duplicar`);
+    toast('Factura duplicada como ' + facNcfDisplay(nueva.ncf) + '.', 'success');
+    loadFacturacion();
+    verFactura(nueva.id);
+  } catch (e) { toast('Error al duplicar: ' + e.message, 'error'); }
 }
 
 async function anularFactura() {
@@ -7129,7 +7141,7 @@ window.app = {
   addItemFac, removeItemFac, facItemSet, guardarFactura,
   enviarFacturaCorreoLista, marcarPagadaLista,
   // facturación — detalle
-  verFactura, cerrarVerFactura, backToFacturas, marcarPagada, anularFactura,
+  verFactura, cerrarVerFactura, backToFacturas, marcarPagada, anularFactura, duplicarFactura,
   imprimirFactura, imprimirFacturaPreview, enviarPorCorreo, enviarPorWhatsApp,
   cerrarEnvioFac, confirmarEnvioFac,
   openRegistrarPagoFac, cerrarRegistrarPagoFac, registrarPagoFac,

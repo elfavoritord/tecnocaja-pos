@@ -3313,6 +3313,25 @@ app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
+// Duplica una factura: mismo cliente/ítems, pero con un NCF nuevo (siguiente
+// número de la secuencia activa) y estado 'pendiente' — reusa crearFacturaInterna
+// así queda igual de validada/consistente que una factura nueva.
+app.post('/api/facturacion/facturas/:id/duplicar', requireAuth, async (req, res) => {
+  try {
+    const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+    const snap = await contadorRef.collection('facturas').doc(req.params.id).get();
+    if (!snap.exists) return res.status(404).json({ error: 'Factura no encontrada.' });
+    const cur = snap.data();
+
+    const factura = await crearFacturaInterna(req, {
+      cliente: cur.cliente, tipo_ncf: cur.tipo_ncf, items: cur.items,
+      condicion_pago: cur.condicion_pago, metodo_pago: cur.metodo_pago,
+      observacion: cur.observacion,
+    });
+    res.json(factura);
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
 app.get('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
   try {
     const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
