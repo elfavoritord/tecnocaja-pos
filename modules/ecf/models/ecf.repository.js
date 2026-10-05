@@ -326,6 +326,10 @@ class EcfRepository {
       ['certification_signed_xml_path', 'TEXT DEFAULT NULL'],
       ['certification_response_path', 'TEXT DEFAULT NULL'],
       ['certification_dgii_file_name', 'VARCHAR(255) DEFAULT NULL'],
+      // e-CF firmado sin Internet: XML exacto que se enviará a la DGII cuando
+      // vuelva la conexión (RFCE firmado en modo rfce, e-CF firmado en normal).
+      ['deferred_signed_xml', 'LONGTEXT DEFAULT NULL'],
+      ['deferred_at', 'DATETIME DEFAULT NULL'],
     ];
     for (const [columnName, definitionSql] of documentColumns) {
       await addColumnIfMissing(this.query, 'ecf_documents', columnName, definitionSql).catch(() => {});
@@ -1862,6 +1866,52 @@ class EcfRepository {
 
   async getLatestDocument() {
     const rows = await this.query('SELECT * FROM ecf_documents WHERE business_id = 1 ORDER BY id DESC LIMIT 1');
+    return rows[0] || null;
+  }
+
+  // ── e-CF diferidos por falta de Internet (ecf.service.js) ────────────────
+  // estado_dgii queda en 'pendiente' y sent_at NO se toca: el documento nunca
+  // llegó a la DGII, así que al enviarlo conserva su e-NCF.
+  async markDocumentDeferred(documentId, { signedXml, message } = {}) {
+    await this.query(
+      `UPDATE ecf_documents
+       SET estado_dgii = 'pendiente',
+           deferred_signed_xml = ?,
+           deferred_at = CURRENT_TIMESTAMP,
+           error_message = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [signedXml, message || null, documentId]
+    );
+  }
+
+  async getDeferredDocuments(limit = 25) {
+    return this.query(
+      `SELECT * FROM ecf_documents
+       WHERE deferred_at IS NOT NULL AND deferred_signed_xml IS NOT NULL
+       ORDER BY id ASC
+       LIMIT ?`,
+      [Number(limit) || 25]
+    );
+  }
+
+  async countDeferredDocuments() {
+    const rows = await this.query(
+      'SELECT COUNT(*) AS total FROM ecf_documents WHERE deferred_at IS NOT NULL AND deferred_signed_xml IS NOT NULL'
+    );
+    return Number(rows[0]?.total || 0);
+  }
+
+  async clearDocumentDeferred(documentId) {
+    await this.query(
+      'UPDATE ecf_documents SET deferred_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [documentId]
+    );
+  }
+
+  async getSaleScope(saleId) {
+    if (!saleId) return null;
+    const rows = await this.query('SELECT id, branch_id, cash_register_id FROM sales WHERE id = ? LIMIT 1', [saleId]);
     return rows[0] || null;
   }
 

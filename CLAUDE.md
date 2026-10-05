@@ -32,6 +32,8 @@ Diagrama completo: `docs/ARCHITECTURE.md`.
 - `server/middleware/dgii-auth.js` — **No activo** (solo existe en `backups/`/`backup_ecf_antiguo/`). No se reconecta a propósito: `/fe/*` lo llama DGII directamente y DGII no puede enviar un token secreto nuestro.
 - `server/routes/dgiiRoutes.js` — Rutas públicas DGII (`/fe/recepcion`, `/fe/aprobacioncomercial`, `/fe/autenticacion`).
 - `server/cache/products-cache.js` — Cache LRU de productos.
+- `server/network/` — LAN-first: monitor de Internet, identidad (`serverId`) y descubrimiento de la principal, vigilante de IP. `GET /api/connectivity` da el modo (`normal`/`local`/`contingencia`/`sin_bd`). **Internet nunca bloquea la venta**: lo remoto va en cola o diferido. Ver `docs/LAN-OFFLINE-FIRST.md`.
+- Multicaja: toda transacción de venta toma primero el lock de `config` (contador FAC) antes de leer stock/NCF. No quitarlo ni apagar `innodb_snapshot_isolation` (MariaDB 12): protegen el inventario entre cajas. Prueba real: `npm run test:e2e-lan`.
 - `db/schema.sql` — Esquema MariaDB completo con seeds.
 - `db.js` — Abstracción dual MariaDB/SQLite.
 - `electron/main.js` — Main process.
@@ -127,6 +129,7 @@ Variables clave en `.env`:
 
 - `NovaPOS-Plan-Evolucion.md` — Diagnóstico + roadmap 6 fases (nombre de archivo histórico, no renombrar).
 - `docs/ARCHITECTURE.md` — Arquitectura detallada.
+- `docs/LAN-OFFLINE-FIRST.md` — Auditoría LAN-first: qué funciona sin Internet, multicaja, contingencia, riesgos.
 - `CONTRIBUTING.md` — Guía de desarrollo.
 - `.env.example` — Todas las variables de entorno documentadas.
 

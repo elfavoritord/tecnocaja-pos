@@ -38,6 +38,9 @@ function fmtCompraFecha(v) {
 // ── Tabs ──────────────────────────────────────────────────────────────────
 function showComprasTab(tab) {
   _comprasActiveTab = tab;
+  // Un solo botón principal: el de la pestaña activa (css/modulos.css).
+  const comprasModule = document.getElementById('module-compras');
+  if (comprasModule) comprasModule.dataset.tab = tab;
   document.querySelectorAll('#module-compras .compras-tab-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });

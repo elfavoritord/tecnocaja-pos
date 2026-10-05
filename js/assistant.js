@@ -144,6 +144,7 @@
     try { localStorage.setItem(ASSISTANT_VISIBLE_KEY, visible ? '1' : '0'); } catch (_e) { /* noop */ }
     const btn = document.getElementById('assistant-float');
     if (btn) btn.classList.toggle('assistant-hidden', !visible);
+    document.getElementById('topbar-help')?.classList.toggle('hidden', !visible);
     if (!visible) close();
   }
 
@@ -230,7 +231,8 @@
   // el usuario lo movió cerca de un borde, se acomoda hacia el lado
   // contrario para no salirse de la pantalla.
   function positionPanelNearFloat() {
-    const btn = document.getElementById('assistant-float');
+    const topbarHelp = document.getElementById('topbar-help');
+    const btn = topbarHelp && topbarHelp.offsetParent ? topbarHelp : document.getElementById('assistant-float');
     const panel = document.getElementById('assistant-panel');
     if (!btn || !panel) return;
     const btnRect = btn.getBoundingClientRect();
@@ -255,6 +257,11 @@
   }
 
   function ensureFloatButton() {
+    const topbarHelp = document.getElementById('topbar-help');
+    if (topbarHelp) {
+      if (!isAssistantVisible()) topbarHelp.classList.add('hidden');
+      return;
+    }
     if (document.getElementById('assistant-float')) return;
     const btn = document.createElement('button');
     btn.id = 'assistant-float';
@@ -274,7 +281,7 @@
     panel.id = 'assistant-panel';
     panel.innerHTML = `
       <div id="assistant-panel-header">
-        <strong>🤖 Tecno Asistente</strong>
+        <strong>Tecno Asistente</strong>
         <button type="button" id="assistant-panel-close" aria-label="Cerrar">✕</button>
       </div>
       <div id="assistant-messages"></div>

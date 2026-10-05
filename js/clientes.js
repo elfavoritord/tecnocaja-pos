@@ -56,48 +56,84 @@ function getClienteBalancePendiente(clienteId, fallbackBalance = 0) {
   return Number(fallbackBalance || 0);
 }
 
+let clientesFilterValue = '';
+
+function clientesIcon(name, size = 18) {
+  return window.TcIconos ? window.TcIconos.svg(name, size) : '';
+}
+
 function loadClientesTable(filter) {
   const tbody = document.getElementById('clientes-tbody');
   if (!tbody) return;
+  if (filter !== undefined) clientesFilterValue = String(filter || '');
   // En modo Empresa de Servicios se muestra Correo en vez de Referencia/Mapa.
   const svc = document.documentElement.dataset.appMode === 'servicios';
   const thead = document.querySelector('#clientes-table thead tr');
   if (thead && thead.dataset.mode !== (svc ? 'svc' : 'pos')) {
     thead.dataset.mode = svc ? 'svc' : 'pos';
     thead.innerHTML = svc
-      ? `<th>${clientText('Nombre')}</th><th>${clientText('Teléfono')}</th><th>${clientText('Correo')}</th><th>${clientText('Cédula/RNC')}</th><th>${clientText('Balance')}</th><th>${clientText('Límite Crédito')}</th><th>${clientText('Acciones')}</th>`
-      : `<th>${clientText('Nombre')}</th><th>${clientText('Teléfono')}</th><th>${clientText('Referencia')}</th><th>${clientText('Mapa')}</th><th>${clientText('Cédula/RNC')}</th><th>${clientText('Balance')}</th><th>${clientText('Límite Crédito')}</th><th>${clientText('Acciones')}</th>`;
+      ? `<th>${clientText('Nombre')}</th><th>${clientText('Teléfono')}</th><th>${clientText('Correo')}</th><th>${clientText('Cédula/RNC')}</th><th class="is-num">${clientText('Balance')}</th><th class="is-num">${clientText('Límite de crédito')}</th><th class="is-actions">${clientText('Acciones')}</th>`
+      : `<th>${clientText('Nombre')}</th><th>${clientText('Teléfono')}</th><th>${clientText('Referencia')}</th><th>${clientText('Mapa')}</th><th>${clientText('Cédula/RNC')}</th><th class="is-num">${clientText('Balance')}</th><th class="is-num">${clientText('Límite de crédito')}</th><th class="is-actions">${clientText('Acciones')}</th>`;
   }
   let list = DB.clientes;
-  if (filter) {
-    const normalizedFilter = String(filter || '').toLowerCase();
+  const activeFilter = clientesFilterValue;
+  if (activeFilter) {
+    const normalizedFilter = activeFilter.toLowerCase();
     list = list.filter((c) =>
       String(c?.nombre || '').toLowerCase().includes(normalizedFilter)
-      || String(c?.cedula || '').includes(filter)
+      || String(c?.cedula || '').includes(activeFilter)
+      || String(c?.rnc || '').includes(activeFilter)
+      || String(c?.telefono || '').includes(activeFilter)
     );
   }
   const balances = new Map(list.map((cliente) => [cliente.id, getClienteBalancePendiente(cliente.id, cliente.balance)]));
+
+  // Tarjetas de resumen (solo se cuentan y suman los datos ya cargados).
+  const deudores = list.filter((c) => (balances.get(c.id) || 0) > 0);
+  const setStat = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+  setStat('clientes-stat-total', list.length);
+  setStat('clientes-stat-deudores', deudores.length);
+  setStat('clientes-stat-por-cobrar', fmt(deudores.reduce((sum, c) => sum + (balances.get(c.id) || 0), 0)));
+  setStat('clientes-stat-limite', fmt(list.reduce((sum, c) => sum + Number(c.limiteCredito || 0), 0)));
+
+  const page = window.TcLista
+    ? window.TcLista.paginate('clientes', list)
+    : { items: list, total: list.length, from: list.length ? 1 : 0, to: list.length, page: 1, pageCount: 1 };
   const midCols = (c) => svc
-    ? `<td>${c.email || '—'}</td>`
-    : `<td>${c.referencia || '—'}</td><td>${c.linkUbicacion ? `<a href="${c.linkUbicacion}" target="_blank" rel="noopener">${clientText('Abrir mapa')}</a>` : '—'}</td>`;
-  tbody.innerHTML = list.map(c => `
+    ? `<td class="tc-cell-muted">${c.email || '—'}</td>`
+    : `<td class="tc-cell-muted">${c.referencia || '—'}</td><td>${c.linkUbicacion ? `<a class="tc-link" href="${c.linkUbicacion}" target="_blank" rel="noopener">${clientText('Abrir mapa')}</a>` : '—'}</td>`;
+  tbody.innerHTML = page.items.map(c => {
+    const balance = balances.get(c.id) || 0;
+    return `
     <tr>
-      <td style="font-weight:600">${c.nombre}</td>
-      <td style="font-family:var(--font-mono)">${c.telefono || '—'}</td>
+      <td><span class="tc-cell-title">${c.nombre}</span></td>
+      <td>${c.telefono || '—'}</td>
       ${midCols(c)}
-      <td style="font-family:var(--font-mono)">${c.cedula || '—'}</td>
-      <td style="font-family:var(--font-mono);color:${(balances.get(c.id) || 0)>0?'var(--warning)':'var(--success)'};font-weight:700">${fmt(balances.get(c.id) || 0)}</td>
-      <td style="font-family:var(--font-mono)">${fmt(c.limiteCredito)}</td>
-      <td>
-        ${(balances.get(c.id) || 0) > 0 ? `<button class="btn-secondary" onclick="openClienteCobroModal(${c.id})" style="margin-right:4px">💵 ${clientText('Cobrar')}</button>` : ''}
-        <button class="btn-edit" onclick="editCliente(${c.id})" style="margin-right:4px">✏ ${clientText('Ver')}</button>
-        <button class="btn-danger" onclick="deleteCliente(${c.id})">✕</button>
+      <td class="tc-cell-muted">${c.cedula || c.rnc || '—'}</td>
+      <td class="is-num ${balance > 0 ? 'tc-num-warn' : ''}"><strong>${fmt(balance)}</strong></td>
+      <td class="is-num">${fmt(c.limiteCredito)}</td>
+      <td class="is-actions">
+        <div class="tc-row-actions">
+          ${balance > 0 ? `<button type="button" class="tc-btn" onclick="openClienteCobroModal(${c.id})">${clientText('Cobrar')}</button>` : ''}
+          <button type="button" class="tc-btn tc-btn--soft" onclick="editCliente(${c.id})">${clientText('Ver')}</button>
+          <button type="button" class="tc-btn tc-btn--icon tc-row-danger" onclick="deleteCliente(${c.id})" title="${clientText('Eliminar cliente')}" aria-label="${clientText('Eliminar cliente')}">${clientesIcon('trash-2', 18)}</button>
+        </div>
       </td>
     </tr>
-  `).join('') || `<tr><td colspan="${svc ? 7 : 8}" style="text-align:center;padding:2rem;color:var(--text3)">${clientText('No se encontraron clientes')}</td></tr>`;
+  `;
+  }).join('') || `<tr class="tc-empty-row"><td colspan="${svc ? 7 : 8}"><div class="tc-empty">${clientesIcon('users', 40)}<div class="tc-empty-text">${clientText('No se encontraron clientes')}</div><button type="button" class="tc-btn tc-btn--primary" onclick="openClienteModal()">${clientText('Nuevo cliente')}</button></div></td></tr>`;
+  const footer = document.getElementById('clientes-footer');
+  if (footer) {
+    footer.innerHTML = window.TcLista
+      ? window.TcLista.footer('clientes', page, 'loadClientesTable', 'clientes')
+      : `<span class="tc-list-count">${list.length} clientes</span>`;
+  }
 }
 
-function filterClientes(val) { loadClientesTable(val); }
+function filterClientes(val) {
+  window.TcLista?.resetPage('clientes');
+  loadClientesTable(val);
+}
 
 function clearClienteModalError() {
   const box = document.getElementById('client-modal-error');
@@ -1700,14 +1736,10 @@ function getRolBadge(userOrRole) {
   const roleCode = normalizeUserRoleCodeClient(typeof userOrRole === 'string' ? userOrRole : (userOrRole?.roleCode || userOrRole?.rol));
   const roleMeta = getRoleDefinitionForUsers(roleCode);
   const label = roleMeta?.nombre || (typeof userOrRole === 'string' ? userOrRole : userOrRole?.rol) || 'Rol';
-  const map = {
-    administrador_general: 'badge-danger',
-    administrador_sucursal: 'badge-warning',
-    supervisor: 'badge-info',
-    cajero: 'badge-info',
-    repartidor: 'badge-success'
-  };
-  return `<span class="badge ${map[roleCode] || 'badge-info'}">${userText(label)}</span>`;
+  // Todos los roles con la misma etiqueta: antes el mismo rol salía de colores
+  // distintos (según viniera como código o como nombre) y el administrador en
+  // rojo, que es solo para errores y acciones peligrosas.
+  return `<span class="badge badge-info badge-role" data-role="${roleCode || ''}">${userText(label)}</span>`;
 }
 
 function loadUsuariosTable() {
@@ -1719,7 +1751,6 @@ function loadUsuariosTable() {
   const limitNote = document.getElementById('usuarios-plan-limit-note');
   if (createButton) {
     createButton.disabled = !canManage;
-    createButton.style.opacity = canManage ? '1' : '0.55';
     createButton.title = canManage ? '' : userText('Tu cuenta no tiene permiso para crear usuarios.');
   }
   if (limitNote) {
@@ -1732,25 +1763,28 @@ function loadUsuariosTable() {
   tbody.innerHTML = scopedUsers.map((user) => {
     const isActive = String(user?.estado || '').trim().toLowerCase() === 'activo';
     const hasFbUid  = Boolean(user?.firebase_uid || user?.firebaseUid);
+    // Columna "Nube": cuenta creada o no (antes "Firebase" con un emoji).
     const fbBadge   = hasFbUid
-      ? `<span title="${escapeUserFieldHtml(user.firebase_uid || user.firebaseUid || '')}" style="color:var(--success,#16a34a);font-size:1rem;cursor:default">🔥</span>`
-      : `<span title="${userText('Sin cuenta Firebase — haz clic en Sync Firebase')}" style="color:var(--text3,#9ca3af);font-size:1rem;cursor:default">○</span>`;
+      ? `<span class="tc-tag tc-tag--success" title="${escapeUserFieldHtml(user.firebase_uid || user.firebaseUid || '')}">${userText('Conectado')}</span>`
+      : `<span class="tc-tag" title="${userText('Sin cuenta en la nube — usa Sincronizar con la nube')}">${userText('Sin cuenta')}</span>`;
     return `
       <tr>
-        <td style="font-family:var(--font-mono);font-weight:700">${escapeUserFieldHtml(user.usuario)}</td>
+        <td><span class="tc-cell-title">${escapeUserFieldHtml(user.usuario)}</span></td>
         <td>
-          <div style="font-weight:600">${escapeUserFieldHtml(user.nombre)}</div>
+          <div class="tc-cell-title">${escapeUserFieldHtml(user.nombre)}</div>
           <div class="user-assignment-text">${escapeUserFieldHtml(getUserAssignmentCaption(user))}</div>
           <div class="user-assignment-text">${escapeUserFieldHtml(getUserBillingFunctionCaptionUi(user))}</div>
         </td>
         <td>${getRolBadge(user)}</td>
         <td><span class="badge ${isActive ? 'badge-success' : 'badge-warning'}">${userText(user.estado)}</span></td>
-        <td style="text-align:center">${fbBadge}</td>
-        <td style="color:var(--text2);font-size:0.82rem">${escapeUserFieldHtml(user.lastLogin || '—')}</td>
-        <td>
-          ${canManage ? `<button class="btn-edit" style="margin-right:4px" onclick="openEditUserModal(${user.id})">✏ ${userText('Editar')}</button>` : ''}
-          ${canManage && Number(DB.currentUser?.id) !== Number(user.id) ? `<button class="btn-danger" onclick="deleteUsuarioRow(${user.id})">🗑 ${userText('Eliminar')}</button>` : ''}
-          ${!canManage ? `<span class="user-readonly-pill">${userText('Solo lectura')}</span>` : ''}
+        <td>${fbBadge}</td>
+        <td class="tc-cell-muted">${escapeUserFieldHtml(user.lastLogin ? (window.TcFecha ? window.TcFecha.formatear(user.lastLogin) : user.lastLogin) : '—')}</td>
+        <td class="is-actions">
+          <div class="tc-row-actions">
+            ${canManage ? `<button type="button" class="tc-btn tc-btn--soft" onclick="openEditUserModal(${user.id})">${userText('Editar')}</button>` : ''}
+            ${canManage && Number(DB.currentUser?.id) !== Number(user.id) ? `<button type="button" class="tc-btn tc-btn--icon tc-row-danger" onclick="deleteUsuarioRow(${user.id})" title="${userText('Eliminar')}" aria-label="${userText('Eliminar')}">${window.TcIconos ? window.TcIconos.svg('trash-2', 18) : ''}</button>` : ''}
+            ${!canManage ? `<span class="tc-tag">${userText('Solo lectura')}</span>` : ''}
+          </div>
         </td>
       </tr>
     `;
@@ -1778,7 +1812,7 @@ async function syncAllUsersFirebase() {
       (result.skipped ? `, ${result.skipped} omitidos` : '') +
       (result.failed  ? `, ${result.failed} fallidos`  : '')
     );
-    showToast(`✅ ${msg}`, result.failed ? 'warning' : 'success');
+    showToast(msg, result.failed ? 'warning' : 'success');
     // Recargar datos para que los indicadores 🔥 se actualicen
     if (typeof reloadBootstrapData === 'function') {
       await reloadBootstrapData().catch(() => {});

@@ -794,46 +794,120 @@ function deleteProductFromCard(productId, event) {
   deleteProduct(productId);
 }
 
-function loadProductsTable() {
-  const grid = document.getElementById('products-grid');
-  const counter = document.getElementById('products-grid-counter');
-  const footerNote = document.getElementById('products-grid-footer-note');
-  if (!grid) return;
+// Vista de Productos: tabla por defecto, con opción de cuadrícula (se recuerda
+// en este equipo).
+const PRODUCTS_VIEW_KEY = 'tc.productos.vista';
 
+function getProductsView() {
   try {
-    const sourceCount = Array.isArray(DB.productos) ? DB.productos.length : 0;
-    const prods = getFilteredProducts();
-    grid.innerHTML = prods.map((p) => {
-      const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre;
-      const tone = getProductVisualTone(p);
-      const scopeLabel = getProductScopeLabel(p);
-      return `
+    return localStorage.getItem(PRODUCTS_VIEW_KEY) === 'cuadricula' ? 'cuadricula' : 'tabla';
+  } catch (_error) {
+    return 'tabla';
+  }
+}
+
+function setProductsView(view) {
+  try {
+    localStorage.setItem(PRODUCTS_VIEW_KEY, view === 'cuadricula' ? 'cuadricula' : 'tabla');
+  } catch (_error) {
+    // Sin almacenamiento: la vista vuelve a tabla al recargar.
+  }
+  loadProductsTable();
+}
+
+function productsIcon(name, size = 18) {
+  return window.TcIconos ? window.TcIconos.svg(name, size) : '';
+}
+
+function buildProductRowMarkup(p) {
+  const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre;
+  const categoria = getProductCompactCategory(p);
+  const stock = p.tracksStock === false ? '—' : Number(p.stock || 0);
+  const isActive = p.estado === 'Activo';
+  return `
+    <tr>
+      <td>
+        <span class="tc-cell-title">${escapeProductIdentityHtml(nombre)}</span>
+        <span class="tc-cell-sub">${escapeProductIdentityHtml(p.codigo || '')}</span>
+      </td>
+      <td class="tc-cell-muted">${escapeProductIdentityHtml(categoria || '')}</td>
+      <td class="is-num">${fmt(getProductFinalPriceWithItbis(p))}</td>
+      <td class="is-num tc-cell-muted">${fmt(p.precioCompra || 0)}</td>
+      <td class="is-num"><strong>${stock}</strong></td>
+      <td>${getStockBadge(p)}</td>
+      <td class="is-actions">
+        <div class="tc-row-actions">
+          <button type="button" class="tc-btn tc-btn--soft" onclick="editProductFromCard(${p.id}, event)">Editar</button>
+          <button type="button" class="tc-btn" onclick="toggleProductStatusFromCard(${p.id}, event)">${isActive ? 'Pausar' : 'Activar'}</button>
+          <button type="button" class="tc-btn tc-btn--icon tc-row-danger" onclick="deleteProductFromCard(${p.id}, event)" title="Eliminar producto" aria-label="Eliminar ${escapeProductIdentityHtml(nombre)}">${productsIcon('trash-2', 18)}</button>
+        </div>
+      </td>
+    </tr>`;
+}
+
+function buildProductCardMarkup(p) {
+  const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre;
+  const tone = getProductVisualTone(p);
+  const scopeLabel = getProductScopeLabel(p);
+  return `
       <article class="products-grid-card products-catalog-card ${tone}" onclick="editProduct(${p.id})" title="${nombre}">
         <div class="products-catalog-media">
           <img src="${getProductImageSrc(p)}" alt="${nombre}" class="products-grid-image" loading="lazy" decoding="async" onerror="this.src=PRODUCT_CARD_IMAGE_FALLBACK">
         </div>
         <div class="products-catalog-body">
           <div class="products-catalog-name">${nombre}</div>
-          <div class="products-catalog-scope" style="font-size:0.72rem;color:var(--text3);margin-top:0.15rem">${escapeProductIdentityHtml(scopeLabel)}</div>
+          <div class="products-catalog-scope">${escapeProductIdentityHtml(scopeLabel)}</div>
           <div class="products-catalog-price">${fmt(getProductFinalPriceWithItbis(p))}</div>
         </div>
       </article>`;
-    }).join('') || '<div class="products-grid-empty">No se encontraron productos</div>';
+}
+
+function loadProductsTable() {
+  const grid = document.getElementById('products-grid');
+  const tbody = document.getElementById('products-tbody');
+  const footer = document.getElementById('products-footer');
+  if (!grid && !tbody) return;
+
+  try {
+    const sourceCount = Array.isArray(DB.productos) ? DB.productos.length : 0;
+    const prods = getFilteredProducts();
+    const view = getProductsView();
+    const page = window.TcLista
+      ? window.TcLista.paginate('productos', prods)
+      : { items: prods, total: prods.length, from: prods.length ? 1 : 0, to: prods.length, page: 1, pageCount: 1 };
+
+    document.getElementById('products-table-wrap')?.classList.toggle('hidden', view !== 'tabla');
+    document.getElementById('products-grid-wrap')?.classList.toggle('hidden', view !== 'cuadricula');
+    document.querySelectorAll('#products-view-switch [data-view]').forEach((tab) => {
+      const selected = tab.dataset.view === view;
+      tab.classList.toggle('is-active', selected);
+      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
+    });
+
+    const empty = '<div class="tc-empty-text">No se encontraron productos</div>';
+    if (view === 'tabla' && tbody) {
+      tbody.innerHTML = page.items.map(buildProductRowMarkup).join('')
+        || `<tr class="tc-empty-row"><td colspan="7"><div class="tc-empty">${productsIcon('package', 40)}${empty}</div></td></tr>`;
+    } else if (grid) {
+      grid.innerHTML = page.items.map(buildProductCardMarkup).join('')
+        || `<div class="tc-empty products-grid-empty">${productsIcon('package', 40)}${empty}</div>`;
+    }
     updateProductsStats(prods);
-    if (counter) {
-      counter.textContent = `${prods.length} visibles`;
+    // "Productos cargados" va en el pie (antes era un aviso amarillo arriba).
+    if (footer) {
+      footer.innerHTML = window.TcLista
+        ? window.TcLista.footer('productos', page, 'loadProductsTable', `productos (${sourceCount} en total)`)
+        : `<span class="tc-list-count">${prods.length} productos</span>`;
     }
-    if (footerNote) {
-      footerNote.textContent = `Productos cargados: ${prods.length} visibles de ${sourceCount} totales`;
-    }
-    showProductsDebug(`Productos cargados: ${prods.length} visibles de ${sourceCount} totales`);
-    if (!prods.length && sourceCount > 0) {
+    showProductsDebug('');
+    if (!prods.length && sourceCount > 0 && !productFilters.search && !productFilters.category && productFilters.status === 'todos') {
       renderProductsFallback(DB.productos, 'la tabla filtrada quedo vacia aunque hay productos cargados');
     } else {
       hideProductsFallback();
     }
   } catch (error) {
-    grid.innerHTML = '<div class="products-grid-empty" style="color:var(--danger)">Error al renderizar productos</div>';
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="tc-cell-error">Error al mostrar los productos</td></tr>';
+    if (grid) grid.innerHTML = '<div class="products-grid-empty tc-cell-error">Error al mostrar los productos</div>';
     showProductsDebug(`Error en modulo productos: ${error.message}`);
     renderProductsFallback(Array.isArray(DB.productos) ? DB.productos : [], error.message);
     console.error('Error renderizando productos:', error);
@@ -907,6 +981,7 @@ function filterProducts() {
   productFilters.search = searchEl?.value || '';
   productFilters.category = categoryEl?.value || '';
   productFilters.status = statusEl?.value || 'todos';
+  window.TcLista?.resetPage('productos');
   loadProductsTable();
 }
 
@@ -1894,26 +1969,45 @@ function loadInventoryTable() {
   if (!tbody) return;
   refreshInventoryCategoryFilter();
   const items = getFilteredInventoryProducts();
-  tbody.innerHTML = items.map(p => {
+  const page = window.TcLista
+    ? window.TcLista.paginate('inventario', items)
+    : { items, total: items.length, from: items.length ? 1 : 0, to: items.length, page: 1, pageCount: 1 };
+  tbody.innerHTML = page.items.map(p => {
     const difference = Number(p.stock || 0) - Number(p.stockMin || 0);
+    const diffClass = difference < 0 ? 'tc-num-neg' : difference === 0 ? 'tc-num-zero' : 'tc-num-pos';
+    const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre;
     return `
     <tr>
-      <td style="font-weight:600">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre}<br><span style="font-family:var(--font-mono);font-size:0.78rem;color:var(--text3)">${p.codigo}</span></td>
-      <td>${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(p.categoria) : p.categoria}</td>
-      <td style="font-family:var(--font-mono);font-weight:700">${p.stock}</td>
-      <td style="font-family:var(--font-mono);color:var(--text2)">${p.stockMin}</td>
-      <td style="font-family:var(--font-mono);color:${difference < 0 ? 'var(--danger)' : difference === 0 ? 'var(--warning)' : 'var(--success)'}">${difference >= 0 ? '+' : ''}${difference}</td>
-      <td style="font-family:var(--font-mono)">${fmt(p.stock * p.precioCompra)}</td>
-      <td>${getStockBadge(p)}</td>
       <td>
-        <div class="products-actions">
-          <button class="btn-edit" onclick="openAjusteModal(${p.id})">✏ Ajustar</button>
-          <button class="btn-ghost" onclick="openKardexModal(${p.id})">📋 Kardex</button>
+        <span class="tc-cell-title">${escapeProductIdentityHtml(nombre)}</span>
+        <span class="tc-cell-sub">${escapeProductIdentityHtml(p.codigo || '')}</span>
+      </td>
+      <td class="tc-cell-muted">${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(p.categoria) : p.categoria}</td>
+      <td class="is-num"><strong>${p.stock}</strong></td>
+      <td class="is-num tc-cell-muted">${p.stockMin}</td>
+      <td class="is-num ${diffClass}">${difference > 0 ? '+' : ''}${difference}</td>
+      <td class="is-num">${formatSaleTableAmountForInventory(p.stock * p.precioCompra)}</td>
+      <td>${getStockBadge(p)}</td>
+      <td class="is-actions">
+        <div class="tc-row-actions">
+          <button type="button" class="tc-btn tc-btn--soft" onclick="openAjusteModal(${p.id})">Ajustar</button>
+          <button type="button" class="tc-btn" onclick="openKardexModal(${p.id})">Kardex</button>
         </div>
       </td>
     </tr>
   `;
-  }).join('') || `<tr><td colspan="8" style="text-align:center;padding:2rem;color:var(--text3)">No se encontraron productos con esos filtros</td></tr>`;
+  }).join('') || `<tr class="tc-empty-row"><td colspan="8"><div class="tc-empty">${productsIcon('clipboard-list', 40)}<div class="tc-empty-text">No se encontraron productos con esos filtros</div></div></td></tr>`;
+  const footer = document.getElementById('inventory-footer');
+  if (footer) {
+    footer.innerHTML = window.TcLista
+      ? window.TcLista.footer('inventario', page, 'loadInventoryTable', 'productos')
+      : `<span class="tc-list-count">${items.length} productos</span>`;
+  }
+}
+
+// Montos de la columna "Valor (RD$)": sin moneda, la moneda va en el encabezado.
+function formatSaleTableAmountForInventory(value) {
+  return Number(value || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function updateInventoryStats() {
@@ -1958,6 +2052,7 @@ function refreshInventoryCategoryFilter() {
 function filterInventory() {
   inventoryFilters.search = document.getElementById('inventory-search')?.value || '';
   inventoryFilters.category = document.getElementById('inventory-category-filter')?.value || '';
+  window.TcLista?.resetPage('inventario');
   inventoryFilters.status = document.getElementById('inventory-status-filter')?.value || 'todos';
   loadInventoryTable();
 }

@@ -250,7 +250,7 @@
   // ── Indicador de estado ───────────────────────────────────
   function setLoadingState(loading) {
     const btn = el('repv2-apply-btn');
-    if (btn) btn.textContent = loading ? '⏳ Cargando...' : '🔍 Aplicar';
+    if (btn) btn.textContent = loading ? 'Cargando...' : 'Aplicar';
     const err = el('repv2-error-banner');
     if (err && loading) err.style.display = 'none';
   }
@@ -259,7 +259,7 @@
     if (!err) {
       err = document.createElement('div');
       err.id = 'repv2-error-banner';
-      err.style.cssText = 'background:#ff4b6e22;border:1px solid #ff4b6e;color:#ff4b6e;padding:0.75rem 1rem;border-radius:8px;margin:0.75rem 0;font-size:0.85rem;';
+      err.className = 'tc-notice tc-notice--danger repv2-error-banner';
       const topbar = document.querySelector('.repv2-topbar');
       if (topbar) topbar.insertAdjacentElement('afterend', err);
     }
@@ -310,7 +310,13 @@
     } catch (e) { console.error('[Reportes] loadVentasDia:', e.message); RV2.ventas_dia = []; }
   }
 
-  const CHART_FONT = "'Plus Jakarta Sans', sans-serif";
+  const CHART_FONT = "'Barlow', 'Segoe UI', sans-serif";
+
+  // Colores de los gráficos: salen de las variables del tema (día y noche).
+  function themeColor(name, fallback) {
+    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return value || fallback;
+  }
 
   function renderChartTendencia() {
     const canvas = el('repv2-chart-tendencia');
@@ -350,10 +356,11 @@
     const chartH = H - padT - padB;
     const n = labels.length;
 
-    const isDark = document.documentElement.dataset.theme !== 'light';
+    const textColor = themeColor('--tc-text-2', '#9BA3BF');
+    const strongText = themeColor('--tc-text', '#E8EAF0');
 
     if (n === 0) {
-      ctx.fillStyle = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)';
+      ctx.fillStyle = textColor;
       ctx.font = `14px ${CHART_FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText('Sin ventas registradas en este período', W / 2, H / 2);
@@ -361,9 +368,10 @@
       return;
     }
 
-    const gridColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.07)';
-    const textColor = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.5)';
-    const accentColor = '#6C63FF';
+    const gridColor = themeColor('--tc-border-soft', '#252D42');
+    const accentColor = themeColor('--tc-primary', '#6C63FF');
+    const areaColor = themeColor('--tc-select-bg', 'rgba(108, 99, 255, 0.18)');
+    const surfaceColor = themeColor('--tc-surface', '#161B27');
 
     // Grid lines
     const gridLines = 4;
@@ -385,15 +393,12 @@
       const barX = padL + chartW / 2 - barW / 2;
       const barTopY = padT + chartH - (values[0] / maxV) * chartH;
       const barH = padT + chartH - barTopY;
-      const grad = ctx.createLinearGradient(0, barTopY, 0, padT + chartH);
-      grad.addColorStop(0, accentColor);
-      grad.addColorStop(1, 'rgba(108,99,255,0.35)');
-      ctx.fillStyle = grad;
+      ctx.fillStyle = accentColor;
       ctx.beginPath();
-      ctx.roundRect(barX, barTopY, barW, barH, [8, 8, 0, 0]);
+      ctx.roundRect(barX, barTopY, barW, barH, [6, 6, 0, 0]);
       ctx.fill();
 
-      ctx.fillStyle = isDark ? '#fff' : '#1a1e30';
+      ctx.fillStyle = strongText;
       ctx.font = `700 13px ${CHART_FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText(fmt(values[0]), barX + barW / 2, barTopY - 12);
@@ -433,29 +438,22 @@
     }
 
     // Área bajo la curva
-    const grad = ctx.createLinearGradient(0, padT, 0, padT + chartH);
-    grad.addColorStop(0, 'rgba(108,99,255,0.28)');
-    grad.addColorStop(1, 'rgba(108,99,255,0.01)');
     ctx.beginPath();
     ctx.moveTo(xPts[0], padT + chartH);
     ctx.lineTo(xPts[0], yPts[0]);
     smoothPath();
     ctx.lineTo(xPts[n - 1], padT + chartH);
     ctx.closePath();
-    ctx.fillStyle = grad;
+    ctx.fillStyle = areaColor;
     ctx.fill();
 
-    // Línea con brillo sutil
     ctx.beginPath();
     smoothPath();
-    ctx.shadowColor = 'rgba(108,99,255,0.45)';
-    ctx.shadowBlur = 8;
     ctx.strokeStyle = accentColor;
     ctx.lineWidth = 2.5;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.stroke();
-    ctx.shadowBlur = 0;
 
     // Puntos — discretos en el trayecto, destacado en el último (el más reciente)
     xPts.forEach((x, i) => {
@@ -464,7 +462,7 @@
       ctx.arc(x, yPts[i], isLast ? 5 : 3, 0, Math.PI * 2);
       ctx.fillStyle = accentColor;
       ctx.fill();
-      ctx.strokeStyle = isDark ? '#1e2435' : '#fff';
+      ctx.strokeStyle = surfaceColor;
       ctx.lineWidth = isLast ? 2.5 : 1.5;
       ctx.stroke();
     });
@@ -472,7 +470,7 @@
     // Etiqueta flotante con el valor del último día
     const lastX = xPts[n - 1];
     const lastY = yPts[n - 1];
-    ctx.fillStyle = isDark ? '#fff' : '#1a1e30';
+    ctx.fillStyle = strongText;
     ctx.font = `700 12px ${CHART_FONT}`;
     ctx.textAlign = lastX > W - padR - 60 ? 'right' : 'center';
     ctx.fillText(fmt(values[n - 1]), lastX + (ctx.textAlign === 'right' ? 8 : 0), Math.max(lastY - 14, padT + 10));
@@ -488,7 +486,10 @@
     } catch (e) { console.error('[Reportes] loadMetodos:', e.message); RV2.metodos = []; }
   }
 
-  const METODO_COLORS = ['#6C63FF','#00E5A0','#40C4FF','#FFB300','#FF4B6E','#A78BFA'];
+  // Paleta de gráficos del tema: --tc-chart-1 … --tc-chart-6 (css/tokens.css).
+  function metodoColors() {
+    return [1, 2, 3, 4, 5, 6].map((i) => themeColor(`--tc-chart-${i}`, '#6C63FF'));
+  }
   const METODO_LABELS = {
     efectivo: 'Efectivo', tarjeta: 'Tarjeta',
     transferencia: 'Transfer.', credito: 'Crédito',
@@ -516,6 +517,7 @@
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, W, H);
 
+    const METODO_COLORS = metodoColors();
     const cx = W / 2, cy = H / 2, r = Math.min(cx, cy) - 16, ri = r * 0.58;
     let startAngle = -Math.PI / 2;
     const total = rows.reduce((s, r) => s + Number(r.total), 0) || 1;
@@ -533,16 +535,16 @@
     // Hole
     ctx.beginPath();
     ctx.arc(cx, cy, ri, 0, Math.PI * 2);
-    const isDark = document.documentElement.dataset.theme !== 'light';
-    ctx.fillStyle = isDark ? '#1E2435' : '#ffffff';
+    ctx.fillStyle = themeColor('--tc-surface', '#161B27');
     ctx.fill();
 
     // Center text
     ctx.textAlign = 'center';
-    ctx.fillStyle = isDark ? 'rgba(255,255,255,0.7)' : 'rgba(0,0,0,0.6)';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.fillText('TOTAL', cx, cy - 6);
-    ctx.font = 'bold 12px monospace';
+    ctx.fillStyle = themeColor('--tc-text-2', '#9BA3BF');
+    ctx.font = `600 12px ${CHART_FONT}`;
+    ctx.fillText('Total', cx, cy - 6);
+    ctx.fillStyle = themeColor('--tc-text', '#E8EAF0');
+    ctx.font = `700 13px ${CHART_FONT}`;
     const cur = (typeof DB !== 'undefined' && DB.config?.currency) || 'RD$';
     // Mostrar el monto real; solo abreviar a M cuando es muy grande y no cabe.
     const centerTxt = total >= 1000000
@@ -646,6 +648,18 @@
     renderPorSucursalBars();
     if (typeof window.scheduleUiTranslation === 'function') window.scheduleUiTranslation(document.body);
   }
+
+  // Al cambiar entre día y noche, los gráficos se vuelven a dibujar con los
+  // colores del tema nuevo.
+  new MutationObserver(() => {
+    if (!document.getElementById('repv2-chart-tendencia')?.offsetParent) return;
+    try {
+      renderChartTendencia();
+      renderChartMetodos();
+    } catch (_error) {
+      // Sin datos cargados todavía: se dibujan al aplicar los filtros.
+    }
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
   // ── DETALLADOS: Facturas ──────────────────────────────────
   window.repV2LoadFacturas = async function (page = 1) {

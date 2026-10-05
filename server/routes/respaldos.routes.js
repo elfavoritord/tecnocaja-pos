@@ -899,10 +899,17 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
 
   // ══════════════════════════════════════════════════════════════════════
   //  POST /api/respaldos/auto
-  //  Llamado internamente al cerrar caja / cierre del app
+  //  Llamado internamente al cerrar caja / cierre del app. No tenía NINGÚN
+  //  control de acceso — cualquiera que alcanzara el puerto podía disparar
+  //  respaldos a voluntad (llenar disco). Ahora exige sesión real o la
+  //  llamada firmada de electron/main.js (req.isInternalSystemCall, ver
+  //  el middleware global de auth en server.js + server/security/internal-request.js).
   // ══════════════════════════════════════════════════════════════════════
   app.post('/api/respaldos/auto', async (req, res) => {
     try {
+      if (!req.authUser && !req.isInternalSystemCall) {
+        return res.status(401).json({ ok: false, error: 'Debes iniciar sesión para realizar esta acción.' });
+      }
       const { trigger = 'manual', forceCloud = false } = req.body || {};
       const result = await app.locals.createAutomaticBackup({ trigger, forceCloud: Boolean(forceCloud) });
       res.json(result);

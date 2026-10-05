@@ -86,8 +86,8 @@ function renderMovimientosSistema() {
 
   tbody.innerHTML = list.map((item) => `
     <tr>
-      <td style="font-family:var(--font-mono);font-size:0.8rem">${formatMovimientoDate(item.fecha)}</td>
-      <td style="font-weight:600">${item.usuario}</td>
+      <td class="tc-cell-muted">${formatMovimientoDate(item.fecha)}</td>
+      <td><span class="tc-cell-title">${item.usuario}</span></td>
       <td>${getRolBadge(item.rol)}</td>
       <td><span class="badge badge-info">${movementText(item.modulo)}</span></td>
       <td>${movementText(item.accion)}</td>
@@ -138,6 +138,8 @@ function lookupCancelSale() {
 
 function formatMovimientoDate(value) {
   if (!value) return '—';
+  // Formato único del sistema: dd/mm/aaaa hh:mm a. m. (js/fechas.js)
+  if (window.TcFecha) return window.TcFecha.formatear(value);
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(movementLocale(), {

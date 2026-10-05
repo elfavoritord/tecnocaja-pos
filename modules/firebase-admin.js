@@ -153,6 +153,34 @@ function getPublicCodesCollectionName() {
   return String(process.env.FIREBASE_PUBLIC_CODES_COLLECTION || 'codigos').trim() || 'codigos';
 }
 
+// El proyecto Firebase es uno solo para todos los clientes. Los IDs locales de
+// clientes y usuarios empiezan en 1 en todos los negocios, así que los
+// documentos de colecciones globales llevan la licencia en el ID: con
+// `pos_{id}` / `pos_user_{id}` un negocio pisaba (o borraba) los de otro.
+function getInstallLicenseUid() {
+  return String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+}
+
+function safeDocIdPart(value) {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+function buildPosClientDocId(localClientId, licenseUid = getInstallLicenseUid()) {
+  const localId = String(localClientId ?? '').trim();
+  if (!licenseUid || !localId) return null;
+  return `pos_${safeDocIdPart(licenseUid)}_${safeDocIdPart(localId)}`;
+}
+
+function buildPosUserDocId(localUserId, licenseUid) {
+  return `pos_user_${safeDocIdPart(licenseUid)}_${safeDocIdPart(localUserId)}`;
+}
+
+// Un businessId derivado del nombre ("pos:tecno-caja-…") lo comparten todos
+// los negocios que se llamen igual; uno de licencia (pos_…, npd_…) es único.
+function isNameDerivedBusinessId(businessId) {
+  return String(businessId || '').trim().startsWith('pos:');
+}
+
 // Colección que la app móvil de reportes lee (esquema en inglés con
 // displayName / businessIds / branchIds / allowedModules / isActive).
 // El POS sigue escribiendo a `usuarios` (es legacy y otras integraciones lo
@@ -342,7 +370,11 @@ function isSameFirebaseUserRecord(doc, options = {}) {
   const data = doc?.data?.() || {};
   const currentLocalUserId = Number(options.currentLocalUserId || 0) || null;
   const currentFirebaseUid = String(options.currentFirebaseUid || '').trim();
-  if (currentLocalUserId && Number(data.localUserId || 0) === currentLocalUserId) {
+  const currentLicenseUid = String(options.currentLicenseUid || '').trim();
+  const docLicenseUid = String(data.principalUid || data.licenseId || '').trim();
+  // El usuario #N de otro negocio no es "el mismo" solo por tener el mismo ID local.
+  const sameBusiness = !currentLicenseUid || !docLicenseUid || docLicenseUid === currentLicenseUid;
+  if (currentLocalUserId && sameBusiness && Number(data.localUserId || 0) === currentLocalUserId) {
     return true;
   }
   if (currentFirebaseUid && String(data.firebaseUid || '').trim() === currentFirebaseUid) {
@@ -399,6 +431,7 @@ async function assertNoFirebaseIdentityConflicts(options = {}) {
     const conflictingEmailDoc = (emailSnapshot?.docs || []).find((doc) => !isSameFirebaseUserRecord(doc, {
       currentLocalUserId,
       currentFirebaseUid,
+      currentLicenseUid,
     }));
     if (conflictingEmailDoc) {
       throw createFirebaseConflictError(`El correo ${email} ya está vinculado en Firebase a otra cuenta del POS.`);
@@ -410,9 +443,13 @@ async function assertNoFirebaseIdentityConflicts(options = {}) {
     const conflictingUsernameDoc = (usernameSnapshot?.docs || []).find((doc) => {
       const data = doc?.data?.() || {};
       if (String(data.businessKey || '').trim() !== businessKey) return false;
+      // Otro negocio que se llama igual: su usuario "admin" no choca con el nuestro.
+      const docLicenseUid = String(data.principalUid || data.licenseId || '').trim();
+      if (currentLicenseUid && docLicenseUid && docLicenseUid !== currentLicenseUid) return false;
       return !isSameFirebaseUserRecord(doc, {
         currentLocalUserId,
         currentFirebaseUid,
+        currentLicenseUid,
       });
     });
     if (conflictingUsernameDoc) {
@@ -717,15 +754,27 @@ async function syncPosClientsToFirestore(clients, config) {
   const batch = firestore.batch();
   const syncedAt = new Date().toISOString();
   const businessName = String(config?.nombre || 'Tecno Caja').trim() || 'Tecno Caja';
+  const licenseUid = getInstallLicenseUid();
+  // Sin licencia vinculada no se sube nada: mejor no sincronizar que mezclar.
+  if (!licenseUid) {
+    return {
+      collection: getPosClientsCollectionName(),
+      total: 0,
+      syncedAt,
+      skipped: true,
+      reason: 'sin_licencia',
+    };
+  }
 
   for (const client of clients) {
     const localId = String(client.id || '').trim();
     if (!localId) continue;
-    const docRef = collection.doc(`pos_${localId}`);
+    const docRef = collection.doc(buildPosClientDocId(localId, licenseUid));
     batch.set(
       docRef,
       {
         source: 'pos',
+        licenseId: licenseUid,
         localClientId: localId,
         businessName,
         systemAssignment: 'pos',
@@ -755,10 +804,14 @@ async function syncPosClientsToFirestore(clients, config) {
 }
 
 async function deletePosClientFromFirestore(localClientId) {
+  // Solo el documento de ESTE negocio. El viejo `pos_{id}` no se borra: ese
+  // ID lo compartían todos los negocios y podía ser el cliente de otro.
+  const docId = buildPosClientDocId(localClientId);
+  if (!docId) return;
   const firestore = getFirestore();
   await firestore
     .collection(getPosClientsCollectionName())
-    .doc(`pos_${localClientId}`)
+    .doc(docId)
     .delete();
 }
 
@@ -795,7 +848,6 @@ async function syncPosAccountsToFirestore(users, config) {
   }
 
   const ownerUser = activeUsers.find((user) => String(user?.rol || '').trim().toLowerCase() === 'administrador') || activeUsers[0];
-  const ownerDocId = `pos_user_${ownerUser.id}`;
   const configuredLicenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
 
   // SEGURIDAD: usar TECNO_CAJA_LICENSE_UID solo si NO es un hash legado (npd_XXXXXXXX).
@@ -815,11 +867,12 @@ async function syncPosAccountsToFirestore(users, config) {
     // Sin UID canónico configurado (o es hash legado) → generar uno nuevo, único
     licenseDocId = `pos_${crypto.randomBytes(8).toString('hex')}`;
   }
-  const desiredUserIds = new Set(activeUsers.map((user) => `pos_user_${user.id}`));
+  const ownerDocId = buildPosUserDocId(ownerUser.id, licenseDocId);
+  const desiredUserIds = new Set(activeUsers.map((user) => buildPosUserDocId(user.id, licenseDocId)));
   const userBatch = firestore.batch();
 
   for (const user of activeUsers) {
-    const docId = `pos_user_${user.id}`;
+    const docId = buildPosUserDocId(user.id, licenseDocId);
     const docRef = usersCollection.doc(docId);
     userBatch.set(
       docRef,
@@ -827,6 +880,7 @@ async function syncPosAccountsToFirestore(users, config) {
         source: 'pos',
         recordKind: 'account',
         systemAssignment: 'pos',
+        licenseId: licenseDocId,
         businessKey,
         businessName,
         mobileAccessUrl: mobileAccessUrl || null,
@@ -854,9 +908,13 @@ async function syncPosAccountsToFirestore(users, config) {
     );
   }
 
-  const existingUserDocs = await usersCollection.where('source', '==', 'pos').where('businessKey', '==', businessKey).get();
+  // Limpieza de usuarios que ya no existen: solo los de ESTA licencia (antes
+  // era por nombre del negocio y borraba los usuarios de otro negocio con el
+  // mismo nombre). También se van los `pos_user_{id}` viejos que eran nuestros.
+  // El documento de cuenta del negocio (ID = licencia) se conserva.
+  const existingUserDocs = await usersCollection.where('source', '==', 'pos').where('principalUid', '==', licenseDocId).get();
   for (const doc of existingUserDocs.docs) {
-    if (!desiredUserIds.has(doc.id)) {
+    if (!desiredUserIds.has(doc.id) && doc.id !== licenseDocId) {
       userBatch.delete(doc.ref);
     }
   }
@@ -925,12 +983,10 @@ async function syncPosAccountsToFirestore(users, config) {
     { merge: true }
   );
 
-  const existingPosLicenseDocs = await licensesCollection.where('source', '==', 'pos').where('businessKey', '==', businessKey).get();
-  for (const doc of existingPosLicenseDocs.docs) {
-    if (doc.id !== licenseDocId) {
-      userBatch.delete(doc.ref);
-    }
-  }
+  // Antes aquí se borraban las demás licencias con el mismo businessKey (nombre
+  // del negocio): dos clientes que se llamaran igual se borraban la licencia
+  // uno al otro en cada sincronización. La licencia vieja de ESTE equipo (hash
+  // legado) la migra migrateLegacyLicenseDoc después del commit.
 
   if (mobileConnectionCodeNormalized) {
     const publicCodeDocRef = publicCodesCollection.doc(mobileConnectionCodeNormalized);
@@ -955,7 +1011,7 @@ async function syncPosAccountsToFirestore(users, config) {
 
     const existingCodeDocs = await publicCodesCollection
       .where('source', '==', 'pos')
-      .where('businessKey', '==', businessKey)
+      .where('principalUid', '==', licenseDocId)
       .get();
     for (const doc of existingCodeDocs.docs) {
       if (doc.id !== mobileConnectionCodeNormalized) {
@@ -1195,6 +1251,50 @@ async function deleteCollectionRecursive(collectionRef, result = {}) {
   }
 }
 
+// Igual que _getBusinessId() en modules/firebase-sync.js.
+function toNegocioSlug(value) {
+  return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+// ¿Otra licencia usa este businessKey (mismo nombre de negocio)?
+async function isBusinessKeyUsedByOtherLicense(firestore, businessKey, licenseUid = '') {
+  const snapshot = await firestore
+    .collection(getAdminLicensesCollectionName())
+    .where('businessKey', '==', businessKey)
+    .get()
+    .catch(() => null);
+  // Si no se pudo consultar, se asume que sí (no borrar a ciegas).
+  if (!snapshot) return true;
+  return snapshot.docs.some((doc) => doc.id !== licenseUid);
+}
+
+async function isFirebaseUidUsedByOtherBusiness(firestore, uid, { licenseUid = '', businessId = '' } = {}) {
+  const ownIds = new Set([licenseUid, businessId].filter(Boolean));
+  const accountSnapshot = await firestore
+    .collection(getAdminUsersCollectionName())
+    .where('firebaseUid', '==', uid)
+    .get()
+    .catch(() => null);
+  const usedInOtherAccount = (accountSnapshot?.docs || []).some((doc) => {
+    const data = doc.data() || {};
+    const owner = String(data.principalUid || data.licenseId || '').trim();
+    return owner && !ownIds.has(owner);
+  });
+  if (usedInOtherAccount) return true;
+
+  const reportsDoc = await firestore
+    .collection(getReportsAppUsersCollectionName())
+    .doc(uid)
+    .get()
+    .catch(() => null);
+  if (!reportsDoc?.exists) return false;
+  const data = reportsDoc.data() || {};
+  const ids = [data.businessId, ...(Array.isArray(data.businessIds) ? data.businessIds : [])]
+    .map((id) => String(id || '').trim())
+    .filter(Boolean);
+  return ids.some((id) => !ownIds.has(id));
+}
+
 async function purgePosBusinessFromFirebase(options = {}) {
   if (!hasAdminCredentialConfig()) {
     const error = new Error('Firebase Admin no está configurado para borrar datos remotos.');
@@ -1214,77 +1314,127 @@ async function purgePosBusinessFromFirebase(options = {}) {
 
   const businessName = String(options.businessName || '').trim() || 'Tecno Caja';
   const businessKey = String(options.businessKey || buildPosBusinessKey(businessName)).trim() || buildPosBusinessKey(businessName);
-  const businessId = String(options.businessId || options.licenseUid || process.env.TECNO_CAJA_LICENSE_UID || businessKey).trim() || businessKey;
   const licenseUid = String(options.licenseUid || process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-  const authUids = new Set((Array.isArray(options.authUids) ? options.authUids : []).map((uid) => String(uid || '').trim()).filter(Boolean));
+  const businessId = String(options.businessId || licenseUid || '').trim();
+  const candidateAuthUids = new Set((Array.isArray(options.authUids) ? options.authUids : []).map((uid) => String(uid || '').trim()).filter(Boolean));
   result.businessKey = businessKey;
-  result.businessId = businessId;
+  result.businessId = businessId || null;
+  result.licenseUid = licenseUid || null;
+  result.authKept = 0;
 
-  const licenseRefs = [];
+  // Solo se borra lo que es de ESTA licencia. Antes también se buscaba por el
+  // nombre del negocio (businessName / businessKey): si otro cliente se llamaba
+  // igual, el formateo borraba su licencia, sus usuarios, sus códigos y sus
+  // clientes en la nube.
   if (licenseUid) {
-    licenseRefs.push(firestore.collection(getAdminLicensesCollectionName()).doc(licenseUid));
-  }
-  licenseRefs.push(...await collectDocRefsFromQuery(
-    firestore.collection(getAdminLicensesCollectionName()).where('businessKey', '==', businessKey)
-  ));
-  licenseRefs.push(...await collectDocRefsFromQuery(
-    firestore.collection(getAdminLicensesCollectionName()).where('businessName', '==', businessName)
-  ));
-  await deleteDocRefs(licenseRefs, result);
+    const licensesCollection = firestore.collection(getAdminLicensesCollectionName());
+    await deleteDocRefs([licensesCollection.doc(licenseUid)], result);
 
-  const userRefs = await collectDocRefsFromQuery(
-    firestore.collection(getAdminUsersCollectionName()).where('businessKey', '==', businessKey)
-  );
-  for (const ref of userRefs) {
-    const snapshot = await ref.get().catch(() => null);
-    const data = snapshot?.data?.() || {};
-    if (String(data.firebaseUid || '').trim()) {
-      authUids.add(String(data.firebaseUid).trim());
+    const usersCollection = firestore.collection(getAdminUsersCollectionName());
+    const userRefs = [
+      usersCollection.doc(licenseUid),
+      ...await collectDocRefsFromQuery(usersCollection.where('principalUid', '==', licenseUid)),
+    ];
+    for (const ref of userRefs) {
+      const snapshot = await ref.get().catch(() => null);
+      const data = snapshot?.data?.() || {};
+      if (String(data.firebaseUid || '').trim()) {
+        candidateAuthUids.add(String(data.firebaseUid).trim());
+      }
     }
-  }
-  await deleteDocRefs(userRefs, result);
+    await deleteDocRefs(userRefs, result);
 
-  const publicCodeRefs = await collectDocRefsFromQuery(
-    firestore.collection(getPublicCodesCollectionName()).where('businessKey', '==', businessKey)
+    await deleteDocRefs(await collectDocRefsFromQuery(
+      firestore.collection(getPublicCodesCollectionName()).where('principalUid', '==', licenseUid)
+    ), result);
+
+    await deleteDocRefs(await collectDocRefsFromQuery(
+      firestore.collection(getPosClientsCollectionName()).where('licenseId', '==', licenseUid)
+    ), result);
+  } else {
+    result.skippedNoLicense = true;
+  }
+
+  // businesses/{id} y los usuarios de la app de reportes. Un ID derivado del
+  // nombre ("pos:tecno-caja-…") lo comparten los negocios que se llaman igual:
+  // solo se borra si ninguna otra licencia tiene ese mismo nombre.
+  const canPurgeBusinessSpace = Boolean(businessId) && (
+    !isNameDerivedBusinessId(businessId)
+    || !await isBusinessKeyUsedByOtherLicense(firestore, businessId, licenseUid)
   );
-  await deleteDocRefs(publicCodeRefs, result);
+  if (canPurgeBusinessSpace) {
+    const reportsUsersCollection = firestore.collection(getReportsAppUsersCollectionName());
+    const reportsUserRefs = [];
+    reportsUserRefs.push(...await collectDocRefsFromQuery(reportsUsersCollection.where('businessId', '==', businessId)));
+    reportsUserRefs.push(...await collectDocRefsFromQuery(reportsUsersCollection.where('businessIds', 'array-contains', businessId)));
+    const reportsUsersToDelete = [];
+    const seenReportsUsers = new Set();
+    for (const ref of reportsUserRefs) {
+      if (!ref?.id || seenReportsUsers.has(ref.id)) continue;
+      seenReportsUsers.add(ref.id);
+      const snapshot = await ref.get().catch(() => null);
+      const data = snapshot?.data?.() || {};
+      const otherBusinessIds = (Array.isArray(data.businessIds) ? data.businessIds : [])
+        .map((id) => String(id || '').trim())
+        .filter((id) => id && id !== businessId);
+      if (otherBusinessIds.length) {
+        // También trabaja para otro negocio: solo se le quita este.
+        await ref.update({
+          businessIds: otherBusinessIds,
+          businessId: String(data.businessId || '').trim() === businessId ? otherBusinessIds[0] : (data.businessId || otherBusinessIds[0]),
+        }).catch(() => {});
+        result.authKept += 1;
+        continue;
+      }
+      reportsUsersToDelete.push(ref);
+      candidateAuthUids.add(String(ref.id).trim());
+    }
+    await deleteDocRefs(reportsUsersToDelete, result);
 
-  const clientRefsByName = await collectDocRefsFromQuery(
-    firestore.collection(getPosClientsCollectionName()).where('businessName', '==', businessName)
-  );
-  await deleteDocRefs(clientRefsByName, result);
-
-  const reportsUsersCollection = firestore.collection(getReportsAppUsersCollectionName());
-  const reportsUserRefs = [];
-  reportsUserRefs.push(...await collectDocRefsFromQuery(reportsUsersCollection.where('businessId', '==', businessId)));
-  reportsUserRefs.push(...await collectDocRefsFromQuery(reportsUsersCollection.where('businessIds', 'array-contains', businessId)));
-  for (const ref of reportsUserRefs) {
-    const snapshot = await ref.get().catch(() => null);
-    if (snapshot?.id) authUids.add(String(snapshot.id).trim());
-  }
-  await deleteDocRefs(reportsUserRefs, result);
-
-  const businessDocRef = firestore.collection('businesses').doc(businessId);
-  const businessSubcollections = typeof businessDocRef.listCollections === 'function'
-    ? await businessDocRef.listCollections().catch(() => [])
-    : [];
-  for (const subcollection of businessSubcollections || []) {
-    await deleteCollectionRecursive(subcollection, result);
-  }
-  await businessDocRef.delete().catch(() => {});
-
-  const legacyNegocioId = String(process.env.TECNO_CAJA_BUSINESS_ID || '').trim();
-  if (legacyNegocioId) {
-    const legacyDocRef = firestore.collection('negocios').doc(legacyNegocioId);
-    const legacySubcollections = typeof legacyDocRef.listCollections === 'function'
-      ? await legacyDocRef.listCollections().catch(() => [])
+    const businessDocRef = firestore.collection('businesses').doc(businessId);
+    const businessSubcollections = typeof businessDocRef.listCollections === 'function'
+      ? await businessDocRef.listCollections().catch(() => [])
       : [];
-    for (const subcollection of legacySubcollections || []) {
+    for (const subcollection of businessSubcollections || []) {
       await deleteCollectionRecursive(subcollection, result);
     }
-    await legacyDocRef.delete().catch(() => {});
+    await businessDocRef.delete().catch(() => {});
+  } else {
+    result.skippedSharedBusinessId = Boolean(businessId);
+  }
+
+  // negocios/{id}: el mismo ID que usa modules/firebase-sync.js. Nunca los IDs
+  // compartidos que se usaban antes como respaldo (proyecto Firebase / "tecnocaja").
+  const sharedNegocioIds = new Set(['tecnocaja', toNegocioSlug(process.env.FIREBASE_PROJECT_ID)].filter(Boolean));
+  const rawNegocioId = String(process.env.TECNO_CAJA_BUSINESS_ID || '').trim();
+  const negocioIds = new Set(
+    [rawNegocioId, toNegocioSlug(rawNegocioId || licenseUid)]
+      .filter((id) => id && !sharedNegocioIds.has(id))
+  );
+  if (negocioIds.size) {
+    for (const negocioId of negocioIds) {
+      const legacyDocRef = firestore.collection('negocios').doc(negocioId);
+      const legacySubcollections = typeof legacyDocRef.listCollections === 'function'
+        ? await legacyDocRef.listCollections().catch(() => [])
+        : [];
+      for (const subcollection of legacySubcollections || []) {
+        await deleteCollectionRecursive(subcollection, result);
+      }
+      await legacyDocRef.delete().catch(() => {});
+    }
   } else {
     result.skippedLegacyNegocio = true;
+  }
+
+  // Cuentas de Firebase Auth: se conserva la que también usa otro negocio
+  // (mismo correo dado de alta en dos negocios); borrarla lo dejaría sin acceso.
+  const authUids = new Set();
+  for (const uid of candidateAuthUids) {
+    if (await isFirebaseUidUsedByOtherBusiness(firestore, uid, { licenseUid, businessId })) {
+      result.authKept += 1;
+      continue;
+    }
+    authUids.add(uid);
   }
 
   for (const uid of authUids) {
@@ -1329,6 +1479,8 @@ function getFirebaseConfigStatus() {
 module.exports = {
   assertNoFirebaseIdentityConflicts,
   buildPosBusinessKey,
+  buildPosClientDocId,
+  buildPosUserDocId,
   chooseBestLicenseDocument,
   deletePosClientFromFirestore,
   describeLicenseSelection,

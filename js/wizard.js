@@ -113,12 +113,12 @@
 
     get scenarioPlanBadge() {
       const badges = {
-        monocaja: '🟢 Plan Básico',
-        multicaja: '🟡 Plan Pro',
-        sucursal: '🏬 Sucursal',
-        multisucursal: '🔵 Plan Plus'
+        monocaja: 'Plan Básico',
+        multicaja: 'Plan Pro',
+        sucursal: 'Sucursal',
+        multisucursal: 'Plan Plus'
       };
-      return badges[WZ.mode] || '🟢 Plan Básico';
+      return badges[WZ.mode] || 'Plan Básico';
     }
   };
 
@@ -512,12 +512,16 @@
     const title = document.getElementById('wz-scenario-title');
     const desc  = document.getElementById('wz-scenario-desc');
     const icon  = document.getElementById('wz-scenario-icon');
+    // Ícono de línea (js/iconos.js) en vez de emoji.
+    const setIcon = (name) => {
+      if (icon && window.TcIconos?.paths?.[name]) icon.innerHTML = window.TcIconos.svg(name, 28);
+    };
     if (WZ.mode === 'multisucursal') {
-      if (icon)  icon.textContent  = '🏢';
+      setIcon('building-2');
       if (title) title.textContent = '¿Cómo deseas configurar este sistema?';
       if (desc)  desc.textContent  = 'Elige si estás creando la red de sucursales desde cero o si este equipo se unirá a una red ya existente.';
     } else {
-      if (icon)  icon.textContent  = '🏪';
+      setIcon('store');
       if (title) title.textContent = '¿Cómo deseas configurar este sistema?';
       if (desc)  desc.textContent  = 'Elige si estás creando un negocio nuevo o si esta terminal se conectará a una red multicaja ya existente.';
     }
@@ -985,7 +989,7 @@
 
     const chip = document.getElementById('wz-assign-user-chip');
     if (chip && WZ.authUser) {
-      chip.innerHTML = `<span>👤</span><div>Autorizado: <strong>${WZ.authUser.nombre || WZ.authUser.usuario}</strong> · ${WZ.authUser.rol}</div>`;
+      chip.innerHTML = `${window.TcIconos?.svg('user', 20) || ''}<div>Autorizado: <strong>${WZ.authUser.nombre || WZ.authUser.usuario}</strong> · ${WZ.authUser.rol}</div>`;
       chip.style.display = 'flex';
     }
 
@@ -1212,9 +1216,19 @@
     const wrap = document.getElementById('setup-service-verticals');
     if (!wrap || wrap.childElementCount) return;
     const list = Array.isArray(window.SERVICE_VERTICALS) ? window.SERVICE_VERTICALS : [];
+    // Íconos de línea por vertical (business-config.js trae emojis).
+    const SERVICE_ICONS = {
+      srv_consultoria: 'chart-column', srv_tecnologia: 'monitor', srv_publicidad: 'megaphone',
+      srv_arquitectura: 'hard-hat', srv_limpieza: 'brush-cleaning', srv_seguridad: 'shield',
+      srv_mantenimiento: 'wrench', srv_viajes: 'plane'
+    };
+    const iconFor = (key) => {
+      const name = SERVICE_ICONS[key] || 'building-2';
+      return window.TcIconos?.paths?.[name] ? window.TcIconos.svg(name, 24) : '';
+    };
     wrap.innerHTML = list.map(v => (
       `<button type="button" class="setup-choice-card" data-biztype="${v.value}">` +
-        `<span class="choice-icon">${v.icon || '🏢'}</span>` +
+        `<span class="choice-icon">${iconFor(v.value)}</span>` +
         `<strong>${v.label}</strong>` +
         `<span>${v.tagline || ''}</span>` +
       `</button>`
@@ -1294,7 +1308,7 @@
       card.className = 'setup-choice-card';
       card.dataset.value = 'sucursal';
       card.dataset.type  = 'structure';
-      card.innerHTML = `<span class="choice-icon">🏬</span><strong>Sucursal</strong><small>Terminal secundaria vinculada al sistema principal de otra ubicación</small>`;
+      card.innerHTML = `<strong>Sucursal</strong><span>Terminal secundaria vinculada al sistema principal de otra ubicación</span>`;
       card.addEventListener('click', () => {
         container.querySelectorAll('.setup-choice-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
@@ -1908,7 +1922,10 @@
         return;
       }
       if (statusEl) statusEl.textContent = '✅ Listo. Reiniciando...';
-      setTimeout(() => location.reload(), 1500);
+      setTimeout(() => {
+        if (typeof restartAfterFactoryReset === 'function') restartAfterFactoryReset();
+        else location.reload();
+      }, 1500);
     } catch (err) {
       if (statusEl) statusEl.textContent = 'Error de red: ' + (err.message || 'desconocido');
     }

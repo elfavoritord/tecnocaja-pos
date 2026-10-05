@@ -1,0 +1,705 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   TECNO CAJA — Componentes compartidos
+
+   Todos los módulos usan estos componentes en lugar de estilos propios. Si
+   un módulo necesita uno nuevo, se agrega aquí (y a guia-estilos.html).
+   Solo variables de css/tokens.css: funcionan en día y en noche.
+   Reglas: bordes de 1px, radio 6px en botones y campos, 8px en paneles,
+   mínimo 44px de alto, sin degradados ni sombras, sin emojis.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.tc-ui,
+.tc-ui button,
+.tc-ui input,
+.tc-ui select,
+.tc-ui textarea {
+  font-family: var(--tc-font);
+  font-variant-numeric: tabular-nums;
+}
+
+.tc-icon {
+  display: block;
+  flex-shrink: 0;
+}
+
+/* ── Botones ───────────────────────────────────────────────────────────── */
+
+.tc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: none;
+  text-shadow: none;
+  transform: none;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.tc-btn:hover:not(:disabled) {
+  border-color: var(--tc-border-strong);
+}
+
+.tc-btn:focus-visible {
+  outline: 2px solid var(--tc-primary);
+  outline-offset: 2px;
+}
+
+/* Principal: uno por pantalla */
+.tc-btn--primary {
+  background: var(--tc-primary);
+  border-color: var(--tc-primary);
+  color: var(--tc-on-primary);
+}
+
+.tc-btn--primary:hover:not(:disabled) {
+  border-color: var(--tc-primary);
+}
+
+/* Secundario: el estilo base (.tc-btn) */
+.tc-btn--secondary {
+  background: var(--tc-surface);
+}
+
+/* Peligro: eliminar, cancelar venta, descartar */
+.tc-btn--danger {
+  background: var(--tc-danger-bg);
+  border-color: var(--tc-danger-border);
+  color: var(--tc-danger-text);
+}
+
+.tc-btn--danger:hover:not(:disabled) {
+  border-color: var(--tc-danger-text);
+}
+
+/* Correcto: SOLO "Cobrar e imprimir" */
+.tc-btn--success {
+  background: var(--tc-success);
+  border-color: var(--tc-success);
+  color: var(--tc-on-success);
+}
+
+.tc-btn--success:hover:not(:disabled) {
+  border-color: var(--tc-success);
+}
+
+/* Suave: acción secundaria destacada (Agregar productos, Exacto) */
+.tc-btn--soft {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-soft-border);
+  color: var(--tc-select-text);
+}
+
+.tc-btn--soft:hover:not(:disabled) {
+  border-color: var(--tc-select-border);
+}
+
+/* Desactivado: igual para todas las variantes */
+.tc-btn:disabled,
+.tc-btn[aria-disabled="true"] {
+  background: var(--tc-disabled-bg);
+  border-color: var(--tc-border-soft);
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+}
+
+.tc-btn--lg {
+  min-height: 52px;
+  padding: 0 var(--tc-space-5);
+  font-size: var(--tc-fs-lg);
+}
+
+.tc-btn--icon {
+  width: var(--tc-control-h);
+  padding: 0;
+}
+
+/* Enlace con aspecto de texto, conserva 44px de área táctil */
+.tc-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-1);
+  min-height: var(--tc-control-h);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--tc-primary);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+}
+
+/* ── Marca de atajo de teclado dentro de un botón ─────────────────────── */
+
+.tc-kbd {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 6px;
+  border: var(--tc-border-w) solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1;
+  opacity: 0.85;
+  box-shadow: none;
+}
+
+/* ── Opción seleccionable (comprobante, tipo de venta, método, monto) ──── */
+/* Selección: fondo morado suave + borde morado, no solo un borde fino. */
+
+.tc-choice {
+  min-width: 0;
+  min-height: var(--tc-control-h);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.tc-choice:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--tc-border-strong);
+}
+
+.tc-choice.is-selected,
+.tc-choice.is-active,
+.tc-choice.active,
+.tc-choice[aria-pressed="true"] {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  box-shadow: inset 0 0 0 1px var(--tc-select-border);
+  color: var(--tc-select-text);
+}
+
+/* Opción suave (sin elegir todavía): "Exacto" entre los montos rápidos */
+.tc-choice--soft:not(.is-selected):not(.is-active):not(.active):not([aria-pressed="true"]) {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-soft-border);
+  color: var(--tc-select-text);
+}
+
+.tc-choice:disabled,
+.tc-choice[aria-disabled="true"],
+.tc-choice.is-unavailable {
+  background: var(--tc-disabled-bg);
+  border-color: var(--tc-border-soft);
+  box-shadow: none;
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+}
+
+/* ── Campos ────────────────────────────────────────────────────────────── */
+
+.tc-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+  min-width: 0;
+  margin: 0;
+}
+
+.tc-field-label {
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  color: var(--tc-text-2);
+}
+
+.tc-input,
+.tc-select,
+.tc-textarea {
+  width: 100%;
+  min-width: 0;
+  height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  box-shadow: none;
+  outline: none;
+}
+
+.tc-input::placeholder,
+.tc-textarea::placeholder {
+  color: var(--tc-text-2);
+  opacity: 0.8;
+}
+
+/* Campo activo: borde morado */
+.tc-input:focus,
+.tc-select:focus,
+.tc-textarea:focus {
+  border-color: var(--tc-primary);
+  box-shadow: inset 0 0 0 1px var(--tc-primary);
+}
+
+.tc-input[readonly] {
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+}
+
+.tc-input:disabled,
+.tc-select:disabled,
+.tc-textarea:disabled {
+  background: var(--tc-disabled-bg);
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+}
+
+.tc-select option {
+  background: var(--tc-surface);
+  color: var(--tc-text);
+}
+
+.tc-textarea {
+  height: auto;
+  min-height: var(--tc-control-h);
+  padding: var(--tc-space-2) var(--tc-space-3);
+  line-height: 1.35;
+  resize: none;
+}
+
+/* Casilla: área de 44px con la caja de 20px */
+.tc-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  cursor: pointer;
+}
+
+.tc-check input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--tc-primary);
+  cursor: pointer;
+}
+
+/* Buscador */
+.tc-search {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-width: 0;
+  height: var(--tc-control-h);
+  padding: 0 0 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text-2);
+}
+
+.tc-search:focus-within {
+  border-color: var(--tc-primary);
+  box-shadow: inset 0 0 0 1px var(--tc-primary);
+}
+
+.tc-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 var(--tc-space-2) 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  box-shadow: none;
+  outline: none;
+}
+
+.tc-search-input::placeholder {
+  color: var(--tc-text-2);
+  opacity: 0.8;
+}
+
+/* ── Tabla ─────────────────────────────────────────────────────────────── */
+
+.tc-table-wrap {
+  min-height: 0;
+  overflow: auto;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+.tc-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+}
+
+.tc-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.tc-table tbody td {
+  height: var(--tc-row-h);
+  padding: 0 var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  vertical-align: middle;
+}
+
+.tc-table tbody tr:hover td {
+  background: var(--tc-surface-2);
+}
+
+.tc-table tbody tr.is-selected td {
+  background: var(--tc-select-bg);
+}
+
+/* Números alineados a la derecha. Peso 500: en Barlow 400 a 16px y pantalla
+   normal (sin escala) el punto decimal se ve como una coma (95.00 / 95,00). */
+.tc-table .is-num {
+  text-align: right;
+  white-space: nowrap;
+  font-weight: var(--tc-weight-medium);
+}
+
+.tc-table .is-actions {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.tc-table-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+  min-height: 52px;
+  padding: var(--tc-space-1) var(--tc-space-3);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+.tc-pagination {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-1);
+}
+
+/* ── Tarjeta de resumen: etiqueta arriba, número abajo, a la izquierda ── */
+
+.tc-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--tc-space-3);
+}
+
+.tc-stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+  min-width: 0;
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  text-align: left;
+}
+
+.tc-stat-label {
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+/* Un número en cero va en color de texto normal: solo .is-warning o
+   .is-danger cuando hay un problema real. */
+.tc-stat-value {
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+  color: var(--tc-text);
+  white-space: nowrap;
+}
+
+.tc-stat-value.is-warning { color: var(--tc-warning-text); }
+.tc-stat-value.is-danger { color: var(--tc-danger-text); }
+
+/* ── Pestañas: un solo estilo, alineadas a la izquierda ───────────────── */
+
+.tc-tabs {
+  display: flex;
+  justify-content: flex-start;
+  gap: var(--tc-space-2);
+  flex-wrap: wrap;
+}
+
+.tc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid transparent;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+}
+
+.tc-tab:hover {
+  color: var(--tc-text);
+}
+
+.tc-tab.is-active,
+.tc-tab[aria-selected="true"] {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  color: var(--tc-select-text);
+}
+
+/* ── Etiqueta de estado: el mismo valor siempre con el mismo color ────── */
+
+.tc-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-1);
+  height: 26px;
+  padding: 0 var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  white-space: nowrap;
+}
+
+.tc-tag--primary {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  color: var(--tc-select-text);
+}
+
+.tc-tag--success {
+  background: var(--tc-success-bg);
+  border-color: var(--tc-success-border);
+  color: var(--tc-success-text);
+}
+
+.tc-tag--warning {
+  background: var(--tc-warning-bg);
+  border-color: var(--tc-warning-border);
+  color: var(--tc-warning-text);
+}
+
+.tc-tag--danger {
+  background: var(--tc-danger-bg);
+  border-color: var(--tc-danger-border);
+  color: var(--tc-danger-text);
+}
+
+/* ── Aviso dentro de la pantalla ──────────────────────────────────────── */
+
+.tc-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.4;
+}
+
+.tc-notice--warning {
+  background: var(--tc-warning-bg);
+  border-color: var(--tc-warning-border);
+  color: var(--tc-warning-text);
+}
+
+.tc-notice--danger {
+  background: var(--tc-danger-bg);
+  border-color: var(--tc-danger-border);
+  color: var(--tc-danger-text);
+}
+
+.tc-notice--success {
+  background: var(--tc-success-bg);
+  border-color: var(--tc-success-border);
+  color: var(--tc-success-text);
+}
+
+/* ── Ventana modal ────────────────────────────────────────────────────── */
+
+.tc-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--tc-scrim);
+}
+
+.tc-modal-backdrop.hidden {
+  display: none;
+}
+
+.tc-modal {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+.tc-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-4) var(--tc-space-5) 0;
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+}
+
+.tc-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-3);
+  min-height: 0;
+  overflow: auto;
+  padding: var(--tc-space-3) var(--tc-space-5);
+  color: var(--tc-text-2);
+}
+
+.tc-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--tc-space-2);
+  padding: 0 var(--tc-space-5) var(--tc-space-5);
+}
+
+/* ── Pantalla vacía: ícono de línea, mensaje y botón principal ────────── */
+
+.tc-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-6);
+  color: var(--tc-text-2);
+  text-align: center;
+}
+
+.tc-empty .tc-icon {
+  color: var(--tc-text-2);
+}
+
+.tc-empty-text {
+  max-width: 360px;
+  font-size: var(--tc-fs-md);
+}
+
+/* ── Menú desplegable (opciones sobre la pantalla, sin sombra) ────────── */
+
+.tc-popover {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+  padding: var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+}
+
+.tc-popover.hidden {
+  display: none;
+}
+
+.tc-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  min-height: var(--tc-control-h);
+  padding: var(--tc-space-1) var(--tc-space-3);
+  border: var(--tc-border-w) solid transparent;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.tc-menu-item:hover {
+  border-color: var(--tc-border);
+}
+
+.tc-menu-item.is-active {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  color: var(--tc-select-text);
+}
+
+.tc-menu-item strong {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.tc-menu-item span {
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+.tc-menu-item.is-active span {
+  color: var(--tc-select-text);
+}
+
+/* ── Utilidades ───────────────────────────────────────────────────────── */
+
+.tc-hidden {
+  display: none !important;
+}

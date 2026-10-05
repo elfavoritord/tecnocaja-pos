@@ -1,0 +1,2515 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   TECNO CAJA — Diseño común dentro de los módulos (Fase 3)
+
+   Los módulos todavía usan las clases de siempre (.btn-primary, .form-input,
+   .data-table, .stat-card, .config-section, .modal...). Aquí esas clases
+   toman el aspecto de los componentes nuevos (css/componentes.css) con las
+   variables de css/tokens.css, en día y en noche, sin tocar la lógica.
+
+   1. Las variables viejas de main.css (--bg2, --text2, --accent, --radius,
+      --font-mono...) apuntan a los tokens nuevos: todo lo que ya las usaba
+      cambia solo.
+   2. Las clases comunes se reestilan con el prefijo
+      :is(#app, .modal-overlay, .tc-themed), que pesa como un id y así le gana
+      a las reglas viejas (incluidas las <style> sueltas de index.html y las
+      que agregan los .js). Este archivo se carga ANTES de cobro.css y
+      ventas.css: Cobro y Ventas mantienen sus estilos propios.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Variables viejas → tokens ─────────────────────────────────────── */
+
+#app,
+.modal-overlay,
+.tc-themed {
+  --bg: var(--tc-bg);
+  --bg2: var(--tc-surface);
+  --bg3: var(--tc-surface-2);
+  --bg4: var(--tc-surface-key);
+  --panel: var(--tc-surface);
+  --panel2: var(--tc-surface-2);
+  --border: var(--tc-border-soft);
+  --text: var(--tc-text);
+  --text2: var(--tc-text-2);
+  --text3: var(--tc-disabled-text);
+  --accent: var(--tc-primary);
+  --accent-light: var(--tc-select-text);
+  --accent-glow: var(--tc-select-bg);
+  --primary: var(--tc-primary);
+  --success: var(--tc-success-text);
+  --danger: var(--tc-danger-text);
+  --warning: var(--tc-warning-text);
+  --info: var(--tc-select-text);
+  --card-shadow: none;
+  --radius: var(--tc-radius-panel);
+  --radius-sm: var(--tc-radius-btn);
+  --font: var(--tc-font);
+  --font-mono: var(--tc-font);
+  /* Variables que solo existen como "var(--x, #color-oscuro)" en estilos en
+     línea de index.html y los .js: sin esto caían al color oscuro también en
+     modo día (Diagnóstico de sincronización, Centro de salud, asistente...). */
+  --text1: var(--tc-text);
+  --card-bg: var(--tc-surface-2);
+  --card-bg2: var(--tc-surface-2);
+  --surface: var(--tc-surface);
+  --surface2: var(--tc-surface-2);
+  --border-color: var(--tc-border-soft);
+  --bg-input: var(--tc-surface);
+  --green: var(--tc-success-text);
+  --transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  font-family: var(--tc-font);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 2. Pantalla de módulo ───────────────────────────────────────────── */
+
+:is(#app) .module {
+  padding: var(--tc-space-4);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+/* Fila de herramientas. El nombre del módulo va solo en la barra superior:
+   el título repetido dentro de la página se oculta. */
+:is(#app) .module > .module-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  margin: 0 0 var(--tc-space-4);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:is(#app) .module > .module-header > h2 {
+  display: none;
+}
+
+:is(#app) .module > .module-header:not(:has(> :not(h2))) {
+  display: none;
+}
+
+:is(#app) .module > .module-header > .module-actions,
+:is(#app) .module > .module-header > div {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--tc-space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* Buscador y filtros a la izquierda; los botones a la derecha. */
+:is(#app) .module > .module-header > .module-actions > button:first-of-type,
+:is(#app) .module > .module-header > div > button:first-of-type,
+:is(#app) .module > .module-header > button:first-of-type {
+  margin-left: auto;
+}
+
+/* ── 3. Botones ──────────────────────────────────────────────────────── */
+
+:is(#app, .modal-overlay, .tc-themed) :is(.btn-primary, .btn-secondary, .btn-danger, .btn-ghost, .btn-danger-ghost, .btn-warning, .btn-success, .btn-outline) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid transparent;
+  border-radius: var(--tc-radius-btn);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1.15;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: none;
+  text-shadow: none;
+  transform: none;
+  filter: none;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .btn-primary,
+:is(#app, .modal-overlay, .tc-themed) .btn-primary:hover:not(:disabled) {
+  background: var(--tc-primary);
+  border-color: var(--tc-primary);
+  color: var(--tc-on-primary);
+  transform: none;
+  box-shadow: none;
+  filter: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.btn-secondary, .btn-outline, .btn-warning, .btn-success) {
+  background: var(--tc-surface);
+  border-color: var(--tc-border);
+  color: var(--tc-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.btn-secondary, .btn-outline, .btn-warning, .btn-success):hover:not(:disabled) {
+  background: var(--tc-surface);
+  border-color: var(--tc-border-strong);
+  color: var(--tc-text);
+  transform: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .btn-danger,
+:is(#app, .modal-overlay, .tc-themed) .btn-danger:hover:not(:disabled) {
+  background: var(--tc-danger-bg);
+  border-color: var(--tc-danger-border);
+  color: var(--tc-danger-text);
+  transform: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .btn-danger:hover:not(:disabled) {
+  border-color: var(--tc-danger-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--tc-text-2);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .btn-ghost:hover:not(:disabled) {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .btn-danger-ghost,
+:is(#app, .modal-overlay, .tc-themed) .btn-danger-ghost:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--tc-danger-border);
+  color: var(--tc-danger-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.btn-primary, .btn-secondary, .btn-danger, .btn-ghost, .btn-danger-ghost, .btn-warning, .btn-success, .btn-outline):disabled {
+  background: var(--tc-disabled-bg);
+  border-color: var(--tc-border-soft);
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.btn-primary, .btn-secondary, .btn-danger, .btn-ghost, .btn-danger-ghost, .btn-outline):focus-visible {
+  outline: 2px solid var(--tc-primary);
+  outline-offset: 2px;
+}
+
+/* ── 4. Campos ───────────────────────────────────────────────────────── */
+
+:is(#app, .modal-overlay, .tc-themed) :is(
+  .form-input,
+  .mod-search,
+  .mod-select,
+  .form-group input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="color"]):not([type="hidden"]),
+  .form-group select,
+  .form-group textarea
+) {
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-regular);
+  box-shadow: none;
+  outline: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(textarea.form-input, .form-group textarea) {
+  padding: var(--tc-space-2) var(--tc-space-3);
+  line-height: 1.4;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.form-input, .mod-search, .mod-select, .form-group input, .form-group select, .form-group textarea):focus {
+  border-color: var(--tc-primary);
+  box-shadow: inset 0 0 0 1px var(--tc-primary);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.form-input, .mod-search, .form-group input, .form-group textarea)::placeholder {
+  color: var(--tc-text-2);
+  opacity: 0.8;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.form-input, .mod-search, .mod-select, .form-group input, .form-group select, .form-group textarea):disabled,
+:is(#app, .modal-overlay, .tc-themed) :is(.form-input, .form-group input)[readonly] {
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.form-input, .mod-select, select) option {
+  background: var(--tc-surface);
+  color: var(--tc-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .form-group {
+  margin-bottom: var(--tc-space-4);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .form-group > label,
+:is(#app, .modal-overlay, .tc-themed) .form-label {
+  margin-bottom: 6px;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
+:is(#app, .modal-overlay, .tc-themed) input[type="checkbox"],
+:is(#app, .modal-overlay, .tc-themed) input[type="radio"] {
+  accent-color: var(--tc-primary);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .helper-text,
+:is(#app, .modal-overlay, .tc-themed) .form-hint {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+/* ── 5. Tablas: encabezado fijo, filas de 56px, números legibles ────── */
+
+:is(#app, .modal-overlay, .tc-themed) :is(.table-wrap, .repv2-table-wrap) {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-variant-numeric: tabular-nums;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) thead tr {
+  background: transparent;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border);
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+/* Peso 500: en Barlow 400 el punto decimal se ve como coma (ver tokens.css). */
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) td {
+  height: var(--tc-row-h);
+  padding: var(--tc-space-1) var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  vertical-align: middle;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) tbody tr {
+  background: transparent;
+  transition: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) tbody tr:hover td {
+  background: var(--tc-surface-2);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Acciones de cada fila: en una línea, al final */
+:is(#app, .modal-overlay, .tc-themed) :is(.data-table, .repv2-table) td :is(.btn-primary, .btn-secondary, .btn-danger, .btn-ghost, .btn-danger-ghost) {
+  padding: 0 var(--tc-space-3);
+}
+
+/* ── 6. Tarjetas de resumen: etiqueta arriba, número abajo, a la izquierda ── */
+
+:is(#app) :is(.inv-stats, .products-stats, .reportes-grid) {
+  gap: var(--tc-space-3);
+  margin-bottom: var(--tc-space-4);
+}
+
+:is(#app) :is(.stat-card, .report-card) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  min-height: 0;
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  text-align: left;
+  transform: none;
+}
+
+:is(#app) :is(.stat-card, .report-card)::before,
+:is(#app) :is(.stat-card, .report-card)::after {
+  display: none;
+}
+
+:is(#app) .stat-card .stat-label {
+  order: -1;
+  margin: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:is(#app) :is(.stat-card .stat-val, .stat-card .stat-value, .report-card .report-card-val) {
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+  line-height: 1.15;
+}
+
+/* Color solo cuando hay un problema real; un cero va en color normal
+   (js/modulos.js marca .is-zero). Verde no se usa para totales. */
+:is(#app) .stat-card.stat-warning .stat-val:not(.is-zero) { color: var(--tc-warning-text); }
+:is(#app) .stat-card.stat-danger .stat-val:not(.is-zero) { color: var(--tc-danger-text); }
+
+:is(#app) .report-card .report-card-header {
+  order: -1;
+  margin: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+:is(#app) :is(.stat-card .stat-sub, .report-card .report-card-sub) {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+}
+
+/* ── 7. Etiquetas de estado ──────────────────────────────────────────── */
+
+:is(#app, .modal-overlay, .tc-themed) .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-1);
+  height: 26px;
+  padding: 0 var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .badge-success {
+  background: var(--tc-success-bg);
+  border-color: var(--tc-success-border);
+  color: var(--tc-success-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .badge-danger {
+  background: var(--tc-danger-bg);
+  border-color: var(--tc-danger-border);
+  color: var(--tc-danger-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .badge-warning {
+  background: var(--tc-warning-bg);
+  border-color: var(--tc-warning-border);
+  color: var(--tc-warning-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.badge-info, .badge-local, .badge-cloud, .badge-both, .badge-auto) {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-soft-border);
+  color: var(--tc-select-text);
+}
+
+/* ── 8. Pestañas: un solo estilo, alineadas a la izquierda ──────────── */
+
+:is(#app, .modal-overlay, .tc-themed) :is(.repv2-tabs, .repv2-subtabs, .tesoreria-subtabs, .rrhh-tabs, .labels-tabs, .upd-tabs, .promo-tabs, .compras-tabs, .dp-tabs, .fiscal-tabs, .net-tabs) {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: var(--tc-space-2);
+  flex-wrap: wrap;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.repv2-tab, .repv2-subtab, .tesoreria-subtab, .rrhh-tab, .labels-tab, .upd-tab-btn, .pill-tab, .compras-tab-btn, .dp-tab, .fiscal-tab-btn, .net-tab-btn, .eu-tab) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid transparent;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  box-shadow: none;
+  color: var(--tc-text-2);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+  transform: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.repv2-tab, .repv2-subtab, .tesoreria-subtab, .rrhh-tab, .labels-tab, .upd-tab-btn, .pill-tab, .compras-tab-btn, .dp-tab, .fiscal-tab-btn, .net-tab-btn, .eu-tab):hover {
+  background: transparent;
+  color: var(--tc-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.repv2-tab, .repv2-subtab, .tesoreria-subtab, .rrhh-tab, .labels-tab, .upd-tab-btn, .pill-tab, .compras-tab-btn, .dp-tab, .fiscal-tab-btn, .net-tab-btn, .eu-tab):is(.active, .is-active, .eu-tab--active, [aria-selected="true"]) {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  box-shadow: none;
+  color: var(--tc-select-text);
+}
+
+/* ── 9. Paneles y secciones ──────────────────────────────────────────── */
+
+:is(#app, .modal-overlay, .tc-themed) .config-section {
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  transform: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .config-section:hover {
+  border-color: var(--tc-border);
+  box-shadow: none;
+  transform: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .config-section h3 {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+/* ── 10. Ventanas modales ────────────────────────────────────────────── */
+
+.modal-overlay:not(:has(#cobro-shell)) {
+  background: var(--tc-scrim);
+  backdrop-filter: none;
+}
+
+:is(.modal-overlay) .modal {
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+:is(.modal-overlay) .modal-header {
+  min-height: 56px;
+  padding: var(--tc-space-2) var(--tc-space-3) var(--tc-space-2) var(--tc-space-5);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  background: transparent;
+}
+
+:is(.modal-overlay) .modal-header :is(h2, h3) {
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+}
+
+/* La X de cerrar: ícono de línea (Lucide "x") en lugar del carácter ✕ */
+:is(.modal-overlay) .modal-close {
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  font-size: 0;
+  cursor: pointer;
+  position: relative;
+}
+
+:is(.modal-overlay) .modal-close::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 20px;
+  height: 20px;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 6 6 18'/%3E%3Cpath d='m6 6 12 12'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+:is(.modal-overlay) .modal-close:hover {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+:is(.modal-overlay) .modal-footer {
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-3) var(--tc-space-5);
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  background: transparent;
+}
+
+/* Íconos que reemplazan emojis (js/modulos.js): van en línea con el texto. */
+svg.tc-emoji-icon {
+  display: inline-block;
+  vertical-align: -0.18em;
+  flex-shrink: 0;
+}
+
+/* Íconos de línea dentro de botones e íconos sueltos de index.html */
+:is(#app, .modal-overlay, .tc-themed) :is(button, .btn-primary, .btn-secondary, .btn-danger, .btn-ghost) > svg.tc-icon {
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CAJA (plantilla de panel): estado y monto arriba, acciones rápidas en una
+   fila con íconos de línea, "Cerrar caja" una sola vez y bloques debajo.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+#app #module-caja .caja-status-card {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "icon main monto action"
+    "warn warn warn warn";
+  align-items: center;
+  column-gap: var(--tc-space-5);
+  row-gap: 0;
+  margin: 0 0 var(--tc-space-3);
+  padding: var(--tc-space-4) var(--tc-space-5);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  text-align: left;
+}
+
+#app #module-caja .caja-status-card.is-open {
+  border-color: var(--tc-success-border);
+}
+
+#app #module-caja .caja-status-icon {
+  grid-area: icon;
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: 0;
+}
+
+#app #module-caja .caja-status-card.is-open .caja-status-icon {
+  background: var(--tc-success-bg);
+  color: var(--tc-success-text);
+}
+
+#app #module-caja .caja-status-main {
+  grid-area: main;
+  min-width: 0;
+}
+
+#app #module-caja .caja-status-text {
+  margin: 0;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+}
+
+#app #module-caja .caja-status-card.is-open .caja-status-text {
+  color: var(--tc-success-text);
+}
+
+#app #module-caja :is(.caja-identity, .caja-operative-date) {
+  margin: 2px 0 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  letter-spacing: 0;
+}
+
+#app #module-caja .caja-monto {
+  grid-area: monto;
+  margin: 0;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-2xl);
+  font-weight: var(--tc-weight-bold);
+  white-space: nowrap;
+}
+
+#app #module-caja .caja-status-action {
+  grid-area: action;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--tc-space-1);
+  max-width: 300px;
+}
+
+#app #module-caja #btn-caja-action {
+  min-width: 160px;
+}
+
+#app #module-caja .caja-action-hint {
+  margin: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  line-height: 1.35;
+  text-align: right;
+}
+
+#app #module-caja .caja-stale-warning {
+  grid-area: warn;
+  margin: var(--tc-space-3) 0 0;
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-warning-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-warning-bg);
+  color: var(--tc-warning-text);
+  font-size: var(--tc-fs-sm);
+}
+
+/* Acciones rápidas en una fila */
+#app #module-caja .caja-quick-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-2);
+  margin: 0 0 var(--tc-space-4);
+}
+
+#app #module-caja .caja-quick-btn {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-width: 0;
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  transform: none;
+}
+
+#app #module-caja .caja-quick-btn:hover {
+  border-color: var(--tc-border-strong);
+  background: var(--tc-surface);
+  transform: none;
+}
+
+#app #module-caja .cqa-icon {
+  display: flex;
+  color: var(--tc-text-2);
+  font-size: 0;
+}
+
+/* Bloques */
+#app #module-caja .caja-layout {
+  gap: var(--tc-space-4);
+}
+
+#app #module-caja :is(.caja-left, .caja-right) {
+  gap: var(--tc-space-4);
+}
+
+#app #module-caja :is(.caja-form, .caja-egresos-card, .caja-ingresos-card, .caja-resumen, .movimientos-list) {
+  margin: 0;
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+#app #module-caja :is(.caja-resumen h3, .movimientos-list h3, .caja-egresos-head h3) {
+  margin: 0 0 var(--tc-space-3);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-caja .caja-egresos-head h3 {
+  margin: 0;
+}
+
+#app #module-caja .caja-egresos-head p {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-caja .resumen-row {
+  min-height: 36px;
+  align-items: center;
+  padding: 0;
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-caja .resumen-row > span:last-child {
+  color: var(--tc-text);
+  font-weight: var(--tc-weight-medium);
+}
+
+#app #module-caja .resumen-total {
+  padding: var(--tc-space-3) 0 0;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+}
+
+#app #module-caja :is(.caja-egreso-btn, .caja-income-row) {
+  min-height: 56px;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  transform: none;
+}
+
+#app #module-caja .caja-egreso-btn:hover {
+  border-color: var(--tc-border-strong);
+  transform: none;
+}
+
+#app #module-caja .caja-egreso-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: 0;
+}
+
+#app #module-caja :is(.caja-egreso-copy strong, .caja-income-copy strong) {
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-caja :is(.caja-egreso-copy small, .caja-income-copy small) {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
+#app :is(.report-panel-tag) {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  box-shadow: none;
+}
+
+@media (max-width: 1279px) {
+  #app #module-caja .caja-status-card {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "icon main monto"
+      "action action action"
+      "warn warn warn";
+    row-gap: var(--tc-space-3);
+  }
+
+  #app #module-caja .caja-status-action {
+    flex-direction: row;
+    align-items: center;
+    max-width: none;
+  }
+
+  #app #module-caja .caja-action-hint {
+    text-align: left;
+  }
+
+  #app #module-caja .caja-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+/* Compacto: las acciones rápidas siguen en una fila (ícono arriba). */
+@media (max-width: 1279px) {
+  #app #module-caja .caja-quick-bar {
+    flex-wrap: nowrap;
+    gap: var(--tc-space-1);
+  }
+
+  #app #module-caja .caja-quick-btn {
+    flex: 1 1 auto;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-height: 56px;
+    padding: var(--tc-space-1) var(--tc-space-2);
+    font-size: var(--tc-fs-xs);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PLANTILLA DE LISTA (Productos, Inventario, Clientes, Proveedores, …):
+   tabla y pie en un mismo panel, acciones al final de la fila, menú
+   "Más acciones" y selector de vista.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+#app .tc-list-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  overflow: hidden;
+}
+
+#app .tc-list-panel > .table-wrap,
+#app .tc-list-panel > .tc-list-table {
+  border: 0;
+  border-radius: 0;
+  overflow: auto;
+}
+
+#app .tc-list-panel > .tc-table-footer {
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+#app .tc-list-panel > .tc-table-footer:empty {
+  display: none;
+}
+
+#app .tc-list-count {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app :is(.data-table, .repv2-table) :is(th, td).is-num {
+  text-align: right;
+  white-space: nowrap;
+}
+
+#app :is(.data-table, .repv2-table) :is(th, td).is-actions {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
+}
+
+#app .tc-cell-title {
+  display: block;
+  color: var(--tc-text);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app .tc-cell-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+}
+
+#app .tc-cell-muted,
+#app :is(.data-table, .repv2-table) td.tc-cell-muted {
+  color: var(--tc-text-2);
+}
+
+#app .tc-cell-error {
+  padding: var(--tc-space-6);
+  color: var(--tc-danger-text);
+  text-align: center;
+}
+
+#app :is(.data-table, .repv2-table) td.tc-num-pos { color: var(--tc-success-text); }
+#app :is(.data-table, .repv2-table) td.tc-num-neg { color: var(--tc-danger-text); }
+#app :is(.data-table, .repv2-table) td.tc-num-zero { color: var(--tc-text); }
+
+#app .tc-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+#app .tc-row-actions .tc-btn {
+  font-size: var(--tc-fs-sm);
+}
+
+#app .tc-row-actions .tc-row-danger {
+  color: var(--tc-text-2);
+}
+
+#app .tc-row-actions .tc-row-danger:hover:not(:disabled) {
+  border-color: var(--tc-danger-border);
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+}
+
+#app :is(.data-table, .repv2-table) tbody tr.tc-empty-row:hover td {
+  background: transparent;
+}
+
+#app :is(.data-table, .repv2-table) tbody tr.tc-empty-row td {
+  height: auto;
+}
+
+/* Menú "Más acciones" */
+#app .tc-more {
+  position: relative;
+  display: inline-flex;
+}
+
+#app .tc-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 240px;
+}
+
+#app .tc-more-menu .tc-menu-item {
+  width: 100%;
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-medium);
+}
+
+#app .tc-more-menu .tc-menu-item--danger {
+  color: var(--tc-danger-text);
+}
+
+/* Selector de vista (Tabla | Cuadrícula) */
+#app .tc-view-switch {
+  flex-wrap: nowrap;
+  gap: 2px;
+}
+
+#app .tc-view-switch .tc-tab {
+  padding: 0 var(--tc-space-3);
+  font-size: var(--tc-fs-sm);
+}
+
+#app .module-header .btn-label {
+  white-space: nowrap;
+}
+
+/* Productos: cuadrícula con los colores del tema, sin degradados */
+#app #module-productos .products-grid-wrap {
+  padding: var(--tc-space-3);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+#app #module-productos .products-grid-wrap::before,
+#app #module-productos .products-grid-wrap::after {
+  display: none;
+}
+
+#app #module-productos .products-grid-card {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  transform: none;
+}
+
+#app #module-productos .products-grid-card:hover {
+  border-color: var(--tc-select-border);
+  box-shadow: none;
+  transform: none;
+}
+
+#app #module-productos .products-catalog-media {
+  background: var(--tc-surface-2);
+}
+
+#app #module-productos .products-catalog-body {
+  background: var(--tc-surface);
+  color: var(--tc-text);
+}
+
+#app #module-productos .products-catalog-name {
+  color: var(--tc-text);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-productos .products-catalog-scope {
+  margin-top: 2px;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+}
+
+#app #module-productos .products-catalog-price {
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-weight: var(--tc-weight-bold);
+}
+
+#app #module-productos .products-grid-card.is-low { border-color: var(--tc-warning-border); }
+#app #module-productos .products-grid-card.is-out { border-color: var(--tc-danger-border); }
+#app #module-productos .products-grid-card.is-paused { opacity: 0.7; }
+
+#app :is(.data-table, .repv2-table) td.tc-num-warn { color: var(--tc-warning-text); }
+
+/* Números de tarjetas: verde solo para estados; rojo/ámbar solo con valor. */
+#app .report-card .report-card-val.text-success { color: var(--tc-text) !important; }
+#app .report-card .report-card-val:is(.text-danger, .is-alert):not(.is-zero) { color: var(--tc-danger-text) !important; }
+#app .report-card .report-card-val.is-zero { color: var(--tc-text) !important; }
+
+/* ═══ PROVEEDORES: lista a la izquierda y detalle a la derecha ═══════════ */
+
+#app #module-proveedores .prov-stats {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+#app #module-proveedores #prov-workspace {
+  gap: var(--tc-space-4) !important;
+}
+
+#app #module-proveedores .prov-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+  width: 100%;
+  min-height: 56px;
+  padding: var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  text-align: left;
+  cursor: pointer;
+}
+
+#app #module-proveedores .prov-list-item:hover {
+  border-color: var(--tc-border-strong);
+}
+
+#app #module-proveedores .prov-list-item.is-selected {
+  border-color: var(--tc-select-border);
+  background: var(--tc-select-bg);
+  box-shadow: inset 3px 0 0 var(--tc-primary);
+}
+
+#app #module-proveedores .prov-list-head,
+#app #module-proveedores .prov-list-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-2);
+}
+
+#app #module-proveedores .prov-list-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-proveedores :is(.prov-list-sub, .prov-list-foot) {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#app #module-proveedores .prov-list-amount {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-proveedores .prov-list-amount.is-warning { color: var(--tc-warning-text); }
+#app #module-proveedores .prov-list-amount.is-danger { color: var(--tc-danger-text); }
+
+#app #module-proveedores :is(.prov-list-empty, .prov-detail-empty) {
+  padding: var(--tc-space-6);
+  color: var(--tc-text-2);
+  text-align: center;
+}
+
+#app #module-proveedores #prov-detail-panel {
+  border: var(--tc-border-w) solid var(--tc-border-soft) !important;
+  border-radius: var(--tc-radius-panel) !important;
+  background: var(--tc-surface) !important;
+}
+
+#app #module-proveedores .prov-detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  flex-shrink: 0;
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+#app #module-proveedores .prov-detail-avatar {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: 50%;
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-proveedores .prov-detail-title {
+  flex: 1;
+  min-width: 0;
+}
+
+#app #module-proveedores .prov-detail-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+}
+
+#app #module-proveedores .prov-detail-sub {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-proveedores .prov-detail-actions {
+  display: flex;
+  gap: var(--tc-space-2);
+  flex-shrink: 0;
+}
+
+#app #module-proveedores .prov-detail-tabs {
+  flex-shrink: 0;
+  padding: var(--tc-space-2) var(--tc-space-4);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+#app #module-proveedores .prov-tab-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--tc-space-4);
+}
+
+#app #module-proveedores .prov-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--tc-space-2);
+  margin-bottom: var(--tc-space-4);
+}
+
+#app #module-proveedores .prov-kpis .tc-stat-value {
+  font-size: var(--tc-fs-lg);
+}
+
+#app #module-proveedores .prov-info {
+  margin-bottom: var(--tc-space-3);
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+}
+
+#app #module-proveedores .prov-info-title {
+  margin-bottom: var(--tc-space-3);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-proveedores .prov-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--tc-space-3);
+}
+
+#app #module-proveedores .prov-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#app #module-proveedores .prov-info-item span {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+}
+
+#app #module-proveedores .prov-info-item strong {
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
+#app #module-proveedores .prov-info-text {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.5;
+}
+
+#app #module-proveedores .prov-tab-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--tc-space-3);
+}
+
+#app #module-proveedores .prov-alert {
+  margin-bottom: var(--tc-space-2);
+}
+
+@media (max-width: 1279px) {
+  #app #module-proveedores .prov-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  #app #module-proveedores #prov-workspace {
+    grid-template-columns: 280px minmax(0, 1fr) !important;
+  }
+}
+
+/* ═══ COMPRAS Y GASTOS: un solo botón principal según la pestaña ═════════ */
+
+#app #module-compras[data-tab="gastos"] #btn-compras-nueva,
+#app #module-compras:not([data-tab="gastos"]) #btn-compras-gasto {
+  display: none;
+}
+
+#app #module-compras > .rrhh-tabs,
+#app #module-compras .cxp-filters {
+  margin-bottom: var(--tc-space-4);
+}
+
+#app :is(.cxp-filter-btn) {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+}
+
+#app :is(.cxp-filter-btn).active {
+  border-color: var(--tc-select-border);
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+}
+
+#app :is(.loading-text) {
+  padding: var(--tc-space-6);
+  color: var(--tc-text-2);
+  text-align: center;
+}
+
+/* ═══ REPORTES (plantilla de panel): filtros arriba, tarjetas y bloques ══ */
+
+#app #module-reportes .repv2-topbar {
+  gap: var(--tc-space-3);
+  padding: 0;
+  margin-bottom: var(--tc-space-4);
+  border-bottom: 0;
+}
+
+#app #module-reportes :is(.repv2-filter-select, .repv2-filter-date) {
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-reportes .repv2-tab-icon {
+  display: flex;
+  font-size: 0;
+}
+
+#app #module-reportes .repv2-kpi-grid {
+  gap: var(--tc-space-3);
+  margin-bottom: var(--tc-space-3);
+}
+
+#app #module-reportes :is(.repv2-kpi, .repv2-chart-panel, .repv2-panel, .repv2-export-card, .repv2-table-card) {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  transform: none;
+}
+
+#app #module-reportes :is(.repv2-kpi, .repv2-chart-panel, .repv2-export-card):hover {
+  border-color: var(--tc-border);
+  box-shadow: none;
+  transform: none;
+}
+
+/* Sin barras de color decorativas arriba de cada tarjeta */
+#app #module-reportes .repv2-kpi::before {
+  display: none;
+}
+
+#app #module-reportes .repv2-kpi {
+  padding: var(--tc-space-3) var(--tc-space-4);
+}
+
+#app #module-reportes .repv2-kpi-label {
+  margin-bottom: 2px;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#app #module-reportes .repv2-kpi-val {
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+}
+
+#app #module-reportes .repv2-kpi-small {
+  font-size: var(--tc-fs-lg);
+}
+
+#app #module-reportes .repv2-kpi-sub {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+}
+
+#app #module-reportes .repv2-charts-row {
+  gap: var(--tc-space-3);
+  margin-bottom: var(--tc-space-3);
+}
+
+#app #module-reportes .repv2-bar-fill-v2 {
+  background: var(--tc-primary);
+}
+
+#app #module-reportes .repv2-estado-emitida {
+  background: var(--tc-success-bg);
+  color: var(--tc-success-text);
+}
+
+#app #module-reportes .repv2-estado-cancelada {
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+}
+
+#app #module-reportes .repv2-estado-pendiente {
+  background: var(--tc-warning-bg);
+  color: var(--tc-warning-text);
+}
+
+#app #module-reportes :is(.repv2-dgii-total, .dgii-kpi-highlight, .dgii-kpi-pagar) {
+  background: var(--tc-surface);
+  border-color: var(--tc-border-soft);
+}
+
+#app #module-reportes .dgii-kpi-pagar {
+  background: var(--tc-total-bg);
+  border-color: var(--tc-total-border);
+}
+
+#app #module-reportes .repv2-export-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: 0;
+}
+
+#app #module-reportes .repv2-export-icon svg {
+  width: 24px;
+  height: 24px;
+}
+
+#app #module-reportes .repv2-error-banner {
+  margin: 0 0 var(--tc-space-3);
+}
+
+@media (max-width: 1279px) {
+  #app #module-reportes .repv2-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  #app #module-reportes .repv2-charts-row,
+  #app #module-reportes .repv2-charts-row-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+#app :is(.data-table) td.tc-cell-strike { text-decoration: line-through; }
+
+/* ═══ PROMOCIONES ════════════════════════════════════════════════════════ */
+
+#app #module-promociones .promo-tabs {
+  margin-bottom: var(--tc-space-4);
+}
+
+#app #module-promociones .pill-tab {
+  flex: 0 0 auto;
+}
+
+#app #module-promociones .products-grid-wrap {
+  padding: 0;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  overflow: auto;
+}
+
+#app #module-promociones .products-grid-wrap::before,
+#app #module-promociones .products-grid-wrap::after {
+  display: none;
+}
+
+#app #module-promociones .promo-highlights {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--tc-space-3);
+}
+
+#app #module-promociones .promo-highlight {
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+#app #module-promociones .promo-highlight-label {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-promociones .promo-highlight-value {
+  margin-top: var(--tc-space-1);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-promociones .promo-stats-actions {
+  margin-bottom: var(--tc-space-3);
+}
+
+#app #module-promociones .product-form-card {
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+#app #module-reportes .repv2-apply-btn,
+#app #module-reportes #repv2-apply-btn {
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border-radius: var(--tc-radius-btn);
+  font-size: var(--tc-fs-sm);
+}
+
+/* ═══ DELIVERY (plantilla de panel) ══════════════════════════════════════ */
+
+#app #module-delivery .dp-stats-row {
+  gap: var(--tc-space-3);
+  margin-bottom: var(--tc-space-4);
+}
+
+#app #module-delivery .dp-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  text-align: left;
+}
+
+#app #module-delivery .dp-stat-label {
+  order: -1;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
+#app #module-delivery .dp-stat .dp-stat-num {
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+}
+
+#app #module-delivery .dp-stat--incidencia .dp-stat-num:not(.is-zero) {
+  color: var(--tc-danger-text);
+}
+
+#app #module-delivery :is(.dp-orders-panel, .dp-map-panel) {
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+#app #module-delivery .dp-tabs {
+  margin-bottom: var(--tc-space-3);
+  border-bottom: 0;
+}
+
+#app #module-delivery .dp-tab.dp-tab--active {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  color: var(--tc-select-text);
+}
+
+#app #module-delivery .dp-map {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+}
+
+#app #module-delivery .dp-map-header strong {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-delivery .dp-empty {
+  color: var(--tc-text-2);
+}
+
+/* ═══ BOT WHATSAPP (plantilla de formulario) ═════════════════════════════ */
+
+#app #module-wabot.module {
+  padding: var(--tc-space-4) !important;
+  gap: var(--tc-space-4) !important;
+}
+
+#app #module-wabot .wabot-header {
+  margin: 0;
+}
+
+/* El nombre del módulo ya está en la barra superior: queda el estado. */
+#app #module-wabot .wabot-header h2 {
+  display: none;
+}
+
+#app #module-wabot .wabot-status-badge {
+  height: 28px;
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-wabot .wabot-status-badge.ready {
+  border-color: var(--tc-success-border);
+  background: var(--tc-success-bg);
+  color: var(--tc-success-text);
+}
+
+#app #module-wabot .wabot-status-badge:is(.starting, .qr) {
+  border-color: var(--tc-warning-border);
+  background: var(--tc-warning-bg);
+  color: var(--tc-warning-text);
+}
+
+#app #module-wabot .wabot-status-badge.disconnected {
+  border-color: var(--tc-danger-border);
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+}
+
+/* Campos a la izquierda, estado a la derecha */
+#app #module-wabot .wabot-grid {
+  gap: var(--tc-space-4);
+}
+
+#app #module-wabot .wabot-grid > :nth-child(2) {
+  order: -1;
+}
+
+#app #module-wabot .wabot-card {
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+#app #module-wabot .wabot-card h3 {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#app #module-wabot .wabot-form-row label {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
+#app #module-wabot :is(.wabot-form-row input, textarea) {
+  min-height: var(--tc-control-h);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+}
+
+#app #module-wabot .wabot-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  opacity: 1 !important;
+}
+
+#app #module-wabot .wabot-btn-start {
+  border-color: var(--tc-primary);
+  background: var(--tc-primary);
+  color: var(--tc-on-primary);
+}
+
+#app #module-wabot .wabot-btn-stop {
+  border-color: var(--tc-danger-border);
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+}
+
+/* "Detener" desactivado cuando el bot está detenido */
+#app #module-wabot .wabot-btn:disabled {
+  border-color: var(--tc-border-soft);
+  background: var(--tc-disabled-bg);
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+}
+
+/* ═══ ETIQUETAS: cada campo en una fila (casilla, nombre y tamaño) ═══════ */
+
+#app #module-labels .labels-quick-field-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  min-height: var(--tc-control-h);
+  margin-bottom: var(--tc-space-2);
+}
+
+#app #module-labels .labels-quick-field-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  flex: 1;
+  min-height: var(--tc-control-h);
+  margin: 0;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-regular);
+  cursor: pointer;
+}
+
+#app #module-labels .labels-quick-field-check input {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+}
+
+#app #module-labels .labels-quick-size-input {
+  width: 96px;
+  flex: 0 0 96px;
+}
+
+/* ═══ MONEDAS, POS MÓVIL, COLA DE COBRO ══════════════════════════════════ */
+
+#app #module-monedas.module {
+  padding: var(--tc-space-4) !important;
+  gap: var(--tc-space-4) !important;
+}
+
+#app #module-monedas :is(.monedas-rate-card, .monedas-section) {
+  margin: 0;
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+#app #module-monedas .monedas-section h3 {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+#app #module-monedas .monedas-rate-card strong {
+  font-size: var(--tc-fs-xl);
+}
+
+#app #module-posmovil .mobile-pos-qr,
+#app #module-posmovil .mobile-session-list {
+  color: var(--tc-text-2);
+}
+
+#app #module-colacobro .module-header {
+  margin-bottom: var(--tc-space-4);
+}
+
+/* ═══ CONFIGURACIÓN (plantilla de formulario) ════════════════════════════
+   Menú de secciones en tarjetas; cada sección se abre en su ventana con
+   "Guardar cambios" abajo, siempre visible. */
+
+#app #module-configuracion #cfg-group-card-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--tc-space-3);
+  max-width: var(--tc-form-max);
+}
+
+#app #module-configuracion .cfg-group-card {
+  min-height: 96px;
+  gap: var(--tc-space-4);
+  padding: var(--tc-space-4) var(--tc-space-5);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  transform: none;
+}
+
+#app #module-configuracion .cfg-group-card:hover {
+  border-color: var(--tc-select-border);
+  box-shadow: none;
+  transform: none;
+}
+
+#app #module-configuracion .cfg-group-card__icon {
+  width: 52px;
+  height: 52px;
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: 0;
+}
+
+#app #module-configuracion .cfg-group-card__title {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#app #module-configuracion .cfg-group-card__desc {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#app #module-configuracion .cfg-group-card__arrow {
+  display: flex;
+  color: var(--tc-text-2);
+}
+
+#app #module-configuracion .config-section-card-icon,
+#cfg-group-modal .config-section-card-icon {
+  display: none;
+}
+
+/* Ventana de grupo / sección */
+#cfg-group-modal {
+  background: var(--tc-scrim) !important;
+}
+
+#cfg-group-modal > div {
+  border: var(--tc-border-w) solid var(--tc-border) !important;
+  border-radius: var(--tc-radius-panel) !important;
+  background: var(--tc-surface) !important;
+  box-shadow: none !important;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+#cfg-group-modal > div > div:first-child {
+  min-height: 56px;
+  border-bottom-color: var(--tc-border-soft) !important;
+}
+
+#cfg-group-modal #cfg-group-modal-title {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-lg) !important;
+  font-weight: var(--tc-weight-bold) !important;
+}
+
+#cfg-group-modal > div > div:first-child > button {
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--tc-text-2) !important;
+}
+
+#cfg-group-modal > div > div:last-child {
+  border-top-color: var(--tc-border-soft) !important;
+  background: var(--tc-surface) !important;
+}
+
+#cfg-group-modal .cfg-group-row {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  width: 100%;
+  min-height: 56px;
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  text-align: left;
+  cursor: pointer;
+}
+
+#cfg-group-modal .cfg-group-row:hover {
+  border-color: var(--tc-select-border);
+}
+
+#cfg-group-modal .cfg-group-row__title {
+  flex: 1;
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cfg-group-modal .cfg-group-row .tc-icon {
+  color: var(--tc-text-2);
+}
+
+#cfg-group-modal .cfg-group-back {
+  min-height: auto;
+  margin-right: var(--tc-space-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#cfg-group-modal .config-section-body {
+  max-width: var(--tc-form-max);
+}
+
+@media (max-width: 1279px) {
+  #app #module-configuracion #cfg-group-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Tarjetas de resumen: una fila a todo lo ancho, también en compacto. */
+#app :is(.inv-stats, .products-stats) {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 1279px) {
+  #app #module-reportes .repv2-kpi-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  /* Selector de vista solo con íconos */
+  #app .tc-view-switch .tc-tab span {
+    display: none;
+  }
+
+  #app :is(.stat-card .stat-val, .stat-card .stat-value, .report-card .report-card-val, .repv2-kpi-val) {
+    font-size: var(--tc-fs-lg);
+  }
+}
+
+/* ═══ CONFIGURACIÓN: detalles de las secciones ═════════════════════════════ */
+
+/* Casillas con su texto al lado. main.css daba width:100% a todo input de
+   .form-group, y la casilla quedaba sola y centrada encima de su texto. */
+:is(#app, .modal-overlay, .tc-themed) .form-group > label:not([class]):has(> input:is([type="checkbox"], [type="radio"])),
+:is(#app, .modal-overlay, .tc-themed) .checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  min-height: var(--tc-control-h);
+  margin-bottom: 0;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .form-group > label:not([class]) > input:is([type="checkbox"], [type="radio"]),
+:is(#app, .modal-overlay, .tc-themed) .checkbox-label > input:is([type="checkbox"], [type="radio"]) {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+/* Actualización del sistema: sin degradados ni brillos. */
+:is(#app, .modal-overlay, .tc-themed) .upd-hero {
+  border-color: var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .upd-hero-logo {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-select-bg);
+  color: var(--tc-primary);
+  box-shadow: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .upd-hero-ver {
+  font-family: var(--tc-font);
+  color: var(--tc-text);
+}
+
+/* Guía del negocio: bloque neutro, sin el degradado naranja. */
+:is(#app, .modal-overlay, .tc-themed) .pizza-menu-card {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  box-shadow: none;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .pizza-menu-title {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+:is(#app, .modal-overlay, .tc-themed) .pizza-menu-note {
+  color: var(--tc-text);
+}
+
+/* Respaldo y restauración */
+:is(#app, .modal-overlay, .tc-themed) .rb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .rb-btn:hover {
+  border-color: var(--tc-border-strong);
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.rb-btn-primary, .rb-btn-primary:hover) {
+  border-color: var(--tc-primary);
+  background: var(--tc-primary);
+  color: var(--tc-on-primary);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.rb-btn-cloud, .rb-btn-cloud:hover) {
+  border-color: var(--tc-soft-border);
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.rb-status-card, .rb-section) {
+  border-color: var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.rb-section-head, .rb-progress-wrap) {
+  border-color: var(--tc-border-soft);
+  background: var(--tc-surface-2);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .rb-status-title {
+  font-size: var(--tc-fs-md);
+}
+
+:is(#app, .modal-overlay, .tc-themed) :is(.rb-status-sub, .rb-status-value, .rb-meta, .rb-progress-text) {
+  font-size: var(--tc-fs-sm);
+}
+
+:is(#app, .modal-overlay, .tc-themed) .rb-file-row:hover {
+  background: var(--tc-surface-2);
+}
+
+/* ═══ CAJA: gaveta, corte, cierre y resumen del turno ═════════════════════
+   Encabezado neutro (sin franjas verde o roja), dos columnas para que el
+   cierre quepa sin scroll a 1366×768, montos en color de texto normal. */
+
+.modal-overlay .modal-card {
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+.modal-overlay .modal-card-header {
+  min-height: 56px;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-2) var(--tc-space-3) var(--tc-space-2) var(--tc-space-5);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  background: var(--tc-surface);
+}
+
+.modal-overlay .modal-card-header h3 {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+}
+
+.modal-overlay .modal-card-icon {
+  display: inline-flex;
+  color: var(--tc-text-2);
+}
+
+#cash-cierre-summary .modal-card-icon {
+  color: var(--tc-success-text);
+}
+
+.modal-overlay .modal-card-close {
+  display: inline-grid;
+  place-items: center;
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  padding: 0;
+  border-radius: var(--tc-radius-btn);
+  color: var(--tc-text-2);
+}
+
+.modal-overlay .modal-card-close:hover {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+.modal-overlay .modal-card-body {
+  padding: var(--tc-space-4) var(--tc-space-5);
+}
+
+.modal-overlay .modal-card-hint {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+.modal-overlay .modal-card-footer {
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-3) var(--tc-space-5);
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  background: var(--tc-surface);
+}
+
+/* Gaveta */
+.modal-overlay .gaveta-modal-card {
+  width: 440px;
+}
+
+.modal-overlay .gaveta-motivos-grid {
+  gap: var(--tc-space-2);
+}
+
+.modal-overlay .gaveta-motivo-btn {
+  min-height: 72px;
+  justify-content: center;
+  gap: var(--tc-space-1);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.modal-overlay .gaveta-motivo-btn:hover {
+  border-color: var(--tc-border-strong);
+  background: var(--tc-surface-2);
+}
+
+.modal-overlay .gaveta-motivo-btn.selected {
+  border-color: var(--tc-select-border);
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+}
+
+.modal-overlay .gaveta-motivo-btn span:first-child {
+  display: inline-flex;
+  font-size: 0;
+}
+
+/* Corte, cierre y resumen */
+.modal-overlay .corte-modal-card {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+}
+
+.modal-overlay .corte-summary-card {
+  width: min(720px, calc(100vw - 32px));
+}
+
+.modal-overlay .corte-modal-body {
+  gap: var(--tc-space-3);
+}
+
+.modal-overlay .corte-info-row {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-3) var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+}
+
+.modal-overlay .corte-info-label {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0.04em;
+}
+
+.modal-overlay .corte-info-item strong {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.modal-overlay .corte-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--tc-space-4);
+  align-items: start;
+}
+
+.modal-overlay .corte-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-2);
+  min-width: 0;
+}
+
+.modal-overlay .corte-section-title {
+  margin: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0.04em;
+}
+
+.modal-overlay .corte-grid {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+.modal-overlay .corte-row {
+  min-height: 36px;
+  padding: 0 var(--tc-space-3);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+}
+
+.modal-overlay .corte-row:not(:last-child) {
+  border-bottom-color: var(--tc-border-soft);
+}
+
+/* Los montos van en color de texto: devoluciones, descuentos o gastos no son
+   un error. Solo la diferencia del conteo usa color (es un estado real). */
+.modal-overlay .corte-row .corte-val,
+.modal-overlay .corte-row .corte-val:is(.text-success, .text-danger, .text-warning) {
+  color: var(--tc-text) !important; /* .text-danger/.text-success de main.css llevan !important */
+  font-family: var(--tc-font);
+  font-weight: var(--tc-weight-medium);
+}
+
+.modal-overlay .corte-total-row {
+  min-height: 48px;
+  margin: 0;
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-total-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-total-bg);
+  color: var(--tc-total-label);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.modal-overlay .corte-total-val {
+  color: var(--tc-total-number);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+}
+
+/* "Contado físico" del resumen: dato, no total. */
+.modal-overlay .corte-total-row + .corte-total-row {
+  border-color: var(--tc-border-soft);
+  background: var(--tc-surface);
+  color: var(--tc-text-2);
+}
+
+.modal-overlay .corte-total-row + .corte-total-row .corte-total-val {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-lg);
+}
+
+.modal-overlay .corte-count-row {
+  margin: 0;
+}
+
+.modal-overlay .corte-count-row label {
+  min-width: 0;
+  flex: 1;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.modal-overlay .corte-count-input {
+  max-width: 180px;
+  font-family: var(--tc-font);
+  text-align: right;
+}
+
+.modal-overlay .corte-diff-wrap {
+  min-height: 44px;
+  margin: 0;
+  padding: 0 var(--tc-space-3);
+  border-radius: var(--tc-radius-panel);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.modal-overlay .corte-diff-ok {
+  border: var(--tc-border-w) solid var(--tc-success-border);
+  background: var(--tc-success-bg);
+  color: var(--tc-success-text);
+}
+
+.modal-overlay .corte-diff-over {
+  border: var(--tc-border-w) solid var(--tc-warning-border);
+  background: var(--tc-warning-bg);
+  color: var(--tc-warning-text);
+}
+
+.modal-overlay .corte-diff-under {
+  border: var(--tc-border-w) solid var(--tc-danger-border);
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+}
+
+.modal-overlay .corte-modal-body > .form-group {
+  margin: 0;
+}
+
+.modal-overlay .corte-aviso {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--tc-space-2);
+  margin: 0;
+}
+
+.modal-overlay .corte-aviso .tc-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.modal-overlay .corte-notas {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+.modal-overlay .corte-modal-footer,
+.modal-overlay .corte-summary-footer {
+  flex-wrap: nowrap;
+}
+
+/* Resumen: "Cerrar sesión" a la izquierda, separado de las acciones del turno. */
+.modal-overlay .corte-summary-footer .corte-logout {
+  margin-right: auto;
+}
+
+@media (max-width: 760px) {
+  .modal-overlay .corte-info-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .modal-overlay .corte-cols {
+    grid-template-columns: 1fr;
+  }
+
+  .modal-overlay :is(.corte-modal-footer, .corte-summary-footer) {
+    flex-wrap: wrap;
+  }
+}
+
+/* ═══ ESTADO DE CONEXIÓN (js/sync-monitor.js) ═════════════════════════════ */
+
+.modal-overlay .tc-conn-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+  margin-bottom: var(--tc-space-4);
+}
+
+.modal-overlay .tc-conn-rows {
+  display: grid;
+  gap: 6px;
+}
+
+.modal-overlay .tc-conn-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+  min-height: 40px;
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+.modal-overlay .tc-conn-row strong {
+  color: var(--tc-text);
+  font-weight: var(--tc-weight-semibold);
+  text-align: right;
+}
+
+.modal-overlay .tc-conn-row.is-success strong { color: var(--tc-success-text); }
+.modal-overlay .tc-conn-row.is-warning strong { color: var(--tc-warning-text); }
+.modal-overlay .tc-conn-row.is-danger strong { color: var(--tc-danger-text); }
+
+.modal-overlay .tc-conn-help {
+  margin: var(--tc-space-4) 0 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.5;
+}
+
+.modal-overlay .tc-conn-loading {
+  padding: var(--tc-space-6);
+  color: var(--tc-text-2);
+  text-align: center;
+}
+
+/* ═══ RED DE TERMINALES: Firewall de Windows (js/network-manager.js) ═══════ */
+
+:is(#app, .modal-overlay) .net-firewall-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-2);
+  margin-top: var(--tc-space-4);
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+:is(#app, .modal-overlay) .net-firewall-title {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+:is(#app, .modal-overlay) .net-firewall-text {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.5;
+}
+
+:is(#app, .modal-overlay) .net-firewall-actions {
+  display: flex;
+  gap: var(--tc-space-2);
+}

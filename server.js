@@ -27,6 +27,7 @@ const QRCode = require('qrcode');
 const sharp = require('sharp');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
 const { query, withTransaction, withTransactionRetry, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
+const { verifyInternalRequest } = require('./server/security/internal-request');
 const productsCache = require('./server/cache/products-cache');
 const { createNcfSequenceService, NCF_LABELS } = require('./server/services/ncf-sequence.service');
 // isMysqlDeployment() está definida más abajo en este archivo — se puede
@@ -46,10 +47,15 @@ const firebaseSync = require('./modules/firebase-sync');
 const reportsSync = require('./modules/firebase-reports-sync');
 const plans = require('./modules/plans');
 const { createLicenseService } = require('./server/licensing/license-service');
+const { TRIAL_DAYS, computeTrialWindow, parseUtcDbDateTime, toUtcDbDateTime } = require('./server/licensing/trial-window');
+const { hasPendingFactoryReset, scheduleFactoryReset } = require('./server/services/factory-reset.service');
 const packageJson = require('./package.json');
 
 // ✅ Sincronización con Firebase (NUEVA)
 const { getInstance: getSyncService } = require('./server/sync/firebase-sync-service');
+const { getInternetMonitor } = require('./server/network/internet-monitor');
+const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatch');
+const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
 const syncRoutes = require('./server/routes/sync.routes');
 
 // ✅ Gestor de archivos Sistema_Data
@@ -117,6 +123,11 @@ const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotio
 
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
 const createNetworkRouter = require('./server/routes/network.routes');
+const createConnectivityRouter = require('./server/routes/connectivity.routes');
+const { createServerIdentity } = require('./server/network/server-identity');
+const { scanForPrincipals, findPrincipal, probeIdentify } = require('./server/network/lan-discovery');
+const { startPrincipalWatcher } = require('./server/network/principal-watcher');
+const { createOfflineSessionMiddleware } = require('./server/middleware/offline-session');
 const { ensureNetworkExtensions, markOfflineBySocket, registerTerminal, getLocalIPs } = require('./server/network/terminalRegistry');
 
 // ✅ App móvil Android (Tecno_Caja_POS_Android_Pro) — vinculación por Tecno
@@ -939,6 +950,15 @@ function isLoopbackHost(host) {
     || normalized === '0.0.0.0';
 }
 
+// Petición hecha desde ESTA misma PC (la ventana de Electron o un navegador
+// local). Lo que llega por cloudflared también sale de 127.0.0.1, pero el
+// túnel agrega cabeceras de proxy — esas no cuentan como locales.
+function isDirectLocalRequest(req) {
+  if (req.headers?.['cf-connecting-ip'] || req.headers?.['x-forwarded-for']) return false;
+  const address = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  return address === '127.0.0.1' || address === '::1';
+}
+
 function getLanIpv4Addresses() {
   const interfaces = os.networkInterfaces() || {};
   const addresses = [];
@@ -1402,6 +1422,9 @@ async function buildPrimaryNetworkProfile(req) {
     principalHost,
     principalPort,
     principalBaseUrl,
+    // Para reencontrar a esta principal en la LAN si cambia su IP.
+    serverId: serverIdentity.getServerId(),
+    principalHostname: serverIdentity.getHostname(),
     licenseUid: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim(),
     db: {
       host: profile.localManaged ? principalHost : profile.host,
@@ -1429,6 +1452,8 @@ function buildRemoteTerminalConfig(data = {}) {
     linkedUserId: Number(data.linkedUserId || 0) || null,
     principalHost: String(data.principalHost || '').trim(),
     principalBaseUrl: String(data.principalBaseUrl || '').trim(),
+    principalServerId: String(data.principalServerId || '').trim() || null,
+    principalHostname: String(data.principalHostname || '').trim() || null,
     isMain: false
   };
 }
@@ -1487,6 +1512,7 @@ const secureLicenseService = createLicenseService({
     if (currentUid === String(licenseUid).trim()) return;
     persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: licenseUid });
   },
+  isInternetKnownOffline: () => getInternetMonitor().isKnownOffline(),
   logger: console,
 });
 
@@ -1999,7 +2025,7 @@ const fileManagerService = createFileManagerService({
 app.use('/api/files', createFileManagerRouter({ fileManagerService, query, resolveRequestActorUser }));
 
 // ✅ Rutas de Delivery — app repartidores Tecno Caja
-app.use('/api/delivery', createDeliveryRouter({ query }));
+app.use('/api/delivery', createDeliveryRouter({ query, getTenantId: firebaseSync.getTenantId }));
 
 // ✅ Nuevo módulo e-CF limpio
 app.use('/api/ecf', ecfModule.apiRouter);
@@ -2022,6 +2048,25 @@ app.use(createRncRouter());
 
 // ✅ Rutas Red de Terminales — multicaja LAN + sucursales remotas
 app.use('/api/network', createNetworkRouter({ query, resolveRequestActorUser }));
+
+// ✅ Estado de conexión en tres partes: base de datos (LAN/local), Internet y
+// pendientes. La caja ya no dice "Sin conexión" sin aclarar qué falta.
+app.use('/api/connectivity', createConnectivityRouter({
+  query,
+  monitor: getInternetMonitor(),
+  getRole: () => {
+    const terminalConfig = getTerminalConfig();
+    if (!terminalConfig) return 'principal';
+    return isMainTerminalConfig(terminalConfig) ? 'principal' : 'terminal';
+  },
+  getCloudStatus: () => getSyncService().getStatus(),
+  countDeferredEcf: () => ecfModule.service.countDeferredDocuments(),
+  countContingencySales: async () => {
+    if (isMainTerminalConfig(getTerminalConfig())) return 0;
+    const rows = await localQuery("SELECT COUNT(*) AS c FROM pending_sales WHERE status IN ('pending', 'syncing', 'error')");
+    return Number(rows[0]?.c || 0);
+  },
+}));
 
 
 // ✅ Báscula TCP — inyectar instancia io y cargar config guardada
@@ -2125,12 +2170,24 @@ function getOfflineRouter() {
       // online — la sincronización offline generaba el número una sola vez
       // y dejaba la venta en error si dos terminales chocaban al sincronizar
       // casi al mismo tiempo.
-      isInvoiceNumberCollisionError
+      isInvoiceNumberCollisionError,
+      // Una venta de contingencia que ya había entrado en línea (mismo intento
+      // de cobro) no se duplica al sincronizar.
+      ensureSaleIdempotencySchema: () => saleIdempotency.ensureSchema()
     });
   }
   return _offlineRouter;
 }
-app.use('/api/offline', (req, res, next) => getOfflineRouter()(req, res, next));
+// Sesión del cajero en contingencia: ver server/middleware/offline-session.js
+// (_authSessionCache y el TTL se declaran más abajo: se leen por petición).
+const offlineSession = createOfflineSessionMiddleware({
+  readAuthToken,
+  sessionCache: { get: (token) => _authSessionCache.get(token), set: (token, value) => _authSessionCache.set(token, value) },
+  getDbSession,
+  getUserById: getUserWithRoleContextById,
+  getSessionTtlMs: () => TECNO_CAJA_AUTH_SESSION_TTL_MS,
+});
+app.use('/api/offline', offlineSession, (req, res, next) => getOfflineRouter()(req, res, next));
 
 // ── Configuración de Monedas (Fase 1 multi-moneda USD/DOP) ────────────────────
 const createCurrencyRouter = require('./server/routes/currency.routes');
@@ -2190,24 +2247,38 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000).unref();
 
+// ── Fase 2 (seguridad) — C1: fin del bypass de autenticación ────────────────
+// Hasta acá, sin Bearer token, CUALQUIERA que mandara `actorUserId=<id>` en
+// el body/query quedaba autenticado como ese usuario (con su rol y permisos
+// completos) sin clave ni token. Auditoría 2026-09: 125 endpoints dependían
+// de resolveRequestActorUser(), y el trazado confirmó que renderer/LAN/móvil/
+// mcp-server ya mandan siempre un Bearer real — el único consumidor propio
+// que dependía del fallback era electron/main.js (4 llamadas internas sin
+// ventana de sesión disponible), que ahora usa el canal firmado de
+// server/security/internal-request.js. Interruptor de emergencia por si algo
+// no contemplado dependía del fallback: NO debe quedar en "1" en producción.
+const LEGACY_ACTOR_FALLBACK_ENABLED = String(process.env.TECNO_CAJA_LEGACY_ACTOR_FALLBACK || '').trim() === '1';
+if (LEGACY_ACTOR_FALLBACK_ENABLED) {
+  console.warn('[seguridad] ⚠️ TECNO_CAJA_LEGACY_ACTOR_FALLBACK=1 — el bypass actorUserId está REACTIVADO. Esto es solo un interruptor de emergencia, no debe quedar así en producción.');
+}
+
 app.use(async (req, _res, next) => {
   try {
     const token = readAuthToken(req);
     if (!token) {
-      // Sin Bearer token: algunas pantallas del propio POS (modo multicaja/LAN)
-      // identifican al actor mandando actorUserId en el body/query en vez de
-      // un token de sesión. Se resuelve aquí, verificando contra la base de
-      // datos que ese usuario existe y está activo, para que TODA la app
-      // (incluyendo ensureAdministrator/ensureNotCashier más abajo) trabaje
-      // sobre un req.authUser real — antes esas dos funciones leían
-      // actorUserRole tal cual viniera en el body, sin verificar nada, así
-      // que cualquiera podía mandar {"actorUserRole":"administrador_general"}
-      // sin sesión y pasar por administrador general.
-      const fallbackId = getRequestActorFallbackId(req);
-      if (fallbackId) {
-        const fallbackUser = await getUserWithRoleContextById(fallbackId).catch(() => null);
-        if (fallbackUser && String(fallbackUser.estado || '').trim().toLowerCase() === 'activo') {
-          req.authUser = fallbackUser;
+      // Llamadas internas del propio Electron (electron/main.js) firmadas con
+      // TECNO_CAJA_DEVICE_SECRET — nunca identifican a un usuario, marcan que
+      // la petición viene del propio backend local (ver internal-request.js).
+      if (verifyInternalRequest(req)) {
+        req.isInternalSystemCall = true;
+      } else if (LEGACY_ACTOR_FALLBACK_ENABLED) {
+        // Interruptor de reversión de emergencia — ver comentario arriba.
+        const fallbackId = getRequestActorFallbackId(req);
+        if (fallbackId) {
+          const fallbackUser = await getUserWithRoleContextById(fallbackId).catch(() => null);
+          if (fallbackUser && String(fallbackUser.estado || '').trim().toLowerCase() === 'activo') {
+            req.authUser = fallbackUser;
+          }
         }
       }
       next();
@@ -3528,10 +3599,10 @@ async function trySyncAllPosAccountsToFirebase(overrides = {}) {
     ...baseConfig,
     trialEndsAt: baseConfig.trialEndsAt
       || (overrides.trialEndsAt instanceof Date ? overrides.trialEndsAt.toISOString() : overrides.trialEndsAt)
-      || (trialRow.trial_ends_at ? new Date(trialRow.trial_ends_at).toISOString() : null),
+      || (parseUtcDbDateTime(trialRow.trial_ends_at)?.toISOString() ?? null),
     trialStartedAt: baseConfig.trialStartedAt
       || (overrides.trialStartedAt instanceof Date ? overrides.trialStartedAt.toISOString() : overrides.trialStartedAt)
-      || (trialRow.trial_started_at ? new Date(trialRow.trial_started_at).toISOString() : null),
+      || (parseUtcDbDateTime(trialRow.trial_started_at)?.toISOString() ?? null),
   };
 
   const result = await syncPosAccountsToFirestore(userRows, config);
@@ -3891,11 +3962,13 @@ function formatSqlDateTimeLocal(value) {
 function getLicenseSummary(row) {
   const status = normalizeLicenseStatus(row.license_status);
   const now = new Date();
-  const endsAt = parseStoredDateTime(row.trial_ends_at);
-  const startedAt = parseStoredDateTime(row.trial_started_at);
-  const checkedAt = parseStoredDateTime(row.license_last_remote_check_at);
+  // parseUtcDbDateTime y no parseStoredDateTime: en MariaDB estas columnas
+  // llegan como Date "local" y había que reinterpretarlas como UTC.
+  const endsAt = parseUtcDbDateTime(row.trial_ends_at);
+  const startedAt = parseUtcDbDateTime(row.trial_started_at);
+  const checkedAt = parseUtcDbDateTime(row.license_last_remote_check_at);
   const msLeft = endsAt ? endsAt.getTime() - now.getTime() : 0;
-  const daysLeft = endsAt ? Math.max(0, Math.ceil(msLeft / 86400000)) : 0;
+  const daysLeft = endsAt ? Math.min(TRIAL_DAYS, Math.max(0, Math.ceil(msLeft / 86400000))) : 0;
   const clockRollbackDetected = Boolean(
     status === 'trial'
       && checkedAt
@@ -4176,38 +4249,37 @@ async function ensureConfigExtensions() {
   await query(`UPDATE config SET license_status = 'trial' WHERE id = 1 AND (license_status IS NULL OR license_status = '')`);
   await query(`UPDATE config SET require_cash_open_before_use = 1 WHERE id = 1 AND require_cash_open_before_use IS NULL`);
   // Salvaguarda: una prueba dura 30 días desde que se completó el asistente
-  // (setup_completed_at, que solo se escribe una vez). trial_ends_at derivaba
-  // de un round-trip DATETIME en el sync de licencia que sumaba el offset local
-  // cada arranque y hacía "crecer" la prueba. Aquí se re-ancla a
-  // setup_completed_at + 30 días si se desvió más de 1 día, y se limpia el
+  // (setup_completed_at, que solo se escribe una vez). En MariaDB las fechas de
+  // prueba se corrían 4 h por cada lectura+escritura (ver
+  // server/licensing/trial-window.js) — las instalaciones que ya arrastran ese
+  // desfase se re-anclan aquí a setup_completed_at + 30 días, y se limpia el
   // caché de licencia para que se reconstruya limpio.
   try {
     const [lc] = await query(
       `SELECT setup_completed_at, trial_started_at, trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1`
     );
     const isTrial = lc && String(lc.license_status || '').toLowerCase() === 'trial';
-    const anchorRaw = lc && (lc.setup_completed_at || lc.trial_started_at);
-    if (isTrial && anchorRaw) {
-      const parse = (v) => {
-        const s = String(v).trim().replace(' ', 'T');
-        return new Date(/\dZ$|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z');
-      };
-      const anchor = parse(anchorRaw);
-      const ends = lc.trial_ends_at ? parse(lc.trial_ends_at) : null;
-      if (!Number.isNaN(anchor.getTime())) {
-        const expected = new Date(anchor.getTime() + 30 * 86400000);
-        const driftDays = ends ? Math.abs(ends.getTime() - expected.getTime()) / 86400000 : Infinity;
-        if (driftDays > 1) {
-          const startSql = anchor.toISOString().slice(0, 19).replace('T', ' ');
-          const endSql = expected.toISOString().slice(0, 19).replace('T', ' ');
-          await query(
-            `UPDATE config SET trial_started_at = ?, trial_ends_at = ? WHERE id = 1`,
-            [startSql, endSql]
-          );
-          await query('DELETE FROM license_cache').catch(() => {});
-          const left = Math.max(0, Math.ceil((expected.getTime() - Date.now()) / 86400000));
-          console.log(`[license] prueba re-anclada a setup+30d (quedan ${left} días).`);
-        }
+    // setup_completed_at sale de datetime('now'): en SQLite es texto UTC; en
+    // MariaDB es CURRENT_TIMESTAMP (hora local) y mysql2 ya lo entrega como el
+    // instante correcto. Las columnas trial_* sí van siempre en UTC.
+    const anchor = !lc ? null
+      : lc.setup_completed_at instanceof Date ? lc.setup_completed_at
+        : parseUtcDbDateTime(lc.setup_completed_at || lc.trial_started_at);
+    if (isTrial && anchor && !Number.isNaN(anchor.getTime())) {
+      const expected = computeTrialWindow({ startedAt: anchor, now: new Date() });
+      const startedAt = parseUtcDbDateTime(lc.trial_started_at);
+      const endsAt = parseUtcDbDateTime(lc.trial_ends_at);
+      const driftMs = Math.max(
+        startedAt ? Math.abs(startedAt.getTime() - expected.startedAt.getTime()) : Infinity,
+        endsAt ? Math.abs(endsAt.getTime() - expected.endsAt.getTime()) : Infinity
+      );
+      if (driftMs > 60 * 60 * 1000) {
+        await query(
+          `UPDATE config SET trial_started_at = ?, trial_ends_at = ? WHERE id = 1`,
+          [toUtcDbDateTime(expected.startedAt), toUtcDbDateTime(expected.endsAt)]
+        );
+        await query('DELETE FROM license_cache').catch(() => {});
+        console.log(`[license] prueba re-anclada a setup+30d (quedan ${expected.daysLeft} días).`);
       }
     }
   } catch (_) { /* si falta la columna o license_cache, no bloquea el arranque */ }
@@ -4422,85 +4494,14 @@ function getFirstPrivateIpv4() {
   return '127.0.0.1';
 }
 
-function getDiscoveryHosts() {
-  const ifaces = os.networkInterfaces();
-  const hosts = new Set();
-
-  for (const list of Object.values(ifaces)) {
-    for (const iface of list) {
-      if (iface.family !== 'IPv4' || iface.internal) continue;
-      const address = String(iface.address || '').trim();
-      if (!/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(address)) continue;
-      const parts = address.split('.');
-      if (parts.length !== 4) continue;
-      const prefix = `${parts[0]}.${parts[1]}.${parts[2]}`;
-      for (let last = 2; last <= 254; last += 1) {
-        if (last === 1) continue;
-        hosts.add(`${prefix}.${last}`);
-      }
-    }
-  }
-
-  return Array.from(hosts).slice(0, 254);
-}
-
-function probeIdentify(host, port, timeoutMs = 900) {
-  return new Promise((resolve) => {
-    const req = http.get({ hostname: host, port, path: '/api/network/identify', timeout: timeoutMs, headers: { Accept: 'application/json' } }, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        if (res.statusCode !== 200) return resolve(null);
-        try {
-          const data = JSON.parse(body || '{}');
-          if (data && data.app === 'Tecno Caja' && data.isMain) {
-            return resolve({
-              host,
-              port,
-              baseUrl: `http://${host}:${port}`,
-              localIp: data.localIp || host,
-              app: data.app,
-              role: data.role || 'principal',
-              isMain: Boolean(data.isMain),
-              businessName: data.businessName || '',
-              branchName: data.branchName || '',
-              version: data.version || ''
-            });
-          }
-        } catch (_e) {
-          // ignore parse errors
-        }
-        return resolve(null);
-      });
-    });
-
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(null);
-    });
-  });
-}
-
+// Descubrimiento de la PC principal en la LAN: server/network/lan-discovery.js
+// (lo comparte electron/main.js para las cajas terminal).
 function getDiscoveryCandidates(port = Number(process.env.PORT || 3000)) {
-  const hosts = getDiscoveryHosts();
-  const results = [];
-  const concurrency = 18;
-  const queue = [...hosts];
-
-  return new Promise(async (resolve) => {
-    const workers = new Array(concurrency).fill(null).map(async () => {
-      while (queue.length) {
-        const host = queue.shift();
-        const candidate = await probeIdentify(host, port);
-        if (candidate) results.push(candidate);
-      }
-    });
-    await Promise.all(workers);
-    resolve(results);
-  });
+  return scanForPrincipals({ port });
 }
+
+// Identificador fijo de este servidor (ver server/network/server-identity.js).
+const serverIdentity = createServerIdentity({ persistRuntimeEnvValues });
 
 function isMainTerminalConfig(terminalConfig = null) {
   if (!terminalConfig) return true;
@@ -5200,6 +5201,22 @@ async function ensureLicenseBackgroundSync() {
   const watcherStarted = await startFirestoreLicenseWatcher().catch(() => false);
   if (!watcherStarted) {
     ensureLicenseFallbackPoller('Listener en tiempo real no disponible');
+  }
+}
+
+// El formateo corta todo lo que escucha la licencia ANTERIOR en Firestore: si
+// no, cualquier cambio en ese doc (incluido liberar este equipo) volvía a
+// escribir su estado en license_cache/config justo después de vaciar la BD.
+function stopRemoteLicenseListeners() {
+  for (const unsubscribe of [licenseWatcherUnsubscribe, ncfPendientesWatcherUnsubscribe, productosPendientesWatcherUnsubscribe]) {
+    try { if (typeof unsubscribe === 'function') unsubscribe(); } catch (_) {}
+  }
+  licenseWatcherUnsubscribe = null;
+  ncfPendientesWatcherUnsubscribe = null;
+  productosPendientesWatcherUnsubscribe = null;
+  if (licenseFallbackPollTimer) {
+    clearInterval(licenseFallbackPollTimer);
+    licenseFallbackPollTimer = null;
   }
 }
 
@@ -6473,11 +6490,19 @@ function getActor(req) {
       userRole: req.authUser.role_name || req.authUser.rol || 'Sistema'
     };
   }
-  return {
-    userId: req.body?.actorUserId || null,
-    userName: req.body?.actorUserName || 'Sistema',
-    userRole: req.body?.actorUserRole || 'Sistema'
-  };
+  // Sin usuario autenticado, actorUserName/actorUserRole del body NO son
+  // confiables — cualquiera podía firmar el log de auditoría como quisiera.
+  // Solo se aceptan tal cual en la llamada firmada internamente por
+  // electron/main.js (ver server/security/internal-request.js); cualquier
+  // otro caso queda etiquetado "Sistema" sin datos inventados por el cliente.
+  if (req.isInternalSystemCall || LEGACY_ACTOR_FALLBACK_ENABLED) {
+    return {
+      userId: req.body?.actorUserId || null,
+      userName: req.body?.actorUserName || 'Sistema',
+      userRole: req.body?.actorUserRole || 'Sistema'
+    };
+  }
+  return { userId: null, userName: 'Sistema', userRole: 'Sistema' };
 }
 
 async function getUserWithRoleContextById(userId) {
@@ -6502,18 +6527,35 @@ async function getUserWithRoleContextById(userId) {
   };
 }
 
+// Para los pocos endpoints que hoy no tenían NINGÚN control de acceso
+// (respaldo automático, verificación de la clave de seguridad) — cualquiera
+// que alcanzara el puerto podía dispararlos. Ahora exigen sesión real o la
+// llamada firmada internamente por electron/main.js (respaldo al cerrar la
+// app, cuando puede no haber ventana/token disponible). No identifican un
+// usuario — solo comprueban que hay alguien o algo autorizado detrás.
+function requireUserOrInternal(req) {
+  if (req.authUser || req.isInternalSystemCall) return;
+  throw createHttpError('Debes iniciar sesión para realizar esta acción.', 401);
+}
+
 async function resolveRequestActorUser(req, options = {}) {
+  // `allowPayloadFallback` se sigue aceptando en la firma para no romper los
+  // ~125 call-sites existentes, pero ya no hace nada salvo con el interruptor
+  // de emergencia abajo: actorUserId en body/query NUNCA vuelve a autenticar
+  // por sí solo (ver C1 en el middleware global, más arriba en este archivo).
   const { required = true, allowPayloadFallback = true } = options;
   if (req.authUser) {
     return req.authUser;
   }
 
-  const fallbackId = allowPayloadFallback ? getRequestActorFallbackId(req) : null;
-  if (fallbackId) {
-    const user = await getUserWithRoleContextById(fallbackId);
-    if (user && String(user.estado || '').trim().toLowerCase() === 'activo') {
-      req.authUser = user;
-      return user;
+  if (LEGACY_ACTOR_FALLBACK_ENABLED) {
+    const fallbackId = allowPayloadFallback ? getRequestActorFallbackId(req) : null;
+    if (fallbackId) {
+      const user = await getUserWithRoleContextById(fallbackId);
+      if (user && String(user.estado || '').trim().toLowerCase() === 'activo') {
+        req.authUser = user;
+        return user;
+      }
     }
   }
 
@@ -7325,6 +7367,14 @@ async function resetSystemData({ keepUserId = null, factoryReset = false } = {})
 
   if (factoryReset) {
     await ensureConfigExtensions();
+    if (getDbClient() === 'mysql') {
+      // DELETE no reinicia AUTO_INCREMENT en MariaDB: sin esto la primera venta,
+      // producto o cliente del negocio "nuevo" seguía la numeración del anterior.
+      // Es DDL (commit implícito), por eso va fuera de la transacción.
+      for (const tableName of await listCurrentTableNames({ query })) {
+        await query(`ALTER TABLE ${escapeSqlTableIdentifier(tableName)} AUTO_INCREMENT = 1`).catch(() => {});
+      }
+    }
   }
 }
 
@@ -8309,6 +8359,8 @@ app.get('/api/public/users-list', async (req, res) => {
 // se muestra el enlace. Nunca lanza, nunca afecta si el login tiene éxito.
 async function findLinkedContadorProfile(firebaseUid) {
   if (!firebaseUid) return null;
+  // Sin Internet no se consulta la nube: el login local no espera el timeout.
+  if (getInternetMonitor().isKnownOffline()) return null;
   try {
     const { getFirestore } = require('./modules/firebase-admin');
     const db = getFirestore();
@@ -8764,6 +8816,11 @@ app.get('/api/setup/status', async (_req, res) => {
 });
 
 app.post('/api/setup/complete', async (req, res) => {
+  // Si se configurara el negocio nuevo antes de reiniciar, el arranque
+  // siguiente lo borraría junto con el formateo pendiente.
+  if (hasPendingFactoryReset(runtime.userDataPath)) {
+    return res.status(409).json({ error: 'Reinicia Tecno Caja para terminar el formateo antes de configurar el negocio.' });
+  }
   const payload = req.body || {};
   const currentStatus = await getSetupStatus();
   const forceReset = Boolean(payload.forceReset);
@@ -9062,18 +9119,21 @@ app.post('/api/setup/complete', async (req, res) => {
       };
     }
   }
-  // Limpiar el UID anterior SIEMPRE que se llegue hasta aquí — este endpoint
-  // borra la base local entera (DELETE FROM users/branches/...) y siempre
-  // significa "negocio nuevo", ya sea por forceReset explícito o porque el
-  // wizard volvió a aparecer en una PC que ya tenía otro negocio instalado.
-  // Antes esto solo se limpiaba si forceReset===true — en cualquier otro caso
-  // (p. ej. configurar un negocio nuevo en una PC que ya tenía uno distinto)
-  // el UID viejo sobrevivía y registerPosLicenseInFirestore() lo reutilizaba,
-  // sobreescribiendo el documento de Firestore del negocio anterior con los
-  // datos del nuevo. Debe limpiarse ANTES de cualquier sync a Firebase.
+  // Limpiar el UID anterior SOLO en forceReset explícito (flujo protegido con
+  // clave de seguridad, ver /api/setup/complete más arriba). Este endpoint
+  // también se alcanza cuando setupRequired quedó en true porque la base local
+  // se corrompió/perdió (crash, antivirus, bug) sin que el negocio haya
+  // cambiado — en ese caso el UID que sigue en app.env es el bueno y NO debe
+  // tocarse: borrarlo aquí obliga a trySyncAllPosAccountsToFirebase()/
+  // registerPosLicenseInFirestore() a derivar uno nuevo del nombre del negocio,
+  // que es justo la causa raíz confirmada de la fragmentación de businessId
+  // (caso Farmacia Enrriqueta, sep-2026: la misma licencia se fragmentó en 3+
+  // documentos de Firestore por reinstalaciones normales, no por reinstalos
+  // deliberados). Si de verdad es un negocio distinto en la misma PC, debe
+  // pasar por el flujo de "reinstalar" (forceReset=true + clave de seguridad).
   {
     const oldUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-    if (oldUid) {
+    if (oldUid && forceReset) {
       persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: '' });
       process.env.TECNO_CAJA_LICENSE_UID = '';
     }
@@ -9326,6 +9386,9 @@ app.get('/api/network/identify', async (_req, res) => {
       app: 'Tecno Caja',
       role: isMain ? 'principal' : 'terminal',
       isMain,
+      // Para que las cajas reencuentren a ESTA principal si cambia su IP.
+      serverId: isMain ? serverIdentity.getServerId() : null,
+      hostname: serverIdentity.getHostname(),
       businessName: String(config.business_name || 'Tecno Caja').trim() || 'Tecno Caja',
       branchName,
       serverPort: Number(process.env.PORT || 3000),
@@ -9608,7 +9671,9 @@ app.post('/api/wizard/remote-link-terminal', async (req, res) => {
     const terminalConfig = buildRemoteTerminalConfig({
       ...(data?.terminalConfig || {}),
       principalHost: networkProfile.principalHost,
-      principalBaseUrl: networkProfile.principalBaseUrl
+      principalBaseUrl: networkProfile.principalBaseUrl,
+      principalServerId: networkProfile.serverId,
+      principalHostname: networkProfile.principalHostname
     });
     if (!saveTerminalConfig(terminalConfig)) {
       return res.status(500).json({ error: 'No se pudo guardar la configuración local del terminal.' });
@@ -11345,6 +11410,7 @@ app.post('/api/backup/restore', async (req, res) => {
 });
 
 app.post('/api/backup/auto-save', async (req, res) => {
+  requireUserOrInternal(req);
   const saved = await saveLatestSecureBackup();
   const actor = getActor(req);
   await writeAuditLog({
@@ -11370,7 +11436,8 @@ app.post('/api/backup/restore-latest', async (req, res) => {
   res.json({ ok: true, ...restored });
 });
 
-app.post('/api/security-password/verify', async (req, res) => {
+app.post('/api/security-password/verify', loginLimiter, async (req, res) => {
+  requireUserOrInternal(req);
   const password = String(req.body?.password || '');
   const currentPassword = await getSecurityPassword();
   if (password !== currentPassword) {
@@ -11524,6 +11591,12 @@ app.post('/api/system/reset', async (req, res) => {
   const isFactoryReset = Boolean(req.body?.factoryReset === true);
   if (!isFactoryReset) {
     ensureAdministrator(req);
+  } else if (!isDirectLocalRequest(req)) {
+    // Una caja secundaria (thin-client) carga la UI desde la PC principal: sin
+    // esto, "formatear" en la secundaria borraba el negocio de la principal.
+    return res.status(403).json({
+      error: 'El formateo solo se puede hacer en la PC donde está instalado el servidor de Tecno Caja. Para desconectar esta caja usa "Reconfigurar terminal".'
+    });
   }
   const confirmation = String(req.body?.confirmation || '').trim().toUpperCase();
   const password = String(req.body?.password || '');
@@ -11547,7 +11620,10 @@ app.post('/api/system/reset', async (req, res) => {
     }
   }
 
-  const backup = await saveLatestSecureBackup();
+  // El formateo no guarda copia previa: se borraría en el reinicio junto con
+  // los demás respaldos de esta PC (el usuario fue avisado en el modal).
+  const backup = isFactoryReset ? null : await saveLatestSecureBackup();
+  if (isFactoryReset) stopRemoteLicenseListeners();
   let firebaseSummary = null;
   if (purgeFirebase) {
     const config = await getConfig({ syncRemote: false }).catch(() => ({}));
@@ -11580,6 +11656,20 @@ app.post('/api/system/reset', async (req, res) => {
     secureLicenseService.invalidateStateMemo();
   }
 
+  if (isFactoryReset) {
+    // Desvincular la PC de su licencia aunque Firebase se conserve: sin esto,
+    // TECNO_CAJA_LICENSE_UID sobrevivía en app.env y el "negocio nuevo"
+    // volvía a engancharse a la licencia (y a la prueba) del anterior.
+    if (!purgeFirebase) {
+      const release = await secureLicenseService.releaseCurrentDevice(process.env.TECNO_CAJA_LICENSE_UID);
+      if (!release.released && release.reason !== 'no_license') {
+        console.warn('[factory-reset] No se pudo liberar este equipo en Firebase:', release.reason);
+      }
+    }
+    persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: '', TECNO_CAJA_BUSINESS_ID: '' });
+    removeTerminalConfigFiles();
+  }
+
   // isFactoryReset controla QUÉ TAN PROFUNDO es el reset local (borrar todo vs. borrar solo datos).
   // purgeFirebase controla si TAMBIÉN se borra la nube.
   // Son decisiones independientes: puedes hacer factory reset local sin tocar Firebase.
@@ -11588,21 +11678,33 @@ app.post('/api/system/reset', async (req, res) => {
     factoryReset: isFactoryReset
   });
 
-  const actor = getActor(req);
-  let actionName, detail;
-  if (isFactoryReset && purgeFirebase) {
-    actionName = 'Factory reset completo (local + Firebase)';
-    detail = `Se borró todo: base local y Firebase. Copia previa: ${backup.fileName}`;
-  } else if (isFactoryReset) {
-    actionName = 'Factory reset local';
-    detail = `Se borró la base local completa. Firebase conservado. Copia previa: ${backup.fileName}`;
-  } else if (purgeFirebase) {
-    actionName = 'Sistema y Firebase limpiados';
-    detail = `Se limpió la app y Firebase. Copia previa: ${backup.fileName}`;
-  } else {
-    actionName = 'Sistema limpiado';
-    detail = `Se limpió la app completa. Copia previa: ${backup.fileName}`;
+  if (isFactoryReset) {
+    secureLicenseService.invalidateStateMemo();
+    // Lo que queda en disco (respaldos, facturas, certificado e-CF, sesión de
+    // WhatsApp, almacenamiento del navegador, identidad del equipo) lo borra
+    // electron/main.js en el próximo arranque, con nada abierto. Fuera de
+    // Electron (npm start) no hay quién lo consuma, así que no se agenda.
+    if (process.versions.electron) {
+      scheduleFactoryReset({ userDataPath: runtime.userDataPath, dbFile: process.env.DB_FILE });
+    }
+    // Sin auditoría: el registro "se formateó" sería justo el rastro que el
+    // formateo debe eliminar.
+    return res.json({
+      ok: true,
+      restartRequired: true,
+      firebasePurged: Boolean(purgeFirebase),
+      firebaseSummary,
+      message: purgeFirebase
+        ? 'Formateo completo (esta PC y Firebase). Tecno Caja se reiniciará como instalación nueva.'
+        : 'Formateo completo de esta PC. Firebase conservado. Tecno Caja se reiniciará como instalación nueva.',
+    });
   }
+
+  const actor = getActor(req);
+  const actionName = purgeFirebase ? 'Sistema y Firebase limpiados' : 'Sistema limpiado';
+  const detail = purgeFirebase
+    ? `Se limpió la app y Firebase. Copia previa: ${backup.fileName}`
+    : `Se limpió la app completa. Copia previa: ${backup.fileName}`;
   await writeAuditLog({ ...actor, moduleName: 'Configuración', actionName, detail });
 
   const payload = {
@@ -11611,13 +11713,7 @@ app.post('/api/system/reset', async (req, res) => {
     firebasePurged: Boolean(purgeFirebase),
     firebaseSummary,
   };
-  if (isFactoryReset) {
-    // Factory reset siempre reinicia en modo instalación limpia (wizard).
-    // El frontend recarga y setup_completed=0 → muestra el asistente de configuración.
-    payload.message = purgeFirebase
-      ? 'Factory reset completo. Firebase eliminado y base local en cero. La app arrancará como nueva instalación.'
-      : 'Factory reset local completado. Firebase conservado. La app arrancará como nueva instalación.';
-  } else if (purgeFirebase) {
+  if (purgeFirebase) {
     payload.message = 'Firebase fue eliminado y la base local quedó en estado inicial. Ahora desinstala Tecno Caja y acepta borrar los archivos locales de esta PC.';
   } else {
     payload.data = await getBootstrapData();
@@ -15613,6 +15709,9 @@ function isInvoiceNumberCollisionError(err) {
     || err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062;
 }
 
+// Ventas sin duplicados en multicaja/LAN: ver server/sales/sale-idempotency.js
+const saleIdempotency = createSaleIdempotency({ query, addColumnIfMissing, mapSaleRows, getConfig });
+
 app.post('/api/sales', async (req, res) => {
   await ensureBusinessRulesExtensions();
   await ensureSalesExtensions();
@@ -15622,10 +15721,25 @@ app.post('/api/sales', async (req, res) => {
   await ensurePromotionsExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true });
   const sale = req.body;
+  // Reintento de la misma venta (respuesta perdida en la red, tiempo agotado,
+  // doble clic): se devuelve la venta ya registrada, no se crea otra.
+  const clientRequestId = normalizeClientRequestId(sale.clientRequestId);
+  if (clientRequestId) {
+    const existingSale = await saleIdempotency.findExistingSaleResponse(clientRequestId);
+    if (existingSale) return res.status(200).json(existingSale);
+  }
   // withTransactionRetry: en multicaja (varias PC → 1 MySQL) la asignación del
   // número de factura y del NCF serializa sobre locks de fila; un tranque o
   // deadlock transitorio se reintenta solo en vez de fallarle la venta al cajero.
-  const created = await withTransactionRetry(async (conn) => {
+  let created;
+  try {
+  created = await withTransactionRetry(async (conn) => {
+    // Primero el lock del contador de facturas: toda venta lo necesita igual,
+    // y tomarlo ANTES de cualquier lectura hace que el resto de la transacción
+    // (stock, NCF, crédito) vea lo último que confirmó la otra caja. Sin esto
+    // dos cajas leían el mismo stock y una venta pisaba el descuento de la
+    // otra, o en MariaDB 11.6+ fallaba con 1020 "Record has changed".
+    await conn.query('UPDATE config SET invoice_next_number = invoice_next_number WHERE id = 1');
     const configRows = await conn.query('SELECT * FROM config WHERE id = 1');
     const config = configRows[0];
     const businessId = Number(config?.business_id || 1) || 1;
@@ -16084,6 +16198,11 @@ app.post('/api/sales', async (req, res) => {
     }
 
     await conn.query('UPDATE sales SET delivery_cash_status = ? WHERE id = ?', [deliveryCashStatus, result.insertId]);
+    // Índice único: si otra petición con el mismo intento ya la registró, esta
+    // falla aquí y toda la transacción se deshace (factura, NCF, inventario).
+    if (clientRequestId) {
+      await conn.query('UPDATE sales SET client_request_id = ? WHERE id = ?', [clientRequestId, result.insertId]);
+    }
 
     // BUG 10 fix: validar items antes de procesarlos — previene cantidades negativas o NaN
     if (!Array.isArray(sale.items) || sale.items.length === 0) {
@@ -16329,6 +16448,13 @@ app.post('/api/sales', async (req, res) => {
       shouldAttemptEcf: shouldUseEcfFlow,
     };
   });
+  } catch (error) {
+    if (clientRequestId && isDuplicateClientRequestError(error)) {
+      const existingSale = await saleIdempotency.findExistingSaleResponse(clientRequestId);
+      if (existingSale) return res.status(200).json(existingSale);
+    }
+    throw error;
+  }
 
   let ecfEmissionResult = null;
   if (created.shouldAttemptEcf) {
@@ -16338,7 +16464,10 @@ app.post('/api/sales', async (req, res) => {
         userName: actorUser.nombre || actorUser.usuario || null,
         userRole: actorUser.rol || actorUser.role_code || null,
         requestedType: String(sale.ecfType || '').trim().toUpperCase() || null,
-        ipAddress: req.ip
+        ipAddress: req.ip,
+        // Sin Internet el e-CF se firma y queda pendiente de envío (no se
+        // espera el timeout de la DGII con el cajero esperando).
+        internetOffline: getInternetMonitor().isKnownOffline()
       });
     } catch (error) {
       console.warn('[ecf] Falló la emisión electrónica automática de la venta %s: %s', created.saleId, error.message);
@@ -20111,6 +20240,28 @@ async function startHttpServer(port, bindHost) {
       };
       setTimeout(runPortalSync, 30000); // primer sync a los 30s de arrancar
       setInterval(runPortalSync, PORTAL_SYNC_INTERVAL_MS).unref();
+
+      // Internet: un solo vigilante para todo el sistema (nube, licencia, DGII).
+      getInternetMonitor().start();
+      // e-CF firmados sin Internet → DGII en cuanto vuelva (solo la PC principal).
+      startEcfDeferredDispatch({
+        service: ecfModule.service,
+        monitor: getInternetMonitor(),
+        isMain: () => isMainTerminalConfig(getTerminalConfig()),
+      });
+      // Caja terminal que usa la base de la PC principal por la LAN: si la
+      // principal cambia de IP (DHCP), reencontrarla y reconectar sola.
+      if (getDbClient() === 'mysql' && !isLoopbackDbHost()) {
+        startPrincipalWatcher({
+          query,
+          getTerminalConfig,
+          saveTerminalConfig,
+          persistRuntimeEnvValues,
+          reloadDatabase,
+          findPrincipal,
+          probeIdentify,
+        });
+      }
     });
     httpServer.once('error', reject);
   });

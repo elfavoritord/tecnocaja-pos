@@ -390,7 +390,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 2rem 1.5rem 1.5rem;
+  padding: 1.6rem 1.5rem 1rem;
   overflow: hidden;
 }
 
@@ -410,26 +410,26 @@
   position: relative;
   z-index: 1;
   width: 100%;
-  max-width: 960px;
-  margin-bottom: 2rem;
+  max-width: 1020px;
+  margin-bottom: 1rem;
 }
 .pi-logo {
   display: flex;
   align-items: center;
-  gap: 0.85rem;
+  gap: 0.7rem;
 }
 .pi-logo-icon {
-  font-size: 2.2rem;
+  font-size: 1.6rem;
   filter: drop-shadow(0 0 10px rgba(59,130,246,.5));
 }
 .pi-logo-name {
-  font-size: 1.2rem;
+  font-size: 1.05rem;
   font-weight: 800;
   color: #fff;
   letter-spacing: -0.02em;
 }
 .pi-logo-tagline {
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   color: #64748b;
   margin-top: 1px;
 }
@@ -439,34 +439,41 @@
   position: relative;
   z-index: 1;
   text-align: center;
-  margin-bottom: 2.5rem;
+  margin-bottom: 1.25rem;
 }
 .pi-hero-title {
-  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  font-size: clamp(1.4rem, 3vw, 1.9rem);
   font-weight: 800;
   color: #fff;
-  margin: 0 0 0.5rem;
+  margin: 0 0 0.3rem;
   letter-spacing: -0.03em;
   line-height: 1.15;
 }
 .pi-hero-sub {
-  font-size: 1rem;
+  font-size: 0.88rem;
   color: #94a3b8;
   margin: 0;
 }
 
-/* Grid de cards */
+/* Grid de cards — 3 por fila (flex para centrar la fila incompleta: con 5
+   opciones la segunda fila lleva 2 centradas). En 2 columnas la 5ª tarjeta
+   ("Actualizar Sistema") quedaba debajo del borde de una pantalla 1366×768. */
 .pi-cards-grid {
   position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.85rem;
   width: 100%;
-  max-width: 900px;
+  max-width: 1020px;
+}
+.pi-cards-grid > .pi-card { flex: 0 1 calc((100% - 1.7rem) / 3); }
+@media (max-width: 900px) {
+  .pi-cards-grid > .pi-card { flex-basis: calc((100% - 0.85rem) / 2); }
 }
 @media (max-width: 640px) {
-  .pi-cards-grid { grid-template-columns: 1fr; }
+  .pi-cards-grid > .pi-card { flex-basis: 100%; }
 }
 
 /* Card base */
@@ -475,16 +482,15 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1rem;
-  padding: 2rem 1.5rem 1.5rem;
-  border-radius: 16px;
+  gap: 0.6rem;
+  padding: 1.1rem 1rem 1rem;
+  border-radius: 14px;
   border: 1px solid rgba(255,255,255,.08);
   background: rgba(255,255,255,.04);
   backdrop-filter: blur(12px);
   cursor: pointer;
   text-align: center;
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease, background 0.2s ease;
-  min-height: 220px;
 }
 .pi-card:hover {
   transform: translateY(-4px);
@@ -502,12 +508,12 @@
 /* Badge "30 días gratis" */
 .pi-card-badge {
   position: absolute;
-  top: 1rem; right: 1rem;
+  top: 0.6rem; right: 0.6rem;
   background: linear-gradient(135deg, #10b981, #059669);
   color: #fff;
-  font-size: 0.7rem;
+  font-size: 0.62rem;
   font-weight: 700;
-  padding: 0.25rem 0.65rem;
+  padding: 0.2rem 0.55rem;
   border-radius: 999px;
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -515,8 +521,8 @@
 
 /* Icono circular */
 .pi-card-icon-wrap {
-  width: 56px; height: 56px;
-  border-radius: 14px;
+  width: 44px; height: 44px;
+  border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
@@ -525,30 +531,30 @@
 .pi-icon-orange { background: rgba(249,115,22,.15);  color: #fb923c; }
 .pi-icon-purple { background: rgba(139,92,246,.15);  color: #a78bfa; }
 
-.pi-card-icon-wrap svg { display: block; }
+.pi-card-icon-wrap svg { display: block; width: 24px; height: 24px; }
 
 /* Cuerpo de la card */
 .pi-card-body { flex: 1; width: 100%; }
 .pi-card-title {
-  font-size: 1rem;
+  font-size: 0.92rem;
   font-weight: 700;
   color: #f1f5f9;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.3rem;
   line-height: 1.3;
 }
 .pi-card-desc {
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   color: #94a3b8;
-  line-height: 1.55;
+  line-height: 1.45;
 }
 
 /* Footer de la card (botón) */
-.pi-card-footer { margin-top: auto; padding-top: 0.5rem; width: 100%; display: flex; justify-content: center; }
+.pi-card-footer { margin-top: auto; padding-top: 0.25rem; width: 100%; display: flex; justify-content: center; }
 .pi-card-btn {
   display: inline-block;
-  padding: 0.55rem 1.4rem;
+  padding: 0.4rem 1.1rem;
   border-radius: 8px;
-  font-size: 0.83rem;
+  font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.02em;
   transition: filter 0.15s;
@@ -566,8 +572,8 @@
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  margin-top: 2rem;
-  padding: 0.6rem 1.25rem;
+  margin-top: 1rem;
+  padding: 0.45rem 1.1rem;
   background: rgba(255,255,255,.04);
   border: 1px solid rgba(255,255,255,.08);
   border-radius: 999px;
@@ -588,6 +594,14 @@
 @keyframes pi-pulse { 0%,100%{opacity:.5} 50%{opacity:1} }
 .pi-status-sep   { color: #334155; }
 .pi-status-version { color: #475569; font-size: 0.72rem; }
+
+/* Pantallas bajas (laptops 1366×650, 1024×600): sin descripciones para que
+   las 5 opciones sigan cabiendo sin desplazarse. */
+@media (max-height: 640px) and (min-width: 641px) {
+  .pi-hero-sub,
+  .pi-card-desc { display: none; }
+  .pi-card { gap: 0.45rem; padding: 0.85rem 0.9rem 0.8rem; }
+}
 
 
 /* ══════════════════════════════════════════════════════════════════════════

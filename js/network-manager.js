@@ -280,8 +280,10 @@ async function loadLanGuide() {
             </div>
           </div>`).join('')}
       </div>
+      ${_renderFirewallSection(isThinClient)}
       ${_renderThinClientSection(isThinClient)}`;
     container.dataset.loaded = '1';
+    _loadFirewallStatus();
   } catch (e) {
     container.innerHTML = `<p style="color:var(--danger)">Error cargando guía: ${_esc(e.message)}</p>`;
   }
@@ -399,6 +401,65 @@ function _relTime(date) {
   if (diff < 3600) return `hace ${Math.floor(diff/60)} min`;
   if (diff < 86400)return `hace ${Math.floor(diff/3600)} h`;
   return `hace ${Math.floor(diff/86400)} días`;
+}
+
+// ── Firewall de Windows (PC principal) ───────────────────────────────────────
+// Las cajas de la red se conectan al puerto 3399 de esta PC. La regla que se
+// crea solo acepta la red local y Tailscale: nunca abre el puerto a Internet.
+function _renderFirewallSection(isThinClient) {
+  if (isThinClient || !window.novaDesktop || !window.novaDesktop.configureFirewall) return '';
+  return `
+    <div class="net-info-box net-firewall-box" id="net-firewall-box">
+      <div class="net-firewall-title">Firewall de Windows</div>
+      <div class="net-firewall-text" id="net-firewall-status">Revisando el Firewall…</div>
+      <label class="checkbox-label"><input type="checkbox" id="net-firewall-db"> También la base de datos (solo si alguna caja se vinculó con el asistente como terminal con base en red)</label>
+      <div class="net-firewall-actions">
+        <button class="btn-primary" type="button" id="net-firewall-btn" onclick="configureLanFirewall()">Permitir cajas de la red</button>
+      </div>
+    </div>`;
+}
+
+async function _loadFirewallStatus() {
+  const statusEl = document.getElementById('net-firewall-status');
+  if (!statusEl || !window.novaDesktop || !window.novaDesktop.getFirewallStatus) return;
+  try {
+    const status = await window.novaDesktop.getFirewallStatus();
+    if (!status || !status.ok || status.platform !== 'win32') {
+      statusEl.textContent = 'No se pudo leer el Firewall de Windows en este equipo.';
+      return;
+    }
+    const server = status.server || {};
+    if (server.exists && server.scoped) {
+      statusEl.textContent = 'Listo: las cajas de la red local ya pueden conectarse a esta PC (puerto 3399, solo red local y Tailscale).';
+    } else if (server.exists) {
+      statusEl.textContent = 'Hay una regla para el puerto 3399, pero acepta conexiones de cualquier red. Pulsa el botón para limitarla a la red local.';
+    } else {
+      statusEl.textContent = 'Falta la regla: si otra caja no logra conectarse a esta PC, pulsa el botón. Windows pedirá permiso de administrador.';
+    }
+    const dbBox = document.getElementById('net-firewall-db');
+    if (dbBox && status.database && status.database.exists) dbBox.checked = true;
+  } catch (e) {
+    statusEl.textContent = 'No se pudo leer el Firewall: ' + e.message;
+  }
+}
+
+async function configureLanFirewall() {
+  const btn = document.getElementById('net-firewall-btn');
+  const includeDatabase = Boolean(document.getElementById('net-firewall-db')?.checked);
+  if (btn) { btn.disabled = true; btn.textContent = 'Esperando permiso de Windows…'; }
+  try {
+    const result = await window.novaDesktop.configureFirewall({ includeDatabase });
+    if (result && result.ok) {
+      _netToast('Firewall listo: las cajas de la red local ya pueden conectarse.');
+    } else if (result && result.cancelled) {
+      _netToast('Se canceló el permiso de administrador. El Firewall no cambió.', 'error');
+    } else {
+      _netToast((result && result.error) || 'No se pudo configurar el Firewall.', 'error');
+    }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Permitir cajas de la red'; }
+    _loadFirewallStatus();
+  }
 }
 
 // ── Thin-client helpers ───────────────────────────────────────────────────────

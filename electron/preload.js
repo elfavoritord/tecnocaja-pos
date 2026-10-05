@@ -155,6 +155,14 @@ contextBridge.exposeInMainWorld('novaDesktop', {
     return ipcRenderer.invoke('terminal:reset-config');
   },
 
+  // ── Firewall de Windows (red local multicaja) ──────────────────────────────
+  getFirewallStatus() {
+    return ipcRenderer.invoke('network:firewall-status');
+  },
+  configureFirewall(options) {
+    return ipcRenderer.invoke('network:configure-firewall', options || {});
+  },
+
   // ── Auto-updater (electron-updater + GitHub Releases) ────────────────────
   /**
    * Busca actualizaciones en GitHub Releases.

@@ -1,0 +1,869 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   TECNO CAJA — Estructura común: menú lateral y barra superior
+
+   Igual en todos los módulos. Solo variables de css/tokens.css (día y noche).
+   El comportamiento (íconos, grupos, "Más", menú del usuario) está en
+   js/shell.js; contraer/expandir sigue siendo toggleSidebar() de app.js:
+   .sidebar.collapsed = menú angosto, sin .collapsed = menú expandido.
+
+   Los selectores llevan #sidebar / .app para ganarle a las reglas viejas de
+   main.css (incluidas las de [data-theme="light"]).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --tc-rail-w: 84px;        /* menú angosto: ícono y nombre debajo */
+  --tc-menu-w: 248px;       /* menú expandido: ícono y nombre en una fila */
+}
+
+/* Compacto: menú solo con íconos. */
+@media (max-width: 1279px) {
+  :root {
+    --tc-rail-w: 64px;
+  }
+}
+
+#app.app {
+  background: var(--tc-bg);
+}
+
+.app .main-content {
+  min-width: 0;
+  background: var(--tc-bg);
+}
+
+/* ── Menú lateral ─────────────────────────────────────────────────────── */
+
+#sidebar.sidebar {
+  position: relative;
+  z-index: 310;
+  width: var(--tc-rail-w);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  background: var(--tc-surface);
+  border-right: var(--tc-border-w) solid var(--tc-border-soft);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  overflow: visible;
+  transition: none;
+  transform: none;
+}
+
+/* Expandido: flota sobre el contenido (no lo empuja) y se cierra al hacer
+   clic afuera, como hoy. El margen negativo deja el contenido en su lugar. */
+#sidebar.sidebar:not(.collapsed) {
+  width: var(--tc-menu-w);
+  margin-right: calc(var(--tc-rail-w) - var(--tc-menu-w));
+  border-right-color: var(--tc-border);
+}
+
+#sidebar .sidebar-logo {
+  height: var(--tc-topbar-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--tc-space-3);
+  padding: 0 var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+#sidebar .sidebar-logo .brand-logo-image {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--tc-radius-panel);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+#sidebar .sidebar-logo .logo-icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-primary);
+  color: var(--tc-on-primary);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-bold);
+}
+
+#sidebar .sidebar-logo .logo-name {
+  display: none;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  -webkit-text-fill-color: currentColor;
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-bold);
+}
+
+#sidebar:not(.collapsed) .sidebar-logo {
+  justify-content: flex-start;
+  padding: 0 var(--tc-space-4);
+}
+
+#sidebar:not(.collapsed) .sidebar-logo .logo-name {
+  display: block;
+  flex: 1;
+}
+
+/* Con el menú expandido el botón de las tres rayas de la barra queda debajo:
+   este hace lo mismo (contraer). */
+#sidebar .sidebar-close {
+  display: none;
+}
+
+#sidebar:not(.collapsed) .sidebar-close {
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: calc(var(--tc-space-2) * -1);
+  padding: 0;
+  border: 0;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  cursor: pointer;
+}
+
+#sidebar:not(.collapsed) .sidebar-close:hover {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+#sidebar .sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: var(--tc-space-1) 0;
+  overflow: hidden;
+}
+
+#sidebar:not(.collapsed) .sidebar-nav {
+  gap: 2px;
+  padding: var(--tc-space-2);
+  overflow-y: auto;
+}
+
+/* Módulo: ícono y nombre debajo (angosto) */
+#sidebar .nav-item,
+#sidebar .nav-more {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 60px;
+  width: 100%;
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--tc-text-2);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-medium);
+  line-height: 1.15;
+  text-align: center;
+  text-decoration: none;
+  white-space: normal;
+  cursor: pointer;
+  transition: none;
+}
+
+#sidebar .nav-item:hover,
+#sidebar .nav-more:hover {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+/* Activo: fondo morado suave y barra morada a la izquierda */
+#sidebar .nav-item.active,
+#sidebar .nav-more.active {
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+  border-left: 0;
+}
+
+#sidebar .nav-item.active::before,
+#sidebar .nav-more.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--tc-primary);
+}
+
+#sidebar .nav-icon {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 0;
+}
+
+#sidebar .nav-label {
+  display: none;
+}
+
+#sidebar .nav-short {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: normal;
+}
+
+/* Contador (Cola de cobro) y punto del bot */
+#sidebar .nav-badge {
+  position: absolute;
+  top: 5px;
+  left: calc(50% + 6px);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--tc-primary);
+  color: var(--tc-on-primary);
+  font-size: 11px;
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1;
+}
+
+#sidebar .nav-wa-dot {
+  position: absolute;
+  top: 8px;
+  left: calc(50% + 8px);
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tc-success-text);
+}
+
+/* Lo que no cabe en el menú angosto va en "Más" */
+#sidebar.collapsed .nav-item.is-overflow {
+  display: none;
+}
+
+#sidebar .nav-more {
+  order: 9999;
+}
+
+#sidebar .nav-more.hidden,
+#sidebar:not(.collapsed) .nav-more {
+  display: none;
+}
+
+/* Títulos de grupo: solo en el menú expandido */
+#sidebar .nav-group-title {
+  display: none;
+}
+
+#sidebar:not(.collapsed) .nav-group-title {
+  display: block;
+  flex-shrink: 0;
+  padding: var(--tc-space-3) var(--tc-space-3) var(--tc-space-1);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0.02em;
+}
+
+#sidebar:not(.collapsed) .nav-group-title.is-empty {
+  display: none;
+}
+
+/* Expandido: ícono y nombre en una fila */
+#sidebar:not(.collapsed) .nav-item {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: var(--tc-space-3);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border-radius: var(--tc-radius-btn);
+  font-size: var(--tc-fs-sm);
+  text-align: left;
+}
+
+#sidebar:not(.collapsed) .nav-item.active::before {
+  top: 8px;
+  bottom: 8px;
+  border-radius: 0 2px 2px 0;
+}
+
+#sidebar:not(.collapsed) .nav-label {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#sidebar:not(.collapsed) .nav-short {
+  display: none;
+}
+
+#sidebar:not(.collapsed) .nav-badge {
+  position: static;
+}
+
+#sidebar:not(.collapsed) .nav-wa-dot {
+  position: static;
+  flex-shrink: 0;
+}
+
+/* Compacto: solo íconos (el nombre sale al pasar el mouse) */
+@media (max-width: 1279px) {
+  #sidebar.collapsed .nav-short {
+    display: none;
+  }
+
+  #sidebar.collapsed .nav-item,
+  #sidebar.collapsed .nav-more {
+    min-height: 48px;
+  }
+
+  #sidebar.collapsed .nav-badge {
+    top: 3px;
+    left: calc(50% + 4px);
+  }
+}
+
+/* Botón redondo con la inicial del usuario */
+#sidebar .sidebar-footer {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  padding: var(--tc-space-2) 0;
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+#sidebar:not(.collapsed) .sidebar-footer {
+  justify-content: flex-start;
+  padding: var(--tc-space-2) var(--tc-space-4);
+}
+
+#sidebar .user-avatar {
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: 50%;
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#sidebar .user-avatar:hover,
+#sidebar .user-avatar[aria-expanded="true"] {
+  border-color: var(--tc-select-border);
+}
+
+/* Menús flotantes del menú lateral ("Más" y usuario): js/shell.js los ubica */
+.tc-shell-pop {
+  position: fixed;
+  z-index: 420;
+  width: 248px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  font-family: var(--tc-font);
+}
+
+#sidebar .user-menu .user-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--tc-space-2) var(--tc-space-3) var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  margin-bottom: var(--tc-space-1);
+}
+
+#sidebar .user-menu .user-name {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#sidebar .user-menu .user-role {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#sidebar .user-menu .btn-logout {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid transparent;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-medium);
+  text-align: left;
+  cursor: pointer;
+}
+
+#sidebar .user-menu .btn-logout:hover {
+  border-color: var(--tc-border);
+  background: transparent;
+  color: var(--tc-text);
+}
+
+.nav-more-menu .nav-more-group {
+  padding: var(--tc-space-2) var(--tc-space-3) var(--tc-space-1);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  letter-spacing: 0.02em;
+}
+
+.nav-more-menu .nav-more-item {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  width: 100%;
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid transparent;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-more-menu .nav-more-item:hover {
+  border-color: var(--tc-border);
+}
+
+.nav-more-menu .nav-more-item.is-active {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  color: var(--tc-select-text);
+}
+
+.nav-more-menu .nav-more-item .tc-icon {
+  color: var(--tc-text-2);
+}
+
+.nav-more-menu .nav-more-item.is-active .tc-icon {
+  color: currentColor;
+}
+
+/* ── Barra superior (52px) ────────────────────────────────────────────── */
+
+.app .topbar {
+  position: relative;
+  z-index: 300;
+  height: var(--tc-topbar-h);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-4);
+  padding: 0 var(--tc-space-4) 0 var(--tc-space-2);
+  background: var(--tc-surface);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-variant-numeric: tabular-nums;
+}
+
+.app .topbar-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+}
+
+.app .topbar .btn-menu,
+.app .topbar .topbar-icon-btn {
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  cursor: pointer;
+}
+
+.app .topbar .btn-menu:hover,
+.app .topbar .topbar-icon-btn:hover {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+.app .topbar .topbar-icon-btn.hidden {
+  display: none;
+}
+
+.app .topbar .breadcrumb {
+  flex-shrink: 0;
+  margin-left: var(--tc-space-1);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+  white-space: nowrap;
+}
+
+.app .topbar .topbar-business {
+  min-width: 0;
+  margin-left: var(--tc-space-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+}
+
+.app .topbar-right {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-4);
+  margin-left: auto;
+}
+
+/* Estado: caja, conexión, sincronización */
+.app .topbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  white-space: nowrap;
+}
+
+.app .topbar-status.hidden {
+  display: none;
+}
+
+.app .topbar-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--tc-text-2);
+}
+
+.app .topbar-caja[data-state="open"] .topbar-dot {
+  background: var(--tc-success-text);
+}
+
+.app .topbar-caja[data-state="closed"] {
+  color: var(--tc-text-2);
+}
+
+.app .topbar-conexion[data-state="offline"],
+.app .topbar-conexion[data-state="error"] {
+  color: var(--tc-danger-text);
+}
+
+.app .topbar-conexion[data-state="syncing"] {
+  color: var(--tc-warning-text);
+}
+
+.app .topbar-conexion[data-state="offline"] .topbar-dot,
+.app .topbar-conexion[data-state="error"] .topbar-dot {
+  background: var(--tc-danger-text);
+}
+
+.app .topbar-conexion[data-state="syncing"] .topbar-dot {
+  background: var(--tc-warning-text);
+}
+
+.app .topbar .topbar-sync {
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-2);
+  margin: 0 calc(var(--tc-space-2) * -1);
+  border: 0;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  cursor: pointer;
+}
+
+.app .topbar .topbar-sync:hover {
+  background: var(--tc-surface-2);
+}
+
+.app .topbar-sync-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+}
+
+.app .topbar-sync[data-state="pending"] {
+  color: var(--tc-warning-text);
+}
+
+.app .topbar-sync[data-state="error"] {
+  color: var(--tc-danger-text);
+}
+
+.app .topbar-sync[data-state="offline"] {
+  color: var(--tc-text-2);
+}
+
+/* Sin Internet (se vende igual) o caja en contingencia: aviso real, ámbar.
+   Servidor local caído: error, rojo. Ver js/sync-monitor.js. */
+.app .topbar-sync[data-state="local"],
+.app .topbar-sync[data-state="contingency"] {
+  color: var(--tc-warning-text);
+}
+
+.app .topbar-sync[data-state="server-down"] {
+  color: var(--tc-danger-text);
+}
+
+/* Hora: hh:mm a. m. en una línea (la fecha sale al pasar el mouse) */
+.app .topbar .topbar-time {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* Día / noche */
+.app .topbar .topbar-theme {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+}
+
+.app .topbar .topbar-theme:hover {
+  border-color: var(--tc-border-strong);
+}
+
+/* Avisos: licencia por vencer o vencida, negocio de prueba */
+.app .topbar .license-pill,
+.app .topbar .trial-business-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-warning-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-warning-bg);
+  color: var(--tc-warning-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  white-space: nowrap;
+}
+
+.app .topbar .license-pill.expired,
+.app .topbar .license-pill.suspended {
+  border-color: var(--tc-danger-border);
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+}
+
+.app .topbar .license-pill.hidden,
+.app .topbar .trial-business-pill.hidden {
+  display: none;
+}
+
+/* Notificaciones */
+.app .topbar .topbar-notif {
+  position: relative;
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--tc-radius-btn);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+  cursor: pointer;
+}
+
+.app .topbar .topbar-notif:hover {
+  background: var(--tc-surface-2);
+}
+
+.app .topbar .topbar-notif:focus-visible,
+.app .topbar .btn-menu:focus-visible,
+.app .topbar .topbar-icon-btn:focus-visible,
+.app .topbar .topbar-theme:focus-visible,
+.app .topbar .topbar-sync:focus-visible,
+#sidebar .nav-item:focus-visible,
+#sidebar .nav-more:focus-visible,
+#sidebar .user-avatar:focus-visible {
+  outline: 2px solid var(--tc-primary);
+  outline-offset: -2px;
+}
+
+.app .topbar-notif-icon {
+  display: inline-flex;
+}
+
+.app .topbar .notif-badge {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  width: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: var(--tc-primary);
+  color: var(--tc-on-primary);
+  font-family: var(--tc-font);
+  font-size: 11px;
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1;
+}
+
+.app .topbar .notif-badge.hidden {
+  display: none;
+}
+
+.app .topbar .notif-panel {
+  top: calc(100% + 6px);
+  width: 360px;
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  cursor: default;
+}
+
+.app .topbar .notif-panel.hidden {
+  display: none;
+}
+
+.app .topbar .notif-panel-header {
+  min-height: 52px;
+  padding: 0 var(--tc-space-2) 0 var(--tc-space-4);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.app .topbar .notif-panel-header .btn-ghost {
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-2);
+  border: 0;
+  background: transparent;
+  color: var(--tc-primary);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+}
+
+.app .topbar .notif-panel-body {
+  max-height: min(420px, calc(100vh - 120px));
+  padding: var(--tc-space-2);
+}
+
+.app .topbar .notif-item {
+  margin-bottom: var(--tc-space-2);
+  padding: var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+.app .topbar .notif-item-title {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+.app .topbar .notif-item-text,
+.app .topbar .notif-item-time,
+.app .topbar .notif-empty {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+.app .topbar .notif-sev--danger { color: var(--tc-danger-text); }
+.app .topbar .notif-sev--warning { color: var(--tc-warning-text); }
+.app .topbar .notif-sev--success { color: var(--tc-success-text); }
+.app .topbar .notif-sev--info { color: var(--tc-text); }
+
+/* Compacto: la barra conserva todo, con menos espacio entre elementos */
+@media (max-width: 1279px) {
+  .app .topbar-right {
+    gap: var(--tc-space-3);
+  }
+
+  .app .topbar .topbar-business {
+    display: none;
+  }
+}
+
+/* El robot de ayuda ya no flota: es el botón "Ayuda" de la barra superior. */
+#assistant-float {
+  display: none !important;
+}

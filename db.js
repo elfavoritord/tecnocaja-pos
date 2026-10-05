@@ -522,13 +522,23 @@ async function withTransaction(work) {
 //  1205 ER_LOCK_WAIT_TIMEOUT · 1213 ER_LOCK_DEADLOCK · 1062 ER_DUP_ENTRY
 // (este último normalmente en invoice_number bajo carrera de varias cajas —
 //  al reintentar, el contador FAC asigna el siguiente número libre).
+//  1020 ER_CHECKREAD: MariaDB 11.6+ (el runtime empaquetado es 12.x) trae
+//  innodb_snapshot_isolation=ON: si la transacción leyó una fila (stock,
+//  contador FAC) y otra caja la cambió antes de su UPDATE, falla en vez de
+//  pisar el valor. Es la protección contra perder descuentos de inventario
+//  (el stock se calcula leyendo y luego escribiendo); NO se apaga. Reintentar
+//  desde cero relee los valores ya confirmados.
 function isTransientTxnError(error) {
   const code = String(error && error.code || '').toUpperCase();
   const errno = Number(error && error.errno || 0);
   if (code === 'ER_LOCK_WAIT_TIMEOUT' || errno === 1205) return { retry: true, kind: 'lock_timeout' };
   if (code === 'ER_LOCK_DEADLOCK' || errno === 1213) return { retry: true, kind: 'deadlock' };
+  if (code === 'ER_CHECKREAD' || errno === 1020) return { retry: true, kind: 'snapshot_conflict' };
   if (code === 'ER_DUP_ENTRY' || errno === 1062) {
     const msg = String(error && error.message || '').toLowerCase();
+    // La misma venta reenviada (sales.client_request_id) no se reintenta: es
+    // un duplicado real y el handler devuelve la venta ya registrada.
+    if (msg.includes('client_request_id')) return { retry: false };
     // Solo reintentar duplicados de número de factura / PK de sales; otros
     // UNIQUE (cédula de cliente, etc.) no se resuelven reintentando.
     if (msg.includes('invoice_number') || msg.includes("for key 'sales") || msg.includes('sales.invoice')) {

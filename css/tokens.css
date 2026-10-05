@@ -1,0 +1,241 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   TECNO CAJA — Tokens de diseño (base para todo el sistema)
+
+   Prefijo --tc- para no chocar con las variables actuales de main.css
+   (--text2, --danger, --bg2...). Cada color tiene valor de noche y de día y
+   sigue el mismo mecanismo de tema que ya existe: <html data-theme="dark">
+   (por defecto) o <html data-theme="light"> (botón del sol, toggleTheme en
+   app.js). Los selectores no dependen de :root, así que un contenedor con
+   data-theme propio (la Guía de estilos) también toma sus colores.
+
+   Los colores salen de las variables actuales del sistema (main.css): fondos
+   --bg/--bg2/--bg3/--bg4, textos --text/--text2/--text3, morado --accent
+   (el del botón Facturar), --success, --warning y --danger. Donde el valor
+   del sistema no da contraste suficiente (verde #00E5A0 sobre blanco, ámbar
+   #FFB300 sobre blanco) el modo día usa un tono más oscuro del mismo color.
+
+   Ningún módulo debe escribir colores directos: todo sale de aquí.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Barlow — archivos locales (OFL, ver fonts/barlow/OFL.txt). Subconjunto
+   latin: cubre español completo (á é í ó ú ñ ü ¿ ¡). */
+@font-face {
+  font-family: 'Barlow';
+  src: url('fonts/barlow/barlow-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Barlow';
+  src: url('fonts/barlow/barlow-500.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Barlow';
+  src: url('fonts/barlow/barlow-600.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Barlow';
+  src: url('fonts/barlow/barlow-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ── Medidas (iguales en día y noche) ───────────────────────────────────── */
+:root {
+  --tc-font: 'Barlow', 'Segoe UI', system-ui, sans-serif;
+  --tc-weight-regular: 400;
+  --tc-weight-medium: 500;
+  --tc-weight-semibold: 600;
+  --tc-weight-bold: 700;
+
+  --tc-fs-xs: 12px;
+  --tc-fs-sm: 14px;
+  --tc-fs-md: 16px;         /* texto base */
+  --tc-fs-lg: 18px;
+  --tc-fs-xl: 22px;
+  --tc-fs-2xl: 28px;
+  --tc-fs-amount: 40px;     /* montos destacados (recibido, devuelta) */
+  --tc-fs-display: 64px;    /* "Total a pagar" */
+
+  --tc-border-w: 1px;
+  --tc-radius-btn: 6px;     /* botones y campos */
+  --tc-radius-panel: 8px;   /* paneles y tarjetas */
+
+  --tc-space-1: 4px;
+  --tc-space-2: 8px;
+  --tc-space-3: 12px;
+  --tc-space-4: 16px;
+  --tc-space-5: 20px;
+  --tc-space-6: 24px;
+
+  --tc-control-h: 44px;     /* mínimo para cualquier botón o campo */
+  --tc-quick-h: 48px;       /* montos rápidos */
+  --tc-method-h: 72px;      /* métodos de pago */
+  --tc-row-h: 56px;         /* filas de tabla */
+
+  --tc-topbar-h: 52px;
+  --tc-bottombar-h: 76px;
+  --tc-col-left: 432px;     /* Cobro: columna izquierda */
+  --tc-col-right: 324px;    /* Cobro: teclado */
+  --tc-side-panel: 340px;   /* Ventas: panel derecho */
+  --tc-search-h: 52px;      /* buscador de Ventas */
+  --tc-sale-row-h: 52px;    /* filas del pedido */
+  --tc-form-max: 1200px;    /* formularios en pantallas muy anchas */
+}
+
+/* Compacto (menos de 1280px): paneles laterales más angostos. */
+@media (max-width: 1279px) {
+  :root {
+    --tc-col-left: 320px;
+    --tc-col-right: 236px;
+    --tc-side-panel: 280px;
+  }
+}
+
+/* Grande (1600px o más): paneles un poco más anchos y texto base un punto
+   más grande. El espacio extra va al contenido, no a estirar botones. */
+@media (min-width: 1600px) {
+  :root {
+    --tc-fs-xs: 13px;
+    --tc-fs-sm: 15px;
+    --tc-fs-md: 17px;
+    --tc-fs-lg: 19px;
+    --tc-fs-xl: 23px;
+    --tc-col-left: 480px;
+    --tc-col-right: 360px;
+    --tc-side-panel: 380px;
+  }
+}
+
+/* ── Noche (tema por defecto) ───────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  /* Neutros */
+  --tc-bg: #0F1117;                         /* --bg */
+  --tc-surface: #161B27;                    /* --bg2: tarjetas, paneles, barras */
+  --tc-surface-2: #1E2435;                  /* --bg3 */
+  --tc-surface-key: #252D42;                /* --bg4: teclas */
+  --tc-surface-key-fn: #2E3650;             /* teclas Limpiar y Borrar */
+  --tc-border: #343C55;
+  --tc-border-strong: #4A5374;
+  --tc-border-soft: #252D42;
+  --tc-text: #E8EAF0;                       /* --text */
+  --tc-text-2: #9BA3BF;                     /* --text2 */
+
+  /* Principal: morado de la marca (botón Facturar, --accent) */
+  --tc-primary: #6C63FF;
+  --tc-on-primary: #FFFFFF;
+
+  /* Selección */
+  --tc-select-bg: rgba(108, 99, 255, 0.18);
+  --tc-select-border: #6C63FF;
+  --tc-select-text: #B3AEFF;
+  --tc-soft-border: rgba(108, 99, 255, 0.40);  /* botón morado suave */
+
+  /* Bloque de total */
+  --tc-total-bg: rgba(108, 99, 255, 0.14);
+  --tc-total-border: rgba(108, 99, 255, 0.40);
+  --tc-total-label: #B3AEFF;
+  --tc-total-number: #FFFFFF;
+
+  /* Correcto: solo "Cobrar e imprimir", la devuelta y estados correctos */
+  --tc-success: #0B7A4B;                    /* botón */
+  --tc-on-success: #FFFFFF;
+  --tc-success-bg: rgba(0, 229, 160, 0.10);
+  --tc-success-border: rgba(0, 229, 160, 0.45);
+  --tc-success-text: #00E5A0;               /* --success */
+
+  /* Aviso: solo avisos reales (stock bajo, falta por cobrar, cambios pendientes) */
+  --tc-warning-bg: rgba(255, 179, 0, 0.12);
+  --tc-warning-border: rgba(255, 179, 0, 0.45);
+  --tc-warning-text: #FFB300;               /* --warning */
+
+  /* Peligro: solo errores y acciones peligrosas */
+  --tc-danger-bg: rgba(255, 75, 110, 0.12);
+  --tc-danger-border: rgba(255, 75, 110, 0.50);
+  --tc-danger-text: #FF4B6E;                /* --danger */
+
+  /* Desactivado */
+  --tc-disabled-bg: #1A1F2C;
+  --tc-disabled-text: #5A6280;              /* --text3 */
+
+  /* Velo detrás de ventanas modales */
+  --tc-scrim: rgba(5, 7, 12, 0.62);
+
+  /* Gráficos (Reportes): series en orden */
+  --tc-chart-1: #6C63FF;
+  --tc-chart-2: #00E5A0;
+  --tc-chart-3: #FFB300;
+  --tc-chart-4: #B3AEFF;
+  --tc-chart-5: #9BA3BF;
+  --tc-chart-6: #FF4B6E;
+}
+
+/* ── Día ────────────────────────────────────────────────────────────────── */
+[data-theme="light"] {
+  /* Neutros */
+  --tc-bg: #F0F2F8;                         /* --bg */
+  --tc-surface: #FFFFFF;                    /* --bg2 */
+  --tc-surface-2: #F5F7FF;                  /* --bg3 */
+  --tc-surface-key: #F5F7FF;
+  --tc-surface-key-fn: #E6E9F2;
+  --tc-border: #CDD3E4;
+  --tc-border-strong: #A9B1CB;
+  --tc-border-soft: #E3E7F2;
+  --tc-text: #1A1E30;                       /* --text */
+  --tc-text-2: #4A5280;                     /* --text2 */
+
+  /* Principal */
+  --tc-primary: #6C63FF;
+  --tc-on-primary: #FFFFFF;
+
+  /* Selección */
+  --tc-select-bg: #EEEDFF;
+  --tc-select-border: #6C63FF;
+  --tc-select-text: #4F46E5;
+  --tc-soft-border: #D9D6FF;
+
+  /* Bloque de total */
+  --tc-total-bg: #EEEDFF;
+  --tc-total-border: #D9D6FF;
+  --tc-total-label: #4A5280;
+  --tc-total-number: #1A1E30;
+
+  /* Correcto */
+  --tc-success: #0B7A4B;
+  --tc-on-success: #FFFFFF;
+  --tc-success-bg: #E7F5EE;
+  --tc-success-border: #0B7A4B;
+  --tc-success-text: #0B7A4B;
+
+  /* Aviso */
+  --tc-warning-bg: #FDF1DC;
+  --tc-warning-border: #C77A1A;
+  --tc-warning-text: #7A3E00;
+
+  /* Peligro */
+  --tc-danger-bg: #FDECEC;
+  --tc-danger-border: #D92D20;
+  --tc-danger-text: #B42318;
+
+  /* Desactivado */
+  --tc-disabled-bg: #F1F3F8;
+  --tc-disabled-text: #8B93B0;              /* --text3 */
+
+  --tc-scrim: rgba(26, 30, 48, 0.40);
+
+  --tc-chart-1: #6C63FF;
+  --tc-chart-2: #0B7A4B;
+  --tc-chart-3: #C77A1A;
+  --tc-chart-4: #A9A3FF;
+  --tc-chart-5: #4A5280;
+  --tc-chart-6: #B42318;
+}

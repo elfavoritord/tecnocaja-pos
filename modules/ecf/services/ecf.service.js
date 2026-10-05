@@ -540,6 +540,14 @@ function buildPublicUrls(baseUrl) {
   };
 }
 
+// Errores en los que la DGII nunca respondió (sin Internet, DNS, conexión
+// rechazada o cortada, tiempo agotado). El documento sigue pendiente.
+const NETWORK_ERROR_PATTERN = /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ESOCKETTIMEDOUT|socket hang up|timeout of \d+ms exceeded|Network Error|getaddrinfo/i;
+function isNetworkLikeError(error) {
+  const text = [error?.code, error?.message, error?.details?.error, error?.cause?.code].filter(Boolean).join(' ');
+  return NETWORK_ERROR_PATTERN.test(text);
+}
+
 class EcfService {
   constructor({ query, withTransaction, resolveRequestActorUser }) {
     this.repository = new EcfRepository({ query, withTransaction });
@@ -2878,12 +2886,18 @@ class EcfService {
         issueDate: payload.sale.created_at || new Date(),
         });
         const signedRfce = signatureService.signXML(rfceXml, certificate);
+        if (context.internetOffline === true) {
+          return await this.deferSaleDocumentOffline(saleId, payload, { signedXml: signedRfce, submissionMode, context });
+        }
         dgiiResponse = await this.fcService.sendConsumptionSummary({
           signedXml: signedRfce,
           filename: `${payload.reservation.encf}-rfce.xml`,
           localEcfPath: null,
         });
       } else {
+        if (context.internetOffline === true) {
+          return await this.deferSaleDocumentOffline(saleId, payload, { signedXml, submissionMode, context });
+        }
         dgiiResponse = await this.receptionService.sendSignedEcf({
           signedXml,
           filename: `${payload.reservation.encf}.xml`,
@@ -2982,6 +2996,186 @@ class EcfService {
       signedXml: this.config.DEBUG_ECF ? signedXml : undefined,
       dgiiResponse: this.config.DEBUG_ECF ? dgiiResponse : undefined,
     };
+  }
+
+  // ── Sin Internet: el e-CF queda firmado y se envía después ──────────────
+  // La venta ya está guardada en la base local. El comprobante se firma igual
+  // que siempre; solo el envío a la DGII espera a que vuelva Internet (lo hace
+  // sendDeferredDocuments, que corre la PC principal). Así la caja no espera
+  // los timeouts de la DGII (45 s) y no se duplica la venta por reintentos.
+  async deferSaleDocumentOffline(saleId, payload, { signedXml, submissionMode, context = {} }) {
+    const documentId = payload.reservation.documentId;
+    const message = 'Sin conexión a Internet: el comprobante quedó firmado y se enviará a la DGII automáticamente cuando vuelva la conexión.';
+    await this.repository.markDocumentDeferred(documentId, { signedXml, message });
+    await this.repository.attachSaleSummary(saleId, {
+      encf: payload.reservation.encf,
+      tipoEcf: payload.tipoEcf,
+      documentId,
+      estado: 'pendiente',
+      trackId: null,
+      error: message,
+    });
+    await this.repository.saveAudit({
+      userId: context.userId || null,
+      userName: context.userName || null,
+      userRole: context.userRole || null,
+      saleId,
+      branchId: payload.sale.branch_id || null,
+      cashRegisterId: payload.sale.cash_register_id || null,
+      sequenceId: payload.reservation.sequence?.id || null,
+      documentId,
+      tipoComprobante: payload.tipoEcf,
+      encf: payload.reservation.encf,
+      actionName: 'document_deferred_offline',
+      status: 'warning',
+      detail: `Documento ${payload.reservation.encf} firmado sin Internet; envío a la DGII pendiente (${submissionMode}).`,
+      responsePayload: { deferred: true },
+    }).catch(() => {});
+    return {
+      ok: false,
+      pending: true,
+      offline: true,
+      documentId,
+      encf: payload.reservation.encf,
+      tipoEcf: payload.tipoEcf,
+      estado: 'pendiente',
+      submissionMode,
+      mensaje: message,
+    };
+  }
+
+  // Envía los e-CF diferidos. Mismo tratamiento de la respuesta que el envío
+  // en línea (processSaleForElectronicInvoicing): secuencia usada, estado,
+  // avance de secuencia, documento y resumen de la venta.
+  async sendDeferredDocuments({ limit = 25 } = {}) {
+    await this.ensureReady();
+    const status = await this.getSystemStatus();
+    if (!status.isActive) return { ok: true, sent: 0, failed: 0, skipped: 'e-CF desactivado' };
+    const documents = await this.repository.getDeferredDocuments(limit);
+    const results = [];
+    for (const document of documents) {
+      try {
+        results.push(await this.sendDeferredDocument(document));
+      } catch (error) {
+        results.push({ ok: false, id: document.id, encf: document.encf, error: error.message });
+        // Sin conexión otra vez: no seguir golpeando la DGII con el resto.
+        if (isNetworkLikeError(error)) break;
+      }
+    }
+    return {
+      ok: true,
+      sent: results.filter((r) => r.ok).length,
+      failed: results.filter((r) => !r.ok).length,
+      results,
+    };
+  }
+
+  async sendDeferredDocument(document) {
+    const certificate = await this.resolveCertificate();
+    const scope = await this.repository.getSaleScope(document.sale_id);
+    const retryContext = {
+      saleId: document.sale_id || null,
+      branchId: scope?.branch_id || null,
+      cashRegisterId: scope?.cash_register_id || null,
+    };
+    const sendXml = document.deferred_signed_xml;
+    let finalDocument = document;
+    let dgiiResponse;
+    try {
+      dgiiResponse = String(document.submission_mode || '').toLowerCase() === 'rfce'
+        ? await this.fcService.sendConsumptionSummary({
+          signedXml: sendXml,
+          filename: `${document.encf}-rfce.xml`,
+          localEcfPath: null,
+        })
+        : await this.receptionService.sendSignedEcf({
+          signedXml: sendXml,
+          filename: `${document.encf}.xml`,
+        });
+    } catch (error) {
+      if (isDgiiSequenceUsedResponse(error)) {
+        await this.repository.clearDocumentDeferred(document.id);
+        const retryResult = await this.retryDocumentAfterSequenceUsed(finalDocument, certificate, {
+          ...retryContext,
+          response: error.details || { error: error.message },
+        });
+        finalDocument = retryResult.document;
+        dgiiResponse = retryResult.response;
+      } else if (isNetworkLikeError(error)) {
+        // Sigue pendiente (sin marcar como enviado): se reintenta luego.
+        throw error;
+      } else {
+        await this.repository.clearDocumentDeferred(document.id);
+        await this.repository.markDocumentSent(document.id, {
+          estado_dgii: 'error',
+          track_id: null,
+          dgii_response_json: { error: error.message },
+          error_message: error.message,
+        });
+        if (document.sale_id) {
+          await this.repository.attachSaleSummary(document.sale_id, {
+            encf: document.encf,
+            tipoEcf: document.tipo_ecf,
+            documentId: document.id,
+            estado: 'error',
+            trackId: null,
+            error: error.message,
+          });
+        }
+        throw error;
+      }
+    }
+
+    await this.repository.clearDocumentDeferred(document.id);
+    if (isDgiiSequenceUsedResponse(dgiiResponse)) {
+      const retryResult = await this.retryDocumentAfterSequenceUsed(finalDocument, certificate, {
+        ...retryContext,
+        response: dgiiResponse,
+      });
+      finalDocument = retryResult.document;
+      dgiiResponse = retryResult.response;
+    }
+
+    const trackId = dgiiResponse.trackId || dgiiResponse.trackid || dgiiResponse.TrackId || null;
+    const state = normalizeDgiiState(dgiiResponse);
+    if (state !== 'rechazado' && finalDocument?.sequence_id) {
+      await this.repository.advanceSequenceAfterUse(finalDocument.sequence_id, finalDocument.encf);
+    }
+    await this.repository.markDocumentSent(finalDocument.id, {
+      estado_dgii: state,
+      track_id: trackId,
+      dgii_response_json: dgiiResponse,
+      error_message: state === 'rechazado' ? (dgiiResponse.mensaje || dgiiResponse.message || 'DGII rechazó el documento.') : null,
+    });
+    if (document.sale_id) {
+      await this.repository.attachSaleSummary(document.sale_id, {
+        encf: finalDocument.encf,
+        tipoEcf: finalDocument.tipo_ecf || document.tipo_ecf,
+        documentId: finalDocument.id,
+        estado: state,
+        trackId,
+        error: dgiiResponse.mensaje || dgiiResponse.message || null,
+      });
+    }
+    await this.repository.saveAudit({
+      saleId: document.sale_id || null,
+      branchId: retryContext.branchId,
+      cashRegisterId: retryContext.cashRegisterId,
+      sequenceId: finalDocument.sequence_id || null,
+      documentId: finalDocument.id,
+      tipoComprobante: finalDocument.tipo_ecf || document.tipo_ecf,
+      encf: finalDocument.encf,
+      actionName: 'document_emitted_deferred',
+      status: state === 'rechazado' ? 'warning' : 'ok',
+      detail: `Documento ${finalDocument.encf} enviado a la DGII al volver Internet.`,
+      responsePayload: { trackId, state },
+    }).catch(() => {});
+    return { ok: !['rechazado', 'error', 'error_consulta', 'error_auth'].includes(state), id: finalDocument.id, encf: finalDocument.encf, estado: state, trackId };
+  }
+
+  async countDeferredDocuments() {
+    await this.ensureReady();
+    return this.repository.countDeferredDocuments();
   }
 
   async listDocuments(filters = {}) {

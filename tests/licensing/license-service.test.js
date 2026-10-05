@@ -149,16 +149,80 @@ describe('server/licensing/license-service', () => {
     const offline = await offlineService.resolveState({ force: true, allowRemote: true });
     expect(offline.source).toBe('cache');
     expect(offline.license.canEnter).toBe(true);
-    expect(offline.license.offlineDaysRemaining).toBe(2);
+    expect(offline.license.offlineDaysRemaining).toBeNull(); // activada: sin límite
   });
 
-  it('bloquea cuando se supera la gracia offline', async () => {
+  it('una licencia activada sigue funcionando meses sin Internet', async () => {
     const state = createMockQueryState();
     const query = createMockQuery(state);
     let now = new Date('2026-04-30T10:00:00.000Z');
     const device = { deviceId: 'npd_test_2', hostname: 'POS-02', platform: 'win32', arch: 'x64' };
 
-    const seedService = createLicenseService({
+    await createLicenseService({
+      query,
+      now: () => now,
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+        overrides: { expiresAt: new Date('2027-04-30T10:00:00.000Z') },
+      }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    }).resolveState({ force: true, allowRemote: true });
+
+    now = new Date('2026-08-15T12:00:00.000Z'); // 107 días después, sin Internet
+    const result = await createLicenseService({
+      query,
+      now: () => now,
+      device,
+      fetchRemoteLicense: async () => { throw new Error('offline'); },
+    }).resolveState({ force: true, allowRemote: true });
+
+    expect(result.source).toBe('cache');
+    expect(result.license.canEnter).toBe(true);
+    expect(result.license.blockedCode).toBeNull();
+    expect(result.license.offlineGraceDays).toBeNull();
+  });
+
+  it('sin Internet, una licencia activada igual vence en su fecha (renovar sí necesita Internet)', async () => {
+    const state = createMockQueryState();
+    const query = createMockQuery(state);
+    let now = new Date('2026-04-30T10:00:00.000Z');
+    const device = { deviceId: 'npd_test_2b', hostname: 'POS-02B', platform: 'win32', arch: 'x64' };
+
+    await createLicenseService({
+      query,
+      now: () => now,
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+        overrides: { expiresAt: new Date('2026-05-30T10:00:00.000Z') },
+      }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    }).resolveState({ force: true, allowRemote: true });
+
+    now = new Date('2026-06-02T12:00:00.000Z');
+    const result = await createLicenseService({
+      query,
+      now: () => now,
+      device,
+      fetchRemoteLicense: async () => { throw new Error('offline'); },
+    }).resolveState({ force: true, allowRemote: true });
+
+    expect(result.license.canEnter).toBe(false);
+    expect(result.license.blockedCode).toBe('expired');
+  });
+
+  it('la prueba sí mantiene el límite de días sin Internet', async () => {
+    const state = createMockQueryState();
+    state.configRow.trial_started_at = '2026-04-10 10:00:00';
+    state.configRow.trial_ends_at = '2026-05-10 10:00:00';
+    const query = createMockQuery(state);
+    let now = new Date('2026-04-15T10:00:00.000Z');
+    const device = { deviceId: 'npd_test_2c', hostname: 'POS-02C', platform: 'win32', arch: 'x64' };
+
+    await createLicenseService({
       query,
       now: () => now,
       device,
@@ -166,24 +230,22 @@ describe('server/licensing/license-service', () => {
         deviceId: device.deviceId,
         secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
         overrides: {
-          expiresAt: new Date('2026-05-30T10:00:00.000Z'),
+          status: 'trial',
+          issuedAt: new Date('2026-04-10T10:00:00.000Z'),
+          expiresAt: new Date('2026-05-10T10:00:00.000Z'),
         },
       }),
       updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
-    });
-    await seedService.resolveState({ force: true, allowRemote: true });
+    }).resolveState({ force: true, allowRemote: true });
 
-    now = new Date('2026-05-05T12:00:00.000Z');
-    const offlineService = createLicenseService({
+    now = new Date('2026-04-20T12:00:00.000Z'); // 5 días sin Internet (límite: 3)
+    const result = await createLicenseService({
       query,
       now: () => now,
       device,
-      fetchRemoteLicense: async () => {
-        throw new Error('offline');
-      },
-    });
+      fetchRemoteLicense: async () => { throw new Error('offline'); },
+    }).resolveState({ force: true, allowRemote: true });
 
-    const result = await offlineService.resolveState({ force: true, allowRemote: true });
     expect(result.license.canEnter).toBe(false);
     expect(result.license.blockedCode).toBe('offline_grace');
   });
@@ -353,5 +415,227 @@ describe('server/licensing/license-service', () => {
     expect(result.license.canEnter).toBe(false);
     expect(result.license.daysLeft).toBe(0);
     expect(state.configRow.trial_ends_at).toBe('2026-05-01 10:00:00');
+  });
+
+  it('con fechas al estilo MariaDB (Date local) la prueba no crece al reiniciar varias veces', async () => {
+    const state = createMockQueryState();
+    state.configRow.trial_started_at = '2026-04-20 14:00:00';
+    state.configRow.trial_ends_at = '2026-05-20 14:00:00';
+    // mysql2 (timezone 'local') devuelve el DATETIME como Date interpretando el
+    // texto como hora local — así llegaba a mirrorStateToConfig.
+    const toMysqlDate = (value) => {
+      if (typeof value !== 'string') return value;
+      const [y, m, d, h, mi, s] = value.split(/[- :]/).map(Number);
+      return new Date(y, m - 1, d, h, mi, s);
+    };
+    const baseQuery = createMockQuery(state);
+    const mysqlLikeQuery = async (sql, params) => {
+      const rows = await baseQuery(sql, params);
+      if (!/FROM config/i.test(sql) || !Array.isArray(rows)) return rows;
+      return rows.map((row) => ({
+        ...row,
+        trial_started_at: toMysqlDate(row.trial_started_at),
+        trial_ends_at: toMysqlDate(row.trial_ends_at),
+      }));
+    };
+    const device = { deviceId: 'npd_test_11', hostname: 'POS-11', platform: 'win32', arch: 'x64' };
+
+    for (let restart = 0; restart < 8; restart += 1) {
+      const service = createLicenseService({
+        query: mysqlLikeQuery,
+        now: () => new Date('2026-04-25T14:00:00.000Z'),
+        device,
+        fetchRemoteLicense: async () => buildRemoteLicense({
+          deviceId: device.deviceId,
+          secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+          overrides: { status: 'trial', expiresAt: new Date('2026-05-20T18:00:00.000Z') },
+        }),
+        updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+      });
+      const result = await service.resolveState({ force: true, allowRemote: true });
+      expect(result.license.daysLeft).toBe(25);
+    }
+
+    expect(state.configRow.trial_started_at).toBe('2026-04-20 14:00:00');
+    expect(state.configRow.trial_ends_at).toBe('2026-05-20 14:00:00');
+  });
+
+  it('la prueba dura 30 días desde su inicio aunque Firebase traiga un vencimiento más tarde', async () => {
+    const state = createMockQueryState();
+    state.configRow.trial_started_at = '2026-04-01 10:00:00';
+    state.configRow.trial_ends_at = '2026-05-09 10:00:00'; // inflado por el bug viejo
+    const device = { deviceId: 'npd_test_12', hostname: 'POS-12', platform: 'win32', arch: 'x64' };
+
+    const service = createLicenseService({
+      query: createMockQuery(state),
+      now: () => new Date('2026-05-05T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+        overrides: { status: 'trial', expiresAt: new Date('2026-06-01T10:00:00.000Z') },
+      }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    });
+
+    const result = await service.resolveState({ force: true, allowRemote: true });
+    expect(result.license.canEnter).toBe(false);
+    expect(result.license.blockedCode).toBe('expired');
+    expect(result.license.trialEndsAt).toBe('2026-05-01T10:00:00.000Z');
+    expect(state.configRow.trial_ends_at).toBe('2026-05-01 10:00:00');
+    expect(state.configRow.license_status).toBe('expired');
+  });
+
+  it('una prueba inflada ya no se reinicia a "hoy + 30 días"', async () => {
+    const state = createMockQueryState();
+    state.configRow.trial_started_at = '2026-04-25 10:00:00';
+    state.configRow.trial_ends_at = '2026-07-01 10:00:00';
+    const service = createLicenseService({
+      query: createMockQuery(state),
+      now: () => new Date('2026-05-01T10:00:00.000Z'),
+      device: { deviceId: 'npd_test_13', hostname: 'POS-13', platform: 'win32', arch: 'x64' },
+      fetchRemoteLicense: async () => { throw new Error('offline'); },
+    });
+    state.configRow.setup_completed = 0; // camino bootstrap (sin caché ni Firebase)
+
+    const result = await service.resolveState({ force: true, allowRemote: true });
+    expect(result.license.daysLeft).toBe(24);
+    expect(state.configRow.trial_started_at).toBe('2026-04-25 10:00:00');
+    expect(state.configRow.trial_ends_at).toBe('2026-05-25 10:00:00');
+  });
+
+  it('multicaja: cada caja lee su propio caché sin Internet aunque compartan la base', async () => {
+    const state = createMockQueryState();
+    state.configRow.business_structure_mode = 'multicaja';
+    const rows = new Map();
+    const baseQuery = createMockQuery(state);
+    // Base compartida con una fila de caché por id (como MariaDB en la LAN).
+    const sharedQuery = async (sql, params = []) => {
+      const normalized = String(sql || '').replace(/\s+/g, ' ').trim();
+      if (normalized.includes('SELECT cache_blob, integrity_hash FROM license_cache')) {
+        return rows.has(params[0]) ? [rows.get(params[0])] : [];
+      }
+      if (normalized.startsWith('INSERT INTO license_cache')) {
+        rows.set(params[0], { cache_blob: params[1], integrity_hash: params[2] });
+        return { affectedRows: 1 };
+      }
+      return baseQuery(sql, params);
+    };
+    let now = new Date('2026-04-30T10:00:00.000Z');
+    // Cada PC genera su propio secreto local (scripts/runtime-bootstrap.js).
+    const machines = [
+      { secret: 'secreto-pc-principal', device: { deviceId: 'npd_principal', hostname: 'CAJA-1', platform: 'win32', arch: 'x64' } },
+      { secret: 'secreto-pc-caja-2', device: { deviceId: 'npd_caja_2', hostname: 'CAJA-2', platform: 'win32', arch: 'x64' } },
+    ];
+    const asMachine = async (machine, fn) => {
+      process.env.TECNO_CAJA_LICENSE_STORAGE_SECRET = machine.secret;
+      return fn();
+    };
+
+    for (const machine of machines) {
+      await asMachine(machine, () => createLicenseService({
+        query: sharedQuery,
+        now: () => now,
+        device: machine.device,
+        fetchRemoteLicense: async () => buildRemoteLicense({
+          deviceId: machine.device.deviceId,
+          secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+          overrides: { deviceLimit: 2 },
+        }),
+        updateRemoteDevice: async () => ({ allowed: true, activeCount: 2, limit: 2 }),
+      }).resolveState({ force: true, allowRemote: true }));
+    }
+    expect(rows.size).toBe(2);
+
+    // Se cae Internet: las dos cajas siguen entrando con su caché.
+    now = new Date('2026-05-01T10:00:00.000Z');
+    for (const machine of machines) {
+      const result = await asMachine(machine, () => createLicenseService({
+        query: sharedQuery,
+        now: () => now,
+        device: machine.device,
+        fetchRemoteLicense: async () => { throw new Error('offline'); },
+      }).resolveState({ force: true, allowRemote: true }));
+      expect(result.source).toBe('cache');
+      expect(result.license.canEnter).toBe(true);
+      expect(result.license.blockedCode).toBeNull();
+    }
+  });
+
+  it('lee el caché de la fila única de versiones anteriores y luego usa la suya', async () => {
+    const state = createMockQueryState();
+    const rows = new Map();
+    const baseQuery = createMockQuery(state);
+    const sharedQuery = async (sql, params = []) => {
+      const normalized = String(sql || '').replace(/\s+/g, ' ').trim();
+      if (normalized.includes('SELECT cache_blob, integrity_hash FROM license_cache')) {
+        return rows.has(params[0]) ? [rows.get(params[0])] : [];
+      }
+      if (normalized.startsWith('INSERT INTO license_cache')) {
+        rows.set(params[0], { cache_blob: params[1], integrity_hash: params[2] });
+        return { affectedRows: 1 };
+      }
+      return baseQuery(sql, params);
+    };
+    const device = { deviceId: 'npd_legacy', hostname: 'POS-L', platform: 'win32', arch: 'x64' };
+    await createLicenseService({
+      query: sharedQuery,
+      now: () => new Date('2026-04-30T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({ deviceId: device.deviceId, secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    }).resolveState({ force: true, allowRemote: true });
+    // Simula una instalación vieja: el caché estaba en la fila 1.
+    const [ownId, ownRow] = [...rows.entries()][0];
+    rows.clear();
+    rows.set(1, ownRow);
+
+    const result = await createLicenseService({
+      query: sharedQuery,
+      now: () => new Date('2026-05-01T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => { throw new Error('offline'); },
+    }).resolveState({ force: true, allowRemote: true });
+    expect(result.source).toBe('cache');
+    expect(result.license.canEnter).toBe(true);
+    expect(rows.has(ownId)).toBe(true); // se pasó a la fila de este equipo
+  });
+
+  it('al formatear libera este equipo de la licencia que tenía en caché', async () => {
+    const state = createMockQueryState();
+    const query = createMockQuery(state);
+    const device = { deviceId: 'npd_test_9', hostname: 'POS-09', platform: 'win32', arch: 'x64' };
+    const released = [];
+
+    const service = createLicenseService({
+      query,
+      now: () => new Date('2026-04-30T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+      }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+      releaseRemoteDevice: async (licenseId, deviceId) => { released.push({ licenseId, deviceId }); },
+    });
+    await service.resolveState({ force: true, allowRemote: true });
+
+    const result = await service.releaseCurrentDevice('');
+
+    expect(result).toEqual({ released: true, licenseId: 'lic_demo_1' });
+    expect(released).toEqual([{ licenseId: 'lic_demo_1', deviceId: 'npd_test_9' }]);
+  });
+
+  it('el formateo sigue aunque Firebase no responda al liberar el equipo', async () => {
+    const state = createMockQueryState();
+    const service = createLicenseService({
+      query: createMockQuery(state),
+      device: { deviceId: 'npd_test_10', hostname: 'POS-10', platform: 'win32', arch: 'x64' },
+      releaseRemoteDevice: async () => { throw new Error('offline'); },
+    });
+
+    await expect(service.releaseCurrentDevice('lic_demo_1'))
+      .resolves.toEqual({ released: false, licenseId: 'lic_demo_1', reason: 'offline' });
+    await expect(service.releaseCurrentDevice('')).resolves.toEqual({ released: false, reason: 'no_license' });
   });
 });

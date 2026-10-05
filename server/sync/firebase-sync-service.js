@@ -8,14 +8,14 @@
  *  - Reusa modules/firebase-admin.js (lee FIREBASE_SERVICE_ACCOUNT_PATH /
  *    FIREBASE_SERVICE_ACCOUNT_JSON, igual que el resto del sistema). Se acabó
  *    el bug de FIREBASE_KEY_PATH inexistente.
- *  - checkInternet() hace un ping real (DNS lookup contra firestore.googleapis.com).
+ *  - checkInternet() usa server/network/internet-monitor.js (DNS + conexión TCP real).
  *  - Si Firebase Admin no se pudo inicializar al arrancar (ej. sin internet),
  *    se reintenta cada vez que vuelve la conexión.
  *  - Expone lastError para que la UI pueda mostrar diagnóstico.
  */
 
-const dns = require('dns').promises;
 const { FirebaseSyncQueue } = require('./firebase-sync-queue');
+const { getInternetMonitor } = require('../network/internet-monitor');
 
 // Cargar el módulo central de Firebase Admin de forma defensiva — si por
 // alguna razón no está disponible, el servicio sigue funcionando en modo
@@ -27,10 +27,6 @@ try {
   console.warn('⚠️  modules/firebase-admin no disponible:', err.message);
 }
 
-// Host usado para detectar internet. Usar el dominio real de Firestore
-// porque si el firewall bloquea Firestore concretamente, da igual que
-// google.com responda — sync va a fallar de todos modos.
-const INTERNET_PROBE_HOST = 'firestore.googleapis.com';
 
 class FirebaseSyncService {
   constructor() {
@@ -52,11 +48,19 @@ class FirebaseSyncService {
     // Inicializar tabla de cola
     await FirebaseSyncQueue.init();
 
-    // Primer chequeo inmediato (no esperar 10s)
-    await this.checkInternet();
+    // Internet lo vigila server/network/internet-monitor.js (DNS + conexión
+    // TCP real; un solo vigilante para todo el sistema). Aquí solo se escucha:
+    // cuando vuelve Internet se sube lo pendiente de inmediato, sin esperar
+    // al intervalo de 30 s.
+    const monitor = getInternetMonitor();
+    monitor.on('change', (online) => {
+      this._applyInternetState(online);
+      if (online) this.processPendingItems().catch(() => {});
+    });
+    monitor.start();
 
-    // Detectar cambios de internet cada 10 segundos
-    this.checkInternetInterval = setInterval(() => this.checkInternet(), 10000);
+    // Primer chequeo inmediato (no esperar al ciclo del monitor)
+    await this.checkInternet();
 
     // Intentar sincronizar cada 30 segundos si hay internet
     this.syncInterval = setInterval(() => this.processPendingItems(), 30000);
@@ -73,19 +77,15 @@ class FirebaseSyncService {
   }
 
   /**
-   * Verifica conectividad real a Firebase haciendo un DNS lookup.
-   * Es barato (no consume cuota), y si DNS resuelve es muy probable que
-   * Firestore esté alcanzable.
+   * Comprueba Internet ahora (server/network/internet-monitor.js: DNS +
+   * conexión TCP a firestore.googleapis.com y otros destinos).
    */
   async checkInternet() {
-    let online = false;
-    try {
-      await dns.lookup(INTERNET_PROBE_HOST);
-      online = true;
-    } catch (err) {
-      online = false;
-    }
+    const online = await getInternetMonitor().check();
+    this._applyInternetState(online);
+  }
 
+  _applyInternetState(online) {
     const wasOnline = this.isOnline;
     this.isOnline = online;
 
