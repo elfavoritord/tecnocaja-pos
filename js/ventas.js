@@ -1439,6 +1439,7 @@ function calculateCurrentSaleTotals() {
 
 function formatSuspendedSaleDate(value) {
   if (!value) return '';
+  if (window.TcFecha) return window.TcFecha.formatear(value);
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleString('es-DO', {
@@ -1776,6 +1777,7 @@ function syncSalesSplitViewLayout(forceValue = null) {
     catalogPanel.classList.toggle('hidden', !enabled);
     catalogPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
   }
+  window.VentasUI?.sync();
 
   return enabled;
 }
@@ -2926,36 +2928,25 @@ function buildBillingStepModalMarkup() {
   `;
 }
 
+// Filas de la lista de productos de "Cobrar y facturar" (css/cobro.css):
+// "4 ×  Bombillo LED 9W  380.00".
 function buildBillingCompactSummaryRowsMarkup() {
   if (!Array.isArray(DB.saleItems) || !DB.saleItems.length) {
-    return `
-      <div class="billing-compact-empty">
-        <strong>No existen productos para cobrar</strong>
-        <span>Escanea o agrega productos antes de abrir el cobro.</span>
-      </div>
-    `;
+    return '<div class="cobro-lines-empty">No hay productos en esta venta.</div>';
   }
 
-  return DB.saleItems.map((item, index) => {
+  return DB.saleItems.map((item) => {
     const qty = Number(item?.qty || 0);
-    const price = Number(item?.precio || 0);
-    const discount = Number(item?.descuento || 0);
-    const tax = Number(item?.itbis || 0);
-    const total = Number(item?.total || 0);
+    const qtyText = Number.isInteger(qty)
+      ? String(qty)
+      : qty.toLocaleString('es-DO', { maximumFractionDigits: 3 });
+    const name = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : (item.nombre || 'Producto');
+    const total = Number(item?.total || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return `
-      <div class="billing-compact-line">
-        <div class="billing-compact-line-main">
-          <span class="billing-compact-line-index">${index + 1}</span>
-          <div class="billing-compact-line-copy">
-            <strong>${escapeHtml(typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre || 'Producto')}</strong>
-            <span>${escapeHtml(String(item?.codigo || ''))}</span>
-          </div>
-        </div>
-        <div class="billing-compact-line-meta">${qty}</div>
-        <div class="billing-compact-line-meta">${fmt(price)}</div>
-        <div class="billing-compact-line-meta">${discount}%</div>
-        <div class="billing-compact-line-meta">${tax}%</div>
-        <div class="billing-compact-line-total">${fmt(total)}</div>
+      <div class="cobro-line">
+        <span class="cobro-line-qty">${escapeHtml(qtyText)} ×</span>
+        <span class="cobro-line-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        <span class="cobro-line-total">${total}</span>
       </div>
     `;
   }).join('');
@@ -2964,472 +2955,6 @@ function buildBillingCompactSummaryRowsMarkup() {
 function getBillingActiveDocumentPreset() {
   if (DB.saleDocumentType === 'factura-electronica') return 'factura-electronica';
   return String(DB.saleNcfType || '').trim().toUpperCase() || 'ticket';
-}
-
-function buildBillingCompactModalMarkup() {
-  const total = parseFmt(document.getElementById('s-total')?.textContent || fmt(0));
-  const selectedClient = getSelectedSaleClient();
-  const activeClientId = DB.saleClientId ? String(DB.saleClientId) : '';
-  const activePreset = getBillingActiveDocumentPreset();
-  const paymentMethod = DB.payMethod || 'efectivo';
-  const printMode = getBillingPrintMode();
-  const hasProducts = Array.isArray(DB.saleItems) && DB.saleItems.length > 0 && total > 0;
-  const discountVal = parseFloat(DB.saleGeneralDiscount || 0) || 0;
-  const orderType = String(DB.saleOrderType || 'mostrador');
-
-  const mainDocs = [
-    { key: 'ticket',              label: 'Ticket', hint: 'Ticket rápido' },
-    { key: 'B02',                 label: 'B02',    hint: 'Consumidor final' },
-    { key: 'B01',                 label: 'B01',    hint: 'Crédito fiscal' },
-    { key: 'factura-electronica', label: 'e-CF',   hint: 'Electrónica' }
-  ];
-  // Comprobantes menos frecuentes en un desplegable aparte, en vez de llenar
-  // la fila de pills — B11/B12/B13/B17 quedan fuera a propósito (esos son de
-  // Compras/Gastos, no de una venta del POS).
-  const extraDocs = [
-    { key: 'B14', label: 'B14 — Régimen Especial' },
-    { key: 'B15', label: 'B15 — Gubernamental' },
-    { key: 'B16', label: 'B16 — Exportaciones' },
-    { key: 'B03', label: 'B03 — Nota de Débito' },
-    { key: 'B04', label: 'B04 — Nota de Crédito' },
-  ];
-  const activeExtraDoc = extraDocs.find((doc) => doc.key === activePreset);
-
-  const sessionExchangeRate = Number(DB.caja?.activeSession?.exchangeRateUsdDop || 0);
-  const paymentMethodButtons = [
-    { key: 'efectivo',      icon: '💵',   label: 'Efectivo',  shortcut: 'F2' },
-    { key: 'tarjeta',       icon: '💳',   label: 'Tarjeta',   shortcut: 'F3' },
-    { key: 'transferencia', icon: '🏦',   label: 'Transfer.', shortcut: 'F4' },
-    { key: 'mixto',         icon: '💵💳', label: 'Mixto',     shortcut: 'F5' },
-    { key: 'credito',       icon: '📄',   label: 'Crédito',   shortcut: 'F6' },
-    { key: 'contra_entrega',icon: '🛵',   label: 'Contra entrega', shortcut: 'F8' },
-    // Solo si el turno activo tiene una tasa de cambio válida (Fase 1 multi-moneda)
-    ...(sessionExchangeRate > 0 ? [{ key: 'usd', icon: '💵', label: 'Dólares', shortcut: 'F7' }] : [])
-  ];
-
-  const clientChips = selectedClient ? `
-    <span class="billing-v3-client-chip">👤 ${escapeHtml(selectedClient.nombre || '')}</span>
-    ${selectedClient.cedula ? `<span class="billing-v3-client-chip">🪪 ${escapeHtml(selectedClient.cedula)}</span>` : ''}
-    ${selectedClient.telefono ? `<span class="billing-v3-client-chip">📞 ${escapeHtml(selectedClient.telefono)}</span>` : ''}
-  ` : '';
-
-  return `
-    <div class="billing-v3-shell">
-
-      <!-- ══ SUBHEADER: Cliente + Tipo + [% Desc] ══ -->
-      <div class="billing-v3-subheader">
-        <!-- Cliente -->
-        <div class="billing-v3-client-wrap">
-          <label class="billing-v3-sh-label">Cliente</label>
-          <div class="billing-v3-client-row">
-            <select id="sale-client-select" class="form-input billing-v3-client-select"
-              onchange="setSaleClient(this.value); _syncBillingV3ClientExpand()">
-              <option value="">${getBillingClientOptionLabel()}</option>
-              ${DB.clientes
-                .slice()
-                .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
-                .map((c) => `<option value="${c.id}" ${activeClientId === String(c.id) ? 'selected' : ''}>${c.nombre}${c.cedula ? ` · ${c.cedula}` : ''}</option>`)
-                .join('')}
-            </select>
-            <button class="billing-v3-add-btn" type="button" onclick="toggleBillingQuickClient()" title="+ Nuevo cliente">+</button>
-          </div>
-          <!-- Chips del cliente real (auto-expande al seleccionar) -->
-          <div id="billing-v3-client-expand" class="billing-v3-client-expand ${selectedClient ? '' : 'hidden'}">
-            ${clientChips}
-          </div>
-          <!-- Formulario de cliente rápido -->
-          <div id="billing-quick-client" class="billing-quick-client hidden">
-            <div class="billing-step-grid billing-step-grid-tight">
-              <div class="billing-step-field">
-                <label>Nombre</label>
-                <input id="billing-qc-nombre" type="text" class="form-input billing-step-input" placeholder="Nombre completo">
-              </div>
-              <div class="billing-step-field">
-                <label>Cédula/RNC</label>
-                <input id="billing-qc-cedula" type="text" class="form-input billing-step-input" placeholder="Documento">
-              </div>
-              <div class="billing-step-field">
-                <label>RNC</label>
-                <input id="billing-qc-rnc" type="text" class="form-input billing-step-input" placeholder="RNC">
-              </div>
-              <div class="billing-step-field">
-                <label>Teléfono</label>
-                <input id="billing-qc-telefono" type="text" class="form-input billing-step-input" placeholder="809-000-0000">
-              </div>
-              <div class="billing-step-field">
-                <label>WhatsApp</label>
-                <input id="billing-qc-whatsapp" type="text" class="form-input billing-step-input" placeholder="809-000-0000">
-              </div>
-              <div class="billing-step-field">
-                <label>Dirección</label>
-                <input id="billing-qc-direccion" type="text" class="form-input billing-step-input" placeholder="Dirección">
-              </div>
-            </div>
-            <div class="billing-quick-client-actions">
-              <button type="button" class="btn-secondary" onclick="toggleBillingQuickClient(false)">Cancelar</button>
-              <button type="button" class="btn-primary" onclick="saveBillingQuickClient()">Guardar</button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Tipo de comprobante + Botón descuento -->
-        <div class="billing-v3-sh-right">
-          <div class="billing-v3-tipo-wrap">
-            <label class="billing-v3-sh-label">Tipo</label>
-            <div class="billing-v3-doc-pills">
-              ${mainDocs.map((doc) => `
-                <button type="button" data-preset="${doc.key}"
-                  class="billing-v3-doc-pill ${activePreset === doc.key ? 'is-active' : ''}"
-                  onclick="setSaleDocumentPreset('${doc.key}')"
-                  title="${doc.hint}"><span>${doc.label}</span></button>
-              `).join('')}
-              <select class="billing-v3-doc-pill billing-v3-doc-pill--select ${activeExtraDoc ? 'is-active' : ''}"
-                onchange="setSaleDocumentPreset(this.value)" title="Otros comprobantes fiscales">
-                <option value="" ${activeExtraDoc ? '' : 'selected'} disabled>Más ▾</option>
-                ${extraDocs.map((doc) => `<option value="${doc.key}" ${activePreset === doc.key ? 'selected' : ''}>${doc.label}</option>`).join('')}
-              </select>
-            </div>
-          </div>
-          <button type="button" class="billing-v3-desc-btn" onclick="openBillingDiscountModal()" title="Descuento general (%)">
-            %${discountVal > 0 ? ` <strong>${discountVal}%</strong>` : ' Desc.'}
-          </button>
-        </div>
-
-        <!-- Tira NCF (visible solo cuando aplica) -->
-        <div class="billing-v3-ncf-strip" id="billing-v3-ncf-strip">
-          <span class="ncf-none-badge" id="ncf-none-badge">Sin NCF</span>
-          <div class="ncf-extra-fields" id="ncf-rnc-fields" style="display:none">
-            <input type="text" id="ncf-rnc-input" class="form-input billing-step-input" placeholder="RNC o cédula (opcional)" maxlength="11"
-              oninput="DB.saleRncCliente=this.value.replace(/\\D/g,'').slice(0,11); updateSaleFiscalPreview()">
-            <input type="text" id="ncf-razon-input" class="form-input billing-step-input" placeholder="Nombre o razón social"
-              oninput="DB.saleRazonSocial=this.value; updateSaleFiscalPreview()">
-          </div>
-          <div class="ncf-extra-fields" id="ncf-ref-fields" style="display:none">
-            <div class="ncf-ref-search-row">
-              <input type="text" id="ncf-ref-input" class="form-input billing-step-input" placeholder="Buscar factura..." oninput="ncfSearchInvoices(this.value)">
-              <span class="ncf-ref-clear" onclick="clearNcfRef()">✕</span>
-            </div>
-            <div class="ncf-ref-results" id="ncf-ref-results"></div>
-            <div class="ncf-ref-selected" id="ncf-ref-selected" style="display:none">
-              <span id="ncf-ref-selected-text"></span>
-              <button type="button" class="ncf-ref-clear-btn" onclick="clearNcfRef()">✕</button>
-            </div>
-          </div>
-          <div id="sale-fiscal-preview" class="sale-fiscal-preview"></div>
-        </div>
-      </div>
-
-      <!-- ══ Tipo de pedido + datos de entrega ══ -->
-      <div class="billing-v3-order-row">
-        <div class="billing-v3-order-pills">
-          <button type="button" class="billing-v3-order-pill ${orderType === 'mostrador' ? 'is-active' : ''}"
-            onclick="setSaleOrderType('mostrador')">🏬 Mostrador</button>
-          <button type="button" class="billing-v3-order-pill ${orderType === 'delivery' ? 'is-active' : ''}"
-            onclick="setSaleOrderType('delivery')">🛵 Delivery</button>
-          <button type="button" class="billing-v3-order-pill ${orderType === 'recoger' ? 'is-active' : ''}"
-            onclick="setSaleOrderType('recoger')">🥡 Para llevar</button>
-        </div>
-        <div id="billing-delivery-fields" class="billing-v3-delivery-fields ${orderType === 'delivery' ? '' : 'hidden'}">
-          <div class="billing-step-grid billing-step-grid-tight">
-            <div class="billing-step-field">
-              <label>Repartidor</label>
-              <select id="sale-delivery-user" class="form-input billing-step-input" onchange="setSaleDeliveryUser(this.value)">
-                ${buildDeliveryUserOptions()}
-              </select>
-            </div>
-            <div class="billing-step-field">
-              <label>Teléfono</label>
-              <input type="text" id="sale-delivery-phone" class="form-input billing-step-input" placeholder="809-000-0000"
-                value="${escapeHtml(DB.saleDeliveryPhone || '')}" oninput="setSaleDeliveryPhone(this.value)">
-            </div>
-            <div class="billing-step-field billing-step-field-wide">
-              <label>Dirección</label>
-              <input type="text" id="sale-delivery-address" class="form-input billing-step-input" placeholder="Calle, número, sector..."
-                value="${escapeHtml(DB.saleDeliveryAddress || '')}" oninput="setSaleDeliveryAddress(this.value)">
-            </div>
-            <div class="billing-step-field billing-step-field-wide">
-              <label>Referencia</label>
-              <input type="text" id="sale-delivery-reference" class="form-input billing-step-input" placeholder="Punto de referencia (opcional)"
-                value="${escapeHtml(DB.saleDeliveryReference || '')}" oninput="setSaleDeliveryReference(this.value)">
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- ══ LAYOUT: 2 columnas ══ -->
-      <div class="billing-v3-layout">
-
-        <!-- ── COL 1: Lista de productos (44%) ── -->
-        <section class="billing-v3-col billing-v3-products">
-          <div class="billing-v3-col-head">
-            <strong>Productos</strong>
-            <span id="billing-items-count">${getSaleLineCountLabel(DB.saleItems, DB.saleItems.length)}</span>
-          </div>
-          <div id="billing-compact-lines" class="billing-v3-lines">
-            ${buildBillingCompactSummaryRowsMarkup()}
-          </div>
-        </section>
-
-        <!-- ── COL 2: Cobro (56%) ── -->
-        <section class="billing-v3-col billing-v3-pay">
-
-          <!-- Status pill (oculto, para compatibilidad) -->
-          <div id="billing-v2-status-pill" class="billing-v2-status-pill billing-v2-status-pill--neutral" style="display:none">⏳</div>
-
-          <!-- TOTAL — 52px -->
-          <div class="billing-v3-total-block">
-            <span class="billing-v3-total-label">TOTAL</span>
-            <strong class="billing-v3-total-amount" id="billing-total">${fmt(total)}</strong>
-            <div id="billing-total-empty" class="${hasProducts ? 'hidden' : ''} billing-v3-total-empty">🛒 Sin productos</div>
-          </div>
-
-          <!-- DOS botones COBRAR -->
-          <div class="billing-v3-cobrar-group">
-            <button id="billing-v2-cobrar-btn"
-              class="billing-v3-cobrar-print"
-              type="button"
-              onclick="processSale('print')"
-              title="ENTER · cobrar e imprimir">
-              🖨 Cobrar e imprimir
-            </button>
-            <button id="billing-v3-cobrar-noprint"
-              class="billing-v3-cobrar-noprint"
-              type="button"
-              onclick="processSale('charge')"
-              title="cobrar sin imprimir">
-              💾 Sin imprimir
-            </button>
-          </div>
-
-          <!-- Indicador de modo F9 (qué hace ENTER) -->
-          <div id="billing-v2-print-indicator"
-            class="billing-v3-print-mode-badge${printMode ? '' : ' billing-v3-print-mode-badge--off'}">
-            ${printMode ? '🖨 ENTER imprime · F9 para cambiar' : '💾 ENTER no imprime · F9 para activar'}
-          </div>
-
-          <!-- Métodos de pago -->
-          <div class="billing-v3-methods">
-            ${paymentMethodButtons.map((m) => `
-              <button type="button"
-                ${m.key === 'contra_entrega' ? 'id="pay-method-cod"' : ''}
-                class="billing-v3-method-btn pay-method ${paymentMethod === m.key ? 'active' : ''}"
-                onclick="setPayMethod('${m.key}', this)"
-                title="${m.shortcut ? m.shortcut + ': ' : ''}${m.label}">
-                <span class="billing-v3-method-icon">${m.icon}</span>
-                <span class="billing-v3-method-label">${m.label}</span>
-                ${m.shortcut ? `<span class="billing-v3-method-key">${m.shortcut}</span>` : ''}
-              </button>
-            `).join('')}
-          </div>
-          <div id="billing-compact-method-note" class="billing-compact-method-note ${paymentMethod === 'contra_entrega' ? '' : 'hidden'}">
-            Contra entrega activo.
-          </div>
-
-          <!-- Área efectivo -->
-          <div class="payment-amount-area" id="efectivo-area">
-            <label class="billing-v3-recibido-label">Recibido</label>
-            <input type="number" id="monto-recibido" placeholder="0.00"
-              oninput="calcCambio()" class="billing-v3-amount-input" autocomplete="off">
-            <div class="billing-v3-quick-row" id="quick-amounts">
-              <button type="button" class="billing-v3-quick-btn billing-v3-quick-exact quick-amount-btn" id="quick-amount-exact" onclick="setMontoExacto(this)" title="Alt+E — Exacto">Exacto</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(100, this)" title="Alt+1 — Poner 100">100</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(200, this)" title="Alt+2 — Poner 200">200</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(500, this)" title="Alt+5 — Poner 500">500</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(1000, this)" title="Alt+0 — Poner 1,000">1,000</button>
-              <button type="button" class="billing-v3-quick-btn quick-amount-btn" onclick="setMontoRapido(2000, this)" title="Alt+9 — Poner 2,000">2,000</button>
-            </div>
-            <!-- Tarjeta de cambio prominente -->
-            <div class="billing-v3-cambio-card" id="billing-cambio-card">
-              <div class="billing-cambio-card-top">
-                <span class="billing-cambio-card-icon">💵</span>
-                <span class="billing-cambio-card-label">DEVUELTA AL CLIENTE</span>
-              </div>
-              <strong id="cambio-val" class="billing-cambio-card-amount">RD$ 0.00</strong>
-              <div id="billing-cambio-faltan" class="billing-cambio-card-faltan hidden"></div>
-            </div>
-          </div>
-
-          <!-- Área tarjeta -->
-          <div class="payment-amount-area billing-payment-form" id="tarjeta-area" style="display:none">
-            <div class="billing-step-grid billing-step-grid-tight">
-              <div class="billing-step-field"><label>Banco</label>
-                <input type="text" class="form-input billing-step-input"
-                  value="${escapeHtml(billingModalState.cardBank || '')}"
-                  oninput="updateBillingPaymentDetail('cardBank', this.value)" placeholder="Banco">
-              </div>
-              <div class="billing-step-field"><label>Ref.</label>
-                <input type="text" class="form-input billing-step-input"
-                  value="${escapeHtml(billingModalState.cardReference || '')}"
-                  oninput="updateBillingPaymentDetail('cardReference', this.value)" placeholder="Referencia">
-              </div>
-            </div>
-            <select class="form-input billing-step-input" onchange="updateBillingPaymentDetail('cardType', this.value)">
-              <option value="">Tipo de tarjeta</option>
-              ${BILLING_CARD_TYPES.map((t) => `<option value="${t}" ${billingModalState.cardType === t ? 'selected' : ''}>${t}</option>`).join('')}
-            </select>
-          </div>
-
-          <!-- Área transferencia -->
-          <div class="payment-amount-area billing-payment-form" id="transferencia-area" style="display:none">
-            <div class="billing-step-grid billing-step-grid-tight">
-              <div class="billing-step-field"><label>Banco</label>
-                <input type="text" class="form-input billing-step-input"
-                  value="${escapeHtml(billingModalState.transferBank || '')}"
-                  oninput="updateBillingPaymentDetail('transferBank', this.value)" placeholder="Banco">
-              </div>
-              <div class="billing-step-field"><label>Ref.</label>
-                <input type="text" class="form-input billing-step-input"
-                  value="${escapeHtml(billingModalState.transferReference || '')}"
-                  oninput="updateBillingPaymentDetail('transferReference', this.value)" placeholder="Referencia">
-              </div>
-            </div>
-          </div>
-
-          <!-- Área mixto -->
-          <div class="payment-amount-area pay-mixto-area" id="mixto-area" style="display:none">
-            <div class="mixto-inputs mixto-inputs-3">
-              <div class="mixto-field"><span class="mixto-field-label">💵 Efectivo</span>
-                <input type="number" id="mixto-efectivo" class="amount-input" placeholder="0.00" min="0" step="0.01"
-                  value="${escapeHtml(String(billingModalState.mixedCashAmount || ''))}" oninput="calcMixto()"></div>
-              <div class="mixto-field"><span class="mixto-field-label">💳 Tarjeta</span>
-                <input type="number" id="mixto-tarjeta" class="amount-input" placeholder="0.00" min="0" step="0.01"
-                  value="${escapeHtml(String(billingModalState.mixedCardAmount || ''))}" oninput="calcMixto()"></div>
-              <div class="mixto-field"><span class="mixto-field-label">🏦 Transf.</span>
-                <input type="number" id="mixto-transferencia" class="amount-input" placeholder="0.00" min="0" step="0.01"
-                  value="${escapeHtml(String(billingModalState.mixedTransferAmount || ''))}" oninput="calcMixto()"></div>
-            </div>
-            <div class="mixto-status" id="mixto-status">
-              <span class="mixto-status-label">Pendiente:</span>
-              <span class="mixto-status-val" id="mixto-pendiente">RD$ 0.00</span>
-            </div>
-            <div class="cambio-display" id="mixto-cambio-row" style="display:none">
-              <span class="cambio-label">Cambio:</span>
-              <span id="mixto-cambio-val" class="cambio-amount">RD$ 0.00</span>
-            </div>
-          </div>
-
-          <!-- Área crédito -->
-          <div class="payment-amount-area billing-payment-form" id="credito-area" style="display:none">
-            <div class="billing-step-grid billing-step-grid-tight">
-              <div class="billing-step-field"><label>Vence</label>
-                <input type="date" class="form-input billing-step-input"
-                  value="${escapeHtml(billingModalState.creditDueDate || '')}"
-                  oninput="updateBillingPaymentDetail('creditDueDate', this.value)">
-              </div>
-              <div class="billing-step-field"><label>Límite</label>
-                <input type="text" class="form-input billing-step-input" readonly
-                  value="${selectedClient ? fmt(Math.max(0, Number(selectedClient.limiteCredito || 0))) : '—'}">
-              </div>
-            </div>
-            <textarea class="form-input billing-step-input" rows="2" placeholder="Notas del crédito..."
-              oninput="updateBillingPaymentDetail('creditNotes', this.value)">${escapeHtml(billingModalState.creditNotes || '')}</textarea>
-          </div>
-
-          <!-- Contra entrega -->
-          <div class="payment-amount-area" id="contra-entrega-area" style="display:none">
-            <div class="sale-fiscal-ok">Pendiente hasta que el delivery entregue el dinero.</div>
-            <label class="billing-v3-recibido-label">¿Con cuánto pagará el cliente?</label>
-            <input type="number" id="monto-recibido-contra-entrega" placeholder="0.00"
-              value="${escapeHtml(String(DB.saleDeliveryPayAmount || ''))}"
-              oninput="setSaleDeliveryPayAmount(this.value)" class="billing-v3-amount-input" autocomplete="off" step="0.01" min="0">
-            <div class="billing-v3-quick-row">
-              <button type="button" class="billing-v3-quick-btn billing-v3-quick-exact" onclick="setMontoExactoContraEntrega(this)" title="Cliente paga el monto exacto">Exacto</button>
-              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(100, this)">100</button>
-              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(200, this)">200</button>
-              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(500, this)">500</button>
-              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(1000, this)">1,000</button>
-              <button type="button" class="billing-v3-quick-btn" onclick="setMontoRapidoContraEntrega(2000, this)">2,000</button>
-            </div>
-            <div class="billing-v3-cambio-card" id="billing-cambio-card-contra-entrega">
-              <div class="billing-cambio-card-top">
-                <span class="billing-cambio-card-icon">🛵</span>
-                <span class="billing-cambio-card-label">CAMBIO A LLEVAR POR EL REPARTIDOR</span>
-              </div>
-              <strong id="cambio-val-contra-entrega" class="billing-cambio-card-amount">RD$ 0.00</strong>
-              <div id="billing-cambio-faltan-contra-entrega" class="billing-cambio-card-faltan hidden"></div>
-            </div>
-          </div>
-
-          <!-- Área dólares (USD) -->
-          <div class="payment-amount-area" id="usd-area" style="display:none">
-            <div class="billing-usd-equiv-row">
-              <span class="billing-usd-equiv-label">Equivalente a cobrar</span>
-              <strong id="billing-usd-equiv-val" class="billing-usd-equiv-amount">US$ 0.00</strong>
-              <span class="billing-usd-equiv-rate" id="billing-usd-rate-label"></span>
-            </div>
-            <label class="billing-v3-recibido-label">Recibido (US$)</label>
-            <input type="number" id="monto-recibido-usd" placeholder="0.00"
-              oninput="calcCambioUsd()" class="billing-v3-amount-input" autocomplete="off" step="0.01" min="0">
-            <!-- Tarjeta de cambio propia — NO reutilizar #cambio-val/#billing-cambio-card,
-                 anidados dentro de #efectivo-area y quedarían ocultos con método 'usd'. -->
-            <div class="billing-v3-cambio-card" id="billing-cambio-card-usd">
-              <div class="billing-cambio-card-top">
-                <span class="billing-cambio-card-icon">💵</span>
-                <span class="billing-cambio-card-label">DEVUELTA AL CLIENTE (RD$)</span>
-              </div>
-              <strong id="cambio-val-usd" class="billing-cambio-card-amount">RD$ 0.00</strong>
-              <div id="billing-cambio-faltan-usd" class="billing-cambio-card-faltan hidden"></div>
-            </div>
-          </div>
-
-          <!-- ── Elementos ocultos para compatibilidad ── -->
-          <span id="billing-subtotal" style="display:none">RD$ 0.00</span>
-          <div id="billing-subtotal-gravado-row" style="display:none"><strong id="billing-subtotal-gravado">RD$ 0.00</strong></div>
-          <div id="billing-subtotal-exento-row" style="display:none"><strong id="billing-subtotal-exento">RD$ 0.00</strong></div>
-          <strong id="billing-descuento" style="display:none">-RD$ 0.00</strong>
-          <strong id="billing-itbis" style="display:none">RD$ 0.00</strong>
-          <select id="sale-doc-type" style="display:none" onchange="setSaleDocumentType(this.value)">
-            <option value="ticket">Ticket / Factura</option>
-            <option value="factura-electronica">Factura Electrónica</option>
-          </select>
-          <select id="sale-order-type" style="display:none" onchange="setSaleOrderType(this.value)">
-            <option value="mostrador" ${String(DB.saleOrderType || 'mostrador') === 'mostrador' ? 'selected' : ''}>Mostrador</option>
-            <option value="delivery"  ${String(DB.saleOrderType || '') === 'delivery'  ? 'selected' : ''}>Delivery</option>
-            <option value="recoger"   ${String(DB.saleOrderType || '') === 'recoger'   ? 'selected' : ''}>Para llevar</option>
-          </select>
-          <select id="sale-kitchen-status" style="display:none" onchange="setSaleKitchenStatus(this.value)"></select>
-          <input type="text" id="sale-table-label" style="display:none"
-            value="${escapeHtml(DB.saleTableLabel || '')}" oninput="setSaleTableLabel(this.value)">
-          <textarea id="sale-order-notes" style="display:none"
-            oninput="setSaleOrderNotes(this.value)">${escapeHtml(DB.saleOrderNotes || '')}</textarea>
-          <div id="billing-client-snapshot" style="display:none"></div>
-          <button id="billing-v2-mode-print" style="display:none" onclick="setBillingPrintMode(true)"></button>
-          <button id="billing-v2-mode-noprint" style="display:none" onclick="setBillingPrintMode(false)"></button>
-          <div id="billing-compact-status" style="display:none"></div>
-        </section>
-      </div>
-
-      <!-- Guardia de descarte -->
-      <div id="billing-discard-guard" class="billing-discard-guard hidden">
-        <div class="billing-discard-card">
-          <strong>¿Salir sin guardar?</strong>
-          <span>Se descartará la información del cobro actual.</span>
-          <div class="billing-discard-actions">
-            <button type="button" class="btn-secondary" onclick="hideBillingDiscardPrompt()">Seguir</button>
-            <button type="button" class="btn-danger" onclick="confirmBillingDiscard()">Salir</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Modal flotante de descuento -->
-      <div id="billing-v3-discount-modal" class="billing-v3-discount-overlay hidden">
-        <div class="billing-v3-discount-card">
-          <strong>Descuento general</strong>
-          <div class="billing-v3-discount-body">
-            <input type="number" id="desc-general" class="billing-v3-discount-input"
-              min="0" max="100" placeholder="0"
-              value="${discountVal}"
-              oninput="applyGeneralDiscount(); _syncBillingV3DiscountBtn()">
-            <span class="billing-v3-discount-pct-label">%</span>
-          </div>
-          <div class="billing-v3-discount-actions">
-            <button type="button" class="btn-secondary" onclick="closeBillingDiscountModal()">Cerrar</button>
-            <button type="button" class="btn-primary" onclick="closeBillingDiscountModal()">Aplicar</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
 }
 
 // ─── LEGACY: layout de dos paneles (ya no se usa como modal principal) ─────────
@@ -3825,7 +3350,7 @@ async function refreshAvailableNcfDocTypes() {
 // y factura-electronica no dependen de fiscal_sequences.
 function _applyAvailableNcfDocTypesToPills() {
   if (!_availableNcfDocTypes) return;
-  document.querySelectorAll('.billing-v3-doc-pill[data-preset]').forEach((btn) => {
+  document.querySelectorAll('#cobro-shell .cobro-doc[data-preset], #cobro-shell .cobro-menu-item[data-preset]').forEach((btn) => {
     const preset = String(btn.dataset.preset || '').toUpperCase();
     if (!/^B\d{2}$/.test(preset)) return;
     const available = _availableNcfDocTypes.has(preset);
@@ -4015,8 +3540,16 @@ function syncBillingConfirmSummary() {
   const totalText = document.getElementById('billing-total')?.textContent || fmt(0);
 
   // ── Actualizar la lista de productos ──
+  // Solo si cambió: esta función corre en cada tecla del monto recibido, y
+  // reescribir la lista devolvía su scroll al principio.
   const summaryBox = document.getElementById('billing-compact-lines');
-  if (summaryBox) summaryBox.innerHTML = buildBillingCompactSummaryRowsMarkup();
+  if (summaryBox) {
+    const rowsMarkup = buildBillingCompactSummaryRowsMarkup();
+    if (summaryBox._renderedMarkup !== rowsMarkup) {
+      summaryBox.innerHTML = rowsMarkup;
+      summaryBox._renderedMarkup = rowsMarkup;
+    }
+  }
 
   // ── Sincronizar pills de comprobante ──
   const activePreset = getBillingActiveDocumentPreset();
@@ -4059,20 +3592,8 @@ function syncBillingConfirmSummary() {
     }
   }
 
-  // ── V2: Botón COBRAR embebido en Col 3 ──
-  const cobrarBtn = document.getElementById('billing-v2-cobrar-btn');
-  if (cobrarBtn) {
-    const disabled = !ready || _billingSubmitting;
-    cobrarBtn.disabled = disabled;
-    const printMode = getBillingPrintMode();
-    if (_billingSubmitting) {
-      cobrarBtn.textContent = '⏳ Procesando...';
-    } else {
-      cobrarBtn.textContent = printMode
-        ? `🔒 COBRAR E IMPRIMIR ${totalText}`
-        : `🔒 COBRAR ${totalText}`;
-    }
-  }
+  // ── Pantalla de cobro: todo lo visual que depende del estado ──
+  window.CobroUI?.sync();
 
   // ── Contenedor legacy: mantenido vacío en v2, usado en modal step ──
   const container = document.getElementById('billing-compact-status');
@@ -4091,119 +3612,16 @@ function syncBillingConfirmSummary() {
 
 function syncBillingModalFooter() {
   const footer = document.getElementById('modal-footer');
-  if (!footer) return;
+  // Solo con la pantalla de cobro abierta: setPayMethod/calcCambio también
+  // corren con el cobro cerrado (cancelSale) y antes pisaban el pie del modal
+  // que estuviera abierto con un pie de cobro viejo.
+  if (!footer || !document.getElementById('cobro-shell')) return;
   const buckets = buildBillingValidationBuckets();
-  const disabled = buckets.confirm.length > 0 || _billingSubmitting;
-  const isV3 = Boolean(document.querySelector('.billing-v3-shell'));
-  const isV2 = !isV3 && Boolean(document.querySelector('.billing-v2-shell'));
-
-  if (isV3) {
-    // ── Footer v3: totales a la izquierda + [Cancelar][Guardar][WhatsApp] ──
-    const subtotalText = document.getElementById('s-subtotal')?.textContent || fmt(0);
-    const itbisText    = document.getElementById('s-itbis')?.textContent    || fmt(0);
-    const descText     = document.getElementById('s-descuento')?.textContent || `- ${fmt(0)}`;
-    const roundingAdjustment = parseFmt(document.getElementById('s-redondeo')?.textContent || fmt(0));
-    const totalText    = document.getElementById('s-total')?.textContent    || fmt(0);
-
-    footer.innerHTML = `
-      <div class="billing-v3-footer">
-        <div class="billing-v3-footer-totals">
-          <span>Subtotal <strong>${subtotalText}</strong></span>
-          <span>ITBIS <strong>${itbisText}</strong></span>
-          <span>Desc. <strong>${descText}</strong></span>
-          ${Math.abs(roundingAdjustment) >= 0.01 ? `<span>Redondeo <strong>+ ${fmt(roundingAdjustment)}</strong></span>` : ''}
-          <span class="billing-v3-footer-total">Total <strong>${totalText}</strong></span>
-        </div>
-        <div class="billing-v3-footer-actions">
-          <button class="billing-v3-btn-cancel" type="button"
-            onclick="requestBillingModalClose({ source: 'cancel' })" title="ESC">
-            ✕ Cancelar
-          </button>
-          <button class="billing-v3-btn-save" type="button"
-            ${_billingSubmitting ? 'disabled' : ''}
-            onclick="processSale('charge')" title="F5">
-            💾 Guardar
-          </button>
-          <button class="billing-v3-btn-wa" type="button"
-            ${disabled ? 'disabled' : ''}
-            onclick="processSale('whatsapp')" title="F6">
-            📱 WhatsApp
-          </button>
-        </div>
-      </div>
-    `;
-    // Sincronizar los dos botones COBRAR embebidos en Col 2
-    const cobrarPrintBtn   = document.getElementById('billing-v2-cobrar-btn');
-    const cobrarNoPrintBtn = document.getElementById('billing-v3-cobrar-noprint');
-    if (cobrarPrintBtn)   cobrarPrintBtn.disabled   = disabled;
-    if (cobrarNoPrintBtn) cobrarNoPrintBtn.disabled = _billingSubmitting;
-    if (_billingSubmitting) {
-      if (cobrarPrintBtn)   cobrarPrintBtn.textContent   = '⏳ Procesando...';
-      if (cobrarNoPrintBtn) cobrarNoPrintBtn.textContent = '⏳ Procesando...';
-    } else {
-      if (cobrarPrintBtn)   cobrarPrintBtn.textContent   = '🖨 Cobrar e imprimir';
-      if (cobrarNoPrintBtn) cobrarNoPrintBtn.textContent = '💾 Cobrar sin imprimir';
-    }
-
-  } else if (isV2) {
-    // Footer ultra-compacto: botones secundarios solamente
-    // El botón principal COBRAR está embebido en Col 3 (billing-v2-cobrar-btn)
-    const totalText = document.getElementById('billing-total')?.textContent || fmt(0);
-    footer.innerHTML = `
-      <div class="billing-v2-footer billing-v2-footer--slim">
-        <button class="billing-v2-btn-sm billing-v2-btn-cancel" type="button"
-          onclick="requestBillingModalClose({ source: 'cancel' })" title="ESC">
-          ✕ Cancelar
-        </button>
-        <button class="billing-v2-btn-sm billing-v2-btn-save" type="button"
-          ${_billingSubmitting ? 'disabled' : ''}
-          onclick="processSale('charge')" title="F5 — Sin imprimir">
-          💾 Guardar
-        </button>
-        <button class="billing-v2-btn-sm billing-v2-btn-wa" type="button"
-          ${disabled ? 'disabled' : ''}
-          onclick="processSale('whatsapp')" title="F6">
-          📱 WA
-        </button>
-        <span class="billing-v2-footer-hint">Efectivo: F2 Exacto · F3+100 · F4+200 · F5+500 · F6+1K · F7+2K · F9 🖨/💾 · ENTER Cobrar · ESC Salir</span>
-      </div>
-    `;
-    // También sincronizar el botón COBRAR embebido en Col 3
-    const cobrarBtn = document.getElementById('billing-v2-cobrar-btn');
-    if (cobrarBtn) {
-      cobrarBtn.disabled = disabled;
-      const printMode = getBillingPrintMode();
-      if (_billingSubmitting) {
-        cobrarBtn.textContent = '⏳ Procesando...';
-      } else {
-        cobrarBtn.textContent = printMode
-          ? `🔒 COBRAR E IMPRIMIR ${totalText}`
-          : `🔒 COBRAR ${totalText}`;
-      }
-    }
-  } else {
-    // Fallback para modal legacy (paso a paso)
-    const totalText = document.getElementById('billing-total')?.textContent || fmt(0);
-    footer.innerHTML = `
-      <div class="billing-footer-meta">
-        <span class="billing-footer-step">POS</span>
-        <strong>Cobro rápido</strong>
-        <span class="billing-footer-status ${buckets.confirm.length ? 'is-pending' : 'is-ready'}">${buckets.confirm.length ? '● Cambios pendientes' : '✓ Listo'}</span>
-      </div>
-      <div class="billing-footer-actions">
-        <button class="btn-secondary" type="button" onclick="requestBillingModalClose({ source: 'cancel' })">Cancelar</button>
-        <button class="btn-secondary" type="button" ${_billingSubmitting ? 'disabled' : ''} onclick="processSale('charge')">Guardar sin imprimir</button>
-        <button class="btn-secondary" type="button" ${disabled ? 'disabled' : ''} onclick="processSale('whatsapp')">Enviar WhatsApp</button>
-        <button
-          id="billing-primary-btn"
-          class="btn-primary"
-          type="button"
-          ${disabled ? 'disabled' : ''}
-          onclick="processSale('print')"
-        >${_billingSubmitting ? '⏳ Procesando cobro...' : `💰 Cobrar e imprimir ${totalText}`}</button>
-      </div>
-    `;
-  }
+  footer.innerHTML = window.CobroUI.buildFooter({
+    disabled: buckets.confirm.length > 0,
+    submitting: _billingSubmitting,
+    validation: buckets.confirm
+  });
 }
 
 function showBillingDiscardPrompt() {
@@ -4418,8 +3836,8 @@ function ensureBillingModalFitsContent() {
   const modalBox = document.getElementById('modal-box');
   const modalBody = document.getElementById('modal-body');
   if (!modalBox?.classList.contains('billing-modal') || !modalBody) return;
-  // V3: el tamaño lo controla CSS (:has(.billing-v3-shell)); no intervenir
-  if (modalBody.querySelector('.billing-v3-shell')) return;
+  // Pantalla completa: el tamaño lo controla css/cobro.css; no intervenir
+  if (modalBody.querySelector('#cobro-shell')) return;
 
   requestAnimationFrame(() => {
     const headerHeight = modalBox.querySelector('.modal-header')?.offsetHeight || 0;
@@ -4440,7 +3858,7 @@ function initBillingModalResize() {
   const modalBox = document.getElementById('modal-box');
   if (!modalBox?.classList.contains('billing-modal')) return;
   // V3: tamaño gestionado por CSS; no restaurar dimensiones guardadas
-  if (document.getElementById('modal-body')?.querySelector('.billing-v3-shell')) return;
+  if (document.getElementById('modal-body')?.querySelector('#cobro-shell')) return;
 
   applyBillingModalWidth(getStoredBillingModalWidth());
   applyBillingModalHeight(getStoredBillingModalHeight());
@@ -4513,28 +3931,20 @@ function syncBillingModalHeader(warnings = []) {
   const title = document.getElementById('modal-title');
   if (!title) return;
 
+  // refreshAvailableNcfDocTypes() llega async: si el cobro ya se cerró, no
+  // escribir en el título del modal que esté abierto ahora.
+  if (!document.getElementById('cobro-shell')) return;
   const type = DB.saleDocumentType || 'ticket';
   const nextNumber = getDocumentSequencePreview(type);
-  const compactWarnings = typeof buildBillingValidationBuckets === 'function'
-    ? buildBillingValidationBuckets().confirm
-    : [];
-  const allWarnings = [...warnings, ...compactWarnings];
-  const ready = allWarnings.length === 0;
-  const hasDraft = billingHasDraftData();
-  const billingCaps = window.TecnoCajaBilling?.getEffectiveBillingCapabilities
-    ? window.TecnoCajaBilling.getEffectiveBillingCapabilities()
-    : { canCreateSales: true, forcePendingCharge: false };
-  const titleMain = 'Cobrar y Facturar';
-  const readyText = billingCaps.forcePendingCharge ? 'Lista para emitir' : 'Listo para cobrar';
-
-  title.innerHTML = `
-    <span class="billing-titlebar">
-      <span class="billing-titlebar-main">${titleMain}</span>
-      <span class="billing-titlebar-doc">${escapeHtml(nextNumber)}</span>
-      <span class="billing-titlebar-badge ${ready ? 'is-ready' : 'is-warning'}">${ready ? readyText : 'Revisar datos'}</span>
-      <span class="billing-titlebar-pending ${hasDraft ? '' : 'hidden'}">● Cambios pendientes</span>
-    </span>
-  `;
+  // Los avisos (fiscales y de validación) se muestran en la misma barra; los
+  // pinta CobroUI.sync() porque los de validación cambian con cada tecla, no
+  // solo al cambiar el comprobante.
+  window.CobroUI.setFiscalWarnings(warnings);
+  title.innerHTML = window.CobroUI.buildHeader({
+    docNumber: nextNumber,
+    hasDraft: billingHasDraftData()
+  });
+  window.CobroUI.sync();
 }
 
 function _showCajaRequiredModal() {
@@ -4560,76 +3970,29 @@ function _showCajaRequiredModal() {
 }
 
 // ═══════════════════════════════════════════════════════════
-//  BILLING V2 — Atajos de teclado (F1–F6, ENTER, ESC)
+//  COBRAR Y FACTURAR — Atajos de teclado
+//  F2 Efectivo · F3 Tarjeta · F4 Transferencia · F5 Mixto · F6 Crédito
+//  F7 Dólares · F8 Contra entrega · F9 Cobrar sin imprimir
+//  Enter Cobrar e imprimir · Esc Cancelar · Alt+E/1/2/5/0/9 montos rápidos
+//  (El modo alternable de F9 "imprimir / no imprimir" se eliminó: ahora
+//  Enter siempre imprime y F9 siempre cobra sin imprimir.)
 // ═══════════════════════════════════════════════════════════
-// ── Modo de impresión (persiste entre ventas) ──────────────
-// ═══════════════════════════════════════════════════════════
 
-const BILLING_PRINT_MODE_KEY = 'tecnocaja_billing_print_mode';
+// Campos donde Enter cobra (montos). En los de texto (referencia, RNC,
+// búsqueda, dirección...) Enter no dispara el cobro.
+const BILLING_ENTER_AMOUNT_INPUTS = new Set([
+  'monto-recibido',
+  'monto-recibido-usd',
+  'monto-recibido-contra-entrega',
+  'mixto-efectivo',
+  'mixto-tarjeta',
+  'mixto-transferencia'
+]);
 
-/** Devuelve true = imprimir, false = no imprimir. Default: true. */
-function getBillingPrintMode() {
-  const stored = localStorage.getItem(BILLING_PRINT_MODE_KEY);
-  return stored === null ? true : stored !== 'false';
+function selectBillingPayMethod(method) {
+  const button = document.querySelector(`.pay-method[onclick*="'${method}'"]`);
+  if (button) setPayMethod(method, button);
 }
-
-/** Guarda la preferencia y actualiza la UI del modal (si está abierto). */
-function setBillingPrintMode(value) {
-  localStorage.setItem(BILLING_PRINT_MODE_KEY, String(Boolean(value)));
-  _syncBillingPrintModeUI();
-}
-
-/** Alterna entre imprimir / no imprimir. Mapeado a F9. */
-function toggleBillingPrintMode() {
-  setBillingPrintMode(!getBillingPrintMode());
-  // Notificar brevemente con el toast
-  const printMode = getBillingPrintMode();
-  showToast(printMode ? '🖨 Impresión activada' : '💾 Sin impresión', 'info');
-}
-
-/** Sincroniza todos los elementos visuales de modo impresión en el modal abierto. */
-function _syncBillingPrintModeUI() {
-  const printMode = getBillingPrintMode();
-  const isV3 = Boolean(document.querySelector('.billing-v3-shell'));
-
-  if (isV3) {
-    // V3: actualizar indicador de modo (qué hace ENTER)
-    const indicator = document.getElementById('billing-v2-print-indicator');
-    if (indicator) {
-      indicator.textContent = printMode ? '🖨 ENTER imprime · F9 para cambiar' : '💾 ENTER no imprime · F9 para activar';
-      indicator.className = `billing-v3-print-mode-badge${printMode ? '' : ' billing-v3-print-mode-badge--off'}`;
-    }
-    // En v3 ambos botones son siempre visibles — no se cambia su texto por F9
-    return;
-  }
-
-  // V2 legacy:
-  // Botones de alternancia
-  document.getElementById('billing-v2-mode-print')?.classList.toggle('is-active', printMode);
-  document.getElementById('billing-v2-mode-noprint')?.classList.toggle('is-active', !printMode);
-
-  // Indicador de texto
-  const indicator = document.getElementById('billing-v2-print-indicator');
-  if (indicator) {
-    indicator.textContent = printMode ? '🖨 Se imprimirá recibo' : '💾 No se imprimirá recibo';
-    indicator.className = `billing-v2-print-indicator${printMode ? '' : ' billing-v2-print-indicator--off'}`;
-  }
-
-  // Botón COBRAR (solo texto, no disabled: eso lo maneja syncBillingConfirmSummary)
-  const cobrarBtn = document.getElementById('billing-v2-cobrar-btn');
-  if (cobrarBtn && !_billingSubmitting) {
-    const totalText = document.getElementById('billing-total')?.textContent || '';
-    const b = buildBillingValidationBuckets ? buildBillingValidationBuckets() : { confirm: ['?'] };
-    const ready = b.confirm.length === 0;
-    if (!cobrarBtn.disabled || ready) {
-      cobrarBtn.textContent = printMode
-        ? `🔒 COBRAR E IMPRIMIR ${totalText}`
-        : `🔒 COBRAR ${totalText}`;
-    }
-  }
-}
-
-// ═══════════════════════════════════════════════════════════
 
 function attachBillingKeyHandler() {
   detachBillingKeyHandler();
@@ -4637,97 +4000,80 @@ function attachBillingKeyHandler() {
     // Solo actuar cuando el modal de cobro está abierto
     if (!document.getElementById('modal-box')?.classList.contains('billing-modal')) return;
 
-    // Si el foco está en un textarea o en un input que NO sea el de monto, no interceptar ENTER
-    const tag = event.target?.tagName || '';
-    const isRestrictedInput = tag === 'TEXTAREA' ||
-      (tag === 'INPUT' && event.target?.id !== 'monto-recibido');
-
-    const isEfectivoActive = DB.payMethod === 'efectivo';
+    const target = event.target;
+    const tag = target?.tagName || '';
+    const isTextField = tag === 'TEXTAREA' || tag === 'SELECT'
+      || (tag === 'INPUT' && !BILLING_ENTER_AMOUNT_INPUTS.has(target?.id));
 
     // ── Atajos Alt + tecla (montos rápidos, solo en efectivo) ──────────────
-    if (event.altKey && isEfectivoActive) {
-      switch (event.key) {
-        case 'e': case 'E':
-          event.preventDefault();
-          setMontoExacto(document.getElementById('quick-amount-exact'));
-          document.getElementById('monto-recibido')?.focus();
-          return;
-        case '1':
-          event.preventDefault();
-          setMontoRapido(100, document.querySelector('.billing-v3-quick-btn[onclick*="100"]'));
-          return;
-        case '2':
-          event.preventDefault();
-          setMontoRapido(200, document.querySelector('.billing-v3-quick-btn[onclick*="200"]'));
-          return;
-        case '5':
-          event.preventDefault();
-          setMontoRapido(500, document.querySelector('.billing-v3-quick-btn[onclick*="500"]'));
-          return;
-        case '0':
-          event.preventDefault();
-          setMontoRapido(1000, document.querySelector('.billing-v3-quick-btn[onclick*="1,000"]'));
-          return;
-        case '9':
-          event.preventDefault();
-          setMontoRapido(2000, document.querySelector('.billing-v3-quick-btn[onclick*="2,000"]'));
-          return;
+    if (event.altKey && DB.payMethod === 'efectivo') {
+      const quickAmounts = { 1: 100, 2: 200, 5: 500, 0: 1000, 9: 2000 };
+      if (event.key === 'e' || event.key === 'E') {
+        event.preventDefault();
+        setMontoExacto(document.getElementById('quick-amount-exact'));
+        document.getElementById('monto-recibido')?.focus();
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(quickAmounts, event.key)) {
+        event.preventDefault();
+        const amount = quickAmounts[event.key];
+        setMontoRapido(amount, document.querySelector(`.quick-amount-btn[onclick*="(${amount},"]`));
+        return;
       }
     }
 
     switch (event.key) {
-      // ── Métodos de pago (F2–F6, siempre) ──────────────────────────────
-      case 'F2': {
+      // ── Métodos de pago (F2–F8, siempre) ──────────────────────────────
+      case 'F2':
         event.preventDefault();
-        const btn = document.querySelector('.pay-method[onclick*="\'efectivo\'"]');
-        if (btn) setPayMethod('efectivo', btn);
+        selectBillingPayMethod('efectivo');
         document.getElementById('monto-recibido')?.focus();
         break;
-      }
-      case 'F3': {
+      case 'F3':
         event.preventDefault();
-        const btn = document.querySelector('.pay-method[onclick*="\'tarjeta\'"]');
-        if (btn) setPayMethod('tarjeta', btn);
+        selectBillingPayMethod('tarjeta');
         break;
-      }
-      case 'F4': {
+      case 'F4':
         event.preventDefault();
-        const btn = document.querySelector('.pay-method[onclick*="\'transferencia\'"]');
-        if (btn) setPayMethod('transferencia', btn);
+        selectBillingPayMethod('transferencia');
         break;
-      }
-      case 'F5': {
+      case 'F5':
         event.preventDefault();
-        const btn = document.querySelector('.pay-method[onclick*="\'mixto\'"]');
-        if (btn) setPayMethod('mixto', btn);
+        selectBillingPayMethod('mixto');
         break;
-      }
-      case 'F6': {
+      case 'F6':
         event.preventDefault();
-        const btn = document.querySelector('.pay-method[onclick*="\'credito\'"]');
-        if (btn) setPayMethod('credito', btn);
+        selectBillingPayMethod('credito');
         break;
-      }
+      case 'F7':
+        event.preventDefault();
+        window.CobroUI?.selectUsd();
+        break;
+      case 'F8':
+        event.preventDefault();
+        setPayMethod('contra_entrega', document.getElementById('pay-method-cod'));
+        break;
 
-      // ── Imprimir / no imprimir ─────────────────────────────────────────
+      // ── Cobrar sin imprimir (F9) ───────────────────────────────────────
       case 'F9':
         event.preventDefault();
         event.stopPropagation();
-        toggleBillingPrintMode();
+        if (!_billingSubmitting) processSale('charge');
         break;
 
-      // ── Cobrar (Enter) ─────────────────────────────────────────────────
+      // ── Cobrar e imprimir (Enter) ──────────────────────────────────────
       case 'Enter':
-        if (isRestrictedInput) return;
+        if (isTextField || window.CobroUI?.hasOpenOverlay()) return;
         event.preventDefault();
         event.stopPropagation();
         { const b = buildBillingValidationBuckets();
-          if (!b.confirm.length && !_billingSubmitting) processSale(getBillingPrintMode() ? 'print' : 'charge'); }
+          if (!b.confirm.length && !_billingSubmitting) processSale('print'); }
         break;
 
-      // ── Cancelar (Escape) ──────────────────────────────────────────────
+      // ── Cancelar (Escape): primero cierra lo que esté abierto encima ──
       case 'Escape':
         event.preventDefault();
+        if (window.CobroUI?.closeOverlays()) break;
         requestBillingModalClose({ source: 'cancel' });
         break;
 
@@ -4796,6 +4142,10 @@ function _syncBillingV3DiscountBtn() {
 }
 
 function openBillingModal() {
+  if (!Array.isArray(DB.saleItems) || !DB.saleItems.length) {
+    showToast('Agrega productos antes de cobrar.', 'warning');
+    return;
+  }
   // El cajero suele tardar unos segundos escogiendo método de pago; usar ese
   // tiempo para dejar lista la impresora y el logo elimina la preparación
   // posterior al botón Facturar.
@@ -4817,19 +4167,46 @@ function openBillingModal() {
     requestBillingModalClose({ source: 'force' });
   }
   billingActivePane = 'payment';
-  resetBillingCheckoutDraft({ preserveRememberedClient: true });
+  // Al volver de "Agregar productos" (o de cancelar "Suspender") se conservan
+  // cliente, comprobante, tipo de venta y método: solo se reinicia en un cobro nuevo.
+  const resumeDraft = Boolean(window.CobroUI?.consumeResume()) && Array.isArray(DB.saleItems) && DB.saleItems.length > 0;
+  if (!resumeDraft) {
+    // El cliente elegido en Ventas (o el de una venta recuperada) se conserva;
+    // sin cliente elegido, se usa el último recordado como antes.
+    const chosenClientId = DB.saleClientId || null;
+    resetBillingCheckoutDraft({ preserveRememberedClient: true });
+    if (chosenClientId) DB.saleClientId = chosenClientId;
+  }
+  // setSaleNcfType() (abajo, y también setPayMethod con tarjeta) limpia RNC,
+  // razón social y factura de referencia: al reanudar se devuelven las que el
+  // cajero ya había escrito.
+  const resumedFiscal = resumeDraft
+    ? { rnc: DB.saleRncCliente, razon: DB.saleRazonSocial, ref: DB.saleNcfReferencia, refId: DB.saleNcfReferenciaId }
+    : null;
   if ((DB.saleOrderType || 'mostrador') === 'delivery') {
     billingModalState.responsibleType = 'delivery';
   } else if (String(DB.currentUser?.rol || '').trim().toLowerCase().includes('vendedor')) {
     billingModalState.responsibleType = 'vendedor';
   }
+  document.getElementById('modal-body').innerHTML = window.CobroUI.buildMarkup();
   syncBillingModalHeader();
-  document.getElementById('modal-body').innerHTML = buildBillingCompactModalMarkup();
   document.getElementById('modal-box').classList.add('billing-modal');
   document.getElementById('modal-overlay').classList.remove('hidden');
   syncBillingModalFooter();
   syncSaleFiscalControls();
   setSaleNcfType(DB.saleNcfType || '');
+  if (resumedFiscal) {
+    if (resumedFiscal.rnc || resumedFiscal.razon) {
+      DB.saleRncCliente = resumedFiscal.rnc || '';
+      DB.saleRazonSocial = resumedFiscal.razon || '';
+      const rncInput = document.getElementById('ncf-rnc-input');
+      const razonInput = document.getElementById('ncf-razon-input');
+      if (rncInput) rncInput.value = DB.saleRncCliente;
+      if (razonInput) razonInput.value = DB.saleRazonSocial;
+    }
+    if (resumedFiscal.ref) selectNcfRef(resumedFiscal.ref, resumedFiscal.refId, resumedFiscal.ref);
+    updateSaleFiscalPreview();
+  }
   refreshAvailableNcfDocTypes();
   _applyAvailableNcfDocTypesToPills();
   syncBillingModalTotals();
@@ -5004,6 +4381,7 @@ function setSaleClient(value) {
   updateSaleFiscalPreview();
   syncBillingModalFooter();
   syncBillingConfirmSummary();
+  window.VentasUI?.sync();
 }
 
 function setSaleOrderType(value) {
@@ -5300,24 +4678,24 @@ function _doSearchProduct(query) {
   ).slice(0, 8);
 
   if (!searchResults.length) {
-    dd.innerHTML = '<div style="padding:1rem;color:var(--text3)">No se encontraron productos</div>';
+    dd.innerHTML = '<div class="search-empty">No se encontraron productos</div>';
     dd.classList.remove('hidden');
     return;
   }
 
   dd.innerHTML = searchResults.map((p, i) => `
     <div class="search-result-item ${i===selectedSearchIdx?'selected':''}" onclick="addProductById(${p.id})">
-      <div style="display:flex;gap:0.75rem;align-items:center">
-        <img src="${getSalesProductImage(p)}" alt="${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre}" style="width:46px;height:46px;object-fit:cover;border-radius:12px;border:1px solid var(--border);background:var(--panel2)" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
+      <div class="sri-main">
+        <img class="sri-img" src="${getSalesProductImage(p)}" alt="${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre}" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
         <div>
           <div class="sri-name">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre}</div>
           <div class="sri-code">${p.codigo} · ${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(p.categoria) : p.categoria}</div>
-          <div style="font-size:.72rem;color:var(--text3);margin-top:.18rem">${escapeHtml(buildSaleItemMeta(p, p))}</div>
+          <div class="sri-meta">${escapeHtml(buildSaleItemMeta(p, p))}</div>
         </div>
       </div>
-      <div style="text-align:right">
+      <div class="sri-side">
         <div class="sri-price">${fmt(p.precioVenta)}</div>
-        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${p.tracksStock===false?'':(p.stock===0?(!p.branchId?'⚠ Sin stock en esta sucursal':'⚠ Agotado'):'Stock: '+p.stock)}</div>
+        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${p.tracksStock===false?'':(p.stock===0?(!p.branchId?'Sin stock en esta sucursal':'Agotado'):'Stock: '+p.stock)}</div>
       </div>
     </div>
   `).join('');
@@ -5554,51 +4932,132 @@ function calcItemTotal(item) {
   return roundSaleMoney(net + calculateSaleItemTax(item));
 }
 
+// Montos de la tabla sin moneda (la moneda va en el total del panel derecho).
+function formatSaleTableAmount(value) {
+  return Number(value || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ITBIS de la línea: el mismo monto con el que calcItemTotal() arma el total
+// de la fila (calculateSaleItemTax). Solo se muestra; no se calcula nada nuevo.
+function getSaleItemTaxForTable(item) {
+  return calculateSaleItemTax(item);
+}
+
+function getSaleItemTaxRateText(item) {
+  return item?.itbisModo === 'monto'
+    ? `ITBIS RD$${Number(item.itbisMontoUnit || 0).toFixed(2)} por unidad`
+    : `ITBIS ${Number(item?.itbis || 0)}%`;
+}
+
+function saleIcon(name, size = 20) {
+  return window.TcIconos ? window.TcIconos.svg(name, size) : '';
+}
+
+// "El último producto agregado queda resaltado": se compara la tabla antes y
+// después de dibujarla (línea nueva o cantidad que subió al escanear de nuevo).
+// No toca la función que agrega productos.
+let saleTableSnapshot = new Map();
+let saleTableHighlightKey = '';
+
+function getSaleRowKey(item) {
+  return [item?.id ?? '', item?.codigo ?? '', item?.variante ?? '', item?.quickSale ? 'rapida' : '', item?.nombre ?? ''].join('|');
+}
+
+function resolveSaleTableHighlight() {
+  const current = new Map(DB.saleItems.map((item) => [getSaleRowKey(item), Number(item.qty || 0)]));
+  let changedKey = '';
+  current.forEach((qty, key) => {
+    const before = saleTableSnapshot.get(key);
+    if (before === undefined || qty > before) changedKey = key;
+  });
+  if (changedKey) saleTableHighlightKey = changedKey;
+  if (!current.has(saleTableHighlightKey)) saleTableHighlightKey = '';
+  saleTableSnapshot = current;
+  return saleTableHighlightKey;
+}
+
 function renderSaleTable() {
   const tbody = document.getElementById('sale-items');
   normalizeCartSaleItems();
   syncSaleOrderCount();
 
   if (!DB.saleItems.length) {
-    tbody.innerHTML = `<tr class="empty-row" id="empty-row"><td colspan="9"><div class="empty-sale"><span class="empty-icon">🛒</span><p>Escanea o busca un producto para comenzar</p></div></td></tr>`;
+    saleTableSnapshot = new Map();
+    saleTableHighlightKey = '';
+    tbody.innerHTML = `<tr class="empty-row" id="empty-row"><td colspan="9"><div class="tc-empty sale-empty">${saleIcon('shopping-cart', 40)}<span class="tc-empty-text">Escanea o busca un producto para comenzar</span></div></td></tr>`;
     return;
   }
 
-  tbody.innerHTML = DB.saleItems.map((item, idx) => `
-    <tr>
-      <td style="color:var(--text3);font-family:var(--font-mono)">${idx+1}</td>
-      <td style="font-family:var(--font-mono);font-size:0.7rem;line-height:1.15;white-space:normal;word-break:break-word">${item.codigo}</td>
-      <td style="white-space:normal;word-break:break-word">
-        <span style="font-weight:600;line-height:1.2">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre}</span>
-        ${item.quickSale ? '<span class="quick-sale-badge">VENTA RÁPIDA · SIN INVENTARIO</span>' : ''}
-        ${item.promoAplicada ? `
-          <div style="margin-top:.2rem">
-            <span style="display:inline-block;font-size:.68rem;font-weight:700;color:#fff;background:${item.promoAplicada.color || '#22c55e'};border-radius:4px;padding:.05rem .4rem">${item.promoAplicada.cantidadMinima ? `🔢 ${item.promoAplicada.cantidadMinima}+ uds` : '🏷'} ${escapeHtml(item.promoAplicada.texto || item.promoAplicada.nombre || 'OFERTA')}</span>
-          </div>
-        ` : ''}
+  const highlightKey = resolveSaleTableHighlight();
+  tbody.innerHTML = DB.saleItems.map((item, idx) => {
+    const name = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre;
+    const isHighlighted = getSaleRowKey(item) === highlightKey;
+    const promoText = item.promoAplicada
+      ? `${item.promoAplicada.cantidadMinima ? `${item.promoAplicada.cantidadMinima}+ uds · ` : ''}${item.promoAplicada.texto || item.promoAplicada.nombre || 'Oferta'}`
+      : '';
+    return `
+    <tr class="${isHighlighted ? 'is-selected' : ''}" data-sale-row="${idx}">
+      <td class="col-n">${idx + 1}</td>
+      <td class="col-code">${escapeHtml(item.codigo ?? '')}</td>
+      <td class="col-name">
+        <span class="sale-item-name">${escapeHtml(name ?? '')}</span>
+        <span class="sale-item-code-inline">${escapeHtml(item.codigo ?? '')}</span>
+        ${item.quickSale ? '<span class="tc-tag sale-item-tag">Venta rápida · sin inventario</span>' : ''}
+        ${promoText ? `<span class="tc-tag tc-tag--primary sale-item-tag">${escapeHtml(promoText)}</span>` : ''}
       </td>
-      <td>
-        ${item.promoAplicada ? `<div style="font-size:.72rem;color:var(--text3);text-decoration:line-through">${fmt(item.promoAplicada.precioOriginal)}</div>` : ''}
-        <input id="sale-item-price-${idx}" class="price-input is-readonly" type="number" value="${item.precio}" min="0" step="0.01" readonly disabled tabindex="-1">
+      <td class="col-price">
+        ${item.promoAplicada ? `<span class="sale-item-price-before">${formatSaleTableAmount(item.promoAplicada.precioOriginal)}</span>` : ''}
+        <span class="sale-item-price" id="sale-item-price-text-${idx}">${formatSaleTableAmount(item.precio)}</span>
+        <input id="sale-item-price-${idx}" class="tc-hidden" type="number" value="${item.precio}" readonly disabled tabindex="-1" aria-hidden="true">
       </td>
-      <td>
+      <td class="col-qty">
         ${isWeightSaleItem(item)
           ? `
-            <div style="display:flex;flex-direction:column;gap:0.4rem">
-              <div style="font-weight:800;font-family:var(--font-mono);color:var(--text1)">${escapeHtml(formatSaleItemQuantity(item, item.qty, { includeUnit: true }))}</div>
-              <button class="btn-secondary" type="button" style="padding:.36rem .55rem;font-size:.72rem" onclick="reweighSaleItem(${idx})">⚖️ Leer peso</button>
+            <div class="sale-weight">
+              <span class="sale-weight-value">${escapeHtml(formatSaleItemQuantity(item, item.qty, { includeUnit: true }))}</span>
+              <button class="tc-btn sale-weight-btn" type="button" onclick="reweighSaleItem(${idx})">${saleIcon('scale', 18)}<span>Leer peso</span></button>
             </div>
           `
           : `
-            <input id="sale-item-qty-${idx}" class="qty-input" type="number" value="${item.qty}" oninput="updateItemQty(${idx},this.value)" onchange="updateItemQty(${idx},this.value)" onkeydown="handleQtyInputKey(event, ${idx})" min="${getSaleItemMinQuantity(item)}" step="${getSaleItemQuantityStep(item)}">
+            <div class="sale-qty">
+              <button class="sale-qty-btn" type="button" onclick="stepSaleItemQty(${idx}, -1)" title="Quitar uno" aria-label="Quitar uno">${saleIcon('minus', 18)}</button>
+              <input id="sale-item-qty-${idx}" class="qty-input" type="number" value="${item.qty}" oninput="updateItemQty(${idx},this.value)" onchange="updateItemQty(${idx},this.value)" onkeydown="handleQtyInputKey(event, ${idx})" min="${getSaleItemMinQuantity(item)}" step="${getSaleItemQuantityStep(item)}" aria-label="Cantidad">
+              <button class="sale-qty-btn" type="button" onclick="stepSaleItemQty(${idx}, 1)" title="Agregar uno" aria-label="Agregar uno">${saleIcon('plus', 18)}</button>
+            </div>
           `}
       </td>
-      <td><input id="sale-item-disc-${idx}" class="disc-input" type="number" value="${item.descuento}" min="0" max="100" step="0.01" oninput="updateItemDisc(${idx},this.value)" onchange="updateItemDisc(${idx},this.value)" title="Descuento de este producto en %"></td>
-      <td style="color:var(--text2);font-size:0.74rem">${item.itbisModo === 'monto' ? `RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}` : `${item.itbis}%`}</td>
-      <td id="sale-item-total-${idx}" style="font-weight:700;font-family:var(--font-mono);font-size:0.76rem;white-space:nowrap">${fmt(item.total)}</td>
-      <td><button class="btn-remove" onclick="removeItem(${idx})">✕</button></td>
+      <td class="col-disc">
+        <label class="sale-disc" title="Descuento de este producto en %">
+          <input id="sale-item-disc-${idx}" class="disc-input" type="number" value="${item.descuento}" min="0" max="100" step="0.01" oninput="updateItemDisc(${idx},this.value)" onchange="updateItemDisc(${idx},this.value)" aria-label="Descuento en por ciento">
+          <span class="sale-disc-suffix">%</span>
+        </label>
+      </td>
+      <td class="col-itbis" id="sale-item-itbis-${idx}" title="${getSaleItemTaxRateText(item)}">${formatSaleTableAmount(getSaleItemTaxForTable(item))}</td>
+      <td class="col-total" id="sale-item-total-${idx}">${formatSaleTableAmount(item.total)}</td>
+      <td class="col-remove"><button class="sale-remove-btn" type="button" onclick="removeItem(${idx})" title="Quitar producto" aria-label="Quitar ${escapeHtml(name ?? 'producto')}">${saleIcon('trash-2', 20)}</button></td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
+
+  const highlighted = tbody.querySelector('tr.is-selected');
+  if (highlighted && typeof highlighted.scrollIntoView === 'function') {
+    highlighted.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+// Botones − y + de la cantidad: mismo paso y mínimo que las teclas + y − del
+// campo (handleQtyInputKey) y la misma función updateItemQty().
+function stepSaleItemQty(idx, direction) {
+  const item = DB.saleItems[idx];
+  if (!item || isWeightSaleItem(item)) return;
+  const currentQty = Number(item.qty || 1);
+  const step = Number.parseFloat(getSaleItemQuantityStep(item)) || 1;
+  const nextQty = direction > 0
+    ? currentQty + step
+    : Math.max(Number(getSaleItemMinQuantity(item) || 1), currentQty - step);
+  const input = document.getElementById(`sale-item-qty-${idx}`);
+  if (input) input.value = String(nextQty);
+  updateItemQty(idx, nextQty);
 }
 
 function syncSaleOrderCount() {
@@ -5660,7 +5119,13 @@ function syncSaleRowDisplay(idx) {
   if (!item) return;
 
   const totalCell = document.getElementById(`sale-item-total-${idx}`);
-  if (totalCell) totalCell.textContent = fmt(item.total);
+  if (totalCell) totalCell.textContent = formatSaleTableAmount(item.total);
+
+  const taxCell = document.getElementById(`sale-item-itbis-${idx}`);
+  if (taxCell) taxCell.textContent = formatSaleTableAmount(getSaleItemTaxForTable(item));
+
+  const priceText = document.getElementById(`sale-item-price-text-${idx}`);
+  if (priceText) priceText.textContent = formatSaleTableAmount(item.precio);
 
   const qtyInput = document.getElementById(`sale-item-qty-${idx}`);
   if (qtyInput && document.activeElement !== qtyInput) {
@@ -5758,6 +5223,9 @@ function updateTotals() {
   if (redondeoEl) redondeoEl.textContent = '+ ' + fmt(totals.roundingAdjustment || 0);
   document.getElementById('s-total').textContent = fmt(totals.total);
   document.getElementById('cobrar-total').textContent = fmt(totals.total);
+  // Sin productos no se abre el cobro (F10 lo respeta en openBillingModal).
+  const cobrarButton = document.getElementById('btn-cobrar');
+  if (cobrarButton) cobrarButton.disabled = !(Array.isArray(DB.saleItems) && DB.saleItems.length > 0);
   const taxLabelEl = document.getElementById('sale-tax-label');
   if (taxLabelEl) {
     taxLabelEl.textContent = `ITBIS (${taxBehavior.taxRate.toFixed(2).replace(/\.00$/, '')}%)`;
@@ -5769,6 +5237,7 @@ function updateTotals() {
 
   syncBillingModalTotals();
   calcCambio();
+  window.VentasUI?.sync();
 }
 
 function validateSaleItemsBeforeCheckout() {
@@ -5798,6 +5267,10 @@ function setPayMethod(method, el) {
     setSaleOrderType('delivery');
     showToast('Se cambió el pedido a delivery para usar contra entrega.', 'success');
   }
+  // syncSaleFiscalControls() vuelve a aplicar el MISMO método cada vez que
+  // cambia el comprobante: en ese caso no se borra lo que el cajero ya puso
+  // en "Recibido" (antes se perdía al tocar B01, B02, e-CF...).
+  const methodChanged = DB.payMethod !== method;
   DB.payMethod = method;
   document.querySelectorAll('.pay-method').forEach(b => b.classList.remove('active'));
   el?.classList.add('active');
@@ -5837,7 +5310,9 @@ function setPayMethod(method, el) {
   }
   const amountInput = document.getElementById('monto-recibido');
   const amountInputUsd = document.getElementById('monto-recibido-usd');
-  if (method === 'usd') {
+  if (!methodChanged) {
+    // Mismo método: se conservan los montos escritos.
+  } else if (method === 'usd') {
     if (amountInputUsd) amountInputUsd.value = '';
   } else if (amountInput) {
     if (method === 'efectivo') {
@@ -6294,9 +5769,8 @@ async function generateReceiptHtmlImageDataUrl(venta) {
     throw new Error('html2canvas no está disponible para capturar el comprobante.');
   }
 
-  // La factura moderna siempre es A4 → capturar a tamaño A4 sin importar el
-  // ajuste de papel del negocio.
-  const paperVariant = 'a4';
+  // Se captura al ancho del papel configurado (A4 o ticket 58/80 mm).
+  const paperVariant = getReceiptPaperVariant();
   const captureWidth = getReceiptCaptureWidth(paperVariant);
   const captureScale = getReceiptCaptureScale(paperVariant);
   const mount = document.createElement('div');
@@ -6741,10 +6215,12 @@ async function getLogoDataUrl(src) {
 }
 
 async function generateReceiptPdf(venta, options = {}) {
-  // Preferir el render HTML → PDF: mismo diseño de la factura A4 moderna que se
-  // ve en pantalla y se imprime. Devuelve un objeto mínimo compatible con lo que
-  // esperan los llamadores (doc.output('datauristring') / doc.save(nombre)).
-  if (window.novaDesktop?.htmlToPdf) {
+  // Con papel A4, preferir el render HTML → PDF: mismo diseño de la factura A4
+  // moderna que se ve en pantalla y se imprime. Con ticket 58/80 mm se usa el
+  // layout jsPDF de abajo, que ya respeta el ancho del ticket. Devuelve un
+  // objeto mínimo compatible con lo que esperan los llamadores
+  // (doc.output('datauristring') / doc.save(nombre)).
+  if (window.novaDesktop?.htmlToPdf && getReceiptPaperVariant() === 'a4') {
     try {
       const b64 = await window.novaDesktop.htmlToPdf(buildFormalInvoiceDocumentHtml(venta));
       if (b64) {
@@ -7143,6 +6619,41 @@ function buildSalePayload() {
   };
 }
 
+// ── Una venta, un registro (multicaja / red local) ─────────────────────────
+// Cada cobro lleva un identificador de intento (clientRequestId). Si el cobro
+// falla (respuesta perdida en la red, tiempo agotado) y el cajero reintenta la
+// MISMA venta, se reenvía el mismo identificador y el servidor devuelve la
+// venta ya registrada en vez de crear otra (server/sales/sale-idempotency.js).
+// Si cambia el carrito, el cliente, el método o el comprobante, es otra venta.
+let _saleAttempt = null;
+
+function _newSaleAttemptKey() {
+  const bytes = new Uint8Array(16);
+  // crypto.getRandomValues existe también en http://IP-de-la-LAN (randomUUID no).
+  (window.crypto || window.msCrypto).getRandomValues(bytes);
+  return 'v' + Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function _saleAttemptSignature(venta) {
+  return JSON.stringify([
+    (venta.items || []).map((item) => [item.id, item.codigo, Number(item.qty), Number(item.precio), Number(item.descuento || 0)]),
+    Number(venta.total || 0).toFixed(2),
+    venta.clientId || venta.cliente || '',
+    venta.metodo || '',
+    venta.tipoComprobante || '',
+    venta.ncfType || '',
+    venta.tipoPedido || ''
+  ]);
+}
+
+function _resolveSaleAttemptKey(venta) {
+  const signature = _saleAttemptSignature(venta);
+  if (!_saleAttempt || _saleAttempt.signature !== signature) {
+    _saleAttempt = { key: _newSaleAttemptKey(), signature };
+  }
+  return _saleAttempt.key;
+}
+
 async function processSale(action = 'print') {
   if (_billingSubmitting) return;
   const billingCaps = window.TecnoCajaBilling?.getEffectiveBillingCapabilities
@@ -7161,6 +6672,7 @@ async function processSale(action = 'print') {
   try {
     const venta = buildSalePayload();
     if (!venta) return;
+    venta.clientRequestId = _resolveSaleAttemptKey(venta);
 
     pendingSaleConfirmation = venta;
     closeAllModals(true, 'success');
@@ -7241,6 +6753,11 @@ async function finalizePendingSale(action = 'charge') {
       warmReceiptPrintPipeline().catch(() => {});
     }
     const response = await api.createSale(salePayload);
+    // Venta confirmada: el próximo cobro es otra venta (nuevo identificador).
+    _saleAttempt = null;
+    if (response?.duplicate) {
+      showToast(`La venta ${response.sale?.id || ''} ya estaba registrada: no se duplicó.`, 'info');
+    }
     const savedVenta = {
       ...response.sale,
       clienteTelefono: response.sale?.clienteTelefono || salePayload?.clienteTelefono || ''
@@ -7487,8 +7004,8 @@ function getReceiptWhatsAppPhone(venta) {
 }
 
 async function buildReceiptPdfForWhatsApp(venta) {
-  // Misma factura A4 moderna, vía el puente Electron htmlToPdf.
-  if (window.novaDesktop?.htmlToPdf) {
+  // Misma factura A4 moderna, vía el puente Electron htmlToPdf (solo con papel A4).
+  if (window.novaDesktop?.htmlToPdf && getReceiptPaperVariant() === 'a4') {
     try {
       const b64 = await window.novaDesktop.htmlToPdf(buildFormalInvoiceDocumentHtml(venta));
       if (b64) {
@@ -9168,9 +8685,22 @@ function buildFormalInvoiceDocumentHtml(venta) {
 }
 
 function buildReceiptSheetMarkup(venta) {
-  // Siempre la factura A4 moderna. buildA4ReceiptSheetMarkup / buildThermal…
-  // quedan definidas abajo sin usar: revertir es cambiar esta línea.
-  return buildFormalInvoiceMarkup(venta);
+  // Cada tamaño de papel de Configuración usa su formato: "Carta / A4" la
+  // factura A4 moderna (v1.3.29) y 58/80 mm el ticket térmico, como antes de
+  // v1.3.29. buildA4ReceiptSheetMarkup (la A4 anterior) queda sin usar.
+  if (getReceiptPaperVariant() === 'a4') {
+    return buildFormalInvoiceMarkup(venta);
+  }
+  const templateData = getReceiptTemplateData(venta);
+  const qrMarkup = isElectronicReceipt(venta) && venta.qrDataUrl
+    ? `
+      <div class="receipt-qr" id="receipt-qr">
+        <img src="${venta.qrDataUrl}" alt="Código QR de factura electrónica">
+        <small>Escaneo de verificación DGII para ${escapeReceiptHtml(getElectronicReceiptNumber(venta) || templateData.factura)}</small>
+      </div>
+    `
+    : '<div class="receipt-qr hidden" id="receipt-qr"></div>';
+  return buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup);
 }
 
 function getReceiptContentMarkup(venta) {
@@ -9178,10 +8708,206 @@ function getReceiptContentMarkup(venta) {
 }
 
 function buildPrintableReceiptHtml(venta) {
+  const paperVariant = getReceiptPaperVariant();
+  if (paperVariant !== 'a4') {
+    return buildThermalPrintableReceiptHtml(venta, paperVariant);
+  }
   // La factura A4 moderna ya trae su CSS completo y su tamano A4 propio
   // (.tcf-page: 210mm x 297mm). Solo hace falta un @page limpio.
   return `${buildReceiptSheetMarkup(venta)}
 <style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#fff}</style>`;
+}
+
+// Ticket 58/80 mm para la impresión HTML (cuando no se usa ESC/POS). Mismo CSS
+// que antes de v1.3.29, sin las reglas de la A4 anterior.
+function buildThermalPrintableReceiptHtml(venta, paperVariant) {
+  return `
+    <div class="ticket-print ticket-print--${paperVariant}">${buildReceiptSheetMarkup(venta)}</div>
+    <style>
+      @page{margin:0;}
+      html,body{margin:0;padding:0;background:#fff;width:100%;height:auto;min-height:0;min-width:0;max-width:none;overflow:hidden}
+      @media print{html,body{margin:0!important;padding:0!important;background:#fff!important;overflow:hidden!important}}
+      *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+      .ticket-print{font-family:"Segoe UI",Arial,sans-serif;color:#111827;line-height:1.5;padding:0;background:#fff;width:100%;max-width:100%;margin:0 auto;display:block;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
+      .ticket-print .receipt-sheet{display:flex;flex-direction:column;gap:.7rem;width:100%;max-width:none;margin:0 auto;padding:.9rem .85rem;background:#fff;border:1px solid #d1d5db;border-radius:0;box-shadow:none;box-sizing:border-box;break-inside:avoid-page;page-break-inside:avoid;height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}
+      .ticket-print .receipt-sheet--58mm{width:48mm;padding:.62rem .5rem}
+      .ticket-print .receipt-sheet--80mm{width:71mm;padding:.88rem .72rem}
+      .ticket-print .receipt-header,.ticket-print .receipt-section,.ticket-print .receipt-summary,.ticket-print .receipt-qr,.ticket-print .receipt-footer{width:100%;align-self:center;break-inside:avoid-page;page-break-inside:avoid}
+      .ticket-print .receipt-header{text-align:center;display:flex;flex-direction:column;gap:.38rem}
+      .ticket-print .receipt-brand{display:flex;align-items:center;justify-content:center;gap:.7rem}
+      .ticket-print .receipt-brand-mark{display:grid;place-items:center}
+      .ticket-print .receipt-brand-image{width:34px;height:34px;object-fit:cover;border-radius:10px;border:1px solid #111827}
+      .ticket-print .receipt-brand-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;border:1px solid #111827;background:#fff;color:#111827;font-size:.95rem}
+      .ticket-print .receipt-brand-copy{display:flex;flex-direction:column;align-items:flex-start;gap:.02rem}
+      .ticket-print .receipt-brand-name{font-size:1.38rem;font-weight:700;line-height:1;letter-spacing:.01em}
+      .ticket-print .receipt-brand-doc{font-size:.58rem;color:#374151;text-transform:uppercase;letter-spacing:.16em;font-weight:600}
+      .ticket-print .receipt-invoice-chip{align-self:center;margin-top:.12rem;padding:.28rem .7rem;border:1px solid #111827;border-radius:999px;font-size:.64rem;font-weight:700;letter-spacing:.08em;background:#fff}
+      .ticket-print .receipt-divider{border-top:1px dashed #9ca3af;margin:0}
+      .ticket-print .receipt-section{display:flex;flex-direction:column;gap:.45rem}
+      .ticket-print .receipt-section-title{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#111827}
+      .ticket-print .receipt-kv-list{display:grid;gap:.34rem}
+      .ticket-print .receipt-kv{display:grid;grid-template-columns:78px minmax(0,1fr);gap:.48rem;align-items:start}
+      .ticket-print .receipt-kv-label{font-size:.62rem;color:#374151;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap;min-width:max-content;padding:0;align-self:start;font-weight:600}
+      .ticket-print .receipt-kv-value{text-align:right;font-weight:700;word-break:break-word;font-family:monospace;padding:0;align-self:start;line-height:1.35;font-size:.74rem;color:#111827}
+      .ticket-print .receipt-items-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;font-size:.62rem;color:#374151;text-transform:uppercase;letter-spacing:.07em;border-bottom:1px dotted #9ca3af;padding-bottom:.3rem;font-weight:600}
+      .ticket-print .receipt-items-head span:not(:first-child){text-align:right}
+      .ticket-print .receipt-items-head--table,.ticket-print .receipt-item-grid--table{grid-template-columns:minmax(0,1.9fr) 34px 56px 58px}
+      .ticket-print .receipt-items-list{display:flex;flex-direction:column;gap:0}
+      .ticket-print .receipt-item{padding:.42rem 0;border-bottom:1px dotted #d1d5db}
+      .ticket-print .receipt-item:last-child{border-bottom:0;padding-bottom:0}
+      .ticket-print .receipt-item-grid{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
+      .ticket-print .receipt-item-main{min-width:0}
+      .ticket-print .receipt-item-name{font-weight:700;color:#111827;font-size:.8rem;overflow-wrap:anywhere}
+      .ticket-print .receipt-item-qty,.ticket-print .receipt-item-price,.ticket-print .receipt-item-total{text-align:right;font-family:monospace;white-space:nowrap}
+      .ticket-print .receipt-item-qty,.ticket-print .receipt-item-price{font-weight:600;color:#111827;font-size:.76rem}
+      .ticket-print .receipt-item-total{text-align:right;min-width:0;color:#111827;font-weight:700;font-family:monospace;font-size:.76rem;white-space:nowrap}
+      .ticket-print .receipt-item-meta{display:block;margin-top:.12rem;color:#374151;font-size:.64rem;font-weight:600}
+      .ticket-print .receipt-summary{display:flex;flex-direction:column;gap:.22rem}
+      .ticket-print .receipt-row,.ticket-print .receipt-total-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center;color:#111827;font-weight:700}
+      .ticket-print .receipt-row--danger{color:#b91c1c}
+      .ticket-print .receipt-row > :last-child,.ticket-print .receipt-total-row > :last-child{text-align:right;white-space:nowrap;font-family:monospace;font-weight:700}
+      .ticket-print .receipt-total-row{margin-top:.22rem;padding-top:.42rem;border-top:1px solid #111827;font-weight:800;font-size:1.04rem}
+      .ticket-print .receipt-footer{text-align:center;margin-top:.12rem;color:#374151;font-size:.66rem;font-weight:600}
+      .ticket-print .receipt-qr{margin-top:.4rem;padding-top:.45rem;border-top:1px dashed #9ca3af;display:flex;flex-direction:column;align-items:center;gap:.35rem}
+      .ticket-print .receipt-qr.hidden{display:none}
+      .ticket-print .receipt-qr img{width:118px;height:118px;background:#fff;padding:.28rem;image-rendering:pixelated;image-rendering:crisp-edges}
+      .ticket-print .receipt-qr small{color:#374151;font-size:.62rem;text-align:center;line-height:1.4;font-weight:600}
+      .ticket-print--58mm .receipt-brand{gap:.48rem}
+      .ticket-print--58mm .receipt-brand-image,.ticket-print--58mm .receipt-brand-icon{width:28px;height:28px;border-radius:8px}
+      .ticket-print--58mm .receipt-brand-name{font-size:1.05rem}
+      .ticket-print--58mm .receipt-brand-doc{font-size:.46rem}
+      .ticket-print--58mm .receipt-invoice-chip{font-size:.54rem;padding:.22rem .52rem}
+      .ticket-print--58mm .receipt-section-title{font-size:.58rem}
+      .ticket-print--58mm .receipt-kv{grid-template-columns:56px minmax(0,1fr);gap:.34rem}
+      .ticket-print--58mm .receipt-kv-label{font-size:.58rem}
+      .ticket-print--58mm .receipt-kv-value{font-size:.68rem}
+      .ticket-print--58mm .receipt-item-name{font-size:.72rem}
+      .ticket-print--58mm .receipt-item-total{min-width:32px;font-size:.66rem}
+      .ticket-print--58mm .receipt-item-meta{font-size:.58rem}
+      .ticket-print--58mm .receipt-total-row{font-size:.92rem}
+      .ticket-print--58mm .receipt-footer{font-size:.62rem}
+      .ticket-print--80mm .receipt-brand-name{font-size:1.46rem}
+      .ticket-print--80mm .receipt-kv-value{font-size:.76rem}
+      .ticket-print--80mm .receipt-item-name{font-size:.82rem}
+      .ticket-print--80mm .receipt-item-qty,.ticket-print--80mm .receipt-item-price,.ticket-print--80mm .receipt-item-total{font-size:.78rem}
+      .ticket-print--58mm .receipt-sheet,.ticket-print--80mm .receipt-sheet{font-family:"Courier New",Consolas,monospace;letter-spacing:0;line-height:2.05;padding-top:1.1rem;padding-bottom:1.1rem}
+      .ticket-print--58mm .receipt-brand,.ticket-print--80mm .receipt-brand{justify-content:center}
+      .ticket-print--58mm .receipt-brand-mark,.ticket-print--80mm .receipt-brand-mark{display:none}
+      .ticket-print--58mm .receipt-brand-copy,.ticket-print--80mm .receipt-brand-copy{align-items:center;gap:.28rem}
+      .ticket-print--58mm .receipt-brand-name,.ticket-print--80mm .receipt-brand-name{font-size:1.5rem;font-weight:600;text-transform:lowercase}
+      .ticket-print--58mm .receipt-brand-doc,.ticket-print--80mm .receipt-brand-doc{font-size:.72rem;font-weight:500;letter-spacing:.1em}
+      .ticket-print--58mm .receipt-invoice-chip,.ticket-print--80mm .receipt-invoice-chip{border:0;padding:.12rem 0;margin-top:.38rem;border-radius:0;font-size:1rem;font-weight:600;letter-spacing:.02em}
+      .ticket-print--58mm .receipt-divider,.ticket-print--80mm .receipt-divider{border-top:1px solid #111827;margin:.16rem 0}
+      .ticket-print--58mm .receipt-section,.ticket-print--80mm .receipt-section{gap:.9rem}
+      .ticket-print--58mm .receipt-kv-list,.ticket-print--80mm .receipt-kv-list{gap:.76rem}
+      .ticket-print--58mm .receipt-section-title,.ticket-print--80mm .receipt-section-title{font-size:.8rem;font-weight:600;letter-spacing:.04em}
+      .ticket-print--58mm .receipt-kv{grid-template-columns:82px minmax(0,1fr);gap:.52rem}
+      .ticket-print--80mm .receipt-kv{grid-template-columns:98px minmax(0,1fr);gap:.62rem}
+      .ticket-print--58mm .receipt-kv-label,.ticket-print--80mm .receipt-kv-label{font-size:.78rem;font-weight:500;letter-spacing:.01em}
+      .ticket-print--58mm .receipt-kv-value,.ticket-print--80mm .receipt-kv-value{font-size:.84rem;font-weight:600}
+      .ticket-print--58mm .receipt-items-head,.ticket-print--80mm .receipt-items-head{font-size:.78rem;font-weight:600;letter-spacing:.01em;border-bottom:1px solid #111827;padding-bottom:.52rem}
+      .ticket-print--58mm .receipt-items-head--table,.ticket-print--58mm .receipt-item-grid--table{grid-template-columns:minmax(0,1.6fr) 34px 56px 56px}
+      .ticket-print--80mm .receipt-items-head--table,.ticket-print--80mm .receipt-item-grid--table{grid-template-columns:minmax(0,2fr) 44px 70px 70px}
+      .ticket-print--58mm .receipt-item,.ticket-print--80mm .receipt-item{padding:.92rem 0;border-bottom:1px dashed #b6bec8}
+      .ticket-print--58mm .receipt-item-name,.ticket-print--80mm .receipt-item-name{font-size:.86rem;font-weight:500;line-height:1.72;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+      .ticket-print--58mm .receipt-item-qty,.ticket-print--58mm .receipt-item-price,.ticket-print--58mm .receipt-item-total,.ticket-print--80mm .receipt-item-qty,.ticket-print--80mm .receipt-item-price,.ticket-print--80mm .receipt-item-total{font-size:.86rem;font-weight:500;line-height:1.72;white-space:nowrap;overflow:hidden;text-overflow:clip;min-width:0}
+      .ticket-print--58mm .receipt-summary,.ticket-print--80mm .receipt-summary{gap:.74rem}
+      .ticket-print--58mm .receipt-row,.ticket-print--80mm .receipt-row{font-size:.86rem;font-weight:500;line-height:1.85}
+      .ticket-print--58mm .receipt-total-row,.ticket-print--80mm .receipt-total-row{font-size:1.1rem;font-weight:700;line-height:1.95}
+      .ticket-print--58mm .receipt-footer,.ticket-print--80mm .receipt-footer{font-size:.76rem;font-weight:500;line-height:1.9;word-break:break-word}
+      .ticket-print--80mm .receipt-sheet{line-height:1.62;padding:.88rem .72rem}
+      .ticket-print--80mm .receipt-brand-copy{gap:.16rem}
+      .ticket-print--80mm .receipt-brand-name{font-size:18px;font-weight:600}
+      .ticket-print--80mm .receipt-brand-doc{font-size:10px;letter-spacing:.05em;font-weight:500}
+      .ticket-print--80mm .receipt-invoice-chip{font-size:15px;margin-top:.24rem;font-weight:600}
+      .ticket-print--80mm .receipt-section{gap:.52rem}
+      .ticket-print--80mm .receipt-kv-list{gap:.42rem}
+      .ticket-print--80mm .receipt-section-title{font-size:11px;font-weight:600}
+      .ticket-print--80mm .receipt-kv{grid-template-columns:76px minmax(0,1fr);gap:.42rem}
+      .ticket-print--80mm .receipt-kv-label{font-size:11px;font-weight:500}
+      .ticket-print--80mm .receipt-kv-value{font-size:11px;line-height:1.42;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+      .ticket-print--80mm .receipt-items-head{font-size:11px;padding-bottom:.3rem;font-weight:600}
+      .ticket-print--80mm .receipt-items-head--table,.ticket-print--80mm .receipt-item-grid--table{grid-template-columns:minmax(0,1.85fr) 34px 58px 58px}
+      .ticket-print--80mm .receipt-item{padding:.46rem 0}
+      .ticket-print--80mm .receipt-item-name{font-size:11px;line-height:1.42;font-weight:500}
+      .ticket-print--80mm .receipt-item-qty,.ticket-print--80mm .receipt-item-price,.ticket-print--80mm .receipt-item-total{font-size:11px;line-height:1.42;font-weight:500}
+      .ticket-print--80mm .receipt-summary{gap:.38rem}
+      .ticket-print--80mm .receipt-row{font-size:11px;line-height:1.48;font-weight:500}
+      .ticket-print--80mm .receipt-total-row{font-size:14px;line-height:1.56;font-weight:700}
+      .ticket-print--80mm .receipt-footer{font-size:10px;line-height:1.46;font-weight:500}
+      .ticket-print .receipt-sheet--58mm,.ticket-print .receipt-sheet--80mm{border:0;box-shadow:none;border-radius:0;background:#fff;font-family:"Courier New",Consolas,monospace;line-height:1.28;letter-spacing:0;gap:.38rem;padding:.4rem .34rem .6rem}
+      .ticket-print .receipt-sheet--58mm .receipt-header,.ticket-print .receipt-sheet--80mm .receipt-header{gap:.16rem}
+      .ticket-print .receipt-sheet--58mm .receipt-brand,.ticket-print .receipt-sheet--80mm .receipt-brand{justify-content:center}
+      .ticket-print .receipt-sheet--58mm .receipt-brand-mark,.ticket-print .receipt-sheet--80mm .receipt-brand-mark,.ticket-print .receipt-sheet--58mm .receipt-brand-doc,.ticket-print .receipt-sheet--80mm .receipt-brand-doc{display:none}
+      .ticket-print .receipt-sheet--58mm .receipt-brand-copy,.ticket-print .receipt-sheet--80mm .receipt-brand-copy{align-items:center;gap:.1rem}
+      .ticket-print .receipt-sheet--58mm .receipt-brand-name,.ticket-print .receipt-sheet--80mm .receipt-brand-name{font-size:15px;font-weight:700;line-height:1.12;letter-spacing:.04em;text-transform:uppercase}
+      .ticket-print .receipt-business-line{text-align:center;color:#111827;font-size:10px;line-height:1.22;font-weight:500}
+      .ticket-print .receipt-business-line--muted{color:#374151;letter-spacing:.04em;text-transform:uppercase}
+      .ticket-print .receipt-thermal-title{margin-top:.1rem;padding:.14rem 0;border-top:1px solid #111827;border-bottom:1px solid #111827;font-size:13px;font-weight:700;letter-spacing:.08em;text-align:center;text-transform:uppercase}
+      .ticket-print .receipt-thermal-ticket{font-size:12px;font-weight:700;letter-spacing:.03em;text-align:center}
+      .ticket-print .receipt-sheet--58mm .receipt-section,.ticket-print .receipt-sheet--80mm .receipt-section{gap:.22rem}
+      .ticket-print .receipt-sheet--58mm .receipt-section-title--thermal,.ticket-print .receipt-sheet--80mm .receipt-section-title--thermal{border-bottom:1px solid #111827;padding-bottom:.12rem;font-size:10px;font-weight:700;letter-spacing:.08em;text-align:left}
+      .ticket-print .receipt-sheet--58mm .receipt-kv-list,.ticket-print .receipt-sheet--80mm .receipt-kv-list{gap:.08rem}
+      .ticket-print .receipt-sheet--58mm .receipt-kv{grid-template-columns:52px minmax(0,1fr);gap:.28rem}
+      .ticket-print .receipt-sheet--80mm .receipt-kv{grid-template-columns:68px minmax(0,1fr);gap:.34rem}
+      .ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--80mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--80mm .receipt-kv-value{font-size:10px;line-height:1.22}
+      .ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--80mm .receipt-kv-label{color:#111827;font-weight:700;letter-spacing:.04em}
+      .ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--80mm .receipt-kv-value{font-weight:600;white-space:normal;overflow:visible;text-overflow:clip;word-break:break-word}
+      .ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--80mm .receipt-items-head{border-bottom:1px solid #111827;padding-bottom:.18rem;font-size:10px;color:#111827;font-weight:700;letter-spacing:.05em}
+      .ticket-print .receipt-sheet--58mm .receipt-items-head--table,.ticket-print .receipt-sheet--58mm .receipt-item-grid--table{grid-template-columns:minmax(0,1.75fr) 28px 46px 48px}
+      .ticket-print .receipt-sheet--80mm .receipt-items-head--table,.ticket-print .receipt-sheet--80mm .receipt-item-grid--table{grid-template-columns:minmax(0,2fr) 34px 56px 58px}
+      .ticket-print .receipt-sheet--58mm .receipt-item,.ticket-print .receipt-sheet--80mm .receipt-item{padding:.16rem 0;border-bottom:1px dotted #9ca3af}
+      .ticket-print .receipt-sheet--58mm .receipt-item:last-child,.ticket-print .receipt-sheet--80mm .receipt-item:last-child{border-bottom:0}
+      .ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--80mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--80mm .receipt-item-qty,.ticket-print .receipt-sheet--80mm .receipt-item-price,.ticket-print .receipt-sheet--80mm .receipt-item-total{font-size:10px;line-height:1.22}
+      .ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--80mm .receipt-item-name{font-weight:600}
+      .ticket-print .receipt-sheet--58mm .receipt-summary,.ticket-print .receipt-sheet--80mm .receipt-summary{gap:.08rem;margin-top:.08rem}
+      .ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--80mm .receipt-row{font-size:10px;line-height:1.22;font-weight:600}
+      .ticket-print .receipt-sheet--58mm .receipt-total-row,.ticket-print .receipt-sheet--80mm .receipt-total-row{margin-top:.1rem;padding-top:.14rem;border-top:1px solid #111827;font-size:15px;line-height:1.24;font-weight:800}
+      .ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer{margin-top:.18rem;padding-top:.2rem;border-top:1px dashed #111827;color:#111827;font-size:10px;line-height:1.24;font-weight:500}
+      .ticket-print .receipt-sheet--58mm .receipt-qr,.ticket-print .receipt-sheet--80mm .receipt-qr{margin-top:.18rem;padding-top:.22rem;border-top:1px dashed #111827;gap:.22rem}
+      .ticket-print .receipt-sheet--58mm .receipt-qr img,.ticket-print .receipt-sheet--80mm .receipt-qr img{width:84px;height:84px}
+      .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:9px;line-height:1.2;color:#111827}
+      .ticket-print .receipt-sheet--58mm .receipt-brand-name{font-size:13px}
+      .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer{font-size:9px}
+      .ticket-print .receipt-sheet--58mm .receipt-thermal-title{font-size:11px}
+      .ticket-print .receipt-sheet--58mm .receipt-thermal-ticket{font-size:10px}
+      .ticket-print .receipt-sheet--58mm .receipt-total-row{font-size:13px}
+      .ticket-print .receipt-sheet--58mm,.ticket-print .receipt-sheet--80mm{color:#000!important;background:#fff!important;text-rendering:geometricPrecision}
+      .ticket-print .receipt-sheet--58mm *,.ticket-print .receipt-sheet--80mm *{color:#000!important;border-color:#000!important;box-shadow:none!important;text-shadow:none!important;opacity:1!important}
+      .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--80mm .receipt-business-line{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
+      .ticket-print .receipt-sheet--58mm .receipt-business-line--muted,.ticket-print .receipt-sheet--80mm .receipt-business-line--muted{letter-spacing:.02em!important}
+      .ticket-print .receipt-sheet--58mm .receipt-thermal-title,.ticket-print .receipt-sheet--80mm .receipt-thermal-title{padding:.2rem 0!important;border-top:1.2px solid #000!important;border-bottom:1.2px solid #000!important;font-size:14px!important;font-weight:800!important}
+      .ticket-print .receipt-sheet--58mm .receipt-thermal-ticket,.ticket-print .receipt-sheet--80mm .receipt-thermal-ticket{font-size:13px!important;font-weight:800!important}
+      .ticket-print .receipt-sheet--58mm .receipt-section-title--thermal,.ticket-print .receipt-sheet--80mm .receipt-section-title--thermal{padding-bottom:.16rem!important;border-bottom:1.2px solid #000!important;font-size:11px!important;font-weight:800!important}
+      .ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--80mm .receipt-kv-label,.ticket-print .receipt-sheet--80mm .receipt-kv-value{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
+      .ticket-print .receipt-sheet--58mm .receipt-kv,.ticket-print .receipt-sheet--80mm .receipt-kv{align-items:start}
+      .ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--80mm .receipt-items-head{padding-bottom:.22rem!important;border-bottom:1.2px solid #000!important;font-size:11px!important;font-weight:800!important}
+      .ticket-print .receipt-sheet--58mm .receipt-item,.ticket-print .receipt-sheet--80mm .receipt-item{padding:.22rem 0!important;border-bottom:1px solid #000!important}
+      .ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--80mm .receipt-item-name,.ticket-print .receipt-sheet--80mm .receipt-item-qty,.ticket-print .receipt-sheet--80mm .receipt-item-price,.ticket-print .receipt-sheet--80mm .receipt-item-total{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
+      .ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--80mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
+      .ticket-print .receipt-sheet--58mm .receipt-total-row,.ticket-print .receipt-sheet--80mm .receipt-total-row{padding-top:.18rem!important;border-top:1.4px solid #000!important;font-size:16px!important;font-weight:900!important}
+      .ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer,.ticket-print .receipt-sheet--58mm .receipt-qr,.ticket-print .receipt-sheet--80mm .receipt-qr{border-top:1px solid #000!important}
+      .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:9px!important;font-weight:500!important}
+      .ticket-print .receipt-mono-line--quotation-message{display:block;white-space:pre;font-size:1.12em;font-weight:900;line-height:1.26!important;letter-spacing:.01em;text-transform:uppercase}
+      .ticket-print .receipt-sheet--58mm .receipt-brand-name{font-size:14px!important}
+      .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer{font-size:10px!important}
+      .ticket-print .receipt-sheet--58mm .receipt-thermal-title{font-size:12px!important}
+      .ticket-print .receipt-sheet--58mm .receipt-thermal-ticket{font-size:11px!important}
+      .ticket-print .receipt-sheet--58mm .receipt-total-row{font-size:14px!important}
+      .ticket-print .receipt-sheet--58mm,.ticket-print .receipt-sheet--80mm{width:100%!important;max-width:100%!important;margin:0!important;height:auto!important;min-height:0!important;max-height:none!important}
+      .ticket-print .receipt-sheet--thermal-mono{padding:.3rem .28rem .46rem!important;line-height:1!important;gap:0!important}
+      .ticket-print .receipt-mono-block{margin:0;font-family:"Courier New",Consolas,monospace!important;font-size:10px;line-height:1.12!important;font-weight:400;letter-spacing:0;color:#000!important;font-variant-ligatures:none;font-feature-settings:"liga" 0,"tnum" 1;font-variant-numeric:tabular-nums lining-nums;display:block;width:100%}
+      .ticket-print .receipt-mono-line{display:block;white-space:pre}
+      .ticket-print .receipt-mono-line--spacer{height:1.12em}
+      .ticket-print .receipt-mono-line--brand{font-weight:700}
+      .ticket-print .receipt-mono-line--title{font-size:1.08em;font-weight:700}
+      .ticket-print .receipt-mono-line--meta-strong,.ticket-print .receipt-mono-line--section,.ticket-print .receipt-mono-line--items-head{font-weight:600}
+      .ticket-print .receipt-mono-line--total{font-size:1em;font-weight:800}
+      .ticket-print .receipt-sheet--58mm .receipt-mono-block{font-size:9px}
+      .ticket-print .receipt-sheet--80mm .receipt-mono-block{font-size:10px}
+      .ticket-print .receipt-sheet--thermal-mono .receipt-qr{margin-top:.24rem;padding-top:.24rem;border-top:1px solid #000!important}
+    </style>
+  `;
 }
 
 function showReceipt(venta, options = {}) {
@@ -9339,6 +9065,8 @@ function openPrintPreviewFromConfig() {
 }
 
 function cancelSale() {
+  // Venta cancelada/cobrada/suspendida: el próximo cobro empieza de cero.
+  window.CobroUI?.clearResume();
   clearRecoveredQuotationTracking();
   storeRememberedBillingClientId(DB.saleClientId);
   DB.saleItems = [];

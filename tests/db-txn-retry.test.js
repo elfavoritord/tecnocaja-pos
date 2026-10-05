@@ -14,6 +14,16 @@ describe('isTransientTxnError', () => {
     expect(classify({ code: 'ER_LOCK_DEADLOCK', errno: 1213 })).toMatchObject({ retry: true, kind: 'deadlock' });
   });
 
+  test('reintenta ER_CHECKREAD (1020) — conflicto de snapshot de MariaDB 11.6+', () => {
+    expect(classify({ code: 'ER_CHECKREAD', errno: 1020, message: "Record has changed since last read in table 'config'" }))
+      .toMatchObject({ retry: true, kind: 'snapshot_conflict' });
+  });
+
+  test('no reintenta la misma venta reenviada (client_request_id)', () => {
+    expect(classify({ code: 'ER_DUP_ENTRY', errno: 1062, message: "Duplicate entry 'abc' for key 'sales.uq_sales_client_request_id'" }))
+      .toMatchObject({ retry: false });
+  });
+
   test('reintenta ER_DUP_ENTRY solo si es de invoice_number', () => {
     expect(classify({ code: 'ER_DUP_ENTRY', errno: 1062, message: "Duplicate entry 'FAC-00001050' for key 'sales.invoice_number'" }))
       .toMatchObject({ retry: true, kind: 'dup_invoice' });

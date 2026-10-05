@@ -16,6 +16,7 @@ function supplierLocale() {
 }
 function fmtS(n) { return typeof fmt === 'function' ? fmt(n) : `RD$ ${Number(n||0).toFixed(2)}`; }
 function fmtDate(v) {
+  if (window.TcFecha) return v ? window.TcFecha.formatear(v, { hora: false }) : '—';
   if (!v) return '—';
   const d = new Date(v);
   return isNaN(d) ? String(v) : d.toLocaleDateString(supplierLocale());
@@ -108,34 +109,28 @@ function renderProveedoresList() {
   const list = getFilteredProveedores();
 
   if (!list.length) {
-    container.innerHTML = `<div style="text-align:center;padding:2rem;color:var(--text3);font-size:.85rem">No se encontraron proveedores</div>`;
+    container.innerHTML = `<div class="prov-list-empty">No se encontraron proveedores</div>`;
     return;
   }
 
   container.innerHTML = list.map(p => {
     const s    = getSupplierPendingSummary(p.id);
     const isA  = _activeProveedorId === p.id;
-    const alert = s.vencidas > 0 ? '🔴' : s.pendientes > 0 ? '🟡' : '';
-    const estadoBg = p.estado === 'Activo' ? '#065f46' : '#374151';
-    const estadoColor = p.estado === 'Activo' ? '#6ee7b7' : '#9ca3af';
+    const tone = s.vencidas > 0 ? 'is-danger' : s.pendientes > 0 ? 'is-warning' : '';
+    const sub = [p.rnc ? `RNC: ${esc(p.rnc)}` : '', p.tipoProveedor ? esc(p.tipoProveedor) : ''].filter(Boolean).join(' · ')
+      || (p.empresa ? esc(p.empresa) : p.telefono ? esc(p.telefono) : 'Sin datos adicionales');
     return `
-      <div onclick="openProveedorDetail(${p.id})"
-        style="padding:10px 12px;border-radius:8px;cursor:pointer;border:1px solid ${isA?'var(--green,#22c55e)':'var(--border,#374151)'};background:${isA?'rgba(34,197,94,.08)':'var(--bg2,#1f2937)'};transition:border-color .15s"
-        onmouseover="if(${p.id}!==_activeProveedorId)this.style.borderColor='rgba(34,197,94,.4)'"
-        onmouseout="if(${p.id}!==_activeProveedorId)this.style.borderColor='var(--border,#374151)'">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <div style="flex:1;font-weight:600;font-size:.88rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.nombre)}${alert?' '+alert:''}</div>
-          <span style="background:${estadoBg};color:${estadoColor};border-radius:4px;padding:1px 6px;font-size:.7rem;font-weight:700;flex-shrink:0">${esc(p.estado)}</span>
-        </div>
-        <div style="font-size:.75rem;color:var(--text3);margin-bottom:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-          ${p.rnc ? `RNC: ${esc(p.rnc)}` : ''}${p.rnc && p.tipoProveedor ? ' · ' : ''}${p.tipoProveedor ? esc(p.tipoProveedor) : ''}
-          ${!p.rnc && !p.tipoProveedor ? (p.empresa ? esc(p.empresa) : p.telefono ? esc(p.telefono) : 'Sin datos adicionales') : ''}
-        </div>
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <div style="font-size:.78rem;color:var(--text3)">${s.totalFacturas} factura(s) · ${s.pendientes} pendiente(s)</div>
-          <div style="font-size:.82rem;font-weight:700;color:${s.vencidas>0?'#f87171':s.pendientes>0?'#fbbf24':'#6ee7b7'}">${fmtS(s.totalPendiente)}</div>
-        </div>
-      </div>`;
+      <button type="button" class="prov-list-item ${isA ? 'is-selected' : ''}" onclick="openProveedorDetail(${p.id})">
+        <span class="prov-list-head">
+          <span class="prov-list-name">${esc(p.nombre)}</span>
+          <span class="tc-tag ${p.estado === 'Activo' ? 'tc-tag--success' : ''}">${esc(p.estado)}</span>
+        </span>
+        <span class="prov-list-sub">${sub}</span>
+        <span class="prov-list-foot">
+          <span>${s.totalFacturas} factura(s) · ${s.pendientes} pendiente(s)</span>
+          <strong class="prov-list-amount ${tone}">${fmtS(s.totalPendiente)}</strong>
+        </span>
+      </button>`;
   }).join('');
 }
 
@@ -146,7 +141,7 @@ async function openProveedorDetail(id) {
 
   const panel = document.getElementById('prov-detail-panel');
   if (!panel) return;
-  panel.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text3)"><div style="text-align:center"><div style="font-size:2rem;margin-bottom:8px">⏳</div><div>Cargando perfil…</div></div></div>`;
+  panel.innerHTML = `<div class="prov-detail-empty">Cargando perfil…</div>`;
 
   try {
     const token = (typeof getStoredAuthToken==='function' ? getStoredAuthToken() : '') || DB?.authToken || '';
@@ -155,53 +150,42 @@ async function openProveedorDetail(id) {
     const data = await res.json();
     _renderProveedorDetailContent(panel, data);
   } catch(e) {
-    panel.innerHTML = `<div style="padding:2rem;color:var(--text3)">Error al cargar el perfil: ${esc(e.message)}</div>`;
+    panel.innerHTML = `<div class="prov-detail-empty">Error al cargar el perfil: ${esc(e.message)}</div>`;
   }
 }
 
 function _renderProveedorDetailContent(panel, { proveedor: p, indicadores: ind, facturas, pagos, alertas }) {
   const tabs = [
-    { id:'resumen',    label:'📊 Resumen' },
-    { id:'facturas',   label:'📄 Facturas' },
-    { id:'pagos',      label:'💵 Pagos' },
-    { id:'alertas',    label:`🔔 Alertas${alertas.length?' ('+alertas.length+')':''}` },
+    { id:'resumen',    label:'Resumen' },
+    { id:'facturas',   label:'Facturas' },
+    { id:'pagos',      label:'Pagos' },
+    { id:'alertas',    label:`Alertas${alertas.length?' ('+alertas.length+')':''}` },
   ];
 
   panel.innerHTML = `
-    <!-- Header del proveedor -->
-    <div style="padding:14px 16px;border-bottom:1px solid var(--border,#374151);display:flex;align-items:center;gap:12px;flex-shrink:0">
-      <div style="width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#065f46,#22c55e);display:flex;align-items:center;justify-content:center;font-size:1.2rem;flex-shrink:0;font-weight:700;color:#fff">
-        ${esc(p.nombre.charAt(0).toUpperCase())}
+    <div class="prov-detail-head">
+      <div class="prov-detail-avatar">${esc(p.nombre.charAt(0).toUpperCase())}</div>
+      <div class="prov-detail-title">
+        <div class="prov-detail-name">${esc(p.nombre)}</div>
+        <div class="prov-detail-sub">${p.rnc?'RNC: '+esc(p.rnc):''}${p.rnc&&p.tipoProveedor?' · ':''}${esc(p.tipoProveedor||p.empresa||'')}</div>
       </div>
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.nombre)}</div>
-        <div style="font-size:.76rem;color:var(--text3)">${p.rnc?'RNC: '+esc(p.rnc):''}${p.rnc&&p.tipoProveedor?' · ':''}${esc(p.tipoProveedor||p.empresa||'')}</div>
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
-        <button onclick="openProveedorModal(${p.id})" style="padding:5px 10px;background:rgba(255,255,255,.07);border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:.78rem;color:var(--text)">✏ Editar</button>
-        <button onclick="openSupplierInvoiceModal(${p.id})" style="padding:5px 10px;background:rgba(34,197,94,.12);border:1px solid #22c55e;border-radius:6px;cursor:pointer;font-size:.78rem;color:#22c55e">+ Factura</button>
+      <div class="prov-detail-actions">
+        <button type="button" class="tc-btn" onclick="openProveedorModal(${p.id})">Editar</button>
+        <button type="button" class="tc-btn tc-btn--soft" onclick="openSupplierInvoiceModal(${p.id})">Registrar factura</button>
       </div>
     </div>
 
-    <!-- Tabs -->
-    <div style="display:flex;border-bottom:1px solid var(--border,#374151);flex-shrink:0;overflow-x:auto">
+    <div class="tc-tabs prov-detail-tabs" role="tablist">
       ${tabs.map(t=>`
-        <button id="prov-tab-btn-${t.id}" onclick="switchProveedorTab('${t.id}')"
-          style="padding:9px 14px;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;font-size:.8rem;color:var(--text3);white-space:nowrap;transition:color .15s">
-          ${t.label}
-        </button>`).join('')}
+        <button type="button" class="tc-tab ${t.id === 'resumen' ? 'is-active' : ''}" id="prov-tab-btn-${t.id}" role="tab" onclick="switchProveedorTab('${t.id}')">${t.label}</button>`).join('')}
     </div>
 
-    <!-- Tab content -->
-    <div id="prov-tab-content" style="flex:1;overflow-y:auto;padding:16px">
+    <div id="prov-tab-content" class="prov-tab-content">
       ${_renderResumenTab(p, ind)}
     </div>`;
 
   // Store data on panel for tab switching
   panel._provData = { p, ind, facturas, pagos, alertas };
-  // Activate first tab
-  const firstBtn = document.getElementById('prov-tab-btn-resumen');
-  if (firstBtn) { firstBtn.style.borderBottomColor = 'var(--green,#22c55e)'; firstBtn.style.color = 'var(--green,#22c55e)'; }
 }
 
 function switchProveedorTab(tabId) {
@@ -209,12 +193,8 @@ function switchProveedorTab(tabId) {
   if (!panel?._provData) return;
   const { p, ind, facturas, pagos, alertas } = panel._provData;
 
-  // Update tab buttons
   ['resumen','facturas','pagos','alertas'].forEach(id => {
-    const btn = document.getElementById(`prov-tab-btn-${id}`);
-    if (!btn) return;
-    btn.style.borderBottomColor = id===tabId ? 'var(--green,#22c55e)' : 'transparent';
-    btn.style.color = id===tabId ? 'var(--green,#22c55e)' : 'var(--text3)';
+    document.getElementById(`prov-tab-btn-${id}`)?.classList.toggle('is-active', id === tabId);
   });
 
   const content = document.getElementById('prov-tab-content');
@@ -227,19 +207,20 @@ function switchProveedorTab(tabId) {
 
 // ── Tab: Resumen ──────────────────────────────────────────────────────────────
 function _renderResumenTab(p, ind) {
+  // tone: solo ámbar o rojo cuando hay un problema real (pendiente o vencido).
   const kpis = [
-    { label:'Total Comprado',   val: fmtS(ind.totalComprado),   color:'#6ee7b7' },
-    { label:'Compras este mes', val: fmtS(ind.comprasMes),      color:'#93c5fd' },
-    { label:'Compras este año', val: fmtS(ind.comprasAnio),     color:'#c4b5fd' },
-    { label:'Por Pagar',        val: fmtS(ind.montoPendiente),  color: ind.montoPendiente>0?'#fbbf24':'#6ee7b7' },
-    { label:'Vencido',          val: fmtS(ind.montoVencido),    color: ind.montoVencido>0?'#f87171':'#6ee7b7' },
-    { label:'ITBIS Acreditable',val: fmtS(ind.totalITBIS),      color:'#fdba74' },
-    { label:'Facturas',         val: ind.totalFacturas,         color:'#e5e7eb' },
-    { label:'Pendientes',       val: ind.facturasPendientesCount, color: ind.facturasPendientesCount>0?'#fbbf24':'#6ee7b7' },
-    { label:'Vencidas',         val: ind.facturasVencidasCount,   color: ind.facturasVencidasCount>0?'#f87171':'#6ee7b7' },
-    { label:'Última Factura',   val: fmtDate(ind.ultimaFactura), color:'#e5e7eb' },
-    { label:'Próx. visita',     val: getNextVisitDayLabel(p),   color:'#e5e7eb' },
-    { label:'Términos pago',    val: `${p.terminosPagoDias} días`, color:'#e5e7eb' },
+    { label:'Total comprado',   val: fmtS(ind.totalComprado) },
+    { label:'Compras este mes', val: fmtS(ind.comprasMes) },
+    { label:'Compras este año', val: fmtS(ind.comprasAnio) },
+    { label:'Por pagar',        val: fmtS(ind.montoPendiente),  tone: ind.montoPendiente>0 ? 'is-warning' : '' },
+    { label:'Vencido',          val: fmtS(ind.montoVencido),    tone: ind.montoVencido>0 ? 'is-danger' : '' },
+    { label:'ITBIS acreditable',val: fmtS(ind.totalITBIS) },
+    { label:'Facturas',         val: ind.totalFacturas },
+    { label:'Pendientes',       val: ind.facturasPendientesCount, tone: ind.facturasPendientesCount>0 ? 'is-warning' : '' },
+    { label:'Vencidas',         val: ind.facturasVencidasCount,   tone: ind.facturasVencidasCount>0 ? 'is-danger' : '' },
+    { label:'Última factura',   val: fmtDate(ind.ultimaFactura) },
+    { label:'Próxima visita',   val: getNextVisitDayLabel(p) },
+    { label:'Términos de pago', val: `${p.terminosPagoDias} días` },
   ];
 
   const info = [
@@ -262,89 +243,87 @@ function _renderResumenTab(p, ind) {
   ];
 
   return `
-    <!-- KPIs grid -->
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin-bottom:16px">
+    <div class="prov-kpis">
       ${kpis.map(k=>`
-        <div style="background:var(--bg,#111827);border:1px solid var(--border);border-radius:8px;padding:10px;text-align:center">
-          <div style="font-size:1.1rem;font-weight:700;color:${k.color}">${k.val}</div>
-          <div style="font-size:.7rem;color:var(--text3);margin-top:2px">${k.label}</div>
+        <div class="tc-stat">
+          <span class="tc-stat-label">${k.label}</span>
+          <span class="tc-stat-value ${k.tone || ''}">${k.val}</span>
         </div>`).join('')}
     </div>
 
-    <!-- Información de contacto -->
-    <div style="background:var(--bg,#111827);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:12px">
-      <div style="font-weight:600;font-size:.85rem;margin-bottom:10px;color:var(--text2)">Información del Proveedor</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+    <div class="prov-info">
+      <div class="prov-info-title">Información del proveedor</div>
+      <div class="prov-info-grid">
         ${info.map(r=>`
-          <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:.68rem;color:var(--text3);text-transform:uppercase;letter-spacing:.5px">${r.label}</span>
-            <span style="font-size:.82rem;color:var(--text)">${esc(r.val)}</span>
+          <div class="prov-info-item">
+            <span>${r.label}</span>
+            <strong>${esc(r.val)}</strong>
           </div>`).join('')}
       </div>
     </div>
 
     ${p.observaciones ? `
-    <div style="background:var(--bg,#111827);border:1px solid var(--border);border-radius:8px;padding:12px">
-      <div style="font-weight:600;font-size:.82rem;margin-bottom:6px;color:var(--text2)">Observaciones</div>
-      <div style="font-size:.83rem;color:var(--text3);line-height:1.5">${esc(p.observaciones)}</div>
+    <div class="prov-info">
+      <div class="prov-info-title">Observaciones</div>
+      <div class="prov-info-text">${esc(p.observaciones)}</div>
     </div>` : ''}`;
 }
 
 // ── Tab: Facturas ─────────────────────────────────────────────────────────────
 function _renderFacturasTab(p, facturas) {
-  if (!facturas.length) return `<div style="text-align:center;padding:2rem;color:var(--text3)">Sin facturas registradas</div>`;
+  if (!facturas.length) return `<div class="prov-detail-empty">Sin facturas registradas</div>`;
 
   return `
-    <div style="overflow-x:auto">
-      <table class="data-table" style="width:100%;font-size:.8rem">
+    <div class="table-wrap">
+      <table class="data-table">
         <thead>
           <tr>
-            <th>No. Factura</th><th>NCF</th><th>Emisión</th><th>Vencimiento</th>
-            <th style="text-align:right">Total</th><th style="text-align:right">ITBIS</th>
-            <th style="text-align:right">Pendiente</th><th>Estado</th><th>Acción</th>
+            <th>No. factura</th><th>NCF</th><th>Emisión</th><th>Vencimiento</th>
+            <th class="is-num">Total</th><th class="is-num">ITBIS</th>
+            <th class="is-num">Pendiente</th><th>Estado</th><th class="is-actions">Acción</th>
           </tr>
         </thead>
         <tbody>
           ${facturas.map(f => `
             <tr>
-              <td style="font-weight:600">${esc(f.numeroFactura)}</td>
-              <td style="font-size:.72rem;color:var(--text3)">${esc(f.ncf||'—')}</td>
+              <td><span class="tc-cell-title">${esc(f.numeroFactura)}</span></td>
+              <td class="tc-cell-muted">${esc(f.ncf||'—')}</td>
               <td>${fmtDate(f.fechaEmision)}</td>
               <td>${fmtDate(f.fechaVencimiento)}</td>
-              <td style="text-align:right">${fmtS(f.montoTotal)}</td>
-              <td style="text-align:right;color:#fdba74">${fmtS(f.itbisAmount)}</td>
-              <td style="text-align:right;font-weight:700;color:${f.montoPendiente>0?'#fbbf24':'#6ee7b7'}">${fmtS(f.montoPendiente)}</td>
+              <td class="is-num">${fmtS(f.montoTotal)}</td>
+              <td class="is-num">${fmtS(f.itbisAmount)}</td>
+              <td class="is-num ${f.montoPendiente>0 ? 'tc-num-warn' : ''}"><strong>${fmtS(f.montoPendiente)}</strong></td>
               <td>${getSupplierInvoiceStatusBadge(f.estado)}</td>
-              <td>${f.montoPendiente>0
-                ? `<button class="btn-edit" onclick="openSupplierPaymentModal(${f.id})">💵 Abonar</button>`
-                : '✅'}</td>
+              <td class="is-actions">${f.montoPendiente>0
+                ? `<button type="button" class="tc-btn tc-btn--soft" onclick="openSupplierPaymentModal(${f.id})">Abonar</button>`
+                : '<span class="tc-cell-muted">Pagada</span>'}</td>
             </tr>`).join('')}
         </tbody>
       </table>
     </div>
-    <div style="margin-top:12px;text-align:right">
-      <button onclick="openSupplierInvoiceModal(${p.id})" class="btn-primary" style="font-size:.8rem">+ Registrar Factura</button>
+    <div class="prov-tab-foot">
+      <button type="button" onclick="openSupplierInvoiceModal(${p.id})" class="tc-btn tc-btn--primary">Registrar factura</button>
     </div>`;
 }
 
 // ── Tab: Pagos ────────────────────────────────────────────────────────────────
 function _renderPagosTab(pagos) {
-  if (!pagos.length) return `<div style="text-align:center;padding:2rem;color:var(--text3)">Sin pagos registrados aún</div>`;
+  if (!pagos.length) return `<div class="prov-detail-empty">Sin pagos registrados aún</div>`;
 
   return `
-    <div style="overflow-x:auto">
-      <table class="data-table" style="width:100%;font-size:.8rem">
+    <div class="table-wrap">
+      <table class="data-table">
         <thead>
-          <tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Notas</th><th>Registrado por</th></tr>
+          <tr><th>Fecha</th><th class="is-num">Monto</th><th>Método</th><th>Notas</th><th>Registrado por</th></tr>
         </thead>
         <tbody>
           ${pagos.map(p=>`
             <tr>
               <td>${fmtDate(p.fecha_pago)}</td>
-              <td style="font-weight:700;color:#6ee7b7">${fmtS(p.monto)}</td>
+              <td class="is-num"><strong>${fmtS(p.monto)}</strong></td>
               <td>${esc(p.metodo_pago||'Efectivo')}</td>
-              <td style="color:var(--text3)">${esc(p.notas||'—')}</td>
-              <td style="color:var(--text3)">${esc(p.created_by||'—')}</td>
+              <td class="tc-cell-muted">${esc(p.notas||'—')}</td>
+              <td class="tc-cell-muted">${esc(p.created_by||'—')}</td>
             </tr>`).join('')}
         </tbody>
       </table>
@@ -353,20 +332,11 @@ function _renderPagosTab(pagos) {
 
 // ── Tab: Alertas ──────────────────────────────────────────────────────────────
 function _renderAlertasTab(alertas, p, ind) {
-  if (!alertas.length) return `
-    <div style="text-align:center;padding:2rem;color:var(--text3)">
-      <div style="font-size:2rem;margin-bottom:8px">✅</div>
-      <div>Sin alertas para este proveedor</div>
-    </div>`;
+  if (!alertas.length) return `<div class="prov-detail-empty">Sin alertas para este proveedor</div>`;
 
-  const colors = { danger: '#fca5a5', warning: '#fde68a', info: '#93c5fd' };
-  const bg     = { danger: 'rgba(239,68,68,.1)', warning: 'rgba(245,158,11,.1)', info: 'rgba(59,130,246,.1)' };
-
+  const tone = { danger: 'tc-notice--danger', warning: 'tc-notice--warning' };
   return alertas.map(a=>`
-    <div style="padding:12px 14px;border:1px solid ${colors[a.tipo]||colors.info};border-radius:8px;background:${bg[a.tipo]||bg.info};margin-bottom:8px;display:flex;align-items:center;gap:10px">
-      <span style="font-size:1.1rem">${a.tipo==='danger'?'🔴':a.tipo==='warning'?'🟡':'ℹ️'}</span>
-      <span style="font-size:.85rem;color:var(--text)">${esc(a.mensaje)}</span>
-    </div>`).join('');
+    <div class="tc-notice ${tone[a.tipo] || ''} prov-alert">${esc(a.mensaje)}</div>`).join('');
 }
 
 // ── Modal: Crear / Editar proveedor ──────────────────────────────────────────

@@ -1,21 +1,22 @@
 {
-  "version": "1.4.1",
-  "stableVersion": "1.4.1",
-  "date": "08/09/2026",
+  "version": "1.4.2",
+  "stableVersion": "1.4.2",
+  "date": "05/10/2026",
   "size": "47.3 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Factura A4 moderna para toda venta: diseno formal con encabezado, NCF, cliente, detalle, TOTAL y monto en letras. Se usa en pantalla, impresion, WhatsApp y PDF por correo.",
-    "Nueva imagen de marca de Tecno Caja POS en el inicio de sesion, la barra lateral y el icono de la aplicacion.",
-    "Nuevo modo Empresa de Servicios: consultoria, tecnologia, publicidad, arquitectura, limpieza, seguridad, mantenimiento y agencia de viajes, con flujo cotizacion, factura, cobro y reporte, sin caja de efectivo ni catalogo de productos.",
-    "Las empresas de servicios pueden ser monocaja, multicaja o multisucursal; se elige en el asistente y la clave de red solo se pide en modo red.",
-    "Elegir Multicaja o Multisucursal ahora pasa la PC principal a base de datos de red (MySQL) automaticamente.",
-    "Empresa nueva en el asistente: cambia a MySQL sin migracion, reiniciando y continuando donde ibas.",
-    "Instalacion con datos: hace copia de seguridad de la base y migra al reiniciar; si algo falla, vuelve sola a la base local sin perder nada.",
-    "Las secuencias fiscales NCF ahora se migran correctamente al activar el modo red.",
-    "MariaDB se reinicia solo cuando hace falta publicar el puerto 3306 en la red local.",
-    "Corregido el contador de dias de la licencia de prueba, que en algunos equipos subia en lugar de bajar."
+    "Nuevo diseno de toda la aplicacion: cobro, ventas, menu, barra superior, modulos, inicio de sesion, asistente inicial, apertura y cierre de caja.",
+    "Funciona completo en la red local sin Internet: ventas, caja, inventario, clientes, reportes, NCF e impresion. Lo que necesita Internet queda en cola y se envia solo cuando vuelve.",
+    "Indicador de conexion claro: Conectado, Modo local activo (sin Internet, se vende normal) o Servidor LAN desconectado.",
+    "Una licencia activada ya no necesita Internet para seguir funcionando.",
+    "Multicaja: varias cajas pueden cobrar al mismo tiempo sin errores, sin facturas repetidas y con el inventario exacto.",
+    "Ventas sin duplicados: si se corta la red o se pulsa dos veces Cobrar, la venta se registra una sola vez.",
+    "Caja secundaria con la PC principal apagada: sigue vendiendo con su copia local y sube las ventas sola al volver la principal, sin duplicarlas.",
+    "Las cajas encuentran solas a la PC principal aunque el router le cambie la IP.",
+    "Factura electronica sin Internet: se firma y queda pendiente con su e-NCF; se envia a DGII al volver la conexion.",
+    "Firewall de Windows configurable desde Red, abierto solo para la red local.",
+    "Mejoras de seguridad en el inicio de sesion y en los datos de cada negocio en la nube."
   ]
 }

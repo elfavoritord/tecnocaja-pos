@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<!--
+  Guía de estilos de Tecno Caja — SOLO DESARROLLO.
+  Con "npm run desktop" se abre en http://127.0.0.1:3399/guia-estilos.html.
+  No entra al instalador: package.json → build.files solo empaqueta
+  index.html de la raíz.
+  Muestra cada componente de css/componentes.css en modo día y en modo noche.
+-->
+<html lang="es" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guía de estilos · Tecno Caja</title>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/componentes.css">
+<style>
+  /* Solo el armado de esta página: dos columnas, una por tema. */
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: var(--tc-font); }
+  .guide { display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; }
+  .guide-col { padding: 24px; background: var(--tc-bg); color: var(--tc-text); }
+  .guide-col h1 { margin: 0 0 4px; font-size: var(--tc-fs-xl); }
+  .guide-col > p { margin: 0 0 20px; color: var(--tc-text-2); font-size: var(--tc-fs-sm); }
+  .guide-block { margin-bottom: 24px; padding: 16px; border: 1px solid var(--tc-border-soft); border-radius: var(--tc-radius-panel); background: var(--tc-surface); }
+  .guide-block h2 { margin: 0 0 12px; font-size: var(--tc-fs-md); color: var(--tc-text-2); font-weight: var(--tc-weight-semibold); }
+  .guide-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .guide-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .guide-swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .guide-swatch { height: 44px; border: 1px solid var(--tc-border-soft); border-radius: var(--tc-radius-btn); display: flex; align-items: end; padding: 4px 6px; font-size: 11px; color: var(--tc-text-2); }
+  @media (max-width: 1100px) { .guide { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body class="tc-ui">
+<div class="guide">
+  <section class="guide-col tc-ui" data-theme="light" id="guide-light">
+    <h1>Guía de estilos</h1>
+    <p data-theme-name>Modo día · componentes de css/componentes.css</p>
+
+    <div class="guide-block">
+      <h2>Colores (tokens.css)</h2>
+      <div class="guide-swatches">
+        <div class="guide-swatch" style="background: var(--tc-bg)">fondo</div>
+        <div class="guide-swatch" style="background: var(--tc-surface)">superficie</div>
+        <div class="guide-swatch" style="background: var(--tc-surface-2)">superficie 2</div>
+        <div class="guide-swatch" style="background: var(--tc-surface-key)">teclas</div>
+        <div class="guide-swatch" style="background: var(--tc-primary); color: var(--tc-on-primary)">principal</div>
+        <div class="guide-swatch" style="background: var(--tc-select-bg); color: var(--tc-select-text)">selección</div>
+        <div class="guide-swatch" style="background: var(--tc-total-bg); color: var(--tc-total-label)">total</div>
+        <div class="guide-swatch" style="background: var(--tc-success); color: var(--tc-on-success)">correcto</div>
+        <div class="guide-swatch" style="background: var(--tc-success-bg); color: var(--tc-success-text)">correcto suave</div>
+        <div class="guide-swatch" style="background: var(--tc-warning-bg); color: var(--tc-warning-text)">aviso</div>
+        <div class="guide-swatch" style="background: var(--tc-danger-bg); color: var(--tc-danger-text)">peligro</div>
+        <div class="guide-swatch" style="background: var(--tc-disabled-bg); color: var(--tc-disabled-text)">desactivado</div>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Botones</h2>
+      <div class="guide-row">
+        <button class="tc-btn tc-btn--primary" type="button">Principal</button>
+        <button class="tc-btn" type="button">Secundario</button>
+        <button class="tc-btn tc-btn--soft" type="button">Suave</button>
+        <button class="tc-btn tc-btn--danger" type="button">Eliminar</button>
+        <button class="tc-btn tc-btn--success" type="button">Cobrar e imprimir <kbd class="tc-kbd">Enter</kbd></button>
+        <button class="tc-btn" type="button" disabled>Desactivado</button>
+        <button class="tc-btn tc-btn--icon" type="button" aria-label="Agregar">
+          <svg class="tc-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+        </button>
+        <button class="tc-btn" type="button">Cancelar <kbd class="tc-kbd">Esc</kbd></button>
+        <button class="tc-link" type="button">Enlace</button>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Opciones seleccionables</h2>
+      <div class="guide-row">
+        <button class="tc-choice" type="button" style="padding: 0 16px">Mostrador</button>
+        <button class="tc-choice is-selected" type="button" style="padding: 0 16px">Delivery</button>
+        <button class="tc-choice tc-choice--soft" type="button" style="padding: 0 16px">Exacto</button>
+        <button class="tc-choice" type="button" style="padding: 0 16px">Para llevar</button>
+        <button class="tc-choice" type="button" style="padding: 0 16px" disabled>Sin secuencia</button>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Campos</h2>
+      <div class="guide-grid">
+        <label class="tc-field"><span class="tc-field-label">Nombre</span><input class="tc-input" placeholder="Escribe aquí"></label>
+        <label class="tc-field"><span class="tc-field-label">Categoría</span><select class="tc-select"><option>Ferretería</option><option>Pintura</option></select></label>
+        <label class="tc-field"><span class="tc-field-label">Solo lectura</span><input class="tc-input" value="RD$ 1,250.00" readonly></label>
+        <label class="tc-field"><span class="tc-field-label">Desactivado</span><input class="tc-input" value="No editable" disabled></label>
+        <label class="tc-field" style="grid-column: span 2"><span class="tc-field-label">Nota</span><textarea class="tc-textarea" rows="2" placeholder="Observaciones"></textarea></label>
+        <div class="tc-search" style="grid-column: span 2">
+          <svg class="tc-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <input class="tc-search-input" placeholder="Buscar producto, código o categoría">
+        </div>
+        <label class="tc-check"><input type="checkbox" checked> Imprimir copia</label>
+        <label class="tc-check"><input type="checkbox"> Enviar por WhatsApp</label>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Tarjetas de resumen</h2>
+      <div class="tc-stats">
+        <div class="tc-stat"><span class="tc-stat-label">Productos</span><span class="tc-stat-value">1,284</span></div>
+        <div class="tc-stat"><span class="tc-stat-label">Stock bajo</span><span class="tc-stat-value is-warning">12</span></div>
+        <div class="tc-stat"><span class="tc-stat-label">Agotados</span><span class="tc-stat-value is-danger">3</span></div>
+        <div class="tc-stat"><span class="tc-stat-label">Sin movimiento</span><span class="tc-stat-value">0</span></div>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Pestañas y etiquetas</h2>
+      <div class="tc-tabs" style="margin-bottom: 12px">
+        <button class="tc-tab is-active" type="button">Compras</button>
+        <button class="tc-tab" type="button">Gastos</button>
+        <button class="tc-tab" type="button">Proveedores</button>
+      </div>
+      <div class="guide-row">
+        <span class="tc-tag tc-tag--success">Activo</span>
+        <span class="tc-tag tc-tag--warning">Stock bajo</span>
+        <span class="tc-tag tc-tag--danger">Agotado</span>
+        <span class="tc-tag tc-tag--primary">Administrador</span>
+        <span class="tc-tag">Inactivo</span>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Tabla</h2>
+      <div class="tc-table-wrap" style="max-height: 230px">
+        <table class="tc-table">
+          <thead><tr><th>Código</th><th>Producto</th><th class="is-num">Stock</th><th class="is-num">Precio</th><th>Estado</th></tr></thead>
+          <tbody>
+            <tr><td>7461</td><td>Bombillo LED 9W</td><td class="is-num">48</td><td class="is-num">95.00</td><td><span class="tc-tag tc-tag--success">Activo</span></td></tr>
+            <tr class="is-selected"><td>7462</td><td>Candado 40 mm</td><td class="is-num">4</td><td class="is-num">390.00</td><td><span class="tc-tag tc-tag--warning">Stock bajo</span></td></tr>
+            <tr><td>7463</td><td>Cinta aislante negra</td><td class="is-num">0</td><td class="is-num">65.00</td><td><span class="tc-tag tc-tag--danger">Agotado</span></td></tr>
+          </tbody>
+        </table>
+        <div class="tc-table-footer">
+          <span>Mostrando 1 a 3 de 128</span>
+          <div class="tc-pagination">
+            <button class="tc-btn" type="button" disabled>Anterior</button>
+            <button class="tc-btn" type="button">Siguiente</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Avisos</h2>
+      <div style="display: grid; gap: 8px">
+        <div class="tc-notice tc-notice--warning">Falta por cobrar RD$ 2,068.00.</div>
+        <div class="tc-notice tc-notice--danger">No se pudo imprimir el recibo.</div>
+        <div class="tc-notice tc-notice--success">Venta guardada.</div>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Ventana modal y menú</h2>
+      <div class="guide-grid">
+        <div class="tc-modal" style="width: 100%">
+          <div class="tc-modal-head">¿Eliminar producto?</div>
+          <div class="tc-modal-body">Esta acción no se puede deshacer.</div>
+          <div class="tc-modal-foot">
+            <button class="tc-btn" type="button">Cancelar</button>
+            <button class="tc-btn tc-btn--danger" type="button">Eliminar</button>
+          </div>
+        </div>
+        <div class="tc-popover">
+          <button class="tc-menu-item" type="button"><strong>Importar</strong><span>Desde Excel o CSV</span></button>
+          <button class="tc-menu-item is-active" type="button"><strong>Exportar</strong><span>A Excel</span></button>
+          <button class="tc-menu-item" type="button"><strong>Limpiar sin precio</strong><span>Pide confirmación</span></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="guide-block">
+      <h2>Pantalla vacía</h2>
+      <div class="tc-empty">
+        <svg class="tc-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        <span class="tc-empty-text">No hay productos que coincidan con la búsqueda.</span>
+        <button class="tc-btn tc-btn--primary" type="button">Nuevo producto</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  // La columna de noche es una copia de la de día con data-theme="dark":
+  // así las dos muestran exactamente los mismos componentes.
+  (function () {
+    const light = document.getElementById('guide-light');
+    const dark = light.cloneNode(true);
+    dark.id = 'guide-dark';
+    dark.setAttribute('data-theme', 'dark');
+    dark.querySelector('[data-theme-name]').textContent = 'Modo noche · componentes de css/componentes.css';
+    light.parentNode.appendChild(dark);
+  })();
+</script>
+</body>
+</html>

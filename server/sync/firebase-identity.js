@@ -41,14 +41,16 @@ async function getNextUserNumber(firestore, businessId) {
  */
 async function syncUserCounter(firestore, businessId, usersCollection) {
   try {
+    // Los usuarios del negocio se reconocen por su licencia (principalUid) y su
+    // ID es pos_user_{licencia}_{N} (antes pos_user_{N}, compartido entre negocios).
     const snapshot = await usersCollection
-      .where('businessKey', '==', businessId)
+      .where('principalUid', '==', businessId)
       .where('source', '==', 'pos')
       .get();
 
     let maxNum = 0;
     for (const doc of snapshot.docs) {
-      const match = doc.id.match(/^pos_user_(\d+)$/);
+      const match = doc.id.match(/^pos_user_(?:.+_)?(\d+)$/);
       if (match) maxNum = Math.max(maxNum, parseInt(match[1], 10));
     }
 

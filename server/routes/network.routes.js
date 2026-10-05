@@ -224,7 +224,7 @@ function createNetworkRouter({ query, resolveRequestActorUser }) {
           {
             step: 2,
             title: 'Permitir el puerto en el firewall de Windows',
-            description: `Abre el puerto TCP ${port} en el Firewall de Windows:\n1. Panel de control → Firewall → Reglas de entrada\n2. Nueva regla → Puerto TCP ${port}\n3. Permite la conexión en red privada`,
+            description: `Pulsa "Permitir cajas de la red" (más abajo, en "Firewall de Windows"). Windows pedirá permiso de administrador y se abrirá el puerto TCP ${port} solo para la red local y Tailscale, nunca para Internet.\nA mano (PowerShell como administrador):\nnetsh advfirewall firewall add rule name="Tecno Caja Server" dir=in action=allow protocol=TCP localport=${port} remoteip=LocalSubnet,100.64.0.0/10`,
             done: null
           },
           {

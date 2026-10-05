@@ -34,17 +34,37 @@ function _tryInit() {
   }
 }
 
-function _getBusinessId() {
-  const raw = String(
-    process.env.TECNO_CAJA_BUSINESS_ID ||
-    process.env.FIREBASE_PROJECT_ID ||
-    'tecnocaja'
-  ).trim();
-  return raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'tecnocaja';
+// Identidad de ESTE negocio en Firestore: la licencia de la instalación.
+// El proyecto Firebase es el mismo para todos los clientes, así que nunca se
+// usa FIREBASE_PROJECT_ID ni un nombre fijo como respaldo: eso juntaba los
+// datos de todos los negocios en el mismo documento.
+function getTenantId() {
+  return String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
 }
 
+function _safeDocIdPart(value) {
+  return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+/**
+ * ID del pedido en pedidos_delivery. Lleva la licencia porque la numeración de
+ * facturas se repite entre negocios (todos empiezan en FAC-00001001) y con el
+ * ID viejo `pos_{factura}` un negocio pisaba el pedido de otro.
+ */
+function buildPedidoDocId(invoiceNumber, tenantId = getTenantId()) {
+  if (!tenantId || !invoiceNumber) return null;
+  return `pos_${_safeDocIdPart(tenantId)}_${_safeDocIdPart(invoiceNumber)}`;
+}
+
+function _getBusinessId() {
+  const raw = String(process.env.TECNO_CAJA_BUSINESS_ID || getTenantId()).trim();
+  return raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || null;
+}
+
+// Sin licencia vinculada no se sube nada: mejor no sincronizar que mezclar.
 function _negocioRef() {
-  return _db.collection('negocios').doc(_getBusinessId());
+  const businessId = _getBusinessId();
+  return businessId ? _db.collection('negocios').doc(businessId) : null;
 }
 
 function _todayStr() {
@@ -66,11 +86,13 @@ function _metodoPagoKey(metodo) {
  */
 async function syncVentaDia({ total, metodoPago, sucursalId, sucursalNombre }) {
   if (!_tryInit()) return;
+  const negocio = _negocioRef();
+  if (!negocio) return;
   try {
     const fecha = _todayStr();
     const sid = String(sucursalId || '1');
     const metodoKey = _metodoPagoKey(metodoPago);
-    await _negocioRef()
+    await negocio
       .collection('ventas_dia')
       .doc(fecha)
       .set(
@@ -97,9 +119,11 @@ async function syncVentaDia({ total, metodoPago, sucursalId, sucursalNombre }) {
 async function syncDeliveryOrder(order) {
   if (!_tryInit()) return;
   if (!order?.invoice_number) return;
+  const negocio = _negocioRef();
+  if (!negocio) return;
   try {
     const invoiceNumber = String(order.invoice_number);
-    await _negocioRef()
+    await negocio
       .collection('delivery_orders')
       .doc(invoiceNumber)
       .set(
@@ -132,8 +156,10 @@ async function syncDeliveryOrder(order) {
  */
 async function syncEstadoCaja({ cajaId, cajaNombre, sucursalId, sucursalNombre, estado, cajeroNombre, montoActual }) {
   if (!_tryInit()) return;
+  const negocio = _negocioRef();
+  if (!negocio) return;
   try {
-    await _negocioRef()
+    await negocio
       .collection('estado_cajas')
       .doc(String(cajaId))
       .set(
@@ -160,13 +186,15 @@ async function syncEstadoCaja({ cajaId, cajaNombre, sucursalId, sucursalNombre, 
  */
 async function syncAlertaStock({ productId, nombre, codigo, stockActual, stockMinimo, sucursalId }) {
   if (!_tryInit()) return;
+  const negocio = _negocioRef();
+  if (!negocio) return;
   const docId = `${productId}_${sucursalId || '0'}`;
   try {
     if (Number(stockActual) > Number(stockMinimo)) {
-      await _negocioRef().collection('stock_alertas').doc(docId).delete().catch(() => {});
+      await negocio.collection('stock_alertas').doc(docId).delete().catch(() => {});
       return;
     }
-    await _negocioRef()
+    await negocio
       .collection('stock_alertas')
       .doc(docId)
       .set(
@@ -210,8 +238,13 @@ async function syncPedidoDelivery({
 }) {
   if (!_tryInit()) return;
   if (!invoiceNumber || !repartidorId) return;
+  const tenantId = getTenantId();
+  const docId = buildPedidoDocId(invoiceNumber, tenantId);
+  if (!docId) {
+    console.warn('[firebase-sync] Pedido delivery no enviado: este equipo no tiene licencia vinculada.');
+    return;
+  }
   try {
-    const docId = `pos_${String(invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
     const now = _FieldValue.serverTimestamp();
     const clienteLatNormalized = _normalizeNullableCoordinate(clienteLat);
     const clienteLngNormalized = _normalizeNullableCoordinate(clienteLng);
@@ -221,6 +254,7 @@ async function syncPedidoDelivery({
     const montoClienteEntregaNormalized = montoClienteEntrega === null || montoClienteEntrega === undefined ? null : Number(montoClienteEntrega);
     const cambioRepartidorNormalized = cambioRepartidor === null || cambioRepartidor === undefined ? null : Number(cambioRepartidor);
     await _db.collection('pedidos_delivery').doc(docId).set({
+      licenseId: tenantId,
       numeroFactura: String(invoiceNumber),
       repartidorId: String(repartidorId),
       repartidorNombre: _normalizeOptionalText(repartidorNombre),
@@ -264,32 +298,36 @@ async function patchPedidoDeliveryMetadata({
   negocioNombre,
 }) {
   if (!_tryInit()) return false;
-  if (!invoiceNumber) return false;
+  // Solo se corrige el pedido propio (ID con la licencia). Los pedidos viejos
+  // `pos_{factura}` no se tocan: ese ID lo comparten todos los negocios y
+  // escribir ahí cambiaba los datos del pedido de otro cliente.
+  const docId = buildPedidoDocId(invoiceNumber);
+  if (!docId) return false;
   try {
-    const docId = `pos_${String(invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-    await _db.collection('pedidos_delivery').doc(docId).set(
-      {
-        numeroFactura: String(invoiceNumber),
-        clienteNombre: _normalizeOptionalText(clienteNombre) || 'Consumidor Final',
-        clienteTelefono: _normalizeOptionalText(clienteTelefono),
-        clienteDireccion: _normalizeOptionalText(clienteDireccion),
-        clienteReferencia: _normalizeOptionalText(clienteReferencia),
-        clienteLocationLink: _normalizeOptionalText(clienteLocationLink),
-        clienteLat: _normalizeNullableCoordinate(clienteLat),
-        clienteLng: _normalizeNullableCoordinate(clienteLng),
-        negocioNombre: _normalizeOptionalText(negocioNombre),
-        actualizadoEn: _FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    // update() y no set(merge): si el pedido no existe no se crea uno vacío.
+    await _db.collection('pedidos_delivery').doc(docId).update({
+      clienteNombre: _normalizeOptionalText(clienteNombre) || 'Consumidor Final',
+      clienteTelefono: _normalizeOptionalText(clienteTelefono),
+      clienteDireccion: _normalizeOptionalText(clienteDireccion),
+      clienteReferencia: _normalizeOptionalText(clienteReferencia),
+      clienteLocationLink: _normalizeOptionalText(clienteLocationLink),
+      clienteLat: _normalizeNullableCoordinate(clienteLat),
+      clienteLng: _normalizeNullableCoordinate(clienteLng),
+      negocioNombre: _normalizeOptionalText(negocioNombre),
+      actualizadoEn: _FieldValue.serverTimestamp(),
+    });
     return true;
   } catch (err) {
-    console.warn('[firebase-sync] patchPedidoDeliveryMetadata error:', err.message);
+    if (Number(err?.code) !== 5) { // 5 = NOT_FOUND: pedido sin enviar, nada que corregir
+      console.warn('[firebase-sync] patchPedidoDeliveryMetadata error:', err.message);
+    }
     return false;
   }
 }
 
 module.exports = {
+  getTenantId,
+  buildPedidoDocId,
   syncVentaDia,
   syncDeliveryOrder,
   syncEstadoCaja,

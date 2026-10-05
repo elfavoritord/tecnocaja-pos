@@ -217,41 +217,17 @@ window.addEventListener('keydown', function(e) {
   const billingModalOpen = !modalHidden && document.getElementById('modal-box')?.classList.contains('billing-modal');
 
   if (billingModalOpen) {
-    if (e.key === 'F2') {
+    // "Cobrar y facturar" maneja sus propios atajos (F2–F9, Enter, Esc) en
+    // attachBillingKeyHandler (ventas.js). Antes este bloque también actuaba
+    // sobre esas mismas teclas y se pisaban: F6 cambiaba el comprobante además
+    // de elegir Crédito, F9 se alternaba dos veces, Enter cobraba aunque se
+    // estuviera escribiendo en un campo de texto y F8 reimprimía el último
+    // recibo. Aquí solo quedan F1 y F10, que el cobro no usa.
+    if (e.key === 'F1' || e.key === 'F10') {
       e.preventDefault();
-      if (typeof focusBillingClientSelect === 'function') focusBillingClientSelect();
-      return;
-    }
-    if (e.key === 'F4') {
-      e.preventDefault();
-      if (typeof cycleBillingPaymentMethod === 'function') cycleBillingPaymentMethod();
-      return;
-    }
-    if (e.key === 'F6') {
-      e.preventDefault();
-      if (typeof cycleBillingDocumentPreset === 'function') cycleBillingDocumentPreset();
-      return;
-    }
-    if (e.key === 'F9') {
-      e.preventDefault();
-      if (typeof toggleBillingPrintMode === 'function') toggleBillingPrintMode();
-      return;
-    }
-    if (e.key === 'F10') {
-      e.preventDefault();
-      // F10 fuerza impresión independientemente del modo guardado
       if (typeof processSale === 'function') processSale('print');
-      return;
     }
-    if (e.key === 'Enter' && targetTag !== 'textarea') {
-      e.preventDefault();
-      // Usa el modo guardado (imprimir o no imprimir)
-      if (typeof processSale === 'function') {
-        const mode = typeof getBillingPrintMode === 'function' ? getBillingPrintMode() : true;
-        processSale(mode ? 'print' : 'charge');
-      }
-      return;
-    }
+    return;
   }
 
   if (e.key === 'F2') {
@@ -260,12 +236,13 @@ window.addEventListener('keydown', function(e) {
     if (search) { search.focus(); search.select(); }
     return;
   }
-  if (e.key === 'F1') {
-    e.preventDefault();
-    processSale && processSale();
-    return;
-  }
   if (e.key === 'Escape') {
+    // Un menú abierto (Más, usuario, notificaciones, cliente de Ventas) se
+    // cierra primero; ese Esc no cancela la venta.
+    if (modalHidden && receiptHidden && (window.VentasUI?.closePopovers?.() || window.TcShell?.closePopovers?.())) {
+      e.preventDefault();
+      return;
+    }
     if (!modalHidden) {
       const modalBox = document.getElementById('modal-box');
       if (modalBox?.classList.contains('billing-modal') && typeof window.requestBillingModalClose === 'function') {

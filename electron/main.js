@@ -1,7 +1,7 @@
 ﻿const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
-const { app, BrowserWindow, dialog, ipcMain, shell, clipboard, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, clipboard, nativeImage, screen, session } = require('electron');
 const http = require('http');
 const net = require('net');
 const os = require('os');
@@ -10,6 +10,8 @@ const { printReceipt, printCorteReceipt, openCashDrawer: escposOpenDrawer } = re
 const { printLabelsTspl } = require('./tspl-printer');
 const { openDrawer: openCashDrawerAll, testDrawer } = require('./cash-drawer');
 const { listSerialPorts, readWeightFromSerial } = require('./scale-reader');
+const { buildInternalHeaders } = require('../server/security/internal-request');
+const { hasPendingFactoryReset, runPendingFactoryReset } = require('../server/services/factory-reset.service');
 
 const CUSTOM_USER_DATA_PATH = process.env.TECNO_CAJA_USER_DATA
   ? path.resolve(process.env.TECNO_CAJA_USER_DATA)
@@ -116,19 +118,31 @@ function logStartup(message) {
   }
 }
 
-function postJson(url, payload, method = 'POST') {
+// `options.authToken`, si viene, se manda como Bearer real de la sesión
+// activa en mainWindow (ver getRendererAuthToken más abajo) — así el backend
+// atribuye la acción al usuario real y aplica sus permisos tal cual. Siempre
+// se adjunta además la firma interna de server/security/internal-request.js
+// como respaldo para cuando no hay ventana/sesión disponible (p. ej. la app
+// cerrándose de golpe): reemplaza al viejo `actorUserId` en el body, que
+// cualquiera podía enviar sin credencial (ver Fase 2 — C1).
+function postJson(url, payload, method = 'POST', options = {}) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(payload || {});
     const target = new URL(url);
+    const headers = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data),
+      ...buildInternalHeaders(),
+    };
+    if (options.authToken) {
+      headers.Authorization = `Bearer ${options.authToken}`;
+    }
     const req = http.request({
       hostname: target.hostname,
       port: target.port,
       path: target.pathname,
       method,
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data)
-      }
+      headers
     }, (res) => {
       let body = '';
       res.setEncoding('utf8');
@@ -156,29 +170,51 @@ function postJson(url, payload, method = 'POST') {
   });
 }
 
+// Lee el Bearer de sesión activo en la ventana principal (window.js/api.js
+// lo expone via window.getTecnoCajaAuthToken()) para que las llamadas
+// internas de abajo se atribuyan al usuario real logueado y respeten sus
+// permisos donde el endpoint los exige (p. ej. /api/config/whatsapp-guide).
+// Si no hay ventana viva o no hay sesión (wizard inicial, cierre forzado sin
+// ventana), devuelve '' — postJson igual manda la firma interna como
+// respaldo (ver comentario arriba de postJson).
+async function getRendererAuthToken() {
+  if (!mainWindow || mainWindow.isDestroyed()) return '';
+  try {
+    const token = await mainWindow.webContents.executeJavaScript(
+      `(() => { try { return (window.getTecnoCajaAuthToken && window.getTecnoCajaAuthToken()) || ''; } catch (_) { return ''; } })()`
+    );
+    return String(token || '').trim();
+  } catch (_error) {
+    return '';
+  }
+}
+
 async function createAutoBackup(actor = {}) {
   // Usa el sistema moderno de respaldos (.tcbak cifrado + nube opcional).
   // Fallback al sistema legacy si la nueva ruta falla.
+  const authToken = await getRendererAuthToken();
   try {
     return await postJson(`${currentAppUrl}/api/respaldos/auto`, {
       trigger: 'cierre_app',
       forceCloud: false,
       ...actor,
-    });
+    }, 'POST', { authToken });
   } catch (_e) {
-    return postJson(`${currentAppUrl}/api/backup/auto-save`, actor);
+    return postJson(`${currentAppUrl}/api/backup/auto-save`, actor, 'POST', { authToken });
   }
 }
 
 async function verifySecurityPassword(password) {
-  return postJson(`${currentAppUrl}/api/security-password/verify`, { password });
+  const authToken = await getRendererAuthToken();
+  return postJson(`${currentAppUrl}/api/security-password/verify`, { password }, 'POST', { authToken });
 }
 
 async function updateWhatsAppPasteGuideEnabled(enabled, actor = {}) {
+  const authToken = await getRendererAuthToken();
   return postJson(`${currentAppUrl}/api/config/whatsapp-guide`, {
     enabled: Boolean(enabled),
     ...actor
-  }, 'PUT');
+  }, 'PUT', { authToken });
 }
 
 function wait(ms) {
@@ -1940,7 +1976,8 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
-    minWidth: 1100,
+    // Tamaño mínimo del rediseño: 1024×720 (Cobro y Ventas caben sin scroll).
+    minWidth: 1024,
     minHeight: 720,
     backgroundColor: '#111827',
     autoHideMenuBar: true,
@@ -2659,6 +2696,30 @@ async function runPendingNetworkDbMigration(splashWin) {
   try { fs.unlinkSync(markerPath); } catch (_) {}
   logStartup(`[db-migration] OK — ${result.summary.totalInserted} registros migrados, modo ${targetMode}.`);
   updateSplashStatus(splashWin, 'Base de datos de red lista.');
+}
+
+// Formateo pendiente (lo agenda POST /api/system/reset con factoryReset). Corre
+// antes de arrancar el servidor y de abrir ventanas: con la BD, los logs y la
+// sesión de WhatsApp cerrados se puede borrar todo sin archivos bloqueados.
+async function runPendingFactoryResetOnBoot() {
+  const userDataPath = app.getPath('userData');
+  if (!hasPendingFactoryReset(userDataPath)) return;
+  logStartup('[factory-reset] Marcador encontrado — formateando esta PC.');
+  // localStorage/IndexedDB guardan la sesión, el último usuario y el caché de
+  // login offline; la partición de WhatsApp Web, la cuenta del negocio.
+  for (const ses of [session.defaultSession, session.fromPartition(WHATSAPP_SESSION_PARTITION)]) {
+    try {
+      await ses.clearStorageData();
+      await ses.clearCache();
+    } catch (error) {
+      logStartup(`[factory-reset] No se pudo limpiar el almacenamiento del navegador: ${error?.message || error}`);
+    }
+  }
+  runPendingFactoryReset({
+    userDataPath,
+    documentsDir: app.getPath('documents'),
+    log: (message) => logStartup(`[factory-reset] ${message}`),
+  });
 }
 
 async function startServer() {
@@ -3737,6 +3798,111 @@ function readThinClientConfig() {
   return null;
 }
 
+function writeThinClientConfig(cfg) {
+  try {
+    fs.writeFileSync(_getTerminalConfigPath(), JSON.stringify({ ...cfg, savedAt: new Date().toISOString() }, null, 2));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function thinClientPort(cfg) {
+  try {
+    return Number(new URL(cfg.serverUrl).port || 3399);
+  } catch (_) {
+    return 3399;
+  }
+}
+
+// Si la caja se vinculó con una versión que no guardaba la identidad de la
+// principal, se aprende ahora (mientras responde) para poder reencontrarla.
+function rememberThinClientIdentity(cfg, meta) {
+  if (!meta || !meta.isMain || !meta.serverId) return cfg;
+  if (cfg.serverId === meta.serverId && cfg.serverHostname === meta.hostname) return cfg;
+  var updated = { ...cfg, serverId: meta.serverId, serverHostname: meta.hostname || cfg.serverHostname || null, businessName: meta.businessName || cfg.businessName || '' };
+  writeThinClientConfig(updated);
+  return updated;
+}
+
+// Busca la principal de este negocio en la LAN (nombre de equipo primero,
+// luego toda la red) y, si respondió en otra dirección, la guarda.
+async function relocateThinClientServer(cfg) {
+  var discovery = require('../server/network/lan-discovery');
+  var found = await discovery.findPrincipal({
+    port: thinClientPort(cfg),
+    serverId: cfg.serverId || null,
+    businessName: cfg.serverId ? '' : (cfg.businessName || ''),
+    hostnames: [cfg.serverHostname]
+  });
+  if (!found) return null;
+  var newUrl = found.foundBy === 'hostname'
+    ? 'http://' + cfg.serverHostname + ':' + found.port
+    : found.baseUrl;
+  var updated = { ...cfg, serverUrl: newUrl, serverId: found.serverId || cfg.serverId || null, serverHostname: found.hostname || cfg.serverHostname || null, businessName: found.businessName || cfg.businessName || '' };
+  writeThinClientConfig(updated);
+  logStartup('[thin-client] Servidor principal reencontrado (' + found.foundBy + '): ' + cfg.serverUrl + ' → ' + newUrl);
+  return updated;
+}
+
+function showThinClientSearchSplash() {
+  var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'
+    + 'body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#0F1117;color:#E8EAF0;font-family:Barlow,"Segoe UI",sans-serif;-webkit-app-region:drag}'
+    + '.c{text-align:center}.t{font-size:18px;font-weight:600;margin-bottom:6px}.s{font-size:14px;color:#9BA3BF}'
+    + '.b{width:220px;height:4px;background:#252D42;border-radius:2px;margin:18px auto 0;overflow:hidden}'
+    + '.b i{display:block;width:40%;height:100%;background:#6C63FF;animation:m 1.2s ease-in-out infinite}'
+    + '@keyframes m{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}'
+    + '</style></head><body><div class="c"><div class="t">Buscando el servidor local…</div>'
+    + '<div class="s">La PC principal no respondió en la dirección guardada.<br>Buscándola en la red del negocio.</div>'
+    + '<div class="b"><i></i></div></div></body></html>';
+  var win = new BrowserWindow({
+    width: 440, height: 220, frame: false, resizable: false, center: true,
+    backgroundColor: '#0F1117', show: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  });
+  win.loadURL('data:text/html;charset=UTF-8,' + encodeURIComponent(html));
+  return win;
+}
+
+// Con la ventana ya abierta: si la principal deja de responder (o cambia de
+// IP), se busca de nuevo y se recarga la pantalla desde la nueva dirección.
+var thinClientWatchTimer = null;
+function startThinClientWatch(initialCfg) {
+  var cfg = initialCfg;
+  var failures = 0;
+  var lastSearchAt = 0;
+  var busy = false;
+  thinClientWatchTimer = setInterval(async function() {
+    if (busy) return;
+    busy = true;
+    try {
+      var probe = await probeTecnoCajaServer(cfg.serverUrl, 4000);
+      if (probe.ok) {
+        failures = 0;
+        cfg = rememberThinClientIdentity(cfg, probe.meta);
+        return;
+      }
+      failures += 1;
+      if (failures < 2 || Date.now() - lastSearchAt < 60000) return;
+      lastSearchAt = Date.now();
+      var updated = await relocateThinClientServer(cfg);
+      if (updated && updated.serverUrl !== cfg.serverUrl) {
+        cfg = updated;
+        currentAppUrl = updated.serverUrl;
+        failures = 0;
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.loadURL(currentAppUrl, { userAgent: 'Tecno Caja-Electron' });
+        }
+      }
+    } catch (_) {
+      // nunca tumbar la app por el vigilante
+    } finally {
+      busy = false;
+    }
+  }, 20000);
+  if (thinClientWatchTimer.unref) thinClientWatchTimer.unref();
+}
+
 // Prueba si la URL apunta a un servidor Tecno Caja real (GET /api/network/identify)
 function probeTecnoCajaServer(serverUrl, timeoutMs) {
   var ms = timeoutMs || 5000;
@@ -3779,6 +3945,9 @@ ipcMain.handle('terminal:save-thin-client-config', async function(_event, payloa
 
     var probe = await probeTecnoCajaServer(serverUrl);
     if (!probe.ok) return { ok: false, error: probe.error };
+    if (probe.meta && probe.meta.isMain === false) {
+      return { ok: false, error: 'Esa dirección es otra caja terminal, no la PC principal.' };
+    }
 
     var configPath = _getTerminalConfigPath();
     var dir = path.dirname(configPath);
@@ -3787,6 +3956,10 @@ ipcMain.handle('terminal:save-thin-client-config', async function(_event, payloa
     fs.writeFileSync(configPath, JSON.stringify({
       isMain:       false,
       serverUrl:    serverUrl,
+      // Identidad de la principal: para reencontrarla si cambia su IP (DHCP).
+      serverId:       (probe.meta && probe.meta.serverId) || null,
+      serverHostname: (probe.meta && probe.meta.hostname) || null,
+      businessName:   (probe.meta && probe.meta.businessName) || '',
       terminalName: terminalName,
       terminalId:   require('crypto').randomBytes(6).toString('hex'),
       setupMode:    'multicaja',
@@ -3810,6 +3983,79 @@ ipcMain.handle('terminal:get-config', async function() {
 });
 
 // IPC: Resetear config (volver a modo principal)
+// ── Firewall de Windows para la red local (multicaja) ──────────────────────
+// Las reglas solo aceptan la subred local y Tailscale (nunca Internet). Crear
+// reglas necesita administrador: se pide permiso a Windows (UAC) solo cuando
+// el administrador pulsa el botón en Configuración → Red de Terminales.
+const FIREWALL_RULES = { server: 'Tecno Caja Server', database: 'Tecno Caja Base de Datos LAN' };
+
+function runCommandText(command, args, timeoutMs = 60000) {
+  return new Promise(function(resolve) {
+    let stdout = '';
+    let stderr = '';
+    let child;
+    try {
+      child = spawn(command, args, { windowsHide: true });
+    } catch (error) {
+      resolve({ code: -1, stdout: '', stderr: error.message });
+      return;
+    }
+    const timer = setTimeout(function() { try { child.kill(); } catch (_) {} }, timeoutMs);
+    child.stdout.on('data', function(d) { stdout += d.toString(); });
+    child.stderr.on('data', function(d) { stderr += d.toString(); });
+    child.on('error', function(error) { clearTimeout(timer); resolve({ code: -1, stdout, stderr: error.message }); });
+    child.on('close', function(code) { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+  });
+}
+
+async function readFirewallRule(name) {
+  if (process.platform !== 'win32') return { exists: false, scoped: false, unsupported: true };
+  const result = await runCommandText('netsh', ['advfirewall', 'firewall', 'show', 'rule', 'name=' + name], 15000);
+  const exists = result.code === 0 && result.stdout.indexOf(name) !== -1;
+  return { exists, scoped: exists && /LocalSubnet/i.test(result.stdout) };
+}
+
+async function getFirewallStatus() {
+  return {
+    ok: true,
+    platform: process.platform,
+    server: await readFirewallRule(FIREWALL_RULES.server),
+    database: await readFirewallRule(FIREWALL_RULES.database),
+  };
+}
+
+ipcMain.handle('network:firewall-status', async function() {
+  try {
+    return await getFirewallStatus();
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
+ipcMain.handle('network:configure-firewall', async function(_event, options) {
+  if (process.platform !== 'win32') return { ok: false, error: 'Solo aplica en Windows.' };
+  try {
+    const source = path.join(app.getAppPath(), 'scripts', 'configurar-firewall-lan.ps1');
+    // PowerShell no puede leer dentro de app.asar: se copia a una carpeta temporal.
+    const scriptPath = path.join(os.tmpdir(), 'tecnocaja-firewall-lan.ps1');
+    fs.writeFileSync(scriptPath, fs.readFileSync(source, 'utf8'), 'utf8');
+    const port = Number(process.env.PORT || DEFAULT_ELECTRON_PORT) || DEFAULT_ELECTRON_PORT;
+    const dbPort = Number(process.env.DB_PORT || 3306) || 3306;
+    const extra = (options && options.includeDatabase) ? ' -IncluirBaseDeDatos -PuertoBaseDeDatos ' + dbPort : '';
+    const inner = '-NoProfile -ExecutionPolicy Bypass -File "' + scriptPath + '" -Puerto ' + port + extra;
+    const command = "Start-Process -FilePath powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '" + inner.replace(/'/g, "''") + "'";
+    const result = await runCommandText('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], 120000);
+    if (result.code !== 0) {
+      const cancelled = /cancel|cancelad/i.test(result.stderr);
+      return { ok: false, cancelled, error: cancelled ? 'Se canceló el permiso de administrador.' : (result.stderr.trim() || 'No se pudo configurar el Firewall.') };
+    }
+    const status = await getFirewallStatus();
+    return { ok: Boolean(status.server.exists), status };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+});
+
 ipcMain.handle('terminal:reset-config', async function() {
   try {
     var appRoot = app.getAppPath();
@@ -4055,19 +4301,37 @@ ipcMain.handle('updater:get-version', () => ({
 app.whenReady().then(async function() {
   try {
     markStartup('electron-ready');
+    await runPendingFactoryResetOnBoot();
     // ── Detección de modo thin-client ───────────────────────────────────────
     var thinCfg = readThinClientConfig();
     if (thinCfg) {
       logStartup('[thin-client] Modo terminal → servidor principal: ' + thinCfg.serverUrl);
       while (true) {
-        var probe = await probeTecnoCajaServer(thinCfg.serverUrl, 8000);
-        if (probe.ok) break;
+        var probe = await probeTecnoCajaServer(thinCfg.serverUrl, 5000);
+        if (probe.ok) {
+          thinCfg = rememberThinClientIdentity(thinCfg, probe.meta);
+          break;
+        }
+
+        // La IP pudo cambiar (DHCP): buscar la principal en la red local.
+        var searchSplash = showThinClientSearchSplash();
+        var relocated = null;
+        try {
+          relocated = await relocateThinClientServer(thinCfg);
+        } catch (_) {
+          relocated = null;
+        }
+        if (searchSplash && !searchSplash.isDestroyed()) searchSplash.destroy();
+        if (relocated) {
+          thinCfg = relocated;
+          continue;
+        }
 
         var choice = dialog.showMessageBoxSync({
           type: 'warning',
           title: 'Tecno Caja — Terminal',
-          message: 'No se pudo conectar al servidor principal.\n\n' + thinCfg.serverUrl + '\n\nError: ' + probe.error,
-          detail: 'Si esta caja depende de otra PC, verifica que la PC principal esté encendida, Tecno Caja esté abierto y el Firewall permita el puerto 3399. Si la IP cambió, usa "Reconfigurar terminal".',
+          message: 'No se encontró el servidor local (PC principal).\n\n' + thinCfg.serverUrl + '\n\nError: ' + probe.error,
+          detail: 'Se buscó la PC principal en toda la red del negocio y no respondió. Verifica que esté encendida, con Tecno Caja abierto, conectada a la misma red, y que el Firewall de Windows permita el puerto 3399. Internet no hace falta para trabajar en red local.',
           buttons: ['Reintentar', 'Abrir de todas formas', 'Reconfigurar terminal'],
           defaultId: 0,
           cancelId: 2
@@ -4083,6 +4347,7 @@ app.whenReady().then(async function() {
       }
       currentAppUrl = thinCfg.serverUrl;
       createWindow();
+      startThinClientWatch(thinCfg);
     } else {
       // Splash screen — show: false hasta ready-to-show para evitar destello blanco
       const splashHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>

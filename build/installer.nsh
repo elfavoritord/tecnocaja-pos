@@ -95,10 +95,13 @@ Function CreateAppDataFolders
 FunctionEnd
 
 ; ── Regla de Firewall para el servidor local ──────────────────────────────────
+; Solo acepta la subred local y Tailscale (100.64.0.0/10): las cajas de la red
+; se conectan, Internet no. Si el instalador corre sin administrador la regla
+; no se crea; se crea desde la app (Configuración → Red de Terminales).
 Function AddFirewallRule
   DetailPrint "Configurando regla de Firewall para ${APP_NAME}..."
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${APP_NAME} Server"'
-  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${APP_NAME} Server" dir=in action=allow protocol=TCP localport=3399 description="${APP_NAME} servidor local POS"'
+  nsExec::ExecToLog 'netsh advfirewall firewall add rule name="${APP_NAME} Server" dir=in action=allow protocol=TCP localport=3399 remoteip=LocalSubnet,100.64.0.0/10 profile=any description="${APP_NAME}: cajas de la red local. Solo LAN y Tailscale, nunca Internet."'
   Pop $0
   ${If} $0 = 0
     DetailPrint "Regla de Firewall configurada correctamente (puerto 3399)."
@@ -191,6 +194,7 @@ FunctionEnd
 
   ; ── 2. Eliminar regla de Firewall (siempre) ───────────────────────────────
   nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${APP_NAME} Server"'
+  nsExec::ExecToLog 'netsh advfirewall firewall delete rule name="${APP_NAME} Base de Datos LAN"'
   DetailPrint "Regla de Firewall de ${APP_NAME} eliminada."
 
   ; ── 3. Preguntar si eliminar datos ────────────────────────────────────────

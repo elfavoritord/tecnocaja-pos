@@ -19,6 +19,24 @@
         { "fieldPath": "actualizadoEn","order": "DESCENDING" }
       ]
     },
+    // Panel Delivery del POS: solo los pedidos de su licencia (licenseId).
+    {
+      "collectionGroup": "pedidos_delivery",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "licenseId",    "order": "ASCENDING" },
+        { "fieldPath": "estado",       "order": "ASCENDING" },
+        { "fieldPath": "creadoEn",     "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "pedidos_delivery",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "licenseId",    "order": "ASCENDING" },
+        { "fieldPath": "creadoEn",     "order": "DESCENDING" }
+      ]
+    },
 
     // ── Ventas ─────────────────────────────────────────────────────────────
     {

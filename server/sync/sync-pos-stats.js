@@ -13,6 +13,7 @@
 
 const { query } = require('../../db');
 const { mapSequence } = require('../routes/fiscal-sequences.routes');
+const { parseUtcDbDateTime } = require('../licensing/trial-window');
 
 const MAX_ROWS = 150;
 
@@ -33,6 +34,13 @@ function safeNum(v) {
 function isoDate(d) {
   if (!d) return null;
   try { return new Date(d).toISOString(); } catch { return null; }
+}
+
+// Fechas de licencia de config (guardadas como DATETIME UTC): new Date() las
+// leía como hora local y subía a Firebase un vencimiento 4 h más tarde en RD,
+// suficiente para que la prueba mostrara 31 días.
+function isoUtcDbDate(d) {
+  return parseUtcDbDateTime(d)?.toISOString() ?? null;
 }
 
 function normalize(rows) {
@@ -97,14 +105,14 @@ async function buildBusinessProfile() {
   // cuando status='active'). Reusar trial_ends_at para expiresAt generaba
   // una alerta falsa de "licencia vence en N días" en negocios que ya
   // estaban en status='active' con licencia perpetua (plan_expires_at NULL).
-  if (cfg.trial_started_at) profile.trialStartedAt = isoDate(cfg.trial_started_at);
-  if (cfg.trial_ends_at) profile.trialEndsAt = isoDate(cfg.trial_ends_at);
+  if (cfg.trial_started_at) profile.trialStartedAt = isoUtcDbDate(cfg.trial_started_at);
+  if (cfg.trial_ends_at) profile.trialEndsAt = isoUtcDbDate(cfg.trial_ends_at);
   // A diferencia de los demás campos, expiresAt SÍ se manda explícitamente en
   // null cuando no hay plan_expires_at (en vez de omitir la clave) — una
   // sincronización anterior con un bug ya escribió un valor incorrecto aquí
   // (reusaba trial_ends_at) y hay que poder limpiarlo, no solo evitar que se
   // repita.
-  profile.expiresAt = cfg.plan_expires_at ? isoDate(cfg.plan_expires_at) : null;
+  profile.expiresAt = cfg.plan_expires_at ? isoUtcDbDate(cfg.plan_expires_at) : null;
   // NO sincronizar cfg.license_status hacia Firestore: el flujo correcto es
   // Firestore (fuente de verdad, controlada desde el panel admin) → POS local,
   // nunca al revés. Si el POS resuelve mal su propio estado (bug local,

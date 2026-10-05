@@ -13,10 +13,19 @@ const {
   decryptJsonEnvelope,
   encryptJsonEnvelope,
 } = require('../security/local-machine-crypto');
+const {
+  DAY_MS,
+  TRIAL_DAYS,
+  computeTrialWindow,
+  parseUtcDbDateTime,
+  toUtcDbDateTime,
+} = require('./trial-window');
 
-const CACHE_ROW_ID = 1;
+// Fila única de versiones anteriores. Ahora cada equipo guarda su caché en su
+// propia fila (ver getCacheRowId): en multicaja todas las cajas comparten la
+// misma base y el caché va cifrado con la llave de CADA equipo.
+const LEGACY_CACHE_ROW_ID = 1;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 // Antes 10s: en la práctica, cualquier login que llegara más de 10s después
 // del último resolveState() (casi siempre, ya que un arranque normal +
 // abrir la pantalla de login + escribir la contraseña toma más que eso)
@@ -294,13 +303,21 @@ class LicenseService {
     this.now = typeof options.now === 'function' ? options.now : () => new Date();
     this.fetchRemoteLicense = options.fetchRemoteLicense || this.defaultFetchRemoteLicense.bind(this);
     this.updateRemoteDevice = options.updateRemoteDevice || this.defaultUpdateRemoteDevice.bind(this);
+    this.releaseRemoteDevice = options.releaseRemoteDevice || this.defaultReleaseRemoteDevice.bind(this);
     this.persistRemoteUid = options.persistRemoteUid || (() => {});
+    // Si ya se sabe que no hay Internet (server/network/internet-monitor.js),
+    // no se intenta Firebase: se usa el caché firmado al instante en vez de
+    // esperar el timeout en cada consulta (login, configuración...).
+    this.isInternetKnownOffline = typeof options.isInternetKnownOffline === 'function'
+      ? options.isInternetKnownOffline
+      : () => false;
     this.logger = options.logger || console;
     this.stateCacheTtlMs = Number(options.stateCacheTtlMs || DEFAULT_STATE_CACHE_TTL_MS);
     this.device = options.device || getDeviceDescriptor();
     this.stateMemo = { at: 0, value: null };
     this.ensureCacheTablePromise = null;
     this.syncPromise = null;
+    this.cacheRowId = null;
   }
 
   // "Eliminar todo" borra license_cache (tabla) y Firebase, pero este objeto
@@ -441,29 +458,18 @@ class LicenseService {
     const planCode = String(context.configRow?.plan_code || 'basico').trim().toLowerCase() || 'basico';
     const now = asDate(this.now()) || new Date();
 
-    // Si el DB ya tiene fechas de trial, usarlas tal cual. Una actualización o
-    // reinstalación no debe mover el vencimiento hacia adelante.
-    let trialEndsAt = asDate(context.configRow?.trial_ends_at);
-    let trialStartedAt = asDate(context.configRow?.trial_started_at);
-    if (!trialStartedAt && trialEndsAt) {
-      trialStartedAt = new Date(trialEndsAt.getTime() - 30 * DAY_MS);
-    }
-    if (!trialEndsAt) {
-      trialStartedAt = now;
-      trialEndsAt = new Date(now.getTime() + 30 * DAY_MS);
-    }
-
-    // Salvaguarda: una prueba dura 30 días. Si el valor guardado quedó inflado
-    // (reloj adelantado en un arranque previo, bucle de sync local↔nube, etc.)
-    // se recorta a 30 días desde ahora en vez de mostrar cientos de días.
-    const MAX_TRIAL_DAYS = 35;
-    if (trialEndsAt.getTime() - now.getTime() > MAX_TRIAL_DAYS * DAY_MS) {
-      trialStartedAt = now;
-      trialEndsAt = new Date(now.getTime() + 30 * DAY_MS);
-    }
-
-    const daysLeft = Math.max(0, Math.ceil((trialEndsAt.getTime() - now.getTime()) / DAY_MS));
-    const expired = trialEndsAt.getTime() <= now.getTime();
+    // Una actualización o reinstalación no debe mover la prueba: se ancla al
+    // inicio guardado y dura 30 días desde ahí (ver trial-window.js).
+    const {
+      startedAt: trialStartedAt,
+      endsAt: trialEndsAt,
+      daysLeft,
+      expired,
+    } = computeTrialWindow({
+      startedAt: parseUtcDbDateTime(context.configRow?.trial_started_at),
+      endsAt: parseUtcDbDateTime(context.configRow?.trial_ends_at),
+      now,
+    });
 
     return {
       source: 'bootstrap',
@@ -515,11 +521,18 @@ class LicenseService {
       rollbackReference && now.getTime() < rollbackReference.getTime() - CLOCK_SKEW_MS
     );
     const offlineDaysSinceLastValidation = lastValidatedAt ? daysBetweenDates(now, lastValidatedAt) : Number.MAX_SAFE_INTEGER;
-    const offlineGraceExceeded = options.enforceOfflineGrace !== false
+    let status = normalizeLicenseStatus(license.status);
+    // Una licencia ACTIVADA no necesita Internet para seguir funcionando: basta
+    // la copia firmada y cifrada de esta PC (fecha de vencimiento, firma, reloj
+    // y límite de equipos se revisan aquí mismo). Internet solo se usa para
+    // enterarse de cambios —renovación, suspensión, cambio de plan— cuando hay
+    // conexión. El límite de días sin conexión queda solo para la prueba.
+    const offlineGraceApplies = status === 'trial';
+    const offlineGraceExceeded = offlineGraceApplies
+      && options.enforceOfflineGrace !== false
       && lastValidatedAt
       && offlineDaysSinceLastValidation > offlineGraceDays;
 
-    let status = normalizeLicenseStatus(license.status);
     let blockedCode = null;
     let message = null;
 
@@ -549,7 +562,7 @@ class LicenseService {
       : 0;
     // Una prueba nunca dura más de 30 días: recorta valores inflados por un
     // reloj adelantado o un bucle de sincronización local↔nube.
-    if (status === 'trial' && daysLeft > 35) daysLeft = 30;
+    if (status === 'trial') daysLeft = Math.min(daysLeft, TRIAL_DAYS);
 
     if (!canEnter) {
       message = buildBlockedMessage({ blockedCode, status });
@@ -570,8 +583,11 @@ class LicenseService {
       trialEndsAt: expiresAt ? expiresAt.toISOString() : null,
       planExpiresAt: expiresAt ? expiresAt.toISOString() : null,
       lastValidatedAt: lastValidatedAt ? lastValidatedAt.toISOString() : null,
-      offlineGraceDays,
-      offlineDaysRemaining: Math.max(0, offlineGraceDays - Math.max(0, offlineDaysSinceLastValidation)),
+      // null = sin límite de días sin Internet (licencia activada).
+      offlineGraceDays: offlineGraceApplies ? offlineGraceDays : null,
+      offlineDaysRemaining: offlineGraceApplies
+        ? Math.max(0, offlineGraceDays - Math.max(0, offlineDaysSinceLastValidation))
+        : null,
       offlineDaysSinceLastValidation: Number.isFinite(offlineDaysSinceLastValidation) ? offlineDaysSinceLastValidation : null,
       daysLeft,
       expired: status === 'expired',
@@ -586,16 +602,39 @@ class LicenseService {
     };
   }
 
-  async readCacheSnapshot() {
-    await this.ensureCacheTable();
+  // Fila del caché de ESTE equipo. Sale de la misma llave con que se cifra el
+  // caché (huella estable + secreto local), no del deviceId: el deviceId
+  // incluye las MAC y cambia al desconectar la red, justo cuando más hace
+  // falta leer el caché. Con una sola fila compartida, la última caja que
+  // sincronizaba con Internet dejaba a las demás sin poder descifrarlo
+  // ("manipulación") en cuanto se caía Internet.
+  getCacheRowId() {
+    if (!this.cacheRowId) {
+      const digest = Buffer.from(computeIntegrityHash('license-cache-row', { purpose: 'license-cache-row' }), 'base64url');
+      this.cacheRowId = 2 + (digest.readUInt32BE(0) % 2000000000);
+    }
+    return this.cacheRowId;
+  }
+
+  async readCacheRow(rowId) {
     const rows = await this.query(
       `SELECT cache_blob, integrity_hash
        FROM license_cache
        WHERE id = ?
        LIMIT 1`,
-      [CACHE_ROW_ID]
+      [rowId]
     ).catch(() => []);
-    const row = rows[0];
+    return rows[0] || null;
+  }
+
+  async readCacheSnapshot() {
+    await this.ensureCacheTable();
+    let row = await this.readCacheRow(this.getCacheRowId());
+    if (!row?.cache_blob) {
+      // Instalaciones anteriores: el caché quedó en la fila única. La próxima
+      // escritura ya va a la fila de este equipo.
+      row = await this.readCacheRow(LEGACY_CACHE_ROW_ID);
+    }
     if (!row?.cache_blob) return null;
 
     const expectedHash = computeIntegrityHash(row.cache_blob, { purpose: 'license-cache' });
@@ -628,7 +667,7 @@ class LicenseService {
          last_seen_at = excluded.last_seen_at,
          updated_at = excluded.updated_at`,
       [
-        CACHE_ROW_ID,
+        this.getCacheRowId(),
         cacheBlob,
         integrityHash,
         snapshot.license?.licenseId || null,
@@ -641,55 +680,43 @@ class LicenseService {
     );
   }
 
-  async mirrorStateToConfig(state) {
+  // Refleja el estado de la licencia en config. Para una prueba (isTrial = la
+  // licencia, antes de evaluar fechas, está en 'trial') la ventana sale SIEMPRE
+  // de las fechas locales: inicio guardado + 30 días (ver trial-window.js).
+  // Firebase puede traer el vencimiento corrido por syncs viejos con desfase de
+  // zona horaria, así que no se le hace caso para la duración de la prueba.
+  async mirrorStateToConfig(state, { isTrial = state.status === 'trial' } = {}) {
     const planCode = String(state.planCode || 'basico').trim().toLowerCase() || 'basico';
     const now = asDate(this.now()) || new Date();
-    const incomingEndsAt = asDate(state.trialEndsAt);
 
-    // Fecha de prueba ACTUAL del DB — es la referencia. NO se re-escribe en cada
-    // arranque: escribirla implica un round-trip DATETIME (naive UTC ↔ Date
-    // local) que suma el offset local cada vez y hacía "crecer" la prueba
-    // (visto: ~+1 día por día en máquinas UTC-4). Solo se toca cuando de verdad
-    // hay que corregir algo (recorte por valor inflado, recuperación local,
-    // instalación nueva).
     const localRows = await this.query(
       'SELECT trial_started_at, trial_ends_at, license_status, setup_completed FROM config WHERE id = 1 LIMIT 1'
     ).catch(() => []);
-    const cfg = localRows[0] || {};
-    const localStartedAt = asDate(cfg.trial_started_at);
-    const localEndsAt = asDate(cfg.trial_ends_at);
+    // Sin fila de config no hay de dónde anclar la prueba: calcularla desde
+    // "ahora" regalaría 30 días nuevos si la lectura falla por un error de BD.
+    if (!localRows.length) return null;
+    const cfg = localRows[0];
+    const local = {
+      startedAt: parseUtcDbDateTime(cfg.trial_started_at),
+      endsAt: parseUtcDbDateTime(cfg.trial_ends_at),
+    };
+    const remote = {
+      startedAt: asDate(state.trialStartedAt),
+      endsAt: asDate(state.trialEndsAt),
+    };
+    // Sin fechas locales (instalación muy vieja o respaldo antiguo) se adoptan
+    // una sola vez las del estado; antes del asistente, la prueba arranca ahora
+    // y /api/setup/complete la vuelve a fijar al terminar.
+    const hasLocalTrial = Boolean(local.startedAt || local.endsAt);
+    const setupCompleted = Boolean(Number(cfg.setup_completed || 0));
+    const trial = computeTrialWindow({
+      ...(hasLocalTrial || !setupCompleted ? local : remote),
+      now,
+    });
 
-    let statusToWrite = state.status;
-    // Preserva la fecha local tal cual (string → asDate UTC → toSqlDateTime UTC
-    // es idempotente ahora que asDate trata el DATETIME naive como UTC). Solo se
-    // recalcula cuando de verdad hay que corregir (valor inflado o instalación
-    // nueva sin fechas).
-    let trialStartedAt = toSqlDateTime(localStartedAt || state.trialStartedAt);
-    let trialEndsAt = toSqlDateTime(localEndsAt || state.trialEndsAt);
-    let effectiveEndsAt = localEndsAt || incomingEndsAt;
-
-    // Salvaguarda: si el fin de prueba local está a más de 35 días (valor
-    // inflado por reloj adelantado o bucle de sync previo), recortarlo a 30.
-    if (statusToWrite === 'trial' && effectiveEndsAt && effectiveEndsAt.getTime() - now.getTime() > 35 * DAY_MS) {
-      trialStartedAt = toSqlDateTime(now);
-      trialEndsAt = toSqlDateTime(new Date(now.getTime() + 30 * DAY_MS));
-      effectiveEndsAt = new Date(now.getTime() + 30 * DAY_MS);
-    } else if (!incomingEndsAt || incomingEndsAt < now) {
-      // Firebase devolvió fecha vencida o nula: mandar el DB local.
-      if (localEndsAt) {
-        statusToWrite = localEndsAt < now && statusToWrite === 'trial'
-          ? 'expired'
-          : String(cfg.license_status || statusToWrite || 'trial');
-      } else if (!Number(cfg.setup_completed || 0) && (statusToWrite === 'expired' || statusToWrite === 'trial')) {
-        // Instalación nueva sin setup completo ni fechas locales/remotas.
-        statusToWrite = 'trial';
-        trialStartedAt = toSqlDateTime(now);
-        trialEndsAt = toSqlDateTime(new Date(now.getTime() + 30 * DAY_MS));
-        effectiveEndsAt = new Date(now.getTime() + 30 * DAY_MS);
-      } else if (statusToWrite === 'trial') {
-        statusToWrite = 'expired';
-      }
-    }
+    const statusToWrite = isTrial ? (trial.expired ? 'expired' : 'trial') : state.status;
+    const trialStartedAt = toUtcDbDateTime(isTrial ? trial.startedAt : (local.startedAt || remote.startedAt));
+    const trialEndsAt = toUtcDbDateTime(isTrial ? trial.endsAt : (local.endsAt || remote.endsAt));
 
     await this.query(
       `UPDATE config
@@ -712,15 +739,34 @@ class LicenseService {
       ]
     ).catch(() => {});
 
-    const correctedDaysLeft = effectiveEndsAt
-      ? Math.max(0, Math.ceil((effectiveEndsAt.getTime() - now.getTime()) / DAY_MS))
-      : 0;
     return {
+      isTrial,
       status: statusToWrite,
-      trialStartedAt: toIsoString(localStartedAt) || (trialStartedAt ? toIsoString(trialStartedAt) : null),
-      trialEndsAt: toIsoString(effectiveEndsAt),
-      daysLeft: correctedDaysLeft,
+      trialStartedAt: toIsoString(trial.startedAt),
+      trialEndsAt: toIsoString(trial.endsAt),
+      daysLeft: trial.daysLeft,
+      expired: trial.expired,
     };
+  }
+
+  // Una prueba se rige por su ventana local de 30 días, venga el estado de
+  // Firebase, del caché o del arranque. No pisa otros bloqueos (firma, reloj
+  // atrasado, límite de equipos, gracia offline).
+  applyTrialWindow(state, trial) {
+    if (!trial?.isTrial) return state;
+    if (state.blockedCode && state.blockedCode !== 'expired') return state;
+    state.status = trial.expired ? 'expired' : 'trial';
+    state.issuedAt = trial.trialStartedAt;
+    state.trialStartedAt = trial.trialStartedAt;
+    state.expiresAt = trial.trialEndsAt;
+    state.trialEndsAt = trial.trialEndsAt;
+    state.planExpiresAt = trial.trialEndsAt;
+    state.daysLeft = trial.daysLeft;
+    state.expired = trial.expired;
+    state.canEnter = !trial.expired;
+    state.blockedCode = trial.expired ? 'expired' : null;
+    state.message = trial.expired ? buildBlockedMessage({ blockedCode: 'expired' }) : null;
+    return state;
   }
 
   async defaultUpdateRemoteDevice(remoteLicense, _context = {}, options = {}) {
@@ -790,6 +836,32 @@ class LicenseService {
     };
   }
 
+  async defaultReleaseRemoteDevice(licenseId, deviceId) {
+    const { FieldValue } = require('firebase-admin/firestore');
+    const docRef = getFirestore().collection(getAdminLicensesCollectionName()).doc(licenseId);
+    await docRef.update({ [`devices.${deviceId}`]: FieldValue.delete() });
+  }
+
+  // Formateo de la PC: saca este equipo de devices{} de su licencia en
+  // Firebase. Después del formateo la PC arranca con un deviceId nuevo, así
+  // que la entrada vieja solo quedaría ocupando un cupo de deviceLimit.
+  // Best-effort: sin internet el formateo local sigue igual.
+  async releaseCurrentDevice(licenseId) {
+    const cached = await this.readCacheSnapshot().catch(() => null);
+    const targetId = String(licenseId || cached?.license?.licenseId || '').trim();
+    if (!targetId) return { released: false, reason: 'no_license' };
+    try {
+      await withTimeout(
+        this.releaseRemoteDevice(targetId, this.device.deviceId),
+        REMOTE_SYNC_TIMEOUT_MS * 2,
+        'Firebase tardó demasiado en liberar el equipo.'
+      );
+      return { released: true, licenseId: targetId };
+    } catch (error) {
+      return { released: false, licenseId: targetId, reason: error.message };
+    }
+  }
+
   async syncWithRemote(options = {}) {
     if (this.syncPromise) return this.syncPromise;
 
@@ -841,29 +913,18 @@ class LicenseService {
       });
 
       await this.writeCacheSnapshot(snapshot);
-      const mirrored = await this.mirrorStateToConfig(state);
-      // Si Firebase devolvió "expired" pero el DB local tiene fechas vigentes,
-      // mirrorStateToConfig las conserva; parchear el
-      // estado para que el frontend muestre los días reales. Solo aplica cuando
-      // el único bloqueo es 'expired'; no tocar device_limit, clock_rollback, etc.
-      if (mirrored && mirrored.daysLeft > 0 && state.blockedCode === 'expired') {
-        state.status        = mirrored.status;
-        state.trialEndsAt   = mirrored.trialEndsAt;
-        state.expiresAt     = mirrored.trialEndsAt;
-        state.planExpiresAt = mirrored.trialEndsAt;
-        state.daysLeft      = mirrored.daysLeft;
-        state.expired       = false;
-        state.canEnter      = true;
-        state.blockedCode   = null;
-        state.message       = null;
-      }
+      // "changed" compara contra el snapshot anterior ANTES de aplicar la
+      // ventana local de prueba: solo debe avisar cambios reales en Firebase.
+      const changed = compareStateFields(
+        previousSnapshot ? this.buildStateFromSnapshot(previousSnapshot, { source: 'cache', now: this.now() }) : {},
+        state
+      );
+      const trial = await this.mirrorStateToConfig(state, { isTrial: normalizedRemote.status === 'trial' });
+      this.applyTrialWindow(state, trial);
 
       return {
         synced: true,
-        changed: compareStateFields(
-          previousSnapshot ? this.buildStateFromSnapshot(previousSnapshot, { source: 'cache', now: this.now() }) : {},
-          state
-        ),
+        changed,
         source: 'firebase',
         license: state,
         remote: normalizedRemote,
@@ -888,7 +949,7 @@ class LicenseService {
     let result = null;
     let remoteError = null;
 
-    if (options.allowRemote !== false) {
+    if (options.allowRemote !== false && !this.isInternetKnownOffline()) {
       try {
         result = await withTimeout(
           this.syncWithRemote(options),
@@ -924,7 +985,10 @@ class LicenseService {
             await this.writeCacheSnapshot(snapshot).catch(() => {});
           }
 
-          await this.mirrorStateToConfig(state);
+          const trial = await this.mirrorStateToConfig(state, {
+            isTrial: normalizeLicenseStatus(snapshot.license?.status) === 'trial',
+          });
+          this.applyTrialWindow(state, trial);
           result = {
             synced: false,
             changed: false,
@@ -957,7 +1021,8 @@ class LicenseService {
               : (remoteError?.code === 'LICENSE_REMOTE_NOT_FOUND' ? 'missing_remote' : 'expired'),
           };
       fallbackState.message = fallbackState.canEnter ? null : buildBlockedMessage(fallbackState);
-      await this.mirrorStateToConfig(fallbackState).catch(() => {});
+      const trial = await this.mirrorStateToConfig(fallbackState, { isTrial: bootstrapAllowed }).catch(() => null);
+      this.applyTrialWindow(fallbackState, trial);
       result = {
         synced: false,
         changed: false,

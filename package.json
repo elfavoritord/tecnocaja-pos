@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -24,6 +24,7 @@
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
+    "test:e2e-lan": "node scripts/e2e-lan/run-lan-e2e.js",
     "admin": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe tecno-caja-admin/main.js"
   },
   "keywords": [],
@@ -119,6 +120,7 @@
       "img/**/*",
       "db/**/*",
       "scripts/**/*",
+      "!scripts/e2e-lan/**",
       "modules/**/*",
       "server/**/*",
       "config/**/*",

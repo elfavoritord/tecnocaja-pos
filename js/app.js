@@ -102,7 +102,7 @@ const BASE_UI_TEXT = {
     },
     {
       title: 'Datos del negocio',
-      text: 'Estos datos saldrán en comprobantes, configuración general y reportes.'
+      text: 'Ingresa tu RNC o Cédula y los datos se completarán automáticamente desde la DGII.'
     },
     {
       title: 'Impresión y comprobantes',
@@ -849,7 +849,7 @@ const APP_UI_COPY = {
       configuracion: 'Configuración'
     },
     shell: {
-      logout: 'Cerrar Sesión'
+      logout: 'Cerrar sesión'
     },
     cash: {
       title: 'Gestión de Caja',
@@ -1603,7 +1603,7 @@ function syncTrialBusinessPill() {
     || DB.config?.businessProfile?.label
     || DB.config?.tipoNegocio
     || 'Demo';
-  pill.textContent = `🧪 Prueba: ${label}`;
+  pill.textContent = `Prueba: ${label}`;
   pill.classList.remove('hidden');
 }
 
@@ -1795,6 +1795,8 @@ function _updatePlanBadge() {
 
   label.textContent = planName;
   badge.title = `Plan activo: ${planName}`;
+  const configPlan = document.getElementById('cfg-plan-readonly');
+  if (configPlan) configPlan.value = planName;
 }
 window._updatePlanBadge = _updatePlanBadge;
 
@@ -1808,6 +1810,8 @@ function applyRolePermissions() {
     item.classList.toggle('hidden', hiddenByLegacyRole || hiddenByBusiness || hiddenByScopedAccess);
   });
   _updatePlanBadge();
+  window.TcShell?.refreshNav();
+  window.TcShell?.syncCaja();
 
   const activeModule = document.querySelector('.nav-item.active');
   const activeModuleName = activeModule?.dataset.module || '';
@@ -1934,14 +1938,20 @@ function updateStaticUiTexts() {
   if (setupTrialNote) setupTrialNote.textContent = copy.setupTrialNote;
   if (setupStructureLabel) setupStructureLabel.textContent = copy.setupStructureLabel || BASE_UI_TEXT.setupStructureLabel;
   if (setupStructureHelp) setupStructureHelp.textContent = copy.setupStructureHelp || BASE_UI_TEXT.setupStructureHelp;
-  document.querySelectorAll('#setup-steps .setup-step-dot').forEach((dot, index) => {
-    dot.textContent = copy.setupSteps?.[index] || dot.textContent;
-  });
-  document.querySelectorAll('.setup-step-panel').forEach((panel, index) => {
+  // Los pasos del asistente (#setup-steps) los nombra js/wizard.js según el
+  // flujo elegido (7 pasos en monocaja, 5 al vincular una terminal...); la
+  // lista vieja de 6 nombres los dejaba desfasados.
+  // Los textos traducidos son 6 (sin el panel "Tipo de negocio"), pero el
+  // asistente tiene 7 paneles: se emparejan por data-step, no por posición,
+  // para que el panel "Tipo" no reciba el título "Administrador inicial".
+  const SETUP_PANEL_COPY_INDEX = { 0: 0, 1: 1, 3: 2, 4: 3, 5: 4, 6: 5 };
+  document.querySelectorAll('.setup-step-panel').forEach((panel) => {
+    const copyIndex = SETUP_PANEL_COPY_INDEX[panel.dataset.step];
+    if (copyIndex === undefined) return;
     const title = panel.querySelector('h3');
     const text = panel.querySelector('p');
-    if (title) title.textContent = copy.setupPanels?.[index]?.title || title.textContent;
-    if (text) text.textContent = copy.setupPanels?.[index]?.text || text.textContent;
+    if (title) title.textContent = copy.setupPanels?.[copyIndex]?.title || title.textContent;
+    if (text) text.textContent = copy.setupPanels?.[copyIndex]?.text || text.textContent;
   });
   const setupBack = document.getElementById('setup-back-btn');
   const setupNext = document.getElementById('setup-next-btn');
@@ -2037,12 +2047,10 @@ function applyAppTranslations() {
   if (logoutBtn) logoutBtn.textContent = appText('shell.logout', logoutBtn.textContent);
 
   setTextBySelector('#module-ventas .sales-pizza-mini-title', translateCatalogText('Menú rápido'));
-  setTextBySelector('#module-ventas .sale-order-title', translateCatalogText('Pedido actual'));
-  setTextBySelector('#module-ventas .sale-order-subtitle', translateCatalogText('Edita cantidades, descuentos o elimina productos antes de cobrar.'));
-  setTextBySelector('#module-ventas .btn-cancel', `✖ ${translateCatalogText('Cancelar')}`);
-  setTextBySelector('#module-ventas .btn-suspend', `⏸ ${translateCatalogText('Suspender')}`);
-  setTextBySelector('#module-ventas .btn-recover', `📂 ${translateCatalogText('Recuperar')}`);
-  setTextBySelector('#module-ventas .btn-reprint', `🖨️ ${translateCatalogText('Reimprimir')}`);
+  setTextBySelector('#module-ventas [data-ventas-label="cancel"]', translateCatalogText('Cancelar venta'));
+  setTextBySelector('#module-ventas [data-ventas-label="suspend"]', translateCatalogText('Suspender'));
+  setTextBySelector('#module-ventas [data-ventas-label="recover"]', translateCatalogText('Recuperar'));
+  setTextBySelector('#module-ventas [data-ventas-label="reprint"]', translateCatalogText('Reimprimir'));
 
   setTextBySelector('#module-productos .module-header h2', translateCatalogText('Gestión de Productos'));
   setPlaceholderBySelector('#products-search', translateCatalogText('Buscar por código, nombre o marca...'));
@@ -2050,10 +2058,10 @@ function applyAppTranslations() {
   document.querySelectorAll('#products-status-filter option').forEach((option, index) => {
     if (productsStatusOptions[index]) option.textContent = translateCatalogText(productsStatusOptions[index]);
   });
-  setTextBySelector('#btn-products-new', `+ ${translateCatalogText('Nuevo Producto')}`);
-  setTextBySelector('#btn-products-import', `⬆ ${translateCatalogText('Importar CSV')}`);
-  setTextBySelector('#btn-products-export', `⬇ ${translateCatalogText('Exportar')}`);
-  setTextBySelector('#btn-products-reload', `↻ ${translateCatalogText('Actualizar')}`);
+  setTextBySelector('#btn-products-new .btn-label', translateCatalogText('Nuevo producto'));
+  setTextBySelector('#btn-products-import', translateCatalogText('Importar CSV'));
+  setTextBySelector('#btn-products-export', translateCatalogText('Exportar'));
+  setTextBySelector('#btn-products-reload', translateCatalogText('Actualizar'));
   ['Productos visibles', 'Con stock bajo', 'Agotados', 'Utilidad potencial'].forEach((text, index) => {
     const el = document.querySelectorAll('#module-productos .stat-label')[index];
     if (el) el.textContent = translateCatalogText(text);
@@ -2065,14 +2073,13 @@ function applyAppTranslations() {
   document.querySelectorAll('#inventory-status-filter option').forEach((option, index) => {
     if (inventoryStatusOptions[index]) option.textContent = translateCatalogText(inventoryStatusOptions[index]);
   });
-  setTextBySelector('#module-inventario .module-actions .btn-primary', `+ ${translateCatalogText('Ajuste Manual')}`);
-  setTextBySelector('#module-inventario .module-actions .btn-secondary', `📋 ${translateCatalogText('Ver Kardex')}`);
+  setTextBySelector('#module-inventario .module-actions .btn-primary .btn-label', translateCatalogText('Ajuste manual'));
+  setTextBySelector('#module-inventario .module-actions .btn-secondary .btn-label', translateCatalogText('Ver kardex'));
 
   setTextBySelector('#module-proveedores .module-header h2', translateCatalogText('Proveedores'));
   setPlaceholderBySelector('#proveedores-search', translateCatalogText('Buscar proveedor, empresa o RNC...'));
-  const supplierHeaderButtons = document.querySelectorAll('#module-proveedores .module-header .btn-primary, #module-proveedores .module-header .btn-secondary');
-  if (supplierHeaderButtons[0]) supplierHeaderButtons[0].textContent = `+ ${translateCatalogText('Nuevo Proveedor')}`;
-  if (supplierHeaderButtons[1]) supplierHeaderButtons[1].textContent = `+ ${translateCatalogText('Factura')}`;
+  setTextBySelector('#module-proveedores .module-header [onclick^="openProveedorModal"] .btn-label', translateCatalogText('Nuevo proveedor'));
+  setTextBySelector('#module-proveedores .module-header [onclick^="openSupplierInvoiceModal"] .btn-label', translateCatalogText('Registrar factura'));
   const supplierCardHeaders = ['Total Proveedores', 'Activos', 'Facturas Pendientes', 'Facturas Vencidas'];
   document.querySelectorAll('#module-proveedores .report-card-header').forEach((el, index) => {
     if (supplierCardHeaders[index]) el.textContent = translateCatalogText(supplierCardHeaders[index]);
@@ -2098,14 +2105,15 @@ function applyAppTranslations() {
     if (supplierHeaders2[index]) el.textContent = translateCatalogText(supplierHeaders2[index]);
   });
 
-  setTextBySelector('#module-caja .module-header h2', appText('cash.title', 'Gestión de Caja'));
-  const cashHeaderButtons = document.querySelectorAll('#module-caja .module-header .btn-primary, #module-caja .module-header .btn-secondary');
-  if (cashHeaderButtons[0]) cashHeaderButtons[0].textContent = `↗ ${translateCatalogText('Registrar ingreso')}`;
-  if (cashHeaderButtons[1]) cashHeaderButtons[1].textContent = `↘ ${translateCatalogText('Registrar egreso')}`;
+  // Caja: "Registrar ingreso/egreso" están en la fila de acciones rápidas.
+  document.querySelectorAll('#module-caja .caja-quick-btn').forEach((button) => {
+    const label = button.querySelector('.cqa-label');
+    if (label) label.textContent = translateCatalogText(label.textContent.trim());
+  });
 
   setTextBySelector('#module-reportes .module-header h2', appText('reports.title', 'Reportes'));
   const exportReportBtn = document.querySelector('#module-reportes .module-header .btn-secondary');
-  if (exportReportBtn) exportReportBtn.textContent = `⬇ ${appText('reports.exportPdf', 'Exportar PDF')}`;
+  if (exportReportBtn) exportReportBtn.textContent = appText('reports.exportPdf', 'Exportar PDF');
 
   setTextBySelector('#module-movimientos .module-header h2', translateCatalogText('Movimientos del Sistema'));
   setPlaceholderBySelector('#movimientos-search', translateCatalogText('Buscar por usuario, módulo o acción...'));
@@ -2137,7 +2145,7 @@ function applyAppTranslations() {
 
   setTextBySelector('#module-posmovil .module-header h2', translateCatalogText('POS Móvil por WiFi'));
   const posMobileButtons = document.querySelectorAll('#module-posmovil .module-header .btn-primary, #module-posmovil .module-header .btn-secondary');
-  if (posMobileButtons[1]) posMobileButtons[1].textContent = `↻ ${translateCatalogText('Actualizar')}`;
+  if (posMobileButtons[1]) posMobileButtons[1].textContent = translateCatalogText('Actualizar');
   const mobileCardHeaders = ['IP de conexión', 'Sesiones activas', 'Items en móviles'];
   document.querySelectorAll('#module-posmovil .report-card-header').forEach((el, index) => {
     if (mobileCardHeaders[index]) el.textContent = translateCatalogText(mobileCardHeaders[index]);
@@ -2152,8 +2160,8 @@ function applyAppTranslations() {
   });
 
   setTextBySelector('#module-usuarios .module-header h2', translateCatalogText('Usuarios y Permisos'));
-  setTextBySelector('#module-usuarios .module-header .btn-primary', `+ ${translateCatalogText('Nuevo Usuario')}`);
-  ['Usuario', 'Nombre', 'Rol', 'Estado', 'Firebase', 'Último Acceso', 'Acciones'].forEach((text, index) => {
+  setTextBySelector('#module-usuarios .module-header .btn-primary .btn-label', translateCatalogText('Nuevo usuario'));
+  ['Usuario', 'Nombre', 'Rol', 'Estado', 'Nube', 'Último acceso', 'Acciones'].forEach((text, index) => {
     const el = document.querySelectorAll('#module-usuarios table thead th')[index];
     if (el) el.textContent = translateCatalogText(text);
   });
@@ -2167,14 +2175,13 @@ function applyAppTranslations() {
     if (el) el.textContent = value;
   });
   const saveConfigBtn = document.querySelector('#module-configuracion .module-header .btn-primary');
-  if (saveConfigBtn) saveConfigBtn.textContent = `💾 ${appText('settings.save', 'Guardar Cambios')}`;
+  if (saveConfigBtn) saveConfigBtn.textContent = appText('settings.save', 'Guardar cambios');
   const clientsHeading = document.querySelector('#module-clientes .module-header h2');
   if (clientsHeading) clientsHeading.textContent = translateCatalogText('Clientes');
   const clientsSearch = document.querySelector('#module-clientes .mod-search');
-  if (clientsSearch) clientsSearch.placeholder = translateCatalogText('Buscar cliente...');
-  const clientsNewButton = document.querySelector('#module-clientes .module-header .btn-primary');
-  if (clientsNewButton) clientsNewButton.textContent = `+ ${translateCatalogText('Nuevo Cliente')}`;
-  const clientsHeaders = ['Nombre', 'Teléfono', 'Referencia', 'Mapa', 'Cédula/RNC', 'Balance', 'Límite Crédito', 'Acciones'];
+  if (clientsSearch) clientsSearch.placeholder = translateCatalogText('Buscar por nombre, cédula o teléfono...');
+  setTextBySelector('#module-clientes .module-header .btn-primary .btn-label', translateCatalogText('Nuevo cliente'));
+  const clientsHeaders = ['Nombre', 'Teléfono', 'Referencia', 'Mapa', 'Cédula/RNC', 'Balance', 'Límite de crédito', 'Acciones'];
   document.querySelectorAll('#clientes-table thead th').forEach((th, index) => {
     th.textContent = translateCatalogText(clientsHeaders[index] || th.textContent);
   });
@@ -2182,8 +2189,8 @@ function applyAppTranslations() {
     'cfg-section-business-title': appText('settings.businessSection', 'Datos del Negocio'),
     'cfg-label-business-name': appText('settings.businessName', 'Nombre del Negocio'),
     'cfg-label-app-logo': appText('settings.appLogo', 'Logo de la App'),
-    'cfg-btn-upload-logo': `🖼 ${appText('settings.uploadLogo', 'Cargar logo')}`,
-    'cfg-btn-remove-logo': `🗑 ${appText('settings.removeLogo', 'Quitar logo')}`,
+    'cfg-btn-upload-logo': appText('settings.uploadLogo', 'Cargar logo'),
+    'cfg-btn-remove-logo': appText('settings.removeLogo', 'Quitar logo'),
     'cfg-label-rnc': appText('settings.rnc', 'RNC / Cédula'),
     'cfg-label-address': appText('settings.address', 'Dirección'),
     'cfg-label-phone': appText('settings.phone', 'Teléfono'),
@@ -2341,9 +2348,10 @@ function applyAppTranslations() {
     cashHint.style.display = '';
     if (!cajaAbierta) cashHint.textContent = appText('cash.openHint', 'Indica el monto inicial y deja una nota para la apertura.');
   }
-  const cashAmountLabel = document.querySelector('#module-caja label[for="caja-input-monto"], #module-caja .caja-form .form-group:first-child label');
+  const cashAmountLabel = document.querySelector('#module-caja label[for="caja-input-monto"]');
   if (cashAmountLabel) cashAmountLabel.textContent = appText('cash.amountLabel', 'Monto Inicial / Final');
-  const cashNotesLabel = document.querySelector('#module-caja .caja-form .form-group:nth-child(2) label');
+  // Por campo: por posición se escribía "Observaciones" sobre el tipo de cambio.
+  const cashNotesLabel = document.querySelector('#module-caja label[for="caja-obs"]');
   if (cashNotesLabel) cashNotesLabel.textContent = appText('cash.notesLabel', 'Observaciones');
   const cashNotes = document.getElementById('caja-obs');
   if (cashNotes) cashNotes.placeholder = appText('cash.notesPlaceholder', 'Notas...');
@@ -2362,16 +2370,20 @@ function applyAppTranslations() {
   if (deliveryEmpty) deliveryEmpty.textContent = appText('cash.pendingDeliveryEmpty', deliveryEmpty.textContent);
   const cajaResumenTitle = document.querySelector('#module-caja .caja-resumen h3');
   if (cajaResumenTitle) cajaResumenTitle.textContent = appText('cash.daySummary', 'Resumen del Día');
-  const resumenRows = document.querySelectorAll('#module-caja .caja-resumen .resumen-row span:first-child');
-  const resumenTitles = [
-    appText('cash.cashSales', 'Ventas en Efectivo'),
-    appText('cash.cardSales', 'Ventas con Tarjeta'),
-    appText('cash.transferSales', 'Transferencias'),
-    appText('cash.totalSales', 'Total Ventas'),
-    appText('cash.expenses', 'Gastos')
-  ];
-  resumenRows.forEach((el, index) => {
-    if (resumenTitles[index]) el.textContent = resumenTitles[index];
+  // Cada etiqueta según el id de su monto (antes iban por posición: 5 textos
+  // para 7 filas dejaban "Total Ventas" sobre el crédito y "Gastos" sobre el
+  // total de ventas).
+  const resumenTitles = {
+    'res-efectivo': appText('cash.cashSales', 'Ventas en Efectivo'),
+    'res-tarjeta': appText('cash.cardSales', 'Ventas con Tarjeta'),
+    'res-transfer': appText('cash.transferSales', 'Transferencias'),
+    'res-total': appText('cash.totalSales', 'Total Ventas'),
+    'res-gastos': appText('cash.expenses', 'Gastos')
+  };
+  document.querySelectorAll('#module-caja .caja-resumen .resumen-row').forEach((row) => {
+    const valueId = row.querySelector('span[id]')?.id;
+    const label = row.querySelector('span:first-child');
+    if (label && resumenTitles[valueId]) label.textContent = resumenTitles[valueId];
   });
   const resumenTotal = document.querySelector('#module-caja .resumen-total span:first-child');
   if (resumenTotal) resumenTotal.textContent = appText('cash.finalBalance', 'Balance Final');
@@ -2876,6 +2888,11 @@ function openFactoryResetModal() {
       <p style="color:var(--danger);font-size:0.85rem;line-height:1.5;margin-bottom:0.75rem">
         Esto eliminará TODOS los datos del negocio, la licencia, configuración y usuarios. No se puede deshacer.
       </p>
+      <p style="color:var(--text2);font-size:0.82rem;line-height:1.5;margin-bottom:0.75rem">
+        También se borran los respaldos guardados en esta PC, las facturas y reportes generados, el certificado e-CF,
+        la sesión de WhatsApp y el registro de este equipo en la licencia. Tecno Caja arrancará como si nunca se hubiera
+        instalado aquí. Si necesitas conservar algo, exporta un respaldo a una USB antes de continuar.
+      </p>
       <input type="text" id="factory-reset-confirmation" class="form-input" placeholder="Escribe ELIMINAR TODO">
     </div>
     <div class="form-group">
@@ -2976,11 +2993,23 @@ async function submitFactoryResetModal() {
     } else {
       showToast('Reset local realizado. Firebase conservado. La aplicación se reiniciará.', 'success');
     }
-    setTimeout(() => window.location.reload(), 2000);
+    setTimeout(restartAfterFactoryReset, 2000);
   } catch (error) {
     if (status) status.textContent = error.message || 'No se pudo ejecutar el reset.';
     showToast('Error durante el reset: ' + (error.message || 'Error desconocido'), 'error');
   }
+}
+
+// Tras formatear hay que reiniciar la app completa, no solo recargar: en el
+// arranque Electron termina de borrar lo que queda en disco y la identidad del
+// equipo (ver server/services/factory-reset.service.js).
+async function restartAfterFactoryReset() {
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+  } catch (_) {}
+  const result = await window.novaDesktop?.restartApp?.().catch(() => null);
+  if (!result?.ok) window.location.reload();
 }
 
 function launchSetupWizardFromLogin(options = {}) {
@@ -3556,10 +3585,25 @@ async function doLogin() {
   }
 }
 
+// El SDK de Google (Firebase Auth) se descarga de Internet: se carga solo
+// cuando alguien pulsa "Entrar con Google", nunca al abrir la app, para que
+// arrancar sin Internet no espere esa descarga. Usuario y contraseña siempre
+// funcionan sin Internet.
+async function ensureFirebaseWebAuthLoaded() {
+  if (window.firebaseWebAuth?.signInWithGoogle) return true;
+  if (window.TcConnectivity?.internet?.online === false) return false;
+  try {
+    await import('./js/firebase-web-auth.js');
+  } catch (_error) {
+    return false;
+  }
+  return Boolean(window.firebaseWebAuth?.signInWithGoogle);
+}
+
 async function doGoogleLogin() {
   if (loginTransitionLock) return;
-  if (!window.firebaseWebAuth?.signInWithGoogle) {
-    showToast('Google no está listo todavía en esta app.', 'error');
+  if (!await ensureFirebaseWebAuthLoaded()) {
+    showToast('Entrar con Google necesita conexión a Internet. Entra con tu usuario y contraseña: funcionan sin Internet.', 'warning');
     return;
   }
 
@@ -3738,9 +3782,10 @@ function updateClock() {
   if (!el) return;
   const now = new Date();
   const locale = getCurrentLocale();
-  const time = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const date = now.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
-  el.innerHTML = `<span class="topbar-time-clock">${time}</span><span class="topbar-time-date">${date}</span>`;
+  const time = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: true });
+  const date = now.toLocaleDateString(locale, { day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (el.textContent !== time) el.textContent = time;
+  if (el.title !== date) el.title = date;
 }
 
 function showModule(name, el) {
@@ -3766,6 +3811,7 @@ function showModule(name, el) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   document.getElementById('breadcrumb').textContent = el ? el.querySelector('.nav-label').textContent : name;
+  window.TcShell?.onModuleShown(name);
   window.TecnoAsistente?.setModuleContext(name);
   if (name === 'ventas' && typeof window.scheduleSalesSearchFocus === 'function') {
     window.scheduleSalesSearchFocus();
@@ -3797,6 +3843,7 @@ function showModule(name, el) {
     if (typeof syncSaleFiscalControls === 'function') syncSaleFiscalControls();
     if (typeof loadActivePromotionsMap === 'function') loadActivePromotionsMap();
     if (typeof renderSalesCatalog === 'function') renderSalesCatalog();
+    window.VentasUI?.sync();
     // Re-render diferido por si el DOM todavía está acomodándose en la carga inicial
     setTimeout(() => { if (typeof renderSalesCatalog === 'function') renderSalesCatalog(); }, 250);
   }
@@ -3883,8 +3930,7 @@ function toggleTheme() {
 function setTheme(val) {
   const theme = val === 'light' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', theme);
-  const button = document.getElementById('topbar-theme-toggle');
-  if (button) button.textContent = theme === 'dark' ? '🌙' : '☀️';
+  window.TcShell?.syncTheme();
   const select = document.getElementById('cfg-theme');
   if (select) select.value = theme;
   saveUiPreferences();
@@ -4120,32 +4166,32 @@ function getEffectiveConfig() {
 
 const CONFIG_GROUPS = {
   negocio: {
-    icon: '🏬', color: '#6366f1', bg: 'rgba(99,102,241,0.13)',
+    icon: 'store',
     title: 'Mi Negocio', desc: 'Nombre, logo, RNC y tipo de negocio',
     find: ['h3#cfg-section-business-title', 'h3#cfg-section-branches-title', '#cfg-admin-delete-section'],
   },
   ventas: {
-    icon: '💳', color: '#f59e0b', bg: 'rgba(245,158,11,0.13)',
+    icon: 'receipt',
     title: 'Ventas y Facturación', desc: 'Moneda, ITBIS y comprobantes NCF',
     find: ['h3#cfg-section-billing-title', '#cfg-ncf-section', 'h3#cfg-business-guide-heading'],
   },
   hardware: {
-    icon: '🖨️', color: '#10b981', bg: 'rgba(16,185,129,0.13)',
+    icon: 'printer',
     title: 'Periféricos', desc: 'Impresora, gaveta, báscula TCP y báscula digital',
     find: ['h3#cfg-section-printer-title', 'h3#cfg-section-drawer-title', '#cfg-bascula-section', 'text:Báscula Digital'],
   },
   sistema: {
-    icon: '🌐', color: '#3b82f6', bg: 'rgba(59,130,246,0.13)',
+    icon: 'monitor',
     title: 'Sistema y Red', desc: 'Apariencia, red, nube y actualizaciones',
     find: ['h3#cfg-section-appearance-title', '#cfg-network-section', '#cfg-cloud-sync-section', '#cfg-sync-diag-section', '#cfg-health-section', '#cfg-update-section'],
   },
   seguridad: {
-    icon: '🔐', color: '#ef4444', bg: 'rgba(239,68,68,0.13)',
+    icon: 'shield',
     title: 'Acceso y Seguridad', desc: 'Contraseña, respaldo y zona de peligro',
     find: ['#cfg-backup-section', 'h3#cfg-section-access-title', 'h3#cfg-section-security-title', 'h3#cfg-section-danger-title'],
   },
   tesoreria: {
-    icon: '💰', color: '#22c55e', bg: 'rgba(34,197,94,0.13)',
+    icon: 'wallet',
     title: 'Caja General', desc: 'Activar Tesorería, fondos y contraseñas',
     find: ['#cfg-tesoreria-section'],
   },
@@ -4192,10 +4238,12 @@ function setupCfgGroupCards(root) {
     document.head.appendChild(style);
   }
 
-  const makeCard = ({ icon, color, bg, title, desc }, onClick) => {
+  // Íconos de línea (js/iconos.js); colores del tema en css/modulos.css.
+  const makeCard = ({ icon, title, desc }, onClick) => {
     const card = document.createElement('div');
     card.className = 'cfg-group-card';
-    card.innerHTML = `<div class="cfg-group-card__icon" style="background:${bg};color:${color}">${icon}</div><div class="cfg-group-card__body"><span class="cfg-group-card__title">${title}</span><span class="cfg-group-card__desc">${desc}</span></div><span class="cfg-group-card__arrow">›</span>`;
+    const svg = (name, size) => (window.TcIconos ? window.TcIconos.svg(name, size) : '');
+    card.innerHTML = `<div class="cfg-group-card__icon">${svg(icon, 26)}</div><div class="cfg-group-card__body"><span class="cfg-group-card__title">${title}</span><span class="cfg-group-card__desc">${desc}</span></div><span class="cfg-group-card__arrow">${svg('chevron-right', 20)}</span>`;
     card.addEventListener('click', onClick);
     return card;
   };
@@ -4211,13 +4259,13 @@ function setupCfgGroupCards(root) {
 
   // Tarjeta DGII
   groupGrid.appendChild(makeCard(
-    { icon: '🏛️', color: '#8b5cf6', bg: 'rgba(139,92,246,0.13)', title: 'e-CF · DGII', desc: 'Certificado, ambiente y estado fiscal' },
+    { icon: 'landmark', title: 'e-CF · DGII', desc: 'Certificado, ambiente y estado fiscal' },
     () => openFiscalConfigModal()
   ));
 
   // Tarjeta Centro de Ayuda — igual que DGII, vista propia en vez de agrupar secciones
   groupGrid.appendChild(makeCard(
-    { icon: '❓', color: '#06b6d4', bg: 'rgba(6,182,212,0.13)', title: 'Centro de Ayuda', desc: 'Artículos de ayuda y soporte' },
+    { icon: 'circle-help', title: 'Centro de Ayuda', desc: 'Artículos de ayuda y soporte' },
     () => window.openHelpCenterModal?.()
   ));
 
@@ -4240,19 +4288,15 @@ function _cfgRenderGroupList() {
   const { group, sections } = _cfgGroupOpen;
   const body = document.getElementById('cfg-group-modal-body');
   body.innerHTML = '';
-  document.getElementById('cfg-group-modal-title').textContent = `${group.icon} ${group.title}`;
+  document.getElementById('cfg-group-modal-title').textContent = group.title;
 
   sections.forEach(s => {
-    const h3 = s.querySelector('h3');
-    const icon = h3?.querySelector('.config-section-card-icon')?.textContent?.trim() || '⚙️';
     const title = _cfgSectionTitle(s);
 
     const row = document.createElement('button');
     row.type = 'button';
-    row.style.cssText = 'display:flex;align-items:center;gap:.85rem;width:100%;padding:.9rem 1rem;background:var(--bg);border:1px solid var(--border);border-radius:10px;cursor:pointer;text-align:left;color:var(--text);transition:background .15s;margin-bottom:.4rem';
-    row.onmouseenter = () => { row.style.background = 'var(--bg2)'; };
-    row.onmouseleave = () => { row.style.background = 'var(--bg)'; };
-    row.innerHTML = `<span style="font-size:1.3rem;width:1.8rem;text-align:center">${icon}</span><span style="flex:1;font-size:.9rem;font-weight:600">${title}</span><span style="color:var(--text3);font-size:1rem">›</span>`;
+    row.className = 'cfg-group-row';
+    row.innerHTML = `<span class="cfg-group-row__title">${title}</span>${window.TcIconos ? window.TcIconos.svg('chevron-right', 20) : ''}`;
     row.addEventListener('click', () => _cfgDrillSection(s));
     body.appendChild(row);
   });
@@ -4296,8 +4340,8 @@ function _cfgDrillSection(sectionEl) {
   titleEl.innerHTML = '';
   const backBtn = document.createElement('button');
   backBtn.type = 'button';
-  backBtn.style.cssText = 'background:none;border:none;color:var(--accent,#6366f1);cursor:pointer;font-size:.85rem;font-weight:600;padding:0;margin-right:.6rem;display:inline-flex;align-items:center;gap:.25rem';
-  backBtn.innerHTML = `‹ ${group.title}`;
+  backBtn.className = 'cfg-group-back tc-link';
+  backBtn.textContent = group.title;
   backBtn.addEventListener('click', _cfgDrillBack);
   titleEl.appendChild(backBtn);
   titleEl.appendChild(document.createTextNode(title));
@@ -5708,6 +5752,7 @@ function applyBranding() {
   const sidebarText = document.getElementById('sidebar-logo-name');
   if (loginText) loginText.textContent = appName;
   if (sidebarText) sidebarText.textContent = appName;
+  window.TcShell?.syncBusiness();
   document.title = typeof window.translateUiString === 'function'
     ? window.translateUiString(`${appName} — Sistema Punto de Venta`)
     : `${appName} — Sistema Punto de Venta`;
@@ -5783,7 +5828,7 @@ function applyBusinessProfile() {
   if (titleEl) titleEl.textContent = '';
   if (subtitleEl) subtitleEl.textContent = '';
   if (searchInput) {
-    searchInput.placeholder = profile?.searchPlaceholder || 'Escanear código o buscar producto... (F2)';
+    searchInput.placeholder = profile?.searchPlaceholder || 'Buscar por nombre, código o escanear (F2)';
   }
 
   const menuItems = Array.isArray(profile?.quickMenuItems) ? profile.quickMenuItems : [];
@@ -6151,9 +6196,15 @@ function updateLicenseUI() {
   }
 
   if (pill) {
+    // El plan y la licencia viven en Configuración: aquí solo se avisa cuando
+    // faltan 7 días o menos, o si está vencida, suspendida o sin verificar.
+    const showWarning = status === 'suspended'
+      || validationBlocked
+      || Boolean(DB.config?.trialExpired)
+      || (status !== 'active' && daysLeft <= 7);
     pill.textContent = text;
     pill.className = `license-pill ${variant}`;
-    pill.classList.remove('hidden');
+    pill.classList.toggle('hidden', !showWarning);
   }
 
   if (loginHint) {
@@ -6757,7 +6808,12 @@ function togglePasswordVisibility(inputId, button) {
   if (!input) return;
   const isPassword = input.type === 'password';
   input.type = isPassword ? 'text' : 'password';
-  if (button) button.textContent = isPassword ? '🙈' : '👁';
+  if (button) {
+    const iconName = isPassword ? 'eye-off' : 'eye';
+    if (window.TcIconos?.paths?.[iconName]) button.innerHTML = window.TcIconos.svg(iconName, 20);
+    else button.textContent = isPassword ? 'Ocultar' : 'Ver';
+    button.setAttribute('aria-label', isPassword ? 'Ocultar contraseña' : 'Mostrar contraseña');
+  }
 }
 
 function openGoogleLinkModal() {
@@ -7566,6 +7622,23 @@ function selectGavetaMotivo(btn) {
   if (confirmBtn) confirmBtn.disabled = false;
 }
 
+// La gaveta se configura por equipo (Configuración → Periféricos se guarda en
+// LocalPeripheralsFlat), igual que la que se abre al cobrar. Antes este botón
+// leía solo DB.config: si la gaveta estaba activada en este equipo, no abría.
+function getCashDrawerOpenConfig() {
+  const cfg = getEffectiveConfig();
+  const enabled = cfg.cashDrawerEnabled === true || cfg.cashDrawerEnabled === 'true' || Number(cfg.cashDrawerEnabled) === 1;
+  if (!enabled) return null;
+  return {
+    method:      cfg.cashDrawerMethod || 'escpos',
+    printerName: resolveDrawerPrinterName(cfg.cashDrawerPrinterName || '', cfg.receiptPrinterName || ''),
+    pin:         Number(cfg.cashDrawerPin ?? 0),
+    networkHost: cfg.cashDrawerNetworkHost || '',
+    networkPort: Number(cfg.cashDrawerNetworkPort || 9100),
+    serialPort:  cfg.cashDrawerSerialPort || 'COM1',
+  };
+}
+
 async function submitGavetaOpen() {
   let motivo = _gavetaMotivoSelected;
   if (motivo === 'Otro') {
@@ -7575,23 +7648,24 @@ async function submitGavetaOpen() {
   }
   if (!motivo) { showToast('Seleccione un motivo.', 'warning'); return; }
 
+  if (!window.novaDesktop?.openCashDrawer) {
+    showToast('La gaveta solo se puede abrir desde la app de escritorio de esta caja.', 'warning');
+    return;
+  }
+  const drawerConfig = getCashDrawerOpenConfig();
+  if (!drawerConfig) {
+    showToast('Esta caja no tiene gaveta configurada. Actívala en Configuración → Periféricos → Gaveta.', 'warning');
+    return;
+  }
+
   const confirmBtn = document.getElementById('btn-gaveta-confirm');
   if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Abriendo...'; }
 
   try {
-    // Abrir gaveta física
-    if (window.novaDesktop?.openCashDrawer && DB.config.cashDrawerEnabled) {
-      const cfg = {
-        method:      DB.config.cashDrawerMethod      || 'escpos',
-        printerName: DB.config.cashDrawerPrinterName || DB.config.receiptPrinterName || '',
-        pin:         Number(DB.config.cashDrawerPin  ?? 0),
-        networkHost: DB.config.cashDrawerNetworkHost || '',
-        networkPort: Number(DB.config.cashDrawerNetworkPort || 9100),
-        serialPort:  DB.config.cashDrawerSerialPort  || 'COM1',
-      };
-      window.novaDesktop.openCashDrawer(cfg).catch(err =>
-        console.warn('[gaveta] No se pudo abrir físicamente:', err?.message)
-      );
+    // Abrir gaveta física; si no abre, no se registra una apertura que no pasó.
+    const opened = await window.novaDesktop.openCashDrawer(drawerConfig).catch((err) => ({ ok: false, error: err?.message }));
+    if (!opened?.ok) {
+      throw new Error(`No se pudo abrir la gaveta: ${opened?.error || 'revisa la impresora y el cable de la gaveta.'}`);
     }
 
     // Registrar en servidor
@@ -7617,7 +7691,7 @@ async function submitGavetaOpen() {
   } catch (err) {
     showToast(err.message || 'Error al registrar apertura de gaveta.', 'error');
   } finally {
-    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = '💵 Abrir Gaveta'; }
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Abrir Gaveta'; }
   }
 }
 
@@ -8553,6 +8627,7 @@ function syncCajaState() {
   DB.config.cajaAbierta = cajaAbierta;
   DB.caja = { ...DB.caja, abierta: cajaAbierta };
   if (!cajaAbierta) DB.config.cajaMonto = 0;
+  window.TcShell?.syncCaja();
 
   statusText.textContent = cajaAbierta ? appText('cash.open', 'Caja Abierta') : appText('cash.closed', 'Caja Cerrada');
   if (identity) {
@@ -8561,7 +8636,8 @@ function syncCajaState() {
   cajaMontoEl.textContent = fmt(DB.config.cajaMonto);
   const canOpenClose = currentUserCan('abrir_caja') || currentUserCan('cerrar_caja');
   btn.textContent = cajaAbierta ? appText('cash.closeAction', 'Cerrar Caja') : appText('cash.openAction', 'Abrir Caja');
-  btn.style.background = cajaAbierta ? 'var(--danger)' : '';
+  btn.classList.toggle('btn-danger', cajaAbierta);
+  btn.classList.toggle('btn-primary', !cajaAbierta);
   btn.disabled = !canOpenClose;
   if (!canOpenClose) {
     btn.title = cajaAbierta
@@ -8570,7 +8646,7 @@ function syncCajaState() {
   } else {
     btn.title = '';
   }
-  document.getElementById('caja-status-card').style.borderColor = cajaAbierta ? 'var(--success)' : '';
+  document.getElementById('caja-status-card')?.classList.toggle('is-open', cajaAbierta);
   if (actionHint) {
     actionHint.textContent = cajaAbierta
       ? appText('cash.closeHint', 'Registra el monto final y una observación antes de cerrar.')
@@ -8597,8 +8673,8 @@ function syncCajaState() {
       const openedLabel = formatCajaDateTime(session.openedAt);
       const operativeLabel = formatDateKeyForDisplay(session.operativeDate);
       operativeDateEl.textContent = openedLabel
-        ? `📅 Abierta: ${openedLabel}`
-        : `📅 Fecha operativa: ${operativeLabel}`;
+        ? `Abierta: ${openedLabel}`
+        : `Fecha operativa: ${operativeLabel}`;
       operativeDateEl.style.display = '';
       staleWarningEl.style.display = session.staleWarning ? '' : 'none';
     } else {
@@ -8791,6 +8867,8 @@ function formatDateKeyForDisplay(dateKey) {
 function formatCajaDateTime(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
+  // Formato único del sistema: dd/mm/aaaa hh:mm a. m. (js/fechas.js)
+  if (window.TcFecha?.toDate(value)) return window.TcFecha.formatear(value);
 
   const parsed = value instanceof Date
     ? value
@@ -9559,13 +9637,6 @@ function buildNotifications() {
   return [...notifications, ...recentActivity];
 }
 
-function getNotificationBadgeColor(severity) {
-  if (severity === 'danger') return 'var(--danger)';
-  if (severity === 'warning') return 'var(--warning)';
-  if (severity === 'success') return 'var(--success)';
-  return 'var(--info)';
-}
-
 function updateNotifications() {
   const badge = document.getElementById('notif-badge');
   const body = document.getElementById('notif-panel-body');
@@ -9584,7 +9655,7 @@ function updateNotifications() {
   body.innerHTML = notifications.map((item) => `
     <div class="notif-item">
       <div class="notif-item-title">
-        <span style="color:${getNotificationBadgeColor(item.severity)}">${item.title}</span>
+        <span class="notif-sev notif-sev--${['danger', 'warning', 'success'].includes(item.severity) ? item.severity : 'info'}">${item.title}</span>
         <span class="notif-item-time">${item.time}</span>
       </div>
       <div class="notif-item-text">${item.text}</div>

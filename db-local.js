@@ -412,7 +412,9 @@ async function localQuery(sql, params = []) {
 async function generateOfflineInvoiceId(terminalId) {
   try {
     const lastResult = await localQuery(
-      `SELECT offline_invoice_id FROM pending_sales WHERE terminal_id = ? ORDER BY created_at DESC LIMIT 1`,
+      // created_at tiene resolución de segundos: dos ventas en el mismo
+      // segundo empataban y se repetía el número (#2, #2). rowid desempata.
+      `SELECT offline_invoice_id FROM pending_sales WHERE terminal_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       [terminalId]
     );
 

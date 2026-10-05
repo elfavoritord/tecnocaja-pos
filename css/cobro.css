@@ -1,0 +1,1271 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   COBRAR Y FACTURAR — pantalla completa (js/cobro.js)
+
+   Solo la disposición de la pantalla y sus piezas propias (métodos, teclado,
+   campo de monto, devuelta). Botones, campos, opciones, menús y ventanas
+   salen de css/componentes.css; los colores, de css/tokens.css (día y noche).
+
+   Se monta dentro del modal genérico (#modal-box.billing-modal) porque
+   ventas.js depende de esa clase para atajos y cierre; los selectores con
+   #modal-box / #cobro-shell ganan en especificidad a las reglas
+   .billing-modal heredadas de main.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Contenedor a pantalla completa ─────────────────────────────────────── */
+
+#modal-overlay:has(#cobro-shell) {
+  padding: 0;
+  background: var(--tc-bg);
+  align-items: stretch;
+  justify-content: stretch;
+  backdrop-filter: none;
+}
+
+#modal-box.billing-modal:has(#cobro-shell) {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  max-width: 100vw;
+  height: 100vh;
+  max-height: 100vh;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: var(--tc-bg);
+  /* La columna izquierda baja hasta el borde inferior; la barra de acciones
+     (76px) ocupa el ancho del centro + teclado. */
+  display: grid;
+  grid-template-columns: var(--tc-col-left) minmax(0, 1fr);
+  grid-template-rows: var(--tc-topbar-h) minmax(0, 1fr) var(--tc-bottombar-h);
+  overflow: hidden;
+  animation: none;
+  transform: none;
+  font-family: var(--tc-font);
+  color: var(--tc-text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Barra superior (52px) ──────────────────────────────────────────────── */
+
+#modal-box:has(#cobro-shell) > .modal-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  height: var(--tc-topbar-h);
+  min-height: 0;
+  margin: 0;
+  padding: 0 var(--tc-space-6);
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: 0;
+  background: var(--tc-surface);
+}
+
+#modal-box:has(#cobro-shell) > .modal-header .modal-close {
+  display: none;
+}
+
+#modal-box:has(#cobro-shell) #modal-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+  color: var(--tc-text);
+}
+
+.cobro-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-4);
+  width: 100%;
+  min-width: 0;
+}
+
+.cobro-topbar-title {
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-bold);
+  white-space: nowrap;
+}
+
+.cobro-topbar-doc {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-medium);
+  color: var(--tc-text-2);
+  white-space: nowrap;
+}
+
+.cobro-topbar-spacer {
+  flex: 1;
+}
+
+/* "Cambios pendientes": aviso (ámbar) */
+.cobro-topbar-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-warning-text);
+  white-space: nowrap;
+}
+
+.cobro-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tc-warning-text);
+}
+
+/* ── Cuerpo: 3 columnas ─────────────────────────────────────────────────── */
+
+#modal-box:has(#cobro-shell) > .modal-body {
+  grid-column: 1 / -1;
+  grid-row: 2 / 4;
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+  background: var(--tc-bg);
+}
+
+#cobro-shell {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: var(--tc-col-left) minmax(0, 1fr) var(--tc-col-right);
+  color: var(--tc-text);
+  font-size: var(--tc-fs-md);
+}
+
+#cobro-shell .cobro-label {
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-text-2);
+  line-height: 1.2;
+}
+
+#cobro-shell .cobro-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-2);
+}
+
+/* "Agregar RNC" en la línea del título: 44px de área táctil sin agrandar la fila */
+#cobro-shell .cobro-label-row .tc-link {
+  margin: -12px 0;
+}
+
+#cobro-shell .cobro-muted {
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--tc-space-2) var(--tc-space-3);
+}
+
+#cobro-shell .cobro-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--tc-space-3);
+}
+
+#cobro-shell .cobro-span-2 {
+  grid-column: span 2;
+}
+
+#cobro-shell .cobro-flat {
+  border-color: transparent;
+  background: transparent;
+  color: var(--tc-text-2);
+}
+
+/* main.css todavía estiliza .pay-method y .quick-amount-btn (del cobro
+   anterior; ventas.js los usa para marcar el activo) con más especificidad
+   que .tc-choice, en especial en modo día ([data-theme="light"] .pay-method
+   .active). Aquí se reafirma el componente, sin el salto al pasar el mouse. */
+#cobro-shell .tc-choice {
+  background: var(--tc-surface);
+  border-color: var(--tc-border);
+  box-shadow: none;
+  color: var(--tc-text);
+  transform: none;
+}
+
+#cobro-shell .tc-choice:hover:not(:disabled):not([aria-disabled="true"]):not(.active):not(.is-active) {
+  background: var(--tc-surface);
+  border-color: var(--tc-border-strong);
+  transform: none;
+}
+
+/* Montos rápidos en gris y "Exacto" en morado suave (imágenes de referencia). */
+#cobro-shell .tc-choice.cobro-quick-btn,
+#cobro-shell .tc-choice.cobro-quick-btn:hover:not(:disabled):not(.active):not(.is-active) {
+  background: var(--tc-surface-2);
+}
+
+#cobro-shell .tc-choice.tc-choice--soft,
+#cobro-shell .tc-choice.tc-choice--soft:hover:not(:disabled):not(.active):not(.is-active) {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-soft-border);
+  color: var(--tc-select-text);
+}
+
+#cobro-shell .tc-choice.tc-choice--soft:hover:not(:disabled):not(.active):not(.is-active) {
+  border-color: var(--tc-select-border);
+}
+
+#cobro-shell .tc-choice.is-selected,
+#cobro-shell .tc-choice.is-active,
+#cobro-shell .tc-choice.active,
+#cobro-shell .tc-choice[aria-pressed="true"] {
+  background: var(--tc-select-bg);
+  border-color: var(--tc-select-border);
+  box-shadow: inset 0 0 0 1px var(--tc-select-border);
+  color: var(--tc-select-text);
+  transform: none;
+}
+
+#cobro-shell .tc-choice:disabled,
+#cobro-shell .tc-choice[aria-disabled="true"],
+#cobro-shell .tc-choice.is-unavailable {
+  background: var(--tc-disabled-bg);
+  border-color: var(--tc-border-soft);
+  box-shadow: none;
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+}
+
+/* ── Columna izquierda ──────────────────────────────────────────────────── */
+
+#cobro-shell .cobro-left {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-4) var(--tc-space-5);
+  background: var(--tc-surface);
+  border-right: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+#cobro-shell .cobro-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Cliente */
+#cobro-shell .cobro-client,
+#cobro-shell .cobro-docs-section {
+  position: relative;
+}
+
+#cobro-shell .cobro-client-row {
+  display: flex;
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-client-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  text-align: left;
+  cursor: pointer;
+}
+
+#cobro-shell .cobro-client-btn:hover {
+  border-color: var(--tc-border-strong);
+}
+
+#cobro-shell .cobro-client-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-client-doc {
+  flex-shrink: 0;
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-client-change {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-primary);
+}
+
+/* Comprobante */
+#cobro-shell .cobro-docs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) 60px;
+  gap: 6px;
+}
+
+#cobro-shell .cobro-doc {
+  height: var(--tc-control-h);
+  padding: 0 2px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+}
+
+#cobro-shell .cobro-doc strong {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1.05;
+}
+
+#cobro-shell .cobro-doc span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.15;
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-doc.is-active span {
+  color: var(--tc-select-text);
+}
+
+#cobro-shell .cobro-fiscal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-fiscal:not(:has(> :not(.tc-hidden):not(.hidden):not([style*="none"]))) {
+  display: none;
+}
+
+#cobro-shell .cobro-ref-fields {
+  flex-direction: column;
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-ref-fields:not([style*="none"]) {
+  display: flex;
+}
+
+#cobro-shell .cobro-ref-results:empty {
+  display: none;
+}
+
+#cobro-shell .cobro-ref-results {
+  max-height: 132px;
+  overflow-y: auto;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-btn);
+  font-size: var(--tc-fs-sm);
+}
+
+#cobro-shell .cobro-ref-results .ncf-ref-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--tc-space-3);
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  cursor: pointer;
+}
+
+#cobro-shell .cobro-ref-results .ncf-ref-item:hover {
+  background: var(--tc-select-bg);
+}
+
+#cobro-shell .cobro-ref-results .ncf-ref-no-results {
+  padding: var(--tc-space-3);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-ref-selected {
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-2);
+  min-height: var(--tc-control-h);
+  padding: 0 0 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-select-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-ref-selected:not([style*="none"]) {
+  display: flex;
+}
+
+/* Tipo de venta */
+#cobro-shell .cobro-segment {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-seg {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-delivery {
+  margin-top: 2px;
+}
+
+/* Productos: lo único con scroll */
+#cobro-shell .cobro-products {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#cobro-shell .cobro-lines {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+}
+
+#cobro-shell .cobro-line {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-height: 38px;
+  padding: 0 var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  font-size: var(--tc-fs-md);
+}
+
+#cobro-shell .cobro-line-qty {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#cobro-shell .cobro-line-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#cobro-shell .cobro-line-total {
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-lines-empty {
+  padding: var(--tc-space-4);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  text-align: center;
+}
+
+#cobro-shell .cobro-left-actions {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-left-actions .tc-btn {
+  padding: 0 var(--tc-space-2);
+}
+
+#cobro-shell .cobro-add-products .tc-icon {
+  color: currentColor;
+}
+
+/* Totales. Un número en cero va en color de texto normal. */
+#cobro-shell .cobro-totals {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#cobro-shell .cobro-totals-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1px var(--tc-space-4);
+}
+
+#cobro-shell .cobro-totals.is-detailed .cobro-totals-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#cobro-shell .cobro-totals-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--tc-space-2);
+  min-width: 0;
+  font-size: var(--tc-fs-sm);
+  line-height: 1.4;
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-totals-row > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#cobro-shell .cobro-totals-row > span:last-child {
+  flex-shrink: 0;
+  color: var(--tc-text);
+}
+
+#cobro-shell .cobro-totals-total {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+  color: var(--tc-text);
+}
+
+/* ── Superposiciones de la columna izquierda ───────────────────────────── */
+
+#cobro-shell .cobro-popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + var(--tc-space-1));
+  z-index: 30;
+}
+
+#cobro-shell .cobro-doc-menu {
+  left: auto;
+  width: 220px;
+}
+
+#cobro-shell .cobro-client-results {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+}
+
+#cobro-shell .cobro-empty {
+  padding: var(--tc-space-3);
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-4);
+  padding: var(--tc-space-4) var(--tc-space-5);
+  background: var(--tc-surface);
+}
+
+#cobro-shell .cobro-sheet.hidden {
+  display: none;
+}
+
+#cobro-shell .cobro-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--tc-fs-lg);
+}
+
+#cobro-shell .cobro-sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--tc-space-2);
+}
+
+/* ── Centro ────────────────────────────────────────────────────────────── */
+
+#cobro-shell .cobro-center {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-4) var(--tc-space-4) calc(var(--tc-bottombar-h) + var(--tc-space-4)) var(--tc-space-6);
+}
+
+/* "Total a pagar": una sola vez, sobre morado suave */
+#cobro-shell .cobro-total-block {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: var(--tc-space-2);
+  padding: var(--tc-space-3) var(--tc-space-6);
+  border: var(--tc-border-w) solid var(--tc-total-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-total-bg);
+}
+
+#cobro-shell .cobro-total-label {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-total-label);
+}
+
+#cobro-shell .cobro-total-amount {
+  display: flex;
+  align-items: baseline;
+  gap: var(--tc-space-3);
+  line-height: 1;
+}
+
+#cobro-shell .cobro-total-cur {
+  font-size: var(--tc-fs-2xl);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-total-label);
+}
+
+#cobro-shell #cobro-total-value {
+  font-size: 56px;
+  font-weight: var(--tc-weight-bold);
+  letter-spacing: -0.01em;
+  color: var(--tc-total-number);
+}
+
+/* Métodos: cuadrícula de 4 columnas, 72px */
+#cobro-shell .cobro-methods {
+  flex-shrink: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: var(--tc-method-h);
+  gap: var(--tc-space-2);
+  margin-bottom: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-method {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  justify-items: start;
+  align-items: center;
+  padding: var(--tc-space-2) var(--tc-space-3);
+  text-align: left;
+}
+
+#cobro-shell .cobro-method-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-method-key {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-medium);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-method.active .cobro-method-key {
+  color: var(--tc-select-text);
+}
+
+#cobro-shell .cobro-method.is-unavailable .cobro-method-key {
+  color: var(--tc-warning-text);
+}
+
+/* ventas.js marca Contra entrega con .pay-method-delivery-hint cuando el
+   pedido no es delivery (al elegirlo cambia solo); main.css le daba un borde
+   de color que aquí no corresponde. El aviso queda en el title del botón. */
+#cobro-shell .cobro-method.pay-method-delivery-hint:not(.active) {
+  border-color: var(--tc-border);
+  box-shadow: none;
+}
+
+/* Panel del método elegido */
+#cobro-shell .cobro-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  overflow: hidden;
+}
+
+/* setPayMethod() (ventas.js) pone display:flex/grid en línea al área
+   activa; aquí solo se ordena el contenido. */
+#cobro-shell .cobro-area {
+  flex-direction: column;
+  gap: var(--tc-space-3) !important;
+  height: 100%;
+  min-height: 0;
+}
+
+#cobro-shell .cobro-area[style*="grid"] {
+  display: flex !important;
+}
+
+#cobro-shell .cobro-field-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+  min-width: 0;
+}
+
+#cobro-shell .cobro-field-head .tc-field-label {
+  flex-shrink: 0;
+}
+
+#cobro-shell .cobro-field-info {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-input-suffix {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-input-suffix > span {
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-input-lg {
+  height: 52px;
+  font-size: var(--tc-fs-2xl);
+  font-weight: var(--tc-weight-semibold);
+  text-align: right;
+}
+
+/* Campo de monto (js/cobro.js: buildAmountField). El <input> real queda
+   transparente encima para recibir clics y foco; lo que se ve es la copia
+   formateada con separadores de miles y un cursor propio. */
+#cobro-shell .cobro-amount {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  min-width: 0;
+  height: 56px;
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  cursor: text;
+}
+
+#cobro-shell .cobro-amount:focus-within {
+  border-color: var(--tc-primary);
+  box-shadow: inset 0 0 0 1px var(--tc-primary);
+}
+
+#cobro-shell .cobro-amount-input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  font-size: var(--tc-fs-md);
+  box-shadow: none;
+  outline: none;
+  cursor: text;
+}
+
+#cobro-shell .cobro-amount-input::selection {
+  background: transparent;
+}
+
+#cobro-shell .cobro-amount-prefix {
+  flex-shrink: 0;
+  font-size: var(--tc-fs-xl);
+  font-weight: var(--tc-weight-medium);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-amount-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-amount-value {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 30px;
+  font-weight: var(--tc-weight-semibold);
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--tc-text);
+}
+
+#cobro-shell .cobro-amount-value.is-placeholder {
+  color: var(--tc-disabled-text);
+}
+
+#cobro-shell .cobro-amount:focus-within .cobro-amount-value::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 0.85em;
+  margin-left: 3px;
+  vertical-align: -0.06em;
+  background: var(--tc-primary);
+  animation: cobro-caret 1s steps(1) infinite;
+}
+
+@keyframes cobro-caret {
+  50% { opacity: 0; }
+}
+
+#cobro-shell .cobro-amount-sm {
+  height: 52px;
+  padding: 0 var(--tc-space-3);
+}
+
+#cobro-shell .cobro-amount-sm .cobro-amount-value {
+  font-size: 24px;
+}
+
+/* Montos rápidos: 48px */
+#cobro-shell .cobro-quick {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: var(--tc-space-2);
+}
+
+#cobro-shell .cobro-quick-btn {
+  height: var(--tc-quick-h);
+  padding: 0 var(--tc-space-2);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-semibold);
+}
+
+/* Devuelta: verde solo si hay devuelta; cero en color de texto normal;
+   faltante en ámbar. */
+#cobro-shell .cobro-change {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-4);
+  min-height: 72px;
+  padding: 0 var(--tc-space-5);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+#cobro-shell .cobro-change-label {
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-change-amount {
+  font-size: var(--tc-fs-amount);
+  font-weight: var(--tc-weight-bold);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+#cobro-shell .cobro-change.cambio-ok {
+  background: var(--tc-success-bg);
+  border-color: var(--tc-success-border);
+  color: var(--tc-success-text);
+}
+
+#cobro-shell .cobro-change.cambio-insuf {
+  background: var(--tc-warning-bg);
+  border-color: var(--tc-warning-border);
+  color: var(--tc-warning-text);
+}
+
+#cobro-shell .cobro-exact-note {
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-mixto-status {
+  align-items: center;
+  justify-content: space-between;
+  min-height: var(--tc-control-h);
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cobro-shell .cobro-mixto-status:not([style*="none"]) {
+  display: flex;
+}
+
+#cobro-shell .cobro-mixto-status strong {
+  font-size: var(--tc-fs-xl);
+}
+
+#cobro-shell .cobro-mixto-pending {
+  background: var(--tc-warning-bg);
+  border-color: var(--tc-warning-border);
+  color: var(--tc-warning-text);
+}
+
+#cobro-shell .cobro-mixto-change {
+  background: var(--tc-success-bg);
+  border-color: var(--tc-success-border);
+  color: var(--tc-success-text);
+}
+
+/* ── Teclado numérico ──────────────────────────────────────────────────── */
+
+#cobro-shell .cobro-keypad {
+  min-height: 0;
+  margin: var(--tc-space-4) var(--tc-space-5) calc(var(--tc-bottombar-h) + var(--tc-space-4)) 0;
+  padding: var(--tc-space-4);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(5, minmax(var(--tc-control-h), 1fr));
+  gap: var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+
+#cobro-shell .cobro-key {
+  min-width: 0;
+  min-height: var(--tc-control-h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-key);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: 34px;
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+  user-select: none;
+}
+
+#cobro-shell .cobro-key-soft {
+  background: var(--tc-surface-key-fn);
+  font-size: var(--tc-fs-xl);
+}
+
+#cobro-shell .cobro-key-wide {
+  grid-column: span 2;
+}
+
+#cobro-shell .cobro-key:active,
+#cobro-shell .cobro-quick-btn:active,
+#cobro-shell .cobro-method:active {
+  background: var(--tc-select-bg);
+}
+
+/* Sin campo donde escribir (Tarjeta, Transferencia o Crédito sin un campo
+   tocado): el teclado se ve apagado. */
+#cobro-shell .cobro-keypad.is-idle .cobro-key {
+  color: var(--tc-disabled-text);
+}
+
+/* ── Barra inferior (76px) ─────────────────────────────────────────────── */
+
+#modal-box:has(#cobro-shell) > .modal-footer {
+  grid-column: 2;
+  grid-row: 3;
+  z-index: 2;
+  height: var(--tc-bottombar-h);
+  min-height: 0;
+  margin: 0;
+  padding: 0 var(--tc-space-4) 0 var(--tc-space-5);
+  display: flex;
+  align-items: center;
+  border: 0;
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: 0;
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+#modal-box:has(#cobro-shell) .cobro-footer {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--tc-space-3);
+  width: 100%;
+}
+
+#modal-box:has(#cobro-shell) .cobro-footer-group {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  min-width: 0;
+}
+
+#modal-box:has(#cobro-shell) .cobro-footer-charge {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+#modal-box:has(#cobro-shell) .cobro-footer .tc-btn {
+  padding: 0 14px;
+}
+
+#modal-box:has(#cobro-shell) .cobro-footer .cobro-btn-print {
+  padding: 0 var(--tc-space-4);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+}
+
+/* Aviso de validación: una línea sobre los botones de cobrar */
+#modal-box:has(#cobro-shell) .cobro-validation {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 18px;
+  color: var(--tc-warning-text);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  line-height: 18px;
+}
+
+#modal-box:has(#cobro-shell) .cobro-validation > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#modal-box:has(#cobro-shell) .cobro-validation.is-empty {
+  visibility: hidden;
+}
+
+/* ── Otros elementos sobre la pantalla ─────────────────────────────────── */
+
+/* Autocompletado de RNC (js/rnc-lookup.js lo cuelga de <body>) */
+body:has(#modal-overlay:not(.hidden) #cobro-shell) .rnc-dropdown {
+  padding: var(--tc-space-1);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  box-shadow: none;
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+}
+
+body:has(#modal-overlay:not(.hidden) #cobro-shell) .rnc-dropdown-item {
+  min-height: var(--tc-control-h);
+  border-radius: var(--tc-radius-btn);
+  color: var(--tc-text);
+}
+
+body:has(#modal-overlay:not(.hidden) #cobro-shell) .rnc-dropdown-item:hover {
+  background: var(--tc-select-bg);
+}
+
+body:has(#modal-overlay:not(.hidden) #cobro-shell) .rnc-dd-name {
+  color: var(--tc-text);
+}
+
+body:has(#modal-overlay:not(.hidden) #cobro-shell) .rnc-dd-id {
+  color: var(--tc-text-2);
+}
+
+/* El asistente flotante tapaba "Total" y "Cancelar" durante el cobro (en la
+   fase de la barra superior pasa a ser un botón fijo de la barra). */
+body:has(#modal-overlay:not(.hidden) #cobro-shell) #assistant-float,
+body:has(#modal-overlay:not(.hidden) #cobro-shell) #assistant-panel {
+  display: none !important;
+}
+
+/* ── Alturas ───────────────────────────────────────────────────────────── */
+
+@media (min-height: 760px) {
+  #cobro-shell .cobro-total-block {
+    padding: var(--tc-space-4) var(--tc-space-6);
+  }
+
+  #cobro-shell #cobro-total-value {
+    font-size: var(--tc-fs-display);
+  }
+
+  #cobro-shell .cobro-line {
+    min-height: 40px;
+  }
+}
+
+/* 1366×768 con barra de tareas deja ~697px y 1920×1080 al 150% ~690px:
+   se compacta para que nada necesite scroll. */
+@media (max-height: 740px) {
+  #cobro-shell .cobro-left {
+    gap: 10px;
+    padding-top: var(--tc-space-3);
+    padding-bottom: var(--tc-space-3);
+  }
+
+  #cobro-shell #cobro-total-value {
+    font-size: 48px;
+  }
+
+  #cobro-shell .cobro-total-block {
+    padding: var(--tc-space-2) var(--tc-space-5);
+  }
+
+  #cobro-shell .cobro-panel {
+    padding: var(--tc-space-3);
+  }
+
+  #cobro-shell .cobro-area {
+    gap: var(--tc-space-2) !important;
+  }
+
+  #cobro-shell .cobro-amount {
+    height: 52px;
+  }
+
+  #cobro-shell .cobro-amount-value {
+    font-size: 28px;
+  }
+
+  #cobro-shell .cobro-change {
+    min-height: 60px;
+  }
+
+  #cobro-shell .cobro-change-amount {
+    font-size: 34px;
+  }
+}
+
+/* ── Anchos ────────────────────────────────────────────────────────────── */
+
+/* Menos de 1366px: la barra de acciones ocupa todo el ancho (los 5 botones
+   no caben en el espacio del centro + teclado). */
+@media (max-width: 1365px) {
+  #modal-box:has(#cobro-shell) > .modal-footer {
+    grid-column: 1 / -1;
+  }
+
+  #cobro-shell .cobro-left {
+    padding-bottom: calc(var(--tc-bottombar-h) + var(--tc-space-3));
+  }
+}
+
+/* Compacto (menos de 1280px): columnas laterales más angostas (tokens.css) */
+@media (max-width: 1279px) {
+  #cobro-shell .cobro-left {
+    padding-left: var(--tc-space-4);
+    padding-right: var(--tc-space-4);
+  }
+
+  #cobro-shell .cobro-center {
+    padding-left: var(--tc-space-4);
+    padding-right: var(--tc-space-3);
+  }
+
+  #cobro-shell .cobro-methods {
+    gap: 6px;
+  }
+
+  #cobro-shell .cobro-method {
+    padding: var(--tc-space-2) 7px;
+  }
+
+  #cobro-shell .cobro-method-name {
+    font-size: 13px;
+  }
+
+  /* Dos líneas si hace falta: a 320px "Agregar productos" no cabe en una */
+  #cobro-shell .cobro-left-actions .tc-btn {
+    gap: var(--tc-space-1);
+    font-size: var(--tc-fs-sm);
+    line-height: 1.1;
+    white-space: normal;
+    text-align: left;
+  }
+
+  #cobro-shell .cobro-docs {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) 48px;
+    gap: 4px;
+  }
+
+  #cobro-shell .cobro-totals-prefix {
+    display: none;
+  }
+
+  #cobro-shell .cobro-keypad {
+    margin-right: var(--tc-space-3);
+    padding: var(--tc-space-3);
+    gap: var(--tc-space-2);
+  }
+
+  #cobro-shell .cobro-key {
+    font-size: 28px;
+  }
+
+  #cobro-shell #cobro-total-value {
+    font-size: 48px;
+  }
+}
+
+/* Montos en peso 500: en Barlow 400 a 16px el punto decimal se ve como una
+   coma en pantallas sin escala (2,600.00 parecía 2,600,00). */
+#cobro-shell .cobro-totals-row:not(.cobro-totals-total) > span:last-child,
+#cobro-shell .cobro-line-qty {
+  font-weight: var(--tc-weight-medium);
+}

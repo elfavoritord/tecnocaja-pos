@@ -51,7 +51,41 @@
     return dot;
   }
 
+  // Con la barra superior nueva, el estado va ahí (#topbar-conexion) y solo
+  // cuando hay algo que avisar: sin conexión, sincronizando o error. Los
+  // colores salen de css/shell.css según data-state.
+  function renderInTopbar(slot, estado, extraInfo) {
+    const cfg = ESTADOS[estado] || ESTADOS.online;
+    // 'offline' lo muestra el botón de estado (js/sync-monitor.js) con el
+    // motivo exacto: servidor local no disponible o modo contingencia. Aquí
+    // solo se avisa la subida de ventas de contingencia (sincronizando/error).
+    const quiet = estado === 'online' || estado === 'synced' || estado === 'offline';
+    const pendingCount = extraInfo?.pendingCount || 0;
+    const pendingText = pendingCount > 0
+      ? ` · ${pendingCount} venta${pendingCount !== 1 ? 's' : ''} pendiente${pendingCount !== 1 ? 's' : ''}`
+      : '';
+    const errorText = extraInfo?.error ? ` · ${String(extraInfo.error).slice(0, 60)}` : '';
+    slot.dataset.state = estado;
+    slot.classList.toggle('hidden', quiet);
+    slot.innerHTML = '<span class="topbar-dot" aria-hidden="true"></span><span></span>';
+    slot.lastChild.textContent = estado === 'syncing' ? 'Subiendo ventas de contingencia…' : cfg.label;
+    slot.title = `${cfg.label}${pendingText}${errorText}`;
+    if (!slot.dataset.bound) {
+      slot.dataset.bound = '1';
+      slot.style.cursor = 'pointer';
+      slot.addEventListener('click', () => {
+        if (window.offlinePendingPanel) window.offlinePendingPanel.open();
+      });
+    }
+    document.getElementById(DOT_ID)?.remove();
+  }
+
   function render(estado, extraInfo) {
+    const slot = document.getElementById('topbar-conexion');
+    if (slot) {
+      renderInTopbar(slot, estado, extraInfo);
+      return;
+    }
     const cfg = ESTADOS[estado] || ESTADOS.online;
     const dot = getDot();
     dot.style.background = cfg.color;
@@ -97,12 +131,20 @@
 
     const manager = window.offlineManager;
 
+    // Al cambiar el estado del servidor, el botón de estado se actualiza al
+    // instante (sin esperar su ciclo de 15 s).
+    const refreshBadge = () => {
+      if (typeof window._updateSyncBadge === 'function') window._updateSyncBadge();
+    };
+
     manager.on('offline', (state) => {
       show('offline', { pendingCount: state.pendingSalesCount || 0 });
+      refreshBadge();
     });
 
     manager.on('online', () => {
       show('online');
+      refreshBadge();
     });
 
     manager.on('syncStart', () => {

@@ -18,6 +18,31 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('../services/promotion-engine');
+const { normalizeClientRequestId, isDuplicateClientRequestError } = require('../sales/sale-idempotency');
+
+// Una venta de contingencia que ya entró a la base principal (por otra
+// sincronización o porque la venta en línea sí se guardó antes de cortarse la
+// red) no se vuelve a insertar: se marca como sincronizada.
+function alreadySyncedError(detail) {
+  const error = new Error(`Venta ya registrada en la base principal (${detail}).`);
+  error.alreadySynced = true;
+  return error;
+}
+
+function isUniqueViolation(error) {
+  const text = [error?.code, error?.message].filter(Boolean).join(' ');
+  return /ER_DUP_ENTRY|Duplicate entry|UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(text);
+}
+
+// Fallo de red o de base al subir algo de contingencia (la principal se apagó
+// o se cortó la LAN en plena sincronización). Eso vuelve solo a la cola; un
+// error de datos (producto inexistente, JSON dañado) queda para revisión.
+// Reintentar no duplica: offline_sync_map se escribe en la misma transacción.
+const TRANSIENT_SYNC_ERROR = /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ECONNRESET|EPIPE|PROTOCOL_CONNECTION_LOST|ER_LOCK|ER_CHECKREAD|deadlock|Lock wait|Record has changed|getaddrinfo|socket|connection|Pool is closed|Too many connections|timeout/i;
+
+function isTransientSyncError(message) {
+  return TRANSIENT_SYNC_ERROR.test(String(message || ''));
+}
 
 /**
  * @param {object} deps - Dependencias inyectadas desde server.js
@@ -68,8 +93,12 @@ module.exports = function createOfflineRouter(deps) {
     ensurePromotionsExtensions,
     // Asignación real de NCF al sincronizar (mismo helper que POST /api/sales online)
     getNextNcfFromSequence,
-    isInvoiceNumberCollisionError
+    isInvoiceNumberCollisionError,
+    // Asegura sales.client_request_id (server/sales/sale-idempotency.js)
+    ensureSaleIdempotencySchema
   } = deps;
+
+  let _offlineSyncMapReady = false;
 
   const router = express.Router();
 
@@ -1316,7 +1345,42 @@ module.exports = function createOfflineRouter(deps) {
   // ─── POST /api/offline/sync-pending ──────────────────────────────────────────
   // Implementación real de la sincronización offline → principal.
   // Lee pending_sales del SQLite local y los inserta en la BD principal (MySQL).
+  // Antes de cada subida, lo que quedó a medias vuelve a la cola:
+  //  · 'syncing': se cerró Tecno Caja o se cortó la red en plena subida
+  //    (antes esas ventas quedaban así para siempre y nunca llegaban).
+  //  · 'error' de red/base: la principal se cayó durante la subida.
+  async function _requeueInterruptedSync() {
+    await localQuery(`UPDATE pending_sales SET status = 'pending' WHERE status = 'syncing'`).catch(() => {});
+    await localQuery(`UPDATE pending_product_changes SET status = 'pending' WHERE status = 'syncing'`).catch(() => {});
+    const failedSales = await localQuery(`SELECT id, error_message FROM pending_sales WHERE status = 'error'`).catch(() => []);
+    for (const row of failedSales || []) {
+      if (!isTransientSyncError(row.error_message)) continue;
+      await localQuery(`UPDATE pending_sales SET status = 'pending', error_message = NULL WHERE id = ?`, [row.id]).catch(() => {});
+    }
+    const failedProducts = await localQuery(`SELECT id, error_message FROM pending_product_changes WHERE status = 'error'`).catch(() => []);
+    for (const row of failedProducts || []) {
+      if (!isTransientSyncError(row.error_message)) continue;
+      await localQuery(`UPDATE pending_product_changes SET status = 'pending', error_message = NULL WHERE id = ?`, [row.id]).catch(() => {});
+    }
+  }
+
+  // Una sola subida a la vez: el reintento automático (cada minuto) y el
+  // botón "Sincronizar" pueden coincidir.
+  let _syncPendingRunning = false;
   router.post('/sync-pending', async (req, res) => {
+    if (_syncPendingRunning) {
+      return res.json({ ok: true, busy: true, synced: 0, failed: 0, skipped: 0, message: 'Ya hay una sincronización en curso.' });
+    }
+    _syncPendingRunning = true;
+    try {
+      await _requeueInterruptedSync();
+      return await _handleSyncPending(req, res);
+    } finally {
+      _syncPendingRunning = false;
+    }
+  });
+
+  async function _handleSyncPending(req, res) {
     const tc = getTerminalConfig() || {};
     const terminalId = tc.terminalId || 'default';
     const results = { synced: 0, failed: 0, skipped: 0, errors: [] };
@@ -1416,6 +1480,15 @@ module.exports = function createOfflineRouter(deps) {
           results.synced++;
           console.log(`[offline/sync] Sincronizada: ${ps.offline_invoice_id} → ${realInvoiceId}`);
         } catch (saleErr) {
+          if (saleErr.alreadySynced) {
+            await localQuery(
+              `UPDATE pending_sales SET status = 'synced', synced_at = datetime('now') WHERE id = ?`,
+              [ps.id]
+            );
+            results.skipped++;
+            console.warn(`[offline/sync] ${ps.offline_invoice_id}: ${saleErr.message} No se duplicó.`);
+            continue;
+          }
           console.error(`[offline/sync] Error en ${ps.offline_invoice_id}:`, saleErr.message);
           await localQuery(
             `UPDATE pending_sales SET status = 'error', error_message = ? WHERE id = ?`,
@@ -1458,7 +1531,7 @@ module.exports = function createOfflineRouter(deps) {
       await logSyncEvent(terminalId, 'full', results.synced, 0, 'error', err.message);
       return res.status(500).json({ error: 'Error en sincronización', details: err.message, ...results });
     }
-  });
+  }
 
   // ─── POST /api/offline/cancel-pending ────────────────────────────────────────
   router.post('/cancel-pending', async (req, res) => {
@@ -1711,7 +1784,43 @@ module.exports = function createOfflineRouter(deps) {
       extraNotes = ' [ADVERTENCIA: se pidió e-CF durante desconexión — no se puede emitir e-CF sin internet; quedó como ticket, revisar y refacturar manualmente si aplica.]';
     }
 
+    if (typeof ensureSaleIdempotencySchema === 'function') {
+      await ensureSaleIdempotencySchema().catch(() => {});
+    }
+    // La tabla de deduplicación debe existir en la principal (antes un fallo
+    // aquí se ignoraba en silencio y no había deduplicación).
+    if (!_offlineSyncMapReady) {
+      await query(`CREATE TABLE IF NOT EXISTS offline_sync_map (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        offline_id VARCHAR(80) NOT NULL UNIQUE,
+        real_invoice_id VARCHAR(40) DEFAULT NULL,
+        terminal_id VARCHAR(40) NOT NULL,
+        branch_id INTEGER NOT NULL,
+        cash_register_id INTEGER NOT NULL,
+        synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`).catch(() => {});
+      _offlineSyncMapReady = true;
+    }
+
     const result = await withTransaction(async (conn) => {
+      // Lock del contador de facturas antes de leer nada, igual que
+      // POST /api/sales: así stock y NCF se leen ya con lo último que
+      // confirmaron las cajas que siguen vendiendo en línea.
+      await conn.query('UPDATE config SET invoice_next_number = invoice_next_number WHERE id = 1');
+      // Deduplicación dentro de ESTA transacción: antes el mapa se escribía
+      // después, aparte; si la red se cortaba entre la venta y el mapa, el
+      // siguiente reintento volvía a insertar la venta (duplicado).
+      try {
+        await conn.query(
+          `INSERT INTO offline_sync_map (offline_id, real_invoice_id, terminal_id, branch_id, cash_register_id)
+           VALUES (?, NULL, ?, ?, ?)`,
+          [pendingSale.offline_invoice_id, String(pendingSale.terminal_id || tc.terminalId || 'terminal'), branchId, cashRegisterId]
+        );
+      } catch (mapError) {
+        if (isUniqueViolation(mapError)) throw alreadySyncedError(pendingSale.offline_invoice_id);
+        throw mapError;
+      }
+
       const configRows = await conn.query('SELECT * FROM config WHERE id = 1 LIMIT 1');
       const config = configRows[0] || {};
 
@@ -1823,6 +1932,19 @@ module.exports = function createOfflineRouter(deps) {
       }
 
       const saleId = insertResult?.insertId;
+
+      await conn.query('UPDATE offline_sync_map SET real_invoice_id = ? WHERE offline_id = ?', [invoiceNumber, pendingSale.offline_invoice_id]);
+      // Si esta misma venta ya había entrado en línea (mismo intento de cobro),
+      // el índice único lo detecta y la transacción se deshace completa.
+      const clientRequestId = normalizeClientRequestId(saleData.clientRequestId);
+      if (clientRequestId) {
+        try {
+          await conn.query('UPDATE sales SET client_request_id = ? WHERE id = ?', [clientRequestId, saleId]);
+        } catch (dupError) {
+          if (isDuplicateClientRequestError(dupError)) throw alreadySyncedError(clientRequestId);
+          throw dupError;
+        }
+      }
 
       // Insertar items y descontar inventario POR SUCURSAL (antes descontaba
       // la columna global products.stock, que no es la fuente de verdad en
@@ -2395,3 +2517,5 @@ module.exports = function createOfflineRouter(deps) {
 
   return router;
 };
+
+module.exports.isTransientSyncError = isTransientSyncError;

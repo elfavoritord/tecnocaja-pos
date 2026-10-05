@@ -358,13 +358,28 @@ app.get('/api/negocios/:id', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Usuarios de UN negocio. businessKey sale del nombre y lo comparten los
+// negocios que se llaman igual, así que manda la licencia (principalUid); por
+// nombre solo se aceptan documentos viejos que no tienen licencia anotada.
+async function findBusinessUserDocs(licenseId, businessKey) {
+  const byLicense = await col(COL_USUARIOS).where('principalUid', '==', licenseId).get();
+  const docs = new Map(byLicense.docs.map((d) => [d.id, d]));
+  if (businessKey) {
+    const byName = await col(COL_USUARIOS).where('businessKey', '==', businessKey).get();
+    byName.docs.forEach((d) => {
+      const owner = String(d.data().principalUid || d.data().licenseId || '').trim();
+      if (!owner && !docs.has(d.id)) docs.set(d.id, d);
+    });
+  }
+  return [...docs.values()];
+}
+
 app.get('/api/negocios/:id/usuarios', requireAuth, async (req, res) => {
   try {
     const licDoc = await col(COL_LICENCIAS).doc(req.params.id).get();
     if (!licDoc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
     const businessKey = licDoc.data().businessKey || req.params.id;
-    const snap = await col(COL_USUARIOS).where('businessKey', '==', businessKey).get();
-    res.json(snap.docs.map(docData));
+    res.json((await findBusinessUserDocs(req.params.id, businessKey)).map(docData));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -481,7 +496,7 @@ app.delete('/api/negocios/:id', requireAuth, async (req, res) => {
     if (!licDoc.exists) return res.status(404).json({ error: 'Negocio no encontrado.' });
 
     const data = licDoc.data() || {};
-    const db   = admin.firestore();
+    const db   = adminSdk.firestore();
 
     // Guardar copia en papelera ANTES de marcar como eliminado
     const snapshot = { ...data, _papeleraId: id, _papeleraFecha: new Date().toISOString(), _papeleraPor: req.adminUser.email };
@@ -499,7 +514,7 @@ app.delete('/api/negocios/:id', requireAuth, async (req, res) => {
 app.post('/api/negocios/:id/restaurar', requireAuth, async (req, res) => {
   const id = req.params.id;
   try {
-    const db        = admin.firestore();
+    const db        = adminSdk.firestore();
     const trashRef  = db.collection('papelera').doc(id);
     const trashDoc  = await trashRef.get();
     if (!trashDoc.exists) return res.status(404).json({ error: 'No se encontró en la papelera.' });
@@ -522,7 +537,7 @@ app.post('/api/negocios/:id/restaurar', requireAuth, async (req, res) => {
 // Listar papelera
 app.get('/api/papelera', requireAuth, async (req, res) => {
   try {
-    const snap = await admin.firestore().collection('papelera').get();
+    const snap = await adminSdk.firestore().collection('papelera').get();
     res.json(snap.docs.map(d => ({ id: d.id, ...d.data() })));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -531,7 +546,7 @@ app.get('/api/papelera', requireAuth, async (req, res) => {
 app.delete('/api/papelera/:id', requireAuth, async (req, res) => {
   const id = req.params.id;
   try {
-    const db       = admin.firestore();
+    const db       = adminSdk.firestore();
     const trashDoc = await db.collection('papelera').doc(id).get();
     const bKey     = trashDoc.exists ? (trashDoc.data().businessKey || id) : id;
 
@@ -541,13 +556,21 @@ app.delete('/api/papelera/:id', requireAuth, async (req, res) => {
     const licRef = col(COL_LICENCIAS).doc(id);
     if ((await licRef.get()).exists) batch.delete(licRef);
 
-    // Borrar usuarios relacionados
-    const usersSnap = await col(COL_USUARIOS).where('businessKey', '==', bKey).get();
-    usersSnap.docs.forEach(d => batch.delete(d.ref));
+    // Borrar usuarios del negocio (por licencia, no por nombre: otro negocio
+    // con el mismo nombre conserva los suyos)
+    (await findBusinessUserDocs(id, bKey)).forEach(d => batch.delete(d.ref));
 
-    // Borrar businesses
-    const bizRef = db.collection('businesses').doc(bKey);
-    if ((await bizRef.get()).exists) batch.delete(bizRef);
+    // Borrar businesses: el de la licencia y el del nombre solo si ninguna
+    // otra licencia usa ese mismo nombre
+    const bizIds = new Set([id]);
+    if (bKey !== id) {
+      const sameName = await col(COL_LICENCIAS).where('businessKey', '==', bKey).get();
+      if (!sameName.docs.some((d) => d.id !== id)) bizIds.add(bKey);
+    }
+    for (const bizId of bizIds) {
+      const bizRef = db.collection('businesses').doc(bizId);
+      if ((await bizRef.get()).exists) batch.delete(bizRef);
+    }
 
     // Borrar de papelera
     batch.delete(db.collection('papelera').doc(id));
@@ -561,7 +584,7 @@ app.delete('/api/papelera/:id', requireAuth, async (req, res) => {
 // Borrar documentos huérfanos en businesses y usuarios (sin licencia activa)
 app.delete('/api/cleanup/huerfanos', requireAuth, async (req, res) => {
   try {
-    const db = admin.firestore();
+    const db = adminSdk.firestore();
     const licSnap = await col(COL_LICENCIAS).get();
     const licIds = new Set(licSnap.docs.map(d => d.id));
     // Obtener todos los businessKey válidos de las licencias
@@ -583,7 +606,8 @@ app.delete('/api/cleanup/huerfanos', requireAuth, async (req, res) => {
     const usrSnap = await col(COL_USUARIOS).get();
     usrSnap.docs.forEach(d => {
       const bk = d.data().businessKey || d.id;
-      if (!licIds.has(d.id) && !licKeys.has(bk) && !licIds.has(bk)) {
+      const owner = String(d.data().principalUid || d.data().licenseId || '').trim();
+      if (!licIds.has(d.id) && !licIds.has(owner) && !licKeys.has(bk) && !licIds.has(bk)) {
         batch.delete(d.ref);
         deleted++;
       }

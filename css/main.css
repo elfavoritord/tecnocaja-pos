@@ -2470,6 +2470,14 @@ body.is-electron .modal:not(.billing-modal),
 }
 .btn-cobrar:hover { transform:translateY(-2px); box-shadow:0 8px 30px var(--accent-glow); }
 .btn-cobrar:active { transform:translateY(0); }
+/* Sin productos no se puede abrir el cobro (updateTotals en ventas.js). */
+.btn-cobrar:disabled {
+  background: var(--tc-disabled-bg);
+  color: var(--tc-disabled-text);
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
+}
 .btn-cotizar {
   padding:1rem 0.95rem;
   background:linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)), var(--bg3);

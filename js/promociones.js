@@ -64,31 +64,40 @@ function formatPromotionVigencia(p) {
   return `${inicio} → ${fin}`;
 }
 
+// Estado de la promoción: el mismo valor siempre con el mismo color.
+const PROMOTION_STATUS_TAG = { activa: 'tc-tag--success', programada: 'tc-tag--warning', vencida: 'tc-tag--danger' };
+
+function promoIcon(name) {
+  return window.TcIconos ? window.TcIconos.svg(name, 18) : '';
+}
+
 function renderPromotionsTable(promotions) {
   const tbody = document.getElementById('promotions-table-body');
   if (!tbody) return;
   if (!promotions.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:1.5rem">No hay promociones. Crea la primera con "+ Nueva Promoción".</td></tr>';
+    tbody.innerHTML = `<tr class="tc-empty-row"><td colspan="8"><div class="tc-empty">${promoIcon('tag')}<div class="tc-empty-text">No hay promociones todavía.</div><button type="button" class="tc-btn tc-btn--primary" onclick="openPromotionModal()">Nueva promoción</button></div></td></tr>`;
     return;
   }
   tbody.innerHTML = promotions.map((p) => `
     <tr>
-      <td><span class="badge-${p.estado === 'activa' ? 'green' : p.estado === 'programada' ? 'yellow' : p.estado === 'vencida' ? 'red' : 'gray'}" style="font-size:.72rem">${PROMOTION_STATUS_LABELS[p.estado] || p.estado}</span></td>
+      <td><span class="tc-tag ${PROMOTION_STATUS_TAG[p.estado] || ''}">${PROMOTION_STATUS_LABELS[p.estado] || p.estado}</span></td>
       <td>
-        <strong ${p.color ? `style="color:${escapeHtml(p.color)}"` : ''}>${escapeHtml(p.nombre)}</strong>
-        ${p.textoPromocion ? `<div style="font-size:.72rem;color:var(--text3)">${escapeHtml(p.textoPromocion)}</div>` : ''}
-        ${p.tipo === 'descuento_por_cantidad' ? `<div style="font-size:.7rem;color:var(--text3)">🔢 Desde ${p.cantidadMinima || '?'} unidades</div>` : ''}
+        <span class="tc-cell-title">${escapeHtml(p.nombre)}</span>
+        ${p.textoPromocion ? `<span class="tc-cell-sub">${escapeHtml(p.textoPromocion)}</span>` : ''}
+        ${p.tipo === 'descuento_por_cantidad' ? `<span class="tc-cell-sub">Desde ${p.cantidadMinima || '?'} unidades</span>` : ''}
       </td>
-      <td>${escapeHtml(p.productoNombre || '—')}<div style="font-size:.72rem;color:var(--text3);font-family:var(--font-mono)">${escapeHtml(p.productoCodigo || '')}</div></td>
-      <td style="text-decoration:line-through;color:var(--text3)">${fmt(p.precioOriginal || 0)}</td>
-      <td style="font-weight:700;color:var(--success,#22c55e)">${fmt(p.precioPromocion || 0)}</td>
-      <td style="font-size:.78rem">${formatPromotionVigencia(p)}</td>
-      <td>${p.prioridad}</td>
-      <td>
-        <button class="btn-xs btn-secondary" type="button" onclick="openPromotionModal(${p.id})" title="Editar">✏️</button>
-        <button class="btn-xs btn-secondary" type="button" onclick="togglePromotion(${p.id})" title="${p.deshabilitada ? 'Activar' : 'Desactivar'}">${p.deshabilitada ? '▶️' : '⏸️'}</button>
-        <button class="btn-xs btn-secondary" type="button" onclick="viewPromotionAuditLog(${p.id})" title="Historial">🕘</button>
-        <button class="btn-xs btn-danger" type="button" onclick="deletePromotion(${p.id})" title="Eliminar">🗑</button>
+      <td>${escapeHtml(p.productoNombre || '—')}<span class="tc-cell-sub">${escapeHtml(p.productoCodigo || '')}</span></td>
+      <td class="is-num tc-cell-muted tc-cell-strike">${fmt(p.precioOriginal || 0)}</td>
+      <td class="is-num"><strong>${fmt(p.precioPromocion || 0)}</strong></td>
+      <td class="tc-cell-muted">${formatPromotionVigencia(p)}</td>
+      <td class="is-num">${p.prioridad}</td>
+      <td class="is-actions">
+        <div class="tc-row-actions">
+          <button class="tc-btn tc-btn--soft" type="button" onclick="openPromotionModal(${p.id})">Editar</button>
+          <button class="tc-btn tc-btn--icon" type="button" onclick="togglePromotion(${p.id})" title="${p.deshabilitada ? 'Activar' : 'Desactivar'}" aria-label="${p.deshabilitada ? 'Activar' : 'Desactivar'}">${promoIcon(p.deshabilitada ? 'play' : 'pause')}</button>
+          <button class="tc-btn tc-btn--icon" type="button" onclick="viewPromotionAuditLog(${p.id})" title="Historial" aria-label="Historial">${promoIcon('history')}</button>
+          <button class="tc-btn tc-btn--icon tc-row-danger" type="button" onclick="deletePromotion(${p.id})" title="Eliminar" aria-label="Eliminar">${promoIcon('trash-2')}</button>
+        </div>
       </td>
     </tr>
   `).join('');
