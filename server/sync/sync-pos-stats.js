@@ -14,6 +14,7 @@
 const { query } = require('../../db');
 const { mapSequence } = require('../routes/fiscal-sequences.routes');
 const { parseUtcDbDateTime } = require('../licensing/trial-window');
+const { notifyControlCenterChange } = require('./control-center');
 
 const MAX_ROWS = 150;
 
@@ -712,6 +713,9 @@ let _syncInFlight = null;
 let _syncQueuedNext = null;
 
 function syncPosStatsToFirestore() {
+  // Mismos disparadores para el Centro de Control de la app de reportes
+  // (venta, caja, gasto, compra, intervalo). Solo programa: no espera nada.
+  notifyControlCenterChange('portal');
   if (_syncInFlight) {
     if (!_syncQueuedNext) {
       const runNext = () => {

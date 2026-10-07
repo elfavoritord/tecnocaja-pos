@@ -262,6 +262,13 @@ async function syncSale(sale, ctx = {}) {
       tax: toNumber(sale.tax),
       total: toNumber(sale.total),
       paymentMethod: normalizePaymentMethod(sale.payment_method),
+      // Código real del POS (efectivo, tarjeta, usd, contra_entrega…).
+      // paymentMethod sigue normalizado (cash/card/…) para las versiones
+      // viejas de la app; la nueva usa este para no perder métodos.
+      paymentMethodCode: String(sale.payment_method || '').trim() || null,
+      orderType: sale.order_type ? String(sale.order_type) : null,
+      documentType: sale.document_type ? String(sale.document_type) : null,
+      ncf: sale.ncf ? String(sale.ncf) : null,
       status: saleStatus,
       invoiceNumber: String(sale.invoice_number || ''),
       invoiceType: normalizeInvoiceType(sale.document_type),

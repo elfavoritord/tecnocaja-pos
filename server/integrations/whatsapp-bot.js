@@ -45,8 +45,23 @@ let _updateClientPhone   = null;
 let _updateClientJid     = null;
 let _getClientById       = null;
 
-const SESSION_DIR = path.join(process.cwd(), '.wwebjs_auth_pos', 'session-tecno-caja-pos-bot');
-const PID_FILE    = path.join(process.cwd(), '.wwebjs_auth_pos', 'chrome.pid');
+// Carpeta de la sesión de WhatsApp (LocalAuth) y del caché de la versión web.
+// Antes colgaba siempre de process.cwd(): en la app instalada eso es la
+// carpeta del programa, que en una instalación "para todos los usuarios"
+// (Program Files) no se puede escribir, y el bot no arrancaba. Ahora va en los
+// datos del usuario (TECNO_CAJA_USER_DATA). Una PC que ya tenía la sesión en
+// la ruta vieja la sigue usando, para no pedir escanear el QR otra vez.
+function resolveBotDataDir() {
+  const legacyDir = path.join(process.cwd(), '.wwebjs_auth_pos');
+  const userDataDir = String(process.env.TECNO_CAJA_USER_DATA || '').trim();
+  if (!userDataDir) return legacyDir;
+  if (fs.existsSync(path.join(legacyDir, 'session-tecno-caja-pos-bot'))) return legacyDir;
+  return path.join(userDataDir, '.wwebjs_auth_pos');
+}
+
+const BOT_DATA_DIR = resolveBotDataDir();
+const SESSION_DIR = path.join(BOT_DATA_DIR, 'session-tecno-caja-pos-bot');
+const PID_FILE    = path.join(BOT_DATA_DIR, 'chrome.pid');
 const LOCK_FILE   = path.join(SESSION_DIR, 'lockfile');
 const SINGLETON   = path.join(SESSION_DIR, 'SingletonLock');
 
@@ -94,7 +109,12 @@ async function setGoogleTokens(tokens) {
   if (_db && tokens) {
     try {
       const enc = Buffer.from(JSON.stringify(tokens)).toString('base64');
-      await _db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_google_tokens',?) ON DUPLICATE KEY UPDATE config_value=?`, [enc, enc]);
+      // Dialecto SQLite (monocaja); db.js lo traduce a MariaDB.
+      await _db(
+        `INSERT INTO offline_cache_config (config_key, config_value) VALUES ('wabot_google_tokens', ?)
+         ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value`,
+        [enc]
+      );
     } catch {}
   }
 }
@@ -107,6 +127,7 @@ const state = {
   ownerJids:   [],          // JIDs autorizados (principal + secundario)
   ownerPhone:  null,
   ownerPhone2: null,
+  lastError:   null,        // por qué no arrancó (se muestra en el panel del bot)
   messages:    [],          // últimos 30 mensajes {dir, text, ts}
 };
 const historial = [];       // historial de conversacion del dueno
@@ -191,6 +212,7 @@ function getSafeState() {
     ownerPhone:  state.ownerPhone,
     ownerPhone2: state.ownerPhone2,
     qrDataUrl:   state.status === 'qr' ? state.qrDataUrl : null,
+    lastError:   state.lastError,
     messages:    state.messages,
   };
 }
@@ -213,33 +235,83 @@ async function getActivePromotionsMap() {
   }
 }
 
-// ── Datos del negocio (lee de MariaDB — fuente de verdad) ─────────────────────
+// ── Fechas de corte para las consultas del dueño ──────────────────────────────
+// Se calculan aquí (hora local de la PC, igual que CURDATE() de MariaDB) y van
+// como parámetros: CURDATE(), NOW(), DATE_SUB(), DATE_FORMAT(), HOUR() y
+// TIMESTAMPDIFF() solo existen en MariaDB, y en una instalación monocaja
+// (SQLite) la consulta entera fallaba → el bot contestaba "Sin conexión a
+// datos del POS".
+function businessDateKeys(now = new Date()) {
+  const today = dateKey(now);
+  return {
+    today,
+    yesterday: dateKey(addDays(now, -1)),
+    monthStart: `${today.slice(0, 7)}-01`,
+    prevMonthStart: dateKey(new Date(now.getFullYear(), now.getMonth() - 1, 1)),
+    last30: dateKey(addDays(now, -30)),
+    weekStart: dateKey(addDays(now, -((now.getDay() + 6) % 7))), // lunes de esta semana
+  };
+}
+
+// Cambia :today, :monthStart, etc. por "?" y arma los parámetros en orden.
+function bindDateKeys(sql, keys) {
+  const params = [];
+  const text = sql.replace(/:(today|yesterday|monthStart|prevMonthStart|last30|weekStart)\b/g, (_match, key) => {
+    params.push(keys[key]);
+    return '?';
+  });
+  return [text, params];
+}
+
+// "YYYY-MM-DD HH:MM:SS" (SQLite) o Date (MariaDB) → Date en hora local.
+function parseLocalDateTime(value) {
+  if (value instanceof Date) return value;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || '').trim());
+  if (match) {
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+      Number(match[4]), Number(match[5]), Number(match[6] || 0));
+  }
+  return new Date(value);
+}
+
+function minutesSince(value, now = new Date()) {
+  if (!value) return null;
+  const date = parseLocalDateTime(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return Math.max(0, Math.floor((now.getTime() - date.getTime()) / 60000));
+}
+
+// ── Datos del negocio (lee de la BD local — fuente de verdad) ─────────────────
 async function getBusinessData(msg = '') {
   if (!_db) return null;
-  const q = (sql, p) => _db(sql, p);
+  const keys = businessDateKeys();
+  const q = (sql, p = []) => {
+    const [text, dateParams] = bindDateKeys(sql, keys);
+    return _db(text, [...dateParams, ...p]);
+  };
 
   try {
     const [[stats]] = await Promise.all([q(`
       SELECT
         /* ── Hoy ── */
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE()),0)                               AS ventas_hoy,
-        COALESCE((SELECT COUNT(*) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE()),0)                                AS facturas_hoy,
-        COALESCE((SELECT SUM(tax) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE()),0)                               AS itbis_hoy,
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE() AND payment_method='efectivo'),0)     AS efectivo_hoy,
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE() AND payment_method='tarjeta'),0)      AS tarjeta_hoy,
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE() AND payment_method='transferencia'),0) AS transferencia_hoy,
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE() AND payment_method='credito'),0)      AS credito_hoy,
-        COALESCE((SELECT COUNT(*) FROM sales WHERE DATE(created_at)=CURDATE() AND (sale_status='cancelada' OR fiscal_status='cancelada')),0)                                                 AS canceladas_hoy,
-        TIMESTAMPDIFF(MINUTE,(SELECT MAX(created_at) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=CURDATE()),NOW())         AS mins_ultima_venta,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today),0)                               AS ventas_hoy,
+        COALESCE((SELECT COUNT(*) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today),0)                                AS facturas_hoy,
+        COALESCE((SELECT SUM(tax) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today),0)                               AS itbis_hoy,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today AND payment_method='efectivo'),0)     AS efectivo_hoy,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today AND payment_method='tarjeta'),0)      AS tarjeta_hoy,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today AND payment_method='transferencia'),0) AS transferencia_hoy,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today AND payment_method='credito'),0)      AS credito_hoy,
+        COALESCE((SELECT COUNT(*) FROM sales WHERE DATE(created_at)=:today AND (sale_status='cancelada' OR fiscal_status='cancelada')),0)                                                 AS canceladas_hoy,
+        (SELECT MAX(created_at) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:today)                                     AS ultima_venta_at,
         /* ── Ayer ── */
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=DATE_SUB(CURDATE(),INTERVAL 1 DAY)),0)    AS ventas_ayer,
-        COALESCE((SELECT COUNT(*) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=DATE_SUB(CURDATE(),INTERVAL 1 DAY)),0)      AS facturas_ayer,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:yesterday),0)    AS ventas_ayer,
+        COALESCE((SELECT COUNT(*) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)=:yesterday),0)      AS facturas_ayer,
         /* ── Mes ── */
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=DATE_FORMAT(CURDATE(),'%Y-%m-01')),0)    AS ventas_mes,
-        COALESCE((SELECT COUNT(*) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=DATE_FORMAT(CURDATE(),'%Y-%m-01')),0)      AS facturas_mes,
-        COALESCE((SELECT SUM(tax) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=DATE_FORMAT(CURDATE(),'%Y-%m-01')),0)      AS itbis_mes,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=:monthStart),0)    AS ventas_mes,
+        COALESCE((SELECT COUNT(*) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=:monthStart),0)      AS facturas_mes,
+        COALESCE((SELECT SUM(tax) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=:monthStart),0)      AS itbis_mes,
         /* ── Mes anterior ── */
-        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=DATE_FORMAT(DATE_SUB(CURDATE(),INTERVAL 1 MONTH),'%Y-%m-01') AND DATE(created_at)<DATE_FORMAT(CURDATE(),'%Y-%m-01')),0) AS ventas_mes_anterior,
+        COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=:prevMonthStart AND DATE(created_at)<:monthStart),0) AS ventas_mes_anterior,
         /* ── Inventario ── */
         (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo')                                                                                                                         AS productos_activos,
         (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo' AND stock_min>0 AND stock<=stock_min)                                                                                    AS bajo_stock,
@@ -254,10 +326,11 @@ async function getBusinessData(msg = '') {
     `)]);
 
     // ── Métricas calculadas ────────────────────────────────────────────────
-    const ultimaVenta = stats.mins_ultima_venta !== null
-      ? (stats.mins_ultima_venta < 1 ? 'hace menos de 1 min'
-        : stats.mins_ultima_venta < 60 ? `hace ${stats.mins_ultima_venta} min`
-        : `hace ${Math.round(stats.mins_ultima_venta / 60)}h`)
+    const minsUltimaVenta = minutesSince(stats.ultima_venta_at);
+    const ultimaVenta = minsUltimaVenta !== null
+      ? (minsUltimaVenta < 1 ? 'hace menos de 1 min'
+        : minsUltimaVenta < 60 ? `hace ${minsUltimaVenta} min`
+        : `hace ${Math.round(minsUltimaVenta / 60)}h`)
       : 'sin ventas hoy';
 
     const pctVsAyer = stats.ventas_ayer > 0
@@ -286,7 +359,7 @@ async function getBusinessData(msg = '') {
         SELECT p.nombre, COALESCE(SUM(si.qty),0) AS vendidos, COALESCE(SUM(si.line_total),0) AS total_vendido
         FROM products p
         LEFT JOIN sale_items si ON si.product_id=p.id
-        LEFT JOIN sales s ON si.sale_id=s.id AND s.sale_status='pagada' AND DATE(s.created_at)>=DATE_SUB(CURDATE(),INTERVAL 30 DAY)
+        LEFT JOIN sales s ON si.sale_id=s.id AND s.sale_status='pagada' AND DATE(s.created_at)>=:last30
         WHERE LOWER(p.estado)='activo'
         GROUP BY p.id ORDER BY vendidos DESC LIMIT 5`);
     }
@@ -295,7 +368,7 @@ async function getBusinessData(msg = '') {
         SELECT p.nombre, COALESCE(SUM(si.qty),0) AS vendidos, COALESCE(SUM(si.line_total),0) AS total_vendido
         FROM products p
         LEFT JOIN sale_items si ON si.product_id=p.id
-        LEFT JOIN sales s ON si.sale_id=s.id AND s.sale_status='pagada' AND DATE(s.created_at)=CURDATE()
+        LEFT JOIN sales s ON si.sale_id=s.id AND s.sale_status='pagada' AND DATE(s.created_at)=:today
         WHERE LOWER(p.estado)='activo'
         GROUP BY p.id HAVING vendidos>0 ORDER BY vendidos DESC LIMIT 5`);
     }
@@ -328,7 +401,7 @@ async function getBusinessData(msg = '') {
                COUNT(*) AS facturas, SUM(s.total) AS ventas
         FROM sales s LEFT JOIN users u ON s.user_id=u.id
         WHERE s.sale_status='pagada' AND COALESCE(s.fiscal_status,'emitida')<>'cancelada'
-          AND DATE(s.created_at)=CURDATE()
+          AND DATE(s.created_at)=:today
         GROUP BY s.user_id ORDER BY ventas DESC LIMIT 6`);
     }
     if (t.match(/gasto|egreso|retiro|salida|movimiento|caja.*gasto|cuanto.*retir/)) {
@@ -336,15 +409,17 @@ async function getBusinessData(msg = '') {
         SELECT movement_type AS tipo, SUM(amount) AS total, COUNT(*) AS cant
         FROM cash_movements
         WHERE LOWER(movement_type) NOT IN ('ingreso','apertura','venta','cobro')
-          AND DATE(happened_at)=CURDATE() AND amount>0
+          AND DATE(happened_at)=:today AND amount>0
         GROUP BY movement_type ORDER BY total DESC LIMIT 8`);
     }
     if (t.match(/hora|tendencia|tráfico|trafico|momento|pico|cuando más|cuando mas/)) {
-      extras.horas = await q(`
-        SELECT HOUR(created_at) AS hora, COUNT(*) AS facturas, SUM(total) AS total
+      // strftime('%H:00', …) es SQLite; db.js lo traduce a DATE_FORMAT en MariaDB.
+      const horas = await q(`
+        SELECT strftime('%H:00', created_at) AS hora, COUNT(*) AS facturas, SUM(total) AS total
         FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada'
-          AND DATE(created_at)=CURDATE()
-        GROUP BY HOUR(created_at) ORDER BY hora`);
+          AND DATE(created_at)=:today
+        GROUP BY strftime('%H:00', created_at) ORDER BY hora`);
+      extras.horas = horas.map((h) => ({ ...h, hora: parseInt(String(h.hora), 10) || 0, total: Number(h.total || 0) }));
     }
     if (t.match(/cliente|comprador|frecuente/)) {
       extras.topClientes = await q(`
@@ -353,7 +428,7 @@ async function getBusinessData(msg = '') {
                COUNT(*) AS compras, SUM(s.total) AS gastado
         FROM sales s LEFT JOIN clients c ON s.client_id=c.id
         WHERE s.sale_status='pagada' AND COALESCE(s.fiscal_status,'emitida')<>'cancelada'
-          AND DATE(s.created_at)>=DATE_FORMAT(CURDATE(),'%Y-%m-01')
+          AND DATE(s.created_at)>=:monthStart
           AND s.client_id IS NOT NULL
         GROUP BY s.client_id ORDER BY gastado DESC LIMIT 5`);
     }
@@ -370,7 +445,7 @@ async function getBusinessData(msg = '') {
       extras.semana = await q(`
         SELECT DATE(created_at) AS dia, SUM(total) AS total, COUNT(*) AS facturas
         FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada'
-          AND created_at>=DATE_SUB(CURDATE(), INTERVAL DAYOFWEEK(CURDATE())-2 DAY)
+          AND DATE(created_at)>=:weekStart
         GROUP BY DATE(created_at) ORDER BY dia`);
     }
     if (t.match(/ultima|último|última|reciente/)) {
@@ -379,7 +454,7 @@ async function getBusinessData(msg = '') {
                COALESCE(s.client_name_snapshot, c.nombre, 'Sin cliente') AS cliente
         FROM sales s LEFT JOIN clients c ON s.client_id=c.id
         WHERE s.sale_status='pagada' AND COALESCE(s.fiscal_status,'emitida')<>'cancelada'
-          AND DATE(s.created_at)=CURDATE()
+          AND DATE(s.created_at)=:today
         ORDER BY s.created_at DESC LIMIT 5`);
     }
 
@@ -413,8 +488,8 @@ async function getBusinessData(msg = '') {
     if (extras.horas?.length) { const pk=extras.horas.reduce((a,b)=>b.total>a.total?b:a,extras.horas[0]); extraText += `\nHORAS HOY:\n${extras.horas.map(h=>`- ${String(h.hora).padStart(2,'0')}:00 → ${h.facturas} fact. ${fmt(h.total)}`).join('\n')}\nPico: ${String(pk.hora).padStart(2,'0')}:00`; }
     if (extras.topClientes?.length) extraText += `\nTOP CLIENTES MES:\n${extras.topClientes.map(c=>`- ${c.cliente} (cedula/RNC: ${c.cedula || 'no registrada'}, tel: ${c.telefono || '-'}): ${c.compras} compras ${fmt(c.gastado)}`).join('\n')}`;
     if (extras.cajas?.length) extraText += `\nCAJAS ABIERTAS:\n${extras.cajas.map(c=>`- ${c.caja_nombre||'Caja'}: ${c.opened_by_user_name} (${fmt(c.expected_amount)})`).join('\n')}`;
-    if (extras.semana?.length) { const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']; extraText += `\nSEMANA:\n${extras.semana.map(d=>{const dt=new Date(d.dia);return `- ${dias[dt.getDay()]} ${dt.getDate()}: ${fmt(d.total)} (${d.facturas} fact.)`;}).join('\n')}`; }
-    if (extras.ultimas?.length) extraText += `\nÚLTIMAS VENTAS:\n${extras.ultimas.map(v=>`- ${v.invoice_number}: ${fmt(v.total)} (${v.payment_method}) ${new Date(v.created_at).toLocaleTimeString('es-DO',{hour:'2-digit',minute:'2-digit'})}`).join('\n')}`;
+    if (extras.semana?.length) { const dias=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb']; extraText += `\nSEMANA:\n${extras.semana.map(d=>{const dt=parseDbDate(d.dia);return `- ${dias[dt.getDay()]} ${dt.getDate()}: ${fmt(d.total)} (${d.facturas} fact.)`;}).join('\n')}`; }
+    if (extras.ultimas?.length) extraText += `\nÚLTIMAS VENTAS:\n${extras.ultimas.map(v=>`- ${v.invoice_number}: ${fmt(v.total)} (${v.payment_method}) ${parseLocalDateTime(v.created_at).toLocaleTimeString('es-DO',{hour:'2-digit',minute:'2-digit'})}`).join('\n')}`;
 
     const text = `DATOS DEL NEGOCIO (tiempo real):
 VENTAS HOY: ${fmt(stats.ventas_hoy)} (${stats.facturas_hoy} fact.) — ${ultimaVenta} | vs ayer: ${fmt(stats.ventas_ayer)} (${cambioAyer})
@@ -1848,7 +1923,7 @@ async function responder(mensaje, fromJid) {
     if (d.semana?.length) {
       let totalSem = 0;
       d.semana.forEach(row => {
-        const dt = new Date(row.dia);
+        const dt = parseDbDate(row.dia);
         totalSem += Number(row.total);
         lines.push(`  • ${diasNombres[dt.getDay()]} ${dt.getDate()}: *${fmt(row.total)}* (${row.facturas} fact.)`);
       });
@@ -1864,7 +1939,7 @@ async function responder(mensaje, fromJid) {
     const lines = [`🧾 *Últimas Ventas — Hoy*`, ``];
     if (d.ultimas?.length) {
       d.ultimas.forEach(v => {
-        const hora = new Date(v.created_at).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' });
+        const hora = parseLocalDateTime(v.created_at).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' });
         lines.push(`  • ${v.invoice_number} — *${fmt(v.total)}*`);
         lines.push(`    ${hora} | ${v.payment_method} | ${v.cliente}`);
       });
@@ -2981,22 +3056,37 @@ function resolveChromePath() {
     }
   }
 
-  // 3. Usa el Chromium de puppeteer (puede requerir descarga en primera ejecución)
+  // 3. Usa el Chromium de puppeteer (solo existe en la PC de desarrollo: el
+  //    instalador no lo trae)
   try {
     const puppeteer = require('puppeteer');
     const chromePath = puppeteer.executablePath();
     if (require('fs').existsSync(chromePath)) return chromePath;
-    console.warn('[wa-bot] Chromium de puppeteer no encontrado en:', chromePath);
-    console.warn('[wa-bot] En PC nueva, puppeteer descarga ~170MB de Chromium en primer uso.');
   } catch (_e) {}
+
+  // 4. Microsoft Edge: también es Chromium y viene con Windows 10/11. Muchas
+  //    PCs de clientes no tienen Chrome, y sin navegador el bot no arrancaba.
+  const edgeCandidates = [
+    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}\\Microsoft\\Edge\\Application\\msedge.exe` : '',
+  ].filter(Boolean);
+  for (const c of edgeCandidates) {
+    if (require('fs').existsSync(c)) {
+      console.log('[wa-bot] Chrome no está instalado; usando Microsoft Edge:', c);
+      return c;
+    }
+  }
 
   return undefined;
 }
 
-function buildClient() {
-  const executablePath = resolveChromePath();
+function buildClient(executablePath) {
   return new Client({
-    authStrategy: new LocalAuth({ clientId: 'tecno-caja-pos-bot', dataPath: '.wwebjs_auth_pos' }),
+    authStrategy: new LocalAuth({ clientId: 'tecno-caja-pos-bot', dataPath: BOT_DATA_DIR }),
+    // Por defecto whatsapp-web.js guarda este caché en ./.wwebjs_cache de la
+    // carpeta actual (la del programa) — misma razón que BOT_DATA_DIR.
+    webVersionCache: { type: 'local', path: path.join(BOT_DATA_DIR, '.wwebjs_cache') },
     puppeteer: {
       headless: true,
       executablePath,
@@ -3041,6 +3131,7 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
   // de la otra a mitad de arranque — visto por el dueño como "arrancó y se
   // apagó solo".
   state.status = 'starting';
+  state.lastError = null;
   pushState();
   // Si hay un cliente viejo, destruirlo primero
   if (_client) { try { await _client.destroy(); } catch {} _client = null; }
@@ -3102,7 +3193,25 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
 
   console.log(`[wa-bot] IA: ${_aiConfig.provider}${_aiConfig.apiKey ? ' ✓' : ''}${_googleTokens ? ' (Google OAuth ✓)' : ''}`);
 
-  _client = buildClient();
+  const executablePath = resolveChromePath();
+  if (!executablePath) {
+    state.status = 'stopped';
+    state.lastError = 'No se encontró Google Chrome ni Microsoft Edge en esta PC. Instala Google Chrome y vuelve a iniciar el bot.';
+    console.error('[wa-bot]', state.lastError);
+    pushState();
+    return;
+  }
+  try {
+    fs.mkdirSync(BOT_DATA_DIR, { recursive: true });
+  } catch (e) {
+    state.status = 'stopped';
+    state.lastError = `No se pudo crear la carpeta de la sesión de WhatsApp (${BOT_DATA_DIR}): ${e.message}`;
+    console.error('[wa-bot]', state.lastError);
+    pushState();
+    return;
+  }
+
+  _client = buildClient(executablePath);
 
   _client.on('qr', async (qr) => {
     // Al generar QR ya no necesitamos el timeout de "sin QR"
@@ -3131,6 +3240,7 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
       if (state.status === 'starting') {
         console.warn('[wa-bot] Timeout (120s) autenticado pero sin sincronizar — deteniendo bot');
         state.status = 'disconnected';
+        state.lastError = 'WhatsApp se conectó pero no terminó de sincronizar en 2 minutos. Vuelve a iniciar el bot.';
         pushState();
         stop().catch(() => {});
       }
@@ -3324,6 +3434,7 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
     if (state.status === 'starting') {
       console.warn('[wa-bot] Timeout (90s) sin QR — deteniendo bot');
       state.status = 'disconnected';
+      state.lastError = 'WhatsApp Web no respondió en 90 segundos. Revisa la conexión a Internet y vuelve a iniciar el bot.';
       pushState();
       stop().catch(() => {});
     }
@@ -3334,6 +3445,7 @@ async function start({ db, io, ownerPhone, ownerPhone2, provider, apiKey }) {
     if (_startTimeoutId) { clearTimeout(_startTimeoutId); _startTimeoutId = null; }
     console.error('[wa-bot] Error en initialize:', e.message);
     state.status = 'stopped';
+    state.lastError = `No se pudo abrir el navegador del bot: ${e.message}`;
     pushState();
   });
 }
@@ -3386,5 +3498,10 @@ function setDependencies({
 module.exports = {
   start, stop, getSafeState, setGoogleTokens, setInstructions,
   setBusinessHours, setCustomerInstructions, setCustomerAiEnabled,
-  setDependencies, sendReceiptImage
+  setDependencies, sendReceiptImage,
+  // Solo para pruebas (tests/whatsapp-bot.sqlite.test.js).
+  _test: {
+    businessDateKeys, bindDateKeys, minutesSince, getBusinessData, resolveBotDataDir,
+    setDb(db) { _db = db; },
+  },
 };

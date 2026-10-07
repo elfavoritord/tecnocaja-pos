@@ -34,6 +34,9 @@ const USER_DATA_TARGETS = [
   'ecf',
   'Sistema_Data',
   'logs',
+  // Sesión del bot de WhatsApp (instalaciones nuevas; ver resolveBotDataDir()
+  // en server/integrations/whatsapp-bot.js).
+  '.wwebjs_auth_pos',
   'ecf-sequence-high-watermarks.json',
   path.join('config', 'terminal-config.json'),
   path.join('config', 'peripherals-config.json'),

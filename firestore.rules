@@ -82,6 +82,18 @@ service cloud.firestore {
                           'Administrador de Sucursal', 'accountant'];
     }
 
+    // Centro de Control (app de reportes): el dueño/administrador ve todo; el
+    // administrador de sucursal solo los documentos cuyas sucursales (campo
+    // branchIds que escribe el POS) tiene asignadas TODAS. Un día sin
+    // movimiento no tiene documento: leerlo (resource == null) no revela nada.
+    function canReadControlCenter(businessId) {
+      return isOwnerOrAdmin(businessId)
+          || (isBranchAdmin(businessId)
+              && (resource == null
+                  || (resource.data.get('branchIds', []).size() > 0
+                      && me().get('branchIds', []).hasAll(resource.data.get('branchIds', [])))));
+    }
+
     // El campo businessId en el doc nuevo coincide con la ruta
     function validBusiness(businessId) {
       return request.resource.data.businessId == businessId;
@@ -268,6 +280,28 @@ service cloud.firestore {
       // ── Alertas del sistema ────────────────────────────────────────────────
       match /alerts/{alertId} {
         allow read:   if isEmployee(businessId);
+        allow write:  if false;
+      }
+
+      // ── Centro de Control de la app de reportes ────────────────────────────
+      // Resúmenes que calcula el POS (server/sync/control-center). Solo los
+      // escribe el Admin SDK del POS.
+      match /controlCenter/{docId} {
+        allow read:   if canReadControlCenter(businessId);
+        allow write:  if false;
+      }
+
+      // Un documento por día (y por sucursal). La app los pide uno a uno
+      // (get); listar la colección completa queda para el dueño/admin.
+      match /dailyStats/{dayId} {
+        allow get:    if canReadControlCenter(businessId);
+        allow list:   if isOwnerOrAdmin(businessId);
+        allow write:  if false;
+      }
+
+      // Señal de vida de cada PC del negocio (principal y cajas terminal).
+      match /terminals/{terminalId} {
+        allow read:   if isBranchAdmin(businessId);
         allow write:  if false;
       }
 

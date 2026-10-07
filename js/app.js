@@ -5593,7 +5593,7 @@ async function testCashDrawerConfig() {
     method:       document.getElementById('cfg-drawer-method')?.value || 'escpos',
     printerName:  resolveDrawerPrinterName(
       document.getElementById('cfg-drawer-printer')?.value || '',
-      DB.config?.receiptPrinterName || ''
+      document.getElementById('cfg-printer-name')?.value || getEffectiveConfig().receiptPrinterName || ''
     ),
     pin:          Number(document.getElementById('cfg-drawer-pin')?.value || 0),
     networkHost:  document.getElementById('cfg-drawer-network-host')?.value || '',
@@ -8210,11 +8210,53 @@ function openCajaModule() {
   closePostCloseScreen();
 }
 
+// Impresora, papel y modo de impresión de ESTA PC — los mismos que usa la
+// factura (printReceipt en ventas.js). Antes se leía DB.config, pero en la app
+// de escritorio la impresora se guarda en peripherals-config.json y no en la
+// BD: en una instalación nueva el cuadre no encontraba impresora y abría el
+// diálogo de Windows para elegirla.
+async function _resolveCortePrintSettings() {
+  const cfg = getEffectiveConfig();
+  const paperWidth = String(cfg.receiptPaperSize || '80mm').toLowerCase();
+  const isThermal = paperWidth === '58mm' || paperWidth === '80mm';
+  const configuredPrinter = String(cfg.receiptPrinterName || '').trim();
+  const printerName = isThermal && typeof resolveReceiptPrinterName === 'function'
+    ? await resolveReceiptPrinterName(configuredPrinter)
+    : configuredPrinter;
+  return {
+    cfg,
+    paperWidth,
+    isThermal,
+    printerName,
+    printMode: String(cfg.receiptPrintMode || 'dialog').toLowerCase(),
+    currency: cfg.currency || DB.config?.currency || 'RD$',
+  };
+}
+
+// Envía un documento HTML (cuadre, balance…) por el mismo canal que la
+// factura en papel carta/A4: directo a la impresora configurada si el modo es
+// "Imprimir directo", o con el diálogo de Windows si así se configuró.
+async function _printConfiguredHtml(html, settings, successMessage) {
+  if (!window.novaDesktop?.printReceiptHtml) {
+    showToast('La impresión solo está disponible en la app de escritorio.', 'warning');
+    return false;
+  }
+  const result = await window.novaDesktop.printReceiptHtml(html, {
+    paperSize: settings.paperWidth || '80mm',
+    mode: settings.printMode,
+    printerName: settings.printerName,
+  });
+  if (!result?.ok) {
+    showToast(result?.error || 'No se pudo imprimir. Revisa la impresora.', 'error');
+    return false;
+  }
+  if (successMessage) showToast(successMessage, 'success');
+  return true;
+}
+
 async function _printCashCorte(d, contado, diferencia, notas) {
-  const printerName  = String(DB.config?.receiptPrinterName || '').trim();
-  const paperWidth   = String(DB.config?.receiptPaperSize   || '80mm').toLowerCase();
-  const currency     = DB.config?.currency || 'RD$';
-  const isThermal    = paperWidth === '58mm' || paperWidth === '80mm';
+  const settings     = await _resolveCortePrintSettings();
+  const { printerName, paperWidth, currency, isThermal } = settings;
   const canEscpos    = Boolean(window.novaDesktop?.printCorteEscpos && isThermal && printerName);
 
   // ── Ruta 1: ESC/POS directo a impresora térmica (app de escritorio) ──────
@@ -8244,52 +8286,68 @@ async function _printCashCorte(d, contado, diferencia, notas) {
       },
       config: {
         paperWidth,
-        narrowCols: Boolean(DB.config?.receiptNarrowCols),
+        narrowCols: Boolean(settings.cfg.receiptNarrowCols),
         cortarPapel: true,
         currency,
       },
     };
 
+    // Igual que la factura: con papel térmico NO se cae al HTML/diálogo si
+    // ESC/POS falla (a una térmica en modo ESC/POS le llegarían caracteres
+    // ilegibles) — se avisa el error para que revisen la impresora.
     try {
       const result = await window.novaDesktop.printCorteEscpos(cortePayload, { printerName, paperWidth });
       if (result?.ok) {
         showToast('Corte enviado a la impresora.', 'success');
         return;
       }
-      console.warn('[corte] ESC/POS falló, usando impresión HTML:', result?.error);
+      console.warn('[corte] ESC/POS falló:', result?.error);
       showToast(result?.error || 'No se pudo imprimir el corte. Revisa la impresora.', 'error');
-      return;
     } catch (err) {
       console.warn('[corte] Error ESC/POS:', err?.message);
+      showToast(err?.message || 'No se pudo imprimir el corte. Revisa la impresora.', 'error');
     }
+    return;
   }
 
-  // ── Ruta 2: HTML + ventana del sistema (sin impresora configurada o web) ──
+  // ── Ruta 2: HTML (papel carta/A4, o térmica sin impresora detectada) ──────
   const fmtN = (n) => `${currency} ${Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const diffLine = Math.abs(diferencia) < 0.01
     ? '✅ Sin diferencia'
     : (diferencia > 0 ? `⚠ Sobran ${fmtN(diferencia)}` : `⚠ Faltan ${fmtN(Math.abs(diferencia))}`);
+  const esc = (v) => escapeHtml(String(v ?? ''));
+  const businessName = getEffectiveConfig().businessName || DB.config?.businessName || 'Tecno Caja';
+  const rnc = getEffectiveConfig().rnc || DB.config?.rnc || '';
 
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-  <title>Corte de Caja</title>
+  // Papel carta/A4: hoja completa con letra legible. Térmica: rollo angosto
+  // (.ticket-print es la clase que electron/main.js mide para cortar el papel).
+  const isA4 = paperWidth === 'a4';
+  const html = `
+  <div class="${isA4 ? 'corte-print corte-print--a4' : 'ticket-print corte-print'}">
   <style>
-    body{font-family:'Courier New',monospace;font-size:12px;margin:0;padding:12px;color:#000;background:#fff}
-    h2{text-align:center;font-size:14px;margin:0 0 4px}
-    .center{text-align:center}
-    .sep{border-top:1px dashed #000;margin:6px 0}
-    .row{display:flex;justify-content:space-between;margin:2px 0}
-    .row.bold{font-weight:bold}
-    .diff{text-align:center;font-size:13px;font-weight:bold;margin:6px 0}
-    .small{font-size:10px;color:#555}
-    @media print{body{padding:4px}}
-  </style></head><body>
-  <h2>${DB.config?.businessName || 'Tecno Caja'}</h2>
+    .corte-print{font-family:'Courier New',monospace;font-size:12px;color:#000;background:#fff;padding:4px}
+    .corte-print--a4{font-family:'Segoe UI',Arial,sans-serif;font-size:14px;max-width:150mm;margin:12mm auto 0;padding:0}
+    .corte-print h2{text-align:center;font-size:14px;margin:0 0 4px}
+    .corte-print--a4 h2{font-size:20px}
+    .corte-print .center{text-align:center}
+    .corte-print .sep{border-top:1px dashed #000;margin:6px 0}
+    .corte-print--a4 .sep{margin:10px 0}
+    .corte-print .row{display:flex;justify-content:space-between;margin:2px 0}
+    .corte-print--a4 .row{margin:5px 0}
+    .corte-print .row.bold{font-weight:bold}
+    .corte-print .diff{text-align:center;font-size:13px;font-weight:bold;margin:6px 0}
+    .corte-print--a4 .diff{font-size:16px;margin:12px 0}
+    .corte-print .small{font-size:10px;color:#555}
+    .corte-print--a4 .small{font-size:12px}
+  </style>
+  <h2>${esc(businessName)}</h2>
+  ${rnc ? `<p class="center small">RNC: ${esc(rnc)}</p>` : ''}
   <p class="center small">CORTE DE CAJA</p>
   <div class="sep"></div>
-  <div class="row"><span>Cajero:</span><span>${d.cajero}</span></div>
-  <div class="row"><span>Apertura:</span><span>${d.horaApertura}</span></div>
-  <div class="row"><span>Corte:</span><span>${d.horaCorte}</span></div>
-  <div class="row"><span>Ventas:</span><span>${d.ventasCount}</span></div>
+  <div class="row"><span>Cajero:</span><span>${esc(d.cajero)}</span></div>
+  <div class="row"><span>Apertura:</span><span>${esc(d.horaApertura)}</span></div>
+  <div class="row"><span>Corte:</span><span>${esc(d.horaCorte)}</span></div>
+  <div class="row"><span>Ventas:</span><span>${esc(d.ventasCount)}</span></div>
   <div class="sep"></div>
   <div class="row"><span>Efectivo:</span><span>${fmtN(d.efectivo)}</span></div>
   <div class="row"><span>Tarjeta:</span><span>${fmtN(d.tarjeta)}</span></div>
@@ -8304,14 +8362,12 @@ async function _printCashCorte(d, contado, diferencia, notas) {
   <div class="row bold"><span>Total esperado:</span><span>${fmtN(d.totalEsperado)}</span></div>
   <div class="row bold"><span>Contado físico:</span><span>${fmtN(contado)}</span></div>
   <div class="diff">${diffLine}</div>
-  ${notas ? `<div class="sep"></div><p class="small">Notas: ${notas}</p>` : ''}
+  ${notas ? `<div class="sep"></div><p class="small">Notas: ${esc(notas)}</p>` : ''}
   <div class="sep"></div>
   <p class="center small">${new Date().toLocaleString('es-DO')}</p>
-  </body></html>`;
+  </div>`;
 
-  if (window.novaDesktop?.printReceiptHtml) {
-    await window.novaDesktop.printReceiptHtml(html, { paperSize: paperWidth || '80mm', mode: 'dialog' });
-  }
+  await _printConfiguredHtml(html, settings, 'Corte enviado a la impresora.');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -10144,6 +10200,7 @@ async function confirmPlanPasswordAndApply() {
 // ════════════════════════════════════════════ BOT WHATSAPP ════════════════════
 
 let _waBotLastStatus = 'stopped';
+let _waBotLastErrorShown = null;
 let _waBotPollTimer  = null;
 
 function _waBotSchedulePoll() {
@@ -10221,6 +10278,9 @@ function waBotRenderState(s) {
       </div>`;
   } else if (s.status === 'starting') {
     box.innerHTML = `<div class="wabot-log-empty" style="display:flex;flex-direction:column;align-items:center;gap:.75rem"><div class="wabot-spinner"></div><span>Iniciando Chrome… el QR aparece en unos segundos.</span></div>`;
+  } else if (s.lastError) {
+    // Motivo real por el que no arrancó (sin navegador, sin Internet…).
+    box.innerHTML = `<div class="wabot-log-empty" style="color:#ef4444">⚠️ ${escapeHtml(s.lastError)}</div>`;
   } else if (s.status === 'disconnected') {
     box.innerHTML = `<div class="wabot-log-empty" style="color:#ef4444">⚠️ Desconectado. Presiona <strong>Iniciar Bot</strong> para reconectar.</div>`;
   } else {
@@ -10512,6 +10572,8 @@ async function waBotStop() {
 // Actualizar panel via Socket.IO + polling
 function _waBotSocketListen(sock) {
   sock.on('wa_bot_state', (s) => {
+    if (s.lastError && s.lastError !== _waBotLastErrorShown) showToast(s.lastError, 'error', 8000);
+    _waBotLastErrorShown = s.lastError || null;
     waBotRenderState(s);
     const dot = document.getElementById('nav-wa-dot');
     if (dot) dot.style.display = s.status === 'ready' ? 'block' : 'none';

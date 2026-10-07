@@ -83,4 +83,4 @@ async function initializeDatabase() {
   }
 }
 
-module.exports = { initializeDatabase };
+module.exports = { initializeDatabase, normalizeSchema };
