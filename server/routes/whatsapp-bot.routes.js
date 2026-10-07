@@ -8,6 +8,8 @@ const router = express.Router();
 // si server.js vuelve a correr schema.sql (ver inspectCoreSchema) — instalaciones
 // viejas que ya tenían config/users/products/etc. antes de que se agregara esta
 // tabla nunca la reciben. Se auto-repara aquí, antes de cualquier ruta del bot.
+// SQL en dialecto SQLite a propósito: las instalaciones monocaja nuevas corren
+// sobre SQLite y db.js lo traduce a MariaDB (AUTOINCREMENT → AUTO_INCREMENT).
 let _configTableEnsured = false;
 router.use(async (req, res, next) => {
   if (_configTableEnsured) return next();
@@ -15,17 +17,28 @@ router.use(async (req, res, next) => {
     const db = req.app.locals.queryFn;
     if (db) {
       await db(`CREATE TABLE IF NOT EXISTS offline_cache_config (
-        id INT AUTO_INCREMENT PRIMARY KEY,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         config_key VARCHAR(100) NOT NULL UNIQUE,
         config_value TEXT DEFAULT NULL,
-        last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        KEY idx_config_key (config_key)
+        last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`);
       _configTableEnsured = true;
     }
   } catch (_e) { /* si falla, se reintenta en la próxima petición */ }
   next();
 });
+
+// Guarda una clave del bot. "ON DUPLICATE KEY UPDATE" es solo de MariaDB y
+// en SQLite (instalación monocaja nueva) daba error de sintaxis: el bot no
+// podía ni iniciar ni guardar la API key. ON CONFLICT ... excluded funciona en
+// SQLite y db.js lo traduce a ON DUPLICATE KEY UPDATE ... VALUES() en MariaDB.
+async function saveBotConfig(db, key, value) {
+  await db(
+    `INSERT INTO offline_cache_config (config_key, config_value) VALUES (?, ?)
+     ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value`,
+    [key, value]
+  );
+}
 
 // ── Google OAuth para Gemini ───────────────────────────────────────────────────
 const GEMINI_SCOPE   = 'https://www.googleapis.com/auth/generative-language';
@@ -76,7 +89,7 @@ router.get('/google-callback', async (req, res) => {
       const db = req.app.locals.queryFn;
       if (db) {
         const enc = Buffer.from(JSON.stringify(tokens)).toString('base64');
-        await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_google_tokens',?) ON DUPLICATE KEY UPDATE config_value=?`, [enc, enc]);
+        await saveBotConfig(db, 'wabot_google_tokens', enc);
       }
     } catch {}
     res.send(`
@@ -147,8 +160,8 @@ router.post('/save-key', async (req, res) => {
     const db = req.app.locals.queryFn;
     const colKey = WABOT_KEY_COLUMNS[provider] || 'wabot_chatgpt_key';
     const encrypted = encryptKey(apiKey);
-    await db(`INSERT INTO offline_cache_config (config_key, config_value) VALUES (?,?) ON DUPLICATE KEY UPDATE config_value=?`, [colKey, encrypted, encrypted]);
-    await db(`INSERT INTO offline_cache_config (config_key, config_value) VALUES ('wabot_provider',?) ON DUPLICATE KEY UPDATE config_value=?`, [provider, provider]);
+    await saveBotConfig(db, colKey, encrypted);
+    await saveBotConfig(db, 'wabot_provider', provider);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -166,7 +179,7 @@ router.post('/instructions', async (req, res) => {
   try {
     const { instructions } = req.body;
     const db = req.app.locals.queryFn;
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_instructions',?) ON DUPLICATE KEY UPDATE config_value=?`, [instructions, instructions]);
+    await saveBotConfig(db, 'wabot_instructions', instructions);
     req.app.locals.ensureWaBot().setInstructions(instructions);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -185,7 +198,7 @@ router.post('/customer-instructions', async (req, res) => {
   try {
     const { instructions } = req.body;
     const db = req.app.locals.queryFn;
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_customer_instructions',?) ON DUPLICATE KEY UPDATE config_value=?`, [instructions, instructions]);
+    await saveBotConfig(db, 'wabot_customer_instructions', instructions);
     req.app.locals.ensureWaBot().setCustomerInstructions(instructions);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -204,7 +217,7 @@ router.post('/customer-ai-toggle', async (req, res) => {
     const { enabled } = req.body;
     const value = enabled ? '1' : '0';
     const db = req.app.locals.queryFn;
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_customer_ai_enabled',?) ON DUPLICATE KEY UPDATE config_value=?`, [value, value]);
+    await saveBotConfig(db, 'wabot_customer_ai_enabled', value);
     req.app.locals.ensureWaBot().setCustomerAiEnabled(!!enabled);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -223,7 +236,7 @@ router.post('/business-hours', async (req, res) => {
   try {
     const { businessHours } = req.body;
     const db = req.app.locals.queryFn;
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_business_hours',?) ON DUPLICATE KEY UPDATE config_value=?`, [businessHours, businessHours]);
+    await saveBotConfig(db, 'wabot_business_hours', businessHours);
     req.app.locals.ensureWaBot().setBusinessHours(businessHours);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -251,14 +264,14 @@ router.post('/start', async (req, res) => {
       .catch(e => console.error('[wa-bot route] start error:', e.message));
 
     // Guardar config para auto-arranque
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_autostart','1') ON DUPLICATE KEY UPDATE config_value='1'`);
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_owner_phone',?) ON DUPLICATE KEY UPDATE config_value=?`, [ownerPhone, ownerPhone]);
+    await saveBotConfig(db, 'wabot_autostart', '1');
+    await saveBotConfig(db, 'wabot_owner_phone', ownerPhone);
     if (ownerPhone2) {
-      await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_owner_phone2',?) ON DUPLICATE KEY UPDATE config_value=?`, [ownerPhone2, ownerPhone2]);
+      await saveBotConfig(db, 'wabot_owner_phone2', ownerPhone2);
     } else {
       await db(`DELETE FROM offline_cache_config WHERE config_key='wabot_owner_phone2'`);
     }
-    await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_provider',?) ON DUPLICATE KEY UPDATE config_value=?`, [provider || 'none', provider || 'none']);
+    await saveBotConfig(db, 'wabot_provider', provider || 'none');
 
     res.json({ ok: true });
   } catch (e) {
@@ -294,10 +307,11 @@ router.post('/stop', async (req, res) => {
     // Limpiar auto-arranque cuando el usuario detiene manualmente
     try {
       const db = req.app.locals.queryFn;
-      await db(`INSERT INTO offline_cache_config (config_key,config_value) VALUES ('wabot_autostart','0') ON DUPLICATE KEY UPDATE config_value='0'`);
+      await saveBotConfig(db, 'wabot_autostart', '0');
     } catch {}
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;
+module.exports.saveBotConfig = saveBotConfig;

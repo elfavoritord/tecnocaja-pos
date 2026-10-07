@@ -55,6 +55,7 @@ const packageJson = require('./package.json');
 const { getInstance: getSyncService } = require('./server/sync/firebase-sync-service');
 const { getInternetMonitor } = require('./server/network/internet-monitor');
 const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatch');
+const { startControlCenterPublisher, notifyControlCenterChange } = require('./server/sync/control-center');
 const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
 const syncRoutes = require('./server/routes/sync.routes');
 
@@ -405,11 +406,33 @@ async function syncPendingReportAppProducts(options = {}) {
     .where('origen', 'in', ['app_reporte', 'app_movil'])
     .limit(60)
     .get();
+  const docs = [...snapshot.docs];
+
+  // La app de reportes (Centro de Control) guarda bajo la licencia, que es el
+  // negocio de sus usuarios. De ahí solo se lee lo pendiente, y un producto
+  // con error se deja de reintentar a los 3 intentos hasta que lo vuelvan a
+  // guardar en la app (que lo marca pendiente otra vez).
+  const licenseBusinessId = getLicenseReportsBusinessId();
+  if (licenseBusinessId && licenseBusinessId !== businessId) {
+    const pending = await firestore
+      .collection('businesses')
+      .doc(licenseBusinessId)
+      .collection('products')
+      .where('syncStatus', 'in', ['pending', 'error'])
+      .limit(60)
+      .get();
+    for (const doc of pending.docs) {
+      const data = doc.data() || {};
+      if ((data.origen ?? data.origin) !== 'app_reporte') continue;
+      if (data.syncStatus === 'error' && Number(data.syncAttempts || 0) >= 3 && !options.force) continue;
+      docs.push(doc);
+    }
+  }
 
   let synced = 0;
   let errors = 0;
 
-  for (const doc of snapshot.docs) {
+  for (const doc of docs) {
     const data = doc.data() || {};
     const alreadySynced = data.sincronizado === true || data.synced === true || data.syncStatus === 'synced';
     if (alreadySynced && !options.force) continue;
@@ -424,12 +447,17 @@ async function syncPendingReportAppProducts(options = {}) {
       data.creadoPor ?? data.createdByName ?? data.updatedByName,
       sourceLabel
     );
+    // El Centro de Control no manda la existencia al editar un producto que ya
+    // existe (se ajusta en el POS, que lleva el kardex); las apps viejas sí.
+    const stockProvided = data.stock !== undefined && data.stock !== null && data.stock !== '';
+    const posProductId = Number(data.posProductId || 0) || null;
 
     try {
       if (!name) throw new Error('El producto no tiene nombre.');
       const price = normalizeReportAppNumber(data.precioVenta ?? data.price, 0);
       const cost = normalizeReportAppNumber(data.precioCompra ?? data.cost, 0);
       const stock = normalizeReportAppNumber(data.stock, 0);
+      const stockMin = normalizeReportAppNumber(data.stockMin ?? data.minStock, 0);
       if (price <= 0) throw new Error('El precio debe ser mayor que cero.');
       if (cost < 0) throw new Error('El costo no puede ser negativo.');
       if (stock < 0) throw new Error('El stock inicial no puede ser negativo.');
@@ -439,52 +467,54 @@ async function syncPendingReportAppProducts(options = {}) {
       );
 
       const result = await withTransaction(async (conn) => {
-        const existingByRemote = await conn.query(
+        // Producto del POS editado en la app: se busca por su ID primero, así
+        // cambiar el código de barras no crea un producto repetido.
+        const existingById = posProductId
+          ? await conn.query('SELECT * FROM products WHERE id = ? LIMIT 1', [posProductId])
+          : [];
+        const existingByRemote = existingById[0] ? [] : await conn.query(
           'SELECT * FROM products WHERE remote_report_product_id = ? LIMIT 1',
           [doc.id]
         );
-        const existingBySku = existingByRemote[0] ? [] : await conn.query(
+        const existingBySku = existingById[0] || existingByRemote[0] ? [] : await conn.query(
           'SELECT * FROM products WHERE LOWER(codigo) = LOWER(?) LIMIT 1',
           [sku]
         );
-        const existingByBarcode = existingByRemote[0] || existingBySku[0] || !barcode ? [] : await conn.query(
+        const existingByBarcode = existingById[0] || existingByRemote[0] || existingBySku[0] || !barcode ? [] : await conn.query(
           `SELECT * FROM products
            WHERE LOWER(COALESCE(barcode, "")) = LOWER(?)
               OR LOWER(COALESCE(codigo, "")) = LOWER(?)
            LIMIT 1`,
           [barcode, barcode]
         );
-        const existing = existingByRemote[0] || existingBySku[0] || existingByBarcode[0] || null;
+        const existing = existingById[0] || existingByRemote[0] || existingBySku[0] || existingByBarcode[0] || null;
+        if (!existing && posProductId) {
+          throw new Error('El producto ya no existe en Tecno Caja POS.');
+        }
         const estado = normalizeReportAppBool(data.isActive, true) ? 'Activo' : 'Inactivo';
-        const payload = [
-          sku,
-          name,
-          canonicalCategory,
-          normalizeReportAppText(data.marca ?? data.brand),
-          normalizeReportAppText(data.unidad ?? data.unit, 'unidad'),
-          cost,
-          price,
-          stock,
-          normalizeReportAppNumber(data.stockMin ?? data.minStock, 0),
-          estado,
-          normalizeReportAppText(data.imageUrl),
-          normalizeReportAppBool(data.aplicaItbis ?? data.appliesTax, false) ? 1 : 0,
-          barcode || sku,
-          doc.id,
-          sourceOrigin,
-        ];
+        const marca = normalizeReportAppText(data.marca ?? data.brand);
+        const unidad = normalizeReportAppText(data.unidad ?? data.unit, 'unidad');
+        const imageUrl = normalizeReportAppText(data.imageUrl);
+        const aplicaItbis = normalizeReportAppBool(data.aplicaItbis ?? data.appliesTax, false) ? 1 : 0;
+        const keepStock = Boolean(existing) && !stockProvided;
 
         let productId;
         if (existing) {
           productId = Number(existing.id);
+          // El ID remoto se conserva: las ventas de la app móvil lo usan para
+          // encontrar el producto.
           await conn.query(
             `UPDATE products
              SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?,
-                 precio_compra = ?, precio_venta = ?, stock = ?, stock_min = ?, estado = ?,
+                 precio_compra = ?, precio_venta = ?, ${keepStock ? '' : 'stock = ?, '}stock_min = ?, estado = ?,
                  image_url = COALESCE(NULLIF(?, ''), image_url), aplica_itbis = ?,
-                 barcode = ?, remote_report_product_id = ?, sync_origin = ?
+                 barcode = ?, remote_report_product_id = COALESCE(NULLIF(remote_report_product_id, ''), ?), sync_origin = ?
              WHERE id = ?`,
-            [...payload, productId]
+            [
+              sku, name, canonicalCategory, marca, unidad, cost, price,
+              ...(keepStock ? [] : [stock]),
+              stockMin, estado, imageUrl, aplicaItbis, barcode || sku, doc.id, sourceOrigin, productId,
+            ]
           );
         } else {
           const insert = await conn.query(
@@ -493,7 +523,10 @@ async function syncPendingReportAppProducts(options = {}) {
                stock, stock_min, estado, image_url, aplica_itbis, barcode,
                remote_report_product_id, sync_origin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)`,
-            payload
+            [
+              sku, name, canonicalCategory, marca, unidad, cost, price, stock, stockMin, estado,
+              imageUrl, aplicaItbis, barcode || sku, doc.id, sourceOrigin,
+            ]
           );
           productId = Number(insert.insertId || 0);
         }
@@ -504,15 +537,12 @@ async function syncPendingReportAppProducts(options = {}) {
           productId,
           branchId: resolvedBranchId,
           stock,
-          stockMin: normalizeReportAppNumber(data.stockMin ?? data.minStock, 0),
+          stockMin,
         });
         if (resolvedBranchId) {
-          await changeBranchInventoryStock(conn, {
-            productId,
-            branchId: resolvedBranchId,
-            absoluteStock: stock,
-            stockMin: normalizeReportAppNumber(data.stockMin ?? data.minStock, 0),
-          });
+          await changeBranchInventoryStock(conn, keepStock
+            ? { productId, branchId: resolvedBranchId, quantityDelta: 0, stockMin }
+            : { productId, branchId: resolvedBranchId, absoluteStock: stock, stockMin });
         }
         await writeReportAppProductSyncLog(conn, {
           remoteProductId: doc.id,
@@ -571,9 +601,21 @@ async function syncPendingReportAppProducts(options = {}) {
     await productsCache.loadAll().catch(() => {});
     await persistProductsCsvBackup('sync_apps').catch(() => {});
     scheduleSilentProductBackup('sync_apps');
+    // Que el catálogo del Centro de Control muestre el cambio pronto.
+    notifyControlCenterChange('productos de la app');
   }
 
   return { synced, errors };
+}
+
+/**
+ * Negocio bajo la licencia (única por cliente): donde publica el Centro de
+ * Control y donde la app de reportes guarda los productos que crea o edita.
+ * Null sin licencia propia (o con una de prueba npd_).
+ */
+function getLicenseReportsBusinessId() {
+  const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+  return licenseUid && !/^npd_/i.test(licenseUid) ? licenseUid : null;
 }
 
 async function syncPendingMobileCustomers() {
@@ -9779,12 +9821,12 @@ async function ensureOfflineTables() {
     // schema nunca la reciben (no está en requiredTables de inspectCoreSchema,
     // así que initializeMySqlDatabase() no vuelve a correr) — se auto-repara
     // aquí. La usa el Bot WhatsApp (número, API keys, proveedor, horarios).
+    // Dialecto SQLite (monocaja); db.js lo traduce a MariaDB.
     await query(`CREATE TABLE IF NOT EXISTS offline_cache_config (
-      id INT AUTO_INCREMENT PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       config_key VARCHAR(100) NOT NULL UNIQUE,
       config_value TEXT DEFAULT NULL,
-      last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      KEY idx_config_key (config_key)
+      last_updated DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`);
   } catch (_e) { /* already exists */ }
 }
@@ -10998,8 +11040,10 @@ app.post('/api/firebase-sync/auth-all', async (req, res) => {
  * Úsese la primera vez que se conecta el POS al nuevo proyecto Firebase.
  */
 app.post('/api/firebase-reports/bootstrap', async (req, res) => {
+  // Antes una petición SIN sesión pasaba (actorUser null) y cualquiera en la
+  // red podía disparar un backfill completo hacia Firestore.
   const actorUser = await resolveRequestActorUser(req, { required: true }).catch(() => null);
-  if (actorUser && !isGlobalAdministratorUser(actorUser)) {
+  if (!actorUser || !isGlobalAdministratorUser(actorUser)) {
     return res.status(403).json({ error: 'Solo el administrador general puede ejecutar este bootstrap.' });
   }
   if (!reportsSync.isEnabled()) {
@@ -11027,7 +11071,12 @@ app.post('/api/firebase-reports/bootstrap', async (req, res) => {
 /**
  * Estado: indica si el módulo de reportes-sync está activo y qué businessId se usa.
  */
-app.get('/api/firebase-reports/status', async (_req, res) => {
+app.get('/api/firebase-reports/status', async (req, res) => {
+  // Devuelve el ID de licencia del negocio: solo con sesión del POS.
+  const actorUser = await resolveRequestActorUser(req, { required: true }).catch(() => null);
+  if (!actorUser) {
+    return res.status(401).json({ error: 'Sesión inválida o expirada.' });
+  }
   const enabled = reportsSync.isEnabled();
   const config = await getReportSyncConfig();
   res.json({
@@ -18721,7 +18770,7 @@ app.get('/api/reports/advanced/devoluciones', async (req, res) => {
         COALESCE(sr.returned_by_user_name, u.nombre, u.usuario, 'Sistema') AS cajero,
         COALESCE(s.payment_method, 'efectivo') AS payment_method,
         COALESCE(s.tax, 0)          AS itbis_amount,
-        sr.total_returned           AS total,
+        sr.returned_amount          AS total,
         sr.return_type,
         sr.return_reason,
         'devolucion'                AS tipo_registro
@@ -20248,6 +20297,43 @@ async function startHttpServer(port, bindHost) {
         service: ecfModule.service,
         monitor: getInternetMonitor(),
         isMain: () => isMainTerminalConfig(getTerminalConfig()),
+      });
+      // Centro de Control de la app de reportes: resúmenes agregados en
+      // Firestore, en segundo plano y solo con Internet (la principal los
+      // calcula; las cajas terminal solo mandan su señal de vida). Ver
+      // server/sync/control-center/ y docs/CENTRO-DE-CONTROL-REPORTES.md.
+      // TECNO_CAJA_CONTROL_CENTER=0 lo apaga sin sacar una versión nueva.
+      if (String(process.env.TECNO_CAJA_CONTROL_CENTER || '1').trim() !== '0') startControlCenterPublisher({
+        query,
+        getFirestore: () => require('./modules/firebase-admin').getFirestore(),
+        // Estructura nueva → siempre bajo la licencia (única por negocio), que
+        // es el businessId que syncStaffToReportsApp pone a los usuarios de la
+        // app. reportsSync.getBusinessId manda las licencias pos_<hex> a
+        // pos:tecno-caja-{nombre}, compartido entre negocios del mismo nombre
+        // (ver memoria firestore-multinegocio); sin licencia se usa ese mismo.
+        getBusinessId: (cfg) => getLicenseReportsBusinessId() || reportsSync.getBusinessId(cfg),
+        monitor: getInternetMonitor(),
+        isMain: () => isMainTerminalConfig(getTerminalConfig()),
+        getServerId: () => serverIdentity.getServerId(),
+        getHostname: () => serverIdentity.getHostname(),
+        getTerminalScope: () => getTerminalScopeSelection(),
+        getCloudStatus: () => getSyncService().getStatus(),
+        countDeferredEcf: () => ecfModule.service.countDeferredDocuments(),
+        countContingencySales: async () => {
+          if (isMainTerminalConfig(getTerminalConfig())) return 0;
+          const rows = await localQuery("SELECT COUNT(*) AS c FROM pending_sales WHERE status IN ('pending', 'syncing', 'error')");
+          return Number(rows[0]?.c || 0);
+        },
+        ensureSchema: async () => {
+          await ensureSalesExtensions();
+          await ensureNcfExtensions();
+          await ensureReturnTables();
+          await ensureCashMovementExtensions();
+          await ensureBranchInventoryTable();
+          await ensurePaymentMethodsTable();
+        },
+        mapSequence: require('./server/routes/fiscal-sequences.routes').mapSequence,
+        appVersion: packageJson.version,
       });
       // Caja terminal que usa la base de la PC principal por la LAN: si la
       // principal cambia de IP (DHCP), reencontrarla y reconectar sola.

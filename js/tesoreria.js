@@ -774,8 +774,11 @@
   //    de caja; no ESC/POS dedicado, pero respeta el ancho de papel configurado) ──
 
   window.tesoreriaPrintBalanceTermico = async function () {
-    const paperWidth = String(DB.config?.receiptPaperSize || '80mm').toLowerCase();
-    const currency = DB.config?.currency || 'RD$';
+    // Impresora/papel/modo de ESTA PC (ver _resolveCortePrintSettings en app.js).
+    const settings = typeof _resolveCortePrintSettings === 'function'
+      ? await _resolveCortePrintSettings()
+      : { paperWidth: String(DB.config?.receiptPaperSize || '80mm').toLowerCase(), printMode: 'dialog', printerName: '', currency: DB.config?.currency || 'RD$' };
+    const currency = settings.currency;
     const fmtN = (n) => `${currency} ${Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     const funds = TES.funds || [];
     const total = funds.reduce((s, f) => s + Number(f.currentBalance || 0), 0);
@@ -802,8 +805,10 @@
       <p class="center small">${new Date().toLocaleString('es-DO')}</p>
       </body></html>`;
 
-    if (window.novaDesktop?.printReceiptHtml) {
-      await window.novaDesktop.printReceiptHtml(html, { paperSize: paperWidth || '80mm', mode: 'dialog' });
+    if (typeof _printConfiguredHtml === 'function') {
+      await _printConfiguredHtml(html, settings, 'Balance enviado a la impresora.');
+    } else if (window.novaDesktop?.printReceiptHtml) {
+      await window.novaDesktop.printReceiptHtml(html, { paperSize: settings.paperWidth || '80mm', mode: 'dialog' });
     } else {
       toast('La impresión solo está disponible en la app de escritorio.', 'warning');
     }

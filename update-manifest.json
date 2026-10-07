@@ -1,22 +1,15 @@
 {
-  "version": "1.4.2",
-  "stableVersion": "1.4.2",
-  "date": "05/10/2026",
+  "version": "1.4.3",
+  "stableVersion": "1.4.3",
+  "date": "07/10/2026",
   "size": "47.3 MB",
-  "type": "feature",
+  "type": "bugfix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Nuevo diseno de toda la aplicacion: cobro, ventas, menu, barra superior, modulos, inicio de sesion, asistente inicial, apertura y cierre de caja.",
-    "Funciona completo en la red local sin Internet: ventas, caja, inventario, clientes, reportes, NCF e impresion. Lo que necesita Internet queda en cola y se envia solo cuando vuelve.",
-    "Indicador de conexion claro: Conectado, Modo local activo (sin Internet, se vende normal) o Servidor LAN desconectado.",
-    "Una licencia activada ya no necesita Internet para seguir funcionando.",
-    "Multicaja: varias cajas pueden cobrar al mismo tiempo sin errores, sin facturas repetidas y con el inventario exacto.",
-    "Ventas sin duplicados: si se corta la red o se pulsa dos veces Cobrar, la venta se registra una sola vez.",
-    "Caja secundaria con la PC principal apagada: sigue vendiendo con su copia local y sube las ventas sola al volver la principal, sin duplicarlas.",
-    "Las cajas encuentran solas a la PC principal aunque el router le cambie la IP.",
-    "Factura electronica sin Internet: se firma y queda pendiente con su e-NCF; se envia a DGII al volver la conexion.",
-    "Firewall de Windows configurable desde Red, abierto solo para la red local.",
-    "Mejoras de seguridad en el inicio de sesion y en los datos de cada negocio en la nube."
+    "Bot de WhatsApp: ya funciona en las instalaciones nuevas de una sola caja (antes daba error al iniciar y al consultar las ventas).",
+    "Bot de WhatsApp: si la PC no tiene Google Chrome usa Microsoft Edge, y el panel muestra el motivo cuando no puede arrancar.",
+    "Cuadre de caja: se imprime directo en la impresora y con el formato configurados en esta PC, igual que la factura, sin abrir la ventana para elegir impresora.",
+    "App de reportes (Centro de Control): la PC principal publica los resumenes de ventas, caja, inventario, clientes y fiscal para la app del telefono, con el historial de los ultimos meses."
   ]
 }

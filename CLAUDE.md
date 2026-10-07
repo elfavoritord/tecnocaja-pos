@@ -34,6 +34,7 @@ Diagrama completo: `docs/ARCHITECTURE.md`.
 - `server/cache/products-cache.js` — Cache LRU de productos.
 - `server/network/` — LAN-first: monitor de Internet, identidad (`serverId`) y descubrimiento de la principal, vigilante de IP. `GET /api/connectivity` da el modo (`normal`/`local`/`contingencia`/`sin_bd`). **Internet nunca bloquea la venta**: lo remoto va en cola o diferido. Ver `docs/LAN-OFFLINE-FIRST.md`.
 - Multicaja: toda transacción de venta toma primero el lock de `config` (contador FAC) antes de leer stock/NCF. No quitarlo ni apagar `innodb_snapshot_isolation` (MariaDB 12): protegen el inventario entre cajas. Prueba real: `npm run test:e2e-lan`.
+- `server/sync/control-center/` — Centro de Control de la app de reportes: la PC principal publica resúmenes ya sumados en Firestore (`businesses/{id}/controlCenter`, `dailyStats`, `terminals`), en segundo plano y solo con Internet. Si cambias su formato, regenera el contrato de la app con `node scripts/control-center/export-app-fixtures.js`. Ver `docs/CENTRO-DE-CONTROL-REPORTES.md`.
 - `db/schema.sql` — Esquema MariaDB completo con seeds.
 - `db.js` — Abstracción dual MariaDB/SQLite.
 - `electron/main.js` — Main process.
@@ -130,6 +131,7 @@ Variables clave en `.env`:
 - `NovaPOS-Plan-Evolucion.md` — Diagnóstico + roadmap 6 fases (nombre de archivo histórico, no renombrar).
 - `docs/ARCHITECTURE.md` — Arquitectura detallada.
 - `docs/LAN-OFFLINE-FIRST.md` — Auditoría LAN-first: qué funciona sin Internet, multicaja, contingencia, riesgos.
+- `docs/CENTRO-DE-CONTROL-REPORTES.md` — Auditoría de la app de reportes, arquitectura del Centro de Control y pasos de despliegue.
 - `CONTRIBUTING.md` — Guía de desarrollo.
 - `.env.example` — Todas las variables de entorno documentadas.
 
