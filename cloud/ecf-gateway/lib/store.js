@@ -3,6 +3,10 @@
 // Almacén de documentos recibidos. En producción usa Firestore (proyecto
 // reporte-sistema-pos, ya activo para Tecno Caja). En tests usa memoria para
 // no depender de credenciales GCP.
+//
+// Los nombres de colección pueden ser rutas de subcolección
+// ("ecf_gateway_tenants/<rnc>/received"): así cada empresa tiene sus
+// documentos aparte y el listado no necesita índices compuestos.
 
 function createMemoryStore() {
   const collections = new Map();
@@ -20,9 +24,9 @@ function createMemoryStore() {
       collection(collectionName).set(key, doc);
       return doc;
     },
-    async list(collectionName, { limit = 50 } = {}) {
+    async list(collectionName, { limit = 50, orderBy = 'receivedAt' } = {}) {
       const docs = Array.from(collection(collectionName).values());
-      docs.sort((a, b) => new Date(b.receivedAt).getTime() - new Date(a.receivedAt).getTime());
+      docs.sort((a, b) => new Date(b[orderBy]).getTime() - new Date(a[orderBy]).getTime());
       return docs.slice(0, limit);
     },
     async findCertificateByRecipientRnc() {
@@ -51,10 +55,10 @@ function createFirestoreStore() {
       await db.collection(collectionName).doc(key).set(doc);
       return doc;
     },
-    async list(collectionName, { limit = 50 } = {}) {
+    async list(collectionName, { limit = 50, orderBy = 'receivedAt' } = {}) {
       const snap = await db
         .collection(collectionName)
-        .orderBy('receivedAt', 'desc')
+        .orderBy(orderBy, 'desc')
         .limit(limit)
         .get();
       return snap.docs.map((d) => d.data());

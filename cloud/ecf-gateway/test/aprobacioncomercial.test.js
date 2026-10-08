@@ -61,7 +61,7 @@ describe('POST /fe/aprobacioncomercial/api/ecf', () => {
     expect(unauthorized.status).toBe(401);
 
     const authorized = await request(app)
-      .get('/admin/received')
+      .get('/admin/received?rnc=130000001')
       .set('Authorization', 'Bearer test-token-123');
     expect(authorized.status).toBe(200);
     expect(authorized.body.approvals.length).toBe(1);

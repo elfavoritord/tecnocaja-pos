@@ -8,12 +8,68 @@ llama durante la certificación e-CF y en producción:
 - `POST /fe/autenticacion/api/validacioncertificado`
 - `POST /fe/recepcion/api/ecf`
 - `POST /fe/aprobacioncomercial/api/ecf`
-- `GET /admin/received` (protegido con `GATEWAY_ADMIN_TOKEN`, lo consume el POS)
+- `GET /admin/received` (token de administrador o de empresa, lo consume el POS)
+- `GET|POST /admin/tenants` (solo administrador)
+- `PUT /admin/tenants/:rnc/certificate` (administrador o la propia empresa)
 
 No reemplaza el módulo e-CF del POS (`modules/ecf/`) ni sus endpoints locales
 en `server/routes/dgii-public.routes.js`. Existe para que esas 3 URLs del
 **Paso 7** de certificación DGII sigan respondiendo aunque la PC de Emilio
 esté apagada.
+
+## Multiempresa: misma URL, datos de cada empresa
+
+Todos los clientes registran ante DGII **las mismas 3 URLs**. El Gateway sabe
+de quién es cada documento por el RNC del XML:
+
+| Llamada de DGII | Empresa dueña | Se guarda en |
+|---|---|---|
+| Recepción e-CF | `RNCComprador` | `ecf_gateway_tenants/{rnc}/received` |
+| Aprobación comercial | `RNCEmisor` | `ecf_gateway_tenants/{rnc}/approvals` |
+
+- El ARECF se firma con el certificado **de esa empresa** (el que se le subió
+  al Gateway, o el que subió desde la app Android). El `CERT_PATH` solo se usa
+  para la empresa por defecto (`GATEWAY_DEFAULT_RNC`); nunca se firma a nombre
+  de otra empresa con él — si una empresa no tiene certificado, su ARECF sale
+  sin firmar y el log lo dice.
+- Un e-CF para un RNC que no es cliente se responde con ARECF Estado 1,
+  motivo 4 ("RNC Comprador no corresponde") y no se guarda.
+- Cada cliente tiene su **token de empresa** (`<rnc>.<secreto>`): con él su POS
+  solo ve sus documentos. En Firestore solo se guarda el hash.
+- Lo recibido antes del modo multiempresa (`ecf_gateway_received` /
+  `ecf_gateway_approvals`) se sigue mostrando como de la empresa por defecto.
+- Sin `GATEWAY_DEFAULT_RNC` el Gateway funciona como antes (una sola empresa).
+
+### Dar de alta un cliente
+
+```bash
+GW=https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app
+ADMIN=<GATEWAY_ADMIN_TOKEN>
+
+# 1. Registrar la empresa — devuelve su token UNA sola vez, guárdalo.
+curl -X POST $GW/admin/tenants -H "Authorization: Bearer $ADMIN" \
+  -H "Content-Type: application/json" \
+  -d '{"rnc":"131000001","nombre":"Colmado Ejemplo"}'
+
+# 2. Subir su certificado .p12 (se valida la clave y se cifra con Cloud KMS).
+curl -X PUT $GW/admin/tenants/131000001/certificate -H "Authorization: Bearer $ADMIN" \
+  -F "certificado=@certificado-cliente.p12" -F "password=<clave del .p12>"
+
+# Ver empresas registradas (sin tokens ni certificados).
+curl $GW/admin/tenants -H "Authorization: Bearer $ADMIN"
+
+# Desactivar una empresa / regenerar su token.
+curl -X POST $GW/admin/tenants -H "Authorization: Bearer $ADMIN" \
+  -H "Content-Type: application/json" -d '{"rnc":"131000001","active":false}'
+curl -X POST $GW/admin/tenants -H "Authorization: Bearer $ADMIN" \
+  -H "Content-Type: application/json" -d '{"rnc":"131000001","rotateToken":true}'
+```
+
+3. En el `.env` del POS del cliente: `ECF_GATEWAY_BASE_URL=$GW`,
+   `ECF_GATEWAY_TOKEN=<su token>` y `DGII_RNC=<su RNC>`.
+4. En el portal DGII del cliente (Paso 7) van las mismas 3 URLs de siempre:
+   `$GW/fe/autenticacion/api/semilla`, `$GW/fe/recepcion/api/ecf`,
+   `$GW/fe/aprobacioncomercial/api/ecf`.
 
 ## Correr local
 
@@ -56,8 +112,26 @@ gcloud run deploy tecno-caja-ecf-gateway \
   --source . \
   --region us-east1 \
   --allow-unauthenticated \
-  --set-env-vars DGII_ENVIRONMENT=CERT,GATEWAY_BUSINESS_ID=tecnocaja-emilio,FIRESTORE_PROJECT_ID=reporte-sistema-pos \
-  --set-env-vars GATEWAY_ADMIN_TOKEN=<token generado>
+  --set-env-vars DGII_ENVIRONMENT=CERT,GATEWAY_DEFAULT_RNC=40211932609,GATEWAY_BUSINESS_ID=tecnocaja-emilio,FIRESTORE_PROJECT_ID=reporte-sistema-pos \
+  --update-secrets GATEWAY_ADMIN_TOKEN=ecf-gateway-admin-token:latest,CERT_PASSWORD=ecf-gateway-cert-password:latest,/secrets/cert.p12=ecf-gateway-cert-p12:latest
+```
+
+Los secretos viven en Secret Manager (nunca como variable en texto plano —
+quedaría visible en la configuración de cada revisión). La cuenta de servicio
+necesita `roles/secretmanager.secretAccessor` sobre cada uno.
+
+### Cambiar el token de administrador
+
+Agrega una versión nueva al secreto (imprime su número, p. ej. `2`), apunta
+el servicio a esa versión (crea una revisión nueva) y pon el mismo valor en
+`ECF_GATEWAY_ADMIN_TOKEN` del `.env` de la PC de Emilio:
+
+```bash
+node -e "process.stdout.write(require('crypto').randomBytes(24).toString('hex'))" \
+  | gcloud secrets versions add ecf-gateway-admin-token --data-file=-
+gcloud run services update tecno-caja-ecf-gateway --region us-east1 \
+  --update-secrets GATEWAY_ADMIN_TOKEN=ecf-gateway-admin-token:<número>
+gcloud secrets versions access <número> --secret ecf-gateway-admin-token   # valor para el .env
 ```
 
 El comando imprime la URL pública, algo como:
@@ -92,8 +166,19 @@ gcloud run services logs read tecno-caja-ecf-gateway --region us-east1 --limit 1
 
 ### Actualizar (nuevo deploy)
 
-Repite el mismo comando `gcloud run deploy` — crea una nueva revisión y
-mueve el 100% del tráfico a ella automáticamente.
+Usa `--update-env-vars` (no `--set-env-vars`, que borra las variables y los
+secretos ya montados como `CERT_PATH`/`CERT_PASSWORD`):
+
+```bash
+npm run vendor-sync
+gcloud run deploy tecno-caja-ecf-gateway --source . --region us-east1 \
+  --update-env-vars GATEWAY_DEFAULT_RNC=40211932609
+```
+
+Crea una nueva revisión y mueve el 100% del tráfico a ella automáticamente.
+La cuenta de servicio necesita además `roles/cloudkms.cryptoKeyEncrypterDecrypter`
+sobre `tecno-caja-fiscal/certificate-vault` (ya lo tiene) para cifrar y abrir
+los certificados de cada empresa.
 
 ### Rollback
 
@@ -105,11 +190,7 @@ gcloud run services update-traffic tecno-caja-ecf-gateway \
 
 ## Qué NO hace (todavía)
 
-- No firma digitalmente el Acuse de Recibo ni el ack de Aprobación Comercial
-  (el stub local tampoco lo hace hoy; falta confirmar contra el manual
-  técnico DGII si es requerido).
-- No aísla por empresa/RNC — es single-tenant (`GATEWAY_BUSINESS_ID` fijo).
-  El campo `businessId` ya queda guardado en cada documento para poder migrar
-  a multiempresa después sin reescribir el modelo de datos.
-- No tiene cola de reintentos ni Secret Manager para certificados — no firma
-  nada, así que no maneja certificados `.p12`.
+- No firma el ack JSON de Aprobación Comercial (solo el ARECF de recepción).
+- No tiene cola de reintentos.
+- La semilla y la validación de certificado (`/fe/autenticacion/*`) siguen
+  siendo respuestas fijas, iguales para todas las empresas.
