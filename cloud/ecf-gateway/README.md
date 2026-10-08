@@ -113,7 +113,25 @@ gcloud run deploy tecno-caja-ecf-gateway \
   --region us-east1 \
   --allow-unauthenticated \
   --set-env-vars DGII_ENVIRONMENT=CERT,GATEWAY_DEFAULT_RNC=40211932609,GATEWAY_BUSINESS_ID=tecnocaja-emilio,FIRESTORE_PROJECT_ID=reporte-sistema-pos \
-  --set-env-vars GATEWAY_ADMIN_TOKEN=<token generado>
+  --update-secrets GATEWAY_ADMIN_TOKEN=ecf-gateway-admin-token:latest,CERT_PASSWORD=ecf-gateway-cert-password:latest,/secrets/cert.p12=ecf-gateway-cert-p12:latest
+```
+
+Los secretos viven en Secret Manager (nunca como variable en texto plano —
+quedaría visible en la configuración de cada revisión). La cuenta de servicio
+necesita `roles/secretmanager.secretAccessor` sobre cada uno.
+
+### Cambiar el token de administrador
+
+Agrega una versión nueva al secreto (imprime su número, p. ej. `2`), apunta
+el servicio a esa versión (crea una revisión nueva) y pon el mismo valor en
+`ECF_GATEWAY_ADMIN_TOKEN` del `.env` de la PC de Emilio:
+
+```bash
+node -e "process.stdout.write(require('crypto').randomBytes(24).toString('hex'))" \
+  | gcloud secrets versions add ecf-gateway-admin-token --data-file=-
+gcloud run services update tecno-caja-ecf-gateway --region us-east1 \
+  --update-secrets GATEWAY_ADMIN_TOKEN=ecf-gateway-admin-token:<número>
+gcloud secrets versions access <número> --secret ecf-gateway-admin-token   # valor para el .env
 ```
 
 El comando imprime la URL pública, algo como:
