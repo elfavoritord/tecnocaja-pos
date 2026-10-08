@@ -1,15 +1,14 @@
 {
-  "version": "1.4.3",
-  "stableVersion": "1.4.3",
+  "version": "1.4.4",
+  "stableVersion": "1.4.4",
   "date": "07/10/2026",
   "size": "47.3 MB",
-  "type": "bugfix",
+  "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Bot de WhatsApp: ya funciona en las instalaciones nuevas de una sola caja (antes daba error al iniciar y al consultar las ventas).",
-    "Bot de WhatsApp: si la PC no tiene Google Chrome usa Microsoft Edge, y el panel muestra el motivo cuando no puede arrancar.",
-    "Cuadre de caja: se imprime directo en la impresora y con el formato configurados en esta PC, igual que la factura, sin abrir la ventana para elegir impresora.",
-    "App de reportes (Centro de Control): la PC principal publica los resumenes de ventas, caja, inventario, clientes y fiscal para la app del telefono, con el historial de los ultimos meses."
+    "Facturacion electronica (e-CF): el servicio en la nube que recibe los documentos de DGII ahora atiende a varias empresas con las mismas URLs. Cada empresa ve solo sus documentos y su acuse de recibo se firma con su propio certificado.",
+    "Asistente de certificacion e-CF: los Pasos 9 y 11 muestran solo los documentos recibidos para el RNC de esta empresa.",
+    "Cada PC puede conectarse al servicio e-CF con el acceso propio de su empresa (ECF_GATEWAY_TOKEN en la configuracion)."
   ]
 }
