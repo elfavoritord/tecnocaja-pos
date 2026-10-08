@@ -64,15 +64,22 @@ function listDgiiReceived() {
 // Trae lo recibido por el Tecno Caja e-CF Gateway (Cloud Run), para que el
 // wizard de certificación (Pasos 9/11) vea los documentos aunque las URLs
 // del Paso 7 apunten al gateway en vez de a este servidor local.
+// El gateway es multiempresa: con el token de empresa (ECF_GATEWAY_TOKEN)
+// solo devuelve lo de esta empresa; con el token de administrador se filtra
+// por DGII_RNC.
 async function fetchGatewayReceived() {
   const base = String(process.env.ECF_GATEWAY_BASE_URL || '').trim().replace(/\/+$/, '');
-  const token = String(process.env.ECF_GATEWAY_ADMIN_TOKEN || '').trim();
+  const token = String(process.env.ECF_GATEWAY_TOKEN || process.env.ECF_GATEWAY_ADMIN_TOKEN || '').trim();
   if (!base || !token) return { received: [], approvals: [] };
+
+  const params = new URLSearchParams({ limit: '50' });
+  const rnc = String(process.env.DGII_RNC || '').replace(/\D/g, '');
+  if (rnc) params.set('rnc', rnc);
 
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const response = await fetch(`${base}/admin/received?limit=50`, {
+    const response = await fetch(`${base}/admin/received?${params}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     });

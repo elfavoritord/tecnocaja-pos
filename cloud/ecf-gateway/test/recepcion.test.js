@@ -76,7 +76,7 @@ describe('POST /fe/recepcion/api/ecf', () => {
     const store = createMemoryStore();
     app = createApp({ store });
     const xml = sampleEcfXml({ encf: 'E310000000003' });
-    await store.save('ecf_gateway_received', '130000001_E310000000003', {
+    await store.save('ecf_gateway_tenants/101000001/received', '130000001_E310000000003', {
       businessId: 'test',
       rncEmisor: '130000001',
       rncComprador: '101000001',
