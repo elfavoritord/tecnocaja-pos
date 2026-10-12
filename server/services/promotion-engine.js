@@ -76,6 +76,47 @@ function isBetterCandidate(candidate, current) {
   return new Date(candidate.createdAt || 0).getTime() > new Date(current.createdAt || 0).getTime();
 }
 
+// Misma condición de fecha que el WHERE de fetchDateActiveRows, para filas que
+// ya no vienen de la base (la tienda online las recibe publicadas y las evalúa
+// más tarde, cuando la fecha pudo haber cambiado).
+function isActiveOnDate(row, now = new Date()) {
+  if (Number(row.permanente) === 1) return true;
+  const today = todayDateKey(now);
+  const fechaInicio = normalizeDateValue(row.fecha_inicio);
+  const fechaFin = normalizeDateValue(row.fecha_fin);
+  if (fechaInicio && today < fechaInicio) return false;
+  if (fechaFin && today > fechaFin) return false;
+  return true;
+}
+
+// Arma { producto_id: promoInfo } con las filas promoción×producto, dejando la
+// mejor por producto (fecha + hora + prioridad). Sin I/O: la usan
+// resolveActivePromotions/resolveActiveQuantityRules y la tienda online.
+function buildActiveMapFromRows(rows, { now = new Date(), withMinQty = false } = {}) {
+  const byProduct = {};
+  for (const row of rows || []) {
+    if (!isActiveOnDate(row, now) || !isWithinTimeWindow(row, now)) continue;
+    const candidate = {
+      promotionId: Number(row.promotion_id),
+      nombre: row.nombre,
+      precioOriginal: Number(row.precio_original),
+      precioPromocion: Number(row.precio_promocion),
+      ahorro: Number((Number(row.precio_original) - Number(row.precio_promocion)).toFixed(2)),
+      texto: row.texto_promocion || '',
+      color: row.color || '',
+      prioridad: Number(row.prioridad || 0),
+      createdAt: row.created_at,
+    };
+    if (withMinQty) candidate.cantidadMinima = Number(row.cantidad_minima);
+    const productoId = Number(row.producto_id);
+    const current = byProduct[productoId];
+    if (!current || isBetterCandidate(candidate, current)) {
+      byProduct[productoId] = candidate;
+    }
+  }
+  return byProduct;
+}
+
 // Trae TODAS las filas promoción×producto vigentes por fecha (sin filtrar por
 // hora todavía) para la sucursal indicada y el tipo dado — una sola consulta,
 // sin N+1. `tipo` se parametriza (placeholder `?`) para reutilizar la misma
@@ -84,7 +125,7 @@ async function fetchDateActiveRows(query, { sucursalId = null, tipo = 'oferta_pr
   const today = todayDateKey();
   return query(
     `SELECT p.id AS promotion_id, p.nombre, p.prioridad, p.color, p.texto_promocion,
-            p.hora_inicio, p.hora_fin, p.permanente, p.created_at,
+            p.hora_inicio, p.hora_fin, p.permanente, p.created_at, p.fecha_inicio, p.fecha_fin,
             pp.producto_id, pp.precio_original, pp.precio_promocion, pp.cantidad_minima
      FROM promotions p
      JOIN promotion_products pp ON pp.promotion_id = p.id
@@ -112,29 +153,7 @@ async function resolveActivePromotions({ query, sucursalId = null, now = new Dat
   if (configRows.length && Number(configRows[0].promotions_enabled) === 0) return {};
 
   const rows = await fetchDateActiveRows(query, { sucursalId, tipo: 'oferta_precio' });
-  const byProduct = {};
-
-  for (const row of rows) {
-    if (!isWithinTimeWindow(row, now)) continue;
-    const candidate = {
-      promotionId: Number(row.promotion_id),
-      nombre: row.nombre,
-      precioOriginal: Number(row.precio_original),
-      precioPromocion: Number(row.precio_promocion),
-      ahorro: Number((Number(row.precio_original) - Number(row.precio_promocion)).toFixed(2)),
-      texto: row.texto_promocion || '',
-      color: row.color || '',
-      prioridad: Number(row.prioridad || 0),
-      createdAt: row.created_at,
-    };
-    const productoId = Number(row.producto_id);
-    const current = byProduct[productoId];
-    if (!current || isBetterCandidate(candidate, current)) {
-      byProduct[productoId] = candidate;
-    }
-  }
-
-  return byProduct;
+  return buildActiveMapFromRows(rows, { now });
 }
 
 // Resuelve el mapa { producto_id: reglaInfo } de reglas "descuento_por_cantidad"
@@ -147,30 +166,7 @@ async function resolveActiveQuantityRules({ query, sucursalId = null, now = new 
   if (configRows.length && Number(configRows[0].promotions_enabled) === 0) return {};
 
   const rows = await fetchDateActiveRows(query, { sucursalId, tipo: 'descuento_por_cantidad' });
-  const byProduct = {};
-
-  for (const row of rows) {
-    if (!isWithinTimeWindow(row, now)) continue;
-    const candidate = {
-      promotionId: Number(row.promotion_id),
-      nombre: row.nombre,
-      precioOriginal: Number(row.precio_original),
-      precioPromocion: Number(row.precio_promocion),
-      ahorro: Number((Number(row.precio_original) - Number(row.precio_promocion)).toFixed(2)),
-      cantidadMinima: Number(row.cantidad_minima),
-      texto: row.texto_promocion || '',
-      color: row.color || '',
-      prioridad: Number(row.prioridad || 0),
-      createdAt: row.created_at,
-    };
-    const productoId = Number(row.producto_id);
-    const current = byProduct[productoId];
-    if (!current || isBetterCandidate(candidate, current)) {
-      byProduct[productoId] = candidate;
-    }
-  }
-
-  return byProduct;
+  return buildActiveMapFromRows(rows, { now, withMinQty: true });
 }
 
 // Decide qué promoción aplica a una línea del carrito, dado cuántas unidades
@@ -207,6 +203,9 @@ async function resolvePriceForSaleItem({ query, productoId, sucursalId = null, q
 module.exports = {
   computePromotionStatus,
   isWithinTimeWindow,
+  isActiveOnDate,
+  buildActiveMapFromRows,
+  fetchDateActiveRows,
   resolveActivePromotions,
   resolveActiveQuantityRules,
   pickWinningPromotion,

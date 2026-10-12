@@ -11,6 +11,10 @@ let billingActivePane = 'payment';
 let billingActiveStep = 'order';
 let activeRecoveredQuotationId = null;
 let activeRecoveredQuotationName = '';
+// Pedido de la tienda online que se está cobrando ({ id, numero, cliente }).
+// Viaja como onlineOrderId en POST /api/sales: el servidor liga la venta al
+// pedido en la misma transacción y rechaza un segundo cobro del mismo pedido.
+let activeOnlineOrder = null;
 let salesSearchFocusTimer = null;
 const BILLING_MODAL_WIDTH_KEY = 'tecnocaja-billing-modal-width';
 const BILLING_MODAL_HEIGHT_KEY = 'tecnocaja-billing-modal-height';
@@ -489,6 +493,13 @@ function resolvePromotionForCartLine(productId, qty) {
 // cantidad final — necesario porque, a diferencia de Oferta de Precio, un
 // Descuento por Cantidad depende de cuánto termine habiendo en el carrito.
 function recalcSaleItemForQty(item, qty) {
+  // Línea de un pedido online: se mantiene el precio con que el cliente
+  // compró (el servidor lo vuelve a leer del pedido al cobrar).
+  if (item.precioPactado !== undefined && item.precioPactado !== null) {
+    const pactado = normalizeSaleItem({ ...item, qty, precio: Number(item.precioPactado) });
+    pactado.total = calcItemTotal(pactado);
+    return pactado;
+  }
   const promo = resolvePromotionForCartLine(Number(item.id), qty);
   const product = findProductForSaleItem(item);
   const updated = normalizeSaleItem({
@@ -1564,6 +1575,7 @@ function buildSuspendedSaleDraft(name) {
     deliveryLink: String(DB.saleDeliveryLink || '').trim(),
     deliveryPayAmount: Number(DB.saleDeliveryPayAmount || 0) || 0,
     orderNotes: String(DB.saleOrderNotes || '').trim(),
+    onlineOrder: activeOnlineOrder ? { ...activeOnlineOrder } : null,
     total: totals.total,
     itemCount: totals.itemCount,
     items: cloneSaleData(DB.saleItems, [])
@@ -1611,6 +1623,48 @@ function clearRecoveredQuotationTracking() {
   activeRecoveredQuotationName = '';
 }
 
+// ── Pedido online en el carrito ─────────────────────────────────────────────
+
+function renderActiveOnlineOrderBanner() {
+  const host = document.getElementById('module-ventas');
+  if (!host) return;
+  let banner = document.getElementById('to-cart-banner');
+  if (!activeOnlineOrder) {
+    banner?.remove();
+    return;
+  }
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'to-cart-banner';
+    banner.className = 'to-cart-banner';
+    host.prepend(banner);
+  }
+  banner.innerHTML = `
+    <span>Cobrando el <strong>pedido online #${escapeHtml(activeOnlineOrder.numero)}</strong> · ${escapeHtml(activeOnlineOrder.cliente || '')}</span>
+    <button type="button" class="btn-secondary" onclick="cancelSale()">Quitar pedido</button>
+  `;
+}
+
+function setActiveOnlineOrder(order) {
+  // telefono: WhatsApp del cliente del pedido, para mandarle la factura al cobrar.
+  activeOnlineOrder = order && order.id
+    ? { id: Number(order.id), numero: order.numero, cliente: order.cliente || '', telefono: order.telefono || '' }
+    : null;
+  renderActiveOnlineOrderBanner();
+}
+
+function clearActiveOnlineOrder({ release = true } = {}) {
+  const previous = activeOnlineOrder;
+  activeOnlineOrder = null;
+  renderActiveOnlineOrderBanner();
+  if (previous && release && window.TiendaOnline?.onCartCleared) {
+    window.TiendaOnline.onCartCleared(previous.id);
+  }
+}
+
+window.setActiveOnlineOrder = setActiveOnlineOrder;
+window.getActiveOnlineOrder = () => (activeOnlineOrder ? { ...activeOnlineOrder } : null);
+
 function applyRecoveredSuspendedSale(pending) {
   DB.saleItems = (cloneSaleData(pending.items, []) || []).map((item) => normalizeSaleItem(item));
   DB.saleClientId = pending.clientId || null;
@@ -1627,6 +1681,7 @@ function applyRecoveredSuspendedSale(pending) {
   DB.saleDeliveryLink = pending.deliveryLink || '';
   DB.saleDeliveryPayAmount = Number(pending.deliveryPayAmount || 0) || 0;
   DB.saleOrderNotes = pending.orderNotes || '';
+  setActiveOnlineOrder(pending.onlineOrder || null);
 
   renderSaleTable();
   updateTotals();
@@ -6412,6 +6467,12 @@ function buildSalePayload() {
     _showCajaRequiredModal();
     return;
   }
+  // En contingencia la venta se guarda en esta caja y sube después: no puede
+  // ligarse al pedido online en el momento, así que se espera a la principal.
+  if (activeOnlineOrder && window.offlineManager?.getState?.()?.isOnline === false) {
+    showToast('Los pedidos online se cobran con la PC principal conectada. Espera a que vuelva la conexión.', 'warning');
+    return null;
+  }
   if (!validateSaleItemsBeforeCheckout()) return null;
   const generalDisc = getGeneralDiscountValue();
   const saleTotals = calcularTotales(DB.saleItems, {
@@ -6614,6 +6675,7 @@ function buildSalePayload() {
     exchangeRateUsed: DB.payMethod === 'usd' ? usdRate : null,
     sourceQuotationId: activeRecoveredQuotationId || null,
     sourceQuotationName: activeRecoveredQuotationName || '',
+    onlineOrderId: activeOnlineOrder?.id || null,
     ...(typeof getBusinessStructurePayload === 'function' ? getBusinessStructurePayload() : {}),
     ...getActorPayload()
   };
@@ -6735,6 +6797,9 @@ async function finalizePendingSale(action = 'charge') {
 
   try {
     const sourceQuotationId = salePayload?.sourceQuotationId || null;
+    const sourceOnlineOrderId = salePayload?.onlineOrderId || null;
+    // Se toma antes de cobrar: al confirmar la venta el pedido activo se limpia.
+    const onlineOrderPhone = sourceOnlineOrderId ? (activeOnlineOrder?.telefono || '') : '';
     const billingCaps = window.TecnoCajaBilling?.getEffectiveBillingCapabilities
       ? window.TecnoCajaBilling.getEffectiveBillingCapabilities()
       : { canCreateSales: true, forcePendingCharge: false };
@@ -6799,6 +6864,11 @@ async function finalizePendingSale(action = 'charge') {
     const esPendienteCobro = String(savedVenta.estadoVenta || savedVenta.sale_status || '').trim() === 'pendiente_cobro';
 
     DB.ventas.unshift(savedVenta);
+    if (sourceOnlineOrderId) {
+      // El servidor ya ligó la venta al pedido: no hay bloqueo que soltar.
+      clearActiveOnlineOrder({ release: false });
+      window.TiendaOnline?.onSaleCompleted?.(sourceOnlineOrderId, savedVenta);
+    }
     if (sourceQuotationId) {
       try {
         await api.deleteQuotation(sourceQuotationId, getActorPayload());
@@ -6846,6 +6916,12 @@ async function finalizePendingSale(action = 'charge') {
     console.log('[wa-bot] Venta finalizada, ¿venía de cotización?', { sourceQuotationId });
     if (sourceQuotationId) {
       sendReceiptToWhatsAppBotAuto(savedVenta);
+    } else if (sourceOnlineOrderId) {
+      // Pedido de la tienda online cobrado: la factura le llega sola al cliente.
+      sendReceiptToWhatsAppBotAuto({
+        ...savedVenta,
+        clienteTelefono: savedVenta.clienteTelefono || onlineOrderPhone || savedVenta.telefonoDelivery || '',
+      });
     }
 
     cancelSale();
@@ -6878,7 +6954,12 @@ async function finalizePendingSale(action = 'charge') {
       await sendReceiptToWhatsApp(savedVenta);
     }
   } catch (error) {
-    if (error?.code === 'NO_ACTIVE_SESSION' || error?.statusCode === 409 || /no hay.*caja.*abierta/i.test(error?.message || '')) {
+    if (error?.code === 'YA_CONVERTIDO') {
+      // Otra caja ya cobró este pedido online: no se registró nada aquí.
+      clearActiveOnlineOrder({ release: false });
+      showToast(error.message, 'warning', 9000);
+      window.TiendaOnline?.refresh?.();
+    } else if (error?.code === 'NO_ACTIVE_SESSION' || error?.statusCode === 409 || /no hay.*caja.*abierta/i.test(error?.message || '')) {
       showToast('Debes abrir la caja antes de registrar ventas. Ve al módulo de Caja y ábrela.', 'warning');
       // Refrescar el estado de la caja por si cambió desde otro terminal
       if (typeof refreshCajaFromServer === 'function') {
@@ -7241,6 +7322,14 @@ async function sendReceiptToWhatsAppBotAuto(venta) {
         showToast('Factura enviada al cliente por WhatsApp.', 'success');
         return;
       }
+      if (result.apagado) {
+        // Negocio sin el bot encendido: se avisa una vez por sesión, sin alarma.
+        if (!window.__tcAvisoBotApagado) {
+          window.__tcAvisoBotApagado = true;
+          showToast('La factura no se envió por WhatsApp: el Bot de WhatsApp está apagado. Actívalo en Más → Bot WhatsApp para que se envíe sola.', 'warning', 9000);
+        }
+        return;
+      }
       lastError = result.error;
       if (!result.retryable) break;
     } catch (error) {
@@ -7262,6 +7351,10 @@ async function sendReceiptToWhatsAppBotAuto(venta) {
 // generable, número inválido) para no reintentar algo que nunca va a mejorar.
 async function _attemptSendReceiptToWhatsAppBot(venta, phone) {
   const status = await fetch('/api/wa-bot/status').then((r) => r.json()).catch(() => null);
+  if (status?.status === 'stopped') {
+    // Apagado no se arregla solo esperando: no tiene sentido reintentar.
+    return { ok: false, retryable: false, apagado: true, error: 'el Bot de WhatsApp está apagado' };
+  }
   if (status?.status !== 'ready') {
     return { ok: false, retryable: true, error: `bot no está listo (${status?.status || 'desconocido'})` };
   }
@@ -9068,6 +9161,7 @@ function cancelSale() {
   // Venta cancelada/cobrada/suspendida: el próximo cobro empieza de cero.
   window.CobroUI?.clearResume();
   clearRecoveredQuotationTracking();
+  clearActiveOnlineOrder();
   storeRememberedBillingClientId(DB.saleClientId);
   DB.saleItems = [];
   resetBillingCheckoutDraft({ preserveRememberedClient: false });

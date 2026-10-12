@@ -1,0 +1,234 @@
+/* ===== TECNO CAJA - TIENDA ONLINE (Pedidos Online, configuración y aviso) =====
+ * Usa los tokens de css/tokens.css (día/noche). La tienda que ve el cliente
+ * vive en la nube (cloud/tienda-online/public) y tiene sus propios estilos.
+ */
+
+/* ── Módulo Pedidos Online ─────────────────────────────────────────────── */
+#module-tiendaonline .to-layout {
+  display: grid;
+  /* minmax(0, 1fr): una tabla ancha nunca empuja la pantalla hacia los lados. */
+  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--tc-space-4);
+  min-height: 0;
+  flex: 1;
+}
+
+@media (max-width: 1100px) {
+  #module-tiendaonline .to-layout { grid-template-columns: 1fr; }
+}
+
+.to-status-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-2) var(--tc-space-4);
+  padding: var(--tc-space-2) var(--tc-space-3);
+  margin-bottom: var(--tc-space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  font-size: var(--tc-fs-sm);
+  color: var(--text2);
+}
+
+.to-status-bar a { color: var(--accent-light); word-break: break-all; }
+.to-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--text3); }
+.to-dot.ok { background: var(--success); }
+.to-dot.warn { background: var(--warning); }
+.to-dot.err { background: var(--danger); }
+
+.to-filters { display: flex; flex-wrap: wrap; gap: var(--tc-space-2); margin-bottom: var(--tc-space-3); }
+.to-filters .pill-tab .to-count { margin-left: 6px; font-weight: 700; }
+
+.to-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-2);
+  overflow-y: auto;
+  max-height: calc(100vh - 290px);
+  padding-right: 2px;
+}
+
+.to-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px var(--tc-space-3);
+  padding: var(--tc-space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+  width: 100%;
+}
+
+.to-card:hover { border-color: var(--tc-border-strong); }
+.to-card.active { border-color: var(--accent); background: var(--accent-glow); }
+.to-card.is-new { border-left: 4px solid var(--warning); }
+.to-card-title { font-weight: 700; font-size: var(--tc-fs-md); }
+.to-card-total { font-weight: 600; text-align: right; }
+.to-card-meta { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: var(--tc-fs-xs); color: var(--text2); }
+
+.to-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--tc-fs-xs);
+  font-weight: 600;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  white-space: nowrap;
+}
+
+.to-badge.st-nuevo { color: var(--warning); border-color: var(--tc-warning-border); background: var(--tc-warning-bg); }
+.to-badge.st-confirmado,
+.to-badge.st-en_preparacion,
+.to-badge.st-listo { color: var(--accent-light); border-color: var(--tc-soft-border); background: var(--accent-glow); }
+.to-badge.st-en_camino { color: var(--info); border-color: var(--tc-soft-border); }
+.to-badge.st-entregado { color: var(--success); border-color: var(--tc-success-border); background: var(--tc-success-bg); }
+.to-badge.st-cancelado,
+.to-badge.st-rechazado { color: var(--danger); border-color: var(--tc-danger-border); background: var(--tc-danger-bg); }
+.to-badge.venta { color: var(--success); border-color: var(--tc-success-border); }
+
+.to-detail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg2);
+  padding: var(--tc-space-4);
+  overflow-y: auto;
+  max-height: calc(100vh - 230px);
+}
+
+.to-detail-empty { color: var(--text2); text-align: center; padding: 3rem 1rem; }
+/* El contenido del pedido va centrado y con un ancho cómodo de leer. */
+.to-detail-inner { max-width: 960px; margin: 0 auto; }
+.to-detail-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--tc-space-2); margin-bottom: var(--tc-space-3); }
+.to-detail-head h3 { margin: 0; font-size: var(--tc-fs-xl); }
+.to-detail-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.to-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); align-items: stretch; gap: var(--tc-space-3); margin-bottom: var(--tc-space-4); }
+.to-box { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--tc-space-3); background: var(--bg3); min-width: 0; overflow-wrap: anywhere; }
+.to-box h4 { margin: 0 0 6px; font-size: var(--tc-fs-sm); color: var(--text2); font-weight: 600; text-transform: uppercase; letter-spacing: .02em; }
+.to-box p { margin: 2px 0; }
+.to-box .to-ok { margin-top: 6px; color: var(--success); font-size: var(--tc-fs-xs); font-weight: 600; }
+.to-items { width: 100%; border-collapse: collapse; margin-bottom: var(--tc-space-3); }
+.to-items th, .to-items td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; font-size: var(--tc-fs-sm); vertical-align: top; }
+.to-items th { color: var(--text2); font-weight: 600; font-size: var(--tc-fs-xs); text-transform: uppercase; letter-spacing: .02em; }
+.to-items td.num, .to-items th.num { text-align: right; white-space: nowrap; }
+.to-items td.cen, .to-items th.cen { text-align: center; white-space: nowrap; }
+/* Columnas fijas: la cantidad centrada y los montos alineados con los totales. */
+.to-items-pedido { table-layout: fixed; }
+.to-items-pedido col.c-cant { width: 76px; }
+.to-items-pedido col.c-monto { width: 128px; }
+.to-items-pedido td:first-child { overflow-wrap: anywhere; }
+.to-items .to-warn { color: var(--warning); font-size: var(--tc-fs-xs); }
+.to-items .to-err { color: var(--danger); font-size: var(--tc-fs-xs); }
+.to-totals {
+  margin-left: auto; width: min(340px, 100%);
+  display: grid; grid-template-columns: 1fr auto; gap: 6px 0;
+  padding: var(--tc-space-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg3);
+  font-size: var(--tc-fs-sm);
+}
+.to-totals > span:nth-child(2n) { padding-left: 16px; text-align: right; white-space: nowrap; }
+.to-totals .grand { padding-top: 6px; border-top: 1px solid var(--border); font-size: var(--tc-fs-lg); font-weight: 700; }
+.to-actions { display: flex; flex-wrap: wrap; gap: var(--tc-space-2); margin: var(--tc-space-4) 0; padding-top: var(--tc-space-4); border-top: 1px solid var(--border); }
+.to-history-title { margin: 0 0 6px; }
+.to-actions .btn-primary, .to-actions .btn-secondary, .to-actions .btn-danger { min-height: var(--tc-control-h); }
+.to-history { list-style: none; margin: 0; padding: 0; font-size: var(--tc-fs-sm); }
+.to-history li { padding: 6px 0; border-bottom: 1px dashed var(--border); color: var(--text2); }
+.to-history li strong { color: var(--text); }
+.to-note { padding: var(--tc-space-2) var(--tc-space-3); border-radius: var(--radius-sm); font-size: var(--tc-fs-sm); margin-bottom: var(--tc-space-2); border: 1px solid var(--border); }
+.to-note.aviso { color: var(--warning); border-color: var(--tc-warning-border); background: var(--tc-warning-bg); }
+.to-note.error { color: var(--danger); border-color: var(--tc-danger-border); background: var(--tc-danger-bg); }
+.to-note.info { color: var(--text2); }
+
+/* Productos publicados */
+.to-products-tools { display: flex; flex-wrap: wrap; gap: var(--tc-space-2); align-items: center; margin-bottom: var(--tc-space-3); }
+.to-products-table td input[type="checkbox"] { width: 20px; height: 20px; }
+.to-products-table td .form-input { min-height: 36px; padding: 4px 8px; }
+.to-muted { color: var(--text2); font-size: var(--tc-fs-xs); }
+
+/* Reportes */
+.to-report-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: var(--tc-space-3); margin-bottom: var(--tc-space-4); }
+.to-report-cards .stat-card { padding: var(--tc-space-3); }
+.to-report-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--tc-space-4); }
+
+/* ── Configuración (Mi Negocio → Tienda online) ───────────────────────── */
+#cfg-tienda-online-section .to-cfg-state { margin-top: .75rem; padding: .6rem .9rem; background: var(--bg3); border-radius: 6px; font-size: .85rem; }
+.to-modal-overlay { position: fixed; inset: 0; z-index: 9990; background: var(--tc-scrim); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.to-modal { width: min(920px, 100%); max-height: 92vh; display: flex; flex-direction: column; background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); }
+.to-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.to-modal-head h3 { margin: 0; font-size: var(--tc-fs-lg); }
+.to-modal-body { padding: 16px 18px; overflow-y: auto; }
+.to-modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.to-modal .tc-tabs { margin-bottom: 14px; }
+.to-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 16px; }
+.to-form-grid .span-full { grid-column: 1 / -1; }
+.to-hours { display: grid; grid-template-columns: 110px auto 1fr 1fr; gap: 6px 10px; align-items: center; }
+.to-zones-row, .to-pay-row { display: grid; grid-template-columns: 1fr 140px auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.to-pay-row { grid-template-columns: 220px 1fr; }
+.to-slug-row { display: flex; align-items: center; gap: 6px; }
+.to-slug-row span { color: var(--text2); white-space: nowrap; font-size: var(--tc-fs-sm); }
+.to-banner-preview { width: 100%; max-height: 160px; object-fit: cover; border-radius: var(--radius); border: 1px solid var(--border); }
+
+/* Fotos del producto para la tienda (ficha → pestaña Tienda online) */
+.to-fotos { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.to-foto {
+  position: relative; width: 96px; height: 96px; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: var(--radius); background: #fff; overflow: hidden;
+}
+/* Tamaño real de la foto, sin estirarla ni recortarla. */
+.to-foto img { position: absolute; inset: 0; margin: auto; max-width: calc(100% - 8px); max-height: calc(100% - 8px); }
+.to-foto.principal { border-color: var(--tc-primary); }
+.to-foto-tag { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 999px; background: var(--tc-primary); color: var(--tc-on-primary); font-size: 10px; font-weight: 600; }
+.to-foto-vacia { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text2); font-size: var(--tc-fs-xs); }
+.to-foto-acts { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; background: rgba(0, 0, 0, .55); }
+.to-foto-acts button { flex: 1; height: 24px; padding: 0; border: 0; background: none; color: #fff; font-size: 11px; cursor: pointer; }
+.to-foto-acts button:hover:not(:disabled) { background: rgba(255, 255, 255, .18); }
+.to-foto-acts button:disabled { opacity: .35; cursor: default; }
+.to-foto-acts button.del:hover { background: #dc2626; }
+.to-foto.add { display: grid; place-items: center; align-content: center; gap: 2px; border-style: dashed; background: transparent; color: var(--text2); cursor: pointer; font: inherit; }
+.to-foto.add b { font-size: 22px; line-height: 1; color: var(--tc-primary); }
+.to-foto.add span { font-size: var(--tc-fs-xs); }
+.to-foto.add:hover { border-color: var(--tc-primary); color: var(--text); }
+.to-fotos-count { width: 100%; }
+
+/* ── Aviso de pedido nuevo (todas las pantallas) ───────────────────────── */
+#to-alert {
+  position: fixed;
+  top: 76px;
+  right: 20px;
+  z-index: 99998;
+  max-width: 340px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: var(--radius);
+  background: var(--tc-primary);
+  color: var(--tc-on-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+  cursor: pointer;
+}
+#to-alert strong { display: block; font-size: var(--tc-fs-md); }
+#to-alert small { display: block; opacity: .9; margin-top: 2px; }
+
+/* Aviso en Ventas mientras se cobra un pedido online */
+.to-cart-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--tc-soft-border);
+  background: var(--accent-glow);
+  color: var(--text);
+  font-size: var(--tc-fs-sm);
+}
+.to-cart-banner button { min-height: 32px; }

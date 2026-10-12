@@ -1124,6 +1124,12 @@
     resumeOnReopen = false;
   }
 
+  // Pedido de la tienda online cargado en Ventas: ya trae cliente, entrega,
+  // método y comprobante; el cobro los conserva igual que "Agregar productos".
+  function markResume() {
+    resumeOnReopen = true;
+  }
+
   // ── Superposiciones ──────────────────────────────────────────────────────
 
   const POPOVER_IDS = ['cobro-client-picker', 'cobro-doc-menu'];
@@ -1198,6 +1204,7 @@
     suspend,
     consumeResume,
     clearResume,
+    markResume,
     closeOverlays,
     hasOpenOverlay,
     getSessionRate,

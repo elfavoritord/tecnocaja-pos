@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#10b981">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <title>Tienda en línea</title>
+  <!--PWA-->
+  <script src="/static/tema.js?v=11"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=11">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-in">
+      <a class="brand" id="brand" href="/" title="Ir al inicio de la tienda"><span class="logo-emoji" aria-hidden="true">🛒</span><h1>Cargando…</h1></a>
+      <div class="search-box">
+        <span class="search-ico" aria-hidden="true">🔍</span>
+        <input class="search" id="buscar" type="search" placeholder="Buscar…" autocomplete="off" aria-label="Buscar productos">
+      </div>
+      <div class="acts">
+        <button class="icon-btn solo-pc" id="pedidos-btn" type="button" aria-label="Mis pedidos" title="Mis pedidos">🧾</button>
+        <button class="icon-btn solo-pc" id="fav-btn" type="button" aria-label="Ver favoritos">❤️<span class="badge red hidden" id="fav-count">0</span></button>
+        <a class="icon-btn hidden" id="llamar-btn" href="#" aria-label="Llamar a la tienda" title="Llamar">📞</a>
+        <a class="icon-btn wa hidden" id="wa-btn" href="#" target="_blank" rel="noopener" aria-label="Escribir por WhatsApp" title="WhatsApp">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3z"/><path d="M9 8.2c.3-.5.6-.5.9-.5h.5c.2 0 .4 0 .6.5l.7 1.6c.1.2.1.4 0 .6l-.5.7c-.1.2-.1.4 0 .5.5.9 1.4 1.8 2.4 2.3.2.1.4.1.5 0l.6-.7c.2-.2.4-.2.6-.1l1.6.7c.3.1.4.3.4.5 0 .9-.6 1.8-1.6 1.9-2.4.4-6.5-3.2-6.8-5.6-.1-.9.3-1.9.9-2.4z" class="wa-fon"/></svg>
+        </a>
+        <button class="icon-btn" id="tema-btn" type="button" aria-label="Cambiar a modo oscuro">🌙</button>
+        <button class="cart-btn solo-pc" id="cart-btn" type="button" aria-label="Ver carrito" title="Carrito">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.6"/><circle cx="18" cy="20" r="1.6"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6.2"/></svg>
+          <span class="badge red hidden" id="cart-count">0</span>
+        </button>
+      </div>
+    </div>
+  </header>
+  <main id="app">
+    <p class="empty">Cargando la tienda…</p>
+  </main>
+
+  <!-- Barra de abajo (teléfono), como una app -->
+  <nav class="tabbar" id="tabbar" aria-label="Navegación">
+    <button type="button" data-nav="inicio" class="on" aria-label="Inicio">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h5v-6h4v6h5V10"/></svg><span>Inicio</span>
+    </button>
+    <button type="button" data-nav="favoritos" aria-label="Favoritos">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.6-9.3A5.3 5.3 0 0 1 12 5.9a5.3 5.3 0 0 1 9.6 5.3c-2.1 4.7-9.6 9.3-9.6 9.3z"/></svg><span>Favoritos</span>
+      <b class="tb-badge red hidden" id="tb-fav-count">0</b>
+    </button>
+    <button type="button" data-nav="carrito" class="tb-cart" aria-label="Carrito">
+      <span class="tb-circle"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.6"/><circle cx="18" cy="20" r="1.6"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6.2"/></svg>
+        <b class="tb-badge hidden" id="tb-cart-count">0</b></span>
+    </button>
+    <button type="button" data-nav="ofertas" aria-label="Ofertas">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5"/></svg><span>Ofertas</span>
+    </button>
+    <button type="button" data-nav="pedidos" aria-label="Mis pedidos">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h12v19l-3-2-3 2-3-2-3 2z"/><path d="M9 7.5h6M9 11.5h6M9 15.5h4"/></svg><span>Pedidos</span>
+    </button>
+  </nav>
+
+  <!-- Carrito, favoritos, mis pedidos y checkout -->
+  <div class="overlay" id="overlay" data-act="cerrar"></div>
+  <aside class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="panel-title">
+    <header>
+      <button class="back x" type="button" data-act="cerrar" aria-label="Cerrar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+      </button>
+      <h3 id="panel-title">Tu carrito</h3>
+      <span class="panel-extra" id="panel-extra"></span>
+    </header>
+    <div class="content" id="panel-content"></div>
+    <footer id="panel-foot"></footer>
+  </aside>
+
+  <!-- Detalle del producto -->
+  <div class="modal-overlay" id="modal-overlay" data-act="cerrar-detalle"></div>
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="grip" data-act="cerrar-detalle" aria-hidden="true"></div>
+    <button class="modal-x" type="button" data-act="cerrar-detalle" aria-label="Cerrar">✕</button>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script src="/static/app.js?v=11"></script>
+</body>
+</html>

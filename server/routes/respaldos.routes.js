@@ -146,7 +146,10 @@ async function pruneCloudBackups(businessId, keepCount = DEFAULT_BACKUP_RETENTIO
   }
 }
 
-async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = false } = {}) {
+// deferCloud: guarda local y deja la copia en la nube "pendiente" para el
+// ciclo de subidas (cada 10 min). Lo usa el respaldo previo a una
+// actualización, que no debe esperar a Internet.
+async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = false, deferCloud = false } = {}) {
   const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
 
   // Verificar si el auto-backup del trigger específico está habilitado.
@@ -179,7 +182,9 @@ async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = f
 
   let estado = 'completado';
   let storagePath = null;
-  if (nubeAuto) {
+  if (nubeAuto && deferCloud) {
+    estado = 'pendiente_nube';
+  } else if (nubeAuto) {
     try {
       const businessId = await resolveBusinessId(query);
       storagePath = r2.backupKey(businessId, fileName);
@@ -910,8 +915,10 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       if (!req.authUser && !req.isInternalSystemCall) {
         return res.status(401).json({ ok: false, error: 'Debes iniciar sesión para realizar esta acción.' });
       }
-      const { trigger = 'manual', forceCloud = false } = req.body || {};
-      const result = await app.locals.createAutomaticBackup({ trigger, forceCloud: Boolean(forceCloud) });
+      const { trigger = 'manual', forceCloud = false, deferCloud = false } = req.body || {};
+      const options = { trigger, forceCloud: Boolean(forceCloud) };
+      if (deferCloud) options.deferCloud = true;
+      const result = await app.locals.createAutomaticBackup(options);
       res.json(result);
     } catch (e) {
       res.status(500).json({ ok: false, error: e.message });

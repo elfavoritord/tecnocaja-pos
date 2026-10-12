@@ -1,0 +1,35 @@
+{
+  "name": "tecno-caja-tienda-online",
+  "version": "1.0.0",
+  "description": "Tienda online de Tecno Caja: catálogo público y recepción de pedidos (Cloud Run). El POS sigue siendo el que factura.",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "vendor-sync": "node scripts/vendor-sync.js",
+    "start": "node index.js",
+    "dev": "npm run vendor-sync && node index.js",
+    "test": "npm run vendor-sync && jest"
+  },
+  "author": "Emilio",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "firebase-admin": "^14.2.0",
+    "helmet": "^8.0.0",
+    "sharp": "^0.34.5"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/test/**/*.test.js"
+    ]
+  }
+}

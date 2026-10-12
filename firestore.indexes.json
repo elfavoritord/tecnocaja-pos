@@ -190,6 +190,26 @@
         { "fieldPath": "status",     "order": "ASCENDING" },
         { "fieldPath": "createdAt",  "order": "DESCENDING" }
       ]
+    },
+
+    // ── App de reportes: historial de compras de un cliente ────────────────
+    // businesses/{id}/sales where customerId == X orderBy createdAt desc
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "customerId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt",  "order": "DESCENDING" }
+      ]
+    },
+    // ── App de reportes: facturas de una sucursal por fecha ─────────────────
+    {
+      "collectionGroup": "sales",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "branchId",  "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []
