@@ -1351,6 +1351,12 @@ async function purgePosBusinessFromFirebase(options = {}) {
     await deleteDocRefs(await collectDocRefsFromQuery(
       firestore.collection(getPosClientsCollectionName()).where('licenseId', '==', licenseUid)
     ), result);
+
+    // Nombre público de la tienda online (lo demás de la tienda vive bajo
+    // businesses/{licencia} y se borra más abajo).
+    await deleteDocRefs(await collectDocRefsFromQuery(
+      firestore.collection('tienda_slugs').where('licenseId', '==', licenseUid)
+    ), result);
   } else {
     result.skippedNoLicense = true;
   }

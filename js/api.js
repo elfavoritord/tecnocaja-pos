@@ -82,6 +82,7 @@ const api = {
       // por fila en `details` — antes se descartaba aquí y solo llegaba el
       // mensaje genérico al toast, sin forma de saber qué falló realmente.
       if (body?.details !== undefined) err.details = body.details;
+      if (body?.code) err.code = body.code;
       // Señal del backend: hay que pasar a la base de datos de red (MySQL) antes
       // de continuar — la manejan saveConfig() y completeInitialSetup().
       if (body?.needsNetworkDbSwitch) {

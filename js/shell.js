@@ -25,6 +25,7 @@
     caja: ['banknote', 'Caja', 'operacion'],
     colacobro: ['list', 'Cola de cobro', 'operacion'],
     delivery: ['bike', 'Delivery', 'operacion'],
+    tiendaonline: ['store', 'Pedidos', 'operacion'],
     posmovil: ['smartphone', 'POS Móvil', 'operacion'],
     productos: ['package', 'Productos', 'catalogo'],
     inventario: ['clipboard-list', 'Inventario', 'catalogo'],

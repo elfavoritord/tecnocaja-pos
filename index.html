@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="css/cobro.css">
 <link rel="stylesheet" href="css/shell.css">
 <link rel="stylesheet" href="css/ventas.css">
+<link rel="stylesheet" href="css/tienda-online.css">
 </head>
 <body>
 <!-- LOGIN SCREEN -->
@@ -727,6 +728,9 @@
       </a>
       <a href="#" class="nav-item" onclick="showModule('delivery', this)" data-module="delivery" id="nav-delivery">
         <span class="nav-icon"></span><span class="nav-label">Delivery</span>
+      </a>
+      <a href="#" class="nav-item" onclick="showModule('tiendaonline', this)" data-module="tiendaonline" id="nav-tienda-online" style="display:none">
+        <span class="nav-icon"></span><span class="nav-label">Pedidos online</span><span class="nav-badge" id="tienda-online-badge" style="display:none"></span>
       </a>
       <a href="#" class="nav-item" onclick="showModule('configuracion', this)" data-module="configuracion" data-deny-role="Cajero">
         <span class="nav-icon"></span><span class="nav-label">Configuración</span>
@@ -1595,6 +1599,33 @@
     </div>
 
     <!-- COLA DE COBRO MODULE -->
+    <!-- PEDIDOS ONLINE (Tienda online, módulo opcional — js/tienda-online.js) -->
+    <div id="module-tiendaonline" class="module hidden">
+      <div class="module-header">
+        <h2>Pedidos online</h2>
+        <div class="module-actions">
+          <input type="text" id="to-search" class="mod-search" placeholder="Buscar pedido, cliente o teléfono…" oninput="TiendaOnline.onSearch(this.value)">
+          <button class="btn-secondary" type="button" onclick="TiendaOnline.syncNow()">Sincronizar</button>
+          <button class="btn-secondary hidden" type="button" id="to-btn-config" onclick="TiendaOnline.openConfig()">Configurar tienda</button>
+        </div>
+      </div>
+      <div class="to-status-bar" id="to-status-bar">Cargando…</div>
+      <div class="tc-tabs">
+        <button type="button" class="pill-tab active" data-to-tab="pedidos" onclick="TiendaOnline.switchTab('pedidos')">Pedidos</button>
+        <button type="button" class="pill-tab" data-to-tab="productos" id="to-tab-btn-productos" onclick="TiendaOnline.switchTab('productos')">Productos publicados</button>
+        <button type="button" class="pill-tab" data-to-tab="reportes" onclick="TiendaOnline.switchTab('reportes')">Reportes</button>
+      </div>
+      <div class="to-pane" id="to-pane-pedidos">
+        <div class="to-filters" id="to-filters"></div>
+        <div class="to-layout">
+          <div class="to-list" id="to-list"></div>
+          <div class="to-detail" id="to-detail"><div class="to-detail-empty">Elige un pedido para ver el detalle.</div></div>
+        </div>
+      </div>
+      <div class="to-pane hidden" id="to-pane-productos"></div>
+      <div class="to-pane hidden" id="to-pane-reportes"></div>
+    </div>
+
     <div id="module-colacobro" class="module hidden">
       <div class="module-header">
         <h2>Cola de Cobro</h2>
@@ -1840,6 +1871,11 @@
           </select>
           <select class="repv2-filter-select" id="repv2-usuario">
             <option value="">Todos los cajeros</option>
+          </select>
+          <select class="repv2-filter-select hidden" id="repv2-origen" title="Origen de venta">
+            <option value="">Todo origen</option>
+            <option value="pos">POS (mostrador)</option>
+            <option value="tienda_online">Tienda online</option>
           </select>
           <button class="repv2-btn-apply" id="repv2-apply-btn" onclick="repV2LoadAll()">
             <span><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg></span> Aplicar
@@ -2724,6 +2760,31 @@
             <small style="font-size:0.8rem;color:var(--text2);display:block;margin-bottom:0.75rem">Define el rol de cada caja: <strong>Mixta</strong> cobra y factura, <strong>Facturación</strong> solo emite facturas (pasan a cola de cobro), <strong>Cobro</strong> solo cobra facturas pendientes.</small>
             <div id="cfg-cash-register-types-list"></div>
           </div>
+        </div>
+
+        <!-- ══════════ TIENDA ONLINE (módulo opcional — js/tienda-online.js) ══════════ -->
+        <div class="config-section" id="cfg-tienda-online-section">
+          <h3 id="cfg-section-tienda-online-title">Tienda online</h3>
+          <p class="helper-text" style="margin:0.25rem 0 0.75rem">
+            Tu propia tienda en Internet con los productos de Tecno Caja. Los pedidos llegan a
+            <strong>Pedidos online</strong> y se cobran como cualquier venta (mismo inventario, caja, NCF/e-CF y delivery).
+            Si la desactivas, la tienda se cierra y no se borra ningún pedido ni venta.
+          </p>
+          <div class="form-group span-full">
+            <div class="toggle-switch">
+              <span class="toggle-switch-label">Activar tienda online</span>
+              <label class="toggle-switch-input">
+                <input type="checkbox" id="cfg-tienda-online-enabled" onchange="TiendaOnline.onToggleEnabled(this)">
+                <span class="toggle-switch-slider"></span>
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
+            <button class="btn-primary compact-btn" type="button" onclick="TiendaOnline.openConfig()">Configurar tienda</button>
+            <button class="btn-secondary compact-btn" type="button" onclick="TiendaOnline.openProductsTab()">Productos publicados</button>
+            <button class="btn-secondary compact-btn" type="button" id="cfg-tienda-online-copy" onclick="TiendaOnline.copyLink()">Copiar enlace</button>
+          </div>
+          <div class="to-cfg-state" id="cfg-tienda-online-state">Cargando estado…</div>
         </div>
 
         <!-- ── Eliminar sucursales / cajas (solo admin general) ── -->
@@ -5040,6 +5101,7 @@
 <script src="js/fiscal-ecf.js"></script>
 <script src="js/network-manager.js"></script>
 <script src="js/delivery-panel.js"></script>
+<script src="js/tienda-online.js"></script>
 <script src="js/file-manager.js"></script>
 <script src="js/respaldos.js"></script>
 <script src="js/platform-init.js"></script>

@@ -2070,6 +2070,38 @@ function extractMapsLinkFromText(text) {
   return match ? match[0] : null;
 }
 
+// Texto directo a un teléfono (avisos de la tienda online: "tu pedido está en
+// camino"…). Mismo manejo del número que sendReceiptImage.
+async function sendTextMessage(phone, text) {
+  if (!_client || state.status !== 'ready') {
+    return { ok: false, error: 'El bot de WhatsApp no está conectado.' };
+  }
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits || !String(text || '').trim()) {
+    return { ok: false, error: 'Teléfono o mensaje inválido.' };
+  }
+  const candidatePhone = digits.length === 10 ? `1${digits}` : digits;
+  try {
+    const numberId = await _client.getNumberId(candidatePhone);
+    if (!numberId) return { ok: false, error: 'Ese número no tiene WhatsApp.' };
+    await _client.sendMessage(numberId._serialized, String(text));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message || 'No se pudo enviar el mensaje por WhatsApp.' };
+  }
+}
+
+// Aviso a los números del dueño configurados en el bot.
+async function notifyOwners(text) {
+  if (!_client || state.status !== 'ready' || !state.ownerJids.length) {
+    return { ok: false, error: 'El bot de WhatsApp no está conectado o no tiene número de dueño.' };
+  }
+  for (const ownerJid of state.ownerJids) {
+    await _client.sendMessage(ownerJid, String(text)).catch(() => {});
+  }
+  return { ok: true };
+}
+
 // Envía la imagen de una factura ya cobrada al cliente. `phone` puede venir
 // en formato local (10 dígitos, como se guarda en cotizaciones/clientes) o ya
 // con código de país — getNumberId() resuelve el JID real contra WhatsApp.
@@ -3081,8 +3113,39 @@ function resolveChromePath() {
   return undefined;
 }
 
+// WhatsApp Web cambia por dentro sin aviso. Con la versión actual, el "marcar
+// como leído" que whatsapp-web.js hace ANTES de cada envío (sendSeen) revienta
+// con "Data passed to getter must include an id property (it's how we
+// memoize)" y el mensaje no sale (pasó al mandar la factura de un pedido
+// online). Ningún envío del bot necesita marcar el chat como leído, así que se
+// apaga por defecto en esta instancia — cubre también msg.reply(), que pasa
+// por client.sendMessage. Si aun así falla con el número (@c.us), se reintenta
+// con el ID interno del contacto (@lid), que es como WhatsApp identifica ahora
+// a muchos usuarios.
+function conEnvioSeguro(client) {
+  const original = client.sendMessage.bind(client);
+  client.sendMessage = async (chatId, content, options = {}) => {
+    const opts = { sendSeen: false, ...options };
+    try {
+      return await original(chatId, content, opts);
+    } catch (error) {
+      if (!/@c\.us$/.test(String(chatId)) || typeof client.getContactLidAndPhone !== 'function') throw error;
+      let lid = null;
+      try {
+        lid = (await client.getContactLidAndPhone([String(chatId)]))?.[0]?.lid || null;
+      } catch (_e) {
+        lid = null;
+      }
+      if (!lid || lid === chatId) throw error;
+      console.warn('[wa-bot] El envío por número falló; reintento con el ID interno del contacto:', error.message);
+      return original(lid, content, opts);
+    }
+  };
+  return client;
+}
+
 function buildClient(executablePath) {
-  return new Client({
+  return conEnvioSeguro(new Client({
     authStrategy: new LocalAuth({ clientId: 'tecno-caja-pos-bot', dataPath: BOT_DATA_DIR }),
     // Por defecto whatsapp-web.js guarda este caché en ./.wwebjs_cache de la
     // carpeta actual (la del programa) — misma razón que BOT_DATA_DIR.
@@ -3115,7 +3178,7 @@ function buildClient(executablePath) {
         '--disable-renderer-backgrounding',
       ],
     },
-  });
+  }));
 }
 
 // ── API pública ────────────────────────────────────────────────────────────────
@@ -3498,10 +3561,10 @@ function setDependencies({
 module.exports = {
   start, stop, getSafeState, setGoogleTokens, setInstructions,
   setBusinessHours, setCustomerInstructions, setCustomerAiEnabled,
-  setDependencies, sendReceiptImage,
+  setDependencies, sendReceiptImage, sendTextMessage, notifyOwners,
   // Solo para pruebas (tests/whatsapp-bot.sqlite.test.js).
   _test: {
-    businessDateKeys, bindDateKeys, minutesSince, getBusinessData, resolveBotDataDir,
+    businessDateKeys, bindDateKeys, minutesSince, getBusinessData, resolveBotDataDir, conEnvioSeguro,
     setDb(db) { _db = db; },
   },
 };

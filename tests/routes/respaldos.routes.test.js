@@ -98,6 +98,32 @@ describe('POST /api/respaldos/auto — control de acceso (Fase 2, C1)', () => {
     clearInterval(appWithInternal.locals.backupPendingUploadTimer);
   });
 
+  test('respaldo previo a una actualización: la nube queda diferida (no espera a Internet)', async () => {
+    const appWithInternal = express();
+    appWithInternal.use(express.json());
+    appWithInternal.use((req, _res, next) => { req.isInternalSystemCall = true; next(); });
+    require('../../server/routes/respaldos.routes')({
+      app: appWithInternal,
+      query: jest.fn().mockResolvedValue([]),
+      getActor: jest.fn().mockReturnValue({ userId: null, userName: 'Sistema', userRole: 'Sistema' }),
+      writeAuditLog: jest.fn().mockResolvedValue(undefined),
+      ensureAdministrator: jest.fn(),
+      isGlobalAdministratorUser: jest.fn().mockReturnValue(true),
+      resolveRequestActorUser: jest.fn().mockResolvedValue(null),
+    });
+    appWithInternal.locals.createAutomaticBackup = jest.fn().mockResolvedValue({ ok: true, fileName: 'upd.tcbak' });
+
+    const res = await request(appWithInternal)
+      .post('/api/respaldos/auto')
+      .send({ trigger: 'actualizacion_sistema', forceCloud: true, deferCloud: true });
+    expect(res.status).toBe(200);
+    expect(appWithInternal.locals.createAutomaticBackup).toHaveBeenCalledWith({
+      trigger: 'actualizacion_sistema', forceCloud: true, deferCloud: true,
+    });
+
+    clearInterval(appWithInternal.locals.backupPendingUploadTimer);
+  });
+
   test('con req.authUser real (sesión) → 200 y dispara el respaldo', async () => {
     const appWithUser = express();
     appWithUser.use(express.json());

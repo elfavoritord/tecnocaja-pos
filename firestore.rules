@@ -361,6 +361,26 @@ service cloud.firestore {
         allow delete: if false;
       }
 
+      // ── Tienda online ──────────────────────────────────────────────────────
+      // La publica el POS (Admin SDK) y la lee/escribe el servicio de la nube
+      // cloud/tienda-online (Admin SDK). Los navegadores de los clientes NUNCA
+      // tocan Firestore directo: todo pasa por la API, que valida precios,
+      // existencia y negocio. La app de reportes puede ver los pedidos.
+      match /tiendaOnline/{docId} {
+        allow read:   if isOwnerOrAdmin(businessId);
+        allow write:  if false;
+      }
+      match /tiendaImagenes/{imageId} {
+        allow read, write: if false;
+      }
+      match /pedidosOnline/{orderId} {
+        allow read:   if isBranchAdmin(businessId);
+        allow write:  if false;
+      }
+      match /pedidosOnlineClaves/{keyId} {
+        allow read, write: if false;
+      }
+
       // ── Auditoría — solo lectura para dueño/admin ──────────────────────────
       match /auditLogs/{logId} {
         allow read:   if isOwnerOrAdmin(businessId);
@@ -468,6 +488,11 @@ service cloud.firestore {
     }
 
     match /negocios/{docId} {
+      allow read, write: if false;
+    }
+
+    // Nombre público de cada tienda online → licencia. Solo Admin SDK.
+    match /tienda_slugs/{slug} {
       allow read, write: if false;
     }
   }

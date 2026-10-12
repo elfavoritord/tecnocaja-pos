@@ -65,6 +65,10 @@ const { createFileManagerRouter }  = require('./server/routes/file-manager.route
 const { ensureInitialReportsBootstrap } = require('./server/services/firebase-initial-sync');
 const createDeliveryRouter = require('./server/routes/delivery.routes');
 
+// Tienda Online (módulo opcional; ver server/tienda-online/ y docs/TIENDA-ONLINE.md)
+const { createTiendaOnline } = require('./server/tienda-online');
+const createTiendaOnlineRouter = require('./server/routes/tienda-online.routes');
+
 // ✅ Respaldo local + nube
 const createRespaldosRouter = require('./server/routes/respaldos.routes');
 
@@ -2279,6 +2283,48 @@ app.locals.ensureWaBot = function ensureWaBot() {
   return waBotModule;
 };
 
+// ── Tienda Online ─────────────────────────────────────────────────────────────
+// Canal de pedidos por Internet. No hay catálogo, inventario, ventas ni
+// facturación aparte: el pedido se cobra con POST /api/sales (ver hooks más
+// abajo) y todo lo demás sale de las tablas del POS.
+const tiendaOnline = createTiendaOnline({
+  query,
+  withTransaction,
+  addColumnIfMissing,
+  nowSql: () => nowRDString(),
+  formatSqlDate: (date) => getLocalDateTimeRD(date).datetime_local.replace('T', ' '),
+  getLicenseId: () => getLicenseReportsBusinessId() || '',
+  getFirestore: () => {
+    try { return require('./modules/firebase-admin').getFirestore(); } catch { return null; }
+  },
+  getFieldValue: () => require('firebase-admin/firestore').FieldValue,
+  isMain: () => isMainTerminalConfig(getTerminalConfig()),
+  monitor: getInternetMonitor(),
+  getIo: () => io,
+  getServerId: () => serverIdentity.getServerId(),
+  mapClientRow,
+  // Solo si el bot ya se cargó (nunca lo arranca la tienda).
+  getWaBot: () => waBotModule,
+  processImage: async (buffer, { width, height }) => {
+    const out = await sharp(buffer).rotate()
+      .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 72 })
+      .toBuffer();
+    return { mime: 'image/webp', data: out.toString('base64') };
+  },
+  readLocalImage: async (imageLocal) => {
+    const filePath = path.join(PRODUCT_UPLOAD_DIR, path.basename(String(imageLocal || '')));
+    return fs.existsSync(filePath) ? fs.promises.readFile(filePath) : null;
+  },
+  saveProductImage: saveProductImageBuffer,
+  removeProductImage: removeLocalProductImage,
+});
+// Lo que se cambia en el POS (productos, fotos, precios, existencia, ofertas,
+// logo…) llega a la tienda online en segundos. Va antes de esas rutas.
+app.use(tiendaOnline.vigilarCambiosCatalogo());
+// Las rutas /api/tienda-online se montan después del middleware de sesión
+// (más abajo, junto a /api/promotions).
+
 // Caché en memoria para sesiones autenticadas — permite que los tokens válidos
 // sigan funcionando cuando MySQL no está disponible (modo offline multicaja).
 const _authSessionCache = new Map();
@@ -2374,6 +2420,26 @@ app.use(async (req, _res, next) => {
 // esté seteado. Montarlo antes (como estaba originalmente) hacía que TODAS
 // las peticiones a /api/promotions fallaran con 401 "Debes iniciar sesión",
 // sin importar que el usuario sí tuviera sesión activa.
+// Tienda online: configuración, productos publicados y Pedidos online.
+app.use('/api/tienda-online', createTiendaOnlineRouter({
+  tienda: tiendaOnline,
+  resolveRequestActorUser,
+  isGlobalAdministratorUser,
+  userRoleHasPermission,
+  userCanManageProductCatalog,
+  getUserScopeBranchId,
+  writeAuditLog,
+  query,
+  nowSql: () => nowRDString(),
+  processBannerImage: async (dataUrl) => {
+    const out = await sharp(decodeDataUrlImage(dataUrl)).rotate()
+      .resize(1600, 600, { fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer();
+    return `data:image/webp;base64,${out.toString('base64')}`;
+  },
+}));
+
 app.use('/api/promotions', createPromotionsRouter({
   query,
   resolveRequestActorUser,
@@ -3229,7 +3295,15 @@ function mapProductRow(row) {
     metaNegocio: parseJsonObjectField(row.business_metadata, {}),
     tracksStock: Boolean(row.tracks_stock ?? 1),
     descuentoPct: Number(row.discount_percent || 0),
-    descuentoHastaAgotar: Boolean(row.discount_until_stock_out)
+    descuentoHastaAgotar: Boolean(row.discount_until_stock_out),
+    // Tienda online (columnas de server/tienda-online/schema.js)
+    online: {
+      publicado: Number(row.online_enabled || 0) === 1,
+      descripcion: row.online_description || '',
+      destacado: Number(row.online_featured || 0) === 1,
+      orden: Number(row.online_order || 0),
+      modoExistencia: row.online_stock_mode === 'ilimitado' ? 'ilimitado' : 'inventario'
+    }
   };
 }
 
@@ -6376,6 +6450,9 @@ function mapSuspendedSaleRow(row) {
     deliveryReference: draft.deliveryReference || '',
     deliveryLink: draft.deliveryLink || '',
     orderNotes: draft.orderNotes || '',
+    // Venta suspendida de un pedido de la tienda online: al recuperarla se
+    // vuelve a ligar al pedido (así no se cobra dos veces).
+    onlineOrder: draft.onlineOrder || null,
     items
   };
 }
@@ -11282,6 +11359,13 @@ app.post('/api/suspended-sales', async (req, res) => {
     deliveryReference: String(payload.deliveryReference || '').trim(),
     deliveryLink: String(payload.deliveryLink || '').trim(),
     orderNotes: String(payload.orderNotes || '').trim(),
+    onlineOrder: payload.onlineOrder && Number(payload.onlineOrder.id)
+      ? {
+          id: Number(payload.onlineOrder.id),
+          numero: Number(payload.onlineOrder.numero) || null,
+          cliente: String(payload.onlineOrder.cliente || '').trim().slice(0, 160),
+        }
+      : null,
     total,
     itemCount,
     items
@@ -16253,6 +16337,22 @@ app.post('/api/sales', async (req, res) => {
       await conn.query('UPDATE sales SET client_request_id = ? WHERE id = ?', [clientRequestId, result.insertId]);
     }
 
+    // Pedido de la tienda online: se liga a ESTA venta dentro de la misma
+    // transacción. Si otra caja ya lo cobró (o es un doble clic/reintento),
+    // falla con 409 y se deshace todo: factura, NCF, inventario y caja.
+    const onlineOrderId = Number(sale.onlineOrderId || 0) || null;
+    let onlineAgreedPrices = null;
+    if (onlineOrderId) {
+      await tiendaOnline.hooks.claimForSaleInTx(conn, {
+        orderId: onlineOrderId,
+        saleId: Number(result.insertId),
+        invoiceNumber,
+        clientId,
+        actor: actorUser,
+      });
+      onlineAgreedPrices = await tiendaOnline.hooks.agreedPricesInTx(conn, onlineOrderId);
+    }
+
     // BUG 10 fix: validar items antes de procesarlos — previene cantidades negativas o NaN
     if (!Array.isArray(sale.items) || sale.items.length === 0) {
       const emptyError = new Error('La venta debe tener al menos un producto.');
@@ -16324,12 +16424,20 @@ app.post('/api/sales', async (req, res) => {
       // nunca lo llena el cajero a mano, así que esto no cambia nada para el
       // flujo legítimo, incluida la venta con precio de catálogo desactualizado
       // en el carrito: aquí siempre se usa el precio ACTUAL de products).
-      const activePromo = isQuickSale
+      // Pedido online: se respeta el precio con que el cliente compró, leído
+      // de online_order_items (base local), nunca del body.
+      const agreed = !isQuickSale && onlineAgreedPrices ? onlineAgreedPrices.get(Number(item.id)) : null;
+      const activePromo = isQuickSale || agreed
         ? null
         : pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
       const effectivePrice = isQuickSale
         ? Number(item.precio || 0)
-        : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
+        : agreed
+          ? agreed.price
+          : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
+      if (agreed && agreed.originalPrice !== null && agreed.originalPrice > agreed.price) {
+        ahorroPromociones += (agreed.originalPrice - agreed.price) * Number(item.qty || 0);
+      }
       const effectiveLineTotal = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
       computedSubtotal += effectiveLineTotal;
       if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
@@ -16377,8 +16485,8 @@ app.post('/api/sales', async (req, res) => {
           String(item.scaleSource || '').trim() || null,
           String(item.scaleRawReading || '').trim() || null,
           effectiveLineTotal,
-          activePromo ? activePromo.promotionId : null,
-          activePromo ? activePromo.precioOriginal : null,
+          activePromo ? activePromo.promotionId : (agreed?.promotionId || null),
+          activePromo ? activePromo.precioOriginal : (agreed && agreed.originalPrice !== null ? agreed.originalPrice : null),
         ]
       );
 
@@ -16495,6 +16603,7 @@ app.post('/api/sales', async (req, res) => {
       deliveryLatitude,
       deliveryLongitude,
       shouldAttemptEcf: shouldUseEcfFlow,
+      onlineOrderId,
     };
   });
   } catch (error) {
@@ -16504,6 +16613,13 @@ app.post('/api/sales', async (req, res) => {
     }
     throw error;
   }
+
+  // Tienda online: avisar a las cajas, subir el estado del pedido y la
+  // existencia nueva (en segundo plano; nunca demora al cajero).
+  try {
+    if (created.onlineOrderId) tiendaOnline.hooks.afterSaleCommitted(created.onlineOrderId);
+    else tiendaOnline.hooks.afterAnySale();
+  } catch (_e) { /* nunca bloquea la venta */ }
 
   let ecfEmissionResult = null;
   if (created.shouldAttemptEcf) {
@@ -17132,6 +17248,10 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
         [creditBalanceAdjustment, sale.client_id]
       );
     }
+    // Venta de un pedido online: el pedido queda libre para cobrarse de nuevo.
+    const releasedOnlineOrderId = sale.online_order_id
+      ? await tiendaOnline.hooks.onSaleCancelledInTx(conn, sale, actorUser)
+      : null;
 
     const rows = await conn.query(
       'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.id = ?',
@@ -17143,6 +17263,7 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
       sale: mapSaleRows(rows, items)[0],
       productIds: [...affectedProductIds].filter((value) => value > 0),
       branchId: inventoryBranchId || null,
+      releasedOnlineOrderId,
     };
   });
 
@@ -17152,6 +17273,10 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
     actionName: 'Factura cancelada',
     detail: `${invoiceNumber} · ${reason}`
   });
+  try {
+    if (result.releasedOnlineOrderId) tiendaOnline.hooks.afterSaleCancelled(result.releasedOnlineOrderId);
+    tiendaOnline.hooks.afterAnySale();
+  } catch (_e) { /* no bloquea la anulación */ }
   fireReportSync(async () => {
     const cfg = await getReportSyncConfig();
     await reportsSync.markSaleCancelled(invoiceNumber, {
@@ -17271,6 +17396,10 @@ app.patch('/api/sales/:invoiceNumber/delivery-status', async (req, res) => {
     actionName: 'Estado de entrega actualizado',
     detail: `${invoiceNumber} · ${deliveryStatus}${deliveryName ? ` · ${deliveryName}` : ''}`
   });
+  // Pedido de la tienda online: el cliente ve "en camino" / "entregado".
+  if (existing.online_order_id) {
+    tiendaOnline.hooks.onSaleDeliveryStatus(existing.id, deliveryStatus, actorUser).catch(() => {});
+  }
   res.json(mapSaleRows(rows, items)[0]);
 });
 
@@ -17978,6 +18107,16 @@ function buildSaleActiveClause(alias = 's') {
     AND COALESCE(${alias}.sale_status,'pagada') = 'pagada'`;
 }
 
+// Filtro "Origen de venta" de Reportes: ?origen=pos | tienda_online.
+// Las ventas de la tienda online son ventas normales del POS marcadas con
+// sync_origin = 'tienda_online' al cobrar el pedido.
+function appendSaleOriginFilter(req, where, alias = 's') {
+  const origen = String(req.query?.origen || '').trim();
+  if (origen === 'tienda_online') return `${where} AND ${alias}.sync_origin = 'tienda_online'`;
+  if (origen === 'pos') return `${where} AND COALESCE(${alias}.sync_origin, '') <> 'tienda_online'`;
+  return where;
+}
+
 function appendDateRangeFilter(where, params, { desdeDatetime, hastaDatetime, alias = 's', field = 'created_at' }) {
   where += ` AND ${alias}.${field} BETWEEN ? AND ?`;
   params.push(desdeDatetime, hastaDatetime);
@@ -17995,6 +18134,7 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
     const userId = Number(req.query?.userId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -18100,6 +18240,7 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
     const branchId = Number(req.query?.branchId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -18157,6 +18298,7 @@ app.get('/api/reports/advanced/productos', async (req, res) => {
     const limit = Math.min(Number(req.query?.limit || 20), 100);
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -18202,6 +18344,7 @@ app.get('/api/reports/advanced/clientes', async (req, res) => {
     const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND s.client_id IS NOT NULL AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(scopedBranchId); }
 
@@ -18245,6 +18388,7 @@ app.get('/api/reports/advanced/metodos-pago', async (req, res) => {
     const userId  = Number(req.query?.userId   || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef)     { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -18321,6 +18465,7 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
     const branchId = Number(req.query?.branchId || 0) || null;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -18451,6 +18596,7 @@ app.get('/api/reports/advanced/ganancias', async (req, res) => {
     const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
 
     let where = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    where = appendSaleOriginFilter(req, where);
     const baseParams = [desdeDatetime, hastaDatetime];
     if (scopedBranchId) {
       where += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?';
@@ -18540,6 +18686,7 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
     const branchId = Number(req.query?.branchId || 0) || scopedBranchId;
 
     let w = `WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     if (branchId) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(branchId); }
 
@@ -18611,6 +18758,7 @@ app.get('/api/reports/advanced/facturas', async (req, res) => {
     const limit = Math.min(Number(req.query?.limit || 50), 200);
 
     let w = `WHERE s.created_at BETWEEN ? AND ?`;
+    w = appendSaleOriginFilter(req, w);
     const p = [desdeDatetime, hastaDatetime];
     const ef = scopedBranchId || branchId;
     if (ef) { w += ' AND COALESCE(s.billed_branch_id,s.branch_id)=?'; p.push(ef); }
@@ -19451,7 +19599,9 @@ app.use((err, _req, res, _next) => {
   res.status(err.statusCode || 500).json({
     error: isMissingTableError
       ? 'La base de datos no está inicializada. Ejecuta el script db/schema.sql.'
-      : err.message || 'Error interno del servidor.'
+      : err.message || 'Error interno del servidor.',
+    // Código de negocio para la pantalla (p. ej. YA_CONVERTIDO de la tienda online).
+    ...(err.statusCode && /^[A-Z_]{3,40}$/.test(String(err.code || '')) ? { code: err.code } : {})
   });
 });
 
@@ -20208,6 +20358,10 @@ app.get('/api/update/check', (req, res) => {
 async function startHttpServer(port, bindHost) {
   const runtimeStartedAt = performance.now();
   await prepareServerRuntime();
+  // Columnas de la tienda online (sales.online_order_id…) antes de la primera venta.
+  await tiendaOnline.ensureReady().catch((error) => {
+    console.warn('[tienda-online] No se pudo preparar el esquema:', error.message);
+  });
   console.log(`[performance] ${JSON.stringify({
     phase: 'server-runtime-ready',
     elapsedMs: Math.round(performance.now() - runtimeStartedAt),
@@ -20335,6 +20489,13 @@ async function startHttpServer(port, bindHost) {
         mapSequence: require('./server/routes/fiscal-sequences.routes').mapSequence,
         appVersion: packageJson.version,
       });
+      // Tienda online (opcional): publica catálogo/existencia y recibe pedidos
+      // solo si está activada en Configuración → Mi Negocio; en las cajas
+      // terminal solo avisa en pantalla de los cambios de la base compartida.
+      // TECNO_CAJA_TIENDA_ONLINE=0 la apaga sin sacar una versión nueva.
+      if (String(process.env.TECNO_CAJA_TIENDA_ONLINE || '1').trim() !== '0') {
+        tiendaOnline.start().catch((error) => console.warn('[tienda-online] No arrancó:', error.message));
+      }
       // Caja terminal que usa la base de la PC principal por la LAN: si la
       // principal cambia de IP (DHCP), reencontrarla y reconectar sola.
       if (getDbClient() === 'mysql' && !isLoopbackDbHost()) {
@@ -20370,6 +20531,7 @@ async function stopHttpServer() {
   if (waBotModule?.stop) {
     await waBotModule.stop().catch(() => {});
   }
+  try { tiendaOnline.stop(); } catch (_e) { /* nada */ }
   await flushPendingSave();
   await new Promise((resolve) => {
     httpServer.close(() => resolve());

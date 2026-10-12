@@ -19,6 +19,7 @@
     status     : 'idle',
     latestInfo : null,       // info de la versión disponible
     downloaded : false,      // true cuando la descarga terminó
+    readyVersion: '',        // versión descargada y lista para instalar
     unsub      : null,       // función para desuscribirse de eventos IPC
     preferences: {
       autoCheck         : true,
@@ -128,6 +129,7 @@
 
         case 'downloaded':
           UPD.downloaded = true;
+          UPD.readyVersion = data.version || UPD.latestInfo?.version || '';
           _setStatus('ready');
           _hideProgress();
           _showInstallAction(data.version || UPD.latestInfo?.version || '');
@@ -216,8 +218,8 @@
   async function installUpdate() {
     if (UPD.status !== 'ready') return;
 
-    const ok = await showDeleteConfirm(
-      'Antes de actualizar: cierra todas las ventas abiertas y realiza el corte de caja. Se creará un respaldo automático y el sistema se reiniciará. ¿Deseas continuar con la actualización ahora?',
+    const ok = await window.showDeleteConfirm(
+      'Antes de actualizar: cierra todas las ventas abiertas y realiza el corte de caja. Se creará un respaldo automático; Tecno Caja se cerrará y volverá a abrir sola en uno o dos minutos. ¿Deseas continuar con la actualización ahora?',
       { confirmText: 'Actualizar ahora' }
     );
     if (!ok) return;
@@ -229,52 +231,40 @@
 
     const STEPS = [
       { id: 'us-backup',  label: skipBackup ? 'Preparando actualización inicial…' : 'Creando respaldo (BD + Configuración + Ventas + Clientes + Inventario)…' },
-      { id: 'us-update',  label: 'Aplicando actualización del sistema…' },
-      { id: 'us-verify',  label: 'Verificando integridad de los archivos…' },
-      { id: 'us-restart', label: 'Reiniciando Tecno Caja POS…' },
+      { id: 'us-update',  label: 'Cerrando la base de datos de forma segura…' },
+      { id: 'us-restart', label: 'Instalando — Tecno Caja se abrirá sola al terminar. No la abras manualmente.' },
     ];
     _showSteps(STEPS);
 
     if (HAS_UPDATER && UPD.isPackaged) {
-      // Crear respaldo antes de instalar
+      // El respaldo, el cierre del servidor y el instalador los hace el proceso
+      // principal (con su firma interna). Antes el respaldo se pedía aquí por
+      // fetch sin sesión y desde v1.4.2 respondía 401: no se podía actualizar.
       _setStepState('us-backup', 'active');
-      try {
-        if (skipBackup) {
-          await _sleep(350);
-        } else {
-          const backupRes = await fetch('/api/respaldos/auto', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trigger: 'actualizacion_sistema', forceCloud: true })
-          });
-          const backupData = await backupRes.json().catch(() => ({}));
-          if (!backupRes.ok || backupData?.ok === false) {
-            throw new Error(backupData?.error || 'No se pudo crear el respaldo completo.');
-          }
-        }
-      } catch (err) {
-        _setStatus('error');
+      let result = await _requestInstall({ skipBackup: skipBackup || !UPD.preferences.backupBeforeUpdate });
+      if (result?.backupFailed) {
         _setStepState('us-backup', 'error');
-        _showError(err.message || 'No se pudo crear el respaldo antes de actualizar.');
-        if (installBtn) installBtn.disabled = false;
+        const seguir = await window.showDeleteConfirm(
+          `No se pudo crear el respaldo: ${result.error || 'motivo desconocido'}. Actualizar no borra ni cambia tus datos. ¿Actualizar de todas formas?`,
+          { confirmText: 'Actualizar sin respaldo' }
+        );
+        if (!seguir) {
+          _showInstallError('Actualización cancelada: no se pudo crear el respaldo.');
+          return;
+        }
+        _setStepState('us-backup', 'active');
+        result = await _requestInstall({ skipBackup: true });
+      }
+      if (result?.ok === false) {
+        _setStepState('us-backup', 'error');
+        _showInstallError(result.error || 'No se pudo iniciar el instalador.');
         return;
       }
       _setStepState('us-backup', 'done');
-
-      _setStepState('us-update', 'active');
       _setStepState('us-update', 'done');
-
-      _setStepState('us-verify', 'active');
-      _setStepState('us-verify', 'done');
-
       _setStepState('us-restart', 'active');
-      // Instala y reinicia — la app se cierra aquí
-      const installResult = await window.novaDesktop.updaterInstall({ backupAlreadyDone: true });
-      if (installResult?.ok === false) {
-        _setStatus('error');
-        _showError(installResult.error || 'No se pudo iniciar el instalador.');
-        if (installBtn) installBtn.disabled = false;
-      }
+      _recordHistory(UPD.readyVersion || UPD.latestInfo?.version || '', UPD.latestInfo);
+      // La app se cierra aquí; el instalador la vuelve a abrir.
     } else {
       // Simulación (desarrollo)
       const durations = [3500, 3000, 2000, 2000];
@@ -287,6 +277,38 @@
       _setStatus('installed');
       _showInstallSuccess();
     }
+  }
+
+  async function _requestInstall(options) {
+    try {
+      return await window.novaDesktop.updaterInstall(options);
+    } catch (err) {
+      return { ok: false, error: err?.message || 'No se pudo iniciar el instalador.' };
+    }
+  }
+
+  // Deja el botón "Instalar ahora" activo para reintentar (antes quedaba en
+  // estado "error" y el botón ya no hacía nada hasta volver a buscar).
+  function _showInstallError(msg) {
+    _setStatus('ready');
+    const installBtn = document.getElementById('upd-btn-install');
+    if (installBtn) installBtn.disabled = false;
+    const wrap = document.getElementById('upd-install-steps');
+    if (!wrap) {
+      window.showToast?.(msg, 'error');
+      return;
+    }
+    wrap.querySelector('.upd-error-card')?.remove();
+    const card = document.createElement('div');
+    card.className = 'upd-error-card';
+    card.innerHTML = `
+      <span class="upd-error-icon">❌</span>
+      <div>
+        <strong>No se pudo instalar la actualización</strong>
+        <p>${_escHtml(msg)}</p>
+        <p>Puedes intentarlo de nuevo con «Instalar ahora».</p>
+      </div>`;
+    wrap.appendChild(card);
   }
 
   /* ─── Registro en historial ──────────────────────────────────────────────── */

@@ -180,8 +180,12 @@ FunctionEnd
 ;        SÍ → borra todos los directorios de datos (lista exhaustiva abajo)
 ;        NO → conserva los datos (útil si reinstalarán y quieren migrar)
 ;
-; Nota: en una ACTUALIZACIÓN (${isUpdated}), NSIS no llama customUnInstall,
-; así que este hook NO se ejecuta durante updates → los datos se preservan.
+; OJO: este macro está dentro de "!ifndef BUILD_UNINSTALLER" y electron-builder
+; compila el desinstalador CON BUILD_UNINSTALLER definido, así que hoy el
+; desinstalador NO lo incluye (ni al desinstalar ni al actualizar). Una
+; actualización SÍ ejecuta el desinstalador viejo (/S --updated): si algún día
+; se saca de ese bloque, envolver todo en ${ifNot} ${isUpdated} y dar al
+; MessageBox "/SD IDNO", o una actualización podría borrar los datos.
 ;
 !macro customUnInstall
 

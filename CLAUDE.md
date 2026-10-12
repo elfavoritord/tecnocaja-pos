@@ -35,6 +35,7 @@ Diagrama completo: `docs/ARCHITECTURE.md`.
 - `server/network/` — LAN-first: monitor de Internet, identidad (`serverId`) y descubrimiento de la principal, vigilante de IP. `GET /api/connectivity` da el modo (`normal`/`local`/`contingencia`/`sin_bd`). **Internet nunca bloquea la venta**: lo remoto va en cola o diferido. Ver `docs/LAN-OFFLINE-FIRST.md`.
 - Multicaja: toda transacción de venta toma primero el lock de `config` (contador FAC) antes de leer stock/NCF. No quitarlo ni apagar `innodb_snapshot_isolation` (MariaDB 12): protegen el inventario entre cajas. Prueba real: `npm run test:e2e-lan`.
 - `server/sync/control-center/` — Centro de Control de la app de reportes: la PC principal publica resúmenes ya sumados en Firestore (`businesses/{id}/controlCenter`, `dailyStats`, `terminals`), en segundo plano y solo con Internet. Si cambias su formato, regenera el contrato de la app con `node scripts/control-center/export-app-fixtures.js`. Ver `docs/CENTRO-DE-CONTROL-REPORTES.md`.
+- `server/tienda-online/` + `cloud/tienda-online/` — **Tienda online** (módulo opcional, se activa en Configuración → Mi Negocio). La nube solo recibe pedidos; el POS los cobra con `POST /api/sales` (`onlineOrderId`, ligado en la misma transacción: una sola venta por pedido). `contrato.js` y `calculo-pedido.js` se comparten con la nube vía `npm run vendor-sync`. No crear catálogo, inventario ni facturación aparte. Ver `docs/TIENDA-ONLINE.md`; pruebas: `npx jest tests/tienda-online`.
 - `db/schema.sql` — Esquema MariaDB completo con seeds.
 - `db.js` — Abstracción dual MariaDB/SQLite.
 - `electron/main.js` — Main process.
@@ -132,6 +133,7 @@ Variables clave en `.env`:
 - `docs/ARCHITECTURE.md` — Arquitectura detallada.
 - `docs/LAN-OFFLINE-FIRST.md` — Auditoría LAN-first: qué funciona sin Internet, multicaja, contingencia, riesgos.
 - `docs/CENTRO-DE-CONTROL-REPORTES.md` — Auditoría de la app de reportes, arquitectura del Centro de Control y pasos de despliegue.
+- `docs/TIENDA-ONLINE.md` — Tienda online: arquitectura, tablas, APIs, sincronización, riesgos y despliegue.
 - `CONTRIBUTING.md` — Guía de desarrollo.
 - `.env.example` — Todas las variables de entorno documentadas.
 

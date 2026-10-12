@@ -1434,6 +1434,7 @@ function openProductModal(id) {
     <div class="product-tab-nav">
       <button class="product-tab-btn active" onclick="switchProductTab(0)">💰 Precios</button>
       <button class="product-tab-btn" onclick="switchProductTab(1)">⚙️ Avanzado</button>
+      ${window.TiendaOnline?.productTabButton?.(2) || ''}
     </div>
 
     <!-- TAB 0: Precio e inventario -->
@@ -1527,6 +1528,8 @@ function openProductModal(id) {
       <div class="form-group span-full" id="mp-extras-group"><label>Extras</label><input type="text" id="mp-extras" class="form-input" value="${prod?(prod.extras||[]).join(', '):''}" placeholder="Extra queso, Pepperoni, Bacon"></div>
       ${buildDynamicFieldsMarkup(profile, prod)}
     </div>
+
+    ${window.TiendaOnline?.productTabPanel?.(2, prod) || ''}
   `;
   document.getElementById('modal-footer').innerHTML = `
     <div class="product-footer-summary">
@@ -1799,6 +1802,12 @@ async function saveProduct(id) {
         console.error('[Tecno Caja] Error subiendo imagen:', imgErr);
         showToast(`Imagen no guardada: ${imgErr.message || 'error desconocido'}`, 'warning');
       }
+    }
+    // Pestaña "Tienda online" del producto (solo si la tienda está activa).
+    if (savedId && window.TiendaOnline?.saveProductPanel) {
+      await window.TiendaOnline.saveProductPanel(savedId).catch((onlineErr) => {
+        showToast(`Producto guardado, pero no se pudo actualizar la tienda online: ${onlineErr.message}`, 'warning');
+      });
     }
   } catch (error) {
     // BUG 20 fix: mensaje amigable para código/nombre duplicado (error único de BD)

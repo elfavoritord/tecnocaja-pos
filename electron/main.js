@@ -4116,6 +4116,13 @@ app.on('second-instance', function() {
 let autoUpdater = null;
 let updaterReady = false;
 let isInstallingUpdate = false;
+// Instalador ya descargado (evento update-downloaded). Sin él, quitAndInstall
+// no hace nada y la app quedaría con el servidor detenido.
+let downloadedUpdate = null;
+// Terminal (thin-client): no tiene base de datos propia, no se respalda aquí.
+let isThinClientRuntime = false;
+// Respaldo antes de instalar: si tarda más, se pregunta si seguir sin él.
+const UPDATE_BACKUP_TIMEOUT_MS = 3 * 60 * 1000;
 
 try {
   ({ autoUpdater } = require('electron-updater'));
@@ -4189,6 +4196,7 @@ function setupAutoUpdater() {
 
   autoUpdater.on('update-downloaded', (info) => {
     logStartup('[updater] Descarga completada — versión: ' + info.version);
+    downloadedUpdate = { version: info.version, file: info.downloadedFile || null };
     sendUpdaterEvent('downloaded', {
       version     : info.version,
       releaseNotes: parseReleaseNotes(info.releaseNotes),
@@ -4260,36 +4268,97 @@ ipcMain.handle('updater:download', async () => {
   }
 });
 
-/** Instalar actualización y reiniciar */
+function withTimeout(promise, ms, message) {
+  let timer = null;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Respaldo local antes de instalar. La copia a la nube queda pendiente y la
+ * sube el ciclo de respaldos cuando la app vuelve a abrir: esperarla aquí
+ * hacía la actualización lenta (o la trababa) con Internet lento.
+ * Va con la firma interna del proceso; el renderer lo pedía por fetch sin
+ * sesión y desde v1.4.2 eso daba 401 → la actualización nunca arrancaba.
+ */
+async function createUpdateBackup() {
+  const url = `${currentAppUrl}/api/respaldos/auto`;
+  const payload = { trigger: 'actualizacion_sistema', forceCloud: true, deferCloud: true };
+  try {
+    return await postJson(url, payload);
+  } catch (error) {
+    const authToken = await getRendererAuthToken();
+    if (!authToken) throw error;
+    return postJson(url, payload, 'POST', { authToken });
+  }
+}
+
+/**
+ * Instalar actualización y reiniciar.
+ * options.skipBackup (o backupAlreadyDone, nombre viejo): no respaldar.
+ * Si el respaldo falla responde { ok:false, backupFailed:true } sin tocar
+ * nada, para que el usuario decida si sigue sin él.
+ */
 ipcMain.handle('updater:install', async (_event, options = {}) => {
   if (!updaterReady || !autoUpdater || !app.isPackaged) return { devMode: true };
-  try {
-    logStartup('[updater] Preparando instalación: respaldo completo y cierre ordenado…');
-    if (!options.backupAlreadyDone) {
-      const backupResult = await createAutoBackup({
-        trigger: 'actualizacion_sistema',
-        forceCloud: true,
-        updatedAt: new Date().toISOString(),
-      });
-      if (backupResult?.error) {
-        return { ok: false, error: backupResult.error };
-      }
-    }
+  if (isInstallingUpdate) return { ok: true };
 
-    isInstallingUpdate = true;
-    app.isQuitting = true;
-    await stopServer().catch((error) => {
-      logStartup('[updater] No se pudo detener servidor antes de instalar: ' + (error?.message || error));
-    });
-
-    logStartup('[updater] Instalando y reiniciando…');
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
-    return { ok: true };
-  } catch (err) {
-    isInstallingUpdate = false;
-    app.isQuitting = false;
-    return { ok: false, error: err.message || 'No se pudo preparar la instalación.' };
+  const pendiente = downloadedUpdate;
+  if (!pendiente?.file || !fs.existsSync(pendiente.file)) {
+    logStartup('[updater] Instalación pedida sin instalador descargado: ' + (pendiente?.file || 'ninguno'));
+    return {
+      ok: false,
+      error: 'La actualización todavía no terminó de descargarse. Pulsa "Buscar actualizaciones" y espera a que diga que está lista para instalar.',
+    };
   }
+
+  const skipBackup = Boolean(options.skipBackup || options.backupAlreadyDone) || isThinClientRuntime;
+  if (!skipBackup) {
+    logStartup('[updater] Respaldo antes de instalar ' + pendiente.version + '…');
+    try {
+      const backup = await withTimeout(createUpdateBackup(), UPDATE_BACKUP_TIMEOUT_MS, 'El respaldo tardó demasiado.');
+      if (!backup || backup.ok === false || backup.error) {
+        throw new Error(backup?.error || 'El respaldo no se pudo completar.');
+      }
+      logStartup('[updater] Respaldo listo: ' + (backup.fileName || 'ok'));
+    } catch (error) {
+      const message = error?.message || String(error);
+      logStartup('[updater] El respaldo antes de actualizar falló: ' + message);
+      return { ok: false, backupFailed: true, error: message };
+    }
+  }
+
+  isInstallingUpdate = true;
+  app.isQuitting = true;
+  logStartup('[updater] Cerrando servidor y base de datos para instalar ' + pendiente.version + '…');
+  await stopServer().catch((error) => {
+    logStartup('[updater] No se pudo detener servidor antes de instalar: ' + (error?.message || error));
+  });
+
+  // Silencioso (/S): sin asistente ni botón "Terminar"; el instalador vuelve
+  // a abrir Tecno Caja solo (--force-run).
+  logStartup('[updater] Instalando ' + pendiente.version + ' en silencio y reiniciando…');
+  setImmediate(() => {
+    let quitRequested = false;
+    app.once('before-quit', () => { quitRequested = true; });
+    try {
+      autoUpdater.quitAndInstall(true, true);
+    } catch (error) {
+      logStartup('[updater] quitAndInstall falló: ' + (error?.message || error));
+    }
+    // Si el instalador no arrancó la app nunca pide cerrarse: el servidor ya
+    // está detenido, así que se reinicia Tecno Caja (sin actualizar) en vez
+    // de dejar al usuario con la pantalla trabada.
+    setTimeout(() => {
+      if (quitRequested) return;
+      logStartup('[updater] El instalador no arrancó; se reinicia Tecno Caja sin actualizar.');
+      app.relaunch();
+      app.exit(0);
+    }, 5000);
+  });
+  return { ok: true };
 });
 
 /** Versión actual */
@@ -4346,8 +4415,12 @@ app.whenReady().then(async function() {
         break;
       }
       currentAppUrl = thinCfg.serverUrl;
+      isThinClientRuntime = true;
       createWindow();
       startThinClientWatch(thinCfg);
+      // Las terminales también se actualizan desde Configuración → Actualizaciones
+      // (antes no se registraban los eventos y la pantalla quedaba en "Verificando…").
+      setupAutoUpdater();
     } else {
       // Splash screen — show: false hasta ready-to-show para evitar destello blanco
       const splashHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>

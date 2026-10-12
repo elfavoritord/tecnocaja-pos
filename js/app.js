@@ -1368,7 +1368,7 @@ function currentUserCan(permission) {
 function getVisibleModulesForCurrentRole() {
   const roleCode = getCurrentUserRoleCode();
   if (roleCode === 'cajero') {
-    return new Set(['ventas', 'clientes', 'caja', 'colacobro', 'reportes', 'delivery']);
+    return new Set(['ventas', 'clientes', 'caja', 'colacobro', 'reportes', 'delivery', 'tiendaonline']);
   }
   return null;
 }
@@ -1458,7 +1458,7 @@ function getBusinessRuntimeConfig() {
     return window.getBusinessConfig(DB.config?.tipoNegocio || DB.config?.businessProfile?.key || 'pizzeria');
   }
   return {
-    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'compras', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
+    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'compras', 'caja', 'colacobro', 'posmovil', 'reportes', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'tiendaonline', 'archivos', 'wabot'],
     productFields: [],
     features: [],
     salesFlow: {},
@@ -3873,6 +3873,7 @@ function showModule(name, el) {
   if (name === 'monedas') { if (typeof loadMonedasModule === 'function') loadMonedasModule(); }
   if (name === 'colacobro') { loadColaCobro(); }
   if (name === 'delivery') { if (typeof initDeliveryPanel === 'function') initDeliveryPanel(); }
+  if (name === 'tiendaonline') { window.TiendaOnline?.onModuleOpen(); }
   if (name !== 'delivery') { if (typeof stopDeliveryPanel === 'function') stopDeliveryPanel(); }
   if (name === 'archivos') { if (typeof FileManager !== 'undefined') FileManager.init(); }
   if (name === 'configuracion') { if (typeof RespaldosMod !== 'undefined') RespaldosMod.init(); }
@@ -3880,6 +3881,7 @@ function showModule(name, el) {
     if (typeof loadNcfAuthSequences === 'function') loadNcfAuthSequences();
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
+    window.TiendaOnline?.loadConfigSection();
     // Inicializar módulo de actualización del sistema
     if (typeof window.Actualizaciones?.init === 'function') window.Actualizaciones.init();
   }
@@ -4167,8 +4169,8 @@ function getEffectiveConfig() {
 const CONFIG_GROUPS = {
   negocio: {
     icon: 'store',
-    title: 'Mi Negocio', desc: 'Nombre, logo, RNC y tipo de negocio',
-    find: ['h3#cfg-section-business-title', 'h3#cfg-section-branches-title', '#cfg-admin-delete-section'],
+    title: 'Mi Negocio', desc: 'Nombre, logo, RNC, tipo de negocio y tienda online',
+    find: ['h3#cfg-section-business-title', 'h3#cfg-section-branches-title', '#cfg-tienda-online-section', '#cfg-admin-delete-section'],
   },
   ventas: {
     icon: 'receipt',

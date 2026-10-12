@@ -1,6 +1,6 @@
 const businessConfig = {
   default: {
-    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'compras', 'caja', 'colacobro', 'posmovil', 'reportes', 'rrhh', 'labels', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'archivos', 'wabot'],
+    modules: ['ventas', 'productos', 'promociones', 'inventario', 'clientes', 'proveedores', 'compras', 'caja', 'colacobro', 'posmovil', 'reportes', 'rrhh', 'labels', 'movimientos', 'usuarios', 'configuracion', 'delivery', 'tiendaonline', 'archivos', 'wabot'],
     productFields: [],
     features: ['inventario', 'reportes', 'clientes', 'proveedores'],
     salesFlow: {

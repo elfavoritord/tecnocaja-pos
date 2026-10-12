@@ -9,7 +9,7 @@
   const RV2 = {
     tab: 'dashboard',
     subtab: 'facturas',
-    filtros: { desde: '', hasta: '', sucursalId: '', cajaId: '', usuarioId: '', desdeHora: '' },
+    filtros: { desde: '', hasta: '', sucursalId: '', cajaId: '', usuarioId: '', desdeHora: '', origen: '' },
     // caché de datos cargados
     kpis: null,
     ventas_dia: [],
@@ -61,6 +61,7 @@
     if (f.sucursalId) p.set('branchId', f.sucursalId);
     if (f.cajaId)     p.set('cajaId', f.cajaId);
     if (f.usuarioId)  p.set('userId', f.usuarioId);
+    if (f.origen)     p.set('origen', f.origen);
     Object.entries(extra).forEach(([k, v]) => { if (v !== '' && v != null) p.set(k, v); });
     return p.toString() ? '?' + p.toString() : '';
   }
@@ -122,6 +123,7 @@
     RV2.filtros.sucursalId = el('repv2-sucursal')?.value || '';
     RV2.filtros.cajaId     = el('repv2-caja')?.value || '';
     RV2.filtros.usuarioId  = el('repv2-usuario')?.value || '';
+    RV2.filtros.origen     = el('repv2-origen')?.value || '';
   }
 
   // ── Tab switching ────────────────────────────────────────
