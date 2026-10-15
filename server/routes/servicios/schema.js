@@ -45,6 +45,8 @@ async function ensureServiciosSchema(query) {
   // Texto de condiciones de pago por defecto de las cotizaciones (plantilla editable).
   await addColumnIfMissing(query, 'config', 'service_quote_terms', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing(query, 'config', 'service_quote_advance_pct', 'DECIMAL(5,2) DEFAULT NULL');
+  // Términos y condiciones del negocio: salen al pie de TODAS las cotizaciones y facturas.
+  await addColumnIfMissing(query, 'config', 'service_terms', 'LONGTEXT DEFAULT NULL');
   // Espejo de la factura de servicios en la tabla `sales` del POS (para que los
   // Reportes/Dashboard/sync del contador la vean como una venta normal).
   await addColumnIfMissing(query, 'svc_invoices', 'sale_id', 'INT DEFAULT NULL');

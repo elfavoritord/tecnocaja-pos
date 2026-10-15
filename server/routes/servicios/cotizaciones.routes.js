@@ -147,11 +147,13 @@ function createCotizacionesRouter(deps) {
     let correo = '';
     let firma = '';
     let autosign = false;
+    let terminos = '';
     try {
-      const [mc] = await query('SELECT service_mail_user, service_signature, service_autosign FROM config WHERE id = 1 LIMIT 1');
+      const [mc] = await query('SELECT service_mail_user, service_signature, service_autosign, service_terms FROM config WHERE id = 1 LIMIT 1');
       correo = (mc && mc.service_mail_user) || '';
       firma = (mc && mc.service_signature) || '';
       autosign = Boolean(Number(mc && mc.service_autosign));
+      terminos = (mc && mc.service_terms) || '';
     } catch (_) { /* noop */ }
     const digitalSign = await resolveDigitalSign(cfg, autosign || wantSign);
     return {
@@ -161,6 +163,10 @@ function createCotizacionesRouter(deps) {
       },
       invoice: { ...full, ...contact, docType: 'cotizacion', digitalSign },
       items: full.items,
+      // Plantilla y color de Configuración → Impresora de Recibos (factura A4).
+      diseno: { plantilla: cfg.invoiceTemplate, color: cfg.invoiceAccentColor },
+      // Términos y condiciones de Ajustes de Empresa de Servicios.
+      terminos,
     };
   }
 

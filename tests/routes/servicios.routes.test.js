@@ -85,6 +85,41 @@ describe('servicios.routes — helpers puros', () => {
     expect(con).toContain('Firma X SRL');
     expect(con).toContain('RNC 40211932609');
   });
+
+  it('renderInvoiceDoc A4 usa la plantilla y el color de Configuración', () => {
+    const doc = {
+      empresa: { nombre: 'Firma X', rnc: '101' },
+      invoice: { numero: 'FAC-2', clientName: 'ACME', fecha: '2026-10-14', estado: 'pagada', subtotal: 200, descuento: 20, itbis: 32.4, total: 212.4, pagado: 212.4, balance: 0, pagos: [{ metodo: 'transferencia' }], notas: 'CONDICIONES\nPago al 50%' },
+      items: [{ descripcion: 'Soporte', cantidad: 2, precio: 100, descuentoPct: 10, itbisPct: 18, total: 212.4 }],
+      diseno: { plantilla: 'ejecutiva', color: '#7e22ce' },
+    };
+    const html = renderInvoiceDoc(doc, 'a4');
+    expect(html).toContain('tcf-tpl-ejecutiva');
+    expect(html).toContain('--acc:#7e22ce');
+    expect(html).toContain('Transferencia');
+    expect(html).toContain('Descuento 10%');       // descuento de la línea, bajo la descripción
+    expect(html).toContain('<strong>CONDICIONES</strong>');
+    // Sin diseño guardado → plantilla clásica.
+    expect(renderInvoiceDoc({ ...doc, diseno: undefined }, 'a4')).toContain('tcf-tpl-clasica');
+  });
+
+  it('los términos y condiciones de Ajustes salen en factura y cotización (A4 y ticket)', () => {
+    const doc = {
+      empresa: { nombre: 'Firma X' },
+      invoice: { numero: 'FAC-3', clientName: 'ACME', fecha: '2026-10-14', estado: 'pendiente', subtotal: 100, descuento: 0, itbis: 18, total: 118, pagado: 0, balance: 118 },
+      items: [{ descripcion: 'Servicio', cantidad: 1, precio: 100, itbisPct: 18, total: 118 }],
+      terminos: 'Garantía de 30 días.\nNo se aceptan devoluciones.',
+    };
+    for (const plantilla of ['clasica', 'ejecutiva', 'recuadro', 'banner']) {
+      const html = renderInvoiceDoc({ ...doc, diseno: { plantilla } }, 'a4');
+      expect(html).toContain('Términos y condiciones');
+      expect(html).toContain('Garantía de 30 días.');
+    }
+    expect(renderInvoiceDoc({ ...doc, invoice: { ...doc.invoice, docType: 'cotizacion' } }, 'a4')).toContain('No se aceptan devoluciones.');
+    expect(renderInvoiceDoc(doc, '80mm')).toContain('Garantía de 30 días.');
+    // Sin términos guardados no sale el bloque.
+    expect(renderInvoiceDoc({ ...doc, terminos: '' }, 'a4')).not.toContain('Términos y condiciones');
+  });
 });
 
 describe('servicios.routes — gating', () => {

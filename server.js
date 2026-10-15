@@ -57,6 +57,7 @@ const { getInternetMonitor } = require('./server/network/internet-monitor');
 const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatch');
 const { startControlCenterPublisher, notifyControlCenterChange } = require('./server/sync/control-center');
 const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
+const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor } = require('./server/utils/invoice-design');
 const syncRoutes = require('./server/routes/sync.routes');
 
 // ✅ Gestor de archivos Sistema_Data
@@ -71,6 +72,9 @@ const createTiendaOnlineRouter = require('./server/routes/tienda-online.routes')
 
 // ✅ Respaldo local + nube
 const createRespaldosRouter = require('./server/routes/respaldos.routes');
+const createSetupReemplazoRouter = require('./server/routes/setup-reemplazo.routes');
+const { leerAutorizacionReemplazo, verificarAutorizacionReemplazo } = require('./server/security/autorizacion-reemplazo');
+const { asegurarTerminalPrincipal } = require('./server/network/terminal-principal');
 
 // Plataforma Multiempresa — referencia ligera para buscar contadores desde el wizard POS
 const createPlatformRouter = require('./server/routes/platform.routes');
@@ -2495,7 +2499,7 @@ app.use('/api/purchases', comprasRouter);
 
 // Gastos — registro fiscal (Fase 2)
 const gastosRouter = createGastosRouter({
-  query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
+  query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
 });
 app.use('/api/expenses', gastosRouter);
 
@@ -2527,6 +2531,19 @@ createRespaldosRouter({
   ensureAdministrator,
   isGlobalAdministratorUser,
   resolveRequestActorUser,
+});
+
+// Permiso para reemplazar el negocio desde la pantalla de inicio (restaurar
+// un respaldo encima o reinstalar). Ver server/routes/setup-reemplazo.routes.js.
+createSetupReemplazoRouter({
+  app,
+  query,
+  loginLimiter,
+  getSecurityPassword,
+  ensureUserExtensions,
+  userPasswordMatches,
+  isGlobalAdministratorUser,
+  writeAuditLog,
 });
 
 const LOCAL_PASSWORD_HASH_PREFIX = 'scrypt';
@@ -4207,7 +4224,12 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // contexto (branch_id, cash_register_id, client_id, document_type/ref, amount,
 // payment_method) a audit_logs — ver ensureConfigExtensions y
 // ensureServiciosCoreExtensions.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-11`;
+// -12: agrega invoice_template/invoice_accent_color a config (plantilla y color
+// de la factura A4, ver js/factura-plantillas.js) — ver ensureConfigExtensions.
+// -13: gastos con varias líneas — tabla expense_items (con categoría por línea)
+// y config.service_terms (términos y condiciones de servicios) — ver
+// ensureGastosSchema y ensureServiciosSchema.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-13`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -4319,6 +4341,10 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'service_vertical', 'VARCHAR(40) DEFAULT NULL');
   await addColumnIfMissing('config', 'service_invoice_default_format', `VARCHAR(10) NOT NULL DEFAULT 'a4'`);
   await addColumnIfMissing('config', 'service_fiscal_mode', `VARCHAR(10) NOT NULL DEFAULT 'ncf'`);
+  // Factura A4: plantilla y color de Configuración → Impresora de Recibos.
+  // NULL = plantilla clásica / color propio de la plantilla.
+  await addColumnIfMissing('config', 'invoice_template', 'VARCHAR(20) DEFAULT NULL');
+  await addColumnIfMissing('config', 'invoice_accent_color', 'VARCHAR(7) DEFAULT NULL');
   await query(
     `INSERT OR IGNORE INTO config
       (id, business_name, rnc, address, phone, currency, tax_rate, invoice_prefix, invoice_next_number, e_invoice_enabled, e_invoice_prefix, e_invoice_next_number, receipt_message, receipt_print_mode, receipt_printer_name, receipt_paper_size, cash_drawer_enabled, cash_drawer_method, cash_drawer_printer_name, cash_drawer_pin, cash_drawer_network_host, cash_drawer_network_port, cash_drawer_serial_port, app_logo, security_password, cash_open, cash_amount, language, business_type, business_structure_mode, cashier_register_required, exclusive_cashier_per_register, starter_catalog_seeded, setup_completed, setup_completed_at, trial_started_at, trial_ends_at, license_status, license_activated_at, license_activated_by, require_cash_open_before_use)
@@ -7976,6 +8002,8 @@ async function getConfig(options = {}) {
     receiptPrintMode: row.receipt_print_mode || 'dialog',
     receiptPrinterName: row.receipt_printer_name || '',
     receiptPaperSize: row.receipt_paper_size || '80mm',
+    invoiceTemplate: sanitizeInvoiceTemplate(row.invoice_template) || 'clasica',
+    invoiceAccentColor: sanitizeInvoiceAccentColor(row.invoice_accent_color) || '',
     cashDrawerEnabled: Boolean(row.cash_drawer_enabled ?? 0),
     cashDrawerMethod: row.cash_drawer_method || 'escpos',
     cashDrawerPrinterName: row.cash_drawer_printer_name || '',
@@ -8924,7 +8952,16 @@ app.get('/api/setup/status', async (_req, res) => {
   if (status.setupCompleted) {
     const mode = String(status.config?.businessStructureMode || 'monocaja');
     if (mode === 'multicaja' || mode === 'multisucursal') {
-      const tc = getTerminalConfig();
+      // La PC con la base de datos local es la principal aunque se haya
+      // perdido terminal-config.json (restaurar o formatear y restaurar).
+      const tc = await asegurarTerminalPrincipal({
+        query,
+        getTerminalConfig,
+        saveTerminalConfig,
+        isLoopbackDbHost,
+        config: status.config,
+        log: (mensaje) => console.log(mensaje),
+      });
       if (!tc) {
         return res.json({ ...status, setupRequired: true, linkingMode: true });
       }
@@ -8947,9 +8984,12 @@ app.post('/api/setup/complete', async (req, res) => {
     return res.status(409).json({ error: 'El sistema ya fue configurado.' });
   }
   if (!currentStatus.setupRequired && forceReset) {
+    // Vale la clave de seguridad o el permiso de /api/setup/autorizar-reemplazo
+    // (que también se puede pedir con un administrador general).
     const securityPassword = String(payload.securityPassword || '');
     const storedPassword = await getSecurityPassword();
-    if (!securityPassword || securityPassword !== storedPassword) {
+    const claveValida = Boolean(securityPassword) && securityPassword === storedPassword;
+    if (!claveValida && !verificarAutorizacionReemplazo(leerAutorizacionReemplazo(req))) {
       return res.status(403).json({ error: 'La clave de seguridad no es válida para reinstalar la aplicación.' });
     }
   }
@@ -14220,6 +14260,17 @@ app.put('/api/config', async (req, res) => {
       String(data.provincia || '').trim() || null
     ]
   );
+  // Diseño de la factura A4. Solo si el cliente lo manda (el asistente inicial
+  // no lo trae y no debe borrar lo elegido) y en un UPDATE aparte: si a la BD
+  // aún no se le agregaron estas columnas, lo demás se guarda igual.
+  if (data.invoiceTemplate !== undefined || data.invoiceAccentColor !== undefined) {
+    await query(
+      'UPDATE config SET invoice_template = ?, invoice_accent_color = ? WHERE id = 1',
+      [sanitizeInvoiceTemplate(data.invoiceTemplate), sanitizeInvoiceAccentColor(data.invoiceAccentColor)]
+    ).catch((error) => {
+      console.warn('No se pudo guardar el diseño de la factura A4:', error.message);
+    });
+  }
   // Sincronizar plan_code con el nuevo business_structure_mode
   await query(`
     UPDATE config

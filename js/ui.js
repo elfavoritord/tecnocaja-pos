@@ -81,6 +81,7 @@ function closeAllModals(force = false, source = 'generic') {
   modalBox?.classList.remove('billing-modal');
   modalBox?.classList.remove('product-modal');
   modalBox?.classList.remove('recover-sales-modal');
+  modalBox?.classList.remove('gasto-modal');
   modalBox?.style.removeProperty('width');
   modalBox?.style.removeProperty('max-width');
   modalBox?.style.removeProperty('height');

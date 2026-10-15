@@ -177,6 +177,15 @@ const api = {
     });
   },
 
+  // Pantalla de inicio sin sesión: permiso temporal para reemplazar el negocio
+  // ({ claveSeguridad } o { usuario, password } de un administrador general).
+  autorizarReemplazo(data) {
+    return this.request('/api/setup/autorizar-reemplazo', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
   // Verifica la contraseña de LA CUENTA del usuario actualmente logueado
   // (su propia contraseña de inicio de sesión), no una clave maestra aparte.
   verifyAccountPassword(data) {
@@ -493,6 +502,13 @@ const api = {
 
   getExpense(id) {
     return this.request(`/api/expenses/${id}`);
+  },
+
+  updateExpense(id, data) {
+    return this.request(`/api/expenses/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
   },
 
   voidExpense(id, data = {}) {

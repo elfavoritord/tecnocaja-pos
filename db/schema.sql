@@ -124,6 +124,8 @@ CREATE TABLE config (
   receipt_print_mode VARCHAR(20) NOT NULL DEFAULT 'dialog',
   receipt_printer_name VARCHAR(160) DEFAULT NULL,
   receipt_paper_size VARCHAR(20) NOT NULL DEFAULT '80mm',
+  invoice_template VARCHAR(20) DEFAULT NULL,
+  invoice_accent_color VARCHAR(7) DEFAULT NULL,
   cash_drawer_enabled TINYINT(1) NOT NULL DEFAULT 0,
   cash_drawer_method VARCHAR(20) NOT NULL DEFAULT 'escpos',
   cash_drawer_printer_name VARCHAR(160) DEFAULT NULL,

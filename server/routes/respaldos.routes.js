@@ -36,6 +36,10 @@ const {
   restorePayloadToDb,
 } = require('../services/backup-core');
 
+// Permiso para restaurar desde la pantalla de inicio encima de un negocio ya
+// configurado ("Reinstalar una app existente" → /api/setup/autorizar-reemplazo).
+const { leerAutorizacionReemplazo, verificarAutorizacionReemplazo } = require('../security/autorizacion-reemplazo');
+
 const DEFAULT_BACKUP_RETENTION = 5; // cuántos .tcbak conservar automáticamente
 
 // ─── R2 Storage helpers ───────────────────────────────────────────────────────
@@ -282,6 +286,23 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       next();
     } catch (e) {
       res.status(401).json({ ok: false, error: e.message });
+    }
+  }
+
+  // Copia del negocio actual antes de restaurar encima. Es una red de
+  // seguridad, no el objetivo de la restauración: si la BD actual está tan mal
+  // que ni se puede leer (la razón misma por la que alguien restauraría),
+  // devuelve null y la restauración sigue.
+  async function crearPreRespaldo(sufijo, securityPwd, origen) {
+    try {
+      const currentPayload = await buildFullPayload(query);
+      const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
+      const nombre = generateFilename(`${currentPayload.businessName}_${sufijo}`, currentPayload.systemVersion);
+      writeFileAtomic(path.join(ensureDir(getDefaultBackupDir()), nombre), currentBuf);
+      return nombre;
+    } catch (preBackupErr) {
+      console.warn(`[respaldos][${origen}] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):`, preBackupErr.message);
+      return null;
     }
   }
 
@@ -665,22 +686,8 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       // Parsear y validar
       const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
 
-      // Crear respaldo del estado actual ANTES de restaurar. Es una red de
-      // seguridad, no el objetivo de esta ruta — si la BD actual está en un
-      // estado tan malo que ni siquiera se puede leer para respaldarla (la
-      // razón misma por la que alguien restauraría), NO debe bloquear la
-      // restauración real. buildFullPayload() aborta si config/users/products/
-      // clients fallan; aquí eso solo significa "sin pre-backup", no "cancelar".
-      let preRestoreName = null;
-      try {
-        const currentPayload = await buildFullPayload(query);
-        const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
-        preRestoreName = generateFilename(currentPayload.businessName + '_PRE-RESTAURACION', currentPayload.systemVersion);
-        const backupDir = ensureDir(getDefaultBackupDir());
-        writeFileAtomic(path.join(backupDir, preRestoreName), currentBuf);
-      } catch (preBackupErr) {
-        console.warn('[respaldos][restaurar-local] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):', preBackupErr.message);
-      }
+      // Crear respaldo del estado actual ANTES de restaurar (ver crearPreRespaldo).
+      const preRestoreName = await crearPreRespaldo('PRE-RESTAURACION', securityPwd, 'restaurar-local');
 
       // Restaurar
       await restorePayloadToDb(payload, query);
@@ -731,18 +738,8 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       // Parsear y validar
       const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
 
-      // Pre-backup del estado actual — igual que en restaurar-local, no debe
-      // bloquear la restauración si la BD actual no se puede leer.
-      let preRestoreName = null;
-      try {
-        const currentPayload = await buildFullPayload(query);
-        const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
-        preRestoreName = generateFilename(currentPayload.businessName + '_PRE-REST-NUBE', currentPayload.systemVersion);
-        const backupDir = ensureDir(getDefaultBackupDir());
-        writeFileAtomic(path.join(backupDir, preRestoreName), currentBuf);
-      } catch (preBackupErr) {
-        console.warn('[respaldos][restaurar-nube] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):', preBackupErr.message);
-      }
+      // Pre-backup del estado actual (ver crearPreRespaldo).
+      const preRestoreName = await crearPreRespaldo('PRE-REST-NUBE', securityPwd, 'restaurar-nube');
 
       // Restaurar
       await restorePayloadToDb(payload, query);
@@ -934,10 +931,14 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
 
   /**
    * Middleware: permite acceso solo cuando el setup NO está completado,
-   * O cuando el sistema está en estado "corrompido" (setup_completed=1 pero sin usuarios).
+   * O cuando el sistema está en estado "corrompido" (setup_completed=1 pero sin usuarios),
+   * O con el permiso de reemplazo de /api/setup/autorizar-reemplazo (clave de
+   * seguridad o administrador general validados desde la pantalla de inicio).
    *
    * Estado corrompido = se permite restaurar de nuevo para reparar la instalación.
-   * Estado normal completado = bloqueado (usar rutas /api/respaldos/* con auth de admin).
+   * Estado normal completado sin permiso = bloqueado.
+   * Con permiso: req.reemplazaNegocio = true y las restauraciones guardan antes
+   * una copia del negocio actual (crearPreRespaldo).
    */
   async function setupOnly(req, res, next) {
     try {
@@ -950,8 +951,15 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       const isSetupDone = done === 1 || done === '1' || done === true;
 
       if (isSetupDone && hasUsers) {
-        // Sistema completamente configurado — bloquear rutas de setup
-        return res.status(403).json({ ok: false, error: 'El sistema ya está configurado.' });
+        if (verificarAutorizacionReemplazo(leerAutorizacionReemplazo(req))) {
+          req.reemplazaNegocio = true;
+          return next();
+        }
+        return res.status(403).json({
+          ok: false,
+          code: 'REEMPLAZO_NO_AUTORIZADO',
+          error: 'Esta instalación ya tiene un negocio. Para reemplazarlo con un respaldo, entra por "Reinstalar una app existente" y escribe la clave de seguridad o el usuario y la contraseña de un administrador.',
+        });
       }
 
       // Permitir si: setup no completado (primera instalación)
@@ -1052,6 +1060,11 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       const backupUserCount = Array.isArray(payload?.data?.users) ? payload.data.users.length : 0;
       console.log(`[respaldos][setup] Restaurando backup: ${backupUserCount} usuario(s), ${payload?.stats?.productos || 0} producto(s), ${payload?.stats?.ventas || 0} venta(s)`);
 
+      // Encima de un negocio existente (permiso de reemplazo): copia del actual primero.
+      const preBackup = req.reemplazaNegocio
+        ? await crearPreRespaldo('PRE-REEMPLAZO', securityPwd, 'setup/restaurar-local')
+        : null;
+
       const restoreResult = await restorePayloadToDb(payload, query);
 
       if (restoreResult.userCount === 0) {
@@ -1079,6 +1092,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         mensaje:           'Restauración completada. Reinicia la aplicación para aplicar los cambios.',
         metadata,
         usersRestored:     restoreResult.userCount,
+        preBackup,
         reiniciarRequerido: true,
       });
     } catch (e) {
@@ -1241,6 +1255,11 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       const backupUserCount = Array.isArray(payload?.data?.users) ? payload.data.users.length : 0;
       console.log(`[respaldos][setup] Restaurando backup nube: ${backupUserCount} usuario(s), ${payload?.stats?.productos || 0} producto(s)`);
 
+      // Encima de un negocio existente (permiso de reemplazo): copia del actual primero.
+      const preBackup = req.reemplazaNegocio
+        ? await crearPreRespaldo('PRE-REEMPLAZO', securityPwd, 'setup/restaurar-nube')
+        : null;
+
       const restoreResult = await restorePayloadToDb(payload, query);
 
       if (restoreResult.userCount === 0) {
@@ -1264,6 +1283,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         mensaje:           'Restauración desde la nube completada. Reinicia la aplicación.',
         metadata,
         usersRestored:     restoreResult.userCount,
+        preBackup,
         reiniciarRequerido: true,
       });
     } catch (e) {

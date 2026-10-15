@@ -19,6 +19,7 @@ let setupWizard = {
   businessStructureMode: 'monocaja',
   forceReset: false,
   securityPassword: '',
+  reemplazoToken: '', // permiso de /api/setup/autorizar-reemplazo ("Reinstalar una app existente")
   googleAuth: null
 };
 let loginMode = 'existing';
@@ -2663,6 +2664,7 @@ function beginGoogleSetup(googleSession) {
     || '';
   setupWizard.forceReset = false;
   setupWizard.securityPassword = '';
+  setupWizard.reemplazoToken = '';
   setupWizard.step = 0;
   setupWizard.language = document.getElementById('login-language-select')?.value || setupWizard.language || DB.config?.idioma || 'es';
   setupWizard.businessType = 'pizzeria';
@@ -2726,7 +2728,7 @@ function setLoginMode(mode = 'existing') {
 }
 
 function getConfiguredAppSetupMessage() {
-  return 'Esta instalacion ya esta configurada. Si solo necesitas otro usuario, entra con una cuenta administradora y crealo desde Usuarios. Si quieres reemplazar el negocio actual, usa "Reinstalar una app existente".';
+  return 'Esta instalación ya está configurada. Si solo necesitas otro usuario, entra con una cuenta administradora y créalo desde Usuarios. Si quieres reemplazar el negocio actual o restaurar un respaldo, usa "Reinstalar una app existente".';
 }
 
 async function startNewUserFlow() {
@@ -2753,26 +2755,35 @@ async function startNewUserFlow() {
   launchSetupWizardFromLogin();
 }
 
+// Si se llegó por "Reinstalar una app existente", el asistente conserva el
+// permiso de reemplazo; en una instalación nueva devuelve los valores vacíos.
+function getSetupReinstallSession() {
+  return setupWizard.forceReset
+    ? { forceReset: true, securityPassword: setupWizard.securityPassword, reemplazoToken: setupWizard.reemplazoToken }
+    : {};
+}
+
 function _handlePlatformInitChoice(choice) {
-  if (!choice) { startSetupWizardSession(); return; }
+  const sesion = getSetupReinstallSession();
+  if (!choice) { startSetupWizardSession(sesion); return; }
 
   switch (choice.type) {
     case 'independent':
       setupWizard._platformBusinessMode = 'independent';
       setupWizard._platformContadorId = null;
-      startSetupWizardSession();
+      startSetupWizardSession(sesion);
       break;
 
     case 'accountant_client':
       setupWizard._platformBusinessMode = 'accountant_client';
       setupWizard._platformContadorId = choice.contador?.id || null;
       setupWizard._platformContadorName = choice.contador?.nombre_firma || '';
-      startSetupWizardSession();
+      startSetupWizardSession(sesion);
       break;
 
     case 'restore_local':
       // Iniciar wizard (para tener el DOM de overlays listo) y abrir restore-local
-      startSetupWizardSession();
+      startSetupWizardSession(sesion);
       setTimeout(() => {
         if (typeof window.wzWelcomeChoice === 'function') window.wzWelcomeChoice('restaurar-local');
       }, 400);
@@ -2780,21 +2791,22 @@ function _handlePlatformInitChoice(choice) {
 
     case 'restore_cloud':
       // Iniciar wizard y abrir restore-cloud
-      startSetupWizardSession();
+      startSetupWizardSession(sesion);
       setTimeout(() => {
         if (typeof window.wzWelcomeChoice === 'function') window.wzWelcomeChoice('restaurar-nube');
       }, 400);
       break;
 
     default:
-      startSetupWizardSession();
+      startSetupWizardSession(sesion);
   }
 }
 
-function startSetupWizardSession({ preserveGoogle = false, forceReset = false, securityPassword = '' } = {}) {
+function startSetupWizardSession({ preserveGoogle = false, forceReset = false, securityPassword = '', reemplazoToken = '' } = {}) {
   setupWizard.forceReset = false;
   setupWizard.forceReset = Boolean(forceReset);
   setupWizard.securityPassword = securityPassword || '';
+  setupWizard.reemplazoToken = reemplazoToken || '';
   setupWizard.step = 0;
   if (!preserveGoogle) setupWizard.googleAuth = null;
   setupWizard.language = document.getElementById('login-language-select')?.value || setupWizard.language || DB.config?.idioma || 'es';
@@ -3025,17 +3037,29 @@ function launchSetupWizardFromLogin(options = {}) {
   body.innerHTML = `
     <div class="modal-grid">
       <div class="form-group span-full">
-        <label>Clave de seguridad</label>
         <p style="color:var(--text2);font-size:0.84rem;line-height:1.5;margin-bottom:0.7rem">
           ${hasGoogleSession
-            ? 'Validaremos la clave de seguridad y luego abriremos el asistente con tu cuenta Google ya vinculada al nuevo negocio.'
-            : 'Esto abrirá el asistente de primer inicio y al finalizar reemplazará la configuración y los datos actuales.'}
+            ? 'Validaremos tu permiso y luego abriremos el asistente con tu cuenta Google ya vinculada al nuevo negocio.'
+            : 'Esto reemplaza el negocio de esta computadora: podrás restaurar un respaldo (de un archivo o de la nube) o crear un negocio nuevo. Antes de restaurar se guarda una copia del negocio actual.'}
         </p>
         ${hasGoogleSession ? `<input type="text" class="form-input" value="${googleSession.email || googleSession.name || 'Cuenta Google seleccionada'}" disabled style="margin-bottom:0.75rem">` : ''}
-        <div class="password-field">
-          <input type="password" id="setup-reinstall-password" class="form-input" placeholder="Escribe la clave de seguridad">
-          <button class="password-toggle" type="button" onclick="togglePasswordVisibility('setup-reinstall-password', this)" aria-label="Mostrar clave">👁</button>
+        <div id="setup-reinstall-mode-clave">
+          <label for="setup-reinstall-password">Clave de seguridad</label>
+          <div class="password-field">
+            <input type="password" id="setup-reinstall-password" class="form-input" placeholder="Escribe la clave de seguridad">
+            <button class="password-toggle" type="button" onclick="togglePasswordVisibility('setup-reinstall-password', this)" aria-label="Mostrar clave">👁</button>
+          </div>
         </div>
+        <div id="setup-reinstall-mode-admin" class="hidden">
+          <label for="setup-reinstall-admin-user">Usuario administrador</label>
+          <input type="text" id="setup-reinstall-admin-user" class="form-input" placeholder="Usuario con el que entras a Tecno Caja" autocomplete="username" style="margin-bottom:0.6rem">
+          <label for="setup-reinstall-admin-pass">Contraseña</label>
+          <div class="password-field">
+            <input type="password" id="setup-reinstall-admin-pass" class="form-input" placeholder="Contraseña de ese usuario" autocomplete="current-password">
+            <button class="password-toggle" type="button" onclick="togglePasswordVisibility('setup-reinstall-admin-pass', this)" aria-label="Mostrar contraseña">👁</button>
+          </div>
+        </div>
+        <button type="button" id="setup-reinstall-mode-toggle" class="tc-link" style="margin-top:0.6rem;background:none;border:0;padding:0;color:var(--tc-select-text,var(--accent));font:inherit;font-size:0.84rem;text-decoration:underline;cursor:pointer" onclick="toggleSetupReinstallMode()">¿No sabes la clave de seguridad? Usa tu usuario y contraseña de administrador</button>
       </div>
       <div class="span-full" id="setup-reinstall-status" style="color:var(--text2);font-size:0.84rem"></div>
     </div>
@@ -3050,29 +3074,72 @@ function launchSetupWizardFromLogin(options = {}) {
   setTimeout(() => document.getElementById('setup-reinstall-password')?.focus(), 0);
 }
 
+// En el modal de "Reinstalar": clave de seguridad o administrador general.
+function toggleSetupReinstallMode() {
+  const clave = document.getElementById('setup-reinstall-mode-clave');
+  const admin = document.getElementById('setup-reinstall-mode-admin');
+  const toggle = document.getElementById('setup-reinstall-mode-toggle');
+  if (!clave || !admin) return;
+  const usarAdmin = admin.classList.contains('hidden');
+  admin.classList.toggle('hidden', !usarAdmin);
+  clave.classList.toggle('hidden', usarAdmin);
+  if (toggle) {
+    toggle.textContent = usarAdmin
+      ? 'Usar la clave de seguridad'
+      : '¿No sabes la clave de seguridad? Usa tu usuario y contraseña de administrador';
+  }
+  document.getElementById(usarAdmin ? 'setup-reinstall-admin-user' : 'setup-reinstall-password')?.focus();
+}
+
+// El permiso de reemplazo lo usan también las restauraciones del asistente
+// (js/wizard.js lo manda en la cabecera X-TC-Reemplazo).
+window.getSetupReemplazoToken = () => setupWizard.reemplazoToken || '';
+// Lo guarda el asistente cuando pide el permiso dentro de la restauración.
+window.setSetupReemplazoToken = (token) => { setupWizard.reemplazoToken = String(token || ''); };
+
 async function confirmSetupReinstallModal(preserveGoogle = false) {
-  const password = String(document.getElementById('setup-reinstall-password')?.value || '').trim();
   const status = document.getElementById('setup-reinstall-status');
-  if (!password) {
-    if (status) status.textContent = 'Debes ingresar la clave de seguridad.';
+  const usarAdmin = !document.getElementById('setup-reinstall-mode-admin')?.classList.contains('hidden');
+  const password = String(document.getElementById('setup-reinstall-password')?.value || '').trim();
+  const adminUser = String(document.getElementById('setup-reinstall-admin-user')?.value || '').trim();
+  const adminPass = String(document.getElementById('setup-reinstall-admin-pass')?.value || '');
+  if (usarAdmin ? (!adminUser || !adminPass) : !password) {
+    if (status) {
+      status.textContent = usarAdmin
+        ? 'Escribe el usuario y la contraseña del administrador.'
+        : 'Debes ingresar la clave de seguridad.';
+    }
     return;
   }
 
   try {
-    await api.verifySecurityPassword({ password });
+    const permiso = await api.autorizarReemplazo(usarAdmin
+      ? { usuario: adminUser, password: adminPass }
+      : { claveSeguridad: password });
+    const securityPassword = usarAdmin ? '' : password;
     closeAllModals();
     if (preserveGoogle && pendingGoogleLinkSession?.idToken) {
       beginGoogleSetup(pendingGoogleLinkSession);
       setupWizard.forceReset = true;
-      setupWizard.securityPassword = password;
+      setupWizard.securityPassword = securityPassword;
+      setupWizard.reemplazoToken = permiso?.token || '';
       showToast('Asistente listo. Tu cuenta Google quedó vinculada al nuevo negocio.', 'success');
       return;
     }
-    startSetupWizardSession({ preserveGoogle: false, forceReset: true, securityPassword: password });
-    await refreshSetupPrinterOptions();
-    showToast('Asistente de reinstalación listo. Ahora sí puedes crear el usuario nuevo.', 'success');
+    // Misma pantalla de inicio que una instalación nueva (negocio nuevo,
+    // restaurar de un archivo o de la nube), con el permiso de reemplazo.
+    setupWizard.forceReset = true;
+    setupWizard.securityPassword = securityPassword;
+    setupWizard.reemplazoToken = permiso?.token || '';
+    if (typeof window.platformInit !== 'undefined') {
+      window.platformInit.show((choice) => _handlePlatformInitChoice(choice));
+    } else {
+      startSetupWizardSession(getSetupReinstallSession());
+      await refreshSetupPrinterOptions();
+    }
+    showToast('Listo: elige si quieres restaurar un respaldo o crear el negocio nuevo.', 'success');
   } catch (error) {
-    if (status) status.textContent = error.message || 'No se pudo validar la clave de seguridad.';
+    if (status) status.textContent = error.message || 'No se pudo validar el permiso.';
     if (typeof window.scheduleUiTranslation === 'function' && status) window.scheduleUiTranslation(status);
   }
 }
@@ -4707,6 +4774,9 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
       ? Number(document.getElementById('cfg-labels-barcode-offset')?.value || 0)
       : (window.LocalPeripheralsFlat?.labelsBarcodeOffsetMm || 0),
     receiptPaperSize: document.getElementById('cfg-paper-size')?.value || DB.config?.receiptPaperSize || '80mm',
+    // Factura A4 (js/factura-plantillas.js). Color '' = el de la plantilla.
+    invoiceTemplate: document.getElementById('cfg-invoice-template')?.value || DB.config?.invoiceTemplate || 'clasica',
+    invoiceAccentColor: document.getElementById('cfg-invoice-color')?.value ?? DB.config?.invoiceAccentColor ?? '',
     receiptNarrowCols: Boolean(document.getElementById('cfg-receipt-narrow-cols')?.checked ?? DB.config?.receiptNarrowCols ?? false),
     cashierRegisterRequired: Boolean(document.getElementById('cfg-cashier-register-required')?.checked ?? DB.config?.cashierRegisterRequired ?? true),
     exclusiveCashierPerRegister: Boolean(document.getElementById('cfg-exclusive-cashier-register')?.checked ?? DB.config?.exclusiveCashierPerRegister ?? true),
@@ -4782,6 +4852,7 @@ function syncConfigForm() {
     if (el === activeElement) return;
     el.value = val ?? '';
   });
+  window.FacturaPlantillas?.sincronizarSelector(cfg);
   if (window.RNCLookup) {
     const rncEl = document.getElementById('cfg-rnc');
     if (rncEl && !rncEl.dataset.rncAttached) {
@@ -6507,6 +6578,7 @@ async function completeInitialSetup() {
       openingNotes: document.getElementById('setup-opening-notes')?.value.trim(),
       forceReset: setupWizard.forceReset,
       securityPassword: setupWizard.securityPassword,
+      reemplazoToken: setupWizard.reemplazoToken,
       networkKey: setupWizard.networkKey || '',
       // Contador elegido en la pantalla de plataforma (platform-init). Antes se
       // guardaba en setupWizard._platform* y nunca se enviaba: el negocio nuevo
@@ -7564,6 +7636,7 @@ window.startNewUserFlow = startNewUserFlow;
 window._handlePlatformInitChoice = _handlePlatformInitChoice;
 window.launchSetupWizardFromLogin = launchSetupWizardFromLogin;
 window.confirmSetupReinstallModal = confirmSetupReinstallModal;
+window.toggleSetupReinstallMode = toggleSetupReinstallMode;
 window.refreshStartupStatus = refreshStartupStatus;
 window.openLicenseWhatsAppSupport = openLicenseWhatsAppSupport;
 window.openWhatsAppWeb = openWhatsAppWeb;

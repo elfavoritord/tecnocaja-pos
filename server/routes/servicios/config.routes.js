@@ -5,7 +5,8 @@
  * El vertical (tipo de empresa) se fija en el wizard y NO se cambia desde aquí.
  *
  *  GET /api/servicios/config
- *  PUT /api/servicios/config           { fiscalMode?, invoiceFormat?, mailUser?, mailPass?, mailFrom? }
+ *  PUT /api/servicios/config           { fiscalMode?, invoiceFormat?, mailUser?, mailPass?, mailFrom?, terms? }
+ *    terms = términos y condiciones que salen en todas las cotizaciones y facturas.
  */
 
 const express = require('express');
@@ -31,7 +32,8 @@ function createConfigRouter(deps) {
       const [row = {}] = await query(
         `SELECT business_type, service_vertical, service_fiscal_mode, service_invoice_default_format,
                 service_mail_user, service_mail_from,
-                service_signature, service_quote_terms, service_quote_advance_pct, service_autosign
+                service_signature, service_quote_terms, service_quote_advance_pct, service_autosign,
+                service_terms
          FROM config WHERE id = 1 LIMIT 1`
       );
       res.json({
@@ -46,6 +48,7 @@ function createConfigRouter(deps) {
         quoteTerms: row.service_quote_terms || '',
         quoteAdvancePct: row.service_quote_advance_pct != null ? Number(row.service_quote_advance_pct) : null,
         autoSign: Boolean(Number(row.service_autosign)),
+        terms: row.service_terms || '',
       });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
@@ -76,6 +79,11 @@ function createConfigRouter(deps) {
         if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(sig)) throw httpError('La firma debe ser una imagen PNG o JPG.');
         if (sig.length > 900000) throw httpError('La imagen de la firma es muy pesada (máx. ~600 KB). Recórtala o redúcela.');
         sets.push('service_signature = ?'); params.push(sig);
+      }
+      if (b.terms !== undefined) {
+        const terms = String(b.terms).trim();
+        if (terms.length > 20000) throw httpError('Los términos y condiciones son muy largos (máx. 20,000 caracteres).');
+        sets.push('service_terms = ?'); params.push(terms || null);
       }
       if (b.quoteTerms !== undefined) { sets.push('service_quote_terms = ?'); params.push(String(b.quoteTerms).trim() || null); }
       if (b.quoteAdvancePct !== undefined) {

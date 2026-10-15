@@ -1328,6 +1328,159 @@ svg.tc-emoji-icon {
   margin-bottom: var(--tc-space-4);
 }
 
+/* ── Ventana "Nuevo gasto" por secciones (openNuevoGastoModal) ──────────── */
+.modal-overlay #modal-box.gasto-modal {
+  width: 920px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-overlay #modal-box.gasto-modal > :is(.modal-header, .modal-footer) { flex: none; }
+.modal-overlay #modal-box.gasto-modal > .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--tc-space-4) var(--tc-space-5);
+  background: var(--tc-bg);
+}
+.modal-overlay #modal-box.gasto-modal > .modal-footer .btn-primary { display: inline-flex; align-items: center; gap: 8px; }
+.gasto-modal .gf { display: flex; flex-direction: column; gap: 14px; }
+.gasto-modal .gf-card {
+  padding: 14px 16px 16px;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: 12px;
+  background: var(--tc-surface);
+}
+.gasto-modal .gf-title,
+.gasto-modal .gf-606 > summary {
+  display: flex; align-items: center; gap: 9px; margin: 0 0 12px;
+  color: var(--tc-text); font-size: 12px; font-weight: 800; letter-spacing: .7px; text-transform: uppercase;
+}
+.gasto-modal .gf-ico {
+  display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 8px;
+  background: var(--tc-select-bg); color: var(--tc-select-text);
+}
+.gasto-modal .gf-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.gasto-modal .gf-grid + .gf-grid { margin-top: 12px; }
+.gasto-modal .gf-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.gasto-modal .gf-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.gasto-modal .gf-span { grid-column: 1 / -1; }
+.gasto-modal .gf-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gasto-modal .gf-field > label {
+  display: flex; align-items: center; gap: 6px; min-height: 22px;
+  color: var(--tc-text-2); font-size: var(--tc-fs-sm); font-weight: var(--tc-weight-medium);
+}
+.gasto-modal .gf-field > label small { font-weight: 400; opacity: .8; }
+.gasto-modal .gf-field .form-input { width: 100%; }
+.gasto-modal .gf-req { color: var(--tc-danger-text); font-weight: 700; }
+/* Estado del pago: dos botones en vez de una lista */
+.gasto-modal .gf-seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; min-height: var(--tc-control-h);
+  border: var(--tc-border-w) solid var(--tc-border); border-radius: var(--tc-radius-btn); background: var(--tc-surface-2);
+}
+.gasto-modal .gf-seg-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border: 0; border-radius: calc(var(--tc-radius-btn) - 2px); background: transparent;
+  color: var(--tc-text-2); font: inherit; font-weight: 600; cursor: pointer;
+}
+.gasto-modal .gf-seg-btn:hover { color: var(--tc-text); }
+.gasto-modal .gf-seg-btn.is-on[data-estado="pagado"] { background: var(--tc-success-bg); color: var(--tc-success-text); box-shadow: inset 0 0 0 1px var(--tc-success-border); }
+.gasto-modal .gf-seg-btn.is-on[data-estado="pendiente"] { background: var(--tc-warning-bg); color: var(--tc-warning-text); box-shadow: inset 0 0 0 1px var(--tc-warning-border); }
+/* Montos con "RD$" adentro */
+.gasto-modal .gf-money { position: relative; }
+.gasto-modal .gf-money > span {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%); pointer-events: none;
+  color: var(--tc-text-2); font-size: var(--tc-fs-sm); font-weight: 600;
+}
+/* Peso 500: con Barlow en 400 a 16 px el punto decimal se ve como coma.
+   !important: la regla general de campos (sección 4) pesa más por sus :not(). */
+.modal-overlay #modal-box.gasto-modal .gf-money .form-input {
+  padding-left: 44px !important; text-align: right; font-weight: 500 !important; font-variant-numeric: tabular-nums;
+  appearance: textfield; -moz-appearance: textfield;
+}
+.gasto-modal .gf-money .form-input::-webkit-inner-spin-button,
+.gasto-modal .gf-money .form-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.gasto-modal .gf-chip {
+  margin-left: auto; padding: 1px 9px; border: 1px solid var(--tc-select-border); border-radius: 999px;
+  background: var(--tc-select-bg); color: var(--tc-select-text); font: inherit; font-size: 11.5px; font-weight: 700; cursor: pointer;
+}
+.gasto-modal .gf-totales { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 10px; margin-top: 14px; }
+.gasto-modal .gf-totales > div {
+  display: flex; flex-direction: column; gap: 4px; padding: 10px 14px; border-radius: 10px;
+  border: var(--tc-border-w) solid var(--tc-border-soft); background: var(--tc-surface-2);
+}
+.gasto-modal .gf-totales span { color: var(--tc-text-2); font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; }
+.gasto-modal .gf-totales b { color: var(--tc-text); font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.gasto-modal .gf-totales .gf-neto { border-color: var(--tc-select-border); background: var(--tc-select-bg); }
+.gasto-modal .gf-totales .gf-neto b { color: var(--tc-select-text); font-size: 22px; }
+.gasto-modal .gf-totales small { color: var(--tc-text-2); font-size: 11.5px; font-weight: 500; }
+.gasto-modal .gf-totales small:empty { display: none; }
+/* Detalle del gasto: varias líneas en una misma factura */
+.gasto-modal .gf-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.gasto-modal .gf-head .gf-title { margin: 0; }
+.gasto-modal .gf-head-acc { display: flex; align-items: center; gap: 8px; }
+.gasto-modal .gf-head-acc .gf-chip { margin-left: 0; padding: 4px 11px; }
+.gasto-modal .gf-add { display: inline-flex; align-items: center; gap: 6px; }
+.gasto-modal .gf-lineas-wrap { overflow-x: auto; border: var(--tc-border-w) solid var(--tc-border-soft); border-radius: 10px; }
+.gasto-modal .gf-lineas { width: 100%; min-width: 760px; border-collapse: collapse; table-layout: fixed; }
+.gasto-modal .gf-lineas--ver { min-width: 560px; table-layout: auto; }
+.gasto-modal .gf-lineas .gl-c-cat { width: 158px; }
+.gasto-modal .gf-lineas .gl-cat { font-size: 13px; padding-right: 4px; }
+.gasto-modal .gf-lineas .gl-cat:has(option[value=""]:checked) { color: var(--tc-text-2); }
+.gasto-modal .gf-cat-nueva { border-color: var(--tc-primary) !important; }
+.gasto-modal .gf-sub { display: block; margin-top: 2px; color: var(--tc-text-2); font-size: 11.5px; font-weight: 500; }
+.gasto-modal .gf-lineas .gl-c-cant { width: 80px; }
+.gasto-modal .gf-lineas .gl-c-precio { width: 130px; }
+.gasto-modal .gf-lineas .gl-c-itbis { width: 86px; }
+.gasto-modal .gf-lineas .gl-c-imp { width: 130px; }
+.gasto-modal .gf-lineas .gl-c-acc { width: 42px; }
+.gasto-modal .gf-lineas th {
+  padding: 9px 10px; background: var(--tc-surface-2); color: var(--tc-text-2); text-align: left;
+  font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; white-space: nowrap;
+}
+.gasto-modal .gf-lineas :is(th, td).num { text-align: right; }
+.gasto-modal .gf-lineas td { padding: 6px 8px; border-top: var(--tc-border-w) solid var(--tc-border-soft); vertical-align: middle; }
+.gasto-modal .gf-lineas--ver td { padding: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.gasto-modal .gf-lineas .form-input { width: 100%; min-width: 0; }
+.modal-overlay #modal-box.gasto-modal .gf-lineas .gl-num {
+  padding: 0 9px !important; text-align: right; font-weight: 500 !important; font-variant-numeric: tabular-nums;
+  appearance: textfield; -moz-appearance: textfield;
+}
+.gasto-modal .gf-lineas .gl-num::-webkit-inner-spin-button,
+.gasto-modal .gf-lineas .gl-num::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.gasto-modal .gf-lineas .gl-imp { text-align: right; font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; padding-right: 12px; }
+.gasto-modal .gf-lineas .gl-acc { text-align: center; padding: 6px 4px; }
+.gasto-modal .gl-quitar {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--tc-danger-text); cursor: pointer;
+}
+.gasto-modal .gl-quitar:hover { background: var(--tc-danger-bg); }
+.gasto-modal .gf-ret { margin-top: 14px; }
+.gasto-modal .gf-dato { min-height: 22px; color: var(--tc-text); font-weight: 600; }
+.gasto-modal .gf-nota { margin: 12px 0 0; color: var(--tc-text-2); }
+.gasto-modal .gf-aviso {
+  margin: 0; padding: 10px 14px; border-radius: 10px; font-weight: 600;
+  border: 1px solid var(--tc-danger-border); background: var(--tc-danger-bg); color: var(--tc-danger-text);
+}
+.gasto-modal .gf-estado { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12.5px; }
+.gasto-modal .gf-estado--pagado { background: var(--tc-success-bg); color: var(--tc-success-text); }
+.gasto-modal .gf-estado--pendiente { background: var(--tc-warning-bg); color: var(--tc-warning-text); }
+.gasto-modal .gf-estado--anulado { background: var(--tc-danger-bg); color: var(--tc-danger-text); }
+.modal-overlay #modal-box.gasto-modal > .modal-footer .btn-secondary { display: inline-flex; align-items: center; gap: 8px; }
+/* 606: plegable */
+.gasto-modal .gf-606 > summary { margin: 0; cursor: pointer; list-style: none; }
+.gasto-modal .gf-606 > summary::-webkit-details-marker { display: none; }
+.gasto-modal .gf-606 > summary small { color: var(--tc-text-2); font-weight: 500; letter-spacing: 0; text-transform: none; }
+.gasto-modal .gf-606 > summary::after { content: '▾'; margin-left: auto; color: var(--tc-text-2); font-size: 14px; transition: transform .15s ease; }
+.gasto-modal .gf-606[open] > summary { margin-bottom: 12px; }
+.gasto-modal .gf-606[open] > summary::after { transform: rotate(180deg); }
+@media (max-width: 760px) {
+  .gasto-modal :is(.gf-grid-3, .gf-grid-4) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gasto-modal .gf-totales { grid-template-columns: 1fr; }
+}
+
 #app :is(.cxp-filter-btn) {
   display: inline-flex;
   align-items: center;
@@ -2512,4 +2665,191 @@ svg.tc-emoji-icon {
 :is(#app, .modal-overlay) .net-firewall-actions {
   display: flex;
   gap: var(--tc-space-2);
+}
+
+/* ═══ CONFIGURACIÓN: diseño de la factura A4 (js/factura-plantillas.js) ════ */
+
+#cfg-invoice-design .helper-text {
+  display: block;
+  margin-top: var(--tc-space-1);
+}
+
+#cfg-invoice-design .tc-fp-plantillas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-3);
+  margin: var(--tc-space-3) 0 var(--tc-space-4);
+}
+
+#cfg-invoice-design .tc-fp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-1);
+  width: 172px;
+  padding: var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  cursor: pointer;
+}
+
+#cfg-invoice-design .tc-fp-card:hover {
+  border-color: var(--tc-border-strong);
+}
+
+#cfg-invoice-design .tc-fp-card[aria-checked="true"] {
+  border-color: var(--tc-select-border);
+  background: var(--tc-select-bg);
+  box-shadow: 0 0 0 1px var(--tc-select-border);
+}
+
+#cfg-invoice-design .tc-fp-card:focus-visible {
+  outline: 2px solid var(--tc-select-border);
+  outline-offset: 2px;
+}
+
+/* Miniatura: la factura A4 real (210 mm = 794 px) reducida a 154 px. */
+#cfg-invoice-design .tc-fp-thumb {
+  position: relative;
+  width: 154px;
+  height: 218px;
+  margin-bottom: var(--tc-space-1);
+  overflow: hidden;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+#cfg-invoice-design .tc-fp-thumb-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 794px;
+  transform: scale(0.194);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+#cfg-invoice-design .tc-fp-thumb .tcfac-root {
+  padding: 0;
+  background: #fff;
+}
+
+#cfg-invoice-design .tc-fp-thumb .tcfac-root .tcf-page {
+  margin: 0;
+  filter: none;
+}
+
+#cfg-invoice-design .tc-fp-card__name {
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cfg-invoice-design .tc-fp-card__desc {
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  line-height: 1.35;
+}
+
+#cfg-invoice-design .tc-fp-sublabel {
+  color: var(--tc-text);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+}
+
+#cfg-invoice-design .tc-fp-colores {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-2);
+  margin-top: var(--tc-space-2);
+}
+
+#cfg-invoice-design .tc-fp-auto,
+#cfg-invoice-design .tc-fp-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-2);
+  box-sizing: border-box;
+  height: var(--tc-control-h);
+  margin: 0;
+  padding: 0 var(--tc-space-3) 0 var(--tc-space-2);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: 999px;
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  cursor: pointer;
+}
+
+#cfg-invoice-design .tc-fp-auto[aria-checked="true"],
+#cfg-invoice-design .tc-fp-custom.is-active {
+  border-color: var(--tc-select-border);
+  background: var(--tc-select-bg);
+  box-shadow: 0 0 0 1px var(--tc-select-border);
+}
+
+#cfg-invoice-design .tc-fp-auto__dot {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+
+#cfg-invoice-design .tc-fp-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  margin: 0;
+  padding: 0;
+  border: 3px solid var(--tc-surface);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--tc-border);
+  cursor: pointer;
+}
+
+#cfg-invoice-design .tc-fp-swatch svg {
+  visibility: hidden;
+}
+
+#cfg-invoice-design .tc-fp-swatch[aria-checked="true"] {
+  box-shadow: 0 0 0 2px var(--tc-select-border);
+}
+
+#cfg-invoice-design .tc-fp-swatch[aria-checked="true"] svg {
+  visibility: visible;
+}
+
+#cfg-invoice-design .tc-fp-swatch:focus-visible,
+#cfg-invoice-design .tc-fp-auto:focus-visible,
+#cfg-invoice-design .tc-fp-custom:focus-within {
+  outline: 2px solid var(--tc-select-border);
+  outline-offset: 2px;
+}
+
+#cfg-invoice-design .tc-fp-custom input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  cursor: pointer;
+}
+
+#cfg-invoice-design .tc-fp-custom input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+#cfg-invoice-design .tc-fp-custom input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 50%;
 }

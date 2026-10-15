@@ -45,6 +45,7 @@
     'srv-facturas': ['file-text', 'Facturación', 'servicios'],
     'srv-cobros': ['hand-coins', 'Cobros', 'servicios'],
     'srv-cxc': ['receipt-text', 'Por cobrar', 'servicios'],
+    'srv-gastos': ['wallet', 'Gastos', 'servicios'],
     'srv-cotizaciones': ['file-pen-line', 'Cotizaciones', 'servicios'],
     'srv-dashboard': ['layout-dashboard', 'Panel', 'servicios'],
     'srv-servicios': ['wrench', 'Servicios', 'servicios'],

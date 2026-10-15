@@ -3650,11 +3650,15 @@ ipcMain.handle('app:html-to-pdf', async (_event, { html = '', landscape = false 
       webPreferences: { nodeIntegration: false, contextIsolation: true },
     });
     await pdfWindow.loadFile(tempFile);
+    // Márgenes en 0 y @page del documento: la factura A4 ya trae sus márgenes
+    // (padding de la hoja). Electron 21+ ignora `marginType` y ponía 1 cm extra
+    // por lado, que encogía el ancho y mandaba el final a una segunda hoja.
     const pdfBuffer = await pdfWindow.webContents.printToPDF({
       printBackground: true,
       pageSize: 'A4',
       landscape,
-      margins: { marginType: 'printableArea' },
+      margins: { top: 0, bottom: 0, left: 0, right: 0 },
+      preferCSSPageSize: true,
     });
     pdfWindow.close();
     pdfWindow = null;

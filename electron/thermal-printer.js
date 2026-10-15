@@ -25,6 +25,9 @@ const CHAR_MAP = {
   'ü': 0x81, 'Ü': 0x9A,
   'ç': 0x87, 'Ç': 0x80,
   '¿': 0xA8, '¡': 0xAD, '°': 0xF8,
+  'º': 0xA7, 'ª': 0xA6, '·': 0xFA,
+  // Sin equivalente en CP437: el carácter ASCII más parecido.
+  '—': 0x2D, '–': 0x2D, '★': 0x2A, '“': 0x22, '”': 0x22, '‘': 0x27, '’': 0x27,
 };
 
 /**
@@ -319,6 +322,25 @@ function formatEscPosDate(value) {
   return str;
 }
 
+// Parte un texto en líneas de hasta `width` caracteres sin cortar palabras
+// (una palabra más larga que la línea sí se corta).
+function wrapReceiptText(value, width) {
+  const words = String(value || '').split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = '';
+  for (const word of words) {
+    if (!current) current = word;
+    else if (current.length + 1 + word.length <= width) current += ` ${word}`;
+    else { lines.push(current); current = word; }
+    while (current.length > width) {
+      lines.push(current.slice(0, width));
+      current = current.slice(width);
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
+
 function buildReceipt(data) {
   const { negocio = {}, venta = {}, config = {} } = data;
   const paperWidth = config.paperWidth || '80mm';
@@ -330,6 +352,19 @@ function buildReceipt(data) {
   const fmtQty = (n) => { const v = Number(n || 0); return Number.isInteger(v) ? String(v) : v.toLocaleString('es-DO', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); };
   const padR = (s, n) => String(s || '').substring(0, n).padEnd(n);
   const padL = (s, n) => String(s || '').substring(0, n).padStart(n);
+  // Etiqueta a la izquierda y valor a la derecha; si no caben en una línea,
+  // la etiqueta va sola y el valor debajo, alineado a la derecha.
+  const keyValue = (label, value) => {
+    const l = String(label || '');
+    const v = String(value || '');
+    if (l.length + 1 + v.length <= COLS) return p.row2(l, v);
+    p.text(l);
+    wrapReceiptText(v, COLS).forEach((line) => p.text(line.padStart(COLS)));
+    return p;
+  };
+  // Las filas armadas en el renderer (js/ventas.js) son las mismas del ticket
+  // en pantalla; sin ellas (payload de una versión anterior) se usan las de antes.
+  const filas = (value) => (Array.isArray(value) && value.length ? value : null);
 
   p.init();
 
@@ -370,30 +405,36 @@ function buildReceipt(data) {
   // ── Datos del comprobante ──────────────────────────────────────────────────
   p.align(1).bold(true).text(String(venta.dataSectionTitle || 'DATOS DEL COMPROBANTE')).bold(false).align(0);
 
-  const detailRows = [
-    [String(venta.primaryLabel || 'FACTURA').toUpperCase(), venta.numeroFactura || ''],
-    ['FECHA',   formatEscPosDate(venta.fecha)],
-    ['CAJERO',  venta.cajero || ''],
-    ['CLIENTE', venta.cliente || 'Consumidor Final'],
-    [String(venta.methodRowLabel || 'METODO').toUpperCase(), venta.metodo || 'Efectivo'],
-  ];
-  if (venta.ncf) detailRows.push(['NCF', venta.ncf]);
-  if (venta.ncf && venta.ncfVencimiento) detailRows.push(['NCF VENCE', formatEscPosDate(venta.ncfVencimiento)]);
+  let detailRows = filas(venta.filasDetalle);
+  if (!detailRows) {
+    detailRows = [
+      [String(venta.primaryLabel || 'FACTURA').toUpperCase(), venta.numeroFactura || ''],
+      ['FECHA',   formatEscPosDate(venta.fecha)],
+      ['CAJERO',  venta.cajero || ''],
+      ['CLIENTE', venta.cliente || 'Consumidor Final'],
+      [String(venta.methodRowLabel || 'METODO').toUpperCase(), venta.metodo || 'Efectivo'],
+    ];
+    if (venta.ncf) detailRows.push(['NCF', venta.ncf]);
+    if (venta.ncf && venta.ncfVencimiento) detailRows.push(['NCF VENCE', formatEscPosDate(venta.ncfVencimiento)]);
+  }
   detailRows.filter(([, v]) => String(v || '').trim()).forEach(([lbl, val]) => {
-    p.row2(lbl, String(val));
+    keyValue(String(lbl).toUpperCase(), String(val));
   });
   p.separator('-');
 
-  // ── Cabecera y filas de ítems (4 columnas) ─────────────────────────────────
+  // ── Cabecera y filas de ítems (4 columnas, 5 si alguno lleva ITBIS) ────────
+  const items = Array.isArray(venta.items) ? venta.items : [];
+  const hasItbisCol = items.some((item) => String(item.itbisTexto || '').trim());
   const totalCol = is58 ? 7 : 9;
   const priceCol = is58 ? 7 : 8;
   const qtyCol   = is58 ? 3 : 4;
-  const nameCol  = COLS - qtyCol - priceCol - totalCol - 3;
+  const itbisCol = hasItbisCol ? (is58 ? 4 : 5) : 0;
+  const nameCol  = COLS - qtyCol - priceCol - totalCol - itbisCol - (hasItbisCol ? 4 : 3);
+  const itbisCell = (text) => (hasItbisCol ? ` ${padL(text, itbisCol)}` : '');
 
-  p.bold(true).text(`${padR('ARTICULO', nameCol)} ${padL('CANT', qtyCol)} ${padL('VALOR', priceCol)} ${padL('TOTAL', totalCol)}`).bold(false);
+  p.bold(true).text(`${padR('ARTICULO', nameCol)}${itbisCell('ITBIS')} ${padL('CANT', qtyCol)} ${padL('VALOR', priceCol)} ${padL('TOTAL', totalCol)}`).bold(false);
   p.separator('-');
 
-  const items = Array.isArray(venta.items) ? venta.items : [];
   for (const item of items) {
     const desc  = String(item.descripcion || item.nombre || '');
     const qty   = Number(item.cantidad || 1);
@@ -408,7 +449,7 @@ function buildReceipt(data) {
     }
     if (!nameLines.length) nameLines.push('');
 
-    p.text(`${padR(nameLines[0], nameCol)} ${padL(qtyText, qtyCol)} ${padL(fmtAmt(price), priceCol)} ${padL(fmtAmt(total), totalCol)}`);
+    p.text(`${padR(nameLines[0], nameCol)}${itbisCell(item.itbisTexto || '')} ${padL(qtyText, qtyCol)} ${padL(fmtAmt(price), priceCol)} ${padL(fmtAmt(total), totalCol)}`);
     nameLines.slice(1).forEach((line) => p.text(line));
     if (item.variante) p.text(`  > ${item.variante}`);
     if (item.notas)    p.text(`  * ${item.notas}`);
@@ -417,35 +458,48 @@ function buildReceipt(data) {
   p.separator('-');
 
   // ── Totales ────────────────────────────────────────────────────────────────
-  if (Number(venta.descuento) > 0) {
-    p.row2('Subtotal:', fmtAmt(venta.subtotal));
-    p.row2('Descuento:', `-${fmtAmt(venta.descuento)}`);
+  const filasResumen = filas(venta.filasResumen);
+  if (filasResumen) {
+    filasResumen.forEach(([label, value]) => keyValue(label, value));
   } else {
     p.row2('Subtotal:', fmtAmt(venta.subtotal));
-  }
-  if (Number(venta.impuesto) > 0) {
-    p.row2('ITBIS:', fmtAmt(venta.impuesto));
+    if (Number(venta.descuento) > 0) p.row2('Descuento:', `-${fmtAmt(venta.descuento)}`);
+    if (Number(venta.impuesto) > 0) p.row2('ITBIS:', fmtAmt(venta.impuesto));
   }
   p.separator('=');
   p.bold(true).size(1, 2).row2('TOTAL', fmtAmt(venta.total)).size(1, 1).bold(false);
 
-  const isUsdPayment = String(venta.paymentCurrency || '') === 'USD';
-
-  if (isUsdPayment) {
-    p.row2('Recibido US$:', Number(venta.usdAmountReceived || 0).toFixed(2));
-    p.row2('Tasa US$:', Number(venta.exchangeRateUsed || 0).toFixed(4));
-    p.row2('Recibido RD$:', fmtAmt(venta.recibido));
+  // filasPago lo manda js/ventas.js aunque esté vacío (pago exacto en efectivo).
+  if (Array.isArray(venta.filasPago)) {
+    venta.filasPago.forEach(([label, value, variant]) => {
+      const resaltada = variant === 'total' || variant === 'meta-strong';
+      if (resaltada) p.bold(true);
+      keyValue(label, value);
+      if (resaltada) p.bold(false);
+    });
+  } else {
+    const isUsdPayment = String(venta.paymentCurrency || '') === 'USD';
+    if (isUsdPayment) {
+      p.row2('Recibido US$:', Number(venta.usdAmountReceived || 0).toFixed(2));
+      p.row2('Tasa US$:', Number(venta.exchangeRateUsed || 0).toFixed(4));
+      p.row2('Recibido RD$:', fmtAmt(venta.recibido));
+    }
+    if (Number(venta.cambio) > 0) {
+      p.row2(isUsdPayment ? 'Devuelta RD$:' : 'Cambio:', fmtAmt(venta.cambio));
+    }
   }
 
-  if (Number(venta.cambio) > 0) {
-    p.row2(isUsdPayment ? 'Devuelta RD$:' : 'Cambio:', fmtAmt(venta.cambio));
-  }
-
-  // ── QR ────────────────────────────────────────────────────────────────────
+  // ── QR + código de seguridad y fecha de firma (e-CF) ──────────────────────
   if (config.mostrarQR && config.qrData) {
     p.align(1).feed(1);
     p.qrCode(config.qrData, is58 ? 4 : 6);
     p.feed(1).align(0);
+  }
+  const seguridadEcf = filas(config.seguridadEcf);
+  if (seguridadEcf) {
+    p.align(1);
+    seguridadEcf.forEach((linea) => wrapReceiptText(linea, COLS).forEach((parte) => p.text(parte)));
+    p.align(0);
   }
 
   // ── Mensaje final ─────────────────────────────────────────────────────────
