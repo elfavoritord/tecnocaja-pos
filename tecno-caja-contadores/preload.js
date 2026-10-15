@@ -8,16 +8,30 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
   saveReportPdf(html, filename, landscape) {
     return ipcRenderer.invoke('report:save-pdf', { html, filename, landscape: !!landscape });
   },
+  // Factura A4 (plantillas): sin márgenes, la hoja trae los suyos.
   saveInvoicePdf(html, filename) {
-    return ipcRenderer.invoke('report:save-pdf', { html, filename, landscape: false });
+    return ipcRenderer.invoke('report:save-pdf', {
+      html, filename, landscape: false, noMargins: true, title: 'Guardar factura como PDF',
+    });
   },
   renderReportPdf(html, landscape) {
     return ipcRenderer.invoke('report:render-pdf', { html, landscape: !!landscape });
+  },
+  renderInvoicePdf(html) {
+    return ipcRenderer.invoke('report:render-pdf', { html, landscape: false, noMargins: true });
+  },
+  previewPrint(html) {
+    return ipcRenderer.invoke('report:preview-print', { html });
   },
 
   // ── Perfil (caché local para el splash pre-login) ──────────────────────────
   cacheProfile(data) {
     return ipcRenderer.invoke('profile:cache', data);
+  },
+
+  // ── Modo día / noche ('dia' | 'noche' | 'auto') ────────────────────────────
+  setTheme(tema) {
+    return ipcRenderer.invoke('ui:set-theme', String(tema || ''));
   },
 
   // ── Actualizaciones ───────────────────────────────────────────────────────

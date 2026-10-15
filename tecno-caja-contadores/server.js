@@ -12,6 +12,9 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const mailer = require('./mailer');
 const asistente = require('./asistente');
+// Plantillas de la factura A4 (copia de js/factura-plantillas.js del POS):
+// aquí solo se usa para validar la plantilla y el color que se guardan.
+const FacturaPlantillas = require('./public/js/factura-plantillas.js');
 
 // ── Firebase Admin SDK ─────────────────────────────────────────────────────
 let adminSdk = null;
@@ -312,6 +315,7 @@ async function requireAuth(req, res, next) {
         nombre_firma: parentData.nombre_firma || '',
         responsable:  colabData.nombre || '',
         rnc:          colabData.rnc || parentData.rnc || '',
+        direccion:    parentData.direccion || '',
         telefono:     colabData.telefono || '',
         correo:       colabData.email || decoded.email || '',
         logo_url:     parentData.logo_url || null,
@@ -355,6 +359,7 @@ async function requireAuth(req, res, next) {
       nombre_firma: contData.nombre_firma || '',
       responsable: contData.responsable || '',
       rnc:         contData.rnc || '',
+      direccion:   contData.direccion || '',
       telefono:    contData.telefono || '',
       correo:      contData.correo || decoded.email || '',
       logo_url:    contData.logo_url || null,
@@ -452,9 +457,13 @@ app.post('/api/auth/verify', async (req, res) => {
         nombre_firma: parentData.nombre_firma || '',
         responsable:  colabData.nombre || '',
         rnc:          colabData.rnc || parentData.rnc || '',
+        direccion:    parentData.direccion || '',
         telefono:     colabData.telefono || '',
         correo:       colabData.email || decoded.email || '',
         logo_url:     parentData.logo_url || null,
+        // Diseño de la factura del contador principal (Configuración).
+        factura_plantilla: parentData.factura_plantilla || null,
+        factura_color:     parentData.factura_color || null,
         contadorDocId: parentId,
         // Campos exclusivos de colaborador
         isColaborador:     true,
@@ -487,9 +496,12 @@ app.post('/api/auth/verify', async (req, res) => {
       nombre_firma: contData.nombre_firma || '',
       responsable:  contData.responsable  || '',
       rnc:          contData.rnc          || '',
+      direccion:    contData.direccion    || '',
       telefono:     contData.telefono     || '',
       correo:       contData.correo       || decoded.email || '',
       logo_url:     contData.logo_url     || null,
+      factura_plantilla: contData.factura_plantilla || null,
+      factura_color:     contData.factura_color     || null,
       contadorDocId: contDoc.id,
       isColaborador: false,
     });
@@ -1273,6 +1285,14 @@ app.put('/api/perfil', requireAuth, async (req, res) => {
   const updates = {};
   for (const campo of CAMPOS_PERMITIDOS) {
     if (req.body[campo] !== undefined) updates[campo] = req.body[campo] || null;
+  }
+  // Diseño de la factura (Configuración → Diseño de la factura). Una plantilla
+  // desconocida queda en la clásica; un color inválido, en el de la plantilla (null).
+  if (req.body.factura_plantilla !== undefined) {
+    updates.factura_plantilla = FacturaPlantillas.normalizarPlantilla(req.body.factura_plantilla);
+  }
+  if (req.body.factura_color !== undefined) {
+    updates.factura_color = FacturaPlantillas.normalizarColor(req.body.factura_color) || null;
   }
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'No hay campos válidos para actualizar.' });
   // Mismo guardia de tamaño que otros campos base64 guardados en un doc de
@@ -3282,6 +3302,7 @@ app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
       estado: 'pendiente',
       contador_nombre: req.contador.nombre_firma || req.contador.fullName,
       contador_rnc:    req.contador.rnc,
+      contador_direccion: req.contador.direccion || '',
       contador_tel:    req.contador.telefono,
       contador_correo: req.contador.correo,
       contador_logo:   req.contador.logo_url || null,
@@ -3371,6 +3392,44 @@ app.put('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
     await ref.update(upd);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Duplica una factura: mismo cliente/ítems/totales, pero con un NCF nuevo
+// (siguiente número de la secuencia activa) y estado 'pendiente' — queda
+// editable de inmediato porque nace sin pagos (misma regla del PUT de arriba).
+app.post('/api/facturacion/facturas/:id/duplicar', requireAuth, async (req, res) => {
+  try {
+    const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+    const snap = await contadorRef.collection('facturas').doc(req.params.id).get();
+    if (!snap.exists) return res.status(404).json({ error: 'Factura no encontrada.' });
+    const cur = snap.data();
+
+    const { ncf, ncfVencimiento } = await getNextNcf(contadorRef, cur.tipo_ncf);
+
+    const data = {
+      ncf, tipo_ncf: cur.tipo_ncf, tipo_ncf_label: cur.tipo_ncf_label,
+      ncf_vencimiento: ncfVencimiento || null,
+      fecha: new Date().toISOString().slice(0, 10),
+      cliente: { ...cur.cliente },
+      items: (cur.items || []).map(it => ({ ...it })),
+      subtotal: cur.subtotal || 0, descuento_total: cur.descuento_total || 0,
+      itbis_total: cur.itbis_total || 0, total: cur.total || 0,
+      monto_pagado: 0, balance: cur.total || 0,
+      condicion_pago: cur.condicion_pago || 'contado',
+      metodo_pago:    cur.metodo_pago    || 'efectivo',
+      observacion:    cur.observacion    || '',
+      estado: 'pendiente',
+      contador_nombre: cur.contador_nombre, contador_rnc: cur.contador_rnc,
+      contador_direccion: cur.contador_direccion ?? (req.contador.direccion || ''),
+      contador_tel:    cur.contador_tel,    contador_correo: cur.contador_correo,
+      contador_logo:   cur.contador_logo || null,
+      duplicada_de: req.params.id,
+      createdAt: isoNow(), updatedAt: isoNow(),
+    };
+
+    const ref = await contadorRef.collection('facturas').add(data);
+    res.json({ id: ref.id, ...data });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
 // Lee la config de correo del contador (doc de Firestore) o el fallback del .env.

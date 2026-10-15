@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tecno Caja Contadores</title>
   <link rel="stylesheet" href="css/contadores.css" />
+  <!-- Modo día / noche: va en el <head> para poner el tema antes de pintar. -->
+  <script src="js/tema.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="js/firebase-client-config.js"></script>
@@ -25,6 +27,9 @@
   LOGIN SCREEN
 ══════════════════════════════════════════════════════════════════════ -->
 <div id="screen-login">
+  <button type="button" class="login-tema" data-tema-alternar title="Cambiar entre modo día y modo noche">
+    <span data-tema-icono>☀️</span> <span data-tema-texto>Modo día</span>
+  </button>
   <div class="login-card">
     <div class="login-brand">
       <div class="login-brand-icon">🧮</div>
@@ -34,7 +39,7 @@
       </div>
     </div>
 
-    <div id="login-error-banner" class="hidden" style="background:#450a0a;border:1px solid #ef4444;border-radius:8px;padding:10px 14px;font-size:13px;color:#fca5a5;"></div>
+    <div id="login-error-banner" class="hidden" style="background:var(--bad-bg);border:1px solid var(--red);border-radius:8px;padding:10px 14px;font-size:13px;color:var(--bad-text-2);"></div>
 
     <div id="view-login">
       <div class="form-group" style="margin-bottom:12px">
@@ -58,10 +63,10 @@
       </button>
       <div id="login-err" class="login-error hidden" style="margin-top:10px"></div>
 
-      <div style="display:flex;align-items:center;gap:10px;margin:16px 0;color:#5a7099;font-size:12px">
-        <div style="flex:1;height:1px;background:#2a3550"></div>
+      <div style="display:flex;align-items:center;gap:10px;margin:16px 0;color:var(--text-muted);font-size:12px">
+        <div style="flex:1;height:1px;background:var(--border)"></div>
         o
-        <div style="flex:1;height:1px;background:#2a3550"></div>
+        <div style="flex:1;height:1px;background:var(--border)"></div>
       </div>
       <button id="btn-login-google" class="btn-login" style="background:#1f2937" onclick="app.doLoginGoogle()">
         🔐 Iniciar con Google
@@ -73,7 +78,7 @@
     </div>
 
     <div id="view-forgot" class="hidden">
-      <p style="font-size:13px;color:#8fa3c2;margin-bottom:14px">
+      <p style="font-size:13px;color:var(--text-sub);margin-bottom:14px">
         Ingresa tu correo y te enviaremos un enlace para restablecer tu contraseña.
       </p>
       <button class="btn-login" onclick="app.sendReset()">Enviar enlace de recuperación</button>
@@ -85,10 +90,10 @@
 
     <!-- Wizard de auto-registro: cuenta de Google sin perfil de contador -->
     <div id="view-registro" class="hidden">
-      <p style="font-size:13px;color:#8fa3c2;margin-bottom:4px">
+      <p style="font-size:13px;color:var(--text-sub);margin-bottom:4px">
         ¡Bienvenido/a! Escribe el RNC de tu firma y buscamos sus datos en la DGII.
       </p>
-      <div id="reg-email-note" style="font-size:12px;color:#5a7099;margin-bottom:12px"></div>
+      <div id="reg-email-note" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
 
       <div class="form-group" style="margin-bottom:4px">
         <label class="login-label">RNC de la firma *</label>
@@ -96,7 +101,7 @@
           onblur="app.buscarRncRegistro()"
           onkeydown="if(event.key==='Enter'){event.preventDefault();app.buscarRncRegistro();}" />
       </div>
-      <div id="reg-dgii-info" style="font-size:12px;min-height:16px;margin-bottom:10px;color:#5a7099"></div>
+      <div id="reg-dgii-info" style="font-size:12px;min-height:16px;margin-bottom:10px;color:var(--text-muted)"></div>
 
       <div class="form-group" style="margin-bottom:10px">
         <label class="login-label">Nombre de la firma *</label>
@@ -215,6 +220,9 @@
           <div class="user-role" id="sidebar-email" style="font-size:10px">contador asociado</div>
         </div>
       </div>
+      <button type="button" class="btn-tema" data-tema-alternar title="Cambiar entre modo día y modo noche">
+        <span data-tema-icono>☀️</span> <span data-tema-texto>Modo día</span>
+      </button>
       <button class="btn-logout" onclick="app.logout()">
         <span>🚪</span> Cerrar sesión
       </button>
@@ -351,7 +359,7 @@
             </tr>
           </thead>
           <tbody id="clientes-tbody">
-            <tr><td colspan="9" style="text-align:center;padding:30px;color:#5a7099">Cargando negocios…</td></tr>
+            <tr><td colspan="9" style="text-align:center;padding:30px;color:var(--text-muted)">Cargando negocios…</td></tr>
           </tbody>
         </table>
       </div>
@@ -396,7 +404,7 @@
             <tr><th>Acción</th><th>Plan</th><th>Por</th><th>Fecha</th></tr>
           </thead>
           <tbody id="det-historial-tbody">
-            <tr><td colspan="4" style="text-align:center;padding:20px;color:#5a7099">Sin historial</td></tr>
+            <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-muted)">Sin historial</td></tr>
           </tbody>
         </table>
       </div>
@@ -420,7 +428,7 @@
             <tr><th>Cliente</th><th>Plan</th><th>Estado</th><th>Inicio</th><th>Vencimiento</th><th>Días Rest.</th><th>Acción</th></tr>
           </thead>
           <tbody id="licencias-tbody">
-            <tr><td colspan="7" style="text-align:center;padding:30px;color:#5a7099">Cargando…</td></tr>
+            <tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text-muted)">Cargando…</td></tr>
           </tbody>
         </table>
       </div>
@@ -574,7 +582,7 @@
             <tr><th>Tipo</th><th>Cliente</th><th>Descripción</th><th>Estado</th><th>Fecha</th><th>Acción</th></tr>
           </thead>
           <tbody id="solicitudes-tbody">
-            <tr><td colspan="6" style="text-align:center;padding:30px;color:#5a7099">Cargando…</td></tr>
+            <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">Cargando…</td></tr>
           </tbody>
         </table>
       </div>
@@ -695,12 +703,12 @@
             </span>
           </div>
           <div class="facr-table-wrap">
-            <table class="facr-table">
+            <table class="facr-table" id="facr-fac-table">
               <thead><tr>
-                <th style="width:9%">NCF</th><th style="width:5%">Tipo</th><th style="width:8%">Fecha</th>
-                <th style="width:15%">Cliente</th><th style="width:9%">RNC</th><th style="width:8%">Método</th>
-                <th style="width:9%;text-align:right">Base</th><th style="width:8%;text-align:right">ITBIS</th><th style="width:9%;text-align:right">Total</th>
-                <th style="width:7%">Estado</th><th style="width:9%;text-align:right">Cobrado</th><th style="width:4%"></th>
+                <th>NCF</th><th>Tipo</th><th>Fecha</th>
+                <th>Cliente</th><th>RNC</th><th>Método</th>
+                <th style="text-align:right">Base</th><th style="text-align:right">ITBIS</th><th style="text-align:right">Total</th>
+                <th>Estado</th><th style="text-align:right">Cobrado</th><th></th>
               </tr></thead>
               <tbody id="facr-fac-tbody"></tbody>
               <tfoot id="facr-fac-tfoot"></tfoot>
@@ -989,6 +997,42 @@
         </div>
       </div>
 
+      <!-- Apariencia: modo día / noche (js/tema.js). Se aplica al instante y
+           se recuerda en esta computadora; no depende de "Guardar cambios". -->
+      <div class="section-card" id="cfg-apariencia">
+        <div class="section-card-title">🎨 Apariencia</div>
+        <p class="tc-fp-ayuda">Elige cómo se ve el portal. Se aplica al instante y se recuerda en esta computadora.</p>
+        <div class="tema-opciones" role="radiogroup" aria-label="Apariencia del portal">
+          <button type="button" class="tema-opcion" role="radio" data-tema="dia">
+            <span class="tema-muestra tema-muestra--dia"><i></i><i></i><i></i></span>
+            <span class="tema-opcion__nombre">☀️ Día</span>
+            <span class="tema-opcion__desc">Fondo claro</span>
+          </button>
+          <button type="button" class="tema-opcion" role="radio" data-tema="noche">
+            <span class="tema-muestra tema-muestra--noche"><i></i><i></i><i></i></span>
+            <span class="tema-opcion__nombre">🌙 Noche</span>
+            <span class="tema-opcion__desc">Fondo oscuro</span>
+          </button>
+          <button type="button" class="tema-opcion" role="radio" data-tema="auto">
+            <span class="tema-muestra tema-muestra--auto"><i></i><i></i><i></i></span>
+            <span class="tema-opcion__nombre">🖥️ Automático</span>
+            <span class="tema-opcion__desc">Igual que Windows</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Diseño de la factura: las mismas plantillas A4 del POS
+           (js/factura-plantillas.js). Se guarda con "Guardar cambios". -->
+      <div class="section-card tc-fp" id="cfg-invoice-design">
+        <div class="section-card-title">🧾 Diseño de la factura</div>
+        <p class="tc-fp-ayuda">Elige la plantilla y el color de tus facturas. Se usa al imprimir, guardar en PDF y enviar por correo. Presiona <strong>Guardar cambios</strong> para aplicarlo.</p>
+        <input type="hidden" id="cfg-invoice-template" value="clasica">
+        <input type="hidden" id="cfg-invoice-color" value="">
+        <div class="tc-fp-plantillas" id="cfg-invoice-templates" role="radiogroup" aria-label="Plantilla de la factura"></div>
+        <div class="tc-fp-sublabel">Color</div>
+        <div class="tc-fp-colores" id="cfg-invoice-colors" role="radiogroup" aria-label="Color de la factura"></div>
+      </div>
+
       <div class="section-card" id="cfg-correo-card">
         <div class="section-card-title">✉ Correo para enviar facturas</div>
         <p style="font-size:13px;color:var(--text-sub);line-height:1.6;margin-bottom:14px">
@@ -1075,7 +1119,7 @@
 
       <div class="section-card" style="opacity:.6;pointer-events:none">
         <div class="section-card-title">🔒 Campos no modificables</div>
-        <p style="font-size:13px;color:#8fa3c2">El rol, estado y permisos de tu cuenta son gestionados por el administrador de Tecno Caja.</p>
+        <p style="font-size:13px;color:var(--text-sub)">El rol, estado y permisos de tu cuenta son gestionados por el administrador de Tecno Caja.</p>
       </div>
     </div>
 
@@ -1182,9 +1226,9 @@
       <div class="section-card">
         <div class="section-card-title">📞 Contacto directo</div>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px;margin-top:4px">
-          <div style="font-size:13px"><span style="color:#8fa3c2">WhatsApp:</span><br><strong>+1 (809) 000-0000</strong></div>
-          <div style="font-size:13px"><span style="color:#8fa3c2">Correo:</span><br><strong>soporte@tecnocaja.com</strong></div>
-          <div style="font-size:13px"><span style="color:#8fa3c2">Horario:</span><br><strong>Lun–Vie 8am–6pm</strong></div>
+          <div style="font-size:13px"><span style="color:var(--text-sub)">WhatsApp:</span><br><strong>+1 (809) 000-0000</strong></div>
+          <div style="font-size:13px"><span style="color:var(--text-sub)">Correo:</span><br><strong>soporte@tecnocaja.com</strong></div>
+          <div style="font-size:13px"><span style="color:var(--text-sub)">Horario:</span><br><strong>Lun–Vie 8am–6pm</strong></div>
         </div>
       </div>
     </div>
@@ -1237,7 +1281,7 @@
         </div>
       </div>
 
-      <div id="ag-sin-datos" class="section-card" style="display:none;text-align:center;padding:40px;color:#5a7099">
+      <div id="ag-sin-datos" class="section-card" style="display:none;text-align:center;padding:40px;color:var(--text-muted)">
         <div style="font-size:36px;margin-bottom:8px">📊</div>
         <div style="font-size:15px;margin-bottom:4px">Sin datos sincronizados aún</div>
         <div style="font-size:12px">Los negocios deben sincronizarse desde Tecno Caja POS para ver datos aquí.</div>
@@ -1286,7 +1330,7 @@
             <button class="btn btn-xs btn-secondary cf-fil" data-fil="trimestral" onclick="app.filtrarObligaciones('trimestral',this)">Trimestrales</button>
           </div>
           <div id="cf-obligaciones-list" style="max-height:520px;overflow-y:auto">
-            <div style="text-align:center;padding:24px;color:#5a7099">Cargando…</div>
+            <div style="text-align:center;padding:24px;color:var(--text-muted)">Cargando…</div>
           </div>
         </div>
 
@@ -1299,7 +1343,7 @@
             <button class="btn btn-xs btn-secondary cf-tfil" data-fil="todos" onclick="app.filtrarTareas('todos',this)">Todas</button>
           </div>
           <div id="cf-tareas-list" style="max-height:520px;overflow-y:auto">
-            <div style="text-align:center;padding:24px;color:#5a7099">Cargando…</div>
+            <div style="text-align:center;padding:24px;color:var(--text-muted)">Cargando…</div>
           </div>
         </div>
       </div>
@@ -1307,14 +1351,14 @@
       <!-- Generador 606/607/608 desde archivo exportado del negocio -->
       <div class="section-card" style="margin-top:20px">
         <div class="section-card-title">📁 Generar 606/607/608 desde archivo del negocio</div>
-        <p style="color:#5a7099;font-size:13px;margin:0 0 12px">
+        <p style="color:var(--text-muted);font-size:13px;margin:0 0 12px">
           Pide a tu cliente que exporte el archivo fiscal desde Tecno Caja POS
           (Reportes → Fiscal DGII → "📤 Exportar para el Contador") y súbelo aquí
           para generar los formatos de envío 606, 607 y 608.
         </p>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <input type="file" id="cf-dgii-file" accept="application/json" onchange="app.cargarArchivoFiscal(event)">
-          <span id="cf-dgii-status" style="font-size:13px;color:#5a7099"></span>
+          <span id="cf-dgii-status" style="font-size:13px;color:var(--text-muted)"></span>
         </div>
         <div id="cf-dgii-resultado" style="display:none;margin-top:16px">
           <div id="cf-dgii-resumen" style="margin-bottom:12px;font-size:13px;line-height:1.6"></div>
@@ -1345,7 +1389,7 @@
         </select>
       </div>
 
-      <div id="ctb-state-empty" style="text-align:center;padding:48px;color:#5a7099">
+      <div id="ctb-state-empty" style="text-align:center;padding:48px;color:var(--text-muted)">
         Selecciona un negocio arriba para ver su contabilidad.
       </div>
 
@@ -1456,13 +1500,13 @@
           </table>
 
           <div class="section-card-title">💵 Flujo de Caja Proyectado (próximo mes)</div>
-          <p style="color:#5a7099;font-size:13px;margin:0 0 8px">Estimado como el promedio del flujo neto de caja de los últimos 3 meses con movimiento — no es un pronóstico contable formal.</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 8px">Estimado como el promedio del flujo neto de caja de los últimos 3 meses con movimiento — no es un pronóstico contable formal.</p>
           <div id="ctb-ind-proyeccion" style="font-size:22px;font-weight:700"></div>
         </div>
 
         <div id="ctb-vista-cierre" class="section-card" style="display:none">
           <div class="section-card-title">🔒 Períodos Contables</div>
-          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Un período cerrado bloquea nuevos asientos con fecha dentro de ese mes.</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 10px">Un período cerrado bloquea nuevos asientos con fecha dentro de ese mes.</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
             <input type="month" id="ctb-periodo-input" class="form-input" style="width:auto">
             <button class="btn btn-secondary" onclick="app.ctbCerrarPeriodo()">Cerrar Período</button>
@@ -1470,7 +1514,7 @@
           <div id="ctb-periodos-body"></div>
 
           <div class="section-card-title" style="margin-top:24px">📅 Cierre Anual</div>
-          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Salda las cuentas de ingresos/costos/gastos del año a Utilidades Retenidas y cierra los 12 meses. No se puede deshacer automáticamente.</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 10px">Salda las cuentas de ingresos/costos/gastos del año a Utilidades Retenidas y cierra los 12 meses. No se puede deshacer automáticamente.</p>
           <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
             <input type="number" id="ctb-anio-input" class="form-input" style="width:100px" placeholder="2026">
             <button class="btn btn-primary" onclick="app.ctbCerrarAnio()">Cerrar Ejercicio</button>
@@ -1526,7 +1570,7 @@
             <tbody id="ctb-centros-tbody"></tbody>
           </table>
           <div class="section-card-title">Comparativo por Centro de Costo</div>
-          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Solo asientos manuales pueden asignarse a un centro de costo.</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 10px">Solo asientos manuales pueden asignarse a un centro de costo.</p>
           <table class="data-table" style="width:100%">
             <thead><tr><th>Centro</th><th style="text-align:right">Debe</th><th style="text-align:right">Haber</th></tr></thead>
             <tbody id="ctb-comparativo-centros-tbody"></tbody>
@@ -1539,7 +1583,7 @@
             <input type="number" id="ctb-presupuesto-anio" class="form-input" style="width:100px" placeholder="2026" onchange="app.ctbCargarPresupuesto()">
             <button class="btn btn-primary" onclick="app.ctbGuardarPresupuesto()">💾 Guardar Presupuesto</button>
           </div>
-          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Monto anual esperado por cuenta — se prorratea automáticamente si comparas solo parte del año.</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 10px">Monto anual esperado por cuenta — se prorratea automáticamente si comparas solo parte del año.</p>
           <div id="ctb-presupuesto-form" style="max-width:500px;margin-bottom:20px"></div>
           <div class="section-card-title">Comparativo Presupuesto vs. Real</div>
           <table class="data-table" style="width:100%">
@@ -1550,7 +1594,7 @@
 
         <div id="ctb-vista-auditoria" class="section-card" style="display:none">
           <div class="section-card-title">🕵️ Auditoría</div>
-          <p style="color:#5a7099;font-size:13px;margin:0 0 10px">Historial de acciones clave: quién, qué y cuándo.</p>
+          <p style="color:var(--text-muted);font-size:13px;margin:0 0 10px">Historial de acciones clave: quién, qué y cuándo.</p>
           <table class="data-table" style="width:100%">
             <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th></tr></thead>
             <tbody id="ctb-auditoria-tbody"></tbody>
@@ -1599,7 +1643,7 @@
         <button class="btn-modal-close" onclick="app.cerrarModalRevalorizarActivo()">✕</button>
         <div class="modal-title">📐 Revalorizar Activo</div>
         <div class="modal-sub">Ajusta el activo a su valor de mercado actual — genera un asiento de superávit (o deterioro) automáticamente</div>
-        <div style="font-size:13px;color:#8fa3c2;margin-bottom:12px">Valor en libros actual: <b id="reval-valor-actual">—</b></div>
+        <div style="font-size:13px;color:var(--text-sub);margin-bottom:12px">Valor en libros actual: <b id="reval-valor-actual">—</b></div>
         <div class="form-group" style="margin-bottom:12px"><label class="form-label">Fecha</label><input id="reval-fecha" type="date" class="form-input"></div>
         <div class="form-group" style="margin-bottom:12px"><label class="form-label">Nuevo valor</label><input id="reval-valor-nuevo" type="number" class="form-input" placeholder="0.00"></div>
         <div class="form-group" style="margin-bottom:16px"><label class="form-label">Motivo</label><input id="reval-motivo" class="form-input" placeholder="Ej. Tasación de mercado, mejora del inmueble"></div>
@@ -1643,7 +1687,7 @@
         </div>
       </div>
 
-      <div id="alertas-empty" style="display:none;text-align:center;padding:60px;color:#5a7099">
+      <div id="alertas-empty" style="display:none;text-align:center;padding:60px;color:var(--text-muted)">
         <div style="font-size:48px;margin-bottom:12px">🎉</div>
         <div style="font-size:16px;font-weight:600;margin-bottom:4px">Sin alertas activas</div>
         <div style="font-size:13px">Todos tus negocios están al día.</div>
@@ -2488,7 +2532,7 @@
 
       <!-- Tipo + Permisos (3 columnas) -->
       <div style="display:grid;grid-template-columns:190px 1fr 1fr;gap:10px;align-items:start">
-        <div style="background:var(--surface,#1a2234);border:1px solid #2d3a52;border-radius:9px;padding:12px">
+        <div style="background:var(--surface,#1a2234);border:1px solid var(--border);border-radius:9px;padding:12px">
           <div style="font-size:11px;font-weight:700;color:var(--text-sub,#8fa3c2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Tipo de colaborador</div>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
             <input id="mc-check-dependiente" type="checkbox" style="width:15px;height:15px;flex-shrink:0"
@@ -2498,13 +2542,13 @@
           <div id="mc-tipo-badge" style="margin-bottom:6px"></div>
           <div id="mc-tipo-desc" style="font-size:11px;color:var(--text-muted,#5a7099);line-height:1.5"></div>
         </div>
-        <div style="background:#052e16;border:1px solid #15803d;border-radius:9px;padding:12px">
-          <div style="font-size:11px;font-weight:700;color:#4ade80;margin-bottom:7px">✅ Puede hacer</div>
-          <div id="mc-permite-list" style="font-size:11px;color:#86efac;line-height:1.8"></div>
+        <div style="background:var(--ok-bg);border:1px solid var(--ok-border);border-radius:9px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--ok-text);margin-bottom:7px">✅ Puede hacer</div>
+          <div id="mc-permite-list" style="font-size:11px;color:var(--ok-text-2);line-height:1.8"></div>
         </div>
-        <div style="background:#450a0a;border:1px solid #b91c1c;border-radius:9px;padding:12px">
-          <div style="font-size:11px;font-weight:700;color:#f87171;margin-bottom:7px">❌ No puede hacer</div>
-          <div id="mc-bloquea-list" style="font-size:11px;color:#fca5a5;line-height:1.8"></div>
+        <div style="background:var(--bad-bg);border:1px solid var(--bad-border);border-radius:9px;padding:12px">
+          <div style="font-size:11px;font-weight:700;color:var(--bad-text);margin-bottom:7px">❌ No puede hacer</div>
+          <div id="mc-bloquea-list" style="font-size:11px;color:var(--bad-text-2);line-height:1.8"></div>
         </div>
       </div>
     </div>
@@ -2547,6 +2591,8 @@
 <script src="vendor/xlsx/xlsx.full.min.js"></script>
 <script src="vendor/jspdf/jspdf.umd.min.js"></script>
 <script src="js/rnc-lookup.js"></script>
+<script src="js/factura-plantillas.js"></script>
+<script src="js/factura-contador.js"></script>
 <script src="js/contadores-app.js"></script>
 </body>
 </html>
