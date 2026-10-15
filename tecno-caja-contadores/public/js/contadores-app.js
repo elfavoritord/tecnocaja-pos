@@ -499,8 +499,8 @@ async function buscarRncRegistro() {
   const rncEl  = $id('reg-rnc');
   const infoEl = $id('reg-dgii-info');
   const raw = (rncEl?.value || '').replace(/\D/g, '');
-  if (raw.length < 9) { if (infoEl) { infoEl.style.color = '#5a7099'; infoEl.textContent = ''; } return; }
-  if (infoEl) { infoEl.style.color = '#5a7099'; infoEl.textContent = 'Consultando la DGII…'; }
+  if (raw.length < 9) { if (infoEl) { infoEl.style.color = 'var(--text-muted)'; infoEl.textContent = ''; } return; }
+  if (infoEl) { infoEl.style.color = 'var(--text-muted)'; infoEl.textContent = 'Consultando la DGII…'; }
   try {
     const d = await apiCall('GET', `/api/rnc/consulta?id=${encodeURIComponent(raw)}`);
     const firmaEl = $id('reg-firma');
@@ -510,15 +510,15 @@ async function buscarRncRegistro() {
         firmaEl.dataset.fromDgii = '1';
       }
       if (infoEl) {
-        infoEl.style.color = '#22c55e';
+        infoEl.style.color = 'var(--green)';
         infoEl.textContent = `✓ DGII: ${d.nombre || d.nombreComercial}${d.estado ? ' · ' + d.estado : ''}`;
       }
     } else if (infoEl) {
-      infoEl.style.color = '#f59e0b';
+      infoEl.style.color = 'var(--orange)';
       infoEl.textContent = 'Ese RNC no aparece en la DGII. Puedes escribir el nombre de la firma a mano.';
     }
   } catch (e) {
-    if (infoEl) { infoEl.style.color = '#f59e0b'; infoEl.textContent = 'No se pudo consultar la DGII ahora — escribe el nombre a mano.'; }
+    if (infoEl) { infoEl.style.color = 'var(--orange)'; infoEl.textContent = 'No se pudo consultar la DGII ahora — escribe el nombre a mano.'; }
   }
 }
 
@@ -645,13 +645,13 @@ async function loadDashboard() {
         const cnt = al.critico + al.urgente;
         setText('dash-alertas-critico', cnt);
         const el = $id('dash-alertas-critico');
-        if (el) el.style.color = cnt > 0 ? '#ef4444' : 'inherit';
+        if (el) el.style.color = cnt > 0 ? 'var(--red)' : 'inherit';
       }
       if (obl) {
         const proximas = obl.filter(o => o.diasRestantes >= 0 && o.diasRestantes <= 7).length;
         setText('dash-obl-proximas', proximas);
         const el = $id('dash-obl-proximas');
-        if (el) el.style.color = proximas > 0 ? '#f59e0b' : 'inherit';
+        if (el) el.style.color = proximas > 0 ? 'var(--orange)' : 'inherit';
       }
     });
   } catch (e) {
@@ -665,7 +665,7 @@ async function loadDashboard() {
 
 async function loadClientes() {
   const tbody = $id('clientes-tbody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:#5a7099">Cargando…</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text-muted,#5a7099)">Cargando…</td></tr>';
   try {
     await refreshToken();
     _allClientes = await apiCall('GET', '/api/clientes');
@@ -673,7 +673,7 @@ async function loadClientes() {
     const countEl = $id('clientes-count');
     if (countEl) countEl.textContent = `${_allClientes.length} negocio(s) asociados a tu firma contable.`;
   } catch (e) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:#ef4444;padding:20px">${e.message}</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--red,#ef4444);padding:20px">${e.message}</td></tr>`;
   }
 }
 
@@ -681,7 +681,7 @@ function renderClientes(list) {
   const tbody = $id('clientes-tbody');
   if (!tbody) return;
   if (!list.length) {
-    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:48px;color:#5a7099">
+    tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;padding:48px;color:var(--text-muted,#5a7099)">
       <div style="font-size:36px;margin-bottom:8px">🏪</div>
       <div>Aún no tienes negocios asociados.</div>
       <div style="font-size:12px;margin-top:4px">Los negocios se asocian desde Tecno Caja POS al elegir "Negocio bajo Contador Asociado".</div>
@@ -694,12 +694,12 @@ function renderClientes(list) {
     const sucursales = Array.isArray(c.sucursales) ? c.sucursales : [];
     const sucursalesCell = sucursales.length
       ? `<span title="${esc(sucursales.map(s => s.nombre || 'Sucursal').join(', '))}" style="cursor:default">${sucursales.length} sucursal${sucursales.length === 1 ? '' : 'es'}</span>`
-      : '<span style="color:#5a7099">—</span>';
+      : '<span style="color:var(--text-muted,#5a7099)">—</span>';
     return `<tr>
       <td>
         <div style="font-weight:600">${c.businessName || c.businessKey || '—'}</div>
         ${esServicios(c) ? `<div style="margin:2px 0">${verticalBadge(c)}</div>` : ''}
-        <div class="td-small" style="font-family:monospace;font-size:10px;color:#5a7099">${c.businessKey || ''}</div>
+        <div class="td-small" style="font-family:monospace;font-size:10px;color:var(--text-muted,#5a7099)">${c.businessKey || ''}</div>
       </td>
       <td class="td-small">${sucursalesCell}</td>
       <td class="td-small">${c.propietario || '—'}</td>
@@ -810,7 +810,7 @@ async function verCliente(id) {
             <td class="td-small">${h.activated_by || '—'}</td>
             <td class="td-small">${fmtDate(h.created_at)}</td>
           </tr>`).join('')
-        : '<tr><td colspan="4" style="text-align:center;padding:16px;color:#5a7099">Sin historial de licencias</td></tr>';
+        : '<tr><td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted,#5a7099)">Sin historial de licencias</td></tr>';
     }
   } catch (e) {
     toast('Error cargando negocio: ' + e.message, 'error');
@@ -825,12 +825,12 @@ async function verCliente(id) {
 
 async function loadLicencias() {
   const tbody = $id('licencias-tbody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:#5a7099">Cargando…</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-muted,#5a7099)">Cargando…</td></tr>';
   try {
     await refreshToken();
     const list = await apiCall('GET', '/api/clientes');
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:#5a7099">Sin clientes registrados</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:36px;color:var(--text-muted,#5a7099)">Sin clientes registrados</td></tr>';
       return;
     }
     tbody.innerHTML = list.map(c => {
@@ -848,7 +848,7 @@ async function loadLicencias() {
       </tr>`;
     }).join('');
   } catch (e) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="color:#ef4444;text-align:center;padding:20px">${e.message}</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red,#ef4444);text-align:center;padding:20px">${e.message}</td></tr>`;
   }
 }
 
@@ -858,14 +858,14 @@ async function loadLicencias() {
 
 async function loadSolicitudes() {
   const tbody = $id('solicitudes-tbody');
-  if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;color:#5a7099">Cargando…</td></tr>';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text-muted,#5a7099)">Cargando…</td></tr>';
   try {
     await refreshToken();
     const status = $id('filtro-sol-status')?.value || '';
     const url = status ? `/api/solicitudes?status=${encodeURIComponent(status)}` : '/api/solicitudes';
     const list = await apiCall('GET', url);
     if (!list.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:36px;color:#5a7099">Sin solicitudes</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:36px;color:var(--text-muted,#5a7099)">Sin solicitudes</td></tr>';
       return;
     }
     tbody.innerHTML = list.map(s => {
@@ -873,7 +873,7 @@ async function loadSolicitudes() {
       return `<tr>
         <td><span style="font-size:13px">${tipo?.icon || '📋'} ${tipo?.label || s.tipo}</span></td>
         <td class="td-small">${s.businessName || '—'}</td>
-        <td style="max-width:240px"><div style="font-size:12px;color:#8fa3c2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.descripcion || '—'}</div></td>
+        <td style="max-width:240px"><div style="font-size:12px;color:var(--text-sub,#8fa3c2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s.descripcion || '—'}</div></td>
         <td>${solBadge(s.status)}</td>
         <td class="td-small">${fmtDate(s.created_at)}</td>
         <td>
@@ -884,7 +884,7 @@ async function loadSolicitudes() {
       </tr>`;
     }).join('');
   } catch (e) {
-    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="color:#ef4444;text-align:center;padding:20px">${e.message}</td></tr>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="color:var(--red,#ef4444);text-align:center;padding:20px">${e.message}</td></tr>`;
   }
 }
 
@@ -974,11 +974,37 @@ async function loadPerfil() {
     setVal('cfg-whatsapp',   p.whatsapp);
     setVal('cfg-logo',       p.logo_url);
     _setCfgLogoPreview(p.logo_url);
+    _pintarDisenoFactura(p.factura_plantilla, p.factura_color);
   } catch (e) {
     toast('Error cargando perfil: ' + e.message, 'error');
   }
   loadConfigCorreo();
   loadConfigIA();
+}
+
+// ── Diseño de la factura (plantillas A4 del POS) ─────────────────────────
+// La elección vive en #cfg-invoice-template y #cfg-invoice-color (los mismos
+// id que en el POS: factura-plantillas.js los maneja) y se guarda con
+// "Guardar cambios" en el perfil (factura_plantilla, factura_color).
+function _empresaDeConfiguracion() {
+  const val = (id) => ($id(id)?.value || '').trim();
+  return {
+    nombre: val('cfg-nombre-firma'), rnc: val('cfg-rnc'), direccion: val('cfg-direccion'),
+    telefono: val('cfg-telefono'), correo: val('cfg-correo'), logo: val('cfg-logo'),
+  };
+}
+
+function _pintarDisenoFactura(plantilla, color) {
+  window.FacturaPlantillas?.sincronizarSelector(
+    { invoiceTemplate: plantilla, invoiceAccentColor: color },
+    { muestra: () => FacturaContador.documentoDeMuestra(_empresaDeConfiguracion()) }
+  );
+}
+
+// Las miniaturas muestran el logo y los datos de la firma: se repintan al
+// cambiarlos, sin perder la plantilla y el color elegidos (aún sin guardar).
+function _repintarDisenoFactura() {
+  _pintarDisenoFactura($id('cfg-invoice-template')?.value, $id('cfg-invoice-color')?.value);
 }
 
 // ── Configuración de correo (por contador) ────────────────────────────
@@ -1285,7 +1311,7 @@ async function asisPropEmail(mi, pi) {
       const found = lista.find(f => String(f.ncf || '').replace(/[^A-Z0-9]/gi, '') === ncfBusca);
       if (found) {
         const full = await apiCall('GET', `/api/facturacion/facturas/${found.id}`);
-        const pdf = await window.contadoresAPI.renderReportPdf(facturaFormalHtml(full), false);
+        const pdf = await window.contadoresAPI.renderInvoicePdf(facturaFormalHtml(full));
         if (pdf?.ok) { pdfBase64 = pdf.base64; pdfNombre = `Factura_${ncfBusca}.pdf`; }
       } else {
         toast(`No encontré la factura ${p.adjuntar_factura_ncf}; se enviará sin adjunto.`, 'info');
@@ -1345,6 +1371,7 @@ function handleCfgLogoUpload(input) {
       const logoInput = $id('cfg-logo');
       if (logoInput) logoInput.value = dataUrl;
       _setCfgLogoPreview(dataUrl);
+      _repintarDisenoFactura();
     };
     img.src = e.target.result;
   };
@@ -1357,13 +1384,14 @@ function quitarCfgLogo() {
   const fileInput = $id('cfg-logo-file');
   if (fileInput) fileInput.value = '';
   _setCfgLogoPreview(null);
+  _repintarDisenoFactura();
 }
 
 async function savePerfil() {
   try {
     await refreshToken();
     const logoUrl = $id('cfg-logo')?.value?.trim() || null;
-    await apiCall('PUT', '/api/perfil', {
+    const datos = {
       nombre_firma: $id('cfg-nombre-firma')?.value?.trim() || null,
       responsable:  $id('cfg-responsable')?.value?.trim()  || null,
       direccion:    $id('cfg-direccion')?.value?.trim()    || null,
@@ -1371,7 +1399,22 @@ async function savePerfil() {
       telefono:     $id('cfg-telefono')?.value?.trim()     || null,
       whatsapp:     $id('cfg-whatsapp')?.value?.trim()     || null,
       logo_url:     logoUrl,
-    });
+    };
+    const tplEl = $id('cfg-invoice-template');
+    if (tplEl) {
+      datos.factura_plantilla = tplEl.value || 'clasica';
+      datos.factura_color = $id('cfg-invoice-color')?.value || '';
+    }
+    await apiCall('PUT', '/api/perfil', datos);
+    // Las facturas se imprimen con el perfil de la sesión (_perfil): el
+    // diseño nuevo vale desde ya, sin volver a iniciar sesión.
+    if (_perfil) {
+      _perfil.direccion = datos.direccion;
+      if (tplEl) {
+        _perfil.factura_plantilla = datos.factura_plantilla;
+        _perfil.factura_color = datos.factura_color || null;
+      }
+    }
     toast('Perfil actualizado correctamente.', 'success');
     const nombre = $id('cfg-nombre-firma')?.value?.trim();
     if (nombre) setText('sidebar-nombre', nombre);
@@ -1671,7 +1714,7 @@ async function loadActualizaciones() {
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
             <div class="ver-num">v${esc(v.version)}</div>
             ${i === 0 ? '<span class="ver-badge-nueva">✦ Última</span>' : ''}
-            ${v.prerelease ? '<span style="background:#f59e0b22;color:#f59e0b;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">BETA</span>' : ''}
+            ${v.prerelease ? '<span style="background:#f59e0b22;color:var(--orange,#f59e0b);font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px">BETA</span>' : ''}
           </div>
           <div class="ver-date">${fmtDate(v.created_at)}</div>
           ${v.descripcion ? `<div class="ver-desc" style="margin-top:4px;font-size:12px;color:var(--text-sub)">${esc(v.descripcion)}</div>` : ''}
@@ -1679,7 +1722,7 @@ async function loadActualizaciones() {
         ${v.url ? `<a href="${esc(v.url)}" onclick="event.preventDefault();window.open('${esc(v.url)}','_blank')" class="btn btn-secondary btn-sm" style="white-space:nowrap;align-self:center">Ver release</a>` : ''}
       </div>`).join('');
   } catch (e) {
-    container.innerHTML = `<div class="empty-state"><div style="color:#ef4444">Error: ${esc(e.message)}</div></div>`;
+    container.innerHTML = `<div class="empty-state"><div style="color:var(--red,#ef4444)">Error: ${esc(e.message)}</div></div>`;
   }
 }
 
@@ -1996,7 +2039,7 @@ function renderFila(row, tab) {
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-ncf">${row.rnc || '—'}</td>`,
         `<td>${row.telefono || '—'}</td>`,
-        `<td class="td-amount" style="color:#f59e0b;font-weight:700">${fmtMoney(row.deuda)}</td>`,
+        `<td class="td-amount" style="color:var(--orange,#f59e0b);font-weight:700">${fmtMoney(row.deuda)}</td>`,
         `<td class="td-date">${fmtDate(row.ultima_compra)}</td>`,
         `<td>${row.estado || '—'}</td>`,
       ]; break;
@@ -2012,14 +2055,14 @@ function renderFila(row, tab) {
     case 'cierres':
       cells = [
         `<td class="td-date">${fmtDate(row.fecha_apertura)}</td>`,
-        `<td class="td-date">${row.fecha_cierre ? fmtDate(row.fecha_cierre) : '<span style="color:#10b981;font-size:11px">Abierta</span>'}</td>`,
+        `<td class="td-date">${row.fecha_cierre ? fmtDate(row.fecha_cierre) : '<span style="color:var(--green,#10b981);font-size:11px">Abierta</span>'}</td>`,
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.caja || '—'}</td>`,
         `<td>${row.cajero_apertura || row.cajero_cierre || '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.monto_apertura)}</td>`,
         `<td class="td-amount">${fmtMoney(row.total_ventas)}</td>`,
         `<td class="td-amount">${fmtMoney(row.monto_contado)}</td>`,
-        `<td class="td-amount" style="${Number(row.diferencia || 0) < 0 ? 'color:#ef4444' : ''}">${fmtMoney(row.diferencia)}</td>`,
+        `<td class="td-amount" style="${Number(row.diferencia || 0) < 0 ? 'color:var(--red,#ef4444)' : ''}">${fmtMoney(row.diferencia)}</td>`,
         `<td>${row.estado || '—'}</td>`,
       ]; break;
     case 'mensual':
@@ -2792,6 +2835,39 @@ async function eliminarNcfAplicada(localSequenceId) {
 
 let _repChart = null;
 
+// Colores de las gráficas según el modo día/noche (Chart.js no lee el CSS):
+// salen de los tokens de contadores.css.
+function _coloresGrafico() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (nombre, porDefecto) => css.getPropertyValue(nombre).trim() || porDefecto;
+  return {
+    texto:   v('--text-sub', '#8fa3c2'),
+    rejilla: v('--chart-grid', 'rgba(71,100,148,0.12)'),
+    fondo:   v('--surface', '#1a2234'),
+    titulo:  v('--text', '#e8edf5'),
+    borde:   v('--border', 'rgba(71,100,148,.4)'),
+  };
+}
+
+// Al cambiar de modo, las gráficas abiertas toman los colores nuevos.
+function _aplicarTemaGraficos() {
+  const c = _coloresGrafico();
+  [_repChart, _ctbIndChart].forEach((chart) => {
+    if (!chart) return;
+    const o = chart.options;
+    Object.values(o.scales || {}).forEach((eje) => {
+      if (eje.ticks) eje.ticks.color = c.texto;
+      if (eje.grid && eje.grid.display !== false) eje.grid.color = c.rejilla;
+    });
+    if (o.plugins?.legend?.labels) o.plugins.legend.labels.color = c.texto;
+    if (o.plugins?.tooltip) {
+      Object.assign(o.plugins.tooltip, { backgroundColor: c.fondo, titleColor: c.titulo, bodyColor: c.texto, borderColor: c.borde });
+    }
+    chart.update('none');
+  });
+}
+window.TemaPortal?.alCambiar(_aplicarTemaGraficos);
+
 async function cargarChartVentas(branchId) {
   if (!_repNegocioId) return;
   try {
@@ -2885,6 +2961,7 @@ function renderRepChart(rows) {
   gradient.addColorStop(1, 'rgba(59,130,246,0)');
 
   if (_repChart) { _repChart.destroy(); _repChart = null; }
+  const col = _coloresGrafico();
   _repChart = new Chart(canvas, {
     type: 'line',
     data: {
@@ -2921,25 +2998,25 @@ function renderRepChart(rows) {
           callbacks: {
             label: ctx => 'RD$ ' + (ctx.parsed.y || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
           },
-          backgroundColor: '#1a2234',
-          titleColor: '#e8edf5',
-          bodyColor: '#8fa3c2',
-          borderColor: 'rgba(71,100,148,.4)',
+          backgroundColor: col.fondo,
+          titleColor: col.titulo,
+          bodyColor: col.texto,
+          borderColor: col.borde,
           borderWidth: 1,
         },
       },
       scales: {
         x: {
-          ticks: { color: '#8fa3c2', font: { size: 10 }, maxRotation: 0, minRotation: 0, autoSkip: true, maxTicksLimit: 7 },
+          ticks: { color: col.texto, font: { size: 10 }, maxRotation: 0, minRotation: 0, autoSkip: true, maxTicksLimit: 7 },
           grid:  { display: false },
           border: { display: false },
         },
         y: {
           ticks: {
-            color: '#8fa3c2', font: { size: 10 }, maxTicksLimit: 4,
+            color: col.texto, font: { size: 10 }, maxTicksLimit: 4,
             callback: v => 'RD$ ' + (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v),
           },
-          grid: { color: 'rgba(71,100,148,0.12)', borderDash: [4, 4] },
+          grid: { color: col.rejilla, borderDash: [4, 4] },
           border: { display: false },
           beginAtZero: true,
         },
@@ -2979,7 +3056,7 @@ async function imprimirTabReporte() {
     body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#1a1a2e;padding:20px}
     .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:12px;border-bottom:3px solid #3b82f6;margin-bottom:16px}
     h1{font-size:18px;font-weight:800;margin-bottom:3px}
-    h2{font-size:13px;color:#5a7099;font-weight:400}
+    h2{font-size:13px;color:var(--text-muted,#5a7099);font-weight:400}
     .badge{display:inline-block;background:#3b82f6;color:#fff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:.3px;text-transform:uppercase}
     table{width:100%;border-collapse:collapse;margin-top:4px}
     th{background:#3b82f6;color:#fff;padding:7px 10px;font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.3px}
@@ -2994,7 +3071,7 @@ async function imprimirTabReporte() {
     </div>
     <div style="text-align:right">
       <div class="badge">${title}</div>
-      <div style="font-size:11px;color:#5a7099;margin-top:5px">Generado: ${fecha}</div>
+      <div style="font-size:11px;color:var(--text-muted,#5a7099);margin-top:5px">Generado: ${fecha}</div>
     </div>
   </div>
   ${tableEl.innerHTML}
@@ -3030,7 +3107,7 @@ async function imprimirReporteMensual() {
     body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#1a1a2e;padding:22px}
     .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14px;border-bottom:3px solid #3b82f6;margin-bottom:18px}
     h1{font-size:20px;font-weight:800;margin-bottom:4px}
-    h3{font-size:13px;color:#5a7099;font-weight:400}
+    h3{font-size:13px;color:var(--text-muted,#5a7099);font-weight:400}
     .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:18px}
     .sc{background:#f1f5f9;border:1px solid #e2e8f0;padding:10px 12px;border-radius:8px}
     .sc-lbl{font-size:9px;text-transform:uppercase;color:#64748b;letter-spacing:.4px;margin-bottom:3px}
@@ -3047,7 +3124,7 @@ async function imprimirReporteMensual() {
       <h1>${esc(neg?.businessName || 'Negocio')}</h1>
       <h3>Reporte mensual — ${mes} · RNC: ${neg?.rnc || '—'}</h3>
     </div>
-    <div style="text-align:right;font-size:11px;color:#5a7099">
+    <div style="text-align:right;font-size:11px;color:var(--text-muted,#5a7099)">
       <div style="font-weight:700;font-size:13px;color:#1a1a2e">Tecno Caja Contadores</div>
       <div>${fecha}</div>
     </div>
@@ -3596,7 +3673,7 @@ async function loadMisSecuenciasNcf() {
     _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf');
     renderMisSecuenciasNcf();
   } catch (e) {
-    if (body) body.innerHTML = `<div class="empty-state"><div style="color:#ef4444">Error: ${esc(e.message)}</div></div>`;
+    if (body) body.innerHTML = `<div class="empty-state"><div style="color:var(--red,#ef4444)">Error: ${esc(e.message)}</div></div>`;
   }
 }
 
@@ -4192,38 +4269,6 @@ async function registrarPagoFac() {
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Registrar'; } }
 }
 
-// Monto en letras — estilo formal dominicano.
-function numeroALetras(num) {
-  const U = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE', 'DIEZ',
-    'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISÉIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE', 'VEINTE'];
-  const D = ['', '', 'VEINTI', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
-  const C = ['', 'CIENTO', 'DOSCIENTOS', 'TRESCIENTOS', 'CUATROCIENTOS', 'QUINIENTOS', 'SEISCIENTOS', 'SETECIENTOS', 'OCHOCIENTOS', 'NOVECIENTOS'];
-  function seccion(n) {
-    if (n === 0) return '';
-    if (n === 100) return 'CIEN';
-    let t = '';
-    const c = Math.floor(n / 100), r = n % 100;
-    if (c) t += C[c] + ' ';
-    if (r <= 20) t += U[r];
-    else { const d = Math.floor(r / 10), u = r % 10; t += d === 2 ? 'VEINTI' + (u ? U[u] : '') : D[d] + (u ? ' Y ' + U[u] : ''); }
-    return t.trim();
-  }
-  function convert(n) {
-    n = Math.floor(n);
-    if (n === 0) return 'CERO';
-    let o = '';
-    const mill = Math.floor(n / 1e6), miles = Math.floor((n % 1e6) / 1000), ciento = n % 1000;
-    if (mill) o += (mill === 1 ? 'UN MILLÓN ' : seccion(mill) + ' MILLONES ');
-    if (miles) o += (miles === 1 ? 'MIL ' : seccion(miles) + ' MIL ');
-    if (ciento) o += seccion(ciento);
-    return o.trim().replace(/\s+/g, ' ');
-  }
-  const v = Math.abs(Number(num) || 0);
-  const ent = Math.floor(v);
-  const cent = Math.round((v - ent) * 100);
-  return `${convert(ent)} PESOS DOMINICANOS CON ${String(cent).padStart(2, '0')}/100`;
-}
-
 // Formatea una fecha "YYYY-MM-DD" sin corrimiento por zona horaria.
 function _fmtFechaSolo(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ''));
@@ -4232,151 +4277,11 @@ function _fmtFechaSolo(s) {
   return `${Number(m[3])} ${meses[Number(m[2]) - 1]} ${m[1]}`;
 }
 
-// Documento A4 formal de la factura del contador. Se usa tanto en la vista
-// previa (iframe) como al generar el PDF.
+// Documento A4 de la factura del contador (vista previa, impresión, PDF y
+// adjunto del correo) con la plantilla y el color de Configuración → Diseño
+// de la factura — las mismas de la factura A4 del POS (js/factura-contador.js).
 function facturaFormalHtml(f) {
-  const estadoLabel = { pendiente: 'PENDIENTE DE PAGO', pagada: 'PAGADA', anulada: 'ANULADA' }[f.estado] || String(f.estado || '').toUpperCase();
-  const money = n => 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const cli = f.cliente || {};
-  const balance = Number(f.balance || 0);
-  const fechaEmision = typeof f.fecha === 'string' && f.fecha ? f.fecha : (fmtDate(f.fecha) || '—');
-
-  const logo = f.contador_logo
-    ? `<img src="${f.contador_logo}" class="logo" alt="${esc(f.contador_nombre || '')}" />`
-    : `<div class="brand">${esc(f.contador_nombre || 'Contador')}</div>`;
-
-  const itemsHtml = (f.items || []).map((it, i) => `
-    <tr>
-      <td class="c-idx">${i + 1}</td>
-      <td class="c-desc">${esc(it.descripcion) || '—'}</td>
-      <td class="c-num">${Number(it.cantidad) || 0}</td>
-      <td class="c-num">${money(it.precio)}</td>
-      <td class="c-num">${Number(it.descuento) > 0 ? Number(it.descuento) + '%' : '—'}</td>
-      <td class="c-num">${Number(it.itbis_rate) > 0 ? Number(it.itbis_rate) + '%' : '—'}</td>
-      <td class="c-num">${money(it.total)}</td>
-    </tr>`).join('');
-
-  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<title>Factura ${esc(facNcfDisplay(f.ncf))}</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{background:#fff}
-  body{font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif;font-size:10.5px;color:#1f2937;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-  .page{position:relative;max-width:190mm;margin:0 auto;padding:4mm 0;overflow:hidden}
-  .watermark{position:absolute;top:44%;left:50%;transform:translate(-50%,-50%) rotate(-24deg);font-size:110px;font-weight:800;letter-spacing:6px;white-space:nowrap;color:rgba(220,38,38,.08);pointer-events:none;z-index:0}
-  .content{position:relative;z-index:1}
-  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:14mm;padding-bottom:6mm}
-  .logo{max-height:26mm;max-width:78mm;display:block;margin-bottom:3mm}
-  .brand{font-size:22px;font-weight:800;color:#15803d;margin-bottom:3mm}
-  .emitter-line{font-size:9.5px;line-height:1.5;color:#4b5563}
-  .emitter-line b{color:#1f2937}
-  .doc{text-align:right;min-width:62mm}
-  .doc-title{font-size:24px;font-weight:800;letter-spacing:4px;color:#15803d;line-height:1}
-  .ncf-chip{display:inline-block;margin-top:3mm;padding:2mm 3mm;border:1.5px solid #15803d;border-radius:3px;font-size:12px;font-weight:800;letter-spacing:.5px;color:#111827}
-  .ncf-chip span{color:#15803d;font-weight:700;letter-spacing:1px;margin-right:1.5mm}
-  .doc-meta{margin-top:4mm;font-size:10px;line-height:1.7;color:#374151}
-  .doc-meta b{color:#111827}
-  .stamp{display:inline-block;margin-top:3mm;padding:3px 12px;border:2px solid;border-radius:3px;font-size:10px;font-weight:800;letter-spacing:1.5px;transform:rotate(-3deg)}
-  .stamp.pendiente{color:#b45309;border-color:#b45309}
-  .stamp.pagada{color:#15803d;border-color:#15803d}
-  .stamp.anulada{color:#b91c1c;border-color:#b91c1c}
-  .rule{height:2.5px;background:#15803d;margin:0 0 6mm}
-  .parties{display:grid;grid-template-columns:1fr 1fr;gap:12mm;margin-bottom:7mm}
-  .block-label{font-size:8.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#6b7280;padding-bottom:2mm;border-bottom:1px solid #e5e7eb;margin-bottom:2.5mm}
-  .party-name{font-size:12px;font-weight:700;color:#111827;margin-bottom:1mm}
-  .party-line{font-size:9.5px;line-height:1.6;color:#4b5563}
-  .pay-row{display:flex;justify-content:space-between;font-size:9.5px;line-height:1.9;color:#4b5563}
-  .pay-row span:last-child{color:#111827;font-weight:600}
-  .items{width:100%;border-collapse:collapse;margin-bottom:4mm}
-  .items thead th{background:#f4f7f5;color:#374151;font-size:8.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;text-align:right;padding:3mm 2mm;border-top:1.5px solid #15803d;border-bottom:1.5px solid #15803d}
-  .items thead th.h-idx{text-align:center;width:8mm}
-  .items thead th.h-desc{text-align:left}
-  .items tbody td{padding:2.5mm 2mm;font-size:9.5px;border-bottom:1px solid #edf0f2;vertical-align:top}
-  .items tbody tr:last-child td{border-bottom:1px solid #d1d5db}
-  .c-idx{text-align:center;color:#9ca3af}
-  .c-desc{text-align:left;color:#1f2937}
-  .c-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-  .totals-wrap{display:flex;justify-content:flex-end}
-  .totals{width:80mm}
-  .totals .t-row{display:flex;justify-content:space-between;padding:1.6mm 0;font-size:10px;color:#4b5563}
-  .totals .t-row .val{color:#111827;font-variant-numeric:tabular-nums}
-  .totals .t-total{border-top:2px solid #111827;margin-top:1mm;padding-top:2.5mm;font-size:14px;font-weight:800;color:#111827}
-  .totals .t-paid{color:#15803d}
-  .totals .t-due{font-weight:700;color:#b45309}
-  .amount-words{margin:5mm 0 0;padding:2.5mm 3mm;background:#f9fafb;border:1px solid #e5e7eb;border-radius:3px;font-size:9.5px;line-height:1.5;color:#374151}
-  .amount-words b{color:#111827}
-  .notes{margin-top:6mm}
-  .notes p{font-size:9.5px;line-height:1.6;color:#4b5563;margin-top:2mm;white-space:pre-wrap}
-  .foot{margin-top:12mm;padding-top:5mm;border-top:1px solid #e5e7eb;font-size:8.5px;line-height:1.6;color:#6b7280}
-  .foot b{display:block;color:#15803d;font-size:10px;margin-bottom:1mm}
-  @page{size:A4;margin:12mm}
-  @media print{.page{padding:0}}
-</style></head><body>
-<div class="page">
-  ${f.estado === 'anulada' ? '<div class="watermark">ANULADA</div>' : ''}
-  <div class="content">
-    <div class="head">
-      <div class="emitter">
-        ${logo}
-        ${f.contador_rnc ? `<div class="emitter-line"><b>RNC:</b> ${esc(f.contador_rnc)}</div>` : ''}
-        ${f.contador_tel ? `<div class="emitter-line"><b>Tel:</b> ${esc(f.contador_tel)}</div>` : ''}
-        ${f.contador_correo ? `<div class="emitter-line">${esc(f.contador_correo)}</div>` : ''}
-      </div>
-      <div class="doc">
-        <div class="doc-title">FACTURA</div>
-        ${f.ncf ? `<div class="ncf-chip"><span>NCF</span> ${esc(facNcfDisplay(f.ncf))}</div>` : ''}
-        <div class="doc-meta">
-          ${f.tipo_ncf ? `<div><b>Tipo de comprobante:</b> ${esc((f.tipo_ncf_label || '') + (f.tipo_ncf ? ' (' + f.tipo_ncf + ')' : ''))}</div>` : ''}
-          <div><b>Fecha de emisión:</b> ${esc(fechaEmision)}</div>
-          ${f.fecha_vencimiento ? `<div><b>Vencimiento:</b> ${esc(_fmtFechaSolo(f.fecha_vencimiento))}</div>` : ''}
-          ${f.ncf_vencimiento ? `<div><b>NCF válido hasta:</b> ${esc(_fmtFechaSolo(f.ncf_vencimiento))}</div>` : ''}
-        </div>
-        <div class="stamp ${f.estado || 'pendiente'}">${esc(estadoLabel)}</div>
-      </div>
-    </div>
-    <div class="rule"></div>
-    <div class="parties">
-      <div>
-        <div class="block-label">Facturar a</div>
-        <div class="party-name">${esc(cli.nombre) || '—'}</div>
-        ${cli.rnc ? `<div class="party-line">RNC / Cédula: ${esc(cli.rnc)}</div>` : ''}
-        ${cli.direccion ? `<div class="party-line">${esc(cli.direccion)}</div>` : ''}
-        ${cli.telefono ? `<div class="party-line">Tel: ${esc(cli.telefono)}</div>` : ''}
-        ${cli.correo ? `<div class="party-line">${esc(cli.correo)}</div>` : ''}
-      </div>
-      <div>
-        <div class="block-label">Detalles de pago</div>
-        ${f.condicion_pago ? `<div class="pay-row"><span>Condición</span><span>${esc(f.condicion_pago)}</span></div>` : ''}
-        ${f.metodo_pago ? `<div class="pay-row"><span>Método de pago</span><span>${esc(f.metodo_pago)}</span></div>` : ''}
-        <div class="pay-row"><span>Estado</span><span>${esc(estadoLabel)}</span></div>
-        ${Number(f.monto_pagado) > 0 ? `<div class="pay-row"><span>Pagado</span><span>${money(f.monto_pagado)}</span></div>` : ''}
-        ${balance > 0.01 && f.estado !== 'anulada' ? `<div class="pay-row"><span>Balance pendiente</span><span>${money(balance)}</span></div>` : ''}
-      </div>
-    </div>
-    <table class="items">
-      <thead><tr>
-        <th class="h-idx">#</th><th class="h-desc">Descripción</th>
-        <th>Cant.</th><th>Precio unit.</th><th>Desc.</th><th>ITBIS</th><th>Importe</th>
-      </tr></thead>
-      <tbody>${itemsHtml}</tbody>
-    </table>
-    <div class="totals-wrap"><div class="totals">
-      <div class="t-row"><span>Subtotal</span><span class="val">${money(f.subtotal)}</span></div>
-      ${Number(f.descuento_total) > 0 ? `<div class="t-row"><span>Descuento</span><span class="val">- ${money(f.descuento_total)}</span></div>` : ''}
-      <div class="t-row"><span>ITBIS</span><span class="val">${money(f.itbis_total)}</span></div>
-      <div class="t-row t-total"><span>TOTAL</span><span class="val">${money(f.total)}</span></div>
-      ${Number(f.monto_pagado) > 0 ? `<div class="t-row t-paid"><span>Pagado</span><span class="val">${money(f.monto_pagado)}</span></div>` : ''}
-      ${balance > 0.01 && f.estado !== 'anulada' ? `<div class="t-row t-due"><span>Balance pendiente</span><span class="val">${money(balance)}</span></div>` : ''}
-    </div></div>
-    <div class="amount-words"><b>Son:</b> ${esc(numeroALetras(f.total))}</div>
-    ${f.observacion ? `<div class="notes"><span class="block-label">Observación</span><p>${esc(f.observacion)}</p></div>` : ''}
-    <div class="foot">
-      <b>${esc(f.contador_nombre || '')}</b>
-      Factura por servicios profesionales. Documento generado electrónicamente; válido sin firma ni sello. Gracias por su preferencia.
-    </div>
-  </div>
-</div>
-</body></html>`;
+  return FacturaContador.documentoHtml(f, _perfil || {});
 }
 
 async function marcarPagada() {
@@ -4419,17 +4324,20 @@ async function imprimirFactura() {
   const html = facturaFormalHtml(f);
   const ncfSlug = (f.ncf || 'FACTURA').replace(/[^A-Z0-9]/gi, '');
   const clientSlug = (f.cliente?.nombre || 'cliente').replace(/\s+/g, '_').slice(0, 20);
-  await _savePdf(html, `Factura_${ncfSlug}_${clientSlug}.pdf`, false);
+  await _savePdf(html, `Factura_${ncfSlug}_${clientSlug}.pdf`, false, { factura: true });
 }
 
-async function _savePdf(html, filename, landscape) {
+// factura: la hoja A4 de la plantilla trae sus márgenes → PDF sin márgenes.
+async function _savePdf(html, filename, landscape, { factura = false } = {}) {
   if (!window.contadoresAPI?.isElectron) {
     toast('Esta función solo está disponible en la app de escritorio.', 'error');
     return;
   }
   try {
     toast('Generando PDF…', 'info');
-    const result = await window.contadoresAPI.saveReportPdf(html, filename, landscape);
+    const result = factura
+      ? await window.contadoresAPI.saveInvoicePdf(html, filename)
+      : await window.contadoresAPI.saveReportPdf(html, filename, landscape);
     if (result.canceled) return;
     if (result.ok) {
       toast('PDF guardado correctamente', 'success');
@@ -4504,7 +4412,7 @@ async function confirmarEnvioFac() {
   if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
   try {
     const html = facturaFormalHtml(_envioFac.data);
-    const pdf = await window.contadoresAPI.renderReportPdf(html, false);
+    const pdf = await window.contadoresAPI.renderInvoicePdf(html);
     if (!pdf?.ok) throw new Error(pdf?.error || 'No se pudo generar el PDF.');
     const r = await apiCall('POST', `/api/facturacion/facturas/${_envioFac.id}/enviar`, {
       to, mensaje: $id('fe-mensaje')?.value || '', pdfBase64: pdf.base64,
@@ -4691,7 +4599,7 @@ async function loadCotizaciones() {
   }
   if (!tbody) return;
   if (!_cotCotizaciones.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:#5a7099">Sin cotizaciones.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted,#5a7099)">Sin cotizaciones.</td></tr>';
     return;
   }
   tbody.innerHTML = _cotCotizaciones.map(c => {
@@ -5034,7 +4942,7 @@ async function confirmarEnvioCot() {
   if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
   try {
     const html = cotizacionFormalHtml(_envioCot.data);
-    const pdf = await window.contadoresAPI.renderReportPdf(html, false);
+    const pdf = await window.contadoresAPI.renderInvoicePdf(html);
     if (!pdf?.ok) throw new Error(pdf?.error || 'No se pudo generar el PDF.');
     const r = await apiCall('POST', `/api/cotizaciones/cotizaciones/${_envioCot.id}/enviar`, {
       to, mensaje: $id('ce-mensaje')?.value || '', pdfBase64: pdf.base64,
@@ -5046,139 +4954,10 @@ async function confirmarEnvioCot() {
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Enviar'; } }
 }
 
-// Documento A4 formal de la cotización — mismo estilo que facturaFormalHtml,
-// sin chip de NCF (las cotizaciones no llevan comprobante fiscal todavía).
+// Documento A4 de la cotización con la misma plantilla y color de la factura
+// (Configuración → Diseño de la factura). Sin NCF: lleva su número COT-….
 function cotizacionFormalHtml(c) {
-  const money = n => 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const cli = c.cliente || {};
-  const fechaEmision = typeof c.fecha === 'string' && c.fecha ? c.fecha : (fmtDate(c.fecha) || '—');
-  const estadoLabel = { aprobada: 'APROBADA', rechazada: 'RECHAZADA', vencida: 'VENCIDA', convertida: 'CONVERTIDA A FACTURA' }[c.estado] || String(c.estado || '').toUpperCase();
-
-  const logo = c.contador_logo
-    ? `<img src="${c.contador_logo}" class="logo" alt="${esc(c.contador_nombre || '')}" />`
-    : `<div class="brand">${esc(c.contador_nombre || 'Contador')}</div>`;
-
-  const itemsHtml = (c.items || []).map((it, i) => `
-    <tr>
-      <td class="c-idx">${i + 1}</td>
-      <td class="c-desc">${esc(it.descripcion) || '—'}</td>
-      <td class="c-num">${Number(it.cantidad) || 0}</td>
-      <td class="c-num">${money(it.precio)}</td>
-      <td class="c-num">${Number(it.descuento) > 0 ? Number(it.descuento) + '%' : '—'}</td>
-      <td class="c-num">${Number(it.itbis_rate) > 0 ? Number(it.itbis_rate) + '%' : '—'}</td>
-      <td class="c-num">${money(it.total)}</td>
-    </tr>`).join('');
-
-  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<title>Cotización ${esc(c.numero || '')}</title>
-<style>
-  *{margin:0;padding:0;box-sizing:border-box}
-  html,body{background:#fff}
-  body{font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif;font-size:10.5px;color:#1f2937;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-  .page{position:relative;max-width:190mm;margin:0 auto;padding:4mm 0;overflow:hidden}
-  .content{position:relative;z-index:1}
-  .head{display:flex;justify-content:space-between;align-items:flex-start;gap:14mm;padding-bottom:6mm}
-  .logo{max-height:26mm;max-width:78mm;display:block;margin-bottom:3mm}
-  .brand{font-size:22px;font-weight:800;color:#15803d;margin-bottom:3mm}
-  .emitter-line{font-size:9.5px;line-height:1.5;color:#4b5563}
-  .emitter-line b{color:#1f2937}
-  .doc{text-align:right;min-width:62mm}
-  .doc-title{font-size:24px;font-weight:800;letter-spacing:4px;color:#15803d;line-height:1}
-  .doc-meta{margin-top:4mm;font-size:10px;line-height:1.7;color:#374151}
-  .doc-meta b{color:#111827}
-  .stamp{display:inline-block;margin-top:3mm;padding:3px 12px;border:2px solid;border-radius:3px;font-size:10px;font-weight:800;letter-spacing:1.5px;transform:rotate(-3deg)}
-  .stamp.aprobada{color:#15803d;border-color:#15803d}
-  .stamp.rechazada{color:#b91c1c;border-color:#b91c1c}
-  .stamp.vencida{color:#b45309;border-color:#b45309}
-  .stamp.convertida{color:#1d4ed8;border-color:#1d4ed8}
-  .rule{height:2.5px;background:#15803d;margin:0 0 6mm}
-  .parties{display:grid;grid-template-columns:1fr 1fr;gap:12mm;margin-bottom:7mm}
-  .block-label{font-size:8.5px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#6b7280;padding-bottom:2mm;border-bottom:1px solid #e5e7eb;margin-bottom:2.5mm}
-  .party-name{font-size:12px;font-weight:700;color:#111827;margin-bottom:1mm}
-  .party-line{font-size:9.5px;line-height:1.6;color:#4b5563}
-  .pay-row{display:flex;justify-content:space-between;font-size:9.5px;line-height:1.9;color:#4b5563}
-  .pay-row span:last-child{color:#111827;font-weight:600}
-  .items{width:100%;border-collapse:collapse;margin-bottom:4mm}
-  .items thead th{background:#f4f7f5;color:#374151;font-size:8.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;text-align:right;padding:3mm 2mm;border-top:1.5px solid #15803d;border-bottom:1.5px solid #15803d}
-  .items thead th.h-idx{text-align:center;width:8mm}
-  .items thead th.h-desc{text-align:left}
-  .items tbody td{padding:2.5mm 2mm;font-size:9.5px;border-bottom:1px solid #edf0f2;vertical-align:top}
-  .items tbody tr:last-child td{border-bottom:1px solid #d1d5db}
-  .c-idx{text-align:center;color:#9ca3af}
-  .c-desc{text-align:left;color:#1f2937}
-  .c-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
-  .totals-wrap{display:flex;justify-content:flex-end}
-  .totals{width:80mm}
-  .totals .t-row{display:flex;justify-content:space-between;padding:1.6mm 0;font-size:10px;color:#4b5563}
-  .totals .t-row .val{color:#111827;font-variant-numeric:tabular-nums}
-  .totals .t-total{border-top:2px solid #111827;margin-top:1mm;padding-top:2.5mm;font-size:14px;font-weight:800;color:#111827}
-  .amount-words{margin:5mm 0 0;padding:2.5mm 3mm;background:#f9fafb;border:1px solid #e5e7eb;border-radius:3px;font-size:9.5px;line-height:1.5;color:#374151}
-  .amount-words b{color:#111827}
-  .notes{margin-top:6mm}
-  .notes p{font-size:9.5px;line-height:1.6;color:#4b5563;margin-top:2mm;white-space:pre-wrap}
-  .foot{margin-top:12mm;padding-top:5mm;border-top:1px solid #e5e7eb;font-size:8.5px;line-height:1.6;color:#6b7280}
-  .foot b{display:block;color:#15803d;font-size:10px;margin-bottom:1mm}
-  @page{size:A4;margin:12mm}
-  @media print{.page{padding:0}}
-</style></head><body>
-<div class="page">
-  <div class="content">
-    <div class="head">
-      <div class="emitter">
-        ${logo}
-        ${c.contador_rnc ? `<div class="emitter-line"><b>RNC:</b> ${esc(c.contador_rnc)}</div>` : ''}
-        ${c.contador_tel ? `<div class="emitter-line"><b>Tel:</b> ${esc(c.contador_tel)}</div>` : ''}
-        ${c.contador_correo ? `<div class="emitter-line">${esc(c.contador_correo)}</div>` : ''}
-      </div>
-      <div class="doc">
-        <div class="doc-title">COTIZACIÓN</div>
-        <div class="doc-meta">
-          <div><b>Número:</b> ${esc(c.numero || '')}</div>
-          <div><b>Fecha de emisión:</b> ${esc(fechaEmision)}</div>
-          ${c.fecha_vencimiento ? `<div><b>Válida hasta:</b> ${esc(_fmtFechaSolo(c.fecha_vencimiento))}</div>` : ''}
-        </div>
-        <div class="stamp ${c.estado || 'aprobada'}">${esc(estadoLabel)}</div>
-      </div>
-    </div>
-    <div class="rule"></div>
-    <div class="parties">
-      <div>
-        <div class="block-label">Cotizar a</div>
-        <div class="party-name">${esc(cli.nombre) || '—'}</div>
-        ${cli.rnc ? `<div class="party-line">RNC / Cédula: ${esc(cli.rnc)}</div>` : ''}
-        ${cli.direccion ? `<div class="party-line">${esc(cli.direccion)}</div>` : ''}
-        ${cli.telefono ? `<div class="party-line">Tel: ${esc(cli.telefono)}</div>` : ''}
-        ${cli.correo ? `<div class="party-line">${esc(cli.correo)}</div>` : ''}
-      </div>
-      <div>
-        <div class="block-label">Condiciones</div>
-        ${c.condicion_pago ? `<div class="pay-row"><span>Condición de pago</span><span>${esc(c.condicion_pago)}</span></div>` : ''}
-        <div class="pay-row"><span>Estado</span><span>${esc(estadoLabel)}</span></div>
-      </div>
-    </div>
-    <table class="items">
-      <thead><tr>
-        <th class="h-idx">#</th><th class="h-desc">Descripción</th>
-        <th>Cant.</th><th>Precio unit.</th><th>Desc.</th><th>ITBIS</th><th>Importe</th>
-      </tr></thead>
-      <tbody>${itemsHtml}</tbody>
-    </table>
-    <div class="totals-wrap"><div class="totals">
-      <div class="t-row"><span>Subtotal</span><span class="val">${money(c.subtotal)}</span></div>
-      ${Number(c.descuento_total) > 0 ? `<div class="t-row"><span>Descuento</span><span class="val">- ${money(c.descuento_total)}</span></div>` : ''}
-      <div class="t-row"><span>ITBIS</span><span class="val">${money(c.itbis_total)}</span></div>
-      <div class="t-row t-total"><span>TOTAL</span><span class="val">${money(c.total)}</span></div>
-    </div></div>
-    <div class="amount-words"><b>Son:</b> ${esc(numeroALetras(c.total))}</div>
-    ${c.notas ? `<div class="notes"><span class="block-label">Condiciones / Notas</span><p>${esc(c.notas)}</p></div>` : ''}
-    ${c.observacion ? `<div class="notes"><span class="block-label">Observación</span><p>${esc(c.observacion)}</p></div>` : ''}
-    <div class="foot">
-      <b>${esc(c.contador_nombre || '')}</b>
-      Cotización de servicios profesionales. Documento generado electrónicamente; válido sin firma ni sello. Precios sujetos a cambio después de la fecha de vencimiento.
-    </div>
-  </div>
-</div>
-</body></html>`;
+  return FacturaContador.cotizacionHtml(c, _perfil || {});
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -5232,8 +5011,8 @@ function colabEstadoBadge(e) {
 
 function colabTipoBadge(t) {
   return t === 'completo'
-    ? '<span class="badge badge-active" style="background:#7c3aed22;color:#a78bfa;border-color:#7c3aed">🌐 Completo</span>'
-    : '<span class="badge badge-pending" style="background:#1e3a5f;color:#60a5fa;border-color:#2563eb">🔗 Dependiente</span>';
+    ? '<span class="badge badge-active" style="background:#7c3aed22;color:var(--purple,#a78bfa);border-color:#7c3aed">🌐 Completo</span>'
+    : '<span class="badge badge-pending" style="background:var(--blue-glow,#1e3a5f);color:var(--sky,#60a5fa);border-color:#2563eb">🔗 Dependiente</span>';
 }
 
 // ── Cargar listado ─────────────────────────────────────────────────────────
@@ -5254,7 +5033,7 @@ async function loadColaboradores() {
     }
   } catch (e) {
     setText('colab-subtitle', 'Error cargando colaboradores');
-    $id('colab-tbody').innerHTML = `<tr><td colspan="7" class="td-empty" style="color:#ef4444">${esc(e.message)}</td></tr>`;
+    $id('colab-tbody').innerHTML = `<tr><td colspan="7" class="td-empty" style="color:var(--red,#ef4444)">${esc(e.message)}</td></tr>`;
   }
 }
 
@@ -5282,7 +5061,7 @@ function _renderColabTabla(lista) {
       <td>${colabTipoBadge(c.tipo)}</td>
       <td>${colabEstadoBadge(c.estado)}</td>
       <td style="text-align:center">
-        <span style="background:#1e3a5f;color:#60a5fa;border-radius:12px;padding:2px 10px;font-size:12px;font-weight:600">
+        <span style="background:var(--blue-glow,#1e3a5f);color:var(--sky,#60a5fa);border-radius:12px;padding:2px 10px;font-size:12px;font-weight:600">
           ${(c.clientesAsignados || []).length}
         </span>
       </td>
@@ -5404,8 +5183,8 @@ function toggleTipoColab(checked) {
     : colabTipoBadge('completo')    + ' <span style="font-size:11px;color:var(--text-muted);margin-left:6px">Este colaborador tiene acceso completo a la plataforma</span>';
 
   if (desc) desc.innerHTML = checked
-    ? 'Al activar este check, el colaborador será <strong style="color:#60a5fa">Dependiente</strong>: solo podrá ver y gestionar los clientes que le asignes.'
-    : 'Sin este check, el colaborador funciona como <strong style="color:#a78bfa">Contador Completo</strong>: puede crear sus propios clientes y formar su propia red.';
+    ? 'Al activar este check, el colaborador será <strong style="color:var(--sky,#60a5fa)">Dependiente</strong>: solo podrá ver y gestionar los clientes que le asignes.'
+    : 'Sin este check, el colaborador funciona como <strong style="color:var(--purple,#a78bfa)">Contador Completo</strong>: puede crear sus propios clientes y formar su propia red.';
 
   const pLista = $id('mc-permite-list');
   const bLista = $id('mc-bloquea-list');
@@ -5515,12 +5294,12 @@ async function verColabDetalle(id) {
     const perms = esD ? PERMISOS_DEPENDIENTE : PERMISOS_COMPLETO;
     $id('cdet-permisos').innerHTML = `
       <div style="margin-bottom:10px">
-        <div style="font-size:12px;font-weight:700;color:#4ade80;margin-bottom:4px">✅ Puede hacer</div>
-        <div style="font-size:12px;color:#86efac;line-height:1.8">${perms.puede.map(p => '• ' + p).join('<br>')}</div>
+        <div style="font-size:12px;font-weight:700;color:var(--ok-text,#4ade80);margin-bottom:4px">✅ Puede hacer</div>
+        <div style="font-size:12px;color:var(--ok-text-2,#86efac);line-height:1.8">${perms.puede.map(p => '• ' + p).join('<br>')}</div>
       </div>
       <div>
-        <div style="font-size:12px;font-weight:700;color:#f87171;margin-bottom:4px">❌ No puede hacer</div>
-        <div style="font-size:12px;color:#fca5a5;line-height:1.8">${perms.noPuede.map(p => '• ' + p).join('<br>')}</div>
+        <div style="font-size:12px;font-weight:700;color:var(--bad-text,#f87171);margin-bottom:4px">❌ No puede hacer</div>
+        <div style="font-size:12px;color:var(--bad-text-2,#fca5a5);line-height:1.8">${perms.noPuede.map(p => '• ' + p).join('<br>')}</div>
       </div>`;
 
     // Acciones
@@ -5546,7 +5325,7 @@ async function _renderColabClientes(colabId) {
     }
     grid.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
       ${clientes.map(c => `
-        <div style="background:var(--surface);border:1px solid #2d3a52;border-radius:10px;padding:14px;display:flex;justify-content:space-between;align-items:center">
+        <div style="background:var(--surface);border:1px solid var(--border,#2d3a52);border-radius:10px;padding:14px;display:flex;justify-content:space-between;align-items:center">
           <div>
             <div style="font-weight:600;color:var(--text);font-size:13px">${esc(c.businessName)}</div>
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">${esc(c.propietario)} • ${esc(c.rnc)}</div>
@@ -5556,7 +5335,7 @@ async function _renderColabClientes(colabId) {
         </div>`).join('')}
     </div>`;
   } catch (e) {
-    grid.innerHTML = `<div class="empty-state"><div class="empty-text" style="color:#ef4444">Error: ${esc(e.message)}</div></div>`;
+    grid.innerHTML = `<div class="empty-state"><div class="empty-text" style="color:var(--red,#ef4444)">Error: ${esc(e.message)}</div></div>`;
   }
 }
 
@@ -5585,7 +5364,7 @@ async function abrirModalAsignar() {
     _negociosAsignar = await apiCall('GET', '/api/clientes');
     _renderNegociosAsignar(_negociosAsignar, colab?.clientesAsignados || []);
   } catch (e) {
-    $id('masig-lista').innerHTML = `<div style="text-align:center;padding:20px;color:#ef4444">Error: ${esc(e.message)}</div>`;
+    $id('masig-lista').innerHTML = `<div style="text-align:center;padding:20px;color:var(--red,#ef4444)">Error: ${esc(e.message)}</div>`;
   }
 }
 
@@ -5599,13 +5378,13 @@ function _renderNegociosAsignar(lista, yaAsignados) {
   }
   el.innerHTML = lista.map(n => {
     const asignado = (yaAsignados || []).includes(n.id);
-    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid #2d3a52">
+    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border,#2d3a52)">
       <div>
         <div style="font-weight:600;color:var(--text);font-size:13px">${esc(n.businessName || n.id)}</div>
         <div style="font-size:11px;color:var(--text-muted)">${esc(n.propietario || '')} • ${esc(n.rnc || '')} • ${statusBadge(n.status).replace(/<[^>]+>/g,'').trim()}</div>
       </div>
       ${asignado
-        ? '<span style="font-size:11px;color:#4ade80;font-weight:600">✅ Ya asignado</span>'
+        ? '<span style="font-size:11px;color:var(--ok-text,#4ade80);font-weight:600">✅ Ya asignado</span>'
         : `<button class="btn btn-primary btn-xs" onclick="app.asignarNegocio('${n.id}','${esc(n.businessName || n.id)}')">Asignar</button>`
       }
     </div>`;
@@ -5691,7 +5470,7 @@ function renderAnalisisGlobalTop(topClientes) {
       <td style="font-weight:600">${esc(c.businessName)}</td>
       <td>${statusBadge(c.status)}</td>
       <td class="td-amount">${fmtMoney(c.ventasMes)}</td>
-      <td class="td-amount" style="color:#f59e0b">${fmtMoney(c.itbisMes)}</td>
+      <td class="td-amount" style="color:var(--orange,#f59e0b)">${fmtMoney(c.itbisMes)}</td>
       <td style="text-align:center">${c.facturas}</td>
       <td><button class="btn btn-xs btn-secondary" onclick="app.verCliente('${c.id}')">Ver</button></td>
     </tr>`;
@@ -5750,7 +5529,7 @@ async function _cargarObligaciones() {
     _renderObligaciones();
   } catch (e) {
     const el = $id('cf-obligaciones-list');
-    if (el) el.innerHTML = `<div style="color:#ef4444;padding:12px">${e.message}</div>`;
+    if (el) el.innerHTML = `<div style="color:var(--red,#ef4444);padding:12px">${e.message}</div>`;
   }
 }
 
@@ -5761,7 +5540,7 @@ async function _cargarTareas() {
     _renderTareas();
   } catch (e) {
     const el = $id('cf-tareas-list');
-    if (el) el.innerHTML = `<div style="color:#ef4444;padding:12px">${e.message}</div>`;
+    if (el) el.innerHTML = `<div style="color:var(--red,#ef4444);padding:12px">${e.message}</div>`;
   }
 }
 
@@ -5790,7 +5569,7 @@ function _renderObligaciones() {
   }
 
   if (!lista.length) {
-    el.innerHTML = '<div style="text-align:center;padding:24px;color:#5a7099">Sin obligaciones para el filtro seleccionado.</div>';
+    el.innerHTML = '<div style="text-align:center;padding:24px;color:var(--text-muted,#5a7099)">Sin obligaciones para el filtro seleccionado.</div>';
     return;
   }
 
@@ -5832,7 +5611,7 @@ function _renderTareas() {
   }
 
   if (!lista.length) {
-    el.innerHTML = `<div style="text-align:center;padding:32px;color:#5a7099">
+    el.innerHTML = `<div style="text-align:center;padding:32px;color:var(--text-muted,#5a7099)">
       <div style="font-size:28px;margin-bottom:8px">✅</div>
       <div>${_cfFilTarea === 'pendiente' ? 'Sin tareas pendientes' : 'Sin tareas completadas'}</div>
       <button class="btn btn-secondary" style="margin-top:12px" onclick="app.abrirModalTarea(null)">+ Agregar tarea</button>
@@ -5855,8 +5634,8 @@ function _renderTareas() {
       <div style="flex:1">
         <div class="tarea-desc" style="${t.estado === 'completada' ? 'text-decoration:line-through;' : ''}">${esc(t.titulo)}</div>
         <div class="tarea-meta">
-          <span style="background:${tipoColor}22;color:${tipoColor};padding:1px 6px;border-radius:4px;font-size:10px;font-weight:600">${(t.tipo||'general').toUpperCase()}</span>
-          ${t.fecha_vencimiento ? `<span style="margin-left:6px;${vencida ? 'color:#ef4444;font-weight:600' : ''}">📅 ${t.fecha_vencimiento}</span>` : ''}
+          <span class="tarea-tipo" style="--tipo:${tipoColor}">${(t.tipo||'general').toUpperCase()}</span>
+          ${t.fecha_vencimiento ? `<span style="margin-left:6px;${vencida ? 'color:var(--red,#ef4444);font-weight:600' : ''}">📅 ${t.fecha_vencimiento}</span>` : ''}
           ${t.businessName ? `<span class="tarea-negocio" style="margin-left:6px">🏪 ${esc(t.businessName)}</span>` : ''}
         </div>
         ${t.notas ? `<div style="font-size:11px;color:var(--text-sub);margin-top:3px;font-style:italic">${esc(t.notas)}</div>` : ''}
@@ -6206,7 +5985,7 @@ async function ctbCargarDiario() {
     tbody.innerHTML = asientos.flatMap(a => (a.lineas || []).map((l, i) => `
       <tr>
         <td>${esc(String(a.fecha || '').slice(0, 10))}</td>
-        <td>${esc(a.descripcion)}${a.origen === 'automatico' ? ' <span style="font-size:11px;color:#5a7099;border:1px solid #2a3550;border-radius:4px;padding:1px 5px">auto</span>' : ''}</td>
+        <td>${esc(a.descripcion)}${a.origen === 'automatico' ? ' <span style="font-size:11px;color:var(--text-muted,#5a7099);border:1px solid var(--border,#2a3550);border-radius:4px;padding:1px 5px">auto</span>' : ''}</td>
         <td>${esc(l.cuenta)} — ${esc(cuentasByCode.get(l.cuenta)?.name || '')}</td>
         <td style="text-align:right">${l.debe ? Number(l.debe).toFixed(2) : ''}</td>
         <td style="text-align:right">${l.haber ? Number(l.haber).toFixed(2) : ''}</td>
@@ -6286,7 +6065,7 @@ async function ctbCargarEstadoResultados() {
   try {
     const d = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/estado-resultados`);
     const fila = (label, val, fuerte) => `
-      <div style="display:flex;justify-content:space-between;padding:6px 0;${fuerte ? 'font-weight:700;border-top:1px solid #2a3550' : ''}">
+      <div style="display:flex;justify-content:space-between;padding:6px 0;${fuerte ? 'font-weight:700;border-top:1px solid var(--border,#2a3550)' : ''}">
         <span>${esc(label)}</span><span>${Number(val).toFixed(2)}</span>
       </div>`;
     if (wrap) wrap.innerHTML = `
@@ -6312,23 +6091,23 @@ async function ctbCargarBalanceGeneral() {
     const lista = (rows) => rows.map(r => `
       <div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px">
         <span>${esc(r.code)} — ${esc(r.name)}</span><span>${Number(r.saldo).toFixed(2)}</span>
-      </div>`).join('') || '<div style="color:#5a7099;font-size:13px">Sin saldo.</div>';
+      </div>`).join('') || '<div style="color:var(--text-muted,#5a7099);font-size:13px">Sin saldo.</div>';
     if (wrap) wrap.innerHTML = `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
         <div>
           <h4>Activos Corrientes</h4>${lista(d.activos.corrientes)}
           <h4 style="margin-top:12px">Activos No Corrientes</h4>${lista(d.activos.noCorrientes)}
-          <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px">Total Activos: ${d.activos.total.toFixed(2)}</div>
+          <div style="font-weight:700;border-top:1px solid var(--border,#2a3550);padding-top:6px;margin-top:8px">Total Activos: ${d.activos.total.toFixed(2)}</div>
         </div>
         <div>
           <h4>Pasivos Corrientes</h4>${lista(d.pasivos.corrientes)}
           <h4 style="margin-top:12px">Pasivos Largo Plazo</h4>${lista(d.pasivos.largoPlazo)}
-          <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px">Total Pasivos: ${d.pasivos.total.toFixed(2)}</div>
+          <div style="font-weight:700;border-top:1px solid var(--border,#2a3550);padding-top:6px;margin-top:8px">Total Pasivos: ${d.pasivos.total.toFixed(2)}</div>
           <h4 style="margin-top:16px">Patrimonio</h4>${lista(d.patrimonio.cuentas)}
-          <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px">Total Patrimonio: ${d.patrimonio.total.toFixed(2)}</div>
+          <div style="font-weight:700;border-top:1px solid var(--border,#2a3550);padding-top:6px;margin-top:8px">Total Patrimonio: ${d.patrimonio.total.toFixed(2)}</div>
         </div>
       </div>
-      <div style="margin-top:16px;font-weight:700;${d.cuadra ? 'color:#22c55e' : 'color:#ef4444'}">
+      <div style="margin-top:16px;font-weight:700;${d.cuadra ? 'color:var(--green,#22c55e)' : 'color:var(--red,#ef4444)'}">
         Activos: ${d.activos.total.toFixed(2)} ${d.cuadra ? '=' : '≠'} Pasivos + Patrimonio: ${d.totalPasivoPatrimonio.toFixed(2)} ${d.cuadra ? '✓' : '✗'}
       </div>`;
   } catch (e) {
@@ -6346,7 +6125,7 @@ async function ctbCargarFlujoEfectivo() {
       ${fila('Flujo de Operación', d.operacion)}
       ${fila('Flujo de Inversión', d.inversion)}
       ${fila('Flujo de Financiamiento', d.financiamiento)}
-      <div style="font-weight:700;border-top:1px solid #2a3550;padding-top:6px;margin-top:8px;display:flex;justify-content:space-between">
+      <div style="font-weight:700;border-top:1px solid var(--border,#2a3550);padding-top:6px;margin-top:8px;display:flex;justify-content:space-between">
         <span>Cambio Neto en Efectivo</span><span>${Number(d.neto).toFixed(2)}</span>
       </div>`;
   } catch (e) {
@@ -6366,7 +6145,7 @@ function _ctbPdfDoc(neg, badge, bodyHtml) {
     body{font-family:'Segoe UI',Arial,sans-serif;font-size:12px;color:#1a1a2e;padding:24px}
     .hdr{display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:12px;border-bottom:3px solid #3b82f6;margin-bottom:18px}
     h1{font-size:18px;font-weight:800;margin-bottom:3px}
-    h2{font-size:13px;color:#5a7099;font-weight:400}
+    h2{font-size:13px;color:var(--text-muted,#5a7099);font-weight:400}
     .badge{display:inline-block;background:#3b82f6;color:#fff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:20px;letter-spacing:.3px;text-transform:uppercase}
     .row{display:flex;justify-content:space-between;padding:6px 0;font-size:12px;border-bottom:1px solid #e2e8f0}
     .row.strong{font-weight:700;border-bottom:2px solid #1a1a2e;font-size:13px}
@@ -6384,7 +6163,7 @@ function _ctbPdfDoc(neg, badge, bodyHtml) {
     </div>
     <div style="text-align:right">
       <div class="badge">${esc(badge)}</div>
-      <div style="font-size:11px;color:#5a7099;margin-top:5px">Generado: ${fecha}</div>
+      <div style="font-size:11px;color:var(--text-muted,#5a7099);margin-top:5px">Generado: ${fecha}</div>
     </div>
   </div>
   ${bodyHtml}
@@ -6579,6 +6358,7 @@ function ctbRenderIndicadoresChart(rows) {
   };
 
   if (_ctbIndChart) { _ctbIndChart.destroy(); _ctbIndChart = null; }
+  const col = _coloresGrafico();
   _ctbIndChart = new Chart(canvas, {
     type: 'bar',
     data: {
@@ -6592,7 +6372,7 @@ function ctbRenderIndicadoresChart(rows) {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: { labels: { color: '#8fa3c2', font: { size: 11 } } },
+        legend: { labels: { color: col.texto, font: { size: 11 } } },
         tooltip: {
           callbacks: {
             label: ctx => `${ctx.dataset.label}: RD$ ` + (ctx.parsed.y || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
@@ -6600,13 +6380,13 @@ function ctbRenderIndicadoresChart(rows) {
         },
       },
       scales: {
-        x: { ticks: { color: '#8fa3c2', font: { size: 10 } }, grid: { display: false } },
+        x: { ticks: { color: col.texto, font: { size: 10 } }, grid: { display: false } },
         y: {
           ticks: {
-            color: '#8fa3c2', font: { size: 10 },
+            color: col.texto, font: { size: 10 },
             callback: v => 'RD$ ' + (v >= 1000 ? (v / 1000).toFixed(1) + 'k' : v),
           },
-          grid: { color: 'rgba(71,100,148,0.12)' },
+          grid: { color: col.rejilla },
         },
       },
     },
@@ -6625,12 +6405,12 @@ async function ctbCargarPeriodos() {
     const periodos = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/periodos`);
     if (!wrap) return;
     if (!periodos.length) {
-      wrap.innerHTML = '<div style="color:#5a7099;font-size:13px">No hay períodos cerrados todavía — todo el historial está abierto.</div>';
+      wrap.innerHTML = '<div style="color:var(--text-muted,#5a7099);font-size:13px">No hay períodos cerrados todavía — todo el historial está abierto.</div>';
       return;
     }
     wrap.innerHTML = periodos.map(p => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #1a2238">
-        <span>${esc(p.periodo)} ${p.tipo === 'anual' ? '<span style="font-size:11px;color:#5a7099">(cierre anual)</span>' : ''}</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border,#1a2238)">
+        <span>${esc(p.periodo)} ${p.tipo === 'anual' ? '<span style="font-size:11px;color:var(--text-muted,#5a7099)">(cierre anual)</span>' : ''}</span>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="badge badge-active">Cerrado</span>
           <button class="btn btn-xs btn-secondary" onclick="app.ctbReabrirPeriodo('${p.periodo}')">Reabrir</button>
@@ -6667,10 +6447,10 @@ async function ctbCargarHistorialCierres() {
     const cierres = await apiCall('GET', `/api/contabilidad/${_ctbNegocioId}/cierres`);
     if (!wrap) return;
     wrap.innerHTML = cierres.map(c => `
-      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a2238">
+      <div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border,#1a2238)">
         <span>Ejercicio ${esc(String(c.year))}</span>
         <span>Utilidad Neta: ${Number(c.utilidadNeta).toFixed(2)} · Cerrado ${esc(String(c.cerradoEn || '').slice(0, 10))} por ${esc(c.cerradoPor || '')}</span>
-      </div>`).join('') || '<div style="color:#5a7099;font-size:13px">Ningún año cerrado todavía.</div>';
+      </div>`).join('') || '<div style="color:var(--text-muted,#5a7099);font-size:13px">Ningún año cerrado todavía.</div>';
   } catch (e) {
     if (wrap) wrap.innerHTML = esc(e.message);
   }
@@ -6714,7 +6494,7 @@ async function ctbCargarActivosFijos() {
         <td>${esc(a.nombre)}</td>
         <td>${esc(a.fechaCompra)}</td>
         <td style="text-align:right">${Number(a.costo).toFixed(2)}</td>
-        <td style="font-size:11px;color:#8fa3c2">${esc(_CTB_METODO_DEP_LABEL[a.metodoDepreciacion] || 'Línea Recta')}</td>
+        <td style="font-size:11px;color:var(--text-sub,#8fa3c2)">${esc(_CTB_METODO_DEP_LABEL[a.metodoDepreciacion] || 'Línea Recta')}</td>
         <td style="text-align:right">${a.mesesDepreciados}/${a.vidaUtilMeses}</td>
         <td style="text-align:right">${ctbValorLibros(a).toFixed(2)}</td>
         <td>${a.estado === 'activo' ? '<span class="badge badge-active">Activo</span>' : '<span class="badge badge-expired">Dado de baja</span>'}</td>
@@ -6869,7 +6649,7 @@ async function ctbCargarPresupuesto() {
           <td>${esc(r.code)} — ${esc(r.name)}</td>
           <td style="text-align:right">${r.presupuestado.toFixed(2)}</td>
           <td style="text-align:right">${r.real.toFixed(2)}</td>
-          <td style="text-align:right;color:${r.variacion > 0 ? '#ef4444' : '#22c55e'}">${r.variacion.toFixed(2)}</td>
+          <td style="text-align:right;color:${r.variacion > 0 ? 'var(--red)' : 'var(--green)'}">${r.variacion.toFixed(2)}</td>
         </tr>`).join('') || '<tr><td colspan="4">Sin presupuesto definido para este año.</td></tr>';
     }
   } catch (e) {

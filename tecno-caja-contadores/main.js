@@ -7,7 +7,7 @@ const path  = require('path');
 const http  = require('http');
 const fs    = require('fs');
 const os    = require('os');
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme } = require('electron');
 
 // En desarrollo usa node_modules del proyecto padre; en producción usa los propios
 if (!app.isPackaged) {
@@ -72,6 +72,39 @@ ipcMain.handle('profile:cache', (_e, data) => {
   writeCachedProfile(data);
 });
 
+// ── Modo día / noche ──────────────────────────────────────────────────────
+// La página lo guarda en su localStorage (public/js/tema.js) y nos manda una
+// copia: el splash, el fondo de la ventana y la barra de título de Windows
+// se deciden antes de que cargue la página. 'auto' sigue a Windows.
+const UI_PREFS_PATH = path.join(app.getPath('userData'), 'ui-prefs.json');
+const THEME_SOURCES = { dia: 'light', noche: 'dark', auto: 'system' };
+const WINDOW_BG = { dark: '#0f1624', light: '#f3f6fb' };
+
+function readThemePref() {
+  try {
+    const tema = JSON.parse(fs.readFileSync(UI_PREFS_PATH, 'utf8'))?.tema;
+    return THEME_SOURCES[tema] ? tema : 'noche';
+  } catch (_) {
+    return 'noche';
+  }
+}
+
+function applyNativeTheme(tema) {
+  nativeTheme.themeSource = THEME_SOURCES[tema] || 'dark';
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+}
+
+ipcMain.handle('ui:set-theme', (_e, tema) => {
+  if (!THEME_SOURCES[tema]) return;
+  try {
+    fs.writeFileSync(UI_PREFS_PATH, JSON.stringify({ tema }));
+  } catch (e) {
+    console.warn('[contadores] No se pudo guardar el tema:', e.message);
+  }
+  const efectivo = applyNativeTheme(tema);
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(WINDOW_BG[efectivo]);
+});
+
 function startServer() {
   return new Promise((resolve, reject) => {
     try {
@@ -128,6 +161,7 @@ function waitForServer(retries = 20) {
 // pesado del servidor, para garantizar que el splash ya pintó en pantalla
 // sin depender de ningún evento de Electron.
 function createWindow() {
+  const temaEfectivo = applyNativeTheme(readThemePref());
   mainWindow = new BrowserWindow({
     width: 1380,
     height: 860,
@@ -139,7 +173,7 @@ function createWindow() {
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
     },
-    backgroundColor: '#0f1624',
+    backgroundColor: WINDOW_BG[temaEfectivo],
     show: true,
   });
 
@@ -147,7 +181,7 @@ function createWindow() {
   // que el splash los muestre en vez de la marca genérica — ver
   // PROFILE_CACHE_PATH arriba.
   const cached = readCachedProfile();
-  const query = {};
+  const query = { tema: temaEfectivo === 'light' ? 'dia' : 'noche' };
   if (cached?.nombre_firma) query.nombre = cached.nombre_firma;
   if (cached?.logo_url)     query.logo   = cached.logo_url;
   mainWindow.loadFile(path.join(__dirname, 'public', 'splash.html'), { query });
@@ -274,13 +308,27 @@ ipcMain.handle('updater:get-version', () => ({
   isPackaged: app.isPackaged,
 }));
 
+// Opciones de printToPDF. noMargins: la factura A4 (plantillas del POS) ya
+// trae sus márgenes (padding de la hoja de 210 mm) y su @page; Electron 21+
+// ignora `marginType` y ponía 1 cm por lado, que encogía la hoja y mandaba
+// el final a otra página. Los reportes siguen como estaban.
+function pdfOptions(landscape, noMargins) {
+  return {
+    printBackground: true,
+    pageSize:        'A4',
+    landscape:       landscape,
+    margins:         noMargins ? { top: 0, bottom: 0, left: 0, right: 0 } : { marginType: 'printableArea' },
+    ...(noMargins ? { preferCSSPageSize: true } : {}),
+  };
+}
+
 // ── Guardar reporte como PDF ────────────────────────────────────────────────
-ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'reporte.pdf', landscape = false } = {}) => {
+ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'reporte.pdf', landscape = false, noMargins = false, title = 'Guardar reporte como PDF' } = {}) => {
   let pdfWindow = null;
   let tempFile  = null;
   try {
     const { filePath, canceled } = await dialog.showSaveDialog(mainWindow, {
-      title:       'Guardar reporte como PDF',
+      title:       String(title),
       defaultPath: path.join(app.getPath('documents'), filename),
       filters:     [{ name: 'PDF', extensions: ['pdf'] }],
     });
@@ -295,12 +343,7 @@ ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'report
     });
     await pdfWindow.loadFile(tempFile);
 
-    const pdfBuffer = await pdfWindow.webContents.printToPDF({
-      printBackground: true,
-      pageSize:        'A4',
-      landscape:       landscape,
-      margins:         { marginType: 'printableArea' },
-    });
+    const pdfBuffer = await pdfWindow.webContents.printToPDF(pdfOptions(landscape, noMargins));
 
     pdfWindow.close();
     pdfWindow = null;
@@ -317,7 +360,7 @@ ipcMain.handle('report:save-pdf', async (_event, { html = '', filename = 'report
 });
 
 // ── Renderizar HTML a PDF y devolverlo en base64 (para adjuntar a un correo) ──
-ipcMain.handle('report:render-pdf', async (_event, { html = '', landscape = false } = {}) => {
+ipcMain.handle('report:render-pdf', async (_event, { html = '', landscape = false, noMargins = false } = {}) => {
   let pdfWindow = null;
   let tempFile  = null;
   try {
@@ -330,12 +373,7 @@ ipcMain.handle('report:render-pdf', async (_event, { html = '', landscape = fals
     });
     await pdfWindow.loadFile(tempFile);
 
-    const pdfBuffer = await pdfWindow.webContents.printToPDF({
-      printBackground: true,
-      pageSize:        'A4',
-      landscape:       landscape,
-      margins:         { marginType: 'printableArea' },
-    });
+    const pdfBuffer = await pdfWindow.webContents.printToPDF(pdfOptions(landscape, noMargins));
 
     pdfWindow.close();
     pdfWindow = null;
@@ -416,11 +454,8 @@ ipcMain.handle('preview:save-pdf', async (event, { suggestedName = 'documento.pd
     });
     if (canceled || !filePath) return { ok: false, canceled: true };
 
-    const pdfBuffer = await event.sender.printToPDF({
-      printBackground: true,
-      pageSize: 'A4',
-      margins: { marginType: 'printableArea' },
-    });
+    // Factura o cotización con plantilla: la hoja trae sus márgenes.
+    const pdfBuffer = await event.sender.printToPDF(pdfOptions(false, true));
     fs.writeFileSync(filePath, pdfBuffer);
     return { ok: true, filePath };
   } catch (error) {

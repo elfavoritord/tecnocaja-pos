@@ -39,6 +39,74 @@
   --radius-sm:  8px;
   --font-mono:  'Consolas', 'Courier New', monospace;
   --transition: all .15s ease;
+
+  /* Colores que antes iban fijos en el HTML/JS (mismo valor en modo noche). */
+  --sky:        #60a5fa;
+  --purple:     #a78bfa;
+  --yellow:     #facc15;
+  --gray-text:  #94a3b8;
+  --chart-grid: rgba(71, 100, 148, 0.12);
+  --ok-bg:      #052e16;
+  --ok-border:  #15803d;
+  --ok-text:    #4ade80;
+  --ok-text-2:  #86efac;
+  --bad-bg:     #450a0a;
+  --bad-border: #b91c1c;
+  --bad-text:   #f87171;
+  --bad-text-2: #fca5a5;
+  --login-bg:   radial-gradient(ellipse at 30% 50%, #1a2a50 0%, #0f1624 60%);
+  --toast-success: #064e3b;
+  --toast-error:   #450a0a;
+  --toast-warning: #451a03;
+  --toast-info:    #1e3a5f;
+
+  color-scheme: dark;
+}
+
+/* ── Modo día ────────────────────────────────────────────────────────────
+   <html data-theme="light">. El modo noche (arriba) es el de siempre.
+   El script del <head> de index.html pone el atributo antes de pintar, y
+   el botón del menú o Configuración → Apariencia lo cambian (tema.js). */
+:root[data-theme="light"] {
+  --bg:        #f3f6fb;
+  --surface:   #ffffff;
+  --surface2:  #f1f4f9;
+  --surface3:  #e2e8f0;
+  --border:    rgba(71, 100, 148, 0.22);
+  --blue:      #2563eb;
+  --blue-dark: #1d4ed8;
+  --blue-glow: rgba(37, 99, 235, 0.12);
+  --green:     #059669;
+  --green-bg:  rgba(5, 150, 105, 0.1);
+  --orange:    #b45309;
+  --orange-bg: rgba(217, 119, 6, 0.12);
+  --red:       #dc2626;
+  --red-bg:    rgba(220, 38, 38, 0.08);
+  --text:      #0f172a;
+  --text-sub:  #475569;
+  --text-muted:#64748b;
+  --shadow:    0 4px 20px rgba(15, 23, 42, 0.08);
+
+  --sky:        #1d4ed8;
+  --purple:     #7c3aed;
+  --yellow:     #a16207;
+  --gray-text:  #64748b;
+  --chart-grid: rgba(15, 23, 42, 0.08);
+  --ok-bg:      #ecfdf5;
+  --ok-border:  #86efac;
+  --ok-text:    #15803d;
+  --ok-text-2:  #166534;
+  --bad-bg:     #fef2f2;
+  --bad-border: #fca5a5;
+  --bad-text:   #b91c1c;
+  --bad-text-2: #991b1b;
+  --login-bg:   radial-gradient(ellipse at 30% 50%, #dbe7ff 0%, #f3f6fb 60%);
+  --toast-success: #ecfdf5;
+  --toast-error:   #fef2f2;
+  --toast-warning: #fffbeb;
+  --toast-info:    #eff6ff;
+
+  color-scheme: light;
 }
 
 body {
@@ -54,7 +122,7 @@ body {
 #screen-login {
   position: fixed; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(ellipse at 30% 50%, #1a2a50 0%, #0f1624 60%);
+  background: var(--login-bg);
   z-index: 200;
 }
 
@@ -379,16 +447,16 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
 .badge-trial::before     { background: var(--orange); }
 .badge-expired, .badge-cancelled { background: var(--red-bg); color: var(--red); }
 .badge-expired::before, .badge-cancelled::before { background: var(--red); }
-.badge-suspended, .badge-pending { background: rgba(100,116,139,.15); color: #94a3b8; }
+.badge-suspended, .badge-pending { background: rgba(100,116,139,.15); color: var(--gray-text); }
 .badge-suspended::before, .badge-pending::before { background: #64748b; }
-.badge-cancelada { background: rgba(100,116,139,.15); color: #94a3b8; }
+.badge-cancelada { background: rgba(100,116,139,.15); color: var(--gray-text); }
 
 .badge-sol-pendiente  { background: var(--orange-bg); color: var(--orange); }
 .badge-sol-revision   { background: var(--blue-glow);  color: var(--blue); }
 .badge-sol-aprobada   { background: var(--green-bg);   color: var(--green); }
 .badge-sol-rechazada  { background: var(--red-bg);     color: var(--red); }
 .badge-sol-completada { background: var(--green-bg);   color: var(--green); }
-.badge-sol-cancelada  { background: rgba(100,116,139,.15); color: #94a3b8; }
+.badge-sol-cancelada  { background: rgba(100,116,139,.15); color: var(--gray-text); }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
 .btn {
@@ -502,10 +570,10 @@ tbody td { padding: 11px 14px; font-size: 13px; color: var(--text); }
   transition: opacity .3s, transform .3s;
   pointer-events: none;
 }
-#toast.success { background: #064e3b; border: 1px solid var(--green); color: var(--green); }
-#toast.error   { background: #450a0a; border: 1px solid var(--red);   color: var(--red);   }
-#toast.warning { background: #451a03; border: 1px solid var(--orange); color: var(--orange); }
-#toast.info    { background: #1e3a5f; border: 1px solid var(--blue);  color: var(--blue);  }
+#toast.success { background: var(--toast-success); border: 1px solid var(--green); color: var(--green); }
+#toast.error   { background: var(--toast-error);   border: 1px solid var(--red);   color: var(--red);   }
+#toast.warning { background: var(--toast-warning); border: 1px solid var(--orange); color: var(--orange); }
+#toast.info    { background: var(--toast-info);    border: 1px solid var(--blue);  color: var(--blue);  }
 #toast.hidden  { opacity: 0; transform: translateY(10px); pointer-events: none; }
 
 /* ── Utilities ───────────────────────────────────────────────────────────── */
@@ -1145,8 +1213,8 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   list-style: none;
   margin: 0;
   padding: 4px 0;
-  background: #1a2234;
-  border: 1px solid rgba(71,100,148,.5);
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0,0,0,.4);
   max-height: 260px;
@@ -1163,17 +1231,17 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   cursor: pointer;
   transition: background .12s;
 }
-.rnc-dropdown-item:hover { background: #232f47; }
+.rnc-dropdown-item:hover { background: var(--surface2); }
 .rnc-dd-name {
-  color: #e8edf5;
+  color: var(--text);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 220px;
 }
-.rnc-dd-id  { color: #5a7099; font-size: 11px; flex-shrink: 0; font-family: monospace; }
-.rnc-dd-inactive .rnc-dd-name { color: #5a7099; }
+.rnc-dd-id  { color: var(--text-muted); font-size: 11px; flex-shrink: 0; font-family: monospace; }
+.rnc-dd-inactive .rnc-dd-name { color: var(--text-muted); }
 
 .rnc-badge {
   display: inline-block;
@@ -1184,9 +1252,9 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   margin-top: 4px;
   white-space: nowrap;
 }
-.rnc-badge--ok    { background: rgba(16,185,129,.12); color: #10b981; border: 1px solid rgba(16,185,129,.25); }
-.rnc-badge--warn  { background: rgba(245,158,11,.12);  color: #f59e0b; border: 1px solid rgba(245,158,11,.25); }
-.rnc-badge--error { background: rgba(239,68,68,.12);   color: #ef4444; border: 1px solid rgba(239,68,68,.25); }
+.rnc-badge--ok    { background: rgba(16,185,129,.12); color: var(--green);  border: 1px solid rgba(16,185,129,.25); }
+.rnc-badge--warn  { background: rgba(245,158,11,.12);  color: var(--orange); border: 1px solid rgba(245,158,11,.25); }
+.rnc-badge--error { background: rgba(239,68,68,.12);   color: var(--red);    border: 1px solid rgba(239,68,68,.25); }
 
 /* ═══════════════════════════════════════════════════════════
    ANÁLISIS GLOBAL
@@ -1203,8 +1271,8 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   line-height: 22px;
   color: var(--text-sub);
 }
-.ag-top-pos.gold   { background: rgba(245,158,11,.15); color: #f59e0b; }
-.ag-top-pos.silver { background: rgba(148,163,184,.15); color: #94a3b8; }
+.ag-top-pos.gold   { background: rgba(245,158,11,.15); color: var(--orange); }
+.ag-top-pos.silver { background: rgba(148,163,184,.15); color: var(--gray-text); }
 .ag-top-pos.bronze { background: rgba(161,108,82,.15);  color: #a16c52; }
 
 /* ═══════════════════════════════════════════════════════════
@@ -1220,8 +1288,8 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   margin-bottom: 6px;
   border-left: 3px solid transparent;
 }
-.obl-item.urgente    { border-left-color: #ef4444; background: rgba(239,68,68,.06); }
-.obl-item.proxima    { border-left-color: #f59e0b; background: rgba(245,158,11,.06); }
+.obl-item.urgente    { border-left-color: var(--red); background: rgba(239,68,68,.06); }
+.obl-item.proxima    { border-left-color: var(--orange); background: rgba(245,158,11,.06); }
 .obl-item.vencida    { border-left-color: #6b7280; background: rgba(107,114,128,.06); }
 .obl-item.pendiente  { border-left-color: var(--border); }
 .obl-badge {
@@ -1238,8 +1306,8 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
 .obl-form { font-size: 11px; font-weight: 700; font-family: monospace; color: var(--blue); }
 .obl-desc { font-size: 13px; font-weight: 500; margin-bottom: 2px; }
 .obl-date { font-size: 11px; color: var(--text-sub); }
-.obl-dias-urgente    { color: #ef4444; font-weight: 700; font-size: 12px; }
-.obl-dias-proxima    { color: #f59e0b; font-weight: 700; font-size: 12px; }
+.obl-dias-urgente    { color: var(--red); font-weight: 700; font-size: 12px; }
+.obl-dias-proxima    { color: var(--orange); font-weight: 700; font-size: 12px; }
 .obl-dias-vencida    { color: #6b7280; font-size: 12px; }
 .obl-dias-pendiente  { color: var(--text-sub); font-size: 11px; }
 
@@ -1255,11 +1323,18 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   transition: background .15s;
 }
 .tarea-item.completada { opacity: .55; }
-.tarea-item.vencida-task { border-left-color: #ef4444; }
+.tarea-item.vencida-task { border-left-color: var(--red); }
 .tarea-chk {
   width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px;
-  cursor: pointer; accent-color: #10b981;
+  cursor: pointer; accent-color: var(--green);
 }
+/* Etiqueta del tipo de tarea: --tipo lo pone contadores-app.js (_renderTareas).
+   En modo día el texto se oscurece para leerse sobre fondo claro. */
+.tarea-tipo {
+  background: color-mix(in srgb, var(--tipo) 13%, transparent); color: var(--tipo);
+  padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600;
+}
+:root[data-theme="light"] .tarea-tipo { color: color-mix(in srgb, var(--tipo) 60%, #000); }
 .tarea-desc  { font-size: 13px; font-weight: 500; line-height: 1.4; }
 .tarea-meta  { font-size: 11px; color: var(--text-sub); margin-top: 2px; }
 .tarea-negocio { font-size: 11px; color: var(--blue); }
@@ -1276,10 +1351,10 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   margin-bottom: 8px;
   border-bottom: 1px solid var(--border);
 }
-.alert-critico-title    { color: #ef4444; }
-.alert-urgente-title    { color: #f59e0b; }
-.alert-advertencia-title { color: #facc15; }
-.alert-info-title       { color: #60a5fa; }
+.alert-critico-title    { color: var(--red); }
+.alert-urgente-title    { color: var(--orange); }
+.alert-advertencia-title { color: var(--yellow); }
+.alert-info-title       { color: var(--sky); }
 
 .alert-item {
   display: flex;
@@ -1564,3 +1639,156 @@ table.facr-table .facr-reprint { font-size: 12px; padding: 2px 6px; }
   .upd-version-jump { flex-direction: column; gap: 0.5rem; }
   .upd-vjump-arrow  { transform: rotate(90deg); }
 }
+
+/* ── Configuración: diseño de la factura (js/factura-plantillas.js) ─────── */
+/* Mismo selector que el POS (css/modulos.css) con la paleta del portal. */
+.tc-fp-ayuda { font-size: 13px; color: var(--text-sub); line-height: 1.6; margin-bottom: 4px; }
+
+#cfg-invoice-design .tc-fp-plantillas {
+  display: flex; flex-wrap: wrap; gap: 12px;
+  margin: 12px 0 18px;
+}
+#cfg-invoice-design .tc-fp-card {
+  display: flex; flex-direction: column; gap: 4px;
+  width: 172px; padding: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface2); color: var(--text);
+  cursor: pointer; transition: border-color .15s, background .15s;
+}
+#cfg-invoice-design .tc-fp-card:hover { border-color: var(--blue); }
+#cfg-invoice-design .tc-fp-card[aria-checked="true"] {
+  border-color: var(--blue); background: var(--blue-glow);
+  box-shadow: 0 0 0 1px var(--blue);
+}
+#cfg-invoice-design .tc-fp-card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* Miniatura: la factura A4 real (210 mm = 794 px) reducida a 154 px. */
+#cfg-invoice-design .tc-fp-thumb {
+  position: relative; width: 154px; height: 218px; margin-bottom: 4px;
+  overflow: hidden; border-radius: 4px; background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+#cfg-invoice-design .tc-fp-thumb-inner {
+  position: absolute; top: 0; left: 0; width: 794px;
+  transform: scale(0.194); transform-origin: top left; pointer-events: none;
+}
+#cfg-invoice-design .tc-fp-thumb .tcfac-root { padding: 0; background: #fff; }
+#cfg-invoice-design .tc-fp-thumb .tcfac-root .tcf-page { margin: 0; filter: none; }
+
+/* Las tablas del portal (thead th / tbody td, arriba) no pintan la factura:
+   las reglas de la plantilla pesan más y esto anula el resto. */
+.tcfac-root thead th {
+  text-transform: none; letter-spacing: normal;
+  background: none; border-bottom: 0; color: inherit;
+}
+.tcfac-root tbody tr,
+.tcfac-root tbody tr:hover { background: none; border-bottom: 0; }
+.tcfac-root tbody td { color: inherit; }
+
+#cfg-invoice-design .tc-fp-card__name { font-size: 13px; font-weight: 700; }
+#cfg-invoice-design .tc-fp-card__desc { font-size: 11.5px; color: var(--text-sub); line-height: 1.35; }
+#cfg-invoice-design .tc-fp-sublabel {
+  font-size: 12px; font-weight: 700; color: var(--text-sub);
+  text-transform: uppercase; letter-spacing: .4px;
+}
+
+#cfg-invoice-design .tc-fp-colores {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px;
+}
+#cfg-invoice-design .tc-fp-auto,
+#cfg-invoice-design .tc-fp-custom {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 40px; padding: 0 14px 0 6px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface2); color: var(--text);
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer;
+}
+#cfg-invoice-design .tc-fp-auto[aria-checked="true"],
+#cfg-invoice-design .tc-fp-custom.is-active {
+  border-color: var(--blue); background: var(--blue-glow);
+  box-shadow: 0 0 0 1px var(--blue);
+}
+#cfg-invoice-design .tc-fp-auto__dot {
+  width: 28px; height: 28px; flex: none; border-radius: 50%;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+#cfg-invoice-design .tc-fp-swatch {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; padding: 0;
+  border: 3px solid var(--surface); border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+#cfg-invoice-design .tc-fp-swatch svg { visibility: hidden; }
+#cfg-invoice-design .tc-fp-swatch[aria-checked="true"] { box-shadow: 0 0 0 2px var(--blue); }
+#cfg-invoice-design .tc-fp-swatch[aria-checked="true"] svg { visibility: visible; }
+#cfg-invoice-design .tc-fp-swatch:focus-visible,
+#cfg-invoice-design .tc-fp-auto:focus-visible,
+#cfg-invoice-design .tc-fp-custom:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+#cfg-invoice-design .tc-fp-custom input[type="color"] {
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%;
+  background: none; cursor: pointer;
+}
+#cfg-invoice-design .tc-fp-custom input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+#cfg-invoice-design .tc-fp-custom input[type="color"]::-webkit-color-swatch { border: 0; border-radius: 50%; }
+
+/* ── Modo día / noche (js/tema.js) ───────────────────────────────────────── */
+.btn-tema {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; padding: 8px 10px; margin-top: 4px;
+  background: none; border: none; border-radius: 8px;
+  color: var(--text-sub); font-size: 13px; font-family: inherit; cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.btn-tema:hover { background: var(--surface2); color: var(--text); }
+
+.login-tema {
+  position: absolute; top: 18px; right: 20px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--text-sub); font-size: 13px; font-weight: 600; font-family: inherit;
+  cursor: pointer; transition: color .15s, border-color .15s;
+}
+.login-tema:hover { color: var(--text); border-color: var(--blue); }
+
+.tema-opciones { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.tema-opcion {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  width: 172px; padding: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface2); color: var(--text);
+  font-family: inherit; text-align: left; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.tema-opcion:hover { border-color: var(--blue); }
+.tema-opcion[aria-checked="true"] {
+  border-color: var(--blue); background: var(--blue-glow);
+  box-shadow: 0 0 0 1px var(--blue);
+}
+.tema-opcion:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.tema-opcion__nombre { font-size: 13px; font-weight: 700; }
+.tema-opcion__desc { font-size: 11.5px; color: var(--text-sub); }
+
+/* Miniatura: menú lateral + dos tarjetas, con los colores de cada modo. */
+.tema-muestra {
+  position: relative; display: block; width: 100%; height: 72px; margin-bottom: 4px;
+  border-radius: 6px; overflow: hidden; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15);
+}
+.tema-muestra i { position: absolute; border-radius: 3px; }
+.tema-muestra i:nth-child(1) { left: 0; top: 0; bottom: 0; width: 30%; border-radius: 0; }
+.tema-muestra i:nth-child(2) { left: 38%; top: 14%; width: 54%; height: 26%; }
+.tema-muestra i:nth-child(3) { left: 38%; top: 52%; width: 54%; height: 34%; }
+.tema-muestra--dia { background: #f3f6fb; }
+.tema-muestra--dia i:nth-child(1) { background: #ffffff; border-right: 1px solid #dbe2ec; }
+.tema-muestra--dia i:nth-child(2) { background: #2563eb; }
+.tema-muestra--dia i:nth-child(3) { background: #ffffff; border: 1px solid #dbe2ec; }
+.tema-muestra--noche { background: #0f1624; }
+.tema-muestra--noche i:nth-child(1) { background: #1a2234; border-right: 1px solid #2c3a54; }
+.tema-muestra--noche i:nth-child(2) { background: #3b82f6; }
+.tema-muestra--noche i:nth-child(3) { background: #1a2234; border: 1px solid #2c3a54; }
+.tema-muestra--auto { background: linear-gradient(135deg, #f3f6fb 0 50%, #0f1624 50% 100%); }
+.tema-muestra--auto i:nth-child(1) { background: linear-gradient(135deg, #ffffff 0 50%, #1a2234 50% 100%); }
+.tema-muestra--auto i:nth-child(2) { background: linear-gradient(90deg, #2563eb, #3b82f6); }
+.tema-muestra--auto i:nth-child(3) { background: linear-gradient(135deg, #ffffff 0 50%, #1a2234 50% 100%); }

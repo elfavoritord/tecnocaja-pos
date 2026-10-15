@@ -141,9 +141,26 @@
       font-size: .64rem;
       color: #1e293b;
     }
+
+    /* Modo día (?tema=dia, lo manda main.js con lo elegido en el portal) */
+    body.dia { background: #f3f6fb; color: #0f172a; }
+    body.dia::before {
+      background:
+        radial-gradient(ellipse at 30% 20%, rgba(37,99,235,.10) 0%, transparent 60%),
+        radial-gradient(ellipse at 70% 80%, rgba(99,102,241,.08) 0%, transparent 60%);
+    }
+    body.dia .logo-text h1 { color: #0f172a; }
+    body.dia .version,
+    body.dia .progress-label { color: #64748b; }
+    body.dia .dots span { background: #64748b; }
+    body.dia .progress-bar { background: rgba(15,23,42,.08); }
+    body.dia .corner { color: #94a3b8; }
   </style>
 </head>
 <body>
+  <script>
+    try { if (new URLSearchParams(location.search).get('tema') === 'dia') document.body.classList.add('dia'); } catch (_) {}
+  </script>
   <div class="logo-wrap">
     <div class="logo-icon" id="splash-logo-icon">🧮</div>
     <div class="logo-text">

@@ -57,10 +57,15 @@ Ok 'GH_TOKEN cargado'
 
 # ── 1. Verificar sintaxis de archivos clave ────────────────────
 Step '1/5' 'Validando sintaxis...'
+# Plantillas de factura A4: copia fresca desde el POS (js/factura-plantillas.js)
+node tecno-caja-contadores/scripts/vendor-sync.js
+if ($LASTEXITCODE -ne 0) { Fail "vendor-sync.js fallo" }
 $checkFiles = @(
   'tecno-caja-contadores/main.js',
   'tecno-caja-contadores/preload.js',
-  'tecno-caja-contadores/server.js'
+  'tecno-caja-contadores/server.js',
+  'tecno-caja-contadores/public/js/factura-plantillas.js',
+  'tecno-caja-contadores/public/js/factura-contador.js'
 )
 foreach ($file in $checkFiles) {
   node --check $file

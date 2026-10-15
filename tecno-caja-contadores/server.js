@@ -12,6 +12,9 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const mailer = require('./mailer');
 const asistente = require('./asistente');
+// Plantillas de la factura A4 (copia de js/factura-plantillas.js del POS):
+// aquí solo se usa para validar la plantilla y el color que se guardan.
+const FacturaPlantillas = require('./public/js/factura-plantillas.js');
 
 // ── Firebase Admin SDK ─────────────────────────────────────────────────────
 let adminSdk = null;
@@ -312,6 +315,7 @@ async function requireAuth(req, res, next) {
         nombre_firma: parentData.nombre_firma || '',
         responsable:  colabData.nombre || '',
         rnc:          colabData.rnc || parentData.rnc || '',
+        direccion:    parentData.direccion || '',
         telefono:     colabData.telefono || '',
         correo:       colabData.email || decoded.email || '',
         logo_url:     parentData.logo_url || null,
@@ -355,6 +359,7 @@ async function requireAuth(req, res, next) {
       nombre_firma: contData.nombre_firma || '',
       responsable: contData.responsable || '',
       rnc:         contData.rnc || '',
+      direccion:   contData.direccion || '',
       telefono:    contData.telefono || '',
       correo:      contData.correo || decoded.email || '',
       logo_url:    contData.logo_url || null,
@@ -452,9 +457,13 @@ app.post('/api/auth/verify', async (req, res) => {
         nombre_firma: parentData.nombre_firma || '',
         responsable:  colabData.nombre || '',
         rnc:          colabData.rnc || parentData.rnc || '',
+        direccion:    parentData.direccion || '',
         telefono:     colabData.telefono || '',
         correo:       colabData.email || decoded.email || '',
         logo_url:     parentData.logo_url || null,
+        // Diseño de la factura del contador principal (Configuración).
+        factura_plantilla: parentData.factura_plantilla || null,
+        factura_color:     parentData.factura_color || null,
         contadorDocId: parentId,
         // Campos exclusivos de colaborador
         isColaborador:     true,
@@ -487,9 +496,12 @@ app.post('/api/auth/verify', async (req, res) => {
       nombre_firma: contData.nombre_firma || '',
       responsable:  contData.responsable  || '',
       rnc:          contData.rnc          || '',
+      direccion:    contData.direccion    || '',
       telefono:     contData.telefono     || '',
       correo:       contData.correo       || decoded.email || '',
       logo_url:     contData.logo_url     || null,
+      factura_plantilla: contData.factura_plantilla || null,
+      factura_color:     contData.factura_color     || null,
       contadorDocId: contDoc.id,
       isColaborador: false,
     });
@@ -1273,6 +1285,14 @@ app.put('/api/perfil', requireAuth, async (req, res) => {
   const updates = {};
   for (const campo of CAMPOS_PERMITIDOS) {
     if (req.body[campo] !== undefined) updates[campo] = req.body[campo] || null;
+  }
+  // Diseño de la factura (Configuración → Diseño de la factura). Una plantilla
+  // desconocida queda en la clásica; un color inválido, en el de la plantilla (null).
+  if (req.body.factura_plantilla !== undefined) {
+    updates.factura_plantilla = FacturaPlantillas.normalizarPlantilla(req.body.factura_plantilla);
+  }
+  if (req.body.factura_color !== undefined) {
+    updates.factura_color = FacturaPlantillas.normalizarColor(req.body.factura_color) || null;
   }
   if (!Object.keys(updates).length) return res.status(400).json({ error: 'No hay campos válidos para actualizar.' });
   // Mismo guardia de tamaño que otros campos base64 guardados en un doc de
@@ -3296,6 +3316,7 @@ async function crearFacturaInterna(req, datos) {
     estado: 'pendiente',
     contador_nombre: req.contador.nombre_firma || req.contador.fullName,
     contador_rnc:    req.contador.rnc,
+    contador_direccion: req.contador.direccion || '',
     contador_tel:    req.contador.telefono,
     contador_correo: req.contador.correo,
     contador_logo:   req.contador.logo_url || null,
@@ -3608,6 +3629,7 @@ app.post('/api/cotizaciones/cotizaciones', requireAuth, async (req, res) => {
       converted_invoice_id: null, converted_at: null,
       contador_nombre: req.contador.nombre_firma || req.contador.fullName,
       contador_rnc:    req.contador.rnc,
+      contador_direccion: req.contador.direccion || '',
       contador_tel:    req.contador.telefono,
       contador_correo: req.contador.correo,
       contador_logo:   req.contador.logo_url || null,

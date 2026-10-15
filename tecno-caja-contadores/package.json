@@ -9,8 +9,9 @@
     "email": "emiliomanaurys@gmail.com"
   },
   "scripts": {
-    "start": "chcp 65001 > nul && ..\\node_modules\\electron\\dist\\electron.exe .",
-    "build": "cd .. && npx electron-builder --config tecno-caja-contadores/electron-builder.yml --win nsis",
+    "vendor-sync": "node scripts/vendor-sync.js",
+    "start": "node scripts/vendor-sync.js && chcp 65001 > nul && ..\\node_modules\\electron\\dist\\electron.exe .",
+    "build": "node scripts/vendor-sync.js && cd .. && npx electron-builder --config tecno-caja-contadores/electron-builder.yml --win nsis",
     "release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\release.ps1 -Bump patch",
     "release:minor": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\release.ps1 -Bump minor",
     "release:major": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\release.ps1 -Bump major"
