@@ -151,6 +151,60 @@ describe('FacturaContador.documentoHtml', () => {
   });
 });
 
+// Cotización como la devuelve GET /api/cotizaciones/cotizaciones/:id
+function cotizacion(overrides = {}) {
+  const { ncf, tipo_ncf, tipo_ncf_label, ncf_vencimiento, monto_pagado, balance, metodo_pago, ...base } = factura();
+  return {
+    ...base,
+    numero: 'COT-000012', validez_dias: 30, fecha_vencimiento: '2026-11-13',
+    condicion_pago: 'contado', notas: 'Incluye cierre fiscal anual.', observacion: '',
+    estado: 'aprobada',
+    ...overrides,
+  };
+}
+
+describe('FacturaContador.aCotizacion / cotizacionHtml', () => {
+  test('número propio, sin NCF, válida hasta y condiciones', () => {
+    const d = FacturaContador.aCotizacion(cotizacion());
+    expect(d.isCot).toBe(true);
+    expect(d.numero).toBe('COT-000012');
+    expect(d.ncf).toBe('');
+    expect(d.vencimientoTexto).toBe('13 de noviembre de 2026');
+    expect(d.condicionPago).toBe('Contado · válida por 30 días');
+    expect(d.notas).toBe('Incluye cierre fiscal anual.');
+    expect(d.empresa.direccion).toBe('Calle Las Flores 5, Santiago');
+  });
+
+  test.each([
+    ['aprobada', 'APROBADA', 'ok', false],
+    ['convertida', 'CONVERTIDA EN FACTURA', 'ok', false],
+    ['vencida', 'VENCIDA', 'bad', false],
+    ['rechazada', 'RECHAZADA', 'bad', true],
+  ])('estado %s', (estado, etiqueta, sello, marca) => {
+    const d = FacturaContador.aCotizacion(cotizacion({ estado }));
+    expect(d.estadoLabel).toBe(etiqueta);
+    expect(d.selloClase).toBe(sello);
+    expect(d.anulada).toBe(marca);
+  });
+
+  test.each(PLANTILLAS)('plantilla %s: COTIZACIÓN con el diseño elegido', (plantilla) => {
+    const html = FacturaContador.cotizacionHtml(cotizacion(), { factura_plantilla: plantilla, factura_color: '#0f766e' });
+    expect(html).toContain(`tcf-tpl-${plantilla}`);
+    expect(html).toContain('--acc:#0f766e');
+    expect(html).toContain('COTIZACIÓN');
+    expect(html).toContain('COT-000012');
+    expect(html).toContain('Cotización de servicios profesionales');
+    expect(html).toContain('TRECE MIL SEISCIENTOS VEINTE PESOS DOMINICANOS CON 00/100');
+    expect(html).not.toContain('Saldo pendiente');
+    expect(html).toContain('@page{size:A4;margin:0}');
+  });
+
+  test('rechazada: marca de agua RECHAZADA', () => {
+    expect(FacturaContador.cotizacionHtml(cotizacion({ estado: 'rechazada' }), {}))
+      .toContain('<div class="tcf-wm">RECHAZADA</div>');
+  });
+});
+
 describe('selector de Configuración', () => {
   // DOM mínimo: solo lo que usa sincronizarSelector.
   function domFalso(ids, valores = {}) {

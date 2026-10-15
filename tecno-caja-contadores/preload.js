@@ -20,8 +20,8 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
   renderInvoicePdf(html) {
     return ipcRenderer.invoke('report:render-pdf', { html, landscape: false, noMargins: true });
   },
-  previewPrint(html) {
-    return ipcRenderer.invoke('report:preview-print', { html });
+  previewPrint(html, title, filename) {
+    return ipcRenderer.invoke('report:preview-print', { html, title, filename });
   },
 
   // ── Perfil (caché local para el splash pre-login) ──────────────────────────

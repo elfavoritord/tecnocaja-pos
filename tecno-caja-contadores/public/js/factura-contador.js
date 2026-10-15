@@ -1,8 +1,9 @@
 'use strict';
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Factura del contador (Facturación) → plantillas A4 del POS
-   (public/js/factura-plantillas.js, copia de js/factura-plantillas.js).
+   Factura y cotización del contador (Facturación y Cotizaciones) →
+   plantillas A4 del POS (public/js/factura-plantillas.js, copia de
+   js/factura-plantillas.js).
 
    - La plantilla y el color se eligen en Configuración → Diseño de la factura
      y se guardan en el perfil (factura_plantilla, factura_color).
@@ -21,6 +22,7 @@
   }
 
   const ESTADOS = { pendiente: 'PENDIENTE DE PAGO', parcial: 'PAGO PARCIAL', pagada: 'PAGADA', anulada: 'ANULADA' };
+  const ESTADOS_COT = { aprobada: 'APROBADA', rechazada: 'RECHAZADA', vencida: 'VENCIDA', convertida: 'CONVERTIDA EN FACTURA' };
   const METODOS = {
     efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta',
     cheque: 'Cheque', deposito: 'Depósito', otro: 'Otro',
@@ -30,6 +32,7 @@
   const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto',
     'septiembre', 'octubre', 'noviembre', 'diciembre'];
   const PIE = 'Factura por servicios profesionales. Documento generado electrónicamente; válido sin firma ni sello. Gracias por su preferencia.';
+  const PIE_COT = 'Cotización de servicios profesionales. Documento generado electrónicamente; válido sin firma ni sello. Precios sujetos a cambio después de la fecha de vencimiento.';
 
   const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -66,29 +69,11 @@
   // Valor guardado en la factura; si la factura no lo trae (null/undefined), el del perfil.
   const dato = (deFactura, dePerfil) => String(deFactura ?? dePerfil ?? '');
 
-  /**
-   * Datos que espera FacturaPlantillas.render.
-   * @param {object} f       factura de GET /api/facturacion/facturas/:id
-   * @param {object} perfil  perfil del contador (para lo que la factura no trae)
-   */
-  function aDocumento(f = {}, perfil = {}) {
-    const estado = String(f.estado || 'pendiente').toLowerCase();
-    const anulada = estado === 'anulada';
-    const total = Number(f.total || 0);
-    const pagado = Number(f.monto_pagado || 0);
-    const balance = f.balance != null ? Number(f.balance) : Math.max(0, r2(total - pagado));
-    const tipo = String(f.tipo_ncf || '').toUpperCase();
+  // Emisor, cliente, líneas y totales: iguales en la factura y la cotización
+  // (las dos se guardan con los mismos campos y computeFacturaItems).
+  function partesComunes(f, perfil) {
     const cli = f.cliente || {};
-    const condicion = CONDICIONES[f.condicion_pago] || String(f.condicion_pago || 'Contado');
-
     return {
-      titulo: TITULOS[tipo] || '',
-      isCot: false,
-      anulada,
-      selloClase: anulada ? 'bad' : (estado === 'pagada' ? 'ok' : 'warn'),
-      estadoLabel: ESTADOS[estado] || estado.toUpperCase(),
-      pagado,
-      balance,
       empresa: {
         nombre: dato(f.contador_nombre, perfil.nombre_firma),
         rnc: dato(f.contador_rnc, perfil.rnc),
@@ -97,14 +82,8 @@
         correo: dato(f.contador_correo, perfil.correo),
         logo: dato(f.contador_logo, perfil.logo_url),
       },
-      numero: '',
-      ncf: ncfTexto(f.ncf),
       fiscalMode: 'ncf',
-      ncfTipoLabel: tipo ? `${tipo}${f.tipo_ncf_label ? ' — ' + f.tipo_ncf_label : ''}` : '',
       fechaTexto: fechaLarga(f.fecha),
-      vencimientoTexto: fechaLarga(f.ncf_vencimiento),
-      metodoPago: METODOS[f.metodo_pago] || String(f.metodo_pago || ''),
-      condicionPago: condicion + (f.fecha_vencimiento ? ` · vence ${fechaLarga(f.fecha_vencimiento)}` : ''),
       cajero: '',
       cliente: {
         nombre: cli.nombre || '—',
@@ -134,12 +113,72 @@
       descuento: Number(f.descuento_total || 0),
       itbis: Number(f.itbis_total || 0),
       redondeo: 0,
-      total,
+      total: Number(f.total || 0),
       mensaje: '',
+      firmas: null,
+    };
+  }
+
+  /**
+   * Factura → datos que espera FacturaPlantillas.render.
+   * @param {object} f       factura de GET /api/facturacion/facturas/:id
+   * @param {object} perfil  perfil del contador (para lo que la factura no trae)
+   */
+  function aDocumento(f = {}, perfil = {}) {
+    const estado = String(f.estado || 'pendiente').toLowerCase();
+    const anulada = estado === 'anulada';
+    const total = Number(f.total || 0);
+    const pagado = Number(f.monto_pagado || 0);
+    const tipo = String(f.tipo_ncf || '').toUpperCase();
+    const condicion = CONDICIONES[f.condicion_pago] || String(f.condicion_pago || 'Contado');
+    return {
+      ...partesComunes(f, perfil),
+      titulo: TITULOS[tipo] || '',
+      isCot: false,
+      anulada,
+      selloClase: anulada ? 'bad' : (estado === 'pagada' ? 'ok' : 'warn'),
+      estadoLabel: ESTADOS[estado] || estado.toUpperCase(),
+      pagado,
+      balance: f.balance != null ? Number(f.balance) : Math.max(0, r2(total - pagado)),
+      numero: '',
+      ncf: ncfTexto(f.ncf),
+      ncfTipoLabel: tipo ? `${tipo}${f.tipo_ncf_label ? ' — ' + f.tipo_ncf_label : ''}` : '',
+      vencimientoTexto: fechaLarga(f.ncf_vencimiento),
+      metodoPago: METODOS[f.metodo_pago] || String(f.metodo_pago || ''),
+      condicionPago: condicion + (f.fecha_vencimiento ? ` · vence ${fechaLarga(f.fecha_vencimiento)}` : ''),
       notasTitulo: 'Observación',
       notas: String(f.observacion || '').trim(),
-      firmas: null,
       pie: PIE,
+    };
+  }
+
+  /**
+   * Cotización (módulo Cotizaciones) → datos de FacturaPlantillas.render.
+   * Sin NCF: el número es el de la cotización (COT-…). Una rechazada sale con
+   * marca de agua, como en el modo Empresa de Servicios.
+   */
+  function aCotizacion(c = {}, perfil = {}) {
+    const estado = String(c.estado || 'aprobada').toLowerCase();
+    const dias = Number(c.validez_dias) || 0;
+    const condicion = CONDICIONES[c.condicion_pago] || String(c.condicion_pago || 'Contado');
+    return {
+      ...partesComunes(c, perfil),
+      isCot: true,
+      anulada: estado === 'rechazada',
+      marcaAgua: 'RECHAZADA',
+      selloClase: ['rechazada', 'vencida'].includes(estado) ? 'bad' : 'ok',
+      estadoLabel: ESTADOS_COT[estado] || estado.toUpperCase(),
+      pagado: 0,
+      balance: 0,
+      numero: String(c.numero || ''),
+      ncf: '',
+      ncfTipoLabel: '',
+      vencimientoTexto: fechaLarga(c.fecha_vencimiento),
+      metodoPago: '',
+      condicionPago: condicion + (dias ? ` · válida por ${dias} días` : ''),
+      notasTitulo: 'Condiciones / Notas',
+      notas: [c.notas, c.observacion].map((x) => String(x || '').trim()).filter(Boolean).join('\n\n'),
+      pie: PIE_COT,
     };
   }
 
@@ -147,17 +186,23 @@
     return { plantilla: perfil.factura_plantilla, color: perfil.factura_color };
   }
 
-  /**
-   * Documento HTML completo (vista previa, impresión, PDF y adjunto del correo).
-   * @page sin márgenes: la hoja de la plantilla ya trae los suyos.
-   */
-  function documentoHtml(f, perfil = {}) {
+  // Documento HTML completo (vista previa, impresión, PDF y adjunto del
+  // correo). @page sin márgenes: la hoja de la plantilla ya trae los suyos.
+  function hojaCompleta(titulo, datos, perfil) {
     const FP = plantillas();
-    const hoja = FP.render(aDocumento(f, perfil), disenoDe(perfil));
+    const hoja = FP.render(datos, disenoDe(perfil));
     return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-<title>Factura ${esc(ncfTexto(f.ncf))}</title>
+<title>${esc(titulo)}</title>
 <style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#eef1f4}@media print{html,body{background:#fff}}</style>
 </head><body>${hoja}${FP.scriptUnaHoja()}</body></html>`;
+  }
+
+  function documentoHtml(f, perfil = {}) {
+    return hojaCompleta(`Factura ${ncfTexto(f.ncf)}`, aDocumento(f, perfil), perfil);
+  }
+
+  function cotizacionHtml(c, perfil = {}) {
+    return hojaCompleta(`Cotización ${c.numero || ''}`, aCotizacion(c, perfil), perfil);
   }
 
   // Factura de ejemplo para las miniaturas de Configuración (servicios
@@ -189,7 +234,7 @@
     });
   }
 
-  const api = { aDocumento, documentoHtml, documentoDeMuestra, ncfTexto, fechaLarga };
+  const api = { aDocumento, aCotizacion, documentoHtml, cotizacionHtml, documentoDeMuestra, ncfTexto, fechaLarga };
 
   global.FacturaContador = api;
   if (typeof module !== 'undefined' && module.exports) {
