@@ -6310,10 +6310,22 @@ async function generateReceiptPdf(venta, options = {}) {
   const items = Array.isArray(venta.items) ? venta.items : [];
   const paperVariant = getReceiptPaperVariant();
   const isA4Landscape = paperVariant === 'a4';
+  // e-CF: el PDF también lleva el QR, el código de seguridad y la fecha de
+  // firma, como el ticket impreso y la factura A4.
+  let qrDataUrl = '';
+  if (isElectronicReceipt(venta)) {
+    try {
+      qrDataUrl = (await ensureReceiptQrData(venta)) || '';
+    } catch (_error) {
+      qrDataUrl = '';
+    }
+  }
+  const securityLines = getReceiptEcfSecurityLines(venta);
+  const qrBlockHeight = (qrDataUrl ? 130 : 0) + (securityLines.length * 12) + ((qrDataUrl || securityLines.length) ? 12 : 0);
   const pageWidth = isA4Landscape ? 842 : 315;
-  const pageHeight = isA4Landscape
+  const pageHeight = qrBlockHeight + (isA4Landscape
     ? Math.max(595, 430 + (items.length * 24) + (venta.notasPedido ? 28 : 0) + (venta.direccionDelivery ? 24 : 0))
-    : Math.max(560, 410 + (items.length * 42) + (venta.notasPedido ? 40 : 0) + (venta.direccionDelivery ? 34 : 0));
+    : Math.max(560, 410 + (items.length * 42) + (venta.notasPedido ? 40 : 0) + (venta.direccionDelivery ? 34 : 0)));
   const doc = new jsPdfApi({ unit: 'pt', format: [pageWidth, pageHeight] });
   const margin = isA4Landscape ? 34 : 22;
   let y = 28;
@@ -6375,9 +6387,9 @@ async function generateReceiptPdf(venta, options = {}) {
   drawKeyValue('Cocina:', venta.estadoCocina || 'pendiente');
   drawKeyValue('Fecha:', venta.fecha);
   drawKeyValue('Cajero:', venta.cajero);
-  drawKeyValue('Cliente:', venta.cliente);
+  drawKeyValue('Cliente:', venta.razonSocialCliente || venta.cliente);
   if (venta.clienteTelefono) drawKeyValue('Teléfono:', venta.clienteTelefono);
-  if (venta.clienteRncCedula) drawKeyValue('RNC / Céd.:', venta.clienteRncCedula);
+  if (venta.clienteRncCedula || venta.rncCliente) drawKeyValue('RNC / Céd.:', venta.clienteRncCedula || venta.rncCliente);
   if (venta.direccionDelivery) drawKeyValue('Dirección:', venta.direccionDelivery);
   if (venta.tipoPedido === 'delivery' && venta.metodo === 'contra_entrega' && Number(venta.montoClienteEntrega || 0) > 0) {
     drawKeyValue('Cliente paga con:', fmt(Number(venta.montoClienteEntrega || 0)));
@@ -6420,6 +6432,20 @@ async function generateReceiptPdf(venta, options = {}) {
   drawKeyValue('Cambio:', fmt(venta.cambio), false);
   drawKeyValue('Método:', SALE_PAYMENT_TYPES[venta.metodo] || 'Efectivo', false);
 
+  if (qrDataUrl || securityLines.length) {
+    y += 6;
+    if (qrDataUrl) {
+      doc.addImage(qrDataUrl, 'PNG', (pageWidth - 120) / 2, y, 120, 120);
+      y += 130;
+    }
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    securityLines.forEach((line) => {
+      doc.text(line, pageWidth / 2, y, { align: 'center' });
+      y += 12;
+    });
+  }
+
   y += 4;
   drawDivider();
   doc.setFont('helvetica', 'normal');
@@ -6453,7 +6479,7 @@ async function renderReceiptQr(venta) {
     qrBox.innerHTML = dataUrl
       ? `
         <img src="${dataUrl}" alt="Código QR de factura electrónica">
-        <small>Escaneo de verificación DGII para ${getElectronicReceiptNumber(venta) || getReceiptInvoiceId(venta)}</small>
+        ${buildReceiptQrCaptionMarkup(venta)}
       `
       : '<small>DGII aún no ha confirmado este e-CF — el QR aparecerá cuando esté aceptado.</small>';
   } catch (_error) {
@@ -7537,6 +7563,10 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
   const logoDataUrl = getReceiptConfigValue('logo') || '';
   const maxLogoPx = normalizedPaperSize === '58mm' ? 280 : 400;
   const logoMono = logoDataUrl ? await convertLogoToEscposMonochrome(logoDataUrl, maxLogoPx) : null;
+  // Mismas filas que el ticket en pantalla (getReceiptTemplateData y
+  // buildThermal*Rows): electron/thermal-printer.js las imprime tal cual.
+  const templateData = getReceiptTemplateData(venta);
+  const header = getThermalDocumentHeader(venta);
 
   return {
     negocio: {
@@ -7558,15 +7588,19 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       metodo: normalizeReceiptText(SALE_PAYMENT_TYPES[venta?.metodo] || venta?.metodo || 'Efectivo'),
       ncf: normalizeReceiptText(venta?.encf || venta?.ncf || ''),
       ncfVencimiento: normalizeReceiptText(venta?.ncfVencimiento || ''),
-      items: (venta?.items || []).map((item) => ({
+      items: (venta?.items || []).map((item, index) => ({
         cantidad: Number(item?.qty || item?.cantidad || 1),
         cantidadTexto: formatReceiptSaleItemQuantity(item, { compactUnit: true }),
         descripcion: normalizeReceiptText(item?.nombre || item?.descripcion || ''),
         subtotal: Number(item?.subtotal ?? item?.total ?? ((Number(item?.precio || 0) * Number(item?.qty || item?.cantidad || 1)) || 0)),
         precio: Number(item?.precio || 0),
+        itbisTexto: templateData.normalizedItems[index] ? getThermalItemItbisText(templateData.normalizedItems[index]) : '',
         variante: normalizeReceiptText(item?.variante || ''),
         notas: normalizeReceiptText(item?.notas || '')
       })),
+      filasDetalle: templateData.detailRows.map(([label, value]) => [String(label), normalizeReceiptText(value)]),
+      filasResumen: buildThermalSummaryRows(venta),
+      filasPago: buildThermalPaymentRows(venta),
       subtotal: Number(venta?.subtotal || 0),
       subtotalGravado: Number(venta?.subtotalGravado || 0),
       subtotalExento: Number(venta?.subtotalExento || 0),
@@ -7580,8 +7614,8 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       paymentCurrency: String(venta?.paymentCurrency || 'DOP'),
       usdAmountReceived: Number(venta?.usdAmountReceived || 0),
       exchangeRateUsed: Number(venta?.exchangeRateUsed || 0),
-      documentTitle: normalizeReceiptText(venta?.receiptDocumentTitle || ''),
-      documentNumber: normalizeReceiptText(venta?.receiptDocumentNumber || ''),
+      documentTitle: header.title,
+      documentNumber: header.number,
       dataSectionTitle: normalizeReceiptText(venta?.receiptDataSectionTitle || ''),
       primaryLabel: normalizeReceiptText(venta?.receiptPrimaryLabel || ''),
       methodRowLabel: normalizeReceiptText(venta?.receiptMethodRowLabel || '')
@@ -7593,6 +7627,7 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       abrirGaveta: false,
       mostrarQR: Boolean(qrData),
       qrData,
+      seguridadEcf: getReceiptEcfSecurityLines(venta),
       mensaje: normalizeReceiptText(venta?.receiptFooterMessageOverride || getReceiptConfigValue('mensaje') || 'Gracias por su compra.'),
       currency: getReceiptConfigValue('moneda') || 'RD$'
     }
@@ -7938,8 +7973,9 @@ function getReceiptTemplateData(venta) {
     ...(venta.tipoEcf ? [['Tipo e-CF', venta.tipoEcf]] : []),
     ['Fecha', formatReceiptDateForPaper(venta.fecha, paperVariant)],
     ['Cajero', normalizeReceiptText(venta.cajero || 'Sistema')],
-    ['Cliente', normalizeReceiptText(venta.cliente || 'Consumidor Final')],
-    ...(venta.clienteRncCedula ? [['RNC / Cédula', normalizeReceiptText(venta.clienteRncCedula)]] : []),
+    // Razón social primero (B01), como en la factura A4.
+    ['Cliente', normalizeReceiptText(venta.razonSocialCliente || venta.cliente || 'Consumidor Final')],
+    ...((venta.clienteRncCedula || venta.rncCliente) ? [['RNC / Cédula', normalizeReceiptText(venta.clienteRncCedula || venta.rncCliente)]] : []),
     ...(dgiiStatus ? [['Estado DGII', dgiiStatus]] : []),
     [methodRowLabel, metodoLabel],
     ...(pendienteCredito > 0 ? [['Pendiente', Number(pendienteCredito).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })]] : []),
@@ -8130,10 +8166,16 @@ function buildThermalKeyValueLines(label, value, width, labelWidth) {
   });
 }
 
+// Columna ITBIS del ticket 58/80 mm (la misma en pantalla y en ESC/POS).
+function getThermalItemItbisText(item) {
+  if (item.itbisModo === 'monto') {
+    return Number(item.itbisMontoUnit || 0) > 0 ? Number(item.itbisMontoUnit).toFixed(2) : '';
+  }
+  return Number(item.itbisRate || 0) > 0 ? `${Number(item.itbisRate).toFixed(0)}%` : '';
+}
+
 function buildThermalItemLines(items, width, paperVariant) {
-  const hasAnyItbis = items.some((item) => (
-    item.itbisModo === 'monto' ? Number(item.itbisMontoUnit || 0) > 0 : Number(item.itbisRate || 0) > 0
-  ));
+  const hasAnyItbis = items.some((item) => Boolean(getThermalItemItbisText(item)));
   const columns = paperVariant === '58mm'
     ? { name: hasAnyItbis ? 7 : 10, itbis: 4, qty: 2, price: 7, total: 7, qtyLabel: 'C', priceLabel: 'VALOR', totalLabel: 'TOTAL' }
     : { name: hasAnyItbis ? 12 : 17, itbis: 5, qty: 4, price: 8, total: hasAnyItbis ? 9 : 10, qtyLabel: 'CANT', priceLabel: 'VALOR', totalLabel: 'TOTAL' };
@@ -8150,10 +8192,7 @@ function buildThermalItemLines(items, width, paperVariant) {
 
   items.forEach((item) => {
     const nameLines = wrapThermalText(item.nombre, columns.name, paperVariant === '58mm' ? 3 : 4);
-    const itbisColText = item.itbisModo === 'monto'
-      ? (Number(item.itbisMontoUnit || 0) > 0 ? Number(item.itbisMontoUnit).toFixed(2) : '')
-      : (Number(item.itbisRate || 0) > 0 ? `${Number(item.itbisRate).toFixed(0)}%` : '');
-    const itbisCol = hasAnyItbis ? ` ${padThermalLeft(itbisColText, columns.itbis)}` : '';
+    const itbisCol = hasAnyItbis ? ` ${padThermalLeft(getThermalItemItbisText(item), columns.itbis)}` : '';
     const qty = padThermalLeft(fmtQty(item), columns.qty);
     const price = padThermalLeft(fmtAmount(item.precio), columns.price);
     const total = padThermalLeft(fmtAmount(item.total), columns.total);
@@ -8165,6 +8204,86 @@ function buildThermalItemLines(items, width, paperVariant) {
   });
 
   return lines.map((line) => String(line || '').slice(0, Math.max(0, Number(width) || 0)));
+}
+
+// ─── Datos del ticket 58/80 mm ───────────────────────────────────────────────
+// El ticket sale por tres caminos: el HTML (pantalla, imagen de WhatsApp e
+// impresión con diálogo), ESC/POS (impresión directa a la térmica, lo arma
+// electron/thermal-printer.js) y el PDF. Estas funciones arman los datos una
+// sola vez para que los tres muestren lo mismo.
+
+function formatThermalAmount(value) {
+  return Number(value || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function getThermalDocumentHeader(venta) {
+  const electronic = isElectronicReceipt(venta);
+  const factura = getReceiptDisplayNumber(venta);
+  return {
+    title: normalizeReceiptText(venta.receiptDocumentTitle || (electronic ? 'FACTURA ELECTRONICA' : 'FACTURA DE VENTA')),
+    number: normalizeReceiptText(
+      venta.receiptDocumentNumber
+      || (electronic ? `eNCF ${getElectronicReceiptNumber(venta) || factura}` : `Factura ${factura}`)
+    ),
+    fiscalState: normalizeReceiptText(venta.estadoDgii || venta.estadoFiscal)
+  };
+}
+
+// Subtotal, gravado/exento, descuento, ITBIS, redondeo y ahorro, sin "RD$".
+function buildThermalSummaryRows(venta) {
+  return buildReceiptSummaryRows(venta).map(([label, value]) => [label, formatThermalAmount(parseFmt(String(value || 0)))]);
+}
+
+// Filas que van después del TOTAL: crédito, pago mixto, dólares o devuelta.
+// [etiqueta, valor, variante] — la variante 'total'/'meta-strong' va resaltada.
+function buildThermalPaymentRows(venta) {
+  const rows = [];
+  if (venta.metodo === 'credito' && !isCreditFullyPaid(venta)) {
+    const pendiente = Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0));
+    const abonado = Number(venta.recibido || 0);
+    if (abonado > 0) rows.push(['Abonado', formatThermalAmount(abonado)]);
+    rows.push(['PENDIENTE', formatThermalAmount(pendiente), 'meta-strong']);
+    rows.push(['Método', 'A CRÉDITO']);
+  } else if (venta.metodo === 'credito') {
+    rows.push(['Pagado', formatThermalAmount(venta.recibido)]);
+    rows.push(['Método', 'CRÉDITO — PAGADO']);
+  } else if (venta.metodo === 'mixto') {
+    if (Number(venta.montoTarjeta || 0) > 0) rows.push(['Tarjeta', formatThermalAmount(venta.montoTarjeta)]);
+    if (Number(venta.montoEfectivo || 0) > 0) rows.push(['Efectivo', formatThermalAmount(venta.montoEfectivo)]);
+    if (Number(venta.cambio || 0) > 0) rows.push(['Cambio', formatThermalAmount(venta.cambio)]);
+    rows.push(['Método', 'Mixto (Tarjeta + Efectivo)']);
+  } else if (venta.paymentCurrency === 'USD') {
+    // Fase 3 multi-moneda: monto cobrado en US$ y su equivalente/vuelto en RD$
+    rows.push(['Recibido US$', Number(venta.usdAmountReceived || 0).toFixed(2)]);
+    if (Number(venta.exchangeRateUsed || 0) > 0) rows.push(['Tasa US$', Number(venta.exchangeRateUsed).toFixed(4)]);
+    rows.push(['Recibido RD$', formatThermalAmount(venta.recibido)]);
+    if (Number(venta.cambio || 0) > 0) rows.push(['Devuelta RD$', formatThermalAmount(venta.cambio), 'total']);
+  } else if (Number(venta.cambio || 0) > 0) {
+    // Recibido y devuelta solo cuando el cliente pagó más del total
+    rows.push(['Recibido', formatThermalAmount(venta.recibido)]);
+    rows.push(['Devuelta', formatThermalAmount(venta.cambio), 'total']);
+  }
+  return rows;
+}
+
+// e-CF: código de seguridad y fecha de firma debajo del QR (representación
+// impresa DGII), igual que en la factura A4. "Fecha firma: dd-mm-aaaa hh:mm:ss"
+// mide 32 caracteres: cabe en una línea del ticket de 58 mm.
+function getReceiptEcfSecurityLines(venta) {
+  if (!isElectronicReceipt(venta)) return [];
+  const { codigoSeguridad, fechaFirma } = getReceiptEcfSecurityData(venta);
+  return [
+    codigoSeguridad ? `Código de seguridad: ${codigoSeguridad}` : '',
+    fechaFirma ? `Fecha firma: ${fechaFirma}` : ''
+  ].filter(Boolean);
+}
+
+function buildReceiptQrCaptionMarkup(venta) {
+  const lines = [
+    ...getReceiptEcfSecurityLines(venta),
+    `Escaneo de verificación DGII para ${getElectronicReceiptNumber(venta) || getReceiptInvoiceId(venta)}`
+  ];
+  return lines.map((line) => `<small>${escapeReceiptHtml(line)}</small>`).join('');
 }
 
 function getA4ReceiptPalette(venta) {
@@ -8333,25 +8452,13 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
 }
 
 function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
-  const { cfg, factura, detailRows, normalizedItems, receiptSimpleMode } = templateData;
-  const fmtThermal = (value) => Number(value || 0).toLocaleString('es-DO', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  });
+  const { cfg, detailRows, normalizedItems } = templateData;
   const businessLines = [
     cfg.rnc ? `RNC: ${normalizeReceiptText(cfg.rnc)}` : '',
     normalizeReceiptText(cfg.direccion),
     cfg.telefono ? `Tel: ${normalizeReceiptText(cfg.telefono)}` : ''
   ].filter(Boolean);
-  const documentTitle = normalizeReceiptText(
-    venta.receiptDocumentTitle
-    || (isElectronicReceipt(venta) ? 'FACTURA ELECTRONICA' : 'FACTURA DE VENTA')
-  );
-  const documentNumber = normalizeReceiptText(
-    venta.receiptDocumentNumber
-    || (isElectronicReceipt(venta) ? `eNCF ${getElectronicReceiptNumber(venta) || factura}` : `Factura ${factura}`)
-  );
-  const fiscalState = normalizeReceiptText(venta.estadoDgii || venta.estadoFiscal);
+  const { title: documentTitle, number: documentNumber, fiscalState } = getThermalDocumentHeader(venta);
   const paperVariant = getReceiptPaperVariant();
   const totalWidth = getThermalReceiptCharWidth(paperVariant);
   const labelWidth = paperVariant === '58mm' ? 8 : 10;
@@ -8390,50 +8497,14 @@ function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
     pushMonoLines(itemLines.slice(1));
   }
   pushMonoLine(divider, 'divider');
-  buildReceiptSummaryRows(venta).forEach(([label, value]) => {
-    pushSummaryLine(label, fmtThermal(parseFmt(String(value || 0))));
+  buildThermalSummaryRows(venta).forEach(([label, value]) => {
+    pushSummaryLine(label, value);
   });
   pushMonoLine(strongDivider, 'divider-strong');
-  pushSummaryLine('TOTAL', fmtThermal(venta.total), 'total');
-  if (venta.metodo === 'credito' && !isCreditFullyPaid(venta)) {
-    const pendiente = Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0));
-    const abonado = Number(venta.recibido || 0);
-    if (abonado > 0) pushSummaryLine('Abonado', fmtThermal(abonado));
-    pushSummaryLine('PENDIENTE', fmtThermal(pendiente), 'meta-strong');
-    pushSummaryLine('Método', 'A CRÉDITO');
-  } else if (venta.metodo === 'credito') {
-    pushSummaryLine('Pagado', fmtThermal(venta.recibido));
-    pushSummaryLine('Método', 'CRÉDITO — PAGADO');
-  } else if (venta.metodo === 'mixto') {
-    if (Number(venta.montoTarjeta || 0) > 0) {
-      pushSummaryLine('Tarjeta', fmtThermal(venta.montoTarjeta));
-    }
-    if (Number(venta.montoEfectivo || 0) > 0) {
-      pushSummaryLine('Efectivo', fmtThermal(venta.montoEfectivo));
-    }
-    if (Number(venta.cambio || 0) > 0) {
-      pushSummaryLine('Cambio', fmtThermal(venta.cambio));
-    }
-    pushSummaryLine('Método', 'Mixto (Tarjeta + Efectivo)');
-  } else if (venta.paymentCurrency === 'USD') {
-    // Fase 3 multi-moneda: mostrar monto cobrado en US$ y su equivalente/vuelto en RD$
-    const usdRecibidoAmt = Number(venta.usdAmountReceived || 0);
-    const recibidoAmt = Number(venta.recibido || 0);
-    const cambioAmt   = Number(venta.cambio   || 0);
-    pushSummaryLine('Recibido US$', usdRecibidoAmt.toFixed(2));
-    pushSummaryLine('Recibido RD$', fmtThermal(recibidoAmt));
-    if (cambioAmt > 0) {
-      pushSummaryLine('Devuelta RD$', fmtThermal(cambioAmt), 'total');
-    }
-  } else {
-    // Mostrar recibido y devuelta cuando el cliente pagó más del total
-    const recibidoAmt = Number(venta.recibido || 0);
-    const cambioAmt   = Number(venta.cambio   || 0);
-    if (cambioAmt > 0) {
-      pushSummaryLine('Recibido', fmtThermal(recibidoAmt));
-      pushSummaryLine('Devuelta', fmtThermal(cambioAmt), 'total');
-    }
-  }
+  pushSummaryLine('TOTAL', formatThermalAmount(venta.total), 'total');
+  buildThermalPaymentRows(venta).forEach(([label, value, variant]) => {
+    pushSummaryLine(label, value, variant);
+  });
   const footerMessage = venta.receiptFooterMessageOverride || cfg.mensaje;
   if (footerMessage) {
     pushMonoLine('', 'spacer');
@@ -8457,124 +8528,25 @@ function buildThermalReceiptSheetMarkup(venta, templateData, qrMarkup) {
 // ─── Factura A4 moderna ──────────────────────────────────────────────────────
 // Mismo diseño formal del modo Empresa de Servicios (server/routes/servicios/
 // renderDoc.js → renderFormalA4), portado al navegador y adaptado a la venta del
-// POS. TODOS los selectores CSS cuelgan de .tcfac-root para poder inyectar el
-// bloque por innerHTML en el modal sin filtrar estilos al resto del app.
-// Decisión de Emilio (v1.3.29): toda venta usa esta factura, aunque el negocio
-// tenga impresora térmica. El ticket 58/80 mm queda en el archivo sin usar.
-const FAC_U = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE', 'DIEZ',
-  'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISÉIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE'];
-const FAC_D = ['', '', 'VEINTE', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
-const FAC_C = ['', 'CIENTO', 'DOSCIENTOS', 'TRESCIENTOS', 'CUATROCIENTOS', 'QUINIENTOS', 'SEISCIENTOS', 'SETECIENTOS', 'OCHOCIENTOS', 'NOVECIENTOS'];
+// POS. Aquí se arman los datos de la venta; el dibujo (plantilla y color de
+// Configuración → Impresora de Recibos) está en js/factura-plantillas.js.
+// Decisión de Emilio (v1.3.29): con papel "Carta / A4" toda venta usa esta
+// factura; con 58/80 mm sale el ticket térmico.
 
-function facSeccion(n) {
-  if (n === 0) return '';
-  if (n < 20) return FAC_U[n];
-  if (n < 100) {
-    const d = Math.floor(n / 10); const u = n % 10;
-    if (n === 20) return 'VEINTE';
-    if (d === 2) return 'VEINTI' + FAC_U[u];
-    return FAC_D[d] + (u ? ' Y ' + FAC_U[u] : '');
+// Código de seguridad y fecha de firma del e-CF para la representación
+// impresa. Se toman de la URL del QR (venta.qrUrl), que el backend arma con el
+// XML firmado: así coinciden con lo que DGII verifica. Sin QR no se muestran.
+function getReceiptEcfSecurityData(venta) {
+  try {
+    const url = new URL(String(venta?.qrUrl || ''));
+    return {
+      codigoSeguridad: url.searchParams.get('CodigoSeguridad') || '',
+      fechaFirma: url.searchParams.get('FechaFirma') || ''
+    };
+  } catch (_error) {
+    return { codigoSeguridad: '', fechaFirma: '' };
   }
-  if (n === 100) return 'CIEN';
-  const c = Math.floor(n / 100); const r = n % 100;
-  return FAC_C[c] + (r ? ' ' + facSeccion(r) : '');
 }
-
-function facMontoEnLetras(valor) {
-  const num = Math.floor(Math.abs(Number(valor) || 0));
-  const cent = Math.round((Math.abs(Number(valor) || 0) - num) * 100);
-  let palabras;
-  if (num === 0) palabras = 'CERO';
-  else {
-    const mill = Math.floor(num / 1000000);
-    const miles = Math.floor((num % 1000000) / 1000);
-    const resto = num % 1000;
-    const p = [];
-    if (mill) p.push(mill === 1 ? 'UN MILLÓN' : facSeccion(mill) + ' MILLONES');
-    if (miles) p.push(miles === 1 ? 'MIL' : facSeccion(miles) + ' MIL');
-    if (resto) p.push(facSeccion(resto));
-    palabras = p.join(' ').trim() || 'CERO';
-  }
-  return `${palabras} PESOS DOMINICANOS CON ${String(cent).padStart(2, '0')}/100`;
-}
-
-function facMoney(n) {
-  return 'RD$ ' + (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-const FORMAL_INVOICE_CSS = `
-.tcfac-root{ display:block; background:#eef1f4; padding:14px; overflow:visible;
-  font-family:"Segoe UI","Helvetica Neue",Arial,sans-serif; color:#1f2937; }
-.tcfac-root *{ margin:0; padding:0; box-sizing:border-box; }
-.tcfac-root .tcf-page{ position:relative; width:210mm; min-height:297mm; margin:0 auto;
-  padding:16mm 18mm; background:#fff; overflow:hidden; font-size:10.5px; color:#1f2937;
-  -webkit-print-color-adjust:exact; print-color-adjust:exact; box-shadow:0 1px 8px rgba(0,0,0,.14); }
-.tcfac-root .tcf-wm{ position:absolute; top:45%; left:50%;
-  transform:translate(-50%,-50%) rotate(-24deg); font-size:110px; font-weight:800;
-  letter-spacing:6px; white-space:nowrap; color:rgba(220,38,38,.09); pointer-events:none; z-index:0; }
-.tcfac-root .tcf-content{ position:relative; z-index:1; }
-.tcfac-root .tcf-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:14mm; padding-bottom:6mm; }
-.tcfac-root .tcf-logo{ max-height:26mm; max-width:70mm; display:block; margin-bottom:3mm; }
-.tcfac-root .tcf-brand-fallback{ font-size:20px; font-weight:800; color:#15803d; letter-spacing:.5px; margin-bottom:3mm; }
-.tcfac-root .tcf-em{ font-size:9.5px; line-height:1.5; color:#4b5563; }
-.tcfac-root .tcf-em strong{ color:#1f2937; }
-.tcfac-root .tcf-doc{ text-align:right; min-width:62mm; }
-.tcfac-root .tcf-title{ font-size:24px; font-weight:800; letter-spacing:4px; color:#15803d; line-height:1; }
-.tcfac-root .tcf-chip{ display:inline-block; margin-top:3mm; padding:2mm 3mm; border:1.5px solid #15803d;
-  border-radius:3px; font-size:12px; font-weight:800; letter-spacing:.5px; color:#111827; }
-.tcfac-root .tcf-chip span{ color:#15803d; font-weight:700; letter-spacing:1px; margin-right:1.5mm; }
-.tcfac-root .tcf-meta{ margin-top:4mm; font-size:10px; line-height:1.7; color:#374151; }
-.tcfac-root .tcf-meta b{ color:#111827; }
-.tcfac-root .tcf-stamp{ display:inline-block; margin-top:3mm; padding:3px 12px; border:2px solid;
-  border-radius:3px; font-size:10px; font-weight:800; letter-spacing:1.5px; transform:rotate(-3deg); }
-.tcfac-root .tcf-stamp.warn{ color:#b45309; border-color:#b45309; }
-.tcfac-root .tcf-stamp.ok{ color:#15803d; border-color:#15803d; }
-.tcfac-root .tcf-stamp.bad{ color:#b91c1c; border-color:#b91c1c; }
-.tcfac-root .tcf-rule{ height:2.5px; background:#15803d; margin:0 0 6mm; }
-.tcfac-root .tcf-parties{ display:grid; grid-template-columns:1fr 1fr; gap:12mm; margin-bottom:7mm; }
-.tcfac-root .tcf-blabel{ font-size:8.5px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase;
-  color:#6b7280; padding-bottom:2mm; border-bottom:1px solid #e5e7eb; margin-bottom:2.5mm; }
-.tcfac-root .tcf-pname{ font-size:12px; font-weight:700; color:#111827; margin-bottom:1mm; }
-.tcfac-root .tcf-pline{ font-size:9.5px; line-height:1.6; color:#4b5563; }
-.tcfac-root .tcf-pay{ display:flex; justify-content:space-between; font-size:9.5px; line-height:1.9; color:#4b5563; }
-.tcfac-root .tcf-pay span:last-child{ color:#111827; font-weight:600; }
-.tcfac-root .tcf-items{ width:100%; border-collapse:collapse; margin-bottom:4mm; }
-.tcfac-root .tcf-items thead th{ background:#f4f7f5; color:#374151; font-size:8.5px; font-weight:700;
-  letter-spacing:.6px; text-transform:uppercase; text-align:right; padding:3mm 2.5mm;
-  border-top:1.5px solid #15803d; border-bottom:1.5px solid #15803d; }
-.tcfac-root .tcf-items thead th.i{ text-align:center; width:9mm; }
-.tcfac-root .tcf-items thead th.d{ text-align:left; }
-.tcfac-root .tcf-items tbody td{ padding:2.6mm 2.5mm; font-size:10px; border-bottom:1px solid #edf0f2; vertical-align:top; }
-.tcfac-root .tcf-items tbody tr:last-child td{ border-bottom:1px solid #d1d5db; }
-.tcfac-root .tcf-ci{ text-align:center; color:#9ca3af; }
-.tcfac-root .tcf-cd{ text-align:left; color:#1f2937; }
-.tcfac-root .tcf-cn{ text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
-.tcfac-root .tcf-tw{ display:flex; justify-content:flex-end; }
-.tcfac-root .tcf-tot{ width:78mm; }
-.tcfac-root .tcf-tot .r{ display:flex; justify-content:space-between; padding:1.6mm 0; font-size:10px; color:#4b5563; }
-.tcfac-root .tcf-tot .r .v{ color:#111827; font-variant-numeric:tabular-nums; }
-.tcfac-root .tcf-tot .grand{ border-top:2px solid #111827; margin-top:1mm; padding-top:2.5mm;
-  font-size:14px; font-weight:800; color:#111827; }
-.tcfac-root .tcf-tot .paid{ color:#15803d; }
-.tcfac-root .tcf-tot .due{ font-weight:700; color:#b45309; }
-.tcfac-root .tcf-words{ margin:5mm 0 0; padding:2.5mm 3mm; background:#f9fafb; border:1px solid #e5e7eb;
-  border-radius:3px; font-size:9.5px; line-height:1.5; color:#374151; }
-.tcfac-root .tcf-words b{ color:#111827; letter-spacing:.3px; }
-.tcfac-root .tcf-note{ margin-top:6mm; font-size:9.5px; line-height:1.6; color:#4b5563; white-space:pre-wrap; }
-.tcfac-root .tcf-qr{ margin-top:6mm; display:flex; align-items:center; gap:4mm; }
-.tcfac-root .tcf-qr img{ width:30mm; height:30mm; }
-.tcfac-root .tcf-qr small{ font-size:8.5px; color:#6b7280; line-height:1.5; }
-.tcfac-root .tcf-foot{ margin-top:12mm; padding-top:5mm; border-top:1px solid #e5e7eb;
-  font-size:8.5px; line-height:1.6; color:#6b7280; }
-.tcfac-root .tcf-foot b{ display:block; color:#15803d; font-size:10px; margin-bottom:1mm; letter-spacing:.3px; }
-@media print{
-  .tcfac-root{ background:#fff; padding:0; overflow:visible; }
-  .tcfac-root .tcf-page{ margin:0; box-shadow:none; width:auto; min-height:auto; }
-}
-@media screen and (max-width:820px){
-  .tcfac-root .tcf-page{ transform:scale(.6); transform-origin:top left; }
-}
-`;
 
 function ventaToFormalDoc(venta) {
   const td = getReceiptTemplateData(venta);
@@ -8668,113 +8640,28 @@ function ventaToFormalDoc(venta) {
     redondeo: bd.redondeo,
     total: totalNum,
     mensaje: venta.receiptFooterMessageOverride || getReceiptConfigValue('mensaje') || '',
-    qrDataUrl: (elec && venta.qrDataUrl) ? venta.qrDataUrl : ''
+    qrDataUrl: (elec && venta.qrDataUrl) ? venta.qrDataUrl : '',
+    ...(elec ? getReceiptEcfSecurityData(venta) : { codigoSeguridad: '', fechaFirma: '' }),
+    fechaTexto: formatReceiptDateForPaper(venta.fecha, 'a4') || '',
+    vencimientoTexto: ((venta.ncf || venta.encf) && venta.ncfVencimiento)
+      ? (formatReceiptDateForPaper(venta.ncfVencimiento, 'a4') || '')
+      : ''
   };
 }
 
+// Plantilla y color de Configuración → Impresora de Recibos (con la vista
+// previa de Configuración, los valores aún sin guardar).
 function buildFormalInvoiceMarkup(venta) {
-  const d = ventaToFormalDoc(venta);
-  const esc = escapeReceiptHtml;
-  const titulo = d.isCot ? 'COTIZACIÓN' : 'FACTURA';
-  const stampClass = (d.isCot || d.balance <= 0.01) ? 'ok' : (d.anulada ? 'bad' : 'warn');
-  const fecha = formatReceiptDateForPaper(d.fecha, 'a4') || '';
-  const venc = d.ncfVencimiento ? (formatReceiptDateForPaper(d.ncfVencimiento, 'a4') || '') : '';
-
-  const itbisCell = (it) => {
-    if (Number(it.itbisMonto) > 0.005) return facMoney(it.itbisMonto);
-    if (Number(it.itbisPct) > 0) return Number(it.itbisPct).toFixed(0) + '%';
-    return 'Exento';
-  };
-  const rows = d.items.map((it, i) => `
-      <tr>
-        <td class="tcf-ci">${i + 1}</td>
-        <td class="tcf-cd">${esc(it.descripcion)}</td>
-        <td class="tcf-cn">${Number(it.cantidad || 0)}</td>
-        <td class="tcf-cn">${facMoney(it.precio)}</td>
-        <td class="tcf-cn">${esc(itbisCell(it))}</td>
-        <td class="tcf-cn">${facMoney(it.total)}</td>
-      </tr>`).join('');
-
-  const logoHtml = d.empresa.logo
-    ? `<img src="${esc(d.empresa.logo)}" class="tcf-logo" alt="logo">`
-    : `<div class="tcf-brand-fallback">${esc(d.empresa.nombre)}</div>`;
-
-  const footNote = d.isCot
-    ? 'Cotización sin valor fiscal. Precios sujetos a cambio después de la fecha de validez. Documento generado electrónicamente.'
-    : 'Documento generado electrónicamente por Tecno Caja POS. Válido sin firma ni sello. Gracias por su compra.';
-
-  return `<div class="tcfac-root">
-  <style>${FORMAL_INVOICE_CSS}</style>
-  <div class="tcf-page">
-    ${d.anulada ? '<div class="tcf-wm">ANULADA</div>' : ''}
-    <div class="tcf-content">
-      <div class="tcf-head">
-        <div>
-          ${logoHtml}
-          ${d.empresa.rnc ? `<div class="tcf-em"><strong>RNC:</strong> ${esc(d.empresa.rnc)}</div>` : ''}
-          ${d.empresa.direccion ? `<div class="tcf-em">${esc(d.empresa.direccion)}</div>` : ''}
-          ${d.empresa.telefono ? `<div class="tcf-em"><strong>Tel:</strong> ${esc(d.empresa.telefono)}</div>` : ''}
-        </div>
-        <div class="tcf-doc">
-          <div class="tcf-title">${titulo}</div>
-          ${d.ncf ? `<div class="tcf-chip"><span>${d.fiscalMode === 'ecf' ? 'e-NCF' : 'NCF'}</span> ${esc(d.ncf)}</div>` : ''}
-          <div class="tcf-meta">
-            ${d.ncfTipoLabel ? `<div><b>Tipo de comprobante:</b> ${esc(d.ncfTipoLabel)}</div>` : ''}
-            <div><b>No.:</b> ${esc(d.numero)}</div>
-            <div><b>Fecha de emisión:</b> ${esc(fecha)}</div>
-            ${venc ? `<div><b>NCF válido hasta:</b> ${esc(venc)}</div>` : ''}
-          </div>
-          <div class="tcf-stamp ${stampClass}">${esc(d.estadoLabel)}</div>
-        </div>
-      </div>
-      <div class="tcf-rule"></div>
-      <div class="tcf-parties">
-        <div>
-          <div class="tcf-blabel">${d.isCot ? 'Cliente' : 'Facturar a'}</div>
-          <div class="tcf-pname">${esc(d.cliente.nombre)}</div>
-          ${d.cliente.rnc ? `<div class="tcf-pline">RNC / Cédula: ${esc(d.cliente.rnc)}</div>` : ''}
-          ${d.cliente.dir ? `<div class="tcf-pline">${esc(d.cliente.dir)}</div>` : ''}
-          ${d.cliente.tel ? `<div class="tcf-pline">Tel: ${esc(d.cliente.tel)}</div>` : ''}
-        </div>
-        <div>
-          <div class="tcf-blabel">Detalles de pago</div>
-          <div class="tcf-pay"><span>Condición</span><span>${esc(d.condicionPago)}</span></div>
-          <div class="tcf-pay"><span>Método de pago</span><span>${esc(d.metodoPago)}</span></div>
-          <div class="tcf-pay"><span>Estado</span><span>${esc(d.estadoLabel)}</span></div>
-          ${Number(d.pagado) ? `<div class="tcf-pay"><span>Pagado</span><span>${facMoney(d.pagado)}</span></div>` : ''}
-          ${(Number(d.balance) > 0.01 && !d.isCot) ? `<div class="tcf-pay"><span>Saldo pendiente</span><span>${facMoney(d.balance)}</span></div>` : ''}
-          ${d.cajero ? `<div class="tcf-pay"><span>Cajero</span><span>${esc(d.cajero)}</span></div>` : ''}
-        </div>
-      </div>
-      <table class="tcf-items">
-        <thead><tr>
-          <th class="i">#</th><th class="d">Descripción</th>
-          <th>Cant.</th><th>Precio unit.</th><th>ITBIS</th><th>Importe</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <div class="tcf-tw"><div class="tcf-tot">
-        <div class="r"><span>Subtotal</span><span class="v">${facMoney(d.subtotal)}</span></div>
-        ${Number(d.descuento) ? `<div class="r"><span>Descuento</span><span class="v">- ${facMoney(d.descuento)}</span></div>` : ''}
-        ${Number(d.itbis) ? `<div class="r"><span>ITBIS</span><span class="v">${facMoney(d.itbis)}</span></div>` : ''}
-        ${Math.abs(Number(d.redondeo || 0)) >= 0.01 ? `<div class="r"><span>Redondeo</span><span class="v">${facMoney(d.redondeo)}</span></div>` : ''}
-        <div class="r grand"><span>TOTAL</span><span class="v">${facMoney(d.total)}</span></div>
-        ${Number(d.pagado) ? `<div class="r paid"><span>Pagado</span><span class="v">${facMoney(d.pagado)}</span></div>` : ''}
-        ${(Number(d.balance) > 0.01 && !d.anulada && !d.isCot) ? `<div class="r due"><span>Saldo pendiente</span><span class="v">${facMoney(d.balance)}</span></div>` : ''}
-      </div></div>
-      <div class="tcf-words"><b>Son:</b> ${esc(facMontoEnLetras(d.total))}</div>
-      ${d.qrDataUrl ? `<div class="tcf-qr"><img src="${esc(d.qrDataUrl)}" alt="QR"><small>Verificación DGII &middot; escanee el código para validar este comprobante fiscal electrónico.</small></div>` : ''}
-      ${d.mensaje ? `<div class="tcf-note">${esc(d.mensaje)}</div>` : ''}
-      <div class="tcf-foot"><b>${esc(d.empresa.nombre)}</b>${footNote}</div>
-    </div>
-  </div>
-</div>`;
+  return window.FacturaPlantillas.render(ventaToFormalDoc(venta), {
+    plantilla: getReceiptConfigValue('invoiceTemplate'),
+    color: getReceiptConfigValue('invoiceAccentColor')
+  });
 }
 
 function buildFormalInvoiceDocumentHtml(venta) {
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">`
     + `<title>${escapeReceiptHtml(getReceiptDisplayNumber(venta))}</title></head>`
-    + `<body style="margin:0">${buildFormalInvoiceMarkup(venta)}</body></html>`;
+    + `<body style="margin:0">${buildFormalInvoiceMarkup(venta)}${window.FacturaPlantillas.scriptUnaHoja()}</body></html>`;
 }
 
 function buildReceiptSheetMarkup(venta) {
@@ -8789,7 +8676,7 @@ function buildReceiptSheetMarkup(venta) {
     ? `
       <div class="receipt-qr" id="receipt-qr">
         <img src="${venta.qrDataUrl}" alt="Código QR de factura electrónica">
-        <small>Escaneo de verificación DGII para ${escapeReceiptHtml(getElectronicReceiptNumber(venta) || templateData.factura)}</small>
+        ${buildReceiptQrCaptionMarkup(venta)}
       </div>
     `
     : '<div class="receipt-qr hidden" id="receipt-qr"></div>';
@@ -8806,9 +8693,11 @@ function buildPrintableReceiptHtml(venta) {
     return buildThermalPrintableReceiptHtml(venta, paperVariant);
   }
   // La factura A4 moderna ya trae su CSS completo y su tamano A4 propio
-  // (.tcf-page: 210mm x 297mm). Solo hace falta un @page limpio.
+  // (.tcf-page: 210mm x 297mm). Solo hace falta un @page limpio. El script
+  // achica la letra si hace falta para que salga en una sola hoja.
   return `${buildReceiptSheetMarkup(venta)}
-<style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#fff}</style>`;
+<style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#fff}</style>
+${window.FacturaPlantillas.scriptUnaHoja()}`;
 }
 
 // Ticket 58/80 mm para la impresión HTML (cuando no se usa ESC/POS). Mismo CSS

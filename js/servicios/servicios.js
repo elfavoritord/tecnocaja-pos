@@ -54,7 +54,11 @@ Condición: La compra de los equipos y la programación de la instalación estar
       .split('{total}').join(money(n2(total)));
   }
   const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const today = () => new Date().toISOString().slice(0, 10);
+  // Fecha LOCAL (toISOString es UTC: en RD, después de las 8 p. m. daba mañana).
+  const today = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
   const MESES_ES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
   // Formatea fechas ISO ("2026-09-02" o "2026-09-02T04:00:00.000Z") a "2 sep 2026".
   // withTime=true agrega " HH:MM" solo si la marca de tiempo trae hora real
@@ -78,6 +82,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
     { mod: 'srv-facturas', label: 'Facturación', icon: '💵' },
     { mod: 'srv-cobros', label: 'Cobros', icon: '💰' },
     { mod: 'srv-cxc', label: 'Cuentas por cobrar', icon: '📉' },
+    { mod: 'srv-gastos', label: 'Gastos', icon: '💸' },
     { mod: 'srv-cotizaciones', label: 'Cotizaciones', icon: '📝' },
     { mod: 'srv-dashboard', label: 'Panel', icon: '📊' },
     { mod: 'srv-servicios', label: 'Servicios', icon: '🧾' },
@@ -137,12 +142,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
   function actionsOf(mod) { return document.querySelector(`#module-${mod} [data-actions]`); }
 
   // ── Modal genérico ───────────────────────────────────────────────────────
-  function modal(title, contentHtml, onSubmit, { wide, submitLabel } = {}) {
+  // xl + subtitle: formularios por secciones (factura y cotización).
+  function modal(title, contentHtml, onSubmit, { wide, xl, subtitle, submitLabel } = {}) {
     const back = document.createElement('div');
-    back.className = 'srv-modal-back';
+    // tc-themed: cuelga de <body> (fuera de #app) y así toma el tema día/noche.
+    back.className = 'srv-modal-back tc-themed';
+    const size = xl ? 'srv-modal-xl' : (wide ? 'srv-modal-wide' : '');
     back.innerHTML = `
-      <div class="srv-modal ${wide ? 'srv-modal-wide' : ''}">
-        <div class="srv-modal-head"><h3>${esc(title)}</h3><button type="button" data-x>✕</button></div>
+      <div class="srv-modal ${size}">
+        <div class="srv-modal-head"><div><h3>${esc(title)}</h3>${subtitle ? `<p class="srv-modal-sub">${esc(subtitle)}</p>` : ''}</div><button type="button" data-x title="Cerrar">✕</button></div>
         <form data-form><div class="srv-modal-body">${contentHtml}</div>
           <div class="srv-modal-foot">
             <button type="button" class="btn btn-ghost" data-cancel>Cancelar</button>
@@ -166,14 +174,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
       } catch (err) {
         toast(err.message || 'Error', 'error');
         const btn = e.target.querySelector('button[type=submit]');
-        if (btn) { btn.disabled = false; btn.textContent = esc(submitLabel || 'Guardar'); }
+        if (btn) { btn.disabled = false; btn.textContent = submitLabel || 'Guardar'; }
       }
     });
     return back;
   }
 
   // ── Selector de cliente (usa DB.clientes ya cargado en el renderer) ──────
-  function clientPickerHtml(cur) {
+  // grid=true: los tres campos en una fila (formularios por secciones).
+  function clientPickerHtml(cur, { grid } = {}) {
     const list = Array.isArray(dbRef().clientes) ? dbRef().clientes : [];
     // Al editar, si el registro solo trae clientId, resolver la cédula del catálogo.
     let rncInicial = cur?.clientRnc || '';
@@ -188,6 +197,19 @@ Condición: La compra de los equipos y la programación de la instalación estar
         const rnc = c.cedula || c.rnc || '';
         return `<option value="${c.id}" data-nombre="${esc(c.nombre)}" data-rnc="${esc(rnc)}" data-email="${esc(c.email || '')}"${cur && cur.clientId == c.id ? ' selected' : ''}>${esc(c.nombre)}${rnc ? ' — ' + esc(rnc) : ''}</option>`;
       }).join('');
+    if (grid) {
+      return `
+      <div class="srv-grid srv-grid-cli">
+        <label>Seleccionar cliente
+          <select name="clientId" id="srv-cli-pick"><option value="">— Nuevo / sin registrar —</option>${opts}</select>
+        </label>
+        <label><span class="srv-lbl">Nombre o razón social <span class="srv-req">*</span></span>
+          <input name="clientName" id="srv-cli-name" value="${esc(cur?.clientName || '')}" placeholder="Ej: Consultora XYZ SRL" required></label>
+        <label><span class="srv-lbl">RNC / Cédula <span class="srv-req" id="srv-cli-rnc-req" hidden>*</span></span>
+          <input name="clientRnc" id="srv-cli-rnc" value="${esc(rncInicial)}" placeholder="RNC (9 dígitos) o cédula (11)" inputmode="numeric"></label>
+      </div>
+      <p class="srv-hint" id="srv-cli-email-hint"></p>`;
+    }
     return `
       <label>Cliente registrado
         <select name="clientId" id="srv-cli-pick"><option value="">— Nuevo / sin registrar —</option>${opts}</select>
@@ -205,20 +227,28 @@ Condición: La compra de los equipos y la programación de la instalación estar
     const rnc = root.querySelector('#srv-cli-rnc');
     const hint = root.querySelector('#srv-cli-email-hint');
     if (!pick) return;
-    const fill = () => {
+    let habiaCliente = false;
+    // inicial=true solo al abrir en edición: conserva el RNC guardado si el
+    // catálogo no tiene. Al cambiar de cliente no se arrastra el RNC del anterior.
+    const fill = (inicial) => {
       const o = pick.selectedOptions[0];
       if (pick.value && o) {
         name.value = o.dataset.nombre || '';
-        rnc.value = o.dataset.rnc || rnc.value || '';
-        name.readOnly = true; rnc.readOnly = true;
+        rnc.value = o.dataset.rnc || (inicial === true ? rnc.value : '') || '';
+        // Si el cliente no tiene RNC en el catálogo, se deja escribir aquí
+        // (el backend usa la cédula del catálogo y, si falta, la escrita).
+        name.readOnly = true; rnc.readOnly = !!o.dataset.rnc;
         hint.textContent = o.dataset.email ? 'Correo: ' + o.dataset.email : 'Este cliente no tiene correo — agrégalo en Clientes para poder enviar la factura.';
+        habiaCliente = true;
       } else {
+        if (habiaCliente) { name.value = ''; rnc.value = ''; }
         name.readOnly = false; rnc.readOnly = false;
         hint.textContent = '';
+        habiaCliente = false;
       }
     };
-    pick.addEventListener('change', fill);
-    if (pick.value) fill(); // cliente preseleccionado (edición): rellenar de una
+    pick.addEventListener('change', () => fill(false));
+    if (pick.value) fill(true); // cliente preseleccionado (edición): rellenar de una
   }
 
   const DATE_KEYS = /^(fecha|vencimiento|createdAt|updatedAt|fechaProgramada|fechaInicio|fechaEntrega|fechaSalida|fechaRegreso|fechaLimite|proximaRevision|proximaFecha|fechaFin|fechaFinEstimada|anuladoAt|completadaAt)$/;
@@ -228,10 +258,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
     if (c.key && DATE_KEYS.test(c.key) && v) return esc(fdate(v));
     return esc(v);
   }
+  // Montos y fechas no se parten en dos líneas (clase nw).
   function table(cols, rows) {
+    const clase = (c) => {
+      const cls = [c.num && 'num', c.key && DATE_KEYS.test(c.key) && 'nw'].filter(Boolean).join(' ');
+      return cls ? ` class="${cls}"` : '';
+    };
     return `<div class="srv-table-wrap"><table class="srv-table">
       <thead><tr>${cols.map((c) => `<th${c.num ? ' class="num"' : ''}>${esc(c.label)}</th>`).join('')}</tr></thead>
-      <tbody>${rows.length ? rows.map((r) => `<tr>${cols.map((c) => `<td${c.num ? ' class="num"' : ''}>${cellValue(c, r)}</td>`).join('')}</tr>`).join('')
+      <tbody>${rows.length ? rows.map((r) => `<tr>${cols.map((c) => `<td${clase(c)}>${cellValue(c, r)}</td>`).join('')}</tr>`).join('')
         : `<tr><td colspan="${cols.length}" class="srv-empty">Sin registros</td></tr>`}</tbody>
     </table></div>`;
   }
@@ -256,34 +291,134 @@ Condición: La compra de los equipos y la programación de la instalación estar
   }
 
   // ═══ Dashboard ═════════════════════════════════════════════════════════════
+  const PERIODOS_PANEL = [['mes', 'Este mes'], ['anterior', 'Mes anterior'], ['anio', 'Este año']];
+  let _dashPeriodo = 'mes';
+
+  function rangoPanel(periodo) {
+    const d = new Date();
+    const iso = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+    if (periodo === 'anterior') {
+      return { desde: iso(new Date(d.getFullYear(), d.getMonth() - 1, 1)), hasta: iso(new Date(d.getFullYear(), d.getMonth(), 0)) };
+    }
+    if (periodo === 'anio') return { desde: `${d.getFullYear()}-01-01`, hasta: today() };
+    return { desde: iso(new Date(d.getFullYear(), d.getMonth(), 1)), hasta: today() };
+  }
+
+  // Lleva al módulo de la tarjeta si está activo en este tipo de empresa.
+  function irAModulo(mod) {
+    const nav = document.querySelector(`.nav-item[data-module="${mod}"]`);
+    if (nav && getComputedStyle(nav).display !== 'none') window.showModule(mod, nav);
+  }
+
+  // Barras horizontales simples: [{ etiqueta, valor, extra?, tono? }].
+  function barras(filas, vacio) {
+    if (!filas.length) return `<p class="srv-dash-vacio">${esc(vacio)}</p>`;
+    const max = Math.max(...filas.map((f) => Math.abs(f.valor)), 1);
+    return `<div class="srv-barras">${filas.map((f) => `
+      <div class="srv-barra${f.tono ? ' srv-barra--' + f.tono : ''}">
+        <div class="srv-barra-txt"><span>${esc(f.etiqueta)}${f.extra ? ` <small>${esc(f.extra)}</small>` : ''}</span><b>${money(f.valor)}</b></div>
+        <div class="srv-barra-pista"><i style="width:${Math.max(2, Math.round(Math.abs(f.valor) / max * 100))}%"></i></div>
+      </div>`).join('')}</div>`;
+  }
+
+  function panelDash(titulo, icono, cuerpo, { accion = '', cls = '' } = {}) {
+    return `<section class="srv-dash-panel ${cls}">
+      <header><h4><span class="srv-card-ico">${ICON[icono] || ''}</span>${esc(titulo)}</h4>${accion}</header>
+      ${cuerpo}
+    </section>`;
+  }
+
   async function renderDashboard() {
     const b = bodyOf('srv-dashboard');
     renderPanelChip();
     b.innerHTML = '<div class="srv-loading">Cargando…</div>';
     try {
-      const d = await req('/dashboard');
-      const card = (t, v, sub) => `<div class="srv-kpi"><span class="srv-kpi-t">${esc(t)}</span><span class="srv-kpi-v">${v}</span>${sub ? `<span class="srv-kpi-s">${esc(sub)}</span>` : ''}</div>`;
+      const rango = rangoPanel(_dashPeriodo);
+      const d = await req(`/dashboard?desde=${rango.desde}&hasta=${rango.hasta}`);
+      const cot = d.cotizaciones || {};
+      const ganancia = Number(d.gananciaEstimada || 0);
+      const facturado = Number(d.serviciosFacturados.monto || 0);
+      const margen = facturado > 0 ? Math.round(ganancia / facturado * 100) : null;
+
+      const kpi = (mod, icono, tono, titulo, valor, sub) => `
+        <button type="button" class="srv-dk srv-dk--${tono}" data-ir="${mod}">
+          <span class="srv-dk-ico">${ICON[icono] || ''}</span>
+          <span class="srv-dk-t">${esc(titulo)}</span>
+          <span class="srv-dk-v">${valor}</span>
+          ${sub ? `<span class="srv-dk-s">${sub}</span>` : ''}
+        </button>`;
+
+      const totalCotPeriodo = ['borrador', 'enviada', 'aprobada', 'convertida', 'rechazada', 'vencida'].reduce((t, k) => t + (cot[k] || 0), 0);
+      const conversion = totalCotPeriodo > 0 ? Math.round((cot.convertida || 0) / totalCotPeriodo * 100) : null;
+      const estadoCot = (k, label) => `<li><span class="srv-dot srv-dot--${k}"></span>${label}<b>${cot[k] || 0}</b></li>`;
+
+      const porCobrar = d.porCobrar || [];
+      const listaCobrar = porCobrar.length
+        ? `<ul class="srv-dash-lista">${porCobrar.map((f) => `
+            <li>
+              <div><b>${esc(f.numero)}</b><small>${esc(f.cliente || 'Sin cliente')}</small></div>
+              <div class="srv-dash-lista-der"><b>${money(f.balance)}</b>
+                <small class="${f.vencida ? 'srv-vencida' : ''}">${f.vencimiento ? (f.vencida ? 'Venció ' : 'Vence ') + esc(fdate(f.vencimiento)) : 'Emitida ' + esc(fdate(f.fecha))}</small></div>
+            </li>`).join('')}</ul>`
+        : '<p class="srv-dash-vacio">No hay facturas pendientes de cobro. 🎉</p>';
+
+      const sucursales = d.porSucursal || [];
       b.innerHTML = `
-        <div class="srv-kpis">
-          ${card('Servicios facturados', money(d.serviciosFacturados.monto), `${d.serviciosFacturados.cantidad} facturas`)}
-          ${card('Cobros del período', money(d.cobrosPeriodo.monto), `${d.cobrosPeriodo.cantidad} pagos`)}
-          ${card('Cuentas por cobrar', money(d.cuentasPorCobrar), `${d.facturasPendientes} pendientes`)}
-          ${card('Facturas vencidas', d.facturasVencidas, '')}
-          ${card('Cotizaciones abiertas', (d.cotizaciones.borrador + d.cotizaciones.enviada), `${d.cotizaciones.aprobada} aprobadas`)}
-          ${card('Ganancia estimada', money(d.gananciaEstimada), `gastos ${money(d.gastosPeriodo)}`)}
-        </div>
-        <h3 class="srv-h3">Rendimiento por sucursal</h3>
-        ${table([
-          { label: 'Sucursal', key: 'sucursal' },
-          { label: 'Facturado', num: true, render: (r) => money(r.facturado) },
-          { label: 'Por cobrar', num: true, render: (r) => money(r.porCobrar) },
-        ], d.porSucursal || [])}
-        <h3 class="srv-h3">Servicios más facturados</h3>
-        ${table([
-          { label: 'Servicio', key: 'nombre' },
-          { label: 'Veces', num: true, key: 'veces' },
-          { label: 'Monto', num: true, render: (r) => money(r.monto) },
-        ], d.topServicios || [])}`;
+        <div class="srv-dash">
+          <div class="srv-dash-top">
+            <div class="srv-periodo" role="group" aria-label="Período">
+              ${PERIODOS_PANEL.map(([k, t]) => `<button type="button" data-periodo="${k}" class="${k === _dashPeriodo ? 'is-on' : ''}">${t}</button>`).join('')}
+            </div>
+            <span class="srv-dash-rango">${esc(fdate(rango.desde))} — ${esc(fdate(rango.hasta))}</span>
+          </div>
+
+          <div class="srv-dash-kpis">
+            ${kpi('srv-facturas', 'doc', 'azul', 'Servicios facturados', money(facturado), `${d.serviciosFacturados.cantidad} ${d.serviciosFacturados.cantidad === 1 ? 'factura' : 'facturas'}`)}
+            ${kpi('srv-cobros', 'cobrar', 'verde', 'Cobros del período', money(d.cobrosPeriodo.monto), `${d.cobrosPeriodo.cantidad} ${d.cobrosPeriodo.cantidad === 1 ? 'pago' : 'pagos'}`)}
+            ${kpi('srv-cxc', 'reloj', 'ambar', 'Cuentas por cobrar', money(d.cuentasPorCobrar), `${d.facturasPendientes} ${d.facturasPendientes === 1 ? 'factura pendiente' : 'facturas pendientes'}`)}
+            ${kpi('srv-cxc', 'alerta', d.facturasVencidas > 0 ? 'rojo' : 'gris', 'Facturas vencidas', String(d.facturasVencidas), d.facturasVencidas > 0 ? 'Cobrar cuanto antes' : 'Todo al día')}
+            ${kpi('srv-cotizaciones', 'lista', 'violeta', 'Cotizaciones abiertas', String(cot.abiertas || 0), cot.montoAbiertas ? `por ${money(cot.montoAbiertas)}` : 'Ninguna pendiente')}
+            ${kpi('srv-gastos', ganancia >= 0 ? 'sube' : 'baja', ganancia >= 0 ? 'verde' : 'rojo', 'Ganancia estimada', money(ganancia),
+              `Gastos ${money(d.gastosPeriodo)}${margen != null && margen >= 0 ? ` · margen ${margen}%` : (ganancia < 0 ? ' · los gastos superan lo facturado' : '')}`)}
+          </div>
+
+          <div class="srv-dash-grid">
+            ${panelDash('Ingresos y gastos', 'cobrar', barras([
+              { etiqueta: 'Facturado', valor: facturado, tono: 'azul' },
+              { etiqueta: 'Cobrado', valor: Number(d.cobrosPeriodo.monto || 0), tono: 'verde' },
+              { etiqueta: 'Gastos', valor: Number(d.gastosPeriodo || 0), tono: 'rojo' },
+            ], '') + `<div class="srv-dash-neto ${ganancia >= 0 ? 'is-pos' : 'is-neg'}"><span>Ganancia estimada <small>(facturado − gastos)</small></span><b>${money(ganancia)}</b></div>`)}
+
+            ${panelDash('Cotizaciones del período', 'lista', `
+              <ul class="srv-estados">
+                ${estadoCot('borrador', 'Borrador')}${estadoCot('enviada', 'Enviadas')}${estadoCot('aprobada', 'Aprobadas')}
+                ${estadoCot('convertida', 'Convertidas en factura')}${estadoCot('rechazada', 'Rechazadas')}${estadoCot('vencida', 'Vencidas')}
+              </ul>
+              ${conversion != null ? `<div class="srv-dash-neto"><span>Tasa de conversión</span><b>${conversion}%</b></div>` : ''}`,
+            { accion: '<button type="button" class="srv-dash-link" data-ir="srv-cotizaciones">Ver todas</button>' })}
+
+            ${panelDash('Servicios más facturados', 'doc', barras((d.topServicios || []).map((s) => ({
+              etiqueta: s.nombre, valor: s.monto, extra: `${s.veces} ${s.veces === 1 ? 'vez' : 'veces'}`, tono: 'azul',
+            })), 'Todavía no hay servicios facturados en este período.'))}
+
+            ${panelDash('Gastos por categoría', 'cobrar', barras((d.gastosPorCategoria || []).map((g) => ({
+              etiqueta: g.categoria, valor: g.monto, tono: 'rojo',
+            })), 'No hay gastos registrados en este período.'),
+            { accion: '<button type="button" class="srv-dash-link" data-ir="srv-gastos">Ver gastos</button>' })}
+
+            ${panelDash('Facturas por cobrar', 'reloj', listaCobrar,
+              { accion: '<button type="button" class="srv-dash-link" data-ir="srv-cxc">Ver todas</button>' })}
+
+            ${sucursales.length > 1 ? panelDash('Rendimiento por sucursal', 'lista', table([
+              { label: 'Sucursal', key: 'sucursal' },
+              { label: 'Facturado', num: true, render: (r) => money(r.facturado) },
+              { label: 'Por cobrar', num: true, render: (r) => money(r.porCobrar) },
+            ], sucursales)) : ''}
+          </div>
+        </div>`;
+
+      b.querySelectorAll('[data-periodo]').forEach((el) => el.onclick = () => { _dashPeriodo = el.dataset.periodo; renderDashboard(); });
+      b.querySelectorAll('[data-ir]').forEach((el) => el.onclick = () => irAModulo(el.dataset.ir));
     } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
   }
 
@@ -377,7 +512,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
   async function renderCotizaciones() {
     const b = bodyOf('srv-cotizaciones');
     actionsOf('srv-cotizaciones').innerHTML = `
-      <label style="font-size:12px;display:flex;align-items:center;gap:5px"><input type="checkbox" id="cot-todas"${_cotTodas ? ' checked' : ''}> Ver convertidas/rechazadas</label>
+      <label class="srv-filtro"><input type="checkbox" id="cot-todas"${_cotTodas ? ' checked' : ''}> Ver convertidas / rechazadas</label>
       <button class="btn btn-ghost" data-catalogo>🧾 Catálogo de servicios</button>
       <button class="btn btn-primary" data-new>+ Nueva cotización</button>`;
     actionsOf('srv-cotizaciones').querySelector('[data-catalogo]').onclick = () => abrirCatalogo();
@@ -393,13 +528,13 @@ Condición: La compra de los equipos y la programación de la instalación estar
         { label: 'Estado', render: (r) => `<span class="srv-badge srv-badge-${r.estado}">${r.estado}</span>` },
         { label: 'Total', num: true, render: (r) => money(r.total) },
         { label: '', render: (r) => {
-          const acc = [`<button class="srv-link" data-view="${r.id}">Ver / Imprimir</button>`,
-            `<button class="srv-link" data-mail="${r.id}">Correo</button>`];
-          if (!['convertida', 'rechazada'].includes(r.estado)) {
-            acc.push(`<button class="srv-link" data-edit="${r.id}">Editar</button>`);
-            acc.push(`<button class="srv-link" data-fact="${r.id}">Facturar</button>`);
-          }
-          return acc.join(' · ');
+          const abierta = !['convertida', 'rechazada'].includes(r.estado);
+          return acciones([
+            accion('data-view', r.id, 'Imprimir', 'imprimir', 'pri', VER_AYUDA),
+            accion('data-mail', r.id, 'Correo', 'correo'),
+            abierta && accion('data-edit', r.id, 'Editar', 'editar'),
+            abierta && accion('data-fact', r.id, 'Facturar', 'facturar', 'ok'),
+          ]);
         } },
       ], rows);
       b.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => abrirDoc('cotizaciones', el.dataset.view, 'Cotización'));
@@ -424,60 +559,120 @@ Condición: La compra de los equipos y la programación de la instalación estar
       ${q.notas ? `<p>${esc(q.notas)}</p>` : ''}`, async () => {}, { wide: true, submitLabel: 'Cerrar' });
   }
 
+  // ── Formularios por secciones (factura / cotización) ─────────────────────
+  const svg = (d) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+  const ICON = {
+    cliente: svg('<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>'),
+    doc: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>'),
+    lista: svg('<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'),
+    nota: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
+    quitar: svg('<path d="M18 6 6 18M6 6l12 12"/>'),
+    imprimir: svg('<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6z"/>'),
+    correo: svg('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>'),
+    editar: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'),
+    facturar: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15l2 2 4-4"/>'),
+    cobrar: svg('<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>'),
+    anular: svg('<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>'),
+    ver: svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+    reloj: svg('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>'),
+    alerta: svg('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4M12 17h.01"/>'),
+    sube: svg('<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>'),
+    baja: svg('<path d="m22 17-8.5-8.5-5 5L2 7"/><path d="M16 17h6v-6"/>'),
+  };
+
+  // Botones de acción de una fila (Ver, Correo, Editar…).
+  // tono: '' gris · 'pri' color del sistema · 'ok' verde · 'peligro' rojo.
+  // Los grises y rojos van solo con ícono (el nombre sale al pasar el mouse)
+  // para que la fila no se parta en dos; el principal y el verde llevan texto.
+  // `attr` es el data-* que ya escuchan los renderers (data-view, data-mail…).
+  function accion(attr, id, texto, icono, tono = '', ayuda = '') {
+    const soloIcono = !tono || tono === 'peligro';
+    return `<button type="button" class="srv-act${tono ? ' srv-act--' + tono : ''}${soloIcono ? ' srv-act--icono' : ''}" ${attr}="${esc(id)}" title="${esc(ayuda || texto)}" aria-label="${esc(texto)}">${ICON[icono] || ''}${soloIcono ? '' : `<span>${esc(texto)}</span>`}</button>`;
+  }
+  const VER_AYUDA = 'Ver, imprimir o guardar en PDF';
+  const acciones = (lista) => `<div class="srv-acts">${lista.filter(Boolean).join('')}</div>`;
+  function card(titulo, icono, cuerpo, { acciones = '', cls = '' } = {}) {
+    return `<section class="srv-card ${cls}">
+      <header class="srv-card-head"><h4><span class="srv-card-ico">${icono}</span>${esc(titulo)}</h4>${acciones}</header>
+      <div class="srv-card-body">${cuerpo}</div>
+    </section>`;
+  }
+  // Texto de etiqueta en un solo span: los <label> del modal son flex en
+  // columna y un "*" suelto caería en otra línea.
+  const lbl = (texto, req) => `<span class="srv-lbl">${esc(texto)}${req ? ' <span class="srv-req">*</span>' : ''}</span>`;
+
   // Editor de líneas reutilizable (cotización / factura).
   // Celdas de una fila: guarda el serviceId (si viene del catálogo) en un hidden.
   function lineCells(it = {}) {
     return `<td class="srv-l-desc"><input type="hidden" name="sid" value="${it.serviceId ? Number(it.serviceId) : ''}">
-        <input name="d" value="${esc(it.descripcion || '')}" placeholder="Servicio / concepto"></td>
-      <td><input name="c" type="number" step="0.01" min="0" value="${it.cantidad ?? 1}"></td>
-      <td><input name="p" type="number" step="0.01" min="0" value="${it.precio ?? 0}"></td>
-      <td><input name="dp" type="number" step="0.01" min="0" max="100" value="${it.descuentoPct ?? 0}"></td>
-      <td><input name="ip" type="number" step="0.01" min="0" value="${it.itbisPct ?? 0}"></td>
+        <input name="d" value="${esc(it.descripcion || '')}" placeholder="Servicio o concepto"></td>
+      <td><input name="c" type="number" step="0.01" min="0" inputmode="decimal" value="${it.cantidad ?? 1}"></td>
+      <td><input name="p" type="number" step="0.01" min="0" inputmode="decimal" value="${it.precio ?? ''}" placeholder="0.00"></td>
+      <td><input name="dp" type="number" step="0.01" min="0" max="100" inputmode="decimal" value="${it.descuentoPct ?? 0}"></td>
+      <td><input name="ip" type="number" step="0.01" min="0" max="100" inputmode="decimal" value="${it.itbisPct ?? 0}"></td>
       <td class="srv-l-imp" data-imp>—</td>
-      <td class="srv-l-rm"><button type="button" class="srv-icon-btn" data-rm title="Quitar línea">✕</button></td>`;
+      <td class="srv-l-rm"><button type="button" class="srv-icon-btn" data-rm title="Quitar línea" aria-label="Quitar línea">${ICON.quitar}</button></td>`;
   }
 
-  function lineEditor(items) {
+  function lineEditor(items, titulo) {
     const its = items && items.length ? items : [{}];
     const rowsHtml = its.map((it, i) => `<tr data-i="${i}">${lineCells(it)}</tr>`).join('');
-    return `<div class="srv-lines">
-      <div class="srv-lines-cat">
-        <select data-cat-sel><option value="">+ Agregar desde el catálogo de servicios…</option></select>
-        <button type="button" class="btn btn-ghost srv-lines-add" data-add>+ Línea manual</button>
-      </div>
+    const acciones = `<div class="srv-lines-cat">
+        <select data-cat-sel title="Agregar un servicio del catálogo"><option value="">Agregar del catálogo…</option></select>
+        <button type="button" class="btn btn-primary srv-lines-add" data-add>+ Agregar línea</button>
+      </div>`;
+    return card(titulo, ICON.lista, `
       <div class="srv-lines-scroll">
-        <table class="srv-table srv-lines-table">
+        <table class="srv-lines-table">
+          <colgroup><col><col class="srv-c-cant"><col class="srv-c-precio"><col class="srv-c-pct"><col class="srv-c-pct"><col class="srv-c-total"><col class="srv-c-rm"></colgroup>
           <thead><tr>
             <th>Descripción</th><th class="num">Cant.</th><th class="num">Precio</th>
-            <th class="num">Desc&nbsp;%</th><th class="num">ITBIS&nbsp;%</th><th class="num">Importe</th><th></th>
+            <th class="num">Desc&nbsp;%</th><th class="num">ITBIS&nbsp;%</th><th class="num">Total</th><th></th>
           </tr></thead>
           <tbody data-lines>${rowsHtml}</tbody>
         </table>
-      </div>
-      <div class="srv-lines-tot">
-        <span>Subtotal <b data-t-sub>${money(0)}</b></span>
-        <span>Descuento <b data-t-desc>${money(0)}</b></span>
-        <span>ITBIS <b data-t-itbis>${money(0)}</b></span>
-        <span class="srv-lines-tot-total">Total <b data-t-total>${money(0)}</b></span>
-      </div>
+      </div>`, { acciones, cls: 'srv-lines' });
+  }
+
+  // Recuadro de totales (se llena con paintLineTotals).
+  function totalsBox(etiquetaTotal) {
+    return `<div class="srv-totbox">
+      <div class="srv-totbox-row"><span>Subtotal</span><b data-t-sub>${money(0)}</b></div>
+      <div class="srv-totbox-row"><span>Descuentos</span><b data-t-desc>${money(0)}</b></div>
+      <div class="srv-totbox-row"><span data-t-itbis-lbl>ITBIS</span><b data-t-itbis>${money(0)}</b></div>
+      <div class="srv-totbox-total"><span>${esc(etiquetaTotal)}</span><b data-t-total>${money(0)}</b></div>
     </div>`;
   }
 
+  // Líneas con descripción. Una línea con monto pero sin descripción es un
+  // error (antes se descartaba en silencio y la factura salía con otro total).
   function collectLines(root) {
-    return [...root.querySelectorAll('[data-lines] tr')].map((tr) => ({
-      serviceId: Number(tr.querySelector('[name=sid]')?.value || 0) || null,
-      descripcion: tr.querySelector('[name=d]').value.trim(),
-      cantidad: Number(tr.querySelector('[name=c]').value || 0),
-      precio: Number(tr.querySelector('[name=p]').value || 0),
-      descuentoPct: Number(tr.querySelector('[name=dp]').value || 0),
-      itbisPct: Number(tr.querySelector('[name=ip]').value || 0),
-    })).filter((x) => x.descripcion);
+    return [...root.querySelectorAll('[data-lines] tr')].map((tr, i) => {
+      const it = {
+        serviceId: Number(tr.querySelector('[name=sid]')?.value || 0) || null,
+        descripcion: tr.querySelector('[name=d]').value.trim(),
+        cantidad: Number(tr.querySelector('[name=c]').value || 0),
+        precio: Number(tr.querySelector('[name=p]').value || 0),
+        descuentoPct: Number(tr.querySelector('[name=dp]').value || 0),
+        itbisPct: Number(tr.querySelector('[name=ip]').value || 0),
+      };
+      if (!it.descripcion && it.precio > 0) {
+        tr.querySelector('[name=d]').focus();
+        throw new Error(`La línea ${i + 1} tiene precio pero no descripción.`);
+      }
+      if (it.descripcion && !(it.cantidad > 0)) {
+        tr.querySelector('[name=c]').focus();
+        throw new Error(`La cantidad de "${it.descripcion}" debe ser mayor que cero.`);
+      }
+      return it;
+    }).filter((x) => x.descripcion);
   }
 
   // Totales en vivo del editor de líneas (misma fórmula que computeTotals del backend).
   // Actualiza el "Importe" de cada fila y devuelve { subtotal, descuento, itbis, total }.
   function calcLineTotals(root) {
     let subtotal = 0, descuento = 0, itbis = 0;
+    const tasas = new Set(); // % de ITBIS de las líneas con monto (para la etiqueta)
     root.querySelectorAll('[data-lines] tr').forEach((tr) => {
       const cant = Math.max(0, Number(tr.querySelector('[name=c]')?.value || 0));
       const precio = Math.max(0, Number(tr.querySelector('[name=p]')?.value || 0));
@@ -488,34 +683,58 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const base = bruto - desc;
       const tax = base * iPct / 100;
       subtotal += bruto; descuento += desc; itbis += tax;
+      if (base > 0) tasas.add(iPct);
       const cell = tr.querySelector('[data-imp]');
       if (cell) cell.textContent = (bruto || base || tax) ? money(n2(base + tax)) : '—';
     });
-    return { subtotal: n2(subtotal), descuento: n2(descuento), itbis: n2(itbis), total: n2(subtotal - descuento + itbis) };
+    return { subtotal: n2(subtotal), descuento: n2(descuento), itbis: n2(itbis), total: n2(subtotal - descuento + itbis), tasas: [...tasas] };
   }
 
   function paintLineTotals(root) {
     const t = calcLineTotals(root);
-    const set = (sel, v) => { const el = root.querySelector(sel); if (el) el.textContent = money(v); };
-    set('[data-t-sub]', t.subtotal); set('[data-t-desc]', t.descuento);
-    set('[data-t-itbis]', t.itbis); set('[data-t-total]', t.total);
+    const set = (sel, v) => { const el = root.querySelector(sel); if (el) el.textContent = v; };
+    set('[data-t-sub]', money(t.subtotal));
+    set('[data-t-desc]', t.descuento > 0 ? '− ' + money(t.descuento) : money(0));
+    set('[data-t-itbis]', money(t.itbis));
+    set('[data-t-total]', money(t.total));
+    // "ITBIS (18%)" solo si todas las líneas llevan la misma tasa; con tasas
+    // mezcladas un porcentaje fijo en la etiqueta sería falso.
+    const tasa = t.tasas.length === 1 && t.tasas[0] > 0 ? t.tasas[0] : null;
+    set('[data-t-itbis-lbl]', tasa != null ? `ITBIS (${tasa % 1 ? n2(tasa) : tasa}%)` : 'ITBIS');
     return t;
   }
 
   function wireLines(root) {
     const tbody = root.querySelector('[data-lines]');
     const repaint = () => paintLineTotals(root);
+    // Quitar la única línea la deja en blanco en vez de dejar la tabla vacía.
+    const quitar = (tr) => {
+      if (tbody.rows.length > 1) { tr.remove(); repaint(); return; }
+      tr.innerHTML = lineCells({});
+      tr.querySelector('[data-rm]').onclick = () => quitar(tr);
+      repaint();
+    };
     const addRow = (it) => {
       const tr = document.createElement('tr');
       tr.innerHTML = lineCells(it || {});
       tbody.appendChild(tr);
-      tr.querySelector('[data-rm]').onclick = () => { tr.remove(); repaint(); };
+      tr.querySelector('[data-rm]').onclick = () => quitar(tr);
       repaint();
       return tr;
     };
-    root.querySelector('[data-add]').onclick = () => addRow({});
-    tbody.querySelectorAll('[data-rm]').forEach((el) => el.onclick = () => { el.closest('tr').remove(); repaint(); });
+    root.querySelector('[data-add]').onclick = () => addRow({}).querySelector('[name=d]').focus();
+    tbody.querySelectorAll('[data-rm]').forEach((el) => el.onclick = () => quitar(el.closest('tr')));
     tbody.addEventListener('input', repaint);
+    // Enter dentro de una línea NO emite la factura: pasa al siguiente campo y,
+    // al final de la última línea, agrega otra.
+    tbody.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' || e.target.tagName !== 'INPUT') return;
+      e.preventDefault();
+      const campos = [...tbody.querySelectorAll('input:not([type=hidden])')];
+      const sig = campos[campos.indexOf(e.target) + 1];
+      if (sig) { sig.focus(); sig.select?.(); }
+      else addRow({}).querySelector('[name=d]').focus();
+    });
     repaint();
 
     // Catálogo de servicios: elegir uno agrega (o rellena) una línea con su
@@ -565,20 +784,26 @@ Condición: La compra de los equipos y la programación de la instalación estar
     let scfg = {};
     try { scfg = await req('/config'); } catch (_) { /* opcional */ }
     const antDefault = scfg.quoteAdvancePct != null ? scfg.quoteAdvancePct : '';
+    const fechaIni = q?.fecha ? String(q.fecha).slice(0, 10) : today();
     const m = modal(q ? 'Editar cotización ' + q.numero : 'Nueva cotización', `
-      ${clientPickerHtml(q)}
-      <div class="srv-row">
-        <label>Fecha<input name="fecha" type="date" value="${esc(q?.fecha || today())}"></label>
-        <label>Validez (días)<input name="validezDias" type="number" min="1" value="${q?.validezDias ?? 15}"></label>
-      </div>
-      ${lineEditor(q?.items)}
-      <div class="srv-form-sec">Condiciones de pago (opcional)</div>
-      <div class="srv-row srv-row-bottom">
-        <label style="flex:0 0 150px">Anticipo requerido (%)
-          <input name="__antpct" id="srv-cot-antpct" type="number" min="0" max="100" step="1" value="${esc(antDefault)}" placeholder="ej. 50"></label>
-        <button type="button" class="btn btn-ghost" id="srv-cot-gennota" style="flex:0 0 auto">Generar nota de condiciones</button>
-      </div>
-      <label>Notas<textarea name="notas" id="srv-cot-notas" rows="4">${esc(q?.notas || '')}</textarea></label>`, async (fd, root) => {
+      ${card('Información del cliente', ICON.cliente, clientPickerHtml(q, { grid: true }))}
+      ${card('Detalles de la cotización', ICON.doc, `
+        <div class="srv-grid srv-grid-3">
+          <label>${lbl('Fecha', true)}<input name="fecha" id="srv-cot-fecha" type="date" value="${esc(fechaIni)}" required></label>
+          <label>${lbl('Validez (días)', true)}<input name="validezDias" id="srv-cot-validez" type="number" min="1" step="1" value="${q?.validezDias ?? 15}" required></label>
+          <label>Válida hasta<output class="srv-readout" id="srv-cot-vence">—</output></label>
+        </div>`)}
+      ${lineEditor(q?.items, 'Servicios cotizados')}
+      <div class="srv-form-end">
+        ${card('Condiciones y notas', ICON.nota, `
+          <div class="srv-cond-row">
+            <label>Anticipo requerido (%)
+              <input name="__antpct" id="srv-cot-antpct" type="number" min="0" max="100" step="1" value="${esc(antDefault)}" placeholder="Ej: 50"></label>
+            <button type="button" class="btn btn-secondary" id="srv-cot-gennota">Generar nota de condiciones</button>
+          </div>
+          <label>Notas<textarea name="notas" id="srv-cot-notas" rows="4" placeholder="Condiciones, alcance o comentarios para el cliente (opcional)">${esc(q?.notas || '')}</textarea></label>`)}
+        ${totalsBox('Total cotizado')}
+      </div>`, async (fd, root) => {
       const items = collectLines(root);
       if (!items.length) throw new Error('Agrega al menos una línea.');
       delete fd.__antpct;
@@ -588,9 +813,21 @@ Condición: La compra de los equipos y la programación de la instalación estar
       renderCotizaciones();
       const cotId = (saved && (saved.id || saved.quotationId)) || (q && q.id);
       if (cotId) firmarYGuardar('cotizaciones', cotId, { avisar: true });
-    }, { wide: true });
+    }, { xl: true, subtitle: 'Datos del cliente, servicios cotizados y condiciones.', submitLabel: q ? 'Guardar cambios' : 'Guardar cotización' });
     wireClientPicker(m);
     wireLines(m);
+    const fechaEl = m.querySelector('#srv-cot-fecha');
+    const validezEl = m.querySelector('#srv-cot-validez');
+    const syncVence = () => {
+      const f = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fechaEl.value);
+      const dias = Math.floor(Number(validezEl.value) || 0);
+      const out = m.querySelector('#srv-cot-vence');
+      if (!f || dias < 1) { out.textContent = '—'; return; }
+      const d = new Date(Number(f[1]), Number(f[2]) - 1, Number(f[3]) + dias);
+      out.textContent = fdate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    };
+    fechaEl.addEventListener('input', syncVence); validezEl.addEventListener('input', syncVence);
+    syncVence();
     m.querySelector('#srv-cot-gennota').onclick = () => {
       const pct = Number(m.querySelector('#srv-cot-antpct').value || 0);
       if (!(pct > 0 && pct < 100)) { toast('Escribe un % de anticipo entre 1 y 99.', 'error'); return; }
@@ -598,7 +835,9 @@ Condición: La compra de los equipos y la programación de la instalación estar
       if (!(total > 0)) { toast('Agrega al menos una línea con monto para calcular la nota.', 'error'); return; }
       const box = m.querySelector('#srv-cot-notas');
       if (box.value.trim() && !confirm('Esto reemplazará el texto actual de Notas. ¿Continuar?')) return;
-      box.value = buildQuoteTerms(total, pct, scfg.quoteTerms);
+      // Texto estándar: el texto fijo del negocio ahora va en Ajustes →
+      // Términos y condiciones y sale solo en cada documento.
+      box.value = buildQuoteTerms(total, pct);
       box.scrollTop = 0;
       toast('Nota de condiciones generada. Puedes editarla antes de guardar.', 'success');
     };
@@ -614,26 +853,28 @@ Condición: La compra de los equipos y la programación de la instalación estar
     const necesitaActivar = !Array.isArray(resp) && resp.necesitaActivar;
     const defMode = cfg.fiscalMode || 'ncf';
     const opts = [];
+    // El vencimiento va en la nota de abajo (#srv-comp-venc): en la opción
+    // alargaba el texto y se cortaba.
     comps.forEach((c) => {
-      const venc = c.vencimiento ? ' · vence ' + fdate(c.vencimiento) : '';
-      opts.push(`<option value="ncf|${esc(c.tipo)}" data-venc="${esc(c.vencimiento || '')}"${defMode === 'ncf' && (defaults.ncfTipo === c.tipo || (!defaults.ncfTipo && opts.length === 0)) ? ' selected' : ''}>NCF ${esc(c.tipo)} — ${esc(c.nombre)}${venc} (${c.disponibles} disp.)</option>`);
+      opts.push(`<option value="ncf|${esc(c.tipo)}" data-venc="${esc(c.vencimiento || '')}"${defMode === 'ncf' && (defaults.ncfTipo === c.tipo || (!defaults.ncfTipo && opts.length === 0)) ? ' selected' : ''}>NCF ${esc(c.tipo)} — ${esc(c.nombre)} (${c.disponibles} disp.)</option>`);
     });
     opts.push(`<option value="ecf|E31"${defMode === 'ecf' ? ' selected' : ''}>e-CF (electrónico)</option>`);
     opts.push(`<option value="consumidor|"${defMode === 'consumidor' || !comps.length ? ' selected' : ''}>Sin comprobante fiscal</option>`);
-    const metodos = ['efectivo', 'transferencia', 'tarjeta', 'deposito', 'cheque', 'otro'];
-    const html = `
-      <label>Comprobante fiscal
-        <select name="comprobante" id="srv-comp">${opts.join('')}</select>
-        <small class="srv-hint" id="srv-comp-venc"></small>
-        ${necesitaActivar ? '<small class="srv-hint" style="color:#b45309">⚠ Tienes secuencias NCF registradas pero <strong>desactivadas</strong>. Actívalas en Configuración → Ventas y Facturación → Secuencias de Comprobantes Fiscales (casilla "Usar los rangos registrados… al facturar").</small>' : (!comps.length ? '<small class="srv-hint" style="color:#b45309">No hay secuencias NCF disponibles. Regístralas en Configuración → Secuencias de Comprobantes Fiscales.</small>' : '')}
-      </label>
-      <div class="srv-row">
-        <label>Condición<select name="condicionPago" id="srv-cond">
+    const metodos = [['efectivo', 'Efectivo'], ['transferencia', 'Transferencia'], ['tarjeta', 'Tarjeta'], ['deposito', 'Depósito'], ['cheque', 'Cheque'], ['otro', 'Otro']];
+    const aviso = necesitaActivar
+      ? '<p class="srv-aviso">⚠ Tienes secuencias NCF registradas pero <strong>desactivadas</strong>. Actívalas en Configuración → Ventas y Facturación → Secuencias de Comprobantes Fiscales (casilla "Usar los rangos registrados… al facturar").</p>'
+      : (!comps.length ? '<p class="srv-aviso">⚠ No hay secuencias NCF disponibles. Regístralas en Configuración → Secuencias de Comprobantes Fiscales.</p>' : '');
+    // Piezas sueltas para el formulario por secciones; `html` las arma apiladas.
+    const campos = {
+      comprobante: `<label>Comprobante fiscal<select name="comprobante" id="srv-comp">${opts.join('')}</select></label>`,
+      condicion: `<label>${lbl('Condición de pago', true)}<select name="condicionPago" id="srv-cond">
           <option value="contado">Contado (pagada al emitir)</option>
           <option value="credito">Crédito</option>
-        </select></label>
-        <label id="srv-mp-wrap">Método de pago<select name="metodoPago">${metodos.map((m) => `<option>${m}</option>`).join('')}</select></label>
-      </div>`;
+        </select></label>`,
+      metodo: `<label id="srv-mp-wrap">${lbl('Método de pago', true)}<select name="metodoPago">${metodos.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>`,
+      avisos: `<small class="srv-hint" id="srv-comp-venc"></small>${aviso}`,
+    };
+    const html = `${campos.comprobante}${campos.avisos}<div class="srv-row">${campos.condicion}${campos.metodo}</div>`;
     const wire = (root) => {
       const sel = root.querySelector('#srv-comp');
       const vencEl = root.querySelector('#srv-comp-venc');
@@ -641,13 +882,38 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const mpWrap = root.querySelector('#srv-mp-wrap');
       const syncVenc = () => {
         const o = sel.selectedOptions[0];
-        vencEl.textContent = o && o.dataset.venc ? 'La factura vencerá el ' + fdate(o.dataset.venc) + ' (fecha del comprobante).' : '';
+        vencEl.textContent = o && o.dataset.venc ? 'Vencimiento del NCF: ' + fdate(o.dataset.venc) + ' (se imprime en la factura).' : '';
       };
       const syncMp = () => { mpWrap.style.display = cond.value === 'contado' ? '' : 'none'; };
       sel.addEventListener('change', syncVenc); cond.addEventListener('change', syncMp);
       syncVenc(); syncMp();
     };
-    return { html, wire };
+    return { html, campos, wire };
+  }
+
+  // Crédito fiscal y gubernamental (B01/B14/B15 y el e-CF E31) llevan el RNC o
+  // la cédula del comprador; consumo final no.
+  const COMP_CON_RNC = /^(ncf\|B0?1|ncf\|B14|ncf\|B15|ecf\|E31)$/;
+  function wireRncRequerido(root) {
+    const comp = root.querySelector('#srv-comp');
+    const rnc = root.querySelector('#srv-cli-rnc');
+    const marca = root.querySelector('#srv-cli-rnc-req');
+    if (!comp || !rnc) return () => true;
+    const exige = () => COMP_CON_RNC.test(comp.value);
+    const sync = () => { if (marca) marca.hidden = !exige(); };
+    comp.addEventListener('change', sync); sync();
+    // Validación al emitir: devuelve true o lanza con el mensaje para el usuario.
+    return () => {
+      if (!exige()) return true;
+      const dig = rnc.value.replace(/\D/g, '');
+      if (dig.length === 9 || dig.length === 11) return true;
+      // Bloqueado = viene del catálogo, y el backend usa el de Clientes.
+      if (rnc.readOnly) throw new Error('El RNC/cédula de este cliente en Clientes no es válido (9 u 11 dígitos). Corrígelo en Clientes.');
+      rnc.focus();
+      throw new Error(dig.length
+        ? 'El RNC debe tener 9 dígitos o la cédula 11.'
+        : 'Este comprobante necesita el RNC o la cédula del cliente.');
+    };
   }
   function readBilling(fd) {
     const [mode, tipo] = String(fd.comprobante || 'consumidor|').split('|');
@@ -676,7 +942,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
   async function renderFacturas() {
     const b = bodyOf('srv-facturas');
     actionsOf('srv-facturas').innerHTML = `
-      <label style="font-size:12px;display:flex;align-items:center;gap:5px"><input type="checkbox" id="fac-todas"${_facTodas ? ' checked' : ''}> Ver pagadas/anuladas</label>
+      <label class="srv-filtro"><input type="checkbox" id="fac-todas"${_facTodas ? ' checked' : ''}> Ver pagadas / anuladas</label>
       <button class="btn btn-ghost" data-catalogo>🧾 Catálogo de servicios</button>
       <button class="btn btn-primary" data-new>+ Nueva factura</button>`;
     actionsOf('srv-facturas').querySelector('[data-catalogo]').onclick = () => abrirCatalogo();
@@ -693,12 +959,12 @@ Condición: La compra de los equipos y la programación de la instalación estar
         { label: 'Total', num: true, render: (r) => money(r.total) },
         { label: 'Balance', num: true, render: (r) => money(r.balance) },
         { label: 'Estado', render: (r) => `<span class="srv-badge srv-badge-${r.estado}">${r.estado}</span>` },
-        { label: '', render: (r) => {
-          const acc = [`<button class="srv-link" data-doc="${r.id}">Imprimir</button>`, `<button class="srv-link" data-mail="${r.id}">Correo</button>`];
-          if (r.estado !== 'anulada' && r.balance > 0) acc.push(`<button class="srv-link" data-pay="${r.id}">Cobrar</button>`);
-          if (r.estado !== 'anulada') acc.push(`<button class="srv-link" data-void="${r.id}">Anular</button>`);
-          return acc.join(' · ');
-        } },
+        { label: '', render: (r) => acciones([
+          accion('data-doc', r.id, 'Imprimir', 'imprimir', 'pri', VER_AYUDA),
+          accion('data-mail', r.id, 'Correo', 'correo'),
+          r.estado !== 'anulada' && r.balance > 0 && accion('data-pay', r.id, 'Cobrar', 'cobrar', 'ok'),
+          r.estado !== 'anulada' && accion('data-void', r.id, 'Anular', 'anular', 'peligro'),
+        ]) },
       ], rows);
       b.querySelectorAll('[data-doc]').forEach((el) => el.onclick = () => verDocumento(el.dataset.doc));
       b.querySelectorAll('[data-mail]').forEach((el) => el.onclick = () => enviarCorreo(el.dataset.mail));
@@ -709,21 +975,33 @@ Condición: La compra de los equipos y la programación de la instalación estar
 
   async function formFactura() {
     const bf = await billingFields();
+    let validarRnc = () => true;
     const m = modal('Nueva factura de servicios', `
-      ${clientPickerHtml()}
-      <label>Fecha<input name="fecha" type="date" value="${today()}"></label>
-      ${bf.html}
-      ${lineEditor()}
-      <label>Notas<textarea name="notas" rows="2"></textarea></label>`, async (fd, root) => {
+      ${card('Información del cliente', ICON.cliente, clientPickerHtml(null, { grid: true }))}
+      ${card('Detalles de la factura', ICON.doc, `
+        <div class="srv-grid srv-grid-fac">
+          <label>${lbl('Fecha', true)}<input name="fecha" type="date" value="${today()}" required></label>
+          ${bf.campos.comprobante}
+          ${bf.campos.condicion}
+          ${bf.campos.metodo}
+        </div>
+        ${bf.campos.avisos}`)}
+      ${lineEditor(null, 'Servicios prestados')}
+      <div class="srv-form-end">
+        ${card('Notas', ICON.nota, '<textarea name="notas" rows="4" placeholder="Notas visibles en la factura (opcional)"></textarea>')}
+        ${totalsBox('Total a pagar')}
+      </div>`, async (fd, root) => {
+      validarRnc();
       const items = collectLines(root);
       if (!items.length) throw new Error('Agrega al menos una línea.');
       const inv = await post('/facturas', { ...fd, ...readBilling(fd), clientId: fd.clientId || null, items });
       toast('Factura ' + inv.numero + (inv.ncf ? ' · ' + inv.ncf : '') + (inv.estado === 'pagada' ? ' (pagada)' : '') + ' emitida', 'success');
       renderFacturas();
       if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
-    }, { wide: true, submitLabel: 'Emitir factura' });
+    }, { xl: true, subtitle: 'Datos del cliente, comprobante y servicios a facturar.', submitLabel: 'Emitir factura' });
     wireClientPicker(m);
     bf.wire(m);
+    validarRnc = wireRncRequerido(m);
     wireLines(m);
   }
 
@@ -1001,7 +1279,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
         { label: 'Método', key: 'metodo' },
         { label: 'Monto', num: true, render: (r) => money(r.monto) },
         { label: 'Estado', render: (r) => r.anuladoAt ? '<span class="srv-badge srv-badge-anulada">anulado</span>' : 'ok' },
-        { label: '', render: (r) => r.anuladoAt ? '' : `<button class="srv-link" data-void="${r.id}">Anular</button>` },
+        { label: '', render: (r) => r.anuladoAt ? '' : acciones([accion('data-void', r.id, 'Anular', 'anular', 'peligro')]) },
       ], rows);
       b.querySelectorAll('[data-void]').forEach((el) => el.onclick = async () => {
         const motivo = prompt('Motivo de la anulación del pago:');
@@ -1053,11 +1331,72 @@ Condición: La compra de los equipos y la programación de la instalación estar
           { label: 'Vence', render: (r) => r.vencimiento || '—' },
           { label: 'Atraso', num: true, render: (r) => r.diasAtraso ? r.diasAtraso + ' d' : '—' },
           { label: 'Balance', num: true, render: (r) => money(r.balance) },
-          { label: '', render: (r) => `<button class="srv-link" data-pay="${r.id}">Cobrar</button>` },
+          { label: '', render: (r) => acciones([accion('data-pay', r.id, 'Cobrar', 'cobrar', 'ok')]) },
         ], d.items)}`;
       b.querySelectorAll('[data-pay]').forEach((el) => el.onclick = () => formPago(el.dataset.pay));
     } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
   }
+
+  // ═══ Gastos ═══════════════════════════════════════════════════════════════
+  // Reusa el registro de Gastos del POS: API /api/expenses
+  // (server/routes/gastos.routes.js) y el formulario de js/compras.js
+  // (categoría, NCF, ITBIS, retenciones y datos del 606). Solo cambia la vista.
+  let _gasMes = '';
+  async function renderGastos() {
+    const b = bodyOf('srv-gastos');
+    const mesActual = today().slice(0, 7);
+    if (!_gasMes) _gasMes = mesActual;
+    actionsOf('srv-gastos').innerHTML = `
+      <label class="srv-filtro">Mes <input type="month" id="gas-mes" value="${esc(_gasMes)}"></label>
+      <button class="btn btn-primary" data-new>+ Nuevo gasto</button>`;
+    actionsOf('srv-gastos').querySelector('[data-new]').onclick = () => {
+      if (typeof window.openNuevoGastoModal !== 'function') { toast('El registro de gastos no está disponible.', 'error'); return; }
+      window.openNuevoGastoModal();
+    };
+    actionsOf('srv-gastos').querySelector('#gas-mes').onchange = (e) => { _gasMes = e.target.value || mesActual; renderGastos(); };
+    b.innerHTML = '<div class="srv-loading">Cargando…</div>';
+    try {
+      const [y, m] = _gasMes.split('-').map(Number);
+      const ultimo = String(new Date(y, m, 0).getDate()).padStart(2, '0');
+      const rows = await apiRef().getExpenses({ desde: `${_gasMes}-01`, hasta: `${_gasMes}-${ultimo}` }) || [];
+      const vigentes = rows.filter((g) => g.estado !== 'anulado');
+      const suma = (lista) => lista.reduce((t, g) => t + (Number(g.total) || 0), 0);
+      const puedeAnular = typeof window.currentUserCan === 'function' ? window.currentUserCan('gastos.anular') : true;
+      const puedeEditar = typeof window.currentUserCan === 'function' ? window.currentUserCan('gastos.crear') : true;
+      b.innerHTML = `
+        <div class="srv-kpis">
+          <div class="srv-kpi"><span class="srv-kpi-t">Gastos del mes</span><span class="srv-kpi-v">${money(suma(vigentes))}</span></div>
+          <div class="srv-kpi"><span class="srv-kpi-t">Pagados</span><span class="srv-kpi-v">${money(suma(vigentes.filter((g) => g.estado === 'pagado')))}</span></div>
+          <div class="srv-kpi"><span class="srv-kpi-t">Pendientes de pago</span><span class="srv-kpi-v">${money(suma(vigentes.filter((g) => g.estado === 'pendiente')))}</span></div>
+          <div class="srv-kpi"><span class="srv-kpi-t">Registros</span><span class="srv-kpi-v">${vigentes.length}</span></div>
+        </div>
+        ${table([
+          { label: 'Fecha', key: 'fecha' },
+          { label: 'Categoría', render: (g) => {
+            const lista = Array.isArray(g.categorias) && g.categorias.length ? g.categorias : [g.categoria];
+            return `<span title="${esc(lista.join(', '))}">${esc(lista[0])}${lista.length > 1 ? ` <span class="srv-mas">+${lista.length - 1}</span>` : ''}</span>`;
+          } },
+          { label: 'Descripción', render: (g) => esc(g.descripcion) + (g.ncf ? `<small class="srv-sub">NCF ${esc(g.ncf)}</small>` : '') },
+          { label: 'Proveedor / beneficiario', render: (g) => esc(g.proveedor || g.beneficiario || '—') },
+          { label: 'Total', num: true, render: (g) => money(g.total) },
+          { label: 'Estado', render: (g) => `<span class="srv-badge srv-badge-${esc(g.estado)}">${esc(g.estado)}</span>` },
+          { label: '', render: (g) => acciones([
+            accion('data-print', g.id, 'Imprimir', 'imprimir', 'pri', VER_AYUDA),
+            accion('data-ver', g.id, 'Ver', 'ver'),
+            g.estado !== 'anulado' && puedeEditar && accion('data-edit', g.id, 'Editar', 'editar'),
+            g.estado !== 'anulado' && puedeAnular && accion('data-void', g.id, 'Anular', 'anular', 'peligro'),
+          ]) },
+        ], rows)}`;
+      b.querySelectorAll('[data-edit]').forEach((el) => el.onclick = () => window.editarGasto && window.editarGasto(Number(el.dataset.edit)));
+      b.querySelectorAll('[data-print]').forEach((el) => el.onclick = () => window.imprimirGasto && window.imprimirGasto(Number(el.dataset.print)));
+      b.querySelectorAll('[data-ver]').forEach((el) => el.onclick = () => window.verGasto && window.verGasto(Number(el.dataset.ver)));
+      b.querySelectorAll('[data-void]').forEach((el) => el.onclick = () => window.anularGasto && window.anularGasto(Number(el.dataset.void)));
+    } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
+  }
+  // compras.js avisa al guardar o anular un gasto: refresca si la vista está abierta.
+  window.addEventListener('tc:gastos-cambiaron', () => {
+    if (document.getElementById('module-srv-gastos')?.classList.contains('active')) renderGastos().catch(() => {});
+  });
 
   // ═══ Auditoría ════════════════════════════════════════════════════════════
   async function renderAuditoria() {
@@ -1828,12 +2167,10 @@ Condición: La compra de los equipos y la programación de la instalación estar
         <span>Firmar automáticamente — la cotización y la factura salen firmadas al verlas, imprimirlas o enviarlas, sin descargar nada.</span>
       </label>
 
-      <div class="srv-form-sec">Cotizaciones — condiciones de pago</div>
-      <label>Anticipo sugerido por defecto (%)
-        <input name="quoteAdvancePct" type="number" min="0" max="100" step="1" value="${esc(cfg.quoteAdvancePct ?? '')}" placeholder="ej. 50 (vacío = sin sugerencia)"></label>
-      <label>Texto base de la nota (opcional)
-        <textarea name="quoteTerms" rows="5" placeholder="Vacío = texto estándar. Marcadores: {pct} {restantePct} {anticipo} {restante} {total}">${esc(cfg.quoteTerms || '')}</textarea></label>
-      <p class="srv-hint">En cada cotización eliges el % y el botón <strong>Generar nota de condiciones</strong> arma el texto con los montos calculados.</p>`,
+      <div class="srv-form-sec">Términos y condiciones</div>
+      <label>Texto de tus términos y condiciones
+        <textarea name="terms" rows="8" maxlength="20000" placeholder="Ej.: Los precios incluyen ITBIS. Se requiere un anticipo del 50% para iniciar el trabajo. La garantía cubre defectos de instalación por 30 días…">${esc(cfg.terms || '')}</textarea></label>
+      <p class="srv-hint">Sale solo, al final de <strong>todas las cotizaciones y facturas</strong> (al verlas, imprimirlas, en PDF y por correo). Déjalo vacío si no quieres que aparezca.</p>`,
     async (fd) => {
       if (!fd.mailPass) delete fd.mailPass;
       if (!fd.signature) delete fd.signature;
@@ -1910,6 +2247,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
     'srv-facturas': renderFacturas,
     'srv-cobros': renderCobros,
     'srv-cxc': renderCxc,
+    'srv-gastos': renderGastos,
     'srv-auditoria': renderAuditoria,
   };
 

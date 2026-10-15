@@ -134,7 +134,20 @@
       </div>
     </div>
   </div>
+  <!-- Términos y condiciones (js/terminos.js, texto en legal/terminos-y-condiciones.md) -->
+  <p class="login-legal">Al usar Tecno Caja aceptas los <button type="button" class="login-legal__link" onclick="abrirTerminos()">Términos y condiciones de uso</button>.</p>
 </div>
+
+<dialog id="terms-dialog" class="tc-terms tc-themed" aria-labelledby="terms-dialog-title">
+  <div class="tc-terms__head">
+    <strong id="terms-dialog-title">Términos y condiciones de uso</strong>
+    <button type="button" class="tc-terms__close" onclick="cerrarTerminos()" aria-label="Cerrar"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+  </div>
+  <div class="tc-terms__body" id="terms-dialog-body"></div>
+  <div class="tc-terms__foot">
+    <button type="button" class="btn-primary" onclick="cerrarTerminos()">Cerrar</button>
+  </div>
+</dialog>
 
 <!-- INITIAL SETUP SCREEN -->
 <div id="setup-screen" class="login-screen tc-themed tc-acceso hidden">
@@ -567,6 +580,11 @@
         <div id="wzrl-reading-msg" style="display:none;color:var(--text3);font-size:.82rem;text-align:center;padding:.5rem 0">Leyendo archivo…</div>
       </div>
 
+      <!-- Fuera de los dos pasos: antes estaba dentro del paso B (oculto hasta
+           leer bien el archivo), así que un error al leerlo no se veía y el
+           botón parecía no hacer nada. -->
+      <div id="wzrl-error" class="wz-auth-error wz-hidden" style="margin-bottom:.6rem"></div>
+
       <!-- Paso B: metadata + contraseña + confirmar -->
       <div id="wzrl-step-confirm" style="display:none">
         <div id="wzrl-meta-box" style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:.9rem 1rem;margin-bottom:1rem;font-size:.83rem;line-height:1.8">
@@ -586,7 +604,6 @@
         <div id="wzrl-warn-existing" class="wz-auth-warning" style="display:none;margin-bottom:.8rem">
           Ya existe un negocio configurado. Esta operación <strong>sobreescribirá</strong> todos los datos actuales con los del respaldo. Se creará un pre-respaldo automático antes de continuar.
         </div>
-        <div id="wzrl-error" class="wz-auth-error wz-hidden" style="margin-bottom:.6rem"></div>
         <div id="wzrl-progress" style="display:none;margin-bottom:.6rem">
           <div style="background:rgba(255,255,255,.08);border-radius:6px;overflow:hidden;height:6px;margin-bottom:.4rem">
             <div id="wzrl-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,#6c5ce7,#00b894);transition:width .4s"></div>
@@ -2866,6 +2883,17 @@
               <option id="cfg-option-paper-a4" value="a4">Carta / A4</option>
             </select>
           </div>
+          <!-- Diseño de la factura A4 (js/factura-plantillas.js). Solo se ve con
+               papel "Carta / A4"; se guarda en la BD y vale para todas las cajas. -->
+          <div class="form-group span-full tc-fp" id="cfg-invoice-design" style="display:none">
+            <label>Diseño de la factura A4</label>
+            <small class="helper-text">Elige la plantilla y el color. Se usa al imprimir, guardar en PDF y copiar para WhatsApp, en todas las cajas del negocio.</small>
+            <input type="hidden" id="cfg-invoice-template" value="clasica">
+            <input type="hidden" id="cfg-invoice-color" value="">
+            <div class="tc-fp-plantillas" id="cfg-invoice-templates" role="radiogroup" aria-label="Plantilla de la factura"></div>
+            <div class="tc-fp-sublabel">Color</div>
+            <div class="tc-fp-colores" id="cfg-invoice-colors" role="radiogroup" aria-label="Color de la factura"></div>
+          </div>
           <div class="form-group span-full">
             <label><input type="checkbox" id="cfg-receipt-narrow-cols"> Impresora económica de 80mm (usa 42 columnas en vez de 48)</label>
             <small id="cfg-receipt-narrow-cols-hint">Actívalo solo si en esta impresora en particular las facturas salen con las palabras cortadas o desalineadas — algunos modelos económicos de 80mm imprimen menos caracteres por línea que el estándar.</small>
@@ -5081,6 +5109,7 @@
 <script src="js/proveedores.js"></script>
 <script src="js/compras.js"></script>
 <script src="js/iconos.js"></script>
+<script src="js/factura-plantillas.js"></script>
 <script src="js/ventas.js"></script>
 <script src="js/cobro.js"></script>
 <script src="js/ventas-ui.js"></script>
@@ -5105,6 +5134,7 @@
 <script src="js/file-manager.js"></script>
 <script src="js/respaldos.js"></script>
 <script src="js/platform-init.js"></script>
+<script src="js/terminos.js"></script>
 <script src="js/app.js"></script>
 <script src="js/shell.js"></script>
 <script src="js/modulos.js"></script>

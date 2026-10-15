@@ -540,7 +540,9 @@ module.exports = function createOfflineRouter(deps) {
           ['activeBranchName', activeBranchName],
           ['activeCashRegisterName', activeCashRegisterName],
           ['requireCashOpenBeforeUse', String(cfg.require_cash_open_before_use ?? true)],
-          ['sales_split_view_enabled', String(cfg.sales_split_view_enabled ?? 0)]
+          ['sales_split_view_enabled', String(cfg.sales_split_view_enabled ?? 0)],
+          ['invoice_template', cfg.invoice_template || ''],
+          ['invoice_accent_color', cfg.invoice_accent_color || '']
         ];
         for (const [k, v] of configItems) {
           await localQuery(
@@ -1634,6 +1636,8 @@ module.exports = function createOfflineRouter(deps) {
         mensaje: rawCfg.receipt_message || rawCfg.mensaje || '¡Gracias por su compra!',
         tipoNegocio: rawCfg.business_type || rawCfg.tipoNegocio || '',
         salesSplitViewEnabled: rawCfg.sales_split_view_enabled === '1' || rawCfg.salesSplitViewEnabled === 'true',
+        invoiceTemplate: rawCfg.invoice_template || 'clasica',
+        invoiceAccentColor: rawCfg.invoice_accent_color || '',
         activeBranchId: Number(rawCfg.active_branch_id || rawCfg.activeBranchId || 0) || null,
         activeCashRegisterId: Number(rawCfg.active_cash_register_id || rawCfg.activeCashRegisterId || 0) || null,
         activeBranchName: rawCfg.activeBranchName || '',

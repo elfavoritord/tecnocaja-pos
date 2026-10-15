@@ -1403,6 +1403,97 @@
     if (id) _wzShow(id);
   }
 
+  // Encima de un negocio que ya existe, las rutas /api/respaldos/setup/* piden
+  // el permiso de "Reinstalar una app existente" (js/app.js → getSetupReemplazoToken).
+  function _wzHeaders() {
+    const token = typeof window.getSetupReemplazoToken === 'function' ? window.getSetupReemplazoToken() : '';
+    return token
+      ? { 'Content-Type': 'application/json', 'X-TC-Reemplazo': token }
+      : { 'Content-Type': 'application/json' };
+  }
+
+  // Al restaurar encima de un negocio, el servidor guarda antes una copia de él.
+  function _wzNotaPreRespaldo(data) {
+    return data && data.preBackup
+      ? ` Se guardó una copia del negocio anterior en la carpeta de respaldos: ${data.preBackup}`
+      : '';
+  }
+
+  // Si esta PC ya tiene un negocio, el servidor pide permiso para reemplazarlo
+  // (code REEMPLAZO_NO_AUTORIZADO). En vez de mandar al usuario de vuelta a
+  // "Reinstalar una app existente", se pide aquí mismo la clave de seguridad o
+  // un administrador general y se reintenta el paso con el permiso.
+  function _wzPedirPermiso(errorId, reintentar) {
+    const caja = document.getElementById(errorId);
+    if (!caja) return;
+    caja.classList.remove('wz-hidden');
+    caja.innerHTML = `
+      <div style="margin-bottom:.55rem;line-height:1.5">Esta computadora ya tiene un negocio configurado. Para reemplazarlo con este respaldo, confirma que eres el dueño. Antes de restaurar se guarda una copia del negocio actual.</div>
+      <div data-permiso="clave">
+        <input type="password" class="form-input" data-campo="clave" placeholder="Clave de seguridad" autocomplete="off" style="margin-bottom:.45rem">
+      </div>
+      <div data-permiso="admin" style="display:none">
+        <input type="text" class="form-input" data-campo="usuario" placeholder="Usuario administrador" autocomplete="username" style="margin-bottom:.45rem">
+        <input type="password" class="form-input" data-campo="password" placeholder="Contraseña" autocomplete="current-password" style="margin-bottom:.45rem">
+      </div>
+      <div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn-primary" data-accion="autorizar">Autorizar y continuar</button>
+        <button type="button" data-accion="cambiar" style="background:none;border:0;padding:0;color:inherit;font:inherit;font-size:.8rem;text-decoration:underline;cursor:pointer">Usar usuario y contraseña de administrador</button>
+      </div>
+      <div data-campo="estado" style="margin-top:.45rem;font-size:.8rem"></div>`;
+
+    const q = (selector) => caja.querySelector(selector);
+    let usarAdmin = false;
+    const enfocar = () => q(usarAdmin ? '[data-campo="usuario"]' : '[data-campo="clave"]')?.focus();
+
+    q('[data-accion="cambiar"]').onclick = () => {
+      usarAdmin = !usarAdmin;
+      q('[data-permiso="clave"]').style.display = usarAdmin ? 'none' : '';
+      q('[data-permiso="admin"]').style.display = usarAdmin ? '' : 'none';
+      q('[data-accion="cambiar"]').textContent = usarAdmin
+        ? 'Usar la clave de seguridad'
+        : 'Usar usuario y contraseña de administrador';
+      enfocar();
+    };
+
+    const autorizar = async () => {
+      const estado = q('[data-campo="estado"]');
+      const body = usarAdmin
+        ? { usuario: q('[data-campo="usuario"]').value.trim(), password: q('[data-campo="password"]').value }
+        : { claveSeguridad: q('[data-campo="clave"]').value.trim() };
+      if (usarAdmin ? (!body.usuario || !body.password) : !body.claveSeguridad) {
+        estado.textContent = usarAdmin ? 'Escribe el usuario y la contraseña.' : 'Escribe la clave de seguridad.';
+        return;
+      }
+      estado.textContent = 'Verificando…';
+      try {
+        const res = await fetch('/api/setup/autorizar-reemplazo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.token) {
+          estado.textContent = data.error || 'No se pudo autorizar.';
+          return;
+        }
+        if (typeof window.setSetupReemplazoToken === 'function') window.setSetupReemplazoToken(data.token);
+        caja.innerHTML = '';
+        caja.classList.add('wz-hidden');
+        reintentar();
+      } catch (err) {
+        estado.textContent = err.message || 'No se pudo autorizar.';
+      }
+    };
+    q('[data-accion="autorizar"]').onclick = autorizar;
+    caja.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') { ev.preventDefault(); autorizar(); }
+      });
+    });
+    setTimeout(enfocar, 0);
+  }
+
   /** Elección en la pantalla de bienvenida */
   window.wzWelcomeChoice = function wzWelcomeChoice(choice) {
     if (choice === 'nuevo') {
@@ -1437,6 +1528,18 @@
   async function _wzHandleFileChosen(e) {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
+    WZR.pendingFile = file;
+    await _wzLeerArchivo(file);
+  }
+
+  async function _wzLeerArchivo(file) {
+    _wzHide('wzrl-error');
+    // La "copia segura" interna (.novaseguro) no es un respaldo del asistente.
+    if (/\.novaseguro$/i.test(file.name)) {
+      _wzShow('wzrl-error');
+      _wzText('wzrl-error', 'Ese archivo es la copia segura interna de la app y no se restaura desde aquí. Elige un respaldo .tcbak (se guardan en Documentos\\TecnoCaja\\Backups).');
+      return;
+    }
 
     _wzStyle('wzrl-reading-msg', 'display', '');
     _wzStyle('wzrl-step-select', 'display', 'none'); // ocultar botón mientras lee
@@ -1457,14 +1560,21 @@
       // Consultar metadatos al backend (sin restaurar)
       const res  = await fetch('/api/respaldos/setup/leer-tcbak', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _wzHeaders(),
         body:    JSON.stringify({ base64 }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({
+        ok: false,
+        error: `El servidor no pudo leer el archivo (respuesta ${res.status}).`,
+      }));
 
       if (!data.ok) {
         _wzStyle('wzrl-reading-msg', 'display', 'none');
         _wzStyle('wzrl-step-select', 'display', '');
+        if (data.code === 'REEMPLAZO_NO_AUTORIZADO') {
+          _wzPedirPermiso('wzrl-error', () => _wzLeerArchivo(file));
+          return;
+        }
         _wzShow('wzrl-error');
         _wzText('wzrl-error', data.error || 'Archivo inválido.');
         return;
@@ -1544,10 +1654,13 @@
 
       const res  = await fetch('/api/respaldos/setup/restaurar-local', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _wzHeaders(),
         body:    JSON.stringify({ base64: WZR.fileBase64, fileName: WZR.fileName, password }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({
+        ok: false,
+        error: `El servidor no pudo restaurar el archivo (respuesta ${res.status}).`,
+      }));
 
       _wzStyle('wzrl-progress-bar', 'width', '100%');
 
@@ -1562,15 +1675,19 @@
         }
         _wzText('wzrl-progress-msg', '');
         _wzStyle('wzrl-progress', 'display', 'none');
-        _wzShow('wzrl-error');
-        _wzText('wzrl-error', data.error || 'Error al restaurar.');
         _wzDisable('wzrl-confirm-btn', false);
         _wzDisable('wzrl-back-btn',    false);
+        if (data.code === 'REEMPLAZO_NO_AUTORIZADO') {
+          _wzPedirPermiso('wzrl-error', () => window.wzRestoreLocalConfirm());
+          return;
+        }
+        _wzShow('wzrl-error');
+        _wzText('wzrl-error', data.error || 'Error al restaurar.');
         return;
       }
 
       _wzText('wzrl-progress-msg', `¡Listo! ${data.usersRestored ? `${data.usersRestored} usuario(s) restaurado(s). ` : ''}Reiniciando…`);
-      await _wzShowSuccessAndRestart('Restauración completada. La aplicación se reiniciará.');
+      await _wzShowSuccessAndRestart(`Restauración completada. La aplicación se reiniciará.${_wzNotaPreRespaldo(data)}`);
     } catch (err) {
       _wzStyle('wzrl-progress', 'display', 'none');
       _wzShow('wzrl-error');
@@ -1602,7 +1719,7 @@
     try {
       const res  = await fetch('/api/respaldos/setup/cloud/auth', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _wzHeaders(),
         body:    JSON.stringify({ email }),
       });
       const data = await res.json();
@@ -1610,6 +1727,10 @@
       _wzStyle('wzrc-list-loading', 'display', 'none');
 
       if (!data.ok) {
+        if (data.code === 'REEMPLAZO_NO_AUTORIZADO') {
+          _wzPedirPermiso('wzrc-login-error', () => window.wzRestoreCloudLogin());
+          return;
+        }
         _wzShow('wzrc-login-error');
         _wzText('wzrc-login-error', data.error || 'No se encontraron respaldos en la nube para este dispositivo.');
         return;
@@ -1740,7 +1861,7 @@
 
       const res = await fetch('/api/respaldos/setup/restaurar-nube', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: _wzHeaders(),
         body:    JSON.stringify({
           storageKey:    b.storageKey || b.key,
           loginEmail,
@@ -1760,15 +1881,19 @@
           return;
         }
         _wzStyle('wzrc-progress', 'display', 'none');
-        _wzShow('wzrc-error');
-        _wzText('wzrc-error', data.error || 'Error al restaurar desde la nube.');
         _wzDisable('wzrc-confirm-btn', false);
         _wzDisable('wzrc-back-btn',    false);
+        if (data.code === 'REEMPLAZO_NO_AUTORIZADO') {
+          _wzPedirPermiso('wzrc-error', () => window.wzRestoreCloudConfirm());
+          return;
+        }
+        _wzShow('wzrc-error');
+        _wzText('wzrc-error', data.error || 'Error al restaurar desde la nube.');
         return;
       }
 
       _wzText('wzrc-progress-msg', '¡Listo! Reiniciando…');
-      await _wzShowSuccessAndRestart('Restauración desde la nube completada. La aplicación se reiniciará.');
+      await _wzShowSuccessAndRestart(`Restauración desde la nube completada. La aplicación se reiniciará.${_wzNotaPreRespaldo(data)}`);
     } catch (err) {
       _wzStyle('wzrc-progress', 'display', 'none');
       _wzShow('wzrc-error');
@@ -1784,7 +1909,8 @@
     if (window.showToast) {
       window.showToast(msg, 'success');
     }
-    await new Promise(r => setTimeout(r, 1800));
+    // Más tiempo cuando el aviso trae el nombre de la copia del negocio anterior.
+    await new Promise(r => setTimeout(r, String(msg).length > 90 ? 3500 : 1800));
     // Solicitar reinicio al proceso Electron (si está disponible)
     if (window.novaDesktop && window.novaDesktop.restartApp) {
       window.novaDesktop.restartApp();

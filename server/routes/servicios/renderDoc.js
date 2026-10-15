@@ -2,10 +2,18 @@
 
 /**
  * renderDoc.js — Documentos formales del modo Empresas de Servicios.
- *   A4  → factura y cotización con diseño formal (logo, sello, "Son:" en letras).
+ *   A4  → factura y cotización con la plantilla y el color elegidos en
+ *         Configuración → Impresora de Recibos (js/factura-plantillas.js, la
+ *         misma de la factura A4 del POS). doc.diseno = { plantilla, color }.
+ *         renderFormalA4 (diseño propio) queda de respaldo si la plantilla falla.
  *   80mm / 58mm → ticket térmico.
  * El envío por correo usa SIEMPRE A4.
  */
+
+let FacturaPlantillas = null;
+try {
+  FacturaPlantillas = require('../../../js/factura-plantillas');
+} catch (_) { /* sin plantillas: renderFormalA4 */ }
 
 function esc(v) {
   return String(v == null ? '' : v)
@@ -95,20 +103,147 @@ function numeroALetras(valor) {
   return `${palabras} PESOS DOMINICANOS CON ${String(cent).padStart(2, '0')}/100`;
 }
 
-// ── A4 formal (factura / cotización) ──────────────────────────────────────
+const ESTADO_LABEL = {
+  borrador: 'BORRADOR', enviada: 'ENVIADA', aprobada: 'APROBADA', rechazada: 'RECHAZADA',
+  vencida: 'VENCIDA', convertida: 'CONVERTIDA EN FACTURA',
+  pendiente: 'PENDIENTE DE PAGO', parcial: 'PAGO PARCIAL', pagada: 'PAGADA', anulada: 'ANULADA',
+};
+function estadoDe(invoice) {
+  const estado = String(invoice.estado || '').toLowerCase();
+  return {
+    estado,
+    label: ESTADO_LABEL[estado] || (invoice.estado || '').toUpperCase(),
+    sello: ['pagada', 'aprobada', 'convertida'].includes(estado) ? 'ok'
+      : ['anulada', 'rechazada', 'vencida'].includes(estado) ? 'bad' : 'warn',
+    anulada: estado === 'anulada' || estado === 'rechazada',
+  };
+}
+function pieDe(isCot, conFirma) {
+  return isCot
+    ? 'Cotización sin valor fiscal. Precios sujetos a cambio después de la fecha de validez. Documento generado electrónicamente.'
+    : `Factura por servicios profesionales. Documento generado electrónicamente${conFirma ? '' : '; válido sin firma ni sello'}. Gracias por su preferencia.`;
+}
+function fechaFirma(ds) {
+  if (!ds || !ds.fecha) return '';
+  const dt = ds.fecha instanceof Date ? ds.fecha : new Date(ds.fecha);
+  return isNaN(dt) ? '' : dt.toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+// ── A4 con las plantillas de Configuración ────────────────────────────────
+const TIPOS_NCF = {
+  B01: 'Crédito Fiscal', B02: 'Consumo', B14: 'Régimen Especial', B15: 'Gubernamental',
+  E31: 'Crédito Fiscal Electrónico', E32: 'Consumo Electrónico',
+};
+const METODOS = {
+  efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta',
+  deposito: 'Depósito', cheque: 'Cheque', otro: 'Otro',
+};
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+function isoDe(v) {
+  if (!v) return '';
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? '' : v.toISOString().slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v).trim());
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  const d = new Date(String(v));
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+}
+function sumarDias(v, dias) {
+  const iso = isoDe(v);
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + (Number(dias) || 0))).toISOString().slice(0, 10);
+}
+
+// Factura/cotización de servicios → datos que espera FacturaPlantillas.render
+// (mismos campos que ventaToFormalDoc del POS, más notas, firmas y nota por línea).
+function aDocumentoPlantilla({ empresa = {}, invoice = {}, items = [], terminos = '' }) {
+  const isCot = invoice.docType === 'cotizacion';
+  const st = estadoDe(invoice);
+  const tipo = String(invoice.ncfTipo || '').toUpperCase();
+  const pago = (invoice.pagos || []).find((p) => !p.anuladoAt);
+  const credito = !isCot && invoice.condicionPago === 'credito';
+  const ds = invoice.digitalSign || null;
+  const validez = Number(invoice.validezDias || 15);
+  return {
+    isCot,
+    anulada: st.anulada,
+    marcaAgua: st.estado === 'rechazada' ? 'RECHAZADA' : 'ANULADA',
+    selloClase: st.sello,
+    estadoLabel: st.label,
+    pagado: isCot ? 0 : Number(invoice.pagado || 0),
+    balance: isCot ? 0 : Number(invoice.balance || 0),
+    empresa: {
+      nombre: empresa.nombre || '', rnc: empresa.rnc || '', direccion: empresa.direccion || '',
+      telefono: empresa.telefono || '', logo: empresa.logo || '',
+    },
+    numero: invoice.numero || '',
+    ncf: invoice.ncf || '',
+    fiscalMode: invoice.fiscalMode || '',
+    ncfTipoLabel: !isCot && TIPOS_NCF[tipo] ? `${tipo} — ${TIPOS_NCF[tipo]}` : '',
+    fechaTexto: fdate(invoice.fecha),
+    vencimientoTexto: isCot ? fdate(sumarDias(invoice.fecha, validez)) : fdate(invoice.ncfVencimiento),
+    metodoPago: isCot || !pago ? '' : (METODOS[pago.metodo] || String(pago.metodo || '')),
+    condicionPago: isCot ? `Válida por ${validez} días`
+      : (credito ? `Crédito${invoice.vencimiento ? ' · vence ' + fdate(invoice.vencimiento) : ''}` : 'Contado'),
+    cliente: {
+      nombre: invoice.clientName || 'Consumidor final', rnc: invoice.clientRnc || '',
+      tel: invoice.clientTel || '', dir: invoice.clientDir || '',
+    },
+    // Importe = cantidad × precio (suma = Subtotal). El descuento de la línea
+    // va como nota debajo de la descripción y en el total como "Descuento".
+    items: items.map((it) => {
+      const bruto = Number(it.cantidad || 0) * Number(it.precio || 0);
+      const dPct = Number(it.descuentoPct || 0);
+      const desc = bruto * dPct / 100;
+      const iPct = Number(it.itbisPct || 0);
+      return {
+        descripcion: it.descripcion,
+        cantidad: Number(it.cantidad || 0),
+        precio: Number(it.precio || 0),
+        itbisPct: iPct,
+        itbisMonto: r2((bruto - desc) * iPct / 100),
+        total: r2(bruto),
+        nota: dPct ? `Descuento ${r2(dPct)}% (- ${money(desc)})` : '',
+      };
+    }),
+    subtotal: Number(invoice.subtotal || 0),
+    descuento: Number(invoice.descuento || 0),
+    itbis: Number(invoice.itbis || 0),
+    total: Number(invoice.total || 0),
+    redondeo: 0,
+    notas: [invoice.condiciones, invoice.notas].map((x) => String(x || '').trim()).filter(Boolean).join('\n\n'),
+    terminos: String(terminos || '').trim(),
+    firmas: (isCot || empresa.firma || ds) ? {
+      imagen: empresa.firma || '',
+      digital: ds ? { nombre: ds.nombre || empresa.nombre || '', rnc: ds.rnc || '', fecha: fechaFirma(ds) } : null,
+      etiqueta: `Firma y sello ${empresa.nombre || ''}`.trim(),
+      cliente: isCot ? 'Aceptación del cliente' : '',
+    } : null,
+    pie: pieDe(isCot, !!(empresa.firma || ds)),
+  };
+}
+
+function renderPlantillaA4(doc) {
+  const d = aDocumentoPlantilla(doc);
+  const diseno = doc.diseno || {};
+  const hoja = FacturaPlantillas.render(d, { plantilla: diseno.plantilla, color: diseno.color });
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<title>${esc(d.numero)} — ${d.isCot ? 'COTIZACIÓN' : 'FACTURA'}</title>
+<style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#eef1f4}@media print{html,body{background:#fff}}</style>
+</head><body>${hoja}${FacturaPlantillas.scriptUnaHoja()}</body></html>`;
+}
+
+// ── A4 formal propio (respaldo si las plantillas no cargan) ─────────────────
 function renderFormalA4(doc) {
   const { empresa = {}, invoice = {}, items = [] } = doc;
   const isCot = invoice.docType === 'cotizacion';
   const titulo = isCot ? 'COTIZACIÓN' : 'FACTURA';
-  const estado = String(invoice.estado || '').toLowerCase();
-  const estadoLabel = {
-    borrador: 'BORRADOR', enviada: 'ENVIADA', aprobada: 'APROBADA', rechazada: 'RECHAZADA',
-    vencida: 'VENCIDA', convertida: 'CONVERTIDA EN FACTURA',
-    pendiente: 'PENDIENTE DE PAGO', parcial: 'PAGO PARCIAL', pagada: 'PAGADA', anulada: 'ANULADA',
-  }[estado] || (invoice.estado || '').toUpperCase();
-  const stampClass = ['pagada', 'aprobada', 'convertida'].includes(estado) ? 'ok'
-    : ['anulada', 'rechazada', 'vencida'].includes(estado) ? 'bad' : 'warn';
-  const anulada = estado === 'anulada' || estado === 'rechazada';
+  const st = estadoDe(invoice);
+  const estado = st.estado;
+  const estadoLabel = st.label;
+  const stampClass = st.sello;
+  const anulada = st.anulada;
   const logoHtml = empresa.logo
     ? `<img src="${empresa.logo}" class="logo" alt="logo">`
     : `<div class="brand-fallback">${esc(empresa.nombre || 'Empresa')}</div>`;
@@ -129,20 +264,14 @@ function renderFormalA4(doc) {
     : '';
   // Bloque visible de firma digital — va donde antes iba "Firma y sello".
   const ds = invoice.digitalSign;
-  let dsFecha = '';
-  if (ds && ds.fecha) {
-    const dt = ds.fecha instanceof Date ? ds.fecha : new Date(ds.fecha);
-    dsFecha = isNaN(dt) ? '' : dt.toLocaleString('es-DO', { dateStyle: 'medium', timeStyle: 'short' });
-  }
+  const dsFecha = fechaFirma(ds);
   const dsigHtml = ds ? `<div class="dsig">
       <div class="dsig-h">✔ FIRMADO DIGITALMENTE</div>
       <div class="dsig-n">${esc(ds.nombre || empresa.nombre || '')}</div>
       ${ds.rnc ? `<div class="dsig-x">RNC ${esc(ds.rnc)}</div>` : ''}
       ${dsFecha ? `<div class="dsig-x">${esc(dsFecha)}</div>` : ''}
     </div>` : '';
-  const footerNote = isCot
-    ? 'Cotización sin valor fiscal. Precios sujetos a cambio después de la fecha de validez. Documento generado electrónicamente.'
-    : `Factura por servicios profesionales. Documento generado electrónicamente${(firmaImg || ds) ? '' : '; válido sin firma ni sello'}. Gracias por su preferencia.`;
+  const footerNote = pieDe(isCot, !!(firmaImg || ds));
 
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <title>${esc(invoice.numero)} — ${titulo}</title>
@@ -277,6 +406,7 @@ function renderFormalA4(doc) {
     </div></div>
     <div class="amount-words"><b>Son:</b> ${esc(numeroALetras(invoice.total))}</div>
     ${invoice.notas ? `<div class="notes"><span class="block-label">Notas</span><p>${formatNotas(invoice.notas)}</p></div>` : ''}
+    ${doc.terminos ? `<div class="notes"><span class="block-label">Términos y condiciones</span><p>${formatNotas(doc.terminos)}</p></div>` : ''}
     ${(isCot || firmaImg || ds) ? `<div class="sign${isCot ? '' : ' sign-solo'}">
       <div class="cell">${firmaImg}${dsigHtml || `<div class="line">Firma y sello ${esc(empresa.nombre || '')}</div>`}</div>
       ${isCot ? '<div class="cell"><div class="line">Aceptación del cliente</div></div>' : ''}
@@ -329,6 +459,7 @@ function renderThermal(doc, width) {
   <div class="hr"></div>
   ${empresa.firma ? `<div class="c"><img src="${empresa.firma}" style="max-width:${width === '58mm' ? '38mm' : '50mm'};max-height:16mm"></div><div class="c">Firma y sello ${esc(empresa.nombre || '')}</div><div class="hr"></div>` : ''}
   ${invoice.digitalSign ? `<div class="c" style="font-weight:bold">FIRMADO DIGITALMENTE</div><div class="c">${esc(invoice.digitalSign.nombre || empresa.nombre || '')}${invoice.digitalSign.rnc ? ' - RNC ' + esc(invoice.digitalSign.rnc) : ''}</div><div class="hr"></div>` : ''}
+  ${doc.terminos ? `<div style="font-size:9px;line-height:1.3"><b>Términos y condiciones</b><br>${esc(String(doc.terminos).trim()).replace(/\r?\n/g, '<br>')}</div><div class="hr"></div>` : ''}
   <div class="c">${isCot ? 'Cotización sin valor fiscal' : '¡Gracias por su preferencia!'}</div>
 </body></html>`;
 }
@@ -337,6 +468,11 @@ function renderInvoiceDoc(doc, formato) {
   const f = String(formato || 'a4').toLowerCase();
   if (f === '80mm') return renderThermal(doc, '80mm');
   if (f === '58mm') return renderThermal(doc, '58mm');
+  if (FacturaPlantillas) {
+    try { return renderPlantillaA4(doc); } catch (e) {
+      console.warn('[servicios] plantilla A4 falló, uso el diseño propio:', e.message);
+    }
+  }
   return renderFormalA4(doc);
 }
 

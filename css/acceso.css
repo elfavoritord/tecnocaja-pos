@@ -100,9 +100,15 @@
 
 /* ═══ INICIO DE SESIÓN ═══════════════════════════════════════════════════ */
 
+/* Tarjeta y, debajo, el enlace a los términos y condiciones. */
+#login-screen {
+  flex-direction: column;
+  gap: var(--tc-space-3);
+}
+
 #login-screen .login-card {
   width: min(960px, 100%);
-  max-height: calc(100vh - 32px);
+  max-height: calc(100vh - 32px - 44px);
   grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
   gap: 0;
   padding: 0;
@@ -1819,4 +1825,181 @@
   background: var(--tc-surface);
   color: var(--tc-text);
   box-shadow: none;
+}
+
+/* ═══ TÉRMINOS Y CONDICIONES (js/terminos.js) ═════════════════════════════ */
+
+#login-screen .login-legal {
+  margin: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  text-align: center;
+}
+
+#login-screen .login-legal__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tc-select-text);
+  font: inherit;
+  font-weight: var(--tc-weight-semibold);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+#login-screen .login-legal__link:hover {
+  color: var(--tc-primary);
+}
+
+#login-screen .login-legal__link:focus-visible {
+  outline: 2px solid var(--tc-select-border);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.tc-terms {
+  width: min(820px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  /* El reset global de main.css quita el margin:auto que centra el <dialog>. */
+  margin: auto;
+  padding: 0;
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+
+.tc-terms[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.tc-terms::backdrop {
+  background: var(--tc-scrim);
+}
+
+.tc-terms__head,
+.tc-terms__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-3) var(--tc-space-5);
+}
+
+.tc-terms__head {
+  justify-content: space-between;
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+}
+
+.tc-terms__foot {
+  justify-content: flex-end;
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+.tc-terms__close {
+  display: inline-grid;
+  place-items: center;
+  width: var(--tc-control-h);
+  height: var(--tc-control-h);
+  padding: 0;
+  border: 0;
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  cursor: pointer;
+}
+
+.tc-terms__close:hover {
+  background: var(--tc-surface-2);
+  color: var(--tc-text);
+}
+
+.tc-terms__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--tc-space-2) var(--tc-space-6) var(--tc-space-6);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.6;
+}
+
+.tc-terms__body h1 {
+  margin: var(--tc-space-4) 0 var(--tc-space-1);
+  font-size: var(--tc-fs-xl);
+  line-height: 1.25;
+}
+
+.tc-terms__body h2 {
+  margin: var(--tc-space-5) 0 var(--tc-space-2);
+  font-size: var(--tc-fs-lg);
+}
+
+.tc-terms__body h1 + h2 {
+  margin-top: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-medium);
+}
+
+.tc-terms__body h3 {
+  margin: var(--tc-space-4) 0 var(--tc-space-1);
+  font-size: var(--tc-fs-md);
+}
+
+.tc-terms__body h4 {
+  margin: var(--tc-space-3) 0 var(--tc-space-1);
+  font-size: var(--tc-fs-sm);
+}
+
+.tc-terms__body p,
+.tc-terms__body ul {
+  margin: var(--tc-space-2) 0;
+}
+
+.tc-terms__body ul {
+  padding-left: var(--tc-space-5);
+}
+
+.tc-terms__body li + li {
+  margin-top: 2px;
+}
+
+.tc-terms__body strong {
+  font-weight: var(--tc-weight-semibold);
+}
+
+.tc-terms__body hr {
+  margin: var(--tc-space-5) 0;
+  border: 0;
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+}
+
+.tc-terms__tabla {
+  overflow-x: auto;
+}
+
+.tc-terms__body table {
+  width: 100%;
+  margin: var(--tc-space-2) 0;
+  border-collapse: collapse;
+}
+
+.tc-terms__body th,
+.tc-terms__body td {
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  text-align: left;
+  vertical-align: top;
+}
+
+.tc-terms__body th {
+  background: var(--tc-surface-2);
+}
+
+.tc-terms__estado {
+  color: var(--tc-text-2);
 }
