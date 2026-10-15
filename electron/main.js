@@ -4341,14 +4341,18 @@ ipcMain.handle('updater:install', async (_event, options = {}) => {
     logStartup('[updater] No se pudo detener servidor antes de instalar: ' + (error?.message || error));
   });
 
-  // Silencioso (/S): sin asistente ni botón "Terminar"; el instalador vuelve
-  // a abrir Tecno Caja solo (--force-run).
-  logStartup('[updater] Instalando ' + pendiente.version + ' en silencio y reiniciando…');
+  // Con la ventana del instalador (como hasta v1.4.1): el usuario ve el
+  // progreso y la página final abre Tecno Caja ("Ejecutar Tecno Caja",
+  // runAfterFinish). En v1.4.5–1.4.6 era silencioso (/S) y, al terminar, el
+  // instalador asistido no volvía a abrir la app: parecía que el POS se había
+  // cerrado solo. Si una versión vieja lo lanza en silencio, el instalador
+  // nuevo abre la app por su cuenta (build/installer.nsh, customInstall).
+  logStartup('[updater] Abriendo el instalador de ' + pendiente.version + '…');
   setImmediate(() => {
     let quitRequested = false;
     app.once('before-quit', () => { quitRequested = true; });
     try {
-      autoUpdater.quitAndInstall(true, true);
+      autoUpdater.quitAndInstall(false, true);
     } catch (error) {
       logStartup('[updater] quitAndInstall falló: ' + (error?.message || error));
     }

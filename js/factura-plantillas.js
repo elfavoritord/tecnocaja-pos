@@ -12,7 +12,11 @@
    también, desde el servidor (server/routes/servicios/renderDoc.js), para sus
    facturas y cotizaciones A4; esos documentos agregan notas, términos y
    condiciones, firmas y nota por línea (d.notas, d.terminos, d.firmas,
-   it.nota), que en el POS no vienen.
+   it.nota), que en el POS no vienen. El portal de contadores
+   (tecno-caja-contadores) usa una copia de este archivo para sus facturas
+   (la copia la hace tecno-caja-contadores/scripts/vendor-sync.js); allí el
+   NCF es el número (d.numero vacío) y salen los correos (empresa.correo,
+   cliente.correo).
 
    - Todos los selectores CSS cuelgan de .tcfac-root: el bloque se inyecta por
      innerHTML sin filtrar estilos al resto del app.
@@ -564,13 +568,14 @@
           ${d.empresa.rnc ? `<div class="tcf-em"><strong>RNC:</strong> ${esc(d.empresa.rnc)}</div>` : ''}
           ${d.empresa.direccion ? `<div class="tcf-em">${esc(d.empresa.direccion)}</div>` : ''}
           ${d.empresa.telefono ? `<div class="tcf-em"><strong>Tel:</strong> ${esc(d.empresa.telefono)}</div>` : ''}
+          ${d.empresa.correo ? `<div class="tcf-em">${esc(d.empresa.correo)}</div>` : ''}
         </div>
         <div class="tcf-doc">
           <div class="tcf-title">${t.titulo}</div>
           ${d.ncf ? `<div class="tcf-chip"><span>${t.etiquetaNcf}</span> ${esc(d.ncf)}</div>` : ''}
           <div class="tcf-meta">
             ${d.ncfTipoLabel ? `<div><b>Tipo de comprobante:</b> ${esc(d.ncfTipoLabel)}</div>` : ''}
-            <div><b>No.:</b> ${esc(d.numero)}</div>
+            ${d.numero ? `<div><b>No.:</b> ${esc(d.numero)}</div>` : ''}
             <div><b>Fecha de emisión:</b> ${esc(t.fecha)}</div>
             ${t.vence ? `<div><b>${d.isCot ? 'Válida hasta' : 'NCF válido hasta'}:</b> ${esc(t.vence)}</div>` : ''}
           </div>
@@ -585,6 +590,7 @@
           ${d.cliente.rnc ? `<div class="tcf-pline">RNC / Cédula: ${esc(d.cliente.rnc)}</div>` : ''}
           ${d.cliente.dir ? `<div class="tcf-pline">${esc(d.cliente.dir)}</div>` : ''}
           ${d.cliente.tel ? `<div class="tcf-pline">Tel: ${esc(d.cliente.tel)}</div>` : ''}
+          ${d.cliente.correo ? `<div class="tcf-pline">${esc(d.cliente.correo)}</div>` : ''}
         </div>
         <div>
           <div class="tcf-blabel">${d.isCot ? 'Condiciones' : 'Detalles de pago'}</div>
@@ -631,6 +637,7 @@
       `<b>${esc(d.cliente.nombre)}</b>`,
       d.cliente.rnc ? `RNC / Cédula: ${esc(d.cliente.rnc)}` : '',
       d.cliente.tel ? `Tel: ${esc(d.cliente.tel)}` : '',
+      d.cliente.correo ? esc(d.cliente.correo) : '',
       d.cliente.dir ? esc(d.cliente.dir) : ''
     ].filter(Boolean).join('<br>');
 
@@ -643,11 +650,12 @@
             ${d.empresa.rnc ? `<div class="tce-em">RNC: ${esc(d.empresa.rnc)}</div>` : ''}
             ${d.empresa.direccion ? `<div class="tce-em">${esc(d.empresa.direccion)}</div>` : ''}
             ${d.empresa.telefono ? `<div class="tce-em">Tel: ${esc(d.empresa.telefono)}</div>` : ''}
+            ${d.empresa.correo ? `<div class="tce-em">${esc(d.empresa.correo)}</div>` : ''}
           </div>
         </div>
         <div class="tce-doc">
           <div class="tce-title">${t.titulo}</div>
-          <div class="tce-num">Nº ${esc(d.numero)}</div>
+          ${d.numero ? `<div class="tce-num">Nº ${esc(d.numero)}</div>` : ''}
           ${d.ncf ? `<div class="tce-ncf"><span>${t.etiquetaNcf}</span>${esc(d.ncf)}</div>` : ''}
           ${d.ncfTipoLabel ? `<div class="tce-docline">${esc(d.ncfTipoLabel)}</div>` : ''}
           ${t.vence ? `<div class="tce-docline">${t.etiquetaVence}: ${esc(t.vence)}</div>` : ''}
@@ -718,6 +726,7 @@
           <div class="tcr-name">${esc(d.empresa.nombre)}</div>
           ${d.empresa.telefono ? `<div class="tcr-em">Tel: ${esc(d.empresa.telefono)}</div>` : ''}
           ${d.empresa.direccion ? `<div class="tcr-em">${esc(d.empresa.direccion)}</div>` : ''}
+          ${d.empresa.correo ? `<div class="tcr-em">${esc(d.empresa.correo)}</div>` : ''}
         </div>
         <div class="tcr-box">
           <div class="tcr-boxtitle">${t.titulo}</div>
@@ -725,7 +734,7 @@
             ${d.empresa.rnc ? fila('RNC', d.empresa.rnc) : ''}
             ${d.ncf ? fila(t.etiquetaNcf, d.ncf) : ''}
             ${d.ncfTipoLabel ? fila('Tipo', d.ncfTipoLabel) : ''}
-            ${fila('Número', d.numero)}
+            ${d.numero ? fila('Número', d.numero) : ''}
             ${fila('Fecha', t.fecha)}
             ${t.vence ? fila(t.etiquetaVence, t.vence) : ''}
             ${fila('Estado', d.estadoLabel)}
@@ -738,6 +747,7 @@
           <div class="tcr-cname">${esc(d.cliente.nombre)}</div>
           ${d.cliente.rnc ? `<div class="tcr-line">RNC / Cédula: ${esc(d.cliente.rnc)}</div>` : ''}
           ${d.cliente.tel ? `<div class="tcr-line">Tel: ${esc(d.cliente.tel)}</div>` : ''}
+          ${d.cliente.correo ? `<div class="tcr-line">${esc(d.cliente.correo)}</div>` : ''}
           ${d.cliente.dir ? `<div class="tcr-line">${esc(d.cliente.dir)}</div>` : ''}
         </div>
         <div>
@@ -790,7 +800,7 @@
           </div>
         </div>
         <div class="tcb-meta">
-          ${meta('Nº', d.numero)}
+          ${d.numero ? meta('Nº', d.numero) : ''}
           ${d.ncf ? meta(t.etiquetaNcf, d.ncf) : ''}
           ${d.ncfTipoLabel ? meta('Tipo', d.ncfTipoLabel) : ''}
           ${meta('Fecha', t.fecha)}
@@ -804,6 +814,7 @@
           <div class="tcb-cname">${esc(d.cliente.nombre)}</div>
           ${d.cliente.rnc ? linea(`RNC / Cédula: ${esc(d.cliente.rnc)}`) : ''}
           ${d.cliente.tel ? linea(`Tel: ${esc(d.cliente.tel)}`) : ''}
+          ${d.cliente.correo ? linea(esc(d.cliente.correo)) : ''}
           ${d.cliente.dir ? linea(esc(d.cliente.dir)) : ''}
         </div>
         <div class="tcb-card">
@@ -811,6 +822,7 @@
           ${d.empresa.rnc ? linea(`RNC: ${esc(d.empresa.rnc)}`) : ''}
           ${d.empresa.direccion ? linea(esc(d.empresa.direccion)) : ''}
           ${d.empresa.telefono ? linea(`Tel: ${esc(d.empresa.telefono)}`) : ''}
+          ${d.empresa.correo ? linea(esc(d.empresa.correo)) : ''}
         </div>
         ${d.metodoPago ? `<div class="tcb-card">
           <div class="tcb-ctitle">Método de pago</div>
@@ -985,10 +997,13 @@
   // La elección vive en dos campos ocultos (#cfg-invoice-template y
   // #cfg-invoice-color) que getConfigPreviewValues() (app.js) lee al guardar y
   // al abrir la vista previa. syncConfigForm() llama sincronizarSelector(cfg).
-  // El bloque solo se ve con el papel "Carta / A4".
+  // El bloque solo se ve con el papel "Carta / A4". El portal de contadores
+  // usa el mismo selector con los mismos id, sin selector de papel (siempre
+  // A4) y con su propia factura de muestra (opciones.muestra).
   const ICONO_CHECK = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   let selectorListo = false;
   let miniaturasPendientes = false;
+  let muestraPropia = null;
 
   function porId(id) {
     return global.document ? global.document.getElementById(id) : null;
@@ -1017,7 +1032,7 @@
     const cont = porId('cfg-invoice-templates');
     if (!cont) return;
     const { plantilla, color } = eleccionActual();
-    const muestra = documentoDeMuestra(empresaParaMuestra());
+    const muestra = muestraPropia ? muestraPropia() : documentoDeMuestra(empresaParaMuestra());
     cont.innerHTML = PLANTILLAS.map((p) => `
       <div class="tc-fp-card" role="radio" tabindex="0" aria-checked="${p.id === plantilla}" data-plantilla="${p.id}">
         <div class="tc-fp-thumb"><div class="tc-fp-thumb-inner">${render(muestra, { plantilla: p.id, color })}</div></div>
@@ -1083,7 +1098,8 @@
   function actualizarVisibilidad() {
     const bloque = porId('cfg-invoice-design');
     if (!bloque) return;
-    const esA4 = String(porId('cfg-paper-size')?.value || '').toLowerCase() === 'a4';
+    const papel = porId('cfg-paper-size');
+    const esA4 = !papel || String(papel.value || '').toLowerCase() === 'a4';
     bloque.style.display = esA4 ? '' : 'none';
     return esA4;
   }
@@ -1134,10 +1150,13 @@
     });
   }
 
-  function sincronizarSelector(cfg = {}) {
+  // opciones.muestra: función que devuelve el documento de las miniaturas
+  // (si no viene, la venta de ejemplo con los datos de Configuración).
+  function sincronizarSelector(cfg = {}, opciones = {}) {
     const campoPlantilla = porId('cfg-invoice-template');
     const campoColor = porId('cfg-invoice-color');
     if (!campoPlantilla || !campoColor) return;
+    if (typeof opciones.muestra === 'function') muestraPropia = opciones.muestra;
     iniciarSelector();
     // Igual que los demás campos de syncConfigForm(): no se pisa lo que el
     // usuario está tocando en este momento.

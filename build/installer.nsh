@@ -162,6 +162,16 @@ FunctionEnd
     ; ACL restrictiva de una ejecución elevada anterior.
     DetailPrint "Actualización rápida: conservando base de datos y configuración existentes."
     Call FixProgramDataPermissions
+    ; v1.4.5 y 1.4.6 lanzan la actualización en silencio (/S --force-run) y el
+    ; instalador asistido no volvía a abrir la app al terminar: el POS parecía
+    ; haberse cerrado solo. En silencio se abre aquí; si el --force-run de
+    ; electron-builder también la abre, la segunda copia se cierra sola
+    ; (requestSingleInstanceLock en electron/main.js). Con ventana no hace
+    ; falta: la página final tiene "Ejecutar Tecno Caja".
+    ${if} ${Silent}
+      DetailPrint "Abriendo ${APP_NAME}..."
+      Exec '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" --updated'
+    ${endIf}
   ${else}
     Call EnsureVCRedistReady
     Call CreateAppDataFolders
