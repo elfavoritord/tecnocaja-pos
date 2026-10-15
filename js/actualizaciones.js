@@ -232,7 +232,7 @@
     const STEPS = [
       { id: 'us-backup',  label: skipBackup ? 'Preparando actualización inicial…' : 'Creando respaldo (BD + Configuración + Ventas + Clientes + Inventario)…' },
       { id: 'us-update',  label: 'Cerrando la base de datos de forma segura…' },
-      { id: 'us-restart', label: 'Instalando — Tecno Caja se abrirá sola al terminar. No la abras manualmente.' },
+      { id: 'us-restart', label: 'Abriendo el instalador — sigue sus pasos y, al final, pulsa "Terminar" para abrir Tecno Caja.' },
     ];
     _showSteps(STEPS);
 
