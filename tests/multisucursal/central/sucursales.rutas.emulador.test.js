@@ -96,4 +96,27 @@ describir('Rutas de sucursales: panel de Emilio y portal del contador', () => {
     expect(cod.body.codigo).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     await comoContador(request(portalContador).put(`${RUTA}/no-existe`).send({ nombre: 'X' })).expect(404);
   });
+
+  test('PC de la empresa: los dos paneles las ven sin el hash; revocar solo Emilio', async () => {
+    const { body } = await comoContador(request(portalContador).post(RUTA).send({ nombre: 'Principal' })).expect(200);
+    const cod = await comoContador(request(portalContador).post(`${RUTA}/${body.sucursal.branchUuid}/codigo`)).expect(200);
+    await createSucursalesCentral({ db }).activarEquipo(cod.body.codigo, { hostname: 'CAJA-1', appVersion: '1.4.6' },
+      { equipoId: 'eq-prueba', tokenHash: 'a'.repeat(64) });
+
+    for (const [app, como] of [[panelAdmin, comoEmilio], [portalContador, comoContador]]) {
+      const r = await como(request(app).get(`${RUTA}/equipos`)).expect(200);
+      expect(r.body.equipos).toEqual([expect.objectContaining({ equipoId: 'eq-prueba', branchUuid: body.sucursal.branchUuid, hostname: 'CAJA-1', estado: 'activo' })]);
+      expect(JSON.stringify(r.body)).not.toMatch(/tokenHash|a{64}/);
+    }
+    await comoContador(request(portalContador).get(`${RUTA}/equipos`), 'firma-2').expect(403);
+
+    const sinPermiso = await comoContador(request(portalContador).post(`${RUTA}/equipos/eq-prueba/revocar`)).expect(403);
+    expect(sinPermiso.body.code).toBe('SIN_PERMISO');
+    await comoEmilio(request(panelAdmin).post(`${RUTA}/equipos/no-existe/revocar`)).expect(404);
+    const rev = await comoEmilio(request(panelAdmin).post(`${RUTA}/equipos/eq-prueba/revocar`)).expect(200);
+    expect(rev.body).toMatchObject({ ok: true, equipoId: 'eq-prueba', estado: 'revocado' });
+    expect(auditoria).toEqual([['sucursales.revocar_equipo', LIC, 'eq-prueba']]);
+    const despues = await comoContador(request(portalContador).get(`${RUTA}/equipos`)).expect(200);
+    expect(despues.body.equipos[0].estado).toBe('revocado');
+  });
 });

@@ -13,6 +13,8 @@
  *   PUT  /:licenseId/:branchUuid    {datos}   editar
  *   POST /:licenseId/:branchUuid/estado {estado: activa|inactiva}   solo super administrador
  *   POST /:licenseId/:branchUuid/codigo       código de equipo (se muestra una vez)
+ *   GET  /:licenseId/equipos                  PC de cada sucursal: en línea, último latido, pendientes
+ *   POST /:licenseId/equipos/:equipoId/revocar   solo super administrador
  */
 
 const express = require('express');
@@ -35,6 +37,16 @@ function createSucursalesRouter({ requireAuth, getCentral, actorDe, alCambiar = 
   const avisar = (req, accion, detalle) => alCambiar(req, accion, req.params.licenseId, detalle).catch(() => {});
 
   router.get('/:licenseId', requireAuth, responder((req, actor) => getCentral().resumen(req.params.licenseId, actor)));
+
+  router.get('/:licenseId/equipos', requireAuth, responder(async (req, actor) => ({
+    equipos: await getCentral().listarEquipos(req.params.licenseId, actor),
+  })));
+
+  router.post('/:licenseId/equipos/:equipoId/revocar', requireAuth, responder(async (req, actor) => {
+    const r = await getCentral().revocarEquipo(req.params.licenseId, req.params.equipoId, actor);
+    await avisar(req, 'sucursales.revocar_equipo', req.params.equipoId);
+    return r;
+  }));
 
   router.put('/:licenseId/limite', requireAuth, responder(async (req, actor) => {
     const r = await getCentral().fijarLimite(req.params.licenseId, req.body?.maximo, actor);

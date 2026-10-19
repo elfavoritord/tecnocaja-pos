@@ -515,13 +515,13 @@ async function openNegocio(id) {
         </table>`}`;
     }
 
-    // Sucursales: Emilio fija el límite y activa/desactiva (el contador no).
+    // Sucursales: Emilio fija el límite, activa/desactiva y revoca PC (el contador no).
     const sucSection = $id('sucursales-section');
     if (sucSection && window.SucursalesUI) {
       const nuevo = sucSection.cloneNode(false); // sin los listeners del negocio anterior
       sucSection.replaceWith(nuevo);
       window.SucursalesUI.montar(nuevo, {
-        api, licenseId: id, permisos: { limite: true, estado: true }, avisar: showToast,
+        api, licenseId: id, permisos: { limite: true, estado: true, revocar: true }, avisar: showToast,
       });
     }
 

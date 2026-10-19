@@ -70,10 +70,33 @@ Ver [cloud/sync-api/README.md](../cloud/sync-api/README.md).
 | **Punta a punta** (`npm run test:multisucursal-enlace`): Sync API + servidor del POS real en SQLite + pantalla en Chrome | **19/19**: el contador crea la sucursal y su código → se escribe en el POS → adopta la identidad central y manda su latido → no deja crear sucursales locales → toma el nombre que cambió el contador → tras reiniciar sigue enlazada → Emilio revoca y el POS lo detecta (y sigue vendiendo local) → desvincular |
 | Regresión | Jest 88 suites / **662 OK**; `test:e2e-lan` **44/44**; arranque SQLite **13/13** |
 
+## 3e — Hecho: PC autorizadas en los dos paneles
+
+En la sección de sucursales, debajo de la lista, aparece **"PC autorizadas"**: cada PC con su sucursal, versión, estado y pendientes.
+
+- **En línea:** tuvo un latido en los últimos 12 min (manda uno cada 5).
+- **Sin conexión:** su último latido es más viejo.
+- **Reemplazada** o **Revocada:** quedan ocultas tras "Ver anteriores".
+
+Cada fila de sucursal resume su PC ("PC: En línea · hace 2 min" o "Sin PC autorizada").
+
+| Pieza | Archivo |
+|---|---|
+| Rutas | `GET /api/sucursales/:licenseId/equipos` (los dos paneles, nunca devuelve el hash del token) y `POST /api/sucursales/:licenseId/equipos/:equipoId/revocar` (**solo Emilio**; va a `audit_logs` como `sucursales.revocar_equipo`) |
+| Pantalla | `js/sucursales-central-ui.js`: tabla de PC, botón **Revocar** solo con `permisos.revocar` (el panel de Emilio lo pasa; el portal no). Pide confirmación y avisa que la tienda sigue vendiendo. Si la lectura de PC falla, las sucursales se ven igual |
+
+Pruebas:
+
+| Prueba | Resultado |
+|---|---|
+| Rutas contra el emulador | Los dos paneles ven las PC sin el hash; otra firma recibe 403; el contador recibe 403 al revocar; Emilio revoca y queda auditado. Total `test:multisucursal-central`: **25/25** |
+| Pantalla en Chrome (`probar-pantalla-sucursales.js`) | **19/19**: en línea con "3 por enviar", "Sin conexión · hace 2 h", reemplazada oculta hasta "Ver anteriores", el contador sin botón revocar, Emilio revoca y se registra quién lo hizo |
+| Regresión | Jest 88 suites / **662 OK** |
+
 ## Siguiente
 
 - **3d — Despliegue de la Sync API** en Cloud Run (pasos en su README), **solo con el visto bueno de Emilio**. Después: `TECNO_CAJA_SYNC_URL` por defecto en el instalador.
-- **Paneles:** mostrar en la ficha de cada sucursal sus equipos (en línea, último latido, pendientes) y el botón revocar (solo Emilio). Las reglas `listarEquipos` y `revocarEquipo` ya están.
+- Nueva versión del portal del contador para que los contadores reciban la sección de sucursales y PC.
 - Conectar `user_branch_access` a los permisos del POS.
 - **Fase 4 — catálogo global** y **Fase 5 — eventos** (ventas, inventario) por la bandeja de salida.
 

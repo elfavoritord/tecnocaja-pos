@@ -87,7 +87,7 @@ async function escribir(page, form, datos) {
 
   const sAdmin = await servidor({
     actorDe: () => ({ tipo: 'super_admin', uid: 'emilio', nombre: 'Emilio' }),
-    permisos: { limite: true, estado: true },
+    permisos: { limite: true, estado: true, revocar: true },
   });
   const sConta = await servidor({
     actorDe: () => ({ tipo: 'contador', uid: 'conta', nombre: 'Pérez & Asociados', contadorId: 'firma-1' }),
@@ -143,6 +143,39 @@ async function escribir(page, form, datos) {
     await esperar(page, '809-555-9999');
     check('Contador: edita los datos', true);
 
+    // ── PC autorizadas (como si la Sync API las hubiera activado) ───────
+    // Con el código que generó el contador se activa una PC; luego otra la
+    // reemplaza (con pendientes por enviar) y otra sucursal tiene una PC que
+    // dejó de conectarse hace 2 horas.
+    const central = createSucursalesCentral({ db });
+    const emilio = { tipo: 'super_admin', uid: 'emilio', nombre: 'Emilio' };
+    const hash = (c) => c.repeat(64);
+    await central.activarEquipo(codigo, { hostname: 'CAJA-VIEJA', appVersion: '1.4.5' }, { equipoId: 'eq-vieja', tokenHash: hash('a') });
+    const suc1 = (await db.collection('equipos_sync').doc('eq-vieja').get()).data().branchUuid;
+    const cod2 = await central.generarCodigo(LIC, suc1, emilio);
+    await central.activarEquipo(cod2.codigo, { hostname: 'CAJA-NUEVA', appVersion: '1.4.6' }, { equipoId: 'eq-nueva', tokenHash: hash('b') });
+    await db.collection('equipos_sync').doc('eq-nueva').update({ ultimaConexion: new Date(), latido: { modo: 'normal', pendientes: { salida: 3, errores: 0 } } });
+    const sucs = await db.collection('licencias').doc(LIC).collection('sucursales').get();
+    const suc2 = sucs.docs.find((d) => d.id !== suc1);
+    const cod3 = await central.generarCodigo(LIC, suc2.id, emilio);
+    await central.activarEquipo(cod3.codigo, { hostname: 'CAJA-ALCARRIZOS', appVersion: '1.4.6' }, { equipoId: 'eq-otra', tokenHash: hash('c') });
+    await db.collection('equipos_sync').doc('eq-otra').update({ ultimaConexion: new Date(Date.now() - 2 * 3600 * 1000) });
+
+    await page.goto(url(sConta));
+    await esperar(page, 'PC autorizadas');
+    const fila = (id) => page.$eval(`tr[data-equipo="${id}"]`, (tr) => tr.textContent).catch(() => null);
+    const nueva = await fila('eq-nueva');
+    check('Contador: ve la PC en línea con sus pendientes', Boolean(nueva) && nueva.includes('En línea') && nueva.includes('3 por enviar') && nueva.includes('v1.4.6'), nueva);
+    const otra = await fila('eq-otra');
+    check('Contador: la PC que no se conecta sale "Sin conexión"', Boolean(otra) && otra.includes('Sin conexión') && otra.includes('hace 2 h'), otra);
+    check('Contador: la reemplazada queda oculta y no hay botón revocar',
+      !(await fila('eq-vieja')) && !(await page.$('button[data-accion="revocar"]')));
+    check('Contador: la fila de la sucursal resume su PC', (await page.content()).includes('PC: <span class="suc-badge suc-activa">En línea</span>'));
+    await page.click('button[data-accion="ver-anteriores"]');
+    const vieja = await fila('eq-vieja');
+    check('Contador: "Ver anteriores" muestra la reemplazada', Boolean(vieja) && vieja.includes('Reemplazada'), vieja);
+    await page.screenshot({ path: path.join(SALIDA, 'contador-equipos.png'), fullPage: true });
+
     // ── Portal del contador (día) ───────────────────────────────────────
     await page.goto(url(sContaDia));
     await esperar(page, 'Sucursales (3 de 3 permitidas)');
@@ -156,6 +189,15 @@ async function escribir(page, form, datos) {
     await desactivar[desactivar.length - 1].click();
     await esperar(page, 'Sucursales (2 de 3 permitidas)');
     check('Emilio: desactiva una sucursal y se libera un cupo', Boolean(await page.$('form[data-form="crear"]')));
+
+    check('Emilio: tiene "Revocar" en las dos PC activas', (await page.$$('button[data-accion="revocar"]')).length === 2);
+    await page.click('tr[data-equipo="eq-otra"] button[data-accion="revocar"]');
+    await esperar(page, 'Ver anteriores (2)');
+    const revocada = (await db.collection('equipos_sync').doc('eq-otra').get()).data();
+    check('Emilio: revoca la PC y queda registrado quién lo hizo', revocada.estado === 'revocado' && revocada.revocadoPor?.uid === 'emilio');
+    await page.click('button[data-accion="ver-anteriores"]');
+    await page.waitForSelector('tr[data-equipo="eq-otra"]', { timeout: 15000 });
+    check('Emilio: la revocada se ve como "Revocada"', (await page.$eval('tr[data-equipo="eq-otra"]', (tr) => tr.textContent)).includes('Revocada'));
     await page.screenshot({ path: path.join(SALIDA, 'emilio.png'), fullPage: true });
 
     const hist = await db.collection('licencias').doc(LIC).collection('sucursales_historial').get();
