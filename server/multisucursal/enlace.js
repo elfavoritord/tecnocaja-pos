@@ -66,6 +66,9 @@ function createEnlaceCentral({
   urlPorDefecto = DEFAULT_SYNC_URL,
   // Lo que la sincronización agrega al latido (conflictos, uso de rangos NCF).
   extrasLatido = async () => ({}),
+  // La sucursal local cambió de nombre o datos (al enlazar o porque el
+  // contador la editó): las pantallas abiertas lo refrescan.
+  alCambiarIdentidad = () => {},
 }) {
   const url = () => {
     const propia = String(env.TECNO_CAJA_SYNC_URL || '').trim();
@@ -124,8 +127,10 @@ function createEnlaceCentral({
     await query(`UPDATE ${tabla} SET \`uuid\` = ? WHERE id = ?`, [uuid, id]);
   }
 
+  // Devuelve true si algo cambió.
   async function copiarDatosSucursal(branchId, sucursal) {
-    if (!branchId || !sucursal) return;
+    if (!branchId || !sucursal) return false;
+    const [antes] = await query('SELECT nombre, codigo, direccion, telefono, encargado FROM branches WHERE id = ? LIMIT 1', [branchId]).catch(() => []);
     await query(
       'UPDATE branches SET nombre = ?, direccion = ?, telefono = ?, encargado = ? WHERE id = ?',
       [sucursal.nombre, sucursal.direccion || '', sucursal.telefono || '', sucursal.encargado || '', branchId]
@@ -135,13 +140,20 @@ function createEnlaceCentral({
       const otra = await query('SELECT id FROM branches WHERE codigo = ? AND id <> ? LIMIT 1', [sucursal.codigo, branchId]);
       if (!otra.length) await query('UPDATE branches SET codigo = ? WHERE id = ?', [sucursal.codigo, branchId]);
     }
+    if (!antes) return true;
+    return antes.nombre !== sucursal.nombre
+      || String(antes.direccion || '') !== String(sucursal.direccion || '')
+      || String(antes.telefono || '') !== String(sucursal.telefono || '')
+      || String(antes.encargado || '') !== String(sucursal.encargado || '');
   }
 
   async function aplicarIdentidad(datos) {
     const local = await identidad.obtener();
     await adoptarUuid('businesses', local.empresa.id, datos.empresa?.companyUuid);
     await adoptarUuid('branches', local.sucursal.id, datos.sucursal?.branchUuid);
-    await copiarDatosSucursal(local.sucursal.id, datos.sucursal);
+    if (await copiarDatosSucursal(local.sucursal.id, datos.sucursal)) {
+      try { alCambiarIdentidad(); } catch (_) { /* solo es un aviso a las pantallas */ }
+    }
     return local;
   }
 

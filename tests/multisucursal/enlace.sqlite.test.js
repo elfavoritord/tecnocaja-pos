@@ -139,6 +139,24 @@ describe('Enlace del POS con la central', () => {
     expect((await enlace.estado()).ultimaConexion).toBe('2026-10-19T16:05:00.000Z');
   });
 
+  test('avisa a las pantallas solo cuando cambian los datos de la sucursal', async () => {
+    const avisos = [];
+    const conAviso = createEnlaceCentral({
+      query: base.query, identidad: createIdentidad({ query: base.query }), bandejas: createBandejas({ dialect: 'sqlite' }), env,
+      fetchImpl: api.fetchImpl, now: () => reloj, logger: { warn() {} }, alCambiarIdentidad: () => avisos.push('cambio'),
+    });
+    activacionOk();
+    await conAviso.activar('ABCD-EFGH');
+    expect(avisos).toEqual(['cambio']); // "Sucursal Principal" → "Bravo Norte"
+    api.responder('GET /v1/identidad', 200, { ok: true, empresa: EMPRESA, sucursal: SUCURSAL, equipo: {}, licencia: { status: 'active' } });
+    await conAviso.refrescarIdentidad();
+    expect(avisos).toEqual(['cambio']); // mismos datos: sin aviso
+    api.responder('GET /v1/identidad', 200, { ok: true, empresa: EMPRESA, sucursal: { ...SUCURSAL, nombre: 'Bravo Norte Plaza' }, equipo: {}, licencia: { status: 'active' } });
+    await conAviso.refrescarIdentidad();
+    expect(avisos).toEqual(['cambio', 'cambio']);
+    conAviso.detener();
+  });
+
   test('identidad: trae los cambios que hizo el contador', async () => {
     activacionOk();
     await enlace.activar('ABCD-EFGH');

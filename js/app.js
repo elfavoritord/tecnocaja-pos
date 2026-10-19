@@ -6047,24 +6047,43 @@ function connectLicenseSocket() {
     });
     _licenseSocket.on('reports-app:product-received', async (data) => {
       showToast(data?.message || 'Nuevo producto recibido desde la App de Reporte', 'success');
-      try {
-        // (Antes llamaba a loadData(), que no existe: el error se tragaba y
-        // la lista no se refrescaba.)
-        if (typeof refreshProductsAfterReportAppSync === 'function') await refreshProductsAfterReportAppSync();
-      } catch (_error) {}
+      // (Antes llamaba a loadData(), que no existe: la lista no se refrescaba.)
+      await refrescarCatalogoSinTocarLaVenta();
     });
-    // Multisucursal: llegaron productos, usuarios o precios de la central.
-    _licenseSocket.on('multisucursal:cambios-aplicados', async () => {
-      try {
-        if (typeof refreshProductsAfterReportAppSync === 'function') await refreshProductsAfterReportAppSync();
-        if (typeof loadUsuariosTable === 'function') loadUsuariosTable();
-      } catch (_error) {}
-    });
+    // Multisucursal: llegaron productos, usuarios, precios o el nombre de la
+    // sucursal desde la central.
+    _licenseSocket.on('multisucursal:cambios-aplicados', () => refrescarCatalogoSinTocarLaVenta());
     _licenseSocket.on('disconnect', () => {
       _licenseSocket = null;
     });
   } catch (_err) {
     _licenseSocket = null;
+  }
+}
+
+// Refresca SOLO lo que puede llegar de fuera mientras la pantalla está abierta
+// (productos, categorías, usuarios, sucursales y el nombre de la sucursal
+// activa). No usa hydrateDB(): el bootstrap trae saleItems vacío y
+// currentUser null, y borraría la venta en curso y la sesión del cajero.
+async function refrescarCatalogoSinTocarLaVenta() {
+  try {
+    const payload = await api.getBootstrap();
+    if (!payload) return;
+    if (Array.isArray(payload.productos)) DB.productos = payload.productos;
+    if (Array.isArray(payload.categorias)) DB.categorias = payload.categorias;
+    if (Array.isArray(payload.users)) DB.users = payload.users;
+    if (Array.isArray(payload.sucursales)) DB.sucursales = payload.sucursales;
+    if (payload.config && payload.config.activeBranchName !== undefined) {
+      DB.config.activeBranchName = payload.config.activeBranchName;
+    }
+    ['refreshProductCategoryFilter', 'loadProductsTable', 'loadInventoryTable', 'updateInventoryStats',
+      'renderSalesCatalog', 'loadUsuariosTable', 'syncCajaState'].forEach((nombre) => {
+      if (typeof window[nombre] === 'function') {
+        try { window[nombre](); } catch (_error) { /* una vista que no está abierta */ }
+      }
+    });
+  } catch (_error) {
+    // Sin conexión con el servidor local: se ve al próximo arranque.
   }
 }
 

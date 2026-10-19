@@ -73,6 +73,7 @@ function createMultisucursal({
     query, identidad, bandejas, env, persistEnv, getEquipo, getModo, logger,
     ...(fetchImpl ? { fetchImpl } : {}),
     extrasLatido: () => (sincronizacion ? sincronizacion.extrasLatido() : Promise.resolve({})),
+    alCambiarIdentidad: () => alAplicar(),
   });
   const ncf = createNcfCentral({ query, withTransaction, bandejas, identidad, auditar, logger });
   sincronizacion = createSincronizacion({

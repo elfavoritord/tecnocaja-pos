@@ -39,16 +39,19 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
 
 const LIC = 'pos:tecno-caja-ferreteria-laboratorio';
 const NEGOCIO = 'Ferretería Laboratorio';
-const PANEL_PORT = 3500;
-const SYNC_PORT = 3509;
+// LAB_PUERTO cambia la base de puertos (por defecto 3500: panel 3500, POS
+// 3501-3503, central 3509), para tener dos laboratorios a la vez.
+const BASE_PUERTO = Number(process.env.LAB_PUERTO || 3500);
+const PANEL_PORT = BASE_PUERTO;
+const SYNC_PORT = BASE_PUERTO + 9;
 // Opciones por variable de entorno (lo que va después de "--" en npm le
 // llegaría a la CLI de Firebase): LAB_TRES=1 tres sucursales; LAB_RAPIDO=1
 // deja las sucursales creadas y las PC ya enlazadas.
 const RAPIDO = process.env.LAB_RAPIDO === '1';
 const PCS = [
-  { nombre: 'PC-1', port: 3501, sucursal: 'Principal' },
-  { nombre: 'PC-2', port: 3502, sucursal: 'Norte' },
-  ...(process.env.LAB_TRES === '1' ? [{ nombre: 'PC-3', port: 3503, sucursal: 'Sur' }] : []),
+  { nombre: 'PC-1', port: BASE_PUERTO + 1, sucursal: 'Principal' },
+  { nombre: 'PC-2', port: BASE_PUERTO + 2, sucursal: 'Norte' },
+  ...(process.env.LAB_TRES === '1' ? [{ nombre: 'PC-3', port: BASE_PUERTO + 3, sucursal: 'Sur' }] : []),
 ];
 
 const db = admin.initializeApp({ projectId: 'demo-tecnocaja' }).firestore();
@@ -89,7 +92,7 @@ function paginaPanel(quien) {
 }
 
 function paginaInicio() {
-  const pcs = PCS.map((pc) => `<li><a href="http://127.0.0.1:${pc.port}/" target="_blank">POS ${pc.nombre}</a> → http://127.0.0.1:${pc.port} (será la sucursal "${pc.sucursal}") · usuario <code>admin</code> clave <code>1234</code></li>`).join('');
+  const pcs = PCS.map((pc) => `<li><a href="http://127.0.0.1:${pc.port}/" target="_blank">POS ${pc.nombre}</a> → http://127.0.0.1:${pc.port} (se enlaza como "${pc.sucursal}") · usuario <code>admin</code> clave <code>1234</code></li>`).join('');
   return `<!doctype html><html><head><meta charset="utf-8"><title>Laboratorio multisucursal</title>
     <style>body{font-family:system-ui,Segoe UI,sans-serif;background:#0f172a;color:#e2e8f0;max-width:980px;margin:auto;padding:24px;line-height:1.5}
     a{color:#60a5fa}code{background:#1e293b;padding:.1rem .35rem;border-radius:4px}h2{margin-top:1.6rem;color:#93c5fd}
@@ -103,13 +106,14 @@ function paginaInicio() {
       <li><a href="/contador" target="_blank">Portal del contador</a> (crea y edita sucursales, códigos, NCF; no cambia el límite ni revoca)</li>
       ${pcs}
     </ul>
+    <p style="color:#fbbf24">Al abrirlas, <b>las dos PC dicen "Sucursal Principal"</b>: así queda toda instalación nueva. Cada una toma el nombre de su sucursal ("Principal", "Norte") cuando le escribes su código de equipo (paso 2).</p>
     <h2>La central (simula Internet)</h2>
     <p>Central: <span id="estado" class="estado">…</span> <button onclick="central('apagar')">Apagar (sin Internet)</button><button onclick="central('encender')">Encender</button>
       <button onclick="if (confirm('¿Cerrar el laboratorio? Se borra todo.')) fetch('/laboratorio/cerrar', { method: 'POST' }).then(() => document.body.innerHTML = '<h1>Laboratorio cerrado</h1>')" style="float:right">Cerrar laboratorio</button></p>
     <p style="color:#94a3b8">Nota: el POS deja entrar hasta 10 veces cada 15 minutos por PC (protección contra adivinar claves). Si sale "Demasiados intentos", espera o cierra y vuelve a abrir el laboratorio.</p>
     <h2>Guía de prueba</h2><ol>
       <li><b>Panel de Emilio:</b> sube el límite a ${PCS.length}. Crea ${PCS.map((p) => `"${p.sucursal}"`).join(', ')} (la primera es la principal). Prueba que el contador no puede pasar del límite.</li>
-      <li><b>Código de equipo</b> de "Principal" → en el POS PC-1: Configuración → <i>Sucursal conectada a Tecno Caja</i> → escribe el código. Lo mismo con "Norte" en PC-2.</li>
+      <li><b>Código de equipo</b> de "Principal" → en el POS PC-1: Configuración → <i>Sucursal conectada a Tecno Caja</i> → escribe el código. Después genera el de <b>"Norte"</b> y escríbelo en <b>PC-2</b> (no en PC-1). En la pantalla de Caja, cada PC pasa a mostrar su sucursal.</li>
       <li><b>PC-1 (principal):</b> crea un producto y en <i>Catálogo de la empresa</i> elige "Todas las sucursales". O usa <i>Publicar todo el catálogo activo</i>.</li>
       <li><b>PC-2:</b> Configuración → <i>Sincronizar ahora</i>. El producto llega con el precio de la principal y existencia 0. Ábrelo: el nombre y el código están bloqueados; el precio no.</li>
       <li><b>PC-2:</b> cambia su precio, registra una compra o ajusta existencia y <b>haz una venta</b>. En PC-1 el precio y la existencia no cambian.</li>
