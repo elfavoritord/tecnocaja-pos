@@ -12,7 +12,7 @@ const { createMigrationRunner } = require('../../server/migrations/runner');
 const migraciones = require('../../server/migrations/multisucursal');
 const { createIdentidad } = require('../../server/multisucursal/identidad');
 const { createBandejas } = require('../../server/multisucursal/bandejas');
-const { createEnlaceCentral } = require('../../server/multisucursal/enlace');
+const { createEnlaceCentral, DEFAULT_SYNC_URL } = require('../../server/multisucursal/enlace');
 
 const EMPRESA = { licenseId: 'pos:tecno-caja-bravo', companyUuid: '11111111-1111-4111-8111-111111111111', nombre: 'Supermercado Bravo' };
 const SUCURSAL = {
@@ -70,11 +70,23 @@ describe('Enlace del POS con la central', () => {
 
   const activacionOk = () => api.responder('POST /v1/equipos/activar', 201, { ok: true, token: TOKEN, equipoId: '33333333-3333-4333-8333-333333333333', empresa: EMPRESA, sucursal: SUCURSAL, reemplazados: 0 });
 
-  test('sin URL de la central no hace nada y lo dice', async () => {
-    delete env.TECNO_CAJA_SYNC_URL;
+  test('con TECNO_CAJA_SYNC_URL=off no hace nada y lo dice', async () => {
+    env.TECNO_CAJA_SYNC_URL = 'off';
     expect(await enlace.estado()).toMatchObject({ configurado: false, tieneToken: false, vinculado: false, estado: 'sin_vincular' });
     await expect(enlace.activar('ABCD-EFGH')).rejects.toMatchObject({ code: 'SIN_CONFIGURAR', statusCode: 503 });
     expect(enlace.iniciar()).toBe(false);
+  });
+
+  test('sin TECNO_CAJA_SYNC_URL usa la Sync API desplegada', async () => {
+    delete env.TECNO_CAJA_SYNC_URL;
+    const urls = [];
+    const porDefecto = createEnlaceCentral({
+      query: base.query, identidad: createIdentidad({ query: base.query }), bandejas: createBandejas({ dialect: 'sqlite' }), env,
+      fetchImpl: async (u) => { urls.push(u); throw new Error('sin red'); }, logger: { warn() {} },
+    });
+    expect((await porDefecto.estado()).configurado).toBe(true);
+    await expect(porDefecto.activar('ABCD-EFGH')).rejects.toMatchObject({ code: 'SIN_CONEXION' });
+    expect(urls).toEqual([`${DEFAULT_SYNC_URL}/v1/equipos/activar`]);
   });
 
   test('activar: guarda el token y esta base adopta la identidad de la central', async () => {

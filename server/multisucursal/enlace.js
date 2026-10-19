@@ -20,6 +20,9 @@
  */
 
 const CLAVE_ESTADO = 'multisucursal_enlace';
+// Sync API desplegada (Cloud Run us-east1, igual que la tienda y el gateway
+// e-CF). TECNO_CAJA_SYNC_URL la cambia (pruebas) y "off" la apaga.
+const DEFAULT_SYNC_URL = 'https://tecno-caja-sync-api-1052855422372.us-east1.run.app';
 const ESTADOS = Object.freeze({
   SIN_VINCULAR: 'sin_vincular',
   VINCULADO: 'vinculado',
@@ -60,8 +63,13 @@ function createEnlaceCentral({
   getModo = () => 'normal',
   logger = console,
   timeoutMs = 15000,
+  urlPorDefecto = DEFAULT_SYNC_URL,
 }) {
-  const url = () => String(env.TECNO_CAJA_SYNC_URL || '').trim().replace(/\/+$/, '');
+  const url = () => {
+    const propia = String(env.TECNO_CAJA_SYNC_URL || '').trim();
+    if (propia.toLowerCase() === 'off') return '';
+    return String(propia || urlPorDefecto || '').replace(/\/+$/, '');
+  };
   const token = () => String(env.TECNO_CAJA_SYNC_TOKEN || '').trim();
   let timers = [];
 
@@ -260,4 +268,4 @@ function createEnlaceCentral({
   return { activar, refrescarIdentidad, latido, desvincular, estado, iniciar, detener };
 }
 
-module.exports = { createEnlaceCentral, ErrorEnlace, ESTADOS, CLAVE_ESTADO };
+module.exports = { createEnlaceCentral, ErrorEnlace, ESTADOS, CLAVE_ESTADO, DEFAULT_SYNC_URL };
