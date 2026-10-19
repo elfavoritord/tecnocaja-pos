@@ -14,6 +14,9 @@ const { createGastosRouter } = require('./routes/gastos.routes');
 const { createAdjuntosRouter } = require('./routes/adjuntos.routes');
 const { createFlujoFinancieroRouter } = require('./routes/flujo-financiero.routes');
 const { createRncRouter } = require('./routes/rnc.routes');
+// Sucursales (multisucursal, Fase 3): mismas reglas que el portal del contador.
+const { createSucursalesCentral } = require('../server/multisucursal/central/sucursales');
+const { createSucursalesRouter } = require('../server/multisucursal/central/sucursales.routes');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -817,6 +820,27 @@ app.use('/api/flujo-financiero', createFlujoFinancieroRouter({ col, docData, req
 // El dataset (~784k líneas) se carga en un worker_thread aparte para no
 // bloquear el arranque del servidor — ver routes/rnc.routes.js.
 app.use('/api/rnc', createRncRouter({ requireAuth }));
+
+// ── Sucursales de cada empresa (multisucursal) ────────────────────────────
+// Emilio es super_admin: fija el límite, crea, edita, activa/desactiva y
+// genera códigos de equipo. Reglas en server/multisucursal/central/sucursales.js.
+app.use('/api/sucursales', createSucursalesRouter({
+  requireAuth,
+  getCentral: () => {
+    if (!fbReady) throw Object.assign(new Error(fbError || 'Firebase no disponible.'), { statusCode: 503 });
+    return createSucursalesCentral({ db });
+  },
+  actorDe: (req) => ({
+    tipo: 'super_admin',
+    uid: req.adminUser.uid,
+    nombre: req.adminUser.fullName || req.adminUser.email,
+  }),
+  alCambiar: (req, accion, licenseId, detalle) => audit(req.adminUser.email, accion, licenseId, detalle),
+}));
+// La pantalla es la misma del portal del contador (fuente única en el POS).
+app.get('/js/sucursales-central-ui.js', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'js', 'sucursales-central-ui.js'));
+});
 
 // ── SPA fallback ───────────────────────────────────────────────────────────
 app.get(/(.*)/, (_req, res) => {

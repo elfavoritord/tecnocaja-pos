@@ -15,6 +15,10 @@ const asistente = require('./asistente');
 // Plantillas de la factura A4 (copia de js/factura-plantillas.js del POS):
 // aquí solo se usa para validar la plantilla y el color que se guardan.
 const FacturaPlantillas = require('./public/js/factura-plantillas.js');
+// Sucursales de las empresas del contador (multisucursal): copia de
+// server/multisucursal/central/ del POS por scripts/vendor-sync.js.
+const { createSucursalesCentral } = require('./server/multisucursal/sucursales');
+const { createSucursalesRouter } = require('./server/multisucursal/sucursales.routes');
 
 // ── Firebase Admin SDK ─────────────────────────────────────────────────────
 let adminSdk = null;
@@ -4665,6 +4669,23 @@ app.post('/api/asistente/enviar-correo', requireAuth, async (req, res) => {
     res.status(e.status || 500).json({ error: e.message });
   }
 });
+
+// ── Sucursales de las empresas del contador ───────────────────────────────
+// Crea y edita sucursales SOLO de sus empresas y dentro del límite que fija
+// Tecno Caja; no cambia el límite ni activa/desactiva (403 desde las reglas).
+app.use('/api/sucursales', createSucursalesRouter({
+  requireAuth,
+  getCentral: () => {
+    if (!fbReady) throw Object.assign(new Error(fbError || 'Firebase no disponible.'), { statusCode: 503 });
+    return createSucursalesCentral({ db });
+  },
+  actorDe: (req) => ({
+    tipo: 'contador',
+    uid: req.contador.uid,
+    nombre: req.contador.fullName || req.contador.email,
+    contadorId: req.contador.contadorDocId,
+  }),
+}));
 
 // ── SPA fallback ───────────────────────────────────────────────────────────
 app.get(/(.*)/, (_req, res) => {

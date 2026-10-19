@@ -812,6 +812,20 @@ async function verCliente(id) {
           </tr>`).join('')
         : '<tr><td colspan="4" style="text-align:center;padding:16px;color:var(--text-muted,#5a7099)">Sin historial de licencias</td></tr>';
     }
+
+    // Sucursales: el contador crea y edita dentro del límite que fija Tecno
+    // Caja; no cambia el límite ni activa/desactiva (lo rechaza el servidor).
+    const sucEl = $id('det-sucursales');
+    if (sucEl && window.SucursalesUI) {
+      const nuevo = sucEl.cloneNode(false); // sin los listeners del negocio anterior
+      sucEl.replaceWith(nuevo);
+      window.SucursalesUI.montar(nuevo, {
+        api: async (method, path, body) => { await refreshToken(); return apiCall(method, path, body); },
+        licenseId: id,
+        permisos: { limite: false, estado: false },
+        avisar: toast,
+      });
+    }
   } catch (e) {
     toast('Error cargando negocio: ' + e.message, 'error');
     goto('negocios');

@@ -27,6 +27,7 @@
     "test:e2e-lan": "node scripts/e2e-lan/run-lan-e2e.js",
     "test:multisucursal-mariadb": "node scripts/multisucursal/probar-migraciones-mariadb.js",
     "test:multisucursal-sqlite": "node scripts/multisucursal/probar-arranque-sqlite.js",
+    "test:multisucursal-central": "npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"npx jest tests/multisucursal/central --runInBand\"",
     "admin": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe tecno-caja-admin/main.js"
   },
   "keywords": [],

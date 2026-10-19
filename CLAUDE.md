@@ -136,6 +136,7 @@ Variables clave en `.env`:
 - `docs/TIENDA-ONLINE.md` — Tienda online: arquitectura, tablas, APIs, sincronización, riesgos y despliegue.
 - `docs/MULTISUCURSAL-DIAGNOSTICO.md` — Fase 1 del proyecto multisucursal (una base por sucursal + sincronización HTTPS): cómo está hoy, brechas, riesgos que bloquean y decisiones pendientes.
 - `docs/MULTISUCURSAL-FASE-2.md` — Fase 2: uuid, bandejas de sincronización, acceso por sucursal y migraciones numeradas (`server/migrations/`). Pruebas: `npm run test:multisucursal-mariadb` y `npm run test:multisucursal-sqlite`. Interruptor: `TECNO_CAJA_MULTISUCURSAL_DESACTIVAR=1`.
+- `docs/MULTISUCURSAL-FASE-3.md` — Sucursales centrales: solo Emilio (`tecno-caja-admin`) y el contador (su portal) las crean; Emilio fija el límite por empresa. Reglas/rutas/pantalla únicas en `server/multisucursal/central/` y `js/sucursales-central-ui.js` (copiadas al portal con su `vendor-sync`). Pruebas con emulador: `npm run test:multisucursal-central`.
 - `CONTRIBUTING.md` — Guía de desarrollo.
 - `.env.example` — Todas las variables de entorno documentadas.
 
