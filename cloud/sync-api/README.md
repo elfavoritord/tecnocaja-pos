@@ -11,11 +11,14 @@ Reglas de sucursales y equipos: `vendor/multisucursal/sucursales.js`, copia de `
 | GET | `/health` | Salud |
 | POST | `/v1/equipos/activar` | `{ codigo, equipo }` → 201 `{ token, equipoId, empresa, sucursal }`. El código lo generan Emilio o el contador al crear la sucursal: sirve una vez y vence en 24 h. El token se entrega **una sola vez**; en Firestore solo queda su hash. Si la sucursal ya tenía una PC, esa queda "reemplazada". Máximo 10 intentos cada 15 min por IP |
 | GET | `/v1/identidad` | `Authorization: Bearer <token>` → datos vigentes de la empresa y la sucursal |
-| POST | `/v1/latido` | `{ appVersion, modo, pendientes, ultimaSincronizacion }` → estado de la PC para los paneles |
+| POST | `/v1/latido` | `{ appVersion, modo, pendientes: { salida, errores, conflictos }, ultimaSincronizacion, ncf: [{ rangoUuid, siguiente }] }` → estado de la PC para los paneles |
+| POST | `/v1/eventos` | `{ eventos: [...] }` (máx. 200, 4 MB) → `{ resultados: [{ eventId, resultado: ok\|duplicado\|rechazado, code, motivo }] }`. Idempotente por `event_id`. Tipos: `venta`, `producto_sucursal`, `producto` y `usuario` (solo la principal), `comando_precio` (solo la principal), `ncf_rango` |
+| GET | `/v1/cambios?tipo=catalogo\|usuarios\|comandos\|ncf&desde=<seq>&limite=<n>&contar=1` | Lo que cambió para esta sucursal desde el cursor, en páginas (`siguiente`, `hayMas`, `pendientes`) |
+| GET | `/v1/sucursales` | Sucursales de la empresa (para elegir alcance en la principal) |
 
-Respuestas 403 con `code`: `EQUIPO_REEMPLAZADO`, `EQUIPO_REVOCADO`, `SUCURSAL_INACTIVA`, `LICENCIA_INACTIVA`. El POS las muestra y deja de sincronizar; la venta local sigue igual.
+Respuestas 403 con `code`: `EQUIPO_REEMPLAZADO`, `EQUIPO_REVOCADO`, `SUCURSAL_INACTIVA`, `LICENCIA_INACTIVA`. El POS las muestra y deja de sincronizar; la venta local sigue igual. Máximo 120 peticiones por minuto por equipo.
 
-Los eventos (ventas, inventario, catálogo) llegan en la Fase 5.
+Reglas de eventos y cambios: `vendor/multisucursal/sincronizacion-central.js`, copia de `server/multisucursal/central/sincronizacion-central.js`. Ver `docs/MULTISUCURSAL-FASES-4-8.md`.
 
 ## Firestore
 
@@ -42,7 +45,9 @@ node cloud/sync-api/scripts/vendor-sync.js
 npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja "node scripts/multisucursal/probar-enlace-pos.js"
 ```
 
-## Despliegue (solo con el visto bueno de Emilio)
+## Despliegue
+
+Desplegada el 2026-10-19 como `tecno-caja-sync-api` (us-east1). Emilio autorizó subirla; para cada cambio:
 
 ```powershell
 cd cloud/sync-api

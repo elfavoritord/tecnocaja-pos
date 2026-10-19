@@ -6,4 +6,5 @@ module.exports = [
   require('./0001-uuid-entidades'),
   require('./0002-tablas-sincronizacion'),
   require('./0003-acceso-sucursales'),
+  require('./0004-catalogo-y-sincronizacion'),
 ];

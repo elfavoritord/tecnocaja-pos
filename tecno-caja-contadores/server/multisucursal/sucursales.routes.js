@@ -15,11 +15,21 @@
  *   POST /:licenseId/:branchUuid/codigo       código de equipo (se muestra una vez)
  *   GET  /:licenseId/equipos                  PC de cada sucursal: en línea, último latido, pendientes
  *   POST /:licenseId/equipos/:equipoId/revocar   solo super administrador
+ *   GET  /:licenseId/ncf                      rangos NCF de todas las sucursales
+ *   POST /:licenseId/:branchUuid/ncf          { tipo, desde, hasta, vence, autorizacion } asignar sub-rango
+ *   POST /:licenseId/:branchUuid/ncf/:rangoUuid/anular   (si la sucursal no lo empezó a usar)
+ *   GET  /:licenseId/resumen?dias=30          ventas por sucursal (lo que ya sincronizó)
  */
 
 const express = require('express');
 
-function createSucursalesRouter({ requireAuth, getCentral, actorDe, alCambiar = async () => {} }) {
+function createSucursalesRouter({
+  requireAuth,
+  getCentral,
+  actorDe,
+  alCambiar = async () => {},
+  getSincronizacion = () => getCentral().sincronizacion,
+}) {
   const router = express.Router();
 
   const responder = (fn) => async (req, res) => {
@@ -45,6 +55,26 @@ function createSucursalesRouter({ requireAuth, getCentral, actorDe, alCambiar = 
   router.post('/:licenseId/equipos/:equipoId/revocar', requireAuth, responder(async (req, actor) => {
     const r = await getCentral().revocarEquipo(req.params.licenseId, req.params.equipoId, actor);
     await avisar(req, 'sucursales.revocar_equipo', req.params.equipoId);
+    return r;
+  }));
+
+  router.get('/:licenseId/ncf', requireAuth, responder(async (req, actor) => ({
+    rangos: await getSincronizacion().listarRangosNcf(req.params.licenseId, actor),
+  })));
+
+  router.get('/:licenseId/resumen', requireAuth, responder((req, actor) => (
+    getSincronizacion().resumenOperacion(req.params.licenseId, actor, { dias: Number(req.query.dias) || 30 })
+  )));
+
+  router.post('/:licenseId/:branchUuid/ncf', requireAuth, responder(async (req, actor) => {
+    const r = await getSincronizacion().asignarRangoNcf(req.params.licenseId, req.params.branchUuid, req.body || {}, actor);
+    await avisar(req, 'sucursales.ncf_asignar', `${r.tipo} ${r.desde}-${r.hasta} → ${req.params.branchUuid}`);
+    return { rango: r };
+  }));
+
+  router.post('/:licenseId/:branchUuid/ncf/:rangoUuid/anular', requireAuth, responder(async (req, actor) => {
+    const r = await getSincronizacion().anularRangoNcf(req.params.licenseId, req.params.branchUuid, req.params.rangoUuid, actor);
+    await avisar(req, 'sucursales.ncf_anular', req.params.rangoUuid);
     return r;
   }));
 

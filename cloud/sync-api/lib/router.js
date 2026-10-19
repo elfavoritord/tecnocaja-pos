@@ -9,14 +9,22 @@
  *   GET  /v1/identidad          Authorization: Bearer <token>
  *        → { empresa, sucursal, equipo, licencia }      (datos vigentes desde la central)
  *   POST /v1/latido             Authorization: Bearer <token>
- *        { appVersion, modo, pendientes: { salida, errores }, ultimaSincronizacion }
+ *        { appVersion, modo, pendientes: { salida, errores }, ultimaSincronizacion, ncf: [{ rangoUuid, siguiente }] }
  *        → { ok }   (para el estado de cada sucursal en los paneles)
+ *   POST /v1/eventos            Authorization: Bearer <token>
+ *        { eventos: [{ eventId, entityType, entityUuid, operation, version, payload }] }  (máx. 200)
+ *        → { resultados: [{ eventId, resultado: ok|duplicado|rechazado, code?, motivo? }] }
+ *   GET  /v1/cambios?tipo=catalogo|usuarios|comandos|ncf&desde=<seq>&limite=<n>&contar=1
+ *        → { items, siguiente, hayMas, pendientes? }
+ *   GET  /v1/sucursales         sucursales de la empresa (nombre, código, principal, estado)
  *
- * Los eventos (ventas, inventario, catálogo) llegan en la Fase 5.
+ * La empresa y la sucursal salen SIEMPRE del token, nunca del cuerpo: un
+ * equipo no puede mandar ni leer datos de otra sucursal o de otra empresa.
  */
 
 const express = require('express');
 const { createSucursalesCentral } = require('../vendor/multisucursal/sucursales');
+const { createSincronizacionCentral, STREAMS } = require('../vendor/multisucursal/sincronizacion-central');
 const { autenticar, nuevoToken } = require('./equipos');
 const { createRateLimiter } = require('./rate-limit');
 
@@ -47,13 +55,38 @@ function vistaSucursal(s) {
 
 function createRouter({ db, now = () => new Date(), limites = {} }) {
   const router = express.Router();
-  router.use(express.json({ limit: '64kb' }));
+  const jsonChico = express.json({ limit: '64kb' });
+  // Un lote de 200 ventas con sus líneas.
+  const jsonLote = express.json({ limit: '4mb' });
   const central = createSucursalesCentral({ db, now });
+  const sincronizacion = createSincronizacionCentral({ db, now });
   const permitirActivacion = createRateLimiter({
     windowMs: limites.activarVentanaMs || 15 * 60 * 1000,
     max: limites.activarMax || 10,
     now: () => now().getTime(),
   });
+  // Por equipo: un POS normal hace unas pocas peticiones por minuto.
+  const permitirEquipo = createRateLimiter({
+    windowMs: 60 * 1000,
+    max: limites.equipoPorMinuto || 120,
+    now: () => now().getTime(),
+  });
+
+  function contexto(req) {
+    const { equipo, sucursal } = req.ctx;
+    return {
+      licenseId: equipo.licenseId,
+      branchUuid: equipo.branchUuid,
+      esPrincipal: Boolean(sucursal.esPrincipal),
+      equipoId: equipo.equipoId,
+      hostname: equipo.hostname || '',
+    };
+  }
+
+  // Para el panel: cuándo sincronizó por última vez cada PC (alerta > 4 h).
+  function marcarSincronizacion(req) {
+    return req.ctx.equipo.ref.update({ ultimaSincronizacion: now(), ultimaConexion: now() }).catch(() => {});
+  }
 
   function fallo(res, error) {
     const status = Number(error.statusCode) || 500;
@@ -68,6 +101,9 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
   async function autenticado(req, res, next) {
     try {
       req.ctx = await autenticar(db, req.get('authorization'));
+      if (!permitirEquipo(req.ctx.equipo.equipoId)) {
+        return res.status(429).json({ ok: false, error: 'Demasiadas peticiones de este equipo.', code: 'DEMASIADAS_PETICIONES' });
+      }
       next();
     } catch (error) {
       fallo(res, error);
@@ -76,7 +112,7 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
 
   router.get('/health', (_req, res) => res.json({ ok: true, servicio: 'tecno-caja-sync-api' }));
 
-  router.post('/v1/equipos/activar', async (req, res) => {
+  router.post('/v1/equipos/activar', jsonChico, async (req, res) => {
     if (!permitirActivacion(req.ip)) {
       return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.', code: 'DEMASIADOS_INTENTOS' });
     }
@@ -116,19 +152,62 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
     });
   });
 
-  router.post('/v1/latido', autenticado, async (req, res) => {
+  router.post('/v1/latido', jsonChico, autenticado, async (req, res) => {
     try {
       const b = req.body || {};
       const ultima = new Date(b.ultimaSincronizacion);
       const latido = {
         appVersion: texto(b.appVersion, 20),
         modo: MODOS.has(b.modo) ? b.modo : 'normal',
-        pendientes: { salida: entero(b.pendientes?.salida), errores: entero(b.pendientes?.errores) },
+        pendientes: {
+          salida: entero(b.pendientes?.salida),
+          errores: entero(b.pendientes?.errores),
+          conflictos: entero(b.pendientes?.conflictos),
+        },
         ultimaSincronizacion: Number.isNaN(ultima.getTime()) ? null : ultima.toISOString(),
         recibidoEn: now().toISOString(),
       };
       await req.ctx.equipo.ref.update({ ultimaConexion: now(), latido, ...(latido.appVersion ? { appVersion: latido.appVersion } : {}) });
+      if (Array.isArray(b.ncf) && b.ncf.length) await sincronizacion.registrarUsoNcf(contexto(req), b.ncf).catch(() => 0);
       res.json({ ok: true });
+    } catch (error) {
+      fallo(res, error);
+    }
+  });
+
+  // Sucursales de la empresa (para elegir a cuáles va un producto, un usuario
+  // o un cambio de precio en la principal).
+  router.get('/v1/sucursales', autenticado, async (req, res) => {
+    try {
+      const snap = await db.collection('licencias').doc(req.ctx.equipo.licenseId).collection('sucursales').get();
+      res.set('Cache-Control', 'no-store').json({
+        ok: true,
+        sucursales: snap.docs.map((d) => ({ ...vistaSucursal({ branchUuid: d.id, ...d.data() }), estaPc: d.id === req.ctx.equipo.branchUuid })),
+      });
+    } catch (error) {
+      fallo(res, error);
+    }
+  });
+
+  router.post('/v1/eventos', jsonLote, autenticado, async (req, res) => {
+    try {
+      const eventos = req.body?.eventos;
+      if (!Array.isArray(eventos)) return res.status(400).json({ ok: false, error: 'Falta la lista de eventos.', code: 'DATOS_INVALIDOS' });
+      const resultados = await sincronizacion.procesarEventos(contexto(req), eventos);
+      await marcarSincronizacion(req);
+      res.set('Cache-Control', 'no-store').json({ ok: true, resultados });
+    } catch (error) {
+      fallo(res, error);
+    }
+  });
+
+  router.get('/v1/cambios', autenticado, async (req, res) => {
+    try {
+      const tipo = String(req.query.tipo || '');
+      if (!STREAMS.includes(tipo)) return res.status(400).json({ ok: false, error: 'Tipo de cambios desconocido.', code: 'DATOS_INVALIDOS' });
+      const r = await sincronizacion.cambios(contexto(req), tipo, req.query.desde, req.query.limite, { contar: req.query.contar === '1' });
+      await marcarSincronizacion(req);
+      res.set('Cache-Control', 'no-store').json({ ok: true, ...r });
     } catch (error) {
       fallo(res, error);
     }

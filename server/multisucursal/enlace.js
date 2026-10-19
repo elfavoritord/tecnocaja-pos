@@ -64,6 +64,8 @@ function createEnlaceCentral({
   logger = console,
   timeoutMs = 15000,
   urlPorDefecto = DEFAULT_SYNC_URL,
+  // Lo que la sincronización agrega al latido (conflictos, uso de rangos NCF).
+  extrasLatido = async () => ({}),
 }) {
   const url = () => {
     const propia = String(env.TECNO_CAJA_SYNC_URL || '').trim();
@@ -89,10 +91,10 @@ function createEnlaceCentral({
     return nuevo;
   }
 
-  async function llamar(method, ruta, body, { conToken = true } = {}) {
+  async function llamar(method, ruta, body, { conToken = true, espera = timeoutMs } = {}) {
     if (!url()) throw new ErrorEnlace('El servicio central de sucursales no está configurado en esta PC.', 'SIN_CONFIGURAR', 503);
     const controlador = new AbortController();
-    const reloj = setTimeout(() => controlador.abort(), timeoutMs);
+    const reloj = setTimeout(() => controlador.abort(), espera);
     let res;
     try {
       res = await fetchImpl(`${url()}${ruta}`, {
@@ -209,17 +211,35 @@ function createEnlaceCentral({
       const pendientes = r
         ? { salida: Number(r.salida.pendiente || 0) + Number(r.salida.error || 0), errores: Number(r.salida.rechazado || 0) }
         : { salida: 0, errores: 0 };
+      const extras = await extrasLatido().catch(() => ({})) || {};
       await llamar('POST', '/v1/latido', {
         appVersion: getEquipo().appVersion || '',
         modo: getModo(),
-        pendientes,
-        ultimaSincronizacion: actual.ultimaConexion || null,
+        pendientes: { ...pendientes, ...(extras.pendientes || {}) },
+        ultimaSincronizacion: extras.ultimaSincronizacion || actual.ultimaConexion || null,
+        ...(Array.isArray(extras.ncf) && extras.ncf.length ? { ncf: extras.ncf } : {}),
       });
       await guardarEstado({ ultimaConexion: now().toISOString(), ultimoError: null, ...(actual.estado ? {} : { estado: ESTADOS.VINCULADO }) });
     } catch (error) {
       await registrarFalla(error);
     }
     return estado();
+  }
+
+  // Para la sincronización (sincronizacion.js): la misma llamada con token. Si
+  // la central responde que este equipo ya no vale, el enlace pasa a ese estado.
+  async function llamarSync(method, ruta, body) {
+    if (!token()) throw new ErrorEnlace('Esta PC no está enlazada con la central.', 'SIN_TOKEN', 409);
+    const actual = await leerEstado();
+    if (DEFINITIVOS.has(actual.estado)) throw new ErrorEnlace('El enlace de esta PC está cerrado (reemplazada o revocada).', 'ENLACE_CERRADO', 409);
+    try {
+      // Lotes de hasta 200 ventas o páginas de catálogo: con una conexión lenta
+      // (datos móviles) pueden tardar; 5 minutos antes de darlo por perdido.
+      return await llamar(method, ruta, body, { espera: Math.max(timeoutMs, 5 * 60 * 1000) });
+    } catch (error) {
+      if (ESTADO_POR_CODIGO[error.code]) await registrarFalla(error);
+      throw error;
+    }
   }
 
   async function desvincular() {
@@ -265,7 +285,7 @@ function createEnlaceCentral({
     return true;
   }
 
-  return { activar, refrescarIdentidad, latido, desvincular, estado, iniciar, detener };
+  return { activar, refrescarIdentidad, latido, desvincular, estado, iniciar, detener, llamarSync };
 }
 
 module.exports = { createEnlaceCentral, ErrorEnlace, ESTADOS, CLAVE_ESTADO, DEFAULT_SYNC_URL };

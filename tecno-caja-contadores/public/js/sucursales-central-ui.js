@@ -15,7 +15,10 @@
  *   });
  *
  * Debajo de las sucursales lista las PC autorizadas (Sync API): en línea o no
- * según su último latido, versión y eventos pendientes. Revocar solo Emilio.
+ * según su último latido, versión y eventos pendientes, con alerta si una no
+ * sincroniza hace más de 4 horas. Revocar solo Emilio. Después: ventas por
+ * sucursal (hoy, ayer, 30 días) y los rangos NCF repartidos por sucursal
+ * (asignar y anular: Emilio y el contador de la empresa).
  *
  * Colores: variables del portal (--surface, --text…) con respaldo oscuro para
  * el panel de Emilio, que no las define.
@@ -39,6 +42,16 @@
 
   // La PC manda un latido cada 5 min: dos perdidos más un margen = sin conexión.
   var EN_LINEA_MS = 12 * 60 * 1000;
+  // Alerta del prompt maestro: sucursal sin sincronizar hace más de 4 horas.
+  var ALERTA_SYNC_MS = 4 * 60 * 60 * 1000;
+  var TIPOS_NCF = ['B01', 'B02', 'B03', 'B04', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17'];
+  var ESTADO_RANGO = {
+    en_espera: 'Recibido, en espera', en_uso: 'En uso', agotado: 'Agotado', rechazado: 'Rechazado por la sucursal', anulado: 'Anulado',
+  };
+
+  function dinero(n) {
+    return 'RD$' + Number(n || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
   var MODOS = { local: 'Modo local', contingencia: 'Contingencia', sin_bd: 'Sin base de datos' };
 
   function hace(iso) {
@@ -64,7 +77,7 @@
     '.suc-ui{color:var(--text,#e2e8f0);font-size:.85rem}',
     '.suc-ui h4{margin:0 0 .75rem;color:var(--text-sub,#94a3b8);font-size:.85rem;letter-spacing:.05em;text-transform:uppercase}',
     '.suc-ui .suc-fila{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-bottom:.75rem}',
-    '.suc-ui input{padding:.4rem .6rem;background:var(--surface2,rgba(255,255,255,.06));border:1px solid var(--border,rgba(255,255,255,.12));border-radius:6px;color:var(--text,#e2e8f0);font-size:.85rem}',
+    '.suc-ui input,.suc-ui select{padding:.4rem .6rem;background:var(--surface2,rgba(255,255,255,.06));border:1px solid var(--border,rgba(255,255,255,.12));border-radius:6px;color:var(--text,#e2e8f0);font-size:.85rem}',
     '.suc-ui button{padding:.35rem .75rem;border-radius:6px;border:1px solid var(--border,rgba(255,255,255,.12));background:var(--surface2,rgba(255,255,255,.06));color:var(--text,#e2e8f0);cursor:pointer;font-size:.8rem}',
     '.suc-ui button:disabled{opacity:.45;cursor:not-allowed}',
     '.suc-ui button.suc-primario{background:var(--blue,#3b82f6);border-color:var(--blue,#3b82f6);color:#fff}',
@@ -104,7 +117,9 @@
     var avisar = opciones.avisar || function () {};
     var ruta = BASE + '/' + encodeURIComponent(licenseId);
     // equipos: null = no se pudieron leer (la lista de sucursales sigue).
-    var estado = { datos: null, equipos: null, verAnteriores: false, editando: null, codigo: null, ocupado: false };
+    var estado = {
+      datos: null, equipos: null, ventas: null, rangos: null, verAnteriores: false, editando: null, codigo: null, ocupado: false,
+    };
 
     asegurarEstilos();
     contenedor.classList.add('suc-ui');
@@ -137,10 +152,20 @@
       if (e.estado === 'activo' && l.modo && MODOS[l.modo]) detalle.push(MODOS[l.modo]);
       var pendientes = Number(p.salida || 0);
       var rechazados = Number(p.errores || 0);
+      var conflictos = Number(p.conflictos || 0);
       var cola = e.estado !== 'activo' ? '—'
-        : (pendientes || rechazados)
-          ? esc(pendientes + ' por enviar') + (rechazados ? '<div class="suc-sub" style="color:var(--red,#ef4444)">' + esc(rechazados + ' rechazados') + '</div>' : '')
+        : (pendientes || rechazados || conflictos)
+          ? esc(pendientes + ' por enviar')
+            + (rechazados ? '<div class="suc-sub" style="color:var(--red,#ef4444)">' + esc(rechazados + ' rechazados') + '</div>' : '')
+            + (conflictos ? '<div class="suc-sub" style="color:var(--orange,#f59e0b)">' + esc(conflictos + ' por revisar en la sucursal') + '</div>' : '')
           : 'Al día';
+      // Alerta: una PC activa que no sincroniza hace más de 4 horas.
+      var sync = e.ultimaSincronizacion || (l && l.ultimaSincronizacion) || null;
+      var tSync = sync ? new Date(sync).getTime() : NaN;
+      var alertaSync = e.estado === 'activo' && (isNaN(tSync) || Date.now() - tSync > ALERTA_SYNC_MS);
+      if (e.estado === 'activo') {
+        detalle.push(alertaSync ? '⚠ sin sincronizar ' + (isNaN(tSync) ? 'todavía' : hace(sync)) : 'sincronizó ' + hace(sync));
+      }
       var acciones = permisos.revocar && e.estado === 'activo'
         ? boton('revocar', 'Revocar', e.equipoId, ' class="suc-peligro" title="Si la PC se perdió, se dañó o se vendió"')
         : '';
@@ -149,7 +174,7 @@
         + '<div class="suc-sub">' + esc([e.appVersion ? 'v' + e.appVersion : '', 'autorizada ' + fecha(e.activadoEn)].filter(Boolean).join(' · ')) + '</div></td>'
         + '<td>' + esc(nombreSucursal(e.branchUuid)) + '</td>'
         + '<td><span class="suc-badge suc-' + sit.clase + '">' + sit.texto + '</span>'
-        + '<div class="suc-sub">Última conexión ' + esc(hace(e.ultimaConexion)) + (detalle.length ? ' · ' + esc(detalle.join(' · ')) : '') + '</div></td>'
+        + '<div class="suc-sub"' + (alertaSync ? ' style="color:var(--orange,#f59e0b)"' : '') + '>Última conexión ' + esc(hace(e.ultimaConexion)) + (detalle.length ? ' · ' + esc(detalle.join(' · ')) : '') + '</div></td>'
         + '<td>' + cola + '</td>'
         + '<td><div class="suc-acciones">' + acciones + '</div></td>'
         + '</tr>';
@@ -168,6 +193,55 @@
           ? '<table><thead><tr><th>PC</th><th>Sucursal</th><th>Conexión</th><th>Pendientes</th><th></th></tr></thead><tbody>'
             + filas.map(filaEquipo).join('') + '</tbody></table>'
           : '<p class="suc-sub">Ninguna PC activa. Genera un código de equipo para autorizar una.</p>');
+    }
+
+    // Ventas por sucursal con lo que ya sincronizó cada una.
+    function seccionVentas() {
+      var v = estado.ventas;
+      if (!v || !v.sucursales || !v.sucursales.length) return '';
+      var hayVentas = v.sucursales.some(function (s) { return s.periodo.ventas > 0; });
+      if (!hayVentas) return '';
+      return '<div class="suc-titulo-equipos"><h4>Ventas por sucursal</h4></div>'
+        + '<table><thead><tr><th>Sucursal</th><th>Hoy</th><th>Ayer</th><th>Últimos 30 días</th></tr></thead><tbody>'
+        + v.sucursales.map(function (s) {
+          return '<tr data-ventas="' + esc(s.branchUuid) + '"><td><strong>' + esc(s.nombre) + '</strong></td>'
+            + '<td>' + dinero(s.hoy.total) + '<div class="suc-sub">' + esc(s.hoy.ventas) + ' venta(s)</div></td>'
+            + '<td>' + dinero(s.ayer.total) + '<div class="suc-sub">' + esc(s.ayer.ventas) + ' venta(s)</div></td>'
+            + '<td>' + dinero(s.periodo.total) + '<div class="suc-sub">' + esc(s.periodo.ventas) + ' venta(s)</div></td></tr>';
+        }).join('')
+        + '<tr><td><strong>Total</strong></td><td><strong>' + dinero(v.total.hoy) + '</strong></td><td></td><td><strong>' + dinero(v.total.periodo) + '</strong></td></tr>'
+        + '</tbody></table>'
+        + '<p class="suc-sub">Con lo que cada sucursal ya sincronizó. Si una PC tiene ventas por enviar, aparece arriba en "PC autorizadas".</p>';
+    }
+
+    // Rangos NCF: la autorización de la DGII se reparte en sub-rangos por
+    // sucursal para que dos sucursales sin Internet nunca usen el mismo número.
+    function seccionNcf() {
+      if (!estado.rangos) return '';
+      var activas = (estado.datos.sucursales || []).filter(function (s) { return s.estado === 'activa'; });
+      var filas = estado.rangos.map(function (r) {
+        var usado = r.siguiente != null ? (r.siguiente - r.desde) : 0;
+        var estadoTexto = r.estado === 'anulado' ? 'Anulado' : (ESTADO_RANGO[r.estadoSucursal] || 'Asignado, sin recibir');
+        var puedeAnular = r.estado !== 'anulado' && ['en_uso', 'agotado'].indexOf(r.estadoSucursal) === -1;
+        return '<tr data-rango="' + esc(r.rangoUuid) + '"><td>' + esc(r.sucursal) + '</td><td><strong>' + esc(r.tipo) + '</strong></td>'
+          + '<td>' + esc(r.desde) + '–' + esc(r.hasta) + (r.autorizacion ? '<div class="suc-sub">Aut. ' + esc(r.autorizacion) + '</div>' : '') + '</td>'
+          + '<td>' + esc(estadoTexto) + (r.motivoSucursal ? '<div class="suc-sub" style="color:var(--red,#ef4444)">' + esc(r.motivoSucursal) + '</div>' : '') + '</td>'
+          + '<td>' + esc(Math.max(0, usado)) + ' / ' + esc(r.total) + '<div class="suc-sub">' + esc(r.disponibles) + ' disponibles</div></td>'
+          + '<td>' + esc(r.vence || '—') + '</td>'
+          + '<td><div class="suc-acciones">' + (puedeAnular ? boton('ncf-anular', 'Anular', r.rangoUuid, ' class="suc-peligro" data-sucursal="' + esc(r.branchUuid) + '"') : '') + '</div></td></tr>';
+      }).join('');
+      return '<div class="suc-titulo-equipos"><h4>Comprobantes fiscales (NCF) por sucursal</h4></div>'
+        + (filas ? '<table><thead><tr><th>Sucursal</th><th>Tipo</th><th>Rango</th><th>Estado</th><th>Usados</th><th>Vence</th><th></th></tr></thead><tbody>' + filas + '</tbody></table>'
+          : '<p class="suc-sub">Todavía no hay rangos NCF repartidos entre sucursales.</p>')
+        + (activas.length ? '<div class="suc-caja"><h4>Asignar un rango a una sucursal</h4><form class="suc-form" data-form="ncf">'
+          + '<select name="branchUuid">' + activas.map(function (s) { return '<option value="' + esc(s.branchUuid) + '">' + esc(s.nombre) + '</option>'; }).join('') + '</select>'
+          + '<select name="tipo">' + TIPOS_NCF.map(function (t) { return '<option' + (t === 'B02' ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>'
+          + '<input name="desde" type="number" min="1" max="99999999" placeholder="Desde *" required>'
+          + '<input name="hasta" type="number" min="1" max="99999999" placeholder="Hasta *" required>'
+          + '<input name="vence" type="date" title="Fecha de vencimiento de la autorización">'
+          + '<input name="autorizacion" maxlength="60" placeholder="No. de autorización DGII">'
+          + '<div class="suc-fila" style="margin:0"><button type="submit" class="suc-primario">Asignar rango</button></div>'
+          + '</form><div class="suc-sub">Los números no pueden cruzarse con otro rango de la empresa (ni con uno anulado). La sucursal lo recibe al sincronizar y lo empieza a usar cuando se le agote el actual.</div></div>' : '');
     }
 
     function filaSucursal(s) {
@@ -223,6 +297,8 @@
         : '<p class="suc-sub">Esta empresa todavía no tiene sucursales registradas.</p>';
 
       html += seccionEquipos();
+      html += seccionVentas();
+      html += seccionNcf();
 
       if (estado.codigo) {
         html += '<div class="suc-caja"><h4>Código para autorizar una PC en ' + esc(estado.codigo.nombre) + '</h4>'
@@ -248,7 +324,9 @@
         api('GET', ruta),
         // Las PC son informativas: si su lectura falla, las sucursales se ven igual.
         api('GET', ruta + '/equipos').then(function (r) { return r.equipos || []; }, function () { return null; }),
-      ]).then(function (r) { estado.datos = r[0]; estado.equipos = r[1]; render(); })
+        api('GET', ruta + '/resumen').then(function (r) { return r; }, function () { return null; }),
+        api('GET', ruta + '/ncf').then(function (r) { return r.rangos || []; }, function () { return null; }),
+      ]).then(function (r) { estado.datos = r[0]; estado.equipos = r[1]; estado.ventas = r[2]; estado.rangos = r[3]; render(); })
         .catch(function (e) { contenedor.innerHTML = '<p class="suc-aviso">' + esc(e.message) + '</p>'; });
     }
 
@@ -286,6 +364,13 @@
         hacer(api('POST', ruta + '/equipos/' + encodeURIComponent(e.equipoId) + '/revocar'), 'PC revocada.').then(cargar).catch(function () {});
         return;
       }
+      if (accion === 'ncf-anular') {
+        var sucursalRango = pulsado.getAttribute('data-sucursal');
+        if (!global.confirm('¿Anular este rango NCF? La sucursal no lo usará y sus números quedan reservados (no se vuelven a asignar).')) return;
+        hacer(api('POST', ruta + '/' + encodeURIComponent(sucursalRango) + '/ncf/' + encodeURIComponent(id) + '/anular'), 'Rango anulado.')
+          .then(cargar).catch(function () {});
+        return;
+      }
       if (accion === 'copiar' && estado.codigo) {
         (navigator.clipboard ? navigator.clipboard.writeText(estado.codigo.codigo) : Promise.reject(new Error('sin portapapeles')))
           .then(function () { avisar('Código copiado.', 'success'); }, function () { avisar('Cópialo a mano.', 'error'); });
@@ -313,6 +398,18 @@
       var form = ev.target.closest('form[data-form]');
       if (!form) return;
       ev.preventDefault();
+      if (form.getAttribute('data-form') === 'ncf') {
+        var rango = {
+          tipo: form.elements.tipo.value,
+          desde: Number(form.elements.desde.value),
+          hasta: Number(form.elements.hasta.value),
+          vence: form.elements.vence.value,
+          autorizacion: form.elements.autorizacion.value,
+        };
+        hacer(api('POST', ruta + '/' + encodeURIComponent(form.elements.branchUuid.value) + '/ncf', rango),
+          'Rango ' + rango.tipo + ' ' + rango.desde + '–' + rango.hasta + ' asignado.').then(cargar).catch(function () {});
+        return;
+      }
       var datos = {};
       ['nombre', 'codigo', 'direccion', 'telefono', 'encargado'].forEach(function (campo) { datos[campo] = form.elements[campo].value; });
       var editando = form.getAttribute('data-form') === 'editar' && estado.editando;

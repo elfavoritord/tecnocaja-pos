@@ -1399,6 +1399,9 @@ function openProductModal(id) {
 
     ${renderProductBranchScopeField(prod)}
 
+    <!-- Multisucursal: catálogo de la empresa (js/multisucursal-enlace.js) -->
+    <div id="mp-empresa-scope" class="span-full"></div>
+
     <!-- Campos básicos siempre visibles -->
     <div class="modal-grid mp-basics-grid">
       <div class="form-group span-full">
@@ -1569,6 +1572,7 @@ function openProductModal(id) {
   `;
   document.getElementById('modal-footer').classList.toggle('product-modal-footer--edit', Boolean(id));
   document.getElementById('modal-overlay').classList.remove('hidden');
+  window.MultisucursalEnlace?.montarEnProducto?.(document.getElementById('mp-empresa-scope'), prod);
   ['mp-pcompra', 'mp-pventa', 'mp-stock'].forEach((fieldId) => {
     document.getElementById(fieldId)?.addEventListener('input', updateProductPreview);
   });
@@ -1761,8 +1765,14 @@ async function saveProduct(id) {
     tracksStock: document.getElementById('mp-tracks-stock')?.checked !== false,
     descuentoPct: Math.min(100, Math.max(0, parseFloat(document.getElementById('mp-descuento')?.value) || 0)),
     descuentoHastaAgotar: document.getElementById('mp-descuento-hasta-agotar')?.checked ?? false,
-    metaNegocio: readDynamicProductFields(profile)
+    metaNegocio: readDynamicProductFields(profile),
+    // Multisucursal: en la principal, si el producto va a la empresa.
+    ...(window.MultisucursalEnlace?.leerDeProducto?.() || {})
   };
+  if (data.alcanceEmpresa === 'sucursales' && !(data.sucursalesEmpresa || []).length) {
+    showToast('Elige al menos una sucursal para el producto.', 'error');
+    return;
+  }
   if (data.precioVenta < data.precioCompra) {
     showToast('El precio de venta no debe ser menor al de compra', 'warning');
     return;

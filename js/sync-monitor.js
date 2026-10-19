@@ -9,10 +9,43 @@
 //   3. Pendientes: cola de la nube, e-CF firmados sin enviar y ventas de
 //      contingencia de esta caja.
 // Nunca se dice "Sin Internet" cuando lo que falla es el servidor local.
+// Multisucursal: si lo local está bien, el badge dice cómo va la
+// sincronización con las demás sucursales (GET /api/multisucursal/indicador).
+
+/* global getTecnoCajaAuthToken, showToast */
 
 let _syncPollTimer = null;
 let _lastSyncStatus = null;
 let _lastConnectivity = null;
+let _lastMultisucursal = null;
+
+// Multisucursal (server/multisucursal/sincronizacion.js): estado de la
+// sincronización con las demás sucursales. null si esta PC no está enlazada.
+async function _fetchMultisucursal() {
+  try {
+    const tok = typeof getTecnoCajaAuthToken === 'function' ? getTecnoCajaAuthToken() : '';
+    if (!tok) return null;
+    const res = await fetch('/api/multisucursal/indicador', { cache: 'no-store', headers: { Authorization: `Bearer ${tok}` } });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.visible ? data : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Lo local manda (servidor caído, contingencia, sin Internet); si lo local
+// está bien, el badge dice cómo va la sincronización entre sucursales.
+function _mergeMultisucursal(view, ms) {
+  const i = ms?.indicador;
+  if (!i || !['ok', 'pending', 'offline'].includes(view.state)) return view;
+  const detalle = `Sucursales: ${i.texto}. La venta sigue normal; lo pendiente se envía solo.`;
+  if (i.nivel === 'sincronizando') return { state: 'pending', label: i.porcentaje != null ? `Sincronizando ${i.porcentaje}%` : 'Sincronizando…', detail: detalle };
+  if (i.nivel === 'pendientes' && view.state === 'ok') return { state: 'pending', label: ms.pendientes ? `${ms.pendientes} por subir` : 'Pendiente', detail: detalle };
+  if (i.nivel === 'sin_conexion') return { state: 'local', label: 'Central sin conexión', detail: detalle };
+  if (i.nivel === 'error') return { state: 'error', label: 'Revisar sucursales', detail: `${detalle} Ábrelo en Configuración → Sucursal conectada a Tecno Caja.` };
+  return view;
+}
 
 async function _fetchJson(url, timeoutMs = 6000) {
   const controller = new AbortController();
@@ -94,7 +127,8 @@ async function _updateSyncBadge() {
   }
   _lastConnectivity = connectivity;
   window.TcConnectivity = connectivity;
-  const view = _describeConnectivity(connectivity);
+  _lastMultisucursal = connectivity ? await _fetchMultisucursal() : null;
+  const view = _mergeMultisucursal(_describeConnectivity(connectivity), _lastMultisucursal);
   _setSyncBadge(view.state, view.label, view.detail);
 }
 
@@ -166,7 +200,8 @@ async function refreshSyncMonitor() {
   try { sync = await _fetchJson('/api/sync/status'); } catch (_) { sync = null; }
   _lastConnectivity = connectivity;
   _lastSyncStatus = sync;
-  const view = _describeConnectivity(connectivity);
+  _lastMultisucursal = connectivity ? await _fetchMultisucursal() : null;
+  const view = _mergeMultisucursal(_describeConnectivity(connectivity), _lastMultisucursal);
   _setSyncBadge(view.state, view.label, view.detail);
 
   const tone = {
@@ -191,6 +226,12 @@ async function refreshSyncMonitor() {
   if (sync) {
     rows.push(_statusRow('Cambios con error', sync.fallidos ?? sync.queue?.errors ?? 0, (sync.fallidos ?? sync.queue?.errors) ? 'danger' : ''));
     rows.push(_statusRow('Última sincronización', _formatDateTime(sync.ultimo_sync ?? sync.lastSyncAt)));
+  }
+  if (_lastMultisucursal?.indicador) {
+    const i = _lastMultisucursal.indicador;
+    const toneMs = { sincronizado: 'success', sincronizando: '', pendientes: 'warning', sin_conexion: 'warning', error: 'danger' }[i.nivel] || '';
+    rows.push(_statusRow('Sucursales (Tecno Caja)', i.texto, toneMs));
+    rows.push(_statusRow('Última sincronización entre sucursales', _formatDateTime(_lastMultisucursal.ultimaSincronizacion)));
   }
 
   body.innerHTML = `

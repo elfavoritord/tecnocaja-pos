@@ -2572,6 +2572,13 @@ const multisucursal = createMultisucursal({
     appVersion: packageJson.version,
     licenseId: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim(),
   }),
+  // Sincronización (Fases 4-7): auditoría y refresco de cachés cuando llegan
+  // productos o usuarios de la central.
+  auditar: (accion, detalle) => writeAuditLog({ userName: 'Sincronización', moduleName: 'Multisucursal', actionName: accion, detail: detalle }),
+  alAplicar: () => {
+    productsCache.flush();
+    clearPublicUsersListCache();
+  },
 });
 app.use('/api/multisucursal', createMultisucursalRouter({
   multisucursal,
@@ -3180,7 +3187,10 @@ function mapUserRow(row) {
     userNumber: String(row.user_number || `pos_user_${row.id || ''}`).trim(),
     localPasswordSet: Boolean(String(row.password_hash || row.password || '').trim()),
     googleLinked: Boolean(firebaseUid),
-    rolePermissions: parseJsonArrayField(row.role_permissions)
+    rolePermissions: parseJsonArrayField(row.role_permissions),
+    // Multisucursal: sucursales de la empresa donde puede entrar (lo fija la principal).
+    sucursalesEmpresa: parseJsonArrayField(row.sucursales_empresa, null),
+    origenUsuario: row.origen_usuario || 'local'
   };
 }
 
@@ -3354,7 +3364,11 @@ function mapProductRow(row) {
       destacado: Number(row.online_featured || 0) === 1,
       orden: Number(row.online_order || 0),
       modoExistencia: row.online_stock_mode === 'ilimitado' ? 'ilimitado' : 'inventario'
-    }
+    },
+    // Multisucursal (server/migrations/multisucursal/0004): catálogo de la empresa.
+    alcanceEmpresa: row.alcance_empresa || 'local',
+    sucursalesEmpresa: parseJsonArrayField(row.sucursales_empresa),
+    origenCatalogo: row.origen_catalogo || 'local'
   };
 }
 
@@ -12201,6 +12215,7 @@ app.post('/api/products', async (req, res) => {
   if (!data?.codigo || !data?.nombre) {
     return res.status(400).json({ error: 'Código y nombre son obligatorios.' });
   }
+  multisucursal.catalogo.validarAlcanceProducto(data);
   // Un admin de sucursal queda forzado a SU sucursal (ignora lo que mande el
   // body); un admin con permiso de catálogo global elige libremente, con null
   // = producto global (visible en todas las sucursales).
@@ -12216,6 +12231,10 @@ app.post('/api/products', async (req, res) => {
   await ensureInventoryMovementsTable();
 
   const createdResult = await withTransaction((conn) => createProductInTransaction(conn, { data, catalogBranchId, actor }));
+  // Multisucursal: en la principal, publicarlo a la empresa si así se eligió.
+  if (await multisucursal.catalogo.guardarAlcanceProducto(createdResult.row.id, data)) {
+    createdResult.row = (await query('SELECT * FROM products WHERE id = ?', [createdResult.row.id]))[0] || createdResult.row;
+  }
 
   try {
     await writeAuditLog({
@@ -12774,10 +12793,13 @@ app.put('/api/products/:id', async (req, res) => {
     return res.status(403).json({ error: 'No tienes permiso para editar productos.' });
   }
   const { id } = req.params;
-  const data = req.body;
+  // Multisucursal: en una sucursal que no es la principal, los datos maestros
+  // de un producto de la empresa no se cambian (gana la central).
+  const data = await multisucursal.catalogo.protegerMaestroProducto(id, req.body);
   if (!data?.codigo || !data?.nombre) {
     return res.status(400).json({ error: 'Código y nombre son obligatorios.' });
   }
+  multisucursal.catalogo.validarAlcanceProducto(data);
   const scopedCatalogBranchId = getProductCatalogBranchScope(actorUser);
   await ensureCategoriesTable();
   await ensureProductExtensions();
@@ -12899,6 +12921,9 @@ app.put('/api/products/:id', async (req, res) => {
       branchId
     };
   });
+  if (await multisucursal.catalogo.guardarAlcanceProducto(id, data)) {
+    updatedResult.row = (await query('SELECT * FROM products WHERE id = ?', [id]))[0] || updatedResult.row;
+  }
 
   try {
     await writeAuditLog({
@@ -12959,6 +12984,7 @@ app.delete('/api/products/:id', async (req, res) => {
   if (scopedDeleteBranchId !== null && Number(product.branch_id || 0) !== scopedDeleteBranchId) {
     return res.status(403).json({ error: 'No tienes permiso para eliminar un producto que no pertenece a tu sucursal.' });
   }
+  await multisucursal.catalogo.validarEliminarProducto(product.id);
   if (Number(product.stock || 0) > 0) {
     return res.status(409).json({ error: 'No puedes eliminar este producto porque tiene stock pendiente.' });
   }
@@ -13836,6 +13862,8 @@ app.post('/api/users', async (req, res) => {
       Number(actorUser.id)
     ]
   );
+  // Multisucursal: en la principal, en qué sucursales de la empresa puede entrar.
+  await multisucursal.catalogo.guardarSucursalesUsuario(result.insertId, data);
   let firebaseAuthResult = null;
   if (normalized.email) {
     firebaseAuthResult = await trySyncStaffFirebaseAuthForLocalUser(result.insertId).catch((error) => ({
@@ -13913,6 +13941,8 @@ app.put('/api/users/:id', async (req, res) => {
   if (!user) {
     return res.status(404).json({ error: 'Usuario no encontrado.' });
   }
+  // Multisucursal: un usuario de la empresa se administra en la principal.
+  await multisucursal.catalogo.validarEditarUsuario(id);
   const actorRoleCode = normalizeLegacyUserRoleCode(actorUser?.role_code || actorUser?.rol);
   const currentTargetRoleCode = normalizeLegacyUserRoleCode(user?.role_code || user?.rol);
   const actorBranchId = getUserBranchIdValue(actorUser);
@@ -13961,6 +13991,7 @@ app.put('/api/users/:id', async (req, res) => {
       id
     ]
   );
+  await multisucursal.catalogo.guardarSucursalesUsuario(id, data);
   let firebaseAuthResult = null;
   if (normalized.email) {
     firebaseAuthResult = await trySyncStaffFirebaseAuthForLocalUser(id).catch((error) => ({
@@ -14019,6 +14050,7 @@ app.delete('/api/users/:id', async (req, res) => {
   if (Number(actorUser.id) === id) {
     return res.status(400).json({ error: 'No puedes eliminar tu propia cuenta.' });
   }
+  await multisucursal.catalogo.validarEditarUsuario(id);
   const actorRoleCode = normalizeLegacyUserRoleCode(actorUser?.role_code || actorUser?.rol);
   const targetRoleCode = normalizeLegacyUserRoleCode(user?.role_code || user?.rol);
   const actorBranchId = getUserBranchIdValue(actorUser);

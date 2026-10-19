@@ -16,6 +16,9 @@
  *  4. Revertir todo y volver a aplicar.
  *  5. Migrador SQLite→MySQL (paso a multicaja): conserva los uuid del SQLite,
  *     incluida la sucursal 1 que la MySQL ya traía sembrada.
+ *  6. Ciclo de sincronización (sincronizacion.js) sobre MariaDB con una
+ *     central simulada: el SQL propio de MariaDB (CONCAT) detecta ventas y
+ *     productos, sube, aplica lo que baja y no repite.
  */
 
 const fs = require('fs');
@@ -110,7 +113,7 @@ async function prueba1Aplicar() {
     await sembrar(db.query);
     await tablaAccesoExistente(db.query);
     const r = await runner(db).runPending();
-    lib.check('MariaDB: aplica las 3 migraciones', r.applied.length === 3, r.applied.map((m) => m.id).join(', '));
+    lib.check(`MariaDB: aplica las ${migraciones.length} migraciones`, r.applied.length === migraciones.length, r.applied.map((m) => m.id).join(', '));
 
     let todosConUuid = true;
     for (const tabla of TABLAS_CON_UUID) {
@@ -156,6 +159,7 @@ async function prueba1Aplicar() {
 
     // Revertir todo y volver a aplicar
     const r1 = runner(db);
+    await r1.revert('ms-0004-catalogo-y-sincronizacion');
     await r1.revert('ms-0003-acceso-sucursales');
     await r1.revert('ms-0002-tablas-sincronizacion');
     await r1.revert('ms-0001-uuid-entidades');
@@ -168,7 +172,7 @@ async function prueba1Aplicar() {
       Number(cols[0].n) === 0 && Number(tablas[0].n) === 0 && Number(accesoCols[0].n) === 0 && Number(productos[0].n) === 50
     );
     const otraVez = await r1.runPending();
-    lib.check('MariaDB: se vuelve a aplicar después de revertir', otraVez.applied.length === 3);
+    lib.check('MariaDB: se vuelve a aplicar después de revertir', otraVez.applied.length === migraciones.length);
   } finally {
     await db.end();
   }
@@ -184,7 +188,7 @@ async function prueba2Concurrencia() {
     const [a, b] = await Promise.all([runner(principal).runPending(), runner(terminal).runPending()]);
     const total = a.applied.length + b.applied.length;
     const claves = await principal.query("SELECT migration_key FROM schema_migrations WHERE migration_key LIKE 'ms-%'");
-    lib.check('MariaDB: dos servidores a la vez → cada migración una sola vez', total === 3 && claves.length === 3, `principal ${a.applied.length}, terminal ${b.applied.length}`);
+    lib.check('MariaDB: dos servidores a la vez → cada migración una sola vez', total === migraciones.length && claves.length === migraciones.length, `principal ${a.applied.length}, terminal ${b.applied.length}`);
   } finally {
     await principal.end();
     await terminal.end();
@@ -243,6 +247,62 @@ async function prueba3Migrador() {
   }
 }
 
+async function prueba4Sincronizacion() {
+  const { createIdentidad } = require('../../server/multisucursal/identidad');
+  const { createNcfCentral } = require('../../server/multisucursal/ncf-central');
+  const { createSincronizacion } = require('../../server/multisucursal/sincronizacion');
+  await crearBase('tc_ms_4');
+  const db = adaptador('tc_ms_4');
+  try {
+    await sembrar(db.query);
+    await runner(db).runPending();
+    await db.query(`INSERT INTO sales (invoice_number, user_id, payment_method, subtotal, tax, total, sale_status, fiscal_status, created_at)
+                    VALUES ('FAC-9', 1, 'efectivo', 100, 0, 100, 'pagada', 'emitida', NOW())`);
+    await db.query("UPDATE products SET alcance_empresa = 'global' WHERE codigo = 'P1'");
+
+    // Central simulada: acepta todo y manda un producto del catálogo de la empresa.
+    const recibidos = [];
+    const productoCentral = {
+      uuid: '99999999-9999-4999-8999-999999999999', seq: 1, version: 1, asignado: true,
+      datos: { codigo: 'C-1', barcode: 'C-1', nombre: 'Producto de la central', categoria: 'General', unidad: 'Unidad', saleMode: 'unidad', productType: 'general', aplicaItbis: false, itbisModo: 'porcentaje', itbisMonto: 0, tracksStock: true, estado: 'Activo', precioSugerido: 75, costoSugerido: 50 },
+    };
+    const enlace = {
+      estado: async () => ({ vinculado: true, tieneToken: true, sucursal: { esPrincipal: true } }),
+      llamarSync: async (method, ruta, body) => {
+        if (ruta === '/v1/eventos') {
+          recibidos.push(...body.eventos);
+          return { resultados: body.eventos.map((e) => ({ eventId: e.eventId, resultado: 'ok' })) };
+        }
+        const desde = Number(/desde=(\d+)/.exec(ruta)[1]);
+        return ruta.includes('tipo=catalogo') && desde < 1 ? { items: [productoCentral], siguiente: 1, hayMas: false } : { items: [], siguiente: desde, hayMas: false };
+      },
+    };
+    const identidad = createIdentidad({ query: db.query, dialect: 'mysql' });
+    const bandejas = createBandejas({ dialect: 'mysql' });
+    const ncf = createNcfCentral({ query: db.query, withTransaction: db.withTransaction, bandejas, identidad, logger: silencioso });
+    const sync = createSincronizacion({ query: db.query, withTransaction: db.withTransaction, dialect: 'mysql', identidad, bandejas, enlace, ncf, logger: silencioso });
+
+    const c1 = await sync.ciclo();
+    const tipos = recibidos.reduce((a, e) => ({ ...a, [e.entityType]: (a[e.entityType] || 0) + 1 }), {});
+    lib.check('MariaDB sync: detecta venta, productos y catálogo publicado con su SQL (CONCAT)', c1.resultado === 'ok' && tipos.venta === 1 && tipos.producto_sucursal === 50 && tipos.producto === 1,
+      JSON.stringify({ r: c1.resultado, tipos, error: c1.detalles }));
+    const [central] = await db.query("SELECT precio_venta, stock, origen_catalogo, uuid FROM products WHERE codigo = 'C-1'");
+    lib.check('MariaDB sync: aplica el producto de la central (precio sugerido, existencia 0)', central && Number(central.precio_venta) === 75 && Number(central.stock) === 0 && central.origen_catalogo === 'central');
+    const antes = recibidos.length;
+    const c2 = await sync.ciclo();
+    lib.check('MariaDB sync: el segundo ciclo solo sube el producto que llegó (nada repetido)', c2.resultado === 'ok' && recibidos.length - antes === 1 && recibidos[recibidos.length - 1].entityType === 'producto_sucursal',
+      `${recibidos.length - antes} evento(s)`);
+    await db.query("UPDATE sales SET sale_status = 'anulada', canceled_at = NOW() WHERE invoice_number = 'FAC-9'");
+    await sync.ciclo();
+    const ultima = recibidos[recibidos.length - 1];
+    lib.check('MariaDB sync: una venta anulada vuelve a subir con su estado', ultima.entityType === 'venta' && ultima.payload.anulada === true && ultima.payload.estado === 'anulada');
+    const bitacora = await db.query('SELECT COUNT(*) AS n FROM sync_bitacora');
+    lib.check('MariaDB sync: cada ciclo queda en sync_bitacora', Number(bitacora[0].n) === 3);
+  } finally {
+    await db.end();
+  }
+}
+
 (async () => {
   fs.mkdirSync(process.env.TC_E2E_DIR, { recursive: true });
   await lib.startMariaDb({ fresh: true });
@@ -250,6 +310,7 @@ async function prueba3Migrador() {
     await prueba1Aplicar();
     await prueba2Concurrencia();
     await prueba3Migrador();
+    await prueba4Sincronizacion();
   } catch (error) {
     lib.check('Sin excepciones', false, error.stack);
   } finally {

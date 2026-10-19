@@ -106,6 +106,7 @@ async function buildFullPayload(query) {
     ncfSequences, pendingSales,
     tables, paymentMethods, branches, cashRegisters,
     inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
+    syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
   ] = await Promise.all([
     safeQuery('SELECT * FROM config', [], 'config'),
     safeQuery('SELECT * FROM users', [], 'users'),
@@ -131,6 +132,12 @@ async function buildFullPayload(query) {
     safeQuery('SELECT * FROM inventory_movements LIMIT 500000'),
     safeQuery('SELECT * FROM branch_transfers LIMIT 50000'),
     safeQuery('SELECT * FROM branch_transfer_items LIMIT 200000'),
+    // Multisucursal: lo que todavía no confirmó la central, por dónde va cada
+    // descarga, lo que espera "Vincular" y los rangos NCF que asignó la central.
+    safeQuery("SELECT * FROM sync_outbox WHERE status <> 'sincronizado' LIMIT 200000"),
+    safeQuery('SELECT * FROM sync_cursors'),
+    safeQuery("SELECT * FROM sync_conflictos WHERE estado = 'pendiente' LIMIT 50000"),
+    safeQuery('SELECT * FROM ncf_rangos_central'),
   ]);
 
   if (failedCritical.length) {
@@ -182,6 +189,7 @@ async function buildFullPayload(query) {
       ncfSequences, pendingSales,
       tables, paymentMethods, branches, cashRegisters,
       inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
+      syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
     },
   };
 }
@@ -322,6 +330,11 @@ async function restorePayloadToDb(payload, query) {
     ['ncf_sequences',     data.ncfSequences     || []],
     ['pending_sales',     data.pendingSales     || []],
     ['dining_tables',     data.tables           || []],
+    // Multisucursal (respaldos nuevos; los viejos no los traen y no se tocan).
+    ['sync_outbox',       data.syncOutbox       || []],
+    ['sync_cursors',      data.syncCursors      || []],
+    ['sync_conflictos',   data.syncConflictos   || []],
+    ['ncf_rangos_central', data.ncfRangosCentral || []],
   ];
 
   const isMySQL = getDbClient() === 'mysql';

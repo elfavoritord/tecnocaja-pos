@@ -18,6 +18,8 @@ const puppeteer = require('puppeteer');
 const admin = require('firebase-admin');
 const { createSucursalesCentral } = require('../../server/multisucursal/central/sucursales');
 const { createSucursalesRouter } = require('../../server/multisucursal/central/sucursales.routes');
+const { createSincronizacionCentral } = require('../../server/multisucursal/central/sincronizacion-central');
+const crypto = require('crypto');
 
 const RAIZ = path.join(__dirname, '..', '..');
 const SALIDA = process.argv[2] || path.join(os.tmpdir(), 'tecnocaja-pantalla-sucursales');
@@ -198,6 +200,40 @@ async function escribir(page, form, datos) {
     await page.click('button[data-accion="ver-anteriores"]');
     await page.waitForSelector('tr[data-equipo="eq-otra"]', { timeout: 15000 });
     check('Emilio: la revocada se ve como "Revocada"', (await page.$eval('tr[data-equipo="eq-otra"]', (tr) => tr.textContent)).includes('Revocada'));
+    check('Emilio: alerta de PC que todavía no sincroniza', (await page.$eval('tr[data-equipo="eq-nueva"]', (tr) => tr.textContent)).includes('sin sincronizar'));
+
+    // ── Ventas por sucursal (lo que ya sincronizó cada una) ─────────────
+    const sync = createSincronizacionCentral({ db });
+    const hoyRd = new Date(Date.now() - 4 * 3600 * 1000).toISOString().slice(0, 10);
+    const venta = (total) => ({ eventId: crypto.randomUUID(), entityType: 'venta', entityUuid: crypto.randomUUID(), operation: 'registrar', payload: { fechaOperativa: hoyRd, total, estado: 'pagada' } });
+    await sync.procesarEventos({ licenseId: LIC, branchUuid: suc1, esPrincipal: true }, [venta(1500), venta(250.5)]);
+    await page.click('button[data-accion="recargar"]');
+    await esperar(page, 'Ventas por sucursal');
+    const filaVentas = await page.$eval(`tr[data-ventas="${suc1}"]`, (tr) => tr.textContent);
+    check('Emilio: ventas de hoy por sucursal', filaVentas.includes('1,750.50') && filaVentas.includes('2 venta(s)'), filaVentas);
+
+    // ── Rangos NCF desde el portal del contador ─────────────────────────
+    await page.goto(url(sConta));
+    await esperar(page, 'Comprobantes fiscales (NCF) por sucursal');
+    const asignar = async (desde, hasta) => {
+      await page.$eval('form[data-form="ncf"] select[name="branchUuid"]', (s, v) => { s.value = v; }, suc1);
+      await page.$eval('form[data-form="ncf"] input[name="desde"]', (i, v) => { i.value = v; }, String(desde));
+      await page.$eval('form[data-form="ncf"] input[name="hasta"]', (i, v) => { i.value = v; }, String(hasta));
+      await page.click('form[data-form="ncf"] button[type="submit"]');
+    };
+    await asignar(1, 500);
+    await esperar(page, 'Asignado, sin recibir');
+    check('Contador: asigna un rango B02 a una sucursal', (await page.$$('tr[data-rango]')).length === 1);
+    await asignar(400, 900);
+    await esperar(page, 'chocan con el rango');
+    check('Contador: un rango que se cruza se rechaza con aviso', (await page.$$('tr[data-rango]')).length === 1);
+    await page.screenshot({ path: path.join(SALIDA, 'contador-ncf.png'), fullPage: true });
+    await page.click('button[data-accion="ncf-anular"]');
+    await esperar(page, 'Anulado');
+    check('Contador: anula un rango que la sucursal no usó', !(await page.$('button[data-accion="ncf-anular"]')));
+
+    await page.goto(url(sAdmin));
+    await esperar(page, 'Comprobantes fiscales (NCF) por sucursal');
     await page.screenshot({ path: path.join(SALIDA, 'emilio.png'), fullPage: true });
 
     const hist = await db.collection('licencias').doc(LIC).collection('sucursales_historial').get();

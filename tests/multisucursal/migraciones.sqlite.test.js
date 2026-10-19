@@ -55,7 +55,7 @@ describe('Migraciones multisucursal (SQLite)', () => {
 
   afterEach(() => base.close());
 
-  test('aplica las tres, una sola vez, con un respaldo previo', async () => {
+  test('aplica todas, una sola vez, con un respaldo previo', async () => {
     const primera = await runner.runPending();
     expect(primera.applied.map((m) => m.id)).toEqual(migraciones.map((m) => m.id));
     expect(respaldos).toEqual([migraciones.map((m) => m.id)]);
@@ -115,6 +115,7 @@ describe('Migraciones multisucursal (SQLite)', () => {
     await expect(base.query('INSERT INTO user_branch_access (user_id, branch_id) VALUES (2, 1)')).rejects.toThrow(/UNIQUE/i);
 
     // Revertir conserva la fila que ya existía.
+    await runner.revert('ms-0004-catalogo-y-sincronizacion');
     await runner.revert('ms-0003-acceso-sucursales');
     const quedan = await base.query('SELECT user_id, branch_id, access_type FROM user_branch_access');
     expect(quedan).toEqual([{ user_id: 2, branch_id: 1, access_type: 'supervisor' }]);
@@ -129,6 +130,25 @@ describe('Migraciones multisucursal (SQLite)', () => {
     ]));
     expect(await columnas(base.query, 'sync_inbox')).toEqual(expect.arrayContaining(['event_id', 'status', 'received_at_utc']));
     expect(await columnas(base.query, 'sync_cursors')).toEqual(['stream', 'cursor_value', 'updated_at_utc']);
+  });
+
+  test('ms-0004: catálogo, usuarios por sucursal, conflictos, bitácora y rangos NCF', async () => {
+    await runner.runPending();
+    expect(await columnas(base.query, 'products')).toEqual(expect.arrayContaining([
+      'alcance_empresa', 'sucursales_empresa', 'origen_catalogo', 'catalogo_version', 'catalogo_hash', 'sucursal_marca',
+    ]));
+    expect(await columnas(base.query, 'users')).toEqual(expect.arrayContaining(['sucursales_empresa', 'origen_usuario', 'usuario_version', 'usuario_hash']));
+    expect(await columnas(base.query, 'sales')).toContain('sync_marca');
+    const [p] = await base.query('SELECT alcance_empresa, origen_catalogo, catalogo_version FROM products LIMIT 1');
+    expect(p).toEqual({ alcance_empresa: 'local', origen_catalogo: 'local', catalogo_version: 0 });
+
+    // Un rango NCF asignado no se suelta al revertir.
+    await base.query(`INSERT INTO ncf_rangos_central (rango_uuid, tipo, desde, hasta, estado, recibido_at_utc)
+                      VALUES ('r1', 'B02', 1, 100, 'en_uso', '2026-10-19T00:00:00.000Z')`);
+    await expect(runner.revert('ms-0004-catalogo-y-sincronizacion')).rejects.toThrow(/rango/);
+    await base.query("UPDATE ncf_rangos_central SET estado = 'agotado'");
+    await runner.revert('ms-0004-catalogo-y-sincronizacion');
+    expect(await columnas(base.query, 'products')).not.toContain('alcance_empresa');
   });
 
   test('si el respaldo previo falla, no migra y la base queda igual', async () => {
@@ -180,6 +200,7 @@ describe('Migraciones multisucursal (SQLite)', () => {
     await runner.runPending();
     await expect(runner.revert('ms-0001-uuid-entidades')).rejects.toThrow(/Primero revierte/);
 
+    await runner.revert('ms-0004-catalogo-y-sincronizacion');
     await runner.revert('ms-0003-acceso-sucursales');
     await runner.revert('ms-0002-tablas-sincronizacion');
     await runner.revert('ms-0001-uuid-entidades');
@@ -198,13 +219,14 @@ describe('Migraciones multisucursal (SQLite)', () => {
 
     // Y se puede volver a aplicar.
     const r = await runner.runPending();
-    expect(r.applied).toHaveLength(3);
+    expect(r.applied).toHaveLength(migraciones.length);
   });
 
   test('no se revierte la bandeja de salida con eventos sin confirmar', async () => {
     await runner.runPending();
     await base.query(`INSERT INTO sync_outbox (event_id, entity_type, entity_uuid, operation, payload, created_at_utc)
                       VALUES ('e1', 'venta', 'u1', 'crear', '{}', '2026-10-18T00:00:00.000Z')`);
+    await runner.revert('ms-0004-catalogo-y-sincronizacion');
     await runner.revert('ms-0003-acceso-sucursales');
     await expect(runner.revert('ms-0002-tablas-sincronizacion')).rejects.toThrow(/sin confirmar/);
     const tablas = await base.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_outbox'");

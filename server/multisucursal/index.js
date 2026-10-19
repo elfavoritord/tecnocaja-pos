@@ -5,8 +5,9 @@
  * (factory con dependencias inyectadas, ver docs/ARCHITECTURE.md).
  *
  * Fase 2: identidad (uuid), bandejas de sincronización, acceso por sucursal
- * y migraciones numeradas. Todavía no envía ni recibe nada de la nube.
- * Ver docs/MULTISUCURSAL-DIAGNOSTICO.md.
+ * y migraciones numeradas. Fase 3: enlace con la Sync API. Fases 4, 5 y 7:
+ * catálogo y usuarios de la empresa, sincronización y rangos NCF.
+ * Ver docs/MULTISUCURSAL-*.md.
  */
 
 const migraciones = require('../migrations/multisucursal');
@@ -15,6 +16,9 @@ const { createIdentidad } = require('./identidad');
 const { createBandejas } = require('./bandejas');
 const { createAccesoSucursales } = require('./acceso-sucursales');
 const { createEnlaceCentral } = require('./enlace');
+const { createCatalogoLocal } = require('./catalogo-local');
+const { createNcfCentral } = require('./ncf-central');
+const { createSincronizacion } = require('./sincronizacion');
 
 function createMultisucursal({
   query,
@@ -35,6 +39,11 @@ function createMultisucursal({
   getModo = () => 'normal',
   fetchImpl,
   logger = console,
+  // Bitácora de auditoría del POS (writeAuditLog) y aviso de que llegaron
+  // productos/usuarios de la central (para refrescar cachés).
+  auditar = async () => {},
+  alAplicar = () => {},
+  cicloMs,
 }) {
   const dialect = String(getDbClient?.() || 'sqlite').toLowerCase() === 'mysql' ? 'mysql' : 'sqlite';
 
@@ -59,10 +68,18 @@ function createMultisucursal({
   const identidad = createIdentidad({ query, dialect, getServerId, getBranchIdOverride });
   const bandejas = createBandejas({ dialect });
   const acceso = createAccesoSucursales({ query, esAdministradorGeneral });
+  let sincronizacion = null;
   const enlace = createEnlaceCentral({
     query, identidad, bandejas, env, persistEnv, getEquipo, getModo, logger,
     ...(fetchImpl ? { fetchImpl } : {}),
+    extrasLatido: () => (sincronizacion ? sincronizacion.extrasLatido() : Promise.resolve({})),
   });
+  const ncf = createNcfCentral({ query, withTransaction, bandejas, identidad, auditar, logger });
+  sincronizacion = createSincronizacion({
+    query, withTransaction, dialect, identidad, bandejas, enlace, ncf, logger, auditar, alAplicar,
+    ...(cicloMs ? { cicloMs } : {}),
+  });
+  const catalogo = createCatalogoLocal({ query, enlace, alCambiar: () => sincronizacion.pronto() });
 
   let ultimoArranque = null;
 
@@ -82,8 +99,10 @@ function createMultisucursal({
     try {
       const resultado = await runner.runPending();
       const uuids = resultado.skipped ? null : await identidad.rellenarUuidsFaltantes();
-      // Solo la PC principal habla con la central (latido e identidad).
+      // Solo la PC principal habla con la central (latido, identidad y
+      // sincronización).
       const enlaceIniciado = resultado.skipped ? false : enlace.iniciar();
+      if (enlaceIniciado) sincronizacion.iniciar();
       ultimoArranque = { at, ...resultado, uuidsAsignados: uuids, enlaceIniciado };
     } catch (error) {
       ultimoArranque = { at, error: error.message };
@@ -102,7 +121,10 @@ function createMultisucursal({
     return { identidad: ident, migraciones: migr, bandejas: resumen, enlace: enl, ultimoArranque };
   }
 
-  return { prepararAlArrancar, estado, runner, identidad, bandejas, acceso, enlace, esServidorPrincipal, dialect };
+  return {
+    prepararAlArrancar, estado, runner, identidad, bandejas, acceso, enlace, sincronizacion, catalogo, ncf,
+    esServidorPrincipal, dialect,
+  };
 }
 
 module.exports = { createMultisucursal };

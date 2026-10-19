@@ -10,7 +10,10 @@ const RAIZ = path.join(__dirname, '..', '..');
 const COPIAS = [
   ['server/multisucursal/central/sucursales.js', 'tecno-caja-contadores/server/multisucursal/sucursales.js'],
   ['server/multisucursal/central/sucursales.routes.js', 'tecno-caja-contadores/server/multisucursal/sucursales.routes.js'],
+  ['server/multisucursal/central/sincronizacion-central.js', 'tecno-caja-contadores/server/multisucursal/sincronizacion-central.js'],
   ['js/sucursales-central-ui.js', 'tecno-caja-contadores/public/js/sucursales-central-ui.js'],
+  ['server/multisucursal/central/sincronizacion-central.js', 'cloud/sync-api/vendor/multisucursal/sincronizacion-central.js'],
+  ['server/multisucursal/central/sucursales.js', 'cloud/sync-api/vendor/multisucursal/sucursales.js'],
 ];
 
 test.each(COPIAS)('%s está copiado igual en el portal del contador', (original, copia) => {

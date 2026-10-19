@@ -14,6 +14,7 @@ const SERVICE_ROOT = path.resolve(__dirname, '..');
 
 const FILES = [
   ['server/multisucursal/central/sucursales.js', 'vendor/multisucursal/sucursales.js'],
+  ['server/multisucursal/central/sincronizacion-central.js', 'vendor/multisucursal/sincronizacion-central.js'],
 ];
 
 for (const [from, to] of FILES) {

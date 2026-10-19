@@ -54,6 +54,9 @@ const ACCIONES = Object.freeze({
   CAMBIAR_ESTADO: 'cambiar_estado',
   GENERAR_CODIGO: 'generar_codigo',
   REVOCAR_EQUIPO: 'revocar_equipo',
+  // Rangos NCF por sucursal (sincronizacion-central.js): el contador lleva lo
+  // fiscal de sus empresas, así que también los asigna.
+  ASIGNAR_NCF: 'asignar_ncf',
 });
 const MENSAJES_SOLO_ADMIN = Object.freeze({
   [ACCIONES.FIJAR_LIMITE]: 'Solo el administrador de Tecno Caja puede cambiar cuántas sucursales tiene una empresa.',
@@ -61,7 +64,7 @@ const MENSAJES_SOLO_ADMIN = Object.freeze({
   [ACCIONES.REVOCAR_EQUIPO]: 'Solo el administrador de Tecno Caja puede revocar equipos.',
 });
 
-const PERMISOS_CONTADOR = new Set([ACCIONES.VER, ACCIONES.CREAR, ACCIONES.EDITAR, ACCIONES.GENERAR_CODIGO]);
+const PERMISOS_CONTADOR = new Set([ACCIONES.VER, ACCIONES.CREAR, ACCIONES.EDITAR, ACCIONES.GENERAR_CODIGO, ACCIONES.ASIGNAR_NCF]);
 
 class ErrorSucursales extends Error {
   constructor(mensaje, codigo, status = 400) {
@@ -466,6 +469,7 @@ function createSucursalesCentral({
       estado: d.estado,
       activadoEn: aFecha(d.activadoEn)?.toISOString() || null,
       ultimaConexion: aFecha(d.ultimaConexion)?.toISOString() || null,
+      ultimaSincronizacion: aFecha(d.ultimaSincronizacion)?.toISOString() || null,
       latido: d.latido || null,
     };
   }
@@ -495,9 +499,20 @@ function createSucursalesCentral({
     });
   }
 
+  let sincronizacion = null;
   return {
     resumen, fijarLimite, crear, editar, cambiarEstado, generarCodigo, canjearCodigo,
     activarEquipo, listarEquipos, revocarEquipo,
+    // Rangos NCF y resumen de ventas (sincronizacion-central.js), con la misma
+    // base. Se carga aquí adentro porque ese módulo a su vez usa este.
+    get sincronizacion() {
+      if (!sincronizacion) {
+        // eslint-disable-next-line global-require
+        const { createSincronizacionCentral } = require('./sincronizacion-central');
+        sincronizacion = createSincronizacionCentral({ db, now, randomUUID });
+      }
+      return sincronizacion;
+    },
   };
 }
 
@@ -512,4 +527,11 @@ module.exports = {
   LIMITE_MAXIMO,
   hashCodigo,
   normalizarCodigoActivacion,
+  // Para sincronizacion-central.js (mismas reglas de permisos y auditoría).
+  autorizar,
+  quien,
+  aFecha,
+  COL_LICENCIAS,
+  SUB_SUCURSALES,
+  SUB_HISTORIAL,
 };

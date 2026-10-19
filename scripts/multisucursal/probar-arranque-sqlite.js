@@ -104,7 +104,7 @@ const respaldosPreMigracion = () => (fs.existsSync(BACKUPS) ? fs.readdirSync(BAC
     L.check('B: el usuario de antes entra', login.status === 200 && Boolean(ctx.token), `HTTP ${login.status} ${login.body?.error || login.body?.message || ''} ${login.body?.code || ''}`);
     const estado = await L.request(PORT, 'GET', '/api/multisucursal/estado', null, ctx.token);
     const ident = estado.body?.identidad || {};
-    L.check('B: migraciones aplicadas al arrancar', estado.status === 200 && (estado.body.ultimoArranque?.applied || []).length === 3 && estado.body.migraciones.every((m) => m.aplicada),
+    L.check('B: migraciones aplicadas al arrancar', estado.status === 200 && (estado.body.ultimoArranque?.applied || []).length === require('../../server/migrations/multisucursal').length && estado.body.migraciones.every((m) => m.aplicada),
       JSON.stringify(estado.body?.ultimoArranque));
     L.check('B: empresa y sucursal con uuid', UUID.test(ident.empresa?.uuid || '') && UUID.test(ident.sucursal?.uuid || ''), `${ident.empresa?.uuid} · ${ident.sucursal?.uuid}`);
 

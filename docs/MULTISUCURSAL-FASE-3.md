@@ -93,12 +93,13 @@ Pruebas:
 | Pantalla en Chrome (`probar-pantalla-sucursales.js`) | **19/19**: en línea con "3 por enviar", "Sin conexión · hace 2 h", reemplazada oculta hasta "Ver anteriores", el contador sin botón revocar, Emilio revoca y se registra quién lo hizo |
 | Regresión | Jest 88 suites / **662 OK** |
 
+## 3d — Hecho: Sync API desplegada
+
+`tecno-caja-sync-api` en Cloud Run (us-east1), con mínimo 0 instancias. Su URL queda por defecto en el POS (`enlace.js`): `TECNO_CAJA_SYNC_URL` vacío usa el servicio y `off` lo apaga.
+
 ## Siguiente
 
-- **3d — Despliegue de la Sync API** en Cloud Run (pasos en su README), **solo con el visto bueno de Emilio**. Después: `TECNO_CAJA_SYNC_URL` por defecto en el instalador.
-- Nueva versión del portal del contador para que los contadores reciban la sección de sucursales y PC.
-- Conectar `user_branch_access` a los permisos del POS.
-- **Fase 4 — catálogo global** y **Fase 5 — eventos** (ventas, inventario) por la bandeja de salida.
+Las fases 4 a 8 (catálogo, sincronización, usuarios por sucursal, NCF y pruebas integrales) están en [MULTISUCURSAL-FASES-4-8.md](MULTISUCURSAL-FASES-4-8.md).
 
 ## Pendiente de revisar
 

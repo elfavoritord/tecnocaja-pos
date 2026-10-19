@@ -112,7 +112,7 @@ async function setInternet(port, offline) {
     );
     L.check(
       'Multisucursal: migraciones aplicadas en MariaDB',
-      Array.isArray(ms.body?.migraciones) && ms.body.migraciones.length === 3 && ms.body.migraciones.every((m) => m.aplicada),
+      Array.isArray(ms.body?.migraciones) && ms.body.migraciones.length === require('../../server/migrations/multisucursal').length && ms.body.migraciones.every((m) => m.aplicada),
       JSON.stringify((ms.body?.migraciones || []).map((m) => [m.id, m.aplicada]))
     );
     ctx.multisucursal = { empresa: msIdent.empresa?.uuid, sucursal: msIdent.sucursal?.uuid };

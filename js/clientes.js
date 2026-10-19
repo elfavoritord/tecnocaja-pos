@@ -2352,6 +2352,11 @@ function euOpenUserModal(user, options = {}) {
   euRenderTabConfig(EU_STATE.user);
   euRenderTabSync(EU_STATE.user);
   euUpdateFooterSyncBtn(EU_STATE.user);
+  // Multisucursal: en la principal, sucursales de la empresa donde puede entrar.
+  window.MultisucursalEnlace?.montarEnUsuario?.(document.getElementById('eu-panel-config'), EU_STATE.user, () => {
+    if (EU_STATE.snapshot) EU_STATE.snapshot.sucursalesEmpresa = euCollectValues().sucursalesEmpresa;
+    euUpdateChanges();
+  });
 
   document.getElementById('eu-overlay').classList.remove('hidden');
   euSwitchTab('info');
@@ -2826,6 +2831,7 @@ function euCollectValues() {
     branchId:    document.getElementById('eu-branch-id')?.value             || '',
     cashId:      document.getElementById('eu-cash-id')?.value               || '',
     password:    document.getElementById('eu-pass')?.value                  || '',
+    sucursalesEmpresa: JSON.stringify(window.MultisucursalEnlace?.leerDeUsuario?.()?.sucursalesEmpresa ?? null),
   };
 }
 
@@ -2849,7 +2855,7 @@ function euUpdateChanges() {
   }
   const labels = { nombre:'Nombre', usuario:'Usuario', email:'Correo', telefono:'Teléfono',
     observacion:'Observación', roleCode:'Rol', estado:'Estado', billingType:'Facturación',
-    branchId:'Sucursal', cashId:'Caja', password:'Contraseña' };
+    branchId:'Sucursal', cashId:'Caja', password:'Contraseña', sucursalesEmpresa:'Sucursales de la empresa' };
   pill.innerHTML = '✏ ' + realChanges.map(k => labels[k] || k).join(', ');
   pill.className = 'eu-changes-pill eu-changed';
 }
@@ -2965,6 +2971,7 @@ async function euSave(options = {}) {
         cashRegisterId,
         telefono: values.telefono,
         observacion: values.observacion,
+        ...(window.MultisucursalEnlace?.leerDeUsuario?.() || {}),
         ...getActorPayload()
       };
       saved = await api.createUser(payload);
@@ -2988,6 +2995,7 @@ async function euSave(options = {}) {
       if (realChanges.includes('branchId')) payload.branchId = branchId;
       if (realChanges.includes('cashId')) payload.cashRegisterId = cashRegisterId;
       if (realChanges.includes('password')) payload.password = values.password;
+      if (realChanges.includes('sucursalesEmpresa')) Object.assign(payload, window.MultisucursalEnlace?.leerDeUsuario?.() || {});
 
       saved = await api.updateUser(editingId, payload);
       DB.users = (DB.users || []).map(u => u.id === editingId ? { ...u, ...saved } : u);
