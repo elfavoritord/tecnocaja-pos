@@ -2581,6 +2581,10 @@ const multisucursal = createMultisucursal({
     // Las pantallas abiertas recargan productos y usuarios (js/app.js).
     io.emit('multisucursal:cambios-aplicados', { at: new Date().toISOString() });
   },
+  // Una PC recién instalada que se enlaza toma la licencia de la empresa
+  // (TECNO_CAJA_LICENSE_UID ya cambió): validarla ya contra Firebase, así
+  // queda registrada como un equipo más de esa licencia.
+  alCambiarLicencia: () => secureLicenseService.resolveState({ force: true, allowRemote: true }),
 });
 app.use('/api/multisucursal', createMultisucursalRouter({
   multisucursal,

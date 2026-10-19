@@ -415,11 +415,33 @@ function createSucursalesCentral({
     if (!equipoId || !/^[a-f0-9]{64}$/.test(String(tokenHash || ''))) throw new Error('Falta equipoId o tokenHash.');
     return db.runTransaction(async (tx) => {
       const canje = await leerCanje(tx, codigo);
-      // Una PC que ya tiene la licencia de una empresa no se activa con el
-      // código de otra (y el código no se gasta).
+      // Una PC con la licencia de otro negocio:
+      //  - recién instalada (sin ventas): se une a la empresa y toma su
+      //    licencia (el asistente inicial le dio una de prueba al azar);
+      //  - con ventas: no, sus datos se mezclarían con los de esta empresa.
+      // En los dos casos de rechazo el código no se gasta.
       const licenciaDelEquipo = texto(equipo.licenseId, 160);
-      if (licenciaDelEquipo && licenciaDelEquipo !== canje.act.licenseId) {
-        throw new ErrorSucursales('Este código es de otra empresa. Esta PC tiene la licencia de otro negocio.', 'OTRA_EMPRESA', 409);
+      const otraLicencia = Boolean(licenciaDelEquipo) && licenciaDelEquipo !== canje.act.licenseId;
+      if (otraLicencia) {
+        const ventas = Number(equipo.ventas);
+        if (!Number.isFinite(ventas) || ventas > 0) {
+          throw new ErrorSucursales(
+            'Esta PC ya tiene ventas de otro negocio: no se puede usar como sucursal de esta empresa. Instala Tecno Caja limpio en ella o pide ayuda a Tecno Caja.',
+            'OTRA_EMPRESA', 409
+          );
+        }
+        // La PC pasa a ser un equipo más de la licencia de la empresa: que haya
+        // cupo, o la licencia la bloquearía apenas se una.
+        const limiteEquipos = Number(canje.lic.deviceLimit || 0);
+        const devs = canje.lic.devices || {};
+        const registrados = Array.isArray(devs) ? devs.map((d) => String(d?.deviceId || d?.id || '')) : Object.keys(devs);
+        const deviceId = texto(equipo.deviceId, 80);
+        if (limiteEquipos > 0 && !(deviceId && registrados.includes(deviceId)) && registrados.length >= limiteEquipos) {
+          throw new ErrorSucursales(
+            `La licencia de la empresa permite ${limiteEquipos} equipo(s) y ya los tiene todos. Pide a Tecno Caja que amplíe el límite de equipos.`,
+            'LIMITE_EQUIPOS', 409
+          );
+        }
       }
       const sucursalKey = `${canje.act.licenseId}/${canje.suc.id}`;
       const anteriores = await tx.get(db.collection(COL_EQUIPOS).where('sucursalKey', '==', sucursalKey));
@@ -452,10 +474,10 @@ function createSucursalesCentral({
       tx.set(historialRef(identidad.licenseId).doc(), {
         accion: 'equipo_activado',
         actor: { tipo: 'equipo', uid: equipoId, nombre: datosEquipo.hostname },
-        detalle: { branchUuid: canje.suc.id, equipoId, reemplazados },
+        detalle: { branchUuid: canje.suc.id, equipoId, reemplazados, ...(otraLicencia ? { licenciaAnterior: licenciaDelEquipo } : {}) },
         at: now(),
       });
-      return { ...identidad, equipoId, reemplazados };
+      return { ...identidad, equipoId, reemplazados, cambiaLicencia: otraLicencia };
     });
   }
 

@@ -78,6 +78,26 @@ describir('Sync API: activar equipos, identidad y latido', () => {
     await activar(s.codigo, { ...PC, licenseId: LIC }).expect(201);
   });
 
+  test('PC recién instalada (sin ventas) con otra licencia: se une y toma la de la empresa', async () => {
+    const s = await sucursalConCodigo();
+    const con = await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 12 }).expect(409);
+    expect(con.body.code).toBe('OTRA_EMPRESA');
+    const r = await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 0 }).expect(201);
+    expect(r.body).toMatchObject({ cambiaLicencia: true, empresa: { licenseId: LIC } });
+    const misma = await sucursalConCodigo('Sur');
+    const r2 = await activar(misma.codigo, { ...PC, deviceId: 'npd_otra', licenseId: LIC, ventas: 300 }).expect(201);
+    expect(r2.body.cambiaLicencia).toBe(false);
+  });
+
+  test('sin cupo de equipos en la licencia de la empresa, la PC nueva no se une', async () => {
+    await db.collection('licencias').doc(LIC).set({ deviceLimit: 1, devices: { npd_principal: { deviceId: 'npd_principal' } } }, { merge: true });
+    const s = await sucursalConCodigo();
+    const r = await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 0 }).expect(409);
+    expect(r.body.code).toBe('LIMITE_EQUIPOS');
+    await db.collection('licencias').doc(LIC).set({ deviceLimit: 2 }, { merge: true });
+    await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 0 }).expect(201);
+  });
+
   test('identidad con token; sin token o con token falso, no', async () => {
     const s = await sucursalConCodigo();
     const { body } = await activar(s.codigo).expect(201);

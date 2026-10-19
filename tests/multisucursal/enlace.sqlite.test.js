@@ -53,7 +53,7 @@ describe('Enlace del POS con la central', () => {
     await base.query("UPDATE config SET business_id = 1, active_branch_id = 2 WHERE id = 1");
     await base.query('CREATE TABLE installation_config (id INTEGER PRIMARY KEY AUTOINCREMENT, config_key VARCHAR(100) NOT NULL, config_value TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)');
     await createMigrationRunner({ query: base.query, withTransaction: base.withTransaction, dialect: 'sqlite', migrations: migraciones, logger: { log() {} } }).runPending();
-    env = { TECNO_CAJA_SYNC_URL: 'https://sync.prueba/' };
+    env = { TECNO_CAJA_SYNC_URL: 'https://sync.prueba/', TECNO_CAJA_LICENSE_UID: EMPRESA.licenseId };
     guardadoEnv = {};
     api = apiSimulada();
     reloj = new Date('2026-10-19T16:00:00.000Z');
@@ -106,6 +106,25 @@ describe('Enlace del POS con la central', () => {
     expect(negocio.uuid).toBe(EMPRESA.companyUuid);
     expect(suc).toEqual({ uuid: SUCURSAL.branchUuid, nombre: 'Bravo Norte', codigo: 'NOR', direccion: 'Av. Hermanas Mirabal 10', telefono: '809-555-1010', encargado: 'Luis' });
     expect(JSON.stringify(await enlace.estado())).not.toContain(TOKEN);
+  });
+
+  test('PC recién instalada con otra licencia: manda sus ventas (0) y toma la licencia de la empresa', async () => {
+    env.TECNO_CAJA_LICENSE_UID = 'pos_0123456789abcdef';
+    const revalidadas = [];
+    const nueva = createEnlaceCentral({
+      query: base.query, identidad: createIdentidad({ query: base.query }), bandejas: createBandejas({ dialect: 'sqlite' }), env,
+      persistEnv: (v) => Object.assign(guardadoEnv, v), fetchImpl: api.fetchImpl, now: () => reloj, logger: { warn() {} },
+      getEquipo: () => ({ hostname: 'CAJA-NUEVA', licenseId: env.TECNO_CAJA_LICENSE_UID }),
+      alCambiarLicencia: async (lic) => { revalidadas.push(lic); },
+    });
+    activacionOk();
+    const estado = await nueva.activar('ABCD-EFGH');
+    expect(api.llamadas[0].body.equipo).toMatchObject({ licenseId: 'pos_0123456789abcdef', ventas: 0 });
+    expect(env.TECNO_CAJA_LICENSE_UID).toBe(EMPRESA.licenseId);
+    expect(guardadoEnv).toEqual({ TECNO_CAJA_SYNC_TOKEN: TOKEN, TECNO_CAJA_LICENSE_UID: EMPRESA.licenseId });
+    expect(revalidadas).toEqual([EMPRESA.licenseId]);
+    expect(estado.licenciaAdoptada).toBe(EMPRESA.licenseId);
+    nueva.detener();
   });
 
   test('si otra fila local tenía ese uuid, lo suelta (índice único)', async () => {

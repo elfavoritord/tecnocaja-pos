@@ -69,6 +69,9 @@ function createEnlaceCentral({
   // La sucursal local cambió de nombre o datos (al enlazar o porque el
   // contador la editó): las pantallas abiertas lo refrescan.
   alCambiarIdentidad = () => {},
+  // Una PC recién instalada que se une a la empresa toma su licencia: el
+  // servidor vuelve a validar la licencia con la nueva.
+  alCambiarLicencia = async () => {},
 }) {
   const url = () => {
     const propia = String(env.TECNO_CAJA_SYNC_URL || '').trim();
@@ -168,12 +171,24 @@ function createEnlaceCentral({
   async function activar(codigo) {
     const limpio = String(codigo || '').trim();
     if (!limpio) throw new ErrorEnlace('Escribe el código de activación.', 'SIN_CODIGO');
-    const r = await llamar('POST', '/v1/equipos/activar', { codigo: limpio, equipo: getEquipo() }, { conToken: false });
+    // Cuántas ventas tiene esta base: una PC recién instalada (0) puede unirse
+    // a la empresa aunque el asistente le haya dado otra licencia.
+    const conteo = await query('SELECT COUNT(*) AS n FROM sales').catch(() => [{ n: null }]);
+    const ventas = conteo[0]?.n == null ? null : Number(conteo[0].n);
+    const r = await llamar('POST', '/v1/equipos/activar', { codigo: limpio, equipo: { ...getEquipo(), ventas } }, { conToken: false });
 
     // El token primero: si algo de lo local falla, se reintenta con
     // refrescarIdentidad sin gastar otro código.
     env.TECNO_CAJA_SYNC_TOKEN = r.token;
-    persistEnv({ TECNO_CAJA_SYNC_TOKEN: r.token });
+    const licenciaEmpresa = String(r.empresa?.licenseId || '').trim();
+    const cambiaLicencia = Boolean(licenciaEmpresa) && licenciaEmpresa !== String(env.TECNO_CAJA_LICENSE_UID || '').trim();
+    if (cambiaLicencia) env.TECNO_CAJA_LICENSE_UID = licenciaEmpresa;
+    persistEnv({ TECNO_CAJA_SYNC_TOKEN: r.token, ...(cambiaLicencia ? { TECNO_CAJA_LICENSE_UID: licenciaEmpresa } : {}) });
+    if (cambiaLicencia) {
+      await Promise.resolve(alCambiarLicencia(licenciaEmpresa)).catch((error) => {
+        logger.warn?.('[multisucursal] La PC tomó la licencia de la empresa; la validación se completa en el próximo arranque:', error.message);
+      });
+    }
     await guardarEstado({
       estado: ESTADOS.VINCULADO,
       equipoId: r.equipoId,
@@ -182,6 +197,7 @@ function createEnlaceCentral({
       activadoEn: now().toISOString(),
       ultimaConexion: now().toISOString(),
       ultimoError: null,
+      licenciaAdoptada: cambiaLicencia ? licenciaEmpresa : null,
     });
     try {
       await aplicarIdentidad(r);
@@ -277,6 +293,7 @@ function createEnlaceCentral({
       activadoEn: guardado.activadoEn || null,
       ultimaConexion: guardado.ultimaConexion || null,
       ultimoError: guardado.ultimoError || null,
+      licenciaAdoptada: guardado.licenciaAdoptada || null,
     };
   }
 

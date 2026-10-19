@@ -131,6 +131,8 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
         empresa: { licenseId: r.licenseId, companyUuid: r.companyUuid, nombre: r.businessName },
         sucursal: vistaSucursal(r.sucursal),
         reemplazados: r.reemplazados.length,
+        // La PC tenía otra licencia (recién instalada): pasa a la de la empresa.
+        cambiaLicencia: Boolean(r.cambiaLicencia),
       });
     } catch (error) {
       fallo(res, error);

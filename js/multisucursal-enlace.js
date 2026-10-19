@@ -240,7 +240,7 @@
         const codigo = el('cfg-ms-codigo')?.value || '';
         if (codigo.replace(/[^A-Z0-9]/gi, '').length !== 8) { avisar('El código tiene 8 caracteres (XXXX-XXXX).', 'warning'); return; }
         const r = await api('POST', '/activar', { codigo });
-        avisar(`Listo: esta PC es la sucursal ${r.enlace?.sucursal?.nombre || ''}. Descargando el catálogo y los usuarios de la empresa…`, 'success');
+        avisar(`Listo: esta PC es la sucursal ${r.enlace?.sucursal?.nombre || ''}${r.enlace?.licenciaAdoptada ? ' y ahora usa la licencia de la empresa' : ''}. Descargando el catálogo y los usuarios de la empresa…`, 'success');
       } else if (nombre === 'sincronizar') {
         await api('POST', '/sincronizar');
         avisar('Sincronizando con Tecno Caja…', 'success');
