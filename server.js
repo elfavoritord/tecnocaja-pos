@@ -2578,6 +2578,8 @@ const multisucursal = createMultisucursal({
   alAplicar: () => {
     productsCache.flush();
     clearPublicUsersListCache();
+    // Las pantallas abiertas recargan productos y usuarios (js/app.js).
+    io.emit('multisucursal:cambios-aplicados', { at: new Date().toISOString() });
   },
 });
 app.use('/api/multisucursal', createMultisucursalRouter({

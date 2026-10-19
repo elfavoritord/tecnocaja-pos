@@ -6048,10 +6048,16 @@ function connectLicenseSocket() {
     _licenseSocket.on('reports-app:product-received', async (data) => {
       showToast(data?.message || 'Nuevo producto recibido desde la App de Reporte', 'success');
       try {
-        await loadData();
-        if (typeof renderProducts === 'function') renderProducts();
-        if (typeof renderVentas === 'function') renderVentas();
-        updateNotifications();
+        // (Antes llamaba a loadData(), que no existe: el error se tragaba y
+        // la lista no se refrescaba.)
+        if (typeof refreshProductsAfterReportAppSync === 'function') await refreshProductsAfterReportAppSync();
+      } catch (_error) {}
+    });
+    // Multisucursal: llegaron productos, usuarios o precios de la central.
+    _licenseSocket.on('multisucursal:cambios-aplicados', async () => {
+      try {
+        if (typeof refreshProductsAfterReportAppSync === 'function') await refreshProductsAfterReportAppSync();
+        if (typeof loadUsuariosTable === 'function') loadUsuariosTable();
       } catch (_error) {}
     });
     _licenseSocket.on('disconnect', () => {

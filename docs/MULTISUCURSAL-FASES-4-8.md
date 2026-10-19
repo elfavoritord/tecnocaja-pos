@@ -144,6 +144,59 @@ Además:
 | 19 | Licencias y límites | ✅ | integral + emulador (`maxSucursales`) |
 | 20 | Funciones existentes siguen | ✅ | `npm test`, `test:e2e-lan`, arranque SQLite |
 
+## Cómo probarlo antes de publicar versiones
+
+### 1. Pruebas automáticas (10-15 minutos)
+
+```powershell
+npm test
+npm run test:multisucursal-central
+npm run test:multisucursal-integral
+npm run test:multisucursal-mariadb
+npm run test:multisucursal-sqlite
+npm run test:e2e-lan
+```
+
+Todas deben terminar sin "FALLA".
+
+### 2. Laboratorio a mano (sin tocar Firebase real ni tus datos)
+
+```powershell
+npm run lab:multisucursal
+# variantes:  $env:LAB_TRES='1'; npm run lab:multisucursal     (tres sucursales)
+#             $env:LAB_RAPIDO='1'; npm run lab:multisucursal   (sucursales ya creadas y PC ya enlazadas)
+```
+
+Abre `http://127.0.0.1:3500` en Chrome. Ahí están:
+
+- tu panel y el portal del contador;
+- dos POS reales en `:3501` y `:3502` (`admin` / `1234`), cada uno con su base;
+- un botón para **apagar o encender la central** (simula que se va Internet);
+- la guía paso a paso de lo que hay que probar.
+
+Todo se borra al cerrar.
+
+### 3. Instalador en una PC de prueba con datos reales
+
+1. Construye el instalador **sin publicarlo**: `npx electron-builder --win nsis -c.directories.output=F:\builds\prueba`. Antes revisa `git status`: se empaqueta el árbol de trabajo.
+2. Instálalo en una PC de prueba (o una máquina virtual), **no** en una de cliente.
+3. Restaura ahí una copia de un respaldo real (por ejemplo, el de un cliente grande). Comprueba que:
+   - al arrancar se crea el respaldo `PRE-MIGRACION`;
+   - entra normal;
+   - vende, cobra e imprime;
+   - Configuración → "Sucursal conectada a Tecno Caja" aparece sin enlazar.
+4. Prueba real contra la Sync API de producción:
+   1. Haz el asistente inicial con un negocio de prueba, por ejemplo "Prueba Multisucursal".
+   2. En tu panel (`tecno-caja-admin`, `npm start`), abre esa empresa → Sucursales: límite 2, crea las dos y genera los códigos.
+   3. Enlaza la PC de prueba (y otra, si tienes).
+   4. Al terminar, desactiva las sucursales de prueba.
+
+### 4. Publicar escalonado
+
+- **Pre-release primero.** Publica la versión como *pre-release* en GitHub. El actualizador de los clientes ignora las pre-releases, así que nadie la recibe sola.
+- **Clientes piloto.** Instálala a mano en uno o dos clientes y déjala correr unos días.
+- **Release normal.** Cuando estés conforme, márcala como release normal y el actualizador la reparte.
+
 ## Despliegue
 
 1. **Sync API.** Hay que volver a desplegarla con los endpoints nuevos (pasos en `cloud/sync-api/README.md`). Como solo agrega rutas, las PC ya enlazadas siguen funcionando.

@@ -176,8 +176,8 @@
           <input id="cfg-ms-precio-valor" class="form-input" type="number" min="0.01" step="0.01" placeholder="Precio" style="max-width:120px">
         </div>
         <div style="display:flex;gap:.9rem;flex-wrap:wrap;margin:.5rem 0">
-          ${otras.map((s) => `<label style="display:flex;gap:.35rem;align-items:center;font-weight:400">
-            <input type="checkbox" data-ms-precio-sucursal="${esc(s.branchUuid)}"> ${esc(s.nombre)}${s.estaPc ? ' (esta)' : ''}</label>`).join('') || '<small class="helper-text">Sin otras sucursales todavía.</small>'}
+          ${otras.map((s) => `<label style="display:inline-flex;gap:.35rem;align-items:center;font-weight:400;white-space:nowrap;width:auto;margin:0">
+            <input type="checkbox" style="width:auto;height:auto;margin:0;flex:none" data-ms-precio-sucursal="${esc(s.branchUuid)}"> ${esc(s.nombre)}${s.estaPc ? ' (esta)' : ''}</label>`).join('') || '<small class="helper-text">Sin otras sucursales todavía.</small>'}
         </div>
         <button type="button" class="btn-secondary compact-btn" data-ms="precio">Aplicar precio</button>
       </div>`;
@@ -337,8 +337,8 @@
 
   function casillasSucursales(nombre, sucursales, elegidas) {
     return sucursales.filter((s) => s.estado === 'activa').map((s) => `
-      <label style="display:flex;gap:.35rem;align-items:center;font-weight:400">
-        <input type="checkbox" data-${nombre}="${esc(s.branchUuid)}" ${elegidas.includes(s.branchUuid) ? 'checked' : ''}> ${esc(s.nombre)}${s.estaPc ? ' (esta)' : ''}
+      <label style="display:inline-flex;gap:.35rem;align-items:center;font-weight:400;white-space:nowrap;width:auto;margin:0">
+        <input type="checkbox" style="width:auto;height:auto;margin:0;flex:none" data-${nombre}="${esc(s.branchUuid)}" ${elegidas.includes(s.branchUuid) ? 'checked' : ''}> ${esc(s.nombre)}${s.estaPc ? ' (esta)' : ''}
       </label>`).join('');
   }
 
@@ -411,8 +411,8 @@
       bloque.innerHTML = `
         <div class="eu-section-title" style="margin-top:0.25rem">Sucursales de la empresa</div>
         <div class="eu-field">
-          <label style="display:flex;gap:.35rem;align-items:center;font-weight:400">
-            <input type="checkbox" data-eu-todas ${todas ? 'checked' : ''}> Puede entrar en todas las sucursales
+          <label style="display:inline-flex;gap:.35rem;align-items:center;font-weight:400;white-space:nowrap;width:auto;margin:0">
+            <input type="checkbox" style="width:auto;height:auto;margin:0;flex:none" data-eu-todas ${todas ? 'checked' : ''}> Puede entrar en todas las sucursales
           </label>
           <div data-eu-lista style="display:${todas ? 'none' : 'flex'};gap:.9rem;flex-wrap:wrap;margin-top:.4rem">
             ${casillasSucursales('eu-sucursal', ctx.sucursales, elegidas)}
