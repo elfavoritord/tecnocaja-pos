@@ -134,6 +134,10 @@ const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotio
 const createNetworkRouter = require('./server/routes/network.routes');
 const createConnectivityRouter = require('./server/routes/connectivity.routes');
 const { createServerIdentity } = require('./server/network/server-identity');
+// ✅ Multisucursal (Fase 2): identidad uuid, bandejas de sincronización y migraciones numeradas
+const { createMultisucursal } = require('./server/multisucursal');
+const { crearRespaldoPrevio } = require('./server/multisucursal/respaldo-previo');
+const createMultisucursalRouter = require('./server/routes/multisucursal.routes');
 const { scanForPrincipals, findPrincipal, probeIdentify } = require('./server/network/lan-discovery');
 const { startPrincipalWatcher } = require('./server/network/principal-watcher');
 const { createOfflineSessionMiddleware } = require('./server/middleware/offline-session');
@@ -2545,6 +2549,26 @@ createSetupReemplazoRouter({
   isGlobalAdministratorUser,
   writeAuditLog,
 });
+
+// Multisucursal: el esquema se prepara al arrancar (prepararAlArrancar, ver
+// prepareServerRuntime) y aquí solo se expone el diagnóstico. Ver
+// docs/MULTISUCURSAL-DIAGNOSTICO.md.
+const multisucursal = createMultisucursal({
+  query,
+  withTransaction,
+  getDbClient,
+  getServerId: () => serverIdentity.getServerId(),
+  getBranchIdOverride: () => getTerminalScopeSelection().branchId,
+  esServidorPrincipal: () => isMainTerminalConfig(getTerminalConfig()),
+  esAdministradorGeneral: (user) => isGlobalAdministratorUser(user),
+  crearRespaldoPrevio,
+  estaDesactivado: () => String(process.env.TECNO_CAJA_MULTISUCURSAL_DESACTIVAR || '').trim() === '1',
+});
+app.use('/api/multisucursal', createMultisucursalRouter({
+  multisucursal,
+  resolveRequestActorUser,
+  isGlobalAdministratorUser,
+}));
 
 const LOCAL_PASSWORD_HASH_PREFIX = 'scrypt';
 const TECNO_CAJA_AUTH_SCHEME = 'Bearer';
@@ -19904,6 +19928,7 @@ async function finishMysqlRuntimeInit() {
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
         ensureSyncQueueTable().catch(e => console.warn('[sync-queue] init fallo:', e.message)),
       ]));
+      await multisucursal.prepararAlArrancar();
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);
       // La licencia local firmada se usa inmediatamente. La consulta remota no
@@ -20109,6 +20134,9 @@ async function prepareServerRuntime() {
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
     ]));
+    // Antes de la recuperación automática: un respaldo hecho con esta versión
+    // trae la columna uuid y la base tiene que tenerla para restaurarlo.
+    await multisucursal.prepararAlArrancar();
 
     // ── Recuperación automática tras corrupción ──────────────────────────────
     // Si la BD existente resultó dañada (ej. corte de luz a mitad de escritura)
@@ -20128,6 +20156,8 @@ async function prepareServerRuntime() {
         const recovery = await attemptAutoRestoreFromBackup({ query });
         if (recovery.restored) {
           console.log(`[auto-recovery] ✅ Base de datos restaurada automáticamente desde respaldo (${recovery.source}): ${recovery.fileName}`);
+          // Un respaldo anterior a la Fase 2 no trae uuid.
+          await multisucursal.identidad.rellenarUuidsFaltantes().catch(() => {});
         } else {
           blankRebuildNoRestore = true;
           console.error('[auto-recovery] ⚠️ BD reconstruida en blanco y sin respaldo utilizable. ' +

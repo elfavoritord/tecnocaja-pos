@@ -286,6 +286,62 @@ async function ensureRuntimeTables(mysqlConn, options = {}) {
 }
 
 // -- Introspección ----------------------------------------------------------------
+// -- Esquema multisucursal (server/migrations/multisucursal) --------------------
+// Se aplica en la MySQL destino ANTES de copiar los datos: así las columnas uuid
+// y las tablas de sincronización existen y lo del SQLite entra con su uuid. Sin
+// esto, sync_outbox/sync_inbox/user_branch_access con datos quedaban "sin
+// destino" (migración incompleta) y los uuid se perdían (columna no común).
+// Sin relleno: los uuid vienen del SQLite (copyUuidsFromSqlite corrige las filas
+// que la MySQL ya tenía, como la sucursal 1 de db/schema.sql).
+async function applyMultisucursalSchema(mysqlConn, options = {}) {
+  const log = normalizeLogger(options.log);
+  const { createMigrationRunner } = require('../../server/migrations/runner');
+  const migraciones = require('../../server/migrations/multisucursal');
+  const query = async (sql, params = []) => {
+    const [rows] = await mysqlConn.query(sql, params);
+    return Array.isArray(rows) ? rows : { affectedRows: rows.affectedRows, insertId: rows.insertId };
+  };
+  const runner = createMigrationRunner({
+    query,
+    dialect: 'mysql',
+    migrations: migraciones,
+    options: { backfill: false },
+    logger: { log: (m) => log.info(m) },
+  });
+  const result = await runner.runPending();
+  log.ok('Esquema multisucursal: ' + (result.applied.length ? result.applied.map((m) => m.id).join(', ') : 'al día'));
+  return result;
+}
+
+// La identidad la manda el SQLite: los ids se copian tal cual, así que la fila
+// con el mismo id es la misma entidad. INSERT IGNORE no pisa las filas que la
+// MySQL ya tenía (sembradas por db/schema.sql y con uuid propio al arrancar el
+// servidor en MySQL); aquí se les pone el uuid del SQLite.
+async function copyUuidsFromSqlite(sqliteDb, mysqlConn, dbName, options = {}) {
+  const log = normalizeLogger(options.log);
+  const { TABLAS_CON_UUID } = require('../../server/migrations/multisucursal/0001-uuid-entidades');
+  let copied = 0;
+  for (const table of TABLAS_CON_UUID) {
+    if (!getSqliteColumns(sqliteDb, table).includes('uuid')) continue;
+    if (!(await getMysqlColumns(mysqlConn, table, dbName)).includes('uuid')) continue;
+    const res = sqliteDb.exec('SELECT id, uuid FROM `' + table + '` WHERE uuid IS NOT NULL');
+    if (!res.length) continue;
+    const [targetRows] = await mysqlConn.query('SELECT id, `uuid` FROM `' + table + '`');
+    const targetById = new Map(targetRows.map((r) => [Number(r.id), r.uuid]));
+    for (const [id, uuid] of res[0].values) {
+      if (!targetById.has(Number(id)) || targetById.get(Number(id)) === uuid) continue;
+      try {
+        await mysqlConn.query('UPDATE `' + table + '` SET `uuid` = ? WHERE id = ?', [uuid, id]);
+        copied += 1;
+      } catch (err) {
+        log.warn('uuid de ' + table + ' #' + id + ': ' + err.message);
+      }
+    }
+  }
+  if (copied) log.ok('uuid tomados del SQLite en filas que la MySQL ya tenía: ' + copied);
+  return copied;
+}
+
 function getSqliteColumns(sqliteDb, table) {
   try {
     const res = sqliteDb.exec('PRAGMA table_info(' + table + ')');
@@ -450,6 +506,7 @@ async function runMigration(opts = {}) {
       onProgress({ phase: 'schema' });
       try { await applySchema(conn, { log }); } catch (err) { log.warn('Schema parcial: ' + err.message); }
       try { await ensureRuntimeTables(conn, { log }); } catch (err) { log.warn('Tablas de runtime: ' + err.message); }
+      try { await applyMultisucursalSchema(conn, { log }); } catch (err) { log.warn('Esquema multisucursal: ' + err.message); }
     }
 
     const sqliteTables = discoverSqliteTables(sqliteDb);
@@ -481,6 +538,9 @@ async function runMigration(opts = {}) {
       }
     }
     onProgress({ phase: 'table', done: ordered.length, total: ordered.length });
+    if (!dryRun) {
+      try { await copyUuidsFromSqlite(sqliteDb, conn, dbName, { log }); } catch (err) { log.warn('uuid: ' + err.message); }
+    }
   } finally {
     sqliteDb.close();
     try { await conn.end(); } catch (_) {}
@@ -505,6 +565,8 @@ async function runMigration(opts = {}) {
 
 module.exports = {
   runMigration,
+  applyMultisucursalSchema,
+  copyUuidsFromSqlite,
   loadSqlite,
   findSqliteFile,
   TABLES_TO_MIGRATE,

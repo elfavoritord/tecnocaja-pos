@@ -101,6 +101,22 @@ async function setInternet(port, offline) {
     const identify = await L.request(P, 'GET', '/api/network/identify');
     L.check('Principal: se identifica con serverId y nombre de equipo', /^srv_[a-f0-9]{16}$/.test(identify.body?.serverId || '') && Boolean(identify.body?.hostname), `${identify.body?.serverId} · ${identify.body?.hostname}`);
 
+    // Multisucursal (Fase 2): la principal migró al arrancar y tiene identidad.
+    const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const ms = await L.request(P, 'GET', '/api/multisucursal/estado', null, ctx.token);
+    const msIdent = ms.body?.identidad || {};
+    L.check(
+      'Multisucursal: principal con empresa y sucursal identificadas (uuid)',
+      ms.status === 200 && UUID.test(msIdent.empresa?.uuid || '') && UUID.test(msIdent.sucursal?.uuid || '') && msIdent.nodo === identify.body?.serverId,
+      `HTTP ${ms.status} · empresa ${msIdent.empresa?.uuid} · sucursal ${msIdent.sucursal?.uuid}`
+    );
+    L.check(
+      'Multisucursal: migraciones aplicadas en MariaDB',
+      Array.isArray(ms.body?.migraciones) && ms.body.migraciones.length === 3 && ms.body.migraciones.every((m) => m.aplicada),
+      JSON.stringify((ms.body?.migraciones || []).map((m) => [m.id, m.aplicada]))
+    );
+    ctx.multisucursal = { empresa: msIdent.empresa?.uuid, sucursal: msIdent.sucursal?.uuid };
+
     // ── Prueba 1: Internet conectado ────────────────────────────────────
     let conn = await L.request(P, 'GET', '/api/connectivity');
     L.check('Internet ON: estado normal (base + Internet)', conn.body?.mode === 'normal' && conn.body?.internet?.online === true, `modo ${conn.body?.mode}`);
@@ -154,6 +170,13 @@ async function setInternet(port, offline) {
     L.check('Terminal: login contra la base de la principal', Boolean(tToken), `HTTP ${tLogin.status} ${tLogin.body?.error || ''}`);
     conn = await L.request(T, 'GET', '/api/connectivity');
     L.check('Terminal: se reconoce como terminal', conn.body?.role === 'terminal' && conn.body?.mode === 'normal', `${conn.body?.role}/${conn.body?.mode}`);
+    const tMs = await L.request(T, 'GET', '/api/multisucursal/estado', null, tToken);
+    L.check(
+      'Multisucursal: la terminal no migra y ve la misma identidad que la principal',
+      tMs.status === 200 && /terminal secundaria/.test(tMs.body?.ultimoArranque?.omitido || '')
+        && tMs.body?.identidad?.empresa?.uuid === ctx.multisucursal?.empresa,
+      `HTTP ${tMs.status} · ${tMs.body?.ultimoArranque?.omitido || tMs.body?.error || ''} · empresa ${tMs.body?.identidad?.empresa?.uuid}`
+    );
     const cache = await L.request(T, 'POST', '/api/offline/init-cache', {}, tToken);
     L.check('Terminal: copia local para contingencia', cache.status === 200, `HTTP ${cache.status} ${cache.body?.error || ''}`);
 

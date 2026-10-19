@@ -134,6 +134,8 @@ Variables clave en `.env`:
 - `docs/LAN-OFFLINE-FIRST.md` — Auditoría LAN-first: qué funciona sin Internet, multicaja, contingencia, riesgos.
 - `docs/CENTRO-DE-CONTROL-REPORTES.md` — Auditoría de la app de reportes, arquitectura del Centro de Control y pasos de despliegue.
 - `docs/TIENDA-ONLINE.md` — Tienda online: arquitectura, tablas, APIs, sincronización, riesgos y despliegue.
+- `docs/MULTISUCURSAL-DIAGNOSTICO.md` — Fase 1 del proyecto multisucursal (una base por sucursal + sincronización HTTPS): cómo está hoy, brechas, riesgos que bloquean y decisiones pendientes.
+- `docs/MULTISUCURSAL-FASE-2.md` — Fase 2: uuid, bandejas de sincronización, acceso por sucursal y migraciones numeradas (`server/migrations/`). Pruebas: `npm run test:multisucursal-mariadb` y `npm run test:multisucursal-sqlite`. Interruptor: `TECNO_CAJA_MULTISUCURSAL_DESACTIVAR=1`.
 - `CONTRIBUTING.md` — Guía de desarrollo.
 - `.env.example` — Todas las variables de entorno documentadas.
 

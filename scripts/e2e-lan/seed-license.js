@@ -24,6 +24,9 @@ const { createLicenseService } = require(path.join(APP, 'server', 'licensing', '
     updateRemoteDevice: async () => ({ allowed: true, activeCount: 2, limit: 5 }),
   });
   const result = await service.resolveState({ force: true, allowRemote: true });
+  // En SQLite el guardado a disco es diferido: sin esto, process.exit() se
+  // adelanta y la licencia no queda en el archivo.
+  if (typeof db.flushPendingSave === 'function') await db.flushPendingSave();
   console.log(JSON.stringify({ source: result.source, canEnter: result.license?.canEnter, rowId: service.getCacheRowId() }));
   process.exit(result.license?.canEnter ? 0 : 1);
 })().catch((error) => { console.error(error); process.exit(1); });

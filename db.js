@@ -218,7 +218,19 @@ const _SAVE_DEBOUNCE_MS = 80;
 // pierde energía en cualquier punto antes del rename, dbFile original queda
 // intacto — sin esto, un corte de luz a mitad del fs.writeFile truncaba el
 // archivo cifrado y el sistema arrancaba con una BD nueva en blanco.
-async function _writeToDisk() {
+// Un solo guardado a la vez. Todos usan el mismo temporal (<db>.tmp-<pid>):
+// si el guardado de una transacción y el diferido coincidían, el primero
+// renombraba el temporal y el segundo fallaba con ENOENT (venta confirmada en
+// memoria pero error 500 al cajero) o caía en la escritura directa no atómica.
+// En cola, cada guardado exporta el estado más reciente al momento de correr.
+let _writeChain = Promise.resolve();
+function _writeToDisk() {
+  const run = _writeChain.then(_writeToDiskNow, _writeToDiskNow);
+  _writeChain = run.catch(function() {});
+  return run;
+}
+
+async function _writeToDiskNow() {
   const db = await getSqlitePromise();
   const plainBuf = Buffer.from(db.export());
   const encrypted = dbEncryptionDisabled() ? plainBuf : encryptSqliteBuffer(plainBuf);

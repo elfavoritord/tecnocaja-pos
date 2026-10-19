@@ -326,6 +326,19 @@ async function restorePayloadToDb(payload, query) {
 
   const isMySQL = getDbClient() === 'mysql';
 
+  // Columnas que existen en ESTA base. Un respaldo hecho con una versión más
+  // nueva puede traer columnas que aquí no hay; antes se armaba el INSERT con
+  // todas, fallaba entero y la tabla quedaba vacía sin avisar (safeQ). Ahora
+  // se omiten esas columnas y el resto de los datos entra.
+  async function _columnasDestino(q, table) {
+    try {
+      const rows = await q(`PRAGMA table_info(${table})`, []);
+      return Array.isArray(rows) ? rows.map((r) => String(r.name || r.Field || '')).filter(Boolean) : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
   async function _doRestore(q) {
     const safeQ = async (sql, params) => {
       try {
@@ -343,7 +356,17 @@ async function restorePayloadToDb(payload, query) {
       await safeQ(`DELETE FROM \`${table}\``, []);
 
       const normalizedRows = rows.map(_normalizeDateTimesInRow);
-      const cols = Object.keys(normalizedRows[0]);
+      const colsRespaldo = Object.keys(normalizedRows[0]);
+      const colsDestino = await _columnasDestino(q, table);
+      const destinoMin = new Set(colsDestino.map((c) => c.toLowerCase()));
+      const cols = colsDestino.length
+        ? colsRespaldo.filter((c) => destinoMin.has(c.toLowerCase()))
+        : colsRespaldo;
+      const omitidas = colsRespaldo.filter((c) => !cols.includes(c));
+      if (omitidas.length) {
+        console.warn(`[respaldos][restore] ${table}: el respaldo trae columnas que esta versión no tiene; se omiten: ${omitidas.join(', ')}`);
+      }
+      if (!cols.length) continue;
 
       if (isMySQL) {
         const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ?`;
