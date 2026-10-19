@@ -137,6 +137,7 @@ Variables clave en `.env`:
 - `docs/MULTISUCURSAL-DIAGNOSTICO.md` — Fase 1 del proyecto multisucursal (una base por sucursal + sincronización HTTPS): cómo está hoy, brechas, riesgos que bloquean y decisiones pendientes.
 - `docs/MULTISUCURSAL-FASE-2.md` — Fase 2: uuid, bandejas de sincronización, acceso por sucursal y migraciones numeradas (`server/migrations/`). Pruebas: `npm run test:multisucursal-mariadb` y `npm run test:multisucursal-sqlite`. Interruptor: `TECNO_CAJA_MULTISUCURSAL_DESACTIVAR=1`.
 - `docs/MULTISUCURSAL-FASE-3.md` — Sucursales centrales: solo Emilio (`tecno-caja-admin`) y el contador (su portal) las crean; Emilio fija el límite por empresa. Reglas/rutas/pantalla únicas en `server/multisucursal/central/` y `js/sucursales-central-ui.js` (copiadas al portal con su `vendor-sync`). Pruebas con emulador: `npm run test:multisucursal-central`.
+- `cloud/sync-api/` — Sync API (Cloud Run, sin desplegar todavía): la PC principal de cada sucursal se activa con un código de equipo y recibe su token (sin la llave de administrador de Firebase). En el POS: `server/multisucursal/enlace.js` + Configuración → "Sucursal conectada a Tecno Caja"; `TECNO_CAJA_SYNC_URL`/`TECNO_CAJA_SYNC_TOKEN` en `config/app.env`. Punta a punta: `npm run test:multisucursal-enlace`.
 - `CONTRIBUTING.md` — Guía de desarrollo.
 - `.env.example` — Todas las variables de entorno documentadas.
 

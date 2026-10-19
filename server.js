@@ -2563,11 +2563,21 @@ const multisucursal = createMultisucursal({
   esAdministradorGeneral: (user) => isGlobalAdministratorUser(user),
   crearRespaldoPrevio,
   estaDesactivado: () => String(process.env.TECNO_CAJA_MULTISUCURSAL_DESACTIVAR || '').trim() === '1',
+  // Enlace con la Sync API central (TECNO_CAJA_SYNC_URL / TECNO_CAJA_SYNC_TOKEN).
+  persistEnv: (values) => persistRuntimeEnvValues(values),
+  getEquipo: () => ({
+    deviceId: require('./server/security/machine-identity').getDeviceId(),
+    hostname: os.hostname(),
+    serverId: serverIdentity.getServerId(),
+    appVersion: packageJson.version,
+    licenseId: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim(),
+  }),
 });
 app.use('/api/multisucursal', createMultisucursalRouter({
   multisucursal,
   resolveRequestActorUser,
   isGlobalAdministratorUser,
+  writeAuditLog,
 }));
 
 const LOCAL_PASSWORD_HASH_PREFIX = 'scrypt';
@@ -14328,6 +14338,12 @@ app.post('/api/branches', plans.requirePlan('plus', query, () => secureLicenseSe
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!isGlobalAdministratorUser(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para crear nuevas sucursales.' });
+  }
+  // Sucursal enlazada a la central (multisucursal): las sucursales las crean
+  // Tecno Caja o el contador desde su panel, no el POS.
+  const enlaceCentral = await multisucursal.enlace.estado().catch(() => null);
+  if (enlaceCentral?.tieneToken) {
+    return res.status(403).json({ error: 'Esta PC está conectada a Tecno Caja como sucursal: las sucursales nuevas las crea Tecno Caja o tu contador desde su panel.' });
   }
   await ensureBusinessRulesExtensions();
   const structureMode = await getConfiguredBusinessStructureMode();

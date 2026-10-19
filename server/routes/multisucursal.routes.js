@@ -1,16 +1,21 @@
 'use strict';
 
 /**
- * server/routes/multisucursal.routes.js — Diagnóstico del módulo
- * multisucursal. Solo administrador general.
+ * server/routes/multisucursal.routes.js — Multisucursal en el POS. Solo
+ * administrador general.
  *
- *   GET /api/multisucursal/estado → identidad (empresa/sucursal/nodo con
- *       uuid), migraciones aplicadas y conteo de la bandeja de salida.
+ *   GET  /api/multisucursal/estado        identidad (uuid), migraciones, bandeja y enlace con la central
+ *   POST /api/multisucursal/activar       { codigo } → enlaza esta PC como la sucursal del código
+ *                                         (código de equipo generado por Emilio o el contador)
+ *   POST /api/multisucursal/sincronizar   identidad + latido ahora (en vez de esperar al temporizador)
+ *   POST /api/multisucursal/desvincular   quita el token de esta PC
+ *
+ * Activar y desvincular solo desde la PC principal: es la que sincroniza.
  */
 
 const express = require('express');
 
-module.exports = function createMultisucursalRoutes({ multisucursal, resolveRequestActorUser, isGlobalAdministratorUser }) {
+module.exports = function createMultisucursalRoutes({ multisucursal, resolveRequestActorUser, isGlobalAdministratorUser, writeAuditLog = async () => {} }) {
   const router = express.Router();
 
   async function soloAdministradorGeneral(req, res, next) {
@@ -26,13 +31,49 @@ module.exports = function createMultisucursalRoutes({ multisucursal, resolveRequ
     }
   }
 
-  router.get('/estado', soloAdministradorGeneral, async (_req, res) => {
-    try {
-      res.json({ ok: true, ...(await multisucursal.estado()) });
-    } catch (error) {
-      res.status(500).json({ ok: false, error: error.message });
+  function soloPrincipal(_req, res, next) {
+    if (!multisucursal.esServidorPrincipal()) {
+      return res.status(409).json({ ok: false, error: 'Hazlo desde la PC principal de la sucursal: es la que se conecta con Tecno Caja.' });
     }
-  });
+    return next();
+  }
+
+  const responder = (fn) => async (req, res) => {
+    try {
+      res.json({ ok: true, ...(await fn(req)) });
+    } catch (error) {
+      const status = Number(error.statusCode) || 500;
+      res.status(status).json({ ok: false, error: error.message, code: error.code || null });
+    }
+  };
+
+  const auditar = (req, accion, detalle) => writeAuditLog({
+    userId: req.authUser?.id,
+    userName: req.authUser?.nombre || req.authUser?.usuario,
+    userRole: req.authUser?.rol,
+    moduleName: 'Multisucursal',
+    actionName: accion,
+    detail: detalle,
+  }).catch(() => {});
+
+  router.get('/estado', soloAdministradorGeneral, responder(() => multisucursal.estado()));
+
+  router.post('/activar', soloAdministradorGeneral, soloPrincipal, responder(async (req) => {
+    const enlace = await multisucursal.enlace.activar(req.body?.codigo);
+    await auditar(req, 'Equipo enlazado a la central', `${enlace.empresa?.nombre || ''} · ${enlace.sucursal?.nombre || ''}`);
+    return { enlace };
+  }));
+
+  router.post('/sincronizar', soloAdministradorGeneral, responder(async () => {
+    await multisucursal.enlace.refrescarIdentidad();
+    return { enlace: await multisucursal.enlace.latido() };
+  }));
+
+  router.post('/desvincular', soloAdministradorGeneral, soloPrincipal, responder(async (req) => {
+    const enlace = await multisucursal.enlace.desvincular();
+    await auditar(req, 'Equipo desvinculado de la central', '');
+    return { enlace };
+  }));
 
   return router;
 };

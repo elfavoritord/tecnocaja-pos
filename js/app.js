@@ -3949,6 +3949,7 @@ function showModule(name, el) {
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     window.TiendaOnline?.loadConfigSection();
+    window.MultisucursalEnlace?.loadConfigSection();
     // Inicializar módulo de actualización del sistema
     if (typeof window.Actualizaciones?.init === 'function') window.Actualizaciones.init();
   }

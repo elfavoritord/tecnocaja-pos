@@ -42,11 +42,40 @@ El **código de equipo** (`XXXX-XXXX`, sin letras que se confundan: I, L, O, 0, 
 
 El emulador corre con `firebase-tools@13.35.1` (vía `npx`): la CLI instalada (15.x) pide Java 21 y la PC tiene Java 17. Puerto propio 8091 en `firebase.emulador.json`, sin tocar `firebase.json`.
 
+## 3b — Hecho: Sync API (`cloud/sync-api/`, Cloud Run, sin desplegar)
+
+Ver [cloud/sync-api/README.md](../cloud/sync-api/README.md).
+
+- `POST /v1/equipos/activar`: canjea el código y entrega un **token por equipo** (`eq_<id>.<secreto>`; en Firestore solo su hash). Todo en una transacción (`activarEquipo` en las reglas centrales): consume el código, deja como **reemplazada** a la PC que tenía la sucursal (una sucursal = una PC que sincroniza, para que dos bases no se hagan pasar por la misma) y registra la nueva. Si la PC ya tiene la licencia de otra empresa, se rechaza sin gastar el código. Máximo 10 intentos cada 15 minutos por IP.
+- `GET /v1/identidad` y `POST /v1/latido`, con token. Responden 403 con código claro si el equipo fue reemplazado o revocado, o si la sucursal o la licencia están inactivas.
+- Reglas nuevas: `activarEquipo`, `listarEquipos` (sin el hash del token) y `revocarEquipo` (**solo Emilio**).
+- El servicio usa la cuenta de servicio de Cloud Run: **el POS no necesita la llave de administrador de Firebase** para esto.
+
+## 3c — Hecho: el POS se conecta como sucursal
+
+| Pieza | Archivo |
+|---|---|
+| Enlace | `server/multisucursal/enlace.js`: activar con el código, guardar el token en `config/app.env`, **adoptar** `companyUuid`/`branchUuid` en `businesses`/`branches` y copiar nombre/código/dirección de la central, latido cada 5 min, identidad cada 30 min, detectar reemplazado/revocado/inactiva, desvincular. Nunca toca la venta |
+| Rutas | `server/routes/multisucursal.routes.js`: `POST /activar`, `/sincronizar`, `/desvincular` (administrador general; activar y desvincular solo desde la PC principal) |
+| Bloqueo | `POST /api/branches` devuelve 403 si la PC está enlazada: las sucursales las crean Tecno Caja o el contador |
+| Pantalla | Configuración → "Sucursal conectada a Tecno Caja" (`js/multisucursal-enlace.js`): escribir el código (se formatea `XXXX-XXXX`), estado, sincronizar, desvincular, avisos de revocación |
+| Configuración | `TECNO_CAJA_SYNC_URL` (URL de la Sync API) y `TECNO_CAJA_SYNC_TOKEN` (lo pone la activación) en `config/app.env`. Sin URL, la sección dice que el servicio aún no está disponible |
+
+### Pruebas 3b/3c (resultados reales)
+
+| Prueba | Resultado |
+|---|---|
+| Sync API contra el emulador (`cloud/sync-api/test`) | **10/10**: activar, código usado/inválido, otra empresa, identidad con/sin/falso token, datos vigentes, una PC por sucursal, revocar solo Emilio, sucursal/licencia inactiva, latido visible sin hash, límite de intentos |
+| Enlace del POS con API simulada (`tests/multisucursal/enlace.sqlite.test.js`) | **13/13** |
+| **Punta a punta** (`npm run test:multisucursal-enlace`): Sync API + servidor del POS real en SQLite + pantalla en Chrome | **19/19**: el contador crea la sucursal y su código → se escribe en el POS → adopta la identidad central y manda su latido → no deja crear sucursales locales → toma el nombre que cambió el contador → tras reiniciar sigue enlazada → Emilio revoca y el POS lo detecta (y sigue vendiendo local) → desvincular |
+| Regresión | Jest 88 suites / **662 OK**; `test:e2e-lan` **44/44**; arranque SQLite **13/13** |
+
 ## Siguiente
 
-- **3b — Sync API (Cloud Run):** canjear el código de equipo (`canjearCodigo` ya está hecho y probado), entregar un token por equipo y la identidad (empresa y sucursal). El POS adopta `companyUuid`/`branchUuid` en sus filas `businesses`/`branches`. Sin la llave de administrador de Firebase en el POS.
-- **3c — POS:** pantalla "Activar como sucursal" (escribir el código) y vista de solo lectura de las sucursales de la empresa. Conectar `user_branch_access` a los permisos.
-- **3d — Despliegue** de la Sync API, solo con el visto bueno de Emilio.
+- **3d — Despliegue de la Sync API** en Cloud Run (pasos en su README), **solo con el visto bueno de Emilio**. Después: `TECNO_CAJA_SYNC_URL` por defecto en el instalador.
+- **Paneles:** mostrar en la ficha de cada sucursal sus equipos (en línea, último latido, pendientes) y el botón revocar (solo Emilio). Las reglas `listarEquipos` y `revocarEquipo` ya están.
+- Conectar `user_branch_access` a los permisos del POS.
+- **Fase 4 — catálogo global** y **Fase 5 — eventos** (ventas, inventario) por la bandeja de salida.
 
 ## Pendiente de revisar
 

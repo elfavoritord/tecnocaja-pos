@@ -14,6 +14,7 @@ const { createMigrationRunner } = require('../migrations/runner');
 const { createIdentidad } = require('./identidad');
 const { createBandejas } = require('./bandejas');
 const { createAccesoSucursales } = require('./acceso-sucursales');
+const { createEnlaceCentral } = require('./enlace');
 
 function createMultisucursal({
   query,
@@ -27,6 +28,12 @@ function createMultisucursal({
   // Interruptor de soporte (TECNO_CAJA_MULTISUCURSAL_DESACTIVAR=1): el
   // arranque queda exactamente como antes de la Fase 2.
   estaDesactivado = () => false,
+  // Enlace con la Sync API (Fase 3c).
+  env = process.env,
+  persistEnv = () => {},
+  getEquipo = () => ({}),
+  getModo = () => 'normal',
+  fetchImpl,
   logger = console,
 }) {
   const dialect = String(getDbClient?.() || 'sqlite').toLowerCase() === 'mysql' ? 'mysql' : 'sqlite';
@@ -52,6 +59,10 @@ function createMultisucursal({
   const identidad = createIdentidad({ query, dialect, getServerId, getBranchIdOverride });
   const bandejas = createBandejas({ dialect });
   const acceso = createAccesoSucursales({ query, esAdministradorGeneral });
+  const enlace = createEnlaceCentral({
+    query, identidad, bandejas, env, persistEnv, getEquipo, getModo, logger,
+    ...(fetchImpl ? { fetchImpl } : {}),
+  });
 
   let ultimoArranque = null;
 
@@ -71,7 +82,9 @@ function createMultisucursal({
     try {
       const resultado = await runner.runPending();
       const uuids = resultado.skipped ? null : await identidad.rellenarUuidsFaltantes();
-      ultimoArranque = { at, ...resultado, uuidsAsignados: uuids };
+      // Solo la PC principal habla con la central (latido e identidad).
+      const enlaceIniciado = resultado.skipped ? false : enlace.iniciar();
+      ultimoArranque = { at, ...resultado, uuidsAsignados: uuids, enlaceIniciado };
     } catch (error) {
       ultimoArranque = { at, error: error.message };
       logger.error?.('[multisucursal] Falló la preparación del esquema:', error.message);
@@ -80,15 +93,16 @@ function createMultisucursal({
   }
 
   async function estado() {
-    const [ident, migr, resumen] = await Promise.all([
+    const [ident, migr, resumen, enl] = await Promise.all([
       identidad.obtener().catch((error) => ({ error: error.message })),
       runner.status().catch((error) => ({ error: error.message })),
       bandejas.resumen(query).catch(() => null),
+      enlace.estado().catch((error) => ({ error: error.message })),
     ]);
-    return { identidad: ident, migraciones: migr, bandejas: resumen, ultimoArranque };
+    return { identidad: ident, migraciones: migr, bandejas: resumen, enlace: enl, ultimoArranque };
   }
 
-  return { prepararAlArrancar, estado, runner, identidad, bandejas, acceso, dialect };
+  return { prepararAlArrancar, estado, runner, identidad, bandejas, acceso, enlace, esServidorPrincipal, dialect };
 }
 
 module.exports = { createMultisucursal };

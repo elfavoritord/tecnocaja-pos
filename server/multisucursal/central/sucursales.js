@@ -22,6 +22,7 @@
  *   licencias/{licenseId}/sucursales/{uuid}   datos de cada sucursal
  *   licencias/{licenseId}/sucursales_historial/{auto}   auditoría
  *   activaciones_equipo/{sha256(código)}      código de un solo uso, 24 h
+ *   equipos_sync/{equipoId}                   PC que sincroniza una sucursal (hash del token)
  *
  * Todo se escribe en transacción: dos personas creando a la vez no pueden
  * pasarse del límite.
@@ -33,6 +34,9 @@ const COL_LICENCIAS = 'licencias';
 const SUB_SUCURSALES = 'sucursales';
 const SUB_HISTORIAL = 'sucursales_historial';
 const COL_ACTIVACIONES = 'activaciones_equipo';
+// Equipos que sincronizan (uno activo por sucursal). Lo lee la Sync API para
+// autenticar cada petición por el hash de su token.
+const COL_EQUIPOS = 'equipos_sync';
 
 const LIMITE_MINIMO = 1;
 const LIMITE_MAXIMO = 200;
@@ -41,6 +45,7 @@ const VIGENCIA_CODIGO_MS = 24 * 60 * 60 * 1000;
 const ALFABETO_CODIGO = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 const ESTADOS = Object.freeze({ ACTIVA: 'activa', INACTIVA: 'inactiva' });
+const ESTADOS_EQUIPO = Object.freeze({ ACTIVO: 'activo', REEMPLAZADO: 'reemplazado', REVOCADO: 'revocado' });
 const ACCIONES = Object.freeze({
   VER: 'ver',
   FIJAR_LIMITE: 'fijar_limite',
@@ -48,6 +53,12 @@ const ACCIONES = Object.freeze({
   EDITAR: 'editar',
   CAMBIAR_ESTADO: 'cambiar_estado',
   GENERAR_CODIGO: 'generar_codigo',
+  REVOCAR_EQUIPO: 'revocar_equipo',
+});
+const MENSAJES_SOLO_ADMIN = Object.freeze({
+  [ACCIONES.FIJAR_LIMITE]: 'Solo el administrador de Tecno Caja puede cambiar cuántas sucursales tiene una empresa.',
+  [ACCIONES.CAMBIAR_ESTADO]: 'Solo el administrador de Tecno Caja puede activar o desactivar sucursales.',
+  [ACCIONES.REVOCAR_EQUIPO]: 'Solo el administrador de Tecno Caja puede revocar equipos.',
 });
 
 const PERMISOS_CONTADOR = new Set([ACCIONES.VER, ACCIONES.CREAR, ACCIONES.EDITAR, ACCIONES.GENERAR_CODIGO]);
@@ -99,12 +110,7 @@ function autorizar(actor, accion, licenciaId, licencia) {
   validarActor(actor);
   if (actor.tipo === 'super_admin') return;
   if (!PERMISOS_CONTADOR.has(accion)) {
-    throw new ErrorSucursales(
-      accion === ACCIONES.FIJAR_LIMITE
-        ? 'Solo el administrador de Tecno Caja puede cambiar cuántas sucursales tiene una empresa.'
-        : 'Solo el administrador de Tecno Caja puede activar o desactivar sucursales.',
-      'SIN_PERMISO', 403
-    );
+    throw new ErrorSucursales(MENSAJES_SOLO_ADMIN[accion] || 'No tienes permiso para esta acción.', 'SIN_PERMISO', 403);
   }
   const asignado = String(licencia?.contadorId || '').trim();
   if (!asignado || asignado !== String(actor.contadorId || '').trim()) {
@@ -356,45 +362,152 @@ function createSucursalesCentral({
     throw new ErrorSucursales('No se pudo generar un código, intenta de nuevo.', 'COLISION', 503);
   }
 
-  // Lo usa la Sync API al activar un equipo: valida y consume el código.
-  async function canjearCodigo(codigo, equipo = {}) {
+  // Lecturas y validaciones de un canje (dentro de una transacción, antes de
+  // cualquier escritura).
+  async function leerCanje(tx, codigo) {
     const ref = db.collection(COL_ACTIVACIONES).doc(hashCodigo(codigo));
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new ErrorSucursales('Código de activación inválido.', 'CODIGO_INVALIDO', 404);
+    const act = snap.data();
+    if (act.usado) throw new ErrorSucursales('Este código ya se usó. Pide uno nuevo.', 'CODIGO_USADO', 409);
+    if (aFecha(act.venceEn) <= now()) throw new ErrorSucursales('Este código venció. Pide uno nuevo.', 'CODIGO_VENCIDO', 410);
+    const lic = await leerLicencia(tx, act.licenseId);
+    if (['suspended', 'cancelled'].includes(lic.status)) {
+      throw new ErrorSucursales('La licencia de la empresa no está activa.', 'LICENCIA_INACTIVA', 403);
+    }
+    const suc = await tx.get(sucursalesRef(act.licenseId).doc(act.branchUuid));
+    if (!suc.exists || suc.data().estado !== ESTADOS.ACTIVA) {
+      throw new ErrorSucursales('La sucursal de este código ya no está activa.', 'SUCURSAL_INACTIVA', 409);
+    }
+    return { ref, act, lic, suc };
+  }
+
+  function identidadDe({ act, lic, suc }) {
+    return {
+      licenseId: act.licenseId,
+      companyUuid: suc.data().companyUuid || lic.companyUuid,
+      sucursal: aVista(suc),
+      businessName: lic.businessName || lic.razon_social || '',
+    };
+  }
+
+  // Valida y consume el código sin registrar equipo.
+  async function canjearCodigo(codigo, equipo = {}) {
     return db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists) throw new ErrorSucursales('Código de activación inválido.', 'CODIGO_INVALIDO', 404);
-      const act = snap.data();
-      if (act.usado) throw new ErrorSucursales('Este código ya se usó. Pide uno nuevo.', 'CODIGO_USADO', 409);
-      if (aFecha(act.venceEn) <= now()) throw new ErrorSucursales('Este código venció. Pide uno nuevo.', 'CODIGO_VENCIDO', 410);
-      const lic = await leerLicencia(tx, act.licenseId);
-      if (['suspended', 'cancelled'].includes(lic.status)) {
-        throw new ErrorSucursales('La licencia de la empresa no está activa.', 'LICENCIA_INACTIVA', 403);
-      }
-      const suc = await tx.get(sucursalesRef(act.licenseId).doc(act.branchUuid));
-      if (!suc.exists || suc.data().estado !== ESTADOS.ACTIVA) {
-        throw new ErrorSucursales('La sucursal de este código ya no está activa.', 'SUCURSAL_INACTIVA', 409);
-      }
-      tx.update(ref, {
+      const canje = await leerCanje(tx, codigo);
+      tx.update(canje.ref, {
         usado: true,
         usadoEn: now(),
         usadoPor: { deviceId: texto(equipo.deviceId, 80), hostname: texto(equipo.hostname, 120) },
       });
-      return {
-        licenseId: act.licenseId,
-        companyUuid: suc.data().companyUuid || lic.companyUuid,
-        sucursal: aVista(suc),
-        businessName: lic.businessName || lic.razon_social || '',
-      };
+      return identidadDe(canje);
     });
   }
 
-  return { resumen, fijarLimite, crear, editar, cambiarEstado, generarCodigo, canjearCodigo };
+  // Activación de un equipo (Sync API), todo en UNA transacción: consume el
+  // código, deja como 'reemplazado' al equipo que tenía la sucursal (una
+  // sucursal = un nodo que sincroniza; dos bases no pueden hablar por la
+  // misma sucursal) y registra el nuevo con el hash de su token.
+  async function activarEquipo(codigo, equipo = {}, { equipoId, tokenHash }) {
+    if (!equipoId || !/^[a-f0-9]{64}$/.test(String(tokenHash || ''))) throw new Error('Falta equipoId o tokenHash.');
+    return db.runTransaction(async (tx) => {
+      const canje = await leerCanje(tx, codigo);
+      // Una PC que ya tiene la licencia de una empresa no se activa con el
+      // código de otra (y el código no se gasta).
+      const licenciaDelEquipo = texto(equipo.licenseId, 160);
+      if (licenciaDelEquipo && licenciaDelEquipo !== canje.act.licenseId) {
+        throw new ErrorSucursales('Este código es de otra empresa. Esta PC tiene la licencia de otro negocio.', 'OTRA_EMPRESA', 409);
+      }
+      const sucursalKey = `${canje.act.licenseId}/${canje.suc.id}`;
+      const anteriores = await tx.get(db.collection(COL_EQUIPOS).where('sucursalKey', '==', sucursalKey));
+      const datosEquipo = {
+        deviceId: texto(equipo.deviceId, 80),
+        hostname: texto(equipo.hostname, 120),
+        serverId: texto(equipo.serverId, 40),
+        appVersion: texto(equipo.appVersion, 20),
+      };
+
+      tx.update(canje.ref, { usado: true, usadoEn: now(), usadoPor: { ...datosEquipo, equipoId } });
+      const reemplazados = [];
+      for (const doc of anteriores.docs) {
+        if (doc.data().estado !== ESTADOS_EQUIPO.ACTIVO) continue;
+        tx.update(doc.ref, { estado: ESTADOS_EQUIPO.REEMPLAZADO, reemplazadoEn: now(), reemplazadoPor: equipoId });
+        reemplazados.push(doc.id);
+      }
+      const identidad = identidadDe(canje);
+      tx.set(db.collection(COL_EQUIPOS).doc(equipoId), {
+        ...datosEquipo,
+        licenseId: identidad.licenseId,
+        companyUuid: identidad.companyUuid,
+        branchUuid: canje.suc.id,
+        sucursalKey,
+        tokenHash,
+        estado: ESTADOS_EQUIPO.ACTIVO,
+        activadoEn: now(),
+        ultimaConexion: now(),
+      });
+      tx.set(historialRef(identidad.licenseId).doc(), {
+        accion: 'equipo_activado',
+        actor: { tipo: 'equipo', uid: equipoId, nombre: datosEquipo.hostname },
+        detalle: { branchUuid: canje.suc.id, equipoId, reemplazados },
+        at: now(),
+      });
+      return { ...identidad, equipoId, reemplazados };
+    });
+  }
+
+  function vistaEquipo(doc) {
+    const d = doc.data();
+    return {
+      equipoId: doc.id,
+      branchUuid: d.branchUuid,
+      hostname: d.hostname || '',
+      appVersion: d.appVersion || '',
+      estado: d.estado,
+      activadoEn: aFecha(d.activadoEn)?.toISOString() || null,
+      ultimaConexion: aFecha(d.ultimaConexion)?.toISOString() || null,
+      latido: d.latido || null,
+    };
+  }
+
+  // Equipos de la empresa (nunca devuelve el hash del token).
+  async function listarEquipos(licenseId, actor) {
+    const lic = await leerLicencia({ get: (ref) => ref.get() }, licenseId);
+    autorizar(actor, ACCIONES.VER, licenseId, lic);
+    const snap = await db.collection(COL_EQUIPOS).where('licenseId', '==', String(licenseId)).get();
+    return snap.docs.map(vistaEquipo).sort((a, b) => String(b.activadoEn).localeCompare(String(a.activadoEn)));
+  }
+
+  // Revocar un equipo (robado, dañado, vendido): deja de poder sincronizar.
+  async function revocarEquipo(licenseId, equipoId, actor) {
+    return db.runTransaction(async (tx) => {
+      const lic = await leerLicencia(tx, licenseId);
+      autorizar(actor, ACCIONES.REVOCAR_EQUIPO, licenseId, lic);
+      const ref = db.collection(COL_EQUIPOS).doc(String(equipoId));
+      const snap = await tx.get(ref);
+      if (!snap.exists || snap.data().licenseId !== String(licenseId)) {
+        throw new ErrorSucursales('Equipo no encontrado.', 'NO_ENCONTRADO', 404);
+      }
+      if (snap.data().estado === ESTADOS_EQUIPO.REVOCADO) return { equipoId: snap.id, estado: ESTADOS_EQUIPO.REVOCADO };
+      tx.update(ref, { estado: ESTADOS_EQUIPO.REVOCADO, revocadoEn: now(), revocadoPor: quien(actor) });
+      registrarHistorial(tx, licenseId, 'equipo_revocado', actor, { equipoId: snap.id, branchUuid: snap.data().branchUuid });
+      return { equipoId: snap.id, estado: ESTADOS_EQUIPO.REVOCADO };
+    });
+  }
+
+  return {
+    resumen, fijarLimite, crear, editar, cambiarEstado, generarCodigo, canjearCodigo,
+    activarEquipo, listarEquipos, revocarEquipo,
+  };
 }
 
 module.exports = {
   createSucursalesCentral,
   ErrorSucursales,
   ESTADOS,
+  ESTADOS_EQUIPO,
   ACCIONES,
+  COL_EQUIPOS,
   LIMITE_MINIMO,
   LIMITE_MAXIMO,
   hashCodigo,

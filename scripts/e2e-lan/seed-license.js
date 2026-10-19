@@ -14,7 +14,7 @@ const { createLicenseService } = require(path.join(APP, 'server', 'licensing', '
       id: 'lic_e2e_colmado',
       businessName: 'Colmado E2E',
       status: 'active',
-      planCode: 'pro',
+      planCode: process.env.E2E_PLAN || 'pro',
       issuedAt: now,
       expiresAt: new Date(now.getTime() + 365 * 86400000),
       deviceLimit: 5,

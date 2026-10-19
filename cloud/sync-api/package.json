@@ -1,0 +1,34 @@
+{
+  "name": "tecno-caja-sync-api",
+  "version": "1.0.0",
+  "description": "Sync API de Tecno Caja (Cloud Run): activa la PC de cada sucursal con un código de un solo uso y le da su token. Multisucursal sin VPN ni llave de administrador en el POS.",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "vendor-sync": "node scripts/vendor-sync.js",
+    "start": "node index.js",
+    "dev": "npm run vendor-sync && node index.js",
+    "test": "npm run vendor-sync && jest"
+  },
+  "author": "Emilio",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "firebase-admin": "^14.2.0",
+    "helmet": "^8.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/test/**/*.test.js"
+    ]
+  }
+}
