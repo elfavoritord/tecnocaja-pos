@@ -2581,13 +2581,52 @@ const multisucursal = createMultisucursal({
     // Las pantallas abiertas recargan productos y usuarios (js/app.js).
     io.emit('multisucursal:cambios-aplicados', { at: new Date().toISOString() });
   },
-  // Una PC recién instalada que se enlaza toma la licencia de la empresa
-  // (TECNO_CAJA_LICENSE_UID ya cambió): validarla ya contra Firebase, así
-  // queda registrada como un equipo más de esa licencia.
-  alCambiarLicencia: () => secureLicenseService.resolveState({ force: true, allowRemote: true }),
+  // La principal publica su perfil para que una sucursal nueva arranque igual.
+  getPerfilNegocio: async () => {
+    const [cfg] = await query('SELECT business_type, currency, tax_rate, rnc FROM config WHERE id = 1 LIMIT 1');
+    return cfg ? { tipoNegocio: cfg.business_type, moneda: cfg.currency, itbis: Number(cfg.tax_rate), rnc: cfg.rnc } : null;
+  },
+});
+// Asistente inicial "Conectar como sucursal de una empresa": el dueño entra
+// con su cuenta y elige la sucursal (sin código).
+const asistenteSucursal = require('./server/multisucursal/asistente-sucursal').createAsistenteSucursal({
+  query,
+  withTransaction,
+  multisucursal,
+  getSetupStatus: () => getSetupStatus(),
+  crearHashClave: (clave) => createLocalPasswordHash(clave),
+  hayFormateoPendiente: () => hasPendingFactoryReset(runtime.userDataPath),
+  esMysql: () => isMysqlDeployment(),
+  prepararTablas: async () => {
+    await ensureBusinessRulesExtensions();
+    await ensureSuspendedSalesTable();
+    await ensureQuotationsTable();
+  },
+  guardarTerminal: (datos) => saveTerminalConfig({
+    terminalId: crypto.randomBytes(8).toString('hex'),
+    terminalName: 'Terminal Principal',
+    language: 'es',
+    linkedAt: new Date().toISOString(),
+    isMain: true,
+    ...datos,
+  }),
+  registrarLicencia: ({ sucursalDe, ...datos }) => registerPosLicenseInFirestore({ ...datos, adminEmail: null, extra: { sucursalDe } }),
+  prepararRedLan: async () => {
+    const perfil = await ensureLanMysqlAccessProfile();
+    return { enabled: true, restartRequired: Boolean(perfil.localManaged), dbPort: Number(perfil.port || process.env.DB_PORT || 3306) };
+  },
+  tiposDeNegocio: () => Object.keys(BUSINESS_TEMPLATES),
+  monedas: () => CURRENCY_OPTIONS.map((m) => m.value),
+  esEmpresaDeServicios: (tipo) => isServiceBusinessType(tipo),
+  limpiarCaches: () => {
+    clearPublicUsersListCache();
+    productsCache.flush();
+  },
+  auditar: (entrada) => writeAuditLog(entrada),
 });
 app.use('/api/multisucursal', createMultisucursalRouter({
   multisucursal,
+  asistente: asistenteSucursal,
   resolveRequestActorUser,
   isGlobalAdministratorUser,
   writeAuditLog,
@@ -8933,7 +8972,9 @@ app.post('/api/login/google/link', async (req, res) => {
 });
 
 // ─── Registro de licencia POS en Firestore ──────────────────────────────────
-async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEndsAt, businessStructureMode }) {
+// `extra`: campos propios de un caso (p. ej. `sucursalDe` en una PC de
+// sucursal, server/multisucursal/asistente-sucursal.js).
+async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEndsAt, businessStructureMode, extra = {} }) {
   try {
     const { getFirestore, buildPosBusinessKey } = require('./modules/firebase-admin');
     const db = getFirestore();
@@ -8976,6 +9017,7 @@ async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEn
       mobileAccessUrl:  publicUrl,
       mobileAccessConfigured: Boolean(publicUrl),
       createdAt:      FieldValue.serverTimestamp(),
+      ...extra,
     };
 
     // usuarios: record del negocio para el panel admin (merge para no pisar docs de usuarios)

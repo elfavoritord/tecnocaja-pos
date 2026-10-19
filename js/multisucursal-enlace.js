@@ -1,8 +1,9 @@
 /* ============================================================
    Tecno Caja — Sucursal conectada a Tecno Caja (multisucursal)
    Configuración → "Sucursal conectada a Tecno Caja".
-   - Escribir el código de equipo que generó Tecno Caja o el
-     contador al crear la sucursal → esta PC queda enlazada.
+   - El dueño del negocio entra con su cuenta de Tecno Caja y elige
+     qué sucursal es esta PC → queda enlazada (el código de equipo
+     de Tecno Caja o del contador sigue sirviendo, para soporte).
    - Estado del enlace, sincronizar ahora y desvincular.
    - Sincronización con las demás sucursales: pendientes, errores,
      conflictos (vincular), progreso de descarga, rangos NCF que
@@ -12,14 +13,14 @@
    Solo administrador general (el servidor lo exige).
    ============================================================ */
 
-/* global showToast, showDeleteConfirm, getTecnoCajaAuthToken, DB */
+/* global showToast, showDeleteConfirm, getTecnoCajaAuthToken, DB, ensureFirebaseWebAuthLoaded */
 
 (function () {
   'use strict';
 
   const MENSAJES_ESTADO = {
-    reemplazado: 'Otra PC se conectó como esta sucursal. Esta quedó fuera de la sincronización. Si es un error, pide un código nuevo.',
-    revocado: 'Tecno Caja desconectó este equipo. Pide un código nuevo para volver a conectarlo.',
+    reemplazado: 'Otra PC se conectó como esta sucursal. Esta quedó fuera de la sincronización. Si es un error, vuelve a conectarla con la cuenta del dueño.',
+    revocado: 'Tecno Caja desconectó este equipo. Para volver a conectarlo, entra con la cuenta del dueño.',
     sucursal_inactiva: 'La sucursal está desactivada en Tecno Caja. Se vuelve a conectar sola cuando la reactiven.',
     licencia_inactiva: 'La licencia de la empresa no está activa. Se vuelve a conectar sola cuando se reactive.',
   };
@@ -87,6 +88,71 @@
         <button type="button" class="btn-primary" data-ms="activar" style="margin-top:.6rem">${textoBoton}</button>
         <small class="helper-text">Lo genera Tecno Caja o tu contador al crear la sucursal. Sirve una sola vez y vence en 24 horas.</small>
       </div>`;
+  }
+
+  // Conectar con la cuenta del dueño del negocio (sin código): entra, elige
+  // qué sucursal es esta PC y listo. El código queda como respaldo para soporte.
+  let cuentaDueno = null;
+  let empresasDueno = [];
+
+  function formularioDueno(textoBoton) {
+    return `
+      <div class="form-group span-full">
+        <label for="cfg-ms-email">Correo del dueño del negocio</label>
+        <input id="cfg-ms-email" class="form-input" type="email" autocomplete="email" style="max-width:320px">
+        <label for="cfg-ms-clave" style="margin-top:.5rem">Contraseña</label>
+        <input id="cfg-ms-clave" class="form-input" type="password" autocomplete="current-password" style="max-width:320px">
+        <div style="display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.6rem">
+          <button type="button" class="btn-primary" data-ms="dueno-entrar">${textoBoton}</button>
+          <button type="button" class="btn-secondary" data-ms="dueno-google">El dueño entra con Google</button>
+        </div>
+        <small class="helper-text">La misma cuenta de Tecno Caja del dueño (la de la app de reportes). Después eliges qué sucursal es esta PC.</small>
+      </div>
+      <div id="cfg-ms-sucursales" class="span-full"></div>
+      <details class="form-group span-full">
+        <summary style="cursor:pointer">Tengo un código de equipo de Tecno Caja</summary>
+        ${formularioCodigo('Conectar con el código')}
+      </details>`;
+  }
+
+  function listaSucursalesDueno() {
+    const partes = empresasDueno.map((e) => `
+      <div class="form-group span-full">
+        <label style="font-weight:600">${esc(e.nombre)}${e.activa === false ? ' — licencia no activa' : ''}</label>
+        ${(e.sucursales || []).map((s) => {
+          const disponible = e.activa !== false && s.estado === 'activa';
+          let nota = s.pc ? `ya tiene una PC (${s.pc.hostname || 'sin nombre'}); esa deja de sincronizar` : 'todavía sin PC';
+          if (s.estado !== 'activa') nota = 'desactivada';
+          return `<label style="display:flex;gap:.5rem;align-items:center;font-weight:400;margin:.3rem 0;width:auto">
+            <input type="radio" name="cfg-ms-sucursal" style="width:auto;height:auto;margin:0;flex:none" value="${esc(s.branchUuid)}"
+              data-lic="${esc(e.licenseId)}" ${disponible ? '' : 'disabled'}>
+            <span>${esc(s.nombre)}${s.esPrincipal ? ' (principal)' : ''} <small class="helper-text" style="display:inline;margin:0">— ${esc(nota)}</small></span>
+          </label>`;
+        }).join('')}
+      </div>`).join('');
+    return `${partes}
+      <small class="helper-text">Si en esta PC ya está tu negocio con sus ventas, elige la principal.</small>
+      <button type="button" class="btn-primary" data-ms="dueno-activar" style="margin-top:.5rem">Conectar esta PC a la sucursal elegida</button>`;
+  }
+
+  async function entrarComoDueno(conGoogle) {
+    if (typeof ensureFirebaseWebAuthLoaded === 'function') await ensureFirebaseWebAuthLoaded();
+    const fb = window.firebaseWebAuth;
+    if (!fb?.signInWithEmail) throw new Error('Para conectar esta PC hace falta Internet.');
+    let cuenta;
+    if (conGoogle) {
+      cuenta = await fb.signInWithGoogle('es');
+    } else {
+      const email = String(el('cfg-ms-email')?.value || '').trim();
+      const clave = String(el('cfg-ms-clave')?.value || '');
+      if (!email || !clave) throw new Error('Escribe el correo y la contraseña del dueño del negocio.');
+      cuenta = await fb.signInWithEmail(email, clave);
+    }
+    const r = await api('POST', '/dueno/empresas', { idToken: cuenta.idToken });
+    cuentaDueno = cuenta;
+    empresasDueno = r.empresas || [];
+    const destino = el('cfg-ms-sucursales');
+    if (destino) destino.innerHTML = listaSucursalesDueno();
   }
 
   // Con la PC enlazada, las sucursales no se crean desde el POS.
@@ -203,7 +269,7 @@
     if (!e.configurado) {
       html = '<p class="helper-text">El servicio central de sucursales está apagado en esta PC (TECNO_CAJA_SYNC_URL=off).</p>';
     } else if (!e.tieneToken) {
-      html = `<p class="helper-text" style="margin:.25rem 0 .75rem">Si esta PC es una sucursal de una empresa con varias sucursales, conéctala con el código de equipo. Las ventas y la caja siguen funcionando igual con o sin Internet.</p>${formularioCodigo('Conectar esta PC')}`;
+      html = `<p class="helper-text" style="margin:.25rem 0 .75rem">Si esta PC es una sucursal de una empresa con varias sucursales, conéctala con la cuenta del dueño del negocio. Las ventas y la caja siguen funcionando igual con o sin Internet.</p>${formularioDueno('Entrar')}`;
     } else {
       const aviso = MENSAJES_ESTADO[e.estado];
       const definitivo = e.estado === 'reemplazado' || e.estado === 'revocado';
@@ -214,7 +280,7 @@
           ${aviso ? `<div class="config-lock-note" style="margin-top:.6rem">${esc(aviso)}</div>` : ''}
           ${e.ultimoError && !aviso ? `<small class="helper-text" style="color:var(--warning,#f59e0b)">${esc(e.ultimoError.mensaje)} (${esc(fecha(e.ultimoError.at))})</small>` : ''}
         </div>
-        ${definitivo ? formularioCodigo('Conectar con el código nuevo') : ''}
+        ${definitivo ? formularioDueno('Volver a conectar') : ''}
         ${e.vinculado ? bloqueSincronizacion(sincronizacion) : ''}
         ${e.vinculado && e.sucursal?.esPrincipal ? bloquePrincipal() : ''}
         <div class="form-group" style="display:flex;gap:.5rem;flex-wrap:wrap">
@@ -236,17 +302,32 @@
     if (ocupado) return;
     try {
       ocupado = true;
-      if (nombre === 'activar') {
+      if (nombre === 'dueno-entrar' || nombre === 'dueno-google') {
+        // Solo muestra las sucursales: no recarga la sección (borraría la lista).
+        await entrarComoDueno(nombre === 'dueno-google');
+        return;
+      }
+      if (nombre === 'dueno-activar') {
+        const elegida = document.querySelector('input[name="cfg-ms-sucursal"]:checked');
+        if (!elegida || !cuentaDueno) { avisar('Elige qué sucursal es esta PC.', 'warning'); return; }
+        const r = await api('POST', '/dueno/activar', {
+          idToken: cuentaDueno.idToken, licenseId: elegida.getAttribute('data-lic'), branchUuid: elegida.value,
+        });
+        cuentaDueno = null;
+        empresasDueno = [];
+        try { await window.firebaseWebAuth?.signOut?.(); } catch (_) { /* la sesión web no hace falta más */ }
+        avisar(`Listo: esta PC es la sucursal ${r.enlace?.sucursal?.nombre || ''}. Descargando el catálogo y los usuarios de la empresa…`, 'success');
+      } else if (nombre === 'activar') {
         const codigo = el('cfg-ms-codigo')?.value || '';
         if (codigo.replace(/[^A-Z0-9]/gi, '').length !== 8) { avisar('El código tiene 8 caracteres (XXXX-XXXX).', 'warning'); return; }
         const r = await api('POST', '/activar', { codigo });
-        avisar(`Listo: esta PC es la sucursal ${r.enlace?.sucursal?.nombre || ''}${r.enlace?.licenciaAdoptada ? ' y ahora usa la licencia de la empresa' : ''}. Descargando el catálogo y los usuarios de la empresa…`, 'success');
+        avisar(`Listo: esta PC es la sucursal ${r.enlace?.sucursal?.nombre || ''}. Descargando el catálogo y los usuarios de la empresa…`, 'success');
       } else if (nombre === 'sincronizar') {
         await api('POST', '/sincronizar');
         avisar('Sincronizando con Tecno Caja…', 'success');
       } else if (nombre === 'desvincular') {
         const ok = typeof showDeleteConfirm === 'function'
-          ? await showDeleteConfirm('¿Desvincular esta PC de Tecno Caja? Deja de sincronizar hasta que se conecte con un código nuevo. No se borra ninguna venta.', { confirmText: 'Desvincular' })
+          ? await showDeleteConfirm('¿Desvincular esta PC de Tecno Caja? Deja de sincronizar hasta que se vuelva a conectar con la cuenta del dueño. No se borra ninguna venta.', { confirmText: 'Desvincular' })
           : window.confirm('¿Desvincular esta PC de Tecno Caja?');
         if (!ok) return;
         await api('POST', '/desvincular');

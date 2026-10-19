@@ -15,7 +15,8 @@
  *   - contador: SOLO en las empresas que tiene asignadas (licencias.contadorId)
  *     crea y edita los datos de sucursales y genera códigos, dentro del
  *     límite. No cambia el límite ni activa/desactiva.
- *   - El dueño del negocio no crea sucursales.
+ *   - El dueño del negocio no crea sucursales. Sí conecta una PC a una de
+ *     ellas entrando con su cuenta (empresasDelDueno / activarEquipoDueno).
  *
  * Firestore:
  *   licencias/{licenseId}                     companyUuid, maxSucursales
@@ -84,6 +85,10 @@ function normalizarCodigoSucursal(valor) {
 
 function normalizarCodigoActivacion(valor) {
   return String(valor || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+function normalizarCorreo(valor) {
+  return String(valor || '').trim().toLowerCase();
 }
 
 function hashCodigo(codigo) {
@@ -365,8 +370,20 @@ function createSucursalesCentral({
     throw new ErrorSucursales('No se pudo generar un código, intenta de nuevo.', 'COLISION', 503);
   }
 
-  // Lecturas y validaciones de un canje (dentro de una transacción, antes de
-  // cualquier escritura).
+  // La licencia de la empresa y la sucursal a la que se une un equipo, ya
+  // validadas (dentro de una transacción, antes de cualquier escritura).
+  async function leerDestino(tx, licenseId, branchUuid, mensajeInactiva = 'La sucursal ya no está activa.') {
+    const lic = await leerLicencia(tx, licenseId);
+    if (['suspended', 'cancelled'].includes(lic.status)) {
+      throw new ErrorSucursales('La licencia de la empresa no está activa.', 'LICENCIA_INACTIVA', 403);
+    }
+    const suc = await tx.get(sucursalesRef(licenseId).doc(String(branchUuid || '')));
+    if (!suc.exists || suc.data().estado !== ESTADOS.ACTIVA) {
+      throw new ErrorSucursales(mensajeInactiva, 'SUCURSAL_INACTIVA', 409);
+    }
+    return { licenseId: String(licenseId), lic, suc };
+  }
+
   async function leerCanje(tx, codigo) {
     const ref = db.collection(COL_ACTIVACIONES).doc(hashCodigo(codigo));
     const snap = await tx.get(ref);
@@ -374,20 +391,13 @@ function createSucursalesCentral({
     const act = snap.data();
     if (act.usado) throw new ErrorSucursales('Este código ya se usó. Pide uno nuevo.', 'CODIGO_USADO', 409);
     if (aFecha(act.venceEn) <= now()) throw new ErrorSucursales('Este código venció. Pide uno nuevo.', 'CODIGO_VENCIDO', 410);
-    const lic = await leerLicencia(tx, act.licenseId);
-    if (['suspended', 'cancelled'].includes(lic.status)) {
-      throw new ErrorSucursales('La licencia de la empresa no está activa.', 'LICENCIA_INACTIVA', 403);
-    }
-    const suc = await tx.get(sucursalesRef(act.licenseId).doc(act.branchUuid));
-    if (!suc.exists || suc.data().estado !== ESTADOS.ACTIVA) {
-      throw new ErrorSucursales('La sucursal de este código ya no está activa.', 'SUCURSAL_INACTIVA', 409);
-    }
-    return { ref, act, lic, suc };
+    const destino = await leerDestino(tx, act.licenseId, act.branchUuid, 'La sucursal de este código ya no está activa.');
+    return { ref, act, ...destino };
   }
 
-  function identidadDe({ act, lic, suc }) {
+  function identidadDe({ licenseId, lic, suc }) {
     return {
-      licenseId: act.licenseId,
+      licenseId,
       companyUuid: suc.data().companyUuid || lic.companyUuid,
       sucursal: aVista(suc),
       businessName: lic.businessName || lic.razon_social || '',
@@ -407,77 +417,149 @@ function createSucursalesCentral({
     });
   }
 
-  // Activación de un equipo (Sync API), todo en UNA transacción: consume el
-  // código, deja como 'reemplazado' al equipo que tenía la sucursal (una
-  // sucursal = un nodo que sincroniza; dos bases no pueden hablar por la
-  // misma sucursal) y registra el nuevo con el hash de su token.
-  async function activarEquipo(codigo, equipo = {}, { equipoId, tokenHash }) {
+  // Lo que comparten la activación con código y la del dueño, dentro de UNA
+  // transacción: deja como 'reemplazado' al equipo que tenía la sucursal (una
+  // sucursal = un nodo que sincroniza; dos bases no pueden hablar por la misma
+  // sucursal) y registra el nuevo con el hash de su token. `antesDeEscribir`
+  // agrega las escrituras propias de cada camino (gastar el código).
+  async function registrarEquipo(tx, destino, equipo, { equipoId, tokenHash }, { actor = null, antesDeEscribir = () => {} } = {}) {
     if (!equipoId || !/^[a-f0-9]{64}$/.test(String(tokenHash || ''))) throw new Error('Falta equipoId o tokenHash.');
+    const { licenseId, lic, suc } = destino;
+    // Cada PC de sucursal conserva SU licencia (la que le dio el asistente
+    // inicial): lo que la ata a la empresa es este enlace, no la licencia.
+    // Así las sincronizaciones viejas de la nube (atadas a la licencia y a
+    // los ids locales) nunca pisan los datos de la principal.
+    // Lo que sí se frena: una PC que ya vende para OTRO negocio (sus datos se
+    // mezclarían). Pasa si está recién instalada (sin ventas) o si ya fue de
+    // esta misma empresa (por ejemplo, se vuelve a enlazar tras revocarla).
+    // Al rechazar no se escribe nada (el código no se gasta).
+    const licenciaDelEquipo = texto(equipo.licenseId, 160);
+    const otraLicencia = Boolean(licenciaDelEquipo) && licenciaDelEquipo !== licenseId;
+    const empresaCentral = suc.data().companyUuid || lic.companyUuid || null;
+    const mismaEmpresa = Boolean(empresaCentral) && texto(equipo.companyUuid, 36) === empresaCentral;
+    if (otraLicencia && !mismaEmpresa) {
+      const ventas = Number(equipo.ventas);
+      if (!Number.isFinite(ventas) || ventas > 0) {
+        throw new ErrorSucursales(
+          'Esta PC ya tiene ventas de otro negocio: no se puede usar como sucursal de esta empresa. Instala Tecno Caja limpio en ella o pide ayuda a Tecno Caja.',
+          'OTRA_EMPRESA', 409
+        );
+      }
+    }
+    const sucursalKey = `${licenseId}/${suc.id}`;
+    const anteriores = await tx.get(db.collection(COL_EQUIPOS).where('sucursalKey', '==', sucursalKey));
+    const datosEquipo = {
+      deviceId: texto(equipo.deviceId, 80),
+      hostname: texto(equipo.hostname, 120),
+      serverId: texto(equipo.serverId, 40),
+      appVersion: texto(equipo.appVersion, 20),
+    };
+
+    antesDeEscribir({ ...datosEquipo, equipoId });
+    const reemplazados = [];
+    for (const doc of anteriores.docs) {
+      if (doc.data().estado !== ESTADOS_EQUIPO.ACTIVO) continue;
+      tx.update(doc.ref, { estado: ESTADOS_EQUIPO.REEMPLAZADO, reemplazadoEn: now(), reemplazadoPor: equipoId });
+      reemplazados.push(doc.id);
+    }
+    const identidad = identidadDe(destino);
+    tx.set(db.collection(COL_EQUIPOS).doc(equipoId), {
+      ...datosEquipo,
+      licenseId: identidad.licenseId,
+      companyUuid: identidad.companyUuid,
+      branchUuid: suc.id,
+      sucursalKey,
+      tokenHash,
+      estado: ESTADOS_EQUIPO.ACTIVO,
+      activadoEn: now(),
+      ultimaConexion: now(),
+      ...(actor ? { activadoPor: actor } : {}),
+    });
+    tx.set(historialRef(identidad.licenseId).doc(), {
+      accion: 'equipo_activado',
+      actor: { tipo: 'equipo', uid: equipoId, nombre: datosEquipo.hostname },
+      detalle: {
+        branchUuid: suc.id, equipoId, reemplazados,
+        ...(otraLicencia ? { licenciaDelEquipo } : {}),
+        ...(actor ? { autorizadoPor: actor } : {}),
+      },
+      at: now(),
+    });
+    return { ...identidad, equipoId, reemplazados };
+  }
+
+  // Activación con el código de equipo que generó Emilio o el contador.
+  async function activarEquipo(codigo, equipo = {}, credencial = {}) {
     return db.runTransaction(async (tx) => {
       const canje = await leerCanje(tx, codigo);
-      // Una PC con la licencia de otro negocio:
-      //  - recién instalada (sin ventas): se une a la empresa y toma su
-      //    licencia (el asistente inicial le dio una de prueba al azar);
-      //  - con ventas: no, sus datos se mezclarían con los de esta empresa.
-      // En los dos casos de rechazo el código no se gasta.
-      const licenciaDelEquipo = texto(equipo.licenseId, 160);
-      const otraLicencia = Boolean(licenciaDelEquipo) && licenciaDelEquipo !== canje.act.licenseId;
-      if (otraLicencia) {
-        const ventas = Number(equipo.ventas);
-        if (!Number.isFinite(ventas) || ventas > 0) {
-          throw new ErrorSucursales(
-            'Esta PC ya tiene ventas de otro negocio: no se puede usar como sucursal de esta empresa. Instala Tecno Caja limpio en ella o pide ayuda a Tecno Caja.',
-            'OTRA_EMPRESA', 409
-          );
-        }
-        // La PC pasa a ser un equipo más de la licencia de la empresa: que haya
-        // cupo, o la licencia la bloquearía apenas se una.
-        const limiteEquipos = Number(canje.lic.deviceLimit || 0);
-        const devs = canje.lic.devices || {};
-        const registrados = Array.isArray(devs) ? devs.map((d) => String(d?.deviceId || d?.id || '')) : Object.keys(devs);
-        const deviceId = texto(equipo.deviceId, 80);
-        if (limiteEquipos > 0 && !(deviceId && registrados.includes(deviceId)) && registrados.length >= limiteEquipos) {
-          throw new ErrorSucursales(
-            `La licencia de la empresa permite ${limiteEquipos} equipo(s) y ya los tiene todos. Pide a Tecno Caja que amplíe el límite de equipos.`,
-            'LIMITE_EQUIPOS', 409
-          );
-        }
-      }
-      const sucursalKey = `${canje.act.licenseId}/${canje.suc.id}`;
-      const anteriores = await tx.get(db.collection(COL_EQUIPOS).where('sucursalKey', '==', sucursalKey));
-      const datosEquipo = {
-        deviceId: texto(equipo.deviceId, 80),
-        hostname: texto(equipo.hostname, 120),
-        serverId: texto(equipo.serverId, 40),
-        appVersion: texto(equipo.appVersion, 20),
-      };
+      return registrarEquipo(tx, canje, equipo, credencial, {
+        antesDeEscribir: (usadoPor) => tx.update(canje.ref, { usado: true, usadoEn: now(), usadoPor }),
+      });
+    });
+  }
 
-      tx.update(canje.ref, { usado: true, usadoEn: now(), usadoPor: { ...datosEquipo, equipoId } });
-      const reemplazados = [];
-      for (const doc of anteriores.docs) {
-        if (doc.data().estado !== ESTADOS_EQUIPO.ACTIVO) continue;
-        tx.update(doc.ref, { estado: ESTADOS_EQUIPO.REEMPLAZADO, reemplazadoEn: now(), reemplazadoPor: equipoId });
-        reemplazados.push(doc.id);
+  // ── Entrar con la cuenta del dueño (sin código) ───────────────────────────
+  // El dueño es el correo de la licencia de la empresa (ownerEmail o email).
+  // La Sync API ya comprobó su contraseña con Firebase Auth antes de llamar
+  // aquí: `dueno` es { uid, email } del token verificado.
+  function esDueno(lic, email) {
+    const correo = normalizarCorreo(email);
+    return Boolean(correo) && [lic?.ownerEmail, lic?.email].some((v) => normalizarCorreo(v) === correo);
+  }
+
+  // Las empresas con sucursales de este dueño, con la PC que tiene cada
+  // sucursal (para avisar que se reemplaza). Sin sucursales creadas por Emilio
+  // o el contador, la empresa no aparece (no hay a qué unirse).
+  async function empresasDelDueno(email) {
+    const correo = normalizarCorreo(email);
+    if (!correo) return [];
+    const docs = new Map();
+    for (const campo of ['ownerEmail', 'email']) {
+      const snap = await db.collection(COL_LICENCIAS).where(campo, '==', correo).limit(25).get();
+      snap.docs.forEach((d) => docs.set(d.id, d));
+    }
+    const empresas = [];
+    for (const doc of docs.values()) {
+      const lic = doc.data();
+      if (lic.deleted || !lic.companyUuid) continue;
+      const [sucursales, equipos] = await Promise.all([
+        sucursalesRef(doc.id).get(),
+        db.collection(COL_EQUIPOS).where('licenseId', '==', doc.id).get(),
+      ]);
+      const pcDe = new Map();
+      equipos.docs.forEach((e) => {
+        const d = e.data();
+        if (d.estado === ESTADOS_EQUIPO.ACTIVO) {
+          pcDe.set(d.branchUuid, { hostname: d.hostname || '', ultimaConexion: aFecha(d.ultimaConexion)?.toISOString() || null });
+        }
+      });
+      empresas.push({
+        licenseId: doc.id,
+        companyUuid: lic.companyUuid,
+        businessName: lic.businessName || lic.razon_social || '',
+        activa: !['suspended', 'cancelled'].includes(lic.status),
+        perfilNegocio: lic.perfilNegocio || null,
+        sucursales: sucursales.docs.map(aVista)
+          .sort((a, b) => (a.esPrincipal !== b.esPrincipal ? (a.esPrincipal ? -1 : 1) : String(a.nombre).localeCompare(String(b.nombre))))
+          .map((s) => ({ ...s, pc: pcDe.get(s.branchUuid) || null })),
+      });
+    }
+    return empresas.sort((a, b) => a.businessName.localeCompare(b.businessName));
+  }
+
+  async function activarEquipoDueno(dueno, licenseId, branchUuid, equipo = {}, credencial = {}) {
+    if (!dueno?.email) throw new ErrorSucursales('Entra con la cuenta del dueño del negocio.', 'SIN_PERMISO', 403);
+    return db.runTransaction(async (tx) => {
+      const lic = await leerLicencia(tx, licenseId);
+      // Primero el permiso: a quien no es el dueño no se le dice nada más.
+      if (!esDueno(lic, dueno.email)) {
+        throw new ErrorSucursales('Esta cuenta no es la dueña de esa empresa.', 'SIN_PERMISO', 403);
       }
-      const identidad = identidadDe(canje);
-      tx.set(db.collection(COL_EQUIPOS).doc(equipoId), {
-        ...datosEquipo,
-        licenseId: identidad.licenseId,
-        companyUuid: identidad.companyUuid,
-        branchUuid: canje.suc.id,
-        sucursalKey,
-        tokenHash,
-        estado: ESTADOS_EQUIPO.ACTIVO,
-        activadoEn: now(),
-        ultimaConexion: now(),
+      const destino = await leerDestino(tx, licenseId, branchUuid);
+      const r = await registrarEquipo(tx, destino, equipo, credencial, {
+        actor: { tipo: 'dueno', uid: texto(dueno.uid, 128), nombre: normalizarCorreo(dueno.email) },
       });
-      tx.set(historialRef(identidad.licenseId).doc(), {
-        accion: 'equipo_activado',
-        actor: { tipo: 'equipo', uid: equipoId, nombre: datosEquipo.hostname },
-        detalle: { branchUuid: canje.suc.id, equipoId, reemplazados, ...(otraLicencia ? { licenciaAnterior: licenciaDelEquipo } : {}) },
-        at: now(),
-      });
-      return { ...identidad, equipoId, reemplazados, cambiaLicencia: otraLicencia };
+      return { ...r, perfilNegocio: lic.perfilNegocio || null };
     });
   }
 
@@ -524,7 +606,7 @@ function createSucursalesCentral({
   let sincronizacion = null;
   return {
     resumen, fijarLimite, crear, editar, cambiarEstado, generarCodigo, canjearCodigo,
-    activarEquipo, listarEquipos, revocarEquipo,
+    activarEquipo, empresasDelDueno, activarEquipoDueno, listarEquipos, revocarEquipo,
     // Rangos NCF y resumen de ventas (sincronizacion-central.js), con la misma
     // base. Se carga aquí adentro porque ese módulo a su vez usa este.
     get sincronizacion() {

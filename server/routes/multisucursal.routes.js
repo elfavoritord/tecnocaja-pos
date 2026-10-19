@@ -5,6 +5,11 @@
  *
  *   GET  /api/multisucursal/estado        identidad (uuid), migraciones, bandeja y enlace con la central
  *   GET  /api/multisucursal/indicador     estado corto para la barra (cualquier usuario con sesión)
+ *   POST /api/multisucursal/asistente/dueno   { idToken } → empresas y sucursales del dueño   (PC sin configurar)
+ *   POST /api/multisucursal/asistente/unirse  { idToken, licenseId, branchUuid, nombre, email, clave, claveRed? }
+ *                                         → configura esta PC nueva como esa sucursal          (PC sin configurar)
+ *   POST /api/multisucursal/dueno/empresas    { idToken } → lo mismo, desde Configuración
+ *   POST /api/multisucursal/dueno/activar     { idToken, licenseId, branchUuid } → enlaza esta PC
  *   POST /api/multisucursal/activar       { codigo } → enlaza esta PC como la sucursal del código
  *                                         (código de equipo generado por Emilio o el contador)
  *   POST /api/multisucursal/sincronizar   identidad + latido + ciclo de sincronización (?esperar=1 lo espera)
@@ -18,14 +23,37 @@
  *   POST /api/multisucursal/catalogo/publicar     publica el catálogo activo (solo la principal)
  *   POST /api/multisucursal/precio-sucursales     { productId, precio, sucursales[] } (solo la principal)
  *
- * Todo menos el indicador: administrador general. Activar y desvincular solo
- * desde la PC principal de la sucursal (es la que sincroniza).
+ * Todo menos el asistente y el indicador: administrador general. Activar y
+ * desvincular solo desde la PC principal de la sucursal (es la que sincroniza).
  */
 
 const express = require('express');
 
-module.exports = function createMultisucursalRoutes({ multisucursal, resolveRequestActorUser, isGlobalAdministratorUser, writeAuditLog = async () => {} }) {
+module.exports = function createMultisucursalRoutes({
+  multisucursal, asistente = null, resolveRequestActorUser, isGlobalAdministratorUser, writeAuditLog = async () => {},
+}) {
   const router = express.Router();
+
+  const responderSinSesion = (fn) => async (req, res) => {
+    try {
+      res.json({ ok: true, ...(await fn(req)) });
+    } catch (error) {
+      res.status(Number(error.statusCode) || 500).json({ ok: false, error: error.message, code: error.code || null });
+    }
+  };
+
+  // Asistente inicial de una PC nueva ("Conectar como sucursal de una
+  // empresa", server/multisucursal/asistente-sucursal.js): el dueño entra con
+  // su cuenta, elige la sucursal y la PC queda configurada como ella. Sin
+  // sesión (la PC todavía no tiene usuarios): el asistente lo permite solo
+  // mientras la PC está sin configurar.
+  if (asistente) {
+    router.post('/asistente/dueno', responderSinSesion((req) => asistente.empresasDelDueno(req.body?.idToken)));
+    router.post('/asistente/unirse', responderSinSesion((req) => asistente.unirse(req.body || {})));
+  }
+
+  // Configuración de una PC ya configurada: las mismas dos llamadas, con la
+  // sesión del administrador general (ver más abajo).
 
   async function conSesion(req, res, next) {
     try {
@@ -95,6 +123,21 @@ module.exports = function createMultisucursalRoutes({ multisucursal, resolveRequ
     // Primera sincronización ya (catálogo, usuarios y rangos de la sucursal).
     sync().iniciar({ primeraEsperaMs: 1000 });
     return { enlace };
+  }));
+
+  // Conectar con la cuenta del dueño (sin código): primero sus sucursales…
+  router.post('/dueno/empresas', soloAdministradorGeneral, soloPrincipal, responder(async (req) => {
+    const r = await multisucursal.enlace.empresasDelDueno(req.body?.idToken);
+    return { dueno: r.dueno || null, empresas: r.empresas || [] };
+  }));
+
+  // …y después esta PC como la sucursal que eligió.
+  router.post('/dueno/activar', soloAdministradorGeneral, soloPrincipal, responder(async (req) => {
+    const b = req.body || {};
+    const r = await multisucursal.enlace.activarConDueno({ idToken: b.idToken, licenseId: b.licenseId, branchUuid: b.branchUuid });
+    await auditar(req, 'Equipo enlazado a la central (cuenta del dueño)', `${r.empresa?.nombre || ''} · ${r.sucursal?.nombre || ''}`);
+    sync().iniciar({ primeraEsperaMs: 1000 });
+    return { enlace: await multisucursal.enlace.estado() };
   }));
 
   router.post('/sincronizar', soloAdministradorGeneral, responder(async (req) => {

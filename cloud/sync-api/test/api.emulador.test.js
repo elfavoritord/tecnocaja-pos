@@ -78,24 +78,19 @@ describir('Sync API: activar equipos, identidad y latido', () => {
     await activar(s.codigo, { ...PC, licenseId: LIC }).expect(201);
   });
 
-  test('PC recién instalada (sin ventas) con otra licencia: se une y toma la de la empresa', async () => {
+  test('PC con su propia licencia: se une si está recién instalada o si ya era de esta empresa', async () => {
     const s = await sucursalConCodigo();
     const con = await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 12 }).expect(409);
     expect(con.body.code).toBe('OTRA_EMPRESA');
     const r = await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 0 }).expect(201);
-    expect(r.body).toMatchObject({ cambiaLicencia: true, empresa: { licenseId: LIC } });
-    const misma = await sucursalConCodigo('Sur');
-    const r2 = await activar(misma.codigo, { ...PC, deviceId: 'npd_otra', licenseId: LIC, ventas: 300 }).expect(201);
-    expect(r2.body.cambiaLicencia).toBe(false);
-  });
-
-  test('sin cupo de equipos en la licencia de la empresa, la PC nueva no se une', async () => {
-    await db.collection('licencias').doc(LIC).set({ deviceLimit: 1, devices: { npd_principal: { deviceId: 'npd_principal' } } }, { merge: true });
-    const s = await sucursalConCodigo();
-    const r = await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 0 }).expect(409);
-    expect(r.body.code).toBe('LIMITE_EQUIPOS');
-    await db.collection('licencias').doc(LIC).set({ deviceLimit: 2 }, { merge: true });
-    await activar(s.codigo, { ...PC, licenseId: 'pos_0123456789abcdef', ventas: 0 }).expect(201);
+    expect(r.body).toMatchObject({ empresa: { licenseId: LIC } });
+    expect(r.body).not.toHaveProperty('cambiaLicencia');
+    // Ya enlazada antes a esta empresa (mismo companyUuid) y con ventas: vale.
+    const sur = await sucursalConCodigo('Sur');
+    await activar(sur.codigo, { ...PC, deviceId: 'npd_otra', licenseId: 'pos_0123456789abcdef', ventas: 300, companyUuid: s.companyUuid }).expect(201);
+    // Y la PC que tiene la licencia de la empresa (la principal), también.
+    const { codigo } = await central.generarCodigo(LIC, s.branchUuid, CONTADORA);
+    await activar(codigo, { ...PC, licenseId: LIC, ventas: 5000 }).expect(201);
   });
 
   test('identidad con token; sin token o con token falso, no', async () => {
@@ -177,6 +172,97 @@ describir('Sync API: activar equipos, identidad y latido', () => {
     for (let i = 0; i < 10; i += 1) await activar(`AAAA-AA${String(i).padStart(2, '2')}`).expect(404);
     const r = await activar('BBBB-BBBB').expect(429);
     expect(r.body.code).toBe('DEMASIADOS_INTENTOS');
+  });
+
+  describe('con la cuenta del dueño (sin código)', () => {
+    const DUENO = 'dueno@bravo.test';
+    const tokenDe = (email, haceMin = 1) => `prueba:${email}:${reloj.getTime() - haceMin * 60000}`;
+    const empresas = (token) => request(app).post('/v1/acceso/dueno').send({ idToken: token });
+    const unir = (token, branchUuid, equipo = PC, licenseId = LIC) => request(app).post('/v1/equipos/activar-dueno').send({ idToken: token, licenseId, branchUuid, equipo });
+
+    beforeEach(async () => {
+      // Firebase Auth falso: "prueba:<correo>:<cuándo inició sesión>".
+      app = createApp({
+        db, now: () => reloj, limites: { activarMax: 10, duenoMax: 50 },
+        verificarIdToken: async (t) => {
+          const [tipo, email, ms] = String(t).split(':');
+          if (tipo !== 'prueba') throw new Error('token inválido');
+          return { uid: `uid-${email}`, email, auth_time: Math.floor(Number(ms) / 1000) };
+        },
+      });
+      await db.collection('licencias').doc(LIC).set({ ownerEmail: DUENO, email: DUENO }, { merge: true });
+    });
+
+    test('lista las sucursales de su empresa con la PC que tiene cada una', async () => {
+      const centro = await central.crear(LIC, { nombre: 'Centro', codigo: 'CEN' }, CONTADORA);
+      const norte = await sucursalConCodigo('Norte');
+      await activar(norte.codigo).expect(201);
+      // Otra empresa con el mismo dueño pero sin sucursales: no aparece.
+      await db.collection('licencias').doc('pos_sin_sucursales').set({ businessName: 'Otro', ownerEmail: DUENO, status: 'active' });
+
+      const r = await empresas(tokenDe(DUENO)).expect(200);
+      expect(r.headers['cache-control']).toBe('no-store');
+      expect(r.body.empresas).toHaveLength(1);
+      expect(r.body.empresas[0]).toMatchObject({ licenseId: LIC, nombre: 'Supermercado Bravo', activa: true });
+      expect(r.body.empresas[0].sucursales).toEqual([
+        expect.objectContaining({ branchUuid: centro.branchUuid, nombre: 'Centro', esPrincipal: true, pc: null }),
+        expect.objectContaining({ branchUuid: norte.branchUuid, nombre: 'Norte', esPrincipal: false, pc: { hostname: 'CAJA-NORTE', ultimaConexion: reloj.toISOString() } }),
+      ]);
+      expect(JSON.stringify(r.body)).not.toContain('tokenHash');
+    });
+
+    test('otra cuenta, un token falso o una sesión vieja no ven nada', async () => {
+      await central.crear(LIC, { nombre: 'Centro' }, CONTADORA);
+      expect((await empresas(tokenDe('otro@correo.test')).expect(404)).body.code).toBe('SIN_EMPRESA');
+      expect((await empresas('falso').expect(401)).body.code).toBe('CUENTA_INVALIDA');
+      expect((await empresas(tokenDe(DUENO, 45)).expect(401)).body.code).toBe('SESION_VIEJA');
+      expect((await empresas('').expect(400)).body.code).toBe('SIN_CUENTA');
+    });
+
+    test('une la PC a la sucursal elegida: token, identidad y la PC anterior queda fuera', async () => {
+      await central.crear(LIC, { nombre: 'Centro' }, CONTADORA);
+      const norte = await sucursalConCodigo('Norte');
+      const vieja = (await activar(norte.codigo).expect(201)).body;
+      await db.collection('licencias').doc(LIC).set({ perfilNegocio: { tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' } }, { merge: true });
+
+      const r = await unir(tokenDe(DUENO), norte.branchUuid, { ...PC, hostname: 'CAJA-NORTE-NUEVA', licenseId: 'pos_nueva', ventas: 0 }).expect(201);
+      expect(r.body.token).toMatch(TOKEN_PATTERN);
+      expect(r.body).toMatchObject({
+        empresa: { licenseId: LIC, companyUuid: norte.companyUuid }, sucursal: { branchUuid: norte.branchUuid, nombre: 'Norte' },
+        reemplazados: 1, perfil: { tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' },
+      });
+      expect((await identidad(vieja.token).expect(403)).body.code).toBe('EQUIPO_REEMPLAZADO');
+      expect((await identidad(r.body.token).expect(200)).body.sucursal.nombre).toBe('Norte');
+      const doc = (await db.collection('equipos_sync').doc(r.body.equipoId).get()).data();
+      expect(doc).toMatchObject({ estado: 'activo', hostname: 'CAJA-NORTE-NUEVA', activadoPor: { tipo: 'dueno', nombre: DUENO } });
+      const hist = (await db.collection('licencias').doc(LIC).collection('sucursales_historial').where('accion', '==', 'equipo_activado').get()).docs.map((d) => d.data());
+      expect(hist.some((h) => h.detalle.autorizadoPor?.nombre === DUENO)).toBe(true);
+    });
+
+    test('no une: otra cuenta, otra empresa con ventas, sucursal desactivada o licencia suspendida', async () => {
+      const norte = await central.crear(LIC, { nombre: 'Norte' }, CONTADORA);
+      expect((await unir(tokenDe('otro@correo.test'), norte.branchUuid).expect(403)).body.code).toBe('SIN_PERMISO');
+      expect((await unir(tokenDe(DUENO), norte.branchUuid, { ...PC, licenseId: 'pos_otra', ventas: 40 }).expect(409)).body.code).toBe('OTRA_EMPRESA');
+      expect((await unir(tokenDe(DUENO), 'no-existe').expect(409)).body.code).toBe('SUCURSAL_INACTIVA');
+      await central.cambiarEstado(LIC, norte.branchUuid, 'inactiva', EMILIO);
+      expect((await unir(tokenDe(DUENO), norte.branchUuid).expect(409)).body.code).toBe('SUCURSAL_INACTIVA');
+      await central.cambiarEstado(LIC, norte.branchUuid, 'activa', EMILIO);
+      await db.collection('licencias').doc(LIC).update({ status: 'suspended' });
+      expect((await unir(tokenDe(DUENO), norte.branchUuid).expect(403)).body.code).toBe('LICENCIA_INACTIVA');
+      expect((await db.collection('equipos_sync').get()).size).toBe(0);
+    });
+
+    test('el latido de la principal publica el perfil del negocio; el de una sucursal no', async () => {
+      const centro = await central.crear(LIC, { nombre: 'Centro' }, CONTADORA);
+      const norte = await central.crear(LIC, { nombre: 'Norte' }, CONTADORA);
+      const pcCentro = (await unir(tokenDe(DUENO), centro.branchUuid, { ...PC, deviceId: 'npd_c', licenseId: LIC }).expect(201)).body;
+      const pcNorte = (await unir(tokenDe(DUENO), norte.branchUuid, { ...PC, deviceId: 'npd_n', ventas: 0 }).expect(201)).body;
+      const latido = (token, perfil) => request(app).post('/v1/latido').set('Authorization', `Bearer ${token}`).send({ appVersion: '1.5.1', perfil }).expect(200);
+      await latido(pcNorte.token, { tipoNegocio: 'pizzeria' });
+      expect((await db.collection('licencias').doc(LIC).get()).data().perfilNegocio).toBeUndefined();
+      await latido(pcCentro.token, { tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131-00000-1' });
+      expect((await db.collection('licencias').doc(LIC).get()).data().perfilNegocio).toMatchObject({ tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' });
+    });
   });
 
   test('salud y rutas desconocidas', async () => {

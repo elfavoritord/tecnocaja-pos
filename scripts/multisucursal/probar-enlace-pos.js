@@ -14,7 +14,7 @@
  * código → la PC adopta la identidad central y manda su latido → el POS ya no
  * deja crear sucursales locales → el contador cambia el nombre y el POS lo
  * toma → tras reiniciar sigue enlazada → Emilio revoca el equipo y el POS lo
- * detecta → desvincular.
+ * detecta → desvincular → se vuelve a conectar con la cuenta del dueño.
  */
 
 const fs = require('fs');
@@ -41,6 +41,7 @@ const HOME = path.join(L.WORK, 'home');
 const LIC = 'pos:tecno-caja-supermercado-bravo';
 const EMILIO = { tipo: 'super_admin', uid: 'emilio', nombre: 'Emilio' };
 const CONTADORA = { tipo: 'contador', uid: 'conta', nombre: 'Pérez & Asociados', contadorId: 'firma-1' };
+const DUENO = 'dueno@bravo.test';
 const ctx = { token: '' };
 
 const db = admin.initializeApp({ projectId: 'demo-tecnocaja' }).firestore();
@@ -65,14 +66,18 @@ const estadoPos = () => L.request(PORT, 'GET', '/api/multisucursal/estado', null
   const servidores = [];
   try {
     // ── Central: la empresa, el límite (Emilio) y la sucursal con su código (contador)
-    await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', contadorId: 'firma-1' });
+    await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', contadorId: 'firma-1', ownerEmail: DUENO });
     await central.fijarLimite(LIC, 2, EMILIO);
     await central.crear(LIC, { nombre: 'Bravo Centro', codigo: 'CEN' }, CONTADORA);
     const norte = await central.crear(LIC, { nombre: 'Bravo Norte', codigo: 'NOR', direccion: 'Av. Hermanas Mirabal 10', telefono: '809-555-1010', encargado: 'Luis' }, CONTADORA);
     const { codigo } = await central.generarCodigo(LIC, norte.branchUuid, CONTADORA);
     L.check('Central: el contador crea "Bravo Norte" y su código de equipo', /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(codigo), codigo);
 
-    const syncApi = await escuchar(crearSyncApi({ db }));
+    // Firebase Auth falso para la cuenta del dueño: "prueba:<correo>".
+    const syncApi = await escuchar(crearSyncApi({
+      db,
+      verificarIdToken: async (t) => ({ uid: 'uid-dueno', email: String(t).split(':')[1], auth_time: Math.floor(Date.now() / 1000) }),
+    }));
     servidores.push(syncApi);
     const SYNC_URL = `http://127.0.0.1:${syncApi.address().port}`;
 
@@ -133,8 +138,11 @@ const estadoPos = () => L.request(PORT, 'GET', '/api/multisucursal/estado', null
     const page = await browser.newPage();
     await page.setViewport({ width: 900, height: 560 });
     await page.goto(`http://127.0.0.1:${sArnes.address().port}/`);
-    await page.waitForSelector('#cfg-ms-codigo', { timeout: 15000 });
+    await page.waitForSelector('[data-ms="dueno-entrar"]', { timeout: 15000 });
+    L.check('Pantalla: sin enlazar ofrece entrar con la cuenta del dueño', Boolean(await page.$('#cfg-ms-email')));
     await page.screenshot({ path: path.join(SALIDA, 'pos-sin-enlazar.png') });
+    // El código de equipo queda como respaldo (soporte), plegado.
+    await page.$eval('#cfg-multisucursal-body details', (d) => { d.open = true; });
     await page.type('#cfg-ms-codigo', codigo.replace('-', '').toLowerCase());
     const escrito = await page.$eval('#cfg-ms-codigo', (el) => el.value);
     L.check('Pantalla: el código se formatea solo (XXXX-XXXX)', escrito === codigo, escrito);
@@ -190,10 +198,33 @@ const estadoPos = () => L.request(PORT, 'GET', '/api/multisucursal/estado', null
     await page.goto(`http://127.0.0.1:${sArnes.address().port}/`);
     await page.waitForFunction(() => document.body.textContent.includes('Tecno Caja desconectó este equipo'), { timeout: 15000 });
     await page.screenshot({ path: path.join(SALIDA, 'pos-revocado.png') });
-    L.check('Pantalla: avisa la revocación y ofrece conectar con un código nuevo', Boolean(await page.$('#cfg-ms-codigo')));
+    L.check('Pantalla: avisa la revocación y ofrece volver a conectar con la cuenta del dueño', Boolean(await page.$('[data-ms="dueno-entrar"]')));
 
     const desv = await L.request(PORT, 'POST', '/api/multisucursal/desvincular', {}, ctx.token);
     L.check('POS: desvincular quita el token', desv.status === 200 && !desv.body.enlace.tieneToken && desv.body.enlace.estado === 'sin_vincular');
+
+    // ── Volver a conectar con la cuenta del dueño (sin código) ───────────
+    await page.goto(`http://127.0.0.1:${sArnes.address().port}/`);
+    await page.waitForSelector('[data-ms="dueno-entrar"]', { timeout: 15000 });
+    await page.evaluate(() => {
+      window.firebaseWebAuth = {
+        signInWithEmail: async (email) => ({ idToken: `prueba:${email}`, email, name: 'Dueño' }),
+        signInWithGoogle: async () => { throw new Error('no'); },
+        signOut: async () => {},
+      };
+    });
+    await page.type('#cfg-ms-email', DUENO);
+    await page.type('#cfg-ms-clave', 'clave');
+    await page.click('[data-ms="dueno-entrar"]');
+    await page.waitForSelector('input[name="cfg-ms-sucursal"]', { timeout: 15000 });
+    const radios = await page.$$eval('input[name="cfg-ms-sucursal"]', (els) => els.map((e) => e.parentElement.textContent.replace(/\s+/g, ' ').trim()));
+    L.check('Pantalla: con la cuenta del dueño lista las sucursales de la empresa', radios.length === 2 && radios.some((t) => /Bravo Norte Plaza/.test(t)), radios.join(' | '));
+    await page.click(`input[name="cfg-ms-sucursal"][value="${norte.branchUuid}"]`);
+    await page.screenshot({ path: path.join(SALIDA, 'pos-cuenta-dueno.png') });
+    await page.click('[data-ms="dueno-activar"]');
+    await page.waitForFunction(() => document.body.textContent.includes('Sucursal Bravo Norte Plaza de Supermercado Bravo'), { timeout: 20000 });
+    const otra = await estadoPos();
+    L.check('POS: conectada otra vez como Norte, sin código', otra.body.enlace.vinculado && otra.body.identidad.sucursal.uuid === norte.branchUuid);
   } catch (error) {
     L.check('Sin excepciones', false, error.stack);
   } finally {

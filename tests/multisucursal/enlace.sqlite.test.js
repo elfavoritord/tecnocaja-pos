@@ -108,23 +108,72 @@ describe('Enlace del POS con la central', () => {
     expect(JSON.stringify(await enlace.estado())).not.toContain(TOKEN);
   });
 
-  test('PC recién instalada con otra licencia: manda sus ventas (0) y toma la licencia de la empresa', async () => {
+  test('PC con otra licencia: manda sus ventas y su empresa, y CONSERVA su licencia', async () => {
     env.TECNO_CAJA_LICENSE_UID = 'pos_0123456789abcdef';
-    const revalidadas = [];
     const nueva = createEnlaceCentral({
       query: base.query, identidad: createIdentidad({ query: base.query }), bandejas: createBandejas({ dialect: 'sqlite' }), env,
       persistEnv: (v) => Object.assign(guardadoEnv, v), fetchImpl: api.fetchImpl, now: () => reloj, logger: { warn() {} },
       getEquipo: () => ({ hostname: 'CAJA-NUEVA', licenseId: env.TECNO_CAJA_LICENSE_UID }),
-      alCambiarLicencia: async (lic) => { revalidadas.push(lic); },
     });
     activacionOk();
-    const estado = await nueva.activar('ABCD-EFGH');
-    expect(api.llamadas[0].body.equipo).toMatchObject({ licenseId: 'pos_0123456789abcdef', ventas: 0 });
-    expect(env.TECNO_CAJA_LICENSE_UID).toBe(EMPRESA.licenseId);
-    expect(guardadoEnv).toEqual({ TECNO_CAJA_SYNC_TOKEN: TOKEN, TECNO_CAJA_LICENSE_UID: EMPRESA.licenseId });
-    expect(revalidadas).toEqual([EMPRESA.licenseId]);
-    expect(estado.licenciaAdoptada).toBe(EMPRESA.licenseId);
+    await nueva.activar('ABCD-EFGH');
+    const [negocio] = await base.query('SELECT uuid FROM businesses WHERE id = 1');
+    expect(api.llamadas[0].body.equipo).toEqual({ hostname: 'CAJA-NUEVA', licenseId: 'pos_0123456789abcdef', ventas: 0, companyUuid: expect.any(String) });
+    expect(api.llamadas[0].body.equipo.companyUuid).not.toBe(EMPRESA.companyUuid);
+    expect(negocio.uuid).toBe(EMPRESA.companyUuid);
+    // Solo el token: la licencia de esta PC no se toca.
+    expect(env.TECNO_CAJA_LICENSE_UID).toBe('pos_0123456789abcdef');
+    expect(guardadoEnv).toEqual({ TECNO_CAJA_SYNC_TOKEN: TOKEN });
     nueva.detener();
+  });
+
+  test('con la cuenta del dueño: lista sus sucursales y une la PC sin código', async () => {
+    const empresas = [{ licenseId: EMPRESA.licenseId, nombre: EMPRESA.nombre, sucursales: [{ ...SUCURSAL, pc: null }] }];
+    api.responder('POST /v1/acceso/dueno', 200, { ok: true, dueno: { email: 'dueno@bravo.test' }, empresas });
+    api.responder('POST /v1/equipos/activar-dueno', 201, {
+      ok: true, token: TOKEN, equipoId: '33333333-3333-4333-8333-333333333333', empresa: EMPRESA, sucursal: SUCURSAL, reemplazados: 1,
+      perfil: { tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' },
+    });
+    api.responder('POST /v1/latido', 200, { ok: true });
+
+    await expect(enlace.empresasDelDueno('')).rejects.toMatchObject({ code: 'SIN_CUENTA' });
+    expect((await enlace.empresasDelDueno('id-token-del-dueno')).empresas).toEqual(empresas);
+    expect(api.llamadas[0]).toMatchObject({ ruta: '/v1/acceso/dueno', auth: null, body: { idToken: 'id-token-del-dueno' } });
+
+    await expect(enlace.activarConDueno({ idToken: 'id-token-del-dueno', licenseId: EMPRESA.licenseId })).rejects.toMatchObject({ code: 'DATOS_INVALIDOS' });
+    const r = await enlace.activarConDueno({ idToken: 'id-token-del-dueno', licenseId: EMPRESA.licenseId, branchUuid: SUCURSAL.branchUuid, baseNueva: true });
+    expect(api.llamadas[1]).toMatchObject({
+      ruta: '/v1/equipos/activar-dueno', auth: null,
+      body: { idToken: 'id-token-del-dueno', licenseId: EMPRESA.licenseId, branchUuid: SUCURSAL.branchUuid, equipo: { hostname: 'CAJA-NORTE', ventas: 0, companyUuid: null } },
+    });
+    // El token no sale hacia la pantalla.
+    expect(r).toEqual({ empresa: EMPRESA, sucursal: SUCURSAL, reemplazados: 1, perfil: { tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' } });
+    expect(guardadoEnv).toEqual({ TECNO_CAJA_SYNC_TOKEN: TOKEN });
+    expect(await enlace.estado()).toMatchObject({ vinculado: true, sucursal: { nombre: 'Bravo Norte' } });
+    const [suc] = await base.query('SELECT uuid, nombre FROM branches WHERE id = 2');
+    expect(suc).toEqual({ uuid: SUCURSAL.branchUuid, nombre: 'Bravo Norte' });
+  });
+
+  test('la principal publica el perfil del negocio en su latido; una sucursal no', async () => {
+    const conPerfil = (esPrincipal) => {
+      const e = createEnlaceCentral({
+        query: base.query, identidad: createIdentidad({ query: base.query }), bandejas: createBandejas({ dialect: 'sqlite' }), env,
+        persistEnv: () => {}, fetchImpl: api.fetchImpl, now: () => reloj, logger: { warn() {} },
+        getPerfilNegocio: async () => ({ tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' }),
+      });
+      api.responder('POST /v1/equipos/activar', 201, { ok: true, token: TOKEN, equipoId: 'x', empresa: EMPRESA, sucursal: { ...SUCURSAL, esPrincipal }, reemplazados: 0 });
+      api.responder('POST /v1/latido', 200, { ok: true });
+      return e;
+    };
+    const principal = conPerfil(true);
+    await principal.activar('ABCD-EFGH');
+    expect(api.llamadas.find((l) => l.ruta === '/v1/latido').body.perfil).toEqual({ tipoNegocio: 'ferreteria', moneda: 'RD$', itbis: 18, rnc: '131000001' });
+    principal.detener();
+    api.limpiar();
+    const sucursal = conPerfil(false);
+    await sucursal.activar('ABCD-EFGH');
+    expect(api.llamadas.find((l) => l.ruta === '/v1/latido').body.perfil).toBeUndefined();
+    sucursal.detener();
   });
 
   test('si otra fila local tenía ese uuid, lo suelta (índice único)', async () => {

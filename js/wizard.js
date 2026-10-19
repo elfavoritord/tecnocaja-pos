@@ -1,5 +1,7 @@
 ﻿'use strict';
 
+/* global showToast, showLoginScreen, loadLoginUsers, refreshStartupStatus, ensureFirebaseWebAuthLoaded, showDeleteConfirm, setupState, setupWizard */
+
 /**
  * Tecno Caja Wizard v3.0 — Flujo con selección de escenario por plan
  *
@@ -39,7 +41,7 @@
   // ─── Estado del wizard ────────────────────────────────────────────────────
   const WZ = {
     virtualStep:      0,
-    scenario:         null,   // null | 'nuevo' | 'existente'
+    scenario:         null,   // null | 'nuevo' | 'existente' | 'sucursal'
     authPassed:       false,
     authUser:         null,
     authBranches:     [],
@@ -516,14 +518,26 @@
     const setIcon = (name) => {
       if (icon && window.TcIconos?.paths?.[name]) icon.innerHTML = window.TcIconos.svg(name, 28);
     };
+    const btnSucursal = document.getElementById('wz-scenario-btn-sucursal');
+    const existenteTitle = document.getElementById('wz-scenario-existente-title');
+    const existenteDesc = document.getElementById('wz-scenario-existente-desc');
     if (WZ.mode === 'multisucursal') {
       setIcon('building-2');
       if (title) title.textContent = '¿Cómo deseas configurar este sistema?';
-      if (desc)  desc.textContent  = 'Elige si estás creando la red de sucursales desde cero o si este equipo se unirá a una red ya existente.';
+      if (desc)  desc.textContent  = 'Elige si esta es la sucursal principal de una empresa nueva, una sucursal nueva de una empresa que ya existe, o otra caja de una sucursal en esta misma red.';
+      // Una sucursal con su propia base se conecta con la cuenta del dueño
+      // (multisucursal por Internet, sin VPN). "Existente" queda para otra
+      // caja de una sucursal en la misma red local.
+      btnSucursal?.classList.remove('wz-hidden');
+      if (existenteTitle) existenteTitle.textContent = 'Otra caja de una sucursal en esta red';
+      if (existenteDesc) existenteDesc.textContent = 'Esta PC será otra caja de una sucursal que ya funciona aquí (misma red local). Se pedirán la IP de la PC principal, un administrador y la clave de red.';
     } else {
       setIcon('store');
       if (title) title.textContent = '¿Cómo deseas configurar este sistema?';
       if (desc)  desc.textContent  = 'Elige si estás creando un negocio nuevo o si esta terminal se conectará a una red multicaja ya existente.';
+      btnSucursal?.classList.add('wz-hidden');
+      if (existenteTitle) existenteTitle.textContent = 'Conectar a un sistema existente';
+      if (existenteDesc) existenteDesc.textContent = 'Este terminal se unirá a un negocio ya configurado. Se requerirán credenciales de administrador y clave de red.';
     }
 
     overlay.classList.remove('wz-hidden');
@@ -576,6 +590,7 @@
   window.wzScenarioSelect = async function (scenario) {
     WZ.scenario = scenario;
     hideScenarioOverlay();
+    if (scenario === 'sucursal') { showSucursalOverlay(); return; }
     if (scenario !== 'nuevo') { showAuthOverlay(); return; }
 
     // Multicaja/multisucursal + negocio nuevo ⇒ la base de datos debe ser MySQL
@@ -651,6 +666,238 @@
     hideScenarioOverlay();
     WZ.virtualStep = 1;
     refreshUI();
+  };
+
+  // ─── Conectar como sucursal de una empresa (multisucursal por Internet) ───
+  // El dueño entra con su cuenta de Tecno Caja, elige en qué sucursal trabaja
+  // esta PC y la PC queda configurada como ella, con los usuarios, el catálogo
+  // y los rangos NCF de la empresa (server/multisucursal/asistente-sucursal.js).
+  // Después entra el usuario que se creó para esa sucursal y vende.
+  const WZS = { cuenta: null, clave: '', empresas: [], elegida: null, ocupado: false };
+
+  const wzsEl = (id) => document.getElementById(id);
+
+  function wzsEsc(valor) {
+    return String(valor == null ? '' : valor)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function wzsError(mensaje) {
+    const caja = wzsEl('wzs-error');
+    if (!caja) return;
+    caja.textContent = mensaje || '';
+    caja.classList.toggle('wz-hidden', !mensaje);
+  }
+
+  function wzsPaso(paso) {
+    ['cuenta', 'sucursal', 'conectando'].forEach((p) => {
+      const bloque = wzsEl(`wzs-paso-${p}`);
+      if (bloque) bloque.style.display = p === paso ? '' : 'none';
+    });
+    const entrar = wzsEl('wzs-btn-entrar');
+    const conectar = wzsEl('wzs-btn-conectar');
+    const acciones = wzsEl('wzs-acciones');
+    if (entrar) entrar.style.display = paso === 'cuenta' ? '' : 'none';
+    if (conectar) {
+      conectar.style.display = paso === 'sucursal' ? '' : 'none';
+      conectar.disabled = !WZS.elegida;
+    }
+    if (acciones) acciones.style.display = paso === 'conectando' ? 'none' : '';
+  }
+
+  async function wzsApi(ruta, body) {
+    const res = await fetch(`/api/multisucursal/asistente/${ruta}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      const error = new Error(data.error || `Error ${res.status}`);
+      error.code = data.code || null;
+      throw error;
+    }
+    return data;
+  }
+
+  function showSucursalOverlay() {
+    injectStyles();
+    WZS.cuenta = null;
+    WZS.clave = '';
+    WZS.empresas = [];
+    WZS.elegida = null;
+    wzsError('');
+    wzsPaso('cuenta');
+    wzsEl('wz-sucursal-overlay')?.classList.remove('wz-hidden');
+    setTimeout(() => wzsEl('wzs-email')?.focus(), 50);
+  }
+
+  async function wzsFirebase() {
+    if (typeof ensureFirebaseWebAuthLoaded === 'function') {
+      await ensureFirebaseWebAuthLoaded();
+    } else {
+      try { await import('./js/firebase-web-auth.js'); } catch (_) { /* sin Internet */ }
+    }
+    if (!window.firebaseWebAuth?.signInWithEmail) {
+      throw new Error('Para conectar esta PC como sucursal hace falta Internet.');
+    }
+    return window.firebaseWebAuth;
+  }
+
+  function wzsRenderSucursales() {
+    const lista = wzsEl('wzs-sucursales');
+    if (!lista) return;
+    const partes = [];
+    WZS.empresas.forEach((empresa) => {
+      partes.push(`<div style="font-weight:600;font-size:.86rem;margin-top:.2rem">${wzsEsc(empresa.nombre)}${empresa.activa === false ? ' — licencia no activa' : ''}</div>`);
+      (empresa.sucursales || []).forEach((s) => {
+        const disponible = empresa.activa !== false && s.estado === 'activa' && !s.esPrincipal;
+        let nota = 'Todavía sin PC';
+        if (s.esPrincipal) nota = 'Principal: es la PC donde ya trabaja tu negocio';
+        else if (s.estado !== 'activa') nota = 'Desactivada';
+        else if (s.pc) nota = `Ya tiene una PC (${s.pc.hostname || 'sin nombre'}): si eliges esta, esa PC deja de sincronizar`;
+        partes.push(`
+          <button type="button" class="wz-scenario-option" data-wzs-lic="${wzsEsc(empresa.licenseId)}" data-wzs-suc="${wzsEsc(s.branchUuid)}"
+            ${disponible ? '' : 'disabled'} style="display:flex;flex-direction:column;align-items:flex-start;gap:.2rem;text-align:left;padding:.65rem .85rem;${disponible ? '' : 'opacity:.5;cursor:not-allowed'}">
+            <strong>${wzsEsc(s.nombre)}${s.codigo ? ` · ${wzsEsc(s.codigo)}` : ''}</strong>
+            <span>${wzsEsc(nota)}</span>
+          </button>`);
+      });
+    });
+    lista.innerHTML = partes.join('') || '<small style="color:var(--text3)">Tu empresa todavía no tiene sucursales. Las crea Tecno Caja o tu contador.</small>';
+    lista.querySelectorAll('[data-wzs-suc]:not([disabled])').forEach((boton) => {
+      boton.addEventListener('click', () => {
+        const empresa = WZS.empresas.find((e) => e.licenseId === boton.getAttribute('data-wzs-lic'));
+        const sucursal = empresa?.sucursales.find((s) => s.branchUuid === boton.getAttribute('data-wzs-suc'));
+        if (!empresa || !sucursal) return;
+        WZS.elegida = { empresa, sucursal };
+        lista.querySelectorAll('[data-wzs-suc]').forEach((b) => { b.style.outline = b === boton ? '2px solid #3B82F6' : ''; });
+        const conectar = wzsEl('wzs-btn-conectar');
+        if (conectar) {
+          conectar.disabled = false;
+          conectar.textContent = `Usar esta PC en «${sucursal.nombre}» →`;
+        }
+        wzsError('');
+      });
+    });
+
+    // MariaDB: las demás cajas de la sucursal se unen con una clave de red.
+    const estado = typeof setupState !== 'undefined' ? setupState : null;
+    const grupoRed = wzsEl('wzs-clave-red-grupo');
+    if (grupoRed) grupoRed.style.display = estado?.dbClient === 'mysql' ? '' : 'none';
+
+    // Con Google no hay contraseña escrita: se pide una para entrar en esta PC.
+    let grupoClave = wzsEl('wzs-clave-local-grupo');
+    if (!WZS.clave && !grupoClave) {
+      grupoClave = document.createElement('div');
+      grupoClave.className = 'form-group';
+      grupoClave.id = 'wzs-clave-local-grupo';
+      grupoClave.innerHTML = '<label for="wzs-clave-local">Contraseña del dueño para entrar en esta PC (mínimo 4)</label><input type="password" id="wzs-clave-local" class="form-input" autocomplete="new-password">';
+      lista.after(grupoClave);
+    } else if (WZS.clave && grupoClave) {
+      grupoClave.remove();
+    }
+  }
+
+  async function wzsListar(cuenta) {
+    const r = await wzsApi('dueno', { idToken: cuenta.idToken });
+    WZS.cuenta = cuenta;
+    WZS.empresas = r.empresas || [];
+    WZS.elegida = null;
+    wzsRenderSucursales();
+    wzsPaso('sucursal');
+  }
+
+  async function wzsEntrarCon(fn) {
+    if (WZS.ocupado) return;
+    WZS.ocupado = true;
+    wzsError('');
+    const boton = wzsEl('wzs-btn-entrar');
+    const textoBoton = boton?.textContent;
+    if (boton) { boton.disabled = true; boton.textContent = 'Entrando…'; }
+    try {
+      await fn(await wzsFirebase());
+    } catch (error) {
+      wzsError(error.message || 'No se pudo entrar.');
+    } finally {
+      WZS.ocupado = false;
+      if (boton) { boton.disabled = false; boton.textContent = textoBoton; }
+    }
+  }
+
+  window.wzSucursalEntrar = function () {
+    const email = String(wzsEl('wzs-email')?.value || '').trim();
+    const clave = String(wzsEl('wzs-clave')?.value || '');
+    if (!email || !clave) { wzsError('Escribe el correo y la contraseña del dueño del negocio.'); return undefined; }
+    return wzsEntrarCon(async (fb) => {
+      const cuenta = await fb.signInWithEmail(email, clave);
+      WZS.clave = clave;
+      await wzsListar(cuenta);
+    });
+  };
+
+  window.wzSucursalEntrarGoogle = function () {
+    return wzsEntrarCon(async (fb) => {
+      const cuenta = await fb.signInWithGoogle((typeof setupWizard !== 'undefined' && setupWizard.language) || 'es');
+      WZS.clave = '';
+      await wzsListar(cuenta);
+    });
+  };
+
+  window.wzSucursalConectar = async function () {
+    if (WZS.ocupado || !WZS.elegida || !WZS.cuenta) return;
+    const { empresa, sucursal } = WZS.elegida;
+    const clave = WZS.clave || String(wzsEl('wzs-clave-local')?.value || '');
+    if (clave.length < 4) { wzsError('Escribe una contraseña de al menos 4 caracteres para que el dueño entre en esta PC.'); return; }
+    if (sucursal.pc) {
+      const texto = `«${sucursal.nombre}» ya tiene una PC conectada (${sucursal.pc.hostname || 'sin nombre'}). Si sigues, esa PC deja de sincronizar y esta toma su lugar. ¿Seguir?`;
+      const ok = typeof showDeleteConfirm === 'function'
+        ? await showDeleteConfirm(texto, { confirmText: 'Usar esta PC' })
+        : window.confirm(texto);
+      if (!ok) return;
+    }
+    WZS.ocupado = true;
+    wzsError('');
+    const textoConectando = wzsEl('wzs-conectando-texto');
+    if (textoConectando) textoConectando.textContent = `Conectando esta PC como «${sucursal.nombre}»…`;
+    wzsPaso('conectando');
+    try {
+      const r = await wzsApi('unirse', {
+        idToken: WZS.cuenta.idToken,
+        licenseId: empresa.licenseId,
+        branchUuid: sucursal.branchUuid,
+        nombre: WZS.cuenta.name || '',
+        email: WZS.cuenta.email || '',
+        clave,
+        claveRed: String(wzsEl('wzs-clave-red')?.value || ''),
+      });
+      wzsEl('wz-sucursal-overlay')?.classList.add('wz-hidden');
+      try { await window.firebaseWebAuth?.signOut?.(); } catch (_) { /* la sesión web no hace falta más */ }
+      WZ.scenario = null;
+      // A la pantalla de entrada, con los usuarios de la sucursal.
+      if (typeof refreshStartupStatus === 'function') await refreshStartupStatus(false);
+      if (typeof showLoginScreen === 'function') showLoginScreen();
+      if (typeof loadLoginUsers === 'function') loadLoginUsers({ preferCache: false });
+      if (typeof showToast === 'function') {
+        showToast(`Listo: esta PC es la sucursal «${r.sucursal?.nombre || sucursal.nombre}». Entra con el usuario de la sucursal. El dueño entra como «${r.usuarioDueno}» con su misma contraseña.`, 'success');
+        if (r.sincronizacion === 'en_curso') showToast('El catálogo de la empresa se sigue descargando en segundo plano.', 'info');
+        if (r.usuarios <= 1) showToast('Todavía no llegó ningún usuario de la sucursal: créalo en la PC principal (Usuarios → sucursales de la empresa) y aparece aquí al sincronizar.', 'warning');
+      }
+    } catch (error) {
+      const volverACuenta = ['SESION_VIEJA', 'CUENTA_INVALIDA'].includes(error.code);
+      wzsPaso(volverACuenta ? 'cuenta' : 'sucursal');
+      wzsError(error.message || 'No se pudo conectar la PC.');
+    } finally {
+      WZS.ocupado = false;
+    }
+  };
+
+  window.wzSucursalCancelar = function () {
+    if (WZS.ocupado) return;
+    wzsEl('wz-sucursal-overlay')?.classList.add('wz-hidden');
+    WZ.scenario = null;
+    showScenarioOverlay();
   };
 
   // ─── Auth overlay ─────────────────────────────────────────────────────────
@@ -1027,10 +1274,9 @@
     WZ.remoteHost       = '';
     WZ.remoteProfile    = null;
     WZ.selectedBizType  = null;
-    const scenOverlay = document.getElementById('wz-scenario-overlay');
-    const authOverlay = document.getElementById('wz-auth-overlay');
-    if (scenOverlay) scenOverlay.classList.add('wz-hidden');
-    if (authOverlay) authOverlay.classList.add('wz-hidden');
+    ['wz-scenario-overlay', 'wz-auth-overlay', 'wz-sucursal-overlay'].forEach((id) => {
+      document.getElementById(id)?.classList.add('wz-hidden');
+    });
   };
 
   // ─── Override: goToSetupStep ──────────────────────────────────────────────
@@ -1386,7 +1632,7 @@
   // ─── Mostrar/ocultar overlays ─────────────────────────────────────────────
   function _wzShowOverlay(id) {
     ['wz-restore-local-overlay', 'wz-restore-cloud-overlay',
-     'wz-auth-overlay', 'wz-scenario-overlay'].forEach(oid => {
+     'wz-auth-overlay', 'wz-scenario-overlay', 'wz-sucursal-overlay'].forEach(oid => {
       const el = document.getElementById(oid);
       if (el) el.classList.add('wz-hidden');
     });

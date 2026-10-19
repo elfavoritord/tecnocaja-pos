@@ -6,6 +6,10 @@
  *   GET  /health
  *   POST /v1/equipos/activar   { codigo, equipo: { deviceId, hostname, serverId, appVersion } }
  *        → 201 { token, equipoId, empresa, sucursal }  (el token se entrega UNA vez)
+ *   POST /v1/acceso/dueno       { idToken }   (Firebase Auth del dueño del negocio)
+ *        → { empresas: [{ licenseId, nombre, perfil, sucursales: [{ ..., pc }] }] }
+ *   POST /v1/equipos/activar-dueno  { idToken, licenseId, branchUuid, equipo }
+ *        → 201 igual que activar, sin código (el dueño elige la sucursal)
  *   GET  /v1/identidad          Authorization: Bearer <token>
  *        → { empresa, sucursal, equipo, licencia }      (datos vigentes desde la central)
  *   POST /v1/latido             Authorization: Bearer <token>
@@ -53,7 +57,16 @@ function vistaSucursal(s) {
   };
 }
 
-function createRouter({ db, now = () => new Date(), limites = {} }) {
+// Cuánto vale el inicio de sesión del dueño para listar y unir una PC.
+const VIGENCIA_SESION_DUENO_MS = 30 * 60 * 1000;
+
+function createRouter({
+  db,
+  now = () => new Date(),
+  limites = {},
+  // Firebase Auth (Admin SDK) en producción; en pruebas, uno falso.
+  verificarIdToken = async () => { throw new Error('Firebase Auth no está configurado.'); },
+}) {
   const router = express.Router();
   const jsonChico = express.json({ limit: '64kb' });
   // Un lote de 200 ventas con sus líneas.
@@ -63,6 +76,13 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
   const permitirActivacion = createRateLimiter({
     windowMs: limites.activarVentanaMs || 15 * 60 * 1000,
     max: limites.activarMax || 10,
+    now: () => now().getTime(),
+  });
+  // Entrar con la cuenta del dueño: aparte de la activación (listar y luego
+  // activar son dos llamadas del mismo asistente).
+  const permitirDueno = createRateLimiter({
+    windowMs: limites.duenoVentanaMs || 15 * 60 * 1000,
+    max: limites.duenoMax || 20,
     now: () => now().getTime(),
   });
   // Por equipo: un POS normal hace unas pocas peticiones por minuto.
@@ -131,8 +151,98 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
         empresa: { licenseId: r.licenseId, companyUuid: r.companyUuid, nombre: r.businessName },
         sucursal: vistaSucursal(r.sucursal),
         reemplazados: r.reemplazados.length,
-        // La PC tenía otra licencia (recién instalada): pasa a la de la empresa.
-        cambiaLicencia: Boolean(r.cambiaLicencia),
+      });
+    } catch (error) {
+      fallo(res, error);
+    }
+  });
+
+  // ── Entrar con la cuenta del dueño (asistente de una PC nueva, sin código) ──
+  // El POS manda el idToken de Firebase Auth que obtuvo con el correo y la
+  // contraseña del dueño (o su Google). Se exige que sea de un inicio de
+  // sesión reciente: un token viejo filtrado no sirve para unir una PC.
+  async function dueno(req) {
+    const idToken = texto(req.body?.idToken, 4096);
+    if (!idToken) throw Object.assign(new Error('Entra con el correo y la contraseña del dueño del negocio.'), { statusCode: 400, code: 'SIN_CUENTA' });
+    let t;
+    try {
+      t = await verificarIdToken(idToken);
+    } catch (_) {
+      throw Object.assign(new Error('La sesión del dueño no es válida o venció. Vuelve a escribir el correo y la contraseña.'), { statusCode: 401, code: 'CUENTA_INVALIDA' });
+    }
+    const email = String(t?.email || '').trim().toLowerCase();
+    const autenticadoEn = Number(t?.auth_time) * 1000;
+    if (!email) throw Object.assign(new Error('Esa cuenta no tiene correo.'), { statusCode: 401, code: 'CUENTA_INVALIDA' });
+    if (!Number.isFinite(autenticadoEn) || now().getTime() - autenticadoEn > VIGENCIA_SESION_DUENO_MS) {
+      throw Object.assign(new Error('Por seguridad, vuelve a escribir el correo y la contraseña del dueño.'), { statusCode: 401, code: 'SESION_VIEJA' });
+    }
+    return { uid: String(t.uid || t.sub || ''), email };
+  }
+
+  function vistaPerfil(p) {
+    return p ? {
+      tipoNegocio: p.tipoNegocio || null,
+      moneda: p.moneda || null,
+      itbis: p.itbis ?? null,
+      rnc: p.rnc || null,
+    } : null;
+  }
+
+  // Empresas con sucursales de este dueño (para elegir en cuál trabaja la PC).
+  router.post('/v1/acceso/dueno', jsonChico, async (req, res) => {
+    if (!permitirDueno(req.ip)) {
+      return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.', code: 'DEMASIADOS_INTENTOS' });
+    }
+    try {
+      const cuenta = await dueno(req);
+      const empresas = await central.empresasDelDueno(cuenta.email);
+      if (!empresas.length) {
+        return res.status(404).set('Cache-Control', 'no-store').json({
+          ok: false,
+          error: 'Esta cuenta no es la dueña de ninguna empresa con sucursales en Tecno Caja. Las sucursales las crea Tecno Caja o tu contador.',
+          code: 'SIN_EMPRESA',
+        });
+      }
+      res.set('Cache-Control', 'no-store').json({
+        ok: true,
+        dueno: { email: cuenta.email },
+        empresas: empresas.map((e) => ({
+          licenseId: e.licenseId,
+          companyUuid: e.companyUuid,
+          nombre: e.businessName,
+          activa: e.activa,
+          perfil: vistaPerfil(e.perfilNegocio),
+          sucursales: e.sucursales.map((s) => ({ ...vistaSucursal(s), pc: s.pc })),
+        })),
+      });
+    } catch (error) {
+      fallo(res, error);
+    }
+  });
+
+  // Une esta PC a la sucursal elegida (mismo resultado que activar con código).
+  router.post('/v1/equipos/activar-dueno', jsonChico, async (req, res) => {
+    if (!permitirActivacion(req.ip)) {
+      return res.status(429).json({ ok: false, error: 'Demasiados intentos. Espera unos minutos.', code: 'DEMASIADOS_INTENTOS' });
+    }
+    try {
+      const cuenta = await dueno(req);
+      const licenseId = texto(req.body?.licenseId, 160);
+      const branchUuid = texto(req.body?.branchUuid, 36);
+      if (!licenseId || !branchUuid) return res.status(400).json({ ok: false, error: 'Elige la sucursal.', code: 'DATOS_INVALIDOS' });
+      const credencial = nuevoToken();
+      const r = await central.activarEquipoDueno(cuenta, licenseId, branchUuid, req.body?.equipo || {}, {
+        equipoId: credencial.equipoId,
+        tokenHash: credencial.tokenHash,
+      });
+      res.status(201).set('Cache-Control', 'no-store').json({
+        ok: true,
+        token: credencial.token,
+        equipoId: r.equipoId,
+        empresa: { licenseId: r.licenseId, companyUuid: r.companyUuid, nombre: r.businessName },
+        sucursal: vistaSucursal(r.sucursal),
+        reemplazados: r.reemplazados.length,
+        perfil: vistaPerfil(r.perfilNegocio),
       });
     } catch (error) {
       fallo(res, error);
@@ -171,6 +281,19 @@ function createRouter({ db, now = () => new Date(), limites = {} }) {
       };
       await req.ctx.equipo.ref.update({ ultimaConexion: now(), latido, ...(latido.appVersion ? { appVersion: latido.appVersion } : {}) });
       if (Array.isArray(b.ncf) && b.ncf.length) await sincronizacion.registrarUsoNcf(contexto(req), b.ncf).catch(() => 0);
+      // La principal publica su perfil: una sucursal nueva arranca igual.
+      if (req.ctx.sucursal.esPrincipal && b.perfil && typeof b.perfil === 'object') {
+        const itbis = Number(b.perfil.itbis);
+        await db.collection('licencias').doc(req.ctx.equipo.licenseId).set({
+          perfilNegocio: {
+            tipoNegocio: texto(b.perfil.tipoNegocio, 30) || null,
+            moneda: texto(b.perfil.moneda, 5) || null,
+            itbis: Number.isFinite(itbis) && itbis >= 0 && itbis <= 100 ? itbis : null,
+            rnc: String(b.perfil.rnc || '').replace(/\D/g, '').slice(0, 11) || null,
+            actualizadoEn: now(),
+          },
+        }, { merge: true }).catch(() => {});
+      }
       res.json({ ok: true });
     } catch (error) {
       fallo(res, error);

@@ -9,11 +9,17 @@ let singleton = null;
 function createFirestoreBackend() {
   const { initializeApp, getApps } = require('firebase-admin/app');
   const { getFirestore } = require('firebase-admin/firestore');
+  const { getAuth } = require('firebase-admin/auth');
   const existing = getApps();
   const app = existing.length
     ? existing[0]
     : initializeApp({ projectId: process.env.FIRESTORE_PROJECT_ID || 'reporte-sistema-pos' });
-  return { db: getFirestore(app) };
+  return {
+    db: getFirestore(app),
+    // Cuenta del dueño (asistente de una PC de sucursal). `true`: una sesión
+    // cerrada a la fuerza (cambio de contraseña) ya no vale.
+    verificarIdToken: (idToken) => getAuth(app).verifyIdToken(idToken, true),
+  };
 }
 
 function getBackend() {

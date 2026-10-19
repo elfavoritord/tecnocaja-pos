@@ -4,11 +4,14 @@
  * server/multisucursal/enlace.js — Enlace de esta PC (nodo de la sucursal)
  * con la Sync API central (cloud/sync-api). Fase 3c.
  *
- *  - activar(codigo): canjea el código de equipo que generó Emilio o el
- *    contador en su panel. La API devuelve un token (se guarda en
- *    config/app.env, como los demás secretos) y la identidad central: esta
- *    base ADOPTA el companyUuid y el branchUuid en businesses/branches, y la
- *    sucursal local toma el nombre y los datos de la central.
+ *  - activarConDueno({ idToken, licenseId, branchUuid }): el dueño del
+ *    negocio entra con su cuenta de Tecno Caja (empresasDelDueno lista sus
+ *    sucursales) y elige en cuál trabaja esta PC. activar(codigo) hace lo
+ *    mismo con un código de equipo de Emilio o del contador. La API devuelve
+ *    un token (se guarda en config/app.env, como los demás secretos) y la
+ *    identidad central: esta base ADOPTA el companyUuid y el branchUuid en
+ *    businesses/branches, y la sucursal local toma el nombre y los datos de
+ *    la central.
  *  - refrescarIdentidad(): trae los datos vigentes (si el contador editó la
  *    sucursal) y detecta si el equipo fue reemplazado, revocado, o si la
  *    sucursal o la licencia están inactivas.
@@ -69,9 +72,9 @@ function createEnlaceCentral({
   // La sucursal local cambió de nombre o datos (al enlazar o porque el
   // contador la editó): las pantallas abiertas lo refrescan.
   alCambiarIdentidad = () => {},
-  // Una PC recién instalada que se une a la empresa toma su licencia: el
-  // servidor vuelve a validar la licencia con la nueva.
-  alCambiarLicencia = async () => {},
+  // Perfil del negocio (tipo, moneda, ITBIS, RNC) que la principal publica
+  // en su latido para que una sucursal nueva arranque igual.
+  getPerfilNegocio = async () => null,
 }) {
   const url = () => {
     const propia = String(env.TECNO_CAJA_SYNC_URL || '').trim();
@@ -168,27 +171,49 @@ function createEnlaceCentral({
     });
   }
 
+  // Lo que la central necesita para decidir si esta PC puede unirse: recién
+  // instalada (0 ventas) o ya enlazada antes a la misma empresa (mismo
+  // companyUuid). Una PC que vende para otro negocio no (se mezclarían los
+  // datos). `baseNueva`: el asistente inicial, que configura la base desde
+  // cero después de unirse (lo que haya ahora se borra).
+  async function datosDelEquipo({ baseNueva = false } = {}) {
+    if (baseNueva) return { ...getEquipo(), ventas: 0, companyUuid: null };
+    const conteo = await query('SELECT COUNT(*) AS n FROM sales').catch(() => [{ n: null }]);
+    const ventas = conteo[0]?.n == null ? null : Number(conteo[0].n);
+    const local = await identidad.obtener().catch(() => null);
+    return { ...getEquipo(), ventas, companyUuid: local?.empresa?.uuid || null };
+  }
+
   async function activar(codigo) {
     const limpio = String(codigo || '').trim();
     if (!limpio) throw new ErrorEnlace('Escribe el código de activación.', 'SIN_CODIGO');
-    // Cuántas ventas tiene esta base: una PC recién instalada (0) puede unirse
-    // a la empresa aunque el asistente le haya dado otra licencia.
-    const conteo = await query('SELECT COUNT(*) AS n FROM sales').catch(() => [{ n: null }]);
-    const ventas = conteo[0]?.n == null ? null : Number(conteo[0].n);
-    const r = await llamar('POST', '/v1/equipos/activar', { codigo: limpio, equipo: { ...getEquipo(), ventas } }, { conToken: false });
+    const r = await llamar('POST', '/v1/equipos/activar', { codigo: limpio, equipo: await datosDelEquipo() }, { conToken: false });
+    return guardarActivacion(r);
+  }
 
+  // Con la cuenta del dueño, sin código: primero sus empresas y sucursales…
+  async function empresasDelDueno(idToken) {
+    if (!String(idToken || '').trim()) throw new ErrorEnlace('Entra con el correo y la contraseña del dueño.', 'SIN_CUENTA');
+    return llamar('POST', '/v1/acceso/dueno', { idToken }, { conToken: false });
+  }
+
+  // …y después unir esta PC a la sucursal que eligió.
+  async function activarConDueno({ idToken, licenseId, branchUuid, baseNueva = false } = {}) {
+    if (!String(idToken || '').trim()) throw new ErrorEnlace('Entra con el correo y la contraseña del dueño.', 'SIN_CUENTA');
+    if (!licenseId || !branchUuid) throw new ErrorEnlace('Elige la sucursal.', 'DATOS_INVALIDOS');
+    const r = await llamar('POST', '/v1/equipos/activar-dueno', {
+      idToken, licenseId, branchUuid, equipo: await datosDelEquipo({ baseNueva }),
+    }, { conToken: false });
+    await guardarActivacion(r);
+    // El token se queda en esta PC (config/app.env), no va a la pantalla.
+    return { empresa: r.empresa, sucursal: r.sucursal, reemplazados: r.reemplazados || 0, perfil: r.perfil || null };
+  }
+
+  async function guardarActivacion(r) {
     // El token primero: si algo de lo local falla, se reintenta con
     // refrescarIdentidad sin gastar otro código.
     env.TECNO_CAJA_SYNC_TOKEN = r.token;
-    const licenciaEmpresa = String(r.empresa?.licenseId || '').trim();
-    const cambiaLicencia = Boolean(licenciaEmpresa) && licenciaEmpresa !== String(env.TECNO_CAJA_LICENSE_UID || '').trim();
-    if (cambiaLicencia) env.TECNO_CAJA_LICENSE_UID = licenciaEmpresa;
-    persistEnv({ TECNO_CAJA_SYNC_TOKEN: r.token, ...(cambiaLicencia ? { TECNO_CAJA_LICENSE_UID: licenciaEmpresa } : {}) });
-    if (cambiaLicencia) {
-      await Promise.resolve(alCambiarLicencia(licenciaEmpresa)).catch((error) => {
-        logger.warn?.('[multisucursal] La PC tomó la licencia de la empresa; la validación se completa en el próximo arranque:', error.message);
-      });
-    }
+    persistEnv({ TECNO_CAJA_SYNC_TOKEN: r.token });
     await guardarEstado({
       estado: ESTADOS.VINCULADO,
       equipoId: r.equipoId,
@@ -197,7 +222,6 @@ function createEnlaceCentral({
       activadoEn: now().toISOString(),
       ultimaConexion: now().toISOString(),
       ultimoError: null,
-      licenciaAdoptada: cambiaLicencia ? licenciaEmpresa : null,
     });
     try {
       await aplicarIdentidad(r);
@@ -240,12 +264,15 @@ function createEnlaceCentral({
         ? { salida: Number(r.salida.pendiente || 0) + Number(r.salida.error || 0), errores: Number(r.salida.rechazado || 0) }
         : { salida: 0, errores: 0 };
       const extras = await extrasLatido().catch(() => ({})) || {};
+      // Solo la principal publica el perfil del negocio.
+      const perfil = actual.sucursal?.esPrincipal ? await Promise.resolve(getPerfilNegocio()).catch(() => null) : null;
       await llamar('POST', '/v1/latido', {
         appVersion: getEquipo().appVersion || '',
         modo: getModo(),
         pendientes: { ...pendientes, ...(extras.pendientes || {}) },
         ultimaSincronizacion: extras.ultimaSincronizacion || actual.ultimaConexion || null,
         ...(Array.isArray(extras.ncf) && extras.ncf.length ? { ncf: extras.ncf } : {}),
+        ...(perfil ? { perfil } : {}),
       });
       await guardarEstado({ ultimaConexion: now().toISOString(), ultimoError: null, ...(actual.estado ? {} : { estado: ESTADOS.VINCULADO }) });
     } catch (error) {
@@ -293,7 +320,6 @@ function createEnlaceCentral({
       activadoEn: guardado.activadoEn || null,
       ultimaConexion: guardado.ultimaConexion || null,
       ultimoError: guardado.ultimoError || null,
-      licenciaAdoptada: guardado.licenciaAdoptada || null,
     };
   }
 
@@ -314,7 +340,9 @@ function createEnlaceCentral({
     return true;
   }
 
-  return { activar, refrescarIdentidad, latido, desvincular, estado, iniciar, detener, llamarSync };
+  return {
+    activar, empresasDelDueno, activarConDueno, refrescarIdentidad, latido, desvincular, estado, iniciar, detener, llamarSync,
+  };
 }
 
 module.exports = { createEnlaceCentral, ErrorEnlace, ESTADOS, CLAVE_ESTADO, DEFAULT_SYNC_URL };

@@ -6055,7 +6055,16 @@ function connectLicenseSocket() {
     });
     // Multisucursal: llegaron productos, usuarios, precios o el nombre de la
     // sucursal desde la central.
-    _licenseSocket.on('multisucursal:cambios-aplicados', () => refrescarCatalogoSinTocarLaVenta());
+    // En la pantalla de entrada (PC de sucursal recién conectada) llegan los
+    // usuarios de la sucursal: se recarga la lista para poder entrar.
+    _licenseSocket.on('multisucursal:cambios-aplicados', () => {
+      const login = document.getElementById('login-screen');
+      if (login && !login.classList.contains('hidden') && login.style.display !== 'none' && !setupState?.setupRequired) {
+        loadLoginUsers({ preferCache: false });
+        return;
+      }
+      refrescarCatalogoSinTocarLaVenta();
+    });
     _licenseSocket.on('disconnect', () => {
       _licenseSocket = null;
     });

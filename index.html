@@ -554,11 +554,64 @@
         <button type="button" id="wz-scenario-btn-existente" class="wz-scenario-option"
           onclick="wzScenarioSelect('existente')">
           <span class="wz-scenario-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
-          <strong>Conectar a un sistema existente</strong>
-          <span>Este terminal se unirá a un negocio ya configurado. Se requerirán credenciales de administrador y clave de red.</span>
+          <strong id="wz-scenario-existente-title">Conectar a un sistema existente</strong>
+          <span id="wz-scenario-existente-desc">Este terminal se unirá a un negocio ya configurado. Se requerirán credenciales de administrador y clave de red.</span>
+        </button>
+        <!-- Multisucursal: PC de una sucursal con su propia base (js/wizard.js → wzSucursal*) -->
+        <button type="button" id="wz-scenario-btn-sucursal" class="wz-scenario-option wz-hidden"
+          onclick="wzScenarioSelect('sucursal')">
+          <span class="wz-scenario-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg></span>
+          <strong>Conectar como sucursal de una empresa</strong>
+          <span>Esta PC trabajará como una sucursal (por ejemplo "Norte") de una empresa que ya usa Tecno Caja. Entra con el correo y la contraseña del dueño del negocio y elige la sucursal.</span>
         </button>
       </div>
       <button type="button" class="btn-secondary wz-overlay-back" onclick="wzScenarioCancel()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg><span>Cambiar estructura</span></button>
+    </div>
+
+    <!-- SUCURSAL OVERLAY — PC nueva que trabaja como sucursal de una empresa:
+         el dueño entra con su cuenta y elige la sucursal (js/wizard.js → wzSucursal*) -->
+    <div id="wz-sucursal-overlay" class="wz-auth-overlay wz-hidden" role="dialog" aria-modal="true" aria-label="Conectar como sucursal">
+      <div class="wz-auth-icon-wrap"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg></div>
+      <h3>Conectar como sucursal</h3>
+
+      <!-- Paso 1: cuenta del dueño -->
+      <div id="wzs-paso-cuenta">
+        <p style="color:var(--text3);font-size:.83rem;margin-bottom:1rem">Entra con el correo y la contraseña del <strong>dueño del negocio</strong> (la misma cuenta de Tecno Caja de la PC principal y de la app de reportes).</p>
+        <div class="form-group">
+          <label for="wzs-email">Correo del dueño</label>
+          <input type="email" id="wzs-email" class="form-input" autocomplete="email" placeholder="dueno@minegocio.com">
+        </div>
+        <div class="form-group">
+          <label for="wzs-clave">Contraseña</label>
+          <input type="password" id="wzs-clave" class="form-input" autocomplete="current-password"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();wzSucursalEntrar();}">
+        </div>
+        <button type="button" class="btn-secondary" onclick="wzSucursalEntrarGoogle()" style="width:100%;margin-bottom:.4rem">El dueño entra con Google</button>
+      </div>
+
+      <!-- Paso 2: en qué sucursal trabaja esta PC -->
+      <div id="wzs-paso-sucursal" style="display:none">
+        <p style="color:var(--text3);font-size:.83rem;margin-bottom:.8rem">¿En qué sucursal va a trabajar esta PC?</p>
+        <div id="wzs-sucursales" style="display:flex;flex-direction:column;gap:.5rem;max-height:46vh;overflow:auto;margin-bottom:.8rem"></div>
+        <div class="form-group" id="wzs-clave-red-grupo" style="display:none">
+          <label for="wzs-clave-red">Clave de red (para las demás cajas de esta sucursal)</label>
+          <input type="password" id="wzs-clave-red" class="form-input" autocomplete="off" placeholder="Mínimo 6 caracteres">
+        </div>
+        <small style="color:var(--text3);font-size:.76rem;display:block;margin-bottom:.6rem">Esta PC baja sola los usuarios de esa sucursal, el catálogo de la empresa y los rangos NCF. Después entra el usuario que se creó para la sucursal en la PC principal y vende. El dueño también entra aquí con su correo (sin la @…) y su misma contraseña.</small>
+      </div>
+
+      <!-- Paso 3: conectando -->
+      <div id="wzs-paso-conectando" style="display:none;text-align:center;padding:1rem 0">
+        <div style="font-size:.9rem;margin-bottom:.4rem" id="wzs-conectando-texto">Conectando esta PC…</div>
+        <small style="color:var(--text3);font-size:.78rem">Bajando los usuarios, el catálogo y los rangos NCF de la sucursal. Puede tardar un minuto.</small>
+      </div>
+
+      <div class="wz-auth-error wz-hidden" id="wzs-error"></div>
+      <div class="wz-overlay-actions" id="wzs-acciones">
+        <button type="button" class="btn-secondary" onclick="wzSucursalCancelar()" style="flex:1"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg><span>Volver</span></button>
+        <button type="button" class="btn-primary" id="wzs-btn-entrar" onclick="wzSucursalEntrar()" style="flex:1.8">Entrar →</button>
+        <button type="button" class="btn-primary" id="wzs-btn-conectar" onclick="wzSucursalConectar()" style="flex:1.8;display:none" disabled>Usar esta PC en la sucursal →</button>
+      </div>
     </div>
 
     <!-- wz-welcome-overlay eliminado — reemplazado por #platform-init-screen -->

@@ -43,8 +43,8 @@ function createMultisucursal({
   // productos/usuarios de la central (para refrescar cachés).
   auditar = async () => {},
   alAplicar = () => {},
-  // La PC tomó la licencia de la empresa al enlazarse (revalidar licencia).
-  alCambiarLicencia = async () => {},
+  // Perfil del negocio que la principal publica (tipo, moneda, ITBIS, RNC).
+  getPerfilNegocio = async () => null,
   cicloMs,
 }) {
   const dialect = String(getDbClient?.() || 'sqlite').toLowerCase() === 'mysql' ? 'mysql' : 'sqlite';
@@ -76,7 +76,7 @@ function createMultisucursal({
     ...(fetchImpl ? { fetchImpl } : {}),
     extrasLatido: () => (sincronizacion ? sincronizacion.extrasLatido() : Promise.resolve({})),
     alCambiarIdentidad: () => alAplicar(),
-    alCambiarLicencia,
+    getPerfilNegocio,
   });
   const ncf = createNcfCentral({ query, withTransaction, bandejas, identidad, auditar, logger });
   sincronizacion = createSincronizacion({

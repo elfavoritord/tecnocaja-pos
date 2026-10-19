@@ -17,6 +17,33 @@ Cada sucursal tiene su propia base (SQLite o MariaDB multicaja) y su PC principa
 | NCF | Emilio o el contador reparten la autorización de la DGII en **sub-rangos por sucursal** que no se cruzan. Cada sucursal los usa con su sistema de secuencias de siempre. |
 | e-CF | **Sin cambios** (riesgo R7, pendiente de decidir con el contador). |
 
+## Conectar una PC: con la cuenta del dueño, sin código
+
+Decisión de Emilio (2026-10-19): el cliente no maneja códigos. Una PC se conecta con el **correo y la contraseña del dueño del negocio**, la misma cuenta de Tecno Caja de la PC principal y de la app de reportes (o su Google).
+
+**PC nueva de una sucursal** (asistente inicial → estructura multisucursal → "Conectar como sucursal de una empresa"):
+
+1. El dueño escribe su correo y su contraseña. El navegador del POS inicia sesión en Firebase Auth (`js/firebase-web-auth.js` → `signInWithEmail`).
+2. La Sync API verifica la sesión (`POST /v1/acceso/dueno`) y devuelve las empresas cuyo `ownerEmail`/`email` es ese correo, con sus sucursales y la PC que tiene cada una. La principal no se puede elegir aquí: es la PC donde ya trabaja el negocio.
+3. El dueño elige la sucursal. `POST /api/multisucursal/asistente/unirse` (`server/multisucursal/asistente-sucursal.js`) hace, en este orden:
+   - **Enlace primero** (`/v1/equipos/activar-dueno`). Si falla, la PC queda igual que antes, sin configurar.
+   - **Base local desde cero** como esa sucursal, con el perfil de la principal (tipo de negocio, moneda, ITBIS, RNC; la principal lo publica en su latido). Queda en monocaja (SQLite) o en multicaja (MariaDB, con clave de red para las demás cajas). La caja queda cerrada: la abre el cajero.
+   - **Administrador general para el dueño:** el usuario es lo que va antes de la @ de su correo, con su misma contraseña. No lleva correo, para que las sincronizaciones de esta PC no toquen su cuenta de la principal.
+   - **Licencia propia de esta PC**, de prueba por 30 días y marcada `sucursalDe` (empresa y sucursal).
+   - **Primera sincronización**, con un tope de 60 s: usuarios, catálogo y rangos NCF de la sucursal.
+4. La PC queda en la **pantalla de entrada**: entra el usuario que se creó para esa sucursal en la principal, abre su caja y vende.
+
+**PC que ya trabaja** (la principal, o una sucursal que se desconectó): Configuración → Mi Negocio → "Sucursal conectada a Tecno Caja" → cuenta del dueño → elegir sucursal (`/api/multisucursal/dueno/empresas` y `/dueno/activar`). El código de equipo sigue ahí, plegado, como respaldo para soporte.
+
+**Cada PC de sucursal conserva su propia licencia.** Lo que la ata a la empresa es el enlace, no la licencia. Así, las sincronizaciones viejas de la nube, que van atadas a la licencia y a los ids locales, nunca pisan los datos de la principal. La central solo rechaza (`OTRA_EMPRESA`) una PC que ya tiene ventas de otro negocio.
+
+Seguridad:
+
+- La Sync API exige una sesión de menos de 30 minutos (`SESION_VIEJA`) y revisa si fue cerrada (cambio de contraseña).
+- Límite de 20 intentos cada 15 minutos por IP.
+- Las rutas del asistente solo responden mientras la PC está sin configurar.
+- El token de la PC nunca llega a la pantalla.
+
 ## Reglas de conflicto (prompt maestro §7)
 
 | Entidad | Regla | Dónde |
@@ -109,15 +136,16 @@ Además:
 
 | Prueba | Comando | Resultado |
 |---|---|---|
-| Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **47/47**, incluidos los 9 nuevos de sincronización y los 13 del POS de punta a punta (varias PC SQLite + Sync API) |
+| Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **53/53**: sincronización, POS de punta a punta (varias PC SQLite + Sync API) y la cuenta del dueño (otra cuenta, sesión vieja, otra empresa con ventas, sucursal o licencia inactiva) |
+| **PC nueva con la cuenta del dueño**: principal real + PC nueva en la pantalla real del asistente (Chrome) → entra el cajero, abre caja y vende | `npm run test:multisucursal-asistente` | **29/29** |
 | **Integral con dos POS reales** (server.js en SQLite, API HTTP real, ventas reales) + pantallas en Chrome | `npm run test:multisucursal-integral` | **40/40** |
 | Pantallas de los paneles en Chrome | `probar-pantalla-sucursales.js` | **24/24** |
 | MariaDB real: migraciones + ciclo de sincronización con `CONCAT` | `npm run test:multisucursal-mariadb` | **23/23** |
 | Arranque SQLite (actualizar una base vieja, interruptor apagado) | `npm run test:multisucursal-sqlite` | **13/13** |
-| Enlace de una PC de punta a punta | `npm run test:multisucursal-enlace` | **19/19** |
+| Enlace de una PC de punta a punta (código y cuenta del dueño en Configuración) | `npm run test:multisucursal-enlace` | **22/22** |
 | Multicaja LAN con MariaDB (ventas a la vez, sin Internet, contingencia) | `npm run test:e2e-lan` | **44/44** |
 | Respaldo de una sucursal enlazada (ida y vuelta `.tcbak`) | `npx jest tests/services/backup-core-multisucursal.test.js` | **1/1** |
-| Regresión | `npm test` | 93 suites, **668 OK** (las 4 del emulador se omiten sin emulador) |
+| Regresión | `npm test` | 94 suites, **674 OK** (las 4 del emulador se omiten sin emulador) |
 
 ## Matriz de aceptación (prompt maestro §21)
 
@@ -125,7 +153,7 @@ Además:
 |---|---|---|---|
 | 1 | Empresa y dos sucursales | ✅ | integral; emulador |
 | 2 | Usuario asignado a una sola sucursal | ✅ | integral: Ana entra en Norte con su clave; en Sur no existe (emulador) |
-| 3 | PC nueva carga solo su sucursal | ✅ | integral: cada PC se activa con su código y adopta su identidad |
+| 3 | PC nueva carga solo su sucursal | ✅ | asistente: la PC nueva entra con la cuenta del dueño, elige Norte y baja solo lo de Norte; integral: con código |
 | 4 | Producto global llega a las sucursales | ✅ | integral + emulador |
 | 5 | Precio de A no cambia el de B | ✅ | integral (3300 en Norte, 3500 en la principal) |
 | 6 | Venta en A no cambia el inventario de B | ✅ | integral: venta real por `POST /api/sales` |
@@ -151,6 +179,8 @@ Además:
 ```powershell
 npm test
 npm run test:multisucursal-central
+npm run test:multisucursal-asistente
+npm run test:multisucursal-enlace
 npm run test:multisucursal-integral
 npm run test:multisucursal-mariadb
 npm run test:multisucursal-sqlite
@@ -186,10 +216,11 @@ Todo se borra al cerrar.
    - vende, cobra e imprime;
    - Configuración → "Sucursal conectada a Tecno Caja" aparece sin enlazar.
 4. Prueba real contra la Sync API de producción:
-   1. Haz el asistente inicial con un negocio de prueba, por ejemplo "Prueba Multisucursal".
-   2. En tu panel (`tecno-caja-admin`, `npm start`), abre esa empresa → Sucursales: límite 2, crea las dos y genera los códigos.
-   3. Enlaza la PC de prueba (y otra, si tienes).
-   4. Al terminar, desactiva las sucursales de prueba.
+   1. En tu panel (`tecno-caja-admin`), abre la empresa de la PC principal → Sucursales: límite 2 y crea "Principal" (la primera queda como principal) y "Norte". La licencia tiene que tener el correo del dueño (`ownerEmail`), el mismo con el que entra a la app de reportes.
+   2. En la PC principal: Configuración → Mi Negocio → "Sucursal conectada a Tecno Caja" → correo y contraseña del dueño → elegir la principal → Conectar.
+   3. En la principal, crea un usuario (por ejemplo, un cajero) y márcale la sucursal "Norte". Publica el catálogo.
+   4. En la PC nueva (instalada sin configurar): asistente → multisucursal → "Conectar como sucursal de una empresa" → correo y contraseña del dueño → "Norte". Queda en la pantalla de entrada con el cajero.
+   5. Al terminar, desactiva las sucursales de prueba.
 
 ### 4. Publicar escalonado
 
@@ -229,6 +260,7 @@ Cloud Run con mínimo 0 instancias, más Firestore.
 
 ## Pendiente
 
+- **Licencia de cada PC de sucursal:** arranca en prueba de 30 días, como cualquier instalación, y se activa desde el panel. En el panel aparece como «Empresa · Sucursal», con `sucursalDe`. Falta decidir si debe seguir sola el plan de la empresa.
 - Transferencias de inventario entre sucursales con bases separadas: hoy solo existen en el modo legado de base compartida.
 - Bajar los últimos 3 meses de ventas a una PC reinstalada: hoy se suben, pero no se bajan.
 - Imágenes de producto en el catálogo de la empresa: hoy no viajan.
