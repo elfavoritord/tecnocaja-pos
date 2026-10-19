@@ -287,6 +287,7 @@
   async function loadConfigSection() {
     const seccion = el('cfg-multisucursal-section');
     if (!seccion) return;
+    engancharClics();
     let datos;
     try {
       datos = await api('GET', '/estado');
@@ -440,10 +441,18 @@
     return { sucursalesEmpresa: lista.length ? lista : null };
   }
 
-  document.addEventListener('click', (ev) => {
-    const boton = ev.target.closest('#cfg-multisucursal-section [data-ms]');
-    if (boton) accion(boton);
-  });
+  // El clic se escucha en el propio contenedor y no en document: Configuración
+  // (js/app.js, _cfgDrillSection) mueve este contenido a su ventana, y esa
+  // ventana corta los clics con event.stopPropagation().
+  function engancharClics() {
+    const cuerpo = el('cfg-multisucursal-body');
+    if (!cuerpo || cuerpo.dataset.msClics === '1') return;
+    cuerpo.dataset.msClics = '1';
+    cuerpo.addEventListener('click', (ev) => {
+      const boton = ev.target.closest('[data-ms]');
+      if (boton && cuerpo.contains(boton)) accion(boton);
+    });
+  }
   document.addEventListener('input', (ev) => {
     if (ev.target && ev.target.id === 'cfg-ms-codigo') formatearCodigo(ev.target);
   });

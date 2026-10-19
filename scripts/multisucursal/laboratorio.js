@@ -113,7 +113,7 @@ function paginaInicio() {
     <p style="color:#94a3b8">Nota: el POS deja entrar hasta 10 veces cada 15 minutos por PC (protección contra adivinar claves). Si sale "Demasiados intentos", espera o cierra y vuelve a abrir el laboratorio.</p>
     <h2>Guía de prueba</h2><ol>
       <li><b>Panel de Emilio:</b> sube el límite a ${PCS.length}. Crea ${PCS.map((p) => `"${p.sucursal}"`).join(', ')} (la primera es la principal). Prueba que el contador no puede pasar del límite.</li>
-      <li><b>Código de equipo</b> de "Principal" → en el POS PC-1: Configuración → <i>Sucursal conectada a Tecno Caja</i> → escribe el código. Después genera el de <b>"Norte"</b> y escríbelo en <b>PC-2</b> (no en PC-1). En la pantalla de Caja, cada PC pasa a mostrar su sucursal.</li>
+      <li><b>Código de equipo</b> de "Principal" → en el POS PC-1: <i>Configuración</i> (menú izquierdo, o dentro de <i>Más</i>) → tarjeta <i>Mi Negocio</i> → <i>Sucursal conectada a Tecno Caja</i> → escribe el código y pulsa <i>Conectar esta PC</i>. Después genera el de <b>"Norte"</b> y escríbelo en <b>PC-2</b> (no en PC-1). En la pantalla de Caja, cada PC pasa a mostrar su sucursal.</li>
       <li><b>PC-1 (principal):</b> crea un producto y en <i>Catálogo de la empresa</i> elige "Todas las sucursales". O usa <i>Publicar todo el catálogo activo</i>.</li>
       <li><b>PC-2:</b> Configuración → <i>Sincronizar ahora</i>. El producto llega con el precio de la principal y existencia 0. Ábrelo: el nombre y el código están bloqueados; el precio no.</li>
       <li><b>PC-2:</b> cambia su precio, registra una compra o ajusta existencia y <b>haz una venta</b>. En PC-1 el precio y la existencia no cambian.</li>

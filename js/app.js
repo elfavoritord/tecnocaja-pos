@@ -4237,8 +4237,9 @@ function getEffectiveConfig() {
 const CONFIG_GROUPS = {
   negocio: {
     icon: 'store',
-    title: 'Mi Negocio', desc: 'Nombre, logo, RNC, tipo de negocio y tienda online',
-    find: ['h3#cfg-section-business-title', 'h3#cfg-section-branches-title', '#cfg-tienda-online-section', '#cfg-admin-delete-section'],
+    title: 'Mi Negocio', desc: 'Nombre, logo, RNC, tipo de negocio, sucursales y tienda online',
+    // #cfg-multisucursal-section: "Sucursal conectada a Tecno Caja" (js/multisucursal-enlace.js).
+    find: ['h3#cfg-section-business-title', 'h3#cfg-section-branches-title', '#cfg-multisucursal-section', '#cfg-tienda-online-section', '#cfg-admin-delete-section'],
   },
   ventas: {
     icon: 'receipt',
@@ -4382,9 +4383,11 @@ function openCfgGroupModal(groupKey) {
 
   const root = document.getElementById('module-configuracion');
   const seen = new Set();
+  // Una sección marcada .hidden no aplica a este usuario o a esta PC (p. ej.
+  // "Eliminar sucursales" fuera del administrador general): no se lista.
   const sections = group.find
     .map(sel => _cfgFindSection(sel, root))
-    .filter(s => s && !seen.has(s) && seen.add(s));
+    .filter(s => s && !s.classList.contains('hidden') && !seen.has(s) && seen.add(s));
 
   if (!sections.length) return;
 

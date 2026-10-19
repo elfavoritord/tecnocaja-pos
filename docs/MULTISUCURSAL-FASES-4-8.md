@@ -89,7 +89,7 @@ Además:
 
 ### Pantallas
 
-- **POS, Configuración → "Sucursal conectada a Tecno Caja"** (`js/multisucursal-enlace.js`). Muestra:
+- **POS, Configuración → tarjeta "Mi Negocio" → "Sucursal conectada a Tecno Caja"** (`js/multisucursal-enlace.js`; la sección está en `CONFIG_GROUPS.negocio` de `js/app.js`). Muestra:
   - estado de la sincronización con indicador 🟢🟡🟠🔴 y barra de progreso al descargar;
   - cambios por subir, conflictos (Vincular/Ignorar), rechazos (Reintentar);
   - rangos NCF y bitácora.
