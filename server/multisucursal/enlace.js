@@ -75,6 +75,9 @@ function createEnlaceCentral({
   // Perfil del negocio (tipo, moneda, ITBIS, RNC) que la principal publica
   // en su latido para que una sucursal nueva arranque igual.
   getPerfilNegocio = async () => null,
+  // La PC se enlazó o se desvinculó: la licencia con que trabaja cambia (una
+  // sucursal usa la de la empresa, ver licencia-sucursal.js).
+  alCambiarEnlace = () => {},
 }) {
   const url = () => {
     const propia = String(env.TECNO_CAJA_SYNC_URL || '').trim();
@@ -232,7 +235,12 @@ function createEnlaceCentral({
     // latido() solo anota el error.
     await latido();
     iniciar();
+    avisarCambioDeEnlace();
     return estado();
+  }
+
+  function avisarCambioDeEnlace() {
+    try { alCambiarEnlace(); } catch (_) { /* solo es un aviso */ }
   }
 
   async function refrescarIdentidad() {
@@ -302,6 +310,7 @@ function createEnlaceCentral({
     persistEnv({ TECNO_CAJA_SYNC_TOKEN: '' });
     detener();
     await guardarEstado({ estado: ESTADOS.SIN_VINCULAR, desvinculadoEn: now().toISOString() });
+    avisarCambioDeEnlace();
     return estado();
   }
 

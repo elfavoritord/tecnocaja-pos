@@ -52,13 +52,36 @@ const verificarIdToken = async (t) => {
   return { uid: `uid-${email}`, email, auth_time: Math.floor(Date.now() / 1000) };
 };
 
-function crearPc(nombre, port, syncUrl) {
+function crearPc(nombre, port, syncUrl, extraEnv = {}) {
   const userData = path.join(L.WORK, `pc-${nombre}`);
   const home = path.join(L.WORK, `home-${nombre}`);
   for (const dir of [userData, home]) fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(path.join(home, 'Documents'), { recursive: true });
-  const env = { DB_CLIENT: 'sqlite', USERPROFILE: home, HOME: home, TECNO_CAJA_SYNC_URL: syncUrl, E2E_PLAN: 'plus' };
+  const env = { DB_CLIENT: 'sqlite', USERPROFILE: home, HOME: home, TECNO_CAJA_SYNC_URL: syncUrl, E2E_PLAN: 'plus', ...extraEnv };
   return { nombre, port, userData, env, proc: null, token: '', boot: null };
+}
+
+// Firebase Admin del POS contra el emulador (mismo proyecto que la central):
+// una cuenta de servicio de mentira con una llave generada aquí. Así la PC de
+// la sucursal registra su licencia propia y lee la de la empresa como en la
+// vida real, sin tocar Firebase de verdad.
+function firebaseDelEmulador() {
+  const { privateKey } = require('crypto').generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  return {
+    FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+      type: 'service_account', project_id: 'demo-tecnocaja', private_key_id: 'prueba',
+      private_key: privateKey, client_email: 'pos@demo-tecnocaja.iam.gserviceaccount.com', client_id: '1',
+    }),
+  };
+}
+
+function leerAppEnv(pc, clave) {
+  const texto = fs.readFileSync(path.join(pc.userData, 'config', 'app.env'), 'utf8');
+  return (texto.match(new RegExp(`^${clave}=(.*)$`, 'm')) || [])[1] || '';
 }
 
 async function arrancar(pc) {
@@ -89,7 +112,7 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
 
     // ── 1. Central ───────────────────────────────────────────────────────
     // Como la escribe el POS al sincronizar sus cuentas: el dueño en `correo`.
-    await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', contadorId: 'firma-1', correo: DUENO });
+    await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', planCode: 'plus', expiresAt: null, contadorId: 'firma-1', correo: DUENO });
     await central.fijarLimite(LIC, 3, EMILIO);
     const sCentro = await central.crear(LIC, { nombre: 'Centro', codigo: 'CEN' }, CONTADORA);
     const sNorte = await central.crear(LIC, { nombre: 'Norte', codigo: 'NOR', direccion: 'Av. Hermanas Mirabal 10', telefono: '809-555-1010' }, CONTADORA);
@@ -136,7 +159,7 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     L.check('Principal: sube el producto y el usuario', ciclo.body?.ciclo?.resultado === 'ok', JSON.stringify(ciclo.body?.ciclo?.resultado || ciclo.body));
 
     // ── 3. PC nueva: el asistente ────────────────────────────────────────
-    norte = crearPc('norte', 3494, SYNC_URL);
+    norte = crearPc('norte', 3494, SYNC_URL, firebaseDelEmulador());
     await arrancar(norte);
     const estado0 = await L.request(norte.port, 'GET', '/api/setup/status');
     L.check('PC nueva: sin configurar', estado0.body?.setupRequired === true);
@@ -208,6 +231,20 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     const usuarios = (await L.request(norte.port, 'GET', '/api/public/users-list')).body?.users || [];
     L.check('PC nueva: en la entrada están caja.norte y el dueño', usuarios.some((u) => u.usuario === 'caja.norte') && usuarios.some((u) => u.usuario === 'dueno'),
       usuarios.map((u) => u.usuario).join(', '));
+    // Licencia: la de la empresa (plan Plus, activa), no una prueba nueva.
+    const lic = estado1.body?.license || {};
+    L.check('Licencia: la PC de la sucursal trabaja con la licencia de la empresa (Plus, activa)', lic.status === 'active' && lic.planCode === 'plus' && lic.canEnter === true,
+      JSON.stringify({ status: lic.status, plan: lic.planCode, canEnter: lic.canEnter }));
+    const propia = leerAppEnv(norte, 'TECNO_CAJA_LICENSE_UID');
+    const docPropio = propia ? (await db.collection('licencias').doc(propia).get()).data() : null;
+    L.check('Licencia: la PC guarda su propio documento marcado como sucursal de la empresa (no aparece como negocio)',
+      Boolean(propia) && propia !== LIC && docPropio?.sucursalDe?.licenseId === LIC && docPropio.sucursalDe.branchUuid === sNorte.branchUuid,
+      `${propia} → ${JSON.stringify(docPropio?.sucursalDe || null)}`);
+    const docEmpresa = (await db.collection('licencias').doc(LIC).get()).data();
+    L.check('Licencia: la PC de la sucursal no escribió en la licencia de la empresa',
+      docEmpresa.businessName === 'Supermercado Bravo' && !Object.keys(docEmpresa.devices || {}).length && docEmpresa.status === 'active',
+      JSON.stringify({ nombre: docEmpresa.businessName, equipos: Object.keys(docEmpresa.devices || {}) }));
+
     const otraVez = await L.request(norte.port, 'POST', '/api/multisucursal/asistente/unirse', { idToken: tokenDe(DUENO), licenseId: LIC, branchUuid: sNorte.branchUuid, email: DUENO, clave: CLAVE_DUENO });
     L.check('PC nueva: el asistente ya no se puede volver a usar', otraVez.status === 409 && otraVez.body?.code === 'YA_CONFIGURADA', `HTTP ${otraVez.status} ${otraVez.body?.code}`);
 
@@ -228,6 +265,9 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     L.check('Norte: caja.norte entra con la clave que le pusieron en la principal', caja.status === 200 && Boolean(caja.body?.token), `HTTP ${caja.status} ${caja.body?.error || ''}`);
     const tCaja = caja.body?.token || '';
     const boot = caja.body?.data || {};
+    const cajaNorte = boot.cajasSucursal?.[0] || boot.cajas?.[0] || {};
+    L.check('Norte: trabaja con su propia caja (no "Caja Principal")', cajaNorte.nombre === 'Caja 1 - Norte' && cajaNorte.codigo === 'NOR-C01',
+      `${cajaNorte.nombre} · ${cajaNorte.codigo}`);
     const abrir = await api(norte, 'POST', '/api/cash/open', { monto: 500, obs: 'Apertura', exchangeRate: 60 }, tCaja);
     L.check('Norte: abre su caja', abrir.status === 200 || abrir.status === 201, `HTTP ${abrir.status} ${abrir.body?.error || ''}`);
     const productos = (await api(norte, 'GET', '/api/products', null, tCaja)).body;

@@ -1558,8 +1558,28 @@ async function isNetworkDbReady() {
   return testTcpReachability(host, port, 1200);
 }
 
+// Una PC de sucursal enlazada trabaja con la licencia de la empresa
+// (server/multisucursal/licencia-sucursal.js). `multisucursal` se crea más
+// abajo: solo se usa ya con el servidor andando.
+const licenciaSucursal = require('./server/multisucursal/licencia-sucursal').createLicenciaSucursal({
+  getEnlace: () => { try { return multisucursal.enlace; } catch (_) { return null; } },
+  leerLicencia: async (licenseId) => {
+    const { getFirestore: firestoreAdmin, getAdminLicensesCollectionName } = require('./modules/firebase-admin');
+    const fs = firestoreAdmin();
+    if (!fs) throw new Error('Firebase no está configurado en esta PC.');
+    const doc = await fs.collection(getAdminLicensesCollectionName()).doc(licenseId).get();
+    return doc.exists ? doc.data() : null;
+  },
+});
+
 const secureLicenseService = createLicenseService({
   query,
+  fetchRemoteLicense: async (context = {}) => licenciaSucursal.combinar(
+    await require('./modules/firebase-admin').fetchRemotePosLicenseState({
+      business_name: context.businessName,
+      principalFirebaseUid: context.principalFirebaseUid,
+    })
+  ),
   persistRemoteUid: (licenseUid) => {
     if (!licenseUid) return;
     const currentUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
@@ -2586,7 +2606,26 @@ const multisucursal = createMultisucursal({
     const [cfg] = await query('SELECT business_type, currency, tax_rate, rnc FROM config WHERE id = 1 LIMIT 1');
     return cfg ? { tipoNegocio: cfg.business_type, moneda: cfg.currency, itbis: Number(cfg.tax_rate), rnc: cfg.rnc } : null;
   },
+  alCambiarEnlace: () => { revisarLicenciaAhora().catch(() => {}); },
 });
+
+// Enlazar o desvincular cambia la licencia con que trabaja la PC (una
+// sucursal usa la de la empresa): se revisa ya, sin esperar el próximo ciclo.
+// Solo si Firebase responde: sin respuesta no se toca el estado actual (una
+// base recién configurada todavía no tiene copia guardada y quedaría bloqueada).
+async function revisarLicenciaAhora() {
+  try {
+    await Promise.race([
+      secureLicenseService.syncWithRemote({}),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Firebase tardó demasiado.')), 10000)),
+    ]);
+    secureLicenseService.invalidateStateMemo();
+    await syncRemoteLicenseToLocalConfig({ force: true }).catch(() => {});
+  } catch (error) {
+    console.warn('[multisucursal] La licencia se revisa en la próxima conexión:', error.message);
+  }
+  vigilarLicenciaEmpresa();
+}
 // Asistente inicial "Conectar como sucursal de una empresa": el dueño entra
 // con su cuenta y elige la sucursal (sin código).
 const asistenteSucursal = require('./server/multisucursal/asistente-sucursal').createAsistenteSucursal({
@@ -2623,6 +2662,12 @@ const asistenteSucursal = require('./server/multisucursal/asistente-sucursal').c
     productsCache.flush();
   },
   auditar: (entrada) => writeAuditLog(entrada),
+  // Ya configurada: la PC toma la licencia de la empresa (la revisión que se
+  // hizo al enlazar fue antes de configurar).
+  alTerminar: async () => {
+    await revisarLicenciaAhora();
+    startFirestoreLicenseWatcher().catch(() => {});
+  },
 });
 app.use('/api/multisucursal', createMultisucursalRouter({
   multisucursal,
@@ -20327,9 +20372,24 @@ async function prepareServerRuntime() {
 }
 
 // ─── Listener Firestore en tiempo real para cambios de licencia ───────────────
+// PC de sucursal: también avisa al momento cuando cambia la licencia de la
+// empresa (activar, suspender, cambiar de plan).
+function vigilarLicenciaEmpresa() {
+  if (!getFirebaseConfigStatus().adminEnabled) return Promise.resolve(false);
+  return licenciaSucursal.vigilar(
+    (licenseId, alCambiar) => {
+      const { getFirestore: firestoreAdmin, getAdminLicensesCollectionName } = require('./modules/firebase-admin');
+      return firestoreAdmin().collection(getAdminLicensesCollectionName()).doc(licenseId)
+        .onSnapshot(alCambiar, (err) => console.warn('[license-watcher] Licencia de la empresa:', err.message));
+    },
+    () => { syncRemoteLicenseToLocalConfig({ force: true, allowRemoteWrite: false }).catch(() => {}); }
+  ).catch(() => false);
+}
+
 async function startFirestoreLicenseWatcher() {
   const firebaseStatus = getFirebaseConfigStatus();
   if (!firebaseStatus.adminEnabled) return false;
+  vigilarLicenciaEmpresa();
   if (licenseWatcherUnsubscribe) return true;
 
   try {

@@ -52,6 +52,14 @@ function usuarioDelCorreo(email) {
   return base.length >= 3 ? base : 'dueno';
 }
 
+// Primera caja de la sucursal: "Caja 1 - Norte", código "NOR-C01".
+function cajaDeLaSucursal(sucursal = {}) {
+  const base = String(sucursal.codigo || sucursal.nombre || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/[^A-Z0-9]+/g, '').slice(0, 14) || 'SUC';
+  return { nombre: texto(`Caja 1 - ${sucursal.nombre || 'Sucursal'}`, 100), codigo: `${base}-C01` };
+}
+
 function sqlFecha(fecha) {
   return fecha.toISOString().slice(0, 19).replace('T', ' ');
 }
@@ -76,6 +84,8 @@ function createAsistenteSucursal({
   esEmpresaDeServicios = () => false,
   limpiarCaches = () => {},
   auditar = async () => {},
+  // Al final: la PC ya configurada toma la licencia de la empresa.
+  alTerminar = async () => {},
   logger = console,
   esperaPrimeraSincronizacionMs = 60000,
   now = () => new Date(),
@@ -181,9 +191,11 @@ function createAsistenteSucursal({
         [businessId, texto(sucursal.nombre, 160) || 'Sucursal', 'SUC-001', sucursal.direccion || null, sucursal.telefono || null, sucursal.encargado || null]
       );
       const branchId = Number(sucursalLocal.insertId || 0) || 1;
+      // La caja es de ESTA sucursal (no "Caja Principal"): en los reportes de
+      // la empresa se distingue de las cajas de las demás sucursales.
       const caja = await conn.query(
-        "INSERT INTO cash_registers (branch_id, nombre, codigo, estado, created_at) VALUES (?, 'Caja Principal', 'CAJ-001', 'Activa', datetime('now'))",
-        [branchId]
+        "INSERT INTO cash_registers (branch_id, nombre, codigo, estado, created_at) VALUES (?, ?, ?, 'Activa', datetime('now'))",
+        [branchId, cajaDeLaSucursal(sucursal).nombre, cajaDeLaSucursal(sucursal).codigo]
       );
       const cashRegisterId = Number(caja.insertId || 0) || 1;
       await conn.query('UPDATE config SET active_branch_id = ?, active_cash_register_id = ? WHERE id = 1', [branchId, cashRegisterId]);
@@ -251,7 +263,7 @@ function createAsistenteSucursal({
       branchId: base.branchId,
       branchName: sucursal.nombre,
       cashRegisterId: base.cashRegisterId,
-      cashRegisterName: 'Caja Principal',
+      cashRegisterName: cajaDeLaSucursal(sucursal).nombre,
       setupMode: modo,
       linkedBy: dueno.usuario,
     });
@@ -278,6 +290,7 @@ function createAsistenteSucursal({
     await multisucursal.enlace.refrescarIdentidad();
     const ciclo = await primeraSincronizacion();
     limpiarCaches();
+    await Promise.resolve(alTerminar()).catch((error) => logger.warn?.('[asistente-sucursal] Revisar la licencia de la empresa:', error.message));
 
     await auditar({
       userId: base.userId,
@@ -303,4 +316,4 @@ function createAsistenteSucursal({
   return { empresasDelDueno, unirse };
 }
 
-module.exports = { createAsistenteSucursal, ErrorAsistente, usuarioDelCorreo, TABLAS_A_VACIAR };
+module.exports = { createAsistenteSucursal, ErrorAsistente, usuarioDelCorreo, cajaDeLaSucursal, TABLAS_A_VACIAR };

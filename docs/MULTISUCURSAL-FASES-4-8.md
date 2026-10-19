@@ -27,15 +27,21 @@ Decisión de Emilio (2026-10-19): el cliente no maneja códigos. Una PC se conec
 2. La Sync API verifica la sesión (`POST /v1/acceso/dueno`) y devuelve las empresas cuya licencia tiene ese correo de dueño (`correo`, que es el que escribe el POS al sincronizar sus cuentas, u `ownerEmail`/`email`), con sus sucursales y la PC que tiene cada una. La principal no se puede elegir aquí: es la PC donde ya trabaja el negocio.
 3. El dueño elige la sucursal. `POST /api/multisucursal/asistente/unirse` (`server/multisucursal/asistente-sucursal.js`) hace, en este orden:
    - **Enlace primero** (`/v1/equipos/activar-dueno`). Si falla, la PC queda igual que antes, sin configurar.
-   - **Base local desde cero** como esa sucursal, con el perfil de la principal (tipo de negocio, moneda, ITBIS, RNC; la principal lo publica en su latido). Queda en monocaja (SQLite) o en multicaja (MariaDB, con clave de red para las demás cajas). La caja queda cerrada: la abre el cajero.
+   - **Base local desde cero** como esa sucursal, con el perfil de la principal (tipo de negocio, moneda, ITBIS, RNC; la principal lo publica en su latido). Queda en monocaja (SQLite) o en multicaja (MariaDB, con clave de red para las demás cajas). La caja es **de esa sucursal** ("Caja 1 - Norte", código `NOR-C01`, no "Caja Principal") y queda cerrada: la abre el cajero.
    - **Administrador general para el dueño:** el usuario es lo que va antes de la @ de su correo, con su misma contraseña. No lleva correo, para que las sincronizaciones de esta PC no toquen su cuenta de la principal.
-   - **Licencia propia de esta PC**, de prueba por 30 días y marcada `sucursalDe` (empresa y sucursal).
+   - **Documento propio de la PC en `licencias`**, marcado `sucursalDe` (empresa y sucursal). No es un negocio aparte: el panel no lo lista y la PC trabaja con la licencia de la empresa (ver abajo).
    - **Primera sincronización**, con un tope de 60 s: usuarios, catálogo y rangos NCF de la sucursal.
 4. La PC queda en la **pantalla de entrada**: entra el usuario que se creó para esa sucursal en la principal, abre su caja y vende.
 
 **PC que ya trabaja** (la principal, o una sucursal que se desconectó): Configuración → Mi Negocio → "Sucursal conectada a Tecno Caja" → cuenta del dueño → elegir sucursal (`/api/multisucursal/dueno/empresas` y `/dueno/activar`). El código de equipo sigue ahí, plegado, como respaldo para soporte.
 
-**Cada PC de sucursal conserva su propia licencia.** Lo que la ata a la empresa es el enlace, no la licencia. Así, las sincronizaciones viejas de la nube, que van atadas a la licencia y a los ids locales, nunca pisan los datos de la principal. La central solo rechaza (`OTRA_EMPRESA`) una PC que ya tiene ventas de otro negocio.
+**Licencia: la de la empresa.** Una PC de sucursal enlazada trabaja con el plan, el estado y el vencimiento de la licencia de la empresa (`server/multisucursal/licencia-sucursal.js`). Si Emilio la activa, la renueva o la suspende, todas las sucursales la siguen, y hay un aviso en tiempo real sobre el documento de la empresa. El límite de equipos no se aplica a las PC de sucursal: las limitan `maxSucursales` y una PC por sucursal.
+
+Pero la PC conserva **su propio id** (`TECNO_CAJA_LICENSE_UID`, documento con `sucursalDe`): las sincronizaciones viejas de la nube van atadas a ese id y a los ids locales, y así nunca escriben sobre los datos de la principal. **No hacer que la PC adopte el id de la empresa.** La prueba punta a punta lo comprueba con Firebase (emulador): la licencia de la empresa queda intacta.
+
+El panel de Emilio (`tecno-caja-admin`) no lista esos documentos como negocios ni los cuenta. La PC aparece en la sección Sucursales de su empresa. Si la PC se desvincula, la reemplazan o la revocan, vuelve a su licencia propia.
+
+La central solo rechaza (`OTRA_EMPRESA`) una PC que ya tiene ventas de otro negocio.
 
 Seguridad:
 
@@ -137,7 +143,7 @@ Además:
 | Prueba | Comando | Resultado |
 |---|---|---|
 | Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **54/54**: sincronización, POS de punta a punta (varias PC SQLite + Sync API) y la cuenta del dueño (otra cuenta, sesión vieja, otra empresa con ventas, sucursal o licencia inactiva) |
-| **PC nueva con la cuenta del dueño**: principal real + PC nueva en la pantalla real del asistente (Chrome) → entra el cajero, abre caja y vende | `npm run test:multisucursal-asistente` | **29/29** |
+| **PC nueva con la cuenta del dueño**: principal real + PC nueva en la pantalla real del asistente (Chrome) → entra el cajero, abre caja y vende | `npm run test:multisucursal-asistente` | **33/33**, con Firebase (emulador) en la PC nueva: trabaja con la licencia de la empresa (Plus activa), su caja propia y sin escribir en la licencia de la empresa |
 | **Integral con dos POS reales** (server.js en SQLite, API HTTP real, ventas reales) + pantallas en Chrome | `npm run test:multisucursal-integral` | **40/40** |
 | Pantallas de los paneles en Chrome | `probar-pantalla-sucursales.js` | **24/24** |
 | MariaDB real: migraciones + ciclo de sincronización con `CONCAT` | `npm run test:multisucursal-mariadb` | **23/23** |
@@ -145,7 +151,7 @@ Además:
 | Enlace de una PC de punta a punta (código y cuenta del dueño en Configuración) | `npm run test:multisucursal-enlace` | **22/22** |
 | Multicaja LAN con MariaDB (ventas a la vez, sin Internet, contingencia) | `npm run test:e2e-lan` | **44/44** |
 | Respaldo de una sucursal enlazada (ida y vuelta `.tcbak`) | `npx jest tests/services/backup-core-multisucursal.test.js` | **1/1** |
-| Regresión | `npm test` | 94 suites, **674 OK** (las 4 del emulador se omiten sin emulador) |
+| Regresión | `npm test` | 95 suites, **683 OK** (las 4 del emulador se omiten sin emulador), incluida `tests/multisucursal/licencia-sucursal.test.js` |
 
 ## Matriz de aceptación (prompt maestro §21)
 
@@ -260,7 +266,6 @@ Cloud Run con mínimo 0 instancias, más Firestore.
 
 ## Pendiente
 
-- **Licencia de cada PC de sucursal:** arranca en prueba de 30 días, como cualquier instalación, y se activa desde el panel. En el panel aparece como «Empresa · Sucursal», con `sucursalDe`. Falta decidir si debe seguir sola el plan de la empresa.
 - Transferencias de inventario entre sucursales con bases separadas: hoy solo existen en el modo legado de base compartida.
 - Bajar los últimos 3 meses de ventas a una PC reinstalada: hoy se suben, pero no se bajan.
 - Imágenes de producto en el catálogo de la empresa: hoy no viajan.

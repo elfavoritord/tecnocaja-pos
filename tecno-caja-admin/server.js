@@ -97,6 +97,11 @@ function col(name) {
   return db.collection(name);
 }
 function docData(doc) { return { id: doc.id, ...doc.data() }; }
+
+// La licencia propia de una PC de sucursal (multisucursal: `sucursalDe`) no es
+// un negocio: esa PC trabaja con la licencia de su empresa y aparece en la
+// sección Sucursales de la empresa, no en la lista de negocios.
+function esNegocio(doc) { return !doc.data().sucursalDe; }
 function isoNow() { return new Date().toISOString(); }
 
 async function audit(actor, action, target, detail) {
@@ -265,7 +270,7 @@ app.get('/api/dashboard', requireAuth, async (_req, res) => {
       col(COL_SOLICITUDES).where('status', '==', 'pendiente').get(),
     ]);
 
-    const negocios = licSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const negocios = licSnap.docs.filter(esNegocio).map(d => ({ id: d.id, ...d.data() }));
     const licMap = {};
     negocios.forEach(n => { const s = n.status || 'trial'; licMap[s] = (licMap[s] || 0) + 1; });
 
@@ -305,7 +310,7 @@ app.get('/api/negocios', requireAuth, async (req, res) => {
       : await col(COL_LICENCIAS).get();
 
     // Resolver nombres de contadores para docs que tengan contadorId pero no contadorNombre
-    const negocios = snap.docs.map(docData);
+    const negocios = snap.docs.filter(esNegocio).map(docData);
     const sinNombre = negocios.filter(n => n.contadorId && !n.contadorNombre);
 
     if (sinNombre.length > 0) {
@@ -635,7 +640,7 @@ app.get('/api/licencias-resumen', requireAuth, async (_req, res) => {
   try {
     const snap = await col(COL_LICENCIAS).get();
     const m = {};
-    snap.docs.forEach(d => { const s = d.data().status || 'trial'; m[s] = (m[s] || 0) + 1; });
+    snap.docs.filter(esNegocio).forEach(d => { const s = d.data().status || 'trial'; m[s] = (m[s] || 0) + 1; });
     res.json(m);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
