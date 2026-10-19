@@ -9,7 +9,7 @@ Reglas de sucursales y equipos: `vendor/multisucursal/sucursales.js`, copia de `
 | Método | Ruta | Para qué |
 |---|---|---|
 | GET | `/health` | Salud |
-| POST | `/v1/acceso/dueno` | `{ idToken }` (Firebase Auth del **dueño del negocio**: su correo y contraseña de Tecno Caja, o su Google) → `{ empresas: [{ licenseId, nombre, perfil, sucursales: [{ ..., pc }] }] }`. Dueño = `ownerEmail`/`email` de la licencia. Solo empresas con sucursales creadas. El inicio de sesión debe tener menos de 30 min (`SESION_VIEJA`). Máximo 20 intentos cada 15 min por IP |
+| POST | `/v1/acceso/dueno` | `{ idToken }` (Firebase Auth del **dueño del negocio**: su correo y contraseña de Tecno Caja, o su Google) → `{ empresas: [{ licenseId, nombre, perfil, sucursales: [{ ..., pc }] }] }`. Dueño = `correo` (lo escribe el POS), `ownerEmail` o `email` de la licencia. Solo empresas con sucursales creadas. El inicio de sesión debe tener menos de 30 min (`SESION_VIEJA`). Máximo 20 intentos cada 15 min por IP |
 | POST | `/v1/equipos/activar-dueno` | `{ idToken, licenseId, branchUuid, equipo }` → 201 igual que `activar` más el `perfil` de la principal (tipo de negocio, moneda, ITBIS, RNC). **Así se conecta una PC normalmente, sin código** (asistente inicial y Configuración del POS) |
 | POST | `/v1/equipos/activar` | `{ codigo, equipo }` → 201 `{ token, equipoId, empresa, sucursal }`. Respaldo para soporte: el código lo generan Emilio o el contador; sirve una vez y vence en 24 h. Máximo 10 intentos cada 15 min por IP |
 
@@ -39,7 +39,7 @@ Ninguna regla de `firestore.rules` las abre: quedan cerradas a cualquier cliente
 Desde la raíz del repo, con el emulador de Firestore (Java 17 → firebase-tools 13 por `npx`):
 
 ```bash
-npm run test:multisucursal-central     # reglas + rutas de los paneles + esta API (53 pruebas)
+npm run test:multisucursal-central     # reglas + rutas de los paneles + esta API (54 pruebas)
 npm run test:multisucursal-enlace      # API + POS en SQLite + Configuración en Chrome
 npm run test:multisucursal-asistente   # PC nueva: asistente con la cuenta del dueño → entra el cajero y vende
 ```
@@ -48,7 +48,7 @@ En las pruebas Firebase Auth es falso (`createApp({ verificarIdToken })`); en Cl
 
 ## Despliegue
 
-Desplegada el 2026-10-19 como `tecno-caja-sync-api` (us-east1; revisión con la cuenta del dueño: `00004`). Emilio autorizó subirla; para cada cambio:
+Desplegada el 2026-10-19 como `tecno-caja-sync-api` (us-east1; revisión con la cuenta del dueño: `00005`). Emilio autorizó subirla; para cada cambio:
 
 ```powershell
 cd cloud/sync-api

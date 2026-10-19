@@ -499,12 +499,16 @@ function createSucursalesCentral({
   }
 
   // ── Entrar con la cuenta del dueño (sin código) ───────────────────────────
-  // El dueño es el correo de la licencia de la empresa (ownerEmail o email).
-  // La Sync API ya comprobó su contraseña con Firebase Auth antes de llamar
-  // aquí: `dueno` es { uid, email } del token verificado.
+  // El dueño es el correo de la licencia de la empresa. Según quién escribió
+  // la licencia está en `correo` (sincronización de cuentas del POS),
+  // `ownerEmail` o `email` (asistente inicial, panel). La Sync API ya comprobó
+  // su contraseña con Firebase Auth antes de llamar aquí: `dueno` es
+  // { uid, email } del token verificado.
+  const CAMPOS_CORREO_DUENO = ['correo', 'ownerEmail', 'email'];
+
   function esDueno(lic, email) {
     const correo = normalizarCorreo(email);
-    return Boolean(correo) && [lic?.ownerEmail, lic?.email].some((v) => normalizarCorreo(v) === correo);
+    return Boolean(correo) && CAMPOS_CORREO_DUENO.some((campo) => normalizarCorreo(lic?.[campo]) === correo);
   }
 
   // Las empresas con sucursales de este dueño, con la PC que tiene cada
@@ -514,14 +518,15 @@ function createSucursalesCentral({
     const correo = normalizarCorreo(email);
     if (!correo) return [];
     const docs = new Map();
-    for (const campo of ['ownerEmail', 'email']) {
+    for (const campo of CAMPOS_CORREO_DUENO) {
       const snap = await db.collection(COL_LICENCIAS).where(campo, '==', correo).limit(25).get();
       snap.docs.forEach((d) => docs.set(d.id, d));
     }
     const empresas = [];
     for (const doc of docs.values()) {
       const lic = doc.data();
-      if (lic.deleted || !lic.companyUuid) continue;
+      // La licencia propia de una PC de sucursal (sucursalDe) no es una empresa.
+      if (lic.deleted || !lic.companyUuid || lic.sucursalDe) continue;
       const [sucursales, equipos] = await Promise.all([
         sucursalesRef(doc.id).get(),
         db.collection(COL_EQUIPOS).where('licenseId', '==', doc.id).get(),

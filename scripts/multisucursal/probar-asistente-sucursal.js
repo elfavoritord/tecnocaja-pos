@@ -88,7 +88,8 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     const SYNC_URL = `http://127.0.0.1:${syncApi.address().port}`;
 
     // ── 1. Central ───────────────────────────────────────────────────────
-    await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', contadorId: 'firma-1', ownerEmail: DUENO, email: DUENO });
+    // Como la escribe el POS al sincronizar sus cuentas: el dueño en `correo`.
+    await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', contadorId: 'firma-1', correo: DUENO });
     await central.fijarLimite(LIC, 3, EMILIO);
     const sCentro = await central.crear(LIC, { nombre: 'Centro', codigo: 'CEN' }, CONTADORA);
     const sNorte = await central.crear(LIC, { nombre: 'Norte', codigo: 'NOR', direccion: 'Av. Hermanas Mirabal 10', telefono: '809-555-1010' }, CONTADORA);

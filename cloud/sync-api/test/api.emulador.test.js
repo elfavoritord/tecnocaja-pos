@@ -211,6 +211,16 @@ describir('Sync API: activar equipos, identidad y latido', () => {
       expect(JSON.stringify(r.body)).not.toContain('tokenHash');
     });
 
+    test('el correo del dueño también vale en `correo` (como lo escribe el POS)', async () => {
+      await db.collection('licencias').doc(LIC).set({ businessName: 'Supermercado Bravo', status: 'active', contadorId: 'firma-1', correo: DUENO });
+      const norte = await central.crear(LIC, { nombre: 'Norte' }, CONTADORA);
+      // La licencia propia de una PC de sucursal no aparece como empresa.
+      await db.collection('licencias').doc('pos_pc_norte').set({ correo: DUENO, companyUuid: norte.companyUuid, sucursalDe: { licenseId: LIC } });
+      const r = await empresas(tokenDe(DUENO)).expect(200);
+      expect(r.body.empresas.map((e) => e.licenseId)).toEqual([LIC]);
+      await unir(tokenDe(DUENO), norte.branchUuid).expect(201);
+    });
+
     test('otra cuenta, un token falso o una sesión vieja no ven nada', async () => {
       await central.crear(LIC, { nombre: 'Centro' }, CONTADORA);
       expect((await empresas(tokenDe('otro@correo.test')).expect(404)).body.code).toBe('SIN_EMPRESA');

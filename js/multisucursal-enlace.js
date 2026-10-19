@@ -13,7 +13,7 @@
    Solo administrador general (el servidor lo exige).
    ============================================================ */
 
-/* global showToast, showDeleteConfirm, getTecnoCajaAuthToken, DB, ensureFirebaseWebAuthLoaded */
+/* global showToast, showDeleteConfirm, getTecnoCajaAuthToken, DB */
 
 (function () {
   'use strict';
@@ -136,9 +136,18 @@
   }
 
   async function entrarComoDueno(conGoogle) {
-    if (typeof ensureFirebaseWebAuthLoaded === 'function') await ensureFirebaseWebAuthLoaded();
+    // Ruta absoluta: el import() de un script clásico se resuelve contra la URL
+    // del script (js/...), no la de la página.
+    if (!window.firebaseWebAuth?.signInWithEmail) {
+      try {
+        await import('/js/firebase-web-auth.js');
+      } catch (error) {
+        console.warn('[multisucursal] No cargó Firebase Auth:', error);
+        throw new Error('No se pudo cargar el inicio de sesión de Tecno Caja. Revisa que esta PC tenga Internet y vuelve a intentar.');
+      }
+    }
     const fb = window.firebaseWebAuth;
-    if (!fb?.signInWithEmail) throw new Error('Para conectar esta PC hace falta Internet.');
+    if (!fb?.signInWithEmail) throw new Error('No se pudo cargar el inicio de sesión de Tecno Caja. Cierra y vuelve a abrir Tecno Caja.');
     let cuenta;
     if (conGoogle) {
       cuenta = await fb.signInWithGoogle('es');

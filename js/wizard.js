@@ -1,6 +1,6 @@
 ﻿'use strict';
 
-/* global showToast, showLoginScreen, loadLoginUsers, refreshStartupStatus, ensureFirebaseWebAuthLoaded, showDeleteConfirm, setupState, setupWizard */
+/* global showToast, showLoginScreen, loadLoginUsers, refreshStartupStatus, showDeleteConfirm, setupState, setupWizard */
 
 /**
  * Tecno Caja Wizard v3.0 — Flujo con selección de escenario por plan
@@ -733,14 +733,20 @@
     setTimeout(() => wzsEl('wzs-email')?.focus(), 50);
   }
 
+  // Firebase Auth del navegador (js/firebase-web-auth.js trae el SDK de
+  // gstatic). Ruta absoluta: un import() en un script clásico se resuelve
+  // contra la URL del script (js/wizard.js), no la de la página.
   async function wzsFirebase() {
-    if (typeof ensureFirebaseWebAuthLoaded === 'function') {
-      await ensureFirebaseWebAuthLoaded();
-    } else {
-      try { await import('./js/firebase-web-auth.js'); } catch (_) { /* sin Internet */ }
+    if (!window.firebaseWebAuth?.signInWithEmail) {
+      try {
+        await import('/js/firebase-web-auth.js');
+      } catch (error) {
+        console.warn('[wizard] No cargó Firebase Auth:', error);
+        throw new Error('No se pudo cargar el inicio de sesión de Tecno Caja. Revisa que esta PC tenga Internet y vuelve a intentar.');
+      }
     }
     if (!window.firebaseWebAuth?.signInWithEmail) {
-      throw new Error('Para conectar esta PC como sucursal hace falta Internet.');
+      throw new Error('No se pudo cargar el inicio de sesión de Tecno Caja. Cierra y vuelve a abrir Tecno Caja.');
     }
     return window.firebaseWebAuth;
   }

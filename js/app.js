@@ -3660,7 +3660,10 @@ async function ensureFirebaseWebAuthLoaded() {
   if (window.firebaseWebAuth?.signInWithGoogle) return true;
   if (window.TcConnectivity?.internet?.online === false) return false;
   try {
-    await import('./js/firebase-web-auth.js');
+    // Ruta absoluta: un import() dentro de un script clásico se resuelve
+    // contra la URL del script (js/app.js), no la de la página; con
+    // './js/...' pedía /js/js/firebase-web-auth.js (404).
+    await import('/js/firebase-web-auth.js');
   } catch (_error) {
     return false;
   }

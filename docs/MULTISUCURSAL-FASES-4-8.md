@@ -24,7 +24,7 @@ Decisión de Emilio (2026-10-19): el cliente no maneja códigos. Una PC se conec
 **PC nueva de una sucursal** (asistente inicial → estructura multisucursal → "Conectar como sucursal de una empresa"):
 
 1. El dueño escribe su correo y su contraseña. El navegador del POS inicia sesión en Firebase Auth (`js/firebase-web-auth.js` → `signInWithEmail`).
-2. La Sync API verifica la sesión (`POST /v1/acceso/dueno`) y devuelve las empresas cuyo `ownerEmail`/`email` es ese correo, con sus sucursales y la PC que tiene cada una. La principal no se puede elegir aquí: es la PC donde ya trabaja el negocio.
+2. La Sync API verifica la sesión (`POST /v1/acceso/dueno`) y devuelve las empresas cuya licencia tiene ese correo de dueño (`correo`, que es el que escribe el POS al sincronizar sus cuentas, u `ownerEmail`/`email`), con sus sucursales y la PC que tiene cada una. La principal no se puede elegir aquí: es la PC donde ya trabaja el negocio.
 3. El dueño elige la sucursal. `POST /api/multisucursal/asistente/unirse` (`server/multisucursal/asistente-sucursal.js`) hace, en este orden:
    - **Enlace primero** (`/v1/equipos/activar-dueno`). Si falla, la PC queda igual que antes, sin configurar.
    - **Base local desde cero** como esa sucursal, con el perfil de la principal (tipo de negocio, moneda, ITBIS, RNC; la principal lo publica en su latido). Queda en monocaja (SQLite) o en multicaja (MariaDB, con clave de red para las demás cajas). La caja queda cerrada: la abre el cajero.
@@ -136,7 +136,7 @@ Además:
 
 | Prueba | Comando | Resultado |
 |---|---|---|
-| Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **53/53**: sincronización, POS de punta a punta (varias PC SQLite + Sync API) y la cuenta del dueño (otra cuenta, sesión vieja, otra empresa con ventas, sucursal o licencia inactiva) |
+| Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **54/54**: sincronización, POS de punta a punta (varias PC SQLite + Sync API) y la cuenta del dueño (otra cuenta, sesión vieja, otra empresa con ventas, sucursal o licencia inactiva) |
 | **PC nueva con la cuenta del dueño**: principal real + PC nueva en la pantalla real del asistente (Chrome) → entra el cajero, abre caja y vende | `npm run test:multisucursal-asistente` | **29/29** |
 | **Integral con dos POS reales** (server.js en SQLite, API HTTP real, ventas reales) + pantallas en Chrome | `npm run test:multisucursal-integral` | **40/40** |
 | Pantallas de los paneles en Chrome | `probar-pantalla-sucursales.js` | **24/24** |
@@ -216,7 +216,7 @@ Todo se borra al cerrar.
    - vende, cobra e imprime;
    - Configuración → "Sucursal conectada a Tecno Caja" aparece sin enlazar.
 4. Prueba real contra la Sync API de producción:
-   1. En tu panel (`tecno-caja-admin`), abre la empresa de la PC principal → Sucursales: límite 2 y crea "Principal" (la primera queda como principal) y "Norte". La licencia tiene que tener el correo del dueño (`ownerEmail`), el mismo con el que entra a la app de reportes.
+   1. En tu panel (`tecno-caja-admin`), abre la empresa de la PC principal → Sucursales: límite 2 y crea "Principal" (la primera queda como principal) y "Norte". El dueño es el correo del administrador de la PC principal (la licencia lo guarda en `correo`), el mismo con el que entra a la app de reportes.
    2. En la PC principal: Configuración → Mi Negocio → "Sucursal conectada a Tecno Caja" → correo y contraseña del dueño → elegir la principal → Conectar.
    3. En la principal, crea un usuario (por ejemplo, un cajero) y márcale la sucursal "Norte". Publica el catálogo.
    4. En la PC nueva (instalada sin configurar): asistente → multisucursal → "Conectar como sucursal de una empresa" → correo y contraseña del dueño → "Norte". Queda en la pantalla de entrada con el cajero.
