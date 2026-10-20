@@ -125,11 +125,21 @@ describir('Sync API: activar equipos, identidad y latido', () => {
     expect((await identidad(vieja.token).expect(403)).body.code).toBe('EQUIPO_REEMPLAZADO');
     await identidad(nueva.token).expect(200);
 
-    // Otra sucursal no se toca.
+    // Otra sucursal (otra PC) no se toca.
     const sur = await sucursalConCodigo('Sur');
-    const pcSur = (await activar(sur.codigo).expect(201)).body;
+    const pcSur = (await activar(sur.codigo, { ...PC, deviceId: 'npd_sur', serverId: 'srv_sur0000000000000' }).expect(201)).body;
     expect(pcSur.reemplazados).toBe(0);
     await identidad(nueva.token).expect(200);
+  });
+
+  test('la misma instalación configurada otra vez como otra sucursal deja fuera su enlace anterior', async () => {
+    const norte = await sucursalConCodigo('Norte');
+    const sur = await sucursalConCodigo('Sur');
+    const antes = (await activar(norte.codigo).expect(201)).body;
+    const despues = (await activar(sur.codigo, { ...PC, deviceId: 'npd_otra_red' }).expect(201)).body;
+    expect(despues.reemplazados).toBe(1);
+    expect((await identidad(antes.token).expect(403)).body.code).toBe('EQUIPO_REEMPLAZADO');
+    expect((await central.listarEquipos(LIC, EMILIO)).filter((e) => e.estado === 'activo').map((e) => e.branchUuid)).toEqual([sur.branchUuid]);
   });
 
   test('revocar un equipo es solo de Emilio y lo saca de inmediato', async () => {
@@ -265,7 +275,7 @@ describir('Sync API: activar equipos, identidad y latido', () => {
     test('el latido de la principal publica el perfil del negocio; el de una sucursal no', async () => {
       const centro = await central.crear(LIC, { nombre: 'Centro' }, CONTADORA);
       const norte = await central.crear(LIC, { nombre: 'Norte' }, CONTADORA);
-      const pcCentro = (await unir(tokenDe(DUENO), centro.branchUuid, { ...PC, deviceId: 'npd_c', licenseId: LIC }).expect(201)).body;
+      const pcCentro = (await unir(tokenDe(DUENO), centro.branchUuid, { ...PC, deviceId: 'npd_c', serverId: 'srv_centro000000000', licenseId: LIC }).expect(201)).body;
       const pcNorte = (await unir(tokenDe(DUENO), norte.branchUuid, { ...PC, deviceId: 'npd_n', ventas: 0 }).expect(201)).body;
       const latido = (token, perfil) => request(app).post('/v1/latido').set('Authorization', `Bearer ${token}`).send({ appVersion: '1.5.1', perfil }).expect(200);
       await latido(pcNorte.token, { tipoNegocio: 'pizzeria' });

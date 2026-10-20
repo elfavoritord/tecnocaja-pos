@@ -19,6 +19,9 @@ const FacturaPlantillas = require('./public/js/factura-plantillas.js');
 // server/multisucursal/central/ del POS por scripts/vendor-sync.js.
 const { createSucursalesCentral } = require('./server/multisucursal/sucursales');
 const { createSucursalesRouter } = require('./server/multisucursal/sucursales.routes');
+// Las sucursales conectadas por Internet (cada una con su PC y su base) en los
+// reportes, productos y filtros del negocio.
+const { createSucursalesConectadas } = require('./server/multisucursal/sucursales-conectadas');
 
 // ── Firebase Admin SDK ─────────────────────────────────────────────────────
 let adminSdk = null;
@@ -142,6 +145,7 @@ async function lookupRncRecord(rawInput) {
 const COL_ADMINS      = 'platform_admins';
 const COL_CONTADORES  = 'contadores';
 const COL_LICENCIAS   = process.env.FIREBASE_ADMIN_LICENSES_COLLECTION || 'licencias';
+const conectadas = createSucursalesConectadas({ getDb: () => db, colLicencias: COL_LICENCIAS });
 const COL_SOLICITUDES = 'support_requests';
 const COL_VERSIONES   = 'app_versions';
 const COL_HISTORIAL   = 'license_history';
@@ -747,7 +751,7 @@ app.get('/api/clientes/:id', requireAuth, async (req, res) => {
     if (data.contadorId !== req.contador.contadorDocId) {
       return res.status(403).json({ error: 'No tienes acceso a este cliente.' });
     }
-    data.sucursales = normalizeBusinessBranches(data);
+    data.sucursales = await conectadas.sucursales(req.params.id, normalizeBusinessBranches(data));
     data.cashRegisters = normalizeBusinessCashRegisters(data);
     data.cantidad_sucursales = data.sucursales.length || data.cantidad_sucursales || null;
     data.diasRestantes = daysFromNow(vencimientoDate(data));
@@ -859,6 +863,21 @@ app.put('/api/solicitudes/:id/cancelar', requireAuth, async (req, res) => {
 // (server/sync/sync-pos-stats.js).
 // ══════════════════════════════════════════════════════════════════════
 
+// A qué sucursal va un producto que pide el contador. Una sucursal de la
+// principal (id local) la aplica su POS en esa sucursal. Una sucursal
+// conectada por Internet tiene su propia PC: el producto lo crea la principal
+// en el catálogo de la empresa y le llega a esa sucursal (sucursalesEmpresa).
+// Sin sucursal = toda la empresa.
+async function sucursalDelPedido(businessId, bizData, branchId) {
+  const normalizedBranchId = normalizeBranchId(branchId);
+  if (!normalizedBranchId) return { branchNombre: null, normalizedBranchId: null, sucursalesEmpresa: null };
+  const sucursales = await conectadas.sucursales(businessId, normalizeBusinessBranches(bizData));
+  const match = sucursales.find((s) => s.id === normalizedBranchId);
+  if (!match) return { error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' };
+  if (match.conectada) return { branchNombre: match.nombre, normalizedBranchId: null, sucursalesEmpresa: [match.branchUuid] };
+  return { branchNombre: match.nombre, normalizedBranchId, sucursalesEmpresa: null };
+}
+
 app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) => {
   try {
     const bizDoc = await col(COL_LICENCIAS).doc(req.params.businessId).get();
@@ -909,14 +928,9 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
     // Si eligieron sucursal, validar contra la lista real sincronizada por el
     // POS (no confiar en lo que mande el navegador) — evita guardar un
     // branchId inventado o de una sucursal ya eliminada.
-    let branchNombre = null;
-    const normalizedBranchId = normalizeBranchId(branchId);
-    if (normalizedBranchId) {
-      const sucursales = normalizeBusinessBranches(bizData);
-      const match = sucursales.find((s) => s.id === normalizedBranchId);
-      if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
-      branchNombre = match.nombre;
-    }
+    const destino = await sucursalDelPedido(businessId, bizData, branchId);
+    if (destino.error) return res.status(400).json({ error: destino.error });
+    const { branchNombre, normalizedBranchId, sucursalesEmpresa } = destino;
 
     const ref = await col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').add({
       accion:        accionNorm,
@@ -936,6 +950,7 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
       itbisMonto:    Math.max(0, Number(itbisMonto || 0)),
       branchId:      normalizedBranchId,
       branchNombre,
+      sucursalesEmpresa,
       imagenData:    imagenData || null,
       status:        'pendiente',
       contadorId:    req.contador.contadorDocId,
@@ -974,14 +989,9 @@ app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (
       return res.status(409).json({ error: 'Este producto ya se aplicó en el sistema del cliente — editarlo aquí no tendría efecto. Edítalo directo desde el módulo Productos del POS.' });
     }
 
-    let branchNombre = null;
-    const normalizedBranchId = normalizeBranchId(branchId);
-    if (normalizedBranchId) {
-      const sucursales = normalizeBusinessBranches(bizData);
-      const match = sucursales.find((s) => s.id === normalizedBranchId);
-      if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
-      branchNombre = match.nombre;
-    }
+    const destino = await sucursalDelPedido(businessId, bizData, branchId);
+    if (destino.error) return res.status(400).json({ error: destino.error });
+    const { branchNombre, normalizedBranchId, sucursalesEmpresa } = destino;
 
     // accion/productoId no se editan aquí — son de qué trata la solicitud
     // (crear uno nuevo vs. modificar uno real ya existente), se conservan
@@ -1002,6 +1012,7 @@ app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (
       itbisMonto:    Math.max(0, Number(itbisMonto || 0)),
       branchId:      normalizedBranchId,
       branchNombre,
+      sucursalesEmpresa,
       imagenData:    imagenData !== undefined ? (imagenData || null) : (pendingDoc.data().imagenData || null),
       // Reintentar desde limpio — si estaba en error (ej. nombre duplicado),
       // el POS debe volver a intentarlo con los datos corregidos.
@@ -1102,9 +1113,14 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
     let branchNombre = null;
     const normalizedBranchId = normalizeBranchId(branchId);
     if (normalizedBranchId) {
-      const sucursales = normalizeBusinessBranches(bizData);
+      const sucursales = await conectadas.sucursales(businessId, normalizeBusinessBranches(bizData));
       const match = sucursales.find((s) => s.id === normalizedBranchId);
       if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
+      // Una sucursal conectada por Internet tiene sus propios rangos, que
+      // reparte la central (no la secuencia de la principal).
+      if (match.conectada) {
+        return res.status(400).json({ error: `${match.nombre} es una sucursal conectada: asígnale su rango en la sección Sucursales → Comprobantes fiscales por sucursal.` });
+      }
       branchNombre = match.nombre;
     }
 
@@ -1373,9 +1389,10 @@ app.get('/api/reportes/:businessId', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'No tienes acceso a este negocio.' });
     }
 
-    // Extraer stats sincronizados desde el POS (campo 'posStats' en el doc de licencias)
-    const stats = data.posStats || {};
-    const sucursales = normalizeBusinessBranches(data);
+    // Extraer stats sincronizados desde el POS (campo 'posStats' en el doc de
+    // licencias), con los de las sucursales conectadas sumados.
+    const stats = await conectadas.sumarStats(req.params.businessId, data.posStats || {});
+    const sucursales = await conectadas.sucursales(req.params.businessId, normalizeBusinessBranches(data));
     const cashRegisters = normalizeBusinessCashRegisters(data);
 
     res.json({
@@ -1433,8 +1450,10 @@ app.get('/api/reportes/:businessId/datos', requireAuth, async (req, res) => {
       .doc(tab)
       .get();
 
-    const hasPosData = data.posStats || tabDoc.exists;
-    let rows = tabDoc.exists ? (tabDoc.data().rows || []).map(normalizeReportRow) : [];
+    // Más lo que publica cada PC de sucursal conectada (bajo su propia licencia).
+    const filasSucursales = await conectadas.filas(req.params.businessId, tab);
+    const hasPosData = data.posStats || tabDoc.exists || filasSucursales.length;
+    let rows = [...(tabDoc.exists ? (tabDoc.data().rows || []) : []), ...filasSucursales].map(normalizeReportRow);
 
     // Aplicar filtros del cliente
     if (desde) rows = rows.filter(r => r.fecha && r.fecha >= desde);

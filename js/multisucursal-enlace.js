@@ -445,7 +445,9 @@
     const ctx = await contextoEmpresa();
     if (!document.body.contains(contenedor)) return;
     if (ctx.principal && (!prod || prod.origenCatalogo !== 'central')) {
-      const alcance = prod?.alcanceEmpresa || 'local';
+      // Un producto nuevo es de toda la empresa (el catálogo es uno solo);
+      // "Solo esta sucursal" hay que elegirlo.
+      const alcance = prod ? (prod.alcanceEmpresa || 'local') : 'global';
       const elegidas = prod?.sucursalesEmpresa || [];
       contenedor.innerHTML = `
         <div class="form-group span-full" data-mp-empresa>

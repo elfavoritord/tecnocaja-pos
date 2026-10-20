@@ -10,7 +10,7 @@ Cada sucursal tiene su propia base (SQLite o MariaDB multicaja) y su PC principa
 
 | Qué | Cómo |
 |---|---|
-| Catálogo de la empresa | Lo publica **solo la sucursal principal**: un producto puede ser solo de esa sucursal, de toda la empresa o de las sucursales que se elijan. Llega a cada sucursal con el precio de la principal como **sugerido**. |
+| Catálogo de la empresa | Lo publica **solo la sucursal principal**: un producto puede ser solo de esa sucursal, de toda la empresa o de las sucursales que se elijan. Llega a cada sucursal con el precio de la principal como **sugerido**. **Por defecto es de toda la empresa**: al enlazar la principal por primera vez se publica sola su catálogo activo, y todo producto nuevo (pantalla, API, app de reportes o pedido del contador) va a toda la empresa salvo que se elija "Solo esta sucursal" o sucursales concretas. |
 | Precio y existencia | Son **de cada sucursal**. La central los registra para reportes, pero nunca los cambia, salvo con la acción explícita "Cambiar un precio en varias sucursales". |
 | Ventas | Suben las de los últimos 90 días al enlazar y después todas. Son **inmutables**: si una vuelve a llegar, solo puede cambiar su estado (anulada, devuelta). |
 | Usuarios | La principal los crea y elige en qué sucursales entran. Viaja solo la **huella scrypt** de la clave, nunca la clave. Gana la central: si la principal desactiva a alguien, se desactiva en todas. |
@@ -137,13 +137,19 @@ Además:
   - alerta de PC sin sincronizar hace más de 4 h y conflictos por revisar;
   - ventas por sucursal;
   - rangos NCF: asignar, anular y ver cuántos quedan.
+- **Portal del contador, reportes del negocio** (`tecno-caja-contadores/server/multisucursal/sucursales-conectadas.js`):
+  - el filtro de sucursal trae también las sucursales conectadas por Internet (con un id estable sacado de su uuid);
+  - las ventas, facturas, productos y cierres de cada PC de sucursal se juntan con los de la principal, marcados con su sucursal, y los totales del tablero las suman. Cada PC los publica bajo su propia licencia (`sucursalDe`);
+  - "Agregar producto" para una sucursal conectada lo crea la principal en el catálogo de la empresa solo para esa sucursal (`sucursalesEmpresa`). Sin sucursal, va a toda la empresa;
+  - un rango NCF para una sucursal conectada se asigna en Sucursales → Comprobantes por sucursal, no con la secuencia de la principal.
+- **Una instalación, un enlace:** si la misma instalación (mismo `serverId`) se configura otra vez como otra sucursal, su enlace anterior queda "reemplazado".
 
 ## Pruebas (resultados reales)
 
 | Prueba | Comando | Resultado |
 |---|---|---|
-| Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **54/54**: sincronización, POS de punta a punta (varias PC SQLite + Sync API) y la cuenta del dueño (otra cuenta, sesión vieja, otra empresa con ventas, sucursal o licencia inactiva) |
-| **PC nueva con la cuenta del dueño**: principal real + PC nueva en la pantalla real del asistente (Chrome) → entra el cajero, abre caja y vende | `npm run test:multisucursal-asistente` | **33/33**, con Firebase (emulador) en la PC nueva: trabaja con la licencia de la empresa (Plus activa), su caja propia y sin escribir en la licencia de la empresa |
+| Reglas centrales contra el emulador | `npm run test:multisucursal-central` | **59/59**: sincronización, POS de punta a punta (varias PC SQLite + Sync API), la cuenta del dueño (otra cuenta, sesión vieja, otra empresa con ventas, sucursal o licencia inactiva), la misma instalación reconfigurada como otra sucursal, catálogo de la empresa por defecto y las sucursales conectadas en el portal del contador |
+| **PC nueva con la cuenta del dueño**: principal real + PC nueva en la pantalla real del asistente (Chrome) → entra el cajero, abre caja y vende | `npm run test:multisucursal-asistente` | **36/36**, con Firebase (emulador) en las dos PC: la principal tiene la licencia de la empresa y aplica dos productos que pide el contador (toda la empresa / solo Norte); la PC nueva trabaja con la licencia de la empresa (Plus activa), recibe esos productos, usa su caja propia y no escribe en la licencia de la empresa |
 | **Integral con dos POS reales** (server.js en SQLite, API HTTP real, ventas reales) + pantallas en Chrome | `npm run test:multisucursal-integral` | **40/40** |
 | Pantallas de los paneles en Chrome | `probar-pantalla-sucursales.js` | **24/24** |
 | MariaDB real: migraciones + ciclo de sincronización con `CONCAT` | `npm run test:multisucursal-mariadb` | **23/23** |
@@ -151,7 +157,7 @@ Además:
 | Enlace de una PC de punta a punta (código y cuenta del dueño en Configuración) | `npm run test:multisucursal-enlace` | **22/22** |
 | Multicaja LAN con MariaDB (ventas a la vez, sin Internet, contingencia) | `npm run test:e2e-lan` | **44/44** |
 | Respaldo de una sucursal enlazada (ida y vuelta `.tcbak`) | `npx jest tests/services/backup-core-multisucursal.test.js` | **1/1** |
-| Regresión | `npm test` | 95 suites, **683 OK** (las 4 del emulador se omiten sin emulador), incluida `tests/multisucursal/licencia-sucursal.test.js` |
+| Regresión | `npm test` | 96 suites, **683 OK** (las 5 del emulador se omiten sin emulador), incluida `tests/multisucursal/licencia-sucursal.test.js` |
 
 ## Matriz de aceptación (prompt maestro §21)
 
@@ -224,7 +230,7 @@ Todo se borra al cerrar.
 4. Prueba real contra la Sync API de producción:
    1. En tu panel (`tecno-caja-admin`), abre la empresa de la PC principal → Sucursales: límite 2 y crea "Principal" (la primera queda como principal) y "Norte". El dueño es el correo del administrador de la PC principal (la licencia lo guarda en `correo`), el mismo con el que entra a la app de reportes.
    2. En la PC principal: Configuración → Mi Negocio → "Sucursal conectada a Tecno Caja" → correo y contraseña del dueño → elegir la principal → Conectar.
-   3. En la principal, crea un usuario (por ejemplo, un cajero) y márcale la sucursal "Norte". Publica el catálogo.
+   3. En la principal, crea un usuario (por ejemplo, un cajero) y márcale la sucursal "Norte". El catálogo se publica solo al conectar la principal.
    4. En la PC nueva (instalada sin configurar): asistente → multisucursal → "Conectar como sucursal de una empresa" → correo y contraseña del dueño → "Norte". Queda en la pantalla de entrada con el cajero.
    5. Al terminar, desactiva las sucursales de prueba.
 
@@ -240,7 +246,7 @@ Todo se borra al cerrar.
 2. **Versión nueva del POS.** Al arrancar corre la migración `ms-0004`, con respaldo previo verificado (`PRE-MIGRACION`). La sincronización empieza sola en las PC enlazadas. A las que no están enlazadas no les cambia nada: sin token no se hace ninguna llamada.
 3. **Portal del contador.** Necesita una versión nueva para tener la sección de sucursales, los rangos NCF y las ventas.
 4. **Al enlazar un cliente que ya tenía varias sucursales** (por ejemplo, por Tailscale):
-   1. En la principal, "Publicar todo el catálogo activo".
+   1. Al conectar la principal se publica sola su catálogo activo (o "Publicar todo el catálogo activo" si ya había publicado antes).
    2. En cada sucursal, resolver los conflictos de código con "Vincular todos". Así cada producto local toma la identidad de la empresa y conserva su precio y su existencia.
 
 ## Reversión

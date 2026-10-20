@@ -447,18 +447,28 @@ function createSucursalesCentral({
       }
     }
     const sucursalKey = `${licenseId}/${suc.id}`;
-    const anteriores = await tx.get(db.collection(COL_EQUIPOS).where('sucursalKey', '==', sucursalKey));
     const datosEquipo = {
       deviceId: texto(equipo.deviceId, 80),
       hostname: texto(equipo.hostname, 120),
       serverId: texto(equipo.serverId, 40),
       appVersion: texto(equipo.appVersion, 20),
     };
+    // Quedan fuera: la PC que tenía esta sucursal y esta misma instalación si
+    // antes era otra sucursal (se volvió a configurar): una instalación habla
+    // por una sola sucursal.
+    const [anteriores, mismaInstalacion] = await Promise.all([
+      tx.get(db.collection(COL_EQUIPOS).where('sucursalKey', '==', sucursalKey)),
+      datosEquipo.serverId
+        ? tx.get(db.collection(COL_EQUIPOS).where('serverId', '==', datosEquipo.serverId))
+        : Promise.resolve({ docs: [] }),
+    ]);
 
     antesDeEscribir({ ...datosEquipo, equipoId });
     const reemplazados = [];
-    for (const doc of anteriores.docs) {
-      if (doc.data().estado !== ESTADOS_EQUIPO.ACTIVO) continue;
+    const vistos = new Set();
+    for (const doc of [...anteriores.docs, ...mismaInstalacion.docs]) {
+      if (vistos.has(doc.id) || doc.data().estado !== ESTADOS_EQUIPO.ACTIVO) continue;
+      vistos.add(doc.id);
       tx.update(doc.ref, { estado: ESTADOS_EQUIPO.REEMPLAZADO, reemplazadoEn: now(), reemplazadoPor: equipoId });
       reemplazados.push(doc.id);
     }

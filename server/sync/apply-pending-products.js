@@ -35,7 +35,11 @@ function getDb() {
  * @param {Function} decodeDataUrlImage — de server.js, decodifica un data:image/...;base64,... a Buffer
  * @param {Function} saveProductImageBuffer — de server.js, redimensiona/optimiza y guarda el archivo
  */
-function createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage }) {
+function createApplyPendingProductsService({
+  createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage,
+  // (productId, solicitud) → multisucursal: a qué sucursales de la empresa va.
+  alCrearProducto = async () => {},
+}) {
   async function findConflictingProductForRequest(data, catalogBranchId, excludeId = null) {
     const rows = await query(
       `SELECT id, codigo, nombre, branch_id
@@ -297,6 +301,11 @@ function createApplyPendingProductsService({ createProductInTransaction, withTra
         }));
 
         const productId = result?.row?.id || null;
+        if (productId) {
+          await Promise.resolve(alCrearProducto(productId, request)).catch((alcanceError) => {
+            console.warn('[apply-pending-products] No se pudo marcar el alcance en la empresa:', alcanceError.message);
+          });
+        }
 
         // Imagen opcional — ya viene redimensionada/comprimida desde el
         // Portal (900px, JPEG). Si falla, no revertir el producto ya creado,

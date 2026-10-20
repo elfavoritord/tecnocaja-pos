@@ -119,15 +119,20 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     L.check('Central: empresa del dueño con Centro (principal) y Norte', sCentro.esPrincipal && !sNorte.esPrincipal);
 
     // ── 2. PC principal: ya vende; se conecta con la cuenta del dueño ────
+    // Su licencia ES la de la empresa (como en la vida real) y tiene Firebase
+    // (emulador): así aplica los productos que pide el contador desde su portal.
+    // (El asistente normal valida la identidad contra Firebase Auth, que no
+    // está en el emulador: se configura sin Firebase y se le da al reiniciar.)
     principal = crearPc('centro', 3493, SYNC_URL);
     await arrancar(principal);
     const setup = await L.request(principal.port, 'POST', '/api/setup/complete', {
       language: 'es', businessType: 'ferreteria', businessStructureMode: 'monocaja', businessRnc: '131000001',
-      businessName: 'Supermercado Bravo', adminName: 'Admin', adminUser: 'admin', adminEmail: 'admin@centro.test',
+      businessName: 'Supermercado Bravo', adminName: 'Admin', adminUser: 'admin', adminEmail: DUENO,
       adminPassword: '1234', openingAmount: 1000, currency: 'RD$',
     });
-    L.check('Principal: negocio configurado (SQLite)', setup.status === 201, `HTTP ${setup.status}`);
+    L.check('Principal: negocio configurado (SQLite)', setup.status === 201, `HTTP ${setup.status} ${setup.body?.error || ''}`);
     await L.stopServer(principal.proc);
+    Object.assign(principal.env, firebaseDelEmulador(), { TECNO_CAJA_LICENSE_UID: LIC });
     L.check('Principal: licencia activa para reiniciar', L.seedLicense({ port: principal.port, userData: principal.userData, env: principal.env }).ok);
     await arrancar(principal);
     const loginPrincipal = await entrar(principal, 'admin', '1234');
@@ -155,8 +160,37 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
       branchId: principal.boot.sucursales?.[0]?.id, sucursalesEmpresa: [sNorte.branchUuid],
     });
     L.check('Principal: crea el usuario "caja.norte" para Norte', cajero.status === 201, `HTTP ${cajero.status} ${cajero.body?.error || ''}`);
+    // Producto nuevo sin elegir alcance: es de toda la empresa.
+    const sinAlcance = await api(principal, 'POST', '/api/products', {
+      codigo: 'BRV-002', barcode: 'BRV-002', nombre: 'Habichuelas', categoria: 'Granos', unidad: 'Unidad', marca: '',
+      precioVenta: 90, precioCompra: 60, stock: 10, stockMin: 1, aplicaItbis: false, estado: 'Activo',
+    });
+    L.check('Principal: un producto nuevo sin elegir alcance es de toda la empresa', sinAlcance.status === 201 && sinAlcance.body?.alcanceEmpresa === 'global',
+      `HTTP ${sinAlcance.status} ${sinAlcance.body?.alcanceEmpresa || sinAlcance.body?.error || ''}`);
+    // El contador pide dos productos desde su portal: uno para toda la empresa
+    // y otro solo para Norte. Los aplica la principal.
+    const pendientes = db.collection('licencias').doc(LIC).collection('productos_pendientes');
+    const pedidoTodos = await pendientes.add({ accion: 'crear', codigo: 'POR-001', nombre: 'Aceite (contador)', precioVenta: 300, precioCompra: 250, stock: 0, status: 'pendiente', branchId: null, sucursalesEmpresa: null, contadorNombre: 'Pérez' });
+    const pedidoNorte = await pendientes.add({ accion: 'crear', codigo: 'POR-002', nombre: 'Café (solo Norte)', precioVenta: 120, precioCompra: 90, stock: 0, status: 'pendiente', branchId: null, sucursalesEmpresa: [sNorte.branchUuid], contadorNombre: 'Pérez' });
+    let aplicados = false;
+    for (let i = 0; i < 60 && !aplicados; i += 1) {
+      const estados = await Promise.all([pedidoTodos, pedidoNorte].map(async (r) => (await r.get()).data().status));
+      aplicados = estados.every((s) => s === 'aplicado');
+      if (!aplicados) {
+        if (i % 10 === 0) await api(principal, 'POST', '/api/cash/drawer-event', {}).catch(() => {});
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
+    const enPrincipal = (await api(principal, 'GET', '/api/products?todasLasSucursales=1')).body;
+    const listaPrincipal = enPrincipal?.products || enPrincipal || [];
+    const porCodigo = (codigo) => listaPrincipal.find((p) => p.codigo === codigo);
+    L.check('Principal: aplica los productos del contador con su alcance (toda la empresa / solo Norte)',
+      aplicados && porCodigo('POR-001')?.alcanceEmpresa === 'global' && porCodigo('POR-002')?.alcanceEmpresa === 'sucursales'
+      && JSON.stringify(porCodigo('POR-002')?.sucursalesEmpresa) === JSON.stringify([sNorte.branchUuid]),
+      JSON.stringify({ aplicados, a: porCodigo('POR-001')?.alcanceEmpresa, b: porCodigo('POR-002')?.alcanceEmpresa }));
     const ciclo = await api(principal, 'POST', '/api/multisucursal/sincronizar?esperar=1', {});
-    L.check('Principal: sube el producto y el usuario', ciclo.body?.ciclo?.resultado === 'ok', JSON.stringify(ciclo.body?.ciclo?.resultado || ciclo.body));
+    L.check('Principal: sube los productos y el usuario', ciclo.body?.ciclo?.resultado === 'ok', JSON.stringify(ciclo.body?.ciclo?.resultado || ciclo.body));
+    const equiposEmpresaAntes = Object.keys((await db.collection('licencias').doc(LIC).get()).data().devices || {});
 
     // ── 3. PC nueva: el asistente ────────────────────────────────────────
     norte = crearPc('norte', 3494, SYNC_URL, firebaseDelEmulador());
@@ -241,9 +275,11 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
       Boolean(propia) && propia !== LIC && docPropio?.sucursalDe?.licenseId === LIC && docPropio.sucursalDe.branchUuid === sNorte.branchUuid,
       `${propia} → ${JSON.stringify(docPropio?.sucursalDe || null)}`);
     const docEmpresa = (await db.collection('licencias').doc(LIC).get()).data();
+    const equiposEmpresa = Object.keys(docEmpresa.devices || {});
     L.check('Licencia: la PC de la sucursal no escribió en la licencia de la empresa',
-      docEmpresa.businessName === 'Supermercado Bravo' && !Object.keys(docEmpresa.devices || {}).length && docEmpresa.status === 'active',
-      JSON.stringify({ nombre: docEmpresa.businessName, equipos: Object.keys(docEmpresa.devices || {}) }));
+      docEmpresa.businessName === 'Supermercado Bravo' && docEmpresa.status === 'active'
+      && equiposEmpresa.length === equiposEmpresaAntes.length && equiposEmpresa.every((e) => equiposEmpresaAntes.includes(e)),
+      JSON.stringify({ nombre: docEmpresa.businessName, antes: equiposEmpresaAntes, despues: equiposEmpresa }));
 
     const otraVez = await L.request(norte.port, 'POST', '/api/multisucursal/asistente/unirse', { idToken: tokenDe(DUENO), licenseId: LIC, branchUuid: sNorte.branchUuid, email: DUENO, clave: CLAVE_DUENO });
     L.check('PC nueva: el asistente ya no se puede volver a usar', otraVez.status === 409 && otraVez.body?.code === 'YA_CONFIGURADA', `HTTP ${otraVez.status} ${otraVez.body?.code}`);
@@ -273,6 +309,9 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     const productos = (await api(norte, 'GET', '/api/products', null, tCaja)).body;
     const arroz = (productos?.products || productos || []).find((p) => p.codigo === 'BRV-001');
     L.check('Norte: tiene el producto de la empresa', Boolean(arroz) && arroz.origenCatalogo === 'central', JSON.stringify(arroz && { precio: arroz.precioVenta, origen: arroz.origenCatalogo }));
+    const codigosNorte = (productos?.products || productos || []).map((p) => p.codigo);
+    L.check('Norte: le llegaron el producto sin alcance elegido y los del contador (el de "solo Norte" también)',
+      ['BRV-002', 'POR-001', 'POR-002'].every((c) => codigosNorte.includes(c)), codigosNorte.join(', '));
     if (arroz) {
       await api(norte, 'PUT', `/api/products/${arroz.id}`, { ...arroz, stock: 10 }, norte.token);
       const precio = Number(arroz.precioVenta);

@@ -126,8 +126,13 @@ function createCatalogoLocal({ query, enlace, alCambiar = () => {} }) {
   }
 
   // POST/PUT /api/products: el alcance en la empresa solo lo fija la principal.
-  async function guardarAlcanceProducto(productId, data = {}) {
-    const valido = validarAlcanceProducto(data);
+  // `nuevo`: un producto recién creado sin alcance elegido (portal del
+  // contador, app de reportes, la API) en la principal enlazada es de TODA la
+  // empresa: el catálogo es uno solo y llega a las sucursales. "Solo esta
+  // sucursal" hay que elegirlo.
+  async function guardarAlcanceProducto(productId, data = {}, { nuevo = false } = {}) {
+    const elegido = validarAlcanceProducto(data);
+    const valido = elegido || (nuevo ? { alcance: 'global', sucursales: null } : null);
     if (!valido) return false;
     const { esPrincipal } = await rolEnlace();
     if (!esPrincipal) return false;
@@ -202,10 +207,20 @@ function createCatalogoLocal({ query, enlace, alCambiar = () => {} }) {
     throw new ErrorCatalogo('Este usuario es de la empresa: se administra en la sucursal principal.', 'USUARIO_DE_EMPRESA', 403);
   }
 
+  // Producto que pidió el contador desde su portal (productos_pendientes): a
+  // qué sucursales de la empresa va. Sin elegir (o "todas") = toda la empresa.
+  function alcanceDeSolicitud(solicitud = {}) {
+    const lista = Array.isArray(solicitud.sucursalesEmpresa)
+      ? solicitud.sucursalesEmpresa.map((v) => String(v || '').toLowerCase()).filter((v) => UUID.test(v))
+      : [];
+    return lista.length ? { alcanceEmpresa: 'sucursales', sucursalesEmpresa: lista } : {};
+  }
+
   return {
     rolEnlace,
     validarAlcanceProducto,
     guardarAlcanceProducto,
+    alcanceDeSolicitud,
     protegerMaestroProducto,
     validarEliminarProducto,
     guardarSucursalesUsuario,

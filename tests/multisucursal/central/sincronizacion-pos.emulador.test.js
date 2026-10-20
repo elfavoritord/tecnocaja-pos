@@ -329,6 +329,42 @@ describir('Sincronización POS ↔ central (SQLite + Sync API + emulador)', () =
     expect(r2.detalles[0]).toMatchObject({ code: 'SUCURSAL_AJENA' });
   });
 
+  test('la principal recién enlazada publica sola su catálogo; lo nuevo va a toda la empresa salvo que se elija', async () => {
+    const LIC3 = 'pos:tecno-caja-colmado-nuevo';
+    await db.collection('licencias').doc(LIC3).set({ businessName: 'Colmado Nuevo', status: 'active' });
+    await central.fijarLimite(LIC3, 2, EMILIO);
+    const P = await crearPc('CAJA-COLMADO', { licencia: LIC3 });
+    for (const [codigo, estado] of [['C001', 'Activo'], ['C002', 'Activo'], ['C003', 'Inactivo']]) {
+      await P.base.query("INSERT INTO products (codigo, nombre, categoria, precio_venta, estado) VALUES (?, ?, 'X', 10, ?)", [codigo, `P ${codigo}`, estado]);
+    }
+    // Antes de enlazar no es la principal de nadie: no publica.
+    expect(await P.ms.sincronizacion.publicarCatalogoInicial()).toMatchObject({ publicados: 0 });
+    await enlazar(P, 'Principal', LIC3);
+    expect(await P.ms.sincronizacion.publicarCatalogoInicial()).toEqual({ publicados: 2 });
+    // Ya publicó: no vuelve a tocar lo que se elija después.
+    await P.base.query("UPDATE products SET alcance_empresa = 'local' WHERE codigo = 'C002'");
+    expect(await P.ms.sincronizacion.publicarCatalogoInicial()).toMatchObject({ publicados: 0, omitido: 'ya publicó antes' });
+    expect((await producto(P, 'C002')).alcance_empresa).toBe('local');
+
+    // Producto nuevo sin alcance (portal, app de reportes, API): de la empresa.
+    const r = await P.base.query("INSERT INTO products (codigo, nombre, categoria, precio_venta) VALUES ('C004', 'Nuevo', 'X', 5)");
+    expect(await P.ms.catalogo.guardarAlcanceProducto(r.insertId, {}, { nuevo: true })).toBe(true);
+    expect((await producto(P, 'C004')).alcance_empresa).toBe('global');
+    // Elegido "solo esta sucursal": se respeta.
+    const r2 = await P.base.query("INSERT INTO products (codigo, nombre, categoria, precio_venta) VALUES ('C005', 'Local', 'X', 5)");
+    await P.ms.catalogo.guardarAlcanceProducto(r2.insertId, { alcanceEmpresa: 'local' }, { nuevo: true });
+    expect((await producto(P, 'C005')).alcance_empresa).toBe('local');
+    // Pedido del contador para una sucursal concreta.
+    const s = await central.crear(LIC3, { nombre: 'Sur' }, EMILIO);
+    expect(P.ms.catalogo.alcanceDeSolicitud({ sucursalesEmpresa: [s.branchUuid.toUpperCase()] })).toEqual({ alcanceEmpresa: 'sucursales', sucursalesEmpresa: [s.branchUuid] });
+    expect(P.ms.catalogo.alcanceDeSolicitud({ branchId: null })).toEqual({});
+    // En una sucursal que no es la principal no cambia nada.
+    const r3 = await B.base.query("INSERT INTO products (codigo, nombre, categoria, precio_venta) VALUES ('B-LOCAL', 'De Norte', 'X', 5)");
+    expect(await B.ms.catalogo.guardarAlcanceProducto(r3.insertId, {}, { nuevo: true })).toBe(false);
+    expect((await producto(B, 'B-LOCAL')).alcance_empresa).toBe('local');
+    expect(await B.ms.sincronizacion.publicarCatalogoInicial()).toMatchObject({ publicados: 0, omitido: 'no es la principal' });
+  });
+
   test('observabilidad: bitácora de cada ciclo y estado con indicador', async () => {
     const ciclos = await A.ms.sincronizacion.bitacora(5);
     expect(ciclos.length).toBeGreaterThan(0);

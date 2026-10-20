@@ -117,12 +117,22 @@ module.exports = function createMultisucursalRoutes({
     return { visible: true, indicador: e.indicador, pendientes: e.pendientes, ultimaSincronizacion: e.ultimaSincronizacion };
   }));
 
+  // Recién enlazada: si es la principal y nunca publicó, su catálogo activo
+  // pasa a ser el de la empresa; y la primera sincronización sale ya
+  // (catálogo, usuarios y rangos de la sucursal).
+  async function despuesDeEnlazar(req, enlace) {
+    const publicacion = await sync().publicarCatalogoInicial().catch(() => null);
+    if (publicacion?.publicados) {
+      await auditar(req, 'Catálogo publicado a la empresa al enlazar la principal', `${publicacion.publicados} producto(s)`);
+    }
+    sync().iniciar({ primeraEsperaMs: 1000 });
+    return { enlace, catalogoPublicado: publicacion?.publicados || 0 };
+  }
+
   router.post('/activar', soloAdministradorGeneral, soloPrincipal, responder(async (req) => {
     const enlace = await multisucursal.enlace.activar(req.body?.codigo);
     await auditar(req, 'Equipo enlazado a la central', `${enlace.empresa?.nombre || ''} · ${enlace.sucursal?.nombre || ''}`);
-    // Primera sincronización ya (catálogo, usuarios y rangos de la sucursal).
-    sync().iniciar({ primeraEsperaMs: 1000 });
-    return { enlace };
+    return despuesDeEnlazar(req, enlace);
   }));
 
   // Conectar con la cuenta del dueño (sin código): primero sus sucursales…
@@ -136,8 +146,7 @@ module.exports = function createMultisucursalRoutes({
     const b = req.body || {};
     const r = await multisucursal.enlace.activarConDueno({ idToken: b.idToken, licenseId: b.licenseId, branchUuid: b.branchUuid });
     await auditar(req, 'Equipo enlazado a la central (cuenta del dueño)', `${r.empresa?.nombre || ''} · ${r.sucursal?.nombre || ''}`);
-    sync().iniciar({ primeraEsperaMs: 1000 });
-    return { enlace: await multisucursal.enlace.estado() };
+    return despuesDeEnlazar(req, await multisucursal.enlace.estado());
   }));
 
   router.post('/sincronizar', soloAdministradorGeneral, responder(async (req) => {

@@ -563,8 +563,11 @@ async function syncPendingReportAppProducts(options = {}) {
           attempt,
           status: 'synced',
         });
-        return { productId, branchId: resolvedBranchId };
+        return { productId, branchId: resolvedBranchId, nuevo: !existing };
       });
+      // Multisucursal: en la principal enlazada, un producto nuevo de la app
+      // es de toda la empresa.
+      if (result.nuevo) await multisucursal.catalogo.guardarAlcanceProducto(result.productId, {}, { nuevo: true }).catch(() => {});
 
       await doc.ref.set({
         synced: true,
@@ -12221,7 +12224,14 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
 // abrir caja, cerrar caja, crear venta — ver server/sync/apply-pending-products.js).
 function applyPendingProductsOnce() {
   return require('./server/sync/apply-pending-products')
-    .createApplyPendingProductsService({ createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage })
+    .createApplyPendingProductsService({
+      createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage,
+      // Multisucursal: en la principal enlazada va a las sucursales que pidió
+      // el contador (sin elegir = toda la empresa).
+      alCrearProducto: (productId, solicitud) => multisucursal.catalogo.guardarAlcanceProducto(
+        productId, multisucursal.catalogo.alcanceDeSolicitud(solicitud), { nuevo: true }
+      ),
+    })
     .applyPendingProductRequests()
 }
 
@@ -12324,8 +12334,9 @@ app.post('/api/products', async (req, res) => {
   await ensureInventoryMovementsTable();
 
   const createdResult = await withTransaction((conn) => createProductInTransaction(conn, { data, catalogBranchId, actor }));
-  // Multisucursal: en la principal, publicarlo a la empresa si así se eligió.
-  if (await multisucursal.catalogo.guardarAlcanceProducto(createdResult.row.id, data)) {
+  // Multisucursal: en la principal, publicarlo a la empresa (toda la empresa
+  // si no se eligió otra cosa).
+  if (await multisucursal.catalogo.guardarAlcanceProducto(createdResult.row.id, data, { nuevo: true })) {
     createdResult.row = (await query('SELECT * FROM products WHERE id = ?', [createdResult.row.id]))[0] || createdResult.row;
   }
 

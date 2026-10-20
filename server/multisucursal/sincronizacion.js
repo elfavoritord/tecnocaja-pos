@@ -703,6 +703,18 @@ function createSincronizacion({
     return { publicados: Number(r?.affectedRows || 0) };
   }
 
+  // Al enlazar la principal por primera vez (nunca publicó nada): su catálogo
+  // activo pasa a ser el de la empresa, para que las sucursales lo reciban sin
+  // que haya que acordarse de "Publicar todo". Después cada producto conserva
+  // lo que se le elija.
+  async function publicarCatalogoInicial() {
+    const ctx = await contexto();
+    if (!ctx.esPrincipal) return { publicados: 0, omitido: 'no es la principal' };
+    const ya = await query("SELECT id FROM products WHERE alcance_empresa <> 'local' OR origen_catalogo <> 'local' LIMIT 1").catch(() => null);
+    if (!ya || ya.length) return { publicados: 0, omitido: 'ya publicó antes' };
+    return publicarCatalogo();
+  }
+
   // Cambio de precio explícito en las sucursales elegidas (la única forma en
   // que un precio local cambia desde fuera). El producto tiene que estar
   // publicado a la empresa.
@@ -838,6 +850,7 @@ function createSincronizacion({
   return {
     ciclo,
     pronto,
+    publicarCatalogoInicial,
     detectar,
     estado,
     bitacora,
