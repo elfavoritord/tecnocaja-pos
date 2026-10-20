@@ -2558,6 +2558,15 @@ createRespaldosRouter({
   ensureAdministrator,
   isGlobalAdministratorUser,
   resolveRequestActorUser,
+  // "Restaurar desde la nube" en una PC nueva: con la cuenta del dueño.
+  verificarCuentaDueno: async (idToken) => {
+    const t = await verifyFirebaseIdToken(idToken);
+    return { uid: t.uid || t.sub, email: String(t.email || '').trim().toLowerCase() };
+  },
+  licenciasDelCorreo: require('./server/services/licencias-del-dueno').createLicenciasDelDueno({
+    getFirestore: () => require('./modules/firebase-admin').getFirestore(),
+  }),
+  persistEnv: (values) => persistRuntimeEnvValues(values),
 });
 
 // Permiso para reemplazar el negocio desde la pantalla de inicio (restaurar

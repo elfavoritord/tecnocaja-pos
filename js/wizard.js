@@ -1962,6 +1962,7 @@
    */
   window.wzRestoreCloudLogin = async function wzRestoreCloudLogin() {
     const email = (document.getElementById('wzrc-email') || {}).value.trim();
+    const clave = (document.getElementById('wzrc-clave') || {}).value || '';
 
     const btn = document.getElementById('wzrc-login-btn');
     if (btn) { btn.disabled = true; btn.textContent = '⏳ Buscando…'; }
@@ -1969,10 +1970,17 @@
     _wzStyle('wzrc-list-loading', 'display', '');
 
     try {
+      // Con contraseña: la cuenta del dueño (Firebase) → los respaldos de sus
+      // negocios, aunque esta PC no tenga licencia todavía.
+      let idToken = '';
+      if (email && clave) {
+        const fb = await wzsFirebase();
+        idToken = (await fb.signInWithEmail(email, clave)).idToken;
+      }
       const res  = await fetch('/api/respaldos/setup/cloud/auth', {
         method:  'POST',
         headers: _wzHeaders(),
-        body:    JSON.stringify({ email }),
+        body:    JSON.stringify({ email, idToken }),
       });
       const data = await res.json();
 
@@ -1990,11 +1998,14 @@
 
       WZR.cloudEmail  = email;
       WZR.businessId  = data.businessId || '';
+      // Permiso del dueño: al restaurar ya no se vuelve a pedir la contraseña.
+      WZR.cloudToken  = data.cloudToken || '';
+      _wzStyle('wzrc-login-password-grupo', 'display', WZR.cloudToken ? 'none' : '');
 
       // Pasar al panel de lista
       _wzStyle('wzrc-panel-login', 'display', 'none');
       _wzStyle('wzrc-panel-list',  'display', '');
-      _wzText('wzrc-user-email', email);
+      _wzText('wzrc-user-email', data.email || email);
 
       // Renderizar lista de backups
       _wzRenderBackupList(data.backups || []);
@@ -2019,6 +2030,7 @@
       return;
     }
 
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     listEl.innerHTML = backups.map((b, i) => {
       const fecha = b.lastModified ? new Date(b.lastModified).toLocaleString('es-DO') : '—';
       const size  = b.size ? `${(b.size / 1024).toFixed(0)} KB` : '—';
@@ -2027,7 +2039,8 @@
         style="display:block;width:100%;text-align:left;padding:.65rem .85rem;margin-bottom:.4rem;
                background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);border-radius:8px;
                cursor:pointer;transition:background .15s;font-size:.8rem;line-height:1.55">
-        <strong style="color:var(--text1)">${b.fileName || b.key || '—'}</strong><br>
+        ${b.negocio ? `<span style="color:var(--text2);font-weight:600">${esc(b.negocio)}</span><br>` : ''}
+        <strong style="color:var(--text1)">${esc(b.fileName || b.key || '—')}</strong><br>
         <span style="color:var(--text3)">📅 ${fecha} &nbsp;·&nbsp; 📦 ${size}</span>
       </button>`;
     }).join('');
@@ -2055,6 +2068,7 @@
     const size  = b.size ? `${(b.size / 1048576).toFixed(2)} MB` : '—';
     _wzHtml('wzrc-meta-box',
       `<table style="width:100%;border-collapse:collapse">` +
+      (b.negocio ? `<tr><td style="color:var(--text3);padding-right:.6rem;width:40%">Negocio</td><td><strong>${String(b.negocio).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))}</strong></td></tr>` : '') +
       `<tr><td style="color:var(--text3);padding-right:.6rem;width:40%">Archivo</td><td><strong>${b.fileName || '—'}</strong></td></tr>` +
       `<tr><td style="color:var(--text3)">Tamaño</td><td>${size}</td></tr>` +
       `<tr><td style="color:var(--text3)">Fecha</td><td>${fecha}</td></tr>` +
@@ -2075,6 +2089,8 @@
   window.wzRestoreCloudBack = function wzRestoreCloudBack() {
     WZR.selectedBackup = null;
     WZR.cloudEmail     = null;
+    WZR.cloudToken     = '';
+    _wzStyle('wzrc-login-password-grupo', 'display', '');
     // Volver al panel de email
     _wzStyle('wzrc-panel-list',  'display', 'none');
     _wzStyle('wzrc-panel-login', 'display', '');
@@ -2094,7 +2110,7 @@
     const loginEmail    = (document.getElementById('wzrc-email')          || {}).value.trim();
     const loginPassword = (document.getElementById('wzrc-login-password') || {}).value || '';
 
-    if (!loginPassword) {
+    if (!loginPassword && !WZR.cloudToken) {
       _wzShow('wzrc-error');
       _wzText('wzrc-error', 'Ingresa tu contraseña de TecnoCaja para confirmar tu identidad.');
       return;
@@ -2118,6 +2134,7 @@
           storageKey:    b.storageKey || b.key,
           loginEmail,
           loginPassword,
+          cloudToken:    WZR.cloudToken || undefined,
         }),
       });
       const data = await res.json();

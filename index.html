@@ -679,11 +679,16 @@
 
       <!-- Panel A: lista los respaldos en la nube de este dispositivo -->
       <div id="wzrc-panel-login">
-        <p style="color:var(--text3);font-size:.83rem;margin-bottom:1.1rem;line-height:1.5">Vamos a buscar los respaldos en la nube de este dispositivo. Ingresa el correo con el que inicias sesión en Tecno Caja — se usará después para confirmar tu identidad antes de restaurar.</p>
+        <p style="color:var(--text3);font-size:.83rem;margin-bottom:1.1rem;line-height:1.5">Entra con el correo y la contraseña del <strong>dueño del negocio</strong> (la cuenta de Tecno Caja). Verás los respaldos en la nube de sus negocios, aunque esta PC esté recién instalada o formateada.</p>
         <div style="margin-bottom:.8rem">
           <label for="wzrc-email" style="display:block;font-size:.8rem;color:var(--text3);margin-bottom:.3rem">Correo electrónico</label>
           <input type="email" id="wzrc-email" class="form-input" placeholder="correo@ejemplo.com"
             style="width:100%;font-size:.85rem" autocomplete="email"
+            onkeydown="if(event.key==='Enter') wzRestoreCloudLogin()">
+        </div>
+        <div style="margin-bottom:.8rem">
+          <label for="wzrc-clave" style="display:block;font-size:.8rem;color:var(--text3);margin-bottom:.3rem">Contraseña</label>
+          <input type="password" id="wzrc-clave" class="form-input" style="width:100%;font-size:.85rem" autocomplete="current-password"
             onkeydown="if(event.key==='Enter') wzRestoreCloudLogin()">
         </div>
         <button type="button" class="btn-primary" onclick="wzRestoreCloudLogin()" id="wzrc-login-btn" style="width:100%;margin-bottom:.6rem">
@@ -703,7 +708,7 @@
         <div id="wzrc-backup-list" style="max-height:200px;overflow-y:auto;display:none;margin-bottom:.8rem"></div>
         <div id="wzrc-confirm-box" style="display:none">
           <div id="wzrc-meta-box" style="background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:.9rem 1rem;margin-bottom:.8rem;font-size:.83rem;line-height:1.8"></div>
-          <div style="margin-bottom:.7rem">
+          <div style="margin-bottom:.7rem" id="wzrc-login-password-grupo">
             <label for="wzrc-login-password" style="display:block;font-size:.8rem;color:var(--text3);margin-bottom:.3rem">
               Contraseña de tu cuenta Tecno Caja
             </label>
@@ -3568,7 +3573,7 @@
             <div class="rb-auto-config-grid">
               <label class="rb-toggle-row">
                 <input type="checkbox" id="rb-cfg-auto-diario" checked>
-                <span>Crear respaldo local diario</span>
+                <span>Copia diaria (una por día; se guardan la de hoy y la del día anterior)</span>
               </label>
               <label class="rb-toggle-row">
                 <input type="checkbox" id="rb-cfg-auto-semanal">
@@ -3579,8 +3584,8 @@
                 <span>Crear respaldo al cerrar caja</span>
               </label>
               <label class="rb-toggle-row rb-nube-only">
-                <input type="checkbox" id="rb-cfg-nube-auto">
-                <span>Subir automáticamente a la nube</span>
+                <input type="checkbox" id="rb-cfg-nube-auto" checked>
+                <span>Subir la copia diaria a la nube (Backblaze)</span>
               </label>
               <label class="rb-toggle-row">
                 <input type="checkbox" id="rb-cfg-antes-actualizar" checked>

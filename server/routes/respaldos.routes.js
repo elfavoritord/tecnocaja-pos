@@ -44,6 +44,7 @@ const DEFAULT_BACKUP_RETENTION = 5; // cuántos .tcbak conservar automáticament
 
 // ─── R2 Storage helpers ───────────────────────────────────────────────────────
 const r2 = require('../services/r2-storage');
+const retencion = require('../services/retencion-respaldos');
 
 /**
  * Devuelve el businessId canónico para paths en R2.
@@ -76,6 +77,17 @@ function signCloudToken(payload) {
 }
 function verifyCloudToken(token) {
   return jwt.verify(token, CLOUD_TOKEN_SECRET);
+}
+
+// Permiso del dueño para restaurar (cloud/auth → restaurar-nube): firmado con
+// un secreto aleatorio de este proceso (no uno fijo que se pueda copiar del
+// código); vale 30 minutos y solo en esta PC.
+const SECRETO_PERMISO_DUENO = crypto.randomBytes(32);
+function firmarPermisoDueno(datos) {
+  return jwt.sign({ ...datos, tipo: 'dueno' }, SECRETO_PERMISO_DUENO, { expiresIn: '30m' });
+}
+function leerPermisoDueno(token) {
+  return jwt.verify(token, SECRETO_PERMISO_DUENO);
 }
 
 // ─── Registrar en backup_history ─────────────────────────────────────────────
@@ -126,30 +138,57 @@ async function getBackupRetentionCount(query) {
   return normalizeRetentionCount(rows[0]?.config_value);
 }
 
-// ─── Limpiar respaldos locales viejos ────────────────────────────────────────
+// ─── Limpiar respaldos viejos (local y nube, mismas reglas) ─────────────────
+// Automáticos: solo la copia de hoy y la del día anterior. Manuales y PRE-…:
+// los `keepCount` más recientes. Ver server/services/retencion-respaldos.js.
 function pruneLocalBackups(dir, keepCount = DEFAULT_BACKUP_RETENTION) {
   const files = listLocalBackups(dir).filter(f => f.name.endsWith('.tcbak'));
-  const keep = normalizeRetentionCount(keepCount);
-  if (files.length > keep) {
-    files.slice(keep).forEach(f => {
-      try { fs.unlinkSync(f.path); } catch (_) {}
-    });
-  }
+  const borrar = new Set(retencion.aBorrar(
+    files.map(f => ({ nombre: f.name, fecha: f.mtime })),
+    { otrosMax: normalizeRetentionCount(keepCount) }
+  ));
+  files.filter(f => borrar.has(f.name)).forEach(f => {
+    try { fs.unlinkSync(f.path); } catch (_) {}
+  });
 }
 
 async function pruneCloudBackups(businessId, keepCount = DEFAULT_BACKUP_RETENTION) {
-  const keep = normalizeRetentionCount(keepCount);
   const prefix = r2.backupPrefix(businessId);
-  const objects = await r2.listObjects(prefix);
-  const backups = objects
-    .filter(o => (o.Key || '').endsWith('.tcbak'))
-    .sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));
-
-  for (const old of backups.slice(keep)) {
+  const objects = (await r2.listObjects(prefix)).filter(o => (o.Key || '').endsWith('.tcbak'));
+  const borrar = new Set(retencion.aBorrar(
+    objects.map(o => ({ nombre: path.basename(o.Key), fecha: o.LastModified })),
+    { otrosMax: normalizeRetentionCount(keepCount) }
+  ));
+  for (const old of objects.filter(o => borrar.has(path.basename(o.Key)))) {
     try { await r2.remove(old.Key); } catch (_) {}
   }
 }
 
+// La nube está configurada en esta PC (llave de Backblaze/R2 en app.env).
+function nubeConfigurada() {
+  return Boolean(String(process.env.R2_ACCESS_KEY_ID || '').trim() && String(process.env.R2_SECRET_ACCESS_KEY || '').trim());
+}
+
+// Números del último respaldo diario bueno, FUERA de la base (junto a los
+// respaldos): si la base se pierde y arranca en blanco, todavía se sabe que
+// antes tenía datos y el respaldo vacío no pisa el bueno.
+const ARCHIVO_ULTIMO_DIARIO = '.ultimo-diario.json';
+function leerUltimoDiario(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, ARCHIVO_ULTIMO_DIARIO), 'utf8')); } catch (_) { return null; }
+}
+function guardarUltimoDiario(dir, datos) {
+  try { fs.writeFileSync(path.join(dir, ARCHIVO_ULTIMO_DIARIO), JSON.stringify(datos)); } catch (_) { /* solo es una referencia */ }
+}
+
+// Disparadores que SIEMPRE rehacen la copia del día (cierres, la revisión
+// diaria y antes de actualizar). Los demás (cambios de productos y clientes)
+// la rehacen como mucho cada 15 minutos.
+const DISPARADORES_DE_CIERRE = new Set(['cierre_app', 'cierre_caja', 'cierre_dia', 'diario', 'actualizacion_sistema', 'manual']);
+const ESPERA_ENTRE_COPIAS_MS = 15 * 60 * 1000;
+
+// Respaldo automático = la copia del día (local y Backblaze). Cada uno del
+// mismo día la reemplaza con los datos más recientes; quedan solo la de hoy y
+// la del día anterior.
 // deferCloud: guarda local y deja la copia en la nube "pendiente" para el
 // ciclo de subidas (cada 10 min). Lo usa el respaldo previo a una
 // actualización, que no debe esperar a Internet.
@@ -160,7 +199,7 @@ async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = f
   // 'cierre_dia' se rige por backup_auto_diario; 'cierre_caja' por
   // backup_al_cerrar_caja. El resto de triggers (cierre_app, cambios de
   // producto/cliente) siempre corren — son eventos puntuales, no un cron.
-  const TRIGGER_CONFIG_KEY = { cierre_dia: 'backup_auto_diario', cierre_caja: 'backup_al_cerrar_caja' };
+  const TRIGGER_CONFIG_KEY = { cierre_dia: 'backup_auto_diario', diario: 'backup_auto_diario', cierre_caja: 'backup_al_cerrar_caja' };
   const cfgKey = TRIGGER_CONFIG_KEY[trigger];
   if (cfgKey && !forceCloud) {
     const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', [cfgKey]).catch(() => []);
@@ -170,19 +209,41 @@ async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = f
     }
   }
 
+  const backupDir  = ensureDir(getDefaultBackupDir());
+  const hoy        = retencion.fechaLocal();
+  if (!DISPARADORES_DE_CIERRE.has(trigger)) {
+    const deHoy = listLocalBackups(backupDir).find(f => retencion.esDiario(f.name) && f.name.endsWith(`_${hoy}.tcbak`));
+    if (deHoy && Date.now() - new Date(deHoy.mtime).getTime() < ESPERA_ENTRE_COPIAS_MS) {
+      return { ok: true, skipped: true, reason: 'La copia de hoy se hizo hace menos de 15 minutos.' };
+    }
+  }
+
   const payload    = await buildFullPayload(query);
   const retentionCount = await getBackupRetentionCount(query);
-  const fileName   = generateFilename(payload.businessName + '_AUTO', payload.systemVersion);
+  const numeros = {
+    usuarios: Array.isArray(payload?.data?.users) ? payload.data.users.length : 0,
+    productos: Number(payload.stats?.productos || 0),
+    ventas: Number(payload.stats?.ventas || 0),
+  };
+  // Parece una base vacía o reiniciada: se guarda aparte para revisarla y no
+  // reemplaza la copia buena del día ni hace borrar la de ayer.
+  const paraRevisar = retencion.pareceVacio(numeros, leerUltimoDiario(backupDir));
+  const fileName   = paraRevisar
+    ? retencion.nombreRevisar(payload.businessName)
+    : retencion.nombreDiario(payload.businessName);
   const fileBuffer = await createTcbakBuffer(payload, securityPwd);
   const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-  const backupDir  = ensureDir(getDefaultBackupDir());
   const filePath   = path.join(backupDir, fileName);
   writeFileAtomic(filePath, fileBuffer);
-  pruneLocalBackups(backupDir, retentionCount);
+  if (!paraRevisar) {
+    guardarUltimoDiario(backupDir, { fecha: hoy, ...numeros });
+    pruneLocalBackups(backupDir, retentionCount);
+  }
 
-  // Verificar si hay nube configurada y auto-subida habilitada.
+  // La copia del día también va a Backblaze cuando la nube está configurada
+  // (salvo que se haya apagado a propósito en Respaldos → "Subir a la nube").
   const nubeRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_nube_auto']).catch(() => []);
-  const nubeAuto = forceCloud || (nubeRows[0]?.config_value || '0') === '1';
+  const nubeAuto = nubeConfigurada() && (forceCloud || (nubeRows[0]?.config_value ?? '1') !== '0');
 
   let estado = 'completado';
   let storagePath = null;
@@ -198,7 +259,7 @@ async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = f
         sha256,
         exportedAt: new Date().toISOString(),
       });
-      await pruneCloudBackups(businessId, retentionCount);
+      if (!paraRevisar) await pruneCloudBackups(businessId, retentionCount);
       estado = 'completado';
     } catch (_) {
       // Sin internet o R2 no configurado: conservar local y marcar pendiente.
@@ -219,10 +280,22 @@ async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = f
     clientes:     payload.stats.clientes,
     ventas:       payload.stats.ventas,
     createdBy:    'sistema-auto',
-    observacion:  `Trigger: ${trigger}`,
+    observacion:  paraRevisar ? `Trigger: ${trigger} · parece una base vacía: no reemplazó la copia del día` : `Trigger: ${trigger}`,
   });
 
-  return { ok: true, fileName, filePath, storagePath, sha256, estado, stats: payload.stats };
+  return { ok: true, fileName, filePath, storagePath, sha256, estado, stats: payload.stats, paraRevisar };
+}
+
+// La copia del día aunque la app no se cierre ni se cierre caja (PC que pasa
+// días encendida): cada hora revisa si ya existe la de hoy.
+async function asegurarCopiaDelDia(query) {
+  const cfg = await query('SELECT setup_completed FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+  if (!Number(cfg[0]?.setup_completed || 0)) return { ok: true, skipped: true, reason: 'Sin configurar.' };
+  const hoy = retencion.fechaLocal();
+  const dir = getDefaultBackupDir();
+  const yaEsta = listLocalBackups(dir).some(f => retencion.esDiario(f.name) && f.name.endsWith(`_${hoy}.tcbak`));
+  if (yaEsta) return { ok: true, skipped: true, reason: 'Ya hay copia de hoy.' };
+  return createAutomaticBackup({ query, trigger: 'diario' });
 }
 
 async function uploadPendingCloudBackups(query, limit = 5) {
@@ -256,13 +329,53 @@ async function uploadPendingCloudBackups(query, limit = 5) {
 // ════════════════════════════════════════════════════════════════════════════
 //  FACTORY PRINCIPAL
 // ════════════════════════════════════════════════════════════════════════════
-module.exports = function createRespaldosRouter({ app, query, getActor, writeAuditLog, ensureAdministrator, isGlobalAdministratorUser, resolveRequestActorUser }) {
+module.exports = function createRespaldosRouter({
+  app, query, getActor, writeAuditLog, ensureAdministrator, isGlobalAdministratorUser, resolveRequestActorUser,
+  // Restaurar desde la nube en una PC recién instalada: la cuenta del dueño
+  // (idToken de Firebase → { email }) y sus negocios (licencias-del-dueno.js).
+  verificarCuentaDueno = null,
+  licenciasDelCorreo = null,
+  // Guarda valores en config/app.env (licencia de la PC, token de sucursal).
+  persistEnv = () => {},
+}) {
+  // Después de restaurar: si esta PC estaba enlazada como una sucursal y el
+  // respaldo es de otro negocio u otra sucursal, deja de hablar por ella (si
+  // no, mandaría los datos restaurados como si fueran de esa sucursal).
+  async function revisarEnlaceTrasRestaurar() {
+    const token = String(process.env.TECNO_CAJA_SYNC_TOKEN || '').trim();
+    if (!token) return null;
+    const filas = await query("SELECT config_value FROM installation_config WHERE config_key = 'multisucursal_enlace' LIMIT 1").catch(() => []);
+    let estado = {};
+    try { estado = JSON.parse(filas[0]?.config_value || '{}') || {}; } catch (_) { estado = {}; }
+    const branchUuid = String(estado?.sucursal?.branchUuid || '').trim().toLowerCase();
+    const misma = branchUuid
+      ? await query('SELECT id FROM branches WHERE LOWER(uuid) = ? LIMIT 1', [branchUuid]).catch(() => [])
+      : [];
+    if (misma.length) return { enlace: 'conservado' };
+    persistEnv({ TECNO_CAJA_SYNC_TOKEN: '' });
+    await query("UPDATE installation_config SET config_value = ? WHERE config_key = 'multisucursal_enlace'", [
+      JSON.stringify({ estado: 'sin_vincular', desvinculadoEn: new Date().toISOString(), motivo: 'Se restauró un respaldo de otro negocio o de otra sucursal.' }),
+    ]).catch(() => {});
+    console.warn('[respaldos] El respaldo restaurado no es de la sucursal enlazada: esta PC quedó desvinculada de la central.');
+    return { enlace: 'desvinculado' };
+  }
+
   app.locals.createAutomaticBackup = (options = {}) => createAutomaticBackup({ query, ...options });
   app.locals.uploadPendingCloudBackups = (limit = 5) => uploadPendingCloudBackups(query, limit);
   if (!app.locals.backupPendingUploadTimer) {
     app.locals.backupPendingUploadTimer = setInterval(() => {
       uploadPendingCloudBackups(query, 5).catch(() => {});
     }, 10 * 60 * 1000);
+    // El servidor HTTP mantiene vivo el proceso; el temporizador solo no.
+    if (typeof app.locals.backupPendingUploadTimer.unref === 'function') app.locals.backupPendingUploadTimer.unref();
+  }
+  if (!app.locals.copiaDelDiaTimer && process.env.NODE_ENV !== 'test') {
+    const revisar = () => asegurarCopiaDelDia(query).catch((e) => console.warn('[respaldos] Copia del día:', e.message));
+    app.locals.copiaDelDiaTimer = setInterval(revisar, 60 * 60 * 1000);
+    if (typeof app.locals.copiaDelDiaTimer.unref === 'function') app.locals.copiaDelDiaTimer.unref();
+    // La primera, unos minutos después de arrancar (no compite con el arranque).
+    const primera = setTimeout(revisar, 3 * 60 * 1000);
+    if (typeof primera.unref === 'function') primera.unref();
   }
 
   // ── Middleware de admin ──────────────────────────────────────────────────
@@ -691,6 +804,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
 
       // Restaurar
       await restorePayloadToDb(payload, query);
+      await revisarEnlaceTrasRestaurar();
 
       await writeAuditLog({
         userId: actor.userId, userName: actor.userName, userRole: actor.userRole,
@@ -743,6 +857,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
 
       // Restaurar
       await restorePayloadToDb(payload, query);
+      await revisarEnlaceTrasRestaurar();
 
       await writeAuditLog({
         userId: actor.userId, userName: actor.userName, userRole: actor.userRole,
@@ -1066,6 +1181,7 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         : null;
 
       const restoreResult = await restorePayloadToDb(payload, query);
+      await revisarEnlaceTrasRestaurar();
 
       if (restoreResult.userCount === 0) {
         // El backup no tenía usuarios (o la restauración de usuarios falló).
@@ -1103,29 +1219,85 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
 
   // ──────────────────────────────────────────────────────────────────────
   //  POST /api/respaldos/setup/cloud/auth
-  //  Lista los respaldos en R2 de ESTE dispositivo (sin sesión — wizard de
-  //  primera instalación). Resuelve el negocio únicamente por
-  //  TECNO_CAJA_LICENSE_UID: ya no hay búsqueda cruzada por correo, porque
-  //  cada llave de Backblaze queda restringida al prefijo backups/<businessId>/
-  //  de un solo negocio y no puede leer el de otros.
-  //  Body: { email } (opcional, solo se conserva para la verificación de
-  //         identidad posterior en /setup/restaurar-nube, no se usa aquí)
-  //  Retorna: { businessId, businessIds, backups, email }
+  //  Lista respaldos en la nube sin sesión (asistente de primera instalación):
+  //   - con { idToken } (cuenta del dueño verificada con Firebase): los de
+  //     todos sus negocios → { backups[{ ..., licenseId, negocio }], cloudToken }.
+  //     Sirve en una PC recién instalada o formateada. No hay búsqueda por
+  //     correo sin contraseña.
+  //   - sin idToken: los de ESTE dispositivo (TECNO_CAJA_LICENSE_UID).
+  //  Cada llave de Backblaze de cliente queda restringida a backups/<su id>/:
+  //  un negocio al que la llave no tiene acceso se informa y se salta.
+  //  Retorna: { businessId, businessIds, backups, email, cloudToken? }
   // ──────────────────────────────────────────────────────────────────────
+  // Con la cuenta del dueño (idToken de Firebase, verificado): los respaldos
+  // de TODOS sus negocios y sus PC de sucursal, aunque esta PC esté recién
+  // instalada o formateada. Devuelve un permiso de 30 min (cloudToken) que
+  // /setup/restaurar-nube exige para restaurar uno de esos negocios.
+  async function respaldosDelDueno(idToken) {
+    let cuenta;
+    try {
+      cuenta = await verificarCuentaDueno(idToken);
+    } catch (_) {
+      return { status: 401, cuerpo: { ok: false, code: 'CUENTA_INVALIDA', error: 'Correo o contraseña incorrectos. Usa la cuenta de Tecno Caja del dueño del negocio.' } };
+    }
+    const licencias = await licenciasDelCorreo(cuenta.email);
+    if (!licencias.length) {
+      return { status: 404, cuerpo: { ok: false, code: 'SIN_NEGOCIOS', error: `${cuenta.email} no es la cuenta del dueño de ningún negocio en Tecno Caja.` } };
+    }
+    const backups = [];
+    const sinAcceso = [];
+    for (const lic of licencias) {
+      try {
+        const objetos = await r2.listObjects(r2.backupPrefix(lic.licenseId));
+        objetos.filter(o => (o.Key || '').endsWith('.tcbak')).forEach(o => backups.push({
+          key: o.Key, storageKey: o.Key, fileName: path.basename(o.Key), size: o.Size, lastModified: o.LastModified,
+          licenseId: lic.licenseId, negocio: lic.nombre,
+        }));
+      } catch (_) {
+        sinAcceso.push(lic.nombre);
+      }
+    }
+    if (!backups.length) {
+      const detalle = sinAcceso.length
+        ? ` La llave de la nube de esta PC no tiene acceso a: ${sinAcceso.join(', ')}. Pide ayuda a Tecno Caja.`
+        : '';
+      return { status: 404, cuerpo: { ok: false, code: 'SIN_RESPALDOS', error: `No hay respaldos en la nube de los negocios de ${cuenta.email}.${detalle}` } };
+    }
+    backups.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
+    const ids = [...new Set(backups.map(b => b.licenseId))];
+    return {
+      status: 200,
+      cuerpo: {
+        ok: true,
+        businessId: backups[0].licenseId,
+        businessIds: ids,
+        backups: backups.slice(0, 40),
+        email: cuenta.email,
+        cloudToken: firmarPermisoDueno({ email: cuenta.email, licencias: licencias.map(l => l.licenseId) }),
+      },
+    };
+  }
+
   app.post('/api/respaldos/setup/cloud/auth', setupOnly, async (req, res) => {
     try {
-      const { email } = req.body || {};
+      const { email, idToken } = req.body || {};
 
       const nubeOk = await r2.isR2Available();
       if (!nubeOk) {
         return res.status(503).json({ ok: false, error: 'La nube no está disponible o no está configurada en este dispositivo.' });
       }
 
+      if (idToken && typeof verificarCuentaDueno === 'function' && typeof licenciasDelCorreo === 'function') {
+        const r = await respaldosDelDueno(String(idToken));
+        return res.status(r.status).json(r.cuerpo);
+      }
+
       const businessId = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
       if (!businessId) {
         return res.status(404).json({
           ok: false,
-          error: 'Este dispositivo no tiene una licencia configurada (TECNO_CAJA_LICENSE_UID). No se puede identificar el negocio para buscar respaldos en la nube.',
+          code: 'NECESITA_CUENTA',
+          error: 'Esta PC todavía no tiene negocio. Escribe también la contraseña del dueño para buscar los respaldos de sus negocios.',
         });
       }
 
@@ -1186,10 +1358,12 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
   // ──────────────────────────────────────────────────────────────────────
   //  POST /api/respaldos/setup/restaurar-nube
   //  Descarga y restaura un respaldo de R2 sin sesión (wizard).
-  //  Body: { storageKey, loginEmail, loginPassword, sha256Esperado }
+  //  Body: { storageKey, loginEmail, loginPassword, sha256Esperado, cloudToken? }
   //
-  //  Autenticación: verifica loginEmail + loginPassword contra los usuarios
-  //  almacenados en el propio backup antes de restaurar.
+  //  Autenticación: con cloudToken (cuenta del dueño, ver cloud/auth) el
+  //  respaldo tiene que ser de uno de sus negocios y la PC queda con esa
+  //  licencia. Sin él, verifica loginEmail + loginPassword contra los
+  //  usuarios almacenados en el propio backup antes de restaurar.
   //  El cifrado del backup usa TECNO_CAJA_SECURITY_PASSWORD del .env.
   // ──────────────────────────────────────────────────────────────────────
   app.post('/api/respaldos/setup/restaurar-nube', setupOnly, async (req, res) => {
@@ -1199,11 +1373,28 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         sha256Esperado,
         loginEmail,
         loginPassword,
+        cloudToken,
         // campo legacy (ignorado en nueva versión; el cifrado usa siempre la env var)
         password: _legacyPwd,
       } = req.body || {};
 
       if (!storageKey) return res.status(400).json({ ok: false, error: 'storageKey requerido.' });
+
+      // Con el permiso del dueño (cloud/auth): solo respaldos de sus negocios.
+      // Su cuenta ya se verificó, así que no se vuelve a pedir la clave del
+      // usuario dentro del respaldo; y esta PC queda con la licencia de ese negocio.
+      let licenciaDelDueno = null;
+      if (cloudToken) {
+        let permiso;
+        try { permiso = leerPermisoDueno(String(cloudToken)); } catch (_) { permiso = null; }
+        if (!permiso || permiso.tipo !== 'dueno') {
+          return res.status(401).json({ ok: false, code: 'SESION_VENCIDA', error: 'La sesión del dueño venció. Vuelve a escribir el correo y la contraseña.' });
+        }
+        licenciaDelDueno = (permiso.licencias || []).find(id => String(storageKey).startsWith(r2.backupPrefix(id))) || null;
+        if (!licenciaDelDueno) {
+          return res.status(403).json({ ok: false, error: 'Ese respaldo no es de un negocio de esta cuenta.' });
+        }
+      }
 
       // Contraseña de cifrado del .env (nunca la del usuario — son cosas distintas)
       const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
@@ -1223,9 +1414,10 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
       const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
 
       // ── Verificar identidad del usuario contra datos del backup ──────────
-      // Solo si se proporcionan credenciales (requeridas si el backup tiene usuarios)
+      // Solo si se proporcionan credenciales (requeridas si el backup tiene
+      // usuarios). Con el permiso del dueño ya está verificado.
       const backupUsers = (payload?.data?.users) || [];
-      if (backupUsers.length > 0) {
+      if (backupUsers.length > 0 && !licenciaDelDueno) {
         if (!loginEmail || !loginPassword) {
           return res.status(401).json({
             ok:    false,
@@ -1261,6 +1453,12 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
         : null;
 
       const restoreResult = await restorePayloadToDb(payload, query);
+      // Restaurado con la cuenta del dueño: esta PC queda con la licencia de
+      // ese negocio (sus respaldos siguen en la misma carpeta de la nube).
+      if (licenciaDelDueno && String(process.env.TECNO_CAJA_LICENSE_UID || '').trim() !== licenciaDelDueno) {
+        persistEnv({ TECNO_CAJA_LICENSE_UID: licenciaDelDueno });
+      }
+      await revisarEnlaceTrasRestaurar();
 
       if (restoreResult.userCount === 0) {
         const motivo = backupUserCount === 0
@@ -1292,3 +1490,8 @@ module.exports = function createRespaldosRouter({ app, query, getActor, writeAud
     }
   });
 };
+
+// Para las pruebas (tests/routes/respaldo-diario.test.js).
+module.exports.createAutomaticBackup = createAutomaticBackup;
+module.exports.asegurarCopiaDelDia = asegurarCopiaDelDia;
+module.exports.pruneCloudBackups = pruneCloudBackups;

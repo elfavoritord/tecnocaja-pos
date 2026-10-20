@@ -58,6 +58,9 @@ const ENV_KEYS_TO_CLEAR = [
   'R2_ACCESS_KEY_ID',
   'R2_SECRET_ACCESS_KEY',
   'POS_PUBLIC_BASE_URL',
+  // Multisucursal: el enlace de esta PC con su sucursal. Una PC formateada que
+  // lo conservara seguiría hablando por esa sucursal con el negocio nuevo.
+  'TECNO_CAJA_SYNC_TOKEN',
 ];
 // Claves de versiones viejas (NovaPOS) que ningún código lee ya, pero que
 // siguen guardando el UID de licencia y los secretos del negocio anterior.
