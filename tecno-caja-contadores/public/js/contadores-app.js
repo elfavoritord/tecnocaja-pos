@@ -39,7 +39,11 @@ async function apiCall(method, path, body) {
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `Error ${res.status}`);
+    err.status = res.status;   // p. ej. 409 = cliente con RNC repetido
+    throw err;
+  }
   return data;
 }
 
@@ -170,6 +174,7 @@ function goto(mod) {
   if (mod === 'reportes')         loadReportes();
   if (mod === 'facturacion')      loadFacturacion();
   if (mod === 'cotizaciones')     loadCotizaciones();
+  if (mod === 'mis-clientes')     loadMisClientes();
   if (mod === 'asistente')        loadAsistente();
   if (mod === 'colaboradores')    loadColaboradores();
   if (mod === 'analisis-global')  loadAnalisisGlobal();
@@ -355,7 +360,7 @@ function _applyPermisos(profile) {
 
   // Colaborador dependiente: ocultar módulos bloqueados
   const hiddenMods = esDependiente
-    ? ['colaboradores', 'licencias', 'solicitudes', 'facturacion']
+    ? ['colaboradores', 'licencias', 'solicitudes', 'facturacion', 'mis-clientes']
     : [];
 
   document.querySelectorAll('.nav-item[data-mod]').forEach(el => {
@@ -3178,7 +3183,6 @@ let _facFacturas  = [];
 let _facClientes  = [];
 let _facCurId     = null;
 let _facCurData   = null;
-let _facEditClfId = null;
 let _facItems     = [];
 let _facEditId    = null;   // id de la factura en edición (null = nueva)
 
@@ -3872,6 +3876,8 @@ async function nuevaFactura() {
   const today = hoyLocal();
   const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
   set('nf-fecha', today);
+  const chkCli = $id('nf-guardar-cliente'); if (chkCli) chkCli.checked = false;
+  _mostrarCheckGuardarCliente('nf', '');
   ['nf-cli-nombre','nf-cli-rnc','nf-cli-dir','nf-cli-tel','nf-cli-correo','nf-observacion']
     .forEach(id => set(id, ''));
 
@@ -3904,7 +3910,7 @@ async function nuevaFactura() {
     if (sel) {
       let html = '<option value="">— Ingresar datos manualmente —</option>';
       if (clientes.length) {
-        html += `<optgroup label="Mis clientes de facturación">` +
+        html += `<optgroup label="Mis Clientes">` +
           clientes.map(c => `<option value="fac_${c.id}">${esc(c.nombre)}${c.rnc ? ' — ' + c.rnc : ''}</option>`).join('') +
           `</optgroup>`;
       }
@@ -4008,6 +4014,7 @@ async function editarFactura(id) {
 }
 
 async function selClienteFac(val) {
+  _mostrarCheckGuardarCliente('nf', val);
   if (!val) return;
   const set = (fid, v) => { const el = $id(fid); if (el) el.value = v || ''; };
 
@@ -4147,16 +4154,17 @@ async function guardarFactura() {
     const editandoId = _facEditId;
     if (esEdicion) {
       await apiCall('PUT', `/api/facturacion/facturas/${editandoId}`, payload);
-      toast('Factura actualizada.', 'success');
     } else {
       payload.tipo_ncf = get('nf-tipo-ncf');
       await apiCall('POST', '/api/facturacion/facturas', payload);
-      toast('Factura emitida correctamente.', 'success');
     }
+    const guardado = $id('nf-guardar-cliente')?.checked ? await _guardarEnMisClientes(cliente, _facClientes) : '';
+    toast((esEdicion ? 'Factura actualizada.' : 'Factura emitida correctamente.') + _textoGuardadoCliente(guardado), 'success');
 
     _facEditId = null;
     hide('modal-nueva-factura');
     loadFacturacion();
+    if ($id('mod-mis-clientes')?.classList.contains('active')) loadMisClientes();
     if (esEdicion && editandoId) verFactura(editandoId);
   } catch (e) {
     toast('Error: ' + e.message, 'error');
@@ -4490,120 +4498,292 @@ async function marcarPagadaLista(id) {
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 
-// ── Clientes de Facturación ───────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// MIS CLIENTES — clientes guardados del contador (colección clientes_fac).
+// Son los mismos del selector "Cliente guardado" de Nueva factura y Nueva
+// cotización. Facturas y cotizaciones guardan su propia copia del cliente:
+// se cruzan con la ficha por RNC/cédula (solo dígitos) o, si alguno de los
+// dos no tiene RNC, por el nombre.
+// ══════════════════════════════════════════════════════════════════════
 
-async function abrirClientesFac() {
-  _facEditClfId = null;
-  ['clf-nombre','clf-rnc','clf-direccion','clf-telefono','clf-correo']
-    .forEach(id => { const el = $id(id); if (el) el.value = ''; });
-  setText('clf-form-title', 'Nuevo cliente');
-  show('modal-clientes-fac');
+let _mcli             = [];         // clientes guardados
+let _mcliFacturas     = [];
+let _mcliCotizaciones = [];
+let _mcliResumenes    = new Map();  // id del cliente → resumen de facturación
+let _mcliEditId       = null;       // cliente en edición (null = nuevo)
+let _mcliFichaId      = null;       // cliente abierto en la ficha
 
-  // Autocomplete DGII en el RNC del cliente de facturación
-  if (window.RNCLookup) {
-    const rncEl    = $id('clf-rnc');
-    const nombreEl = $id('clf-nombre');
-    if (rncEl) {
-      RNCLookup.attach(rncEl, {
-        nameEl: nombreEl,
-        mode: 'both',
-        onSelect() {},
-      });
-    }
-  }
+const _mcliTexto = (v) => String(v || '').trim().toLowerCase()
+  .normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, ' ');
+const _mcliDigitos = (v) => String(v || '').replace(/\D/g, '');
 
-  await loadClientesFac();
+// ¿Este documento (factura/cotización) es de este cliente guardado?
+function _mcliEsDe(cliente, docCliente) {
+  if (!docCliente) return false;
+  const a = _mcliDigitos(cliente.rnc), b = _mcliDigitos(docCliente.rnc);
+  if (a && b) return a === b;
+  const n = _mcliTexto(cliente.nombre);
+  return !!n && n === _mcliTexto(docCliente.nombre);
 }
 
-function cerrarClientesFac() { hide('modal-clientes-fac'); }
+function _mcliResumen(cliente) {
+  const facturas = _mcliFacturas.filter(f => _mcliEsDe(cliente, f.cliente))
+    .sort((x, y) => String(y.fecha || '').localeCompare(String(x.fecha || '')));
+  const vigentes = facturas.filter(f => f.estado !== 'anulada');
+  const saldo = (f) => Math.max(0, Number(f.balance ?? ((f.total || 0) - (f.monto_pagado || 0))) || 0);
+  const anio = String(new Date().getFullYear());
+  return {
+    facturas,
+    cotizaciones: _mcliCotizaciones.filter(c => _mcliEsDe(cliente, c.cliente))
+      .sort((x, y) => String(y.fecha || '').localeCompare(String(x.fecha || ''))),
+    cantidad:  vigentes.length,
+    facturado: vigentes.reduce((a, f) => a + Number(f.total || 0), 0),
+    cobrado:   vigentes.reduce((a, f) => a + Number(f.monto_pagado || 0), 0),
+    pendiente: vigentes.reduce((a, f) => a + saldo(f), 0),
+    esteAnio:  vigentes.filter(f => String(f.fecha || '').startsWith(anio)).reduce((a, f) => a + Number(f.total || 0), 0),
+    ultima:    vigentes[0]?.fecha || '',
+  };
+}
 
-async function loadClientesFac() {
+async function loadMisClientes() {
+  const tbody = $id('mcli-tbody');
+  if (tbody && !_mcli.length) tbody.innerHTML = '<tr><td colspan="7" class="td-empty">Cargando clientes…</td></tr>';
   try {
-    const list = await apiCall('GET', '/api/facturacion/clientes');
-    _facClientes = list;
-    renderClientesFac(list);
+    const [clientes, facturas, cotizaciones] = await Promise.all([
+      apiCall('GET', '/api/facturacion/clientes'),
+      apiCall('GET', '/api/facturacion/facturas').catch(() => []),
+      apiCall('GET', '/api/cotizaciones/cotizaciones?todas=1').catch(() => []),
+    ]);
+    _mcli = clientes;
+    _facClientes = clientes;
+    _mcliFacturas = facturas;
+    _mcliCotizaciones = cotizaciones;
+    _mcliResumenes = new Map(clientes.map(c => [c.id, _mcliResumen(c)]));
+    _renderMcliResumen();
+    filtrarMisClientes();
+    if (_mcliFichaId && !$id('modal-mi-cliente-ficha')?.classList.contains('hidden')) verMiCliente(_mcliFichaId);
   } catch (e) {
-    const el = $id('clf-lista');
-    if (el) el.innerHTML = `<div style="color:var(--red);padding:16px">Error: ${e.message}</div>`;
+    if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="td-empty" style="color:var(--red)">Error: ${esc(e.message)}</td></tr>`;
   }
 }
 
-function renderClientesFac(list) {
-  const el = $id('clf-lista');
-  if (!el) return;
-  if (!list.length) {
-    el.innerHTML = '<div style="text-align:center;padding:32px;color:var(--text-muted)">Aún no hay clientes. Completa el formulario de arriba para agregar uno.</div>';
+function _renderMcliResumen() {
+  const res = [..._mcliResumenes.values()];
+  setText('mcli-total', String(_mcli.length));
+  setText('mcli-con-saldo', String(res.filter(r => r.pendiente > 0.009).length));
+  setText('mcli-pendiente', fmtMoney(res.reduce((a, r) => a + r.pendiente, 0)));
+  setText('mcli-anio', fmtMoney(res.reduce((a, r) => a + r.esteAnio, 0)));
+}
+
+function filtrarMisClientes() {
+  const tbody = $id('mcli-tbody');
+  if (!tbody) return;
+  const q = _mcliTexto($id('mcli-buscar')?.value);
+  const qDig = _mcliDigitos(q);
+  const filtro = $id('mcli-filtro')?.value || '';
+
+  const lista = _mcli.filter((c) => {
+    const r = _mcliResumenes.get(c.id) || {};
+    if (filtro === 'saldo' && !(r.pendiente > 0.009)) return false;
+    if (filtro === 'sin-facturas' && r.cantidad) return false;
+    if (!q) return true;
+    if ([c.nombre, c.contacto, c.correo].some(v => _mcliTexto(v).includes(q))) return true;
+    return qDig.length >= 3 && [c.rnc, c.telefono].some(v => _mcliDigitos(v).includes(qDig));
+  });
+
+  setText('mcli-sub', _mcli.length
+    ? `${_mcli.length} cliente${_mcli.length === 1 ? '' : 's'} guardado${_mcli.length === 1 ? '' : 's'} para facturar y cotizar`
+    : 'Guarda aquí los clientes a los que facturas y cotizas');
+
+  if (!lista.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="td-empty">${_mcli.length
+      ? 'Ningún cliente coincide con la búsqueda.'
+      : 'Aún no tienes clientes guardados. Presiona <b>＋ Nuevo cliente</b> para agregar el primero.'}</td></tr>`;
     return;
   }
-  el.innerHTML = list.map(c => `<div class="clf-item">
-    <div class="clf-item-info">
-      <div class="clf-item-name">${esc(c.nombre)}</div>
-      <div class="clf-item-meta">${c.rnc ? 'RNC: ' + c.rnc : ''}${c.rnc && c.telefono ? ' · ' : ''}${c.telefono || ''}</div>
-    </div>
-    <div class="clf-item-actions">
-      <button class="btn btn-xs btn-secondary" onclick="app.editarClienteFac('${c.id}')">Editar</button>
-      <button class="btn btn-xs btn-danger"    onclick="app.eliminarClienteFac('${c.id}')">Eliminar</button>
-    </div>
-  </div>`).join('');
+
+  tbody.innerHTML = lista.map((c) => {
+    const r = _mcliResumenes.get(c.id) || {};
+    const contacto = [c.telefono, c.correo].filter(Boolean).map(esc).join('<br>') || '<span class="text-muted">—</span>';
+    return `<tr>
+      <td>
+        <a href="#" class="mcli-nombre" onclick="app.verMiCliente('${c.id}');return false">${esc(c.nombre)}</a>
+        ${c.contacto ? `<div class="td-small">Atención: ${esc(c.contacto)}</div>` : ''}
+      </td>
+      <td class="td-small">${esc(c.rnc) || '—'}</td>
+      <td class="td-small">${contacto}</td>
+      <td style="text-align:right">${r.cantidad || 0}</td>
+      <td class="td-amount" style="text-align:right">${fmtMoney(r.facturado || 0)}</td>
+      <td class="td-amount ${r.pendiente > 0.009 ? 'mcli-pendiente' : ''}" style="text-align:right">${fmtMoney(r.pendiente || 0)}</td>
+      <td>
+        <div class="mcli-acciones">
+          <button class="btn btn-secondary btn-xs" onclick="app.facturarMiCliente('${c.id}')" title="Nueva factura a este cliente">💳 Facturar</button>
+          <button class="btn btn-secondary btn-xs" onclick="app.cotizarMiCliente('${c.id}')" title="Nueva cotización a este cliente">🧾 Cotizar</button>
+          <button class="btn btn-secondary btn-xs" onclick="app.abrirMiCliente('${c.id}')" title="Editar datos">✏</button>
+          <button class="btn btn-danger btn-xs" onclick="app.eliminarMiCliente('${c.id}')" title="Eliminar de Mis Clientes">🗑</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
 }
 
-function nuevoClienteFac() {
-  _facEditClfId = null;
-  setText('clf-form-title', 'Nuevo cliente');
-  ['clf-nombre','clf-rnc','clf-direccion','clf-telefono','clf-correo']
-    .forEach(id => { const el = $id(id); if (el) el.value = ''; });
-  $id('clf-nombre')?.focus();
+// ── Formulario nuevo / editar ─────────────────────────────────────────
+const _MCLI_CAMPOS = ['nombre', 'rnc', 'contacto', 'telefono', 'correo', 'direccion', 'notas'];
+
+function abrirMiCliente(id) {
+  const c = id ? _mcli.find(x => x.id === id) : null;
+  _mcliEditId = c ? c.id : null;
+  _MCLI_CAMPOS.forEach((campo) => { const el = $id(`mcli-f-${campo}`); if (el) el.value = c?.[campo] || ''; });
+  setText('mcli-form-titulo', c ? '✏ Editar cliente' : '＋ Nuevo cliente');
+  const btn = $id('mcli-btn-guardar'); if (btn) btn.textContent = c ? '💾 Guardar cambios' : '💾 Guardar cliente';
+
+  // Autocompletar con la DGII al escribir el RNC, igual que en la factura.
+  if (window.RNCLookup) {
+    const rncEl = $id('mcli-f-rnc');
+    if (rncEl) RNCLookup.attach(rncEl, { nameEl: $id('mcli-f-nombre'), mode: 'both', onSelect() {} });
+  }
+  show('modal-mi-cliente');
+  setTimeout(() => $id('mcli-f-nombre')?.focus(), 50);
 }
 
-function editarClienteFac(id) {
-  const c = _facClientes.find(x => x.id === id);
-  if (!c) return;
-  _facEditClfId = id;
-  setText('clf-form-title', 'Editar cliente');
-  const set = (fid, v) => { const el = $id(fid); if (el) el.value = v || ''; };
-  set('clf-nombre',    c.nombre);
-  set('clf-rnc',       c.rnc);
-  set('clf-direccion', c.direccion);
-  set('clf-telefono',  c.telefono);
-  set('clf-correo',    c.correo);
-  $id('clf-nombre')?.focus();
-}
+function cerrarMiCliente() { _mcliEditId = null; hide('modal-mi-cliente'); }
 
-async function guardarClienteFac() {
-  const get  = id => ($id(id)?.value || '').trim();
-  const nombre = get('clf-nombre');
-  if (!nombre) { toast('El nombre es requerido.', 'error'); return; }
-  const data = { nombre, rnc: get('clf-rnc'), direccion: get('clf-direccion'), telefono: get('clf-telefono'), correo: get('clf-correo') };
+async function guardarMiCliente() {
+  const datos = {};
+  _MCLI_CAMPOS.forEach((campo) => { datos[campo] = ($id(`mcli-f-${campo}`)?.value || '').trim(); });
+  if (!datos.nombre) { toast('Escribe el nombre o razón social del cliente.', 'error'); $id('mcli-f-nombre')?.focus(); return; }
+  if (datos.correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(datos.correo)) { toast('El correo no es válido.', 'error'); $id('mcli-f-correo')?.focus(); return; }
+
+  const btn = $id('mcli-btn-guardar');
+  const label = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
   try {
-    if (_facEditClfId) {
-      await apiCall('PUT', `/api/facturacion/clientes/${_facEditClfId}`, data);
+    if (_mcliEditId) {
+      await apiCall('PUT', `/api/facturacion/clientes/${_mcliEditId}`, datos);
       toast('Cliente actualizado.', 'success');
     } else {
-      await apiCall('POST', '/api/facturacion/clientes', data);
-      toast('Cliente guardado.', 'success');
+      await apiCall('POST', '/api/facturacion/clientes', datos);
+      toast('Cliente guardado en Mis Clientes.', 'success');
     }
-    _facEditClfId = null;
-    setText('clf-form-title', 'Nuevo cliente');
-    ['clf-nombre','clf-rnc','clf-direccion','clf-telefono','clf-correo']
-      .forEach(id => { const el = $id(id); if (el) el.value = ''; });
-    await loadClientesFac();
-  } catch (e) { toast('Error: ' + e.message, 'error'); }
+    cerrarMiCliente();
+    await loadMisClientes();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = label; }
+  }
 }
 
-function cancelarClienteFac() {
-  _facEditClfId = null;
-  setText('clf-form-title', 'Nuevo cliente');
-  ['clf-nombre','clf-rnc','clf-direccion','clf-telefono','clf-correo']
-    .forEach(id => { const el = $id(id); if (el) el.value = ''; });
-}
-
-async function eliminarClienteFac(id) {
-  if (!confirm('¿Eliminar este cliente? No se puede deshacer.')) return;
+async function eliminarMiCliente(id) {
+  const c = _mcli.find(x => x.id === id);
+  if (!c) return;
+  if (!confirm(`¿Eliminar a "${c.nombre}" de Mis Clientes?\n\nSus facturas y cotizaciones no se borran.`)) return;
   try {
     await apiCall('DELETE', `/api/facturacion/clientes/${id}`);
     toast('Cliente eliminado.', 'success');
-    await loadClientesFac();
+    if (_mcliFichaId === id) cerrarFichaMiCliente();
+    await loadMisClientes();
   } catch (e) { toast('Error: ' + e.message, 'error'); }
+}
+
+// ── Ficha del cliente: datos, saldo, facturas y cotizaciones ──────────
+function verMiCliente(id) {
+  const c = _mcli.find(x => x.id === id);
+  if (!c) return;
+  _mcliFichaId = id;
+  const r = _mcliResumenes.get(id) || _mcliResumen(c);
+
+  setText('mcli-ficha-nombre', c.nombre);
+  setText('mcli-ficha-rnc', c.rnc ? `RNC / Cédula: ${c.rnc}` : 'Sin RNC / cédula');
+  const fila = (dt, dd) => `<dt>${dt}</dt><dd>${dd || '—'}</dd>`;
+  $id('mcli-ficha-datos').innerHTML = `<dl class="info-dl">
+    ${fila('Atención', esc(c.contacto))}
+    ${fila('Teléfono', esc(c.telefono))}
+    ${fila('Correo', esc(c.correo))}
+    ${fila('Dirección', esc(c.direccion))}
+    ${c.notas ? fila('Notas', `<span style="white-space:pre-wrap">${esc(c.notas)}</span>`) : ''}
+  </dl>`;
+
+  setText('mcli-ficha-facturado', fmtMoney(r.facturado));
+  setText('mcli-ficha-cobrado', fmtMoney(r.cobrado));
+  setText('mcli-ficha-pendiente', fmtMoney(r.pendiente));
+  setText('mcli-ficha-ultima', r.ultima ? fmtDate(r.ultima) : '—');
+  $id('mcli-ficha-pendiente')?.classList.toggle('mcli-pendiente', r.pendiente > 0.009);
+
+  $id('mcli-ficha-facturas').innerHTML = r.facturas.map(f => `<tr>
+      <td><a href="#" onclick="app.verFacturaDeMiCliente('${f.id}');return false"><code>${esc(facNcfDisplay(f.ncf))}</code></a></td>
+      <td class="td-date">${fmtDate(f.fecha)}</td>
+      <td class="td-amount" style="text-align:right">${fmtMoney(f.total)}</td>
+      <td class="td-amount" style="text-align:right">${f.estado === 'anulada' ? '—' : fmtMoney(f.balance ?? ((f.total || 0) - (f.monto_pagado || 0)))}</td>
+      <td>${facEstadoBadge(f.estado)}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="td-empty">Sin facturas todavía.</td></tr>';
+
+  $id('mcli-ficha-cotizaciones').innerHTML = r.cotizaciones.map(q => `<tr>
+      <td><a href="#" onclick="app.verCotizacionPreview('${q.id}');return false">${esc(q.numero)}</a></td>
+      <td class="td-date">${fmtDate(q.fecha)}</td>
+      <td class="td-amount" style="text-align:right">${fmtMoney(q.total)}</td>
+      <td>${cotEstadoBadge(q.estado)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="td-empty">Sin cotizaciones todavía.</td></tr>';
+
+  show('modal-mi-cliente-ficha');
+}
+
+function cerrarFichaMiCliente() { _mcliFichaId = null; hide('modal-mi-cliente-ficha'); }
+
+function editarFichaMiCliente() { if (_mcliFichaId) abrirMiCliente(_mcliFichaId); }
+
+function verFacturaDeMiCliente(facturaId) {
+  cerrarFichaMiCliente();
+  verFactura(facturaId);
+}
+
+// Abre Nueva factura / Nueva cotización con el cliente ya puesto.
+async function facturarMiCliente(id) {
+  const clienteId = id || _mcliFichaId;
+  if (!clienteId) return;
+  cerrarFichaMiCliente();
+  await nuevaFactura();
+  const sel = $id('nf-cliente-sel');
+  if (sel) sel.value = `fac_${clienteId}`;
+  await selClienteFac(`fac_${clienteId}`);
+}
+
+async function cotizarMiCliente(id) {
+  const clienteId = id || _mcliFichaId;
+  if (!clienteId) return;
+  cerrarFichaMiCliente();
+  await nuevaCotizacion();
+  const sel = $id('cot-cliente-sel');
+  if (sel) sel.value = `fac_${clienteId}`;
+  await selClienteCot(`fac_${clienteId}`);
+}
+
+// "Guardar este cliente en Mis Clientes" de Nueva factura / Nueva
+// cotización. No repite un cliente que ya está (mismo RNC/cédula, o mismo
+// nombre si no tiene RNC). Devuelve 'nuevo', 'existe' o '' si falló.
+async function _guardarEnMisClientes(cliente, yaGuardados) {
+  if ((yaGuardados || []).some(c => _mcliEsDe(c, cliente))) return 'existe';
+  try {
+    await apiCall('POST', '/api/facturacion/clientes', cliente);
+    _mcli = [];   // la próxima visita a Mis Clientes recarga la lista
+    return 'nuevo';
+  } catch (e) {
+    if (e.status === 409) return 'existe';
+    toast('No se pudo guardar el cliente en Mis Clientes: ' + e.message, 'error');
+    return '';
+  }
+}
+
+function _textoGuardadoCliente(r) {
+  if (r === 'nuevo') return ' El cliente quedó guardado en Mis Clientes.';
+  if (r === 'existe') return ' El cliente ya estaba en Mis Clientes.';
+  return '';
+}
+
+// El check solo tiene sentido si el cliente no viene de Mis Clientes.
+function _mostrarCheckGuardarCliente(prefijo, valorSelector) {
+  const fila = $id(`${prefijo}-guardar-cliente-row`);
+  if (fila) fila.style.display = String(valorSelector || '').startsWith('fac_') ? 'none' : '';
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -4665,6 +4845,8 @@ async function nuevaCotizacion() {
   set('cot-condicion', 'contado');
   ['cot-cli-nombre', 'cot-cli-rnc', 'cot-cli-dir', 'cot-cli-tel', 'cot-cli-correo', 'cot-notas', 'cot-observacion']
     .forEach(id => set(id, ''));
+  const chkCli = $id('cot-guardar-cliente'); if (chkCli) chkCli.checked = false;
+  _mostrarCheckGuardarCliente('cot', '');
 
   // Autocomplete DGII en el RNC del cliente, igual que en Facturación.
   if (window.RNCLookup) {
@@ -4685,7 +4867,7 @@ async function nuevaCotizacion() {
     if (sel) {
       let html = '<option value="">— Ingresar datos manualmente —</option>';
       if (clientes.length) {
-        html += `<optgroup label="Mis clientes de facturación">` +
+        html += `<optgroup label="Mis Clientes">` +
           clientes.map(c => `<option value="fac_${c.id}">${esc(c.nombre)}${c.rnc ? ' — ' + c.rnc : ''}</option>`).join('') +
           `</optgroup>`;
       }
@@ -4742,6 +4924,7 @@ async function editarCotizacion(id) {
 }
 
 async function selClienteCot(val) {
+  _mostrarCheckGuardarCliente('cot', val);
   if (!val) return;
   const set = (fid, v) => { const el = $id(fid); if (el) el.value = v || ''; };
 
@@ -4868,15 +5051,16 @@ async function guardarCotizacion() {
     const editandoId = _cotEditId;
     if (esEdicion) {
       await apiCall('PUT', `/api/cotizaciones/cotizaciones/${editandoId}`, payload);
-      toast('Cotización actualizada.', 'success');
     } else {
       await apiCall('POST', '/api/cotizaciones/cotizaciones', payload);
-      toast('Cotización guardada.', 'success');
     }
+    const guardado = $id('cot-guardar-cliente')?.checked ? await _guardarEnMisClientes(cliente, _cotClientes) : '';
+    toast((esEdicion ? 'Cotización actualizada.' : 'Cotización guardada.') + _textoGuardadoCliente(guardado), 'success');
 
     _cotEditId = null;
     hide('modal-nueva-cotizacion');
     loadCotizaciones();
+    if ($id('mod-mis-clientes')?.classList.contains('active')) loadMisClientes();
   } catch (e) {
     toast('Error: ' + e.message, 'error');
   } finally {
@@ -6953,9 +7137,10 @@ window.app = {
   imprimirFactura, imprimirFacturaPreview, enviarPorCorreo, enviarPorWhatsApp,
   cerrarEnvioFac, confirmarEnvioFac,
   openRegistrarPagoFac, cerrarRegistrarPagoFac, registrarPagoFac,
-  // facturación — clientes
-  abrirClientesFac, cerrarClientesFac,
-  nuevoClienteFac, editarClienteFac, guardarClienteFac, cancelarClienteFac, eliminarClienteFac,
+  // mis clientes
+  loadMisClientes, filtrarMisClientes, abrirMiCliente, cerrarMiCliente, guardarMiCliente, eliminarMiCliente,
+  verMiCliente, cerrarFichaMiCliente, editarFichaMiCliente, verFacturaDeMiCliente,
+  facturarMiCliente, cotizarMiCliente,
   // cotizaciones
   loadCotizaciones, nuevaCotizacion, cerrarNuevaCotizacion, editarCotizacion, selClienteCot,
   addItemCot, removeItemCot, cotItemSet, guardarCotizacion,

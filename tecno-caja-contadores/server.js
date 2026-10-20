@@ -2976,56 +2976,72 @@ app.delete('/api/contabilidad/:businessId/adjuntos/:id', requireAuth, async (req
 });
 
 // ══════════════════════════════════════════════════════════════════════
-// FACTURACIÓN — Clientes del contador
+// MIS CLIENTES — clientes del contador (módulo "Mis Clientes"; también
+// alimentan el selector de cliente de Facturación y Cotizaciones)
 // ══════════════════════════════════════════════════════════════════════
+
+function clientesFacCol(req) {
+  return col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('clientes_fac');
+}
+
+// Campos que se guardan de un cliente. Un mismo RNC/cédula no puede estar
+// dos veces (se compara solo por dígitos: "131-00000-1" = "131000001").
+function datosClienteFac(body = {}) {
+  const txt = (v, max) => String(v || '').trim().slice(0, max);
+  return {
+    nombre: txt(body.nombre, 160), rnc: txt(body.rnc, 20),
+    contacto: txt(body.contacto, 120), direccion: txt(body.direccion, 240),
+    telefono: txt(body.telefono, 40), correo: txt(body.correo, 120),
+    notas: txt(body.notas, 2000),
+  };
+}
+
+async function rncClienteRepetido(req, rnc, exceptoId) {
+  const digitos = String(rnc || '').replace(/\D/g, '');
+  if (!digitos) return null;
+  const snap = await clientesFacCol(req).get();
+  const dup = snap.docs.find(d => d.id !== exceptoId && String(d.data().rnc || '').replace(/\D/g, '') === digitos);
+  return dup ? { id: dup.id, ...dup.data() } : null;
+}
 
 app.get('/api/facturacion/clientes', requireAuth, async (req, res) => {
   try {
-    const snap = await col(COL_CONTADORES)
-      .doc(req.contador.contadorDocId)
-      .collection('clientes_fac')
-      .orderBy('nombre')
-      .get();
+    const snap = await clientesFacCol(req).orderBy('nombre').get();
     res.json(snap.docs.map(docData));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/facturacion/clientes', requireAuth, async (req, res) => {
   try {
-    const { nombre, rnc, direccion, telefono, correo } = req.body;
-    if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre es requerido.' });
-    const data = {
-      nombre: nombre.trim(), rnc: (rnc||'').trim(),
-      direccion: (direccion||'').trim(), telefono: (telefono||'').trim(),
-      correo: (correo||'').trim(), createdAt: isoNow(), updatedAt: isoNow(),
-    };
-    const ref = await col(COL_CONTADORES)
-      .doc(req.contador.contadorDocId).collection('clientes_fac').add(data);
+    const datos = datosClienteFac(req.body);
+    if (!datos.nombre) return res.status(400).json({ error: 'El nombre es requerido.' });
+    const dup = await rncClienteRepetido(req, datos.rnc);
+    if (dup) return res.status(409).json({ error: `Ya tienes un cliente con ese RNC/cédula: ${dup.nombre}.`, cliente: { id: dup.id, nombre: dup.nombre } });
+    const data = { ...datos, createdAt: isoNow(), updatedAt: isoNow() };
+    const ref = await clientesFacCol(req).add(data);
     res.json({ id: ref.id, ...data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/facturacion/clientes/:id', requireAuth, async (req, res) => {
   try {
-    const { nombre, rnc, direccion, telefono, correo } = req.body;
-    if (!nombre?.trim()) return res.status(400).json({ error: 'El nombre es requerido.' });
-    const ref = col(COL_CONTADORES)
-      .doc(req.contador.contadorDocId).collection('clientes_fac').doc(req.params.id);
+    const datos = datosClienteFac(req.body);
+    if (!datos.nombre) return res.status(400).json({ error: 'El nombre es requerido.' });
+    const ref = clientesFacCol(req).doc(req.params.id);
     if (!(await ref.get()).exists) return res.status(404).json({ error: 'Cliente no encontrado.' });
-    const data = {
-      nombre: nombre.trim(), rnc: (rnc||'').trim(),
-      direccion: (direccion||'').trim(), telefono: (telefono||'').trim(),
-      correo: (correo||'').trim(), updatedAt: isoNow(),
-    };
+    const dup = await rncClienteRepetido(req, datos.rnc, req.params.id);
+    if (dup) return res.status(409).json({ error: `Ya tienes otro cliente con ese RNC/cédula: ${dup.nombre}.` });
+    const data = { ...datos, updatedAt: isoNow() };
     await ref.update(data);
     res.json({ id: req.params.id, ...data });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Borra solo la ficha: las facturas y cotizaciones guardan su propia copia
+// de los datos del cliente y no cambian.
 app.delete('/api/facturacion/clientes/:id', requireAuth, async (req, res) => {
   try {
-    await col(COL_CONTADORES)
-      .doc(req.contador.contadorDocId).collection('clientes_fac').doc(req.params.id).delete();
+    await clientesFacCol(req).doc(req.params.id).delete();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
