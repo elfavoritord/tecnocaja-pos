@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.4.7",
+  "version": "1.5.0",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -31,7 +31,7 @@
     "lab:multisucursal": "node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"node scripts/multisucursal/laboratorio.js\"",
     "test:multisucursal-asistente": "node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"node scripts/multisucursal/probar-asistente-sucursal.js\"",
     "test:multisucursal-integral": "node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"node scripts/multisucursal/probar-multisucursal-integral.js\"",
-    "test:multisucursal-central":"node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"npx jest --runInBand --testMatch **/tests/multisucursal/central/**/*.test.js **/cloud/sync-api/test/**/*.test.js\"",
+    "test:multisucursal-central": "node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"npx jest --runInBand --testMatch **/tests/multisucursal/central/**/*.test.js **/cloud/sync-api/test/**/*.test.js\"",
     "admin": "chcp 65001 > nul && set ELECTRON_RUN_AS_NODE=&& .\\node_modules\\electron\\dist\\electron.exe tecno-caja-admin/main.js"
   },
   "keywords": [],
