@@ -246,6 +246,12 @@ function rowMatchesBranch(row, branchId, tab = '') {
   return normalized.branchId === branchId;
 }
 function isoNow() { return new Date().toISOString(); }
+// Fecha de hoy en la hora de esta PC ("2026-10-19"). toISOString() da la de
+// UTC: en RD (UTC-4) después de las 8:00 p. m. ya es la de mañana.
+function fechaLocal(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 function daysFromNow(date) {
   if (!date) return null;
   const d = date.toDate ? date.toDate() : new Date(date);
@@ -1955,7 +1961,7 @@ app.get('/api/contabilidad/:businessId/balance-general', requireAuth, async (req
   try {
     const businessId = req.params.businessId;
     await ctbCheckAccess(req, businessId);
-    const hasta = req.query.hasta || new Date().toISOString().slice(0, 10);
+    const hasta = req.query.hasta || fechaLocal();
     const { cuentas, asientos } = await ctbFetchCuentasYAsientos(businessId);
 
     // Saldos acumulados desde el inicio del negocio hasta la fecha de corte
@@ -2046,7 +2052,7 @@ app.get('/api/contabilidad/:businessId/indicadores', requireAuth, async (req, re
   try {
     const businessId = req.params.businessId;
     await ctbCheckAccess(req, businessId);
-    const hasta = req.query.hasta || new Date().toISOString().slice(0, 10);
+    const hasta = req.query.hasta || fechaLocal();
     const { cuentas, asientos } = await ctbFetchCuentasYAsientos(businessId);
 
     // Saldos de Balance General a la fecha de corte (misma lógica que /balance-general)
@@ -2387,7 +2393,7 @@ app.post('/api/contabilidad/:businessId/activos-fijos/depreciar', requireAuth, a
   try {
     const businessId = req.params.businessId;
     await ctbCheckAccess(req, businessId);
-    const hasta = req.body?.hasta || new Date().toISOString().slice(0, 7);
+    const hasta = req.body?.hasta || fechaLocal().slice(0, 7);
 
     const licRef = col(COL_LICENCIAS).doc(businessId);
     const snap = await licRef.collection('activos_fijos').where('estado', '==', 'activo').get();
@@ -3043,7 +3049,7 @@ const NCF_TIPOS = Object.fromEntries(NCF_DOCUMENT_TYPES.map((t) => [t.code, t.la
 // ══════════════════════════════════════════════════════════════════════
 
 function mapMisSecuencia(d) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = fechaLocal();
   const totalAuthorized = d.endNumber - d.startNumber + 1;
   const totalUsed = Math.max(0, d.nextNumber - d.startNumber);
   const totalAvailable = Math.max(0, d.endNumber - d.nextNumber + 1);
@@ -3187,7 +3193,7 @@ app.delete('/api/mis-secuencias-ncf/:id', requireAuth, async (req, res) => {
 // ninguna secuencia activa/vigente/con cupo para ese tipo, se bloquea la
 // factura — decisión explícita: nunca inventar un NCF sin respaldo real.
 async function getNextNcf(contadorRef, tipo) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = fechaLocal();
   const seqCol = contadorRef.collection('mis_secuencias_ncf');
   return db.runTransaction(async (t) => {
     const snap = await t.get(seqCol.where('documentType', '==', tipo).where('status', '==', 'activo'));
@@ -3246,7 +3252,7 @@ app.get('/api/facturacion/stats', requireAuth, async (req, res) => {
   try {
     const snap = await col(COL_CONTADORES)
       .doc(req.contador.contadorDocId).collection('facturas').get();
-    const mes = new Date().toISOString().slice(0, 7);
+    const mes = fechaLocal().slice(0, 7);
     let totalMes = 0, pendientes = 0, pagadas = 0, totalGeneral = 0;
     for (const d of snap.docs) {
       const f = d.data();
@@ -3323,7 +3329,7 @@ async function crearFacturaInterna(req, datos) {
   const data = {
     ncf, tipo_ncf, tipo_ncf_label: NCF_TIPOS[tipo_ncf],
     ncf_vencimiento: ncfVencimiento || null,
-    fecha: fecha || new Date().toISOString().slice(0, 10),
+    fecha: fecha || fechaLocal(),
     cliente: {
       nombre:    cliente.nombre.trim(), rnc:      cliente.rnc       || '',
       direccion: cliente.direccion || '',  telefono: cliente.telefono || '',
@@ -3634,7 +3640,7 @@ app.post('/api/cotizaciones/cotizaciones', requireAuth, async (req, res) => {
     const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
     const numero = await getNextCotizacionNumero(contadorRef);
     const { itemsCalc, subtotal, descuento_total, itbis_total, total } = computeFacturaItems(items);
-    const fechaDoc = fecha || new Date().toISOString().slice(0, 10);
+    const fechaDoc = fecha || fechaLocal();
     const dias = Math.max(1, Number(validez_dias) || 30);
     const fecha_vencimiento = new Date(new Date(fechaDoc).getTime() + dias * 86400000).toISOString().slice(0, 10);
 
@@ -3742,7 +3748,7 @@ app.post('/api/cotizaciones/cotizaciones/:id/facturar', requireAuth, async (req,
     const factura = await crearFacturaInterna(req, {
       cliente: c.cliente,
       tipo_ncf: req.body.tipo_ncf,
-      fecha: new Date().toISOString().slice(0, 10),
+      fecha: fechaLocal(),
       items: c.items,
       condicion_pago: c.condicion_pago,
       metodo_pago: req.body.metodo_pago || 'efectivo',
@@ -4618,7 +4624,7 @@ app.post('/api/asistente/chat', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Falta el mensaje del usuario.' });
     }
 
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = fechaLocal();
     const systemPrompt = [
       `Eres el asistente virtual de "${req.contador.nombre_firma || req.contador.fullName || 'la firma contable'}", una firma de contabilidad en República Dominicana.`,
       `Ayudas al contador a consultar información de SUS clientes (negocios que usan Tecno Caja POS), preparar resúmenes y responder dudas de contabilidad y fiscalidad dominicana (ITBIS, NCF, IR-17, IT-1, TSS, DGII).`,

@@ -65,10 +65,24 @@ function $id(id)   { return document.getElementById(id); }
 function setText(id, txt) { const el = $id(id); if (el) el.textContent = txt; }
 
 // ── Date formatting ────────────────────────────────────────────────────────
+// Fecha de HOY en la hora de la PC ("2026-10-19"). No sacarla de
+// toISOString(): esa es la fecha en UTC, y en RD
+// (UTC-4) después de las 8:00 p. m. ya da la de mañana — una factura hecha de
+// noche quedaba con fecha de mañana y no salía en "Este mes" ni en "Hoy".
+function hoyLocal(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function fmtDate(val) {
   if (!val) return '—';
   try {
-    const d = val?.toDate ? val.toDate() : new Date(val._seconds ? val._seconds * 1000 : val);
+    // "2026-10-19" (fecha sin hora) es ese día aquí: new Date('2026-10-19') lo
+    // toma como medianoche UTC y en RD se mostraba el día anterior.
+    const soloFecha = typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val);
+    const d = soloFecha
+      ? new Date(Number(val.slice(0, 4)), Number(val.slice(5, 7)) - 1, Number(val.slice(8, 10)))
+      : val?.toDate ? val.toDate() : new Date(val._seconds ? val._seconds * 1000 : val);
     if (isNaN(d)) return '—';
     return d.toLocaleDateString('es-DO', { day: '2-digit', month: 'short', year: 'numeric' });
   } catch { return '—'; }
@@ -2130,7 +2144,7 @@ function exportarCSV() {
 
   const neg = _allClientes.find(c => c.id === _repNegocioId);
   const nombre = (neg?.businessName || 'negocio').replace(/[^a-zA-Z0-9]/g, '_');
-  const fecha  = new Date().toISOString().slice(0, 10);
+  const fecha  = hoyLocal();
   const csv    = '﻿' + rows.join('\n'); // BOM for Excel
   const blob   = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url    = URL.createObjectURL(blob);
@@ -2186,7 +2200,7 @@ function exportarExcel() {
   XLSX.utils.book_append_sheet(wb, ws, sheetName || 'Reporte');
 
   const nombre = (neg?.businessName || 'negocio').replace(/[^a-zA-Z0-9]/g, '_');
-  const fechaArchivo = new Date().toISOString().slice(0, 10);
+  const fechaArchivo = hoyLocal();
   XLSX.writeFile(wb, `reporte_${_repTab}_${nombre}_${fechaArchivo}.xlsx`);
   toast('Excel exportado correctamente.', 'success');
 }
@@ -2899,7 +2913,7 @@ async function cargarChartVentas(branchId) {
 // (nunca pasa en un mes calendario), el día 1 podría quedar fuera de la
 // ventana — aceptable para esta vista filtrada por sucursal.
 function computeSalesStatsFromRows(rows) {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = hoyLocal();
   const monthStr = todayStr.slice(0, 7);
   let ventasHoy = 0, ventasMes = 0, itbisMes = 0, facturasEmitidas = 0;
   for (const r of rows) {
@@ -3093,7 +3107,7 @@ async function imprimirTabReporte() {
   </body></html>`;
 
   const slug = (neg?.businessName || 'negocio').replace(/\s+/g, '_').slice(0, 30);
-  const filename = `${slug}_${_repTab}_${new Date().toISOString().slice(0,10)}.pdf`;
+  const filename = `${slug}_${_repTab}_${hoyLocal()}.pdf`;
   await _savePdf(html, filename, true);
 }
 
@@ -3152,7 +3166,7 @@ async function imprimirReporteMensual() {
   </body></html>`;
 
   const slug = (neg?.businessName || 'negocio').replace(/\s+/g, '_').slice(0, 30);
-  const filename = `${slug}_reporte_mensual_${new Date().toISOString().slice(0, 7)}.pdf`;
+  const filename = `${slug}_reporte_mensual_${hoyLocal().slice(0, 7)}.pdf`;
   await _savePdf(html, filename, false);
 }
 
@@ -3546,7 +3560,7 @@ function _facRPdfDoc() {
 }
 function _facRSave(doc, name) {
   const slug = String(_perfil?.nombre_firma || 'firma').replace(/[^a-z0-9]+/gi, '_').slice(0, 30);
-  doc.save(`${name}_${slug}_${new Date().toISOString().slice(0, 10)}.pdf`);
+  doc.save(`${name}_${slug}_${hoyLocal()}.pdf`);
   toast('Reporte PDF generado', 'success');
 }
 
@@ -3855,7 +3869,7 @@ async function nuevaFactura() {
   const ncfEl = $id('nf-tipo-ncf'); if (ncfEl) ncfEl.disabled = false;
 
   _facItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = hoyLocal();
   const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
   set('nf-fecha', today);
   ['nf-cli-nombre','nf-cli-rnc','nf-cli-dir','nf-cli-tel','nf-cli-correo','nf-observacion']
@@ -4644,7 +4658,7 @@ async function nuevaCotizacion() {
   if (bEl) bEl.textContent = '💾 Guardar Cotización';
 
   _cotItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = hoyLocal();
   const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
   set('cot-fecha', today);
   set('cot-validez-dias', 30);
@@ -5633,7 +5647,7 @@ function _renderTareas() {
     return;
   }
 
-  const hoy = new Date().toISOString().slice(0, 10);
+  const hoy = hoyLocal();
   el.innerHTML = lista.map(t => {
     const vencida = t.fecha_vencimiento && t.fecha_vencimiento < hoy && t.estado !== 'completada';
     const chkState = t.estado === 'completada' ? 'checked' : '';
@@ -6016,7 +6030,7 @@ function ctbCopiarAsiento(id) {
   _ctbLineas = (original.lineas || []).map(l => ({
     cuenta: l.cuenta || '', debe: l.debe || '', haber: l.haber || '', centroCosto: l.centroCosto || '',
   }));
-  $id('asiento-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('asiento-fecha').value = hoyLocal();
   $id('asiento-descripcion').value = (original.descripcion || '') + ' (copia)';
   ctbRenderLineasAsiento();
   $id('modal-asiento').classList.remove('hidden');
@@ -6209,7 +6223,7 @@ async function ctbExportarER() {
       ${_pdfFila('Utilidad Neta', d.utilidadNeta, true)}
     `;
     const html = _ctbPdfDoc(neg, 'Estado de Resultados', body);
-    await _savePdf(html, `EstadoResultados_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+    await _savePdf(html, `EstadoResultados_${_ctbPdfSlug(neg)}_${hoyLocal()}.pdf`, false);
   } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
 }
 
@@ -6240,7 +6254,7 @@ async function ctbExportarBG() {
       </div>
     `;
     const html = _ctbPdfDoc(neg, 'Balance General', body);
-    await _savePdf(html, `BalanceGeneral_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+    await _savePdf(html, `BalanceGeneral_${_ctbPdfSlug(neg)}_${hoyLocal()}.pdf`, false);
   } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
 }
 
@@ -6256,7 +6270,7 @@ async function ctbExportarFE() {
       ${_pdfFila('Cambio Neto en Efectivo', d.neto, true)}
     `;
     const html = _ctbPdfDoc(neg, 'Flujo de Efectivo', body);
-    await _savePdf(html, `FlujoEfectivo_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+    await _savePdf(html, `FlujoEfectivo_${_ctbPdfSlug(neg)}_${hoyLocal()}.pdf`, false);
   } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
 }
 
@@ -6301,7 +6315,7 @@ async function ctbExportarIndicadores() {
       <div class="row strong" style="margin-top:12px"><span>Flujo de Caja Proyectado (próximo mes)</span><span>RD$ ${Number(d.flujoProyectado).toFixed(2)}</span></div>
     `;
     const html = _ctbPdfDoc(neg, 'Indicadores Financieros', body);
-    await _savePdf(html, `Indicadores_${_ctbPdfSlug(neg)}_${new Date().toISOString().slice(0, 10)}.pdf`, false);
+    await _savePdf(html, `Indicadores_${_ctbPdfSlug(neg)}_${hoyLocal()}.pdf`, false);
   } catch (e) { toast('Error generando PDF: ' + e.message, 'error'); }
 }
 
@@ -6554,7 +6568,7 @@ async function ctbDepreciar() {
 let _ctbActivoBajaId = null;
 function ctbAbrirBajaActivo(id) {
   _ctbActivoBajaId = id;
-  $id('baja-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('baja-fecha').value = hoyLocal();
   $id('baja-valor-venta').value = '';
   $id('baja-motivo').value = '';
   $id('modal-baja-activo').classList.remove('hidden');
@@ -6580,7 +6594,7 @@ function ctbAbrirRevalorizarActivo(id) {
   if (!activo) return;
   _ctbActivoRevalId = id;
   setText('reval-valor-actual', fmtMoney(ctbValorLibros(activo)));
-  $id('reval-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('reval-fecha').value = hoyLocal();
   $id('reval-valor-nuevo').value = '';
   $id('reval-motivo').value = '';
   $id('modal-revalorizar-activo').classList.remove('hidden');
@@ -6723,7 +6737,7 @@ let _ctbLineas = [];
 function abrirModalAsiento() {
   if (!_ctbNegocioId) { toast('Selecciona un negocio primero.', 'warning'); return; }
   _ctbLineas = [{ cuenta: '', debe: '', haber: '', centroCosto: '' }, { cuenta: '', debe: '', haber: '', centroCosto: '' }];
-  $id('asiento-fecha').value = new Date().toISOString().slice(0, 10);
+  $id('asiento-fecha').value = hoyLocal();
   $id('asiento-descripcion').value = '';
   ctbRenderLineasAsiento();
   $id('modal-asiento').classList.remove('hidden');
