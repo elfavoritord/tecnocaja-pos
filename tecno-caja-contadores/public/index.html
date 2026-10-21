@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Tecno Caja Contadores</title>
+  <!-- Inter (diseño 2026). Sin Internet se usa Segoe UI, ver body en contadores.css. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="css/contadores.css" />
   <!-- Modo día / noche: va en el <head> para poner el tema antes de pintar. -->
   <script src="js/tema.js"></script>
@@ -32,7 +36,7 @@
   </button>
   <div class="login-card">
     <div class="login-brand">
-      <div class="login-brand-icon">🧮</div>
+      <div class="login-brand-icon">TC</div>
       <div>
         <div class="login-brand-title">Tecno Caja Contadores</div>
         <div class="login-brand-sub">Portal exclusivo de firmas contables</div>
@@ -142,184 +146,256 @@
   <aside id="sidebar">
     <div class="sidebar-header">
       <div class="sidebar-brand">
-        <div class="sidebar-brand-icon" id="sidebar-brand-icon">🧮</div>
-        <div>
+        <div class="sidebar-brand-icon" id="sidebar-brand-icon">TC</div>
+        <div class="sidebar-brand-texto">
           <div class="sidebar-brand-name" id="sidebar-brand-name">Tecno Caja</div>
-          <div class="sidebar-brand-sub">Portal Contadores</div>
+          <div class="sidebar-brand-sub">Portal contadores</div>
         </div>
       </div>
-      <button class="btn-reg-cliente" onclick="app.goto('negocios')">
-        🏪 Negocios Asociados
+      <button type="button" class="cartera-pill" onclick="app.goto('negocios')" title="Ver los negocios asociados">
+        <span class="cartera-pill__punto"></span>
+        <span id="sidebar-cartera">Negocios en cartera</span>
+        <svg class="ico ico-sm cartera-pill__flecha" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
       </button>
     </div>
 
     <nav class="sidebar-nav">
       <div class="nav-section-label">Principal</div>
       <a class="nav-item active" data-mod="dashboard" onclick="app.goto('dashboard')">
-        <span class="nav-icon">📊</span> Dashboard
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+        Dashboard
       </a>
       <a class="nav-item" data-mod="negocios" onclick="app.goto('negocios')">
-        <span class="nav-icon">🏪</span> Negocios Asociados
-      </a>
-      <a class="nav-item" data-mod="licencias" onclick="app.goto('licencias')">
-        <span class="nav-icon">🧾</span> Licencias
-      </a>
-      <a class="nav-item" data-mod="reportes" onclick="app.goto('reportes')">
-        <span class="nav-icon">📈</span> Reportes
-      </a>
-      <a class="nav-item" data-mod="analisis-global" onclick="app.goto('analisis-global')">
-        <span class="nav-icon">📉</span> Análisis Global
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></svg>
+        Negocios asociados
       </a>
 
-      <div class="nav-section-label" style="margin-top:8px">Gestión</div>
+      <div class="nav-section-label">Mi despacho</div>
+      <a class="nav-item" data-mod="facturacion" onclick="app.goto('facturacion')">
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M14 8H8"/><path d="M16 12H8"/><path d="M13 16H8"/></svg>
+        Facturación
+      </a>
+      <a class="nav-item" data-mod="cotizaciones" onclick="app.goto('cotizaciones')">
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 12 2 2 4-4"/></svg>
+        Cotizaciones
+      </a>
+      <a class="nav-item" id="nav-colaboradores" data-mod="colaboradores" onclick="app.goto('colaboradores')">
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Colaboradores
+        <span id="nav-badge-colab" class="nav-badge hidden">0</span>
+      </a>
+
+      <div class="nav-section-label">Cartera</div>
+      <a class="nav-item" data-mod="licencias" onclick="app.goto('licencias')">
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/></svg>
+        Licencias
+      </a>
+      <a class="nav-item" data-mod="reportes" onclick="app.goto('reportes')">
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg>
+        Reportes
+      </a>
+      <a class="nav-item" data-mod="analisis-global" onclick="app.goto('analisis-global')">
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+        Análisis global
+      </a>
+
+      <div class="nav-section-label">Gestión</div>
       <a class="nav-item" data-mod="alertas" onclick="app.goto('alertas')">
-        <span class="nav-icon">🔔</span> Alertas
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        Alertas
         <span id="nav-badge-alertas" class="nav-badge hidden">0</span>
       </a>
       <a class="nav-item" data-mod="centro-fiscal" onclick="app.goto('centro-fiscal')">
-        <span class="nav-icon">🗓️</span> Centro Fiscal
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+        Centro fiscal
+        <span id="nav-badge-cf" class="nav-badge hidden" title="Obligaciones DGII en los próximos 7 días">0</span>
       </a>
       <a class="nav-item" data-mod="contabilidad" onclick="app.goto('contabilidad')">
-        <span class="nav-icon">📒</span> Contabilidad
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></svg>
+        Contabilidad
       </a>
       <a class="nav-item" data-mod="solicitudes" onclick="app.goto('solicitudes')">
-        <span class="nav-icon">📋</span> Solicitudes
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+        Solicitudes
         <span id="nav-badge-sol" class="nav-badge hidden">0</span>
-      </a>
-      <a class="nav-item" data-mod="facturacion" onclick="app.goto('facturacion')">
-        <span class="nav-icon">💳</span> Facturación
-      </a>
-      <a class="nav-item" data-mod="cotizaciones" onclick="app.goto('cotizaciones')">
-        <span class="nav-icon">🧾</span> Cotizaciones
-      </a>
-      <a class="nav-item" id="nav-colaboradores" data-mod="colaboradores" onclick="app.goto('colaboradores')">
-        <span class="nav-icon">🤝</span> Colaboradores
-        <span id="nav-badge-colab" class="nav-badge hidden">0</span>
       </a>
       <!-- ASISTENTE IA — desactivado por ahora. Para reactivar: quitar este comentario
            y el style="display:none" del #cfg-ia-card.
       <a class="nav-item" data-mod="asistente" onclick="app.goto('asistente')">
-        <span class="nav-icon">🤖</span> Asistente
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+        Asistente
       </a>
       -->
 
-      <div class="nav-section-label" style="margin-top:8px">Cuenta</div>
+      <div class="nav-section-label">Cuenta</div>
       <a class="nav-item" data-mod="configuracion" onclick="app.goto('configuracion')">
-        <span class="nav-icon">⚙️</span> Configuración
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/></svg>
+        Configuración
       </a>
       <a class="nav-item" data-mod="actualizaciones" onclick="app.goto('actualizaciones')">
-        <span class="nav-icon">🔄</span> Actualizaciones
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+        Actualizaciones
       </a>
       <a class="nav-item" data-mod="ayuda" onclick="app.goto('ayuda')">
-        <span class="nav-icon">❓</span> Centro de Ayuda
+        <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+        Centro de ayuda
       </a>
     </nav>
 
     <div class="sidebar-footer">
       <div class="user-avatar-row">
         <div class="user-avatar" id="user-avatar-letter">C</div>
-        <div>
+        <div class="user-datos">
           <div class="user-name" id="sidebar-nombre">Firma contable</div>
-          <div class="user-role" id="sidebar-email" style="font-size:10px">contador asociado</div>
+          <div class="user-role" id="sidebar-email">Contador principal</div>
         </div>
       </div>
-      <button type="button" class="btn-tema" data-tema-alternar title="Cambiar entre modo día y modo noche">
-        <span data-tema-icono>☀️</span> <span data-tema-texto>Modo día</span>
-      </button>
-      <button class="btn-logout" onclick="app.logout()">
-        <span>🚪</span> Cerrar sesión
-      </button>
+      <div class="sidebar-footer-acciones">
+        <button type="button" class="btn-tema" data-tema-alternar title="Cambiar entre modo día y modo noche">
+          <svg class="ico ico-sm ico-sol" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+          <svg class="ico ico-sm ico-luna" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+          <span data-tema-texto>Modo día</span>
+        </button>
+        <button type="button" class="btn-logout" onclick="app.logout()" title="Cerrar sesión">
+          <svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+          Salir
+        </button>
+      </div>
     </div>
   </aside>
+
+  <div id="main-wrap">
+  <!-- Barra superior: título del módulo, buscador (Ctrl+K), periodo y alertas -->
+  <header id="topbar">
+    <div class="topbar-titulo">
+      <div class="topbar-migas" id="topbar-migas">Principal</div>
+      <h1 id="topbar-titulo">Dashboard</h1>
+    </div>
+    <div class="topbar-acciones">
+      <div class="buscador-global" id="buscador-global-wrap">
+        <svg class="ico ico-sm buscador-global__lupa" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="buscador-global" type="search" autocomplete="off" spellcheck="false"
+          placeholder="Buscar negocio, RNC, NCF o factura" aria-label="Buscar negocio, RNC, NCF o factura" />
+        <kbd>Ctrl K</kbd>
+        <div class="buscador-resultados hidden" id="buscador-resultados" role="listbox"></div>
+      </div>
+      <div class="topbar-periodo" title="Las ventas e ITBIS del Dashboard son del mes en curso">
+        <svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
+        <span id="topbar-periodo">—</span>
+      </div>
+      <button type="button" class="topbar-campana" onclick="app.goto('alertas')" title="Alertas críticas y urgentes">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+        <span id="topbar-badge-alertas" class="topbar-campana__num hidden">0</span>
+      </button>
+    </div>
+  </header>
 
   <!-- MAIN -->
   <main id="main-content">
 
     <!-- ── DASHBOARD ─────────────────────────────────────────────────────── -->
     <div id="mod-dashboard" class="module active">
-      <div class="mod-header">
-        <div>
-          <div class="mod-title">Dashboard</div>
-          <div class="mod-sub">Resumen de tu cartera de clientes</div>
+
+      <!-- Aviso de la obligación DGII más cercana (hoy / mañana / 2 días) -->
+      <div class="db-aviso hidden" id="db-aviso">
+        <div class="db-aviso__icono">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></svg>
         </div>
-        <div class="mod-actions">
-          <button class="btn btn-secondary" onclick="app.loadDashboard()">↺ Actualizar</button>
-          <button class="btn btn-secondary" onclick="app.goto('negocios')">🏪 Ver Negocios</button>
+        <div class="db-aviso__texto">
+          <div class="db-aviso__titulo" id="db-aviso-titulo"></div>
+          <div class="db-aviso__sub" id="db-aviso-sub"></div>
+        </div>
+        <button class="btn btn-secondary" onclick="app.goto('centro-fiscal')">Ver centro fiscal</button>
+      </div>
+
+      <!-- KPIs -->
+      <div class="db-kpis">
+        <div class="db-kpi" onclick="app.goto('negocios')">
+          <div class="db-kpi__cabeza"><span>Negocios en cartera</span><span class="pill pill-neutral">Cartera</span></div>
+          <div class="db-kpi__valor" id="db-kpi-negocios">—</div>
+          <div class="db-kpi__sub" id="db-kpi-negocios-sub">&nbsp;</div>
+        </div>
+        <div class="db-kpi" onclick="app.goto('analisis-global')">
+          <div class="db-kpi__cabeza"><span id="db-kpi-ventas-lbl">Ventas de la cartera</span><span class="pill pill-info">Mes</span></div>
+          <div class="db-kpi__valor num" id="db-kpi-ventas">—</div>
+          <div class="db-kpi__sub" id="db-kpi-ventas-sub">&nbsp;</div>
+        </div>
+        <div class="db-kpi" onclick="app.goto('analisis-global')">
+          <div class="db-kpi__cabeza"><span id="db-kpi-itbis-lbl">ITBIS facturado</span><span class="pill pill-info">Mes</span></div>
+          <div class="db-kpi__valor num" id="db-kpi-itbis">—</div>
+          <div class="db-kpi__sub" id="db-kpi-itbis-sub">&nbsp;</div>
+        </div>
+        <div class="db-kpi" onclick="app.goto('centro-fiscal')">
+          <div class="db-kpi__cabeza"><span>Obligaciones en 7 días</span><span class="pill pill-neutral" id="db-kpi-obl-tag">—</span></div>
+          <div class="db-kpi__valor" id="db-kpi-obl">—</div>
+          <div class="db-kpi__sub" id="db-kpi-obl-sub">&nbsp;</div>
         </div>
       </div>
 
-      <!-- Fila 1: Estado de cartera -->
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-icon blue">👥</div>
-          <div><div class="stat-label">Total Clientes</div><div class="stat-value" id="dash-total">—</div></div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon green">🟢</div>
-          <div><div class="stat-label">Licencias Activas</div><div class="stat-value" id="dash-activas">—</div></div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon orange">🟡</div>
-          <div><div class="stat-label">En Prueba</div><div class="stat-value" id="dash-prueba">—</div></div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon red">🔴</div>
-          <div><div class="stat-label">Vencidas</div><div class="stat-value" id="dash-vencidas">—</div></div>
-        </div>
-        <div class="stat-card" style="cursor:pointer" onclick="app.goto('solicitudes')">
-          <div class="stat-icon purple">📋</div>
-          <div><div class="stat-label">Sol. Pendientes</div><div class="stat-value" id="dash-sol">—</div></div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-icon orange">📅</div>
-          <div><div class="stat-label">Próx. a Vencer</div><div class="stat-value" id="dash-proximos">—</div></div>
-        </div>
-      </div>
+      <div class="db-grid">
+        <!-- Salud de la cartera -->
+        <section class="db-card db-card--tabla">
+          <div class="db-card__cabeza">
+            <h2>Salud de la cartera</h2>
+            <button class="btn btn-secondary btn-sm" onclick="app.goto('negocios')">Ver todos</button>
+          </div>
+          <div class="db-tabla-wrap">
+            <table class="db-tabla">
+              <thead>
+                <tr>
+                  <th>Negocio</th>
+                  <th>Última sync</th>
+                  <th class="is-num" id="db-salud-col-ventas">Ventas del mes</th>
+                  <th>Pendiente</th>
+                  <th>Salud</th>
+                </tr>
+              </thead>
+              <tbody id="db-salud-tbody">
+                <tr><td colspan="5" class="db-vacio">Cargando negocios…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
 
-      <!-- Fila 2: Datos financieros agregados -->
-      <div style="margin-top:12px;margin-bottom:20px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('analisis-global')">
-          <div class="stat-icon green" style="font-size:18px;width:36px;height:36px">💰</div>
-          <div style="flex:1;min-width:0">
-            <div class="stat-label" style="white-space:nowrap;font-size:11px">Ventas Mes</div>
-            <div class="stat-value" id="dash-ventas-mes" style="font-size:15px;white-space:nowrap">—</div>
+        <!-- Calendario DGII -->
+        <section class="db-card">
+          <div class="db-card__cabeza">
+            <h2>Calendario DGII</h2>
+            <span class="db-card__nota">Próximos 30 días</span>
           </div>
-        </div>
-        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('analisis-global')">
-          <div class="stat-icon orange" style="font-size:18px;width:36px;height:36px">🧾</div>
-          <div style="flex:1;min-width:0">
-            <div class="stat-label" style="white-space:nowrap;font-size:11px">ITBIS Mes</div>
-            <div class="stat-value" id="dash-itbis-mes" style="font-size:15px;white-space:nowrap">—</div>
+          <div class="db-calendario" id="db-calendario">
+            <div class="db-vacio">Cargando…</div>
           </div>
-        </div>
-        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('alertas')">
-          <div class="stat-icon red" style="font-size:18px;width:36px;height:36px">🔔</div>
-          <div style="flex:1;min-width:0">
-            <div class="stat-label" style="white-space:nowrap;font-size:11px">Alertas Críticas</div>
-            <div class="stat-value" id="dash-alertas-critico" style="font-size:15px;white-space:nowrap">—</div>
-          </div>
-        </div>
-        <div class="stat-card dash-kpi-card" style="cursor:pointer" onclick="app.goto('centro-fiscal')">
-          <div class="stat-icon blue" style="font-size:18px;width:36px;height:36px">🗓️</div>
-          <div style="flex:1;min-width:0">
-            <div class="stat-label" style="white-space:nowrap;font-size:11px">Oblig. 7 días</div>
-            <div class="stat-value" id="dash-obl-proximas" style="font-size:15px;white-space:nowrap">—</div>
-          </div>
-        </div>
-      </div>
+        </section>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-        <div class="section-card">
-          <div class="section-card-title">📅 Próximos vencimientos</div>
-          <div id="dash-venc-list" class="venc-grid">
-            <div class="empty-state"><div class="empty-icon">🎉</div><div class="empty-text">Sin vencimientos próximos</div></div>
+        <!-- Alertas que requieren acción -->
+        <section class="db-card">
+          <div class="db-card__cabeza">
+            <h2>Alertas que requieren acción</h2>
+            <button class="btn btn-secondary btn-sm" onclick="app.goto('alertas')">Ver todas</button>
           </div>
-        </div>
-        <div class="section-card">
-          <div class="section-card-title">🔄 Últimos clientes sincronizados</div>
-          <div id="dash-recientes" class="recientes-list">
-            <div class="empty-state"><div class="empty-icon">👥</div><div class="empty-text">Sin clientes aún</div></div>
+          <div class="db-alertas" id="db-alertas">
+            <div class="db-vacio">Cargando…</div>
           </div>
+        </section>
+
+        <div class="db-columna">
+          <!-- Licencias -->
+          <section class="db-card">
+            <div class="db-card__cabeza"><h2>Licencias</h2></div>
+            <div class="db-barra" id="db-lic-barra"></div>
+            <div class="db-leyenda" id="db-lic-leyenda"></div>
+            <button class="btn btn-secondary btn-sm" data-solo-principal onclick="app.goto('licencias')">Gestionar licencias</button>
+          </section>
+
+          <!-- Mis honorarios (facturas del despacho por cobrar) -->
+          <section class="db-card" id="db-honorarios" data-solo-principal>
+            <div class="db-card__cabeza"><h2>Mis honorarios</h2></div>
+            <div class="db-hon__lbl">Por cobrar</div>
+            <div class="db-hon__monto num" id="db-hon-monto">—</div>
+            <div class="db-hon__sub" id="db-hon-sub">&nbsp;</div>
+            <button class="btn btn-secondary btn-sm" onclick="app.goto('facturacion')">Ir a facturación</button>
+          </section>
         </div>
       </div>
     </div>
@@ -369,7 +445,7 @@
     </div>
 
     <!-- ── NEGOCIO DETALLE ──────────────────────────────────────────────── -->
-    <div id="mod-cliente-detalle" class="module">
+    <div id="mod-cliente-detalle" class="module module--detalle">
       <div class="mod-header">
         <div>
           <button class="btn btn-secondary btn-sm" onclick="app.goto('negocios')" style="margin-bottom:8px">← Volver a Negocios</button>
@@ -452,9 +528,9 @@
           <div class="mod-sub">Consulta y exporta datos de tus negocios asociados</div>
         </div>
         <div class="mod-actions" id="rep-header-actions">
-          <button class="btn btn-secondary" onclick="app.actualizarReporte()">↺ Actualizar</button>
-          <button class="btn btn-secondary" onclick="app.exportarCSV()" id="btn-exportar-csv">📊 Exportar CSV</button>
-          <button class="btn btn-secondary" onclick="app.imprimirReporte()" id="btn-imprimir">🖨 Imprimir</button>
+          <button class="btn btn-secondary" data-icono="refresh-cw" onclick="app.actualizarReporte()">Actualizar</button>
+          <button class="btn btn-secondary" data-icono="download" onclick="app.exportarCSV()" id="btn-exportar-csv">Exportar CSV</button>
+          <button class="btn btn-secondary" data-icono="printer" onclick="app.imprimirReporte()" id="btn-imprimir">Imprimir</button>
         </div>
       </div>
 
@@ -553,10 +629,11 @@
         </div>
 
         <!-- Botón Ver Reportes -->
-        <div style="display:flex;gap:10px;justify-content:center;padding:6px 0 4px">
-          <button class="btn btn-primary" style="padding:10px 28px;font-size:14px" onclick="app.abrirRepDetalle('ventas')">📊 Ver Reportes Detallados</button>
-          <button class="btn btn-secondary" onclick="app.imprimirReporteMensual()">📄 Reporte mensual</button>
-          <button class="btn btn-secondary" onclick="app.actualizarReporte()">↺ Actualizar</button>
+        <div class="rep-abrir">
+          <button class="btn btn-primary rep-abrir__principal" data-icono="chart-column" onclick="app.abrirRepDetalle('ventas')">Ver reportes detallados</button>
+          <button class="btn btn-secondary" data-icono="package" onclick="app.abrirRepDetalle('productos')">Productos</button>
+          <button class="btn btn-secondary" data-icono="landmark" onclick="app.abrirRepDetalle('itbis')">ITBIS / DGII</button>
+          <button class="btn btn-secondary" data-icono="file-text" onclick="app.imprimirReporteMensual()">Reporte mensual</button>
         </div>
 
       </div><!-- /rep-state-data -->
@@ -598,147 +675,144 @@
 
     <!-- ── FACTURACIÓN ────────────────────────────────────────────────────── -->
     <div id="mod-facturacion" class="module">
-      <div class="mod-header">
-        <div>
-          <div class="mod-title">💳 Facturación</div>
-          <div class="mod-sub">Emite facturas por tus servicios contables</div>
+      <div class="facx-acciones">
+        <button class="btn btn-secondary" data-icono="landmark" onclick="app.abrirMisSecuenciasNcf()">Mis secuencias NCF</button>
+        <button class="btn btn-secondary" data-icono="users" onclick="app.goto('mis-clientes')">Mis clientes</button>
+        <button class="btn btn-primary" data-icono="plus" onclick="app.nuevaFactura()">Nueva factura</button>
+      </div>
+
+      <!-- KPIs del período elegido abajo -->
+      <div class="db-kpis">
+        <div class="db-kpi db-kpi--fijo">
+          <div class="db-kpi__cabeza"><span id="facx-k-fact-lbl">Facturado este mes</span></div>
+          <div class="db-kpi__valor num" id="facx-k-fact">—</div>
+          <div class="db-kpi__sub" id="facx-k-fact-sub">&nbsp;</div>
         </div>
-        <div class="mod-actions">
-          <button class="btn btn-secondary" onclick="app.abrirMisSecuenciasNcf()">🏛 Mis Secuencias NCF</button>
-          <button class="btn btn-secondary" onclick="app.abrirClientesFac()">👥 Mis Clientes</button>
-          <button class="btn btn-primary"   onclick="app.nuevaFactura()">＋ Nueva Factura</button>
+        <div class="db-kpi db-kpi--fijo">
+          <div class="db-kpi__cabeza"><span>Cobrado</span></div>
+          <div class="db-kpi__valor num is-ok" id="facx-k-cob">—</div>
+          <div class="db-kpi__sub" id="facx-k-cob-sub">&nbsp;</div>
+        </div>
+        <div class="db-kpi db-kpi--fijo">
+          <div class="db-kpi__cabeza"><span>Por cobrar</span></div>
+          <div class="db-kpi__valor num is-warn" id="facx-k-pend">—</div>
+          <div class="db-kpi__sub" id="facx-k-pend-sub">&nbsp;</div>
+        </div>
+        <div class="db-kpi db-kpi--fijo">
+          <div class="db-kpi__cabeza"><span>ITBIS facturado</span></div>
+          <div class="db-kpi__valor num" id="facx-k-itbis">—</div>
+          <div class="db-kpi__sub" id="facx-k-itbis-sub">&nbsp;</div>
         </div>
       </div>
 
-      <!-- Filtro compartido -->
-      <div class="facr-filterbar">
-        <div class="facr-fgroup">
-          <label class="facr-flabel">Período</label>
-          <select id="facr-periodo" class="fac-filter-select" onchange="app.facROnPeriodoChange()">
-            <option value="hoy">Hoy</option>
-            <option value="ayer">Ayer</option>
-            <option value="semana">Esta semana</option>
-            <option value="mes" selected>Este mes</option>
-            <option value="mes_pasado">Mes pasado</option>
-            <option value="anio">Este año</option>
-            <option value="custom">Personalizado</option>
-          </select>
+      <div class="facx-barra">
+        <div class="rep-tabs-nav" id="facr-tabs">
+          <button class="rep-tab-btn active" data-tab="facturas"  onclick="app.facRSwitchTab('facturas')">Facturas</button>
+          <button class="rep-tab-btn"        data-tab="agrupados" onclick="app.facRSwitchTab('agrupados')">Agrupados</button>
+          <button class="rep-tab-btn"        data-tab="dgii"      onclick="app.facRSwitchTab('dgii')">DGII</button>
+          <button class="rep-tab-btn"        data-tab="exportar"  onclick="app.facRSwitchTab('exportar')">Exportar</button>
         </div>
-        <div id="facr-custom" class="hidden" style="display:flex;align-items:flex-end;gap:6px">
-          <div class="facr-fgroup"><label class="facr-flabel">Desde</label><input type="date" id="facr-desde" class="fac-filter-date" /></div>
-          <span style="color:var(--text-muted);font-size:11px;padding-bottom:9px">→</span>
-          <div class="facr-fgroup"><label class="facr-flabel">Hasta</label><input type="date" id="facr-hasta" class="fac-filter-date" /></div>
+        <div class="facx-filtros">
+          <div class="facr-fgroup">
+            <label class="facr-flabel" for="facr-periodo">Período</label>
+            <select id="facr-periodo" class="form-select" onchange="app.facROnPeriodoChange(); app.facRApply()">
+              <option value="hoy">Hoy</option>
+              <option value="ayer">Ayer</option>
+              <option value="semana">Esta semana</option>
+              <option value="mes" selected>Este mes</option>
+              <option value="mes_pasado">Mes pasado</option>
+              <option value="anio">Este año</option>
+              <option value="custom">Personalizado</option>
+            </select>
+          </div>
+          <div id="facr-custom" class="hidden" style="display:flex;align-items:flex-end;gap:8px">
+            <div class="facr-fgroup"><label class="facr-flabel" for="facr-desde">Desde</label><input type="date" id="facr-desde" class="form-input" onchange="app.facRApply()" /></div>
+            <div class="facr-fgroup"><label class="facr-flabel" for="facr-hasta">Hasta</label><input type="date" id="facr-hasta" class="form-input" onchange="app.facRApply()" /></div>
+          </div>
+          <div class="facr-fgroup">
+            <label class="facr-flabel" for="facr-estado">Estado</label>
+            <select id="facr-estado" class="form-select" onchange="app.facRApply()">
+              <option value="">Todos</option>
+              <option value="pendiente">Pendiente</option>
+              <option value="parcial">Pago parcial</option>
+              <option value="pagada">Pagada</option>
+              <option value="anulada">Anulada</option>
+            </select>
+          </div>
+          <div class="facr-fgroup">
+            <label class="facr-flabel" for="facr-metodo">Método</label>
+            <select id="facr-metodo" class="form-select" onchange="app.facRApply()">
+              <option value="">Todos</option>
+              <option value="efectivo">Efectivo</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="tarjeta">Tarjeta</option>
+              <option value="cheque">Cheque</option>
+              <option value="deposito">Depósito</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+          <div class="facr-fgroup">
+            <label class="facr-flabel" for="facr-tipo">Comprobante</label>
+            <select id="facr-tipo" class="form-select" onchange="app.facRApply()">
+              <option value="">Todos</option>
+              <option value="B01">B01 — Crédito fiscal</option>
+              <option value="B02">B02 — Consumidor final</option>
+              <option value="B03">B03 — Nota de débito</option>
+              <option value="B04">B04 — Nota de crédito</option>
+              <option value="B11">B11 — Comprobante de compras</option>
+              <option value="B12">B12 — Registro único de ingresos</option>
+              <option value="B13">B13 — Gastos menores</option>
+              <option value="B14">B14 — Régimen especial</option>
+              <option value="B15">B15 — Gubernamental</option>
+              <option value="B16">B16 — Exportaciones</option>
+              <option value="B17">B17 — Pagos al exterior</option>
+            </select>
+          </div>
         </div>
-        <div class="facr-fgroup">
-          <label class="facr-flabel">Estado</label>
-          <select id="facr-estado" class="fac-filter-select">
-            <option value="">Todos</option>
-            <option value="pendiente">Pendiente</option>
-            <option value="parcial">Pago parcial</option>
-            <option value="pagada">Pagada</option>
-            <option value="anulada">Anulada</option>
-          </select>
-        </div>
-        <div class="facr-fgroup">
-          <label class="facr-flabel">Método</label>
-          <select id="facr-metodo" class="fac-filter-select">
-            <option value="">Todos</option>
-            <option value="efectivo">Efectivo</option>
-            <option value="transferencia">Transferencia</option>
-            <option value="tarjeta">Tarjeta</option>
-            <option value="cheque">Cheque</option>
-            <option value="deposito">Depósito</option>
-            <option value="otro">Otro</option>
-          </select>
-        </div>
-        <div class="facr-fgroup">
-          <label class="facr-flabel">Comprobante</label>
-          <select id="facr-tipo" class="fac-filter-select">
-            <option value="">Todos</option>
-            <option value="B01">B01 — Crédito Fiscal</option>
-            <option value="B02">B02 — Consumidor Final</option>
-            <option value="B03">B03 — Nota de Débito</option>
-            <option value="B04">B04 — Nota de Crédito</option>
-            <option value="B11">B11 — Comprobante de Compras</option>
-            <option value="B12">B12 — Registro Único de Ingresos</option>
-            <option value="B13">B13 — Gastos Menores</option>
-            <option value="B14">B14 — Régimen Especial</option>
-            <option value="B15">B15 — Gubernamental</option>
-            <option value="B16">B16 — Comprobante para Exportaciones</option>
-            <option value="B17">B17 — Comprobante para Pagos al Exterior</option>
-          </select>
-        </div>
-        <button class="btn btn-primary btn-sm" style="align-self:flex-end" onclick="app.facRApply()">🔍 Aplicar</button>
       </div>
 
-      <!-- Pestañas -->
-      <div class="rep-tabs-nav" id="facr-tabs">
-        <button class="rep-tab-btn active" data-tab="dashboard"  onclick="app.facRSwitchTab('dashboard')">📊 Dashboard</button>
-        <button class="rep-tab-btn"        data-tab="detallados" onclick="app.facRSwitchTab('detallados')">📋 Detallados</button>
-        <button class="rep-tab-btn"        data-tab="dgii"       onclick="app.facRSwitchTab('dgii')">🏛 DGII</button>
-        <button class="rep-tab-btn"        data-tab="exportar"   onclick="app.facRSwitchTab('exportar')">📤 Exportar</button>
+      <!-- Panel: Facturas -->
+      <div id="facr-pane-facturas" class="facr-pane">
+        <div class="facr-toolbar">
+          <span id="facr-fac-count">0 facturas</span>
+          <button class="facr-btn-export" data-icono="download" onclick="app.facRExportFacturas()">PDF</button>
+        </div>
+        <div class="facx-wrap">
+          <table class="facx-tabla" id="facr-fac-table">
+            <thead><tr>
+              <th>NCF</th><th>Fecha</th><th>Cliente · RNC</th>
+              <th class="is-num">Base</th><th class="is-num">ITBIS</th><th class="is-num">Total</th>
+              <th>Estado</th><th>Antigüedad</th><th></th>
+            </tr></thead>
+            <tbody id="facr-fac-tbody"></tbody>
+            <tfoot id="facr-fac-tfoot"></tfoot>
+          </table>
+        </div>
+        <div class="facr-pager" id="facr-fac-pager"></div>
       </div>
 
-      <!-- Panel: Dashboard -->
-      <div id="facr-pane-dashboard" class="facr-pane">
-        <div class="fac-stats-grid" id="facr-kpis"></div>
-      </div>
-
-      <!-- Panel: Detallados -->
-      <div id="facr-pane-detallados" class="facr-pane hidden">
+      <!-- Panel: Agrupados -->
+      <div id="facr-pane-agrupados" class="facr-pane hidden">
         <div class="facr-subtabs" id="facr-subtabs">
-          <button class="facr-subtab active" data-sub="facturas" onclick="app.facRSwitchSubtab('facturas')">Facturas</button>
-          <button class="facr-subtab" data-sub="cliente" onclick="app.facRSwitchSubtab('cliente')">Por Cliente</button>
-          <button class="facr-subtab" data-sub="tipo"    onclick="app.facRSwitchSubtab('tipo')">Por Tipo</button>
-          <button class="facr-subtab" data-sub="metodo"  onclick="app.facRSwitchSubtab('metodo')">Por Método</button>
-          <button class="facr-subtab" data-sub="estado"  onclick="app.facRSwitchSubtab('estado')">Por Estado</button>
+          <button class="facr-subtab active" data-sub="cliente" onclick="app.facRSwitchSubtab('cliente')">Por cliente</button>
+          <button class="facr-subtab" data-sub="tipo"    onclick="app.facRSwitchSubtab('tipo')">Por tipo</button>
+          <button class="facr-subtab" data-sub="metodo"  onclick="app.facRSwitchSubtab('metodo')">Por método</button>
+          <button class="facr-subtab" data-sub="estado"  onclick="app.facRSwitchSubtab('estado')">Por estado</button>
         </div>
-
-        <div id="facr-sub-facturas" class="facr-subpane">
-          <div class="facr-toolbar">
-            <span id="facr-fac-count">0 facturas</span>
-            <span style="display:flex;gap:8px;align-items:center">
-              <select id="facr-fac-metodo" class="fac-filter-select" onchange="app.facRFacMetodo(this.value)">
-                <option value="">Todos los métodos</option>
-                <option value="efectivo">Efectivo</option>
-                <option value="transferencia">Transferencia</option>
-                <option value="tarjeta">Tarjeta</option>
-                <option value="cheque">Cheque</option>
-                <option value="deposito">Depósito</option>
-                <option value="otro">Otro</option>
-              </select>
-              <button class="facr-btn-export" onclick="app.facRExportFacturas()">⬇ PDF</button>
-            </span>
-          </div>
-          <div class="facr-table-wrap">
-            <table class="facr-table" id="facr-fac-table">
-              <thead><tr>
-                <th>NCF</th><th>Tipo</th><th>Fecha</th>
-                <th>Cliente</th><th>RNC</th><th>Método</th>
-                <th style="text-align:right">Base</th><th style="text-align:right">ITBIS</th><th style="text-align:right">Total</th>
-                <th>Estado</th><th style="text-align:right">Cobrado</th><th></th>
-              </tr></thead>
-              <tbody id="facr-fac-tbody"></tbody>
-              <tfoot id="facr-fac-tfoot"></tfoot>
-            </table>
-          </div>
-          <div class="facr-pager" id="facr-fac-pager"></div>
-        </div>
-
-        <div id="facr-sub-cliente" class="facr-subpane hidden">
-          <div class="facr-toolbar"><span id="facr-cliente-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('cliente')">⬇ PDF</button></div>
+        <div id="facr-sub-cliente" class="facr-subpane">
+          <div class="facr-toolbar"><span id="facr-cliente-count">—</span><button class="facr-btn-export" data-icono="download" onclick="app.facRExportGroup('cliente')">PDF</button></div>
           <div class="facr-table-wrap"><table class="facr-table" id="facr-cliente-table"></table></div>
         </div>
         <div id="facr-sub-tipo" class="facr-subpane hidden">
-          <div class="facr-toolbar"><span id="facr-tipo-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('tipo')">⬇ PDF</button></div>
+          <div class="facr-toolbar"><span id="facr-tipo-count">—</span><button class="facr-btn-export" data-icono="download" onclick="app.facRExportGroup('tipo')">PDF</button></div>
           <div class="facr-table-wrap"><table class="facr-table" id="facr-tipo-table"></table></div>
         </div>
         <div id="facr-sub-metodo" class="facr-subpane hidden">
-          <div class="facr-toolbar"><span id="facr-metodo-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('metodo')">⬇ PDF</button></div>
+          <div class="facr-toolbar"><span id="facr-metodo-count">—</span><button class="facr-btn-export" data-icono="download" onclick="app.facRExportGroup('metodo')">PDF</button></div>
           <div class="facr-table-wrap"><table class="facr-table" id="facr-metodo-table"></table></div>
         </div>
         <div id="facr-sub-estado" class="facr-subpane hidden">
-          <div class="facr-toolbar"><span id="facr-estado-count">—</span><button class="facr-btn-export" onclick="app.facRExportGroup('estado')">⬇ PDF</button></div>
+          <div class="facr-toolbar"><span id="facr-estado-count">—</span><button class="facr-btn-export" data-icono="download" onclick="app.facRExportGroup('estado')">PDF</button></div>
           <div class="facr-table-wrap"><table class="facr-table" id="facr-estado-table"></table></div>
         </div>
       </div>
@@ -747,28 +821,69 @@
       <div id="facr-pane-dgii" class="facr-pane hidden">
         <div class="facr-dgii-kpis" id="facr-dgii-kpis"></div>
         <div class="section-card">
-          <div class="section-card-title">🧾 Desglose por tipo de comprobante</div>
+          <div class="section-card-title">Desglose por tipo de comprobante</div>
           <div class="facr-table-wrap"><table class="facr-table" id="facr-dgii-table"></table></div>
-          <div style="margin-top:12px;text-align:right"><button class="facr-btn-export" onclick="app.facRExportDGII()">⬇ PDF DGII</button></div>
+          <div style="margin-top:12px;text-align:right"><button class="facr-btn-export" data-icono="download" onclick="app.facRExportDGII()">PDF DGII</button></div>
         </div>
-        <p style="font-size:11px;color:var(--text-muted);margin-top:10px">Reporte orientativo de tus honorarios facturados. Verifica siempre con la DGII.</p>
+        <p style="font-size:11.5px;color:var(--text-muted);margin-top:10px">Reporte orientativo de tus honorarios facturados. Verifica siempre con la DGII.</p>
       </div>
 
       <!-- Panel: Exportar -->
       <div id="facr-pane-exportar" class="facr-pane hidden">
         <div class="facr-export-grid">
-          <div class="facr-export-card" onclick="app.facRExportFacturas()"><div class="ico">🧾</div><h4>Detalle de Facturas</h4><p>Todas las facturas del período, con subtotales.</p></div>
-          <div class="facr-export-card" onclick="app.facRExportGroup('cliente')"><div class="ico">👥</div><h4>Por Cliente</h4><p>Facturación agrupada por cliente.</p></div>
-          <div class="facr-export-card" onclick="app.facRExportGroup('tipo')"><div class="ico">📑</div><h4>Por Tipo de Comprobante</h4><p>Totales por tipo de NCF.</p></div>
-          <div class="facr-export-card" onclick="app.facRExportGroup('metodo')"><div class="ico">💳</div><h4>Por Método de Pago</h4><p>Cobros por método.</p></div>
-          <div class="facr-export-card" onclick="app.facRExportDGII()"><div class="ico">🏛</div><h4>Reporte Fiscal DGII</h4><p>Gravado, exento, ITBIS y desglose por NCF.</p></div>
-          <div class="facr-export-card facr-export-card-full" onclick="app.facRExportConsolidado()"><div class="ico">📊</div><h4>Reporte Consolidado</h4><p>Resumen + por cliente + por tipo + DGII en un solo PDF.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportFacturas()"><div class="ico" data-icono="receipt-text" data-icono-tam="30"></div><h4>Detalle de facturas</h4><p>Todas las facturas del período, con subtotales.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportGroup('cliente')"><div class="ico" data-icono="users" data-icono-tam="30"></div><h4>Por cliente</h4><p>Facturación agrupada por cliente.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportGroup('tipo')"><div class="ico" data-icono="files" data-icono-tam="30"></div><h4>Por tipo de comprobante</h4><p>Totales por tipo de NCF.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportGroup('metodo')"><div class="ico" data-icono="credit-card" data-icono-tam="30"></div><h4>Por método de pago</h4><p>Cobros por método.</p></div>
+          <div class="facr-export-card" onclick="app.facRExportDGII()"><div class="ico" data-icono="landmark" data-icono-tam="30"></div><h4>Reporte fiscal DGII</h4><p>Gravado, exento, ITBIS y desglose por NCF.</p></div>
+          <div class="facr-export-card facr-export-card-full" onclick="app.facRExportConsolidado()"><div class="ico" data-icono="chart-column" data-icono-tam="30"></div><h4>Reporte consolidado</h4><p>Resumen + por cliente + por tipo + DGII en un solo PDF.</p></div>
         </div>
       </div>
     </div>
 
+    <!-- ── MIS CLIENTES (del despacho: Facturación y Cotizaciones) ───────── -->
+    <div id="mod-mis-clientes" class="module">
+      <div class="mod-header">
+        <div>
+          <button class="btn btn-secondary btn-sm" onclick="app.goto('facturacion')" style="margin-bottom:8px"><svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Facturación</button>
+          <div class="mod-sub" id="mcli-sub">Guarda aquí los clientes a los que facturas y cotizas</div>
+        </div>
+        <div class="mod-actions">
+          <button class="btn btn-primary" data-icono="user-plus" onclick="app.abrirMiCliente()">Nuevo cliente</button>
+        </div>
+      </div>
+      <div class="db-kpis">
+        <div class="db-kpi db-kpi--fijo"><div class="db-kpi__cabeza"><span>Clientes guardados</span></div><div class="db-kpi__valor" id="mcli-total">—</div></div>
+        <div class="db-kpi db-kpi--fijo"><div class="db-kpi__cabeza"><span>Con saldo pendiente</span></div><div class="db-kpi__valor" id="mcli-con-saldo">—</div></div>
+        <div class="db-kpi db-kpi--fijo"><div class="db-kpi__cabeza"><span>Por cobrar</span></div><div class="db-kpi__valor num is-warn" id="mcli-pendiente">—</div></div>
+        <div class="db-kpi db-kpi--fijo"><div class="db-kpi__cabeza"><span>Facturado este año</span></div><div class="db-kpi__valor num" id="mcli-anio">—</div></div>
+      </div>
+      <div class="table-wrap">
+        <div class="mcli-barra">
+          <div class="fm-buscador">
+            <svg class="ico ico-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            <input id="mcli-buscar" type="search" class="form-input" placeholder="Buscar por nombre, RNC, teléfono o correo" oninput="app.filtrarMisClientes()" />
+          </div>
+          <select id="mcli-filtro" class="form-select" onchange="app.filtrarMisClientes()" aria-label="Filtrar clientes">
+            <option value="">Todos los clientes</option>
+            <option value="saldo">Con saldo pendiente</option>
+            <option value="sin-facturas">Sin facturas</option>
+          </select>
+        </div>
+        <table>
+          <thead><tr>
+            <th>Cliente</th><th>RNC / Cédula</th><th>Contacto</th><th style="text-align:right">Facturas</th>
+            <th style="text-align:right">Facturado</th><th style="text-align:right">Pendiente</th><th></th>
+          </tr></thead>
+          <tbody id="mcli-tbody">
+            <tr><td colspan="7" class="td-empty">Cargando clientes…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- ── DETALLE DE FACTURA (página completa, estilo admin) ──────────────── -->
-    <div id="mod-fac-detalle" class="module">
+    <div id="mod-fac-detalle" class="module module--detalle">
       <div class="mod-header">
         <div style="display:flex;align-items:center;gap:14px">
           <button class="btn btn-ghost btn-sm" onclick="app.backToFacturas()">← Facturación</button>
@@ -816,27 +931,27 @@
     <div id="mod-cotizaciones" class="module">
       <div class="mod-header">
         <div>
-          <div class="mod-title">🧾 Cotizaciones</div>
-          <div class="mod-sub">Cotiza tus servicios y conviértelas en factura con un clic</div>
+          <div class="mod-title">Cotizaciones</div>
+          <div class="mod-sub">Cotiza tus servicios y conviértelos en factura con un clic</div>
         </div>
         <div class="mod-actions">
-          <button class="btn btn-secondary" onclick="app.loadCotizaciones()">↺ Actualizar</button>
-          <button class="btn btn-primary" onclick="app.nuevaCotizacion()">＋ Nueva cotización</button>
+          <button class="btn btn-secondary" data-icono="refresh-cw" onclick="app.loadCotizaciones()">Actualizar</button>
+          <button class="btn btn-primary" data-icono="plus" onclick="app.nuevaCotizacion()">Nueva cotización</button>
         </div>
       </div>
       <div class="table-wrap">
         <div class="search-bar">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-sub)">
+          <label class="fm-check-linea">
             <input type="checkbox" id="cot-ver-todas" onchange="app.loadCotizaciones()" />
-            Ver convertidas/rechazadas
+            Ver también las convertidas y rechazadas
           </label>
         </div>
-        <table>
+        <table class="cotx-tabla">
           <thead>
-            <tr><th>Número</th><th>Cliente</th><th>Fecha</th><th>Estado</th><th style="text-align:right">Total</th><th>Acción</th></tr>
+            <tr><th>Número</th><th>Cliente</th><th>Fecha</th><th>Válida hasta</th><th>Estado</th><th style="text-align:right">Total</th><th></th></tr>
           </thead>
           <tbody id="cotizaciones-tbody">
-            <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted)">Cargando…</td></tr>
+            <tr><td colspan="7" class="td-empty">Cargando…</td></tr>
           </tbody>
         </table>
       </div>
@@ -905,7 +1020,7 @@
     </div>
 
     <!-- ── COLABORADOR DETALLE ────────────────────────────────────────────── -->
-    <div id="mod-colab-detalle" class="module">
+    <div id="mod-colab-detalle" class="module module--detalle">
       <div class="mod-header">
         <div>
           <button class="btn btn-secondary btn-sm" onclick="app.goto('colaboradores')" style="margin-bottom:8px">← Volver</button>
@@ -1056,6 +1171,16 @@
             <span class="tema-opcion__nombre">🖥️ Automático</span>
             <span class="tema-opcion__desc">Igual que Windows</span>
           </button>
+        </div>
+
+        <div class="tamano-bloque">
+          <div class="tamano-bloque__titulo">Tamaño de la pantalla</div>
+          <p class="tc-fp-ayuda">Agranda la letra, los botones y los módulos de todo el portal. Útil en pantallas pequeñas o con escritorio remoto.</p>
+          <div class="pm-segmento pm-segmento--3 tamano-opciones" role="radiogroup" aria-label="Tamaño de la pantalla">
+            <button type="button" role="radio" data-tamano="normal"><span style="font-size:13px">Normal</span></button>
+            <button type="button" role="radio" data-tamano="grande"><span style="font-size:15px">Grande</span></button>
+            <button type="button" role="radio" data-tamano="muy_grande"><span style="font-size:17px">Muy grande</span></button>
+          </div>
         </div>
       </div>
 
@@ -1752,6 +1877,7 @@
     </div>
 
   </main>
+  </div><!-- /#main-wrap -->
 </div>
 
 <!-- ── MODAL: Nueva Tarea Fiscal ───────────────────────────────────────── -->
@@ -1834,63 +1960,65 @@
 
 <!-- ── MODAL: Reportes Detallados ───────────────────────────────────────── -->
 <div id="modal-rep-detalle" class="modal-overlay hidden">
-  <div class="modal-card rep-modal-full">
-    <button class="btn-modal-close" onclick="app.cerrarRepDetalle()">✕</button>
-
-    <!-- Header del modal -->
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+  <div class="modal-card rep-modal-full" role="dialog" aria-modal="true" aria-labelledby="rmd-titulo">
+    <!-- Encabezado: negocio y acciones -->
+    <div class="fm-cabeza rep-cabeza">
       <div>
-        <div style="font-size:16px;font-weight:700;margin-bottom:2px" id="rmd-titulo">Reportes</div>
-        <div style="font-size:12px;color:var(--text-sub)" id="rmd-subtitulo">—</div>
+        <div class="fm-titulo" id="rmd-titulo">Reportes</div>
+        <div class="fm-sub" id="rmd-subtitulo">—</div>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <button class="btn btn-secondary btn-sm" onclick="app.actualizarReporte()">↺ Actualizar</button>
-        <button class="btn btn-secondary btn-sm" onclick="app.exportarCSV()">📊 CSV</button>
-        <button class="btn btn-secondary btn-sm" onclick="app.exportarExcel()">📗 Excel</button>
-        <button class="btn btn-secondary btn-sm" onclick="app.imprimirTabReporte()">🖨 Imprimir pestaña</button>
-        <button class="btn btn-primary btn-sm"   onclick="app.imprimirReporteMensual()">📄 Reporte mensual</button>
+      <div class="fm-cabeza__der rep-acciones">
+        <button type="button" class="btn btn-secondary" data-icono="refresh-cw" onclick="app.actualizarReporte()">Actualizar</button>
+        <button type="button" class="btn btn-secondary" data-icono="download" onclick="app.exportarCSV()">CSV</button>
+        <button type="button" class="btn btn-secondary" data-icono="download" onclick="app.exportarExcel()">Excel</button>
+        <button type="button" class="btn btn-secondary" data-icono="printer" onclick="app.imprimirTabReporte()">Imprimir pestaña</button>
+        <button type="button" class="btn btn-primary" data-icono="file-text" onclick="app.imprimirReporteMensual()">Reporte mensual</button>
+        <button type="button" class="pm-cerrar" onclick="app.cerrarRepDetalle()" title="Cerrar" aria-label="Cerrar">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
       </div>
     </div>
 
+    <div class="rep-cuerpo">
     <!-- Tabs -->
-    <div class="rep-tabs-nav" id="rep-tabs-nav" style="margin-bottom:10px">
-      <button class="rep-tab-btn active" data-tab="ventas"     onclick="app.cambiarTabReporte('ventas')">💵 Ventas</button>
-      <button class="rep-tab-btn"        data-tab="facturas"   onclick="app.cambiarTabReporte('facturas')">🧾 Facturas</button>
-      <button class="rep-tab-btn"        data-tab="productos"  onclick="app.cambiarTabReporte('productos')">📦 Productos</button>
-      <button class="rep-tab-btn"        data-tab="inventario" onclick="app.cambiarTabReporte('inventario')">🗄 Inventario</button>
-      <button class="rep-tab-btn"        data-tab="itbis"      onclick="app.cambiarTabReporte('itbis')">🏛 ITBIS / DGII</button>
-      <button class="rep-tab-btn"        data-tab="cxc"        onclick="app.cambiarTabReporte('cxc')">💳 C × Cobrar</button>
-      <button class="rep-tab-btn"        data-tab="clientes"   onclick="app.cambiarTabReporte('clientes')">👥 Clientes</button>
-      <button class="rep-tab-btn"        data-tab="cierres"    onclick="app.cambiarTabReporte('cierres')">🔐 Cierres Caja</button>
-      <button class="rep-tab-btn"        data-tab="mensual"    onclick="app.cambiarTabReporte('mensual')">📅 Mensual</button>
+    <div class="rep-tabs-nav" id="rep-tabs-nav">
+      <button class="rep-tab-btn active" data-tab="ventas"     data-icono="banknote"       onclick="app.cambiarTabReporte('ventas')">Ventas</button>
+      <button class="rep-tab-btn"        data-tab="facturas"   data-icono="receipt-text"   onclick="app.cambiarTabReporte('facturas')">Facturas</button>
+      <button class="rep-tab-btn"        data-tab="productos"  data-icono="package"        onclick="app.cambiarTabReporte('productos')">Productos</button>
+      <button class="rep-tab-btn"        data-tab="inventario" data-icono="clipboard-list" onclick="app.cambiarTabReporte('inventario')">Inventario</button>
+      <button class="rep-tab-btn"        data-tab="itbis"      data-icono="landmark"       onclick="app.cambiarTabReporte('itbis')">ITBIS / DGII</button>
+      <button class="rep-tab-btn"        data-tab="cxc"        data-icono="wallet"         onclick="app.cambiarTabReporte('cxc')">Cuentas por cobrar</button>
+      <button class="rep-tab-btn"        data-tab="clientes"   data-icono="users"          onclick="app.cambiarTabReporte('clientes')">Clientes</button>
+      <button class="rep-tab-btn"        data-tab="cierres"    data-icono="lock"           onclick="app.cambiarTabReporte('cierres')">Cierres de caja</button>
+      <button class="rep-tab-btn"        data-tab="mensual"    data-icono="calendar"       onclick="app.cambiarTabReporte('mensual')">Mensual</button>
     </div>
 
     <!-- Filtros -->
     <div class="rep-filter-bar" id="rep-filter-bar">
-      <div class="rep-filter-group">
-        <label class="rep-filter-label">Buscar</label>
-        <input type="text" id="rep-f-buscar" class="rep-filter-input" placeholder="Cliente, factura, NCF, producto..." oninput="app.aplicarFiltrosConDebounce()" />
+      <div class="rep-filter-group rep-filter-group--buscar">
+        <label class="rep-filter-label" for="rep-f-buscar">Buscar</label>
+        <input type="text" id="rep-f-buscar" class="rep-filter-input" placeholder="Cliente, factura, NCF o producto" oninput="app.aplicarFiltrosConDebounce()" />
       </div>
       <div class="rep-filter-group">
-        <label class="rep-filter-label">Desde</label>
+        <label class="rep-filter-label" for="rep-f-desde">Desde</label>
         <input type="date" id="rep-f-desde" class="rep-filter-input" onchange="app.aplicarFiltros()" />
       </div>
       <div class="rep-filter-group">
-        <label class="rep-filter-label">Hasta</label>
+        <label class="rep-filter-label" for="rep-f-hasta">Hasta</label>
         <input type="date" id="rep-f-hasta" class="rep-filter-input" onchange="app.aplicarFiltros()" />
       </div>
       <div class="rep-filter-group">
-        <label class="rep-filter-label">Sucursal</label>
+        <label class="rep-filter-label" for="rep-f-sucursal">Sucursal</label>
         <select id="rep-f-sucursal" class="rep-filter-input" onchange="app.aplicarFiltros(); app.actualizarStatsPorSucursal()">
           <option value="">Todas</option>
         </select>
       </div>
       <div class="rep-filter-group">
-        <label class="rep-filter-label">Cajero</label>
+        <label class="rep-filter-label" for="rep-f-cajero">Cajero</label>
         <input type="text" id="rep-f-cajero" class="rep-filter-input" placeholder="Todos" onchange="app.aplicarFiltros()" />
       </div>
       <div class="rep-filter-group" id="rep-f-ncf-group">
-        <label class="rep-filter-label">Tipo NCF</label>
+        <label class="rep-filter-label" for="rep-f-ncf">Tipo NCF</label>
         <select id="rep-f-ncf" class="rep-filter-input" onchange="app.aplicarFiltros()">
           <option value="">Todos</option>
           <option value="B01">B01 — Crédito Fiscal</option>
@@ -1908,7 +2036,7 @@
         </select>
       </div>
       <div class="rep-filter-group">
-        <label class="rep-filter-label">Pago</label>
+        <label class="rep-filter-label" for="rep-f-pago">Pago</label>
         <select id="rep-f-pago" class="rep-filter-input" onchange="app.aplicarFiltros()">
           <option value="">Todos</option>
           <option value="efectivo">Efectivo</option>
@@ -1917,149 +2045,192 @@
           <option value="credito">Crédito</option>
         </select>
       </div>
-      <button class="btn btn-xs btn-secondary" onclick="app.limpiarFiltros()" style="align-self:flex-end">✕ Limpiar</button>
+      <button type="button" class="btn btn-secondary rep-limpiar" data-icono="x" onclick="app.limpiarFiltros()">Limpiar</button>
     </div>
 
     <!-- Productos agregados desde este Portal — se aplican en el POS del
          cliente la próxima vez que sincronice (abrir/cerrar caja o venta),
          no al instante. Solo visible en la pestaña "Productos". -->
-    <div id="rep-productos-pendientes-panel" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;gap:12px;flex-wrap:wrap">
-        <div class="rep-filter-label" style="font-weight:600">Productos agregados desde el Portal</div>
-        <button class="btn btn-xs btn-primary" onclick="app.abrirAgregarProductoModal()">+ Agregar producto</button>
+    <div id="rep-productos-pendientes-panel" class="rep-seccion" style="display:none">
+      <div class="rep-seccion__cabeza">
+        <div>
+          <div class="rep-seccion__titulo">Productos agregados desde el portal</div>
+          <div class="rep-seccion__sub">Se aplican en el POS del negocio cuando sincroniza.</div>
+        </div>
+        <button type="button" class="btn btn-primary" data-icono="plus" onclick="app.abrirAgregarProductoModal()">Agregar producto</button>
       </div>
-      <div id="rep-productos-pendientes-list" style="margin-bottom:16px"></div>
+      <div id="rep-productos-pendientes-list"></div>
     </div>
 
     <!-- Secuencias NCF registradas desde este Portal — se aplican en el POS
          del cliente la próxima vez que sincronice, no al instante. Solo
-         visible en la pestaña "🏛 ITBIS / DGII". Solo NCF tradicional
+         visible en la pestaña "ITBIS / DGII". Solo NCF tradicional
          (B01-B17); el e-CF ya se certifica aparte, no aplica aquí. -->
     <div id="rep-ncf-pendientes-panel" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;gap:12px;flex-wrap:wrap">
-        <div class="rep-filter-label" style="font-weight:600">Secuencias activas en el POS del cliente</div>
+      <div class="rep-seccion">
+        <div class="rep-seccion__cabeza">
+          <div>
+            <div class="rep-seccion__titulo">Secuencias activas en el POS del negocio</div>
+            <div class="rep-seccion__sub">Las que el POS está usando ahora mismo.</div>
+          </div>
+        </div>
+        <div id="rep-ncf-aplicadas-list"></div>
       </div>
-      <div id="rep-ncf-aplicadas-list" style="margin-bottom:16px"></div>
-
-      <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;gap:12px;flex-wrap:wrap">
-        <div class="rep-filter-label" style="font-weight:600">Secuencias NCF registradas desde el Portal</div>
-        <button class="btn btn-xs btn-primary" onclick="app.abrirAgregarNcfModal()">+ Registrar secuencia NCF</button>
+      <div class="rep-seccion">
+        <div class="rep-seccion__cabeza">
+          <div>
+            <div class="rep-seccion__titulo">Secuencias registradas desde el portal</div>
+            <div class="rep-seccion__sub">Se aplican en el POS cuando sincroniza.</div>
+          </div>
+          <button type="button" class="btn btn-primary" data-icono="plus" onclick="app.abrirAgregarNcfModal()">Registrar secuencia NCF</button>
+        </div>
+        <div id="rep-ncf-pendientes-list"></div>
       </div>
-      <div id="rep-ncf-pendientes-list" style="margin-bottom:16px"></div>
     </div>
 
     <!-- Tabla -->
-    <div id="rep-table-inner" style="min-height:200px;overflow-x:auto">
+    <div id="rep-table-inner" class="rep-tabla-wrap">
       <div class="rep-loading"><div class="rep-spinner"></div>Selecciona una pestaña</div>
     </div>
+    </div><!-- /rep-cuerpo -->
   </div>
 </div>
 
 <!-- Modal: Agregar producto (queda pendiente, se aplica en el POS del
      cliente en su próxima sincronización — no es instantáneo) -->
 <div id="modal-agregar-producto" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarAgregarProductoModal()">✕</button>
-    <div class="modal-title" id="modal-agregar-producto-titulo">📦 Agregar Producto</div>
-    <div class="modal-sub">Se aplicará en el sistema del cliente la próxima vez que sincronice (no es instantáneo).</div>
+  <div class="modal-card pm-modal" role="dialog" aria-modal="true" aria-labelledby="modal-agregar-producto-titulo">
+    <div class="pm-cabeza">
+      <div>
+        <div class="pm-titulo" id="modal-agregar-producto-titulo">Nuevo producto</div>
+        <div class="pm-sub" id="ap-sub">Se aplica en el POS del negocio cuando sincronice</div>
+      </div>
+      <button type="button" class="pm-cerrar" onclick="app.cerrarAgregarProductoModal()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
 
-    <div class="fac-form-section">
-      <div class="fac-section-lbl">Producto</div>
-      <div style="display:flex;gap:14px;align-items:flex-start;margin-bottom:8px">
-        <div class="ap-image-box" onclick="document.getElementById('ap-image-file').click()" title="Clic para subir imagen">
-          <img id="ap-image-preview" class="ap-image-preview" style="display:none">
-          <div class="ap-image-placeholder" id="ap-image-placeholder">
-            <span>📷</span>
-            <small>Imagen</small>
+    <div class="pm-cuerpo">
+      <!-- Datos del producto -->
+      <div class="pm-col">
+        <div class="pm-fila-foto">
+          <div class="ap-image-box" onclick="document.getElementById('ap-image-file').click()" title="Clic para subir una foto">
+            <img id="ap-image-preview" class="ap-image-preview" style="display:none" alt="">
+            <div class="ap-image-placeholder" id="ap-image-placeholder">
+              <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+              <small>Agregar foto</small>
+            </div>
+            <input type="file" id="ap-image-file" accept="image/*" style="display:none" onchange="app.handleAgregarProductoImagen(this)">
           </div>
-          <input type="file" id="ap-image-file" accept="image/*" style="display:none" onchange="app.handleAgregarProductoImagen(this)">
+          <div class="pm-foto-campos">
+            <div class="pm-campo fm-campo">
+              <label for="ap-nombre">Nombre del producto *</label>
+              <input type="text" id="ap-nombre" class="form-input" placeholder="Agua Dasani 500 ml" />
+            </div>
+            <div class="pm-campo fm-campo">
+              <label for="ap-codigo">Código o código de barras *</label>
+              <div class="pm-con-boton">
+                <input type="text" id="ap-codigo" class="form-input" placeholder="049000409772" />
+                <button type="button" class="btn btn-secondary" id="ap-generar-btn" onclick="app.generarCodigoProducto()" title="Usar el siguiente código libre del catálogo">Generar</button>
+              </div>
+            </div>
+          </div>
         </div>
-        <div style="flex:1;min-width:0">
-          <div class="form-group">
-            <label class="form-label">Código *</label>
-            <input type="text" id="ap-codigo" class="form-input" placeholder="Ej: 0001" />
+
+        <div class="pm-tres">
+          <div class="pm-campo">
+            <label for="ap-categoria">Categoría</label>
+            <input type="text" id="ap-categoria" class="form-input pm-con-lista" list="ap-categorias" placeholder="General" autocomplete="off" />
+            <datalist id="ap-categorias"></datalist>
           </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Nombre *</label>
-            <input type="text" id="ap-nombre" class="form-input" placeholder="Nombre del producto" />
+          <div class="pm-campo">
+            <label for="ap-marca">Marca</label>
+            <input type="text" id="ap-marca" class="form-input" placeholder="Opcional" />
           </div>
+          <div class="pm-campo">
+            <label for="ap-unidad">Unidad</label>
+            <select id="ap-unidad" class="form-select"></select>
+          </div>
+        </div>
+
+        <div class="pm-campo" id="ap-alcance-wrap">
+          <label>Disponible en</label>
+          <div class="pm-segmento" role="radiogroup" aria-label="Disponible en">
+            <button type="button" role="radio" data-ap-alcance="todas" onclick="app.apElegirAlcance('todas')">Todas las sucursales</button>
+            <button type="button" role="radio" data-ap-alcance="una" onclick="app.apElegirAlcance('una')">Una sucursal</button>
+          </div>
+          <select id="ap-sucursal" class="form-select pm-sucursal" aria-label="Sucursal" style="display:none"></select>
+        </div>
+
+        <div class="pm-inventario">
+          <div class="pm-inventario__cabeza">
+            <span>Inventario</span>
+            <label class="sw" title="Igual que en el POS: si lo apagas, se vende sin contar existencias">
+              <input type="checkbox" id="ap-controla" checked onchange="app.apControlInventario()" />
+              <span class="sw__pista"></span> Controlar inventario
+            </label>
+          </div>
+          <div class="pm-dos" id="ap-stock-wrap">
+            <div class="pm-campo fm-campo">
+              <label for="ap-stock" id="ap-stock-lbl">Stock inicial</label>
+              <input type="number" id="ap-stock" class="form-input" min="0" step="1" placeholder="100" />
+            </div>
+            <div class="pm-campo fm-campo">
+              <label for="ap-stock-min">Stock mínimo (avisar cuando baje de)</label>
+              <input type="number" id="ap-stock-min" class="form-input" min="0" step="1" placeholder="10" />
+            </div>
+          </div>
+          <div class="pm-ayuda" id="ap-sin-control" style="display:none">Se vende sin contar existencias: no se descuenta en cada venta, no sale en las alertas de stock bajo y en Inventario aparece como “No controla inventario”.</div>
         </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">Alcance del producto</label>
-        <select id="ap-sucursal" class="form-select">
-          <option value="">🌐 Global (todas las sucursales)</option>
-        </select>
-        <small style="display:block;margin-top:3px;color:var(--text-muted);font-size:10.5px">Un producto de sucursal específica solo lo ve y vende esa sucursal.</small>
-      </div>
-
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Categoría</label>
-          <input type="text" id="ap-categoria" class="form-input" placeholder="General" />
+      <!-- Precio e impuestos -->
+      <div class="pm-precio">
+        <div class="pm-precio__titulo">Precio e impuestos</div>
+        <div class="pm-campo">
+          <label for="ap-precio-compra">Costo de compra</label>
+          <div class="pm-moneda"><span>RD$</span><input type="number" id="ap-precio-compra" class="form-input" min="0" step="0.01" placeholder="0.00" oninput="app.apCalcular()" /></div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Marca</label>
-          <input type="text" id="ap-marca" class="form-input" placeholder="Opcional" />
+        <div class="pm-campo fm-campo">
+          <label for="ap-precio-venta">Precio de venta *</label>
+          <div class="pm-moneda"><span>RD$</span><input type="number" id="ap-precio-venta" class="form-input" min="0" step="0.01" placeholder="0.00" oninput="app.apCalcular()" /></div>
         </div>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Unidad</label>
-        <input type="text" id="ap-unidad" class="form-input" placeholder="Unidad" />
+        <div class="pm-campo">
+          <label>ITBIS</label>
+          <div class="pm-segmento pm-segmento--3" role="radiogroup" aria-label="ITBIS">
+            <button type="button" role="radio" data-ap-itbis="exento" onclick="app.apElegirItbis('exento')">Exento</button>
+            <button type="button" role="radio" data-ap-itbis="porcentaje" onclick="app.apElegirItbis('porcentaje')" title="Tasa general configurada en el POS del negocio">18%</button>
+            <button type="button" role="radio" data-ap-itbis="monto" onclick="app.apElegirItbis('monto')">Monto fijo</button>
+          </div>
+        </div>
+        <div class="pm-campo" id="ap-itbis-monto-wrap" style="display:none">
+          <label for="ap-itbis-monto">ITBIS fijo por unidad</label>
+          <div class="pm-moneda"><span>RD$</span><input type="number" id="ap-itbis-monto" class="form-input" min="0" step="0.01" placeholder="0.00" oninput="app.apCalcular()" /></div>
+          <small class="pm-ayuda">Se cobra tal cual en Ticket. Si la venta lleva comprobante fiscal (NCF/e-CF), el POS lo convierte a la tasa DGII más cercana (0/16/18%) solo para ese documento.</small>
+        </div>
+        <label class="pm-check" id="ap-incluye-wrap">
+          <input type="checkbox" id="ap-precio-incluye" onchange="app.apCalcular()" />
+          El precio ya incluye ITBIS
+        </label>
+        <div class="pm-resumen">
+          <div><span>Precio sin ITBIS</span><strong class="num" id="ap-r-base">RD$ 0.00</strong></div>
+          <div><span>ITBIS por unidad</span><strong class="num" id="ap-r-itbis">RD$ 0.00</strong></div>
+          <div><span>Precio al cliente</span><strong class="num" id="ap-r-final">RD$ 0.00</strong></div>
+          <div><span>Ganancia por unidad</span><strong class="num" id="ap-r-ganancia">—</strong></div>
+        </div>
+        <small class="pm-ayuda" id="ap-r-nota"></small>
       </div>
     </div>
 
-    <div class="fac-form-section">
-      <div class="fac-section-lbl">Precios &amp; Inventario</div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Precio de compra</label>
-          <input type="number" id="ap-precio-compra" class="form-input" min="0" step="0.01" placeholder="0.00" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Precio de venta *</label>
-          <input type="number" id="ap-precio-venta" class="form-input" min="0" step="0.01" placeholder="0.00" />
-        </div>
+    <div class="pm-pie">
+      <label class="pm-check" id="ap-otro-wrap">
+        <input type="checkbox" id="ap-crear-otro" />
+        Crear otro después de guardar
+      </label>
+      <div class="pm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarAgregarProductoModal()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="modal-agregar-producto-btn" onclick="app.guardarProductoPendiente()">Guardar producto</button>
       </div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Stock inicial</label>
-          <input type="number" id="ap-stock" class="form-input" min="0" step="1" placeholder="0" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Stock mínimo</label>
-          <input type="number" id="ap-stock-min" class="form-input" min="0" step="1" placeholder="0" />
-        </div>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <div style="display:flex;align-items:center;gap:8px">
-          <input type="checkbox" id="ap-aplica-itbis" style="width:auto" onchange="app.syncProductoItbisFields()" />
-          <label class="form-label" style="margin:0" for="ap-aplica-itbis">Aplica ITBIS</label>
-        </div>
-        <div id="ap-itbis-modo-wrap" style="display:none;margin-top:8px;padding-left:2px">
-          <div style="display:flex;gap:16px;flex-wrap:wrap">
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
-              <input type="radio" name="ap-itbis-modo" id="ap-itbis-modo-pct" value="porcentaje" checked style="width:auto" onchange="app.syncProductoItbisFields()" />
-              <span>% global</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:400">
-              <input type="radio" name="ap-itbis-modo" id="ap-itbis-modo-monto" value="monto" style="width:auto" onchange="app.syncProductoItbisFields()" />
-              <span>Monto fijo (RD$)</span>
-            </label>
-          </div>
-          <div id="ap-itbis-monto-wrap" style="display:none;margin-top:8px">
-            <label class="form-label">ITBIS fijo por unidad (RD$)</label>
-            <input type="number" id="ap-itbis-monto" class="form-input" min="0" step="0.01" placeholder="0.00" />
-            <small style="display:block;margin-top:3px;color:var(--text-muted);font-size:10.5px">Se cobra tal cual en Ticket. Si la venta genera un comprobante fiscal (NCF/e-CF), el POS lo convierte a la tasa DGII más cercana (0/16/18%) solo para ese documento.</small>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarAgregarProductoModal()">Cancelar</button>
-      <button class="btn btn-primary" id="modal-agregar-producto-btn" onclick="app.guardarProductoPendiente()">Agregar Producto</button>
     </div>
   </div>
 </div>
@@ -2067,67 +2238,77 @@
 <!-- Modal: Registrar secuencia NCF (queda pendiente, se aplica en el POS
      del cliente en su próxima sincronización — no es instantáneo) -->
 <div id="modal-agregar-ncf" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarAgregarNcfModal()">✕</button>
-    <div class="modal-title">🏛 Registrar Secuencia NCF</div>
-    <div class="modal-sub">Registra aquí el rango exacto que la DGII autorizó (con referencia y documento). Se aplicará en el POS del cliente la próxima vez que sincronice.</div>
-
-    <div class="fac-form-section">
-      <div class="fac-section-lbl">Comprobante</div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Tipo de comprobante *</label>
-          <select id="an-tipo" class="form-select"></select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Sucursal</label>
-          <select id="an-sucursal" class="form-select">
-            <option value="">🌐 Global (todas las sucursales)</option>
-          </select>
+  <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="an-titulo">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="an-titulo">Registrar secuencia NCF</div>
+        <div class="fm-sub" id="an-sub">El rango exacto que la DGII autorizó. Se aplica en el POS del negocio cuando sincronice.</div>
+      </div>
+      <button type="button" class="pm-cerrar" onclick="app.cerrarAgregarNcfModal()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="fm-cuerpo" id="an-form">
+      <div class="fm-seccion">
+        <div class="fm-seccion__titulo">Comprobante</div>
+        <div class="fm-grid">
+          <div class="fm-campo">
+            <label for="an-tipo">Tipo de comprobante *</label>
+            <select id="an-tipo" class="form-select" onchange="app.anActualizar()"></select>
+            <div class="fm-ayuda" id="an-tipo-ayuda"></div>
+          </div>
+          <div class="fm-campo">
+            <label for="an-sucursal">Sucursal</label>
+            <select id="an-sucursal" class="form-select" onchange="app.anActualizar()"></select>
+          </div>
+          <div class="fm-campo">
+            <label for="an-prefijo">Prefijo</label>
+            <input type="text" id="an-prefijo" class="form-input fm-prefijo" readonly tabindex="-1" />
+          </div>
+          <div class="fm-campo">
+            <label for="an-fecha-vencimiento">Fecha de vencimiento *</label>
+            <input type="date" id="an-fecha-vencimiento" class="form-input" />
+          </div>
+          <div class="fm-campo">
+            <label for="an-desde">Número inicial *</label>
+            <input type="number" id="an-desde" class="form-input" min="1" step="1" placeholder="1" oninput="app.anActualizar()" />
+          </div>
+          <div class="fm-campo">
+            <label for="an-hasta">Número final *</label>
+            <input type="number" id="an-hasta" class="form-input" min="1" step="1" placeholder="500" oninput="app.anActualizar()" />
+          </div>
+          <div class="fm-span-2"><div class="fm-preview" id="an-preview"></div></div>
         </div>
       </div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Número inicial autorizado *</label>
-          <input type="number" id="an-desde" class="form-input" min="1" placeholder="1" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Número final autorizado *</label>
-          <input type="number" id="an-hasta" class="form-input" min="1" placeholder="500" />
+      <div class="fm-seccion">
+        <div class="fm-seccion__titulo">Autorización DGII</div>
+        <div class="fm-grid">
+          <div class="fm-campo">
+            <label for="an-referencia">Número de autorización *</label>
+            <input type="text" id="an-referencia" class="form-input" placeholder="5009418959" />
+          </div>
+          <div class="fm-campo">
+            <label for="an-fecha-autorizacion">Fecha de autorización</label>
+            <input type="date" id="an-fecha-autorizacion" class="form-input" />
+          </div>
+          <div class="fm-campo fm-span-2">
+            <label for="an-adjunto-file">Documento de autorización (PDF, XML o imagen)</label>
+            <input type="file" id="an-adjunto-file" class="form-input" accept=".pdf,.xml,image/*" onchange="app.handleAgregarNcfAdjunto(this)" />
+            <div class="fm-ayuda" id="an-adjunto-nombre"></div>
+          </div>
+          <div class="fm-campo fm-span-2">
+            <label for="an-notas">Notas</label>
+            <input type="text" id="an-notas" class="form-input" placeholder="Ej.: aprobada en la Oficina Virtual el 03/09" />
+          </div>
         </div>
       </div>
     </div>
-
-    <div class="fac-form-section">
-      <div class="fac-section-lbl">Autorización DGII</div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Fecha de autorización</label>
-          <input type="date" id="an-fecha-autorizacion" class="form-input" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Fecha de vencimiento</label>
-          <input type="date" id="an-fecha-vencimiento" class="form-input" />
-        </div>
+    <div class="fm-pie">
+      <div class="fm-pie__msg" id="an-msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarAgregarNcfModal()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="an-btn-guardar" onclick="app.guardarNcfPendiente()">Registrar secuencia</button>
       </div>
-      <div class="form-group">
-        <label class="form-label">Referencia / número de autorización DGII *</label>
-        <input type="text" id="an-referencia" class="form-input" placeholder="Ej: consulta de solicitudes DGII #..." />
-      </div>
-      <div class="form-group">
-        <label class="form-label">Documento de autorización (PDF, XML, imagen)</label>
-        <input type="file" id="an-adjunto-file" accept=".pdf,.xml,image/*" onchange="app.handleAgregarNcfAdjunto(this)" />
-        <small id="an-adjunto-nombre" style="display:block;margin-top:3px;color:var(--text-muted);font-size:10.5px"></small>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Notas</label>
-        <input type="text" id="an-notas" class="form-input" placeholder="Opcional" />
-      </div>
-    </div>
-
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarAgregarNcfModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="app.guardarNcfPendiente()">Registrar Secuencia</button>
     </div>
   </div>
 </div>
@@ -2135,43 +2316,50 @@
 <!-- Modal: Editar secuencia NCF ya aplicada — queda como solicitud, el POS
      del cliente la revalida y aplica en su próxima sincronización. -->
 <div id="modal-editar-ncf" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarEditarNcfModal()">✕</button>
-    <div class="modal-title" id="ane-titulo">🏛 Editar Secuencia NCF</div>
-    <div class="modal-sub">No se puede cambiar el número inicial ni bajar el final por debajo de lo ya usado. Se aplica cuando el POS del cliente sincronice.</div>
-
-    <div class="fac-form-section">
-      <div class="form-group">
-        <label class="form-label">Nombre del comprobante</label>
-        <input type="text" id="ane-nombre" class="form-input" placeholder="Opcional" />
+  <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="ane-titulo">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="ane-titulo">Editar secuencia NCF</div>
+        <div class="fm-sub">No se puede cambiar el número inicial ni bajar el final por debajo de lo ya usado. Se aplica cuando el POS del negocio sincronice.</div>
       </div>
-      <div class="form-group">
-        <label class="form-label">Número final autorizado</label>
-        <input type="number" id="ane-hasta" class="form-input" min="1" />
-      </div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Fecha de autorización</label>
+      <button type="button" class="pm-cerrar" onclick="app.cerrarEditarNcfModal()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="fm-cuerpo" id="ane-form">
+      <div class="fm-grid">
+        <div class="fm-campo">
+          <label for="ane-nombre">Nombre del comprobante</label>
+          <input type="text" id="ane-nombre" class="form-input" placeholder="Consumidor final" />
+        </div>
+        <div class="fm-campo">
+          <label for="ane-hasta">Número final autorizado *</label>
+          <input type="number" id="ane-hasta" class="form-input" min="1" step="1" placeholder="500" />
+        </div>
+        <div class="fm-campo">
+          <label for="ane-fecha-autorizacion">Fecha de autorización</label>
           <input type="date" id="ane-fecha-autorizacion" class="form-input" />
         </div>
-        <div class="form-group">
-          <label class="form-label">Fecha de vencimiento</label>
+        <div class="fm-campo">
+          <label for="ane-fecha-vencimiento">Fecha de vencimiento</label>
           <input type="date" id="ane-fecha-vencimiento" class="form-input" />
         </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Referencia / número de autorización DGII</label>
-        <input type="text" id="ane-referencia" class="form-input" />
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Motivo de la edición</label>
-        <input type="text" id="ane-notas" class="form-input" placeholder="Opcional pero recomendado" />
+        <div class="fm-campo">
+          <label for="ane-referencia">Número de autorización</label>
+          <input type="text" id="ane-referencia" class="form-input" placeholder="5009418959" />
+        </div>
+        <div class="fm-campo">
+          <label for="ane-notas">Motivo de la edición</label>
+          <input type="text" id="ane-notas" class="form-input" placeholder="Ej.: la DGII amplió el rango" />
+        </div>
       </div>
     </div>
-
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarEditarNcfModal()">Cancelar</button>
-      <button class="btn btn-primary" onclick="app.guardarEdicionNcf()">Guardar Edición</button>
+    <div class="fm-pie">
+      <div class="fm-pie__msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarEditarNcfModal()">Cancelar</button>
+        <button type="button" class="btn btn-primary" onclick="app.guardarEdicionNcf()">Guardar cambios</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2194,221 +2382,243 @@
 
 <!-- ── MODAL: Mis Secuencias NCF (facturación propia del contador) ────────── -->
 <div id="modal-mis-ncf-lista" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarMisSecuenciasNcf()">✕</button>
-    <div class="modal-title">🏛 Mis Secuencias NCF</div>
-    <div class="modal-sub">Rangos que la DGII te autorizó a ti para facturar tus servicios contables. Sin una secuencia activa aquí, no se puede emitir factura de ese tipo.</div>
-    <div style="display:flex;justify-content:flex-end;margin-bottom:10px">
-      <button class="btn btn-primary" onclick="app.abrirRegistrarMiNcfModal()">＋ Registrar secuencia</button>
+  <div class="modal-card fm-modal" role="dialog" aria-modal="true" aria-labelledby="mis-ncf-titulo">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="mis-ncf-titulo">Mis secuencias NCF</div>
+        <div class="fm-sub">Rangos que la DGII te autorizó para facturar tus servicios. Sin una secuencia activa no se puede emitir ese tipo.</div>
+      </div>
+      <div class="fm-cabeza__der">
+        <button type="button" class="btn btn-primary" data-icono="plus" onclick="app.abrirRegistrarMiNcfModal()">Agregar secuencia</button>
+        <button type="button" class="pm-cerrar" onclick="app.cerrarMisSecuenciasNcf()" title="Cerrar" aria-label="Cerrar">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
     </div>
-    <div id="mis-ncf-lista-body">
-      <div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>
+    <div class="fm-cuerpo">
+      <div class="ncf-resumen"><div class="ncf-resumen__txt" id="mis-ncf-resumen">Cargando…</div></div>
+      <div id="mis-ncf-lista-body" class="ncf-cards"></div>
     </div>
   </div>
 </div>
 
 <!-- ── MODAL: Registrar / Editar Mi Secuencia NCF ──────────────────────────── -->
 <div id="modal-registrar-mi-ncf" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarRegistrarMiNcfModal()">✕</button>
-    <div class="modal-title" id="mn-titulo">🏛 Registrar Mi Secuencia NCF</div>
-    <div class="modal-sub">Registra el rango exacto que la DGII te autorizó, con referencia y documento de respaldo.</div>
-
-    <div class="fac-form-section">
-      <div class="fac-section-lbl">Comprobante</div>
-      <div class="form-group">
-        <label class="form-label">Tipo de comprobante *</label>
-        <select id="mn-tipo" class="form-select"></select>
+  <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="mn-titulo">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="mn-titulo">Registrar secuencia NCF</div>
+        <div class="fm-sub">El rango exacto que la DGII te autorizó para facturar tus servicios.</div>
       </div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Número inicial autorizado *</label>
-          <input type="number" id="mn-desde" class="form-input" min="1" placeholder="1" />
+      <button type="button" class="pm-cerrar" onclick="app.cerrarRegistrarMiNcfModal()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="fm-cuerpo" id="mn-form">
+      <div class="fm-seccion">
+        <div class="fm-seccion__titulo">Comprobante</div>
+        <div class="fm-grid">
+          <div class="fm-campo fm-span-2">
+            <label for="mn-tipo">Tipo de comprobante *</label>
+            <select id="mn-tipo" class="form-select" onchange="app.mnActualizar()"></select>
+            <div class="fm-ayuda" id="mn-tipo-ayuda"></div>
+          </div>
+          <div class="fm-campo">
+            <label for="mn-prefijo">Prefijo</label>
+            <input type="text" id="mn-prefijo" class="form-input fm-prefijo" readonly tabindex="-1" />
+          </div>
+          <div class="fm-campo">
+            <label for="mn-fecha-vencimiento" id="mn-vence-lbl">Fecha de vencimiento *</label>
+            <input type="date" id="mn-fecha-vencimiento" class="form-input" />
+          </div>
+          <div class="fm-campo">
+            <label for="mn-desde">Número inicial *</label>
+            <input type="number" id="mn-desde" class="form-input" min="1" step="1" placeholder="1" oninput="app.mnActualizar()" />
+          </div>
+          <div class="fm-campo">
+            <label for="mn-hasta">Número final *</label>
+            <input type="number" id="mn-hasta" class="form-input" min="1" step="1" placeholder="500" oninput="app.mnActualizar()" />
+          </div>
+          <div class="fm-span-2"><div class="fm-preview" id="mn-preview"></div></div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Número final autorizado *</label>
-          <input type="number" id="mn-hasta" class="form-input" min="1" placeholder="500" />
+      </div>
+      <div class="fm-seccion">
+        <div class="fm-seccion__titulo">Autorización DGII</div>
+        <div class="fm-grid">
+          <div class="fm-campo">
+            <label for="mn-referencia">Número de autorización (opcional)</label>
+            <input type="text" id="mn-referencia" class="form-input" placeholder="5009418959" />
+          </div>
+          <div class="fm-campo">
+            <label for="mn-fecha-autorizacion">Fecha de autorización (opcional)</label>
+            <input type="date" id="mn-fecha-autorizacion" class="form-input" />
+          </div>
+          <div class="fm-campo fm-span-2">
+            <label for="mn-adjunto-file">Documento de la DGII (opcional)</label>
+            <input type="file" id="mn-adjunto-file" class="form-input" accept=".pdf,image/*" onchange="app.handleMiNcfAdjunto(this)" />
+            <div class="fm-ayuda" id="mn-adjunto-nombre"></div>
+          </div>
+          <div class="fm-campo fm-span-2">
+            <label for="mn-notas">Notas</label>
+            <input type="text" id="mn-notas" class="form-input" placeholder="Ej.: aprobada en la Oficina Virtual el 03/09" />
+          </div>
         </div>
-      </div>
-      <div class="fac-grid-2">
-        <div class="form-group">
-          <label class="form-label">Fecha de autorización</label>
-          <input type="date" id="mn-fecha-autorizacion" class="form-input" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">Fecha de vencimiento</label>
-          <input type="date" id="mn-fecha-vencimiento" class="form-input" />
-        </div>
-      </div>
-      <div class="form-group">
-        <label class="form-label">Referencia / número de autorización DGII *</label>
-        <input type="text" id="mn-referencia" class="form-input" />
-      </div>
-      <div class="form-group">
-        <label class="form-label">Documento de autorización DGII (PDF/imagen) *</label>
-        <input type="file" id="mn-adjunto-file" accept=".pdf,image/*" onchange="app.handleMiNcfAdjunto(this)" />
-        <span id="mn-adjunto-nombre" style="font-size:12px;color:var(--text-sub);display:block;margin-top:4px"></span>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label class="form-label">Notas</label>
-        <input type="text" id="mn-notas" class="form-input" placeholder="Opcional" />
       </div>
     </div>
-
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarRegistrarMiNcfModal()">Cancelar</button>
-      <button class="btn btn-primary" id="mn-btn-guardar" onclick="app.guardarMiNcf()">Guardar</button>
+    <div class="fm-pie">
+      <div class="fm-pie__msg" id="mn-msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarRegistrarMiNcfModal()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="mn-btn-guardar" onclick="app.guardarMiNcf()">Guardar secuencia</button>
+      </div>
     </div>
   </div>
 </div>
 
 <!-- ── MODAL: Nueva Factura ──────────────────────────────────────────────── -->
 <div id="modal-nueva-factura" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarNuevaFactura()">✕</button>
-    <div class="modal-title">＋ Nueva Factura</div>
-    <div class="modal-sub">Completa los datos para emitir el comprobante fiscal</div>
-
-    <div class="fac-form-layout">
-      <!-- Columna izquierda: cliente + condiciones -->
+  <div class="modal-card fm-modal fm-doc" role="dialog" aria-modal="true" aria-labelledby="nf-titulo">
+    <div class="fm-cabeza">
       <div>
-        <div class="fac-form-section">
-          <div class="fac-section-lbl">Cliente</div>
-          <div class="form-group">
-            <label class="form-label">Cliente guardado / negocio asociado</label>
-            <select id="nf-cliente-sel" class="form-select" onchange="app.selClienteFac(this.value)">
-              <option value="">— Ingresar datos manualmente —</option>
-            </select>
-          </div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Nombre / Razón social *</label>
-              <input id="nf-cli-nombre" type="text" class="form-input" placeholder="Empresa o persona" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">RNC / Cédula</label>
-              <input id="nf-cli-rnc" type="text" class="form-input" placeholder="000-00000-0" />
-            </div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Dirección</label>
-            <input id="nf-cli-dir" type="text" class="form-input" placeholder="Calle, número, sector..." />
-          </div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Teléfono</label>
-              <input id="nf-cli-tel" type="text" class="form-input" placeholder="809-000-0000" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Correo</label>
-              <input id="nf-cli-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
-            </div>
+        <div class="fm-titulo" id="nf-titulo">Nueva factura</div>
+        <div class="fm-sub" id="nf-sub">Honorarios de tu despacho</div>
+      </div>
+      <div class="fm-ncf" id="nf-ncf-wrap"><span id="nf-ncf-chip-lbl">NCF:</span> <strong id="nf-ncf-chip">—</strong></div>
+    </div>
+
+    <div class="fm-cuerpo" id="nf-form" oninput="app.nfActualizarPie()" onchange="app.nfActualizarPie()">
+      <section class="fm-seccion">
+        <div class="fm-seccion__cabeza">
+          <div class="fm-seccion__titulo">Tipo de comprobante</div>
+          <div class="fm-otro-tipo" id="nf-otro-wrap">
+            <label for="nf-tipo-otro">Otro:</label>
+            <select id="nf-tipo-otro" class="form-select" onchange="app.nfElegirTipo(this.value)"></select>
           </div>
         </div>
+        <div class="fm-tipos" id="nf-tipos" role="radiogroup" aria-label="Tipo de comprobante"></div>
+        <input type="hidden" id="nf-tipo-ncf" value="B02" />
+        <div class="fm-aviso" id="nf-ncf-hint"></div>
+      </section>
 
-        <div class="fac-form-section">
-          <div class="fac-section-lbl">Comprobante &amp; Pago</div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Tipo comprobante *</label>
-              <select id="nf-tipo-ncf" class="form-select" onchange="app.onNfTipoNcfChange()">
-                <option value="B02">B02 — Consumidor Final</option>
-                <option value="B01">B01 — Crédito Fiscal</option>
-                <option value="B03">B03 — Nota de Débito</option>
-                <option value="B04">B04 — Nota de Crédito</option>
-                <option value="B11">B11 — Comprobante de Compras</option>
-                <option value="B12">B12 — Registro Único de Ingresos</option>
-                <option value="B13">B13 — Gastos Menores</option>
-                <option value="B14">B14 — Régimen Especial</option>
-                <option value="B15">B15 — Gubernamental</option>
-                <option value="B16">B16 — Comprobante para Exportaciones</option>
-                <option value="B17">B17 — Comprobante para Pagos al Exterior</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label class="form-label">Fecha *</label>
-              <input id="nf-fecha" type="date" class="form-input" />
+      <section class="fm-seccion">
+        <div class="fm-seccion__cabeza">
+          <div class="fm-seccion__titulo">Cliente</div>
+          <button type="button" class="btn fm-btn-borde" onclick="app.docClienteNuevo('nf')">+ Nuevo cliente</button>
+        </div>
+        <div class="fm-grid">
+          <div class="fm-campo">
+            <label for="nf-cli-rnc" id="nf-rnc-lbl">RNC / Cédula</label>
+            <input id="nf-cli-rnc" type="text" class="form-input" inputmode="numeric" autocomplete="off" placeholder="131-00000-1" />
+            <div class="fm-ayuda" id="nf-rnc-ayuda"></div>
+          </div>
+          <div class="fm-campo">
+            <label for="nf-cli-nombre">Razón social *</label>
+            <div class="fm-autocompletar">
+              <input id="nf-cli-nombre" type="text" class="form-input" autocomplete="off" placeholder="Nombre de la empresa"
+                oninput="app.docBuscarCliente('nf')" onfocus="app.docBuscarCliente('nf', true)"
+                onblur="document.getElementById('nf-cli-resultados').classList.add('hidden')" />
+              <div class="fm-resultados hidden" id="nf-cli-resultados"></div>
             </div>
           </div>
-          <div id="nf-ncf-hint" style="font-size:11px;min-height:1.2em;margin:-2px 0 4px;color:var(--text-sub)"></div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Condición de pago</label>
-              <select id="nf-condicion" class="form-select">
-                <option value="contado">Contado</option>
-                <option value="credito">Crédito</option>
-                <option value="adelanto">Adelanto</option>
-              </select>
+          <div class="fm-campo">
+            <label for="nf-cli-correo">Email</label>
+            <input id="nf-cli-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
+          </div>
+          <div class="fm-campo">
+            <label for="nf-cli-tel">Teléfono</label>
+            <input id="nf-cli-tel" type="tel" class="form-input" placeholder="809-000-0000" />
+          </div>
+        </div>
+        <label class="fm-check-linea fm-guardar-cli" id="nf-guardar-cliente-row">
+          <input type="checkbox" id="nf-guardar-cliente" /> Guardar en Mis clientes
+        </label>
+      </section>
+
+      <section class="fm-seccion">
+        <div class="fm-seccion__titulo">Servicios</div>
+        <div class="fm-campo" id="nf-items-campo">
+          <div class="fm-items">
+            <table>
+              <thead><tr>
+                <th>Descripción</th><th style="width:62px;text-align:center">Cant.</th><th style="width:108px;text-align:right">Precio</th>
+                <th style="width:90px">ITBIS</th><th style="width:112px;text-align:right">Subtotal</th><th style="width:36px"></th>
+              </tr></thead>
+              <tbody id="nf-items-body"></tbody>
+            </table>
+          </div>
+          <input type="hidden" id="nf-items" />
+        </div>
+        <button type="button" class="fm-agregar-linea" data-icono="plus" onclick="app.addItemFac()">Agregar línea</button>
+        <!-- Sugerencias de servicio (la lista la arma _docPintarPlantillas con el período ya puesto) -->
+        <datalist id="fac-servicios-list"></datalist>
+      </section>
+
+      <div class="fm-resumen-caja" aria-label="Resumen de la factura">
+        <div class="fm-resumen-caja__fila"><span>Subtotal</span><strong id="nf-t-sub">RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__fila is-desc" hidden><span>Descuentos</span><strong id="nf-t-desc">− RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__fila" hidden><span>Exento</span><strong id="nf-t-exento">RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__fila"><span id="nf-t-itbis-lbl">ITBIS (18%)</span><strong id="nf-t-itbis">RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__total"><span>Total</span><strong id="nf-t-total">RD$ 0.00</strong></div>
+      </div>
+
+      <section class="fm-seccion">
+        <div class="fm-seccion__titulo">Método de pago</div>
+        <div class="pm-segmento pm-segmento--3" role="radiogroup" aria-label="Método de pago" id="nf-condicion-seg">
+          <button type="button" role="radio" data-valor="contado" onclick="app.docElegirCondicion('nf','contado')">Contado</button>
+          <button type="button" role="radio" data-valor="credito" onclick="app.docElegirCondicion('nf','credito')">Crédito</button>
+          <button type="button" role="radio" data-valor="adelanto" onclick="app.docElegirCondicion('nf','adelanto')">Adelanto</button>
+        </div>
+        <input type="hidden" id="nf-condicion" value="contado" />
+      </section>
+
+      <section class="fm-seccion">
+        <label class="fm-seccion__titulo" for="nf-observacion" style="display:block;margin-bottom:10px">Nota para el cliente (opcional)</label>
+        <div class="fm-campo">
+          <textarea id="nf-observacion" class="form-textarea" rows="3" placeholder="Escriba cualquier nota adicional..."></textarea>
+        </div>
+      </section>
+
+      <details class="fm-mas" id="nf-mas">
+        <summary>Más opciones <small>Fecha, forma de pago, dirección y envío</small></summary>
+        <div class="fm-mas__cuerpo">
+          <div class="fm-grid">
+            <div class="fm-campo">
+              <label for="nf-fecha">Fecha de emisión *</label>
+              <input id="nf-fecha" type="date" class="form-input" />
             </div>
-            <div class="form-group">
-              <label class="form-label">Método de pago</label>
+            <div class="fm-campo">
+              <label for="nf-metodo">Forma de pago</label>
               <select id="nf-metodo" class="form-select">
                 <option value="efectivo">Efectivo</option>
                 <option value="transferencia">Transferencia</option>
                 <option value="tarjeta">Tarjeta</option>
                 <option value="cheque">Cheque</option>
+                <option value="deposito">Depósito</option>
                 <option value="otro">Otro</option>
               </select>
             </div>
+            <div class="fm-campo fm-span-2">
+              <label for="nf-cli-dir">Dirección del cliente</label>
+              <input id="nf-cli-dir" type="text" class="form-input" placeholder="Av. 27 de Febrero #120, Santo Domingo" />
+            </div>
+          </div>
+          <div class="fm-enviar" id="nf-enviar-bloque">
+            <span>Enviar al emitir:</span>
+            <label class="fm-check-linea"><input type="checkbox" id="nf-enviar-correo" /> PDF por correo</label>
+            <label class="fm-check-linea"><input type="checkbox" id="nf-enviar-wa" /> Enlace por WhatsApp</label>
+            <span class="fm-ayuda" id="nf-enviar-ayuda"></span>
           </div>
         </div>
-
-        <div class="form-group">
-          <label class="form-label">Observación</label>
-          <textarea id="nf-observacion" class="form-textarea" rows="3" placeholder="Notas, instrucciones de pago..."></textarea>
-        </div>
-      </div>
-
-      <!-- Columna derecha: ítems + totales -->
-      <div>
-        <div class="fac-form-section">
-          <div class="fac-section-lbl" style="display:flex;justify-content:space-between;align-items:center">
-            <span>Servicios / Ítems</span>
-            <button class="btn btn-secondary btn-sm" onclick="app.addItemFac()">＋ Agregar ítem</button>
-          </div>
-          <div style="margin-top:4px">
-            <table class="fac-items-table">
-              <thead>
-                <tr>
-                  <th>Descripción</th>
-                  <th style="width:42px">Cant.</th>
-                  <th style="width:70px">Precio</th>
-                  <th style="width:44px">Desc.%</th>
-                  <th style="width:52px">ITBIS</th>
-                  <th style="width:88px;text-align:right">Total</th>
-                  <th style="width:22px"></th>
-                </tr>
-              </thead>
-              <tbody id="nf-items-body"></tbody>
-            </table>
-          </div>
-          <datalist id="fac-servicios-list">
-            <option value="Servicio contable mensual">
-            <option value="Implementación de sistema">
-            <option value="Soporte técnico">
-            <option value="Asesoría fiscal">
-            <option value="Declaración ITBIS">
-            <option value="Declaración IR-17">
-            <option value="Declaración IR-2">
-            <option value="Preparación de nómina">
-            <option value="Auditoría">
-            <option value="Consultoría empresarial">
-            <option value="Registro mercantil">
-          </datalist>
-        </div>
-
-        <div class="fac-totals-box">
-          <div class="fac-total-row"><span>Subtotal</span><span id="nf-t-sub">RD$ 0.00</span></div>
-          <div class="fac-total-row"><span>Descuento</span><span id="nf-t-desc" style="color:var(--red)">— RD$ 0.00</span></div>
-          <div class="fac-total-row"><span>ITBIS</span><span id="nf-t-itbis">RD$ 0.00</span></div>
-          <div class="fac-total-row fac-total-final"><span>TOTAL GENERAL</span><span id="nf-t-total">RD$ 0.00</span></div>
-        </div>
-      </div>
+      </details>
     </div>
 
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarNuevaFactura()">Cancelar</button>
-      <button class="btn btn-primary" id="nf-btn-guardar" onclick="app.guardarFactura()">💾 Emitir Factura</button>
+    <div class="fm-pie">
+      <button type="button" class="btn fm-pie__previa" data-icono="eye" onclick="app.vistaPreviaFactura()">Vista previa</button>
+      <div class="fm-pie__msg" id="nf-msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarNuevaFactura()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="nf-btn-guardar" data-icono="receipt-text" onclick="app.guardarFactura()">Emitir factura</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2437,156 +2647,136 @@
 
 <!-- ── MODAL: Nueva Cotización ───────────────────────────────────────────── -->
 <div id="modal-nueva-cotizacion" class="modal-overlay hidden">
-  <div class="modal-card fac-modal-xl">
-    <button class="btn-modal-close" onclick="app.cerrarNuevaCotizacion()">✕</button>
-    <div class="modal-title">＋ Nueva Cotización</div>
-    <div class="modal-sub">Completa los datos para cotizar tus servicios</div>
-
-    <div class="fac-form-layout">
-      <!-- Columna izquierda: cliente + condiciones -->
+  <div class="modal-card fm-modal fm-doc" role="dialog" aria-modal="true" aria-labelledby="cot-titulo">
+    <div class="fm-cabeza">
       <div>
-        <div class="fac-form-section">
-          <div class="fac-section-lbl">Cliente</div>
-          <div class="form-group">
-            <label class="form-label">Cliente guardado / negocio asociado</label>
-            <select id="cot-cliente-sel" class="form-select" onchange="app.selClienteCot(this.value)">
-              <option value="">— Ingresar datos manualmente —</option>
-            </select>
-          </div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Nombre / Razón social *</label>
-              <input id="cot-cli-nombre" type="text" class="form-input" placeholder="Empresa o persona" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">RNC / Cédula</label>
-              <input id="cot-cli-rnc" type="text" class="form-input" placeholder="000-00000-0" />
-            </div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Dirección</label>
-            <input id="cot-cli-dir" type="text" class="form-input" placeholder="Calle, número, sector..." />
-          </div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Teléfono</label>
-              <input id="cot-cli-tel" type="text" class="form-input" placeholder="809-000-0000" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Correo</label>
-              <input id="cot-cli-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
-            </div>
-          </div>
-        </div>
-
-        <div class="fac-form-section">
-          <div class="fac-section-lbl">Validez &amp; Condiciones</div>
-          <div class="fac-grid-2">
-            <div class="form-group">
-              <label class="form-label">Fecha *</label>
-              <input id="cot-fecha" type="date" class="form-input" />
-            </div>
-            <div class="form-group">
-              <label class="form-label">Validez (días)</label>
-              <input id="cot-validez-dias" type="number" class="form-input" min="1" value="30" />
-            </div>
-          </div>
-          <div class="form-group">
-            <label class="form-label">Condición de pago</label>
-            <select id="cot-condicion" class="form-select">
-              <option value="contado">Contado</option>
-              <option value="credito">Crédito</option>
-              <option value="adelanto">Adelanto</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="form-group">
-          <label class="form-label">Notas / condiciones</label>
-          <textarea id="cot-notas" class="form-textarea" rows="2" placeholder="Condiciones de la cotización..."></textarea>
-        </div>
-        <div class="form-group">
-          <label class="form-label">Observación</label>
-          <textarea id="cot-observacion" class="form-textarea" rows="2" placeholder="Notas internas..."></textarea>
-        </div>
+        <div class="fm-titulo" id="cot-titulo">Nueva cotización</div>
+        <div class="fm-sub">Honorarios de tu despacho · no consume NCF hasta convertirla en factura</div>
       </div>
+      <div class="fm-ncf"><span>Válida hasta:</span> <strong id="cot-vence-chip">—</strong></div>
+    </div>
 
-      <!-- Columna derecha: ítems + totales -->
-      <div>
-        <div class="fac-form-section">
-          <div class="fac-section-lbl" style="display:flex;justify-content:space-between;align-items:center">
-            <span>Servicios / Ítems</span>
-            <button class="btn btn-secondary btn-sm" onclick="app.addItemCot()">＋ Agregar ítem</button>
+    <div class="fm-cuerpo" id="cot-form" oninput="app.cotActualizarPie()" onchange="app.cotActualizarPie()">
+      <section class="fm-seccion">
+        <div class="fm-seccion__cabeza">
+          <div class="fm-seccion__titulo">Cliente</div>
+          <button type="button" class="btn fm-btn-borde" onclick="app.docClienteNuevo('cot')">+ Nuevo cliente</button>
+        </div>
+        <div class="fm-grid">
+          <div class="fm-campo">
+            <label for="cot-cli-rnc">RNC / Cédula</label>
+            <input id="cot-cli-rnc" type="text" class="form-input" inputmode="numeric" autocomplete="off" placeholder="131-00000-1" />
+            <div class="fm-ayuda" id="cot-rnc-ayuda"></div>
           </div>
-          <div style="margin-top:4px">
-            <table class="fac-items-table">
-              <thead>
-                <tr>
-                  <th>Descripción</th>
-                  <th style="width:42px">Cant.</th>
-                  <th style="width:70px">Precio</th>
-                  <th style="width:44px">Desc.%</th>
-                  <th style="width:52px">ITBIS</th>
-                  <th style="width:88px;text-align:right">Total</th>
-                  <th style="width:22px"></th>
-                </tr>
-              </thead>
+          <div class="fm-campo">
+            <label for="cot-cli-nombre">Razón social *</label>
+            <div class="fm-autocompletar">
+              <input id="cot-cli-nombre" type="text" class="form-input" autocomplete="off" placeholder="Nombre de la empresa"
+                oninput="app.docBuscarCliente('cot')" onfocus="app.docBuscarCliente('cot', true)"
+                onblur="document.getElementById('cot-cli-resultados').classList.add('hidden')" />
+              <div class="fm-resultados hidden" id="cot-cli-resultados"></div>
+            </div>
+          </div>
+          <div class="fm-campo">
+            <label for="cot-cli-correo">Email</label>
+            <input id="cot-cli-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
+          </div>
+          <div class="fm-campo">
+            <label for="cot-cli-tel">Teléfono</label>
+            <input id="cot-cli-tel" type="tel" class="form-input" placeholder="809-000-0000" />
+          </div>
+        </div>
+        <label class="fm-check-linea fm-guardar-cli" id="cot-guardar-cliente-row">
+          <input type="checkbox" id="cot-guardar-cliente" /> Guardar en Mis clientes
+        </label>
+      </section>
+
+      <section class="fm-seccion">
+        <div class="fm-seccion__titulo">Servicios</div>
+        <div class="fm-campo" id="cot-items-campo">
+          <div class="fm-items">
+            <table>
+              <thead><tr>
+                <th>Descripción</th><th style="width:62px;text-align:center">Cant.</th><th style="width:108px;text-align:right">Precio</th>
+                <th style="width:90px">ITBIS</th><th style="width:112px;text-align:right">Subtotal</th><th style="width:36px"></th>
+              </tr></thead>
               <tbody id="cot-items-body"></tbody>
             </table>
           </div>
+          <input type="hidden" id="cot-items" />
         </div>
+        <button type="button" class="fm-agregar-linea" data-icono="plus" onclick="app.addItemCot()">Agregar línea</button>
+      </section>
 
-        <div class="fac-totals-box">
-          <div class="fac-total-row"><span>Subtotal</span><span id="cot-t-sub">RD$ 0.00</span></div>
-          <div class="fac-total-row"><span>Descuento</span><span id="cot-t-desc" style="color:var(--red)">— RD$ 0.00</span></div>
-          <div class="fac-total-row"><span>ITBIS</span><span id="cot-t-itbis">RD$ 0.00</span></div>
-          <div class="fac-total-row fac-total-final"><span>TOTAL GENERAL</span><span id="cot-t-total">RD$ 0.00</span></div>
-        </div>
+      <div class="fm-resumen-caja" aria-label="Resumen de la cotización">
+        <div class="fm-resumen-caja__fila"><span>Subtotal</span><strong id="cot-t-sub">RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__fila is-desc" hidden><span>Descuentos</span><strong id="cot-t-desc">− RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__fila" hidden><span>Exento</span><strong id="cot-t-exento">RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__fila"><span id="cot-t-itbis-lbl">ITBIS (18%)</span><strong id="cot-t-itbis">RD$ 0.00</strong></div>
+        <div class="fm-resumen-caja__total"><span>Total cotizado</span><strong id="cot-t-total">RD$ 0.00</strong></div>
       </div>
+
+      <div class="fm-par">
+        <section class="fm-seccion">
+          <div class="fm-seccion__titulo">Condición de pago</div>
+          <div class="pm-segmento pm-segmento--3" role="radiogroup" aria-label="Condición de pago" id="cot-condicion-seg">
+            <button type="button" role="radio" data-valor="contado" onclick="app.docElegirCondicion('cot','contado')">Contado</button>
+            <button type="button" role="radio" data-valor="credito" onclick="app.docElegirCondicion('cot','credito')">Crédito</button>
+            <button type="button" role="radio" data-valor="adelanto" onclick="app.docElegirCondicion('cot','adelanto')">Adelanto</button>
+          </div>
+          <input type="hidden" id="cot-condicion" value="contado" />
+        </section>
+        <section class="fm-seccion">
+          <div class="fm-seccion__titulo">Validez</div>
+          <div class="pm-segmento pm-segmento--3" role="radiogroup" aria-label="Validez" id="cot-validez-seg">
+            <button type="button" role="radio" data-valor="15" onclick="app.cotElegirValidez(15)">15 días</button>
+            <button type="button" role="radio" data-valor="30" onclick="app.cotElegirValidez(30)">30 días</button>
+            <button type="button" role="radio" data-valor="otro" onclick="app.cotElegirValidez('otro')">Otro</button>
+          </div>
+          <div class="fm-campo fm-dias" id="cot-validez-otro-wrap">
+            <label for="cot-validez-dias">Días de validez:</label>
+            <input id="cot-validez-dias" type="number" class="form-input" min="1" max="365" step="1" value="30" placeholder="45" />
+          </div>
+          <div class="fm-ayuda" id="cot-vence-nota" style="margin-top:6px"></div>
+        </section>
+      </div>
+
+      <section class="fm-seccion">
+        <label class="fm-seccion__titulo" for="cot-notas" style="display:block;margin-bottom:10px">Nota para el cliente (opcional)</label>
+        <div class="fm-campo">
+          <textarea id="cot-notas" class="form-textarea" rows="3" placeholder="Escriba cualquier nota adicional..."></textarea>
+        </div>
+      </section>
+
+      <details class="fm-mas" id="cot-mas">
+        <summary>Más opciones <small>Fecha, dirección y nota interna</small></summary>
+        <div class="fm-mas__cuerpo">
+          <div class="fm-grid">
+            <div class="fm-campo">
+              <label for="cot-fecha">Fecha de la cotización *</label>
+              <input id="cot-fecha" type="date" class="form-input" />
+            </div>
+            <div class="fm-campo">
+              <label for="cot-cli-dir">Dirección del cliente</label>
+              <input id="cot-cli-dir" type="text" class="form-input" placeholder="Av. 27 de Febrero #120, Santo Domingo" />
+            </div>
+            <div class="fm-campo fm-span-2">
+              <label for="cot-observacion">Nota interna (va a la factura al convertir)</label>
+              <input id="cot-observacion" type="text" class="form-input" placeholder="Ej.: cliente referido por Ferretería Pérez" />
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
 
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarNuevaCotizacion()">Cancelar</button>
-      <button class="btn btn-primary" id="cot-btn-guardar" onclick="app.guardarCotizacion()">💾 Guardar Cotización</button>
-    </div>
-  </div>
-</div>
-
-<!-- ── MODAL: Facturar cotización (elegir tipo de comprobante) ─────────────── -->
-<div id="modal-cot-facturar" class="modal-overlay hidden">
-  <div class="modal-card" style="max-width:420px">
-    <button class="btn-modal-close" onclick="app.cerrarFacturarCotizacion()">✕</button>
-    <div class="modal-title">Convertir a factura</div>
-    <div class="modal-sub" id="cf-cot-numero">—</div>
-    <div class="form-group">
-      <label class="form-label">Tipo comprobante *</label>
-      <select id="cf-tipo-ncf" class="form-select">
-        <option value="B02">B02 — Consumidor Final</option>
-        <option value="B01">B01 — Crédito Fiscal</option>
-        <option value="B03">B03 — Nota de Débito</option>
-        <option value="B04">B04 — Nota de Crédito</option>
-        <option value="B11">B11 — Comprobante de Compras</option>
-        <option value="B12">B12 — Registro Único de Ingresos</option>
-        <option value="B13">B13 — Gastos Menores</option>
-        <option value="B14">B14 — Régimen Especial</option>
-        <option value="B15">B15 — Gubernamental</option>
-        <option value="B16">B16 — Comprobante para Exportaciones</option>
-        <option value="B17">B17 — Comprobante para Pagos al Exterior</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Método de pago</label>
-      <select id="cf-metodo" class="form-select">
-        <option value="efectivo">Efectivo</option>
-        <option value="transferencia">Transferencia</option>
-        <option value="tarjeta">Tarjeta</option>
-        <option value="cheque">Cheque</option>
-        <option value="otro">Otro</option>
-      </select>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="app.cerrarFacturarCotizacion()">Cancelar</button>
-      <button class="btn btn-primary" id="cf-btn" onclick="app.confirmarFacturarCotizacion()">Facturar</button>
+    <div class="fm-pie">
+      <button type="button" class="btn fm-pie__previa" data-icono="eye" onclick="app.vistaPreviaCotizacionForm()">Vista previa</button>
+      <div class="fm-pie__msg" id="cot-msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarNuevaCotizacion()">Cancelar</button>
+        <button type="button" class="btn btn-secondary" id="cot-btn-convertir" data-icono="receipt-text" onclick="app.convertirCotizacionDesdeModal()" style="display:none">Convertir en factura</button>
+        <button type="button" class="btn btn-primary" id="cot-btn-guardar" data-icono="save" onclick="app.guardarCotizacion()">Guardar cotización</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2617,11 +2807,11 @@
 <div id="modal-fac-pago" class="modal-overlay hidden">
   <div class="modal-card" style="max-width:380px">
     <button class="btn-modal-close" onclick="app.cerrarRegistrarPagoFac()">✕</button>
-    <div class="modal-title">Registrar pago</div>
+    <div class="modal-title">Registrar cobro</div>
     <div class="modal-sub" id="fp-saldo-lbl">—</div>
-    <div class="form-group">
-      <label class="form-label">Monto *</label>
-      <input id="fp-monto" type="number" class="form-input" min="0.01" step="0.01" placeholder="0.00" />
+    <div class="fm-campo" style="margin-bottom:12px">
+      <label for="fp-monto">Monto recibido *</label>
+      <input id="fp-monto" type="number" class="form-input" min="0.01" step="0.01" placeholder="6490.00" />
     </div>
     <div class="form-group">
       <label class="form-label">Método</label>
@@ -2644,51 +2834,108 @@
   </div>
 </div>
 
-<!-- ── MODAL: Mis Clientes de Facturación ──────────────────────────────── -->
-<div id="modal-clientes-fac" class="modal-overlay hidden">
-  <div class="modal-card wide">
-    <button class="btn-modal-close" onclick="app.cerrarClientesFac()">✕</button>
-    <div class="modal-title">👥 Mis Clientes</div>
-    <div class="modal-sub">Clientes para tu facturación personal</div>
-
-    <div class="fac-cliente-form" style="margin-top:16px">
-      <div class="fac-section-lbl" id="clf-form-title">Nuevo cliente</div>
-      <div class="fac-grid-2" style="margin-top:10px">
-        <div class="form-group">
-          <label class="form-label">Nombre *</label>
-          <input id="clf-nombre" type="text" class="form-input" placeholder="Empresa o persona" />
-        </div>
-        <div class="form-group">
-          <label class="form-label">RNC / Cédula</label>
-          <input id="clf-rnc" type="text" class="form-input" placeholder="000-00000-0" />
-        </div>
+<!-- ── MODAL: Mis clientes — nuevo / editar ─────────────────────────────── -->
+<div id="modal-mi-cliente" class="modal-overlay hidden">
+  <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="mcli-form-titulo">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="mcli-form-titulo">Nuevo cliente</div>
+        <div class="fm-sub">Aparece en el buscador de Nueva factura y Nueva cotización.</div>
       </div>
-      <div class="form-group" style="margin-top:8px">
-        <label class="form-label">Dirección</label>
-        <input id="clf-direccion" type="text" class="form-input" />
-      </div>
-      <div class="fac-grid-2" style="margin-top:8px">
-        <div class="form-group">
-          <label class="form-label">Teléfono</label>
-          <input id="clf-telefono" type="text" class="form-input" />
+      <button type="button" class="pm-cerrar" onclick="app.cerrarMiCliente()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="fm-cuerpo" id="mcli-form">
+      <div class="fm-grid">
+        <div class="fm-campo">
+          <label for="mcli-f-rnc">RNC / Cédula</label>
+          <div class="fm-con-boton">
+            <input id="mcli-f-rnc" type="text" class="form-input" inputmode="numeric" placeholder="131-00000-1" />
+            <button type="button" class="btn btn-secondary" onclick="app.mcliConsultarDgii()">Consultar DGII</button>
+          </div>
+          <div class="fm-ayuda" id="mcli-rnc-ayuda"></div>
         </div>
-        <div class="form-group">
-          <label class="form-label">Correo</label>
-          <input id="clf-correo" type="email" class="form-input" />
+        <div class="fm-campo">
+          <label for="mcli-f-nombre">Nombre o razón social *</label>
+          <input id="mcli-f-nombre" type="text" class="form-input" placeholder="Ferretería Hnos. Pérez SRL" />
         </div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn btn-primary btn-sm" onclick="app.guardarClienteFac()">Guardar cliente</button>
-        <button class="btn btn-ghost btn-sm"   onclick="app.cancelarClienteFac()">Cancelar</button>
+        <div class="fm-campo">
+          <label for="mcli-f-correo">Correo</label>
+          <input id="mcli-f-correo" type="email" class="form-input" placeholder="cliente@empresa.com" />
+        </div>
+        <div class="fm-campo">
+          <label for="mcli-f-telefono">Teléfono / WhatsApp</label>
+          <input id="mcli-f-telefono" type="tel" class="form-input" placeholder="809-000-0000" />
+        </div>
+        <div class="fm-campo fm-span-2">
+          <label for="mcli-f-direccion">Dirección</label>
+          <input id="mcli-f-direccion" type="text" class="form-input" placeholder="Av. 27 de Febrero #120, Santo Domingo" />
+        </div>
+        <div class="fm-campo">
+          <label for="mcli-f-contacto">Persona de contacto</label>
+          <input id="mcli-f-contacto" type="text" class="form-input" placeholder="Pedro Pérez (gerente)" />
+        </div>
+        <div class="fm-campo">
+          <label for="mcli-f-notas">Notas</label>
+          <input id="mcli-f-notas" type="text" class="form-input" placeholder="Ej.: factura a fin de mes" />
+        </div>
       </div>
     </div>
-
-    <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0 10px">
-      <span style="font-size:13px;color:var(--text-muted)">Clientes registrados</span>
-      <button class="btn btn-secondary btn-sm" onclick="app.nuevoClienteFac()">＋ Nuevo</button>
+    <div class="fm-pie">
+      <div class="fm-pie__msg" id="mcli-msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarMiCliente()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="mcli-btn-guardar" onclick="app.guardarMiCliente()">Guardar cliente</button>
+      </div>
     </div>
-    <div id="clf-lista">
-      <div style="text-align:center;padding:32px;color:var(--text-muted)">Cargando clientes...</div>
+  </div>
+</div>
+
+<!-- ── MODAL: Mis clientes — ficha (datos, saldo, facturas y cotizaciones) ─ -->
+<div id="modal-mi-cliente-ficha" class="modal-overlay hidden">
+  <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="mcli-ficha-nombre">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="mcli-ficha-nombre">Cliente</div>
+        <div class="fm-sub" id="mcli-ficha-rnc"></div>
+      </div>
+      <div class="fm-cabeza__der">
+        <button type="button" class="btn btn-secondary btn-sm" data-icono="pencil" onclick="app.editarFichaMiCliente()">Editar</button>
+        <button type="button" class="pm-cerrar" onclick="app.cerrarFichaMiCliente()" title="Cerrar" aria-label="Cerrar">
+          <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="fm-cuerpo">
+      <div id="mcli-ficha-datos"></div>
+      <div class="mcli-ficha-kpis">
+        <div><small>Facturado</small><strong class="num" id="mcli-ficha-facturado">—</strong></div>
+        <div><small>Cobrado</small><strong class="num" id="mcli-ficha-cobrado">—</strong></div>
+        <div><small>Pendiente</small><strong class="num" id="mcli-ficha-pendiente">—</strong></div>
+        <div><small>Última factura</small><strong id="mcli-ficha-ultima">—</strong></div>
+      </div>
+      <div class="fm-seccion">
+        <div class="fm-seccion__titulo">Facturas</div>
+        <div class="facx-wrap"><table>
+          <thead><tr><th>NCF</th><th>Fecha</th><th style="text-align:right">Total</th><th style="text-align:right">Saldo</th><th>Estado</th></tr></thead>
+          <tbody id="mcli-ficha-facturas"></tbody>
+        </table></div>
+      </div>
+      <div class="fm-seccion">
+        <div class="fm-seccion__titulo">Cotizaciones</div>
+        <div class="facx-wrap"><table>
+          <thead><tr><th>Número</th><th>Fecha</th><th style="text-align:right">Total</th><th>Estado</th></tr></thead>
+          <tbody id="mcli-ficha-cotizaciones"></tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="fm-pie">
+      <div class="fm-pie__msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" data-icono="clipboard-check" onclick="app.cotizarMiCliente()">Nueva cotización</button>
+        <button type="button" class="btn btn-primary" data-icono="receipt-text" onclick="app.facturarMiCliente()">Nueva factura</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2810,6 +3057,8 @@
 <script src="js/factura-plantillas.js"></script>
 <script src="js/factura-contador.js"></script>
 <script src="js/sucursales-central-ui.js"></script>
+<script src="js/iconos.js"></script>
+<script src="js/sin-emojis.js"></script>
 <script src="js/contadores-app.js"></script>
 </body>
 </html>

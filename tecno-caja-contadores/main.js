@@ -174,8 +174,12 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
     backgroundColor: WINDOW_BG[temaEfectivo],
-    show: true,
+    // Siempre arranca maximizada (igual que el POS). maximize() la muestra ya
+    // en grande, sin esperar 'ready-to-show': así no se ve chica y luego crece.
+    show: false,
   });
+  mainWindow.maximize();
+  mainWindow.focus();
 
   // Pasa el nombre/logo del último contador que inició sesión (si hay) para
   // que el splash los muestre en vez de la marca genérica — ver

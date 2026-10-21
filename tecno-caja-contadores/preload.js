@@ -1,5 +1,5 @@
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 contextBridge.exposeInMainWorld('contadoresAPI', {
   isElectron: true,
@@ -32,6 +32,12 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
   // ── Modo día / noche ('dia' | 'noche' | 'auto') ────────────────────────────
   setTheme(tema) {
     return ipcRenderer.invoke('ui:set-theme', String(tema || ''));
+  },
+
+  // ── Tamaño de la pantalla (Configuración → Apariencia): zoom de la ventana ──
+  setZoom(factor) {
+    const n = Number(factor);
+    if (Number.isFinite(n) && n >= 0.8 && n <= 1.5) webFrame.setZoomFactor(n);
   },
 
   // ── Actualizaciones ───────────────────────────────────────────────────────

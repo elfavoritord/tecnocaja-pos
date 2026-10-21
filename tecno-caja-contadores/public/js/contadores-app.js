@@ -68,6 +68,33 @@ function hide(id)  { const el = document.getElementById(id); if (el) el.classLis
 function $id(id)   { return document.getElementById(id); }
 function setText(id, txt) { const el = $id(id); if (el) el.textContent = txt; }
 
+// ── Validación en línea (diseño 2026): el mensaje va en rojo debajo del
+// campo, no en un aviso emergente. El campo debe estar dentro de .fm-campo.
+function _fmError(campoId, msg) {
+  const el = $id(campoId);
+  const wrap = el?.closest('.fm-campo');
+  if (!wrap) { if (msg) toast(msg, 'error'); return; }
+  let box = wrap.querySelector(':scope > .fm-error');
+  if (!box) { box = document.createElement('div'); box.className = 'fm-error'; wrap.appendChild(box); }
+  box.textContent = msg || '';
+  wrap.classList.toggle('is-invalido', Boolean(msg));
+}
+function _fmLimpiar(rootId) {
+  $id(rootId)?.querySelectorAll('.fm-campo').forEach((w) => {
+    w.classList.remove('is-invalido');
+    const box = w.querySelector(':scope > .fm-error');
+    if (box) box.textContent = '';
+  });
+}
+// Al escribir en un campo con error, el error se quita.
+document.addEventListener('input', (e) => {
+  const wrap = e.target.closest?.('.fm-campo.is-invalido');
+  if (!wrap) return;
+  wrap.classList.remove('is-invalido');
+  const box = wrap.querySelector(':scope > .fm-error');
+  if (box) box.textContent = '';
+});
+
 // ── Date formatting ────────────────────────────────────────────────────────
 // Fecha de HOY en la hora de la PC ("2026-10-19"). No sacarla de
 // toISOString(): esa es la fecha en UTC, y en RD
@@ -154,15 +181,46 @@ function solBadge(s) {
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
+// Barra superior: grupo del menú (miga) y título. Los detalles marcan en el
+// menú a su módulo padre (`nav`).
+const MODULOS_TOPBAR = {
+  dashboard:         { grupo: 'Principal',          titulo: 'Dashboard' },
+  negocios:          { grupo: 'Principal',          titulo: 'Negocios asociados' },
+  'cliente-detalle': { grupo: 'Negocios asociados', titulo: 'Detalle del negocio', nav: 'negocios' },
+  licencias:         { grupo: 'Cartera',            titulo: 'Licencias' },
+  reportes:          { grupo: 'Cartera',            titulo: 'Reportes' },
+  'analisis-global': { grupo: 'Cartera',            titulo: 'Análisis global' },
+  alertas:           { grupo: 'Gestión',            titulo: 'Alertas' },
+  'centro-fiscal':   { grupo: 'Gestión',            titulo: 'Centro fiscal' },
+  contabilidad:      { grupo: 'Gestión',            titulo: 'Contabilidad' },
+  solicitudes:       { grupo: 'Gestión',            titulo: 'Solicitudes' },
+  facturacion:       { grupo: 'Mi despacho',        titulo: 'Facturación' },
+  'fac-detalle':     { grupo: 'Facturación',        titulo: 'Factura', nav: 'facturacion' },
+  cotizaciones:      { grupo: 'Mi despacho',        titulo: 'Cotizaciones' },
+  colaboradores:     { grupo: 'Mi despacho',        titulo: 'Colaboradores' },
+  'colab-detalle':   { grupo: 'Colaboradores',      titulo: 'Colaborador', nav: 'colaboradores' },
+  'mis-clientes':    { grupo: 'Facturación',        titulo: 'Mis clientes', nav: 'facturacion' },
+  asistente:         { grupo: 'Mi despacho',        titulo: 'Asistente' },
+  configuracion:     { grupo: 'Cuenta',             titulo: 'Configuración' },
+  actualizaciones:   { grupo: 'Cuenta',             titulo: 'Actualizaciones' },
+  ayuda:             { grupo: 'Cuenta',             titulo: 'Centro de ayuda' },
+};
+
+function _pintarTopbar(mod) {
+  const info = MODULOS_TOPBAR[mod] || { grupo: '', titulo: '' };
+  setText('topbar-migas', info.grupo);
+  setText('topbar-titulo', info.titulo);
+  const navMod = info.nav || mod;
+  document.querySelectorAll('.nav-item').forEach((el) => el.classList.toggle('active', el.dataset.mod === navMod));
+  $id('main-content')?.scrollTo(0, 0);
+}
+
 function goto(mod) {
   document.querySelectorAll('.module').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
 
   const modEl = $id(`mod-${mod}`);
   if (modEl) modEl.classList.add('active');
-
-  const navEl = document.querySelector(`[data-mod="${mod}"]`);
-  if (navEl) navEl.classList.add('active');
+  _pintarTopbar(mod);
 
   // Load data for the module
   if (mod === 'dashboard')        loadDashboard();
@@ -231,6 +289,7 @@ function instalarActualizacionGlobal() {
 
 async function initApp() {
   _initGlobalUpdaterListener();
+  _initBuscadorGlobal();
   try {
     const cfg = await fetch('/api/firebase-config').then(r => r.json());
     if (cfg.error) {
@@ -305,24 +364,34 @@ function showLoginScreen() {
 // Muestra el logo de la firma en el avatar del sidebar (abajo) y en el
 // ícono de marca (arriba) si el contador tiene uno subido (Configuración →
 // Logo de la firma); si no, cae al ícono/inicial genérico de Tecno Caja.
+// "Emilio Manaurys Cabrera" → "EM" (sin contar "de", "la", "y"…).
+function _iniciales(nombre) {
+  const partes = String(nombre || '').trim().split(/\s+/)
+    .filter((p) => p && !/^(de|del|la|las|los|y|e|srl|sas|eirl)$/i.test(p.replace(/[.,]/g, '')));
+  const letras = partes.slice(0, 2).map((p) => p.charAt(0).toUpperCase()).join('');
+  return letras || '?';
+}
+
 function _setSidebarAvatar(nombre, logoUrl) {
   const avatarEl = $id('user-avatar-letter');
   if (avatarEl) {
     if (logoUrl) {
       avatarEl.innerHTML = `<img src="${logoUrl}" style="width:100%;height:100%;border-radius:50%;object-fit:cover">`;
     } else {
-      avatarEl.textContent = (nombre || '?').charAt(0).toUpperCase();
+      avatarEl.textContent = _iniciales(nombre);
     }
   }
 
+  // Arriba va la marca: el logo y nombre de la firma si subió logo; si no, Tecno Caja.
   const brandIcon = $id('sidebar-brand-icon');
   if (brandIcon) {
     brandIcon.innerHTML = logoUrl
-      ? `<img src="${logoUrl}" style="width:100%;height:100%;border-radius:10px;object-fit:cover">`
-      : '🧮';
+      ? `<img src="${logoUrl}" style="width:100%;height:100%;border-radius:8px;object-fit:cover">`
+      : 'TC';
+    brandIcon.classList.toggle('con-logo', Boolean(logoUrl));
   }
   const brandName = $id('sidebar-brand-name');
-  if (brandName) brandName.textContent = nombre || 'Tecno Caja';
+  if (brandName) brandName.textContent = (logoUrl && nombre) || 'Tecno Caja';
 
   // Se guarda en disco (vía Electron) para que el PRÓXIMO arranque, antes de
   // iniciar sesión, el splash ya sepa qué nombre/logo mostrar — hoy no
@@ -376,14 +445,23 @@ function _applyPermisos(profile) {
   const btnNuevo = $id('btn-nuevo-colab');
   if (btnNuevo) btnNuevo.style.display = esDependiente ? 'none' : '';
 
+  // Dashboard: licencias y honorarios son de módulos que el dependiente no ve.
+  document.querySelectorAll('[data-solo-principal]').forEach((el) => {
+    el.style.display = esDependiente ? 'none' : '';
+  });
+
   // Badge de rol en sidebar
   const roleEl = $id('sidebar-email');
   if (roleEl) {
-    const roleLabel = esDependiente ? 'Colaborador Dependiente'
-      : esCompleto    ? 'Colaborador Completo'
-      : 'Contador Principal';
+    const roleLabel = esDependiente ? 'Colaborador dependiente'
+      : esCompleto    ? 'Colaborador completo'
+      : 'Contador principal';
     roleEl.textContent = roleLabel;
   }
+}
+
+function _esDependiente() {
+  return Boolean(_perfil?.isColaborador && _perfil?.tipo === 'dependiente');
 }
 
 function showLoginError(msg) {
@@ -583,99 +661,523 @@ async function logout() {
   if (!confirm('¿Cerrar sesión?')) return;
   await _fbAuth?.signOut();
   _token = null; _perfil = null; _allClientes = [];
+  _buscadorCache.facturas = null; // el buscador no muestra facturas de otra sesión
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// DASHBOARD
+// DASHBOARD (diseño 2026)
+// Todo sale de lo que ya existía: /api/dashboard, /api/clientes (posStats que
+// publica cada POS), /api/analisis-global, /api/alertas, el calendario del
+// Centro fiscal y las facturas de honorarios. Si un dato no existe, "—".
 // ══════════════════════════════════════════════════════════════════════
 
+const _MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio',
+  'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const _MESES_CORTOS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const _PLANES = { basico: 'Básico', basic: 'Básico', pro: 'Pro', plus: 'Plus', enterprise: 'Enterprise' };
+
+// Fecha de Firestore / ISO / "AAAA-MM-DD" (este último es ese día aquí, no UTC).
+function _aFecha(val) {
+  if (!val) return null;
+  try {
+    if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+      return new Date(Number(val.slice(0, 4)), Number(val.slice(5, 7)) - 1, Number(val.slice(8, 10)));
+    }
+    const d = val?.toDate ? val.toDate() : new Date(val._seconds ? val._seconds * 1000 : val);
+    return isNaN(d) ? null : d;
+  } catch { return null; }
+}
+
+// Días de calendario de hoy a esa fecha (negativo = ya pasó).
+function _diasHasta(val) {
+  const d = _aFecha(val);
+  if (!d) return null;
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const dia = new Date(d); dia.setHours(0, 0, 0, 0);
+  return Math.round((dia - hoy) / 86400000);
+}
+
+function _plural(n, uno, varios) { return `${n} ${n === 1 ? uno : varios}`; }
+function _venceTexto(dias) {
+  return dias === 0 ? 'vence hoy' : dias === 1 ? 'vence mañana' : `vence en ${dias} días`;
+}
+
+function _planTexto(c) {
+  const code = String(c.planCode || c.plan_code || '').trim();
+  if (!code) return '';
+  return `Plan ${_PLANES[code.toLowerCase()] || code.charAt(0).toUpperCase() + code.slice(1)}`;
+}
+
+// ── Calendario DGII (obligaciones del Centro fiscal, agrupadas por fecha) ──
+// El IT-1 que vence el 20 de un mes es el ITBIS del mes anterior.
+function _oblEtiqueta(o) {
+  if (o.form === 'IT-1') return `ITBIS de ${_MESES[(Number(o.mes) + 10) % 12]}`;
+  const desc = String(o.desc || '');
+  return desc.startsWith(o.form) ? desc.slice(o.form.length).trim() || o.form : desc || o.form;
+}
+
+function _oblProximas(lista, hastaDias) {
+  const grupos = new Map();
+  (lista || []).forEach((o) => {
+    const dias = _diasHasta(o.fecha);
+    if (dias === null || dias < 0 || dias > hastaDias) return;
+    if (!grupos.has(o.fecha)) grupos.set(o.fecha, { fecha: o.fecha, dias, items: [] });
+    grupos.get(o.fecha).items.push(o);
+  });
+  return [...grupos.values()].sort((a, b) => a.fecha.localeCompare(b.fecha)).map((g) => {
+    const forms = [...new Set(g.items.map((o) => o.form))];
+    const etiquetas = [...new Set(g.items.map(_oblEtiqueta))];
+    const dow = _aFecha(g.fecha).getDay();
+    return {
+      ...g,
+      titulo: forms.length === 1 ? `${forms[0]} · ${etiquetas[0]}` : forms.join(' · '),
+      etiquetas: etiquetas.join(' / '),
+      multiple: forms.length > 1,
+      finDeSemana: dow === 0 ? 'Cae domingo' : dow === 6 ? 'Cae sábado' : '',
+    };
+  });
+}
+
+// ── Salud de cada negocio (licencia + última sincronización) ──
+function _saludNegocio(c) {
+  const status = String(c.status || 'trial').toLowerCase();
+  const dias = typeof c.diasRestantes === 'number' ? c.diasRestantes : null;
+  const sync = _aFecha(c.syncedAt);
+  const diasSync = sync ? Math.max(0, -_diasHasta(sync)) : null;
+  const motivos = [];
+  let nivel = 'ok';
+  const subir = (n) => { if (n === 'bad' || (n === 'warn' && nivel === 'ok')) nivel = n; };
+
+  if (status === 'expired' || status === 'cancelled' || (dias !== null && dias < 0)) { subir('bad'); motivos.push('Licencia vencida'); }
+  else if (status === 'suspended') { subir('bad'); motivos.push('Licencia suspendida'); }
+  else if (dias !== null && dias <= 15) { subir('warn'); motivos.push(`Licencia ${_venceTexto(dias)}`); }
+
+  if (diasSync === null) { subir('bad'); motivos.push('Nunca ha sincronizado'); }
+  else if (diasSync > 7) { subir('bad'); motivos.push(`Sin datos hace ${diasSync} días`); }
+  else if (diasSync >= 3) { subir('warn'); motivos.push(`Sin sincronizar hace ${diasSync} días`); }
+
+  // En la tabla va el motivo principal; todos quedan en el title de la celda.
+  return { nivel, pendiente: motivos[0] || 'Al día', motivos, diasSync };
+}
+
+// Mismos cortes que _saludNegocio: hasta 2 días está bien, 3–7 atención, más es crítico.
+function _pillSync(diasSync) {
+  if (diasSync === null) return '<span class="pill pill-bad">Sin sincronizar</span>';
+  const txt = diasSync === 0 ? 'Hoy' : `Hace ${_plural(diasSync, 'día', 'días')}`;
+  const cls = diasSync <= 2 ? 'pill-ok' : diasSync <= 7 ? 'pill-warn' : 'pill-bad';
+  return `<span class="pill ${cls}">${txt}</span>`;
+}
+
+const _SALUD_PILL = {
+  ok:   '<span class="pill pill-ok">Al día</span>',
+  warn: '<span class="pill pill-warn">Atención</span>',
+  bad:  '<span class="pill pill-bad">Crítico</span>',
+};
+
+function _renderSaludCartera(clientes) {
+  const tbody = $id('db-salud-tbody');
+  if (!tbody) return;
+  if (!clientes) {
+    tbody.innerHTML = '<tr><td colspan="5" class="db-vacio">No se pudieron cargar los negocios.</td></tr>';
+    return;
+  }
+  if (!clientes.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="db-vacio">Aún no tienes negocios asociados.</td></tr>';
+    return;
+  }
+  const orden = { bad: 0, warn: 1, ok: 2 };
+  const filas = clientes.map((c) => ({ c, s: _saludNegocio(c), ventas: c.posStats?.ventasMes }))
+    .sort((a, b) => (orden[a.s.nivel] - orden[b.s.nivel]) || ((Number(b.ventas) || 0) - (Number(a.ventas) || 0)))
+    .slice(0, 6);
+  tbody.innerHTML = filas.map(({ c, s, ventas }) => `
+    <tr class="db-fila" onclick="app.verCliente('${esc(c.id)}')" title="Ver el detalle del negocio">
+      <td>
+        <div class="db-negocio" title="${esc(c.businessName || c.businessKey || '')}">${esc(c.businessName || c.businessKey || '—')}</div>
+        <div class="db-negocio-plan">${esc(_planTexto(c))}</div>
+      </td>
+      <td>${_pillSync(s.diasSync)}</td>
+      <td class="is-num num">${ventas === undefined || ventas === null ? '—' : fmtMoney(ventas)}</td>
+      <td class="db-pendiente" title="${esc(s.motivos.join(' · '))}">${esc(s.pendiente)}${s.motivos.length > 1 ? ` <span class="db-mas">+${s.motivos.length - 1}</span>` : ''}</td>
+      <td>${_SALUD_PILL[s.nivel]}</td>
+    </tr>`).join('');
+}
+
+function _renderCalendario(grupos, totalNegocios) {
+  const el = $id('db-calendario');
+  if (!el) return;
+  if (!grupos) { el.innerHTML = '<div class="db-vacio">No se pudo cargar el calendario.</div>'; return; }
+  if (!grupos.length) { el.innerHTML = '<div class="db-vacio">Sin obligaciones en los próximos 30 días.</div>'; return; }
+  const negocios = _plural(totalNegocios, 'negocio', 'negocios');
+  el.innerHTML = grupos.slice(0, 4).map((g) => {
+    const d = _aFecha(g.fecha);
+    const sub = [g.multiple ? g.etiquetas : negocios, g.finDeSemana].filter(Boolean).join(' · ');
+    const chip = g.dias === 0 ? '<span class="pill pill-bad">Hoy</span>'
+      : g.dias === 1 ? '<span class="pill pill-warn">Mañana</span>'
+      : `<span class="pill pill-neutral">${g.dias} días</span>`;
+    return `<div class="db-cal-item">
+      <div class="db-cal-fecha ${g.dias <= 2 ? 'is-pronto' : ''}">
+        <strong>${d.getDate()}</strong><span>${_MESES_CORTOS[d.getMonth()]}</span>
+      </div>
+      <div class="db-cal-texto">
+        <div class="db-cal-titulo" title="${esc(g.titulo)}">${esc(g.titulo)}</div>
+        <div class="db-cal-sub" title="${esc(sub)}">${esc(sub)}</div>
+      </div>
+      ${chip}
+    </div>`;
+  }).join('');
+}
+
+// "Solicitud pendiente: soporte_tecnico" → "Solicitud pendiente: Soporte Técnico".
+function _msgAlerta(a) {
+  if (a?.tipo !== 'solicitud_pendiente') return a?.msg || '';
+  const clave = String(a.msg || '').split(':').slice(1).join(':').trim();
+  const tipo = TIPOS_SOLICITUD.find((t) => t.key === clave);
+  return tipo ? `Solicitud pendiente: ${tipo.label}` : a.msg;
+}
+
+// Alertas del servidor + las obligaciones DGII de los próximos 3 días.
+function _renderAlertasDashboard(al, grupos) {
+  const el = $id('db-alertas');
+  if (!el) return;
+  const lista = [];
+
+  (grupos || []).filter((g) => g.dias <= 3).forEach((g) => {
+    lista.push({
+      nivel: g.dias === 0 ? 'critico' : 'urgente',
+      titulo: `${g.titulo} ${_venceTexto(g.dias)}`,
+      sub: `Obligación DGII · ${fmtDate(g.fecha)}`,
+      boton: 'Abrir centro fiscal',
+      accion: "app.goto('centro-fiscal')",
+    });
+  });
+
+  const servidor = al?.alertas || [];
+  // Una licencia vencida y la falta de sincronización del mismo negocio van juntas.
+  const sinSync = new Map(servidor.filter((a) => a.tipo === 'sin_sync').map((a) => [a.businessId, a]));
+  const unidos = new Set();
+  servidor.forEach((a) => {
+    if (a.tipo === 'sin_sync' && unidos.has(a.businessId)) return;
+    const nombre = a.businessName || '—';
+    const idJs = esc(a.businessId || '');
+    if (a.tipo === 'licencia_vencida' || a.tipo === 'licencia_proxima') {
+      const extra = sinSync.get(a.businessId);
+      const diasSync = extra ? (String(extra.msg).match(/(\d+)\s*días/) || [])[1] : null;
+      if (extra) unidos.add(a.businessId);
+      const base = a.tipo === 'licencia_vencida' ? 'Licencia vencida' : `Licencia ${_venceTexto(a.dias)}`;
+      lista.push({
+        nivel: a.nivel,
+        titulo: diasSync ? `${base} y sin sincronizar ${diasSync} días` : base,
+        sub: a.tipo === 'licencia_vencida' && typeof a.dias === 'number'
+          ? `${nombre} · Hace ${_plural(Math.abs(a.dias), 'día', 'días')}` : nombre,
+        boton: 'Renovar',
+        accion: `app.abrirSolicitudModal('${idJs}', 'renovar_licencia')`,
+      });
+    } else if (a.tipo === 'sin_sync') {
+      const n = (String(a.msg).match(/(\d+)\s*días/) || [])[1];
+      lista.push({
+        nivel: a.nivel, titulo: n ? `Sin sincronizar hace ${n} días` : 'Sin sincronizar',
+        sub: nombre, boton: 'Ver negocio', accion: `app.verCliente('${idJs}')`,
+      });
+    } else {
+      lista.push({
+        nivel: a.nivel, titulo: _msgAlerta(a) || 'Aviso', sub: nombre,
+        boton: 'Ver solicitudes', accion: "app.goto('solicitudes')",
+      });
+    }
+  });
+
+  if (!al && !lista.length) { el.innerHTML = '<div class="db-vacio">No se pudieron cargar las alertas.</div>'; return; }
+  if (!lista.length) { el.innerHTML = '<div class="db-vacio">No hay alertas pendientes. Todo al día.</div>'; return; }
+
+  const orden = { critico: 0, urgente: 1, advertencia: 2, info: 3 };
+  const pills = {
+    critico: '<span class="pill pill-bad">Crítica</span>',
+    urgente: '<span class="pill pill-bad">Urgente</span>',
+    advertencia: '<span class="pill pill-warn">Advertencia</span>',
+    info: '<span class="pill pill-info">Aviso</span>',
+  };
+  el.innerHTML = lista.sort((a, b) => (orden[a.nivel] ?? 9) - (orden[b.nivel] ?? 9)).slice(0, 4).map((a) => `
+    <div class="db-alerta">
+      <div class="db-alerta__nivel">${pills[a.nivel] || pills.info}</div>
+      <div class="db-alerta__texto">
+        <div class="db-alerta__titulo">${esc(a.titulo)}</div>
+        <div class="db-alerta__sub">${esc(a.sub)}</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="${a.accion}">${esc(a.boton)}</button>
+    </div>`).join('');
+}
+
+function _renderLicencias(stats) {
+  const partes = [
+    { n: stats.activas || 0,     cls: 'ok',   lbl: 'Activas' },
+    { n: stats.prueba || 0,      cls: 'warn', lbl: 'En prueba' },
+    { n: stats.vencidas || 0,    cls: 'bad',  lbl: 'Vencidas' },
+    { n: stats.suspendidas || 0, cls: 'neutral', lbl: 'Suspendidas' },
+  ].filter((p, i) => p.n > 0 || i < 3);
+  const barra = $id('db-lic-barra');
+  if (barra) {
+    const total = partes.reduce((s, p) => s + p.n, 0);
+    barra.innerHTML = total
+      ? partes.filter((p) => p.n > 0).map((p) => `<span class="is-${p.cls}" style="flex-grow:${p.n}" title="${p.lbl}: ${p.n}"></span>`).join('')
+      : '<span class="is-vacio"></span>';
+  }
+  const leyenda = $id('db-lic-leyenda');
+  if (leyenda) {
+    leyenda.innerHTML = partes.map((p) => `<span><i class="is-${p.cls}"></i>${p.lbl} <strong>${p.n}</strong></span>`).join('');
+  }
+}
+
+async function _cargarHonorarios() {
+  if (_esDependiente()) return;
+  try {
+    const facturas = await apiCall('GET', '/api/facturacion/facturas');
+    _buscadorCache.facturas = facturas;
+    _buscadorCache.facturasEn = Date.now();
+    const pendientes = facturas.filter((f) => f.estado === 'pendiente' || f.estado === 'parcial');
+    const saldo = (f) => Number(f.balance ?? ((f.total || 0) - (f.monto_pagado || 0))) || 0;
+    setText('db-hon-monto', fmtMoney(pendientes.reduce((s, f) => s + saldo(f), 0)));
+    let sub = 'Todas tus facturas están cobradas.';
+    if (pendientes.length) {
+      const masVieja = pendientes.reduce((a, f) => (String(f.fecha || '') < String(a.fecha || '') ? f : a), pendientes[0]);
+      const dias = Math.max(0, -(_diasHasta(masVieja.fecha) ?? 0));
+      sub = pendientes.length === 1
+        ? `1 factura ${masVieja.tipo_ncf || ''} · ${_plural(dias, 'día', 'días')} sin cobrar`.replace('  ', ' ')
+        : `${pendientes.length} facturas · la más antigua tiene ${_plural(dias, 'día', 'días')}`;
+    }
+    setText('db-hon-sub', sub);
+  } catch (_) {
+    setText('db-hon-monto', '—');
+    setText('db-hon-sub', 'No se pudieron cargar tus facturas.');
+  }
+}
+
+function _actualizarBadgeNav(id, count) {
+  const badge = $id(id);
+  if (!badge) return;
+  badge.textContent = count;
+  badge.classList.toggle('hidden', !(count > 0));
+}
+
 async function loadDashboard() {
+  const ahora = new Date();
+  const mes = _MESES[ahora.getMonth()];
+  setText('topbar-periodo', `${mes.charAt(0).toUpperCase()}${mes.slice(1)} ${ahora.getFullYear()}`);
+  setText('db-kpi-ventas-lbl', `Ventas de la cartera · ${_MESES_CORTOS[ahora.getMonth()]}`);
+  setText('db-kpi-itbis-lbl', `ITBIS facturado · ${_MESES_CORTOS[ahora.getMonth()]}`);
+  setText('db-salud-col-ventas', `Ventas ${_MESES_CORTOS[ahora.getMonth()]}`);
+
   try {
     await refreshToken();
-    const data = await apiCall('GET', '/api/dashboard');
-    const { stats, recientes } = data;
-
-    setText('dash-total',    stats.total);
-    setText('dash-activas',  stats.activas);
-    setText('dash-prueba',   stats.prueba);
-    setText('dash-vencidas', stats.vencidas);
-    setText('dash-sol',      stats.solicitudesPendientes);
-    setText('dash-proximos', stats.proximosVencer.length);
-
-    const badgeSol = $id('nav-badge-sol');
-    if (badgeSol) {
-      if (stats.solicitudesPendientes > 0) {
-        badgeSol.textContent = stats.solicitudesPendientes;
-        badgeSol.classList.remove('hidden');
-      } else {
-        badgeSol.classList.add('hidden');
-      }
-    }
-
-    // Próximos vencimientos
-    const vencEl = $id('dash-venc-list');
-    if (vencEl) {
-      if (!stats.proximosVencer.length) {
-        vencEl.innerHTML = '<div class="empty-state"><div class="empty-icon">🎉</div><div class="empty-text">Sin vencimientos próximos</div></div>';
-      } else {
-        vencEl.innerHTML = stats.proximosVencer.slice(0, 8).map(v => {
-          const cls = v.diasRestantes <= 7 ? 'critico' : v.diasRestantes <= 15 ? '' : 'ok';
-          const dCls = v.diasRestantes <= 7 ? 'critico' : v.diasRestantes <= 15 ? 'warn' : 'ok';
-          return `<div class="venc-item ${cls}">
-            <div>
-              <div class="venc-name">${v.businessName}</div>
-              <div class="text-sm text-muted">${statusBadge(v.status)}</div>
-            </div>
-            <div class="venc-dias ${dCls}">${diasLabel(v.diasRestantes)}</div>
-          </div>`;
-        }).join('');
-      }
-    }
-
-    // Recientes
-    const recEl = $id('dash-recientes');
-    if (recEl) {
-      if (!recientes.length) {
-        recEl.innerHTML = '<div class="empty-state"><div class="empty-icon">👥</div><div class="empty-text">Sin clientes aún</div></div>';
-      } else {
-        recEl.innerHTML = recientes.map(c => `
-          <div class="reciente-item" onclick="app.goto('negocios');setTimeout(()=>app.verCliente('${c.id}'),300)">
-            <div class="reciente-icon">🏪</div>
-            <div>
-              <div class="reciente-name">${c.businessName || '—'}</div>
-              <div class="reciente-meta">${c.planCode || '—'} · ${fmtDate(c.syncedAt)}</div>
-            </div>
-            <div class="reciente-badge">${statusBadge(c.status)}</div>
-          </div>`).join('');
-      }
-    }
-
-    // Cargar KPIs extra en background (análisis global + alertas críticas + obligaciones)
-    Promise.all([
+    const anio = ahora.getFullYear();
+    // En diciembre los próximos 30 días ya entran en el año siguiente.
+    const [dash, clientes, ag, al, obl, oblSiguiente] = await Promise.all([
+      apiCall('GET', '/api/dashboard'),
+      apiCall('GET', '/api/clientes').catch(() => null),
       apiCall('GET', '/api/analisis-global').catch(() => null),
       apiCall('GET', '/api/alertas').catch(() => null),
-      apiCall('GET', '/api/centro-fiscal/obligaciones').catch(() => null),
-    ]).then(([ag, al, obl]) => {
-      if (ag) {
-        setText('dash-ventas-mes', fmtMoney(ag.resumen.totalVentasMes));
-        setText('dash-itbis-mes',  fmtMoney(ag.resumen.totalItbisMes));
+      apiCall('GET', `/api/centro-fiscal/obligaciones?anio=${anio}`).catch(() => null),
+      ahora.getMonth() === 11
+        ? apiCall('GET', `/api/centro-fiscal/obligaciones?anio=${anio + 1}`).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+    const { stats } = dash;
+    if (clientes) _allClientes = clientes;
+    const total = stats.total || 0;
+
+    setText('sidebar-cartera', `${_plural(total, 'negocio', 'negocios')} en cartera`);
+    _actualizarBadgeNav('nav-badge-sol', stats.solicitudesPendientes || 0);
+
+    // KPI: negocios
+    setText('db-kpi-negocios', total);
+    const partesCartera = [
+      _plural(stats.activas || 0, 'activo', 'activos'),
+      `${stats.prueba || 0} en prueba`,
+      _plural(stats.vencidas || 0, 'vencido', 'vencidos'),
+    ];
+    if (stats.suspendidas) partesCartera.push(_plural(stats.suspendidas, 'suspendido', 'suspendidos'));
+    setText('db-kpi-negocios-sub', partesCartera.join(' · '));
+
+    // KPI: ventas e ITBIS del mes (lo que publica cada POS)
+    if (ag) {
+      const r = ag.resumen;
+      setText('db-kpi-ventas', fmtMoney(r.totalVentasMes));
+      setText('db-kpi-itbis', fmtMoney(r.totalItbisMes));
+      setText('db-kpi-ventas-sub', r.clientesConPosData < r.totalClientes
+        ? `Suma de ${r.clientesConPosData} de ${r.totalClientes} negocios (el resto sin datos)`
+        : `Suma de ${r.totalClientes === 1 ? 'tu negocio' : `los ${r.totalClientes} negocios`}`);
+      setText('db-kpi-itbis-sub', `Base para el IT-1 de ${_MESES[(ahora.getMonth() + 1) % 12]}`);
+    } else {
+      setText('db-kpi-ventas', '—');
+      setText('db-kpi-itbis', '—');
+      setText('db-kpi-ventas-sub', 'No se pudieron cargar las ventas');
+    }
+
+    // Obligaciones DGII: KPI, aviso, calendario y badge del menú
+    const grupos = obl ? _oblProximas([...obl, ...(oblSiguiente || [])], 30) : null;
+    const en7 = (grupos || []).filter((g) => g.dias <= 7);
+    const cuantas = en7.reduce((s, g) => s + g.items.length, 0);
+    setText('db-kpi-obl', grupos ? cuantas : '—');
+    setText('db-kpi-obl-sub', en7.length ? `${en7[0].titulo.replace(' · ITBIS de ', ' ')} · ${_venceTexto(en7[0].dias)}` : 'Nada vence esta semana');
+    const tag = $id('db-kpi-obl-tag');
+    if (tag) {
+      const urgente = en7.some((g) => g.dias <= 2);
+      tag.className = `pill ${urgente ? 'pill-bad' : en7.length ? 'pill-warn' : 'pill-ok'}`;
+      tag.textContent = urgente ? 'Urgente' : en7.length ? 'Próximas' : 'Al día';
+    }
+    _actualizarBadgeNav('nav-badge-cf', cuantas);
+
+    const aviso = $id('db-aviso');
+    const pronto = (grupos || []).find((g) => g.dias <= 2);
+    if (aviso) {
+      aviso.classList.toggle('hidden', !pronto);
+      if (pronto) {
+        const cuando = pronto.dias === 0 ? 'Vence hoy' : pronto.dias === 1 ? 'Vence mañana' : 'Vence en 2 días';
+        setText('db-aviso-titulo', `${cuando}: ${pronto.titulo}`);
+        setText('db-aviso-sub', `${fmtDate(pronto.fecha)} · Revisa el centro fiscal para tus ${_plural(total, 'negocio', 'negocios')}.`);
       }
-      if (al) {
-        const cnt = al.critico + al.urgente;
-        setText('dash-alertas-critico', cnt);
-        const el = $id('dash-alertas-critico');
-        if (el) el.style.color = cnt > 0 ? 'var(--red)' : 'inherit';
-      }
-      if (obl) {
-        const proximas = obl.filter(o => o.diasRestantes >= 0 && o.diasRestantes <= 7).length;
-        setText('dash-obl-proximas', proximas);
-        const el = $id('dash-obl-proximas');
-        if (el) el.style.color = proximas > 0 ? 'var(--orange)' : 'inherit';
-      }
-    });
+    }
+
+    _renderSaludCartera(clientes);
+    _renderCalendario(grupos, total);
+    _renderAlertasDashboard(al, grupos);
+    _renderLicencias(stats);
+    if (al) _actualizarBadgeAlertas(al.critico + al.urgente);
+    _cargarHonorarios();
   } catch (e) {
     toast('Error cargando dashboard: ' + e.message, 'error');
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// BUSCADOR GLOBAL (barra superior, Ctrl+K)
+// Negocios (nombre, RNC, propietario, correo) y facturas de honorarios
+// (NCF, cliente, RNC). Usa lo ya cargado; las facturas se refrescan cada minuto.
+// ══════════════════════════════════════════════════════════════════════
+
+const _buscadorCache = { facturas: null, facturasEn: 0, cargandoClientes: null };
+let _buscadorTimer = null;
+let _buscadorSel = -1;
+
+function _normalizar(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+}
+function _soloAlfanum(s) { return _normalizar(s).replace(/[^a-z0-9]/g, ''); }
+
+async function _buscadorDatos() {
+  if (!_allClientes.length) {
+    _buscadorCache.cargandoClientes = _buscadorCache.cargandoClientes
+      || apiCall('GET', '/api/clientes').then((l) => { _allClientes = l; }).catch(() => {});
+    await _buscadorCache.cargandoClientes;
+    _buscadorCache.cargandoClientes = null;
+  }
+  if (!_esDependiente() && (!_buscadorCache.facturas || Date.now() - _buscadorCache.facturasEn > 60000)) {
+    try {
+      _buscadorCache.facturas = await apiCall('GET', '/api/facturacion/facturas');
+      _buscadorCache.facturasEn = Date.now();
+    } catch (_) { /* sin facturas: se busca solo en negocios */ }
+  }
+}
+
+async function _buscarGlobal() {
+  const input = $id('buscador-global');
+  const caja = $id('buscador-resultados');
+  if (!input || !caja) return;
+  const q = _normalizar(input.value);
+  const qAlnum = _soloAlfanum(input.value);
+  if (!q) { caja.classList.add('hidden'); return; }
+
+  await _buscadorDatos();
+  if (_normalizar(input.value) !== q) return; // ya escribió otra cosa
+
+  const coincide = (texto) => _normalizar(texto).includes(q);
+  const coincideCodigo = (texto) => qAlnum.length >= 3 && _soloAlfanum(texto).includes(qAlnum);
+
+  const negocios = _allClientes.filter((c) =>
+    coincide(c.businessName) || coincide(c.propietario) || coincide(c.correo) || coincideCodigo(c.rnc)
+  ).slice(0, 5);
+  const facturas = (_buscadorCache.facturas || []).filter((f) =>
+    coincideCodigo(f.ncf) || coincide(f.cliente?.nombre) || coincideCodigo(f.cliente?.rnc)
+  ).slice(0, 5);
+
+  const items = [];
+  let html = '';
+  if (negocios.length) {
+    html += '<div class="buscador-grupo">Negocios</div>';
+    html += negocios.map((c) => {
+      items.push(() => verCliente(c.id));
+      return `<button type="button" class="buscador-item" data-i="${items.length - 1}">
+        <span class="buscador-item__titulo">${esc(c.businessName || c.businessKey || '—')}</span>
+        <span class="buscador-item__meta">${esc([c.rnc ? `RNC ${c.rnc}` : '', _planTexto(c)].filter(Boolean).join(' · '))}</span>
+      </button>`;
+    }).join('');
+  }
+  if (facturas.length) {
+    html += '<div class="buscador-grupo">Facturas de honorarios</div>';
+    html += facturas.map((f) => {
+      items.push(() => verFactura(f.id));
+      return `<button type="button" class="buscador-item" data-i="${items.length - 1}">
+        <span class="buscador-item__titulo">${esc(facNcfDisplay(f.ncf))} · ${esc(f.cliente?.nombre || '—')}</span>
+        <span class="buscador-item__meta">${esc(fmtDate(f.fecha))} · ${esc(fmtMoney(f.total))}</span>
+      </button>`;
+    }).join('');
+  }
+  if (!items.length) html = '<div class="buscador-vacio">Sin resultados para esa búsqueda.</div>';
+
+  caja.innerHTML = html;
+  caja._acciones = items;
+  _buscadorSel = items.length ? 0 : -1;
+  _buscadorMarcar();
+  caja.classList.remove('hidden');
+}
+
+function _buscadorMarcar() {
+  document.querySelectorAll('#buscador-resultados .buscador-item').forEach((b) => {
+    b.classList.toggle('is-activo', Number(b.dataset.i) === _buscadorSel);
+  });
+}
+
+function _buscadorAbrir(i) {
+  const caja = $id('buscador-resultados');
+  const accion = caja?._acciones?.[i];
+  if (!accion) return;
+  caja.classList.add('hidden');
+  const input = $id('buscador-global');
+  if (input) { input.value = ''; input.blur(); }
+  accion();
+}
+
+function _initBuscadorGlobal() {
+  const input = $id('buscador-global');
+  const caja = $id('buscador-resultados');
+  if (!input || !caja) return;
+  input.addEventListener('input', () => {
+    clearTimeout(_buscadorTimer);
+    _buscadorTimer = setTimeout(_buscarGlobal, 150);
+  });
+  input.addEventListener('focus', () => { if (input.value.trim()) _buscarGlobal(); });
+  input.addEventListener('keydown', (e) => {
+    const total = caja._acciones?.length || 0;
+    if (e.key === 'ArrowDown' && total) { e.preventDefault(); _buscadorSel = (_buscadorSel + 1) % total; _buscadorMarcar(); }
+    else if (e.key === 'ArrowUp' && total) { e.preventDefault(); _buscadorSel = (_buscadorSel - 1 + total) % total; _buscadorMarcar(); }
+    else if (e.key === 'Enter' && _buscadorSel >= 0) { e.preventDefault(); _buscadorAbrir(_buscadorSel); }
+    else if (e.key === 'Escape') { caja.classList.add('hidden'); input.blur(); }
+  });
+  caja.addEventListener('mousedown', (e) => {
+    const item = e.target.closest('.buscador-item');
+    if (!item) return;
+    e.preventDefault(); // que el input no pierda el foco antes del clic
+    _buscadorAbrir(Number(item.dataset.i));
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!e.target.closest('#buscador-global-wrap')) caja.classList.add('hidden');
+  });
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !$id('screen-app')?.classList.contains('hidden')) {
+      e.preventDefault();
+      input.focus();
+      input.select();
+    }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -691,6 +1193,7 @@ async function loadClientes() {
     renderClientes(_allClientes);
     const countEl = $id('clientes-count');
     if (countEl) countEl.textContent = `${_allClientes.length} negocio(s) asociados a tu firma contable.`;
+    setText('sidebar-cartera', `${_plural(_allClientes.length, 'negocio', 'negocios')} en cartera`);
   } catch (e) {
     if (tbody) tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--red,#ef4444);padding:20px">${e.message}</td></tr>`;
   }
@@ -932,7 +1435,7 @@ async function cancelarSolicitud(id) {
 }
 
 // ── Modal solicitud ────────────────────────────────────────────────────────
-function abrirSolicitudModal(clienteId) {
+function abrirSolicitudModal(clienteId, tipoKey) {
   _solTipoSel = null;
 
   // Render tipo buttons
@@ -954,6 +1457,12 @@ function abrirSolicitudModal(clienteId) {
 
   const descEl = $id('sol-descripcion');
   if (descEl) descEl.value = '';
+
+  // Desde el Dashboard ("Renovar") llega el tipo ya elegido.
+  if (tipoKey) {
+    const btn = tiposEl?.querySelector(`[data-key="${tipoKey}"]`);
+    if (btn) selSolTipo(tipoKey, btn);
+  }
 
   show('modal-solicitud');
 }
@@ -2005,6 +2514,11 @@ function renderTablaReporte(data) {
   inner.innerHTML = `<table class="data-table" style="table-layout:auto">${thead}${tbody}</table>`;
 }
 
+// Producto que no controla inventario (products.tracks_stock = 0 en el POS).
+function _sinControlStock(row) {
+  return row && (row.tracksStock === false || row.tracksStock === 0 || row.tracksStock === '0');
+}
+
 function renderFila(row, tab) {
   let cells = [];
   switch (tab) {
@@ -2034,22 +2548,29 @@ function renderFila(row, tab) {
     case 'productos':
       cells = [
         `<td class="td-ncf">${row.codigo || '—'}</td>`,
-        `<td style="font-weight:600">${row.nombre || '—'}</td>`,
+        `<td class="td-nombre">${row.nombre || '—'}</td>`,
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td>${row.categoria || '—'}</td>`,
         `<td class="td-amount">${fmtMoney(row.precio)}</td>`,
         `<td class="td-amount">${fmtMoney(row.costo)}</td>`,
-        `<td style="text-align:center">${row.stock ?? '—'}</td>`,
+        `<td style="text-align:center">${_sinControlStock(row) ? '<span class="text-muted">No controla</span>' : (row.stock ?? '—')}</td>`,
         `<td style="text-align:center">${row.vendidos ?? '—'}</td>`,
-        `<td style="text-align:center;white-space:nowrap">
-           <button class="btn btn-xs btn-secondary" onclick="app.editarProductoReal('${row.id}')">✎</button>
-           <button class="btn btn-xs btn-secondary" onclick="app.eliminarProductoReal('${row.id}')">✕</button>
-         </td>`,
+        `<td style="text-align:center;white-space:nowrap"><div class="rep-acc">
+           <button class="btn-icono" data-icono="pencil" title="Editar producto" aria-label="Editar producto" onclick="app.editarProductoReal('${row.id}')"></button>
+           <button class="btn-icono is-danger" data-icono="trash-2" title="Pedir que se elimine" aria-label="Eliminar producto" onclick="app.eliminarProductoReal('${row.id}')"></button>
+         </div></td>`,
       ]; break;
     case 'inventario':
-      cells = [
+      cells = _sinControlStock(row) ? [
         `<td class="td-ncf">${row.codigo || '—'}</td>`,
-        `<td style="font-weight:600">${row.nombre || '—'}</td>`,
+        `<td class="td-nombre">${row.nombre || '—'}</td>`,
+        `<td>${row.sucursal || 'Global'}</td>`,
+        `<td style="text-align:center" colspan="2"><span class="text-muted">No controla inventario</span></td>`,
+        `<td><span class="pill pill-neutral">Sin control</span></td>`,
+        `<td class="td-date">${fmtDate(row.ultima_compra)}</td>`,
+      ] : [
+        `<td class="td-ncf">${row.codigo || '—'}</td>`,
+        `<td class="td-nombre">${row.nombre || '—'}</td>`,
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td style="text-align:center">${row.stock ?? '—'}</td>`,
         `<td style="text-align:center">${row.minimo ?? '—'}</td>`,
@@ -2068,7 +2589,7 @@ function renderFila(row, tab) {
       ]; break;
     case 'cxc':
       cells = [
-        `<td style="font-weight:600">${row.cliente || '—'}</td>`,
+        `<td class="td-nombre">${row.cliente || '—'}</td>`,
         `<td>${row.sucursal || 'Global'}</td>`,
         `<td class="td-ncf">${row.rnc || '—'}</td>`,
         `<td>${row.telefono || '—'}</td>`,
@@ -2078,7 +2599,7 @@ function renderFila(row, tab) {
       ]; break;
     case 'clientes':
       cells = [
-        `<td style="font-weight:600">${row.nombre || '—'}</td>`,
+        `<td class="td-nombre">${row.nombre || '—'}</td>`,
         `<td class="td-ncf">${row.rnc || '—'}</td>`,
         `<td>${row.telefono || '—'}</td>`,
         `<td>${row.correo || '—'}</td>`,
@@ -2134,8 +2655,9 @@ function limpiarFiltros() {
 }
 
 function exportarCSV() {
-  const table = $id('rep-table-inner')?.querySelector('table');
-  if (!table) { toast('No hay datos para exportar.', 'error'); return; }
+  const original = $id('rep-table-inner')?.querySelector('table');
+  if (!original) { toast('No hay datos para exportar.', 'error'); return; }
+  const table = _copiaSinAcciones(original);
 
   const rows = [];
   table.querySelectorAll('tr').forEach(tr => {
@@ -2160,9 +2682,10 @@ function exportarCSV() {
 }
 
 function exportarExcel() {
-  const table = $id('rep-table-inner')?.querySelector('table');
-  if (!table) { toast('No hay datos para exportar.', 'error'); return; }
+  const original = $id('rep-table-inner')?.querySelector('table');
+  if (!original) { toast('No hay datos para exportar.', 'error'); return; }
   if (!window.XLSX) { toast('Librería de Excel no disponible.', 'error'); return; }
+  const table = _copiaSinAcciones(original);
 
   const neg   = _allClientes.find(c => c.id === _repNegocioId);
   const title = _REP_TAB_LABELS[_repTab] || _repTab || 'Reporte';
@@ -2311,12 +2834,12 @@ function renderProductosPendientes() {
             <td>${p.nombre || '—'}${p.tieneImagen ? ' 📷' : ''}</td>
             <td>${p.branchNombre || '🌐 Global'}</td>
             <td>${esEliminar ? '—' : fmtMoney(p.precioVenta)}</td>
-            <td>${esEliminar ? '—' : (p.stock ?? 0)}</td>
+            <td>${esEliminar ? '—' : p.tracksStock === false ? '<span class="text-muted">No controla inventario</span>' : (p.stock ?? 0)}</td>
             <td>${badges[p.status] || p.status || '—'}</td>
             <td>${p.status === 'error' ? (p.errorMessage || '') : ''}</td>
             <td style="display:flex;gap:6px">
-              ${esEliminar ? '' : `<button class="btn btn-xs btn-secondary" onclick="app.editarProductoPendiente('${p.id}')">✎ Editar</button>`}
-              <button class="btn btn-xs btn-secondary" onclick="app.eliminarProductoPendiente('${p.id}')">✕ ${esEliminar ? 'Cancelar' : 'Eliminar'}</button>
+              ${esEliminar ? '' : `<button class="btn btn-sm btn-secondary" data-icono="pencil" onclick="app.editarProductoPendiente('${p.id}')">Editar</button>`}
+              <button class="btn btn-sm btn-secondary" data-icono="x" onclick="app.eliminarProductoPendiente('${p.id}')">${esEliminar ? 'Cancelar' : 'Quitar'}</button>
             </td>
           </tr>
         `; }).join('')}
@@ -2338,26 +2861,126 @@ async function eliminarProductoPendiente(pendingId) {
 let _editingPendingProductId = null;
 let _targetRealProductId = null; // producto YA sincronizado que se está proponiendo editar (accion:'editar')
 
-function abrirAgregarProductoModal() {
-  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
-  _editingPendingProductId = null;
-  _targetRealProductId = null;
-  ['ap-codigo', 'ap-nombre', 'ap-categoria', 'ap-marca', 'ap-unidad', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min', 'ap-itbis-monto'].forEach((id) => {
-    const el = $id(id);
-    if (el) el.value = '';
-  });
-  const itbisEl = $id('ap-aplica-itbis');
-  if (itbisEl) itbisEl.checked = false;
-  const itbisPctEl = $id('ap-itbis-modo-pct');
-  if (itbisPctEl) itbisPctEl.checked = true;
-  syncProductoItbisFields();
+// Modal "Nuevo producto" (diseño 2026). El alcance y el ITBIS se eligen con
+// botones; al guardar se traducen a los mismos campos de siempre
+// (branchId / aplicaItbis / itbisModo / itbisMonto) que aplica el POS.
+let _apAlcance = 'todas';  // 'todas' | 'una'
+let _apItbis   = 'exento'; // 'exento' | 'porcentaje' | 'monto'
+// Solo para la vista previa: el POS cobra el % general de SU configuración
+// (casi siempre 18%). El precio de venta se guarda SIN ITBIS, como en el POS.
+const AP_ITBIS_TASA = 18;
+const AP_UNIDADES = ['Unidad', 'Caja', 'Paquete', 'Botella', 'Lata', 'Fardo', 'Pack', 'Docena', 'Litro', 'Galón',
+  'Frasco', 'Blíster', 'Sobre', 'Par', 'Pieza', 'Rollo', 'Saco', 'Metro', 'Pie', 'Servicio'];
 
-  const sucursalEl = $id('ap-sucursal');
-  if (sucursalEl) {
-    sucursalEl.innerHTML = '<option value="">🌐 Global (todas las sucursales)</option>' +
-      _repNegocioSucursales.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join('');
+function _apRedondear(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+function _apLlenarUnidades(actual) {
+  const sel = $id('ap-unidad');
+  if (!sel) return;
+  const lista = AP_UNIDADES.slice();
+  if (actual && !lista.includes(actual)) lista.unshift(actual); // unidad propia del negocio
+  sel.innerHTML = lista.map((u) => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
+  sel.value = actual || 'Unidad';
+}
+
+// Sugerencias de categoría: las que ya usa el catálogo cargado del negocio.
+function _apLlenarCategorias() {
+  const lista = $id('ap-categorias');
+  if (!lista) return;
+  const cats = [...new Set(_repProductosRows.map((p) => String(p.categoria || '').trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'es'));
+  lista.innerHTML = cats.map((c) => `<option value="${esc(c)}"></option>`).join('');
+}
+
+function apElegirAlcance(alcance) {
+  _apAlcance = alcance === 'una' && _repNegocioSucursales.length ? 'una' : 'todas';
+  document.querySelectorAll('[data-ap-alcance]').forEach((b) => {
+    b.setAttribute('aria-checked', String(b.dataset.apAlcance === _apAlcance));
+  });
+  const sel = $id('ap-sucursal');
+  if (sel) sel.style.display = _apAlcance === 'una' ? '' : 'none';
+}
+
+// "Controlar inventario" (igual que el POS, products.tracks_stock): apagado
+// oculta el stock; el producto se vende sin contar existencias.
+function apControlInventario(valor) {
+  const chk = $id('ap-controla');
+  if (chk && typeof valor === 'boolean') chk.checked = valor;
+  const controla = chk ? chk.checked : true;
+  const wrap = $id('ap-stock-wrap'); if (wrap) wrap.style.display = controla ? '' : 'none';
+  const nota = $id('ap-sin-control'); if (nota) nota.style.display = controla ? 'none' : '';
+}
+
+function apElegirItbis(modo) {
+  _apItbis = ['exento', 'porcentaje', 'monto'].includes(modo) ? modo : 'exento';
+  document.querySelectorAll('[data-ap-itbis]').forEach((b) => {
+    b.setAttribute('aria-checked', String(b.dataset.apItbis === _apItbis));
+  });
+  const montoWrap = $id('ap-itbis-monto-wrap');
+  if (montoWrap) montoWrap.style.display = _apItbis === 'monto' ? '' : 'none';
+  const incluyeWrap = $id('ap-incluye-wrap');
+  if (incluyeWrap) incluyeWrap.style.display = _apItbis === 'exento' ? 'none' : '';
+  apCalcular();
+}
+
+// Precio que se guarda (sin ITBIS, igual que el POS) y la vista previa.
+// "El precio ya incluye ITBIS" solo convierte lo escrito al precio base.
+function _apPrecios() {
+  const precio = Math.max(0, Number($id('ap-precio-venta')?.value || 0));
+  const costo  = Math.max(0, Number($id('ap-precio-compra')?.value || 0));
+  const monto  = Math.max(0, Number($id('ap-itbis-monto')?.value || 0));
+  const incluye = _apItbis !== 'exento' && Boolean($id('ap-precio-incluye')?.checked);
+  let base = precio;
+  if (incluye) base = _apItbis === 'monto' ? precio - monto : precio / (1 + AP_ITBIS_TASA / 100);
+  base = _apRedondear(Math.max(0, base));
+  const itbis = _apItbis === 'exento' ? 0
+    : _apItbis === 'monto' ? _apRedondear(monto)
+    : _apRedondear(base * AP_ITBIS_TASA / 100);
+  return { precio, costo, incluye, base, itbis, final: _apRedondear(base + itbis) };
+}
+
+function apCalcular() {
+  const p = _apPrecios();
+  setText('ap-r-base', fmtMoney(p.base));
+  setText('ap-r-itbis', fmtMoney(p.itbis));
+  setText('ap-r-final', fmtMoney(p.final));
+
+  const gan = $id('ap-r-ganancia');
+  if (gan) {
+    if (!p.base || !p.costo) {
+      gan.textContent = '—';
+      gan.className = 'num';
+    } else {
+      const g = _apRedondear(p.base - p.costo);
+      gan.textContent = `${fmtMoney(g)} · ${Math.round((g / p.base) * 100)}%`;
+      gan.className = `num ${g >= 0 ? 'text-green' : 'text-red'}`;
+    }
   }
 
+  let nota = '';
+  if (p.incluye && p.precio && Math.abs(p.final - p.precio) >= 0.005) {
+    nota = `Por el redondeo a centavos, en caja se cobrará ${fmtMoney(p.final)}.`;
+  } else if (_apItbis === 'porcentaje') {
+    nota = 'Vista previa con 18 %. El POS aplica la tasa general que tenga configurada el negocio.';
+  }
+  setText('ap-r-nota', nota);
+}
+
+// Siguiente código corto libre (0001, 0002…) mirando el catálogo cargado y lo
+// pendiente. Si choca con uno que no estaba cargado, el POS lo marca en Error.
+function generarCodigoProducto() {
+  const usados = new Set([..._repProductosRows, ..._productosPendientes]
+    .map((p) => String(p.codigo || '').trim()).filter(Boolean));
+  const cortos = [...usados].filter((c) => /^\d{1,6}$/.test(c));
+  const ancho = Math.max(4, ...cortos.map((c) => c.length));
+  let n = cortos.reduce((max, c) => Math.max(max, Number(c)), 0) + 1;
+  let codigo = String(n).padStart(ancho, '0');
+  while (usados.has(codigo)) { n += 1; codigo = String(n).padStart(ancho, '0'); }
+  const el = $id('ap-codigo');
+  if (el) { el.value = codigo; el.focus(); }
+}
+
+function _apLimpiarImagen() {
   _apImagenDataUrl = null;
   const preview = $id('ap-image-preview');
   const placeholder = $id('ap-image-placeholder');
@@ -2367,10 +2990,81 @@ function abrirAgregarProductoModal() {
   if (box) box.classList.remove('has-image');
   const fileInput = $id('ap-image-file');
   if (fileInput) fileInput.value = '';
+}
 
-  setText('modal-agregar-producto-titulo', '📦 Agregar Producto');
-  setText('modal-agregar-producto-btn', 'Agregar Producto');
+// Rótulos según el caso: crear, editar uno pendiente o pedir editar uno real.
+function _apModo(modo) {
+  const nuevo = modo === 'nuevo';
+  setText('modal-agregar-producto-titulo',
+    nuevo ? 'Nuevo producto' : modo === 'pendiente' ? 'Editar producto pendiente' : 'Solicitar edición del producto');
+  setText('modal-agregar-producto-btn',
+    nuevo ? 'Guardar producto' : modo === 'pendiente' ? 'Guardar cambios' : 'Enviar solicitud');
+  setText('ap-stock-lbl', nuevo ? 'Stock inicial' : 'Stock');
+  const otro = $id('ap-otro-wrap');
+  if (otro) otro.style.visibility = nuevo ? '' : 'hidden';
+}
+
+function abrirAgregarProductoModal() {
+  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  _editingPendingProductId = null;
+  _targetRealProductId = null;
+  ['ap-codigo', 'ap-nombre', 'ap-categoria', 'ap-marca', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min', 'ap-itbis-monto'].forEach((id) => {
+    const el = $id(id);
+    if (el) el.value = '';
+  });
+  _apLlenarUnidades('Unidad');
+  _apLlenarCategorias();
+
+  const negocio = _allClientes.find((c) => c.id === _repNegocioId);
+  const nombreNegocio = negocio?.businessName || $id('rep-biz-name')?.textContent || 'El negocio';
+  setText('ap-sub', `${nombreNegocio} · se aplica en el POS cuando sincronice`);
+
+  const sucursalEl = $id('ap-sucursal');
+  if (sucursalEl) {
+    sucursalEl.innerHTML = _repNegocioSucursales
+      .map((s) => `<option value="${esc(s.id)}">${esc(s.nombre || 'Sucursal')}</option>`).join('');
+  }
+  const alcanceWrap = $id('ap-alcance-wrap');
+  if (alcanceWrap) alcanceWrap.style.display = _repNegocioSucursales.length ? '' : 'none';
+  apElegirAlcance('todas');
+
+  const incluyeEl = $id('ap-precio-incluye');
+  if (incluyeEl) incluyeEl.checked = false;
+  const otroEl = $id('ap-crear-otro');
+  if (otroEl) otroEl.checked = false;
+  apElegirItbis('exento');
+  apControlInventario(true);
+  _fmLimpiar('modal-agregar-producto');
+
+  _apLimpiarImagen();
+  _apModo('nuevo');
   show('modal-agregar-producto');
+  setTimeout(() => $id('ap-nombre')?.focus(), 50);
+}
+
+// Carga un producto (pendiente o real) en el modal ya abierto.
+function _apRellenar(d) {
+  const set = (id, val) => { const el = $id(id); if (el) el.value = val ?? ''; };
+  set('ap-codigo', d.codigo);
+  set('ap-nombre', d.nombre);
+  set('ap-categoria', d.categoria);
+  set('ap-marca', d.marca);
+  _apLlenarUnidades(d.unidad || 'Unidad');
+  set('ap-precio-compra', d.precioCompra);
+  set('ap-precio-venta', d.precioVenta);
+  set('ap-stock', d.stock);
+  set('ap-stock-min', d.stockMin);
+  set('ap-itbis-monto', d.itbisMonto || '');
+  // El precio guardado ya es sin ITBIS: no volver a convertirlo.
+  const incluyeEl = $id('ap-precio-incluye');
+  if (incluyeEl) incluyeEl.checked = false;
+  apElegirItbis(!d.aplicaItbis ? 'exento' : d.itbisModo === 'monto' ? 'monto' : 'porcentaje');
+  // Sin el dato (POS viejo o solicitud vieja) = controla, como en el POS.
+  apControlInventario(!(d.tracksStock === false || d.tracksStock === 0 || d.tracksStock === '0'));
+  const sucursalEl = $id('ap-sucursal');
+  const tieneSucursal = d.branchId && _repNegocioSucursales.some((s) => String(s.id) === String(d.branchId));
+  if (sucursalEl && tieneSucursal) sucursalEl.value = String(d.branchId);
+  apElegirAlcance(tieneSucursal ? 'una' : 'todas');
 }
 
 function editarProductoPendiente(pendingId) {
@@ -2379,31 +3073,8 @@ function editarProductoPendiente(pendingId) {
 
   abrirAgregarProductoModal();
   _editingPendingProductId = pendingId;
-
-  const set = (id, val) => { const el = $id(id); if (el) el.value = val ?? ''; };
-  set('ap-codigo', p.codigo);
-  set('ap-nombre', p.nombre);
-  set('ap-categoria', p.categoria);
-  set('ap-marca', p.marca);
-  set('ap-unidad', p.unidad);
-  set('ap-precio-compra', p.precioCompra);
-  set('ap-precio-venta', p.precioVenta);
-  set('ap-stock', p.stock);
-  set('ap-stock-min', p.stockMin);
-  const itbisEl = $id('ap-aplica-itbis');
-  if (itbisEl) itbisEl.checked = Boolean(p.aplicaItbis);
-  const itbisEsMonto = p.itbisModo === 'monto';
-  const itbisPctEl = $id('ap-itbis-modo-pct');
-  const itbisMontoModoEl = $id('ap-itbis-modo-monto');
-  if (itbisPctEl) itbisPctEl.checked = !itbisEsMonto;
-  if (itbisMontoModoEl) itbisMontoModoEl.checked = itbisEsMonto;
-  set('ap-itbis-monto', p.itbisMonto || '');
-  syncProductoItbisFields();
-  const sucursalEl = $id('ap-sucursal');
-  if (sucursalEl) sucursalEl.value = p.branchId ? String(p.branchId) : '';
-
-  setText('modal-agregar-producto-titulo', '✎ Editar Producto Pendiente');
-  setText('modal-agregar-producto-btn', 'Guardar Cambios');
+  _apRellenar(p);
+  _apModo('pendiente');
 }
 
 // Producto YA sincronizado (vive en el POS real, no en la cola pendiente) —
@@ -2417,31 +3088,8 @@ function editarProductoReal(productoId) {
 
   abrirAgregarProductoModal();
   _targetRealProductId = productoId;
-
-  const set = (id, val) => { const el = $id(id); if (el) el.value = val ?? ''; };
-  set('ap-codigo', p.codigo);
-  set('ap-nombre', p.nombre);
-  set('ap-categoria', p.categoria);
-  set('ap-marca', p.marca);
-  set('ap-unidad', p.unidad);
-  set('ap-precio-compra', p.costo);
-  set('ap-precio-venta', p.precio);
-  set('ap-stock', p.stock);
-  set('ap-stock-min', p.stockMin);
-  const itbisEl = $id('ap-aplica-itbis');
-  if (itbisEl) itbisEl.checked = Boolean(p.aplicaItbis);
-  const itbisEsMonto = p.itbisModo === 'monto';
-  const itbisPctEl = $id('ap-itbis-modo-pct');
-  const itbisMontoModoEl = $id('ap-itbis-modo-monto');
-  if (itbisPctEl) itbisPctEl.checked = !itbisEsMonto;
-  if (itbisMontoModoEl) itbisMontoModoEl.checked = itbisEsMonto;
-  set('ap-itbis-monto', p.itbisMonto || '');
-  syncProductoItbisFields();
-  const sucursalEl = $id('ap-sucursal');
-  if (sucursalEl) sucursalEl.value = p.branchId ? String(p.branchId) : '';
-
-  setText('modal-agregar-producto-titulo', '✎ Solicitar edición de producto');
-  setText('modal-agregar-producto-btn', 'Enviar solicitud');
+  _apRellenar({ ...p, precioCompra: p.costo, precioVenta: p.precio });
+  _apModo('real');
 }
 
 async function eliminarProductoReal(productoId) {
@@ -2463,27 +3111,41 @@ async function eliminarProductoReal(productoId) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-function syncProductoItbisFields() {
-  const aplica = $id('ap-aplica-itbis')?.checked ?? false;
-  const modoWrap = $id('ap-itbis-modo-wrap');
-  if (modoWrap) modoWrap.style.display = aplica ? '' : 'none';
-  const esMonto = $id('ap-itbis-modo-monto')?.checked ?? false;
-  const montoWrap = $id('ap-itbis-monto-wrap');
-  if (montoWrap) montoWrap.style.display = esMonto ? '' : 'none';
-}
-
 function cerrarAgregarProductoModal() { _editingPendingProductId = null; _targetRealProductId = null; hide('modal-agregar-producto'); }
+
+// "Crear otro después de guardar": deja categoría, unidad, sucursal e ITBIS
+// como estaban (lo normal es cargar varios parecidos seguidos).
+function _apPrepararOtro() {
+  ['ap-codigo', 'ap-nombre', 'ap-marca', 'ap-precio-compra', 'ap-precio-venta', 'ap-stock', 'ap-stock-min'].forEach((id) => {
+    const el = $id(id);
+    if (el) el.value = '';
+  });
+  _apLimpiarImagen();
+  apCalcular();
+  $id('ap-nombre')?.focus();
+}
 
 async function guardarProductoPendiente() {
   const codigo = $id('ap-codigo')?.value?.trim();
   const nombre = $id('ap-nombre')?.value?.trim();
-  const precioVenta = Number($id('ap-precio-venta')?.value || 0);
-  if (!codigo) { toast('El código es obligatorio.', 'error'); return; }
-  if (!nombre) { toast('El nombre es obligatorio.', 'error'); return; }
-  if (!precioVenta || precioVenta <= 0) { toast('Indica un precio de venta válido.', 'error'); return; }
+  const precios = _apPrecios();
+  const precioVenta = precios.base;
+  const controla = $id('ap-controla')?.checked !== false;
+  _fmLimpiar('modal-agregar-producto');
+  const errores = [];
+  if (!nombre) errores.push(['ap-nombre', 'Escribe el nombre del producto.']);
+  if (!codigo) errores.push(['ap-codigo', 'Escribe el código o usa Generar.']);
+  if (!precioVenta || precioVenta <= 0) errores.push(['ap-precio-venta', 'Indica un precio de venta mayor que 0.']);
+  if (controla && Number($id('ap-stock')?.value || 0) < 0) errores.push(['ap-stock', 'El stock no puede ser negativo.']);
+  if (controla && Number($id('ap-stock-min')?.value || 0) < 0) errores.push(['ap-stock-min', 'No puede ser negativo.']);
+  if (errores.length) {
+    errores.forEach(([id, msg]) => _fmError(id, msg));
+    $id(errores[0][0])?.focus();
+    return;
+  }
 
   const sucursalEl = $id('ap-sucursal');
-  const branchId = sucursalEl?.value ? Number(sucursalEl.value) : null;
+  const branchId = _apAlcance === 'una' && sucursalEl?.value ? Number(sucursalEl.value) : null;
   const payload = {
     codigo,
     nombre,
@@ -2492,10 +3154,12 @@ async function guardarProductoPendiente() {
     unidad:       $id('ap-unidad')?.value?.trim() || 'Unidad',
     precioCompra: Number($id('ap-precio-compra')?.value || 0),
     precioVenta,
-    stock:        Number($id('ap-stock')?.value || 0),
-    stockMin:     Number($id('ap-stock-min')?.value || 0),
-    aplicaItbis:  Boolean($id('ap-aplica-itbis')?.checked),
-    itbisModo:    $id('ap-itbis-modo-monto')?.checked ? 'monto' : 'porcentaje',
+    // Sin control de inventario el stock no se usa (el POS no lo toca al editar).
+    stock:        controla ? Number($id('ap-stock')?.value || 0) : 0,
+    stockMin:     controla ? Number($id('ap-stock-min')?.value || 0) : 0,
+    tracksStock:  controla,
+    aplicaItbis:  _apItbis !== 'exento',
+    itbisModo:    _apItbis === 'monto' ? 'monto' : 'porcentaje',
     itbisMonto:   Math.max(0, Number($id('ap-itbis-monto')?.value || 0)),
     branchId,
   };
@@ -2509,8 +3173,11 @@ async function guardarProductoPendiente() {
     payload.productoId = _targetRealProductId;
   }
 
+  const btn = $id('modal-agregar-producto-btn');
+  if (btn) btn.disabled = true;
   try {
     await refreshToken();
+    const esNuevo = !_editingPendingProductId && !_targetRealProductId;
     if (_editingPendingProductId) {
       await apiCall('PUT', `/api/productos-pendientes/${_repNegocioId}/${_editingPendingProductId}`, payload);
       toast('Producto pendiente actualizado — se aplicará cuando el sistema del cliente sincronice.', 'success');
@@ -2520,9 +3187,19 @@ async function guardarProductoPendiente() {
         ? 'Solicitud de edición enviada — se aplicará cuando el sistema del cliente sincronice.'
         : 'Producto agregado — se aplicará cuando el sistema del cliente sincronice.', 'success');
     }
-    cerrarAgregarProductoModal();
+    if (esNuevo && $id('ap-crear-otro')?.checked) {
+      // El nuevo ya cuenta para "Generar" aunque la lista no haya recargado.
+      _productosPendientes.push({ codigo });
+      _apPrepararOtro();
+    } else {
+      cerrarAgregarProductoModal();
+    }
     loadProductosPendientes();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2550,12 +3227,12 @@ let _anAdjuntoDataUrl = null; // documento de autorización DGII (base64), opcio
 function handleAgregarNcfAdjunto(input) {
   const file = input?.files?.[0];
   if (!file) return;
-  if (file.size > 700 * 1024) { toast('El archivo debe pesar menos de 700 KB.', 'error'); return; }
+  _fmError('an-adjunto-file', '');
+  if (file.size > 700 * 1024) { _fmError('an-adjunto-file', 'El archivo debe pesar menos de 700 KB.'); input.value = ''; return; }
   const reader = new FileReader();
   reader.onload = (e) => {
     _anAdjuntoDataUrl = e.target.result;
-    const label = $id('an-adjunto-nombre');
-    if (label) label.textContent = `📎 ${file.name}`;
+    setText('an-adjunto-nombre', `Adjunto: ${file.name}`);
   };
   reader.readAsDataURL(file);
 }
@@ -2608,7 +3285,7 @@ function renderNcfPendientes() {
             <td>${refMotivo}</td>
             <td>${badges[n.status] || n.status || '—'}</td>
             <td>${n.status === 'error' ? (n.errorMessage || '') : ''}</td>
-            <td>${['pendiente', 'error'].includes(n.status) ? `<button class="btn btn-xs btn-secondary" onclick="app.cancelarNcfPendiente('${n.id}')">✕ ${n.status === 'error' ? 'Descartar' : 'Cancelar'}</button>` : ''}</td>
+            <td>${['pendiente', 'error'].includes(n.status) ? `<button class="btn btn-sm btn-secondary" data-icono="x" onclick="app.cancelarNcfPendiente('${n.id}')">${n.status === 'error' ? 'Descartar' : 'Cancelar'}</button>` : ''}</td>
           </tr>
         `; }).join('')}
       </tbody>
@@ -2629,23 +3306,35 @@ async function cancelarNcfPendiente(pendienteId) {
 function abrirAgregarNcfModal() {
   if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
   const tipoEl = $id('an-tipo');
-  if (tipoEl) tipoEl.innerHTML = NCF_DOCUMENT_TYPES.map((t) => `<option value="${t.code}">${t.label}</option>`).join('');
+  if (tipoEl) { tipoEl.innerHTML = _ncfOpciones(); tipoEl.value = 'B02'; }
   ['an-desde', 'an-hasta', 'an-fecha-autorizacion', 'an-fecha-vencimiento', 'an-referencia', 'an-notas'].forEach((id) => {
     const el = $id(id);
     if (el) el.value = '';
   });
   const sucursalEl = $id('an-sucursal');
   if (sucursalEl) {
-    sucursalEl.innerHTML = '<option value="">🌐 Global (todas las sucursales)</option>' +
-      _repNegocioSucursales.map((s) => `<option value="${s.id}">${s.nombre}</option>`).join('');
+    sucursalEl.innerHTML = '<option value="">Todas las sucursales</option>' +
+      _repNegocioSucursales.map((s) => `<option value="${esc(s.id)}">${esc(s.nombre)}</option>`).join('');
   }
+  const negocio = _allClientes.find((c) => c.id === _repNegocioId);
+  setText('an-sub', `${negocio?.businessName || 'El negocio'} · se aplica en su POS cuando sincronice.`);
   _anAdjuntoDataUrl = null;
-  const label = $id('an-adjunto-nombre');
-  if (label) label.textContent = '';
+  setText('an-adjunto-nombre', '');
   const fileInput = $id('an-adjunto-file');
   if (fileInput) fileInput.value = '';
-
+  _fmLimpiar('an-form');
+  setText('an-msg', '');
+  anActualizar();
   show('modal-agregar-ncf');
+  setTimeout(() => $id('an-desde')?.focus(), 50);
+}
+
+function anActualizar() {
+  const tipo = $id('an-tipo')?.value || '';
+  const el = $id('an-prefijo'); if (el) el.value = tipo;
+  setText('an-tipo-ayuda', NCF_DESCRIPCIONES[tipo] || '');
+  const p = $id('an-preview');
+  if (p) p.innerHTML = _ncfPreviewHtml(tipo, $id('an-desde')?.value, $id('an-hasta')?.value);
 }
 
 function cerrarAgregarNcfModal() { hide('modal-agregar-ncf'); }
@@ -2656,9 +3345,21 @@ async function guardarNcfPendiente() {
   const endNumber = Number($id('an-hasta')?.value || 0);
   const authorizationReference = $id('an-referencia')?.value?.trim();
 
-  if (!documentType) { toast('Selecciona el tipo de comprobante.', 'error'); return; }
-  if (!startNumber || !endNumber || startNumber > endNumber) { toast('Indica un rango válido.', 'error'); return; }
-  if (!authorizationReference) { toast('Indica la referencia de autorización de la DGII.', 'error'); return; }
+  _fmLimpiar('an-form');
+  setText('an-msg', '');
+  // Contra lo que ya tiene el POS y lo que está en cola para aplicarse.
+  const enCola = (_ncfPendientes || []).filter(n => (n.action || 'create') === 'create' && n.status !== 'aplicado')
+    .map(n => ({ ...n, status: 'pendiente' }));
+  const err = _ncfValidar({
+    tipo: documentType, desde: startNumber, hasta: endNumber, vence: $id('an-fecha-vencimiento')?.value || '',
+    existentes: [...(_ncfAplicadas || []), ...enCola],
+  });
+  if (!authorizationReference) err.referencia = 'Escribe el número de autorización de la DGII.';
+  if (err.desde) _fmError('an-desde', err.desde);
+  if (err.hasta) _fmError('an-hasta', err.hasta);
+  if (err.vence) _fmError('an-fecha-vencimiento', err.vence);
+  if (err.referencia) _fmError('an-referencia', err.referencia);
+  if (Object.keys(err).length) return;
 
   const sucursalEl = $id('an-sucursal');
   const branchId = sucursalEl?.value ? Number(sucursalEl.value) : null;
@@ -2680,7 +3381,10 @@ async function guardarNcfPendiente() {
     toast('Secuencia NCF registrada — se aplicará cuando el sistema del cliente sincronice.', 'success');
     cerrarAgregarNcfModal();
     loadNcfPendientes();
-  } catch (e) { toast(e.message, 'error'); }
+  } catch (e) {
+    const m = $id('an-msg');
+    if (m) { m.textContent = e.message; m.classList.add('is-error'); }
+  }
 }
 
 // ── Secuencias ya aplicadas en el POS (espejo de solo lectura) ─────────
@@ -2733,9 +3437,9 @@ function renderNcfAplicadas() {
             <td>${s.branchName || '🌐 Global'}</td>
             <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${colores[s.effectiveStatus] || colores[s.status] || '#6b7280'}">${ESTADO_LABELS[s.effectiveStatus] || ESTADO_LABELS[s.status] || s.effectiveStatus || s.status}</span></td>
             <td style="white-space:nowrap">
-              <button class="btn btn-xs btn-secondary" onclick="app.abrirEditarNcfModal('${s.id}')">✎ Editar</button>
-              ${s.status === 'activo' ? `<button class="btn btn-xs btn-secondary" onclick="app.abrirSuspenderNcfModal('${s.id}')">⏸ Suspender</button>` : ''}
-              <button class="btn btn-xs btn-danger" onclick="app.eliminarNcfAplicada('${s.id}')">🗑 Eliminar</button>
+              <button class="btn btn-sm btn-secondary" data-icono="pencil" onclick="app.abrirEditarNcfModal('${s.id}')">Editar</button>
+              ${s.status === 'activo' ? `<button class="btn btn-sm btn-secondary" data-icono="circle-pause" onclick="app.abrirSuspenderNcfModal('${s.id}')">Suspender</button>` : ''}
+              <button class="btn-icono is-danger" data-icono="trash-2" title="Eliminar" aria-label="Eliminar" onclick="app.eliminarNcfAplicada('${s.id}')"></button>
             </td>
           </tr>
         `).join('')}
@@ -2748,7 +3452,8 @@ function abrirEditarNcfModal(localSequenceId) {
   const seq = _ncfAplicadas.find((s) => String(s.id) === String(localSequenceId));
   if (!seq) return;
   _ncfEditTargetId = localSequenceId;
-  $id('ane-titulo').textContent = `Editar ${seq.documentType} · ${seq.startNumber}–${seq.endNumber}`;
+  _fmLimpiar('ane-form');
+  $id('ane-titulo').textContent = `Editar ${_ncfFmt(seq.documentType, seq.startNumber)} – ${_ncfFmt(seq.documentType, seq.endNumber)}`;
   $id('ane-nombre').value = seq.documentName || '';
   $id('ane-hasta').value = seq.endNumber || '';
   $id('ane-hasta').min = seq.nextNumber || seq.startNumber || 1;
@@ -2763,6 +3468,15 @@ function cerrarEditarNcfModal() { hide('modal-editar-ncf'); }
 
 async function guardarEdicionNcf() {
   if (!_ncfEditTargetId) return;
+  const seq = _ncfAplicadas.find((s) => String(s.id) === String(_ncfEditTargetId));
+  const hasta = Number($id('ane-hasta')?.value || 0);
+  _fmLimpiar('ane-form');
+  if (seq) {
+    const usado = Math.max(Number(seq.startNumber), Number(seq.nextNumber || seq.startNumber) - 1);
+    const err = _ncfValidar({ tipo: seq.documentType, desde: seq.startNumber, hasta, existentes: _ncfAplicadas, excluirId: seq.id, editando: true });
+    if (!err.hasta && hasta < usado) err.hasta = `Ya se usaron hasta el ${_ncfFmt(seq.documentType, usado)}: el final no puede ser menor.`;
+    if (err.hasta) { _fmError('ane-hasta', err.hasta); return; }
+  }
   try {
     await refreshToken();
     await apiCall('POST', '/api/ncf-pendientes/editar', {
@@ -3061,7 +3775,8 @@ function renderRepChart(rows) {
 function abrirRepDetalle(tab) {
   const neg = _allClientes.find(c => c.id === _repNegocioId);
   setText('rmd-titulo',    neg?.businessName || 'Reportes detallados');
-  setText('rmd-subtitulo', [neg?.rnc ? 'RNC: ' + neg.rnc : '', neg?.propietario ? 'Propietario: ' + neg.propietario : ''].filter(Boolean).join('  ·  '));
+  setText('rmd-subtitulo', [neg?.propietario ? 'Propietario: ' + neg.propietario : '', neg?.rnc ? 'RNC ' + neg.rnc : '', neg ? _planTexto(neg) : '']
+    .filter(Boolean).join('  ·  '));
   show('modal-rep-detalle');
   cambiarTabReporte(tab || _repTab || 'ventas');
 }
@@ -3075,6 +3790,16 @@ const _REP_TAB_LABELS = {
   inventario: 'Inventario', itbis: 'ITBIS / DGII', cxc: 'Cuentas × Cobrar',
   clientes: 'Clientes', cierres: 'Cierres de Caja', mensual: 'Resumen Mensual',
 };
+
+// PDF, CSV y Excel llevan la tabla tal cual, menos la columna de botones (Editar/Eliminar).
+function _copiaSinAcciones(el) {
+  const copia = el.cloneNode(true);
+  copia.querySelectorAll('tr').forEach((tr) => {
+    const ultima = tr.lastElementChild;
+    if (ultima && (ultima.querySelector('.rep-acc') || /^acciones$/i.test(ultima.textContent.trim()))) ultima.remove();
+  });
+  return copia;
+}
 
 async function imprimirTabReporte() {
   const tableEl = $id('rep-table-inner');
@@ -3095,6 +3820,8 @@ async function imprimirTabReporte() {
     th{background:#3b82f6;color:#fff;padding:7px 10px;font-size:10px;text-align:left;text-transform:uppercase;letter-spacing:.3px}
     td{padding:6px 10px;border-bottom:1px solid #e2e8f0;font-size:11px;vertical-align:middle}
     tr:nth-child(even) td{background:#f8fafc}
+    .td-nombre{font-weight:600}
+    .td-amount{text-align:right;white-space:nowrap}
     .footer{text-align:center;font-size:10px;color:#94a3b8;margin-top:16px;padding-top:10px;border-top:1px solid #e2e8f0}
   </style></head><body>
   <div class="hdr">
@@ -3107,7 +3834,7 @@ async function imprimirTabReporte() {
       <div style="font-size:11px;color:var(--text-muted,#5a7099);margin-top:5px">Generado: ${fecha}</div>
     </div>
   </div>
-  ${tableEl.innerHTML}
+  ${_copiaSinAcciones(tableEl).innerHTML}
   <div class="footer">Tecno Caja Contadores — Portal de Contadores Asociados</div>
   </body></html>`;
 
@@ -3190,7 +3917,6 @@ let _cotCotizaciones = [];
 let _cotClientes     = [];
 let _cotItems         = [];
 let _cotEditId        = null;   // id de la cotización en edición (null = nueva)
-let _cotFacturarId    = null;   // cotización que se está convirtiendo a factura
 let _envioCot         = null;   // { id, data } — cotización en curso de envío por correo
 
 function esc(s) {
@@ -3213,13 +3939,6 @@ function facEstadoBadge(estado) {
   };
   const lbl = map[estado] || estado || '—';
   return `<span class="fac-estado ${estado || 'pendiente'}">${lbl}</span>`;
-}
-
-function calcItemTotal(item) {
-  const base = (Number(item.precio) || 0) * Math.max(1, Number(item.cantidad) || 1);
-  const desc  = base * ((Number(item.descuento) || 0) / 100);
-  const grav  = base - desc;
-  return Math.round((grav * (1 + (Number(item.itbis_rate) || 0) / 100)) * 100) / 100;
 }
 
 async function loadFacturacion() {
@@ -3276,7 +3995,7 @@ function _repPdfTable(doc, y, headers, rows, colWidths) {
 // MÓDULO DE REPORTES DE FACTURACIÓN — pestañas estilo POS (reportes-v2)
 // 100% cliente sobre _facFacturas. Pestañas: Dashboard · Detallados · DGII · Exportar.
 // ══════════════════════════════════════════════════════════════════════
-let _facR = { tab: 'dashboard', sub: 'facturas', periodo: 'mes', desde: '', hasta: '',
+let _facR = { tab: 'facturas', sub: 'cliente', periodo: 'mes', desde: '', hasta: '',
               estado: '', metodo: '', tipo: '', facMetodo: '', page: 1 };
 const FACR_PAGE = 50;
 const FACR_ESTADO_LBL = { pendiente: 'Pendiente', parcial: 'Pago parcial', pagada: 'Pagada', anulada: 'Anulada' };
@@ -3298,7 +4017,6 @@ function facRInit() {
   const per = $id('facr-periodo');
   if (per && !per.value) per.value = _facR.periodo;
   _facR.facMetodo = ''; _facR.page = 1;
-  const fm = $id('facr-fac-metodo'); if (fm) fm.value = '';
   facROnPeriodoChange();
   facRCalcRange();
   facRSwitchSubtab(_facR.sub);   // deja marcada la sub-pestaña sin renderizar aún
@@ -3347,7 +4065,7 @@ function facRApply() { facRCalcRange(); _facR.page = 1; facRRenderActive(); }
 function facRSwitchTab(tab) {
   _facR.tab = tab;
   document.querySelectorAll('#facr-tabs .rep-tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  ['dashboard', 'detallados', 'dgii', 'exportar'].forEach(t => {
+  ['facturas', 'agrupados', 'dgii', 'exportar'].forEach(t => {
     const p = $id('facr-pane-' + t); if (p) p.classList.toggle('hidden', t !== tab);
   });
   facRRenderActive();
@@ -3356,47 +4074,49 @@ function facRSwitchTab(tab) {
 function facRSwitchSubtab(sub) {
   _facR.sub = sub; _facR.page = 1;
   document.querySelectorAll('#facr-subtabs .facr-subtab').forEach(b => b.classList.toggle('active', b.dataset.sub === sub));
-  ['facturas', 'cliente', 'tipo', 'metodo', 'estado'].forEach(s => {
+  ['cliente', 'tipo', 'metodo', 'estado'].forEach(s => {
     const p = $id('facr-sub-' + s); if (p) p.classList.toggle('hidden', s !== sub);
   });
-  if (_facR.tab === 'detallados') facRRenderDetalle();
+  if (_facR.tab === 'agrupados') facRRenderGroup(sub);
 }
 
 function facRRenderActive() {
-  if (_facR.tab === 'dashboard') facRRenderDashboard();
-  else if (_facR.tab === 'detallados') facRRenderDetalle();
+  facRRenderKpis();
+  if (_facR.tab === 'facturas') facRRenderFacturas();
+  else if (_facR.tab === 'agrupados') facRRenderGroup(_facR.sub);
   else if (_facR.tab === 'dgii') facRRenderDGII();
 }
 
-// ── Dashboard (solo tarjetas KPI) ─────────────────────────────────────
-function facRRenderDashboard() {
+const _facSaldo = (f) => Math.max(0, _facN(f.balance ?? (_facN(f.total) - _facN(f.monto_pagado))));
+const _facCobrable = (f) => ['pendiente', 'parcial'].includes(f.estado || 'pendiente');
+// Días desde la emisión (fecha "AAAA-MM-DD" de aquí, no UTC).
+function _facDiasDesde(fecha) { return Math.max(0, -(_diasHasta(fecha) ?? 0)); }
+
+// ── Tarjetas de arriba (mismo filtro que la tabla) ─────────────────────
+function facRRenderKpis() {
   const list = facRFiltered();
   const vig  = list.filter(f => (f.estado || 'pendiente') !== 'anulada');
   const totalFact = vig.reduce((s, f) => s + _facN(f.total), 0);
   const itbis     = vig.reduce((s, f) => s + _facN(f.itbis_total), 0);
   const cobrado   = vig.reduce((s, f) => s + _facN(f.monto_pagado), 0);
-  const ticket    = vig.length ? totalFact / vig.length : 0;
-  const cobPor    = m => vig.filter(f => (f.metodo_pago || 'efectivo') === m).reduce((s, f) => s + _facN(f.monto_pagado), 0);
+  const base      = vig.reduce((s, f) => s + _facN(f.subtotal) - _facN(f.descuento_total), 0);
+  const pendientes = vig.filter(_facCobrable);
+  const porCobrar = pendientes.reduce((s, f) => s + _facSaldo(f), 0);
+  const viejo = pendientes.filter(f => _facDiasDesde(f.fecha) > 30).reduce((s, f) => s + _facSaldo(f), 0);
+  const tipos = [...new Set(vig.map(f => f.tipo_ncf).filter(Boolean))];
 
-  const kpis = [
-    ['💰', 'Total facturado', fmtMoney(totalFact), 'purple'],
-    ['🧾', 'Facturas', String(list.length), ''],
-    ['🎫', 'Ticket promedio', fmtMoney(ticket), 'blue'],
-    ['🏦', 'ITBIS facturado', fmtMoney(itbis), 'orange'],
-    ['✅', 'Cobrado', fmtMoney(cobrado), 'green'],
-    ['⏳', 'Por cobrar', fmtMoney(Math.max(0, totalFact - cobrado)), 'red'],
-    ['💵', 'Efectivo', fmtMoney(cobPor('efectivo')), ''],
-    ['🏧', 'Transferencia', fmtMoney(cobPor('transferencia')), ''],
-  ];
-  const box = $id('facr-kpis');
-  if (box) box.innerHTML = kpis.map(([ic, l, v, c]) =>
-    `<div class="fac-stat-card"><div class="fac-stat-icon">${ic}</div><div class="fac-stat-lbl">${l}</div><div class="fac-stat-val ${c}">${v}</div></div>`).join('');
-}
-
-// ── Detallados ────────────────────────────────────────────────────────
-function facRRenderDetalle() {
-  if (_facR.sub === 'facturas') facRRenderFacturas();
-  else facRRenderGroup(_facR.sub);
+  const lblPer = { hoy: 'Facturado hoy', ayer: 'Facturado ayer', semana: 'Facturado esta semana', mes: 'Facturado este mes',
+    mes_pasado: 'Facturado el mes pasado', anio: 'Facturado este año', custom: 'Facturado en el período' };
+  setText('facx-k-fact-lbl', lblPer[_facR.periodo] || 'Facturado');
+  setText('facx-k-fact', fmtMoney(totalFact));
+  setText('facx-k-fact-sub', vig.length ? `${_plural(vig.length, 'factura', 'facturas')}${tipos.length ? ' · ' + tipos.join(', ') : ''}` : 'Sin facturas en el período');
+  setText('facx-k-cob', fmtMoney(cobrado));
+  setText('facx-k-cob-sub', totalFact > 0 ? `${Math.round((cobrado / totalFact) * 100)}% del facturado` : '—');
+  setText('facx-k-pend', fmtMoney(porCobrar));
+  setText('facx-k-pend-sub', !pendientes.length ? 'Nada pendiente'
+    : viejo > 0.009 ? `${fmtMoney(viejo)} con más de 30 días` : 'Todo en 0–30 días');
+  setText('facx-k-itbis', fmtMoney(itbis));
+  setText('facx-k-itbis-sub', `Base gravada ${fmtMoney(base)}`);
 }
 
 function facRRenderFacturas() {
@@ -3406,31 +4126,32 @@ function facRRenderFacturas() {
   if (_facR.page > pages) _facR.page = pages;
   const slice = rows.slice((_facR.page - 1) * FACR_PAGE, _facR.page * FACR_PAGE);
 
-  // En la tabla los montos van SIN "RD$" (los encabezados ya lo implican) para
-  // que las 12 columnas quepan sin scroll horizontal.
+  // Montos sin "RD$" en la tabla (el encabezado ya lo dice).
   const mm = v => _facN(v).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   setText('facr-fac-count', `${rows.length} factura${rows.length === 1 ? '' : 's'}`);
   const tb = $id('facr-fac-tbody');
   if (tb) {
     tb.innerHTML = slice.length ? slice.map(f => {
       const base = _facN(f.subtotal) - _facN(f.descuento_total);
-      const pag  = _facN(f.monto_pagado);
-      const bal  = _facN(f.total) - pag;
+      const cobrable = _facCobrable(f);
+      const dias = _facDiasDesde(f.fecha);
+      const antig = cobrable ? `<span class="pill ${dias > 60 ? 'pill-bad' : dias > 30 ? 'pill-warn' : 'pill-neutral'}">${_plural(dias, 'día', 'días')}</span>` : '<span class="text-muted">—</span>';
       return `<tr>
-        <td><span class="ncf-badge">${esc(facNcfDisplay(f.ncf))}</span></td>
-        <td>${esc(f.tipo_ncf || '—')}</td>
+        <td class="facx-ncf">${esc(facNcfDisplay(f.ncf))}</td>
         <td>${fmtDate(f.fecha)}</td>
-        <td title="${esc(f.cliente?.nombre || '')}">${esc(f.cliente?.nombre || '—')}</td>
-        <td style="font-family:var(--font-mono);font-size:10px;color:var(--text-sub)">${esc(f.cliente?.rnc || '—')}</td>
-        <td>${esc(_facRMetodoLabel(f.metodo_pago))}</td>
-        <td class="facr-td-r">${mm(base)}</td>
-        <td class="facr-td-r">${mm(f.itbis_total)}</td>
-        <td class="facr-td-r" style="font-weight:700">${mm(f.total)}</td>
+        <td title="${esc(f.cliente?.nombre || '')}"><div class="facx-cli">${esc(f.cliente?.nombre || '—')}</div><div class="facx-rnc">${f.cliente?.rnc ? 'RNC ' + esc(f.cliente.rnc) : 'Sin RNC'}</div></td>
+        <td class="is-num">${mm(base)}</td>
+        <td class="is-num">${mm(f.itbis_total)}</td>
+        <td class="is-num" style="font-weight:700">${mm(f.total)}</td>
         <td>${facEstadoBadge(f.estado)}</td>
-        <td class="facr-td-r" title="${bal > 0.009 && (f.estado || '') !== 'anulada' ? 'Falta RD$ ' + mm(bal) : ''}">${mm(pag)}${bal > 0.009 && (f.estado || '') !== 'anulada' ? ` <span style="color:var(--orange)">·${mm(bal)}</span>` : ''}</td>
-        <td><button class="facr-reprint" title="Ver / imprimir factura" onclick="app.verFactura('${f.id}')">🖨</button></td>
+        <td>${antig}</td>
+        <td><div class="facx-acc">
+          ${cobrable ? `<button class="btn btn-secondary btn-sm" data-icono="banknote" onclick="app.registrarCobroLista('${f.id}')" title="Registrar cobro · saldo RD$ ${mm(_facSaldo(f))}">Cobrar</button>` : ''}
+          <button class="btn-icono" title="Descargar PDF" aria-label="Descargar PDF" data-icono="download" onclick="app.pdfFacturaLista('${f.id}')"></button>
+          <button class="btn-icono" title="Ver factura" aria-label="Ver factura" data-icono="eye" onclick="app.verFactura('${f.id}')"></button>
+        </div></td>
       </tr>`;
-    }).join('') : '<tr><td colspan="12" class="td-empty">Sin facturas en el período seleccionado.</td></tr>';
+    }).join('') : '<tr><td colspan="9" class="td-empty">Sin facturas en el período seleccionado.</td></tr>';
   }
 
   const tf = $id('facr-fac-tfoot');
@@ -3439,15 +4160,12 @@ function facRRenderFacturas() {
       const sB = rows.reduce((s, f) => s + (_facN(f.subtotal) - _facN(f.descuento_total)), 0);
       const sI = rows.reduce((s, f) => s + _facN(f.itbis_total), 0);
       const sT = rows.reduce((s, f) => s + _facN(f.total), 0);
-      const sP = rows.reduce((s, f) => s + _facN(f.monto_pagado), 0);
       tf.innerHTML = `<tr>
-        <td colspan="6">Subtotales · pág. ${_facR.page}/${pages} · ${rows.length} facturas</td>
-        <td class="facr-td-r">${mm(sB)}</td>
-        <td class="facr-td-r">${mm(sI)}</td>
-        <td class="facr-td-r">${mm(sT)}</td>
-        <td></td>
-        <td class="facr-td-r">${mm(sP)}</td>
-        <td></td>
+        <td colspan="3">Totales · ${rows.length} factura${rows.length === 1 ? '' : 's'}${pages > 1 ? ` · pág. ${_facR.page}/${pages}` : ''}</td>
+        <td class="is-num">${mm(sB)}</td>
+        <td class="is-num">${mm(sI)}</td>
+        <td class="is-num">${mm(sT)}</td>
+        <td colspan="3"></td>
       </tr>`;
     } else tf.innerHTML = '';
   }
@@ -3682,13 +4400,82 @@ function facRExportConsolidado() {
 // rechaza la emisión (ver POST /api/mis-secuencias-ncf y getNextNcf en
 // server.js) — nunca se inventa un NCF sin respaldo real.
 
-// Catálogo completo DGII (B01–B17). Reusa NCF_DOCUMENT_TYPES (mismo shape) para
-// no mantener dos listas — antes solo tenía 5 tipos y faltaban B03/B04/B11–B13/B17.
-const MIS_NCF_TIPOS = NCF_DOCUMENT_TYPES;
-
 let _misNcf = [];
 let _mnAdjuntoDataUrl = null;
 let _mnEditTargetId = null;
+
+// ── Secuencias NCF: lo común a "Mis secuencias" y a las del POS del negocio ──
+const NCF_NOMBRES = {
+  B01: 'Crédito fiscal', B02: 'Consumidor final', B03: 'Nota de débito', B04: 'Nota de crédito',
+  B11: 'Comprobante de compras', B12: 'Registro único de ingresos', B13: 'Gastos menores',
+  B14: 'Régimen especial', B15: 'Gubernamental', B16: 'Exportaciones', B17: 'Pagos al exterior',
+};
+const NCF_DESCRIPCIONES = {
+  B01: 'Empresa con RNC que deduce gastos', B02: 'Persona o empresa sin crédito fiscal',
+  B03: 'Aumenta el monto de una factura ya emitida', B04: 'Anula o reduce una factura ya emitida',
+  B11: 'Compras a personas sin RNC', B12: 'Ventas resumidas en un solo registro',
+  B13: 'Gastos menores del negocio', B14: 'Zonas francas y regímenes exentos',
+  B15: 'Entidades del Estado', B16: 'Ventas al exterior', B17: 'Pagos a proveedores del exterior',
+};
+// Las notas de crédito (B04) no vencen; el resto lleva la fecha que da la DGII.
+const NCF_SIN_VENCE = new Set(['B04']);
+
+function _ncfFmt(tipo, n) { return `${tipo}${String(Math.max(0, Math.trunc(Number(n) || 0))).padStart(8, '0')}`; }
+function _ncfOpciones() {
+  return NCF_DOCUMENT_TYPES.map(t => `<option value="${t.code}">${t.code} — ${NCF_NOMBRES[t.code] || t.label}</option>`).join('');
+}
+
+// "Primer NCF: B0200000001 · Último: B0200000500 · 500 comprobantes"
+function _ncfPreviewHtml(tipo, desde, hasta) {
+  const d = Number(desde), h = Number(hasta);
+  if (!tipo || !Number.isInteger(d) || d < 1 || !Number.isInteger(h) || h <= d) {
+    return 'Escribe el número inicial y el final para ver el rango.';
+  }
+  const n = h - d + 1;
+  return `Primer NCF: <strong>${_ncfFmt(tipo, d)}</strong> · Último: <strong>${_ncfFmt(tipo, h)}</strong> · ${n.toLocaleString('es-DO')} comprobante${n === 1 ? '' : 's'}`;
+}
+
+// Reglas del formulario: { campo: mensaje }. `existentes` = secuencias ya
+// registradas (las suspendidas no cuentan, igual que en el servidor).
+function _ncfValidar({ tipo, desde, hasta, vence, existentes = [], excluirId = null, editando = false }) {
+  const err = {};
+  const d = Number(desde), h = Number(hasta);
+  if (!editando && (!Number.isInteger(d) || d < 1)) err.desde = 'Escribe el número inicial (1 o más).';
+  if (!Number.isInteger(h) || h < 1) err.hasta = 'Escribe el número final.';
+  else if (Number.isInteger(d) && h <= d) err.hasta = 'El número final debe ser mayor que el inicial.';
+  else if (h > 99999999) err.hasta = 'El NCF tiene 8 dígitos: máximo 99999999.';
+  if (!vence && !NCF_SIN_VENCE.has(tipo) && !editando) err.vence = 'Indica la fecha de vencimiento que dio la DGII.';
+  else if (vence && !editando && vence < hoyLocal()) err.vence = 'Esa fecha ya pasó: la secuencia no se podría usar.';
+  if (!err.desde && !err.hasta) {
+    const choque = existentes.find(s => s.documentType === tipo && String(s.id) !== String(excluirId)
+      && !['suspendido', 'cancelado', 'eliminado'].includes(s.status)
+      && d <= Number(s.endNumber) && h >= Number(s.startNumber));
+    if (choque) err.hasta = `Se cruza con la secuencia ${_ncfFmt(tipo, choque.startNumber)}–${_ncfFmt(tipo, choque.endNumber)}.`;
+  }
+  return err;
+}
+
+// Estado que se muestra: Activa / Por agotarse / Por vencer / Vencida / Agotada / Desactivada.
+function _ncfEstado(s) {
+  const total = Math.max(1, Number(s.totalAuthorized) || (Number(s.endNumber) - Number(s.startNumber) + 1));
+  const quedan = Math.max(0, Number(s.totalAvailable ?? (Number(s.endNumber) - Number(s.nextNumber) + 1)));
+  const pct = quedan / total;
+  const diasVence = s.expirationDate ? _diasHasta(s.expirationDate) : null;
+  if (s.status === 'suspendido') return { etiqueta: 'Desactivada', pill: 'pill-neutral', activa: false, quedan, total, pct, diasVence, alertas: [] };
+  if ((s.effectiveStatus || s.status) === 'vencido' || (diasVence !== null && diasVence < 0)) {
+    return { etiqueta: 'Vencida', pill: 'pill-bad', activa: false, quedan, total, pct, diasVence, alertas: [] };
+  }
+  if (quedan <= 0 || (s.effectiveStatus || s.status) === 'agotado') {
+    return { etiqueta: 'Agotada', pill: 'pill-bad', activa: false, quedan: 0, total, pct: 0, diasVence, alertas: [] };
+  }
+  const alertas = [];
+  if (pct < 0.10) alertas.push(`Quedan solo ${_plural(quedan, 'comprobante', 'comprobantes')} (${Math.max(1, Math.round(pct * 100))}%).`);
+  if (diasVence !== null && diasVence < 30) alertas.push(diasVence === 0 ? 'Vence hoy.' : `Vence en ${_plural(diasVence, 'día', 'días')}.`);
+  if (alertas.length) {
+    return { etiqueta: pct < 0.10 ? 'Por agotarse' : 'Por vencer', pill: 'pill-warn', activa: true, quedan, total, pct, diasVence, alertas };
+  }
+  return { etiqueta: 'Activa', pill: 'pill-ok', activa: true, quedan, total, pct, diasVence, alertas };
+}
 
 async function abrirMisSecuenciasNcf() {
   show('modal-mis-ncf-lista');
@@ -3699,13 +4486,15 @@ function cerrarMisSecuenciasNcf() { hide('modal-mis-ncf-lista'); }
 
 async function loadMisSecuenciasNcf() {
   const body = $id('mis-ncf-lista-body');
-  if (body) body.innerHTML = `<div class="empty-state"><div class="empty-icon">🔄</div><div class="empty-text">Cargando…</div></div>`;
+  setText('mis-ncf-resumen', 'Cargando…');
+  if (body) body.innerHTML = '';
   try {
     await refreshToken();
     _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf');
     renderMisSecuenciasNcf();
   } catch (e) {
-    if (body) body.innerHTML = `<div class="empty-state"><div style="color:var(--red,#ef4444)">Error: ${esc(e.message)}</div></div>`;
+    setText('mis-ncf-resumen', '');
+    if (body) body.innerHTML = `<div class="fm-aviso fm-aviso--error">No se pudieron cargar tus secuencias: ${esc(e.message)}</div>`;
   }
 }
 
@@ -3713,130 +4502,204 @@ function renderMisSecuenciasNcf() {
   const body = $id('mis-ncf-lista-body');
   if (!body) return;
   if (!_misNcf.length) {
-    body.innerHTML = `<div class="empty-state"><div class="empty-icon">🏛</div><div class="empty-text">No tienes secuencias NCF registradas todavía.</div></div>`;
+    setText('mis-ncf-resumen', 'Todavía no tienes secuencias registradas.');
+    body.innerHTML = `<div class="fm-aviso">Registra el rango que la DGII te autorizó (por ejemplo B02 del 1 al 500) para poder emitir facturas de ese tipo.
+      <button class="btn btn-primary btn-sm" data-icono="plus" onclick="app.abrirRegistrarMiNcfModal()">Agregar secuencia</button></div>`;
     return;
   }
-  const colores = { activo: '#22C55E', agotado: '#ef4444', vencido: '#ef4444', suspendido: '#6b7280' };
-  const labels  = { activo: 'Activo', agotado: 'Agotado', vencido: 'Vencido', suspendido: 'Suspendido' };
-  body.innerHTML = `
-    <table class="data-table">
-      <thead><tr><th>Tipo</th><th>Rango</th><th>Próximo</th><th>Disponibles</th><th>Vencimiento</th><th>Estado</th><th></th></tr></thead>
-      <tbody>
-        ${_misNcf.map(s => `
-          <tr>
-            <td>${esc(s.documentType)}</td>
-            <td>${s.startNumber}–${s.endNumber}</td>
-            <td>${s.nextNumber}</td>
-            <td>${s.totalAvailable}</td>
-            <td>${s.expirationDate ? fmtDate(s.expirationDate) : '—'}</td>
-            <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${colores[s.effectiveStatus] || '#6b7280'}">${labels[s.effectiveStatus] || s.effectiveStatus}</span></td>
-            <td style="white-space:nowrap">
-              <button class="btn btn-xs btn-secondary" onclick="app.abrirRegistrarMiNcfModal('${s.id}')">✎ Editar</button>
-              ${s.status === 'activo' ? `<button class="btn btn-xs btn-secondary" onclick="app.suspenderMiNcf('${s.id}')">⏸ Suspender</button>` : ''}
-              ${s.status === 'suspendido' ? `<button class="btn btn-xs btn-secondary" onclick="app.activarMiNcf('${s.id}')">▶ Activar</button>` : ''}
-              ${s.nextNumber === s.startNumber ? `<button class="btn btn-xs btn-danger" onclick="app.eliminarMiNcf('${s.id}')">🗑 Eliminar</button>` : ''}
-            </td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  `;
+  const lista = _misNcf.map(s => ({ s, e: _ncfEstado(s) }))
+    .sort((a, b) => (Number(b.e.activa) - Number(a.e.activa))
+      || String(a.s.documentType).localeCompare(String(b.s.documentType))
+      || Number(a.s.startNumber) - Number(b.s.startNumber));
+  const activas = lista.filter(x => x.e.activa).length;
+  const alerta = lista.filter(x => x.e.alertas.length).length;
+  const inactivas = lista.length - activas;
+  setText('mis-ncf-resumen', [
+    _plural(activas, 'activa', 'activas'),
+    alerta ? `${alerta} por agotarse o vencer` : '',
+    inactivas ? `${inactivas} vencida${inactivas === 1 ? '' : 's'}, agotada${inactivas === 1 ? '' : 's'} o desactivada${inactivas === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' · '));
+
+  body.innerHTML = lista.map(({ s, e }) => {
+    const tipo = s.documentType;
+    const usados = Math.max(0, Number(s.totalUsed ?? (Number(s.nextNumber) - Number(s.startNumber))));
+    const barra = e.pct < 0.10 ? 'is-bad' : e.pct < 0.25 ? 'is-warn' : '';
+    const vence = s.expirationDate
+      ? `${_fmtFechaSolo(s.expirationDate)}${e.diasVence !== null && e.diasVence >= 0 ? ` · en ${_plural(e.diasVence, 'día', 'días')}` : ''}`
+      : 'No vence';
+    return `<div class="ncf-card ${e.alertas.length ? 'is-alerta' : ''} ${e.activa ? '' : 'is-inactiva'}">
+      <div class="ncf-card__cabeza">
+        <div class="ncf-card__tipo">${esc(tipo)} · ${esc(NCF_NOMBRES[tipo] || '')}<small>${esc(NCF_DESCRIPCIONES[tipo] || '')}</small></div>
+        <span class="pill ${e.pill}">${e.etiqueta}</span>
+      </div>
+      <dl class="ncf-datos">
+        <dt>Rango</dt><dd><code>${_ncfFmt(tipo, s.startNumber)} – ${_ncfFmt(tipo, s.endNumber)}</code></dd>
+        <dt>Próximo NCF</dt><dd><code>${e.quedan > 0 ? _ncfFmt(tipo, s.nextNumber) : '—'}</code></dd>
+        <dt>Usados</dt><dd>${usados.toLocaleString('es-DO')}</dd>
+        <dt>Vence</dt><dd>${esc(vence)}</dd>
+      </dl>
+      <div class="ncf-barra ${barra}" role="progressbar" aria-valuemin="0" aria-valuemax="${e.total}" aria-valuenow="${e.quedan}"><span style="width:${Math.round(e.pct * 100)}%"></span></div>
+      <div class="ncf-barra__txt"><span>Quedan ${e.quedan.toLocaleString('es-DO')} de ${e.total.toLocaleString('es-DO')}</span><span>${Math.round(e.pct * 100)}%</span></div>
+      ${e.alertas.map(a => `<div class="ncf-alerta">${esc(a)}</div>`).join('')}
+      <div class="ncf-acciones">
+        <button class="btn btn-secondary btn-sm" data-icono="pencil" onclick="app.abrirRegistrarMiNcfModal('${s.id}')">Editar</button>
+        ${s.status === 'suspendido'
+          ? `<button class="btn btn-secondary btn-sm" data-icono="play" onclick="app.activarMiNcf('${s.id}')">Activar</button>`
+          : (s.status === 'activo' ? `<button class="btn btn-secondary btn-sm" data-icono="circle-pause" onclick="app.suspenderMiNcf('${s.id}')">Desactivar</button>` : '')}
+        ${s.tieneDocumento ? `<button class="btn btn-secondary btn-sm" data-icono="file-text" onclick="app.verDocumentoMiNcf('${s.id}')">Documento</button>` : ''}
+        ${Number(s.nextNumber) === Number(s.startNumber) ? `<button class="btn-icono is-danger" data-icono="trash-2" title="Eliminar (nunca se usó)" aria-label="Eliminar" onclick="app.eliminarMiNcf('${s.id}')"></button>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// El documento de la DGII se baja solo cuando se pide (no viene en la lista).
+async function verDocumentoMiNcf(id) {
+  try {
+    const { attachmentData } = await apiCall('GET', `/api/mis-secuencias-ncf/${id}/documento`);
+    const seq = _misNcf.find(s => String(s.id) === String(id));
+    const ext = /^data:application\/pdf/.test(attachmentData) ? 'pdf' : (/^data:image\/(\w+)/.exec(attachmentData)?.[1] || 'bin');
+    const a = document.createElement('a');
+    a.href = attachmentData;
+    a.download = `Autorizacion_${seq?.documentType || 'NCF'}_${seq?.startNumber || ''}-${seq?.endNumber || ''}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) { toast(e.message, 'error'); }
 }
 
 function handleMiNcfAdjunto(input) {
   const file = input?.files?.[0];
+  _fmError('mn-adjunto-file', '');
   if (!file) return;
-  if (file.size > 700 * 1024) { toast('El archivo debe pesar menos de 700 KB.', 'error'); return; }
+  if (file.size > 700 * 1024) { _fmError('mn-adjunto-file', 'El archivo debe pesar menos de 700 KB.'); input.value = ''; return; }
   const reader = new FileReader();
   reader.onload = (e) => {
     _mnAdjuntoDataUrl = e.target.result;
-    const label = $id('mn-adjunto-nombre');
-    if (label) label.textContent = `📎 ${file.name}`;
+    setText('mn-adjunto-nombre', `Adjunto: ${file.name}`);
   };
   reader.readAsDataURL(file);
+}
+
+// Prefijo, vista previa y ayuda del tipo mientras se escribe.
+function mnActualizar() {
+  const tipo = $id('mn-tipo')?.value || '';
+  const el = $id('mn-prefijo'); if (el) el.value = tipo;
+  setText('mn-tipo-ayuda', NCF_DESCRIPCIONES[tipo] || '');
+  setText('mn-vence-lbl', NCF_SIN_VENCE.has(tipo) ? 'Fecha de vencimiento (las notas de crédito no vencen)' : 'Fecha de vencimiento *');
+  const p = $id('mn-preview');
+  if (p) p.innerHTML = _ncfPreviewHtml(tipo, $id('mn-desde')?.value, $id('mn-hasta')?.value);
 }
 
 function abrirRegistrarMiNcfModal(editId) {
   _mnEditTargetId = editId || null;
   const seq = editId ? _misNcf.find((s) => String(s.id) === String(editId)) : null;
   _mnAdjuntoDataUrl = null;
+  _fmLimpiar('mn-form');
+  setText('mn-msg', '');
 
   const tipoEl = $id('mn-tipo');
-  if (tipoEl) tipoEl.innerHTML = MIS_NCF_TIPOS.map((t) => `<option value="${t.code}">${t.label}</option>`).join('');
+  if (tipoEl) tipoEl.innerHTML = _ncfOpciones();
 
-  const set = (id, v) => { const el = $id(id); if (el) el.value = v || ''; };
+  const set = (id, v) => { const el = $id(id); if (el) el.value = v ?? ''; };
+  const fileInput = $id('mn-adjunto-file'); if (fileInput) fileInput.value = '';
   if (seq) {
-    setText('mn-titulo', `🏛 Editar ${seq.documentType} · ${seq.startNumber}–${seq.endNumber}`);
+    setText('mn-titulo', `Editar secuencia ${seq.documentType}`);
     if (tipoEl) { tipoEl.value = seq.documentType; tipoEl.disabled = true; }
     set('mn-desde', seq.startNumber);
     $id('mn-desde').disabled = true;
     set('mn-hasta', seq.endNumber);
-    set('mn-fecha-autorizacion', (seq.authorizationDate || '').slice(0, 10));
-    set('mn-fecha-vencimiento', (seq.expirationDate || '').slice(0, 10));
+    set('mn-fecha-autorizacion', String(seq.authorizationDate || '').slice(0, 10));
+    set('mn-fecha-vencimiento', String(seq.expirationDate || '').slice(0, 10));
     set('mn-referencia', seq.authorizationReference);
     set('mn-notas', seq.notes);
-    // El adjunto no se reemplaza al editar (opcional) — se mantiene el ya guardado.
-    const label = $id('mn-adjunto-nombre');
-    if (label) label.textContent = seq.attachmentData ? '📎 Ya tiene documento adjunto (no se reemplaza al editar)' : '';
-    $id('mn-adjunto-file').required = false;
+    setText('mn-adjunto-nombre', seq.tieneDocumento ? 'Ya tiene un documento guardado. Sube otro solo si quieres reemplazarlo.' : '');
+    setText('mn-btn-guardar', 'Guardar cambios');
   } else {
-    setText('mn-titulo', '🏛 Registrar Mi Secuencia NCF');
-    if (tipoEl) tipoEl.disabled = false;
-    ['mn-desde','mn-hasta','mn-fecha-autorizacion','mn-fecha-vencimiento','mn-referencia','mn-notas'].forEach((id) => set(id, ''));
+    setText('mn-titulo', 'Registrar secuencia NCF');
+    if (tipoEl) { tipoEl.disabled = false; tipoEl.value = 'B02'; }
+    ['mn-desde', 'mn-hasta', 'mn-fecha-autorizacion', 'mn-fecha-vencimiento', 'mn-referencia', 'mn-notas'].forEach((id) => set(id, ''));
     $id('mn-desde').disabled = false;
-    const label = $id('mn-adjunto-nombre');
-    if (label) label.textContent = '';
-    $id('mn-adjunto-file').value = '';
+    setText('mn-adjunto-nombre', '');
+    setText('mn-btn-guardar', 'Guardar secuencia');
   }
+  mnActualizar();
   show('modal-registrar-mi-ncf');
+  setTimeout(() => $id(seq ? 'mn-hasta' : 'mn-desde')?.focus(), 50);
 }
 
 function cerrarRegistrarMiNcfModal() { hide('modal-registrar-mi-ncf'); }
 
 async function guardarMiNcf() {
   const get = (id) => $id(id)?.value?.trim() || '';
+  const seq = _mnEditTargetId ? _misNcf.find(s => String(s.id) === String(_mnEditTargetId)) : null;
+  const tipo = seq ? seq.documentType : get('mn-tipo');
+  _fmLimpiar('mn-form');
+  setText('mn-msg', '');
+  const err = _ncfValidar({
+    tipo, desde: seq ? seq.startNumber : get('mn-desde'), hasta: get('mn-hasta'), vence: get('mn-fecha-vencimiento'),
+    existentes: _misNcf, excluirId: _mnEditTargetId, editando: Boolean(seq),
+  });
+  if (seq && !err.hasta && Number(get('mn-hasta')) < Number(seq.nextNumber) - 1) {
+    err.hasta = `Ya se usaron hasta el ${_ncfFmt(tipo, Number(seq.nextNumber) - 1)}: el final no puede ser menor.`;
+  }
+  if (err.desde) _fmError('mn-desde', err.desde);
+  if (err.hasta) _fmError('mn-hasta', err.hasta);
+  if (err.vence) _fmError('mn-fecha-vencimiento', err.vence);
+  if (Object.keys(err).length) return;
+
+  const btn = $id('mn-btn-guardar');
+  if (btn) btn.disabled = true;
   try {
     await refreshToken();
-    if (_mnEditTargetId) {
+    if (seq) {
       await apiCall('PUT', `/api/mis-secuencias-ncf/${_mnEditTargetId}`, {
         endNumber: Number(get('mn-hasta')) || null,
         authorizationDate: get('mn-fecha-autorizacion') || null,
         expirationDate: get('mn-fecha-vencimiento') || null,
-        authorizationReference: get('mn-referencia') || null,
+        authorizationReference: get('mn-referencia'),
         notes: get('mn-notas'),
+        attachmentData: _mnAdjuntoDataUrl || undefined,
       });
       toast('Secuencia actualizada.', 'success');
     } else {
-      if (!_mnAdjuntoDataUrl) { toast('Sube el documento de autorización de la DGII.', 'error'); return; }
       await apiCall('POST', '/api/mis-secuencias-ncf', {
-        documentType: get('mn-tipo'),
+        documentType: tipo,
         startNumber: Number(get('mn-desde')) || 0,
         endNumber: Number(get('mn-hasta')) || 0,
         authorizationDate: get('mn-fecha-autorizacion') || null,
         expirationDate: get('mn-fecha-vencimiento') || null,
         authorizationReference: get('mn-referencia'),
-        attachmentData: _mnAdjuntoDataUrl,
+        attachmentData: _mnAdjuntoDataUrl || null,
         notes: get('mn-notas'),
       });
       toast('Secuencia registrada y activa.', 'success');
     }
     cerrarRegistrarMiNcfModal();
-    loadMisSecuenciasNcf();
-  } catch (e) { toast(e.message, 'error'); }
+    await loadMisSecuenciasNcf();
+    if (!$id('modal-nueva-factura')?.classList.contains('hidden')) _nfPintarTipos();
+  } catch (e) {
+    // Errores del servidor (p. ej. 409: se cruza con otra) debajo del campo que toca.
+    if (/cruza|final/i.test(e.message)) _fmError('mn-hasta', e.message);
+    else if (/vencimiento|fecha/i.test(e.message)) _fmError('mn-fecha-vencimiento', e.message);
+    else { const m = $id('mn-msg'); if (m) { m.textContent = e.message; m.classList.add('is-error'); } }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function suspenderMiNcf(id) {
   const seq = _misNcf.find((s) => String(s.id) === String(id));
   if (!seq) return;
   const reason = await pedirMotivoNcf(
-    `Suspender ${seq.documentType} ${seq.startNumber}–${seq.endNumber}`,
-    'El motivo es obligatorio. No podrás facturar con este rango hasta que la actives de nuevo.'
+    `Desactivar ${seq.documentType} ${_ncfFmt(seq.documentType, seq.startNumber)}–${_ncfFmt(seq.documentType, seq.endNumber)}`,
+    'El motivo es obligatorio. No podrás facturar con este rango hasta que lo actives de nuevo.'
   );
   if (!reason) return;
   try {
     await refreshToken();
     await apiCall('POST', `/api/mis-secuencias-ncf/${id}/suspender`, { reason });
-    toast('Secuencia suspendida.', 'success');
+    toast('Secuencia desactivada.', 'success');
     loadMisSecuenciasNcf();
   } catch (e) { toast(e.message, 'error'); }
 }
@@ -3853,7 +4716,7 @@ async function activarMiNcf(id) {
 async function eliminarMiNcf(id) {
   const seq = _misNcf.find((s) => String(s.id) === String(id));
   if (!seq) return;
-  if (!confirm(`¿Eliminar la secuencia ${seq.documentType} ${seq.startNumber}–${seq.endNumber}? Nunca se usó, así que se puede borrar sin problema.`)) return;
+  if (!confirm(`¿Eliminar la secuencia ${_ncfFmt(seq.documentType, seq.startNumber)}–${_ncfFmt(seq.documentType, seq.endNumber)}? Nunca se usó, así que se puede borrar sin problema.`)) return;
   try {
     await refreshToken();
     await apiCall('DELETE', `/api/mis-secuencias-ncf/${id}`);
@@ -3862,77 +4725,489 @@ async function eliminarMiNcf(id) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-// ── Nueva Factura ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// FACTURA Y COTIZACIÓN — formulario común (diseño 2026)
+// Prefijo 'nf' = Nueva factura, 'cot' = cotización. Mismos pasos: cliente
+// (buscador de Mis clientes y negocios asociados + DGII), servicios con
+// "Agregar rápido", pago y notas, y el resumen fijo a la derecha.
+// ══════════════════════════════════════════════════════════════════════
 
-async function nuevaFactura() {
-  _facEditId = null;
-  const tEl = $id('modal-nueva-factura')?.querySelector('.modal-title');
-  if (tEl) tEl.textContent = '＋ Nueva Factura';
-  const bEl = $id('nf-btn-guardar');
-  if (bEl) bEl.textContent = '💾 Emitir Factura';
-  const ncfEl = $id('nf-tipo-ncf'); if (ncfEl) ncfEl.disabled = false;
+function _docItems(p) { return p === 'cot' ? _cotItems : _facItems; }
+function _docSetItems(p, v) { if (p === 'cot') _cotItems = v; else _facItems = v; }
+function _docNuevaLinea(d = {}) {
+  return {
+    descripcion: d.descripcion || '', cantidad: Number(d.cantidad) || 1, precio: Number(d.precio) || 0,
+    descuento: Number(d.descuento) || 0, itbis_rate: d.itbis_rate ?? 18,
+  };
+}
+const _r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+// Importe de la línea sin ITBIS (el ITBIS va aparte en el resumen).
+function _docImporte(it) {
+  const base = (Number(it.precio) || 0) * Math.max(1, Number(it.cantidad) || 1);
+  return _r2(base - base * (Math.min(100, Math.max(0, Number(it.descuento) || 0)) / 100));
+}
+// Mismo cálculo que computeFacturaItems() del servidor.
+function _docTotales(items) {
+  let subtotal = 0, descuentos = 0, gravada = 0, exento = 0, itbis = 0;
+  for (const it of items || []) {
+    const base = (Number(it.precio) || 0) * Math.max(1, Number(it.cantidad) || 1);
+    const d = base * (Math.min(100, Math.max(0, Number(it.descuento) || 0)) / 100);
+    const g = base - d;
+    const rate = Number(it.itbis_rate) || 0;
+    subtotal += base; descuentos += d; itbis += g * (rate / 100);
+    if (rate > 0) gravada += g; else exento += g;
+  }
+  return {
+    subtotal: _r2(subtotal), descuentos: _r2(descuentos), gravada: _r2(gravada), exento: _r2(exento),
+    itbis: _r2(itbis), total: _r2(subtotal - descuentos + itbis),
+  };
+}
+// Líneas que se mandan: sin las que quedaron completamente vacías.
+function _docItemsUtiles(items) {
+  return (items || []).filter(it => String(it.descripcion || '').trim() || Number(it.precio) > 0);
+}
 
-  _facItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
-  const today = hoyLocal();
-  const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
-  set('nf-fecha', today);
-  const chkCli = $id('nf-guardar-cliente'); if (chkCli) chkCli.checked = false;
-  _mostrarCheckGuardarCliente('nf', '');
-  ['nf-cli-nombre','nf-cli-rnc','nf-cli-dir','nf-cli-tel','nf-cli-correo','nf-observacion']
-    .forEach(id => set(id, ''));
+// "Agregar rápido": servicios típicos del despacho con el período ya puesto.
+function _docPlantillas() {
+  const hoy = new Date();
+  const prev = new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1);
+  const mesHoy = `${_MESES_CORTOS[hoy.getMonth()]} ${hoy.getFullYear()}`;
+  const mesPrev = `${_MESES_CORTOS[prev.getMonth()]} ${prev.getFullYear()}`;
+  return [
+    { clave: 'Contabilidad mensual', etiqueta: 'Contabilidad mensual', descripcion: `Contabilidad mensual · ${mesHoy}` },
+    { clave: 'Preparación y envío IT-1', etiqueta: 'IT-1', descripcion: `Preparación y envío IT-1 · ${mesPrev}` },
+    { clave: 'Formatos 606 / 607', etiqueta: '606 / 607', descripcion: `Formatos 606 / 607 · ${mesPrev}` },
+    { clave: 'Declaración IR-2', etiqueta: 'IR-2 anual', descripcion: `Declaración IR-2 · año ${hoy.getFullYear() - 1}` },
+  ];
+}
+// Precio sugerido: el último que usaste en una factura o cotización con ese servicio.
+function _docUltimoPrecio(clave) {
+  const docs = [...(_facFacturas || []), ...(_cotCotizaciones || [])]
+    .sort((a, b) => String(b.fecha || '').localeCompare(String(a.fecha || '')));
+  for (const d of docs) {
+    const it = (d.items || []).find(x => String(x.descripcion || '').startsWith(clave) && Number(x.precio) > 0);
+    if (it) return Number(it.precio);
+  }
+  return 0;
+}
+// Las sugerencias salen al escribir la descripción (datalist), con el período ya puesto.
+const _DOC_SERVICIOS_EXTRA = ['Declaración IR-17', 'Preparación de nómina y TSS', 'Asesoría fiscal', 'Auditoría', 'Consultoría empresarial', 'Registro mercantil'];
+function _docPintarPlantillas() {
+  const lista = $id('fac-servicios-list');
+  if (!lista) return;
+  lista.innerHTML = [..._docPlantillas().map(x => x.descripcion), ..._DOC_SERVICIOS_EXTRA]
+    .map(v => `<option value="${esc(v)}"></option>`).join('');
+}
+function docAgregarPlantilla(p, i) {
+  const x = _docPlantillas()[i];
+  if (!x) return;
+  const items = _docItems(p);
+  const precio = _docUltimoPrecio(x.clave);
+  const linea = _docNuevaLinea({ descripcion: x.descripcion, precio });
+  let idx;
+  if (items.length === 1 && !items[0].descripcion && !Number(items[0].precio)) { items[0] = linea; idx = 0; }
+  else { items.push(linea); idx = items.length - 1; }
+  renderDocItems(p);
+  _docPintarTotales(p);
+  _docActualizarPie(p);
+  if (!precio) setTimeout(() => $id(`${p}-items-body`)?.querySelector(`[data-precio="${idx}"]`)?.focus(), 30);
+}
 
-  // Autocomplete DGII en el RNC del cliente de facturación
-  if (window.RNCLookup) {
-    const rncEl    = $id('nf-cli-rnc');
-    const nombreEl = $id('nf-cli-nombre');
-    if (rncEl) {
-      RNCLookup.attach(rncEl, {
-        nameEl: nombreEl,
-        mode: 'both',
-        onSelect() {},
-      });
+function renderDocItems(p) {
+  const tbody = $id(`${p}-items-body`);
+  if (!tbody) return;
+  const ej = _docPlantillas()[0].descripcion;
+  // Sin columna de descuento (diseño 2026): si la línea trae uno (de una
+  // cotización vieja) se respeta en el cálculo y sale en el resumen.
+  tbody.innerHTML = _docItems(p).map((it, i) => {
+    const rate = Number(it.itbis_rate) || 0;
+    const extra = [0, 18].includes(rate) ? '' : `<option value="${rate}" selected>${rate}%</option>`;
+    const precio = Number(it.precio) ? Number(it.precio).toFixed(2) : '';
+    return `<tr>
+      <td><input type="text" class="form-input" list="fac-servicios-list" value="${esc(it.descripcion)}" placeholder="Ej.: ${esc(ej)}"
+        aria-label="Descripción" oninput="app.docItemSet('${p}',${i},'descripcion',this.value)" /></td>
+      <td><input type="number" class="form-input fm-cant" min="1" step="1" value="${it.cantidad}" aria-label="Cantidad"
+        oninput="app.docItemSet('${p}',${i},'cantidad',this.value)" /></td>
+      <td><input type="number" class="form-input" min="0" step="0.01" value="${precio}" placeholder="5000.00" data-precio="${i}"
+        aria-label="Precio" oninput="app.docItemSet('${p}',${i},'precio',this.value)" /></td>
+      <td><select class="form-select" aria-label="ITBIS" onchange="app.docItemSet('${p}',${i},'itbis_rate',this.value)">
+        <option value="18" ${rate === 18 ? 'selected' : ''}>18%</option>
+        <option value="0" ${rate === 0 ? 'selected' : ''}>Exento</option>${extra}
+      </select></td>
+      <td class="fm-importe" id="${p}-item-imp-${i}">${fmtMoney(_docImporte(it))}</td>
+      <td><button type="button" class="btn-quitar" data-icono="trash-2" title="Quitar línea" aria-label="Quitar línea" onclick="app.docRemoveItem('${p}',${i})"></button></td>
+    </tr>`;
+  }).join('');
+}
+
+function docItemSet(p, idx, field, value) {
+  const it = _docItems(p)[idx];
+  if (!it) return;
+  it[field] = field === 'descripcion' ? value : (Number(value) || 0);
+  // Elegida una sugerencia ("Contabilidad mensual · oct 2026") sin precio: el último que usaste.
+  if (field === 'descripcion' && !Number(it.precio)) {
+    const sug = _docPlantillas().find(x => x.descripcion === value);
+    const precio = sug ? _docUltimoPrecio(sug.clave) : 0;
+    if (precio) {
+      it.precio = precio;
+      const inp = $id(`${p}-items-body`)?.querySelector(`[data-precio="${idx}"]`);
+      if (inp) inp.value = precio.toFixed(2);
     }
   }
-  set('nf-tipo-ncf', 'B02');
-  set('nf-condicion', 'contado');
-  set('nf-metodo', 'efectivo');
+  const cell = $id(`${p}-item-imp-${idx}`);
+  if (cell) cell.textContent = fmtMoney(_docImporte(it));
+  _docPintarTotales(p);
+}
 
+function docAddItem(p) {
+  _docItems(p).push(_docNuevaLinea());
+  renderDocItems(p);
+  _docPintarTotales(p);
+  _docActualizarPie(p);
+  const filas = $id(`${p}-items-body`)?.querySelectorAll('tr');
+  filas?.[filas.length - 1]?.querySelector('input')?.focus();
+}
+
+function docRemoveItem(p, idx) {
+  const items = _docItems(p);
+  if (items.length <= 1) _docSetItems(p, [_docNuevaLinea()]);
+  else items.splice(idx, 1);
+  renderDocItems(p);
+  _docPintarTotales(p);
+  _docActualizarPie(p);
+}
+
+function _docPintarTotales(p) {
+  const t = _docTotales(_docItems(p));
+  setText(`${p}-t-sub`, fmtMoney(t.subtotal));
+  setText(`${p}-t-desc`, '− ' + fmtMoney(t.descuentos));
+  setText(`${p}-t-gravada`, fmtMoney(t.gravada));
+  setText(`${p}-t-exento`, fmtMoney(t.exento));
+  setText(`${p}-t-itbis`, fmtMoney(t.itbis));
+  setText(`${p}-t-total`, fmtMoney(t.total));
+  // En el resumen solo salen las cifras que dicen algo: descuentos y exento si hay.
+  const ver = (id, si) => { const fila = $id(id)?.parentElement; if (fila) fila.hidden = !si; };
+  ver(`${p}-t-desc`, t.descuentos > 0);
+  ver(`${p}-t-exento`, t.exento > 0);
+  const tasas = [...new Set(_docItems(p).map(it => Number(it.itbis_rate) || 0).filter(r => r > 0))];
+  setText(`${p}-t-itbis-lbl`, tasas.length === 1 ? `ITBIS (${tasas[0]}%)` : 'ITBIS');
+  return t;
+}
+
+function _docActualizarPie(p) { if (p === 'cot') cotActualizarPie(); else nfActualizarPie(); }
+
+function docElegirCondicion(p, valor) {
+  const h = $id(`${p}-condicion`); if (h) h.value = valor;
+  document.querySelectorAll(`#${p}-condicion-seg [data-valor]`).forEach(b => b.setAttribute('aria-checked', String(b.dataset.valor === valor)));
+}
+
+// ── Cliente: buscador + DGII ──
+function _docClientesGuardados(p) { return (p === 'cot' ? _cotClientes : _facClientes) || []; }
+
+// Se busca escribiendo en "Razón social". soloVacio: al entrar al campo, la
+// lista sale solo si está vacío (para elegir un cliente sin escribir).
+function docBuscarCliente(p, soloVacio) {
+  const input = $id(`${p}-cli-nombre`);
+  const caja = $id(`${p}-cli-resultados`);
+  if (!input || !caja) return;
+  if (soloVacio && input.value.trim()) return;
+  const q = _normalizar(input.value);
+  const qd = String(input.value || '').replace(/\D/g, '');
+  const pasa = (nombre, rnc) => !q || _normalizar(nombre).includes(q) || (qd.length >= 3 && String(rnc || '').replace(/\D/g, '').includes(qd));
+  const guardados = _docClientesGuardados(p).filter(c => pasa(c.nombre, c.rnc)).slice(0, 6);
+  const negocios = (_allClientes || []).filter(n => pasa(n.businessName || n.businessKey, n.rnc)).slice(0, 6);
+  let html = '';
+  if (guardados.length) {
+    html += '<div class="buscador-grupo">Mis clientes</div>' + guardados.map(c => `
+      <button type="button" class="buscador-item" onmousedown="event.preventDefault();app.docElegirCliente('${p}','fac_${esc(c.id)}')">
+        <span class="buscador-item__titulo">${esc(c.nombre)}</span>
+        <span class="buscador-item__meta">${esc([c.rnc ? `RNC ${c.rnc}` : 'Sin RNC', c.correo].filter(Boolean).join(' · '))}</span>
+      </button>`).join('');
+  }
+  if (negocios.length) {
+    html += '<div class="buscador-grupo">Negocios asociados</div>' + negocios.map(n => `
+      <button type="button" class="buscador-item" onmousedown="event.preventDefault();app.docElegirCliente('${p}','neg_${esc(n.id)}')">
+        <span class="buscador-item__titulo">${esc(n.businessName || n.businessKey || '—')}</span>
+        <span class="buscador-item__meta">${esc(n.rnc ? `RNC ${n.rnc}` : 'Sin RNC')}</span>
+      </button>`).join('');
+  }
+  // Sin coincidencias es un cliente nuevo: no se muestra nada y se sigue escribiendo.
+  caja.innerHTML = html;
+  caja.classList.toggle('hidden', !html);
+}
+
+async function docElegirCliente(p, val) {
+  $id(`${p}-cli-resultados`)?.classList.add('hidden');
+  if (p === 'cot') await selClienteCot(val); else await selClienteFac(val);
+  setText(`${p}-rnc-ayuda`, '');
+  if (p === 'nf') _nfPintarTipos();
+  _docActualizarPie(p);
+}
+
+function docClienteNuevo(p) {
+  ['nombre', 'rnc', 'dir', 'tel', 'correo'].forEach(c => { const el = $id(`${p}-cli-${c}`); if (el) el.value = ''; });
+  // El nombre que traiga la DGII vuelve a llenarse solo (no es una edición a mano).
+  const nom = $id(`${p}-cli-nombre`); if (nom) delete nom.dataset.rncOverride;
+  $id(`${p}-cli-resultados`)?.classList.add('hidden');
+  _mostrarCheckGuardarCliente(p, '');
+  const chk = $id(`${p}-guardar-cliente`); if (chk) chk.checked = true;
+  setText(`${p}-rnc-ayuda`, '');
+  _docActualizarPie(p);
+  $id(`${p}-cli-rnc`)?.focus();
+}
+
+async function _consultarDgii(rncId, nombreId, ayudaId) {
+  const raw = String($id(rncId)?.value || '').replace(/\D/g, '');
+  _fmError(rncId, '');
+  if (raw.length !== 9 && raw.length !== 11) { _fmError(rncId, 'El RNC tiene 9 dígitos y la cédula 11.'); return; }
+  setText(ayudaId, 'Consultando la DGII…');
   try {
-    // Cargar clientes de facturación propios
+    const d = await apiCall('GET', `/api/rnc/consulta?id=${encodeURIComponent(raw)}`);
+    if (d && d.found) {
+      const nom = $id(nombreId);
+      if (nom) nom.value = d.nombre || d.nombreComercial || nom.value;
+      setText(ayudaId, `DGII: ${d.nombre || d.nombreComercial}${d.estado ? ' · ' + d.estado : ''}`);
+      _fmError(nombreId, '');
+    } else {
+      setText(ayudaId, 'Ese RNC no aparece en la DGII. Escribe el nombre a mano.');
+    }
+  } catch (_) {
+    setText(ayudaId, 'No se pudo consultar la DGII ahora. Escribe el nombre a mano.');
+  }
+}
+async function docConsultarDgii(p) {
+  await _consultarDgii(`${p}-cli-rnc`, `${p}-cli-nombre`, `${p}-rnc-ayuda`);
+  if (p === 'nf') _nfPintarTipos();
+  _docActualizarPie(p);
+}
+function mcliConsultarDgii() { return _consultarDgii('mcli-f-rnc', 'mcli-f-nombre', 'mcli-rnc-ayuda'); }
+
+// Los resultados del buscador de cliente se cierran al tocar fuera.
+document.addEventListener('mousedown', (e) => {
+  if (e.target.closest?.('.fm-buscador, .fm-autocompletar')) return;
+  document.querySelectorAll('.fm-resultados').forEach(c => c.classList.add('hidden'));
+});
+
+async function _docCargarClientes(p) {
+  try {
     const [clientes, negocios] = await Promise.all([
       apiCall('GET', '/api/facturacion/clientes'),
       _allClientes.length ? Promise.resolve(_allClientes) : apiCall('GET', '/api/clientes').catch(() => []),
     ]);
-    _facClientes = clientes;
+    if (p === 'cot') _cotClientes = clientes; else _facClientes = clientes;
     if (!_allClientes.length && negocios.length) _allClientes = negocios;
+  } catch { /* sin clientes guardados: se escriben a mano */ }
+}
 
-    const sel = $id('nf-cliente-sel');
-    if (sel) {
-      let html = '<option value="">— Ingresar datos manualmente —</option>';
-      if (clientes.length) {
-        html += `<optgroup label="Mis Clientes">` +
-          clientes.map(c => `<option value="fac_${c.id}">${esc(c.nombre)}${c.rnc ? ' — ' + c.rnc : ''}</option>`).join('') +
-          `</optgroup>`;
-      }
-      if (negocios.length) {
-        html += `<optgroup label="Negocios asociados">` +
-          negocios.map(n => `<option value="neg_${n.id}">${esc(n.businessName || n.businessKey || n.id)}${n.rnc ? ' — ' + n.rnc : ''}</option>`).join('') +
-          `</optgroup>`;
-      }
-      sel.innerHTML = html;
-      sel.value = '';
-    }
-  } catch { /* no critical */ }
+// ── Nueva factura ─────────────────────────────────────────────────────
 
-  // Cargar mis secuencias NCF y poner por defecto un tipo que SÍ tenga rango activo.
+// En tarjetas; los demás (B15, B16…) van en "Otro".
+const NF_TIPOS_PRINCIPALES = ['B01', 'B02', 'B14'];
+let _nfTipo = 'B02';
+let _nfTipoManual = false;     // el contador eligió el tipo: no se cambia solo al elegir cliente
+let _nfIntento = false;        // tras el primer "Emitir", los errores se pintan mientras escribe
+let _nfEditNcf = null;         // NCF de la factura en edición (no cambia)
+let _facDesdeCot = null;       // { id, numero } — "Convertir en factura" desde una cotización
+
+// La secuencia con la que el servidor va a emitir (la activa de menor rango).
+function _nfSecuenciaUsable(tipo) {
+  return (_misNcf || [])
+    .filter(s => s.documentType === tipo && (s.effectiveStatus || s.status) === 'activo' && Number(s.totalAvailable ?? 1) > 0)
+    .sort((a, b) => Number(a.startNumber) - Number(b.startNumber))[0] || null;
+}
+
+function _nfEstadoTipo(tipo) {
+  const u = _nfSecuenciaUsable(tipo);
+  if (u) {
+    const n = Number(u.totalAvailable || 0);
+    return { texto: `${n.toLocaleString('es-DO')} disponible${n === 1 ? '' : 's'}`, cls: n <= 5 ? '' : 'is-ok', usable: u };
+  }
+  const seqs = (_misNcf || []).filter(s => s.documentType === tipo);
+  if (!seqs.length) return { texto: 'Sin secuencia', cls: '', usable: null };
+  return { texto: _ncfEstado(seqs[0]).etiqueta, cls: 'is-bad', usable: null };
+}
+
+function _nfPintarTipos() {
+  const editando = Boolean(_facEditId);
+  const cont = $id('nf-tipos');
+  if (cont) {
+    cont.innerHTML = NF_TIPOS_PRINCIPALES.map(t => {
+      const st = _nfEstadoTipo(t);
+      // Código y nombre; el estado solo se ve cuando no se puede emitir con ese tipo.
+      return `<button type="button" class="fm-tipo" role="radio" aria-checked="${_nfTipo === t}" ${editando ? 'disabled' : ''}
+        title="${esc(`${NCF_DESCRIPCIONES[t]} · ${st.texto}`)}" onclick="app.nfElegirTipo('${t}')">
+        <span class="fm-tipo__cod">${t}</span>
+        <span class="fm-tipo__nombre">${esc(NCF_NOMBRES[t])}</span>
+        ${st.usable ? '' : `<span class="fm-tipo__estado is-bad">${esc(st.texto)}</span>`}
+      </button>`;
+    }).join('');
+  }
+  const otros = NCF_DOCUMENT_TYPES.map(x => x.code).filter(c => !NF_TIPOS_PRINCIPALES.includes(c));
+  const sel = $id('nf-tipo-otro');
+  if (sel) {
+    sel.innerHTML = '<option value="">Elegir…</option>' +
+      otros.map(c => `<option value="${c}">${c} — ${esc(NCF_NOMBRES[c])} · ${esc(_nfEstadoTipo(c).texto)}</option>`).join('');
+    sel.value = otros.includes(_nfTipo) ? _nfTipo : '';
+    sel.disabled = editando;
+  }
+  const hidden = $id('nf-tipo-ncf'); if (hidden) hidden.value = _nfTipo;
+  setText('nf-rnc-lbl', _nfTipo === 'B01' ? 'RNC / Cédula *' : 'RNC / Cédula');
+
+  const hint = $id('nf-ncf-hint');
+  const chip = $id('nf-ncf-chip');
+  const chipWrap = $id('nf-ncf-wrap');
+  if (editando) {
+    if (chip) chip.textContent = facNcfDisplay(_nfEditNcf);
+    setText('nf-ncf-chip-lbl', 'NCF asignado:');
+    chipWrap?.classList.remove('is-bad');
+    if (hint) hint.innerHTML = '';
+    return;
+  }
+  setText('nf-ncf-chip-lbl', 'NCF:');
+  const u = _nfSecuenciaUsable(_nfTipo);
+  if (chip) chip.textContent = u ? _ncfFmt(_nfTipo, u.nextNumber) : `${_nfTipo} sin secuencia`;
+  chipWrap?.classList.toggle('is-bad', !u);
+  if (!hint) return;
+  if (!u) {
+    hint.className = 'fm-aviso fm-aviso--error';
+    hint.innerHTML = `No tienes una secuencia ${_nfTipo} activa para emitir este comprobante.
+      <button type="button" class="btn btn-secondary btn-sm" data-icono="plus" onclick="app.abrirRegistrarMiNcfModal()">Agregar secuencia</button>`;
+    return;
+  }
+  const e = _ncfEstado(u);
+  hint.className = 'fm-aviso';
+  hint.innerHTML = e.alertas.length ? esc(`${_nfTipo}: ${e.alertas.join(' ')}`) : '';
+}
+
+function nfElegirTipo(tipo) {
+  if (!tipo || _facEditId) return;
+  _nfTipo = tipo;
+  _nfTipoManual = true;
+  _nfPintarTipos();
+  nfActualizarPie();
+}
+
+// Lo que falta para emitir: { campo, msg, pie } (pie = texto corto del pie).
+function _nfProblemas() {
+  const get = (id) => ($id(id)?.value || '').trim();
+  const out = [];
+  if (!_facEditId && !_nfSecuenciaUsable(_nfTipo)) {
+    out.push({ campo: null, msg: `No tienes una secuencia ${_nfTipo} activa. Agrégala o elige otro tipo de comprobante.` });
+  }
+  const rnc = get('nf-cli-rnc').replace(/\D/g, '');
+  if (_nfTipo === 'B01' && rnc.length !== 9 && rnc.length !== 11) {
+    out.push({ campo: 'nf-cli-rnc', msg: rnc ? 'El RNC tiene 9 dígitos y la cédula 11.' : 'El B01 requiere el RNC o cédula del cliente.',
+      pie: 'Falta el RNC del cliente para emitir un B01.' });
+  } else if (rnc && rnc.length !== 9 && rnc.length !== 11) {
+    out.push({ campo: 'nf-cli-rnc', msg: 'El RNC tiene 9 dígitos y la cédula 11.' });
+  }
+  if (!get('nf-cli-nombre')) out.push({ campo: 'nf-cli-nombre', msg: 'Escribe el nombre o la razón social del cliente.', pie: 'Falta el nombre del cliente.' });
+  const correo = get('nf-cli-correo');
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) out.push({ campo: 'nf-cli-correo', msg: 'Ese correo no es válido.' });
+  const utiles = _docItemsUtiles(_facItems);
+  if (!utiles.some(i => Number(i.precio) > 0)) {
+    out.push({ campo: 'nf-items', msg: 'Agrega al menos un servicio con precio.', pie: 'Agrega al menos un servicio con precio.' });
+  } else if (utiles.some(i => Number(i.precio) > 0 && !String(i.descripcion || '').trim())) {
+    out.push({ campo: 'nf-items', msg: 'Cada línea con precio necesita una descripción.' });
+  }
+  if (!get('nf-fecha')) out.push({ campo: 'nf-fecha', msg: 'Indica la fecha de emisión.' });
+  return out;
+}
+
+function _nfPintarEnvio() {
+  const bloque = $id('nf-enviar-bloque');
+  if (bloque) bloque.style.display = _facEditId ? 'none' : '';
+  const correo = ($id('nf-cli-correo')?.value || '').trim();
+  const tel = ($id('nf-cli-tel')?.value || '').replace(/\D/g, '');
+  const chkC = $id('nf-enviar-correo');
+  const chkW = $id('nf-enviar-wa');
+  const okCorreo = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo);
+  const okTel = tel.length >= 10;
+  if (chkC) { chkC.disabled = !okCorreo; if (!okCorreo) chkC.checked = false; }
+  if (chkW) { chkW.disabled = !okTel; if (!okTel) chkW.checked = false; }
+  setText('nf-enviar-ayuda', !okCorreo && !okTel ? 'Escribe el correo o el teléfono del cliente para enviarle la factura.'
+    : !okCorreo ? 'Sin correo del cliente: solo WhatsApp.' : !okTel ? 'Sin teléfono del cliente: solo correo.' : '');
+}
+
+function nfActualizarPie() {
+  _docPintarTotales('nf');
+  const probs = _nfProblemas();
+  const msg = $id('nf-msg');
+  if (msg) {
+    msg.textContent = probs[0] ? (probs[0].pie || probs[0].msg)
+      : (_facEditId ? 'El NCF y el tipo de comprobante no cambian al editar.' : '');
+    msg.classList.toggle('is-error', Boolean(probs.length && _nfIntento));
+  }
+  const btn = $id('nf-btn-guardar');
+  // El NCF que se asigna ya se ve arriba, en la etiqueta "NCF:".
+  if (btn && !btn.disabled) _btnTexto(btn, _facEditId ? 'Guardar cambios' : 'Emitir factura');
+  if (_nfIntento) {
+    _fmLimpiar('nf-form');
+    probs.forEach(p => { if (p.campo) _fmError(p.campo, p.msg); });
+    _docAbrirMasSiError('nf-mas');
+  }
+  _nfPintarEnvio();
+}
+
+// Cambia el texto de un botón sin perder su ícono (data-icono).
+function _btnTexto(btn, txt) {
+  if (!btn || btn.textContent.trim() === txt) return;
+  btn.textContent = txt;
+  if (btn.dataset.icono && window.TcIconos) {
+    btn.insertAdjacentHTML('afterbegin', window.TcIconos.svg(btn.dataset.icono, Number(btn.dataset.iconoTam) || 16, 'tc-icono'));
+  }
+}
+
+// "Más opciones" se abre solo si un campo de adentro (la fecha) tiene error.
+function _docAbrirMasSiError(id) {
+  const mas = $id(id);
+  if (mas && !mas.open && mas.querySelector('.fm-campo.is-invalido')) mas.open = true;
+}
+
+// opts.enfocar = false cuando se abre con datos ya puestos (editar, desde una
+// cotización o desde Mis clientes): así no se abre el buscador encima.
+async function nuevaFactura(opts) {
+  const enfocar = opts?.enfocar !== false;
+  _facEditId = null;
+  _nfEditNcf = null;
+  _facDesdeCot = null;
+  _nfIntento = false;
+  _nfTipoManual = false;
+  setText('nf-titulo', 'Nueva factura');
+  setText('nf-sub', 'Honorarios de tu despacho');
+  const mas = $id('nf-mas'); if (mas) mas.open = false;
+
+  _facItems = [_docNuevaLinea()];
+  const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
+  set('nf-fecha', hoyLocal());
+  ['nf-cli-nombre', 'nf-cli-rnc', 'nf-cli-dir', 'nf-cli-tel', 'nf-cli-correo', 'nf-observacion'].forEach(id => set(id, ''));
+  setText('nf-rnc-ayuda', '');
+  $id('nf-cli-resultados')?.classList.add('hidden');
+  const chkCli = $id('nf-guardar-cliente'); if (chkCli) chkCli.checked = false;
+  _mostrarCheckGuardarCliente('nf', '');
+  ['nf-enviar-correo', 'nf-enviar-wa'].forEach(id => { const el = $id(id); if (el) el.checked = false; });
+  set('nf-metodo', 'efectivo');
+  docElegirCondicion('nf', 'contado');
+  _fmLimpiar('nf-form');
+
+  // Autocompletado de la DGII al escribir el RNC (además del botón).
+  if (window.RNCLookup) {
+    const rncEl = $id('nf-cli-rnc');
+    if (rncEl) RNCLookup.attach(rncEl, { nameEl: $id('nf-cli-nombre'), mode: 'both', onSelect() { nfActualizarPie(); } });
+  }
+
+  await _docCargarClientes('nf');
+  // Secuencias y tipo por defecto: uno que SÍ tenga rango activo.
   try { _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf'); } catch { _misNcf = _misNcf || []; }
-  const ncfSel = $id('nf-tipo-ncf');
-  if (ncfSel) { ncfSel.disabled = false; ncfSel.value = _facPickDefaultNcf(false); }
-  onNfTipoNcfChange();
+  _nfTipo = _facPickDefaultNcf(false);
 
-  renderFacItemsTable();
-  calcularTotalesFac();
+  _docPintarPlantillas('nf');
+  renderDocItems('nf');
+  _nfPintarTipos();
   show('modal-nueva-factura');
+  $id('nf-form')?.scrollTo(0, 0);
+  nfActualizarPie();
+  if (enfocar) setTimeout(() => $id('nf-cli-rnc')?.focus(), 50);
 }
 
 // Tipos de NCF con una secuencia utilizable (activa, no vencida, con números).
@@ -3950,26 +5225,7 @@ function _facPickDefaultNcf(conRnc) {
   return orden.find(t => usables.includes(t)) || usables[0] || (conRnc ? 'B01' : 'B02');
 }
 
-function onNfTipoNcfChange() {
-  const hint = $id('nf-ncf-hint');
-  if (!hint) return;
-  if (_facEditId) { hint.textContent = ''; return; }
-  const tipo = $id('nf-tipo-ncf')?.value || '';
-  const seqs = (_misNcf || []).filter(s => s.documentType === tipo);
-  const usable = seqs.find(s => (s.effectiveStatus || s.status) === 'activo' && Number(s.totalAvailable ?? 1) > 0);
-  const otros = _facNcfUsables().filter(t => t !== tipo);
-  const sug = otros.length ? ` Con secuencia activa: ${otros.join(', ')}.` : '';
-  if (usable) {
-    const disp = Number(usable.totalAvailable ?? 0);
-    hint.innerHTML = `<span style="color:${disp <= 5 ? 'var(--orange)' : 'var(--green)'}">Próximo: ${usable.documentType}${String(usable.nextNumber).padStart(8, '0')} · ${disp} disponible${disp === 1 ? '' : 's'}${usable.expirationDate ? ' · vence ' + usable.expirationDate : ''}</span>`;
-  } else if (!seqs.length) {
-    hint.innerHTML = `<span style="color:var(--orange)">⚠ Sin secuencia ${tipo} registrada.${sug || ' Regístrala en "Mis Secuencias NCF".'}</span>`;
-  } else {
-    hint.innerHTML = `<span style="color:var(--red)">✖ La secuencia ${tipo} está vencida o agotada.${sug}</span>`;
-  }
-}
-
-function cerrarNuevaFactura() { _facEditId = null; hide('modal-nueva-factura'); }
+function cerrarNuevaFactura() { _facEditId = null; _facDesdeCot = null; hide('modal-nueva-factura'); }
 
 // Reabrir el formulario con una factura existente para editarla (solo pendiente).
 async function editarFactura(id) {
@@ -3979,8 +5235,10 @@ async function editarFactura(id) {
       toast('Solo se puede editar una factura pendiente y sin pagos.', 'error');
       return;
     }
-    await nuevaFactura();               // arranca el modal en limpio y carga los selects
+    await nuevaFactura({ enfocar: false });   // arranca el modal en limpio y carga los clientes
     _facEditId = id;
+    _nfEditNcf = f.ncf;
+    _nfTipo = f.tipo_ncf || 'B02';
 
     const set = (fid, v) => { const el = $id(fid); if (el) el.value = v == null ? '' : v; };
     set('nf-cli-nombre', f.cliente?.nombre);
@@ -3989,27 +5247,18 @@ async function editarFactura(id) {
     set('nf-cli-tel',    f.cliente?.telefono);
     set('nf-cli-correo', f.cliente?.correo);
     set('nf-fecha',      (f.fecha || '').slice(0, 10));
-    set('nf-condicion',  f.condicion_pago || 'contado');
     set('nf-metodo',     f.metodo_pago || 'efectivo');
     set('nf-observacion', f.observacion || '');
-    const ncfEl = $id('nf-tipo-ncf');
-    if (ncfEl) { ncfEl.value = f.tipo_ncf || 'B02'; ncfEl.disabled = true; }   // el NCF ya está asignado
-    const hintEl = $id('nf-ncf-hint'); if (hintEl) hintEl.innerHTML = `NCF ya asignado: <code>${facNcfDisplay(f.ncf)}</code> (no cambia)`;
+    docElegirCondicion('nf', f.condicion_pago || 'contado');
 
-    _facItems = (f.items || []).map(it => ({
-      descripcion: it.descripcion || '', cantidad: it.cantidad || 1,
-      precio: it.precio || 0, descuento: it.descuento || 0, itbis_rate: it.itbis_rate ?? 18,
-    }));
-    if (!_facItems.length) _facItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
+    _facItems = (f.items || []).map(it => _docNuevaLinea(it));
+    if (!_facItems.length) _facItems = [_docNuevaLinea()];
 
-    const tEl = $id('modal-nueva-factura')?.querySelector('.modal-title');
-    if (tEl) tEl.textContent = `✏ Editar Factura ${facNcfDisplay(f.ncf)}`;
-    const bEl = $id('nf-btn-guardar'); if (bEl) bEl.textContent = '💾 Guardar cambios';
-
-    renderFacItemsTable();
-    calcularTotalesFac();
-    hide('modal-ver-factura');
-    show('modal-nueva-factura');
+    setText('nf-titulo', `Editar factura ${facNcfDisplay(f.ncf)}`);
+    setText('nf-sub', 'Solo mientras esté pendiente y sin cobros');
+    renderDocItems('nf');
+    _nfPintarTipos();
+    nfActualizarPie();
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 
@@ -4038,138 +5287,132 @@ async function selClienteFac(val) {
     set('nf-cli-correo', n.correo || n.email || n.ownerEmail || '');
   }
 
-  // Reajustar el tipo de NCF por defecto según si ya hay RNC (solo si el tipo
-  // sugerido tiene una secuencia activa).
-  if (!_facEditId) {
-    const t = $id('nf-tipo-ncf');
-    if (t && !t.disabled) { t.value = _facPickDefaultNcf(!!($id('nf-cli-rnc')?.value || '').trim()); onNfTipoNcfChange(); }
+  // Tipo de NCF por defecto según si ya hay RNC (si el contador no lo eligió).
+  if (!_facEditId && !_nfTipoManual) {
+    _nfTipo = _facPickDefaultNcf(!!($id('nf-cli-rnc')?.value || '').trim());
   }
 }
 
-function renderFacItemsTable() {
-  const tbody = $id('nf-items-body');
-  if (!tbody) return;
-  tbody.innerHTML = _facItems.map((item, idx) => `<tr id="fac-item-row-${idx}">
-    <td>
-      <input type="text" class="form-input fac-iinput" list="fac-servicios-list"
-        value="${esc(item.descripcion)}" placeholder="Descripción del servicio..."
-        oninput="app.facItemSet(${idx},'descripcion',this.value)" />
-    </td>
-    <td>
-      <input type="number" class="form-input fac-iinput" value="${item.cantidad}" min="1" step="1"
-        oninput="app.facItemSet(${idx},'cantidad',this.value)" />
-    </td>
-    <td>
-      <input type="number" class="form-input fac-iinput" value="${item.precio}" min="0" step="0.01"
-        oninput="app.facItemSet(${idx},'precio',this.value)" />
-    </td>
-    <td>
-      <input type="number" class="form-input fac-iinput" value="${item.descuento}" min="0" max="100" step="1"
-        oninput="app.facItemSet(${idx},'descuento',this.value)" />
-    </td>
-    <td>
-      <select class="form-select fac-iinput" onchange="app.facItemSet(${idx},'itbis_rate',this.value)">
-        <option value="0"  ${item.itbis_rate ==  0 ? 'selected' : ''}>0%</option>
-        <option value="18" ${item.itbis_rate == 18 ? 'selected' : ''}>18%</option>
-      </select>
-    </td>
-    <td class="td-amount" id="fac-item-tot-${idx}">${fmtMoney(calcItemTotal(item))}</td>
-    <td>
-      <button class="btn-icon-danger" onclick="app.removeItemFac(${idx})" title="Eliminar">✕</button>
-    </td>
-  </tr>`).join('');
+// Nombres viejos (siguen en window.app): ahora todo pasa por el formulario común.
+function facItemSet(idx, field, value) { docItemSet('nf', idx, field, value); }
+function addItemFac() { docAddItem('nf'); }
+function removeItemFac(idx) { docRemoveItem('nf', idx); }
+
+// Factura armada con lo que hay en el formulario (vista previa antes de emitir).
+function _nfFacturaTemporal() {
+  const get = id => ($id(id)?.value || '').trim();
+  const items = _docItemsUtiles(_facItems).map(it => {
+    const base = (Number(it.precio) || 0) * Math.max(1, Number(it.cantidad) || 1);
+    const desc = base * ((Number(it.descuento) || 0) / 100);
+    const itbis = (base - desc) * ((Number(it.itbis_rate) || 0) / 100);
+    return { ...it, itbis: _r2(itbis), total: _r2(base - desc + itbis) };
+  });
+  const t = _docTotales(items);
+  const u = _nfSecuenciaUsable(_nfTipo);
+  return {
+    ncf: _facEditId ? _nfEditNcf : (u ? _ncfFmt(_nfTipo, u.nextNumber) : `${_nfTipo}00000000`),
+    tipo_ncf: _nfTipo, tipo_ncf_label: NCF_DOCUMENT_TYPES.find(x => x.code === _nfTipo)?.label || _nfTipo,
+    ncf_vencimiento: u?.expirationDate || null,
+    fecha: get('nf-fecha') || hoyLocal(),
+    cliente: { nombre: get('nf-cli-nombre'), rnc: get('nf-cli-rnc'), direccion: get('nf-cli-dir'), telefono: get('nf-cli-tel'), correo: get('nf-cli-correo') },
+    items, subtotal: t.subtotal, descuento_total: t.descuentos, itbis_total: t.itbis, total: t.total,
+    monto_pagado: 0, balance: t.total, estado: 'pendiente',
+    condicion_pago: get('nf-condicion') || 'contado', metodo_pago: get('nf-metodo') || 'efectivo', observacion: get('nf-observacion'),
+  };
 }
 
-function facItemSet(idx, field, value) {
-  if (!_facItems[idx]) return;
-  _facItems[idx][field] = field === 'descripcion' ? value : (Number(value) || 0);
-  const cell = $id(`fac-item-tot-${idx}`);
-  if (cell) cell.textContent = fmtMoney(calcItemTotal(_facItems[idx]));
-  calcularTotalesFac();
+async function vistaPreviaFactura() {
+  if (!window.contadoresAPI?.isElectron) { toast('La vista previa solo está disponible en la app de escritorio.', 'error'); return; }
+  try {
+    const r = await window.contadoresAPI.previewPrint(facturaFormalHtml(_nfFacturaTemporal()), 'Vista previa de la factura', 'Vista_previa_factura.pdf');
+    if (!r?.ok) toast('Error al abrir la vista previa: ' + (r?.error || 'desconocido'), 'error');
+  } catch (_) { toast('Error al abrir la vista previa.', 'error'); }
 }
 
-function addItemFac() {
-  _facItems.push({ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 });
-  renderFacItemsTable();
-  calcularTotalesFac();
-}
-
-function removeItemFac(idx) {
-  if (_facItems.length <= 1) { toast('Debe tener al menos un ítem.', 'error'); return; }
-  _facItems.splice(idx, 1);
-  renderFacItemsTable();
-  calcularTotalesFac();
-}
-
-function calcularTotalesFac() {
-  let sub = 0, desc = 0, itbis = 0;
-  for (const item of _facItems) {
-    const base = (Number(item.precio) || 0) * Math.max(1, Number(item.cantidad) || 1);
-    const d    = base * ((Number(item.descuento) || 0) / 100);
-    const grav = base - d;
-    sub   += base;
-    desc  += d;
-    itbis += grav * ((Number(item.itbis_rate) || 0) / 100);
+// "Enviar al emitir": correo con el PDF y/o enlace de WhatsApp.
+async function _nfEnviarAlEmitir(f, { correo, whatsapp }) {
+  if (whatsapp && f.cliente?.telefono) {
+    const tel = String(f.cliente.telefono).replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+    const msg = encodeURIComponent(`Hola ${f.cliente?.nombre || ''}, le enviamos la factura ${facNcfDisplay(f.ncf)} por ${fmtMoney(f.total)}. Gracias por preferirnos.`);
+    window.open(`https://wa.me/1${tel}?text=${msg}`, '_blank');
   }
-  const total = sub - desc + itbis;
-  setText('nf-t-sub',   fmtMoney(sub));
-  setText('nf-t-desc',  '— ' + fmtMoney(desc));
-  setText('nf-t-itbis', fmtMoney(itbis));
-  setText('nf-t-total', fmtMoney(total));
+  if (correo && f.cliente?.correo) {
+    const cfg = await ensureEmailCfg();
+    if (!cfg.configured || !window.contadoresAPI?.isElectron) { abrirModalEnvioFac(f.id, f.cliente.correo, f); return; }
+    try {
+      const pdf = await window.contadoresAPI.renderInvoicePdf(facturaFormalHtml(f));
+      if (!pdf?.ok) throw new Error(pdf?.error || 'No se pudo generar el PDF.');
+      const r = await apiCall('POST', `/api/facturacion/facturas/${f.id}/enviar`, { to: f.cliente.correo, mensaje: '', pdfBase64: pdf.base64 });
+      toast(`Factura enviada a ${r.to}.`, 'success');
+    } catch (e) {
+      toast('La factura se emitió, pero el correo no salió: ' + e.message, 'error');
+    }
+  }
 }
 
 async function guardarFactura() {
+  _nfIntento = true;
+  const probs = _nfProblemas();
+  nfActualizarPie();
+  if (probs.length) {
+    const primero = probs.find(p => p.campo && p.campo !== 'nf-items');
+    if (primero) $id(primero.campo)?.focus();
+    return;
+  }
+
   const btn = $id('nf-btn-guardar');
   const esEdicion = !!_facEditId;
-  const labelOrig = esEdicion ? '💾 Guardar cambios' : '💾 Emitir Factura';
-  if (btn) { btn.disabled = true; btn.textContent = esEdicion ? 'Guardando...' : 'Emitiendo...'; }
+  if (btn) { btn.disabled = true; _btnTexto(btn, esEdicion ? 'Guardando…' : 'Emitiendo…'); }
+  const get = id => ($id(id)?.value || '').trim();
+  const cliente = {
+    nombre: get('nf-cli-nombre'), rnc: get('nf-cli-rnc'),
+    direccion: get('nf-cli-dir'), telefono: get('nf-cli-tel'), correo: get('nf-cli-correo'),
+  };
+  const envio = { correo: Boolean($id('nf-enviar-correo')?.checked), whatsapp: Boolean($id('nf-enviar-wa')?.checked) };
+  const desdeCot = _facDesdeCot;
   try {
-    const get = id => ($id(id)?.value || '').trim();
-    const cliente = {
-      nombre: get('nf-cli-nombre'), rnc:      get('nf-cli-rnc'),
-      direccion: get('nf-cli-dir'), telefono: get('nf-cli-tel'),
-      correo:    get('nf-cli-correo'),
-    };
-    if (!cliente.nombre) { toast('El nombre del cliente es requerido.', 'error'); return; }
-    if (!_facItems.some(i => (Number(i.precio) || 0) > 0)) {
-      toast('Agrega al menos un ítem con precio mayor a 0.', 'error'); return;
-    }
-    if (!esEdicion) {
-      const tipo = get('nf-tipo-ncf');
-      if (!_facNcfUsables().includes(tipo)) {
-        toast(`No tienes una secuencia NCF activa para ${tipo}. Regístrala en "Mis Secuencias NCF" o elige otro tipo.`, 'error');
-        return;
-      }
-    }
-
     const payload = {
       cliente,
       fecha:          get('nf-fecha'),
-      condicion_pago: get('nf-condicion'),
+      condicion_pago: get('nf-condicion') || 'contado',
       metodo_pago:    get('nf-metodo'),
       observacion:    get('nf-observacion'),
-      items: _facItems,
+      items: _docItemsUtiles(_facItems),
     };
 
     const editandoId = _facEditId;
+    let nueva = null;
     if (esEdicion) {
       await apiCall('PUT', `/api/facturacion/facturas/${editandoId}`, payload);
     } else {
-      payload.tipo_ncf = get('nf-tipo-ncf');
-      await apiCall('POST', '/api/facturacion/facturas', payload);
+      payload.tipo_ncf = _nfTipo;
+      if (desdeCot) payload.cotizacion_id = desdeCot.id;
+      nueva = await apiCall('POST', '/api/facturacion/facturas', payload);
     }
-    const guardado = $id('nf-guardar-cliente')?.checked ? await _guardarEnMisClientes(cliente, _facClientes) : '';
-    toast((esEdicion ? 'Factura actualizada.' : 'Factura emitida correctamente.') + _textoGuardadoCliente(guardado), 'success');
+    const guardado = $id('nf-guardar-cliente')?.checked && $id('nf-guardar-cliente-row')?.style.display !== 'none'
+      ? await _guardarEnMisClientes(cliente, _facClientes) : '';
+    toast((esEdicion ? 'Factura actualizada.'
+      : `Factura ${facNcfDisplay(nueva?.ncf)} emitida${desdeCot ? ` desde la cotización ${desdeCot.numero}` : ''}.`) + _textoGuardadoCliente(guardado), 'success');
 
     _facEditId = null;
+    _facDesdeCot = null;
     hide('modal-nueva-factura');
     loadFacturacion();
     if ($id('mod-mis-clientes')?.classList.contains('active')) loadMisClientes();
+    if (desdeCot && $id('mod-cotizaciones')?.classList.contains('active')) loadCotizaciones();
     if (esEdicion && editandoId) verFactura(editandoId);
+    if (nueva) _nfEnviarAlEmitir(nueva, envio);
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    // El error va donde corresponde: RNC, secuencia o el pie.
+    if (/RNC|cédula/i.test(e.message)) _fmError('nf-cli-rnc', e.message);
+    else if (/secuencia/i.test(e.message)) { try { _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf'); } catch { /* sigue */ } _nfPintarTipos(); }
+    const msg = $id('nf-msg');
+    if (msg) { msg.textContent = e.message; msg.classList.add('is-error'); }
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+    if (btn) {
+      btn.disabled = false;
+      _btnTexto(btn, esEdicion ? 'Guardar cambios' : 'Emitir factura');
+    }
   }
 }
 
@@ -4183,7 +5426,7 @@ function _showFacDetalle() {
   document.querySelectorAll('.module').forEach(el => el.classList.remove('active'));
   const el = $id('mod-fac-detalle');
   if (el) el.classList.add('active');
-  window.scrollTo(0, 0);
+  _pintarTopbar('fac-detalle');
 }
 
 function backToFacturas() { goto('facturacion'); }
@@ -4238,14 +5481,14 @@ async function verFactura(id) {
     const editable = f.estado === 'pendiente' && Number(f.monto_pagado || 0) === 0;
     const cobrable = ['pendiente', 'parcial'].includes(f.estado);
     const acc = [];
-    if (cobrable) acc.push(`<button class="btn btn-primary btn-sm" onclick="app.openRegistrarPagoFac()">Registrar pago</button>`);
-    if (editable) acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.editarFactura('${f.id}')">✏ Editar</button>`);
-    acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.duplicarFactura('${f.id}')">⧉ Duplicar</button>`);
-    acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.imprimirFactura()">⬇ Descargar PDF</button>`);
-    acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.imprimirFacturaPreview()">🖨 Imprimir / Vista previa</button>`);
-    acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.enviarPorCorreo()">✉ Enviar por correo</button>`);
-    if (f.cliente?.telefono) acc.push(`<button class="btn btn-secondary btn-sm" onclick="app.enviarPorWhatsApp()">💬 WhatsApp</button>`);
-    if (f.estado !== 'anulada') acc.push(`<button class="btn btn-danger btn-sm" onclick="app.anularFactura()">🚫 Anular</button>`);
+    if (cobrable) acc.push(`<button class="btn btn-primary btn-sm" data-icono="banknote" onclick="app.openRegistrarPagoFac()">Registrar cobro</button>`);
+    if (editable) acc.push(`<button class="btn btn-secondary btn-sm" data-icono="pencil" onclick="app.editarFactura('${f.id}')">Editar</button>`);
+    acc.push(`<button class="btn btn-secondary btn-sm" data-icono="copy" onclick="app.duplicarFactura('${f.id}')">Duplicar</button>`);
+    acc.push(`<button class="btn btn-secondary btn-sm" data-icono="download" onclick="app.imprimirFactura()">Descargar PDF</button>`);
+    acc.push(`<button class="btn btn-secondary btn-sm" data-icono="printer" onclick="app.imprimirFacturaPreview()">Imprimir / Vista previa</button>`);
+    acc.push(`<button class="btn btn-secondary btn-sm" data-icono="mail" onclick="app.enviarPorCorreo()">Enviar por correo</button>`);
+    if (f.cliente?.telefono) acc.push(`<button class="btn btn-secondary btn-sm" data-icono="message-circle" onclick="app.enviarPorWhatsApp()">WhatsApp</button>`);
+    if (f.estado !== 'anulada') acc.push(`<button class="btn btn-danger btn-sm" data-icono="x" onclick="app.anularFactura()">Anular</button>`);
     $id('fd-actions').innerHTML = acc.join('');
 
     $id('fd-email-info').textContent = f.ultimoEmailA ? `✉ Último envío: ${f.ultimoEmailA} · ${fmtDate(f.ultimoEmailEn)}` : '';
@@ -4276,6 +5519,27 @@ async function imprimirFacturaPreview() {
 }
 
 // ── Registrar pago ───────────────────────────────────────────────────
+let _pagoDesdeLista = false;   // el cobro se pidió desde la tabla de Facturación
+
+// "Registrar cobro" y "PDF" en cada fila de la tabla de Facturación.
+function registrarCobroLista(id) {
+  const f = _facFacturas.find(x => x.id === id);
+  if (!f) return;
+  _facCurId = id; _facCurData = f; _pagoDesdeLista = true;
+  openRegistrarPagoFac();
+}
+
+async function pdfFacturaLista(id) {
+  let f = _facFacturas.find(x => x.id === id);
+  if (!f) return;
+  if (!f.ncf_vencimiento) {
+    try { f = await apiCall('GET', `/api/facturacion/facturas/${id}`); } catch { /* usa la de la lista */ }
+  }
+  const ncfSlug = (f.ncf || 'FACTURA').replace(/[^A-Z0-9]/gi, '');
+  const clientSlug = (f.cliente?.nombre || 'cliente').replace(/\s+/g, '_').slice(0, 20);
+  await _savePdf(facturaFormalHtml(f), `Factura_${ncfSlug}_${clientSlug}.pdf`, false, { factura: true });
+}
+
 function openRegistrarPagoFac() {
   if (!_facCurData) return;
   const bal = Number(_facCurData.balance ?? ((_facCurData.total || 0) - (_facCurData.monto_pagado || 0)));
@@ -4285,12 +5549,15 @@ function openRegistrarPagoFac() {
   $id('fp-nota').value = '';
   show('modal-fac-pago');
 }
-function cerrarRegistrarPagoFac() { hide('modal-fac-pago'); }
+function cerrarRegistrarPagoFac() { _pagoDesdeLista = false; hide('modal-fac-pago'); }
 
 async function registrarPagoFac() {
   if (!_facCurId) return;
   const monto = Number($id('fp-monto')?.value);
-  if (!Number.isFinite(monto) || monto <= 0) { toast('Ingresa un monto válido.', 'error'); return; }
+  const saldo = Number(_facCurData?.balance ?? ((_facCurData?.total || 0) - (_facCurData?.monto_pagado || 0)));
+  _fmError('fp-monto', '');
+  if (!Number.isFinite(monto) || monto <= 0) { _fmError('fp-monto', 'Escribe un monto mayor que 0.'); return; }
+  if (saldo > 0 && monto > saldo + 0.01) { _fmError('fp-monto', `No puede pasar del saldo pendiente (${fmtMoney(saldo)}).`); return; }
   const btn = $id('fp-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
   try {
@@ -4299,9 +5566,10 @@ async function registrarPagoFac() {
     });
     hide('modal-fac-pago');
     toast('Pago registrado.', 'success');
-    verFactura(_facCurId);
+    if (!_pagoDesdeLista) verFactura(_facCurId);
+    _pagoDesdeLista = false;
     loadFacturacion();
-  } catch (e) { toast('Error: ' + e.message, 'error'); }
+  } catch (e) { _fmError('fp-monto', e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Registrar'; } }
 }
 
@@ -4598,7 +5866,7 @@ function filtrarMisClientes() {
   if (!lista.length) {
     tbody.innerHTML = `<tr><td colspan="7" class="td-empty">${_mcli.length
       ? 'Ningún cliente coincide con la búsqueda.'
-      : 'Aún no tienes clientes guardados. Presiona <b>＋ Nuevo cliente</b> para agregar el primero.'}</td></tr>`;
+      : 'Aún no tienes clientes guardados. Presiona <b>Nuevo cliente</b> para agregar el primero.'}</td></tr>`;
     return;
   }
 
@@ -4613,14 +5881,14 @@ function filtrarMisClientes() {
       <td class="td-small">${esc(c.rnc) || '—'}</td>
       <td class="td-small">${contacto}</td>
       <td style="text-align:right">${r.cantidad || 0}</td>
-      <td class="td-amount" style="text-align:right">${fmtMoney(r.facturado || 0)}</td>
-      <td class="td-amount ${r.pendiente > 0.009 ? 'mcli-pendiente' : ''}" style="text-align:right">${fmtMoney(r.pendiente || 0)}</td>
+      <td class="num" style="text-align:right;white-space:nowrap;font-weight:500">${fmtMoney(r.facturado || 0)}</td>
+      <td class="num ${r.pendiente > 0.009 ? 'mcli-pendiente' : ''}" style="text-align:right;white-space:nowrap;font-weight:600">${fmtMoney(r.pendiente || 0)}</td>
       <td>
         <div class="mcli-acciones">
-          <button class="btn btn-secondary btn-xs" onclick="app.facturarMiCliente('${c.id}')" title="Nueva factura a este cliente">💳 Facturar</button>
-          <button class="btn btn-secondary btn-xs" onclick="app.cotizarMiCliente('${c.id}')" title="Nueva cotización a este cliente">🧾 Cotizar</button>
-          <button class="btn btn-secondary btn-xs" onclick="app.abrirMiCliente('${c.id}')" title="Editar datos">✏</button>
-          <button class="btn btn-danger btn-xs" onclick="app.eliminarMiCliente('${c.id}')" title="Eliminar de Mis Clientes">🗑</button>
+          <button class="btn btn-secondary btn-sm" data-icono="receipt-text" onclick="app.facturarMiCliente('${c.id}')" title="Nueva factura a este cliente">Facturar</button>
+          <button class="btn btn-secondary btn-sm" data-icono="clipboard-check" onclick="app.cotizarMiCliente('${c.id}')" title="Nueva cotización a este cliente">Cotizar</button>
+          <button class="btn-icono" data-icono="pencil" onclick="app.abrirMiCliente('${c.id}')" title="Editar datos" aria-label="Editar datos"></button>
+          <button class="btn-icono is-danger" data-icono="trash-2" onclick="app.eliminarMiCliente('${c.id}')" title="Eliminar de Mis clientes" aria-label="Eliminar"></button>
         </div>
       </td>
     </tr>`;
@@ -4634,8 +5902,11 @@ function abrirMiCliente(id) {
   const c = id ? _mcli.find(x => x.id === id) : null;
   _mcliEditId = c ? c.id : null;
   _MCLI_CAMPOS.forEach((campo) => { const el = $id(`mcli-f-${campo}`); if (el) el.value = c?.[campo] || ''; });
-  setText('mcli-form-titulo', c ? '✏ Editar cliente' : '＋ Nuevo cliente');
-  const btn = $id('mcli-btn-guardar'); if (btn) btn.textContent = c ? '💾 Guardar cambios' : '💾 Guardar cliente';
+  setText('mcli-form-titulo', c ? 'Editar cliente' : 'Nuevo cliente');
+  const btn = $id('mcli-btn-guardar'); if (btn) btn.textContent = c ? 'Guardar cambios' : 'Guardar cliente';
+  _fmLimpiar('mcli-form');
+  setText('mcli-rnc-ayuda', '');
+  const m = $id('mcli-msg'); if (m) { m.textContent = ''; m.classList.remove('is-error'); }
 
   // Autocompletar con la DGII al escribir el RNC, igual que en la factura.
   if (window.RNCLookup) {
@@ -4651,8 +5922,13 @@ function cerrarMiCliente() { _mcliEditId = null; hide('modal-mi-cliente'); }
 async function guardarMiCliente() {
   const datos = {};
   _MCLI_CAMPOS.forEach((campo) => { datos[campo] = ($id(`mcli-f-${campo}`)?.value || '').trim(); });
-  if (!datos.nombre) { toast('Escribe el nombre o razón social del cliente.', 'error'); $id('mcli-f-nombre')?.focus(); return; }
-  if (datos.correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(datos.correo)) { toast('El correo no es válido.', 'error'); $id('mcli-f-correo')?.focus(); return; }
+  _fmLimpiar('mcli-form');
+  const rnc = datos.rnc.replace(/\D/g, '');
+  let invalido = false;
+  if (rnc && rnc.length !== 9 && rnc.length !== 11) { _fmError('mcli-f-rnc', 'El RNC tiene 9 dígitos y la cédula 11.'); invalido = true; }
+  if (!datos.nombre) { _fmError('mcli-f-nombre', 'Escribe el nombre o la razón social del cliente.'); invalido = true; }
+  if (datos.correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(datos.correo)) { _fmError('mcli-f-correo', 'Ese correo no es válido.'); invalido = true; }
+  if (invalido) { $id('mcli-form')?.querySelector('.is-invalido input')?.focus(); return; }
 
   const btn = $id('mcli-btn-guardar');
   const label = btn?.textContent;
@@ -4663,12 +5939,14 @@ async function guardarMiCliente() {
       toast('Cliente actualizado.', 'success');
     } else {
       await apiCall('POST', '/api/facturacion/clientes', datos);
-      toast('Cliente guardado en Mis Clientes.', 'success');
+      toast('Cliente guardado en Mis clientes.', 'success');
     }
     cerrarMiCliente();
     await loadMisClientes();
   } catch (e) {
-    toast(e.message, 'error');
+    // 409 = ya hay un cliente con ese RNC/cédula.
+    if (e.status === 409) _fmError('mcli-f-rnc', e.message);
+    else { const m = $id('mcli-msg'); if (m) { m.textContent = e.message; m.classList.add('is-error'); } }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
@@ -4742,20 +6020,16 @@ async function facturarMiCliente(id) {
   const clienteId = id || _mcliFichaId;
   if (!clienteId) return;
   cerrarFichaMiCliente();
-  await nuevaFactura();
-  const sel = $id('nf-cliente-sel');
-  if (sel) sel.value = `fac_${clienteId}`;
-  await selClienteFac(`fac_${clienteId}`);
+  await nuevaFactura({ enfocar: false });
+  await docElegirCliente('nf', `fac_${clienteId}`);
 }
 
 async function cotizarMiCliente(id) {
   const clienteId = id || _mcliFichaId;
   if (!clienteId) return;
   cerrarFichaMiCliente();
-  await nuevaCotizacion();
-  const sel = $id('cot-cliente-sel');
-  if (sel) sel.value = `fac_${clienteId}`;
-  await selClienteCot(`fac_${clienteId}`);
+  await nuevaCotizacion({ enfocar: false });
+  await docElegirCliente('cot', `fac_${clienteId}`);
 }
 
 // "Guardar este cliente en Mis Clientes" de Nueva factura / Nueva
@@ -4807,83 +6081,135 @@ async function loadCotizaciones() {
   }
   if (!tbody) return;
   if (!_cotCotizaciones.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-muted,#5a7099)">Sin cotizaciones.</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="7" class="td-empty">Sin cotizaciones todavía.
+      <div style="margin-top:10px"><button class="btn btn-secondary btn-sm" data-icono="plus" onclick="app.nuevaCotizacion()">Nueva cotización</button></div></td></tr>`;
     return;
   }
   tbody.innerHTML = _cotCotizaciones.map(c => {
+    const vence = c.fecha_vencimiento ? _fmtFechaSolo(c.fecha_vencimiento) : '—';
+    const vencida = c.estado !== 'convertida' && c.fecha_vencimiento && c.fecha_vencimiento < hoyLocal();
     const acciones = [
-      `<a href="#" onclick="app.verCotizacionPreview('${c.id}');return false">Ver / Imprimir</a>`,
-      `<a href="#" onclick="app.abrirModalEnvioCot('${c.id}');return false">Correo</a>`,
+      `<button class="btn-icono" data-icono="eye" title="Ver / imprimir" aria-label="Ver / imprimir" onclick="app.verCotizacionPreview('${c.id}')"></button>`,
+      `<button class="btn-icono" data-icono="mail" title="Enviar por correo" aria-label="Enviar por correo" onclick="app.abrirModalEnvioCot('${c.id}')"></button>`,
     ];
     if (c.estado !== 'convertida') {
-      acciones.push(`<a href="#" onclick="app.editarCotizacion('${c.id}');return false">Editar</a>`);
-      acciones.push(`<a href="#" onclick="app.abrirFacturarCotizacion('${c.id}');return false">Facturar</a>`);
+      acciones.push(`<button class="btn-icono" data-icono="pencil" title="Editar" aria-label="Editar" onclick="app.editarCotizacion('${c.id}')"></button>`);
+      acciones.push(`<button class="btn btn-secondary btn-sm" data-icono="receipt-text" onclick="app.convertirCotizacionEnFactura('${c.id}')">Convertir en factura</button>`);
+    } else if (c.converted_invoice_id) {
+      acciones.push(`<button class="btn btn-secondary btn-sm" data-icono="receipt-text" onclick="app.verFactura('${c.converted_invoice_id}')">Ver factura</button>`);
     }
     return `<tr>
-      <td>${esc(c.numero)}</td>
-      <td>${esc(c.cliente?.nombre) || '—'}</td>
+      <td class="facx-ncf">${esc(c.numero)}</td>
+      <td style="font-weight:600">${esc(c.cliente?.nombre) || '—'}</td>
       <td>${fmtDate(c.fecha)}</td>
-      <td>${cotEstadoBadge(c.estado)}</td>
-      <td style="text-align:right">${fmtMoney(c.total)}</td>
-      <td>${acciones.join(' · ')}</td>
+      <td ${vencida ? 'style="color:var(--pill-bad-text)"' : ''}>${vence}</td>
+      <td>${cotEstadoBadge(vencida && c.estado === 'aprobada' ? 'vencida' : c.estado)}</td>
+      <td style="text-align:right;font-weight:600" class="num">${fmtMoney(c.total)}</td>
+      <td><div class="cotx-acc">${acciones.join('')}</div></td>
     </tr>`;
   }).join('');
 }
 
-async function nuevaCotizacion() {
-  _cotEditId = null;
-  const tEl = $id('modal-nueva-cotizacion')?.querySelector('.modal-title');
-  if (tEl) tEl.textContent = '＋ Nueva Cotización';
-  const bEl = $id('cot-btn-guardar');
-  if (bEl) bEl.textContent = '💾 Guardar Cotización';
+let _cotValidez = 30;
+let _cotIntento = false;
+let _cotNumero = null;
 
-  _cotItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
-  const today = hoyLocal();
+function cotElegirValidez(v) {
+  const wrap = $id('cot-validez-otro-wrap');
+  const input = $id('cot-validez-dias');
+  if (v === 'otro') {
+    if (wrap) wrap.style.display = '';
+    input?.focus();
+  } else {
+    _cotValidez = Number(v) || 30;
+    if (input) input.value = _cotValidez;
+    if (wrap) wrap.style.display = 'none';
+  }
+  document.querySelectorAll('#cot-validez-seg [data-valor]').forEach(b => {
+    b.setAttribute('aria-checked', String(v === 'otro' ? b.dataset.valor === 'otro' : b.dataset.valor === String(_cotValidez)));
+  });
+  cotActualizarPie();
+}
+
+function _cotDiasValidez() { return Math.max(1, Math.min(365, Number($id('cot-validez-dias')?.value) || 30)); }
+function _cotVenceFecha() {
+  const f = $id('cot-fecha')?.value || hoyLocal();
+  const d = _aFecha(f) || new Date();
+  d.setDate(d.getDate() + _cotDiasValidez());
+  return hoyLocal(d);
+}
+
+function _cotProblemas() {
+  const get = (id) => ($id(id)?.value || '').trim();
+  const out = [];
+  const rnc = get('cot-cli-rnc').replace(/\D/g, '');
+  if (rnc && rnc.length !== 9 && rnc.length !== 11) out.push({ campo: 'cot-cli-rnc', msg: 'El RNC tiene 9 dígitos y la cédula 11.' });
+  if (!get('cot-cli-nombre')) out.push({ campo: 'cot-cli-nombre', msg: 'Escribe el nombre o la razón social del cliente.', pie: 'Falta el nombre del cliente.' });
+  const correo = get('cot-cli-correo');
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) out.push({ campo: 'cot-cli-correo', msg: 'Ese correo no es válido.' });
+  const utiles = _docItemsUtiles(_cotItems);
+  if (!utiles.some(i => Number(i.precio) > 0)) out.push({ campo: 'cot-items', msg: 'Agrega al menos un servicio con precio.', pie: 'Agrega al menos un servicio con precio.' });
+  else if (utiles.some(i => Number(i.precio) > 0 && !String(i.descripcion || '').trim())) out.push({ campo: 'cot-items', msg: 'Cada línea con precio necesita una descripción.' });
+  if (!get('cot-fecha')) out.push({ campo: 'cot-fecha', msg: 'Indica la fecha de la cotización.' });
+  const dias = Number(get('cot-validez-dias'));
+  if (!Number.isInteger(dias) || dias < 1 || dias > 365) out.push({ campo: 'cot-validez-dias', msg: 'Entre 1 y 365 días.' });
+  return out;
+}
+
+function cotActualizarPie() {
+  _docPintarTotales('cot');
+  const vence = _cotVenceFecha();
+  setText('cot-vence-chip', _fmtFechaSolo(vence));
+  setText('cot-vence-nota', `Válida ${_plural(_cotDiasValidez(), 'día', 'días')}: hasta el ${_fmtFechaSolo(vence)}.`);
+  const probs = _cotProblemas();
+  const msg = $id('cot-msg');
+  if (msg) {
+    msg.textContent = probs[0] ? (probs[0].pie || probs[0].msg) : '';
+    msg.classList.toggle('is-error', Boolean(probs.length && _cotIntento));
+  }
+  const btn = $id('cot-btn-guardar');
+  if (btn && !btn.disabled) _btnTexto(btn, _cotEditId ? 'Guardar cambios' : 'Guardar cotización');
+  if (_cotIntento) {
+    _fmLimpiar('cot-form');
+    probs.forEach(p => { if (p.campo) _fmError(p.campo, p.msg); });
+    _docAbrirMasSiError('cot-mas');
+  }
+}
+
+async function nuevaCotizacion(opts) {
+  const enfocar = opts?.enfocar !== false;
+  _cotEditId = null;
+  _cotNumero = null;
+  _cotIntento = false;
+  setText('cot-titulo', 'Nueva cotización');
+  const conv = $id('cot-btn-convertir'); if (conv) conv.style.display = 'none';
+
+  _cotItems = [_docNuevaLinea()];
   const set = (id, v) => { const el = $id(id); if (el) el.value = v; };
-  set('cot-fecha', today);
-  set('cot-validez-dias', 30);
-  set('cot-condicion', 'contado');
+  set('cot-fecha', hoyLocal());
   ['cot-cli-nombre', 'cot-cli-rnc', 'cot-cli-dir', 'cot-cli-tel', 'cot-cli-correo', 'cot-notas', 'cot-observacion']
     .forEach(id => set(id, ''));
+  setText('cot-rnc-ayuda', '');
+  $id('cot-cli-resultados')?.classList.add('hidden');
   const chkCli = $id('cot-guardar-cliente'); if (chkCli) chkCli.checked = false;
   _mostrarCheckGuardarCliente('cot', '');
+  docElegirCondicion('cot', 'contado');
+  cotElegirValidez(30);
+  _fmLimpiar('cot-form');
+  const mas = $id('cot-mas'); if (mas) mas.open = false;
 
-  // Autocomplete DGII en el RNC del cliente, igual que en Facturación.
   if (window.RNCLookup) {
     const rncEl = $id('cot-cli-rnc');
-    const nombreEl = $id('cot-cli-nombre');
-    if (rncEl) RNCLookup.attach(rncEl, { nameEl: nombreEl, mode: 'both', onSelect() {} });
+    if (rncEl) RNCLookup.attach(rncEl, { nameEl: $id('cot-cli-nombre'), mode: 'both', onSelect() { cotActualizarPie(); } });
   }
 
-  try {
-    const [clientes, negocios] = await Promise.all([
-      apiCall('GET', '/api/facturacion/clientes'),
-      _allClientes.length ? Promise.resolve(_allClientes) : apiCall('GET', '/api/clientes').catch(() => []),
-    ]);
-    _cotClientes = clientes;
-    if (!_allClientes.length && negocios.length) _allClientes = negocios;
-
-    const sel = $id('cot-cliente-sel');
-    if (sel) {
-      let html = '<option value="">— Ingresar datos manualmente —</option>';
-      if (clientes.length) {
-        html += `<optgroup label="Mis Clientes">` +
-          clientes.map(c => `<option value="fac_${c.id}">${esc(c.nombre)}${c.rnc ? ' — ' + c.rnc : ''}</option>`).join('') +
-          `</optgroup>`;
-      }
-      if (negocios.length) {
-        html += `<optgroup label="Negocios asociados">` +
-          negocios.map(n => `<option value="neg_${n.id}">${esc(n.businessName || n.businessKey || n.id)}${n.rnc ? ' — ' + n.rnc : ''}</option>`).join('') +
-          `</optgroup>`;
-      }
-      sel.innerHTML = html;
-      sel.value = '';
-    }
-  } catch { /* no crítico */ }
-
-  renderCotItemsTable();
-  calcularTotalesCot();
+  await _docCargarClientes('cot');
+  _docPintarPlantillas('cot');
+  renderDocItems('cot');
   show('modal-nueva-cotizacion');
+  $id('cot-form')?.scrollTo(0, 0);
+  cotActualizarPie();
+  if (enfocar) setTimeout(() => $id('cot-cli-rnc')?.focus(), 50);
 }
 
 function cerrarNuevaCotizacion() { _cotEditId = null; hide('modal-nueva-cotizacion'); }
@@ -4892,8 +6218,9 @@ async function editarCotizacion(id) {
   try {
     const c = await apiCall('GET', `/api/cotizaciones/cotizaciones/${id}`);
     if (c.estado === 'convertida') { toast('No se puede editar una cotización ya convertida a factura.', 'error'); return; }
-    await nuevaCotizacion();               // arranca el modal en limpio y carga los selects
+    await nuevaCotizacion({ enfocar: false });   // arranca el modal en limpio y carga los clientes
     _cotEditId = id;
+    _cotNumero = c.numero || null;
 
     const set = (fid, v) => { const el = $id(fid); if (el) el.value = v == null ? '' : v; };
     set('cot-cli-nombre', c.cliente?.nombre);
@@ -4902,24 +6229,20 @@ async function editarCotizacion(id) {
     set('cot-cli-tel',    c.cliente?.telefono);
     set('cot-cli-correo', c.cliente?.correo);
     set('cot-fecha',      (c.fecha || '').slice(0, 10));
-    set('cot-validez-dias', c.validez_dias || 30);
-    set('cot-condicion', c.condicion_pago || 'contado');
     set('cot-notas', c.notas || '');
     set('cot-observacion', c.observacion || '');
+    docElegirCondicion('cot', c.condicion_pago || 'contado');
+    const dias = Number(c.validez_dias) || 30;
+    if (dias === 15 || dias === 30) cotElegirValidez(dias);
+    else { set('cot-validez-dias', dias); cotElegirValidez('otro'); }
 
-    _cotItems = (c.items || []).map(it => ({
-      descripcion: it.descripcion || '', cantidad: it.cantidad || 1,
-      precio: it.precio || 0, descuento: it.descuento || 0, itbis_rate: it.itbis_rate ?? 18,
-    }));
-    if (!_cotItems.length) _cotItems = [{ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 }];
+    _cotItems = (c.items || []).map(it => _docNuevaLinea(it));
+    if (!_cotItems.length) _cotItems = [_docNuevaLinea()];
 
-    const tEl = $id('modal-nueva-cotizacion')?.querySelector('.modal-title');
-    if (tEl) tEl.textContent = `✏ Editar Cotización ${esc(c.numero)}`;
-    const bEl = $id('cot-btn-guardar'); if (bEl) bEl.textContent = '💾 Guardar cambios';
-
-    renderCotItemsTable();
-    calcularTotalesCot();
-    show('modal-nueva-cotizacion');
+    setText('cot-titulo', `Cotización ${c.numero}`);
+    const conv = $id('cot-btn-convertir'); if (conv) conv.style.display = '';
+    renderDocItems('cot');
+    cotActualizarPie();
   } catch (e) { toast('Error: ' + e.message, 'error'); }
 }
 
@@ -4949,160 +6272,130 @@ async function selClienteCot(val) {
   }
 }
 
-function renderCotItemsTable() {
-  const tbody = $id('cot-items-body');
-  if (!tbody) return;
-  tbody.innerHTML = _cotItems.map((item, idx) => `<tr id="cot-item-row-${idx}">
-    <td>
-      <input type="text" class="form-input fac-iinput" list="fac-servicios-list"
-        value="${esc(item.descripcion)}" placeholder="Descripción del servicio..."
-        oninput="app.cotItemSet(${idx},'descripcion',this.value)" />
-    </td>
-    <td>
-      <input type="number" class="form-input fac-iinput" value="${item.cantidad}" min="1" step="1"
-        oninput="app.cotItemSet(${idx},'cantidad',this.value)" />
-    </td>
-    <td>
-      <input type="number" class="form-input fac-iinput" value="${item.precio}" min="0" step="0.01"
-        oninput="app.cotItemSet(${idx},'precio',this.value)" />
-    </td>
-    <td>
-      <input type="number" class="form-input fac-iinput" value="${item.descuento}" min="0" max="100" step="1"
-        oninput="app.cotItemSet(${idx},'descuento',this.value)" />
-    </td>
-    <td>
-      <select class="form-select fac-iinput" onchange="app.cotItemSet(${idx},'itbis_rate',this.value)">
-        <option value="0"  ${item.itbis_rate ==  0 ? 'selected' : ''}>0%</option>
-        <option value="18" ${item.itbis_rate == 18 ? 'selected' : ''}>18%</option>
-      </select>
-    </td>
-    <td class="td-amount" id="cot-item-tot-${idx}">${fmtMoney(calcItemTotal(item))}</td>
-    <td>
-      <button class="btn-icon-danger" onclick="app.removeItemCot(${idx})" title="Eliminar">✕</button>
-    </td>
-  </tr>`).join('');
+// Nombres viejos (siguen en window.app).
+function cotItemSet(idx, field, value) { docItemSet('cot', idx, field, value); }
+function addItemCot() { docAddItem('cot'); }
+function removeItemCot(idx) { docRemoveItem('cot', idx); }
+
+function _cotDatosForm() {
+  const get = id => ($id(id)?.value || '').trim();
+  return {
+    cliente: {
+      nombre: get('cot-cli-nombre'), rnc: get('cot-cli-rnc'),
+      direccion: get('cot-cli-dir'), telefono: get('cot-cli-tel'), correo: get('cot-cli-correo'),
+    },
+    fecha:          get('cot-fecha'),
+    validez_dias:   _cotDiasValidez(),
+    condicion_pago: get('cot-condicion') || 'contado',
+    observacion:    get('cot-observacion'),
+    notas:          get('cot-notas'),
+    items: _docItemsUtiles(_cotItems),
+  };
 }
 
-function cotItemSet(idx, field, value) {
-  if (!_cotItems[idx]) return;
-  _cotItems[idx][field] = field === 'descripcion' ? value : (Number(value) || 0);
-  const cell = $id(`cot-item-tot-${idx}`);
-  if (cell) cell.textContent = fmtMoney(calcItemTotal(_cotItems[idx]));
-  calcularTotalesCot();
-}
-
-function addItemCot() {
-  _cotItems.push({ descripcion: '', cantidad: 1, precio: 0, descuento: 0, itbis_rate: 18 });
-  renderCotItemsTable();
-  calcularTotalesCot();
-}
-
-function removeItemCot(idx) {
-  if (_cotItems.length <= 1) { toast('Debe tener al menos un ítem.', 'error'); return; }
-  _cotItems.splice(idx, 1);
-  renderCotItemsTable();
-  calcularTotalesCot();
-}
-
-function calcularTotalesCot() {
-  let sub = 0, desc = 0, itbis = 0;
-  for (const item of _cotItems) {
-    const base = (Number(item.precio) || 0) * Math.max(1, Number(item.cantidad) || 1);
-    const d    = base * ((Number(item.descuento) || 0) / 100);
-    const grav = base - d;
-    sub   += base;
-    desc  += d;
-    itbis += grav * ((Number(item.itbis_rate) || 0) / 100);
+// silencioso: guarda sin cerrar el modal ni avisar (antes de convertir en factura).
+async function guardarCotizacion({ silencioso = false } = {}) {
+  _cotIntento = true;
+  const probs = _cotProblemas();
+  cotActualizarPie();
+  if (probs.length) {
+    const primero = probs.find(p => p.campo && p.campo !== 'cot-items');
+    if (primero) $id(primero.campo)?.focus();
+    return false;
   }
-  const total = sub - desc + itbis;
-  setText('cot-t-sub',   fmtMoney(sub));
-  setText('cot-t-desc',  '— ' + fmtMoney(desc));
-  setText('cot-t-itbis', fmtMoney(itbis));
-  setText('cot-t-total', fmtMoney(total));
-}
-
-async function guardarCotizacion() {
   const btn = $id('cot-btn-guardar');
   const esEdicion = !!_cotEditId;
-  const labelOrig = esEdicion ? '💾 Guardar cambios' : '💾 Guardar Cotización';
-  if (btn) { btn.disabled = true; btn.textContent = 'Guardando...'; }
+  if (btn) { btn.disabled = true; _btnTexto(btn, 'Guardando…'); }
   try {
-    const get = id => ($id(id)?.value || '').trim();
-    const cliente = {
-      nombre: get('cot-cli-nombre'), rnc:      get('cot-cli-rnc'),
-      direccion: get('cot-cli-dir'), telefono: get('cot-cli-tel'),
-      correo:    get('cot-cli-correo'),
-    };
-    if (!cliente.nombre) { toast('El nombre del cliente es requerido.', 'error'); return; }
-    if (!_cotItems.some(i => (Number(i.precio) || 0) > 0)) {
-      toast('Agrega al menos un ítem con precio mayor a 0.', 'error'); return;
-    }
-
-    const payload = {
-      cliente,
-      fecha:          get('cot-fecha'),
-      validez_dias:   Number(get('cot-validez-dias')) || 30,
-      condicion_pago: get('cot-condicion'),
-      observacion:    get('cot-observacion'),
-      notas:          get('cot-notas'),
-      items: _cotItems,
-    };
-
+    const payload = _cotDatosForm();
     const editandoId = _cotEditId;
-    if (esEdicion) {
-      await apiCall('PUT', `/api/cotizaciones/cotizaciones/${editandoId}`, payload);
-    } else {
-      await apiCall('POST', '/api/cotizaciones/cotizaciones', payload);
+    if (esEdicion) await apiCall('PUT', `/api/cotizaciones/cotizaciones/${editandoId}`, payload);
+    else {
+      const nueva = await apiCall('POST', '/api/cotizaciones/cotizaciones', payload);
+      _cotEditId = nueva.id;
+      _cotNumero = nueva.numero;
     }
-    const guardado = $id('cot-guardar-cliente')?.checked ? await _guardarEnMisClientes(cliente, _cotClientes) : '';
-    toast((esEdicion ? 'Cotización actualizada.' : 'Cotización guardada.') + _textoGuardadoCliente(guardado), 'success');
-
-    _cotEditId = null;
-    hide('modal-nueva-cotizacion');
+    const guardado = $id('cot-guardar-cliente')?.checked && $id('cot-guardar-cliente-row')?.style.display !== 'none'
+      ? await _guardarEnMisClientes(payload.cliente, _cotClientes) : '';
+    if (!silencioso) {
+      toast((esEdicion ? 'Cotización actualizada.' : `Cotización ${_cotNumero || ''} guardada.`) + _textoGuardadoCliente(guardado), 'success');
+      _cotEditId = null;
+      hide('modal-nueva-cotizacion');
+    }
     loadCotizaciones();
     if ($id('mod-mis-clientes')?.classList.contains('active')) loadMisClientes();
+    return true;
   } catch (e) {
-    toast('Error: ' + e.message, 'error');
+    const msg = $id('cot-msg');
+    if (msg) { msg.textContent = e.message; msg.classList.add('is-error'); }
+    return false;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = labelOrig; }
+    if (btn) {
+      btn.disabled = false;
+      _btnTexto(btn, _cotEditId ? 'Guardar cambios' : 'Guardar cotización');
+    }
   }
 }
 
-// ── Convertir a factura ─────────────────────────────────────────────────
-
-async function abrirFacturarCotizacion(id) {
-  const c = _cotCotizaciones.find(x => x.id === id);
-  if (!c) { toast('Cotización no encontrada en la lista actual.', 'error'); return; }
-  _cotFacturarId = id;
-  setText('cf-cot-numero', `${c.numero} — ${c.cliente?.nombre || ''} — ${fmtMoney(c.total)}`);
-  try { _misNcf = await apiCall('GET', '/api/mis-secuencias-ncf'); } catch { _misNcf = _misNcf || []; }
-  const conRnc = !!(c.cliente?.rnc || '').trim();
-  const ncfEl = $id('cf-tipo-ncf'); if (ncfEl) ncfEl.value = _facPickDefaultNcf(conRnc);
-  const metEl = $id('cf-metodo'); if (metEl) metEl.value = 'efectivo';
-  show('modal-cot-facturar');
-}
-
-function cerrarFacturarCotizacion() { _cotFacturarId = null; hide('modal-cot-facturar'); }
-
-async function confirmarFacturarCotizacion() {
-  if (!_cotFacturarId) return;
-  const tipo_ncf = $id('cf-tipo-ncf')?.value;
-  if (!_facNcfUsables().includes(tipo_ncf)) {
-    toast(`No tienes una secuencia NCF activa para ${tipo_ncf}. Regístrala en "Mis Secuencias NCF" o elige otro tipo.`, 'error');
-    return;
-  }
-  const btn = $id('cf-btn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Facturando…'; }
+// Vista previa de lo que hay en el formulario (aunque no esté guardada).
+async function vistaPreviaCotizacionForm() {
+  if (!window.contadoresAPI?.isElectron) { toast('La vista previa solo está disponible en la app de escritorio.', 'error'); return; }
+  const d = _cotDatosForm();
+  const items = d.items.map(it => {
+    const base = (Number(it.precio) || 0) * Math.max(1, Number(it.cantidad) || 1);
+    const desc = base * ((Number(it.descuento) || 0) / 100);
+    const itbis = (base - desc) * ((Number(it.itbis_rate) || 0) / 100);
+    return { ...it, itbis: _r2(itbis), total: _r2(base - desc + itbis) };
+  });
+  const t = _docTotales(items);
+  const c = {
+    ...d, items, numero: _cotNumero || 'COT-BORRADOR', estado: 'aprobada', fecha_vencimiento: _cotVenceFecha(),
+    subtotal: t.subtotal, descuento_total: t.descuentos, itbis_total: t.itbis, total: t.total,
+  };
   try {
-    const r = await apiCall('POST', `/api/cotizaciones/cotizaciones/${_cotFacturarId}/facturar`, {
-      tipo_ncf, metodo_pago: $id('cf-metodo')?.value || 'efectivo',
-    });
-    hide('modal-cot-facturar');
-    toast(`Factura ${facNcfDisplay(r.factura?.ncf)} creada correctamente.`, 'success');
-    _cotFacturarId = null;
-    loadCotizaciones();
-  } catch (e) { toast('Error: ' + e.message, 'error'); }
-  finally { if (btn) { btn.disabled = false; btn.textContent = 'Facturar'; } }
+    const r = await window.contadoresAPI.previewPrint(cotizacionFormalHtml(c), `Cotización ${c.numero}`, `Cotizacion_${c.numero}.pdf`);
+    if (!r?.ok) toast('Error al abrir la vista previa: ' + (r?.error || 'desconocido'), 'error');
+  } catch (_) { toast('Error al abrir la vista previa.', 'error'); }
+}
+
+// ── Convertir en factura: abre Nueva factura con todo lo de la cotización ──
+async function _abrirFacturaDesdeCotizacion(c) {
+  await nuevaFactura({ enfocar: false });
+  _facDesdeCot = { id: c.id, numero: c.numero };
+  const set = (fid, v) => { const el = $id(fid); if (el) el.value = v == null ? '' : v; };
+  set('nf-cli-nombre', c.cliente?.nombre);
+  set('nf-cli-rnc',    c.cliente?.rnc);
+  set('nf-cli-dir',    c.cliente?.direccion);
+  set('nf-cli-tel',    c.cliente?.telefono);
+  set('nf-cli-correo', c.cliente?.correo);
+  set('nf-observacion', c.observacion || '');
+  docElegirCondicion('nf', c.condicion_pago || 'contado');
+  _facItems = (c.items || []).map(it => _docNuevaLinea(it));
+  if (!_facItems.length) _facItems = [_docNuevaLinea()];
+  _nfTipo = _facPickDefaultNcf(Boolean(String(c.cliente?.rnc || '').trim()));
+  // El subtítulo basta para saber de dónde viene (un aviso aparte quitaba espacio).
+  setText('nf-sub', `Desde la cotización ${c.numero} · al emitir queda como convertida`);
+  renderDocItems('nf');
+  _nfPintarTipos();
+  nfActualizarPie();
+}
+
+async function convertirCotizacionEnFactura(id) {
+  let c = _cotCotizaciones.find(x => x.id === id);
+  try { c = await apiCall('GET', `/api/cotizaciones/cotizaciones/${id}`); } catch { /* usa la de la lista */ }
+  if (!c) { toast('No se encontró la cotización.', 'error'); return; }
+  if (c.estado === 'convertida') { toast('Esta cotización ya fue facturada.', 'info'); return; }
+  await _abrirFacturaDesdeCotizacion({ ...c, id });
+}
+
+// Desde el formulario: guarda los cambios y pasa todo a Nueva factura.
+async function convertirCotizacionDesdeModal() {
+  const ok = await guardarCotizacion({ silencioso: true });
+  if (!ok || !_cotEditId) return;
+  const datos = { ..._cotDatosForm(), id: _cotEditId, numero: _cotNumero };
+  hide('modal-nueva-cotizacion');
+  _cotEditId = null;
+  await _abrirFacturaDesdeCotizacion(datos);
 }
 
 // ── Ver / imprimir / enviar por correo ──────────────────────────────────
@@ -7028,7 +8321,7 @@ function _renderAlertas(data) {
           <div class="alert-icon">${tipoIcon[a.tipo] || nivelIcon[nivel]}</div>
           <div class="alert-content">
             <div class="alert-bname">${esc(a.businessName || '—')}</div>
-            <div class="alert-msg">${esc(a.msg)}</div>
+            <div class="alert-msg">${esc(_msgAlerta(a))}</div>
           </div>
           ${a.businessId ? `<button class="btn btn-xs btn-secondary" onclick="app.verCliente('${a.businessId}')">Ver</button>` : ''}
         </div>`).join('');
@@ -7039,15 +8332,13 @@ function _renderAlertas(data) {
 }
 
 function _actualizarBadgeAlertas(count) {
-  const badge = $id('nav-badge-alertas');
-  if (!badge) return;
-  if (count > 0) {
-    badge.textContent = count;
-    badge.classList.remove('hidden');
-    badge.style.background = '#ef4444';
-  } else {
-    badge.classList.add('hidden');
-  }
+  // Menú lateral y campana de la barra superior muestran el mismo número.
+  ['nav-badge-alertas', 'topbar-badge-alertas'].forEach((id) => {
+    const badge = $id(id);
+    if (!badge) return;
+    badge.textContent = count > 99 ? '99+' : count;
+    badge.classList.toggle('hidden', !(count > 0));
+  });
 }
 
 // Auto-polling de alertas cada 3 minutos
@@ -7115,22 +8406,27 @@ window.app = {
   aplicarFiltros, aplicarFiltrosConDebounce, actualizarStatsPorSucursal, limpiarFiltros, exportarCSV, exportarExcel, imprimirReporte, actualizarReporte,
   abrirRepDetalle, cerrarRepDetalle, imprimirTabReporte, imprimirReporteMensual,
   // productos pendientes (agregados desde este Portal)
-  abrirAgregarProductoModal, editarProductoPendiente, eliminarProductoPendiente, editarProductoReal, eliminarProductoReal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen, syncProductoItbisFields,
+  abrirAgregarProductoModal, editarProductoPendiente, eliminarProductoPendiente, editarProductoReal, eliminarProductoReal, cerrarAgregarProductoModal, guardarProductoPendiente, handleAgregarProductoImagen,
+  apElegirAlcance, apElegirItbis, apCalcular, generarCodigoProducto, apControlInventario,
   // secuencias NCF pendientes (registradas desde este Portal)
-  abrirAgregarNcfModal, cerrarAgregarNcfModal, guardarNcfPendiente, handleAgregarNcfAdjunto, cancelarNcfPendiente,
+  abrirAgregarNcfModal, cerrarAgregarNcfModal, guardarNcfPendiente, handleAgregarNcfAdjunto, cancelarNcfPendiente, anActualizar,
   // secuencias NCF ya aplicadas (editar/suspender/eliminar remoto)
   abrirEditarNcfModal, cerrarEditarNcfModal, guardarEdicionNcf, abrirSuspenderNcfModal, eliminarNcfAplicada,
   confirmarMotivoNcf, cancelarMotivoNcf,
   // facturación — mis secuencias NCF propias (para facturar sus servicios)
   abrirMisSecuenciasNcf, cerrarMisSecuenciasNcf, abrirRegistrarMiNcfModal, cerrarRegistrarMiNcfModal,
-  handleMiNcfAdjunto, guardarMiNcf, suspenderMiNcf, activarMiNcf, eliminarMiNcf,
+  handleMiNcfAdjunto, guardarMiNcf, suspenderMiNcf, activarMiNcf, eliminarMiNcf, mnActualizar, verDocumentoMiNcf,
   // facturación — dashboard
   loadFacturacion,
   facRApply, facROnPeriodoChange, facRSwitchTab, facRSwitchSubtab, facRFacPage, facRFacMetodo,
   facRExportFacturas, facRExportGroup, facRExportDGII, facRExportConsolidado,
-  // facturación — nueva factura
-  nuevaFactura, cerrarNuevaFactura, selClienteFac, editarFactura, onNfTipoNcfChange,
+  registrarCobroLista, pdfFacturaLista,
+  // facturación — nueva factura (y formulario común con la cotización)
+  nuevaFactura, cerrarNuevaFactura, selClienteFac, editarFactura,
   addItemFac, removeItemFac, facItemSet, guardarFactura,
+  nfElegirTipo, nfActualizarPie, vistaPreviaFactura,
+  docBuscarCliente, docElegirCliente, docClienteNuevo, docConsultarDgii, docAgregarPlantilla,
+  docItemSet, docAddItem, docRemoveItem, docElegirCondicion, mcliConsultarDgii,
   enviarFacturaCorreoLista, marcarPagadaLista,
   // facturación — detalle
   verFactura, cerrarVerFactura, backToFacturas, marcarPagada, anularFactura, duplicarFactura,
@@ -7144,7 +8440,8 @@ window.app = {
   // cotizaciones
   loadCotizaciones, nuevaCotizacion, cerrarNuevaCotizacion, editarCotizacion, selClienteCot,
   addItemCot, removeItemCot, cotItemSet, guardarCotizacion,
-  abrirFacturarCotizacion, cerrarFacturarCotizacion, confirmarFacturarCotizacion,
+  cotElegirValidez, cotActualizarPie, vistaPreviaCotizacionForm,
+  convertirCotizacionEnFactura, convertirCotizacionDesdeModal,
   verCotizacionPreview, abrirModalEnvioCot, cerrarEnvioCot, confirmarEnvioCot,
   // colaboradores
   loadColaboradores, filtrarColaboradores,

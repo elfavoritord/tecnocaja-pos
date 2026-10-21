@@ -90,4 +90,36 @@
   };
 
   aplicar();
+
+  // ── Tamaño de la pantalla: agranda letra, botones y módulos a la vez ──
+  // En la app es el zoom de la ventana (Electron); en un navegador, CSS zoom.
+  const CLAVE_TAMANO = 'tc_cont_tamano';
+  const TAMANOS = { normal: 1, grande: 1.1, muy_grande: 1.2 };
+
+  function tamano() {
+    try {
+      const v = localStorage.getItem(CLAVE_TAMANO);
+      return TAMANOS[v] ? v : 'normal';
+    } catch (_) {
+      return 'normal';
+    }
+  }
+
+  function aplicarTamano() {
+    const factor = TAMANOS[tamano()];
+    if (window.contadoresAPI?.setZoom) window.contadoresAPI.setZoom(factor);
+    else document.documentElement.style.zoom = factor === 1 ? '' : String(factor);
+    document.querySelectorAll('[data-tamano]').forEach((el) => {
+      el.setAttribute('aria-checked', String(el.dataset.tamano === tamano()));
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    const opcion = event.target.closest('[data-tamano]');
+    if (!opcion || !TAMANOS[opcion.dataset.tamano]) return;
+    try { localStorage.setItem(CLAVE_TAMANO, opcion.dataset.tamano); } catch (_) { /* vale solo por esta sesión */ }
+    aplicarTamano();
+  });
+  document.addEventListener('DOMContentLoaded', aplicarTamano);
+  aplicarTamano();
 })();

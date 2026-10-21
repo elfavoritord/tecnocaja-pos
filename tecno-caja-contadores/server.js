@@ -905,7 +905,8 @@ app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) =
 
 app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
   const { businessId, accion, productoId, codigo, nombre, categoria, marca, unidad, saleMode,
-          precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData } = req.body;
+          precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData,
+          tracksStock } = req.body;
   const accionNorm = ['editar', 'eliminar'].includes(accion) ? accion : 'crear';
 
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
@@ -951,6 +952,8 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
       precioVenta:   Number(precioVenta || 0),
       stock:         Number(stock || 0),
       stockMin:      Number(stockMin || 0),
+      // "Controlar inventario" (products.tracks_stock del POS). Sin el dato = sí.
+      tracksStock:   tracksStock !== false,
       aplicaItbis:   Boolean(aplicaItbis),
       itbisModo:     itbisModo === 'monto' ? 'monto' : 'porcentaje',
       itbisMonto:    Math.max(0, Number(itbisMonto || 0)),
@@ -973,7 +976,8 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
 app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (req, res) => {
   const { businessId, pendingId } = req.params;
   const { codigo, nombre, categoria, marca, unidad, saleMode,
-          precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData } = req.body;
+          precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData,
+          tracksStock } = req.body;
 
   if (!codigo || !String(codigo).trim()) return res.status(400).json({ error: 'El código es obligatorio.' });
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
@@ -1013,6 +1017,7 @@ app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (
       precioVenta:   Number(precioVenta || 0),
       stock:         Number(stock || 0),
       stockMin:      Number(stockMin || 0),
+      tracksStock:   tracksStock !== false,
       aplicaItbis:   Boolean(aplicaItbis),
       itbisModo:     itbisModo === 'monto' ? 'monto' : 'porcentaje',
       itbisMonto:    Math.max(0, Number(itbisMonto || 0)),
@@ -3087,13 +3092,36 @@ async function findOverlappingMisSecuencia(contadorRef, documentType, startNumbe
   });
 }
 
+// La lista NO lleva el documento de autorización (base64 de ~150 KB cada uno):
+// con 11 secuencias eran ~1.7 MB en cada apertura de "Mis secuencias", de
+// Nueva factura y de convertir cotización. Se baja aparte con /documento.
+function sinDocumento(s) {
+  const { attachmentData, ...resto } = s;
+  const tipo = /^data:([^;]+);/.exec(String(attachmentData || ''))?.[1] || null;
+  return { ...resto, tieneDocumento: Boolean(attachmentData), documentoTipo: tipo };
+}
+
 app.get('/api/mis-secuencias-ncf', requireAuth, async (req, res) => {
   try {
     const snap = await col(COL_CONTADORES).doc(req.contador.contadorDocId)
       .collection('mis_secuencias_ncf').orderBy('documentType').get();
-    res.json(snap.docs.map((d) => mapMisSecuencia(docData(d))));
+    res.json(snap.docs.map((d) => sinDocumento(mapMisSecuencia(docData(d)))));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+app.get('/api/mis-secuencias-ncf/:id/documento', requireAuth, async (req, res) => {
+  try {
+    const doc = await col(COL_CONTADORES).doc(req.contador.contadorDocId)
+      .collection('mis_secuencias_ncf').doc(req.params.id).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Secuencia no encontrada.' });
+    const data = doc.data().attachmentData || null;
+    if (!data) return res.status(404).json({ error: 'Esta secuencia no tiene documento adjunto.' });
+    res.json({ attachmentData: data });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Las notas de crédito (B04) no tienen fecha de vencimiento; el resto sí.
+const NCF_SIN_VENCIMIENTO = new Set(['B04']);
 
 app.post('/api/mis-secuencias-ncf', requireAuth, async (req, res) => {
   const { documentType, startNumber, endNumber, authorizationDate, expirationDate, authorizationReference, attachmentData, notes } = req.body;
@@ -3101,16 +3129,20 @@ app.post('/api/mis-secuencias-ncf', requireAuth, async (req, res) => {
   if (!NCF_TIPOS[tipo]) return res.status(400).json({ error: 'Tipo de comprobante inválido.' });
   const desde = Number(startNumber);
   const hasta = Number(endNumber);
-  if (!Number.isFinite(desde) || !Number.isFinite(hasta) || desde < 1 || desde > hasta) {
+  if (!Number.isInteger(desde) || !Number.isInteger(hasta) || desde < 1) {
     return res.status(400).json({ error: 'El rango de números no es válido.' });
   }
-  if (!authorizationReference || !String(authorizationReference).trim()) {
-    return res.status(400).json({ error: 'Indica la referencia de autorización de la DGII.' });
+  if (hasta <= desde) return res.status(400).json({ error: 'El número final debe ser mayor que el inicial.' });
+  if (hasta > 99999999) return res.status(400).json({ error: 'El NCF tradicional tiene 8 dígitos (máximo 99999999).' });
+  const vence = String(expirationDate || '').slice(0, 10);
+  if (!vence && !NCF_SIN_VENCIMIENTO.has(tipo)) {
+    return res.status(400).json({ error: 'Indica la fecha de vencimiento que dio la DGII.' });
   }
-  if (!attachmentData) {
-    return res.status(400).json({ error: 'Sube el documento de autorización de la DGII.' });
+  if (vence && vence < fechaLocal()) {
+    return res.status(400).json({ error: 'Esa fecha de vencimiento ya pasó: la secuencia no se podría usar.' });
   }
-  if (String(attachmentData).length > 700_000) {
+  // Número de autorización y documento: opcionales (decisión de Emilio, oct 2026).
+  if (attachmentData && String(attachmentData).length > 700_000) {
     return res.status(400).json({ error: 'El archivo es demasiado grande. Usa uno más liviano (máx. ~500KB).' });
   }
 
@@ -3127,15 +3159,15 @@ app.post('/api/mis-secuencias-ncf', requireAuth, async (req, res) => {
       documentType: tipo,
       startNumber: desde, endNumber: hasta, nextNumber: desde,
       authorizationDate: authorizationDate || null,
-      expirationDate: expirationDate || null,
-      authorizationReference: String(authorizationReference).trim(),
-      attachmentData,
+      expirationDate: vence || null,
+      authorizationReference: String(authorizationReference || '').trim(),
+      attachmentData: attachmentData || null,
       notes: notes || '',
       status: 'activo',
       createdAt: isoNow(), updatedAt: isoNow(),
     });
     const doc = await ref.get();
-    res.status(201).json(mapMisSecuencia(docData(doc)));
+    res.status(201).json(sinDocumento(mapMisSecuencia(docData(doc))));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3150,19 +3182,36 @@ app.put('/api/mis-secuencias-ncf/:id', requireAuth, async (req, res) => {
     // puede bajar de lo ya usado.
     const wasUsed = d.nextNumber > d.startNumber;
     const endNumber = req.body.endNumber != null ? Number(req.body.endNumber) : d.endNumber;
+    if (!Number.isInteger(endNumber)) return res.status(400).json({ error: 'El número final no es válido.' });
     if (wasUsed && endNumber < d.nextNumber - 1) {
       return res.status(400).json({ error: 'No se puede reducir el rango por debajo de los números ya utilizados.' });
     }
-    if (d.startNumber > endNumber) return res.status(400).json({ error: 'El número final no puede ser menor que el inicial.' });
+    if (endNumber <= d.startNumber) return res.status(400).json({ error: 'El número final debe ser mayor que el inicial.' });
+    if (endNumber !== d.endNumber) {
+      const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
+      const overlap = await findOverlappingMisSecuencia(contadorRef, d.documentType, d.startNumber, endNumber, req.params.id);
+      if (overlap) {
+        const o = overlap.data();
+        const fmt = (n) => `${d.documentType}${String(n).padStart(8, '0')}`;
+        return res.status(409).json({ error: `Se cruza con la secuencia ya registrada ${fmt(o.startNumber)}–${fmt(o.endNumber)}.` });
+      }
+    }
+    if (req.body.attachmentData && String(req.body.attachmentData).length > 700_000) {
+      return res.status(400).json({ error: 'El archivo es demasiado grande. Usa uno más liviano (máx. ~500KB).' });
+    }
 
-    await ref.update({
+    const upd = {
       endNumber,
       authorizationDate: req.body.authorizationDate || d.authorizationDate,
       expirationDate: req.body.expirationDate || d.expirationDate,
-      authorizationReference: req.body.authorizationReference ? String(req.body.authorizationReference).trim() : d.authorizationReference,
+      authorizationReference: req.body.authorizationReference != null ? String(req.body.authorizationReference).trim() : d.authorizationReference,
       notes: req.body.notes != null ? req.body.notes : d.notes,
       updatedAt: isoNow(),
-    });
+    };
+    if (req.body.attachmentData) upd.attachmentData = req.body.attachmentData;
+    // Si ya estaba agotada y le subieron el final, vuelve a quedar activa.
+    if (d.status === 'agotado' && endNumber >= d.nextNumber) upd.status = 'activo';
+    await ref.update(upd);
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3213,14 +3262,15 @@ async function getNextNcf(contadorRef, tipo) {
   const seqCol = contadorRef.collection('mis_secuencias_ncf');
   return db.runTransaction(async (t) => {
     const snap = await t.get(seqCol.where('documentType', '==', tipo).where('status', '==', 'activo'));
-    const candidate = snap.docs.find((doc) => {
+    // La de menor rango primero: es la que el formulario muestra como "NCF a asignar".
+    const candidate = snap.docs.filter((doc) => {
       const x = doc.data();
       if (x.expirationDate && x.expirationDate < today) return false;
       if (x.nextNumber > x.endNumber) return false;
       return true;
-    });
+    }).sort((a, b) => Number(a.data().startNumber) - Number(b.data().startNumber))[0];
     if (!candidate) {
-      const err = new Error(`No tienes una secuencia NCF activa para comprobantes ${tipo}. Regístrala en "🏛 Mis Secuencias NCF" antes de facturar.`);
+      const err = new Error(`No tienes una secuencia NCF activa para comprobantes ${tipo}. Agrégala en "Mis secuencias NCF" antes de facturar.`);
       err.status = 409;
       throw err;
     }
@@ -3336,6 +3386,11 @@ async function crearFacturaInterna(req, datos) {
   if (!cliente?.nombre?.trim()) { const e = new Error('Nombre del cliente requerido.'); e.status = 400; throw e; }
   if (!NCF_TIPOS[tipo_ncf])     { const e = new Error('Tipo de comprobante inválido.'); e.status = 400; throw e; }
   if (!Array.isArray(items) || !items.length) { const e = new Error('Debe agregar al menos un ítem.'); e.status = 400; throw e; }
+  // El crédito fiscal (B01) solo vale con el RNC (9 dígitos) o la cédula (11) del cliente.
+  const rncDigitos = String(cliente.rnc || '').replace(/\D/g, '');
+  if (tipo_ncf === 'B01' && rncDigitos.length !== 9 && rncDigitos.length !== 11) {
+    const e = new Error('El B01 requiere el RNC (9 dígitos) o la cédula (11 dígitos) del cliente.'); e.status = 400; throw e;
+  }
 
   const contadorRef = col(COL_CONTADORES).doc(req.contador.contadorDocId);
   const { ncf, ncfVencimiento } = await getNextNcf(contadorRef, tipo_ncf);
@@ -3365,6 +3420,8 @@ async function crearFacturaInterna(req, datos) {
     contador_tel:    req.contador.telefono,
     contador_correo: req.contador.correo,
     contador_logo:   req.contador.logo_url || null,
+    cotizacion_id:     datos.cotizacion_id || null,
+    cotizacion_numero: datos.cotizacion_numero || null,
     createdAt: isoNow(), updatedAt: isoNow(),
   };
 
@@ -3374,7 +3431,22 @@ async function crearFacturaInterna(req, datos) {
 
 app.post('/api/facturacion/facturas', requireAuth, async (req, res) => {
   try {
-    const factura = await crearFacturaInterna(req, req.body);
+    // "Convertir en factura" desde una cotización: el modal llega con los
+    // datos de la cotización (editables) y aquí se marca como convertida.
+    const cotId = req.body.cotizacion_id ? String(req.body.cotizacion_id) : null;
+    let cotRef = null;
+    let cotNumero = null;
+    if (cotId) {
+      cotRef = col(COL_CONTADORES).doc(req.contador.contadorDocId).collection('cotizaciones').doc(cotId);
+      const cotSnap = await cotRef.get();
+      if (!cotSnap.exists) return res.status(404).json({ error: 'La cotización ya no existe.' });
+      if (cotSnap.data().estado === 'convertida') return res.status(400).json({ error: 'Esta cotización ya fue facturada.' });
+      cotNumero = cotSnap.data().numero || null;
+    }
+    const factura = await crearFacturaInterna(req, { ...req.body, cotizacion_id: cotId, cotizacion_numero: cotNumero });
+    if (cotRef) {
+      await cotRef.update({ estado: 'convertida', converted_invoice_id: factura.id, converted_at: isoNow(), updatedAt: isoNow() });
+    }
     res.json(factura);
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
@@ -3449,6 +3521,10 @@ app.put('/api/facturacion/facturas/:id', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'Solo se puede editar una factura pendiente y sin pagos registrados.' });
       }
       if (!cliente?.nombre?.trim()) return res.status(400).json({ error: 'Nombre del cliente requerido.' });
+      const rncDig = String(cliente.rnc || '').replace(/\D/g, '');
+      if (cur.tipo_ncf === 'B01' && rncDig.length !== 9 && rncDig.length !== 11) {
+        return res.status(400).json({ error: 'El B01 requiere el RNC (9 dígitos) o la cédula (11 dígitos) del cliente.' });
+      }
       const c = computeFacturaItems(items);
       upd.cliente = {
         nombre: cliente.nombre.trim(), rnc: cliente.rnc || '',
