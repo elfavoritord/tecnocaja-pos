@@ -28,6 +28,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { getDocumentType } = require('../../modules/ecf/config/document-types');
 
 const ATTACHMENT_MIME_EXTENSIONS = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp',
@@ -204,14 +205,32 @@ function mapSequence(row, lowStockThreshold = LOW_STOCK_THRESHOLD) {
   };
 }
 
+// 'AAAA-MM-DD' de una columna DATE (llega como Date o como texto según el motor).
+function dateText(value) {
+  if (!value) return '';
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return '';
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+  }
+  return String(value).slice(0, 10);
+}
+
 // Mapea una fila de ecf_sequences (módulo e-CF certificado) al mismo shape
-// que mapSequence, marcada readOnly — el panel unificado la muestra pero no
-// ofrece editar/activar/suspender sobre ella (eso sigue en js/fiscal-ecf.js).
+// que mapSequence, marcada readOnly — el panel unificado y el espejo del
+// Portal del Contador (ncf_aplicadas) la muestran pero no ofrecen
+// editar/activar/suspender sobre ella (eso se hace en el POS).
 function mapEcfSequenceReadOnly(row) {
   const totalAuthorized = Number(row.numero_final) - Number(row.numero_inicial) + 1;
   const totalUsed = Math.max(0, Number(row.proximo_numero) - Number(row.numero_inicial));
   const totalAvailable = Math.max(0, Number(row.numero_final) - Number(row.proximo_numero) + 1);
   const percentUsed = totalAuthorized > 0 ? Math.min(100, Math.round((totalUsed / totalAuthorized) * 100)) : 0;
+  const status = Number(row.activo) ? 'activo' : 'suspendido';
+  const today = dateText(new Date());
+  let effectiveStatus = status;
+  if (status === 'activo') {
+    if (row.fecha_vencimiento && dateText(row.fecha_vencimiento) < today) effectiveStatus = 'vencido';
+    else if (totalAvailable <= 0) effectiveStatus = 'agotado';
+  }
   return {
     id: `ecf-${row.id}`,
     businessId: row.business_id,
@@ -219,7 +238,7 @@ function mapEcfSequenceReadOnly(row) {
     branchName: row.branch_name || (row.branch_id ? null : 'Global'),
     series: 'E',
     documentType: row.tipo_comprobante,
-    documentName: row.tipo_comprobante,
+    documentName: getDocumentType(row.tipo_comprobante)?.label || row.tipo_comprobante,
     prefix: row.tipo_comprobante,
     startNumber: Number(row.numero_inicial),
     endNumber: Number(row.numero_final),
@@ -230,8 +249,8 @@ function mapEcfSequenceReadOnly(row) {
     expirationDate: row.fecha_vencimiento,
     authorizationReference: row.authorization_reference || null,
     environment: 'e-cf',
-    status: row.activo ? 'activo' : 'suspendido',
-    effectiveStatus: row.activo ? 'activo' : 'suspendido',
+    status,
+    effectiveStatus,
     authorizationFileUrl: row.authorization_file_url || null,
     notes: null,
     createdAt: row.created_at,
@@ -262,8 +281,22 @@ function createFiscalSequencesRouter({
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, verifyUserPassword, getUserScopeBranchId,
   isGlobalAdministratorUser, isBranchAdministratorUser,
   attachmentsDir, attachmentsWebPath = '/uploads/comprobantes-fiscales', isMysqlDeployment,
+  onSequencesChanged = null,
 }) {
   const router = express.Router();
+
+  // Cada cambio que sale bien (registrar, editar, activar, suspender,
+  // eliminar) refresca el espejo que ve el Portal del Contador, sin esperar a
+  // la próxima venta: así no le registra al negocio un rango que ya tiene.
+  router.use((req, res, next) => {
+    if (req.method !== 'GET' && typeof onSequencesChanged === 'function') {
+      res.on('finish', () => {
+        if (res.statusCode >= 400) return;
+        try { onSequencesChanged(); } catch (_) { /* nunca frena la respuesta */ }
+      });
+    }
+    next();
+  });
 
   function actorName(actor) {
     return actor?.usuario || actor?.nombre || null;
@@ -684,5 +717,5 @@ async function ensureSchemaAndPermissions(query) {
 module.exports = {
   createFiscalSequencesRouter, ensureSchema: ensureSchemaAndPermissions,
   findOverlappingSequence, VALID_DOCUMENT_TYPES, ACTIVATABLE_STATUSES,
-  ATTACHMENT_MIME_EXTENSIONS, MAX_ATTACHMENT_BYTES, mapSequence,
+  ATTACHMENT_MIME_EXTENSIONS, MAX_ATTACHMENT_BYTES, mapSequence, mapEcfSequenceReadOnly,
 };

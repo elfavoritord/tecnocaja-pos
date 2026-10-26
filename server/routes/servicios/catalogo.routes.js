@@ -11,10 +11,14 @@
  *  GET    /api/servicios/catalogo/:id
  *  PUT    /api/servicios/catalogo/:id
  *  DELETE /api/servicios/catalogo/:id            (baja lógica: activo = 0)
+ *  POST   /api/servicios/catalogo/importar       { servicios: [...] } (CSV leído por js/catalogo-csv.js)
  */
 
 const express = require('express');
 const { httpError, roleCodeOf, actorName, makeServiceGuard } = require('./_common');
+const { importarServicios } = require('./catalogo-import');
+
+const MAX_IMPORTAR = 2000;
 
 function mapService(row) {
   return {
@@ -58,6 +62,27 @@ function createCatalogoRouter(deps) {
       if (existing[0]) return res.status(200).json({ id: existing[0].id, nombre });
       const r = await query('INSERT INTO svc_service_categories (nombre) VALUES (?)', [nombre]);
       res.status(201).json({ id: r.insertId, nombre });
+    } catch (e) {
+      res.status(e.statusCode || 500).json({ error: e.message });
+    }
+  });
+
+  // ── Importar desde CSV ───────────────────────────────────────────────────
+  // El navegador lee el archivo (js/catalogo-csv.js) y manda las filas: se
+  // crea lo nuevo y se actualiza lo que ya existe por código (o nombre).
+  router.post('/importar', guard.requirePerm('servicios.crear'), async (req, res) => {
+    const actor = req.authUser;
+    try {
+      const filas = Array.isArray(req.body?.servicios) ? req.body.servicios : [];
+      if (!filas.length) throw httpError('El archivo no trae servicios para importar.');
+      if (filas.length > MAX_IMPORTAR) throw httpError(`Máximo ${MAX_IMPORTAR.toLocaleString('en-US')} servicios por importación.`);
+      const resultado = await importarServicios(query, filas);
+      await writeAuditLog({
+        userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
+        moduleName: 'Servicios', actionName: 'Servicios importados',
+        detail: `${resultado.creados} creados, ${resultado.actualizados} actualizados, ${resultado.omitidos} omitidos (CSV)`,
+      });
+      res.json(resultado);
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }

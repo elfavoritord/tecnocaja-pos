@@ -133,6 +133,7 @@ function fechaFirma(ds) {
 const TIPOS_NCF = {
   B01: 'Crédito Fiscal', B02: 'Consumo', B14: 'Régimen Especial', B15: 'Gubernamental',
   E31: 'Crédito Fiscal Electrónico', E32: 'Consumo Electrónico',
+  E44: 'Régimen Especial Electrónico', E45: 'Gubernamental Electrónico',
 };
 const METODOS = {
   efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta',
@@ -181,6 +182,10 @@ function aDocumentoPlantilla({ empresa = {}, invoice = {}, items = [], terminos 
     ncf: invoice.ncf || '',
     fiscalMode: invoice.fiscalMode || '',
     ncfTipoLabel: !isCot && TIPOS_NCF[tipo] ? `${tipo} — ${TIPOS_NCF[tipo]}` : '',
+    // e-CF: bloque de seguridad de la DGII (QR, código y fecha de firma).
+    qrDataUrl: invoice.ecfQrDataUrl || '',
+    codigoSeguridad: invoice.ecfCodigoSeguridad || '',
+    fechaFirma: invoice.ecfFechaFirma || '',
     fechaTexto: fdate(invoice.fecha),
     vencimientoTexto: isCot ? fdate(sumarDias(invoice.fecha, validez)) : fdate(invoice.ncfVencimiento),
     metodoPago: isCot || !pago ? '' : (METODOS[pago.metodo] || String(pago.metodo || '')),
@@ -411,6 +416,10 @@ function renderFormalA4(doc) {
       <div class="cell">${firmaImg}${dsigHtml || `<div class="line">Firma y sello ${esc(empresa.nombre || '')}</div>`}</div>
       ${isCot ? '<div class="cell"><div class="line">Aceptación del cliente</div></div>' : ''}
     </div>` : ''}
+    ${invoice.ecfQrDataUrl ? `<div style="display:flex;align-items:center;gap:4mm;margin-top:5mm;font-size:9px;line-height:1.6;break-inside:avoid">
+      <img src="${esc(invoice.ecfQrDataUrl)}" alt="QR" style="width:28mm;height:28mm">
+      <div>${invoice.ecfCodigoSeguridad ? `<div><b>Código de seguridad:</b> ${esc(invoice.ecfCodigoSeguridad)}</div>` : ''}${invoice.ecfFechaFirma ? `<div><b>Fecha de firma digital:</b> ${esc(invoice.ecfFechaFirma)}</div>` : ''}</div>
+    </div>` : ''}
     <div class="foot"><b>${esc(empresa.nombre || '')}</b>${footerNote}</div>
   </div>
 </div></body></html>`;
@@ -455,6 +464,9 @@ function renderThermal(doc, width) {
   </table>
   <div class="hr"></div>
   <div class="c">Son: ${esc(numeroALetras(invoice.total))}</div>
+  ${invoice.ecfQrDataUrl ? `<div class="hr"></div><div class="c"><img src="${esc(invoice.ecfQrDataUrl)}" alt="QR" style="width:${width === '58mm' ? 30 : 36}mm"></div>
+  ${invoice.ecfCodigoSeguridad ? `<div class="c">Código de seguridad: ${esc(invoice.ecfCodigoSeguridad)}</div>` : ''}
+  ${invoice.ecfFechaFirma ? `<div class="c">Fecha de firma: ${esc(invoice.ecfFechaFirma)}</div>` : ''}` : ''}
   ${['anulada', 'rechazada'].includes(String(invoice.estado || '').toLowerCase()) ? '<div class="c big">*** ' + esc(String(invoice.estado).toUpperCase()) + ' ***</div>' : ''}
   <div class="hr"></div>
   ${empresa.firma ? `<div class="c"><img src="${empresa.firma}" style="max-width:${width === '58mm' ? '38mm' : '50mm'};max-height:16mm"></div><div class="c">Firma y sello ${esc(empresa.nombre || '')}</div><div class="hr"></div>` : ''}

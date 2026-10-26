@@ -45,6 +45,15 @@
   // Alerta del prompt maestro: sucursal sin sincronizar hace más de 4 horas.
   var ALERTA_SYNC_MS = 4 * 60 * 60 * 1000;
   var TIPOS_NCF = ['B01', 'B02', 'B03', 'B04', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17'];
+  // e-NCF (factura electrónica): la DGII los autoriza por RNC y se reparten
+  // entre sucursales igual que los B (ver sincronizacion-central.js).
+  var TIPOS_ECF = [
+    ['E31', 'Factura de Crédito Fiscal Electrónica'], ['E32', 'Factura de Consumo Electrónica'],
+    ['E33', 'Nota de Débito Electrónica'], ['E34', 'Nota de Crédito Electrónica'],
+    ['E41', 'Compras Electrónico'], ['E43', 'Gastos Menores Electrónico'],
+    ['E44', 'Regímenes Especiales Electrónico'], ['E45', 'Gubernamental Electrónico'],
+    ['E46', 'Exportaciones Electrónico'], ['E47', 'Pagos al Exterior Electrónico'],
+  ];
   var ESTADO_RANGO = {
     en_espera: 'Recibido, en espera', en_uso: 'En uso', agotado: 'Agotado', rechazado: 'Rechazado por la sucursal', anulado: 'Anulado',
   };
@@ -117,8 +126,10 @@
     var avisar = opciones.avisar || function () {};
     var ruta = BASE + '/' + encodeURIComponent(licenseId);
     // equipos: null = no se pudieron leer (la lista de sucursales sigue).
+    // dgii: autorización leída del archivo de la DGII que falta por repartir
+    // ({ tipo, desde, totalDesde, totalHasta, autorizacion, cola }).
     var estado = {
-      datos: null, equipos: null, ventas: null, rangos: null, verAnteriores: false, editando: null, codigo: null, ocupado: false,
+      datos: null, equipos: null, ventas: null, rangos: null, verAnteriores: false, editando: null, codigo: null, ocupado: false, dgii: null,
     };
 
     asegurarEstilos();
@@ -224,24 +235,46 @@
         var estadoTexto = r.estado === 'anulado' ? 'Anulado' : (ESTADO_RANGO[r.estadoSucursal] || 'Asignado, sin recibir');
         var puedeAnular = r.estado !== 'anulado' && ['en_uso', 'agotado'].indexOf(r.estadoSucursal) === -1;
         return '<tr data-rango="' + esc(r.rangoUuid) + '"><td>' + esc(r.sucursal) + '</td><td><strong>' + esc(r.tipo) + '</strong></td>'
-          + '<td>' + esc(r.desde) + '–' + esc(r.hasta) + (r.autorizacion ? '<div class="suc-sub">Aut. ' + esc(r.autorizacion) + '</div>' : '') + '</td>'
+          + '<td>' + esc(r.desde) + '–' + esc(r.hasta) + (r.autorizacion ? '<div class="suc-sub">Aut. ' + esc(r.autorizacion) + '</div>' : '')
+          + (r.origen === 'sucursal' ? '<div class="suc-sub">Ya lo tenía la sucursal al conectarse</div>' : '') + '</td>'
           + '<td>' + esc(estadoTexto) + (r.motivoSucursal ? '<div class="suc-sub" style="color:var(--red,#ef4444)">' + esc(r.motivoSucursal) + '</div>' : '') + '</td>'
           + '<td>' + esc(Math.max(0, usado)) + ' / ' + esc(r.total) + '<div class="suc-sub">' + esc(r.disponibles) + ' disponibles</div></td>'
           + '<td>' + esc(r.vence || '—') + '</td>'
           + '<td><div class="suc-acciones">' + (puedeAnular ? boton('ncf-anular', 'Anular', r.rangoUuid, ' class="suc-peligro" data-sucursal="' + esc(r.branchUuid) + '"') : '') + '</div></td></tr>';
       }).join('');
-      return '<div class="suc-titulo-equipos"><h4>Comprobantes fiscales (NCF) por sucursal</h4></div>'
+      // Lo que quedó por repartir del archivo de la DGII llena el formulario.
+      var p = estado.dgii;
+      function opcion(tipo, texto) {
+        var elegida = p ? p.tipo === tipo : tipo === 'B02';
+        return '<option value="' + tipo + '"' + (elegida ? ' selected' : '') + '>' + texto + '</option>';
+      }
+      var pendiente = p
+        ? '<p class="suc-sub">La DGII autorizó <strong>' + esc(p.tipo) + ' ' + esc(p.totalDesde) + '–' + esc(p.totalHasta) + '</strong>'
+          + (p.autorizacion ? ' (autorización ' + esc(p.autorizacion) + ')' : '') + '. Falta por repartir: <strong>' + esc(p.tipo) + ' '
+          + esc(p.desde) + '–' + esc(p.totalHasta) + '</strong>. Si lo divides entre varias sucursales, baja el «Hasta»: lo que sobre se queda aquí para la siguiente. '
+          + ((p.cola || []).length ? 'Después siguen: ' + p.cola.map(function (r) { return esc(r.tipo) + ' ' + esc(r.desde) + '–' + esc(r.hasta); }).join(', ') + '. ' : '')
+          + boton('dgii-quitar', 'Quitar') + '</p>'
+        : '';
+      return '<div class="suc-titulo-equipos"><h4>Comprobantes fiscales (NCF y e-NCF) por sucursal</h4></div>'
         + (filas ? '<table><thead><tr><th>Sucursal</th><th>Tipo</th><th>Rango</th><th>Estado</th><th>Usados</th><th>Vence</th><th></th></tr></thead><tbody>' + filas + '</tbody></table>'
-          : '<p class="suc-sub">Todavía no hay rangos NCF repartidos entre sucursales.</p>')
-        + (activas.length ? '<div class="suc-caja"><h4>Asignar un rango a una sucursal</h4><form class="suc-form" data-form="ncf">'
+          : '<p class="suc-sub">Todavía no hay rangos NCF ni e-NCF repartidos entre sucursales.</p>')
+        + (activas.length ? '<div class="suc-caja"><h4>Asignar un rango a una sucursal</h4>'
+          + '<div class="suc-fila"><label class="suc-sub">Subir la autorización de la DGII (XML, Excel o CSV de la Oficina Virtual; uno o varios archivos): '
+          + '<input type="file" data-dgii accept=".xml,.csv,.xls,.xlsx" multiple></label></div>'
+          + pendiente
+          + '<form class="suc-form" data-form="ncf">'
           + '<select name="branchUuid">' + activas.map(function (s) { return '<option value="' + esc(s.branchUuid) + '">' + esc(s.nombre) + '</option>'; }).join('') + '</select>'
-          + '<select name="tipo">' + TIPOS_NCF.map(function (t) { return '<option' + (t === 'B02' ? ' selected' : '') + '>' + t + '</option>'; }).join('') + '</select>'
-          + '<input name="desde" type="number" min="1" max="99999999" placeholder="Desde *" required>'
-          + '<input name="hasta" type="number" min="1" max="99999999" placeholder="Hasta *" required>'
+          + '<select name="tipo">'
+          + '<optgroup label="Comprobantes fiscales (B)">' + TIPOS_NCF.map(function (t) { return opcion(t, t); }).join('') + '</optgroup>'
+          + '<optgroup label="Comprobantes electrónicos (e-NCF)">' + TIPOS_ECF.map(function (t) { return opcion(t[0], t[0] + ' · ' + esc(t[1])); }).join('') + '</optgroup>'
+          + '</select>'
+          + '<input name="desde" type="number" min="1" placeholder="Desde *" required' + (p ? ' value="' + esc(p.desde) + '"' : '') + '>'
+          + '<input name="hasta" type="number" min="1" placeholder="Hasta *" required' + (p ? ' value="' + esc(p.totalHasta) + '"' : '') + '>'
           + '<input name="vence" type="date" title="Fecha de vencimiento de la autorización">'
-          + '<input name="autorizacion" maxlength="60" placeholder="No. de autorización DGII">'
+          + '<input name="autorizacion" maxlength="60" placeholder="No. de autorización DGII"' + (p && p.autorizacion ? ' value="' + esc(p.autorizacion) + '"' : '') + '>'
           + '<div class="suc-fila" style="margin:0"><button type="submit" class="suc-primario">Asignar rango</button></div>'
-          + '</form><div class="suc-sub">Los números no pueden cruzarse con otro rango de la empresa (ni con uno anulado). La sucursal lo recibe al sincronizar y lo empieza a usar cuando se le agote el actual.</div></div>' : '');
+          + '</form><div class="suc-sub">Los números no pueden cruzarse con otro rango de la empresa (ni con uno anulado). La sucursal lo recibe al sincronizar y lo empieza a usar cuando se le agote el actual. '
+          + 'Para la factura electrónica (E31, E32…) se reparte igual la autorización que dio la DGII: un pedazo del rango para cada sucursal. Si la sucursal ya emitió números de ese rango, se rechaza.</div></div>' : '');
     }
 
     function filaSucursal(s) {
@@ -266,11 +299,16 @@
         + '</tr>';
     }
 
-    function formulario(s) {
+    // La primera que se crea queda como principal para siempre: es la tienda
+    // donde ya trabaja el negocio con su PC (la que publica el catálogo).
+    function formulario(s, esLaPrimera) {
       var v = s || {};
-      var titulo = s ? 'Editar sucursal' : 'Nueva sucursal';
-      return '<div class="suc-caja"><h4>' + titulo + '</h4><form class="suc-form" data-form="' + (s ? 'editar' : 'crear') + '">'
-        + '<input name="nombre" placeholder="Nombre *" maxlength="160" required value="' + esc(v.nombre) + '">'
+      var titulo = s ? 'Editar sucursal' : (esLaPrimera ? 'Sucursal principal' : 'Nueva sucursal');
+      return '<div class="suc-caja"><h4>' + titulo + '</h4>'
+        + (esLaPrimera ? '<p class="suc-aviso">La primera sucursal queda como <strong>principal</strong>: la tienda donde ya trabaja el negocio con su PC actual. '
+          + 'Ponle el nombre de esa tienda; la segunda tienda (la PC nueva) se crea después.</p>' : '')
+        + '<form class="suc-form" data-form="' + (s ? 'editar' : 'crear') + '">'
+        + '<input name="nombre" placeholder="' + (esLaPrimera ? 'Nombre de la tienda donde ya trabaja el negocio *' : 'Nombre *') + '" maxlength="160" required value="' + esc(v.nombre) + '">'
         + '<input name="codigo" placeholder="Código (ej. SUC-02)" maxlength="40" value="' + esc(v.codigo) + '">'
         + '<input name="direccion" placeholder="Dirección" maxlength="255" value="' + esc(v.direccion) + '">'
         + '<input name="telefono" placeholder="Teléfono" maxlength="40" value="' + esc(v.telefono) + '">'
@@ -311,9 +349,12 @@
       if (estado.editando) {
         html += formulario(estado.editando);
       } else if (d.disponibles > 0) {
-        html += formulario(null);
+        html += formulario(null, !d.sucursales.length);
       } else {
-        html += '<p class="suc-aviso">Se alcanzó el límite de sucursales de esta empresa.'
+        var soloPrincipal = d.sucursales.length === 1 && d.sucursales[0].esPrincipal;
+        html += '<p class="suc-aviso">'
+          + (soloPrincipal ? 'Esta empresa solo tiene permitida la sucursal principal. Para conectar la PC de otra tienda hace falta un cupo más.'
+            : 'Se alcanzó el límite de sucursales de esta empresa.')
           + (permisos.limite ? ' Súbelo arriba para crear otra.' : ' Solo el administrador de Tecno Caja puede ampliarlo.') + '</p>';
       }
       contenedor.innerHTML = html;
@@ -343,6 +384,50 @@
       return (estado.datos.sucursales || []).filter(function (s) { return s.branchUuid === id; })[0];
     }
 
+    function pendienteDe(r, cola) {
+      return { tipo: r.tipo, desde: r.desde, totalDesde: r.desde, totalHasta: r.hasta, autorizacion: r.referencia, cola: cola };
+    }
+
+    // Se asignó un pedazo de la autorización de la DGII: lo que sobra queda
+    // para la siguiente sucursal; si no sobra, pasa al siguiente tipo del archivo.
+    function repartido(rango) {
+      var p = estado.dgii;
+      if (!p || p.tipo !== rango.tipo || rango.desde !== p.desde) return;
+      if (rango.hasta < p.totalHasta) {
+        p.desde = rango.hasta + 1;
+        avisar('Falta por repartir ' + p.tipo + ' ' + p.desde + '–' + p.totalHasta + '.', 'success');
+        return;
+      }
+      var siguiente = (p.cola || []).shift();
+      estado.dgii = siguiente ? pendienteDe(siguiente, p.cola) : null;
+    }
+
+    // Los archivos de la DGII (js/dgii-autorizacion.js; uno o varios a la vez)
+    // llenan el formulario: un rango tras otro, en el orden en que vienen.
+    contenedor.addEventListener('change', function (ev) {
+      var input = ev.target.closest('input[data-dgii]');
+      if (!input || !input.files || !input.files.length) return;
+      var lector = global.TcDgiiAutorizacion;
+      var archivos = Array.prototype.slice.call(input.files);
+      input.value = '';
+      if (!lector) { avisar('Esta pantalla no tiene el lector del archivo de la DGII.', 'error'); return; }
+      var varios = archivos.length > 1;
+      lector.leerArchivos(archivos).then(function (leido) {
+        var aprobados = lector.aprobados(leido.rangos).filter(function (r) {
+          return TIPOS_NCF.indexOf(r.tipo) >= 0 || TIPOS_ECF.some(function (t) { return t[0] === r.tipo; });
+        });
+        var fallaron = leido.errores.length
+          ? ' No se pudo leer: ' + leido.errores.map(function (e) { return e.archivo; }).join(', ') + '.'
+          : '';
+        if (!aprobados.length) { avisar('No encontré rangos aprobados en ' + (varios ? 'esos archivos.' : 'ese archivo.') + fallaron, 'error'); return; }
+        estado.dgii = pendienteDe(aprobados[0], aprobados.slice(1));
+        avisar((aprobados.length > 1
+          ? (varios ? 'Los ' + archivos.length + ' archivos traen ' : 'El archivo trae ') + aprobados.length + ' rangos; empieza por ' + aprobados[0].tipo + '. Al terminar de repartirlo sigue el próximo.'
+          : 'Listo: ' + aprobados[0].tipo + ' ' + aprobados[0].desde + '–' + aprobados[0].hasta + '. Elige la sucursal y asigna.') + fallaron, 'success');
+        render();
+      }, function (e) { avisar('No se pudieron leer los archivos: ' + e.message, 'error'); });
+    });
+
     contenedor.addEventListener('click', function (ev) {
       var pulsado = ev.target.closest('button[data-accion]');
       if (!pulsado) return;
@@ -354,6 +439,7 @@
       if (accion === 'cancelar') { estado.editando = null; render(); return; }
       if (accion === 'cerrar-codigo') { estado.codigo = null; render(); return; }
       if (accion === 'ver-anteriores') { estado.verAnteriores = !estado.verAnteriores; render(); return; }
+      if (accion === 'dgii-quitar') { estado.dgii = null; render(); return; }
       if (accion === 'recargar') { cargar(); return; }
       if (accion === 'revocar') {
         var e = (estado.equipos || []).filter(function (x) { return x.equipoId === id; })[0];
@@ -407,7 +493,9 @@
           autorizacion: form.elements.autorizacion.value,
         };
         hacer(api('POST', ruta + '/' + encodeURIComponent(form.elements.branchUuid.value) + '/ncf', rango),
-          'Rango ' + rango.tipo + ' ' + rango.desde + '–' + rango.hasta + ' asignado.').then(cargar).catch(function () {});
+          'Rango ' + rango.tipo + ' ' + rango.desde + '–' + rango.hasta + ' asignado.')
+          .then(function () { repartido(rango); })
+          .then(cargar).catch(function () {});
         return;
       }
       var datos = {};

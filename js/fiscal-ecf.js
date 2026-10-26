@@ -1310,7 +1310,7 @@ async function saveDgiiSettings() {
   if (qscdConfigJson) body.qscdConfigJson = qscdConfigJson;
 
   if (selectedEnvironment === 'ecf' && currentEnvironment !== 'ecf') {
-    showFiscalToast('Para pasar a producción DGII use el botón "Activar producción DGII" (requiere confirmación reforzada).', 'error');
+    showFiscalToast('Para pasar a producción DGII use el botón "Activar producción DGII" (debajo de este panel). Si la DGII ya te autorizó y solo reiniciaste la configuración, marca "Ya estoy autorizado por la DGII".', 'error');
     document.getElementById('fiscal-dgii-environment').value = currentEnvironment;
     return;
   }
@@ -1705,7 +1705,9 @@ function renderProductionStatus(data) {
     badge.className = 'fiscal-badge-gray';
   }
 
-  if (btnActivate) btnActivate.style.display = (!isProd && data.environment === 'certecf') ? 'inline-flex' : 'none';
+  // También en TesteCF: un RNC ya autorizado por la DGII se reactiva desde ahí
+  // (opción "Ya estoy autorizado" del modal).
+  if (btnActivate) btnActivate.style.display = !isProd ? 'inline-flex' : 'none';
   if (btnRevert) btnRevert.style.display = isProd ? 'inline-flex' : 'none';
 
   FISCAL_UI_STATE.productionStatus = data;
@@ -1739,8 +1741,19 @@ async function openActivateProductionModal() {
         secuencias autorizadas por la DGII.<br><br>
         Confirma únicamente si la DGII ya autorizó oficialmente a este contribuyente como Emisor Electrónico.
       </p>
-      <div style="border:1px solid var(--border);border-radius:8px;padding:.6rem .75rem;margin-bottom:.85rem;background:var(--bg1)">
+      <label style="display:flex;align-items:flex-start;gap:.5rem;margin-bottom:.6rem;font-size:.82rem;cursor:pointer">
+        <input type="checkbox" id="prod-ya-autorizado" style="margin-top:2px">
+        <span><b>Ya estoy autorizado por la DGII</b> y vuelvo a activar producción (después de reinstalar o reiniciar la configuración). No repite la certificación; se comprueba autenticándose en producción y, si falla, no se activa nada.</span>
+      </label>
+      <div id="prod-checklist" style="border:1px solid var(--border);border-radius:8px;padding:.6rem .75rem;margin-bottom:.85rem;background:var(--bg1)">
         ${buildProductionChecklistHtml(status.checklist.items)}
+      </div>
+      <div id="prod-url-box" style="display:none;margin:-.35rem 0 .85rem">
+        <label style="display:block;font-size:.78rem;color:var(--text3);margin-bottom:.3rem">URL de servicios registrada en la DGII (sin /fe/…):</label>
+        <div style="display:flex;gap:.5rem">
+          <input type="url" id="prod-url-input" class="form-input" style="flex:1" placeholder="https://…" autocomplete="off">
+          <button class="btn-secondary" data-action="save-url" style="white-space:nowrap">Guardar URL</button>
+        </div>
       </div>
       <label style="display:flex;align-items:flex-start;gap:.5rem;margin-bottom:.75rem;font-size:.82rem;cursor:pointer">
         <input type="checkbox" id="prod-activate-checkbox" style="margin-top:2px">
@@ -1759,11 +1772,56 @@ async function openActivateProductionModal() {
   const checkbox = overlay.querySelector('#prod-activate-checkbox');
   const textInput = overlay.querySelector('#prod-activate-text');
   const confirmBtn = overlay.querySelector('#prod-activate-confirm-btn');
+  const yaAutorizado = overlay.querySelector('#prod-ya-autorizado');
+  let ready = Boolean(status.ready);
   const updateEnabled = () => {
-    confirmBtn.disabled = !(checkbox.checked && textInput.value === 'ACTIVAR PRODUCCION');
+    confirmBtn.disabled = !(ready && checkbox.checked && textInput.value === 'ACTIVAR PRODUCCION');
   };
   checkbox.addEventListener('change', updateEnabled);
   textInput.addEventListener('input', updateEnabled);
+  // Falta la URL productiva: se guarda aquí mismo (en Mi Negocio solo la guarda
+  // "Guardar configuración DGII", no "Guardar datos del negocio").
+  const urlBox = overlay.querySelector('#prod-url-box');
+  const urlInput = overlay.querySelector('#prod-url-input');
+  urlInput.value = document.getElementById('fiscal-dgii-public-base-url')?.value.trim() || '';
+  const renderChecklist = (data) => {
+    ready = Boolean(data.ready);
+    overlay.querySelector('#prod-checklist').innerHTML = buildProductionChecklistHtml(data.checklist.items);
+    const faltaUrl = data.checklist.items.some((item) => item.key === 'production_url' && item.status !== 'ok');
+    urlBox.style.display = faltaUrl ? 'block' : 'none';
+    updateEnabled();
+  };
+  const refresh = async () => {
+    try {
+      renderChecklist(await fiscalApi('GET', `/production/status${yaAutorizado.checked ? '?yaAutorizado=1' : ''}`));
+    } catch (e) {
+      showFiscalToast(`Error: ${e.message}`, 'error');
+    }
+  };
+  // La lista de requisitos cambia con la reactivación (no pide CerteCF ni el Paso 15).
+  yaAutorizado.addEventListener('change', refresh);
+  overlay.querySelector('[data-action="save-url"]').addEventListener('click', async (event) => {
+    const url = urlInput.value.trim().replace(/\/+$/, '').replace(/\/fe(\/.*)?$/i, '');
+    if (!/^https:\/\/[^\s/]+\.[^\s]+$/i.test(url)) {
+      showFiscalToast('Escribe la URL completa con https:// (por ejemplo https://tu-servicio.run.app).', 'error');
+      return;
+    }
+    const btn = event.currentTarget;
+    setBtnLoading(btn, true, 'Guardando…');
+    try {
+      await fiscalApi('POST', '/wizard/set-production-base-url', { publicBaseUrl: url });
+      urlInput.value = url;
+      const field = document.getElementById('fiscal-dgii-public-base-url');
+      if (field) field.value = url;
+      showFiscalToast('URL de producción guardada.', 'success');
+      await refresh();
+    } catch (e) {
+      showFiscalToast(`Error: ${e.message}`, 'error');
+    } finally {
+      setBtnLoading(btn, false, 'Guardar URL');
+    }
+  });
+  renderChecklist(status);
 
   function close() {
     if (overlay.parentNode) document.body.removeChild(overlay);
@@ -1775,6 +1833,7 @@ async function openActivateProductionModal() {
       const result = await fiscalApi('POST', '/production/activate', {
         confirmed: true,
         confirmationText: textInput.value,
+        yaAutorizado: yaAutorizado.checked,
       });
       close();
       if (result.ok) {
@@ -1824,7 +1883,9 @@ async function loadFiscalSequences() {
   if (!container) return;
   container.innerHTML = '<div class="loading-text">Cargando secuencias…</div>';
   try {
-    const seqs = await fiscalApi('GET', '/sequences');
+    // Solo pruebas: los rangos reales están en Configuración → Ventas y
+    // Facturación → Secuencias de Comprobantes Electrónicos (js/ecf-sequences-config.js).
+    const seqs = await fiscalApi('GET', '/sequences?environment=certecf');
     renderSequencesTable(container, seqs);
     FISCAL_UI_STATE.sequencesLoaded = true;
   } catch (e) {
@@ -1919,15 +1980,19 @@ async function openFindNextSequenceModal() {
 }
 
 function renderSequencesTable(container, seqs) {
+  const note = `<div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:.6rem .85rem;margin-bottom:.8rem;font-size:.8rem;color:var(--text2)">
+      Aquí solo van las secuencias de <strong>pruebas</strong> para la certificación con la DGII. Los rangos reales con los que facturas
+      se registran en <strong>Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF)</strong>.
+    </div>`;
   if (!seqs.length) {
-    container.innerHTML = '<div class="empty-state-small">No hay secuencias e-NCF configuradas. Agrega una abajo.</div>';
+    container.innerHTML = note + '<div class="empty-state-small">No hay secuencias de prueba. La certificación las crea sola al importar el set de la DGII.</div>';
     return;
   }
-  container.innerHTML = `
+  container.innerHTML = note + `
     <table class="compact-table" style="width:100%;font-size:0.82rem">
       <thead><tr>
-        <th>Tipo</th><th>Descripción</th><th>Sucursal</th><th>Caja</th>
-        <th>Prefijo</th><th>Rango</th><th>Próximo</th><th>Restantes</th>
+        <th>Tipo</th><th>Sucursal</th><th>Caja</th>
+        <th>Rango</th><th>Próximo</th><th>Restantes</th>
         <th>Vence</th><th>Estado</th><th></th>
       </tr></thead>
       <tbody>
@@ -1945,11 +2010,12 @@ function renderSequencesTable(container, seqs) {
           const statusLbl = !seq.activo ? 'Inactiva' : seq.isExpired ? 'Vencida' : seq.isExhausted ? 'Agotada' : 'Activa';
           return `
             <tr>
-              <td><strong style="color:var(--accent)">${escapeHtml(seq.tipoComprobante)}</strong></td>
-              <td>${escapeHtml(seq.label)}</td>
+              <td>
+                <strong style="color:var(--accent)">${escapeHtml(seq.tipoComprobante)}</strong>
+                ${seq.label && seq.label !== seq.tipoComprobante ? `<div style="font-size:.72rem;color:var(--text3);line-height:1.25">${escapeHtml(seq.label)}</div>` : ''}
+              </td>
               <td>${escapeHtml(seq.branchName)}</td>
               <td>${escapeHtml(seq.cashRegisterName || 'Global')}</td>
-              <td>${escapeHtml(seq.prefijo)}${escapeHtml(seq.serie || '')}</td>
               <td>${Number(seq.desde || 0).toLocaleString()}–${Number(seq.hasta || 0).toLocaleString()}</td>
               <td>${Number(seq.proximo || 0).toLocaleString()}</td>
               <td style="${restStyle}">${seq.isExhausted ? '⚠ Agotada' : Number(seq.remaining || 0).toLocaleString()}</td>
@@ -2002,24 +2068,37 @@ async function initEcfSequenceForm() {
       types = await fiscalApi('GET', '/sequences/types');
     } catch (_) {
       types = [
-        { code: 'E31', label: 'Crédito Fiscal' },
-        { code: 'E32', label: 'Consumidor Final' },
-        { code: 'E33', label: 'Nota de Débito' },
-        { code: 'E34', label: 'Nota de Crédito' },
-        { code: 'E41', label: 'Compras' },
-        { code: 'E43', label: 'Gastos Menores' },
-        { code: 'E44', label: 'Regímenes Especiales' },
-        { code: 'E45', label: 'Gubernamental' },
-        { code: 'E46', label: 'Exportaciones' },
-        { code: 'E47', label: 'Pagos al Exterior' },
+        { code: 'E31', label: 'Factura de Crédito Fiscal Electrónica', group: 'facturas' },
+        { code: 'E32', label: 'Factura de Consumo Electrónica', group: 'facturas' },
+        { code: 'E33', label: 'Nota de Débito Electrónica', group: 'notas' },
+        { code: 'E34', label: 'Nota de Crédito Electrónica', group: 'notas' },
+        { code: 'E41', label: 'Compras Electrónico', group: 'especiales' },
+        { code: 'E43', label: 'Gastos Menores Electrónico', group: 'especiales' },
+        { code: 'E44', label: 'Regímenes Especiales Electrónico', group: 'especiales' },
+        { code: 'E45', label: 'Gubernamental Electrónico', group: 'especiales' },
+        { code: 'E46', label: 'Exportaciones Electrónico', group: 'especiales' },
+        { code: 'E47', label: 'Pagos al Exterior Electrónico', group: 'especiales' },
       ];
     }
-    typesGrid.innerHTML = types.map((type) => `
-      <label style="display:flex;align-items:center;gap:.35rem;font-size:.8rem;font-weight:400;cursor:pointer">
-        <input type="checkbox" class="fiscal-seq-type-check" value="${type.code}" checked>
-        ${type.code} — ${escapeHtml(type.label)}
-      </label>
-    `).join('');
+    // Mismo orden y nombres que la lista de la DGII en la Oficina Virtual.
+    const groups = [
+      ['facturas', 'Facturas'],
+      ['notas', 'Notas de débito y crédito (corrigen una factura)'],
+      ['especiales', 'Comprobantes especiales'],
+    ];
+    typesGrid.innerHTML = groups.map(([key, title]) => {
+      const items = types.filter((type) => (type.group || 'especiales') === key);
+      if (!items.length) return '';
+      return `
+        <div style="grid-column:1/-1;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text3);margin-top:.35rem">${escapeHtml(title)}</div>
+        ${items.map((type) => `
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.8rem;font-weight:400;cursor:pointer">
+            <input type="checkbox" class="fiscal-seq-type-check" value="${type.code}" checked>
+            <span><strong>${type.code}</strong> · ${escapeHtml(type.label)}</span>
+          </label>
+        `).join('')}
+      `;
+    }).join('');
     typesGrid.dataset.loaded = '1';
   }
 
@@ -2054,12 +2133,16 @@ async function saveEcfSequences() {
   const branchId = document.getElementById('fiscal-seq-branch')?.value || null;
   const cashRegisterId = document.getElementById('fiscal-seq-caja')?.value || null;
   const desde = parseInt(document.getElementById('fiscal-seq-desde')?.value, 10) || 1;
-  const hasta = parseInt(document.getElementById('fiscal-seq-hasta')?.value, 10) || 9999999999;
+  const hasta = parseInt(document.getElementById('fiscal-seq-hasta')?.value, 10) || 0;
   const fechaAutorizacion = document.getElementById('fiscal-seq-fecha-aut')?.value || null;
   const fechaVencimiento = document.getElementById('fiscal-seq-fecha-ven')?.value || null;
 
   if (!tipos.length) {
     showFiscalToast('Marca al menos un tipo de comprobante.', 'warning');
+    return;
+  }
+  if (!hasta) {
+    showFiscalToast('Escribe el número final (Hasta) del rango.', 'warning');
     return;
   }
   if (hasta < desde) {
@@ -2079,6 +2162,7 @@ async function saveEcfSequences() {
         tipoComprobante: tipo,
         branchId: branchId || null,
         cashRegisterId: cashRegisterId || null,
+        environment: 'certecf',
         desde,
         hasta,
         fechaAutorizacion,
@@ -2253,7 +2337,7 @@ function renderDocsTable(container, data) {
                 <div>${escapeHtml(doc.documentCount ? `${doc.documentCount} doc.` : '1 doc.')}</div>
               </td>
               <td>${formatDate(doc.fecha_emision)}</td>
-              <td title="${escapeHtml(doc.mensajes_dgii || '')}"><span class="badge-${estadoMap[doc.estado_dgii] || 'gray'}" style="font-size:0.7rem">${escapeHtml(formatDocStateLabel(doc.estado_dgii))}</span></td>
+              <td title="${escapeHtml(doc.mensajes_dgii || '')}"><span class="badge-${estadoMap[doc.estado_dgii] || 'gray'}" style="font-size:0.7rem">${escapeHtml(formatDocStateLabel(doc.estado_dgii))}</span>${doc.estado_dgii === 'aceptado_condicional' && doc.mensajes_dgii ? `<div style="max-width:220px;margin-top:3px;font-size:0.68rem;line-height:1.25;color:#9a6700;white-space:normal">${escapeHtml(doc.mensajes_dgii)}</div>` : ''}</td>
               <td style="white-space:nowrap">
                 ${['pendiente', 'pendiente_red', 'pendiente_rfce', 'error_auth', 'rechazado', 'error'].includes(doc.estado_dgii)
                   ? `<button class="btn-xs" onclick="resendEcfDoc(${doc.id})" title="Reenviar">↺</button>`

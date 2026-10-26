@@ -2248,6 +2248,20 @@ function buildPrintShell(html, layout) {
         max-width: 100%;
         height: auto;
       }
+      /* No dejar que el límite global de imágenes redimensione el QR fiscal.
+         Su PNG ya está rasterizado con módulos binarios para 203 dpi; se
+         conserva el tamaño cuadrado en mm indicado por el recibo. */
+      .print-root .ticket-print .receipt-qr img {
+        display: block;
+        max-width: none !important;
+        aspect-ratio: 1 / 1;
+        object-fit: fill;
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        background-color: #fff !important;
+        print-color-adjust: exact;
+        -webkit-print-color-adjust: exact;
+      }
     </style>
   </head>
   <body>
@@ -2350,12 +2364,19 @@ async function waitForPrintWindowReady(printWindow) {
   `, true);
 }
 
-function sanitizeReceiptPrintOptions(options = {}) {
+function sanitizeReceiptPrintOptions(options = {}, { preservePageSize = false } = {}) {
   const sanitized = { ...options };
   const hasPageSize = Boolean(sanitized.pageSize);
 
   if (sanitized.silent) {
     // Silent/direct printing must keep the explicit thermal page size.
+    delete sanitized.usePrinterDefaultPageSize;
+    return sanitized;
+  }
+
+  // Thermal receipts need the roll width selected in the app. The printer
+  // default can silently scale the document to a different stock size.
+  if (preservePageSize) {
     delete sanitized.usePrinterDefaultPageSize;
     return sanitized;
   }
@@ -2368,8 +2389,8 @@ function sanitizeReceiptPrintOptions(options = {}) {
   return sanitized;
 }
 
-async function runReceiptPrintJob(printWindow, options) {
-  const safeOptions = sanitizeReceiptPrintOptions(options);
+async function runReceiptPrintJob(printWindow, options, sanitizeOptions) {
+  const safeOptions = sanitizeReceiptPrintOptions(options, sanitizeOptions);
   return new Promise((resolve) => {
     printWindow.webContents.print(safeOptions, (success, failureReason) => {
       resolve({
@@ -3329,7 +3350,7 @@ ipcMain.handle('receipt:print-html', async (_event, html, options = {}) => {
 
     const mode = String(options?.mode || 'dialog').toLowerCase();
     const printerName = String(options?.printerName || '').trim();
-    const shouldUsePrinterDefaultPageSize = mode !== 'direct';
+    const shouldUsePrinterDefaultPageSize = mode !== 'direct' && !isThermalPrint;
     const printOptions = {
       silent: mode === 'direct',
       printBackground: !isThermalPrint,
@@ -3345,7 +3366,8 @@ ipcMain.handle('receipt:print-html', async (_event, html, options = {}) => {
     };
     if (shouldUsePrinterDefaultPageSize) {
       printOptions.usePrinterDefaultPageSize = true;
-    } else if (isThermalPrint) {
+    }
+    if (isThermalPrint) {
       printOptions.dpi = { horizontal: 203, vertical: 203 };
       const contentHeightPx = await printWindow.webContents.executeJavaScript(`
         (() => {
@@ -3377,12 +3399,13 @@ ipcMain.handle('receipt:print-html', async (_event, html, options = {}) => {
     }
 
     let effectivePrintOptions = { ...printOptions };
-    let result = await runReceiptPrintJob(printWindow, effectivePrintOptions);
+    const sanitizeOptions = { preservePageSize: isThermalPrint };
+    let result = await runReceiptPrintJob(printWindow, effectivePrintOptions, sanitizeOptions);
     if (!result.ok && printerName) {
       result = await runReceiptPrintJob(printWindow, {
         ...effectivePrintOptions,
         deviceName: undefined
-      });
+      }, sanitizeOptions);
     }
 
     printWindow.close();

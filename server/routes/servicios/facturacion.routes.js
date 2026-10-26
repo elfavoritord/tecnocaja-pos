@@ -4,7 +4,8 @@
  * facturacion.routes.js — Facturación de servicios.
  * Factura desde: directa · cotización · (M2) orden/proyecto.
  * Comprobante: NCF tradicional (consume ncf_authorized_sequences) o e-CF
- * (numera desde config, queda ecf_status='pendiente' para firmar/enviar luego).
+ * (secuencias del módulo e-CF: la venta espejo se firma y se envía a la DGII
+ * con el mismo motor que el POS, después de guardar la factura).
  *
  *  GET    /api/servicios/facturas?estado=&clientId=&branchId=&desde=&hasta=
  *  POST   /api/servicios/facturas
@@ -21,6 +22,32 @@ const {
 } = require('./_common');
 const { renderInvoiceDoc, renderEmailBody } = require('./renderDoc');
 const { sendInvoiceEmail } = require('./mailer');
+const { getDocumentType } = require('../../../modules/ecf/config/document-types');
+const { validateBuyerForEcf, validateCertificateForEcf } = require('../../../modules/ecf/validators/document-validator');
+
+// e-CF con los que se le factura a un cliente (los equivalentes de B01, B02,
+// B14 y B15). Notas de crédito/débito, compras, gastos menores, exportaciones
+// y pagos al exterior tienen su propio flujo.
+const ECF_TIPOS_FACTURA = ['E31', 'E32', 'E44', 'E45'];
+
+// Misma regla que el motor e-CF (getNextAvailableSequence): activa, sin vencer,
+// con números, y Global o de la sucursal/caja de la factura.
+function secuenciaEcfSirve(s, { tipo, branchId, cashRegisterId }) {
+  const t = String(s.tipoComprobante || '').toUpperCase();
+  if (!ECF_TIPOS_FACTURA.includes(t) || (tipo && t !== tipo)) return false;
+  if (!s.activo || s.isExpired || s.isExhausted) return false;
+  if (s.branchId && Number(s.branchId) !== Number(branchId || 0)) return false;
+  if (s.cashRegisterId && Number(s.cashRegisterId) !== Number(cashRegisterId || 0)) return false;
+  return true;
+}
+
+function fechaSql(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+  }
+  return String(value).slice(0, 10);
+}
 
 function mapInvoice(row, items = [], payments = []) {
   return {
@@ -38,10 +65,14 @@ function mapInvoice(row, items = [], payments = []) {
     vencimiento: row.vencimiento || null,
     condicionPago: row.condicion_pago || 'contado',
     fiscalMode: row.fiscal_mode || 'ncf',
-    ncf: row.ncf || '',
+    // e-CF: el estado vivo es el de la venta espejo (lo actualiza el módulo
+    // e-CF también cuando se reenvía desde Facturación Electrónica).
+    ncf: (row.fiscal_mode === 'ecf' && row.sale_encf) || row.ncf || '',
+    qrUrl: row.sale_qr_data || '',
     ncfTipo: row.ncf_tipo || '',
     ncfVencimiento: row.ncf_vencimiento || null,
-    ecfStatus: row.ecf_status || null,
+    ecfStatus: (row.fiscal_mode === 'ecf' && row.sale_ecf_estado) || row.ecf_status || null,
+    ecfError: row.fiscal_mode === 'ecf' ? (row.sale_ecf_error || null) : null,
     subtotal: Number(row.subtotal || 0),
     descuento: Number(row.descuento || 0),
     itbis: Number(row.itbis || 0),
@@ -72,6 +103,7 @@ function mapInvoice(row, items = [], payments = []) {
       referencia: p.referencia || '',
       anuladoAt: p.anulado_at || null,
     })),
+    metodo: payments.find((p) => !p.anulado_at)?.metodo || 'efectivo',
   };
 }
 
@@ -200,7 +232,7 @@ function createFacturacionRouter(deps) {
   const {
     query, withTransaction, writeAuditLog, ensureSchema, nextServiceDocNumber,
     getNextNcfFromSequence, getConfig, isGlobalAdministratorUser, getUserScopeBranchId,
-    ecfService,
+    ecfService, isInternetOffline = () => false,
   } = deps;
   const guard = makeServiceGuard(deps);
   const router = express.Router();
@@ -212,9 +244,13 @@ function createFacturacionRouter(deps) {
 
   async function fetchFull(id) {
     const [row] = await query(
-      `SELECT i.*, b.nombre AS branch_name, c.email AS client_email FROM svc_invoices i
+      `SELECT i.*, b.nombre AS branch_name, c.email AS client_email,
+              s.encf AS sale_encf, s.ecf_estado AS sale_ecf_estado, s.ecf_error AS sale_ecf_error,
+              s.qr_data AS sale_qr_data
+       FROM svc_invoices i
        LEFT JOIN branches b ON b.id = i.branch_id
        LEFT JOIN clients c ON c.id = i.client_id
+       LEFT JOIN sales s ON s.id = i.sale_id
        WHERE i.id = ?`, [id]
     );
     if (!row) return null;
@@ -245,18 +281,39 @@ function createFacturacionRouter(deps) {
       terminos = (mc && mc.service_terms) || '';
     } catch (_) { /* columnas aún no migradas */ }
     const digitalSign = await resolveDigitalSign(cfg, autosign || wantSign);
+    const seguridadEcf = full.fiscalMode === 'ecf' ? await datosSeguridadEcf(full.id) : {};
     return {
       empresa: {
         nombre: cfg.nombre || 'Tecno Caja', rnc: cfg.rnc || '', direccion: cfg.direccion || '',
         telefono: cfg.telefono || '', correo, logo: cfg.logo || '', firma,
       },
-      invoice: { ...full, ...contact, docType: 'factura', digitalSign },
+      invoice: { ...full, ...contact, ...seguridadEcf, docType: 'factura', digitalSign },
       items: full.items,
       // Plantilla y color de Configuración → Impresora de Recibos (factura A4).
       diseno: { plantilla: cfg.invoiceTemplate, color: cfg.invoiceAccentColor },
       // Términos y condiciones de Ajustes de Empresa de Servicios.
       terminos,
     };
+  }
+
+  // e-CF: QR, código de seguridad y fecha de firma para la representación
+  // impresa. Salen de la URL del QR que el módulo e-CF guardó en la venta
+  // espejo (sales.qr_data, igual que en el recibo del POS).
+  async function datosSeguridadEcf(invoiceId) {
+    try {
+      const [row] = await query(
+        'SELECT s.qr_data FROM svc_invoices i INNER JOIN sales s ON s.id = i.sale_id WHERE i.id = ? LIMIT 1', [invoiceId]
+      );
+      const qrUrl = String(row?.qr_data || '').trim();
+      if (!qrUrl) return {};
+      const url = new URL(qrUrl);
+      const QRCode = require('qrcode');
+      return {
+        ecfQrDataUrl: await QRCode.toDataURL(qrUrl, { margin: 1, width: 220 }),
+        ecfCodigoSeguridad: url.searchParams.get('CodigoSeguridad') || '',
+        ecfFechaFirma: url.searchParams.get('FechaFirma') || '',
+      };
+    } catch (_) { return {}; }
   }
 
   // Devuelve { nombre, rnc, fecha } si el PDF se va a firmar (auto-firma activa o
@@ -275,17 +332,104 @@ function createFacturacionRouter(deps) {
     } catch (_) { return null; }
   }
 
+  async function listarSecuenciasEcf() {
+    if (!ecfService || typeof ecfService.listSequences !== 'function') return [];
+    if (typeof ecfService.ensureReady === 'function') await ecfService.ensureReady().catch(() => {});
+    // Solo las del ambiente activo: en producción no se factura con rangos de pruebas.
+    return ecfService.listSequences({ onlyActiveEnvironment: true }).catch(() => []);
+  }
+
+  // Antes de guardar una factura e-CF: que el módulo esté activo y completo,
+  // que haya secuencia del tipo y que el comprador cumpla (RNC/nombre). Así
+  // no queda guardada una factura que después no se puede emitir.
+  // `reusaNumero`: reintento que usará el e-NCF ya apartado (no hace falta
+  // número libre en la secuencia).
+  async function prepararEcf(p, { branchId, cashRegisterId, reusaNumero = false }) {
+    if (!ecfService || typeof ecfService.processSaleForElectronicInvoicing !== 'function') {
+      throw httpError('La facturación electrónica no está disponible en esta instalación.', 500);
+    }
+    const tipo = p.ncfTipo || (String(p.clientRnc || '').replace(/\D/g, '') ? 'E31' : 'E32');
+    if (!ECF_TIPOS_FACTURA.includes(tipo)) {
+      throw httpError(`El e-CF ${tipo} no se emite desde Facturación de servicios. Usa ${ECF_TIPOS_FACTURA.join(', ')}.`);
+    }
+    const status = await ecfService.getSystemStatus();
+    if (!status.isActive) {
+      throw httpError('La facturación electrónica está desactivada. Actívala en Configuración → Facturación Electrónica DGII → Estado.', 409);
+    }
+    const faltan = (status.checklist?.items || []).filter((i) => i.key !== 'sequences' && i.status !== 'ok').map((i) => i.message);
+    const certificado = typeof ecfService.getCertificateStatus === 'function' ? await ecfService.getCertificateStatus() : null;
+    if (certificado) faltan.push(...validateCertificateForEcf(certificado));
+    if (faltan.length) throw httpError(`No se puede emitir el e-CF: ${[...new Set(faltan)].join(' ')}`, 409);
+    const secuencias = reusaNumero ? [] : await listarSecuenciasEcf();
+    if (!reusaNumero && !secuencias.some((s) => secuenciaEcfSirve(s, { tipo, branchId, cashRegisterId }))) {
+      throw httpError(`No hay una secuencia e-CF ${tipo} activa con números disponibles. Regístrala en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`, 409);
+    }
+    const rfceUmbral = Number(ecfService?.config?.DGII_RFCE_THRESHOLD_DOP || 250000) || 250000;
+    if (tipo === 'E32' && p.totals.total >= rfceUmbral) {
+      const digits = String(p.clientRnc || '').replace(/\D/g, '');
+      if (!p.clientName || ![9, 11].includes(digits.length)) {
+        throw httpError(`Para emitir un e-CF E32 de RD$${rfceUmbral.toLocaleString('es-DO')} o más, indica el nombre y el RNC/cédula del comprador.`);
+      }
+    }
+    const comprador = validateBuyerForEcf({ tipoEcf: tipo, buyerTaxId: p.clientRnc, buyerName: p.clientName });
+    if (comprador.length) throw httpError(comprador.join(' '));
+    return tipo;
+  }
+
+  // Después del commit: firma y envía la venta espejo con el motor del POS (el
+  // e-NCF lo reserva el módulo e-CF de su secuencia) y deja el resultado en la
+  // factura. Si la DGII falla, la factura queda guardada con su error y el
+  // documento se reintenta desde Facturación Electrónica → Documentos.
+  // `reenviarDocumentoId`: reintento de un e-CF ya firmado (solo se reenvía).
+  // Sin él se emite; si un intento anterior apartó el e-NCF pero no llegó a
+  // firmar, el módulo e-CF reusa ese mismo número.
+  async function emitirEcf({ invoiceId, saleId, tipo, actor, reenviarDocumentoId = null }) {
+    let result = null;
+    let error = null;
+    try {
+      result = reenviarDocumentoId
+        ? await ecfService.resendDocument(reenviarDocumentoId)
+        : await ecfService.processSaleForElectronicInvoicing(saleId, {
+          userId: actor.id || null,
+          userName: actorName(actor),
+          userRole: roleCodeOf(actor),
+          requestedType: tipo,
+          internetOffline: isInternetOffline(),
+        });
+    } catch (e) {
+      error = e.message;
+      console.warn('[servicios] e-CF de la factura #%s falló: %s', invoiceId, e.message);
+      // Que el error quede a la vista en la lista (si falla antes de firmar, el
+      // módulo e-CF no llega a anotarlo en la venta).
+      await query('UPDATE sales SET ecf_estado = ?, ecf_error = ? WHERE id = ?', ['error', String(e.message).slice(0, 500), saleId]).catch(() => {});
+    }
+    const [doc] = await query(
+      `SELECT d.encf, d.tipo_ecf, d.estado_dgii, d.error_message, s.fecha_vencimiento
+       FROM ecf_documents d LEFT JOIN ecf_sequences s ON s.id = d.sequence_id
+       WHERE d.sale_id = ? ORDER BY d.id DESC LIMIT 1`, [saleId]
+    ).catch(() => []);
+    const encf = result?.encf || doc?.encf || null;
+    const estado = String(result?.estado || (error ? 'error' : doc?.estado_dgii) || 'pendiente').slice(0, 20);
+    await query(
+      'UPDATE svc_invoices SET ncf = ?, ncf_tipo = ?, ncf_vencimiento = ?, ecf_status = ? WHERE id = ?',
+      [encf, result?.tipoEcf || doc?.tipo_ecf || tipo, fechaSql(doc?.fecha_vencimiento), estado, invoiceId]
+    );
+    const pendiente = Boolean(result?.pending);
+    const ok = Boolean(result?.ok);
+    return {
+      ok, pendiente, encf, estado,
+      mensaje: result?.mensaje || null,
+      error: ok || pendiente ? null : (error || doc?.error_message || 'La DGII no aceptó el comprobante.'),
+    };
+  }
+
   // Consume el comprobante fiscal según el modo. Corre dentro de la transacción.
+  // El e-CF no se numera aquí: lo hace el módulo e-CF al emitir (emitirEcf).
   async function assignFiscal(conn, { fiscalMode, ncfTipo, branchId }) {
     const mode = ['ncf', 'ecf', 'consumidor'].includes(fiscalMode) ? fiscalMode : 'ncf';
     if (mode === 'consumidor') return { fiscal_mode: 'consumidor', ncf: null, ncf_tipo: null, ncf_vencimiento: null, ecf_status: null };
     if (mode === 'ecf') {
-      const rows = await conn.query('SELECT e_invoice_prefix, e_invoice_next_number FROM config WHERE id = 1 LIMIT 1');
-      const c = rows[0] || { e_invoice_prefix: 'E31', e_invoice_next_number: 1 };
-      const n = Number(c.e_invoice_next_number || 1);
-      const numero = `${String(c.e_invoice_prefix || 'E31').replace(/-+$/,'')}${String(n).padStart(10, '0')}`;
-      await conn.query('UPDATE config SET e_invoice_next_number = ? WHERE id = 1', [n + 1]);
-      return { fiscal_mode: 'ecf', ncf: numero, ncf_tipo: ncfTipo || 'E31', ncf_vencimiento: null, ecf_status: 'pendiente' };
+      return { fiscal_mode: 'ecf', ncf: null, ncf_tipo: ncfTipo, ncf_vencimiento: null, ecf_status: 'pendiente' };
     }
     // NCF tradicional
     const tipo = String(ncfTipo || 'B02').toUpperCase();
@@ -338,6 +482,19 @@ function createFacturacionRouter(deps) {
     const METODOS_PAGO = ['efectivo', 'transferencia', 'tarjeta', 'deposito', 'cheque', 'otro'];
     const metodoPago = METODOS_PAGO.includes(String(body?.metodoPago)) ? String(body.metodoPago) : 'efectivo';
     const cobrarAhora = p.condicionPago === 'contado' && body?.pagoInmediato !== false;
+    const esEcf = p.fiscalMode === 'ecf';
+    if (esEcf) p.ncfTipo = await prepararEcf(p, { branchId, cashRegisterId });
+    const tipoNcf = String(p.ncfTipo || 'B02').toUpperCase();
+    const tipoConsumo = (p.fiscalMode === 'ncf' && /^B0?2$/.test(tipoNcf))
+      || (p.fiscalMode === 'ecf' && p.ncfTipo === 'E32');
+    const umbralConsumo = Number(ecfService?.config?.DGII_RFCE_THRESHOLD_DOP || 250000) || 250000;
+    if (tipoConsumo && p.totals.total < umbralConsumo && !p.clientName) p.clientName = 'Consumidor Final';
+    if (p.fiscalMode === 'ncf' && /^B0?2$/.test(tipoNcf) && p.totals.total >= umbralConsumo) {
+      const digits = String(p.clientRnc || '').replace(/\D/g, '');
+      if (!p.clientName || ![9, 11].includes(digits.length)) {
+        throw httpError(`Para comprobantes B02 de RD$${umbralConsumo.toLocaleString('es-DO')} o más, indica el nombre y el RNC/cédula del comprador.`);
+      }
+    }
 
     const saved = await withTransaction(async (conn) => {
       const numero = await nextServiceDocNumber(conn, 'invoice');
@@ -387,19 +544,25 @@ function createFacturacionRouter(deps) {
       // ── Espejo en `sales` (para Reportes/Dashboard del POS) ──────────────
       // La factura de servicios se registra también como una venta normal con
       // ítems de "venta rápida" (sin producto). Cualquier fallo aquí NO debe
-      // tumbar la emisión de la factura.
+      // tumbar la emisión de la factura, salvo en e-CF: lo que se firma y se
+      // envía a la DGII es justamente esa venta.
+      let saleId = null;
       try {
-        const saleId = await mirrorInvoiceToSales(conn, {
+        saleId = await mirrorInvoiceToSales(conn, {
           numero, ncf: fiscal.ncf, fiscalMode: fiscal.fiscal_mode, ncfTipo: fiscal.ncf_tipo,
           actor, branchId, cashRegisterId, p, cobrarAhora, metodoPago,
         });
         if (saleId) await conn.query('UPDATE svc_invoices SET sale_id = ? WHERE id = ?', [saleId, invoiceId]);
       } catch (mirrorErr) {
+        if (esEcf) throw mirrorErr;
         console.warn('[servicios] espejo en sales falló:', mirrorErr.message);
       }
 
-      return { invoiceId, numero, ncf: fiscal.ncf };
+      return { invoiceId, numero, ncf: fiscal.ncf, saleId };
     });
+
+    const ecf = esEcf ? await emitirEcf({ invoiceId: saved.invoiceId, saleId: saved.saleId, tipo: p.ncfTipo, actor }) : null;
+    if (ecf?.encf) saved.ncf = ecf.encf;
 
     await writeAuditLog({
       userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
@@ -408,7 +571,8 @@ function createFacturacionRouter(deps) {
       branchId, clientId: p.clientId, documentType: 'factura', documentRef: saved.numero,
       amount: p.totals.total, paymentMethod: cobrarAhora ? metodoPago : null,
     });
-    return fetchFull(saved.invoiceId);
+    const full = await fetchFull(saved.invoiceId);
+    return ecf ? { ...full, ecf } : full;
   }
 
   // ── Buscar la factura de servicios por su número o NCF (para reimpresión) ─
@@ -432,7 +596,7 @@ function createFacturacionRouter(deps) {
     B14: 'Régimen Especial', B15: 'Gubernamental', B16: 'Exportaciones', B17: 'Pagos al Exterior',
     E31: 'e-CF Crédito Fiscal', E32: 'e-CF Consumo', E34: 'e-CF Nota de Crédito',
   };
-  router.get('/comprobantes', async (_req, res) => {
+  router.get('/comprobantes', async (req, res) => {
     try {
       let v2 = false;
       try {
@@ -467,7 +631,31 @@ function createFacturacionRouter(deps) {
         vencimiento: r.vencimiento || null,
         disponibles: Math.max(0, Number(r.disponibles || 0)),
       }));
-      res.json({ comprobantes: items, necesitaActivar });
+
+      // e-CF: las secuencias del módulo de Facturación Electrónica, un tipo por
+      // opción. `ecfFueraDeAlcance`: hay activas, pero de otra sucursal/caja.
+      let branchId = null;
+      try { branchId = resolveBranch(req.authUser, req.query.branchId, deps); } catch (_) { /* sin sucursal */ }
+      const secuencias = await listarSecuenciasEcf();
+      const porTipo = new Map();
+      for (const s of secuencias.filter((x) => secuenciaEcfSirve(x, { branchId, cashRegisterId: null }))) {
+        const tipo = String(s.tipoComprobante).toUpperCase();
+        const prev = porTipo.get(tipo);
+        porTipo.set(tipo, {
+          tipo,
+          nombre: getDocumentType(tipo)?.label || NCF_LABELS[tipo] || tipo,
+          vencimiento: prev?.vencimiento || fechaSql(s.fechaVencimiento),
+          disponibles: (prev?.disponibles || 0) + Math.max(0, Number(s.remaining || 0)),
+        });
+      }
+      const electronicos = ECF_TIPOS_FACTURA.filter((t) => porTipo.has(t)).map((t) => porTipo.get(t));
+      const ecfFueraDeAlcance = !electronicos.length
+        && secuencias.some((s) => secuenciaEcfSirve(s, { branchId: s.branchId, cashRegisterId: s.cashRegisterId }));
+      let ecfActivo = false;
+      if (electronicos.length && ecfService && typeof ecfService.getSystemStatus === 'function') {
+        ecfActivo = Boolean((await ecfService.getSystemStatus().catch(() => null))?.isActive);
+      }
+      res.json({ comprobantes: items, necesitaActivar, electronicos, ecfActivo, ecfFueraDeAlcance });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }
@@ -484,16 +672,22 @@ function createFacturacionRouter(deps) {
         cond.push('i.estado = ?'); params.push(String(req.query.estado));
       } else if (req.query.todas !== '1') {
         // Por defecto la lista muestra solo lo que falta gestionar (pendiente/
-        // parcial). Las pagadas y anuladas ya viven en Reportes. ?todas=1 las trae.
-        cond.push("i.estado IN ('pendiente', 'parcial')");
+        // parcial, o un e-CF que la DGII todavía no aceptó). Las pagadas y
+        // anuladas ya viven en Reportes. ?todas=1 las trae.
+        cond.push(`(i.estado IN ('pendiente', 'parcial')
+          OR (i.fiscal_mode = 'ecf' AND i.estado <> 'anulada'
+              AND COALESCE(s.ecf_estado, i.ecf_status, '') NOT IN ('aceptado', 'aceptado_condicional')))`);
       }
       if (req.query.clientId) { cond.push('i.client_id = ?'); params.push(Number(req.query.clientId)); }
       if (req.query.desde) { cond.push('i.fecha >= ?'); params.push(String(req.query.desde)); }
       if (req.query.hasta) { cond.push('i.fecha <= ?'); params.push(String(req.query.hasta)); }
       const where = cond.length ? `WHERE ${cond.join(' AND ')}` : '';
       const rows = await query(
-        `SELECT i.*, b.nombre AS branch_name FROM svc_invoices i
+        `SELECT i.*, b.nombre AS branch_name,
+                s.encf AS sale_encf, s.ecf_estado AS sale_ecf_estado, s.ecf_error AS sale_ecf_error
+         FROM svc_invoices i
          LEFT JOIN branches b ON b.id = i.branch_id
+         LEFT JOIN sales s ON s.id = i.sale_id
          ${where} ORDER BY i.fecha DESC, i.id DESC LIMIT 500`, params
       );
       res.json(rows.map((r) => mapInvoice(r)));
@@ -599,6 +793,57 @@ function createFacturacionRouter(deps) {
         branchId: full.branchId, clientId: full.clientId, documentType: 'factura', documentRef: full.numero, amount: full.total,
       });
       res.json({ ok: true, to });
+    } catch (e) {
+      res.status(e.statusCode || 500).json({ error: e.message });
+    }
+  });
+
+  // ── Reintentar el e-CF (falló al armar, firmar o enviar) ─────────────────
+  // Ya firmado → se reenvía. Sin firmar (el XML falló) → se emite otra vez con
+  // el mismo e-NCF apartado. Sin documento (facturas numeradas con el contador
+  // viejo, p. ej. "ECF0000000001") → se emite como nueva con su secuencia.
+  const ECF_YA_ENVIADO = new Set(['aceptado', 'aceptado_condicional', 'enviado', 'en_proceso', 'procesando']);
+  router.post('/:id/reintentar-ecf', guard.requirePerm('servicios.facturar'), async (req, res) => {
+    const id = Number(req.params.id);
+    try {
+      const [inv] = await query(
+        `SELECT id, numero, fiscal_mode, ncf, ncf_tipo, sale_id, estado, client_name, client_rnc, branch_id, cash_register_id, total
+         FROM svc_invoices WHERE id = ?`, [id]
+      );
+      if (!inv) throw httpError('Factura no encontrada.', 404);
+      if (inv.fiscal_mode !== 'ecf') throw httpError('Esta factura no es un e-CF.');
+      if (inv.estado === 'anulada') throw httpError('La factura está anulada.', 409);
+      if (!inv.sale_id) throw httpError('La factura no tiene la venta con la que se emite el e-CF.', 409);
+      const [doc] = await query(
+        `SELECT id, encf, tipo_ecf, estado_dgii, environment, CASE WHEN signed_xml_content IS NULL THEN 0 ELSE 1 END AS firmado
+         FROM ecf_documents WHERE sale_id = ? ORDER BY id DESC LIMIT 1`, [inv.sale_id]
+      ).catch(() => []);
+      if (doc && ECF_YA_ENVIADO.has(String(doc.estado_dgii || '').toLowerCase())) {
+        throw httpError(`El e-CF ${doc.encf} ya fue enviado a la DGII (${doc.estado_dgii}).`, 409);
+      }
+      // Una factura empezada en pruebas (TesteCF/CerteCF) no se manda como
+      // comprobante fiscal real después de pasar a producción, ni al revés.
+      const ambiente = String((await ecfService.getSystemStatus().catch(() => null))?.environment || '').toLowerCase();
+      if (doc && ambiente && String(doc.environment || '').toLowerCase() !== ambiente) {
+        throw httpError(`Esta factura se hizo en el ambiente ${doc.environment} y ahora estás en ${ambiente}. Anúlala y hazla de nuevo.`, 409);
+      }
+      const firmado = Boolean(Number(doc?.firmado || 0));
+      if (firmado && isInternetOffline()) {
+        throw httpError(`Sin Internet: el e-CF ${doc.encf} ya está firmado y se enviará solo cuando vuelva la conexión.`, 409);
+      }
+      const tipo = String((doc && doc.tipo_ecf) || inv.ncf_tipo || '').toUpperCase() || null;
+      if (!firmado) {
+        await prepararEcf(
+          { ncfTipo: tipo, clientRnc: inv.client_rnc, clientName: inv.client_name, totals: { total: Number(inv.total || 0) } },
+          { branchId: inv.branch_id, cashRegisterId: inv.cash_register_id, reusaNumero: Boolean(doc) }
+        );
+      }
+      const ecf = await emitirEcf({ invoiceId: id, saleId: inv.sale_id, tipo, actor: req.authUser, reenviarDocumentoId: firmado ? doc.id : null });
+      // Número viejo inventado (p. ej. "ECF0000000001") que quedó en la venta espejo.
+      if (ecf.encf && inv.ncf && inv.ncf !== ecf.encf) {
+        await query('UPDATE sales SET ncf = NULL, ncf_type = NULL WHERE id = ? AND ncf = ?', [inv.sale_id, inv.ncf]).catch(() => {});
+      }
+      res.json({ ...(await fetchFull(id)), ecf });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }

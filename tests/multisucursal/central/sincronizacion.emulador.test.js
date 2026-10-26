@@ -182,6 +182,46 @@ describir('Sincronización central (emulador de Firestore)', () => {
     expect(deNorte).toMatchObject({ estadoSucursal: 'en_uso', siguiente: 640, disponibles: 361, sucursal: 'Norte' });
   });
 
+  test('e-NCF: la autorización de la DGII se reparte igual que los B', async () => {
+    const norte = await sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E32', desde: 1, hasta: 50, autorizacion: '6005604697' }, CONTADORA);
+    // El mismo número en otra sucursal choca; otro pedazo del rango no.
+    await expect(sync.asignarRangoNcf(LIC, B.branchUuid, { tipo: 'E32', desde: 40, hasta: 100 }, EMILIO)).rejects.toMatchObject({ code: 'RANGO_SOLAPADO' });
+    await sync.asignarRangoNcf(LIC, B.branchUuid, { tipo: 'E32', desde: 51, hasta: 100, autorizacion: '6005604697' }, EMILIO);
+    // B02 y E32 son tipos distintos: pueden usar los mismos números.
+    await sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'B02', desde: 1, hasta: 50 }, EMILIO);
+    // Más de lo que cabe en la tabla del POS o un tipo que no existe.
+    await expect(sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E32', desde: 101, hasta: 9999999999 }, EMILIO)).rejects.toMatchObject({ code: 'DATOS_INVALIDOS' });
+    await expect(sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E99', desde: 1, hasta: 10 }, EMILIO)).rejects.toMatchObject({ code: 'DATOS_INVALIDOS' });
+
+    const deNorte = await sync.cambios(A, 'ncf', 0);
+    expect(deNorte.items.map((i) => [i.tipo, i.desde, i.hasta, i.autorizacion])).toEqual([
+      ['E32', 1, 50, '6005604697'],
+      ['B02', 1, 50, null],
+    ]);
+    expect(deNorte.items[0].rangoUuid).toBe(norte.rangoUuid);
+  });
+
+  test('e-NCF: la sucursal que ya facturaba avisa su rango y queda reservado a su nombre', async () => {
+    const r = id();
+    const reporte = ev('ncf_rango', r, { rangoUuid: r, tipo: 'E32', desde: 1, hasta: 100, autorizacion: '6005604697', estado: 'en_uso', siguiente: 2 }, 'reportar');
+    expect(await sync.procesarEvento(A, reporte)).toMatchObject({ resultado: 'ok' });
+    // Esos números ya no se le dan a otra sucursal.
+    await expect(sync.asignarRangoNcf(LIC, B.branchUuid, { tipo: 'E32', desde: 50, hasta: 150 }, EMILIO)).rejects.toMatchObject({ code: 'RANGO_SOLAPADO' });
+    // La sucursal lo recibe de vuelta por su stream (y el panel lo muestra como suyo).
+    expect((await sync.cambios(A, 'ncf', 0)).items).toEqual([expect.objectContaining({ rangoUuid: r, tipo: 'E32', desde: 1, hasta: 100 })]);
+    const lista = await sync.listarRangosNcf(LIC, CONTADORA);
+    expect(lista.find((x) => x.rangoUuid === r)).toMatchObject({ origen: 'sucursal', estadoSucursal: 'en_uso', siguiente: 2, sucursal: 'Principal' });
+
+    // Otra sucursal que trae números que ya son de A: se rechaza para revisarlo.
+    const choque = id();
+    expect(await sync.procesarEvento(B, ev('ncf_rango', choque, { rangoUuid: choque, tipo: 'E32', desde: 90, hasta: 120, estado: 'en_uso', siguiente: 95 }, 'reportar')))
+      .toMatchObject({ resultado: 'rechazado', code: 'RANGO_SOLAPADO' });
+    // Datos que no son un rango tampoco entran.
+    const malo = id();
+    expect(await sync.procesarEvento(B, ev('ncf_rango', malo, { rangoUuid: malo, tipo: 'E32', desde: 0, hasta: 5, estado: 'en_uso' }, 'reportar')))
+      .toMatchObject({ resultado: 'rechazado', code: 'DATOS_INVALIDOS' });
+  });
+
   test('aislamiento: otra empresa no ve el catálogo ni los rangos', async () => {
     await sync.procesarEvento(A, ev('producto', id(), producto()));
     await sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'B02', desde: 1, hasta: 10 }, EMILIO);

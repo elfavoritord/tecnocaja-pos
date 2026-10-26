@@ -79,14 +79,30 @@ async function onAuthStateChanged(user) {
 }
 
 // ── API helper ─────────────────────────────────────────────────────────────
+async function fetchWithAuth(path, opts = {}) {
+  const user = _currentUser;
+  if (!user) throw new Error('No hay una sesión activa. Inicia sesión nuevamente.');
+
+  const send = async forceRefresh => {
+    _idToken = await user.getIdToken(forceRefresh);
+    return fetch(path, {
+      ...opts,
+      headers: { ...opts.headers, Authorization: `Bearer ${_idToken}` },
+    });
+  };
+
+  let res = await send(false);
+  if (res.status === 401) res = await send(true);
+  return res;
+}
+
 async function api(method, path, body) {
-  if (_currentUser) _idToken = await _currentUser.getIdToken();
   const opts = {
     method,
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${_idToken}` },
+    headers: { 'Content-Type': 'application/json' },
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const res  = await fetch(path, opts);
+  const res  = await fetchWithAuth(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
@@ -1365,8 +1381,7 @@ async function anularFactura() {
 }
 
 async function fetchAuthBlob(path) {
-  if (_currentUser) _idToken = await _currentUser.getIdToken();
-  const res = await fetch(path, { headers: { 'Authorization': `Bearer ${_idToken}` } });
+  const res = await fetchWithAuth(path);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || `HTTP ${res.status}`);

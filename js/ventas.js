@@ -5,6 +5,7 @@ let selectedSearchIdx = -1;
 let pendingSaleConfirmation = null;
 let currentReceiptSale = null;
 let currentReceiptOptions = {};
+let receiptPreviewPrintArmed = false;
 let receiptPreviewContext = null;
 let receiptPrinterCache = { expiresAt: 0, printers: [] };
 let billingActivePane = 'payment';
@@ -5714,6 +5715,15 @@ function isElectronicReceipt(venta) {
   );
 }
 
+// El estado de recepción es interno para mostrarlo en el listado. La
+// representación impresa DGII lleva e-NCF, datos fiscales, QR y seguridad;
+// no debe presentar "Aceptado condicional" como si fuera un dato del e-CF.
+function getReceiptFiscalDisplayStatus(venta) {
+  return isElectronicReceipt(venta)
+    ? ''
+    : normalizeReceiptText(venta?.estadoDgii || venta?.estadoFiscal || '');
+}
+
 function getElectronicReceiptNumber(venta) {
   return String(venta?.encf || venta?.ncf || getReceiptInvoiceId(venta) || '').trim();
 }
@@ -5737,14 +5747,23 @@ function buildReceiptQrPayload(venta) {
 
 async function ensureReceiptQrData(venta) {
   if (!venta || !isElectronicReceipt(venta)) return null;
-  if (venta.qrDataUrl) return venta.qrDataUrl;
+  // Los recibos guardados en memoria pueden traer el PNG anterior (generado
+  // con módulos suavizados por Chromium). Solo reutiliza la versión binaria,
+  // alineada a puntos del cabezal térmico, devuelta por /api/qrcode.
+  if (String(venta.qrDataUrl || '').startsWith('data:image/png;base64,')
+      && venta.qrPrintWidthMm
+      && venta.qrPrintFormat === 'thermal-binary-203dpi-v1') {
+    return venta.qrDataUrl;
+  }
 
   const qrPayload = buildReceiptQrPayload(venta);
   if (!qrPayload) return null;
-  const response = await api.generateQr(qrPayload);
+  const response = await api.generateQr(qrPayload, { format: 'thermal-png' });
   const dataUrl = response?.dataUrl || '';
   if (!dataUrl) throw new Error('QR vacío');
   venta.qrDataUrl = dataUrl;
+  venta.qrPrintWidthMm = Number(response?.physicalWidthMm) || 32.5;
+  venta.qrPrintFormat = 'thermal-binary-203dpi-v1';
   return dataUrl;
 }
 
@@ -5973,7 +5992,7 @@ async function generateReceiptFallbackImageDataUrl(venta) {
   const rows = [
     ['FACTURA', factura],
     ncfDisplay ? ['NCF', ncfDisplay] : null,
-    ncfDisplay && venta.ncfVencimiento ? ['NCF VENCE', formatReceiptDateForPaper(venta.ncfVencimiento, '58mm')] : null,
+    (venta.ncf || venta.encf) && venta.ncfVencimiento ? ['VENCE NCF/e-NCF', formatReceiptDateForPaper(venta.ncfVencimiento, '58mm')] : null,
     ncfTypeLabel ? ['TIPO NCF', ncfTypeLabel] : null,
     venta.ncfReferencia ? ['NCF REF', venta.ncfReferencia] : null,
     ['TIPO', SALE_DOCUMENT_TYPES[venta.tipoComprobante] || 'Ticket / Factura'],
@@ -6380,8 +6399,8 @@ async function generateReceiptPdf(venta, options = {}) {
   if (venta.ncfType) {
     drawKeyValue('Tipo NCF:', `${venta.ncfType} · ${NCF_LABELS_FE[venta.ncfType] || venta.ncfType}`);
   }
-  if (!isElectronicReceipt(venta) && venta.ncf && venta.ncfVencimiento) {
-    drawKeyValue('NCF vence:', formatReceiptDateForPaper(venta.ncfVencimiento, paperVariant));
+  if ((venta.ncf || venta.encf) && venta.ncfVencimiento) {
+    drawKeyValue('Vence NCF/e-NCF:', formatReceiptDateForPaper(venta.ncfVencimiento, paperVariant));
   }
   drawKeyValue('Pedido:', SALE_ORDER_TYPES[venta.tipoPedido] || venta.tipoPedido || 'Mostrador');
   drawKeyValue('Cocina:', venta.estadoCocina || 'pendiente');
@@ -6461,8 +6480,8 @@ async function generateReceiptPdf(venta, options = {}) {
   return doc;
 }
 
-async function renderReceiptQr(venta) {
-  const qrBox = document.getElementById('receipt-qr');
+async function renderReceiptQr(venta, root = document) {
+  const qrBox = root?.querySelector?.('#receipt-qr');
   if (!qrBox) return;
 
   if (!isElectronicReceipt(venta)) {
@@ -7584,7 +7603,7 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       cajero: normalizeReceiptText(venta?.cajero || DB.currentUser?.nombre || DB.currentUser?.usuario || 'CAJERO'),
       cliente: normalizeReceiptText(venta?.cliente || 'Consumidor Final'),
       tipoComprobante: String(venta?.tipoComprobante || ''),
-      estadoFiscal: normalizeReceiptText(venta?.estadoDgii || venta?.estadoFiscal || ''),
+      estadoFiscal: getReceiptFiscalDisplayStatus(venta),
       metodo: normalizeReceiptText(SALE_PAYMENT_TYPES[venta?.metodo] || venta?.metodo || 'Efectivo'),
       ncf: normalizeReceiptText(venta?.encf || venta?.ncf || ''),
       ncfVencimiento: normalizeReceiptText(venta?.ncfVencimiento || ''),
@@ -7668,9 +7687,35 @@ async function resolveReceiptPrinterName(rawPrinterName = '') {
 }
 
 async function printReceipt(venta = currentReceiptSale) {
+  if (currentReceiptOptions?.receiptPreview) {
+    if (!receiptPreviewPrintArmed) {
+      console.warn('[receipt preview] Impresión bloqueada: requiere pulsar Imprimir recibo en la vista previa.');
+      return false;
+    }
+    receiptPreviewPrintArmed = false;
+  }
   if (!venta) {
     showToast('No hay un comprobante listo para imprimir.', 'warning');
     return false;
+  }
+  // En el cobro POS la impresión puede dispararse mientras la respuesta e-CF
+  // todavía está actualizando sales.qr_data. Recupera la representación fiscal
+  // firmada antes de construir el QR ESC/POS para no imprimir el recibo vacío.
+  if (isElectronicReceipt(venta) && !buildReceiptQrPayload(venta) && typeof api !== 'undefined' && typeof api.request === 'function') {
+    const invoiceNumber = String(venta.invoiceNumber || venta.invoice_number || venta.id || '').trim();
+    if (invoiceNumber) {
+      try {
+        const receiptResponse = await api.request(`/api/sales/${encodeURIComponent(invoiceNumber)}/receipt`, { _timeoutMs: 20000 });
+        const fiscalSale = receiptResponse?.sale;
+        if (fiscalSale?.qrUrl) venta.qrUrl = fiscalSale.qrUrl;
+        if (fiscalSale?.fechaFirmaFiscal) venta.fechaFirmaFiscal = fiscalSale.fechaFirmaFiscal;
+        if (fiscalSale?.fiscalFechaIso) venta.fiscalFechaIso = fiscalSale.fiscalFechaIso;
+        if (fiscalSale?.encf) venta.encf = fiscalSale.encf;
+        if (fiscalSale?.tipoEcf) venta.tipoEcf = fiscalSale.tipoEcf;
+      } catch (error) {
+        console.warn('No se pudo recuperar el QR firmado de la factura antes de imprimir.', error);
+      }
+    }
   }
   const successMessage = venta?.printSuccessMessage || 'Factura enviada a impresión.';
   const failureMessage = venta?.printFailureMessage || 'No se pudo imprimir la factura.';
@@ -7753,9 +7798,33 @@ async function printReceipt(venta = currentReceiptSale) {
   return true;
 }
 
+async function printReceiptFromPreview(venta) {
+  if (!venta) return false;
+  const previousSale = currentReceiptSale;
+  const previousOptions = currentReceiptOptions;
+  currentReceiptSale = venta;
+  currentReceiptOptions = { receiptPreview: true };
+  receiptPreviewPrintArmed = true;
+  try {
+    return await printReceipt(venta);
+  } finally {
+    receiptPreviewPrintArmed = false;
+    currentReceiptSale = previousSale;
+    currentReceiptOptions = previousOptions;
+  }
+}
+
 function renderReceiptFooter(options = {}) {
   const footer = document.getElementById('receipt-footer');
   if (!footer) return;
+
+  if (options.receiptPreview) {
+    footer.innerHTML = `
+      <button class="btn-secondary" onclick="closeReceipt()">Cerrar</button>
+      <button type="button" class="btn-primary" onclick="printReceiptPreview()">🖨️ Imprimir recibo</button>
+    `;
+    return;
+  }
 
   if (options.preview) {
     footer.innerHTML = `
@@ -7937,7 +8006,7 @@ function getReceiptTemplateData(venta) {
   const factura = getReceiptDisplayNumber(venta);
   const electronicReceipt = isElectronicReceipt(venta);
   const electronicNumber = getElectronicReceiptNumber(venta);
-  const dgiiStatus = normalizeReceiptText(venta.estadoDgii || '');
+  const dgiiStatus = getReceiptFiscalDisplayStatus(venta);
   const receiptSimpleMode = true;
   const paperVariant = getReceiptPaperVariant();
   const thermalLike = paperVariant !== 'a4';
@@ -7969,7 +8038,7 @@ function getReceiptTemplateData(venta) {
     // no a e-CF (ese ya muestra su propio "e-NCF" arriba).
     ...(!electronicReceipt && venta.ncf ? [['NCF', venta.ncf]] : []),
     ...(venta.ncfType ? [['Tipo NCF', `${venta.ncfType} · ${NCF_LABELS_FE[venta.ncfType] || venta.ncfType}`]] : []),
-    ...(!electronicReceipt && venta.ncf && venta.ncfVencimiento ? [['NCF vence', formatReceiptDateForPaper(venta.ncfVencimiento, paperVariant)]] : []),
+    ...((venta.ncf || venta.encf) && venta.ncfVencimiento ? [['Vence NCF/e-NCF', formatReceiptDateForPaper(venta.ncfVencimiento, paperVariant)]] : []),
     ...(venta.tipoEcf ? [['Tipo e-CF', venta.tipoEcf]] : []),
     ['Fecha', formatReceiptDateForPaper(venta.fecha, paperVariant)],
     ['Cajero', normalizeReceiptText(venta.cajero || 'Sistema')],
@@ -8225,7 +8294,7 @@ function getThermalDocumentHeader(venta) {
       venta.receiptDocumentNumber
       || (electronic ? `eNCF ${getElectronicReceiptNumber(venta) || factura}` : `Factura ${factura}`)
     ),
-    fiscalState: normalizeReceiptText(venta.estadoDgii || venta.estadoFiscal)
+    fiscalState: getReceiptFiscalDisplayStatus(venta)
   };
 }
 
@@ -8334,10 +8403,10 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
     venta.clienteRncCedula ? ['RNC / Cédula', venta.clienteRncCedula || ''] : null,
     isElectronicReceipt(venta) ? ['e-NCF', getElectronicReceiptNumber(venta)] : null,
     !isElectronicReceipt(venta) && venta.ncf ? ['NCF', venta.ncf] : null,
-    !isElectronicReceipt(venta) && venta.ncf && venta.ncfVencimiento ? ['NCF Vence', formatReceiptDateForPaper(venta.ncfVencimiento, 'a4')] : null,
+    (venta.ncf || venta.encf) && venta.ncfVencimiento ? ['Vence NCF/e-NCF', formatReceiptDateForPaper(venta.ncfVencimiento, 'a4')] : null,
     venta.ncfType ? ['Tipo NCF', `${venta.ncfType} · ${NCF_LABELS_FE[venta.ncfType] || ''}`] : null,
     venta.tipoEcf ? ['Tipo e-CF', venta.tipoEcf] : null,
-    venta.estadoDgii ? ['Estado DGII', venta.estadoDgii] : null,
+    getReceiptFiscalDisplayStatus(venta) ? ['Estado DGII', getReceiptFiscalDisplayStatus(venta)] : null,
     venta.ncfReferencia ? ['NCF Referencia', venta.ncfReferencia] : null
   ].filter(Boolean);
   const metaRows = [
@@ -8383,7 +8452,7 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
         <div class="receipt-a4-docbox" style="--receipt-accent:${palette.accent};--receipt-accent-soft:${palette.accentSoft};--receipt-accent-strong:${palette.accentStrong}">
           <div class="receipt-a4-doclabel">${escapeReceiptHtml(palette.title)}</div>
           <div class="receipt-a4-docnumber">${escapeReceiptHtml(palette.docLabel)}: ${escapeReceiptHtml(isElectronicReceipt(venta) ? (getElectronicReceiptNumber(venta) || factura) : factura)}</div>
-          ${(venta.estadoDgii || venta.estadoFiscal) ? `<div class="receipt-a4-docstatus">${escapeReceiptHtml(String(venta.estadoDgii || venta.estadoFiscal).toUpperCase())}</div>` : ''}
+          ${getReceiptFiscalDisplayStatus(venta) ? `<div class="receipt-a4-docstatus">${escapeReceiptHtml(getReceiptFiscalDisplayStatus(venta).toUpperCase())}</div>` : ''}
         </div>
       </div>
 
@@ -8541,10 +8610,18 @@ function getReceiptEcfSecurityData(venta) {
     const url = new URL(String(venta?.qrUrl || ''));
     return {
       codigoSeguridad: url.searchParams.get('CodigoSeguridad') || '',
-      fechaFirma: url.searchParams.get('FechaFirma') || ''
+      // DGII's short ConsultaTimbreFC URL for E32 under RD$250,000 omits
+      // FechaFirma. Keep the printed signature timestamp from the sale record.
+      fechaFirma: formatReceiptDateForPaper(
+        url.searchParams.get('FechaFirma') || venta?.fechaFirmaFiscal || venta?.fiscalFechaIso || '',
+        'a4'
+      )
     };
   } catch (_error) {
-    return { codigoSeguridad: '', fechaFirma: '' };
+    return {
+      codigoSeguridad: '',
+      fechaFirma: formatReceiptDateForPaper(venta?.fechaFirmaFiscal || venta?.fiscalFechaIso || '', 'a4')
+    };
   }
 }
 
@@ -8597,6 +8674,7 @@ function ventaToFormalDoc(venta) {
     return {
       descripcion: it.nombre,
       cantidad: it.qty,
+      unidad: it.unitLabel || it.unidad || it.unidadMedida || 'Unidad',
       precio: it.precio,
       itbisPct: rate,
       itbisMonto: monto,
@@ -8675,7 +8753,7 @@ function buildReceiptSheetMarkup(venta) {
   const qrMarkup = isElectronicReceipt(venta) && venta.qrDataUrl
     ? `
       <div class="receipt-qr" id="receipt-qr">
-        <img src="${venta.qrDataUrl}" alt="Código QR de factura electrónica">
+        <img src="${venta.qrDataUrl}" alt="Código QR de factura electrónica" style="width:${Number(venta.qrPrintWidthMm) || 32.5}mm;height:${Number(venta.qrPrintWidthMm) || 32.5}mm">
         ${buildReceiptQrCaptionMarkup(venta)}
       </div>
     `
@@ -8752,8 +8830,8 @@ function buildThermalPrintableReceiptHtml(venta, paperVariant) {
       .ticket-print .receipt-footer{text-align:center;margin-top:.12rem;color:#374151;font-size:.66rem;font-weight:600}
       .ticket-print .receipt-qr{margin-top:.4rem;padding-top:.45rem;border-top:1px dashed #9ca3af;display:flex;flex-direction:column;align-items:center;gap:.35rem}
       .ticket-print .receipt-qr.hidden{display:none}
-      .ticket-print .receipt-qr img{width:118px;height:118px;background:#fff;padding:.28rem;image-rendering:pixelated;image-rendering:crisp-edges}
-      .ticket-print .receipt-qr small{color:#374151;font-size:.62rem;text-align:center;line-height:1.4;font-weight:600}
+      .ticket-print .receipt-qr img{width:118px;height:118px;background:#fff;padding:.28rem;image-rendering:pixelated;image-rendering:crisp-edges;print-color-adjust:exact;-webkit-print-color-adjust:exact}
+      .ticket-print .receipt-qr small{color:#000;font-size:.68rem;text-align:center;line-height:1.4;font-weight:800}
       .ticket-print--58mm .receipt-brand{gap:.48rem}
       .ticket-print--58mm .receipt-brand-image,.ticket-print--58mm .receipt-brand-icon{width:28px;height:28px;border-radius:8px}
       .ticket-print--58mm .receipt-brand-name{font-size:1.05rem}
@@ -8847,7 +8925,8 @@ function buildThermalPrintableReceiptHtml(venta, paperVariant) {
       .ticket-print .receipt-sheet--58mm .receipt-total-row,.ticket-print .receipt-sheet--80mm .receipt-total-row{margin-top:.1rem;padding-top:.14rem;border-top:1px solid #111827;font-size:15px;line-height:1.24;font-weight:800}
       .ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer{margin-top:.18rem;padding-top:.2rem;border-top:1px dashed #111827;color:#111827;font-size:10px;line-height:1.24;font-weight:500}
       .ticket-print .receipt-sheet--58mm .receipt-qr,.ticket-print .receipt-sheet--80mm .receipt-qr{margin-top:.18rem;padding-top:.22rem;border-top:1px dashed #111827;gap:.22rem}
-      .ticket-print .receipt-sheet--58mm .receipt-qr img,.ticket-print .receipt-sheet--80mm .receipt-qr img{width:84px;height:84px}
+      .ticket-print .receipt-sheet--58mm .receipt-qr img{width:72px;height:72px}
+      .ticket-print .receipt-sheet--80mm .receipt-qr img{width:33mm;height:33mm;max-width:none!important;aspect-ratio:1/1;object-fit:contain;padding:0!important;background:#fff!important;image-rendering:pixelated;image-rendering:crisp-edges;print-color-adjust:exact;-webkit-print-color-adjust:exact}
       .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:9px;line-height:1.2;color:#111827}
       .ticket-print .receipt-sheet--58mm .receipt-brand-name{font-size:13px}
       .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer{font-size:9px}
@@ -8869,7 +8948,7 @@ function buildThermalPrintableReceiptHtml(venta, paperVariant) {
       .ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--80mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer{font-size:11px!important;line-height:1.18!important;font-weight:700!important}
       .ticket-print .receipt-sheet--58mm .receipt-total-row,.ticket-print .receipt-sheet--80mm .receipt-total-row{padding-top:.18rem!important;border-top:1.4px solid #000!important;font-size:16px!important;font-weight:900!important}
       .ticket-print .receipt-sheet--58mm .receipt-footer,.ticket-print .receipt-sheet--80mm .receipt-footer,.ticket-print .receipt-sheet--58mm .receipt-qr,.ticket-print .receipt-sheet--80mm .receipt-qr{border-top:1px solid #000!important}
-      .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:9px!important;font-weight:500!important}
+      .ticket-print .receipt-sheet--58mm .receipt-qr small,.ticket-print .receipt-sheet--80mm .receipt-qr small{font-size:10px!important;color:#000!important;font-weight:800!important;line-height:1.3!important}
       .ticket-print .receipt-mono-line--quotation-message{display:block;white-space:pre;font-size:1.12em;font-weight:900;line-height:1.26!important;letter-spacing:.01em;text-transform:uppercase}
       .ticket-print .receipt-sheet--58mm .receipt-brand-name{font-size:14px!important}
       .ticket-print .receipt-sheet--58mm .receipt-business-line,.ticket-print .receipt-sheet--58mm .receipt-kv-label,.ticket-print .receipt-sheet--58mm .receipt-kv-value,.ticket-print .receipt-sheet--58mm .receipt-items-head,.ticket-print .receipt-sheet--58mm .receipt-item-name,.ticket-print .receipt-sheet--58mm .receipt-item-qty,.ticket-print .receipt-sheet--58mm .receipt-item-price,.ticket-print .receipt-sheet--58mm .receipt-item-total,.ticket-print .receipt-sheet--58mm .receipt-row,.ticket-print .receipt-sheet--58mm .receipt-footer{font-size:10px!important}
@@ -8898,7 +8977,9 @@ function showReceipt(venta, options = {}) {
   currentReceiptSale = venta;
   currentReceiptOptions = options || {};
   if (title) {
-    title.textContent = options.preview
+    title.textContent = options.receiptPreview
+      ? (options.title || 'Vista previa del recibo')
+      : options.preview
       ? 'Vista Previa de Impresión'
       : options.pending
         ? 'Confirmar Comprobante'
@@ -8929,6 +9010,58 @@ function showReceipt(venta, options = {}) {
     detachReceiptPendingKeyHandler();
   }
 }
+
+// Vista de consulta explícita: solo muestra el recibo. La impresión sucede
+// únicamente cuando el usuario pulsa el botón del pie de esta vista.
+window.showReceiptPreview = function(venta, options = {}) {
+  if (!venta) {
+    showToast('No se encontró el recibo para mostrar.', 'error');
+    return;
+  }
+
+  let overlay = document.getElementById('report-receipt-preview-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'report-receipt-preview-overlay';
+    overlay.className = 'modal-overlay hidden';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.style.zIndex = '2600';
+    overlay.innerHTML = `
+      <div class="modal receipt-modal" style="display:flex;flex-direction:column;max-width:min(760px,96vw);width:760px;max-height:92vh">
+        <div class="modal-header">
+          <h3 id="report-receipt-preview-title">Vista previa del recibo</h3>
+          <button type="button" class="modal-close" data-preview-close aria-label="Cerrar vista previa">×</button>
+        </div>
+        <div class="modal-body" style="overflow:auto;flex:1;min-height:0">
+          <div id="report-receipt-preview-content" class="receipt"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-secondary" data-preview-close>Cerrar</button>
+          <button type="button" class="btn-primary" data-preview-print>🖨️ Imprimir recibo</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll('[data-preview-close]').forEach((button) => {
+      button.addEventListener('click', () => overlay.classList.add('hidden'));
+    });
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) overlay.classList.add('hidden');
+    });
+    overlay.querySelector('[data-preview-print]')?.addEventListener('click', () => {
+      const sale = overlay._previewSale;
+      if (sale) printReceiptFromPreview(sale);
+    });
+  }
+
+  overlay._previewSale = venta;
+  const title = overlay.querySelector('#report-receipt-preview-title');
+  const content = overlay.querySelector('#report-receipt-preview-content');
+  if (title) title.textContent = options.title || 'Vista previa del recibo';
+  if (content) content.innerHTML = getReceiptContentMarkup(venta);
+  overlay.classList.remove('hidden');
+  renderReceiptQr(venta, overlay);
+};
 
 // Handler global para que Enter dispare "Cobrar e imprimir" cuando el modal
 // está en estado "pending". Se registra sólo mientras el modal pendiente
@@ -8973,6 +9106,7 @@ function detachReceiptPendingKeyHandler() {
 function closeReceipt() {
   const overlay = document.getElementById('receipt-overlay');
   overlay.classList.add('hidden');
+  overlay.style.zIndex = '';
   const modalEl = overlay.querySelector('.receipt-modal');
   if (modalEl) modalEl.classList.remove('receipt-modal--pending');
   detachReceiptPendingKeyHandler();

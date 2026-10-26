@@ -3949,6 +3949,7 @@ function showModule(name, el) {
   if (name === 'configuracion') { if (typeof RespaldosMod !== 'undefined') RespaldosMod.init(); }
   if (name === 'configuracion') {
     if (typeof loadNcfAuthSequences === 'function') loadNcfAuthSequences();
+    if (typeof loadEcfProdSequences === 'function') loadEcfProdSequences();
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     window.TiendaOnline?.loadConfigSection();
@@ -4101,6 +4102,11 @@ const CONFIG_SECTION_CARD_META = {
     eyebrow: 'Fiscal',
     desc: 'Rangos autorizados para comprobantes NCF.'
   },
+  'cfg-ecf-seq-section': {
+    icon: '⚡',
+    eyebrow: 'Fiscal',
+    desc: 'Rangos e-NCF (serie E) autorizados por la DGII para la factura electrónica.'
+  },
   'cfg-section-drawer-title': {
     icon: '🧰',
     eyebrow: 'Caja',
@@ -4246,8 +4252,8 @@ const CONFIG_GROUPS = {
   },
   ventas: {
     icon: 'receipt',
-    title: 'Ventas y Facturación', desc: 'Moneda, ITBIS y comprobantes NCF',
-    find: ['h3#cfg-section-billing-title', '#cfg-ncf-section', 'h3#cfg-business-guide-heading'],
+    title: 'Ventas y Facturación', desc: 'Moneda, ITBIS y comprobantes NCF y e-NCF',
+    find: ['h3#cfg-section-billing-title', '#cfg-ncf-section', '#cfg-ecf-seq-section', 'h3#cfg-business-guide-heading'],
   },
   hardware: {
     icon: 'printer',

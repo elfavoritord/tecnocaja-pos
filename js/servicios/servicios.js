@@ -182,7 +182,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
 
   // ── Selector de cliente (usa DB.clientes ya cargado en el renderer) ──────
   // grid=true: los tres campos en una fila (formularios por secciones).
-  function clientPickerHtml(cur, { grid } = {}) {
+  function clientPickerHtml(cur, { grid, optionalConsumer = false } = {}) {
     const list = Array.isArray(dbRef().clientes) ? dbRef().clientes : [];
     // Al editar, si el registro solo trae clientId, resolver la cédula del catálogo.
     let rncInicial = cur?.clientRnc || '';
@@ -203,8 +203,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
         <label>Seleccionar cliente
           <select name="clientId" id="srv-cli-pick"><option value="">— Nuevo / sin registrar —</option>${opts}</select>
         </label>
-        <label><span class="srv-lbl">Nombre o razón social <span class="srv-req">*</span></span>
-          <input name="clientName" id="srv-cli-name" value="${esc(cur?.clientName || '')}" placeholder="Ej: Consultora XYZ SRL" required></label>
+        <label><span class="srv-lbl">Nombre o razón social <span class="srv-req" id="srv-cli-name-req"${optionalConsumer ? ' hidden' : ''}>*</span></span>
+          <input name="clientName" id="srv-cli-name" value="${esc(cur?.clientName || '')}" placeholder="${optionalConsumer ? 'Opcional para consumidor final' : 'Ej: Consultora XYZ SRL'}"${optionalConsumer ? '' : ' required'}></label>
         <label><span class="srv-lbl">RNC / Cédula <span class="srv-req" id="srv-cli-rnc-req" hidden>*</span></span>
           <input name="clientRnc" id="srv-cli-rnc" value="${esc(rncInicial)}" placeholder="RNC (9 dígitos) o cédula (11)" inputmode="numeric"></label>
       </div>
@@ -472,20 +472,136 @@ Condición: La compra de los equipos y la programación de la instalación estar
     });
   }
 
+  // ── Importar / exportar el catálogo en CSV ────────────────────────────────
+  // Mismo formato que el portal del contador (js/catalogo-csv.js). El archivo
+  // se lee aquí, se muestra qué se crea y qué se actualiza, y al confirmar se
+  // manda a POST /catalogo/importar. Ventana de análisis: js/ventana-analisis.js.
+  const icono = (nombre) => (window.TcIconos ? window.TcIconos.svg(nombre, 16) : '');
+
+  // Nuevo o "se actualiza" según el catálogo actual (por código o, sin código,
+  // por nombre). Uno con código y sin nombre que no existe no se puede crear.
+  function clasificarImportacion(filas, actuales, errores) {
+    const porCodigo = new Map(actuales.filter((s) => s.codigo).map((s) => [String(s.codigo).toLowerCase(), s]));
+    const porNombre = new Map(actuales.map((s) => [String(s.nombre).toLowerCase(), s]));
+    const clasificadas = [];
+    filas.forEach((f) => {
+      const actual = (f.codigo && porCodigo.get(f.codigo.toLowerCase())) || (f.nombre && porNombre.get(f.nombre.toLowerCase()));
+      if (!actual && f.soloActualiza) {
+        errores.push(`fila ${f.fila}: el código ${f.codigo} no está en el catálogo y la fila no trae nombre para crearlo.`);
+        return;
+      }
+      clasificadas.push({ ...f, estado: actual ? 'actualiza' : 'nuevo' });
+    });
+    return clasificadas;
+  }
+
+  function exportarServiciosCsv(actuales) {
+    const csv = window.TcCatalogoCsv;
+    const contenido = csv.aCsv(csv.COLUMNAS_SERVICIOS, actuales.map((s) => ({
+      codigo: s.codigo, nombre: s.nombre, descripcion: s.descripcion, categoria: s.categoria, unidad: s.unidad,
+      precio: (Number(s.precio) || 0).toFixed(2), itbisPct: Number(s.itbisPct) || 0,
+      duracionMin: s.duracionMin ?? '', estado: s.activo ? 'Activo' : 'Inactivo',
+    })));
+    const blob = new Blob([contenido], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = actuales.length ? 'servicios.csv' : 'plantilla-servicios.csv';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast(actuales.length ? `${actuales.length} servicios exportados.` : 'Catálogo vacío: se descargó la plantilla con las columnas.', 'success');
+  }
+
+  async function leerCsvServicios(files, actuales) {
+    const csv = window.TcCatalogoCsv;
+    const varios = files.length > 1;
+    return window.TcVentanaAnalisis.correr({
+      titulo: 'Analizando el archivo',
+      subtitulo: varios ? `${files.length} archivos` : files[0].name,
+      pasos: [varios ? `Leyendo los ${files.length} archivos` : 'Leyendo el archivo', 'Reconociendo las columnas', 'Comparando con tu catálogo'],
+      trabajo: async () => {
+        const filas = [];
+        const errores = [];
+        for (const file of files) {
+          try {
+            const leido = csv.leerServicios(await csv.leerArchivo(file));
+            leido.filas.forEach((f) => filas.push({ ...f, archivo: file.name }));
+            leido.errores.forEach((e) => errores.push(`${varios ? `${file.name}, ` : ''}fila ${e.fila}: ${e.mensaje}`));
+          } catch (e) {
+            errores.push(`${file.name}: ${e.message}`);
+          }
+        }
+        const clasificadas = clasificarImportacion(filas, actuales, errores);
+        if (!clasificadas.length) throw new Error(errores[0] || 'El archivo no trae servicios.');
+        return { filas: clasificadas, errores };
+      },
+      resumen: (r) => {
+        const nuevos = r.filas.filter((f) => f.estado === 'nuevo').length;
+        return `Encontré ${r.filas.length} servicios: ${nuevos} nuevos y ${r.filas.length - nuevos} para actualizar.`
+          + (r.errores.length ? ` ${r.errores.length} fila(s) con problemas.` : '');
+      },
+    });
+  }
+
+  // Lo leído, antes de guardar: qué se crea, qué se actualiza y qué falló.
+  function pintarPreviaImportacion(zona, leido, alImportar) {
+    const nuevos = leido.filas.filter((f) => f.estado === 'nuevo').length;
+    const actualiza = leido.filas.length - nuevos;
+    const muestra = leido.filas.slice(0, 50);
+    zona.innerHTML = `
+      <div class="ecfs-found" style="margin:0 0 12px">
+        <div class="ecfs-found__title">${icono('file-text')}<span style="flex:1">Listo para importar: ${leido.filas.length} servicios (${nuevos} ${nuevos === 1 ? 'nuevo' : 'nuevos'}, ${actualiza} ${actualiza === 1 ? 'se actualiza' : 'se actualizan'})</span>
+          <button type="button" class="ecfs-btn ecfs-found__close" data-imp-quitar>${icono('x')}Quitar</button></div>
+        ${table([
+          { label: 'Fila', render: (f) => esc(f.fila) },
+          { label: 'Código', render: (f) => esc(f.codigo || '—') },
+          { label: 'Servicio', render: (f) => esc(f.nombre) },
+          { label: 'Precio', num: true, render: (f) => (f.precio != null ? money(f.precio) : '—') },
+          { label: 'ITBIS %', num: true, render: (f) => (f.itbisPct != null ? `${f.itbisPct}%` : '—') },
+          { label: '', render: (f) => `<span class="ecfs-pill ${f.estado === 'nuevo' ? 'ecfs-pill--ok' : ''}">${f.estado === 'nuevo' ? 'Nuevo' : 'Se actualiza'}</span>` },
+        ], muestra)}
+        ${leido.filas.length > muestra.length ? `<div class="ecfs-found__notes">… y ${leido.filas.length - muestra.length} más.</div>` : ''}
+        ${leido.errores.slice(0, 5).map((e) => `<div class="ecfs-found__notes">No se importa: ${esc(e)}</div>`).join('')}
+        ${leido.errores.length > 5 ? `<div class="ecfs-found__notes">… y ${leido.errores.length - 5} fila(s) más con problemas.</div>` : ''}
+        <div class="ecfs-found__notes">Al actualizar solo cambian las columnas que trae el archivo. Un CSV con Código y Precio sube los precios sin tocar lo demás.</div>
+        <div class="ecfs-found__actions"><button type="button" class="btn btn-primary" data-imp-ok>Importar ${leido.filas.length} servicios</button></div>
+      </div>`;
+    zona.querySelector('[data-imp-quitar]').onclick = () => { zona.innerHTML = ''; };
+    zona.querySelector('[data-imp-ok]').onclick = alImportar;
+  }
+
+  async function guardarImportacion(leido) {
+    const servicios = leido.filas.map(({ estado: _estado, archivo: _archivo, ...f }) => f);
+    return window.TcVentanaAnalisis.correr({
+      titulo: 'Importando servicios',
+      subtitulo: `${servicios.length} servicios`,
+      pasos: ['Revisando cada fila', 'Creando los nuevos', 'Actualizando los que ya existen'],
+      trabajo: () => post('/catalogo/importar', { servicios }),
+      resumen: (r) => `Listo: ${r.creados} creados y ${r.actualizados} actualizados${r.omitidos ? `; ${r.omitidos} no se pudieron importar` : ''}.`,
+    });
+  }
+
   // Gestión del catálogo de servicios en una ventana (sin ítem de menú propio).
   // Se abre desde el botón "Catálogo de servicios" en Facturación / Cotizaciones.
   async function abrirCatalogo() {
     const m = modal('Catálogo de servicios', `
       <div class="srv-actions" style="margin-bottom:10px">
         <button type="button" class="btn btn-primary" data-new-srv>+ Nuevo servicio</button>
+        <button type="button" class="btn btn-ghost" data-import-srv title="Crea los nuevos y actualiza los que ya existen (por código o nombre)">${icono('upload')} Importar CSV</button>
+        <button type="button" class="btn btn-ghost" data-export-srv title="Descarga el catálogo en CSV (Excel). Sin servicios, descarga la plantilla">${icono('download')} Exportar CSV</button>
+        <input type="file" accept=".csv,.txt" multiple hidden data-import-file>
       </div>
+      <div data-cat-import></div>
       <div data-cat-list><div class="srv-loading">Cargando…</div></div>`,
     async () => {}, { wide: true, submitLabel: 'Cerrar' });
     const list = m.querySelector('[data-cat-list]');
+    const zonaImport = m.querySelector('[data-cat-import]');
+    const archivo = m.querySelector('[data-import-file]');
+    let actuales = [];
     const load = async () => {
       list.innerHTML = '<div class="srv-loading">Cargando…</div>';
       try {
         const rows = await req('/catalogo');
+        actuales = rows;
         list.innerHTML = table([
           { label: 'Código', key: 'codigo' },
           { label: 'Servicio', key: 'nombre' },
@@ -504,6 +620,23 @@ Condición: La compra de los equipos y la programación de la instalación estar
       } catch (e) { list.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
     };
     m.querySelector('[data-new-srv]').onclick = () => formServicio(null, load);
+    m.querySelector('[data-export-srv]').onclick = () => exportarServiciosCsv(actuales);
+    m.querySelector('[data-import-srv]').onclick = () => { archivo.value = ''; archivo.click(); };
+    archivo.onchange = async () => {
+      const files = Array.from(archivo.files || []);
+      archivo.value = '';
+      if (!files.length) return;
+      let leido;
+      try { leido = await leerCsvServicios(files, actuales); } catch (_) { return; } // el error ya se mostró
+      pintarPreviaImportacion(zonaImport, leido, async () => {
+        try {
+          const r = await guardarImportacion(leido);
+          zonaImport.innerHTML = '';
+          if (r.errores?.length) toast(`No se importó: ${r.errores[0]}${r.errores.length > 1 ? ` (+${r.errores.length - 1} más)` : ''}`, 'warning');
+          load();
+        } catch (_) { /* el error ya se mostró; lo leído sigue en pantalla */ }
+      });
+    };
     load();
   }
 
@@ -843,27 +976,48 @@ Condición: La compra de los equipos y la programación de la instalación estar
     };
   }
 
-  // Campos de facturación compartidos: comprobante (tipos NCF ya configurados),
-  // método de pago y condición. Devuelve { html, wire(root) }.
+  // Campos de facturación compartidos: comprobante (tipos NCF y e-CF con
+  // secuencia activa), método de pago y condición. Devuelve { html, wire(root) }.
   async function billingFields(defaults = {}) {
     let resp = { comprobantes: [], necesitaActivar: false };
     let cfg = {};
     try { [resp, cfg] = await Promise.all([req('/facturas/comprobantes'), req('/config')]); } catch (_) {}
     const comps = Array.isArray(resp) ? resp : (resp.comprobantes || []);
+    const ecfs = Array.isArray(resp) ? [] : (resp.electronicos || []);
+    const ecfActivo = !Array.isArray(resp) && resp.ecfActivo;
     const necesitaActivar = !Array.isArray(resp) && resp.necesitaActivar;
     const defMode = cfg.fiscalMode || 'ncf';
-    const opts = [];
-    // El vencimiento va en la nota de abajo (#srv-comp-venc): en la opción
-    // alargaba el texto y se cortaba.
-    comps.forEach((c) => {
-      opts.push(`<option value="ncf|${esc(c.tipo)}" data-venc="${esc(c.vencimiento || '')}"${defMode === 'ncf' && (defaults.ncfTipo === c.tipo || (!defaults.ncfTipo && opts.length === 0)) ? ' selected' : ''}>NCF ${esc(c.tipo)} — ${esc(c.nombre)} (${c.disponibles} disp.)</option>`);
-    });
-    opts.push(`<option value="ecf|E31"${defMode === 'ecf' ? ' selected' : ''}>e-CF (electrónico)</option>`);
-    opts.push(`<option value="consumidor|"${defMode === 'consumidor' || !comps.length ? ' selected' : ''}>Sin comprobante fiscal</option>`);
+    // Un e-CF por tipo con secuencia activa; el número lo reserva el módulo
+    // e-CF al emitir. Con la facturación electrónica apagada se ven, pero no
+    // se pueden elegir. El vencimiento va en la nota de abajo (#srv-comp-venc):
+    // en la opción alargaba el texto y se cortaba.
+    const opciones = [
+      ...comps.map((c) => ({ mode: 'ncf', tipo: c.tipo, venc: c.vencimiento, label: `NCF ${c.tipo} — ${c.nombre} (${c.disponibles} disp.)` })),
+      ...ecfs.map((c) => ({ mode: 'ecf', tipo: c.tipo, venc: c.vencimiento, disabled: !ecfActivo, label: `e-CF ${c.tipo} — ${c.nombre} (${c.disponibles} disp.)` })),
+      { mode: 'consumidor', tipo: '', label: 'Sin comprobante fiscal' },
+    ];
+    // Preselección: el tipo pedido, si no el primero del modo de Ajustes, si no
+    // el primer comprobante fiscal que haya (p. ej. solo e-CF con modo "ncf").
+    const usables = opciones.filter((o) => !o.disabled);
+    const elegida = (defaults.ncfTipo && usables.find((o) => o.mode === defMode && o.tipo === defaults.ncfTipo))
+      || usables.find((o) => o.mode === defMode)
+      || (defMode !== 'consumidor' && usables.find((o) => o.mode !== 'consumidor'))
+      || usables[usables.length - 1];
+    const opts = opciones.map((o) => `<option value="${esc(o.mode + '|' + o.tipo)}" data-venc="${esc(o.venc || '')}"${o.mode === 'ecf' ? ' data-ecf="1"' : ''}${o.disabled ? ' disabled' : ''}${o === elegida ? ' selected' : ''}>${esc(o.label)}</option>`);
     const metodos = [['efectivo', 'Efectivo'], ['transferencia', 'Transferencia'], ['tarjeta', 'Tarjeta'], ['deposito', 'Depósito'], ['cheque', 'Cheque'], ['otro', 'Otro']];
-    const aviso = necesitaActivar
-      ? '<p class="srv-aviso">⚠ Tienes secuencias NCF registradas pero <strong>desactivadas</strong>. Actívalas en Configuración → Ventas y Facturación → Secuencias de Comprobantes Fiscales (casilla "Usar los rangos registrados… al facturar").</p>'
-      : (!comps.length ? '<p class="srv-aviso">⚠ No hay secuencias NCF disponibles. Regístralas en Configuración → Secuencias de Comprobantes Fiscales.</p>' : '');
+    const avisos = [];
+    if (necesitaActivar) {
+      avisos.push('⚠ Tienes secuencias NCF registradas pero <strong>desactivadas</strong>. Actívalas en Configuración → Ventas y Facturación → Secuencias de Comprobantes Fiscales (casilla "Usar los rangos registrados… al facturar").');
+    }
+    if (ecfs.length && !ecfActivo) {
+      avisos.push('⚠ Tienes secuencias e-CF pero la facturación electrónica está <strong>desactivada</strong>. Actívala en Configuración → Facturación Electrónica DGII → Estado.');
+    } else if (!ecfs.length && !Array.isArray(resp) && resp.ecfFueraDeAlcance) {
+      avisos.push('⚠ Tus secuencias e-CF activas están asignadas a otra sucursal o a una caja. Para facturar servicios regístralas como Global en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).');
+    }
+    if (!comps.length && !ecfs.length && !necesitaActivar) {
+      avisos.push('⚠ No hay secuencias NCF ni e-CF disponibles. Regístralas en Configuración → Ventas y Facturación → Secuencias de Comprobantes Fiscales (NCF) o Secuencias de Comprobantes Electrónicos (e-NCF).');
+    }
+    const aviso = avisos.map((a) => `<p class="srv-aviso">${a}</p>`).join('');
     // Piezas sueltas para el formulario por secciones; `html` las arma apiladas.
     const campos = {
       comprobante: `<label>Comprobante fiscal<select name="comprobante" id="srv-comp">${opts.join('')}</select></label>`,
@@ -882,7 +1036,9 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const mpWrap = root.querySelector('#srv-mp-wrap');
       const syncVenc = () => {
         const o = sel.selectedOptions[0];
-        vencEl.textContent = o && o.dataset.venc ? 'Vencimiento del NCF: ' + fdate(o.dataset.venc) + ' (se imprime en la factura).' : '';
+        vencEl.textContent = o && o.dataset.venc
+          ? (o.dataset.ecf ? 'Vencimiento de la secuencia e-CF: ' : 'Vencimiento del NCF: ') + fdate(o.dataset.venc) + ' (se imprime en la factura).'
+          : '';
       };
       const syncMp = () => { mpWrap.style.display = cond.value === 'contado' ? '' : 'none'; };
       sel.addEventListener('change', syncVenc); cond.addEventListener('change', syncMp);
@@ -891,20 +1047,40 @@ Condición: La compra de los equipos y la programación de la instalación estar
     return { html, campos, wire };
   }
 
-  // Crédito fiscal y gubernamental (B01/B14/B15 y el e-CF E31) llevan el RNC o
-  // la cédula del comprador; consumo final no.
-  const COMP_CON_RNC = /^(ncf\|B0?1|ncf\|B14|ncf\|B15|ecf\|E31)$/;
+  // Crédito fiscal, régimen especial y gubernamental (B01/B14/B15 y los e-CF
+  // E31/E44/E45) llevan el RNC o la cédula del comprador; consumo final no.
+  const COMP_CON_RNC = /^(ncf\|B0?1|ncf\|B14|ncf\|B15|ecf\|E31|ecf\|E44|ecf\|E45)$/;
   function wireRncRequerido(root) {
     const comp = root.querySelector('#srv-comp');
     const rnc = root.querySelector('#srv-cli-rnc');
     const marca = root.querySelector('#srv-cli-rnc-req');
+    const nombre = root.querySelector('#srv-cli-name');
+    const marcaNombre = root.querySelector('#srv-cli-name-req');
     if (!comp || !rnc) return () => true;
-    const exige = () => COMP_CON_RNC.test(comp.value);
-    const sync = () => { if (marca) marca.hidden = !exige(); };
-    comp.addEventListener('change', sync); sync();
+    const compradorObligatorio = () => {
+      if (COMP_CON_RNC.test(comp.value)) return true;
+      const [mode, type] = String(comp.value || '').split('|');
+      const consumo = (mode === 'ncf' && /^B0?2$/.test(type)) || (mode === 'ecf' && type === 'E32');
+      return consumo && calcLineTotals(root).total >= 250000;
+    };
+    const sync = () => {
+      const required = compradorObligatorio();
+      if (marca) marca.hidden = !required;
+      if (marcaNombre) marcaNombre.hidden = !required;
+      if (rnc) rnc.required = required;
+      if (nombre) nombre.required = required;
+    };
+    comp.addEventListener('change', sync);
+    root.addEventListener('input', sync);
+    root.addEventListener('change', sync);
+    sync();
     // Validación al emitir: devuelve true o lanza con el mensaje para el usuario.
     return () => {
-      if (!exige()) return true;
+      if (!compradorObligatorio()) return true;
+      if (nombre && !nombre.value.trim()) {
+        nombre.focus();
+        throw new Error('Para comprobantes de consumo desde RD$250,000, indica el nombre del comprador.');
+      }
       const dig = rnc.value.replace(/\D/g, '');
       if (dig.length === 9 || dig.length === 11) return true;
       // Bloqueado = viene del catálogo, y el backend usa el de Clientes.
@@ -915,6 +1091,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
         : 'Este comprobante necesita el RNC o la cédula del cliente.');
     };
   }
+  // Aviso al emitir: número, NCF/e-NCF y, en e-CF, lo que pasó con la DGII.
+  function avisarEmision(inv) {
+    const base = 'Factura ' + inv.numero + (inv.ncf ? ' · ' + inv.ncf : '');
+    const e = inv.ecf;
+    if (e && e.error) { toast(base + ' guardada, pero el e-CF no se pudo emitir: ' + e.error, 'error'); return; }
+    if (e && e.pendiente) { toast(base + ' emitida. ' + (e.mensaje || 'El e-CF se enviará a la DGII cuando vuelva la conexión.'), 'warning'); return; }
+    toast(base + (inv.estado === 'pagada' ? ' (pagada)' : '') + ' emitida' + (e ? ' y enviada a la DGII' : ''), 'success');
+  }
+
   function readBilling(fd) {
     const [mode, tipo] = String(fd.comprobante || 'consumidor|').split('|');
     const out = { fiscalMode: mode, ncfTipo: tipo || null, condicionPago: fd.condicionPago || 'contado' };
@@ -929,7 +1114,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
       <p>Se generará una factura de servicios a partir de la cotización.</p>
       ${bf.html}`, async (fd) => {
       const inv = await post('/facturas/desde-cotizacion/' + id, { ...fd, ...readBilling(fd) });
-      toast('Factura ' + inv.numero + (inv.ncf ? ' · ' + inv.ncf : '') + ' emitida', 'success');
+      avisarEmision(inv);
+      await imprimirFacturaSiTermica(inv.id);
       renderCotizaciones();
       window.showModule('srv-facturas', document.querySelector('.nav-item[data-module="srv-facturas"]'));
       if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
@@ -939,6 +1125,27 @@ Condición: La compra de los equipos y la programación de la instalación estar
 
   // ═══ Facturación ══════════════════════════════════════════════════════════
   let _facTodas = false;
+  // Estado del e-CF en la DGII, junto al e-NCF. [clase de srv-badge, texto]
+  const ECF_ESTADOS = {
+    aceptado: ['pagada', 'Aceptado DGII'], aceptado_condicional: ['pagada', 'Aceptado condicional'],
+    enviado: ['parcial', 'Enviado'], en_proceso: ['parcial', 'En proceso'], procesando: ['parcial', 'En proceso'],
+    firmado: ['pendiente', 'Firmado, sin enviar'], pendiente: ['pendiente', 'Pendiente de envío'],
+    rechazado: ['anulada', 'Rechazado DGII'],
+  };
+  const ECF_YA_ENVIADO = ['aceptado', 'aceptado_condicional', 'enviado', 'en_proceso', 'procesando'];
+  function ecfBadge(r) {
+    if (r.fiscalMode !== 'ecf') return '';
+    const [cls, txt] = ECF_ESTADOS[r.ecfStatus] || ['anulada', 'Error e-CF'];
+    return ` <span class="srv-badge srv-badge-${cls}" title="${esc(r.ecfError || txt)}">${esc(txt)}</span>`;
+  }
+  const ecfReintentable = (r) => r.fiscalMode === 'ecf' && r.estado !== 'anulada' && !ECF_YA_ENVIADO.includes(r.ecfStatus);
+  async function reintentarEcf(id, btn) {
+    btn.disabled = true;
+    try {
+      avisarEmision(await post('/facturas/' + id + '/reintentar-ecf', {}));
+    } catch (e) { toast(e.message, 'error'); }
+    renderFacturas();
+  }
   async function renderFacturas() {
     const b = bodyOf('srv-facturas');
     actionsOf('srv-facturas').innerHTML = `
@@ -953,23 +1160,32 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const rows = await req('/facturas' + (_facTodas ? '?todas=1' : ''));
       b.innerHTML = table([
         { label: 'Número', key: 'numero' },
-        { label: 'NCF', key: 'ncf' },
+        { label: 'NCF', render: (r) => esc(r.ncf || '') + ecfBadge(r) },
         { label: 'Cliente', key: 'clientName' },
         { label: 'Fecha', key: 'fecha' },
         { label: 'Total', num: true, render: (r) => money(r.total) },
         { label: 'Balance', num: true, render: (r) => money(r.balance) },
         { label: 'Estado', render: (r) => `<span class="srv-badge srv-badge-${r.estado}">${r.estado}</span>` },
         { label: '', render: (r) => acciones([
+          ecfReintentable(r) && accion('data-ecf', r.id, 'Enviar e-CF', 'sube', 'ok', 'Armar, firmar y enviar el e-CF a la DGII'),
           accion('data-doc', r.id, 'Imprimir', 'imprimir', 'pri', VER_AYUDA),
           accion('data-mail', r.id, 'Correo', 'correo'),
           r.estado !== 'anulada' && r.balance > 0 && accion('data-pay', r.id, 'Cobrar', 'cobrar', 'ok'),
           r.estado !== 'anulada' && accion('data-void', r.id, 'Anular', 'anular', 'peligro'),
         ]) },
       ], rows);
-      b.querySelectorAll('[data-doc]').forEach((el) => el.onclick = () => verDocumento(el.dataset.doc));
+      b.querySelectorAll('[data-doc]').forEach((el) => el.onclick = async () => {
+        const prefs = await preferenciasImpresionServicio();
+        if (prefs.formato === '58mm' || prefs.formato === '80mm') {
+          await imprimirDocumentoServicio('facturas', el.dataset.doc, prefs.formato, prefs);
+          return;
+        }
+        verDocumento(el.dataset.doc);
+      });
       b.querySelectorAll('[data-mail]').forEach((el) => el.onclick = () => enviarCorreo(el.dataset.mail));
       b.querySelectorAll('[data-pay]').forEach((el) => el.onclick = () => formPago(el.dataset.pay));
       b.querySelectorAll('[data-void]').forEach((el) => el.onclick = () => anularFactura(el.dataset.void));
+      b.querySelectorAll('[data-ecf]').forEach((el) => el.onclick = () => reintentarEcf(el.dataset.ecf, el));
     } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
   }
 
@@ -977,7 +1193,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
     const bf = await billingFields();
     let validarRnc = () => true;
     const m = modal('Nueva factura de servicios', `
-      ${card('Información del cliente', ICON.cliente, clientPickerHtml(null, { grid: true }))}
+      ${card('Información del cliente', ICON.cliente, clientPickerHtml(null, { grid: true, optionalConsumer: true }))}
       ${card('Detalles de la factura', ICON.doc, `
         <div class="srv-grid srv-grid-fac">
           <label>${lbl('Fecha', true)}<input name="fecha" type="date" value="${today()}" required></label>
@@ -995,7 +1211,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const items = collectLines(root);
       if (!items.length) throw new Error('Agrega al menos una línea.');
       const inv = await post('/facturas', { ...fd, ...readBilling(fd), clientId: fd.clientId || null, items });
-      toast('Factura ' + inv.numero + (inv.ncf ? ' · ' + inv.ncf : '') + (inv.estado === 'pagada' ? ' (pagada)' : '') + ' emitida', 'success');
+      avisarEmision(inv);
+      await imprimirFacturaSiTermica(inv.id);
       renderFacturas();
       if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
     }, { xl: true, subtitle: 'Datos del cliente, comprobante y servicios a facturar.', submitLabel: 'Emitir factura' });
@@ -1114,8 +1331,116 @@ Condición: La compra de los equipos y la programación de la instalación estar
   // formato + Imprimir + Guardar PDF + Enviar por correo.
   // Prioriza el PDF firmado guardado al crear el documento; si no hay, y la
   // auto-firma está activa, firma al vuelo.
+  async function preferenciasImpresionServicio() {
+    let local = {};
+    try { local = await window.novaDesktop?.getPeripheralsConfig?.() || {}; } catch (_) {}
+    const cfg = { ...(dbRef().config || {}), ...(local || {}) };
+    const formato = String(cfg.receiptPaperSize || '80mm').toLowerCase();
+    return { cfg, formato: ['58mm', '80mm', 'a4'].includes(formato) ? formato : 'a4' };
+  }
+
+  async function imprimirDocumentoServicio(base, id, formato, prefs = null) {
+    if (base === 'facturas' && (formato === '58mm' || formato === '80mm')) {
+      return imprimirFacturaConReciboPos(id);
+    }
+    if (!window.novaDesktop?.printReceiptHtml) {
+      abrirDoc(base, id, base === 'facturas' ? 'Factura' : 'Cotización');
+      return false;
+    }
+    try {
+      const doc = await req(`/${base}/${id}/documento?formato=${encodeURIComponent(formato)}`);
+      const settings = prefs || await preferenciasImpresionServicio();
+      const esTermica = formato === '58mm' || formato === '80mm';
+      let printerName = '';
+      if (esTermica) {
+        const configured = String(settings.cfg.receiptPrinterName || '').trim();
+        printerName = typeof window.resolveReceiptPrinterName === 'function'
+          ? await window.resolveReceiptPrinterName(configured)
+          : configured;
+      } else if (settings.formato === 'a4' && settings.cfg.receiptPrinterName) {
+        printerName = String(settings.cfg.receiptPrinterName).trim();
+      } else {
+        const result = await window.novaDesktop.listPrinters?.().catch(() => null);
+        printerName = String(result?.printers?.find((printer) => printer?.isDefault)?.name || '').trim();
+      }
+      const result = await window.novaDesktop.printReceiptHtml(doc.html, {
+        mode: 'direct', printerName, paperSize: formato,
+      });
+      if (!result?.ok) throw new Error(result?.error || 'No se pudo imprimir. Revisa la impresora configurada.');
+      toast(esTermica ? `Factura enviada a la impresora térmica (${formato}).` : 'Factura A4 enviada a su impresora.', 'success');
+      return true;
+    } catch (error) {
+      toast(error.message || 'No se pudo imprimir la factura.', 'error');
+      return false;
+    }
+  }
+
+  // Reutiliza el mismo modelo, plantilla y canal ESC/POS de la caja del POS.
+  // Así las facturas térmicas de servicios salen con el ancho configurado y
+  // sin abrir la ventana web de documentos.
+  async function imprimirFacturaConReciboPos(id) {
+    try {
+      const factura = await req(`/facturas/${encodeURIComponent(id)}`);
+      if (typeof window.printReceipt !== 'function') {
+        toast('No está disponible la impresión del recibo del POS.', 'error');
+        return false;
+      }
+      const venta = {
+        id: factura.numero,
+        numero: factura.numero,
+        fecha: factura.fecha,
+        cliente: factura.clientName || 'Consumidor Final',
+        razonSocialCliente: factura.clientName || 'Consumidor Final',
+        clienteRncCedula: factura.clientRnc || '',
+        rncCliente: factura.clientRnc || '',
+        cajero: factura.creadoPor || 'Sistema',
+        metodo: factura.metodo || 'efectivo',
+        subtotal: Number(factura.subtotal || 0),
+        descuento: Number(factura.descuento || 0),
+        itbis: Number(factura.itbis || 0),
+        total: Number(factura.total || 0),
+        recibido: Number(factura.pagado || 0),
+        balance: Number(factura.balance || 0),
+        pagado: Number(factura.pagado || 0),
+        encf: factura.fiscalMode === 'ecf' ? factura.ncf : '',
+        ncf: factura.ncf || '',
+        tipoEcf: factura.ncfTipo || '',
+        esElectronica: factura.fiscalMode === 'ecf',
+        qrUrl: factura.qrUrl || '',
+        estadoDgii: factura.ecfStatus || '',
+        receiptPrimaryLabel: 'Factura',
+        receiptSuccessMessage: 'Factura enviada a la impresora térmica.',
+        printSuccessMessage: 'Factura enviada a la impresora térmica.',
+        printFailureMessage: 'No se pudo imprimir la factura en la impresora térmica.',
+        items: (factura.items || []).map((item) => ({
+          nombre: item.descripcion || 'Servicio',
+          qty: Number(item.cantidad || 0),
+          precio: Number(item.precio || 0),
+          descuento: Number(item.descuentoPct || 0),
+          itbis: Number(item.itbisPct || 0),
+          total: Number(item.total || 0),
+          subtotal: Number(item.total || 0),
+        })),
+      };
+      return await window.printReceipt(venta);
+    } catch (error) {
+      toast(error.message || 'No se pudo preparar la factura para impresión.', 'error');
+      return false;
+    }
+  }
+
+  async function imprimirFacturaSiTermica(id) {
+    const prefs = await preferenciasImpresionServicio();
+    if (prefs.formato !== '58mm' && prefs.formato !== '80mm') return false;
+    return imprimirFacturaConReciboPos(id);
+  }
+
   async function abrirDoc(base, id, label) {
     const auto = await autosignActivo();
+    // Las facturas de servicios comparten el ancho configurado para la
+    // impresora de recibos del POS; el selector permite cambiarlo por documento.
+    const papelRecibo = String(dbRef().config?.receiptPaperSize || '80mm').toLowerCase();
+    const formatoInicial = ['58mm', '80mm'].includes(papelRecibo) ? papelRecibo : 'a4';
     const canPdf = !!(window.novaDesktop && window.novaDesktop.htmlToPdf);
     const storedPdf = (auto || canPdf) ? await pdfFirmadoGuardado(base, id) : null;
     let d;
@@ -1132,7 +1457,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
       .bar .sig{font-size:12px;color:#86efac;margin-left:auto}
       iframe{width:100%;border:0;height:calc(100vh - 50px)}</style></head>
       <body><div class="bar"><strong>${esc(label)}</strong>
-        <select id="fmt"><option value="a4">A4</option><option value="80mm">80 mm</option><option value="58mm">58 mm</option></select>
+        <select id="fmt"><option value="a4"${formatoInicial === 'a4' ? ' selected' : ''}>A4</option><option value="80mm"${formatoInicial === '80mm' ? ' selected' : ''}>80 mm</option><option value="58mm"${formatoInicial === '58mm' ? ' selected' : ''}>58 mm</option></select>
         <button class="g" id="pr">Imprimir</button>
         <button id="pf">📥 Guardar PDF${modoPdf ? '' : ' firmado'}</button>
         <button class="g" id="ml">Enviar por correo</button>
@@ -1191,13 +1516,41 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const sel = w.document.getElementById('fmt');
       if (sel) sel.onchange = () => load(sel.value);
       const pr = w.document.getElementById('pr');
-      if (pr) pr.onclick = () => {
+      if (pr) pr.onclick = async () => {
+        const fmt = w.document.getElementById('fmt')?.value || 'a4';
         const fr = w.document.getElementById('fr');
-        const sig = w.document.getElementById('sig');
-        // Si ya hay PDF firmado pero la vista aún es el HTML, cámbiala antes de imprimir.
-        if (signedB64 && fr && !blobUrl) showPdf(fr, sig, signedB64, true);
-        try { fr.contentWindow.print(); }
-        catch (_) { if (blobUrl) { try { w.open(blobUrl, '_blank'); } catch (_) {} } }
+        if (!window.novaDesktop?.printReceiptHtml) {
+          try { fr.contentWindow.print(); } catch (_) { toast('No se pudo abrir la impresión.', 'error'); }
+          return;
+        }
+        pr.disabled = true;
+        try {
+          const doc = await req(`/${base}/${id}/documento?formato=${encodeURIComponent(fmt)}`);
+          const local = await window.novaDesktop.getPeripheralsConfig?.().catch(() => ({})) || {};
+          const cfg = { ...(dbRef().config || {}), ...local };
+          const esTermica = fmt === '58mm' || fmt === '80mm';
+          let printerName = '';
+          if (esTermica) {
+            const configured = String(cfg.receiptPrinterName || '').trim();
+            printerName = typeof window.resolveReceiptPrinterName === 'function'
+              ? await window.resolveReceiptPrinterName(configured)
+              : configured;
+          } else if (cfg.receiptPaperSize === 'a4' && cfg.receiptPrinterName) {
+            printerName = String(cfg.receiptPrinterName).trim();
+          } else {
+            const result = await window.novaDesktop.listPrinters?.().catch(() => null);
+            printerName = String(result?.printers?.find((printer) => printer?.isDefault)?.name || '').trim();
+          }
+          const result = await window.novaDesktop.printReceiptHtml(doc.html, {
+            mode: 'direct', printerName, paperSize: fmt,
+          });
+          if (!result?.ok) throw new Error(result?.error || 'No se pudo imprimir. Revisa la impresora configurada.');
+          toast(esTermica ? `Factura enviada a la impresora térmica (${fmt}).` : 'Factura A4 enviada a la impresora predeterminada.', 'success');
+        } catch (error) {
+          toast(error.message || 'No se pudo imprimir la factura.', 'error');
+        } finally {
+          pr.disabled = false;
+        }
       };
       const pf = w.document.getElementById('pf');
       if (pf) pf.onclick = () => { guardarPdfDocumento(base, id, label); };
@@ -1214,7 +1567,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const ml = w.document.getElementById('ml');
       if (ml) ml.onclick = () => { try { revoke(); w.close(); } catch (_) {} enviarCorreoDoc(base, id, label.toLowerCase()); };
       try { w.addEventListener('beforeunload', revoke); } catch (_) {}
-      load('a4');
+      load(formatoInicial);
     }, 120);
   }
 
@@ -2253,6 +2606,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
 
   window.Servicios = {
     injectChrome,
+    abrirCatalogo,
     onShow(mod) {
       injectChrome();
       const fn = RENDERERS[mod];
@@ -2275,7 +2629,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const num = venta && (venta.numero || venta.invoiceNumber || venta.invoice_number || venta.id);
       if (svc && num && !(options && options.preview)) {
         req('/facturas/por-numero/' + encodeURIComponent(num))
-          .then((r) => { if (r && r.id) abrirDoc('facturas', r.id, 'Factura'); else orig.call(this, venta, options); })
+          .then(async (r) => {
+            if (!r || !r.id) return orig.call(this, venta, options);
+            const prefs = await preferenciasImpresionServicio();
+            if (prefs.formato === '58mm' || prefs.formato === '80mm') {
+              await imprimirFacturaConReciboPos(r.id);
+            } else {
+              abrirDoc('facturas', r.id, 'Factura');
+            }
+          })
           .catch(() => orig.call(this, venta, options));
         return;
       }

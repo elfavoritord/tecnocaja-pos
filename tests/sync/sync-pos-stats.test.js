@@ -73,6 +73,16 @@ jest.mock('../../db', () => ({
     if (text.includes('FROM cash_registers cr')) return [{ id: 7, branch_id: 1, nombre: 'Caja Principal', codigo: 'CP-1', estado: 'Activa', tipo_caja: 'mixta' }];
     if (text.includes('FROM branches')) return [{ id: 1, nombre: 'Principal' }];
     if (text.includes('FROM ncf_authorized_sequences')) return [];
+    if (text.includes('FROM svc_services s')) {
+      return [{ id: 5, codigo: 'MANT-01', nombre: 'Mantenimiento', descripcion: 'Limpieza', categoria: 'Soporte', precio: 1500, itbisPct: 18, unidad: 'visita', vendidos: 3 }];
+    }
+    if (text.includes('FROM ecf_sequences es')) {
+      return [{
+        id: 13, business_id: 1, branch_id: null, tipo_comprobante: 'E32', numero_inicial: 1, numero_final: 100,
+        proximo_numero: 2, activo: 1, environment: 'ecf', authorization_reference: '6005604697',
+        fecha_autorizacion: '2026-10-25', fecha_vencimiento: null, created_at: '2026-10-25 12:00:00', updated_at: '2026-10-25 12:00:00',
+      }];
+    }
 
     if (text.includes('SUM(total)') || text.includes('COUNT(*) AS cnt') || text.includes('SUM(tax)')) {
       return [{ total: 100, cnt: 1 }];
@@ -154,6 +164,38 @@ describe('sync-pos-stats contabilidad', () => {
           rows: [expect.objectContaining({ branch_id: 1, branchId: 1, sucursal: 'Principal' })],
         }),
       }),
+    ]));
+  });
+
+  it('el espejo de secuencias del portal trae las e-NCF de producción (con lo usado) y avisa que las trae', async () => {
+    const { syncPosStatsToFirestore } = require('../../server/sync/sync-pos-stats');
+
+    await syncPosStatsToFirestore();
+
+    expect(mockFirestoreState.writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        op: 'batchSet',
+        path: 'licencias/pos_demo_1/ncf_aplicadas/ecf-13',
+        data: expect.objectContaining({
+          series: 'E', documentType: 'E32', startNumber: 1, endNumber: 100, nextNumber: 2, totalUsed: 1, totalAvailable: 99, readOnly: true,
+        }),
+      }),
+      expect.objectContaining({ op: 'directSet', path: 'licencias/pos_demo_1', data: expect.objectContaining({ ncfEspejoVersion: 2 }) }),
+    ]));
+  });
+
+  it('la pestaña Productos del portal trae también los servicios de la Empresa de Servicios', async () => {
+    const { syncPosStatsToFirestore } = require('../../server/sync/sync-pos-stats');
+
+    await syncPosStatsToFirestore();
+
+    const productos = mockFirestoreState.writes.find((w) => w.path === 'licencias/pos_demo_1/reportes/productos');
+    expect(productos.data.rows).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: 'svc-5', tipo: 'servicio', codigo: 'MANT-01', nombre: 'Mantenimiento', categoria: 'Soporte',
+      precio: 1500, itbisPct: 18, unidad: 'visita', vendidos: 3, stock: null,
+    })]));
+    expect(mockFirestoreState.writes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ op: 'directSet', path: 'licencias/pos_demo_1', data: expect.objectContaining({ serviciosPortalVersion: 1 }) }),
     ]));
   });
 

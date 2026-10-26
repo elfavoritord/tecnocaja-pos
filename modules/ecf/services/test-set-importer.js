@@ -1194,10 +1194,18 @@ function buildTransmissionXml({ testCase, emitter, customer, defaults, issueDate
   };
 
   if (testCase.tipoEcf === 'E33' || testCase.tipoEcf === 'E34') {
+    const ncfModificado = normalizeRowValue(testCase.ncfModificado || testCase.rawRow?.NCFModificado || testCase.rawRow?.eNCFModificado);
+    const fechaNcfModificado = normalizeRowValue(testCase.fechaNcfModificado || testCase.rawRow?.FechaNCFModificado);
+    const codigoModificacion = normalizeRowValue(testCase.codigoModificacion || testCase.rawRow?.CodigoModificacion);
+    assertCondition(
+      ncfModificado && fechaNcfModificado && codigoModificacion,
+      `${testCase.tipoEcf} requiere NCFModificado, FechaNCFModificado y CodigoModificacion reales del caso de prueba.`,
+      { statusCode: 422 },
+    );
     baseDocument.document.referencia = {
-      ncfModificado: 'E310000000001',
-      fechaNcfModificado: '01-01-2026',
-      codigoModificacion: testCase.tipoEcf === 'E33' ? '1' : '2',
+      ncfModificado,
+      fechaNcfModificado,
+      codigoModificacion,
     };
   }
 

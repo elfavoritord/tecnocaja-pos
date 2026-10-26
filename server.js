@@ -23,7 +23,7 @@ const { spawnSync } = require('child_process');
 const express = require('express');
 const cors = require('cors');
 const { formidable } = require('formidable');
-const QRCode = require('qrcode');
+const { generateQrDataUrl } = require('./modules/ecf/utils/qr-image.util');
 const sharp = require('sharp');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
 const { query, withTransaction, withTransactionRetry, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
@@ -58,6 +58,7 @@ const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatc
 const { startControlCenterPublisher, notifyControlCenterChange } = require('./server/sync/control-center');
 const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
 const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor } = require('./server/utils/invoice-design');
+const { buildQrVerificationUrl } = require('./modules/ecf/utils/qr-url.util');
 const syncRoutes = require('./server/routes/sync.routes');
 
 // ✅ Gestor de archivos Sistema_Data
@@ -158,7 +159,11 @@ const {
   getLocalCacheStatus
 } = require('./db-local');
 
-const ecfModule = createEcfModule({ query, withTransaction, resolveRequestActorUser });
+const ecfModule = createEcfModule({
+  query, withTransaction, resolveRequestActorUser,
+  // El espejo de secuencias del Portal del Contador se refresca al momento.
+  onSequencesChanged: () => syncPortalContableFireAndForget('secuencias e-NCF'),
+});
 
 /**
  * Ejecuta una función de sync con Firestore en fire-and-forget.
@@ -2099,16 +2104,18 @@ const fileManagerService = createFileManagerService({
   query,
   userDataPath: process.env.TECNO_CAJA_USER_DATA || os.homedir(),
 });
-app.use('/api/files', createFileManagerRouter({ fileManagerService, query, resolveRequestActorUser }));
+app.use('/api/files', resolveAuthSession, createFileManagerRouter({ fileManagerService, query, resolveRequestActorUser }));
 
 // ✅ Rutas de Delivery — app repartidores Tecno Caja
 app.use('/api/delivery', createDeliveryRouter({ query, getTenantId: firebaseSync.getTenantId }));
 
 // ✅ Nuevo módulo e-CF limpio
-app.use('/api/ecf', ecfModule.apiRouter);
+// (resolveAuthSession delante: este router se monta antes del middleware
+// global de sesión y getCurrentActor() necesita req.authUser).
+app.use('/api/ecf', resolveAuthSession, ecfModule.apiRouter);
 
 // ✅ Rutas fiscales anteriores desactivadas para evitar mezclar legado con v2
-app.use('/api/fiscal', ecfModule.legacyApiRouter);
+app.use('/api/fiscal', resolveAuthSession, ecfModule.legacyApiRouter);
 
 // ✅ Rutas públicas DGII — DGII llama a estos endpoints durante certificación y producción
 // GET  /fe/autenticacion/api/semilla
@@ -2124,7 +2131,7 @@ app.get('/api/ecf/reception/received', async (_req, res) => res.json({ items: aw
 app.use(createRncRouter());
 
 // ✅ Rutas Red de Terminales — multicaja LAN + sucursales remotas
-app.use('/api/network', createNetworkRouter({ query, resolveRequestActorUser }));
+app.use('/api/network', resolveAuthSession, createNetworkRouter({ query, resolveRequestActorUser }));
 
 // ✅ Estado de conexión en tres partes: base de datos (LAN/local), Internet y
 // pendientes. La caja ya no dice "Sin conexión" sin aclarar qué falta.
@@ -2268,7 +2275,7 @@ app.use('/api/offline', offlineSession, (req, res, next) => getOfflineRouter()(r
 
 // ── Configuración de Monedas (Fase 1 multi-moneda USD/DOP) ────────────────────
 const createCurrencyRouter = require('./server/routes/currency.routes');
-app.use('/api/currency', createCurrencyRouter({
+app.use('/api/currency', resolveAuthSession, createCurrencyRouter({
   query,
   resolveRequestActorUser,
   ensureAdministrator,
@@ -2381,7 +2388,15 @@ if (LEGACY_ACTOR_FALLBACK_ENABLED) {
   console.warn('[seguridad] ⚠️ TECNO_CAJA_LEGACY_ACTOR_FALLBACK=1 — el bypass actorUserId está REACTIVADO. Esto es solo un interruptor de emergencia, no debe quedar así en producción.');
 }
 
-app.use(async (req, _res, next) => {
+// Resuelve req.authUser a partir del Bearer token. Es una function (se eleva)
+// para ponerla también delante de los routers que se montan más arriba en este
+// archivo (/api/files, /api/ecf, /api/fiscal, /api/network, /api/currency): sin
+// ella, su resolveRequestActorUser() no veía al usuario y respondía 401 "Debes
+// iniciar sesión…" aunque hubiera sesión (desde C1 ya no hay fallback por
+// actorUserId). Corre una sola vez por petición.
+async function resolveAuthSession(req, _res, next) {
+  if (req.authSessionResolved) { next(); return; }
+  req.authSessionResolved = true;
   try {
     const token = readAuthToken(req);
     if (!token) {
@@ -2443,7 +2458,8 @@ app.use(async (req, _res, next) => {
     } catch (_) {}
     next(error);
   }
-});
+}
+app.use(resolveAuthSession);
 
 // 📢 Centro de Promociones — montado DESPUÉS del middleware de arriba a
 // propósito: ese middleware es el que resuelve req.authUser a partir del
@@ -2513,6 +2529,7 @@ const fiscalSequencesRouter = createFiscalSequencesRouter({
   isGlobalAdministratorUser, isBranchAdministratorUser,
   attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH,
   verifyUserPassword: verifyUserAccountPassword, isMysqlDeployment,
+  onSequencesChanged: () => syncPortalContableFireAndForget('secuencias NCF'),
 });
 app.use('/api/fiscal-sequences', fiscalSequencesRouter);
 
@@ -2536,6 +2553,8 @@ app.use('/api/servicios', createServiciosRouter({
   getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
   getConfig, getNextNcfFromSequence,
   ecfService: ecfModule.service,
+  // Sin Internet el e-CF de la factura se firma y queda pendiente de envío.
+  isInternetOffline: () => getInternetMonitor().isKnownOffline(),
 }));
 
 // Cobro de crédito a clientes
@@ -12063,17 +12082,11 @@ app.post('/api/qrcode', async (req, res) => {
     return res.status(400).json({ error: 'El texto para el QR es obligatorio.' });
   }
 
-  const dataUrl = await QRCode.toDataURL(text, {
-    width: 192,
-    margin: 1,
-    errorCorrectionLevel: 'M',
-    color: {
-      dark: '#000000',
-      light: '#FFFFFF'
-    }
-  });
-
-  res.json({ dataUrl });
+  const qrImage = await generateQrDataUrl(text, req.body?.format);
+  if (qrImage && typeof qrImage === 'object') {
+    return res.json(qrImage);
+  }
+  res.json({ dataUrl: qrImage });
 });
 
 app.post('/api/categories', async (req, res) => {
@@ -12438,6 +12451,10 @@ app.post('/api/products/import-csv', async (req, res) => {
   const buffer = fs.readFileSync(csvFile.filepath);
   const importedRows = parseProductsCsvBuffer(buffer, originalFilename);
   const actor = getActor(req);
+  // A qué sucursal van, elegido al importar (js/productos.js): 'global' =
+  // todas, el id de una sucursal = solo esa, 'archivo' (o sin elegir, como
+  // antes) = la columna Sucursal de cada fila.
+  const importDestino = String([].concat(parsed?.fields?.destino ?? [])[0] || 'archivo').trim().toLowerCase();
 
   const summary = await withTransaction(async (conn) => {
     const report = {
@@ -12479,6 +12496,17 @@ app.post('/api/products/import-csv', async (req, res) => {
       return { branchId: null, error: `sucursal "${raw}" no encontrada` };
     }
 
+    let destinoBranchId = null;
+    if (/^\d+$/.test(importDestino)) {
+      const elegida = allBranchesForImport.find((b) => Number(b.id) === Number(importDestino));
+      if (!elegida) {
+        const error = new Error('La sucursal elegida para la importación ya no existe.');
+        error.statusCode = 400;
+        throw error;
+      }
+      destinoBranchId = Number(elegida.id);
+    }
+
     for (const record of importedRows) {
       try {
         if (!record.codigo || !record.nombre) {
@@ -12490,6 +12518,10 @@ app.post('/api/products/import-csv', async (req, res) => {
         let catalogBranchId = null;
         if (scopedImportBranchId !== null) {
           catalogBranchId = scopedImportBranchId;
+        } else if (importDestino === 'global') {
+          catalogBranchId = null;
+        } else if (destinoBranchId) {
+          catalogBranchId = destinoBranchId;
         } else if (record.sucursal) {
           const resolved = resolveCsvBranchId(record.sucursal);
           if (resolved.error) {
@@ -17024,6 +17056,34 @@ app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
 
     const sale = mapSaleRows(rows, items)[0];
     if (!sale) return res.status(404).json({ error: 'No se pudo construir el comprobante.' });
+    if (sale.ecfDocumentId) {
+      const ecfRows = await query(
+        'SELECT signed_xml_content, environment FROM ecf_documents WHERE id = ? LIMIT 1',
+        [sale.ecfDocumentId]
+      ).catch(() => []);
+      const signedXml = String(ecfRows[0]?.signed_xml_content || '');
+      if (signedXml) {
+        const fixedQrUrl = buildQrVerificationUrl(signedXml, ecfRows[0].environment);
+        const firma = signedXml.match(/<FechaHoraFirma[^>]*>([^<]+)<\/FechaHoraFirma>/i)?.[1]?.trim() || '';
+        const fechaVencimientoXml = signedXml.match(/<(?:[\w.-]+:)?FechaVencimientoSecuencia(?:\s[^>]*)?>([^<]+)<\/(?:[\w.-]+:)?FechaVencimientoSecuencia>/i)?.[1]?.trim() || '';
+        const fechaVencimientoMatch = fechaVencimientoXml.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+        const fechaVencimientoIso = fechaVencimientoMatch
+          ? `${fechaVencimientoMatch[3]}-${fechaVencimientoMatch[2]}-${fechaVencimientoMatch[1]}`
+          : (/^\d{4}-\d{2}-\d{2}$/.test(fechaVencimientoXml) ? fechaVencimientoXml : '');
+        if (fixedQrUrl) {
+          sale.qrUrl = fixedQrUrl;
+          await query('UPDATE sales SET qr_data = ? WHERE id = ?', [fixedQrUrl, sale.id]).catch(() => {});
+        }
+        if (firma) sale.fechaFirmaFiscal = firma;
+        if (fechaVencimientoIso) {
+          sale.ncfVencimiento = fechaVencimientoIso;
+          await query(
+            'UPDATE sales SET ncf_vencimiento = COALESCE(ncf_vencimiento, ?) WHERE id = ?',
+            [fechaVencimientoIso, sale.id]
+          ).catch(() => {});
+        }
+      }
+    }
     res.json({ sale });
   } catch (e) {
     console.error('[receipt reprint]', e.message);
@@ -18241,12 +18301,13 @@ app.get('/api/reports/dashboard', async (req, res) => {
            INNER JOIN products p ON p.id = ib.product_id
            WHERE ib.branch_id = ?
              AND p.estado = "Activo"
+             AND COALESCE(p.tracks_stock, 1) <> 0
              AND ib.stock <= ib.stock_min
            ORDER BY ib.stock ASC
            LIMIT 12`,
           [scopedBranchId]
         )
-      : query('SELECT id, nombre, stock, stock_min FROM products WHERE estado = "Activo" AND stock <= stock_min ORDER BY stock ASC LIMIT 12'),
+      : query('SELECT id, nombre, stock, stock_min FROM products WHERE estado = "Activo" AND COALESCE(tracks_stock, 1) <> 0 AND stock <= stock_min ORDER BY stock ASC LIMIT 12'),
     scopedBranchId
       ? query(
           `SELECT strftime('%H:00', s.created_at) AS hora, COUNT(*) AS total

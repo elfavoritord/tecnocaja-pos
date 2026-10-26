@@ -885,6 +885,43 @@
     return cssCache[plantilla];
   }
 
+  // Representación Impresa e-CF: conserva los campos fiscales y permite que
+  // la RI adopte la plantilla comercial seleccionada para la factura A4.
+  function dibujarEcfRi(d, plantilla, color) {
+    const tema = resolverColores(plantilla, color);
+    const prefijo = String(d.ncf || '').match(/^E(\d{2})/)?.[1] || '';
+    const titulos = { '31': 'Factura de Crédito Fiscal Electrónica', '32': 'Factura de Consumo Electrónica',
+      '33': 'Nota de Débito Electrónica', '34': 'Nota de Crédito Electrónica',
+      '41': 'Compras Electrónico', '43': 'Gastos Menores Electrónico',
+      '44': 'Regímenes Especiales Electrónico', '45': 'Gubernamental Electrónico', '46': 'Exportaciones Electrónico', '47': 'Pagos al Exterior Electrónico' };
+    const titulo = titulos[prefijo] || 'Comprobante Fiscal Electrónico';
+    const cliente = d.cliente || {};
+    const consumidor = prefijo === '32' && Number(d.total || 0) < 250000;
+    const rows = (d.items || []).map((it) => {
+      const qty = Number(it.cantidad || 0);
+      const tax = Number(it.itbisMonto || 0);
+      const valor = Number(it.total || (Number(it.precio || 0) * qty));
+      return `<tr><td class="q">${esc(qty)}</td><td>${esc(it.descripcion || '')}</td><td>${esc(it.unidad || 'Unidad')}</td><td class="n">${dinero(it.precio)}</td><td class="n">${dinero(tax)}</td><td class="n">${dinero(valor)}</td></tr>`;
+    }).join('');
+    return `<style>${BASE_CSS}${CSS[plantilla]}
+.tcfac-ecf-ri{font:${tamanoLetra(10)}px Arial,sans-serif;color:#202b36;background:#fff;--ri-accent:var(--acc);--ri-ink:var(--acc-ink);--ri-tint:var(--acc-tint);--ri-on-accent:var(--on-acc)}
+.tcfac-ecf-ri *{box-sizing:border-box}.tcfac-ecf-ri .head{display:flex;justify-content:space-between;gap:12mm;border-bottom:2px solid var(--ri-accent);padding:0 0 5mm;margin-bottom:7mm}
+.tcfac-ecf-ri h1{font-size:${tamanoLetra(15)}px;color:var(--ri-ink);margin:0 0 3mm}.tcfac-ecf-ri p{margin:1.5mm 0;line-height:1.35}.tcfac-ecf-ri .ident{text-align:right;min-width:65mm}
+.tcfac-ecf-ri .ident strong{font-size:${tamanoLetra(13)}px;color:var(--ri-ink)}.tcfac-ecf-ri .box{border:1px solid var(--ri-accent);border-radius:2mm;padding:3mm;margin-bottom:5mm}
+.tcfac-ecf-ri .buyer{display:grid;grid-template-columns:1fr 1fr;gap:2mm 8mm}.tcfac-ecf-ri table{width:100%;border-collapse:collapse;margin-top:4mm;font-size:${tamanoLetra(9)}px}
+.tcfac-ecf-ri th{background:var(--ri-tint);color:var(--ri-ink);text-align:left;border-top:1px solid var(--ri-accent);border-bottom:1px solid var(--ri-accent);padding:2.5mm 1.5mm}
+.tcfac-ecf-ri td{border-bottom:1px solid #d7e1e7;padding:2.5mm 1.5mm;vertical-align:top}.tcfac-ecf-ri .n{text-align:right;white-space:nowrap}.tcfac-ecf-ri .q{text-align:center}
+.tcfac-ecf-ri .bottom{display:flex;justify-content:space-between;align-items:flex-end;gap:8mm;margin-top:8mm}.tcfac-ecf-ri .qr-block{width:72mm;display:flex;flex-direction:column;align-items:flex-start;gap:1.5mm}.tcfac-ecf-ri .qr{width:38mm;height:38mm;object-fit:contain}.tcfac-ecf-ri .totals{width:72mm}.tcfac-ecf-ri .totals div{display:flex;justify-content:space-between;padding:1.5mm 0;border-bottom:1px solid #d7e1e7}.tcfac-ecf-ri .grand{font-weight:bold;font-size:${tamanoLetra(13)}px;color:var(--ri-ink);border-top:2px solid var(--ri-accent)}.tcfac-ecf-ri .security{font-size:${tamanoLetra(8.5)}px;line-height:1.4}.tcfac-ecf-ri .watermark{text-align:center;color:#ad2828;font-weight:bold;margin-top:6mm}
+.tcf-tpl-ejecutiva .tcfac-ecf-ri .head{background:var(--ri-tint);border-left:3mm solid var(--ri-accent);padding:5mm}.tcf-tpl-ejecutiva .tcfac-ecf-ri th{background:var(--ri-accent);color:var(--ri-on-accent)}
+.tcf-tpl-recuadro .tcfac-ecf-ri .head{border:1px solid var(--ri-accent);border-radius:2mm;padding:5mm}.tcf-tpl-recuadro .tcfac-ecf-ri th{background:#fff;border-bottom:2px solid var(--ri-accent)}
+.tcf-tpl-banner .tcfac-ecf-ri .head{background:var(--ri-accent);border:0;padding:6mm;color:var(--ri-on-accent)}.tcf-tpl-banner .tcfac-ecf-ri .head h1,.tcf-tpl-banner .tcfac-ecf-ri .head p,.tcf-tpl-banner .tcfac-ecf-ri .head .ident strong{color:var(--ri-on-accent)}.tcf-tpl-banner .tcfac-ecf-ri th{background:var(--ri-tint)}
+@media print{.tcfac-ecf-ri{padding:0;min-height:0}}
+</style><div class="tcfac-root tcf-tpl-${plantilla}" style="--acc:${tema.acc};--acc-ink:${tema.ink};--acc-tint:${tema.tint};--on-acc:${tema.onAcc}"><div class="tcf-page"><div class="tcf-content"><div class="tcfac-ecf-ri"><div class="head"><div>${d.empresa.logo ? `<img src="${esc(d.empresa.logo)}" alt="Logo" style="max-width:48mm;max-height:22mm;object-fit:contain;margin-bottom:2mm">` : ''}<h1>${esc(d.empresa.nombre || '')}</h1><p>RNC: ${esc(d.empresa.rnc || '')}</p><p>${esc(d.empresa.direccion || '')}</p><p>${esc(d.empresa.telefono || '')}</p></div><div class="ident"><strong>${esc(titulo)}</strong><p>e-NCF: ${esc(d.ncf || '')}</p><p>Fecha de emisión: ${esc(d.fechaTexto || '')}</p>${d.ncfVencimiento ? `<p>Fecha de vencimiento: ${esc(d.vencimientoTexto || d.ncfVencimiento)}</p>` : ''}</div></div>
+${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"><span>Razón social: ${esc(cliente.nombre || 'Consumidor Final')}</span><span>RNC/Cédula: ${esc(cliente.rnc || '')}</span><span>Dirección: ${esc(cliente.dir || '')}</span><span>Teléfono: ${esc(cliente.tel || '')}</span></div></div>`}
+<table><thead><tr><th>Cantidad</th><th>Descripción</th><th>Unidad de Medida</th><th class="n">Precio</th><th class="n">ITBIS</th><th class="n">Valor</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="bottom"><div class="qr-block">${d.qrDataUrl ? `<img class="qr" src="${esc(d.qrDataUrl)}" alt="Código QR DGII">` : ''}<div class="security">${d.codigoSeguridad ? `<p><b>Código de seguridad:</b> ${esc(d.codigoSeguridad)}</p>` : ''}${d.fechaFirma ? `<p><b>Fecha de firma digital:</b> ${esc(d.fechaFirma)}</p>` : ''}</div></div><div class="totals"><div><span>Monto gravado</span><b>${dinero(Number(d.subtotal || 0) - Number(d.descuento || 0))}</b></div>${Number(d.descuento) ? `<div><span>Descuento</span><b>${dinero(d.descuento)}</b></div>` : ''}<div><span>ITBIS</span><b>${dinero(d.itbis)}</b></div><div class="grand"><span>Total</span><b>${dinero(d.total)}</b></div></div></div>${d.anulada ? '<div class="watermark">ANULADA</div>' : ''}</div></div></div></div>`;
+  }
+
   // Una sola hoja: si el documento no cabe en una A4, reduce la hoja entera
   // (letra y espacios por igual, con --tcf-zoom) lo justo para que quepa. Si
   // haría falta reducir más de ESCALA_MINIMA (muchas líneas), lo deja en
@@ -938,6 +975,7 @@
       cliente: d.cliente || {},
       items: Array.isArray(d.items) ? d.items : []
     };
+    if (doc.fiscalMode === 'ecf') return dibujarEcfRi(doc, plantilla, opciones.color);
     const cuerpo = DIBUJOS[plantilla](doc, textosComunes(doc));
     const vars = `--acc:${c.acc};--acc-ink:${c.ink};--acc-tint:${c.tint};--on-acc:${c.onAcc}`;
     return `<div class="tcfac-root tcf-tpl-${plantilla}" style="${vars}">

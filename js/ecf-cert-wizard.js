@@ -329,6 +329,10 @@ const ECF_CERT_WIZARD = (() => {
 
   function isUnlocked(stepId) {
     if (stepId === 1) return true;
+    // DGII can revise the portal flow while certification is in progress;
+    // keep the sworn declaration reachable even when production URL setup
+    // (step 12) is no longer part of the current portal sequence.
+    if (stepId === 13) return true;
     return isCompleted(stepId - 1);
   }
 
@@ -1742,7 +1746,24 @@ const ECF_CERT_WIZARD = (() => {
 
       logLine('Generando set de simulación con nuevas secuencias eNCF…');
       pollInterval = setInterval(() => _pollStep4Status(logLine), 3500);
-      const result = await fiscalApi('POST', '/certification-center/simulate/generate');
+      let result = await fiscalApi('POST', '/certification-center/simulate/generate', { background: true });
+      if (result.processing) {
+        logLine('Lote creado. El envío continúa en segundo plano; la pantalla se mantendrá disponible.', 'info');
+        const sendResult = await _waitForSimulationSend(logLine);
+        if (!sendResult) {
+          logLine('El envío sigue activo en el servidor. Actualiza el estado antes de iniciar otro lote.', 'warn');
+          return;
+        }
+        result.sent = sendResult.totalProcessed || 0;
+        result.errors = (sendResult.results || [])
+          .filter((item) => item?.ok === false)
+          .map((item) => item.message || item.case?.dgiiMessage || item.case?.estado || 'Un e-CF no pudo enviarse.');
+        if (!sendResult.ok || sendResult.stoppedByRejection || sendResult.stoppedByTransient) {
+          logLine('El envío de e-CF se detuvo por una respuesta de DGII. Revisa el detalle y el estado de cada tipo antes de enviar los RFCE.', 'warn');
+          result.errors.slice(0, 3).forEach((message) => logLine(`⚠ ${message}`, 'warn'));
+          return;
+        }
+      }
 
       if (result.encfMapping?.length) {
         logLine(`Nuevos eNCFs: ${result.encfMapping.slice(0,3).map(m=>`${m.old}→${m.new}`).join(', ')}${result.encfMapping.length>3?' …':''}`, 'info');
@@ -1768,7 +1789,15 @@ const ECF_CERT_WIZARD = (() => {
           logLine(`RFCE generate: ${rfceGen.error}`, 'warn');
         } else {
           logLine(`${rfceGen?.generated || rfceGen?.items?.length || 0} RFCE generados. Enviando a DGII…`, 'ok');
-          const rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit').catch(e => ({ error: e.message }));
+          let rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit', { background: true }).catch(e => ({ error: e.message }));
+          if (rfceSend?.processing) {
+            logLine('El servidor está enviando los 4 RFCE en segundo plano…', 'info');
+            rfceSend = await _waitForRfceSubmit(logLine);
+            if (!rfceSend) {
+              logLine('El envío RFCE sigue activo en el servidor. Actualiza su estado antes de reintentar.', 'warn');
+              return;
+            }
+          }
           if (rfceSend?.error) {
             logLine(`RFCE envío: ${rfceSend.error}`, 'warn');
           } else {
@@ -1822,12 +1851,40 @@ const ECF_CERT_WIZARD = (() => {
     }
   }
 
+  async function _waitForRfceSubmit(logLine, timeoutMs = 300000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastProgress = '';
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const status = await fiscalApi('GET', '/certification-center/rfce/status');
+      _renderStep4RfceList(status.items || []);
+      const items = status.items || [];
+      const submitted = items.filter((item) => !['generado', 'firmado', 'pendiente'].includes(String(item.estado || '').toLowerCase())).length;
+      const progress = `${submitted}/${items.length || 4} resúmenes procesados`;
+      if (progress !== lastProgress) {
+        lastProgress = progress;
+        logLine(`Envío en curso: ${progress}.`, 'info');
+      }
+      if (status.lastRun?.error) throw new Error(status.lastRun.error);
+      if (!status.sending) return status.lastRun?.result || status;
+    }
+    return null;
+  }
+
   async function _rfceSubmit() {
     setBtnState('ecf-wz-rfce-send-btn', true, 'Enviando…');
     function logLine(msg, type='info') { appendLog('ecf-wz-rfce-log', msg, type); }
     try {
       logLine('Enviando RFCE a DGII vía RecepciónFC…');
-      const result = await fiscalApi('POST', '/certification-center/rfce/submit');
+      let result = await fiscalApi('POST', '/certification-center/rfce/submit', { background: true });
+      if (result.processing) {
+        logLine('El servidor inició el envío. Puedes seguir usando las demás pantallas mientras procesa los 4 resúmenes.', 'info');
+        result = await _waitForRfceSubmit(logLine);
+        if (!result) {
+          logLine('El envío sigue activo en el servidor. Actualiza el estado antes de intentar otro envío.', 'warn');
+          return;
+        }
+      }
       const items = result.items || [];
       const results = result.results || [];
       const aceptados = result.aceptados ?? items.filter(i => ['aceptado','aceptado_condicional'].includes(String(i.estado||'').toLowerCase())).length;
@@ -2085,6 +2142,32 @@ const ECF_CERT_WIZARD = (() => {
     return false;
   }
 
+  async function _waitForSimulationSend(logLine, timeoutMs = 17 * 60 * 1000) {
+    const deadline = Date.now() + timeoutMs;
+    let lastProgress = '';
+    while (Date.now() < deadline) {
+      const [run, status] = await Promise.all([
+        fiscalApi('GET', '/certification-center/simulate/status'),
+        fiscalApi('GET', '/certification-center/status'),
+      ]);
+      await _updateStep4Types(status.byType || []);
+      const normalTypes = (status.byType || []).filter((item) => !item.isRfce);
+      const total = normalTypes.reduce((sum, item) => sum + Number(item.total || 0), 0);
+      const progressed = normalTypes.reduce((sum, item) => sum + Number(item.accepted || 0) + Number(item.sent || 0) + Number(item.rejected || 0), 0);
+      const progress = `${Math.min(progressed, total)}/${total || 21} e-CF enviados o respondidos`;
+      if (progress !== lastProgress) {
+        lastProgress = progress;
+        logLine(`Envío en curso: ${progress}.`, 'info');
+      }
+      if (!run.active) {
+        if (run.error) throw new Error(run.error);
+        return run.result || {};
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+    }
+    return null;
+  }
+
   async function _regenerateWithNewEncfs() {
     const logEl = document.getElementById('ecf-wz-step4-regen-log');
     const mainLogEl = document.getElementById('ecf-wz-step4-regen-main-log');
@@ -2107,7 +2190,24 @@ const ECF_CERT_WIZARD = (() => {
     }
     try {
       logLine('Borrando documentos anteriores y asignando nuevos eNCFs desde la secuencia…');
-      const result = await fiscalApi('POST', '/certification-center/simulate/generate');
+      let result = await fiscalApi('POST', '/certification-center/simulate/generate', { background: true });
+      if (result.processing) {
+        logLine('Lote creado. El servidor está enviando los e-CF; puedes seguir usando las demás pantallas.', 'info');
+        const sendResult = await _waitForSimulationSend(logLine);
+        if (!sendResult) {
+          logLine('El envío sigue activo en el servidor. Actualiza el estado antes de iniciar otro lote.', 'warn');
+          return;
+        }
+        result.sent = sendResult.totalProcessed || 0;
+        result.errors = (sendResult.results || [])
+          .filter((item) => item?.ok === false)
+          .map((item) => item.message || item.case?.dgiiMessage || item.case?.estado || 'Un e-CF no pudo enviarse.');
+        if (!sendResult.ok || sendResult.stoppedByRejection || sendResult.stoppedByTransient) {
+          logLine('DGII detuvo el envío de e-CF. Revisa el estado actual antes de continuar con los RFCE.', 'warn');
+          result.errors.slice(0, 3).forEach((message) => logLine(`⚠ ${message}`, 'warn'));
+          return;
+        }
+      }
 
       if (result.encfMapping?.length) {
         logLine(`Nuevos eNCFs asignados: ${result.encfMapping.slice(0, 4).map(m => `${m.old}→${m.new}`).join(', ')}${result.encfMapping.length > 4 ? ' …' : ''}`, 'ok');
@@ -2125,7 +2225,15 @@ const ECF_CERT_WIZARD = (() => {
           logLine(`RFCE generate: ${rfceGen.error}`, 'warn');
         } else {
           logLine(`${rfceGen?.generated || rfceGen?.items?.length || 0} RFCE generados. Enviando a DGII…`, 'ok');
-          const rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit').catch(e => ({ error: e.message }));
+          let rfceSend = await fiscalApi('POST', '/certification-center/rfce/submit', { background: true }).catch(e => ({ error: e.message }));
+          if (rfceSend?.processing) {
+            logLine('El servidor está enviando los 4 RFCE en segundo plano…', 'info');
+            rfceSend = await _waitForRfceSubmit(logLine);
+            if (!rfceSend) {
+              logLine('El envío RFCE sigue activo. Actualiza el estado antes de reintentar.', 'warn');
+              return;
+            }
+          }
           if (rfceSend?.error) {
             logLine(`RFCE envío: ${rfceSend.error}`, 'warn');
           } else {
@@ -2849,16 +2957,14 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function runStep9ecf() {
-    const startedAt = WZ.state?.steps?.[8]?.data?.startedAt;
     const result = await fiscalApi('GET', '/reception/received').catch(() => ({ items: [] }));
-    const received = (result?.items || []).filter((i) => {
-      if (i.type !== 'recepcion-ecf') return false;
-      if (!startedAt) return true;
-      return new Date(i.receivedAt).getTime() >= new Date(startedAt).getTime();
-    }).length;
+    // Step 8 is confirmed after the user starts the test in DGII. Its
+    // startedAt timestamp is therefore recorded after DGII may already have
+    // delivered the documents, so filtering against it rejects valid receipts.
+    const received = (result?.items || []).filter((i) => i.type === 'recepcion-ecf').length;
     if (received === 0) {
       if (typeof showFiscalToast === 'function') {
-        showFiscalToast('Todavía no hay ningún e-CF recibido de DGII desde que iniciaste la prueba en el Paso 8. Espera a que DGII envíe.', 'warning');
+        showFiscalToast('Todavía no hay ningún e-CF de prueba recibido de DGII. Espera a que DGII envíe y actualiza la lista.', 'warning');
       }
       return;
     }

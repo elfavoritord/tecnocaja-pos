@@ -42,30 +42,54 @@ function createSucursalesConectadas({ getDb, colLicencias = 'licencias' }) {
       .map((d) => ({ id: d.id, branchUuid: d.data().sucursalDe?.branchUuid || '', nombre: d.data().sucursalDe?.sucursal || '', data: d.data() }));
   }
 
-  // Lista de sucursales del negocio para el portal: las que publica el POS de
-  // la principal (`propias`, con sus ids locales) más las demás sucursales de
-  // la empresa. Sin sucursales en la central, queda como antes.
+  // La principal y las demás sucursales activas de la central; null si la
+  // empresa no trabaja con sucursales conectadas (todo queda como antes).
+  async function deLaCentral(licenseId) {
+    const activas = (await centrales(licenseId).catch(() => [])).filter((s) => s.estado === 'activa');
+    const otras = activas.filter((s) => !s.esPrincipal);
+    const principal = activas.find((s) => s.esPrincipal);
+    return otras.length && principal ? { principal, otras } : null;
+  }
+
+  function vista(s) {
+    return {
+      id: idDeSucursal(s.branchUuid),
+      nombre: s.nombre || 'Sucursal',
+      codigo: s.codigo || '',
+      direccion: s.direccion || '',
+      telefono: s.telefono || '',
+      encargado: s.encargado || '',
+      estado: 'Activa',
+      cajas: [],
+      branchUuid: s.branchUuid,
+      conectada: true,
+    };
+  }
+
+  // Lista de sucursales del negocio para el portal. Con sucursales en la
+  // central es la de la central: la base de la principal entera es UNA
+  // sucursal (así la sube también su sincronización) y sus sucursales locales
+  // (`propias`, con sus ids locales) no salen aparte, que se veían dobles.
+  // Sin sucursales en la central, queda la que publica el POS.
   async function sucursales(licenseId, propias = []) {
-    const lista = await centrales(licenseId).catch(() => []);
-    const otras = lista.filter((s) => !s.esPrincipal && s.estado === 'activa');
-    if (!otras.length) return propias;
+    const central = await deLaCentral(licenseId);
+    if (!central) return propias;
     const pcs = await pcsDeSucursal(licenseId).catch(() => []);
     return [
-      ...propias,
-      ...otras.map((s) => ({
-        id: idDeSucursal(s.branchUuid),
-        nombre: s.nombre || 'Sucursal',
-        codigo: s.codigo || '',
-        direccion: s.direccion || '',
-        telefono: s.telefono || '',
-        encargado: s.encargado || '',
-        estado: 'Activa',
-        cajas: [],
-        branchUuid: s.branchUuid,
-        conectada: true,
-        tienePc: pcs.some((p) => p.branchUuid === s.branchUuid),
-      })),
+      { ...vista(central.principal), principal: true },
+      ...central.otras.map((s) => ({ ...vista(s), tienePc: pcs.some((p) => p.branchUuid === s.branchUuid) })),
     ];
+  }
+
+  // Filas de licencias/{empresa}/reportes/{tab} (las publica la principal):
+  // con sucursales en la central todas son de la principal, aunque se hayan
+  // hecho en una de sus sucursales locales.
+  async function filasDeLaPrincipal(licenseId, rows = []) {
+    const central = await deLaCentral(licenseId);
+    if (!central) return rows;
+    const id = idDeSucursal(central.principal.branchUuid);
+    const nombre = central.principal.nombre || 'Sucursal principal';
+    return rows.map((r) => ({ ...r, branchId: id, branch_id: id, sucursalId: id, sucursal_id: id, sucursal: nombre }));
   }
 
   // Filas de licencias/{pc}/reportes/{tab} de cada PC de sucursal, marcadas
@@ -97,7 +121,7 @@ function createSucursalesConectadas({ getDb, colLicencias = 'licencias' }) {
     return total;
   }
 
-  return { sucursales, filas, sumarStats, pcsDeSucursal };
+  return { sucursales, filas, filasDeLaPrincipal, sumarStats, pcsDeSucursal };
 }
 
 module.exports = { createSucursalesConectadas, idDeSucursal };

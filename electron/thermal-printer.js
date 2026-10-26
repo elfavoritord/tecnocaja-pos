@@ -492,14 +492,17 @@ function buildReceipt(data) {
   // ── QR + código de seguridad y fecha de firma (e-CF) ──────────────────────
   if (config.mostrarQR && config.qrData) {
     p.align(1).feed(1);
+    // QR nativo de la impresora (~35 mm en 80 mm). Probado en papel el
+    // 2026-10-25 con una 2connet 2C-POS80: el teléfono lo lee; la versión en
+    // imagen de 60 mm con calor doble salía demasiado grande.
     p.qrCode(config.qrData, is58 ? 4 : 6);
     p.feed(1).align(0);
   }
   const seguridadEcf = filas(config.seguridadEcf);
   if (seguridadEcf) {
-    p.align(1);
+    p.align(1).bold(true);
     seguridadEcf.forEach((linea) => wrapReceiptText(linea, COLS).forEach((parte) => p.text(parte)));
-    p.align(0);
+    p.bold(false).align(0);
   }
 
   // ── Mensaje final ─────────────────────────────────────────────────────────

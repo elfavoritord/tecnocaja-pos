@@ -25,7 +25,9 @@ function textOf(parent, name) {
 }
 
 function hasAnyTag(xml, tagName) {
-  return new RegExp(`<${tagName}\\b`, 'i').test(String(xml || ''));
+  // XMLDSig firma con prefijo (p. ej. <ds:Signature>); el nombre local del
+  // elemento sigue siendo Signature y debe contar para validar el RFCE.
+  return new RegExp(`<(?:(?:[A-Za-z_][\\w.-]*):)?${tagName}\\b`, 'i').test(String(xml || ''));
 }
 
 function assertSequence(parent, expected, errors, label) {
@@ -58,7 +60,6 @@ function validateRfceXml(xmlContent, { requireSignature = true } = {}) {
   if (hasAnyTag(xml, 'DetallesItems')) errors.push('Un RFCE no debe incluir DetallesItems.');
   if (hasAnyTag(xml, 'NombreComercial')) errors.push('Un RFCE no debe incluir NombreComercial.');
   if (hasAnyTag(xml, 'FechaHoraFirma')) errors.push('Un RFCE no debe incluir FechaHoraFirma; solo firma XMLDSig.');
-  if (requireSignature && !hasAnyTag(xml, 'Signature')) errors.push('El RFCE debe estar firmado digitalmente.');
 
   let doc;
   try {
@@ -66,6 +67,16 @@ function validateRfceXml(xmlContent, { requireSignature = true } = {}) {
   } catch (error) {
     errors.push(`XML RFCE inválido: ${error.message}`);
   }
+
+  // No buscar Signature como texto: XMLDSig suele usar un prefijo de espacio
+  // de nombres (ds:Signature), cuyo nombre local sigue siendo "Signature".
+  const containsSignature = (node) => {
+    if (!node) return false;
+    if (node.nodeType === 1 && localName(node).toLowerCase() === 'signature') return true;
+    return Array.from(node.childNodes || []).some(containsSignature);
+  };
+  const hasSignature = containsSignature(doc?.documentElement);
+  if (requireSignature && !hasSignature) errors.push('El RFCE debe estar firmado digitalmente.');
 
   const root = doc?.documentElement || null;
   const encabezado = firstDirectChild(root, 'Encabezado');

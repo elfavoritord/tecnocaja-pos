@@ -314,8 +314,8 @@ async function getBusinessData(msg = '') {
         COALESCE((SELECT SUM(total) FROM sales WHERE sale_status='pagada' AND COALESCE(fiscal_status,'emitida')<>'cancelada' AND DATE(created_at)>=:prevMonthStart AND DATE(created_at)<:monthStart),0) AS ventas_mes_anterior,
         /* ── Inventario ── */
         (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo')                                                                                                                         AS productos_activos,
-        (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo' AND stock_min>0 AND stock<=stock_min)                                                                                    AS bajo_stock,
-        (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo' AND stock<=0)                                                                                                            AS sin_stock,
+        (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo' AND COALESCE(tracks_stock,1)<>0 AND stock_min>0 AND stock<=stock_min)                                                    AS bajo_stock,
+        (SELECT COUNT(*) FROM products WHERE LOWER(estado)='activo' AND COALESCE(tracks_stock,1)<>0 AND stock<=0)                                                                            AS sin_stock,
         COALESCE((SELECT SUM(stock*precio_compra) FROM products WHERE LOWER(estado)='activo' AND stock>0),0)                                                                                 AS valor_inventario,
         /* ── Clientes ── */
         (SELECT COUNT(*) FROM clients)                                                                                                                                                        AS clientes_total,
@@ -351,7 +351,7 @@ async function getBusinessData(msg = '') {
       extras.bajosStock = await q(`
         SELECT nombre, stock, stock_min AS minimo, precio_venta,
           CASE WHEN stock<=0 THEN 'SIN STOCK' ELSE 'BAJO' END AS alerta
-        FROM products WHERE LOWER(estado)='activo' AND stock_min>0 AND stock<=stock_min
+        FROM products WHERE LOWER(estado)='activo' AND COALESCE(tracks_stock,1)<>0 AND stock_min>0 AND stock<=stock_min
         ORDER BY stock ASC LIMIT 10`);
     }
     if (t.match(/top|popular|vend|mejor|más|mas/)) {

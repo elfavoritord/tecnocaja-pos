@@ -24,6 +24,15 @@ contextBridge.exposeInMainWorld('contadoresAPI', {
     return ipcRenderer.invoke('report:preview-print', { html, title, filename });
   },
 
+  // ── Recibo de pago en impresora térmica (Configuración → Recibo de pago) ──
+  listPrinters() {
+    return ipcRenderer.invoke('printer:list');
+  },
+  // datos = reciboPagoDatos() del portal; firma = { nombre_firma, rnc, telefono, direccion }.
+  printReceipt(datos, firma, impresora, anchoMm, copias) {
+    return ipcRenderer.invoke('printer:receipt', { datos, firma, impresora, anchoMm, copias });
+  },
+
   // ── Perfil (caché local para el splash pre-login) ──────────────────────────
   cacheProfile(data) {
     return ipcRenderer.invoke('profile:cache', data);

@@ -1010,6 +1010,67 @@ function triggerProductsCsvImport() {
   input.click();
 }
 
+// ── A qué sucursal van los productos importados ───────────────────────────────
+// Igual que "Alcance del producto" en la ficha: solo con 2 o más sucursales y
+// para quien maneja el catálogo global (a un admin de sucursal el servidor lo
+// deja siempre en la suya).
+function canChooseImportBranch() {
+  const canManageGlobal = currentUserCan('crear_productos_globales') || getCurrentUserRoleCode() === 'administrador_general';
+  return canManageGlobal && (DB.sucursales || []).length >= 2 && !isOfflineBranchProductMode();
+}
+
+// ¿El CSV trae la columna Sucursal con algún valor?
+async function csvHasBranchColumn(file) {
+  try {
+    const filas = window.TcCatalogoCsv.filasDeCsv(await window.TcCatalogoCsv.leerArchivo(file));
+    const normal = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+    const col = (filas[0] || []).findIndex((h) => ['sucursal', 'branch', 'branch_id', 'id sucursal'].includes(normal(h)));
+    return col >= 0 && filas.slice(1).some((f) => String(f[col] || '').trim());
+  } catch (_) {
+    return false;
+  }
+}
+
+// → 'global' | id de la sucursal | 'archivo' | null (canceló)
+function chooseImportBranch(fileName, hasBranchColumn) {
+  return new Promise((resolve) => {
+    const sucursales = DB.sucursales || [];
+    const opciones = [
+      ...(hasBranchColumn ? [['archivo', 'Según la columna Sucursal del archivo', 'Cada producto va a la sucursal de su fila; vacía o "Global" = todas.']] : []),
+      ['global', 'Todas las sucursales (global)', 'Se ven y se venden en todas las sucursales.'],
+      ...sucursales.map((s) => [String(s.id), `Solo en ${s.nombre}`, 'Solo aparecen y se venden en esa sucursal.']),
+    ];
+    const nota = 'Si un código ya existe en esa sucursal (o como global), ese producto se actualiza.';
+    const overlay = document.createElement('div');
+    overlay.className = 'tc-themed';
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(6,8,16,0.72);z-index:5000;display:flex;align-items:center;justify-content:center;padding:16px';
+    overlay.innerHTML = `
+      <div role="dialog" aria-modal="true" aria-labelledby="imp-dest-titulo" style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.4rem 1.6rem;max-width:440px;width:100%;box-shadow:var(--card-shadow)">
+        <div id="imp-dest-titulo" style="font-weight:700;font-size:1.05rem;color:var(--text)">¿A qué sucursal van los productos?</div>
+        <div style="margin:0.25rem 0 0.9rem;color:var(--text2);font-size:0.85rem">${escapeProductIdentityHtml(fileName)}</div>
+        <div style="display:grid;gap:0.45rem;max-height:50vh;overflow:auto">
+          ${opciones.map(([valor, titulo, ayuda], i) => `
+            <label style="display:flex;gap:0.65rem;align-items:flex-start;padding:0.6rem 0.75rem;border:1px solid var(--border);border-radius:10px;cursor:pointer">
+              <input type="radio" name="imp-dest" value="${escapeProductIdentityHtml(valor)}" ${i === 0 ? 'checked' : ''} style="margin-top:0.2rem">
+              <span><strong style="color:var(--text);font-weight:600">${escapeProductIdentityHtml(titulo)}</strong>
+                <small style="display:block;color:var(--text2);font-size:0.78rem">${escapeProductIdentityHtml(ayuda)}</small></span>
+            </label>`).join('')}
+        </div>
+        <small style="display:block;margin-top:0.7rem;color:var(--text2);font-size:0.78rem">${escapeProductIdentityHtml(nota)}</small>
+        <div style="display:flex;gap:0.75rem;justify-content:flex-end;margin-top:1.1rem">
+          <button class="btn-secondary" type="button" data-action="cancel">Cancelar</button>
+          <button class="btn-primary" type="button" data-action="ok">Importar</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = (valor) => { document.removeEventListener('keydown', onKey, true); overlay.remove(); resolve(valor); };
+    const onKey = (event) => { if (event.key === 'Escape') { event.stopPropagation(); close(null); } };
+    document.addEventListener('keydown', onKey, true);
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => close(null));
+    overlay.querySelector('[data-action="ok"]').addEventListener('click', () => close(overlay.querySelector('input[name="imp-dest"]:checked')?.value || 'global'));
+  });
+}
+
 async function handleProductsCsvImport(input) {
   const file = input?.files?.[0];
   if (!file) return;
@@ -1017,6 +1078,12 @@ async function handleProductsCsvImport(input) {
     showToast('Selecciona un archivo CSV o TXT válido.', 'error');
     input.value = '';
     return;
+  }
+
+  let destino = 'archivo';
+  if (canChooseImportBranch()) {
+    destino = await chooseImportBranch(file.name, await csvHasBranchColumn(file));
+    if (destino === null) { input.value = ''; return; }
   }
 
   const button = document.getElementById('btn-products-import');
@@ -1029,7 +1096,23 @@ async function handleProductsCsvImport(input) {
   try {
     const formData = new FormData();
     formData.append('csv', file, file.name);
-    const result = await api.importProductsCsv(formData);
+    formData.append('destino', destino);
+    const importar = () => api.importProductsCsv(formData);
+    const sucursalDestino = (DB.sucursales || []).find((s) => String(s.id) === String(destino));
+    // Misma ventana de análisis que la carga de comprobantes (js/ventana-analisis.js).
+    const result = window.TcVentanaAnalisis
+      ? await window.TcVentanaAnalisis.correr({
+        titulo: 'Importando productos',
+        subtitulo: `${file.name}${destino === 'global' ? ' · todas las sucursales' : sucursalDestino ? ` · solo en ${sucursalDestino.nombre}` : ''}`,
+        pasos: ['Leyendo el archivo', 'Reconociendo las columnas', 'Creando y actualizando productos', 'Guardando la copia de respaldo'],
+        trabajo: importar,
+        resumen: (r) => {
+          const partes = [`${Number(r?.created || 0)} creado(s)`, `${Number(r?.updated || 0)} actualizado(s)`];
+          if (Number(r?.skipped || 0)) partes.push(`${Number(r.skipped)} omitido(s)`);
+          return `Listo: ${partes.join(', ')}.`;
+        },
+      })
+      : await importar();
 
     if (Array.isArray(result?.products)) {
       DB.productos = result.products;
@@ -1995,6 +2078,15 @@ function loadInventoryTable() {
     const difference = Number(p.stock || 0) - Number(p.stockMin || 0);
     const diffClass = difference < 0 ? 'tc-num-neg' : difference === 0 ? 'tc-num-zero' : 'tc-num-pos';
     const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre;
+    // Sin control de inventario: se vende sin existencias, no se muestra un 0 engañoso.
+    const sinControl = p.tracksStock === false;
+    const celdasStock = sinControl
+      ? `<td class="is-num tc-cell-muted" colspan="3">No controla inventario</td>
+      <td class="is-num tc-cell-muted">—</td>`
+      : `<td class="is-num"><strong>${p.stock}</strong></td>
+      <td class="is-num tc-cell-muted">${p.stockMin}</td>
+      <td class="is-num ${diffClass}">${difference > 0 ? '+' : ''}${difference}</td>
+      <td class="is-num">${formatSaleTableAmountForInventory(p.stock * p.precioCompra)}</td>`;
     return `
     <tr>
       <td>
@@ -2002,10 +2094,7 @@ function loadInventoryTable() {
         <span class="tc-cell-sub">${escapeProductIdentityHtml(p.codigo || '')}</span>
       </td>
       <td class="tc-cell-muted">${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(p.categoria) : p.categoria}</td>
-      <td class="is-num"><strong>${p.stock}</strong></td>
-      <td class="is-num tc-cell-muted">${p.stockMin}</td>
-      <td class="is-num ${diffClass}">${difference > 0 ? '+' : ''}${difference}</td>
-      <td class="is-num">${formatSaleTableAmountForInventory(p.stock * p.precioCompra)}</td>
+      ${celdasStock}
       <td>${getStockBadge(p)}</td>
       <td class="is-actions">
         <div class="tc-row-actions">

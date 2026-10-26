@@ -16,7 +16,8 @@
  *     estado (anulada, devuelta); el total y las líneas no se tocan.
  *   - Usuarios: gana la central (los publica la principal).
  *   - NCF: un número asignado a una sucursal nunca se vuelve a asignar, ni
- *     siquiera si el rango se anula.
+ *     siquiera si el rango se anula. Igual para los e-NCF (serie E): la DGII
+ *     los autoriza por RNC y la empresa los reparte entre sus sucursales.
  *
  * Firestore (todo bajo licencias/{licenseId}, cerrado a clientes; solo Admin SDK):
  *   sync/contador                         seq creciente de la empresa (cursores)
@@ -51,7 +52,10 @@ const TIPOS_EVENTO = Object.freeze({
   NCF_RANGO: 'ncf_rango',
 });
 const STREAMS = Object.freeze(['catalogo', 'usuarios', 'comandos', 'ncf']);
-const TIPOS_NCF = Object.freeze(['B01', 'B02', 'B03', 'B04', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17']);
+const TIPOS_NCF = Object.freeze([
+  'B01', 'B02', 'B03', 'B04', 'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17',
+  'E31', 'E32', 'E33', 'E34', 'E41', 'E43', 'E44', 'E45', 'E46', 'E47',
+]);
 const ESTADOS_NCF_SUCURSAL = Object.freeze(['en_espera', 'en_uso', 'agotado', 'rechazado', 'anulado']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FECHA = /^\d{4}-\d{2}-\d{2}$/;
@@ -59,6 +63,9 @@ const MAX_EVENTOS = 200;
 const MAX_ITEMS = 500;
 const LIMITE_CAMBIOS = 500;
 const NCF_MAXIMO = 99999999;
+// El e-NCF lleva 10 dígitos, pero la tabla ncf_rangos_central del POS guarda
+// los números en INT: hasta 2,147,483,647. La DGII no da números tan altos.
+const ECF_MAXIMO = 2147483647;
 const ZONA_RD_MS = 4 * 60 * 60 * 1000; // UTC-4 todo el año (sin horario de verano)
 
 // Un evento que la central no acepta por sus datos: la sucursal lo marca
@@ -431,7 +438,65 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
     };
   }
 
+  // Una sucursal que ya facturaba antes de enlazarse avisa los rangos que
+  // tenía cargados (operation 'reportar'). Quedan a su nombre, igual que uno
+  // asignado desde el panel, para que la central no le dé esos números a otra
+  // sucursal. Si chocan con un rango de otra sucursal se rechaza: hay que
+  // revisarlo a mano (dos sucursales pudieron emitir el mismo número).
+  async function efectoNcfRangoReportado(tx, ctx, ev) {
+    const p = ev.payload || {};
+    const rangoUuid = exigirUuid(p.rangoUuid || ev.entityUuid, 'Rango NCF');
+    const tipo = texto(p.tipo, 5).toUpperCase();
+    const desde = entero(p.desde);
+    const hasta = entero(p.hasta);
+    const vence = texto(p.vence, 10);
+    if (!TIPOS_NCF.includes(tipo)) throw new ErrorEvento('Tipo de comprobante inválido.', 'DATOS_INVALIDOS');
+    const maximo = tipo.startsWith('E') ? ECF_MAXIMO : NCF_MAXIMO;
+    if (!Number.isInteger(desde) || !Number.isInteger(hasta) || desde < 1 || hasta < desde || hasta > maximo) {
+      throw new ErrorEvento('Rango inválido.', 'DATOS_INVALIDOS');
+    }
+    if (vence && !FECHA.test(vence)) throw new ErrorEvento('Fecha de vencimiento inválida.', 'DATOS_INVALIDOS');
+    if (!['en_uso', 'agotado'].includes(p.estado)) throw new ErrorEvento('Estado de rango NCF inválido.', 'DATOS_INVALIDOS');
+    const ref = sucRef(ctx.licenseId, ctx.branchUuid).collection('ncf_rangos').doc(rangoUuid);
+    const tipoRef = licRef(ctx.licenseId).collection('ncf_tipos').doc(tipo);
+    const [snap, tipoSnap] = await Promise.all([tx.get(ref), tx.get(tipoRef)]);
+    const siguiente = entero(p.siguiente);
+    if (snap.exists) {
+      return () => tx.set(ref, {
+        estadoSucursal: p.estado, ...(Number.isInteger(siguiente) ? { siguiente } : {}), actualizadoSucursalEn: now(),
+      }, { merge: true });
+    }
+    const dados = tipoSnap.exists ? tipoSnap.data().rangos || [] : [];
+    const choque = dados.find((r) => desde <= r.hasta && hasta >= r.desde);
+    if (choque) {
+      throw new ErrorEvento(
+        `Los ${tipo} ${desde}–${hasta} que esta sucursal ya tenía chocan con el rango ${choque.desde}–${choque.hasta} de otra sucursal. Revísalo con tu contador.`,
+        'RANGO_SOLAPADO'
+      );
+    }
+    const seq = await reservarSeq(tx, ctx.licenseId);
+    return () => {
+      tx.set(ref, {
+        tipo, desde, hasta, vence: vence || null, autorizacion: texto(p.autorizacion, 60) || null,
+        estado: 'asignado', origen: 'sucursal', estadoSucursal: p.estado,
+        ...(Number.isInteger(siguiente) ? { siguiente } : {}),
+        seq: seq.siguiente(),
+        creadoPor: { tipo: 'equipo', uid: ctx.equipoId || null, nombre: ctx.hostname || '' },
+        creadoEn: now(),
+      });
+      tx.set(tipoRef, { rangos: [...dados, { rangoUuid, branchUuid: ctx.branchUuid, desde, hasta, anulado: false }] });
+      seq.guardar();
+      tx.set(licRef(ctx.licenseId).collection(SUB_HISTORIAL).doc(), {
+        accion: 'ncf_reportado',
+        actor: { tipo: 'equipo', uid: ctx.equipoId || null, nombre: ctx.hostname || '' },
+        detalle: { branchUuid: ctx.branchUuid, rangoUuid, tipo, desde, hasta },
+        at: now(),
+      });
+    };
+  }
+
   async function efectoNcfRango(tx, ctx, ev) {
+    if (ev.operation === 'reportar') return efectoNcfRangoReportado(tx, ctx, ev);
     const p = ev.payload || {};
     const rangoUuid = exigirUuid(p.rangoUuid || ev.entityUuid, 'Rango NCF');
     if (!ESTADOS_NCF_SUCURSAL.includes(p.estado)) throw new ErrorEvento('Estado de rango NCF inválido.', 'DATOS_INVALIDOS');
@@ -580,6 +645,8 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
       vence: d.vence || null,
       autorizacion: d.autorizacion || null,
       estado: d.estado,
+      // 'sucursal': lo tenía la PC antes de enlazarse y lo avisó; 'central': del panel.
+      origen: d.origen || 'central',
       estadoSucursal: d.estadoSucursal || null,
       motivoSucursal: d.motivoSucursal || null,
       siguiente,
@@ -601,9 +668,10 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
       const desde = entero(datos?.desde);
       const hasta = entero(datos?.hasta);
       const vence = texto(datos?.vence, 10);
-      if (!TIPOS_NCF.includes(tipo)) throw new ErrorSucursales('Tipo de comprobante inválido (B01, B02…).', 'DATOS_INVALIDOS');
-      if (!Number.isInteger(desde) || !Number.isInteger(hasta) || desde < 1 || hasta < desde || hasta > NCF_MAXIMO) {
-        throw new ErrorSucursales('El rango debe ir de un número a otro mayor o igual (1 a 99999999).', 'DATOS_INVALIDOS');
+      if (!TIPOS_NCF.includes(tipo)) throw new ErrorSucursales('Tipo de comprobante inválido (B01, B02… o E31, E32…).', 'DATOS_INVALIDOS');
+      const maximo = tipo.startsWith('E') ? ECF_MAXIMO : NCF_MAXIMO;
+      if (!Number.isInteger(desde) || !Number.isInteger(hasta) || desde < 1 || hasta < desde || hasta > maximo) {
+        throw new ErrorSucursales(`El rango debe ir de un número a otro mayor o igual (1 a ${maximo}).`, 'DATOS_INVALIDOS');
       }
       if (vence && !FECHA.test(vence)) throw new ErrorSucursales('La fecha de vencimiento va como AAAA-MM-DD.', 'DATOS_INVALIDOS');
       const suc = await tx.get(sucRef(licenseId, branchUuid));

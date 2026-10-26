@@ -12,6 +12,9 @@ const COPIAS = [
   ['server/multisucursal/central/sucursales.routes.js', 'tecno-caja-contadores/server/multisucursal/sucursales.routes.js'],
   ['server/multisucursal/central/sincronizacion-central.js', 'tecno-caja-contadores/server/multisucursal/sincronizacion-central.js'],
   ['js/sucursales-central-ui.js', 'tecno-caja-contadores/public/js/sucursales-central-ui.js'],
+  ['js/dgii-autorizacion.js', 'tecno-caja-contadores/public/js/dgii-autorizacion.js'],
+  ['js/catalogo-csv.js', 'tecno-caja-contadores/public/js/catalogo-csv.js'],
+  ['electron/thermal-printer.js', 'tecno-caja-contadores/electron/thermal-printer.js'],
   ['server/multisucursal/central/sincronizacion-central.js', 'cloud/sync-api/vendor/multisucursal/sincronizacion-central.js'],
   ['server/multisucursal/central/sucursales.js', 'cloud/sync-api/vendor/multisucursal/sucursales.js'],
 ];

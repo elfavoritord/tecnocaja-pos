@@ -10,7 +10,7 @@ const { formidable } = require('formidable');
 const { OFFICIAL_ENVIRONMENTS, buildEcfConfig, normalizeEnvironmentKey, toBoolean } = require('../config/ecf.config');
 const { getDocumentTypes, getDocumentType } = require('../config/document-types');
 const { DgiiClient } = require('../dgii/client');
-const { EcfRepository, digitsOnly, parseJson, parseEncfNumber } = require('../models/ecf.repository');
+const { EcfRepository, digitsOnly, parseJson, parseEncfNumber, sequenceEnvironment } = require('../models/ecf.repository');
 const signatureService = require('../signature/signature.service');
 const { AuthService } = require('./auth.service');
 const { buildTotals, generateEcfXml, generateRfceXml, normalizeEcfXmlStructure, normalizeEncfValue } = require('./ecf-generator');
@@ -563,6 +563,9 @@ class EcfService {
       // escribir el estado. Este flag evita que una segunda invocación arranque mientras la
       // primera sigue en curso, sin importar qué botón la disparó.
       rfceSubmitInFlight: false,
+      rfceSubmitLastRun: null,
+      simulationSendInFlight: false,
+      simulationSendStatus: null,
     };
     this.config = buildEcfConfig();
     this.logger = createLogger('ecf', { debug: this.config.DEBUG_ECF });
@@ -606,6 +609,9 @@ class EcfService {
     });
     this.certificationDir = path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'certification');
     this.certificationSignedDir = path.join(this.certificationDir, 'signed');
+    this.dgiiAuthTimer = null;
+    this.dgiiAuthBootstrapped = false;
+    this.dgiiAuthBootstrapPromise = null;
   }
 
   async ensureReady() {
@@ -614,6 +620,59 @@ class EcfService {
     fs.mkdirSync(this.certificationSignedDir, { recursive: true });
     this.seedStorage.ensureStorage();
     this.receptionStorage.ensureStorage();
+    if (!this.dgiiAuthBootstrapped) {
+      this.dgiiAuthBootstrapped = true;
+      this.dgiiAuthBootstrapPromise = this.repository.getResolvedEmitter(1)
+        .then((emitter) => {
+          if (emitter?.is_active && emitter.production_status === 'active' && emitter.environment === 'ecf') {
+            // DGII_ENV puede arrancar con el valor predeterminado del proceso
+            // aunque Producción (e-CF) esté guardada en la base de datos. Carga
+            // primero el ambiente persistido; de lo contrario la renovación
+            // retorna sin autenticar y la pantalla queda en "Sin conexión".
+            this.applyRuntimeConfig(emitter.environment);
+            this.startDgiiAuthMaintenance();
+            return this.refreshDgiiAuthentication();
+          }
+          return null;
+        })
+        .catch((error) => {
+          this.dgiiAuthBootstrapped = false;
+          console.warn('[ECF] No se pudo restaurar autenticación DGII al iniciar:', error.message);
+          return null;
+        });
+    }
+  }
+
+  startDgiiAuthMaintenance() {
+    if (this.dgiiAuthTimer) return;
+    this.dgiiAuthTimer = setInterval(() => {
+      this.refreshDgiiAuthentication().catch((error) =>
+        console.warn('[ECF] Falló la renovación automática del token DGII:', error.message));
+    }, 60_000);
+    this.dgiiAuthTimer.unref?.();
+  }
+
+  async refreshDgiiAuthentication() {
+    const emitter = await this.repository.getResolvedEmitter(1);
+    if (!emitter?.is_active || emitter.production_status !== 'active' || emitter.environment !== 'ecf' || this.config.DGII_ENV !== 'ecf') return null;
+    try {
+      const auth = await this.authService.authenticate();
+      this.runtimeState.lastConnection = {
+        status: 'conectado',
+        message: 'Autenticación DGII activa; se renovará automáticamente antes de vencer.',
+        tokenExpiresAt: auth.expira,
+        checkedAt: nowIso(),
+      };
+      return auth;
+    } catch (error) {
+      this.runtimeState.lastConnection = {
+        status: 'desconectado',
+        message: `No se pudo autenticar con DGII. Se reintentará automáticamente: ${error.message}`,
+        tokenExpiresAt: null,
+        checkedAt: nowIso(),
+      };
+      throw error;
+    }
   }
 
   _readSequenceHighWatermarkState() {
@@ -683,7 +742,7 @@ class EcfService {
 
     const sequences = await this.repository.query(
       `SELECT id, tipo_comprobante, numero_final, proximo_numero, activo
-         FROM ecf_sequences WHERE business_id = 1 AND activo = 1`
+         FROM ecf_sequences WHERE business_id = 1 AND activo = 1 AND environment = 'certecf'`
     ).catch(() => []);
     for (const sequence of sequences) {
       const tipo = String(sequence.tipo_comprobante || '').trim().toUpperCase();
@@ -724,6 +783,29 @@ class EcfService {
     return maxima;
   }
 
+  // Los botones de diagnóstico (semilla, autenticar) prueban el ambiente elegido
+  // en pantalla sin dejarlo puesto: si no, un proceso en curso (p. ej. el envío
+  // de la certificación) seguía consultando la DGII en el ambiente equivocado.
+  async withEnvironment(environment, work) {
+    const previous = this.config.DGII_ENV;
+    if (!environment || environment === previous) return work();
+    this.applyRuntimeConfig(environment);
+    try {
+      return await work();
+    } finally {
+      this.applyRuntimeConfig(previous);
+    }
+  }
+
+  // Un documento se consulta/envía en el ambiente en que se creó, no en el que
+  // esté en memoria ni en el guardado (certificación en CerteCF con el ambiente
+  // guardado en TesteCF mandaba las consultas y los RFCE a TesteCF).
+  useDocumentEnvironment(document, fallback = null) {
+    const environment = normalizeEnvironmentKey(document?.environment || fallback || this.config.DGII_ENV);
+    if (environment !== this.config.DGII_ENV) this.applyRuntimeConfig(environment);
+    return environment;
+  }
+
   applyRuntimeConfig(environment) {
     this.config = buildEcfConfig({ DGII_ENV: environment });
     this.dgiiClient.config = this.config;
@@ -731,6 +813,9 @@ class EcfService {
     this.authService.clearToken();
     this.receptionService.config = this.config;
     this.statusService.config = this.config;
+    // Sin esto el RFCE salía bien (lo manda dgiiClient) pero se guardaba con la
+    // URL y la carpeta del ambiente de arranque: en producción decía CerteCF.
+    this.fcService.config = this.config;
   }
 
   async getCurrentActor(req, { adminOnly = false } = {}) {
@@ -841,9 +926,13 @@ class EcfService {
 
   async getSystemStatus() {
     await this.ensureReady();
+    // La primera carga espera la restauración de sesión para que la interfaz
+    // muestre el resultado real del auto inicio y no un falso "Sin conexión".
+    await this.dgiiAuthBootstrapPromise;
     const emitter = await this.repository.getResolvedEmitter(1);
     const certificate = await this.getCertificateStatus();
-    const sequences = await this.repository.listSequences(1);
+    const sequences = (await this.repository.listSequences(1))
+      .filter((item) => item.environment === sequenceEnvironment(emitter.environment));
     const checklist = this.buildChecklist(emitter, certificate, sequences);
     const ready = checklist.items.every((item) => item.status === 'ok');
 
@@ -871,7 +960,9 @@ class EcfService {
    */
   async getExpiringSequencesSummary(businessId = 1, thresholdDays = 30) {
     await this.ensureReady();
-    const sequences = await this.repository.listSequences(businessId);
+    const environment = sequenceEnvironment((await this.repository.getResolvedEmitter(businessId)).environment);
+    const sequences = (await this.repository.listSequences(businessId))
+      .filter((item) => item.environment === environment);
     const now = Date.now();
     const dayMs = 86400000;
     return sequences
@@ -1275,6 +1366,12 @@ class EcfService {
     }
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     await this.repository.upsertEmitter(1, { is_active: true });
+    const emitter = await this.repository.getResolvedEmitter(1).catch(() => null);
+    if (emitter?.production_status === 'active' && emitter.environment === 'ecf') {
+      this.startDgiiAuthMaintenance();
+      this.refreshDgiiAuthentication().catch((error) =>
+        console.warn('[ECF] No se pudo autenticar DGII al activar e-CF:', error.message));
+    }
     await this.repository.saveAudit({
       userId: actor.id,
       userName: actor.nombre || actor.usuario,
@@ -1289,6 +1386,10 @@ class EcfService {
   async deactivate(req) {
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     await this.repository.upsertEmitter(1, { is_active: false });
+    if (this.dgiiAuthTimer) clearInterval(this.dgiiAuthTimer);
+    this.dgiiAuthTimer = null;
+    this.authService.clearToken();
+    this.runtimeState.lastConnection = null;
     await this.repository.saveAudit({
       userId: actor.id,
       userName: actor.nombre || actor.usuario,
@@ -1315,12 +1416,18 @@ class EcfService {
     }
   }
 
-  async getProductionActivationStatus() {
+  // `yaAutorizado`: reactivación de un RNC que la DGII YA autorizó como emisor
+  // electrónico (p. ej. tras reinstalar o reiniciar la configuración local):
+  // no se le pide repetir la certificación (el wizard local se perdió y la DGII
+  // no la repite). La prueba es la autenticación real en producción que hace
+  // activateProduction; si falla, la emisión sigue bloqueada.
+  async getProductionActivationStatus({ yaAutorizado = false } = {}) {
     await this.ensureReady();
     const emitter = await this.repository.getResolvedEmitter(1);
     const certificate = await this.getCertificateStatus();
     const wizardState = this._readCertWizardState();
     const step15Done = Boolean(wizardState?.completedSteps?.includes(15));
+    const reactivacion = Boolean(yaAutorizado) && ['testecf', 'certecf'].includes(emitter.environment);
 
     const batchId = await this.repository.getLatestCertificationBatchId();
     let pendingCertificationSends = 0;
@@ -1338,18 +1445,22 @@ class EcfService {
       {
         key: 'environment_certecf',
         label: 'Ambiente actual',
-        status: emitter.environment === 'certecf' ? 'ok' : 'error',
+        status: emitter.environment === 'certecf' || reactivacion ? 'ok' : 'error',
         message: emitter.environment === 'certecf'
           ? 'El ambiente activo es CerteCF.'
-          : `El ambiente activo es "${emitter.environment}" — solo se puede activar producción desde CerteCF.`,
+          : reactivacion
+            ? `Reactivación desde "${emitter.environment}" (ya autorizado por la DGII).`
+            : `El ambiente activo es "${emitter.environment}" — solo se puede activar producción desde CerteCF.`,
       },
       {
         key: 'wizard_step15',
         label: 'Certificación finalizada (Paso 15)',
-        status: step15Done ? 'ok' : 'error',
+        status: step15Done || reactivacion ? 'ok' : 'error',
         message: step15Done
           ? 'El wizard de certificación marca el Paso 15 como completado.'
-          : 'El Paso 15 (Finalizado) del wizard de certificación todavía no está completado.',
+          : reactivacion
+            ? 'Reactivación: la DGII ya autorizó este RNC; se comprueba autenticándose en producción.'
+            : 'El Paso 15 (Finalizado) del wizard de certificación todavía no está completado.',
       },
       {
         key: 'production_url',
@@ -1400,6 +1511,7 @@ class EcfService {
     const ready = items.every((item) => item.status === 'ok');
     return {
       ready,
+      reactivacion,
       checklist: { items },
       productionStatus: emitter.production_status,
       environment: emitter.environment,
@@ -1421,7 +1533,7 @@ class EcfService {
       throw new EcfError('El texto de confirmación no coincide. Debe escribir exactamente: ACTIVAR PRODUCCION', { statusCode: 422 });
     }
 
-    const readiness = await this.getProductionActivationStatus();
+    const readiness = await this.getProductionActivationStatus({ yaAutorizado: req.body?.yaAutorizado === true });
     if (!readiness.ready) {
       const blockers = readiness.checklist.items.filter((item) => item.status !== 'ok').map((item) => item.message);
       throw new EcfError(`No se puede activar producción todavía: ${blockers.join(' | ')}`, { statusCode: 422 });
@@ -1434,9 +1546,11 @@ class EcfService {
       userId: actor.id,
       userName: actor.nombre || actor.usuario,
       userRole: actor.rol || actor.role_code,
-      actionName: 'production_activation_requested',
+      actionName: readiness.reactivacion ? 'production_reactivation_requested' : 'production_activation_requested',
       status: 'info',
-      detail: `Solicitó activar producción DGII (ambiente previo: ${previousEnvironment}).`,
+      detail: readiness.reactivacion
+        ? `Solicitó REACTIVAR producción DGII declarando que el RNC ya está autorizado (ambiente previo: ${previousEnvironment}).`
+        : `Solicitó activar producción DGII (ambiente previo: ${previousEnvironment}).`,
     });
 
     this.applyRuntimeConfig('ecf');
@@ -1453,11 +1567,18 @@ class EcfService {
     const authOk = Boolean(authResult?.token) && authResult?.environment === 'ecf';
 
     if (authOk) {
+      this.runtimeState.lastConnection = {
+        status: 'conectado',
+        message: 'Autenticación DGII exitosa.',
+        tokenExpiresAt: authResult.expira,
+        checkedAt: nowIso(),
+      };
       await this.repository.upsertEmitter(1, {
         production_status: 'active',
         production_activated_at: new Date(),
         production_activated_by: actor.nombre || actor.usuario || 'admin',
       });
+      this.startDgiiAuthMaintenance();
       await this.repository.saveAudit({
         userId: actor.id,
         userName: actor.nombre || actor.usuario,
@@ -1477,6 +1598,27 @@ class EcfService {
       return {
         ok: true,
         message: 'Producción DGII activada y autenticación verificada correctamente.',
+        production: await this.getProductionActivationStatus(),
+      };
+    }
+
+    // Reactivación fallida: se vuelve al ambiente de antes en vez de dejar la
+    // emisión bloqueada en producción (sin autenticación no hay prueba de que
+    // la DGII lo tenga autorizado).
+    if (readiness.reactivacion) {
+      this.applyRuntimeConfig(previousEnvironment);
+      await this.repository.upsertEmitter(1, { environment: previousEnvironment });
+      await this.repository.saveAudit({
+        userId: actor.id,
+        userName: actor.nombre || actor.usuario,
+        userRole: actor.rol || actor.role_code,
+        actionName: 'production_reactivation_auth_failed',
+        status: 'warning',
+        detail: `No se reactivó producción: la autenticación DGII falló (${authError?.message || 'sin token'}). Se volvió a ${previousEnvironment}.`,
+      });
+      return {
+        ok: false,
+        message: `No se pudo autenticar en producción DGII (${authError?.message || 'sin token'}). No se activó nada; sigues en ${previousEnvironment}.`,
         production: await this.getProductionActivationStatus(),
       };
     }
@@ -1513,6 +1655,8 @@ class EcfService {
 
     const emitter = await this.repository.getResolvedEmitter(1);
     this.applyRuntimeConfig('certecf');
+    if (this.dgiiAuthTimer) clearInterval(this.dgiiAuthTimer);
+    this.dgiiAuthTimer = null;
     await this.repository.upsertEmitter(1, { environment: 'certecf', production_status: 'suspended' });
     await this.repository.saveAudit({
       userId: actor.id,
@@ -1530,8 +1674,26 @@ class EcfService {
     };
   }
 
-  async listSequences() {
-    return this.repository.listSequences(1);
+  async listSequences({ onlyActiveEnvironment = false, environment = null } = {}) {
+    const sequences = await this.repository.listSequences(1);
+    if (!onlyActiveEnvironment && !environment) return sequences;
+    const wanted = sequenceEnvironment(environment || (await this.repository.getResolvedEmitter(1)).environment);
+    return sequences.filter((item) => item.environment === wanted);
+  }
+
+  async getSequenceHistory(sequenceId) {
+    const rows = await this.repository.query(
+      `SELECT action_name, detail, user_name, created_at FROM ecf_audit_log
+       WHERE sequence_id = ? AND action_name LIKE 'sequence_%'
+       ORDER BY id DESC LIMIT 50`,
+      [Number(sequenceId)]
+    ).catch(() => []);
+    return rows.map((row) => ({
+      action: row.action_name,
+      detail: row.detail,
+      userName: row.user_name,
+      createdAt: row.created_at,
+    }));
   }
 
   async generateNextENCF(req = {}) {
@@ -1545,19 +1707,65 @@ class EcfService {
       businessId: 1,
       tipoComprobante,
       sequenceId: body.sequenceId || body.sequence_id || null,
+      environment: body.environment || this.config.DGII_ENV,
+    });
+  }
+
+  // Historial de secuencias en ecf_audit_log (mismo registro que el resto del
+  // módulo): quién creó, ajustó, desactivó o borró cada rango y con qué datos.
+  async _auditSequence(actor, actionName, sequence, detail, responsePayload = null) {
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actor.nombre || actor.usuario,
+      userRole: actor.rol || actor.role_code,
+      sequenceId: sequence?.id || null,
+      tipoComprobante: sequence?.tipo_comprobante || null,
+      actionName,
+      status: 'info',
+      detail,
+      responsePayload,
     });
   }
 
   async saveSequence(req) {
-    await this.getCurrentActor(req, { adminOnly: true });
-    return this.repository.saveSequence(1, req.body || {});
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    await this.ensureReady();
+    const body = req.body || {};
+    // Sin ambiente explícito, el rango es del ambiente activo del emisor.
+    const environment = sequenceEnvironment(body.environment || (await this.repository.getResolvedEmitter(1)).environment);
+    const saved = await this.repository.saveSequence(1, { ...body, environment });
+    const sequence = await this.repository.getSequence(saved.id);
+    await this._auditSequence(
+      actor,
+      'sequence_created',
+      sequence,
+      `Agregó la secuencia ${sequence?.tipo_comprobante} ${sequence?.numero_inicial}–${sequence?.numero_final} `
+        + `(${environment === 'ecf' ? 'producción' : 'pruebas'}${sequence?.authorization_reference ? `, autorización DGII ${sequence.authorization_reference}` : ''}).`,
+      { after: sequence },
+    );
+    return { ok: true, sequence, sequences: saved.sequences };
   }
 
   async updateSequenceNext(req) {
-    await this.getCurrentActor(req, { adminOnly: true });
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
     const sequenceId = Number(req.params.id || 0);
     const nextNumber = Number(req.body?.proximoNumero || req.body?.nextNumber || req.body?.proximo || 0);
+    const before = await this.repository.getSequence(sequenceId);
+    if (before && sequenceEnvironment(before.environment) === 'ecf') {
+      assertCondition(
+        nextNumber >= Number(before.numero_inicial) && nextNumber <= Number(before.numero_final) + 1,
+        `El próximo número debe estar dentro del rango autorizado (${before.numero_inicial}–${before.numero_final}).`,
+        { statusCode: 422 }
+      );
+    }
     const sequence = await this.repository.updateSequenceNextNumber(sequenceId, nextNumber);
+    await this._auditSequence(
+      actor,
+      'sequence_next_changed',
+      sequence,
+      `Cambió el próximo número de ${sequence?.tipo_comprobante} de ${before?.proximo_numero} a ${nextNumber}.`,
+      { before, after: sequence },
+    );
     return {
       ok: true,
       sequence,
@@ -1566,21 +1774,39 @@ class EcfService {
   }
 
   async disableSequence(req) {
-    await this.getCurrentActor(req, { adminOnly: true });
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const sequence = await this.repository.getSequence(Number(req.params.id));
     await this.repository.disableSequence(Number(req.params.id));
+    await this._auditSequence(actor, 'sequence_disabled', sequence,
+      `Desactivó la secuencia ${sequence?.tipo_comprobante} ${sequence?.numero_inicial}–${sequence?.numero_final}.`,
+      { before: sequence });
     return { ok: true };
   }
 
   async deleteSequencePermanently(req) {
-    await this.getCurrentActor(req, { adminOnly: true });
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const sequence = await this.repository.getSequence(Number(req.params.id));
+    // Un rango de producción con e-CF emitidos es parte del historial fiscal:
+    // se desactiva, no se borra.
+    if (sequence && sequenceEnvironment(sequence.environment) === 'ecf') {
+      const used = await this.repository.query(
+        'SELECT id FROM ecf_documents WHERE sequence_id = ? LIMIT 1',
+        [sequence.id]
+      ).catch(() => []);
+      assertCondition(!used.length, 'Esta secuencia ya tiene e-CF emitidos y no se puede eliminar. Desactívala.', { statusCode: 409 });
+    }
     const result = await this.repository.deleteSequencePermanently(Number(req.params.id));
     if (!result.deleted) return { ok: false, message: 'Secuencia no encontrada o ya eliminada.' };
+    await this._auditSequence(actor, 'sequence_deleted', sequence,
+      `Eliminó la secuencia ${sequence?.tipo_comprobante} ${sequence?.numero_inicial}–${sequence?.numero_final}.`,
+      { before: sequence });
     return { ok: true, message: 'Secuencia eliminada permanentemente.' };
   }
 
   async buildConnectionTestResult(environmentOverride = null) {
     const emitter = await this.repository.getResolvedEmitter(1);
-    const sequences = await this.repository.listSequences(1);
+    const sequences = (await this.repository.listSequences(1))
+      .filter((item) => item.environment === sequenceEnvironment(environmentOverride || emitter.environment));
     const certificate = await this.getCertificateStatus();
     const checklist = this.buildChecklist(emitter, certificate, sequences);
     const blockingRequirements = checklist.items.filter((item) => item.status !== 'ok').map((item) => ({
@@ -1628,15 +1854,17 @@ class EcfService {
 
   async testConnection(req) {
     const environment = normalizeEnvironmentKey(req.body?.environment || (await this.repository.getResolvedEmitter(1)).environment);
-    const result = await this.buildConnectionTestResult(environment);
+    const result = await this.withEnvironment(environment, () => this.buildConnectionTestResult(environment));
     await this.repository.saveTestRun('authenticate', result.ok ? 'ok' : 'warning', result.message, result, environment);
     return result;
   }
 
   async testSeed(req) {
     const environment = normalizeEnvironmentKey(req.body?.environment || (await this.repository.getResolvedEmitter(1)).environment);
-    this.applyRuntimeConfig(environment);
-    const seed = await this.authService.requestSeed();
+    const { seed, seedUrl } = await this.withEnvironment(environment, async () => ({
+      seed: await this.authService.requestSeed(),
+      seedUrl: this.config.DGII_SEMILLA_URL,
+    }));
     const response = {
       ok: Boolean(seed.value),
       environment,
@@ -1645,7 +1873,7 @@ class EcfService {
       seedDate: seed.fecha || null,
       estado: seed.storage?.estado || 'obtenida',
       archivo: seed.storage?.xmlPath || null,
-      seedUrl: this.config.DGII_SEMILLA_URL,
+      seedUrl,
       rawResponseLength: Buffer.byteLength(seed.raw || '', 'utf8'),
       builtXmlLength: Buffer.byteLength(seed.xml || '', 'utf8'),
       rawResponsePreview: String(seed.raw || '').slice(0, 240),
@@ -1665,7 +1893,10 @@ class EcfService {
 
   async debugAuth(req) {
     const environment = normalizeEnvironmentKey(req.body?.environment || (await this.repository.getResolvedEmitter(1)).environment);
-    this.applyRuntimeConfig(environment);
+    return this.withEnvironment(environment, () => this.debugAuthIn(environment));
+  }
+
+  async debugAuthIn(environment) {
     const seed = await this.authService.requestSeed();
     const certificate = await this.resolveCertificate();
     const signedXml = signatureService.signXML(seed.xml, certificate);
@@ -2129,6 +2360,7 @@ class EcfService {
     const emisorNode = encabezado?.getElementsByTagName('Emisor')?.[0];
     const compradorNode = encabezado?.getElementsByTagName('Comprador')?.[0];
     const idDocNode = encabezado?.getElementsByTagName('IdDoc')?.[0];
+    const referenciaNode = root.getElementsByTagName('InformacionReferencia')?.[0];
     const itemNodes = Array.from(root.getElementsByTagName('Item') || []);
     const tipoEcf = String(document?.tipo_ecf || firstNodeText(idDocNode, 'TipoeCF') || '').trim().toUpperCase();
 
@@ -2276,8 +2508,36 @@ class EcfService {
     }
 
     if (String(document.submission_mode || '').toLowerCase() === 'rfce') {
+      let signedRfce = document.signed_xml_content;
+      // Las ventas pequeñas E32 guardan el e-CF completo para conservar el
+      // documento/QR. En un reintento se debe reconstruir y firmar el RFCE.
+      if (!/^\s*(?:<\?xml[^>]*>\s*)?<RFCE\b/i.test(String(signedRfce || ''))) {
+        const sourceXml = document.xml_content || signedRfce;
+        const payload = this.extractPayloadFromDocumentXml(document, sourceXml);
+        const totals = buildTotals(payload.items);
+        const xmlDoc = parseXml(String(sourceXml).replace(/^\uFEFF/, ''));
+        const paymentNodes = Array.from(xmlDoc.getElementsByTagName('FormaDePago') || []);
+        const paymentForms = paymentNodes.map((node) => ({
+          formaPago: firstNodeText(node, 'FormaPago'),
+          montoPago: parseDecimal(firstNodeText(node, 'MontoPago'), 0),
+        }));
+        if (!paymentForms.length) paymentForms.push({ formaPago: '1', montoPago: totals.total });
+        const certificate = await this.resolveCertificate();
+        const rfceXml = generateRfceXml({
+          ...payload,
+          document: {
+            ...payload.document,
+            tipoeCF: 'E32',
+            codigoSeguridad: computeSecurityCode(document.signed_xml_content || sourceXml),
+          },
+          totals,
+          paymentForms,
+        });
+        assertValidRfceXml(rfceXml);
+        signedRfce = signatureService.signXML(rfceXml, certificate);
+      }
       return this.fcService.sendConsumptionSummary({
-        signedXml: document.signed_xml_content,
+        signedXml: signedRfce,
         filename: `${document.encf || `documento-${document.id}`}-rfce.xml`,
         localEcfPath: document.local_ecf_path || null,
       });
@@ -3191,6 +3451,14 @@ class EcfService {
   async resendDocument(id) {
     const document = await this.repository.getDocument(id);
     if (!document) throw new EcfError('Documento e-CF no encontrado.', { statusCode: 404 });
+    // e-CF de una venta que falló antes de armar el XML (p. ej. faltaba un dato
+    // del emisor): se arma, firma y envía de nuevo con el MISMO e-NCF apartado
+    // (createDocumentFromSale lo reusa). Los casos de certificación no pasan por aquí.
+    if (document.sale_id && !String(document.xml_content || '').trim()
+      && !document.certification_batch_id && !document.certification_case_key) {
+      const result = await this.processSaleForElectronicInvoicing(Number(document.sale_id), { requestedType: document.tipo_ecf });
+      return { ...result, mensaje: result.mensaje || `Documento ${result.encf} armado, firmado y enviado.` };
+    }
     const certificate = await this.resolveCertificate();
     const repairedDocument = await this.repairStoredDocumentXml(document, certificate);
     let preparedDocument = this.shouldAdvanceSequenceOnSend(repairedDocument)
@@ -3258,6 +3526,7 @@ class EcfService {
       };
     }
 
+    this.useDocumentEnvironment(document);
     const dgii = await this.statusService.getTrackStatus(document.track_id);
     const state = normalizeDgiiState(dgii);
     const sequenceUsed = isDgiiSequenceUsedResponse(dgii);
@@ -3548,6 +3817,15 @@ class EcfService {
     };
   }
 
+  async certificationSimulationSendStatus() {
+    await this.ensureReady();
+    return {
+      ok: true,
+      active: !!this.runtimeState.simulationSendInFlight,
+      ...(this.runtimeState.simulationSendStatus || {}),
+    };
+  }
+
   async certificationCenterProcess(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
@@ -3801,6 +4079,9 @@ class EcfService {
   async generateSimulationSet(req) {
     await this.ensureReady();
     await this.getCurrentActor(req, { adminOnly: true });
+    if (this.runtimeState.simulationSendInFlight) {
+      throw new EcfError('El envío del Paso 4 sigue en curso. Actualiza el estado antes de iniciar otro lote.', { statusCode: 409 });
+    }
 
     // ── 1. Leer templates base del Paso 2 ───────────────────────────────────────
     // No usar simulaciones previas como plantilla: cada regeneración del Paso 4
@@ -3942,7 +4223,8 @@ class EcfService {
     // El contador visible puede haberse reiniciado, pero DGII conserva para siempre
     // los e-NCF quemados. Adelantar primero cada rango al máximo histórico respaldado.
     const historicalSequenceMaxima = await this._syncCertificationSequenceHighWatermarks();
-    const configuredSequences = await this.repository.listSequences(1);
+    const configuredSequences = (await this.repository.listSequences(1))
+      .filter((sequence) => sequence.environment === 'certecf');
     const sequenceProblems = [];
     for (const [tipo, required] of requiredSequenceCounts) {
       const available = configuredSequences
@@ -3971,7 +4253,7 @@ class EcfService {
     const encfMap = {};
 
     for (const t of templates) {
-      const seqResult = await this.generateNextENCF({ body: { tipoComprobante: t.tipo } }).catch((err) => {
+      const seqResult = await this.generateNextENCF({ body: { tipoComprobante: t.tipo, environment: 'certecf' } }).catch((err) => {
         throw new EcfError(`Sin secuencia disponible para tipo ${t.tipo}: ${err.message}`, { statusCode: 422 });
       });
       encfMap[t.oldEncf] = seqResult.encf;
@@ -4132,6 +4414,49 @@ class EcfService {
     const normalCount = templates.filter((t) => t.submissionMode !== 'rfce').length;
     let seqSent = 0;
     const seqErrors = [];
+    if (req?.body?.background === true) {
+      this.runtimeState.simulationSendInFlight = true;
+      this.runtimeState.simulationSendStatus = {
+        active: true,
+        startedAt: new Date().toISOString(),
+        batchId: simBatchId,
+        result: null,
+        error: null,
+      };
+      Promise.resolve()
+        .then(() => this.runCertificationSequence(req))
+        .then((seqResult) => {
+          this.runtimeState.simulationSendStatus = {
+            ...this.runtimeState.simulationSendStatus,
+            active: false,
+            finishedAt: new Date().toISOString(),
+            result: seqResult,
+          };
+        })
+        .catch((error) => {
+          this.runtimeState.simulationSendStatus = {
+            ...this.runtimeState.simulationSendStatus,
+            active: false,
+            finishedAt: new Date().toISOString(),
+            error: error.message || String(error),
+          };
+        })
+        .finally(() => { this.runtimeState.simulationSendInFlight = false; });
+
+      return {
+        ok: true,
+        processing: true,
+        batchId: simBatchId,
+        historicalSequenceMaxima,
+        created: templates.length,
+        normal: normalCount,
+        rfce: templates.length - normalCount,
+        sent: 0,
+        encfMapping: Object.entries(encfMap).map(([oldE, newE]) => ({ old: oldE, new: newE })),
+        errors: [],
+        message: `Lote de ${templates.length} comprobantes creado. El envío de los ${normalCount} e-CF continúa en segundo plano.`,
+      };
+    }
     try {
       const seqResult = await this.runCertificationSequence(req);
       seqSent = seqResult?.sent || 0;
@@ -4440,7 +4765,7 @@ class EcfService {
       const [refDoc] = await this.repository.query(
         `SELECT id, encf, tipo_ecf, submission_mode, estado_dgii, track_id, certification_original_xml
          FROM ecf_documents
-         WHERE business_id = 1 AND encf = ?
+         WHERE business_id = 1 AND encf = ? AND environment <> 'ecf'
          ORDER BY id DESC LIMIT 1`,
         [refEncf]
       );
@@ -4730,7 +5055,7 @@ class EcfService {
     const rows = await this.repository.query(
       `SELECT id, encf, certification_original_xml
        FROM ecf_documents
-       WHERE business_id = 1 AND encf = ?
+       WHERE business_id = 1 AND encf = ? AND environment <> 'ecf'
        LIMIT 1`,
       [encf]
     );
@@ -4815,7 +5140,7 @@ class EcfService {
     const rows = await this.repository.query(
       `SELECT id, encf, certification_original_xml
        FROM ecf_documents
-       WHERE business_id = 1 AND encf = ?
+       WHERE business_id = 1 AND encf = ? AND environment <> 'ecf'
        LIMIT 1`,
       [encf]
     );
@@ -5879,6 +6204,8 @@ class EcfService {
       ok: true,
       ...state,
       items,
+      sending: !!this.runtimeState.rfceSubmitInFlight,
+      lastRun: this.runtimeState.rfceSubmitLastRun,
       aceptados: accepted,
       total: items.length,
       source: dbItems.length ? 'ecf_documents' : (state.items?.length ? 'state' : 'empty'),
@@ -6028,7 +6355,7 @@ class EcfService {
       let certSrc;
       try { certSrc = JSON.parse(doc.certification_original_xml || '{}'); } catch (_) { return { ok: false }; }
 
-      const seqResult = await this.generateNextENCF({ body: { tipoComprobante: 'E32' } });
+      const seqResult = await this.generateNextENCF({ body: { tipoComprobante: 'E32', environment: 'certecf' } });
       const newEncf = seqResult.encf;
 
       const patchEncf = (row) => {
@@ -6073,6 +6400,34 @@ class EcfService {
       throw new EcfError('Ya hay un envío de RFCE en curso — espera a que termine antes de reintentar.', { statusCode: 409 });
     }
     this.runtimeState.rfceSubmitInFlight = true;
+    if (req?.body?.background === true) {
+      this.runtimeState.rfceSubmitLastRun = {
+        active: true,
+        startedAt: new Date().toISOString(),
+        result: null,
+        error: null,
+      };
+      Promise.resolve()
+        .then(() => this._step4RfceSubmitInner(req))
+        .then((result) => {
+          this.runtimeState.rfceSubmitLastRun = {
+            ...this.runtimeState.rfceSubmitLastRun,
+            active: false,
+            finishedAt: new Date().toISOString(),
+            result,
+          };
+        })
+        .catch((error) => {
+          this.runtimeState.rfceSubmitLastRun = {
+            ...this.runtimeState.rfceSubmitLastRun,
+            active: false,
+            finishedAt: new Date().toISOString(),
+            error: error.message || String(error),
+          };
+        })
+        .finally(() => { this.runtimeState.rfceSubmitInFlight = false; });
+      return { ok: true, processing: true, message: 'El envío RFCE continúa en segundo plano.' };
+    }
     try {
       return await this._step4RfceSubmitInner(req);
     } finally {
@@ -6408,6 +6763,8 @@ class EcfService {
     const candidates = updatedItems
       .map((item, index) => ({ item, index }))
       .filter(({ item }) => item.trackId && !['aceptado', 'aceptado_condicional', 'rechazado'].includes(String(item.estado || '').toLowerCase()));
+    // Los RFCE de certificación viven en CerteCF aunque el ambiente guardado sea otro.
+    if (candidates.length) this.useDocumentEnvironment(null, 'certecf');
 
     const polled = await mapWithConcurrency(candidates, 4, async ({ item, index }) => {
       try {
@@ -7681,7 +8038,7 @@ class EcfService {
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
          ${batchClause}
-         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando')
+         AND estado_dgii IN ('enviado', 'en_proceso', 'procesando', 'pendiente')
          AND track_id IS NOT NULL
        ORDER BY COALESCE(certification_order_index, id) ASC, id ASC
        LIMIT 60`,
@@ -8213,10 +8570,13 @@ class EcfService {
 
   async getSequenceUsageStats() {
     await this.ensureReady();
-    const stats = await this.repository.getSequenceUsageStats(1);
+    // Panel "Control de Secuencias" de e-CF · DGII → Secuencias: solo pruebas.
+    const environment = 'certecf';
+    const stats = await this.repository.getSequenceUsageStats(1, environment);
     // Cruzar con ecf_sequences para obtener el próximo disponible según el rango
     const sequences = await this.repository.query(
-      'SELECT tipo_comprobante, proximo_numero, numero_final, activo, fecha_vencimiento FROM ecf_sequences WHERE business_id=1 AND activo=1'
+      'SELECT tipo_comprobante, proximo_numero, numero_final, activo, fecha_vencimiento FROM ecf_sequences WHERE business_id=1 AND activo=1 AND environment=?',
+      [environment]
     ).catch(() => []);
     const seqMap = {};
     for (const s of sequences) seqMap[s.tipo_comprobante] = s;
@@ -8249,10 +8609,12 @@ class EcfService {
     const { tipoEcf } = req.body || req.query || {};
     if (!tipoEcf) return { ok: false, message: 'Indica el tipo de e-CF (ej. E31, E32).' };
     const tipo = String(tipoEcf).trim().toUpperCase();
-    const maxFromUsage = await this.repository.getNextAvailableAfterUsage(1, tipo);
+    // Botón de e-CF · DGII → Secuencias: solo secuencias de pruebas.
+    const environment = 'certecf';
+    const maxFromUsage = await this.repository.getNextAvailableAfterUsage(1, tipo, environment);
     const seqs = await this.repository.query(
-      'SELECT * FROM ecf_sequences WHERE business_id=1 AND tipo_comprobante=? AND activo=1 ORDER BY id LIMIT 1',
-      [tipo]
+      'SELECT * FROM ecf_sequences WHERE business_id=1 AND tipo_comprobante=? AND activo=1 AND environment=? ORDER BY id LIMIT 1',
+      [tipo, environment]
     ).catch(() => []);
     const seq = seqs[0] || null;
     const proxSeq = seq ? Number(seq.proximo_numero || 0) : 0;
@@ -8341,6 +8703,7 @@ class EcfService {
       businessId: 1,
       tipoComprobante: 'E32',
       sale: {},
+      environment,
     });
     const { encf, sequence, numero: sequenceNumber } = generated;
 
@@ -8492,8 +8855,7 @@ class EcfService {
     assertCondition(signedRfce, `El RFCE ${doc.encf} no tiene XML firmado. Use rfce/generate primero.`, { statusCode: 422 });
 
     const rawEmitter = await this.repository.getResolvedEmitter(1);
-    const environment = normalizeEnvironmentKey(rawEmitter.environment);
-    this.applyRuntimeConfig(environment);
+    const environment = this.useDocumentEnvironment(doc, rawEmitter.environment);
 
     let dgiiResponse;
     try {
@@ -8567,11 +8929,10 @@ class EcfService {
     assertCondition(normalizedTrackId, 'Debe indicar un TrackID para consultar.', { statusCode: 422 });
 
     const rawEmitter = await this.repository.getResolvedEmitter(1);
-    const environment = normalizeEnvironmentKey(rawEmitter.environment);
-    this.applyRuntimeConfig(environment);
+    const linkedDoc = await this.repository.getDocumentByTrackId(normalizedTrackId);
+    const environment = this.useDocumentEnvironment(linkedDoc, rawEmitter.environment);
 
     const result = await this.receptionService.getTrackStatus(normalizedTrackId);
-    const linkedDoc = await this.repository.getDocumentByTrackId(normalizedTrackId);
 
     if (linkedDoc && String(linkedDoc.submission_mode || '').toLowerCase() === 'rfce') {
       const newEstado = normalizeDgiiState(result);

@@ -1,0 +1,340 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Secuencias e-NCF de producción (Configuración → Ventas y Facturación).
+   js/ecf-sequences-config.js. Solo tokens de css/tokens.css: día y noche.
+   La ventana de análisis (.ecfs-ai) y la vista previa (.ecfs-found) también
+   las usan js/ventana-analisis.js, el catálogo de servicios y productos.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Estado del ambiente ─────────────────────────────────────────────── */
+.ecfs-status {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-3) var(--tc-space-4);
+  margin-bottom: var(--tc-space-4);
+  border: 1px solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.4;
+}
+.ecfs-status .tc-icon { flex-shrink: 0; }
+.ecfs-status strong { color: var(--tc-text); font-weight: var(--tc-weight-semibold); }
+.ecfs-status--ok { background: var(--tc-success-bg); border-color: var(--tc-success-border); }
+.ecfs-status--ok .tc-icon { color: var(--tc-success-text); }
+.ecfs-status--warn { background: var(--tc-warning-bg); border-color: var(--tc-warning-border); }
+.ecfs-status--warn .tc-icon { color: var(--tc-warning-text); }
+.ecfs-status--info .tc-icon { color: var(--tc-select-text); }
+
+/* ── Tarjetas de secuencia ───────────────────────────────────────────── */
+.ecfs-list { display: grid; gap: var(--tc-space-3); }
+
+.ecfs-empty {
+  padding: var(--tc-space-5);
+  text-align: center;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+  border: 1px dashed var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+}
+
+.ecfs-card {
+  display: grid;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-4);
+  border: 1px solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+.ecfs-card--off { opacity: 0.6; }
+
+.ecfs-card__head { display: flex; align-items: flex-start; gap: var(--tc-space-3); }
+.ecfs-chip {
+  flex-shrink: 0;
+  min-width: 52px;
+  padding: 6px 10px;
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+  font-weight: var(--tc-weight-bold);
+  font-size: var(--tc-fs-md);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+.ecfs-card__title { flex: 1; min-width: 0; }
+.ecfs-card__name { color: var(--tc-text); font-weight: var(--tc-weight-semibold); font-size: var(--tc-fs-md); }
+.ecfs-card__meta { color: var(--tc-text-2); font-size: var(--tc-fs-xs); margin-top: 2px; }
+
+.ecfs-pill {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--tc-border);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-text-2);
+}
+.ecfs-pill--ok { background: var(--tc-success-bg); border-color: var(--tc-success-border); color: var(--tc-success-text); }
+.ecfs-pill--bad { background: var(--tc-danger-bg); border-color: var(--tc-danger-border); color: var(--tc-danger-text); }
+
+/* Cada dato ocupa lo que mide y pasa a la línea siguiente si no cabe:
+   un e-NCF nunca se parte por la mitad. */
+.ecfs-card__numbers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tc-space-3) var(--tc-space-6);
+}
+.ecfs-num__label { color: var(--tc-text-2); font-size: var(--tc-fs-xs); }
+/* Peso 500 o más en números: Barlow 400 hace ver el punto como coma. */
+.ecfs-num__value { color: var(--tc-text); font-weight: var(--tc-weight-semibold); font-size: var(--tc-fs-sm); white-space: nowrap; }
+
+.ecfs-bar { height: 8px; border-radius: 999px; background: var(--tc-surface-2); overflow: hidden; }
+.ecfs-bar__fill { height: 100%; border-radius: inherit; background: var(--tc-primary); transition: width 0.4s ease; }
+.ecfs-bar--low .ecfs-bar__fill { background: var(--tc-warning-text); }
+.ecfs-bar__text { display: flex; justify-content: space-between; color: var(--tc-text-2); font-size: var(--tc-fs-xs); margin-top: 4px; }
+
+.ecfs-card__actions { display: flex; flex-wrap: wrap; gap: var(--tc-space-2); justify-content: flex-end; }
+.ecfs-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 var(--tc-space-3);
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text);
+  font: inherit;
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  cursor: pointer;
+}
+.ecfs-btn:hover { border-color: var(--tc-select-border); background: var(--tc-select-bg); }
+.ecfs-btn--danger { color: var(--tc-danger-text); }
+.ecfs-btn--danger:hover { border-color: var(--tc-danger-border); background: var(--tc-danger-bg); }
+
+.ecfs-history {
+  display: grid;
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-3);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface-2);
+  font-size: var(--tc-fs-xs);
+  color: var(--tc-text-2);
+}
+.ecfs-history__item { display: grid; gap: 2px; padding-left: var(--tc-space-3); border-left: 2px solid var(--tc-select-border); }
+.ecfs-history__item strong { color: var(--tc-text); font-weight: var(--tc-weight-medium); }
+
+/* ── Carga del archivo de la DGII ────────────────────────────────────── */
+/* Va arriba de las secuencias (lo que más se usa), separada por una línea. */
+.ecfs-upload {
+  margin-bottom: var(--tc-space-5);
+  padding-bottom: var(--tc-space-5);
+  border-bottom: 1px solid var(--tc-border-soft);
+}
+.ecfs-upload__title { color: var(--tc-text); font-weight: var(--tc-weight-semibold); font-size: var(--tc-fs-md); margin-bottom: var(--tc-space-1); }
+.ecfs-upload__hint { color: var(--tc-text-2); font-size: var(--tc-fs-sm); margin-bottom: var(--tc-space-3); }
+
+/* Compacta (una fila) para que las secuencias se vean sin bajar. */
+.ecfs-drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-4);
+  border: 2px dashed var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+  color: var(--tc-text-2);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.ecfs-drop__main { flex: 1; min-width: 200px; }
+.ecfs-drop:hover, .ecfs-drop--over { border-color: var(--tc-select-border); background: var(--tc-select-bg); }
+.ecfs-drop__icon {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--tc-select-bg);
+  color: var(--tc-select-text);
+}
+.ecfs-drop__main { color: var(--tc-text); font-weight: var(--tc-weight-semibold); font-size: var(--tc-fs-sm); }
+.ecfs-drop__formats { display: flex; gap: var(--tc-space-2); }
+.ecfs-drop__formats span {
+  padding: 2px 8px;
+  border-radius: var(--tc-radius-btn);
+  border: 1px solid var(--tc-border);
+  font-size: var(--tc-fs-xs);
+  font-weight: var(--tc-weight-semibold);
+}
+.ecfs-paste { margin-top: var(--tc-space-2); font-size: var(--tc-fs-sm); }
+.ecfs-paste summary { cursor: pointer; color: var(--tc-select-text); }
+
+/* Resultado leído: lo que autorizó la DGII */
+.ecfs-found {
+  margin-top: var(--tc-space-4);
+  padding: var(--tc-space-4);
+  border: 1px solid var(--tc-select-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-select-bg);
+  animation: ecfs-up 0.35s ease both;
+}
+.ecfs-found__title { display: flex; align-items: center; gap: var(--tc-space-2); color: var(--tc-text); font-weight: var(--tc-weight-semibold); margin-bottom: var(--tc-space-3); }
+.ecfs-found__title .tc-icon { color: var(--tc-select-text); }
+.ecfs-found__item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--tc-space-3);
+  align-items: center;
+  padding: var(--tc-space-3);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  margin-bottom: var(--tc-space-2);
+}
+.ecfs-found__notes { color: var(--tc-text-2); font-size: var(--tc-fs-xs); margin: var(--tc-space-2) 0; }
+.ecfs-found__close { flex-shrink: 0; min-height: 30px; padding: 0 var(--tc-space-2); font-size: var(--tc-fs-xs); }
+.ecfs-found__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--tc-space-3); margin-top: var(--tc-space-3); }
+
+/* ── Ventana de análisis ("como una IA") ─────────────────────────────── */
+/* Encima de cualquier ventana del POS (las de servicios van a 9999). */
+.ecfs-ai {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: grid;
+  place-items: center;
+  padding: var(--tc-space-4);
+  background: var(--tc-scrim);
+  backdrop-filter: blur(6px);
+  animation: ecfs-fade 0.2s ease both;
+}
+.ecfs-ai__panel {
+  position: relative;
+  width: min(440px, 100%);
+  padding: var(--tc-space-6);
+  border: 1px solid var(--tc-select-border);
+  border-radius: 16px;
+  background: var(--tc-surface);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  color: var(--tc-text);
+  overflow: hidden;
+  animation: ecfs-up 0.3s ease both;
+}
+/* Brillo de fondo que se mueve detrás del contenido */
+.ecfs-ai__panel::before {
+  content: '';
+  position: absolute;
+  inset: -40%;
+  background: radial-gradient(circle at 30% 30%, var(--tc-select-bg), transparent 45%),
+              radial-gradient(circle at 70% 70%, var(--tc-success-bg), transparent 45%);
+  animation: ecfs-spin 9s linear infinite;
+  pointer-events: none;
+}
+.ecfs-ai__panel > * { position: relative; }
+
+.ecfs-ai__orb {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto var(--tc-space-4);
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--tc-primary), var(--tc-success-text), var(--tc-select-text), var(--tc-primary));
+  animation: ecfs-spin 2.4s linear infinite, ecfs-pulse 1.8s ease-in-out infinite;
+  display: grid;
+  place-items: center;
+}
+.ecfs-ai__orb::after {
+  content: '';
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--tc-surface);
+}
+.ecfs-ai--done .ecfs-ai__orb { animation: none; background: var(--tc-success-text); }
+.ecfs-ai--done .ecfs-ai__orb::after { display: none; }
+.ecfs-ai--done .ecfs-ai__orb .tc-icon { position: absolute; color: var(--tc-on-success); }
+.ecfs-ai--error .ecfs-ai__orb { animation: none; background: var(--tc-danger-text); }
+.ecfs-ai--error .ecfs-ai__orb::after { display: none; }
+.ecfs-ai--error .ecfs-ai__orb .tc-icon { position: absolute; color: #fff; }
+.ecfs-ai__orb .tc-icon { display: none; }
+.ecfs-ai--done .ecfs-ai__orb .tc-icon,
+.ecfs-ai--error .ecfs-ai__orb .tc-icon { display: block; }
+
+.ecfs-ai__title {
+  text-align: center;
+  font-size: var(--tc-fs-lg);
+  font-weight: var(--tc-weight-bold);
+  background: linear-gradient(90deg, var(--tc-text) 0%, var(--tc-select-text) 50%, var(--tc-text) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ecfs-shimmer 2.2s linear infinite;
+}
+.ecfs-ai--done .ecfs-ai__title, .ecfs-ai--error .ecfs-ai__title { animation: none; color: var(--tc-text); background: none; }
+.ecfs-ai__subtitle { text-align: center; color: var(--tc-text-2); font-size: var(--tc-fs-sm); margin-top: var(--tc-space-1); }
+
+.ecfs-ai__steps { list-style: none; margin: var(--tc-space-5) 0 0; padding: 0; display: grid; gap: var(--tc-space-2); }
+.ecfs-ai__step {
+  display: flex;
+  align-items: center;
+  gap: var(--tc-space-3);
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-disabled-text);
+  transition: color 0.2s ease;
+}
+.ecfs-ai__step--active { color: var(--tc-text); }
+.ecfs-ai__step--done { color: var(--tc-text-2); }
+.ecfs-ai__dot {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--tc-border);
+}
+.ecfs-ai__step--active .ecfs-ai__dot {
+  border-color: var(--tc-select-border);
+  border-top-color: transparent;
+  animation: ecfs-spin 0.8s linear infinite;
+}
+.ecfs-ai__step--done .ecfs-ai__dot { border-color: var(--tc-success-text); background: var(--tc-success-text); color: var(--tc-on-success); }
+.ecfs-ai__step--fail .ecfs-ai__dot { border-color: var(--tc-danger-text); background: var(--tc-danger-text); color: #fff; }
+.ecfs-ai__dot .tc-icon { display: none; }
+.ecfs-ai__step--done .ecfs-ai__dot .tc-icon,
+.ecfs-ai__step--fail .ecfs-ai__dot .tc-icon { display: block; }
+
+.ecfs-ai__result {
+  min-height: 1.4em;
+  margin-top: var(--tc-space-4);
+  text-align: center;
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-medium);
+  color: var(--tc-text);
+}
+.ecfs-ai__result::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--tc-select-text);
+  animation: ecfs-blink 0.9s steps(2) infinite;
+}
+.ecfs-ai__result:empty::after, .ecfs-ai__result--typed::after { content: none; }
+.ecfs-ai__close { display: flex; justify-content: center; margin-top: var(--tc-space-4); }
+
+@keyframes ecfs-spin { to { transform: rotate(360deg); } }
+@keyframes ecfs-pulse { 50% { box-shadow: 0 0 0 10px var(--tc-select-bg); } }
+@keyframes ecfs-shimmer { to { background-position: -200% 0; } }
+@keyframes ecfs-blink { to { opacity: 0; } }
+@keyframes ecfs-fade { from { opacity: 0; } }
+@keyframes ecfs-up { from { opacity: 0; transform: translateY(8px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .ecfs-ai, .ecfs-ai__panel, .ecfs-ai__panel::before, .ecfs-ai__orb, .ecfs-ai__title,
+  .ecfs-ai__step--active .ecfs-ai__dot, .ecfs-found, .ecfs-ai__result::after {
+    animation: none !important;
+  }
+}

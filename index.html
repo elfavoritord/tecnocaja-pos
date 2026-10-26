@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/componentes.css">
 <link rel="stylesheet" href="css/modulos.css">
+<link rel="stylesheet" href="css/ecf-secuencias.css">
 <link rel="stylesheet" href="css/acceso.css">
 <link rel="stylesheet" href="css/cobro.css">
 <link rel="stylesheet" href="css/shell.css">
@@ -3204,6 +3205,89 @@
           </details>
         </div>
 
+        <!-- ══════════ SECUENCIAS e-NCF (PRODUCCIÓN) — js/ecf-sequences-config.js ══════════ -->
+        <div class="config-section" id="cfg-ecf-seq-section">
+          <h3 data-card-title="Secuencias de Comprobantes Electrónicos (e-NCF)" style="margin:0">Secuencias de Comprobantes Electrónicos (e-NCF)</h3>
+          <p class="helper-text" style="margin:0.3rem 0 1rem">
+            Aquí van los rangos e-NCF reales que te autorizó la DGII (serie E). Con estos se emiten las
+            facturas electrónicas que se envían a la DGII. Las secuencias de prueba de la certificación
+            quedan aparte, en e-CF · DGII → Secuencias.
+          </p>
+          <!-- Sucursal de una empresa (multisucursal): aviso en vez de la carga. -->
+          <div id="ecf-prod-seq-central"></div>
+          <!-- La carga va arriba de las secuencias: es lo que más se usa. -->
+          <div class="ecfs-upload" id="ecf-prod-seq-upload">
+            <div class="ecfs-upload__title">Cargar la autorización de la DGII</div>
+            <div class="ecfs-upload__hint">
+              En la Oficina Virtual (Consultas → Solicitudes de Comprobantes) descarga el detalle de cada
+              solicitud aprobada y súbelos aquí, uno o varios a la vez. El sistema lee el tipo, el rango, el Nº y la fecha de autorización.
+            </div>
+            <label class="ecfs-drop" id="ecf-prod-seq-drop">
+              <span class="ecfs-drop__icon" data-icon="upload"></span>
+              <span class="ecfs-drop__main">Arrastra aquí los archivos de la DGII (uno o varios) o haz clic para buscarlos</span>
+              <span class="ecfs-drop__formats"><span>XML</span><span>Excel</span><span>CSV</span></span>
+              <input type="file" id="ecf-prod-seq-dgii-file" accept=".xml,.xls,.xlsx,.csv" multiple hidden onchange="ecfProdSeqReadDgiiFile(this)">
+            </label>
+            <div id="ecf-prod-seq-dgii-preview"></div>
+            <details class="ecfs-paste">
+              <summary>o pega el texto de la respuesta</summary>
+              <textarea id="ecf-prod-seq-dgii-xml" class="form-input" rows="3" style="margin-top:0.4rem" placeholder="&lt;SolicitudNCF&gt; … &lt;NUM_AUTOR&gt; … &lt;NUMERO_DESDE&gt;E320000000001&lt;/NUMERO_DESDE&gt; …"></textarea>
+              <button class="btn-secondary" type="button" style="margin-top:0.4rem" onclick="ecfProdSeqPreviewFromText()">Leer el texto</button>
+            </details>
+          <details id="ecf-prod-seq-add" class="ecfs-paste">
+            <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Registrar secuencia a mano</summary>
+            <div class="ncf-seq-form" style="margin-top:0.6rem">
+              <div class="form-group">
+                <label>Tipo de comprobante</label>
+                <select id="ecf-prod-seq-type" class="form-input"></select>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div class="form-group">
+                  <label>Sucursal (vacío = global)</label>
+                  <select id="ecf-prod-seq-branch" class="form-input"><option value="">Global (todas las sucursales)</option></select>
+                </div>
+                <div class="form-group">
+                  <label>Caja (vacío = todas)</label>
+                  <select id="ecf-prod-seq-caja" class="form-input"><option value="">Global / todas las cajas</option></select>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div class="form-group">
+                  <label>Número inicial autorizado</label>
+                  <input type="number" id="ecf-prod-seq-desde" class="form-input" min="1" placeholder="Ej. 1">
+                </div>
+                <div class="form-group">
+                  <label>Número final autorizado</label>
+                  <input type="number" id="ecf-prod-seq-hasta" class="form-input" min="1" placeholder="Ej. 100">
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
+                <div class="form-group">
+                  <label>Nº de autorización DGII</label>
+                  <input type="text" id="ecf-prod-seq-referencia" class="form-input" maxlength="60" placeholder="NUM_AUTOR de la respuesta">
+                </div>
+                <div class="form-group">
+                  <label>Fecha de autorización</label>
+                  <input type="date" id="ecf-prod-seq-fecha-autorizacion" class="form-input">
+                </div>
+              </div>
+              <div class="form-group">
+                <label>Fecha de vencimiento (si la DGII puso una)</label>
+                <input type="date" id="ecf-prod-seq-vencimiento" class="form-input">
+              </div>
+              <div class="form-group">
+                <label class="checkbox-label"><input type="checkbox" id="ecf-prod-seq-rnc-confirm"> Confirmo que esta autorización corresponde al RNC de mi empresa</label>
+              </div>
+              <button class="btn-primary" type="button" onclick="saveEcfProdSequence()">Guardar secuencia</button>
+            </div>
+          </details>
+          </div>
+          <div id="ecf-prod-seq-env"></div>
+          <div id="ecf-prod-seq-list" class="ecfs-list">
+            <div class="loading-text">Cargando secuencias…</div>
+          </div>
+        </div>
+
         <!-- ══════════ GAVETA REGISTRADORA ══════════ -->
         <div class="config-section">
           <h3 id="cfg-section-drawer-title">Gaveta Registradora</h3>
@@ -4861,10 +4945,11 @@
         </div>
 
         <details id="fiscal-seq-add-details" style="margin-top:.8rem">
-          <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Agregar secuencia(s) e-NCF</summary>
+          <summary style="cursor:pointer;font-weight:600;color:var(--accent)">+ Agregar secuencia(s) de prueba</summary>
           <div style="background:var(--bg2);padding:1rem;border-radius:8px;margin-top:.6rem">
             <p style="font-size:.8rem;color:var(--text2);margin:0 0 .7rem">
-              Marca los tipos de comprobante que DGII te autorizó y llena los datos una sola vez — se crean todas juntas al guardar.
+              Solo para la certificación con la DGII (pruebas). Marca los tipos y llena los datos una sola vez — se crean todas juntas al guardar.
+              Los rangos reales van en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).
             </p>
             <div class="form-group" style="margin-bottom:.8rem">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.35rem">
@@ -4874,7 +4959,7 @@
                   <a href="#" onclick="event.preventDefault();toggleAllSequenceTypes(false)">Ninguno</a>
                 </span>
               </div>
-              <div id="fiscal-seq-types-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.4rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem">
+              <div id="fiscal-seq-types-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:.4rem .8rem;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.6rem .8rem">
                 <span class="loading-text" style="font-size:.8rem">Cargando tipos…</span>
               </div>
             </div>
@@ -4893,7 +4978,7 @@
               </div>
               <div class="form-group">
                 <label>Número final (Hasta)</label>
-                <input type="number" id="fiscal-seq-hasta" class="form-input" value="9999999999" min="1">
+                <input type="number" id="fiscal-seq-hasta" class="form-input" min="1" placeholder="Ej. 500">
               </div>
               <div class="form-group">
                 <label>Fecha de autorización</label>
@@ -5166,6 +5251,8 @@
 <script src="js/sync-status-widget.js"></script>
 <script src="js/sync-monitor.js"></script>
 <script src="js/system-health.js"></script>
+<script src="js/ventana-analisis.js"></script>
+<script src="js/catalogo-csv.js"></script>
 <script src="js/productos.js"></script>
 <script src="js/promociones.js"></script>
 <script src="js/rnc-lookup.js"></script>
@@ -5192,6 +5279,8 @@
 <!-- js/firebase-web-auth.js se carga solo al pulsar "Entrar con Google" (js/app.js: doGoogleLogin):
      sus módulos vienen de Internet y no deben frenar el arranque sin conexión. -->
 <script src="js/fiscal-ecf.js"></script>
+<script src="js/dgii-autorizacion.js"></script>
+<script src="js/ecf-sequences-config.js"></script>
 <script src="js/network-manager.js"></script>
 <script src="js/delivery-panel.js"></script>
 <script src="js/tienda-online.js"></script>

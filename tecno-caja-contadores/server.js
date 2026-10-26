@@ -903,13 +903,61 @@ app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) =
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Servicio del catálogo de una Empresa de Servicios (svc_services en el POS):
+// misma cola, con tipo 'servicio'. El código es opcional, el precio va sin
+// ITBIS y el ITBIS es un % (como en el Catálogo de servicios del POS). No va
+// por sucursal: el catálogo de servicios es de todo el negocio.
+const SERVICIOS_POS_VIEJO = 'Este negocio tiene una versión de Tecno Caja que no recibe servicios desde el portal: que actualice primero.';
+
+function datosServicioPendiente(body) {
+  return {
+    tipo:        'servicio',
+    codigo:      String(body.codigo || '').trim() || null,
+    nombre:      String(body.nombre || '').trim() || null,
+    descripcion: String(body.descripcion || '').trim(),
+    categoria:   String(body.categoria || '').trim() || 'General',
+    unidad:      String(body.unidad || '').trim() || 'servicio',
+    precioVenta: Math.max(0, Number(body.precioVenta || 0)),
+    itbisPct:    Math.min(100, Math.max(0, Number(body.itbisPct || 0))),
+    branchId:    null,
+    branchNombre: null,
+  };
+}
+
 app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
   const { businessId, accion, productoId, codigo, nombre, categoria, marca, unidad, saleMode,
           precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData,
-          tracksStock } = req.body;
+          tracksStock, tipo, servicioId } = req.body;
   const accionNorm = ['editar', 'eliminar'].includes(accion) ? accion : 'crear';
 
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  if (tipo === 'servicio') {
+    if (accionNorm !== 'crear' && !servicioId) return res.status(400).json({ error: 'Falta el servicio.' });
+    if (accionNorm !== 'eliminar' && (!nombre || !String(nombre).trim())) return res.status(400).json({ error: 'El nombre del servicio es obligatorio.' });
+    try {
+      const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
+      if (!bizDoc.exists || bizDoc.data().contadorId !== req.contador.contadorDocId) {
+        return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+      }
+      // Un POS viejo tomaría el servicio de la cola como si fuera un producto.
+      if (!Number(bizDoc.data().serviciosPortalVersion || 0)) {
+        return res.status(409).json({ error: SERVICIOS_POS_VIEJO });
+      }
+      const ref = await col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').add({
+        ...datosServicioPendiente(req.body),
+        accion:         accionNorm,
+        servicioId:     servicioId ? Number(servicioId) : null,
+        productoId:     null,
+        status:         'pendiente',
+        contadorId:     req.contador.contadorDocId,
+        contadorNombre: req.contador.nombre_firma,
+        createdAt:      isoNow(),
+        updatedAt:      isoNow(),
+      });
+      const doc = await ref.get();
+      return res.status(201).json(docData(doc));
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
   if (accionNorm === 'eliminar') {
     if (!productoId) return res.status(400).json({ error: 'Falta el producto a eliminar.' });
   } else {
@@ -973,11 +1021,117 @@ app.post('/api/productos-pendientes', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Importación de un CSV (lo lee js/catalogo-csv.js en el navegador): muchos
+// productos o servicios de una vez. Cada fila queda en la cola como 'crear'
+// con importado: true y las columnas que traía el archivo (campos): el POS
+// crea lo nuevo y, en lo que ya tiene (por código), cambia solo esas columnas
+// (apply-pending-products.js / pending-servicios.js del POS). Un lote de
+// Firestore admite 500 escrituras: el navegador manda de 500 en 500.
+const MAX_LOTE_CATALOGO = 500;
+const CAMPOS_CATALOGO = new Set([
+  'codigo', 'nombre', 'descripcion', 'categoria', 'marca', 'unidad', 'sucursal',
+  'precio', 'precioCompra', 'precioVenta', 'itbisPct', 'aplicaItbis', 'stock', 'stockMin', 'tracksStock', 'duracionMin', 'activo',
+]);
+
+app.post('/api/productos-pendientes/lote', requireAuth, async (req, res) => {
+  const { businessId, tipo, items } = req.body || {};
+  const servicio = tipo === 'servicio';
+  if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'El archivo no trae filas para importar.' });
+  if (items.length > MAX_LOTE_CATALOGO) return res.status(400).json({ error: `Máximo ${MAX_LOTE_CATALOGO} filas por envío.` });
+
+  try {
+    const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
+    const bizData = bizDoc.exists ? docData(bizDoc) : null;
+    if (!bizDoc.exists || bizData.contadorId !== req.contador.contadorDocId) {
+      return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+    }
+    if (servicio && !Number(bizData.serviciosPortalVersion || 0)) return res.status(409).json({ error: SERVICIOS_POS_VIEJO });
+
+    const destinos = new Map(); // sucursal pedida → destino validado
+    const docs = [];
+    for (const it of items) {
+      const fila = Number(it.fila) || null;
+      const donde = fila ? `Fila ${fila}: ` : '';
+      const campos = (Array.isArray(it.campos) ? it.campos : []).filter((c) => CAMPOS_CATALOGO.has(c));
+      const nombre = String(it.nombre || '').trim();
+      const codigo = String(it.codigo || '').trim();
+      if (servicio) {
+        if (!nombre) return res.status(400).json({ error: `${donde}falta el nombre del servicio.` });
+        docs.push({ ...datosServicioPendiente(it), accion: 'crear', servicioId: null, productoId: null, importado: true, campos, fila });
+        continue;
+      }
+      if (!codigo || !nombre) return res.status(400).json({ error: `${donde}el código y el nombre son obligatorios.` });
+      const clave = String(it.branchId || '');
+      if (!destinos.has(clave)) destinos.set(clave, await sucursalDelPedido(businessId, bizData, it.branchId));
+      const destino = destinos.get(clave);
+      if (destino.error) return res.status(400).json({ error: `${donde}${destino.error}` });
+      docs.push({
+        accion: 'crear',
+        productoId: null,
+        codigo,
+        nombre,
+        categoria: String(it.categoria || '').trim() || 'General',
+        marca: String(it.marca || '').trim(),
+        unidad: String(it.unidad || '').trim() || 'Unidad',
+        saleMode: 'unidad',
+        precioCompra: Math.max(0, Number(it.precioCompra || 0)),
+        precioVenta: Math.max(0, Number(it.precioVenta || 0)),
+        stock: Math.max(0, Number(it.stock || 0)),
+        stockMin: Math.max(0, Number(it.stockMin || 0)),
+        tracksStock: it.tracksStock !== false,
+        aplicaItbis: Boolean(it.aplicaItbis),
+        itbisModo: 'porcentaje',
+        itbisMonto: 0,
+        branchId: destino.normalizedBranchId,
+        branchNombre: destino.branchNombre,
+        sucursalesEmpresa: destino.sucursalesEmpresa,
+        imagenData: null,
+        importado: true,
+        campos,
+        fila,
+      });
+    }
+
+    const cola = col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes');
+    const batch = db.batch();
+    const ahora = isoNow();
+    for (const d of docs) {
+      batch.set(cola.doc(), {
+        ...d, status: 'pendiente', contadorId: req.contador.contadorDocId, contadorNombre: req.contador.nombre_firma,
+        createdAt: ahora, updatedAt: ahora,
+      });
+    }
+    await batch.commit();
+    res.status(201).json({ ok: true, registrados: docs.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put('/api/productos-pendientes/:businessId/:pendingId', requireAuth, async (req, res) => {
   const { businessId, pendingId } = req.params;
   const { codigo, nombre, categoria, marca, unidad, saleMode,
           precioCompra, precioVenta, stock, stockMin, aplicaItbis, itbisModo, itbisMonto, branchId, imagenData,
-          tracksStock } = req.body;
+          tracksStock, tipo } = req.body;
+
+  if (tipo === 'servicio') {
+    if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre del servicio es obligatorio.' });
+    try {
+      const bizDoc = await col(COL_LICENCIAS).doc(businessId).get();
+      if (!bizDoc.exists || bizDoc.data().contadorId !== req.contador.contadorDocId) {
+        return res.status(403).json({ error: 'No tienes acceso a ese negocio.' });
+      }
+      const pendingRef = col(COL_LICENCIAS).doc(businessId).collection('productos_pendientes').doc(pendingId);
+      const pendingDoc = await pendingRef.get();
+      if (!pendingDoc.exists) return res.status(404).json({ error: 'Ese servicio pendiente ya no existe.' });
+      if (pendingDoc.data().status === 'aplicado') {
+        return res.status(409).json({ error: 'Este servicio ya se aplicó en el sistema del cliente — edítalo desde la lista de servicios.' });
+      }
+      // accion/servicioId se conservan: son de qué trata la solicitud.
+      await pendingRef.update({ ...datosServicioPendiente(req.body), status: 'pendiente', errorMessage: null, updatedAt: isoNow() });
+      const doc = await pendingRef.get();
+      return res.json(docData(doc));
+    } catch (e) { return res.status(500).json({ error: e.message }); }
+  }
 
   if (!codigo || !String(codigo).trim()) return res.status(400).json({ error: 'El código es obligatorio.' });
   if (!nombre || !String(nombre).trim()) return res.status(400).json({ error: 'El nombre es obligatorio.' });
@@ -1058,11 +1212,13 @@ app.delete('/api/productos-pendientes/:businessId/:pendingId', requireAuth, asyn
 // ══════════════════════════════════════════════════════════════════════
 // SECUENCIAS NCF PENDIENTES
 // Mismo patrón que PRODUCTOS PENDIENTES arriba: el contador registra aquí
-// un rango NCF tradicional (B01-B17, catálogo completo — e-CF no aplica,
-// ese se certifica aparte) autorizado por la DGII para un negocio cliente.
-// Queda en cola en licencias/{businessId}/ncf_pendientes y lo aplica el POS
-// del cliente la próxima vez que sincronice (ver server/sync/apply-pending-ncf.js
-// del POS, mismo mecanismo que apply-pending-products.js).
+// un rango autorizado por la DGII para un negocio cliente — NCF tradicional
+// (B01-B17) o e-NCF de la factura electrónica (E31-E47), a mano o leído del
+// archivo de la DGII. Queda en cola en licencias/{businessId}/ncf_pendientes
+// y lo aplica el POS del cliente la próxima vez que sincronice (ver
+// server/sync/apply-pending-ncf.js del POS, mismo mecanismo que
+// apply-pending-products.js). Las e-NCF van a las secuencias de producción
+// del POS; editarlas o suspenderlas se hace allá.
 // ══════════════════════════════════════════════════════════════════════
 
 const NCF_DOCUMENT_TYPES = [
@@ -1073,7 +1229,13 @@ const NCF_DOCUMENT_TYPES = [
   { code: 'B15', label: 'Gubernamental' }, { code: 'B16', label: 'Comprobante para Exportaciones' },
   { code: 'B17', label: 'Comprobante para Pagos al Exterior' },
 ];
-const NCF_DOCUMENT_TYPE_CODES = NCF_DOCUMENT_TYPES.map((t) => t.code);
+// Mismos tipos que modules/ecf/config/document-types.js del POS.
+const ECF_DOCUMENT_TYPE_CODES = ['E31', 'E32', 'E33', 'E34', 'E41', 'E43', 'E44', 'E45', 'E46', 'E47'];
+const NCF_DOCUMENT_TYPE_CODES = [...NCF_DOCUMENT_TYPES.map((t) => t.code), ...ECF_DOCUMENT_TYPE_CODES];
+// Límites del POS (EcfRepository.saveSequence): el e-NCF lleva 10 dígitos y
+// la DGII autoriza cantidades concretas, no millones de una vez.
+const ECF_MAXIMO = 9999999999;
+const ECF_RANGO_MAXIMO = 1000000;
 function ncfScopesConflict(a, b) {
   const left = normalizeBranchId(a);
   const right = normalizeBranchId(b);
@@ -1082,6 +1244,11 @@ function ncfScopesConflict(a, b) {
 function ncfRangesOverlap(aStart, aEnd, bStart, bEnd) {
   return Number(aStart) <= Number(bEnd) && Number(aEnd) >= Number(bStart);
 }
+// En el espejo ncf_aplicadas las e-NCF del POS llevan id 'ecf-N'.
+function esSecuenciaEcf(localSequenceId) {
+  return String(localSequenceId || '').startsWith('ecf-');
+}
+const ECF_SE_ADMINISTRA_EN_POS = 'Las secuencias e-NCF se editan o suspenden en el POS del negocio (Configuración → Secuencias de Comprobantes Electrónicos).';
 
 app.get('/api/ncf-pendientes/:businessId', requireAuth, async (req, res) => {
   try {
@@ -1112,6 +1279,16 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
   if (!authorizationReference || !String(authorizationReference).trim()) {
     return res.status(400).json({ error: 'Indica la referencia de autorización de la DGII.' });
   }
+  const electronico = ECF_DOCUMENT_TYPE_CODES.includes(tipo);
+  if (electronico) {
+    if (hasta > ECF_MAXIMO) return res.status(400).json({ error: 'El e-NCF lleva 10 dígitos: el número final no puede pasar de 9999999999.' });
+    if (hasta - desde + 1 > ECF_RANGO_MAXIMO) {
+      return res.status(400).json({ error: 'Ese rango es demasiado grande para una autorización de la DGII. Copia el "desde" y el "hasta" exactos.' });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(authorizationDate || ''))) {
+      return res.status(400).json({ error: 'Indica la fecha en que la DGII autorizó el rango e-NCF.' });
+    }
+  }
   // Mismo guardia de tamaño que productos_pendientes (límite de 1MB por
   // documento de Firestore, con margen porque base64 infla ~33%).
   if (attachmentData && String(attachmentData).length > 700_000) {
@@ -1122,14 +1299,16 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
     const bizData = await ctbCheckAccess(req, businessId);
 
     let branchNombre = null;
-    const normalizedBranchId = normalizeBranchId(branchId);
+    let normalizedBranchId = normalizeBranchId(branchId);
     if (normalizedBranchId) {
       const sucursales = await conectadas.sucursales(businessId, normalizeBusinessBranches(bizData));
       const match = sucursales.find((s) => s.id === normalizedBranchId);
       if (!match) return res.status(400).json({ error: 'Esa sucursal ya no existe o no está sincronizada. Refresca e intenta de nuevo.' });
+      // La principal de la central: la secuencia de su POS, para toda su base.
+      if (match.principal) normalizedBranchId = null;
       // Una sucursal conectada por Internet tiene sus propios rangos, que
       // reparte la central (no la secuencia de la principal).
-      if (match.conectada) {
+      else if (match.conectada) {
         return res.status(400).json({ error: `${match.nombre} es una sucursal conectada: asígnale su rango en la sección Sucursales → Comprobantes fiscales por sucursal.` });
       }
       branchNombre = match.nombre;
@@ -1140,19 +1319,21 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
       licRef.collection('ncf_aplicadas').get(),
       licRef.collection('ncf_pendientes').get(),
     ]);
+    // Un e-NCF de producción no se repite en ninguna sucursal del POS (así lo
+    // valida EcfRepository.saveSequence): para la serie E no cuenta la sucursal.
     const aplicadaDuplicada = aplicadasSnap.docs.map(docData).find((seq) =>
       String(seq.documentType || seq.document_type || '').toUpperCase() === tipo &&
-      ncfScopesConflict(seq.branchId ?? seq.branch_id, normalizedBranchId) &&
+      (electronico || ncfScopesConflict(seq.branchId ?? seq.branch_id, normalizedBranchId)) &&
       ncfRangesOverlap(desde, hasta, seq.startNumber ?? seq.start_number, seq.endNumber ?? seq.end_number)
     );
     if (aplicadaDuplicada) {
-      return res.status(409).json({ error: 'Ese rango NCF se cruza con una secuencia ya aplicada en el POS.' });
+      return res.status(409).json({ error: `Ese rango ${tipo} se cruza con una secuencia ya aplicada en el POS.` });
     }
     const pendienteDuplicada = pendientesSnap.docs.map(docData).find((seq) =>
       (seq.action || 'create') === 'create' &&
       !['aplicado', 'cancelado'].includes(String(seq.status || '').toLowerCase()) &&
       String(seq.documentType || '').toUpperCase() === tipo &&
-      ncfScopesConflict(seq.branchId, normalizedBranchId) &&
+      (electronico || ncfScopesConflict(seq.branchId, normalizedBranchId)) &&
       ncfRangesOverlap(desde, hasta, seq.startNumber, seq.endNumber)
     );
     if (pendienteDuplicada) {
@@ -1222,6 +1403,7 @@ app.post('/api/ncf-pendientes/editar', requireAuth, async (req, res) => {
           authorizationDate, expirationDate, authorizationReference, notes } = req.body;
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
   if (!targetLocalSequenceId) return res.status(400).json({ error: 'Falta indicar qué secuencia editar.' });
+  if (esSecuenciaEcf(targetLocalSequenceId)) return res.status(400).json({ error: ECF_SE_ADMINISTRA_EN_POS });
 
   try {
     await ctbCheckAccess(req, businessId);
@@ -1252,6 +1434,7 @@ app.post('/api/ncf-pendientes/suspender', requireAuth, async (req, res) => {
   const { businessId, targetLocalSequenceId, reason } = req.body;
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
   if (!targetLocalSequenceId) return res.status(400).json({ error: 'Falta indicar qué secuencia suspender.' });
+  if (esSecuenciaEcf(targetLocalSequenceId)) return res.status(400).json({ error: ECF_SE_ADMINISTRA_EN_POS });
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'Indica el motivo de la suspensión.' });
 
   try {
@@ -1280,6 +1463,7 @@ app.post('/api/ncf-pendientes/eliminar', requireAuth, async (req, res) => {
   const { businessId, targetLocalSequenceId, reason } = req.body;
   if (!businessId) return res.status(400).json({ error: 'Selecciona un negocio.' });
   if (!targetLocalSequenceId) return res.status(400).json({ error: 'Falta indicar qué secuencia eliminar.' });
+  if (esSecuenciaEcf(targetLocalSequenceId)) return res.status(400).json({ error: ECF_SE_ADMINISTRA_EN_POS });
   if (!reason || !String(reason).trim()) return res.status(400).json({ error: 'Indica el motivo de la eliminación.' });
 
   try {
@@ -1418,6 +1602,12 @@ app.get('/api/reportes/:businessId', requireAuth, async (req, res) => {
         planCode:     data.planCode     || data.plan_code || '—',
         syncedAt:     data.syncedAt     || data.updatedAt || null,
         hasPosData:   !!data.posStats,
+        // 2 = su POS informa también las e-NCF (server/sync/sync-pos-stats.js del POS).
+        ncfEspejoVersion: Number(data.ncfEspejoVersion || 0),
+        // Empresa de Servicios: vende servicios (catálogo svc_services), no productos.
+        serviceCompany: Boolean(data.serviceCompany || String(data.vertical || data.tipo_negocio || '').startsWith('srv_')),
+        // 1 = su POS publica y recibe servicios (server/sync/pending-servicios.js del POS).
+        serviciosPortalVersion: Number(data.serviciosPortalVersion || 0),
         sucursales,
         cashRegisters,
       },
@@ -1463,8 +1653,9 @@ app.get('/api/reportes/:businessId/datos', requireAuth, async (req, res) => {
 
     // Más lo que publica cada PC de sucursal conectada (bajo su propia licencia).
     const filasSucursales = await conectadas.filas(req.params.businessId, tab);
+    const filasPrincipal = await conectadas.filasDeLaPrincipal(req.params.businessId, tabDoc.exists ? (tabDoc.data().rows || []) : []);
     const hasPosData = data.posStats || tabDoc.exists || filasSucursales.length;
-    let rows = [...(tabDoc.exists ? (tabDoc.data().rows || []) : []), ...filasSucursales].map(normalizeReportRow);
+    let rows = [...filasPrincipal, ...filasSucursales].map(normalizeReportRow);
 
     // Aplicar filtros del cliente
     if (desde) rows = rows.filter(r => r.fecha && r.fecha >= desde);

@@ -387,7 +387,9 @@ function generateEcfXml(payload) {
   const emisor = encabezado.ele('Emisor');
   emisor.ele('RNCEmisor').txt(sanitizeText(emitter.rnc));
   emisor.ele('RazonSocialEmisor').txt(sanitizeText(emitter.razonSocial || emitter.razon_social));
-  appendIfValue(emisor, 'NombreComercial', sanitizeText(emitter.nombreComercial || emitter.nombre_comercial));
+  // Opcional en la DGII: sin nombre comercial la etiqueta no va (antes lanzaba
+  // "campo obligatorio vacío" después de apartar el e-NCF).
+  appendIfValue(emisor, 'NombreComercial', sanitizeText(emitter.nombreComercial || emitter.nombre_comercial, { allowEmpty: true }));
   appendIfValue(emisor, 'DireccionEmisor', sanitizeText(emitter.direccion, { allowEmpty: true }));
   const emitterPhones = normalizeEmitterPhones(emitter.telefono);
   if (emitterPhones.length) {

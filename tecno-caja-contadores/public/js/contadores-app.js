@@ -168,7 +168,8 @@ function verticalLabel(c) {
 }
 function verticalBadge(c) {
   if (!esServicios(c)) return '';
-  return `<span class="badge" style="background:rgba(14,165,233,.14);color:#0369a1;border:1px solid rgba(14,165,233,.3)">🏢 ${verticalLabel(c)}</span>`;
+  // Colores del tema (día y noche), no fijos: en modo noche el azul oscuro no se leía.
+  return `<span class="pill pill-info">🏢 ${esc(verticalLabel(c))}</span>`;
 }
 
 function solBadge(s) {
@@ -227,7 +228,7 @@ function goto(mod) {
   if (mod === 'negocios')         loadClientes();
   if (mod === 'licencias')        loadLicencias();
   if (mod === 'solicitudes')      loadSolicitudes();
-  if (mod === 'configuracion')    loadPerfil();
+  if (mod === 'configuracion')    { cfgIr(); loadPerfil(); }
   if (mod === 'actualizaciones')  loadActualizaciones();
   if (mod === 'reportes')         loadReportes();
   if (mod === 'facturacion')      loadFacturacion();
@@ -1257,9 +1258,78 @@ function contactarNegocio(tel, nombre) {
   window.open(`https://wa.me/1${tel}?text=${msg}`, '_blank');
 }
 
+// ── Ficha del negocio (Negocios → abrir) ─────────────────────────────────
+// Una sola tarjeta: nombre, estado y plan arriba; en la cuadrícula solo los
+// datos que tiene el negocio (sin filas con "—"); lo técnico al pie, en
+// pequeño. Si es Empresa de Servicios, su mes en una fila de cifras.
+function _fichaNegocio(c, id) {
+  const svc = esServicios(c);
+  const nombre = c.businessName || c.businessKey || id;
+  const tipo = svc ? verticalLabel(c) : String(c.tipo_negocio || '').replace(/^./, (l) => l.toUpperCase());
+  const sub = [
+    c.rnc ? `RNC ${esc(c.rnc)}` : '',
+    esc(tipo),
+    esc([c.direccion, c.provincia].filter(Boolean).join(', ')),
+  ].filter(Boolean).join(' · ');
+
+  const dias = c.diasRestantes;
+  const vence = vencimientoFecha(c);
+  const licencia = vence
+    ? `${esc(fmtDate(vence))} · <span class="${diasClass(dias)}">${esc(diasLabel(dias))}</span>`
+    : (String(c.status) === 'active' ? 'Sin vencimiento' : '');
+  const sucursales = Number(c.cantidad_sucursales || 0);
+  const cajas = Number(c.cantidad_cajas || 0);
+  const estructura = [
+    sucursales ? _plural(sucursales, 'sucursal', 'sucursales') : '',
+    cajas ? _plural(cajas, 'caja', 'cajas') : '',
+  ].filter(Boolean).join(' · ');
+
+  const datos = [
+    ['Propietario', esc(c.propietario || '')],
+    ['Teléfono', c.telefono ? `<a href="tel:${esc(c.telefono)}">${esc(c.telefono)}</a>` : ''],
+    ['Correo', c.correo ? `<a href="mailto:${esc(c.correo)}">${esc(c.correo)}</a>` : ''],
+    ['Razón social', c.razon_social && c.razon_social !== c.businessName ? esc(c.razon_social) : ''],
+    [String(c.status) === 'active' ? 'Licencia' : 'Prueba vence', licencia],
+    ['Cliente desde', c.trialStartedAt ? esc(fmtDate(c.trialStartedAt)) : ''],
+    ['Estructura', estructura],
+    ['Última sincronización', c.syncedAt ? esc(fmtDate(c.syncedAt)) : '<span class="text-orange">Nunca</span>'],
+  ].filter(([, v]) => v)
+    .map(([k, v]) => `<div class="det-dato"><span>${k}</span><strong>${v}</strong></div>`).join('');
+
+  const s = (c.posStats && c.posStats.servicios) || {};
+  const servicios = svc ? `
+    <div class="det-cifras" aria-label="Servicios del mes">
+      <div><span>Facturado (mes)</span><strong class="num">${fmtMoney(s.facturadoMes || 0)}</strong><small>${_plural(Number(s.facturasMes || 0), 'factura', 'facturas')}</small></div>
+      <div><span>Cobrado (mes)</span><strong class="num">${fmtMoney(s.cobradoMes || 0)}</strong></div>
+      <div><span>Por cobrar</span><strong class="num">${fmtMoney(s.cuentasPorCobrar || 0)}</strong><small>${_plural(Number(s.facturasPendientes || 0), 'factura pendiente', 'facturas pendientes')}</small></div>
+      <div><span>Cotizaciones abiertas</span><strong class="num">${Number(s.cotizacionesAbiertas || 0)}</strong></div>
+    </div>` : '';
+
+  const plan = _planTexto(c);
+  return {
+    nombre,
+    iniciales: _iniciales(nombre),
+    pills: `${statusBadge(c.status || 'trial')}${plan ? `<span class="pill pill-neutral">${esc(plan)}</span>` : ''}${svc ? verticalBadge(c) : ''}`,
+    sub,
+    datos,
+    servicios,
+    pie: `Clave <code>${esc(c.businessKey || c.id || id)}</code>${c.source ? ` · Origen ${esc(c.source)}` : ''}`,
+  };
+}
+
+// "Ver reportes" de la ficha: Reportes con ese negocio elegido.
+function verReportesNegocio(id) {
+  if (!id) return;
+  _repNegocioId = id;
+  goto('reportes');
+}
+
 async function verCliente(id) {
   _currentClienteId = id;
   goto('cliente-detalle');
+  const comprobantesEl = $id('det-comprobantes');
+  if (comprobantesEl) comprobantesEl.innerHTML = '<p style="color:var(--text-muted)">Cargando…</p>';
+  cargarComprobantesNegocio(id);
   try {
     await refreshToken();
     const [c, hist] = await Promise.all([
@@ -1267,61 +1337,14 @@ async function verCliente(id) {
       apiCall('GET', `/api/licencias/${id}`).catch(() => []),
     ]);
 
-    const nombreEl = $id('det-nombre');
-    if (nombreEl) {
-      nombreEl.innerHTML = esc(c.businessName || c.businessKey || id) + (esServicios(c) ? ' ' + verticalBadge(c) : '');
-    }
-    setText('det-key', c.businessKey || id);
-
-    const dias = c.diasRestantes;
-    const pct  = dias !== null ? Math.min(100, Math.max(0, (dias / 30) * 100)) : 0;
-    const barCls = dias <= 7 ? 'progress-red' : dias <= 15 ? 'progress-orange' : 'progress-green';
-
-    const svc = esServicios(c);
-    const s = (c.posStats && c.posStats.servicios) || {};
-    const infoNeg = $id('det-info-negocio');
-    if (infoNeg) infoNeg.innerHTML = [
-      ['Nombre comercial', c.businessName || '—'],
-      ['Razón social',     c.razon_social  || '—'],
-      ['RNC / Cédula',     c.rnc           || '—'],
-      ['Tipo de negocio',  svc ? verticalLabel(c) : (c.tipo_negocio || '—')],
-      ['Dirección',        c.direccion     || '—'],
-      ['Provincia',        c.provincia     || '—'],
-    ].map(([k, v]) => `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`).join('')
-      + (svc ? `
-        <div class="info-row" style="border-top:1px solid #e2e8f0;margin-top:6px;padding-top:8px"><span class="info-key" style="font-weight:700;color:#0369a1">Servicios (mes)</span><span class="info-val"></span></div>
-        <div class="info-row"><span class="info-key">Facturado</span><span class="info-val">${fmtMoney(s.facturadoMes || 0)} · ${Number(s.facturasMes || 0)} fact.</span></div>
-        <div class="info-row"><span class="info-key">Cobrado</span><span class="info-val">${fmtMoney(s.cobradoMes || 0)}</span></div>
-        <div class="info-row"><span class="info-key">Cuentas por cobrar</span><span class="info-val">${fmtMoney(s.cuentasPorCobrar || 0)}</span></div>
-        <div class="info-row"><span class="info-key">Facturas pendientes</span><span class="info-val">${Number(s.facturasPendientes || 0)}</span></div>
-        <div class="info-row"><span class="info-key">Cotizaciones abiertas</span><span class="info-val">${Number(s.cotizacionesAbiertas || 0)}</span></div>` : '');
-
-    const infoLic = $id('det-info-licencia');
-    if (infoLic) infoLic.innerHTML = `
-      <div style="margin-bottom:12px">${statusBadge(c.status || 'trial')}</div>
-      <div class="info-list">
-        <div class="info-row"><span class="info-key">Plan</span><span class="info-val">${c.planCode || c.plan_code || '—'}</span></div>
-        <div class="info-row"><span class="info-key">Inicio prueba</span><span class="info-val">${fmtDate(c.trialStartedAt)}</span></div>
-        <div class="info-row"><span class="info-key">Vencimiento</span><span class="info-val ${diasClass(dias)}">${fmtDate(vencimientoFecha(c))}</span></div>
-        <div class="info-row"><span class="info-key">Días restantes</span><span class="info-val ${diasClass(dias)} text-bold">${diasLabel(dias)}</span></div>
-      </div>
-      ${dias !== null ? `<div class="progress-wrap mt-4"><div class="progress-bar ${barCls}" style="width:${pct}%"></div></div>` : ''}`;
-
-    const infoContacto = $id('det-info-contacto');
-    if (infoContacto) infoContacto.innerHTML = [
-      ['Propietario', c.propietario || '—'],
-      ['Teléfono',    c.telefono    || '—'],
-      ['Correo',      c.correo      || '—'],
-    ].map(([k, v]) => `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`).join('');
-
-    const infoTec = $id('det-info-tecnico');
-    if (infoTec) infoTec.innerHTML = [
-      ['Sucursales',   c.cantidad_sucursales || '—'],
-      ['Cajas',        c.cantidad_cajas      || '—'],
-      ['Business Key', `<code style="font-size:11px">${c.businessKey || c.id}</code>`],
-      ['Origen',       c.source              || '—'],
-      ['Último sync',  fmtDate(c.syncedAt)],
-    ].map(([k, v]) => `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`).join('');
+    const ficha = _fichaNegocio(c, id);
+    setText('det-nombre', ficha.nombre);
+    setText('det-avatar', ficha.iniciales);
+    const pills = $id('det-pills'); if (pills) pills.innerHTML = ficha.pills;
+    const sub = $id('det-sub'); if (sub) sub.innerHTML = ficha.sub;
+    const datos = $id('det-datos'); if (datos) datos.innerHTML = ficha.datos;
+    const servicios = $id('det-servicios'); if (servicios) servicios.innerHTML = ficha.servicios;
+    const pie = $id('det-key'); if (pie) pie.innerHTML = ficha.pie;
 
     const hTbody = $id('det-historial-tbody');
     if (hTbody) {
@@ -1502,6 +1525,49 @@ async function enviarSolicitud() {
 // PERFIL / CONFIGURACIÓN
 // ══════════════════════════════════════════════════════════════════════
 
+// Secciones de Configuración (menú de la izquierda, una a la vez). Los datos
+// de la firma y el diseño de la factura van al perfil con "Guardar cambios";
+// lo demás se guarda al momento o con su propio botón.
+const CFG_SECCIONES = {
+  firma:      { sub: 'Los datos y el logo de tu firma', guardar: true },
+  factura:    { sub: 'La plantilla y el color de tus facturas y cotizaciones', guardar: true },
+  recibo:     { sub: 'El recibo de pago en impresora térmica, de esta computadora' },
+  correo:     { sub: 'Tu Gmail para enviarles las facturas a tus clientes' },
+  apariencia: { sub: 'Modo día o noche y tamaño de la pantalla, de esta computadora' },
+  ia:         { sub: 'La llave de Google Gemini del asistente virtual' },
+};
+let _cfgSeccion = 'firma';
+
+// Sin sección: la última que se abrió (una oculta, como la del asistente, no vale).
+function cfgIr(seccion) {
+  let s = CFG_SECCIONES[seccion] ? seccion : _cfgSeccion;
+  if ($id(`cfg-nav-${s}`)?.style.display === 'none') s = 'firma';
+  _cfgSeccion = s;
+  document.querySelectorAll('[data-cfg]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.cfg === s)));
+  document.querySelectorAll('[data-cfg-panel]').forEach((p) => { p.hidden = p.dataset.cfgPanel !== s; });
+  setText('cfg-sub', CFG_SECCIONES[s].sub);
+  const guardar = $id('cfg-btn-guardar');
+  if (guardar) guardar.style.display = CFG_SECCIONES[s].guardar ? '' : 'none';
+  $id('main-content')?.scrollTo(0, 0);
+}
+
+// Abre Configuración en una sección (y pone el cursor en un campo).
+function irAConfig(seccion, campo) {
+  goto('configuracion');
+  cfgIr(seccion);
+  if (campo) setTimeout(() => $id(campo)?.focus(), 250);
+}
+
+// Estado al lado de Recibo de pago y Correo de envío en el menú.
+function _cfgPintarEstados() {
+  const pinta = (id, texto, clase) => {
+    const el = $id(id);
+    if (el) el.innerHTML = texto ? `<span class="pill ${clase}">${texto}</span>` : '';
+  };
+  pinta('cfg-estado-recibo', reciboConfig().activo ? 'Activo' : '', 'pill-ok');
+  if (_emailCfg) pinta('cfg-estado-correo', _emailCfg.configured ? 'Listo' : 'Falta', _emailCfg.configured ? 'pill-ok' : 'pill-warn');
+}
+
 async function loadPerfil() {
   try {
     await refreshToken();
@@ -1522,6 +1588,8 @@ async function loadPerfil() {
   }
   loadConfigCorreo();
   loadConfigIA();
+  reciboPintarConfig();
+  reciboCargarImpresoras();
 }
 
 // ── Diseño de la factura (plantillas A4 del POS) ─────────────────────────
@@ -1570,6 +1638,7 @@ async function loadConfigCorreo() {
   } catch (e) {
     if (est) est.textContent = 'Error: ' + e.message;
   }
+  _cfgPintarEstados();
 }
 
 async function guardarConfigCorreo() {
@@ -1948,10 +2017,12 @@ async function savePerfil() {
       datos.factura_color = $id('cfg-invoice-color')?.value || '';
     }
     await apiCall('PUT', '/api/perfil', datos);
-    // Las facturas se imprimen con el perfil de la sesión (_perfil): el
-    // diseño nuevo vale desde ya, sin volver a iniciar sesión.
+    // Las facturas y los recibos se imprimen con el perfil de la sesión
+    // (_perfil): los datos, el logo y el diseño nuevos valen desde ya, sin
+    // volver a iniciar sesión.
     if (_perfil) {
-      _perfil.direccion = datos.direccion;
+      ['responsable', 'direccion', 'correo', 'telefono', 'whatsapp', 'logo_url'].forEach((k) => { _perfil[k] = datos[k]; });
+      if (datos.nombre_firma) _perfil.nombre_firma = datos.nombre_firma;
       if (tplEl) {
         _perfil.factura_plantilla = datos.factura_plantilla;
         _perfil.factura_color = datos.factura_color || null;
@@ -2280,6 +2351,7 @@ let _repProductosRows = []; // último data.rows del tab 'productos' — para po
 let _repStatsGlobal  = null; // stats.* del negocio completo (posStats sincronizado por el POS), para volver a "Todas"
 let _repHasPosData   = false;
 let _repVentasRows   = []; // filas del tab 'ventas' (últimos 30 días) — reusadas por el gráfico y por las tarjetas al filtrar por sucursal
+let _repPosInformaEcf = null; // ¿su POS informa las e-NCF? (ncfEspejoVersion ≥ 2)
 
 // `aligns` es paralelo a `cols` — debe calzar 1 a 1 con la alineación real
 // que usa cada <td> en renderFila() (clases td-amount → right, style
@@ -2339,7 +2411,15 @@ async function loadReportes() {
     $id('rep-state-empty').style.display = '';
     $id('rep-state-data').style.display  = 'none';
     $id('rep-biz-status').style.display  = 'none';
+    _repAccionesNegocio(false);
   }
+}
+
+// Botones del negocio elegido en la cabecera (Ver reportes detallados,
+// Productos, ITBIS / DGII, Reporte mensual): solo con un negocio.
+function _repAccionesNegocio(visible) {
+  const el = $id('rep-acciones-negocio');
+  if (el) el.style.display = visible ? '' : 'none';
 }
 
 async function selNegocioReporte(id) {
@@ -2349,6 +2429,7 @@ async function selNegocioReporte(id) {
     _repNegocioSucursales = [];
     $id('rep-state-empty').style.display = '';
     $id('rep-state-data').style.display  = 'none';
+    _repAccionesNegocio(false);
     loadProductosPendientes();
     loadNcfPendientes();
     loadNcfAplicadas();
@@ -2358,9 +2439,13 @@ async function selNegocioReporte(id) {
   _repNegocioId = id;
   $id('rep-state-empty').style.display = 'none';
   $id('rep-state-data').style.display  = '';
+  _repAccionesNegocio(true);
 
   // Show loading state in table
   $id('rep-table-inner').innerHTML = `<div class="rep-loading"><div class="rep-spinner"></div>Cargando datos del negocio…</div>`;
+  setText('rs-comprobantes', '—');
+  const comprobantesEl = $id('rep-comprobantes');
+  if (comprobantesEl) comprobantesEl.innerHTML = '<div class="rep-loading"><div class="rep-spinner"></div>Cargando…</div>';
   setText('rep-biz-name', '…');
   setText('rep-biz-meta', '');
   $id('rep-biz-chips').innerHTML = '';
@@ -2371,6 +2456,11 @@ async function selNegocioReporte(id) {
     _repNegocioSucursales = Array.isArray(data.negocio?.sucursales) ? data.negocio.sucursales : [];
     _repStatsGlobal = data.stats;
     _repHasPosData  = data.negocio.hasPosData;
+    _repPosInformaEcf = _posInformaEcf(data.negocio);
+    _repEsServicios = Boolean(data.negocio?.serviceCompany);
+    _repServiciosPortal = Number(data.negocio?.serviciosPortalVersion || 0) >= 1;
+    _pintarCatalogoTipo();
+    cargarComprobantesActivos(id);
     renderSucursalReporteFilter();
     renderBizBar(data.negocio);
     await actualizarStatsPorSucursal();
@@ -2498,13 +2588,17 @@ function renderTablaReporte(data) {
 
   if (_repTab === 'productos') _repProductosRows = data.rows || [];
 
-  const cols = REP_TABS[_repTab]?.cols || [];
+  // Empresa de Servicios: la pestaña Productos es su catálogo de servicios.
+  const cols = _repTab === 'productos' && _repEsServicios
+    ? ['Código', 'Servicio', 'Sucursal', 'Categoría', 'Precio', 'Costo', 'Unidad', 'Facturados', 'Acciones']
+    : REP_TABS[_repTab]?.cols || [];
   const aligns = REP_TABS[_repTab]?.aligns || [];
   if (!data.rows || !data.rows.length) {
+    const posViejo = _repTab === 'productos' && _repEsServicios && !_repServiciosPortal;
     inner.innerHTML = `<div class="rep-no-sync">
       <div class="rep-no-sync-icon">📭</div>
-      <div class="rep-no-sync-title">Sin resultados</div>
-      <div class="rep-no-sync-sub">No hay datos para los filtros seleccionados.</div>
+      <div class="rep-no-sync-title">${posViejo ? 'Sin servicios todavía' : 'Sin resultados'}</div>
+      <div class="rep-no-sync-sub">${posViejo ? SERVICIOS_POS_VIEJO : 'No hay datos para los filtros seleccionados.'}</div>
     </div>`;
     return;
   }
@@ -2546,6 +2640,24 @@ function renderFila(row, tab) {
         `<td>${row.estado || '—'}</td>`,
       ]; break;
     case 'productos':
+      // Servicio del catálogo de la Empresa de Servicios: sin costo ni stock.
+      if (_esFilaServicio(row)) {
+        cells = [
+          `<td class="td-ncf">${esc(row.codigo || '—')}</td>`,
+          `<td class="td-nombre">${esc(row.nombre || '—')} <span class="pill pill-info">Servicio</span>${row.descripcion ? `<div class="text-muted" style="font-size:12px">${esc(row.descripcion)}</div>` : ''}</td>`,
+          '<td>Global</td>',
+          `<td>${esc(row.categoria || '—')}</td>`,
+          `<td class="td-amount">${fmtMoney(row.precio)}${row.itbisPct ? `<div class="text-muted" style="font-size:11.5px">+ ${esc(row.itbisPct)}% ITBIS</div>` : ''}</td>`,
+          '<td class="td-amount">—</td>',
+          `<td style="text-align:center"><span class="text-muted">${esc(row.unidad || 'servicio')}</span></td>`,
+          `<td style="text-align:center">${row.vendidos ?? '—'}</td>`,
+          `<td style="text-align:center;white-space:nowrap"><div class="rep-acc">
+             <button class="btn-icono" data-icono="pencil" title="Editar servicio" aria-label="Editar servicio" onclick="app.editarServicioReal('${esc(row.id)}')"></button>
+             <button class="btn-icono is-danger" data-icono="trash-2" title="Pedir que se dé de baja" aria-label="Dar de baja el servicio" onclick="app.darDeBajaServicio('${esc(row.id)}')"></button>
+           </div></td>`,
+        ];
+        break;
+      }
       cells = [
         `<td class="td-ncf">${row.codigo || '—'}</td>`,
         `<td class="td-nombre">${row.nombre || '—'}</td>`,
@@ -2815,7 +2927,7 @@ function renderProductosPendientes() {
   // de abajo, mostrarlo dos veces confundía.
   const pendientes = _productosPendientes.filter((p) => p.status !== 'aplicado');
   if (!pendientes.length) {
-    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">No hay productos pendientes por sincronizar.</div>`;
+    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">No hay ${_repEsServicios ? 'servicios' : 'productos'} pendientes por sincronizar.</div>`;
     return;
   }
   const badges = { pendiente: '🟡 Pendiente de sincronizar', error: '🔴 Error' };
@@ -2827,14 +2939,15 @@ function renderProductosPendientes() {
         ${pendientes.map(p => {
           const accion = p.accion || 'crear';
           const esEliminar = accion === 'eliminar';
+          const servicio = p.tipo === 'servicio';
           return `
           <tr>
-            <td>${accionBadges[accion] || accion}</td>
-            <td>${p.codigo || '—'}</td>
-            <td>${p.nombre || '—'}${p.tieneImagen ? ' 📷' : ''}</td>
+            <td>${servicio && esEliminar ? 'Dar de baja' : (accionBadges[accion] || accion)}</td>
+            <td>${esc(p.codigo || '—')}</td>
+            <td>${esc(p.nombre || '—')}${p.tieneImagen ? ' 📷' : ''}${servicio ? ' <span class="pill pill-info">Servicio</span>' : ''}</td>
             <td>${p.branchNombre || '🌐 Global'}</td>
-            <td>${esEliminar ? '—' : fmtMoney(p.precioVenta)}</td>
-            <td>${esEliminar ? '—' : p.tracksStock === false ? '<span class="text-muted">No controla inventario</span>' : (p.stock ?? 0)}</td>
+            <td>${esEliminar ? '—' : fmtMoney(p.precioVenta)}${servicio && !esEliminar && p.itbisPct ? ` <small class="text-muted">+ ${esc(p.itbisPct)}% ITBIS</small>` : ''}</td>
+            <td>${esEliminar ? '—' : servicio ? '<span class="text-muted">Servicio</span>' : p.tracksStock === false ? '<span class="text-muted">No controla inventario</span>' : (p.stock ?? 0)}</td>
             <td>${badges[p.status] || p.status || '—'}</td>
             <td>${p.status === 'error' ? (p.errorMessage || '') : ''}</td>
             <td style="display:flex;gap:6px">
@@ -2887,7 +3000,7 @@ function _apLlenarUnidades(actual) {
 function _apLlenarCategorias() {
   const lista = $id('ap-categorias');
   if (!lista) return;
-  const cats = [...new Set(_repProductosRows.map((p) => String(p.categoria || '').trim()).filter(Boolean))]
+  const cats = [...new Set(_repProductosRows.filter((p) => !_esFilaServicio(p)).map((p) => String(p.categoria || '').trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b, 'es'));
   lista.innerHTML = cats.map((c) => `<option value="${esc(c)}"></option>`).join('');
 }
@@ -3070,6 +3183,13 @@ function _apRellenar(d) {
 function editarProductoPendiente(pendingId) {
   const p = _productosPendientes.find((item) => item.id === pendingId);
   if (!p) { toast('No se encontró ese producto pendiente.', 'error'); return; }
+  if (p.tipo === 'servicio') {
+    abrirServicioModal();
+    _asPendienteId = pendingId;
+    _asRellenar(p);
+    _asModo('pendiente');
+    return;
+  }
 
   abrirAgregarProductoModal();
   _editingPendingProductId = pendingId;
@@ -3203,12 +3323,536 @@ async function guardarProductoPendiente() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// SERVICIOS (Empresa de Servicios)
+// El catálogo de servicios del POS (svc_services) sale en la pestaña
+// Productos (filas tipo 'servicio', id 'svc-N', ver sync-pos-stats.js del
+// POS). Agregar, editar o dar de baja va por la misma cola que los productos
+// con tipo 'servicio' (server/sync/pending-servicios.js del POS). El precio
+// se guarda sin ITBIS y el ITBIS es un % que se suma en la factura, igual que
+// en el Catálogo de servicios del POS. Un negocio que no es Empresa de
+// Servicios vende servicios como productos sin control de inventario.
+// ══════════════════════════════════════════════════════════════════════
+
+const AS_UNIDADES = ['servicio', 'hora', 'día', 'semana', 'mes', 'año', 'visita', 'sesión', 'proyecto', 'unidad'];
+let _repEsServicios = false; // el negocio de Reportes es Empresa de Servicios
+let _repServiciosPortal = false; // su POS publica y recibe servicios (serviciosPortalVersion ≥ 1)
+const SERVICIOS_POS_VIEJO = 'Este negocio tiene una versión de Tecno Caja que todavía no le manda sus servicios al portal ni los recibe desde aquí. Cuando actualice, aparecen aquí.';
+let _asItbis = 18;
+let _asPendienteId = null;   // editando un servicio que todavía está en la cola
+let _asServicioId = null;    // pidiendo editar uno que ya está en el POS (id local)
+
+function _esFilaServicio(row) { return row && row.tipo === 'servicio'; }
+function _idServicio(rowId) { return Number(String(rowId || '').replace(/^svc-/, '')) || null; }
+
+// En una Empresa de Servicios la pestaña Productos es su catálogo de servicios.
+function _pintarCatalogoTipo() {
+  document.querySelectorAll('.rep-lbl-productos').forEach((el) => { el.textContent = _repEsServicios ? 'Servicios' : 'Productos'; });
+  const prod = $id('rep-btn-agregar-producto');
+  const serv = $id('rep-btn-agregar-servicio');
+  if (prod) { prod.style.display = _repEsServicios ? 'none' : ''; prod.className = 'btn btn-primary'; }
+  if (serv) serv.className = `btn ${_repEsServicios ? 'btn-primary' : 'btn-secondary'}`;
+}
+
+function asElegirItbis(pct) {
+  _asItbis = [0, 16, 18].includes(Number(pct)) ? Number(pct) : 18;
+  document.querySelectorAll('[data-as-itbis]').forEach((b) => b.setAttribute('aria-checked', String(Number(b.dataset.asItbis) === _asItbis)));
+  const incluye = $id('as-incluye-wrap');
+  if (incluye) incluye.style.display = _asItbis ? '' : 'none';
+  asCalcular();
+}
+
+function _asPrecios() {
+  const precio = Math.max(0, Number($id('as-precio')?.value || 0));
+  const incluye = _asItbis > 0 && Boolean($id('as-precio-incluye')?.checked);
+  const base = _apRedondear(incluye ? precio / (1 + _asItbis / 100) : precio);
+  const itbis = _apRedondear(base * _asItbis / 100);
+  return { precio, base, itbis, final: _apRedondear(base + itbis) };
+}
+
+function asCalcular() {
+  const p = _asPrecios();
+  setText('as-r-base', fmtMoney(p.base));
+  setText('as-r-itbis', fmtMoney(p.itbis));
+  setText('as-r-final', fmtMoney(p.final));
+}
+
+function _asModo(modo) {
+  setText('as-titulo', modo === 'nuevo' ? 'Nuevo servicio' : modo === 'pendiente' ? 'Editar servicio pendiente' : 'Solicitar edición del servicio');
+  setText('as-btn', modo === 'nuevo' ? 'Guardar servicio' : modo === 'pendiente' ? 'Guardar cambios' : 'Enviar solicitud');
+  const otro = $id('as-otro-wrap');
+  if (otro) otro.style.visibility = modo === 'nuevo' ? '' : 'hidden';
+}
+
+function abrirServicioModal() {
+  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  if (_repEsServicios && !_repServiciosPortal) { toast(SERVICIOS_POS_VIEJO, 'error'); return; }
+  // Negocio normal: el servicio es un producto que no controla inventario.
+  if (!_repEsServicios) {
+    abrirAgregarProductoModal();
+    apControlInventario(false);
+    _apLlenarUnidades('Servicio');
+    setText('modal-agregar-producto-titulo', 'Nuevo servicio');
+    setText('modal-agregar-producto-btn', 'Guardar servicio');
+    return;
+  }
+  _asPendienteId = null;
+  _asServicioId = null;
+  ['as-nombre', 'as-codigo', 'as-unidad', 'as-categoria', 'as-descripcion', 'as-precio'].forEach((id) => { const el = $id(id); if (el) el.value = ''; });
+  const unidades = $id('as-unidades');
+  if (unidades) unidades.innerHTML = AS_UNIDADES.map((u) => `<option value="${esc(u)}"></option>`).join('');
+  const categorias = $id('as-categorias');
+  if (categorias) {
+    const cats = [...new Set(_repProductosRows.filter(_esFilaServicio).map((s) => String(s.categoria || '').trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'es'));
+    categorias.innerHTML = cats.map((c) => `<option value="${esc(c)}"></option>`).join('');
+  }
+  const incluye = $id('as-precio-incluye'); if (incluye) incluye.checked = false;
+  const otro = $id('as-crear-otro'); if (otro) otro.checked = false;
+  const negocio = _allClientes.find((c) => c.id === _repNegocioId);
+  setText('as-sub', `${negocio?.businessName || 'El negocio'} · se aplica en el POS cuando sincronice`);
+  asElegirItbis(18);
+  _fmLimpiar('modal-servicio');
+  _asModo('nuevo');
+  show('modal-servicio');
+  setTimeout(() => $id('as-nombre')?.focus(), 50);
+}
+
+function _asRellenar(d) {
+  const set = (id, val) => { const el = $id(id); if (el) el.value = val ?? ''; };
+  set('as-nombre', d.nombre);
+  set('as-codigo', d.codigo);
+  set('as-unidad', d.unidad);
+  set('as-categoria', d.categoria && d.categoria !== 'General' ? d.categoria : '');
+  set('as-descripcion', d.descripcion);
+  set('as-precio', d.precio ?? d.precioVenta);
+  asElegirItbis(Number(d.itbisPct || 0));
+}
+
+function editarServicioReal(rowId) {
+  const s = _repProductosRows.find((r) => String(r.id) === String(rowId));
+  if (!s) { toast('No se encontró ese servicio. Actualiza la pestaña e intenta de nuevo.', 'error'); return; }
+  abrirServicioModal();
+  _asServicioId = _idServicio(rowId);
+  _asRellenar(s);
+  _asModo('real');
+}
+
+async function darDeBajaServicio(rowId) {
+  const s = _repProductosRows.find((r) => String(r.id) === String(rowId));
+  const nombre = s?.nombre || `#${_idServicio(rowId)}`;
+  if (!confirm(`¿Dar de baja "${nombre}"? Deja de ofrecerse en el POS cuando sincronice; las facturas que ya lo tienen no cambian.`)) return;
+  try {
+    await refreshToken();
+    await apiCall('POST', '/api/productos-pendientes', {
+      businessId: _repNegocioId, tipo: 'servicio', accion: 'eliminar', servicioId: _idServicio(rowId), codigo: s?.codigo || '', nombre,
+    });
+    toast('Solicitud de baja enviada.', 'success');
+    loadProductosPendientes();
+  } catch (e) { toast(e.message, 'error'); }
+}
+
+function cerrarServicioModal() { _asPendienteId = null; _asServicioId = null; hide('modal-servicio'); }
+
+async function guardarServicioPendiente() {
+  const nombre = $id('as-nombre')?.value?.trim();
+  _fmLimpiar('modal-servicio');
+  if (!nombre) { _fmError('as-nombre', 'Escribe el nombre del servicio.'); $id('as-nombre')?.focus(); return; }
+  const payload = {
+    tipo: 'servicio',
+    nombre,
+    codigo: $id('as-codigo')?.value?.trim() || '',
+    unidad: $id('as-unidad')?.value?.trim() || 'servicio',
+    categoria: $id('as-categoria')?.value?.trim() || 'General',
+    descripcion: $id('as-descripcion')?.value?.trim() || '',
+    precioVenta: _asPrecios().base,
+    itbisPct: _asItbis,
+  };
+  if (_asServicioId) { payload.accion = 'editar'; payload.servicioId = _asServicioId; }
+  const esNuevo = !_asPendienteId && !_asServicioId;
+  const btn = $id('as-btn');
+  if (btn) btn.disabled = true;
+  try {
+    await refreshToken();
+    if (_asPendienteId) {
+      await apiCall('PUT', `/api/productos-pendientes/${_repNegocioId}/${_asPendienteId}`, payload);
+      toast('Servicio pendiente actualizado — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    } else {
+      await apiCall('POST', '/api/productos-pendientes', { businessId: _repNegocioId, ...payload });
+      toast(_asServicioId
+        ? 'Solicitud de edición enviada — se aplicará cuando el sistema del cliente sincronice.'
+        : 'Servicio agregado — se aplicará cuando el sistema del cliente sincronice.', 'success');
+    }
+    if (esNuevo && $id('as-crear-otro')?.checked) {
+      ['as-nombre', 'as-codigo', 'as-descripcion', 'as-precio'].forEach((id) => { const el = $id(id); if (el) el.value = ''; });
+      asCalcular();
+      $id('as-nombre')?.focus();
+    } else {
+      cerrarServicioModal();
+    }
+    loadProductosPendientes();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// IMPORTAR / EXPORTAR EL CATÁLOGO EN CSV (productos o servicios del negocio)
+// Mismo formato que el POS (js/catalogo-csv.js, copiado por vendor-sync).
+// Importar: se lee aquí, se muestra qué se crea y qué se actualiza, y cada
+// fila va a la cola con importado: true (POST /api/productos-pendientes/lote).
+// El POS crea lo nuevo y, en lo que ya tiene (por código), cambia solo las
+// columnas que traía el archivo. En una Empresa de Servicios es su catálogo
+// de servicios; si no, sus productos.
+// ══════════════════════════════════════════════════════════════════════
+
+const IC_LOTE = 500; // filas por envío (un lote de Firestore)
+let _icLeido = null; // { filas: [...con estado], errores: [...] }
+
+function _icNombreArchivo(sufijo) {
+  const negocio = _allClientes.find((c) => c.id === _repNegocioId);
+  const base = String(negocio?.businessName || 'negocio').normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'negocio';
+  return `${base}-${sufijo}.csv`;
+}
+
+function _icDescargar(contenido, nombre) {
+  const url = URL.createObjectURL(new Blob([contenido], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = nombre;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Filas del catálogo (las de la pestaña) en las columnas que importa el POS.
+function _icRegistrosCatalogo() {
+  if (_repEsServicios) {
+    return _repProductosRows.filter(_esFilaServicio).map((s) => ({
+      codigo: s.codigo, nombre: s.nombre, descripcion: s.descripcion, categoria: s.categoria, unidad: s.unidad,
+      precio: (Number(s.precio) || 0).toFixed(2), itbisPct: Number(s.itbisPct) || 0, duracionMin: '', estado: 'Activo',
+    }));
+  }
+  return _repProductosRows.filter((p) => !_esFilaServicio(p)).map((p) => ({
+    codigo: p.codigo, nombre: p.nombre, sucursal: p.branchId ? (p.sucursal || '') : '', marca: p.marca, categoria: p.categoria,
+    unidad: p.unidad, precioCompra: (Number(p.costo) || 0).toFixed(2), precioVenta: (Number(p.precio) || 0).toFixed(2),
+    stock: p.stock ?? '', stockMin: p.stockMin ?? '', estado: 'Activo',
+    aplicaItbis: p.aplicaItbis ? 'Sí' : 'No', tracksStock: _sinControlStock(p) ? 'No' : 'Sí',
+  }));
+}
+
+function exportarCatalogoCsv() {
+  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  const csv = window.TcCatalogoCsv;
+  const registros = _icRegistrosCatalogo();
+  if (!registros.length) { toast(`Este negocio todavía no tiene ${_repEsServicios ? 'servicios' : 'productos'} sincronizados. Usa "Descargar plantilla" en Importar.`, 'error'); return; }
+  const columnas = _repEsServicios ? csv.COLUMNAS_SERVICIOS : csv.COLUMNAS_PRODUCTOS;
+  _icDescargar(csv.aCsv(columnas, registros), _icNombreArchivo(_repEsServicios ? 'servicios' : 'productos'));
+  toast(`${registros.length} ${_repEsServicios ? 'servicios exportados' : 'productos exportados'}. Se abre con Excel.`, 'success');
+}
+
+function icPlantilla() {
+  const csv = window.TcCatalogoCsv;
+  _icDescargar(csv.aCsv(_repEsServicios ? csv.COLUMNAS_SERVICIOS : csv.COLUMNAS_PRODUCTOS, []),
+    `plantilla-${_repEsServicios ? 'servicios' : 'productos'}.csv`);
+}
+
+function abrirImportarCatalogo() {
+  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+  if (_repEsServicios && !_repServiciosPortal) { toast(SERVICIOS_POS_VIEJO, 'error'); return; }
+  const que = _repEsServicios ? 'servicios' : 'productos';
+  const negocio = _allClientes.find((c) => c.id === _repNegocioId);
+  setText('ic-titulo', `Importar ${que}`);
+  setText('ic-sub', `${negocio?.businessName || 'El negocio'} · se aplica en su POS cuando sincronice.`);
+  setText('ic-drop-titulo', `Sube el CSV de ${que} (uno o varios)`);
+  setText('ic-drop-ayuda', _repEsServicios
+    ? 'El que exporta el POS o Excel → Guardar como → CSV. Lo nuevo se crea y lo que ya existe (por código o nombre) se actualiza.'
+    : 'El que exporta el POS o Excel → Guardar como → CSV. Lo nuevo se crea y lo que ya existe (por código) se actualiza.');
+  setText('ic-columnas', _repEsServicios
+    ? 'Columnas: Código, Nombre, Descripción, Categoría, Unidad, Precio, ITBIS %. Solo Nombre es obligatoria.'
+    : 'Columnas: Código, Nombre, Sucursal, Marca, Categoría, Unidad, Costo, Precio, Stock, Stock Mínimo, Aplica ITBIS, Rastrea Stock. Código y Nombre son obligatorias.');
+  _icLeido = null;
+  _icDestinoElegido = false;
+  _icPintarDestino(false);
+  _icPintar();
+  setText('ic-msg', '');
+  _icPrepararArrastre();
+  show('modal-importar-catalogo');
+}
+
+// ── A qué sucursal van los productos importados ─────────────────────────
+// Solo productos y solo si el negocio tiene sucursales (el catálogo de
+// servicios es de todo el negocio). '' = todas (global), un id = solo esa,
+// 'archivo' = lo que diga la columna Sucursal de cada fila.
+const IC_SEGUN_ARCHIVO = 'archivo';
+
+function _icPintarDestino(archivoTraeSucursal) {
+  const campo = $id('ic-destino-campo');
+  const sel = $id('ic-destino');
+  const aplica = !_repEsServicios && _repNegocioSucursales.length > 0;
+  if (campo) campo.style.display = aplica ? '' : 'none';
+  if (!sel || !aplica) return;
+  const actual = sel.value;
+  sel.innerHTML = '<option value="">Todas las sucursales (global)</option>'
+    + _repNegocioSucursales.map((s) => `<option value="${esc(s.id)}">Solo en ${esc(s.nombre || 'Sucursal')}${s.conectada && !s.principal ? ' (conectada)' : ''}</option>`).join('')
+    + (archivoTraeSucursal ? `<option value="${IC_SEGUN_ARCHIVO}">Según la columna Sucursal del archivo</option>` : '');
+  const opciones = Array.from(sel.options).map((o) => o.value);
+  // Recién leído un archivo con la columna Sucursal: se respeta por defecto.
+  sel.value = archivoTraeSucursal && !_icDestinoElegido ? IC_SEGUN_ARCHIVO : (opciones.includes(actual) ? actual : '');
+  _icAyudaDestino();
+}
+
+let _icDestinoElegido = false; // el contador ya lo cambió a mano
+
+function _icDestino() {
+  if (_repEsServicios || !_repNegocioSucursales.length) return '';
+  return $id('ic-destino')?.value || '';
+}
+
+function _icAyudaDestino() {
+  const d = _icDestino();
+  const s = _repNegocioSucursales.find((x) => String(x.id) === String(d));
+  setText('ic-destino-ayuda', (d === IC_SEGUN_ARCHIVO
+    ? 'Cada producto nuevo va a la sucursal que diga su fila; vacía o "Global" = todas.'
+    : s ? `Los productos nuevos quedan solo en ${s.nombre}.` : 'Los productos nuevos se ven y se venden en todas las sucursales.')
+    + ' Los que ya existen se actualizan donde están.');
+}
+
+function icCambiarDestino() {
+  _icDestinoElegido = true;
+  _icAyudaDestino();
+  _icPintar();
+}
+
+// Filas que se importan con el destino elegido: con "según el archivo", las
+// de una sucursal que no es del negocio no van.
+function _icFilasValidas() {
+  const d = _icLeido;
+  if (!d) return { filas: [], errores: [] };
+  if (_icDestino() !== IC_SEGUN_ARCHIVO) return { filas: d.filas, errores: d.errores };
+  return {
+    filas: d.filas.filter((f) => f.sucursalMala === undefined),
+    errores: [...d.errores, ...d.filas.filter((f) => f.sucursalMala !== undefined).map((f) => `fila ${f.fila}: la sucursal "${f.sucursalMala}" no es de este negocio.`)],
+  };
+}
+
+function _icNombreDestino(f) {
+  const d = _icDestino();
+  const id = d === IC_SEGUN_ARCHIVO ? f.branchArchivo : (d || null);
+  return id ? (_repNegocioSucursales.find((s) => String(s.id) === String(id))?.nombre || 'Sucursal') : 'Todas';
+}
+
+function cerrarImportarCatalogo() {
+  hide('modal-importar-catalogo');
+  _icLeido = null;
+}
+
+function _icPrepararArrastre() {
+  const drop = $id('ic-drop');
+  if (!drop || drop.dataset.listo) return;
+  drop.dataset.listo = '1';
+  ['dragenter', 'dragover'].forEach((tipo) => drop.addEventListener(tipo, (ev) => { ev.preventDefault(); drop.classList.add('is-encima'); }));
+  ['dragleave', 'drop'].forEach((tipo) => drop.addEventListener(tipo, () => drop.classList.remove('is-encima')));
+  drop.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    const files = Array.from(ev.dataTransfer?.files || []);
+    if (files.length) icLeerArchivos(files);
+  });
+}
+
+// Sucursal del CSV (nombre o id) → id de una sucursal del negocio. Vacía o
+// "Global" = todas. undefined = no existe.
+function _icSucursal(valor) {
+  const t = String(valor || '').trim();
+  if (!t || t.toLowerCase() === 'global' || t.toLowerCase() === 'todas') return null;
+  const s = _repNegocioSucursales.find((x) => String(x.id) === t || String(x.nombre || '').trim().toLowerCase() === t.toLowerCase());
+  return s ? s.id : undefined;
+}
+
+// Nuevo o "se actualiza", contra lo que ya se ve del negocio (sus filas de la
+// pestaña). El POS compara con todo su catálogo, así que uno que no salga
+// aquí también se actualiza si ya existe allá. La columna Sucursal de cada
+// producto queda resuelta (branchArchivo) o marcada si no es del negocio
+// (sucursalMala): solo cuenta si el destino es "según el archivo".
+function _icClasificar(filas, servicios) {
+  const actuales = _repProductosRows.filter((r) => _esFilaServicio(r) === servicios);
+  const porCodigo = new Map(actuales.filter((r) => r.codigo).map((r) => [String(r.codigo).toLowerCase(), r]));
+  const porNombre = new Map(actuales.map((r) => [String(r.nombre || '').toLowerCase(), r]));
+  const clasificadas = filas.map((f) => {
+    const g = { ...f };
+    if (!servicios && f.campos.includes('sucursal')) {
+      const id = _icSucursal(f.sucursal);
+      if (id === undefined) g.sucursalMala = f.sucursal;
+      else g.branchArchivo = id;
+    }
+    const actual = (f.codigo && porCodigo.get(f.codigo.toLowerCase())) || (servicios ? porNombre.get(f.nombre.toLowerCase()) : null);
+    g.estado = actual ? 'actualiza' : 'nuevo';
+    return g;
+  });
+  return { filas: clasificadas, errores: [] };
+}
+
+async function icLeerArchivos(files) {
+  const lista = Array.from(files || []);
+  if (!lista.length) return;
+  const csv = window.TcCatalogoCsv;
+  const servicios = _repEsServicios;
+  const varios = lista.length > 1;
+  setText('ic-msg', '');
+  try {
+    _icLeido = await _anAnalizar({
+      titulo: 'Analizando el archivo',
+      subtitulo: varios ? `${lista.length} archivos: ${lista.map((f) => f.name).join(', ')}` : lista[0].name,
+      pasos: [varios ? `Leyendo los ${lista.length} archivos` : 'Leyendo el archivo', 'Reconociendo las columnas', 'Comparando con lo que ya tiene el negocio'],
+      trabajo: async () => {
+        const filas = [];
+        const errores = [];
+        for (const file of lista) {
+          try {
+            const leido = servicios ? csv.leerServicios(await csv.leerArchivo(file)) : csv.leerProductos(await csv.leerArchivo(file));
+            leido.filas.forEach((f) => filas.push({ ...f, archivo: file.name }));
+            leido.errores.forEach((e) => errores.push(`${varios ? `${file.name}, ` : ''}fila ${e.fila}: ${e.mensaje}`));
+          } catch (e) {
+            errores.push(`${file.name}: ${e.message}`);
+          }
+        }
+        if (!filas.length) throw new Error(errores[0] || 'El archivo no trae filas para importar.');
+        const r = _icClasificar(filas, servicios);
+        return { filas: r.filas, errores: [...errores, ...r.errores], servicios };
+      },
+      resumen: (r) => {
+        const nuevos = r.filas.filter((f) => f.estado === 'nuevo').length;
+        return `Encontré ${r.filas.length} ${servicios ? 'servicios' : 'productos'}: ${nuevos} nuevos y ${r.filas.length - nuevos} para actualizar.`
+          + (r.errores.length ? ` ${r.errores.length} fila(s) con problemas.` : '');
+      },
+    });
+  } catch (_) {
+    return; // el error ya se mostró en la ventana de análisis
+  }
+  _icPintarDestino(_icLeido.filas.some((f) => String(f.sucursal || '').trim()));
+  _icPintar();
+}
+
+function icQuitar() {
+  _icLeido = null;
+  _icPintarDestino(false);
+  _icPintar();
+}
+
+function _icPintar() {
+  const caja = $id('ic-resultado');
+  const drop = $id('ic-drop');
+  const boton = $id('ic-btn');
+  const d = _icLeido;
+  if (drop) drop.style.display = d ? 'none' : '';
+  if (!caja) return;
+  if (!d) {
+    caja.innerHTML = '';
+    if (boton) { boton.textContent = 'Importar'; boton.disabled = true; }
+    return;
+  }
+  const { filas, errores } = _icFilasValidas();
+  const nuevos = filas.filter((f) => f.estado === 'nuevo').length;
+  const muestra = filas.slice(0, 50);
+  const precio = (f) => (d.servicios ? f.precio : f.precioVenta);
+  const conSucursal = !d.servicios && _repNegocioSucursales.length > 0;
+  caja.innerHTML = `
+    <div class="an-leido">
+      <div class="an-leido__cabeza">
+        <div><strong>Listo para importar</strong><small>${filas.length} ${d.servicios ? 'servicios' : 'productos'}: ${_plural(nuevos, 'nuevo', 'nuevos')} y ${filas.length - nuevos} ${filas.length - nuevos === 1 ? 'se actualiza' : 'se actualizan'}</small></div>
+        <button type="button" class="btn btn-secondary btn-sm" data-icono="x" onclick="app.icQuitar()">Quitar</button>
+      </div>
+      ${errores.length ? `<div class="an-aviso" role="note"><strong>${_plural(errores.length, 'fila no se importa', 'filas no se importan')}:</strong>
+        ${errores.slice(0, 5).map(esc).join(' · ')}${errores.length > 5 ? ` · y ${errores.length - 5} más` : ''}</div>` : ''}
+      <div class="ic-tabla">
+        <table class="data-table">
+          <thead><tr><th>Fila</th><th>Código</th><th>${d.servicios ? 'Servicio' : 'Producto'}</th>${conSucursal ? '<th>Sucursal</th>' : ''}<th style="text-align:right">Precio</th><th></th></tr></thead>
+          <tbody>${muestra.map((f) => `<tr>
+            <td>${esc(f.fila)}</td><td>${esc(f.codigo || '—')}</td><td>${esc(f.nombre)}</td>
+            ${conSucursal ? `<td>${f.estado === 'actualiza' ? '<span class="text-muted">Donde ya está</span>' : esc(_icNombreDestino(f))}</td>` : ''}
+            <td style="text-align:right">${precio(f) != null ? fmtMoney(precio(f)) : '—'}</td>
+            <td><span class="pill ${f.estado === 'nuevo' ? 'pill-ok' : 'pill-info'}">${f.estado === 'nuevo' ? 'Nuevo' : 'Se actualiza'}</span></td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </div>
+      ${filas.length > muestra.length ? `<small class="text-muted">… y ${filas.length - muestra.length} más.</small>` : ''}
+      <small class="text-muted">Al actualizar solo cambian las columnas que trae el archivo: un CSV con Código y Precio sube los precios sin tocar lo demás.</small>
+    </div>`;
+  if (boton) {
+    boton.textContent = `Importar ${_plural(filas.length, d.servicios ? 'servicio' : 'producto', d.servicios ? 'servicios' : 'productos')}`;
+    boton.disabled = !filas.length;
+  }
+}
+
+// Fila leída → lo que espera POST /api/productos-pendientes/lote. destino:
+// '' = todas las sucursales, un id = esa sucursal, 'archivo' = la de la fila.
+function _icItem(f, servicios, destino = '') {
+  if (servicios) {
+    return {
+      fila: f.fila, campos: f.campos, codigo: f.codigo, nombre: f.nombre, descripcion: f.descripcion,
+      categoria: f.categoria, unidad: f.unidad, precioVenta: f.precio, itbisPct: f.itbisPct,
+    };
+  }
+  return {
+    fila: f.fila, campos: f.campos, codigo: f.codigo, nombre: f.nombre, marca: f.marca, categoria: f.categoria,
+    unidad: f.unidad, precioCompra: f.precioCompra, precioVenta: f.precioVenta, stock: f.stock, stockMin: f.stockMin,
+    aplicaItbis: f.aplicaItbis, tracksStock: f.tracksStock,
+    branchId: destino === IC_SEGUN_ARCHIVO ? (f.branchArchivo ?? null) : (destino || null),
+  };
+}
+
+async function icImportar() {
+  const d = _icLeido;
+  const { filas } = _icFilasValidas();
+  if (!d || !filas.length) return;
+  const negocioId = _repNegocioId;
+  const destino = _icDestino();
+  const que = d.servicios ? 'servicios' : 'productos';
+  const sucursal = _repNegocioSucursales.find((s) => String(s.id) === String(destino));
+  setText('ic-msg', '');
+  try {
+    await _anAnalizar({
+      titulo: `Importando ${que}`,
+      subtitulo: `${filas.length} ${que}${d.servicios || !_repNegocioSucursales.length ? '' : destino === IC_SEGUN_ARCHIVO ? ' · cada uno a la sucursal del archivo' : sucursal ? ` · solo en ${sucursal.nombre}` : ' · todas las sucursales'}`,
+      pasos: ['Revisando cada fila', 'Enviándolas al POS del negocio', 'Dejándolas listas para que su POS las aplique'],
+      trabajo: async () => {
+        await refreshToken();
+        let registrados = 0;
+        for (let i = 0; i < filas.length; i += IC_LOTE) {
+          const r = await apiCall('POST', '/api/productos-pendientes/lote', {
+            businessId: negocioId,
+            tipo: d.servicios ? 'servicio' : 'producto',
+            items: filas.slice(i, i + IC_LOTE).map((f) => _icItem(f, d.servicios, destino)),
+          });
+          registrados += Number(r.registrados || 0);
+        }
+        return registrados;
+      },
+      resumen: (n) => `Listo: ${n} ${que} en camino. Su POS los aplica cuando sincronice (en segundos si está abierto).`,
+    });
+  } catch (_) {
+    return; // el error ya se mostró; lo leído sigue en pantalla
+  }
+  cerrarImportarCatalogo();
+  loadProductosPendientes();
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // SECUENCIAS NCF PENDIENTES (registradas desde este Portal)
 // Mismo mecanismo que Productos Pendientes: el POS del cliente corre local,
 // esto queda en cola en Firestore y se aplica la próxima vez que ese POS
-// sincroniza. Solo NCF tradicional (B01-B17) — el e-CF ya se certifica aparte.
-// Visible en la pestaña "🏛 ITBIS / DGII".
+// sincroniza. NCF tradicional (B01-B17) y e-NCF de la factura electrónica
+// (E31-E47), a mano o leídos del archivo de la DGII (js/dgii-autorizacion.js).
+// Visible en la pestaña "🏛 ITBIS / DGII" y desde la ficha del negocio.
 // ══════════════════════════════════════════════════════════════════════
+
+// e-NCF que se le pueden registrar a un negocio (los del POS:
+// modules/ecf/config/document-types.js). "Mis secuencias" del contador y su
+// facturación siguen siendo solo B (NCF_DOCUMENT_TYPES).
+const ECF_DOCUMENT_TYPES = ['E31', 'E32', 'E33', 'E34', 'E41', 'E43', 'E44', 'E45', 'E46', 'E47'];
 
 const NCF_DOCUMENT_TYPES = [
   { code: 'B01', label: 'B01 — Crédito Fiscal' }, { code: 'B02', label: 'B02 — Consumidor Final' },
@@ -3221,6 +3865,20 @@ const NCF_DOCUMENT_TYPES = [
 
 let _ncfPendientes = [];
 let _anAdjuntoDataUrl = null; // documento de autorización DGII (base64), opcional
+// El modal "Registrar comprobantes" se abre para un negocio: el de Reportes o
+// el de su ficha. Lo que ya tiene (aplicadas + en cola) sirve para no repetir.
+let _anNegocioId = null;
+let _anAplicadas = [];
+let _anPendientes = [];
+// Archivo de la DGII leído: { nombre, dataUrl, rangos: [{ ..., estado }] } o null.
+let _anDgii = null;
+// ¿El POS del negocio le informa al portal sus e-NCF? (ncfEspejoVersion ≥ 2,
+// lo escribe sync-pos-stats.js). null = todavía no se sabe.
+let _anPosInformaEcf = null;
+
+function _posInformaEcf(negocio) {
+  return Number(negocio?.ncfEspejoVersion || 0) >= 2;
+}
 
 // El adjunto puede ser PDF/XML/imagen — a diferencia de la imagen de producto
 // no se puede "redimensionar", solo se valida tamaño antes de convertir a base64.
@@ -3303,88 +3961,650 @@ async function cancelarNcfPendiente(pendienteId) {
   } catch (e) { toast(e.message, 'error'); }
 }
 
-function abrirAgregarNcfModal() {
-  if (!_repNegocioId) { toast('Selecciona un negocio primero.', 'error'); return; }
+// Abre "Registrar comprobantes" para un negocio: el elegido en Reportes o,
+// desde su ficha, el que se pase. Carga lo que ya tiene para no repetir rangos.
+async function abrirAgregarNcfModal(negocioId) {
+  const id = negocioId || _repNegocioId;
+  if (!id) { toast('Selecciona un negocio primero.', 'error'); return; }
+  _anNegocioId = id;
+  _anDgii = null;
+  _anPosInformaEcf = null;
+  _anAplicadas = id === _repNegocioId ? _ncfAplicadas : [];
+  _anPendientes = id === _repNegocioId ? _ncfPendientes : [];
   const tipoEl = $id('an-tipo');
-  if (tipoEl) { tipoEl.innerHTML = _ncfOpciones(); tipoEl.value = 'B02'; }
-  ['an-desde', 'an-hasta', 'an-fecha-autorizacion', 'an-fecha-vencimiento', 'an-referencia', 'an-notas'].forEach((id) => {
-    const el = $id(id);
+  if (tipoEl) { tipoEl.innerHTML = _ncfOpcionesCliente(); tipoEl.value = 'B02'; }
+  ['an-desde', 'an-hasta', 'an-fecha-autorizacion', 'an-fecha-vencimiento', 'an-referencia', 'an-notas'].forEach((campoId) => {
+    const el = $id(campoId);
     if (el) el.value = '';
   });
-  const sucursalEl = $id('an-sucursal');
-  if (sucursalEl) {
-    sucursalEl.innerHTML = '<option value="">Todas las sucursales</option>' +
-      _repNegocioSucursales.map((s) => `<option value="${esc(s.id)}">${esc(s.nombre)}</option>`).join('');
-  }
-  const negocio = _allClientes.find((c) => c.id === _repNegocioId);
+  const negocio = _allClientes.find((c) => c.id === id);
   setText('an-sub', `${negocio?.businessName || 'El negocio'} · se aplica en su POS cuando sincronice.`);
+  _anPintarSucursales(id === _repNegocioId ? _repNegocioSucursales : []);
   _anAdjuntoDataUrl = null;
   setText('an-adjunto-nombre', '');
   const fileInput = $id('an-adjunto-file');
   if (fileInput) fileInput.value = '';
   _fmLimpiar('an-form');
   setText('an-msg', '');
+  _anPrepararArrastre();
+  renderAnDgii();
   anActualizar();
   show('modal-agregar-ncf');
-  setTimeout(() => $id('an-desde')?.focus(), 50);
+
+  try {
+    await refreshToken();
+    const [aplicadas, pendientes, cliente] = await Promise.all([
+      apiCall('GET', `/api/ncf-aplicadas/${id}`),
+      apiCall('GET', `/api/ncf-pendientes/${id}`),
+      apiCall('GET', `/api/clientes/${id}`).catch(() => null),
+    ]);
+    if (_anNegocioId !== id) return;
+    _anAplicadas = aplicadas || [];
+    _anPendientes = pendientes || [];
+    if (cliente) {
+      _anPosInformaEcf = _posInformaEcf(cliente);
+      if (id !== _repNegocioId) _anPintarSucursales(cliente.sucursales || []);
+    }
+    if (_anDgii) {
+      _anDgii.rangos = _anClasificarRangos(_anDgii.leidos, _anExistentes(), _anPosInformaEcf);
+      renderAnDgii();
+    }
+  } catch (_) {
+    // Sin la lista se registra igual: el servidor revisa los cruces.
+  }
+}
+
+// Sucursal: solo si el negocio tiene. Una sucursal conectada por Internet
+// recibe sus rangos en Sucursales (el servidor la rechaza aquí).
+function _anPintarSucursales(sucursales) {
+  const sel = $id('an-sucursal');
+  const campo = $id('an-sucursal-campo');
+  if (!sel) return;
+  const actual = sel.value;
+  sel.innerHTML = '<option value="">Todas las sucursales</option>' + (sucursales || []).map((s) => (s.conectada && !s.principal
+    ? `<option value="${esc(s.id)}" disabled>${esc(s.nombre)} — sus rangos se asignan en Sucursales</option>`
+    : `<option value="${esc(s.id)}">${esc(s.nombre)}</option>`)).join('');
+  sel.value = (sucursales || []).some((s) => String(s.id) === actual) ? actual : '';
+  if (campo) campo.style.display = (sucursales || []).length ? '' : 'none';
+}
+
+// Lo que el negocio ya tiene en su POS más lo que está en cola para aplicarse.
+function _anExistentes() {
+  const enCola = (_anPendientes || []).filter((n) => (n.action || 'create') === 'create' && n.status !== 'aplicado')
+    .map((n) => ({ ...n, status: 'pendiente', enCola: true }));
+  return [...(_anAplicadas || []), ...enCola];
 }
 
 function anActualizar() {
   const tipo = $id('an-tipo')?.value || '';
+  const electronico = _ncfEsE(tipo);
   const el = $id('an-prefijo'); if (el) el.value = tipo;
   setText('an-tipo-ayuda', NCF_DESCRIPCIONES[tipo] || '');
+  setText('an-vence-lbl', electronico ? 'Fecha de vencimiento (si la DGII la indica)'
+    : NCF_SIN_VENCE.has(tipo) ? 'Fecha de vencimiento (las notas de crédito no vencen)' : 'Fecha de vencimiento *');
+  setText('an-fecha-autorizacion-lbl', electronico ? 'Fecha de autorización *' : 'Fecha de autorización');
+  const desde = $id('an-desde'); if (desde) desde.placeholder = '1';
+  const hasta = $id('an-hasta'); if (hasta) hasta.placeholder = electronico ? '100' : '500';
   const p = $id('an-preview');
   if (p) p.innerHTML = _ncfPreviewHtml(tipo, $id('an-desde')?.value, $id('an-hasta')?.value);
 }
 
-function cerrarAgregarNcfModal() { hide('modal-agregar-ncf'); }
+function cerrarAgregarNcfModal() {
+  hide('modal-agregar-ncf');
+  _anDgii = null;
+}
 
 async function guardarNcfPendiente() {
+  if (_anDgii) return registrarRangosDgii();
   const documentType = $id('an-tipo')?.value;
   const startNumber = Number($id('an-desde')?.value || 0);
   const endNumber = Number($id('an-hasta')?.value || 0);
   const authorizationReference = $id('an-referencia')?.value?.trim();
+  const authorizationDate = $id('an-fecha-autorizacion')?.value || '';
 
   _fmLimpiar('an-form');
   setText('an-msg', '');
-  // Contra lo que ya tiene el POS y lo que está en cola para aplicarse.
-  const enCola = (_ncfPendientes || []).filter(n => (n.action || 'create') === 'create' && n.status !== 'aplicado')
-    .map(n => ({ ...n, status: 'pendiente' }));
   const err = _ncfValidar({
     tipo: documentType, desde: startNumber, hasta: endNumber, vence: $id('an-fecha-vencimiento')?.value || '',
-    existentes: [...(_ncfAplicadas || []), ...enCola],
+    existentes: _anExistentes(),
   });
+  if (_ncfEsE(documentType) && _anPosInformaEcf === false) {
+    const m = $id('an-msg');
+    if (m) {
+      m.textContent = 'Este negocio tiene una versión de Tecno Caja que no recibe e-NCF desde el portal: que actualice primero.';
+      m.classList.add('is-error');
+    }
+    return;
+  }
   if (!authorizationReference) err.referencia = 'Escribe el número de autorización de la DGII.';
+  if (_ncfEsE(documentType) && !authorizationDate) err.autorizada = 'Indica la fecha en que la DGII autorizó el rango.';
   if (err.desde) _fmError('an-desde', err.desde);
   if (err.hasta) _fmError('an-hasta', err.hasta);
   if (err.vence) _fmError('an-fecha-vencimiento', err.vence);
   if (err.referencia) _fmError('an-referencia', err.referencia);
+  if (err.autorizada) _fmError('an-fecha-autorizacion', err.autorizada);
   if (Object.keys(err).length) return;
-
-  const sucursalEl = $id('an-sucursal');
-  const branchId = sucursalEl?.value ? Number(sucursalEl.value) : null;
 
   try {
     await refreshToken();
     await apiCall('POST', '/api/ncf-pendientes', {
-      businessId: _repNegocioId,
+      businessId: _anNegocioId,
       documentType,
-      branchId,
+      branchId: _anSucursalElegida(),
       startNumber,
       endNumber,
-      authorizationDate: $id('an-fecha-autorizacion')?.value || null,
+      authorizationDate: authorizationDate || null,
       expirationDate: $id('an-fecha-vencimiento')?.value || null,
       authorizationReference,
       notes: $id('an-notas')?.value?.trim() || '',
       attachmentData: _anAdjuntoDataUrl || null,
     });
-    toast('Secuencia NCF registrada — se aplicará cuando el sistema del cliente sincronice.', 'success');
-    cerrarAgregarNcfModal();
-    loadNcfPendientes();
+    toast(`Secuencia ${documentType} registrada — se aplicará cuando el sistema del cliente sincronice.`, 'success');
+    _anDespuesDeRegistrar();
   } catch (e) {
     const m = $id('an-msg');
     if (m) { m.textContent = e.message; m.classList.add('is-error'); }
   }
+}
+
+function _anSucursalElegida() {
+  const valor = $id('an-sucursal')?.value;
+  return valor ? Number(valor) : null;
+}
+
+// Cierra y repinta donde se abrió (Reportes o la ficha del negocio). El POS
+// suele aplicarlo en segundos: se vuelve a mirar al rato.
+function _anDespuesDeRegistrar() {
+  const id = _anNegocioId;
+  cerrarAgregarNcfModal();
+  if (id === _repNegocioId) { loadNcfPendientes(); cargarComprobantesActivos(id); scheduleNcfRefresh(); }
+  if (id === _currentClienteId) {
+    cargarComprobantesNegocio(id);
+    setTimeout(() => { if (_currentClienteId === id) cargarComprobantesNegocio(id); }, 4000);
+  }
+}
+
+// ── Archivo de la DGII ───────────────────────────────────────────────────
+// Lo lee js/dgii-autorizacion.js (el mismo del POS): XML, Excel o CSV de la
+// Oficina Virtual. Cada rango aprobado queda como 'nuevo' o, si no se puede
+// registrar, con el motivo. `existentes` = el espejo del POS (lo cargado ahí,
+// a mano o desde aquí, con lo usado) más lo que está en cola.
+// posInformaEcf === false: el POS del negocio es de una versión que no
+// informa sus e-NCF, así que un E "nuevo" queda sin confirmar.
+function _anClasificarRangos(leidos, existentes, posInformaEcf = null) {
+  const validos = [...NCF_DOCUMENT_TYPES.map((t) => t.code), ...ECF_DOCUMENT_TYPES];
+  // Con varios archivos, un rango tampoco puede cruzarse con otro del mismo lote.
+  const delLote = [];
+  return (leidos || []).map((r) => {
+    const base = { ...r, tipo: String(r.tipo || '').toUpperCase() };
+    if (!validos.includes(base.tipo)) return { ...base, estado: 'omitido', motivo: `${base.tipo} no se usa en Tecno Caja.` };
+    if (!base.referencia) return { ...base, estado: 'omitido', motivo: 'Al archivo le falta el Nº de autorización: regístralo a mano.' };
+    if (_ncfEsE(base.tipo) && !base.fechaAutorizacion) {
+      return { ...base, estado: 'omitido', motivo: 'Al archivo le falta la fecha de autorización: regístralo a mano.' };
+    }
+    const cruza = (s) => String(s.documentType || '').toUpperCase() === base.tipo
+      && !['cancelado', 'eliminado'].includes(s.status)
+      && base.desde <= Number(s.endNumber) && base.hasta >= Number(s.startNumber);
+    const choque = (existentes || []).find(cruza);
+    const choqueLote = choque ? null : delLote.find(cruza);
+    if (choqueLote) {
+      return {
+        ...base, estado: 'omitido',
+        motivo: `Se cruza con ${_ncfFmt(base.tipo, choqueLote.startNumber)}–${_ncfFmt(base.tipo, choqueLote.endNumber)}${choqueLote.archivo ? ` de ${choqueLote.archivo}` : ''}.`,
+      };
+    }
+    if (choque) {
+      const igual = Number(choque.startNumber) === base.desde && Number(choque.endNumber) === base.hasta;
+      let motivo;
+      if (choque.enCola) motivo = igual ? 'Ya se registró: espera que el POS lo aplique.' : `Se cruza con ${_ncfFmt(base.tipo, choque.startNumber)}–${_ncfFmt(base.tipo, choque.endNumber)}, que espera que el POS lo aplique.`;
+      else {
+        const lugar = igual ? 'Ya está en el POS del negocio' : `Se cruza con ${_ncfFmt(base.tipo, choque.startNumber)}–${_ncfFmt(base.tipo, choque.endNumber)}, que ya está en el POS`;
+        motivo = `${lugar}${_anUsoTexto(choque)}.`;
+      }
+      return { ...base, estado: 'registrado', motivo };
+    }
+    delLote.push({ documentType: base.tipo, startNumber: base.desde, endNumber: base.hasta, archivo: base.archivo });
+    // Esa versión tampoco aplica e-NCF de la cola: no se registra hasta que actualice.
+    if (_ncfEsE(base.tipo) && posInformaEcf === false) {
+      return {
+        ...base, estado: 'sin_confirmar', sinConfirmar: true,
+        motivo: 'El POS de este negocio todavía no le informa al portal sus e-NCF: no puedo comprobar si ya lo tiene.',
+      };
+    }
+    return { ...base, estado: 'nuevo', motivo: '' };
+  });
+}
+
+// " · usados 1, va por el E320000000002" / " · ya se usó completo" / " · sin usar"
+function _anUsoTexto(s) {
+  const desde = Number(s.startNumber), hasta = Number(s.endNumber);
+  const siguiente = Number(s.nextNumber);
+  if (!Number.isFinite(siguiente) || siguiente <= desde) return ' · sin usar todavía';
+  if (siguiente > hasta) return ' · ya se usó completo';
+  return ` · ${_plural(siguiente - desde, 'usado', 'usados')}, va por el ${_ncfFmt(s.documentType, siguiente)}`;
+}
+
+function _anPrepararArrastre() {
+  const drop = $id('an-drop');
+  if (!drop || drop.dataset.listo) return;
+  drop.dataset.listo = '1';
+  ['dragenter', 'dragover'].forEach((tipo) => drop.addEventListener(tipo, (ev) => {
+    ev.preventDefault();
+    drop.classList.add('is-encima');
+  }));
+  ['dragleave', 'drop'].forEach((tipo) => drop.addEventListener(tipo, () => drop.classList.remove('is-encima')));
+  drop.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    const files = Array.from(ev.dataTransfer?.files || []);
+    if (files.length) anLeerArchivoDgii(files);
+  });
+}
+
+// Data URL con el tipo según la extensión (Windows a veces no lo da y el POS
+// solo guarda XML, CSV o Excel como documento de autorización).
+function _anArchivoComoDataUrl(file) {
+  const tipos = {
+    xml: 'application/xml', csv: 'text/csv', xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  };
+  const ext = String(file.name || '').split('.').pop().toLowerCase();
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(String(e.target.result || '').replace(/^data:[^;,]*/, `data:${tipos[ext] || 'application/octet-stream'}`));
+    reader.onerror = () => resolve(null);
+    reader.readAsDataURL(file);
+  });
+}
+
+// Uno o varios archivos a la vez (la DGII da uno por solicitud).
+async function anLeerArchivoDgii(files) {
+  const lista = files instanceof File ? [files] : Array.from(files || []);
+  if (!lista.length) return;
+  const lector = window.TcDgiiAutorizacion;
+  if (!lector) { toast('No se pudo cargar el lector del archivo de la DGII. Recarga la página.', 'error'); return; }
+  setText('an-msg', '');
+  const varios = lista.length > 1;
+  const nombre = varios ? `${lista.length} archivos` : lista[0].name;
+  let leido = null;
+  try {
+    const rangos = await _anAnalizar({
+      titulo: 'Analizando la autorización',
+      subtitulo: varios ? `${nombre}: ${lista.map((f) => f.name).join(', ')}` : nombre,
+      pasos: [varios ? `Leyendo los ${lista.length} archivos de la DGII` : 'Leyendo el archivo de la DGII', 'Buscando los rangos aprobados', 'Comparando con lo que ya tiene el negocio'],
+      trabajo: async () => {
+        leido = await lector.leerArchivos(lista);
+        if (!leido.rangos.length) {
+          const detalle = leido.errores.map((e) => (varios ? `${e.archivo}: ${e.mensaje}` : e.mensaje)).join(' | ');
+          throw new Error(`No encontré rangos${detalle ? ` (${detalle})` : ''}. Descárgalos de la Oficina Virtual → Consultas → Solicitudes de Comprobantes.`);
+        }
+        leido.aprobados = lector.aprobados(leido.rangos);
+        if (!leido.aprobados.length) throw new Error(varios ? 'Ninguno de los archivos trae un rango aprobado por la DGII todavía.' : 'El archivo no trae ningún rango aprobado por la DGII todavía.');
+        return _anClasificarRangos(leido.aprobados, _anExistentes(), _anPosInformaEcf);
+      },
+      resumen: (r) => {
+        const nuevos = r.filter((x) => x.estado === 'nuevo');
+        if (nuevos.length) return `Encontré ${_plural(nuevos.length, 'rango nuevo', 'rangos nuevos')}: ${[...new Set(nuevos.map((x) => x.tipo))].join(', ')}.`;
+        if (r.some((x) => x.sinConfirmar)) return 'No puedo confirmar los e-NCF: el POS de este negocio necesita actualizarse.';
+        return varios ? 'Leí los archivos, pero no hay rangos nuevos para registrar.' : 'Leí el archivo, pero no hay rangos nuevos para registrar.';
+      },
+    });
+    // Para los B, cada archivo va como documento de autorización de sus rangos.
+    const adjuntos = {};
+    for (const f of lista) adjuntos[f.name] = f.size <= 500 * 1024 ? await _anArchivoComoDataUrl(f) : null;
+    _anDgii = {
+      nombre,
+      varios,
+      leidos: leido.aprobados,
+      rangos,
+      ignorados: leido.rangos.length - leido.aprobados.length,
+      errores: leido.errores,
+      adjuntos,
+    };
+    renderAnDgii();
+  } catch (_) {
+    // El error ya se mostró en la ventana de análisis.
+  }
+}
+
+function anQuitarArchivoDgii() {
+  _anDgii = null;
+  renderAnDgii();
+}
+
+// Resultado del archivo, en lugar de la zona de subir. Mientras está, el
+// formulario a mano se oculta y el botón principal registra estos rangos.
+function renderAnDgii() {
+  const caja = $id('an-dgii-resultado');
+  const drop = $id('an-drop');
+  const manual = $id('an-manual');
+  const boton = $id('an-btn-guardar');
+  const d = _anDgii;
+  if (drop) drop.style.display = d ? 'none' : '';
+  if (manual) manual.style.display = d ? 'none' : '';
+  if (!caja) return;
+  if (!d) {
+    caja.innerHTML = '';
+    if (boton) { boton.textContent = 'Registrar secuencia'; boton.disabled = false; }
+    return;
+  }
+  const nuevos = d.rangos.filter((r) => r.estado === 'nuevo');
+  const necesitaVence = nuevos.some((r) => !_ncfEsE(r.tipo) && !NCF_SIN_VENCE.has(r.tipo));
+  const negocio = _allClientes.find((c) => c.id === _anNegocioId);
+  const filas = d.rangos.map((r) => `
+    <div class="an-rango ${r.estado === 'nuevo' || r.sinConfirmar ? '' : 'is-omitido'}">
+      <span class="an-rango__tipo">${esc(r.tipo)}</span>
+      <div class="an-rango__datos">
+        <strong>${esc(NCF_NOMBRES[r.tipo] || r.tipo)}</strong>
+        <small>${esc(_ncfFmt(r.tipo, r.desde))} → ${esc(_ncfFmt(r.tipo, r.hasta))} · ${_plural(r.hasta - r.desde + 1, 'comprobante', 'comprobantes')}</small>
+        <small>${r.referencia ? `Autorización ${esc(r.referencia)}` : 'Sin Nº de autorización'}${r.fechaAutorizacion ? ` · ${esc(fmtDate(r.fechaAutorizacion))}` : ''}</small>
+        ${d.varios && r.archivo ? `<small>Archivo: ${esc(r.archivo)}</small>` : ''}
+      </div>
+      ${r.sinConfirmar ? '<span class="pill pill-warn">Sin confirmar</span>' : `<span class="pill ${r.estado === 'nuevo' ? 'pill-ok' : r.estado === 'registrado' ? 'pill-neutral' : 'pill-warn'}" title="${esc(r.motivo)}">${r.estado === 'nuevo' ? 'Nuevo' : r.estado === 'registrado' ? 'Ya registrado' : 'No se puede'}</span>`}
+      ${r.motivo && !r.sinConfirmar ? `<div class="an-rango__motivo">${esc(r.motivo)}</div>` : ''}
+    </div>`).join('');
+  const sinConfirmar = d.rangos.some((r) => r.sinConfirmar);
+  caja.innerHTML = `
+    <div class="an-leido">
+      <div class="an-leido__cabeza">
+        <div><strong>Lo que autorizó la DGII</strong><small>${esc(d.nombre)}${d.ignorados ? ` · ${_plural(d.ignorados, 'solicitud no aprobada se ignoró', 'solicitudes no aprobadas se ignoraron')}` : ''}</small></div>
+        <button type="button" class="btn btn-secondary btn-sm" data-icono="x" onclick="app.anQuitarArchivoDgii()">Quitar</button>
+      </div>
+      ${sinConfirmar ? `
+        <div class="an-aviso" role="note">
+          <strong>Este negocio tiene una versión de Tecno Caja que no le informa al portal sus e-NCF.</strong>
+          No puedo comprobar si estos rangos E ya están cargados en su POS ni cuántos se usaron, y esa versión
+          tampoco los recibe desde aquí. Que actualice Tecno Caja y vuelve a subir el archivo.
+        </div>` : ''}
+      ${(d.errores || []).length ? `
+        <div class="an-aviso" role="note">
+          <strong>${d.errores.length === 1 ? 'Un archivo no se pudo leer' : `${d.errores.length} archivos no se pudieron leer`}:</strong>
+          ${d.errores.map((e) => `${esc(e.archivo)} (${esc(e.mensaje)})`).join(' · ')}
+        </div>` : ''}
+      ${filas}
+      ${nuevos.length ? `
+        ${necesitaVence ? `
+          <div class="fm-campo an-leido__vence">
+            <label for="an-dgii-vence">Fecha de vencimiento de los NCF (B) *</label>
+            <input type="date" id="an-dgii-vence" class="form-input" />
+            <div class="fm-ayuda">La que aparece en la autorización de la DGII. Los e-NCF no la necesitan.</div>
+          </div>` : ''}
+        <label class="an-leido__confirma">
+          <input type="checkbox" id="an-dgii-confirma" />
+          <span>Esta autorización es de <strong>${esc(negocio?.businessName || 'este negocio')}</strong>${negocio?.rnc ? ` (RNC ${esc(negocio.rnc)})` : ''}.</span>
+        </label>` : ''}
+    </div>`;
+  if (boton) {
+    boton.textContent = nuevos.length ? `Registrar ${_plural(nuevos.length, 'rango', 'rangos')}` : 'Nada nuevo que registrar';
+    boton.disabled = !nuevos.length;
+  }
+}
+
+async function registrarRangosDgii() {
+  const d = _anDgii;
+  const nuevos = (d?.rangos || []).filter((r) => r.estado === 'nuevo');
+  if (!nuevos.length) return;
+  _fmLimpiar('an-form');
+  setText('an-msg', '');
+  const vence = $id('an-dgii-vence')?.value || '';
+  if ($id('an-dgii-vence') && !vence) { _fmError('an-dgii-vence', 'Indica la fecha de vencimiento que dio la DGII.'); return; }
+  if (vence && vence < hoyLocal()) { _fmError('an-dgii-vence', 'Esa fecha ya pasó: la secuencia no se podría usar.'); return; }
+  if (!$id('an-dgii-confirma')?.checked) {
+    const m = $id('an-msg');
+    if (m) { m.textContent = 'Confirma que la autorización es de este negocio.'; m.classList.add('is-error'); }
+    return;
+  }
+  const negocioId = _anNegocioId;
+  const branchId = _anSucursalElegida();
+  try {
+    await _anAnalizar({
+      titulo: 'Enviando al POS del negocio',
+      subtitulo: `Autorización ${[...new Set(nuevos.map((r) => r.referencia))].join(', ')}`,
+      pasos: ['Revisando que no se cruce con lo que ya tiene', 'Guardando la autorización', 'Dejándolo listo para que su POS lo aplique'],
+      trabajo: async () => {
+        await refreshToken();
+        const errores = [];
+        for (const r of nuevos) {
+          const electronico = _ncfEsE(r.tipo);
+          try {
+            await apiCall('POST', '/api/ncf-pendientes', {
+              businessId: negocioId,
+              documentType: r.tipo,
+              branchId,
+              startNumber: r.desde,
+              endNumber: r.hasta,
+              authorizationDate: r.fechaAutorizacion || null,
+              expirationDate: electronico || NCF_SIN_VENCE.has(r.tipo) ? null : vence,
+              authorizationReference: r.referencia,
+              notes: `Del archivo de la DGII (${r.archivo || d.nombre}).`,
+              // Para los B su archivo es el documento de autorización: con él
+              // el POS deja la secuencia activa sin que el dueño la confirme.
+              attachmentData: electronico ? null : (d.adjuntos[r.archivo] || null),
+            });
+          } catch (e) {
+            errores.push(`${r.tipo}: ${e.message}`);
+          }
+        }
+        if (errores.length === nuevos.length) throw new Error(errores.join(' | '));
+        return errores;
+      },
+      resumen: (errores) => (errores.length
+        ? `Registré una parte. No se pudo: ${errores.join(' | ')}`
+        : `Listo: ${[...new Set(nuevos.map((r) => r.tipo))].join(', ')} se aplica${nuevos.length > 1 ? 'n' : ''} en el POS cuando sincronice.`),
+    });
+    _anDespuesDeRegistrar();
+  } catch (_) {
+    // El error ya se mostró; lo leído sigue en pantalla.
+  }
+}
+
+// ── Ventana de análisis (como un asistente) ─────────────────────────────
+// Muestra los pasos uno a uno mientras corre `trabajo`; cada paso dura un
+// mínimo para que se lea y el último espera a que el trabajo termine.
+// Misma idea que la del POS (js/ecf-sequences-config.js).
+async function _anAnalizar({ titulo, subtitulo, pasos, trabajo, resumen }) {
+  const icono = (nombre, tam) => (window.TcIconos ? window.TcIconos.svg(nombre, tam) : '');
+  const espera = (ms) => new Promise((r) => setTimeout(r, ms));
+  const capa = document.createElement('div');
+  capa.className = 'an-ia';
+  capa.setAttribute('role', 'status');
+  capa.innerHTML = `
+    <div class="an-ia__panel">
+      <div class="an-ia__orbe">${icono('check', 30)}</div>
+      <div class="an-ia__titulo">${esc(titulo)}</div>
+      <div class="an-ia__sub">${esc(subtitulo || '')}</div>
+      <ul class="an-ia__pasos">${pasos.map((p) => `
+        <li class="an-ia__paso"><span class="an-ia__punto">${icono('check', 12)}</span><span>${esc(p)}</span></li>`).join('')}
+      </ul>
+      <div class="an-ia__resultado"></div>
+      <div class="an-ia__cerrar"></div>
+    </div>`;
+  document.body.appendChild(capa);
+  const items = Array.from(capa.querySelectorAll('.an-ia__paso'));
+  const reducido = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const ritmo = reducido ? 120 : 520;
+
+  let resultado;
+  let error = null;
+  const tarea = Promise.resolve().then(trabajo).then((v) => { resultado = v; }, (e) => { error = e; });
+  for (let i = 0; i < items.length; i += 1) {
+    items[i].classList.add('is-activo');
+    await (i === items.length - 1 ? Promise.all([tarea, espera(ritmo)]) : espera(ritmo));
+    items[i].classList.remove('is-activo');
+    if (error && i === items.length - 1) break;
+    items[i].classList.add('is-hecho');
+  }
+
+  const tituloEl = capa.querySelector('.an-ia__titulo');
+  const resultadoEl = capa.querySelector('.an-ia__resultado');
+  if (error) {
+    capa.classList.add('is-error');
+    capa.querySelector('.an-ia__orbe').innerHTML = icono('x', 30);
+    const ultimo = items[items.length - 1];
+    ultimo.classList.add('is-fallo');
+    ultimo.querySelector('.an-ia__punto').innerHTML = icono('x', 12);
+    tituloEl.textContent = 'No se pudo completar';
+    resultadoEl.classList.add('is-escrito');
+    resultadoEl.textContent = error.message || String(error);
+    await new Promise((resolve) => {
+      const cerrar = capa.querySelector('.an-ia__cerrar');
+      cerrar.innerHTML = '<button type="button" class="btn btn-secondary">Cerrar</button>';
+      cerrar.querySelector('button').addEventListener('click', resolve, { once: true });
+    });
+    capa.remove();
+    throw error;
+  }
+
+  capa.classList.add('is-listo');
+  tituloEl.textContent = 'Listo';
+  const texto = typeof resumen === 'function' ? resumen(resultado) : (resumen || '');
+  // El resumen se escribe letra por letra, como la respuesta de un asistente.
+  for (let i = 1; i <= texto.length; i += 1) {
+    resultadoEl.textContent = texto.slice(0, i);
+    await espera(reducido ? 0 : 14);
+  }
+  resultadoEl.classList.add('is-escrito');
+  await espera(reducido ? 300 : 1100);
+  capa.remove();
+  return resultado;
+}
+
+// ── Ficha del negocio: Comprobantes fiscales ─────────────────────────────
+async function cargarComprobantesNegocio(id) {
+  const caja = $id('det-comprobantes');
+  if (!caja) return;
+  try {
+    await refreshToken();
+    const [aplicadas, pendientes, cliente] = await Promise.all([
+      apiCall('GET', `/api/ncf-aplicadas/${id}`),
+      apiCall('GET', `/api/ncf-pendientes/${id}`),
+      apiCall('GET', `/api/clientes/${id}`).catch(() => null),
+    ]);
+    if (_currentClienteId !== id) return;
+    caja.innerHTML = _comprobantesNegocioHtml(aplicadas || [], pendientes || [], cliente ? _posInformaEcf(cliente) : null);
+  } catch (e) {
+    caja.innerHTML = `<p style="color:var(--text-muted)">No se pudieron cargar los comprobantes: ${esc(e.message)}</p>`;
+  }
+}
+
+function _comprobantesNegocioHtml(aplicadas, pendientes, posInformaEcf = null) {
+  const enCola = pendientes.filter((n) => (n.action || 'create') === 'create' && ['pendiente', 'error'].includes(n.status));
+  const aviso = posInformaEcf === false
+    ? '<div class="an-aviso" role="note">Este negocio tiene una versión de Tecno Caja que no le informa al portal sus e-NCF: aquí solo se ven sus NCF (B). Cuando actualice, aparecen también las E con lo usado.</div>'
+    : '';
+  if (!aplicadas.length && !enCola.length) {
+    return `${aviso}<p class="detc-vacio">Este negocio todavía no tiene secuencias en su POS. Sube la autorización de la DGII con "Registrar comprobantes".</p>`;
+  }
+  const fila = (tipo, cuerpo, pill) => `
+    <div class="detc-item">
+      <span class="detc-tipo">${esc(tipo)}</span>
+      <div class="detc-datos">${cuerpo}</div>
+      ${pill}
+    </div>`;
+  const filasCola = enCola.map((n) => fila(n.documentType,
+    `<strong>${esc(NCF_NOMBRES[n.documentType] || n.documentType)}</strong>
+     <small>${esc(_ncfFmt(n.documentType, n.startNumber))} → ${esc(_ncfFmt(n.documentType, n.endNumber))}${n.status === 'error' && n.errorMessage ? ` · ${esc(n.errorMessage)}` : ''}</small>`,
+    n.status === 'error' ? '<span class="pill pill-bad">Error</span>' : '<span class="pill pill-info">Por aplicar</span>'));
+  const filasPos = aplicadas.map((s) => {
+    const e = _ncfEstado(s);
+    return fila(s.documentType,
+      `<strong>${esc(NCF_NOMBRES[s.documentType] || s.documentName || s.documentType)}</strong>
+       <small>${esc(_ncfFmt(s.documentType, s.startNumber))} → ${esc(_ncfFmt(s.documentType, s.endNumber))} · ${_plural(Math.max(0, e.total - e.quedan), 'usado', 'usados')} · quedan ${Number(e.quedan).toLocaleString('es-DO')}${s.branchName && s.branchName !== 'Global' ? ` · ${esc(s.branchName)}` : ''}</small>`,
+      `<span class="pill ${e.pill}">${esc(e.etiqueta)}</span>`);
+  });
+  return `${aviso}<div class="detc-lista">${[...filasCola, ...filasPos].join('')}</div>`;
+}
+
+// ── Reportes: comprobantes activos del negocio ──────────────────────────
+// Los que su POS puede usar ahora (B y e-NCF, del espejo ncf_aplicadas),
+// primero los que se están acabando, y los registrados desde aquí que el
+// POS todavía no aplica.
+async function cargarComprobantesActivos(id) {
+  const caja = $id('rep-comprobantes');
+  if (!caja || !id) return;
+  try {
+    await refreshToken();
+    const [aplicadas, pendientes] = await Promise.all([
+      apiCall('GET', `/api/ncf-aplicadas/${id}`),
+      apiCall('GET', `/api/ncf-pendientes/${id}`),
+    ]);
+    if (_repNegocioId !== id) return;
+    const r = _comprobantesActivos(aplicadas || [], pendientes || []);
+    setText('rs-comprobantes', String(r.activas.length));
+    setText('rep-comprobantes-sub', r.resumen);
+    caja.innerHTML = _comprobantesActivosHtml(r, _repPosInformaEcf);
+  } catch (e) {
+    setText('rs-comprobantes', '—');
+    caja.innerHTML = `<p class="detc-vacio">No se pudieron cargar los comprobantes: ${esc(e.message)}</p>`;
+  }
+}
+
+function _comprobantesActivos(aplicadas, pendientes) {
+  const lista = aplicadas.map((s) => ({ s, e: _ncfEstado(s) }));
+  const activas = lista.filter((x) => x.e.activa)
+    .sort((a, b) => (b.e.alertas.length - a.e.alertas.length)
+      || String(a.s.documentType).localeCompare(String(b.s.documentType))
+      || Number(a.s.startNumber) - Number(b.s.startNumber));
+  const enCola = pendientes.filter((n) => (n.action || 'create') === 'create' && n.status === 'pendiente');
+  const alerta = activas.filter((x) => x.e.alertas.length).length;
+  const inactivas = lista.length - activas.length;
+  const resumen = [
+    _plural(activas.length, 'activa', 'activas'),
+    alerta ? `${alerta} por agotarse o vencer` : '',
+    enCola.length ? `${enCola.length} por aplicar` : '',
+    inactivas ? `${inactivas} agotada${inactivas === 1 ? '' : 's'}, vencida${inactivas === 1 ? '' : 's'} o desactivada${inactivas === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' · ');
+  return { activas, enCola, inactivas, resumen };
+}
+
+function _comprobantesActivosHtml({ activas, enCola, inactivas }, posInformaEcf = null) {
+  const aviso = posInformaEcf === false
+    ? '<div class="an-aviso" role="note" style="margin-bottom:10px">Este negocio tiene una versión de Tecno Caja que no le informa al portal sus e-NCF: aquí solo se ven sus NCF (B). Cuando actualice, aparecen también las E.</div>'
+    : '';
+  if (!activas.length && !enCola.length) {
+    return `${aviso}<p class="detc-vacio">El POS de este negocio no tiene comprobantes activos${inactivas ? ' (las que tiene están agotadas, vencidas o desactivadas)' : ''}. Súbele la autorización de la DGII con "Registrar comprobantes".</p>`;
+  }
+  const tarjetas = activas.map(({ s, e }) => {
+    const tipo = s.documentType;
+    const barra = e.pct < 0.10 ? 'is-bad' : e.pct < 0.25 ? 'is-warn' : '';
+    const vence = s.expirationDate
+      ? `${_fmtFechaSolo(s.expirationDate)}${e.diasVence !== null && e.diasVence >= 0 ? ` · en ${_plural(e.diasVence, 'día', 'días')}` : ''}`
+      : (_ncfEsE(tipo) || NCF_SIN_VENCE.has(tipo) ? 'No vence' : '—');
+    const lugar = s.branchName && s.branchName !== 'Global' ? ` · ${esc(s.branchName)}` : '';
+    return `<div class="ncf-card ${e.alertas.length ? 'is-alerta' : ''}">
+      <div class="ncf-card__cabeza">
+        <div class="ncf-card__tipo">${esc(tipo)} · ${esc(NCF_NOMBRES[tipo] || s.documentName || '')}<small>${_ncfEsE(tipo) ? 'Comprobante electrónico' : 'Comprobante fiscal'}${lugar}</small></div>
+        <span class="pill ${e.pill}">${e.etiqueta}</span>
+      </div>
+      <dl class="ncf-datos">
+        <dt>Próximo</dt><dd><code>${_ncfFmt(tipo, s.nextNumber)}</code></dd>
+        <dt>Rango</dt><dd><code>${_ncfFmt(tipo, s.startNumber)} – ${_ncfFmt(tipo, s.endNumber)}</code></dd>
+        <dt>Vence</dt><dd>${esc(vence)}</dd>
+      </dl>
+      <div class="ncf-barra ${barra}" role="progressbar" aria-valuemin="0" aria-valuemax="${e.total}" aria-valuenow="${e.quedan}"><span style="width:${Math.round(e.pct * 100)}%"></span></div>
+      <div class="ncf-barra__txt"><span>Quedan ${e.quedan.toLocaleString('es-DO')} de ${e.total.toLocaleString('es-DO')}</span><span>${Math.round(e.pct * 100)}%</span></div>
+      ${e.alertas.map((a) => `<div class="ncf-alerta">${esc(a)}</div>`).join('')}
+    </div>`;
+  });
+  const porAplicar = enCola.map((n) => `<div class="ncf-card is-inactiva">
+      <div class="ncf-card__cabeza">
+        <div class="ncf-card__tipo">${esc(n.documentType)} · ${esc(NCF_NOMBRES[n.documentType] || '')}<small>Registrado desde el portal</small></div>
+        <span class="pill pill-info">Por aplicar</span>
+      </div>
+      <dl class="ncf-datos">
+        <dt>Rango</dt><dd><code>${_ncfFmt(n.documentType, n.startNumber)} – ${_ncfFmt(n.documentType, n.endNumber)}</code></dd>
+        <dt>Autorización</dt><dd>${esc(n.authorizationReference || '—')}</dd>
+      </dl>
+      <div class="ncf-alerta">Se aplica cuando el POS del negocio sincronice.</div>
+    </div>`);
+  return `${aviso}<div class="ncf-cards">${[...tarjetas, ...porAplicar].join('')}</div>`;
+}
+
+// "Ver secuencias": Reportes → ese negocio → ITBIS / DGII (editar o suspender los B).
+function verSecuenciasNegocio(id) {
+  if (!id) return;
+  _repNegocioId = id;
+  goto('reportes');
+  abrirRepDetalle('itbis');
 }
 
 // ── Secuencias ya aplicadas en el POS (espejo de solo lectura) ─────────
@@ -3413,7 +4633,7 @@ function renderNcfAplicadas() {
   const listEl = $id('rep-ncf-aplicadas-list');
   if (!listEl) return;
   if (!_ncfAplicadas.length) {
-    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">Todavía no hay secuencias activas en el POS de este negocio.</div>`;
+    listEl.innerHTML = `<div class="rep-no-sync-sub" style="padding:8px 0">Todavía no hay secuencias en el POS de este negocio.</div>`;
     return;
   }
   const colores = {
@@ -3435,11 +4655,12 @@ function renderNcfAplicadas() {
             <td>${s.nextNumber}</td>
             <td>${s.totalAvailable}</td>
             <td>${s.branchName || '🌐 Global'}</td>
-            <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${colores[s.effectiveStatus] || colores[s.status] || '#6b7280'}">${ESTADO_LABELS[s.effectiveStatus] || ESTADO_LABELS[s.status] || s.effectiveStatus || s.status}</span></td>
+            <td><span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${colores[s.effectiveStatus] || colores[s.status] || '#6b7280'}">${s.readOnly && s.status === 'suspendido' ? 'Desactivada' : (ESTADO_LABELS[s.effectiveStatus] || ESTADO_LABELS[s.status] || s.effectiveStatus || s.status)}</span></td>
             <td style="white-space:nowrap">
+              ${s.readOnly ? '<span class="rep-no-sync-sub" title="Las e-NCF se editan o desactivan en el POS: Configuración → Secuencias de Comprobantes Electrónicos">e-NCF · se maneja en el POS</span>' : `
               <button class="btn btn-sm btn-secondary" data-icono="pencil" onclick="app.abrirEditarNcfModal('${s.id}')">Editar</button>
               ${s.status === 'activo' ? `<button class="btn btn-sm btn-secondary" data-icono="circle-pause" onclick="app.abrirSuspenderNcfModal('${s.id}')">Suspender</button>` : ''}
-              <button class="btn-icono is-danger" data-icono="trash-2" title="Eliminar" aria-label="Eliminar" onclick="app.eliminarNcfAplicada('${s.id}')"></button>
+              <button class="btn-icono is-danger" data-icono="trash-2" title="Eliminar" aria-label="Eliminar" onclick="app.eliminarNcfAplicada('${s.id}')"></button>`}
             </td>
           </tr>
         `).join('')}
@@ -3531,7 +4752,7 @@ function cancelarMotivoNcf() {
 // llegar antes de repintar, para que el contador vea el resultado sin tener
 // que darle a "Actualizar" a mano.
 function scheduleNcfRefresh() {
-  setTimeout(() => { loadNcfAplicadas(); loadNcfPendientes(); }, 4000);
+  setTimeout(() => { loadNcfAplicadas(); loadNcfPendientes(); cargarComprobantesActivos(_repNegocioId); }, 4000);
 }
 
 async function abrirSuspenderNcfModal(localSequenceId) {
@@ -4129,6 +5350,7 @@ function facRRenderFacturas() {
   // Montos sin "RD$" en la tabla (el encabezado ya lo dice).
   const mm = v => _facN(v).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   setText('facr-fac-count', `${rows.length} factura${rows.length === 1 ? '' : 's'}`);
+  const conRecibo = reciboConfig().activo;
   const tb = $id('facr-fac-tbody');
   if (tb) {
     tb.innerHTML = slice.length ? slice.map(f => {
@@ -4147,6 +5369,7 @@ function facRRenderFacturas() {
         <td>${antig}</td>
         <td><div class="facx-acc">
           ${cobrable ? `<button class="btn btn-secondary btn-sm" data-icono="banknote" onclick="app.registrarCobroLista('${f.id}')" title="Registrar cobro · saldo RD$ ${mm(_facSaldo(f))}">Cobrar</button>` : ''}
+          ${conRecibo && f.estado !== 'anulada' && _reciboPagos(f).length ? `<button class="btn-icono" title="Imprimir el recibo del último pago" aria-label="Imprimir recibo" data-icono="printer" onclick="app.reciboFacturaLista('${f.id}')"></button>` : ''}
           <button class="btn-icono" title="Descargar PDF" aria-label="Descargar PDF" data-icono="download" onclick="app.pdfFacturaLista('${f.id}')"></button>
           <button class="btn-icono" title="Ver factura" aria-label="Ver factura" data-icono="eye" onclick="app.verFactura('${f.id}')"></button>
         </div></td>
@@ -4409,6 +5632,11 @@ const NCF_NOMBRES = {
   B01: 'Crédito fiscal', B02: 'Consumidor final', B03: 'Nota de débito', B04: 'Nota de crédito',
   B11: 'Comprobante de compras', B12: 'Registro único de ingresos', B13: 'Gastos menores',
   B14: 'Régimen especial', B15: 'Gubernamental', B16: 'Exportaciones', B17: 'Pagos al exterior',
+  // e-NCF: como los nombra la DGII en la Oficina Virtual.
+  E31: 'Factura de Crédito Fiscal Electrónica', E32: 'Factura de Consumo Electrónica',
+  E33: 'Nota de Débito Electrónica', E34: 'Nota de Crédito Electrónica', E41: 'Compras Electrónico',
+  E43: 'Gastos Menores Electrónico', E44: 'Regímenes Especiales Electrónico', E45: 'Gubernamental Electrónico',
+  E46: 'Exportaciones Electrónico', E47: 'Pagos al Exterior Electrónico',
 };
 const NCF_DESCRIPCIONES = {
   B01: 'Empresa con RNC que deduce gastos', B02: 'Persona o empresa sin crédito fiscal',
@@ -4416,13 +5644,30 @@ const NCF_DESCRIPCIONES = {
   B11: 'Compras a personas sin RNC', B12: 'Ventas resumidas en un solo registro',
   B13: 'Gastos menores del negocio', B14: 'Zonas francas y regímenes exentos',
   B15: 'Entidades del Estado', B16: 'Ventas al exterior', B17: 'Pagos a proveedores del exterior',
+  E31: 'Factura electrónica a empresa con RNC', E32: 'Factura electrónica a consumidor final',
+  E33: 'Aumenta una factura electrónica ya emitida', E34: 'Anula o reduce una factura electrónica',
+  E41: 'Compras electrónicas a personas sin RNC', E43: 'Gastos menores del negocio',
+  E44: 'Zonas francas y regímenes exentos', E45: 'Entidades del Estado',
+  E46: 'Ventas al exterior', E47: 'Pagos a proveedores del exterior',
 };
 // Las notas de crédito (B04) no vencen; el resto lleva la fecha que da la DGII.
 const NCF_SIN_VENCE = new Set(['B04']);
+// e-NCF: 10 dígitos y la DGII autoriza cantidades concretas (mismos límites
+// que el POS, EcfRepository.saveSequence).
+const ECF_MAXIMO = 9999999999;
+const ECF_RANGO_MAXIMO = 1000000;
 
-function _ncfFmt(tipo, n) { return `${tipo}${String(Math.max(0, Math.trunc(Number(n) || 0))).padStart(8, '0')}`; }
+function _ncfEsE(tipo) { return ECF_DOCUMENT_TYPES.includes(String(tipo || '').toUpperCase()); }
+function _ncfFmt(tipo, n) {
+  return `${tipo}${String(Math.max(0, Math.trunc(Number(n) || 0))).padStart(_ncfEsE(tipo) ? 10 : 8, '0')}`;
+}
 function _ncfOpciones() {
   return NCF_DOCUMENT_TYPES.map(t => `<option value="${t.code}">${t.code} — ${NCF_NOMBRES[t.code] || t.label}</option>`).join('');
+}
+// Para los negocios: NCF (B) y e-NCF de la factura electrónica (E).
+function _ncfOpcionesCliente() {
+  return `<optgroup label="Comprobantes fiscales (NCF)">${_ncfOpciones()}</optgroup>`
+    + `<optgroup label="Comprobantes electrónicos (e-NCF)">${ECF_DOCUMENT_TYPES.map(c => `<option value="${c}">${c} — ${NCF_NOMBRES[c]}</option>`).join('')}</optgroup>`;
 }
 
 // "Primer NCF: B0200000001 · Último: B0200000500 · 500 comprobantes"
@@ -4432,23 +5677,29 @@ function _ncfPreviewHtml(tipo, desde, hasta) {
     return 'Escribe el número inicial y el final para ver el rango.';
   }
   const n = h - d + 1;
-  return `Primer NCF: <strong>${_ncfFmt(tipo, d)}</strong> · Último: <strong>${_ncfFmt(tipo, h)}</strong> · ${n.toLocaleString('es-DO')} comprobante${n === 1 ? '' : 's'}`;
+  const sigla = _ncfEsE(tipo) ? 'e-NCF' : 'NCF';
+  return `Primer ${sigla}: <strong>${_ncfFmt(tipo, d)}</strong> · Último: <strong>${_ncfFmt(tipo, h)}</strong> · ${n.toLocaleString('es-DO')} comprobante${n === 1 ? '' : 's'}`;
 }
 
 // Reglas del formulario: { campo: mensaje }. `existentes` = secuencias ya
-// registradas (las suspendidas no cuentan, igual que en el servidor).
+// registradas (las suspendidas no cuentan, igual que en el servidor). Una
+// e-NCF desactivada sí cuenta: el POS no repite un número de producción.
 function _ncfValidar({ tipo, desde, hasta, vence, existentes = [], excluirId = null, editando = false }) {
   const err = {};
   const d = Number(desde), h = Number(hasta);
+  const electronico = _ncfEsE(tipo);
   if (!editando && (!Number.isInteger(d) || d < 1)) err.desde = 'Escribe el número inicial (1 o más).';
   if (!Number.isInteger(h) || h < 1) err.hasta = 'Escribe el número final.';
   else if (Number.isInteger(d) && h <= d) err.hasta = 'El número final debe ser mayor que el inicial.';
-  else if (h > 99999999) err.hasta = 'El NCF tiene 8 dígitos: máximo 99999999.';
-  if (!vence && !NCF_SIN_VENCE.has(tipo) && !editando) err.vence = 'Indica la fecha de vencimiento que dio la DGII.';
+  else if (electronico && h > ECF_MAXIMO) err.hasta = 'El e-NCF tiene 10 dígitos: máximo 9999999999.';
+  else if (!electronico && h > 99999999) err.hasta = 'El NCF tiene 8 dígitos: máximo 99999999.';
+  else if (electronico && h - d + 1 > ECF_RANGO_MAXIMO) err.hasta = 'Ese rango es demasiado grande: copia el "desde" y el "hasta" exactos de la DGII.';
+  if (!vence && !NCF_SIN_VENCE.has(tipo) && !electronico && !editando) err.vence = 'Indica la fecha de vencimiento que dio la DGII.';
   else if (vence && !editando && vence < hoyLocal()) err.vence = 'Esa fecha ya pasó: la secuencia no se podría usar.';
   if (!err.desde && !err.hasta) {
+    const noCuentan = electronico ? ['cancelado', 'eliminado'] : ['suspendido', 'cancelado', 'eliminado'];
     const choque = existentes.find(s => s.documentType === tipo && String(s.id) !== String(excluirId)
-      && !['suspendido', 'cancelado', 'eliminado'].includes(s.status)
+      && !noCuentan.includes(s.status)
       && d <= Number(s.endNumber) && h >= Number(s.startNumber));
     if (choque) err.hasta = `Se cruza con la secuencia ${_ncfFmt(tipo, choque.startNumber)}–${_ncfFmt(tipo, choque.endNumber)}.`;
   }
@@ -5480,8 +6731,11 @@ async function verFactura(id) {
 
     const editable = f.estado === 'pendiente' && Number(f.monto_pagado || 0) === 0;
     const cobrable = ['pendiente', 'parcial'].includes(f.estado);
+    const conRecibo = reciboConfig().activo && f.estado !== 'anulada';
+    const pagosRecibo = _reciboPagos(f);
     const acc = [];
     if (cobrable) acc.push(`<button class="btn btn-primary btn-sm" data-icono="banknote" onclick="app.openRegistrarPagoFac()">Registrar cobro</button>`);
+    if (conRecibo && pagosRecibo.length) acc.push(`<button class="btn btn-secondary btn-sm" data-icono="printer" onclick="app.reciboDePago(${pagosRecibo.length - 1})">Recibo del último pago</button>`);
     if (editable) acc.push(`<button class="btn btn-secondary btn-sm" data-icono="pencil" onclick="app.editarFactura('${f.id}')">Editar</button>`);
     acc.push(`<button class="btn btn-secondary btn-sm" data-icono="copy" onclick="app.duplicarFactura('${f.id}')">Duplicar</button>`);
     acc.push(`<button class="btn btn-secondary btn-sm" data-icono="download" onclick="app.imprimirFactura()">Descargar PDF</button>`);
@@ -5493,9 +6747,10 @@ async function verFactura(id) {
 
     $id('fd-email-info').textContent = f.ultimoEmailA ? `✉ Último envío: ${f.ultimoEmailA} · ${fmtDate(f.ultimoEmailEn)}` : '';
 
-    $id('fd-pagos').innerHTML = (f.pagos || []).map(p => `
-      <tr><td style="text-align:right">${money(p.monto)}</td><td>${esc(p.metodo) || '—'}</td><td>${fmtDate(p.fecha)}</td><td>${esc(p.nota) || '—'}</td></tr>
-    `).join('') || '<tr><td colspan="4" class="td-empty">Sin pagos registrados</td></tr>';
+    $id('fd-pagos').innerHTML = pagosRecibo.map((p, i) => `
+      <tr><td style="text-align:right">${money(p.monto)}</td><td>${esc(p.metodo) || '—'}</td><td>${fmtDate(p.fecha)}</td><td>${esc(p.nota) || '—'}</td>
+        <td style="text-align:right">${conRecibo ? `<button class="btn btn-secondary btn-sm" data-icono="printer" onclick="app.reciboDePago(${i})" title="Imprimir el recibo de este pago">Recibo</button>` : ''}</td></tr>
+    `).join('') || '<tr><td colspan="5" class="td-empty">Sin pagos registrados</td></tr>';
   } catch (e) {
     toast('Error cargando factura: ' + e.message, 'error');
     goto('facturacion');
@@ -5560,17 +6815,404 @@ async function registrarPagoFac() {
   if (saldo > 0 && monto > saldo + 0.01) { _fmError('fp-monto', `No puede pasar del saldo pendiente (${fmtMoney(saldo)}).`); return; }
   const btn = $id('fp-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Guardando…'; }
+  const facturaId = _facCurId;
   try {
-    await apiCall('PUT', `/api/facturacion/facturas/${_facCurId}`, {
+    await apiCall('PUT', `/api/facturacion/facturas/${facturaId}`, {
       pago: { monto, metodo: $id('fp-metodo')?.value || 'efectivo', nota: $id('fp-nota')?.value || '' },
     });
     hide('modal-fac-pago');
     toast('Pago registrado.', 'success');
-    if (!_pagoDesdeLista) verFactura(_facCurId);
+    if (!_pagoDesdeLista) verFactura(facturaId);
     _pagoDesdeLista = false;
     loadFacturacion();
+    _reciboTrasCobro(facturaId);
   } catch (e) { _fmError('fp-monto', e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = 'Registrar'; } }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// RECIBO DE PAGO (impresora térmica, opcional)
+// Configuración → Recibo de pago: activarlo, la impresora (de esta PC), el
+// ancho (80 o 58 mm), qué hacer al registrar un cobro y las copias. Se
+// guarda en esta computadora. El botón "Recibo" sale en la tabla de
+// Facturación (último pago) y en cada pago del detalle de la factura. Sin
+// impresora elegida se abre la vista previa con la ventana de imprimir.
+// ══════════════════════════════════════════════════════════════════════
+
+const RECIBO_CLAVE = 'tc-recibo-pago';
+const RECIBO_POR_DEFECTO = { activo: false, impresora: '', ancho: 80, alCobrar: 'preguntar', copias: 1, logo: true };
+const RECIBO_METODOS = { efectivo: 'Efectivo', transferencia: 'Transferencia', tarjeta: 'Tarjeta', cheque: 'Cheque', deposito: 'Depósito', credito: 'Crédito' };
+
+function reciboConfig() {
+  try {
+    return { ...RECIBO_POR_DEFECTO, ...JSON.parse(localStorage.getItem(RECIBO_CLAVE) || '{}') };
+  } catch (_) {
+    return { ...RECIBO_POR_DEFECTO };
+  }
+}
+
+function _reciboGuardar(cfg) {
+  try { localStorage.setItem(RECIBO_CLAVE, JSON.stringify(cfg)); } catch (_) { /* solo vale por esta sesión */ }
+}
+
+// Pagos de la factura. Una marcada "pagada" a mano (o al contado) puede no
+// tener la lista: cuenta como un solo pago por lo cobrado.
+function _reciboPagos(f) {
+  const pagos = Array.isArray(f?.pagos) ? f.pagos.filter((p) => Number(p.monto) > 0) : [];
+  if (pagos.length) return pagos;
+  const pagado = Number(f?.monto_pagado || 0);
+  return pagado > 0 ? [{ monto: pagado, metodo: f.metodo_pago || 'efectivo', fecha: f.updatedAt || f.fecha, nota: '' }] : [];
+}
+
+// Datos de un recibo: el pago `indice` (por defecto el último) de la factura.
+function reciboPagoDatos(f, indice) {
+  const pagos = _reciboPagos(f);
+  if (!pagos.length) return null;
+  const i = Number.isInteger(indice) && indice >= 0 && indice < pagos.length ? indice : pagos.length - 1;
+  const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  const anteriores = r2(pagos.slice(0, i).reduce((s, p) => s + Number(p.monto || 0), 0));
+  const monto = r2(pagos[i].monto);
+  const total = r2(f.total);
+  const saldo = Math.max(0, r2(total - anteriores - monto));
+  // Por qué paga: lo que se facturó (hasta 6 líneas).
+  const lineas = (Array.isArray(f.items) ? f.items : []).filter((it) => String(it.descripcion || '').trim());
+  const concepto = lineas.slice(0, 6).map((it) => `${Number(it.cantidad) > 1 ? `${Number(it.cantidad)} x ` : ''}${String(it.descripcion).trim()}`);
+  if (lineas.length > 6) concepto.push(`y ${lineas.length - 6} más`);
+  return {
+    numero: `${String(f.ncf || 'FACT').replace(/[^A-Z0-9]/gi, '')}-${String(i + 1).padStart(2, '0')}`,
+    fecha: pagos[i].fecha || new Date().toISOString(),
+    cliente: f.cliente?.nombre || 'Cliente',
+    rnc: f.cliente?.rnc || '',
+    ncf: facNcfDisplay(f.ncf),
+    total, anteriores, monto, saldo,
+    saldada: saldo <= 0.009,
+    metodo: RECIBO_METODOS[String(pagos[i].metodo || '').toLowerCase()] || pagos[i].metodo || 'Efectivo',
+    nota: pagos[i].nota || '',
+    concepto,
+    pagoNumero: i + 1,
+    pagosTotal: pagos.length,
+  };
+}
+
+// Recibo para impresora térmica: letra negra sobre blanco, sin colores, del
+// ancho imprimible del rollo (72 mm en 80 mm, 48 mm en 58 mm). logo: el de
+// _reciboLogoVista (como sale en el papel); sin pasarlo usa el de la firma.
+function reciboPagoHtml(d, perfil, ancho = 80, logo) {
+  const e = (t) => esc(t == null ? '' : String(t));
+  const dinero = (n) => (Number(n) || 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const angosto = Number(ancho) === 58;
+  const util = angosto ? 48 : 72;
+  const fecha = (() => {
+    const f = new Date(d.fecha);
+    return Number.isNaN(f.getTime()) ? '' : `${hoyLocal(f).split('-').reverse().join('/')} ${f.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}`;
+  })();
+  const letras = window.FacturaPlantillas?.montoEnLetras ? window.FacturaPlantillas.montoEnLetras(d.monto) : '';
+  const fila = (k, v, clase = '') => `<div class="fila ${clase}"><span>${k}</span><span>${v}</span></div>`;
+  const firma = perfil || {};
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Recibo ${e(d.numero)}</title><style>
+    @page { size: ${angosto ? 58 : 80}mm auto; margin: 0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #fff; }
+    body { width: ${util}mm; margin: 0 auto; padding: 3mm 0 6mm; font-family: Arial, Helvetica, sans-serif; font-size: ${angosto ? 10.5 : 11.5}px; line-height: 1.35; color: #000; }
+    .c { text-align: center; }
+    .logo { display: block; max-width: ${angosto ? 30 : 40}mm; max-height: 16mm; margin: 0 auto 2mm; filter: grayscale(1); }
+    .firma { font-size: ${angosto ? 13 : 14.5}px; font-weight: 800; }
+    .titulo { margin: 2mm 0 1mm; font-size: ${angosto ? 13 : 15}px; font-weight: 800; letter-spacing: 1px; }
+    .linea { border-top: 1px dashed #000; margin: 2mm 0; }
+    .fila { display: flex; justify-content: space-between; gap: 2mm; }
+    .fila > span:last-child { text-align: right; white-space: nowrap; }
+    .b { font-weight: 700; }
+    .grande { font-size: ${angosto ? 14 : 16}px; font-weight: 800; }
+    .caja { border: 1.5px solid #000; padding: 1.5mm 2mm; margin: 2mm 0; }
+    ${angosto ? '.caja .fila { flex-direction: column; gap: 0; } .caja .fila > span:last-child { text-align: left; }' : ''}
+    .letras { font-size: ${angosto ? 9 : 10}px; margin-top: 1mm; }
+    .firma-linea { margin: 9mm 6mm 1mm; border-top: 1px solid #000; }
+    .concepto { padding-left: 2mm; text-indent: -2mm; }
+    .pie { font-size: ${angosto ? 9.5 : 10.5}px; }
+  </style></head><body>
+    ${logo ? `<img class="logo" src="${e(logo.src)}" style="width:${logo.mm}mm;max-height:none" alt="">`
+      : logo === undefined && firma.logo_url && reciboConfig().logo ? `<img class="logo" src="${e(firma.logo_url)}" alt="">` : ''}
+    <div class="c firma">${e(firma.nombre_firma || 'Recibo de pago')}</div>
+    <div class="c pie">${[firma.rnc ? `RNC ${e(firma.rnc)}` : '', e(firma.telefono)].filter(Boolean).join(' · ')}</div>
+    ${firma.direccion ? `<div class="c pie">${e(firma.direccion)}</div>` : ''}
+    <div class="c titulo">RECIBO DE PAGO</div>
+    <div class="c">No. ${e(d.numero)}</div>
+    <div class="c">${e(fecha)}</div>
+    <div class="linea"></div>
+    <div>Recibimos de:</div>
+    <div class="b">${e(d.cliente)}</div>
+    ${d.rnc ? `<div>RNC / Cédula: ${e(d.rnc)}</div>` : ''}
+    <div class="linea"></div>
+    ${(d.concepto || []).length ? `<div>Por concepto de:</div>${d.concepto.map((c) => `<div class="concepto">- ${e(c)}</div>`).join('')}<div class="linea"></div>` : ''}
+    ${fila('Factura', e(d.ncf))}
+    ${fila('Total factura', dinero(d.total))}
+    ${d.anteriores > 0 ? fila('Pagado antes', dinero(d.anteriores)) : ''}
+    <div class="caja">
+      ${fila('ESTE PAGO', `RD$ ${dinero(d.monto)}`, 'grande')}
+      ${letras ? `<div class="letras">${e(letras)}</div>` : ''}
+    </div>
+    ${fila('Forma de pago', e(d.metodo))}
+    ${d.pagosTotal > 1 ? fila('Pago', `${d.pagoNumero} de ${d.pagosTotal}`) : ''}
+    ${d.saldada ? '<div class="c b" style="margin-top:2mm">FACTURA SALDADA</div>' : fila('Saldo pendiente', `RD$ ${dinero(d.saldo)}`, 'b')}
+    ${d.nota ? `<div class="linea"></div><div>Nota del pago: ${e(d.nota)}</div>` : ''}
+    <div class="firma-linea"></div>
+    <div class="c pie">Recibido por</div>
+    <div class="linea"></div>
+    <div class="c pie">¡Gracias por su pago!</div>
+  </body></html>`;
+}
+
+// Logo de la firma en puntos de térmica (1 bit por punto), como el del ticket
+// del POS (convertLogoToEscposMonochrome en js/ventas.js): sin los bordes
+// blancos y a lo sumo maxAncho × maxAlto puntos (203 puntos = 1 pulgada).
+// Un logo sobre fondo oscuro (estilo ícono de app) se invierte: el fondo queda
+// blanco y el dibujo negro. Sin eso salía un cuadro casi todo negro que la
+// térmica no imprimía. Si aun así queda más de la mitad en negro, no se pone.
+const _reciboLogoCache = new Map();
+const RECIBO_LOGO_MAX_NEGRO = 0.5;
+
+function _reciboLogoMono(dataUrl, maxAncho, maxAlto) {
+  if (!dataUrl) return Promise.resolve(null);
+  const clave = `${maxAncho}x${maxAlto}:${dataUrl}`;
+  if (!_reciboLogoCache.has(clave)) _reciboLogoCache.set(clave, _reciboLogoMonoSinCache(dataUrl, maxAncho, maxAlto));
+  return _reciboLogoCache.get(clave);
+}
+
+function _reciboLogoMonoSinCache(dataUrl, maxAncho, maxAlto) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const espera = setTimeout(() => resolve(null), 3000);
+    img.onload = () => {
+      clearTimeout(espera);
+      try {
+        const sonda = document.createElement('canvas');
+        sonda.width = img.width;
+        sonda.height = img.height;
+        const sctx = sonda.getContext('2d');
+        sctx.drawImage(img, 0, 0);
+        const px = sctx.getImageData(0, 0, img.width, img.height).data;
+        const gris = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        // ¿Fondo oscuro? Lo dice la orilla de la imagen (lo transparente no cuenta).
+        let suma = 0, opacos = 0, orilla = 0;
+        for (let y = 0; y < img.height; y += 1) {
+          for (let x = 0; x < img.width; x += 1) {
+            if (y > 0 && y < img.height - 1 && x > 0 && x < img.width - 1) continue;
+            orilla += 1;
+            const i = (y * img.width + x) * 4;
+            if (px[i + 3] < 10) continue;
+            suma += gris(px, i);
+            opacos += 1;
+          }
+        }
+        const invertir = opacos > orilla / 2 && suma / opacos < 100;
+        // Punto negro en el papel: lo oscuro (o lo claro, si se invierte); lo transparente es papel.
+        const negro = (d, i) => d[i + 3] >= 128 && (invertir ? gris(d, i) >= 150 : gris(d, i) < 150);
+        let minX = img.width, minY = img.height, maxX = -1, maxY = -1;
+        for (let y = 0; y < img.height; y += 1) {
+          for (let x = 0; x < img.width; x += 1) {
+            if (!negro(px, (y * img.width + x) * 4)) continue;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+        if (maxX < minX) { resolve(null); return; } // nada que imprimir
+        const cw = maxX - minX + 1;
+        const ch = maxY - minY + 1;
+        const escala = Math.min(1, maxAncho / cw, maxAlto / ch);
+        const w = Math.max(8, Math.round(cw * escala));
+        const h = Math.max(1, Math.round(ch * escala));
+        const ancho = Math.ceil(w / 8) * 8; // ESC/POS: ancho en múltiplos de 8
+        const lienzo = document.createElement('canvas');
+        lienzo.width = ancho;
+        lienzo.height = h;
+        const ctx = lienzo.getContext('2d');
+        ctx.drawImage(img, minX, minY, cw, ch, 0, 0, w, h);
+        const { data } = ctx.getImageData(0, 0, ancho, h);
+        const bytesPorLinea = ancho / 8;
+        const bytes = [];
+        let puntos = 0;
+        for (let y = 0; y < h; y += 1) {
+          for (let bx = 0; bx < bytesPorLinea; bx += 1) {
+            let byte = 0;
+            for (let bit = 0; bit < 8; bit += 1) {
+              if (bx * 8 + bit < w && negro(data, (y * ancho + bx * 8 + bit) * 4)) { byte |= (1 << (7 - bit)); puntos += 1; }
+            }
+            bytes.push(byte);
+          }
+        }
+        if (puntos > w * h * RECIBO_LOGO_MAX_NEGRO) { resolve(null); return; }
+        resolve({ width: ancho, height: h, bytesPerLine: bytesPorLinea, data: bytes });
+      } catch (_) {
+        resolve(null);
+      }
+    };
+    img.onerror = () => { clearTimeout(espera); resolve(null); };
+    img.src = dataUrl;
+  });
+}
+
+// El logo tal como sale en el papel, para la vista previa ({ src, mm } o null).
+async function _reciboLogoVista(angosto) {
+  if (!reciboConfig().logo || !_perfil?.logo_url) return null;
+  const mono = await _reciboLogoMono(_perfil.logo_url, angosto ? 200 : 280, 140);
+  if (!mono) return null;
+  const lienzo = document.createElement('canvas');
+  lienzo.width = mono.width;
+  lienzo.height = mono.height;
+  const ctx = lienzo.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, mono.width, mono.height);
+  ctx.fillStyle = '#000000';
+  mono.data.forEach((byte, n) => {
+    const y = Math.floor(n / mono.bytesPerLine);
+    const x0 = (n % mono.bytesPerLine) * 8;
+    for (let bit = 0; bit < 8; bit += 1) if (byte & (1 << (7 - bit))) ctx.fillRect(x0 + bit, y, 1, 1);
+  });
+  return { src: lienzo.toDataURL('image/png'), mm: mono.width / 8 }; // 8 puntos por mm
+}
+
+// Imprime el recibo del pago `indice` (o el último) de la factura f.
+async function imprimirReciboPago(f, indice) {
+  const datos = reciboPagoDatos(f, indice);
+  if (!datos) { toast('Esta factura todavía no tiene pagos registrados.', 'error'); return false; }
+  const cfg = reciboConfig();
+  const api = window.contadoresAPI;
+  try {
+    // En la térmica sale con comandos ESC/POS, como los tickets del POS
+    // (electron/recibo-pago.js); el HTML es solo para la vista previa.
+    if (api?.printReceipt && cfg.impresora) {
+      const angosto = Number(cfg.ancho) === 58;
+      const firma = {
+        nombre_firma: _perfil?.nombre_firma || '', rnc: _perfil?.rnc || '', telefono: _perfil?.telefono || '', direccion: _perfil?.direccion || '',
+        logoMono: cfg.logo && _perfil?.logo_url ? await _reciboLogoMono(_perfil.logo_url, angosto ? 200 : 280, 140) : null,
+      };
+      const letras = window.FacturaPlantillas?.montoEnLetras ? window.FacturaPlantillas.montoEnLetras(datos.monto) : '';
+      const r = await api.printReceipt({ ...datos, letras }, firma, cfg.impresora, cfg.ancho, cfg.copias);
+      if (!r?.ok) throw new Error(r?.error || 'La impresora no respondió.');
+      toast(`Recibo ${datos.numero} enviado a ${cfg.impresora}.`, 'success');
+      return true;
+    }
+    if (api?.previewPrint) {
+      const html = reciboPagoHtml(datos, _perfil, cfg.ancho, await _reciboLogoVista(Number(cfg.ancho) === 58));
+      const r = await api.previewPrint(html, `Recibo ${datos.numero}`, `Recibo_${datos.numero}.pdf`);
+      if (!r?.ok) throw new Error(r?.error || 'No se pudo abrir la vista previa.');
+      return true;
+    }
+    toast('El recibo se imprime desde la app de escritorio.', 'error');
+    return false;
+  } catch (e) {
+    toast(`No se pudo imprimir el recibo: ${e.message}`, 'error');
+    return false;
+  }
+}
+
+// Botón "Recibo" de la tabla de Facturación: el último pago.
+async function reciboFacturaLista(id) {
+  const f = _facFacturas.find((x) => x.id === id);
+  if (f) await imprimirReciboPago(f);
+}
+
+// Botón "Recibo" de un pago en el detalle de la factura.
+async function reciboDePago(indice) {
+  if (_facCurData) await imprimirReciboPago(_facCurData, Number(indice));
+}
+
+// Después de registrar un cobro: según Configuración, pregunta, imprime solo o nada.
+async function _reciboTrasCobro(facturaId) {
+  const cfg = reciboConfig();
+  if (!cfg.activo || cfg.alCobrar === 'no') return;
+  if (cfg.alCobrar !== 'auto' && !confirm('Pago registrado. ¿Imprimo el recibo para el cliente?')) return;
+  try {
+    const f = await apiCall('GET', `/api/facturacion/facturas/${facturaId}`);
+    await imprimirReciboPago(f);
+  } catch (e) {
+    toast(`No se pudo preparar el recibo: ${e.message}`, 'error');
+  }
+}
+
+// ── Configuración → Recibo de pago ───────────────────────────────────────
+async function reciboCargarImpresoras() {
+  const sel = $id('cfg-recibo-impresora');
+  if (!sel) return;
+  const cfg = reciboConfig();
+  const api = window.contadoresAPI;
+  if (!api?.listPrinters) {
+    sel.innerHTML = '<option value="">Solo en la app de escritorio</option>';
+    return;
+  }
+  sel.innerHTML = '<option value="">Buscando impresoras…</option>';
+  const r = await api.listPrinters().catch((e) => ({ ok: false, error: e.message, impresoras: [] }));
+  const lista = r.impresoras || [];
+  const elegida = cfg.impresora && !lista.some((p) => p.nombre === cfg.impresora)
+    ? [{ nombre: cfg.impresora, etiqueta: `${cfg.impresora} (no conectada ahora)` }] : [];
+  sel.innerHTML = '<option value="">— Ventana de imprimir (sin elegir) —</option>'
+    + [...elegida, ...lista].map((p) => `<option value="${esc(p.nombre)}">${esc(p.etiqueta || p.nombre)}${p.predeterminada ? ' · predeterminada' : ''}</option>`).join('');
+  sel.value = cfg.impresora || '';
+  if (!r.ok) setText('cfg-recibo-estado', `No se pudieron leer las impresoras: ${r.error || ''}`);
+}
+
+function reciboPintarConfig() {
+  const cfg = reciboConfig();
+  const activo = $id('cfg-recibo-activo');
+  if (activo) activo.checked = Boolean(cfg.activo);
+  const opciones = $id('cfg-recibo-opciones');
+  const acciones = $id('cfg-recibo-acciones');
+  if (opciones) opciones.classList.toggle('is-apagado', !cfg.activo);
+  if (acciones) acciones.style.display = cfg.activo ? '' : 'none';
+  document.querySelectorAll('[data-recibo-ancho]').forEach((b) => b.setAttribute('aria-checked', String(Number(b.dataset.reciboAncho) === Number(cfg.ancho))));
+  const alCobrar = $id('cfg-recibo-al-cobrar'); if (alCobrar) alCobrar.value = cfg.alCobrar;
+  const copias = $id('cfg-recibo-copias'); if (copias) copias.value = String(cfg.copias);
+  const logo = $id('cfg-recibo-logo'); if (logo) logo.checked = cfg.logo !== false;
+  const imp = $id('cfg-recibo-impresora'); if (imp && imp.options.length) imp.value = cfg.impresora || '';
+  _cfgPintarEstados();
+}
+
+function reciboGuardarConfig() {
+  const cfg = {
+    ...reciboConfig(),
+    activo: Boolean($id('cfg-recibo-activo')?.checked),
+    impresora: $id('cfg-recibo-impresora')?.value || '',
+    alCobrar: $id('cfg-recibo-al-cobrar')?.value || 'preguntar',
+    copias: Number($id('cfg-recibo-copias')?.value || 1) === 2 ? 2 : 1,
+    logo: $id('cfg-recibo-logo') ? Boolean($id('cfg-recibo-logo').checked) : true,
+  };
+  _reciboGuardar(cfg);
+  reciboPintarConfig();
+  setText('cfg-recibo-estado', cfg.activo ? 'Guardado en esta computadora.' : 'Recibos de pago apagados.');
+  if (typeof facRRenderFacturas === 'function' && $id('facr-fac-tbody')) facRRenderFacturas();
+}
+
+function reciboElegirAncho(ancho) {
+  _reciboGuardar({ ...reciboConfig(), ancho: Number(ancho) === 58 ? 58 : 80 });
+  reciboPintarConfig();
+}
+
+// Un recibo de ejemplo con los datos de la firma.
+function _reciboEjemplo() {
+  return {
+    ncf: 'B0100000099', total: 4720, monto_pagado: 3000, metodo_pago: 'efectivo',
+    cliente: { nombre: 'Cliente de ejemplo SRL', rnc: '131000000' },
+    items: [{ cantidad: 1, descripcion: 'Contabilidad mensual de octubre' }, { cantidad: 1, descripcion: 'Declaración IT-1' }],
+    pagos: [
+      { monto: 2000, metodo: 'transferencia', fecha: new Date().toISOString() },
+      { monto: 1000, metodo: 'efectivo', fecha: new Date().toISOString(), nota: 'Recibo de prueba' },
+    ],
+  };
+}
+
+async function reciboVistaPrevia() {
+  const cfg = reciboConfig();
+  const html = reciboPagoHtml(reciboPagoDatos(_reciboEjemplo()), _perfil, cfg.ancho, await _reciboLogoVista(Number(cfg.ancho) === 58));
+  if (!window.contadoresAPI?.previewPrint) { toast('La vista previa es de la app de escritorio.', 'error'); return; }
+  await window.contadoresAPI.previewPrint(html, 'Recibo de pago (ejemplo)', 'Recibo_ejemplo.pdf');
+}
+
+async function reciboPrueba() {
+  setText('cfg-recibo-estado', 'Imprimiendo…');
+  const ok = await imprimirReciboPago(_reciboEjemplo());
+  setText('cfg-recibo-estado', ok ? 'Listo. Si no salió, revisa que la impresora esté encendida y con papel.' : '');
 }
 
 // Formatea una fecha "YYYY-MM-DD" sin corrimiento por zona horaria.
@@ -5663,20 +7305,10 @@ async function ensureEmailCfg() {
 
 let _envioFac = null;   // { id, data }
 
-// Lleva al contador a Configuración → Correo y resalta la tarjeta.
+// Lleva al contador a Configuración → Correo de envío.
 function irAConfigurarCorreo() {
   toast('Primero configura tu correo para poder enviar facturas.', 'info');
-  goto('configuracion');
-  setTimeout(() => {
-    const card = $id('cfg-correo-card');
-    if (card) {
-      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      card.style.transition = 'box-shadow .3s';
-      card.style.boxShadow = '0 0 0 2px var(--blue)';
-      setTimeout(() => { card.style.boxShadow = ''; }, 2000);
-    }
-    $id('cfg-email-user')?.focus();
-  }, 250);
+  irAConfig('correo', 'cfg-email-user');
 }
 
 async function abrirModalEnvioFac(id, prefillEmail, data) {
@@ -8395,7 +10027,7 @@ window.app = {
   loadSolicitudes, cancelarSolicitud,
   abrirSolicitudModal, cerrarSolicitudModal, selSolTipo, enviarSolicitud,
   // perfil
-  loadPerfil, savePerfil, handleCfgLogoUpload, quitarCfgLogo,
+  loadPerfil, savePerfil, handleCfgLogoUpload, quitarCfgLogo, cfgIr, irAConfig,
   guardarConfigCorreo, desconectarConfigCorreo, abrirLink,
   loadAsistente, nuevoChat, enviarChat, guardarConfigIA, desconectarConfigIA,
   asisPropPdf, asisPropEmail, asisPropDismiss,
@@ -8410,6 +10042,13 @@ window.app = {
   apElegirAlcance, apElegirItbis, apCalcular, generarCodigoProducto, apControlInventario,
   // secuencias NCF pendientes (registradas desde este Portal)
   abrirAgregarNcfModal, cerrarAgregarNcfModal, guardarNcfPendiente, handleAgregarNcfAdjunto, cancelarNcfPendiente, anActualizar,
+  anLeerArchivoDgii, anQuitarArchivoDgii, verSecuenciasNegocio, verReportesNegocio,
+  // servicios (Empresa de Servicios)
+  abrirServicioModal, cerrarServicioModal, guardarServicioPendiente, asElegirItbis, asCalcular, editarServicioReal, darDeBajaServicio,
+  // importar / exportar el catálogo en CSV
+  abrirImportarCatalogo, cerrarImportarCatalogo, icLeerArchivos, icQuitar, icImportar, icPlantilla, exportarCatalogoCsv, icCambiarDestino,
+  // recibo de pago (impresora térmica)
+  reciboFacturaLista, reciboDePago, reciboCargarImpresoras, reciboGuardarConfig, reciboElegirAncho, reciboVistaPrevia, reciboPrueba,
   // secuencias NCF ya aplicadas (editar/suspender/eliminar remoto)
   abrirEditarNcfModal, cerrarEditarNcfModal, guardarEdicionNcf, abrirSuspenderNcfModal, eliminarNcfAplicada,
   confirmarMotivoNcf, cancelarMotivoNcf,

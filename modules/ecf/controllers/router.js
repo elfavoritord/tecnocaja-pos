@@ -140,14 +140,26 @@ function createEcfRouter(deps) {
   router.post('/deactivate', wrap((req) => service.deactivate(req)));
   router.get('/validate-activation', wrap(() => service.validateActivation()));
 
-  router.get('/sequences', wrap(() => service.listSequences()));
+  // Al agregar, ajustar, desactivar o borrar una secuencia se avisa
+  // (deps.onSequencesChanged): el Portal del Contador ve el cambio en
+  // segundos y no le registra a ese negocio un rango que ya tiene.
+  const changingSequences = (handler) => wrap(async (req, res) => {
+    const payload = await handler(req, res);
+    try { deps.onSequencesChanged?.(); } catch (_) { /* nunca frena la respuesta */ }
+    return payload;
+  });
+
+  // ?environment=ecf → solo producción (Configuración → Ventas y Facturación);
+  // ?environment=certecf → solo pruebas (e-CF · DGII → Secuencias).
+  router.get('/sequences', wrap((req) => service.listSequences({ environment: req.query?.environment || null })));
   router.get('/sequences/next', wrap((req) => service.generateNextENCF(req)));
   router.post('/sequences/next', wrap((req) => service.generateNextENCF(req)));
   router.get('/sequences/types', wrap(() => require('../config/document-types').getDocumentTypes()));
-  router.post('/sequences', wrap((req) => service.saveSequence(req)));
-  router.post('/sequences/:id/next', wrap((req) => service.updateSequenceNext(req)));
-  router.delete('/sequences/:id', wrap((req) => service.disableSequence(req)));
-  router.delete('/sequences/:id/permanent', wrap((req) => service.deleteSequencePermanently(req)));
+  router.post('/sequences', changingSequences((req) => service.saveSequence(req)));
+  router.get('/sequences/:id/history', wrap((req) => service.getSequenceHistory(Number(req.params.id))));
+  router.post('/sequences/:id/next', changingSequences((req) => service.updateSequenceNext(req)));
+  router.delete('/sequences/:id', changingSequences((req) => service.disableSequence(req)));
+  router.delete('/sequences/:id/permanent', changingSequences((req) => service.deleteSequencePermanently(req)));
 
   router.get('/documents', wrap((req) => service.listDocuments(req.query || {})));
   router.post('/enviar', wrap((req) => service.enviarDocumento(req)));
@@ -207,6 +219,7 @@ function createEcfRouter(deps) {
   router.post('/certification-center/force-sync', wrap((req) => service.certificationCenterForceSync(req)));
   router.post('/certification-center/process', wrap((req) => service.certificationCenterProcess(req)));
   router.post('/certification-center/simulate/generate', wrap((req) => service.generateSimulationSet(req)));
+  router.get('/certification-center/simulate/status', wrap(() => service.certificationSimulationSendStatus()));
   router.post('/certification-center/simulate/manual-send', wrap((req) => service.simulateManualSend(req)));
   router.post('/certification-center/reset', wrap((req) => service.certificationCenterReset(req)));
   router.post('/certification-center/cases/:id/retry', wrap((req) => service.certificationCenterRetry(Number(req.params.id), req)));
@@ -292,7 +305,7 @@ function createEcfRouter(deps) {
 
   // ── Activación segura de producción DGII (ambiente 'ecf') — acción independiente,
   //    nunca disparada automáticamente por el wizard. Ver docs/plan de activación segura.
-  router.get('/production/status', wrap(() => service.getProductionActivationStatus()));
+  router.get('/production/status', wrap((req) => service.getProductionActivationStatus({ yaAutorizado: req.query?.yaAutorizado === '1' })));
   router.post('/production/activate', wrap((req) => service.activateProduction(req)));
   router.post('/production/revert', wrap((req) => service.revertProductionToCertification(req)));
 
@@ -565,13 +578,15 @@ function createEcfRouter(deps) {
     }
   });
 
+  // Representación impresa de la certificación (asistente, paso 5): un e-NCF de
+  // pruebas puede repetirse en producción, así que se buscan solo los de pruebas.
   router.get('/print/repr-impresa/:encf', async (req, res) => {
     try {
       const { generateReprImpresaHtml } = require('./repr-impresa');
       const rows = await deps.query(
         `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, environment
          FROM ecf_documents
-         WHERE encf = ? AND signed_xml_content IS NOT NULL
+         WHERE encf = ? AND signed_xml_content IS NOT NULL AND environment <> 'ecf'
          ORDER BY CASE WHEN certification_test_type LIKE 'simulation-%' THEN 0 ELSE 1 END,
                   created_at DESC, id DESC
          LIMIT 1`,
@@ -582,6 +597,7 @@ function createEcfRouter(deps) {
       const html = await generateReprImpresaHtml(representation.signedXml, {
         env: rows[0].environment || process.env.DGII_ENV || 'certecf',
         rfceSummaryXml: representation.rfceSummaryXml,
+        modality: String(req.query.modalidad || '').toLowerCase() === 'contingencia' ? 'contingencia' : undefined,
       });
       res.type('text/html').send(html);
     } catch (e) {
@@ -597,7 +613,7 @@ function createEcfRouter(deps) {
       const rows = await deps.query(
         `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, environment
          FROM ecf_documents
-         WHERE encf = ? AND signed_xml_content IS NOT NULL
+         WHERE encf = ? AND signed_xml_content IS NOT NULL AND environment <> 'ecf'
          ORDER BY CASE WHEN certification_test_type LIKE 'simulation-%' THEN 0 ELSE 1 END,
                   created_at DESC, id DESC
          LIMIT 1`,
@@ -608,6 +624,7 @@ function createEcfRouter(deps) {
       const html = await generateReprImpresaHtml(representation.signedXml, {
         env: rows[0].environment || process.env.DGII_ENV || 'certecf',
         rfceSummaryXml: representation.rfceSummaryXml,
+        modality: String(req.query.modalidad || '').toLowerCase() === 'contingencia' ? 'contingencia' : undefined,
       });
       browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
       const page = await browser.newPage();

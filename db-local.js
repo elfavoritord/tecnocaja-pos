@@ -307,9 +307,27 @@ async function _initLocalDb() {
   const SQL = await initSqlJs();
   const fileExists = fs.existsSync(LOCAL_OFFLINE_DB_FILE);
   const buffer = fileExists ? fs.readFileSync(LOCAL_OFFLINE_DB_FILE) : undefined;
-  const db = new SQL.Database(buffer);
-  // Ejecutar el esquema (CREATE TABLE IF NOT EXISTS es idempotente)
-  db.run(LOCAL_SCHEMA);
+  let db;
+  try {
+    db = new SQL.Database(buffer);
+    // Ejecutar el esquema (CREATE TABLE IF NOT EXISTS es idempotente)
+    db.run(LOCAL_SCHEMA);
+  } catch (error) {
+    if (!fileExists) throw error;
+
+    // No sobrescribir una BD offline ilegible: conservarla para recuperación
+    // manual y arrancar una caché nueva para que el modo online siga disponible.
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupPath = `${LOCAL_OFFLINE_DB_FILE}.corrupt-${stamp}.bak`;
+    fs.copyFileSync(LOCAL_OFFLINE_DB_FILE, backupPath);
+    try { db?.close(); } catch (_) {}
+    db = new SQL.Database();
+    db.run(LOCAL_SCHEMA);
+    console.error(
+      `[db-local] La caché offline no era una BD SQLite válida; se conservó en ${backupPath} y se inició una caché nueva.`,
+      error.message
+    );
+  }
 
   // Fase 3 de la extensión offline: pending_cash_movements ya existía para
   // movimientos ligados a ventas; se le agregan columnas para soportar
@@ -346,12 +364,20 @@ async function _initLocalDb() {
 }
 
 function _saveLocalDb(db) {
+  let tempPath = null;
   try {
     const data = db.export();
     fs.mkdirSync(path.dirname(LOCAL_OFFLINE_DB_FILE), { recursive: true });
-    fs.writeFileSync(LOCAL_OFFLINE_DB_FILE, Buffer.from(data));
+    tempPath = `${LOCAL_OFFLINE_DB_FILE}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tempPath, Buffer.from(data));
+    // Reemplazar desde un archivo completo evita dejar una BD truncada si el
+    // proceso se cierra mientras persiste el caché offline.
+    fs.renameSync(tempPath, LOCAL_OFFLINE_DB_FILE);
   } catch (err) {
     console.error('[db-local] Error guardando BD local:', err.message);
+    if (tempPath) {
+      try { fs.rmSync(tempPath, { force: true }); } catch (_) {}
+    }
   }
 }
 

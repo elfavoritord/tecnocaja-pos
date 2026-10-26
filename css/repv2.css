@@ -317,6 +317,9 @@
 }
 .repv2-reprint-btn:hover { background: rgba(99,102,241,.25); transform: scale(1.05); }
 .repv2-reprint-btn:active { transform: scale(.97); }
+.repv2-invoice-actions { white-space: nowrap; }
+.repv2-view-invoice-btn { font-size: .72rem; padding: .35rem .6rem; }
+.repv2-invoice-actions .repv2-reprint-btn + .repv2-reprint-btn { margin-left: .5rem; }
 
 .repv2-estado { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 999px; font-size: 0.68rem; font-weight: 700; }
 .repv2-estado-emitida  { background: rgba(0,229,160,0.15); color: #00e5a0; }

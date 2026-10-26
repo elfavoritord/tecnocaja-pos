@@ -303,6 +303,12 @@ function signXmlWithXmlCrypto(xmlContent, certificateContext) {
   if (!/\bxsd:/i.test(unsignedXml)) {
     unsignedXml = unsignedXml.replace(/(<[A-Za-z_][\w:.-]*\b[^>]*?)\s+xmlns:xsd="http:\/\/www\.w3\.org\/2001\/XMLSchema"/i, '$1');
   }
+  // La DGII valida con .NET (XmlDocument con PreserveWhitespace = false): al
+  // leer descarta los saltos de línea y sangrías entre etiquetas. Si se firman,
+  // su digest no coincide y responde 400 "Firma del certificado invalida"
+  // (comprobado en CerteCF 2026-10-21: la semilla indentada fallaba, compactada
+  // dio token). Firmado sin ellos vale tanto si la DGII los descarta como si no.
+  unsignedXml = unsignedXml.replace(/>\s+</g, '><').trim();
 
   const signer = new SignedXml({
     privateKey: privateKeyPem,

@@ -116,8 +116,21 @@ async function requireAuth(req, res, next) {
   const header = String(req.headers.authorization || '').trim();
   if (!header.startsWith('Bearer ')) return res.status(401).json({ error: 'No autorizado.' });
 
+  let decoded;
   try {
-    const decoded = await adminSdk.auth().verifyIdToken(header.slice(7));
+    decoded = await adminSdk.auth().verifyIdToken(header.slice(7));
+  } catch (e) {
+    if (!e?.code?.startsWith('auth/')) {
+      console.error('[admin] Error verificando ID token:', e.message);
+      return res.status(503).json({ error: 'No se pudo validar la sesión con Firebase.' });
+    }
+    const msg = e.code === 'auth/id-token-expired'
+      ? 'Sesión expirada. Inicia sesión nuevamente.'
+      : 'Token inválido.';
+    return res.status(401).json({ error: msg });
+  }
+
+  try {
     const uid = decoded.uid;
 
     const userDoc = await col(COL_ADMINS).doc(uid).get();
@@ -139,10 +152,8 @@ async function requireAuth(req, res, next) {
     req.adminUser = { uid, email: decoded.email, fullName: userData.fullName, role: userData.role, permissions: userData.permissions || ['*'] };
     next();
   } catch (e) {
-    const msg = e?.code === 'auth/id-token-expired'
-      ? 'Sesión expirada. Inicia sesión nuevamente.'
-      : 'Token inválido.';
-    res.status(401).json({ error: msg });
+    console.error('[admin] Error verificando perfil de administrador:', e.message);
+    res.status(503).json({ error: 'No se pudo verificar el acceso en Firebase.' });
   }
 }
 
@@ -845,6 +856,10 @@ app.use('/api/sucursales', createSucursalesRouter({
 // La pantalla es la misma del portal del contador (fuente única en el POS).
 app.get('/js/sucursales-central-ui.js', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'js', 'sucursales-central-ui.js'));
+});
+// Lector del archivo de autorización de la DGII que usa esa pantalla.
+app.get('/js/dgii-autorizacion.js', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'js', 'dgii-autorizacion.js'));
 });
 
 // ── SPA fallback ───────────────────────────────────────────────────────────

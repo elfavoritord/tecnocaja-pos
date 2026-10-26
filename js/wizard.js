@@ -771,6 +771,16 @@
           </button>`);
       });
     });
+    // Solo la principal (o ninguna libre): sin explicación parece un error.
+    const hayElegible = WZS.empresas.some((empresa) => empresa.activa !== false
+      && (empresa.sucursales || []).some((s) => s.estado === 'activa' && !s.esPrincipal));
+    if (partes.length && !hayElegible) {
+      partes.push(`<div style="margin-top:.4rem;padding:.65rem .85rem;border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.1);border-radius:10px;font-size:.82rem;line-height:1.45">
+        <strong>No hay otra sucursal para esta PC.</strong> La principal es la tienda donde ya trabaja tu negocio con su PC actual.
+        Pide a Tecno Caja o a tu contador que cree la sucursal de esta PC (por ejemplo, la segunda tienda) y después pulsa «Volver» y entra otra vez.
+        Las sucursales de Configuración → Sucursales y cajas de la PC principal no salen aquí: son solo de esa PC.
+      </div>`);
+    }
     lista.innerHTML = partes.join('') || '<small style="color:var(--text3)">Tu empresa todavía no tiene sucursales. Las crea Tecno Caja o tu contador.</small>';
     lista.querySelectorAll('[data-wzs-suc]:not([disabled])').forEach((boton) => {
       boton.addEventListener('click', () => {

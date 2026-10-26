@@ -1068,8 +1068,8 @@ input.form-input[type="file"] { min-height: 0; padding: 7px 10px; }
 .rep-modal-full .btn-icono { width: 36px; height: 36px; }
 
 /* Botones de abajo en Reportes (abrir el panel) */
-.rep-abrir { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; padding: 8px 0 4px; }
-.rep-abrir__principal { padding: 11px 26px; font-size: 14.5px; }
+/* Botones del negocio elegido, en la cabecera junto a Actualizar/Exportar/Imprimir. */
+.rep-acciones-negocio { display: contents; }
 
 @media (max-width: 900px) {
   .rep-cuerpo { padding: 12px 14px 18px; }
@@ -2694,3 +2694,250 @@ table.facx-tabla th:not(:nth-child(3)) { width: 1%; }
 table.facx-tabla tbody td:nth-child(3) { white-space: normal; min-width: 150px; }
 .facx-cli { font-weight: 600; color: var(--text); }
 .facx-rnc { font-size: 11.5px; color: var(--text-muted); font-family: var(--font-mono); }
+
+/* ── Registrar comprobantes (NCF y e-NCF) para un negocio ──────────────────
+   Modal #modal-agregar-ncf y tarjeta "Comprobantes fiscales" de la ficha del
+   negocio (contadores-app.js: abrirAgregarNcfModal, renderAnDgii, _anAnalizar). */
+.an-sucursal-campo { margin-bottom: 16px; max-width: 360px; }
+
+.an-drop {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px;
+  padding: 16px; border: 2px dashed var(--input-border); border-radius: var(--radius);
+  background: var(--panel-bg); cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+.an-drop:hover, .an-drop.is-encima { border-color: var(--blue); background: var(--blue-glow); }
+.an-drop__icono {
+  flex-shrink: 0; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%;
+  background: var(--pill-info-bg); color: var(--pill-info-text);
+}
+.an-drop__texto { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 3px; }
+.an-drop__texto strong { font-size: 14px; color: var(--text); }
+.an-drop__texto small { font-size: 12px; color: var(--text-sub); line-height: 1.45; }
+.an-drop__formatos { display: flex; gap: 6px; }
+.an-drop__formatos span {
+  padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
+  font-size: 11.5px; font-weight: 600; color: var(--text-sub);
+}
+
+.an-separador { display: flex; align-items: center; gap: 12px; margin: 18px 0 14px; color: var(--text-muted); font-size: 12px; }
+.an-separador::before, .an-separador::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* Lo leído del archivo */
+.an-leido {
+  display: grid; gap: 8px; padding: 14px; border-radius: var(--radius);
+  border: 1px solid var(--blue); background: var(--blue-glow);
+  animation: an-sube .35s ease both;
+}
+.an-leido__cabeza { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 2px; }
+.an-leido__cabeza strong { display: block; font-size: 14px; color: var(--text); }
+.an-leido__cabeza small { display: block; font-size: 12px; color: var(--text-sub); margin-top: 2px; }
+.an-rango {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: center;
+  padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface);
+}
+.an-rango.is-omitido { opacity: .72; }
+.an-rango__tipo {
+  min-width: 48px; padding: 5px 8px; border-radius: 6px; text-align: center;
+  background: var(--pill-info-bg); color: var(--pill-info-text); font-weight: 700; font-size: 13px;
+}
+.an-rango__datos { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.an-rango__datos strong { font-size: 13.5px; color: var(--text); }
+.an-rango__datos small { font-size: 12px; color: var(--text-sub); font-family: var(--font-mono); }
+.an-rango__datos small + small { font-family: inherit; }
+.an-rango__motivo { grid-column: 2 / -1; font-size: 12px; color: var(--text-sub); }
+.an-leido__vence { margin-top: 6px; max-width: 320px; }
+.an-leido__confirma { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--text); cursor: pointer; }
+.an-leido__confirma input { margin-top: 3px; flex-shrink: 0; }
+
+/* Ventana de análisis ("como un asistente"), encima del modal */
+.an-ia {
+  position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; padding: 16px;
+  background: var(--overlay); backdrop-filter: blur(6px); animation: an-aparece .2s ease both;
+}
+.an-ia__panel {
+  position: relative; width: min(440px, 100%); padding: 28px; overflow: hidden;
+  border: 1px solid var(--blue); border-radius: 16px; background: var(--surface);
+  box-shadow: var(--shadow-modal); color: var(--text); animation: an-sube .3s ease both;
+}
+/* Brillo que se mueve detrás del contenido */
+.an-ia__panel::before {
+  content: ''; position: absolute; inset: -40%; pointer-events: none;
+  background: radial-gradient(circle at 30% 30%, var(--blue-glow), transparent 45%),
+              radial-gradient(circle at 70% 70%, var(--green-bg), transparent 45%);
+  animation: an-gira 9s linear infinite;
+}
+.an-ia__panel > * { position: relative; }
+.an-ia__orbe {
+  width: 64px; height: 64px; margin: 0 auto 16px; border-radius: 50%; display: grid; place-items: center;
+  background: conic-gradient(from 0deg, var(--blue), var(--green), var(--purple), var(--blue));
+  animation: an-gira 2.4s linear infinite, an-pulso 1.8s ease-in-out infinite;
+}
+.an-ia__orbe::after { content: ''; width: 48px; height: 48px; border-radius: 50%; background: var(--surface); }
+.an-ia__orbe .tc-icon { display: none; position: absolute; color: #fff; }
+.an-ia.is-listo .an-ia__orbe { animation: none; background: var(--green); }
+.an-ia.is-error .an-ia__orbe { animation: none; background: var(--red); }
+.an-ia.is-listo .an-ia__orbe::after, .an-ia.is-error .an-ia__orbe::after { display: none; }
+.an-ia.is-listo .an-ia__orbe .tc-icon, .an-ia.is-error .an-ia__orbe .tc-icon { display: block; }
+.an-ia__titulo {
+  text-align: center; font-size: 18px; font-weight: 700;
+  background: linear-gradient(90deg, var(--text) 0%, var(--blue) 50%, var(--text) 100%);
+  background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: an-brillo 2.2s linear infinite;
+}
+.an-ia.is-listo .an-ia__titulo, .an-ia.is-error .an-ia__titulo { animation: none; background: none; color: var(--text); }
+.an-ia__sub { text-align: center; color: var(--text-sub); font-size: 13px; margin-top: 4px; word-break: break-word; }
+.an-ia__pasos { list-style: none; margin: 20px 0 0; padding: 0; display: grid; gap: 8px; }
+.an-ia__paso { display: flex; align-items: center; gap: 12px; font-size: 13.5px; color: var(--text-muted); transition: color .2s ease; }
+.an-ia__paso.is-activo { color: var(--text); }
+.an-ia__paso.is-hecho { color: var(--text-sub); }
+.an-ia__punto {
+  flex-shrink: 0; display: grid; place-items: center; width: 20px; height: 20px;
+  border-radius: 50%; border: 2px solid var(--border);
+}
+.an-ia__punto .tc-icon { display: none; }
+.an-ia__paso.is-activo .an-ia__punto { border-color: var(--blue); border-top-color: transparent; animation: an-gira .8s linear infinite; }
+.an-ia__paso.is-hecho .an-ia__punto { border-color: var(--green); background: var(--green); color: #fff; }
+.an-ia__paso.is-fallo .an-ia__punto { border-color: var(--red); background: var(--red); color: #fff; }
+.an-ia__paso.is-hecho .an-ia__punto .tc-icon, .an-ia__paso.is-fallo .an-ia__punto .tc-icon { display: block; }
+.an-ia__resultado { min-height: 1.4em; margin-top: 16px; text-align: center; font-size: 13.5px; font-weight: 500; color: var(--text); }
+.an-ia__resultado::after { content: '▍'; margin-left: 2px; color: var(--blue); animation: an-cursor .9s steps(2) infinite; }
+.an-ia__resultado:empty::after, .an-ia__resultado.is-escrito::after { content: none; }
+.an-ia__cerrar { display: flex; justify-content: center; margin-top: 16px; }
+.an-ia__cerrar:empty { display: none; }
+
+@keyframes an-gira { to { transform: rotate(360deg); } }
+@keyframes an-pulso { 50% { box-shadow: 0 0 0 10px var(--blue-glow); } }
+@keyframes an-brillo { to { background-position: -200% 0; } }
+@keyframes an-cursor { to { opacity: 0; } }
+@keyframes an-aparece { from { opacity: 0; } }
+@keyframes an-sube { from { opacity: 0; transform: translateY(8px); } }
+@media (prefers-reduced-motion: reduce) {
+  .an-ia, .an-ia__panel, .an-ia__panel::before, .an-ia__orbe, .an-ia__titulo,
+  .an-ia__paso.is-activo .an-ia__punto, .an-leido, .an-ia__resultado::after { animation: none !important; }
+}
+
+/* Ficha del negocio: Comprobantes fiscales */
+.det-comprobantes__cabeza { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.det-comprobantes__cabeza .section-card-title { margin-bottom: 4px; }
+.det-comprobantes__sub { font-size: 12.5px; color: var(--text-sub); }
+.det-comprobantes__acciones { display: flex; gap: 8px; flex-wrap: wrap; }
+.detc-lista { display: grid; gap: 8px; }
+.detc-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 10px 12px; border-radius: var(--radius-sm); background: var(--panel-bg); border: 1px solid var(--border);
+}
+.detc-tipo {
+  min-width: 48px; padding: 5px 8px; border-radius: 6px; text-align: center;
+  background: var(--pill-info-bg); color: var(--pill-info-text); font-weight: 700; font-size: 13px;
+}
+.detc-datos { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.detc-datos strong { font-size: 13.5px; color: var(--text); }
+.detc-datos small { font-size: 12px; color: var(--text-sub); overflow-wrap: anywhere; }
+.detc-vacio { color: var(--text-muted); font-size: 13px; }
+@media (max-width: 560px) {
+  .an-rango, .detc-item { grid-template-columns: auto minmax(0, 1fr); }
+  .an-rango .pill, .detc-item .pill { grid-column: 2; justify-self: start; }
+}
+
+/* Aviso: el POS del negocio es de una versión que no informa sus e-NCF */
+.an-aviso {
+  padding: 10px 12px; border-radius: var(--radius-sm); line-height: 1.5;
+  background: var(--aviso-bg); border: 1px solid var(--aviso-border); color: var(--text); font-size: 12.5px;
+}
+.an-aviso strong { display: block; margin-bottom: 2px; color: var(--text); }
+.detc-lista + .an-aviso, .an-aviso + .detc-lista, .an-aviso + .detc-vacio { margin-top: 10px; }
+
+/* Cabecera de "Comprobantes fiscales / activos": botones a la derecha mientras quepan. */
+.det-comprobantes__cabeza > div:first-child { flex: 1 1 280px; min-width: 0; }
+
+/* Productos / servicios agregados desde el portal: botones de agregar. */
+.rep-acciones-catalogo { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+
+/* Importar productos / servicios desde CSV */
+.ic-plantilla { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; font-size: 12px; color: var(--text-sub); }
+.ic-plantilla > span { flex: 1 1 260px; line-height: 1.45; }
+#ic-resultado:not(:empty) { margin-top: 10px; }
+.ic-tabla { max-height: 300px; overflow: auto; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); }
+.ic-tabla table { width: 100%; }
+.ic-tabla th { position: sticky; top: 0; background: var(--panel-bg); z-index: 1; }
+
+/* ── Ficha del negocio (Negocios → abrir): una tarjeta compacta ─────────── */
+.det-barra { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.det-ficha { padding: 18px 20px; }
+.det-ficha__cabeza { display: flex; align-items: center; gap: 14px; }
+.det-ficha__avatar {
+  flex-shrink: 0; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 12px;
+  background: var(--pill-info-bg); color: var(--pill-info-text); font-weight: 700; font-size: 17px; letter-spacing: .5px;
+}
+.det-ficha__titulo { min-width: 0; flex: 1; }
+.det-ficha__nombre { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+.det-ficha__nombre .mod-title { font-size: 19px; line-height: 1.25; }
+.det-ficha__pills { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.det-ficha__sub { margin-top: 3px; font-size: 13px; color: var(--text-sub); overflow-wrap: anywhere; }
+.det-datos {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px 18px;
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.det-dato { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.det-dato > span { font-size: 11.5px; color: var(--text-muted); }
+.det-dato > strong { font-size: 13.5px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.det-dato a { color: inherit; text-decoration: none; border-bottom: 1px dashed var(--border); }
+.det-dato a:hover { color: var(--blue); border-bottom-color: var(--blue); }
+.det-cifras {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-top: 14px;
+}
+.det-cifras > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--panel-bg); border: 1px solid var(--border); }
+.det-cifras span { font-size: 11.5px; color: var(--text-muted); }
+.det-cifras strong { font-size: 15px; color: var(--text); }
+.det-cifras small { font-size: 11.5px; color: var(--text-sub); }
+.det-ficha__pie { margin-top: 14px; font-size: 11.5px; color: var(--text-muted); }
+.det-ficha__pie code { font-family: var(--font-mono); font-size: 11px; color: var(--text-sub); }
+
+/* Configuración → Recibo de pago (impresora térmica) */
+.recibo-opciones { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 18px; margin-top: 14px; transition: opacity .15s ease; }
+.recibo-opciones.is-apagado { opacity: .45; pointer-events: none; }
+.recibo-acciones { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.recibo-estado { font-size: 12.5px; color: var(--text-sub); }
+
+/* Configuración: menú de secciones a la izquierda y una sección a la vez */
+.cfg-layout { display: grid; grid-template-columns: 256px minmax(0, 1fr); gap: 20px; align-items: start; }
+/* Con o sin "Guardar cambios" el encabezado mide igual: el menú no salta. */
+#mod-configuracion > .mod-header { min-height: 38px; }
+.cfg-nav {
+  position: sticky; top: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.cfg-nav__grupo {
+  padding: 12px 10px 4px; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted);
+}
+.cfg-nav__grupo:first-child { padding-top: 4px; }
+.cfg-nav__item {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 8px 10px;
+  border: 0; border-radius: var(--radius-sm); background: none; cursor: pointer; text-align: left;
+  color: var(--text-sub); font-size: 13.5px; font-weight: 500; font-family: inherit;
+  transition: background .15s, color .15s;
+}
+.cfg-nav__item:hover { background: var(--surface3); color: var(--text); }
+.cfg-nav__item[aria-selected="true"] { background: var(--nav-activo-bg); color: var(--nav-activo-text); font-weight: 600; }
+.cfg-nav__item:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.cfg-nav__item svg.tc-icono { width: 18px; height: 18px; }
+.cfg-nav__texto { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cfg-nav__estado { flex-shrink: 0; }
+.cfg-nav__estado:empty { display: none; }
+#cfg-recibo > .sw { margin-top: 10px; }
+@media (min-width: 1200px) { .recibo-opciones > .fm-campo:first-child { grid-column: span 2; } }
+.cfg-panel[hidden] { display: none; }
+.cfg-panel > .section-card:last-child { margin-bottom: 0; }
+.cfg-ayuda { margin: -8px 0 14px; }
+.cfg-logo { display: flex; align-items: center; gap: 16px; }
+.cfg-logo__botones { display: flex; gap: 8px; flex-wrap: wrap; }
+.cfg-logo .cfg-ayuda { margin: 8px 0 0; }
+.cfg-nota { display: flex; align-items: center; gap: 8px; margin: 4px 2px 0; font-size: 12.5px; color: var(--text-muted); }
+@media (max-width: 900px) {
+  .cfg-layout { grid-template-columns: minmax(0, 1fr); }
+  .cfg-nav { position: static; flex-direction: row; overflow-x: auto; }
+  .cfg-nav__grupo { display: none; }
+  .cfg-nav__item { width: auto; white-space: nowrap; }
+}

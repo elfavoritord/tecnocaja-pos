@@ -277,10 +277,10 @@ const api = {
     return this.request('/api/audit');
   },
 
-  generateQr(text) {
+  generateQr(text, options = {}) {
     return this.request('/api/qrcode', {
       method: 'POST',
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text, ...options })
     });
   },
 

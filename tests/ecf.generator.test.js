@@ -98,6 +98,21 @@ describe('ecf-generator generateEcfXml', () => {
     expect(xml).toContain('<TelefonoEmisor>809-000-0000</TelefonoEmisor>');
   });
 
+  test('sin nombre comercial del emisor genera el XML sin la etiqueta (es opcional en la DGII)', () => {
+    const payload = {
+      emitter: { rnc: '40211932609', razonSocial: 'Tecno Caja POS', nombreComercial: '', direccion: 'Calle 1' },
+      customer: { nombre: 'Consumidor Final' },
+      document: { eNCF: 'E320000000012', tipoeCF: 'E32' },
+      items: [{ name: 'Servicio', quantity: 1, unitPrice: 250, taxRate: 18 }],
+      issueDate: new Date('2026-10-21T12:00:00Z'),
+    };
+    const { xml } = generateEcfXml(payload);
+    expect(xml).toContain('<RazonSocialEmisor>Tecno Caja POS</RazonSocialEmisor>');
+    expect(xml).not.toContain('<NombreComercial');
+    expect(generateEcfXml({ ...payload, emitter: { ...payload.emitter, nombreComercial: 'Tecno' } }).xml)
+      .toContain('<NombreComercial>Tecno</NombreComercial>');
+  });
+
   test('genera E47 con la estructura requerida por la XSD oficial', () => {
     const { xml } = generateEcfXml({
       emitter: {

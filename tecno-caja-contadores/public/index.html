@@ -220,7 +220,8 @@
         <span id="nav-badge-sol" class="nav-badge hidden">0</span>
       </a>
       <!-- ASISTENTE IA — desactivado por ahora. Para reactivar: quitar este comentario
-           y el style="display:none" del #cfg-ia-card.
+           y el style="display:none" del #cfg-ia-card y de su botón #cfg-nav-ia
+           en Configuración.
       <a class="nav-item" data-mod="asistente" onclick="app.goto('asistente')">
         <svg class="ico nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
         Asistente
@@ -446,34 +447,41 @@
 
     <!-- ── NEGOCIO DETALLE ──────────────────────────────────────────────── -->
     <div id="mod-cliente-detalle" class="module module--detalle">
-      <div class="mod-header">
-        <div>
-          <button class="btn btn-secondary btn-sm" onclick="app.goto('negocios')" style="margin-bottom:8px">← Volver a Negocios</button>
-          <div class="mod-title" id="det-nombre">Cliente</div>
-          <div class="mod-sub" id="det-key" style="font-family:monospace;font-size:12px"></div>
-        </div>
+      <div class="det-barra">
+        <button class="btn btn-secondary btn-sm" onclick="app.goto('negocios')">← Volver a Negocios</button>
         <div class="mod-actions">
-          <button class="btn btn-secondary" onclick="app.abrirSolicitudModal(app.currentClienteId)">📋 Crear Solicitud</button>
+          <button class="btn btn-secondary" data-icono="chart-column" onclick="app.verReportesNegocio(app.currentClienteId)">Ver reportes</button>
+          <button class="btn btn-secondary" data-icono="clipboard-list" onclick="app.abrirSolicitudModal(app.currentClienteId)">Crear solicitud</button>
         </div>
       </div>
 
-      <div class="detail-grid">
-        <div class="detail-card">
-          <div class="detail-card-title">Información del negocio</div>
-          <div class="info-list" id="det-info-negocio"></div>
+      <!-- Ficha del negocio: nombre, estado y lo que se usa a diario arriba;
+           solo los datos que tiene (sin filas vacías) y lo técnico al pie. -->
+      <div class="section-card det-ficha">
+        <div class="det-ficha__cabeza">
+          <div class="det-ficha__avatar" id="det-avatar" aria-hidden="true">—</div>
+          <div class="det-ficha__titulo">
+            <div class="det-ficha__nombre"><span class="mod-title" id="det-nombre">Cliente</span><span class="det-ficha__pills" id="det-pills"></span></div>
+            <div class="det-ficha__sub" id="det-sub"></div>
+          </div>
         </div>
-        <div class="detail-card">
-          <div class="detail-card-title">Estado de licencia</div>
-          <div id="det-info-licencia"></div>
+        <div class="det-datos" id="det-datos"></div>
+        <div id="det-servicios"></div>
+        <div class="det-ficha__pie" id="det-key"></div>
+      </div>
+
+      <div class="section-card">
+        <div class="det-comprobantes__cabeza">
+          <div>
+            <div class="section-card-title">🧾 Comprobantes fiscales (NCF y e-NCF)</div>
+            <div class="det-comprobantes__sub">Sube la autorización de la DGII y queda en el POS del negocio cuando sincronice.</div>
+          </div>
+          <div class="det-comprobantes__acciones">
+            <button type="button" class="btn btn-secondary" data-icono="list" onclick="app.verSecuenciasNegocio(app.currentClienteId)">Ver secuencias</button>
+            <button type="button" class="btn btn-primary" data-icono="upload" onclick="app.abrirAgregarNcfModal(app.currentClienteId)">Registrar comprobantes</button>
+          </div>
         </div>
-        <div class="detail-card">
-          <div class="detail-card-title">Contacto</div>
-          <div class="info-list" id="det-info-contacto"></div>
-        </div>
-        <div class="detail-card">
-          <div class="detail-card-title">Configuración técnica</div>
-          <div class="info-list" id="det-info-tecnico"></div>
-        </div>
+        <div id="det-comprobantes"><p style="color:var(--text-muted)">Cargando…</p></div>
       </div>
 
       <div class="section-card">
@@ -528,6 +536,13 @@
           <div class="mod-sub">Consulta y exporta datos de tus negocios asociados</div>
         </div>
         <div class="mod-actions" id="rep-header-actions">
+          <!-- Del negocio elegido: solo se ven con un negocio seleccionado. -->
+          <span class="rep-acciones-negocio" id="rep-acciones-negocio" style="display:none">
+            <button class="btn btn-primary" data-icono="chart-column" onclick="app.abrirRepDetalle('ventas')">Ver reportes detallados</button>
+            <button class="btn btn-secondary" data-icono="package" onclick="app.abrirRepDetalle('productos')"><span class="rep-lbl-productos">Productos</span></button>
+            <button class="btn btn-secondary" data-icono="landmark" onclick="app.abrirRepDetalle('itbis')">ITBIS / DGII</button>
+            <button class="btn btn-secondary" data-icono="file-text" onclick="app.imprimirReporteMensual()">Reporte mensual</button>
+          </span>
           <button class="btn btn-secondary" data-icono="refresh-cw" onclick="app.actualizarReporte()">Actualizar</button>
           <button class="btn btn-secondary" data-icono="download" onclick="app.exportarCSV()" id="btn-exportar-csv">Exportar CSV</button>
           <button class="btn btn-secondary" data-icono="printer" onclick="app.imprimirReporte()" id="btn-imprimir">Imprimir</button>
@@ -602,6 +617,23 @@
           <div class="stat-card rep-sc"><div class="stat-icon red">⚠️</div><div><div class="stat-label" title="Cifra del negocio completo — aún no se desglosa por sucursal.">Bajo inventario ⓘ</div><div class="stat-value rep-sv" id="rs-bajo-inv">—</div></div></div>
           <div class="stat-card rep-sc"><div class="stat-icon orange">💳</div><div><div class="stat-label" title="Cifra del negocio completo — aún no se desglosa por sucursal.">Cuentas × cobrar ⓘ</div><div class="stat-value rep-sv" id="rs-cxc">—</div></div></div>
           <div class="stat-card rep-sc"><div class="stat-icon blue">🔄</div><div><div class="stat-label">Última sync</div><div class="stat-value rep-sv" id="rs-sync" style="font-size:12px">—</div></div></div>
+          <div class="stat-card rep-sc"><div class="stat-icon green">🧾</div><div><div class="stat-label" title="Secuencias NCF y e-NCF que el POS del negocio puede usar ahora.">Comprobantes activos ⓘ</div><div class="stat-value rep-sv" id="rs-comprobantes">—</div></div></div>
+        </div>
+
+        <!-- Comprobantes activos en el POS del negocio (NCF y e-NCF, del espejo
+             ncf_aplicadas) y los registrados desde aquí que todavía no aplica. -->
+        <div class="section-card" style="margin-bottom:14px">
+          <div class="det-comprobantes__cabeza">
+            <div>
+              <div class="section-card-title">🧾 Comprobantes activos</div>
+              <div class="det-comprobantes__sub" id="rep-comprobantes-sub">NCF y e-NCF que el POS del negocio puede usar ahora.</div>
+            </div>
+            <div class="det-comprobantes__acciones">
+              <button type="button" class="btn btn-secondary" data-icono="list" onclick="app.abrirRepDetalle('itbis')">Ver todas</button>
+              <button type="button" class="btn btn-primary" data-icono="upload" onclick="app.abrirAgregarNcfModal()">Registrar comprobantes</button>
+            </div>
+          </div>
+          <div id="rep-comprobantes"></div>
         </div>
 
         <!-- Gráfico de ventas -->
@@ -626,14 +658,6 @@
             <div class="rep-chart-empty-icon">📉</div>
             <div>Sin datos de ventas para mostrar</div>
           </div>
-        </div>
-
-        <!-- Botón Ver Reportes -->
-        <div class="rep-abrir">
-          <button class="btn btn-primary rep-abrir__principal" data-icono="chart-column" onclick="app.abrirRepDetalle('ventas')">Ver reportes detallados</button>
-          <button class="btn btn-secondary" data-icono="package" onclick="app.abrirRepDetalle('productos')">Productos</button>
-          <button class="btn btn-secondary" data-icono="landmark" onclick="app.abrirRepDetalle('itbis')">ITBIS / DGII</button>
-          <button class="btn btn-secondary" data-icono="file-text" onclick="app.imprimirReporteMensual()">Reporte mensual</button>
         </div>
 
       </div><!-- /rep-state-data -->
@@ -920,7 +944,7 @@
 
           <div class="detail-card-title" style="margin-top:18px">Historial de pagos</div>
           <table class="data-table">
-            <thead><tr><th style="text-align:right">Monto</th><th>Método</th><th>Fecha</th><th>Nota</th></tr></thead>
+            <thead><tr><th style="text-align:right">Monto</th><th>Método</th><th>Fecha</th><th>Nota</th><th></th></tr></thead>
             <tbody id="fd-pagos"></tbody>
           </table>
         </div>
@@ -1072,7 +1096,7 @@
           El asistente usa <strong>Google Gemini</strong>. Necesitas una API key gratuita de Google AI Studio.
           Se configura una sola vez.
         </p>
-        <button class="btn btn-primary" onclick="app.goto('configuracion');setTimeout(()=>document.getElementById('cfg-ia-card')?.scrollIntoView({behavior:'smooth'}),250)">Ir a configurarlo</button>
+        <button class="btn btn-primary" onclick="app.irAConfig('ia', 'cfg-ia-key')">Ir a configurarlo</button>
       </div>
 
       <div id="asis-chat-wrap" class="section-card hidden" style="display:flex;flex-direction:column;height:calc(100vh - 190px);padding:0;overflow:hidden">
@@ -1086,19 +1110,54 @@
       </div>
     </div>
 
+    <!-- Configuración: un menú de secciones a la izquierda (app.cfgIr) y una
+         sección a la vez. "Guardar cambios" solo sale en Datos y logo y en
+         Diseño de la factura (van al perfil); lo demás se guarda al momento o
+         con su propio botón. -->
     <div id="mod-configuracion" class="module">
       <div class="mod-header">
         <div>
           <div class="mod-title">Configuración</div>
-          <div class="mod-sub">Información de tu firma contable</div>
+          <div class="mod-sub" id="cfg-sub">Los datos y el logo de tu firma</div>
         </div>
         <div class="mod-actions">
-          <button class="btn btn-primary" onclick="app.savePerfil()">💾 Guardar cambios</button>
+          <button class="btn btn-primary" id="cfg-btn-guardar" data-icono="save" onclick="app.savePerfil()">Guardar cambios</button>
         </div>
       </div>
 
+      <div class="cfg-layout">
+        <nav class="cfg-nav" role="tablist" aria-label="Secciones de Configuración" aria-orientation="vertical">
+          <div class="cfg-nav__grupo">Mi firma</div>
+          <button type="button" class="cfg-nav__item" role="tab" id="cfg-nav-firma" data-cfg="firma" data-icono="building-2" data-icono-tam="18" onclick="app.cfgIr('firma')">
+            <span class="cfg-nav__texto">Datos y logo</span>
+          </button>
+          <div class="cfg-nav__grupo">Documentos</div>
+          <button type="button" class="cfg-nav__item" role="tab" id="cfg-nav-factura" data-cfg="factura" data-icono="file-text" data-icono-tam="18" onclick="app.cfgIr('factura')">
+            <span class="cfg-nav__texto">Diseño de la factura</span>
+          </button>
+          <button type="button" class="cfg-nav__item" role="tab" id="cfg-nav-recibo" data-cfg="recibo" data-icono="printer" data-icono-tam="18" onclick="app.cfgIr('recibo')">
+            <span class="cfg-nav__texto">Recibo de pago</span>
+            <span class="cfg-nav__estado" id="cfg-estado-recibo"></span>
+          </button>
+          <button type="button" class="cfg-nav__item" role="tab" id="cfg-nav-correo" data-cfg="correo" data-icono="mail" data-icono-tam="18" onclick="app.cfgIr('correo')">
+            <span class="cfg-nav__texto">Correo de envío</span>
+            <span class="cfg-nav__estado" id="cfg-estado-correo"></span>
+          </button>
+          <div class="cfg-nav__grupo">Portal</div>
+          <button type="button" class="cfg-nav__item" role="tab" id="cfg-nav-apariencia" data-cfg="apariencia" data-icono="palette" data-icono-tam="18" onclick="app.cfgIr('apariencia')">
+            <span class="cfg-nav__texto">Apariencia</span>
+          </button>
+          <!-- Asistente IA desactivado: ver el comentario del menú lateral. -->
+          <button type="button" class="cfg-nav__item" role="tab" id="cfg-nav-ia" data-cfg="ia" data-icono="bot" data-icono-tam="18" onclick="app.cfgIr('ia')" style="display:none">
+            <span class="cfg-nav__texto">Asistente IA</span>
+          </button>
+        </nav>
+
+        <div class="cfg-paneles">
+      <section class="cfg-panel" data-cfg-panel="firma" role="tabpanel" aria-labelledby="cfg-nav-firma">
       <div class="section-card">
         <div class="section-card-title">🏢 Datos de la firma</div>
+        <p class="tc-fp-ayuda cfg-ayuda">Salen en tus facturas, cotizaciones y recibos de pago.</p>
         <div class="form-grid">
           <div class="form-group">
             <label class="form-label">Nombre de la Firma *</label>
@@ -1128,28 +1187,35 @@
             <label class="form-label">WhatsApp</label>
             <input id="cfg-whatsapp" type="tel" class="form-input" placeholder="809-000-0000" />
           </div>
-          <div class="form-group">
-            <label class="form-label">Logo de la firma</label>
-            <div style="display:flex;align-items:center;gap:14px">
-              <div class="ap-image-box" onclick="document.getElementById('cfg-logo-file').click()" title="Clic para subir el logo">
-                <img id="cfg-logo-preview" class="ap-image-preview" style="display:none">
-                <div class="ap-image-placeholder" id="cfg-logo-placeholder">
-                  <span>🏢</span>
-                  <small>Logo</small>
-                </div>
-                <input type="file" id="cfg-logo-file" accept="image/*" style="display:none" onchange="app.handleCfgLogoUpload(this)">
-              </div>
-              <div>
-                <button type="button" class="btn btn-secondary" onclick="document.getElementById('cfg-logo-file').click()">📤 Subir logo</button>
-                <button type="button" class="btn btn-secondary" onclick="app.quitarCfgLogo()">🗑 Quitar</button>
-                <div style="font-size:11px;color:var(--text-sub);margin-top:6px">Se ve en este portal y cuando tus clientes te buscan desde el POS (Facturación Electrónica → Mi Contador).</div>
-              </div>
-            </div>
-            <input id="cfg-logo" type="hidden" />
-          </div>
         </div>
       </div>
 
+      <div class="section-card">
+        <div class="section-card-title">🖼 Logo de la firma</div>
+        <div class="cfg-logo">
+          <div class="ap-image-box" onclick="document.getElementById('cfg-logo-file').click()" title="Clic para subir el logo">
+            <img id="cfg-logo-preview" class="ap-image-preview" style="display:none">
+            <div class="ap-image-placeholder" id="cfg-logo-placeholder">
+              <span>🏢</span>
+              <small>Logo</small>
+            </div>
+            <input type="file" id="cfg-logo-file" accept="image/*" style="display:none" onchange="app.handleCfgLogoUpload(this)">
+          </div>
+          <div>
+            <div class="cfg-logo__botones">
+              <button type="button" class="btn btn-secondary" data-icono="upload" onclick="document.getElementById('cfg-logo-file').click()">Subir logo</button>
+              <button type="button" class="btn btn-secondary" data-icono="trash-2" onclick="app.quitarCfgLogo()">Quitar</button>
+            </div>
+            <p class="tc-fp-ayuda cfg-ayuda">Sale en este portal, en tus facturas, en el recibo de pago y cuando tus clientes te buscan desde el POS (Facturación Electrónica → Mi Contador).</p>
+          </div>
+        </div>
+        <input id="cfg-logo" type="hidden" />
+      </div>
+
+      <p class="cfg-nota" data-icono="lock">El rol, el estado y los permisos de tu cuenta los maneja el administrador de Tecno Caja.</p>
+      </section>
+
+      <section class="cfg-panel" data-cfg-panel="apariencia" role="tabpanel" aria-labelledby="cfg-nav-apariencia" hidden>
       <!-- Apariencia: modo día / noche (js/tema.js). Se aplica al instante y
            se recuerda en esta computadora; no depende de "Guardar cambios". -->
       <div class="section-card" id="cfg-apariencia">
@@ -1183,7 +1249,9 @@
           </div>
         </div>
       </div>
+      </section>
 
+      <section class="cfg-panel" data-cfg-panel="factura" role="tabpanel" aria-labelledby="cfg-nav-factura" hidden>
       <!-- Diseño de la factura: las mismas plantillas A4 del POS
            (js/factura-plantillas.js). Se guarda con "Guardar cambios". -->
       <div class="section-card tc-fp" id="cfg-invoice-design">
@@ -1195,7 +1263,67 @@
         <div class="tc-fp-sublabel">Color</div>
         <div class="tc-fp-colores" id="cfg-invoice-colors" role="radiogroup" aria-label="Color de la factura"></div>
       </div>
+      </section>
 
+      <section class="cfg-panel" data-cfg-panel="recibo" role="tabpanel" aria-labelledby="cfg-nav-recibo" hidden>
+      <!-- Recibo de pago en impresora térmica (opcional). Se aplica al instante
+           y se recuerda en esta computadora (la impresora es de esta PC); no
+           depende de "Guardar cambios". -->
+      <div class="section-card" id="cfg-recibo">
+        <div class="section-card-title">🧾 Recibo de pago (impresora térmica)</div>
+        <p class="tc-fp-ayuda">Opcional. Un recibo pequeño para darle al cliente cuando paga una factura, completa o una parte. Se recuerda en esta computadora.</p>
+        <label class="sw">
+          <input type="checkbox" id="cfg-recibo-activo" onchange="app.reciboGuardarConfig()" />
+          <span class="sw__pista"></span> Usar recibos de pago
+        </label>
+        <div id="cfg-recibo-opciones" class="recibo-opciones">
+          <div class="fm-campo">
+            <label for="cfg-recibo-impresora">Impresora</label>
+            <div class="fm-con-boton">
+              <select id="cfg-recibo-impresora" class="form-select" onchange="app.reciboGuardarConfig()"></select>
+              <button type="button" class="btn btn-secondary" data-icono="refresh-cw" onclick="app.reciboCargarImpresoras()" title="Buscar otra vez las impresoras de esta computadora">Buscar</button>
+            </div>
+            <div class="fm-ayuda">La térmica que tengas instalada en Windows (por ejemplo "POS-80"). Sin elegir, se abre la ventana de imprimir.</div>
+          </div>
+          <div class="fm-campo">
+            <label>Ancho del papel</label>
+            <div class="pm-segmento" role="radiogroup" aria-label="Ancho del papel">
+              <button type="button" role="radio" data-recibo-ancho="80" onclick="app.reciboElegirAncho(80)">80 mm</button>
+              <button type="button" role="radio" data-recibo-ancho="58" onclick="app.reciboElegirAncho(58)">58 mm</button>
+            </div>
+          </div>
+          <div class="fm-campo">
+            <label for="cfg-recibo-al-cobrar">Al registrar un cobro</label>
+            <select id="cfg-recibo-al-cobrar" class="form-select" onchange="app.reciboGuardarConfig()">
+              <option value="preguntar">Preguntar si imprimo el recibo</option>
+              <option value="auto">Imprimir el recibo solo</option>
+              <option value="no">No imprimir (solo con el botón Recibo)</option>
+            </select>
+          </div>
+          <div class="fm-campo">
+            <label for="cfg-recibo-copias">Copias</label>
+            <select id="cfg-recibo-copias" class="form-select" onchange="app.reciboGuardarConfig()">
+              <option value="1">1 (para el cliente)</option>
+              <option value="2">2 (cliente y archivo)</option>
+            </select>
+          </div>
+          <div class="fm-campo">
+            <label>Logo</label>
+            <label class="sw" title="El logo de Datos de la firma, en blanco y negro">
+              <input type="checkbox" id="cfg-recibo-logo" checked onchange="app.reciboGuardarConfig()" />
+              <span class="sw__pista"></span> Imprimir el logo de la firma
+            </label>
+          </div>
+        </div>
+        <div class="recibo-acciones" id="cfg-recibo-acciones">
+          <button type="button" class="btn btn-secondary" data-icono="eye" onclick="app.reciboVistaPrevia()">Ver cómo queda</button>
+          <button type="button" class="btn btn-secondary" data-icono="printer" onclick="app.reciboPrueba()">Imprimir recibo de prueba</button>
+          <span class="recibo-estado" id="cfg-recibo-estado"></span>
+        </div>
+      </div>
+      </section>
+
+      <section class="cfg-panel" data-cfg-panel="correo" role="tabpanel" aria-labelledby="cfg-nav-correo" hidden>
       <div class="section-card" id="cfg-correo-card">
         <div class="section-card-title">✉ Correo para enviar facturas</div>
         <p style="font-size:13px;color:var(--text-sub);line-height:1.6;margin-bottom:14px">
@@ -1249,7 +1377,9 @@
           <button class="btn btn-secondary" id="cfg-email-del" onclick="app.desconectarConfigCorreo()" style="display:none">Desconectar</button>
         </div>
       </div>
+      </section>
 
+      <section class="cfg-panel" data-cfg-panel="ia" role="tabpanel" aria-labelledby="cfg-nav-ia" hidden>
       <div class="section-card" id="cfg-ia-card" style="display:none">
         <div class="section-card-title">🤖 Asistente virtual (IA)</div>
         <p style="font-size:13px;color:var(--text-sub);line-height:1.6;margin-bottom:14px">
@@ -1279,11 +1409,9 @@
           <button class="btn btn-secondary" id="cfg-ia-del" onclick="app.desconectarConfigIA()" style="display:none">Desconectar</button>
         </div>
       </div>
-
-      <div class="section-card" style="opacity:.6;pointer-events:none">
-        <div class="section-card-title">🔒 Campos no modificables</div>
-        <p style="font-size:13px;color:var(--text-sub)">El rol, estado y permisos de tu cuenta son gestionados por el administrador de Tecno Caja.</p>
-      </div>
+      </section>
+        </div><!-- /cfg-paneles -->
+      </div><!-- /cfg-layout -->
     </div>
 
     <!-- ── ACTUALIZACIONES ────────────────────────────────────────────────── -->
@@ -1984,7 +2112,7 @@
     <div class="rep-tabs-nav" id="rep-tabs-nav">
       <button class="rep-tab-btn active" data-tab="ventas"     data-icono="banknote"       onclick="app.cambiarTabReporte('ventas')">Ventas</button>
       <button class="rep-tab-btn"        data-tab="facturas"   data-icono="receipt-text"   onclick="app.cambiarTabReporte('facturas')">Facturas</button>
-      <button class="rep-tab-btn"        data-tab="productos"  data-icono="package"        onclick="app.cambiarTabReporte('productos')">Productos</button>
+      <button class="rep-tab-btn"        data-tab="productos"  data-icono="package"        onclick="app.cambiarTabReporte('productos')"><span class="rep-lbl-productos">Productos</span></button>
       <button class="rep-tab-btn"        data-tab="inventario" data-icono="clipboard-list" onclick="app.cambiarTabReporte('inventario')">Inventario</button>
       <button class="rep-tab-btn"        data-tab="itbis"      data-icono="landmark"       onclick="app.cambiarTabReporte('itbis')">ITBIS / DGII</button>
       <button class="rep-tab-btn"        data-tab="cxc"        data-icono="wallet"         onclick="app.cambiarTabReporte('cxc')">Cuentas por cobrar</button>
@@ -2054,24 +2182,29 @@
     <div id="rep-productos-pendientes-panel" class="rep-seccion" style="display:none">
       <div class="rep-seccion__cabeza">
         <div>
-          <div class="rep-seccion__titulo">Productos agregados desde el portal</div>
+          <div class="rep-seccion__titulo"><span class="rep-lbl-productos">Productos</span> agregados desde el portal</div>
           <div class="rep-seccion__sub">Se aplican en el POS del negocio cuando sincroniza.</div>
         </div>
-        <button type="button" class="btn btn-primary" data-icono="plus" onclick="app.abrirAgregarProductoModal()">Agregar producto</button>
+        <div class="rep-acciones-catalogo">
+          <button type="button" class="btn btn-secondary" data-icono="upload" onclick="app.abrirImportarCatalogo()" title="Crea lo nuevo y actualiza lo que ya existe (por código)">Importar CSV</button>
+          <button type="button" class="btn btn-secondary" data-icono="download" onclick="app.exportarCatalogoCsv()" title="Descarga el catálogo en CSV, el mismo formato que importa el POS">Exportar CSV</button>
+          <button type="button" class="btn btn-secondary" data-icono="plus" id="rep-btn-agregar-producto" onclick="app.abrirAgregarProductoModal()">Agregar producto</button>
+          <button type="button" class="btn btn-primary" data-icono="plus" id="rep-btn-agregar-servicio" onclick="app.abrirServicioModal()">Agregar servicio</button>
+        </div>
       </div>
       <div id="rep-productos-pendientes-list"></div>
     </div>
 
-    <!-- Secuencias NCF registradas desde este Portal — se aplican en el POS
-         del cliente la próxima vez que sincronice, no al instante. Solo
-         visible en la pestaña "ITBIS / DGII". Solo NCF tradicional
-         (B01-B17); el e-CF ya se certifica aparte, no aplica aquí. -->
+    <!-- Secuencias registradas desde este Portal (NCF B y e-NCF E) — se
+         aplican en el POS del cliente la próxima vez que sincronice, no al
+         instante. Solo visible en la pestaña "ITBIS / DGII"; también se
+         abre desde la ficha del negocio (Comprobantes fiscales). -->
     <div id="rep-ncf-pendientes-panel" style="display:none">
       <div class="rep-seccion">
         <div class="rep-seccion__cabeza">
           <div>
-            <div class="rep-seccion__titulo">Secuencias activas en el POS del negocio</div>
-            <div class="rep-seccion__sub">Las que el POS está usando ahora mismo.</div>
+            <div class="rep-seccion__titulo">Secuencias en el POS del negocio</div>
+            <div class="rep-seccion__sub">NCF y e-NCF que el POS tiene ahora mismo.</div>
           </div>
         </div>
         <div id="rep-ncf-aplicadas-list"></div>
@@ -2082,7 +2215,7 @@
             <div class="rep-seccion__titulo">Secuencias registradas desde el portal</div>
             <div class="rep-seccion__sub">Se aplican en el POS cuando sincroniza.</div>
           </div>
-          <button type="button" class="btn btn-primary" data-icono="plus" onclick="app.abrirAgregarNcfModal()">Registrar secuencia NCF</button>
+          <button type="button" class="btn btn-primary" data-icono="upload" onclick="app.abrirAgregarNcfModal()">Registrar comprobantes</button>
         </div>
         <div id="rep-ncf-pendientes-list"></div>
       </div>
@@ -2235,13 +2368,142 @@
   </div>
 </div>
 
-<!-- Modal: Registrar secuencia NCF (queda pendiente, se aplica en el POS
-     del cliente en su próxima sincronización — no es instantáneo) -->
+<!-- Modal: Servicio (Empresa de Servicios: catálogo de servicios del POS,
+     svc_services). Misma cola que los productos, con tipo 'servicio'; se
+     aplica en el POS del cliente cuando sincroniza. -->
+<div id="modal-servicio" class="modal-overlay hidden">
+  <div class="modal-card pm-modal" role="dialog" aria-modal="true" aria-labelledby="as-titulo">
+    <div class="pm-cabeza">
+      <div>
+        <div class="pm-titulo" id="as-titulo">Nuevo servicio</div>
+        <div class="pm-sub" id="as-sub">Se aplica en el POS del negocio cuando sincronice</div>
+      </div>
+      <button type="button" class="pm-cerrar" onclick="app.cerrarServicioModal()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+
+    <div class="pm-cuerpo">
+      <div class="pm-col">
+        <div class="pm-campo fm-campo">
+          <label for="as-nombre">Nombre del servicio *</label>
+          <input type="text" id="as-nombre" class="form-input" placeholder="Mantenimiento de computadora" />
+        </div>
+        <div class="pm-dos">
+          <div class="pm-campo fm-campo">
+            <label for="as-codigo">Código</label>
+            <input type="text" id="as-codigo" class="form-input" placeholder="Opcional" />
+          </div>
+          <div class="pm-campo">
+            <label for="as-unidad">Unidad</label>
+            <input type="text" id="as-unidad" class="form-input pm-con-lista" list="as-unidades" placeholder="servicio" autocomplete="off" />
+            <datalist id="as-unidades"></datalist>
+          </div>
+        </div>
+        <div class="pm-campo">
+          <label for="as-categoria">Categoría</label>
+          <input type="text" id="as-categoria" class="form-input pm-con-lista" list="as-categorias" placeholder="General" autocomplete="off" />
+          <datalist id="as-categorias"></datalist>
+        </div>
+        <div class="pm-campo">
+          <label for="as-descripcion">Descripción</label>
+          <textarea id="as-descripcion" class="form-input" rows="4" placeholder="Lo que incluye el servicio. Sale en la cotización y la factura."></textarea>
+        </div>
+      </div>
+
+      <div class="pm-precio">
+        <div class="pm-precio__titulo">Precio e impuestos</div>
+        <div class="pm-campo fm-campo">
+          <label for="as-precio">Precio *</label>
+          <div class="pm-moneda"><span>RD$</span><input type="number" id="as-precio" class="form-input" min="0" step="0.01" placeholder="0.00" oninput="app.asCalcular()" /></div>
+        </div>
+        <div class="pm-campo">
+          <label>ITBIS</label>
+          <div class="pm-segmento pm-segmento--3" role="radiogroup" aria-label="ITBIS">
+            <button type="button" role="radio" data-as-itbis="0" onclick="app.asElegirItbis(0)">Exento</button>
+            <button type="button" role="radio" data-as-itbis="16" onclick="app.asElegirItbis(16)">16%</button>
+            <button type="button" role="radio" data-as-itbis="18" onclick="app.asElegirItbis(18)">18%</button>
+          </div>
+        </div>
+        <label class="pm-check" id="as-incluye-wrap">
+          <input type="checkbox" id="as-precio-incluye" onchange="app.asCalcular()" />
+          El precio ya incluye ITBIS
+        </label>
+        <div class="pm-resumen">
+          <div><span>Precio sin ITBIS</span><strong class="num" id="as-r-base">RD$ 0.00</strong></div>
+          <div><span>ITBIS</span><strong class="num" id="as-r-itbis">RD$ 0.00</strong></div>
+          <div><span>Precio al cliente</span><strong class="num" id="as-r-final">RD$ 0.00</strong></div>
+        </div>
+        <small class="pm-ayuda">Como en el Catálogo de servicios del POS: se guarda el precio sin ITBIS y el ITBIS se suma en la factura.</small>
+      </div>
+    </div>
+
+    <div class="pm-pie">
+      <label class="pm-check" id="as-otro-wrap">
+        <input type="checkbox" id="as-crear-otro" />
+        Crear otro después de guardar
+      </label>
+      <div class="pm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarServicioModal()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="as-btn" onclick="app.guardarServicioPendiente()">Guardar servicio</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Importar productos o servicios de un negocio desde CSV (uno o varios
+     archivos; js/catalogo-csv.js, el mismo formato que exporta el POS). Cada
+     fila queda en la cola y el POS crea lo nuevo y actualiza lo que ya tiene. -->
+<div id="modal-importar-catalogo" class="modal-overlay hidden">
+  <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="ic-titulo">
+    <div class="fm-cabeza">
+      <div>
+        <div class="fm-titulo" id="ic-titulo">Importar productos</div>
+        <div class="fm-sub" id="ic-sub">Se aplica en el POS del negocio cuando sincronice.</div>
+      </div>
+      <button type="button" class="pm-cerrar" onclick="app.cerrarImportarCatalogo()" title="Cerrar" aria-label="Cerrar">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <div class="fm-cuerpo" id="ic-form">
+      <div class="fm-campo an-sucursal-campo" id="ic-destino-campo">
+        <label for="ic-destino">¿A qué sucursal van los productos?</label>
+        <select id="ic-destino" class="form-select" onchange="app.icCambiarDestino()"></select>
+        <div class="fm-ayuda" id="ic-destino-ayuda"></div>
+      </div>
+      <label class="an-drop" id="ic-drop" for="ic-file">
+        <span class="an-drop__icono" data-icono="upload" data-icono-tam="22"></span>
+        <span class="an-drop__texto">
+          <strong id="ic-drop-titulo">Sube el CSV de productos (uno o varios)</strong>
+          <small id="ic-drop-ayuda">El que exporta el POS o Excel → Guardar como → CSV. Lo nuevo se crea y lo que ya existe (por código) se actualiza.</small>
+        </span>
+        <span class="an-drop__formatos"><span>CSV</span></span>
+      </label>
+      <input type="file" id="ic-file" accept=".csv,.txt" multiple hidden onchange="app.icLeerArchivos(Array.from(this.files)); this.value = ''" />
+      <div class="ic-plantilla">
+        <span id="ic-columnas"></span>
+        <button type="button" class="btn btn-secondary btn-sm" data-icono="download" onclick="app.icPlantilla()">Descargar plantilla</button>
+      </div>
+      <div id="ic-resultado"></div>
+    </div>
+    <div class="fm-pie">
+      <div class="fm-pie__msg" id="ic-msg"></div>
+      <div class="fm-pie__botones">
+        <button type="button" class="btn btn-secondary" onclick="app.cerrarImportarCatalogo()">Cancelar</button>
+        <button type="button" class="btn btn-primary" id="ic-btn" onclick="app.icImportar()" disabled>Importar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Registrar comprobantes fiscales (NCF B y e-NCF E) para un negocio.
+     Lo más rápido va arriba: el archivo que da la DGII. Queda pendiente y se
+     aplica en el POS del cliente cuando sincroniza (en segundos si está abierto). -->
 <div id="modal-agregar-ncf" class="modal-overlay hidden">
   <div class="modal-card fm-modal fm-modal--md" role="dialog" aria-modal="true" aria-labelledby="an-titulo">
     <div class="fm-cabeza">
       <div>
-        <div class="fm-titulo" id="an-titulo">Registrar secuencia NCF</div>
+        <div class="fm-titulo" id="an-titulo">Registrar comprobantes fiscales</div>
         <div class="fm-sub" id="an-sub">El rango exacto que la DGII autorizó. Se aplica en el POS del negocio cuando sincronice.</div>
       </div>
       <button type="button" class="pm-cerrar" onclick="app.cerrarAgregarNcfModal()" title="Cerrar" aria-label="Cerrar">
@@ -2249,6 +2511,27 @@
       </button>
     </div>
     <div class="fm-cuerpo" id="an-form">
+      <div class="fm-campo an-sucursal-campo" id="an-sucursal-campo">
+        <label for="an-sucursal">Sucursal</label>
+        <select id="an-sucursal" class="form-select"></select>
+      </div>
+
+      <div class="fm-seccion" id="an-dgii">
+        <div class="fm-seccion__titulo">Autorización de la DGII</div>
+        <label class="an-drop" id="an-drop" for="an-dgii-file">
+          <span class="an-drop__icono" data-icono="upload" data-icono-tam="22"></span>
+          <span class="an-drop__texto">
+            <strong>Sube los archivos que te dio la DGII (uno o varios)</strong>
+            <small>Oficina Virtual → Consultas → Solicitudes de Comprobantes. Se leen los rangos aprobados de NCF (B) y e-NCF (E).</small>
+          </span>
+          <span class="an-drop__formatos"><span>XML</span><span>Excel</span><span>CSV</span></span>
+        </label>
+        <input type="file" id="an-dgii-file" accept=".xml,.xlsx,.xls,.csv" multiple hidden onchange="app.anLeerArchivoDgii(Array.from(this.files)); this.value = ''" />
+        <div id="an-dgii-resultado"></div>
+      </div>
+
+      <div id="an-manual">
+        <div class="an-separador"><span>o escríbelo a mano</span></div>
       <div class="fm-seccion">
         <div class="fm-seccion__titulo">Comprobante</div>
         <div class="fm-grid">
@@ -2258,16 +2541,8 @@
             <div class="fm-ayuda" id="an-tipo-ayuda"></div>
           </div>
           <div class="fm-campo">
-            <label for="an-sucursal">Sucursal</label>
-            <select id="an-sucursal" class="form-select" onchange="app.anActualizar()"></select>
-          </div>
-          <div class="fm-campo">
             <label for="an-prefijo">Prefijo</label>
             <input type="text" id="an-prefijo" class="form-input fm-prefijo" readonly tabindex="-1" />
-          </div>
-          <div class="fm-campo">
-            <label for="an-fecha-vencimiento">Fecha de vencimiento *</label>
-            <input type="date" id="an-fecha-vencimiento" class="form-input" />
           </div>
           <div class="fm-campo">
             <label for="an-desde">Número inicial *</label>
@@ -2288,20 +2563,25 @@
             <input type="text" id="an-referencia" class="form-input" placeholder="5009418959" />
           </div>
           <div class="fm-campo">
-            <label for="an-fecha-autorizacion">Fecha de autorización</label>
+            <label for="an-fecha-autorizacion" id="an-fecha-autorizacion-lbl">Fecha de autorización</label>
             <input type="date" id="an-fecha-autorizacion" class="form-input" />
+          </div>
+          <div class="fm-campo">
+            <label for="an-fecha-vencimiento" id="an-vence-lbl">Fecha de vencimiento *</label>
+            <input type="date" id="an-fecha-vencimiento" class="form-input" />
+          </div>
+          <div class="fm-campo">
+            <label for="an-notas">Notas</label>
+            <input type="text" id="an-notas" class="form-input" placeholder="Ej.: aprobada en la Oficina Virtual el 03/09" />
           </div>
           <div class="fm-campo fm-span-2">
             <label for="an-adjunto-file">Documento de autorización (PDF, XML o imagen)</label>
             <input type="file" id="an-adjunto-file" class="form-input" accept=".pdf,.xml,image/*" onchange="app.handleAgregarNcfAdjunto(this)" />
             <div class="fm-ayuda" id="an-adjunto-nombre"></div>
           </div>
-          <div class="fm-campo fm-span-2">
-            <label for="an-notas">Notas</label>
-            <input type="text" id="an-notas" class="form-input" placeholder="Ej.: aprobada en la Oficina Virtual el 03/09" />
-          </div>
         </div>
       </div>
+      </div><!-- /an-manual -->
     </div>
     <div class="fm-pie">
       <div class="fm-pie__msg" id="an-msg"></div>
@@ -2824,8 +3104,8 @@
       </select>
     </div>
     <div class="form-group">
-      <label class="form-label">Nota</label>
-      <input id="fp-nota" type="text" class="form-input" placeholder="Opcional" />
+      <label class="form-label">Nota del pago (sale en el recibo)</label>
+      <input id="fp-nota" type="text" class="form-input" placeholder="Opcional. Ej.: abono de octubre" />
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="app.cerrarRegistrarPagoFac()">Cancelar</button>
@@ -3056,6 +3336,8 @@
 <script src="js/rnc-lookup.js"></script>
 <script src="js/factura-plantillas.js"></script>
 <script src="js/factura-contador.js"></script>
+<script src="js/dgii-autorizacion.js"></script>
+<script src="js/catalogo-csv.js"></script>
 <script src="js/sucursales-central-ui.js"></script>
 <script src="js/iconos.js"></script>
 <script src="js/sin-emojis.js"></script>

@@ -12,9 +12,11 @@ directories:
 files:
   - main.js
   - preload.js
+  - preload-preview.js
   - server.js
   - mailer.js
   - asistente.js
+  - electron/**/*
   - server/**/*
   - public/**/*
   - "!public/**/*.map"

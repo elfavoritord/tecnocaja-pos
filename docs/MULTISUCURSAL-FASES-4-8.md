@@ -15,7 +15,7 @@ Cada sucursal tiene su propia base (SQLite o MariaDB multicaja) y su PC principa
 | Ventas | Suben las de los últimos 90 días al enlazar y después todas. Son **inmutables**: si una vuelve a llegar, solo puede cambiar su estado (anulada, devuelta). |
 | Usuarios | La principal los crea y elige en qué sucursales entran. Viaja solo la **huella scrypt** de la clave, nunca la clave. Gana la central: si la principal desactiva a alguien, se desactiva en todas. |
 | NCF | Emilio o el contador reparten la autorización de la DGII en **sub-rangos por sucursal** que no se cruzan. Cada sucursal los usa con su sistema de secuencias de siempre. |
-| e-CF | **Sin cambios** (riesgo R7, pendiente de decidir con el contador). |
+| e-CF | Decisión de Emilio (2026-10-25): **igual que los NCF**. La autorización de e-NCF de la DGII (E31, E32…, por RNC) se reparte en sub-rangos por sucursal desde el mismo panel. La sucursal lo aplica sobre sus secuencias de producción de la factura electrónica (`ecf_sequences`, `environment = 'ecf'`) y desactiva las cargadas a mano. Cada sucursal firma en su PC con el certificado (R7 opción a): sigue facturando sin Internet. En una PC enlazada, Configuración → Ventas y Facturación → Secuencias e-NCF solo muestra el aviso y los rangos de la central. Tope: 2,147,483,647 (columna INT de `ncf_rangos_central`). |
 
 ## Conectar una PC: con la cuenta del dueño, sin código
 
@@ -179,7 +179,7 @@ Además:
 | 14 | Sin Internet la LAN sigue | ✅ | `test:e2e-lan`; integral: sin la central se vende y el indicador lo dice |
 | 15 | Caída del servidor local y contingencia | ✅ | `test:e2e-lan` (principal caída → contingencia → recuperación); ver `docs/LAN-OFFLINE-FIRST.md` |
 | 16 | Respaldos y restauración | ⚠️ Parcial | El `.tcbak` ahora incluye las columnas nuevas, la bandeja sin confirmar, los cursores, los conflictos y los rangos NCF de la central, y vuelven al restaurar (`tests/services/backup-core-multisucursal.test.js`, ida y vuelta cifrada). Si se restaura un respaldo viejo, la sucursal vuelve a bajar por cursor lo que le falte (sin duplicar) y no reutiliza un NCF ya emitido. **La Fase 0 (R4, contraseña de restauración) sigue pendiente** |
-| 17 | Controles de NCF y estados de e-CF | ✅ NCF · ⏸ e-CF | NCF: rangos sin choques, venta B02 real con número del rango, rango usado rechazado, agotado detectado. e-CF sin cambios (R7) |
+| 17 | Controles de NCF y estados de e-CF | ✅ NCF · ✅ e-NCF | NCF: rangos sin choques, venta B02 real con número del rango, rango usado rechazado, agotado detectado. e-NCF: mismos sub-rangos sin choques, rango con un e-NCF ya emitido en producción rechazado, agotado → siguiente (`tests/multisucursal/ncf-central-ecf.test.js` y el emulador central) |
 | 18 | Sin conexiones entrantes ni Tailscale | ✅ | El POS solo llama a la Sync API por HTTPS saliente |
 | 19 | Licencias y límites | ✅ | integral + emulador (`maxSucursales`) |
 | 20 | Funciones existentes siguen | ✅ | `npm test`, `test:e2e-lan`, arranque SQLite |
@@ -275,6 +275,9 @@ Cloud Run con mínimo 0 instancias, más Firestore.
 - Transferencias de inventario entre sucursales con bases separadas: hoy solo existen en el modo legado de base compartida.
 - Bajar los últimos 3 meses de ventas a una PC reinstalada: hoy se suben, pero no se bajan.
 - Imágenes de producto en el catálogo de la empresa: hoy no viajan.
-- e-CF por sucursal: decisión R7 con el contador.
+- e-CF por sucursal: hecho como los NCF (2026-10-25).
+  - El panel de sucursales lee el XML o CSV de la DGII (`js/dgii-autorizacion.js`, compartido con el POS y copiado al portal) y va dejando "falta por repartir" mientras se asigna por pedazos.
+  - Una PC que ya facturaba e-CF antes de enlazarse avisa sus rangos de producción en cada ciclo: `ncf.reportarLocales()` manda un evento `ncf_rango` con operation `reportar`. La central los deja a nombre de esa sucursal (`origen: 'sucursal'`) y rechaza con `RANGO_SOLAPADO` si chocan con otra sucursal.
+  - **Requiere la Sync API desplegada con esta versión de `sincronizacion-central.js`**; una anterior rechaza el aviso (se reintenta desde "Rechazados").
 - Fase 0: R4 (restaurar), R5 (arranque en blanco) y R6 (claves en texto plano en `users.password`). Los usuarios que llegan de la central ya traen solo la huella.
 - R1: la llave de administrador de Firebase en los instaladores del POS y del portal. La sincronización nueva no la usa.

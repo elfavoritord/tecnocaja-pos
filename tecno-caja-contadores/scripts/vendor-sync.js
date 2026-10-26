@@ -8,6 +8,12 @@
 //    rangos NCF por sucursal y resumen de ventas (sincronizacion-central.js).
 //  - Íconos de línea (js/iconos.js): el portal cambia sus emojis por estos
 //    al mostrarse (public/js/sin-emojis.js), igual que el POS.
+//  - Lector del archivo de autorización de secuencias de la DGII
+//    (js/dgii-autorizacion.js), para repartir rangos NCF y e-NCF.
+//  - Importar/exportar el catálogo en CSV (js/catalogo-csv.js): el mismo
+//    formato que el POS, para productos y servicios de cada negocio.
+//  - Motor de impresión térmica ESC/POS del POS (electron/thermal-printer.js):
+//    el recibo de pago sale con comandos directos, como los tickets del POS.
 // Corre solo con npm start, npm run build y el release; las pruebas
 // tests/contadores-factura.test.js y tests/multisucursal/vendor-contadores.test.js
 // avisan si una copia quedó vieja.
@@ -25,6 +31,9 @@ const FILES = [
   ['server/multisucursal/central/sincronizacion-central.js', 'server/multisucursal/sincronizacion-central.js'],
   ['js/sucursales-central-ui.js', 'public/js/sucursales-central-ui.js'],
   ['js/iconos.js', 'public/js/iconos.js'],
+  ['js/dgii-autorizacion.js', 'public/js/dgii-autorizacion.js'],
+  ['js/catalogo-csv.js', 'public/js/catalogo-csv.js'],
+  ['electron/thermal-printer.js', 'electron/thermal-printer.js'],
 ];
 
 for (const [from, to] of FILES) {

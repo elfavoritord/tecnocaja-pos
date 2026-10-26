@@ -36,13 +36,13 @@ function validateBuyerForEcf({ tipoEcf, buyerTaxId, buyerName, documentType } = 
   if (!type) return errors;
 
   if (type.buyerTaxIdRequired && !hasTaxId(buyerTaxId)) {
-    errors.push(`El comprador debe tener RNC o Cédula válida para emitir un ${type.label} (${type.code}).`);
+    errors.push(`El comprador debe tener RNC o Cédula válida para emitir el comprobante ${type.code} (${type.label}).`);
   }
 
   if (!type.allowsConsumerFinal) {
     const name = String(buyerName || '').trim();
     if (!name || name === 'Consumidor Final') {
-      errors.push(`Debe indicar la razón social o nombre completo del comprador para emitir un ${type.label} (${type.code}).`);
+      errors.push(`Debe indicar la razón social o nombre completo del comprador para emitir el comprobante ${type.code} (${type.label}).`);
     }
   }
 

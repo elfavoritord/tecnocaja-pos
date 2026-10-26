@@ -1,16 +1,18 @@
 'use strict';
 
+// Nombres como los muestra la DGII en la Oficina Virtual al solicitar
+// secuencias e-NCF, para que el usuario reconozca cada tipo al copiar el rango.
 const ECF_DOCUMENT_TYPES = [
-  { code: 'E31', label: 'Factura de Crédito Fiscal', buyerTaxIdRequired: true, allowsConsumerFinal: false },
-  { code: 'E32', label: 'Factura de Consumo', buyerTaxIdRequired: false, allowsConsumerFinal: true },
-  { code: 'E33', label: 'Nota de Débito', buyerTaxIdRequired: true, allowsConsumerFinal: false },
-  { code: 'E34', label: 'Nota de Crédito', buyerTaxIdRequired: true, allowsConsumerFinal: false },
-  { code: 'E41', label: 'Compras', buyerTaxIdRequired: true, allowsConsumerFinal: false },
-  { code: 'E43', label: 'Gastos Menores', buyerTaxIdRequired: false, allowsConsumerFinal: true },
-  { code: 'E44', label: 'Regímenes Especiales', buyerTaxIdRequired: true, allowsConsumerFinal: false },
-  { code: 'E45', label: 'Gubernamental', buyerTaxIdRequired: true, allowsConsumerFinal: false },
-  { code: 'E46', label: 'Exportaciones', buyerTaxIdRequired: false, allowsConsumerFinal: false },
-  { code: 'E47', label: 'Pagos al Exterior', buyerTaxIdRequired: false, allowsConsumerFinal: false },
+  { code: 'E31', label: 'Factura de Crédito Fiscal Electrónica', group: 'facturas', buyerTaxIdRequired: true, allowsConsumerFinal: false },
+  { code: 'E32', label: 'Factura de Consumo Electrónica', group: 'facturas', buyerTaxIdRequired: false, allowsConsumerFinal: true },
+  { code: 'E33', label: 'Nota de Débito Electrónica', group: 'notas', buyerTaxIdRequired: true, allowsConsumerFinal: false },
+  { code: 'E34', label: 'Nota de Crédito Electrónica', group: 'notas', buyerTaxIdRequired: true, allowsConsumerFinal: false },
+  { code: 'E41', label: 'Compras Electrónico', group: 'especiales', buyerTaxIdRequired: true, allowsConsumerFinal: false },
+  { code: 'E43', label: 'Gastos Menores Electrónico', group: 'especiales', buyerTaxIdRequired: false, allowsConsumerFinal: true },
+  { code: 'E44', label: 'Regímenes Especiales Electrónico', group: 'especiales', buyerTaxIdRequired: true, allowsConsumerFinal: false },
+  { code: 'E45', label: 'Gubernamental Electrónico', group: 'especiales', buyerTaxIdRequired: true, allowsConsumerFinal: false },
+  { code: 'E46', label: 'Exportaciones Electrónico', group: 'especiales', buyerTaxIdRequired: false, allowsConsumerFinal: false },
+  { code: 'E47', label: 'Pagos al Exterior Electrónico', group: 'especiales', buyerTaxIdRequired: false, allowsConsumerFinal: false },
 ];
 
 const DOCUMENT_TYPE_MAP = new Map(ECF_DOCUMENT_TYPES.map((item) => [item.code, item]));

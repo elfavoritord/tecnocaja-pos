@@ -29,10 +29,12 @@ describe('C1 — actorUserId ya no autentica', () => {
     expect(serverSrc).toContain("process.env.TECNO_CAJA_LEGACY_ACTOR_FALLBACK");
     // La rama "sin token" del middleware global debe intentar primero el
     // canal firmado interno, y solo caer al fallback viejo bajo el flag.
-    const middlewareBlock = serverSrc.slice(
-      serverSrc.indexOf('app.use(async (req, _res, next) => {'),
-      serverSrc.indexOf('app.use(async (req, _res, next) => {') + 2000
-    );
+    // (resolveAuthSession: el middleware global, también puesto delante de los
+    // routers que se montan antes que él.)
+    const start = serverSrc.indexOf('async function resolveAuthSession(req, _res, next) {');
+    expect(start).toBeGreaterThan(-1);
+    expect(serverSrc).toContain('app.use(resolveAuthSession);');
+    const middlewareBlock = serverSrc.slice(start, start + 2000);
     expect(middlewareBlock).toContain('verifyInternalRequest(req)');
     expect(middlewareBlock).toContain('req.isInternalSystemCall = true');
     expect(middlewareBlock).toContain('else if (LEGACY_ACTOR_FALLBACK_ENABLED)');

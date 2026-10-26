@@ -25,6 +25,7 @@ function parseEcfXmlForQr(xml) {
 
   return {
     isRfce,
+    tipoEcf: xmlText(idDoc, 'TipoeCF'),
     encf: xmlText(idDoc, 'eNCF'),
     fechaEmision: xmlText(emisor, 'FechaEmision'),
     fechaHoraFirma: xmlText(xml, 'FechaHoraFirma'),
@@ -38,9 +39,8 @@ function parseEcfXmlForQr(xml) {
 /**
  * Construye la URL pública de verificación (ConsultaTimbre / ConsultaTimbreFC)
  * a partir del XML REALMENTE firmado y enviado a DGII — nunca a partir de
- * datos reconstruidos aparte, para garantizar que QR/XML/DGII siempre
- * coincidan campo por campo (RncEmisor, RncComprador, ENCF, FechaEmision,
- * MontoTotal, FechaFirma, CodigoSeguridad).
+ * datos reconstruidos aparte. Usa ConsultaTimbreFC para RFCE y E32 menores
+ * de RD$250,000; los demás tipos incluyen los campos que exige ConsultaTimbre.
  */
 function buildQrVerificationUrl(signedXml, environment) {
   if (!signedXml) return '';
@@ -50,8 +50,11 @@ function buildQrVerificationUrl(signedXml, environment) {
   const { baseUrl } = resolveEnvironmentConfig(environment || 'certecf');
   const envSegment = baseUrl.split('/').pop();
   const fechaFirma = d.fechaHoraFirma || d.fechaEmision || '';
+  const montoTotal = Number(d.montoTotal);
+  const esConsumoMenor250Mil = !d.isRfce && d.tipoEcf === '32'
+    && Number.isFinite(montoTotal) && montoTotal < 250000;
 
-  if (d.isRfce) {
+  if (d.isRfce || esConsumoMenor250Mil) {
     return `https://fc.dgii.gov.do/${envSegment}/ConsultaTimbreFC?` +
       `RncEmisor=${encodeURIComponent(d.rncEmisor)}` +
       `&ENCF=${encodeURIComponent(d.encf)}` +

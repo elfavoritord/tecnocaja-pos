@@ -70,6 +70,32 @@ function buildRfceXml({ encf = 'E320000000060', monto = '40120.00', codigo = 'YV
 </RFCE>`;
 }
 
+test.each([
+  ['E33', 'E330000000086'],
+  ['E34', 'E340000000086'],
+])('la RI %s muestra el e-NCF afectado dentro del recuadro de identificación', async (tipo, encf) => {
+  const tipoNumero = tipo.slice(1);
+  const xml = buildE31Xml()
+    .replace('<TipoeCF>31</TipoeCF>', `<TipoeCF>${tipoNumero}</TipoeCF>`)
+    .replace('<eNCF>E310000000051</eNCF>', `<eNCF>${encf}</eNCF>`)
+    .replace(`<TipoeCF>${tipoNumero}</TipoeCF>`, `<TipoeCF>${tipoNumero}</TipoeCF><FechaVencimientoSecuencia>31-12-2028</FechaVencimientoSecuencia>`)
+    .replace('<FechaHoraFirma>', '<InformacionReferencia><NCFModificado>E320000001133</NCFModificado><FechaNCFModificado>22-10-2026</FechaNCFModificado><CodigoModificacion>3</CodigoModificacion></InformacionReferencia><FechaHoraFirma>');
+
+  const html = await generateReprImpresaHtml(xml, { env: 'certecf' });
+  const docBoxStart = html.indexOf('<div class="doc-box">');
+  const referencePosition = html.indexOf('E320000001133');
+  const docBoxEnd = html.indexOf('</div>', referencePosition);
+  const buyerBoxPosition = html.indexOf('<div class="buyer-box">');
+
+  expect(html).toContain(`e-NCF: ${encf}`);
+  // La DGII no pide vencimiento de secuencia en el E32 ni en el E34.
+  if (tipo === 'E34') expect(html).not.toContain('Fecha Vencimiento: 31-12-2028');
+  else expect(html).toContain('Fecha Vencimiento: 31-12-2028');
+  expect(referencePosition).toBeGreaterThan(docBoxStart);
+  expect(referencePosition).toBeLessThan(docBoxEnd);
+  expect(referencePosition).toBeLessThan(buyerBoxPosition);
+}, 20000); // la primera RI carga el módulo y arma el QR: en una PC lenta con toda la suite pasa de 5 s
+
 function buildEcfWithoutBuyer(tipo, encf) {
   return buildE31Xml()
     .replace('<TipoeCF>31</TipoeCF>', `<TipoeCF>${tipo}</TipoeCF>`)
@@ -187,7 +213,8 @@ describe('qr-url.util vs repr-impresa — deben coincidir siempre (mismo XML fir
     try {
       const html = await generateReprImpresaHtml(fullE32, { env: 'certecf', rfceSummaryXml: summary });
       expect(html).toContain('Servicio de prueba RFCE');
-      expect(html).toContain('FACTURA DE CONSUMO ELECTRÓNICA (RFCE)');
+      expect(html).toContain('Factura de Consumo Electrónica');
+      expect(html).toContain('<div class="buyer-box hidden">');
       expect(generatedUrl).toBe(
         'https://fc.dgii.gov.do/CerteCF/ConsultaTimbreFC?' +
         'RncEmisor=40211932609' +

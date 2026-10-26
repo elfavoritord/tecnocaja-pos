@@ -4,6 +4,23 @@ const fs = require('fs');
 const { EcfError } = require('../utils/errors');
 const { SeedStorageService } = require('./seed-storage.service');
 
+// Motivo que dio la DGII al no entregar el token (JSON con mensaje/title/errors
+// o texto/HTML), para mostrarlo en vez de solo "no devolvió un token".
+function dgiiAuthReason(auth) {
+  const status = auth?.http?.status;
+  const raw = String(auth?.raw || auth?.http?.body || '').trim();
+  let detalle = '';
+  try {
+    const json = JSON.parse(raw) || {};
+    const errores = json.errors && typeof json.errors === 'object' ? Object.values(json.errors).flat().join(' ') : '';
+    detalle = [json.mensaje, json.message, json.title, json.detail, errores].filter(Boolean).join(' · ');
+  } catch (_) {
+    detalle = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  detalle = detalle.slice(0, 300);
+  return `HTTP ${status || '?'}${detalle ? `: ${detalle}` : ', respuesta vacía'}`;
+}
+
 class AuthService {
   constructor({ config, dgiiClient, signatureService, logger, certificateResolver, seedStorage }) {
     this.config = config;
@@ -152,11 +169,12 @@ class AuthService {
     console.log('======================================================\n');
 
     if (!auth.token) {
+      const motivo = `DGII no devolvió un token de autenticación (${dgiiAuthReason(auth)}).`;
       this.seedStorage.markFailed({
         id: signedEntry.id,
-        error: 'DGII no devolvió un token de autenticación.',
+        error: motivo,
       });
-      throw new EcfError('DGII no devolvió un token de autenticación.', {
+      throw new EcfError(motivo, {
         statusCode: 502,
         details: {
           httpStatus: auth.http?.status,

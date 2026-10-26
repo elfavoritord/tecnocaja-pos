@@ -19,7 +19,9 @@
  *   3. recibir(): baja por cursor el catálogo, los usuarios, los cambios de
  *      precio explícitos y los rangos NCF. El cursor se guarda después de
  *      cada página: una descarga cortada sigue donde quedó.
- *   4. ncf.ajustar(): activa el siguiente rango NCF si el actual se agotó.
+ *   4. ncf.reportarLocales(): avisa los rangos e-NCF que esta PC ya tenía
+ *      antes de enlazarse; ncf.ajustar(): activa el siguiente rango NCF si el
+ *      actual se agotó.
  * Cada ciclo queda en sync_bitacora (duración, eventos, bytes, resultado).
  *
  * Internet nunca bloquea la venta: todo esto corre en segundo plano.
@@ -577,6 +579,9 @@ function createSincronizacion({
         [ESTADOS_SALIDA.ERROR, 'SIN_CONEXION%']
       );
       progreso = { etapa: 'Rangos NCF', hechos: 0, total: 0 };
+      // Antes de ajustar: un rango e-NCF que esta PC ya usaba queda en uso y
+      // uno nuevo de la central espera a que se agote.
+      await ncf.reportarLocales();
       await ncf.ajustar();
       // Lo reanudado y lo que generó ajustar() (estado de rangos) sube en este mismo ciclo.
       await enviar(contadores);

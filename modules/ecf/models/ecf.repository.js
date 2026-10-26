@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { normalizeEnvironmentKey } = require('../config/ecf.config');
+const { getDocumentType } = require('../config/document-types');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { getDbClient } = require('../../../db');
 const { buildQrVerificationUrl } = require('../utils/qr-url.util');
@@ -22,6 +23,26 @@ const QR_ELIGIBLE_STATES = new Set(['aceptado', 'aceptado_condicional']);
 function lockingSuffix() {
   return getDbClient() === 'mysql' ? ' FOR UPDATE' : '';
 }
+
+// Una secuencia e-NCF es de producción ('ecf') o de pruebas ('certecf', que
+// cubre TesteCF y CerteCF). Producción nunca toma una de pruebas: la
+// certificación crea rangos con colchón (+200) que la DGII no autorizó, y
+// facturar con ellos da "No existen rangos de secuencias disponibles" (75).
+function sequenceEnvironment(environment) {
+  return normalizeEnvironmentKey(environment) === 'ecf' ? 'ecf' : 'certecf';
+}
+
+// Ambientes de ecf_documents / ecf_sequence_usage que comparten numeración.
+// La DGII lleva producción aparte: un e-NCF usado en pruebas sigue libre en
+// producción (E320000000001 de la certificación no es el de una venta real).
+function environmentsSharingNumbers(environment) {
+  return sequenceEnvironment(environment) === 'ecf' ? ['ecf'] : ['testecf', 'certecf'];
+}
+
+const MAX_ENCF_NUMBER = 9999999999;
+// La DGII autoriza cantidades concretas por solicitud; un rango mayor es un
+// dato mal copiado (el formulario traía 1–9,999,999,999 por defecto).
+const MAX_PRODUCTION_RANGE = 1000000;
 
 function digitsOnly(value) {
   return String(value || '').replace(/\D/g, '');
@@ -307,6 +328,12 @@ class EcfRepository {
     for (const [columnName, definitionSql] of sequenceColumns) {
       await addColumnIfMissing(this.query, 'ecf_sequences', columnName, definitionSql).catch(() => {});
     }
+    // Ambiente de cada secuencia (ver sequenceEnvironment).
+    await addColumnIfMissing(this.query, 'ecf_sequences', 'environment', 'VARCHAR(20) DEFAULT NULL').catch(() => {});
+    await this.classifyUnassignedSequences().catch(() => {});
+    await this.widenEncfUniqueIndex().catch((error) => {
+      console.warn('[ECF] No se pudo ajustar el índice único de e-NCF por ambiente:', error.message);
+    });
 
     const documentColumns = [
       // Columnas añadidas después de la creación inicial de la tabla
@@ -614,13 +641,15 @@ class EcfRepository {
       return {
         id: row.id,
         tipoComprobante: row.tipo_comprobante,
-        label: row.tipo_comprobante,
+        label: getDocumentType(row.tipo_comprobante)?.label || row.tipo_comprobante,
         branchId: row.branch_id || null,
         cashRegisterId: row.cash_register_id || null,
         branchName: row.branch_name || 'Global',
         cashRegisterName: row.cash_register_name || '',
         prefijo: row.tipo_comprobante || '',
         serie: '',
+        environment: sequenceEnvironment(row.environment),
+        authorizationReference: row.authorization_reference || null,
         desde: Number(row.numero_inicial || 0),
         hasta: end,
         proximo: current,
@@ -635,29 +664,109 @@ class EcfRepository {
   }
 
   async saveSequence(businessId, payload) {
-    assertCondition(payload.tipoComprobante, 'Debe indicar el tipo de comprobante.', { statusCode: 422 });
-    assertCondition(Number(payload.desde || 0) > 0, 'La secuencia inicial debe ser mayor que cero.', { statusCode: 422 });
-    assertCondition(Number(payload.hasta || 0) >= Number(payload.desde || 0), 'El rango final debe ser mayor o igual al inicial.', {
+    const tipoComprobante = String(payload.tipoComprobante || '').trim().toUpperCase();
+    const desde = Number(payload.desde || 0);
+    const hasta = Number(payload.hasta || 0);
+    const environment = sequenceEnvironment(payload.environment);
+    const authorizationReference = String(payload.authorizationReference || '').trim().slice(0, 60) || null;
+    assertCondition(tipoComprobante, 'Debe indicar el tipo de comprobante.', { statusCode: 422 });
+    assertCondition(Number.isInteger(desde) && desde > 0, 'La secuencia inicial debe ser mayor que cero.', { statusCode: 422 });
+    assertCondition(Number.isInteger(hasta) && hasta >= desde, 'El rango final debe ser mayor o igual al inicial.', {
+      statusCode: 422,
+    });
+    assertCondition(hasta <= MAX_ENCF_NUMBER, 'El número final no puede pasar de 9,999,999,999 (el e-NCF lleva 10 dígitos).', {
       statusCode: 422,
     });
 
-    await this.query(
+    if (environment === 'ecf') {
+      assertCondition(authorizationReference,
+        'Escribe el número de autorización que te dio la DGII para este rango (Oficina Virtual → Consultas → Solicitudes de Comprobantes).',
+        { statusCode: 422 });
+      assertCondition(payload.fechaAutorizacion, 'Indica la fecha en que la DGII autorizó el rango.', { statusCode: 422 });
+      assertCondition(hasta - desde + 1 <= MAX_PRODUCTION_RANGE,
+        `Un rango de ${(hasta - desde + 1).toLocaleString('en-US')} números no es una autorización de la DGII. Copia el "desde" y el "hasta" exactos.`,
+        { statusCode: 422 });
+      const overlapping = await this.query(
+        `SELECT id, numero_inicial, numero_final FROM ecf_sequences
+         WHERE business_id = ? AND tipo_comprobante = ? AND environment = 'ecf'
+           AND numero_inicial <= ? AND numero_final >= ?
+         LIMIT 1`,
+        [businessId, tipoComprobante, hasta, desde]
+      );
+      assertCondition(!overlapping.length,
+        `Ya hay una secuencia ${tipoComprobante} de producción que cubre parte de ese rango (${overlapping[0]?.numero_inicial}–${overlapping[0]?.numero_final}).`,
+        { statusCode: 422 });
+    }
+
+    const result = await this.query(
       `INSERT INTO ecf_sequences
-       (business_id, branch_id, cash_register_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero, fecha_autorizacion, fecha_vencimiento, activo, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+       (business_id, branch_id, cash_register_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero, fecha_autorizacion, fecha_vencimiento, environment, authorization_reference, activo, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
         businessId,
         payload.branchId || null,
         payload.cashRegisterId || null,
-        String(payload.tipoComprobante).trim().toUpperCase(),
-        Number(payload.desde),
-        Number(payload.hasta),
-        Number(payload.desde),
+        tipoComprobante,
+        desde,
+        hasta,
+        desde,
         payload.fechaAutorizacion || null,
         payload.fechaVencimiento || null,
+        environment,
+        authorizationReference,
       ]
     );
-    return this.listSequences(businessId);
+    return {
+      id: Number(result?.insertId || 0) || null,
+      environment,
+      sequences: await this.listSequences(businessId),
+    };
+  }
+
+  // Algunas bases tienen un UNIQUE (business_id, encf) en ecf_documents: no deja
+  // emitir en producción un e-NCF que ya se usó en pruebas. Se cambia por
+  // (business_id, encf, environment): sigue sin repetir dentro de un ambiente.
+  async widenEncfUniqueIndex() {
+    const target = 'uq_ecf_documents_business_encf_env';
+    if (getDbClient() === 'mysql') {
+      const rows = await this.query(
+        `SELECT INDEX_NAME AS name, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS cols
+         FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ecf_documents' AND NON_UNIQUE = 0
+         GROUP BY INDEX_NAME`
+      );
+      for (const row of rows) {
+        const name = String(row.name || '');
+        if (row.cols !== 'business_id,encf' || !/^\w+$/.test(name)) continue;
+        await this.query(`ALTER TABLE ecf_documents DROP INDEX \`${name}\`, ADD UNIQUE KEY ${target} (business_id, encf, environment)`);
+      }
+      return;
+    }
+    const indexes = await this.query('PRAGMA index_list(ecf_documents)');
+    for (const index of indexes) {
+      const name = String(index.name || '');
+      if (!Number(index.unique) || index.origin !== 'c' || !/^\w+$/.test(name)) continue;
+      const cols = (await this.query(`PRAGMA index_info(${name})`)).map((col) => col.name).join(',');
+      if (cols !== 'business_id,encf') continue;
+      await this.query(`DROP INDEX ${name}`);
+      await this.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${target} ON ecf_documents (business_id, encf, environment)`);
+    }
+  }
+
+  // Secuencias de antes de separar ambientes: producción solo se queda con las
+  // creadas después de activarla; las demás vienen de la certificación.
+  async classifyUnassignedSequences() {
+    const rows = await this.query('SELECT id, created_at FROM ecf_sequences WHERE environment IS NULL');
+    if (!rows.length) return;
+    const emitter = await this.getEmitter(1).catch(() => null);
+    const activatedAt = emitter?.environment === 'ecf' && emitter.production_status === 'active' && emitter.production_activated_at
+      ? new Date(emitter.production_activated_at).getTime()
+      : null;
+    for (const row of rows) {
+      const createdAt = new Date(row.created_at).getTime();
+      const environment = activatedAt && createdAt >= activatedAt ? 'ecf' : 'certecf';
+      await this.query('UPDATE ecf_sequences SET environment = ? WHERE id = ?', [environment, row.id]);
+    }
   }
 
   async ensureSequenceCoverage(conn, businessId, payload) {
@@ -668,11 +777,13 @@ class EcfRepository {
     assertCondition(numeroInicial > 0, 'La secuencia importada debe iniciar en un número mayor que cero.', { statusCode: 422 });
     assertCondition(numeroFinal >= numeroInicial, 'La secuencia importada tiene un rango inválido.', { statusCode: 422 });
 
+    // Solo la certificación importa sets de prueba: nunca extiende un rango de producción.
     const rows = await conn.query(
       `SELECT *
        FROM ecf_sequences
        WHERE business_id = ?
          AND tipo_comprobante = ?
+         AND (environment = 'certecf' OR environment IS NULL)
        ORDER BY activo DESC, id DESC`,
       [businessId, tipoComprobante]
     );
@@ -714,8 +825,8 @@ class EcfRepository {
 
     const insertResult = await conn.query(
       `INSERT INTO ecf_sequences
-       (business_id, branch_id, cash_register_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero, fecha_autorizacion, fecha_vencimiento, activo, created_at, updated_at)
-       VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+       (business_id, branch_id, cash_register_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero, fecha_autorizacion, fecha_vencimiento, environment, activo, created_at, updated_at)
+       VALUES (?, NULL, NULL, ?, ?, ?, ?, ?, ?, 'certecf', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
         businessId,
         tipoComprobante,
@@ -736,6 +847,7 @@ class EcfRepository {
       proximo_numero: nextNumber,
       fecha_autorizacion: payload.fechaAutorizacion || null,
       fecha_vencimiento: payload.fechaVencimiento || null,
+      environment: 'certecf',
       activo: 1,
     };
   }
@@ -767,21 +879,29 @@ class EcfRepository {
     return this.getSequence(normalizedSequenceId);
   }
 
-  async getNextAvailableSequence(conn, businessId, sale, tipoComprobante) {
+  async getNextAvailableSequence(conn, businessId, sale, tipoComprobante, environment) {
+    // Producción gasta primero el rango más viejo de la DGII: cuando llega una
+    // autorización nueva queda en espera hasta que se agote la anterior (los
+    // e-NCF salen en orden y no se vence un rango sin usar). En pruebas se
+    // conserva "el más nuevo primero", que la certificación usa para saltar
+    // números que la DGII ya quemó.
+    const order = sequenceEnvironment(environment) === 'ecf' ? 'numero_inicial ASC, id ASC' : 'id DESC';
     const rows = await conn.query(
       `SELECT * FROM ecf_sequences
        WHERE business_id = ?
          AND tipo_comprobante = ?
          AND activo = 1
+         AND environment = ?
          AND (branch_id IS NULL OR branch_id = ?)
          AND (cash_register_id IS NULL OR cash_register_id = ?)
        ORDER BY
          CASE WHEN cash_register_id = ? THEN 0 WHEN cash_register_id IS NULL THEN 1 ELSE 2 END,
          CASE WHEN branch_id = ? THEN 0 WHEN branch_id IS NULL THEN 1 ELSE 2 END,
-         id DESC${lockingSuffix()}`,
+         ${order}${lockingSuffix()}`,
       [
         businessId,
         tipoComprobante,
+        sequenceEnvironment(environment),
         sale.branch_id || null,
         sale.cash_register_id || null,
         sale.cash_register_id || null,
@@ -801,9 +921,13 @@ class EcfRepository {
     return `${String(tipoComprobante).trim().toUpperCase()}${String(nextNumber).padStart(10, '0')}`;
   }
 
-  async localEncfExists(conn, businessId, encf, excludeDocumentId = null) {
+  // `environment`: solo cuentan los e-NCF usados en ese ambiente (ver
+  // environmentsSharingNumbers). Sin él, cualquier uso en cualquier ambiente.
+  async localEncfExists(conn, businessId, encf, excludeDocumentId = null, environment = null) {
     const normalizedEncf = String(encf || '').trim().toUpperCase();
     if (!normalizedEncf) return false;
+    const environments = environment ? environmentsSharingNumbers(environment) : [];
+    const inList = environments.map(() => '?').join(', ');
 
     const documentRows = await conn.query(
       `SELECT id
@@ -811,18 +935,22 @@ class EcfRepository {
        WHERE business_id = ?
          AND UPPER(encf) = ?
          AND (? IS NULL OR id <> ?)
+         ${environments.length ? `AND environment IN (${inList})` : ''}
        LIMIT 1`,
-      [businessId, normalizedEncf, excludeDocumentId || null, excludeDocumentId || null]
+      [businessId, normalizedEncf, excludeDocumentId || null, excludeDocumentId || null, ...environments]
     );
     if (documentRows.length > 0) return true;
 
+    // Una venta sin documento e-CF ligado cuenta en cualquier ambiente.
     const saleRows = await conn.query(
-      `SELECT id
-       FROM sales
-       WHERE UPPER(encf) = ?
-         AND (? IS NULL OR ecf_document_id IS NULL OR ecf_document_id <> ?)
+      `SELECT s.id
+       FROM sales s
+       LEFT JOIN ecf_documents d ON d.id = s.ecf_document_id
+       WHERE UPPER(s.encf) = ?
+         AND (? IS NULL OR s.ecf_document_id IS NULL OR s.ecf_document_id <> ?)
+         ${environments.length ? `AND (d.id IS NULL OR d.environment IN (${inList}))` : ''}
        LIMIT 1`,
-      [normalizedEncf, excludeDocumentId || null, excludeDocumentId || null]
+      [normalizedEncf, excludeDocumentId || null, excludeDocumentId || null, ...environments]
     ).catch(() => []);
     if (saleRows.length > 0) return true;
 
@@ -831,8 +959,9 @@ class EcfRepository {
       `SELECT id FROM ecf_sequence_usage
         WHERE business_id=? AND UPPER(encf)=?
           AND status IN ('SENT','ACCEPTED','REJECTED','BLOCKED_DGII_USED','RESERVED')
+          ${environments.length ? `AND environment IN (${inList})` : ''}
         LIMIT 1`,
-      [businessId, normalizedEncf]
+      [businessId, normalizedEncf, ...environments]
     ).catch(() => []);
     return usageRows.length > 0;
   }
@@ -862,11 +991,24 @@ class EcfRepository {
         `La secuencia ${options.sequenceId} no corresponde al tipo ${normalizedType}.`,
         { statusCode: 422 }
       );
+      if (options.environment) {
+        assertCondition(
+          sequenceEnvironment(sequence.environment) === sequenceEnvironment(options.environment),
+          `La secuencia ${options.sequenceId} no es del ambiente de este documento (producción y pruebas no se mezclan).`,
+          { statusCode: 422 }
+        );
+      }
     } else {
-      sequence = await this.getNextAvailableSequence(conn, businessId, options.sale || {}, normalizedType);
+      sequence = await this.getNextAvailableSequence(conn, businessId, options.sale || {}, normalizedType, options.environment);
     }
 
-    assertCondition(sequence, `No existe una secuencia e-CF activa para ${normalizedType}.`, { statusCode: 422 });
+    assertCondition(
+      sequence,
+      sequenceEnvironment(options.environment) === 'ecf'
+        ? `No hay una secuencia ${normalizedType} de producción. Agrega el rango que te autorizó la DGII en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`
+        : `No existe una secuencia e-CF activa para ${normalizedType}.`,
+      { statusCode: 422 }
+    );
     assertCondition(Number(sequence.activo || 0) === 1, `La secuencia ${normalizedType} no está activa.`, { statusCode: 422 });
 
     const prefijo = String(sequence.tipo_comprobante || normalizedType).trim().toUpperCase();
@@ -881,8 +1023,11 @@ class EcfRepository {
     const expired = sequence.fecha_vencimiento ? new Date(sequence.fecha_vencimiento).getTime() < Date.now() : false;
     assertCondition(!expired, `La secuencia ${prefijo} está vencida.`, { statusCode: 422 });
 
+    // Cada número se busca solo entre los usados en el ambiente de la secuencia.
+    const numberingEnvironment = options.environment || sequence.environment;
     let encf = this.formatEncf(prefijo, candidateNumber);
-    while (candidateNumber <= finalNumber && await this.localEncfExists(conn, businessId, encf, excludeDocumentId)) {
+    while (candidateNumber <= finalNumber
+      && await this.localEncfExists(conn, businessId, encf, excludeDocumentId, numberingEnvironment)) {
       candidateNumber += 1;
       encf = this.formatEncf(prefijo, candidateNumber);
     }
@@ -1003,7 +1148,8 @@ class EcfRepository {
     return { inserted: true };
   }
 
-  async getSequenceUsageStats(businessId = 1) {
+  async getSequenceUsageStats(businessId = 1, environment = null) {
+    const environments = environment ? environmentsSharingNumbers(environment) : [];
     const rows = await this.query(`
       SELECT tipo_ecf,
              COUNT(*) AS total,
@@ -1017,19 +1163,22 @@ class EcfRepository {
              MAX(sent_at)                    AS ultimo_envio
         FROM ecf_sequence_usage
        WHERE business_id=?
+         ${environments.length ? `AND environment IN (${environments.map(() => '?').join(', ')})` : ''}
        GROUP BY tipo_ecf
        ORDER BY tipo_ecf
-    `, [businessId]);
+    `, [businessId, ...environments]);
     return rows;
   }
 
-  async getNextAvailableAfterUsage(businessId, tipoEcf) {
+  async getNextAvailableAfterUsage(businessId, tipoEcf, environment = null) {
+    const environments = environment ? environmentsSharingNumbers(environment) : [];
     const rows = await this.query(`
       SELECT MAX(CAST(sequence_number AS UNSIGNED)) AS max_used
         FROM ecf_sequence_usage
        WHERE business_id=? AND tipo_ecf=?
          AND status IN ('SENT','ACCEPTED','REJECTED','BLOCKED_DGII_USED','RESERVED')
-    `, [businessId, tipoEcf]);
+         ${environments.length ? `AND environment IN (${environments.map(() => '?').join(', ')})` : ''}
+    `, [businessId, tipoEcf, ...environments]);
     return Number(rows[0]?.max_used || 0);
   }
 
@@ -1071,11 +1220,37 @@ class EcfRepository {
         throw new EcfError('Venta no encontrada para emitir e-CF.', { statusCode: 404 });
       }
 
+      // Un intento anterior de ESTA venta que falló antes de firmar (p. ej. XML
+      // incompleto) ya apartó un e-NCF que nunca llegó a la DGII: al reintentar
+      // se usa ese mismo número en vez de apartar otro y dejarlo suelto.
+      const previousRows = await conn.query(
+        `SELECT * FROM ecf_documents
+         WHERE sale_id = ? AND tipo_ecf = ? AND environment = ?
+           AND signed_xml_content IS NULL AND sent_at IS NULL AND track_id IS NULL
+           AND certification_batch_id IS NULL
+         ORDER BY id DESC LIMIT 1`,
+        [saleId, tipoEcf, normalizeEnvironmentKey(environment)]
+      );
+      const previous = previousRows[0];
+      if (previous) {
+        const sequenceRows = previous.sequence_id
+          ? await conn.query('SELECT * FROM ecf_sequences WHERE id = ? LIMIT 1', [previous.sequence_id])
+          : [];
+        return {
+          documentId: Number(previous.id),
+          sequence: sequenceRows[0] || { id: previous.sequence_id || null },
+          encf: previous.encf,
+          sale,
+          reused: true,
+        };
+      }
+
       const generated = await this.generateNextENCF({
         conn,
         businessId: 1,
         sale,
         tipoComprobante: tipoEcf,
+        environment,
       });
       const sequence = generated.sequence;
       const encf = generated.encf;
@@ -1164,10 +1339,16 @@ class EcfRepository {
       montoTotal: toSqlNumber(payload.montoTotal, 0),
     };
     const safeOrderIndex = toSqlInteger(payload.certificationOrderIndex, null);
+    const environment = normalizeEnvironmentKey(payload.environment || 'testecf');
+    const sameEnvironments = environmentsSharingNumbers(environment);
 
+    // Solo se reemplaza un documento del mismo ambiente: nunca una venta real
+    // de producción con el mismo e-NCF.
     const existingRows = await conn.query(
-      'SELECT * FROM ecf_documents WHERE business_id = ? AND encf = ? ORDER BY id DESC LIMIT 1',
-      [safeBusinessId, encf]
+      `SELECT * FROM ecf_documents
+       WHERE business_id = ? AND encf = ? AND environment IN (${sameEnvironments.map(() => '?').join(', ')})
+       ORDER BY id DESC LIMIT 1`,
+      [safeBusinessId, encf, ...sameEnvironments]
     );
     const existing = existingRows[0] || null;
     const protectedStatuses = new Set(['aceptado', 'aceptado_condicional', 'en_proceso', 'enviado', 'procesando']);
@@ -1179,7 +1360,6 @@ class EcfRepository {
 
     const state = String(payload.estadoDgii || (payload.signedXml ? 'firmado' : 'pendiente')).trim();
     const signedAt = payload.signedAt ? toSqlDateTime(payload.signedAt) : null;
-    const environment = normalizeEnvironmentKey(payload.environment || 'testecf');
 
     if (existing) {
       await conn.query(
@@ -1491,11 +1671,30 @@ class EcfRepository {
     );
     return {
       total: rows.length,
-      documents: rows.map((row) => ({
-        ...row,
-        fecha_emision: row.xml_generated_at || row.created_at,
-        mensajes_dgii: row.error_message || '',
-      })),
+      documents: rows.map((row) => {
+        const response = typeof row.dgii_response_json === 'string'
+          ? parseJson(row.dgii_response_json, {})
+          : (row.dgii_response_json || {});
+        const messages = Array.isArray(response.mensajes || response.Mensajes)
+          ? (response.mensajes || response.Mensajes)
+            .map((item) => {
+              const code = item?.codigo ?? item?.Codigo;
+              const value = item?.valor ?? item?.Valor ?? item?.mensaje ?? item?.Mensaje ?? item?.descripcion ?? item?.Descripcion;
+              return [code != null ? `[${code}]` : '', value || ''].filter(Boolean).join(' ');
+            })
+            .filter(Boolean)
+          : [];
+        const dgiiDetail = [
+          row.error_message,
+          response.mensaje || response.Mensaje || response.message || response.Message || response.descripcion || response.Descripcion,
+          ...messages,
+        ].filter(Boolean).join(' | ');
+        return {
+          ...row,
+          fecha_emision: row.xml_generated_at || row.created_at,
+          mensajes_dgii: dgiiDetail,
+        };
+      }),
     };
   }
 
@@ -1985,5 +2184,6 @@ module.exports = {
   digitsOnly,
   parseEncfNumber,
   parseJson,
+  sequenceEnvironment,
   toSqlDateTime,
 };

@@ -12,11 +12,15 @@
  */
 
 const { query } = require('../../db');
-const { mapSequence } = require('../routes/fiscal-sequences.routes');
+const { mapSequence, mapEcfSequenceReadOnly } = require('../routes/fiscal-sequences.routes');
 const { parseUtcDbDateTime } = require('../licensing/trial-window');
 const { notifyControlCenterChange } = require('./control-center');
 
 const MAX_ROWS = 150;
+// El catálogo (productos y servicios) va más completo: el contador lo exporta
+// y lo usa para importar cambios. Se sube en cada sincronización (también en
+// cada venta), así que no todo: los 500 más vendidos (~125 KB).
+const MAX_CATALOGO_ROWS = 500;
 
 function getLicenseUid() {
   return String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
@@ -228,11 +232,13 @@ async function buildPosStats(ventasRows = []) {
     // Productos activos (usa estado con capital A según schema)
     query(`SELECT COUNT(*) AS cnt FROM products WHERE LOWER(estado) = 'activo'`),
 
-    // Bajo inventario (stock <= stock_min, cuando stock_min > 0)
+    // Bajo inventario (stock <= stock_min, cuando stock_min > 0). Los que no
+    // controlan inventario (tracks_stock = 0) no cuentan: se venden sin existencias.
     query(
       `SELECT COUNT(*) AS cnt
        FROM products
        WHERE LOWER(estado) = 'activo'
+         AND COALESCE(tracks_stock, 1) <> 0
          AND stock_min > 0
          AND stock <= stock_min`
     ),
@@ -316,7 +322,7 @@ async function buildReportesTabs() {
        LIMIT ${MAX_ROWS}`
     ),
 
-    // Tab productos (top vendidos en últimos 30 días)
+    // Tab productos: el catálogo, primero los más vendidos en 30 días
     query(
       `SELECT
          p.id                            AS id,
@@ -335,6 +341,7 @@ async function buildReportesTabs() {
          p.aplica_itbis                 AS aplicaItbis,
          p.itbis_modo                   AS itbisModo,
          p.itbis_monto                  AS itbisMonto,
+         COALESCE(p.tracks_stock, 1)    AS tracksStock,
          COALESCE(SUM(si.qty), 0)       AS vendidos
        FROM products p
        LEFT JOIN branches b ON b.id = p.branch_id
@@ -343,9 +350,9 @@ async function buildReportesTabs() {
          AND s.sale_status = 'pagada'
          AND DATE(s.created_at) >= date('now','-30 days')
        WHERE LOWER(p.estado) = 'activo'
-       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock, p.stock_min, p.marca, p.unidad, p.aplica_itbis, p.itbis_modo, p.itbis_monto
-       ORDER BY vendidos DESC
-       LIMIT ${MAX_ROWS}`
+       GROUP BY p.id, p.codigo, p.nombre, p.branch_id, b.nombre, p.categoria, p.precio_venta, p.precio_compra, p.stock, p.stock_min, p.marca, p.unidad, p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.tracks_stock
+       ORDER BY vendidos DESC, p.nombre
+       LIMIT ${MAX_CATALOGO_ROWS}`
     ),
 
     // Tab inventario
@@ -358,7 +365,9 @@ async function buildReportesTabs() {
          b.nombre                                                AS sucursal,
          p.stock                                                AS stock,
          p.stock_min                                            AS minimo,
+         COALESCE(p.tracks_stock, 1)                            AS tracksStock,
          CASE
+           WHEN COALESCE(p.tracks_stock, 1) = 0 THEN 'No controla inventario'
            WHEN p.stock <= 0           THEN 'Sin stock'
            WHEN p.stock_min > 0
             AND p.stock <= p.stock_min THEN 'Bajo'
@@ -367,7 +376,7 @@ async function buildReportesTabs() {
        FROM products p
        LEFT JOIN branches b ON b.id = p.branch_id
        WHERE LOWER(p.estado) = 'activo'
-       ORDER BY p.stock ASC
+       ORDER BY CASE WHEN COALESCE(p.tracks_stock, 1) = 0 THEN 1 ELSE 0 END, p.stock ASC
        LIMIT ${MAX_ROWS}`
     ),
 
@@ -450,6 +459,45 @@ async function buildReportesTabs() {
     ),
   ]);
 
+  // Servicios del catálogo de la Empresa de Servicios (svc_services): van en
+  // la pestaña Productos del portal con tipo 'servicio' e id 'svc-N' (no son
+  // de products). Vendidos = facturados en los últimos 30 días.
+  const servicios = await query(
+    `SELECT s.id, s.codigo, s.nombre, s.descripcion, c.nombre AS categoria, s.precio, s.itbis_pct AS itbisPct,
+            s.unidad, COALESCE(v.vendidos, 0) AS vendidos
+     FROM svc_services s
+     LEFT JOIN svc_service_categories c ON c.id = s.categoria_id
+     LEFT JOIN (
+       SELECT i.service_id, SUM(i.cantidad) AS vendidos
+       FROM svc_invoice_items i
+       JOIN svc_invoices f ON f.id = i.invoice_id
+       WHERE f.estado <> 'anulada' AND DATE(f.fecha) >= date('now','-30 days')
+       GROUP BY i.service_id
+     ) v ON v.service_id = s.id
+     WHERE s.activo = 1
+     ORDER BY vendidos DESC, s.nombre
+     LIMIT ${MAX_CATALOGO_ROWS}`
+  ).catch(() => []); // sin catálogo de servicios en este POS
+  const filasServicios = servicios.map((s) => ({
+    id: `svc-${s.id}`,
+    tipo: 'servicio',
+    codigo: s.codigo || '',
+    nombre: s.nombre,
+    descripcion: s.descripcion || '',
+    branch_id: null,
+    branchId: null,
+    sucursal: '',
+    categoria: s.categoria || '',
+    precio: safeNum(s.precio),
+    costo: null,
+    stock: null,
+    unidad: s.unidad || 'servicio',
+    itbisPct: safeNum(s.itbisPct),
+    aplicaItbis: safeNum(s.itbisPct) > 0,
+    tracksStock: 0,
+    vendidos: safeNum(s.vendidos),
+  }));
+
   // Facturas = mismas filas de ventas con layout diferente
   const facturas = ventas.map(v => ({
     fecha:    v.fecha,
@@ -494,7 +542,7 @@ async function buildReportesTabs() {
   return {
     ventas:     normalize(ventas),
     facturas:   normalize(facturas),
-    productos:  normalize(productos),
+    productos:  normalize([...productos, ...filasServicios]),
     inventario: normalize(inventario),
     itbis:      normalize(itbis),
     cxc:        normalize(cxc),
@@ -685,6 +733,9 @@ async function buildContabilidadFeed() {
 // Nunca es la fuente de verdad — el contador la usa para ver el estado real
 // antes de pedir una edición/suspensión (ver server/sync/apply-pending-ncf.js
 // y las acciones 'edit'/'suspend' de licencias/{uid}/ncf_pendientes).
+// Las e-NCF de producción van también (id 'ecf-N', readOnly): el contador ve
+// lo que ya tiene el negocio antes de subirle otro rango, pero se administran
+// en el POS.
 async function buildNcfSequencesSnapshot() {
   const rows = await query(
     `SELECT fs.*, b.nombre AS branch_name FROM ncf_authorized_sequences fs
@@ -692,7 +743,13 @@ async function buildNcfSequencesSnapshot() {
      WHERE fs.deleted_at IS NULL
      ORDER BY fs.document_type, fs.branch_id`
   );
-  return rows.map(mapSequence);
+  const ecfRows = await query(
+    `SELECT es.*, b.nombre AS branch_name FROM ecf_sequences es
+     LEFT JOIN branches b ON b.id = es.branch_id
+     WHERE es.environment = 'ecf'
+     ORDER BY es.tipo_comprobante, es.numero_inicial`
+  ).catch(() => []); // sin factura electrónica en este POS
+  return [...rows.map(mapSequence), ...ecfRows.map(mapEcfSequenceReadOnly)];
 }
 
 // ── Escritura a Firestore ──────────────────────────────────────────────────
@@ -768,8 +825,15 @@ async function runSync() {
     const licRef = db.collection('licencias').doc(licenseUid);
 
     // 1. Escribir posStats + perfil del negocio en el doc principal (merge
-    // para no pisar otros campos como contadorId)
-    await licRef.set({ posStats, ...businessProfile }, { merge: true });
+    // para no pisar otros campos como contadorId). ncfEspejoVersion 2 = el
+    // espejo de abajo trae también las e-NCF: sin él, el portal avisa que no
+    // puede saber qué rangos E ya tiene este POS (versión vieja).
+    // serviciosPortalVersion 1 = publica su catálogo de servicios y aplica los
+    // servicios que manda el contador (pending-servicios.js). Un POS viejo
+    // tomaría un servicio de la cola como si fuera un producto.
+    await licRef.set({
+      posStats, ...businessProfile, ...(ncfSequences ? { ncfEspejoVersion: 2 } : {}), serviciosPortalVersion: 1,
+    }, { merge: true });
 
     // 2. Escribir filas tabulares en sub-colección reportes/{tab}
     const repCol = licRef.collection('reportes');

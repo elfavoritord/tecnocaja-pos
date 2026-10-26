@@ -446,6 +446,34 @@ ipcMain.handle('report:preview-print', async (_event, { html = '', title = 'Vist
   }
 });
 
+// ── Recibo de pago en impresora térmica ─────────────────────────────────────
+// Configuración → Recibo de pago: la impresora se elige en el portal y se
+// recuerda en esta PC. El recibo sale con comandos ESC/POS directos, el mismo
+// motor de los tickets del POS (electron/recibo-pago.js). Como página HTML,
+// el controlador de Windows de la térmica lo giraba y lo encogía.
+ipcMain.handle('printer:list', async () => {
+  try {
+    const lista = await mainWindow.webContents.getPrintersAsync();
+    return {
+      ok: true,
+      impresoras: lista.map((p) => ({ nombre: p.name, etiqueta: p.displayName || p.name, predeterminada: Boolean(p.isDefault) })),
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || 'No se pudieron leer las impresoras.', impresoras: [] };
+  }
+});
+
+ipcMain.handle('printer:receipt', async (_event, { datos = null, firma = {}, impresora = '', anchoMm = 80, copias = 1 } = {}) => {
+  if (!impresora) return { ok: false, error: 'Elige la impresora del recibo en Configuración.' };
+  if (!datos) return { ok: false, error: 'Faltan los datos del recibo.' };
+  try {
+    const { imprimirReciboPago } = require('./electron/recibo-pago');
+    return await imprimirReciboPago(impresora, datos, firma, anchoMm, copias);
+  } catch (error) {
+    return { ok: false, error: error.message || 'No se pudo imprimir el recibo.' };
+  }
+});
+
 // Guarda como PDF la propia ventana de vista previa (botón flotante) —
 // reutiliza su webContents ya cargado en vez de renderizar el HTML de nuevo.
 ipcMain.handle('preview:save-pdf', async (event, { suggestedName = 'documento.pdf' } = {}) => {

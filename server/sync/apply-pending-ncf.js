@@ -32,8 +32,11 @@
  * rango. Cambiar el próximo número o reactivar una ya suspendida/eliminada
  * sigue exclusivo del dueño en el POS.
  *
- * Solo NCF tradicional (B01-B17) — el e-CF ya se certifica aparte con la
- * DGII, no se autoriza por rango manual, no aplica esta cola.
+ * 'create' acepta también e-NCF (E31-E47): van a las secuencias de
+ * producción de la factura electrónica (ecf_sequences, ambiente 'ecf'), igual
+ * que si el dueño subiera el archivo de la DGII en Configuración → Secuencias
+ * de Comprobantes Electrónicos. 'edit'/'suspend'/'delete' siguen siendo solo
+ * para B: una e-NCF se administra en el POS.
  */
 
 const fs = require('fs');
@@ -42,6 +45,7 @@ const crypto = require('crypto');
 const {
   findOverlappingSequence, VALID_DOCUMENT_TYPES, ATTACHMENT_MIME_EXTENSIONS, MAX_ATTACHMENT_BYTES,
 } = require('../routes/fiscal-sequences.routes');
+const { getDocumentType: getEcfDocumentType } = require('../../modules/ecf/config/document-types');
 
 function getLicenseUid() {
   return String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
@@ -59,8 +63,19 @@ function getDb() {
  * @param {Function} isMysqlDeployment — de server.js
  * @param {string} attachmentsDir — carpeta local donde guardar el documento de autorización (FISCAL_ATTACHMENTS_DIR)
  * @param {string} attachmentsWebPath — prefijo web para el archivo guardado (FISCAL_ATTACHMENTS_WEB_PATH)
+ * @param {object} [ecfRepository] — EcfRepository de modules/ecf (si no viene, se crea con query/withTransaction)
  */
-function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, isMysqlDeployment, attachmentsDir, attachmentsWebPath }) {
+function createApplyPendingNcfService({
+  query, withTransaction, writeAuditLog, isMysqlDeployment, attachmentsDir, attachmentsWebPath, ecfRepository = null,
+}) {
+  function getEcfRepository() {
+    if (!ecfRepository) {
+      const { EcfRepository } = require('../../modules/ecf/models/ecf.repository');
+      ecfRepository = new EcfRepository({ query, withTransaction });
+    }
+    return ecfRepository;
+  }
+
   // Decodifica un data:mime;base64,... y lo guarda en attachmentsDir, o
   // devuelve null si el formato/tipo no es válido — mismas reglas que el
   // endpoint manual POST /api/fiscal-sequences/:id/attachment.
@@ -112,11 +127,23 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
     }
   }
 
-  async function applyCreate(request, contadorNombre) {
-    const documentType = String(request.documentType || '').toUpperCase().trim();
-    if (!VALID_DOCUMENT_TYPES.includes(documentType)) {
-      throw new Error(`Tipo de comprobante inválido: ${documentType}.`);
+  // Revalidar la sucursal elegida contra la base local. Si ya no existe,
+  // no convertir a global: un rango NCF local no debe terminar disponible
+  // para todas las sucursales.
+  async function resolveBranchId(request) {
+    const requestedBranchId = Number(request.branchId || 0) || null;
+    if (!requestedBranchId) return null;
+    const branchRows = await query(
+      `SELECT id FROM branches WHERE id = ? AND estado <> 'Eliminada' LIMIT 1`,
+      [requestedBranchId]
+    ).catch(() => []);
+    if (!branchRows.length) {
+      throw new Error(`La sucursal seleccionada (${requestedBranchId}) ya no existe o fue eliminada.`);
     }
+    return requestedBranchId;
+  }
+
+  function validRange(request) {
     const startNumber = Number(request.startNumber);
     const endNumber = Number(request.endNumber);
     if (!Number.isFinite(startNumber) || !Number.isFinite(endNumber) || startNumber < 1 || startNumber > endNumber) {
@@ -126,22 +153,71 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
     if (!authorizationReference) {
       throw new Error('Falta la referencia de autorización DGII.');
     }
+    return { startNumber, endNumber, authorizationReference };
+  }
 
-    // Revalidar la sucursal elegida contra la base local. Si ya no existe,
-    // no convertir a global: un rango NCF local no debe terminar disponible
-    // para todas las sucursales.
-    let branchId = null;
-    const requestedBranchId = Number(request.branchId || 0) || null;
-    if (requestedBranchId) {
-      const branchRows = await query(
-        `SELECT id FROM branches WHERE id = ? AND estado <> 'Eliminada' LIMIT 1`,
-        [requestedBranchId]
-      ).catch(() => []);
-      if (!branchRows.length) {
-        throw new Error(`La sucursal seleccionada (${requestedBranchId}) ya no existe o fue eliminada.`);
-      }
-      branchId = requestedBranchId;
+  function dateOrNull(value) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) ? value : null;
+  }
+
+  // e-NCF: mismas reglas que al subir el archivo de la DGII en el POS
+  // (EcfRepository.saveSequence): Nº y fecha de autorización, y sin cruzarse
+  // con otro rango de producción de ese tipo. Si ya hay uno de ese tipo con
+  // números, este espera su turno (se usa primero el rango más bajo).
+  async function applyCreateElectronico(request, contadorNombre, documentType) {
+    const { startNumber, endNumber, authorizationReference } = validRange(request);
+    const branchId = await resolveBranchId(request);
+    const repo = getEcfRepository();
+    await repo.ensureSchema();
+
+    const duplicate = await query(
+      `SELECT id FROM ecf_sequences
+       WHERE tipo_comprobante = ? AND environment = 'ecf' AND numero_inicial = ? AND numero_final = ?
+       LIMIT 1`,
+      [documentType, startNumber, endNumber]
+    );
+    if (duplicate[0]) {
+      return {
+        sequenceId: `ecf-${duplicate[0].id}`,
+        auditAction: 'duplicate_from_contador',
+        auditReason: 'La secuencia ya existía en el POS; solicitud vinculada automáticamente.',
+        duplicateResolved: true,
+      };
     }
+
+    const saved = await repo.saveSequence(1, {
+      tipoComprobante: documentType,
+      environment: 'ecf',
+      desde: startNumber,
+      hasta: endNumber,
+      authorizationReference,
+      fechaAutorizacion: dateOrNull(request.authorizationDate),
+      fechaVencimiento: dateOrNull(request.expirationDate),
+      branchId,
+    });
+    const auditReason = `Registrado desde el Portal del Contador (${contadorNombre})`;
+    // Historial de la secuencia en Configuración → Secuencias de Comprobantes
+    // Electrónicos (ecf_audit_log, como cuando la agrega el dueño).
+    await repo.saveAudit({
+      userName: `Contador: ${contadorNombre}`,
+      userRole: 'Contador',
+      sequenceId: saved.id,
+      tipoComprobante: documentType,
+      actionName: 'sequence_created',
+      detail: `Agregó la secuencia ${documentType} ${startNumber}–${endNumber} (producción, autorización DGII ${authorizationReference}) desde el Portal del Contador.`
+        + (request.notes ? ` ${request.notes}` : ''),
+    });
+    return { sequenceId: `ecf-${saved.id}`, auditAction: 'create_from_contador', auditReason };
+  }
+
+  async function applyCreate(request, contadorNombre) {
+    const documentType = String(request.documentType || '').toUpperCase().trim();
+    if (getEcfDocumentType(documentType)) return applyCreateElectronico(request, contadorNombre, documentType);
+    if (!VALID_DOCUMENT_TYPES.includes(documentType)) {
+      throw new Error(`Tipo de comprobante inválido: ${documentType}.`);
+    }
+    const { startNumber, endNumber, authorizationReference } = validRange(request);
+    const branchId = await resolveBranchId(request);
 
     const duplicate = await query(
       `SELECT id FROM ncf_authorized_sequences
@@ -164,8 +240,8 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
       throw new Error(`Se cruza con la autorización ya registrada ${fmt(overlap.start_number)}–${fmt(overlap.end_number)}.`);
     }
 
-    const authDate = /^\d{4}-\d{2}-\d{2}$/.test(String(request.authorizationDate || '')) ? request.authorizationDate : null;
-    const expDate = /^\d{4}-\d{2}-\d{2}$/.test(String(request.expirationDate || '')) ? request.expirationDate : null;
+    const authDate = dateOrNull(request.authorizationDate);
+    const expDate = dateOrNull(request.expirationDate);
 
     const result = await query(
       `INSERT INTO ncf_authorized_sequences
@@ -205,9 +281,19 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
     return { sequenceId, auditAction: 'create_from_contador', auditReason };
   }
 
-  async function applyEdit(request, contadorNombre) {
+  // Id local de una secuencia B. Las e-NCF ('ecf-N' en el espejo) no se
+  // cambian desde el portal.
+  function targetSequenceId(request, verbo) {
+    if (String(request.targetLocalSequenceId || '').startsWith('ecf-')) {
+      throw new Error('Las secuencias e-NCF se administran en el POS (Configuración → Secuencias de Comprobantes Electrónicos).');
+    }
     const targetId = Number(request.targetLocalSequenceId || 0);
-    if (!targetId) throw new Error('Falta indicar qué secuencia editar.');
+    if (!targetId) throw new Error(`Falta indicar qué secuencia ${verbo}.`);
+    return targetId;
+  }
+
+  async function applyEdit(request, contadorNombre) {
+    const targetId = targetSequenceId(request, 'editar');
 
     return withTransaction(async (conn) => {
       const [seq] = await conn.query(
@@ -253,8 +339,7 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
   }
 
   async function applySuspend(request, contadorNombre) {
-    const targetId = Number(request.targetLocalSequenceId || 0);
-    if (!targetId) throw new Error('Falta indicar qué secuencia suspender.');
+    const targetId = targetSequenceId(request, 'suspender');
     const reason = String(request.reason || '').trim();
     if (!reason) throw new Error('Falta el motivo de la suspensión.');
 
@@ -280,8 +365,7 @@ function createApplyPendingNcfService({ query, withTransaction, writeAuditLog, i
   }
 
   async function applyDelete(request, contadorNombre) {
-    const targetId = Number(request.targetLocalSequenceId || 0);
-    if (!targetId) throw new Error('Falta indicar qué secuencia eliminar.');
+    const targetId = targetSequenceId(request, 'eliminar');
     const reason = String(request.reason || '').trim() || `Eliminada desde el Portal del Contador (${contadorNombre})`;
 
     return withTransaction(async (conn) => {

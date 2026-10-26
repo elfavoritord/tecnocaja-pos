@@ -16,6 +16,8 @@
  *   mismo POS ya sincronizó (ver sync-pos-stats.js → profile.sucursales),
  *   pero igual se revalida aquí contra la base local por si esa sucursal
  *   se eliminó entre que el contador la eligió y que este POS sincronizó.
+ *   tipo: 'servicio' — un servicio del catálogo de la Empresa de Servicios
+ *   (svc_services), no un producto: lo aplica server/sync/pending-servicios.js.
  */
 
 function getLicenseUid() {
@@ -39,7 +41,40 @@ function createApplyPendingProductsService({
   createProductInTransaction, withTransaction, writeAuditLog, query, decodeDataUrlImage, saveProductImageBuffer, removeLocalProductImage,
   // (productId, solicitud) → multisucursal: a qué sucursales de la empresa va.
   alCrearProducto = async () => {},
+  // Servicios (tipo 'servicio'): por defecto, pending-servicios.js con este query.
+  pendingServicios = null,
 }) {
+  function getPendingServicios() {
+    if (!pendingServicios) pendingServicios = require('./pending-servicios').createPendingServicios({ query });
+    return pendingServicios;
+  }
+
+  async function aplicarServicio(doc, request) {
+    const r = await getPendingServicios().aplicar(request);
+    await doc.ref.update({
+      status: 'aplicado',
+      localServiceId: r.servicioId,
+      duplicateResolved: Boolean(r.duplicado),
+      duplicateMessage: r.duplicado
+        ? (r.accion === 'eliminar' ? 'El servicio ya no estaba activo en el POS.' : 'El servicio ya existía en el POS; solicitud vinculada automáticamente.')
+        : null,
+      appliedAt: new Date().toISOString(),
+    });
+    const acciones = { crear: 'Servicio creado por contador', editar: 'Servicio editado por contador', eliminar: 'Servicio dado de baja por contador' };
+    try {
+      await writeAuditLog({
+        userId: null,
+        userName: `Contador: ${request.contadorNombre || 'sin nombre'}`,
+        userRole: 'Contador',
+        moduleName: 'Servicios',
+        actionName: acciones[r.accion],
+        detail: `${r.detalle} (vía Portal del Contador)`,
+      });
+    } catch (auditError) {
+      console.warn('[apply-pending-products] No se pudo registrar auditoría:', auditError.message);
+    }
+  }
+
   async function findConflictingProductForRequest(data, catalogBranchId, excludeId = null) {
     const rows = await query(
       `SELECT id, codigo, nombre, branch_id
@@ -67,6 +102,24 @@ function createApplyPendingProductsService({
       [data.codigo, data.nombre, catalogBranchId, catalogBranchId, data.codigo]
     ).catch(() => []);
     return rows[0] || null;
+  }
+
+  // Producto importado de un CSV en el portal (request.importado): si ya
+  // existe, se actualizan solo las columnas que traía el archivo
+  // (request.campos), igual que el importador de CSV del POS.
+  const COLUMNAS_IMPORTABLES = {
+    nombre: 'nombre', categoria: 'categoria', marca: 'marca', unidad: 'unidad',
+    precioCompra: 'precio_compra', precioVenta: 'precio_venta', stock: 'stock', stockMin: 'stock_min',
+    aplicaItbis: 'aplica_itbis', tracksStock: 'tracks_stock',
+  };
+  async function actualizarDesdeImportacion(productoId, data, campos) {
+    const cambios = (Array.isArray(campos) ? campos : []).filter((campo) => COLUMNAS_IMPORTABLES[campo]);
+    if (!cambios.length) return;
+    const valor = (campo) => (['aplicaItbis', 'tracksStock'].includes(campo) ? (data[campo] ? 1 : 0) : data[campo]);
+    await withTransaction((conn) => conn.query(
+      `UPDATE products SET ${cambios.map((campo) => `${COLUMNAS_IMPORTABLES[campo]} = ?`).join(', ')} WHERE id = ?`,
+      [...cambios.map(valor), productoId]
+    ));
   }
 
   async function markRequestAppliedFromExisting(doc, existingProduct, message = '') {
@@ -111,6 +164,17 @@ function createApplyPendingProductsService({
     for (const doc of snapshot.docs) {
       const request = doc.data() || {};
       const accion = ['editar', 'eliminar'].includes(request.accion) ? request.accion : 'crear';
+
+      if (request.tipo === 'servicio') {
+        try {
+          await aplicarServicio(doc, request);
+          applied += 1;
+        } catch (error) {
+          await doc.ref.update({ status: 'error', errorMessage: error.message || 'No se pudo aplicar el servicio.', appliedAt: new Date().toISOString() }).catch(() => {});
+          failed += 1;
+        }
+        continue;
+      }
 
       const actorForRequest = {
         userId: null,
@@ -186,7 +250,8 @@ function createApplyPendingProductsService({
         aplicaItbis: Boolean(request.aplicaItbis),
         itbisModo: request.itbisModo === 'monto' ? 'monto' : 'porcentaje',
         itbisMonto: Math.max(0, Number(request.itbisMonto || 0)),
-        tracksStock: true,
+        // "Controlar inventario" del Portal. Solicitudes viejas no lo traen = sí controla.
+        tracksStock: request.tracksStock !== false,
       };
 
       if (!data.codigo || !data.nombre) {
@@ -244,14 +309,22 @@ function createApplyPendingProductsService({
             continue;
           }
 
+          // Sin control de inventario el Portal no muestra el stock: se deja el
+          // que tenía el POS (si lo vuelven a activar, no se pierde).
+          const controla = data.tracksStock ? 1 : 0;
           await withTransaction((conn) => conn.query(
             `UPDATE products
              SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?,
-                 precio_compra = ?, precio_venta = ?, stock = ?, stock_min = ?,
+                 precio_compra = ?, precio_venta = ?,
+                 stock = CASE WHEN ? = 1 THEN ? ELSE stock END,
+                 stock_min = CASE WHEN ? = 1 THEN ? ELSE stock_min END,
+                 tracks_stock = ?,
                  aplica_itbis = ?, itbis_modo = ?, itbis_monto = ?, branch_id = ?
              WHERE id = ?`,
             [data.codigo, data.nombre, data.categoria, data.marca, data.unidad,
-             data.precioCompra, data.precioVenta, data.stock, data.stockMin,
+             data.precioCompra, data.precioVenta,
+             controla, data.stock, controla, data.stockMin,
+             controla,
              data.aplicaItbis ? 1 : 0, data.itbisModo, data.itbisMonto, catalogBranchId, productoId]
           ));
 
@@ -288,6 +361,23 @@ function createApplyPendingProductsService({
 
       try {
         const existingBeforeCreate = await findExistingProductForRequest(data, catalogBranchId);
+        if (existingBeforeCreate && request.importado) {
+          await actualizarDesdeImportacion(existingBeforeCreate.id, data, request.campos);
+          await doc.ref.update({ status: 'aplicado', localProductId: Number(existingBeforeCreate.id), appliedAt: new Date().toISOString() });
+          try {
+            await writeAuditLog({
+              ...actor,
+              userRole: 'Contador',
+              moduleName: 'Productos',
+              actionName: 'Producto actualizado por contador',
+              detail: `${existingBeforeCreate.codigo} · ${data.nombre} (importado de CSV en el Portal del Contador)`,
+            });
+          } catch (auditError) {
+            console.warn('[apply-pending-products] No se pudo registrar auditoría:', auditError.message);
+          }
+          applied += 1;
+          continue;
+        }
         if (existingBeforeCreate) {
           await markRequestAppliedFromExisting(doc, existingBeforeCreate);
           applied += 1;

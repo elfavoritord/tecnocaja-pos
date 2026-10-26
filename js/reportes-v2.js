@@ -701,7 +701,9 @@
         <td style="font-family:var(--font-mono);font-weight:800">${fmt(r.total)}</td>
         <td>${r.tipo === 'cobro' ? '—' : `<span class="repv2-estado repv2-estado-${r.estado}">${r.estado}</span>`}</td>
         <td>${fmtEstadoCobro(r)}</td>
-        <td><button class="repv2-reprint-btn" onclick="repV2ReprintSale('${r.tipo === 'cobro' ? 'cobro:' + r.paymentId : r.factura}')" title="Reimprimir comprobante">🖨️</button></td>
+        <td class="repv2-invoice-actions">
+          <button type="button" class="repv2-reprint-btn repv2-view-invoice-btn" onclick="event.preventDefault(); event.stopPropagation(); repV2ViewSale('${r.tipo === 'cobro' ? 'cobro:' + r.paymentId : r.factura}'); return false" title="Abrir vista previa del recibo" aria-label="Ver factura emitida">👁️ Ver recibo</button>
+        </td>
       </tr>`).join('');
 
     // Filas de cobro cuya factura original también está en este rango se
@@ -723,7 +725,7 @@
     renderPager('det-facturas-pager', page, pages, p => repV2LoadFacturas(p));
   }
 
-  window.repV2ReprintSale = async function(invoiceNumberOrCobro) {
+  async function openReportReceipt(invoiceNumberOrCobro, mode) {
     try {
       if (typeof showToast === 'function') showToast('Cargando comprobante…', 'info');
       const isCobro = String(invoiceNumberOrCobro || '').startsWith('cobro:');
@@ -731,15 +733,24 @@
         ? await apiGet(`/api/clients/credit-payments/${encodeURIComponent(invoiceNumberOrCobro.slice(6))}/receipt`)
         : await apiGet(`/api/sales/${encodeURIComponent(invoiceNumberOrCobro)}/receipt`);
       if (!data?.sale) throw new Error('Comprobante no encontrado.');
-      if (typeof showReceipt === 'function') {
-        showReceipt(data.sale, { title: isCobro ? 'Reimpresión — Recibo de Cobro' : `Reimpresión — ${invoiceNumberOrCobro}` });
+      if (mode === 'view') {
+        if (typeof showReceiptPreview !== 'function') throw new Error('La vista previa del recibo no está disponible. Recarga el sistema e inténtalo de nuevo.');
+        showReceiptPreview(data.sale, { title: isCobro ? 'Vista previa del recibo de cobro' : `Vista previa — ${invoiceNumberOrCobro}` });
+      } else if (typeof showReceipt === 'function') {
+        const title = isCobro
+          ? (mode === 'view' ? 'Recibo de cobro emitido' : 'Reimpresión — Recibo de Cobro')
+          : (mode === 'view' ? `Factura emitida — ${invoiceNumberOrCobro}` : `Reimpresión — ${invoiceNumberOrCobro}`);
+        showReceipt(data.sale, { title });
       } else {
         if (typeof showToast === 'function') showToast('Función de impresión no disponible.', 'error');
       }
     } catch (e) {
       if (typeof showToast === 'function') showToast('Error: ' + e.message, 'error');
     }
-  };
+  }
+
+  window.repV2ViewSale = (invoiceNumberOrCobro) => openReportReceipt(invoiceNumberOrCobro, 'view');
+  window.repV2ReprintSale = (invoiceNumberOrCobro) => openReportReceipt(invoiceNumberOrCobro, 'reprint');
 
   function fmtMetodo(m) {
     return {
