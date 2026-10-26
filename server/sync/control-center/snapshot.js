@@ -63,6 +63,7 @@ async function collectSnapshot({
   cachedMonths = null,
   full = true,
   mapSequence = null,
+  mapEcfSequence = null,
   syncInfo = null,
 }) {
   const warnings = [];
@@ -117,7 +118,7 @@ async function collectSnapshot({
     productRows, branchInventory, categoryRows,
     openSessions, closedSessions,
     openReceivables, recentCollections, clientsCountRows, activity90, activityMonth,
-    ecfCounts, ecfOpen, ecfDocuments, ncfUsage, ncfSequences, ncfLegacy,
+    ecfCounts, ecfOpen, ecfDocuments, ncfUsage, ncfSequences, ncfLegacy, ecfSequences, ncfDocuments,
     deliveryStatus, deliveryClients, deliveryDrivers, deliveryActive, deliveryCash,
     lanTerminals,
   ] = await Promise.all([
@@ -146,6 +147,9 @@ async function collectSnapshot({
     safe(warnings, 'NCF', () => queries.ncfUsage(query, p.periods.month.from, p.periods.month.to)),
     safe(warnings, 'secuencias NCF', () => queries.ncfAuthorizedSequences(query)),
     safe(warnings, 'secuencias NCF (antiguas)', () => queries.ncfLegacySequences(query)),
+    // Sin facturación electrónica la tabla puede no existir: no es un aviso.
+    queries.ecfSequences(query).catch(() => []),
+    safe(warnings, 'comprobantes NCF recientes', () => queries.ncfRecentDocuments(query, `${recentFrom} 00:00:00`, 60)),
     safe(warnings, 'delivery', () => queries.deliveryByStatus(query, p.periods.month.from, p.periods.month.to)),
     safe(warnings, 'clientes delivery', () => queries.deliveryClients(query, p.periods.month.from, p.periods.month.to)),
     safe(warnings, 'repartidores', () => queries.deliveryByDriver(query, p.periods.month.from, p.periods.month.to)),
@@ -204,7 +208,10 @@ async function collectSnapshot({
     ncfUsage,
     ncfSequences,
     ncfLegacy,
+    ecfSequences,
+    ncfDocuments,
     mapSequence,
+    mapEcfSequence,
     deliveryStatus,
     deliveryClients,
     deliveryDrivers,
@@ -395,6 +402,9 @@ function buildScopeDocuments(snapshot, scopeKey = null) {
     sequences: snapshot.ncfSequences,
     legacySequences: snapshot.ncfLegacy,
     mapSequence: snapshot.mapSequence,
+    ecfSequences: snapshot.ecfSequences,
+    mapEcfSequence: snapshot.mapEcfSequence,
+    ncfDocuments: snapshot.ncfDocuments,
     eInvoiceEnabled: snapshot.config.e_invoice_enabled,
     branchKey: scopeKey,
     today,

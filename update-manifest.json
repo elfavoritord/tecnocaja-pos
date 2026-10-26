@@ -1,16 +1,15 @@
 {
-  "version": "1.6.0",
-  "stableVersion": "1.6.0",
-  "date": "25/10/2026",
+  "version": "1.6.1",
+  "stableVersion": "1.6.1",
+  "date": "26/10/2026",
   "size": "47.3 MB",
-  "type": "feature",
+  "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Facturacion electronica: las secuencias e-NCF de produccion y de pruebas van separadas y piden el numero de autorizacion de la DGII. Se pueden subir varios archivos de la DGII a la vez.",
-    "Empresa de servicios: importar y exportar el catalogo de servicios en CSV y facturar servicios con e-CF.",
-    "Productos: al importar el CSV se elige la sucursal o todas las sucursales.",
-    "Tu contador puede cargarte los comprobantes de la DGII y agregar servicios desde su portal; llegan solos a Tecno Caja.",
-    "Ticket termico con el QR de la DGII impreso por la impresora (se lee mejor)."
+    "Facturacion electronica: la app instalada ya se conecta a la DGII (antes fallaba con el error ENOTDIR).",
+    "Certificacion: nuevo boton Ya me certifique antes. Para negocios ya certificados ante la DGII: solo pide el certificado .p12 y deja la facturacion electronica conectada a produccion.",
+    "Certificado: una contrasena equivocada ya no borra el certificado que estaba funcionando. Activar conecta con la DGII al momento, sin reiniciar.",
+    "App de reportes: las fotos de productos tomadas desde el telefono se guardan y se ven; la app muestra los comprobantes emitidos y los rangos e-NCF."
   ]
 }

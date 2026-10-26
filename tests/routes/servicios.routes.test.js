@@ -688,5 +688,5 @@ describe('servicios.routes — firma digital del PDF', () => {
     expect(signed).toMatch(/\/ByteRange\s*\[/);
     expect(signed).not.toMatch(/\/ByteRange\s*\[[^\]]*\*/); // sin placeholder **
     expect(signed).toContain('adbe.pkcs7.detached');
-  });
+  }, 30000); // firmar con el .p12 (RSA en JS) pasa de 5 s en una PC lenta
 });

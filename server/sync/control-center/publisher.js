@@ -26,6 +26,7 @@
 const crypto = require('crypto');
 const snapshotLib = require('./snapshot');
 const periodsLib = require('./periods');
+const { createFotosPublisher } = require('./fotos');
 
 const DEFAULTS = {
   firstRunDelayMs: 45 * 1000,
@@ -99,6 +100,9 @@ function createControlCenterPublisher(deps = {}) {
     countContingencySales = async () => 0,
     ensureSchema = async () => {},
     mapSequence = null,
+    mapEcfSequence = null,
+    processImage = null,
+    readLocalImage = null,
     appVersion = '',
     logger = console,
     now = () => new Date(),
@@ -112,6 +116,9 @@ function createControlCenterPublisher(deps = {}) {
   const hashes = new Map();
   const lastWriteAt = new Map();
   const warned = new Set();
+  const fotos = processImage && readLocalImage
+    ? createFotosPublisher({ query, processImage, readLocalImage, logger, options: deps.fotosOptions })
+    : null;
   let started = false;
   let schemaReady = false;
   let inFlight = null;
@@ -294,6 +301,7 @@ function createControlCenterPublisher(deps = {}) {
       cachedMonths: needsFull ? null : cache.months,
       full: needsFull,
       mapSequence,
+      mapEcfSequence,
       syncInfo: await syncInfo(),
     });
     cache = { facts: snapshot.facts, factsDay: today, months: snapshot.months };
@@ -302,6 +310,19 @@ function createControlCenterPublisher(deps = {}) {
     if (!businessId) {
       warnOnce('no-business', 'El negocio no tiene licencia ni nombre propio todavía; no se publica el Centro de Control.');
       return { skipped: 'business' };
+    }
+
+    // Fotos primero: el catálogo solo nombra las que ya están arriba.
+    if (fotos && snapshot.productsLoaded) {
+      const todas = [...snapshot.catalog.branches.values()].map((b) => b.id);
+      const versiones = await fotos.publicar(firestore, businessId, todas).catch((error) => {
+        warnOnce(`fotos:${error.message}`, `No se pudieron publicar las fotos de productos: ${error.message}`);
+        return fotos.versiones();
+      });
+      for (const p of snapshot.products) {
+        const version = versiones.get(String(p.id));
+        if (version) p.photo = version;
+      }
     }
 
     const scopes = [null, ...snapshot.branchKeys];

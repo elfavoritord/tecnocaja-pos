@@ -14,7 +14,7 @@ const snapshotLib = require('../../server/sync/control-center/snapshot');
 const state = require('../../server/sync/control-center/state');
 const queries = require('../../server/sync/control-center/queries');
 const { createControlCenterPublisher, stableHash } = require('../../server/sync/control-center/publisher');
-const { mapSequence } = require('../../server/routes/fiscal-sequences.routes');
+const { mapSequence, mapEcfSequenceReadOnly: mapEcfSequence } = require('../../server/routes/fiscal-sequences.routes');
 
 const { NOW, createDb, fakeFirestore } = require('./control-center.fixture');
 
@@ -70,6 +70,7 @@ describe('snapshot del Centro de Control (SQLite real)', () => {
       now: NOW,
       full: true,
       mapSequence,
+      mapEcfSequence,
       syncInfo: { cloud: { pending: 0, errors: 2, lastError: 'timeout' }, pendingEcf: 1 },
     });
     all = snapshotLib.buildScopeDocuments(snapshot, null);
@@ -177,6 +178,23 @@ describe('snapshot del Centro de Control (SQLite real)', () => {
     expect(f.sequences[0]).toMatchObject({ type: 'B02', status: 'proximo_agotarse', available: 21 });
   });
 
+  test('comprobantes: rangos NCF y e-NCF (nuevos marcados) y los NCF emitidos', () => {
+    const f = all.fiscal;
+    expect(f.sequences.map((s) => s.type)).toEqual(['B02', 'E32']); // el E31 de pruebas no cuenta
+    expect(f.sequences[0]).toMatchObject({
+      kind: 'ncf', from: 'B0200000001', to: 'B0200000100', next: 'B0200000080', total: 100, used: 79, isNew: false,
+    });
+    expect(f.sequences[1]).toMatchObject({
+      kind: 'ecf', from: 'E320000000001', to: 'E320000000500', next: 'E320000000004',
+      available: 497, used: 3, status: 'activo', isNew: true, createdAt: '2026-10-03 10:00:00',
+    });
+    expect(f.ncf.documents).toEqual([expect.objectContaining({
+      ncf: 'B0200000079', type: 'B02', invoice: 'FAC-00000001', total: 118, tax: 18, cancelled: false, branchId: '1',
+    })]);
+    // Norte no ve los comprobantes de la Principal.
+    expect(norte.fiscal.ncf.documents).toEqual([]);
+  });
+
   test('delivery activo y cobro contra entrega pendiente', () => {
     const d = all.delivery;
     expect(d.today).toMatchObject({ orders: 1, sales: 80, onTheWay: 1 });
@@ -279,6 +297,7 @@ describe('publicador', () => {
       mapSequence,
       appVersion: '9.9.9',
       getServerId: () => 'srv_main',
+      mapEcfSequence,
       logger: { warn: () => {}, log: () => {} },
       setTimeoutFn: () => 0,
       clearTimeoutFn: () => {},
@@ -377,6 +396,59 @@ describe('publicador', () => {
     const result = await publisher.runOnce({ full: true });
     expect(result).toEqual({ skipped: 'business' });
     expect(firestore.store.size).toBe(0);
+    publisher.stop();
+    ctx.db.close();
+  });
+
+  test('fotos de productos: se publican achicadas, el catálogo dice su versión y se borran al quitarlas', async () => {
+    const ctx = await createDb();
+    const firestore = fakeFirestore();
+    const leidas = [];
+    const publisher = makePublisher(ctx, firestore, {
+      processImage: async (buffer, size) => ({ mime: 'image/webp', data: `${buffer.toString()}@${size.width}` }),
+      readLocalImage: async (imageLocal) => { leidas.push(imageLocal); return Buffer.from('foto-arroz'); },
+    }).start();
+    const base = 'businesses/pos_test1234/controlCenter';
+
+    await publisher.runOnce({ full: true });
+    await publisher.whenIdle();
+    expect(firestore.store.get(`${base}/foto_1`)).toMatchObject({
+      kind: 'productPhoto', productId: '1', mime: 'image/webp', data: 'foto-arroz@480',
+      version: 'arroz-1-abc123def456.webp', branchIds: ['1', '2'],
+    });
+    expect(firestore.store.get(`${base}/fotos`).versions).toEqual({ 1: 'arroz-1-abc123def456.webp' });
+    const arroz = () => firestore.store.get(`${base}/catalog_p0`).items.find((p) => p.id === '1');
+    expect(arroz().photo).toBe('arroz-1-abc123def456.webp');
+    expect(firestore.store.get(`${base}/catalog_p0_b2`).items.find((p) => p.id === '1').photo).toBe('arroz-1-abc123def456.webp');
+
+    // Sin cambios no la vuelve a leer ni a subir.
+    await publisher.runOnce({ full: false });
+    expect(leidas).toHaveLength(1);
+
+    // Foto quitada en el POS: se borra de la nube y del catálogo.
+    ctx.db.run('UPDATE products SET image_local = NULL WHERE id = 1');
+    await publisher.runOnce({ full: false });
+    expect(firestore.store.has(`${base}/foto_1`)).toBe(false);
+    expect(firestore.store.get(`${base}/fotos`).versions).toEqual({});
+    expect(arroz().photo).toBeUndefined();
+    publisher.stop();
+    ctx.db.close();
+  });
+
+  test('una foto que falta en el disco no se publica ni se reintenta en cada corrida', async () => {
+    const ctx = await createDb();
+    const firestore = fakeFirestore();
+    let lecturas = 0;
+    const publisher = makePublisher(ctx, firestore, {
+      processImage: async () => ({ mime: 'image/webp', data: 'x' }),
+      readLocalImage: async () => { lecturas += 1; return null; },
+    }).start();
+    await publisher.runOnce({ full: true });
+    await publisher.whenIdle();
+    await publisher.runOnce({ full: false });
+    expect(lecturas).toBe(1);
+    expect(firestore.store.has('businesses/pos_test1234/controlCenter/foto_1')).toBe(false);
+    expect(firestore.store.get('businesses/pos_test1234/controlCenter/catalog_p0').items[0].photo).toBeUndefined();
     publisher.stop();
     ctx.db.close();
   });

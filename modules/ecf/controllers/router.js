@@ -307,6 +307,8 @@ function createEcfRouter(deps) {
   //    nunca disparada automáticamente por el wizard. Ver docs/plan de activación segura.
   router.get('/production/status', wrap((req) => service.getProductionActivationStatus({ yaAutorizado: req.query?.yaAutorizado === '1' })));
   router.post('/production/activate', wrap((req) => service.activateProduction(req)));
+  // "Ya me certifiqué antes": solo el .p12 → producción conectada y wizard 15/15.
+  router.post('/production/reactivar-certificado', wrap((req) => service.reactivateCertifiedEmitter(req)));
   router.post('/production/revert', wrap((req) => service.revertProductionToCertification(req)));
 
   router.get('/reports/summary', wrap(() => service.getSummaryReport()));

@@ -485,6 +485,36 @@ function ncfLegacySequences(query) {
   return query('SELECT * FROM ncf_sequences WHERE activa = 1 ORDER BY ncf_type, branch_id');
 }
 
+/** Secuencias e-NCF de producción (las de pruebas no son comprobantes válidos). */
+function ecfSequences(query) {
+  return query(
+    `SELECT es.*, b.nombre AS branch_name
+       FROM ecf_sequences es
+       LEFT JOIN branches b ON b.id = es.branch_id
+      WHERE es.environment = 'ecf'
+      ORDER BY es.tipo_comprobante, es.numero_inicial`
+  );
+}
+
+/** Últimos comprobantes con NCF tipo B emitidos (los e-CF tienen su propia lista). */
+async function ncfRecentDocuments(query, from, limit = 60) {
+  const build = (full) => `
+    SELECT s.id, s.ncf, ${full ? 's.ncf_type' : "''"} AS nt, s.invoice_number, s.created_at,
+           s.total, s.tax, COALESCE(s.fiscal_status, 'emitida') AS fs, ${BRANCH} AS b,
+           ${full ? "COALESCE(c.nombre, s.client_name_snapshot, '')" : "COALESCE(c.nombre, '')"} AS name
+      FROM sales s
+      LEFT JOIN clients c ON c.id = s.client_id
+     WHERE s.created_at >= ? AND s.ncf IS NOT NULL AND s.ncf <> '' AND s.ncf NOT LIKE 'E%'
+     ORDER BY s.created_at DESC, s.id DESC
+     LIMIT ?`;
+  try {
+    return await query(build(true), [from, limit]);
+  } catch (_error) {
+    // Base vieja sin ncf_type o sin el nombre del cliente guardado en la venta.
+    return query(build(false), [from, limit]);
+  }
+}
+
 // ── Delivery ────────────────────────────────────────────────────────────────
 
 function deliveryByStatus(query, from, to) {
@@ -604,6 +634,8 @@ module.exports = {
   ncfUsage,
   ncfAuthorizedSequences,
   ncfLegacySequences,
+  ecfSequences,
+  ncfRecentDocuments,
   deliveryByStatus,
   deliveryClients,
   deliveryByDriver,

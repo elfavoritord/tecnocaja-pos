@@ -2,7 +2,11 @@
 
 const crypto = require('crypto');
 
-const DEFAULT_SECRET = process.env.ECF_SECRET || process.env.FISCAL_CERT_SECRET || 'tecnocaja-ecf-secret-change-me';
+// Clave con la que cifra toda instalación sin ECF_SECRET/FISCAL_CERT_SECRET.
+// Si la instalación luego recibe su propia clave, lo guardado antes con esta
+// se sigue pudiendo leer (ver decryptTextWithLegacyFallback).
+const LEGACY_DEFAULT_SECRET = 'tecnocaja-ecf-secret-change-me';
+const DEFAULT_SECRET = process.env.ECF_SECRET || process.env.FISCAL_CERT_SECRET || LEGACY_DEFAULT_SECRET;
 
 function deriveKey(secret = DEFAULT_SECRET) {
   return crypto.scryptSync(String(secret), 'tecnocaja-ecf-salt-v2', 32);
@@ -38,6 +42,15 @@ function decryptText(payload, secret = DEFAULT_SECRET) {
   return decryptBuffer(payload, secret).toString('utf8');
 }
 
+function decryptTextWithLegacyFallback(payload) {
+  try {
+    return decryptText(payload);
+  } catch (error) {
+    if (DEFAULT_SECRET === LEGACY_DEFAULT_SECRET) throw error;
+    return decryptText(payload, LEGACY_DEFAULT_SECRET);
+  }
+}
+
 function maskSecret(value, keep = 4) {
   const text = String(value || '');
   if (!text) return '';
@@ -48,6 +61,7 @@ function maskSecret(value, keep = 4) {
 module.exports = {
   decryptBuffer,
   decryptText,
+  decryptTextWithLegacyFallback,
   encryptBuffer,
   encryptText,
   maskSecret,

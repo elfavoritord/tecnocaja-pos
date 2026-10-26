@@ -22,7 +22,7 @@ const SCHEMA = `
   CREATE TABLE payment_methods (id INTEGER PRIMARY KEY, codigo TEXT, nombre TEXT, estado TEXT DEFAULT 'Activo');
   CREATE TABLE products (id INTEGER PRIMARY KEY, codigo TEXT, nombre TEXT, categoria TEXT, unidad TEXT,
     precio_compra REAL, precio_venta REAL, stock REAL, stock_min REAL, estado TEXT DEFAULT 'Activo', tracks_stock INT DEFAULT 1,
-    barcode TEXT, marca TEXT, aplica_itbis INT DEFAULT 0, image_url TEXT);
+    barcode TEXT, marca TEXT, aplica_itbis INT DEFAULT 0, image_url TEXT, image_local TEXT);
   CREATE TABLE categories (id INTEGER PRIMARY KEY, nombre TEXT);
   CREATE TABLE inventory_by_branch (id INTEGER PRIMARY KEY, branch_id INT, product_id INT, stock REAL, stock_min REAL);
   CREATE TABLE clients (id INTEGER PRIMARY KEY, nombre TEXT, telefono TEXT);
@@ -52,6 +52,9 @@ const SCHEMA = `
     document_type TEXT, document_name TEXT, prefix TEXT, start_number INT, end_number INT, next_number INT,
     last_used_number INT, authorization_date TEXT, expiration_date TEXT, authorization_reference TEXT,
     environment TEXT, status TEXT, authorization_file_url TEXT, notes TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+  CREATE TABLE ecf_sequences (id INTEGER PRIMARY KEY, business_id INT, branch_id INT, tipo_comprobante TEXT,
+    numero_inicial INT, numero_final INT, proximo_numero INT, fecha_autorizacion TEXT, fecha_vencimiento TEXT,
+    activo INT DEFAULT 1, environment TEXT, authorization_reference TEXT, created_at TEXT, updated_at TEXT);
   CREATE TABLE terminal_registrations (terminal_id TEXT, terminal_name TEXT, branch_id INT, cash_register_id INT,
     is_main INT, status TEXT, connection_type TEXT, last_seen_at TEXT);
 `;
@@ -137,8 +140,15 @@ function seed(db) {
        (4, 1, 'E31', 'E310000000002', 'rechazado', 'Juan Pérez', 500, 'RNC del comprador inválido', '2026-10-05 12:01:00', '2026-10-05 12:01:20', NULL),
        (3, 2, 'E32', 'E320000000003', 'pendiente', 'Consumidor', 40, NULL, '2026-10-05 08:00:00', NULL, NULL),
        (NULL, 1, 'E31', 'E310000000099', 'rechazado', 'Prueba DGII', 1, 'caso de certificación', '2026-10-05 08:00:00', NULL, 'CASO-1')`);
-  run(`INSERT INTO ncf_authorized_sequences (id, business_id, branch_id, series, document_type, prefix, start_number, end_number, next_number, expiration_date, status)
-       VALUES (1, 1, 1, 'B', 'B02', 'B02', 1, 100, 80, '2027-12-31', 'activo')`);
+  run(`INSERT INTO ncf_authorized_sequences (id, business_id, branch_id, series, document_type, prefix, start_number, end_number, next_number, expiration_date, status, created_at)
+       VALUES (1, 1, 1, 'B', 'B02', 'B02', 1, 100, 80, '2027-12-31', 'activo', '2026-09-01 08:00:00')`);
+  // e-NCF: uno de producción cargado hace 2 días (nuevo) y uno de pruebas que no cuenta.
+  run(`INSERT INTO ecf_sequences (id, business_id, branch_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero,
+         fecha_autorizacion, fecha_vencimiento, activo, environment, authorization_reference, created_at) VALUES
+       (1, 1, NULL, 'E32', 1, 500, 4, '2026-10-03', '2028-12-31', 1, 'ecf', 'AUT-2026-1', '2026-10-03 10:00:00'),
+       (2, 1, NULL, 'E31', 1, 100, 1, '2026-01-10', '2027-12-31', 1, 'certecf', 'PRUEBA', '2026-01-10 10:00:00')`);
+  // Foto de Arroz subida en la PC (archivo local con la huella en el nombre).
+  run(`UPDATE products SET image_local = '/uploads/productos/arroz-1-abc123def456.webp' WHERE id = 1`);
   run(`INSERT INTO terminal_registrations VALUES
        ('T-MAIN', 'PC Principal', 1, 1, 1, 'online', 'lan', '2026-10-05 14:29:00'),
        ('T-2', 'Caja Norte', 2, 3, 0, 'offline', 'lan', '2026-10-05 11:00:00')`);
@@ -176,6 +186,9 @@ function fakeFirestore() {
     async get() {
       const data = store.get(path);
       return { exists: Boolean(data), data: () => data };
+    },
+    async delete() {
+      store.delete(path);
     },
   });
   const colRef = (path) => ({ path, doc: (id) => docRef(`${path}/${id}`) });

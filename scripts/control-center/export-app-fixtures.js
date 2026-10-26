@@ -15,7 +15,11 @@ const fs = require('fs');
 const path = require('path');
 const snapshotLib = require('../../server/sync/control-center/snapshot');
 const { clean } = require('../../server/sync/control-center/publisher');
-const { mapSequence } = require('../../server/routes/fiscal-sequences.routes');
+const { mapSequence, mapEcfSequenceReadOnly } = require('../../server/routes/fiscal-sequences.routes');
+const { versionDe } = require('../../server/sync/control-center/fotos');
+
+// PNG de 1×1 para la foto de ejemplo (la app solo necesita poder leerla).
+const FOTO_EJEMPLO = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 const { NOW, createDb } = require('../../tests/sync/control-center.fixture');
 
 const OUT_DIR = path.join(__dirname, '..', '..', 'reporte app', 'test', 'fixtures', 'control_center');
@@ -34,6 +38,7 @@ async function main() {
       now: NOW,
       full: true,
       mapSequence,
+      mapEcfSequence: mapEcfSequenceReadOnly,
       syncInfo: {
         generatedAt: NOW,
         generatedAtText: '2026-10-05 14:30:00',
@@ -47,6 +52,11 @@ async function main() {
     const write = (name, data) => {
       fs.writeFileSync(path.join(OUT_DIR, `${name}.json`), `${JSON.stringify(toJson({ ...data, generatedAt: NOW }), null, 2)}\n`);
     };
+    // Lo que hace control-center/fotos.js al publicar: la foto de Arroz.
+    const [conFoto] = await query("SELECT id, image_local FROM products WHERE image_local IS NOT NULL AND image_local <> ''");
+    const arroz = snapshot.products.find((p) => String(p.id) === String(conFoto.id));
+    arroz.photo = versionDe(conFoto.image_local);
+    write('foto_1', { kind: 'productPhoto', productId: String(arroz.id), mime: 'image/png', data: FOTO_EJEMPLO, version: arroz.photo, branchIds: ['1', '2'] });
     const all = snapshotLib.buildScopeDocuments(snapshot, null);
     for (const [kind, data] of Object.entries(all)) write(kind, data);
     const norte = snapshotLib.buildScopeDocuments(snapshot, '2');

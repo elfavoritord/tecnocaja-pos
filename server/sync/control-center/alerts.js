@@ -98,8 +98,12 @@ function buildAlerts({ inventory, cash, receivables, fiscal, delivery, sync, tod
         message: fiscal.open.oldestAt ? `El más antiguo es del ${fiscal.open.oldestAt.slice(0, 16)}.` : '',
       });
     }
+    // Un rango viejo agotado o vencido no avisa si ya hay otro activo del mismo
+    // tipo para esa sucursal (o uno global).
+    const cubiertos = new Set(fiscal.sequences.filter((s) => s.status === 'activo').map((s) => `${s.type}|${s.branchId || ''}`));
     for (const seq of fiscal.sequences) {
       if (!['vencido', 'agotado', 'proximo_agotarse'].includes(seq.status)) continue;
+      if (cubiertos.has(`${seq.type}|${seq.branchId || ''}`) || cubiertos.has(`${seq.type}|`)) continue;
       const critical = seq.status !== 'proximo_agotarse';
       push({
         id: `ncf-${seq.type}-${seq.branchId || 'global'}`,

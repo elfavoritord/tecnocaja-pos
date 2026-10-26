@@ -3,13 +3,22 @@
 const fs = require('fs');
 const path = require('path');
 
-const ROOT_LOG_DIR = path.resolve(__dirname, '..', '..', '..', 'logs');
+// En la app instalada __dirname cae dentro de app.asar (solo lectura): crear
+// la carpeta ahí lanzaba "ENOTDIR, not a directory" y tumbaba la operación que
+// registraba (pedir la semilla, enviar e-CF…), así que la app instalada nunca
+// lograba conectarse a la DGII. Se escribe en la carpeta de datos del usuario.
+function resolveLogDir() {
+  const userData = String(process.env.TECNO_CAJA_USER_DATA || '').trim();
+  return userData
+    ? path.join(path.resolve(userData), 'logs')
+    : path.resolve(__dirname, '..', '..', '..', 'logs');
+}
+
+const ROOT_LOG_DIR = resolveLogDir();
 const ROOT_LOG_FILE = path.join(ROOT_LOG_DIR, 'ecf.log');
-const MODULE_LOG_DIR = path.resolve(__dirname, '..', 'logs');
 
 function ensureLogTargets() {
   fs.mkdirSync(ROOT_LOG_DIR, { recursive: true });
-  fs.mkdirSync(MODULE_LOG_DIR, { recursive: true });
   if (!fs.existsSync(ROOT_LOG_FILE)) {
     fs.writeFileSync(ROOT_LOG_FILE, '', 'utf8');
   }
@@ -36,7 +45,6 @@ function sanitize(value) {
 }
 
 function writeLog(level, scope, message, context = null) {
-  ensureLogTargets();
   const entry = {
     timestamp: new Date().toISOString(),
     level,
@@ -44,7 +52,11 @@ function writeLog(level, scope, message, context = null) {
     message,
     context: sanitize(context),
   };
-  fs.appendFileSync(ROOT_LOG_FILE, `${JSON.stringify(entry)}\n`, 'utf8');
+  // Un log que no se puede escribir nunca debe frenar la facturación.
+  try {
+    ensureLogTargets();
+    fs.appendFileSync(ROOT_LOG_FILE, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (_) {}
 }
 
 function createLogger(scope, { debug = false } = {}) {

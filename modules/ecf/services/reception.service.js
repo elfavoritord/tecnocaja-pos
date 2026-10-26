@@ -179,7 +179,7 @@ class ReceptionService {
       sourcePath: xmlFilePath,
       storageService: this.storageService,
       environment: this.config?.DGII_ENV,
-      baseDir: process.cwd(),
+      baseDir: this.storageService?.baseDir || process.cwd(),
     });
 
     logDgiiDispatchPlan(dispatchPlan);

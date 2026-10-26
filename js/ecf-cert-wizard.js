@@ -55,6 +55,12 @@ const ECF_CERT_WIZARD = (() => {
       .ecf-wz-progress-track {
         height:6px;background:var(--bg4);border-radius:999px;overflow:hidden;
       }
+      .ecf-wz-reactivar {
+        padding:.75rem 1.4rem;background:rgba(22,163,74,.06);border-bottom:1px solid var(--border);
+        display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap;
+        font-size:.82rem;color:var(--text2);line-height:1.5;
+      }
+      .ecf-wz-reactivar b { display:block;color:var(--text); }
       .ecf-wz-progress-fill {
         height:100%;border-radius:999px;
         background:linear-gradient(90deg,var(--accent),var(--accent-light));
@@ -387,8 +393,8 @@ const ECF_CERT_WIZARD = (() => {
 
     const progress = getProgress();
     const env = WZ.state?.environment || 'certecf';
-    const envLabel = env === 'certecf' ? 'CerteCF' : 'TesteCF';
-    const envColor = env === 'certecf' ? '#f59e0b' : '#60a5fa';
+    const envLabel = env === 'ecf' ? 'Producción' : env === 'certecf' ? 'CerteCF' : 'TesteCF';
+    const envColor = env === 'ecf' ? '#16a34a' : env === 'certecf' ? '#f59e0b' : '#60a5fa';
     const startedAt = fmtDate(WZ.state?.startedAt);
     const finishedAt = fmtDate(WZ.state?.finishedAt);
 
@@ -437,6 +443,18 @@ const ECF_CERT_WIZARD = (() => {
             <span>${progress === 100 ? '🎉 Certificación completada' : progress === 0 ? 'Inicia el proceso para comenzar' : 'En progreso…'}</span>
           </div>
         </div>
+
+        ${progress < 100 ? `
+          <div class="ecf-wz-reactivar">
+            <div>
+              <b>¿Tu RNC ya pasó la certificación con la DGII?</b>
+              Si ya te certificaste antes (en esta u otra PC), no repitas los 15 pasos: carga tu certificado .p12 y quedas conectado a producción.
+            </div>
+            <button class="ecf-wz-action-btn" style="padding:.5rem 1rem;font-size:.82rem" onclick="ECF_CERT_WIZARD.openReactivar()">
+              Ya me certifiqué antes
+            </button>
+          </div>
+        ` : ''}
 
         <!-- Body -->
         <div class="ecf-wz-body">
@@ -3454,8 +3472,9 @@ const ECF_CERT_WIZARD = (() => {
     const ecf4  = steps[4]?.data || {};
     const acecf = steps[11]?.data || {};
     const env   = WZ.state?.environment || 'certecf';
-    const envLabel = env === 'certecf' ? 'CerteCF — Certificación' : 'TesteCF — Pruebas';
+    const envLabel = env === 'ecf' ? 'Producción (eCF)' : env === 'certecf' ? 'CerteCF — Certificación' : 'TesteCF — Pruebas';
     const finalized = isCompleted(15);
+    const reactivacion = WZ.state?.reactivacion || null;
 
     return `
       ${stepHeader(15, '🎉')}
@@ -3468,7 +3487,17 @@ const ECF_CERT_WIZARD = (() => {
             : 'Revisa el resumen debajo. Cuando DGII confirme la aprobación final en el portal CerteCF, marca la certificación como finalizada.'}
         </p>
 
-        ${finalized ? `
+        ${finalized && reactivacion ? `
+          <div class="ecf-wz-card" style="max-width:520px;margin:0 auto 1.5rem;text-align:left;border-color:#16a34a">
+            <div class="ecf-wz-card-title" style="color:#16a34a">✅ Conectado a producción DGII</div>
+            <p style="font-size:.82rem;color:var(--text2);margin:.4rem 0 0;line-height:1.6">
+              Reactivado el ${h(fmtDateTime(reactivacion.at))} con tu certificado .p12 (el RNC ya estaba certificado ante la DGII).
+              Para facturar necesitas tus secuencias e-NCF autorizadas en
+              <b>Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos</b>.
+            </p>
+          </div>
+        ` : ''}
+        ${finalized && !reactivacion ? `
           <div class="ecf-wz-card" style="max-width:520px;margin:0 auto 1.5rem;text-align:left;border-color:#f59e0b">
             <div class="ecf-wz-card-title" style="color:#f59e0b">⚠ Activar producción DGII</div>
             <p style="font-size:.82rem;color:var(--text2);margin:.4rem 0 0;line-height:1.6">
@@ -3579,6 +3608,92 @@ const ECF_CERT_WIZARD = (() => {
       _updateStep2Counters(ecfStatus.counts || {}, rfceStatus.items || []);
       await _loadStep2ManualDocs([], rfceStatus.items || []);
     } catch (_) {}
+  }
+
+  // ── "Ya me certifiqué antes" ──────────────────────────────────────────────────
+  // Solo pide el .p12: el servidor se autentica en producción, deja los 15
+  // pasos completos y la conexión DGII activa (ver reactivateCertifiedEmitter).
+  function openReactivar() {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(6,8,16,0.88);z-index:3000;display:flex;align-items:center;justify-content:center';
+    overlay.innerHTML = `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.5rem 1.75rem;max-width:480px;width:92%;max-height:88vh;overflow:auto">
+        <h3 style="margin:0 0 .5rem;color:var(--text)">Ya me certifiqué antes</h3>
+        <p style="margin:0 0 1rem;font-size:.85rem;line-height:1.6;color:var(--text2)">
+          Para un RNC que ya pasó la certificación e-CF con la DGII. Carga tu certificado .p12:
+          Tecno Caja se conecta a la DGII en producción, completa los 15 pasos y te deja listo para facturar.
+          Si la DGII no acepta el certificado, no se activa nada.
+        </p>
+        <label class="ecf-wz-dropzone" data-role="drop" style="display:block;margin-bottom:.75rem">
+          <input type="file" data-role="file" accept=".p12,.pfx" style="display:none">
+          <span data-role="file-label">Haz clic para elegir tu certificado .p12</span>
+        </label>
+        <label style="display:block;font-size:.78rem;color:var(--text3);margin-bottom:.3rem">Contraseña del certificado</label>
+        <input type="password" data-role="pass" class="form-input" style="width:100%;margin-bottom:.75rem" autocomplete="off">
+        <label style="display:flex;gap:.5rem;align-items:flex-start;font-size:.82rem;margin-bottom:1rem;cursor:pointer">
+          <input type="checkbox" data-role="ok" style="margin-top:2px">
+          <span>La DGII ya autorizó este RNC como emisor electrónico.</span>
+        </label>
+        <div data-role="msg" style="display:none;font-size:.82rem;margin-bottom:.85rem;line-height:1.5;color:#f87171"></div>
+        <div style="display:flex;gap:.75rem;justify-content:flex-end">
+          <button class="ecf-wz-action-btn secondary" data-action="cancel">Cancelar</button>
+          <button class="ecf-wz-action-btn" data-action="send" disabled>Conectar con la DGII</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    const $ = (role) => overlay.querySelector(`[data-role="${role}"]`);
+    const sendBtn = overlay.querySelector('[data-action="send"]');
+    const close = () => overlay.remove();
+    const updateEnabled = () => {
+      sendBtn.disabled = !($('file').files.length && $('pass').value && $('ok').checked);
+    };
+    const showMsg = (text) => {
+      $('msg').textContent = text;
+      $('msg').style.display = text ? 'block' : 'none';
+    };
+
+    $('file').addEventListener('change', () => {
+      const file = $('file').files[0];
+      $('file-label').textContent = file ? file.name : 'Haz clic para elegir tu certificado .p12';
+      $('drop').classList.toggle('has-file', Boolean(file));
+      updateEnabled();
+    });
+    $('pass').addEventListener('input', updateEnabled);
+    $('ok').addEventListener('change', updateEnabled);
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', close);
+
+    sendBtn.addEventListener('click', async () => {
+      showMsg('');
+      sendBtn.disabled = true;
+      sendBtn.innerHTML = '<span class="ecf-wz-spin">⏳</span> Conectando con la DGII…';
+      const form = new FormData();
+      form.append('certificate', $('file').files[0]);
+      form.append('password', $('pass').value);
+      try {
+        const result = await fiscalApi('POST', '/production/reactivar-certificado', form, true);
+        if (!result.ok) {
+          showMsg(result.message || 'La DGII no aceptó el certificado.');
+          return;
+        }
+        close();
+        if (typeof showFiscalToast === 'function') {
+          showFiscalToast(`✅ ${result.message}`, result.pendientes?.length ? 'warning' : 'success');
+        }
+        await loadState();
+        WZ.activeStep = STEPS.length;
+        render();
+        if (typeof loadFiscalStatus === 'function') loadFiscalStatus().catch(() => {});
+      } catch (err) {
+        showMsg(err.message || 'No se pudo completar.');
+      } finally {
+        if (overlay.isConnected) {
+          sendBtn.textContent = 'Conectar con la DGII';
+          updateEnabled();
+        }
+      }
+    });
   }
 
   // ── Reset wizard ──────────────────────────────────────────────────────────────
@@ -3707,6 +3822,9 @@ const ECF_CERT_WIZARD = (() => {
 
     // Step 15 — Finalizado
     runStep15,
+
+    // "Ya me certifiqué antes"
+    openReactivar,
 
     // Misc
     validateStoredCertificate,

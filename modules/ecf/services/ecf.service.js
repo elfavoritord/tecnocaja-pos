@@ -22,7 +22,7 @@ const { ReceptionService } = require('./reception.service');
 const { ReceptionStorageService } = require('./reception-storage.service');
 const { SeedStorageService } = require('./seed-storage.service');
 const { StatusService } = require('./status.service');
-const { decryptText, encryptText, maskSecret } = require('./crypto-service');
+const { decryptTextWithLegacyFallback, encryptText, maskSecret } = require('./crypto-service');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { validateSaleForEcf } = require('../validators/document-validator');
 const { createLogger } = require('../utils/logger');
@@ -44,6 +44,71 @@ const LOCAL_ECF_WORK_DIR = path.join(ECF_WRITABLE_BASE_DIR, 'ecf');
 // Debe vivir fuera de LOCAL_ECF_WORK_DIR y storage/ecf: ambos se limpian al
 // reiniciar la certificación, pero DGII nunca libera los e-NCF ya utilizados.
 const SEQUENCE_HIGH_WATERMARK_PATH = path.join(ECF_WRITABLE_BASE_DIR, 'ecf-sequence-high-watermarks.json');
+// Progreso del wizard de certificación. Antes se guardaba bajo process.cwd():
+// con "npm run desktop" caía en la carpeta del proyecto y la app instalada no
+// lo veía (mostraba 0%); en el .exe caía en la carpeta del programa, que el
+// instalador reemplaza en cada actualización.
+const CERT_WIZARD_STATE_PATH = path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'cert-wizard-state.json');
+
+function legacyCertWizardStatePath() {
+  return path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
+}
+
+function readCertWizardStateFile() {
+  for (const stateFile of [CERT_WIZARD_STATE_PATH, legacyCertWizardStatePath()]) {
+    try {
+      return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    } catch (_) {
+      // Sigue con la ruta vieja.
+    }
+  }
+  return null;
+}
+
+const CERT_WIZARD_TOTAL_STEPS = 15;
+
+// RNC del titular según el certificado: el de la empresa (VATDO-) si lo trae;
+// si no, la cédula de la persona (IDCDO-).
+function rncFromCertificateSubject(subject) {
+  const text = String(subject || '');
+  const empresa = text.match(/VATDO-?(\d{9})\b/i);
+  if (empresa) return empresa[1];
+  const persona = text.match(/IDCDO-?(\d{11})\b/i);
+  return persona ? persona[1] : '';
+}
+
+function holderNameFromCertificate(certificate) {
+  const attributes = certificate?.certificate?.subject?.attributes || [];
+  const pick = (...names) => attributes.find((a) => names.includes(a.shortName) || names.includes(a.name))?.value || '';
+  return String(pick('O', 'organizationName') || pick('CN', 'commonName')).trim();
+}
+
+// Wizard con los 15 pasos hechos para un RNC que la DGII ya había certificado.
+// Respeta lo que hubiera de una certificación anterior en esta PC.
+function buildReactivatedWizardState(previous, { at, by, rnc, razonSocial }) {
+  const steps = { ...(previous?.steps || {}) };
+  for (let id = 1; id <= CERT_WIZARD_TOTAL_STEPS; id += 1) {
+    if (!steps[id]?.completedAt) steps[id] = { completedAt: at, data: { reactivado: true } };
+  }
+  const datosNegocio = steps[1].data || {};
+  steps[1] = {
+    ...steps[1],
+    data: { ...datosNegocio, rnc: datosNegocio.rnc || rnc, razonSocial: datosNegocio.razonSocial || razonSocial },
+  };
+  return {
+    ...(previous || {}),
+    currentStep: CERT_WIZARD_TOTAL_STEPS,
+    completedSteps: Array.from({ length: CERT_WIZARD_TOTAL_STEPS }, (_, index) => index + 1),
+    manualResetSteps: [],
+    startedAt: previous?.startedAt || at,
+    updatedAt: at,
+    finishedAt: previous?.finishedAt || at,
+    progress: 100,
+    environment: 'ecf',
+    steps,
+    reactivacion: { at, by, rnc },
+  };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -835,7 +900,19 @@ class EcfService {
     await this.ensureReady();
     const stored = await this.repository.getCertificate(1);
     const certPath = stored?.certificate_path || this.config.CERT_PATH;
-    const certPassword = stored?.password_encrypted ? decryptText(stored.password_encrypted) : this.config.CERT_PASSWORD;
+    let certPassword = this.config.CERT_PASSWORD;
+    if (stored?.password_encrypted) {
+      try {
+        certPassword = decryptTextWithLegacyFallback(stored.password_encrypted);
+      } catch (_) {
+        // Pasa cuando el .p12 se cargó desde otra instalación o con otra clave
+        // (p. ej. con "npm run desktop" y se abre la app instalada).
+        throw new EcfError(
+          'No se pudo leer la contraseña del certificado guardado: se guardó con otra clave. Vuelve a cargar tu certificado .p12 (o usa "Ya me certifiqué antes" en Certificación).',
+          { statusCode: 422 },
+        );
+      }
+    }
     const certificate = signatureService.loadCertificate({
       certPath,
       certPassword,
@@ -1285,9 +1362,7 @@ class EcfService {
     };
   }
 
-  async handleCertificateUpload(req) {
-    await this.ensureReady();
-    const actor = await this.getCurrentActor(req, { adminOnly: true });
+  async _readCertificateUpload(req) {
     const form = formidable({ multiples: false, maxFileSize: 10 * 1024 * 1024, keepExtensions: true });
     const { fields, files } = await new Promise((resolve, reject) => {
       form.parse(req, (error, parsedFields, parsedFiles) => {
@@ -1301,20 +1376,45 @@ class EcfService {
     const rawPassword = Array.isArray(fields.password) ? fields.password[0] : fields.password;
     assertCondition(uploaded?.filepath, 'No se recibió el archivo del certificado.', { statusCode: 400 });
     assertCondition(rawPassword, 'Debe indicar la contraseña del certificado.', { statusCode: 400 });
+    return { uploaded, password: String(rawPassword) };
+  }
 
-    const targetPath = path.join(CERT_STORAGE_DIR, 'business-1-active.p12');
-    fs.copyFileSync(path.resolve(uploaded.filepath), targetPath);
+  // Abre el .p12 desde el archivo subido, sin tocar el certificado activo: antes
+  // se copiaba primero y una contraseña equivocada pisaba el certificado bueno.
+  _openUploadedCertificate({ uploaded, password, expectedRnc }) {
     const certificate = signatureService.loadCertificate({
-      certPath: targetPath,
-      certPassword: String(rawPassword),
+      certPath: path.resolve(uploaded.filepath),
+      certPassword: password,
     });
-    const validation = signatureService.validateCertificate(certificate, {
+    return {
+      certificate,
+      validation: signatureService.validateCertificate(certificate, { expectedRnc }),
+    };
+  }
+
+  async handleCertificateUpload(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const { uploaded, password } = await this._readCertificateUpload(req);
+    const { validation } = this._openUploadedCertificate({
+      uploaded,
+      password,
       expectedRnc: (await this.repository.getResolvedEmitter(1)).rnc,
     });
+    await this._saveActiveCertificate({ uploaded, password, validation, actor });
+    return {
+      ok: validation.isValidNow,
+      result: validation,
+    };
+  }
+
+  async _saveActiveCertificate({ uploaded, password, validation, actor }) {
+    const targetPath = path.join(CERT_STORAGE_DIR, 'business-1-active.p12');
+    fs.copyFileSync(path.resolve(uploaded.filepath), targetPath);
     await this.repository.saveCertificate(1, {
       fileName: uploaded.originalFilename || 'certificado.p12',
       certificatePath: targetPath,
-      passwordEncrypted: encryptText(String(rawPassword)),
+      passwordEncrypted: encryptText(password),
       subject: validation.subject,
       issuer: validation.issuer,
       serialNumber: validation.serialNumber,
@@ -1331,10 +1431,6 @@ class EcfService {
       detail: `Cargó certificado ${uploaded.originalFilename || 'certificado.p12'}.`,
       responsePayload: validation,
     });
-    return {
-      ok: validation.isValidNow,
-      result: validation,
-    };
   }
 
   async validateStoredCertificate() {
@@ -1368,6 +1464,10 @@ class EcfService {
     await this.repository.upsertEmitter(1, { is_active: true });
     const emitter = await this.repository.getResolvedEmitter(1).catch(() => null);
     if (emitter?.production_status === 'active' && emitter.environment === 'ecf') {
+      // Igual que al arrancar: si el módulo estaba apagado al abrir la app, el
+      // proceso sigue en el ambiente de .env y refreshDgiiAuthentication no
+      // autenticaba (la pantalla quedaba en "Sin conexión" hasta reiniciar).
+      this.applyRuntimeConfig(emitter.environment);
       this.startDgiiAuthMaintenance();
       this.refreshDgiiAuthentication().catch((error) =>
         console.warn('[ECF] No se pudo autenticar DGII al activar e-CF:', error.message));
@@ -1408,12 +1508,7 @@ class EcfService {
   // debe activar esto por sí solo — ver docs/plan de activación segura.
 
   _readCertWizardState() {
-    const stateFile = path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
-    try {
-      return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    } catch (_) {
-      return null;
-    }
+    return readCertWizardStateFile();
   }
 
   // `yaAutorizado`: reactivación de un RNC que la DGII YA autorizó como emisor
@@ -1637,6 +1732,126 @@ class EcfService {
       ok: false,
       message: 'El ambiente productivo fue configurado, pero no fue posible autenticarse ante la DGII. La emisión de e-CF permanece bloqueada.',
       production: await this.getProductionActivationStatus(),
+    };
+  }
+
+  // "Ya me certifiqué antes": el RNC ya pasó la certificación con la DGII (en
+  // esta u otra PC) y se perdió lo local (reinstalación, PC nueva, reinicio).
+  // La DGII no la repite, así que solo se pide el .p12. La prueba es
+  // autenticarse en producción; si la DGII no lo acepta, no se cambia nada
+  // más que el certificado guardado. Las secuencias e-NCF de producción no se
+  // pueden inventar: si faltan, se avisa para cargarlas desde la DGII.
+  async reactivateCertifiedEmitter(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const actorName = actor.nombre || actor.usuario || 'admin';
+    const { uploaded, password } = await this._readCertificateUpload(req);
+    const before = await this.repository.getResolvedEmitter(1);
+    const rncNegocio = digitsOnly(before.rnc);
+
+    let opened;
+    try {
+      opened = this._openUploadedCertificate({ uploaded, password, expectedRnc: rncNegocio || null });
+    } catch (error) {
+      throw new EcfError(`No se pudo abrir el certificado .p12. Revisa que la contraseña sea la correcta. (${error.message})`, { statusCode: 422 });
+    }
+    const { certificate, validation } = opened;
+    if (!validation.isValidNow) {
+      throw new EcfError(
+        validation.isExpired
+          ? `El certificado venció el ${String(validation.validTo).slice(0, 10)}. Necesitas uno vigente.`
+          : 'El certificado todavía no está vigente.',
+        { statusCode: 422 },
+      );
+    }
+    if (rncNegocio && validation.rncMatch === false) {
+      throw new EcfError(`Este certificado no pertenece al RNC ${rncNegocio} registrado en Mi Negocio.`, { statusCode: 422 });
+    }
+    const rnc = rncNegocio || rncFromCertificateSubject(certificate.subject);
+    if (![9, 11].includes(rnc.length)) {
+      throw new EcfError('No se encontró el RNC en el certificado. Escríbelo en Configuración → Mi Negocio y vuelve a intentarlo.', { statusCode: 422 });
+    }
+    const razonSocial = before.razon_social || holderNameFromCertificate(certificate);
+
+    await this._saveActiveCertificate({ uploaded, password, validation, actor });
+    if (!rncNegocio || !before.razon_social) {
+      await this.repository.upsertEmitter(1, { rnc, razon_social: razonSocial });
+    }
+
+    this.applyRuntimeConfig('ecf');
+    let auth = null;
+    let authError = null;
+    try {
+      auth = await this.authService.authenticate({ forceRefresh: true });
+    } catch (error) {
+      authError = error;
+    }
+
+    if (!auth?.token) {
+      this.applyRuntimeConfig(before.environment);
+      await this.repository.saveAudit({
+        userId: actor.id,
+        userName: actorName,
+        userRole: actor.rol || actor.role_code,
+        actionName: 'production_reactivation_auth_failed',
+        status: 'warning',
+        detail: `"Ya me certifiqué antes": la DGII no aceptó el certificado en producción (${authError?.message || 'sin token'}).`,
+      });
+      return {
+        ok: false,
+        message: `La DGII no aceptó tu certificado en producción (${authError?.message || 'no devolvió token'}). Revisa que el RNC ${rnc} ya esté autorizado como emisor electrónico. No se cambió nada más; el certificado quedó guardado.`,
+      };
+    }
+
+    const yaEstabaActiva = before.production_status === 'active' && before.production_activated_at;
+    await this.repository.upsertEmitter(1, {
+      environment: 'ecf',
+      production_status: 'active',
+      production_activated_at: yaEstabaActiva ? before.production_activated_at : new Date(),
+      production_activated_by: yaEstabaActiva ? before.production_activated_by : actorName,
+      is_active: true,
+    });
+    this.runtimeState.lastConnection = {
+      status: 'conectado',
+      message: 'Autenticación DGII activa; se renovará automáticamente antes de vencer.',
+      tokenExpiresAt: auth.expira,
+      checkedAt: nowIso(),
+    };
+    this.startDgiiAuthMaintenance();
+
+    this._writeCertWizardState(buildReactivatedWizardState(this._readCertWizardState(), {
+      at: nowIso(),
+      by: actorName,
+      rnc,
+      razonSocial,
+    }));
+
+    const secuenciasProduccion = (await this.repository.listSequences(1))
+      .filter((item) => item.environment === 'ecf' && item.activo && !item.isExpired && !item.isExhausted);
+    const pendientes = secuenciasProduccion.length
+      ? []
+      : ['Carga tus secuencias e-NCF autorizadas por la DGII (Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos).'];
+
+    await this.repository.saveAudit({
+      userId: actor.id,
+      userName: actorName,
+      userRole: actor.rol || actor.role_code,
+      actionName: 'production_reactivated',
+      status: 'ok',
+      detail: `"Ya me certifiqué antes": RNC ${rnc} conectado a producción DGII con su certificado; certificación local completada (15/15).`,
+      responsePayload: { previousEnvironment: before.environment, tokenExpira: auth.expira, secuenciasProduccion: secuenciasProduccion.length },
+    });
+
+    return {
+      ok: true,
+      message: pendientes.length
+        ? 'Conectado a la DGII en producción. Solo falta cargar tus secuencias e-NCF para facturar.'
+        : 'Conectado a la DGII en producción y listo para facturar.',
+      rnc,
+      razonSocial,
+      tokenExpiresAt: auth.expira,
+      secuenciasProduccion: secuenciasProduccion.length,
+      pendientes,
     };
   }
 
@@ -7213,7 +7428,9 @@ class EcfService {
     this.receptionStorage.clearAll();
 
     // Progreso del wizard guardado en disco (15 pasos, checkboxes, archivos adjuntos).
-    fs.rmSync(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'cert-wizard-state.json'), { force: true });
+    // También la copia de la ruta vieja: si quedara, el wizard la volvería a leer.
+    fs.rmSync(CERT_WIZARD_STATE_PATH, { force: true });
+    fs.rmSync(legacyCertWizardStatePath(), { force: true });
 
     await this.repository.saveAudit({
       userId: actor.id,
@@ -8434,23 +8651,19 @@ class EcfService {
 
   // ── Wizard de certificación: estado persistido en disco ───────────────────────
   async getWizardState() {
-    const stateFile = path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
-    try {
-      const raw = fs.readFileSync(stateFile, 'utf8');
-      return { ok: true, state: JSON.parse(raw) };
-    } catch (_) {
-      return { ok: true, state: null };
-    }
+    return { ok: true, state: readCertWizardStateFile() };
   }
 
   async saveWizardState(req) {
-    const stateFile = path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
-    const stateDir = path.dirname(stateFile);
-    if (!fs.existsSync(stateDir)) fs.mkdirSync(stateDir, { recursive: true });
     const { state } = req.body || {};
     if (!state || typeof state !== 'object') throw new Error('Payload inválido: se requiere { state: { ... } }');
-    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2), 'utf8');
+    this._writeCertWizardState(state);
     return { ok: true };
+  }
+
+  _writeCertWizardState(state) {
+    fs.mkdirSync(path.dirname(CERT_WIZARD_STATE_PATH), { recursive: true });
+    fs.writeFileSync(CERT_WIZARD_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
   }
 
   // ENDPOINT DE DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación
@@ -9013,10 +9226,12 @@ function createEcfService(deps) {
 }
 
 module.exports = {
+  buildReactivatedWizardState,
   collectEncfHighWatermarks,
   createEcfService,
   mergeEncfHighWatermarks,
   normalizeAcecfDateTime,
   parseOfficialAcecfFilename,
   resolveAcecfDatasetDateTime,
+  rncFromCertificateSubject,
 };

@@ -158,8 +158,9 @@ Cajas terminal ──── señal de vida ───────────▶ 
 - El POS publica el catálogo completo en `controlCenter/catalog` (cantidad, páginas,
   **categorías del POS** y unidades) y `catalog_p{n}` (400 productos por página,
   ordenados por ID: una venta solo reescribe la página del producto vendido). Va en
-  cada publicación con la misma huella SHA-1. La foto solo viaja si es una URL corta
-  (las guardadas en base64 no). Si la consulta de productos falla, no se publica
+  cada publicación con la misma huella SHA-1. En el catálogo solo viaja la dirección
+  de la foto si es una URL corta; las fotos guardadas en el POS van aparte
+  (`foto_{id}`, ver abajo). Si la consulta de productos falla, no se publica
   (no se pisa el catálogo bueno con uno vacío).
 - Existencia: la de la sucursal en `catalog_p{n}_bN`; en el general, la suma de
   sucursales y el detalle `stockByBranch`.
@@ -176,8 +177,29 @@ Cajas terminal ──── señal de vida ───────────▶ 
   para que la lista se actualice en ~1 minuto.
 - Antes de guardar, la app revisa en el catálogo: código repetido (no deja guardar)
   y nombre parecido (pregunta). Solo deja elegir categorías que existen en el POS.
-- Foto: Firebase Storage `businesses/{licencia}/products/{doc}.jpg` (reglas en
-  `storage.rules`). Lector de código con la cámara (`mobile_scanner`).
+- Foto (oct 2026, sin Firebase Storage, que el proyecto no tiene activado y por
+  eso las fotos no subían): la app achica cualquier foto a JPEG de hasta ~600 KB
+  (`cc_photo_tools.dart`, paquete `image`) y la manda dentro del mismo documento
+  (`imageUrl` = data URL). El POS la guarda como archivo local, igual que las de la
+  PC (`server/sync/foto-de-la-app.js`), y borra el data URL del documento.
+- El POS publica cada foto local achicada a 480 px WebP en
+  `controlCenter/foto_{id}` (`server/sync/control-center/fotos.js`, máx. 30 por
+  corrida, solo las que cambiaron; índice en `controlCenter/fotos`). El catálogo
+  dice su versión en `photo` (= nombre del archivo, que trae la huella). La app la
+  muestra completa (sin recortar) en la lista y en grande al tocarla. Un
+  administrador de una sola sucursal no puede leer esos documentos (las reglas
+  piden todas las sucursales): ve el ícono.
+- Lector de código con la cámara (`mobile_scanner`).
+
+### 3.5 Comprobantes (pantalla Fiscal)
+
+- `controlCenter/fiscal` trae los rangos NCF **y los e-NCF de producción**
+  (`ecf_sequences` con `environment = 'ecf'`) con `from`, `to`, `next`, `used`,
+  `total`, `createdAt` e `isNew` (cargado en los últimos 7 días), y
+  `ncf.documents`: los últimos 60 comprobantes con NCF tipo B de 30 días.
+- La app los muestra en "Comprobantes": Emitidos (e-CF con su estado DGII y NCF),
+  Rangos (los nuevos marcados) y Resumen del mes. Un rango viejo agotado o vencido
+  ya no avisa si hay otro activo del mismo tipo.
 
 ---
 

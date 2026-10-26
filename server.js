@@ -56,6 +56,7 @@ const { getInstance: getSyncService } = require('./server/sync/firebase-sync-ser
 const { getInternetMonitor } = require('./server/network/internet-monitor');
 const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatch');
 const { startControlCenterPublisher, notifyControlCenterChange } = require('./server/sync/control-center');
+const { esFotoDeLaApp, guardarFotoDeLaApp } = require('./server/sync/foto-de-la-app');
 const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
 const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor } = require('./server/utils/invoice-design');
 const { buildQrVerificationUrl } = require('./modules/ecf/utils/qr-url.util');
@@ -511,8 +512,15 @@ async function syncPendingReportAppProducts(options = {}) {
         const estado = normalizeReportAppBool(data.isActive, true) ? 'Activo' : 'Inactivo';
         const marca = normalizeReportAppText(data.marca ?? data.brand);
         const unidad = normalizeReportAppText(data.unidad ?? data.unit, 'unidad');
-        const imageUrl = normalizeReportAppText(data.imageUrl);
+        // La foto que manda la app se guarda como archivo después (ver abajo).
+        const imageUrl = esFotoDeLaApp(data.imageUrl) ? '' : normalizeReportAppText(data.imageUrl);
         const aplicaItbis = normalizeReportAppBool(data.aplicaItbis ?? data.appliesTax, false) ? 1 : 0;
+        // Controlar inventario (servicios, recargas…): solo si la app lo manda;
+        // las versiones viejas no lo mandan y se conserva lo del POS.
+        const tracksStockRaw = data.tracksStock ?? data.controlaInventario;
+        const tracksStock = tracksStockRaw === undefined || tracksStockRaw === null
+          ? null
+          : (normalizeReportAppBool(tracksStockRaw, true) ? 1 : 0);
         const keepStock = Boolean(existing) && !stockProvided;
 
         let productId;
@@ -525,24 +533,25 @@ async function syncPendingReportAppProducts(options = {}) {
              SET codigo = ?, nombre = ?, categoria = ?, marca = ?, unidad = ?,
                  precio_compra = ?, precio_venta = ?, ${keepStock ? '' : 'stock = ?, '}stock_min = ?, estado = ?,
                  image_url = COALESCE(NULLIF(?, ''), image_url), aplica_itbis = ?,
+                 tracks_stock = COALESCE(?, tracks_stock),
                  barcode = ?, remote_report_product_id = COALESCE(NULLIF(remote_report_product_id, ''), ?), sync_origin = ?
              WHERE id = ?`,
             [
               sku, name, canonicalCategory, marca, unidad, cost, price,
               ...(keepStock ? [] : [stock]),
-              stockMin, estado, imageUrl, aplicaItbis, barcode || sku, doc.id, sourceOrigin, productId,
+              stockMin, estado, imageUrl, aplicaItbis, tracksStock, barcode || sku, doc.id, sourceOrigin, productId,
             ]
           );
         } else {
           const insert = await conn.query(
             `INSERT INTO products
               (codigo, nombre, categoria, marca, unidad, precio_compra, precio_venta,
-               stock, stock_min, estado, image_url, aplica_itbis, barcode,
+               stock, stock_min, estado, image_url, aplica_itbis, tracks_stock, barcode,
                remote_report_product_id, sync_origin)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?)`,
             [
               sku, name, canonicalCategory, marca, unidad, cost, price, stock, stockMin, estado,
-              imageUrl, aplicaItbis, barcode || sku, doc.id, sourceOrigin,
+              imageUrl, aplicaItbis, tracksStock ?? 1, barcode || sku, doc.id, sourceOrigin,
             ]
           );
           productId = Number(insert.insertId || 0);
@@ -574,6 +583,17 @@ async function syncPendingReportAppProducts(options = {}) {
       // es de toda la empresa.
       if (result.nuevo) await multisucursal.catalogo.guardarAlcanceProducto(result.productId, {}, { nuevo: true }).catch(() => {});
 
+      // Foto de la app: archivo local como las de la PC; el producto se recibe
+      // aunque la foto falle (queda el aviso en el documento).
+      let photoError = null;
+      const traeFoto = esFotoDeLaApp(data.imageUrl);
+      if (traeFoto) {
+        await guardarFotoDeLaApp(
+          { query, saveProductImageBuffer, removeLocalProductImage, decodeDataUrlImage },
+          { productId: result.productId, productName: name, dataUrl: data.imageUrl }
+        ).catch((error) => { photoError = `No se pudo guardar la foto: ${error.message}`; });
+      }
+
       await doc.ref.set({
         synced: true,
         sincronizado: true,
@@ -581,6 +601,9 @@ async function syncPendingReportAppProducts(options = {}) {
         syncError: null,
         syncAttempts: attempt,
         posProductId: result.productId,
+        // La foto ya está en el POS: no se guarda dos veces en la nube.
+        ...(traeFoto && !photoError ? { imageUrl: FieldValue.delete() } : {}),
+        photoError,
         fechaSincronizacion: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
@@ -2343,17 +2366,8 @@ const tiendaOnline = createTiendaOnline({
   mapClientRow,
   // Solo si el bot ya se cargó (nunca lo arranca la tienda).
   getWaBot: () => waBotModule,
-  processImage: async (buffer, { width, height }) => {
-    const out = await sharp(buffer).rotate()
-      .resize(width, height, { fit: 'inside', withoutEnlargement: true })
-      .webp({ quality: 72 })
-      .toBuffer();
-    return { mime: 'image/webp', data: out.toString('base64') };
-  },
-  readLocalImage: async (imageLocal) => {
-    const filePath = path.join(PRODUCT_UPLOAD_DIR, path.basename(String(imageLocal || '')));
-    return fs.existsSync(filePath) ? fs.promises.readFile(filePath) : null;
-  },
+  processImage: procesarFotoWebp,
+  readLocalImage: leerFotoLocalProducto,
   saveProductImage: saveProductImageBuffer,
   removeProductImage: removeLocalProductImage,
 });
@@ -3415,6 +3429,20 @@ function decodeDataUrlImage(imageData) {
     throw error;
   }
   return Buffer.from(match[2], 'base64');
+}
+
+// Foto de producto achicada a WebP en base64 (tienda online y app de reportes).
+async function procesarFotoWebp(buffer, { width, height }) {
+  const out = await sharp(buffer).rotate()
+    .resize(width, height, { fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 72 })
+    .toBuffer();
+  return { mime: 'image/webp', data: out.toString('base64') };
+}
+
+async function leerFotoLocalProducto(imageLocal) {
+  const filePath = path.join(PRODUCT_UPLOAD_DIR, path.basename(String(imageLocal || '')));
+  return fs.existsSync(filePath) ? fs.promises.readFile(filePath) : null;
 }
 
 async function saveProductImageBuffer({ productId, productName, buffer }) {
@@ -20805,6 +20833,9 @@ async function startHttpServer(port, bindHost) {
           await ensurePaymentMethodsTable();
         },
         mapSequence: require('./server/routes/fiscal-sequences.routes').mapSequence,
+        mapEcfSequence: require('./server/routes/fiscal-sequences.routes').mapEcfSequenceReadOnly,
+        processImage: procesarFotoWebp,
+        readLocalImage: leerFotoLocalProducto,
         appVersion: packageJson.version,
       });
       // Tienda online (opcional): publica catálogo/existencia y recibe pedidos

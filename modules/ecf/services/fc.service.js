@@ -65,7 +65,7 @@ class FcService {
     const tempFile = crearArchivoTemporalDGII({
       xmlContent: signedXml,
       dgiiFileName,
-      baseDir: process.cwd(),
+      baseDir: this.storageService?.baseDir || process.cwd(),
     });
 
     console.log('===== ENVÍO DGII =====');

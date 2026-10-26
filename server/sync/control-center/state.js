@@ -9,7 +9,7 @@
  * para Firestore. `branchKey` null = todo el negocio.
  */
 
-const { toDayKey, toWallText, diffDays } = require('./periods');
+const { toDayKey, toWallText, diffDays, addDays: addDaysKey } = require('./periods');
 const labels = require('./labels');
 const { NO_BRANCH, num, round2, idKey } = require('./facts');
 
@@ -337,6 +337,8 @@ function buildProductCatalog({
     if (p.aplica_itbis !== undefined && p.aplica_itbis !== null) item.tax = Number(p.aplica_itbis) === 1;
     if (p.tracks_stock !== undefined && p.tracks_stock !== null && Number(p.tracks_stock) === 0) item.tracksStock = false;
     if (p.image_url) item.imageUrl = String(p.image_url);
+    // Foto publicada en controlCenter/foto_{id} (ver fotos.js).
+    if (p.photo) item.photo = String(p.photo);
     if (stockByBranch) item.stockByBranch = stockByBranch;
     items.push(item);
   }
@@ -649,6 +651,9 @@ function buildFiscal({
   sequences = [],
   legacySequences = [],
   mapSequence = null,
+  ecfSequences = [],
+  mapEcfSequence = null,
+  ncfDocuments = [],
   eInvoiceEnabled = false,
   branchKey = null,
   today,
@@ -734,29 +739,70 @@ function buildFiscal({
     ncfByType.set(code, acc);
   }
 
+  // Secuencias: las NCF (tipo B) y las e-NCF de producción, con su rango, el
+  // próximo número y si se cargaron en la última semana ("nueva").
+  const newSince = today ? addDaysKey(today, -7) : null;
+  const inBranch = (row) => branchKey === null || !row.branch_id || String(row.branch_id) === branchKey;
+  const fromMapped = (m, kind) => {
+    const width = kind === 'ecf' ? 10 : 8;
+    const number = (n) => (Number.isFinite(Number(n)) ? `${m.documentType}${String(Math.trunc(Number(n))).padStart(width, '0')}` : null);
+    const total = num(m.totalAuthorized);
+    const available = num(m.totalAvailable);
+    let status = m.effectiveStatus || m.status;
+    if (kind === 'ecf' && status === 'activo' && available > 0 && available <= LOW_SEQUENCE_THRESHOLD) status = 'proximo_agotarse';
+    const createdAt = toWallText(m.createdAt);
+    return {
+      id: String(m.id),
+      kind,
+      type: m.documentType,
+      label: labels.ncfTypeLabel(m.documentType),
+      branchId: m.branchId ? String(m.branchId) : null,
+      branchName: m.branchName || null,
+      from: number(m.startNumber),
+      to: number(m.endNumber),
+      next: available > 0 ? number(m.nextNumber) : null,
+      total,
+      used: num(m.totalUsed),
+      available,
+      percentUsed: num(m.percentUsed),
+      expirationDate: m.expirationDate ? toDayKey(m.expirationDate) : null,
+      createdAt,
+      isNew: Boolean(createdAt && newSince && createdAt.slice(0, 10) >= newSince),
+      status,
+    };
+  };
   let sequenceList = [];
   if (sequences.length && typeof mapSequence === 'function') {
-    sequenceList = sequences
-      .filter((s) => branchKey === null || !s.branch_id || String(s.branch_id) === branchKey)
-      .map((row) => {
-        const m = mapSequence(row);
-        return {
-          type: m.documentType,
-          label: labels.ncfTypeLabel(m.documentType),
-          branchId: m.branchId ? String(m.branchId) : null,
-          branchName: m.branchName || null,
-          available: num(m.totalAvailable),
-          percentUsed: num(m.percentUsed),
-          expirationDate: m.expirationDate ? toDayKey(m.expirationDate) : null,
-          status: m.effectiveStatus || m.status,
-        };
-      })
-      .filter((s) => s.status !== 'anulado' && s.status !== 'inactivo');
+    sequenceList = sequences.filter(inBranch).map((row) => fromMapped(mapSequence(row), 'ncf'));
   } else {
-    sequenceList = legacySequences
-      .filter((s) => branchKey === null || !s.branch_id || String(s.branch_id) === branchKey)
-      .map((row) => mapLegacySequence(row, today));
+    sequenceList = legacySequences.filter(inBranch).map((row) => mapLegacySequence(row, today));
   }
+  if (ecfSequences.length && typeof mapEcfSequence === 'function') {
+    sequenceList.push(...ecfSequences.filter(inBranch).map((row) => fromMapped(mapEcfSequence(row), 'ecf')));
+  }
+  sequenceList = sequenceList.filter((s) => !['anulado', 'inactivo', 'suspendido'].includes(s.status));
+
+  // Comprobantes NCF emitidos (los más recientes primero).
+  const ncfDocs = ncfDocuments
+    .filter((d) => inScope(branchKey, d.b))
+    .slice(0, docsLimit)
+    .map((d) => {
+      const ncf = String(d.ncf || '');
+      const type = String(d.nt || '').toUpperCase() || ncf.slice(0, 3).toUpperCase();
+      return {
+        id: String(d.id),
+        ncf,
+        type,
+        typeLabel: labels.ncfTypeLabel(type),
+        invoice: d.invoice_number || null,
+        createdAt: toWallText(d.created_at),
+        customer: d.name ? String(d.name) : null,
+        total: round2(d.total),
+        tax: round2(d.tax),
+        cancelled: String(d.fs) === 'cancelada',
+        branchId: d.b ? String(d.b) : null,
+      };
+    });
 
   const round = (c) => ({ ...c, amount: round2(c.amount) });
   return {
@@ -771,6 +817,7 @@ function buildFiscal({
     ncf: {
       byType: [...ncfByType.values()].map((t) => ({ ...t, amount: round2(t.amount), tax: round2(t.tax) })).sort((a, b) => b.count - a.count),
       cancelledCount: ncfCancelled,
+      documents: ncfDocs,
     },
     sequences: sequenceList,
   };
