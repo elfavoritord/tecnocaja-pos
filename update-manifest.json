@@ -1,15 +1,16 @@
 {
-  "version": "1.4.5",
-  "stableVersion": "1.4.5",
-  "date": "12/10/2026",
+  "version": "1.6.0",
+  "stableVersion": "1.6.0",
+  "date": "25/10/2026",
   "size": "47.3 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Tienda online (opcional): se activa en Configuracion > Mi Negocio > Tienda online. Los pedidos llegan a Pedidos y se cobran desde Ventas; el cliente se guarda solo en Clientes y recibe su factura por WhatsApp al cobrar.",
-    "Hasta 6 fotos por producto en la tienda. Precios, productos, fotos y el logo del negocio se actualizan en la tienda en segundos.",
-    "Actualizaciones: el boton Instalar ahora vuelve a funcionar. Instala sin asistente y Tecno Caja se abre sola al terminar. Las cajas en red tambien se actualizan desde la app.",
-    "Bot de WhatsApp: corregido el error al enviar la factura."
+    "Facturacion electronica: las secuencias e-NCF de produccion y de pruebas van separadas y piden el numero de autorizacion de la DGII. Se pueden subir varios archivos de la DGII a la vez.",
+    "Empresa de servicios: importar y exportar el catalogo de servicios en CSV y facturar servicios con e-CF.",
+    "Productos: al importar el CSV se elige la sucursal o todas las sucursales.",
+    "Tu contador puede cargarte los comprobantes de la DGII y agregar servicios desde su portal; llegan solos a Tecno Caja.",
+    "Ticket termico con el QR de la DGII impreso por la impresora (se lee mejor)."
   ]
 }
