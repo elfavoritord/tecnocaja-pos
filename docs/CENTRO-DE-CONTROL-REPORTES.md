@@ -201,6 +201,40 @@ Cajas terminal ──── señal de vida ───────────▶ 
   Rangos (los nuevos marcados) y Resumen del mes. Un rango viejo agotado o vencido
   ya no avisa si hay otro activo del mismo tipo.
 
+### 3.6 Empresas de servicios (POS 1.6.2)
+
+Una empresa de servicios (`business_type` `srv_*` o `config.service_company = 1`)
+no tiene inventario ni cajas. La app arma su menú según el negocio:
+
+- `summary.business` trae `appMode` (`pos` | `servicios`), `vertical`,
+  `verticalLabel` y `modules`: los módulos de trabajo de ese tipo de servicio
+  (cotizaciones, ordenes, proyectos, contratos, calendario, seguridad,
+  mantenimiento, reservaciones, campanas, obras). Salen de
+  `js/business-config.js`, la misma lista que arma el menú del POS
+  (`server/sync/control-center/servicios.js` la lee con `vm`).
+- `controlCenter/services[_b{sucursal}]` (solo en servicios):
+  - `collections`: lo cobrado hoy, ayer, semana y mes (`svc_invoice_payments`,
+    sin los anulados) y el mes por método;
+  - `receivables`: el saldo real de cada factura (`svc_invoices` pendiente o
+    parcial), las vencidas, los clientes que deben y las facturas;
+  - `recentPayments`;
+  - `modules`: abiertos, lo que necesita atención (atrasados, vencidos, por
+    vencer…), el monto y hasta 25 renglones con un formato común.
+  `summary.services` lleva lo mismo sin las listas.
+- Lo facturado sale de las ventas de siempre: el POS espeja cada factura de
+  servicios en `sales`. En servicios las líneas sin producto se agrupan por su
+  nombre (cada servicio), no como "Ventas rápidas" (`itemsByDay(quickByName)`).
+- Alertas: en servicios no se avisa de inventario, cajas ni del fiado del POS.
+  Se avisa de las facturas vencidas (`services-overdue`) y del trabajo
+  atrasado (`services-<módulo>`, `module: 'services:<módulo>'`).
+- App: pestañas Inicio · Facturación · Por cobrar · Alertas · Más. Inicio
+  muestra cobrado, por cobrar y una tarjeta por módulo. "Más" muestra su trabajo
+  en vez de Cajas y Delivery. Todo es solo para ver: se crea y cambia en el POS.
+  Con un POS de antes de la 1.6.2 la app reconoce el negocio por `businessType`
+  y pide actualizar el POS para ver cobros y por cobrar.
+- Pruebas: `tests/sync/control-center-servicios.test.js` (POS, con el esquema
+  real de `svc_*`) y los fixtures `*_servicios.json` de la app.
+
 ---
 
 ## 4. Seguridad

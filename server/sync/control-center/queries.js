@@ -76,9 +76,16 @@ function salesHoursByDay(query, from, to) {
   );
 }
 
-async function itemsByDay(query, from, to) {
+/**
+ * `quickByName`: las líneas sin producto se separan por su nombre. Una empresa
+ * de servicios factura todo así (cada servicio es una línea sin producto); en
+ * un punto de venta son ventas rápidas sueltas y van juntas.
+ */
+async function itemsByDay(query, from, to, { quickByName = false } = {}) {
+  const QUICK_NAME = "CASE WHEN si.product_id IS NULL THEN COALESCE(si.item_name, '') ELSE '' END";
   const build = (withItemName) => `
     SELECT DATE(s.created_at) AS d, ${BRANCH} AS b, si.product_id AS pid,
+           ${withItemName && quickByName ? `${QUICK_NAME} AS qn,` : ''}
            MAX(COALESCE(${withItemName ? 'si.item_name, ' : ''}p.nombre, '')) AS name,
            MAX(COALESCE(p.categoria, '')) AS cat,
            COALESCE(SUM(si.qty), 0) AS qty,
@@ -89,7 +96,7 @@ async function itemsByDay(query, from, to) {
       JOIN sales s ON s.id = si.sale_id
       LEFT JOIN products p ON p.id = si.product_id
      WHERE s.created_at BETWEEN ? AND ? AND ${ACTIVE}
-     GROUP BY DATE(s.created_at), ${BRANCH}, si.product_id`;
+     GROUP BY DATE(s.created_at), ${BRANCH}, si.product_id${withItemName && quickByName ? `, ${QUICK_NAME}` : ''}`;
   try {
     return await query(build(true), [from, to]);
   } catch (_error) {
@@ -238,6 +245,11 @@ function businessConfig(query) {
             e_invoice_enabled, license_status, tax_rate
        FROM config WHERE id = 1 LIMIT 1`
   );
+}
+
+/** Aparte: instalaciones viejas no tienen estas columnas y no deben tumbar la configuración. */
+function serviceConfig(query) {
+  return query('SELECT service_company, service_vertical FROM config WHERE id = 1 LIMIT 1');
 }
 
 function branches(query) {
@@ -612,6 +624,7 @@ module.exports = {
   salesByMonth,
   pendingChargeSales,
   businessConfig,
+  serviceConfig,
   branches,
   cashRegisters,
   staffUsers,

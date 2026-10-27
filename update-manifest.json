@@ -1,15 +1,14 @@
 {
-  "version": "1.6.1",
-  "stableVersion": "1.6.1",
+  "version": "1.6.2",
+  "stableVersion": "1.6.2",
   "date": "26/10/2026",
   "size": "47.3 MB",
-  "type": "fix",
+  "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Facturacion electronica: la app instalada ya se conecta a la DGII (antes fallaba con el error ENOTDIR).",
-    "Certificacion: nuevo boton Ya me certifique antes. Para negocios ya certificados ante la DGII: solo pide el certificado .p12 y deja la facturacion electronica conectada a produccion.",
-    "Certificado: una contrasena equivocada ya no borra el certificado que estaba funcionando. Activar conecta con la DGII al momento, sin reiniciar.",
-    "App de reportes: las fotos de productos tomadas desde el telefono se guardan y se ven; la app muestra los comprobantes emitidos y los rangos e-NCF."
+    "App de reportes para empresas de servicios: muestra lo cobrado, las facturas por cobrar con su vencimiento, las cotizaciones y el trabajo (ordenes, proyectos, contratos y mas, segun el tipo de servicio). Sin inventario ni cajas.",
+    "Alertas en la app para empresas de servicios: facturas vencidas, ordenes y proyectos atrasados, contratos por vencer.",
+    "App de reportes: los servicios mas facturados salen por nombre de servicio."
   ]
 }

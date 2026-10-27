@@ -20,7 +20,7 @@ const { versionDe } = require('../../server/sync/control-center/fotos');
 
 // PNG de 1×1 para la foto de ejemplo (la app solo necesita poder leerla).
 const FOTO_EJEMPLO = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-const { NOW, createDb } = require('../../tests/sync/control-center.fixture');
+const { NOW, createDb, createServiceDb } = require('../../tests/sync/control-center.fixture');
 
 const OUT_DIR = path.join(__dirname, '..', '..', 'reporte app', 'test', 'fixtures', 'control_center');
 
@@ -64,6 +64,16 @@ async function main() {
     write('catalog_p0_b2', norte.catalog_p0);
     for (const doc of snapshotLib.buildDayDocuments(snapshot, ['2026-10-04', '2026-10-05'], null)) {
       write(`day_${doc.id}`, doc.data);
+    }
+
+    // Empresa de servicios (Tecnología): lo que cambia en la app.
+    const servicios = await createServiceDb();
+    try {
+      const snap = await snapshotLib.collectSnapshot({ query: servicios.query, now: NOW, full: true, syncInfo: snapshot.syncInfo });
+      const docs = snapshotLib.buildScopeDocuments(snap, null);
+      for (const kind of ['summary', 'sales', 'services', 'customers', 'fiscal']) write(`${kind}_servicios`, docs[kind]);
+    } finally {
+      servicios.db.close();
     }
     console.log(`Fixtures escritos en ${OUT_DIR}`);
   } finally {

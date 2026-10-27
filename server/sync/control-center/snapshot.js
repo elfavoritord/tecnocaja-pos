@@ -17,6 +17,7 @@ const queries = require('./queries');
 const periodsLib = require('./periods');
 const factsLib = require('./facts');
 const state = require('./state');
+const servicios = require('./servicios');
 const { buildAlerts } = require('./alerts');
 
 const SCHEMA_VERSION = 1;
@@ -36,14 +37,14 @@ async function safe(warnings, label, fn, fallback = []) {
  * consulta de primeras compras (recorre toda la tabla de ventas; solo en las
  * corridas completas).
  */
-async function collectFacts(query, { fromDay, toDay }, { warnings = [], customerFirsts = null } = {}) {
+async function collectFacts(query, { fromDay, toDay }, { warnings = [], customerFirsts = null, quickByName = false } = {}) {
   const from = `${fromDay} 00:00:00`;
   const to = `${toDay} 23:59:59`;
   const [totals, dims, hours, items, cancelled, returns, collections, expenses, outflows] = await Promise.all([
     queries.salesTotalsByDay(query, from, to),
     safe(warnings, 'ventas por dimensión', () => queries.salesDimsByDay(query, from, to)),
     safe(warnings, 'ventas por hora', () => queries.salesHoursByDay(query, from, to)),
-    safe(warnings, 'productos vendidos', () => queries.itemsByDay(query, from, to)),
+    safe(warnings, 'productos vendidos', () => queries.itemsByDay(query, from, to, { quickByName })),
     safe(warnings, 'anulaciones', () => queries.cancelledByDay(query, from, to)),
     safe(warnings, 'devoluciones', () => queries.returnsByDay(query, from, to)),
     safe(warnings, 'cobros de crédito', () => queries.collectionsByDay(query, from, to)),
@@ -70,8 +71,9 @@ async function collectSnapshot({
   const p = periodsLib.buildPeriods(now);
   const today = p.today;
 
-  const [configRows, branchRows, registerRows, userRows, paymentRows] = await Promise.all([
+  const [configRows, serviceRows, branchRows, registerRows, userRows, paymentRows] = await Promise.all([
     safe(warnings, 'configuración', () => queries.businessConfig(query)),
+    queries.serviceConfig(query).catch(() => []),
     safe(warnings, 'sucursales', () => queries.branches(query)),
     safe(warnings, 'cajas', () => queries.cashRegisters(query)),
     safe(warnings, 'usuarios', () => queries.staffUsers(query)),
@@ -79,17 +81,25 @@ async function collectSnapshot({
   ]);
   const config = configRows[0] || {};
   const catalog = state.buildCatalog({ branches: branchRows, registers: registerRows, users: userRows, paymentMethods: paymentRows });
+  // Empresa de servicios: la app le muestra cobros, por cobrar y su trabajo en
+  // vez de inventario y cajas.
+  const profile = servicios.perfilDelNegocio(config, serviceRows[0] || {});
+  const servicesRaw = profile.appMode === 'servicios'
+    ? await servicios.collectServicios(query, p, { modules: profile.modules, warnings })
+    : null;
 
   // Hechos: en corrida rápida solo se recalcula HOY y se reusan los días
   // anteriores ya calculados; en corrida completa, toda la ventana.
   let facts;
   let customerFirsts = null;
+  // En servicios cada servicio facturado es una línea sin producto.
+  const quickByName = profile.appMode === 'servicios';
   if (full || !cachedFacts) {
     customerFirsts = await safe(warnings, 'clientes nuevos', () => queries.customerFirstPurchases(query), null);
-    facts = await collectFacts(query, { fromDay: p.facts.fromDay, toDay: today }, { warnings, customerFirsts });
+    facts = await collectFacts(query, { fromDay: p.facts.fromDay, toDay: today }, { warnings, customerFirsts, quickByName });
   } else {
     facts = new Map(cachedFacts);
-    const todayFacts = await collectFacts(query, { fromDay: today, toDay: today }, { warnings });
+    const todayFacts = await collectFacts(query, { fromDay: today, toDay: today }, { warnings, quickByName });
     // Los clientes nuevos de hoy se recalculan en la próxima corrida completa;
     // se conserva el valor ya calculado para no perderlo.
     const previous = cachedFacts.get(today);
@@ -176,6 +186,8 @@ async function collectSnapshot({
     full,
     warnings,
     config,
+    profile,
+    servicesRaw,
     catalog,
     multiBranch,
     branchKeys: multiBranch ? activeBranches.map((b) => b.id) : [],
@@ -441,8 +453,18 @@ function buildScopeDocuments(snapshot, scopeKey = null) {
     warnings: snapshot.warnings.slice(0, 10),
   } : null;
 
+  const profile = snapshot.profile || { appMode: 'pos', vertical: null, verticalLabel: null, modules: [] };
+  const services = servicios.buildServicios({
+    profile,
+    raw: snapshot.servicesRaw,
+    periods: p,
+    scopeKey,
+    catalog,
+  });
+
   const alerts = buildAlerts({
     inventory, cash, receivables, fiscal, delivery, sync,
+    services: services?.doc || null,
     today, nowText: snapshot.nowText, branchKey: scopeKey,
   });
 
@@ -452,6 +474,12 @@ function buildScopeDocuments(snapshot, scopeKey = null) {
     currency: snapshot.config.currency || 'RD$',
     structureMode: snapshot.config.business_structure_mode || 'monocaja',
     businessType: snapshot.config.business_type || null,
+    // pos = punto de venta (colmado, súper, farmacia…); servicios = empresa de
+    // servicios. La app arma su menú con esto.
+    appMode: profile.appMode,
+    vertical: profile.vertical,
+    verticalLabel: profile.verticalLabel,
+    modules: profile.modules,
     eInvoiceEnabled: Boolean(Number(snapshot.config.e_invoice_enabled || 0)),
     multiBranch: snapshot.multiBranch,
     branchCount: [...catalog.branches.values()].filter((b) => b.active).length,
@@ -531,6 +559,7 @@ function buildScopeDocuments(snapshot, scopeKey = null) {
     sync,
     alerts,
   };
+  if (services) summary.services = services.light;
 
   const salesDoc = {
     ...scopeMeta(snapshot, scopeKey, 'sales'),
@@ -549,6 +578,7 @@ function buildScopeDocuments(snapshot, scopeKey = null) {
     fiscal: { ...scopeMeta(snapshot, scopeKey, 'fiscal'), ...fiscal },
     delivery: { ...scopeMeta(snapshot, scopeKey, 'delivery'), ...delivery },
   };
+  if (services) docs.services = { ...scopeMeta(snapshot, scopeKey, 'services'), ...services.doc };
   Object.assign(docs, buildCatalogDocuments(snapshot, scopeKey));
   return docs;
 }

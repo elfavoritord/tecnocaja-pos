@@ -393,7 +393,10 @@ function createControlCenterPublisher(deps = {}) {
         }
         const chunkFrom = periodsLib.addDays(cursorTo, -(options.backfillChunkDays - 1));
         const cursorFrom = chunkFrom < target ? target : chunkFrom;
-        const facts = await snapshotLib.collectFacts(query, { fromDay: cursorFrom, toDay: cursorTo }, { customerFirsts });
+        const facts = await snapshotLib.collectFacts(query, { fromDay: cursorFrom, toDay: cursorTo }, {
+          customerFirsts,
+          quickByName: snapshot.profile?.appMode === 'servicios',
+        });
         const days = periodsLib.listDays(cursorFrom, cursorTo);
         const docs = [];
         for (const scopeKey of scopes) {

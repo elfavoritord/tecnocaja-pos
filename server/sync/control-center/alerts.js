@@ -11,6 +11,8 @@
  * rato, terminal sin conexión) las calcula la app, no el POS.
  */
 
+const { serviciosAlerts } = require('./servicios');
+
 const CASH_DIFFERENCE_TOLERANCE = 5; // mismo criterio que "Cerrada ⚠" del POS
 const ECF_PENDING_MINUTES = 30;
 
@@ -32,9 +34,20 @@ function minutesSince(wallText, nowText) {
   return Math.round((to - from) / 60000);
 }
 
-function buildAlerts({ inventory, cash, receivables, fiscal, delivery, sync, today, nowText, branchKey = null }) {
+/**
+ * `services`: documento de servicios (empresa de servicios) o null. En una
+ * empresa de servicios no aplican inventario ni cajas, y lo que se debe sale
+ * de sus facturas de servicios, no del crédito del POS.
+ */
+function buildAlerts({ inventory, cash, receivables, fiscal, delivery, sync, services = null, today, nowText, branchKey = null }) {
   const alerts = [];
   const push = (alert) => alerts.push({ branchId: branchKey, count: 1, ...alert });
+  if (services) {
+    inventory = null;
+    cash = null;
+    receivables = null;
+    for (const alert of serviciosAlerts(services, money)) push(alert);
+  }
 
   if (inventory) {
     if (inventory.outOfStockCount > 0) {

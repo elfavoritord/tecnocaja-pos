@@ -154,13 +154,8 @@ function seed(db) {
        ('T-2', 'Caja Norte', 2, 3, 0, 'offline', 'lan', '2026-10-05 11:00:00')`);
 }
 
-async function createDb() {
-  const initSqlJs = require('sql.js');
-  const SQL = await initSqlJs();
-  const db = new SQL.Database();
-  db.run(SCHEMA);
-  seed(db);
-  const query = async (sql, params = []) => {
+function queryFor(db) {
+  return async (sql, params = []) => {
     const stmt = db.prepare(sql);
     try {
       stmt.bind(params.map((p) => (p === undefined ? null : p)));
@@ -171,6 +166,79 @@ async function createDb() {
       stmt.free();
     }
   };
+}
+
+async function createDb() {
+  const initSqlJs = require('sql.js');
+  const SQL = await initSqlJs();
+  const db = new SQL.Database();
+  db.run(SCHEMA);
+  seed(db);
+  return { db, query: queryFor(db) };
+}
+
+/**
+ * Empresa de servicios de ejemplo (Tecnología, 2 sucursales) con el esquema
+ * real de las tablas svc_*. `withServiceTables: false` = todavía sin tablas.
+ */
+async function createServiceDb({ withServiceTables = true } = {}) {
+  const { ensureServiciosSchema } = require('../../server/routes/servicios/schema');
+  const initSqlJs = require('sql.js');
+  const SQL = await initSqlJs();
+  const db = new SQL.Database();
+  db.run(SCHEMA);
+  db.run('ALTER TABLE config ADD COLUMN service_company INT DEFAULT 0');
+  db.run('ALTER TABLE config ADD COLUMN service_vertical TEXT');
+  const query = queryFor(db);
+  const run = (sql, params = []) => db.run(sql, params);
+  run(`INSERT INTO config (id, business_name, rnc, currency, business_structure_mode, business_type, e_invoice_enabled, license_status, tax_rate, service_company, service_vertical)
+       VALUES (1, 'Emilio Digital Solutions', '40211932609', 'RD$', 'multisucursal', 'srv_tecnologia', 1, 'active', 18, 1, 'srv_tecnologia')`);
+  run(`INSERT INTO branches (id, nombre) VALUES (1, 'Principal'), (2, 'Santiago')`);
+  run(`INSERT INTO cash_registers (id, branch_id, nombre) VALUES (1, 1, 'Puesto 1')`);
+  run(`INSERT INTO users (id, nombre, usuario, rol) VALUES (1, 'Emilio', 'emilio', 'administrador_general')`);
+  run(`INSERT INTO payment_methods (codigo, nombre) VALUES ('efectivo', 'Efectivo'), ('transferencia', 'Transferencia')`);
+  run(`INSERT INTO clients VALUES (1, 'Farmacia Central', '809-555-0101'), (2, 'Colegio Luz', '809-555-0202')`);
+  // Facturas de servicios espejadas en ventas (así las ve "Facturación").
+  run(`INSERT INTO sales (id, invoice_number, user_id, client_id, branch_id, billed_branch_id, billed_by_user_id, payment_method,
+         subtotal, tax, total, received_amount, created_at, client_name_snapshot, document_type) VALUES
+       (1, 'FS-0003', 1, 1, 1, 1, 1, 'efectivo', 1016.95, 183.05, 1200, 1200, '2026-10-02 09:00:00', 'Farmacia Central', 'B01'),
+       (2, 'FS-0005', 1, 2, 1, 1, 1, 'transferencia', 847.46, 152.54, 1000, 1000, '2026-10-05 10:00:00', 'Colegio Luz', 'B01')`);
+  run(`INSERT INTO sale_items (sale_id, product_id, item_name, qty, price, line_total) VALUES
+       (1, NULL, 'Soporte técnico', 1, 1200, 1200), (2, NULL, 'Instalación de red', 1, 1000, 1000)`);
+  if (withServiceTables) {
+    await ensureServiciosSchema(query);
+    // Facturas: una vencida, una que vence después, una pagada y una anulada.
+    run(`INSERT INTO svc_invoices (id, numero, client_id, client_name, branch_id, fecha, vencimiento, total, pagado, balance, estado) VALUES
+         (1, 'FS-0001', 1, 'Farmacia Central', 1, '2026-09-10', '2026-09-25', 5000, 1000, 4000, 'parcial'),
+         (2, 'FS-0002', 2, 'Colegio Luz', 2, '2026-10-01', '2026-10-31', 2500, 0, 2500, 'pendiente'),
+         (3, 'FS-0003', 1, 'Farmacia Central', 1, '2026-10-02', NULL, 1200, 1200, 0, 'pagada'),
+         (4, 'FS-0004', 2, 'Colegio Luz', 1, '2026-10-03', '2026-10-04', 900, 0, 900, 'anulada')`);
+    // Cobros: hoy, ayer (domingo, semana pasada), este mes y el mes pasado; uno anulado.
+    run(`INSERT INTO svc_invoice_payments (invoice_id, fecha, monto, metodo, branch_id, created_by_user_name, anulado_at) VALUES
+         (1, '2026-10-05', 1000, 'transferencia', 1, 'Emilio', NULL),
+         (3, '2026-10-04', 1200, 'efectivo', 1, 'Emilio', NULL),
+         (3, '2026-10-02', 300, 'efectivo', 2, 'Emilio', NULL),
+         (1, '2026-09-20', 700, 'efectivo', 1, 'Emilio', NULL),
+         (1, '2026-10-05', 999, 'efectivo', 1, 'Emilio', '2026-10-05 10:00:00')`);
+    run(`INSERT INTO svc_quotations (numero, client_name, branch_id, fecha, validez_dias, estado, total) VALUES
+         ('COT-0001', 'Farmacia Central', 1, '2026-10-01', 15, 'aprobada', 8000),
+         ('COT-0002', 'Colegio Luz', 1, '2026-09-01', 15, 'aprobada', 3000),
+         ('COT-0003', 'Colegio Luz', 1, '2026-09-15', 15, 'convertida', 4000)`);
+    run(`INSERT INTO svc_work_orders (numero, titulo, client_name, branch_id, estado, prioridad, responsable_nombre, fecha_programada) VALUES
+         ('OT-0001', 'Instalar red', 'Colegio Luz', 1, 'asignada', 'alta', 'Carlos', '2026-10-01'),
+         ('OT-0002', 'Revisar servidor', 'Farmacia Central', 2, 'pendiente', 'normal', NULL, '2026-10-09'),
+         ('OT-0003', 'Cambiar disco', 'Farmacia Central', 1, 'completada', 'normal', 'Carlos', '2026-09-20')`);
+    run(`INSERT INTO svc_projects (numero, nombre, client_name, branch_id, estado, avance_pct, fecha_entrega, presupuesto) VALUES
+         ('PRY-0001', 'Sistema de citas', 'Farmacia Central', 1, 'en_progreso', 40, '2026-09-30', 60000),
+         ('PRY-0002', 'Página web', 'Colegio Luz', 1, 'planificacion', 0, '2026-12-15', 25000),
+         ('PRY-0003', 'App vieja', 'Colegio Luz', 1, 'completado', 100, '2026-08-01', 10000)`);
+    run(`INSERT INTO svc_contracts (numero, titulo, client_name, branch_id, estado, monto, frecuencia, fecha_fin) VALUES
+         ('CTR-0001', 'Soporte mensual', 'Farmacia Central', 1, 'activo', 3500, 'mensual', '2026-10-20'),
+         ('CTR-0002', 'Hosting', 'Colegio Luz', 1, 'activo', 1500, 'mensual', '2027-06-30')`);
+    // Tabla de otro tipo de servicio: no debe aparecer en Tecnología.
+    run(`INSERT INTO svc_campaigns (numero, nombre, client_name, branch_id, estado, fecha_fin, presupuesto) VALUES
+         ('CMP-0001', 'No va', 'X', 1, 'activa', '2026-01-01', 1)`);
+  }
   return { db, query };
 }
 
@@ -209,4 +277,4 @@ function fakeFirestore() {
   };
 }
 
-module.exports = { NOW, SCHEMA, seed, createDb, fakeFirestore };
+module.exports = { NOW, SCHEMA, seed, createDb, createServiceDb, fakeFirestore };

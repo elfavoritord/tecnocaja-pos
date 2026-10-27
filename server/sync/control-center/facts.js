@@ -138,10 +138,13 @@ function buildFacts(rows, { fromDay, toDay } = {}) {
     const day = toDayKey(r.d);
     if (!inWindow(day)) continue;
     const f = ensureDay(facts, day, idKey(r.b));
-    const pid = r.pid === null || r.pid === undefined ? 'rapida' : String(r.pid);
+    const quick = r.pid === null || r.pid === undefined;
+    // qn: nombre de la línea sin producto (empresas de servicios: el servicio).
+    const quickName = quick ? String(r.qn || '').trim() : '';
+    const pid = !quick ? String(r.pid) : (quickName ? `rapida:${quickName.toLowerCase()}` : 'rapida');
     if (!f.items[pid]) {
       f.items[pid] = {
-        name: pid === 'rapida' ? 'Ventas rápidas (sin producto)' : String(r.name || 'Producto'),
+        name: !quick ? String(r.name || 'Producto') : (quickName || 'Ventas rápidas (sin producto)'),
         cat: String(r.cat || ''),
         qty: 0, rev: 0, covRev: 0, covCost: 0,
       };
