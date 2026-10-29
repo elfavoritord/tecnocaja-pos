@@ -579,14 +579,6 @@ function isRfceEncfAlreadyUsedError(responseOrError) {
 // reintentar — solo se resuelve descargando un set nuevo en el portal DGII. Se calcula
 // siempre desde la BD (fuente de verdad) para que sobreviva a regeneraciones del estado
 // local en memoria/archivo (step4RfceGenerate ya no debe perder esta bandera).
-// Mensaje cuando el set del Paso 2 trae un RFCE que la DGII ya dio por "ya utilizado".
-function burnedRfceSetMessage(encfs = []) {
-  const lista = encfs.join(', ');
-  return `El set trae ${encfs.length === 1 ? 'el resumen' : 'los resúmenes'} ${lista}, que la DGII ya rechazó como "ya utilizado" en un intento anterior. `
-    + 'La DGII no lo vuelve a aceptar: si se envía, rechaza el resumen y reinicia toda la prueba (también los 21 comprobantes). No se envió nada. '
-    + 'Descarga el set otra vez en el portal DGII (Paso 2 → Descargar comprobantes) y cárgalo aquí. Si el set nuevo trae el mismo e-NCF, hay que pedirle a la DGII que lo libere o que entregue otro set.';
-}
-
 function isPermanentlyBlockedRfceItem({ estado, certificationTestType, dgiiResponse }) {
   if (String(estado || '').toLowerCase() !== 'rechazado') return false;
   const isSimulated = String(certificationTestType || '').toLowerCase().startsWith('simulation-');
@@ -4139,18 +4131,6 @@ class EcfService {
 
     const preview = previewCertificationSet([excelFile]);
 
-    // Un RFCE que la DGII ya rechazó como "ya utilizado" no se acepta nunca más, y al
-    // rechazarlo la DGII reinicia toda la prueba. Se para aquí, antes de borrar el lote
-    // anterior y de enviar los 21.
-    const burnedRfce = await this._burnedCertificationRfceEncfs(preview.rfceEncfs || []);
-    if (burnedRfce.length) {
-      throw new EcfError(burnedRfceSetMessage(burnedRfce), {
-        statusCode: 409,
-        code: 'ECF_RFCE_YA_UTILIZADO',
-        details: { burnedRfce },
-      });
-    }
-
     const deleted = await this.repository.query(
       'DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
     );
@@ -6764,15 +6744,7 @@ class EcfService {
         continue;
       }
       // Paso 4: sus e-NCF salen de nuestra secuencia y se usan una sola vez, en cualquier lote.
-      // Paso 2: el e-NCF viene del set DGII; solo se frena si la DGII ya lo dio por "ya
-      // utilizado" en otro lote (reimportar el set borra sent_at, el historial no).
       const isFixedDataset = !String(item.certificationTestType || '').toLowerCase().startsWith('simulation-');
-      if (isFixedDataset && (await this._burnedCertificationRfceEncfs([item.encf])).length) {
-        const mensajeDgii = 'La DGII ya rechazó este e-NCF como "ya utilizado" en un intento anterior; no se envía porque reenviarlo reinicia la prueba. Descarga el set otra vez en el portal DGII.';
-        updatedItems[index] = { ...item, estado: 'rechazado', mensajeDgii, permanentlyBlocked: true };
-        results.push({ encf: item.encf, ok: false, estado: 'rechazado', skipped: true, permanentlyBlocked: true, mensaje: mensajeDgii });
-        continue;
-      }
       const priorUsageRows = isFixedDataset ? [] : await this.repository.query(
         `SELECT status, dgii_track_id, dgii_message
            FROM ecf_sequence_usage
@@ -6983,49 +6955,6 @@ class EcfService {
       bloqueados: updatedItems.filter((item) => item.permanentlyBlocked).length,
       batchInvalidated,
     };
-  }
-
-  // e-NCF de RFCE que la DGII ya rechazó como "ya utilizado" en certificación. El historial
-  // vive en ecf_sequence_usage, que sobrevive a reimportar el set y a "Reiniciar Paso 2".
-  async _burnedCertificationRfceEncfs(encfs = []) {
-    const lista = [...new Set(encfs.map((encf) => String(encf || '').trim().toUpperCase()).filter(Boolean))];
-    if (!lista.length) return [];
-    const rows = await this.repository.query(
-      `SELECT encf
-         FROM ecf_sequence_usage
-        WHERE business_id = 1
-          AND tipo_ecf = 'E32'
-          AND status = 'BLOCKED_DGII_USED'
-          AND (environment IS NULL OR environment <> 'ecf')
-          AND encf IN (${lista.map(() => '?').join(', ')})`,
-      lista
-    ).catch(() => []);
-    const quemados = new Set(rows.map((row) => String(row.encf || '').toUpperCase()));
-    return lista.filter((encf) => quemados.has(encf));
-  }
-
-  // Antes de reenviar los 21 del Paso 2: si el lote trae un RFCE ya quemado en la DGII,
-  // la prueba se reiniciaría otra vez al enviarlo y esos 21 se perderían.
-  async _assertBatchRfceNotBurned() {
-    const batchId = await this.repository.getLatestCertificationBatchId();
-    const rows = await this.repository.query(
-      `SELECT encf
-         FROM ecf_documents
-        WHERE business_id = 1
-          AND certification_case_key IS NOT NULL
-          AND submission_mode = 'rfce'
-          AND (certification_test_type IS NULL OR certification_test_type NOT LIKE 'simulation-%')
-          ${batchId ? 'AND certification_batch_id = ?' : ''}`,
-      batchId ? [batchId] : []
-    ).catch(() => []);
-    const burnedRfce = await this._burnedCertificationRfceEncfs(rows.map((row) => row.encf));
-    if (burnedRfce.length) {
-      throw new EcfError(burnedRfceSetMessage(burnedRfce), {
-        statusCode: 409,
-        code: 'ECF_RFCE_YA_UTILIZADO',
-        details: { burnedRfce },
-      });
-    }
   }
 
   // Documento RFCE más reciente de certificación con ese e-NCF (el del lote activo).
@@ -8192,7 +8121,6 @@ class EcfService {
   async runCertificationSequence(req) {
     await this.ensureReady();
     await this.getCurrentActor(req, { adminOnly: true });
-    await this._assertBatchRfceNotBurned();
     // Límite generoso — un set DGII típico tiene 21-30 casos.
     const limit = Math.max(1, Math.min(Number(req.body?.limit || 50), 200));
     // Retardo entre envíos (ms) para no saturar DGII ni expirar el token.

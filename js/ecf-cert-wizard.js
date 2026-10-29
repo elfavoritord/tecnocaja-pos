@@ -1225,7 +1225,7 @@ const ECF_CERT_WIZARD = (() => {
           if (textEl) textEl.textContent = 'Comprobantes rechazados — resetear y reintentar';
           if (resetBtn) resetBtn.style.display = '';
         } else if (rfceRejected > 0) {
-          if (textEl) textEl.textContent = 'RFCE rechazado por la DGII. No se puede reenviar: descarga el set otra vez en el portal DGII y cárgalo aquí con "Procesar y enviar comprobantes". Si el set nuevo trae el mismo e-NCF, el sistema no lo envía y hay que pedirle a la DGII que lo libere.';
+          if (textEl) textEl.textContent = 'RFCE rechazado por la DGII. No se reenvía en este lote: descarga el set otra vez en el portal DGII y cárgalo aquí con "Procesar y enviar comprobantes".';
           if (resetBtn) resetBtn.style.display = 'none';
         }
       }
@@ -1345,7 +1345,7 @@ const ECF_CERT_WIZARD = (() => {
     try {
       await fiscalApi('POST', '/certification/reset-sent').catch(() => {});
       await fiscalApi('POST', '/certification/reset-rejected').catch(() => {});
-      // Si el lote trae un RFCE quemado, el servidor no envía nada y explica por qué.
+      // Si el reenvío falla, se muestra el motivo en vez de decir que arrancó.
       await fiscalApi('POST', '/certification/run-sequential');
       const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
       if (alertEl) alertEl.style.display = 'none';

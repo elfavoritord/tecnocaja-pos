@@ -14,7 +14,7 @@ const { createEcfService } = require('../modules/ecf/services/ecf.service');
 
 const ENCFS = ['E320000000005', 'E320000000006', 'E320000000007', 'E320000000008'];
 
-function buildService({ respuestas = {}, quemados = [] } = {}) {
+function buildService({ respuestas = {}, historialQuemado = false } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rfce-unico-'));
   const docs = new Map(ENCFS.map((encf, i) => [encf, { id: 100 + i, encf, estado_dgii: 'firmado', sent_at: null }]));
   const eventos = [];
@@ -32,11 +32,8 @@ function buildService({ respuestas = {}, quemados = [] } = {}) {
       const row = docs.get(params[0]);
       return row ? [{ ...row }] : [];
     }
-    if (/FROM ecf_sequence_usage .*status = 'BLOCKED_DGII_USED'/.test(text)) {
-      return params.filter((encf) => quemados.includes(encf)).map((encf) => ({ encf }));
-    }
-    if (/SELECT encf FROM ecf_documents .*submission_mode = 'rfce'/.test(text)) {
-      return ENCFS.map((encf) => ({ encf }));
+    if (historialQuemado && /FROM ecf_sequence_usage/.test(text)) {
+      return [{ status: 'BLOCKED_DGII_USED', dgii_message: 'ya ha sido utilizado previamente' }];
     }
     if (/^ ?UPDATE ecf_documents SET sent_at = CURRENT_TIMESTAMP/.test(text)) {
       const row = [...docs.values()].find((doc) => doc.id === params[0]);
@@ -162,6 +159,15 @@ describe('RFCE del Paso 2: un solo envío por lote', () => {
     expect(docs.get('E320000000005').sent_at).toBeNull();
   });
 
+  // Decisión de Emilio (2026-10-29): el set del Paso 2 sale aunque un intento anterior
+  // haya quedado "ya utilizado". Solo cuenta la marca de envío del lote actual.
+  test('con un set nuevo, el RFCE se envía aunque un intento anterior quedara "ya utilizado"', async () => {
+    const { service } = buildService({ historialQuemado: true });
+    const result = await service.step4RfceSubmit(null);
+    expect(service.fcService.sendConsumptionSummary).toHaveBeenCalledTimes(4);
+    expect(result.aceptados).toBe(4);
+  });
+
   test('reenviar a mano un RFCE de certificación ya enviado se rechaza', () => {
     const { service } = buildService();
     expect(() => service._assertCertificationRfceNotSent({
@@ -173,47 +179,6 @@ describe('RFCE del Paso 2: un solo envío por lote', () => {
     expect(() => service._assertCertificationRfceNotSent({
       certification_case_key: 'caso-1', submission_mode: 'normal', sent_at: new Date(), encf: 'E310000000001',
     })).not.toThrow();
-  });
-});
-
-describe('RFCE que la DGII ya dio por "ya utilizado" en otro intento', () => {
-  test('no se envía aunque el set se haya vuelto a importar (sin marca de envío)', async () => {
-    const { service } = buildService({ quemados: ['E320000000006'] });
-    const result = await service.step4RfceSubmit(null);
-    const enviados = service.fcService.sendConsumptionSummary.mock.calls.map(([arg]) => arg.filename);
-    expect(enviados).toEqual(['E320000000005.xml', 'E320000000007.xml', 'E320000000008.xml']);
-    expect(result.results.find((r) => r.encf === 'E320000000006'))
-      .toMatchObject({ ok: false, skipped: true, permanentlyBlocked: true });
-    expect(result.bloqueados).toBe(1);
-  });
-
-  test('antes de reenviar los 21 se para si el lote trae un RFCE quemado', async () => {
-    const { service } = buildService({ quemados: ['E320000000006'] });
-    service.repository.getLatestCertificationBatchId = jest.fn(async () => 'cert-1');
-    await expect(service._assertBatchRfceNotBurned())
-      .rejects.toMatchObject({ statusCode: 409, code: 'ECF_RFCE_YA_UTILIZADO' });
-    await expect(service._assertBatchRfceNotBurned()).rejects.toThrow(/E320000000006/);
-  });
-
-  test('sin RFCE quemados el lote sigue normal', async () => {
-    const { service } = buildService();
-    service.repository.getLatestCertificationBatchId = jest.fn(async () => 'cert-1');
-    await expect(service._assertBatchRfceNotBurned()).resolves.toBeUndefined();
-  });
-
-  test('la vista previa del Excel trae los e-NCF de la hoja RFCE', () => {
-    const XLSX = require('xlsx');
-    const { previewCertificationSet } = require('../modules/ecf/services/certification-importer');
-    const fila = (encf) => ({ Caso: 'Caso', ENCF: encf, 'Fecha Vencimiento': '20-05-2027', 'Monto Gravado': 1, TipoPago: '01', TipoIngresos: '01' });
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([fila('E310000000001'), fila('E320000000005')]), 'ECF');
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet([fila('E320000000005'), fila('E320000000006')]), 'RFCE');
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rfce-preview-'));
-    const filepath = path.join(tmp, 'set.xlsx');
-    fs.writeFileSync(filepath, XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }));
-
-    const preview = previewCertificationSet([{ filepath, originalFilename: 'set.xlsx' }]);
-    expect(preview.rfceEncfs.sort()).toEqual(['E320000000005', 'E320000000006']);
   });
 });
 
