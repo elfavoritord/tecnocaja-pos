@@ -1084,20 +1084,22 @@ const ECF_CERT_WIZARD = (() => {
     }
 
     // Verificar si ya hay docs aceptados o bloqueados antes de sobrescribir
+    let forceReset = false;
     try {
       const prev = await fiscalApi('GET', '/certification-center/status').catch(() => null);
       if (prev?.counts) {
         const { accepted = 0, blocked = 0, total = 0 } = prev.counts;
         if (total > 0 && (accepted > 0 || blocked > 0)) {
           const ok = confirm(
-            `⚠️ ATENCIÓN — Ya hay comprobantes en DGII de una corrida anterior:\n` +
+            `⚠️ ATENCIÓN — Ya hay comprobantes de un intento anterior:\n` +
             `• ${accepted} aceptado(s)\n` +
             `• ${blocked} bloqueado(s)\n\n` +
-            `Si corres el proceso de nuevo se creará un lote NUEVO con los mismos eNCF.\n` +
-            `DGII los rechazará como "secuencia ya utilizada" y quedarán bloqueados.\n\n` +
-            `¿Estás seguro de que quieres reiniciar desde cero?`
+            `Procesar este Excel borra ese lote y empieza uno nuevo.\n` +
+            `Hazlo solo con un set recién descargado del portal DGII (después de que la DGII reinició la prueba).\n\n` +
+            `¿Continuar?`
           );
           if (!ok) return;
+          forceReset = true;
         }
       }
     } catch (_) {}
@@ -1116,6 +1118,7 @@ const ECF_CERT_WIZARD = (() => {
     const form = new FormData();
     form.append('excel', excelInput.files[0]);
     form.append('environment', WZ.state?.environment || 'certecf');
+    if (forceReset) form.append('forceReset', 'true');
 
     logLine('Importando set de datos y generando XMLs…');
 
@@ -1222,7 +1225,7 @@ const ECF_CERT_WIZARD = (() => {
           if (textEl) textEl.textContent = 'Comprobantes rechazados — resetear y reintentar';
           if (resetBtn) resetBtn.style.display = '';
         } else if (rfceRejected > 0) {
-          if (textEl) textEl.textContent = 'RFCE rechazado por la DGII. No se puede reenviar en este lote: descarga el set otra vez en el portal DGII y usa "Reiniciar Paso 2 por completo". "Resetear y reintentar" no aplica a RFCE.';
+          if (textEl) textEl.textContent = 'RFCE rechazado por la DGII. No se puede reenviar: descarga el set otra vez en el portal DGII y cárgalo aquí con "Procesar y enviar comprobantes". Si el set nuevo trae el mismo e-NCF, el sistema no lo envía y hay que pedirle a la DGII que lo libere.';
           if (resetBtn) resetBtn.style.display = 'none';
         }
       }
@@ -1342,7 +1345,8 @@ const ECF_CERT_WIZARD = (() => {
     try {
       await fiscalApi('POST', '/certification/reset-sent').catch(() => {});
       await fiscalApi('POST', '/certification/reset-rejected').catch(() => {});
-      await fiscalApi('POST', '/certification/run-sequential').catch(() => {});
+      // Si el lote trae un RFCE quemado, el servidor no envía nada y explica por qué.
+      await fiscalApi('POST', '/certification/run-sequential');
       const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
       if (alertEl) alertEl.style.display = 'none';
       appendLog('ecf-wz-step2-log', '✅ Reseteado. Reenvío secuencial iniciado. Usa "Actualizar" para ver progreso.', 'ok');
@@ -1403,7 +1407,7 @@ const ECF_CERT_WIZARD = (() => {
         const enviadosAhora = results.filter((x) => !x.skipped).length;
         const yaEnviados = results.filter((x) => x.alreadySent).length;
         const rechazadoHint = (r.rechazados || 0) > 0
-          ? ' Un RFCE rechazado no se puede volver a enviar en este lote: descarga el set otra vez en el portal DGII y usa "Reiniciar Paso 2 por completo".'
+          ? ' Un RFCE rechazado no se puede volver a enviar: descarga el set otra vez en el portal DGII y cárgalo con "Procesar y enviar comprobantes".'
           : '';
         logEl.textContent = `${r.aceptados||0}/4 aceptados · ${enviadosAhora} enviado(s) ahora`
           + (yaEnviados ? ` · ${yaEnviados} ya se habían enviado (no se reenvían)` : '')

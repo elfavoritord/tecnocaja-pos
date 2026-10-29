@@ -441,6 +441,11 @@ function previewCertificationSet(uploadedFiles = []) {
         acc[key] = (acc[key] || 0) + 1;
         return acc;
       }, {}),
+      // e-NCF de la hoja RFCE: se revisan contra el historial antes de enviar nada.
+      rfceEncfs: normalizedCases
+        .filter((item) => String(item.submissionMode || '').toLowerCase() === 'rfce')
+        .map((item) => String(item.encf || '').trim().toUpperCase())
+        .filter(Boolean),
     };
   } finally {
     for (const tempDir of cleanupDirs) {
