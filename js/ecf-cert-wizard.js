@@ -31,7 +31,13 @@ const ECF_CERT_WIZARD = (() => {
     state: null,
     activeStep: 1,
     polling: null,
+    skipPress: null,
+    skipConfirmStep: null,
+    skipSuppressClick: false,
   };
+
+  // Tiempo que hay que dejar presionado un paso para que aparezca "pasar paso".
+  const SKIP_HOLD_MS = 1200;
 
   // ── CSS ───────────────────────────────────────────────────────────────────────
   function injectCss() {
@@ -95,6 +101,25 @@ const ECF_CERT_WIZARD = (() => {
       .ecf-wz-step-dot.dot-active   { background:var(--accent);color:#fff; }
       .ecf-wz-step-dot.dot-done     { background:#16a34a;color:#fff; }
       .ecf-wz-step-dot.dot-error    { background:#dc2626;color:#fff; }
+
+      /* Pasar paso a mano (oculto: dejar presionado) */
+      .ecf-wz-step-item.pressing::after {
+        content:'';position:absolute;left:0;bottom:0;width:100%;height:2px;
+        background:var(--accent);transform-origin:left;
+        animation:ecfWzHold ${SKIP_HOLD_MS}ms linear forwards;
+      }
+      @keyframes ecfWzHold {
+        from { transform:scaleX(0); }
+        to   { transform:scaleX(1); }
+      }
+      .ecf-wz-skip-confirm {
+        margin:.15rem .75rem .5rem;padding:.7rem .75rem;border-radius:8px;
+        background:var(--bg3);border:1px solid var(--accent);
+        font-size:.74rem;color:var(--text2);line-height:1.45;
+      }
+      .ecf-wz-skip-confirm b { display:block;color:var(--text);margin-bottom:.2rem; }
+      .ecf-wz-skip-confirm .skip-actions { display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.55rem; }
+      .ecf-wz-skip-confirm .ecf-wz-action-btn { padding:.4rem .7rem;font-size:.74rem; }
       .ecf-wz-content {
         overflow-y:auto;padding:1.4rem;max-height:calc(100vh - 260px);
         animation:ecfWzFadeIn .22s ease;
@@ -385,6 +410,75 @@ const ECF_CERT_WIZARD = (() => {
     renderSidebar();
   }
 
+  // ── Pasar un paso a mano (oculto) ─────────────────────────────────────────────
+  // Dejar presionado un paso pendiente en la barra lateral muestra un botón para
+  // darlo por completado y seguir: para cuando el paso ya se hizo en el portal de
+  // la DGII y el wizard no lo detectó. Solo cambia el progreso del wizard; no
+  // envía nada a la DGII.
+  function _skipPressStart(event, stepId) {
+    _skipPressEnd();
+    WZ.skipSuppressClick = false;
+    if (event.button !== 0 || isCompleted(stepId) || !isUnlocked(stepId)) return;
+    const item = event.currentTarget;
+    item.classList.add('pressing');
+    WZ.skipPress = {
+      item,
+      timer: setTimeout(() => {
+        item.classList.remove('pressing');
+        WZ.skipPress = null;
+        // El clic que llega al soltar no debe navegar (ver _onStepClick).
+        WZ.skipSuppressClick = true;
+        WZ.skipConfirmStep = stepId;
+        renderSidebar();
+      }, SKIP_HOLD_MS),
+    };
+  }
+
+  function _skipPressEnd() {
+    if (!WZ.skipPress) return;
+    clearTimeout(WZ.skipPress.timer);
+    WZ.skipPress.item.classList.remove('pressing');
+    WZ.skipPress = null;
+  }
+
+  function _onStepClick(stepId) {
+    if (WZ.skipSuppressClick) {
+      WZ.skipSuppressClick = false;
+      return;
+    }
+    if (WZ.skipConfirmStep && WZ.skipConfirmStep !== stepId) WZ.skipConfirmStep = null;
+    goToStep(stepId);
+  }
+
+  function _cancelSkipStep() {
+    WZ.skipConfirmStep = null;
+    renderSidebar();
+  }
+
+  async function _confirmSkipStep(stepId) {
+    WZ.skipConfirmStep = null;
+    if (isCompleted(stepId) || !isUnlocked(stepId)) {
+      renderSidebar();
+      return;
+    }
+    const data = WZ.state?.steps?.[stepId]?.data || {};
+    await markDone(stepId, { ...data, pasadoManual: true });
+  }
+
+  function renderSkipConfirm(step) {
+    const nextLabel = step.id < STEPS.length ? `Pasar al Paso ${step.id + 1} →` : 'Finalizar';
+    return `
+      <div class="ecf-wz-skip-confirm">
+        <b>¿Dar el Paso ${step.id} por completado?</b>
+        Úsalo solo si ya lo hiciste en el portal de la DGII. No envía nada a la DGII.
+        <div class="skip-actions">
+          <button class="ecf-wz-action-btn" onclick="ECF_CERT_WIZARD._confirmSkipStep(${step.id})">${nextLabel}</button>
+          <button class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD._cancelSkipStep()">Cancelar</button>
+        </div>
+      </div>
+    `;
+  }
+
   // ── Main render ───────────────────────────────────────────────────────────────
   function render() {
     const root = document.getElementById('fiscal-tab-homologation');
@@ -485,7 +579,11 @@ const ECF_CERT_WIZARD = (() => {
 
       return `
         <div class="ecf-wz-step-item ${locked?'locked':''} ${completed?'completed':''} ${active?'active':''}"
-          ${locked ? '' : `onclick="ECF_CERT_WIZARD.goToStep(${step.id})"`}
+          ${locked ? '' : `onclick="ECF_CERT_WIZARD._onStepClick(${step.id})"
+          onpointerdown="ECF_CERT_WIZARD._skipPressStart(event, ${step.id})"
+          onpointerup="ECF_CERT_WIZARD._skipPressEnd()"
+          onpointerleave="ECF_CERT_WIZARD._skipPressEnd()"
+          onpointercancel="ECF_CERT_WIZARD._skipPressEnd()"`}
           style="position:relative">
           <div class="ecf-wz-step-dot ${dotClass}">
             ${completed ? '✓' : step.id}
@@ -503,6 +601,7 @@ const ECF_CERT_WIZARD = (() => {
             style="flex-shrink:0;background:none;border:1px solid rgba(251,113,133,.35);border-radius:4px;color:#fb7185;font-size:.6rem;padding:.15rem .35rem;cursor:pointer;line-height:1.2;opacity:.7"
             onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='.7'">↩</button>` : ''}
         </div>
+        ${WZ.skipConfirmStep === step.id && unlocked && !completed ? renderSkipConfirm(step) : ''}
       `;
     }).join('');
   }
@@ -3726,6 +3825,11 @@ const ECF_CERT_WIZARD = (() => {
 
     render,
     goToStep,
+    _onStepClick,
+    _skipPressStart,
+    _skipPressEnd,
+    _confirmSkipStep,
+    _cancelSkipStep,
 
     runStep1,
     runStep1Sign,

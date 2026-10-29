@@ -900,6 +900,14 @@ class EcfService {
     await this.ensureReady();
     const stored = await this.repository.getCertificate(1);
     const certPath = stored?.certificate_path || this.config.CERT_PATH;
+    // Sin certificado en la BD se usa CERT_PATH del .env, que puede apuntar a un
+    // .p12 viejo ya borrado: decir dónde cargarlo en vez de solo la ruta.
+    if (!certPath || !fs.existsSync(certPath)) {
+      throw new EcfError(
+        `No hay un certificado .p12 cargado${certPath ? ` (no se encontró ${certPath})` : ''}. Cárgalo con su contraseña en Configurar e-CF DGII → Certificado.`,
+        { statusCode: 422 },
+      );
+    }
     let certPassword = this.config.CERT_PASSWORD;
     if (stored?.password_encrypted) {
       try {

@@ -151,6 +151,11 @@ if ($AssemblyCachePath -and (Test-Path $AssemblyCachePath)) {
 if (-not $loadedFromCache) {
   if ($AssemblyCachePath) {
     Add-Type -TypeDefinition $csharpSource -OutputAssembly $AssemblyCachePath -IgnoreWarnings -ErrorAction SilentlyContinue
+  }
+  # -OutputAssembly solo escribe el .dll, no carga la clase en la sesión: sin esto la
+  # primera firma de cada PC fallaba con TypeNotFound y solo pasaba en el reintento.
+  if ($AssemblyCachePath -and (Test-Path $AssemblyCachePath)) {
+    Add-Type -Path $AssemblyCachePath
   } else {
     Add-Type -TypeDefinition $csharpSource -IgnoreWarnings -ErrorAction SilentlyContinue
   }
@@ -169,12 +174,31 @@ $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate
   $flags
 )
 
+# En Windows PowerShell 5.1 (.NET Framework) $cert.PrivateKey trae la llave en el
+# proveedor CSP que indique el .p12; si no indica ninguno Windows usa el "Enhanced
+# Cryptographic Provider", que no firma SHA-256 y ComputeSignature falla con
+# "Algoritmo especificado no es válido" (PCs de clientes sin PowerShell 7).
+# GetRSAPrivateKey la abre por CNG; si aun así llega una CSP vieja se copia a una
+# PROV_RSA_AES (24), que sí firma SHA-256 (el .p12 se abre con Exportable).
+$signingKey = $null
+try {
+  $signingKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
+} catch { }
+if (-not $signingKey) { $signingKey = $cert.PrivateKey }
+if ($signingKey -is [System.Security.Cryptography.RSACryptoServiceProvider] -and $signingKey.CspKeyContainerInfo.ProviderType -ne 24) {
+  $aesCspParams = New-Object System.Security.Cryptography.CspParameters(24)
+  $aesKey = New-Object System.Security.Cryptography.RSACryptoServiceProvider -ArgumentList $aesCspParams
+  $aesKey.ImportParameters($signingKey.ExportParameters($true))
+  $aesKey.PersistKeyInCsp = $false
+  $signingKey = $aesKey
+}
+
 $xmlDoc = New-Object System.Xml.XmlDocument
 $xmlDoc.PreserveWhitespace = $false
 $xmlDoc.Load($InputXmlPath)
 
 $signedXml = New-Object System.Security.Cryptography.Xml.SignedXml($xmlDoc)
-$signedXml.SigningKey = $cert.PrivateKey
+$signedXml.SigningKey = $signingKey
 $signedXml.SignedInfo.CanonicalizationMethod = [System.Security.Cryptography.Xml.SignedXml]::XmlDsigCanonicalizationUrl
 $signedXml.SignedInfo.SignatureMethod = 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256'
 

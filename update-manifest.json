@@ -1,14 +1,13 @@
 {
-  "version": "1.6.2",
-  "stableVersion": "1.6.2",
-  "date": "26/10/2026",
+  "version": "1.6.3",
+  "stableVersion": "1.6.3",
+  "date": "28/10/2026",
   "size": "47.3 MB",
-  "type": "feature",
+  "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "App de reportes para empresas de servicios: muestra lo cobrado, las facturas por cobrar con su vencimiento, las cotizaciones y el trabajo (ordenes, proyectos, contratos y mas, segun el tipo de servicio). Sin inventario ni cajas.",
-    "Alertas en la app para empresas de servicios: facturas vencidas, ordenes y proyectos atrasados, contratos por vencer.",
-    "App de reportes: los servicios mas facturados salen por nombre de servicio."
+    "Facturacion electronica: firmar el XML de postulacion ya funciona en todas las PCs (en las que no tenian PowerShell 7 salia 'Algoritmo especificado no es valido').",
+    "Facturacion electronica: si no hay certificado .p12 cargado, el mensaje dice donde cargarlo (Configurar e-CF DGII > Certificado)."
   ]
 }
