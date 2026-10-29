@@ -114,9 +114,14 @@ const RespaldosMod = (() => {
       const cls  = ['pro','plus','enterprise','active'].includes(plan) ? 'badge-success' : 'badge-warning';
       planEl.innerHTML = `<span class="rb-badge ${cls}">${plan.toUpperCase()}</span>`;
     }
-    // Mostrar/ocultar sección nube según si Firebase está configurado (nubeDisponible)
+    // Sección nube: visible si esta PC tiene la nube configurada, aunque la
+    // conexión falle (así se ve el motivo en vez de desaparecer sin aviso).
     const nubeButtons = document.querySelectorAll('.rb-nube-only');
-    nubeButtons.forEach(b => b.classList.toggle('hidden', !_estado.nubeDisponible));
+    nubeButtons.forEach(b => b.classList.toggle('hidden', !mostrarNube()));
+    if (mostrarNube() && !_estado.nubeDisponible) {
+      const lista = document.getElementById('rb-lista-nube');
+      if (lista) lista.innerHTML = `<div class="rb-empty-row">No se pudo conectar con la nube${_estado.nubeError ? `: ${_estado.nubeError}` : ''}. Revisa el Internet y pulsa "Actualizar".</div>`;
+    }
 
     // Lista de archivos locales
     renderListaLocal();
@@ -153,7 +158,11 @@ const RespaldosMod = (() => {
     `).join('');
 
     // Respetar visibilidad nube
-    el.querySelectorAll('.rb-nube-only').forEach(b => b.classList.toggle('hidden', !_estado?.nubeDisponible));
+    el.querySelectorAll('.rb-nube-only').forEach(b => b.classList.toggle('hidden', !mostrarNube()));
+  }
+
+  function mostrarNube() {
+    return Boolean(_estado?.nubeDisponible || _estado?.nubeConfigurada);
   }
 
   function renderHistorial() {
@@ -198,6 +207,15 @@ const RespaldosMod = (() => {
   function renderListaNube(backups) {
     const el = document.getElementById('rb-lista-nube');
     if (!el) return;
+    // Tarjeta "Respaldo en la Nube": el más reciente (la lista viene ordenada).
+    const ultimo = document.getElementById('rb-ultimo-nube');
+    if (ultimo) {
+      const b = (backups || [])[0];
+      ultimo.classList.toggle('rb-empty', !b);
+      ultimo.innerHTML = b
+        ? `<strong>${b.fileName || b.key}</strong><br><span class="rb-meta">${fmtDate(b.lastModified)} · ${fmt(b.size)}</span>`
+        : '<span class="rb-empty">Sin respaldos en la nube aún</span>';
+    }
     if (!backups || !backups.length) {
       el.innerHTML = '<div class="rb-empty-row">No hay respaldos en la nube.</div>';
       return;
@@ -603,7 +621,8 @@ const RespaldosMod = (() => {
   // ─── Init ─────────────────────────────────────────────────────────────────────
   async function init() {
     await cargarEstado();
-    // Cargar lista nube si está disponible
+    // Cargar la lista de la nube si está disponible (si falló la conexión, el
+    // motivo ya quedó en la sección y "Actualizar" vuelve a intentar).
     if (_estado?.nubeDisponible) {
       await cargarListaNube();
     }

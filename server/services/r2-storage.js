@@ -87,14 +87,27 @@ function getBucket() {
   return bucket;
 }
 
-// ─── Verificar si R2/B2 está disponible (con caché 60 s) ─────────────────────
-let _availCache    = null;   // { ok: bool, ts: Date.now() }
-const AVAIL_TTL_MS = 60_000; // 60 segundos
+// ¿Hay llaves de nube en esta PC? (no comprueba que funcionen)
+function isConfigured() {
+  const keys = Boolean((process.env.R2_ACCESS_KEY_ID || '').trim() && (process.env.R2_SECRET_ACCESS_KEY || '').trim());
+  const target = Boolean((process.env.R2_ENDPOINT || '').trim() || (process.env.R2_ACCOUNT_ID || '').trim());
+  return keys && target && Boolean((process.env.R2_BUCKET || '').trim());
+}
 
-async function isR2Available(force = false) {
+// ─── Verificar si R2/B2 está disponible (con caché 60 s por prefijo) ─────────
+const _availCache  = new Map(); // prefijo → { ok, ts, err }
+const AVAIL_TTL_MS = 60_000;    // 60 segundos
+
+// `prefix`: la carpeta del negocio (backups/<id>/). La llave de Backblaze de
+// cada cliente (scripts/create-business-b2-key.js) solo puede listar dentro de
+// esa carpeta: listar el bucket entero sin prefijo da "acceso denegado" y la
+// pantalla de Respaldos escondía la nube aunque los respaldos sí se subían.
+async function isR2Available(force = false, prefix = '') {
   const now = Date.now();
-  if (!force && _availCache && (now - _availCache.ts) < AVAIL_TTL_MS) {
-    if (!_availCache.ok) throw new Error(_availCache.err || 'No disponible (caché)');
+  const cacheKey = String(prefix || '');
+  const cached = _availCache.get(cacheKey);
+  if (!force && cached && (now - cached.ts) < AVAIL_TTL_MS) {
+    if (!cached.ok) throw new Error(cached.err || 'No disponible (caché)');
     return true;
   }
   try {
@@ -102,11 +115,11 @@ async function isR2Available(force = false) {
     const bucket = getBucket();
     // ListObjectsV2 con MaxKeys=1 funciona en R2, B2 y S3 genérico
     // HeadBucket a veces falla en B2 con permisos de app key
-    await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1 }));
-    _availCache = { ok: true, ts: now };
+    await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1, ...(prefix ? { Prefix: prefix } : {}) }));
+    _availCache.set(cacheKey, { ok: true, ts: now });
     return true;
   } catch (e) {
-    _availCache = { ok: false, ts: now, err: e.message };
+    _availCache.set(cacheKey, { ok: false, ts: now, err: e.message });
     throw e;
   }
 }
@@ -212,11 +225,12 @@ function backupKey(businessId, fileName) {
 
 /** Fuerza re-creación del cliente (útil si cambian vars en caliente) */
 function resetClient() {
-  _client      = null;
-  _availCache  = null;
+  _client = null;
+  _availCache.clear();
 }
 
 module.exports = {
+  isConfigured,
   isR2Available,
   upload,
   download,

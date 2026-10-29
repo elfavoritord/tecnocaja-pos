@@ -44,7 +44,7 @@ describe('venta rápida sin inventario', () => {
     const offline = read('server/routes/offline.routes.js');
     expect(offline).toContain('if (saleId && (productId || isQuickSale))');
     expect(offline).toContain('isQuickSale ? null : productId');
-    expect(offline).toContain('if (!isQuickSale) {');
+    expect(offline).toContain('if (!isQuickSale && !comboSnapshot) {');
   });
 
   test('e-CF y reportes leen primero el nombre guardado en la línea', () => {

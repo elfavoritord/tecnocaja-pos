@@ -453,6 +453,10 @@ function buildReceipt(data) {
     nameLines.slice(1).forEach((line) => p.text(line));
     if (item.variante) p.text(`  > ${item.variante}`);
     if (item.notas)    p.text(`  * ${item.notas}`);
+    // Combo desglosado: sus productos, sin precio (ya van en el del combo).
+    if (Array.isArray(item.componentes)) {
+      item.componentes.forEach((line) => p.text(`  - ${String(line || '')}`.slice(0, COLS)));
+    }
   }
 
   p.separator('-');

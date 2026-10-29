@@ -126,6 +126,7 @@ CREATE TABLE config (
   receipt_paper_size VARCHAR(20) NOT NULL DEFAULT '80mm',
   invoice_template VARCHAR(20) DEFAULT NULL,
   invoice_accent_color VARCHAR(7) DEFAULT NULL,
+  combo_invoice_display VARCHAR(20) NOT NULL DEFAULT 'agrupado',
   cash_drawer_enabled TINYINT(1) NOT NULL DEFAULT 0,
   cash_drawer_method VARCHAR(20) NOT NULL DEFAULT 'escpos',
   cash_drawer_printer_name VARCHAR(160) DEFAULT NULL,
@@ -536,6 +537,7 @@ CREATE TABLE sale_items (
   line_total DECIMAL(12,2) NOT NULL,
   promotion_id INT DEFAULT NULL,
   original_price DECIMAL(12,2) DEFAULT NULL,
+  combo_snapshot LONGTEXT DEFAULT NULL,
   KEY idx_sale_items_sale (sale_id),
   KEY idx_sale_items_product (product_id),
   KEY idx_sale_items_promotion (promotion_id),
@@ -601,6 +603,20 @@ CREATE TABLE promotion_audit_log (
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_promo_audit_promo (promotion_id),
   KEY idx_promo_audit_created (created_at)
+);
+
+-- Combos promocionales: qué productos (y cuántos) lleva cada combo. El combo es
+-- una fila de products con product_type 'combo' y sin existencia propia.
+CREATE TABLE product_combo_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  combo_product_id INT NOT NULL,
+  component_product_id INT NOT NULL,
+  quantity DECIMAL(12,3) NOT NULL DEFAULT 1.000,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_combo_items_combo (combo_product_id),
+  KEY idx_combo_items_component (component_product_id)
 );
 
 CREATE TABLE inventory_movements (

@@ -131,6 +131,8 @@ const createRncRouter  = require('./server/routes/rnc.routes');
 // 📢 Centro de Promociones
 const createPromotionsRouter = require('./server/routes/promotions.routes');
 const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('./server/services/promotion-engine');
+const createCombosRouter = require('./server/routes/combos.routes');
+const combosService = require('./server/services/combos.service');
 
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
 const createNetworkRouter = require('./server/routes/network.routes');
@@ -777,6 +779,7 @@ async function syncPendingMobileSales() {
   await ensureSalesExtensions();
   await ensureInventoryMovementsTable();
   await ensureBranchInventoryTable();
+  await ensureCombosExtensions();
   const cfg = await getReportSyncConfig();
   const businessId = reportsSync.getBusinessId(cfg);
   const snapshot = await firestore
@@ -874,7 +877,7 @@ async function syncPendingMobileSales() {
         for (const item of items) {
           const remoteProductId = normalizeReportAppText(item.productId);
           const products = await conn.query(
-            `SELECT id, nombre, precio_compra, tracks_stock
+            `SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock
              FROM products
              WHERE remote_report_product_id = ?
                 OR CAST(id AS CHAR) = ?
@@ -889,18 +892,43 @@ async function syncPendingMobileSales() {
           if (qty <= 0) throw new Error(`Cantidad inválida en "${item.productName || product.nombre}".`);
           const price = normalizeReportAppNumber(item.price, 0);
           const lineTotal = normalizeReportAppNumber(item.total, price * qty);
+          // Combo vendido desde el teléfono: se guarda su foto y se descuentan
+          // sus componentes (la composición de este momento).
+          const comboComponents = (await combosService.loadComponentsByCombo(conn.query.bind(conn), [product.id]))
+            .get(Number(product.id));
+          const comboSnapshot = comboComponents
+            ? combosService.buildSaleSnapshot({ ...product, precio_venta: price }, comboComponents)
+            : null;
           await conn.query(
             `INSERT INTO sale_items
-              (sale_id, product_id, qty, price, discount_rate, tax_rate, sale_mode, unit_label, line_total)
-             VALUES (?, ?, ?, ?, ?, ?, 'unidad', 'Unidad', ?)`,
+              (sale_id, product_id, item_name, qty, price, discount_rate, tax_rate, sale_mode, unit_label, line_total, combo_snapshot)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'unidad', 'Unidad', ?, ?)`,
             [
-              saleInsert.insertId, product.id, qty, price,
+              saleInsert.insertId, product.id, comboSnapshot ? comboSnapshot.nombre : null, qty, price,
               normalizeReportAppNumber(item.discount, 0),
               normalizeReportAppNumber(item.taxRate, 0), lineTotal,
+              comboSnapshot ? JSON.stringify(comboSnapshot) : null,
             ]
           );
           productIds.push(Number(product.id));
-          if (status === 'pagada' && Number(product.tracks_stock ?? 1) !== 0) {
+          if (status === 'pagada' && comboSnapshot) {
+            for (const line of combosService.inventoryLinesForSaleItem({ combo_snapshot: comboSnapshot }, qty)) {
+              if (!line.tracksStock || !(line.qty > 0)) continue;
+              productIds.push(line.productId);
+              const stockChange = await changeBranchInventoryStock(conn, {
+                productId: line.productId, branchId, quantityDelta: -line.qty, preventNegative: true,
+              });
+              await registerInventoryMovement(conn, {
+                productId: line.productId, branchId, cashRegisterId,
+                saleId: Number(saleInsert.insertId), tipo: 'venta', cantidad: -line.qty,
+                stockAnterior: stockChange.previousStock, stockNuevo: stockChange.nextStock,
+                costoUnitario: line.unitCost,
+                referenciaTipo: 'venta_movil', referenciaId: doc.id,
+                notas: `Salida por combo ${line.comboName} · venta móvil ${invoiceNumber}`.slice(0, 255),
+                usuarioId: users[0].id, usuarioNombre: users[0].nombre || 'App Móvil',
+              });
+            }
+          } else if (status === 'pagada' && Number(product.tracks_stock ?? 1) !== 0) {
             const stockChange = await changeBranchInventoryStock(conn, {
               productId: product.id, branchId, quantityDelta: -qty, preventNegative: true,
             });
@@ -2259,6 +2287,8 @@ function getOfflineRouter() {
       changeBranchInventoryStock,
       registerInventoryMovement,
       mapInventoryMovementRow,
+      // Combos promocionales: la venta offline de un combo descuenta sus componentes.
+      ensureCombosExtensions,
       // Caja offline (Fase 3 de la extensión offline)
       withTransaction,
       ensureCashMovementExtensions,
@@ -2506,6 +2536,26 @@ app.use('/api/promotions', createPromotionsRouter({
   resolveRequestActorUser,
   userRoleHasPermission,
   ensurePromotionsExtensions,
+}));
+
+// Combos promocionales (Centro de Promociones → Combos promocionales).
+app.use('/api/combos', createCombosRouter({
+  query,
+  withTransaction,
+  addColumnIfMissing,
+  resolveRequestActorUser,
+  userRoleHasPermission,
+  isGlobalAdministratorUser,
+  getProductCatalogBranchScope,
+  resolveStockBranchId: resolveComboStockBranchId,
+  ensureUniqueProductCode,
+  ensureUniqueProductBarcode,
+  ensureUniqueProductName,
+  saveProductImageBuffer,
+  decodeDataUrlImage,
+  removeLocalProductImage,
+  writeAuditLog,
+  afterCombosChanged,
 }));
 
 // Plataforma Multiempresa — solo rutas públicas del wizard (buscar contador)
@@ -3521,6 +3571,123 @@ function mapProductRow(row) {
   };
 }
 
+// Combos promocionales: a los combos de la lista les agrega sus componentes y
+// cuántos se pueden armar con la existencia que trae la misma lista (la de la
+// sucursal activa). El combo en sí no tiene existencia propia.
+async function attachComboDataToProducts(products = []) {
+  const comboIds = products
+    .filter((p) => p.tipoProducto === combosService.COMBO_PRODUCT_TYPE)
+    .map((p) => Number(p.id));
+  if (!comboIds.length) return products;
+  await ensureCombosExtensions();
+  const byCombo = await combosService.loadComponentsByCombo(query, comboIds);
+  const stockById = new Map(products.map((p) => [Number(p.id), Number(p.stock || 0)]));
+  for (const product of products) {
+    const componentes = byCombo.get(Number(product.id));
+    if (!componentes || !componentes.length) continue;
+    product.componentes = componentes.map((c) => ({
+      id: c.id, codigo: c.codigo, nombre: c.nombre, cantidad: c.cantidad, controlaStock: c.controlaStock,
+    }));
+    product.comboDisponible = combosService.computeComboAvailability(componentes, stockById);
+    product.comboPrecioNormal = combosService.computeComboTotals(componentes, product.precioVenta).precioNormal;
+  }
+  return products;
+}
+
+// Antes de descontar una venta con combos: lo que pide TODO el carrito por
+// producto (combos + productos sueltos, sumados) contra la existencia de la
+// sucursal. changeBranchInventoryStock igual frena un negativo al descontar
+// línea por línea; esto da un mensaje claro con todo lo que falta.
+async function assertCartStockForCombos(conn, { items = [], componentsByCombo, branchId }) {
+  const runQuery = conn.query.bind(conn);
+  const productItems = items.filter((item) => !(item.quickSale === true && !Number(item.id || 0)));
+  const normalIds = [...new Set(productItems
+    .map((item) => Number(item.id || 0))
+    .filter((id) => id > 0 && !componentsByCombo.has(id)))];
+  const normalRows = new Map();
+  if (normalIds.length) {
+    const rows = await runQuery(
+      `SELECT id, nombre, tracks_stock FROM products WHERE id IN (${normalIds.map(() => '?').join(', ')})`,
+      normalIds
+    );
+    for (const row of rows) normalRows.set(Number(row.id), row);
+  }
+  const names = new Map();
+  const lines = productItems.map((item) => {
+    const componentes = componentsByCombo.get(Number(item.id));
+    if (componentes) {
+      componentes.forEach((c) => names.set(c.id, c.nombre));
+      return { qty: Number(item.qty || 0), componentes };
+    }
+    const row = normalRows.get(Number(item.id));
+    if (row) names.set(Number(row.id), row.nombre);
+    return { productId: Number(item.id), qty: Number(item.qty || 0), tracksStock: Boolean(row) && Number(row.tracks_stock ?? 1) !== 0 };
+  });
+  const needs = combosService.aggregateStockNeeds(lines);
+  if (!needs.size) return;
+  const resolvedBranchId = await resolveInventoryBranchId({ query: runQuery }, branchId);
+  if (!resolvedBranchId) return;
+  const faltantes = [];
+  for (const [productId, need] of needs) {
+    const record = await ensureBranchInventoryRecord({ query: runQuery }, productId, resolvedBranchId);
+    const stock = Number(record?.stock || 0);
+    if (need > stock + 1e-9) {
+      faltantes.push(`${names.get(productId) || record?.product_name || `producto ${productId}`}: hay ${stock}, se necesitan ${need}`);
+    }
+  }
+  if (faltantes.length) {
+    throw Object.assign(
+      new Error(`Stock insuficiente para el pedido (contando los combos): ${faltantes.join('; ')}.`),
+      { statusCode: 409, code: 'COMBO_STOCK_INSUFICIENTE' }
+    );
+  }
+}
+
+// Sucursal cuya existencia se usa para calcular cuántos combos se pueden armar.
+async function resolveComboStockBranchId(actor) {
+  const scoped = getUserScopeBranchId(actor);
+  if (scoped) return Number(scoped);
+  const rows = await query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+  return Number(rows[0]?.active_branch_id || 0) || null;
+}
+
+// Lo mismo que hace POST/PUT /api/products después de guardar: caché del
+// catálogo, app de reportes, Firebase y respaldo CSV del catálogo.
+// Multisucursal: el combo NO se publica al catálogo de la empresa (queda con
+// alcance 'local'): la central todavía no transporta sus componentes y en la
+// sucursal llegaría un "combo" vacío que se vendería sin descontar nada. Cada
+// sucursal arma sus combos con sus productos.
+async function afterCombosChanged(ids = []) {
+  const unique = [...new Set(ids.map(Number).filter((id) => id > 0))];
+  if (!unique.length) return;
+  for (const id of unique) {
+    const rows = await query('SELECT * FROM products WHERE id = ? LIMIT 1', [id]);
+    const row = rows[0];
+    if (!row) continue;
+    try { productsCache.upsert(mapProductRow(row)); } catch (_e) { /* caché opcional */ }
+    fireReportSync(async () => {
+      const cfg = await getReportSyncConfig();
+      await syncCategoriesToReports({ config: cfg });
+      await reportsSync.syncProduct(row, { config: cfg });
+    });
+    try {
+      const _lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      if (_lic) {
+        getSyncService().enqueueAndSync('product', row.id, {
+          businessId: _lic,
+          codigo: row.codigo || '', nombre: row.nombre || '', categoria: row.categoria || '',
+          marca: row.marca || '', unidad: row.unidad || '', precioVenta: Number(row.precio_venta || 0),
+          precioCompra: Number(row.precio_compra || 0), stock: 0, stockMin: 0, estado: row.estado || 'Activo',
+          aplicaItbis: Boolean(row.aplica_itbis), imageUrl: row.image_url || null,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (_e) { /* sync en segundo plano */ }
+  }
+  await persistProductsCsvBackup('combos');
+  scheduleSilentProductBackup('combos');
+}
+
 async function persistProductsCsvBackup(reason = 'auto') {
   try {
     const rows = await query('SELECT * FROM products ORDER BY nombre, id');
@@ -4426,7 +4593,9 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // -13: gastos con varias líneas — tabla expense_items (con categoría por línea)
 // y config.service_terms (términos y condiciones de servicios) — ver
 // ensureGastosSchema y ensureServiciosSchema.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-13`;
+// -14: combos promocionales — tabla product_combo_items, sale_items.combo_snapshot
+// y config.combo_invoice_display — ver ensureCombosExtensions.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-14`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -5783,6 +5952,20 @@ async function ensureNcfExtensions() {
 }
 
 // ── Centro de Promociones ──────────────────────────────────────────────────
+// Combos promocionales (server/services/combos.service.js). Memoizado: lo piden
+// el arranque, el router de combos y cada venta.
+let _combosSchemaReady = null;
+function ensureCombosExtensions() {
+  if (!_combosSchemaReady) {
+    _combosSchemaReady = combosService.ensureCombosSchema({ query, addColumnIfMissing })
+      .catch((error) => {
+        _combosSchemaReady = null;
+        throw error;
+      });
+  }
+  return _combosSchemaReady;
+}
+
 async function ensurePromotionsExtensions() {
   await query(`
     CREATE TABLE IF NOT EXISTS promotions (
@@ -7684,6 +7867,7 @@ async function resetSystemData({ keepUserId = null, factoryReset = false } = {})
       await conn.query('DELETE FROM supplier_invoices');
       await conn.query('DELETE FROM suppliers');
       await conn.query('DELETE FROM clients');
+      await conn.query('DELETE FROM product_combo_items').catch(() => {});
       await conn.query('DELETE FROM products');
       await conn.query('DELETE FROM categories');
       await conn.query('DELETE FROM suspended_sales');
@@ -7748,6 +7932,7 @@ async function restoreBackupPayload(backup) {
       await conn.query('DELETE FROM supplier_invoices');
       await conn.query('DELETE FROM suppliers');
       await conn.query('DELETE FROM clients');
+      await conn.query('DELETE FROM product_combo_items').catch(() => {});
       await conn.query('DELETE FROM products');
       await conn.query('DELETE FROM categories');
       await conn.query('DELETE FROM suspended_sales');
@@ -7993,6 +8178,19 @@ async function restoreBackupPayload(backup) {
   });
 }
 
+function comboDisplayFromSaleItem(item) {
+  const snapshot = combosService.parseComboSnapshot(item?.combo_snapshot);
+  if (!snapshot) return {};
+  return {
+    combo: {
+      comboId: snapshot.comboId,
+      codigo: snapshot.codigo,
+      nombre: snapshot.nombre,
+      componentes: snapshot.componentes.map((c) => ({ id: c.id, codigo: c.codigo, nombre: c.nombre, cantidad: c.cantidad })),
+    },
+  };
+}
+
 function mapSaleRows(sales, items) {
   return sales.map((sale) => {
     let fiscalPayload = {};
@@ -8104,7 +8302,9 @@ function mapSaleRows(sales, items) {
         scaleRawReading: item.scale_raw_reading || '',
         promotionId: item.promotion_id === null || item.promotion_id === undefined ? null : Number(item.promotion_id),
         originalPrice: item.original_price === null || item.original_price === undefined ? null : Number(item.original_price),
-        quickSale: Number(item.is_quick_sale || 0) === 1
+        quickSale: Number(item.is_quick_sale || 0) === 1,
+        // Combo: los componentes tal como se vendieron (para el desglose impreso).
+        ...comboDisplayFromSaleItem(item)
       })),
     subtotal: Number(sale.subtotal || 0),
     descuento: Number(sale.discount || 0),
@@ -8200,6 +8400,8 @@ async function getConfig(options = {}) {
     receiptPrinterName: row.receipt_printer_name || '',
     receiptPaperSize: row.receipt_paper_size || '80mm',
     invoiceTemplate: sanitizeInvoiceTemplate(row.invoice_template) || 'clasica',
+    // Combos en facturas y tickets: 'agrupado' (una línea) o 'desglosado'.
+    comboInvoiceDisplay: combosService.normalizeComboInvoiceDisplay(row.combo_invoice_display),
     invoiceAccentColor: sanitizeInvoiceAccentColor(row.invoice_accent_color) || '',
     cashDrawerEnabled: Boolean(row.cash_drawer_enabled ?? 0),
     cashDrawerMethod: row.cash_drawer_method || 'escpos',
@@ -8559,12 +8761,18 @@ async function getBootstrapData(actorUser = null) {
     };
   }
 
+  const productos = await attachComboDataToProducts(productRows.map(mapProductRow))
+    .catch((error) => {
+      console.warn('[combos] No se pudieron agregar los componentes al catálogo:', error.message);
+      return productRows.map(mapProductRow);
+    });
+
   return {
     config,
     categorias: categoryRows.map((item) => item.nombre),
     users: userRows.map(mapUserRow),
     currentUser: null,
-    productos: productRows.map(mapProductRow),
+    productos,
     clientes: clientRows.map((row) => mapClientRow({
       ...row,
       balance: pendingCreditByClient.has(Number(row.id || 0))
@@ -9306,6 +9514,7 @@ app.post('/api/setup/complete', async (req, res) => {
     await conn.query('DELETE FROM supplier_invoices');
     await conn.query('DELETE FROM suppliers');
     await conn.query('DELETE FROM clients');
+    await conn.query('DELETE FROM product_combo_items').catch(() => {});
     await conn.query('DELETE FROM products');
     await conn.query('DELETE FROM categories');
     await conn.query('DELETE FROM suspended_sales');
@@ -12171,7 +12380,7 @@ app.get('/api/products', async (req, res) => {
   const rows = branchId
     ? await query('SELECT * FROM products WHERE branch_id IS NULL OR branch_id = ? ORDER BY nombre', [branchId])
     : await query('SELECT * FROM products ORDER BY nombre');
-  res.json({ products: rows.map(mapProductRow) });
+  res.json({ products: await attachComboDataToProducts(rows.map(mapProductRow)) });
 });
 
 // Cuerpo reusable de "crear producto" — usado tanto por POST /api/products
@@ -13002,6 +13211,17 @@ app.put('/api/products/:id', async (req, res) => {
       ? scopedCatalogBranchId
       : (Number(data.branchId ?? previous.branch_id ?? 0) || null);
 
+    // Un combo con componentes no tiene existencia propia (sale de sus
+    // componentes): aunque se edite desde Productos, sigue siendo combo.
+    const comboItemRows = await conn.query(
+      'SELECT COUNT(*) AS n FROM product_combo_items WHERE combo_product_id = ?',
+      [id]
+    ).catch(() => [{ n: 0 }]);
+    if (Number(comboItemRows[0]?.n || 0) > 0) {
+      // alcanceEmpresa 'local': ver afterCombosChanged (la central no lleva componentes).
+      Object.assign(data, { tipoProducto: combosService.COMBO_PRODUCT_TYPE, esCombo: true, tracksStock: false, stock: 0, stockMin: 0, alcanceEmpresa: 'local' });
+    }
+
     await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
     await ensureUniqueProductCode(data.codigo, id, conn, catalogBranchId);
     await ensureUniqueProductBarcode(data.barcode || data.codigo, id, conn, catalogBranchId);
@@ -13158,6 +13378,16 @@ app.delete('/api/products/:id', async (req, res) => {
     return res.status(403).json({ error: 'No tienes permiso para eliminar un producto que no pertenece a tu sucursal.' });
   }
   await multisucursal.catalogo.validarEliminarProducto(product.id);
+  const usedInCombos = await query(
+    `SELECT p.nombre FROM product_combo_items ci JOIN products p ON p.id = ci.combo_product_id
+      WHERE ci.component_product_id = ? LIMIT 3`,
+    [product.id]
+  ).catch(() => []);
+  if (usedInCombos.length) {
+    return res.status(409).json({
+      error: `No puedes eliminar este producto: forma parte del combo ${usedInCombos.map((r) => `"${r.nombre}"`).join(', ')}. Quítalo del combo primero.`
+    });
+  }
   if (Number(product.stock || 0) > 0) {
     return res.status(409).json({ error: 'No puedes eliminar este producto porque tiene stock pendiente.' });
   }
@@ -13169,6 +13399,8 @@ app.delete('/api/products/:id', async (req, res) => {
   }
   await withTransaction(async (conn) => {
     await conn.query('DELETE FROM products WHERE id = ?', [req.params.id]);
+    // Si era un combo, su composición se va con él.
+    await conn.query('DELETE FROM product_combo_items WHERE combo_product_id = ?', [req.params.id]).catch(() => {});
   });
   await removeLocalProductImage(product.image_local);
   productsCache.invalidate({ id: Number(req.params.id), codigo: product.codigo });
@@ -13201,9 +13433,12 @@ app.post('/api/admin/cleanup-zero-price-products', async (req, res) => {
   if (!userCanManageGlobalProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para realizar esta acción.' });
   }
-  const zeroRows = await query(
+  const comboComponentIds = new Set((await query('SELECT DISTINCT component_product_id AS id FROM product_combo_items').catch(() => []))
+    .map((row) => Number(row.id)));
+  // Un producto en $0 que forma parte de un combo no se borra: el combo lo necesita.
+  const zeroRows = (await query(
     "SELECT id, codigo, nombre, stock FROM products WHERE (precio_venta IS NULL OR precio_venta = 0) AND estado != 'Eliminado'"
-  );
+  )).filter((row) => !comboComponentIds.has(Number(row.id)));
   if (!zeroRows.length) {
     return res.json({ deleted: 0, products: [] });
   }
@@ -14824,6 +15059,7 @@ app.post('/api/sales/return', async (req, res) => {
           qty: qtyReturn,
           price: effectivePrice,
           lineTotal,
+          comboSnapshot: original.combo_snapshot || null,
         });
       }
 
@@ -14863,22 +15099,37 @@ app.post('/api/sales/return', async (req, res) => {
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [returnId, item.saleItemId, item.productId, item.productName, item.qty, item.price, item.lineTotal]
         );
-        // Reintegrar al inventario
-        if (inventoryBranchId && item.productId) {
-          await changeBranchInventoryStock(conn, {
-            productId: item.productId,
+        // Reintegrar al inventario. Un combo devuelve sus componentes × las
+        // unidades devueltas, según la foto de la venta (no la composición actual).
+        const returnLines = item.comboSnapshot
+          ? combosService.inventoryLinesForSaleItem({ combo_snapshot: item.comboSnapshot }, item.qty)
+              .filter((line) => line.tracksStock && line.qty > 0)
+          : (item.productId ? [{ productId: item.productId, qty: item.qty, comboName: '' }] : []);
+        for (const line of (inventoryBranchId ? returnLines : [])) {
+          const stockChange = await changeBranchInventoryStock(conn, {
+            productId: line.productId,
             branchId: inventoryBranchId,
-            quantityDelta: +item.qty,
+            quantityDelta: +line.qty,
             preventNegative: false,
           });
-          // Registrar movimiento de inventario
-          await conn.query(
-            `INSERT INTO inventory_movements (product_id, branch_id, movement_type, quantity, notes, user_id, user_name, happened_at)
-             VALUES (?, ?, 'devolucion', ?, ?, ?, ?, datetime('now'))`,
-            [item.productId, inventoryBranchId, item.qty,
-             `Devolución factura ${invoiceNumber} — ${reason}`,
-             actor.userId || null, actor.userName || 'Sistema']
-          ).catch(() => {}); // no crítico si falla el log
+          // Movimiento de inventario con las columnas reales de la tabla (antes
+          // usaba columnas que no existen y el registro fallaba en silencio).
+          await registerInventoryMovement(conn, {
+            productId: line.productId,
+            branchId: inventoryBranchId,
+            cashRegisterId: structure.cashRegisterId || null,
+            saleId: sale.id,
+            tipo: 'devolucion',
+            cantidad: line.qty,
+            stockAnterior: stockChange.previousStock,
+            stockNuevo: stockChange.nextStock,
+            costoUnitario: Number(line.unitCost || stockChange.unitCost || 0),
+            referenciaTipo: 'devolucion',
+            referenciaId: invoiceNumber,
+            notas: `Devolución factura ${invoiceNumber}${line.comboName ? ` (combo ${line.comboName})` : ''} — ${reason}`.slice(0, 255),
+            usuarioId: actor.userId || null,
+            usuarioNombre: actor.userName || 'Sistema',
+          }).catch((err) => console.warn('[devolucion] No se pudo registrar el movimiento:', err.message));
         }
       }
 
@@ -16681,6 +16932,22 @@ app.post('/api/sales', async (req, res) => {
     }
 
     const affectedProductIds = new Set();
+    // Combos promocionales: la línea del combo se cobra como un artículo, pero
+    // el inventario sale de sus componentes reales. Primero se valida lo que
+    // pide TODO el carrito por producto (combos + productos sueltos), para no
+    // vender más de lo que hay aunque varios combos compartan componentes.
+    await ensureCombosExtensions();
+    const saleComboComponents = await combosService.loadComponentsByCombo(
+      conn.query.bind(conn),
+      sale.items.filter((item) => !(item.quickSale === true && !Number(item.id || 0))).map((item) => item.id)
+    );
+    if (saleComboComponents.size && shouldDiscountInventoryNow) {
+      await assertCartStockForCombos(conn, {
+        items: sale.items,
+        componentsByCombo: saleComboComponents,
+        branchId: structure.branchId,
+      });
+    }
     let ahorroPromociones = 0;
     let computedSubtotal = 0;
     // Techo de ITBIS acumulado por línea (para el anti-tamper de más abajo).
@@ -16700,14 +16967,22 @@ app.post('/api/sales', async (req, res) => {
       const isQuickSale = item.quickSale === true && !Number(item.id || 0);
       const quickName = isQuickSale ? String(item.nombre || '').trim().slice(0, 150) : '';
       let product = null;
+      let comboSnapshot = null;
       if (!isQuickSale) {
         affectedProductIds.add(Number(item.id || 0) || 0);
-        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, aplica_itbis, itbis_modo, itbis_monto FROM products WHERE id = ? LIMIT 1', [item.id]);
+        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, aplica_itbis, itbis_modo, itbis_monto, estado FROM products WHERE id = ? LIMIT 1', [item.id]);
         product = productRows[0];
         if (!product) {
           const missingError = new Error(`El producto ID ${item.id} no existe.`);
           missingError.statusCode = 400;
           throw missingError;
+        }
+        const comboComponents = saleComboComponents.get(Number(product.id));
+        if (comboComponents) {
+          if (String(product.estado || '') === 'Inactivo') {
+            throw Object.assign(new Error(`El combo "${product.nombre}" está desactivado y no se puede vender.`), { statusCode: 409 });
+          }
+          comboSnapshot = combosService.buildSaleSnapshot(product, comboComponents);
         }
       }
 
@@ -16759,12 +17034,14 @@ app.post('/api/sales', async (req, res) => {
 
       await conn.query(
         `INSERT INTO sale_items
-          (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, tax_mode, tax_amount, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, tax_mode, tax_amount, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price, combo_snapshot)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           result.insertId,
           isQuickSale ? null : item.id,
-          isQuickSale ? quickName : null,
+          // Un combo guarda su nombre de ese momento: renombrarlo después no
+          // cambia las facturas viejas.
+          comboSnapshot ? comboSnapshot.nombre : (isQuickSale ? quickName : null),
           isQuickSale ? 1 : 0,
           item.qty,
           effectivePrice,
@@ -16783,10 +17060,43 @@ app.post('/api/sales', async (req, res) => {
           effectiveLineTotal,
           activePromo ? activePromo.promotionId : (agreed?.promotionId || null),
           activePromo ? activePromo.precioOriginal : (agreed && agreed.originalPrice !== null ? agreed.originalPrice : null),
+          comboSnapshot ? JSON.stringify(comboSnapshot) : null,
         ]
       );
 
-      if (!isQuickSale && shouldDiscountInventoryNow && Number(product?.tracks_stock ?? 1) !== 0) {
+      // Combo: sale cada componente × cantidad de combos (la fila del combo no
+      // tiene existencia propia: tracks_stock = 0, así que el bloque de abajo no
+      // la toca).
+      if (comboSnapshot && shouldDiscountInventoryNow) {
+        for (const line of combosService.inventoryLinesForSaleItem({ combo_snapshot: comboSnapshot }, item.qty)) {
+          if (!line.tracksStock || !(line.qty > 0)) continue;
+          affectedProductIds.add(line.productId);
+          const stockChange = await changeBranchInventoryStock(conn, {
+            productId: line.productId,
+            branchId: structure.branchId,
+            quantityDelta: -line.qty,
+            preventNegative: true
+          });
+          await registerInventoryMovement(conn, {
+            productId: line.productId,
+            branchId: structure.branchId,
+            cashRegisterId: structure.cashRegisterId,
+            saleId: Number(result.insertId),
+            tipo: 'venta',
+            cantidad: -line.qty,
+            stockAnterior: stockChange.previousStock,
+            stockNuevo: stockChange.nextStock,
+            costoUnitario: line.unitCost,
+            referenciaTipo: 'venta',
+            referenciaId: invoiceNumber,
+            notas: `Salida por combo ${line.comboName} · venta ${invoiceNumber}`.slice(0, 255),
+            usuarioId: sale.userId || null,
+            usuarioNombre: actorUser.nombre || actorUser.usuario || 'Sistema'
+          });
+        }
+      }
+
+      if (!isQuickSale && shouldDiscountInventoryNow && !comboSnapshot && Number(product?.tracks_stock ?? 1) !== 0) {
         const stockChange = await changeBranchInventoryStock(conn, {
           productId: item.id,
           branchId: structure.branchId,
@@ -17286,26 +17596,29 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
     );
 
     const affectedProductIds = new Set();
-    for (const item of saleItems) {
-      if (!item.product_id || Number(item.tracks_stock ?? 1) === 0) continue;
-      affectedProductIds.add(Number(item.product_id || 0) || 0);
-      const qty = Number(item.qty || 0);
+    // Un combo descuenta sus componentes según la foto guardada al facturar.
+    for (const line of saleItems.flatMap((item) => combosService.inventoryLinesForSaleItem(item))) {
+      if (!line.productId || !line.tracksStock) continue;
+      affectedProductIds.add(line.productId);
+      const qty = Number(line.qty || 0);
       const stockChange = await changeBranchInventoryStock(conn, {
-        productId: item.product_id,
+        productId: line.productId,
         branchId: inventoryBranchId,
         quantityDelta: -qty,
         preventNegative: true
       });
       await registerInventoryMovement(conn, {
-        productId: item.product_id,
+        productId: line.productId,
         tipo: 'venta',
         cantidad: -qty,
         stockAnterior: stockChange.previousStock,
         stockNuevo: stockChange.nextStock,
-        costoUnitario: Number(item.precio_compra || stockChange.unitCost || 0),
+        costoUnitario: Number(line.unitCost || stockChange.unitCost || 0),
         referenciaTipo: 'venta',
         referenciaId: invoiceNumber,
-        notas: `Descuento por cobro de factura pendiente ${invoiceNumber}`,
+        notas: line.comboName
+          ? `Descuento por cobro de factura pendiente ${invoiceNumber} (combo ${line.comboName})`.slice(0, 255)
+          : `Descuento por cobro de factura pendiente ${invoiceNumber}`,
         usuarioId: actor.userId || null,
         usuarioNombre: actor.userName || 'Sistema',
         branchId: inventoryBranchId,
@@ -17514,25 +17827,29 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
 
     const affectedProductIds = new Set();
     if (inventoryWasDiscounted && inventoryBranchId) {
-      for (const item of saleItems) {
-        if (!item.product_id || Number(item.tracks_stock ?? 1) === 0) continue;
-        affectedProductIds.add(Number(item.product_id || 0) || 0);
-        const qty = Number(item.qty || 0);
+      // Un combo reintegra sus componentes según la foto de la venta (no la
+      // composición actual del combo, que pudo cambiar).
+      for (const line of saleItems.flatMap((item) => combosService.inventoryLinesForSaleItem(item))) {
+        if (!line.productId || !line.tracksStock) continue;
+        affectedProductIds.add(line.productId);
+        const qty = Number(line.qty || 0);
         const stockChange = await changeBranchInventoryStock(conn, {
-          productId: item.product_id,
+          productId: line.productId,
           branchId: inventoryBranchId,
           quantityDelta: qty
         });
         await registerInventoryMovement(conn, {
-          productId: item.product_id,
+          productId: line.productId,
           tipo: 'cancelacion_venta',
           cantidad: qty,
           stockAnterior: stockChange.previousStock,
           stockNuevo: stockChange.nextStock,
-          costoUnitario: Number(item.precio_compra || stockChange.unitCost || 0),
+          costoUnitario: Number(line.unitCost || stockChange.unitCost || 0),
           referenciaTipo: 'cancelacion_venta',
           referenciaId: invoiceNumber,
-          notas: `Reintegro por cancelación ${invoiceNumber}`,
+          notas: line.comboName
+            ? `Reintegro por cancelación ${invoiceNumber} (combo ${line.comboName})`.slice(0, 255)
+            : `Reintegro por cancelación ${invoiceNumber}`,
           usuarioId: actor.userId || null,
           usuarioNombre: actor.userName || 'Sistema',
           branchId: inventoryBranchId,
@@ -20177,6 +20494,7 @@ async function finishMysqlRuntimeInit() {
         ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
         ensureSyncQueueTable().catch(e => console.warn('[sync-queue] init fallo:', e.message)),
+        ensureCombosExtensions().catch(e => console.warn('[combos] init fallo:', e.message)),
       ]));
       await multisucursal.prepararAlArrancar();
       const setup = await getSetupStatus();
@@ -20383,6 +20701,7 @@ async function prepareServerRuntime() {
       ensureAssistantSchema(query).catch(e => console.warn('[assistant] init fallo:', e.message)),
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
+      ensureCombosExtensions().catch(e => console.warn('[combos] init fallo:', e.message)),
     ]));
     // Antes de la recuperación automática: un respaldo hecho con esta versión
     // trae la columna uuid y la base tiene que tenerla para restaurarlo.

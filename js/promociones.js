@@ -415,7 +415,7 @@ async function loadActivePromotionsMap() {
 }
 
 // ── Pestañas del módulo ──────────────────────────────────────────────────────
-const PROMOTIONS_TABS = ['dashboard', 'activas', 'estadisticas', 'historial', 'config'];
+const PROMOTIONS_TABS = ['dashboard', 'activas', 'combos', 'estadisticas', 'historial', 'config'];
 function switchPromotionsTab(tab) {
   PROMOTIONS_TABS.forEach((t) => {
     document.getElementById(`promo-panel-${t}`)?.classList.toggle('hidden', t !== tab);
@@ -427,6 +427,7 @@ function switchPromotionsTab(tab) {
 
   if (tab === 'dashboard') loadPromotionsDashboard();
   else if (tab === 'activas') loadPromotionsTable();
+  else if (tab === 'combos' && typeof loadCombosPanel === 'function') loadCombosPanel();
   else if (tab === 'estadisticas') loadPromotionStats();
   else if (tab === 'historial') loadPromotionsAuditLog();
   else if (tab === 'config') loadPromotionsConfig();

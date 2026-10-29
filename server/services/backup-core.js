@@ -107,6 +107,7 @@ async function buildFullPayload(query) {
     tables, paymentMethods, branches, cashRegisters,
     inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
     syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
+    productComboItems,
   ] = await Promise.all([
     safeQuery('SELECT * FROM config', [], 'config'),
     safeQuery('SELECT * FROM users', [], 'users'),
@@ -138,6 +139,8 @@ async function buildFullPayload(query) {
     safeQuery('SELECT * FROM sync_cursors'),
     safeQuery("SELECT * FROM sync_conflictos WHERE estado = 'pendiente' LIMIT 50000"),
     safeQuery('SELECT * FROM ncf_rangos_central'),
+    // Combos promocionales: qué productos lleva cada combo.
+    safeQuery('SELECT * FROM product_combo_items'),
   ]);
 
   if (failedCritical.length) {
@@ -190,6 +193,7 @@ async function buildFullPayload(query) {
       tables, paymentMethods, branches, cashRegisters,
       inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
       syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
+      productComboItems,
     },
   };
 }
@@ -311,6 +315,7 @@ async function restorePayloadToDb(payload, query) {
     ['categories',        data.categories       || []],
     ['users',             data.users            || []],
     ['products',          data.products         || []],
+    ['product_combo_items', data.productComboItems || []],
     ['clients',           data.clients          || []],
     ['suppliers',         data.suppliers        || []],
     ['payment_methods',   data.paymentMethods   || []],
@@ -363,10 +368,17 @@ async function restorePayloadToDb(payload, query) {
 
     await safeQ('SET FOREIGN_KEY_CHECKS = 0', []);
 
+    // La composición de los combos apunta a ids de productos: si se restauran
+    // productos, la vieja se borra aunque el respaldo no traiga combos (uno de
+    // antes de los combos), o quedaría apuntando a productos que ya no son.
+    const restoringProducts = (data.products || []).length > 0;
+
     for (const [table, rows] of tableOrder) {
-      if (!rows.length) continue;
+      const alwaysClear = table === 'product_combo_items' && restoringProducts;
+      if (!rows.length && !alwaysClear) continue;
 
       await safeQ(`DELETE FROM \`${table}\``, []);
+      if (!rows.length) continue;
 
       const normalizedRows = rows.map(_normalizeDateTimesInRow);
       const colsRespaldo = Object.keys(normalizedRows[0]);

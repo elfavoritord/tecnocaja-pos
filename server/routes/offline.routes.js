@@ -18,6 +18,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('../services/promotion-engine');
+const combosService = require('../services/combos.service');
 const { normalizeClientRequestId, isDuplicateClientRequestError } = require('../sales/sale-idempotency');
 
 // Una venta de contingencia que ya entró a la base principal (por otra
@@ -81,6 +82,8 @@ module.exports = function createOfflineRouter(deps) {
     changeBranchInventoryStock,
     registerInventoryMovement,
     mapInventoryMovementRow,
+    // Combos promocionales
+    ensureCombosExtensions,
     // Caja offline (Fase 3 de la extensión offline)
     withTransaction,
     ensureCashMovementExtensions,
@@ -1964,6 +1967,14 @@ module.exports = function createOfflineRouter(deps) {
         resolveActivePromotions({ query: conn.query.bind(conn), sucursalId: branchId }),
         resolveActiveQuantityRules({ query: conn.query.bind(conn), sucursalId: branchId }),
       ]);
+      // Combos promocionales: la venta offline se hizo sin la base principal;
+      // al sincronizar se guarda la composición de ESTE momento y se descuentan
+      // los componentes (la fila del combo no tiene existencia propia).
+      if (typeof ensureCombosExtensions === 'function') await ensureCombosExtensions();
+      const offlineComboComponents = await combosService.loadComponentsByCombo(
+        conn.query.bind(conn),
+        items.map((it) => Number(it.id || it.producto_id || 0)).filter((id) => id > 0)
+      ).catch(() => new Map());
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         let productId = Number(item.id || item.producto_id || 0);
@@ -2001,18 +2012,60 @@ module.exports = function createOfflineRouter(deps) {
           const effectiveLineTotal = activePromo ? Number((effectiveUnitPrice * qty).toFixed(2)) : lineTotal;
           if (activePromo) ahorroPromociones += activePromo.ahorro * qty;
 
+          const comboComponents = isQuickSale ? null : offlineComboComponents.get(productId);
+          let comboSnapshot = null;
+          if (comboComponents) {
+            const comboRows = await conn.query('SELECT id, codigo, nombre FROM products WHERE id = ? LIMIT 1', [productId]).catch(() => []);
+            comboSnapshot = combosService.buildSaleSnapshot(
+              { id: productId, codigo: comboRows[0]?.codigo || item.codigo || '', nombre: comboRows[0]?.nombre || item.nombre || item.name || '', precio_venta: effectiveUnitPrice },
+              comboComponents
+            );
+          }
+
           await conn.query(
-            `INSERT INTO sale_items (sale_id, product_id, item_name, is_quick_sale, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?)`,
-            [saleId, isQuickSale ? null : productId, isQuickSale ? quickName : null, isQuickSale ? 1 : 0,
+            `INSERT INTO sale_items (sale_id, product_id, item_name, is_quick_sale, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price, combo_snapshot)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?, ?)`,
+            [saleId, isQuickSale ? null : productId, comboSnapshot ? comboSnapshot.nombre : (isQuickSale ? quickName : null), isQuickSale ? 1 : 0,
              qty, effectiveUnitPrice, effectiveLineTotal, discountRate, taxRate,
-             activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null]
+             activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null,
+             comboSnapshot ? JSON.stringify(comboSnapshot) : null]
           );
+
+          // Combo: salen sus componentes (como el resto de la venta offline, sin
+          // frenar un negativo: la venta ya ocurrió en la caja).
+          if (comboSnapshot) {
+            for (const line of combosService.inventoryLinesForSaleItem({ combo_snapshot: comboSnapshot }, qty)) {
+              if (!line.tracksStock || !(line.qty > 0)) continue;
+              let prevStock = 0;
+              let nextStock = 0;
+              try {
+                const change = await changeBranchInventoryStock({ query: conn.query }, {
+                  productId: line.productId,
+                  branchId,
+                  quantityDelta: -line.qty
+                });
+                prevStock = change.previousStock;
+                nextStock = change.nextStock;
+              } catch (stockErr) {
+                console.warn(`[offline-sync] No se pudo descontar el componente ${line.productId} del combo:`, stockErr.message);
+              }
+              await conn.query(
+                `INSERT INTO inventory_movements
+                   (product_id, movement_type, quantity_change, previous_stock, new_stock,
+                    reference_type, reference_id, notes, branch_id, sale_id, created_at)
+                 VALUES (?, 'salida', ?, ?, ?, 'venta_offline', ?, ?, ?, ?, ?)`,
+                [line.productId, line.qty, prevStock, nextStock, invoiceNumber,
+                 `Venta offline sincronizada (${pendingSale.offline_invoice_id}) · combo ${line.comboName}`.slice(0, 255),
+                 branchId, saleId || null, nowSql]
+              ).catch(() => {});
+              productIds.push(line.productId);
+            }
+          }
 
           // Descontar stock de ESTA sucursal (no el agregado global)
           let previousStock = 0;
           let newStock = 0;
-          if (!isQuickSale) {
+          if (!isQuickSale && !comboSnapshot) {
             try {
               const inventoryChange = await changeBranchInventoryStock({ query: conn.query }, {
                 productId,
@@ -2027,7 +2080,7 @@ module.exports = function createOfflineRouter(deps) {
           }
 
           // Registrar movimiento de inventario (columnas del schema real)
-          if (!isQuickSale) await conn.query(
+          if (!isQuickSale && !comboSnapshot) await conn.query(
             `INSERT INTO inventory_movements
                (product_id, movement_type, quantity_change, previous_stock, new_stock,
                 reference_type, reference_id, notes, branch_id, sale_id, created_at)

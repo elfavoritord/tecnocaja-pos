@@ -670,13 +670,46 @@ function findMergeableSaleItemIndex(product, saleMode) {
   });
 }
 
+// Combo promocional: producto del catálogo con componentes fijos (Promociones →
+// Combos). Se vende como una línea; la existencia sale de sus componentes.
+function isComboProduct(product) {
+  return Boolean(product) && product.tipoProducto === 'combo'
+    && Array.isArray(product.componentes) && product.componentes.length > 0;
+}
+
 // Suma la cantidad de un producto que ya está en el carrito (aún no facturada),
 // para poder mostrar disponibilidad en vivo y evitar agregar más de lo que hay.
+// Cuenta también lo que lleva cada combo del carrito.
 function getCartQtyForProduct(productId, excludeIdx = -1) {
   return (DB.saleItems || []).reduce((sum, item, idx) => {
     if (idx === excludeIdx) return sum;
-    return Number(item.id || 0) === Number(productId) ? sum + Number(item.qty || 0) : sum;
+    if (Number(item.id || 0) === Number(productId)) return sum + Number(item.qty || 0);
+    const combo = item.id ? DB.productos.find((p) => Number(p.id) === Number(item.id)) : null;
+    const component = isComboProduct(combo)
+      ? combo.componentes.find((c) => Number(c.id) === Number(productId) && c.controlaStock !== false)
+      : null;
+    return component ? sum + Number(item.qty || 0) * Number(component.cantidad || 0) : sum;
   }, 0);
+}
+
+// Cuántos combos más se pueden armar con lo que queda de sus componentes
+// (descontando lo que ya aparta el carrito). null = ningún componente controla existencia.
+function getComboAvailableQty(combo, excludeIdx = -1) {
+  if (!isComboProduct(combo)) return null;
+  let available = Infinity;
+  for (const component of combo.componentes) {
+    if (component.controlaStock === false || !(Number(component.cantidad) > 0)) continue;
+    const product = DB.productos.find((p) => Number(p.id) === Number(component.id));
+    const free = Number(product?.stock || 0) - getCartQtyForProduct(component.id, excludeIdx);
+    available = Math.min(available, Math.floor(free / Number(component.cantidad) + 1e-9));
+  }
+  return available === Infinity ? null : Math.max(0, available);
+}
+
+function getComboComponentsLabel(components = []) {
+  return components
+    .map((c) => `${Number(c.cantidad || 0)} × ${c.nombre || ''}`)
+    .join(' · ');
 }
 
 function focusSaleQuantityInput(index, options = {}) {
@@ -1945,16 +1978,20 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
     const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(product) : product.nombre;
     const stock = Number(product.stock || 0);
     const stockMin = Number(product.stockMin || 0);
-    const tracksStock = product.tracksStock !== false;
+    const isCombo = isComboProduct(product);
+    const comboAvailable = isCombo ? getComboAvailableQty(product) : null;
+    const tracksStock = isCombo ? comboAvailable !== null : product.tracksStock !== false;
     // El stock mostrado descuenta lo que ya está en el carrito (aún no vendido)
     // para que baje en vivo al agregar y vuelva a la normalidad si se quita.
-    const cartQty = tracksStock ? getCartQtyForProduct(product.id) : 0;
-    const availableStock = tracksStock ? Math.max(0, stock - cartQty) : stock;
-    const stockClass = tracksStock && availableStock === 0 ? 'is-out' : tracksStock && availableStock <= stockMin ? 'is-low' : '';
+    const cartQty = tracksStock && !isCombo ? getCartQtyForProduct(product.id) : 0;
+    const availableStock = isCombo ? (comboAvailable ?? 0) : (tracksStock ? Math.max(0, stock - cartQty) : stock);
+    const stockClass = tracksStock && availableStock === 0 ? 'is-out' : tracksStock && !isCombo && availableStock <= stockMin ? 'is-low' : '';
     const stockLabel = !tracksStock ? '' : availableStock === 0 ? 'Agotado' : `Disp: ${availableStock}`;
+    const comboTitle = isCombo ? ` — ${getComboComponentsLabel(product.componentes)}` : '';
     return `
-    <article class="sales-product-card ${stockClass}" onclick="addProductById(${product.id})" title="${nombre}">
-      <div class="sales-product-media">
+    <article class="sales-product-card ${stockClass}" onclick="addProductById(${product.id})" title="${escapeHtml(`${nombre}${comboTitle}`)}">
+      <div class="sales-product-media"${isCombo ? ' style="position:relative"' : ''}>
+        ${isCombo ? '<span class="sales-product-combo-badge">Combo</span>' : ''}
         <img class="sales-product-image" src="${getSalesProductImage(product)}" alt="${nombre}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
       </div>
       <div class="sales-product-body">
@@ -4751,7 +4788,7 @@ function _doSearchProduct(query) {
       </div>
       <div class="sri-side">
         <div class="sri-price">${fmt(p.precioVenta)}</div>
-        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${p.tracksStock===false?'':(p.stock===0?(!p.branchId?'Sin stock en esta sucursal':'Agotado'):'Stock: '+p.stock)}</div>
+        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${isComboProduct(p)?`Combo · Disp: ${getComboAvailableQty(p) ?? '—'}`:(p.tracksStock===false?'':(p.stock===0?(!p.branchId?'Sin stock en esta sucursal':'Agotado'):'Stock: '+p.stock))}</div>
       </div>
     </div>
   `).join('');
@@ -4931,6 +4968,22 @@ async function addProductById(id) {
     };
   }
 
+  // Combo: el tope lo pone el componente que menos alcance (contando lo que ya
+  // aparta el carrito, también en otros combos). El servidor vuelve a validar.
+  if (isComboProduct(prod)) {
+    const comboAvailable = getComboAvailableQty(prod);
+    if (comboAvailable !== null && nextQty > comboAvailable) {
+      showToast(
+        comboAvailable <= 0
+          ? `No alcanzan los productos para otro "${prod.nombre}".`
+          : `Solo se pueden armar ${comboAvailable} más de "${prod.nombre}".`,
+        'warning'
+      );
+      focusSalesSearchInput({ force: true });
+      return;
+    }
+  }
+
   // Tope de disponibilidad: no dejar agregar más de lo que realmente hay
   // (stock real menos lo que ya está en el carrito), avisando antes de que
   // llegue a facturarse.
@@ -5059,6 +5112,13 @@ function renderSaleTable() {
         <span class="sale-item-name">${escapeHtml(name ?? '')}</span>
         <span class="sale-item-code-inline">${escapeHtml(item.codigo ?? '')}</span>
         ${item.quickSale ? '<span class="tc-tag sale-item-tag">Venta rápida · sin inventario</span>' : ''}
+        ${(() => {
+          // Combo: lo que lleva se muestra, pero no se puede cambiar en la venta.
+          const combo = DB.productos.find((p) => Number(p.id) === Number(item.id));
+          return isComboProduct(combo)
+            ? `<span class="tc-tag sale-item-tag">Combo</span><span class="sale-combo-components">${escapeHtml(getComboComponentsLabel(combo.componentes))}</span>`
+            : '';
+        })()}
         ${promoText ? `<span class="tc-tag tc-tag--primary sale-item-tag">${escapeHtml(promoText)}</span>` : ''}
       </td>
       <td class="col-price">
@@ -5210,7 +5270,18 @@ function updateItemQty(idx, val) {
 
   let qty = sanitizeSaleItemQty(item, val);
   const product = DB.productos.find(p => Number(p.id) === Number(item.id));
-  if (product && product.tracksStock !== false) {
+  if (isComboProduct(product)) {
+    const comboAvailable = getComboAvailableQty(product, idx);
+    if (comboAvailable !== null && qty > comboAvailable) {
+      qty = Math.max(0, comboAvailable);
+      showToast(
+        comboAvailable > 0
+          ? `Solo se pueden armar ${comboAvailable} de "${product.nombre}".`
+          : `No alcanzan los productos para "${product.nombre}".`,
+        'warning'
+      );
+    }
+  } else if (product && product.tracksStock !== false) {
     const otherCartQty = getCartQtyForProduct(product.id, idx);
     const available = Number(product.stock || 0) - otherCartQty;
     if (qty > available) {
@@ -6898,10 +6969,18 @@ async function finalizePendingSale(action = 'charge') {
       }
     }
 
-    // BUG 17 fix: solo descontar stock a productos que controlan inventario
+    // BUG 17 fix: solo descontar stock a productos que controlan inventario.
+    // Un combo descuenta sus componentes (igual que el servidor).
     DB.saleItems.forEach(item => {
       const prod = DB.productos.find(p => p.id === item.id);
-      if (prod && prod.tracksStock !== false) {
+      if (isComboProduct(prod)) {
+        prod.componentes.forEach((component) => {
+          const compProd = DB.productos.find((p) => Number(p.id) === Number(component.id));
+          if (compProd && compProd.tracksStock !== false && component.controlaStock !== false) {
+            compProd.stock = Math.max(0, Number(compProd.stock || 0) - Number(item.qty || 0) * Number(component.cantidad || 0));
+          }
+        });
+      } else if (prod && prod.tracksStock !== false) {
         prod.stock = Math.max(0, prod.stock - item.qty);
       }
     });
@@ -7108,6 +7187,25 @@ function getReceiptConfigOverride() {
 
 function getReceiptConfigValue(field) {
   return getReceiptConfigOverride()?.[field] ?? getEffectiveConfig()[field] ?? '';
+}
+
+// Combo desglosado (Promociones → Combos → Presentación en las facturas): las
+// líneas "2 x Refresco" que van debajo del combo, sin precio. Usa la foto de la
+// venta (item.combo, lo que llevaba ese día); sin ella (vista previa del
+// carrito), lo que lleva el combo ahora. Cantidades = por combo × combos vendidos.
+function getReceiptComboLines(item) {
+  if ((getReceiptConfigValue('comboInvoiceDisplay') || 'agrupado') !== 'desglosado') return [];
+  let components = item?.combo?.componentes;
+  if (!Array.isArray(components) || !components.length) {
+    const product = (DB.productos || []).find((p) => Number(p.id) === Number(item?.id));
+    components = isComboProduct(product) ? product.componentes : null;
+  }
+  if (!Array.isArray(components) || !components.length) return [];
+  const combos = Number(item?.qty || item?.cantidad || 1) || 1;
+  return components.map((c) => {
+    const units = Math.round(Number(c.cantidad || 0) * combos * 1000) / 1000;
+    return `${units} x ${normalizeReceiptText(c.nombre || '')}`;
+  });
 }
 
 function buildReceiptWhatsAppMessage(venta) {
@@ -7615,7 +7713,9 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
         precio: Number(item?.precio || 0),
         itbisTexto: templateData.normalizedItems[index] ? getThermalItemItbisText(templateData.normalizedItems[index]) : '',
         variante: normalizeReceiptText(item?.variante || ''),
-        notas: normalizeReceiptText(item?.notas || '')
+        notas: normalizeReceiptText(item?.notas || ''),
+        // Combo desglosado: sus productos van debajo, sin precio.
+        componentes: getReceiptComboLines(item)
       })),
       filasDetalle: templateData.detailRows.map(([label, value]) => [String(label), normalizeReceiptText(value)]),
       filasResumen: buildThermalSummaryRows(venta),
@@ -8092,6 +8192,11 @@ function getReceiptTemplateData(venta) {
 
   const itemsMarkup = normalizedItems.map((item) => {
     const itemName = clipReceiptItemName(item.nombre);
+    // Combo desglosado: sus productos debajo, sin precio (ya están en el del combo).
+    const comboLines = getReceiptComboLines(item);
+    const comboMarkup = comboLines.length
+      ? comboLines.map((line) => `<div class="receipt-item-meta receipt-item-combo">&nbsp;&nbsp;- ${escapeReceiptHtml(line)}</div>`).join('')
+      : '';
     if (usesTableItems) {
       return `
         <div class="receipt-item receipt-item--table">
@@ -8101,6 +8206,7 @@ function getReceiptTemplateData(venta) {
             <div class="receipt-item-price">${escapeReceiptHtml(fmtReceiptTableAmount(item.subtotal))}</div>
             <div class="receipt-item-total">${escapeReceiptHtml(fmtReceiptTableAmount(item.total))}</div>
           </div>
+          ${comboMarkup}
         </div>
       `;
     }
@@ -8116,6 +8222,7 @@ function getReceiptTemplateData(venta) {
                 : escapeReceiptHtml(`Unit: ${fmtReceiptValue(item.precio)}`)}
               ${receiptSimpleMode ? '' : ` · ${escapeReceiptHtml(item.itbisModo === 'monto' ? `ITBIS RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}/u` : `ITBIS ${item.itbisRate.toFixed(2)}%`)}`}
             </div>
+            ${comboMarkup}
           </div>
           <div class="receipt-item-total">${escapeReceiptHtml(fmt(item.total))}</div>
         </div>
@@ -8671,8 +8778,11 @@ function ventaToFormalDoc(venta) {
     } else if (rate > 0 && monto <= 0 && sub > 0) {
       monto = r2(sub * (rate / 100));
     }
+    const comboLines = getReceiptComboLines(it);
     return {
       descripcion: it.nombre,
+      // Combo desglosado: sus productos como nota de la línea (sin precio).
+      ...(comboLines.length ? { nota: `Incluye: ${comboLines.join(', ')}` } : {}),
       cantidad: it.qty,
       unidad: it.unitLabel || it.unidad || it.unidadMedida || 'Unidad',
       precio: it.precio,

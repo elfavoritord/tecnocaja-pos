@@ -1435,6 +1435,13 @@ function renderProductBranchScopeField(prod) {
 
 function openProductModal(id) {
   const prod = id ? DB.productos.find(p => p.id === id) : null;
+  // Un combo promocional (con productos adentro) se edita en Promociones → Combos:
+  // ahí están sus componentes, su precio y su imagen.
+  if (prod && prod.tipoProducto === 'combo' && Array.isArray(prod.componentes) && prod.componentes.length
+      && typeof openComboModal === 'function') {
+    openComboModal(prod.id);
+    return;
+  }
   const profile = getProductFormProfile();
   const cats = DB.categorias.map(c => `<option ${prod&&prod.categoria===c?'selected':''}>${c}</option>`).join('');
   const selectedType = prod?.tipoProducto || profile.typeOptions?.[0]?.[0] || 'general';

@@ -512,21 +512,26 @@ module.exports = function createRespaldosRouter({
       const licRows = await query('SELECT license_status FROM config LIMIT 1').catch(() => []);
       const plan    = licRows[0]?.license_status || 'trial';
 
-      // Verificar si B2/R2 está disponible
+      // Verificar si B2/R2 está disponible, dentro de la carpeta del negocio
+      // (la llave de cada cliente solo puede listar ahí).
+      const nubeConfigurada = r2.isConfigured();
       let nubeDisponible = false;
       let nubeError = null;
-      try {
-        nubeDisponible = await r2.isR2Available();
-      } catch (e) {
-        nubeError = e.message;
-        console.error('[respaldos] R2/B2 no disponible:', e.message);
-        nubeDisponible = false;
+      if (nubeConfigurada) {
+        try {
+          nubeDisponible = await r2.isR2Available(false, r2.backupPrefix(await resolveBusinessId(query)));
+        } catch (e) {
+          nubeError = e.message;
+          console.error('[respaldos] R2/B2 no disponible:', e.message);
+          nubeDisponible = false;
+        }
       }
 
       res.json({
         ok: true,
         backupDir,
         planActual: plan,
+        nubeConfigurada,
         nubeDisponible,
         nubeError,
         ultimoLocal: localFiles[0] || null,
@@ -660,7 +665,7 @@ module.exports = function createRespaldosRouter({
         role:       user.role,
       });
 
-      const nubeDisponible = await r2.isR2Available();
+      const nubeDisponible = await r2.isR2Available(false, r2.backupPrefix(businessId));
 
       res.json({ ok: true, cloudToken, businessId, email: user.email, nubeDisponible });
     } catch (e) {
@@ -1282,7 +1287,8 @@ module.exports = function createRespaldosRouter({
     try {
       const { email, idToken } = req.body || {};
 
-      const nubeOk = await r2.isR2Available();
+      const setupUid = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      const nubeOk = await r2.isR2Available(false, setupUid ? r2.backupPrefix(setupUid) : '');
       if (!nubeOk) {
         return res.status(503).json({ ok: false, error: 'La nube no está disponible o no está configurada en este dispositivo.' });
       }

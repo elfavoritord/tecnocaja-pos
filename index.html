@@ -1154,6 +1154,7 @@
       <div class="tc-tabs promo-tabs">
         <button type="button" class="pill-tab active" id="promo-tab-btn-dashboard" onclick="switchPromotionsTab('dashboard')">Dashboard</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-activas" onclick="switchPromotionsTab('activas')">Promociones Activas</button>
+        <button type="button" class="pill-tab" id="promo-tab-btn-combos" onclick="switchPromotionsTab('combos')">Combos promocionales</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-estadisticas" onclick="switchPromotionsTab('estadisticas')">Estadísticas</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-historial" onclick="switchPromotionsTab('historial')">Historial</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-config" onclick="switchPromotionsTab('config')">Configuración</button>
@@ -1213,6 +1214,62 @@
               <tr><td colspan="8" style="text-align:center;color:var(--text3);padding:1.5rem">Cargando…</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- Panel: Combos promocionales (js/combos.js) -->
+      <div id="promo-panel-combos" class="promo-tab-panel hidden">
+        <div class="products-stats">
+          <div class="stat-card"><div class="stat-val" id="combos-count-active">0</div><div class="stat-label">Combos activos</div></div>
+          <div class="stat-card stat-warning"><div class="stat-val" id="combos-count-inactive">0</div><div class="stat-label">Inactivos</div></div>
+          <div class="stat-card"><div class="stat-val" id="combos-count-sold">0</div><div class="stat-label">Combos vendidos</div></div>
+          <div class="stat-card"><div class="stat-val" id="combos-income">RD$ 0.00</div><div class="stat-label">Ingresos por combos</div></div>
+        </div>
+        <div class="combo-toolbar">
+          <input type="text" id="combos-search" class="mod-search" placeholder="Buscar combo por nombre o código..." oninput="filterCombos()">
+          <select id="combos-status-filter" class="mod-select" onchange="filterCombos()">
+            <option value="">Todos</option>
+            <option value="activo">Activos</option>
+            <option value="inactivo">Inactivos</option>
+          </select>
+          <button class="btn-secondary" type="button" onclick="loadCombosPanel()">Recargar</button>
+          <button class="btn-primary" type="button" onclick="openComboModal()">Nuevo combo</button>
+        </div>
+        <div id="combos-list" class="combo-grid"></div>
+
+        <div class="product-form-card combo-settings">
+          <div class="combo-settings-title">Presentación de combos en las facturas</div>
+          <label class="combo-radio"><input type="radio" name="combo-presentacion" value="agrupado" checked onchange="saveComboInvoiceDisplay(this.value)"> Mostrar como un solo artículo <small>(Combo Familiar · 1 · RD$600)</small></label>
+          <label class="combo-radio"><input type="radio" name="combo-presentacion" value="desglosado" onchange="saveComboInvoiceDisplay(this.value)"> Mostrar desglosado con sus productos <small>(debajo del combo, sin precio: no se cobran dos veces)</small></label>
+          <small class="combo-hint">Aplica a las facturas y tickets nuevos. El comprobante fiscal electrónico (e-CF) siempre lleva el combo como una sola línea con su precio e ITBIS.</small>
+        </div>
+
+        <div class="combo-report">
+          <div class="combo-report-head">
+            <div class="combo-settings-title">Reporte de combos</div>
+            <label>Desde <input type="date" id="combos-report-desde" class="form-input"></label>
+            <label>Hasta <input type="date" id="combos-report-hasta" class="form-input"></label>
+            <button class="btn-secondary" type="button" onclick="loadCombosReport()">Ver reporte</button>
+          </div>
+          <div class="products-grid-wrap">
+            <table class="data-table" style="width:100%">
+              <thead>
+                <tr>
+                  <th>Combo</th>
+                  <th class="is-num">Vendidos</th>
+                  <th class="is-num">Ingresos</th>
+                  <th class="is-num">Precio prom.</th>
+                  <th class="is-num">Costo</th>
+                  <th class="is-num">Ganancia · margen</th>
+                  <th>Productos consumidos</th>
+                  <th>Última venta · cajeros</th>
+                </tr>
+              </thead>
+              <tbody id="combos-report-body">
+                <tr><td colspan="8" class="combo-empty">Elige un período y pulsa "Ver reporte".</td></tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
@@ -5255,6 +5312,7 @@
 <script src="js/catalogo-csv.js"></script>
 <script src="js/productos.js"></script>
 <script src="js/promociones.js"></script>
+<script src="js/combos.js"></script>
 <script src="js/rnc-lookup.js"></script>
 <script src="js/clientes.js"></script>
 <script src="js/proveedores.js"></script>

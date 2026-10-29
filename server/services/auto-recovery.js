@@ -48,8 +48,8 @@ async function attemptAutoRestoreFromBackup({ query }) {
   try {
     const businessId = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
     if (businessId) {
-      await r2.isR2Available();
       const prefix = r2.backupPrefix(businessId);
+      await r2.isR2Available(false, prefix);
       const objects = (await r2.listObjects(prefix))
         .filter(o => (o.Key || '').endsWith('.tcbak'))
         .sort((a, b) => new Date(b.LastModified || 0) - new Date(a.LastModified || 0));

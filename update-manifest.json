@@ -1,13 +1,15 @@
 {
-  "version": "1.6.3",
-  "stableVersion": "1.6.3",
-  "date": "28/10/2026",
+  "version": "1.6.4",
+  "stableVersion": "1.6.4",
+  "date": "29/10/2026",
   "size": "47.3 MB",
-  "type": "fix",
+  "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Facturacion electronica: firmar el XML de postulacion ya funciona en todas las PCs (en las que no tenian PowerShell 7 salia 'Algoritmo especificado no es valido').",
-    "Facturacion electronica: si no hay certificado .p12 cargado, el mensaje dice donde cargarlo (Configurar e-CF DGII > Certificado)."
+    "Respaldos: los respaldos en la nube ya aparecen en la pantalla de Respaldos (antes solo se veian los locales).",
+    "Nuevo: Combos promocionales (Promociones > Combos). Arma combos con productos de tu inventario, con imagen y precio propio; se venden como un solo articulo y descuentan cada producto del inventario.",
+    "Facturas: elige si el combo se imprime como un solo articulo o con sus productos debajo.",
+    "Certificacion e-CF: los resumenes RFCE del Paso 2 ya no se envian dos veces a la DGII, y el ZIP de representaciones impresas del Paso 5 se genera bien en todas las PCs."
   ]
 }

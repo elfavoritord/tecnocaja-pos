@@ -122,6 +122,32 @@ describe('buildReceipt con un payload de antes (sin filas)', () => {
   });
 });
 
+describe('combo desglosado', () => {
+  const venta = (componentes) => ({
+    negocio: { nombre: 'Colmado' },
+    venta: {
+      numeroFactura: 'FAC-1', fecha: '2026-10-29T10:00:00.000Z', cliente: 'Consumidor Final', metodo: 'Efectivo',
+      items: [{ cantidad: 2, descripcion: 'Combo Familiar', precio: 600, subtotal: 1200, componentes }],
+      subtotal: 1200, total: 1200,
+    },
+    config: { paperWidth: '80mm' },
+  });
+
+  test('imprime los productos del combo debajo, sin precio, y el total no cambia', () => {
+    const texto = lineasImpresas(venta(['2 x Pollo', '4 x Refresco'])).join('\n');
+    expect(texto).toContain('  - 2 x Pollo');
+    expect(texto).toContain('  - 4 x Refresco');
+    expect(texto).not.toMatch(/Refresco.*\d+\.\d{2}/);
+    expect(texto).toMatch(/TOTAL\s+1,?200\.00/);
+  });
+
+  test('agrupado (sin componentes): una sola línea', () => {
+    const texto = lineasImpresas(venta([])).join('\n');
+    expect(texto).toContain('Combo Familiar');
+    expect(texto).not.toContain('  - ');
+  });
+});
+
 describe('encodeText', () => {
   test('caracteres que antes salían como basura en CP437', () => {
     expect([...encodeText('·')]).toEqual([0xFA]);
