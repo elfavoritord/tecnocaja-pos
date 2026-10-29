@@ -1,15 +1,13 @@
 {
-  "version": "1.6.4",
-  "stableVersion": "1.6.4",
+  "version": "1.6.5",
+  "stableVersion": "1.6.5",
   "date": "29/10/2026",
   "size": "47.3 MB",
-  "type": "feature",
+  "type": "bugfix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Respaldos: los respaldos en la nube ya aparecen en la pantalla de Respaldos (antes solo se veian los locales).",
-    "Nuevo: Combos promocionales (Promociones > Combos). Arma combos con productos de tu inventario, con imagen y precio propio; se venden como un solo articulo y descuentan cada producto del inventario.",
-    "Facturas: elige si el combo se imprime como un solo articulo o con sus productos debajo.",
-    "Certificacion e-CF: los resumenes RFCE del Paso 2 ya no se envian dos veces a la DGII, y el ZIP de representaciones impresas del Paso 5 se genera bien en todas las PCs."
+    "Certificacion e-CF (Paso 2): si el set de la DGII trae un resumen RFCE que la DGII ya rechazo como \"ya utilizado\", el sistema se detiene antes de enviar los 21 comprobantes y avisa cual es, para que la prueba no se reinicie otra vez.",
+    "Certificacion e-CF (Paso 2): \"Procesar y enviar comprobantes\" acepta un set nuevo de la DGII sin tener que reiniciar el paso primero."
   ]
 }
