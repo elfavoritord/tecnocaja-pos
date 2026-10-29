@@ -43,7 +43,9 @@ class FcService {
     this.storageService = storageService || null;
   }
 
-  async sendConsumptionSummary({ signedXml, filename, localEcfPath = null }) {
+  // beforeSubmit corre justo antes del POST a la DGII (después de validar y autenticar):
+  // la certificación lo usa para marcar el RFCE como enviado antes de que pueda llegar.
+  async sendConsumptionSummary({ signedXml, filename, localEcfPath = null, beforeSubmit = null }) {
     const endpointName = this.config?.DGII_FC_URL || 'RecepcionFC';
     const xmlRoot = assertDgiiXmlRoot(signedXml, 'RFCE', endpointName, {
       message: 'Este archivo es un e-CF completo. Para este paso debe enviar un resumen RFCE.',
@@ -86,6 +88,7 @@ class FcService {
     const auth = await this.authService.authenticate();
     let response;
     try {
+      if (beforeSubmit) await beforeSubmit();
       response = await this.dgiiClient.submitRfce({
         token: auth.token,
         signedXml: fs.readFileSync(tempFile.tempPath, 'utf8'),

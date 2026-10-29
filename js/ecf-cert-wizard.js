@@ -966,7 +966,8 @@ const ECF_CERT_WIZARD = (() => {
               <div id="ecf-wz-s2-rfce-subtitle" style="font-size:.8rem;color:var(--text3);margin-top:.2rem">Resúmenes de Consumo Aceptados</div>
               <button id="ecf-wz-s2-rfce-resend-btn" class="ecf-wz-action-btn"
                 style="font-size:.75rem;padding:.3rem .7rem;margin-top:.5rem"
-                onclick="ECF_CERT_WIZARD._resendRfce()">🔄 Reenviar RFCE</button>
+                title="Envía a la DGII solo los resúmenes que todavía no se han enviado en este lote"
+                onclick="ECF_CERT_WIZARD._resendRfce()">📤 Enviar RFCE</button>
               <div id="ecf-wz-s2-rfce-resend-log" style="font-size:.72rem;margin-top:.3rem;color:var(--text3)"></div>
             </div>
           </div>
@@ -1162,10 +1163,10 @@ const ECF_CERT_WIZARD = (() => {
         if (alertEl) alertEl.style.display = '';
       } else {
         // El envío de RFCE ya NO es automático: se disparaba a la vez que un envío manual
-        // ("Reenviar RFCE") podía estar en curso, reenviando los 4 resúmenes por partida
-        // doble y re-quemando eNCF del set fijo DGII sin que el usuario pudiera controlarlo.
-        // Ahora es 100% manual — usa el botón "Reenviar RFCE" cuando estés listo.
-        logLine('✅ 21/21 comprobantes listos. Usa "Reenviar RFCE" cuando quieras enviar los resúmenes <250Mil.', 'ok');
+        // podía estar en curso, reenviando los 4 resúmenes por partida doble y re-quemando
+        // eNCF del set fijo DGII sin que el usuario pudiera controlarlo.
+        // Ahora es 100% manual — usa el botón "Enviar RFCE" cuando estés listo.
+        logLine('✅ 21/21 comprobantes listos. Usa "Enviar RFCE" para enviar los resúmenes <250Mil (cada uno sale una sola vez).', 'ok');
       }
     } catch (err) {
       clearTimeout(hangTimeout);
@@ -1221,7 +1222,7 @@ const ECF_CERT_WIZARD = (() => {
           if (textEl) textEl.textContent = 'Comprobantes rechazados — resetear y reintentar';
           if (resetBtn) resetBtn.style.display = '';
         } else if (rfceRejected > 0) {
-          if (textEl) textEl.textContent = 'RFCE con e-NCF ya quemado en el set fijo DGII — usa "Reenviar RFCE" arriba o descarga un set nuevo. "Resetear y reintentar" no aplica a RFCE.';
+          if (textEl) textEl.textContent = 'RFCE rechazado por la DGII. No se puede reenviar en este lote: descarga el set otra vez en el portal DGII y usa "Reiniciar Paso 2 por completo". "Resetear y reintentar" no aplica a RFCE.';
           if (resetBtn) resetBtn.style.display = 'none';
         }
       }
@@ -1396,17 +1397,25 @@ const ECF_CERT_WIZARD = (() => {
       if (logEl) logEl.textContent = 'Enviando a DGII…';
       const r = await fiscalApi('POST', '/certification-center/rfce/submit');
       if (logEl) {
-        const blockedHint = r.bloqueados > 0
-          ? ` — ${r.bloqueados} con e-NCF ya quemado en el set fijo DGII: descarga un set nuevo, no reintentes.`
+        // Un RFCE se envía una sola vez por lote: la DGII reinicia la prueba si recibe
+        // el mismo e-NCF dos veces, así que los ya enviados se saltan.
+        const results = r.results || [];
+        const enviadosAhora = results.filter((x) => !x.skipped).length;
+        const yaEnviados = results.filter((x) => x.alreadySent).length;
+        const rechazadoHint = (r.rechazados || 0) > 0
+          ? ' Un RFCE rechazado no se puede volver a enviar en este lote: descarga el set otra vez en el portal DGII y usa "Reiniciar Paso 2 por completo".'
           : '';
-        logEl.textContent = `✅ ${r.aceptados||0} aceptados, ${r.rechazados||0} rechazados.${blockedHint}`;
+        logEl.textContent = `${r.aceptados||0}/4 aceptados · ${enviadosAhora} enviado(s) ahora`
+          + (yaEnviados ? ` · ${yaEnviados} ya se habían enviado (no se reenvían)` : '')
+          + ((r.rechazados || 0) > 0 ? ` · ${r.rechazados} rechazado(s).` : '.')
+          + rechazadoHint;
         logEl.style.color = (r.rechazados||0) > 0 ? '#f87171' : '#4ade80';
       }
       await _pollStep2();
     } catch (err) {
       if (logEl) { logEl.textContent = `❌ ${err.message}`; logEl.style.color = '#f87171'; }
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = '🔄 Reenviar RFCE'; }
+      if (btn) { btn.disabled = false; btn.textContent = '📤 Enviar RFCE'; }
     }
   }
 
@@ -2594,13 +2603,12 @@ const ECF_CERT_WIZARD = (() => {
             <div style="display:flex;gap:.4rem">
               <a id="ecf-wz-step5-zip-btn"
                 href="/api/ecf/print/step5-pdf-bundle"
-                download="representaciones-impresas-DGII.zip"
-                onclick="ECF_CERT_WIZARD._step5StartZipDownload(this)"
+                onclick="event.preventDefault();ECF_CERT_WIZARD._downloadFromApi(this.href, 'representaciones-impresas-DGII.zip', this)"
                 style="font-size:.75rem;padding:.25rem .65rem;background:rgba(22,163,74,.12);border:1px solid rgba(22,163,74,.35);border-radius:6px;color:#4ade80;text-decoration:none;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:.3rem">
                 📦 Descargar todos en ZIP
               </a>
               <a href="/api/ecf/print/step5-xml-bundle"
-                download="xml-documentos-DGII.zip"
+                onclick="event.preventDefault();ECF_CERT_WIZARD._downloadFromApi(this.href, 'xml-documentos-DGII.zip', this)"
                 title="Descarga el XML firmado de todos los documentos del lote — útil para verificar los datos sin reenviar"
                 style="font-size:.75rem;padding:.25rem .65rem;background:rgba(108,99,255,.12);border:1px solid rgba(108,99,255,.35);border-radius:6px;color:var(--accent);text-decoration:none;white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;gap:.3rem">
                 📄 Descargar XML de todos
@@ -2676,7 +2684,8 @@ const ECF_CERT_WIZARD = (() => {
               title="Ver vista previa en nueva pestaña">
               👁 Ver
             </a>
-            <a href="/api/ecf/print/repr-impresa/${encodeURIComponent(doc.encf)}/pdf" download
+            <a href="/api/ecf/print/repr-impresa/${encodeURIComponent(doc.encf)}/pdf"
+              onclick="event.preventDefault();ECF_CERT_WIZARD._downloadFromApi(this.href, '${h(doc.encf)}-repr-impresa.pdf', this)"
               style="font-size:.73rem;padding:.25rem .55rem;background:rgba(22,163,74,.1);border:1px solid rgba(22,163,74,.3);border-radius:5px;color:#4ade80;text-decoration:none;white-space:nowrap"
               title="Descargar PDF para subir al portal DGII">
               📄 PDF
@@ -2697,16 +2706,48 @@ const ECF_CERT_WIZARD = (() => {
     if (_step5Docs) _renderStep5List();
   }
 
-  function _step5StartZipDownload(el) {
-    const orig = el.innerHTML;
-    el.innerHTML = '⏳ Generando ZIP…';
-    el.style.pointerEvents = 'none';
-    el.style.opacity = '0.6';
-    setTimeout(() => {
-      el.innerHTML = orig;
-      el.style.pointerEvents = '';
-      el.style.opacity = '';
-    }, 15000);
+  // Descarga por fetch en vez de <a download>: cuando el servidor respondía con un
+  // error, el enlace lo guardaba con nombre .zip/.pdf y quedaba un archivo que no abría.
+  async function _downloadFromApi(url, fileName, el) {
+    const original = el ? el.innerHTML : '';
+    if (el) {
+      el.innerHTML = '⏳ Generando…';
+      el.style.pointerEvents = 'none';
+      el.style.opacity = '0.6';
+    }
+    try {
+      const token = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '')
+        || (typeof DB !== 'undefined' && DB?.authToken) || '';
+      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      const type = res.headers.get('content-type') || '';
+      if (!res.ok || type.includes('application/json')) {
+        let message = `Error ${res.status}`;
+        try {
+          const data = await res.json();
+          message = data.error || data.message || message;
+        } catch (_) { /* respuesta sin JSON */ }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 2000);
+    } catch (err) {
+      const message = `No se pudo descargar ${fileName}: ${err.message}`;
+      if (typeof showFiscalToast === 'function') showFiscalToast(message, 'error');
+      else alert(message);
+    } finally {
+      if (el) {
+        el.innerHTML = original;
+        el.style.pointerEvents = '';
+        el.style.opacity = '';
+      }
+    }
   }
 
   function _step5CheckAll() {
@@ -3885,7 +3926,7 @@ const ECF_CERT_WIZARD = (() => {
     runStep5,
     _step5Check,
     _step5CheckAll,
-    _step5StartZipDownload,
+    _downloadFromApi,
     _step5LoadDocs,
 
     // Step 6 — Validación Repr. Impresa

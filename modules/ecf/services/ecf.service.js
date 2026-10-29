@@ -29,6 +29,7 @@ const { createLogger } = require('../utils/logger');
 const { parseXml } = require('../utils/xml.util');
 const { detectXmlRoot, getDgiiXmlDispatchType, generarNombreArchivoDGII } = require('../utils/dgii-file.util');
 const { assertValidRfceXml } = require('../utils/rfce-xsd.util');
+const { ecfWorkPath } = require('../utils/work-dir.util');
 
 // Base escribible: en instalaciones empaquetadas (.exe), __dirname y process.cwd()
 // pueden caer dentro de app.asar (archivo de solo lectura), y fs.mkdirSync ahí
@@ -759,7 +760,7 @@ class EcfService {
   }
 
   _legacyCertificationHighWatermarks() {
-    const backupsDir = path.join(process.cwd(), 'storage', 'ecf', 'backups');
+    const backupsDir = ecfWorkPath('storage', 'ecf', 'backups');
     if (!fs.existsSync(backupsDir)) return {};
     let maxima = {};
     const scanDirectory = (directory) => {
@@ -2382,7 +2383,7 @@ class EcfService {
           );
         }
         if (String(rebuilt.submissionMode || '').toLowerCase() === 'rfce' && rebuilt.linkedSignedEcfXml) {
-          const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+          const localEcfDir = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
           fs.mkdirSync(localEcfDir, { recursive: true });
           linkedEcfArtifactPath = path.join(localEcfDir, `${document.encf}.xml`);
           fs.writeFileSync(linkedEcfArtifactPath, rebuilt.linkedSignedEcfXml, 'utf8');
@@ -3671,9 +3672,22 @@ class EcfService {
     return document.signed_xml_content || document.xml_content || '';
   }
 
+  // Un RFCE de certificación va a la DGII una sola vez por lote: si recibe el mismo
+  // e-NCF otra vez lo cuenta como enviado dos veces y reinicia la prueba. Solo
+  // "Reiniciar Paso 2 por completo" o importar el set de nuevo lo habilitan otra vez.
+  _assertCertificationRfceNotSent(document) {
+    if (!document?.certification_case_key || !document.sent_at) return;
+    if (String(document.submission_mode || '').toLowerCase() !== 'rfce') return;
+    throw new EcfError(
+      `El resumen ${document.encf} ya se envió a la DGII en este lote. Enviarlo otra vez hace que la DGII lo cuente como enviado dos veces y reinicie la prueba.`,
+      { statusCode: 409 }
+    );
+  }
+
   async resendDocument(id) {
     const document = await this.repository.getDocument(id);
     if (!document) throw new EcfError('Documento e-CF no encontrado.', { statusCode: 404 });
+    this._assertCertificationRfceNotSent(document);
     // e-CF de una venta que falló antes de armar el XML (p. ej. faltaba un dato
     // del emisor): se arma, firma y envía de nuevo con el MISMO e-NCF apartado
     // (createDocumentFromSale lo reusa). Los casos de certificación no pasan por aquí.
@@ -4281,6 +4295,7 @@ class EcfService {
     await this.getCurrentActor(req, { adminOnly: true });
     const document = await this.repository.getDocument(Number(documentId));
     assertCondition(document?.certification_case_key, 'Caso de certificación no encontrado.', { statusCode: 404 });
+    this._assertCertificationRfceNotSent(document);
     assertCondition(!isCertificationBlockedEncf(document.encf) && String(document.estado_dgii || '').toLowerCase() !== 'bloqueado', 'Este e-NCF está bloqueado por secuencia usada y no se puede reenviar.', { statusCode: 409 });
     const parsedResponse = parseJson(document.dgii_response_json, null);
     assertCondition(!isDgiiSequenceUsedResponse(parsedResponse), 'DGII marcó esta secuencia como usada; queda bloqueada y no se puede reenviar.', { statusCode: 409 });
@@ -4884,7 +4899,7 @@ class EcfService {
     // Sin esto, generate250MilXmls reutiliza la firma antigua (misma CodigoSeguridadeCF)
     // y DGII rechaza con "combinación ya utilizada" causando otro reinicio en cadena.
     fs.rmSync(this._step4RfceStatusPath(), { force: true });
-    const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    const localEcfDir = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
     if (fs.existsSync(localEcfDir)) {
       for (const f of fs.readdirSync(localEcfDir)) {
         if (/\.xml$/i.test(f)) {
@@ -5425,11 +5440,11 @@ class EcfService {
   async generate250MilXmls(req) {
     await this.ensureReady();
 
-    const OUT_DIR = path.join(process.cwd(), 'scripts', '250mil-upload');
+    const OUT_DIR = ecfWorkPath('scripts', '250mil-upload');
     if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-    const LOCAL_ECF_DIR = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    const LOCAL_ECF_DIR = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
     fs.mkdirSync(LOCAL_ECF_DIR, { recursive: true });
-    const tmpDir = path.join(process.cwd(), 'storage', 'ecf', 'tmp');
+    const tmpDir = ecfWorkPath('storage', 'ecf', 'tmp');
     if (fs.existsSync(tmpDir)) {
       for (const f of fs.readdirSync(tmpDir)) {
         if (/\.(xml|zip|json)$/i.test(f)) {
@@ -5470,7 +5485,7 @@ class EcfService {
     const rfceBatchParams = rfceBatchId ? [rfceBatchId] : [];
     let rfceDocs = await this.repository.query(
       `SELECT id, encf, certification_original_xml, certification_test_type,
-              estado_dgii, signed_xml_content, dgii_response_json
+              estado_dgii, signed_xml_content, dgii_response_json, sent_at
        FROM ecf_documents
        WHERE business_id=1
          AND certification_case_key IS NOT NULL
@@ -5539,6 +5554,38 @@ class EcfService {
         continue;
       }
 
+      // Un RFCE ya enviado en este lote no se vuelve a firmar: la DGII tiene su
+      // CodigoSeguridadeCF y el E32 del portal debe seguir coincidiendo con él.
+      // Re-firmarlo cambiaba el código y abría la puerta a mandarlo otra vez.
+      const sentRfceXml = doc.sent_at ? String(doc.signed_xml_content || '') : '';
+      if (/<RFCE[\s>]/i.test(sentRfceXml)) {
+        const sentPath = path.join(OUT_DIR, `${doc.encf}.xml`);
+        fs.writeFileSync(sentPath, sentRfceXml, 'utf8');
+        const sentCode = extractRfceSecurityCode(sentRfceXml);
+        generated.push({
+          encf: doc.encf,
+          file: sentPath,
+          sizekb: Math.round(fs.statSync(sentPath).size / 1024),
+          items: Object.keys(ecfRow || {})
+            .filter((k) => /^NombreItem\[/.test(k) && val(ecfRow, k))
+            .map((k) => val(ecfRow, k)),
+          root: 'RFCE',
+          endpoint: this.config.DGII_FC_URL,
+          montoTotal: val(rfceRow, 'MontoTotal') || '?',
+          montoGravadoI1: val(rfceRow, 'MontoGravadoI1') || '?',
+          itbis1: val(rfceRow, 'ITBIS1') || '?',
+          totalItbis1: val(rfceRow, 'TotalITBIS1') || '?',
+          nombreComercial: '(omitido)',
+          localEcfFile: path.join(LOCAL_ECF_DIR, `${doc.encf}.xml`),
+          certificationTestType: doc.certification_test_type || null,
+          codigoSeguridad: sentCode,
+          previousCodigoSeguridad: sentCode,
+          securityCodeChanged: false,
+          alreadySent: true,
+        });
+        continue;
+      }
+
       let localSignedEcf;
       let localSecurityCode;
       let reusedExistingE32 = false;
@@ -5570,12 +5617,12 @@ class EcfService {
             }
             // 2. Intentar el archivo RFCE actual en scripts/250mil-upload/{encf}.xml
             if (!rfceCode) {
-              const cur = path.join(process.cwd(), 'scripts', '250mil-upload', `${doc.encf}.xml`);
+              const cur = ecfWorkPath('scripts', '250mil-upload', `${doc.encf}.xml`);
               if (fs.existsSync(cur)) rfceCode = extractRfceSecurityCode(fs.readFileSync(cur, 'utf8'));
             }
             // 3. Fallback: buscar en rfce-enviados el RFCE que coincida con el E32 existente
             if (rfceCode !== existingCode) {
-              const rfceEnvDir = path.join(process.cwd(), 'storage', 'ecf', 'rfce-enviados');
+              const rfceEnvDir = ecfWorkPath('storage', 'ecf', 'rfce-enviados');
               if (fs.existsSync(rfceEnvDir)) {
                 const arch = fs.readdirSync(rfceEnvDir)
                   .filter((f) => f.startsWith('rfce-enviado-') && f.endsWith('.xml'))
@@ -5856,7 +5903,7 @@ class EcfService {
 
     const generated = [];
     const errors = [];
-    const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    const localEcfDir = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
     const localEmitter = await this.getEmitterForXml(1);
 
     for (const doc of rfceDocs) {
@@ -5911,7 +5958,7 @@ class EcfService {
         const rfcePathCandidates = [
           doc.certification_sent_xml_path,
           doc.certification_signed_xml_path,
-          path.join(process.cwd(), 'scripts', '250mil-upload', `${doc.encf}.xml`),
+          ecfWorkPath('scripts', '250mil-upload', `${doc.encf}.xml`),
         ]
           .map((candidate) => String(candidate || '').trim())
           .filter(Boolean)
@@ -6040,7 +6087,7 @@ class EcfService {
   async openLocalEcfOriginalesFolder() {
     this._disabled250MilPortalFlow();
     await this.ensureReady();
-    const dir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    const dir = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
     fs.mkdirSync(dir, { recursive: true });
     const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.xml'));
     const opened = openFolderInOs(dir);
@@ -6076,7 +6123,7 @@ class EcfService {
     await this.ensureReady();
     const cleanEncf = String(encf || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
     assertCondition(cleanEncf, 'eNCF inválido.', { statusCode: 400 });
-    const filePath = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales', `${cleanEncf}.xml`);
+    const filePath = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales', `${cleanEncf}.xml`);
     assertCondition(fs.existsSync(filePath), `Archivo ${cleanEncf}.xml no encontrado en ecf-originales-locales. Genera el lote primero.`, { statusCode: 404 });
     const xml = fs.readFileSync(filePath, 'utf8').replace(/^﻿/, '');
     return { encf: cleanEncf, xml };
@@ -6104,7 +6151,7 @@ class EcfService {
     const verification = signatureService.verifySignature(signedXml);
     assertCondition(verification.ok, 'El XML editado no pasó la verificación de firma.', { statusCode: 422 });
 
-    const localEcfDir = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    const localEcfDir = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
     fs.mkdirSync(localEcfDir, { recursive: true });
     fs.writeFileSync(path.join(localEcfDir, `${cleanEncf}.xml`), signedXml, 'utf8');
 
@@ -6247,7 +6294,7 @@ class EcfService {
   // Guarda automáticamente los E32 de portal cuando los RFCE son aceptados.
   // Verifica que el security code del E32 local coincida con el del RFCE antes de copiar.
   _savePortalE32ForAcceptedItems(items) {
-    const LOCAL_ECF_DIR = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales');
+    const LOCAL_ECF_DIR = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales');
     // Incluir items aceptados + items cuyo E32 local exista y tenga CodigoSeguridadeCF consistente.
     // "generado" puede ocurrir cuando el RFCE se envió por otra ruta y el JSON no se actualizó.
     // La verificación del código en el loop siguiente ya descarta archivos inconsistentes.
@@ -6270,7 +6317,7 @@ class EcfService {
         if (old.toLowerCase().endsWith('.xml')) fs.unlinkSync(path.join(portalDir, old));
       }
 
-      const RFCE_ENVIADOS_DIR = path.join(process.cwd(), 'storage', 'ecf', 'rfce-enviados');
+      const RFCE_ENVIADOS_DIR = ecfWorkPath('storage', 'ecf', 'rfce-enviados');
 
       for (const item of accepted) {
         const ecfPath = path.join(LOCAL_ECF_DIR, `${item.encf}.xml`);
@@ -6291,7 +6338,7 @@ class EcfService {
 
         // 2. Intentar el archivo RFCE actual en scripts/250mil-upload/{encf}.xml
         if (!rfceCode) {
-          const currentRfcePath = path.join(process.cwd(), 'scripts', '250mil-upload', `${item.encf}.xml`);
+          const currentRfcePath = ecfWorkPath('scripts', '250mil-upload', `${item.encf}.xml`);
           if (fs.existsSync(currentRfcePath)) {
             rfceCode = extractRfceSecurityCode(fs.readFileSync(currentRfcePath, 'utf8'));
           }
@@ -6484,12 +6531,7 @@ class EcfService {
     const dbByEncf = new Map(dbItems.map((i) => [String(i.encf || '').toUpperCase(), i]));
     const items = (generatedResult.generated || []).map((item) => {
       const dbItem = dbByEncf.get(String(item.encf || '').toUpperCase());
-      const isFixedDataset = !String(item.certificationTestType || dbItem?.certificationTestType || '')
-        .toLowerCase().startsWith('simulation-');
-      const repairedUsedCombination = Boolean(
-        dbItem?.permanentlyBlocked && isFixedDataset && item.securityCodeChanged
-      );
-      const hasDgiiState = dbItem && !repairedUsedCombination && (
+      const hasDgiiState = dbItem && (
         ['aceptado', 'aceptado_condicional'].includes(String(dbItem.estado || '').toLowerCase())
         || dbItem.permanentlyBlocked
         || dbItem.trackId
@@ -6510,7 +6552,6 @@ class EcfService {
         codigoSeguridad: item.codigoSeguridad || null,
         previousCodigoSeguridad: item.previousCodigoSeguridad || null,
         securityCodeChanged: !!item.securityCodeChanged,
-        repairedUsedCombination,
         endpoint: item.endpoint || this.config.DGII_FC_URL,
         root: 'RFCE',
         sizekb: item.sizekb || 0,
@@ -6518,23 +6559,6 @@ class EcfService {
         localEcfFile: item.localEcfFile || null,
       };
     });
-    for (const item of items.filter((candidate) => candidate.repairedUsedCombination)) {
-      await this.repository.query(
-        `UPDATE ecf_documents
-            SET estado_dgii = 'firmado', track_id = NULL, error_message = NULL,
-                dgii_response_json = NULL, sent_at = NULL, updated_at = CURRENT_TIMESTAMP
-          WHERE business_id = 1 AND certification_case_key IS NOT NULL
-            AND submission_mode = 'rfce' AND encf = ?`,
-        [item.encf]
-      );
-      await this.repository.query(
-        `UPDATE ecf_sequence_usage
-            SET status = 'RESERVED', dgii_track_id = NULL, dgii_code = NULL,
-                dgii_message = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE business_id = 1 AND tipo_ecf = 'E32' AND encf = ?`,
-        ['RFCE del set DGII regenerado con un CodigoSeguridadeCF nuevo.', item.encf]
-      ).catch(() => null);
-    }
     for (const item of items) {
       if (String(item.estado || '').toLowerCase() === 'generado') {
         await this._recordStep4RfceSequenceUsage(item, 'RESERVED', { message: 'RFCE generado para Paso 4; reservado para evitar doble envío.' });
@@ -6658,7 +6682,7 @@ class EcfService {
     }
   }
 
-  async _step4RfceSubmitInner(req, { combinationRetry = 0 } = {}) {
+  async _step4RfceSubmitInner(req) {
     let state = this._step4RfceReadState();
     if (!state.items?.length) {
       const generated = await this.step4RfceGenerate(req);
@@ -6694,7 +6718,34 @@ class EcfService {
         results.push({ encf: item.encf, ok: true, estado: item.estado || 'enviado', trackId: item.trackId, skipped: true });
         continue;
       }
-      const priorUsageRows = await this.repository.query(
+      // Un RFCE va a la DGII UNA sola vez por lote. La DGII registra cada envío (aunque
+      // lo rechace) y, si recibe el mismo e-NCF otra vez, lo cuenta como enviado dos veces
+      // y reinicia la prueba. El RFCE no trae TrackID: la marca es sent_at del documento
+      // del lote, que se pone ANTES de llamar a la DGII por si la respuesta se pierde.
+      const rfceRow = await this._findCertificationRfceRow(item.encf);
+      if (!rfceRow) {
+        const mensajeDgii = 'Este resumen no está en el lote importado. Procesa el set de la DGII antes de enviarlo.';
+        updatedItems[index] = { ...item, estado: 'error', mensajeDgii };
+        results.push({ encf: item.encf, ok: false, error: mensajeDgii });
+        continue;
+      }
+      if (rfceRow.sent_at) {
+        const estadoEnviado = rfceRow.estado_dgii || item.estado || 'enviado';
+        updatedItems[index] = { ...item, estado: estadoEnviado };
+        results.push({
+          encf: item.encf,
+          ok: !['rechazado', 'error'].includes(String(estadoEnviado).toLowerCase()),
+          estado: estadoEnviado,
+          skipped: true,
+          alreadySent: true,
+          permanentlyBlocked: !!item.permanentlyBlocked,
+          mensaje: 'Ya se envió a la DGII en este lote; no se reenvía.',
+        });
+        continue;
+      }
+      // Paso 4: sus e-NCF salen de nuestra secuencia y se usan una sola vez, en cualquier lote.
+      const isFixedDataset = !String(item.certificationTestType || '').toLowerCase().startsWith('simulation-');
+      const priorUsageRows = isFixedDataset ? [] : await this.repository.query(
         `SELECT status, dgii_track_id, dgii_message
            FROM ecf_sequence_usage
           WHERE business_id = 1
@@ -6704,9 +6755,7 @@ class EcfService {
           LIMIT 1`,
         [String(item.encf || '').trim().toUpperCase()]
       ).catch(() => []);
-      const isFixedDataset = !String(item.certificationTestType || '').toLowerCase().startsWith('simulation-');
-      const repairedUsedCombination = isFixedDataset && item.securityCodeChanged;
-      if (priorUsageRows.length && !repairedUsedCombination) {
+      if (priorUsageRows.length) {
         const prior = priorUsageRows[0] || {};
         const blocked = String(prior.status || '').toUpperCase() === 'BLOCKED_DGII_USED';
         updatedItems[index] = {
@@ -6743,12 +6792,22 @@ class EcfService {
           results.push({ encf: item.encf, ok: false, error: mensajeDgii });
           break;
         }
+        let postStarted = false;
         try {
           const signedXml = fs.readFileSync(filePath, 'utf8').replace(/^﻿/, '');
           const response = await this.fcService.sendConsumptionSummary({
             signedXml,
             filename: item.fileName,
             localEcfPath: item.localEcfFile || null,
+            // Se marca justo antes del POST: si falla la validación o la autenticación,
+            // el RFCE no llegó a salir y se puede enviar después.
+            beforeSubmit: async () => {
+              await this.repository.query(
+                'UPDATE ecf_documents SET sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                [rfceRow.id]
+              );
+              postStarted = true;
+            },
           });
           const trackId = response.trackId || response.trackid || response.TrackId || null;
           // Para RFCE, "secuencia ya utilizada" se detecta con isRfceEncfAlreadyUsedError
@@ -6761,8 +6820,8 @@ class EcfService {
           let permanentlyBlocked = false;
 
           // En Paso 4 la secuencia queda quemada y se rota al reiniciar. En Paso 2 el
-          // e-NCF pertenece al set fijo DGII: puede regenerarse el E32 con otra firma
-          // valida para obtener un CodigoSeguridadeCF nuevo y reintentar la combinacion.
+          // e-NCF pertenece al set fijo DGII: no se reintenta con otro código (la DGII lo
+          // cuenta como enviado dos veces); hace falta un set nuevo.
           if (estado === 'rechazado' && isRfceEncfAlreadyUsedError(response)) {
             permanentlyBlocked = true;
             mensajeDgii = `${mensajeDgii ? mensajeDgii + ' — ' : ''}DGII ya recibio esta combinacion e-NCF + codigo de seguridad.`;
@@ -6850,7 +6909,21 @@ class EcfService {
             batchInvalidated = true;
             break;
           }
-          updatedItems[index] = { ...item, estado: 'error', mensajeDgii: error.message, fechaEnviado: new Date().toISOString() };
+          // Si el POST no salió (validación, autenticación) o la conexión ni se abrió, el
+          // RFCE no llegó y se puede enviar después. Si se cortó a medias (tiempo agotado,
+          // conexión reiniciada) no se sabe si llegó: queda como enviado y no se reintenta.
+          const notDelivered = !postStarted
+            || ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH'].includes(String(error?.cause?.code || ''));
+          if (notDelivered && postStarted) {
+            await this.repository.query(
+              'UPDATE ecf_documents SET sent_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+              [rfceRow.id]
+            );
+          }
+          const mensajeError = notDelivered
+            ? `${error.message} — No llegó a la DGII; puedes enviarlo de nuevo.`
+            : `${error.message} — No se sabe si la DGII lo recibió; no se reenvía para no duplicarlo.`;
+          updatedItems[index] = { ...item, estado: 'error', mensajeDgii: mensajeError, fechaEnviado: notDelivered ? null : new Date().toISOString() };
           await this.repository.query(
             `UPDATE ecf_documents
                 SET estado_dgii = 'error',
@@ -6860,10 +6933,10 @@ class EcfService {
               WHERE business_id = 1
                 AND certification_case_key IS NOT NULL
                 AND encf = ?`,
-            [error.message, JSON.stringify({ error: error.message, details: error.details || null }), item.encf]
+            [mensajeError, JSON.stringify({ error: error.message, details: error.details || null }), item.encf]
           ).catch(err => console.warn('[ECF] UPDATE batch cert error falló:', err.message));
-          await this._recordStep4RfceSequenceUsage(updatedItems[index], 'REJECTED', dgiiResponse);
-          results.push({ encf: item.encf, ok: false, error: error.message });
+          if (!notDelivered) await this._recordStep4RfceSequenceUsage(updatedItems[index], 'SENT', dgiiResponse);
+          results.push({ encf: item.encf, ok: false, error: mensajeError });
           if (normalizeDgiiState(dgiiResponse) === 'rechazado') batchInvalidated = true;
           break;
         }
@@ -6871,18 +6944,6 @@ class EcfService {
     }
 
     this._step4RfceWriteState({ ...state, items: updatedItems });
-
-    const fixedDatasetCombinationUsed = updatedItems.some((candidate) =>
-      candidate.permanentlyBlocked
-      && !String(candidate.certificationTestType || '').toLowerCase().startsWith('simulation-')
-      && isRfceEncfAlreadyUsedError(candidate.dgiiResponse || {})
-    );
-    if (fixedDatasetCombinationUsed && combinationRetry < 2) {
-      const regenerated = await this.step4RfceGenerate(req);
-      if (regenerated.ok) {
-        return this._step4RfceSubmitInner(req, { combinationRetry: combinationRetry + 1 });
-      }
-    }
 
     return {
       ok: results.every((result) => result.ok !== false),
@@ -6896,10 +6957,37 @@ class EcfService {
     };
   }
 
+  // Documento RFCE más reciente de certificación con ese e-NCF (el del lote activo).
+  async _findCertificationRfceRow(encf) {
+    const rows = await this.repository.query(
+      `SELECT id, encf, estado_dgii, sent_at
+         FROM ecf_documents
+        WHERE business_id = 1
+          AND certification_case_key IS NOT NULL
+          AND submission_mode = 'rfce'
+          AND encf = ?
+        ORDER BY id DESC
+        LIMIT 1`,
+      [String(encf || '').trim().toUpperCase()]
+    );
+    return rows[0] || null;
+  }
+
   async _recordStep4RfceSequenceUsage(item = {}, status = 'SENT', response = {}) {
     const encf = String(item.encf || '').trim().toUpperCase();
     if (!encf) return null;
     const tipoEcf = String(item.tipoEcf || item.tipo_ecf || encf.slice(0, 3) || 'E32').trim().toUpperCase();
+    if (String(status).toUpperCase() === 'RESERVED') {
+      // Regenerar no borra el historial: un e-NCF ya enviado no vuelve a "reservado".
+      const prior = await this.repository.query(
+        `SELECT status FROM ecf_sequence_usage
+          WHERE business_id = 1 AND tipo_ecf = ? AND encf = ?
+            AND status IN ('SENT','ACCEPTED','REJECTED','BLOCKED_DGII_USED')
+          LIMIT 1`,
+        [tipoEcf, encf]
+      ).catch(() => []);
+      if (prior.length) return null;
+    }
     const docRows = await this.repository.query(
       `SELECT id, business_id, tipo_ecf, sequence_id, sale_id, environment
          FROM ecf_documents
@@ -6953,8 +7041,8 @@ class EcfService {
     // anterior. Los 21 comprobantes normales regeneran su XML desde certification_original_xml
     // al reenviar, sin depender de archivos locales adicionales.
     const dirsToClean = [
-      path.join(process.cwd(), 'scripts', '250mil-upload'),
-      path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales'),
+      ecfWorkPath('scripts', '250mil-upload'),
+      ecfWorkPath('storage', 'ecf', 'ecf-originales-locales'),
     ];
     for (const dir of dirsToClean) {
       if (!fs.existsSync(dir)) continue;
@@ -7291,7 +7379,7 @@ class EcfService {
       };
 
       const filename = `${rncComprador || rncEmisor}${encf}.xml`;
-      const outDir = path.join(process.cwd(), 'storage', 'ecf', 'acecf-enviados');
+      const outDir = ecfWorkPath('storage', 'ecf', 'acecf-enviados');
       fs.mkdirSync(outDir, { recursive: true });
 
       const sendOnce = async (fechaHoraACValue) => {
@@ -7424,7 +7512,7 @@ class EcfService {
     // Carpetas de trabajo: XMLs originales/generados, RFCE, evidencia, ACECF,
     // temporales y el set de subida <250Mil. Todo se regenera al re-certificar.
     wipeDir(LOCAL_ECF_WORK_DIR);
-    wipeDir(path.join(process.cwd(), 'scripts', '250mil-upload'));
+    wipeDir(ecfWorkPath('scripts', '250mil-upload'));
     wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'ecf-originales-locales'));
     wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'tmp'));
     wipeDir(path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'step14-evidence'));
@@ -7744,6 +7832,7 @@ class EcfService {
     if (!document || !document.certification_case_key) {
       throw new EcfError('Caso de certificación DGII no encontrado.', { statusCode: 404 });
     }
+    this._assertCertificationRfceNotSent(document);
 
     const certificate = await this.resolveCertificate();
     const preparedDocument = await this.repairStoredDocumentXml(document, certificate);
@@ -8648,7 +8737,7 @@ class EcfService {
     if (!uploaded?.filepath) {
       throw new EcfError('No se recibió el archivo de evidencia (campo "evidence").', { statusCode: 400 });
     }
-    const dir = path.join(process.cwd(), 'storage', 'ecf', 'step14-evidence');
+    const dir = ecfWorkPath('storage', 'ecf', 'step14-evidence');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const ext = path.extname(uploaded.originalFilename || uploaded.newFilename || '') || '.png';
     const destName = `evidencia-${Date.now()}${ext}`;

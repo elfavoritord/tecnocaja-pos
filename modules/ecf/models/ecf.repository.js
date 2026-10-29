@@ -1881,7 +1881,8 @@ class EcfRepository {
        WHERE business_id = 1
          AND certification_case_key IS NOT NULL
          ${batchClause}
-         AND estado_dgii NOT IN ('aceptado', 'aceptado_condicional')`,
+         AND estado_dgii NOT IN ('aceptado', 'aceptado_condicional')
+         AND (submission_mode IS NULL OR submission_mode != 'rfce')`,
       params
     );
     return { reset: result.affectedRows || 0, batchId };
@@ -2114,10 +2115,13 @@ class EcfRepository {
     return rows[0] || null;
   }
 
+  // Los casos de certificación tienen su propio flujo en el asistente: reenviarlos
+  // desde "Reintentar pendientes" duplicaba los RFCE en la DGII.
   async getRetryableDocuments() {
     return this.query(
       `SELECT * FROM ecf_documents
        WHERE business_id = 1
+         AND certification_case_key IS NULL
          AND estado_dgii IN ('pendiente', 'error', 'error_auth', 'rechazado', 'error_xml', 'error_firma', 'error_consulta')
        ORDER BY id DESC
        LIMIT 100`

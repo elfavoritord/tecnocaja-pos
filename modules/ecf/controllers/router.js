@@ -7,6 +7,8 @@ const { createEcfService } = require('../services/ecf.service');
 const { buildQrVerificationUrl } = require('../utils/qr-url.util');
 const { checkQrResolves } = require('../utils/dgii-live-check.util');
 const { recordQrDiagnostic } = require('../utils/qr-diagnostic.util');
+const { launchPdfBrowser } = require('../utils/pdf-browser.util');
+const { ecfWorkPath } = require('../utils/work-dir.util');
 
 function wrap(handler) {
   return async (req, res) => {
@@ -59,7 +61,7 @@ function resolveStep5Representation(row) {
 
   const cleanEncf = String(row.encf || '').trim().toUpperCase();
   if (!/^E32\d{10}$/.test(cleanEncf)) throw new Error(`e-NCF RFCE inválido: ${cleanEncf || 'ausente'}.`);
-  const fullEcfPath = path.join(process.cwd(), 'storage', 'ecf', 'ecf-originales-locales', `${cleanEncf}.xml`);
+  const fullEcfPath = ecfWorkPath('storage', 'ecf', 'ecf-originales-locales', `${cleanEncf}.xml`);
   if (!fs.existsSync(fullEcfPath)) {
     throw new Error(`Falta el E32 completo vinculado a ${cleanEncf}. Regenera el lote completo del Paso 4.`);
   }
@@ -409,7 +411,6 @@ function createEcfRouter(deps) {
     let browser;
     try {
       const archiver = require('archiver');
-      const puppeteer = require('puppeteer');
       const { generateReprImpresaHtml } = require('./repr-impresa');
 
       const rows = (await loadLatestSimulationRows()).filter((row) => row.signed_xml_content);
@@ -474,19 +475,17 @@ function createEcfRouter(deps) {
         return res.status(409).json({ error: `El lote de simulación está incompleto. Faltan: ${missing.join(', ') || 'documentos válidos'}.` });
       }
 
-      browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+      browser = await launchPdfBrowser();
       const page = await browser.newPage();
 
-      res.setHeader('Content-Type', 'application/zip');
-      res.setHeader('Content-Disposition', 'attachment; filename="representaciones-impresas-DGII.zip"');
-
-      const archive = archiver('zip', { zlib: { level: 6 } });
-      archive.pipe(res);
-
+      // Los 11 PDF se arman ANTES de empezar a mandar el ZIP: si uno falla a medias, la
+      // respuesta es un error legible y no un ZIP cortado que Windows no puede abrir.
+      //
       // La Representación Impresa debe mostrar exactamente lo que se transmitió a la DGII —
       // durante certificación esos datos vienen fijos del set de pruebas de la DGII (incluida
       // su empresa de ejemplo), no del emisor/comprador real configurado localmente. Por eso no
       // se sobreescribe emitter/buyer aquí: se deja que generateReprImpresaHtml lea el XML tal cual.
+      const pdfFiles = [];
       for (const { key, idx, row, representation } of selected) {
         const label = TYPE_LABELS[key] || key;
         const filename = `${String(idx).padStart(2,'0')}-${label}-${row.encf}.pdf`;
@@ -496,7 +495,7 @@ function createEcfRouter(deps) {
         });
         await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
         const pdfRaw = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
-        archive.append(Buffer.isBuffer(pdfRaw) ? pdfRaw : Buffer.from(pdfRaw), { name: filename });
+        pdfFiles.push({ name: filename, data: Buffer.isBuffer(pdfRaw) ? pdfRaw : Buffer.from(pdfRaw) });
         recordQrDiagnostic({
           tipoEcf: row.tipo_ecf,
           signedXml: representation.rfceSummaryXml || representation.signedXml,
@@ -514,14 +513,22 @@ function createEcfRouter(deps) {
         '',
         ...verificationSummary.map((v) => `Tipo ${v.key}: eNCF ${v.encf} — verificado en DGII: ${v.dgiiVerificado ? 'SI (' + v.dgiiEstadoPublico + ')' : 'NO'}`),
       ];
-      archive.append(resumenLines.join('\n'), { name: '00-RESUMEN-VERIFICACION-DGII.txt' });
 
       await browser.close();
       browser = null;
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', 'attachment; filename="representaciones-impresas-DGII.zip"');
+      const archive = archiver('zip', { zlib: { level: 6 } });
+      archive.on('error', () => res.destroy());
+      archive.pipe(res);
+      archive.append(resumenLines.join('\r\n'), { name: '00-RESUMEN-VERIFICACION-DGII.txt' });
+      for (const file of pdfFiles) archive.append(file.data, { name: file.name });
       await archive.finalize();
     } catch (e) {
       if (browser) { try { await browser.close(); } catch (_) {} }
       if (!res.headersSent) res.status(500).json({ error: e.message });
+      else res.destroy();
     }
   });
 
@@ -611,7 +618,6 @@ function createEcfRouter(deps) {
     let browser;
     try {
       const { generateReprImpresaHtml } = require('./repr-impresa');
-      const puppeteer = require('puppeteer');
       const rows = await deps.query(
         `SELECT encf, tipo_ecf, submission_mode, signed_xml_content, environment
          FROM ecf_documents
@@ -628,7 +634,7 @@ function createEcfRouter(deps) {
         rfceSummaryXml: representation.rfceSummaryXml,
         modality: String(req.query.modalidad || '').toLowerCase() === 'contingencia' ? 'contingencia' : undefined,
       });
-      browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+      browser = await launchPdfBrowser();
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle0' });
       const pdf = await page.pdf({ format: 'A4', printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
