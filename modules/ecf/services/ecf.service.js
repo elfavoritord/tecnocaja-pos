@@ -594,6 +594,17 @@ function isCertificationBlockedEncf(encf) {
   return CERTIFICATION_BLOCKED_ENCFS.has(String(encf || '').trim().toUpperCase());
 }
 
+// El gateway e-CF atiende a todos los clientes con la misma URL (ver cloud/ecf-gateway).
+const DEFAULT_ECF_GATEWAY_URL = 'https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app';
+
+// La URL guardada manda (un túnel propio, por ejemplo); sin ella se usa el gateway,
+// para que nadie tenga que escribirla a mano.
+function resolvePublicBaseUrl(savedUrl) {
+  return String(savedUrl || '').trim()
+    || String(process.env.ECF_GATEWAY_BASE_URL || '').trim().replace(/\/+$/, '')
+    || DEFAULT_ECF_GATEWAY_URL;
+}
+
 function buildPublicUrls(baseUrl) {
   const normalized = String(baseUrl || '').trim().replace(/\/+$/, '');
   if (!normalized) return { baseUrl: '' };
@@ -1088,9 +1099,9 @@ class EcfService {
       dgiiSettings: {
         environment: emitter.environment,
         certificateMode: emitter.certificate_type,
-        publicBaseUrl: emitter.public_base_url,
+        publicBaseUrl: resolvePublicBaseUrl(emitter.public_base_url),
         allowedOrigins: emitter.allowed_origins,
-        publicUrls: buildPublicUrls(emitter.public_base_url),
+        publicUrls: buildPublicUrls(resolvePublicBaseUrl(emitter.public_base_url)),
         internalToken: {
           requireInternalToken: emitter.require_internal_token,
           configured: Boolean(emitter.internal_token_hash),
@@ -8700,9 +8711,15 @@ class EcfService {
         resolve({ ok: false, reason: 'No se permite localhost ni IP privada — debe ser una URL pública.' });
         return;
       }
-      const req2 = https.get(url, { timeout: 8000, rejectUnauthorized: true }, (res) => {
+      // 20 s: el gateway de Cloud Run puede estar arrancando.
+      const req2 = https.get(url, { timeout: 20000, rejectUnauthorized: true }, (res) => {
         res.resume();
-        if (res.statusCode >= 500) {
+        // La DGII falla igual ante un 404, 401 o 403, y un error de una letra en la URL da 404.
+        if (res.statusCode === 404) {
+          resolve({ ok: false, reason: 'Esa dirección no existe (404). Revisa que esté bien escrita.' });
+        } else if (res.statusCode === 401 || res.statusCode === 403) {
+          resolve({ ok: false, reason: `Pide autorización (${res.statusCode}) y la DGII no puede entrar.` });
+        } else if (res.statusCode >= 500) {
           resolve({ ok: false, reason: `El servidor respondió con error ${res.statusCode}.` });
         } else {
           resolve({ ok: true });
@@ -9330,5 +9347,6 @@ module.exports = {
   normalizeAcecfDateTime,
   parseOfficialAcecfFilename,
   resolveAcecfDatasetDateTime,
+  resolvePublicBaseUrl,
   rncFromCertificateSubject,
 };

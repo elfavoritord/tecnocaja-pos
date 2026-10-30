@@ -157,6 +157,15 @@ function createDgiiPublicRouter() {
     });
   });
 
+  // GET de disponibilidad, igual que en el gateway: la DGII y el asistente lo prueban
+  // antes del POST, y un 404 aquí se reporta como fallo de comunicación.
+  router.get('/fe/recepcion/api/ecf', (_req, res) => {
+    res.status(200).json({ status: 'ok', service: 'recepcion' });
+  });
+  router.get('/fe/aprobacioncomercial/api/ecf', (_req, res) => {
+    res.status(200).json({ status: 'ok', service: 'aprobacioncomercial' });
+  });
+
   // ── POST /fe/recepcion/api/ecf ───────────────────────────────────────────────
   router.post('/fe/recepcion/api/ecf', (req, res) => {
     const body = String(req.body || '');

@@ -2870,9 +2870,9 @@ const ECF_CERT_WIZARD = (() => {
         <div class="ecf-wz-card">
           <div class="ecf-wz-card-title">Instrucciones</div>
           <ol style="font-size:.82rem;color:var(--text2);line-height:1.8;margin:0;padding-left:1.3rem">
-            <li>Inicia el <strong>túnel Cloudflare</strong> y copia la URL pública</li>
+            <li>Espera a que las 3 URLs de abajo salgan con ✅</li>
             <li>En el portal DGII CerteCF, abre el Paso 7 → <strong>"Actualizar URLs de Servicios"</strong></li>
-            <li>Ingresa las URLs que aparecen abajo en los campos correspondientes</li>
+            <li><strong>Copia y pega</strong> cada URL con su botón 📋; no las escribas a mano</li>
             <li>Guarda en el portal y luego confirma aquí</li>
           </ol>
         </div>
@@ -2901,30 +2901,50 @@ const ECF_CERT_WIZARD = (() => {
       const urls = cfg?.dgiiSettings?.publicUrls || {};
       const base = urls.baseUrl || '';
       const items = [
-        { label: 'Autenticación (Semilla)', url: urls.semillaUrl || (base ? `${base}/fe/autenticacion/api/semilla` : '') },
-        { label: 'Recepción e-CF', url: urls.recepcionUrl || (base ? `${base}/fe/recepcion/api/ecf` : '') },
-        { label: 'Aprobación Comercial', url: urls.aprobacionUrl || (base ? `${base}/fe/aprobacioncomercial/api/ecf` : '') },
+        { key: 'semilla', label: 'Autenticación (Semilla)', url: urls.semillaUrl || (base ? `${base}/fe/autenticacion/api/semilla` : '') },
+        { key: 'recepcion', label: 'Recepción e-CF', url: urls.recepcionUrl || (base ? `${base}/fe/recepcion/api/ecf` : '') },
+        { key: 'aprobacion', label: 'Aprobación Comercial', url: urls.aprobacionUrl || (base ? `${base}/fe/aprobacioncomercial/api/ecf` : '') },
       ];
       if (!base) {
         el.innerHTML = `
           <div style="background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.25);border-radius:8px;padding:.75rem .9rem;font-size:.82rem;color:#f87171">
-            ⚠️ No hay URL base configurada. Configura la URL pública del túnel Cloudflare en Configuración → DGII → URL Base.
+            ⚠️ No hay URL base configurada. Escríbela en Mi Negocio → Configuración avanzada → Base URL pública HTTPS.
           </div>`;
         return;
       }
-      el.innerHTML = items.map(item => `
+      el.innerHTML = items.map((item) => `
         <div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:.65rem .85rem;margin-bottom:.4rem">
           <div style="font-size:.71rem;color:var(--text3);margin-bottom:.2rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em">${h(item.label)}</div>
           <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap">
             <code style="font-size:.78rem;color:var(--accent);flex:1;word-break:break-all">${h(item.url || '(sin URL)')}</code>
             ${item.url ? `<button class="ecf-wz-action-btn secondary" style="padding:.2rem .55rem;font-size:.74rem;min-width:auto"
-              onclick="ECF_CERT_WIZARD._copyText(${JSON.stringify(item.url)})">📋</button>` : ''}
+              onclick="ECF_CERT_WIZARD._copyText(${h(JSON.stringify(item.url))})">📋</button>` : ''}
           </div>
+          <div id="ecf-wz-step7url-check-${item.key}" style="font-size:.74rem;color:var(--text3);margin-top:.25rem">⏳ Comprobando…</div>
         </div>
       `).join('');
       WZ._step7Urls = urls;
+      await _checkStep7Urls(urls);
     } catch (err) {
       if (el) el.innerHTML = `<div style="color:#f87171;font-size:.82rem">Error: ${h(err.message)}</div>`;
+    }
+  }
+
+  // Prueba las 3 URLs al abrir el paso, para ver un error de escritura antes de pasarlas al portal.
+  async function _checkStep7Urls(urls) {
+    const paint = (key, ok, text) => {
+      const line = document.getElementById(`ecf-wz-step7url-check-${key}`);
+      if (!line) return;
+      line.textContent = `${ok ? '✅' : '❌'} ${text}`;
+      line.style.color = ok ? '#4ade80' : '#f87171';
+    };
+    try {
+      const check = await fiscalApi('POST', '/certification/validate-service-urls', {
+        urls: { semilla: urls.semillaUrl, recepcion: urls.recepcionUrl, aprobacion: urls.aprobacionUrl },
+      });
+      (check.results || []).forEach((r) => paint(r.name, r.ok, r.ok ? 'Responde bien' : r.reason));
+    } catch (err) {
+      ['semilla', 'recepcion', 'aprobacion'].forEach((key) => paint(key, false, `No se pudo comprobar: ${err.message}`));
     }
   }
 
@@ -2945,7 +2965,7 @@ const ECF_CERT_WIZARD = (() => {
   async function runStep7url() {
     const urls = WZ._step7Urls || {};
     if (!urls.semillaUrl || !urls.recepcionUrl || !urls.aprobacionUrl) {
-      if (typeof showFiscalToast === 'function') showFiscalToast('Configura primero la URL base en Configuración → DGII.', 'warning');
+      if (typeof showFiscalToast === 'function') showFiscalToast('Configura primero la URL base en Mi Negocio → Configuración avanzada.', 'warning');
       return;
     }
     setBtnState('ecf-wz-step7url-btn', true, 'Validando URLs…');
@@ -2988,8 +3008,7 @@ const ECF_CERT_WIZARD = (() => {
         <div class="ecf-wz-card">
           <div class="ecf-wz-card-title">Instrucciones</div>
           <ol style="font-size:.82rem;color:var(--text2);line-height:1.8;margin:0;padding-left:1.3rem">
-            <li>Verifica que el <strong>túnel Cloudflare esté activo</strong> en esta computadora</li>
-            <li>Verifica que <strong>Tecno Caja esté corriendo</strong> (este servidor)</li>
+            <li>Verifica que en el portal estén guardadas las <strong>URLs del Paso 7</strong>, iguales letra por letra</li>
             <li>En el portal DGII CerteCF, haz clic en <strong>"Inicio Prueba de Recepción e-CF"</strong></li>
             <li>DGII enviará e-CF de prueba a tu endpoint — Tecno Caja responderá automáticamente</li>
             <li>Monitorea los documentos recibidos en el Paso 9</li>
@@ -3155,7 +3174,7 @@ const ECF_CERT_WIZARD = (() => {
         <div class="ecf-wz-card">
           <div class="ecf-wz-card-title">Instrucciones</div>
           <ol style="font-size:.82rem;color:var(--text2);line-height:1.8;margin:0;padding-left:1.3rem">
-            <li>Verifica que el <strong>túnel Cloudflare siga activo</strong></li>
+            <li>Verifica que el campo <strong>Servicio de Aprobación Comercial</strong> del portal sea igual a la URL del Paso 7</li>
             <li>En el portal DGII CerteCF, haz clic en <strong>"Inicio Prueba de Recepción Aprobación Comercial"</strong></li>
             <li>DGII enviará Aprobaciones Comerciales de prueba — Tecno Caja responderá automáticamente</li>
           </ol>
@@ -3204,7 +3223,7 @@ const ECF_CERT_WIZARD = (() => {
           <div class="ecf-wz-card-title">Instrucciones</div>
           <div style="font-size:.82rem;color:var(--text2);line-height:1.7;margin-bottom:.85rem">
             Ingresa en el portal DGII CerteCF las <strong>URLs definitivas de producción</strong>.
-            Si usas el mismo túnel permanente de Cloudflare que en las pruebas, usa la misma URL base.
+            Normalmente es la misma URL base de las pruebas. Cópiala y pégala; no la escribas a mano.
           </div>
         </div>
         <div class="ecf-wz-card">
@@ -3213,7 +3232,7 @@ const ECF_CERT_WIZARD = (() => {
             <div>
               <label style="font-size:.78rem;color:var(--text3);display:block;margin-bottom:.3rem">URL base (sin /fe/...)</label>
               <input id="step12-base-url" type="url" value="${h(savedBase)}"
-                placeholder="https://mi-tunel.trycloudflare.com"
+                placeholder="https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app"
                 style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:.5rem .75rem;color:var(--text);font-size:.83rem;box-sizing:border-box"
                 oninput="ECF_CERT_WIZARD._previewStep12()">
             </div>
@@ -3246,7 +3265,7 @@ const ECF_CERT_WIZARD = (() => {
           <code style="font-size:.75rem;color:var(--accent);word-break:break-all">${h(base + p)}</code>
         </div>
         <button class="ecf-wz-action-btn secondary" style="padding:.2rem .5rem;font-size:.73rem;min-width:auto"
-          onclick="ECF_CERT_WIZARD._copyText(${JSON.stringify(base + p)})">📋</button>
+          onclick="ECF_CERT_WIZARD._copyText(${h(JSON.stringify(base + p))})">📋</button>
       </div>
     `).join('')}</div>`;
   }

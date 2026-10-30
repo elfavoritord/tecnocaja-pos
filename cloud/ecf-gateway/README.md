@@ -42,6 +42,15 @@ de quién es cada documento por el RNC del XML:
 
 ### Dar de alta un cliente
 
+Hay que hacerlo **antes del Paso 7** de la certificación. Sin alta, la DGII responde
+"El acuse de recibo no es válido" en el Paso 8. Desde la PC de Emilio:
+
+```powershell
+& "C:\Program Files\PowerShell\7\pwsh.exe" -File cloud\ecf-gateway\scripts\alta-empresa.ps1 -Rnc <RNC> -P12 <ruta del .p12> -Nombre "<negocio>"
+```
+
+Es lo mismo que estos pasos a mano:
+
 ```bash
 GW=https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app
 ADMIN=<GATEWAY_ADMIN_TOKEN>
