@@ -7,7 +7,7 @@
  * Todo lo que llega del navegador se normaliza aquí: tipos, largos y rangos.
  */
 
-const { METODOS_PAGO, MODALIDADES_TIENDA, normalizarSlug, slugValido } = require('./contrato');
+const { METODOS_PAGO, normalizarSlug, slugValido } = require('./contrato');
 const { normalizarDiseno } = require('./diseno');
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -164,9 +164,8 @@ function normalizarSettings(input = {}, previo = defaultSettings()) {
     },
     conversion: { precio: merged.conversion?.precio === 'actual' ? 'actual' : 'pedido' },
     inventario: { reservarAlRecibir: bool(merged.inventario?.reservarAlRecibir, false) },
-    modalidad: MODALIDADES_TIENDA.includes(merged.modalidad) ? merged.modalidad : 'mixta',
+    // Solo los usa una Empresa de Servicios (catalog.js).
     serviciosTienda: {
-      contratar: bool(merged.serviciosTienda?.contratar, true),
       cotizacion: bool(merged.serviciosTienda?.cotizacion, true),
       cita: bool(merged.serviciosTienda?.cita, false),
       whatsapp: bool(merged.serviciosTienda?.whatsapp, true),

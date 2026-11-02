@@ -1914,24 +1914,12 @@ function toggleSalesQuickMenu() {
   saveSalesUiPreference('salesQuickMenuCollapsed', collapsed);
 }
 
-/** La miniatura de la foto; si no se puede usar, la tarjeta cae a la foto completa. */
-function getSalesProductThumb(product) {
-  const imagen = getSalesProductImage(product);
-  return /\.webp$/i.test(imagen) && !/^data:/i.test(imagen) ? imagen.replace(/\.webp$/i, '-t.webp') : imagen;
-}
-
 function getSalesCatalogProducts() {
   const query = String(document.getElementById('product-search')?.value || '').toLowerCase().trim();
   const category = String(document.getElementById('sales-category-filter')?.value || '');
   const stockFilter = String(document.getElementById('sales-stock-filter')?.value || 'todos');
-  const typeFilter = String(document.getElementById('sales-type-filter')?.value || 'todos');
-  // El filtro de tipo solo aparece si el negocio tiene servicios.
-  const hayServicios = (DB.productos || []).some((p) => p.tipoProducto === 'servicio');
-  const typeSelect = document.getElementById('sales-type-filter');
-  if (typeSelect) typeSelect.classList.toggle('hidden', !hayServicios);
 
   return DB.productos.filter((product) => {
-    if (hayServicios && typeFilter !== 'todos' && (product.tipoProducto === 'servicio') !== (typeFilter === 'servicios')) return false;
     // Usar la misma función que el buscador → catálogo y búsqueda son coherentes.
     if (!isProductSellable(product)) return false;
 
@@ -2008,10 +1996,9 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
     const comboTitle = isCombo ? ` — ${getComboComponentsLabel(product.componentes)}` : '';
     return `
     <article class="sales-product-card ${stockClass}" onclick="addProductById(${product.id})" title="${escapeHtml(`${nombre}${comboTitle}`)}">
-      <div class="sales-product-media"${isCombo || product.tipoProducto === 'servicio' ? ' style="position:relative"' : ''}>
+      <div class="sales-product-media"${isCombo ? ' style="position:relative"' : ''}>
         ${isCombo ? '<span class="sales-product-combo-badge">Combo</span>' : ''}
-        ${product.tipoProducto === 'servicio' ? '<span class="sales-product-combo-badge sales-product-service-badge">Servicio</span>' : ''}
-        <img class="sales-product-image" src="${getSalesProductThumb(product)}" data-full="${getSalesProductImage(product)}" alt="${nombre}" loading="lazy" decoding="async" onerror="if(this.dataset.full&&this.dataset.full!==this.getAttribute('src')){const f=this.dataset.full;this.removeAttribute('data-full');this.src=f}else{this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'}">
+        <img class="sales-product-image" src="${getSalesProductImage(product)}" alt="${nombre}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
       </div>
       <div class="sales-product-body">
         <div class="sales-product-name">${nombre}</div>

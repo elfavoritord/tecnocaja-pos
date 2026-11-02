@@ -1,20 +1,11 @@
 'use strict';
 
-// Productos y servicios en un solo catálogo: reglas del artículo, enlace con el
-// catálogo de una Empresa de Servicios y miniaturas de las fotos.
+// Catálogo de una Empresa de Servicios enlazado con products, que es lo que publica su tienda.
 
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const sharp = require('sharp');
 const { createSqlitePos } = require('../helpers/sqlite-pos');
-const { esServicio, normalizarArticulo, generarCodigoArticulo } = require('../../server/services/articulos');
+const { esServicio, esEmpresaServicios } = require('../../server/services/articulos');
 const { enlazarServicio, enlazarTodos } = require('../../server/routes/servicios/enlace-productos');
 const { ensureServiciosSchema } = require('../../server/routes/servicios/schema');
-const { createMiniaturas, rutaMiniatura } = require('../../server/services/miniaturas');
-
-// En Windows, la caché de sharp deja la foto abierta y no se puede borrar la carpeta.
-sharp.cache(false);
 
 // La base real agrega estas columnas al arrancar (server.js); el esquema base no las trae.
 async function crearPos() {
@@ -23,32 +14,18 @@ async function crearPos() {
   return pos;
 }
 
-describe('reglas del artículo', () => {
-  test('un servicio nunca lleva inventario, lo diga quien lo diga', () => {
-    const a = normalizarArticulo({ tipoProducto: 'Servicio', codigo: ' S1 ', tracksStock: true, stock: 50, stockMin: 3, esCombo: true });
-    expect(a).toMatchObject({ tipoProducto: 'servicio', codigo: 'S1', tracksStock: false, stock: 0, stockMin: 0, esCombo: false });
-  });
-
-  test('un producto queda igual: sus datos no se tocan', () => {
-    const entrada = { tipoProducto: 'producto', codigo: 'A1', tracksStock: true, stock: 7, stockMin: 2 };
-    expect(normalizarArticulo(entrada)).toMatchObject({ tracksStock: true, stock: 7, stockMin: 2 });
-    expect(entrada.codigo).toBe('A1');
+describe('reglas', () => {
+  test('qué es un servicio', () => {
+    expect(esServicio('Servicio')).toBe(true);
     expect(esServicio('producto')).toBe(false);
     expect(esServicio(undefined)).toBe(false);
   });
 
-  test('sin código, se genera uno que no choca', async () => {
-    const pos = await crearPos();
-    try {
-      const s = await generarCodigoArticulo(pos.query, 'servicio');
-      expect(s).toMatch(/^SRV-\d{5}$/);
-      expect(await generarCodigoArticulo(pos.query, 'producto')).toMatch(/^ART-\d{5}$/);
-      await pos.query("INSERT INTO products (codigo, nombre, categoria, precio_compra, precio_venta) VALUES (?, 'Ya estaba', 'General', 0, 1)", [s]);
-      const otro = await generarCodigoArticulo(pos.query, 'servicio');
-      expect(otro).not.toBe(s);
-    } finally {
-      pos.close();
-    }
+  test('qué es una Empresa de Servicios', () => {
+    expect(esEmpresaServicios({ service_company: 1 })).toBe(true);
+    expect(esEmpresaServicios({ business_type: 'srv_limpieza' })).toBe(true);
+    expect(esEmpresaServicios({ service_company: 0, business_type: 'colmado' })).toBe(false);
+    expect(esEmpresaServicios(undefined)).toBe(false);
   });
 });
 
@@ -104,34 +81,5 @@ describe('enlace con el catálogo de servicios', () => {
 
   test('un servicio que no existe no rompe', async () => {
     expect(await enlazarServicio(pos.query, 99999)).toBeNull();
-  });
-});
-
-describe('miniaturas', () => {
-  let dir;
-
-  beforeAll(async () => {
-    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'miniaturas-'));
-    await sharp({ create: { width: 900, height: 600, channels: 3, background: '#336699' } }).webp().toFile(path.join(dir, 'foto.webp'));
-  });
-  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
-
-  const pedir = (ruta) => new Promise((resolve) => {
-    createMiniaturas({ dir, sharp })({ path: ruta }, { sendFile: resolve }, () => resolve('siguiente'));
-  });
-
-  test('la crea la primera vez, más pequeña, y deja la original', async () => {
-    expect(rutaMiniatura('/uploads/products/foto.webp')).toBe('/uploads/products/foto-t.webp');
-    expect(await pedir('/foto-t.webp')).toBe('siguiente');
-    const meta = await sharp(path.join(dir, 'foto-t.webp')).metadata();
-    expect(meta.width).toBe(240);
-    expect((await sharp(path.join(dir, 'foto.webp')).metadata()).width).toBe(900);
-  });
-
-  test('otras rutas y fotos que no existen pasan de largo', async () => {
-    expect(await pedir('/foto.webp')).toBe('siguiente');
-    expect(await pedir('/nada-t.webp')).toBe('siguiente');
-    expect(fs.existsSync(path.join(dir, 'nada-t.webp'))).toBe(false);
-    expect(await pedir('/..%2F..%2Fsecreto-t.webp')).toBe('siguiente');
   });
 });

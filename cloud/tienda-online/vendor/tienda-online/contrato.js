@@ -117,17 +117,17 @@ const rutas = Object.freeze({
   solicitud: (lic, id) => `businesses/${lic}/solicitudesOnline/${id}`,
 });
 
-const MODALIDADES_TIENDA = ['productos', 'servicios', 'mixta'];
-
 /**
- * Qué ofrece la tienda. Un perfil sin estos datos es de un POS anterior: se comporta
- * como siempre, con todo lo publicado a la venta en el carrito.
+ * Qué ofrece la tienda. Solo la de una Empresa de Servicios (modalidad 'servicios')
+ * recibe solicitudes y no tiene carrito. Cualquier otra vende como siempre.
  */
 function opcionesServicios(perfil = {}) {
+  if (perfil.modalidad !== 'servicios') {
+    return { modalidad: 'productos', cotizacion: false, cita: false, whatsapp: false, mostrarPrecio: true };
+  }
   const s = perfil.serviciosTienda || {};
   return {
-    modalidad: MODALIDADES_TIENDA.includes(perfil.modalidad) ? perfil.modalidad : 'mixta',
-    contratar: s.contratar !== false,
+    modalidad: 'servicios',
     cotizacion: s.cotizacion !== false,
     cita: s.cita === true,
     whatsapp: s.whatsapp !== false,
@@ -136,14 +136,12 @@ function opcionesServicios(perfil = {}) {
 }
 
 function articuloVisible(producto, opciones) {
-  if (opciones.modalidad === 'mixta') return true;
-  return (opciones.modalidad === 'servicios') === (producto.tipo === 'servicio');
+  return opciones.modalidad !== 'servicios' || producto.tipo === 'servicio';
 }
 
-/** ¿Se puede pagar con el carrito? Un servicio que requiere evaluación previa, no. */
+/** ¿Se puede pagar con el carrito? */
 function articuloComprable(producto, opciones) {
-  if (!articuloVisible(producto, opciones)) return false;
-  return producto.tipo !== 'servicio' || (opciones.contratar && opciones.mostrarPrecio);
+  return opciones.modalidad !== 'servicios' && articuloVisible(producto, opciones);
 }
 
 /** Mensaje para el cliente cuando su pedido cambia de estado. */
@@ -183,7 +181,6 @@ module.exports = {
   MAX_FOTOS_PRODUCTO,
   claveFotoProducto,
   CLAVE_IMAGEN_RE,
-  MODALIDADES_TIENDA,
   articuloComprable,
   articuloVisible,
   opcionesServicios,

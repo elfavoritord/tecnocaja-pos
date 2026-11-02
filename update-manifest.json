@@ -1,16 +1,14 @@
 {
-  "version": "1.6.11",
-  "stableVersion": "1.6.11",
+  "version": "1.6.12",
+  "stableVersion": "1.6.12",
   "date": "02/11/2026",
   "size": "198 MB",
-  "type": "feature",
+  "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Productos y servicios en un solo catálogo, con código opcional y filtro en Ventas.",
-    "Tienda online: elige mostrar productos, servicios o los dos, y recibe solicitudes de cotización y cita.",
-    "Tienda online: nuevo editor Personalizar tienda con vista previa.",
-    "Empresa de Servicios: ya puede publicar su tienda y pasar solicitudes a cotización o al calendario.",
-    "Nueva pantalla de Planes y precios."
+    "Negocios con POS: productos, ventas y tienda vuelven a como estaban antes de la 1.6.11.",
+    "Corregido: editar un artículo de tipo Servicio ponía su existencia en 0.",
+    "Empresa de Servicios: tienda online con solicitudes de cotización y cita, sin carrito."
   ]
 }

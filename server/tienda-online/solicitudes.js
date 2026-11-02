@@ -8,6 +8,8 @@
  * las revisa y decide.
  */
 
+const { esEmpresaServicios } = require('../services/articulos');
+
 const ESTADOS_SOLICITUD = ['nueva', 'en_revision', 'confirmada', 'convertida', 'descartada'];
 
 function texto(valor, max) {
@@ -64,6 +66,9 @@ function createSolicitudes({ query, nowSql, nube, emit = () => {}, logger = cons
 
   /** Trae lo pendiente de la nube. Cada solicitud se marca una sola vez. */
   async function recibirPendientes() {
+    // Un negocio con POS no recibe solicitudes: no gasta lecturas de la nube.
+    const [config] = await query('SELECT * FROM config WHERE id = 1 LIMIT 1');
+    if (!esEmpresaServicios(config)) return { nuevas: 0 };
     const docs = await nube.fetchPendingSolicitudes(50);
     let nuevas = 0;
     for (const doc of docs) {

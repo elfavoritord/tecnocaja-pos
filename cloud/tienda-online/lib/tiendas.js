@@ -124,7 +124,7 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         agotado,
         destacado: Boolean(p.destacado),
         marca: p.marca || '',
-        tipo: esServicio ? 'servicio' : 'producto',
+        tipo: opciones.modalidad === 'servicios' && esServicio ? 'servicio' : 'producto',
         comprable: articuloComprable(p, opciones),
         precioOculto,
         creadoEn: p.creadoEn || null,

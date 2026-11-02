@@ -915,11 +915,6 @@
                   <select id="sales-category-filter" class="form-input" onchange="renderSalesCatalog()">
                     <option value="">Todas las categorías</option>
                   </select>
-                  <select id="sales-type-filter" class="form-input hidden" onchange="renderSalesCatalog()" aria-label="Tipo de artículo">
-                    <option value="todos">Todos</option>
-                    <option value="productos">Productos</option>
-                    <option value="servicios">Servicios</option>
-                  </select>
                   <select id="sales-stock-filter" class="form-input" onchange="renderSalesCatalog()">
                     <option value="todos">Todos</option>
                     <option value="disponibles">Disponibles</option>
@@ -1753,7 +1748,7 @@
       <div class="to-status-bar" id="to-status-bar">Cargando…</div>
       <div class="tc-tabs">
         <button type="button" class="pill-tab active" data-to-tab="pedidos" onclick="TiendaOnline.switchTab('pedidos')">Pedidos</button>
-        <button type="button" class="pill-tab" data-to-tab="solicitudes" onclick="TiendaOnline.switchTab('solicitudes')">Solicitudes <span class="nav-badge" id="to-sol-badge" style="display:none"></span></button>
+        <button type="button" class="pill-tab hidden" data-to-tab="solicitudes" onclick="TiendaOnline.switchTab('solicitudes')">Solicitudes <span class="nav-badge" id="to-sol-badge" style="display:none"></span></button>
         <button type="button" class="pill-tab" data-to-tab="productos" id="to-tab-btn-productos" onclick="TiendaOnline.switchTab('productos')">Productos publicados</button>
         <button type="button" class="pill-tab" data-to-tab="reportes" onclick="TiendaOnline.switchTab('reportes')">Reportes</button>
       </div>

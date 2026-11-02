@@ -166,7 +166,7 @@
       return `<section class="sec" id="sec-catalogo" aria-labelledby="tit-catalogo"><div class="wrap">
         ${cabeza('catalogo', titulo(s, ctx.tienda().modalidad === 'servicios' ? 'Nuestros servicios' : 'Todos los productos'), productos.length > 12 ? 'catalogo' : '')}
         <div class="grid">${lista.map(tarjeta).join('')}</div>
-        ${productos.length > 12 ? `<div class="mas-caja"><button class="btn ghost" type="button" data-ir="catalogo">Ver los ${productos.length} ${ctx.tienda().modalidad === 'servicios' ? 'servicios' : 'artículos'}</button></div>` : ''}
+        ${productos.length > 12 ? `<div class="mas-caja"><button class="btn ghost" type="button" data-ir="catalogo">Ver los ${productos.length} ${ctx.tienda().modalidad === 'servicios' ? 'servicios' : 'productos'}</button></div>` : ''}
       </div></section>`;
     }
 
@@ -205,7 +205,7 @@
 
     function contacto(s, t, d) {
       const lista = enlacesContacto(t, d);
-      if (t.solicitudes?.cotizacion && t.modalidad !== 'productos') lista.unshift('<button class="cto" type="button" data-solicitud="cotizacion" data-solicitud-id="">Solicitar cotización</button>');
+      if (t.solicitudes?.cotizacion) lista.unshift('<button class="cto" type="button" data-solicitud="cotizacion" data-solicitud-id="">Solicitar cotización</button>');
       if (!lista.length) return '';
       return `<section class="sec" id="sec-contacto" aria-labelledby="tit-contacto"><div class="wrap">
         ${cabeza('contacto', titulo(s, 'Contáctanos'))}
@@ -221,8 +221,6 @@
         destacados: (s) => filaProductos('destacados', titulo(s, 'Productos destacados'), ctx.lista('destacados'), 'destacados'),
         nuevos: (s) => vitrina('nuevos', s, 'Nuevos productos', d),
         ofertas: (s) => vitrina('ofertas', s, 'Ofertas especiales', d),
-        // En una tienda solo de servicios, esa lista ya es "Nuestros servicios".
-        servicios: (s) => (t.modalidad === 'servicios' ? '' : filaProductos('servicios', titulo(s, 'Nuestros servicios'), ctx.lista('servicios'), 'servicios')),
         masVendidos: (s) => filaProductos('masVendidos', titulo(s, 'Los más vendidos'), ctx.lista('masVendidos'), 'masVendidos'),
         marcas: (s) => marcas(s),
         banners: () => banners(t),

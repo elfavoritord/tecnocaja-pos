@@ -922,7 +922,7 @@
       ancho: 940,
       cuerpo: `
         <div class="tc-tabs">
-          ${['General', 'Entrega', 'Pagos', 'Horario', 'Avanzado', 'Vitrinas', 'Tipo de tienda'].map((t, i) => `<button type="button" class="pill-tab ${i === 0 ? 'active' : ''}" data-cfg-tab="${i}">${t}</button>`).join('')}
+          ${['General', 'Entrega', 'Pagos', 'Horario', 'Avanzado', 'Vitrinas', ...(esEmpresaServicios() ? ['Solicitudes'] : [])].map((t, i) => `<button type="button" class="pill-tab ${i === 0 ? 'active' : ''}" data-cfg-tab="${i}">${t}</button>`).join('')}
         </div>
         <div data-cfg-pane="0" class="to-form-grid">
           <div class="form-group span-full">
@@ -995,7 +995,7 @@
             ${vitrinaForm('nuevos', 'Nuevos productos', 'Los productos registrados recientemente, del más nuevo al más viejo. Los que ya existían antes de esta versión no cuentan como nuevos.', cfg)}
           </div>
         </div>
-        <div data-cfg-pane="6" class="hidden">${tipoTiendaForm(s)}</div>`,
+        ${esEmpresaServicios() ? `<div data-cfg-pane="6" class="hidden">${solicitudesForm(s)}</div>` : ''}`,
       botones: [
         ['secondary', 'Personalizar tienda', () => { TiendaEditor.abrir(); }],
         ['secondary', 'Publicar ahora', async () => {
@@ -1017,6 +1017,10 @@
     overlay.querySelectorAll('[data-vit-auto]').forEach((c) => c.addEventListener('change', () => {
       overlay.querySelector(`[data-vit-color="${c.dataset.vitAuto}"]`).disabled = c.checked;
     }));
+    if (esEmpresaServicios()) {
+      // Sin carrito no hay entrega ni pagos que configurar.
+      overlay.querySelectorAll('[data-cfg-tab="1"], [data-cfg-tab="2"]').forEach((b) => b.classList.add('hidden'));
+    }
     overlay.querySelectorAll('[data-cfg-tab]').forEach((b) => b.addEventListener('click', () => {
       overlay.querySelectorAll('[data-cfg-tab]').forEach((x) => x.classList.toggle('active', x === b));
       overlay.querySelectorAll('[data-cfg-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.cfgPane !== b.dataset.cfgTab));
@@ -1058,26 +1062,17 @@
     });
   }
 
-  /** Productos, servicios o las dos cosas, y cómo se piden los servicios. */
-  function tipoTiendaForm(s) {
+  /** Empresa de Servicios: cómo se piden los servicios en su tienda. */
+  function solicitudesForm(s) {
     const v = s.serviciosTienda;
-    const servicios = esEmpresaServicios();
     const check = (id, valor, texto) => `<div class="form-group span-full"><label><input type="checkbox" id="${id}" ${valor ? 'checked' : ''}> ${texto}</label></div>`;
     return `<div class="to-form-grid">
-      ${servicios
-    ? '<p class="helper-text span-full">Tu tienda muestra tus servicios y recibe solicitudes. No lleva carrito porque se factura desde tu módulo de servicios.</p>'
-    : `<div class="form-group span-full"><label>Qué muestra tu tienda</label>
-        <select class="form-input" id="tocfg-modalidad">
-          <option value="mixta" ${s.modalidad === 'mixta' ? 'selected' : ''}>Productos y servicios</option>
-          <option value="productos" ${s.modalidad === 'productos' ? 'selected' : ''}>Solo productos</option>
-          <option value="servicios" ${s.modalidad === 'servicios' ? 'selected' : ''}>Solo servicios</option>
-        </select></div>
-        ${check('tocfg-srv-contratar', v.contratar, 'Los servicios se pueden pagar con el carrito, como un producto')}`}
+      <p class="helper-text span-full">Tu tienda muestra tus servicios y recibe solicitudes. No lleva carrito porque se factura desde tu módulo de servicios.</p>
       ${check('tocfg-srv-cotizacion', v.cotizacion, 'Recibir solicitudes de cotización')}
       ${check('tocfg-srv-cita', v.cita, 'Recibir solicitudes de cita')}
       ${check('tocfg-srv-whatsapp', v.whatsapp, 'Mostrar el botón de consultar por WhatsApp')}
       ${check('tocfg-srv-precio', v.mostrarPrecio, 'Mostrar el precio de los servicios')}
-      ${check('tocfg-auto', s.publicacionAutomatica, 'Publicar sola cada cosa nueva que registres. Si la ocultas después, no vuelve a salir')}
+      ${check('tocfg-auto', s.publicacionAutomatica, 'Publicar automáticamente cada servicio nuevo. Si lo ocultas después, no vuelve a salir')}
     </div>`;
   }
 
@@ -1159,7 +1154,7 @@
       };
       if (codigo === 'otro') pagos[codigo].etiqueta = ov.querySelector('[data-pago-etiqueta]')?.value || '';
     });
-    if (!Object.values(pagos).some((p) => p.habilitado)) {
+    if (!esEmpresaServicios() && !Object.values(pagos).some((p) => p.habilitado)) {
       toast('Activa al menos un método de pago.', 'warning');
       return false;
     }
@@ -1210,15 +1205,15 @@
         notificaciones: { whatsappDueno: q('#tocfg-wa-dueno').checked, whatsappCliente: q('#tocfg-wa-cliente').checked },
         categoriasOrden: q('#tocfg-cats').value.split('\n').map((c) => c.trim()).filter(Boolean),
         diseno: leerDiseno(ov),
-        modalidad: q('#tocfg-modalidad')?.value || TO.config.settings.modalidad,
-        serviciosTienda: {
-          contratar: q('#tocfg-srv-contratar') ? q('#tocfg-srv-contratar').checked : TO.config.settings.serviciosTienda.contratar,
-          cotizacion: q('#tocfg-srv-cotizacion').checked,
-          cita: q('#tocfg-srv-cita').checked,
-          whatsapp: q('#tocfg-srv-whatsapp').checked,
-          mostrarPrecio: q('#tocfg-srv-precio').checked,
-        },
-        publicacionAutomatica: q('#tocfg-auto').checked,
+        ...(esEmpresaServicios() ? {
+          serviciosTienda: {
+            cotizacion: q('#tocfg-srv-cotizacion').checked,
+            cita: q('#tocfg-srv-cita').checked,
+            whatsapp: q('#tocfg-srv-whatsapp').checked,
+            mostrarPrecio: q('#tocfg-srv-precio').checked,
+          },
+          publicacionAutomatica: q('#tocfg-auto').checked,
+        } : {}),
       },
     };
     if (activar) body.enabled = true;
@@ -1503,7 +1498,6 @@
     const abierta = !['convertida', 'descartada'].includes(s.estado);
     const tel = String(s.cliente.telefono || '').replace(/\D/g, '');
     const wa = tel.length >= 10 ? `https://wa.me/${tel.length === 10 ? `1${tel}` : tel}` : '';
-    const servicios = esEmpresaServicios();
     const accion = (nombre, texto, tipo = 'btn-secondary') => `<button type="button" class="${tipo}" onclick="TiendaOnline.atenderSolicitud(${s.id}, '${nombre}')">${texto}</button>`;
     return `<article class="to-solicitud" data-solicitud="${s.id}">
       <header>
@@ -1517,10 +1511,8 @@
       ${s.mensaje ? `<p class="to-sol-mensaje">${esc(s.mensaje)}</p>` : ''}
       ${s.referencia ? `<p class="to-muted">${esc(s.referencia)}</p>` : ''}
       <div class="to-sol-acciones">
-        ${abierta && s.tipo === 'cita' && servicios ? accion('calendario', 'Agendar en el calendario', 'btn-primary') : ''}
-        ${abierta && s.tipo !== 'cita' && servicios ? accion('cotizacion', 'Crear cotización', 'btn-primary') : ''}
-        ${abierta && s.tipo !== 'cita' && !servicios && s.productoId ? accion('ventas', 'Cotizar en Ventas', 'btn-primary') : ''}
-        ${abierta && s.tipo === 'cita' && !servicios ? accion('confirmada', 'Confirmar cita', 'btn-primary') : ''}
+        ${abierta && s.tipo === 'cita' ? accion('calendario', 'Agendar en el calendario', 'btn-primary') : ''}
+        ${abierta && s.tipo !== 'cita' ? accion('cotizacion', 'Crear cotización', 'btn-primary') : ''}
         ${abierta && s.estado === 'nueva' ? accion('en_revision', 'En revisión') : ''}
         ${abierta ? accion('convertida', 'Marcar atendida') : ''}
         ${wa ? `<a class="btn-secondary" href="${esc(wa)}" data-to-ext="1">WhatsApp</a>` : ''}
@@ -1560,12 +1552,6 @@
         });
         await api('PUT', `/solicitudes/${id}`, { estado: 'convertida', referencia: 'Agendada en el calendario' });
         toast('Cita agendada en el calendario.', 'success');
-      } else if (accion === 'ventas') {
-        await api('PUT', `/solicitudes/${id}`, { estado: 'en_revision', referencia: s.referencia });
-        if (typeof showModule === 'function') showModule('ventas', document.querySelector('[data-module="ventas"]'));
-        if (typeof addProductById === 'function') addProductById(s.productoId);
-        toast(`${s.articulo} está en el carrito. Pulsa Cotización para ${s.cliente.nombre}.`, 'success', 7000);
-        return;
       } else {
         await api('PUT', `/solicitudes/${id}`, { estado: accion, referencia: s.referencia });
       }
@@ -1578,6 +1564,7 @@
   /** En una Empresa de Servicios no hay pedidos que cobrar: solo solicitudes y lo publicado. */
   function ajustarModoEmpresa() {
     const servicios = esEmpresaServicios();
+    document.querySelector('[data-to-tab="solicitudes"]')?.classList.toggle('hidden', !servicios);
     document.querySelector('[data-to-tab="pedidos"]')?.classList.toggle('hidden', servicios);
     document.querySelector('[data-to-tab="reportes"]')?.classList.toggle('hidden', servicios);
     const productos = el('to-tab-btn-productos');

@@ -25,8 +25,6 @@ const cors = require('cors');
 const { formidable } = require('formidable');
 const { generateQrDataUrl } = require('./modules/ecf/utils/qr-image.util');
 const sharp = require('sharp');
-const articulos = require('./server/services/articulos');
-const miniaturas = require('./server/services/miniaturas');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
 const { query, withTransaction, withTransactionRetry, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
 const { verifyInternalRequest } = require('./server/security/internal-request');
@@ -2152,8 +2150,6 @@ app.use(express.static(path.join(__dirname), {
     }
   }
 }));
-// Miniaturas de las fotos: se crean la primera vez que alguien las pide.
-app.use(PRODUCT_UPLOAD_WEB_PATH, miniaturas.createMiniaturas({ dir: PRODUCT_UPLOAD_DIR, sharp }));
 app.use(PRODUCT_UPLOAD_WEB_PATH, express.static(PRODUCT_UPLOAD_DIR));
 app.use(TREASURY_ATTACHMENTS_WEB_PATH, express.static(TREASURY_ATTACHMENTS_DIR));
 app.use(FISCAL_ATTACHMENTS_WEB_PATH, express.static(FISCAL_ATTACHMENTS_DIR));
@@ -3456,7 +3452,6 @@ async function removeLocalProductImage(imageLocal) {
   if (fs.existsSync(filePath)) {
     fs.rmSync(filePath, { force: true });
   }
-  fs.rmSync(miniaturas.rutaMiniatura(filePath), { force: true });
 }
 
 async function downloadAndSaveProductImage({ productId, productName, imageUrl }) {
@@ -12430,8 +12425,7 @@ app.get('/api/products', async (req, res) => {
 // (un usuario logueado, con req) como por el consumidor de productos
 // pendientes que llegan del Portal del Contador (server/sync/apply-pending-products.js,
 // sin req/sesión HTTP, solo un actor sintético para el log de auditoría).
-async function createProductInTransaction(conn, { data: entrada, catalogBranchId, actor }) {
-  const data = articulos.normalizarArticulo(entrada);
+async function createProductInTransaction(conn, { data, catalogBranchId, actor }) {
   await conn.query('INSERT OR IGNORE INTO categories (nombre) VALUES (?)', [data.categoria]);
   await ensureUniqueProductCode(data.codigo, null, conn, catalogBranchId);
   await ensureUniqueProductBarcode(data.barcode || data.codigo, null, conn, catalogBranchId);
@@ -12617,11 +12611,10 @@ app.post('/api/products', async (req, res) => {
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para crear productos.' });
   }
-  const data = articulos.normalizarArticulo(req.body);
-  if (!data?.nombre) {
-    return res.status(400).json({ error: 'El nombre es obligatorio.' });
+  const data = req.body;
+  if (!data?.codigo || !data?.nombre) {
+    return res.status(400).json({ error: 'Código y nombre son obligatorios.' });
   }
-  if (!data.codigo) data.codigo = await articulos.generarCodigoArticulo(query, data.tipoProducto);
   multisucursal.catalogo.validarAlcanceProducto(data);
   // Un admin de sucursal queda forzado a SU sucursal (ignora lo que mande el
   // body); un admin con permiso de catálogo global elige libremente, con null
@@ -13222,13 +13215,9 @@ app.put('/api/products/:id', async (req, res) => {
   const { id } = req.params;
   // Multisucursal: en una sucursal que no es la principal, los datos maestros
   // de un producto de la empresa no se cambian (gana la central).
-  const data = articulos.normalizarArticulo(await multisucursal.catalogo.protegerMaestroProducto(id, req.body));
-  if (!data?.nombre) {
-    return res.status(400).json({ error: 'El nombre es obligatorio.' });
-  }
-  if (!data.codigo) {
-    const [actual] = await query('SELECT codigo FROM products WHERE id = ? LIMIT 1', [id]);
-    data.codigo = actual?.codigo || await articulos.generarCodigoArticulo(query, data.tipoProducto);
+  const data = await multisucursal.catalogo.protegerMaestroProducto(id, req.body);
+  if (!data?.codigo || !data?.nombre) {
+    return res.status(400).json({ error: 'Código y nombre son obligatorios.' });
   }
   multisucursal.catalogo.validarAlcanceProducto(data);
   const scopedCatalogBranchId = getProductCatalogBranchScope(actorUser);

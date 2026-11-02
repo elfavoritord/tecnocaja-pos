@@ -12,7 +12,7 @@
  */
 
 const crypto = require('crypto');
-const { esServicio } = require('../services/articulos');
+const { esEmpresaServicios, esServicio } = require('../services/articulos');
 const { fetchDateActiveRows, isActiveOnDate } = require('../services/promotion-engine');
 const { claveProducto, claveFotoProducto, METODOS_PAGO } = require('./contrato');
 const { leerFotosExtra } = require('./fotos');
@@ -196,7 +196,8 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
     const settings = store.settings;
     const { branchId, branchName, primaryBranchId } = await resolveStoreBranchId(store.branchId, config);
     const taxRate = Number(config.tax_rate ?? 18);
-    if (store.enabled) await fecharProductosNuevos(settings.publicacionAutomatica);
+    const empresaServicios = esEmpresaServicios(config);
+    if (store.enabled) await fecharProductosNuevos(empresaServicios && settings.publicacionAutomatica);
     const [rows, promos] = await Promise.all([
       readProducts({ branchId, primaryBranchId }),
       promotionsFor(branchId),
@@ -303,7 +304,6 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
       return v ? { clave: `_anuncio_${n}`, version: v } : null;
     }).filter(Boolean);
     const publicados = new Set(productos.map((p) => p.id));
-    const empresaServicios = Number(config.service_company || 0) === 1 || /^srv_/.test(String(config.business_type || ''));
 
     const perfil = {
       licenseId: getLicenseId(),
@@ -318,10 +318,8 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
       colorPrimario: settings.colorPrimario,
       diseno: settings.diseno || null,
       // Una Empresa de Servicios no tiene caja: recibe solicitudes, no cobra por carrito.
-      modalidad: empresaServicios ? 'servicios' : settings.modalidad,
-      serviciosTienda: empresaServicios
-        ? { ...settings.serviciosTienda, contratar: false }
-        : settings.serviciosTienda,
+      modalidad: empresaServicios ? 'servicios' : 'productos',
+      serviciosTienda: empresaServicios ? settings.serviciosTienda : null,
       logo: logoVersion ? '_logo' : null,
       logoVersion,
       banner: bannerVersion ? '_banner' : null,

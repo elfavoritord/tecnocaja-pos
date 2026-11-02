@@ -389,7 +389,7 @@ async function pruebasServicios() {
       }
       const servicio = await api('POST', '/api/products', {
         codigo: 'SERV', barcode: 'SERV', nombre: 'Servicio tecnico', categoria: 'GENERAL', unidad: 'Unidad', marca: '', precioVenta: 100, precioCompra: 0,
-        stock: 0, stockMin: 0, aplicaItbis: true, estado: 'Activo', branchId: ctx.branchId, tipoProducto: 'servicio',
+        stock: 0, stockMin: 0, aplicaItbis: true, estado: 'Activo', branchId: ctx.branchId, tipoProducto: 'servicio', tracksStock: false,
       });
       ctx.productos.SERV = Number(servicio.body?.product?.id || servicio.body?.producto?.id || servicio.body?.id || 0);
       const emitidos = await pruebasPos();

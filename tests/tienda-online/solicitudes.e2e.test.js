@@ -1,9 +1,11 @@
 'use strict';
 
 /**
- * Catálogo unificado en la tienda, de punta a punta y sin red: base SQLite real del
+ * La tienda según el tipo de negocio, de punta a punta y sin red: base SQLite real del
  * POS → publicador → Firestore en memoria → API de la nube → solicitud → POS.
- * Modalidades, cada opción por separado, y que una solicitud nunca se vuelva venta.
+ *
+ * Un negocio con POS vende como siempre, aunque tenga artículos tipo Servicio.
+ * Solo una Empresa de Servicios muestra sus servicios y recibe solicitudes.
  */
 
 const request = require('supertest');
@@ -13,7 +15,7 @@ const { createTiendaOnline } = require('../../server/tienda-online');
 const { createApp } = require('../../cloud/tienda-online/lib/app');
 
 const LIC = 'pos_ccccddddeeeeffff';
-const SLUG = 'negocio-mixto';
+const SLUG = 'negocio-prueba';
 
 let pos;
 let fs;
@@ -39,8 +41,8 @@ async function idDe(codigo) {
   return Number(rows[0].id);
 }
 
-async function publicar(cambios = {}, config = 0) {
-  await pos.query('UPDATE config SET service_company = ? WHERE id = 1', [config]);
+async function publicar(cambios = {}, empresaServicios = 0) {
+  await pos.query('UPDATE config SET service_company = ? WHERE id = 1', [empresaServicios]);
   const actual = await tienda.settingsStore.read();
   await tienda.settingsStore.write({
     enabled: true,
@@ -55,16 +57,13 @@ async function publicar(cambios = {}, config = 0) {
 
 const leerTienda = async () => (await request(app).get(`/api/tiendas/${SLUG}`)).body;
 const enviar = (cuerpo) => request(app).post(`/api/tiendas/${SLUG}/solicitudes`).send(cuerpo);
-
-function pedido(items) {
-  return {
-    idempotencyKey: clave(),
-    cliente: { nombre: 'Juan Pérez', telefono: '829-000-0000' },
-    entrega: { tipo: 'retiro' },
-    pago: { metodo: 'efectivo' },
-    items,
-  };
-}
+const pedir = (items) => request(app).post(`/api/tiendas/${SLUG}/pedidos`).send({
+  idempotencyKey: clave(),
+  cliente: { nombre: 'Juan Pérez', telefono: '829-000-0000' },
+  entrega: { tipo: 'retiro' },
+  pago: { metodo: 'efectivo' },
+  items,
+});
 
 beforeAll(async () => {
   pos = await createSqlitePos();
@@ -89,11 +88,7 @@ beforeAll(async () => {
                   VALUES (?, ?, ?, ?, ?, ?, 'Activo', ?, ?, 1, ?)`;
   await pos.query(insert, ['CAB', 'Cable HDMI', 'Accesorios', 100, 300, 5, 1, 1, 'producto']);
   await pos.query(insert, ['LIM', 'Limpieza de oficina', 'Servicios', 0, 2500, 0, 1, 0, 'servicio']);
-  await publicar({
-    nombre: 'Negocio Mixto',
-    telefono: '8095550000',
-    pagos: { efectivo: { habilitado: true } },
-  });
+  await publicar({ nombre: 'Negocio Prueba', telefono: '8095550000', pagos: { efectivo: { habilitado: true } } });
 });
 
 afterAll(() => {
@@ -101,178 +96,189 @@ afterAll(() => {
   pos.close();
 });
 
-describe('Modalidades de la tienda', () => {
-  test('una tienda de antes sigue igual: productos y servicios, y los dos se compran', async () => {
+describe('Negocio con POS: la tienda sigue como estaba', () => {
+  // Datos que pudo guardar la 1.6.11: no cambian nada.
+  const guardado = { modalidad: 'servicios', publicacionAutomatica: true, serviciosTienda: { contratar: false, cotizacion: true, cita: true, whatsapp: true, mostrarPrecio: false } };
+
+  beforeAll(() => publicar(guardado));
+
+  test('todo lo publicado se muestra y se vende, y un servicio se ve como un artículo más', async () => {
     const { tienda: t, productos } = await leerTienda();
-    expect(t.modalidad).toBe('mixta');
-    const cable = productos.find((p) => p.nombre === 'Cable HDMI');
-    const limpieza = productos.find((p) => p.nombre === 'Limpieza de oficina');
-    expect(cable).toMatchObject({ tipo: 'producto', comprable: true, precioOculto: false });
-    expect(limpieza).toMatchObject({ tipo: 'servicio', comprable: true, precio: 2500, disponible: null, agotado: false });
+    expect(t.modalidad).toBe('productos');
+    expect(t.solicitudes).toEqual({ cotizacion: false, cita: false, whatsapp: false });
+    expect(productos.map((p) => p.nombre).sort()).toEqual(['Cable HDMI', 'Limpieza de oficina']);
+    for (const p of productos) expect(p).toMatchObject({ tipo: 'producto', comprable: true, precioOculto: false });
+    expect(productos.find((p) => p.nombre === 'Limpieza de oficina').precio).toBe(2500);
   });
 
-  test('solo productos: los servicios no salen ni se pueden pedir', async () => {
-    await publicar({ modalidad: 'productos' });
+  test('el carrito acepta el artículo tipo Servicio', async () => {
+    const res = await pedir([{ productoId: await idDe('LIM'), cantidad: 1 }]);
+    expect(res.status).toBe(201);
+  });
+
+  test('no recibe solicitudes de ningún tipo, ni llamando directo a la API', async () => {
+    for (const extra of [{}, { tipo: 'cita', fecha: '2026-12-01' }, { tipo: 'consulta' }]) {
+      expect((await enviar(solicitud(extra))).status).toBe(409);
+    }
+  });
+
+  test('un perfil de un POS anterior se porta igual', async () => {
+    const lic = 'pos_9999888877776666';
+    const viejo = createFakeFirestore({
+      'tienda_slugs/vieja': { licenseId: lic },
+      [`businesses/${lic}/tiendaOnline/perfil`]: {
+        licenseId: lic, slug: 'vieja', activa: true, nombre: 'Vieja', moneda: 'RD$', tasaItbis: 18,
+        pagos: [{ codigo: 'efectivo', etiqueta: 'Efectivo' }], retiro: { habilitado: true }, delivery: { habilitado: false }, categorias: [], horario: null,
+      },
+      [`businesses/${lic}/tiendaOnline/catalogo`]: { paginas: 1, total: 1, version: 'v1' },
+      [`businesses/${lic}/tiendaOnline/catalogo_p0`]: { productos: [{ id: 1, nombre: 'Agua', categoria: 'B', precio: 25, modoVenta: 'unidad', controlaStock: false, itbis: false }] },
+      [`businesses/${lic}/tiendaOnline/stock`]: { items: {}, contador: 1 },
+    });
+    const r = await request(createApp({ db: viejo, FieldValue: viejo.FieldValue })).get('/api/tiendas/vieja');
+    expect(r.body.tienda.solicitudes).toEqual({ cotizacion: false, cita: false, whatsapp: false });
+    expect(r.body.productos[0]).toMatchObject({ tipo: 'producto', comprable: true });
+  });
+
+  test('la publicación automática no le aplica', async () => {
+    await pos.query(`INSERT INTO products (codigo, nombre, categoria, precio_compra, precio_venta, stock, estado, online_enabled, product_type)
+                     VALUES ('NUEPOS', 'Nuevo en POS', 'General', 0, 10, 1, 'Activo', 0, 'producto')`);
+    await publicar();
     const { productos } = await leerTienda();
-    expect(productos.map((p) => p.nombre)).toEqual(['Cable HDMI']);
-    const res = await request(app).post(`/api/tiendas/${SLUG}/pedidos`)
-      .send(pedido([{ productoId: await idDe('LIM'), cantidad: 1 }]));
-    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(productos.map((p) => p.nombre)).not.toContain('Nuevo en POS');
   });
 
-  test('solo servicios: los productos no salen ni se pueden comprar', async () => {
-    await publicar({ modalidad: 'servicios' });
-    const { productos, tienda: t } = await leerTienda();
-    expect(t.modalidad).toBe('servicios');
-    expect(productos.map((p) => p.nombre)).toEqual(['Limpieza de oficina']);
-    const res = await request(app).post(`/api/tiendas/${SLUG}/pedidos`)
-      .send(pedido([{ productoId: await idDe('CAB'), cantidad: 1 }]));
-    expect(res.status).toBeGreaterThanOrEqual(400);
-  });
-
-  test('una Empresa de Servicios siempre es solo servicios y sin carrito', async () => {
-    await publicar({ modalidad: 'mixta', serviciosTienda: { contratar: true, cotizacion: true, cita: false, whatsapp: true, mostrarPrecio: true } }, 1);
-    const { productos, tienda: t } = await leerTienda();
-    expect(t.modalidad).toBe('servicios');
-    expect(productos.map((p) => p.nombre)).toEqual(['Limpieza de oficina']);
-    expect(productos[0].comprable).toBe(false);
-    const res = await request(app).post(`/api/tiendas/${SLUG}/pedidos`)
-      .send(pedido([{ productoId: await idDe('LIM'), cantidad: 1 }]));
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    await publicar({}, 0);
+  test('no busca solicitudes en la nube', async () => {
+    const r = await tienda.solicitudes.recibirPendientes();
+    expect(r).toEqual({ nuevas: 0 });
+    expect(eventos.filter(([e]) => e === 'tienda-online:nueva-solicitud')).toHaveLength(0);
   });
 });
 
-describe('Cada opción por separado', () => {
-  const base = { contratar: true, cotizacion: true, cita: false, whatsapp: true, mostrarPrecio: true };
+describe('Empresa de Servicios', () => {
+  const base = { cotizacion: true, cita: false, whatsapp: true, mostrarPrecio: true };
 
-  test('sin "contratar", el servicio se ve con su precio pero el carrito lo rechaza', async () => {
-    await publicar({ modalidad: 'mixta', serviciosTienda: { ...base, contratar: false } });
-    const { productos } = await leerTienda();
-    const limpieza = productos.find((p) => p.tipo === 'servicio');
-    expect(limpieza).toMatchObject({ comprable: false, precio: 2500, precioOculto: false });
-    const res = await request(app).post(`/api/tiendas/${SLUG}/pedidos`)
-      .send(pedido([{ productoId: limpieza.id, cantidad: 1 }]));
-    expect(res.status).toBeGreaterThanOrEqual(400);
-    // El producto de al lado sigue vendiéndose.
-    expect(productos.find((p) => p.tipo === 'producto').comprable).toBe(true);
+  test('solo muestra sus servicios y no los vende por carrito', async () => {
+    await publicar({ serviciosTienda: base }, 1);
+    const { productos, tienda: t } = await leerTienda();
+    expect(t.modalidad).toBe('servicios');
+    expect(productos.map((p) => p.nombre)).toEqual(['Limpieza de oficina']);
+    expect(productos[0]).toMatchObject({ tipo: 'servicio', comprable: false, precio: 2500, disponible: null });
+    expect((await pedir([{ productoId: productos[0].id, cantidad: 1 }])).status).toBeGreaterThanOrEqual(400);
+    expect((await pedir([{ productoId: await idDe('CAB'), cantidad: 1 }])).status).toBeGreaterThanOrEqual(400);
   });
 
   test('con el precio oculto, el precio no sale de la nube por ningún lado', async () => {
-    await publicar({ modalidad: 'mixta', serviciosTienda: { ...base, mostrarPrecio: false } });
-    const cuerpo = await leerTienda();
-    const limpieza = cuerpo.productos.find((p) => p.tipo === 'servicio');
-    expect(limpieza).toMatchObject({ precio: 0, precioAntes: null, precioOculto: true, comprable: false });
-    expect(JSON.stringify(limpieza)).not.toMatch(/2500/);
-    const r = await enviar(solicitud({ productoId: limpieza.id }));
-    expect(r.status).toBe(201);
-    await tienda.sync.recibirSolicitudes();
-    const [recibida] = await tienda.solicitudes.listar();
+    await publicar({ serviciosTienda: { ...base, mostrarPrecio: false } }, 1);
+    const { productos } = await leerTienda();
+    expect(productos[0]).toMatchObject({ precio: 0, precioAntes: null, precioOculto: true });
+    expect(JSON.stringify(productos[0])).not.toMatch(/2500/);
+    expect((await enviar(solicitud({ productoId: productos[0].id, mensaje: 'Sin precio' }))).status).toBe(201);
+    await tienda.solicitudes.recibirPendientes();
+    const recibida = (await tienda.solicitudes.listar()).find((s) => s.mensaje === 'Sin precio');
     expect(recibida.precio).toBeNull();
   });
 
   test('cotización y cita apagadas se rechazan aunque alguien llame directo a la API', async () => {
-    await publicar({ modalidad: 'mixta', serviciosTienda: { ...base, cotizacion: false, cita: false } });
+    await publicar({ serviciosTienda: { ...base, cotizacion: false, cita: false } }, 1);
     expect((await enviar(solicitud())).status).toBe(409);
     expect((await enviar(solicitud({ tipo: 'cita', fecha: '2026-12-01' }))).status).toBe(409);
-    // Una consulta suelta no depende de esas opciones.
     expect((await enviar(solicitud({ tipo: 'consulta' }))).status).toBe(201);
   });
 
   test('la tienda le dice a la página qué botones van', async () => {
-    await publicar({ modalidad: 'mixta', serviciosTienda: { ...base, cita: true, whatsapp: false } });
+    await publicar({ serviciosTienda: { ...base, cita: true, whatsapp: false } }, 1);
     const { tienda: t } = await leerTienda();
     expect(t.solicitudes).toEqual({ cotizacion: true, cita: true, whatsapp: false });
   });
-});
 
-describe('Solicitudes', () => {
-  let limpiezaId;
+  describe('Solicitudes', () => {
+    let limpiezaId;
 
-  beforeAll(async () => {
-    await publicar({ modalidad: 'mixta', serviciosTienda: { contratar: false, cotizacion: true, cita: true, whatsapp: true, mostrarPrecio: true } });
-    limpiezaId = await idDe('LIM');
-  });
-
-  test('valida lo mínimo y atrapa al robot', async () => {
-    expect((await enviar(solicitud({ cliente: { nombre: 'A', telefono: '8095550101' } }))).status).toBe(400);
-    expect((await enviar(solicitud({ cliente: { nombre: 'Ana', telefono: '12' } }))).status).toBe(400);
-    expect((await enviar(solicitud({ cliente: { nombre: 'Ana', telefono: '8095550101', email: 'no-es-correo' } }))).status).toBe(400);
-    expect((await enviar(solicitud({ tipo: 'venta' }))).status).toBe(400);
-    expect((await enviar(solicitud({ tipo: 'cita' }))).status).toBe(400); // sin fecha
-    expect((await enviar(solicitud({ website: 'https://spam.test' }))).status).toBe(400);
-    expect((await enviar(solicitud({ productoId: 999999 }))).status).toBe(409);
-  });
-
-  test('doble clic: una sola solicitud; llega al POS una vez y no crea venta ni factura', async () => {
-    const ventasAntes = (await pos.query('SELECT COUNT(*) AS n FROM sales'))[0].n;
-    const stockAntes = (await pos.query("SELECT stock FROM products WHERE codigo = 'CAB'"))[0].stock;
-    const cuerpo = solicitud({ productoId: limpiezaId });
-    const a = await enviar(cuerpo);
-    const b = await enviar(cuerpo);
-    expect(a.status).toBe(201);
-    expect(b.status).toBe(200);
-    expect(b.body.repetida).toBe(true);
-
-    await tienda.sync.recibirSolicitudes();
-    await tienda.sync.recibirSolicitudes(); // reconexión: no duplica
-    const solicitudes = await tienda.solicitudes.listar();
-    const mias = solicitudes.filter((s) => s.articulo === 'Limpieza de oficina' && s.mensaje === cuerpo.mensaje && s.precio === 2500);
-    expect(mias).toHaveLength(1);
-    expect(mias[0]).toMatchObject({
-      tipo: 'cotizacion',
-      estado: 'nueva',
-      productoId: limpiezaId,
-      cliente: { nombre: 'Ana Pérez', telefono: '8095550101', email: 'ana@correo.test' },
+    beforeAll(async () => {
+      await publicar({ serviciosTienda: { ...base, cita: true } }, 1);
+      limpiezaId = await idDe('LIM');
     });
-    expect(eventos.some(([e]) => e === 'tienda-online:nueva-solicitud')).toBe(true);
-    expect((await pos.query('SELECT COUNT(*) AS n FROM sales'))[0].n).toBe(ventasAntes);
-    expect((await pos.query("SELECT stock FROM products WHERE codigo = 'CAB'"))[0].stock).toBe(stockAntes);
+
+    test('valida lo mínimo y atrapa al robot', async () => {
+      expect((await enviar(solicitud({ cliente: { nombre: 'A', telefono: '8095550101' } }))).status).toBe(400);
+      expect((await enviar(solicitud({ cliente: { nombre: 'Ana', telefono: '12' } }))).status).toBe(400);
+      expect((await enviar(solicitud({ cliente: { nombre: 'Ana', telefono: '8095550101', email: 'no-es-correo' } }))).status).toBe(400);
+      expect((await enviar(solicitud({ tipo: 'venta' }))).status).toBe(400);
+      expect((await enviar(solicitud({ tipo: 'cita' }))).status).toBe(400); // sin fecha
+      expect((await enviar(solicitud({ website: 'https://spam.test' }))).status).toBe(400);
+      expect((await enviar(solicitud({ productoId: 999999 }))).status).toBe(409);
+    });
+
+    test('doble clic: una sola solicitud; llega al POS una vez y no crea venta ni factura', async () => {
+      const ventasAntes = (await pos.query('SELECT COUNT(*) AS n FROM sales'))[0].n;
+      const cuerpo = solicitud({ productoId: limpiezaId, mensaje: 'Son tres oficinas' });
+      const a = await enviar(cuerpo);
+      const b = await enviar(cuerpo);
+      expect(a.status).toBe(201);
+      expect(b.status).toBe(200);
+      expect(b.body.repetida).toBe(true);
+
+      await tienda.sync.recibirSolicitudes();
+      await tienda.sync.recibirSolicitudes(); // reconexión: no duplica
+      const mias = (await tienda.solicitudes.listar()).filter((s) => s.mensaje === 'Son tres oficinas');
+      expect(mias).toHaveLength(1);
+      expect(mias[0]).toMatchObject({
+        tipo: 'cotizacion',
+        estado: 'nueva',
+        articulo: 'Limpieza de oficina',
+        precio: 2500,
+        productoId: limpiezaId,
+        cliente: { nombre: 'Ana Pérez', telefono: '8095550101', email: 'ana@correo.test' },
+      });
+      expect(eventos.some(([e]) => e === 'tienda-online:nueva-solicitud')).toBe(true);
+      expect((await pos.query('SELECT COUNT(*) AS n FROM sales'))[0].n).toBe(ventasAntes);
+    });
+
+    test('una cita lleva la fecha y la hora que pidió el cliente', async () => {
+      const r = await enviar(solicitud({ tipo: 'cita', productoId: limpiezaId, fecha: '2026-12-15', hora: '10:30', mensaje: 'Por la mañana' }));
+      expect(r.status).toBe(201);
+      await tienda.sync.recibirSolicitudes();
+      const cita = (await tienda.solicitudes.listar()).find((s) => s.tipo === 'cita' && s.mensaje === 'Por la mañana');
+      expect(cita).toMatchObject({ fecha: '2026-12-15', hora: '10:30' });
+    });
+
+    test('el negocio la lleva de estado en estado; un estado inventado no entra', async () => {
+      const [s] = await tienda.solicitudes.listar();
+      await tienda.solicitudes.cambiar(s.id, { estado: 'en_revision' });
+      await tienda.solicitudes.cambiar(s.id, { estado: 'convertida', referencia: 'Cotización COT-1' });
+      const leida = (await tienda.solicitudes.listar()).find((x) => x.id === s.id);
+      expect(leida).toMatchObject({ estado: 'convertida', referencia: 'Cotización COT-1' });
+      await expect(tienda.solicitudes.cambiar(s.id, { estado: 'facturada' })).rejects.toThrow('Estado inválido');
+      expect((await tienda.solicitudes.listar({ estado: 'convertida' })).map((x) => x.id)).toContain(s.id);
+    });
   });
 
-  test('una cita lleva la fecha y la hora que pidió el cliente', async () => {
-    const r = await enviar(solicitud({ tipo: 'cita', productoId: limpiezaId, fecha: '2026-12-15', hora: '10:30', mensaje: 'Por la mañana' }));
-    expect(r.status).toBe(201);
-    await tienda.sync.recibirSolicitudes();
-    const cita = (await tienda.solicitudes.listar()).find((s) => s.tipo === 'cita' && s.mensaje === 'Por la mañana');
-    expect(cita).toMatchObject({ fecha: '2026-12-15', hora: '10:30' });
-  });
+  describe('Publicación automática', () => {
+    const insertar = (codigo, nombre) => pos.query(
+      `INSERT INTO products (codigo, nombre, categoria, precio_compra, precio_venta, stock, estado, online_enabled, product_type, tracks_stock)
+       VALUES (?, ?, 'Servicios', 0, 900, 0, 'Activo', 0, 'servicio', 0)`,
+      [codigo, nombre],
+    );
 
-  test('el negocio la lleva de estado en estado; un estado inventado no entra', async () => {
-    const [s] = await tienda.solicitudes.listar();
-    await tienda.solicitudes.cambiar(s.id, { estado: 'en_revision' });
-    await tienda.solicitudes.cambiar(s.id, { estado: 'convertida', referencia: 'Cotización COT-1' });
-    const leida = (await tienda.solicitudes.listar()).find((x) => x.id === s.id);
-    expect(leida).toMatchObject({ estado: 'convertida', referencia: 'Cotización COT-1' });
-    await expect(tienda.solicitudes.cambiar(s.id, { estado: 'facturada' })).rejects.toThrow('Estado inválido');
-    expect((await tienda.solicitudes.listar({ estado: 'convertida' })).map((x) => x.id)).toContain(s.id);
-    expect(await tienda.solicitudes.contarNuevas()).toBeGreaterThanOrEqual(0);
-  });
-});
+    test('apagada, lo nuevo no se publica solo', async () => {
+      await publicar({ publicacionAutomatica: false }, 1);
+      await insertar('NUE1', 'Nuevo sin publicar');
+      await publicar({}, 1);
+      expect((await leerTienda()).productos.map((p) => p.nombre)).not.toContain('Nuevo sin publicar');
+    });
 
-describe('Publicación automática', () => {
-  test('apagada, lo nuevo no se publica solo', async () => {
-    await publicar({ modalidad: 'mixta', publicacionAutomatica: false, serviciosTienda: { contratar: true, cotizacion: true, cita: false, whatsapp: true, mostrarPrecio: true } });
-    await pos.query(`INSERT INTO products (codigo, nombre, categoria, precio_compra, precio_venta, stock, estado, online_enabled, product_type)
-                     VALUES ('NUE1', 'Nuevo sin publicar', 'General', 0, 10, 1, 'Activo', 0, 'producto')`);
-    await publicar();
-    const { productos } = await leerTienda();
-    expect(productos.map((p) => p.nombre)).not.toContain('Nuevo sin publicar');
-  });
+    test('encendida, se publica una sola vez: si el dueño lo oculta, no vuelve', async () => {
+      await publicar({ publicacionAutomatica: true }, 1);
+      await insertar('NUE2', 'Asesoría nueva');
+      await publicar({}, 1);
+      const nombres = (await leerTienda()).productos.map((p) => p.nombre);
+      expect(nombres).toContain('Asesoría nueva');
+      // El que ya existía antes de encender no se publica de golpe.
+      expect(nombres).not.toContain('Nuevo sin publicar');
 
-  test('encendida, se publica una sola vez: si el dueño lo oculta, no vuelve', async () => {
-    await publicar({ publicacionAutomatica: true });
-    await pos.query(`INSERT INTO products (codigo, nombre, categoria, precio_compra, precio_venta, stock, estado, online_enabled, product_type, tracks_stock)
-                     VALUES ('NUE2', 'Asesoría nueva', 'Servicios', 0, 900, 0, 'Activo', 0, 'servicio', 0)`);
-    await publicar();
-    let { productos } = await leerTienda();
-    expect(productos.map((p) => p.nombre)).toContain('Asesoría nueva');
-    // El que ya existía antes de encender no se publica de golpe.
-    expect(productos.map((p) => p.nombre)).not.toContain('Nuevo sin publicar');
-
-    await pos.query("UPDATE products SET online_enabled = 0 WHERE codigo = 'NUE2'");
-    await publicar();
-    ({ productos } = await leerTienda());
-    expect(productos.map((p) => p.nombre)).not.toContain('Asesoría nueva');
+      await pos.query("UPDATE products SET online_enabled = 0 WHERE codigo = 'NUE2'");
+      await publicar({}, 1);
+      expect((await leerTienda()).productos.map((p) => p.nombre)).not.toContain('Asesoría nueva');
+    });
   });
 });

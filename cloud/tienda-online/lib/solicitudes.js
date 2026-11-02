@@ -49,6 +49,7 @@ function validarSolicitud(body = {}) {
 async function crearSolicitud({ db, FieldValue, tienda, datos }) {
   const { licenseId, perfil, lista } = tienda;
   const opciones = opcionesServicios(perfil);
+  if (opciones.modalidad !== 'servicios') throw httpError('Esta tienda no recibe solicitudes.', 409);
   if (datos.tipo === 'cotizacion' && !opciones.cotizacion) throw httpError('Esta tienda no recibe solicitudes de cotización.', 409);
   if (datos.tipo === 'cita' && !opciones.cita) throw httpError('Esta tienda no recibe solicitudes de cita.', 409);
 

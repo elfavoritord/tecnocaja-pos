@@ -3562,7 +3562,7 @@ async function activateAuthenticatedSession(response, sessionLanguage, options =
   document.getElementById('app')?.classList.remove('hidden');
   initApp();
   const salesNav = document.querySelector('.nav-item[data-module="ventas"]');
-  if (salesNav) {
+  if (salesNav && isBusinessModuleEnabled('ventas')) {
     showModule('ventas', salesNav);
   }
   if (response.linkedContadorProfile) {

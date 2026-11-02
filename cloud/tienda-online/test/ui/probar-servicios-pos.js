@@ -1,7 +1,7 @@
 'use strict';
 
-// El POS real con clics de verdad: una Empresa de Servicios (sin pantalla de venta)
-// atendiendo solicitudes, y un negocio normal vendiendo un servicio. SQLite temporal.
+// El POS real con clics de verdad, en SQLite temporal. Una Empresa de Servicios (sin pantalla
+// de venta) activa su tienda y atiende solicitudes; un negocio con POS sigue como siempre.
 //   node cloud/tienda-online/test/ui/probar-servicios-pos.js [carpeta-de-capturas]
 /* global DB, doLogin, renderSalesCatalog, showModule, TiendaOnline -- corren dentro de la página */
 
@@ -49,11 +49,17 @@ async function entrar(browser, port) {
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle2' });
   await page.waitForSelector('#login-user', { timeout: 30000 });
   await page.evaluate(() => {
+    const original = window.showToast;
+    window.avisos = [];
+    window.showToast = function (mensaje, ...resto) {
+      window.avisos.push(String(mensaje));
+      return original.call(this, mensaje, ...resto);
+    };
     document.getElementById('login-user').value = 'admin';
     document.getElementById('login-pass').value = '1234';
   });
   await page.evaluate(() => doLogin());
-  await sleep(2000);
+  await sleep(2500);
   const api = (metodo, ruta, cuerpo) => page.evaluate(async (m, r, c) => {
     const res = await fetch(r, {
       method: m,
@@ -65,6 +71,11 @@ async function entrar(browser, port) {
   return { page, errores, api };
 }
 
+const clicEnBoton = (page, texto) => page.evaluate((t) => {
+  const b = [...document.querySelectorAll('[data-btn]')].filter((x) => new RegExp(t).test(x.textContent)).pop();
+  b.click();
+}, texto);
+
 async function empresaServicios(browser) {
   const server = await arrancar('srv', 'srv_limpieza', PORT);
   try {
@@ -72,10 +83,11 @@ async function empresaServicios(browser) {
     const modo = await page.evaluate(() => ({
       servicio: Boolean(DB.config?.serviceCompany),
       ventas: Boolean(document.querySelector('[data-module="ventas"]')?.offsetParent),
+      avisos: window.avisos,
     }));
     ok('empresa de servicios, sin pantalla de venta', modo.servicio && !modo.ventas, JSON.stringify(modo));
+    ok('al entrar no sale el aviso de módulo no activo', !modo.avisos.some((a) => /no está activo/.test(a)), modo.avisos.join(' | '));
 
-    // El servicio del catálogo nace con su producto, sin duplicar.
     const creado = await api('POST', '/api/servicios/catalogo', { nombre: 'Limpieza profunda', codigo: 'LIMP-1', precio: 3500, itbisPct: 18, unidad: 'servicio' });
     ok('crear el servicio', creado.status === 201 || creado.status === 200, JSON.stringify(creado.body));
     const servicioId = creado.body.id;
@@ -85,19 +97,51 @@ async function empresaServicios(browser) {
     const nombres = (productos.body.productos || productos.body.items || []).map((p) => p.nombre);
     ok('los servicios se pueden publicar en la tienda', nombres.includes('Limpieza profunda') && nombres.includes('Fumigación'), JSON.stringify(productos.body).slice(0, 300));
 
-    // Activar y abrir
-    await api('PUT', '/api/tienda-online/config', { enabled: true, slug: 'limpieza-prueba' });
-    await page.reload({ waitUntil: 'networkidle2' });
-    await sleep(2500);
-    const logueada = await page.evaluate(() => Boolean(DB.currentUser));
-    if (!logueada) {
-      await page.evaluate(() => {
-        document.getElementById('login-user').value = 'admin';
-        document.getElementById('login-pass').value = '1234';
-      });
-      await page.evaluate(() => doLogin());
-      await sleep(2000);
+    // Activar la tienda como lo haría el dueño: Configuración → Mi Negocio → Tienda online.
+    await page.evaluate(() => { showModule('configuracion', document.querySelector('[data-module="configuracion"]')); });
+    await sleep(1500);
+    const tarjeta = await page.evaluate(() => {
+      const c = [...document.querySelectorAll('.cfg-group-card')].find((x) => /Mi Negocio/.test(x.textContent));
+      c?.click();
+      return Boolean(c);
+    });
+    ok('Configuración tiene Mi Negocio', tarjeta);
+    await sleep(500);
+    const fila = await page.evaluate(() => {
+      const f = [...document.querySelectorAll('#cfg-group-modal *')].filter((x) => x.children.length <= 3 && x.textContent.trim().startsWith('Tienda online') && x.offsetParent).pop();
+      f?.click();
+      return Boolean(f);
+    });
+    ok('Mi Negocio tiene Tienda online', fila);
+    await sleep(500);
+    const check = await page.evaluate(() => {
+      const c = document.getElementById('cfg-tienda-online-enabled');
+      c?.click();
+      return Boolean(c);
+    });
+    ok('se puede encender', check);
+    await page.waitForSelector('#tocfg-slug', { timeout: 8000 });
+    const tabs = await page.evaluate(() => [...document.querySelectorAll('[data-cfg-tab]')].filter((b) => !b.classList.contains('hidden')).map((b) => b.textContent.trim()));
+    ok('sin pestañas de Entrega ni Pagos', !tabs.includes('Entrega') && !tabs.includes('Pagos') && tabs.includes('Solicitudes'), tabs.join());
+    await page.$eval('#tocfg-slug', (e) => { e.value = 'limpieza-prueba'; });
+    await page.click('[data-cfg-tab="6"]');
+    await sleep(200);
+    const form = await page.evaluate(() => ({
+      modalidad: Boolean(document.querySelector('#tocfg-modalidad')),
+      contratar: Boolean(document.querySelector('#tocfg-srv-contratar')),
+      cotizacion: document.querySelector('#tocfg-srv-cotizacion')?.checked,
+    }));
+    ok('elige solo cómo recibir solicitudes', !form.modalidad && !form.contratar && form.cotizacion === true, JSON.stringify(form));
+    await page.evaluate(() => { document.querySelector('#tocfg-srv-cita').checked = true; });
+    if (CAPTURAS) {
+      fs.mkdirSync(CAPTURAS, { recursive: true });
+      await page.screenshot({ path: path.join(CAPTURAS, 'pos-solicitudes-config.png') });
     }
+    await clicEnBoton(page, '^Guardar');
+    await sleep(1200);
+    const cfg = (await api('GET', '/api/tienda-online/config')).body;
+    ok('queda activa sin pedir método de pago', cfg.enabled === true && cfg.slug === 'limpieza-prueba', JSON.stringify({ e: cfg.enabled, s: cfg.slug, avisos: await page.evaluate(() => window.avisos) }));
+    ok('guarda la opción de citas', cfg.settings.serviciosTienda.cita === true);
 
     // Solicitudes de ejemplo, como si hubieran llegado de la nube.
     let lista = [
@@ -132,18 +176,16 @@ async function empresaServicios(browser) {
       titulo: document.querySelector('#module-tiendaonline .module-header h2')?.textContent,
       pedidos: document.querySelector('[data-to-tab="pedidos"]')?.classList.contains('hidden'),
       reportes: document.querySelector('[data-to-tab="reportes"]')?.classList.contains('hidden'),
+      solicitudes: document.querySelector('[data-to-tab="solicitudes"]')?.classList.contains('hidden'),
       publicados: document.getElementById('to-tab-btn-productos')?.textContent,
       panel: !document.getElementById('to-pane-solicitudes')?.classList.contains('hidden'),
       tarjetas: document.querySelectorAll('.to-solicitud').length,
     }));
-    ok('el módulo se llama Tienda online y abre en Solicitudes', vista.nav === 'Tienda online' && vista.corto === 'Tienda' && vista.arriba === 'Tienda online' && vista.titulo === 'Tienda online' && vista.panel, JSON.stringify(vista));
+    ok('el módulo se llama Tienda online y abre en Solicitudes', vista.nav === 'Tienda online' && vista.corto === 'Tienda' && vista.arriba === 'Tienda online' && vista.titulo === 'Tienda online' && vista.panel && vista.solicitudes === false, JSON.stringify(vista));
     ok('sin pedidos ni reportes de venta', vista.pedidos && vista.reportes);
     ok('la lista de lo publicado habla de servicios', /Servicios publicados/.test(vista.publicados), vista.publicados);
     ok('se ven las dos solicitudes', vista.tarjetas === 2, String(vista.tarjetas));
-    if (CAPTURAS) {
-      fs.mkdirSync(CAPTURAS, { recursive: true });
-      await page.screenshot({ path: path.join(CAPTURAS, 'pos-solicitudes.png') });
-    }
+    if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-solicitudes.png') });
 
     // Cotización de verdad, sin factura.
     await page.evaluate(() => TiendaOnline.atenderSolicitud(1, 'cotizacion'));
@@ -163,43 +205,28 @@ async function empresaServicios(browser) {
     const eventos = cal.body.items || cal.body.eventos || cal.body;
     ok('la cita entra al calendario con su fecha y hora', Array.isArray(eventos) && eventos.some((e) => e.fecha === '2030-01-15' && e.hora && e.hora.startsWith('10:30')), JSON.stringify(cal.body).slice(0, 300));
     ok('la cita queda atendida', lista[1].estado === 'convertida');
-
-    // Configuración: tipo de tienda
-    await page.evaluate(() => TiendaOnline.openConfig());
-    await page.waitForSelector('[data-cfg-tab="6"]', { timeout: 8000 });
-    await page.click('[data-cfg-tab="6"]');
-    await sleep(200);
-    const form = await page.evaluate(() => ({
-      modalidad: Boolean(document.querySelector('#tocfg-modalidad')),
-      contratar: Boolean(document.querySelector('#tocfg-srv-contratar')),
-      cotizacion: document.querySelector('#tocfg-srv-cotizacion')?.checked,
-    }));
-    ok('en servicios no se elige modalidad ni carrito', !form.modalidad && !form.contratar && form.cotizacion === true, JSON.stringify(form));
-    if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-tipo-tienda-servicios.png') });
     ok('sin errores en la pantalla (servicios)', errores.length === 0, errores.join(' | '));
   } finally {
     L.stopServer(server);
   }
 }
 
-async function negocioNormal(browser) {
+async function negocioConPos(browser) {
   const server = await arrancar('pos', 'colmado', PORT + 1);
   try {
     const { page, errores, api } = await entrar(browser, PORT + 1);
 
-    // Sin código ni barras: el sistema le pone uno.
-    const servicio = await api('POST', '/api/products', { nombre: 'Instalación de abanico', categoria: 'General', precioCompra: 0, precioVenta: 800, stock: 99, stockMin: 5, tipoProducto: 'servicio', tracksStock: true, unidad: 'servicio', aplicaItbis: 1 });
-    ok('un servicio se crea sin código', servicio.status === 201 || servicio.status === 200, JSON.stringify(servicio.body).slice(0, 200));
-    ok('recibe un código interno', /^SRV-\d{5}$/.test(servicio.body.codigo), servicio.body.codigo);
-    ok('un servicio nunca lleva inventario', Number(servicio.body.stock) === 0 && servicio.body.tracksStock === false, JSON.stringify(servicio.body).slice(0, 200));
-    const producto = await api('POST', '/api/products', { nombre: 'Abanico de techo', categoria: 'General', precioCompra: 1000, precioVenta: 2500, stock: 5, stockMin: 1, unidad: 'und', aplicaItbis: 1 });
-    ok('un producto se crea sin código', /^ART-\d{5}$/.test(producto.body.codigo), JSON.stringify(producto.body).slice(0, 200));
-    const sinNombre = await api('POST', '/api/products', { categoria: 'General', precioVenta: 10 });
-    ok('el nombre sigue siendo obligatorio', sinNombre.status >= 400);
-    const repetido = await api('POST', '/api/products', { nombre: 'Otro', codigo: producto.body.codigo, categoria: 'General', precioVenta: 10 });
-    ok('un código repetido se rechaza', repetido.status >= 400);
+    // Productos: como en la 1.6.10.
+    const sinCodigo = await api('POST', '/api/products', { nombre: 'Sin código', categoria: 'General', precioCompra: 1, precioVenta: 10, stock: 1, stockMin: 0, unidad: 'und', aplicaItbis: 1 });
+    ok('el código sigue siendo obligatorio', sinCodigo.status === 400 && /Código y nombre/.test(sinCodigo.body.error), JSON.stringify(sinCodigo.body));
+    const datos = { codigo: 'INS-1', nombre: 'Instalación', categoria: 'General', precioCompra: 0, precioVenta: 800, stock: 7, stockMin: 1, tipoProducto: 'servicio', tracksStock: true, unidad: 'und', aplicaItbis: 1 };
+    const conStock = await api('POST', '/api/products', datos);
+    ok('un artículo tipo Servicio conserva su stock al crearse', Number(conStock.body.stock) === 7, JSON.stringify(conStock.body).slice(0, 200));
+    const id = conStock.body.id;
+    const editado = await api('PUT', `/api/products/${id}`, { ...datos, nombre: 'Instalación editada' });
+    ok('y al editarse no se pone en 0', editado.status === 200 && Number(editado.body.stock) === 7 && editado.body.tracksStock !== false, JSON.stringify(editado.body).slice(0, 200));
 
-    // Pantalla de ventas: filtro y etiqueta.
+    // Ventas: sin los cambios de la 1.6.11.
     await page.reload({ waitUntil: 'networkidle2' });
     await sleep(2000);
     if (!(await page.evaluate(() => Boolean(DB.currentUser)))) {
@@ -210,78 +237,65 @@ async function negocioNormal(browser) {
       await page.evaluate(() => doLogin());
       await sleep(2000);
     }
-    await page.evaluate(() => { showModule('ventas', document.querySelector('[data-module="ventas"]')); renderSalesCatalog(true); });
+    await page.evaluate(() => {
+      const original = window.showToast;
+      window.avisos = [];
+      window.showToast = function (mensaje, ...resto) {
+        window.avisos.push(String(mensaje));
+        return original.call(this, mensaje, ...resto);
+      };
+      showModule('ventas', document.querySelector('[data-module="ventas"]'));
+      renderSalesCatalog(true);
+    });
     await sleep(1500);
-    ok('el filtro de tipo aparece en el catálogo de Ventas', await page.$eval('#sales-type-filter', (e) => !e.classList.contains('hidden')));
-    const contar = () => page.evaluate(() => document.querySelectorAll('.sales-product-card').length);
-    const todos = await contar();
-    await page.select('#sales-type-filter', 'servicios');
-    await sleep(500);
-    const servicios = await contar();
-    const conEtiqueta = await page.evaluate(() => document.querySelectorAll('.sales-product-service-badge').length);
-    await page.select('#sales-type-filter', 'productos');
-    await sleep(500);
-    const productos = await contar();
-    ok('el filtro separa productos y servicios', servicios >= 1 && productos >= 1 && servicios + productos === todos, `${todos}/${servicios}/${productos}`);
-    ok('el servicio lleva su etiqueta', conEtiqueta >= 1, String(conEtiqueta));
-    await page.select('#sales-type-filter', 'todos');
-    if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-ventas-filtro.png') });
+    const ventas = await page.evaluate(() => ({
+      filtro: Boolean(document.getElementById('sales-type-filter')),
+      etiqueta: document.querySelectorAll('.sales-product-service-badge').length,
+      miniatura: [...document.querySelectorAll('.sales-product-image')].some((i) => /-t\.webp/.test(i.getAttribute('src') || '')),
+      tarjetas: document.querySelectorAll('.sales-product-card').length,
+    }));
+    ok('Ventas sin filtro de tipo, etiqueta ni miniaturas', !ventas.filtro && ventas.etiqueta === 0 && !ventas.miniatura && ventas.tarjetas >= 1, JSON.stringify(ventas));
 
-    // Venta real: el servicio no descuenta, el producto sí.
-    const stockDe = async (id) => {
-      const r = (await api('GET', '/api/products?pageSize=100')).body;
-      const lista = Array.isArray(r) ? r : (r.items || r.products || r.productos || []);
-      return Number(lista.find((p) => Number(p.id) === Number(id))?.stock);
-    };
-    const antes = await stockDe(producto.body.id);
+    // Venta: descuenta como siempre.
     const venta = await api('POST', '/api/sales', {
       userId: 1, clientId: null, cliente: 'Consumidor Final', tipoComprobante: 'ticket', ncfType: null, metodo: 'efectivo', tipoPedido: 'mostrador',
-      items: [
-        { id: servicio.body.id, codigo: servicio.body.codigo, nombre: 'Instalación de abanico', qty: 1, precio: 800 },
-        { id: producto.body.id, codigo: producto.body.codigo, nombre: 'Abanico de techo', qty: 2, precio: 2500 },
-      ],
-      subtotal: 5800, descuento: 0, itbis: 1044, total: 6844, pagoCon: 10000, cambio: 3156,
+      items: [{ id, codigo: 'INS-1', nombre: 'Instalación', qty: 1, precio: 800 }],
+      subtotal: 800, descuento: 0, itbis: 144, total: 944, pagoCon: 1000, cambio: 56,
     });
-    ok('vende producto y servicio juntos', venta.status === 200 || venta.status === 201, JSON.stringify(venta.body).slice(0, 300));
-    ok('el producto descuenta', await stockDe(producto.body.id) === antes - 2);
-    ok('el servicio sigue sin inventario', await stockDe(servicio.body.id) === 0);
+    ok('la venta funciona', venta.status === 200 || venta.status === 201, JSON.stringify(venta.body).slice(0, 300));
+    const lista = (await api('GET', '/api/products?pageSize=100')).body;
+    const filas = Array.isArray(lista) ? lista : (lista.items || lista.products || lista.productos || []);
+    ok('el artículo con inventario descuenta', Number(filas.find((p) => Number(p.id) === Number(id))?.stock) === 6);
 
-    // Compras no ofrece servicios.
-    const enCompras = await page.evaluate((id) => {
-      const p = (DB.productos || []).find((x) => Number(x.id) === Number(id));
-      return p ? p.tipoProducto : null;
-    }, servicio.body.id);
-    ok('el servicio queda marcado como tal', enCompras === 'servicio', String(enCompras));
-
-    // Configuración: modalidades visibles y se guardan.
+    // Tienda online: como en la 1.6.10.
     await page.evaluate(() => TiendaOnline.openConfig());
-    await page.waitForSelector('[data-cfg-tab="6"]', { timeout: 8000 });
-    await page.click('[data-cfg-tab="6"]');
-    await sleep(200);
-    await page.select('#tocfg-modalidad', 'mixta');
-    await page.evaluate(() => {
-      document.querySelector('#tocfg-srv-contratar').checked = false;
-      document.querySelector('#tocfg-srv-cita').checked = true;
-      document.querySelector('#tocfg-srv-precio').checked = false;
-      document.querySelector('#tocfg-auto').checked = true;
-    });
-    if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-tipo-tienda.png') });
+    await page.waitForSelector('#tocfg-slug', { timeout: 8000 });
+    const tabs = await page.evaluate(() => [...document.querySelectorAll('[data-cfg-tab]')].filter((b) => !b.classList.contains('hidden')).map((b) => b.textContent.trim()));
+    ok('Configurar tienda sin pestañas nuevas', tabs.join() === 'General,Entrega,Pagos,Horario,Avanzado,Vitrinas', tabs.join());
     await page.$eval('#tocfg-slug', (e) => { e.value = 'colmado-prueba'; });
-    await page.$$eval('[data-pago]', (l) => { if (!l.some((c) => c.checked)) l[0].click(); });
-    await page.evaluate(() => [...document.querySelectorAll('[data-btn]')].find((b) => /^Guardar/.test(b.textContent)).click());
+    await page.evaluate(() => { document.querySelectorAll('[data-pago]').forEach((c) => { c.checked = false; }); });
+    await clicEnBoton(page, '^Guardar');
+    await sleep(500);
+    ok('sigue pidiendo un método de pago', await page.evaluate(() => window.avisos.some((a) => /método de pago/.test(a))));
+    await page.evaluate(() => { document.querySelector('[data-pago]').checked = true; });
+    await clicEnBoton(page, '^Guardar');
     await sleep(900);
     const cfg = (await api('GET', '/api/tienda-online/config')).body;
-    ok('guarda cada opción por separado', cfg.settings.modalidad === 'mixta' && cfg.settings.serviciosTienda.contratar === false && cfg.settings.serviciosTienda.cita === true && cfg.settings.serviciosTienda.mostrarPrecio === false && cfg.settings.serviciosTienda.cotizacion === true && cfg.settings.publicacionAutomatica === true, JSON.stringify({ m: cfg.settings.modalidad, s: cfg.settings.serviciosTienda, a: cfg.settings.publicacionAutomatica }));
+    ok('guarda sin tocar lo de servicios', cfg.slug === 'colmado-prueba' && cfg.settings.publicacionAutomatica === false, JSON.stringify({ s: cfg.slug, a: cfg.settings.publicacionAutomatica }));
+    ok('el editor no trae sección de Servicios', !(cfg.disenoBase?.secciones || []).some((s) => s.id === 'servicios'));
 
-    // Pestaña Solicitudes real, vacía.
-    await page.evaluate(() => { showModule('tiendaonline', document.getElementById('nav-tienda-online')); TiendaOnline.switchTab('solicitudes'); });
-    await sleep(800);
-    ok('Solicitudes vacía lo explica', /Todavía no hay solicitudes/.test(await page.$eval('#to-pane-solicitudes', (e) => e.textContent)));
-    const pestanas = await page.evaluate(() => ({
-      pedidos: document.querySelector('[data-to-tab="pedidos"]')?.classList.contains('hidden'),
+    await page.evaluate(() => { showModule('tiendaonline', document.getElementById('nav-tienda-online')); });
+    await sleep(900);
+    const vista = await page.evaluate(() => ({
+      nav: document.querySelector('#nav-tienda-online .nav-label')?.textContent,
+      corto: document.querySelector('#nav-tienda-online .nav-short')?.textContent,
       titulo: document.querySelector('#module-tiendaonline .module-header h2')?.textContent,
+      pedidos: document.querySelector('[data-to-tab="pedidos"]')?.classList.contains('hidden'),
+      solicitudes: document.querySelector('[data-to-tab="solicitudes"]')?.classList.contains('hidden'),
+      publicados: document.getElementById('to-tab-btn-productos')?.textContent,
     }));
-    ok('un negocio normal conserva sus Pedidos online', pestanas.pedidos === false && pestanas.titulo === 'Pedidos online', JSON.stringify(pestanas));
+    ok('conserva sus Pedidos online, sin Solicitudes', vista.nav === 'Pedidos online' && vista.corto === 'Pedidos' && vista.titulo === 'Pedidos online' && vista.pedidos === false && vista.solicitudes === true && /Productos publicados/.test(vista.publicados), JSON.stringify(vista));
+    if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-pedidos.png') });
     ok('sin errores en la pantalla (POS)', errores.length === 0, errores.join(' | '));
   } finally {
     L.stopServer(server);
@@ -293,7 +307,7 @@ async function negocioNormal(browser) {
   const browser = await puppeteer.launch({ headless: true });
   try {
     await empresaServicios(browser);
-    await negocioNormal(browser);
+    await negocioConPos(browser);
   } finally {
     await browser.close();
   }
