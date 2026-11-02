@@ -4925,7 +4925,9 @@ function syncConfigForm() {
   const licenseReadonly = document.getElementById('cfg-license-readonly');
   if (licenseReadonly) {
     licenseReadonly.value = cfg.licenseStatus === 'active'
-      ? appText('license.active', 'Licencia activa')
+      ? (cfg.licenseModalidad === 'LIFETIME_NO_SUBSCRIPTION'
+        ? appText('license.permanent', 'Licencia permanente')
+        : appText('license.active', 'Licencia activa'))
       : (cfg.licenseStatus === 'suspended'
           ? appText('license.suspended', 'Licencia suspendida')
           : (cfg.trialExpired
@@ -5505,7 +5507,9 @@ function syncConfigLicenseSummary() {
   const licenseReadonly = document.getElementById('cfg-license-readonly');
   if (licenseReadonly) {
     licenseReadonly.value = cfg.licenseStatus === 'active'
-      ? appText('license.active', 'Licencia activa')
+      ? (cfg.licenseModalidad === 'LIFETIME_NO_SUBSCRIPTION'
+        ? appText('license.permanent', 'Licencia permanente')
+        : appText('license.active', 'Licencia activa'))
       : (cfg.licenseStatus === 'suspended'
           ? appText('license.suspended', 'Licencia suspendida')
           : (cfg.trialExpired

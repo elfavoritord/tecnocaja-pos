@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.10",
+  "version": "1.6.11",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -141,6 +141,9 @@
       "!modules/ecf/certificates/*.p12",
       "!modules/ecf/certificates/*.pfx",
       "!modules/ecf/logs/**",
+      "cloud/tienda-online/public/**/*",
+      "cloud/tienda-online/lib/tiendas.js",
+      "cloud/tienda-online/vendor/**/*",
       "server/**/*",
       "config/**/*",
       "db.js",

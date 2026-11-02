@@ -250,7 +250,8 @@ function normalizeLicenseStatus(value) {
   const normalized = String(value || 'trial').trim().toLowerCase();
   if (['active', 'activo', 'activo_pro', 'active_pro', 'activepro', 'activo pro'].includes(normalized)) return 'active';
   if (['expired', 'expirado', 'vencido'].includes(normalized)) return 'expired';
-  if (['suspended', 'suspendido', 'bloqueado', 'blocked'].includes(normalized)) return 'suspended';
+  // Antes "cancelled" caía abajo como prueba: cancelar desde el panel no cortaba nada.
+  if (['suspended', 'suspendido', 'bloqueado', 'blocked', 'cancelled', 'cancelada', 'cancelado'].includes(normalized)) return 'suspended';
   return 'trial';
 }
 
@@ -944,6 +945,7 @@ async function syncPosAccountsToFirestore(users, config) {
     }
   }
 
+  const conContrato = Boolean(existingLicDoc?.exists && existingLicDoc.data()?.contrato);
   const statusToWrite = (remoteStatus === 'active' || remoteStatus === 'suspended') ? remoteStatus : effectiveStatus;
 
   // Solo incluir contadorId/contadorNombre si el POS los tiene configurados localmente.
@@ -968,15 +970,17 @@ async function syncPosAccountsToFirestore(users, config) {
       mobileConnectionCodeNormalized: mobileConnectionCodeNormalized || null,
       principalUid: licenseDocId,
       licenseId: licenseDocId,
-      status: statusToWrite,
-      planCode: localPlanCode || null,
-      plan_code: localPlanCode || null,
-      planName: localPlanName || null,
-      plan_name: localPlanName || null,
-      businessStructureMode: localBusinessStructureMode || null,
-      business_structure_mode: localBusinessStructureMode || null,
-      trialStartedAt: trialStartsAt && !Number.isNaN(trialStartsAt.getTime()) ? trialStartsAt : null,
-      trialEndsAt: trialEndsAt && !Number.isNaN(trialEndsAt.getTime()) ? trialEndsAt : null,
+      ...(conContrato ? {} : {
+        status: statusToWrite,
+        planCode: localPlanCode || null,
+        plan_code: localPlanCode || null,
+        planName: localPlanName || null,
+        plan_name: localPlanName || null,
+        businessStructureMode: localBusinessStructureMode || null,
+        business_structure_mode: localBusinessStructureMode || null,
+        trialStartedAt: trialStartsAt && !Number.isNaN(trialStartsAt.getTime()) ? trialStartsAt : null,
+        trialEndsAt: trialEndsAt && !Number.isNaN(trialEndsAt.getTime()) ? trialEndsAt : null,
+      }),
       ...contadorFields,
       syncedAt,
     },

@@ -37,6 +37,8 @@
     soloDestacados: false,
     soloMasVendidos: false,
     marca: '',
+    tipoFiltro: '', // '' | productos | servicios
+    solicitud: null, // { tipo, productoId, clave, enviando }
     vista: 'inicio', // inicio (secciones) | catalogo (todos, con filtros)
     limite: POR_PAGINA,
     animar: true, // la entrada al bajar solo al abrir, no en cada actualización
@@ -191,7 +193,7 @@
   /** Suma al carrito y avisa. Devuelve cuánto se agregó de verdad. */
   function agregar(id, cuanto) {
     const p = S.porId.get(id);
-    if (!p || p.agotado) return 0;
+    if (!p || p.agotado || p.comprable === false) return 0;
     const antes = cantidadDe(id);
     const agregado = round2(setCantidad(id, antes + (cuanto || paso(p))) - antes);
     if (agregado > 0) {
@@ -312,7 +314,11 @@
     html.classList.toggle('sin-buscador', !e.mostrarBuscador);
     html.classList.toggle('sin-menu', !e.mostrarMenu);
     // Sin encabezado o sin carrito arriba, el carrito sigue a mano (nunca se pierde).
-    html.classList.toggle('carrito-flota', !cabecera || !e.mostrarCarrito);
+    // Sin nada que pagar por carrito (solo solicitudes), el carrito no aparece.
+    const hayCompras = S.productos.some((p) => p.comprable !== false);
+    html.classList.toggle('sin-carrito', !hayCompras);
+    html.classList.toggle('carrito-flota', hayCompras && (!cabecera || !e.mostrarCarrito));
+    $('#buscar').placeholder = S.tienda.modalidad === 'servicios' ? 'Buscar servicios…' : 'Buscar…';
     pintarMenus();
     medirEncabezado();
   }
@@ -338,6 +344,7 @@
   function entradasMenu() {
     const t = S.tienda;
     const lista = [];
+    if (S.tienda.modalidad === 'mixta' && listaDe('servicios').length) lista.push(['servicios', 'Servicios']);
     if (listaDe('ofertas').length) lista.push(['ofertas', 'Ofertas']);
     if (listaDe('nuevos').length) lista.push(['nuevos', 'Novedades']);
     if (listaDe('masVendidos').length) lista.push(['masVendidos', 'Más vendidos']);
@@ -432,6 +439,7 @@
     S.buscar = '';
     $('#buscar').value = '';
     if (tipo === 'ofertas') S.soloOfertas = true;
+    else if (tipo === 'servicios') S.tipoFiltro = 'servicios';
     else if (tipo === 'nuevos') S.orden = 'nuevos';
     else if (tipo === 'destacados') S.soloDestacados = true;
     else if (tipo === 'masVendidos') S.soloMasVendidos = true;
@@ -460,6 +468,7 @@
   function listaDe(id) {
     const hay = S.productos.filter((p) => !p.agotado);
     if (id === 'destacados') return hay.filter((p) => p.destacado).slice(0, 12);
+    if (id === 'servicios') return hay.filter((p) => p.tipo === 'servicio').slice(0, 12);
     const { vitrinas } = S.tienda.diseno;
     if (id === 'ofertas') return hay.filter(tieneOferta).sort((a, b) => descuentoDe(b) - descuentoDe(a)).slice(0, vitrinas.ofertas.cantidad);
     if (id === 'nuevos') return hay.filter(esNuevo).sort(masNuevoPrimero).slice(0, vitrinas.nuevos.cantidad);
@@ -484,6 +493,7 @@
     esc, tarjeta, fotosDe, emojiDe, horarioHoy, money, waUrl, categorias, sinMovimiento,
     tintaSobre: window.TCDiseno.tintaSobre,
     productos: () => S.productos,
+    tienda: () => S.tienda,
     ordenInicial: () => S.productos.slice().sort(ordenPorDefecto),
     lista: listaDe,
   });
@@ -575,7 +585,16 @@
     S.soloDisponibles = false;
     S.soloDestacados = false;
     S.soloMasVendidos = false;
+    S.tipoFiltro = '';
     S.limite = POR_PAGINA;
+  }
+
+  /** "3 productos", "3 servicios" o "3 artículos", según lo que se está viendo. */
+  function textoCantidad(n) {
+    const soloServicios = S.tipoFiltro === 'servicios' || S.tienda.modalidad === 'servicios';
+    const hayMezcla = !S.tipoFiltro && S.productos.some((p) => p.tipo === 'servicio');
+    const palabra = soloServicios ? 'servicio' : hayMezcla ? 'artículo' : 'producto';
+    return `${n} ${palabra}${n === 1 ? '' : 's'}`;
   }
 
   function tituloCatalogo() {
@@ -583,6 +602,8 @@
     if (q) return `Resultados para “${esc(q)}”`;
     if (S.categoria) return esc(S.categoria);
     if (S.marca) return esc(S.marca);
+    if (S.tipoFiltro === 'servicios' || S.tienda.modalidad === 'servicios') return 'Nuestros servicios';
+    if (S.tipoFiltro === 'productos') return 'Productos';
     if (S.soloOfertas) return 'Ofertas y promociones';
     if (S.soloDestacados) return 'Productos destacados';
     if (S.soloMasVendidos) return 'Los más vendidos';
@@ -595,6 +616,7 @@
     if (S.categoria) c.push(['categoria', S.categoria]);
     if (S.marca) c.push(['marca', S.marca]);
     if (S.min !== '' || S.max !== '') c.push(['precio', `Precio: ${S.min || '0'} – ${S.max || '…'}`]);
+    if (S.tipoFiltro) c.push(['tipo', S.tipoFiltro === 'servicios' ? 'Servicios' : 'Productos']);
     if (S.soloOfertas) c.push(['ofertas', 'En oferta']);
     if (S.soloDisponibles) c.push(['disponibles', 'Solo disponibles']);
     if (S.soloDestacados) c.push(['destacados', 'Destacados']);
@@ -620,6 +642,7 @@
         <aside class="filtros" id="filtros" aria-label="Filtros">
           <header><span>Filtros</span><button type="button" data-act="cerrar-filtros" aria-label="Cerrar filtros">${ICO.x}</button></header>
           <div class="fcuerpo">
+            <div class="fgrupo hidden" id="f-tipos-caja"><h3>Tipo</h3><div class="flist" id="f-tipos"></div></div>
             <div class="fgrupo"><h3>Categorías</h3><div class="flist" id="f-cats"></div></div>
             <div class="fgrupo hidden" id="f-marcas-caja"><h3>Marcas</h3><div class="flist" id="f-marcas"></div></div>
             <div class="fgrupo"><h3>Precio</h3>
@@ -661,7 +684,8 @@
   }
 
   function quitarFiltro(cual) {
-    if (cual === 'categoria') S.categoria = '';
+    if (cual === 'tipo') S.tipoFiltro = '';
+    else if (cual === 'categoria') S.categoria = '';
     else if (cual === 'marca') S.marca = '';
     else if (cual === 'ofertas') S.soloOfertas = false;
     else if (cual === 'disponibles') S.soloDisponibles = false;
@@ -678,7 +702,7 @@
     const titulo = tituloCatalogo();
     $('#cat-titulo').innerHTML = titulo;
     $('#miga').innerHTML = titulo;
-    $('#cat-n').textContent = `${total} ${total === 1 ? 'producto' : 'productos'}`;
+    $('#cat-n').textContent = textoCantidad(total);
     const activos = chipsActivos();
     $('#chips').innerHTML = activos.length
       ? `${activos.map(([k, txt]) => `<button type="button" data-quitar-filtro="${k}" aria-label="Quitar filtro: ${esc(txt)}">${esc(txt)}${ICO.x}</button>`).join('')}
@@ -687,7 +711,7 @@
     const n = $('#n-filtros');
     n.textContent = String(activos.length);
     n.classList.toggle('hidden', !activos.length);
-    $('#f-ver').textContent = `Ver ${total} ${total === 1 ? 'producto' : 'productos'}`;
+    $('#f-ver').textContent = `Ver ${textoCantidad(total)}`;
     const cats = categorias();
     const cuantos = new Map();
     for (const p of S.productos) cuantos.set(p.categoria, (cuantos.get(p.categoria) || 0) + 1);
@@ -695,6 +719,14 @@
       ${cats.map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}<small>${cuantos.get(c) || 0}</small></button>`).join('')}`;
     $('#tira').innerHTML = `<button type="button" data-cat="" class="${S.categoria ? '' : 'on'}">Todo</button>
       ${cats.map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}</button>`).join('')}`;
+    // Solo en una tienda con productos y servicios.
+    const nServicios = S.productos.filter((p) => p.tipo === 'servicio').length;
+    const mixta = nServicios > 0 && nServicios < S.productos.length;
+    $('#f-tipos-caja').classList.toggle('hidden', !mixta);
+    if (mixta) {
+      $('#f-tipos').innerHTML = [['', 'Todos', S.productos.length], ['productos', 'Productos', S.productos.length - nServicios], ['servicios', 'Servicios', nServicios]]
+        .map(([v, txt, k]) => `<button type="button" data-tipo-filtro="${v}" class="${S.tipoFiltro === v ? 'on' : ''}">${txt}<small>${k}</small></button>`).join('');
+    }
     const marcas = new Map();
     for (const p of S.productos) if (p.marca) marcas.set(p.marca, (marcas.get(p.marca) || 0) + 1);
     $('#f-marcas-caja').classList.toggle('hidden', !marcas.size);
@@ -758,6 +790,7 @@
     const etiquetas = [
       desc > 0 ? `<span class="tag oferta">-${desc}%</span>` : p.porCantidad ? '<span class="tag oferta">Oferta</span>' : '',
       esNuevo(p) || vitrina === 'nuevos' ? '<span class="tag nuevo">Nuevo</span>' : '',
+      p.tipo === 'servicio' ? '<span class="tag serv">Servicio</span>' : '',
       p.destacado && !desc && !esNuevo(p) ? '<span class="tag star" title="Destacado">★</span>' : '',
     ].join('');
     const poco = !p.agotado && p.disponible !== null && p.disponible <= 10;
@@ -775,11 +808,11 @@
         <div class="body">
           ${p.categoria ? `<div class="card-cat">${esc(p.categoria)}</div>` : ''}
           <div class="name" title="${nombre}">${nombre}</div>
-          <div class="price"><span class="now">${money(precioFinal(p))}</span>${unidadHtml(p)}${antes ? `<s>${moneyCorto(antes)}</s>` : ''}</div>
+          <div class="price"><span class="now">${p.precioOculto ? 'Consultar precio' : money(precioFinal(p))}</span>${p.precioOculto ? '' : unidadHtml(p)}${antes ? `<s>${moneyCorto(antes)}</s>` : ''}</div>
           ${p.porCantidad ? `<div class="rule">${esc(cant(p.porCantidad.cantidadMinima))}+ a ${moneyCorto(p.porCantidad.precio)}</div>` : ''}
           ${p.conItbis ? '<div class="tax">+ ITBIS</div>' : ''}
           ${poco ? `<div class="disp poco">Quedan ${esc(cant(p.disponible))}</div>` : ''}
-          ${p.agotado ? '' : `<div class="card-cta">${c > 0
+          ${p.agotado ? '' : p.comprable === false ? `<div class="card-cta"><button class="add" type="button" data-rapida="${p.id}" aria-label="Solicitar: ${nombre}">Solicitar</button></div>` : `<div class="card-cta">${c > 0
             ? `<div class="qty-pill" role="group" aria-label="Cantidad en el carrito: ${nombre}">
                 <button type="button" data-menos="${p.id}" aria-label="Quitar uno">−</button>
                 <span>${esc(cant(c))}</span>
@@ -797,6 +830,7 @@
     const max = S.max === '' ? NaN : Number(S.max);
     const vendidos = new Map((S.tienda.masVendidos || []).map((id, i) => [Number(id), i]));
     const lista = S.productos.filter((p) => {
+      if (S.tipoFiltro && (p.tipo === 'servicio') !== (S.tipoFiltro === 'servicios')) return false;
       if (S.categoria && p.categoria !== S.categoria) return false;
       if (S.marca && p.marca !== S.marca) return false;
       if (S.soloOfertas && !tieneOferta(p)) return false;
@@ -991,6 +1025,10 @@
   function especificaciones(p) {
     const lista = [`Categoría: ${p.categoria || 'General'}`];
     if (p.marca) lista.push(`Marca: ${p.marca}`);
+    if (p.tipo === 'servicio') {
+      if (!p.precioOculto) lista.push(p.conItbis ? 'ITBIS: se suma al total' : 'Precio final: no lleva ITBIS adicional');
+      return lista;
+    }
     const u = norm(p.unidad);
     lista.push(p.modoVenta === 'unidad'
       ? `Se vende por unidad${p.unidad && !['unidad', 'und', 'u'].includes(u) ? ` (${p.unidad})` : ''}`
@@ -1084,7 +1122,7 @@
             <button class="det-fav${fav ? ' on' : ''}" type="button" data-fav="${p.id}" aria-pressed="${fav}" aria-label="${fav ? 'Quitar de' : 'Agregar a'} favoritos">${ICO.corazon}</button>
           </div>
           <div class="det-price">
-            <span class="now">${money(precioFinal(p))}${unidadHtml(p)}</span>
+            <span class="now">${p.precioOculto ? 'Consultar precio' : `${money(precioFinal(p))}${unidadHtml(p)}`}</span>
             ${antes ? `<s>${money(antes)}</s>` : ''}
             ${desc > 0 ? `<span class="off">-${desc}%</span>` : ''}
           </div>
@@ -1093,6 +1131,7 @@
           ${enCarrito > 0 ? `<p class="det-cart">Ya tienes ${esc(cant(enCarrito))} en tu carrito · <button class="link" type="button" data-act="ver-carrito-detalle">Ver carrito</button></p>` : ''}
           ${p.descripcion ? `<p class="det-desc${larga ? ' clamp' : ''}" id="det-desc">${esc(p.descripcion)}</p>
             ${larga ? '<button class="link det-vermas" type="button" data-act="ver-mas">Ver más</button>' : ''}` : ''}
+          ${p.tipo === 'servicio' && p.comprable !== false ? botonesSolicitud(p, false) : ''}
           ${rapida ? `<button class="link det-completo" type="button" data-act="detalle-completo">Ver todos los detalles</button>` : `<div class="acc">
             ${seccion('specs', 'Especificaciones', ICONO_LISTA, `<ul class="det-specs">${especificaciones(p).map((s) => `<li>${esc(s)}</li>`).join('')}</ul>`)}
             ${seccion('entrega', 'Entrega y pago', ICO.moto, entregaYPagoHtml())}
@@ -1103,7 +1142,21 @@
   }
 
   /** Barra de compra fija abajo: cantidad y "Agregar · total". */
+  /** Cómo pedir un servicio, según lo que el negocio tenga activado. */
+  function botonesSolicitud(p, grande = true) {
+    const sol = S.tienda.solicitudes || {};
+    const wa = sol.whatsapp ? waUrl(S.tienda.whatsapp || S.tienda.telefono) : '';
+    const clase = grande ? 'btn big' : 'btn ghost';
+    const botones = [
+      sol.cotizacion ? `<button class="${clase}" type="button" data-solicitud="cotizacion" data-solicitud-id="${p?.id || ''}">Solicitar cotización</button>` : '',
+      sol.cita ? `<button class="${clase}" type="button" data-solicitud="cita" data-solicitud-id="${p?.id || ''}">Reservar cita</button>` : '',
+      wa ? `<a class="btn ghost${grande ? ' big' : ''}" href="${esc(wa)}?text=${encodeURIComponent(p ? `Hola, quiero información sobre: ${p.nombre}` : 'Hola, quiero información.')}" target="_blank" rel="noopener">Consultar por WhatsApp</a>` : '',
+    ].filter(Boolean);
+    return botones.length ? `<div class="det-acciones">${botones.join('')}</div>` : '<p class="muted">Contacta a la tienda para más información.</p>';
+  }
+
   function detallePieHtml(p) {
+    if (p.comprable === false) return botonesSolicitud(p);
     if (p.agotado) return '<button class="btn big det-add" type="button" disabled>Agotado por ahora</button>';
     const q = ajustarCantidad(p, S.detalle.cantidad);
     return `
@@ -1509,6 +1562,84 @@
     };
   }
 
+  // ── Solicitud de cotización, cita o consulta ────────────────────────────
+  const TIPOS_SOLICITUD = { cotizacion: 'Solicitar cotización', cita: 'Reservar cita', consulta: 'Enviar consulta' };
+
+  function abrirSolicitud(tipo, productoId) {
+    if (S.detalle) cerrarDetalle();
+    S.solicitud = { tipo, productoId: Number(productoId) || null, clave: nuevaClave(), enviando: false };
+    if (S.panel) irA('solicitud');
+    else abrirPanel('solicitud');
+  }
+
+  function panelSolicitud() {
+    const c = leerJSON(KEY_CLIENTE, {});
+    const s = S.solicitud;
+    const p = s.productoId ? S.porId.get(s.productoId) : null;
+    const hoy = new Date();
+    const min = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+    return {
+      contenido: `${p ? `<div class="alert ok">${esc(p.nombre)}${p.precioOculto ? '' : ` · ${money(precioFinal(p))}`}</div>` : ''}
+        <form class="f" id="form-solicitud" novalidate>
+          <label>Nombre<input name="nombre" required maxlength="120" autocomplete="name" value="${esc(c.nombre || '')}"></label>
+          <label>Teléfono<input name="telefono" required inputmode="tel" autocomplete="tel" maxlength="20" value="${esc(c.telefono || '')}"></label>
+          <label>Correo (opcional)<input name="email" type="email" maxlength="160" autocomplete="email" value="${esc(c.email || '')}"></label>
+          ${s.tipo === 'cita' ? `<div class="row2">
+            <label>Fecha<input name="fecha" type="date" required min="${min}"></label>
+            <label>Hora<input name="hora" type="time"></label>
+          </div>` : ''}
+          <label>${s.tipo === 'cita' ? 'Algo que debamos saber (opcional)' : 'Cuéntanos qué necesitas'}<textarea name="mensaje" maxlength="1000"></textarea></label>
+          <input name="website" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px" aria-hidden="true">
+        </form>
+        <p class="muted">El negocio revisa tu solicitud y te contacta para confirmar las condiciones. Todavía no es un pedido ni un cobro.</p>
+        <div id="form-err"></div>`,
+      pie: `<button class="btn big" type="button" data-act="enviar-solicitud">Enviar</button>
+        <button class="btn-link" type="button" data-act="cerrar">Cancelar</button>`,
+    };
+  }
+
+  function panelSolicitudLista() {
+    return {
+      contenido: '<div class="alert ok">Recibimos tu solicitud. El negocio te contactará para confirmar.</div>',
+      pie: '<button class="btn big" type="button" data-act="cerrar">Volver a la tienda</button>',
+    };
+  }
+
+  async function enviarSolicitud() {
+    const f = $('#form-solicitud');
+    const s = S.solicitud;
+    if (!f || !s || s.enviando) return;
+    const v = (n) => (f.elements[n] ? String(f.elements[n].value || '').trim() : '');
+    s.enviando = true;
+    const boton = $('[data-act="enviar-solicitud"]');
+    if (boton) { boton.disabled = true; boton.textContent = 'Enviando…'; }
+    try {
+      await api('/solicitudes', {
+        method: 'POST',
+        body: {
+          idempotencyKey: s.clave,
+          website: v('website'),
+          tipo: s.tipo,
+          productoId: s.productoId,
+          cliente: { nombre: v('nombre'), telefono: v('telefono'), email: v('email') },
+          mensaje: v('mensaje'),
+          fecha: v('fecha'),
+          hora: v('hora'),
+        },
+      });
+      guardarJSON(KEY_CLIENTE, { ...leerJSON(KEY_CLIENTE, {}), nombre: v('nombre'), telefono: v('telefono'), email: v('email') });
+      S.solicitud = null;
+      S.panel = 'solicitud-lista';
+      pintarPanel();
+    } catch (e) {
+      s.enviando = false;
+      if (boton) { boton.disabled = false; boton.textContent = 'Enviar'; }
+      const err = $('#form-err');
+      if (err) err.innerHTML = `<div class="alert err">${esc(e.message)}</div>`;
+      if (e.data?.campo && f.elements[e.data.campo]) f.elements[e.data.campo].focus();
+    }
+  }
+
   // ── Mis pedidos (los hechos desde este teléfono) ────────────────────────
   const ESTADO_CLASE = { entregado: 'ok', cancelado: 'bad', rechazado: 'bad' };
 
@@ -1639,11 +1770,11 @@
   function pintarPanel() {
     if (!S.panel) return;
     const t = S.tienda;
-    const titulos = { carrito: 'Tu carrito', favoritos: 'Favoritos', datos: 'Datos del pedido', listo: '¡Pedido recibido!', pedidos: 'Mis pedidos' };
+    const titulos = { solicitud: TIPOS_SOLICITUD[S.solicitud?.tipo] || 'Solicitud', 'solicitud-lista': '¡Solicitud enviada!', carrito: 'Tu carrito', favoritos: 'Favoritos', datos: 'Datos del pedido', listo: '¡Pedido recibido!', pedidos: 'Mis pedidos' };
     const { contenido, pie } = {
-      carrito: panelCarrito, favoritos: panelFavoritos, datos: panelDatos, listo: panelListo, pedidos: panelPedidos,
+      carrito: panelCarrito, favoritos: panelFavoritos, datos: panelDatos, listo: panelListo, pedidos: panelPedidos, solicitud: panelSolicitud, 'solicitud-lista': panelSolicitudLista,
     }[S.panel](t);
-    $('#panel').classList.toggle('ancho', S.panel === 'datos' || S.panel === 'listo');
+    $('#panel').classList.toggle('ancho', ['datos', 'listo', 'solicitud'].includes(S.panel));
     $('#panel-title').textContent = titulos[S.panel];
     const n = S.panel === 'carrito' ? S.carrito.items.length : S.panel === 'favoritos' ? S.favoritos.filter((id) => S.porId.has(id)).length : 0;
     $('#panel-extra').textContent = n ? `${n} ${n === 1 ? 'producto' : 'productos'}` : '';
@@ -1748,7 +1879,7 @@
 
   // ── Eventos (delegados: sin onclick en el HTML) ──────────────────────────
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-nav],[data-ir],[data-fila],[data-rapida],[data-quitar-filtro],[data-marca],[data-car],[data-car-ir],[data-fav],[data-agregar],[data-ver],[data-det],[data-mas],[data-menos],[data-quitar],[data-cat],[data-act],[data-entrega]');
+    const t = e.target.closest('[data-nav],[data-ir],[data-fila],[data-rapida],[data-quitar-filtro],[data-marca],[data-tipo-filtro],[data-solicitud],[data-car],[data-car-ir],[data-fav],[data-agregar],[data-ver],[data-det],[data-mas],[data-menos],[data-quitar],[data-cat],[data-act],[data-entrega]');
     if (!t) return;
     const d = t.dataset;
     if (d.nav) navegar(d.nav);
@@ -1758,6 +1889,12 @@
       fila?.scrollBy({ left: Number(d.fila) * fila.clientWidth * 0.85, behavior: SIN_MOVIMIENTO ? 'auto' : 'smooth' });
     } else if (d.rapida) abrirDetalle(Number(d.rapida), { rapida: true });
     else if (d.quitarFiltro) quitarFiltro(d.quitarFiltro);
+    else if (d.solicitud) abrirSolicitud(d.solicitud, d.solicitudId);
+    else if (d.tipoFiltro !== undefined) {
+      S.tipoFiltro = d.tipoFiltro;
+      S.limite = POR_PAGINA;
+      pintarProductos({ arriba: true });
+    }
     else if (d.marca !== undefined) {
       S.marca = S.marca === d.marca ? '' : d.marca;
       S.limite = POR_PAGINA;
@@ -1792,6 +1929,7 @@
       recotizar();
     } else if (d.act === 'cerrar') cerrarPanel();
     else if (d.act === 'cerrar-detalle') cerrarDetalle();
+    else if (d.act === 'enviar-solicitud') enviarSolicitud();
     else if (d.act === 'cerrar-menu') cerrarMenu();
     else if (d.act === 'abrir-filtros') abrirFiltros(true);
     else if (d.act === 'cerrar-filtros') abrirFiltros(false);
@@ -1900,6 +2038,22 @@
     if (!sec) return;
     if (e.target.open) ACORDEON.add(sec); else ACORDEON.delete(sec);
   }, true);
+
+  // Vista previa de "Personalizar tienda" (solo dentro del POS): pinta el borrador
+  // sin guardar nada. Lo "automático" toma el color del negocio, igual que la nube.
+  if (SLUG === 'vista-previa') {
+    window.addEventListener('message', (e) => {
+      if (e.origin !== location.origin || e.data?.tipo !== 'tc-diseno' || !S.tienda) return;
+      const d = JSON.parse(JSON.stringify(e.data.diseno));
+      d.colores.principal = d.colores.principal || S.tienda.colorPrimario;
+      d.colores.botones = d.colores.botones || d.colores.principal;
+      d.colores.encabezado = d.colores.encabezado || d.colores.principal;
+      S.tienda.diseno = d;
+      aplicarDiseno();
+      pintarEncabezado();
+      pintarCatalogo();
+    });
+  }
 
   // ── Carga ────────────────────────────────────────────────────────────────
   // El catálogo se guarda en el teléfono: al volver a entrar la tienda se ve

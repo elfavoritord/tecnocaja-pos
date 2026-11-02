@@ -75,6 +75,7 @@ function createLicenciaSucursal({
       status: empresa.status || 'trial',
       planCode,
       ...fechas,
+      modalidad: empresa.modalidad || null,
       deviceLimit: 0,
       signature: null,
       signatureAlg: null,
@@ -87,6 +88,9 @@ function createLicenciaSucursal({
         forceBlocked: Boolean(empresa.forceBlocked),
         planCode,
         plan_code: planCode,
+        // La PC de sucursal se rige por el contrato de la empresa.
+        modalidad: empresa.modalidad || null,
+        servicios: empresa.servicios || null,
         deviceLimit: 0,
         device_limit: 0,
         signature: null,

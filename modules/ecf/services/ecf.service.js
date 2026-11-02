@@ -3348,7 +3348,7 @@ class EcfService {
       const taxRate = item.tax_mode === 'monto'
         ? nearestCatalogTaxRate(item.tax_amount, (quantity * unitPrice) - discount)
         : Number(item.tax_rate || item.itbis || 0);
-      return { name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate };
+      return { name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate, isService: item.product_type === 'servicio' };
     });
 
     const totals = buildTotals(preparedItems);
@@ -3579,6 +3579,7 @@ class EcfService {
       unitPrice: Number(item.price || 0),
       discount: Number(item.discount_amount || 0),
       taxRate: Number(item.tax_rate || item.itbis || 0),
+      isService: item.product_type === 'servicio',
     }));
     const fechaOriginal = new Date(sale.created_at || original.created_at);
     const dias = Math.floor((Date.now() - fechaOriginal.getTime()) / 86400000);
@@ -3661,6 +3662,13 @@ class EcfService {
   // Se frena antes de cobrar, con la conexión de la transacción de la venta.
   async assertSaleHasSequence({ exec, environment, requestedType, buyerTaxId, branchId, cashRegisterId, itbis = 0 }) {
     const tipoEcf = inferRequestedType(requestedType, buyerTaxId);
+    if (typeof this.servicioPermitido === 'function' && !this.servicioPermitido()) {
+      throw new EcfError(
+        'La facturación electrónica no está activa en esta licencia, así que esta venta no se cobró. '
+        + 'Cóbrala sin comprobante electrónico o escríbenos para activarla.',
+        { statusCode: 422, code: 'ECF_SERVICIO_INACTIVO', details: { tipoEcf } }
+      );
+    }
     if (vaSinItbis(tipoEcf) && Number(itbis) > 0) {
       throw new EcfError(`El ${tipoEcf} va sin ITBIS y esta venta lo trae, así que no se cobró. Vuelve a elegir el comprobante para recalcular.`, { statusCode: 422, code: 'ECF_SIN_ITBIS' });
     }

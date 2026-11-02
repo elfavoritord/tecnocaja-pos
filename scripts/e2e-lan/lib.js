@@ -41,6 +41,10 @@ function prepareSandbox() {
   for (const dir of ['server', 'modules', 'db', 'scripts', 'js', 'css', 'img']) {
     if (fs.existsSync(path.join(PROJECT, dir))) copyDir(path.join(PROJECT, dir), path.join(APP, dir));
   }
+  // Lo que usa la vista previa de la tienda (lo mismo que empaca el instalador).
+  for (const dir of ['cloud/tienda-online/public', 'cloud/tienda-online/lib', 'cloud/tienda-online/vendor']) {
+    if (fs.existsSync(path.join(PROJECT, dir))) copyDir(path.join(PROJECT, dir), path.join(APP, dir));
+  }
   for (const file of ['server.js', 'db.js', 'db-local.js', 'package.json', 'index.html']) {
     fs.copyFileSync(path.join(PROJECT, file), path.join(APP, file));
   }

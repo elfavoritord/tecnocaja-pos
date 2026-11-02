@@ -129,6 +129,26 @@ const TABLES = [
   )`,
 ];
 
+TABLES.push(`CREATE TABLE IF NOT EXISTS online_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cloud_id VARCHAR(64) NOT NULL UNIQUE,
+    tipo VARCHAR(20) NOT NULL DEFAULT 'consulta',
+    estado VARCHAR(20) NOT NULL DEFAULT 'nueva',
+    product_id INT DEFAULT NULL,
+    product_name VARCHAR(255) DEFAULT NULL,
+    price DECIMAL(12,2) DEFAULT NULL,
+    customer_name VARCHAR(160) NOT NULL,
+    customer_phone VARCHAR(40) DEFAULT NULL,
+    customer_email VARCHAR(160) DEFAULT NULL,
+    message TEXT DEFAULT NULL,
+    preferred_date VARCHAR(10) DEFAULT NULL,
+    preferred_time VARCHAR(5) DEFAULT NULL,
+    reference VARCHAR(120) DEFAULT NULL,
+    cloud_created_at DATETIME DEFAULT NULL,
+    received_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+  )`);
+
 const INDEXES = [
   'CREATE INDEX idx_online_orders_status ON online_orders (status)',
   'CREATE INDEX idx_online_orders_sale ON online_orders (sale_id)',
@@ -140,6 +160,7 @@ const INDEXES = [
   'CREATE INDEX idx_online_order_notif_status ON online_order_notifications (status)',
   'CREATE INDEX idx_sales_online_order ON sales (online_order_id)',
   'CREATE INDEX idx_products_online ON products (online_enabled)',
+  'CREATE INDEX idx_online_requests_estado ON online_requests (estado)',
 ];
 
 const COLUMNS = [
@@ -157,6 +178,8 @@ const COLUMNS = [
   // ya existían quedan en NULL: de esos no se sabe y no se presentan como nuevos.
   ['products', 'online_created_at', 'DATETIME DEFAULT NULL'],
   ['online_store_settings', 'new_products_from_id', 'INT DEFAULT NULL'],
+  // Portada de teléfono y banners publicitarios: { banner_movil, anuncio_1… }.
+  ['online_store_settings', 'design_images', 'LONGTEXT DEFAULT NULL'],
   ['sales', 'online_order_id', 'INT DEFAULT NULL'],
   ['sales', 'sync_origin', 'VARCHAR(40) DEFAULT NULL'],
   ['clients', 'sync_origin', 'VARCHAR(40) DEFAULT NULL'],

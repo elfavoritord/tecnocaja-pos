@@ -8,6 +8,7 @@ const { createIconos, colorValido } = require('./iconos');
 const { createEstaticos, comprimirJson } = require('./estaticos');
 const { cotizar, crearPedido, verPedido } = require('./pedidos');
 const { validarPedido, validarItems } = require('./validacion');
+const { crearSolicitud, validarSolicitud } = require('./solicitudes');
 const { createRateLimiter } = require('./rate-limit');
 const { estaAbierta } = require('./horario');
 const { slugValido } = require('../vendor/tienda-online/contrato');
@@ -207,6 +208,19 @@ function createRouter({ db, FieldValue, now = () => new Date(), limits = {} }) {
       repetido: r.repetido,
       seguimiento: `/t/${req.params.slug}/pedido/${r.pedidoId}?k=${r.token}`,
     });
+  }));
+
+  // Cotización, cita o consulta: no es un pedido y no calcula totales.
+  router.post('/api/tiendas/:slug/solicitudes', express.json({ limit: '16kb' }), wrap(async (req, res) => {
+    const ip = ipDe(req);
+    if (!limitPedidos(`s:${ip}:${req.params.slug}`)) {
+      return res.status(429).json({ error: 'Has enviado varias solicitudes seguidas. Espera unos minutos.' });
+    }
+    const datos = validarSolicitud(req.body);
+    const tienda = await tiendaAbierta(req, res);
+    if (!tienda) return;
+    const r = await crearSolicitud({ db, FieldValue, tienda, datos });
+    res.status(r.repetida ? 200 : 201).json({ ok: true, repetida: r.repetida });
   }));
 
   router.get('/api/tiendas/:slug/pedidos/:id', wrap(async (req, res) => {

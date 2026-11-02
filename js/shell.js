@@ -79,6 +79,8 @@
 
   function confOf(item) {
     const module = item.dataset.module || '';
+    // Una Empresa de Servicios no tiene pedidos: recibe solicitudes de su tienda.
+    if (module === 'tiendaonline' && document.documentElement.dataset.appMode === 'servicios') return ['store', 'Tienda', 'operacion'];
     return NAV[module] || ['layout-grid', item.querySelector('.nav-label')?.textContent?.trim() || module, 'sistema'];
   }
 

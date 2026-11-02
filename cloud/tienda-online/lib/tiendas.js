@@ -4,7 +4,9 @@
 // con caché corta por instancia. El pedido SIEMPRE vuelve a leer la existencia
 // dentro de su transacción; la caché solo sirve para mostrar la tienda.
 
-const { rutas, slugValido, claveProducto, CLAVE_IMAGEN_RE, MAX_FOTOS_PRODUCTO } = require('../vendor/tienda-online/contrato');
+const {
+  rutas, slugValido, claveProducto, CLAVE_IMAGEN_RE, MAX_FOTOS_PRODUCTO, articuloComprable, articuloVisible, opcionesServicios,
+} = require('../vendor/tienda-online/contrato');
 const { precioParaCantidad, promocionPorCantidad, round2 } = require('../vendor/tienda-online/calculo-pedido');
 const { resolverDiseno } = require('../vendor/tienda-online/diseno');
 
@@ -50,7 +52,9 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
     for (const snap of paginas) {
       if (snap.exists) lista.push(...(snap.data().productos || []));
     }
-    const productos = new Map(lista.map((p) => [Number(p.id), p]));
+    // Solo lo que se puede pagar con el carrito: lo demás se atiende por solicitud.
+    const opciones = opcionesServicios(perfil);
+    const productos = new Map(lista.filter((p) => articuloComprable(p, opciones)).map((p) => [Number(p.id), p]));
     const v = {
       licenseId,
       perfil,
@@ -88,7 +92,9 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
     const diseno = resolverDiseno(perfil.diseno, { colorPrimario: perfil.colorPrimario });
     const nuevoHasta = diseno.vitrinas.nuevos.diasNuevo * 24 * 60 * 60 * 1000;
     const productos = [];
+    const opciones = opcionesServicios(perfil);
     for (const p of tienda.lista) {
+      if (!articuloVisible(p, opciones)) continue;
       const disp = disponible(p, tienda.stock);
       const agotado = disp !== null && disp <= 0;
       if (agotado && perfil.mostrarAgotados === false) continue;
@@ -99,6 +105,8 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         .filter((f) => f && CLAVE_IMAGEN_RE.test(String(f.clave)))
         .map((f) => urlImagen(slug, f.clave, f.version));
       const fotos = [principal, ...extras].filter(Boolean).slice(0, MAX_FOTOS_PRODUCTO);
+      const esServicio = p.tipo === 'servicio';
+      const precioOculto = esServicio && !opciones.mostrarPrecio;
       productos.push({
         id: p.id,
         nombre: p.nombre,
@@ -106,16 +114,19 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         categoria: p.categoria,
         unidad: p.unidad,
         modoVenta: p.modoVenta,
-        precio,
-        precioAntes: precioOriginal && precioOriginal > precio ? precioOriginal : null,
+        precio: precioOculto ? 0 : precio,
+        precioAntes: !precioOculto && precioOriginal && precioOriginal > precio ? precioOriginal : null,
         promocion: promocion ? (promocion.texto || promocion.nombre) : null,
-        porCantidad: promocionPorCantidad(p, nowDate),
-        descuentoPct: p.descuentoPct || 0,
+        porCantidad: precioOculto ? null : promocionPorCantidad(p, nowDate),
+        descuentoPct: precioOculto ? 0 : (p.descuentoPct || 0),
         conItbis: Boolean(p.itbis),
         disponible: disp === null ? null : Math.min(disp, 999),
         agotado,
         destacado: Boolean(p.destacado),
         marca: p.marca || '',
+        tipo: esServicio ? 'servicio' : 'producto',
+        comprable: articuloComprable(p, opciones),
+        precioOculto,
         creadoEn: p.creadoEn || null,
         // Se calcula aquí: deja de ser nuevo solo, sin que el POS publique nada.
         nuevo: Boolean(p.creadoEn) && nowDate.getTime() - new Date(p.creadoEn).getTime() <= nuevoHasta,
@@ -145,6 +156,8 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         bannerMovil: perfil.bannerMovil ? urlImagen(slug, perfil.bannerMovil, perfil.bannerMovilVersion) : null,
         diseno,
         anuncios,
+        modalidad: opciones.modalidad,
+        solicitudes: { cotizacion: opciones.cotizacion, cita: opciones.cita, whatsapp: opciones.whatsapp },
         masVendidos: (Array.isArray(perfil.masVendidos) ? perfil.masVendidos : []).map(Number).filter(Number.isFinite).slice(0, 24),
         moneda: perfil.moneda || 'RD$',
         horario: perfil.horario || null,

@@ -20,6 +20,7 @@ const {
   parseUtcDbDateTime,
   toUtcDbDateTime,
 } = require('./trial-window');
+const { MODALIDAD_PERMANENTE, normalizarModalidad, resolverServicios } = require('./servicios');
 
 // Fila única de versiones anteriores. Ahora cada equipo guarda su caché en su
 // propia fila (ver getCacheRowId): en multicaja todas las cajas comparten la
@@ -66,7 +67,8 @@ function normalizeLicenseStatus(value) {
   const normalized = String(value || 'trial').trim().toLowerCase();
   if (['active', 'activo', 'activo_pro', 'active_pro', 'activepro', 'activo pro'].includes(normalized)) return 'active';
   if (['expired', 'expirado', 'vencido'].includes(normalized)) return 'expired';
-  if (['suspended', 'suspendido', 'bloqueado', 'blocked'].includes(normalized)) return 'suspended';
+  // Antes "cancelled" caía abajo como prueba: cancelar desde el panel no cortaba nada.
+  if (['suspended', 'suspendido', 'bloqueado', 'blocked', 'cancelled', 'cancelada', 'cancelado'].includes(normalized)) return 'suspended';
   return 'trial';
 }
 
@@ -254,6 +256,15 @@ function normalizeRegisteredDevices(value) {
   return [];
 }
 
+function serviciosParaGuardar(servicios) {
+  if (!servicios || typeof servicios !== 'object') return null;
+  const salida = {};
+  for (const [clave, s] of Object.entries(servicios)) {
+    salida[clave] = { estado: String(s?.estado || 'inactivo'), venceEn: toIsoString(s?.venceEn) };
+  }
+  return salida;
+}
+
 function daysBetweenDates(newer, older) {
   const a = asDate(newer);
   const b = asDate(older);
@@ -328,6 +339,18 @@ class LicenseService {
   // la base local ya estuvieran limpios.
   invalidateStateMemo() {
     this.stateMemo = { at: 0, value: null };
+  }
+
+  /**
+   * ¿Puede emitir comprobantes electrónicos? Solo mira lo que ya está en memoria,
+   * sin tocar la base: la venta llama esto con el candado de config tomado.
+   * Sin contrato registrado (o sin datos todavía) se permite, como hasta hoy.
+   */
+  ecfPermitido(now = this.now()) {
+    const license = this.stateMemo.value?.license;
+    if (!license?.servicios?.conContrato) return true;
+    const { ecf } = resolverServicios(license.servicios.fuente, asDate(now) || new Date());
+    return ecf.permitido;
   }
 
   signatureVerificationConfigured() {
@@ -441,6 +464,9 @@ class LicenseService {
       planCode,
       planName: plans.PLAN_NAMES[planCode] || planCode,
       status,
+      modalidad: normalizarModalidad(remote.modalidad || raw.modalidad),
+      // Con fechas en texto: esto se guarda en el caché cifrado de la PC.
+      servicios: serviciosParaGuardar(raw.servicios),
       issuedAt,
       expiresAt,
       deviceId: this.device.deviceId,
@@ -522,6 +548,10 @@ class LicenseService {
     );
     const offlineDaysSinceLastValidation = lastValidatedAt ? daysBetweenDates(now, lastValidatedAt) : Number.MAX_SAFE_INTEGER;
     let status = normalizeLicenseStatus(license.status);
+    const modalidad = normalizarModalidad(license.modalidad);
+    // Pago único: no vence, así que el reloj no da ninguna ventaja y un reloj
+    // atrasado no es motivo para detener las ventas.
+    const permanente = modalidad === MODALIDAD_PERMANENTE;
     // Una licencia ACTIVADA no necesita Internet para seguir funcionando: basta
     // la copia firmada y cifrada de esta PC (fecha de vencimiento, firma, reloj
     // y límite de equipos se revisan aquí mismo). Internet solo se usa para
@@ -539,16 +569,17 @@ class LicenseService {
     if (verification.valid === false) {
       blockedCode = verification.reason === 'missing_signature' ? 'missing_signature' : 'invalid_signature';
       status = 'expired';
-    } else if (clockRollbackDetected) {
+    } else if (clockRollbackDetected && !permanente) {
       blockedCode = 'clock_rollback';
       status = 'expired';
     } else if (options.deviceLimitExceeded) {
       blockedCode = 'device_limit';
-      status = 'expired';
+      // Una permanente nunca aparece como vencida: lo que pasa es que este equipo no está autorizado.
+      if (!permanente) status = 'expired';
     } else if (status === 'suspended') {
       blockedCode = 'suspended';
     } else if ((status === 'trial' && (!expiresAt || now.getTime() > expiresAt.getTime()))
-      || (status === 'active' && expiresAt && now.getTime() > expiresAt.getTime())) {
+      || (status === 'active' && !permanente && expiresAt && now.getTime() > expiresAt.getTime())) {
       blockedCode = 'expired';
       status = 'expired';
     } else if (offlineGraceExceeded) {
@@ -573,6 +604,8 @@ class LicenseService {
       licenseId: String(license.licenseId || '').trim() || null,
       businessName: String(license.businessName || '').trim() || null,
       status,
+      modalidad,
+      servicios: resolverServicios(license.servicios, now),
       planCode: String(license.planCode || 'basico').trim().toLowerCase() || 'basico',
       planName: plans.PLAN_NAMES[String(license.planCode || 'basico').trim().toLowerCase() || 'basico'] || 'Tecno Caja Básico',
       deviceId: String(license.deviceId || this.device.deviceId).trim(),

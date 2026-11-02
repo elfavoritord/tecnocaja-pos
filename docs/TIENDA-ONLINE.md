@@ -358,15 +358,14 @@ Una sola tienda, gratis para todos. Cada negocio cambia su aspecto; no hay plant
 - El encabezado y el pie se pueden apagar, pero no mover. "Todos los productos" se puede mover, pero no apagar. Sin encabezado o sin carrito arriba, en computadora sale un carrito flotante.
 - Las variantes de producto no existen: el POS no las tiene y agregarlas tocaría inventario y ventas.
 
-**Lo que el POS ya publica** (sale con la próxima versión): `diseno`, `marca` y `creadoEn`. Sin ellos, la tienda se ve en Moderno con el color del negocio, sin marcas y sin "Nuevos productos".
+**Personalizar tienda** (`js/tienda-editor.js`, botón en Configurar tienda): editor con vista previa real.
 
-**Lo que la nube ya lee y el POS todavía no publica** (llega con el editor):
+- **Borrador y publicado:** `settings.disenoBorrador` es lo que se edita; `settings.diseno` es lo que se publica. Los clientes no ven nada hasta "Guardar y publicar".
+- **Vista previa:** `server/tienda-online/vista-previa.js` sirve la misma página en `/t/vista-previa`, con el catálogo local, y recibe el borrador por `postMessage`. No recibe pedidos. Por eso el instalador empaca `cloud/tienda-online/public`, `lib/tiendas.js` y `vendor`. Se carga al usarla: si falta, el POS arranca igual.
+- **Imágenes:** la portada de teléfono y los banners publicitarios van en `online_store_settings.design_images`. Se publican al subirlas, igual que el banner de siempre.
+- **El POS publica:** `diseno`, `bannerMovil`, `anuncios`, `masVendidos` (solo el orden, de los últimos 90 días), y en cada producto `marca` y `creadoEn`. Sin ellos, Moderno con el color del negocio y sin esas secciones.
 
-| Campo | Dónde | Sin él |
-|---|---|---|
-| `bannerMovil`, `bannerMovilVersion` | perfil | el banner de computadora |
-| `anuncios: [{clave: '_anuncio_N', version}]` | perfil | no sale la sección |
-| `masVendidos: [ids]` | perfil (sin cantidades) | no sale la sección |
+Prueba: `node cloud/tienda-online/test/ui/probar-editor-pos.js`.
 
 **Vitrinas (Ofertas especiales y Nuevos productos):** filas con movimiento continuo en `public/marquee.js`. Se configuran en Configurar tienda → Vitrinas y se guardan en `settings.diseno.vitrinas`; la activación y el título, en `diseno.secciones`.
 

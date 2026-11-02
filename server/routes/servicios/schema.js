@@ -696,6 +696,11 @@ async function ensureServiciosSchema(query) {
       if (!row) await query('INSERT INTO svc_doc_counters (doc_type, prefix, next_number) VALUES (?, ?, 1)', [docType, prefix]);
     });
   }
+
+  // Cada servicio tiene su producto en el catálogo único (ver enlace-productos.js).
+  await addColumnIfMissing(query, 'svc_services', 'product_id', 'INT DEFAULT NULL');
+  // eslint-disable-next-line global-require
+  await require('./enlace-productos').enlazarTodos(query);
 }
 
 // Toma y consume el siguiente folio interno (COT-000123 / FAC-000123).

@@ -20,6 +20,8 @@
 <link rel="stylesheet" href="css/shell.css">
 <link rel="stylesheet" href="css/ventas.css">
 <link rel="stylesheet" href="css/tienda-online.css">
+  <link rel="stylesheet" href="css/planes-precios.css">
+  <link rel="stylesheet" href="css/tienda-editor.css">
 </head>
 <body>
 <!-- LOGIN SCREEN -->
@@ -913,6 +915,11 @@
                   <select id="sales-category-filter" class="form-input" onchange="renderSalesCatalog()">
                     <option value="">Todas las categorías</option>
                   </select>
+                  <select id="sales-type-filter" class="form-input hidden" onchange="renderSalesCatalog()" aria-label="Tipo de artículo">
+                    <option value="todos">Todos</option>
+                    <option value="productos">Productos</option>
+                    <option value="servicios">Servicios</option>
+                  </select>
                   <select id="sales-stock-filter" class="form-input" onchange="renderSalesCatalog()">
                     <option value="todos">Todos</option>
                     <option value="disponibles">Disponibles</option>
@@ -1746,6 +1753,7 @@
       <div class="to-status-bar" id="to-status-bar">Cargando…</div>
       <div class="tc-tabs">
         <button type="button" class="pill-tab active" data-to-tab="pedidos" onclick="TiendaOnline.switchTab('pedidos')">Pedidos</button>
+        <button type="button" class="pill-tab" data-to-tab="solicitudes" onclick="TiendaOnline.switchTab('solicitudes')">Solicitudes <span class="nav-badge" id="to-sol-badge" style="display:none"></span></button>
         <button type="button" class="pill-tab" data-to-tab="productos" id="to-tab-btn-productos" onclick="TiendaOnline.switchTab('productos')">Productos publicados</button>
         <button type="button" class="pill-tab" data-to-tab="reportes" onclick="TiendaOnline.switchTab('reportes')">Reportes</button>
       </div>
@@ -1756,6 +1764,7 @@
           <div class="to-detail" id="to-detail"><div class="to-detail-empty">Elige un pedido para ver el detalle.</div></div>
         </div>
       </div>
+      <div class="to-pane hidden" id="to-pane-solicitudes"></div>
       <div class="to-pane hidden" id="to-pane-productos"></div>
       <div class="to-pane hidden" id="to-pane-reportes"></div>
     </div>
@@ -3601,6 +3610,7 @@
             <button id="cfg-btn-license-refresh" class="btn-secondary" type="button" onclick="refreshStartupStatus()">Actualizar estado</button>
             <button id="cfg-btn-license-whatsapp" class="btn-secondary" type="button" onclick="openLicenseWhatsAppSupport()">Verificar por WhatsApp</button>
           </div>
+          <button id="cfg-btn-planes" class="btn-secondary" type="button" onclick="PlanesPrecios.abrir()" style="margin-top:8px">Ver planes y precios</button>
         </div>
 
         <div class="config-section">
@@ -5386,6 +5396,8 @@
 <script src="js/network-manager.js"></script>
 <script src="js/delivery-panel.js"></script>
 <script src="js/tienda-online.js"></script>
+  <script src="js/planes-precios.js"></script>
+  <script src="js/tienda-editor.js"></script>
 <script src="js/multisucursal-enlace.js"></script>
 <script src="js/file-manager.js"></script>
 <script src="js/respaldos.js"></script>

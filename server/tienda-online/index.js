@@ -18,6 +18,7 @@
 const { ensureTiendaOnlineSchema } = require('./schema');
 const { createSettingsStore } = require('./settings');
 const { createCatalogBuilder } = require('./catalog');
+const { createSolicitudes } = require('./solicitudes');
 const { createNube } = require('./nube');
 const { createOrdersService, sqlDateToIso } = require('./orders');
 const { createNotifier } = require('./notifier');
@@ -73,7 +74,7 @@ function createTiendaOnline(deps) {
   }
 
   const settingsStore = createSettingsStore({ query, nowSql });
-  const catalogBuilder = createCatalogBuilder({ query, nowSql, getLicenseId, readBanner: settingsStore.readBanner });
+  const catalogBuilder = createCatalogBuilder({ query, nowSql, getLicenseId, readDesignImages: settingsStore.readDesignImages, readBanner: settingsStore.readBanner });
   const nube = createNube({ getFirestore, getFieldValue, getLicenseId });
   const notifier = createNotifier({ query, nowSql, getWaBot, logger });
   const orders = createOrdersService({ query, withTransaction, nowSql, formatSqlDate, mapClientRow, notifier, emit, logger });
@@ -90,9 +91,11 @@ function createTiendaOnline(deps) {
     readPublishedIndex: () => nube.readCatalogIndex(),
     logger,
   });
+  const solicitudes = createSolicitudes({ query, nowSql, nube, emit, logger });
   const sync = createOrdersSync({
     nube,
     orders,
+    solicitudes,
     notifier,
     settingsStore,
     getLicenseId,
@@ -260,11 +263,13 @@ function createTiendaOnline(deps) {
     publicUrl,
     settingsStore,
     catalogBuilder,
+    readLocalImage,
     nube,
     orders,
     notifier,
     publisher,
     sync,
+    solicitudes,
     fotos,
     hooks,
   };

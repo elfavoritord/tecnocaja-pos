@@ -1,13 +1,16 @@
 {
-  "version": "1.6.10",
-  "stableVersion": "1.6.10",
+  "version": "1.6.11",
+  "stableVersion": "1.6.11",
   "date": "02/11/2026",
   "size": "198 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Tienda online: página renovada, filtros por marca y disponibilidad, y un enlace propio para cada producto.",
-    "Tienda online: nueva pestaña Vitrinas con Ofertas especiales y Nuevos productos, que se mueven solas y se configuran por separado."
+    "Productos y servicios en un solo catálogo, con código opcional y filtro en Ventas.",
+    "Tienda online: elige mostrar productos, servicios o los dos, y recibe solicitudes de cotización y cita.",
+    "Tienda online: nuevo editor Personalizar tienda con vista previa.",
+    "Empresa de Servicios: ya puede publicar su tienda y pasar solicitudes a cotización o al calendario.",
+    "Nueva pantalla de Planes y precios."
   ]
 }

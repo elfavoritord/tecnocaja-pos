@@ -461,7 +461,7 @@ const businessConfig = {
     verticalMeta: { icon: '📊', label: 'Consultoría', tagline: 'Propuestas, proyectos, contratos y honorarios' },
     modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-propuestas', 'srv-cotizaciones',
       'srv-proyectos', 'srv-contratos', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
-      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'cotizaciones', 'proyectos', 'contratos', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Proyectos activos', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -472,7 +472,7 @@ const businessConfig = {
     // srv-dashboard (Panel) y srv-servicios (catálogo) quitados a pedido — landing pasa a srv-facturas.
     modules: ['srv-facturas', 'clientes', 'srv-cotizaciones', 'srv-proyectos',
       'srv-ordenes', 'srv-contratos', 'srv-cobros', 'srv-cxc', 'srv-gastos',
-      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['proyectos', 'ordenes', 'contratos', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Proyectos activos', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -482,7 +482,7 @@ const businessConfig = {
     verticalMeta: { icon: '📣', label: 'Agencia de Publicidad', tagline: 'Campañas, proyectos creativos y presupuestos' },
     modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-campanas',
       'srv-proyectos', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
-      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'campanas', 'proyectos', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Campañas activas', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -492,7 +492,7 @@ const businessConfig = {
     verticalMeta: { icon: '📐', label: 'Arquitectura e Ingeniería', tagline: 'Proyectos, obras, avances y presupuestos' },
     modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-proyectos',
       'srv-obras', 'srv-contratos', 'proveedores', 'srv-facturas', 'srv-cobros', 'srv-cxc',
-      'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'proyectos', 'obras', 'contratos', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Obras en proceso', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -502,7 +502,7 @@ const businessConfig = {
     verticalMeta: { icon: '🧹', label: 'Empresa de Limpieza', tagline: 'Contratos, servicios programados y personal' },
     modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-contratos', 'srv-ordenes',
       'srv-calendario', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
-      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'contratos', 'ordenes', 'calendario', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Servicios pendientes', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -512,7 +512,7 @@ const businessConfig = {
     verticalMeta: { icon: '🛡️', label: 'Empresa de Seguridad', tagline: 'Puestos, guardias, turnos y contratos' },
     modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-contratos', 'srv-seguridad',
       'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
-      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'contratos', 'seguridad', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Puestos activos', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -522,7 +522,7 @@ const businessConfig = {
     verticalMeta: { icon: '🔧', label: 'Empresa de Mantenimiento', tagline: 'Órdenes de trabajo, preventivo y equipos' },
     modules: ['srv-facturas', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-ordenes',
       'srv-mantenimiento', 'srv-calendario', 'proveedores', 'srv-cobros', 'srv-cxc',
-      'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'srv-gastos', 'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'cotizaciones', 'ordenes', 'mantenimiento', 'calendario', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Órdenes abiertas', taxTitle: 'Cuentas por cobrar' } }
   },
@@ -532,7 +532,7 @@ const businessConfig = {
     verticalMeta: { icon: '✈️', label: 'Agencia de Viajes', tagline: 'Reservaciones, paquetes, anticipos y comisiones' },
     modules: ['srv-dashboard', 'clientes', 'srv-servicios', 'srv-cotizaciones', 'srv-reservaciones',
       'proveedores', 'srv-facturas', 'srv-cobros', 'srv-cxc', 'srv-gastos',
-      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion'],
+      'rrhh', 'reportes', 'srv-auditoria', 'usuarios', 'configuracion', 'tiendaonline'],
     features: ['servicios', 'reservaciones', 'cotizaciones', 'facturacion', 'cxc'],
     dashboard: { reportCards: { salesTitle: 'Servicios facturados', profitTitle: 'Cobros del período', topTitle: 'Reservaciones activas', taxTitle: 'Cuentas por cobrar' } }
   },

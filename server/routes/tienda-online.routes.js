@@ -9,7 +9,9 @@
 
 const express = require('express');
 const { ESTADOS, ESTADO_ETIQUETAS, METODOS_PAGO, MAX_FOTOS_PRODUCTO, normalizarSlug } = require('../tienda-online/contrato');
-const { normalizarDiseno, LIMITES_VITRINA } = require('../tienda-online/diseno');
+const {
+  ESTILOS, LIMITES_VITRINA, MAX_ANUNCIOS, OPCIONES, REDES, SECCIONES, TIPOGRAFIAS, aplicarEstilo, normalizarDiseno,
+} = require('../tienda-online/diseno');
 const { leerFotosExtra } = require('../tienda-online/fotos');
 
 const STOCK_MODES = ['inventario', 'ilimitado'];
@@ -111,6 +113,14 @@ function createTiendaOnlineRouter({
       url: tienda.publicUrl(store.slug),
       disenoBase: normalizarDiseno(store.settings.diseno),
       limitesVitrina: LIMITES_VITRINA,
+      editor: {
+        secciones: SECCIONES,
+        tipografias: TIPOGRAFIAS.map(({ id, nombre }) => ({ id, nombre })),
+        opciones: OPCIONES,
+        redes: REDES,
+        maxAnuncios: MAX_ANUNCIOS,
+        estilos: Object.entries(ESTILOS).map(([id, e]) => ({ id, nombre: e.nombre, descripcion: e.descripcion })),
+      },
       metodosPago: METODOS_PAGO,
       sucursales: branches.map((b) => ({ id: Number(b.id), nombre: b.nombre })),
       categorias: categorias.map((c) => c.categoria).filter(Boolean),
@@ -122,11 +132,26 @@ function createTiendaOnlineRouter({
     const actor = await requireConfig(req);
     const before = await tienda.settingsStore.read();
     const body = req.body || {};
+    // Lo de la pestaña Vitrinas también entra en el borrador, si hay uno abierto:
+    // publicarlo después no debe devolver las vitrinas a como estaban.
+    const borrador = before.settings.disenoBorrador;
+    const conVitrinas = body.settings?.diseno && borrador
+      ? {
+        ...body.settings,
+        disenoBorrador: {
+          ...borrador,
+          vitrinas: body.settings.diseno.vitrinas,
+          secciones: borrador.secciones.map((s) => (['ofertas', 'nuevos'].includes(s.id)
+            ? { ...s, ...(body.settings.diseno.secciones || []).find((x) => x.id === s.id) }
+            : s)),
+        },
+      }
+      : body.settings;
     const saved = await tienda.settingsStore.write({
       enabled: body.enabled,
       slug: body.slug,
       branchId: body.branchId,
-      settings: body.settings,
+      settings: conVitrinas,
     }, { userName: actorName(actor) });
 
     // Reservar el nombre de una vez (si hay Internet) para avisar ya si está ocupado.
@@ -154,6 +179,76 @@ function createTiendaOnlineRouter({
     }
     tienda.publisher.run({ force: true }).catch(() => {});
     res.json({ ...saved, url: tienda.publicUrl(saved.slug), aviso });
+  }));
+
+  // ── Solicitudes de la tienda (cotización, cita o consulta) ─────────────
+  // Se revisan y confirman aquí: nunca se vuelven factura solas.
+  router.get('/solicitudes', wrap(async (req, res) => {
+    await requireActor(req);
+    await tienda.sync.recibirSolicitudes?.().catch(() => {});
+    res.json({
+      solicitudes: await tienda.solicitudes.listar({ estado: String(req.query.estado || '') }),
+      nuevas: await tienda.solicitudes.contarNuevas(),
+    });
+  }));
+
+  router.put('/solicitudes/:id', wrap(async (req, res) => {
+    const actor = await requireActor(req);
+    const guardada = await tienda.solicitudes.cambiar(req.params.id, req.body || {});
+    audit(actor, 'Solicitud de la tienda actualizada', `#${guardada.id} · ${guardada.estado}`);
+    res.json(guardada);
+  }));
+
+  // ── Personalizar tienda ────────────────────────────────────────────────
+  router.put('/config/diseno', wrap(async (req, res) => {
+    const actor = await requireConfig(req);
+    const diseno = normalizarDiseno(req.body?.diseno);
+    const publicar = req.body?.publicar === true;
+    const saved = await tienda.settingsStore.write({
+      settings: publicar ? { diseno, disenoBorrador: null } : { disenoBorrador: diseno },
+    }, { userName: actorName(actor) });
+    audit(actor, publicar ? 'Diseño de la tienda publicado' : 'Borrador del diseño guardado', diseno.estilo);
+    if (publicar) tienda.publisher.run({ force: true }).catch(() => {});
+    res.json({ diseno, publicado: normalizarDiseno(saved.settings.diseno) });
+  }));
+
+  router.delete('/config/diseno/borrador', wrap(async (req, res) => {
+    const actor = await requireConfig(req);
+    await tienda.settingsStore.write({ settings: { disenoBorrador: null } }, { userName: actorName(actor) });
+    audit(actor, 'Borrador del diseño descartado', '');
+    res.json({ ok: true });
+  }));
+
+  // No guarda nada: devuelve cómo queda el diseño con ese estilo.
+  router.post('/config/diseno/estilo', wrap(async (req, res) => {
+    await requireConfig(req);
+    const { estilo, diseno, restaurar } = req.body || {};
+    res.json({ diseno: aplicarEstilo(estilo, restaurar === true ? {} : diseno) });
+  }));
+
+  const CLAVES_IMAGEN = /^(banner_movil|anuncio_[1-4])$/;
+  router.post('/config/imagen/:clave', wrap(async (req, res) => {
+    const actor = await requireConfig(req);
+    const { clave } = req.params;
+    const dataUrl = String(req.body?.dataUrl || '');
+    if (!CLAVES_IMAGEN.test(clave) || !/^data:image\/(png|jpe?g|webp);base64,/i.test(dataUrl)) {
+      const error = new Error('Sube una imagen PNG, JPG o WEBP.');
+      error.statusCode = 400;
+      throw error;
+    }
+    const imagenes = await tienda.settingsStore.writeDesignImage(clave, processBannerImage ? await processBannerImage(dataUrl) : dataUrl);
+    audit(actor, 'Imagen de la tienda cambiada', clave);
+    tienda.publisher.run({ force: true }).catch(() => {});
+    res.json({ imagenes });
+  }));
+
+  router.delete('/config/imagen/:clave', wrap(async (req, res) => {
+    const actor = await requireConfig(req);
+    if (!CLAVES_IMAGEN.test(req.params.clave)) return res.status(400).json({ error: 'Imagen inválida.' });
+    const imagenes = await tienda.settingsStore.writeDesignImage(req.params.clave, null);
+    audit(actor, 'Imagen de la tienda quitada', req.params.clave);
+    tienda.publisher.run({ force: true }).catch(() => {});
+    return res.json({ imagenes });
   }));
 
   router.post('/config/banner', wrap(async (req, res) => {

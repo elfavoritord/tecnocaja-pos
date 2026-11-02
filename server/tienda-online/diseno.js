@@ -17,6 +17,7 @@ const SECCIONES = [
   { id: 'destacados', nombre: 'Productos destacados' },
   { id: 'nuevos', nombre: 'Nuevos productos' },
   { id: 'ofertas', nombre: 'Ofertas especiales' },
+  { id: 'servicios', nombre: 'Servicios' },
   { id: 'masVendidos', nombre: 'Más vendidos' },
   { id: 'marcas', nombre: 'Marcas' },
   { id: 'banners', nombre: 'Banners publicitarios' },
@@ -93,7 +94,7 @@ const ESTILOS = {
       esquinas: 'redondas', sombras: 'suaves', espaciado: 'normal', estiloTarjetas: 'limpia',
     },
     hero: { altura: 'media', alineacion: 'izquierda' },
-    secciones: ordenSecciones(['hero', 'categorias', 'destacados', 'ofertas', 'nuevos', 'masVendidos', 'marcas', 'banners', 'catalogo', 'informacion', 'contacto']),
+    secciones: ordenSecciones(['hero', 'categorias', 'destacados', 'servicios', 'ofertas', 'nuevos', 'masVendidos', 'marcas', 'banners', 'catalogo', 'informacion', 'contacto']),
   },
   comercial: {
     nombre: 'Comercial',
@@ -107,7 +108,7 @@ const ESTILOS = {
       esquinas: 'suaves', sombras: 'suaves', espaciado: 'compacto', estiloTarjetas: 'elevada',
     },
     hero: { altura: 'baja', alineacion: 'izquierda' },
-    secciones: ordenSecciones(['hero', 'ofertas', 'categorias', 'masVendidos', 'destacados', 'nuevos', 'banners', 'marcas', 'catalogo', 'informacion', 'contacto']),
+    secciones: ordenSecciones(['hero', 'ofertas', 'categorias', 'servicios', 'masVendidos', 'destacados', 'nuevos', 'banners', 'marcas', 'catalogo', 'informacion', 'contacto']),
   },
   premium: {
     nombre: 'Premium',
@@ -121,7 +122,7 @@ const ESTILOS = {
       esquinas: 'rectas', sombras: 'ninguna', espaciado: 'amplio', estiloTarjetas: 'borde',
     },
     hero: { altura: 'alta', alineacion: 'centro' },
-    secciones: ordenSecciones(['hero', 'destacados', 'categorias', 'nuevos', 'banners', 'ofertas', 'masVendidos', 'marcas', 'catalogo', 'informacion', 'contacto']),
+    secciones: ordenSecciones(['hero', 'destacados', 'servicios', 'categorias', 'nuevos', 'banners', 'ofertas', 'masVendidos', 'marcas', 'catalogo', 'informacion', 'contacto']),
   },
 };
 
@@ -183,7 +184,7 @@ function urlSegura(valor) {
 /** A dónde lleva un botón: un lugar de la tienda, una categoría o una dirección https. */
 function enlace(valor, respaldo = 'catalogo') {
   const s = String(valor ?? '').trim();
-  if (['catalogo', 'ofertas', 'nuevos', 'destacados', 'masVendidos', 'contacto', 'whatsapp'].includes(s)) return s;
+  if (['catalogo', 'ofertas', 'nuevos', 'destacados', 'masVendidos', 'servicios', 'contacto', 'whatsapp'].includes(s)) return s;
   if (/^categoria:.{1,120}$/.test(s)) return s;
   return urlSegura(s) || respaldo;
 }

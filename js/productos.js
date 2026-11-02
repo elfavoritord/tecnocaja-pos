@@ -644,7 +644,15 @@ function syncProductBusinessFields() {
   if (stockInput) stockInput.step = numericStep;
   if (stockMinInput) stockMinInput.step = numericStep;
 
-  const tracksStock = document.getElementById('mp-tracks-stock')?.checked !== false;
+  // Un servicio nunca lleva inventario: el servidor también lo exige.
+  const esServicio = typeValue === 'servicio';
+  const tracksInput = document.getElementById('mp-tracks-stock');
+  if (tracksInput && esServicio) tracksInput.checked = false;
+  const tracksGroup = document.getElementById('mp-tracks-stock-group');
+  if (tracksGroup) tracksGroup.style.display = esServicio ? 'none' : '';
+  const compraLabel = document.getElementById('mp-pcompra')?.closest('.form-group')?.querySelector('label');
+  if (compraLabel) compraLabel.textContent = esServicio ? 'Costo del servicio, opcional (RD$)' : 'Precio Compra (RD$)';
+  const tracksStock = tracksInput?.checked !== false;
   const noStockHint = document.getElementById('mp-no-stock-hint');
   const stockGroup = document.getElementById('mp-stock-group');
   const stockMinGroup = document.getElementById('mp-stockmin-group');
@@ -1444,6 +1452,8 @@ function openProductModal(id) {
   }
   const profile = getProductFormProfile();
   const cats = DB.categorias.map(c => `<option ${prod&&prod.categoria===c?'selected':''}>${c}</option>`).join('');
+  // Todo negocio puede registrar servicios, sea cual sea su tipo.
+  if (!profile.typeOptions?.some(([valor]) => valor === 'servicio')) profile.typeOptions = [...(profile.typeOptions || []), ['servicio', 'Servicio']];
   const selectedType = prod?.tipoProducto || profile.typeOptions?.[0]?.[0] || 'general';
   const selectedUnit = prod?.unidad || profile.unitOptions?.[0] || 'Unidad';
   const selectedSaleMode = getScaleUtils().normalizeSaleMode
@@ -1469,9 +1479,9 @@ function openProductModal(id) {
       </div>
       <div class="mp-image-fields">
         <div class="form-group">
-          <label>Código</label>
+          <label>Código <small style="font-weight:400;color:var(--text2)">(opcional)</small></label>
           <div class="scan-input-row">
-            <input type="text" id="mp-codigo" class="form-input" value="${prod?prod.codigo:''}" placeholder="Escribe o escanea">
+            <input type="text" id="mp-codigo" class="form-input" value="${prod?prod.codigo:''}" placeholder="Si lo dejas vacío se genera solo">
             <button type="button" class="btn-secondary" onclick="armProductScanner()">📷</button>
           </div>
           <small id="mp-code-feedback" style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)"></small>
@@ -1818,7 +1828,7 @@ async function saveProduct(id) {
   const codigo = document.getElementById('mp-codigo').value.trim();
   const saleMode = getSelectedProductSaleMode();
   const selectedUnit = getSelectedProductUnit();
-  if (!nombre || !codigo) { showToast('Nombre y código son obligatorios', 'error'); return; }
+  if (!nombre) { showToast('El nombre es obligatorio', 'error'); return; }
   if (!validateProductIdentity({ notify: true, focusField: true })) return;
   if (saleMode === 'peso' && scaleUtils.isWeightUnit && !scaleUtils.isWeightUnit(selectedUnit)) {
     showToast('Los productos vendidos por peso deben usar Kilogramo, Gramo o Libra como unidad.', 'error');

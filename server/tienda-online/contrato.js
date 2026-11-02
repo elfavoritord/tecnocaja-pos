@@ -113,7 +113,38 @@ const rutas = Object.freeze({
   pedido: (lic, id) => `businesses/${lic}/pedidosOnline/${id}`,
   claves: (lic) => `businesses/${lic}/pedidosOnlineClaves`,
   clave: (lic, hash) => `businesses/${lic}/pedidosOnlineClaves/${hash}`,
+  solicitudes: (lic) => `businesses/${lic}/solicitudesOnline`,
+  solicitud: (lic, id) => `businesses/${lic}/solicitudesOnline/${id}`,
 });
+
+const MODALIDADES_TIENDA = ['productos', 'servicios', 'mixta'];
+
+/**
+ * Qué ofrece la tienda. Un perfil sin estos datos es de un POS anterior: se comporta
+ * como siempre, con todo lo publicado a la venta en el carrito.
+ */
+function opcionesServicios(perfil = {}) {
+  const s = perfil.serviciosTienda || {};
+  return {
+    modalidad: MODALIDADES_TIENDA.includes(perfil.modalidad) ? perfil.modalidad : 'mixta',
+    contratar: s.contratar !== false,
+    cotizacion: s.cotizacion !== false,
+    cita: s.cita === true,
+    whatsapp: s.whatsapp !== false,
+    mostrarPrecio: s.mostrarPrecio !== false,
+  };
+}
+
+function articuloVisible(producto, opciones) {
+  if (opciones.modalidad === 'mixta') return true;
+  return (opciones.modalidad === 'servicios') === (producto.tipo === 'servicio');
+}
+
+/** ¿Se puede pagar con el carrito? Un servicio que requiere evaluación previa, no. */
+function articuloComprable(producto, opciones) {
+  if (!articuloVisible(producto, opciones)) return false;
+  return producto.tipo !== 'servicio' || (opciones.contratar && opciones.mostrarPrecio);
+}
 
 /** Mensaje para el cliente cuando su pedido cambia de estado. */
 const MENSAJES_CLIENTE = Object.freeze({
@@ -152,6 +183,10 @@ module.exports = {
   MAX_FOTOS_PRODUCTO,
   claveFotoProducto,
   CLAVE_IMAGEN_RE,
+  MODALIDADES_TIENDA,
+  articuloComprable,
+  articuloVisible,
+  opcionesServicios,
   rutas,
   mensajeCliente,
 };

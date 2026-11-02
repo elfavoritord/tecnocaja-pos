@@ -266,6 +266,8 @@ function _searchCompraProducts(q) {
   const results = (DB.productos || []).filter((p) => {
     const estado = String(p.estado || '').toLowerCase();
     if (estado === 'inactivo' || estado === 'eliminado') return false;
+    // Un servicio no se compra para inventario.
+    if (p.tipoProducto === 'servicio') return false;
     return String(p.nombre || '').toLowerCase().includes(query) || String(p.codigo || '').toLowerCase().includes(query);
   }).slice(0, 8);
 

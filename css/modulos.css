@@ -2987,3 +2987,5 @@ svg.tc-emoji-icon {
   font-weight: var(--tc-weight-semibold);
 }
 .sale-combo-components { display: block; font-size: var(--tc-fs-xs); color: var(--tc-text-2); }
+
+.sales-product-service-badge { background: var(--primary, #4f46e5); color: #fff; }

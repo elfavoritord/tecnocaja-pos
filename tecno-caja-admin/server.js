@@ -7,6 +7,7 @@
  */
 const path    = require('path');
 const express = require('express');
+const { createContratosRouter } = require('./routes/contratos.routes');
 const { createFacturacionRouter } = require('./routes/facturacion.routes');
 const { createSuscripcionesRouter } = require('./routes/suscripciones.routes');
 const { createComprasRouter } = require('./routes/compras.routes');
@@ -860,6 +861,15 @@ app.get('/js/sucursales-central-ui.js', (_req, res) => {
 // Lector del archivo de autorización de la DGII que usa esa pantalla.
 app.get('/js/dgii-autorizacion.js', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'js', 'dgii-autorizacion.js'));
+});
+
+// Contrato comercial de cada licencia: planes, servicios y pagos.
+app.use((req, res, next) => {
+  if (!fbReady) return next();
+  if (!createContratosRouter._montado) {
+    createContratosRouter._montado = createContratosRouter({ db: adminSdk.firestore(), requireAuth, audit, coleccionLicencias: COL_LICENCIAS, coleccionHistorial: COL_HISTORIAL });
+  }
+  return createContratosRouter._montado(req, res, next);
 });
 
 // ── SPA fallback ───────────────────────────────────────────────────────────

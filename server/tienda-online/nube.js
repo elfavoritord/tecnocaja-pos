@@ -137,6 +137,15 @@ function createNube({ getFirestore, getFieldValue, getLicenseId }) {
     );
   }
 
+  async function fetchPendingSolicitudes(limit = 50) {
+    const snap = await db().collection(rutas.solicitudes(lic())).where('importada', '==', false).limit(limit).get();
+    return snap.docs.map((doc) => ({ id: doc.id, data: doc.data() }));
+  }
+
+  async function markSolicitudImportada(id) {
+    await db().doc(rutas.solicitud(lic(), id)).update({ importada: true, importadaEn: fv().serverTimestamp() });
+  }
+
   async function markImported(orderId, { serverId = '' } = {}) {
     await db().doc(rutas.pedido(lic(), orderId)).update({
       'pos.importado': true,
@@ -231,6 +240,8 @@ function createNube({ getFirestore, getFieldValue, getLicenseId }) {
     writeImagen,
     deleteImagen,
     fetchPendingOrders,
+    fetchPendingSolicitudes,
+    markSolicitudImportada,
     listenPendingOrders,
     markImported,
     pushOrderUpdate,

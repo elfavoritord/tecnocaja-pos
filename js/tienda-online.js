@@ -124,6 +124,8 @@
   function syncNav() {
     const nav = el('nav-tienda-online');
     if (nav) nav.style.display = TO.activa ? '' : 'none';
+    const etiquetaNav = nav?.querySelector('.nav-label');
+    if (etiquetaNav && esEmpresaServicios()) etiquetaNav.textContent = 'Tienda online';
     const badge = el('tienda-online-badge');
     const nuevos = Number(TO.resumen?.nuevos || 0);
     if (badge) {
@@ -211,6 +213,11 @@
         refreshResumen();
         if (moduleVisible()) loadPedidos();
       });
+      TO.socket.on('tienda-online:nueva-solicitud', () => {
+        toast('Llegó una solicitud nueva de la tienda.', 'success', 6000);
+        if (moduleVisible() && TO.tab === 'solicitudes') loadSolicitudes();
+        else api('GET', '/solicitudes').then((r) => pintarBadgeSolicitudes(r.nuevas)).catch(() => {});
+      });
       TO.socket.on('tienda-online:cambio', (p) => {
         refreshResumen();
         if (moduleVisible()) {
@@ -285,8 +292,9 @@
   function switchTab(tab) {
     TO.tab = tab;
     document.querySelectorAll('[data-to-tab]').forEach((b) => b.classList.toggle('active', b.dataset.toTab === tab));
-    ['pedidos', 'productos', 'reportes'].forEach((t) => el(`to-pane-${t}`)?.classList.toggle('hidden', t !== tab));
+    ['pedidos', 'solicitudes', 'productos', 'reportes'].forEach((t) => el(`to-pane-${t}`)?.classList.toggle('hidden', t !== tab));
     if (tab === 'pedidos') loadPedidos();
+    if (tab === 'solicitudes') loadSolicitudes();
     if (tab === 'productos') loadProductos();
     if (tab === 'reportes') renderReportes();
   }
@@ -914,7 +922,7 @@
       ancho: 940,
       cuerpo: `
         <div class="tc-tabs">
-          ${['General', 'Entrega', 'Pagos', 'Horario', 'Avanzado', 'Vitrinas'].map((t, i) => `<button type="button" class="pill-tab ${i === 0 ? 'active' : ''}" data-cfg-tab="${i}">${t}</button>`).join('')}
+          ${['General', 'Entrega', 'Pagos', 'Horario', 'Avanzado', 'Vitrinas', 'Tipo de tienda'].map((t, i) => `<button type="button" class="pill-tab ${i === 0 ? 'active' : ''}" data-cfg-tab="${i}">${t}</button>`).join('')}
         </div>
         <div data-cfg-pane="0" class="to-form-grid">
           <div class="form-group span-full">
@@ -986,8 +994,10 @@
             ${vitrinaForm('ofertas', 'Ofertas especiales', 'Todo producto con oferta vigente o descuento. Se quita sola al vencer la oferta.', cfg)}
             ${vitrinaForm('nuevos', 'Nuevos productos', 'Los productos registrados recientemente, del más nuevo al más viejo. Los que ya existían antes de esta versión no cuentan como nuevos.', cfg)}
           </div>
-        </div>`,
+        </div>
+        <div data-cfg-pane="6" class="hidden">${tipoTiendaForm(s)}</div>`,
       botones: [
+        ['secondary', 'Personalizar tienda', () => { TiendaEditor.abrir(); }],
         ['secondary', 'Publicar ahora', async () => {
           try {
             const r = await api('POST', '/publicar', {});
@@ -1046,6 +1056,29 @@
         bannerBox.textContent = 'Sin banner';
       } catch (error) { toast(error.message, 'error'); }
     });
+  }
+
+  /** Productos, servicios o las dos cosas, y cómo se piden los servicios. */
+  function tipoTiendaForm(s) {
+    const v = s.serviciosTienda;
+    const servicios = esEmpresaServicios();
+    const check = (id, valor, texto) => `<div class="form-group span-full"><label><input type="checkbox" id="${id}" ${valor ? 'checked' : ''}> ${texto}</label></div>`;
+    return `<div class="to-form-grid">
+      ${servicios
+    ? '<p class="helper-text span-full">Tu tienda muestra tus servicios y recibe solicitudes. No lleva carrito porque se factura desde tu módulo de servicios.</p>'
+    : `<div class="form-group span-full"><label>Qué muestra tu tienda</label>
+        <select class="form-input" id="tocfg-modalidad">
+          <option value="mixta" ${s.modalidad === 'mixta' ? 'selected' : ''}>Productos y servicios</option>
+          <option value="productos" ${s.modalidad === 'productos' ? 'selected' : ''}>Solo productos</option>
+          <option value="servicios" ${s.modalidad === 'servicios' ? 'selected' : ''}>Solo servicios</option>
+        </select></div>
+        ${check('tocfg-srv-contratar', v.contratar, 'Los servicios se pueden pagar con el carrito, como un producto')}`}
+      ${check('tocfg-srv-cotizacion', v.cotizacion, 'Recibir solicitudes de cotización')}
+      ${check('tocfg-srv-cita', v.cita, 'Recibir solicitudes de cita')}
+      ${check('tocfg-srv-whatsapp', v.whatsapp, 'Mostrar el botón de consultar por WhatsApp')}
+      ${check('tocfg-srv-precio', v.mostrarPrecio, 'Mostrar el precio de los servicios')}
+      ${check('tocfg-auto', s.publicacionAutomatica, 'Publicar sola cada cosa nueva que registres. Si la ocultas después, no vuelve a salir')}
+    </div>`;
   }
 
   /** Formulario de una vitrina (Ofertas especiales / Nuevos productos). */
@@ -1177,6 +1210,15 @@
         notificaciones: { whatsappDueno: q('#tocfg-wa-dueno').checked, whatsappCliente: q('#tocfg-wa-cliente').checked },
         categoriasOrden: q('#tocfg-cats').value.split('\n').map((c) => c.trim()).filter(Boolean),
         diseno: leerDiseno(ov),
+        modalidad: q('#tocfg-modalidad')?.value || TO.config.settings.modalidad,
+        serviciosTienda: {
+          contratar: q('#tocfg-srv-contratar') ? q('#tocfg-srv-contratar').checked : TO.config.settings.serviciosTienda.contratar,
+          cotizacion: q('#tocfg-srv-cotizacion').checked,
+          cita: q('#tocfg-srv-cita').checked,
+          whatsapp: q('#tocfg-srv-whatsapp').checked,
+          mostrarPrecio: q('#tocfg-srv-precio').checked,
+        },
+        publicacionAutomatica: q('#tocfg-auto').checked,
       },
     };
     if (activar) body.enabled = true;
@@ -1409,7 +1451,144 @@
 
   // ── Arranque ────────────────────────────────────────────────────────────
 
+  // ── Solicitudes de la tienda ───────────────────────────────────────────
+  // Cotización, cita o consulta de un cliente. Se revisan aquí: nunca se vuelven
+  // factura solas. En una Empresa de Servicios pasan a su cotización o calendario.
+  const ETIQUETA_SOLICITUD = { cotizacion: 'Cotización', cita: 'Cita', consulta: 'Consulta' };
+  const ETIQUETA_ESTADO_SOLICITUD = {
+    nueva: 'Nueva', en_revision: 'En revisión', confirmada: 'Confirmada', convertida: 'Atendida', descartada: 'Descartada',
+  };
+
+  function esEmpresaServicios() { return typeof DB !== 'undefined' && Boolean(DB.config?.serviceCompany); }
+
+  function hoyLocal() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  async function pedirServicios(metodo, ruta, cuerpo) {
+    const res = await fetch(`/api/servicios${ruta}`, {
+      method: metodo,
+      headers: authHeaders(),
+      body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+    return data;
+  }
+
+  function pintarBadgeSolicitudes(nuevas) {
+    const b = el('to-sol-badge');
+    if (!b) return;
+    b.textContent = nuevas > 0 ? String(nuevas) : '';
+    b.style.display = nuevas > 0 ? '' : 'none';
+  }
+
+  async function loadSolicitudes() {
+    const caja = el('to-pane-solicitudes');
+    if (!caja) return;
+    try {
+      const r = await api('GET', '/solicitudes');
+      TO.solicitudes = r.solicitudes;
+      pintarBadgeSolicitudes(r.nuevas);
+      caja.innerHTML = r.solicitudes.length
+        ? `<div class="to-solicitudes">${r.solicitudes.map(tarjetaSolicitud).join('')}</div>`
+        : '<p class="to-muted" style="padding:24px;text-align:center">Todavía no hay solicitudes. Aquí llegan las cotizaciones, citas y consultas de tu tienda.</p>';
+    } catch (error) {
+      caja.innerHTML = `<p class="to-muted" style="padding:24px">${esc(error.message)}</p>`;
+    }
+  }
+
+  function tarjetaSolicitud(s) {
+    const abierta = !['convertida', 'descartada'].includes(s.estado);
+    const tel = String(s.cliente.telefono || '').replace(/\D/g, '');
+    const wa = tel.length >= 10 ? `https://wa.me/${tel.length === 10 ? `1${tel}` : tel}` : '';
+    const servicios = esEmpresaServicios();
+    const accion = (nombre, texto, tipo = 'btn-secondary') => `<button type="button" class="${tipo}" onclick="TiendaOnline.atenderSolicitud(${s.id}, '${nombre}')">${texto}</button>`;
+    return `<article class="to-solicitud" data-solicitud="${s.id}">
+      <header>
+        <b>${esc(ETIQUETA_SOLICITUD[s.tipo] || s.tipo)}</b>
+        <span class="to-sol-estado ${esc(s.estado)}">${esc(ETIQUETA_ESTADO_SOLICITUD[s.estado] || s.estado)}</span>
+        <small>${esc(fecha(s.creadoEn))}</small>
+      </header>
+      ${s.articulo ? `<p class="to-sol-articulo">${esc(s.articulo)}${s.precio !== null ? ` · ${money(s.precio)}` : ''}</p>` : ''}
+      <p><b>${esc(s.cliente.nombre)}</b> · ${esc(s.cliente.telefono)}${s.cliente.email ? ` · ${esc(s.cliente.email)}` : ''}</p>
+      ${s.fecha ? `<p>Cita pedida para: <b>${esc(s.fecha)}${s.hora ? ` a las ${esc(s.hora)}` : ''}</b></p>` : ''}
+      ${s.mensaje ? `<p class="to-sol-mensaje">${esc(s.mensaje)}</p>` : ''}
+      ${s.referencia ? `<p class="to-muted">${esc(s.referencia)}</p>` : ''}
+      <div class="to-sol-acciones">
+        ${abierta && s.tipo === 'cita' && servicios ? accion('calendario', 'Agendar en el calendario', 'btn-primary') : ''}
+        ${abierta && s.tipo !== 'cita' && servicios ? accion('cotizacion', 'Crear cotización', 'btn-primary') : ''}
+        ${abierta && s.tipo !== 'cita' && !servicios && s.productoId ? accion('ventas', 'Cotizar en Ventas', 'btn-primary') : ''}
+        ${abierta && s.tipo === 'cita' && !servicios ? accion('confirmada', 'Confirmar cita', 'btn-primary') : ''}
+        ${abierta && s.estado === 'nueva' ? accion('en_revision', 'En revisión') : ''}
+        ${abierta ? accion('convertida', 'Marcar atendida') : ''}
+        ${wa ? `<a class="btn-secondary" href="${esc(wa)}" data-to-ext="1">WhatsApp</a>` : ''}
+        ${abierta ? accion('descartada', 'Descartar') : ''}
+      </div>
+    </article>`;
+  }
+
+  async function atenderSolicitud(id, accion) {
+    const s = (TO.solicitudes || []).find((x) => x.id === id);
+    if (!s) return;
+    try {
+      if (accion === 'cotizacion') {
+        const servicio = s.servicioId ? await pedirServicios('GET', `/catalogo/${s.servicioId}`).catch(() => null) : null;
+        const cot = await pedirServicios('POST', '/cotizaciones', {
+          clientName: s.cliente.nombre,
+          fecha: hoyLocal(),
+          notas: [s.mensaje, `Tel: ${s.cliente.telefono}`].filter(Boolean).join(' · '),
+          items: [{
+            serviceId: s.servicioId,
+            descripcion: s.articulo || s.mensaje.slice(0, 200) || 'Solicitud de la tienda online',
+            cantidad: 1,
+            precio: servicio?.precio ?? s.precio ?? 0,
+            itbisPct: servicio?.itbisPct ?? 0,
+          }],
+        });
+        await api('PUT', `/solicitudes/${id}`, { estado: 'convertida', referencia: `Cotización ${cot.numero || ''}`.trim() });
+        toast(`Cotización ${cot.numero || ''} creada. Revisa las condiciones antes de enviarla.`, 'success', 7000);
+      } else if (accion === 'calendario') {
+        await pedirServicios('POST', '/calendario', {
+          titulo: `${s.articulo || 'Cita'} · ${s.cliente.nombre}`,
+          fecha: s.fecha || hoyLocal(),
+          hora: s.hora || null,
+          clientName: s.cliente.nombre,
+          serviceId: s.servicioId,
+          notas: [s.mensaje, `Tel: ${s.cliente.telefono}`].filter(Boolean).join(' · '),
+        });
+        await api('PUT', `/solicitudes/${id}`, { estado: 'convertida', referencia: 'Agendada en el calendario' });
+        toast('Cita agendada en el calendario.', 'success');
+      } else if (accion === 'ventas') {
+        await api('PUT', `/solicitudes/${id}`, { estado: 'en_revision', referencia: s.referencia });
+        if (typeof showModule === 'function') showModule('ventas', document.querySelector('[data-module="ventas"]'));
+        if (typeof addProductById === 'function') addProductById(s.productoId);
+        toast(`${s.articulo} está en el carrito. Pulsa Cotización para ${s.cliente.nombre}.`, 'success', 7000);
+        return;
+      } else {
+        await api('PUT', `/solicitudes/${id}`, { estado: accion, referencia: s.referencia });
+      }
+      loadSolicitudes();
+    } catch (error) {
+      toast(error.message, 'error', 7000);
+    }
+  }
+
+  /** En una Empresa de Servicios no hay pedidos que cobrar: solo solicitudes y lo publicado. */
+  function ajustarModoEmpresa() {
+    const servicios = esEmpresaServicios();
+    document.querySelector('[data-to-tab="pedidos"]')?.classList.toggle('hidden', servicios);
+    document.querySelector('[data-to-tab="reportes"]')?.classList.toggle('hidden', servicios);
+    const productos = el('to-tab-btn-productos');
+    if (productos) productos.textContent = servicios ? 'Servicios publicados' : 'Productos publicados';
+    const titulo = document.querySelector('#module-tiendaonline .module-header h2');
+    if (titulo) titulo.textContent = servicios ? 'Tienda online' : 'Pedidos online';
+    if (servicios && (!TO.tab || TO.tab === 'pedidos' || TO.tab === 'reportes')) TO.tab = 'solicitudes';
+  }
+
   function onModuleOpen() {
+    ajustarModoEmpresa();
     loadEstado();
     refreshResumen();
     switchTab(TO.tab || 'pedidos');
@@ -1430,6 +1609,7 @@
     refresh: () => { refreshResumen(); if (moduleVisible()) loadPedidos(); },
     onModuleOpen,
     switchTab,
+    atenderSolicitud,
     setFilter: (f) => { TO.filtro = f; loadPedidos(); },
     onSearch: (() => {
       let t = null;

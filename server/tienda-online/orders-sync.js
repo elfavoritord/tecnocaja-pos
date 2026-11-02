@@ -33,6 +33,7 @@ function esErrorDeDatos(error) {
 function createOrdersSync({
   nube,
   orders,
+  solicitudes = null,
   notifier,
   settingsStore,
   getLicenseId,
@@ -207,9 +208,15 @@ function createOrdersSync({
     return notifier.dispatchPending().catch((error) => ({ enviados: 0, error: error.message }));
   }
 
+  async function recibirSolicitudes() {
+    if (!solicitudes || !(await puedeCorrer())) return { nuevas: 0 };
+    return solicitudes.recibirPendientes();
+  }
+
   async function runAll() {
     await ensureListener().catch(() => {});
     await pollOnce().catch(() => {});
+    await recibirSolicitudes().catch((error) => { status.ultimoError = `Solicitudes: ${error.message}`; });
     await pushOnce().catch(() => {});
     await dispatchOnce().catch(() => {});
   }
@@ -241,6 +248,7 @@ function createOrdersSync({
     start,
     stop,
     pollOnce,
+    recibirSolicitudes,
     pushOnce,
     dispatchOnce,
     runAll,

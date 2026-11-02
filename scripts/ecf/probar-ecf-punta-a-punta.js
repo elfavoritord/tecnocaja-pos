@@ -102,7 +102,7 @@ async function comprobarEmitido(nombre, encf, { tipo, total, itbis, indicador, t
 
 // ── POS: venta normal ────────────────────────────────────────────────────────
 // El precio lo pone el catálogo del servidor: cada producto de prueba tiene el suyo.
-const PRECIOS = { GRAV: 100, EXEN: 100, MEDIO: 50, DEC: 33.33, CARO: 300000 };
+const PRECIOS = { GRAV: 100, EXEN: 100, MEDIO: 50, DEC: 33.33, CARO: 300000, SERV: 100 };
 function linea(prod, { qty = 1, itbis = 18, descuento = 0 } = {}) {
   const precio = PRECIOS[prod];
   const bruto = redondear(qty * precio);
@@ -160,6 +160,18 @@ async function pruebasPos() {
   await comprobarEmitido('E31 a cliente con todos sus datos', encfVenta(ventaConDatos), { tipo: 'E31', total: 118 });
   const xmlConDatos = recibidoDe(encfVenta(ventaConDatos))?.xml;
   check('E31 a cliente: teléfono con formato de la DGII', tag(xmlConDatos, 'TelefonoAdicional') === '809-555-1234', String(tag(xmlConDatos, 'TelefonoAdicional')));
+
+  // Bien o servicio: el indicador de cada línea sale del tipo del artículo.
+  const indicadores = (xml) => [...String(xml || '').matchAll(/<IndicadorBienoServicio>(\d)<\/IndicadorBienoServicio>/g)].map((m) => m[1]);
+  const ventaServicio = await api('POST', '/api/sales', venta([linea('SERV')], { ...conRnc, ecfType: 'E31' }));
+  check('E31 de un servicio: venta guardada', ventaServicio.status === 201, `HTTP ${ventaServicio.status} ${ventaServicio.body?.error || ''}`.slice(0, 200));
+  await comprobarEmitido('E31 de un servicio', encfVenta(ventaServicio), { tipo: 'E31', total: 118, itbis: 18 });
+  const xmlServicio = indicadores(recibidoDe(encfVenta(ventaServicio))?.xml);
+  check('E31 de un servicio: indicador 2', xmlServicio.length === 1 && xmlServicio[0] === '2', xmlServicio.join());
+  const ventaMixta = await api('POST', '/api/sales', venta([linea('GRAV'), linea('SERV')], { ...conRnc, ecfType: 'E31' }));
+  await comprobarEmitido('E31 de producto y servicio', encfVenta(ventaMixta), { tipo: 'E31', total: 236, itbis: 36 });
+  const xmlMixta = indicadores(recibidoDe(encfVenta(ventaMixta))?.xml);
+  check('E31 de producto y servicio: 1 y 2', xmlMixta.join() === '1,2', xmlMixta.join());
 
   // E44 y E46 no aceptan una venta que todavía traiga ITBIS.
   const conItbis = await api('POST', '/api/sales', venta([linea('GRAV')], { ...conRnc, ecfType: 'E44' }));
@@ -375,6 +387,11 @@ async function pruebasServicios() {
         });
         ctx.productos[codigo] = Number(prod.body?.product?.id || prod.body?.producto?.id || prod.body?.id || 0);
       }
+      const servicio = await api('POST', '/api/products', {
+        codigo: 'SERV', barcode: 'SERV', nombre: 'Servicio tecnico', categoria: 'GENERAL', unidad: 'Unidad', marca: '', precioVenta: 100, precioCompra: 0,
+        stock: 0, stockMin: 0, aplicaItbis: true, estado: 'Activo', branchId: ctx.branchId, tipoProducto: 'servicio',
+      });
+      ctx.productos.SERV = Number(servicio.body?.product?.id || servicio.body?.producto?.id || servicio.body?.id || 0);
       const emitidos = await pruebasPos();
       encfOrigen = emitidos['E31 mixta']?.encf;
 

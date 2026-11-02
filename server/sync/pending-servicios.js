@@ -15,6 +15,7 @@
  */
 
 const { ensureServiciosSchema } = require('../routes/servicios/schema');
+const { enlazarServicioSeguro } = require('../routes/servicios/enlace-productos');
 const { importarServicios } = require('../routes/servicios/catalogo-import');
 
 function createPendingServicios({ query, ensureSchema = ensureServiciosSchema }) {
@@ -72,6 +73,7 @@ function createPendingServicios({ query, ensureSchema = ensureServiciosSchema })
     if (accion === 'eliminar') {
       if (!servicioId) throw new Error('Falta el servicio a dar de baja.');
       const r = await query("UPDATE svc_services SET activo = 0, updated_at = datetime('now') WHERE id = ?", [servicioId]);
+      await enlazarServicioSeguro(query, servicioId);
       // Si ya no estaba, el objetivo (que no se ofrezca) ya se cumplió.
       return { servicioId, accion, detalle: `Servicio #${servicioId}`, duplicado: !r.affectedRows };
     }
@@ -105,6 +107,7 @@ function createPendingServicios({ query, ensureSchema = ensureServiciosSchema })
            unidad = ?, activo = 1, updated_at = datetime('now') WHERE id = ?`,
         [d.codigo || null, d.nombre, d.descripcion, await categoriaId(d.categoria), d.precio, d.itbisPct, d.unidad, servicioId]
       );
+      await enlazarServicioSeguro(query, servicioId);
       return { servicioId, accion, detalle: `${d.nombre} · RD$ ${d.precio.toFixed(2)}`, duplicado: false };
     }
 
@@ -115,6 +118,7 @@ function createPendingServicios({ query, ensureSchema = ensureServiciosSchema })
        VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
       [d.codigo || null, d.nombre, d.descripcion, await categoriaId(d.categoria), d.precio, d.itbisPct, d.unidad]
     );
+    await enlazarServicioSeguro(query, r.insertId);
     return { servicioId: r.insertId, accion, detalle: `${d.nombre} · RD$ ${d.precio.toFixed(2)}`, duplicado: false };
   }
 

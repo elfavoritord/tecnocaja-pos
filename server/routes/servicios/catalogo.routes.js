@@ -15,6 +15,7 @@
  */
 
 const express = require('express');
+const { enlazarServicioSeguro, enlazarTodos } = require('./enlace-productos');
 const { httpError, roleCodeOf, actorName, makeServiceGuard } = require('./_common');
 const { importarServicios } = require('./catalogo-import');
 
@@ -32,6 +33,7 @@ function mapService(row) {
     itbisPct: Number(row.itbis_pct || 0),
     unidad: row.unidad || 'servicio',
     duracionMin: row.duracion_min != null ? Number(row.duracion_min) : null,
+    productoId: row.product_id ? Number(row.product_id) : null,
     activo: Boolean(row.activo),
     createdAt: row.created_at,
     updatedAt: row.updated_at || null,
@@ -77,6 +79,7 @@ function createCatalogoRouter(deps) {
       if (!filas.length) throw httpError('El archivo no trae servicios para importar.');
       if (filas.length > MAX_IMPORTAR) throw httpError(`Máximo ${MAX_IMPORTAR.toLocaleString('en-US')} servicios por importación.`);
       const resultado = await importarServicios(query, filas);
+      await enlazarTodos(query);
       await writeAuditLog({
         userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
         moduleName: 'Servicios', actionName: 'Servicios importados',
@@ -157,6 +160,7 @@ function createCatalogoRouter(deps) {
         userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
         moduleName: 'Servicios', actionName: 'Servicio creado', detail: `${p.nombre} · RD$ ${p.precio.toFixed(2)}`,
       });
+      await enlazarServicioSeguro(query, r.insertId);
       const [row] = await query(
         `SELECT s.*, c.nombre AS categoria_nombre FROM svc_services s
          LEFT JOIN svc_service_categories c ON c.id = s.categoria_id WHERE s.id = ?`, [r.insertId]
@@ -183,6 +187,7 @@ function createCatalogoRouter(deps) {
         userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
         moduleName: 'Servicios', actionName: 'Servicio editado', detail: `${p.nombre} (#${id})`,
       });
+      await enlazarServicioSeguro(query, id);
       const [row] = await query(
         `SELECT s.*, c.nombre AS categoria_nombre FROM svc_services s
          LEFT JOIN svc_service_categories c ON c.id = s.categoria_id WHERE s.id = ?`, [id]
@@ -199,6 +204,7 @@ function createCatalogoRouter(deps) {
     try {
       const r = await query(`UPDATE svc_services SET activo = 0, updated_at = datetime('now') WHERE id = ?`, [id]);
       if (!r.affectedRows) throw httpError('Servicio no encontrado.', 404);
+      await enlazarServicioSeguro(query, id);
       await writeAuditLog({
         userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor),
         moduleName: 'Servicios', actionName: 'Servicio desactivado', detail: `Servicio #${id}`,

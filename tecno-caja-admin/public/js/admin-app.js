@@ -314,6 +314,7 @@ function navigateTo(mod) {
   if (mod === 'dashboard')       loadDashboard();
   if (mod === 'negocios')        loadNegocios();
   if (mod === 'licencias')       loadLicencias();
+  if (mod === 'precios')         adminContratos.cargarPrecios();
   if (mod === 'contadores')      loadContadores();
   if (mod === 'facturacion')     loadFacturas();
   if (mod === 'suscripciones')   loadSuscripciones();
@@ -430,7 +431,8 @@ function renderNegociosList(list) {
         ? `<span style="color:#10b981;font-weight:600">${n.contadorNombre}</span>`
         : `<span style="color:#64748b">—</span> <button class="btn-sm btn-warning" style="font-size:10px;padding:2px 7px" onclick="adminApp.openNegocio('${n.id}');setTimeout(()=>adminApp.showAsignarContador(),300)">Asignar</button>`}</td>
       <td>${fmtDate(n.syncedAt || n.updatedAt)}</td>
-      <td><button class="btn-sm" onclick="adminApp.openNegocio('${n.id}')">Ver</button></td>
+      <td><button class="btn-sm" onclick="adminApp.openNegocio('${n.id}')">Ver</button>
+        <button class="btn-sm" onclick="adminContratos.abrir('${n.id}')">Contrato</button></td>
     </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;opacity:.6">Sin resultados</td></tr>';
 }
 

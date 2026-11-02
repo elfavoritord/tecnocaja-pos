@@ -34,6 +34,8 @@ const TAMANOS = {
   producto: { width: 480, height: 480 },
   logo: { width: 256, height: 256 },
   banner: { width: 1400, height: 520 },
+  bannerMovil: { width: 800, height: 800 },
+  anuncio: { width: 1000, height: 500 },
 };
 
 function hash(value) {
@@ -166,7 +168,8 @@ function createPublisher({
     await publishImages(built.imagenes);
     // El perfil nombra solo la versión del logo/banner que ya está arriba.
     const perfil = { ...built.perfil };
-    for (const [campo, clave] of [['logo', '_logo'], ['banner', '_banner']]) {
+    perfil.anuncios = (perfil.anuncios || []).filter((a) => imagenesPublicadas.get(a.clave) === a.version);
+    for (const [campo, clave] of [['logo', '_logo'], ['banner', '_banner'], ['bannerMovil', '_banner_movil']]) {
       const campoVersion = `${campo}Version`;
       if (!perfil[campo] || imagenesPublicadas.get(clave) === perfil[campoVersion]) continue;
       const arriba = imagenesPublicadas.get(clave);

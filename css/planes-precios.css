@@ -1,0 +1,31 @@
+/* Planes y precios (js/planes-precios.js) */
+.pp-fondo { position: fixed; inset: 0; z-index: 12000; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .6); }
+.pp-caja { width: min(1040px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; overflow: hidden; border-radius: 14px; background: var(--surface, var(--bg2, #fff)); color: var(--text, #111); box-shadow: 0 24px 70px rgba(0, 0, 0, .35); }
+.pp-caja > header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border, rgba(128, 128, 128, .25)); }
+.pp-caja h2 { margin: 0; font-size: 20px; }
+.pp-cerrar { width: 36px; height: 36px; border: 1px solid var(--border, rgba(128, 128, 128, .3)); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; }
+.pp-cuerpo { overflow-y: auto; padding: 20px; }
+.pp-cargando { padding: 40px 0; text-align: center; }
+.pp-planes { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 14px; }
+.pp-plan { position: relative; padding: 18px; border: 1px solid var(--border, rgba(128, 128, 128, .3)); border-radius: 12px; }
+.pp-plan.es-actual { border: 2px solid var(--primary, #4f46e5); }
+.pp-tu-plan { position: absolute; top: 12px; right: 12px; padding: 2px 10px; border-radius: 99px; background: var(--primary, #4f46e5); color: #fff; font-size: 12px; font-weight: 600; }
+.pp-plan h3 { margin: 0 0 4px; font-size: 18px; }
+.pp-plan p { margin: 0 0 8px; font-size: 14px; line-height: 1.4; }
+.pp-desc, .pp-nota { color: var(--text2, inherit); opacity: .85; }
+.pp-plan .pp-precio { font-size: 15px; }
+.pp-plan .pp-precio b { font-size: 26px; font-weight: 700; }
+.pp-incluye { padding-top: 8px; border-top: 1px solid var(--border, rgba(128, 128, 128, .25)); font-weight: 600; }
+.pp-extra { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.45; }
+.pp-nota { margin: 14px 0; font-size: 13px; }
+.pp-columnas { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.pp-seccion { margin-bottom: 14px; padding: 16px 18px; border: 1px solid var(--border, rgba(128, 128, 128, .3)); border-radius: 12px; font-size: 14px; }
+.pp-seccion h3 { margin: 0 0 8px; font-size: 16px; }
+.pp-seccion h4 { margin: 12px 0 6px; font-size: 14px; }
+.pp-seccion ul { margin: 0; padding-left: 18px; line-height: 1.5; }
+.pp-seccion p { margin: 0 0 8px; }
+.pp-seccion .pp-servicios { padding: 0; list-style: none; }
+.pp-servicios li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; border-bottom: 1px solid var(--border, rgba(128, 128, 128, .18)); }
+.pp-est.activo { color: var(--success, #16a34a); }
+.pp-est.vencido, .pp-est.suspendido { color: var(--danger, #dc2626); }
+.pp-whatsapp { display: inline-block; text-decoration: none; }

@@ -65,7 +65,7 @@ describe('diseño de la tienda', () => {
   });
 
   test('el orden elegido se respeta exactamente, con encabezado y pie en sus puntas', () => {
-    const medio = ['catalogo', 'ofertas', 'hero', 'marcas', 'categorias', 'destacados', 'nuevos', 'masVendidos', 'banners', 'informacion', 'contacto'];
+    const medio = ['catalogo', 'ofertas', 'servicios', 'hero', 'marcas', 'categorias', 'destacados', 'nuevos', 'masVendidos', 'banners', 'informacion', 'contacto'];
     const d = normalizarDiseno({ secciones: [{ id: 'pie' }, ...medio.map((id) => ({ id })), { id: 'encabezado' }] });
     expect(idsEnOrden(d)).toEqual(['encabezado', ...medio, 'pie']);
   });

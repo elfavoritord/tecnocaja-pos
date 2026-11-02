@@ -132,6 +132,9 @@
       <li class="nav-item" data-module="licencias">
         <span class="nav-icon">◇</span> Licencias
       </li>
+      <li class="nav-item" data-module="precios">
+        <span class="nav-icon">$</span> Planes y precios
+      </li>
       <li class="nav-item" data-module="contadores">
         <span class="nav-icon">◎</span> Contadores
       </li>
@@ -342,6 +345,11 @@
     </section>
 
     <!-- Licencias overview -->
+    <section id="mod-precios" class="module hidden">
+      <div class="module-header"><h1>Planes y precios</h1></div>
+      <div id="precios-contenido" class="card ctr-form" style="padding:16px">Cargando…</div>
+    </section>
+
     <section id="mod-licencias" class="module hidden">
       <div class="module-header">
         <h1>Licencias</h1>
@@ -1346,6 +1354,25 @@
 
 <script src="js/dgii-autorizacion.js"></script>
 <script src="js/sucursales-central-ui.js"></script>
+<div id="modal-contrato" class="modal-overlay hidden">
+  <div class="modal" style="max-width:980px;width:96%;max-height:92vh;overflow:auto">
+    <div class="modal-header" style="display:flex;justify-content:space-between;align-items:center">
+      <h3 id="contrato-titulo">Contrato</h3>
+      <button class="btn-sm" onclick="adminContratos.cerrar()">✕</button>
+    </div>
+    <div id="contrato-cuerpo" class="ctr-form" style="padding:12px 4px"></div>
+  </div>
+</div>
 <script src="js/admin-app.js"></script>
+<style>
+  .ctr-form label { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--text-muted); }
+  .ctr-form label:has(input[type="checkbox"]) { flex-direction: row; align-items: center; }
+  .ctr-form input:not([type="checkbox"]), .ctr-form select {
+    height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-input, rgba(255, 255, 255, .05)); color: var(--text); color-scheme: dark;
+  }
+  .ctr-form select option { color: #111; }
+</style>
+<script src="js/contratos.js"></script>
 </body>
 </html>

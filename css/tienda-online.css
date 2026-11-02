@@ -243,3 +243,17 @@
 .to-vit-color input[type="color"]:disabled { opacity: .35; }
 .to-vit-color label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; font-size: 13px; white-space: nowrap; }
 .to-vit-color input[type="checkbox"] { width: auto; margin: 0; }
+
+/* Solicitudes de la tienda */
+.to-solicitudes { display: grid; gap: 12px; padding: 12px 0; }
+.to-solicitud { padding: 14px 16px; border: 1px solid var(--border, rgba(128, 128, 128, .3)); border-radius: 10px; }
+.to-solicitud header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
+.to-solicitud header small { margin-left: auto; opacity: .7; }
+.to-solicitud p { margin: 4px 0; font-size: 14px; }
+.to-sol-articulo { font-weight: 600; }
+.to-sol-mensaje { padding: 8px 10px; border-radius: 6px; background: rgba(128, 128, 128, .1); white-space: pre-wrap; }
+.to-sol-estado { padding: 1px 9px; border-radius: 99px; font-size: 12px; font-weight: 600; background: rgba(128, 128, 128, .18); }
+.to-sol-estado.nueva { background: rgba(245, 158, 11, .18); color: #f59e0b; }
+.to-sol-estado.convertida, .to-sol-estado.confirmada { background: rgba(34, 197, 94, .16); color: #22c55e; }
+.to-sol-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.to-sol-acciones .btn-primary, .to-sol-acciones .btn-secondary { padding: 6px 12px; font-size: 13px; text-decoration: none; }

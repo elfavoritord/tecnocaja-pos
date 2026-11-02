@@ -7,7 +7,7 @@
  * Todo lo que llega del navegador se normaliza aquí: tipos, largos y rangos.
  */
 
-const { METODOS_PAGO, normalizarSlug, slugValido } = require('./contrato');
+const { METODOS_PAGO, MODALIDADES_TIENDA, normalizarSlug, slugValido } = require('./contrato');
 const { normalizarDiseno } = require('./diseno');
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
@@ -164,8 +164,19 @@ function normalizarSettings(input = {}, previo = defaultSettings()) {
     },
     conversion: { precio: merged.conversion?.precio === 'actual' ? 'actual' : 'pedido' },
     inventario: { reservarAlRecibir: bool(merged.inventario?.reservarAlRecibir, false) },
+    modalidad: MODALIDADES_TIENDA.includes(merged.modalidad) ? merged.modalidad : 'mixta',
+    serviciosTienda: {
+      contratar: bool(merged.serviciosTienda?.contratar, true),
+      cotizacion: bool(merged.serviciosTienda?.cotizacion, true),
+      cita: bool(merged.serviciosTienda?.cita, false),
+      whatsapp: bool(merged.serviciosTienda?.whatsapp, true),
+      mostrarPrecio: bool(merged.serviciosTienda?.mostrarPrecio, true),
+    },
+    publicacionAutomatica: bool(merged.publicacionAutomatica, false),
     // null = nunca lo personalizó: la tienda se ve Moderno con su color.
     diseno: merged.diseno ? normalizarDiseno(merged.diseno) : null,
+    // Lo que se está editando en "Personalizar tienda": la tienda no lo usa hasta publicar.
+    disenoBorrador: merged.disenoBorrador ? normalizarDiseno(merged.disenoBorrador) : null,
   };
 }
 
@@ -190,6 +201,7 @@ function createSettingsStore({ query, nowSql }) {
       branchId: Number(row.branch_id || 0) || null,
       settings: normalizarSettings(parseJson(row.settings_json)),
       hasBanner: Boolean(row.banner_data),
+      imagenes: Object.keys(parseJson(row.design_images)),
       updatedAt: row.updated_at || null,
       updatedBy: row.updated_by || null,
     };
@@ -233,11 +245,24 @@ function createSettingsStore({ query, nowSql }) {
     return read();
   }
 
+  async function readDesignImages() {
+    const rows = await query('SELECT design_images FROM online_store_settings WHERE id = 1 LIMIT 1');
+    return parseJson(rows[0]?.design_images);
+  }
+
+  async function writeDesignImage(clave, dataUrl) {
+    const imagenes = await readDesignImages();
+    if (dataUrl) imagenes[clave] = dataUrl;
+    else delete imagenes[clave];
+    await query('UPDATE online_store_settings SET design_images = ?, updated_at = ? WHERE id = 1', [JSON.stringify(imagenes), nowSql()]);
+    return Object.keys(imagenes);
+  }
+
   async function writeBanner(dataUrl) {
     await query('UPDATE online_store_settings SET banner_data = ?, updated_at = ? WHERE id = 1', [dataUrl || null, nowSql()]);
   }
 
-  return { read, readBanner, write, writeBanner };
+  return { read, readBanner, readDesignImages, write, writeBanner, writeDesignImage };
 }
 
 module.exports = {

@@ -12,6 +12,7 @@
  */
 
 const crypto = require('crypto');
+const { esServicio } = require('../services/articulos');
 const { fetchDateActiveRows, isActiveOnDate } = require('../services/promotion-engine');
 const { claveProducto, claveFotoProducto, METODOS_PAGO } = require('./contrato');
 const { leerFotosExtra } = require('./fotos');
@@ -84,13 +85,33 @@ function fechaIso(valor) {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', readBanner = null }) {
+function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', readBanner = null, readDesignImages = null }) {
+  /** Los más vendidos de los últimos 90 días: solo el orden, la tienda nunca ve cantidades. */
+  async function masVendidos(now) {
+    try {
+      const desde = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const filas = await query(
+        `SELECT si.product_id AS id
+           FROM sale_items si
+           JOIN sales s ON s.id = si.sale_id
+          WHERE s.created_at >= ? AND s.canceled_at IS NULL AND si.product_id IS NOT NULL
+          GROUP BY si.product_id
+          ORDER BY SUM(si.qty) DESC
+          LIMIT 40`,
+        [desde],
+      );
+      return filas.map((f) => Number(f.id));
+    } catch (_error) {
+      return [];
+    }
+  }
+
   /**
    * La tabla products no guarda cuándo se creó cada producto. Al activar la tienda
    * se anota el último id; lo que aparezca después recibe su fecha aquí, al revisar
    * el catálogo (unos 30 s después de crearlo). Nunca bloquea la publicación.
    */
-  async function fecharProductosNuevos() {
+  async function fecharProductosNuevos(publicacionAutomatica = false) {
     if (!nowSql) return;
     try {
       const fila = (await query('SELECT new_products_from_id FROM online_store_settings WHERE id = 1 LIMIT 1'))[0];
@@ -99,6 +120,10 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
         const tope = await query('SELECT MAX(id) AS n FROM products');
         await query('UPDATE online_store_settings SET new_products_from_id = ? WHERE id = 1', [Number(tope[0]?.n || 0)]);
         return;
+      }
+      // Publicación automática: una sola vez, al aparecer. Si el dueño lo oculta después, no vuelve.
+      if (publicacionAutomatica) {
+        await query("UPDATE products SET online_enabled = 1 WHERE online_created_at IS NULL AND id > ? AND estado = 'Activo'", [Number(desde)]);
       }
       await query('UPDATE products SET online_created_at = ? WHERE online_created_at IS NULL AND id > ?', [nowSql(), Number(desde)]);
     } catch (error) {
@@ -138,7 +163,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
   /** Productos publicados con existencia de la sucursal de la tienda. */
   async function readProducts({ branchId, primaryBranchId }) {
     return query(
-      `SELECT p.id, p.codigo, p.nombre, p.categoria, p.marca, p.online_created_at, p.unidad, p.sale_mode, p.precio_venta, p.estado,
+      `SELECT p.id, p.codigo, p.nombre, p.categoria, p.marca, p.product_type, p.online_created_at, p.unidad, p.sale_mode, p.precio_venta, p.estado,
               p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.tracks_stock, p.discount_percent, p.branch_id,
               p.image_url, p.image_local, p.online_images, p.online_description, p.online_featured, p.online_order,
               p.online_stock_mode, p.stock AS legacy_stock,
@@ -171,7 +196,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
     const settings = store.settings;
     const { branchId, branchName, primaryBranchId } = await resolveStoreBranchId(store.branchId, config);
     const taxRate = Number(config.tax_rate ?? 18);
-    if (store.enabled) await fecharProductosNuevos();
+    if (store.enabled) await fecharProductosNuevos(settings.publicacionAutomatica);
     const [rows, promos] = await Promise.all([
       readProducts({ branchId, primaryBranchId }),
       promotionsFor(branchId),
@@ -218,6 +243,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
         descripcion: String(row.online_description || ''),
         categoria: String(row.categoria || 'General'),
         marca: String(row.marca || '').trim(),
+        tipo: esServicio(row.product_type) ? 'servicio' : 'producto',
         creadoEn: fechaIso(row.online_created_at),
         unidad: String(row.unidad || 'Unidad'),
         modoVenta: ['peso', 'medida'].includes(String(row.sale_mode)) ? String(row.sale_mode) : 'unidad',
@@ -263,6 +289,22 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
       imagenes.push({ clave: '_banner', version: bannerVersion, tamano: 'banner', fuente: { tipo: 'data', valor: bannerData } });
     }
 
+    const imagenesDiseno = readDesignImages ? await readDesignImages().catch(() => ({})) : {};
+    const versionDiseno = (nombre, clave, tamano) => {
+      const valor = imagenesDiseno[nombre];
+      if (!esDataUrlImagen(valor)) return null;
+      const v = version(valor);
+      imagenes.push({ clave, version: v, tamano, fuente: { tipo: 'data', valor } });
+      return v;
+    };
+    const bannerMovilVersion = versionDiseno('banner_movil', '_banner_movil', 'bannerMovil');
+    const anuncios = [1, 2, 3, 4].map((n) => {
+      const v = versionDiseno(`anuncio_${n}`, `_anuncio_${n}`, 'anuncio');
+      return v ? { clave: `_anuncio_${n}`, version: v } : null;
+    }).filter(Boolean);
+    const publicados = new Set(productos.map((p) => p.id));
+    const empresaServicios = Number(config.service_company || 0) === 1 || /^srv_/.test(String(config.business_type || ''));
+
     const perfil = {
       licenseId: getLicenseId(),
       slug: store.slug,
@@ -275,10 +317,19 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
       email: settings.email,
       colorPrimario: settings.colorPrimario,
       diseno: settings.diseno || null,
+      // Una Empresa de Servicios no tiene caja: recibe solicitudes, no cobra por carrito.
+      modalidad: empresaServicios ? 'servicios' : settings.modalidad,
+      serviciosTienda: empresaServicios
+        ? { ...settings.serviciosTienda, contratar: false }
+        : settings.serviciosTienda,
       logo: logoVersion ? '_logo' : null,
       logoVersion,
       banner: bannerVersion ? '_banner' : null,
       bannerVersion,
+      bannerMovil: bannerMovilVersion ? '_banner_movil' : null,
+      bannerMovilVersion,
+      anuncios,
+      masVendidos: (await masVendidos(now)).filter((id) => publicados.has(id)).slice(0, 24),
       moneda: String(config.currency || 'RD$'),
       tasaItbis: taxRate,
       horario: settings.horario,

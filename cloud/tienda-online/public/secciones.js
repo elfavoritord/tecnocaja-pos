@@ -106,7 +106,7 @@
           <h2>${esc(tituloTxt)}</h2>
           ${sub ? `<p>${esc(sub)}</p>` : ''}
           <div class="hero-btns">
-            ${h.textoBoton ? botonDestino(h.enlaceBoton, h.textoBoton, 'btn hero-b1') : ''}
+            ${h.textoBoton ? botonDestino(h.enlaceBoton, h.textoBoton === 'Ver productos' && t.modalidad === 'servicios' ? 'Ver servicios' : h.textoBoton, 'btn hero-b1') : ''}
             ${h.textoBoton2 ? botonDestino(h.enlaceBoton2, h.textoBoton2, 'btn hero-b2') : ''}
           </div>
         </div></div>
@@ -128,7 +128,7 @@
         </button>`;
       }).join('');
       return `<section class="sec" id="sec-categorias" aria-labelledby="tit-categorias"><div class="wrap">
-        ${cabeza('categorias', titulo(s, 'Compra por categoría'), nombres.length > 8 ? 'catalogo' : '')}
+        ${cabeza('categorias', titulo(s, ctx.tienda().modalidad === 'servicios' ? 'Explora por categoría' : 'Compra por categoría'), nombres.length > 8 ? 'catalogo' : '')}
         <div class="cat-tiles">${tiles}</div>
       </div></section>`;
     }
@@ -164,9 +164,9 @@
       if (!productos.length) return '<section class="sec"><div class="wrap"><p class="empty">Esta tienda aún no tiene productos publicados.</p></div></section>';
       const lista = ctx.ordenInicial().slice(0, 12);
       return `<section class="sec" id="sec-catalogo" aria-labelledby="tit-catalogo"><div class="wrap">
-        ${cabeza('catalogo', titulo(s, 'Todos los productos'), productos.length > 12 ? 'catalogo' : '')}
+        ${cabeza('catalogo', titulo(s, ctx.tienda().modalidad === 'servicios' ? 'Nuestros servicios' : 'Todos los productos'), productos.length > 12 ? 'catalogo' : '')}
         <div class="grid">${lista.map(tarjeta).join('')}</div>
-        ${productos.length > 12 ? `<div class="mas-caja"><button class="btn ghost" type="button" data-ir="catalogo">Ver los ${productos.length} productos</button></div>` : ''}
+        ${productos.length > 12 ? `<div class="mas-caja"><button class="btn ghost" type="button" data-ir="catalogo">Ver los ${productos.length} ${ctx.tienda().modalidad === 'servicios' ? 'servicios' : 'artículos'}</button></div>` : ''}
       </div></section>`;
     }
 
@@ -205,6 +205,7 @@
 
     function contacto(s, t, d) {
       const lista = enlacesContacto(t, d);
+      if (t.solicitudes?.cotizacion && t.modalidad !== 'productos') lista.unshift('<button class="cto" type="button" data-solicitud="cotizacion" data-solicitud-id="">Solicitar cotización</button>');
       if (!lista.length) return '';
       return `<section class="sec" id="sec-contacto" aria-labelledby="tit-contacto"><div class="wrap">
         ${cabeza('contacto', titulo(s, 'Contáctanos'))}
@@ -220,6 +221,8 @@
         destacados: (s) => filaProductos('destacados', titulo(s, 'Productos destacados'), ctx.lista('destacados'), 'destacados'),
         nuevos: (s) => vitrina('nuevos', s, 'Nuevos productos', d),
         ofertas: (s) => vitrina('ofertas', s, 'Ofertas especiales', d),
+        // En una tienda solo de servicios, esa lista ya es "Nuestros servicios".
+        servicios: (s) => (t.modalidad === 'servicios' ? '' : filaProductos('servicios', titulo(s, 'Nuestros servicios'), ctx.lista('servicios'), 'servicios')),
         masVendidos: (s) => filaProductos('masVendidos', titulo(s, 'Los más vendidos'), ctx.lista('masVendidos'), 'masVendidos'),
         marcas: (s) => marcas(s),
         banners: () => banners(t),
