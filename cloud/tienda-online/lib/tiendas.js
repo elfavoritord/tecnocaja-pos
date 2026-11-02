@@ -6,6 +6,7 @@
 
 const { rutas, slugValido, claveProducto, CLAVE_IMAGEN_RE, MAX_FOTOS_PRODUCTO } = require('../vendor/tienda-online/contrato');
 const { precioParaCantidad, promocionPorCantidad, round2 } = require('../vendor/tienda-online/calculo-pedido');
+const { resolverDiseno } = require('../vendor/tienda-online/diseno');
 
 function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 60 * 1000, now = Date.now }) {
   const slugs = new Map();
@@ -82,6 +83,10 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
   /** Lo que ve el cliente: sin costos, sin existencias exactas de más. */
   function vistaPublica(slug, tienda, nowDate = new Date()) {
     const { perfil } = tienda;
+    // Una tienda que todavía no personalizó nada (o un POS sin editor) se ve con
+    // el estilo Moderno y su color de siempre.
+    const diseno = resolverDiseno(perfil.diseno, { colorPrimario: perfil.colorPrimario });
+    const nuevoHasta = diseno.vitrinas.nuevos.diasNuevo * 24 * 60 * 60 * 1000;
     const productos = [];
     for (const p of tienda.lista) {
       const disp = disponible(p, tienda.stock);
@@ -110,11 +115,21 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         disponible: disp === null ? null : Math.min(disp, 999),
         agotado,
         destacado: Boolean(p.destacado),
+        marca: p.marca || '',
+        creadoEn: p.creadoEn || null,
+        // Se calcula aquí: deja de ser nuevo solo, sin que el POS publique nada.
+        nuevo: Boolean(p.creadoEn) && nowDate.getTime() - new Date(p.creadoEn).getTime() <= nuevoHasta,
         orden: Number(p.orden || 0),
         imagen: fotos[0] || null,
         imagenes: fotos,
       });
     }
+    const anuncios = (Array.isArray(perfil.anuncios) ? perfil.anuncios : [])
+      .filter((a) => a && CLAVE_IMAGEN_RE.test(String(a.clave)))
+      .map((a) => {
+        const texto = diseno.anuncios.find((x) => `_anuncio_${x.n}` === a.clave);
+        return { imagen: urlImagen(slug, a.clave, a.version), titulo: texto?.titulo || '', enlace: texto?.enlace || '' };
+      });
     return {
       tienda: {
         slug,
@@ -127,6 +142,10 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         colorPrimario: perfil.colorPrimario || '#10b981',
         logo: perfil.logo ? urlImagen(slug, perfil.logo, perfil.logoVersion) : null,
         banner: perfil.banner ? urlImagen(slug, perfil.banner, perfil.bannerVersion) : null,
+        bannerMovil: perfil.bannerMovil ? urlImagen(slug, perfil.bannerMovil, perfil.bannerMovilVersion) : null,
+        diseno,
+        anuncios,
+        masVendidos: (Array.isArray(perfil.masVendidos) ? perfil.masVendidos : []).map(Number).filter(Number.isFinite).slice(0, 24),
         moneda: perfil.moneda || 'RD$',
         horario: perfil.horario || null,
         pedidoMinimo: Number(perfil.pedidoMinimo || 0),

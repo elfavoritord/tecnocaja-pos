@@ -77,7 +77,35 @@ function version(value) {
   return crypto.createHash('sha1').update(String(value || '')).digest('hex').slice(0, 10);
 }
 
-function createCatalogBuilder({ query, getLicenseId = () => '', readBanner = null }) {
+/** Fecha guardada → ISO. SQLite la da como texto y MariaDB como Date; la de hoy no se inventa. */
+function fechaIso(valor) {
+  if (!valor) return null;
+  const d = new Date(valor instanceof Date ? valor : String(valor).replace(' ', 'T'));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', readBanner = null }) {
+  /**
+   * La tabla products no guarda cuándo se creó cada producto. Al activar la tienda
+   * se anota el último id; lo que aparezca después recibe su fecha aquí, al revisar
+   * el catálogo (unos 30 s después de crearlo). Nunca bloquea la publicación.
+   */
+  async function fecharProductosNuevos() {
+    if (!nowSql) return;
+    try {
+      const fila = (await query('SELECT new_products_from_id FROM online_store_settings WHERE id = 1 LIMIT 1'))[0];
+      const desde = fila?.new_products_from_id;
+      if (desde === null || desde === undefined) {
+        const tope = await query('SELECT MAX(id) AS n FROM products');
+        await query('UPDATE online_store_settings SET new_products_from_id = ? WHERE id = 1', [Number(tope[0]?.n || 0)]);
+        return;
+      }
+      await query('UPDATE products SET online_created_at = ? WHERE online_created_at IS NULL AND id > ?', [nowSql(), Number(desde)]);
+    } catch (error) {
+      console.warn('[tienda-online] No se pudieron fechar los productos nuevos:', error.message);
+    }
+  }
+
   async function readConfig() {
     const rows = await query('SELECT * FROM config WHERE id = 1 LIMIT 1');
     return rows[0] || {};
@@ -110,7 +138,7 @@ function createCatalogBuilder({ query, getLicenseId = () => '', readBanner = nul
   /** Productos publicados con existencia de la sucursal de la tienda. */
   async function readProducts({ branchId, primaryBranchId }) {
     return query(
-      `SELECT p.id, p.codigo, p.nombre, p.categoria, p.unidad, p.sale_mode, p.precio_venta, p.estado,
+      `SELECT p.id, p.codigo, p.nombre, p.categoria, p.marca, p.online_created_at, p.unidad, p.sale_mode, p.precio_venta, p.estado,
               p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.tracks_stock, p.discount_percent, p.branch_id,
               p.image_url, p.image_local, p.online_images, p.online_description, p.online_featured, p.online_order,
               p.online_stock_mode, p.stock AS legacy_stock,
@@ -143,6 +171,7 @@ function createCatalogBuilder({ query, getLicenseId = () => '', readBanner = nul
     const settings = store.settings;
     const { branchId, branchName, primaryBranchId } = await resolveStoreBranchId(store.branchId, config);
     const taxRate = Number(config.tax_rate ?? 18);
+    if (store.enabled) await fecharProductosNuevos();
     const [rows, promos] = await Promise.all([
       readProducts({ branchId, primaryBranchId }),
       promotionsFor(branchId),
@@ -188,6 +217,8 @@ function createCatalogBuilder({ query, getLicenseId = () => '', readBanner = nul
         nombre: String(row.nombre || ''),
         descripcion: String(row.online_description || ''),
         categoria: String(row.categoria || 'General'),
+        marca: String(row.marca || '').trim(),
+        creadoEn: fechaIso(row.online_created_at),
         unidad: String(row.unidad || 'Unidad'),
         modoVenta: ['peso', 'medida'].includes(String(row.sale_mode)) ? String(row.sale_mode) : 'unidad',
         precio: Number(row.precio_venta || 0),
@@ -243,6 +274,7 @@ function createCatalogBuilder({ query, getLicenseId = () => '', readBanner = nul
       direccion: settings.direccion || String(config.address || ''),
       email: settings.email,
       colorPrimario: settings.colorPrimario,
+      diseno: settings.diseno || null,
       logo: logoVersion ? '_logo' : null,
       logoVersion,
       banner: bannerVersion ? '_banner' : null,

@@ -338,3 +338,47 @@ Checklist manual antes de publicar una versión:
 - "Reservar inventario al recibir el pedido" también para el mostrador.
 - Pago en línea con tarjeta (pasarela): hoy el cliente solo elige el método; el cobro real es en el POS.
 - El cliente aún no puede cancelar desde la página (debe llamar o escribir); se dejó así para no tener cambios en dos direcciones.
+
+## 10. Rediseño y diseño por negocio (noviembre 2026)
+
+Una sola tienda, gratis para todos. Cada negocio cambia su aspecto; no hay plantillas ni planes.
+
+**Hecho (nube):**
+
+- `server/tienda-online/diseno.js` — valores por defecto, estilos Moderno, Comercial y Premium, y validación. La nube lo copia con `npm run vendor-sync`. Es solo configuración visual: no guarda datos de productos.
+- `public/diseno-aplicar.js` convierte el diseño en variables de CSS. Los colores de fondo, texto y tarjetas van en `--u-*`, y el modo oscuro del cliente los ignora a propósito.
+- `public/secciones.js` pinta las secciones de inicio en el orden configurado. Una sección sin datos no se pinta.
+- `public/fonts/` tiene las letras propias (licencia OFL), porque la CSP no permite Google Fonts. El navegador solo baja la que se use.
+- La página tiene dos vistas: inicio por secciones y catálogo con filtros. Cada producto tiene su enlace (`?p=id`).
+
+**Reglas que hay que respetar:**
+
+- Una tienda sin `perfil.diseno` se ve en Moderno con su `colorPrimario`.
+- Si el negocio no escribió título ni subtítulo, el banner sale solo y completo, porque muchos ya traen letras dentro de la imagen. Va dentro del ancho de la página, con 340 px de alto como mucho (240 en teléfono) y la misma imagen desenfocada a los lados.
+- El encabezado y el pie se pueden apagar, pero no mover. "Todos los productos" se puede mover, pero no apagar. Sin encabezado o sin carrito arriba, en computadora sale un carrito flotante.
+- Las variantes de producto no existen: el POS no las tiene y agregarlas tocaría inventario y ventas.
+
+**Lo que el POS ya publica** (sale con la próxima versión): `diseno`, `marca` y `creadoEn`. Sin ellos, la tienda se ve en Moderno con el color del negocio, sin marcas y sin "Nuevos productos".
+
+**Lo que la nube ya lee y el POS todavía no publica** (llega con el editor):
+
+| Campo | Dónde | Sin él |
+|---|---|---|
+| `bannerMovil`, `bannerMovilVersion` | perfil | el banner de computadora |
+| `anuncios: [{clave: '_anuncio_N', version}]` | perfil | no sale la sección |
+| `masVendidos: [ids]` | perfil (sin cantidades) | no sale la sección |
+
+**Vitrinas (Ofertas especiales y Nuevos productos):** filas con movimiento continuo en `public/marquee.js`. Se configuran en Configurar tienda → Vitrinas y se guardan en `settings.diseno.vitrinas`; la activación y el título, en `diseno.secciones`.
+
+- **Copias:** el grupo se copia lo necesario para llenar la pantalla. Las copias son solo visuales: llevan `aria-hidden` y están fuera del teclado. Un solo producto se queda quieto.
+- **Pausa:** con el mouse encima, con el foco del teclado, fuera de pantalla y con un panel abierto. Con el dedo se desliza; un toque sin mover sigue siendo un clic.
+- **Reducir movimiento:** se muestra como fila normal, sin animación ni copias.
+- **Vigencia de ofertas:** la calcula la nube en cada petición con `precioParaCantidad`, así que una oferta vencida sale sola aunque el POS esté apagado. El descuento fijo del producto (`discount_percent`) no tiene fechas.
+- **Fecha de creación:** `products` no la guardaba. Se agregó `products.online_created_at`. Al activar la tienda se anota el último id en `new_products_from_id`, y `catalog.js` le pone fecha a lo que aparezca después. Los productos anteriores quedan sin fecha y no se presentan como nuevos.
+- **"Nuevo":** lo calcula la nube con `diasNuevo`, y deja de serlo solo.
+
+Pruebas propias: `npx jest tests/tienda-online/vitrinas.test.js` y, en la app real, `node cloud/tienda-online/test/ui/probar-vitrinas-pos.js`.
+
+**Pruebas:** `npx jest tests/tienda-online/diseno.test.js`, `npx jest` en `cloud/tienda-online` y, en navegador real, `node cloud/tienda-online/test/ui/probar-tienda-ui.js [carpeta-de-capturas]`. Con `--demo` deja una tienda por estilo en los puertos 3410, 3411 y 3412.
+
+**Desplegar sin afectar clientes:** agregar `--no-traffic --tag rediseno` al deploy; se ve en `https://rediseno---tecno-caja-tienda-k4mlbj4dpq-ue.a.run.app`. Para volver atrás, se pasa el tráfico a la revisión anterior.

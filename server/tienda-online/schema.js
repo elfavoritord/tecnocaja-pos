@@ -153,6 +153,10 @@ const COLUMNS = [
   // Fotos adicionales para la tienda (JSON con rutas locales, hasta 5); la
   // principal sigue siendo image_local / image_url del producto.
   ['products', 'online_images', 'TEXT DEFAULT NULL'],
+  // Cuándo apareció el producto en el catálogo (para "Nuevos productos"). Los que
+  // ya existían quedan en NULL: de esos no se sabe y no se presentan como nuevos.
+  ['products', 'online_created_at', 'DATETIME DEFAULT NULL'],
+  ['online_store_settings', 'new_products_from_id', 'INT DEFAULT NULL'],
   ['sales', 'online_order_id', 'INT DEFAULT NULL'],
   ['sales', 'sync_origin', 'VARCHAR(40) DEFAULT NULL'],
   ['clients', 'sync_origin', 'VARCHAR(40) DEFAULT NULL'],

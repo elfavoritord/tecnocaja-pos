@@ -914,7 +914,7 @@
       ancho: 940,
       cuerpo: `
         <div class="tc-tabs">
-          ${['General', 'Entrega', 'Pagos', 'Horario', 'Avanzado'].map((t, i) => `<button type="button" class="pill-tab ${i === 0 ? 'active' : ''}" data-cfg-tab="${i}">${t}</button>`).join('')}
+          ${['General', 'Entrega', 'Pagos', 'Horario', 'Avanzado', 'Vitrinas'].map((t, i) => `<button type="button" class="pill-tab ${i === 0 ? 'active' : ''}" data-cfg-tab="${i}">${t}</button>`).join('')}
         </div>
         <div data-cfg-pane="0" class="to-form-grid">
           <div class="form-group span-full">
@@ -979,6 +979,13 @@
           <div class="form-group span-full"><label><input type="checkbox" id="tocfg-sonido"> Sonido al recibir un pedido en esta caja</label></div>
           <div class="form-group span-full"><label>Orden de categorías (una por línea; las demás van después en orden alfabético)</label>
             <textarea class="form-input" id="tocfg-cats" rows="4">${esc((s.categoriasOrden || []).join('\n'))}</textarea></div>
+        </div>
+        <div data-cfg-pane="5" class="hidden">
+          <p class="helper-text">Dos filas de productos que se mueven solas en la tienda. Salen del catálogo: no crean productos ni cambian precios ni inventario. Una vitrina sin productos no aparece.</p>
+          <div class="to-vitrinas">
+            ${vitrinaForm('ofertas', 'Ofertas especiales', 'Todo producto con oferta vigente o descuento. Se quita sola al vencer la oferta.', cfg)}
+            ${vitrinaForm('nuevos', 'Nuevos productos', 'Los productos registrados recientemente, del más nuevo al más viejo. Los que ya existían antes de esta versión no cuentan como nuevos.', cfg)}
+          </div>
         </div>`,
       botones: [
         ['secondary', 'Publicar ahora', async () => {
@@ -994,6 +1001,12 @@
       ],
     });
 
+    overlay.querySelectorAll('[data-vit-rango]').forEach((r) => r.addEventListener('input', () => {
+      overlay.querySelector(`[data-vit-valor="${r.dataset.vitRango}"]`).textContent = r.value;
+    }));
+    overlay.querySelectorAll('[data-vit-auto]').forEach((c) => c.addEventListener('change', () => {
+      overlay.querySelector(`[data-vit-color="${c.dataset.vitAuto}"]`).disabled = c.checked;
+    }));
     overlay.querySelectorAll('[data-cfg-tab]').forEach((b) => b.addEventListener('click', () => {
       overlay.querySelectorAll('[data-cfg-tab]').forEach((x) => x.classList.toggle('active', x === b));
       overlay.querySelectorAll('[data-cfg-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.cfgPane !== b.dataset.cfgTab));
@@ -1033,6 +1046,64 @@
         bannerBox.textContent = 'Sin banner';
       } catch (error) { toast(error.message, 'error'); }
     });
+  }
+
+  /** Formulario de una vitrina (Ofertas especiales / Nuevos productos). */
+  function vitrinaForm(id, nombre, ayuda, cfg) {
+    const d = cfg.disenoBase;
+    const v = d.vitrinas[id];
+    const sec = d.secciones.find((x) => x.id === id) || {};
+    const lim = cfg.limitesVitrina;
+    const rango = (campo, etiqueta, unidad) => `<div class="form-group">
+      <label>${etiqueta}: <b data-vit-valor="${id}-${campo}">${v[campo]}</b> ${unidad}</label>
+      <input type="range" class="to-vit-rango" data-vit-rango="${id}-${campo}" data-vit="${id}" data-campo="${campo}" min="${lim[campo].min}" max="${lim[campo].max}" value="${v[campo]}">
+    </div>`;
+    const colorCampo = (campo, etiqueta) => `<div class="form-group">
+      <label>${etiqueta}</label>
+      <div class="to-vit-color">
+        <input type="color" class="form-input" data-vit-color="${id}-${campo}" data-vit="${id}" data-campo="${campo}" value="${esc(v[campo] || '#ffffff')}" ${v[campo] ? '' : 'disabled'}>
+        <label><input type="checkbox" data-vit-auto="${id}-${campo}" ${v[campo] ? '' : 'checked'}> El de la tienda</label>
+      </div>
+    </div>`;
+    return `<fieldset class="to-vitrina">
+      <legend><label><input type="checkbox" data-vit-activa="${id}" ${sec.activa !== false ? 'checked' : ''}> ${esc(nombre)}</label></legend>
+      <p class="helper-text">${esc(ayuda)}</p>
+      <div class="to-form-grid">
+        <div class="form-group span-full"><label>Título</label><input type="text" class="form-input" data-vit-titulo="${id}" maxlength="60" placeholder="${esc(nombre)}" value="${esc(sec.titulo || '')}"></div>
+        ${rango('cantidad', 'Productos', 'como máximo')}
+        ${rango('velocidad', 'Velocidad', 'puntos por segundo')}
+        <div class="form-group"><label>Se mueve hacia</label>
+          <select class="form-input" data-vit="${id}" data-campo="direccion">
+            <option value="izquierda" ${v.direccion === 'izquierda' ? 'selected' : ''}>La izquierda</option>
+            <option value="derecha" ${v.direccion === 'derecha' ? 'selected' : ''}>La derecha</option>
+          </select></div>
+        <div class="form-group"><label>Tarjetas</label>
+          <select class="form-input" data-vit="${id}" data-campo="estiloTarjeta">
+            ${[['tienda', 'Como el resto de la tienda'], ['limpia', 'Limpias'], ['borde', 'Con borde'], ['elevada', 'Con sombra']].map(([k, t]) => `<option value="${k}" ${v.estiloTarjeta === k ? 'selected' : ''}>${t}</option>`).join('')}
+          </select></div>
+        ${id === 'nuevos' ? rango('diasNuevo', 'Se considera nuevo por', 'días') : ''}
+        ${colorCampo('colorFondo', 'Color de fondo')}
+        ${colorCampo('colorTitulo', 'Color del título')}
+        ${colorCampo('colorEtiqueta', 'Color de la etiqueta')}
+      </div>
+    </fieldset>`;
+  }
+
+  /** Lo de la pestaña Vitrinas sobre el resto del diseño, que no se toca. */
+  function leerDiseno(ov) {
+    const base = TO.config.disenoBase;
+    const vitrinas = JSON.parse(JSON.stringify(base.vitrinas));
+    ov.querySelectorAll('[data-vit][data-campo]').forEach((el) => {
+      const { vit, campo } = el.dataset;
+      if (el.type === 'color') vitrinas[vit][campo] = el.disabled ? null : el.value;
+      else vitrinas[vit][campo] = el.type === 'range' ? Number(el.value) : el.value;
+    });
+    const secciones = base.secciones.map((s) => {
+      const activa = ov.querySelector(`[data-vit-activa="${s.id}"]`);
+      if (!activa) return s;
+      return { ...s, activa: activa.checked, titulo: ov.querySelector(`[data-vit-titulo="${s.id}"]`).value };
+    });
+    return { ...base, vitrinas, secciones };
   }
 
   function zonaRow(z) {
@@ -1105,6 +1176,7 @@
         conversion: { precio: q('#tocfg-precio').value },
         notificaciones: { whatsappDueno: q('#tocfg-wa-dueno').checked, whatsappCliente: q('#tocfg-wa-cliente').checked },
         categoriasOrden: q('#tocfg-cats').value.split('\n').map((c) => c.trim()).filter(Boolean),
+        diseno: leerDiseno(ov),
       },
     };
     if (activar) body.enabled = true;

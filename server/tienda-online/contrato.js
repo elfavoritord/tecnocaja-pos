@@ -98,7 +98,7 @@ function claveFotoProducto(productId, n = 0) {
 }
 
 /** Claves válidas en tiendaImagenes. */
-const CLAVE_IMAGEN_RE = /^(p\d{1,10}(?:_[1-5])?|_logo|_banner)$/;
+const CLAVE_IMAGEN_RE = /^(p\d{1,10}(?:_[1-5])?|_logo|_banner|_banner_movil|_anuncio_[1-4])$/;
 
 const rutas = Object.freeze({
   slug: (slug) => `tienda_slugs/${slug}`,

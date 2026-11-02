@@ -8,6 +8,7 @@
  */
 
 const { METODOS_PAGO, normalizarSlug, slugValido } = require('./contrato');
+const { normalizarDiseno } = require('./diseno');
 
 const DIAS = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 const HORA_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -163,6 +164,8 @@ function normalizarSettings(input = {}, previo = defaultSettings()) {
     },
     conversion: { precio: merged.conversion?.precio === 'actual' ? 'actual' : 'pedido' },
     inventario: { reservarAlRecibir: bool(merged.inventario?.reservarAlRecibir, false) },
+    // null = nunca lo personalizó: la tienda se ve Moderno con su color.
+    diseno: merged.diseno ? normalizarDiseno(merged.diseno) : null,
   };
 }
 

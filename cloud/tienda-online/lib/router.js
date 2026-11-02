@@ -128,6 +128,8 @@ function createRouter({ db, FieldValue, now = () => new Date(), limits = {} }) {
     res.set('Cache-Control', !r.exacto ? 'public, max-age=30' : req.query.v ? 'public, max-age=604800, immutable' : 'public, max-age=300');
     res.send(r.png);
   }));
+  // Las letras no cambian (si cambian, cambia su ?v=): se guardan un año.
+  router.use('/static/fonts', express.static(path.join(PUBLIC_DIR, 'fonts'), { maxAge: '365d', immutable: true, index: false }));
   router.use('/static', createEstaticos(PUBLIC_DIR), express.static(PUBLIC_DIR, { maxAge: '1h', index: false }));
   // Service worker: guarda la página, los archivos y las fotos en el teléfono
   // (abre al instante y sin señal muestra lo último). Va en la raíz para que

@@ -9,6 +9,7 @@
 
 const express = require('express');
 const { ESTADOS, ESTADO_ETIQUETAS, METODOS_PAGO, MAX_FOTOS_PRODUCTO, normalizarSlug } = require('../tienda-online/contrato');
+const { normalizarDiseno, LIMITES_VITRINA } = require('../tienda-online/diseno');
 const { leerFotosExtra } = require('../tienda-online/fotos');
 
 const STOCK_MODES = ['inventario', 'ilimitado'];
@@ -108,6 +109,8 @@ function createTiendaOnlineRouter({
     res.json({
       ...store,
       url: tienda.publicUrl(store.slug),
+      disenoBase: normalizarDiseno(store.settings.diseno),
+      limitesVitrina: LIMITES_VITRINA,
       metodosPago: METODOS_PAGO,
       sucursales: branches.map((b) => ({ id: Number(b.id), nombre: b.nombre })),
       categorias: categorias.map((c) => c.categoria).filter(Boolean),

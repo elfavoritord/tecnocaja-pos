@@ -93,6 +93,56 @@ describe('servicio de la tienda', () => {
     expect(adelantada.headers['cache-control']).toBe('public, max-age=30');
   });
 
+  test('una tienda sin personalizar recibe el diseño Moderno con su color', async () => {
+    const db = seed();
+    await db.doc('businesses/pos_1111222233334444/tiendaOnline/perfil').set({ colorPrimario: '#047857' }, { merge: true });
+    const res = await request(createApp({ db, FieldValue: db.FieldValue })).get('/api/tiendas/la-esquina');
+    expect(res.status).toBe(200);
+    expect(res.body.tienda.diseno.estilo).toBe('moderno');
+    expect(res.body.tienda.diseno.colores.principal).toBe('#047857');
+    expect(res.body.tienda.anuncios).toEqual([]);
+    expect(res.body.tienda.masVendidos).toEqual([]);
+    expect(res.body.tienda.bannerMovil).toBeNull();
+    expect(res.body.productos[0].nuevo).toBe(false);
+    expect(res.body.productos[0].costo).toBeUndefined();
+  });
+
+  test('el diseño publicado pasa validado y los banners solo con claves válidas', async () => {
+    const db = seed();
+    await db.doc('businesses/pos_1111222233334444/tiendaOnline/perfil').set({
+      diseno: {
+        estilo: 'premium',
+        colores: { fondo: 'url(evil)' },
+        hero: { enlaceBoton: 'javascript:alert(1)' },
+        anuncios: [{ titulo: 'Dos por uno', enlace: 'ofertas' }],
+      },
+      anuncios: [{ clave: '_anuncio_1', version: 'a1' }, { clave: '../../otra', version: 'x' }],
+      masVendidos: [5, 'x', 7],
+    }, { merge: true });
+    await db.doc('businesses/pos_1111222233334444/tiendaImagenes/_anuncio_1').set({ mime: 'image/webp', data: Buffer.from('anuncio').toString('base64'), version: 'a1' });
+    const app = createApp({ db, FieldValue: db.FieldValue });
+    const res = await request(app).get('/api/tiendas/la-esquina');
+    const { diseno, anuncios, masVendidos } = res.body.tienda;
+    expect(diseno.estilo).toBe('premium');
+    expect(diseno.colores.fondo).toBe('#faf8f5');
+    expect(diseno.hero.enlaceBoton).toBe('catalogo');
+    expect(anuncios).toHaveLength(1);
+    expect(anuncios[0]).toMatchObject({ titulo: 'Dos por uno', enlace: 'ofertas' });
+    expect(masVendidos).toEqual([5, 7]);
+    const img = await request(app).get(anuncios[0].imagen);
+    expect(img.status).toBe(200);
+  });
+
+  test('las letras se guardan un año; las claves de imagen desconocidas no existen', async () => {
+    const db = seed();
+    const app = createApp({ db, FieldValue: db.FieldValue });
+    const letra = await request(app).get('/static/fonts/inter.woff2?v=1');
+    expect(letra.status).toBe(200);
+    expect(letra.headers['cache-control']).toMatch(/immutable/);
+    expect((await request(app).get('/api/tiendas/la-esquina/img/_otra')).status).toBe(404);
+    expect((await request(app).get('/static/fonts/..%2f..%2findex.js')).status).toBeGreaterThanOrEqual(400);
+  });
+
   test('rechaza nombres de tienda inválidos y límites de pedidos', async () => {
     const db = seed();
     const app = createApp({ db, FieldValue: db.FieldValue, limits: { pedidos: 2 } });

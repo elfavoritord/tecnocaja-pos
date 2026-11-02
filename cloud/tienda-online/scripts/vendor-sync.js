@@ -15,6 +15,7 @@ const SERVICE_ROOT = path.resolve(__dirname, '..');
 const FILES = [
   ['server/tienda-online/contrato.js', 'vendor/tienda-online/contrato.js'],
   ['server/tienda-online/calculo-pedido.js', 'vendor/tienda-online/calculo-pedido.js'],
+  ['server/tienda-online/diseno.js', 'vendor/tienda-online/diseno.js'],
   ['server/services/promotion-engine.js', 'vendor/services/promotion-engine.js'],
 ];
 

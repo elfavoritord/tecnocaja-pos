@@ -9,35 +9,61 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Tienda en línea</title>
   <!--PWA-->
-  <script src="/static/tema.js?v=11"></script>
-  <link rel="stylesheet" href="/static/styles.css?v=11">
+  <script src="/static/tema.js?v=14"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=14">
 </head>
 <body>
-  <header class="top">
+  <header class="top" id="top">
     <div class="wrap top-in">
-      <a class="brand" id="brand" href="/" title="Ir al inicio de la tienda"><span class="logo-emoji" aria-hidden="true">🛒</span><h1>Cargando…</h1></a>
-      <div class="search-box">
-        <span class="search-ico" aria-hidden="true">🔍</span>
-        <input class="search" id="buscar" type="search" placeholder="Buscar…" autocomplete="off" aria-label="Buscar productos">
+      <button class="menu-btn" id="menu-btn" type="button" aria-label="Abrir menú" aria-controls="menu" aria-expanded="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <a class="brand" id="brand" href="/" title="Ir al inicio de la tienda"><h1>Cargando…</h1></a>
+      <div class="search-box" id="search-box">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+        <input class="search" id="buscar" type="search" placeholder="Buscar productos…" autocomplete="off" aria-label="Buscar productos">
       </div>
       <div class="acts">
-        <button class="icon-btn solo-pc" id="pedidos-btn" type="button" aria-label="Mis pedidos" title="Mis pedidos">🧾</button>
-        <button class="icon-btn solo-pc" id="fav-btn" type="button" aria-label="Ver favoritos">❤️<span class="badge red hidden" id="fav-count">0</span></button>
-        <a class="icon-btn hidden" id="llamar-btn" href="#" aria-label="Llamar a la tienda" title="Llamar">📞</a>
-        <a class="icon-btn wa hidden" id="wa-btn" href="#" target="_blank" rel="noopener" aria-label="Escribir por WhatsApp" title="WhatsApp">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3z"/><path d="M9 8.2c.3-.5.6-.5.9-.5h.5c.2 0 .4 0 .6.5l.7 1.6c.1.2.1.4 0 .6l-.5.7c-.1.2-.1.4 0 .5.5.9 1.4 1.8 2.4 2.3.2.1.4.1.5 0l.6-.7c.2-.2.4-.2.6-.1l1.6.7c.3.1.4.3.4.5 0 .9-.6 1.8-1.6 1.9-2.4.4-6.5-3.2-6.8-5.6-.1-.9.3-1.9.9-2.4z" class="wa-fon"/></svg>
+        <a class="icon-btn hidden" id="llamar-btn" href="#" aria-label="Llamar a la tienda" title="Llamar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>
         </a>
-        <button class="icon-btn" id="tema-btn" type="button" aria-label="Cambiar a modo oscuro">🌙</button>
+        <a class="icon-btn hidden" id="wa-btn" href="#" target="_blank" rel="noopener" aria-label="Escribir por WhatsApp" title="WhatsApp">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 0 0-7.8 13.5L3 21l4.6-1.2A9 9 0 1 0 12 3z"/><path d="M9 8.5c-.5.5-.8 1.3-.7 2 .3 2.3 3.5 5.3 5.9 5.2.8 0 1.6-.6 1.8-1.4l-1.9-1.1-.9.8c-1-.5-1.9-1.4-2.4-2.4l.8-.9L10.5 8.8z"/></svg>
+        </a>
+        <button class="icon-btn" id="tema-btn" type="button" aria-label="Cambiar a modo oscuro"></button>
+        <button class="icon-btn solo-pc" id="pedidos-btn" type="button" aria-label="Mis pedidos" title="Mis pedidos">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h12v19l-3-2-3 2-3-2-3 2z"/><path d="M9 7.5h6M9 11.5h6M9 15.5h4"/></svg>
+        </button>
+        <button class="icon-btn solo-pc" id="fav-btn" type="button" aria-label="Ver favoritos" title="Favoritos">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.6-9.3A5.3 5.3 0 0 1 12 5.9a5.3 5.3 0 0 1 9.6 5.3c-2.1 4.7-9.6 9.3-9.6 9.3z"/></svg>
+          <span class="badge hidden" id="fav-count">0</span>
+        </button>
         <button class="cart-btn solo-pc" id="cart-btn" type="button" aria-label="Ver carrito" title="Carrito">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.6"/><circle cx="18" cy="20" r="1.6"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6.2"/></svg>
-          <span class="badge red hidden" id="cart-count">0</span>
+          <span class="badge hidden" id="cart-count">0</span>
         </button>
       </div>
     </div>
+    <nav class="nav-pc" id="nav-pc" aria-label="Menú de la tienda"></nav>
   </header>
+
   <main id="app">
-    <p class="empty">Cargando la tienda…</p>
+    <div class="sk" aria-label="Cargando la tienda" role="status">
+      <div class="sk-hero sk-b"></div>
+      <div class="wrap sk-grid">
+        <div class="sk-card"><div class="sk-b sk-img"></div><div class="sk-b sk-l"></div><div class="sk-b sk-l c"></div></div>
+        <div class="sk-card"><div class="sk-b sk-img"></div><div class="sk-b sk-l"></div><div class="sk-b sk-l c"></div></div>
+        <div class="sk-card"><div class="sk-b sk-img"></div><div class="sk-b sk-l"></div><div class="sk-b sk-l c"></div></div>
+        <div class="sk-card"><div class="sk-b sk-img"></div><div class="sk-b sk-l"></div><div class="sk-b sk-l c"></div></div>
+      </div>
+    </div>
   </main>
+
+  <!-- Carrito fijo cuando el negocio quita el encabezado o el carrito de arriba -->
+  <button class="cart-flota" id="cart-flota" type="button" aria-label="Ver carrito" data-nav="carrito">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.6"/><circle cx="18" cy="20" r="1.6"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6.2"/></svg>
+    <span class="badge hidden" id="flota-count">0</span>
+  </button>
 
   <!-- Barra de abajo (teléfono), como una app -->
   <nav class="tabbar" id="tabbar" aria-label="Navegación">
@@ -46,9 +72,9 @@
     </button>
     <button type="button" data-nav="favoritos" aria-label="Favoritos">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.6-9.3A5.3 5.3 0 0 1 12 5.9a5.3 5.3 0 0 1 9.6 5.3c-2.1 4.7-9.6 9.3-9.6 9.3z"/></svg><span>Favoritos</span>
-      <b class="tb-badge red hidden" id="tb-fav-count">0</b>
+      <b class="tb-badge hidden" id="tb-fav-count">0</b>
     </button>
-    <button type="button" data-nav="carrito" class="tb-cart" aria-label="Carrito">
+    <button type="button" data-nav="carrito" class="tb-cart" id="tb-cart" aria-label="Carrito">
       <span class="tb-circle"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.6"/><circle cx="18" cy="20" r="1.6"/><path d="M2 3h3l2.6 12.2a1 1 0 0 0 1 .8h9.7a1 1 0 0 0 1-.8L21 7H6.2"/></svg>
         <b class="tb-badge hidden" id="tb-cart-count">0</b></span>
     </button>
@@ -59,6 +85,18 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2.5h12v19l-3-2-3 2-3-2-3 2z"/><path d="M9 7.5h6M9 11.5h6M9 15.5h4"/></svg><span>Pedidos</span>
     </button>
   </nav>
+
+  <!-- Menú del teléfono -->
+  <div class="overlay" id="menu-fondo" data-act="cerrar-menu"></div>
+  <aside class="menu" id="menu" role="dialog" aria-modal="true" aria-label="Menú de la tienda">
+    <header>
+      <strong id="menu-nombre"></strong>
+      <button class="menu-x" type="button" data-act="cerrar-menu" aria-label="Cerrar menú">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="menu-cuerpo" id="menu-cuerpo"></div>
+  </aside>
 
   <!-- Carrito, favoritos, mis pedidos y checkout -->
   <div class="overlay" id="overlay" data-act="cerrar"></div>
@@ -74,16 +112,21 @@
     <footer id="panel-foot"></footer>
   </aside>
 
-  <!-- Detalle del producto -->
+  <!-- Detalle del producto y vista rápida -->
   <div class="modal-overlay" id="modal-overlay" data-act="cerrar-detalle"></div>
   <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="grip" data-act="cerrar-detalle" aria-hidden="true"></div>
-    <button class="modal-x" type="button" data-act="cerrar-detalle" aria-label="Cerrar">✕</button>
+    <button class="modal-x" type="button" data-act="cerrar-detalle" aria-label="Cerrar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
     <div class="modal-body" id="modal-body"></div>
     <div class="modal-foot" id="modal-foot"></div>
   </div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/diseno-aplicar.js?v=14"></script>
+  <script src="/static/secciones.js?v=14"></script>
+  <script src="/static/marquee.js?v=14"></script>
+  <script src="/static/app.js?v=14"></script>
 </body>
 </html>

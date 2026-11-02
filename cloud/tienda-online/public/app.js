@@ -13,15 +13,15 @@
   const KEY_FAVORITOS = `tc-favoritos-${SLUG}`;
   const KEY_CLIENTE = 'tc-cliente';
   const KEY_TEMA = 'tc-tema';
-  const COLOR_BASE = '#10b981';
-  const COLOR_BASE_HOVER = '#059669';
   const MAX_DETALLE = 99;
+  const POR_PAGINA = 24;
+  const { ICO } = window.TCSecciones;
   // Carrusel de fotos del detalle.
   const SLIDE_MS = 6000;
   const REANUDAR_MS = 5000;
   const UMBRAL_ARRASTRE = 50;
   const SIN_MOVIMIENTO = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  const ICONO_MAS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>';
+  const ICONO_MAS = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
 
   const S = {
     tienda: null,
@@ -33,6 +33,13 @@
     max: '',
     orden: '',
     soloOfertas: false,
+    soloDisponibles: false,
+    soloDestacados: false,
+    soloMasVendidos: false,
+    marca: '',
+    vista: 'inicio', // inicio (secciones) | catalogo (todos, con filtros)
+    limite: POR_PAGINA,
+    animar: true, // la entrada al bajar solo al abrir, no en cada actualización
     misPedidos: null, // null = cargando; [] = sin pedidos en este teléfono
     carrito: cargarCarrito(),
     favoritos: cargarFavoritos(),
@@ -78,11 +85,12 @@
     const d = new Date(v);
     return Number.isNaN(d.getTime()) ? '' : d.toLocaleString('es-DO', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   }
-  function toast(texto) {
+  function toast(texto, { error = false, ok = false } = {}) {
     const box = $('#toasts');
     const t = document.createElement('div');
-    t.className = 'toast';
-    t.textContent = texto;
+    t.className = `toast${error ? ' err' : ''}`;
+    if (ok) t.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>';
+    t.appendChild(document.createTextNode(texto));
     box.appendChild(t);
     while (box.children.length > 3) box.firstElementChild.remove();
     setTimeout(() => t.remove(), 3000);
@@ -122,10 +130,13 @@
     const a = document.activeElement;
     let sel = '';
     if (contenedor && a && contenedor.contains(a)) {
-      for (const k of ['agregar', 'fav', 'ver', 'det', 'act']) if (a.dataset?.[k]) { sel = `[data-${k}="${a.dataset[k]}"]`; break; }
+      for (const k of ['agregar', 'mas', 'menos', 'rapida', 'fav', 'ver', 'det', 'act']) if (a.dataset?.[k]) { sel = `[data-${k}="${a.dataset[k]}"]`; break; }
     }
     pintar();
-    if (sel) (raiz ? raiz() : contenedor)?.querySelector(sel)?.focus({ preventScroll: true });
+    if (!sel) return;
+    const lugar = raiz ? raiz() : contenedor;
+    // "Agregar" se vuelve − 1 +; si ya no está, el foco pasa al botón que lo reemplazó.
+    (lugar?.querySelector(sel) || lugar?.querySelector('[data-mas],[data-agregar]'))?.focus({ preventScroll: true });
   }
 
   // ── Precios: oferta del POS y descuento % del producto ──────────────────
@@ -141,6 +152,7 @@
     const antes = precioAntesDe(p);
     return antes ? Math.round((1 - precioFinal(p) / antes) * 100) : 0;
   }
+  function tieneOferta(p) { return descuentoDe(p) > 0 || Boolean(p.porCantidad); }
 
   // ── Carrito y favoritos (se guardan en este teléfono) ───────────────────
   function cargarCarrito() {
@@ -183,10 +195,12 @@
     const antes = cantidadDe(id);
     const agregado = round2(setCantidad(id, antes + (cuanto || paso(p))) - antes);
     if (agregado > 0) {
-      toast(cuanto ? `${cant(agregado)} × ${p.nombre} agregado al carrito` : `${p.nombre} agregado al carrito`);
-      const b = $('#cart-btn');
-      b.classList.add('pulso');
-      setTimeout(() => b.classList.remove('pulso'), 200);
+      toast(cuanto ? `${cant(agregado)} × ${p.nombre} agregado al carrito` : `${p.nombre} agregado al carrito`, { ok: true });
+      for (const b of [$('#cart-btn'), $('#tb-cart'), $('#cart-flota')]) {
+        b.classList.remove('pulso');
+        void b.offsetWidth; // reinicia la animación si se agrega seguido
+        b.classList.add('pulso');
+      }
     }
     return agregado;
   }
@@ -208,7 +222,7 @@
     if (S.detalle) pintarDetalle();
     if (S.panel === 'favoritos') pintarPanel();
     const nombre = p ? p.nombre : 'Producto';
-    toast(i >= 0 ? `${nombre} quitado de favoritos` : `${nombre} agregado a favoritos ❤️`);
+    toast(i >= 0 ? `${nombre} quitado de favoritos` : `${nombre} agregado a favoritos`, { ok: i < 0 });
   }
 
   function pintarContadores() {
@@ -218,6 +232,9 @@
     cb.textContent = n > 99 ? '99+' : cant(n);
     cb.classList.toggle('hidden', !n);
     $('#cart-btn').setAttribute('aria-label', n ? `Ver carrito (${cant(n)})` : 'Ver carrito');
+    const fl = $('#flota-count');
+    fl.textContent = cb.textContent;
+    fl.classList.toggle('hidden', !n);
     const fb = $('#fav-count');
     fb.textContent = f > 99 ? '99+' : String(f);
     fb.classList.toggle('hidden', !f);
@@ -236,7 +253,7 @@
     const activo = S.panel === 'favoritos' ? 'favoritos'
       : ['carrito', 'datos', 'listo'].includes(S.panel) ? 'carrito'
         : S.panel === 'pedidos' ? 'pedidos'
-          : S.soloOfertas ? 'ofertas' : 'inicio';
+          : S.soloOfertas && S.vista === 'catalogo' ? 'ofertas' : 'inicio';
     document.querySelectorAll('#tabbar [data-nav]').forEach((b) => {
       b.classList.toggle('on', b.dataset.nav === activo);
       if (b.dataset.nav === activo) b.setAttribute('aria-current', 'page');
@@ -244,11 +261,11 @@
     });
   }
 
-  // ── Tema y color del negocio ─────────────────────────────────────────────
+  // ── Tema y diseño del negocio ────────────────────────────────────────────
   function pintarTema() {
     const oscuro = document.documentElement.getAttribute('data-theme') === 'dark';
     const b = $('#tema-btn');
-    b.textContent = oscuro ? '☀️' : '🌙';
+    b.innerHTML = oscuro ? ICO.sol : ICO.luna;
     b.setAttribute('aria-label', oscuro ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro');
   }
 
@@ -256,64 +273,171 @@
     const oscuro = document.documentElement.getAttribute('data-theme') !== 'dark';
     document.documentElement.setAttribute('data-theme', oscuro ? 'dark' : 'light');
     try { localStorage.setItem(KEY_TEMA, oscuro ? 'dark' : 'light'); } catch (_e) { /* modo privado */ }
+    window.TCDiseno.pintarMeta();
     pintarTema();
   }
 
-  function contrasteConBlanco(rgb) {
-    const [r, g, b] = rgb.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
-    return 1.05 / (0.2126 * r + 0.7152 * g + 0.0722 * b + 0.05);
+  function aplicarDiseno() {
+    const { diseno } = S.tienda;
+    window.TCDiseno.aplicar(diseno);
+    $('#tema-btn').classList.toggle('hidden', !diseno.apariencia.temaOscuro);
+    pintarTema();
   }
 
-  function aplicarColor(color) {
-    const c = /^#[0-9a-f]{6}$/i.test(color || '') ? color.toLowerCase() : COLOR_BASE;
-    const rgb = [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
-    // Texto (precios, nombre): el mismo color, oscurecido hasta leerse bien sobre blanco.
-    let tinta = rgb;
-    for (let i = 0; i < 20 && contrasteConBlanco(tinta) < 3.5; i++) tinta = tinta.map((v) => Math.round(v * 0.92));
-    const st = document.documentElement.style;
-    st.setProperty('--c', c);
-    st.setProperty('--c-hover', c === COLOR_BASE ? COLOR_BASE_HOVER : `rgb(${rgb.map((v) => Math.round(v * 0.82)).join(',')})`);
-    st.setProperty('--c-ink', c === COLOR_BASE ? COLOR_BASE_HOVER : `rgb(${tinta.join(',')})`);
-    st.setProperty('--c-soft', `rgba(${rgb.join(',')},.12)`);
-    $('meta[name="theme-color"]')?.setAttribute('content', c);
+  function seccionActiva(id) {
+    return Boolean(S.tienda.diseno.secciones.find((s) => s.id === id)?.activa);
   }
 
-  // ── Encabezado, filtros y pie ────────────────────────────────────────────
+  function waUrl(valor) {
+    const wa = String(valor || '').replace(/\D/g, '');
+    return wa.length >= 10 ? `https://wa.me/${wa.length === 10 ? `1${wa}` : wa}` : '';
+  }
+
+  // ── Encabezado y menús ───────────────────────────────────────────────────
   function pintarEncabezado() {
     const t = S.tienda;
+    const e = t.diseno.encabezado;
+    const html = document.documentElement;
     document.title = t.nombre;
-    $('#brand').innerHTML = `
-      ${t.logo ? `<img src="${esc(t.logo)}" alt="">` : '<span class="logo-emoji" aria-hidden="true">🛒</span>'}
-      <h1>${esc(t.nombre)}</h1>
-      ${t.abierta ? '' : '<span class="chip off">Cerrado</span>'}`;
+    const logo = e.mostrarLogo && t.logo ? `<img src="${esc(t.logo)}" alt="">` : '';
+    const conNombre = e.mostrarNombre || !logo;
+    $('#brand').innerHTML = `${logo}<h1${conNombre ? '' : ' class="sr"'}>${esc(t.nombre)}</h1>${t.abierta ? '' : '<span class="chip off">Cerrado</span>'}`;
+    contactoEnEncabezado(e.mostrarTelefono ? t.telefono : '', e.mostrarWhatsapp ? (t.whatsapp || t.telefono) : '');
+    const cabecera = seccionActiva('encabezado');
+    $('#top').classList.toggle('hidden', !cabecera);
+    $('#top').classList.toggle('con-buscador', e.mostrarBuscador);
+    $('#search-box').classList.toggle('hidden', !e.mostrarBuscador);
+    $('#nav-pc').classList.toggle('hidden', !e.mostrarMenu);
+    $('#cart-btn').classList.toggle('hidden', !e.mostrarCarrito);
+    html.classList.toggle('sin-buscador', !e.mostrarBuscador);
+    html.classList.toggle('sin-menu', !e.mostrarMenu);
+    // Sin encabezado o sin carrito arriba, el carrito sigue a mano (nunca se pierde).
+    html.classList.toggle('carrito-flota', !cabecera || !e.mostrarCarrito);
+    pintarMenus();
+    medirEncabezado();
+  }
+
+  /** En el teléfono solo queda fijo el buscador: el nombre sube con la página. */
+  function medirEncabezado() {
+    const caja = $('#search-box');
+    if (caja && caja.offsetTop > 0) document.documentElement.style.setProperty('--alto-marca', `${Math.max(0, caja.offsetTop - 8)}px`);
   }
 
   /** Llamar y WhatsApp de la tienda, arriba junto al botón de día/noche. */
   function contactoEnEncabezado(telefono, whatsapp) {
     const tel = String(telefono || '').replace(/[^\d+]/g, '');
-    const wa = String(whatsapp || telefono || '').replace(/\D/g, '');
     const llamar = $('#llamar-btn');
     const waBtn = $('#wa-btn');
     llamar.classList.toggle('hidden', tel.replace(/\D/g, '').length < 7);
     if (tel) llamar.href = `tel:${tel}`;
-    waBtn.classList.toggle('hidden', wa.length < 10);
-    if (wa.length >= 10) waBtn.href = `https://wa.me/${wa.length === 10 ? `1${wa}` : wa}`;
+    const wa = waUrl(whatsapp);
+    waBtn.classList.toggle('hidden', !wa);
+    if (wa) waBtn.href = wa;
+  }
+
+  function entradasMenu() {
+    const t = S.tienda;
+    const lista = [];
+    if (listaDe('ofertas').length) lista.push(['ofertas', 'Ofertas']);
+    if (listaDe('nuevos').length) lista.push(['nuevos', 'Novedades']);
+    if (listaDe('masVendidos').length) lista.push(['masVendidos', 'Más vendidos']);
+    const hayContacto = t.telefono || t.whatsapp || t.email || Object.values(t.diseno.redes || {}).some(Boolean);
+    if (seccionActiva('contacto') && hayContacto) lista.push(['contacto', 'Contacto']);
+    return lista;
+  }
+
+  function pintarMenus() {
+    const cats = categorias();
+    const extras = entradasMenu();
+    const destino = ([d, txt]) => `<button class="nav-link" type="button" data-ir="${esc(d)}">${esc(txt)}</button>`;
+    $('#nav-pc').innerHTML = `<div class="wrap nav-in">
+      ${destino(['inicio', 'Inicio'])}
+      <div class="nav-drop">
+        <button class="nav-link" type="button" data-ir="catalogo" aria-haspopup="true">Productos ${ICO.flecha}</button>
+        <div class="nav-menu">
+          <button type="button" data-ir="catalogo">Todos los productos</button>
+          ${cats.map((c) => `<button type="button" data-ir="categoria:${esc(c)}">${esc(c)}</button>`).join('')}
+        </div>
+      </div>
+      ${extras.map(destino).join('')}
+    </div>`;
+    $('#menu-nombre').textContent = S.tienda.nombre;
+    const fila = ([d, txt]) => `<button type="button" data-ir="${esc(d)}">${esc(txt)}${ICO.flecha.replace('<svg', '<svg width="16" height="16"')}</button>`;
+    $('#menu-cuerpo').innerHTML = `
+      ${fila(['inicio', 'Inicio'])}
+      ${fila(['catalogo', 'Todos los productos'])}
+      ${extras.map(fila).join('')}
+      ${cats.length ? '<h3>Categorías</h3>' : ''}
+      ${cats.map((c) => fila([`categoria:${c}`, c])).join('')}`;
+  }
+
+  function abrirMenu() {
+    $('#menu').classList.add('open');
+    $('#menu-fondo').classList.add('open');
+    $('#menu-btn').setAttribute('aria-expanded', 'true');
+    document.body.classList.add('lock');
+    $('#menu .menu-x').focus({ preventScroll: true });
+  }
+
+  function cerrarMenu() {
+    if (!$('#menu').classList.contains('open')) return;
+    $('#menu').classList.remove('open');
+    $('#menu-fondo').classList.remove('open');
+    $('#menu-btn').setAttribute('aria-expanded', 'false');
+    if (!S.panel && !S.detalle) document.body.classList.remove('lock');
+    $('#menu-btn').focus({ preventScroll: true });
+  }
+
+  function subirA(top) {
+    window.scrollTo({ top, behavior: SIN_MOVIMIENTO ? 'auto' : 'smooth' });
   }
 
   /** El nombre o logo del negocio lleva al inicio: sin filtros, arriba y sin paneles abiertos. */
   function irAlInicio() {
     if (S.detalle) cerrarDetalle();
     if (S.panel) cerrarPanel();
-    S.categoria = '';
+    cerrarMenu();
+    limpiarFiltros();
     S.buscar = '';
-    S.min = '';
-    S.max = '';
-    S.orden = '';
-    S.soloOfertas = false;
+    S.porBusqueda = false;
     $('#buscar').value = '';
+    S.vista = 'inicio';
+    try { if (history.state?.tcCatalogo) history.replaceState(null, ''); } catch (_e) { /* sin historial */ }
     if (S.tienda) pintarCatalogo();
     pintarTabbar();
-    window.scrollTo({ top: 0, behavior: SIN_MOVIMIENTO ? 'auto' : 'smooth' });
+    subirA(0);
+  }
+
+  /** A dónde lleva un botón de la tienda (portada, menú, "Ver todo", banners…). */
+  function irDestino(valor) {
+    const texto = String(valor || '');
+    const corte = texto.indexOf(':');
+    const tipo = corte > 0 ? texto.slice(0, corte) : texto;
+    const dato = corte > 0 ? texto.slice(corte + 1) : '';
+    cerrarMenu();
+    if (S.panel) cerrarPanel();
+    if (tipo === 'inicio') { irAlInicio(); return; }
+    if (tipo === 'whatsapp') {
+      const url = waUrl(S.tienda.whatsapp || S.tienda.telefono);
+      if (url) window.open(url, '_blank', 'noopener');
+      return;
+    }
+    if (tipo === 'contacto') {
+      if (S.vista !== 'inicio') irAlInicio();
+      const sec = $('#sec-contacto') || $('.foot');
+      if (sec) subirA(sec.getBoundingClientRect().top + window.scrollY - ($('#top').offsetHeight || 0));
+      return;
+    }
+    limpiarFiltros();
+    S.buscar = '';
+    $('#buscar').value = '';
+    if (tipo === 'ofertas') S.soloOfertas = true;
+    else if (tipo === 'nuevos') S.orden = 'nuevos';
+    else if (tipo === 'destacados') S.soloDestacados = true;
+    else if (tipo === 'masVendidos') S.soloMasVendidos = true;
+    else if (tipo === 'categoria') S.categoria = dato;
+    else if (tipo === 'marca') S.marca = dato;
+    entrarCatalogo();
   }
 
   function horarioHoy(t) {
@@ -328,56 +452,258 @@
     return [...orden, ...[...conProductos].filter((c) => !orden.includes(c))];
   }
 
-  function pieHtml(t) {
-    const wa = String(t.whatsapp || '').replace(/\D/g, '');
-    const waUrl = wa.length >= 10 ? `https://wa.me/${wa.length === 10 ? `1${wa}` : wa}` : '';
-    const hoy = horarioHoy(t);
-    const datos = [
-      hoy ? `<span>🕒 ${esc(hoy)}</span>` : '',
-      t.direccion ? `<span>📍 ${esc(t.direccion)}</span>` : '',
-      t.telefono ? `<a href="tel:${esc(String(t.telefono).replace(/[^\d+]/g, ''))}">📞 ${esc(t.telefono)}</a>` : '',
-      waUrl ? `<a href="${esc(waUrl)}" target="_blank" rel="noopener">💬 WhatsApp</a>` : '',
-    ].join('');
-    return `<footer class="foot">
-      ${t.descripcion ? `<p>${esc(t.descripcion)}</p>` : ''}
-      ${datos ? `<div class="datos">${datos}</div>` : ''}
-      <p class="marca">Pedidos procesados por ${esc(t.nombre)} con Tecno Caja.</p>
-    </footer>`;
+  // ── Listas de la página de inicio ────────────────────────────────────────
+  function ordenPorDefecto(a, b) {
+    return Number(a.agotado) - Number(b.agotado) || Number(b.destacado) - Number(a.destacado);
   }
 
+  function listaDe(id) {
+    const hay = S.productos.filter((p) => !p.agotado);
+    if (id === 'destacados') return hay.filter((p) => p.destacado).slice(0, 12);
+    const { vitrinas } = S.tienda.diseno;
+    if (id === 'ofertas') return hay.filter(tieneOferta).sort((a, b) => descuentoDe(b) - descuentoDe(a)).slice(0, vitrinas.ofertas.cantidad);
+    if (id === 'nuevos') return hay.filter(esNuevo).sort(masNuevoPrimero).slice(0, vitrinas.nuevos.cantidad);
+    if (id === 'masVendidos') {
+      return (S.tienda.masVendidos || []).map((x) => S.porId.get(Number(x))).filter((p) => p && !p.agotado).slice(0, 12);
+    }
+    return [];
+  }
+
+  function esNuevo(p) { return p.nuevo === true; }
+
+  function masNuevoPrimero(a, b) {
+    return (Date.parse(b.creadoEn || '') || 0) - (Date.parse(a.creadoEn || '') || 0) || b.id - a.id;
+  }
+
+  /** Se consulta cada vez: el cliente puede cambiarlo con la página abierta. */
+  const PREF_MOVIMIENTO = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  function sinMovimiento() { return Boolean(PREF_MOVIMIENTO?.matches); }
+  PREF_MOVIMIENTO?.addEventListener?.('change', () => { if (S.tienda) pintarCatalogo(); });
+
+  const SECC = window.TCSecciones.crear({
+    esc, tarjeta, fotosDe, emojiDe, horarioHoy, money, waUrl, categorias, sinMovimiento,
+    tintaSobre: window.TCDiseno.tintaSobre,
+    productos: () => S.productos,
+    ordenInicial: () => S.productos.slice().sort(ordenPorDefecto),
+    lista: listaDe,
+  });
+
+  // ── Aparición suave al bajar y filas que se deslizan ─────────────────────
+  const REVELA = !SIN_MOVIMIENTO && 'IntersectionObserver' in window
+    ? new IntersectionObserver((entradas) => {
+      for (const en of entradas) {
+        if (!en.isIntersecting) continue;
+        const el = en.target;
+        REVELA.unobserve(el);
+        el.classList.add('in');
+        setTimeout(() => { el.classList.remove('rv', 'in'); el.style.transitionDelay = ''; }, 900);
+      }
+    }, { rootMargin: '0px 0px -4% 0px', threshold: 0.04 })
+    : null;
+
+  function revelar(raiz) {
+    if (!S.animar || !REVELA) return;
+    raiz.querySelectorAll('.sec-head, .mq-caja, .card, .cat-tile, .marcas button, .anuncio, .info-item, .cto').forEach((el) => {
+      if (el.closest('.foot') || (el.matches('.card') && el.closest('.mq-caja'))) return;
+      const i = [...el.parentElement.children].indexOf(el);
+      el.classList.add('rv');
+      el.style.transitionDelay = `${Math.min(i, 5) * 55}ms`;
+      REVELA.observe(el);
+    });
+  }
+
+  function flechasDeFila(fila) {
+    const caja = fila.closest('.fila-caja');
+    if (!caja) return;
+    const izq = caja.querySelector('.prev');
+    const der = caja.querySelector('.next');
+    izq.hidden = fila.scrollLeft <= 4;
+    der.hidden = fila.scrollLeft + fila.clientWidth >= fila.scrollWidth - 4;
+  }
+
+  function prepararFilas(guardadas) {
+    document.querySelectorAll('.fila').forEach((fila) => {
+      const antes = guardadas?.get(fila.dataset.filaLista);
+      if (antes) { fila.style.scrollBehavior = 'auto'; fila.scrollLeft = antes; fila.style.scrollBehavior = ''; }
+      flechasDeFila(fila);
+      fila.addEventListener('scroll', () => flechasDeFila(fila), { passive: true });
+    });
+  }
+
+  // ── Página: inicio por secciones o catálogo con filtros ──────────────────
   function pintarCatalogo() {
     const t = S.tienda;
-    const ordenes = [['', 'Ordenar por'], ['precio-asc', 'Menor precio'], ['precio-desc', 'Mayor precio'], ['ofertas', 'Mejores ofertas'], ['nuevos', 'Más nuevos']];
-    $('#app').innerHTML = `
-      <section class="filtros" aria-label="Filtros">
-        <div class="wrap">
-          <div class="cats" id="cats" role="group" aria-label="Categorías">
-            <button type="button" data-cat="" class="${S.categoria ? '' : 'on'}">Todo</button>
-            ${S.productos.some((p) => descuentoDe(p) > 0 || p.porCantidad)
-              ? `<button type="button" id="pill-ofertas" data-ofertas="1" class="pill-ofertas ${S.soloOfertas ? 'on' : ''}" aria-pressed="${S.soloOfertas}">🔥 Ofertas</button>` : ''}
-            ${categorias().map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}</button>`).join('')}
+    const app = $('#app');
+    const filas = new Map([...document.querySelectorAll('.fila')].map((f) => [f.dataset.filaLista, f.scrollLeft]));
+    const aviso = !t.abierta
+      ? `<div class="wrap"><div class="aviso">${t.aceptaFueraDeHorario ? 'Estamos cerrados ahora: tu pedido se procesa cuando abramos.' : 'Estamos cerrados: no recibimos pedidos ahora.'}</div></div>`
+      : '';
+    rota.io?.disconnect();
+    rota.visibles.clear();
+    app.innerHTML = `${aviso}${S.vista === 'catalogo' ? catalogoHtml() : SECC.inicio(t)}${SECC.pie(t)}`;
+    if (S.vista === 'catalogo') {
+      enlazarFiltros();
+      pintarProductos();
+    } else {
+      revelar(app);
+      observarTarjetas(app);
+    }
+    window.TCMarquee.montar(app);
+    prepararFilas(filas);
+    S.animar = false;
+  }
+
+  function entrarCatalogo() {
+    S.vista = 'catalogo';
+    S.limite = POR_PAGINA;
+    try { if (!history.state?.tcCatalogo) history.pushState({ tcCatalogo: true }, ''); } catch (_e) { /* sin historial */ }
+    pintarCatalogo();
+    $('#app').classList.remove('vista-entra');
+    void $('#app').offsetWidth;
+    $('#app').classList.add('vista-entra');
+    pintarTabbar();
+    window.scrollTo(0, 0);
+  }
+
+  function limpiarFiltros() {
+    S.categoria = '';
+    S.marca = '';
+    S.min = '';
+    S.max = '';
+    S.orden = '';
+    S.soloOfertas = false;
+    S.soloDisponibles = false;
+    S.soloDestacados = false;
+    S.soloMasVendidos = false;
+    S.limite = POR_PAGINA;
+  }
+
+  function tituloCatalogo() {
+    const q = S.buscar.trim();
+    if (q) return `Resultados para “${esc(q)}”`;
+    if (S.categoria) return esc(S.categoria);
+    if (S.marca) return esc(S.marca);
+    if (S.soloOfertas) return 'Ofertas y promociones';
+    if (S.soloDestacados) return 'Productos destacados';
+    if (S.soloMasVendidos) return 'Los más vendidos';
+    if (S.orden === 'nuevos') return 'Recién llegados';
+    return 'Todos los productos';
+  }
+
+  function chipsActivos() {
+    const c = [];
+    if (S.categoria) c.push(['categoria', S.categoria]);
+    if (S.marca) c.push(['marca', S.marca]);
+    if (S.min !== '' || S.max !== '') c.push(['precio', `Precio: ${S.min || '0'} – ${S.max || '…'}`]);
+    if (S.soloOfertas) c.push(['ofertas', 'En oferta']);
+    if (S.soloDisponibles) c.push(['disponibles', 'Solo disponibles']);
+    if (S.soloDestacados) c.push(['destacados', 'Destacados']);
+    if (S.soloMasVendidos) c.push(['masVendidos', 'Más vendidos']);
+    return c;
+  }
+
+  function catalogoHtml() {
+    const ordenes = [['', 'Recomendados'], ['precio-asc', 'Menor precio'], ['precio-desc', 'Mayor precio'], ['ofertas', 'Mejores ofertas'], ['nuevos', 'Más nuevos']];
+    return `<div class="wrap cat-vista">
+      <nav class="migas" aria-label="Estás en"><button type="button" data-ir="inicio">Inicio</button><span>/</span><span id="miga"></span></nav>
+      <div class="cat-head">
+        <div class="cat-tit"><h2 id="cat-titulo"></h2><span id="cat-n" aria-live="polite"></span></div>
+        <button class="btn-filtros" type="button" data-act="abrir-filtros">${ICO.filtros}Filtros<b id="n-filtros" class="hidden"></b></button>
+        <select id="orden" aria-label="Ordenar por">
+          ${ordenes.map(([v, l]) => `<option value="${v}" ${S.orden === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="tira" id="tira" role="group" aria-label="Categorías"></div>
+      <div class="cat-lay">
+        <div class="filtros-fondo" id="filtros-fondo" data-act="cerrar-filtros"></div>
+        <aside class="filtros" id="filtros" aria-label="Filtros">
+          <header><span>Filtros</span><button type="button" data-act="cerrar-filtros" aria-label="Cerrar filtros">${ICO.x}</button></header>
+          <div class="fcuerpo">
+            <div class="fgrupo"><h3>Categorías</h3><div class="flist" id="f-cats"></div></div>
+            <div class="fgrupo hidden" id="f-marcas-caja"><h3>Marcas</h3><div class="flist" id="f-marcas"></div></div>
+            <div class="fgrupo"><h3>Precio</h3>
+              <div class="precio-rango">
+                <input id="pmin" type="number" min="0" step="any" inputmode="decimal" placeholder="Mín" aria-label="Precio mínimo" value="${esc(S.min)}">
+                <span>–</span>
+                <input id="pmax" type="number" min="0" step="any" inputmode="decimal" placeholder="Máx" aria-label="Precio máximo" value="${esc(S.max)}">
+              </div>
+            </div>
+            <div class="fgrupo"><h3>Disponibilidad</h3>
+              <label class="fcheck"><input id="f-disp" type="checkbox" ${S.soloDisponibles ? 'checked' : ''}> Solo disponibles</label>
+              <label class="fcheck"><input id="f-ofertas" type="checkbox" ${S.soloOfertas ? 'checked' : ''}> Solo en oferta</label>
+            </div>
           </div>
-          <div class="price-range">
-            <span class="lbl">Precio:</span>
-            <input id="pmin" type="number" min="0" step="any" inputmode="decimal" placeholder="Mín" aria-label="Precio mínimo" value="${esc(S.min)}">
-            <span class="dash">-</span>
-            <input id="pmax" type="number" min="0" step="any" inputmode="decimal" placeholder="Máx" aria-label="Precio máximo" value="${esc(S.max)}">
-          </div>
-          <select id="orden" aria-label="Ordenar por">
-            ${ordenes.map(([v, l]) => `<option value="${v}" ${S.orden === v ? 'selected' : ''}>${l}</option>`).join('')}
-          </select>
+          <footer><button class="btn" type="button" data-act="cerrar-filtros" id="f-ver">Ver productos</button></footer>
+        </aside>
+        <div>
+          <div class="grid" id="productos"></div>
+          <div class="mas-caja" id="mas-caja"></div>
         </div>
-      </section>
-      <div class="wrap contenido">
-        ${!t.abierta ? `<div class="aviso">${t.aceptaFueraDeHorario ? 'Estamos cerrados ahora: tu pedido se procesa cuando abramos.' : 'Estamos cerrados: no recibimos pedidos ahora.'}</div>` : ''}
-        ${t.banner ? `<div class="banner"><img src="${esc(t.banner)}" alt=""></div>` : ''}
-        <div class="grid-box" id="grid-box"><div class="grid" id="productos"></div></div>
-        ${pieHtml(t)}
-      </div>`;
-    $('#pmin').addEventListener('input', (e) => { S.min = e.target.value; pintarProductos({ arriba: true }); });
-    $('#pmax').addEventListener('input', (e) => { S.max = e.target.value; pintarProductos({ arriba: true }); });
-    $('#orden').addEventListener('change', (e) => { S.orden = e.target.value; pintarProductos({ arriba: true }); });
-    pintarProductos();
+      </div>
+    </div>`;
+  }
+
+  function enlazarFiltros() {
+    const cambio = () => { S.limite = POR_PAGINA; pintarProductos({ arriba: true }); };
+    $('#pmin').addEventListener('input', (e) => { S.min = e.target.value; cambio(); });
+    $('#pmax').addEventListener('input', (e) => { S.max = e.target.value; cambio(); });
+    $('#orden').addEventListener('change', (e) => { S.orden = e.target.value; cambio(); });
+    $('#f-disp').addEventListener('change', (e) => { S.soloDisponibles = e.target.checked; cambio(); });
+    $('#f-ofertas').addEventListener('change', (e) => { S.soloOfertas = e.target.checked; cambio(); });
+  }
+
+  function abrirFiltros(abrir) {
+    $('#filtros')?.classList.toggle('open', abrir);
+    $('#filtros-fondo')?.classList.toggle('open', abrir);
+    if (abrir) document.body.classList.add('lock');
+    else if (!S.panel && !S.detalle) document.body.classList.remove('lock');
+  }
+
+  function quitarFiltro(cual) {
+    if (cual === 'categoria') S.categoria = '';
+    else if (cual === 'marca') S.marca = '';
+    else if (cual === 'ofertas') S.soloOfertas = false;
+    else if (cual === 'disponibles') S.soloDisponibles = false;
+    else if (cual === 'destacados') S.soloDestacados = false;
+    else if (cual === 'masVendidos') S.soloMasVendidos = false;
+    else if (cual === 'precio') { S.min = ''; S.max = ''; }
+    else if (cual === 'todo') limpiarFiltros();
+    S.limite = POR_PAGINA;
+    pintarCatalogo();
+  }
+
+  /** Lo que cambia con cada filtro, sin tocar los campos donde se está escribiendo. */
+  function pintarEstadoFiltros(total) {
+    const titulo = tituloCatalogo();
+    $('#cat-titulo').innerHTML = titulo;
+    $('#miga').innerHTML = titulo;
+    $('#cat-n').textContent = `${total} ${total === 1 ? 'producto' : 'productos'}`;
+    const activos = chipsActivos();
+    $('#chips').innerHTML = activos.length
+      ? `${activos.map(([k, txt]) => `<button type="button" data-quitar-filtro="${k}" aria-label="Quitar filtro: ${esc(txt)}">${esc(txt)}${ICO.x}</button>`).join('')}
+        <button class="limpiar" type="button" data-quitar-filtro="todo">Limpiar todo</button>`
+      : '';
+    const n = $('#n-filtros');
+    n.textContent = String(activos.length);
+    n.classList.toggle('hidden', !activos.length);
+    $('#f-ver').textContent = `Ver ${total} ${total === 1 ? 'producto' : 'productos'}`;
+    const cats = categorias();
+    const cuantos = new Map();
+    for (const p of S.productos) cuantos.set(p.categoria, (cuantos.get(p.categoria) || 0) + 1);
+    $('#f-cats').innerHTML = `<button type="button" data-cat="" class="${S.categoria ? '' : 'on'}">Todas<small>${S.productos.length}</small></button>
+      ${cats.map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}<small>${cuantos.get(c) || 0}</small></button>`).join('')}`;
+    $('#tira').innerHTML = `<button type="button" data-cat="" class="${S.categoria ? '' : 'on'}">Todo</button>
+      ${cats.map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}</button>`).join('')}`;
+    const marcas = new Map();
+    for (const p of S.productos) if (p.marca) marcas.set(p.marca, (marcas.get(p.marca) || 0) + 1);
+    $('#f-marcas-caja').classList.toggle('hidden', !marcas.size);
+    $('#f-marcas').innerHTML = [...marcas.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30)
+      .map(([m, k]) => `<button type="button" data-marca="${esc(m)}" class="${S.marca === m ? 'on' : ''}">${esc(m)}<small>${k}</small></button>`).join('');
+    const disp = $('#f-disp');
+    if (disp) disp.checked = S.soloDisponibles;
+    const of = $('#f-ofertas');
+    if (of) of.checked = S.soloOfertas;
   }
 
   // ── Tarjetas de producto ────────────────────────────────────────────────
@@ -412,14 +738,16 @@
     const fotos = fotosDe(p);
     const url = fotos[indice % Math.max(1, fotos.length)];
     return url
-      ? `<img src="${esc(url)}" alt="" draggable="false" data-pid="${p.id}"${lazy ? ' loading="lazy"' : ''}>`
+      ? `<img src="${esc(url)}" alt="" draggable="false" data-pid="${p.id}"${lazy ? ' loading="lazy" decoding="async"' : ''}>`
       : `<span class="emoji" aria-hidden="true">${emojiDe(p)}</span>`;
   }
   function unidadHtml(p) {
     return p.modoVenta === 'unidad' ? '' : `<small>/ ${esc(p.unidad)}</small>`;
   }
 
-  function tarjeta(p) {
+  /** En una vitrina: la etiqueta NUEVO siempre y sin cambiar sola de foto (ya se mueve). */
+  function tarjeta(p, opciones) {
+    const vitrina = opciones?.vitrina || '';
     const c = cantidadDe(p.id);
     const fav = S.favoritos.includes(p.id);
     const desc = descuentoDe(p);
@@ -427,78 +755,150 @@
     const nombre = esc(p.nombre);
     const nFotos = fotosDe(p).length;
     const iFoto = (rota.indice.get(p.id) || 0) % Math.max(1, nFotos); // al repintar sigue en la misma foto
+    const etiquetas = [
+      desc > 0 ? `<span class="tag oferta">-${desc}%</span>` : p.porCantidad ? '<span class="tag oferta">Oferta</span>' : '',
+      esNuevo(p) || vitrina === 'nuevos' ? '<span class="tag nuevo">Nuevo</span>' : '',
+      p.destacado && !desc && !esNuevo(p) ? '<span class="tag star" title="Destacado">★</span>' : '',
+    ].join('');
+    const poco = !p.agotado && p.disponible !== null && p.disponible <= 10;
     return `
-      <article class="card${p.agotado ? ' agotado' : ''}" data-id="${p.id}"${nFotos > 1 ? ' data-rota="1"' : ''}>
+      <article class="card${p.agotado ? ' agotado' : ''}" data-id="${p.id}"${nFotos > 1 && !vitrina ? ' data-rota="1"' : ''}>
         <button class="ver" type="button" data-ver="${p.id}" aria-label="Ver detalle: ${nombre}"></button>
         <div class="img ${cajaClase(p)}">
           ${imagenHtml(p, { indice: iFoto })}
-          ${desc > 0 ? `<span class="off">-${desc}%</span>` : p.destacado ? '<span class="off feat" title="Destacado">★</span>' : ''}
-          <button class="fav${fav ? ' on' : ''}" type="button" data-fav="${p.id}" aria-pressed="${fav}" aria-label="${fav ? 'Quitar de' : 'Agregar a'} favoritos: ${nombre}">${fav ? '❤️' : '🤍'}</button>
+          ${etiquetas ? `<div class="tags">${etiquetas}</div>` : ''}
+          <button class="fav${fav ? ' on' : ''}" type="button" data-fav="${p.id}" aria-pressed="${fav}" aria-label="${fav ? 'Quitar de' : 'Agregar a'} favoritos: ${nombre}">${ICO.corazon}</button>
           ${p.agotado ? '<span class="soldout">Agotado</span>'
-            : `<button class="add" type="button" data-agregar="${p.id}" aria-label="Agregar al carrito: ${nombre}">${ICONO_MAS}</button>`}
-          ${nFotos > 1 || c > 0 ? `<div class="abajo">
-            ${nFotos > 1 ? `<span class="nfotos" title="${nFotos} fotos">📷 ${iFoto + 1}/${nFotos}</span>` : ''}
-            ${c > 0 ? `<span class="qty" title="En tu carrito">${esc(cant(c))}</span>` : ''}
-          </div>` : ''}
+            : `<button class="qv" type="button" data-rapida="${p.id}" aria-label="Vista rápida: ${nombre}">${ICO.ojo}Vista rápida</button>`}
+          ${nFotos > 1 ? `<span class="nfotos" title="${nFotos} fotos">${iFoto + 1}/${nFotos}</span>` : ''}
         </div>
         <div class="body">
+          ${p.categoria ? `<div class="card-cat">${esc(p.categoria)}</div>` : ''}
           <div class="name" title="${nombre}">${nombre}</div>
-          <div class="price">${antes ? `<s>${moneyCorto(antes)}</s>` : ''}<span class="now">${money(precioFinal(p))}</span>${unidadHtml(p)}</div>
+          <div class="price"><span class="now">${money(precioFinal(p))}</span>${unidadHtml(p)}${antes ? `<s>${moneyCorto(antes)}</s>` : ''}</div>
           ${p.porCantidad ? `<div class="rule">${esc(cant(p.porCantidad.cantidadMinima))}+ a ${moneyCorto(p.porCantidad.precio)}</div>` : ''}
           ${p.conItbis ? '<div class="tax">+ ITBIS</div>' : ''}
+          ${poco ? `<div class="disp poco">Quedan ${esc(cant(p.disponible))}</div>` : ''}
+          ${p.agotado ? '' : `<div class="card-cta">${c > 0
+            ? `<div class="qty-pill" role="group" aria-label="Cantidad en el carrito: ${nombre}">
+                <button type="button" data-menos="${p.id}" aria-label="Quitar uno">−</button>
+                <span>${esc(cant(c))}</span>
+                <button type="button" data-mas="${p.id}" aria-label="Agregar uno">+</button>
+              </div>`
+            : `<button class="add" type="button" data-agregar="${p.id}" aria-label="Agregar al carrito: ${nombre}">${ICONO_MAS}Agregar</button>`}</div>`}
         </div>
       </article>`;
   }
 
-  /** Búsqueda, categoría, precio y orden se combinan. */
+  /** Búsqueda, categoría, marca, precio, disponibilidad y orden se combinan. */
   function visibles() {
-    const q = norm(S.buscar.trim());
+    const palabras = norm(S.buscar.trim()).split(/\s+/).filter(Boolean);
     const min = S.min === '' ? NaN : Number(S.min);
     const max = S.max === '' ? NaN : Number(S.max);
-    const lista = S.productos.filter((p) => (!S.categoria || p.categoria === S.categoria)
-      && (!S.soloOfertas || descuentoDe(p) > 0 || p.porCantidad)
-      && (!q || norm(`${p.nombre} ${p.descripcion}`).includes(q))
-      && (!Number.isFinite(min) || precioFinal(p) >= min)
-      && (!Number.isFinite(max) || precioFinal(p) <= max));
+    const vendidos = new Map((S.tienda.masVendidos || []).map((id, i) => [Number(id), i]));
+    const lista = S.productos.filter((p) => {
+      if (S.categoria && p.categoria !== S.categoria) return false;
+      if (S.marca && p.marca !== S.marca) return false;
+      if (S.soloOfertas && !tieneOferta(p)) return false;
+      if (S.soloDisponibles && p.agotado) return false;
+      if (S.soloDestacados && !p.destacado) return false;
+      if (S.soloMasVendidos && !vendidos.has(p.id)) return false;
+      if (Number.isFinite(min) && precioFinal(p) < min) return false;
+      if (Number.isFinite(max) && precioFinal(p) > max) return false;
+      if (!palabras.length) return true;
+      const texto = norm(`${p.nombre} ${p.descripcion} ${p.categoria} ${p.marca || ''}`);
+      return palabras.every((w) => texto.includes(w));
+    });
     const orden = {
       'precio-asc': (a, b) => precioFinal(a) - precioFinal(b),
       'precio-desc': (a, b) => precioFinal(b) - precioFinal(a),
       ofertas: (a, b) => descuentoDe(b) - descuentoDe(a),
-      nuevos: (a, b) => b.id - a.id, // el id más alto es el último que se creó en el POS
-    }[S.orden] || ((a, b) => Number(b.destacado) - Number(a.destacado));
+      nuevos: masNuevoPrimero,
+    }[S.orden] || (S.soloMasVendidos ? (a, b) => vendidos.get(a.id) - vendidos.get(b.id) : ordenPorDefecto);
     return lista.sort(orden);
+  }
+
+  function pieDeLista(total, mostrados) {
+    const caja = $('#mas-caja');
+    if (!caja) return;
+    caja.innerHTML = total > mostrados
+      ? `<span class="progreso">Mostrando ${mostrados} de ${total}</span>
+         <button class="btn ghost" type="button" data-act="mas-productos">Ver más productos</button>`
+      : '';
   }
 
   function pintarProductos({ arriba = false } = {}) {
     const box = $('#productos');
-    if (!box) return;
+    // En la página de inicio no hay lista filtrable: se repintan las secciones.
+    if (!box) { if (S.tienda) pintarCatalogo(); return; }
     const lista = visibles();
+    const mostrar = lista.slice(0, S.limite);
     rota.io?.disconnect();
     rota.visibles.clear();
-    box.innerHTML = lista.length ? lista.map(tarjeta).join('')
-      : `<p class="empty">${S.soloOfertas ? 'No hay ofertas con estos filtros.' : 'No se encontraron productos.'}</p>`;
+    box.innerHTML = mostrar.length ? mostrar.map(tarjeta).join('')
+      : `<p class="empty">${S.buscar.trim() ? 'No encontramos ese producto. Prueba con otra palabra.' : 'No hay productos con estos filtros.'}</p>`;
+    pintarEstadoFiltros(lista.length);
+    pieDeLista(lista.length, mostrar.length);
     if (arriba) {
-      $('#grid-box').scrollTop = 0;
-      // En el teléfono la lista va con el scroll de la página: si quedó abajo, volver al inicio del catálogo.
-      const filtros = $('.filtros');
-      if (filtros && window.matchMedia('(max-width: 639px)').matches) {
-        const destino = filtros.offsetTop + filtros.offsetHeight - ($('.top')?.offsetHeight || 0);
-        if (window.scrollY > destino) window.scrollTo({ top: destino });
-      }
+      const inicio = $('.cat-vista');
+      const tope = inicio ? inicio.getBoundingClientRect().top + window.scrollY - ($('#top').offsetHeight || 0) : 0;
+      if (window.scrollY > tope) window.scrollTo({ top: Math.max(0, tope) });
     }
     observarTarjetas(box);
   }
 
-  /** Repinta una sola tarjeta (sin perder el scroll ni el foco del teclado). */
+  function masProductos() {
+    const lista = visibles();
+    const desde = S.limite;
+    S.limite += POR_PAGINA;
+    const nuevos = lista.slice(desde, S.limite);
+    const box = $('#productos');
+    box.insertAdjacentHTML('beforeend', nuevos.map(tarjeta).join(''));
+    pieDeLista(lista.length, Math.min(S.limite, lista.length));
+    observarTarjetas(box);
+  }
+
+  /** Repinta las tarjetas de ese producto (sin perder el scroll ni el foco). Puede salir en varias secciones. */
   function pintarTarjeta(id) {
-    const vieja = document.querySelector(`.card[data-id="${Number(id)}"]`);
     const p = S.porId.get(id);
-    if (!vieja || !p) return;
-    rota.io?.unobserve(vieja);
-    rota.visibles.delete(vieja);
-    const nueva = () => document.querySelector(`.card[data-id="${Number(id)}"]`);
-    conFoco(vieja, () => { vieja.outerHTML = tarjeta(p); }, nueva);
-    if (nueva()) observarTarjetas(nueva());
+    if (!p) return;
+    document.querySelectorAll(`.card[data-id="${Number(id)}"]`).forEach((vieja) => {
+      rota.io?.unobserve(vieja);
+      rota.visibles.delete(vieja);
+      const marca = document.createElement('template');
+      marca.innerHTML = tarjeta(p, { vitrina: vieja.closest('[data-vitrina]')?.dataset.vitrina }).trim();
+      const nueva = marca.content.firstElementChild;
+      // Las copias de la vitrina siguen fuera del teclado.
+      if (vieja.closest('[data-copia]')) nueva.querySelectorAll('a, button, input').forEach((el) => el.setAttribute('tabindex', '-1'));
+      conFoco(vieja, () => vieja.replaceWith(nueva), () => nueva);
+      observarTarjetas(nueva);
+    });
+  }
+
+  /** El producto vuela de su tarjeta al carrito. */
+  function volarAlCarrito(origen) {
+    if (SIN_MOVIMIENTO || !origen?.animate) return;
+    const destino = ['#tb-cart', '#cart-btn', '#cart-flota'].map((s) => $(s)).find((el) => el && el.getBoundingClientRect().width > 0);
+    const caja = origen.querySelector('.img, .sim-img, .thumb');
+    if (!destino || !caja) return;
+    const r = caja.getBoundingClientRect();
+    const d = destino.getBoundingClientRect();
+    const v = document.createElement('div');
+    v.className = 'vuela';
+    const foto = caja.querySelector('img');
+    if (foto) { const i = new Image(); i.src = foto.src; i.alt = ''; v.appendChild(i); } else v.textContent = caja.querySelector('.emoji')?.textContent || '';
+    const x = r.left + r.width / 2 - 32;
+    const y = r.top + r.height / 2 - 32;
+    v.style.left = `${x}px`;
+    v.style.top = `${y}px`;
+    document.body.appendChild(v);
+    const dx = d.left + d.width / 2 - 32 - x;
+    const dy = d.top + d.height / 2 - 32 - y;
+    v.animate([
+      { transform: 'translate(0, 0) scale(1)', opacity: 1 },
+      { transform: `translate(${dx * 0.55}px, ${dy * 0.55 - 36}px) scale(.72)`, opacity: 1, offset: 0.6 },
+      { transform: `translate(${dx}px, ${dy}px) scale(.22)`, opacity: 0.2 },
+    ], { duration: 620, easing: 'cubic-bezier(.3, .6, .2, 1)' }).onfinish = () => v.remove();
   }
 
   // ── Fotos que pasan solas en las tarjetas ───────────────────────────────
@@ -566,7 +966,7 @@
       }));
       setTimeout(() => vieja.remove(), 700);
       const badge = card.querySelector('.nfotos');
-      if (badge) badge.textContent = `📷 ${i + 1}/${fotos.length}`;
+      if (badge) badge.textContent = `${i + 1}/${fotos.length}`;
     };
     pre.onerror = () => {
       delete card.dataset.cambiando;
@@ -590,6 +990,7 @@
   /** Lo que se sabe del producto (sin inventar nada que el POS no tenga). */
   function especificaciones(p) {
     const lista = [`Categoría: ${p.categoria || 'General'}`];
+    if (p.marca) lista.push(`Marca: ${p.marca}`);
     const u = norm(p.unidad);
     lista.push(p.modoVenta === 'unidad'
       ? `Se vende por unidad${p.unidad && !['unidad', 'und', 'u'].includes(u) ? ` (${p.unidad})` : ''}`
@@ -609,7 +1010,7 @@
     return S.productos
       .filter((x) => x.id !== p.id && x.categoria === p.categoria && !x.agotado)
       .sort((a, b) => Math.abs(precioFinal(a) - ref) - Math.abs(precioFinal(b) - ref))
-      .slice(0, 3);
+      .slice(0, 4);
   }
 
   function similarHtml(x) {
@@ -624,6 +1025,7 @@
   // Secciones desplegables del detalle: se recuerda cuáles abrió el cliente.
   const ACORDEON = new Set();
   const ICONO_FLECHA = '<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+  const ICONO_LISTA = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg>';
 
   function seccion(clave, titulo, icono, contenido) {
     return `<details class="acc-item" data-acc="${clave}" ${ACORDEON.has(clave) ? 'open' : ''}>
@@ -663,20 +1065,23 @@
     const enCarrito = cantidadDe(p.id);
     const similares = similaresDe(p);
     const larga = String(p.descripcion || '').length > 160;
+    const rapida = Boolean(S.detalle?.rapida);
     return `
       <div class="det-grid">
         <div class="det-media">
           ${carruselHtml(p, `${desc > 0 ? `<span class="off">-${desc}%</span>` : ''}${p.agotado ? '<span class="soldout">Agotado</span>' : ''}`)}
+          ${miniaturasHtml(p)}
         </div>
         <div class="det-info">
           <div class="det-tags">
             ${p.categoria ? `<span class="det-cat">${esc(p.categoria)}</span>` : ''}
+            ${esNuevo(p) ? '<span class="det-cat nuevo">Nuevo</span>' : ''}
             ${p.destacado ? '<span class="det-cat star">★ Destacado</span>' : ''}
-            ${p.agotado ? '<span class="det-cat bad">Agotado</span>' : p.disponible !== null && p.disponible <= 10 ? `<span class="det-cat warn">Quedan ${esc(cant(p.disponible))}</span>` : ''}
+            ${p.agotado ? '<span class="det-cat bad">Agotado</span>' : p.disponible !== null && p.disponible <= 10 ? `<span class="det-cat warn">Quedan ${esc(cant(p.disponible))}</span>` : '<span class="det-cat ok">Disponible</span>'}
           </div>
           <div class="det-head">
             <h2 id="modal-title">${esc(p.nombre)}</h2>
-            <button class="det-fav${fav ? ' on' : ''}" type="button" data-fav="${p.id}" aria-pressed="${fav}" aria-label="${fav ? 'Quitar de' : 'Agregar a'} favoritos">${fav ? '❤️' : '🤍'}</button>
+            <button class="det-fav${fav ? ' on' : ''}" type="button" data-fav="${p.id}" aria-pressed="${fav}" aria-label="${fav ? 'Quitar de' : 'Agregar a'} favoritos">${ICO.corazon}</button>
           </div>
           <div class="det-price">
             <span class="now">${money(precioFinal(p))}${unidadHtml(p)}</span>
@@ -684,17 +1089,17 @@
             ${desc > 0 ? `<span class="off">-${desc}%</span>` : ''}
           </div>
           ${p.conItbis ? '<p class="det-nota">+ ITBIS al pagar</p>' : ''}
-          ${p.porCantidad ? `<p class="det-promo">🔥 Llevando ${esc(cant(p.porCantidad.cantidadMinima))} o más: ${money(p.porCantidad.precio)} c/u</p>` : ''}
-          ${enCarrito > 0 ? `<p class="det-cart">🛒 Ya tienes ${esc(cant(enCarrito))} en tu carrito · <button class="link" type="button" data-act="ver-carrito-detalle">Ver carrito</button></p>` : ''}
+          ${p.porCantidad ? `<p class="det-promo">Llevando ${esc(cant(p.porCantidad.cantidadMinima))} o más: ${money(p.porCantidad.precio)} c/u</p>` : ''}
+          ${enCarrito > 0 ? `<p class="det-cart">Ya tienes ${esc(cant(enCarrito))} en tu carrito · <button class="link" type="button" data-act="ver-carrito-detalle">Ver carrito</button></p>` : ''}
           ${p.descripcion ? `<p class="det-desc${larga ? ' clamp' : ''}" id="det-desc">${esc(p.descripcion)}</p>
             ${larga ? '<button class="link det-vermas" type="button" data-act="ver-mas">Ver más</button>' : ''}` : ''}
-          <div class="acc">
-            ${seccion('specs', 'Especificaciones', '📋', `<ul class="det-specs">${especificaciones(p).map((s) => `<li>${esc(s)}</li>`).join('')}</ul>`)}
-            ${seccion('entrega', 'Entrega y pago', '🛵', entregaYPagoHtml())}
-          </div>
+          ${rapida ? `<button class="link det-completo" type="button" data-act="detalle-completo">Ver todos los detalles</button>` : `<div class="acc">
+            ${seccion('specs', 'Especificaciones', ICONO_LISTA, `<ul class="det-specs">${especificaciones(p).map((s) => `<li>${esc(s)}</li>`).join('')}</ul>`)}
+            ${seccion('entrega', 'Entrega y pago', ICO.moto, entregaYPagoHtml())}
+          </div>`}
         </div>
       </div>
-      ${similares.length ? `<h3 class="det-sub sim">Productos similares</h3><div class="sim-grid">${similares.map(similarHtml).join('')}</div>` : ''}`;
+      ${!rapida && similares.length ? `<h3 class="det-sub sim">Productos similares</h3><div class="sim-grid">${similares.map(similarHtml).join('')}</div>` : ''}`;
   }
 
   /** Barra de compra fija abajo: cantidad y "Agregar · total". */
@@ -728,11 +1133,18 @@
           ${fotos.map((url, i) => `<div class="car-slide" role="group" aria-roledescription="foto" aria-label="${i + 1} de ${fotos.length}">
             <img src="${esc(url)}" alt="${i ? '' : nombre}" draggable="false" data-pid="${p.id}"></div>`).join('')}
         </div>
-        <button class="car-arrow prev" type="button" data-car="prev" aria-label="Foto anterior">‹</button>
-        <button class="car-arrow next" type="button" data-car="next" aria-label="Foto siguiente">›</button>
+        <button class="car-arrow prev" type="button" data-car="prev" aria-label="Foto anterior">${ICO.flechaIzq}</button>
+        <button class="car-arrow next" type="button" data-car="next" aria-label="Foto siguiente">${ICO.flecha}</button>
         <div class="car-dots">${fotos.map((_, i) => `<button class="dot" type="button" data-car-ir="${i}" aria-label="Ver foto ${i + 1}"></button>`).join('')}</div>
         ${marcas}
       </div>`;
+  }
+
+  /** Las fotos en pequeño debajo de la grande (computadora). */
+  function miniaturasHtml(p) {
+    const fotos = fotosDe(p);
+    if (fotos.length < 2) return '';
+    return `<div class="miniaturas">${fotos.map((url, i) => `<button type="button" data-car-ir="${i}" aria-label="Ver foto ${i + 1}"><img src="${esc(url)}" alt="" loading="lazy"></button>`).join('')}</div>`;
   }
 
   function irSlide(i, animar = true) {
@@ -745,6 +1157,7 @@
       d.classList.toggle('active', k === CAR.i);
       d.setAttribute('aria-current', k === CAR.i ? 'true' : 'false');
     });
+    document.querySelectorAll('.miniaturas button').forEach((b, k) => b.classList.toggle('on', k === CAR.i));
   }
 
   function iniciarAuto() {
@@ -872,12 +1285,16 @@
     pintarTotalDetalle(p);
   }
 
-  function abrirDetalle(id) {
+  function abrirDetalle(id, { rapida = false, desdeUrl = false } = {}) {
     const p = S.porId.get(id);
     if (!p) return;
     const yaAbierto = Boolean(S.detalle);
-    S.detalle = { id, cantidad: 1 };
+    S.detalle = { id, cantidad: 1, rapida };
+    $('#modal').classList.toggle('rapida', rapida);
+    // Cada producto tiene su enlace (?p=id): se puede compartir por WhatsApp.
+    const urlProducto = `${location.pathname}?p=${id}`;
     if (yaAbierto) {
+      try { history.replaceState(history.state, '', urlProducto); } catch (_e) { /* sin historial */ }
       // Producto similar: cambia el contenido con un fundido corto, sin cerrar.
       const body = $('#modal-body');
       body.classList.add('cambiando');
@@ -885,7 +1302,9 @@
       return;
     }
     S.abridorDetalle = document.activeElement;
-    try { history.pushState({ tcDetalle: true }, ''); } catch (_e) { /* sin historial */ }
+    if (!desdeUrl) {
+      try { history.pushState({ tcDetalle: true, tcCatalogo: Boolean(history.state?.tcCatalogo) }, '', urlProducto); } catch (_e) { /* sin historial */ }
+    }
     pintarDetalle();
     $('#modal-body').scrollTop = 0;
     $('#modal').classList.add('open');
@@ -912,6 +1331,9 @@
     $('#modal').classList.remove('open');
     $('#modal-overlay').classList.remove('open');
     if (!S.panel) document.body.classList.remove('lock');
+    if (new URLSearchParams(location.search).has('p')) {
+      try { history.replaceState(history.state, '', location.pathname); } catch (_e) { /* sin historial */ }
+    }
     // El foco vuelve a quien abrió el detalle, si sigue a la vista (con el panel abierto, solo si está en el panel).
     const a = S.abridorDetalle;
     S.abridorDetalle = null;
@@ -923,7 +1345,7 @@
     if (!p) return;
     S.detalle.cantidad = ajustarCantidad(p, $('#det-cant')?.value ?? S.detalle.cantidad);
     if (!agregar(p.id, S.detalle.cantidad)) {
-      if (!p.agotado) toast(`Ya tienes en el carrito todo lo disponible de ${p.nombre}.`);
+      if (!p.agotado) toast(`Ya tienes en el carrito todo lo disponible de ${p.nombre}.`, { error: true });
       return;
     }
     // Confirmación en el mismo botón (el pie ya se repintó con el carrito nuevo).
@@ -1003,18 +1425,11 @@
 
   /** Barra de abajo del teléfono. */
   function navegar(destino) {
-    if (destino === 'inicio' || destino === 'ofertas') {
+    if (destino === 'inicio') { irAlInicio(); return; }
+    if (destino === 'ofertas') {
       if (S.panel) cerrarPanel();
-      const ofertas = destino === 'ofertas';
-      if (S.soloOfertas !== ofertas) {
-        S.soloOfertas = ofertas;
-        $('#pill-ofertas')?.classList.toggle('on', ofertas);
-        $('#pill-ofertas')?.setAttribute('aria-pressed', String(ofertas));
-        pintarProductos({ arriba: true });
-      }
-      window.scrollTo({ top: 0, behavior: SIN_MOVIMIENTO ? 'auto' : 'smooth' });
-      pintarTabbar();
-      if (ofertas && !S.productos.some((p) => descuentoDe(p) > 0 || p.porCantidad)) toast('Esta tienda no tiene ofertas ahora.');
+      if (!S.productos.some(tieneOferta)) { toast('Esta tienda no tiene ofertas ahora.'); pintarTabbar(); return; }
+      irDestino('ofertas');
       return;
     }
     if (S.panel) irA(destino);
@@ -1044,7 +1459,7 @@
   function panelCarrito(t) {
     if (!S.carrito.items.length) {
       return {
-        contenido: `<div class="vacio">${ICONO_CARRITO}<p>Tu carrito está vacío.</p><span class="muted">Toca + en un producto para agregarlo.</span></div>`,
+        contenido: `<div class="vacio">${ICONO_CARRITO}<p>Tu carrito está vacío.</p><span class="muted">Toca "Agregar" en un producto para guardarlo aquí.</span></div>`,
         pie: '<button class="btn big" type="button" data-act="cerrar">Ver productos</button>',
       };
     }
@@ -1152,7 +1567,7 @@
           </div>
         </div>`;
       }).join('')
-      : '<p class="empty">Aún no tienes favoritos.<br>Toca 🤍 en un producto para guardarlo aquí.</p>';
+      : '<p class="empty">Aún no tienes favoritos.<br>Toca el corazón en un producto para guardarlo aquí.</p>';
     return {
       contenido,
       pie: `${S.carrito.items.length ? '<button class="btn" type="button" data-act="ver-carrito">Ver carrito</button>' : ''}
@@ -1333,15 +1748,28 @@
 
   // ── Eventos (delegados: sin onclick en el HTML) ──────────────────────────
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-nav],[data-ofertas],[data-car],[data-car-ir],[data-fav],[data-agregar],[data-ver],[data-det],[data-mas],[data-menos],[data-quitar],[data-cat],[data-act],[data-entrega]');
+    const t = e.target.closest('[data-nav],[data-ir],[data-fila],[data-rapida],[data-quitar-filtro],[data-marca],[data-car],[data-car-ir],[data-fav],[data-agregar],[data-ver],[data-det],[data-mas],[data-menos],[data-quitar],[data-cat],[data-act],[data-entrega]');
     if (!t) return;
     const d = t.dataset;
     if (d.nav) navegar(d.nav);
-    else if (d.ofertas) navegar(S.soloOfertas ? 'inicio' : 'ofertas');
-    else if (d.car) { irSlide(CAR.i + (d.car === 'next' ? 1 : -1)); pausarAuto(); }
+    else if (d.ir) irDestino(d.ir);
+    else if (d.fila) {
+      const fila = t.parentElement.querySelector('.fila');
+      fila?.scrollBy({ left: Number(d.fila) * fila.clientWidth * 0.85, behavior: SIN_MOVIMIENTO ? 'auto' : 'smooth' });
+    } else if (d.rapida) abrirDetalle(Number(d.rapida), { rapida: true });
+    else if (d.quitarFiltro) quitarFiltro(d.quitarFiltro);
+    else if (d.marca !== undefined) {
+      S.marca = S.marca === d.marca ? '' : d.marca;
+      S.limite = POR_PAGINA;
+      pintarProductos({ arriba: true });
+    } else if (d.car) { irSlide(CAR.i + (d.car === 'next' ? 1 : -1)); pausarAuto(); }
     else if (d.carIr !== undefined) { irSlide(Number(d.carIr)); pausarAuto(); }
     else if (d.fav) { e.stopPropagation(); toggleFavorito(Number(d.fav)); }
-    else if (d.agregar) { e.stopPropagation(); agregar(Number(d.agregar)); }
+    else if (d.agregar) {
+      e.stopPropagation();
+      volarAlCarrito(t.closest('.card, .sim-card, .fav-line'));
+      agregar(Number(d.agregar));
+    }
     else if (d.ver) abrirDetalle(Number(d.ver));
     else if (d.det) {
       const p = S.detalle && S.porId.get(S.detalle.id);
@@ -1351,8 +1779,12 @@
     else if (d.quitar) quitar(Number(d.quitar));
     else if (d.cat !== undefined) {
       S.categoria = d.cat;
-      document.querySelectorAll('#cats button').forEach((b) => b.classList.toggle('on', b.dataset.cat === S.categoria));
+      S.limite = POR_PAGINA;
       pintarProductos({ arriba: true });
+      const box = $('#productos');
+      box?.classList.remove('vista-entra');
+      void box?.offsetWidth;
+      box?.classList.add('vista-entra');
     } else if (d.entrega) {
       recordarForm();
       S.entrega = d.entrega;
@@ -1360,6 +1792,16 @@
       recotizar();
     } else if (d.act === 'cerrar') cerrarPanel();
     else if (d.act === 'cerrar-detalle') cerrarDetalle();
+    else if (d.act === 'cerrar-menu') cerrarMenu();
+    else if (d.act === 'abrir-filtros') abrirFiltros(true);
+    else if (d.act === 'cerrar-filtros') abrirFiltros(false);
+    else if (d.act === 'mas-productos') masProductos();
+    else if (d.act === 'detalle-completo') {
+      S.detalle.rapida = false;
+      $('#modal').classList.remove('rapida');
+      pintarDetalle();
+      $('#modal-body').scrollTop = 0;
+    }
     else if (d.act === 'agregar-detalle') agregarDesdeDetalle();
     else if (d.act === 'reintentar') arrancarCatalogo();
     else if (d.act === 'ver-mas') {
@@ -1375,7 +1817,33 @@
     else if (d.act === 'carrito' || d.act === 'ver-carrito') irA('carrito');
     else if (d.act === 'confirmar') confirmar();
   });
-  $('#buscar').addEventListener('input', (e) => { S.buscar = e.target.value; pintarProductos({ arriba: true }); });
+  // Búsqueda al instante: abre el catálogo al escribir y vuelve al borrar.
+  let esperaBusqueda = null;
+  $('#buscar').addEventListener('input', (e) => {
+    S.buscar = e.target.value;
+    S.limite = POR_PAGINA;
+    clearTimeout(esperaBusqueda);
+    esperaBusqueda = setTimeout(() => {
+      const hay = Boolean(S.buscar.trim());
+      if (hay && S.vista !== 'catalogo') { S.porBusqueda = true; entrarCatalogo(); return; }
+      if (!hay && S.porBusqueda) { irAlInicio(); return; }
+      pintarProductos({ arriba: true });
+    }, 120);
+  });
+  $('#menu-btn').addEventListener('click', abrirMenu);
+  // Sombra del encabezado al bajar (y su medida al girar el teléfono).
+  let marcoScroll = 0;
+  window.addEventListener('scroll', () => {
+    if (marcoScroll) return;
+    marcoScroll = requestAnimationFrame(() => {
+      marcoScroll = 0;
+      $('#top').classList.toggle('scroll', window.scrollY > 4);
+    });
+  }, { passive: true });
+  window.addEventListener('resize', () => {
+    medirEncabezado();
+    document.querySelectorAll('.fila').forEach(flechasDeFila);
+  }, { passive: true });
   $('#tema-btn').addEventListener('click', cambiarTema);
   $('#fav-btn').addEventListener('click', () => abrirPanel('favoritos'));
   $('#pedidos-btn').addEventListener('click', () => abrirPanel('pedidos'));
@@ -1384,6 +1852,8 @@
     if (e.key === 'Escape') {
       if (S.detalle) cerrarDetalle();
       else if (S.panel) cerrarPanel();
+      else if ($('#menu').classList.contains('open')) cerrarMenu();
+      else if ($('#filtros')?.classList.contains('open')) abrirFiltros(false);
       return;
     }
     // Flechas del teclado: cambian la foto del carrusel (si no se está escribiendo).
@@ -1408,7 +1878,22 @@
     caja.classList.add(fondoDe(p));
     img.outerHTML = `<span class="emoji" aria-hidden="true">${emojiDe(p)}</span>`;
   }, true);
-  window.addEventListener('popstate', () => { if (S.detalle) ocultarDetalle(); });
+  window.addEventListener('popstate', () => {
+    if (S.detalle) { ocultarDetalle(); return; }
+    // Botón atrás del teléfono: del catálogo vuelve al inicio de la tienda.
+    const enCatalogo = Boolean(history.state?.tcCatalogo);
+    if (!S.tienda || enCatalogo === (S.vista === 'catalogo')) return;
+    if (!enCatalogo) {
+      limpiarFiltros();
+      S.buscar = '';
+      S.porBusqueda = false;
+      $('#buscar').value = '';
+    }
+    S.vista = enCatalogo ? 'catalogo' : 'inicio';
+    pintarCatalogo();
+    pintarTabbar();
+    window.scrollTo(0, 0);
+  });
   // Secciones desplegables del detalle ("toggle" no sube: se escucha en captura).
   document.addEventListener('toggle', (e) => {
     const sec = e.target?.dataset?.acc;
@@ -1435,13 +1920,27 @@
     S.carrito.items = S.carrito.items.filter((i) => S.porId.has(i.productoId) && !S.porId.get(i.productoId).agotado);
     if (S.carrito.items.length !== antes) { guardarCarrito(); toast('Algunos productos de tu carrito ya no están disponibles.'); }
     if (S.detalle && !S.porId.has(S.detalle.id)) cerrarDetalle();
-    aplicarColor(S.tienda.colorPrimario);
+    aplicarDiseno();
     pintarEncabezado();
     if (inicial || !$('#productos') || JSON.stringify(S.tienda) !== tiendaAntes) pintarCatalogo();
     else pintarProductos();
+    abrirProductoDelEnlace();
     pintarContadores();
     if (S.panel === 'favoritos') pintarPanel();
     if (S.detalle && !document.querySelector('#modal-foot input:focus')) pintarDetalle();
+  }
+
+  /** Enlace directo a un producto (?p=id): se abre una sola vez, al entrar. */
+  let enlaceRevisado = false;
+  function abrirProductoDelEnlace() {
+    if (enlaceRevisado) return;
+    enlaceRevisado = true;
+    const id = Number(new URLSearchParams(location.search).get('p'));
+    if (!id) return;
+    if (S.porId.has(id)) abrirDetalle(id, { desdeUrl: true });
+    else {
+      try { history.replaceState(history.state, '', location.pathname); } catch (_e) { /* sin historial */ }
+    }
   }
 
   /** Pide el catálogo; solo repinta si algo cambió. Devuelve true si cambió. */
@@ -1458,7 +1957,8 @@
   /** Lo último guardado en este teléfono (para mostrar algo al instante). */
   function mostrarGuardado() {
     const guardado = leerJSON(KEY_CATALOGO, null);
-    if (!guardado?.data?.tienda || !Array.isArray(guardado.data.productos) || Date.now() - Number(guardado.en || 0) > MAX_EDAD_GUARDADO) return false;
+    // Lo guardado antes del rediseño no trae el diseño: se espera a lo del servidor.
+    if (!guardado?.data?.tienda?.diseno || !Array.isArray(guardado.data.productos) || Date.now() - Number(guardado.en || 0) > MAX_EDAD_GUARDADO) return false;
     try {
       aplicarDatos(guardado.data, { inicial: true });
       S.ultimoCatalogo = JSON.stringify(guardado.data);
@@ -1478,11 +1978,11 @@
       const malo = ['cancelado', 'rechazado'].includes(p.estado);
       const idx = pasos.indexOf(p.estado);
       const tienda = p.tienda || {};
-      aplicarColor(tienda.colorPrimario);
+      window.TCDiseno.aplicarColor(tienda.colorPrimario);
       document.title = `Pedido #${p.numero} · ${tienda.nombre || ''}`;
       // El logo (el mismo ícono de la tienda) y el nombre llevan al inicio de la tienda.
       $('#brand').innerHTML = `<img src="/t/${encodeURIComponent(SLUG)}/iconos/64.png" alt=""><h1>${esc(tienda.nombre || 'Tu pedido')}</h1>`;
-      contactoEnEncabezado(tienda.telefono, tienda.whatsapp);
+      contactoEnEncabezado(tienda.telefono, tienda.whatsapp || tienda.telefono);
       const t = p.totales || {};
       $('#app').innerHTML = `
         <div class="wrap"><div class="track">

@@ -73,7 +73,7 @@ function createTiendaOnline(deps) {
   }
 
   const settingsStore = createSettingsStore({ query, nowSql });
-  const catalogBuilder = createCatalogBuilder({ query, getLicenseId, readBanner: settingsStore.readBanner });
+  const catalogBuilder = createCatalogBuilder({ query, nowSql, getLicenseId, readBanner: settingsStore.readBanner });
   const nube = createNube({ getFirestore, getFieldValue, getLicenseId });
   const notifier = createNotifier({ query, nowSql, getWaBot, logger });
   const orders = createOrdersService({ query, withTransaction, nowSql, formatSqlDate, mapClientRow, notifier, emit, logger });
