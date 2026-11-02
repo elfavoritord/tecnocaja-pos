@@ -270,6 +270,9 @@ module.exports = function createOfflineRouter(deps) {
   router.post('/init-cache', async (req, res) => {
     try {
       await ensurePromotionsExtensions();
+      if (typeof ensurePendingCashMovementExtensions === 'function') {
+        await ensurePendingCashMovementExtensions().catch(() => {});
+      }
       const tc = getTerminalConfig() || {};
       const terminalId = tc.terminalId || 'default';
       const branchId = tc.branchId || null;

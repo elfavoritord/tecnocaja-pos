@@ -106,7 +106,45 @@ function resolveBranch(actor, requested, { isGlobalAdministratorUser, getUserSco
   return Number(scoped);
 }
 
+function digitosDeDocumento(documento) {
+  const digitos = String(documento || '').replace(/\D/g, '');
+  return digitos.length === 9 || digitos.length === 11 ? digitos : '';
+}
+
+// El cliente que ya tiene ese RNC o cédula, escrito con o sin guiones.
+async function buscarClientePorDocumento(query, documento) {
+  const digitos = digitosDeDocumento(documento);
+  if (!digitos) return null;
+  const sinGuiones = (campo) => `REPLACE(REPLACE(COALESCE(${campo}, ''), '-', ''), ' ', '')`;
+  const filas = await query(
+    `SELECT id, nombre FROM clients WHERE ${sinGuiones('cedula')} = ? OR ${sinGuiones('rnc')} = ? LIMIT 1`,
+    [digitos, digitos]
+  ).catch(() => query(`SELECT id, nombre FROM clients WHERE ${sinGuiones('cedula')} = ? LIMIT 1`, [digitos]));
+  return filas[0] || null;
+}
+
+// Cliente escrito a mano en un documento: queda en Clientes si trae nombre y un RNC
+// o cédula válidos. Si no se puede guardar, el documento sigue con los datos escritos.
+async function agregarClienteDelDocumento(deps, { nombre, documento, actor, modulo }) {
+  const { query, insertClientRow, mapClientRow, writeAuditLog } = deps;
+  const digitos = digitosDeDocumento(documento);
+  const limpio = String(nombre || '').trim();
+  if (!insertClientRow || !digitos || !limpio || /^consumidor final$/i.test(limpio)) return null;
+  try {
+    const fila = await insertClientRow({ query }, { nombre: limpio, cedula: digitos });
+    await writeAuditLog({
+      userId: actor?.id, userName: actorName(actor), userRole: roleCodeOf(actor),
+      moduleName: 'Clientes', actionName: 'Cliente creado', detail: `${limpio} (desde ${modulo})`, clientId: fila.id,
+    });
+    return mapClientRow ? mapClientRow(fila) : fila;
+  } catch (error) {
+    console.warn('[servicios] No se pudo agregar el cliente del documento:', error.message);
+    return null;
+  }
+}
+
 module.exports = {
   httpError, roleCodeOf, actorName, round2, computeTotals,
   makeServiceGuard, resolveBranch,
+  buscarClientePorDocumento, agregarClienteDelDocumento,
 };

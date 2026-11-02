@@ -22,6 +22,7 @@ describe('reference structure', () => {
         tipoeCF: 'E33',
         tipoIngresos: '01',
         tipoPago: '1',
+        fechaVencimientoSecuencia: '2028-12-31',
         referencia: {
           ncfModificado: 'E310000000001',
           fechaNcfModificado: '01-01-2026',

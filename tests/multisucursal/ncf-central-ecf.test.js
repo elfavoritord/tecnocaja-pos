@@ -54,6 +54,15 @@ async function crearSucursal() {
 const E32_NORTE = { rangoUuid: RANGO_A, tipo: 'E32', desde: 101, hasta: 200, autorizacion: '6005604697', estado: 'asignado' };
 
 describe('rangos e-NCF asignados por la central', () => {
+  test('la fecha de vencimiento: E32 no la guarda aunque llegue; E31 sí', async () => {
+    const { query, ncf } = await crearSucursal();
+    await ncf.registrar({ ...E32_NORTE, vence: '2099-12-31' });
+    await ncf.registrar({ rangoUuid: '22222222-2222-4222-8222-222222222222', tipo: 'E31', desde: 1, hasta: 10, vence: '2099-12-31', autorizacion: '60', estado: 'asignado' });
+    await ncf.ajustar();
+    const filas = await query('SELECT tipo_comprobante AS tipo, fecha_vencimiento AS vence FROM ecf_sequences ORDER BY tipo_comprobante');
+    expect(filas).toEqual([{ tipo: 'E31', vence: '2099-12-31' }, { tipo: 'E32', vence: null }]);
+  });
+
   test('el rango llega en espera y al activarse queda como única secuencia E32 de producción', async () => {
     const { query, repo, ncf, eventos } = await crearSucursal();
     // Una secuencia cargada a mano antes de unirse a la empresa.
@@ -113,7 +122,7 @@ describe('rangos e-NCF asignados por la central', () => {
     // Rango del archivo de la DGII, ya usado (va por el 2); otro desactivado sin usar.
     const enUso = await repo.saveSequence(1, { tipoComprobante: 'E32', environment: 'ecf', authorizationReference: '6005604697', fechaAutorizacion: '2026-10-25', desde: 1, hasta: 100 });
     await query('UPDATE ecf_sequences SET proximo_numero = 2 WHERE id = ?', [enUso.id]);
-    const sinUsar = await repo.saveSequence(1, { tipoComprobante: 'E31', environment: 'ecf', authorizationReference: 'X', fechaAutorizacion: '2026-10-25', desde: 1, hasta: 10 });
+    const sinUsar = await repo.saveSequence(1, { tipoComprobante: 'E31', environment: 'ecf', authorizationReference: 'X', fechaAutorizacion: '2026-10-25', fechaVencimiento: `${new Date().getFullYear() + 1}-12-31`, desde: 1, hasta: 10 });
     await query('UPDATE ecf_sequences SET activo = 0 WHERE id = ?', [sinUsar.id]);
 
     const reportados = await ncf.reportarLocales();

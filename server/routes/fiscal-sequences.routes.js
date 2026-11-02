@@ -47,7 +47,7 @@ const DOCUMENT_LABELS = {
   B14: 'Régimen Especial', B15: 'Gubernamental', B16: 'Comprobante para Exportaciones',
   B17: 'Comprobante para Pagos al Exterior',
 };
-const ACTIVATABLE_STATUSES = ['pendiente', 'legacy_unverified'];
+const ACTIVATABLE_STATUSES = ['pendiente', 'legacy_unverified', 'suspendido'];
 // Umbral por defecto (fallback si config.ncf_alert_low_count_threshold no
 // está configurado) por debajo del cual una secuencia 'activo' se muestra
 // como "próxima a agotarse" en el panel — no se persiste, se calcula al
@@ -66,8 +66,9 @@ async function addColumnIfMissing(query, tableName, columnName, definition) {
     await query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   } catch (error) {
     const message = String(error?.message || '').toLowerCase();
-    const isMissingTable = message.includes('no such table') || message.includes("doesn't exist");
-    if (!isMissingTable) throw error;
+    // Dos peticiones a la vez pueden agregar la misma columna: la segunda no es un error.
+    const seIgnora = message.includes('no such table') || message.includes("doesn't exist") || message.includes('duplicate column');
+    if (!seIgnora) throw error;
   }
 }
 
@@ -248,6 +249,7 @@ function mapEcfSequenceReadOnly(row) {
     authorizationDate: row.fecha_autorizacion,
     expirationDate: row.fecha_vencimiento,
     authorizationReference: row.authorization_reference || null,
+    modoSimple: Boolean(Number(row.modo_simple || 0)),
     environment: 'e-cf',
     status,
     effectiveStatus,
@@ -453,7 +455,7 @@ function createFiscalSequencesRouter({
            ORDER BY es.tipo_comprobante, es.branch_id`,
           ecfParams
         );
-        return res.json(ecfRows.map(mapEcfSequenceReadOnly));
+        return res.json(ecfRows.filter((row) => !row.deleted_at).map(mapEcfSequenceReadOnly));
       }
 
       const conditions = ['fs.deleted_at IS NULL'];

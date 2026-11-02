@@ -46,7 +46,8 @@ function createSucursalesConectadas({ getDb, colLicencias = 'licencias' }) {
   // empresa no trabaja con sucursales conectadas (todo queda como antes).
   async function deLaCentral(licenseId) {
     const activas = (await centrales(licenseId).catch(() => [])).filter((s) => s.estado === 'activa');
-    const otras = activas.filter((s) => !s.esPrincipal);
+    // Firestore las entrega por su id, que es al azar: sin ordenar cambiaban de lugar entre negocios.
+    const otras = activas.filter((s) => !s.esPrincipal).sort((a, b) => String(a.nombre).localeCompare(String(b.nombre), 'es'));
     const principal = activas.find((s) => s.esPrincipal);
     return otras.length && principal ? { principal, otras } : null;
   }

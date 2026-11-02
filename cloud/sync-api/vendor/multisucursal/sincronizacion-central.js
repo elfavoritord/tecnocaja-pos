@@ -66,6 +66,7 @@ const NCF_MAXIMO = 99999999;
 // El e-NCF lleva 10 dígitos, pero la tabla ncf_rangos_central del POS guarda
 // los números en INT: hasta 2,147,483,647. La DGII no da números tan altos.
 const ECF_MAXIMO = 2147483647;
+const ECF_SIN_VENCIMIENTO = Object.freeze(['E32', 'E34']);
 const ZONA_RD_MS = 4 * 60 * 60 * 1000; // UTC-4 todo el año (sin horario de verano)
 
 // Un evento que la central no acepta por sus datos: la sucursal lo marca
@@ -674,6 +675,11 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
         throw new ErrorSucursales(`El rango debe ir de un número a otro mayor o igual (1 a ${maximo}).`, 'DATOS_INVALIDOS');
       }
       if (vence && !FECHA.test(vence)) throw new ErrorSucursales('La fecha de vencimiento va como AAAA-MM-DD.', 'DATOS_INVALIDOS');
+      // Mismo criterio del POS (XSD de la DGII): E32 y E34 no llevan fecha; los demás e-NCF, sí.
+      const sinFecha = ECF_SIN_VENCIMIENTO.includes(tipo);
+      if (tipo.startsWith('E') && !sinFecha && !vence) {
+        throw new ErrorSucursales(`El ${tipo} lleva obligatoriamente la fecha de vencimiento de la secuencia: indícala.`, 'DATOS_INVALIDOS');
+      }
       const suc = await tx.get(sucRef(licenseId, branchUuid));
       if (!suc.exists) throw new ErrorSucursales('Sucursal no encontrada.', 'NO_ENCONTRADA', 404);
       if (suc.data().estado !== ESTADOS.ACTIVA) throw new ErrorSucursales('La sucursal está desactivada.', 'SUCURSAL_INACTIVA', 409);
@@ -691,7 +697,7 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
       const seq = await reservarSeq(tx, licenseId);
       const rangoUuid = randomUUID();
       const doc = {
-        tipo, desde, hasta, vence: vence || null, autorizacion: texto(datos?.autorizacion, 60) || null,
+        tipo, desde, hasta, vence: sinFecha ? null : vence || null, autorizacion: texto(datos?.autorizacion, 60) || null,
         estado: 'asignado', seq: seq.siguiente(), creadoPor: quien(actor), creadoEn: now(),
       };
       tx.set(sucRef(licenseId, branchUuid).collection('ncf_rangos').doc(rangoUuid), doc);

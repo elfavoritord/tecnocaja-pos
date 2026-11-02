@@ -199,7 +199,8 @@ function createSucursalesCentral({
     const snap = await sucursalesRef(licenseId).get();
     const sucursales = snap.docs.map(aVista).sort((a, b) => {
       if (a.esPrincipal !== b.esPrincipal) return a.esPrincipal ? -1 : 1;
-      return String(a.createdAt).localeCompare(String(b.createdAt));
+      // Dos creadas en el mismo instante no deben cambiar de lugar en cada consulta.
+      return String(a.createdAt).localeCompare(String(b.createdAt)) || String(a.nombre).localeCompare(String(b.nombre));
     });
     const activas = sucursales.filter((s) => s.estado === ESTADOS.ACTIVA).length;
     return {

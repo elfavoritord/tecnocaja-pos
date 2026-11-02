@@ -2024,6 +2024,7 @@ function renderSequencesTable(container, seqs) {
               <td style="display:flex;gap:.35rem;flex-wrap:wrap">
                 ${seq.activo ? `<button class="btn-xs" onclick='setEcfSequenceNext(${seq.id}, ${Number(seq.proximo || 0)}, ${JSON.stringify(String(seq.tipoComprobante || ''))})' title="Ajustar próximo número">↺</button>` : ''}
                 ${seq.activo ? `<button class="btn-xs btn-danger" onclick="disableEcfSequence(${seq.id})" title="Desactivar">✕</button>` : ''}
+                ${!seq.activo && !seq.isExpired && !seq.isExhausted ? `<button class="btn-xs btn-primary" onclick="enableEcfSequence(${seq.id})" title="Activar">▶</button>` : ''}
                 <button class="btn-xs btn-danger" onclick="deleteEcfSequencePermanently(${seq.id},'${escapeHtml(seq.tipoComprobante)}')" title="Eliminar permanentemente">🗑</button>
               </td>
             </tr>
@@ -2225,10 +2226,28 @@ async function disableEcfSequence(id) {
   }
 }
 
+async function enableEcfSequence(id) {
+  try {
+    await fiscalApi('POST', `/sequences/${id}/enable`);
+    showFiscalToast('Secuencia activada.', 'success');
+    await loadFiscalSequences();
+    await loadFiscalStatus();
+  } catch (e) {
+    showFiscalToast(`Error: ${e.message}`, 'error');
+  }
+}
+
 async function deleteEcfSequencePermanently(id, tipo) {
   if (!confirm(`¿ELIMINAR permanentemente la secuencia ${tipo || id}?\n\nEsta acción no se puede deshacer. La secuencia será borrada de la base de datos.`)) return;
   try {
-    const r = await fiscalApi('DELETE', `/sequences/${id}/permanent`);
+    let r;
+    try {
+      r = await fiscalApi('DELETE', `/sequences/${id}/permanent`);
+    } catch (e) {
+      if (!e.details?.usada) throw e;
+      if (!confirm(`${e.message} ¿Eliminarla de todas formas?\n\nSe quita de la lista y no se usará más. Los e-CF ya emitidos se conservan y esos números no se repiten.`)) return;
+      r = await fiscalApi('DELETE', `/sequences/${id}/permanent?force=1`);
+    }
     if (r.ok) {
       showFiscalToast(`Secuencia ${tipo || id} eliminada.`, 'success');
       await loadFiscalSequences();
@@ -2345,6 +2364,9 @@ function renderDocsTable(container, data) {
                 <button class="btn-xs" onclick="checkEcfDocStatus(${doc.id})" title="Ver estado">⟳</button>
                 <button class="btn-xs" onclick="viewEcfXml(${doc.id})" title="Ver XML">XML</button>
                 <button class="btn-xs" onclick="downloadEcfXml(${doc.id}, '${escapeHtml(doc.encf)}')" title="Descargar XML">⬇</button>
+                ${doc.sale_id && ['aceptado', 'aceptado_condicional'].includes(doc.estado_dgii) && !['E33', 'E34'].includes(doc.tipo_ecf)
+                  ? `<button class="btn-xs" onclick="openEcfNoteModal(${doc.id}, '${escapeHtml(doc.encf)}')" title="Nota de crédito o débito">Nota</button>`
+                  : ''}
               </td>
             </tr>
           `).join('')}
@@ -2352,6 +2374,65 @@ function renderDocsTable(container, data) {
       </table>
     </div>
   `;
+}
+
+// Nota de crédito (anula toda la factura o rebaja un monto) o de débito (aumenta un monto).
+function openEcfNoteModal(documentId, encf, alTerminar = null) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(6,8,16,.88);z-index:5000;display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;width:min(460px,92vw)">
+      <h3 style="margin:0 0 .85rem">Nota para ${escapeHtml(encf)}</h3>
+      <div class="form-group"><label>Tipo</label>
+        <select id="ecf-nota-tipo" class="form-input">
+          <option value="anular">E34 · Nota de crédito: anular toda la factura</option>
+          <option value="E34">E34 · Nota de crédito: rebajar un monto</option>
+          <option value="E33">E33 · Nota de débito: aumentar un monto</option>
+        </select></div>
+      <div id="ecf-nota-monto-box" style="display:none;grid-template-columns:1fr 1fr;gap:.5rem">
+        <div class="form-group"><label>Monto sin ITBIS</label><input type="number" min="0.01" step="0.01" id="ecf-nota-monto" class="form-input"></div>
+        <div class="form-group"><label>ITBIS</label>
+          <select id="ecf-nota-itbis" class="form-input"><option value="18">18%</option><option value="16">16%</option><option value="0">Exento</option></select></div>
+      </div>
+      <div class="form-group"><label>Motivo</label><input type="text" id="ecf-nota-razon" class="form-input" maxlength="90"></div>
+      <div id="ecf-nota-error" role="alert" style="display:none;margin-top:.6rem;color:#dc2626;font-size:.85rem;line-height:1.4"></div>
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;margin-top:1rem">
+        <button class="btn-secondary" data-action="cancel">Cancelar</button>
+        <button class="btn-primary" data-action="ok">Emitir nota</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const tipo = overlay.querySelector('#ecf-nota-tipo');
+  tipo.onchange = () => { overlay.querySelector('#ecf-nota-monto-box').style.display = tipo.value === 'anular' ? 'none' : 'grid'; };
+  overlay.querySelector('[data-action="cancel"]').onclick = () => overlay.remove();
+  const emitir = overlay.querySelector('[data-action="ok"]');
+  emitir.onclick = async () => {
+    emitir.disabled = true;
+    emitir.textContent = 'Enviando a la DGII…';
+    try {
+      const r = await fiscalApi('POST', '/notas', {
+        documentId,
+        encf,
+        tipoEcf: tipo.value === 'E33' ? 'E33' : 'E34',
+        anular: tipo.value === 'anular',
+        monto: Number(overlay.querySelector('#ecf-nota-monto').value || 0),
+        itbis: Number(overlay.querySelector('#ecf-nota-itbis').value || 0),
+        razon: overlay.querySelector('#ecf-nota-razon').value.trim(),
+      });
+      if (r.ok === false) throw new Error(r.error || 'La DGII no aceptó la nota.');
+      showFiscalToast(`Nota ${r.encf} emitida.`, 'success');
+      overlay.remove();
+      if (alTerminar) alTerminar();
+      else await loadEcfDocuments();
+    } catch (e) {
+      emitir.disabled = false;
+      emitir.textContent = 'Emitir nota';
+      // El aviso va dentro de la ventana: el motivo de la DGII puede ser largo.
+      const aviso = overlay.querySelector('#ecf-nota-error');
+      aviso.textContent = e.message;
+      aviso.style.display = '';
+    }
+  };
 }
 
 async function resendEcfDoc(id) {

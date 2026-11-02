@@ -93,7 +93,7 @@ test('instala sin pedir el respaldo por fetch: lo hace el proceso principal', as
   await u.ctx.Actualizaciones.installUpdate();
   expect(u.ctx.fetch).not.toHaveBeenCalled();
   expect(u.ctx.novaDesktop.updaterInstall).toHaveBeenCalledTimes(1);
-  expect(u.ctx.novaDesktop.updaterInstall).toHaveBeenCalledWith({ skipBackup: false });
+  expect(u.ctx.novaDesktop.updaterInstall).toHaveBeenCalledWith({ skipBackup: false, comprobarOperaciones: true });
   expect(u.estado()).toMatch(/Instalando/);
   expect(u.historial()[0]).toMatchObject({ version: '1.4.6' });
 });
@@ -106,7 +106,7 @@ test('si el respaldo falla pregunta y, si acepta, instala sin respaldo', async (
   await u.ctx.Actualizaciones.installUpdate();
   expect(u.ctx.showDeleteConfirm).toHaveBeenCalledTimes(2);
   expect(u.ctx.showDeleteConfirm.mock.calls[1][0]).toMatch(/disco lleno/);
-  expect(u.ctx.novaDesktop.updaterInstall.mock.calls).toEqual([[{ skipBackup: false }], [{ skipBackup: true }]]);
+  expect(u.ctx.novaDesktop.updaterInstall.mock.calls).toEqual([[{ skipBackup: false, comprobarOperaciones: true }], [{ skipBackup: true, comprobarOperaciones: true }]]);
   expect(u.estado()).toMatch(/Instalando/);
 });
 
@@ -140,5 +140,5 @@ test('respeta la opción "Respaldo antes de actualizar" apagada', async () => {
   await u.ctx.Actualizaciones.init();
   u.emitir('downloaded', { version: '1.4.6' });
   await u.ctx.Actualizaciones.installUpdate();
-  expect(u.ctx.novaDesktop.updaterInstall).toHaveBeenCalledWith({ skipBackup: true });
+  expect(u.ctx.novaDesktop.updaterInstall).toHaveBeenCalledWith({ skipBackup: true, comprobarOperaciones: true });
 });

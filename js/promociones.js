@@ -624,6 +624,7 @@ async function savePromotionsConfig() {
 // Se refresca solo (independiente de que el cajero visite el módulo) para que
 // las alertas aparezcan aunque nunca abra Centro de Promociones.
 async function refreshPromotionAlertsData() {
+  if (!DB?.authToken) return;
   try {
     const res = await apiGet('/api/promotions');
     _promotionsCache = res.promotions || [];

@@ -26,6 +26,7 @@
  */
 
 const crypto = require('crypto');
+const { llevaVencimiento } = require('../../modules/ecf/config/document-types');
 
 const NOMBRES = {
   B01: 'Crédito Fiscal', B02: 'Consumidor Final', B03: 'Nota de Débito', B04: 'Nota de Crédito',
@@ -176,7 +177,7 @@ function createNcfCentral({
            (business_id, branch_id, cash_register_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero,
             fecha_autorizacion, fecha_vencimiento, environment, authorization_reference, activo, created_at, updated_at)
          VALUES (1, NULL, NULL, ?, ?, ?, ?, NULL, ?, 'ecf', ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [rango.tipo, Number(rango.desde), Number(rango.hasta), Number(rango.desde), rango.vence || null, rango.autorizacion || null]
+        [rango.tipo, Number(rango.desde), Number(rango.hasta), Number(rango.desde), llevaVencimiento(rango.tipo) ? rango.vence || null : null, rango.autorizacion || null]
       );
       await conn.query(
         "UPDATE ncf_rangos_central SET estado = 'en_uso', sistema = 'ecf', secuencia_local_id = ?, motivo = NULL, actualizado_at_utc = ? WHERE rango_uuid = ?",
@@ -247,15 +248,14 @@ function createNcfCentral({
   // tiene, y uno nuevo de la central espera a que se agoten (ajustar()).
   async function reportarLocales() {
     const filas = await query(
-      `SELECT s.id, s.tipo_comprobante, s.numero_inicial, s.numero_final, s.proximo_numero, s.activo,
-              s.fecha_vencimiento, s.authorization_reference
+      `SELECT s.*
          FROM ecf_sequences s
         WHERE s.environment = 'ecf'
           AND NOT EXISTS (SELECT 1 FROM ncf_rangos_central r WHERE r.sistema = 'ecf' AND r.secuencia_local_id = s.id)
         ORDER BY s.id`
     ).catch(() => []); // sin factura electrónica en esta PC no hay nada que avisar
     const reportados = [];
-    for (const s of filas) {
+    for (const s of filas.filter((fila) => !fila.deleted_at)) {
       const desde = Number(s.numero_inicial);
       const hasta = Number(s.numero_final);
       const siguiente = Number(s.proximo_numero);

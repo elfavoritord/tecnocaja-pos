@@ -87,6 +87,7 @@ async function loadEcfProdSequences() {
     ecfProdSeqRows = rows;
     ecfProdSeqCentral = central;
     ecfProdSeqRenderCentral();
+    ecfProdSeqRenderSimple(rows);
     ecfProdSeqRenderEnvironment(status, rows);
     ecfProdSeqDecorateDrop();
     const inUse = ecfProdSeqInUseIds(rows);
@@ -98,6 +99,64 @@ async function loadEcfProdSequences() {
   } catch (e) {
     container.innerHTML = `<div class="error-text">Error al cargar: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+// Modo sencillo: una casilla por tipo. Equivalente en la serie B para reconocerlo.
+const ECF_PROD_SEQ_EQUIVALENTE_B = {
+  E31: 'B01', E32: 'B02', E33: 'B03', E34: 'B04', E41: 'B11', E43: 'B13', E44: 'B14', E45: 'B15', E46: 'B16', E47: 'B17',
+};
+// Según los XSD de la DGII, E32 y E34 no llevan fecha de vencimiento; los demás, sí.
+const ECF_PROD_SEQ_SIN_VENCIMIENTO = new Set(['E32', 'E34']);
+
+function ecfProdSeqRenderSimple(rows) {
+  const box = document.getElementById('ecf-prod-seq-simple');
+  const list = document.getElementById('ecf-prod-seq-simple-list');
+  if (!box || !list) return;
+  box.hidden = ecfProdSeqCentral.vinculado;
+  list.innerHTML = ecfProdSeqTypes.map((type) => {
+    const vigentes = rows.filter((seq) => seq.tipoComprobante === type.code && seq.activo && !seq.isExpired && !seq.isExhausted);
+    const conRango = vigentes.some((seq) => !seq.modoSimple);
+    const simple = vigentes.find((seq) => seq.modoSimple);
+    let nota = 'Sin activar';
+    if (vigentes.length && !ECF_PROD_SEQ_SIN_VENCIMIENTO.has(type.code) && !vigentes.some((seq) => seq.fechaVencimiento)) nota = 'Le falta la fecha de vencimiento';
+    else if (conRango) nota = 'Con el rango que cargaste de la DGII';
+    else if (simple) nota = `Activo · sigue en ${ecfProdSeqEncf(type.code, simple.proximo)}`;
+    return `<label class="ecfs-simple__item">
+      <input type="checkbox" ${vigentes.length ? 'checked' : ''} ${conRango ? 'disabled' : ''}
+        onchange="ecfProdSeqToggleSimple('${type.code}', ${simple ? simple.id : 'null'}, this)">
+      <span>
+        <span class="ecfs-simple__name">${type.code} · ${escapeHtml(type.label)} (${ECF_PROD_SEQ_EQUIVALENTE_B[type.code] || ''})</span><br>
+        <span class="ecfs-simple__note">${escapeHtml(nota)}</span>
+      </span>
+    </label>`;
+  }).join('');
+}
+
+async function ecfProdSeqToggleSimple(tipo, simpleId, input) {
+  const marcado = input.checked;
+  try {
+    if (!marcado) {
+      await fiscalApi('DELETE', `/sequences/${simpleId}`);
+      showToast(`${tipo} desactivado.`, 'success');
+    } else {
+      let fechaVencimiento = null;
+      if (!ECF_PROD_SEQ_SIN_VENCIMIENTO.has(tipo)) {
+        // La DGII exige esta fecha en el XML. Se sugiere el plazo normal de la secuencia.
+        fechaVencimiento = await showPromptModal(
+          `El ${tipo} lleva obligatoriamente la fecha de vencimiento de la secuencia. Confírmala con tu autorización de la DGII:`,
+          { inputType: 'date', defaultValue: `${new Date().getFullYear() + 1}-12-31` }
+        );
+        if (!fechaVencimiento) { input.checked = false; return; }
+      }
+      await fiscalApi('POST', '/sequences/simple', { tipoComprobante: tipo, fechaVencimiento });
+      showToast(`${tipo} activado.`, 'success');
+    }
+  } catch (e) {
+    input.checked = !marcado;
+    showToast('Error: ' + e.message, 'error');
+    return;
+  }
+  loadEcfProdSequences();
 }
 
 // Sucursal de una empresa: la carga del archivo de la DGII se cambia por un
@@ -156,23 +215,27 @@ function ecfProdSeqInUseIds(rows) {
 }
 
 function ecfProdSeqRenderCard(seq, inUse = new Set()) {
+  const llevaFecha = !ECF_PROD_SEQ_SIN_VENCIMIENTO.has(seq.tipoComprobante);
+  const faltaFecha = llevaFecha && !seq.fechaVencimiento;
   let estado;
   if (!seq.activo) estado = { label: 'Inactiva', cls: '' };
   else if (seq.isExpired) estado = { label: 'Vencida', cls: 'ecfs-pill--bad' };
   else if (seq.isExhausted) estado = { label: 'Agotada', cls: 'ecfs-pill--bad' };
+  else if (faltaFecha) estado = { label: 'Falta la fecha', cls: 'ecfs-pill--bad', hint: 'Sin la fecha de vencimiento que dio la DGII no se puede emitir.' };
   else if (inUse.has(seq.id)) estado = { label: 'En uso', cls: 'ecfs-pill--ok' };
   else estado = { label: 'En espera', cls: '', hint: 'Se empieza a usar cuando se agote el rango anterior.' };
   const total = Math.max(1, Number(seq.hasta) - Number(seq.desde) + 1);
   const disponibles = seq.isExhausted ? 0 : Number(seq.remaining || 0);
   const usados = total - disponibles;
   const pct = Math.min(100, Math.round((usados / total) * 100));
-  const pocos = disponibles > 0 && disponibles / total < 0.1;
+  const pocos = !seq.modoSimple && disponibles > 0 && disponibles / total < 0.1;
   const lugar = `${seq.branchName || 'Global'}${seq.cashRegisterName ? ` / ${seq.cashRegisterName}` : ''}`;
   // Un rango de la central se maneja desde el panel de sucursales: aquí no se
   // cambia el próximo número ni se desactiva o borra.
   const central = ecfProdSeqFromCentral(seq);
   const autorizacion = [
-    seq.authorizationReference ? `Autorización DGII ${escapeHtml(seq.authorizationReference)}` : 'Sin Nº de autorización',
+    seq.modoSimple ? 'Modo sencillo'
+      : seq.authorizationReference ? `Autorización DGII ${escapeHtml(seq.authorizationReference)}` : 'Sin Nº de autorización',
     seq.fechaAutorizacion ? ecfProdSeqFormatDate(seq.fechaAutorizacion) : '',
     central ? 'Asignado por la central' : '',
   ].filter(Boolean).join(' · ');
@@ -190,18 +253,20 @@ function ecfProdSeqRenderCard(seq, inUse = new Set()) {
       ${estado.hint ? `<div class="ecfs-card__meta">${escapeHtml(estado.hint)}</div>` : ''}
       <div class="ecfs-card__numbers">
         <div><div class="ecfs-num__label">Próximo e-NCF</div><div class="ecfs-num__value">${seq.isExhausted ? '—' : ecfProdSeqEncf(seq.tipoComprobante, seq.proximo)}</div></div>
-        <div><div class="ecfs-num__label">Rango autorizado</div><div class="ecfs-num__value">${ecfProdSeqEncf(seq.tipoComprobante, seq.desde)} → ${ecfProdSeqEncf(seq.tipoComprobante, seq.hasta)}</div></div>
-        <div><div class="ecfs-num__label">Vence</div><div class="ecfs-num__value">${seq.fechaVencimiento ? ecfProdSeqFormatDate(seq.fechaVencimiento) : 'Sin vencimiento'}</div></div>
+        <div><div class="ecfs-num__label">Rango autorizado</div><div class="ecfs-num__value">${seq.modoSimple ? 'Sin registrar' : `${ecfProdSeqEncf(seq.tipoComprobante, seq.desde)} → ${ecfProdSeqEncf(seq.tipoComprobante, seq.hasta)}`}</div></div>
+        ${llevaFecha ? `<div><div class="ecfs-num__label">Vence</div><div class="ecfs-num__value">${faltaFecha ? 'Falta la fecha' : ecfProdSeqFormatDate(seq.fechaVencimiento)}</div></div>` : ''}
       </div>
-      <div class="${pocos ? 'ecfs-bar--low' : ''}">
+      ${seq.modoSimple ? `<div class="ecfs-bar__text"><span>${ecfProdSeqFormatNumber(usados)} ${usados === 1 ? 'usado' : 'usados'}</span></div>` : `<div class="${pocos ? 'ecfs-bar--low' : ''}">
         <div class="ecfs-bar"><div class="ecfs-bar__fill" style="width:${pct}%"></div></div>
         <div class="ecfs-bar__text"><span>${ecfProdSeqFormatNumber(usados)} ${usados === 1 ? 'usado' : 'usados'}</span><span>${ecfProdSeqFormatNumber(disponibles)} de ${ecfProdSeqFormatNumber(total)} disponibles</span></div>
-      </div>
+      </div>`}
       <div class="ecfs-card__actions">
         ${seq.activo && !central ? `<button class="ecfs-btn" type="button" onclick="ecfProdSeqChangeNext(${seq.id})">${ecfProdSeqIcon('pencil', 16)}Próximo número</button>` : ''}
+        ${llevaFecha && (faltaFecha || !central) ? `<button class="ecfs-btn" type="button" onclick="ecfProdSeqSetExpiry(${seq.id}, '${escapeHtml(seq.tipoComprobante)}', '${escapeHtml(String(seq.fechaVencimiento || '').slice(0, 10))}')">${ecfProdSeqIcon('calendar', 16)}Fecha de vencimiento</button>` : ''}
         <button class="ecfs-btn" type="button" onclick="ecfProdSeqToggleHistory(${seq.id})">${ecfProdSeqIcon('history', 16)}${ecfProdSeqExpandedHistoryId === seq.id ? 'Ocultar historial' : 'Historial'}</button>
         ${seq.activo && !central ? `<button class="ecfs-btn" type="button" onclick="ecfProdSeqDisable(${seq.id})">${ecfProdSeqIcon('pause', 16)}Desactivar</button>` : ''}
-        ${central ? '' : `<button class="ecfs-btn ecfs-btn--danger" type="button" onclick="ecfProdSeqDelete(${seq.id})" title="Solo si nunca se emitió un e-CF con ella">${ecfProdSeqIcon('trash-2', 16)}Eliminar</button>`}
+        ${!seq.activo && !central && !seq.isExpired && !seq.isExhausted ? `<button class="ecfs-btn" type="button" onclick="ecfProdSeqEnable(${seq.id})">${ecfProdSeqIcon('play', 16)}Activar</button>` : ''}
+        ${central ? '' : `<button class="ecfs-btn ecfs-btn--danger" type="button" onclick="ecfProdSeqDelete(${seq.id})">${ecfProdSeqIcon('trash-2', 16)}Eliminar</button>`}
       </div>
       ${history}
     </div>`;
@@ -261,6 +326,21 @@ async function ecfProdSeqToggleHistory(id) {
   }
 }
 
+async function ecfProdSeqSetExpiry(id, tipo, actual) {
+  const fechaVencimiento = await showPromptModal(
+    `Fecha de vencimiento del ${tipo}, la que aparece en tu autorización de la DGII:`,
+    { inputType: 'date', defaultValue: actual || `${new Date().getFullYear() + 1}-12-31` }
+  );
+  if (!fechaVencimiento) return;
+  try {
+    await fiscalApi('POST', `/sequences/${id}/vencimiento`, { fechaVencimiento });
+    showToast('Fecha de vencimiento guardada.', 'success');
+    loadEcfProdSequences();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
 async function ecfProdSeqChangeNext(id) {
   const value = await showPromptModal('Nuevo próximo número (debe estar dentro del rango autorizado):', { inputType: 'number' });
   if (!value) return;
@@ -284,10 +364,30 @@ async function ecfProdSeqDisable(id) {
   }
 }
 
-async function ecfProdSeqDelete(id) {
-  if (!await showDeleteConfirm('¿Eliminar esta secuencia? Solo se puede si nunca se emitió un e-CF con ella.')) return;
+async function ecfProdSeqEnable(id) {
   try {
-    const result = await fiscalApi('DELETE', `/sequences/${id}/permanent`);
+    await fiscalApi('POST', `/sequences/${id}/enable`);
+    showToast('Secuencia activada.', 'success');
+    loadEcfProdSequences();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+async function ecfProdSeqDelete(id) {
+  if (!await showDeleteConfirm('¿Eliminar esta secuencia?')) return;
+  try {
+    let result;
+    try {
+      result = await fiscalApi('DELETE', `/sequences/${id}/permanent`);
+    } catch (e) {
+      if (!e.details?.usada) throw e;
+      const ok = await showDeleteConfirm(
+        `${e.message} ¿Eliminarla de todas formas?\n\nSe quita de la lista y no se usará más. Los e-CF ya emitidos se conservan y esos números no se repiten.`
+      );
+      if (!ok) return;
+      result = await fiscalApi('DELETE', `/sequences/${id}/permanent?force=1`);
+    }
     if (result.ok === false) throw new Error(result.message || 'No se pudo eliminar.');
     showToast('Secuencia eliminada.', 'success');
     loadEcfProdSequences();
@@ -297,6 +397,15 @@ async function ecfProdSeqDelete(id) {
 }
 
 // ── Formulario ────────────────────────────────────────────────────────────────
+
+// E32 y E34 no llevan fecha de vencimiento: ahí el campo no aparece.
+function ecfProdSeqAjustarVencimiento() {
+  const tipo = document.getElementById('ecf-prod-seq-type')?.value;
+  const grupo = document.getElementById('ecf-prod-seq-vencimiento-grupo');
+  if (!grupo) return;
+  grupo.hidden = ECF_PROD_SEQ_SIN_VENCIMIENTO.has(tipo);
+  if (grupo.hidden) document.getElementById('ecf-prod-seq-vencimiento').value = '';
+}
 
 async function initEcfProdSeqForm() {
   const typeSel = document.getElementById('ecf-prod-seq-type');
@@ -310,6 +419,7 @@ async function initEcfProdSeqForm() {
     }).join('');
     typeSel.dataset.loaded = '1';
   }
+  ecfProdSeqAjustarVencimiento();
 
   const branchSel = document.getElementById('ecf-prod-seq-branch');
   const cajaSel = document.getElementById('ecf-prod-seq-caja');
@@ -456,6 +566,10 @@ function ecfProdSeqShowDgiiPreview(ranges, origen, errores = []) {
               <div><div class="ecfs-num__label">Nº de autorización</div><div class="ecfs-num__value">${escapeHtml(item.referencia || '—')}</div></div>
               <div><div class="ecfs-num__label">Fecha</div><div class="ecfs-num__value">${ecfProdSeqFormatDate(item.fechaAutorizacion)}</div></div>
             </div>
+            ${ecfProdSeqDgiiRanges.includes(item) && !ECF_PROD_SEQ_SIN_VENCIMIENTO.has(item.tipo) ? `<div class="form-group" style="margin:var(--tc-space-2) 0 0">
+              <label>Fecha de vencimiento *</label>
+              <input type="date" class="form-input" data-dgii-vence="${ecfProdSeqDgiiRanges.indexOf(item)}">
+            </div>` : ''}
           </div>
         </div>`).join('')}
       ${notas}
@@ -473,7 +587,16 @@ async function ecfProdSeqRegisterDgiiRanges() {
     showToast(`Al archivo le falta el Nº o la fecha de autorización de ${faltan.map((item) => item.tipo).join(', ')}. Regístralo a mano abajo.`, 'warning');
     return;
   }
-  const ranges = ecfProdSeqDgiiRanges;
+  // El archivo de la DGII no trae el vencimiento: se copia de la autorización.
+  const ranges = ecfProdSeqDgiiRanges.map((item, indice) => ({
+    ...item,
+    fechaVencimiento: document.querySelector(`[data-dgii-vence="${indice}"]`)?.value || null,
+  }));
+  const sinFecha = ranges.filter((item) => !ECF_PROD_SEQ_SIN_VENCIMIENTO.has(item.tipo) && !item.fechaVencimiento);
+  if (sinFecha.length) {
+    showToast(`Indica la fecha de vencimiento de ${sinFecha.map((item) => item.tipo).join(', ')}.`, 'warning');
+    return;
+  }
   const tipos = ranges.map((item) => item.tipo).join(', ');
   try {
     await ecfProdSeqAiRun({
@@ -495,6 +618,7 @@ async function ecfProdSeqRegisterDgiiRanges() {
               hasta: item.hasta,
               authorizationReference: item.referencia,
               fechaAutorizacion: item.fechaAutorizacion,
+              fechaVencimiento: item.fechaVencimiento,
             });
           } catch (e) {
             errores.push(`${item.tipo}: ${e.message}`);
@@ -530,6 +654,7 @@ async function saveEcfProdSequence() {
   if (!desde || !hasta || hasta < desde) { showToast('Escribe el número inicial y final exactos del rango.', 'warning'); return; }
   if (!authorizationReference) { showToast('Escribe el Nº de autorización de la DGII.', 'warning'); return; }
   if (!fechaAutorizacion) { showToast('Indica la fecha de autorización de la DGII.', 'warning'); return; }
+  if (!ECF_PROD_SEQ_SIN_VENCIMIENTO.has(tipoComprobante) && !fechaVencimiento) { showToast(`Indica la fecha de vencimiento del ${tipoComprobante}.`, 'warning'); return; }
   if (!rncConfirmed) { showToast('Confirma que la autorización corresponde al RNC de tu empresa.', 'warning'); return; }
 
   try {

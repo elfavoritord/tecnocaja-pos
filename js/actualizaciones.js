@@ -218,6 +218,12 @@
   async function installUpdate() {
     if (UPD.status !== 'ready') return;
 
+    const motivo = await window.TcAvisoActualizacion?.motivoParaEsperar?.();
+    if (motivo) {
+      window.showToast?.(`${motivo} Termínala antes de instalar.`, 'warning');
+      return;
+    }
+
     const ok = await window.showDeleteConfirm(
       'Antes de actualizar: cierra todas las ventas abiertas y realiza el corte de caja. Se creará un respaldo automático; Tecno Caja se cerrará y volverá a abrir sola en uno o dos minutos. ¿Deseas continuar con la actualización ahora?',
       { confirmText: 'Actualizar ahora' }
@@ -232,7 +238,7 @@
     const STEPS = [
       { id: 'us-backup',  label: skipBackup ? 'Preparando actualización inicial…' : 'Creando respaldo (BD + Configuración + Ventas + Clientes + Inventario)…' },
       { id: 'us-update',  label: 'Cerrando la base de datos de forma segura…' },
-      { id: 'us-restart', label: 'Abriendo el instalador — sigue sus pasos y, al final, pulsa "Terminar" para abrir Tecno Caja.' },
+      { id: 'us-restart', label: 'Instalando la versión nueva: Tecno Caja se cerrará y volverá a abrir solo.' },
     ];
     _showSteps(STEPS);
 
@@ -241,7 +247,7 @@
       // principal (con su firma interna). Antes el respaldo se pedía aquí por
       // fetch sin sesión y desde v1.4.2 respondía 401: no se podía actualizar.
       _setStepState('us-backup', 'active');
-      let result = await _requestInstall({ skipBackup: skipBackup || !UPD.preferences.backupBeforeUpdate });
+      let result = await _requestInstall({ skipBackup: skipBackup || !UPD.preferences.backupBeforeUpdate, comprobarOperaciones: true });
       if (result?.backupFailed) {
         _setStepState('us-backup', 'error');
         const seguir = await window.showDeleteConfirm(
@@ -253,7 +259,7 @@
           return;
         }
         _setStepState('us-backup', 'active');
-        result = await _requestInstall({ skipBackup: true });
+        result = await _requestInstall({ skipBackup: true, comprobarOperaciones: true });
       }
       if (result?.ok === false) {
         _setStepState('us-backup', 'error');

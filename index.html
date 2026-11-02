@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="css/componentes.css">
 <link rel="stylesheet" href="css/modulos.css">
 <link rel="stylesheet" href="css/ecf-secuencias.css">
+<link rel="stylesheet" href="css/actualizacion-aviso.css">
 <link rel="stylesheet" href="css/acceso.css">
 <link rel="stylesheet" href="css/cobro.css">
 <link rel="stylesheet" href="css/shell.css">
@@ -3272,9 +3273,19 @@
           </p>
           <!-- Sucursal de una empresa (multisucursal): aviso en vez de la carga. -->
           <div id="ecf-prod-seq-central"></div>
+          <!-- Modo sencillo: marcar los tipos y facturar; el resto es opcional. -->
+          <div class="ecfs-upload" id="ecf-prod-seq-simple">
+            <div class="ecfs-upload__title">Comprobantes que usas</div>
+            <div class="ecfs-upload__hint">
+              Marca los que tienes autorizados por la DGII y ya puedes facturar. Solo se te pide la fecha de vencimiento en los
+              tipos que la llevan. La cantidad es opcional: para llevar ese control, carga abajo la autorización de la DGII. Sin ella, el sistema no sabe cuántos te
+              autorizaron ni te avisa cuando se acaben.
+            </div>
+            <div id="ecf-prod-seq-simple-list" class="ecfs-simple"></div>
+          </div>
           <!-- La carga va arriba de las secuencias: es lo que más se usa. -->
           <div class="ecfs-upload" id="ecf-prod-seq-upload">
-            <div class="ecfs-upload__title">Cargar la autorización de la DGII</div>
+            <div class="ecfs-upload__title">Cargar la autorización de la DGII (opcional)</div>
             <div class="ecfs-upload__hint">
               En la Oficina Virtual (Consultas → Solicitudes de Comprobantes) descarga el detalle de cada
               solicitud aprobada y súbelos aquí, uno o varios a la vez. El sistema lee el tipo, el rango, el Nº y la fecha de autorización.
@@ -3296,7 +3307,7 @@
             <div class="ncf-seq-form" style="margin-top:0.6rem">
               <div class="form-group">
                 <label>Tipo de comprobante</label>
-                <select id="ecf-prod-seq-type" class="form-input"></select>
+                <select id="ecf-prod-seq-type" class="form-input" onchange="ecfProdSeqAjustarVencimiento()"></select>
               </div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem">
                 <div class="form-group">
@@ -3328,8 +3339,8 @@
                   <input type="date" id="ecf-prod-seq-fecha-autorizacion" class="form-input">
                 </div>
               </div>
-              <div class="form-group">
-                <label>Fecha de vencimiento (si la DGII puso una)</label>
+              <div class="form-group" id="ecf-prod-seq-vencimiento-grupo">
+                <label>Fecha de vencimiento *</label>
                 <input type="date" id="ecf-prod-seq-vencimiento" class="form-input">
               </div>
               <div class="form-group">
@@ -3342,6 +3353,38 @@
           <div id="ecf-prod-seq-env"></div>
           <div id="ecf-prod-seq-list" class="ecfs-list">
             <div class="loading-text">Cargando secuencias…</div>
+          </div>
+        </div>
+
+        <!-- ══════════ COMPROBANTES ENVIADOS A LA DGII — js/ecf-comprobantes.js ══════════ -->
+        <div class="config-section" id="cfg-ecf-docs-section">
+          <h3 data-card-title="Comprobantes enviados a la DGII" style="margin:0">Comprobantes enviados a la DGII</h3>
+          <p class="helper-text" style="margin:0.3rem 0 1rem">
+            Cada comprobante electrónico con lo que respondió la DGII: si lo aceptó, el motivo si lo rechazó, su enlace de consulta y su XML.
+          </p>
+          <div id="ecfd-panel">
+          <div class="ecfd-resumen" id="ecfd-resumen"></div>
+          <div class="ecfd-filtros">
+            <input type="search" id="ecfd-buscar" class="form-input" placeholder="Buscar por e-NCF, cliente, RNC, factura o TrackID" aria-label="Buscar comprobante">
+            <select id="ecfd-tipo" class="form-input" aria-label="Tipo de comprobante"><option value="">Todos los tipos</option></select>
+            <select id="ecfd-ambiente" class="form-input" aria-label="Ambiente">
+              <option value="ecf">Producción (reales)</option>
+              <option value="pruebas">Pruebas y certificación</option>
+            </select>
+            <label class="ecfd-fecha">Desde<input type="date" id="ecfd-desde" class="form-input"></label>
+            <label class="ecfd-fecha">Hasta<input type="date" id="ecfd-hasta" class="form-input"></label>
+          </div>
+          <div id="ecfd-lista" class="ecfs-list"><div class="loading-text">Cargando comprobantes…</div></div>
+          <div class="ecfd-paginas" id="ecfd-paginas"></div>
+          <dialog class="ecfd-xml" id="ecfd-xml" aria-labelledby="ecfd-xml-titulo">
+            <div class="ecfd-xml__cabeza">
+              <strong id="ecfd-xml-titulo">XML</strong>
+              <button type="button" class="ecfs-btn" id="ecfd-xml-copiar">Copiar</button>
+              <button type="button" class="ecfs-btn" id="ecfd-xml-descargar">Descargar</button>
+              <button type="button" class="ecfs-btn" id="ecfd-xml-cerrar">Cerrar</button>
+            </div>
+            <pre class="ecfd-xml__texto" id="ecfd-xml-texto"></pre>
+          </dialog>
           </div>
         </div>
 
@@ -5339,6 +5382,7 @@
 <script src="js/fiscal-ecf.js"></script>
 <script src="js/dgii-autorizacion.js"></script>
 <script src="js/ecf-sequences-config.js"></script>
+<script src="js/ecf-comprobantes.js"></script>
 <script src="js/network-manager.js"></script>
 <script src="js/delivery-panel.js"></script>
 <script src="js/tienda-online.js"></script>
@@ -5354,6 +5398,7 @@
 <script src="js/wizard.js"></script>
 <script src="js/ecf-cert-wizard.js"></script>
 <script src="js/actualizaciones.js"></script>
+<script src="js/actualizacion-aviso.js"></script>
 <script src="js/sync-diagnostic.js"></script>
 <script src="js/superadmin.js"></script>
 <script src="js/contador.js"></script>

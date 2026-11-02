@@ -879,6 +879,11 @@ function _renderAlertasDashboard(al, grupos) {
         nivel: a.nivel, titulo: n ? `Sin sincronizar hace ${n} días` : 'Sin sincronizar',
         sub: nombre, boton: 'Ver negocio', accion: `app.verCliente('${idJs}')`,
       });
+    } else if (a.tipo === 'secuencia') {
+      lista.push({
+        nivel: a.nivel, titulo: a.msg, sub: nombre,
+        boton: 'Registrar', accion: `app.abrirAgregarNcfModal('${idJs}')`,
+      });
     } else {
       lista.push({
         nivel: a.nivel, titulo: _msgAlerta(a) || 'Aviso', sub: nombre,
@@ -4040,8 +4045,14 @@ function anActualizar() {
   const electronico = _ncfEsE(tipo);
   const el = $id('an-prefijo'); if (el) el.value = tipo;
   setText('an-tipo-ayuda', NCF_DESCRIPCIONES[tipo] || '');
-  setText('an-vence-lbl', electronico ? 'Fecha de vencimiento (si la DGII la indica)'
-    : NCF_SIN_VENCE.has(tipo) ? 'Fecha de vencimiento (las notas de crédito no vencen)' : 'Fecha de vencimiento *');
+  setText('an-vence-lbl', NCF_SIN_VENCE.has(tipo) ? 'Fecha de vencimiento (las notas de crédito no vencen)' : 'Fecha de vencimiento *');
+  // E32 y E34 no llevan fecha: ahí el campo no aparece.
+  const campoVence = $id('an-fecha-vencimiento');
+  if (campoVence) {
+    const ocultar = electronico && NCF_SIN_VENCE.has(tipo);
+    campoVence.closest('.fm-campo').hidden = ocultar;
+    if (ocultar) campoVence.value = '';
+  }
   setText('an-fecha-autorizacion-lbl', electronico ? 'Fecha de autorización *' : 'Fecha de autorización');
   const desde = $id('an-desde'); if (desde) desde.placeholder = '1';
   const hasta = $id('an-hasta'); if (hasta) hasta.placeholder = electronico ? '100' : '500';
@@ -4288,7 +4299,8 @@ function renderAnDgii() {
     return;
   }
   const nuevos = d.rangos.filter((r) => r.estado === 'nuevo');
-  const necesitaVence = nuevos.some((r) => !_ncfEsE(r.tipo) && !NCF_SIN_VENCE.has(r.tipo));
+  const tiposConVence = [...new Set(nuevos.filter((r) => !NCF_SIN_VENCE.has(r.tipo)).map((r) => r.tipo))];
+  const necesitaVence = tiposConVence.length > 0;
   const negocio = _allClientes.find((c) => c.id === _anNegocioId);
   const filas = d.rangos.map((r) => `
     <div class="an-rango ${r.estado === 'nuevo' || r.sinConfirmar ? '' : 'is-omitido'}">
@@ -4324,9 +4336,9 @@ function renderAnDgii() {
       ${nuevos.length ? `
         ${necesitaVence ? `
           <div class="fm-campo an-leido__vence">
-            <label for="an-dgii-vence">Fecha de vencimiento de los NCF (B) *</label>
+            <label for="an-dgii-vence">Fecha de vencimiento de ${esc(tiposConVence.join(', '))} *</label>
             <input type="date" id="an-dgii-vence" class="form-input" />
-            <div class="fm-ayuda">La que aparece en la autorización de la DGII. Los e-NCF no la necesitan.</div>
+            <div class="fm-ayuda">La que aparece en la autorización de la DGII. Si no es la misma para todos, sube esos archivos por separado.</div>
           </div>` : ''}
         <label class="an-leido__confirma">
           <input type="checkbox" id="an-dgii-confirma" />
@@ -4373,7 +4385,7 @@ async function registrarRangosDgii() {
               startNumber: r.desde,
               endNumber: r.hasta,
               authorizationDate: r.fechaAutorizacion || null,
-              expirationDate: electronico || NCF_SIN_VENCE.has(r.tipo) ? null : vence,
+              expirationDate: NCF_SIN_VENCE.has(r.tipo) ? null : vence,
               authorizationReference: r.referencia,
               notes: `Del archivo de la DGII (${r.archivo || d.nombre}).`,
               // Para los B su archivo es el documento de autorización: con él
@@ -4568,7 +4580,7 @@ function _comprobantesActivosHtml({ activas, enCola, inactivas }, posInformaEcf 
     const barra = e.pct < 0.10 ? 'is-bad' : e.pct < 0.25 ? 'is-warn' : '';
     const vence = s.expirationDate
       ? `${_fmtFechaSolo(s.expirationDate)}${e.diasVence !== null && e.diasVence >= 0 ? ` · en ${_plural(e.diasVence, 'día', 'días')}` : ''}`
-      : (_ncfEsE(tipo) || NCF_SIN_VENCE.has(tipo) ? 'No vence' : '—');
+      : (NCF_SIN_VENCE.has(tipo) ? 'No vence' : _ncfEsE(tipo) ? 'Falta la fecha' : '—');
     const lugar = s.branchName && s.branchName !== 'Global' ? ` · ${esc(s.branchName)}` : '';
     return `<div class="ncf-card ${e.alertas.length ? 'is-alerta' : ''}">
       <div class="ncf-card__cabeza">
@@ -4577,11 +4589,11 @@ function _comprobantesActivosHtml({ activas, enCola, inactivas }, posInformaEcf 
       </div>
       <dl class="ncf-datos">
         <dt>Próximo</dt><dd><code>${_ncfFmt(tipo, s.nextNumber)}</code></dd>
-        <dt>Rango</dt><dd><code>${_ncfFmt(tipo, s.startNumber)} – ${_ncfFmt(tipo, s.endNumber)}</code></dd>
+        <dt>Rango</dt><dd>${s.modoSimple ? 'Modo sencillo: sin cantidad registrada' : `<code>${_ncfFmt(tipo, s.startNumber)} – ${_ncfFmt(tipo, s.endNumber)}</code>`}</dd>
         <dt>Vence</dt><dd>${esc(vence)}</dd>
       </dl>
-      <div class="ncf-barra ${barra}" role="progressbar" aria-valuemin="0" aria-valuemax="${e.total}" aria-valuenow="${e.quedan}"><span style="width:${Math.round(e.pct * 100)}%"></span></div>
-      <div class="ncf-barra__txt"><span>Quedan ${e.quedan.toLocaleString('es-DO')} de ${e.total.toLocaleString('es-DO')}</span><span>${Math.round(e.pct * 100)}%</span></div>
+      ${s.modoSimple ? '' : `<div class="ncf-barra ${barra}" role="progressbar" aria-valuemin="0" aria-valuemax="${e.total}" aria-valuenow="${e.quedan}"><span style="width:${Math.round(e.pct * 100)}%"></span></div>
+      <div class="ncf-barra__txt"><span>Quedan ${e.quedan.toLocaleString('es-DO')} de ${e.total.toLocaleString('es-DO')}</span><span>${Math.round(e.pct * 100)}%</span></div>`}
       ${e.alertas.map((a) => `<div class="ncf-alerta">${esc(a)}</div>`).join('')}
     </div>`;
   });
@@ -5650,8 +5662,9 @@ const NCF_DESCRIPCIONES = {
   E44: 'Zonas francas y regímenes exentos', E45: 'Entidades del Estado',
   E46: 'Ventas al exterior', E47: 'Pagos a proveedores del exterior',
 };
-// Las notas de crédito (B04) no vencen; el resto lleva la fecha que da la DGII.
-const NCF_SIN_VENCE = new Set(['B04']);
+// Las notas de crédito (B04) no vencen y E32 y E34 no llevan fecha (XSD de la DGII);
+// el resto lleva la que da la DGII.
+const NCF_SIN_VENCE = new Set(['B04', 'E32', 'E34']);
 // e-NCF: 10 dígitos y la DGII autoriza cantidades concretas (mismos límites
 // que el POS, EcfRepository.saveSequence).
 const ECF_MAXIMO = 9999999999;
@@ -5694,11 +5707,11 @@ function _ncfValidar({ tipo, desde, hasta, vence, existentes = [], excluirId = n
   else if (electronico && h > ECF_MAXIMO) err.hasta = 'El e-NCF tiene 10 dígitos: máximo 9999999999.';
   else if (!electronico && h > 99999999) err.hasta = 'El NCF tiene 8 dígitos: máximo 99999999.';
   else if (electronico && h - d + 1 > ECF_RANGO_MAXIMO) err.hasta = 'Ese rango es demasiado grande: copia el "desde" y el "hasta" exactos de la DGII.';
-  if (!vence && !NCF_SIN_VENCE.has(tipo) && !electronico && !editando) err.vence = 'Indica la fecha de vencimiento que dio la DGII.';
+  if (!vence && !NCF_SIN_VENCE.has(tipo) && !editando) err.vence = 'Indica la fecha de vencimiento que dio la DGII.';
   else if (vence && !editando && vence < hoyLocal()) err.vence = 'Esa fecha ya pasó: la secuencia no se podría usar.';
   if (!err.desde && !err.hasta) {
     const noCuentan = electronico ? ['cancelado', 'eliminado'] : ['suspendido', 'cancelado', 'eliminado'];
-    const choque = existentes.find(s => s.documentType === tipo && String(s.id) !== String(excluirId)
+    const choque = existentes.find(s => !s.modoSimple && s.documentType === tipo && String(s.id) !== String(excluirId)
       && !noCuentan.includes(s.status)
       && d <= Number(s.endNumber) && h >= Number(s.startNumber));
     if (choque) err.hasta = `Se cruza con la secuencia ${_ncfFmt(tipo, choque.startNumber)}–${_ncfFmt(tipo, choque.endNumber)}.`;
@@ -9936,6 +9949,7 @@ function _renderAlertas(data) {
   const tipoIcon  = {
     licencia_vencida:   '📛', licencia_proxima: '⏰',
     sin_sync:           '🔄', solicitud_pendiente: '📋',
+    secuencia:          '🧾',
   };
 
   ['critico','urgente','advertencia','info'].forEach(nivel => {
@@ -9955,6 +9969,7 @@ function _renderAlertas(data) {
             <div class="alert-bname">${esc(a.businessName || '—')}</div>
             <div class="alert-msg">${esc(_msgAlerta(a))}</div>
           </div>
+          ${a.tipo === 'secuencia' ? `<button class="btn btn-xs btn-secondary" onclick="app.abrirAgregarNcfModal('${a.businessId}')">Registrar</button>` : ''}
           ${a.businessId ? `<button class="btn btn-xs btn-secondary" onclick="app.verCliente('${a.businessId}')">Ver</button>` : ''}
         </div>`).join('');
     }

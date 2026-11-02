@@ -749,7 +749,7 @@ async function buildNcfSequencesSnapshot() {
      WHERE es.environment = 'ecf'
      ORDER BY es.tipo_comprobante, es.numero_inicial`
   ).catch(() => []); // sin factura electrónica en este POS
-  return [...rows.map(mapSequence), ...ecfRows.map(mapEcfSequenceReadOnly)];
+  return [...rows.map(mapSequence), ...ecfRows.filter((row) => !row.deleted_at).map(mapEcfSequenceReadOnly)];
 }
 
 // ── Escritura a Firestore ──────────────────────────────────────────────────

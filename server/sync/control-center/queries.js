@@ -505,7 +505,7 @@ function ecfSequences(query) {
        LEFT JOIN branches b ON b.id = es.branch_id
       WHERE es.environment = 'ecf'
       ORDER BY es.tipo_comprobante, es.numero_inicial`
-  );
+  ).then((rows) => rows.filter((row) => !row.deleted_at)); // en JS: la columna puede faltar si e-CF no ha arrancado
 }
 
 /** Últimos comprobantes con NCF tipo B emitidos (los e-CF tienen su propia lista). */

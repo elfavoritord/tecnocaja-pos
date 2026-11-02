@@ -15,7 +15,7 @@ const { createServiciosRouter } = require('../../server/routes/servicios');
 const { computeTotals } = require('../../server/routes/servicios/_common');
 const { renderInvoiceDoc, numeroALetras } = require('../../server/routes/servicios/renderDoc');
 
-function buildApp({ query, config, actor, ecfService } = {}) {
+function buildApp({ query, config, actor, ecfService, insertClientRow } = {}) {
   const mockQuery = query || jest.fn().mockResolvedValue([]);
   const app = express();
   app.use(express.json());
@@ -33,9 +33,94 @@ function buildApp({ query, config, actor, ecfService } = {}) {
     getConfig: jest.fn().mockResolvedValue(config === undefined ? { serviceCompany: true, serviceFiscalMode: 'ncf' } : config),
     getNextNcfFromSequence: jest.fn().mockResolvedValue({ ncf: 'B0200000001', fechaVencimiento: '2026-12-31' }),
     ecfService,
+    insertClientRow,
+    mapClientRow: (fila) => ({ id: fila.id, nombre: fila.nombre, cedula: fila.cedula }),
   }));
   return { app, mockQuery };
 }
+
+describe('servicios.routes — cliente escrito con RNC o cédula', () => {
+  const linea = { descripcion: 'Servicio', cantidad: 1, precio: 100, itbisPct: 18 };
+  const insertsDeFactura = (mockQuery) => mockQuery.mock.calls.filter(([sql]) => /INSERT INTO svc_invoices/i.test(sql));
+
+  function preparar({ clienteExistente = null } = {}) {
+    const mockQuery = jest.fn().mockImplementation(async (sql) => {
+      if (/FROM clients WHERE REPLACE/i.test(sql)) return clienteExistente ? [clienteExistente] : [];
+      if (/^\s*INSERT/i.test(sql)) return { insertId: 7 };
+      if (/FROM svc_invoices/i.test(sql)) return [{ id: 7, numero: 'FAC-1', total: 118 }];
+      return [];
+    });
+    const insertClientRow = jest.fn(async (_runner, datos) => ({ id: 55, ...datos }));
+    const { app } = buildApp({ query: mockQuery, insertClientRow });
+    return { app, mockQuery, insertClientRow };
+  }
+
+  it('factura con RNC nuevo: lo agrega a Clientes, sin guiones, y liga la factura', async () => {
+    const { app, mockQuery, insertClientRow } = preparar();
+    const res = await request(app).post('/api/servicios/facturas').send({
+      fiscalMode: 'ncf', ncfTipo: 'B01', clientName: 'ACME SRL', clientRnc: '131-88068-1', items: [linea],
+    });
+    expect(res.status).toBe(201);
+    expect(insertClientRow).toHaveBeenCalledWith(expect.anything(), { nombre: 'ACME SRL', cedula: '131880681' });
+    expect(res.body.clienteNuevo).toMatchObject({ id: 55, nombre: 'ACME SRL' });
+    expect(insertsDeFactura(mockQuery)[0][1]).toContain(55);
+  });
+
+  it('si ese RNC ya está en Clientes usa ese, con su nombre, y no lo repite', async () => {
+    const { app, mockQuery, insertClientRow } = preparar({ clienteExistente: { id: 9, nombre: 'ACME Registrado' } });
+    const res = await request(app).post('/api/servicios/facturas').send({
+      fiscalMode: 'ncf', ncfTipo: 'B01', clientName: 'otro nombre', clientRnc: '131880681', items: [linea],
+    });
+    expect(res.status).toBe(201);
+    expect(insertClientRow).not.toHaveBeenCalled();
+    expect(res.body.clienteNuevo).toBeUndefined();
+    expect(insertsDeFactura(mockQuery)[0][1]).toEqual(expect.arrayContaining([9, 'ACME Registrado']));
+  });
+
+  it.each([
+    ['sin documento', { clientName: 'Juan', clientRnc: '' }],
+    ['documento incompleto', { clientName: 'Juan', clientRnc: '123' }],
+    ['consumidor final', { clientName: 'consumidor final', clientRnc: '131880681' }],
+    ['sin nombre', { clientName: '', clientRnc: '131880681' }],
+  ])('%s: no agrega a nadie', async (_nombre, cliente) => {
+    const { app, insertClientRow } = preparar();
+    const res = await request(app).post('/api/servicios/facturas').send({ fiscalMode: 'ncf', ncfTipo: 'B02', ...cliente, items: [linea] });
+    expect(res.status).toBe(201);
+    expect(insertClientRow).not.toHaveBeenCalled();
+  });
+
+  it('si no se puede guardar el cliente, la factura sale igual', async () => {
+    const { app, insertClientRow } = preparar();
+    insertClientRow.mockRejectedValueOnce(new Error('sin espacio'));
+    const res = await request(app).post('/api/servicios/facturas').send({
+      fiscalMode: 'ncf', ncfTipo: 'B01', clientName: 'ACME SRL', clientRnc: '131880681', items: [linea],
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.clienteNuevo).toBeUndefined();
+  });
+
+  it('si la factura no es válida, no agrega al cliente', async () => {
+    const { app, insertClientRow } = preparar();
+    const res = await request(app).post('/api/servicios/facturas').send({
+      fiscalMode: 'ncf', ncfTipo: 'B01', clientName: 'ACME SRL', clientRnc: '131880681', items: [],
+    });
+    expect(res.status).toBe(400);
+    expect(insertClientRow).not.toHaveBeenCalled();
+  });
+
+  it('la cotización también lo agrega', async () => {
+    const mockQuery = jest.fn().mockImplementation(async (sql) => {
+      if (/^\s*INSERT/i.test(sql)) return { insertId: 3 };
+      if (/FROM svc_quotations/i.test(sql)) return [{ id: 3, numero: 'COT-1', total: 118 }];
+      return [];
+    });
+    const insertClientRow = jest.fn(async (_runner, datos) => ({ id: 56, ...datos }));
+    const { app } = buildApp({ query: mockQuery, insertClientRow });
+    const res = await request(app).post('/api/servicios/cotizaciones').send({ clientName: 'ACME SRL', clientRnc: '40211932609', items: [linea] });
+    expect(res.status).toBe(201);
+    expect(res.body.clienteNuevo).toMatchObject({ id: 56 });
+  });
+});
 
 describe('servicios.routes — helpers puros', () => {
   it('computeTotals suma subtotal, descuento e ITBIS por línea', () => {
@@ -394,6 +479,21 @@ describe('servicios.routes — factura e-CF con las secuencias del módulo e-CF'
     expect(res.body.ecfActivo).toBe(true);
   });
 
+  it('modo sencillo: E32 marcada sale para facturar sin cantidad, y E34 se informa aparte', async () => {
+    const ecfService = ecfServiceMock({
+      listSequences: jest.fn().mockResolvedValue([
+        seq({ tipoComprobante: 'E32', modoSimple: true, remaining: 9999999999, fechaVencimiento: null }),
+        seq({ tipoComprobante: 'E34', modoSimple: true }),
+      ]),
+    });
+    const { app } = buildApp({ ecfService });
+    const res = await request(app).get('/api/servicios/facturas/comprobantes');
+    expect(res.body.electronicos.map((e) => e.tipo)).toEqual(['E32']);
+    expect(res.body.electronicos[0].sinCantidad).toBe(true);
+    expect(res.body.ecfOtros).toEqual([expect.objectContaining({ tipo: 'E34' })]);
+    expect(res.body.ecfActivo).toBe(true);
+  });
+
   it('avisa cuando las secuencias e-CF activas son de otra sucursal', async () => {
     const ecfService = ecfServiceMock({ listSequences: jest.fn().mockResolvedValue([seq({ branchId: 4 })]) });
     const { app } = buildApp({ ecfService });
@@ -469,6 +569,47 @@ describe('servicios.routes — factura e-CF con las secuencias del módulo e-CF'
     expect(ecfService.resendDocument).not.toHaveBeenCalled();
     expect(ecfService.listSequences).not.toHaveBeenCalled(); // reusa su número: no pide uno libre
     expect(res.body.ecf).toMatchObject({ ok: true, encf: 'E320000000001' });
+  });
+
+  it('consultar-ecf: trae el resultado de los enviados y dice cuáles siguen esperando', async () => {
+    const actualizaciones = [];
+    const mockQuery = jest.fn().mockImplementation(async (sql, params) => {
+      if (/JOIN ecf_documents d/i.test(sql)) {
+        return [
+          { invoice_id: 36, numero: 'FAC-36', document_id: 214, estado_dgii: 'enviado' },
+          { invoice_id: 37, numero: 'FAC-37', document_id: 215, estado_dgii: 'enviado' },
+          { invoice_id: 38, numero: 'FAC-38', document_id: 216, estado_dgii: 'enviado' },
+        ];
+      }
+      if (/^UPDATE svc_invoices SET ecf_status/i.test(sql)) actualizaciones.push(params);
+      return [];
+    });
+    const ecfService = ecfServiceMock({
+      queryDocumentStatus: jest.fn()
+        .mockResolvedValueOnce({ estado: 'aceptado', encf: 'E310000000005', mensaje: 'Consulta completada.' })
+        .mockResolvedValueOnce({ estado: 'enviado', encf: 'E310000000006' })
+        .mockRejectedValueOnce(new Error('DGII no responde')),
+    });
+    const { app } = buildApp({ query: mockQuery, ecfService });
+    const res = await request(app).post('/api/servicios/facturas/consultar-ecf').send({});
+    expect(res.status).toBe(200);
+    expect(res.body.cambios).toEqual([{ numero: 'FAC-36', encf: 'E310000000005', estado: 'aceptado', mensaje: 'Consulta completada.' }]);
+    expect(res.body.pendientes).toBe(2);
+    expect(actualizaciones).toEqual([['aceptado', 'E310000000005', 36]]);
+  });
+
+  it('consultar-ecf: avisa también lo que el servidor ya supo por su cuenta', async () => {
+    const mockQuery = jest.fn().mockImplementation(async (sql) => (/JOIN ecf_documents d/i.test(sql)
+      ? [{ invoice_id: 36, numero: 'FAC-36', document_id: 214, encf: 'E310000000005', estado_dgii: 'rechazado', error_message: 'Campo no válido' }]
+      : []));
+    const ecfService = ecfServiceMock({ queryDocumentStatus: jest.fn() });
+    const { app } = buildApp({ query: mockQuery, ecfService });
+    const res = await request(app).post('/api/servicios/facturas/consultar-ecf').send({ ids: [36, 'x', -1] });
+    expect(res.body.cambios).toEqual([{ numero: 'FAC-36', encf: 'E310000000005', estado: 'rechazado', mensaje: 'Campo no válido' }]);
+    expect(ecfService.queryDocumentStatus).not.toHaveBeenCalled();
+    const consulta = mockQuery.mock.calls.find(([sql]) => /JOIN ecf_documents d/i.test(sql));
+    expect(consulta[0]).toContain('i.id IN (?)');
+    expect(consulta[1]).toEqual([36]);
   });
 
   it('reintentar: documento ya firmado solo se reenvía', async () => {

@@ -172,7 +172,7 @@ function createApplyPendingNcfService({
 
     const duplicate = await query(
       `SELECT id FROM ecf_sequences
-       WHERE tipo_comprobante = ? AND environment = 'ecf' AND numero_inicial = ? AND numero_final = ?
+       WHERE tipo_comprobante = ? AND environment = 'ecf' AND deleted_at IS NULL AND numero_inicial = ? AND numero_final = ?
        LIMIT 1`,
       [documentType, startNumber, endNumber]
     );

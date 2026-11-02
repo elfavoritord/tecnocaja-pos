@@ -75,6 +75,8 @@ async function ensureSupplierPaymentsTableLocal(query) {
       CONSTRAINT fk_sp_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE
     )
   `).catch(() => {});
+  // La versión de server.js no lleva esta columna.
+  await addColumnIfMissing(query, 'supplier_payments', 'purchase_id', 'INT DEFAULT NULL');
 }
 
 async function addColumnIfMissing(query, tableName, columnName, definition) {
@@ -83,8 +85,9 @@ async function addColumnIfMissing(query, tableName, columnName, definition) {
     await query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   } catch (error) {
     const message = String(error?.message || '').toLowerCase();
-    const isMissingTable = message.includes('no such table') || message.includes("doesn't exist");
-    if (!isMissingTable) throw error;
+    // Dos peticiones a la vez pueden agregar la misma columna: la segunda no es un error.
+    const seIgnora = message.includes('no such table') || message.includes("doesn't exist") || message.includes('duplicate column');
+    if (!seIgnora) throw error;
   }
 }
 
@@ -210,6 +213,7 @@ function mapPurchaseItemRow(row) {
 }
 
 function createComprasRouter({
+  emitirEcfDeOperacion = null,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
   changeBranchInventoryStock, registerInventoryMovement, mapSupplierInvoiceRow, resolveSupplierInvoiceStatus,
   isMysqlDeployment,
@@ -280,7 +284,9 @@ function createComprasRouter({
     try {
       const supplierId = Number(data.supplierId || 0);
       if (!supplierId) throw httpError('Selecciona un proveedor.');
-      const numeroDocumento = String(data.numeroDocumento || '').trim();
+      // E41: el proveedor no da comprobante y lo emite el negocio; su e-NCF es el documento.
+      const emitirE41 = data.emitirE41 === true;
+      const numeroDocumento = String(data.numeroDocumento || '').trim() || (emitirE41 ? 'E41' : '');
       if (!numeroDocumento) throw httpError('El número de documento del proveedor es obligatorio.');
       const fechaComprobante = String(data.fechaComprobante || '').trim();
       if (!fechaComprobante) throw httpError('La fecha del comprobante es obligatoria.');
@@ -412,12 +418,39 @@ function createComprasRouter({
         detail: `${supplier.nombre} · ${numeroDocumento} · RD$ ${total.toFixed(2)} · ${condicionPago}`,
       });
 
+      // La compra ya quedó: si el E41 falla, se avisa sin deshacerla.
+      let ecf = null;
+      if (emitirE41 && emitirEcfDeOperacion) {
+        ecf = await emitirEcfDeOperacion({
+          tipoEcf: 'E41',
+          customer: { rnc: supplier.rnc || supplier.cedula || '', nombre: supplier.nombre },
+          items: lines.map((l, i) => ({
+            name: l.nombre || l.codigo || 'Producto',
+            quantity: l.cantidad,
+            unitPrice: l.costoUnitario,
+            discount: i === 0 ? descuento : 0,
+            taxRate: l.itbisPct,
+            withholdingAmount: i === 0 ? isrMontoRetencion : 0,
+          })),
+          document: { totalItbisRetenido: itbisRetenido },
+          origen: `purchase:${result.purchaseId}`,
+          branchId,
+          context: { userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor) },
+        });
+        if (ecf?.encf) {
+          await query(
+            'UPDATE purchases SET ncf = ?, tipo_ncf = ?, numero_documento = CASE WHEN numero_documento = ? THEN ? ELSE numero_documento END WHERE id = ?',
+            [ecf.encf, 'E41', 'E41', ecf.encf, result.purchaseId]
+          );
+        }
+      }
+
       const [row] = await query(
         `SELECT p.*, s.nombre AS supplier_name FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id WHERE p.id = ?`,
         [result.purchaseId]
       );
       syncContabilidadFireAndForget('compra registrada');
-      res.status(201).json(mapPurchaseRow(row));
+      res.status(201).json({ ...mapPurchaseRow(row), ecf });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }

@@ -17,6 +17,20 @@ const ECF_DOCUMENT_TYPES = [
 
 const DOCUMENT_TYPE_MAP = new Map(ECF_DOCUMENT_TYPES.map((item) => [item.code, item]));
 
+// Según los XSD de la DGII, E32 y E34 no llevan FechaVencimientoSecuencia; los demás la exigen.
+const TIPOS_SIN_VENCIMIENTO = new Set(['E32', 'E34']);
+
+function llevaVencimiento(code) {
+  return !TIPOS_SIN_VENCIMIENTO.has(String(code || '').trim().toUpperCase());
+}
+
+// Van sin ITBIS: el XSD del E44 no admite montos gravados y el E46 va a tasa 0%.
+const TIPOS_SIN_ITBIS = new Set(['E44', 'E46']);
+
+function vaSinItbis(code) {
+  return TIPOS_SIN_ITBIS.has(String(code || '').trim().toUpperCase());
+}
+
 function getDocumentTypes() {
   return ECF_DOCUMENT_TYPES.map((item) => ({ ...item }));
 }
@@ -37,5 +51,7 @@ module.exports = {
   ECF_DOCUMENT_TYPES,
   getDocumentType,
   getDocumentTypes,
+  llevaVencimiento,
+  vaSinItbis,
   resolveElectronicDocumentType,
 };

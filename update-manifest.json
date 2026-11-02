@@ -1,14 +1,19 @@
 {
-  "version": "1.6.7",
-  "stableVersion": "1.6.7",
-  "date": "30/10/2026",
-  "size": "47.3 MB",
-  "type": "bugfix",
+  "version": "1.6.8",
+  "stableVersion": "1.6.8",
+  "date": "01/11/2026",
+  "size": "198 MB",
+  "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Certificacion e-CF: el boton para copiar las URLs de los Pasos 7 y 12 ya funciona.",
-    "Certificacion e-CF: el Paso 7 revisa las 3 URLs al abrirse y una direccion mal escrita ya no pasa la validacion.",
-    "Certificacion e-CF: la URL del servicio ya viene puesta y se actualizaron las instrucciones."
+    "Actualizaciones: se descargan solas y el sistema pregunta antes de instalar y reiniciar. Se puede dejar para más tarde.",
+    "Facturación electrónica: nueva pantalla para ver cada comprobante, su estado, sus errores, su enlace de la DGII y su XML.",
+    "Facturación electrónica: corregidos rechazos de la DGII en facturas E31 con ITBIS y con clientes que tienen teléfono o dirección.",
+    "Facturación electrónica: notas de crédito y débito, compras, gastos y exportaciones ya se emiten desde su pantalla.",
+    "Secuencias: se pueden activar con una casilla; la fecha de vencimiento se pide solo en los tipos que la llevan.",
+    "Facturas de servicios: al escribir el RNC o la cédula salen los datos y el cliente se agrega solo.",
+    "Una sola caja: corregida la compra al contado y \"Ya me certifiqué antes\", que daban error.",
+    "Módulo Archivos: vuelve a funcionar."
   ]
 }

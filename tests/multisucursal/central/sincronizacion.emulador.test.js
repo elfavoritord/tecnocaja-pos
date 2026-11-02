@@ -182,6 +182,16 @@ describir('Sincronización central (emulador de Firestore)', () => {
     expect(deNorte).toMatchObject({ estadoSucursal: 'en_uso', siguiente: 640, disponibles: 361, sucursal: 'Norte' });
   });
 
+  test('e-NCF: la fecha de vencimiento es obligatoria salvo en E32 y E34, que no la llevan', async () => {
+    await expect(sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E31', desde: 1, hasta: 10 }, EMILIO)).rejects.toMatchObject({ code: 'DATOS_INVALIDOS' });
+    const conFecha = await sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E31', desde: 1, hasta: 10, vence: '2099-12-31' }, EMILIO);
+    expect(conFecha.vence).toBe('2099-12-31');
+    const sinFecha = await sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E34', desde: 1, hasta: 10, vence: '2099-12-31' }, EMILIO);
+    expect(sinFecha.vence).toBeNull();
+    // Los B siguen como estaban.
+    await expect(sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'B04', desde: 1, hasta: 10 }, EMILIO)).resolves.toMatchObject({ vence: null });
+  });
+
   test('e-NCF: la autorización de la DGII se reparte igual que los B', async () => {
     const norte = await sync.asignarRangoNcf(LIC, A.branchUuid, { tipo: 'E32', desde: 1, hasta: 50, autorizacion: '6005604697' }, CONTADORA);
     // El mismo número en otra sucursal choca; otro pedazo del rango no.

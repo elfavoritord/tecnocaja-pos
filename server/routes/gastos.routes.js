@@ -67,8 +67,9 @@ async function addColumnIfMissing(query, tableName, columnName, definition) {
     await query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   } catch (error) {
     const message = String(error?.message || '').toLowerCase();
-    const isMissingTable = message.includes('no such table') || message.includes("doesn't exist");
-    if (!isMissingTable) throw error;
+    // Dos peticiones a la vez pueden agregar la misma columna: la segunda no es un error.
+    const seIgnora = message.includes('no such table') || message.includes("doesn't exist") || message.includes('duplicate column');
+    if (!seIgnora) throw error;
   }
 }
 
@@ -234,6 +235,7 @@ function mapExpenseRow(row) {
 }
 
 function createGastosRouter({
+  emitirEcfDeOperacion = null,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
 }) {
   const router = express.Router();
@@ -429,9 +431,65 @@ function createGastosRouter({
         detail: `${g.categoria} · ${g.descripcion}${g.lineas.length > 1 ? ` (${g.lineas.length} líneas)` : ''} · RD$ ${g.total.toFixed(2)}`,
       });
 
+      // E41 (compra sin comprobante; las empresas de servicios no tienen menú de Compras),
+      // E43 (gastos menores) o E47 (pago al exterior). El gasto ya quedó: si falla, se avisa.
+      // E43 y E47 van exentos en el XML (XSD), así que su monto incluye el ITBIS.
+      let ecf = null;
+      const tipoEcf = ['E41', 'E43', 'E47'].includes(String(req.body?.emitirEcf || '')) ? String(req.body.emitirEcf) : null;
+      if (tipoEcf === 'E41' && emitirEcfDeOperacion) {
+        const [proveedor] = g.supplierId
+          ? await query('SELECT nombre, rnc FROM suppliers WHERE id = ? LIMIT 1', [g.supplierId])
+          : [];
+        ecf = proveedor?.rnc
+          ? await emitirEcfDeOperacion({
+            tipoEcf,
+            customer: { rnc: proveedor.rnc, nombre: proveedor.nombre },
+            items: (g.lineas.length ? g.lineas : [{ descripcion: g.descripcion, cantidad: 1, precio: g.subtotal, itbisPct: 0 }]).map((l, i) => ({
+              name: l.descripcion || g.descripcion,
+              quantity: Number(l.cantidad || 1),
+              unitPrice: Number(l.precio || 0),
+              discount: 0,
+              taxRate: Number(l.itbisPct || 0),
+              withholdingAmount: i === 0 ? g.retencionIsr : 0,
+            })),
+            document: { totalItbisRetenido: g.retencionItbis },
+            origen: `expense:${expenseId}`,
+            branchId: g.branchId,
+            context: { userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor) },
+          })
+          : { ok: false, error: 'Para el E41 elige un proveedor que tenga RNC o cédula.' };
+        if (ecf?.encf) {
+          await query('UPDATE expenses SET ncf = ?, tipo_ncf = ? WHERE id = ?', [ecf.encf, tipoEcf, expenseId]);
+        }
+      } else if (tipoEcf && emitirEcfDeOperacion) {
+        const lineas = g.lineas.length
+          ? g.lineas
+          : [{ descripcion: g.descripcion, cantidad: 1, total: g.total }];
+        ecf = await emitirEcfDeOperacion({
+          tipoEcf,
+          customer: { nombre: g.beneficiario || g.descripcion, identificadorExtranjero: String(req.body?.identificadorExtranjero || '').trim() },
+          items: lineas.map((l, i) => ({
+            name: l.descripcion || g.descripcion,
+            quantity: 1,
+            unitPrice: Number(l.total || 0),
+            discount: 0,
+            taxRate: 0,
+            isService: tipoEcf === 'E47',
+            withholdingAmount: tipoEcf === 'E47' && i === 0 ? g.retencionIsr : 0,
+          })),
+          document: tipoEcf === 'E47' ? { totalIsrRetencion: g.retencionIsr } : {},
+          origen: `expense:${expenseId}`,
+          branchId: g.branchId,
+          context: { userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor) },
+        });
+        if (ecf?.encf) {
+          await query('UPDATE expenses SET ncf = ?, tipo_ncf = ? WHERE id = ?', [ecf.encf, tipoEcf, expenseId]);
+        }
+      }
+
       const creado = await gastoConLineas(expenseId);
       syncContabilidadFireAndForget('gasto registrado');
-      res.status(201).json(creado ? creado.gasto : { id: expenseId, items: g.lineas });
+      res.status(201).json({ ...(creado ? creado.gasto : { id: expenseId, items: g.lineas }), ecf });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }

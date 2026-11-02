@@ -19,6 +19,7 @@
 const express = require('express');
 const {
   httpError, roleCodeOf, actorName, computeTotals, makeServiceGuard, resolveBranch,
+  buscarClientePorDocumento, agregarClienteDelDocumento,
 } = require('./_common');
 const { renderInvoiceDoc, renderEmailBody } = require('./renderDoc');
 const { sendInvoiceEmail } = require('./mailer');
@@ -26,9 +27,10 @@ const { getDocumentType } = require('../../../modules/ecf/config/document-types'
 const { validateBuyerForEcf, validateCertificateForEcf } = require('../../../modules/ecf/validators/document-validator');
 
 // e-CF con los que se le factura a un cliente (los equivalentes de B01, B02,
-// B14 y B15). Notas de crédito/débito, compras, gastos menores, exportaciones
-// y pagos al exterior tienen su propio flujo.
-const ECF_TIPOS_FACTURA = ['E31', 'E32', 'E44', 'E45'];
+// B14, B15 y B16). Las notas salen de Documentos, de una devolución o al anular;
+// compras, gastos menores y pagos al exterior, de Compras y Gastos.
+const ECF_TIPOS_FACTURA = ['E31', 'E32', 'E44', 'E45', 'E46'];
+const ECF_SIN_ITBIS = ['E44', 'E46'];
 
 // Misma regla que el motor e-CF (getNextAvailableSequence): activa, sin vencer,
 // con números, y Global o de la sucursal/caja de la factura.
@@ -72,7 +74,7 @@ function mapInvoice(row, items = [], payments = []) {
     ncfTipo: row.ncf_tipo || '',
     ncfVencimiento: row.ncf_vencimiento || null,
     ecfStatus: (row.fiscal_mode === 'ecf' && row.sale_ecf_estado) || row.ecf_status || null,
-    ecfError: row.fiscal_mode === 'ecf' ? (row.sale_ecf_error || null) : null,
+    ecfError: row.fiscal_mode === 'ecf' && row.sale_ecf_estado !== 'aceptado' ? (row.sale_ecf_error || null) : null,
     subtotal: Number(row.subtotal || 0),
     descuento: Number(row.descuento || 0),
     itbis: Number(row.itbis || 0),
@@ -476,6 +478,10 @@ function createFacturacionRouter(deps) {
         p.clientId = null;
       }
     }
+    if (!p.clientId) {
+      const existente = await buscarClientePorDocumento(query, p.clientRnc);
+      if (existente) { p.clientId = existente.id; p.clientName = existente.nombre || p.clientName; }
+    }
     const branchId = resolveBranch(actor, body?.branchId, deps) || (body?.branchId ? Number(body.branchId) : null);
     const cashRegisterId = body?.cashRegisterId ? Number(body.cashRegisterId) : null;
     // Cobro inmediato si es contado (registra el pago con el método elegido).
@@ -484,6 +490,10 @@ function createFacturacionRouter(deps) {
     const cobrarAhora = p.condicionPago === 'contado' && body?.pagoInmediato !== false;
     const esEcf = p.fiscalMode === 'ecf';
     if (esEcf) p.ncfTipo = await prepararEcf(p, { branchId, cashRegisterId });
+    // E44 y E46 van sin ITBIS, igual que en el XML: el total de la factura debe dar lo mismo.
+    if (esEcf && ECF_SIN_ITBIS.includes(p.ncfTipo)) {
+      p.totals = computeTotals((body?.items || []).map((item) => ({ ...item, itbisPct: 0 })));
+    }
     const tipoNcf = String(p.ncfTipo || 'B02').toUpperCase();
     const tipoConsumo = (p.fiscalMode === 'ncf' && /^B0?2$/.test(tipoNcf))
       || (p.fiscalMode === 'ecf' && p.ncfTipo === 'E32');
@@ -495,6 +505,11 @@ function createFacturacionRouter(deps) {
         throw httpError(`Para comprobantes B02 de RD$${umbralConsumo.toLocaleString('es-DO')} o más, indica el nombre y el RNC/cédula del comprador.`);
       }
     }
+
+    const clienteNuevo = p.clientId
+      ? null
+      : await agregarClienteDelDocumento(deps, { nombre: p.clientName, documento: p.clientRnc, actor, modulo: 'una factura' });
+    if (clienteNuevo) p.clientId = clienteNuevo.id;
 
     const saved = await withTransaction(async (conn) => {
       const numero = await nextServiceDocNumber(conn, 'invoice');
@@ -572,7 +587,7 @@ function createFacturacionRouter(deps) {
       amount: p.totals.total, paymentMethod: cobrarAhora ? metodoPago : null,
     });
     const full = await fetchFull(saved.invoiceId);
-    return ecf ? { ...full, ecf } : full;
+    return { ...full, ...(ecf ? { ecf } : {}), ...(clienteNuevo ? { clienteNuevo } : {}) };
   }
 
   // ── Buscar la factura de servicios por su número o NCF (para reimpresión) ─
@@ -646,16 +661,25 @@ function createFacturacionRouter(deps) {
           nombre: getDocumentType(tipo)?.label || NCF_LABELS[tipo] || tipo,
           vencimiento: prev?.vencimiento || fechaSql(s.fechaVencimiento),
           disponibles: (prev?.disponibles || 0) + Math.max(0, Number(s.remaining || 0)),
+          // Modo sencillo: no se sabe cuántos autorizó la DGII, así que no se muestra cantidad.
+          sinCantidad: Boolean(prev?.sinCantidad || s.modoSimple),
         });
       }
       const electronicos = ECF_TIPOS_FACTURA.filter((t) => porTipo.has(t)).map((t) => porTipo.get(t));
+      // Activas que no son de factura (E34 y otras): se ven en la lista, pero no se eligen.
+      const ecfOtros = [...new Set(secuencias
+        .filter((s) => s.activo && !s.isExpired && !s.isExhausted)
+        .map((s) => String(s.tipoComprobante).toUpperCase())
+        .filter((t) => !ECF_TIPOS_FACTURA.includes(t)))]
+        .sort()
+        .map((tipo) => ({ tipo, nombre: getDocumentType(tipo)?.label || NCF_LABELS[tipo] || tipo }));
       const ecfFueraDeAlcance = !electronicos.length
         && secuencias.some((s) => secuenciaEcfSirve(s, { branchId: s.branchId, cashRegisterId: s.cashRegisterId }));
       let ecfActivo = false;
       if (electronicos.length && ecfService && typeof ecfService.getSystemStatus === 'function') {
         ecfActivo = Boolean((await ecfService.getSystemStatus().catch(() => null))?.isActive);
       }
-      res.json({ comprobantes: items, necesitaActivar, electronicos, ecfActivo, ecfFueraDeAlcance });
+      res.json({ comprobantes: items, necesitaActivar, electronicos, ecfOtros, ecfActivo, ecfFueraDeAlcance });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }
@@ -691,6 +715,41 @@ function createFacturacionRouter(deps) {
          ${where} ORDER BY i.fecha DESC, i.id DESC LIMIT 500`, params
       );
       res.json(rows.map((r) => mapInvoice(r)));
+    } catch (e) {
+      res.status(e.statusCode || 500).json({ error: e.message });
+    }
+  });
+
+  // ── Resultado de la DGII de los e-CF que siguen en "Enviado" ─────────────
+  // La lista lo pide mientras tenga alguno: la DGII contesta por TrackID, segundos después.
+  // Manda las facturas que tiene en espera: el servidor también consulta por su cuenta al
+  // enviar, y sin esto una respuesta que ya llegó no se le avisaba a nadie.
+  router.post('/consultar-ecf', async (req, res) => {
+    try {
+      const ESPERANDO = ['enviado', 'en_proceso', 'procesando'];
+      const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).map(Number).filter((id) => id > 0).slice(0, 50);
+      const cual = ids.length
+        ? `i.id IN (${ids.map(() => '?').join(', ')})`
+        : `d.estado_dgii IN ('enviado', 'en_proceso', 'procesando')`;
+      const pendientes = await query(
+        `SELECT i.id AS invoice_id, i.numero, d.id AS document_id, d.encf, d.estado_dgii, d.error_message
+         FROM svc_invoices i
+         JOIN ecf_documents d ON d.sale_id = i.sale_id
+         WHERE i.fiscal_mode = 'ecf' AND i.estado <> 'anulada' AND d.track_id IS NOT NULL AND ${cual}
+         ORDER BY d.id DESC LIMIT 50`,
+        ids
+      );
+      const cambios = [];
+      let siguen = 0;
+      for (const fila of pendientes) {
+        const r = ESPERANDO.includes(fila.estado_dgii)
+          ? await ecfService.queryDocumentStatus(fila.document_id).catch(() => null)
+          : { estado: fila.estado_dgii, encf: fila.encf, mensaje: fila.error_message };
+        if (!r || ESPERANDO.includes(r.estado)) { siguen += 1; continue; }
+        await query('UPDATE svc_invoices SET ecf_status = ?, ncf = COALESCE(?, ncf) WHERE id = ?', [String(r.estado).slice(0, 20), r.encf || null, fila.invoice_id]);
+        cambios.push({ numero: fila.numero, encf: r.encf, estado: r.estado, mensaje: r.mensaje });
+      }
+      res.json({ cambios, pendientes: siguen });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }
@@ -886,7 +945,18 @@ function createFacturacionRouter(deps) {
         detail: `${inv.numero}${inv.ncf ? ' · ' + inv.ncf : ''} · ${motivo}`,
         branchId: inv.branch_id, clientId: inv.client_id, documentType: 'factura', documentRef: inv.numero, amount: Number(inv.total || 0),
       });
-      res.json(await fetchFull(id));
+      // Nota de crédito que anula el e-CF aceptado. La anulación ya quedó: si falla, se avisa.
+      const ecfNota = inv.sale_id && typeof ecfService?.emitSafely === 'function'
+        ? await ecfService.emitSafely('emitNoteForSale', {
+          saleId: inv.sale_id,
+          tipoEcf: 'E34',
+          codigoModificacion: '1',
+          razon: motivo,
+          origen: `sale:${inv.sale_id}:anulacion`,
+          context: { userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor), internetOffline: isInternetOffline() },
+        })
+        : null;
+      res.json({ ...(await fetchFull(id)), ecfNota: ecfNota?.skipped ? null : ecfNota });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }

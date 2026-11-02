@@ -134,6 +134,7 @@ function openNuevaCompraModal() {
         </select>
       </div>
       <div class="form-group"><label>No. Documento del proveedor *</label><input type="text" id="compra-numero" class="form-input" placeholder="FAC-000123"></div>
+      <div class="form-group"><label style="display:flex;gap:.4rem;align-items:center;cursor:pointer"><input type="checkbox" id="compra-emitir-e41"> Proveedor sin comprobante: emitir e-CF de compras (E41)</label></div>
       <div class="form-group"><label>NCF</label><input type="text" id="compra-ncf" class="form-input" placeholder="B0100000001"></div>
       <div class="form-group"><label>Fecha comprobante *</label><input type="date" id="compra-fecha" class="form-input" value="${today}" onchange="syncCompraFechaVencimiento()"></div>
       <div class="form-group"><label>Fecha recepción</label><input type="date" id="compra-recepcion" class="form-input" value="${today}"></div>
@@ -389,8 +390,9 @@ async function guardarCompra() {
       supplierId = Number(created.id);
     }
 
-    await api.createPurchase({
+    const compraGuardada = await api.createPurchase({
       supplierId, branchId, numeroDocumento,
+      emitirE41: Boolean(document.getElementById('compra-emitir-e41')?.checked),
       ncf: document.getElementById('compra-ncf')?.value.trim() || '',
       fechaComprobante, fechaRecepcion, condicionPago,
       fechaVencimiento: condicionPago === 'credito' ? fechaVencimiento : null,
@@ -410,6 +412,8 @@ async function guardarCompra() {
     closeAllModals();
     purchaseItemsDraft = [];
     showToast('Compra registrada correctamente.', 'success');
+    if (compraGuardada?.ecf?.encf && compraGuardada.ecf.ok) showToast(`e-CF de compras ${compraGuardada.ecf.encf} emitido.`, 'success');
+    else if (compraGuardada?.ecf?.error) showToast(`La compra quedó registrada, pero el E41 no se emitió: ${compraGuardada.ecf.error}`, 'warning');
     loadComprasTable();
     loadCuentasPorPagar();
     if (typeof loadProductsTable === 'function') loadProductsTable();
@@ -870,6 +874,15 @@ async function openNuevoGastoModal(gasto = null) {
             <input type="text" id="gasto-beneficiario" class="form-input" placeholder="Persona o empresa a la que se pagó"></div>
           <div class="gf-field"><label for="gasto-ncf">NCF del comprobante</label>
             <input type="text" id="gasto-ncf" class="form-input" placeholder="B0100000001" maxlength="19"></div>
+          <div class="gf-field"><label for="gasto-emitir-ecf">Emitir e-CF</label>
+            <select id="gasto-emitir-ecf" class="form-input">
+              <option value="">No emitir</option>
+              <option value="E41">E41 · Compra a proveedor sin comprobante</option>
+              <option value="E43">E43 · Gastos menores</option>
+              <option value="E47">E47 · Pago al exterior</option>
+            </select></div>
+          <div class="gf-field" id="gasto-id-extranjero-campo" hidden><label for="gasto-id-extranjero">Identificación fiscal del proveedor extranjero *</label>
+            <input type="text" id="gasto-id-extranjero" class="form-input" maxlength="20" placeholder="Tax ID o número de registro"></div>
           <div class="gf-field"><label for="gasto-notas">Notas</label>
             <input type="text" id="gasto-notas" class="form-input" placeholder="Observaciones"></div>
         </div>
@@ -1044,11 +1057,19 @@ async function guardarGasto(imprimir = false) {
       formaPago: document.getElementById('gasto-606-forma-pago')?.value ? Number(document.getElementById('gasto-606-forma-pago').value) : null,
       isrTipoRetencion: document.getElementById('gasto-606-isr-tipo')?.value ? Number(document.getElementById('gasto-606-isr-tipo').value) : null,
       ncfModificado: document.getElementById('gasto-606-ncf-modificado')?.value.trim() || '',
+      emitirEcf: document.getElementById('gasto-emitir-ecf')?.value || '',
+      identificadorExtranjero: document.getElementById('gasto-id-extranjero')?.value.trim() || '',
     };
+    if (datos.emitirEcf === 'E47' && !datos.identificadorExtranjero) {
+      showToast('El E47 lleva la identificación fiscal del proveedor extranjero.', 'warning');
+      return;
+    }
     const guardado = editandoId ? await api.updateExpense(editandoId, datos) : await api.createExpense(datos);
     _gastoEditandoId = null;
     closeAllModals();
     showToast(editandoId ? 'Gasto actualizado.' : 'Gasto registrado correctamente.', 'success');
+    if (guardado?.ecf?.encf && guardado.ecf.ok) showToast(`e-CF ${guardado.ecf.encf} emitido.`, 'success');
+    else if (guardado?.ecf?.error) showToast(`El gasto quedó registrado, pero el e-CF no se emitió: ${guardado.ecf.error}`, 'warning');
     _expenseCategoriesCache = null; // trae también las categorías nuevas
     loadGastosTable();
     avisarGastosCambiaron();

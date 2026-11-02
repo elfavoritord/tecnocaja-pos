@@ -37,12 +37,26 @@ const FileManager = (() => {
     return isNaN(d) ? str : d.toLocaleString('es-DO', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
   };
 
+  function headersDeSesion() {
+    const token = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '') || window.DB?.authToken || '';
+    return { Authorization: `Bearer ${token}` };
+  }
+
   async function api(endpoint, opts = {}) {
     const res  = await fetch(`/api/files${endpoint}`, {
-      headers: { 'Content-Type': 'application/json' },
       ...opts,
+      headers: { 'Content-Type': 'application/json', ...headersDeSesion(), ...(opts.headers || {}) },
     });
     return res.json();
+  }
+
+  // Un enlace o un iframe no pueden mandar la sesión: el archivo se pide aparte.
+  async function archivoComoUrl(ruta) {
+    const res = await fetch(ruta, { headers: headersDeSesion() });
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `HTTP ${res.status}`);
+    const cabecera = res.headers.get('Content-Disposition') || '';
+    const nombre = decodeURIComponent((cabecera.match(/filename="([^"]*)"/) || [])[1] || '');
+    return { url: URL.createObjectURL(await res.blob()), nombre };
   }
 
   function showFMToast(msg, type = 'success') {
@@ -286,18 +300,32 @@ const FileManager = (() => {
   }
 
   // ── Acciones de archivo ────────────────────────────────────────────────────
-  function downloadFile(id) {
-    window.open(`/api/files/download/${id}`, '_blank');
+  async function downloadFile(id) {
+    try {
+      const { url, nombre } = await archivoComoUrl(`/api/files/download/${id}`);
+      const enlace = document.createElement('a');
+      enlace.href = url;
+      enlace.download = nombre || `archivo-${id}`;
+      enlace.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      showFMToast(`No se pudo descargar: ${e.message}`, 'error');
+    }
   }
 
-  function previewFile(id) {
+  async function previewFile(id) {
     const modal = $('fm-preview-modal');
     const frame = $('fm-preview-frame');
-    if (modal && frame) {
-      frame.src = `/api/files/preview/${id}`;
-      modal.style.display = 'flex';
-    } else {
-      window.open(`/api/files/preview/${id}`, '_blank');
+    try {
+      const { url } = await archivoComoUrl(`/api/files/preview/${id}`);
+      if (modal && frame) {
+        frame.src = url;
+        modal.style.display = 'flex';
+      } else {
+        window.open(url, '_blank');
+      }
+    } catch (e) {
+      showFMToast(`No se pudo abrir: ${e.message}`, 'error');
     }
   }
 
@@ -305,7 +333,10 @@ const FileManager = (() => {
     const modal = $('fm-preview-modal');
     const frame = $('fm-preview-frame');
     if (modal) modal.style.display = 'none';
-    if (frame) frame.src = '';
+    if (frame) {
+      if (frame.src.startsWith('blob:')) URL.revokeObjectURL(frame.src);
+      frame.src = '';
+    }
   }
 
   async function deleteFile(id, name) {

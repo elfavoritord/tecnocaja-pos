@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.7",
+  "version": "1.6.8",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -26,6 +26,8 @@
     "test:coverage": "jest --coverage",
     "test:e2e-lan": "node scripts/e2e-lan/run-lan-e2e.js",
     "test:combos-e2e": "node scripts/combos/probar-combos-e2e.js && node scripts/combos/probar-combos-e2e.js --sqlite && node scripts/combos/probar-combos-ui.js",
+    "test:ecf-completo": "node scripts/ecf/probar-ecf-punta-a-punta.js && node scripts/ecf/probar-ecf-punta-a-punta.js --servicios && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite --servicios && node scripts/ecf/probar-ui-ecf.js && node scripts/ecf/probar-ui-ecf.js --servicios && node scripts/ecf/probar-comprobantes-ui.js",
+    "test:pantallas": "node scripts/ecf/recorrer-pantallas.js && node scripts/ecf/recorrer-pantallas.js --servicios && node scripts/ecf/recorrer-pantallas.js --mariadb && node scripts/ecf/recorrer-pantallas.js --mariadb --servicios",
     "test:multisucursal-mariadb": "node scripts/multisucursal/probar-migraciones-mariadb.js",
     "test:multisucursal-sqlite": "node scripts/multisucursal/probar-arranque-sqlite.js",
     "test:multisucursal-enlace": "node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"node scripts/multisucursal/probar-enlace-pos.js\"",
@@ -131,6 +133,8 @@
       "db/**/*",
       "scripts/**/*",
       "!scripts/e2e-lan/**",
+      "!scripts/ecf/**",
+      "!scripts/actualizacion/**",
       "modules/**/*",
       "server/**/*",
       "config/**/*",

@@ -24,7 +24,8 @@ async function addColumnIfMissing(query, table, column, definition) {
     await query(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   } catch (error) {
     const message = String(error?.message || '').toLowerCase();
-    if (!message.includes('no such table') && !message.includes("doesn't exist")) throw error;
+    // Dos peticiones a la vez pueden agregar la misma columna: la segunda no es un error.
+    if (!message.includes('no such table') && !message.includes("doesn't exist") && !message.includes('duplicate column')) throw error;
   }
 }
 

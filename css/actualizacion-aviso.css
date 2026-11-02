@@ -1,0 +1,63 @@
+/* Aviso de actualización lista (js/actualizacion-aviso.js). Solo tokens: día y noche. */
+.upd-aviso {
+  position: fixed;
+  /* A la izquierda del panel derecho: no tapa el total ni el botón de cobrar. */
+  left: max(16px, calc(50% - 420px));
+  bottom: 20px;
+  z-index: 4500;
+  width: min(420px, calc(100vw - 32px));
+  padding: var(--tc-space-4);
+  border: 1px solid var(--tc-select-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  font-size: var(--tc-fs-sm);
+}
+.upd-aviso--centro {
+  top: 50%;
+  right: auto;
+  bottom: auto;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4600;
+}
+.upd-aviso-fondo {
+  position: fixed;
+  inset: 0;
+  z-index: 4590;
+  background: rgba(6, 8, 16, 0.6);
+}
+.upd-aviso p { margin: 0 0 var(--tc-space-2); line-height: 1.5; }
+.upd-aviso__titulo {
+  margin: 0 0 var(--tc-space-2);
+  font-size: var(--tc-fs-md, 16px);
+  font-weight: var(--tc-weight-semibold);
+}
+.upd-aviso__nota { color: var(--tc-warning-text); }
+.upd-aviso__pregunta { font-weight: var(--tc-weight-semibold); }
+.upd-aviso__botones {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--tc-space-2);
+  margin-top: var(--tc-space-3);
+}
+.upd-aviso__btn {
+  min-height: 40px;
+  padding: 0 var(--tc-space-3);
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text);
+  font: inherit;
+  font-weight: var(--tc-weight-semibold);
+  cursor: pointer;
+}
+.upd-aviso__btn:hover { border-color: var(--tc-select-border); background: var(--tc-select-bg); }
+.upd-aviso__btn--pri {
+  border-color: var(--tc-primary, #6c63ff);
+  background: var(--tc-primary, #6c63ff);
+  color: #fff;
+}
+.upd-aviso__btn--pri:hover { background: var(--tc-primary, #6c63ff); filter: brightness(1.08); }

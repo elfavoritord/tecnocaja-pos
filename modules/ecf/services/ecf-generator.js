@@ -2,6 +2,7 @@
 
 const builder = require('xmlbuilder');
 const { assertCondition, EcfError } = require('../utils/errors');
+const { llevaVencimiento } = require('../config/document-types');
 const { parseXml, serializeXml, stripInvalidXmlChars } = require('../utils/xml.util');
 
 function round2(value) {
@@ -38,6 +39,9 @@ function normalizeEncfValue(value, tipoeCF = '') {
 }
 
 function formatDate(value) {
+  // "AAAA-MM-DD" se toma tal cual: new Date() la lee en UTC y en RD quedaba un día antes.
+  const soloFecha = typeof value === 'string' && /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (soloFecha) return `${soloFecha[3]}-${soloFecha[2]}-${soloFecha[1]}`;
   const date = value instanceof Date ? value : new Date(value);
   assertCondition(!Number.isNaN(date.getTime()), 'Fecha inválida para el e-CF.');
   const day = String(date.getDate()).padStart(2, '0');
@@ -68,6 +72,39 @@ function sanitizeText(value, { allowEmpty = false } = {}) {
 
 function normalizeBuyerTaxId(value) {
   return String(value || '').replace(/\D/g, '');
+}
+
+// Campos con formato o largo fijo en el XSD de la DGII. Un teléfono o un correo mal
+// escrito en Clientes no debe costar el rechazo del comprobante: esos datos se omiten.
+function telefonoDgii(value) {
+  const digitos = String(value || '').replace(/\D/g, '').replace(/^1(?=\d{10}$)/, '');
+  return digitos.length === 10 ? `${digitos.slice(0, 3)}-${digitos.slice(3, 6)}-${digitos.slice(6)}` : null;
+}
+
+function correoDgii(value) {
+  const correo = stripInvalidXmlChars(String(value || '').trim());
+  return correo.length <= 80 && /^\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*$/.test(correo) ? correo : null;
+}
+
+function recortar(value, maximo) {
+  return String(value ?? '').slice(0, maximo).trim();
+}
+
+function decimalesDgii(value, maximo) {
+  const exacto = Number(value).toFixed(maximo).replace(/0+$/, '');
+  const [entero, decimales = ''] = exacto.split('.');
+  return `${entero}.${decimales.padEnd(2, '0')}`;
+}
+
+// El XSD admite 2 decimales en la cantidad y 4 en el precio. Con báscula (0.375 kg) la cantidad
+// se redondea y el precio se ajusta para que cantidad × precio siga dando el monto de la línea.
+function cantidadYPrecioDgii(item) {
+  const redondeada = Number(item.quantity.toFixed(2));
+  if (Math.abs(redondeada - item.quantity) < 1e-9) {
+    return { cantidad: item.quantity.toFixed(2), precio: decimalesDgii(item.unitPrice, 4) };
+  }
+  const cantidad = redondeada > 0 ? redondeada : 1;
+  return { cantidad: cantidad.toFixed(2), precio: decimalesDgii((item.quantity * item.unitPrice) / cantidad, 4) };
 }
 
 function buildTotals(items) {
@@ -111,7 +148,8 @@ function buildTotals(items) {
       taxableBase,
       taxAmount,
       lineTotal,
-      exempt: taxRate <= 0,
+      // Indicador 3 = gravado al 0%. Sin él, tasa 0 es exento (indicador 4).
+      exempt: taxRate <= 0 && Number(billingIndicator) !== 3,
       withholdingAmount,
       billingIndicator,
       retentionIndicator,
@@ -126,7 +164,8 @@ function buildTotals(items) {
   const exemptAmount = round2(normalizedItems.filter((item) => item.exempt).reduce((sum, item) => sum + item.taxableBase, 0));
   const taxed18 = round2(normalizedItems.filter((item) => item.taxRate === 18).reduce((sum, item) => sum + item.taxableBase, 0));
   const taxed16 = round2(normalizedItems.filter((item) => item.taxRate === 16).reduce((sum, item) => sum + item.taxableBase, 0));
-  const taxed0 = round2(normalizedItems.filter((item) => item.taxRate === 0).reduce((sum, item) => sum + item.taxableBase, 0));
+  // Un exento no es gravado: contarlo en los dos da la DGII 3205 "MontoTotal no es correcto".
+  const taxed0 = round2(normalizedItems.filter((item) => item.taxRate === 0 && !item.exempt).reduce((sum, item) => sum + item.taxableBase, 0));
   const totalTax = round2(normalizedItems.reduce((sum, item) => sum + item.taxAmount, 0));
   const total = round2(normalizedItems.reduce((sum, item) => sum + item.lineTotal, 0));
   const totalIsrRetenido = round2(normalizedItems.reduce((sum, item) => sum + item.withholdingAmount, 0));
@@ -162,9 +201,10 @@ function normalizeEmitterPhones(value) {
   }
 
   return String(value || '')
-    .split(/[;,|]+/)
+    .split(/[;,|/]+|\s+y\s+/)
     .map(normalizePhoneEntry)
-    .filter(Boolean);
+    .filter((telefono) => /^\d{3}-\d{3}-\d{4}$/.test(telefono))
+    .slice(0, 3);
 }
 
 function isSignatureNode(node) {
@@ -196,7 +236,9 @@ function normalizeEcfXmlStructure(xmlContent, options = {}) {
   }
 
   const idDocNode = doc.getElementsByTagName('IdDoc')?.[0] || null;
-  if (idDocNode) {
+  // En E34 el indicador es obligatorio (XSD) y 0 es un valor válido: no se quita.
+  const esNotaCredito = String(idDocNode?.getElementsByTagName('TipoeCF')?.[0]?.textContent || '').trim() === '34';
+  if (idDocNode && !esNotaCredito) {
     const removableNoteIndicators = [];
     for (let child = idDocNode.firstChild; child; child = child.nextSibling) {
       if (child.nodeType === 1 && child.nodeName === 'IndicadorNotaCredito') {
@@ -301,16 +343,28 @@ function normalizeEcfXmlStructure(xmlContent, options = {}) {
 const TIPOS_NOTA_CREDITO = new Set(['E34']);
 
 /** Tipos que NUNCA llevan TipoIngresos en IdDoc. */
-const TIPOS_SIN_TIPO_INGRESOS = new Set(['E34', 'E43', 'E47']);
+const TIPOS_SIN_TIPO_INGRESOS = new Set(['E34', 'E41', 'E43', 'E47']);
+
+/** E43 no lleva sección Comprador (XSD). */
+const TIPOS_SIN_COMPRADOR = new Set(['E43']);
+
+/** E41: cada ítem lleva Retencion obligatoria, y Totales sus retenciones. */
+const TIPO_COMPRAS = 'E41';
+
+/** E46: exportación, siempre gravada al 0% (XSD: sin MontoExento, solo ITBIS3). */
+const TIPO_EXPORTACION = 'E46';
+const TIPO_REGIMEN_ESPECIAL = 'E44';
+/** En su XSD pueden identificar al comprador extranjero. */
+const TIPOS_CON_ID_EXTRANJERO = new Set(['E32', 'E33', 'E34', 'E44', 'E46', 'E47']);
 
 /** Tipos que llevan FechaVencimientoSecuencia en IdDoc. */
-const TIPOS_CON_FECHA_VENCIMIENTO = new Set(['E33', 'E41', 'E43', 'E44', 'E45', 'E46', 'E47']);
 
 /** Tipos que NO llevan TipoPago en IdDoc. */
 const TIPOS_SIN_TIPO_PAGO = new Set(['E43']);
 
 /** Tipos "gastos/exterior" donde Totales sólo lleva MontoExento + MontoTotal (+ TotalISRRetencion para E47). */
 const TIPOS_TOTALES_EXENTO = new Set(['E43', 'E47']);
+const TIPOS_CON_INDICADOR_GRAVADO = new Set(['E31', 'E32', 'E33', 'E34', 'E41', 'E45']);
 
 /** E47: pago al exterior, tiene bloque Retencion por ítem y IndicadorBienoServicio=2 forzado. */
 const TIPO_EXTERIOR = 'E47';
@@ -319,15 +373,21 @@ function generateEcfXml(payload) {
   const emitter = payload?.emitter || {};
   const customer = payload?.customer || {};
   const document = payload?.document || {};
-  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const documentTypeCode = normalizeDocumentTypeCode(document.tipoeCF);
+  const rawItems = Array.isArray(payload?.items) ? payload.items : [];
+  // Sin ITBIS por ley; su XSD no admite montos gravados en E44 ni más tasa que 0% en E46.
+  const items = documentTypeCode === TIPO_EXPORTACION
+    ? rawItems.map((item) => ({ ...item, taxRate: 0, billingIndicator: 3 }))
+    : documentTypeCode === TIPO_REGIMEN_ESPECIAL
+      ? rawItems.map((item) => ({ ...item, taxRate: 0, billingIndicator: 4 }))
+      : rawItems;
   const issueDate = payload?.issueDate || new Date();
   const totals = buildTotals(items);
-  const documentTypeCode = normalizeDocumentTypeCode(document.tipoeCF);
   const normalizedEncf = normalizeEncfValue(document.eNCF, documentTypeCode);
   const isExteriorPayment = documentTypeCode === TIPO_EXTERIOR;
   const isExentoTotal = TIPOS_TOTALES_EXENTO.has(documentTypeCode);
   const isNotaCredito = TIPOS_NOTA_CREDITO.has(documentTypeCode);
-  const hasFechaVencimiento = TIPOS_CON_FECHA_VENCIMIENTO.has(documentTypeCode);
+  const hasFechaVencimiento = llevaVencimiento(documentTypeCode);
   const hasTipoIngresos = !TIPOS_SIN_TIPO_INGRESOS.has(documentTypeCode);
   const hasTipoPago = !TIPOS_SIN_TIPO_PAGO.has(documentTypeCode);
 
@@ -335,10 +395,10 @@ function generateEcfXml(payload) {
   assertCondition(totals.total >= 0, 'El monto total del e-CF no puede ser negativo.', { statusCode: 422 });
   assertCondition(document.eNCF, 'Debe indicar el eNCF del documento.', { statusCode: 422 });
   assertCondition(document.tipoeCF, 'Debe indicar el tipo de e-CF.', { statusCode: 422 });
-  if (hasFechaVencimiento && isExteriorPayment) {
+  if (hasFechaVencimiento) {
     assertCondition(
       document.fechaVencimientoSecuencia,
-      'El e-CF E47 requiere FechaVencimientoSecuencia en IdDoc.',
+      `El e-CF ${documentTypeCode} requiere la fecha de vencimiento de la secuencia. Indícala en Configuración → Secuencias de Comprobantes Electrónicos (e-NCF).`,
       { statusCode: 422 }
     );
   }
@@ -357,7 +417,7 @@ function generateEcfXml(payload) {
   idDoc.ele('TipoeCF').txt(String(document.tipoeCF).replace(/^E/i, ''));
   idDoc.ele('eNCF').txt(sanitizeText(normalizedEncf));
 
-  // FechaVencimientoSecuencia: E33, E41, E43, E44, E45, E46, E47
+  // FechaVencimientoSecuencia: E31, E33, E41, E43, E44, E45, E46, E47
   if (hasFechaVencimiento && document.fechaVencimientoSecuencia) {
     idDoc.ele('FechaVencimientoSecuencia').txt(formatDate(document.fechaVencimientoSecuencia));
   }
@@ -368,14 +428,15 @@ function generateEcfXml(payload) {
     idDoc.ele('IndicadorNotaCredito').txt(String(indicador));
   }
 
-  // TipoIngresos: E31, E32, E33, E41, E44, E45, E46 (NO en E34, E43, E47)
-  if (hasTipoIngresos) {
-    appendIfValue(idDoc, 'TipoIngresos', document.tipoIngresos || '01');
+  // Con líneas gravadas la DGII lo exige (código 176 en E31). Va en 0 porque MontoItem
+  // se envía sin ITBIS. Los demás tipos no tienen este campo en su XSD.
+  if (TIPOS_CON_INDICADOR_GRAVADO.has(documentTypeCode) && totals.items.some((item) => item.taxRate > 0)) {
+    idDoc.ele('IndicadorMontoGravado').txt(String(document.indicadorMontoGravado ?? 0));
   }
 
-  // IndicadorMontoGravado: opcional para tipos que lo admiten (E41, E31...)
-  if (!isExteriorPayment && !isExentoTotal) {
-    appendIfValue(idDoc, 'IndicadorMontoGravado', document.indicadorMontoGravado);
+  // TipoIngresos: E31, E32, E33, E44, E45, E46. E34 solo con líneas gravadas, como en la certificación.
+  if (hasTipoIngresos || (isNotaCredito && totals.items.some((item) => item.taxRate > 0))) {
+    appendIfValue(idDoc, 'TipoIngresos', document.tipoIngresos || '01');
   }
 
   // TipoPago: todos excepto E43
@@ -386,11 +447,11 @@ function generateEcfXml(payload) {
   // ── Emisor ───────────────────────────────────────────────────────────────
   const emisor = encabezado.ele('Emisor');
   emisor.ele('RNCEmisor').txt(sanitizeText(emitter.rnc));
-  emisor.ele('RazonSocialEmisor').txt(sanitizeText(emitter.razonSocial || emitter.razon_social));
+  emisor.ele('RazonSocialEmisor').txt(recortar(sanitizeText(emitter.razonSocial || emitter.razon_social), 150));
   // Opcional en la DGII: sin nombre comercial la etiqueta no va (antes lanzaba
   // "campo obligatorio vacío" después de apartar el e-NCF).
-  appendIfValue(emisor, 'NombreComercial', sanitizeText(emitter.nombreComercial || emitter.nombre_comercial, { allowEmpty: true }));
-  appendIfValue(emisor, 'DireccionEmisor', sanitizeText(emitter.direccion, { allowEmpty: true }));
+  appendIfValue(emisor, 'NombreComercial', recortar(sanitizeText(emitter.nombreComercial || emitter.nombre_comercial, { allowEmpty: true }), 150));
+  appendIfValue(emisor, 'DireccionEmisor', recortar(sanitizeText(emitter.direccion, { allowEmpty: true }), 100));
   const emitterPhones = normalizeEmitterPhones(emitter.telefono);
   if (emitterPhones.length) {
     const table = emisor.ele('TablaTelefonoEmisor');
@@ -398,17 +459,25 @@ function generateEcfXml(payload) {
       table.ele('TelefonoEmisor').txt(phone);
     }
   }
-  appendIfValue(emisor, 'CorreoEmisor', sanitizeText(emitter.correo, { allowEmpty: true }));
+  appendIfValue(emisor, 'CorreoEmisor', correoDgii(emitter.correo));
   emisor.ele('FechaEmision').txt(formatDate(issueDate));
 
   // ── Comprador ────────────────────────────────────────────────────────────
-  const buyerTaxId = normalizeBuyerTaxId(customer.rnc || customer.taxId || customer.cedula);
-  const comprador = encabezado.ele('Comprador');
-  appendIfValue(comprador, 'RNCComprador', buyerTaxId);
-  appendIfValue(comprador, 'RazonSocialComprador', sanitizeText(customer.nombre || customer.razonSocial || 'Consumidor Final', { allowEmpty: true }));
-  appendIfValue(comprador, 'CorreoComprador', sanitizeText(customer.correo, { allowEmpty: true }));
-  appendIfValue(comprador, 'TelefonoAdicional', sanitizeText(customer.telefono, { allowEmpty: true }));
-  appendIfValue(comprador, 'DireccionComprador', sanitizeText(customer.direccion, { allowEmpty: true }));
+  if (!TIPOS_SIN_COMPRADOR.has(documentTypeCode)) {
+    const buyerTaxId = normalizeBuyerTaxId(customer.rnc || customer.taxId || customer.cedula);
+    const comprador = encabezado.ele('Comprador');
+    if (!isExteriorPayment && [9, 11].includes(buyerTaxId.length)) comprador.ele('RNCComprador').txt(buyerTaxId);
+    if (TIPOS_CON_ID_EXTRANJERO.has(documentTypeCode)) {
+      appendIfValue(comprador, 'IdentificadorExtranjero', recortar(sanitizeText(customer.identificadorExtranjero, { allowEmpty: true }), 20));
+    }
+    appendIfValue(comprador, 'RazonSocialComprador', recortar(sanitizeText(customer.nombre || customer.razonSocial || 'Consumidor Final', { allowEmpty: true }), 150));
+    if (!isExteriorPayment) {
+      // Este es el orden del XSD: el teléfono va después de la dirección, y E41 no lo tiene.
+      appendIfValue(comprador, 'CorreoComprador', correoDgii(customer.correo));
+      appendIfValue(comprador, 'DireccionComprador', recortar(sanitizeText(customer.direccion, { allowEmpty: true }), 100));
+      if (documentTypeCode !== TIPO_COMPRAS) appendIfValue(comprador, 'TelefonoAdicional', telefonoDgii(customer.telefono));
+    }
+  }
 
   // ── Totales ──────────────────────────────────────────────────────────────
   const totalsNode = encabezado.ele('Totales');
@@ -430,13 +499,20 @@ function generateEcfXml(payload) {
     appendIfValue(totalsNode, 'MontoGravadoTotal', totals.totalTaxed ? totals.totalTaxed.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI1', totals.taxed18 ? totals.taxed18.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoGravadoI2', totals.taxed16 ? totals.taxed16.toFixed(2) : null);
+    appendIfValue(totalsNode, 'MontoGravadoI3', totals.taxed0 ? totals.taxed0.toFixed(2) : null);
     appendIfValue(totalsNode, 'MontoExento', totals.exemptAmount ? totals.exemptAmount.toFixed(2) : null);
     appendIfValue(totalsNode, 'ITBIS1', totals.taxed18 ? '18' : null);
     appendIfValue(totalsNode, 'ITBIS2', totals.taxed16 ? '16' : null);
-    appendIfValue(totalsNode, 'TotalITBIS', totals.totalTax ? totals.totalTax.toFixed(2) : null);
+    appendIfValue(totalsNode, 'ITBIS3', totals.taxed0 ? '0' : null);
+    appendIfValue(totalsNode, 'TotalITBIS', totals.totalTax || totals.taxed0 ? totals.totalTax.toFixed(2) : null);
     appendIfValue(totalsNode, 'TotalITBIS1', totals.taxed18 ? round2(totals.taxed18 * 0.18).toFixed(2) : null);
     appendIfValue(totalsNode, 'TotalITBIS2', totals.taxed16 ? round2(totals.taxed16 * 0.16).toFixed(2) : null);
+    appendIfValue(totalsNode, 'TotalITBIS3', totals.taxed0 ? '0.00' : null);
     totalsNode.ele('MontoTotal').txt(totals.total.toFixed(2));
+    if (documentTypeCode === TIPO_COMPRAS) {
+      appendIfValue(totalsNode, 'TotalITBISRetenido', round2(document.totalItbisRetenido ?? 0) ? round2(document.totalItbisRetenido).toFixed(2) : null);
+      appendIfValue(totalsNode, 'TotalISRRetencion', totals.totalIsrRetenido ? totals.totalIsrRetenido.toFixed(2) : null);
+    }
   }
 
   // ── DetallesItems ────────────────────────────────────────────────────────
@@ -455,34 +531,34 @@ function generateEcfXml(payload) {
         String(item.retentionIndicator ?? document.retentionIndicator ?? 1)
       );
       retencion.ele('MontoISRRetenido').txt(round2(item.withholdingAmount ?? 0).toFixed(2));
-      detalle.ele('NombreItem').txt(item.name);
+      detalle.ele('NombreItem').txt(recortar(item.name, 80));
       // E47 exige IndicadorBienoServicio=2 (servicio) siempre
       detalle.ele('IndicadorBienoServicio').txt('2');
-      appendIfValue(detalle, 'DescripcionItem', item.additionalDescription || null);
-      detalle.ele('CantidadItem').txt(item.quantity.toFixed(2));
-      appendIfValue(detalle, 'UnidadMedida', item.unitMeasure || null);
-      detalle.ele('PrecioUnitarioItem').txt(item.unitPrice.toFixed(2));
+      appendIfValue(detalle, 'DescripcionItem', recortar(item.additionalDescription, 1000) || null);
+      detalle.ele('CantidadItem').txt(cantidadYPrecioDgii(item).cantidad);
+      appendIfValue(detalle, 'UnidadMedida', /^\d+$/.test(String(item.unitMeasure ?? '')) ? item.unitMeasure : null);
+      detalle.ele('PrecioUnitarioItem').txt(cantidadYPrecioDgii(item).precio);
       detalle.ele('MontoItem').txt(item.taxableBase.toFixed(2));
     } else {
       // Tipos normales (E31, E32, E33, E34, E41, E44, E45, E46):
-      // Orden XSD: IndicadorFacturacion → NombreItem → IndicadorBienoServicio →
+      // Orden XSD: IndicadorFacturacion → [Retencion] → NombreItem → IndicadorBienoServicio →
       //            [DescripcionItem] → CantidadItem → [UnidadMedida] → PrecioUnitarioItem →
-      //            [MontoItemMasITBIS] → [TasaITBIS] → [ITBISItem] → [DescuentoMonto] → MontoItem
-      // IndicadorFacturacion: 1=Gravado18%, 3=TasaReducida16%, 4=Exento
-      const billingInd = item.billingIndicator ?? (item.taxRate === 16 ? 3 : item.exempt ? 4 : 1);
+      //            [DescuentoMonto] → MontoItem. El ITBIS va en Totales: el Item no lo lleva.
+      // IndicadorFacturacion (XSD DGII): 1=18%, 2=16%, 3=0%, 4=Exento
+      const billingInd = item.billingIndicator ?? (item.taxRate === 16 ? 2 : item.exempt ? 4 : 1);
       detalle.ele('IndicadorFacturacion').txt(String(billingInd));
-      detalle.ele('NombreItem').txt(item.name);
+      if (documentTypeCode === TIPO_COMPRAS) {
+        const retencion = detalle.ele('Retencion');
+        retencion.ele('IndicadorAgenteRetencionoPercepcion').txt(String(item.retentionIndicator ?? document.retentionIndicator ?? 1));
+        appendIfValue(retencion, 'MontoISRRetenido', item.withholdingAmount ? round2(item.withholdingAmount).toFixed(2) : null);
+      }
+      detalle.ele('NombreItem').txt(recortar(item.name, 80));
       // IndicadorBienoServicio: 1=Bien, 2=Servicio
       detalle.ele('IndicadorBienoServicio').txt(String(item.goodsOrServicesIndicator || 1));
-      appendIfValue(detalle, 'DescripcionItem', item.additionalDescription || null);
-      detalle.ele('CantidadItem').txt(item.quantity.toFixed(2));
-      appendIfValue(detalle, 'UnidadMedida', item.unitMeasure || null);
-      detalle.ele('PrecioUnitarioItem').txt(item.unitPrice.toFixed(2));
-      // MontoItemMasITBIS = total de la línea incluyendo ITBIS (solo cuando aplica ITBIS)
-      appendIfValue(detalle, 'MontoItemMasITBIS', !item.exempt ? item.lineTotal.toFixed(2) : null);
-      // TasaITBIS es entero (18, 16) — no usar toFixed
-      appendIfValue(detalle, 'TasaITBIS', !item.exempt && item.taxRate ? String(item.taxRate) : null);
-      appendIfValue(detalle, 'ITBISItem', item.taxAmount ? item.taxAmount.toFixed(2) : null);
+      appendIfValue(detalle, 'DescripcionItem', recortar(item.additionalDescription, 1000) || null);
+      detalle.ele('CantidadItem').txt(cantidadYPrecioDgii(item).cantidad);
+      appendIfValue(detalle, 'UnidadMedida', /^\d+$/.test(String(item.unitMeasure ?? '')) ? item.unitMeasure : null);
+      detalle.ele('PrecioUnitarioItem').txt(cantidadYPrecioDgii(item).precio);
       appendIfValue(detalle, 'DescuentoMonto', item.discount ? item.discount.toFixed(2) : null);
       // MontoItem = base imponible sin ITBIS; siempre al final del bloque Item
       detalle.ele('MontoItem').txt(item.taxableBase.toFixed(2));
@@ -495,6 +571,7 @@ function generateEcfXml(payload) {
     appendIfValue(referencia, 'NCFModificado', sanitizeText(document.referencia.ncfModificado, { allowEmpty: true }));
     appendIfValue(referencia, 'FechaNCFModificado', sanitizeText(document.referencia.fechaNcfModificado, { allowEmpty: true }));
     appendIfValue(referencia, 'CodigoModificacion', sanitizeText(document.referencia.codigoModificacion, { allowEmpty: true }));
+    appendIfValue(referencia, 'RazonModificacion', sanitizeText(document.referencia.razonModificacion, { allowEmpty: true }).slice(0, 90));
   }
 
   xml.ele('FechaHoraFirma').txt(formatDateTime(new Date()));

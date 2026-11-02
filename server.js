@@ -136,6 +136,7 @@ const combosService = require('./server/services/combos.service');
 
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
 const createNetworkRouter = require('./server/routes/network.routes');
+const { createOperacionesActivas } = require('./server/system/operaciones-activas');
 const createConnectivityRouter = require('./server/routes/connectivity.routes');
 const { createServerIdentity } = require('./server/network/server-identity');
 // ✅ Multisucursal (Fase 2): identidad uuid, bandejas de sincronización y migraciones numeradas
@@ -2131,6 +2132,10 @@ app.set('trust proxy', 1);
 if (helmetMiddleware) app.use(helmetMiddleware);
 
 app.use(cors(CORS_OPTIONS));
+// Antes de los routers: tienen que contar todas las escrituras en curso.
+const operacionesActivas = createOperacionesActivas({ query });
+app.use(operacionesActivas.middleware);
+app.use('/api/system', operacionesActivas.router);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname), {
   // El frontend cambia seguido durante desarrollo/soporte y Electron reusa su
@@ -2598,7 +2603,14 @@ const fiscalSequencesRouter = createFiscalSequencesRouter({
 app.use('/api/fiscal-sequences', fiscalSequencesRouter);
 
 // Compras — Compras + Cuentas por pagar (Fase 1)
+// e-CF de compras y gastos: se emiten después de guardar y sin Internet quedan firmados.
+const emitirEcfDeOperacion = (args) => ecfModule.service.emitSafely('emitStandaloneDocument', {
+  ...args,
+  context: { ...(args.context || {}), internetOffline: getInternetMonitor().isKnownOffline() },
+});
+
 const comprasRouter = createComprasRouter({
+  emitirEcfDeOperacion,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
   changeBranchInventoryStock, registerInventoryMovement, mapSupplierInvoiceRow, resolveSupplierInvoiceStatus,
   isMysqlDeployment,
@@ -2607,6 +2619,7 @@ app.use('/api/purchases', comprasRouter);
 
 // Gastos — registro fiscal (Fase 2)
 const gastosRouter = createGastosRouter({
+  emitirEcfDeOperacion,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
 });
 app.use('/api/expenses', gastosRouter);
@@ -2615,7 +2628,7 @@ app.use('/api/expenses', gastosRouter);
 app.use('/api/servicios', createServiciosRouter({
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog,
   getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
-  getConfig, getNextNcfFromSequence,
+  getConfig, getNextNcfFromSequence, insertClientRow, mapClientRow,
   ecfService: ecfModule.service,
   // Sin Internet el e-CF de la factura se firma y queda pendiente de envío.
   isInternetOffline: () => getInternetMonitor().isKnownOffline(),
@@ -4559,8 +4572,9 @@ async function addColumnIfMissing(tableName, columnName, definition) {
     await query(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   } catch (error) {
     const message = String(error?.message || '').toLowerCase();
-    const isMissingTable = message.includes('no such table') || message.includes("doesn't exist");
-    if (!isMissingTable) {
+    // Dos peticiones a la vez pueden agregar la misma columna: la segunda no es un error.
+    const seIgnora = message.includes('no such table') || message.includes("doesn't exist") || message.includes('duplicate column');
+    if (!seIgnora) {
       throw error;
     }
   }
@@ -6186,6 +6200,17 @@ async function ensurePendingCashMovementExtensions() {
   await addColumnIfMissing('pending_cash_movements', 'supplier_invoice_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('pending_cash_movements', 'branch_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('pending_cash_movements', 'cash_register_id', 'INT DEFAULT NULL');
+  // Las mismas que agrega db-local.js a su archivo: sin ellas, /api/offline/init-cache daba 500.
+  await addColumnIfMissing('offline_cache_users', 'role_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('offline_cache_users', 'role_code', 'VARCHAR(60) DEFAULT NULL');
+  await addColumnIfMissing('offline_cache_users', 'role_name', 'VARCHAR(120) DEFAULT NULL');
+  await addColumnIfMissing('offline_cache_users', 'role_permissions', 'TEXT DEFAULT NULL');
+  await addColumnIfMissing('offline_cache_users', 'branch_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('offline_cache_users', 'cash_register_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('offline_cache_products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
+  await addColumnIfMissing('pending_product_changes', 'offline_product_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('pending_product_changes', 'product_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing('pending_product_changes', 'branch_id', 'INT DEFAULT NULL');
 }
 
 /**
@@ -15060,6 +15085,7 @@ app.post('/api/sales/return', async (req, res) => {
           price: effectivePrice,
           lineTotal,
           comboSnapshot: original.combo_snapshot || null,
+          taxRate: Number(original.tax_rate || original.itbis || 0),
         });
       }
 
@@ -15207,7 +15233,24 @@ app.post('/api/sales/return', async (req, res) => {
         );
       }
 
-      return { returnId, returnedAmount, itemsCount: validatedItems.length, cashMovementId, cashPortion, creditBalancePortion };
+      return {
+        returnId, returnedAmount, itemsCount: validatedItems.length, cashMovementId, cashPortion, creditBalancePortion,
+        saleId: sale.id, isFullyReturned, validatedItems,
+      };
+    });
+
+    // Nota de crédito de la devolución, si la factura era un e-CF aceptado. La
+    // devolución ya está hecha: si la nota falla, se avisa y no se deshace nada.
+    const ecfNota = await ecfModule.service.emitSafely('emitNoteForSale', {
+      saleId: result.saleId,
+      tipoEcf: 'E34',
+      items: result.validatedItems.map((item) => ({
+        name: item.productName || 'Producto', quantity: item.qty, unitPrice: item.price, discount: 0, taxRate: item.taxRate,
+      })),
+      codigoModificacion: result.isFullyReturned ? '1' : '3',
+      razon: reason,
+      origen: `return:${result.returnId}`,
+      context: { userId: actor.userId || null, userName: actor.userName || null, internetOffline: getInternetMonitor().isKnownOffline() },
     });
 
     const creditNote = result.creditBalancePortion > 0
@@ -15228,6 +15271,7 @@ app.post('/api/sales/return', async (req, res) => {
       creditBalancePortion: result.creditBalancePortion,
       itemsCount: result.itemsCount,
       message: `Devolución procesada: RD$ ${result.returnedAmount.toFixed(2)} por ${result.itemsCount} producto(s).${creditNote}`,
+      ecfNota: ecfNota?.skipped ? null : ecfNota,
     });
   } catch (err) {
     const code = err.statusCode || 500;
@@ -16408,6 +16452,9 @@ app.post('/api/sales', async (req, res) => {
     const existingSale = await saleIdempotency.findExistingSaleResponse(clientRequestId);
     if (existingSale) return res.status(200).json(existingSale);
   }
+  const ecfSaleEnvironment = sale.tipoComprobante === 'factura-electronica'
+    ? await ecfModule.service.getActiveSaleEnvironment()
+    : null;
   // withTransactionRetry: en multicaja (varias PC → 1 MySQL) la asignación del
   // número de factura y del NCF serializa sobre locks de fila; un tranque o
   // deadlock transitorio se reintenta solo en vez de fallarle la venta al cajero.
@@ -16549,6 +16596,17 @@ app.post('/api/sales', async (req, res) => {
 
     const effectiveNcfType = requestedNcfType;
     const shouldUseEcfFlow = documentType === 'factura-electronica';
+    if (shouldUseEcfFlow && ecfSaleEnvironment) {
+      await ecfModule.service.assertSaleHasSequence({
+        exec: (sql, params) => conn.query(sql, params),
+        environment: ecfSaleEnvironment,
+        requestedType: sale.ecfType,
+        itbis: sale.itbis,
+        buyerTaxId: clientRnc || clientTaxId,
+        branchId: structure.branchId,
+        cashRegisterId: structure.cashRegisterId,
+      });
+    }
 
     let deliveryUserId = sale.repartidorId || null;
     let deliveryName = String(sale.repartidor || '').trim();
@@ -17929,9 +17987,20 @@ app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
     });
   });
 
+  // Nota de crédito que anula el e-CF aceptado de la factura cancelada.
+  const [ventaCancelada] = await query('SELECT id FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]);
+  const ecfNota = await ecfModule.service.emitSafely('emitNoteForSale', {
+    saleId: ventaCancelada?.id,
+    tipoEcf: 'E34',
+    codigoModificacion: '1',
+    razon: reason,
+    origen: `sale:${ventaCancelada?.id}:anulacion`,
+    context: { userId: actor.userId || null, userName: actor.userName || null, internetOffline: getInternetMonitor().isKnownOffline() },
+  });
   res.json({
     sale: result.sale,
-    config: await getConfig()
+    config: await getConfig(),
+    ecfNota: ecfNota?.skipped ? null : ecfNota,
   });
 });
 

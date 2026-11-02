@@ -3818,6 +3818,10 @@ function initApp() {
     window.scheduleSalesSearchFocus();
   }
 
+  // Sus alertas se piden al abrir la página, cuando todavía no hay sesión.
+  if (typeof refreshPromotionAlertsData === 'function') refreshPromotionAlertsData();
+  if (typeof refreshCrmAgendaCache === 'function') refreshCrmAgendaCache();
+
   // Iniciar el gestor de conexión offline (multicaja)
   if (window.OfflineManager && !window.offlineManager) {
     window.offlineManager = new OfflineManager({ healthCheckInterval: 5000 });
@@ -3950,6 +3954,7 @@ function showModule(name, el) {
   if (name === 'configuracion') {
     if (typeof loadNcfAuthSequences === 'function') loadNcfAuthSequences();
     if (typeof loadEcfProdSequences === 'function') loadEcfProdSequences();
+    window.loadEcfComprobantes?.();
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     window.TiendaOnline?.loadConfigSection();
@@ -4107,6 +4112,11 @@ const CONFIG_SECTION_CARD_META = {
     eyebrow: 'Fiscal',
     desc: 'Rangos e-NCF (serie E) autorizados por la DGII para la factura electrónica.'
   },
+  'cfg-ecf-docs-section': {
+    icon: '🧾',
+    eyebrow: 'Fiscal',
+    desc: 'Cada e-CF con su estado, sus errores, su enlace de la DGII y su XML.'
+  },
   'cfg-section-drawer-title': {
     icon: '🧰',
     eyebrow: 'Caja',
@@ -4253,7 +4263,7 @@ const CONFIG_GROUPS = {
   ventas: {
     icon: 'receipt',
     title: 'Ventas y Facturación', desc: 'Moneda, ITBIS y comprobantes NCF y e-NCF',
-    find: ['h3#cfg-section-billing-title', '#cfg-ncf-section', '#cfg-ecf-seq-section', 'h3#cfg-business-guide-heading'],
+    find: ['h3#cfg-section-billing-title', '#cfg-ncf-section', '#cfg-ecf-seq-section', '#cfg-ecf-docs-section', 'h3#cfg-business-guide-heading'],
   },
   hardware: {
     icon: 'printer',
@@ -8730,6 +8740,8 @@ async function procesarDevolucion() {
     });
 
     showToast(`✅ ${result.message}`, 'success');
+    if (result.ecfNota?.encf && result.ecfNota.ok) showToast(`Nota de crédito ${result.ecfNota.encf} emitida.`, 'success');
+    else if (result.ecfNota?.error) showToast(`La devolución quedó hecha, pero la nota de crédito no se emitió: ${result.ecfNota.error}`, 'warning');
     closeDevolucionModal();
 
     // Refrescar datos locales

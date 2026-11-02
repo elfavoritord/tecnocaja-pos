@@ -148,7 +148,7 @@ describe('ecf-generator generateEcfXml', () => {
     });
 
     expect(xml).toContain('<eNCF>E470000000011</eNCF>');
-    expect(xml).toContain('<FechaVencimientoSecuencia>30-12-2026</FechaVencimientoSecuencia>');
+    expect(xml).toContain('<FechaVencimientoSecuencia>31-12-2026</FechaVencimientoSecuencia>');
     expect(xml).not.toContain('<TipoIngresos>');
     expect(xml).toContain('<MontoExento>3000.00</MontoExento>');
     expect(xml).toContain('<MontoTotal>3000.00</MontoTotal>');

@@ -221,7 +221,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
       <p class="srv-hint" id="srv-cli-email-hint"></p>`;
   }
 
-  function wireClientPicker(root) {
+  // agregaCliente: el documento guarda en Clientes al que se escribió a mano.
+  function wireClientPicker(root, { agregaCliente = false } = {}) {
     const pick = root.querySelector('#srv-cli-pick');
     const name = root.querySelector('#srv-cli-name');
     const rnc = root.querySelector('#srv-cli-rnc');
@@ -249,6 +250,64 @@ Condición: La compra de los equipos y la programación de la instalación estar
     };
     pick.addEventListener('change', () => fill(false));
     if (pick.value) fill(true); // cliente preseleccionado (edición): rellenar de una
+
+    // Al escribir el RNC o la cédula se traen los datos: primero de Clientes y, si no
+    // está, del padrón de la DGII. Lo que el usuario haya escrito como nombre se respeta.
+    const seAgrega = agregaCliente ? ' Se agregará a tus clientes al guardar.' : '';
+    const digitos = (valor) => String(valor || '').replace(/\D/g, '');
+    let nombreAutomatico = false;
+    let turno = 0;
+    let espera = null;
+    const buscar = async () => {
+      const miTurno = ++turno;
+      const doc = digitos(rnc.value);
+      if (doc.length !== 9 && doc.length !== 11) {
+        if (nombreAutomatico) name.value = '';
+        nombreAutomatico = false;
+        hint.textContent = '';
+        return;
+      }
+      const conocido = Array.from(pick.options).find((o) => o.value && digitos(o.dataset.rnc) === doc);
+      if (conocido) {
+        pick.value = conocido.value;
+        pick.dispatchEvent(new Event('change', { bubbles: true }));
+        hint.textContent = 'Ya está en tus clientes. ' + hint.textContent;
+        return;
+      }
+      hint.textContent = 'Buscando en la DGII…';
+      const data = window.RNCLookup ? await window.RNCLookup.byId(doc) : null;
+      if (miTurno !== turno || pick.value) return;
+      if (!data || !data.found) {
+        if (nombreAutomatico) name.value = '';
+        nombreAutomatico = false;
+        hint.textContent = 'No aparece en el padrón de la DGII: escribe el nombre.' + seAgrega;
+        return;
+      }
+      if (!name.value.trim() || nombreAutomatico) {
+        name.value = data.nombre || data.nombreComercial || '';
+        nombreAutomatico = true;
+        name.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      const estado = String(data.estado || '');
+      const datos = [data.nombre || data.nombreComercial, data.tipo, data.categoria].filter(Boolean).join(' · ');
+      const aviso = estado && !/normal|activo/i.test(estado) ? ` Atención: la DGII lo tiene como ${estado}.` : '';
+      hint.textContent = `DGII: ${datos}.${aviso}${seAgrega}`;
+    };
+    rnc.addEventListener('input', () => {
+      if (pick.value) return;
+      clearTimeout(espera);
+      espera = setTimeout(buscar, 300);
+    });
+    name.addEventListener('input', (ev) => { if (ev.isTrusted) nombreAutomatico = false; });
+  }
+
+  // El renderer guarda los clientes desde el login: el nuevo se añade para que salga en la lista.
+  function recordarClienteNuevo(doc) {
+    const nuevo = doc && doc.clienteNuevo;
+    if (!nuevo) return;
+    const db = dbRef();
+    db.clientes = [nuevo, ...(Array.isArray(db.clientes) ? db.clientes : [])];
+    toast(`${nuevo.nombre} se agregó a tus clientes.`, 'success');
   }
 
   const DATE_KEYS = /^(fecha|vencimiento|createdAt|updatedAt|fechaProgramada|fechaInicio|fechaEntrega|fechaSalida|fechaRegreso|fechaLimite|proximaRevision|proximaFecha|fechaFin|fechaFinEstimada|anuladoAt|completadaAt)$/;
@@ -943,11 +1002,12 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const payload = { ...fd, clientId: fd.clientId || null, items };
       const saved = q ? await put('/cotizaciones/' + q.id, payload) : await post('/cotizaciones', payload);
       toast('Cotización guardada', 'success');
+      recordarClienteNuevo(saved);
       renderCotizaciones();
       const cotId = (saved && (saved.id || saved.quotationId)) || (q && q.id);
       if (cotId) firmarYGuardar('cotizaciones', cotId, { avisar: true });
     }, { xl: true, subtitle: 'Datos del cliente, servicios cotizados y condiciones.', submitLabel: q ? 'Guardar cambios' : 'Guardar cotización' });
-    wireClientPicker(m);
+    wireClientPicker(m, { agregaCliente: true });
     wireLines(m);
     const fechaEl = m.querySelector('#srv-cot-fecha');
     const validezEl = m.querySelector('#srv-cot-validez');
@@ -976,6 +1036,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
     };
   }
 
+  // Dónde se emite cada e-CF que no es de esta pantalla.
+  const ECF_DONDE_SE_EMITE = {
+    E33: 'botón Nota de la factura',
+    E34: 'al anular, o botón Nota de la factura',
+    E41: 'se emite desde Gastos',
+    E43: 'se emite desde Gastos',
+    E47: 'se emite desde Gastos',
+  };
+
   // Campos de facturación compartidos: comprobante (tipos NCF y e-CF con
   // secuencia activa), método de pago y condición. Devuelve { html, wire(root) }.
   async function billingFields(defaults = {}) {
@@ -984,6 +1053,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
     try { [resp, cfg] = await Promise.all([req('/facturas/comprobantes'), req('/config')]); } catch (_) {}
     const comps = Array.isArray(resp) ? resp : (resp.comprobantes || []);
     const ecfs = Array.isArray(resp) ? [] : (resp.electronicos || []);
+    const ecfOtros = Array.isArray(resp) ? [] : (resp.ecfOtros || []);
     const ecfActivo = !Array.isArray(resp) && resp.ecfActivo;
     const necesitaActivar = !Array.isArray(resp) && resp.necesitaActivar;
     const defMode = cfg.fiscalMode || 'ncf';
@@ -993,7 +1063,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
     // en la opción alargaba el texto y se cortaba.
     const opciones = [
       ...comps.map((c) => ({ mode: 'ncf', tipo: c.tipo, venc: c.vencimiento, label: `NCF ${c.tipo} — ${c.nombre} (${c.disponibles} disp.)` })),
-      ...ecfs.map((c) => ({ mode: 'ecf', tipo: c.tipo, venc: c.vencimiento, disabled: !ecfActivo, label: `e-CF ${c.tipo} — ${c.nombre} (${c.disponibles} disp.)` })),
+      ...ecfs.map((c) => ({ mode: 'ecf', tipo: c.tipo, venc: c.vencimiento, disabled: !ecfActivo, label: `e-CF ${c.tipo} — ${c.nombre}${c.sinCantidad ? '' : ` (${c.disponibles} disp.)`}` })),
+      ...ecfOtros.map((c) => ({ mode: 'ecf', tipo: c.tipo, disabled: true, label: `e-CF ${c.tipo} — ${c.nombre} (${ECF_DONDE_SE_EMITE[c.tipo] || 'no se emite desde aquí'})` })),
       { mode: 'consumidor', tipo: '', label: 'Sin comprobante fiscal' },
     ];
     // Preselección: el tipo pedido, si no el primero del modo de Ajustes, si no
@@ -1015,7 +1086,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
       avisos.push('⚠ Tus secuencias e-CF activas están asignadas a otra sucursal o a una caja. Para facturar servicios regístralas como Global en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).');
     }
     if (!comps.length && !ecfs.length && !necesitaActivar) {
-      avisos.push('⚠ No hay secuencias NCF ni e-CF disponibles. Regístralas en Configuración → Ventas y Facturación → Secuencias de Comprobantes Fiscales (NCF) o Secuencias de Comprobantes Electrónicos (e-NCF).');
+      const activas = ecfOtros.map((c) => c.tipo).join(', ');
+      avisos.push(`⚠ ${activas ? `Tienes activa ${esc(activas)}, pero se emite desde otra pantalla.` : 'No hay secuencias para facturar.'} Marca <strong>E32</strong> (consumo) o <strong>E31</strong> (crédito fiscal) en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`);
     }
     const aviso = avisos.map((a) => `<p class="srv-aviso">${a}</p>`).join('');
     // Piezas sueltas para el formulario por secciones; `html` las arma apiladas.
@@ -1063,7 +1135,27 @@ Condición: La compra de los equipos y la programación de la instalación estar
       const consumo = (mode === 'ncf' && /^B0?2$/.test(type)) || (mode === 'ecf' && type === 'E32');
       return consumo && calcLineTotals(root).total >= 250000;
     };
+    // E44 y E46 van sin ITBIS: las líneas quedan en 0% mientras estén elegidos.
+    const sinItbisAntes = new Map();
+    const ajustarItbis = () => {
+      const sinItbis = /^ecf\|E4[46]$/.test(comp.value);
+      let cambio = false;
+      root.querySelectorAll('[name=ip]').forEach((campo) => {
+        if (sinItbis && !campo.readOnly) {
+          sinItbisAntes.set(campo, campo.value);
+          campo.value = 0;
+          campo.readOnly = true;
+          cambio = true;
+        } else if (!sinItbis && campo.readOnly) {
+          campo.value = sinItbisAntes.get(campo) ?? campo.value;
+          campo.readOnly = false;
+          cambio = true;
+        }
+      });
+      if (cambio) paintLineTotals(root);
+    };
     const sync = () => {
+      ajustarItbis();
       const required = compradorObligatorio();
       if (marca) marca.hidden = !required;
       if (marcaNombre) marcaNombre.hidden = !required;
@@ -1146,6 +1238,35 @@ Condición: La compra de los equipos y la programación de la instalación estar
     } catch (e) { toast(e.message, 'error'); }
     renderFacturas();
   }
+  // La DGII contesta segundos después de recibir el e-CF: mientras haya alguno en
+  // "Enviado", se le pregunta y el resultado aparece solo.
+  const ECF_ESPERANDO = ['enviado', 'en_proceso', 'procesando'];
+  let _facConsultaTimer = null;
+  function seguirEstadoEcf(rows, b) {
+    clearTimeout(_facConsultaTimer);
+    const ids = rows.filter((r) => r.fiscalMode === 'ecf' && r.estado !== 'anulada' && ECF_ESPERANDO.includes(r.ecfStatus)).map((r) => r.id);
+    if (!ids.length) return;
+    let intentos = 0;
+    const consultar = async () => {
+      if (!b.isConnected) return;
+      let r = null;
+      try { r = await post('/facturas/consultar-ecf', { ids }); } catch (_) { /* se vuelve a intentar */ }
+      if (r && r.cambios && r.cambios.length) {
+        r.cambios.forEach((c) => {
+          const aceptado = ['aceptado', 'aceptado_condicional'].includes(c.estado);
+          const motivo = !aceptado || c.estado === 'aceptado_condicional' ? c.mensaje : '';
+          const texto = (ECF_ESTADOS[c.estado] || [null, c.estado])[1];
+          toast(`${c.numero} · ${c.encf}: ${texto}${motivo ? '. ' + motivo : ''}`, c.estado === 'aceptado' ? 'success' : aceptado ? 'warning' : 'error');
+        });
+        renderFacturas();
+        return;
+      }
+      intentos += 1;
+      if (intentos < 12 && (!r || r.pendientes > 0)) _facConsultaTimer = setTimeout(consultar, 5000);
+    };
+    _facConsultaTimer = setTimeout(consultar, 2000);
+  }
+
   async function renderFacturas() {
     const b = bodyOf('srv-facturas');
     actionsOf('srv-facturas').innerHTML = `
@@ -1171,9 +1292,13 @@ Condición: La compra de los equipos y la programación de la instalación estar
           accion('data-doc', r.id, 'Imprimir', 'imprimir', 'pri', VER_AYUDA),
           accion('data-mail', r.id, 'Correo', 'correo'),
           r.estado !== 'anulada' && r.balance > 0 && accion('data-pay', r.id, 'Cobrar', 'cobrar', 'ok'),
+          r.estado !== 'anulada' && r.fiscalMode === 'ecf' && ['aceptado', 'aceptado_condicional'].includes(r.ecfStatus)
+            && accion('data-nota', r.ncf, 'Nota', 'editar', '', 'Nota de crédito o débito'),
           r.estado !== 'anulada' && accion('data-void', r.id, 'Anular', 'anular', 'peligro'),
         ]) },
       ], rows);
+      seguirEstadoEcf(rows, b);
+      b.querySelectorAll('[data-nota]').forEach((el) => el.onclick = () => window.openEcfNoteModal(null, el.dataset.nota, renderFacturas));
       b.querySelectorAll('[data-doc]').forEach((el) => el.onclick = async () => {
         const prefs = await preferenciasImpresionServicio();
         if (prefs.formato === '58mm' || prefs.formato === '80mm') {
@@ -1212,11 +1337,12 @@ Condición: La compra de los equipos y la programación de la instalación estar
       if (!items.length) throw new Error('Agrega al menos una línea.');
       const inv = await post('/facturas', { ...fd, ...readBilling(fd), clientId: fd.clientId || null, items });
       avisarEmision(inv);
+      recordarClienteNuevo(inv);
       await imprimirFacturaSiTermica(inv.id);
       renderFacturas();
       if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
     }, { xl: true, subtitle: 'Datos del cliente, comprobante y servicios a facturar.', submitLabel: 'Emitir factura' });
-    wireClientPicker(m);
+    wireClientPicker(m, { agregaCliente: true });
     bf.wire(m);
     validarRnc = wireRncRequerido(m);
     wireLines(m);
@@ -1612,8 +1738,10 @@ Condición: La compra de los equipos y la programación de la instalación estar
     modal('Anular factura', `
       <label>Motivo<textarea name="motivo" rows="2" required></textarea></label>
       <label class="srv-check"><input type="checkbox" name="forzar" value="1"> Forzar aunque tenga pagos</label>`, async (fd) => {
-      await post(`/facturas/${id}/anular`, { motivo: fd.motivo, forzar: fd.forzar === '1' });
+      const anulada = await post(`/facturas/${id}/anular`, { motivo: fd.motivo, forzar: fd.forzar === '1' });
       toast('Factura anulada', 'success');
+      if (anulada?.ecfNota?.encf && anulada.ecfNota.ok) toast(`Nota de crédito ${anulada.ecfNota.encf} emitida.`, 'success');
+      else if (anulada?.ecfNota?.error) toast(`La factura quedó anulada, pero la nota de crédito no se emitió: ${anulada.ecfNota.error}`, 'warning');
       renderFacturas();
     }, { submitLabel: 'Anular' });
   }

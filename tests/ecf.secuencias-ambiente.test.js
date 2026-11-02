@@ -284,7 +284,7 @@ describe('módulo de secuencias e-NCF de producción (servicio)', () => {
     expect(pruebas.map((s) => s.hasta)).toEqual([9999999999]);
   });
 
-  test('guarda el historial y no borra un rango de producción con e-CF emitidos', async () => {
+  test('guarda el historial y un rango de producción con e-CF emitidos solo se quita de la lista', async () => {
     const { service, query } = await crearServicio();
     const { sequence } = await service.saveSequence({ body: PRODUCCION });
 
@@ -301,7 +301,11 @@ describe('módulo de secuencias e-NCF de producción (servicio)', () => {
       [sequence.id]
     );
     await expect(service.deleteSequencePermanently({ params: { id: sequence.id } }))
-      .rejects.toThrow(/ya tiene e-CF emitidos/);
+      .rejects.toThrow(/ya tiene 1 e-CF emitido/);
+    await service.deleteSequencePermanently({ params: { id: sequence.id }, query: { force: '1' } });
+    const filas = await query('SELECT id, deleted_at FROM ecf_sequences WHERE id = ?', [sequence.id]);
+    expect(filas[0].deleted_at).toBeTruthy();
+    expect((await service.listSequences({ environment: 'ecf' })).map((s) => s.id)).not.toContain(sequence.id);
   });
 });
 

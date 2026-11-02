@@ -54,6 +54,15 @@
     ['E44', 'Regímenes Especiales Electrónico'], ['E45', 'Gubernamental Electrónico'],
     ['E46', 'Exportaciones Electrónico'], ['E47', 'Pagos al Exterior Electrónico'],
   ];
+  // Según la DGII, E32 y E34 no llevan fecha de vencimiento; los demás e-NCF la exigen.
+  var ECF_SIN_VENCIMIENTO = ['E32', 'E34'];
+  function ajustarVence(form) {
+    var tipo = form.elements.tipo.value;
+    var campo = form.elements.vence;
+    campo.hidden = ECF_SIN_VENCIMIENTO.indexOf(tipo) >= 0;
+    campo.required = tipo.charAt(0) === 'E' && !campo.hidden;
+    if (campo.hidden) campo.value = '';
+  }
   var ESTADO_RANGO = {
     en_espera: 'Recibido, en espera', en_uso: 'En uso', agotado: 'Agotado', rechazado: 'Rechazado por la sucursal', anulado: 'Anulado',
   };
@@ -358,6 +367,8 @@
           + (permisos.limite ? ' Súbelo arriba para crear otra.' : ' Solo el administrador de Tecno Caja puede ampliarlo.') + '</p>';
       }
       contenedor.innerHTML = html;
+      var formNcf = contenedor.querySelector('form[data-form="ncf"]');
+      if (formNcf) ajustarVence(formNcf);
     }
 
     function cargar() {
@@ -405,6 +416,7 @@
     // Los archivos de la DGII (js/dgii-autorizacion.js; uno o varios a la vez)
     // llenan el formulario: un rango tras otro, en el orden en que vienen.
     contenedor.addEventListener('change', function (ev) {
+      if (ev.target.name === 'tipo' && ev.target.form) { ajustarVence(ev.target.form); return; }
       var input = ev.target.closest('input[data-dgii]');
       if (!input || !input.files || !input.files.length) return;
       var lector = global.TcDgiiAutorizacion;
@@ -489,7 +501,7 @@
           tipo: form.elements.tipo.value,
           desde: Number(form.elements.desde.value),
           hasta: Number(form.elements.hasta.value),
-          vence: form.elements.vence.value,
+          vence: form.elements.vence.value || null,
           autorizacion: form.elements.autorizacion.value,
         };
         hacer(api('POST', ruta + '/' + encodeURIComponent(form.elements.branchUuid.value) + '/ncf', rango),

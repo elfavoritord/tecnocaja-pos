@@ -131,7 +131,7 @@ function ncfAuthSeqRenderRow(r) {
 }
 
 function ncfAuthSeqRenderActions(r) {
-  const canActivate = r.status === 'pendiente' || r.status === 'legacy_unverified';
+  const canActivate = r.status === 'pendiente' || r.status === 'legacy_unverified' || r.status === 'suspendido';
   const canSuspend = r.status === 'activo';
   return `
     <div style="display:flex;gap:0.25rem;flex-wrap:wrap">

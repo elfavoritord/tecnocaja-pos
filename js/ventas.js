@@ -1385,7 +1385,13 @@ function calculateSaleItemNet(item = {}) {
   return roundSaleMoney(calculateSaleItemBase(item) - calculateSaleItemDiscount(item));
 }
 
+// E44 y E46 van sin ITBIS: al elegirlos, el cobro se recalcula sin él.
+function saleVaSinItbis() {
+  return DB.saleDocumentType === 'factura-electronica' && ['E44', 'E46'].includes(DB.saleEcfType);
+}
+
 function calculateSaleItemTax(item = {}, options = {}) {
+  if (saleVaSinItbis()) return 0;
   const net = calculateSaleItemNet(item);
   if (!(net > 0)) return 0;
   const discountRate = Math.max(0, Number(options.generalDiscountRate ?? 0));
@@ -3046,7 +3052,7 @@ function buildBillingCompactSummaryRowsMarkup() {
 }
 
 function getBillingActiveDocumentPreset() {
-  if (DB.saleDocumentType === 'factura-electronica') return 'factura-electronica';
+  if (DB.saleDocumentType === 'factura-electronica') return DB.saleEcfType || 'factura-electronica';
   return String(DB.saleNcfType || '').trim().toUpperCase() || 'ticket';
 }
 
@@ -3454,7 +3460,9 @@ function _applyAvailableNcfDocTypesToPills() {
 
 function setSaleDocumentPreset(preset) {
   const normalized = String(preset || 'ticket').trim();
-  if (normalized === 'factura-electronica') {
+  // E44, E45 y E46 se eligen; sin elegir, el servidor usa E31 con RNC y E32 sin él.
+  DB.saleEcfType = ['E44', 'E45', 'E46'].includes(normalized) ? normalized : null;
+  if (normalized === 'factura-electronica' || DB.saleEcfType) {
     DB.saleDocumentType = 'factura-electronica';
     setSaleNcfType('');
   } else if (normalized === 'ticket') {
@@ -6721,6 +6729,7 @@ function buildSalePayload() {
     clientTaxId: client?.cedula || '',
     tipoComprobante,
     ncfType: ncfType || null,
+    ecfType: tipoComprobante === 'factura-electronica' ? (DB.saleEcfType || null) : null,
     rncCliente: DB.saleRncCliente || client?.rnc || '',
     razonSocialCliente: DB.saleRazonSocial || client?.razon_social || '',
     ncfReferencia: DB.saleNcfReferencia || null,
@@ -6759,7 +6768,7 @@ function buildSalePayload() {
         qty: normalizedItem.qty,
         precio: normalizedItem.precio,
         descuento: normalizedItem.descuento,
-        itbis: normalizedItem.itbis,
+        itbis: saleVaSinItbis() ? 0 : normalizedItem.itbis,
         itbisModo: normalizedItem.itbisModo || 'porcentaje',
         itbisMontoUnit: normalizedItem.itbisModo === 'monto' ? Number(normalizedItem.itbisMontoUnit || 0) : 0,
         total: normalizedItem.total,
@@ -6938,6 +6947,9 @@ async function finalizePendingSale(action = 'charge') {
     _saleAttempt = null;
     if (response?.duplicate) {
       showToast(`La venta ${response.sale?.id || ''} ya estaba registrada: no se duplicó.`, 'info');
+    }
+    if (response?.ecf?.error) {
+      showToast(`La venta se guardó, pero el e-CF no se emitió: ${response.ecf.error}`, 'warning');
     }
     const savedVenta = {
       ...response.sale,

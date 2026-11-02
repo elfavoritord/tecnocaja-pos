@@ -246,6 +246,8 @@ async function confirmCancelSale(invoiceNumber) {
     renderCancelSaleLookupResult(updatedSale);
     if (typeof renderMovimientosSistema === 'function') renderMovimientosSistema();
     showToast(movementText('Factura cancelada correctamente'), 'success');
+    if (response.ecfNota?.encf && response.ecfNota.ok) showToast(`Nota de crédito ${response.ecfNota.encf} emitida.`, 'success');
+    else if (response.ecfNota?.error) showToast(`La factura quedó cancelada, pero la nota de crédito no se emitió: ${response.ecfNota.error}`, 'warning');
   } catch (error) {
     showToast(error.message, 'error');
   }

@@ -3193,6 +3193,7 @@ function euValidateDuplicateFields() {
 let _crmAgendaCache = [];
 
 async function refreshCrmAgendaCache() {
+  if (!DB?.authToken) return;
   try {
     _crmAgendaCache = await api.getCrmAgenda({ soloPendientes: true });
   } catch (_e) {

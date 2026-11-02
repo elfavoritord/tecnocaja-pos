@@ -30,7 +30,10 @@
     { key: 'B15', label: 'B15', hint: 'Gubernamental' },
     { key: 'B16', label: 'B16', hint: 'Exportaciones' },
     { key: 'B03', label: 'B03', hint: 'Nota de débito' },
-    { key: 'B04', label: 'B04', hint: 'Nota de crédito' }
+    { key: 'B04', label: 'B04', hint: 'Nota de crédito' },
+    { key: 'E44', label: 'E44', hint: 'e-CF régimen especial' },
+    { key: 'E45', label: 'E45', hint: 'e-CF gubernamental' },
+    { key: 'E46', label: 'E46', hint: 'e-CF exportaciones' }
   ];
   const ORDER_TYPES = [
     { key: 'mostrador', label: 'Mostrador' },

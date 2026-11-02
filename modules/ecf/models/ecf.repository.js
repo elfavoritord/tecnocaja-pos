@@ -2,7 +2,7 @@
 
 const crypto = require('crypto');
 const { normalizeEnvironmentKey } = require('../config/ecf.config');
-const { getDocumentType } = require('../config/document-types');
+const { getDocumentType, llevaVencimiento } = require('../config/document-types');
 const { EcfError, assertCondition } = require('../utils/errors');
 const { getDbClient } = require('../../../db');
 const { buildQrVerificationUrl } = require('../utils/qr-url.util');
@@ -324,6 +324,11 @@ class EcfRepository {
       // advanceSequenceAfterUse, ya certificados con la DGII.
       ['authorization_reference', 'VARCHAR(60) DEFAULT NULL'],
       ['authorization_file_url', 'VARCHAR(255) DEFAULT NULL'],
+      // Modo sencillo: el dueño o el contador solo marcó el tipo; sin rango de la DGII cargado.
+      ['modo_simple', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      // Eliminada de la lista con e-CF ya emitidos: la fila queda porque reenviar o
+      // volver a firmar esos e-CF la lee por sequence_id.
+      ['deleted_at', 'DATETIME DEFAULT NULL'],
     ];
     for (const [columnName, definitionSql] of sequenceColumns) {
       await addColumnIfMissing(this.query, 'ecf_sequences', columnName, definitionSql).catch(() => {});
@@ -331,6 +336,10 @@ class EcfRepository {
     // Ambiente de cada secuencia (ver sequenceEnvironment).
     await addColumnIfMissing(this.query, 'ecf_sequences', 'environment', 'VARCHAR(20) DEFAULT NULL').catch(() => {});
     await this.classifyUnassignedSequences().catch(() => {});
+    // E32 y E34 no llevan fecha: una vieja solo serviría para dar la secuencia por vencida.
+    await this.query(
+      "UPDATE ecf_sequences SET fecha_vencimiento = NULL WHERE environment = 'ecf' AND tipo_comprobante IN ('E32', 'E34') AND fecha_vencimiento IS NOT NULL"
+    ).catch(() => {});
     await this.widenEncfUniqueIndex().catch((error) => {
       console.warn('[ECF] No se pudo ajustar el índice único de e-NCF por ambiente:', error.message);
     });
@@ -353,6 +362,11 @@ class EcfRepository {
       ['certification_signed_xml_path', 'TEXT DEFAULT NULL'],
       ['certification_response_path', 'TEXT DEFAULT NULL'],
       ['certification_dgii_file_name', 'VARCHAR(255) DEFAULT NULL'],
+      // e-CF que no nace de una venta (nota, compra, gasto): qué lo originó, para no
+      // emitirlo dos veces, y a qué documento modifica. Llevan sale_id NULL a propósito:
+      // lo que busca "el e-CF de una venta" no debe encontrar sus notas.
+      ['origen', 'VARCHAR(60) DEFAULT NULL'],
+      ['documento_origen_id', 'INT DEFAULT NULL'],
       // e-CF firmado sin Internet: XML exacto que se enviará a la DGII cuando
       // vuelva la conexión (RFCE firmado en modo rfce, e-CF firmado en normal).
       ['deferred_signed_xml', 'LONGTEXT DEFAULT NULL'],
@@ -626,11 +640,11 @@ class EcfRepository {
        FROM ecf_sequences s
        LEFT JOIN branches b ON b.id = s.branch_id
        LEFT JOIN cash_registers c ON c.id = s.cash_register_id
-       WHERE s.business_id = ?
+       WHERE s.business_id = ? AND s.deleted_at IS NULL
        ORDER BY s.tipo_comprobante, s.branch_id, s.cash_register_id, s.id DESC`,
       [businessId]
     ).catch(() => this.query(
-      'SELECT * FROM ecf_sequences WHERE business_id = ? ORDER BY tipo_comprobante, branch_id, cash_register_id, id DESC',
+      'SELECT * FROM ecf_sequences WHERE business_id = ? AND deleted_at IS NULL ORDER BY tipo_comprobante, branch_id, cash_register_id, id DESC',
       [businessId]
     ));
 
@@ -659,8 +673,26 @@ class EcfRepository {
         activo: Boolean(Number(row.activo || 0)),
         isExpired: expired,
         isExhausted: current > end,
+        modoSimple: Boolean(Number(row.modo_simple || 0)),
       };
     });
+  }
+
+  // La fecha que se guarda en una secuencia de producción: obligatoria donde el XSD de la
+  // DGII la exige y ninguna en E32 y E34.
+  validarVencimiento(tipoComprobante, fecha) {
+    if (!llevaVencimiento(tipoComprobante)) return null;
+    const valor = String(fecha || '').trim().slice(0, 10);
+    assertCondition(/^\d{4}-\d{2}-\d{2}$/.test(valor),
+      `El ${tipoComprobante} lleva obligatoriamente la fecha de vencimiento de la secuencia: indícala.`, { statusCode: 422 });
+    assertCondition(new Date(`${valor}T23:59:59`).getTime() >= Date.now(),
+      'Esa fecha de vencimiento ya pasó: pide otra secuencia a la DGII.', { statusCode: 422 });
+    return valor;
+  }
+
+  async updateSequenceExpiry(id, fechaVencimiento) {
+    await this.query('UPDATE ecf_sequences SET fecha_vencimiento = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [fechaVencimiento, id]);
+    return this.getSequence(id);
   }
 
   async saveSequence(businessId, payload) {
@@ -678,17 +710,21 @@ class EcfRepository {
       statusCode: 422,
     });
 
+    let fechaVencimiento = payload.fechaVencimiento || null;
     if (environment === 'ecf') {
       assertCondition(authorizationReference,
         'Escribe el número de autorización que te dio la DGII para este rango (Oficina Virtual → Consultas → Solicitudes de Comprobantes).',
         { statusCode: 422 });
       assertCondition(payload.fechaAutorizacion, 'Indica la fecha en que la DGII autorizó el rango.', { statusCode: 422 });
+      fechaVencimiento = this.validarVencimiento(tipoComprobante, payload.fechaVencimiento);
       assertCondition(hasta - desde + 1 <= MAX_PRODUCTION_RANGE,
         `Un rango de ${(hasta - desde + 1).toLocaleString('en-US')} números no es una autorización de la DGII. Copia el "desde" y el "hasta" exactos.`,
         { statusCode: 422 });
       const overlapping = await this.query(
         `SELECT id, numero_inicial, numero_final FROM ecf_sequences
          WHERE business_id = ? AND tipo_comprobante = ? AND environment = 'ecf'
+           AND COALESCE(modo_simple, 0) = 0
+           AND deleted_at IS NULL
            AND numero_inicial <= ? AND numero_final >= ?
          LIMIT 1`,
         [businessId, tipoComprobante, hasta, desde]
@@ -711,16 +747,110 @@ class EcfRepository {
         hasta,
         desde,
         payload.fechaAutorizacion || null,
-        payload.fechaVencimiento || null,
+        fechaVencimiento,
         environment,
         authorizationReference,
       ]
     );
+    const id = Number(result?.insertId || 0) || null;
+    if (environment === 'ecf' && id) {
+      await this.retireSimpleSequence(businessId, tipoComprobante, { id, desde, hasta });
+      await this.skipUsedNumbers(businessId, tipoComprobante, { id, desde, hasta });
+    }
     return {
-      id: Number(result?.insertId || 0) || null,
+      id,
       environment,
       sequences: await this.listSequences(businessId),
     };
+  }
+
+  // Un rango que se vuelve a cargar sigue después de lo ya emitido dentro de él.
+  async skipUsedNumbers(businessId, tipoComprobante, { id, desde, hasta }) {
+    const rows = await this.query(
+      `SELECT MAX(encf) AS ultimo FROM ecf_documents
+       WHERE business_id = ? AND tipo_ecf = ? AND environment = 'ecf' AND encf BETWEEN ? AND ?`,
+      [businessId, tipoComprobante, this.formatEncf(tipoComprobante, desde), this.formatEncf(tipoComprobante, hasta)]
+    ).catch(() => []);
+    if (!rows[0]?.ultimo) return;
+    await this.query(
+      'UPDATE ecf_sequences SET proximo_numero = ? WHERE id = ? AND proximo_numero <= ?',
+      [parseEncfNumber(rows[0].ultimo, tipoComprobante) + 1, id, parseEncfNumber(rows[0].ultimo, tipoComprobante)]
+    );
+  }
+
+  // Al cargar un rango real de la DGII, ese rango manda: el modo sencillo de ese tipo
+  // se apaga y el rango sigue después de lo que ya se emitió.
+  async retireSimpleSequence(businessId, tipoComprobante, { id, desde, hasta }) {
+    const rows = await this.query(
+      `SELECT id, proximo_numero FROM ecf_sequences
+       WHERE business_id = ? AND tipo_comprobante = ? AND environment = 'ecf' AND modo_simple = 1 AND activo = 1`,
+      [businessId, tipoComprobante]
+    );
+    for (const row of rows) {
+      await this.disableSequence(row.id);
+      const proximo = Number(row.proximo_numero || 0);
+      if (proximo > desde && proximo <= hasta + 1) {
+        await this.query('UPDATE ecf_sequences SET proximo_numero = ? WHERE id = ?', [proximo, id]);
+      }
+    }
+  }
+
+  // Último número de producción que la DGII aceptó sin decir "secuencia no autorizada" (75).
+  async lastAuthorizedNumber(businessId, tipoComprobante) {
+    const rows = await this.query(
+      `SELECT encf, dgii_response_json FROM ecf_documents
+       WHERE business_id = ? AND tipo_ecf = ? AND environment = 'ecf'
+         AND estado_dgii IN ('aceptado', 'aceptado_condicional')
+       ORDER BY id DESC LIMIT 500`,
+      [businessId, tipoComprobante]
+    ).catch(() => []);
+    return rows.reduce((mayor, row) => {
+      const respuesta = typeof row.dgii_response_json === 'string'
+        ? parseJson(row.dgii_response_json, {})
+        : (row.dgii_response_json || {});
+      const mensajes = Array.isArray(respuesta?.mensajes) ? respuesta.mensajes : [];
+      if (mensajes.some((m) => String(m?.codigo) === '75')) return mayor;
+      return Math.max(mayor, parseEncfNumber(row.encf, tipoComprobante));
+    }, 0);
+  }
+
+  // Modo sencillo: marcar el tipo y facturar. El número sigue después del último que
+  // la DGII aceptó como autorizado, o empieza en 1. Si ya hay un rango vigente de la DGII, se usa ese.
+  async activateSimpleSequence(businessId, { tipoComprobante, fechaVencimiento = null }) {
+    const rows = await this.query(
+      `SELECT id, numero_inicial, numero_final, proximo_numero, fecha_vencimiento, activo, modo_simple, deleted_at
+       FROM ecf_sequences
+       WHERE business_id = ? AND tipo_comprobante = ? AND environment = 'ecf'`,
+      [businessId, tipoComprobante]
+    );
+    const now = Date.now();
+    const vigente = rows.find((row) => !row.deleted_at && !Number(row.modo_simple) && Number(row.activo)
+      && Number(row.proximo_numero) <= Number(row.numero_final)
+      && !(row.fecha_vencimiento && new Date(row.fecha_vencimiento).getTime() < now));
+    if (vigente) return { id: vigente.id, existing: true };
+
+    const simple = rows.find((row) => !row.deleted_at && Number(row.modo_simple));
+    if (simple) {
+      await this.query(
+        `UPDATE ecf_sequences SET activo = 1, fecha_vencimiento = COALESCE(?, fecha_vencimiento), updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [fechaVencimiento, simple.id]
+      );
+      return { id: simple.id, existing: false };
+    }
+
+    // Un número que la DGII marcó como no autorizado no indica dónde va la secuencia
+    // real: seguir después de él la alejaría más. Los usados se saltan al emitir.
+    const usadoEnRangos = rows
+      .filter((row) => !row.deleted_at && Number(row.proximo_numero) > Number(row.numero_inicial))
+      .reduce((mayor, row) => Math.max(mayor, Number(row.proximo_numero) - 1), 0);
+    const inicio = Math.max(usadoEnRangos, await this.lastAuthorizedNumber(businessId, tipoComprobante)) + 1;
+    const result = await this.query(
+      `INSERT INTO ecf_sequences
+       (business_id, tipo_comprobante, numero_inicial, numero_final, proximo_numero, fecha_vencimiento, environment, modo_simple, activo, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'ecf', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [businessId, tipoComprobante, inicio, MAX_ENCF_NUMBER, inicio, fechaVencimiento]
+    );
+    return { id: Number(result?.insertId || 0) || null, existing: false };
   }
 
   // Algunas bases tienen un UNIQUE (business_id, encf) en ecf_documents: no deja
@@ -856,6 +986,17 @@ class EcfRepository {
     await this.query('UPDATE ecf_sequences SET activo = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
   }
 
+  async hideSequence(id) {
+    await this.query(
+      'UPDATE ecf_sequences SET activo = 0, deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [id]
+    );
+  }
+
+  async enableSequence(id) {
+    await this.query('UPDATE ecf_sequences SET activo = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [id]);
+  }
+
   async deleteSequencePermanently(id) {
     const result = await this.query('DELETE FROM ecf_sequences WHERE id = ? AND business_id = 1', [id]);
     return { deleted: result.affectedRows || 0 };
@@ -891,6 +1032,7 @@ class EcfRepository {
        WHERE business_id = ?
          AND tipo_comprobante = ?
          AND activo = 1
+         AND deleted_at IS NULL
          AND environment = ?
          AND (branch_id IS NULL OR branch_id = ?)
          AND (cash_register_id IS NULL OR cash_register_id = ?)
@@ -915,6 +1057,32 @@ class EcfRepository {
       const exhausted = Number(row.proximo_numero || 0) > Number(row.numero_final || 0);
       return !expired && !exhausted;
     }) || null;
+  }
+
+  // ¿Hay un rango vigente para emitir este tipo? Solo lee, sin bloquear filas: la
+  // venta lo consulta dentro de su transacción antes de cobrar (`exec` es su conexión).
+  async hasAvailableSequence(criterio) {
+    return (await this.usableSequences(criterio)).length > 0;
+  }
+
+  async usableSequences({ exec, businessId = 1, tipoComprobante, environment, branchId = null, cashRegisterId = null }) {
+    const run = exec || this.query;
+    const rows = await run(
+      `SELECT numero_final, proximo_numero, fecha_vencimiento FROM ecf_sequences
+       WHERE business_id = ?
+         AND tipo_comprobante = ?
+         AND activo = 1
+         AND deleted_at IS NULL
+         AND environment = ?
+         AND (branch_id IS NULL OR branch_id = ?)
+         AND (cash_register_id IS NULL OR cash_register_id = ?)`,
+      [businessId, tipoComprobante, sequenceEnvironment(environment), branchId, cashRegisterId]
+    );
+    const now = Date.now();
+    return rows.filter((row) => {
+      const expired = row.fecha_vencimiento ? new Date(row.fecha_vencimiento).getTime() < now : false;
+      return !expired && Number(row.proximo_numero || 0) <= Number(row.numero_final || 0);
+    });
   }
 
   formatEncf(tipoComprobante, nextNumber) {
@@ -1280,6 +1448,43 @@ class EcfRepository {
     });
   }
 
+  // Reserva el e-NCF de un e-CF que no nace de una venta. Con el mismo `origen`
+  // devuelve el documento que ya existe: un reintento no gasta otro número.
+  async reserveStandaloneDocument({ tipoEcf, environment, userId = null, branchId = null, cashRegisterId = null, origen, documentoOrigenId = null }) {
+    return this.withTransaction(async (conn) => {
+      const previos = await conn.query(
+        // Uno rechazado no cuenta: la DGII no lo tomó y hay que emitirlo con otro número.
+        `SELECT * FROM ecf_documents WHERE origen = ? AND tipo_ecf = ? AND environment = ? AND estado_dgii <> 'rechazado' ORDER BY id DESC LIMIT 1`,
+        [origen, tipoEcf, normalizeEnvironmentKey(environment)]
+      );
+      if (previos[0]) {
+        const secuencias = previos[0].sequence_id
+          ? await conn.query('SELECT * FROM ecf_sequences WHERE id = ? LIMIT 1', [previos[0].sequence_id])
+          : [];
+        return {
+          documentId: Number(previos[0].id),
+          sequence: secuencias[0] || { id: previos[0].sequence_id || null },
+          encf: previos[0].encf,
+          existing: previos[0],
+        };
+      }
+      const generated = await this.generateNextENCF({
+        conn,
+        businessId: 1,
+        sale: { branch_id: branchId, cash_register_id: cashRegisterId },
+        tipoComprobante: tipoEcf,
+        environment,
+      });
+      const result = await conn.query(
+        `INSERT INTO ecf_documents
+         (business_id, sale_id, sequence_id, branch_id, cash_register_id, created_by_user_id, tipo_ecf, encf, environment, estado_dgii, origen, documento_origen_id, xml_generated_at, created_at, updated_at)
+         VALUES (1, NULL, ?, ?, ?, ?, ?, ?, ?, 'pendiente', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [generated.sequence.id, branchId, cashRegisterId, userId, tipoEcf, generated.encf, normalizeEnvironmentKey(environment), origen, documentoOrigenId]
+      );
+      return { documentId: Number(result.insertId || 0), sequence: generated.sequence, encf: generated.encf };
+    });
+  }
+
   async updateDocumentPayload(documentId, payload) {
     const numberOrNull = (value) => (
       value === null || value === undefined ? null : toSqlNumber(value, null)
@@ -1585,6 +1790,24 @@ class EcfRepository {
     return rows[0] || null;
   }
 
+  // Un e-CF rechazado se vuelve a emitir con otro número. Si su secuencia ya no sirve
+  // (desactivada, eliminada, agotada o vencida), sigue con la vigente de ese tipo.
+  async sequenceForReissue(document) {
+    const [actual] = await this.query('SELECT * FROM ecf_sequences WHERE id = ? LIMIT 1', [Number(document.sequence_id)]);
+    const vencida = actual?.fecha_vencimiento ? new Date(actual.fecha_vencimiento).getTime() < Date.now() : false;
+    if (actual && !actual.deleted_at && Number(actual.activo) === 1 && !vencida
+      && Number(actual.proximo_numero) <= Number(actual.numero_final)) {
+      return actual.id;
+    }
+    const vigente = await this.withTransaction((conn) => this.getNextAvailableSequence(
+      conn, document.business_id || 1, document, document.tipo_ecf, document.environment
+    ));
+    assertCondition(vigente,
+      `No hay una secuencia ${document.tipo_ecf} activa para volver a emitir este e-CF. Agrégala en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos.`,
+      { statusCode: 422 });
+    return vigente.id;
+  }
+
   async reserveNextEncfForSequence(sequenceId, tipoComprobante) {
     assertCondition(sequenceId, 'Debe indicar la secuencia para reservar el siguiente e-NCF.', { statusCode: 422 });
     const normalizedType = String(tipoComprobante || '').trim().toUpperCase();
@@ -1693,6 +1916,125 @@ class EcfRepository {
           ...row,
           fecha_emision: row.xml_generated_at || row.created_at,
           mensajes_dgii: dgiiDetail,
+        };
+      }),
+    };
+  }
+
+  // Configuración → Comprobantes enviados a la DGII. Producción por defecto; "pruebas" son los
+  // demás ambientes, con los casos de la certificación.
+  async listComprobantes(filters = {}) {
+    const POR_PAGINA = 25;
+    const GRUPOS = {
+      aceptado: ['aceptado'],
+      condicional: ['aceptado_condicional'],
+      rechazado: ['rechazado', 'bloqueado'],
+      proceso: ['enviado', 'en_proceso', 'procesando'],
+    };
+    const conocidos = Object.values(GRUPOS).flat();
+    const marcas = (lista) => lista.map(() => '?').join(', ');
+    const grupoDe = (estado) => Object.keys(GRUPOS).find((g) => GRUPOS[g].includes(estado)) || 'sin_enviar';
+
+    const base = ['d.business_id = 1'];
+    const baseParams = [];
+    if (filters.ambiente === 'pruebas') base.push("COALESCE(d.environment, '') <> 'ecf'");
+    else base.push("d.environment = 'ecf'");
+    if (filters.tipo) { base.push('d.tipo_ecf = ?'); baseParams.push(String(filters.tipo).toUpperCase()); }
+    if (filters.desde) { base.push('date(d.created_at) >= date(?)'); baseParams.push(String(filters.desde)); }
+    if (filters.hasta) { base.push('date(d.created_at) <= date(?)'); baseParams.push(String(filters.hasta)); }
+    const buscar = String(filters.buscar || '').trim();
+    if (buscar) {
+      const patron = `%${buscar}%`;
+      base.push('(d.encf LIKE ? OR d.nombre_comprador LIKE ? OR d.rnc_comprador LIKE ? OR d.track_id LIKE ? OR s.invoice_number LIKE ?)');
+      baseParams.push(patron, patron, patron, patron, patron);
+    }
+    const desde = 'FROM ecf_documents d LEFT JOIN sales s ON s.id = d.sale_id';
+
+    const conteos = await this.query(
+      `SELECT d.estado_dgii AS estado, COUNT(*) AS total ${desde} WHERE ${base.join(' AND ')} GROUP BY d.estado_dgii`,
+      baseParams
+    );
+    const resumen = { total: 0, aceptado: 0, condicional: 0, rechazado: 0, proceso: 0, sinEnviar: 0 };
+    conteos.forEach((fila) => {
+      const cantidad = Number(fila.total || 0);
+      const grupo = grupoDe(fila.estado);
+      resumen.total += cantidad;
+      resumen[grupo === 'sin_enviar' ? 'sinEnviar' : grupo] += cantidad;
+    });
+
+    const clauses = [...base];
+    const params = [...baseParams];
+    if (GRUPOS[filters.estado]) {
+      clauses.push(`d.estado_dgii IN (${marcas(GRUPOS[filters.estado])})`);
+      params.push(...GRUPOS[filters.estado]);
+    } else if (filters.estado === 'sin_enviar') {
+      clauses.push(`(d.estado_dgii IS NULL OR d.estado_dgii NOT IN (${marcas(conocidos)}))`);
+      params.push(...conocidos);
+    }
+    const total = filters.estado
+      ? (filters.estado === 'sin_enviar' ? resumen.sinEnviar : resumen[filters.estado] || 0)
+      : resumen.total;
+    const paginas = Math.max(Math.ceil(total / POR_PAGINA), 1);
+    const pagina = Math.min(Math.max(Number.parseInt(filters.pagina, 10) || 1, 1), paginas);
+
+    const rows = await this.query(
+      `SELECT d.id, d.encf, d.tipo_ecf, d.nombre_comprador, d.rnc_comprador, d.monto_total, d.itbis_total, d.estado_dgii,
+              d.track_id, d.environment, d.submission_mode, d.origen, d.error_message, d.dgii_response_json,
+              d.signed_xml_content, d.xml_generated_at, d.created_at, d.sent_at, s.invoice_number
+       ${desde}
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY d.id DESC
+       LIMIT ${POR_PAGINA} OFFSET ${(pagina - 1) * POR_PAGINA}`,
+      params
+    );
+
+    return {
+      total,
+      pagina,
+      paginas,
+      resumen,
+      documents: rows.map((row) => {
+        const respuesta = typeof row.dgii_response_json === 'string'
+          ? parseJson(row.dgii_response_json, {})
+          : (row.dgii_response_json || {});
+        const crudos = respuesta?.mensajes || respuesta?.Mensajes;
+        const mensajes = (Array.isArray(crudos) ? crudos : [])
+          .map((m) => ({
+            codigo: String(m?.codigo ?? m?.Codigo ?? '').replace(/^0$/, ''),
+            texto: String((typeof m === 'string' ? m : m?.valor ?? m?.Valor ?? m?.descripcion ?? m?.Descripcion ?? m?.mensaje) || '').trim(),
+          }))
+          .filter((m) => m.texto);
+        const grupo = grupoDe(row.estado_dgii);
+        const error = String(row.error_message || '').trim();
+        if (grupo !== 'aceptado' && error && error !== '[object Object]' && !mensajes.some((m) => m.texto === error || error.includes(m.texto))) {
+          mensajes.unshift({ codigo: '', texto: error });
+        }
+        // La consulta de la DGII solo encuentra lo que recibió y no rechazó.
+        const conEnlace = ['aceptado', 'condicional', 'proceso'].includes(grupo);
+        let enlace = '';
+        if (conEnlace && row.signed_xml_content) {
+          try { enlace = buildQrVerificationUrl(row.signed_xml_content, row.environment) || ''; } catch (_) { enlace = ''; }
+        }
+        return {
+          id: row.id,
+          encf: row.encf || '',
+          tipoEcf: row.tipo_ecf || '',
+          tipoNombre: getDocumentType(row.tipo_ecf)?.label || row.tipo_ecf || '',
+          comprador: row.nombre_comprador || '',
+          rncComprador: row.rnc_comprador || '',
+          montoTotal: Number(row.monto_total || 0),
+          itbisTotal: Number(row.itbis_total || 0),
+          fecha: row.sent_at || row.xml_generated_at || row.created_at,
+          estado: row.estado_dgii || '',
+          grupo,
+          trackId: row.track_id || '',
+          ambiente: sequenceEnvironment(row.environment),
+          modo: row.submission_mode || 'normal',
+          origen: row.origen || '',
+          factura: row.invoice_number || '',
+          tieneXml: Boolean(row.signed_xml_content),
+          mensajes,
+          enlace,
         };
       }),
     };

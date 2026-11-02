@@ -84,6 +84,8 @@ npm test
 
 Framework: Jest. Tests viven en `tests/`. Un test por módulo extraído.
 
+e-CF de punta a punta, con la app real y un DGII falso (nada sale a la DGII real): `npm run test:ecf-completo` (POS y servicios, MariaDB y SQLite; valida cada XML contra los XSD). Recorrer todas las pantallas buscando errores: `npm run test:pantallas`. Al tocar `ecf-generator.js` o la venta, correr ambas.
+
 ## Lint y format
 
 ```bash

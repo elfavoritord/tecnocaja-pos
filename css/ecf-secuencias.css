@@ -126,6 +126,13 @@
 .ecfs-history__item { display: grid; gap: 2px; padding-left: var(--tc-space-3); border-left: 2px solid var(--tc-select-border); }
 .ecfs-history__item strong { color: var(--tc-text); font-weight: var(--tc-weight-medium); }
 
+/* ── Modo sencillo: marcar los tipos que se usan ─────────────────────── */
+.ecfs-simple { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--tc-space-2); }
+.ecfs-simple__item { display: flex; align-items: flex-start; gap: var(--tc-space-2); padding: var(--tc-space-2) var(--tc-space-3); border: 1px solid var(--tc-border-soft); border-radius: 8px; cursor: pointer; }
+.ecfs-simple__item input { margin-top: 3px; flex-shrink: 0; }
+.ecfs-simple__name { color: var(--tc-text); font-size: var(--tc-fs-sm); font-weight: var(--tc-weight-semibold); }
+.ecfs-simple__note { color: var(--tc-text-2); font-size: var(--tc-fs-xs, 0.75rem); }
+
 /* ── Carga del archivo de la DGII ────────────────────────────────────── */
 /* Va arriba de las secuencias (lo que más se usa), separada por una línea. */
 .ecfs-upload {
@@ -337,4 +344,104 @@
   .ecfs-ai__step--active .ecfs-ai__dot, .ecfs-found, .ecfs-ai__result::after {
     animation: none !important;
   }
+}
+
+/* ── Comprobantes enviados a la DGII (js/ecf-comprobantes.js) ─────────────── */
+.ecfd-resumen { display: flex; flex-wrap: wrap; gap: var(--tc-space-2); margin-bottom: var(--tc-space-3); }
+.ecfd-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-height: 36px;
+  padding: 6px var(--tc-space-3);
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  font: inherit;
+  font-size: var(--tc-fs-sm);
+  cursor: pointer;
+}
+.ecfd-chip strong { color: var(--tc-text); font-weight: var(--tc-weight-semibold); }
+.ecfd-chip:hover, .ecfd-chip.is-activo { border-color: var(--tc-select-border); background: var(--tc-select-bg); }
+.ecfd-filtros {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  align-items: end;
+  gap: var(--tc-space-2);
+  margin-bottom: var(--tc-space-3);
+}
+#ecfd-buscar { grid-column: 1 / -1; }
+.ecfd-fecha { display: flex; flex-direction: column; gap: 4px; font-size: var(--tc-fs-xs); color: var(--tc-text-2); }
+.ecfd-fila {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-3);
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+}
+.ecfd-fila__cabeza { display: flex; align-items: flex-start; gap: var(--tc-space-3); }
+.ecfd-fila__titulo { flex: 1; min-width: 0; }
+.ecfd-encf { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ecfd-fila__monto { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-variant-numeric: tabular-nums; }
+.ecfd-pill--aviso { background: var(--tc-warning-bg); border-color: var(--tc-warning-border); color: var(--tc-warning-text); }
+.ecfd-mensajes {
+  margin: 0;
+  padding: var(--tc-space-2) var(--tc-space-3);
+  list-style: none;
+  border: 1px solid var(--tc-danger-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-danger-bg);
+  color: var(--tc-danger-text);
+  font-size: var(--tc-fs-sm);
+  overflow-wrap: anywhere;
+}
+.ecfd-mensajes--aviso { border-color: var(--tc-warning-border); background: var(--tc-warning-bg); color: var(--tc-warning-text); }
+.ecfd-track { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--tc-fs-xs); color: var(--tc-text-2); }
+.ecfd-track code { overflow-wrap: anywhere; }
+.ecfd-copiar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  min-height: 28px;
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-text-2);
+  cursor: pointer;
+}
+.ecfd-paginas { display: flex; align-items: center; justify-content: center; gap: var(--tc-space-3); margin-top: var(--tc-space-3); font-size: var(--tc-fs-sm); }
+.ecfd-paginas:empty { display: none; }
+.ecfd-xml {
+  width: min(900px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  padding: 0;
+  border: 1px solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+}
+.ecfd-xml[open] { display: flex; flex-direction: column; }
+.ecfd-xml::backdrop { background: rgba(0, 0, 0, 0.5); }
+.ecfd-xml__cabeza {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-3);
+  border-bottom: 1px solid var(--tc-border);
+}
+.ecfd-xml__cabeza strong { flex: 1; min-width: 160px; }
+.ecfd-xml__texto {
+  flex: 1;
+  margin: 0;
+  padding: var(--tc-space-3);
+  overflow: auto;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

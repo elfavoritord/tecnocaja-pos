@@ -180,6 +180,10 @@ contextBridge.exposeInMainWorld('novaDesktop', {
     return ipcRenderer.invoke('updater:install', options || {});
   },
   /** Devuelve { version, isPackaged } del proceso main */
+  /** Respuesta al aviso de reinicio: 'mostrado', 'posponer' o 'aplazar' */
+  updaterPromptRespuesta(accion) {
+    return ipcRenderer.invoke('updater:prompt-respuesta', accion);
+  },
   updaterGetVersion() {
     return ipcRenderer.invoke('updater:get-version');
   },
@@ -198,6 +202,7 @@ contextBridge.exposeInMainWorld('novaDesktop', {
       'updater:progress',
       'updater:downloaded',
       'updater:error',
+      'updater:prompt',
     ];
     const listeners = EVENTS.map(ev => {
       const fn = (_e, data) => callback(ev.replace('updater:', ''), data);

@@ -8,7 +8,7 @@ const XLSX = require('xlsx');
 const { execFile } = require('child_process');
 const { formidable } = require('formidable');
 const { OFFICIAL_ENVIRONMENTS, buildEcfConfig, normalizeEnvironmentKey, toBoolean } = require('../config/ecf.config');
-const { getDocumentTypes, getDocumentType } = require('../config/document-types');
+const { getDocumentTypes, getDocumentType, llevaVencimiento, vaSinItbis } = require('../config/document-types');
 const { DgiiClient } = require('../dgii/client');
 const { EcfRepository, digitsOnly, parseJson, parseEncfNumber, sequenceEnvironment } = require('../models/ecf.repository');
 const signatureService = require('../signature/signature.service');
@@ -24,7 +24,7 @@ const { SeedStorageService } = require('./seed-storage.service');
 const { StatusService } = require('./status.service');
 const { decryptTextWithLegacyFallback, encryptText, maskSecret } = require('./crypto-service');
 const { EcfError, assertCondition } = require('../utils/errors');
-const { validateSaleForEcf } = require('../validators/document-validator');
+const { validateCertificateForEcf, validateEmitterForEcf, validateSaleForEcf } = require('../validators/document-validator');
 const { createLogger } = require('../utils/logger');
 const { parseXml } = require('../utils/xml.util');
 const { detectXmlRoot, getDgiiXmlDispatchType, generarNombreArchivoDGII } = require('../utils/dgii-file.util');
@@ -247,6 +247,7 @@ function firstNodeText(parent, tagName) {
 
 function parseDecimal(value, fallback = 0) {
   const normalized = String(value || '').replace(/,/g, '.').trim();
+  if (!normalized) return fallback;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -471,6 +472,9 @@ function normalizeDgiiState(payload) {
   const httpStatus = Number(payload?.http?.status || payload?.httpStatus || 0);
   if (httpStatus >= 500) return 'error_consulta';
   if (httpStatus >= 400) return 'rechazado';
+  // Recibido con TrackID, aún sin resultado. Sin esto, el texto '"error":null' de la
+  // respuesta cruda lo marcaba como error y nadie volvía a consultar a la DGII.
+  if (String(payload?.estado || '').toUpperCase() === 'ENVIADO') return 'enviado';
 
   const candidates = [
     payload?.estado,
@@ -593,6 +597,12 @@ const CERTIFICATION_BLOCKED_ENCFS = new Set([]);
 function isCertificationBlockedEncf(encf) {
   return CERTIFICATION_BLOCKED_ENCFS.has(String(encf || '').trim().toUpperCase());
 }
+
+// Espera antes de preguntar a la DGII el resultado de un e-CF recién enviado.
+const RETARDO_CONSULTA_ECF_MS = process.env.NODE_ENV === 'test' ? 0 : 1500;
+
+// Según los XSD de la DGII (modules/ecf/schemas), todos los demás tipos llevan
+// FechaVencimientoSecuencia obligatoria (minOccurs="1").
 
 // El gateway e-CF atiende a todos los clientes con la misma URL (ver cloud/ecf-gateway).
 const DEFAULT_ECF_GATEWAY_URL = 'https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app';
@@ -1987,11 +1997,23 @@ class EcfService {
     const nextNumber = Number(req.body?.proximoNumero || req.body?.nextNumber || req.body?.proximo || 0);
     const before = await this.repository.getSequence(sequenceId);
     if (before && sequenceEnvironment(before.environment) === 'ecf') {
+      // En modo sencillo no hay rango autorizado registrado: el inicio lo fija el sistema
+      // y aquí se corrige. Un número ya emitido no se puede repetir en ningún caso.
+      const simple = Number(before.modo_simple || 0) === 1;
       assertCondition(
-        nextNumber >= Number(before.numero_inicial) && nextNumber <= Number(before.numero_final) + 1,
+        nextNumber >= (simple ? 1 : Number(before.numero_inicial)) && nextNumber <= Number(before.numero_final) + 1,
         `El próximo número debe estar dentro del rango autorizado (${before.numero_inicial}–${before.numero_final}).`,
         { statusCode: 422 }
       );
+      const encf = this.repository.formatEncf(before.tipo_comprobante, nextNumber);
+      const usado = await this.repository.query(
+        `SELECT id FROM ecf_documents WHERE business_id = 1 AND encf = ? AND environment = 'ecf' LIMIT 1`,
+        [encf]
+      ).catch(() => []);
+      assertCondition(!usado.length, `El ${encf} ya se emitió y no se puede repetir.`, { statusCode: 422 });
+      if (simple && nextNumber < Number(before.numero_inicial)) {
+        await this.repository.query('UPDATE ecf_sequences SET numero_inicial = ? WHERE id = ?', [nextNumber, sequenceId]);
+      }
     }
     const sequence = await this.repository.updateSequenceNextNumber(sequenceId, nextNumber);
     await this._auditSequence(
@@ -2018,17 +2040,86 @@ class EcfService {
     return { ok: true };
   }
 
+  // Modo sencillo: basta marcar el tipo. La fecha solo se pide donde el XSD de la DGII
+  // la exige; los demás datos de un rango son para control interno.
+  async activateSimpleSequence(req) {
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    await this.ensureReady();
+    const tipoComprobante = String(req.body?.tipoComprobante || '').trim().toUpperCase();
+    assertCondition(getDocumentType(tipoComprobante), 'Tipo de comprobante inválido.', { statusCode: 422 });
+    // Dos sucursales con el mismo tipo repetirían números: ahí los reparte la central.
+    assertCondition(!String(process.env.TECNO_CAJA_SYNC_TOKEN || '').trim(),
+      'Esta PC es una sucursal: sus rangos e-NCF los reparte la central.', { statusCode: 409 });
+    const result = await this.repository.activateSimpleSequence(1, {
+      tipoComprobante,
+      fechaVencimiento: this.repository.validarVencimiento(tipoComprobante, req.body?.fechaVencimiento),
+    });
+    const sequence = await this.repository.getSequence(result.id);
+    if (!result.existing) {
+      await this._auditSequence(actor, 'sequence_simple_enabled', sequence,
+        `Activó ${tipoComprobante} en modo sencillo; sigue en el número ${sequence?.proximo_numero}.`,
+        { after: sequence });
+    }
+    return { ok: true, existing: result.existing, sequence };
+  }
+
+  // Para los rangos que se cargaron antes de que la fecha fuera obligatoria: sin ella no se pueden emitir.
+  async updateSequenceExpiry(req) {
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const before = await this.repository.getSequence(Number(req.params.id));
+    assertCondition(before, 'Secuencia no encontrada.', { statusCode: 404 });
+    assertCondition(llevaVencimiento(before.tipo_comprobante),
+      `El ${before.tipo_comprobante} no lleva fecha de vencimiento.`, { statusCode: 422 });
+    const fecha = this.repository.validarVencimiento(before.tipo_comprobante, req.body?.fechaVencimiento);
+    const sequence = await this.repository.updateSequenceExpiry(before.id, fecha);
+    await this._auditSequence(actor, 'sequence_expiry_changed', sequence,
+      `Puso la fecha de vencimiento ${fecha} a la secuencia ${before.tipo_comprobante} ${before.numero_inicial}–${before.numero_final}.`,
+      { before, after: sequence });
+    return { ok: true, sequence };
+  }
+
+  // Vuelve a activar una secuencia desactivada. Sin esto, un rango con e-CF emitidos
+  // quedaba sin salida: no se podía usar, ni borrar, ni cargar otra vez (se cruza).
+  async enableSequence(req) {
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    const sequence = await this.repository.getSequence(Number(req.params.id));
+    assertCondition(sequence, 'Secuencia no encontrada.', { statusCode: 404 });
+    assertCondition(Number(sequence.proximo_numero) <= Number(sequence.numero_final),
+      'Esta secuencia ya se agotó: no quedan números para usar.', { statusCode: 409 });
+    const vence = sequence.fecha_vencimiento ? new Date(sequence.fecha_vencimiento).getTime() : null;
+    assertCondition(vence === null || vence >= Date.now(),
+      'Esta secuencia ya venció: pide otra a la DGII.', { statusCode: 409 });
+    await this.repository.enableSequence(sequence.id);
+    await this._auditSequence(actor, 'sequence_enabled', sequence,
+      `Activó de nuevo la secuencia ${sequence.tipo_comprobante} ${sequence.numero_inicial}–${sequence.numero_final}.`,
+      { before: sequence });
+    return { ok: true };
+  }
+
   async deleteSequencePermanently(req) {
     const actor = await this.getCurrentActor(req, { adminOnly: true });
     const sequence = await this.repository.getSequence(Number(req.params.id));
-    // Un rango de producción con e-CF emitidos es parte del historial fiscal:
-    // se desactiva, no se borra.
+    // Un rango de producción con e-CF emitidos se quita de la lista, pero la fila queda:
+    // reenviar o volver a firmar esos e-CF la lee por sequence_id. Pide confirmación aparte.
     if (sequence && sequenceEnvironment(sequence.environment) === 'ecf') {
       const used = await this.repository.query(
-        'SELECT id FROM ecf_documents WHERE sequence_id = ? LIMIT 1',
+        'SELECT COUNT(*) AS total FROM ecf_documents WHERE sequence_id = ?',
         [sequence.id]
       ).catch(() => []);
-      assertCondition(!used.length, 'Esta secuencia ya tiene e-CF emitidos y no se puede eliminar. Desactívala.', { statusCode: 409 });
+      const emitidos = Number(used[0]?.total || 0);
+      if (emitidos > 0) {
+        if (String(req.query?.force || '') !== '1') {
+          throw new EcfError(`Esta secuencia ya tiene ${emitidos} e-CF emitido${emitidos === 1 ? '' : 's'}.`, {
+            statusCode: 409,
+            details: { usada: true, emitidos },
+          });
+        }
+        await this.repository.hideSequence(sequence.id);
+        await this._auditSequence(actor, 'sequence_deleted', sequence,
+          `Eliminó de la lista la secuencia ${sequence.tipo_comprobante} ${sequence.numero_inicial}–${sequence.numero_final}, con ${emitidos} e-CF emitido${emitidos === 1 ? '' : 's'}, que se conservan.`,
+          { before: sequence });
+        return { ok: true, message: 'Secuencia eliminada de la lista. Los e-CF emitidos se conservan.' };
+      }
     }
     const result = await this.repository.deleteSequencePermanently(Number(req.params.id));
     if (!result.deleted) return { ok: false, message: 'Secuencia no encontrada o ya eliminada.' };
@@ -2640,7 +2731,9 @@ class EcfService {
         quantity: parseDecimal(firstNodeText(itemNode, 'CantidadItem'), 1),
         unitPrice: parseDecimal(firstNodeText(itemNode, 'PrecioUnitarioItem'), parseDecimal(firstNodeText(itemNode, 'MontoItem'), 0)),
         discount: parseDecimal(firstNodeText(itemNode, 'DescuentoMonto'), 0),
-        taxRate: parseDecimal(firstNodeText(itemNode, 'TasaITBIS'), 0),
+        // Los XML viejos traen TasaITBIS; el formato de la DGII da la tasa por el indicador.
+        taxRate: parseDecimal(firstNodeText(itemNode, 'TasaITBIS'),
+          { 1: 18, 2: 16 }[String(firstNodeText(itemNode, 'IndicadorFacturacion')).trim()] || 0),
         billingIndicator: parseOptionalInt(firstNodeText(itemNode, 'IndicadorFacturacion')),
         retentionIndicator: parseOptionalInt(firstNodeText(itemNode, 'IndicadorAgenteRetencionoPercepcion')) || 1,
         withholdingAmount: parseDecimal(firstNodeText(itemNode, 'MontoISRRetenido'), 0),
@@ -2666,19 +2759,26 @@ class EcfService {
     const currentEncf = normalizeEncfValue(document.encf, document.tipo_ecf);
     let normalizedReservedEncf = currentEncf;
     let sequence = null;
+    let sequenceId = document.sequence_id;
 
     if (manualEncf) {
       normalizedReservedEncf = normalizeManualEncfInput(manualEncf, document.tipo_ecf);
       const manualNext = parseEncfNumber(normalizedReservedEncf, document.tipo_ecf) + 1;
       sequence = await this.repository.updateSequenceNextNumber(document.sequence_id, manualNext);
     } else {
-      await this.repository.advanceSequenceAfterUse(document.sequence_id, document.encf);
-      let reserved = await this.repository.reserveNextEncfForSequence(document.sequence_id, document.tipo_ecf);
+      // Certificación se queda en su secuencia: trae los números del set de la DGII.
+      if (!document.certification_case_key && !document.certification_batch_id) {
+        sequenceId = await this.repository.sequenceForReissue(document);
+      }
+      if (sequenceId === document.sequence_id) {
+        await this.repository.advanceSequenceAfterUse(sequenceId, document.encf);
+      }
+      let reserved = await this.repository.reserveNextEncfForSequence(sequenceId, document.tipo_ecf);
       normalizedReservedEncf = normalizeEncfValue(reserved.encf, document.tipo_ecf);
       if (normalizedReservedEncf === currentEncf) {
         const forcedNext = parseEncfNumber(currentEncf, document.tipo_ecf) + 1;
-        sequence = await this.repository.updateSequenceNextNumber(document.sequence_id, forcedNext);
-        reserved = await this.repository.reserveNextEncfForSequence(document.sequence_id, document.tipo_ecf);
+        sequence = await this.repository.updateSequenceNextNumber(sequenceId, forcedNext);
+        reserved = await this.repository.reserveNextEncfForSequence(sequenceId, document.tipo_ecf);
         normalizedReservedEncf = normalizeEncfValue(reserved.encf, document.tipo_ecf);
       } else {
         sequence = reserved.sequence || null;
@@ -2698,7 +2798,7 @@ class EcfService {
     }
 
     await this.repository.reissueDocument(document.id, {
-      sequence_id: document.sequence_id,
+      sequence_id: sequenceId,
       encf: normalizedReservedEncf,
       estado_dgii: 'firmado',
       codigo_seguridad: computeSecurityCode(signedXml),
@@ -2717,6 +2817,7 @@ class EcfService {
 
     return {
       ...document,
+      sequence_id: sequenceId,
       encf: normalizedReservedEncf,
       estado_dgii: 'firmado',
       track_id: null,
@@ -3301,6 +3402,287 @@ class EcfService {
     };
   }
 
+  // Un e-CF recibido con TrackID aún no tiene resultado: sin consultarlo se quedaba
+  // "enviado" (o "error") para siempre aunque la DGII lo hubiera rechazado. No espera:
+  // el cajero no tiene que aguantar la consulta.
+  _consultarResultadoDespues(documentId, state, trackId) {
+    if (state !== 'enviado' || !trackId) return;
+    const timer = setTimeout(() => {
+      this.queryDocumentStatus(documentId).catch((error) => {
+        console.warn(`[ECF] No se pudo consultar el documento ${documentId}:`, error.message);
+      });
+    }, RETARDO_CONSULTA_ECF_MS);
+    timer.unref?.();
+  }
+
+  // e-CF que no nace de una venta: notas, compras, gastos, pagos al exterior.
+  // Nunca debe tumbar la operación que lo pidió (la devolución o la compra ya se hicieron):
+  // quien llama guarda lo que devuelve y le avisa al usuario.
+  async emitStandaloneDocument({ tipoEcf, customer = {}, items, document: extras = {}, origen, documentoOrigenId = null, branchId = null, cashRegisterId = null, issueDate = new Date(), context = {} }) {
+    await this.ensureReady();
+    const rawEmitter = await this.repository.getResolvedEmitter(1);
+    if (!rawEmitter.is_active) return { ok: false, skipped: true, error: 'La facturación electrónica está desactivada.' };
+    const emitter = await this.getEmitterForXml(1);
+    const errores = [...validateEmitterForEcf(rawEmitter), ...validateCertificateForEcf(await this.getCertificateStatus())];
+    if (errores.length) throw new EcfError(`No se puede emitir el ${tipoEcf}: ${errores.join(' | ')}`, { statusCode: 422 });
+
+    const reservation = await this.repository.reserveStandaloneDocument({
+      tipoEcf,
+      environment: rawEmitter.environment,
+      userId: context.userId || null,
+      branchId,
+      cashRegisterId,
+      origen,
+      documentoOrigenId,
+    });
+    // Reintento de algo que ya salió: no se firma ni se envía otra vez.
+    if (reservation.existing?.signed_xml_content && (reservation.existing.track_id || String(reservation.existing.estado_dgii) !== 'error')) {
+      return {
+        ok: true, existing: true, documentId: reservation.documentId, encf: reservation.encf, tipoEcf,
+        estado: reservation.existing.estado_dgii,
+      };
+    }
+
+    const generated = generateEcfXml({
+      emitter,
+      customer,
+      document: {
+        eNCF: reservation.encf,
+        tipoeCF: tipoEcf,
+        tipoIngresos: '01',
+        tipoPago: '1',
+        fechaVencimientoSecuencia: reservation.sequence?.fecha_vencimiento || null,
+        ...extras,
+      },
+      items,
+      issueDate,
+    });
+    const certificate = await this.resolveCertificate();
+    const signedXml = signatureService.signXML(generated.xml, certificate);
+    const verification = signatureService.verifySignature(signedXml);
+    if (!verification.ok) {
+      throw new EcfError('La verificación local de la firma digital falló.', { statusCode: 422, details: verification });
+    }
+    await this.repository.updateDocumentPayload(reservation.documentId, {
+      nombre_comprador: customer.nombre || null,
+      rnc_comprador: digitsOnly(customer.rnc),
+      subtotal: generated.totals.subtotal,
+      descuento_total: generated.totals.totalDiscount,
+      monto_exento: generated.totals.exemptAmount,
+      monto_gravado: generated.totals.totalTaxed,
+      itbis_total: generated.totals.totalTax,
+      monto_total: generated.totals.total,
+      codigo_seguridad: computeSecurityCode(signedXml),
+      xml_content: generated.xml,
+      signed_xml_content: signedXml,
+      submission_mode: 'normal',
+      estado_dgii: 'firmado',
+      signed_at: new Date(),
+    });
+
+    if (context.internetOffline === true) {
+      const mensaje = 'Sin conexión a Internet: el comprobante quedó firmado y se enviará a la DGII automáticamente cuando vuelva.';
+      await this.repository.markDocumentDeferred(reservation.documentId, { signedXml, message: mensaje });
+      return { ok: true, pending: true, documentId: reservation.documentId, encf: reservation.encf, tipoEcf, estado: 'pendiente', mensaje };
+    }
+
+    let dgiiResponse;
+    try {
+      dgiiResponse = await this.receptionService.sendSignedEcf({ signedXml, filename: `${reservation.encf}.xml` });
+    } catch (error) {
+      await this.repository.markDocumentSent(reservation.documentId, {
+        estado_dgii: 'error',
+        track_id: null,
+        dgii_response_json: { error: error.message },
+        error_message: error.message,
+      });
+      return { ok: false, documentId: reservation.documentId, encf: reservation.encf, tipoEcf, estado: 'error', error: error.message };
+    }
+    const trackId = dgiiResponse.trackId || dgiiResponse.trackid || dgiiResponse.TrackId || null;
+    const state = normalizeDgiiState(dgiiResponse);
+    const mensaje = dgiiResponse.mensaje || dgiiResponse.message || null;
+    if (state !== 'rechazado' && reservation.sequence?.id) {
+      await this.repository.advanceSequenceAfterUse(reservation.sequence.id, reservation.encf);
+    }
+    await this.repository.markDocumentSent(reservation.documentId, {
+      estado_dgii: state,
+      track_id: trackId,
+      dgii_response_json: dgiiResponse,
+      error_message: state === 'rechazado' ? (mensaje || 'DGII rechazó el documento.') : null,
+    });
+    await this.repository.saveAudit({
+      userId: context.userId || null,
+      userName: context.userName || null,
+      userRole: context.userRole || null,
+      branchId,
+      cashRegisterId,
+      sequenceId: reservation.sequence?.id || null,
+      documentId: reservation.documentId,
+      tipoComprobante: tipoEcf,
+      encf: reservation.encf,
+      actionName: 'document_standalone_sent',
+      status: state === 'rechazado' ? 'warning' : 'ok',
+      detail: `${tipoEcf} ${reservation.encf} (${origen}): ${state}.`,
+    }).catch(() => {});
+
+    // La DGII valida en unos 200 ms: se consulta enseguida para decirle al usuario el
+    // resultado real. Si todavía no responde, queda "enviado" y se ve en Documentos.
+    let estadoFinal = state;
+    let mensajeFinal = mensaje;
+    if (state === 'enviado' && trackId) {
+      await new Promise((resolve) => { setTimeout(resolve, RETARDO_CONSULTA_ECF_MS); });
+      const consulta = await this.queryDocumentStatus(reservation.documentId).catch(() => null);
+      if (consulta?.estado) {
+        estadoFinal = consulta.estado;
+        mensajeFinal = consulta.mensaje || mensajeFinal;
+      }
+    }
+    const rechazado = ['rechazado', 'error', 'error_consulta', 'error_auth'].includes(estadoFinal);
+    return {
+      ok: !rechazado, documentId: reservation.documentId, encf: reservation.encf, tipoEcf, estado: estadoFinal, trackId,
+      ...(rechazado ? { error: mensajeFinal || 'La DGII rechazó el comprobante.' } : {}),
+    };
+  }
+
+  // Para quien llama después de guardar una operación: un fallo del e-CF se devuelve,
+  // no se lanza, porque la devolución o la compra ya quedaron hechas.
+  async emitSafely(fn, args) {
+    try {
+      return await this[fn](args);
+    } catch (error) {
+      console.warn(`[ECF] ${fn} (${args?.origen || ''}):`, error.message);
+      return { ok: false, error: error.message };
+    }
+  }
+
+  // Nota de crédito (E34) o débito (E33) ligada al e-CF aceptado de una venta. Sin e-CF
+  // aceptado no hay nada que modificar: devuelve skipped, y la operación sigue normal.
+  // codigoModificacion (XSD): 1 anula, 2 corrige texto, 3 corrige montos.
+  async emitNoteForSale({ saleId, tipoEcf = 'E34', items = null, codigoModificacion = '1', razon = '', origen, context = {} }) {
+    await this.ensureReady();
+    const rawEmitter = await this.repository.getResolvedEmitter(1);
+    if (!rawEmitter.is_active) return { ok: false, skipped: true };
+    const [original] = await this.repository.query(
+      `SELECT * FROM ecf_documents
+       WHERE sale_id = ? AND environment = ?
+         AND tipo_ecf NOT IN ('E33', 'E34')
+         AND estado_dgii IN ('aceptado', 'aceptado_condicional')
+       ORDER BY id DESC LIMIT 1`,
+      [saleId, normalizeEnvironmentKey(rawEmitter.environment)]
+    );
+    if (!original) return { ok: false, skipped: true };
+
+    const { sale, items: saleItems } = await this.repository.getSaleWithItems(saleId);
+    const lineas = items || saleItems.map((item) => ({
+      name: item.product_name || item.nombre || 'Producto',
+      quantity: Number(item.qty || 0),
+      unitPrice: Number(item.price || 0),
+      discount: Number(item.discount_amount || 0),
+      taxRate: Number(item.tax_rate || item.itbis || 0),
+    }));
+    const fechaOriginal = new Date(sale.created_at || original.created_at);
+    const dias = Math.floor((Date.now() - fechaOriginal.getTime()) / 86400000);
+    const dd = String(fechaOriginal.getDate()).padStart(2, '0');
+    const mm = String(fechaOriginal.getMonth() + 1).padStart(2, '0');
+    return this.emitStandaloneDocument({
+      tipoEcf,
+      customer: {
+        rnc: original.rnc_comprador || sale.client_tax_id || sale.client_tax_id_snapshot || '',
+        nombre: original.nombre_comprador || sale.client_name || 'Consumidor Final',
+      },
+      items: lineas,
+      document: {
+        ...(tipoEcf === 'E34' ? { indicadorNotaCredito: dias > 30 ? 1 : 0 } : {}),
+        referencia: {
+          ncfModificado: original.encf,
+          fechaNcfModificado: `${dd}-${mm}-${fechaOriginal.getFullYear()}`,
+          codigoModificacion: String(codigoModificacion),
+          razonModificacion: razon,
+        },
+      },
+      origen,
+      documentoOrigenId: original.id,
+      branchId: sale.branch_id || null,
+      cashRegisterId: sale.cash_register_id || null,
+      context,
+    });
+  }
+
+  // Nota hecha a mano desde Documentos: anula toda la factura, o ajusta un monto.
+  async emitManualNote(req) {
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    await this.ensureReady();
+    const body = req.body || {};
+    // Desde Documentos llega el id; desde Facturas de servicios, el e-NCF.
+    const documento = body.documentId
+      ? await this.repository.getDocument(Number(body.documentId))
+      : (await this.repository.query(
+        `SELECT * FROM ecf_documents WHERE business_id = 1 AND encf = ? AND sale_id IS NOT NULL ORDER BY id DESC LIMIT 1`,
+        [String(body.encf || '').trim().toUpperCase()]
+      ))[0];
+    assertCondition(documento?.sale_id, 'Ese comprobante no viene de una venta o factura.', { statusCode: 422 });
+    const tipoEcf = String(body.tipoEcf || 'E34').toUpperCase();
+    assertCondition(['E33', 'E34'].includes(tipoEcf), 'Tipo de nota inválido.', { statusCode: 422 });
+    const razon = String(body.razon || '').trim();
+    assertCondition(razon, 'Indica el motivo de la nota.', { statusCode: 422 });
+    const anula = tipoEcf === 'E34' && body.anular === true;
+    const monto = Number(body.monto || 0);
+    assertCondition(anula || monto > 0, 'Indica el monto de la nota.', { statusCode: 422 });
+    const taxRate = [0, 16, 18].includes(Number(body.itbis)) ? Number(body.itbis) : 0;
+    const items = anula ? null : [{ name: razon.slice(0, 80), quantity: 1, unitPrice: monto, discount: 0, taxRate }];
+    const result = await this.emitNoteForSale({
+      saleId: documento.sale_id,
+      tipoEcf,
+      items,
+      codigoModificacion: anula ? '1' : '3',
+      razon,
+      // Cada nota manual de ajuste es otra nota; una anulación se emite una sola vez.
+      origen: anula ? `sale:${documento.sale_id}:anulacion` : `doc:${documento.id}:${tipoEcf}:${Date.now()}`,
+      context: { userId: actor.id, userName: actor.nombre || actor.usuario, userRole: actor.rol || actor.role_code, internetOffline: body.internetOffline === true },
+    });
+    assertCondition(!result.skipped, 'Solo se le puede hacer nota a un e-CF aceptado por la DGII.', { statusCode: 422 });
+    return result;
+  }
+
+  // Ambiente del e-CF si está activo; null si no. Se pide fuera de la transacción de
+  // la venta porque usa el pool. Si falla, no se frena la venta por esta comprobación.
+  async getActiveSaleEnvironment() {
+    try {
+      await this.ensureReady();
+      const emitter = await this.repository.getResolvedEmitter(1);
+      return emitter.is_active ? emitter.environment : null;
+    } catch (error) {
+      console.warn('[ECF] No se pudo leer el ambiente para la venta:', error.message);
+      return null;
+    }
+  }
+
+  // Sin rango cargado la venta se guardaba e imprimía sin e-NCF, y nadie se enteraba.
+  // Se frena antes de cobrar, con la conexión de la transacción de la venta.
+  async assertSaleHasSequence({ exec, environment, requestedType, buyerTaxId, branchId, cashRegisterId, itbis = 0 }) {
+    const tipoEcf = inferRequestedType(requestedType, buyerTaxId);
+    if (vaSinItbis(tipoEcf) && Number(itbis) > 0) {
+      throw new EcfError(`El ${tipoEcf} va sin ITBIS y esta venta lo trae, así que no se cobró. Vuelve a elegir el comprobante para recalcular.`, { statusCode: 422, code: 'ECF_SIN_ITBIS' });
+    }
+    const disponibles = await this.repository.usableSequences({
+      exec, tipoComprobante: tipoEcf, environment, branchId, cashRegisterId,
+    });
+    if (!disponibles.length) {
+      throw new EcfError(
+        `No hay comprobantes electrónicos ${tipoEcf} disponibles, así que esta venta no se cobró. `
+        + 'Tu contador puede registrarlos desde su portal, o agrégalos en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).',
+        { statusCode: 422, code: 'ECF_SIN_SECUENCIA', details: { tipoEcf } }
+      );
+    }
+    if (llevaVencimiento(tipoEcf) && !disponibles.some((row) => row.fecha_vencimiento)) {
+      throw new EcfError(
+        `A la secuencia ${tipoEcf} le falta la fecha de vencimiento que dio la DGII, así que esta venta no se cobró. `
+        + 'Ponla en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos, botón "Fecha de vencimiento".',
+        { statusCode: 422, code: 'ECF_SIN_VENCIMIENTO', details: { tipoEcf } }
+      );
+    }
+  }
+
   async processSaleForElectronicInvoicing(saleId, context = {}) {
     await this.ensureReady();
     const status = await this.getSystemStatus();
@@ -3478,6 +3860,8 @@ class EcfService {
         state,
       },
     });
+
+    this._consultarResultadoDespues(finalDocument.id, state, trackId);
 
     return {
       ok: !['rechazado', 'error', 'error_consulta', 'error_auth'].includes(state),
@@ -3673,6 +4057,12 @@ class EcfService {
     return this.repository.countDeferredDocuments();
   }
 
+  async listComprobantes(req) {
+    await this.getCurrentActor(req);
+    await this.ensureReady();
+    return this.repository.listComprobantes(req.query || {});
+  }
+
   async listDocuments(filters = {}) {
     return this.repository.listDocuments(filters);
   }
@@ -3753,6 +4143,7 @@ class EcfService {
         error: response.mensaje || response.message || null,
       });
     }
+    this._consultarResultadoDespues(document.id, state, trackId);
     return {
       ok: state !== 'rechazado',
       estado: state,
@@ -3796,8 +4187,9 @@ class EcfService {
     // Extraer mensaje de rechazo: DGII a veces lo pone en dgii.mensaje (singular) y otras
     // en dgii.mensajes[] (array de objetos con .valor o .descripcion).
     const mensajesArr = Array.isArray(dgii.mensajes) ? dgii.mensajes : (Array.isArray(dgii.Mensajes) ? dgii.Mensajes : []);
+    // Un aceptado trae { valor: '', codigo: 0 }: no es un mensaje, y como texto daba "[object Object]".
     const mensajesText = mensajesArr
-      .map((m) => String(m?.valor || m?.Valor || m?.descripcion || m?.Descripcion || m?.mensaje || m || '').trim())
+      .map((m) => String((typeof m === 'string' ? m : m?.valor || m?.Valor || m?.descripcion || m?.Descripcion || m?.mensaje) || '').trim())
       .filter(Boolean)
       .join(' | ');
     const errorMsg = dgii.mensaje || dgii.message || dgii.descripcion || dgii.Descripcion || mensajesText || null;

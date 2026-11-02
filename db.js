@@ -316,14 +316,38 @@ process.on('SIGTERM', function() { _flushOnExit().finally(function() { process.e
 process.on('SIGINT',  function() { _flushOnExit().finally(function() { process.exit(0); }); });
 // ─────────────────────────────────────────────────────────────────────────────
 
+// sql.js no acepta Date ni undefined. Una fecha se guarda como lo hace mysql2: hora local.
+function sqliteParam(value) {
+  if (value === undefined) return null;
+  if (!(value instanceof Date)) return value;
+  const dos = (n) => String(n).padStart(2, '0');
+  return `${value.getFullYear()}-${dos(value.getMonth() + 1)}-${dos(value.getDate())} ${dos(value.getHours())}:${dos(value.getMinutes())}:${dos(value.getSeconds())}`;
+}
+
+// Muchos CREATE TABLE se escribieron para MariaDB. En SQLite fallaban y, como casi todos
+// llevan .catch, la tabla nunca se creaba sin que nadie se enterara.
+function adaptarCreateTableSqlite(sql) {
+  const texto = String(sql || '');
+  if (!/^\s*CREATE\s+TABLE/i.test(texto)) return sql;
+  const columnas = '\\((?:[^()]|\\([^()]*\\))*\\)';
+  return texto
+    .replace(/\b(?:BIG)?INT(?:EGER)?(?:\(\d+\))?(?:\s+UNSIGNED)?(?:\s+NOT\s+NULL)?\s+AUTO_INCREMENT\s+PRIMARY\s+KEY\b/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
+    .replace(new RegExp(`,\\s*UNIQUE\\s+(?:KEY|INDEX)\\s+\\w+\\s*(${columnas})`, 'gi'), ', UNIQUE $1')
+    // Solo en mayúsculas: "key VARCHAR(100)" es una columna, no un índice.
+    .replace(new RegExp(`,\\s*(?:KEY|INDEX)\\s+(?!VARCHAR\\b|CHAR\\b|DECIMAL\\b|INT\\b)\\w+\\s*${columnas}`, 'g'), '')
+    .replace(/\s+ON\s+UPDATE\s+CURRENT_TIMESTAMP(?:\(\))?/gi, '')
+    .replace(/\bENUM\s*\([^)]*\)/gi, 'TEXT')
+    .replace(/\)\s*(?:ENGINE|DEFAULT\s+CHARSET|CHARSET|COLLATE)\s*=?[^)]*$/i, ')');
+}
+
 async function runSqliteStatement(sql, params, save) {
   if (params === undefined) params = [];
   if (save === undefined) save = true;
   const db = await getSqlitePromise();
   const trimmed = String(sql || '').trim();
   const isSelect = /^(SELECT|PRAGMA|WITH)/i.test(trimmed);
-  const statement = db.prepare(sql);
-  statement.bind(params);
+  const statement = db.prepare(adaptarCreateTableSqlite(sql));
+  statement.bind(Array.isArray(params) ? params.map(sqliteParam) : params);
 
   if (isSelect) {
     const rows = [];
@@ -584,6 +608,7 @@ async function withTransactionRetry(work, options = {}) {
 }
 
 module.exports = {
+  adaptarCreateTableSqlite,
   query: query,
   withTransaction: withTransaction,
   withTransactionRetry: withTransactionRetry,

@@ -17,6 +17,7 @@ const asistente = require('./asistente');
 const FacturaPlantillas = require('./public/js/factura-plantillas.js');
 // Sucursales de las empresas del contador (multisucursal): copia de
 // server/multisucursal/central/ del POS por scripts/vendor-sync.js.
+const { alertasDeSecuencias } = require('./server/alertas-secuencias');
 const { createSucursalesCentral } = require('./server/multisucursal/sucursales');
 const { createSucursalesRouter } = require('./server/multisucursal/sucursales.routes');
 // Las sucursales conectadas por Internet (cada una con su PC y su base) en los
@@ -1232,6 +1233,8 @@ const NCF_DOCUMENT_TYPES = [
 // Mismos tipos que modules/ecf/config/document-types.js del POS.
 const ECF_DOCUMENT_TYPE_CODES = ['E31', 'E32', 'E33', 'E34', 'E41', 'E43', 'E44', 'E45', 'E46', 'E47'];
 const NCF_DOCUMENT_TYPE_CODES = [...NCF_DOCUMENT_TYPES.map((t) => t.code), ...ECF_DOCUMENT_TYPE_CODES];
+// E32 y E34 no llevan fecha de vencimiento (XSD de la DGII); los demás e-NCF la exigen.
+const ECF_SIN_VENCIMIENTO = new Set(['E32', 'E34']);
 // Límites del POS (EcfRepository.saveSequence): el e-NCF lleva 10 dígitos y
 // la DGII autoriza cantidades concretas, no millones de una vez.
 const ECF_MAXIMO = 9999999999;
@@ -1288,6 +1291,13 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(authorizationDate || ''))) {
       return res.status(400).json({ error: 'Indica la fecha en que la DGII autorizó el rango e-NCF.' });
     }
+    if (!ECF_SIN_VENCIMIENTO.has(tipo)) {
+      const vence = String(expirationDate || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(vence)) {
+        return res.status(400).json({ error: `El ${tipo} lleva obligatoriamente la fecha de vencimiento de la secuencia: indícala.` });
+      }
+      if (vence < fechaLocal()) return res.status(400).json({ error: 'Esa fecha de vencimiento ya pasó: la secuencia no se podría usar.' });
+    }
   }
   // Mismo guardia de tamaño que productos_pendientes (límite de 1MB por
   // documento de Firestore, con margen porque base64 infla ~33%).
@@ -1322,6 +1332,7 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
     // Un e-NCF de producción no se repite en ninguna sucursal del POS (así lo
     // valida EcfRepository.saveSequence): para la serie E no cuenta la sucursal.
     const aplicadaDuplicada = aplicadasSnap.docs.map(docData).find((seq) =>
+      !seq.modoSimple &&
       String(seq.documentType || seq.document_type || '').toUpperCase() === tipo &&
       (electronico || ncfScopesConflict(seq.branchId ?? seq.branch_id, normalizedBranchId)) &&
       ncfRangesOverlap(desde, hasta, seq.startNumber ?? seq.start_number, seq.endNumber ?? seq.end_number)
@@ -1348,7 +1359,7 @@ app.post('/api/ncf-pendientes', requireAuth, async (req, res) => {
       startNumber: desde,
       endNumber: hasta,
       authorizationDate: authorizationDate || null,
-      expirationDate: expirationDate || null,
+      expirationDate: ECF_SIN_VENCIMIENTO.has(tipo) ? null : expirationDate || null,
       authorizationReference: String(authorizationReference).trim(),
       notes: notes || '',
       attachmentData: attachmentData || null,
@@ -4625,6 +4636,25 @@ app.get('/api/alertas', requireAuth, async (req, res) => {
       const s = docData(doc);
       alertas.push({ tipo: 'solicitud_pendiente', nivel: 'info', businessId: s.businessId, businessName: s.businessName || '—', msg: `Solicitud pendiente: ${s.tipo || 'sin tipo'}` });
     });
+
+    // Comprobantes por agotarse o vencer de cada negocio. Si no se puede leer
+    // uno, se sigue con los demás: las otras alertas no dependen de esto.
+    const hoy = fechaLocal();
+    await Promise.all(licSnap.docs.map(async (doc) => {
+      const c = docData(doc);
+      try {
+        const licRef = col(COL_LICENCIAS).doc(c.id);
+        const [aplicadas, pendientes] = await Promise.all([
+          licRef.collection('ncf_aplicadas').get(),
+          licRef.collection('ncf_pendientes').where('status', '==', 'pendiente').get(),
+        ]);
+        alertasDeSecuencias({ aplicadas: aplicadas.docs.map(docData), pendientes: pendientes.docs.map(docData), hoy }).forEach((a) => {
+          alertas.push({ tipo: 'secuencia', nivel: a.nivel, businessId: c.id, businessName: c.businessName || c.businessKey || '—', msg: a.msg });
+        });
+      } catch (e) {
+        console.warn(`[alertas] No se pudieron leer las secuencias de ${c.id}: ${e.message}`);
+      }
+    }));
 
     const orden = { critico: 0, urgente: 1, advertencia: 2, info: 3 };
     alertas.sort((a, b) => (orden[a.nivel] ?? 9) - (orden[b.nivel] ?? 9));

@@ -11,6 +11,7 @@ const { printLabelsTspl } = require('./tspl-printer');
 const { openDrawer: openCashDrawerAll, testDrawer } = require('./cash-drawer');
 const { listSerialPorts, readWeightFromSerial } = require('./scale-reader');
 const { buildInternalHeaders } = require('../server/security/internal-request');
+const { crearRecordatorio } = require('./update-recordatorio');
 const { hasPendingFactoryReset, runPendingFactoryReset } = require('../server/services/factory-reset.service');
 
 const CUSTOM_USER_DATA_PATH = process.env.TECNO_CAJA_USER_DATA
@@ -4150,6 +4151,46 @@ let downloadedUpdate = null;
 let isThinClientRuntime = false;
 // Respaldo antes de instalar: si tarda más, se pregunta si seguir sin él.
 const UPDATE_BACKUP_TIMEOUT_MS = 3 * 60 * 1000;
+// El POS pasa días abierto: se vuelve a buscar sin depender de que lo cierren.
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const UPDATE_PROMPT_TICK_MS = 30 * 1000;
+let updateReminder = null;
+
+function getUpdateReminder() {
+  if (updateReminder) return updateReminder;
+  const archivo = path.join(app.getPath('userData'), 'config', 'update-pendiente.json');
+  updateReminder = crearRecordatorio({
+    versionActual: app.getVersion(),
+    leer: () => JSON.parse(fs.readFileSync(archivo, 'utf8')),
+    guardar: (estado) => {
+      fs.mkdirSync(path.dirname(archivo), { recursive: true });
+      fs.writeFileSync(archivo, JSON.stringify(estado));
+    },
+  });
+  return updateReminder;
+}
+
+function avisarSiToca() {
+  if (isInstallingUpdate || !downloadedUpdate || !getUpdateReminder().debeAvisar()) return;
+  sendUpdaterEvent('prompt', { version: downloadedUpdate.version, esTerminal: isThinClientRuntime });
+}
+
+// Última revisión antes de cerrar: una venta de otra caja pudo entrar después de la del renderer.
+function operacionesActivasEnServidor() {
+  if (isThinClientRuntime || !currentAppUrl) return Promise.resolve(0);
+  return new Promise((resolve) => {
+    const req = http.get(`${currentAppUrl}/api/system/operaciones-activas`, { timeout: 3000 }, (res) => {
+      let cuerpo = '';
+      res.setEncoding('utf8');
+      res.on('data', (parte) => { cuerpo += parte; });
+      res.on('end', () => {
+        try { resolve(Number(JSON.parse(cuerpo).activas) || 0); } catch (_) { resolve(0); }
+      });
+    });
+    req.on('error', () => resolve(0));
+    req.on('timeout', () => { req.destroy(); resolve(0); });
+  });
+}
 
 try {
   ({ autoUpdater } = require('electron-updater'));
@@ -4224,10 +4265,12 @@ function setupAutoUpdater() {
   autoUpdater.on('update-downloaded', (info) => {
     logStartup('[updater] Descarga completada — versión: ' + info.version);
     downloadedUpdate = { version: info.version, file: info.downloadedFile || null };
+    getUpdateReminder().descargada(info.version);
     sendUpdaterEvent('downloaded', {
       version     : info.version,
       releaseNotes: parseReleaseNotes(info.releaseNotes),
     });
+    avisarSiToca();
   });
 
   autoUpdater.on('error', (err) => {
@@ -4238,13 +4281,25 @@ function setupAutoUpdater() {
 
   // No competir con el arranque, la base de datos ni la primera pantalla.
   // La comprobación y descarga ocurren cuando la aplicación ya está lista.
-  setTimeout(() => {
+  const buscar = () => {
     if (app.isQuitting || isInstallingUpdate) return;
     autoUpdater.checkForUpdates().catch((err) => {
       logStartup('[updater] Verificación automática omitida: ' + (err?.message || err));
     });
-  }, 30000);
+  };
+  setTimeout(buscar, 30000);
+  setInterval(buscar, UPDATE_CHECK_INTERVAL_MS).unref?.();
+  setInterval(avisarSiToca, UPDATE_PROMPT_TICK_MS).unref?.();
 }
+
+// El aviso se vio, se pospuso o se retiró porque empezó una venta.
+ipcMain.handle('updater:prompt-respuesta', (_event, accion) => {
+  const reminder = getUpdateReminder();
+  if (accion === 'mostrado') reminder.mostrado();
+  else if (accion === 'posponer') reminder.posponer();
+  else if (accion === 'aplazar') reminder.aplazar();
+  return { ok: true };
+});
 
 /** Convierte releaseNotes (string HTML o array) a array de strings limpios */
 function parseReleaseNotes(notes) {
@@ -4341,6 +4396,10 @@ ipcMain.handle('updater:install', async (_event, options = {}) => {
     };
   }
 
+  if (options.comprobarOperaciones && await operacionesActivasEnServidor() > 0) {
+    return { ok: false, ocupado: true, error: 'Otra caja está guardando una operación.' };
+  }
+
   const skipBackup = Boolean(options.skipBackup || options.backupAlreadyDone) || isThinClientRuntime;
   if (!skipBackup) {
     logStartup('[updater] Respaldo antes de instalar ' + pendiente.version + '…');
@@ -4364,18 +4423,16 @@ ipcMain.handle('updater:install', async (_event, options = {}) => {
     logStartup('[updater] No se pudo detener servidor antes de instalar: ' + (error?.message || error));
   });
 
-  // Con la ventana del instalador (como hasta v1.4.1): el usuario ve el
-  // progreso y la página final abre Tecno Caja ("Ejecutar Tecno Caja",
-  // runAfterFinish). En v1.4.5–1.4.6 era silencioso (/S) y, al terminar, el
-  // instalador asistido no volvía a abrir la app: parecía que el POS se había
-  // cerrado solo. Si una versión vieja lo lanza en silencio, el instalador
-  // nuevo abre la app por su cuenta (build/installer.nsh, customInstall).
-  logStartup('[updater] Abriendo el instalador de ' + pendiente.version + '…');
+  // Sin ventana: nadie tiene que pulsar nada y Tecno Caja vuelve a abrir sola.
+  // En v1.4.5–1.4.6 el silencioso no la reabría; desde la 1.4.7 lo hace el
+  // propio instalador (build/installer.nsh, customInstall), y el renderer avisa
+  // antes de cerrar para que no parezca que el POS se cerró solo.
+  logStartup('[updater] Instalando en silencio ' + pendiente.version + '…');
   setImmediate(() => {
     let quitRequested = false;
     app.once('before-quit', () => { quitRequested = true; });
     try {
-      autoUpdater.quitAndInstall(false, true);
+      autoUpdater.quitAndInstall(true, true);
     } catch (error) {
       logStartup('[updater] quitAndInstall falló: ' + (error?.message || error));
     }

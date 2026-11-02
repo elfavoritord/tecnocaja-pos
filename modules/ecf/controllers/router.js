@@ -17,6 +17,7 @@ function wrap(handler) {
       if (res.headersSent) return;
       res.json(payload);
     } catch (error) {
+      if (!error.statusCode) console.warn(`[ECF] ${req.method} ${req.originalUrl}:`, error);
       res.status(error.statusCode || 500).json({
         error: error.message || 'Error interno e-CF.',
         details: error.details || undefined,
@@ -160,10 +161,24 @@ function createEcfRouter(deps) {
   router.post('/sequences', changingSequences((req) => service.saveSequence(req)));
   router.get('/sequences/:id/history', wrap((req) => service.getSequenceHistory(Number(req.params.id))));
   router.post('/sequences/:id/next', changingSequences((req) => service.updateSequenceNext(req)));
+  router.post('/notas', wrap((req) => service.emitManualNote(req)));
+  router.post('/sequences/simple', changingSequences((req) => service.activateSimpleSequence(req)));
+  router.post('/sequences/:id/vencimiento', changingSequences((req) => service.updateSequenceExpiry(req)));
+  router.post('/sequences/:id/enable', changingSequences((req) => service.enableSequence(req)));
   router.delete('/sequences/:id', changingSequences((req) => service.disableSequence(req)));
   router.delete('/sequences/:id/permanent', changingSequences((req) => service.deleteSequencePermanently(req)));
 
+  // Con sesión: son datos fiscales de clientes, y reenviar gasta números de la secuencia.
+  router.use('/documents', async (req, res, next) => {
+    try {
+      await service.getCurrentActor(req);
+      next();
+    } catch (error) {
+      res.status(error.statusCode || 401).json({ error: error.message || 'Debes iniciar sesión para realizar esta acción.' });
+    }
+  });
   router.get('/documents', wrap((req) => service.listDocuments(req.query || {})));
+  router.get('/comprobantes', wrap((req) => service.listComprobantes(req)));
   router.post('/enviar', wrap((req) => service.enviarDocumento(req)));
   router.get('/track/:id', wrap((req) => service.consultarTrackId(req.params.id, req)));
   router.get('/enviados/current/xml', async (req, res) => {

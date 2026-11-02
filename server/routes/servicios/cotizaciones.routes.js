@@ -15,6 +15,7 @@
 const express = require('express');
 const {
   httpError, roleCodeOf, actorName, computeTotals, makeServiceGuard, resolveBranch,
+  buscarClientePorDocumento, agregarClienteDelDocumento,
 } = require('./_common');
 const { renderInvoiceDoc, renderEmailBody } = require('./renderDoc');
 const { sendInvoiceEmail } = require('./mailer');
@@ -222,7 +223,7 @@ function createCotizacionesRouter(deps) {
     }
   });
 
-  async function readBody(body) {
+  async function readBody(body, actor) {
     const fecha = String(body?.fecha || '').trim() || new Date().toISOString().slice(0, 10);
     const totals = computeTotals(body?.items);
     if (!totals.items.length) throw httpError('Agrega al menos un servicio a la cotización.');
@@ -235,8 +236,18 @@ function createCotizacionesRouter(deps) {
       if (cli) { clientName = cli.nombre || clientName; clientRnc = String(cli.cedula || '').trim() || clientRnc; }
       else clientId = null;
     }
+    let clienteNuevo = null;
+    if (!clientId) {
+      const existente = await buscarClientePorDocumento(query, clientRnc);
+      if (existente) { clientId = existente.id; clientName = existente.nombre || clientName; }
+      else {
+        clienteNuevo = await agregarClienteDelDocumento(deps, { nombre: clientName, documento: clientRnc, actor, modulo: 'una cotización' });
+        if (clienteNuevo) clientId = clienteNuevo.id;
+      }
+    }
     return {
       fecha,
+      clienteNuevo,
       clientId,
       clientName,
       clientRnc,
@@ -251,7 +262,7 @@ function createCotizacionesRouter(deps) {
   router.post('/', guard.requirePerm('servicios.crear'), async (req, res) => {
     const actor = req.authUser;
     try {
-      const p = await readBody(req.body);
+      const p = await readBody(req.body, actor);
       const branchId = resolveBranch(actor, req.body?.branchId, deps)
         || (req.body?.branchId ? Number(req.body.branchId) : null);
       const cashRegisterId = req.body?.cashRegisterId ? Number(req.body.cashRegisterId) : null;
@@ -286,7 +297,7 @@ function createCotizacionesRouter(deps) {
         detail: `${saved.numero} · RD$ ${p.totals.total.toFixed(2)}`,
         branchId, clientId: p.clientId, documentType: 'cotizacion', documentRef: saved.numero, amount: p.totals.total,
       });
-      res.status(201).json(await fetchFull(saved.quotationId));
+      res.status(201).json({ ...(await fetchFull(saved.quotationId)), ...(p.clienteNuevo ? { clienteNuevo: p.clienteNuevo } : {}) });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }
@@ -300,7 +311,7 @@ function createCotizacionesRouter(deps) {
       const [cur] = await query('SELECT * FROM svc_quotations WHERE id = ?', [id]);
       if (!cur) throw httpError('Cotización no encontrada.', 404);
       if (!EDITABLE.includes(cur.estado)) throw httpError(`No se puede editar una cotización en estado "${cur.estado}".`, 409);
-      const p = await readBody(req.body);
+      const p = await readBody(req.body, actor);
       await withTransaction(async (conn) => {
         await conn.query(
           `UPDATE svc_quotations SET client_id=?, client_name=?, client_rnc=?, fecha=?, validez_dias=?,
@@ -324,7 +335,7 @@ function createCotizacionesRouter(deps) {
         moduleName: 'Cotizaciones', actionName: 'Cotización editada', detail: `${cur.numero} (#${id})`,
         branchId: cur.branch_id, clientId: p.clientId, documentType: 'cotizacion', documentRef: cur.numero, amount: p.totals.total,
       });
-      res.json(await fetchFull(id));
+      res.json({ ...(await fetchFull(id)), ...(p.clienteNuevo ? { clienteNuevo: p.clienteNuevo } : {}) });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
     }
