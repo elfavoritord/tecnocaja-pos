@@ -169,7 +169,7 @@ function createEcfRouter(deps) {
   router.delete('/sequences/:id/permanent', changingSequences((req) => service.deleteSequencePermanently(req)));
 
   // Con sesión: son datos fiscales de clientes, y reenviar gasta números de la secuencia.
-  router.use('/documents', async (req, res, next) => {
+  router.use(['/documents', '/print', '/enviados'], async (req, res, next) => {
     try {
       await service.getCurrentActor(req);
       next();

@@ -1,19 +1,13 @@
 {
-  "version": "1.6.8",
-  "stableVersion": "1.6.8",
+  "version": "1.6.9",
+  "stableVersion": "1.6.9",
   "date": "01/11/2026",
   "size": "198 MB",
-  "type": "feature",
+  "type": "security",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Actualizaciones: se descargan solas y el sistema pregunta antes de instalar y reiniciar. Se puede dejar para más tarde.",
-    "Facturación electrónica: nueva pantalla para ver cada comprobante, su estado, sus errores, su enlace de la DGII y su XML.",
-    "Facturación electrónica: corregidos rechazos de la DGII en facturas E31 con ITBIS y con clientes que tienen teléfono o dirección.",
-    "Facturación electrónica: notas de crédito y débito, compras, gastos y exportaciones ya se emiten desde su pantalla.",
-    "Secuencias: se pueden activar con una casilla; la fecha de vencimiento se pide solo en los tipos que la llevan.",
-    "Facturas de servicios: al escribir el RNC o la cédula salen los datos y el cliente se agrega solo.",
-    "Una sola caja: corregida la compra al contado y \"Ya me certifiqué antes\", que daban error.",
-    "Módulo Archivos: vuelve a funcionar."
+    "Actualizaciones: esta versión permite probar el nuevo aviso para instalar y reiniciar.",
+    "Seguridad: los documentos de la certificación e-CF ahora requieren haber iniciado sesión."
   ]
 }

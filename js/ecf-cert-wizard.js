@@ -2683,7 +2683,8 @@ const ECF_CERT_WIZARD = (() => {
             ${doc.representationReady ? '' : `<div style="font-size:.7rem;color:#f87171">Representación inválida: ${h(doc.representationError || 'falta el E32 completo vinculado')}</div>`}
           </div>
           <div style="display:flex;gap:.4rem;flex-shrink:0">
-            <a href="/api/ecf/print/repr-impresa/${encodeURIComponent(doc.encf)}" target="_blank"
+            <a href="/api/ecf/print/repr-impresa/${encodeURIComponent(doc.encf)}"
+              onclick="event.preventDefault();ECF_CERT_WIZARD._verEnVentana(this.href)"
               style="font-size:.73rem;padding:.25rem .55rem;background:rgba(108,99,255,.15);border:1px solid rgba(108,99,255,.3);border-radius:5px;color:var(--accent);text-decoration:none;white-space:nowrap"
               title="Ver vista previa en nueva pestaña">
               👁 Ver
@@ -2712,6 +2713,21 @@ const ECF_CERT_WIZARD = (() => {
 
   // Descarga por fetch en vez de <a download>: cuando el servidor respondía con un
   // error, el enlace lo guardaba con nombre .zip/.pdf y quedaba un archivo que no abría.
+  // Un enlace no puede mandar la sesión: la página se pide aparte y se abre desde aquí.
+  async function _verEnVentana(url) {
+    try {
+      const token = (typeof getStoredAuthToken === 'function' ? getStoredAuthToken() : '')
+        || (typeof DB !== 'undefined' && DB?.authToken) || '';
+      const res = await fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || `Error ${res.status}`);
+      const href = URL.createObjectURL(new Blob([await res.text()], { type: 'text/html' }));
+      window.open(href, '_blank');
+      setTimeout(() => URL.revokeObjectURL(href), 60000);
+    } catch (error) {
+      if (typeof showToast === 'function') showToast(`No se pudo abrir: ${error.message}`, 'error');
+    }
+  }
+
   async function _downloadFromApi(url, fileName, el) {
     const original = el ? el.innerHTML : '';
     if (el) {
@@ -3950,6 +3966,7 @@ const ECF_CERT_WIZARD = (() => {
     _step5Check,
     _step5CheckAll,
     _downloadFromApi,
+    _verEnVentana,
     _step5LoadDocs,
 
     // Step 6 — Validación Repr. Impresa

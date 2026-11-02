@@ -438,7 +438,7 @@ async function pruebasServicios() {
     // Los comprobantes y su XML piden sesión.
     const lista0 = await api('GET', '/api/ecf/comprobantes');
     const idDoc = lista0.body?.documents?.[0]?.id;
-    for (const [metodo, ruta] of [['GET', '/api/ecf/documents'], ['GET', `/api/ecf/documents/${idDoc}/xml`], ['GET', `/api/ecf/documents/${idDoc}/status`], ['POST', `/api/ecf/documents/${idDoc}/resend`]]) {
+    for (const [metodo, ruta] of [['GET', '/api/ecf/documents'], ['GET', `/api/ecf/documents/${idDoc}/xml`], ['GET', `/api/ecf/documents/${idDoc}/status`], ['POST', `/api/ecf/documents/${idDoc}/resend`], ['GET', '/api/ecf/print/step5-docs'], ['GET', '/api/ecf/print/step5-xml-bundle'], ['GET', '/api/ecf/print/repr-impresa/E310000000001'], ['GET', '/api/ecf/print/qr-diagnostics'], ['GET', '/api/ecf/enviados/current/xml']]) {
       const sinSesion = await L.request(PORT, metodo, ruta);
       check(`Sin sesión: ${metodo} ${ruta.replace(String(idDoc), ':id')}`, sinSesion.status === 401, `HTTP ${sinSesion.status}`);
     }
