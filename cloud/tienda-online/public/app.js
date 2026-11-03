@@ -37,6 +37,7 @@
     soloDestacados: false,
     soloMasVendidos: false,
     marca: '',
+    tipoFiltro: '', // '' | productos | servicios
     solicitud: null, // { tipo, productoId, clave, enviando }
     vista: 'inicio', // inicio (secciones) | catalogo (todos, con filtros)
     limite: POR_PAGINA,
@@ -317,7 +318,7 @@
     const sinCarrito = S.tienda.modalidad === 'servicios';
     html.classList.toggle('sin-carrito', sinCarrito);
     html.classList.toggle('carrito-flota', !sinCarrito && (!cabecera || !e.mostrarCarrito));
-    $('#buscar').placeholder = S.tienda.modalidad === 'servicios' ? 'Buscar servicios…' : 'Buscar…';
+    $('#buscar').placeholder = soloServicios() ? 'Buscar servicios…' : 'Buscar…';
     pintarMenus();
     medirEncabezado();
   }
@@ -581,12 +582,20 @@
     S.soloDisponibles = false;
     S.soloDestacados = false;
     S.soloMasVendidos = false;
+    S.tipoFiltro = '';
     S.limite = POR_PAGINA;
   }
 
-  /** "3 productos", o "3 servicios" en una Empresa de Servicios. */
+  /** Empresa de Servicios que publica solo servicios. */
+  function soloServicios() {
+    return S.tienda.modalidad === 'servicios' && !S.tienda.conProductos;
+  }
+
+  /** "3 productos", o "3 servicios"/"3 artículos" en una Empresa de Servicios. */
   function textoCantidad(n) {
-    const palabra = S.tienda.modalidad === 'servicios' ? 'servicio' : 'producto';
+    let palabra = 'producto';
+    if (S.tipoFiltro === 'servicios' || soloServicios()) palabra = 'servicio';
+    else if (S.tipoFiltro !== 'productos' && S.tienda.modalidad === 'servicios') palabra = 'artículo';
     return `${n} ${palabra}${n === 1 ? '' : 's'}`;
   }
 
@@ -595,7 +604,9 @@
     if (q) return `Resultados para “${esc(q)}”`;
     if (S.categoria) return esc(S.categoria);
     if (S.marca) return esc(S.marca);
-    if (S.tienda.modalidad === 'servicios') return 'Nuestros servicios';
+    if (S.tipoFiltro === 'servicios' || soloServicios()) return 'Nuestros servicios';
+    if (S.tipoFiltro === 'productos') return 'Productos';
+    if (S.tienda.modalidad === 'servicios') return 'Servicios y productos';
     if (S.soloOfertas) return 'Ofertas y promociones';
     if (S.soloDestacados) return 'Productos destacados';
     if (S.soloMasVendidos) return 'Los más vendidos';
@@ -608,6 +619,7 @@
     if (S.categoria) c.push(['categoria', S.categoria]);
     if (S.marca) c.push(['marca', S.marca]);
     if (S.min !== '' || S.max !== '') c.push(['precio', `Precio: ${S.min || '0'} – ${S.max || '…'}`]);
+    if (S.tipoFiltro) c.push(['tipo', S.tipoFiltro === 'servicios' ? 'Servicios' : 'Productos']);
     if (S.soloOfertas) c.push(['ofertas', 'En oferta']);
     if (S.soloDisponibles) c.push(['disponibles', 'Solo disponibles']);
     if (S.soloDestacados) c.push(['destacados', 'Destacados']);
@@ -633,6 +645,7 @@
         <aside class="filtros" id="filtros" aria-label="Filtros">
           <header><span>Filtros</span><button type="button" data-act="cerrar-filtros" aria-label="Cerrar filtros">${ICO.x}</button></header>
           <div class="fcuerpo">
+            <div class="fgrupo hidden" id="f-tipos-caja"><h3>Tipo</h3><div class="flist" id="f-tipos"></div></div>
             <div class="fgrupo"><h3>Categorías</h3><div class="flist" id="f-cats"></div></div>
             <div class="fgrupo hidden" id="f-marcas-caja"><h3>Marcas</h3><div class="flist" id="f-marcas"></div></div>
             <div class="fgrupo"><h3>Precio</h3>
@@ -674,7 +687,8 @@
   }
 
   function quitarFiltro(cual) {
-    if (cual === 'categoria') S.categoria = '';
+    if (cual === 'tipo') S.tipoFiltro = '';
+    else if (cual === 'categoria') S.categoria = '';
     else if (cual === 'marca') S.marca = '';
     else if (cual === 'ofertas') S.soloOfertas = false;
     else if (cual === 'disponibles') S.soloDisponibles = false;
@@ -708,6 +722,14 @@
       ${cats.map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}<small>${cuantos.get(c) || 0}</small></button>`).join('')}`;
     $('#tira').innerHTML = `<button type="button" data-cat="" class="${S.categoria ? '' : 'on'}">Todo</button>
       ${cats.map((c) => `<button type="button" data-cat="${esc(c)}" class="${S.categoria === c ? 'on' : ''}">${esc(c)}</button>`).join('')}`;
+    // Solo si la tienda tiene servicios y productos a la vez.
+    const nServicios = S.productos.filter((p) => p.tipo === 'servicio').length;
+    const mezcla = nServicios > 0 && nServicios < S.productos.length;
+    $('#f-tipos-caja').classList.toggle('hidden', !mezcla);
+    if (mezcla) {
+      $('#f-tipos').innerHTML = [['', 'Todos', S.productos.length], ['productos', 'Productos', S.productos.length - nServicios], ['servicios', 'Servicios', nServicios]]
+        .map(([v, txt, k]) => `<button type="button" data-tipo-filtro="${v}" class="${S.tipoFiltro === v ? 'on' : ''}">${txt}<small>${k}</small></button>`).join('');
+    }
     const marcas = new Map();
     for (const p of S.productos) if (p.marca) marcas.set(p.marca, (marcas.get(p.marca) || 0) + 1);
     $('#f-marcas-caja').classList.toggle('hidden', !marcas.size);
@@ -811,6 +833,7 @@
     const max = S.max === '' ? NaN : Number(S.max);
     const vendidos = new Map((S.tienda.masVendidos || []).map((id, i) => [Number(id), i]));
     const lista = S.productos.filter((p) => {
+      if (S.tipoFiltro && (p.tipo === 'servicio') !== (S.tipoFiltro === 'servicios')) return false;
       if (S.categoria && p.categoria !== S.categoria) return false;
       if (S.marca && p.marca !== S.marca) return false;
       if (S.soloOfertas && !tieneOferta(p)) return false;
@@ -1005,7 +1028,7 @@
   function especificaciones(p) {
     const lista = [`Categoría: ${p.categoria || 'General'}`];
     if (p.marca) lista.push(`Marca: ${p.marca}`);
-    if (p.tipo === 'servicio') {
+    if (S.tienda.modalidad === 'servicios' && p.tipo === 'servicio') {
       if (!p.precioOculto) lista.push(p.conItbis ? 'ITBIS: se suma al total' : 'Precio final: no lleva ITBIS adicional');
       return lista;
     }
@@ -1857,7 +1880,7 @@
 
   // ── Eventos (delegados: sin onclick en el HTML) ──────────────────────────
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-nav],[data-ir],[data-fila],[data-rapida],[data-quitar-filtro],[data-marca],[data-solicitud],[data-car],[data-car-ir],[data-fav],[data-agregar],[data-ver],[data-det],[data-mas],[data-menos],[data-quitar],[data-cat],[data-act],[data-entrega]');
+    const t = e.target.closest('[data-nav],[data-ir],[data-fila],[data-rapida],[data-quitar-filtro],[data-marca],[data-tipo-filtro],[data-solicitud],[data-car],[data-car-ir],[data-fav],[data-agregar],[data-ver],[data-det],[data-mas],[data-menos],[data-quitar],[data-cat],[data-act],[data-entrega]');
     if (!t) return;
     const d = t.dataset;
     if (d.nav) navegar(d.nav);
@@ -1868,6 +1891,11 @@
     } else if (d.rapida) abrirDetalle(Number(d.rapida), { rapida: true });
     else if (d.quitarFiltro) quitarFiltro(d.quitarFiltro);
     else if (d.solicitud) abrirSolicitud(d.solicitud, d.solicitudId);
+    else if (d.tipoFiltro !== undefined) {
+      S.tipoFiltro = d.tipoFiltro;
+      S.limite = POR_PAGINA;
+      pintarProductos({ arriba: true });
+    }
     else if (d.marca !== undefined) {
       S.marca = S.marca === d.marca ? '' : d.marca;
       S.limite = POR_PAGINA;

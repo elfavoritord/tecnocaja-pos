@@ -33,7 +33,7 @@ function createConfigRouter(deps) {
         `SELECT business_type, service_vertical, service_fiscal_mode, service_invoice_default_format,
                 service_mail_user, service_mail_from,
                 service_signature, service_quote_terms, service_quote_advance_pct, service_autosign,
-                service_terms
+                service_terms, service_products_enabled
          FROM config WHERE id = 1 LIMIT 1`
       );
       res.json({
@@ -49,6 +49,7 @@ function createConfigRouter(deps) {
         quoteAdvancePct: row.service_quote_advance_pct != null ? Number(row.service_quote_advance_pct) : null,
         autoSign: Boolean(Number(row.service_autosign)),
         terms: row.service_terms || '',
+        productos: Boolean(Number(row.service_products_enabled)),
       });
     } catch (e) {
       res.status(e.statusCode || 500).json({ error: e.message });
@@ -93,6 +94,10 @@ function createConfigRouter(deps) {
       if (b.autoSign !== undefined) {
         sets.push('service_autosign = ?');
         params.push(b.autoSign === true || b.autoSign === 1 || b.autoSign === '1' ? 1 : 0);
+      }
+      if (b.productos !== undefined) {
+        sets.push('service_products_enabled = ?');
+        params.push(b.productos === true || b.productos === 1 || b.productos === '1' ? 1 : 0);
       }
       if (!sets.length) throw httpError('Nada que actualizar.');
 

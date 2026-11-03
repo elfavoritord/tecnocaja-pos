@@ -86,6 +86,16 @@
       </section>`;
     }
 
+    function tituloCatalogoInicio(t) {
+      if (t.modalidad !== 'servicios') return 'Todos los productos';
+      return t.conProductos ? 'Servicios y productos' : 'Nuestros servicios';
+    }
+
+    function palabraCatalogo(t) {
+      if (t.modalidad !== 'servicios') return 'productos';
+      return t.conProductos ? 'artículos' : 'servicios';
+    }
+
     function hero(t, d) {
       const h = d.hero;
       const tituloTxt = h.titulo || t.nombre;
@@ -106,7 +116,7 @@
           <h2>${esc(tituloTxt)}</h2>
           ${sub ? `<p>${esc(sub)}</p>` : ''}
           <div class="hero-btns">
-            ${h.textoBoton ? botonDestino(h.enlaceBoton, h.textoBoton === 'Ver productos' && t.modalidad === 'servicios' ? 'Ver servicios' : h.textoBoton, 'btn hero-b1') : ''}
+            ${h.textoBoton ? botonDestino(h.enlaceBoton, h.textoBoton === 'Ver productos' && t.modalidad === 'servicios' && !t.conProductos ? 'Ver servicios' : h.textoBoton, 'btn hero-b1') : ''}
             ${h.textoBoton2 ? botonDestino(h.enlaceBoton2, h.textoBoton2, 'btn hero-b2') : ''}
           </div>
         </div></div>
@@ -164,9 +174,9 @@
       if (!productos.length) return '<section class="sec"><div class="wrap"><p class="empty">Esta tienda aún no tiene productos publicados.</p></div></section>';
       const lista = ctx.ordenInicial().slice(0, 12);
       return `<section class="sec" id="sec-catalogo" aria-labelledby="tit-catalogo"><div class="wrap">
-        ${cabeza('catalogo', titulo(s, ctx.tienda().modalidad === 'servicios' ? 'Nuestros servicios' : 'Todos los productos'), productos.length > 12 ? 'catalogo' : '')}
+        ${cabeza('catalogo', titulo(s, tituloCatalogoInicio(ctx.tienda())), productos.length > 12 ? 'catalogo' : '')}
         <div class="grid">${lista.map(tarjeta).join('')}</div>
-        ${productos.length > 12 ? `<div class="mas-caja"><button class="btn ghost" type="button" data-ir="catalogo">Ver los ${productos.length} ${ctx.tienda().modalidad === 'servicios' ? 'servicios' : 'productos'}</button></div>` : ''}
+        ${productos.length > 12 ? `<div class="mas-caja"><button class="btn ghost" type="button" data-ir="catalogo">Ver los ${productos.length} ${palabraCatalogo(ctx.tienda())}</button></div>` : ''}
       </div></section>`;
     }
 

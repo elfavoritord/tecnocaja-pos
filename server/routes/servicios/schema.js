@@ -699,6 +699,12 @@ async function ensureServiciosSchema(query) {
 
   // Cada servicio tiene su producto en el catálogo único (ver enlace-productos.js).
   await addColumnIfMissing(query, 'svc_services', 'product_id', 'INT DEFAULT NULL');
+  // Vender productos desde Facturación (Ajustes de Empresa de Servicios).
+  await addColumnIfMissing(query, 'config', 'service_products_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing(query, 'svc_invoice_items', 'product_id', 'INT DEFAULT NULL');
+  await addColumnIfMissing(query, 'svc_quotation_items', 'product_id', 'INT DEFAULT NULL');
+  // Línea de servicio de la venta espejo: el e-CF la declara como servicio.
+  await addColumnIfMissing(query, 'sale_items', 'is_service', 'TINYINT(1) NOT NULL DEFAULT 0');
   // eslint-disable-next-line global-require
   await require('./enlace-productos').enlazarTodos(query);
 }

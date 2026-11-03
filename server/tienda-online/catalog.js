@@ -320,6 +320,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
       // Una Empresa de Servicios no tiene caja: recibe solicitudes, no cobra por carrito.
       modalidad: empresaServicios ? 'servicios' : 'productos',
       serviciosTienda: empresaServicios ? settings.serviciosTienda : null,
+      productosEnTienda: empresaServicios && Number(config.service_products_enabled || 0) === 1,
       logo: logoVersion ? '_logo' : null,
       logoVersion,
       banner: bannerVersion ? '_banner' : null,

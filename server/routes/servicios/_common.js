@@ -42,6 +42,7 @@ function computeTotals(items) {
     itbis += tax;
     return {
       serviceId: raw.serviceId ?? raw.service_id ?? null,
+      productId: Number(raw.productId ?? raw.product_id ?? 0) || null,
       descripcion: String(raw.descripcion || raw.nombre || '').trim(),
       cantidad,
       precio,

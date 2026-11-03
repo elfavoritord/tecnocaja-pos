@@ -157,6 +157,7 @@ function createTiendas({ db, ttlMs = 15000, slugTtlMs = 60000, imgTtlMs = 10 * 6
         diseno,
         anuncios,
         modalidad: opciones.modalidad,
+        conProductos: opciones.conProductos === true,
         solicitudes: { cotizacion: opciones.cotizacion, cita: opciones.cita, whatsapp: opciones.whatsapp },
         masVendidos: (Array.isArray(perfil.masVendidos) ? perfil.masVendidos : []).map(Number).filter(Number.isFinite).slice(0, 24),
         moneda: perfil.moneda || 'RD$',

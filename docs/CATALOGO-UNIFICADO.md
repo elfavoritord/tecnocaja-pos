@@ -68,14 +68,26 @@ Quién es Empresa de Servicios lo dice `esEmpresaServicios(config)` en `server/s
 
 La nube y el POS tratan cualquier perfil sin `modalidad: 'servicios'` como siempre: todo lo publicado se vende por carrito, un artículo tipo Servicio se ve como uno más y no hay solicitudes (la nube responde 409). Lo que un negocio haya guardado con la 1.6.11 se ignora. La tabla `online_requests` existe pero queda vacía, y no consulta la nube.
 
+### Empresa de Servicios que vende productos
+
+**Decisión de Emilio:** puede tener sus productos, pero la venta es la de la Empresa de Servicios: se factura en Facturación, sin pantalla de venta ni caja.
+
+- **Opcional y apagado:** Configuración → Empresa de Servicios → "Vender productos" (`config.service_products_enabled`). Activa Productos, Inventario, Compras y Proveedores.
+- **Facturación y cotización:** un buscador del catálogo (`conectarBuscador` en `js/servicios/servicios.js`) busca por nombre o código sin importar acentos, filtra por Servicios o Productos y muestra precio, ITBIS y existencia. Un código exacto + Enter agrega directo, así que sirve el lector de código de barras. Repetir un artículo suma la cantidad, y un producto agotado no se agrega. La línea guarda `product_id` en `svc_invoice_items` y `svc_quotation_items`.
+- **Inventario:** se descuenta al emitir la factura, con el mismo lock y reintento de la venta del POS (`createInvoice` en `facturacion.routes.js`). Sin existencia, se rechaza y no queda nada. Anular devuelve lo vendido. Cotizar no toca inventario.
+- **e-CF:** en la venta espejo, un producto va con su `product_id` (indicador 1) y lo demás lleva `sale_items.is_service = 1` (indicador 2). Antes, toda línea de una factura de servicios salía con 1.
+- **Productos:** esta lista y `DB.productos` no traen los productos enlazados a un servicio, que se manejan en el catálogo de servicios.
+- **Tienda:** con `productosEnTienda`, muestra servicios y productos publicados, con filtro por tipo. Sigue sin carrito: un producto se solicita igual que un servicio. El precio oculto solo aplica a servicios.
+
 ## 3. Lo que no se hizo
 
 - **Fotos y descripciones entre sucursales:** cambian el formato central de sincronización.
 - **App móvil:** tiene cambios sin commit de otra sesión.
+- **Multisucursal con productos en una Empresa de Servicios:** sin probar.
 
 ## 4. Pruebas
 
 - `npx jest tests/catalogo tests/tienda-online/solicitudes`: enlace, modalidades y solicitudes para los dos tipos de negocio.
 - `cloud/tienda-online/test/ui/probar-servicios-ui.js`: la página de la tienda en navegador real.
 - `cloud/tienda-online/test/ui/probar-servicios-pos.js`: el POS real. Empresa de Servicios con clics, y un negocio con POS comparado contra la 1.6.10.
-- `npm run test:ecf-completo`: indicador de servicio en el XML.
+- `npm run test:ecf-completo`: indicador de bien o servicio en el XML, también en una factura con producto y servicio.

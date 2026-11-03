@@ -84,6 +84,7 @@ beforeAll(async () => {
   });
   await tienda.ensureReady();
   await pos.addColumnIfMissing('config', 'service_company', 'TINYINT NOT NULL DEFAULT 0');
+  await pos.addColumnIfMissing('config', 'service_products_enabled', 'TINYINT NOT NULL DEFAULT 0');
   const insert = `INSERT INTO products (codigo, nombre, categoria, precio_compra, precio_venta, stock, estado, aplica_itbis, tracks_stock, online_enabled, product_type)
                   VALUES (?, ?, ?, ?, ?, ?, 'Activo', ?, ?, 1, ?)`;
   await pos.query(insert, ['CAB', 'Cable HDMI', 'Accesorios', 100, 300, 5, 1, 1, 'producto']);
@@ -250,6 +251,43 @@ describe('Empresa de Servicios', () => {
       expect(leida).toMatchObject({ estado: 'convertida', referencia: 'Cotización COT-1' });
       await expect(tienda.solicitudes.cambiar(s.id, { estado: 'facturada' })).rejects.toThrow('Estado inválido');
       expect((await tienda.solicitudes.listar({ estado: 'convertida' })).map((x) => x.id)).toContain(s.id);
+    });
+  });
+
+  describe('Si también vende productos', () => {
+    beforeAll(async () => {
+      await pos.query('UPDATE config SET service_products_enabled = 1 WHERE id = 1');
+      await publicar({ serviciosTienda: { ...base, cita: true } }, 1);
+    });
+    afterAll(async () => {
+      await pos.query('UPDATE config SET service_products_enabled = 0 WHERE id = 1');
+      await publicar({}, 1);
+    });
+
+    test('muestra productos y servicios, sin carrito', async () => {
+      const { productos, tienda: t } = await leerTienda();
+      expect(t).toMatchObject({ modalidad: 'servicios', conProductos: true });
+      const cable = productos.find((p) => p.nombre === 'Cable HDMI');
+      expect(cable).toMatchObject({ tipo: 'producto', comprable: false, precio: 300 });
+      expect(productos.find((p) => p.nombre === 'Limpieza de oficina')).toMatchObject({ tipo: 'servicio', comprable: false });
+      expect((await pedir([{ productoId: cable.id, cantidad: 1 }])).status).toBeGreaterThanOrEqual(400);
+    });
+
+    test('un producto se solicita igual que un servicio', async () => {
+      const cable = await idDe('CAB');
+      const r = await enviar(solicitud({ productoId: cable, mensaje: 'Quiero 5 cables' }));
+      expect(r.status).toBe(201);
+      await tienda.sync.recibirSolicitudes();
+      const s = (await tienda.solicitudes.listar()).find((x) => x.mensaje === 'Quiero 5 cables');
+      expect(s).toMatchObject({ articulo: 'Cable HDMI', precio: 300, productoId: cable, servicioId: null });
+    });
+
+    test('el precio oculto solo aplica a los servicios', async () => {
+      await publicar({ serviciosTienda: { ...base, mostrarPrecio: false } }, 1);
+      const { productos } = await leerTienda();
+      expect(productos.find((p) => p.nombre === 'Cable HDMI')).toMatchObject({ precio: 300, precioOculto: false });
+      expect(productos.find((p) => p.nombre === 'Limpieza de oficina')).toMatchObject({ precio: 0, precioOculto: true });
+      await publicar({ serviciosTienda: { ...base, cita: true } }, 1);
     });
   });
 

@@ -205,10 +205,171 @@ async function empresaServicios(browser) {
     const eventos = cal.body.items || cal.body.eventos || cal.body;
     ok('la cita entra al calendario con su fecha y hora', Array.isArray(eventos) && eventos.some((e) => e.fecha === '2030-01-15' && e.hora && e.hora.startsWith('10:30')), JSON.stringify(cal.body).slice(0, 300));
     ok('la cita queda atendida', lista[1].estado === 'convertida');
+    await productosEnEmpresa(page, api);
     ok('sin errores en la pantalla (servicios)', errores.length === 0, errores.join(' | '));
   } finally {
     L.stopServer(server);
   }
+}
+
+// La Empresa de Servicios que también vende productos: se facturan como un servicio.
+async function productosEnEmpresa(page, api) {
+  const navVisible = (modulo) => page.evaluate((m) => {
+    // El menú pasa a "Más" lo que no cabe: por eso no se mira si se está pintando.
+    const n = document.querySelector(`.nav-item[data-module="${m}"]`);
+    const ocultoPorCss = document.documentElement.dataset.appMode === 'servicios' && !document.documentElement.dataset.serviceProducts && ['productos', 'inventario', 'compras'].includes(m);
+    return Boolean(n) && !n.classList.contains('hidden') && !ocultoPorCss;
+  }, modulo);
+  ok('apagado: sin módulo de Productos', !(await navVisible('productos')));
+  const sinActivar = await api('GET', '/api/servicios/catalogo/productos');
+  ok('apagado: la factura no ofrece productos', Array.isArray(sinActivar.body) && sinActivar.body.length === 0);
+
+  // Encenderlo como lo haría el dueño: Configuración → Empresa de Servicios.
+  await page.evaluate(() => { showModule('configuracion', document.querySelector('[data-module="configuracion"]')); });
+  await sleep(1000);
+  await page.evaluate(() => document.getElementById('srv-cfg-card').click());
+  await page.waitForSelector('input[name="productos"]', { timeout: 8000 });
+  await page.evaluate(() => { document.querySelector('input[name="productos"]').checked = true; });
+  if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-ajuste-productos.png') });
+  await page.evaluate(() => {
+    const form = document.querySelector('input[name="productos"]').closest('form');
+    (form.querySelector('[type="submit"]') || [...form.ownerDocument.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Guardar')).click();
+  });
+  await sleep(1200);
+  ok('encendido: aparecen Productos, Inventario, Compras y Proveedores', (await navVisible('productos')) && (await navVisible('inventario')) && (await navVisible('compras')) && (await navVisible('proveedores')));
+  ok('sigue sin pantalla de venta', !(await navVisible('ventas')) && !(await navVisible('caja')));
+
+  const crear = await api('POST', '/api/products', { codigo: 'TONER-1', nombre: 'Tóner HP', categoria: 'General', precioCompra: 1000, precioVenta: 2500, stock: 5, stockMin: 1, unidad: 'und', aplicaItbis: 1 });
+  ok('crear un producto', Number(crear.body.id) > 0, JSON.stringify(crear.body).slice(0, 200));
+  const id = Number(crear.body.id);
+  const stockDe = async () => {
+    const r = (await api('GET', '/api/products')).body;
+    return Number(r.products.find((p) => Number(p.id) === id)?.stock);
+  };
+  const nombres = (await api('GET', '/api/products')).body.products.map((p) => p.nombre);
+  ok('la lista de Productos no repite los servicios', nombres.includes('Tóner HP') && !nombres.includes('Limpieza profunda'), nombres.join());
+
+  // Comprar sube la existencia, sin caja.
+  const proveedor = await api('POST', '/api/suppliers', { nombre: 'Proveedor Tóner', rnc: '', telefono: '', email: '', direccion: '' });
+  const compra = await api('POST', '/api/purchases', {
+    supplierId: Number(proveedor.body?.id || proveedor.body?.supplier?.id || 0), branchId: await page.evaluate(() => DB.config.activeBranchId || DB.sucursales?.[0]?.id), numeroDocumento: 'B0100000001', condicionPago: 'contado', fechaComprobante: new Date().toISOString().slice(0, 10),
+    items: [{ productId: id, codigo: 'TONER-1', nombre: 'Tóner HP', cantidad: 2, costoUnitario: 1000, itbisPct: 18 }],
+  });
+  ok('comprar sube la existencia, sin caja', compra.status === 201 && await stockDe() === 7, `HTTP ${compra.status} ${compra.body?.error || ''} stock ${await stockDe()}`);
+  const ajuste = 2;
+
+  // Los módulos abren sin errores.
+  for (const modulo of ['productos', 'inventario', 'compras', 'proveedores']) {
+    const abrio = await page.evaluate((m) => {
+      window.avisos.length = 0;
+      showModule(m, document.querySelector(`.nav-item[data-module="${m}"]`));
+      return document.getElementById(`module-${m}`)?.classList.contains('active');
+    }, modulo);
+    await sleep(600);
+    ok(`abre ${modulo}`, abrio && !(await page.evaluate(() => window.avisos.some((a) => /no está activo|permiso/.test(a)))));
+    if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, `srv-modulo-${modulo}.png`) });
+  }
+
+  // El buscador del catálogo en Nueva factura.
+  await api('POST', '/api/products', { codigo: 'CABLE-0', barcode: '7460000000017', nombre: 'Cable sin existencia', categoria: 'General', precioCompra: 1, precioVenta: 50, stock: 0, stockMin: 0, unidad: 'und', aplicaItbis: 0 });
+  await page.evaluate(() => { showModule('srv-facturas', document.querySelector('.nav-item[data-module="srv-facturas"]')); });
+  await sleep(800);
+  // Varios clics seguidos abren una sola ventana, y abre de una vez.
+  const apertura = await page.evaluate(async () => {
+    const espera = (ms) => new Promise((r) => { setTimeout(r, ms); });
+    const b = [...document.querySelectorAll('#module-srv-facturas button, [id*="srv"] button')].find((x) => /Nueva factura/.test(x.textContent));
+    const t0 = performance.now();
+    b.click(); b.click(); b.click();
+    while (!document.querySelector('[data-bus-q]') && performance.now() - t0 < 8000) await espera(10);
+    const ms = Math.round(performance.now() - t0);
+    await espera(500);
+    b.click();
+    await espera(300);
+    return { ms, ventanas: document.querySelectorAll('.srv-modal-back').length };
+  });
+  ok('varios clics en Nueva factura abren una sola ventana', apertura.ventanas === 1, JSON.stringify(apertura));
+  ok('Nueva factura abre de una vez', apertura.ms < 400, `${apertura.ms} ms`);
+  await page.waitForFunction(() => !document.querySelector('[data-bus-tipos]').hidden, { timeout: 8000 });
+  const lineas = () => page.$$eval('[data-lines] tr', (l) => l.map((tr) => ({
+    pid: tr.querySelector('[name=pid]').value, sid: tr.querySelector('[name=sid]').value, d: tr.querySelector('[name=d]').value,
+    c: tr.querySelector('[name=c]').value, p: tr.querySelector('[name=p]').value, ip: tr.querySelector('[name=ip]').value,
+  })).filter((x) => x.d));
+  const tiposTxt = await page.$$eval('[data-bus-tipo]', (l) => l.map((b) => b.textContent.replace(/\s+/g, ' ').trim()));
+  ok('el buscador trae Todos, Servicios y Productos', tiposTxt.join('|') === 'Todos 4|Servicios 2|Productos 2', tiposTxt.join('|'));
+  await page.click('[data-bus-q]');
+  await page.type('[data-bus-q]', 'toner');
+  await sleep(150);
+  const resultado = await page.$$eval('.srv-bus-item', (l) => l.map((i) => i.textContent.replace(/\s+/g, ' ').trim()));
+  ok('busca sin acentos y muestra precio, ITBIS y existencia', resultado.length === 1 && /Tóner HP/.test(resultado[0]) && /2,500\.00/.test(resultado[0]) && /18% ITBIS/.test(resultado[0]) && new RegExp(`Existencia: ${5 + ajuste}`).test(resultado[0]), JSON.stringify(resultado));
+  if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-buscador.png') });
+  await page.keyboard.press('Enter');
+  await sleep(200);
+  let l = await lineas();
+  ok('Enter agrega el producto con su precio e ITBIS', l.length === 1 && Number(l[0].pid) === id && !l[0].sid && l[0].d === 'Tóner HP' && Number(l[0].p) === 2500 && Number(l[0].ip) === 18, JSON.stringify(l));
+  ok('el buscador queda vacío y listo', await page.evaluate(() => document.activeElement === document.querySelector('[data-bus-q]') && !document.querySelector('[data-bus-q]').value && document.querySelector('[data-bus-lista]').hidden));
+  await page.type('[data-bus-q]', 'TONER-1');
+  await page.keyboard.press('Enter');
+  await sleep(200);
+  l = await lineas();
+  ok('el mismo código otra vez suma la cantidad', l.length === 1 && Number(l[0].c) === 2, JSON.stringify(l));
+  await page.type('[data-bus-q]', '7460000000017');
+  await page.keyboard.press('Enter');
+  await sleep(200);
+  ok('un producto agotado no se agrega', (await lineas()).length === 1 && await page.evaluate(() => window.avisos.some((a) => /agotado/.test(a))));
+  await page.evaluate(() => { document.querySelector('[data-bus-q]').value = ''; });
+  await page.click('[data-bus-tipo="servicio"]');
+  await sleep(150);
+  const soloServicios = await page.$$eval('.srv-bus-item', (l) => l.map((i) => i.querySelector('.srv-bus-nom').textContent));
+  ok('el filtro Servicios muestra solo servicios', soloServicios.join() === 'Fumigación,Limpieza profunda', soloServicios.join());
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await sleep(200);
+  l = await lineas();
+  ok('con flechas y Enter se agrega un servicio', l.length === 2 && l[1].d === 'Limpieza profunda' && Number(l[1].sid) > 0 && !l[1].pid, JSON.stringify(l));
+  await page.type('[data-bus-q]', 'no existe');
+  await sleep(150);
+  ok('sin resultados lo dice', /Nada coincide/.test(await page.$eval('[data-bus-lista]', (e) => e.textContent)));
+  await page.keyboard.press('Escape');
+  ok('Esc cierra el buscador y no la factura', await page.evaluate(() => document.querySelector('[data-bus-lista]').hidden && Boolean(document.querySelector('[data-buscador]'))));
+  await page.keyboard.press('Enter');
+  ok('Enter en el buscador vacío no emite la factura', await page.evaluate(() => Boolean(document.querySelector('[data-buscador]'))));
+  if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-factura-producto.png') });
+  await page.evaluate(() => [...document.querySelectorAll('.srv-modal button, .modal-overlay button')].find((b) => /Cancelar|Cerrar/.test(b.textContent))?.click());
+
+  // Factura: producto y servicio juntos; descuenta solo el producto.
+  const factura = (items, extra = {}) => api('POST', '/api/servicios/facturas', { fiscalMode: 'consumidor', clientName: 'Cliente', items, ...extra });
+  const lineaProducto = (cantidad) => ({ productId: id, descripcion: 'Tóner HP', cantidad, precio: 2500, itbisPct: 18 });
+  const mixta = await factura([lineaProducto(2), { descripcion: 'Instalación', cantidad: 1, precio: 500, itbisPct: 18 }]);
+  ok('factura con producto y servicio', mixta.status === 201 && Number(mixta.body.total) === 6490, JSON.stringify(mixta.body).slice(0, 200));
+  ok('descuenta la existencia', await stockDe() === 3 + ajuste, String(await stockDe()));
+
+  // Sin existencia: no se emite nada.
+  const facturasAntes = (await api('GET', '/api/servicios/facturas?todas=1')).body.length;
+  const sinStock = await factura([lineaProducto(99)]);
+  ok('sin existencia se rechaza', sinStock.status === 409 && /Stock insuficiente/.test(sinStock.body.error), JSON.stringify(sinStock.body));
+  ok('y no queda factura ni cambia el stock', (await api('GET', '/api/servicios/facturas?todas=1')).body.length === facturasAntes && await stockDe() === 3 + ajuste);
+
+  // Anular devuelve lo vendido, una sola vez.
+  const anular = await api('POST', `/api/servicios/facturas/${mixta.body.id}/anular`, { motivo: 'Prueba', forzar: true });
+  ok('anular la factura', anular.status === 200, JSON.stringify(anular.body).slice(0, 200));
+  ok('devuelve la existencia', await stockDe() === 5 + ajuste, String(await stockDe()));
+  const otra = await api('POST', `/api/servicios/facturas/${mixta.body.id}/anular`, { motivo: 'Otra vez', forzar: true });
+  ok('anular dos veces no duplica', otra.status === 409 && await stockDe() === 5 + ajuste);
+
+  // Cotizar no toca inventario; facturar la cotización, sí.
+  const cot = await api('POST', '/api/servicios/cotizaciones', { clientName: 'Cliente', items: [lineaProducto(1)] });
+  ok('cotizar no descuenta', cot.status === 201 && await stockDe() === 5 + ajuste, JSON.stringify(cot.body).slice(0, 160));
+  const deCot = await api('POST', `/api/servicios/facturas/desde-cotizacion/${cot.body.id}`, { fiscalMode: 'consumidor' });
+  ok('facturar la cotización descuenta', deCot.status === 201 && deCot.body.items[0].productId === id && await stockDe() === 4 + ajuste, JSON.stringify(deCot.body).slice(0, 200));
+
+  // Un servicio no se puede vender como producto, ni un producto si la opción está apagada.
+  const productoDeServicio = (await api('GET', '/api/servicios/catalogo?activo=1')).body[0].productoId;
+  const conServicio = await factura([{ productId: productoDeServicio, descripcion: 'x', cantidad: 1, precio: 1 }]);
+  ok('el producto de un servicio no se factura como producto', conServicio.status === 409, JSON.stringify(conServicio.body));
+  await api('PUT', '/api/servicios/config', { productos: false });
+  const apagado = await factura([lineaProducto(1)]);
+  ok('apagado, la factura rechaza productos', apagado.status === 409 && await stockDe() === 4 + ajuste, JSON.stringify(apagado.body));
+  await api('PUT', '/api/servicios/config', { productos: true });
 }
 
 async function negocioConPos(browser) {
@@ -296,6 +457,8 @@ async function negocioConPos(browser) {
     }));
     ok('conserva sus Pedidos online, sin Solicitudes', vista.nav === 'Pedidos online' && vista.corto === 'Pedidos' && vista.titulo === 'Pedidos online' && vista.pedidos === false && vista.solicitudes === true && /Productos publicados/.test(vista.publicados), JSON.stringify(vista));
     if (CAPTURAS) await page.screenshot({ path: path.join(CAPTURAS, 'pos-pedidos.png') });
+    const srvProductos = await page.evaluate(() => getComputedStyle(document.querySelector('.nav-item[data-module="productos"]')).display !== 'none');
+    ok('un negocio con POS sigue con su módulo de Productos', srvProductos);
     ok('sin errores en la pantalla (POS)', errores.length === 0, errores.join(' | '));
   } finally {
     L.stopServer(server);

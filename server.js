@@ -26,6 +26,7 @@ const { formidable } = require('formidable');
 const { generateQrDataUrl } = require('./modules/ecf/utils/qr-image.util');
 const sharp = require('sharp');
 const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/runtime-bootstrap');
+const { esEmpresaServicios } = require('./server/services/articulos');
 const { query, withTransaction, withTransactionRetry, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
 const { verifyInternalRequest } = require('./server/security/internal-request');
 const productsCache = require('./server/cache/products-cache');
@@ -2641,6 +2642,8 @@ app.use('/api/servicios', createServiciosRouter({
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog,
   getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
   getConfig, getNextNcfFromSequence, insertClientRow, mapClientRow,
+  withTransactionRetry, changeBranchInventoryStock, registerInventoryMovement,
+  syncProductsToReports: (ids, options) => syncProductsToReportsByIds(ids, options).catch(() => {}),
   ecfService: ecfModule.service,
   // Sin Internet el e-CF de la factura se firma y queda pendiente de envío.
   isInternetOffline: () => getInternetMonitor().isKnownOffline(),
@@ -8464,6 +8467,7 @@ async function getConfig(options = {}) {
     serviceVertical: row.service_vertical || (isServiceBusinessType(businessType) ? businessType : null),
     serviceInvoiceDefaultFormat: row.service_invoice_default_format || 'a4',
     serviceFiscalMode: row.service_fiscal_mode || 'ncf',
+    serviceProductsEnabled: Boolean(Number(row.service_products_enabled ?? 0)),
     businessStructureMode: normalizeBusinessStructureMode(row.business_structure_mode) || 'monocaja',
     cashierRegisterRequired: Boolean(row.cashier_register_required ?? 1),
     exclusiveCashierPerRegister: Boolean(row.exclusive_cashier_per_register ?? 1),
@@ -8799,10 +8803,12 @@ async function getBootstrapData(actorUser = null) {
     };
   }
 
-  const productos = await attachComboDataToProducts(productRows.map(mapProductRow))
+  // En una Empresa de Servicios, sus servicios se manejan en su catálogo, no en Productos.
+  const filasProducto = config.serviceCompany ? productRows.filter((p) => p.product_type !== 'servicio') : productRows;
+  const productos = await attachComboDataToProducts(filasProducto.map(mapProductRow))
     .catch((error) => {
       console.warn('[combos] No se pudieron agregar los componentes al catálogo:', error.message);
-      return productRows.map(mapProductRow);
+      return filasProducto.map(mapProductRow);
     });
 
   return {
@@ -12418,7 +12424,9 @@ app.get('/api/products', async (req, res) => {
   const rows = branchId
     ? await query('SELECT * FROM products WHERE branch_id IS NULL OR branch_id = ? ORDER BY nombre', [branchId])
     : await query('SELECT * FROM products ORDER BY nombre');
-  res.json({ products: await attachComboDataToProducts(rows.map(mapProductRow)) });
+  const [cfgNegocio] = await query('SELECT * FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+  const visibles = esEmpresaServicios(cfgNegocio) ? rows.filter((p) => p.product_type !== 'servicio') : rows;
+  res.json({ products: await attachComboDataToProducts(visibles.map(mapProductRow)) });
 });
 
 // Cuerpo reusable de "crear producto" — usado tanto por POST /api/products

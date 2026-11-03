@@ -1467,7 +1467,11 @@ function getBusinessRuntimeConfig() {
   };
 }
 
+// Empresa de Servicios que vende productos (Ajustes de Empresa de Servicios).
+const MODULOS_PRODUCTOS_SERVICIOS = ['productos', 'inventario', 'compras', 'proveedores'];
+
 function isBusinessModuleEnabled(name) {
+  if (DB.config?.serviceCompany && DB.config?.serviceProductsEnabled && MODULOS_PRODUCTOS_SERVICIOS.includes(name)) return true;
   const config = getBusinessRuntimeConfig();
   const modules = Array.isArray(config.modules) ? config.modules : [];
   return !modules.length || modules.includes(name);
@@ -5910,6 +5914,11 @@ function applyBusinessProfile() {
     html.dataset.appMode = 'servicios';
   } else {
     delete html.dataset.appMode;
+  }
+  if (isServiceMode && DB.config?.serviceProductsEnabled) {
+    html.dataset.serviceProducts = '1';
+  } else {
+    delete html.dataset.serviceProducts;
   }
 
   const titleEl = document.querySelector('.sales-catalog-title');

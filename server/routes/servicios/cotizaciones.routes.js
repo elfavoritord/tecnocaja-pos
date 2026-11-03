@@ -50,6 +50,7 @@ function mapQuotation(row, items = []) {
     items: items.map((it) => ({
       id: it.id,
       serviceId: it.service_id || null,
+      productId: it.product_id || null,
       descripcion: it.descripcion,
       cantidad: Number(it.cantidad || 0),
       precio: Number(it.precio || 0),
@@ -283,9 +284,9 @@ function createCotizacionesRouter(deps) {
         for (const it of p.totals.items) {
           await conn.query(
             `INSERT INTO svc_quotation_items
-              (quotation_id, service_id, descripcion, cantidad, precio, descuento_pct, itbis_pct, total)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [quotationId, it.serviceId, it.descripcion, it.cantidad, it.precio, it.descuentoPct, it.itbisPct, it.total]
+              (quotation_id, service_id, product_id, descripcion, cantidad, precio, descuento_pct, itbis_pct, total)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [quotationId, it.serviceId, it.productId, it.descripcion, it.cantidad, it.precio, it.descuentoPct, it.itbisPct, it.total]
           );
         }
         return { quotationId, numero };
@@ -324,9 +325,9 @@ function createCotizacionesRouter(deps) {
         for (const it of p.totals.items) {
           await conn.query(
             `INSERT INTO svc_quotation_items
-              (quotation_id, service_id, descripcion, cantidad, precio, descuento_pct, itbis_pct, total)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, it.serviceId, it.descripcion, it.cantidad, it.precio, it.descuentoPct, it.itbisPct, it.total]
+              (quotation_id, service_id, product_id, descripcion, cantidad, precio, descuento_pct, itbis_pct, total)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [id, it.serviceId, it.productId, it.descripcion, it.cantidad, it.precio, it.descuentoPct, it.itbisPct, it.total]
           );
         }
       });

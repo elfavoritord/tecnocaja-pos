@@ -1,14 +1,15 @@
 {
-  "version": "1.6.12",
-  "stableVersion": "1.6.12",
-  "date": "02/11/2026",
+  "version": "1.6.13",
+  "stableVersion": "1.6.13",
+  "date": "03/11/2026",
   "size": "198 MB",
-  "type": "fix",
+  "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Negocios con POS: productos, ventas y tienda vuelven a como estaban antes de la 1.6.11.",
-    "Corregido: editar un artículo de tipo Servicio ponía su existencia en 0.",
-    "Empresa de Servicios: tienda online con solicitudes de cotización y cita, sin carrito."
+    "Empresa de Servicios: opción para vender productos desde Facturación, con inventario.",
+    "Empresa de Servicios: buscador del catálogo en la factura y la cotización, con lector de código de barras.",
+    "Empresa de Servicios: Nueva factura abre más rápido y una sola ventana.",
+    "Empresa de Servicios: los comprobantes electrónicos marcan cada línea como bien o servicio."
   ]
 }

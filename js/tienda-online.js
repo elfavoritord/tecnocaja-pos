@@ -822,6 +822,12 @@
     const state = el('cfg-tienda-online-state');
     const toggle = el('cfg-tienda-online-enabled');
     if (!state || !toggle) return;
+    if (esEmpresaServicios()) {
+      const desc = el('cfg-tienda-online-desc');
+      if (desc) desc.textContent = 'Tu propia tienda en Internet con lo que publiques. Las solicitudes de tus clientes llegan a Tienda online, y de ahí pasan a una cotización o al calendario. Si la desactivas, la tienda se cierra y no se borra nada.';
+      const publicados = el('cfg-tienda-online-publicados');
+      if (publicados) publicados.textContent = 'Publicados';
+    }
     if (!canConfigure()) {
       el('cfg-tienda-online-section')?.classList.add('hidden');
       return;
@@ -1067,12 +1073,12 @@
     const v = s.serviciosTienda;
     const check = (id, valor, texto) => `<div class="form-group span-full"><label><input type="checkbox" id="${id}" ${valor ? 'checked' : ''}> ${texto}</label></div>`;
     return `<div class="to-form-grid">
-      <p class="helper-text span-full">Tu tienda muestra tus servicios y recibe solicitudes. No lleva carrito porque se factura desde tu módulo de servicios.</p>
+      <p class="helper-text span-full">Tu tienda muestra lo que publiques y recibe solicitudes. No lleva carrito porque se factura desde Facturación.</p>
       ${check('tocfg-srv-cotizacion', v.cotizacion, 'Recibir solicitudes de cotización')}
       ${check('tocfg-srv-cita', v.cita, 'Recibir solicitudes de cita')}
       ${check('tocfg-srv-whatsapp', v.whatsapp, 'Mostrar el botón de consultar por WhatsApp')}
       ${check('tocfg-srv-precio', v.mostrarPrecio, 'Mostrar el precio de los servicios')}
-      ${check('tocfg-auto', s.publicacionAutomatica, 'Publicar automáticamente cada servicio nuevo. Si lo ocultas después, no vuelve a salir')}
+      ${check('tocfg-auto', s.publicacionAutomatica, 'Publicar automáticamente lo nuevo que registres. Si lo ocultas después, no vuelve a salir')}
     </div>`;
   }
 
@@ -1527,16 +1533,19 @@
     try {
       if (accion === 'cotizacion') {
         const servicio = s.servicioId ? await pedirServicios('GET', `/catalogo/${s.servicioId}`).catch(() => null) : null;
+        const productos = !s.servicioId && s.productoId ? await pedirServicios('GET', '/catalogo/productos').catch(() => []) : [];
+        const producto = productos.find((p) => p.id === s.productoId) || null;
         const cot = await pedirServicios('POST', '/cotizaciones', {
           clientName: s.cliente.nombre,
           fecha: hoyLocal(),
           notas: [s.mensaje, `Tel: ${s.cliente.telefono}`].filter(Boolean).join(' · '),
           items: [{
             serviceId: s.servicioId,
+            productId: producto?.id || null,
             descripcion: s.articulo || s.mensaje.slice(0, 200) || 'Solicitud de la tienda online',
             cantidad: 1,
-            precio: servicio?.precio ?? s.precio ?? 0,
-            itbisPct: servicio?.itbisPct ?? 0,
+            precio: servicio?.precio ?? producto?.precio ?? s.precio ?? 0,
+            itbisPct: servicio?.itbisPct ?? producto?.itbisPct ?? 0,
           }],
         });
         await api('PUT', `/solicitudes/${id}`, { estado: 'convertida', referencia: `Cotización ${cot.numero || ''}`.trim() });
@@ -1568,7 +1577,8 @@
     document.querySelector('[data-to-tab="pedidos"]')?.classList.toggle('hidden', servicios);
     document.querySelector('[data-to-tab="reportes"]')?.classList.toggle('hidden', servicios);
     const productos = el('to-tab-btn-productos');
-    if (productos) productos.textContent = servicios ? 'Servicios publicados' : 'Productos publicados';
+    const conProductos = servicios && Boolean(DB.config?.serviceProductsEnabled);
+    if (productos) productos.textContent = servicios ? (conProductos ? 'Publicados' : 'Servicios publicados') : 'Productos publicados';
     const titulo = document.querySelector('#module-tiendaonline .module-header h2');
     if (titulo) titulo.textContent = servicios ? 'Tienda online' : 'Pedidos online';
     if (servicios && (!TO.tab || TO.tab === 'pedidos' || TO.tab === 'reportes')) TO.tab = 'solicitudes';

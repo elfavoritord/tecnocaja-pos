@@ -708,7 +708,9 @@ Condición: La compra de los equipos y la programación de la instalación estar
       <button class="btn btn-ghost" data-catalogo>🧾 Catálogo de servicios</button>
       <button class="btn btn-primary" data-new>+ Nueva cotización</button>`;
     actionsOf('srv-cotizaciones').querySelector('[data-catalogo]').onclick = () => abrirCatalogo();
-    actionsOf('srv-cotizaciones').querySelector('[data-new]').onclick = () => formCotizacion();
+    actionsOf('srv-cotizaciones').querySelector('[data-new]').onclick = () => abrirUnaVez('cotizacion', () => formCotizacion());
+    refrescarDatosFacturar().catch(() => {});
+    refrescarCatalogoFacturar().catch(() => {});
     actionsOf('srv-cotizaciones').querySelector('#cot-todas').onchange = (e) => { _cotTodas = e.target.checked; renderCotizaciones(); };
     b.innerHTML = '<div class="srv-loading">Cargando…</div>';
     try {
@@ -731,8 +733,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
       ], rows);
       b.querySelectorAll('[data-view]').forEach((el) => el.onclick = () => abrirDoc('cotizaciones', el.dataset.view, 'Cotización'));
       b.querySelectorAll('[data-mail]').forEach((el) => el.onclick = () => enviarCorreoDoc('cotizaciones', el.dataset.mail, 'cotización'));
-      b.querySelectorAll('[data-edit]').forEach((el) => el.onclick = async () => formCotizacion(await req('/cotizaciones/' + el.dataset.edit)));
-      b.querySelectorAll('[data-fact]').forEach((el) => el.onclick = () => facturarCotizacion(el.dataset.fact));
+      b.querySelectorAll('[data-edit]').forEach((el) => el.onclick = () => abrirUnaVez('cotizacion', async () => formCotizacion(await req('/cotizaciones/' + el.dataset.edit))));
+      b.querySelectorAll('[data-fact]').forEach((el) => el.onclick = () => abrirUnaVez('facturar-cotizacion', () => facturarCotizacion(el.dataset.fact)));
     } catch (e) { b.innerHTML = `<div class="srv-err">${esc(e.message)}</div>`; }
   }
 
@@ -797,6 +799,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
   // Celdas de una fila: guarda el serviceId (si viene del catálogo) en un hidden.
   function lineCells(it = {}) {
     return `<td class="srv-l-desc"><input type="hidden" name="sid" value="${it.serviceId ? Number(it.serviceId) : ''}">
+        <input type="hidden" name="pid" value="${it.productId ? Number(it.productId) : ''}">
         <input name="d" value="${esc(it.descripcion || '')}" placeholder="Servicio o concepto"></td>
       <td><input name="c" type="number" step="0.01" min="0" inputmode="decimal" value="${it.cantidad ?? 1}"></td>
       <td><input name="p" type="number" step="0.01" min="0" inputmode="decimal" value="${it.precio ?? ''}" placeholder="0.00"></td>
@@ -810,10 +813,22 @@ Condición: La compra de los equipos y la programación de la instalación estar
     const its = items && items.length ? items : [{}];
     const rowsHtml = its.map((it, i) => `<tr data-i="${i}">${lineCells(it)}</tr>`).join('');
     const acciones = `<div class="srv-lines-cat">
-        <select data-cat-sel title="Agregar un servicio del catálogo"><option value="">Agregar del catálogo…</option></select>
         <button type="button" class="btn btn-primary srv-lines-add" data-add>+ Agregar línea</button>
       </div>`;
-    return card(titulo, ICON.lista, `
+    const idLista = `srv-bus-${Date.now().toString(36)}`;
+    return card(DB.config?.serviceProductsEnabled ? 'Productos y servicios' : titulo, ICON.lista, `
+      <div class="srv-buscador" data-buscador>
+        <div class="srv-buscador-barra">
+          <div class="srv-buscador-campo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <input type="search" data-bus-q autocomplete="off" spellcheck="false"
+              placeholder="Buscar en el catálogo por nombre o código, o escanear…" aria-label="Buscar en el catálogo"
+              role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${idLista}">
+          </div>
+          <div class="srv-buscador-tipos" data-bus-tipos hidden role="group" aria-label="Tipo"></div>
+        </div>
+        <div class="srv-buscador-lista" id="${idLista}" data-bus-lista role="listbox" hidden></div>
+      </div>
       <div class="srv-lines-scroll">
         <table class="srv-lines-table">
           <colgroup><col><col class="srv-c-cant"><col class="srv-c-precio"><col class="srv-c-pct"><col class="srv-c-pct"><col class="srv-c-total"><col class="srv-c-rm"></colgroup>
@@ -842,6 +857,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
     return [...root.querySelectorAll('[data-lines] tr')].map((tr, i) => {
       const it = {
         serviceId: Number(tr.querySelector('[name=sid]')?.value || 0) || null,
+        productId: Number(tr.querySelector('[name=pid]')?.value || 0) || null,
         descripcion: tr.querySelector('[name=d]').value.trim(),
         cantidad: Number(tr.querySelector('[name=c]').value || 0),
         precio: Number(tr.querySelector('[name=p]').value || 0),
@@ -929,52 +945,239 @@ Condición: La compra de los equipos y la programación de la instalación estar
     });
     repaint();
 
-    // Catálogo de servicios: elegir uno agrega (o rellena) una línea con su
-    // precio e ITBIS ya cargados. Las líneas manuales siguen igual.
-    const sel = root.querySelector('[data-cat-sel]');
-    if (sel) {
-      req('/catalogo?activo=1').then((rows) => {
-        (rows || []).forEach((s) => {
-          const o = document.createElement('option');
-          o.value = String(s.id);
-          o.textContent = `${s.codigo ? s.codigo + ' · ' : ''}${s.nombre} — ${money(s.precio)}${s.itbisPct ? ' + ' + s.itbisPct + '% ITBIS' : ''}`;
-          o.dataset.nombre = s.nombre;
-          o.dataset.precio = s.precio;
-          o.dataset.itbis = s.itbisPct || 0;
-          sel.appendChild(o);
-        });
-      }).catch(() => {});
-      sel.onchange = () => {
-        const o = sel.selectedOptions[0];
-        if (!o || !o.value) return;
+    const bus = root.querySelector('[data-buscador]');
+    if (bus) conectarBuscador(bus, { tbody, addRow, repaint });
+  }
+
+  // ── Buscador del catálogo ────────────────────────────────────────────────
+  // Por nombre o código, sin importar los acentos, o con el lector de código de
+  // barras (un código exacto + Enter agrega directo). Elegir algo agrega la línea
+  // con su precio e ITBIS; si ya está, le suma uno a la cantidad.
+  const MAX_RESULTADOS = 60;
+  const _catalogo = { datos: null, pendiente: null };
+  function refrescarCatalogoFacturar() {
+    if (!_catalogo.pendiente) {
+      _catalogo.pendiente = Promise.all([req('/catalogo?activo=1'), req('/catalogo/productos').catch(() => [])])
+        .then(([servicios, productos]) => { _catalogo.datos = { servicios: servicios || [], productos: productos || [] }; return _catalogo.datos; })
+        .finally(() => { _catalogo.pendiente = null; });
+    }
+    return _catalogo.pendiente;
+  }
+  const sinAcentos = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const cantidadTexto = (n) => Number(n || 0).toLocaleString('es-DO', { maximumFractionDigits: 2 });
+
+  function conectarBuscador(bus, { tbody, addRow, repaint }) {
+    const q = bus.querySelector('[data-bus-q]');
+    const lista = bus.querySelector('[data-bus-lista]');
+    const tipos = bus.querySelector('[data-bus-tipos]');
+    const st = { items: [], cargado: false, tipo: '', visibles: [], activo: -1, abierto: false };
+
+    // Lo guardado aparece de una vez; lo recién pedido lo reemplaza al llegar.
+    const cargar = ({ servicios, productos }) => {
+      st.items = [
+        ...(servicios || []).map((s) => ({
+          tipo: 'servicio', id: Number(s.id), codigo: s.codigo || '', barcode: '', nombre: s.nombre,
+          precio: Number(s.precio || 0), itbisPct: Number(s.itbisPct || 0), controlaStock: false, stock: 0,
+        })),
+        ...(productos || []).map((p) => ({
+          tipo: 'producto', id: Number(p.id), codigo: p.codigo || '', barcode: p.barcode || '', nombre: p.nombre,
+          precio: Number(p.precio || 0), itbisPct: Number(p.itbisPct || 0), controlaStock: Boolean(p.controlaStock), stock: Number(p.stock || 0),
+        })),
+      ].map((a) => ({ ...a, clave: sinAcentos(`${a.nombre} ${a.codigo} ${a.barcode}`) }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' }));
+      st.cargado = true;
+      const nProductos = (productos || []).length;
+      if (nProductos) {
+        const nServicios = st.items.length - nProductos;
+        tipos.innerHTML = [['', 'Todos', st.items.length], ['servicio', 'Servicios', nServicios], ['producto', 'Productos', nProductos]]
+          .map(([v, txt, n]) => `<button type="button" data-bus-tipo="${v}" class="${v === st.tipo ? 'on' : ''}" aria-pressed="${v === st.tipo}">${txt} <small>${n}</small></button>`).join('');
+        tipos.hidden = false;
+      }
+      if (st.abierto) pintar();
+    };
+    if (_catalogo.datos) cargar(_catalogo.datos);
+    refrescarCatalogoFacturar().then(cargar).catch(() => {});
+
+    const agotado = (a) => a.controlaStock && a.stock <= 0;
+
+    function filtrar() {
+      const palabras = sinAcentos(q.value).split(/\s+/).filter(Boolean);
+      return st.items.filter((a) => (!st.tipo || a.tipo === st.tipo) && palabras.every((w) => a.clave.includes(w)));
+    }
+
+    function detalle(a) {
+      return [
+        a.codigo ? esc(a.codigo) : '',
+        a.tipo === 'servicio' ? 'Servicio' : 'Producto',
+        a.itbisPct ? `+ ${cantidadTexto(a.itbisPct)}% ITBIS` : 'Sin ITBIS',
+        // eslint-disable-next-line no-nested-ternary
+        a.controlaStock ? (agotado(a) ? '<b class="srv-bus-agotado">Agotado</b>' : `Existencia: ${cantidadTexto(a.stock)}`) : '',
+      ].filter(Boolean).join(' · ');
+    }
+
+    function pintar() {
+      const todos = filtrar();
+      st.visibles = todos.slice(0, MAX_RESULTADOS);
+      if (st.activo >= st.visibles.length || st.activo < 0 || agotado(st.visibles[st.activo] || {})) {
+        st.activo = st.visibles.findIndex((a) => !agotado(a));
+      }
+      if (!st.cargado) {
+        lista.innerHTML = '<div class="srv-bus-vacio">Cargando el catálogo…</div>';
+      } else if (!st.visibles.length) {
+        lista.innerHTML = `<div class="srv-bus-vacio">${st.items.length
+          ? `Nada coincide con "${esc(q.value.trim())}". Usa <b>+ Agregar línea</b> para escribirlo a mano.`
+          : 'Tu catálogo está vacío. Agrega servicios en Facturación → Catálogo de servicios.'}</div>`;
+      } else {
+        lista.innerHTML = st.visibles.map((a, i) => `<div class="srv-bus-item${i === st.activo ? ' on' : ''}${agotado(a) ? ' agotado' : ''}"
+            id="${lista.id}-${i}" data-i="${i}" role="option" aria-selected="${i === st.activo}"${agotado(a) ? ' aria-disabled="true"' : ''}>
+            <span class="srv-bus-nom">${esc(a.nombre)}</span>
+            <span class="srv-bus-precio">${money(a.precio)}</span>
+            <span class="srv-bus-det">${detalle(a)}</span>
+          </div>`).join('')
+          + (todos.length > MAX_RESULTADOS ? `<div class="srv-bus-mas">Mostrando ${MAX_RESULTADOS} de ${todos.length}. Sigue escribiendo para encontrarlo.</div>` : '');
+      }
+      marcarActivo();
+    }
+
+    function marcarActivo() {
+      lista.querySelectorAll('.srv-bus-item').forEach((el) => {
+        const on = Number(el.dataset.i) === st.activo;
+        el.classList.toggle('on', on);
+        el.setAttribute('aria-selected', String(on));
+        if (on) el.scrollIntoView({ block: 'nearest' });
+      });
+      if (st.activo >= 0) q.setAttribute('aria-activedescendant', `${lista.id}-${st.activo}`);
+      else q.removeAttribute('aria-activedescendant');
+    }
+
+    function abrir() {
+      st.abierto = true;
+      lista.hidden = false;
+      q.setAttribute('aria-expanded', 'true');
+      pintar();
+    }
+
+    function cerrar() {
+      st.abierto = false;
+      lista.hidden = true;
+      q.setAttribute('aria-expanded', 'false');
+      q.removeAttribute('aria-activedescendant');
+    }
+
+    function mover(paso) {
+      if (!st.abierto) { abrir(); return; }
+      const n = st.visibles.length;
+      for (let i = 1; i <= n; i += 1) {
+        const j = (st.activo + paso * i + n * i) % n;
+        if (!agotado(st.visibles[j])) { st.activo = j; break; }
+      }
+      marcarActivo();
+    }
+
+    function resaltar(tr) {
+      tr.classList.remove('srv-l-nueva');
+      void tr.offsetWidth; // reinicia la animación
+      tr.classList.add('srv-l-nueva');
+    }
+
+    function agregar(a) {
+      if (!a) return;
+      if (agotado(a)) { toast(`${a.nombre} está agotado.`, 'warning'); return; }
+      const campo = a.tipo === 'producto' ? 'pid' : 'sid';
+      const existente = [...tbody.querySelectorAll('tr')].find((tr) => Number(tr.querySelector(`[name=${campo}]`)?.value || 0) === a.id);
+      if (existente) {
+        const cant = existente.querySelector('[name=c]');
+        const nueva = Number(cant.value || 0) + 1;
+        if (a.controlaStock && nueva > a.stock) {
+          toast(`Solo hay ${cantidadTexto(a.stock)} de ${a.nombre}.`, 'warning');
+          return;
+        }
+        cant.value = nueva;
+        repaint();
+        resaltar(existente);
+      } else {
         const it = {
-          serviceId: Number(o.value), descripcion: o.dataset.nombre,
-          cantidad: 1, precio: Number(o.dataset.precio || 0),
-          descuentoPct: 0, itbisPct: Number(o.dataset.itbis || 0),
+          serviceId: a.tipo === 'servicio' ? a.id : null, productId: a.tipo === 'producto' ? a.id : null,
+          descripcion: a.nombre, cantidad: 1, precio: a.precio, descuentoPct: 0, itbisPct: a.itbisPct,
         };
-        // Si la primera fila sigue vacía, reutilízala en vez de dejar una en blanco.
+        // Si la primera fila sigue vacía, se usa esa en vez de dejar una en blanco.
         const first = tbody.querySelector('tr');
-        const firstEmpty = first
+        const firstEmpty = first && tbody.rows.length === 1
           && !first.querySelector('[name=d]').value.trim()
           && Number(first.querySelector('[name=p]').value || 0) === 0;
+        let tr;
         if (firstEmpty) {
-          first.querySelector('[name=sid]').value = it.serviceId;
+          first.querySelector('[name=sid]').value = it.serviceId || '';
+          first.querySelector('[name=pid]').value = it.productId || '';
           first.querySelector('[name=d]').value = it.descripcion;
           first.querySelector('[name=c]').value = it.cantidad;
           first.querySelector('[name=p]').value = it.precio;
           first.querySelector('[name=ip]').value = it.itbisPct;
           repaint();
+          tr = first;
         } else {
-          addRow(it);
+          tr = addRow(it);
         }
-        sel.value = '';
-      };
+        resaltar(tr);
+      }
+      q.value = '';
+      cerrar();
+      q.focus();
     }
+
+    q.addEventListener('input', () => { st.activo = -1; abrir(); });
+    q.addEventListener('click', () => { if (!st.abierto) abrir(); });
+    q.addEventListener('blur', () => cerrar());
+    q.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') { e.preventDefault(); mover(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); mover(-1); return; }
+      if (e.key === 'Escape') {
+        if (st.abierto || q.value) { e.preventDefault(); e.stopPropagation(); q.value = ''; cerrar(); }
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      // Enter nunca emite la factura desde aquí.
+      e.preventDefault();
+      e.stopPropagation();
+      const texto = sinAcentos(q.value);
+      if (!texto) {
+        if (st.abierto && st.activo >= 0) agregar(st.visibles[st.activo]);
+        return;
+      }
+      // Lector de código de barras: código exacto, aunque la lista no esté abierta.
+      const exacto = st.items.find((a) => sinAcentos(a.codigo) === texto || (a.barcode && sinAcentos(a.barcode) === texto));
+      if (exacto) { agregar(exacto); return; }
+      if (st.abierto && st.activo >= 0) { agregar(st.visibles[st.activo]); return; }
+      toast(st.cargado ? `No se encontró "${q.value.trim()}" en el catálogo.` : 'El catálogo todavía está cargando.', 'warning');
+    });
+    // mousedown y no click: así el buscador no pierde el foco al elegir.
+    lista.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const item = e.target.closest('.srv-bus-item');
+      if (item) agregar(st.visibles[Number(item.dataset.i)]);
+    });
+    lista.addEventListener('mousemove', (e) => {
+      const item = e.target.closest('.srv-bus-item:not(.agotado)');
+      if (item && Number(item.dataset.i) !== st.activo) { st.activo = Number(item.dataset.i); marcarActivo(); }
+    });
+    tipos.addEventListener('mousedown', (e) => e.preventDefault());
+    tipos.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-bus-tipo]');
+      if (!b) return;
+      st.tipo = b.dataset.busTipo;
+      tipos.querySelectorAll('[data-bus-tipo]').forEach((x) => {
+        x.classList.toggle('on', x === b);
+        x.setAttribute('aria-pressed', String(x === b));
+      });
+      st.activo = -1;
+      q.focus();
+      abrir();
+    });
   }
 
   async function formCotizacion(q) {
     let scfg = {};
-    try { scfg = await req('/config'); } catch (_) { /* opcional */ }
+    try { scfg = (await datosFacturar()).cfg || {}; } catch (_) { /* opcional */ }
     const antDefault = scfg.quoteAdvancePct != null ? scfg.quoteAdvancePct : '';
     const fechaIni = q?.fecha ? String(q.fecha).slice(0, 10) : today();
     const m = modal(q ? 'Editar cotización ' + q.numero : 'Nueva cotización', `
@@ -1034,6 +1237,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
       box.scrollTop = 0;
       toast('Nota de condiciones generada. Puedes editarla antes de guardar.', 'success');
     };
+    return m;
   }
 
   // Dónde se emite cada e-CF que no es de esta pantalla.
@@ -1045,12 +1249,55 @@ Condición: La compra de los equipos y la programación de la instalación estar
     E47: 'se emite desde Gastos',
   };
 
+  // Comprobantes y ajustes para facturar. Se piden al abrir Facturación o
+  // Cotizaciones y se reusan, así la ventana abre de una vez; cada uso los
+  // refresca por detrás para la próxima.
+  const _facturar = { datos: null, pendiente: null };
+  function refrescarDatosFacturar() {
+    if (!_facturar.pendiente) {
+      _facturar.pendiente = Promise.all([req('/facturas/comprobantes'), req('/config')])
+        .then(([resp, cfg]) => { _facturar.datos = { resp, cfg }; return _facturar.datos; })
+        .finally(() => { _facturar.pendiente = null; });
+    }
+    return _facturar.pendiente;
+  }
+  async function datosFacturar() {
+    if (_facturar.datos) {
+      refrescarDatosFacturar().catch(() => {});
+      return _facturar.datos;
+    }
+    return refrescarDatosFacturar();
+  }
+
+  // Una sola ventana de cada tipo: un doble clic, o hacer clic mientras carga,
+  // no abre otra. Si ya está abierta, se trae al frente.
+  const _abriendo = new Set();
+  async function abrirUnaVez(clave, abrir) {
+    const abierta = document.querySelector(`.srv-modal-back[data-unico="${clave}"]`);
+    if (abierta) {
+      abierta.querySelector('input:not([type=hidden]):not([disabled]), select, textarea')?.focus();
+      return;
+    }
+    if (_abriendo.has(clave)) return;
+    _abriendo.add(clave);
+    document.body.classList.add('srv-abriendo');
+    try {
+      const m = await abrir();
+      if (m) m.dataset.unico = clave;
+    } catch (e) {
+      toast(e.message || 'No se pudo abrir.', 'error');
+    } finally {
+      _abriendo.delete(clave);
+      document.body.classList.remove('srv-abriendo');
+    }
+  }
+
   // Campos de facturación compartidos: comprobante (tipos NCF y e-CF con
   // secuencia activa), método de pago y condición. Devuelve { html, wire(root) }.
   async function billingFields(defaults = {}) {
     let resp = { comprobantes: [], necesitaActivar: false };
     let cfg = {};
-    try { [resp, cfg] = await Promise.all([req('/facturas/comprobantes'), req('/config')]); } catch (_) {}
+    try { ({ resp, cfg } = await datosFacturar()); } catch (_) {}
     const comps = Array.isArray(resp) ? resp : (resp.comprobantes || []);
     const ecfs = Array.isArray(resp) ? [] : (resp.electronicos || []);
     const ecfOtros = Array.isArray(resp) ? [] : (resp.ecfOtros || []);
@@ -1213,6 +1460,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
       if (inv && inv.id) firmarYGuardar('facturas', inv.id, { avisar: true });
     }, { submitLabel: 'Facturar' });
     bf.wire(m);
+    return m;
   }
 
   // ═══ Facturación ══════════════════════════════════════════════════════════
@@ -1274,7 +1522,10 @@ Condición: La compra de los equipos y la programación de la instalación estar
       <button class="btn btn-ghost" data-catalogo>🧾 Catálogo de servicios</button>
       <button class="btn btn-primary" data-new>+ Nueva factura</button>`;
     actionsOf('srv-facturas').querySelector('[data-catalogo]').onclick = () => abrirCatalogo();
-    actionsOf('srv-facturas').querySelector('[data-new]').onclick = () => formFactura();
+    actionsOf('srv-facturas').querySelector('[data-new]').onclick = () => abrirUnaVez('factura', formFactura);
+    // Lo que necesita "Nueva factura", pedido de antemano.
+    refrescarDatosFacturar().catch(() => {});
+    refrescarCatalogoFacturar().catch(() => {});
     actionsOf('srv-facturas').querySelector('#fac-todas').onchange = (e) => { _facTodas = e.target.checked; renderFacturas(); };
     b.innerHTML = '<div class="srv-loading">Cargando…</div>';
     try {
@@ -1346,6 +1597,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
     bf.wire(m);
     validarRnc = wireRncRequerido(m);
     wireLines(m);
+    return m;
   }
 
   // Firma el PDF (base64) con el .p12 del emisor si hay uno cargado y vigente.
@@ -2648,6 +2900,12 @@ Condición: La compra de los equipos y la programación de la instalación estar
         <span>Firmar automáticamente — la cotización y la factura salen firmadas al verlas, imprimirlas o enviarlas, sin descargar nada.</span>
       </label>
 
+      <div class="srv-form-sec">Productos</div>
+      <label class="srv-check">
+        <input type="checkbox" name="productos"${cfg.productos ? ' checked' : ''}>
+        <span>Vender productos — activa Productos, Inventario, Compras y Proveedores. Se facturan desde Facturación igual que un servicio, descuentan inventario y se pueden publicar en tu tienda.</span>
+      </label>
+
       <div class="srv-form-sec">Términos y condiciones</div>
       <label>Texto de tus términos y condiciones
         <textarea name="terms" rows="8" maxlength="20000" placeholder="Ej.: Los precios incluyen ITBIS. Se requiere un anticipo del 50% para iniciar el trabajo. La garantía cubre defectos de instalación por 30 días…">${esc(cfg.terms || '')}</textarea></label>
@@ -2657,7 +2915,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
       if (!fd.signature) delete fd.signature;
       if (fd.signatureClear !== '1') delete fd.signatureClear;
       fd.autoSign = fd.autoSign === 'on' || fd.autoSign === '1' || fd.autoSign === true;
+      fd.productos = fd.productos === 'on' || fd.productos === '1' || fd.productos === true;
       await put('/config', fd);
+      if (Boolean(DB.config.serviceProductsEnabled) !== fd.productos) {
+        DB.config.serviceProductsEnabled = fd.productos;
+        applyBusinessProfile();
+        applyRolePermissions();
+        // Trae el catálogo de esta empresa para los módulos que acaban de aparecer.
+        if (fd.productos) window.refrescarCatalogoSinTocarLaVenta?.();
+      }
       toast('Ajustes guardados', 'success');
     }, { submitLabel: 'Guardar', wide: true });
 

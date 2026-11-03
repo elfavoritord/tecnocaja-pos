@@ -2909,7 +2909,7 @@
         <!-- ══════════ TIENDA ONLINE (módulo opcional — js/tienda-online.js) ══════════ -->
         <div class="config-section" id="cfg-tienda-online-section">
           <h3 id="cfg-section-tienda-online-title">Tienda online</h3>
-          <p class="helper-text" style="margin:0.25rem 0 0.75rem">
+          <p class="helper-text" id="cfg-tienda-online-desc" style="margin:0.25rem 0 0.75rem">
             Tu propia tienda en Internet con los productos de Tecno Caja. Los pedidos llegan a
             <strong>Pedidos online</strong> y se cobran como cualquier venta (mismo inventario, caja, NCF/e-CF y delivery).
             Si la desactivas, la tienda se cierra y no se borra ningún pedido ni venta.
@@ -2925,7 +2925,7 @@
           </div>
           <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
             <button class="btn-primary compact-btn" type="button" onclick="TiendaOnline.openConfig()">Configurar tienda</button>
-            <button class="btn-secondary compact-btn" type="button" onclick="TiendaOnline.openProductsTab()">Productos publicados</button>
+            <button class="btn-secondary compact-btn" type="button" id="cfg-tienda-online-publicados" onclick="TiendaOnline.openProductsTab()">Productos publicados</button>
             <button class="btn-secondary compact-btn" type="button" id="cfg-tienda-online-copy" onclick="TiendaOnline.copyLink()">Copiar enlace</button>
           </div>
           <div class="to-cfg-state" id="cfg-tienda-online-state">Cargando estado…</div>

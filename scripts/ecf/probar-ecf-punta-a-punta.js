@@ -276,6 +276,27 @@ async function pruebasServicios() {
   const consultar = await api('POST', '/api/servicios/facturas/consultar-ecf', {});
   check('Servicios: consultar pendientes corre', consultar.status === 200, `HTTP ${consultar.status} ${consultar.body?.error || ''}`);
 
+  // Bien o servicio en una factura de servicios: sin producto es servicio.
+  const indicadores = (xml) => [...String(xml || '').matchAll(/<IndicadorBienoServicio>(\d)<\/IndicadorBienoServicio>/g)].map((m) => m[1]);
+  const conRncServicios = { clientName: 'Empresa Nueva SRL', clientRnc: '131880681' };
+  const soloServicio = await api('POST', '/api/servicios/facturas', factura('E31', conRncServicios));
+  check('Servicios: una línea de servicio lleva indicador 2', indicadores(recibidoDe(soloServicio.body?.ncf)?.xml).join() === '2', indicadores(recibidoDe(soloServicio.body?.ncf)?.xml).join());
+  const activar = await api('PUT', '/api/servicios/config', { productos: true });
+  check('Servicios: activar la venta de productos', activar.status === 200, `HTTP ${activar.status} ${activar.body?.error || ''}`);
+  const articulo = await api('POST', '/api/products', {
+    codigo: 'PROD-S', barcode: 'PROD-S', nombre: 'Producto de la empresa', categoria: 'GENERAL', unidad: 'Unidad', marca: '', precioVenta: 500, precioCompra: 100,
+    stock: 10, stockMin: 0, aplicaItbis: true, estado: 'Activo', branchId: ctx.branchId,
+  });
+  const articuloId = Number(articulo.body?.product?.id || articulo.body?.id || 0);
+  check('Servicios: crear un producto', articuloId > 0, `HTTP ${articulo.status} ${articulo.body?.error || ''}`);
+  const mixta = await api('POST', '/api/servicios/facturas', factura('E31', {
+    ...conRncServicios,
+    items: [{ productId: articuloId, descripcion: 'Producto de la empresa', cantidad: 2, precio: 500, descuentoPct: 0, itbisPct: 18 }, lineaServicio()],
+  }));
+  check('Servicios: factura con producto y servicio', mixta.status === 201, `HTTP ${mixta.status} ${mixta.body?.error || ''}`);
+  await comprobarEmitido('Servicios: producto y servicio', mixta.body?.ncf, { tipo: 'E31', total: 2360, itbis: 360 });
+  check('Servicios: producto 1 y servicio 2', indicadores(recibidoDe(mixta.body?.ncf)?.xml).join() === '1,2', indicadores(recibidoDe(mixta.body?.ncf)?.xml).join());
+
   // Documento impreso en cada formato.
   for (const formato of ['a4', '80mm', '58mm']) {
     const doc = await api('GET', `/api/servicios/facturas/${nueva?.id}/documento?formato=${formato}`);

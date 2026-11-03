@@ -116,6 +116,31 @@ function createCatalogoRouter(deps) {
     }
   });
 
+  // Productos que se pueden facturar. Vacío si la empresa no vende productos.
+  router.get('/productos', async (_req, res) => {
+    try {
+      const [cfg] = await query('SELECT service_products_enabled, tax_rate FROM config WHERE id = 1 LIMIT 1');
+      if (!Number(cfg?.service_products_enabled)) return res.json([]);
+      const rows = await query(
+        `SELECT id, codigo, barcode, nombre, precio_venta, aplica_itbis, tracks_stock, stock, unidad
+         FROM products WHERE estado = 'Activo' AND product_type <> 'servicio' ORDER BY nombre LIMIT 3000`
+      );
+      res.json(rows.map((p) => ({
+        id: Number(p.id),
+        codigo: p.codigo || '',
+        barcode: p.barcode || '',
+        nombre: p.nombre,
+        precio: Number(p.precio_venta || 0),
+        itbisPct: Number(p.aplica_itbis) === 1 ? Number(cfg.tax_rate ?? 18) : 0,
+        controlaStock: Number(p.tracks_stock ?? 1) !== 0,
+        stock: Number(p.stock || 0),
+        unidad: p.unidad || '',
+      })));
+    } catch (e) {
+      res.status(e.statusCode || 500).json({ error: e.message });
+    }
+  });
+
   router.get('/:id', async (req, res) => {
     const [row] = await query(
       `SELECT s.*, c.nombre AS categoria_nombre

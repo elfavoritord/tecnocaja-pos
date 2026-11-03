@@ -3348,7 +3348,7 @@ class EcfService {
       const taxRate = item.tax_mode === 'monto'
         ? nearestCatalogTaxRate(item.tax_amount, (quantity * unitPrice) - discount)
         : Number(item.tax_rate || item.itbis || 0);
-      return { name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate, isService: item.product_type === 'servicio' };
+      return { name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate, isService: item.product_type === 'servicio' || Number(item.is_service) === 1 };
     });
 
     const totals = buildTotals(preparedItems);
@@ -3579,7 +3579,7 @@ class EcfService {
       unitPrice: Number(item.price || 0),
       discount: Number(item.discount_amount || 0),
       taxRate: Number(item.tax_rate || item.itbis || 0),
-      isService: item.product_type === 'servicio',
+      isService: item.product_type === 'servicio' || Number(item.is_service) === 1,
     }));
     const fechaOriginal = new Date(sale.created_at || original.created_at);
     const dias = Math.floor((Date.now() - fechaOriginal.getTime()) / 86400000);

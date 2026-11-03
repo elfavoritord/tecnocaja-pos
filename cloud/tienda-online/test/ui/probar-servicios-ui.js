@@ -66,6 +66,8 @@ const solicitar = (page) => page.evaluate(() => [...document.querySelectorAll('[
   const servidor = (d) => new Promise((resolve) => {
     const s = createApp({ db: d, FieldValue: d.FieldValue, limits: { pedidos: 1000, cotizar: 1000, lectura: 1000 } }).listen(0, '127.0.0.1', () => resolve(s));
   });
+  const dbMixta = createFakeFirestore(sembrar('mixta', { modalidad: 'servicios', productosEnTienda: true, serviciosTienda: { cotizacion: true, cita: false, whatsapp: true, mostrarPrecio: true } }, LISTA));
+  const s3 = await servidor(dbMixta);
   const s0 = await servidor(dbPos);
   const s1 = await servidor(dbServicios);
   const s2 = await servidor(dbOculta);
@@ -179,6 +181,37 @@ const solicitar = (page) => page.evaluate(() => [...document.querySelectorAll('[
     ok('Precio oculto: solo los botones activados', det.cotizacion && !det.cita && det.wa === 0, JSON.stringify(det));
     ok('Precio oculto: sin errores en la pantalla', e2.length === 0, e2.join(' | '));
 
+    // Empresa de Servicios que también vende productos
+    const { page: p4, errores: e4 } = await abrir(browser, s3, 'mixta');
+    const mixta = await p4.evaluate(() => ({
+      texto: document.body.innerText,
+      sinCarrito: document.documentElement.classList.contains('sin-carrito'),
+      agregar: document.querySelectorAll('.card-cta [data-car], .card-cta .qty').length,
+      placeholder: document.querySelector('#buscar')?.placeholder,
+    }));
+    ok('Con productos: muestra los dos, sin carrito', /Cable HDMI/.test(mixta.texto) && /Limpieza de oficina/.test(mixta.texto) && mixta.sinCarrito && mixta.agregar === 0, JSON.stringify({ c: mixta.sinCarrito, a: mixta.agregar }));
+    ok('Con productos: textos generales', /Servicios y productos/.test(mixta.texto) && !/Ver servicios/.test(mixta.texto) && mixta.placeholder === 'Buscar…', mixta.placeholder);
+    await p4.evaluate(() => document.querySelector('[data-ir="catalogo"]').click());
+    await sleep(400);
+    ok('Con productos: cuenta artículos', /4 artículos/.test(await p4.$eval('#cat-n', (e) => e.textContent)));
+    ok('Con productos: filtro de tipo', await p4.$$eval('[data-tipo-filtro]', (l) => l.length === 3));
+    await p4.evaluate(() => document.querySelector('[data-tipo-filtro="productos"]').click());
+    await sleep(300);
+    const soloProductos = await p4.evaluate(() => ({ n: document.querySelector('#cat-n').textContent, tarjetas: [...document.querySelectorAll('#productos .card')].length, t: document.querySelector('#cat-titulo').textContent }));
+    ok('Con productos: filtra los productos', /2 productos/.test(soloProductos.n) && soloProductos.tarjetas === 2 && soloProductos.t === 'Productos', JSON.stringify(soloProductos));
+    if (CAPTURAS) await p4.screenshot({ path: path.join(CAPTURAS, 'servicios-con-productos.png') });
+    await solicitar(p4);
+    await p4.waitForSelector('.det-acciones [data-solicitud="cotizacion"]', { timeout: 5000 });
+    await p4.evaluate(() => document.querySelector('.det-acciones [data-solicitud="cotizacion"]').click());
+    await p4.waitForSelector('#form-solicitud', { timeout: 5000 });
+    await p4.type('#form-solicitud [name="nombre"]', 'Ana Pérez');
+    await p4.type('#form-solicitud [name="telefono"]', '8095550101');
+    await p4.evaluate(() => document.querySelector('[data-act="enviar-solicitud"]').click());
+    await p4.waitForFunction(() => /Recibimos tu solicitud/.test(document.body.innerText), { timeout: 5000 });
+    const deProducto = (await dbMixta.collection(`businesses/${LIC}/solicitudesOnline`).get()).docs.map((d) => d.data());
+    ok('Con productos: un producto se solicita', deProducto.length === 1 && /Cable|Mouse/.test(deProducto[0].articulo), JSON.stringify(deProducto[0]?.articulo));
+    ok('Con productos: sin errores en la pantalla', e4.length === 0, e4.join(' | '));
+
     // Móvil
     const { page: p3, errores: e3 } = await abrir(browser, s2, 'oculta', { width: 390, height: 780, isMobile: true, hasTouch: true });
     const movil = await p3.evaluate(() => ({
@@ -194,6 +227,7 @@ const solicitar = (page) => page.evaluate(() => [...document.querySelectorAll('[
     s0.close();
     s1.close();
     s2.close();
+    s3.close();
   }
   const fallas = resultados.filter((r) => !r.ok);
   console.log(`\n${resultados.length - fallas.length}/${resultados.length} pasaron`);

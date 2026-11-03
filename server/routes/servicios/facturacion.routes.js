@@ -90,6 +90,7 @@ function mapInvoice(row, items = [], payments = []) {
     items: items.map((it) => ({
       id: it.id,
       serviceId: it.service_id || null,
+      productId: it.product_id || null,
       descripcion: it.descripcion,
       cantidad: Number(it.cantidad || 0),
       precio: Number(it.precio || 0),
@@ -116,8 +117,9 @@ function saleDocType({ fiscalMode, ncfTipo }) {
   return 'ticket';
 }
 
-// Inserta la factura de servicios como una venta en `sales` + `sale_items`
-// (ítems tipo "venta rápida", sin producto). Devuelve el sale_id.
+// Inserta la factura de servicios como una venta en `sales` + `sale_items`.
+// Un producto va con su product_id; lo demás es un servicio ("venta rápida", sin
+// producto) y el e-CF lo declara como servicio. Devuelve el sale_id.
 async function mirrorInvoiceToSales(conn, { numero, ncf, fiscalMode, ncfTipo, actor, branchId, cashRegisterId, p, cobrarAhora, metodoPago }) {
   const total = Number(p.totals.total || 0);
   const recibido = cobrarAhora ? total : 0;
@@ -147,9 +149,9 @@ async function mirrorInvoiceToSales(conn, { numero, ncf, fiscalMode, ncfTipo, ac
     const lineTotal = Number(it.total || 0);
     const taxAmt = Number((Number(it.cantidad || 0) * Number(it.precio || 0) * (1 - Number(it.descuentoPct || 0) / 100) * (Number(it.itbisPct || 0) / 100)).toFixed(2));
     await conn.query(
-      `INSERT INTO sale_items (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, tax_mode, tax_amount, sale_mode, line_total)
-       VALUES (?, NULL, ?, 1, ?, ?, ?, ?, 'porcentaje', ?, 'unidad', ?)`,
-      [saleId, it.descripcion, it.cantidad, it.precio, it.descuentoPct || 0, it.itbisPct || 0, taxAmt, lineTotal]
+      `INSERT INTO sale_items (sale_id, product_id, item_name, is_quick_sale, is_service, qty, price, discount_rate, tax_rate, tax_mode, tax_amount, sale_mode, line_total)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'porcentaje', ?, 'unidad', ?)`,
+      [saleId, it.productId || null, it.descripcion, it.productId ? 0 : 1, it.productId ? 0 : 1, it.cantidad, it.precio, it.descuentoPct || 0, it.itbisPct || 0, taxAmt, lineTotal]
     );
   }
   return saleId;
@@ -185,6 +187,7 @@ async function backfillInvoiceMirror(query, withTransaction) {
           subtotal: Number(inv.subtotal || 0), descuento: Number(inv.descuento || 0),
           itbis: Number(inv.itbis || 0), total,
           items: items.map((it) => ({
+            productId: it.product_id || null,
             descripcion: it.descripcion, cantidad: Number(it.cantidad || 0), precio: Number(it.precio || 0),
             descuentoPct: Number(it.descuento_pct || 0), itbisPct: Number(it.itbis_pct || 0), total: Number(it.total || 0),
           })),
@@ -235,6 +238,7 @@ function createFacturacionRouter(deps) {
     query, withTransaction, writeAuditLog, ensureSchema, nextServiceDocNumber,
     getNextNcfFromSequence, getConfig, isGlobalAdministratorUser, getUserScopeBranchId,
     ecfService, isInternetOffline = () => false,
+    withTransactionRetry, changeBranchInventoryStock, registerInventoryMovement, syncProductsToReports,
   } = deps;
   const guard = makeServiceGuard(deps);
   const router = express.Router();
@@ -464,6 +468,61 @@ function createFacturacionRouter(deps) {
     };
   }
 
+  // Productos de la factura, ya comprobados. Una línea sin producto es un servicio.
+  async function productosDeLineas(items) {
+    const ids = [...new Set(items.map((it) => it.productId).filter(Boolean))];
+    const porId = new Map();
+    if (!ids.length) return porId;
+    const [cfg] = await query('SELECT service_products_enabled FROM config WHERE id = 1 LIMIT 1');
+    if (!Number(cfg?.service_products_enabled)) {
+      throw httpError('Esta empresa no vende productos. Actívalo en Configuración → Empresa de Servicios.', 409);
+    }
+    const filas = await query(
+      `SELECT id, nombre, estado, product_type, tracks_stock, precio_compra FROM products WHERE id IN (${ids.map(() => '?').join(',')})`,
+      ids,
+    );
+    for (const fila of filas) porId.set(Number(fila.id), fila);
+    for (const it of items) {
+      if (!it.productId) continue;
+      const fila = porId.get(it.productId);
+      if (!fila || fila.estado !== 'Activo' || fila.product_type === 'servicio') {
+        throw httpError(`El producto de la línea "${it.descripcion}" ya no está disponible.`, 409);
+      }
+    }
+    return porId;
+  }
+
+  // Mueve el inventario de las líneas de producto (signo -1 al vender, +1 al anular).
+  async function moverInventario(conn, { items, productos, signo, branchId, cashRegisterId, saleId, numero, actor }) {
+    const afectados = [];
+    for (const it of items) {
+      const fila = it.productId ? productos.get(it.productId) : null;
+      if (!fila || Number(fila.tracks_stock ?? 1) === 0) continue;
+      const cantidad = signo * Math.abs(Number(it.cantidad || 0));
+      const cambio = await changeBranchInventoryStock(conn, {
+        productId: it.productId, branchId, quantityDelta: cantidad, preventNegative: signo < 0,
+      });
+      await registerInventoryMovement(conn, {
+        productId: it.productId,
+        branchId: cambio.branchId,
+        cashRegisterId,
+        saleId,
+        tipo: signo < 0 ? 'venta' : 'devolucion',
+        cantidad,
+        stockAnterior: cambio.previousStock,
+        stockNuevo: cambio.nextStock,
+        costoUnitario: Number(fila.precio_compra || 0),
+        referenciaTipo: 'factura_servicios',
+        referenciaId: numero,
+        notas: `${signo < 0 ? 'Salida por factura' : 'Entrada por anulación de la factura'} ${numero}`.slice(0, 255),
+        usuarioId: actor.id || null,
+        usuarioNombre: actorName(actor),
+      });
+      afectados.push(it.productId);
+    }
+    return afectados;
+  }
+
   async function createInvoice({ actor, body, origin }) {
     const cfg = await getConfig().catch(() => ({}));
     const fallbackFiscal = cfg.serviceFiscalMode || 'ncf';
@@ -511,7 +570,13 @@ function createFacturacionRouter(deps) {
       : await agregarClienteDelDocumento(deps, { nombre: p.clientName, documento: p.clientRnc, actor, modulo: 'una factura' });
     if (clienteNuevo) p.clientId = clienteNuevo.id;
 
-    const saved = await withTransaction(async (conn) => {
+    const productos = await productosDeLineas(p.totals.items);
+    // Con inventario de por medio: mismo lock y reintento que la venta del POS (multicaja).
+    const transaccion = productos.size ? withTransactionRetry : withTransaction;
+    let productosAfectados = [];
+
+    const saved = await transaccion(async (conn) => {
+      if (productos.size) await conn.query('UPDATE config SET invoice_next_number = invoice_next_number WHERE id = 1');
       const numero = await nextServiceDocNumber(conn, 'invoice');
       const fiscal = await assignFiscal(conn, { fiscalMode: p.fiscalMode, ncfTipo: p.ncfTipo, branchId });
       // Vencimiento del pago = el del comprobante (NCF válido hasta), salvo que
@@ -532,9 +597,9 @@ function createFacturacionRouter(deps) {
       const invoiceId = r.insertId;
       for (const it of p.totals.items) {
         await conn.query(
-          `INSERT INTO svc_invoice_items (invoice_id, service_id, descripcion, cantidad, precio, descuento_pct, itbis_pct, total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [invoiceId, it.serviceId, it.descripcion, it.cantidad, it.precio, it.descuentoPct, it.itbisPct, it.total]
+          `INSERT INTO svc_invoice_items (invoice_id, service_id, product_id, descripcion, cantidad, precio, descuento_pct, itbis_pct, total)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [invoiceId, it.serviceId, it.productId, it.descripcion, it.cantidad, it.precio, it.descuentoPct, it.itbisPct, it.total]
         );
       }
       if (origin?.quotationId) {
@@ -573,9 +638,15 @@ function createFacturacionRouter(deps) {
         console.warn('[servicios] espejo en sales falló:', mirrorErr.message);
       }
 
+      // Sin existencia suficiente, no se emite nada: la transacción completa se revierte.
+      productosAfectados = await moverInventario(conn, {
+        items: p.totals.items, productos, signo: -1, branchId, cashRegisterId, saleId, numero, actor,
+      });
+
       return { invoiceId, numero, ncf: fiscal.ncf, saleId };
     });
 
+    if (productosAfectados.length) syncProductsToReports?.(productosAfectados, { branchId });
     const ecf = esEcf ? await emitirEcf({ invoiceId: saved.invoiceId, saleId: saved.saleId, tipo: p.ncfTipo, actor }) : null;
     if (ecf?.encf) saved.ncf = ecf.encf;
 
@@ -778,7 +849,7 @@ function createFacturacionRouter(deps) {
         clientId: q.client_id, clientName: q.client_name, clientRnc: q.client_rnc,
         branchId: q.branch_id, cashRegisterId: q.cash_register_id,
         items: qItems.map((it) => ({
-          serviceId: it.service_id, descripcion: it.descripcion, cantidad: it.cantidad,
+          serviceId: it.service_id, productId: it.product_id, descripcion: it.descripcion, cantidad: it.cantidad,
           precio: it.precio, descuentoPct: it.descuento_pct, itbisPct: it.itbis_pct,
         })),
         notas: req.body?.notas || q.notas,
@@ -924,13 +995,29 @@ function createFacturacionRouter(deps) {
       if (Number(pagos) > 0 && !req.body?.forzar) {
         throw httpError('La factura tiene pagos registrados. Anula los pagos primero o envía forzar=true.', 409);
       }
-      const r = await query(
-        `UPDATE svc_invoices SET estado = 'anulada', balance = 0, motivo_anulacion = ?, anulada_at = datetime('now'),
-           anulada_by_user_name = ?, signed_pdf = NULL, signed_at = NULL, updated_at = datetime('now')
-         WHERE id = ? AND estado <> 'anulada'`,
-        [motivo, actorName(actor), id]
-      );
-      if (!r.affectedRows) throw httpError('La factura ya está anulada.', 409);
+      const lineas = await query('SELECT product_id, cantidad FROM svc_invoice_items WHERE invoice_id = ? AND product_id IS NOT NULL', [id]);
+      const itemsConProducto = lineas.map((l) => ({ productId: Number(l.product_id), cantidad: Number(l.cantidad || 0) }));
+      const productos = new Map();
+      if (itemsConProducto.length) {
+        const filas = await query(
+          `SELECT id, tracks_stock, precio_compra FROM products WHERE id IN (${itemsConProducto.map(() => '?').join(',')})`,
+          itemsConProducto.map((l) => l.productId),
+        );
+        for (const fila of filas) productos.set(Number(fila.id), fila);
+      }
+      const devueltos = await withTransaction(async (conn) => {
+        const r = await conn.query(
+          `UPDATE svc_invoices SET estado = 'anulada', balance = 0, motivo_anulacion = ?, anulada_at = datetime('now'),
+             anulada_by_user_name = ?, signed_pdf = NULL, signed_at = NULL, updated_at = datetime('now')
+           WHERE id = ? AND estado <> 'anulada'`,
+          [motivo, actorName(actor), id]
+        );
+        if (!r.affectedRows) throw httpError('La factura ya está anulada.', 409);
+        return moverInventario(conn, {
+          items: itemsConProducto, productos, signo: 1, branchId: inv.branch_id, cashRegisterId: inv.cash_register_id, saleId: inv.sale_id, numero: inv.numero, actor,
+        });
+      });
+      if (devueltos.length) syncProductsToReports?.(devueltos, { branchId: inv.branch_id });
       if (inv.sale_id) {
         await query(
           `UPDATE sales SET sale_status = 'anulada', fiscal_status = 'cancelada',

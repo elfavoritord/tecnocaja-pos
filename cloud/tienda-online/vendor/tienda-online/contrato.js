@@ -119,7 +119,8 @@ const rutas = Object.freeze({
 
 /**
  * Qué ofrece la tienda. Solo la de una Empresa de Servicios (modalidad 'servicios')
- * recibe solicitudes y no tiene carrito. Cualquier otra vende como siempre.
+ * recibe solicitudes y no tiene carrito: sus productos, si los vende, también se
+ * solicitan. Cualquier otra tienda vende como siempre.
  */
 function opcionesServicios(perfil = {}) {
   if (perfil.modalidad !== 'servicios') {
@@ -128,6 +129,7 @@ function opcionesServicios(perfil = {}) {
   const s = perfil.serviciosTienda || {};
   return {
     modalidad: 'servicios',
+    conProductos: perfil.productosEnTienda === true,
     cotizacion: s.cotizacion !== false,
     cita: s.cita === true,
     whatsapp: s.whatsapp !== false,
@@ -136,7 +138,7 @@ function opcionesServicios(perfil = {}) {
 }
 
 function articuloVisible(producto, opciones) {
-  return opciones.modalidad !== 'servicios' || producto.tipo === 'servicio';
+  return opciones.modalidad !== 'servicios' || opciones.conProductos || producto.tipo === 'servicio';
 }
 
 /** ¿Se puede pagar con el carrito? */
