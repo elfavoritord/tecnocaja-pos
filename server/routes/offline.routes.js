@@ -84,6 +84,8 @@ module.exports = function createOfflineRouter(deps) {
     mapInventoryMovementRow,
     // Combos promocionales
     ensureCombosExtensions,
+    // Combos personalizados
+    ensureCustomCombosExtensions,
     // Caja offline (Fase 3 de la extensión offline)
     withTransaction,
     ensureCashMovementExtensions,
@@ -1978,10 +1980,19 @@ module.exports = function createOfflineRouter(deps) {
         conn.query.bind(conn),
         items.map((it) => Number(it.id || it.producto_id || 0)).filter((id) => id > 0)
       ).catch(() => new Map());
+      // Combos personalizados: la venta ya ocurrió en la caja, así que no se
+      // rechaza nada; solo se guarda a qué combo perteneció cada línea.
+      const hayCombosPersonalizados = items.some((it) => it && it.comboPersonalizado && it.comboPersonalizado.clave);
+      if (hayCombosPersonalizados && typeof ensureCustomCombosExtensions === 'function') {
+        await ensureCustomCombosExtensions().catch((e) => console.warn('[offline-sync] Combos personalizados:', e.message));
+      }
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         let productId = Number(item.id || item.producto_id || 0);
         const isQuickSale = item.quickSale === true && !productId;
+        const customCombo = item && item.comboPersonalizado && item.comboPersonalizado.clave
+          ? item.comboPersonalizado
+          : null;
         const quickName = isQuickSale ? String(item.nombre || item.name || '').trim().slice(0, 150) : '';
         if (isQuickSale && !quickName) {
           throw new Error('Un producto rápido de la venta no tiene nombre.');
@@ -2008,7 +2019,9 @@ module.exports = function createOfflineRouter(deps) {
           // estuvo sin conexión) — al sincronizar, con conexión real a la BD
           // principal, se vuelve a resolver la promoción activa y esa es la que
           // se guarda de verdad.
-          const activePromo = isQuickSale
+          // Un producto dentro de un combo personalizado va a su precio de
+          // catálogo (con ese se armó el combo): no se le busca oferta.
+          const activePromo = isQuickSale || customCombo
             ? null
             : pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
           const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;
@@ -2025,7 +2038,7 @@ module.exports = function createOfflineRouter(deps) {
             );
           }
 
-          await conn.query(
+          const saleItemInsert = await conn.query(
             `INSERT INTO sale_items (sale_id, product_id, item_name, is_quick_sale, qty, price, line_total, discount_rate, tax_rate, sale_mode, promotion_id, original_price, combo_snapshot)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unidad', ?, ?, ?)`,
             [saleId, isQuickSale ? null : productId, comboSnapshot ? comboSnapshot.nombre : (isQuickSale ? quickName : null), isQuickSale ? 1 : 0,
@@ -2033,6 +2046,27 @@ module.exports = function createOfflineRouter(deps) {
              activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null,
              comboSnapshot ? JSON.stringify(comboSnapshot) : null]
           );
+          if (customCombo && saleItemInsert && saleItemInsert.insertId) {
+            // El INSERT de arriba no guarda el ITBIS de la línea: en una línea de
+            // combo se guarda el que cobró la caja (incluido el de monto fijo),
+            // para que el reporte del combo y el e-CF lo vean.
+            const lineTax = Number(item.impuestoMonto);
+            const lineTaxMode = String(item.itbisModo || '') === 'monto' ? 'monto' : 'porcentaje';
+            await conn.query(
+              'UPDATE sale_items SET custom_combo_key = ?, custom_combo_id = ?, custom_combo_name = ?, custom_combo_price = ?, tax_mode = ?, tax_amount = ? WHERE id = ?',
+              [
+                String(customCombo.clave).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40),
+                Number(customCombo.comboId || 0) || null,
+                String(customCombo.nombre || '').slice(0, 150) || null,
+                Number.isFinite(Number(customCombo.precio)) ? Number(customCombo.precio) : null,
+                lineTaxMode,
+                Number.isFinite(lineTax) && lineTax >= 0
+                  ? Number(lineTax.toFixed(2))
+                  : Number((effectiveLineTotal * (taxRate / 100)).toFixed(2)),
+                saleItemInsert.insertId,
+              ]
+            ).catch((e) => console.warn('[offline-sync] No se pudo marcar la línea del combo personalizado:', e.message));
+          }
 
           // Combo: salen sus componentes (como el resto de la venta offline, sin
           // frenar un negativo: la venta ya ocurrió en la caja).

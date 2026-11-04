@@ -3825,6 +3825,11 @@ function initApp() {
   // Sus alertas se piden al abrir la página, cuando todavía no hay sesión.
   if (typeof refreshPromotionAlertsData === 'function') refreshPromotionAlertsData();
   if (typeof refreshCrmAgendaCache === 'function') refreshCrmAgendaCache();
+  // Combos personalizados: el botón COMBOS de Ventas depende de su
+  // configuración. Se pide aquí (no solo al abrir Ventas) porque al recargar
+  // la app entra por el auto-login con Ventas ya abierta y sin pasar por
+  // showModule('ventas'): el botón se quedaba escondido.
+  window.CombosPersonalizados?.cargar?.({ forzar: true });
 
   // Iniciar el gestor de conexión offline (multicaja)
   if (window.OfflineManager && !window.offlineManager) {
@@ -3904,6 +3909,7 @@ function showModule(name, el) {
   }
   if (name === 'promociones') {
     if (typeof switchPromotionsTab === 'function') switchPromotionsTab('dashboard');
+    window.CombosPersonalizados?.onPromocionesOpen();
   }
   if (name === 'movimientos') {
     if (typeof syncMovimientosModuleFilter === 'function') syncMovimientosModuleFilter();
@@ -3920,6 +3926,7 @@ function showModule(name, el) {
     if (typeof refreshSaleClientOptions === 'function') refreshSaleClientOptions();
     if (typeof syncSaleFiscalControls === 'function') syncSaleFiscalControls();
     if (typeof loadActivePromotionsMap === 'function') loadActivePromotionsMap();
+    window.CombosPersonalizados?.onVentasOpen();
     if (typeof renderSalesCatalog === 'function') renderSalesCatalog();
     window.VentasUI?.sync();
     // Re-render diferido por si el DOM todavía está acomodándose en la carga inicial
@@ -3962,6 +3969,7 @@ function showModule(name, el) {
     if (typeof loadBasculaConfig === 'function') loadBasculaConfig();
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     window.TiendaOnline?.loadConfigSection();
+    window.CombosPersonalizados?.loadConfigSection();
     window.MultisucursalEnlace?.loadConfigSection();
     // Inicializar módulo de actualización del sistema
     if (typeof window.Actualizaciones?.init === 'function') window.Actualizaciones.init();

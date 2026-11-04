@@ -173,6 +173,43 @@ async function pruebasPos() {
   const xmlMixta = indicadores(recibidoDe(encfVenta(ventaMixta))?.xml);
   check('E31 de producto y servicio: 1 y 2', xmlMixta.join() === '1,2', xmlMixta.join());
 
+  // Combo personalizado a precio libre con ITBIS incluido: RD$250 por un
+  // gravado (118) + dos exentos (100 y 50) que sueltos valen RD$268. El precio
+  // se reparte entre los tres productos: cada uno es su línea del XML con su
+  // base y su ITBIS, y el total del e-CF es el precio del combo.
+  await api('PUT', '/api/combos-personalizados/config', { activo: true });
+  await api('PUT', '/api/combos-personalizados/productos', { ids: [ctx.productos.GRAV, ctx.productos.EXEN, ctx.productos.MEDIO], habilitado: true });
+  const motorCombos = require(path.join(L.PROJECT, 'js', 'combos-personalizados-motor.js'));
+  const reparto = motorCombos.repartirCombo({
+    precio: 250,
+    tasa: 18,
+    seleccion: [
+      { id: ctx.productos.GRAV, qty: 1, precio: PRECIOS.GRAV, aplicaItbis: true },
+      { id: ctx.productos.EXEN, qty: 1, precio: PRECIOS.EXEN, aplicaItbis: false },
+      { id: ctx.productos.MEDIO, qty: 1, precio: PRECIOS.MEDIO, aplicaItbis: false },
+    ],
+  });
+  const itbisCombo = reparto.filas.reduce((acc, f) => acc + f.itbis, 0) / 100;
+  const lineasCombo = (clave) => reparto.filas.map((f) => ({
+    id: f.id, codigo: 'COMBO', nombre: 'COMBO', qty: f.qty, precio: f.precio, descuento: 0, itbis: f.tasa, itbisModo: 'porcentaje',
+    subtotal: f.neto / 100, rebaja: 0, total: f.total / 100, impuestoMonto: f.itbis / 100,
+    comboPersonalizado: { clave, comboId: null, nombre: 'Combo e-CF', precio: 250 },
+  }));
+  const lineasXml = (xml) => [...String(xml || '').matchAll(/<PrecioUnitarioItem>([^<]+)<\/PrecioUnitarioItem>/g)].map((m) => Number(m[1]));
+  for (const [nombre, extras, tipo] of [['E32 con combo personalizado', {}, 'E32'], ['E31 con combo personalizado', { ...conRnc, ecfType: 'E31' }, 'E31']]) {
+    const r = await api('POST', '/api/sales', venta(lineasCombo(`ecf${tipo}`), extras));
+    check(`${nombre}: venta guardada por RD$250 con ITBIS incluido`, r.status === 201 && r.body?.sale?.total === 250, `HTTP ${r.status} ${r.body?.error || ''} total ${r.body?.sale?.total}`.slice(0, 200));
+    const doc = await comprobarEmitido(nombre, encfVenta(r), { tipo, total: 250, itbis: itbisCombo, indicador: '0' });
+    // El XML firmado completo (el E32 de menos de 250 mil llega a la DGII como resumen).
+    const firmado = await fetch(`http://127.0.0.1:${PORT}/api/ecf/documents/${doc?.id}/xml`, { headers: { Authorization: `Bearer ${ctx.token}` } }).then((x) => x.text());
+    const precios = lineasXml(firmado);
+    check(`${nombre}: una línea por producto con su parte del precio (${reparto.filas.map((f) => f.precio).join(', ')})`,
+      precios.join() === reparto.filas.map((f) => f.precio).join(), precios.join());
+    check(`${nombre}: el XML firmado cuadra (total 250, ITBIS ${itbisCombo})`,
+      Number(tag(firmado, 'MontoTotal')) === 250 && Number(tag(firmado, 'TotalITBIS') || 0) === itbisCombo,
+      `MontoTotal ${tag(firmado, 'MontoTotal')} · TotalITBIS ${tag(firmado, 'TotalITBIS')}`);
+  }
+
   // E44 y E46 no aceptan una venta que todavía traiga ITBIS.
   const conItbis = await api('POST', '/api/sales', venta([linea('GRAV')], { ...conRnc, ecfType: 'E44' }));
   check('E44 con ITBIS: se frena antes de cobrar', conItbis.status === 422 && conItbis.body?.code !== undefined || conItbis.status === 422, `HTTP ${conItbis.status} ${conItbis.body?.error || ''}`.slice(0, 200));

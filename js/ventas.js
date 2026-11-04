@@ -494,6 +494,12 @@ function resolvePromotionForCartLine(productId, qty) {
 // cantidad final — necesario porque, a diferencia de Oferta de Precio, un
 // Descuento por Cantidad depende de cuánto termine habiendo en el carrito.
 function recalcSaleItemForQty(item, qty) {
+  // Línea de un combo personalizado: su precio de catálogo, sin ofertas.
+  if (isCustomComboSaleItem(item)) {
+    const fixed = normalizeSaleItem({ ...item, qty, promoAplicada: null, descuento: 0 });
+    fixed.total = calcItemTotal(fixed);
+    return fixed;
+  }
   // Línea de un pedido online: se mantiene el precio con que el cliente
   // compró (el servidor lo vuelve a leer del pedido al cobrar).
   if (item.precioPactado !== undefined && item.precioPactado !== null) {
@@ -665,6 +671,9 @@ function addQuickSaleItem() {
 function findMergeableSaleItemIndex(product, saleMode) {
   if (saleMode === 'peso') return -1;
   return (DB.saleItems || []).findIndex((item) => {
+    // Una línea de un combo personalizado no se junta con nada: su cantidad
+    // solo cambia editando el combo.
+    if (isCustomComboSaleItem(item)) return false;
     if (Number(item.id || 0) !== Number(product.id || 0)) return false;
     return getSaleItemSaleMode(item, product) === saleMode;
   });
@@ -675,6 +684,58 @@ function findMergeableSaleItemIndex(product, saleMode) {
 function isComboProduct(product) {
   return Boolean(product) && product.tipoProducto === 'combo'
     && Array.isArray(product.componentes) && product.componentes.length > 0;
+}
+
+// Combo personalizado de precio fijo (js/combos-personalizados.js): NO es un
+// producto. Es un grupo de líneas normales del carrito (cada producto con su
+// precio de catálogo y su ITBIS) que comparten item.comboPersonalizado.clave.
+// La suma de esas líneas es el precio del combo; el servidor lo vuelve a validar.
+function isCustomComboSaleItem(item) {
+  return Boolean(item && item.comboPersonalizado && item.comboPersonalizado.clave);
+}
+
+// Línea de un combo personalizado: una fila del reparto del precio del combo
+// (CombosPersonalizadosMotor.repartirCombo): su parte del precio, su cantidad y
+// su tasa de ITBIS en %. Sin ofertas ni descuento propio.
+function buildCustomComboSaleItem(product, fila, combo) {
+  const base = buildSaleItem(product, fila.qty);
+  const item = normalizeSaleItem({
+    ...base,
+    qty: fila.qty,
+    precio: Number(fila.precio || 0),
+    itbis: Number(fila.tasa || 0),
+    itbisModo: 'porcentaje',
+    itbisMontoUnit: 0,
+    promoAplicada: null,
+    descuento: 0,
+    comboPersonalizado: {
+      clave: String(combo.clave),
+      comboId: Number(combo.comboId || combo.id || 0),
+      nombre: String(combo.nombre || ''),
+      precio: Number(combo.precio || 0),
+    },
+  });
+  item.total = calcItemTotal(item);
+  return item;
+}
+
+// Grupos de combos personalizados del carrito, en el orden en que aparecen.
+function getCustomComboGroups(items = DB.saleItems) {
+  const groups = new Map();
+  (items || []).forEach((item, idx) => {
+    if (!isCustomComboSaleItem(item)) return;
+    const clave = item.comboPersonalizado.clave;
+    if (!groups.has(clave)) groups.set(clave, { ...item.comboPersonalizado, indices: [] });
+    groups.get(clave).indices.push(idx);
+  });
+  return groups;
+}
+
+function removeCustomComboGroup(clave) {
+  DB.saleItems = (DB.saleItems || []).filter((item) => !(isCustomComboSaleItem(item) && item.comboPersonalizado.clave === clave));
+  renderSaleTable();
+  updateTotals();
+  renderSalesCatalog();
 }
 
 // Suma la cantidad de un producto que ya está en el carrito (aún no facturada),
@@ -5077,7 +5138,38 @@ let saleTableSnapshot = new Map();
 let saleTableHighlightKey = '';
 
 function getSaleRowKey(item) {
-  return [item?.id ?? '', item?.codigo ?? '', item?.variante ?? '', item?.quickSale ? 'rapida' : '', item?.nombre ?? ''].join('|');
+  return [item?.id ?? '', item?.codigo ?? '', item?.variante ?? '', item?.quickSale ? 'rapida' : '', item?.nombre ?? '', item?.comboPersonalizado?.clave ?? ''].join('|');
+}
+
+// Fila de encabezado de un combo personalizado en el carrito: nombre, precio,
+// cuánto suman sus productos y los botones Editar / Quitar.
+function renderCustomComboHeaderRow(group) {
+  const lines = group.indices.map((i) => DB.saleItems[i]).filter(Boolean);
+  const totalCents = lines.reduce((acc, item) => acc + Math.round(Number(item.total || 0) * 100), 0);
+  const taxCents = lines.reduce((acc, item) => acc + Math.round(Number(getSaleItemTaxForTable(item) || 0) * 100), 0);
+  const priceCents = Math.round(Number(group.precio || 0) * 100);
+  // El precio elegido ya incluye el ITBIS. Solo con una unidad de un único
+  // producto gravado puede quedar 1 centavo por debajo (ITBIS por línea).
+  const ok = totalCents > 0 && totalCents <= priceCents && priceCents - totalCents <= 1;
+  const status = !ok
+    ? `Suma ${formatSaleTableAmount(totalCents / 100)}: edítalo`
+    : (totalCents === priceCents ? 'ITBIS incluido' : `Queda en ${formatSaleTableAmount(totalCents / 100)} · ITBIS incluido`);
+  const clave = escapeHtml(group.clave);
+  return `
+    <tr class="sale-combo-head ${ok ? '' : 'is-invalid'}" data-combo-key="${clave}">
+      <td class="col-n">${saleIcon('package', 16)}</td>
+      <td class="col-code">Combo</td>
+      <td class="col-name">
+        <span class="sale-item-name">${escapeHtml(group.nombre || 'Combo')}</span>
+        <span class="tc-tag ${ok ? 'tc-tag--primary' : 'tc-tag--danger'} sale-item-tag">${escapeHtml(status)}</span>
+      </td>
+      <td class="col-price">${formatSaleTableAmount(group.precio)}</td>
+      <td class="col-qty"><button class="tc-btn sale-combo-btn" type="button" onclick="CombosPersonalizados.editarGrupo('${clave}')">${saleIcon('pencil', 16)}<span>Editar</span></button></td>
+      <td class="col-disc"></td>
+      <td class="col-itbis">${formatSaleTableAmount(taxCents / 100)}</td>
+      <td class="col-total">${formatSaleTableAmount(totalCents / 100)}</td>
+      <td class="col-remove"><button class="sale-remove-btn" type="button" onclick="CombosPersonalizados.quitarGrupo('${clave}')" title="Quitar el combo completo" aria-label="Quitar el combo ${escapeHtml(group.nombre || '')}">${saleIcon('trash-2', 20)}</button></td>
+    </tr>`;
 }
 
 function resolveSaleTableHighlight() {
@@ -5106,14 +5198,20 @@ function renderSaleTable() {
   }
 
   const highlightKey = resolveSaleTableHighlight();
+  const customComboGroups = getCustomComboGroups();
   tbody.innerHTML = DB.saleItems.map((item, idx) => {
     const name = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(item.nombre) : item.nombre;
     const isHighlighted = getSaleRowKey(item) === highlightKey;
+    // Combo personalizado: encabezado antes de su primera línea; sus líneas no
+    // cambian cantidad, descuento ni se quitan sueltas (se edita el combo).
+    const customCombo = isCustomComboSaleItem(item);
+    const customComboGroup = customCombo ? customComboGroups.get(item.comboPersonalizado.clave) : null;
+    const customComboHeader = customComboGroup && customComboGroup.indices[0] === idx ? renderCustomComboHeaderRow(customComboGroup) : '';
     const promoText = item.promoAplicada
       ? `${item.promoAplicada.cantidadMinima ? `${item.promoAplicada.cantidadMinima}+ uds · ` : ''}${item.promoAplicada.texto || item.promoAplicada.nombre || 'Oferta'}`
       : '';
-    return `
-    <tr class="${isHighlighted ? 'is-selected' : ''}" data-sale-row="${idx}">
+    return `${customComboHeader}
+    <tr class="${isHighlighted ? 'is-selected' : ''}${customCombo ? ' sale-combo-line' : ''}" data-sale-row="${idx}">
       <td class="col-n">${idx + 1}</td>
       <td class="col-code">${escapeHtml(item.codigo ?? '')}</td>
       <td class="col-name">
@@ -5135,7 +5233,9 @@ function renderSaleTable() {
         <input id="sale-item-price-${idx}" class="tc-hidden" type="number" value="${item.precio}" readonly disabled tabindex="-1" aria-hidden="true">
       </td>
       <td class="col-qty">
-        ${isWeightSaleItem(item)
+        ${customCombo
+          ? `<span class="sale-combo-qty">${escapeHtml(formatSaleItemQuantity(item, item.qty))}</span>`
+          : isWeightSaleItem(item)
           ? `
             <div class="sale-weight">
               <span class="sale-weight-value">${escapeHtml(formatSaleItemQuantity(item, item.qty, { includeUnit: true }))}</span>
@@ -5151,14 +5251,14 @@ function renderSaleTable() {
           `}
       </td>
       <td class="col-disc">
-        <label class="sale-disc" title="Descuento de este producto en %">
+        ${customCombo ? '<span class="sale-combo-muted">—</span>' : `<label class="sale-disc" title="Descuento de este producto en %">
           <input id="sale-item-disc-${idx}" class="disc-input" type="number" value="${item.descuento}" min="0" max="100" step="0.01" oninput="updateItemDisc(${idx},this.value)" onchange="updateItemDisc(${idx},this.value)" aria-label="Descuento en por ciento">
           <span class="sale-disc-suffix">%</span>
-        </label>
+        </label>`}
       </td>
       <td class="col-itbis" id="sale-item-itbis-${idx}" title="${getSaleItemTaxRateText(item)}">${formatSaleTableAmount(getSaleItemTaxForTable(item))}</td>
       <td class="col-total" id="sale-item-total-${idx}">${formatSaleTableAmount(item.total)}</td>
-      <td class="col-remove"><button class="sale-remove-btn" type="button" onclick="removeItem(${idx})" title="Quitar producto" aria-label="Quitar ${escapeHtml(name ?? 'producto')}">${saleIcon('trash-2', 20)}</button></td>
+      <td class="col-remove">${customCombo ? '' : `<button class="sale-remove-btn" type="button" onclick="removeItem(${idx})" title="Quitar producto" aria-label="Quitar ${escapeHtml(name ?? 'producto')}">${saleIcon('trash-2', 20)}</button>`}</td>
     </tr>
   `;
   }).join('');
@@ -5173,7 +5273,7 @@ function renderSaleTable() {
 // campo (handleQtyInputKey) y la misma función updateItemQty().
 function stepSaleItemQty(idx, direction) {
   const item = DB.saleItems[idx];
-  if (!item || isWeightSaleItem(item)) return;
+  if (!item || isWeightSaleItem(item) || isCustomComboSaleItem(item)) return;
   const currentQty = Number(item.qty || 1);
   const step = Number.parseFloat(getSaleItemQuantityStep(item)) || 1;
   const nextQty = direction > 0
@@ -5207,6 +5307,7 @@ function syncSaleOrderCount() {
 }
 
 function handleQtyInputKey(event, idx) {
+  if (isCustomComboSaleItem(DB.saleItems[idx])) return;
   if (event.key === 'Enter') {
     event.preventDefault();
     updateItemQty(idx, event.target.value);
@@ -5270,6 +5371,11 @@ function syncSaleRowDisplay(idx) {
 function updateItemQty(idx, val) {
   const item = DB.saleItems[idx];
   if (!item) return;
+  if (isCustomComboSaleItem(item)) {
+    showToast('Para cambiar los productos de un combo, usa "Editar" en el combo.', 'warning');
+    renderSaleTable();
+    return;
+  }
   if (isWeightSaleItem(item)) {
     showToast('Los productos por peso se actualizan leyendo la báscula.', 'warning');
     renderSaleTable();
@@ -5310,18 +5416,25 @@ function updateItemQty(idx, val) {
   renderSalesCatalog();
 }
 function updateItemPrice(idx, val) {
+  if (isCustomComboSaleItem(DB.saleItems[idx])) return;
   DB.saleItems[idx].precio = Math.max(0, parseFloat(val) || 0);
   DB.saleItems[idx].total = calcItemTotal(DB.saleItems[idx]);
   syncSaleRowDisplay(idx);
   updateTotals();
 }
 function updateItemDisc(idx, val) {
+  if (isCustomComboSaleItem(DB.saleItems[idx])) return;
   DB.saleItems[idx].descuento = Math.min(100, Math.max(0, parseFloat(val) || 0));
   DB.saleItems[idx].total = calcItemTotal(DB.saleItems[idx]);
   syncSaleRowDisplay(idx);
   updateTotals();
 }
 function removeItem(idx) {
+  // Una línea de combo personalizado se va con todo su combo.
+  if (isCustomComboSaleItem(DB.saleItems[idx])) {
+    removeCustomComboGroup(DB.saleItems[idx].comboPersonalizado.clave);
+    return;
+  }
   DB.saleItems.splice(idx, 1);
   renderSaleTable();
   updateTotals();
@@ -5377,6 +5490,17 @@ function updateTotals() {
 
 function validateSaleItemsBeforeCheckout() {
   normalizeCartSaleItems();
+
+  // Combos personalizados: cada combo tiene que seguir cuadrando con su precio
+  // (una venta en pausa pudo retomarse con precios distintos) y no van en E44/E46.
+  if (DB.saleItems.some(isCustomComboSaleItem)) {
+    const comboError = window.CombosPersonalizados?.validarCarrito?.({ sinItbis: saleVaSinItbis() })
+      ?? 'No se cargaron los combos personalizados. Actualiza la pantalla.';
+    if (comboError) {
+      showToast(comboError, 'error');
+      return false;
+    }
+  }
 
   for (const item of DB.saleItems) {
     const qty = Number(item.qty || 0);
@@ -6782,7 +6906,10 @@ function buildSalePayload() {
         scaleMeasuredUnit: normalizedItem.scaleMeasuredUnit,
         scaleSource: normalizedItem.scaleSource,
         scaleRawReading: normalizedItem.scaleRawReading,
-        quickSale: normalizedItem.quickSale === true
+        quickSale: normalizedItem.quickSale === true,
+        // Combo personalizado: a qué combo pertenece la línea (el servidor
+        // vuelve a calcular el combo con los precios de la base).
+        ...(isCustomComboSaleItem(normalizedItem) ? { comboPersonalizado: { ...normalizedItem.comboPersonalizado } } : {})
       };
     }),
     subtotal: saleTotals.subtotal,
@@ -7206,6 +7333,8 @@ function getReceiptConfigValue(field) {
 // venta (item.combo, lo que llevaba ese día); sin ella (vista previa del
 // carrito), lo que lleva el combo ahora. Cantidades = por combo × combos vendidos.
 function getReceiptComboLines(item) {
+  // Combo personalizado agrupado (groupCustomComboReceiptItems): sus productos.
+  if (Array.isArray(item?.comboPersonalizadoLineas)) return item.comboPersonalizadoLineas;
   if ((getReceiptConfigValue('comboInvoiceDisplay') || 'agrupado') !== 'desglosado') return [];
   let components = item?.combo?.componentes;
   if (!Array.isArray(components) || !components.length) {
@@ -7218,6 +7347,89 @@ function getReceiptComboLines(item) {
     const units = Math.round(Number(c.cantidad || 0) * combos * 1000) / 1000;
     return `${units} x ${normalizeReceiptText(c.nombre || '')}`;
   });
+}
+
+// Combos personalizados en la factura impresa (ticket, térmica, A4): las líneas
+// de cada combo salen juntas en UNA fila con el nombre del combo y su precio
+// final (ITBIS incluido); debajo, "Impuesto incluido: 76.27" y lo que lleva
+// ("2 x Papas", sin precios). Solo cambia lo que se MUESTRA: los totales, el
+// gravado/exento y el ITBIS de la factura salen de las líneas reales, y el
+// e-CF lleva una línea por producto con su base y su ITBIS.
+function groupCustomComboReceiptItems(items = []) {
+  if (!(items || []).some(isCustomComboSaleItem)) return items;
+  const salida = [];
+  const grupos = new Map();
+  items.forEach((item) => {
+    if (!isCustomComboSaleItem(item)) {
+      salida.push(item);
+      return;
+    }
+    const clave = item.comboPersonalizado.clave;
+    if (!grupos.has(clave)) {
+      const grupo = { combo: item.comboPersonalizado, lineas: [] };
+      grupos.set(clave, grupo);
+      salida.push(grupo);
+    }
+    grupos.get(clave).lineas.push(item);
+  });
+  return salida.map((entrada) => (entrada && Array.isArray(entrada.lineas) && entrada.combo
+    ? buildCustomComboReceiptRow(entrada)
+    : entrada));
+}
+
+function buildCustomComboReceiptRow({ combo, lineas }) {
+  const centavos = (valor) => Math.round(Number(valor || 0) * 100);
+  const monto = (c) => (c / 100).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const subtotal = lineas.reduce((acc, it) => acc + centavos(it.subtotal ?? it.total), 0);
+  const itbis = lineas.reduce((acc, it) => acc + centavos(it.lineTax), 0);
+  const precioFinal = subtotal + itbis;
+  // Debajo del combo: el impuesto que ya va dentro del precio y lo que lleva
+  // (sin precios por producto: el combo es un solo concepto).
+  const cantidades = new Map();
+  lineas.forEach((it) => {
+    const nombre = normalizeReceiptText(it.nombre || '');
+    cantidades.set(nombre, (cantidades.get(nombre) || 0) + Number(it.qty || 0));
+  });
+  const detalle = [
+    { texto: 'Impuesto incluido', monto: monto(itbis) },
+    ...[...cantidades.entries()].map(([nombre, qty]) => ({ texto: `${qty} x ${nombre}`, monto: '' })),
+  ];
+  const componentes = detalle.map((d) => (d.monto ? `${d.texto}: ${d.monto}` : d.texto));
+  return {
+    id: null,
+    codigo: 'COMBO',
+    nombre: normalizeReceiptText(combo.nombre || 'Combo personalizado'),
+    qty: 1,
+    cantidad: 1,
+    saleMode: 'unidad',
+    unitLabel: 'Combo',
+    weightUnit: '',
+    // El combo se muestra a su precio final, con el ITBIS incluido. Los
+    // totales de la factura (subtotal, gravado, exento, ITBIS) no cambian.
+    precio: precioFinal / 100,
+    subtotal: precioFinal / 100,
+    total: precioFinal / 100,
+    descuento: 0,
+    itbis: 0,
+    itbisRate: 0,
+    itbisModo: 'porcentaje',
+    itbisMontoUnit: 0,
+    lineTax: itbis / 100,
+    impuestoIncluido: itbis / 100,
+    promotionId: null,
+    originalPrice: null,
+    variante: '',
+    notas: '',
+    comboPersonalizadoLineas: componentes,
+    comboPersonalizadoDetalle: detalle,
+  };
+}
+
+// Las mismas líneas, con el monto pegado a la derecha en un ancho fijo de
+// caracteres (ticket térmico): así un nombre largo no se come el precio.
+function formatCustomComboDetailLines(item, width) {
+  const ancho = Math.max(12, Number(width) || 32);
+  return (item?.comboPersonalizadoDetalle || []).map((d) => buildThermalMonoLine(d.texto, d.monto, ancho).trimEnd());
 }
 
 function buildReceiptWhatsAppMessage(venta) {
@@ -7717,17 +7929,24 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
       metodo: normalizeReceiptText(SALE_PAYMENT_TYPES[venta?.metodo] || venta?.metodo || 'Efectivo'),
       ncf: normalizeReceiptText(venta?.encf || venta?.ncf || ''),
       ncfVencimiento: normalizeReceiptText(venta?.ncfVencimiento || ''),
-      items: (venta?.items || []).map((item, index) => ({
+      items: (templateData.normalizedItems.some((row) => Array.isArray(row.comboPersonalizadoLineas))
+        ? templateData.normalizedItems
+        : (venta?.items || [])).map((item, index, filas) => ({
         cantidad: Number(item?.qty || item?.cantidad || 1),
         cantidadTexto: formatReceiptSaleItemQuantity(item, { compactUnit: true }),
         descripcion: normalizeReceiptText(item?.nombre || item?.descripcion || ''),
         subtotal: Number(item?.subtotal ?? item?.total ?? ((Number(item?.precio || 0) * Number(item?.qty || item?.cantidad || 1)) || 0)),
         precio: Number(item?.precio || 0),
-        itbisTexto: templateData.normalizedItems[index] ? getThermalItemItbisText(templateData.normalizedItems[index]) : '',
+        itbisTexto: filas === templateData.normalizedItems
+          ? getThermalItemItbisText(item)
+          : (templateData.normalizedItems[index] ? getThermalItemItbisText(templateData.normalizedItems[index]) : ''),
         variante: normalizeReceiptText(item?.variante || ''),
         notas: normalizeReceiptText(item?.notas || ''),
-        // Combo desglosado: sus productos van debajo, sin precio.
-        componentes: getReceiptComboLines(item)
+        // Combo desglosado: sus productos van debajo, sin precio. Combo
+        // personalizado: sus productos con el monto alineado a la derecha.
+        componentes: Array.isArray(item?.comboPersonalizadoDetalle)
+          ? formatCustomComboDetailLines(item, getThermalReceiptCharWidth(normalizedPaperSize === '58mm' ? '58mm' : '80mm') - 4)
+          : getReceiptComboLines(item)
       })),
       filasDetalle: templateData.detailRows.map(([label, value]) => [String(label), normalizeReceiptText(value)]),
       filasResumen: buildThermalSummaryRows(venta),
@@ -8172,7 +8391,7 @@ function getReceiptTemplateData(venta) {
       ['Cambio a llevar', fmt(Number(venta.cambioRepartidor || 0))],
     ] : []),
   ].filter(([, value]) => Boolean(String(value || '').trim()));
-  const normalizedItems = (venta.items || []).map((item) => {
+  const normalizedItems = groupCustomComboReceiptItems((venta.items || []).map((item) => {
     const normalizedItem = normalizeSaleItem(item);
     const qty = Number(normalizedItem.qty || 0);
     const precio = Number(item.precio || 0);
@@ -8189,7 +8408,7 @@ function getReceiptTemplateData(venta) {
       itbisRate,
       lineTax: roundSaleMoney(item.impuestoMonto ?? (subtotalItem * (itbisRate / 100)))
     };
-  });
+  }));
 
   const itemsHeaderMarkup = usesTableItems
     ? `
@@ -8356,6 +8575,8 @@ function buildThermalKeyValueLines(label, value, width, labelWidth) {
 
 // Columna ITBIS del ticket 58/80 mm (la misma en pantalla y en ESC/POS).
 function getThermalItemItbisText(item) {
+  // Combo personalizado: su precio ya trae el ITBIS.
+  if (Array.isArray(item.comboPersonalizadoDetalle)) return 'Incl.';
   if (item.itbisModo === 'monto') {
     return Number(item.itbisMontoUnit || 0) > 0 ? Number(item.itbisMontoUnit).toFixed(2) : '';
   }
@@ -8389,6 +8610,9 @@ function buildThermalItemLines(items, width, paperVariant) {
     nameLines.slice(1).forEach((line) => {
       lines.push(line);
     });
+    if (Array.isArray(item.comboPersonalizadoDetalle)) {
+      formatCustomComboDetailLines(item, width - 4).forEach((line) => lines.push(`  - ${line}`));
+    }
   });
 
   return lines.map((line) => String(line || '').slice(0, Math.max(0, Number(width) || 0)));
@@ -8535,8 +8759,10 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
   const itemsRows = normalizedItems.map((item) => `
     <div class="receipt-a4-table-row">
       <div>${escapeReceiptHtml(formatReceiptSaleItemQuantity(item))}</div>
-      <div>${escapeReceiptHtml(item.nombre)}</div>
-      <div>${escapeReceiptHtml(item.itbisModo === 'monto' ? `RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}` : (item.itbisRate > 0 ? `${item.itbisRate.toFixed(2)}%` : '0.00'))}</div>
+      <div>${escapeReceiptHtml(item.nombre)}${Array.isArray(item.comboPersonalizadoLineas)
+        ? item.comboPersonalizadoLineas.map((line) => `<div class="receipt-item-meta receipt-item-combo">- ${escapeReceiptHtml(line)}</div>`).join('')
+        : ''}</div>
+      <div>${escapeReceiptHtml(Array.isArray(item.comboPersonalizadoDetalle) ? 'Incluido' : (item.itbisModo === 'monto' ? `RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}` : (item.itbisRate > 0 ? `${item.itbisRate.toFixed(2)}%` : '0.00')))}</div>
       <div>${escapeReceiptHtml(fmt(item.total))}</div>
     </div>
   `).join('');
@@ -8789,6 +9015,21 @@ function ventaToFormalDoc(venta) {
       if (rate <= 0 && sub > 0) rate = Math.round((monto / sub) * 100);
     } else if (rate > 0 && monto <= 0 && sub > 0) {
       monto = r2(sub * (rate / 100));
+    }
+    // Combo personalizado: un solo concepto a su precio final, con el impuesto
+    // incluido (la columna ITBIS muestra lo que ya va dentro del precio).
+    if (Array.isArray(it.comboPersonalizadoDetalle)) {
+      const contenido = it.comboPersonalizadoDetalle.filter((d) => !d.monto).map((d) => d.texto);
+      return {
+        descripcion: `${it.nombre} · Impuesto incluido`,
+        nota: `ITBIS incluido: RD$ ${r2(it.impuestoIncluido).toFixed(2)}${contenido.length ? ` · Incluye: ${contenido.join(', ')}` : ''}`,
+        cantidad: 1,
+        unidad: 'Combo',
+        precio: it.precio,
+        itbisPct: 0,
+        itbisMonto: monto,
+        total: Number(it.total || 0)
+      };
     }
     const comboLines = getReceiptComboLines(it);
     return {

@@ -1569,6 +1569,7 @@ function openProductModal(id) {
             </div>
           </div>
         </div>
+        ${window.CombosPersonalizados?.campoProducto?.(prod) || ''}
       </div>
       <div class="form-group" id="mp-stock-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Actual</label><input type="number" id="mp-stock" class="form-input" value="${prod?prod.stock:0}" min="0"></div>
       <div class="form-group" id="mp-stockmin-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Mínimo</label><input type="number" id="mp-stockmin" class="form-input" value="${prod?prod.stockMin:5}" min="0"></div>
@@ -1902,6 +1903,12 @@ async function saveProduct(id) {
         console.error('[Tecno Caja] Error subiendo imagen:', imgErr);
         showToast(`Imagen no guardada: ${imgErr.message || 'error desconocido'}`, 'warning');
       }
+    }
+    // "Disponible para combos" (combos personalizados, solo si están activos).
+    if (savedId && window.CombosPersonalizados?.guardarCampoProducto) {
+      await window.CombosPersonalizados.guardarCampoProducto(savedId).catch((comboErr) => {
+        showToast(`Producto guardado, pero no se pudo cambiar "Disponible para combos": ${comboErr.message}`, 'warning');
+      });
     }
     // Pestaña "Tienda online" del producto (solo si la tienda está activa).
     if (savedId && window.TiendaOnline?.saveProductPanel) {

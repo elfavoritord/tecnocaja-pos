@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.13",
+  "version": "1.6.14",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -26,6 +26,7 @@
     "test:coverage": "jest --coverage",
     "test:e2e-lan": "node scripts/e2e-lan/run-lan-e2e.js",
     "test:combos-e2e": "node scripts/combos/probar-combos-e2e.js && node scripts/combos/probar-combos-e2e.js --sqlite && node scripts/combos/probar-combos-ui.js",
+    "test:combos-personalizados-e2e": "node scripts/combos-personalizados/probar-e2e.js && node scripts/combos-personalizados/probar-e2e.js --sqlite && node scripts/combos-personalizados/probar-ui.js",
     "test:ecf-completo": "node scripts/ecf/probar-ecf-punta-a-punta.js && node scripts/ecf/probar-ecf-punta-a-punta.js --servicios && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite --servicios && node scripts/ecf/probar-ui-ecf.js && node scripts/ecf/probar-ui-ecf.js --servicios && node scripts/ecf/probar-comprobantes-ui.js",
     "test:pantallas": "node scripts/ecf/recorrer-pantallas.js && node scripts/ecf/recorrer-pantallas.js --servicios && node scripts/ecf/recorrer-pantallas.js --mariadb && node scripts/ecf/recorrer-pantallas.js --mariadb --servicios",
     "test:multisucursal-mariadb": "node scripts/multisucursal/probar-migraciones-mariadb.js",

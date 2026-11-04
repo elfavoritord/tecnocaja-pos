@@ -107,7 +107,7 @@ async function buildFullPayload(query) {
     tables, paymentMethods, branches, cashRegisters,
     inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
     syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
-    productComboItems,
+    productComboItems, customCombos,
   ] = await Promise.all([
     safeQuery('SELECT * FROM config', [], 'config'),
     safeQuery('SELECT * FROM users', [], 'users'),
@@ -141,6 +141,8 @@ async function buildFullPayload(query) {
     safeQuery('SELECT * FROM ncf_rangos_central'),
     // Combos promocionales: qué productos lleva cada combo.
     safeQuery('SELECT * FROM product_combo_items'),
+    // Combos personalizados de precio fijo (las ventas guardan su foto en sale_items).
+    safeQuery('SELECT * FROM custom_combos'),
   ]);
 
   if (failedCritical.length) {
@@ -193,7 +195,7 @@ async function buildFullPayload(query) {
       tables, paymentMethods, branches, cashRegisters,
       inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
       syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
-      productComboItems,
+      productComboItems, customCombos,
     },
   };
 }
@@ -316,6 +318,7 @@ async function restorePayloadToDb(payload, query) {
     ['users',             data.users            || []],
     ['products',          data.products         || []],
     ['product_combo_items', data.productComboItems || []],
+    ['custom_combos',     data.customCombos     || []],
     ['clients',           data.clients          || []],
     ['suppliers',         data.suppliers        || []],
     ['payment_methods',   data.paymentMethods   || []],

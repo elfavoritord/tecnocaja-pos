@@ -1,15 +1,15 @@
 {
-  "version": "1.6.13",
-  "stableVersion": "1.6.13",
-  "date": "03/11/2026",
+  "version": "1.6.14",
+  "stableVersion": "1.6.14",
+  "date": "04/11/2026",
   "size": "198 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Empresa de Servicios: opción para vender productos desde Facturación, con inventario.",
-    "Empresa de Servicios: buscador del catálogo en la factura y la cotización, con lector de código de barras.",
-    "Empresa de Servicios: Nueva factura abre más rápido y una sola ventana.",
-    "Empresa de Servicios: los comprobantes electrónicos marcan cada línea como bien o servicio."
+    "Combos personalizados (opcional, Configuración → Apariencia): el cajero escribe el precio del combo con ITBIS incluido y elige los productos.",
+    "La factura muestra el combo como un solo concepto con \"Impuesto incluido\"; el e-CF lleva cada producto con su base y su ITBIS.",
+    "El inventario descuenta cada producto del combo; devoluciones, cancelaciones y reportes funcionan igual.",
+    "Reporte de combos en Promociones → Combos personalizados."
   ]
 }

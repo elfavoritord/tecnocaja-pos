@@ -946,3 +946,51 @@
     min-height: 24px;
   }
 }
+
+/* ── Combos personalizados de precio fijo (js/combos-personalizados.js) ───── */
+#module-ventas .ccp-ventas-btn {
+  height: var(--tc-control-h);
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--tc-space-4);
+  border: var(--tc-border-w) solid var(--tc-primary);
+  border-radius: var(--tc-radius-btn);
+  background: transparent;
+  color: var(--tc-primary);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-bold);
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+#module-ventas .ccp-ventas-btn:hover { background: var(--tc-primary); color: var(--tc-on-primary); }
+#module-ventas .ccp-ventas-btn:focus-visible { outline: 2px solid var(--tc-primary); outline-offset: 2px; }
+#module-ventas .ccp-ventas-btn.hidden { display: none !important; }
+
+/* Encabezado del combo en el pedido y sus líneas (sin cantidad ni descuento sueltos). */
+#module-ventas .sale-table tbody tr.sale-combo-head td {
+  background: var(--tc-surface-2);
+  border-top: var(--tc-border-w) solid var(--tc-border);
+  font-weight: var(--tc-weight-semibold);
+}
+#module-ventas .sale-table tbody tr.sale-combo-head.is-invalid td { background: var(--tc-danger-bg); }
+#module-ventas .sale-table tbody tr.sale-combo-head .col-n { color: var(--tc-primary); }
+#module-ventas .sale-table tbody tr.sale-combo-line td.col-name { padding-left: var(--tc-space-6); }
+#module-ventas .sale-table tbody tr.sale-combo-line td.col-n { border-left: 3px solid var(--tc-primary); }
+#module-ventas .sale-combo-qty { font-weight: var(--tc-weight-semibold); }
+#module-ventas .sale-combo-muted { color: var(--tc-text-2); }
+#module-ventas .sale-combo-btn {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--tc-space-1);
+  padding: 0 var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  cursor: pointer;
+}
+#module-ventas .sale-combo-btn:hover { border-color: var(--tc-primary); color: var(--tc-primary); }

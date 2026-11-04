@@ -897,6 +897,8 @@
               <span class="search-icon" aria-hidden="true"></span>
               <input type="text" id="product-search" placeholder="Buscar por nombre, código o escanear (F2)" oninput="searchProduct(this.value)" onkeydown="handleSearchKey(event)" autocomplete="off">
               <span class="search-hint">Enter para agregar</span>
+              <!-- Combos personalizados de precio fijo (js/combos-personalizados.js): solo con la función activa. -->
+              <button id="ccp-ventas-btn" class="ccp-ventas-btn hidden" type="button" onclick="CombosPersonalizados.abrir()" title="Armar un combo al precio que acordó el cliente">COMBOS</button>
               <button class="quick-sale-add-btn" type="button" onclick="openQuickSaleModal()" title="Agregar producto rápido" aria-label="Agregar producto rápido"></button>
             </div>
             <div id="search-dropdown" class="search-dropdown hidden"></div>
@@ -1158,6 +1160,7 @@
         <button type="button" class="pill-tab active" id="promo-tab-btn-dashboard" onclick="switchPromotionsTab('dashboard')">Dashboard</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-activas" onclick="switchPromotionsTab('activas')">Promociones Activas</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-combos" onclick="switchPromotionsTab('combos')">Combos promocionales</button>
+        <button type="button" class="pill-tab hidden" id="promo-tab-btn-combos-personalizados" onclick="switchPromotionsTab('combos-personalizados')">Combos personalizados</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-estadisticas" onclick="switchPromotionsTab('estadisticas')">Estadísticas</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-historial" onclick="switchPromotionsTab('historial')">Historial</button>
         <button type="button" class="pill-tab" id="promo-tab-btn-config" onclick="switchPromotionsTab('config')">Configuración</button>
@@ -1277,6 +1280,37 @@
       </div>
 
       <!-- Panel: Estadísticas -->
+      <!-- Panel: Combos personalizados de precio fijo (js/combos-personalizados.js) -->
+      <div id="promo-panel-combos-personalizados" class="promo-tab-panel hidden">
+        <div class="stats-row">
+          <div class="stat-card"><div class="stat-val" id="ccp-count-activos">0</div><div class="stat-label">Combos sugeridos activos</div></div>
+          <div class="stat-card stat-warning"><div class="stat-val" id="ccp-count-inactivos">0</div><div class="stat-label">Inactivos</div></div>
+          <div class="stat-card"><div class="stat-val" id="ccp-count-productos">0</div><div class="stat-label">Productos disponibles</div></div>
+        </div>
+        <div class="combo-toolbar">
+          <span class="combo-hint" style="flex:1 1 240px">En Ventas el cajero escribe el precio del combo (con ITBIS incluido) y elige los productos. Los combos sugeridos son opcionales: un nombre y, si quieres, un precio de partida que el cajero puede cambiar.</span>
+          <button class="btn-primary" type="button" onclick="CombosPersonalizados.abrirFormulario()">Nuevo combo sugerido</button>
+        </div>
+        <div id="ccp-lista" class="combo-grid"></div>
+
+        <div class="product-form-card combo-settings">
+          <div class="combo-settings-title">Productos disponibles para combos</div>
+          <small class="combo-hint">Marca los productos que el cajero puede elegir. Son los mismos del inventario: se siguen vendiendo sueltos igual. Solo productos que se venden por unidad.</small>
+          <input type="text" class="mod-search" placeholder="Buscar producto…" oninput="CombosPersonalizados.buscarProductosPanel(this.value)">
+          <div id="ccp-productos" class="ccp-prod-list"></div>
+        </div>
+
+        <div class="combo-report">
+          <div class="combo-report-head">
+            <div class="combo-settings-title">Reporte de combos personalizados</div>
+            <label>Desde <input type="date" id="ccp-reporte-desde" class="form-input"></label>
+            <label>Hasta <input type="date" id="ccp-reporte-hasta" class="form-input"></label>
+            <button class="btn-secondary" type="button" onclick="CombosPersonalizados.verReporte()">Ver reporte</button>
+          </div>
+          <div id="ccp-reporte"><div class="combo-empty">Elige un período y pulsa "Ver reporte".</div></div>
+        </div>
+      </div>
+
       <div id="promo-panel-estadisticas" class="promo-tab-panel hidden">
         <div class="products-stats">
           <div class="stat-card"><div class="stat-val" id="pd-productos">0</div><div class="stat-label">Productos en promoción</div></div>
@@ -3568,6 +3602,37 @@
             </div>
             <small id="cfg-sales-split-view-helper" class="helper-text">Muestra el catálogo de productos a un lado y el pedido actual al otro para trabajar en pantalla dividida.</small>
           </div>
+          <!-- Combos personalizados de precio fijo (js/combos-personalizados.js). Se guarda al instante. -->
+          <div class="form-group ccp-config" id="cfg-ccp-section">
+            <div class="ccp-config-title">Combos personalizados</div>
+            <div class="toggle-switch">
+              <span class="toggle-switch-label">Activar combos personalizados</span>
+              <label class="toggle-switch-input">
+                <input type="checkbox" id="cfg-ccp-activo" onchange="CombosPersonalizados.guardarOpcion('activo', this.checked)">
+                <span class="toggle-switch-slider"></span>
+              </label>
+            </div>
+            <small class="helper-text">En Ventas, el cajero escribe el precio que acordó con el cliente (con ITBIS incluido) y elige libremente los productos del combo. Apagado, Ventas y Productos quedan igual que siempre.</small>
+            <small class="helper-text hidden" id="cfg-ccp-permiso">Solo el administrador general puede cambiar estas opciones.</small>
+            <div class="ccp-config-opciones hidden" id="cfg-ccp-opciones">
+              <div class="toggle-switch">
+                <span class="toggle-switch-label">Mostrar los productos con su imagen</span>
+                <label class="toggle-switch-input">
+                  <input type="checkbox" id="cfg-ccp-imagenes" onchange="CombosPersonalizados.guardarOpcion('mostrarImagenes', this.checked)">
+                  <span class="toggle-switch-slider"></span>
+                </label>
+              </div>
+              <div class="toggle-switch">
+                <span class="toggle-switch-label">Permitir elegir cantidades de un producto</span>
+                <label class="toggle-switch-input">
+                  <input type="checkbox" id="cfg-ccp-cantidades" onchange="CombosPersonalizados.guardarOpcion('permitirCantidades', this.checked)">
+                  <span class="toggle-switch-slider"></span>
+                </label>
+              </div>
+              <small class="helper-text">En la factura el combo sale como un solo concepto a su precio, con la indicación "Impuesto incluido". El e-CF lleva cada producto con su base y su ITBIS.</small>
+              <button class="btn-secondary compact-btn" type="button" style="align-self:flex-start" onclick="showModule('promociones', document.querySelector('.nav-item[data-module=promociones]'));setTimeout(function(){switchPromotionsTab('combos-personalizados')},60)">Administrar combos</button>
+            </div>
+          </div>
           <div class="form-group"><label id="cfg-label-primary-color">Color Primario</label>
             <div class="color-options">
               <button class="color-dot" style="background:#6C63FF" onclick="setAccent('#6C63FF','#8B85FF')"></button>
@@ -5361,6 +5426,8 @@
 <script src="js/productos.js"></script>
 <script src="js/promociones.js"></script>
 <script src="js/combos.js"></script>
+<script src="js/combos-personalizados-motor.js"></script>
+<script src="js/combos-personalizados.js"></script>
 <script src="js/rnc-lookup.js"></script>
 <script src="js/clientes.js"></script>
 <script src="js/proveedores.js"></script>

@@ -134,6 +134,9 @@ const createPromotionsRouter = require('./server/routes/promotions.routes');
 const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('./server/services/promotion-engine');
 const createCombosRouter = require('./server/routes/combos.routes');
 const combosService = require('./server/services/combos.service');
+// Combos personalizados de precio fijo (Configuración → Apariencia).
+const createCombosPersonalizadosRouter = require('./server/routes/combos-personalizados.routes');
+const combosPersonalizados = require('./server/services/combos-personalizados.service');
 
 // ✅ Red de Terminales — multicaja LAN + sucursales remotas
 const createNetworkRouter = require('./server/routes/network.routes');
@@ -2297,6 +2300,8 @@ function getOfflineRouter() {
       mapInventoryMovementRow,
       // Combos promocionales: la venta offline de un combo descuenta sus componentes.
       ensureCombosExtensions,
+      // Combos personalizados: la venta offline guarda a qué combo perteneció cada línea.
+      ensureCustomCombosExtensions,
       // Caja offline (Fase 3 de la extensión offline)
       withTransaction,
       ensureCashMovementExtensions,
@@ -2574,6 +2579,21 @@ app.use('/api/combos', createCombosRouter({
   removeLocalProductImage,
   writeAuditLog,
   afterCombosChanged,
+}));
+
+// Combos personalizados de precio fijo (Apariencia → Combos personalizados;
+// Promociones → Combos personalizados). La venta la valida POST /api/sales.
+app.use('/api/combos-personalizados', createCombosPersonalizadosRouter({
+  query,
+  addColumnIfMissing,
+  resolveRequestActorUser,
+  userRoleHasPermission,
+  isGlobalAdministratorUser,
+  userCanManageGlobalConfig,
+  saveProductImageBuffer,
+  decodeDataUrlImage,
+  removeLocalProductImage,
+  writeAuditLog,
 }));
 
 // Plataforma Multiempresa — solo rutas públicas del wizard (buscar contador)
@@ -4624,7 +4644,10 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // ensureGastosSchema y ensureServiciosSchema.
 // -14: combos promocionales — tabla product_combo_items, sale_items.combo_snapshot
 // y config.combo_invoice_display — ver ensureCombosExtensions.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-14`;
+// -15: combos personalizados de precio fijo — tabla custom_combos,
+// config.custom_combos_*, products.combo_personalizado y sale_items.custom_combo_*
+// — ver ensureCustomCombosExtensions.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-15`;
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -5993,6 +6016,20 @@ function ensureCombosExtensions() {
       });
   }
   return _combosSchemaReady;
+}
+
+// Combos personalizados (server/services/combos-personalizados.service.js).
+// Memoizado igual que los combos promocionales: arranque, router y cada venta.
+let _customCombosSchemaReady = null;
+function ensureCustomCombosExtensions() {
+  if (!_customCombosSchemaReady) {
+    _customCombosSchemaReady = combosPersonalizados.ensureCustomCombosSchema({ query, addColumnIfMissing })
+      .catch((error) => {
+        _customCombosSchemaReady = null;
+        throw error;
+      });
+  }
+  return _customCombosSchemaReady;
 }
 
 async function ensurePromotionsExtensions() {
@@ -7908,6 +7945,7 @@ async function resetSystemData({ keepUserId = null, factoryReset = false } = {})
       await conn.query('DELETE FROM suppliers');
       await conn.query('DELETE FROM clients');
       await conn.query('DELETE FROM product_combo_items').catch(() => {});
+      await conn.query('DELETE FROM custom_combos').catch(() => {});
       await conn.query('DELETE FROM products');
       await conn.query('DELETE FROM categories');
       await conn.query('DELETE FROM suspended_sales');
@@ -7973,6 +8011,7 @@ async function restoreBackupPayload(backup) {
       await conn.query('DELETE FROM suppliers');
       await conn.query('DELETE FROM clients');
       await conn.query('DELETE FROM product_combo_items').catch(() => {});
+      await conn.query('DELETE FROM custom_combos').catch(() => {});
       await conn.query('DELETE FROM products');
       await conn.query('DELETE FROM categories');
       await conn.query('DELETE FROM suspended_sales');
@@ -8344,7 +8383,9 @@ function mapSaleRows(sales, items) {
         originalPrice: item.original_price === null || item.original_price === undefined ? null : Number(item.original_price),
         quickSale: Number(item.is_quick_sale || 0) === 1,
         // Combo: los componentes tal como se vendieron (para el desglose impreso).
-        ...comboDisplayFromSaleItem(item)
+        ...comboDisplayFromSaleItem(item),
+        // Combo personalizado: a qué combo perteneció la línea (foto del día).
+        ...combosPersonalizados.comboDeLineaGuardada(item)
       })),
     subtotal: Number(sale.subtotal || 0),
     descuento: Number(sale.discount || 0),
@@ -9559,6 +9600,7 @@ app.post('/api/setup/complete', async (req, res) => {
     await conn.query('DELETE FROM suppliers');
     await conn.query('DELETE FROM clients');
     await conn.query('DELETE FROM product_combo_items').catch(() => {});
+    await conn.query('DELETE FROM custom_combos').catch(() => {});
     await conn.query('DELETE FROM products');
     await conn.query('DELETE FROM categories');
     await conn.query('DELETE FROM suspended_sales');
@@ -16466,6 +16508,9 @@ app.post('/api/sales', async (req, res) => {
   await ensurePromotionsExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true });
   const sale = req.body;
+  if (Array.isArray(sale?.items) && sale.items.some((item) => combosPersonalizados.esLineaDeCombo(item))) {
+    await ensureCustomCombosExtensions();
+  }
   // Reintento de la misma venta (respuesta perdida en la red, tiempo agotado,
   // doble clic): se devuelve la venta ya registrada, no se crea otra.
   const clientRequestId = normalizeClientRequestId(sale.clientRequestId);
@@ -17027,6 +17072,16 @@ app.post('/api/sales', async (req, res) => {
         branchId: structure.branchId,
       });
     }
+    // Combos personalizados: cada producto del combo es una línea normal (su
+    // precio de catálogo y su ITBIS; el inventario sale por la ruta de siempre).
+    // Aquí se recalcula cada combo con los precios de la base y se exige su
+    // precio. Una venta sin combos devuelve null sin hacer ninguna consulta.
+    const saleCustomCombos = await combosPersonalizados.prepararVenta(conn.query.bind(conn), {
+      items: sale.items,
+      config,
+      ventaSinItbis: documentType === 'factura-electronica'
+        && ['E44', 'E46'].includes(String(sale.ecfType || '').trim().toUpperCase()),
+    });
     let ahorroPromociones = 0;
     let computedSubtotal = 0;
     // Techo de ITBIS acumulado por línea (para el anti-tamper de más abajo).
@@ -17042,9 +17097,11 @@ app.post('/api/sales', async (req, res) => {
       resolveActivePromotions({ query: conn.query.bind(conn), sucursalId: structure.branchId }),
       resolveActiveQuantityRules({ query: conn.query.bind(conn), sucursalId: structure.branchId }),
     ]);
-    for (const item of sale.items) {
+    for (const [itemIndex, item] of sale.items.entries()) {
       const isQuickSale = item.quickSale === true && !Number(item.id || 0);
       const quickName = isQuickSale ? String(item.nombre || '').trim().slice(0, 150) : '';
+      // Combo personalizado de esta línea (ya validado y repartido arriba), o null.
+      const customCombo = saleCustomCombos ? (saleCustomCombos.lineas.get(itemIndex) || null) : null;
       let product = null;
       let comboSnapshot = null;
       if (!isQuickSale) {
@@ -17076,15 +17133,19 @@ app.post('/api/sales', async (req, res) => {
       // en el carrito: aquí siempre se usa el precio ACTUAL de products).
       // Pedido online: se respeta el precio con que el cliente compró, leído
       // de online_order_items (base local), nunca del body.
-      const agreed = !isQuickSale && onlineAgreedPrices ? onlineAgreedPrices.get(Number(item.id)) : null;
-      const activePromo = isQuickSale || agreed
+      // Combo personalizado: su parte del precio del combo, repartida por el
+      // servidor en prepararVenta (sin ofertas: nunca del body).
+      const agreed = !isQuickSale && !customCombo && onlineAgreedPrices ? onlineAgreedPrices.get(Number(item.id)) : null;
+      const activePromo = isQuickSale || agreed || customCombo
         ? null
         : pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
       const effectivePrice = isQuickSale
         ? Number(item.precio || 0)
-        : agreed
-          ? agreed.price
-          : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
+        : customCombo
+          ? customCombo.precioLinea
+          : agreed
+            ? agreed.price
+            : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
       if (agreed && agreed.originalPrice !== null && agreed.originalPrice > agreed.price) {
         ahorroPromociones += (agreed.originalPrice - agreed.price) * Number(item.qty || 0);
       }
@@ -17095,7 +17156,9 @@ app.post('/api/sales', async (req, res) => {
       // Modo/monto de ITBIS SIEMPRE releídos de products (nunca del payload
       // del cliente) — igual que ya se hace con el precio de venta más
       // arriba, para que el anti-tamper de más abajo sea real.
-      const isFixedTax = !isQuickSale && Boolean(product?.aplica_itbis) && String(product?.itbis_modo) === 'monto';
+      // En un combo personalizado el ITBIS va siempre en % (el de monto fijo
+      // pasa a la tasa de la DGII más cercana, igual que en el e-CF).
+      const isFixedTax = !isQuickSale && !customCombo && Boolean(product?.aplica_itbis) && String(product?.itbis_modo) === 'monto';
       const effectiveTaxMode = isFixedTax ? 'monto' : 'porcentaje';
       const effectiveTaxAmount = isFixedTax
         ? Number((Number(product.itbis_monto || 0) * Number(item.qty || 0)).toFixed(2))
@@ -17111,7 +17174,7 @@ app.post('/api/sales', async (req, res) => {
       const fixedCeiling = isFixedTax ? Number(product.itbis_monto || 0) * Number(item.qty || 0) : 0;
       maxTaxCeiling += Math.max(percentCeiling, fixedCeiling);
 
-      await conn.query(
+      const saleItemInsert = await conn.query(
         `INSERT INTO sale_items
           (sale_id, product_id, item_name, is_quick_sale, qty, price, discount_rate, tax_rate, tax_mode, tax_amount, sale_mode, unit_label, weight_unit, scale_weight, scale_measured_value, scale_measured_unit, scale_source, scale_raw_reading, line_total, promotion_id, original_price, combo_snapshot)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -17138,10 +17201,21 @@ app.post('/api/sales', async (req, res) => {
           String(item.scaleRawReading || '').trim() || null,
           effectiveLineTotal,
           activePromo ? activePromo.promotionId : (agreed?.promotionId || null),
-          activePromo ? activePromo.precioOriginal : (agreed && agreed.originalPrice !== null ? agreed.originalPrice : null),
+          // Combo personalizado: el precio de catálogo del producto (trazabilidad).
+          customCombo
+            ? customCombo.precioOriginal
+            : (activePromo ? activePromo.precioOriginal : (agreed && agreed.originalPrice !== null ? agreed.originalPrice : null)),
           comboSnapshot ? JSON.stringify(comboSnapshot) : null,
         ]
       );
+      // Marca del combo personalizado en su línea (aparte del INSERT de
+      // siempre: una venta sin combos no toca estas columnas).
+      if (customCombo) {
+        await conn.query(
+          'UPDATE sale_items SET custom_combo_key = ?, custom_combo_id = ?, custom_combo_name = ?, custom_combo_price = ? WHERE id = ?',
+          [customCombo.clave, customCombo.comboId, customCombo.nombre, customCombo.precio, saleItemInsert.insertId]
+        );
+      }
 
       // Combo: sale cada componente × cantidad de combos (la fila del combo no
       // tiene existencia propia: tracks_stock = 0, así que el bloque de abajo no
@@ -17194,7 +17268,9 @@ app.post('/api/sales', async (req, res) => {
           costoUnitario: Number(product?.precio_compra || 0),
           referenciaTipo: 'venta',
           referenciaId: invoiceNumber,
-          notas: `Salida por venta ${invoiceNumber}`,
+          notas: customCombo
+            ? `Salida por venta ${invoiceNumber} · combo ${customCombo.nombre}`.slice(0, 255)
+            : `Salida por venta ${invoiceNumber}`,
           usuarioId: sale.userId || null,
           usuarioNombre: actorUser.nombre || actorUser.usuario || 'Sistema'
         });
@@ -17289,6 +17365,7 @@ app.post('/api/sales', async (req, res) => {
       deliveryLongitude,
       shouldAttemptEcf: shouldUseEcfFlow,
       onlineOrderId,
+      customCombos: saleCustomCombos ? saleCustomCombos.grupos : [],
     };
   });
   } catch (error) {
@@ -17354,6 +17431,18 @@ app.post('/api/sales', async (req, res) => {
     actionName: created.saleStatus === 'pendiente' ? 'Factura pendiente creada' : 'Venta registrada',
     detail: `${created.branchName || 'Sucursal'} · ${created.cashRegisterName || 'Caja'} · ${rows[0]?.invoice_number || 'Venta'} · ${created.saleMode || 'directa'} · ${created.saleStatus || 'pagada'} · Pago: ${rows[0]?.payment_method || 'efectivo'} · RD$ ${Number(sale.total || 0).toFixed(2)}`
   }).catch((err) => console.warn('[audit] Falló al registrar venta:', err.message));
+  // Combos personalizados: el precio lo elige el cajero, así que cada combo
+  // queda en la auditoría con el valor normal de lo que llevó.
+  for (const combo of created.customCombos || []) {
+    writeAuditLog({
+      userId: actorUser.id || sale.userId || null,
+      userName: actorUser.nombre || actorUser.usuario || 'Sistema',
+      userRole: actorUser.rol || 'Sistema',
+      moduleName: 'Ventas',
+      actionName: 'Combo personalizado vendido',
+      detail: `${rows[0]?.invoice_number || 'Venta'} · ${combo.nombre} · ${combosPersonalizados.fmt(combo.precio)} (valor normal ${combosPersonalizados.fmt(combo.normal)})`
+    }).catch(() => {});
+  }
   if (created.saleStatus === 'pagada') {
     firebaseSync.syncVentaDia({
       total: sale.total,
@@ -20585,6 +20674,7 @@ async function finishMysqlRuntimeInit() {
         ensureMultiempresaExtensions().catch(e => console.warn('[multiempresa] init fallo:', e.message)),
         ensureSyncQueueTable().catch(e => console.warn('[sync-queue] init fallo:', e.message)),
         ensureCombosExtensions().catch(e => console.warn('[combos] init fallo:', e.message)),
+        ensureCustomCombosExtensions().catch(e => console.warn('[combos-personalizados] init fallo:', e.message)),
       ]));
       await multisucursal.prepararAlArrancar();
       const setup = await getSetupStatus();
@@ -20792,6 +20882,7 @@ async function prepareServerRuntime() {
       ensureNetworkExtensions(query).catch(e => console.warn('[network] init fallo:', e.message)),
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
       ensureCombosExtensions().catch(e => console.warn('[combos] init fallo:', e.message)),
+      ensureCustomCombosExtensions().catch(e => console.warn('[combos-personalizados] init fallo:', e.message)),
     ]));
     // Antes de la recuperación automática: un respaldo hecho con esta versión
     // trae la columna uuid y la base tiene que tenerla para restaurarlo.

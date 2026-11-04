@@ -127,6 +127,9 @@ CREATE TABLE config (
   invoice_template VARCHAR(20) DEFAULT NULL,
   invoice_accent_color VARCHAR(7) DEFAULT NULL,
   combo_invoice_display VARCHAR(20) NOT NULL DEFAULT 'agrupado',
+  custom_combos_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  custom_combos_show_images TINYINT(1) NOT NULL DEFAULT 1,
+  custom_combos_allow_qty TINYINT(1) NOT NULL DEFAULT 1,
   cash_drawer_enabled TINYINT(1) NOT NULL DEFAULT 0,
   cash_drawer_method VARCHAR(20) NOT NULL DEFAULT 'escpos',
   cash_drawer_printer_name VARCHAR(160) DEFAULT NULL,
@@ -264,6 +267,7 @@ CREATE TABLE products (
   extra_options LONGTEXT DEFAULT NULL,
   allow_half_and_half TINYINT(1) NOT NULL DEFAULT 0,
   is_combo TINYINT(1) NOT NULL DEFAULT 0,
+  combo_personalizado TINYINT(1) NOT NULL DEFAULT 0,
   aplica_itbis TINYINT(1) NOT NULL DEFAULT 0,
   itbis_modo VARCHAR(20) NOT NULL DEFAULT 'porcentaje',
   itbis_monto DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -538,9 +542,14 @@ CREATE TABLE sale_items (
   promotion_id INT DEFAULT NULL,
   original_price DECIMAL(12,2) DEFAULT NULL,
   combo_snapshot LONGTEXT DEFAULT NULL,
+  custom_combo_key VARCHAR(40) DEFAULT NULL,
+  custom_combo_id INT DEFAULT NULL,
+  custom_combo_name VARCHAR(150) DEFAULT NULL,
+  custom_combo_price DECIMAL(12,2) DEFAULT NULL,
   KEY idx_sale_items_sale (sale_id),
   KEY idx_sale_items_product (product_id),
   KEY idx_sale_items_promotion (promotion_id),
+  KEY idx_sale_items_custom_combo (custom_combo_id),
   CONSTRAINT fk_sale_items_sale FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   CONSTRAINT fk_sale_items_product FOREIGN KEY (product_id) REFERENCES products(id)
 );
@@ -617,6 +626,24 @@ CREATE TABLE product_combo_items (
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   KEY idx_combo_items_combo (combo_product_id),
   KEY idx_combo_items_component (component_product_id)
+);
+
+-- Combos personalizados: combos sugeridos (nombre y precio sugerido, opcionales).
+-- El precio de cada venta y los productos los elige el cajero; van como líneas
+-- normales de sale_items (custom_combo_key / custom_combo_id / custom_combo_name /
+-- custom_combo_price) con el precio del combo repartido entre ellas.
+CREATE TABLE custom_combos (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(150) NOT NULL,
+  descripcion VARCHAR(500) DEFAULT NULL,
+  precio DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  estado VARCHAR(20) NOT NULL DEFAULT 'Activo',
+  color VARCHAR(20) DEFAULT NULL,
+  image_local VARCHAR(255) DEFAULT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_by_user_id INT DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE inventory_movements (
