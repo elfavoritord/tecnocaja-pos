@@ -90,11 +90,33 @@ function getBucket() {
   return bucket;
 }
 
-// ¿Hay llaves de nube en esta PC? (no comprueba que funcionen)
-function isConfigured() {
+// Nube por el servicio de Tecno Caja (sin llave en esta PC): ver nube-intermediario.js.
+const nube = require('./nube-intermediario');
+
+// ¿Tiene esta PC su propia llave de Backblaze en app.env? (instalaciones viejas,
+// la PC de Emilio). Sin ella, todo va por el servicio de Tecno Caja.
+function tieneLlavePropia() {
   const keys = Boolean((process.env.R2_ACCESS_KEY_ID || '').trim() && (process.env.R2_SECRET_ACCESS_KEY || '').trim());
   const target = Boolean((process.env.R2_ENDPOINT || '').trim() || (process.env.R2_ACCOUNT_ID || '').trim());
   return keys && target && Boolean((process.env.R2_BUCKET || '').trim());
+}
+
+// 'propia' (llave en app.env), 'tecnocaja' (por el servicio) o 'ninguno'.
+function modo() {
+  if (tieneLlavePropia()) return 'propia';
+  return nube.disponible() ? 'tecnocaja' : 'ninguno';
+}
+
+// ¿Puede esta PC usar la nube? (no comprueba que funcione)
+function isConfigured() {
+  return modo() !== 'ninguno';
+}
+
+// El dueño entró con su cuenta en una PC sin licencia o formateada: con eso el
+// servicio le deja ver y bajar los respaldos de sus negocios (30 min).
+async function entrarComoDueno(idToken) {
+  if (tieneLlavePropia()) return null;
+  return nube.entrarComoDueno(idToken);
 }
 
 // ─── Verificar si R2/B2 está disponible (con caché 60 s por prefijo) ─────────
@@ -113,6 +135,17 @@ async function isR2Available(force = false, prefix = '') {
     if (!cached.ok) throw new Error(cached.err || 'No disponible (caché)');
     return true;
   }
+  if (!tieneLlavePropia()) {
+    try {
+      if (!nube.disponible()) throw new Error('Esta PC no tiene acceso a la nube todavía (sin licencia ni cuenta del dueño).');
+      await nube.listar(prefix || backupPrefix(String(process.env.TECNO_CAJA_LICENSE_UID || '').trim()));
+      _availCache.set(cacheKey, { ok: true, ts: now });
+      return true;
+    } catch (e) {
+      _availCache.set(cacheKey, { ok: false, ts: now, err: e.message });
+      throw e;
+    }
+  }
   try {
     const client = getClient();
     const bucket = getBucket();
@@ -129,6 +162,7 @@ async function isR2Available(force = false, prefix = '') {
 
 // ─── Subir archivo ────────────────────────────────────────────────────────────
 async function upload(key, buffer, metadata = {}) {
+  if (!tieneLlavePropia()) return nube.subir(key, buffer);
   const client = getClient();
   const bucket = getBucket();
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
@@ -147,6 +181,7 @@ async function upload(key, buffer, metadata = {}) {
 
 async function verifyObject(key, { size, sha256 }) {
   if (!sha256) throw new Error('Falta la huella registrada para comprobar el objeto en B2.');
+  if (!tieneLlavePropia()) return nube.verificar(key, { size, sha256 });
   const confirmed = await getClient().send(new HeadObjectCommand({ Bucket: getBucket(), Key: key }), { abortSignal: AbortSignal.timeout(10000) });
   if (Number(confirmed.ContentLength) !== Number(size) || confirmed.Metadata?.sha256 !== sha256) throw new Error('La nube no confirmó tamaño y huella del respaldo. Permanece pendiente de envío.');
   return { verifiedAt: new Date().toISOString() };
@@ -154,6 +189,7 @@ async function verifyObject(key, { size, sha256 }) {
 
 // ─── Descargar archivo ────────────────────────────────────────────────────────
 async function download(key) {
+  if (!tieneLlavePropia()) return nube.bajar(key);
   const client = getClient();
   const bucket = getBucket();
   const resp   = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(120000) });
@@ -168,6 +204,7 @@ async function download(key) {
 
 // ─── Listar objetos bajo un prefijo ──────────────────────────────────────────
 async function listObjects(prefix) {
+  if (!tieneLlavePropia()) return nube.listar(prefix);
   const client  = getClient();
   const bucket  = getBucket();
   const results = [];
@@ -189,6 +226,7 @@ async function listObjects(prefix) {
 
 // ─── Eliminar objeto ──────────────────────────────────────────────────────────
 async function remove(key) {
+  if (!tieneLlavePropia()) return nube.borrar(key);
   const client = getClient();
   const bucket = getBucket();
   await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
@@ -196,6 +234,10 @@ async function remove(key) {
 
 // ─── Verificar si un objeto existe ───────────────────────────────────────────
 async function exists(key) {
+  if (!tieneLlavePropia()) {
+    const prefijo = key.slice(0, key.lastIndexOf('/') + 1);
+    return nube.listar(prefijo).then((l) => l.some((o) => o.Key === key)).catch(() => false);
+  }
   try {
     const client = getClient();
     const bucket = getBucket();
@@ -244,6 +286,9 @@ function resetClient() {
 
 module.exports = {
   isConfigured,
+  tieneLlavePropia,
+  modo,
+  entrarComoDueno,
   isR2Available,
   upload,
   verifyObject,

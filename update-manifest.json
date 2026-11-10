@@ -1,20 +1,15 @@
 {
-  "version": "1.6.15",
-  "stableVersion": "1.6.15",
-  "date": "09/11/2026",
+  "version": "1.6.16",
+  "stableVersion": "1.6.16",
+  "date": "10/11/2026",
   "size": "198 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Compras: sube la factura del proveedor (XML e-CF, Excel o CSV, foto o PDF) y revísala en «Preparar compra» antes de registrarla; crea los productos nuevos con su precio.",
-    "Compras: precio de venta con o sin ITBIS, control de inventario por producto y recepción de mercancía (total o parcial) si el negocio la usa.",
-    "Comprobantes de compras y gastos: solo aparecen los que tienen secuencia, los electrónicos primero; el RNC o cédula busca en la DGII.",
-    "E41, E43 y E47 se revisan contra el formato oficial de la DGII antes de salir y el e-NCF pasa a la compra o al gasto solo cuando la DGII lo acepta.",
-    "Finanzas: propina legal, crédito en pago mixto, estados de cuenta, notas de crédito, ITBIS separado, cierre de caja seguro y apertura de gaveta con motivo.",
-    "Mesas: reservas con anticipo (consumible o no) que entra a la caja y constancia impresa.",
-    "Usuarios: permisos personalizados por usuario.",
-    "Respaldos: cada empresa con su propia carpeta, copia completa del día y reintentos automáticos a la nube cuando vuelve Internet.",
-    "Proveedores: las tarjetas muestran el nombre correcto (Total comprado ya no sale como «Facturas vencidas»)."
+    "Respaldos en la nube automáticos para todos los negocios: cada PC sube su copia del día sola, sin configurar nada.",
+    "Si la PC se daña o se formatea, entra con la cuenta del dueño en «Restaurar desde la nube» y recupera sus datos.",
+    "La clave de los respaldos queda guardada de forma segura y vuelve sola a una PC formateada.",
+    "Se corrigió «Subir archivo de respaldo a la nube», que fallaba."
   ]
 }

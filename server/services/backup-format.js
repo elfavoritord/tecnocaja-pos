@@ -84,4 +84,22 @@ async function parseTcbakBuffer(fileBuffer, password) {
 }
 
 
-module.exports = { createTcbakBuffer, parseTcbakBuffer };
+// Prueba varias claves (la de esta PC, la guardada en la nube para ese negocio,
+// las anteriores): una PC formateada ya no tiene la suya en app.env.
+async function parseTcbakBufferCon(fileBuffer, claves) {
+  const lista = [...new Set((claves || []).map((c) => String(c || '')).filter(Boolean))];
+  let ultimo = null;
+  for (const clave of lista) {
+    try {
+      const r = await parseTcbakBuffer(fileBuffer, clave);
+      return { ...r, claveUsada: clave };
+    } catch (e) {
+      ultimo = e;
+      // Solo se prueba otra clave si esta no descifró; un archivo dañado no mejora.
+      if (!/Contraseña incorrecta/.test(e.message)) throw e;
+    }
+  }
+  throw ultimo || new Error('Contraseña incorrecta o archivo corrupto. No se pudo descifrar el respaldo.');
+}
+
+module.exports = { createTcbakBuffer, parseTcbakBuffer, parseTcbakBufferCon };

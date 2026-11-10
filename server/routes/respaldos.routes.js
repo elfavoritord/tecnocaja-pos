@@ -44,6 +44,25 @@ const DEFAULT_BACKUP_RETENTION = 5; // cuántos .tcbak conservar automáticament
 
 // ─── R2 Storage helpers ───────────────────────────────────────────────────────
 const r2 = require('../services/r2-storage');
+const nube = require('../services/nube-intermediario');
+const { parseTcbakBufferCon } = require('../services/backup-format');
+
+// Claves para abrir un respaldo de la nube de un negocio: la que se escribió,
+// la de esta PC, la guardada en el servicio de Tecno Caja para ese negocio (una
+// PC formateada perdió la suya del app.env) y la de siempre.
+async function clavesParaNegocio(licenseId, escrita = '') {
+  const propia = String(process.env.TECNO_CAJA_SECURITY_PASSWORD || '').trim();
+  const claves = [escrita, propia];
+  if (licenseId) {
+    try {
+      const esEstaPc = licenseId === String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      const r = await nube.clave(licenseId, { propia: esEstaPc ? propia : '' });
+      claves.push(r.clave, ...(r.anteriores || []));
+    } catch (_) { /* sin servicio: se prueba con lo que hay */ }
+  }
+  claves.push('Seguridad2026');
+  return claves;
+}
 const retencion = require('../services/retencion-respaldos');
 const backupPolicy = require('../services/backup-policy');
 const uploadState = require('../services/backup-upload-state');
@@ -484,7 +503,26 @@ module.exports = function createRespaldosRouter({
     if (typeof app.locals.backupPendingUploadTimer.unref === 'function') app.locals.backupPendingUploadTimer.unref();
   }
   if (!app.locals.copiaDelDiaTimer && process.env.NODE_ENV !== 'test') {
-    const revisar = () => { if (!isMainTerminal()) return; return historyReady.then(() => asegurarCopiaDelDia(query, { metadataPath: backupMetadataPath })).catch((e) => console.warn('[respaldos] Copia del día:', e.message)); };
+    // La clave de los respaldos queda guardada en el servicio de Tecno Caja (y
+    // vuelve sola si la PC se formateó). Una vez cada 12 h; sin Internet, después.
+    let claveRevisadaEn = 0;
+    const revisarClave = async () => {
+      if (Date.now() - claveRevisadaEn < 12 * 60 * 60 * 1000) return;
+      try {
+        const r = await nube.sincronizarClave({ persistEnv });
+        if (!r.omitido) claveRevisadaEn = Date.now();
+        if (r.recuperada) console.log('[respaldos] Se recuperó la clave de los respaldos de este negocio desde la nube.');
+      } catch (e) {
+        console.warn('[respaldos] Clave de respaldos en la nube:', e.message);
+      }
+    };
+    const revisar = () => {
+      if (!isMainTerminal()) return;
+      return historyReady.then(async () => {
+        await revisarClave();
+        return asegurarCopiaDelDia(query, { metadataPath: backupMetadataPath });
+      }).catch((e) => console.warn('[respaldos] Copia del día:', e.message));
+    };
     app.locals.copiaDelDiaTimer = setInterval(revisar, 60 * 60 * 1000);
     if (typeof app.locals.copiaDelDiaTimer.unref === 'function') app.locals.copiaDelDiaTimer.unref();
     // La primera, unos minutos después de arrancar (no compite con el arranque).
@@ -924,7 +962,8 @@ module.exports = function createRespaldosRouter({
     try {
       const { storageKey, sha256Esperado, password: pwdOverride } = req.body || {};
       if (!storageKey) return res.status(400).json({ ok: false, error: 'storageKey requerido.' });
-      if (!String(storageKey).startsWith(r2.backupPrefix(await resolveBusinessId(query)))) throw new Error('El respaldo no está en la carpeta de esta empresa.');
+      const negocioId = await resolveBusinessId(query);
+      if (!String(storageKey).startsWith(r2.backupPrefix(negocioId))) throw new Error('El respaldo no está en la carpeta de esta empresa.');
 
       const securityPwd = pwdOverride
         || process.env.TECNO_CAJA_SECURITY_PASSWORD
@@ -941,8 +980,8 @@ module.exports = function createRespaldosRouter({
         }
       }
 
-      // Parsear y validar
-      const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
+      // Parsear y validar (con la clave de esta PC o la guardada para el negocio).
+      const { payload, metadata } = await parseTcbakBufferCon(fileBuffer, await clavesParaNegocio(negocioId, pwdOverride));
 
       // Pre-backup del estado actual (ver crearPreRespaldo).
       const preRestoreName = await crearPreRespaldo('PRE-REST-NUBE', securityPwd, 'restaurar-nube');
@@ -1037,9 +1076,10 @@ module.exports = function createRespaldosRouter({
       }
 
       // Validación mínima: el buffer debe parsear como JSON con el magic correcto
+      // (V1/V2 o V3: antes se rechazaban los V3 que la app genera desde la 1.6.15).
       try {
         const parsed = JSON.parse(fileBuffer.toString('utf8'));
-        if (parsed.magic !== BACKUP_MAGIC) {
+        if (![BACKUP_MAGIC, 'TECNOCAJA_BACKUP_V3'].includes(parsed.magic)) {
           return res.status(400).json({ ok: false, error: 'El archivo no es un respaldo válido de Tecno Caja.' });
         }
       } catch (_) {
@@ -1049,9 +1089,11 @@ module.exports = function createRespaldosRouter({
       const fileName  = rawFileName || `TecnoCaja_Upload_${Date.now()}.tcbak`;
       const sha256    = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
-      // Subir a R2
+      // Subir a R2 (solo un respaldo de esta empresa: se abre para comprobarlo;
+      // antes `payload` no existía aquí y la subida fallaba siempre).
       const businessId = await resolveBusinessId(query);
       const storageKey = r2.backupKey(businessId, fileName);
+      const { payload } = await parseTcbakBufferCon(fileBuffer, await clavesParaNegocio(businessId));
       backupPolicy.assertPayload(payload, await backupPolicy.context(query));
       await r2.upload(storageKey, fileBuffer, {
         businessId,
@@ -1354,15 +1396,26 @@ module.exports = function createRespaldosRouter({
     try {
       const { email, idToken } = req.body || {};
 
-      const setupUid = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-      const nubeOk = await r2.isR2Available(false, setupUid ? r2.backupPrefix(setupUid) : '');
-      if (!nubeOk) {
-        return res.status(503).json({ ok: false, error: 'La nube no está disponible o no está configurada en este dispositivo.' });
-      }
-
+      // Con la cuenta del dueño: sin llave propia en esta PC (lo normal en una PC
+      // recién instalada o formateada), el servicio de Tecno Caja le da acceso a
+      // los respaldos de sus negocios. Nada que configurar a mano.
       if (idToken && typeof verificarCuentaDueno === 'function' && typeof licenciasDelCorreo === 'function') {
+        if (typeof r2.tieneLlavePropia === 'function' && !r2.tieneLlavePropia()) {
+          try {
+            await r2.entrarComoDueno(String(idToken));
+          } catch (e) {
+            const status = e.statusCode === 404 ? 404 : (e.statusCode === 401 ? 401 : 503);
+            return res.status(status).json({ ok: false, code: e.code || 'NUBE_NO_DISPONIBLE', error: e.message });
+          }
+        }
         const r = await respaldosDelDueno(String(idToken));
         return res.status(r.status).json(r.cuerpo);
+      }
+
+      const setupUid = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      const nubeOk = await r2.isR2Available(false, setupUid ? r2.backupPrefix(setupUid) : '').catch(() => false);
+      if (!nubeOk) {
+        return res.status(503).json({ ok: false, error: 'La nube no está disponible en este dispositivo. Escribe también la contraseña del dueño para buscar los respaldos de sus negocios.' });
       }
 
       const businessId = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
@@ -1483,8 +1536,10 @@ module.exports = function createRespaldosRouter({
         }
       }
 
-      // Descifrar y parsear backup
-      const { payload, metadata } = await parseTcbakBuffer(fileBuffer, securityPwd);
+      // Descifrar: con la clave de esta PC o, si se formateó, con la guardada en
+      // el servicio de Tecno Caja para ese negocio.
+      const negocioDelRespaldo = licenciaDelDueno || (String(storageKey).match(/^backups\/([^/]+)\//) || [])[1] || '';
+      const { payload, metadata, claveUsada } = await parseTcbakBufferCon(fileBuffer, await clavesParaNegocio(negocioDelRespaldo));
 
       // ── Verificar identidad del usuario contra datos del backup ──────────
       // Solo si se proporcionan credenciales (requeridas si el backup tiene
@@ -1530,6 +1585,11 @@ module.exports = function createRespaldosRouter({
       // ese negocio (sus respaldos siguen en la misma carpeta de la nube).
       if (licenciaDelDueno && String(process.env.TECNO_CAJA_LICENSE_UID || '').trim() !== licenciaDelDueno) {
         persistEnv({ TECNO_CAJA_LICENSE_UID: licenciaDelDueno });
+      }
+      // La clave guardada del negocio vuelve a esta PC: sus respaldos nuevos se
+      // cifran igual que antes del formateo.
+      if (claveUsada && claveUsada !== 'Seguridad2026' && !String(process.env.TECNO_CAJA_SECURITY_PASSWORD || '').trim()) {
+        persistEnv({ TECNO_CAJA_SECURITY_PASSWORD: claveUsada });
       }
       await revisarEnlaceTrasRestaurar();
 

@@ -20,6 +20,21 @@ En los dos caminos el token se entrega **una sola vez** (en Firestore solo queda
 | GET | `/v1/cambios?tipo=catalogo\|usuarios\|comandos\|ncf&desde=<seq>&limite=<n>&contar=1` | Lo que cambió para esta sucursal desde el cursor, en páginas (`siguiente`, `hayMas`, `pendientes`) |
 | GET | `/v1/sucursales` | Sucursales de la empresa (para elegir alcance en la principal) |
 
+### Respaldos en la nube sin llaves en las PC (`lib/respaldos.js`, 2026-11-10)
+
+La llave de Backblaze vive solo aquí. Cada PC pide un permiso y recibe enlaces firmados de 5 minutos para **su** carpeta `backups/<licencia>/`; el POS lo usa solo (`server/services/nube-intermediario.js`, desde `r2-storage.js`) cuando su `app.env` no tiene llave propia.
+
+| Método | Ruta | Para qué |
+|---|---|---|
+| POST | `/v1/respaldos/sesion` | `{ licenseId, deviceId }` (la PC tiene que estar en `licencias/{id}.devices` y no liberada) → permiso de 1 h para su carpeta. O `{ idToken }` (cuenta del dueño, sesión de menos de 30 min) → permiso de 30 min para **leer** los respaldos de sus negocios (PC formateada o nueva) |
+| POST | `/v1/respaldos/listar` · `/bajar` · `/verificar` | Bearer → lista, enlace de bajada, tamaño + huella |
+| POST | `/v1/respaldos/subir` · `/borrar` | Bearer, solo la PC → enlace de subida (la huella va firmada como `x-amz-meta-sha256`) / borrar un respaldo viejo |
+| POST | `/v1/respaldos/clave` | Bearer → clave con que se cifran los respaldos del negocio. La PC manda la suya (`propia`) y queda guardada; formateada, la recupera. El dueño solo la lee |
+
+Firestore: `respaldos_claves/{licenseId}` (`actual` + `anteriores`, cifradas con AES-256-GCM y `RESPALDOS_SECRETO`). Ninguna regla la abre.
+
+Variables (además de `FIRESTORE_PROJECT_ID`): `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_ENDPOINT` (la llave del bucket) y `RESPALDOS_SECRETO` (copia en el `.env` del repo: **si se pierde o cambia, las claves guardadas ya no se abren**). Sin ellas las rutas responden 503. Pruebas: `npx jest test/respaldos` (en esta carpeta) y, contra Backblaze real, `node scripts/probar-nube-intermediario.js` desde la raíz (con `NODE_PATH=cloud/sync-api/node_modules`).
+
 Respuestas 403 con `code`: `EQUIPO_REEMPLAZADO`, `EQUIPO_REVOCADO`, `SUCURSAL_INACTIVA`, `LICENCIA_INACTIVA`. El POS las muestra y deja de sincronizar; la venta local sigue igual. Máximo 120 peticiones por minuto por equipo.
 
 Reglas de eventos y cambios: `vendor/multisucursal/sincronizacion-central.js`, copia de `server/multisucursal/central/sincronizacion-central.js`. Ver `docs/MULTISUCURSAL-FASES-4-8.md`.
@@ -57,6 +72,8 @@ gcloud run deploy tecno-caja-sync-api --source . --region us-east1 --project rep
   --allow-unauthenticated --min-instances 0 --max-instances 3 --memory 256Mi `
   "--update-env-vars=FIRESTORE_PROJECT_ID=reporte-sistema-pos"
 ```
+
+`--update-env-vars` conserva las variables que ya tiene el servicio (las de respaldos se ponen una vez; ver arriba). Para ponerlas sin escribirlas en pantalla hay un script que las lee del `.env` del repo.
 
 - `--allow-unauthenticated`: la autenticación es el token de cada equipo o la cuenta del dueño, no IAM (el POS no tiene cuenta de Google).
 - La cuenta de servicio de Cloud Run (hoy la de Compute por defecto, con Editor) necesita **Cloud Datastore User** y poder leer usuarios de Firebase Auth (verificar la cuenta del dueño).
