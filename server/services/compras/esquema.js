@@ -158,6 +158,8 @@ async function ensureComprasFaseA(query, { getDbClient, withTransaction } = {}) 
   await col('config', 'compras_margen_defecto', 'DECIMAL(6,2) DEFAULT NULL');
   await col('config', 'compras_tipo_margen', "VARCHAR(10) NOT NULL DEFAULT 'costo'");
   await col('config', 'compras_precio_modo', "VARCHAR(10) NOT NULL DEFAULT 'base'");
+  // Compras que registra el contador desde su portal (fase C). El negocio lo puede apagar.
+  await col('config', 'compras_contador_permitido', 'INT NOT NULL DEFAULT 1');
 
   await indice(query, 'idx_purchases_uuid', 'CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_uuid ON purchases (uuid)');
   await indice(query, 'idx_purchase_receipts_uuid', 'CREATE UNIQUE INDEX IF NOT EXISTS idx_purchase_receipts_uuid ON purchase_receipts (uuid)');

@@ -74,7 +74,7 @@ function crearServicioCompras(deps) {
   // ── Configuración por empresa ──────────────────────────────────────────────
   async function leerConfig() {
     await ensureSchema();
-    const [row] = await query('SELECT compras_modo_recepcion, compras_margen_defecto, compras_tipo_margen, compras_precio_modo FROM config WHERE id = 1');
+    const [row] = await query('SELECT compras_modo_recepcion, compras_margen_defecto, compras_tipo_margen, compras_precio_modo, compras_contador_permitido FROM config WHERE id = 1');
     const cfg = await Promise.resolve(getConfig()).catch(() => ({}));
     const tasa = Number(cfg?.itbis ?? 18);
     return {
@@ -84,6 +84,9 @@ function crearServicioCompras(deps) {
       precioModo: ['base', 'incluido', 'exento'].includes(row?.compras_precio_modo) ? row.compras_precio_modo : 'base',
       tasaItbis: Number.isFinite(tasa) ? tasa : 18,
       rncNegocio: String(cfg?.rnc || ''),
+      // El contador vinculado registra compras desde su portal (por defecto sí).
+      contadorRegistra: row?.compras_contador_permitido === undefined || row?.compras_contador_permitido === null
+        ? true : Number(row.compras_contador_permitido) !== 0,
     };
   }
   async function guardarConfig(body) {
@@ -96,6 +99,9 @@ function crearServicioCompras(deps) {
     const precioModo = ['base', 'incluido', 'exento'].includes(body?.precioModo) && body.precioModo !== 'exento' ? body.precioModo : 'base';
     await query('UPDATE config SET compras_modo_recepcion = ?, compras_margen_defecto = ?, compras_tipo_margen = ?, compras_precio_modo = ? WHERE id = 1',
       [modo, margen, tipoMargen, precioModo]);
+    if (typeof body?.contadorRegistra === 'boolean') {
+      await query('UPDATE config SET compras_contador_permitido = ? WHERE id = 1', [body.contadorRegistra ? 1 : 0]);
+    }
     return leerConfig();
   }
 
