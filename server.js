@@ -2734,6 +2734,27 @@ const comprasRouter = createComprasRouter({
 });
 app.use('/api/purchases', comprasRouter);
 
+// Compras que el contador registra desde su portal (licencias/{id}/compras_pendientes):
+// esta PC principal las registra por la misma ruta de compras, sin duplicar.
+const colaComprasPortal = require('./server/services/compras/cola-portal').createColaComprasPortal({
+  servicio: comprasRouter.servicio, query, writeAuditLog,
+  getDb: () => {
+    if (!getFirebaseConfigStatus().adminEnabled) return null;
+    return require('./modules/firebase-admin').getFirestore();
+  },
+  getBranchId: async () => {
+    const propia = Number(getTerminalScopeSelection().branchId || 0);
+    if (propia) return propia;
+    const [b] = await query('SELECT id FROM branches ORDER BY id LIMIT 1').catch(() => []);
+    return b ? Number(b.id) : null;
+  },
+  esPrincipal: () => isMainTerminalConfig(getTerminalConfig()),
+  alRegistrar: () => syncPortalContableFireAndForget('compra registrada por el contador'),
+  quien: () => require('os').hostname(),
+});
+// Respaldo del listener: cada 3 minutos (si no hay Firebase o Internet, no hace nada).
+setInterval(() => { colaComprasPortal.procesar().catch(() => {}); }, 3 * 60 * 1000).unref?.();
+
 // Gastos — registro fiscal (Fase 2)
 const gastosRouter = createGastosRouter({
   comprobantesCompra, puedeAprobarComprobantes,
@@ -20651,6 +20672,7 @@ function startLicenseServicesInBackground() {
     ensureLicenseBackgroundSync(),
     startFirestoreNcfPendientesWatcher(),
     startFirestoreProductosPendientesWatcher(),
+    Promise.resolve().then(() => (isMainTerminalConfig(getTerminalConfig()) ? colaComprasPortal.escuchar() : false)),
   ]).then((results) => {
     for (const result of results) {
       if (result.status === 'rejected') {

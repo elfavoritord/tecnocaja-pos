@@ -895,6 +895,9 @@
           <label class="cp-campo">El margen es sobre<select class="tc-select" id="cp-cfg-tipo"><option value="costo" ${c.tipoMargen !== 'venta' ? 'selected' : ''}>el costo</option><option value="venta" ${c.tipoMargen === 'venta' ? 'selected' : ''}>la venta</option></select></label>
           <label class="cp-campo">El precio que se escribe es<select class="tc-select" id="cp-cfg-modo"><option value="base" ${c.precioModo === 'base' ? 'selected' : ''}>Precio base + ITBIS</option><option value="incluido" ${c.precioModo === 'incluido' ? 'selected' : ''}>Precio final (ITBIS incluido)</option></select></label>
           <p class="cp-nota">La tasa de ITBIS sale de Configuración → Facturación (hoy ${c.tasaItbis} %).</p>
+        </fieldset>
+        <fieldset class="cp-config"><legend>Tu contador</legend>
+          <label class="cp-check"><input type="checkbox" id="cp-cfg-contador" ${c.contadorRegistra !== false ? 'checked' : ''}> <span><b>Mi contador registra compras desde su portal</b> (entran solas: inventario, costos y cuentas por pagar; no cambia los precios de tus productos)</span></label>
         </fieldset>`;
       document.getElementById('modal-footer').innerHTML = `<button class="btn-secondary" type="button" onclick="closeAllModals()">Cancelar</button>
         ${c.puedeConfigurar ? '<button class="btn-primary" type="button" id="cp-cfg-guardar">Guardar</button>' : '<small>Solo quien administra la configuración puede cambiarla.</small>'}`;
@@ -904,6 +907,7 @@
           cfg = { ...cfg, ...(await req('/api/purchases/config', json('PUT', {
             modoRecepcion: document.querySelector('input[name="cp-modo"]:checked')?.value, margenDefecto: document.getElementById('cp-cfg-margen').value,
             tipoMargen: document.getElementById('cp-cfg-tipo').value, precioModo: document.getElementById('cp-cfg-modo').value,
+            contadorRegistra: document.getElementById('cp-cfg-contador').checked,
           }))) };
           toast('Configuración de compras guardada.');
           closeAllModals();

@@ -34,12 +34,20 @@ const FILES = [
   ['js/dgii-autorizacion.js', 'public/js/dgii-autorizacion.js'],
   ['js/catalogo-csv.js', 'public/js/catalogo-csv.js'],
   ['electron/thermal-printer.js', 'electron/thermal-printer.js'],
+  // Compras desde el portal (fase C): los mismos lectores de facturas del POS
+  // (XML e-CF del proveedor, Excel/CSV con la plantilla de Compras).
+  ['modules/ecf/utils/xml.util.js', 'server/compras/xml.util.js'],
+  ['server/services/compras/emparejar-productos.js', 'server/compras/emparejar-productos.js'],
+  ['server/services/compras/lector-xml-ecf.js', 'server/compras/lector-xml-ecf.js',
+    (t) => t.replace("require('../../../modules/ecf/utils/xml.util')", "require('./xml.util')")],
+  ['server/services/compras/lector-tabla.js', 'server/compras/lector-tabla.js'],
 ];
 
-for (const [from, to] of FILES) {
+for (const [from, to, transformar] of FILES) {
   const src = path.join(REPO_ROOT, from);
   const dest = path.join(APP_ROOT, to);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.copyFileSync(src, dest);
+  if (transformar) fs.writeFileSync(dest, transformar(fs.readFileSync(src, 'utf8')));
+  else fs.copyFileSync(src, dest);
   console.log(`[vendor-sync] ${from} -> tecno-caja-contadores/${to}`);
 }

@@ -487,7 +487,7 @@ function createComprasRouter({
       const antes = await servicio.leerConfig();
       const cfg = await servicio.guardarConfig(req.body || {});
       await Promise.resolve(writeAuditLog({ userId: req.authUser.id, userName: actorName(req.authUser), moduleName: 'Compras', actionName: 'Configuración de compras',
-        before: antes, after: cfg, detail: `Recepción: ${cfg.modoRecepcion} · margen ${cfg.margenDefecto ?? 'manual'} (${cfg.tipoMargen}) · precio ${cfg.precioModo}` })).catch(() => {});
+        before: antes, after: cfg, detail: `Recepción: ${cfg.modoRecepcion} · margen ${cfg.margenDefecto ?? 'manual'} (${cfg.tipoMargen}) · precio ${cfg.precioModo} · contador registra compras: ${cfg.contadorRegistra ? 'sí' : 'no'}` })).catch(() => {});
       res.json(cfg);
     } catch (e) { responderError(res, e); }
   });
@@ -812,6 +812,8 @@ function createComprasRouter({
     }
   });
 
+  // El mismo servicio lo usa la cola de compras del portal del contador.
+  router.servicio = servicio;
   return router;
 }
 

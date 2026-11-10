@@ -2541,6 +2541,8 @@ function cambiarTabReporte(tab) {
 }
 
 async function cargarDatosReporte() {
+  // Compras de proveedores: su propia vista (public/js/compras-portal.js).
+  if (_repTab === 'compras' && window.ComprasPortal) return window.ComprasPortal.cargar(_repNegocioId);
   if (!_repNegocioId || _repLoading) return;
   _repLoading = true;
 

@@ -110,6 +110,28 @@ tabla dentro de una transacción comprobando el conteo) y `config` (`compras_*`)
 - Al tocar compras, correr también `node scripts/probar-nueve-mejoras.js` y `npm run test:ecf-completo`
   (el E41 de compras pasa por aquí).
 
+## Fase C: el contador registra compras desde su portal (2026-11-10)
+
+Decisión de Emilio: **el contador registra directo** (la compra entra sola, sin confirmación del negocio).
+
+- **Portal** (Reportes → pestaña **Compras**, `tecno-caja-contadores/public/js/compras-portal.js` +
+  `server/compras-portal.js`): lee el XML e-CF o el Excel/CSV del proveedor con **los mismos lectores del
+  POS** (copiados por su `vendor-sync`), o se escribe a mano. Cada línea: producto del negocio (lo que
+  publica su POS), «Nuevo» (con precio de venta opcional, ITBIS incluido) o servicio/gasto. Se manda a
+  `licencias/{licencia}/compras_pendientes/{uuid}`. Lista con estados; «Corregir» y «Quitar».
+- **POS** (`server/services/compras/cola-portal.js`): la PC principal la toma (transacción + lease de
+  10 min), la registra con `registrar` (uuid = el de la cola: nunca duplica) y escribe el resultado:
+  `registrada` (compra #, total, productos nuevos), `requiere_correccion` (motivos: parecidos, totales, NCF
+  repetido, precio de un producto existente…) o `rechazada`. Listener de Firestore + revisión cada 3 min.
+- **Límites:** solo el contador vinculado (`contadorId` de la licencia); el negocio lo apaga en
+  Compras → Configuración («Mi contador registra compras», `config.compras_contador_permitido`); el
+  contador **no cambia precios ni control de inventario de productos existentes** (permiso Productos) y no
+  emite comprobantes de compra (E41/B11). El XML original queda en `purchase_documents`. Auditoría
+  «Compra registrada por el contador».
+- El POS avisa que soporta la cola con `comprasPortalVersion: 1` en su licencia (sync-pos-stats); con un
+  POS viejo el portal no deja mandar.
+- Pruebas: `npx jest tests/compras/cola-portal tests/contadores-compras`.
+
 ## Pendiente (fases siguientes)
 
 - **B**: lectura de fotos/PDF (texto del PDF digital, IA con visión con clave del negocio, OCR

@@ -885,6 +885,10 @@ async function sucursalDelPedido(businessId, bizData, branchId) {
   return { branchNombre: match.nombre, normalizedBranchId, sucursalesEmpresa: null };
 }
 
+// Compras de proveedores que el contador registra para un negocio (cola que
+// el POS registra solo): server/compras-portal.js.
+require('./server/compras-portal').registrarRutasComprasPortal(app, { col, COL_LICENCIAS, requireAuth, isoNow });
+
 app.get('/api/productos-pendientes/:businessId', requireAuth, async (req, res) => {
   try {
     const bizDoc = await col(COL_LICENCIAS).doc(req.params.businessId).get();

@@ -1,15 +1,14 @@
 {
-  "version": "1.6.16",
-  "stableVersion": "1.6.16",
+  "version": "1.6.17",
+  "stableVersion": "1.6.17",
   "date": "10/11/2026",
   "size": "198 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Respaldos en la nube automáticos para todos los negocios: cada PC sube su copia del día sola, sin configurar nada.",
-    "Si la PC se daña o se formatea, entra con la cuenta del dueño en «Restaurar desde la nube» y recupera sus datos.",
-    "La clave de los respaldos queda guardada de forma segura y vuelve sola a una PC formateada.",
-    "Se corrigió «Subir archivo de respaldo a la nube», que fallaba."
+    "Tu contador puede registrar las compras de tus proveedores desde su portal: entran solas al inventario, los costos y las cuentas por pagar.",
+    "Si una compra del contador no cuadra (producto parecido, totales, factura repetida), vuelve a su portal para corregirla; nunca se registra dos veces.",
+    "Puedes apagarlo cuando quieras en Compras → Configuración («Mi contador registra compras»)."
   ]
 }

@@ -831,8 +831,11 @@ async function runSync() {
     // serviciosPortalVersion 1 = publica su catálogo de servicios y aplica los
     // servicios que manda el contador (pending-servicios.js). Un POS viejo
     // tomaría un servicio de la cola como si fuera un producto.
+    // comprasPortalVersion 1 = registra las compras que manda el contador
+    // (compras_pendientes, server/services/compras/cola-portal.js); con un POS
+    // viejo el portal no deja mandarlas.
     await licRef.set({
-      posStats, ...businessProfile, ...(ncfSequences ? { ncfEspejoVersion: 2 } : {}), serviciosPortalVersion: 1,
+      posStats, ...businessProfile, ...(ncfSequences ? { ncfEspejoVersion: 2 } : {}), serviciosPortalVersion: 1, comprasPortalVersion: 1,
     }, { merge: true });
 
     // 2. Escribir filas tabulares en sub-colección reportes/{tab}
