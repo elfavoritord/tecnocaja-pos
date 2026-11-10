@@ -39,10 +39,16 @@ const RespaldosMod = (() => {
     const map = {
       completado:    'badge-success',
       pendiente_nube: 'badge-warning',
+      pendiente_configuracion: 'badge-warning',
+      revision_identidad: 'badge-warning',
+      archivo_reemplazado: 'badge-neutral',
+      archivo_no_disponible: 'badge-danger',
       fallido:       'badge-danger',
       subiendo:      'badge-info',
     };
-    return `<span class="rb-badge ${map[estado] || 'badge-neutral'}">${estado || '—'}</span>`;
+    const labels = { completado: 'Completado', pendiente_nube: 'Pendiente de envío', pendiente_configuracion: 'Falta configurar B2',
+      revision_identidad: 'Revisar empresa', archivo_reemplazado: 'Copia sustituida', archivo_no_disponible: 'Archivo no disponible', fallido: 'Error', subiendo: 'Enviando' };
+    return `<span class="rb-badge ${map[estado] || 'badge-neutral'}">${labels[estado] || estado || '—'}</span>`;
   }
 
   function tipoBadge(tipo) {
@@ -93,6 +99,15 @@ const RespaldosMod = (() => {
   // ─── Render del panel de estado ──────────────────────────────────────────────
   function renderEstado() {
     if (!_estado) return;
+    const health = document.getElementById('rb-verificacion');
+    if (health && _estado.verification) {
+      const v = _estado.verification;
+      health.textContent = [v.status === 'verificado' ? 'Respaldo local verificado y copia en B2 confirmada.' : 'Revisión de respaldos: hay puntos pendientes.',
+        v.local ? `Datos locales hasta: ${fmtDate(v.local.capturedAt)}.` : '',
+        v.cloud ? `Última confirmación en B2: ${fmtDate(v.cloud.confirmedAt)}.` : '',
+        v.cloud?.capturedAt ? `Datos en B2 hasta: ${fmtDate(v.cloud.capturedAt)}.` : '', ...v.messages].filter(Boolean).join('\n');
+      health.style.borderColor = v.status === 'verificado' ? 'var(--success,#15976a)' : 'var(--warning,#b67b09)';
+    }
 
     // Último respaldo local
     const ul = document.getElementById('rb-ultimo-local');
@@ -106,6 +121,8 @@ const RespaldosMod = (() => {
     // Directorio de respaldos
     const dirEl = document.getElementById('rb-dir-display');
     if (dirEl && _estado.backupDir) dirEl.textContent = _estado.backupDir;
+    const legacyDir = document.getElementById('rb-legacy-dir');
+    if (legacyDir) legacyDir.textContent = _estado.legacyBackupDir ? `Tus copias anteriores se conservan en ${_estado.legacyBackupDir}. Puedes elegirlas con “Restaurar desde archivo”.` : '';
 
     // Plan y estado de nube
     const planEl = document.getElementById('rb-plan-badge');
@@ -345,8 +362,12 @@ const RespaldosMod = (() => {
       input.onchange = async (e) => {
         const file = e.target.files?.[0];
         if (!file) return;
-        const buffer = await file.arrayBuffer();
-        const b64    = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+        const b64 = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(',')[1]);
+          reader.onerror = () => reject(new Error('No se pudo leer el archivo seleccionado.'));
+          reader.readAsDataURL(file);
+        });
         await _doRestaurarLocal(b64, file.name);
         input.value = '';
       };
@@ -359,21 +380,20 @@ const RespaldosMod = (() => {
 
   async function restaurarDesdeArchivoLocal(filePath) {
     if (!filePath) return;
-    const ok = await confirmRestaurar(`Restaurar desde:\n${filePath}\n\n⚠️ Se creará un respaldo del estado actual antes de restaurar.`);
-    if (!ok) return;
     await _doRestaurarLocal(null, null, filePath);
+  }
+
+  async function confirmarPlanRestauracion(source) {
+    setProgress('Verificando empresa, integridad y compatibilidad…', 'info');
+    const plan = await _req('/api/respaldos/prevalidar', { method: 'POST', body: JSON.stringify(source) });
+    const pendientes = plan.requiresReconfiguration?.length ? `\nReconfigurar: ${plan.requiresReconfiguration.join(', ')}\n` : '';
+    return confirmRestaurar(`Empresa: ${plan.metadata?.businessName || 'Sin nombre'}\nIdentidad: ${plan.empresaId || 'Formato antiguo'}\nDatos hasta: ${fmtDate(plan.capturedAt)}\nTablas: ${plan.tables} · Archivos: ${plan.files}\n${plan.warning || ''}${pendientes}\nSe guardará una copia del estado actual. La restauración sustituirá los datos por los de esta fecha. ¿Continuar?`);
   }
 
   async function _doRestaurarLocal(base64, fileName, filePath) {
     if (!base64 && !filePath) return;
-    const ok = await confirmRestaurar(
-      `¿Restaurar el sistema desde "${fileName || filePath}"?\n\n` +
-      `⚠️ Se creará un respaldo automático del estado actual antes de restaurar.\n` +
-      `El sistema se reiniciará al completar.`
-    );
-    if (!ok) return;
-
     try {
+      if (!await confirmarPlanRestauracion({ base64, filePath })) { clearProgress(); return; }
       setProgress('Validando archivo…', 'info');
       const data = await _req('/api/respaldos/restaurar-local', {
         method: 'POST',
@@ -409,14 +429,8 @@ const RespaldosMod = (() => {
   async function restaurarDesdeNube(storageKey, sha256) {
     if (!storageKey) return;
     const fileName = storageKey.split('/').pop() || storageKey;
-    const ok = await confirmRestaurar(
-      `¿Restaurar desde la nube?\n\nArchivo: ${fileName}\n\n` +
-      `⚠️ Se creará un respaldo del estado actual antes de restaurar.\n` +
-      `El sistema se reiniciará al completar.`
-    );
-    if (!ok) return;
-
     try {
+      if (!await confirmarPlanRestauracion({ storageKey })) { clearProgress(); return; }
       setProgress('Descargando desde R2…', 'info');
       const data = await _req('/api/respaldos/restaurar-nube', {
         method: 'POST',

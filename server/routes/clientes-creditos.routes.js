@@ -16,8 +16,14 @@
 
 const express = require('express');
 const reportsSync = require('../../modules/firebase-reports-sync');
+const money = require('../../js/pos-money');
+const { createHash } = require('crypto');
 
 async function ensureSchema(query) {
+  await query(`CREATE TABLE IF NOT EXISTS client_credit_payment_requests (
+    request_id VARCHAR(100) PRIMARY KEY, client_id INT NOT NULL, payload_hash VARCHAR(64) NOT NULL,
+    response_json TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
   await query(`
     CREATE TABLE IF NOT EXISTS client_credit_payments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +62,8 @@ function createClientesCreditosRouter({
   normalizeCurrencyAmount, mapClientRow, getClientRowWithComputedBalance,
   writeAuditLog, getConfig, ensureClientExtensions, ensureSalesExtensions,
   ensureCashMovementExtensions, fireReportSync, getReportSyncConfig, getReportSyncBranchesMap,
-  resolveRequestActorUser,
+  resolveRequestActorUser, ensureReturnTables, getClientRowsWithComputedBalance, nowSql,
+  canViewReceivables, getUserScopeBranchId,
 }) {
   const router = express.Router();
 
@@ -72,6 +79,97 @@ function createClientesCreditosRouter({
     } catch (e) {
       res.status(e.statusCode || 401).json({ error: e.message || 'Sesión inválida o expirada.' });
     }
+  });
+
+  // Reporte general de clientes: solo saldos abiertos reales (después de
+  // abonos, notas de crédito y cancelaciones), nunca el histórico de compras.
+  router.get('/receivables-report', async (req, res) => {
+    const actorUser = await resolveRequestActorUser(req, { required: true });
+    if (typeof canViewReceivables === 'function' && !canViewReceivables(actorUser)) return res.status(403).json({ error: 'No tienes permiso para ver las cuentas por cobrar.' });
+    const scope = typeof getUserScopeBranchId === 'function' ? getUserScopeBranchId(actorUser) : null;
+    const branchId = Number(scope || req.query.branchId || 0) || null;
+    const clients = await getClientRowsWithComputedBalance();
+    const rows = await query(`SELECT s.client_id, s.created_at, s.credit_due_date, s.total, s.received_amount, s.credit_adjustment, COALESCE(s.billed_branch_id, s.branch_id) AS branch_id
+      FROM sales s WHERE (s.payment_method = 'credito' OR s.credit_amount > 0) AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
+        AND COALESCE(s.total, 0) > COALESCE(s.received_amount, 0) + COALESCE(s.credit_adjustment, 0)`);
+    const movements = await query(`SELECT client_id, MAX(happened_at) AS latest FROM (
+      SELECT client_id, created_at AS happened_at FROM sales WHERE client_id IS NOT NULL
+      UNION ALL SELECT client_id, created_at AS happened_at FROM client_credit_payments
+    ) history GROUP BY client_id`);
+    const dateString = d => d instanceof Date ? d.toISOString().slice(0,19).replace('T',' ') : String(d || '');
+    const today = require('../services/client-statement').hoyRD();
+    const cfg = await getConfig({ syncRemote: false }).catch(() => ({}));
+    const result = clients.map(c => {
+      const sales = rows.filter(s => Number(s.client_id) === Number(c.id) && (!branchId || Number(s.branch_id) === branchId));
+      let pendiente = 0n, vencido = 0n, vencidas = 0;
+      for (const s of sales) {
+        const p = money.cents(s.total || 0) - money.cents(s.received_amount || 0) - money.cents(s.credit_adjustment || 0);
+        if (p <= 0n) continue;
+        pendiente += p;
+        if (s.credit_due_date && dateString(s.credit_due_date).slice(0,10) < today) { vencido += p; vencidas += 1; }
+      }
+      const mapped = mapClientRow(c);
+      const saldo = branchId ? money.number(pendiente) : Number(mapped.balance || 0);
+      const limite = Number(mapped.limiteCredito || 0);
+      return { ...mapped, balance: saldo, vencido: money.number(vencido), facturasPendientes: sales.length, facturasVencidas: vencidas,
+        limiteUtilizado: saldo, limiteDisponible: limite > 0 ? Math.max(0, money.number(money.cents(limite) - money.cents(saldo))) : null, sinLimite: !(limite > 0),
+        estado: saldo <= 0 ? 'sin_deuda' : (limite > 0 && saldo > limite ? 'sobre_limite' : (vencidas ? 'vencido' : 'al_dia')),
+        ultimoMovimiento: dateString(movements.find(m => Number(m.client_id) === Number(c.id))?.latest) || null };
+    });
+    const total = result.reduce((n, c) => n + money.cents(c.balance || 0), 0n);
+    res.json({ clientes: result, totalClientes: result.length, totalPorCobrar: money.number(total), fechaCorte: today, branchId,
+      negocio: { nombre: cfg.nombre || cfg.businessName || '', rnc: cfg.rnc || '' } });
+  });
+
+  // Detalle de una factura del estado de cuenta: conceptos, pagos aplicados,
+  // notas de crédito, saldo y días de atraso.
+  router.get('/:id/statement/invoice/:saleId', async (req, res) => {
+    await resolveRequestActorUser(req, { required: true });
+    await ensureReturnTables();
+    const clientId = Number(req.params.id), saleId = Number(req.params.saleId);
+    const [sale] = await query('SELECT * FROM sales WHERE id = ? AND client_id = ? LIMIT 1', [saleId, clientId]);
+    if (!sale) return res.status(404).json({ error: 'Factura no encontrada para este cliente.' });
+    const items = await query(`SELECT si.qty, si.price, si.discount_rate, si.tax_rate, si.tax_amount, si.general_discount_amount, si.legal_tip_amount, si.line_total,
+        COALESCE(si.item_name, p.nombre, 'Producto') AS nombre FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE si.sale_id = ? ORDER BY si.id`, [saleId]);
+    const pagos = await query(`SELECT a.applied_amount, p.payment_method, p.created_at, p.id FROM client_credit_payment_allocations a
+        JOIN client_credit_payments p ON p.id = a.payment_id WHERE a.sale_id = ? ORDER BY p.created_at, p.id`, [saleId]);
+    const notas = await query('SELECT id, returned_at, returned_amount, credit_reduction, fiscal_document, return_reason, adjustment_kind FROM sale_returns WHERE original_sale_id = ? ORDER BY id', [saleId]);
+    const pendiente = Math.max(0, money.number(money.cents(sale.total || 0) - money.cents(sale.received_amount || 0) - money.cents(sale.credit_adjustment || 0)));
+    const today = require('../services/client-statement').hoyRD();
+    const vence = sale.credit_due_date ? dateOnly(sale.credit_due_date) : null;
+    const atraso = vence && pendiente > 0 && vence < today ? Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${vence}T00:00:00Z`)) / 86400000) : 0;
+    res.json({
+      factura: sale.invoice_number, documento: sale.ncf || sale.invoice_number, fecha: dateOnly(sale.created_at, true), vence,
+      subtotal: Number(sale.subtotal || 0), descuento: Number(sale.discount || 0), itbis: Number(sale.tax || 0), propinaLegal: Number(sale.legal_tip_amount || 0),
+      total: Number(sale.total || 0), cobradoAlVender: Number(sale.financial_version) > 0 ? money.number(money.cents(sale.total || 0) - money.cents(sale.credit_amount || 0)) : null,
+      estado: sale.fiscal_status === 'cancelada' ? 'cancelada' : (pendiente <= 0 ? 'pagada' : (atraso ? 'vencida' : 'abierta')), pendiente, diasAtraso: atraso,
+      conceptos: items.map((i) => ({ nombre: i.nombre, cantidad: Number(i.qty || 0), precio: Number(i.price || 0), descuentoPct: Number(i.discount_rate || 0),
+        itbisPct: Number(i.tax_rate || 0), itbis: Number(i.tax_amount || 0), total: Number(i.line_total || 0) })),
+      pagos: pagos.map((p) => ({ id: Number(p.id), fecha: dateOnly(p.created_at, true), metodo: p.payment_method, monto: Number(p.applied_amount || 0) })),
+      notas: notas.map((r) => ({ id: Number(r.id), fecha: dateOnly(r.returned_at, true), documento: r.fiscal_document || '', motivo: r.return_reason || '', monto: Number(r.returned_amount || 0), rebajaCredito: Number(r.credit_reduction || 0) })),
+    });
+  });
+  function dateOnly(d, conHora = false) {
+    const s = d instanceof Date ? d.toISOString().slice(0, 19).replace('T', ' ') : String(d || '');
+    return conHora ? s : s.slice(0, 10);
+  }
+
+  router.get('/:id/statement', async (req, res) => {
+    await ensureReturnTables();
+    await resolveRequestActorUser(req, { required: true });
+    const clientId = Number(req.params.id);
+    const from = String(req.query.from || ''), to = String(req.query.to || '');
+    if ([from,to].some(d => d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) || (from && to && from > to)) return res.status(400).json({ error: 'Período no válido.' });
+    const result = await withTransaction(async conn => {
+      const client = await getClientRowWithComputedBalance(clientId, conn);
+      if (!client) throw Object.assign(new Error('Cliente no encontrado.'), { statusCode: 404 });
+      const sales = await conn.query(`SELECT * FROM sales WHERE client_id = ? AND (payment_method = 'credito' OR credit_amount > 0) ORDER BY created_at, id`, [clientId]);
+      const payments = await conn.query(`SELECT a.sale_id, a.payment_id, a.applied_amount, p.payment_method, p.created_at, s.invoice_number, s.ncf
+        FROM client_credit_payment_allocations a JOIN client_credit_payments p ON p.id = a.payment_id JOIN sales s ON s.id = a.sale_id WHERE p.client_id = ?`, [clientId]);
+      const returns = await conn.query('SELECT r.* FROM sale_returns r JOIN sales s ON s.id = r.original_sale_id WHERE s.client_id = ?', [clientId]);
+      return require('../services/client-statement').build({ client: mapClientRow(client), sales, payments, returns, from, to });
+    });
+    res.json(result);
   });
 
   // Reimpresión del recibo de un cobro ya registrado — usado desde Reportes
@@ -149,12 +247,12 @@ function createClientesCreditosRouter({
     }
 
     const sales = await query(
-      `SELECT id, invoice_number, document_type, created_at, total, received_amount
+      `SELECT id, invoice_number, document_type, created_at, total, received_amount, credit_adjustment, credit_due_date
        FROM sales
        WHERE client_id = ?
-         AND payment_method = 'credito'
+         AND (payment_method = 'credito' OR credit_amount > 0)
          AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
-         AND COALESCE(total, 0) > COALESCE(received_amount, 0)
+         AND COALESCE(total, 0) > COALESCE(received_amount, 0) + COALESCE(credit_adjustment, 0)
        ORDER BY created_at ASC, id ASC`,
       [clientId]
     );
@@ -162,7 +260,7 @@ function createClientesCreditosRouter({
     const mappedSales = sales.map((sale) => {
       const total = normalizeCurrencyAmount(sale.total || 0);
       const receivedAmount = normalizeCurrencyAmount(sale.received_amount || 0);
-      const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount));
+      const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount - Number(sale.credit_adjustment || 0)));
       return {
         id: Number(sale.id || 0),
         invoiceNumber: sale.invoice_number,
@@ -170,6 +268,7 @@ function createClientesCreditosRouter({
         fecha: sale.created_at,
         total,
         recibido: receivedAmount,
+        ajusteCredito: Number(sale.credit_adjustment || 0), vencimiento: sale.credit_due_date || null,
         pendiente: pendingAmount
       };
     });
@@ -192,7 +291,11 @@ function createClientesCreditosRouter({
       ? String(req.body.metodo).trim()
       : 'efectivo';
     const notes = String(req.body?.obs || '').trim() || 'Cobro de crédito a cliente';
+    const requestId = String(req.body?.clientRequestId || '').trim();
+    if (requestId && !/^[\w-]{16,100}$/.test(requestId)) return res.status(400).json({ error: 'Identificador de cobro no válido.' });
+    const payloadHash = createHash('sha256').update(JSON.stringify([clientId, amount, paymentMethod, notes, req.body?.branchId || null, req.body?.cashRegisterId || null])).digest('hex');
     const actor = getActor(req);
+    const happenedAt = nowSql();
 
     if (!clientId) {
       return res.status(400).json({ error: 'Cliente no válido.' });
@@ -209,6 +312,14 @@ function createClientesCreditosRouter({
     }
 
     const result = await withTransaction(async (conn) => {
+      await conn.query(`SELECT id FROM clients WHERE id = ?${require('../../db').getDbClient() === 'mysql' ? ' FOR UPDATE' : ''}`, [clientId]);
+      if (requestId) {
+        const old = (await conn.query('SELECT * FROM client_credit_payment_requests WHERE request_id = ?', [requestId]))[0];
+        if (old) {
+          if (old.payload_hash !== payloadHash || Number(old.client_id) !== clientId) throw Object.assign(new Error('El identificador ya corresponde a otro cobro.'), { statusCode: 409 });
+          return { ...JSON.parse(old.response_json), replayed: true };
+        }
+      }
       const clientRow = await getClientRowWithComputedBalance(clientId, conn);
       if (!clientRow) {
         const error = new Error('Cliente no encontrado.');
@@ -217,12 +328,12 @@ function createClientesCreditosRouter({
       }
 
       const pendingSales = await conn.query(
-        `SELECT id, invoice_number, total, received_amount, created_at, client_id, branch_id
+        `SELECT id, invoice_number, total, received_amount, credit_adjustment, created_at, client_id, branch_id
          FROM sales
          WHERE client_id = ?
-           AND payment_method = 'credito'
+           AND (payment_method = 'credito' OR credit_amount > 0)
            AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
-           AND COALESCE(total, 0) > COALESCE(received_amount, 0)
+           AND COALESCE(total, 0) > COALESCE(received_amount, 0) + COALESCE(credit_adjustment, 0)
          ORDER BY created_at ASC, id ASC`,
         [clientId]
       );
@@ -233,29 +344,27 @@ function createClientesCreditosRouter({
         throw error;
       }
 
-      const totalPending = normalizeCurrencyAmount(
-        pendingSales.reduce((sum, sale) => sum + Math.max(0, Number(sale.total || 0) - Number(sale.received_amount || 0)), 0)
-      );
+      const totalPending = money.number(pendingSales.reduce((sum, sale) => sum + money.cents(sale.total || 0) - money.cents(sale.received_amount || 0) - money.cents(sale.credit_adjustment || 0), 0n));
       if (amount > totalPending) {
         const error = new Error('El monto supera el balance pendiente del cliente.');
         error.statusCode = 409;
         throw error;
       }
 
-      let sessionId = null;
-      if (paymentMethod === 'efectivo') {
-        const sessions = await conn.query(
-          'SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1',
-          [structure.cashRegisterId]
-        );
-        const session = sessions[0];
-        if (!session) {
-          const error = new Error('Debes tener una caja abierta para registrar cobros en efectivo.');
-          error.statusCode = 409;
-          throw error;
-        }
-        sessionId = Number(session.id || 0);
+      // El abono queda en el turno abierto de la caja, sea cual sea el método,
+      // para que el cierre lo muestre en su bloque (efectivo, tarjeta o
+      // transferencia). Solo el efectivo exige caja abierta.
+      const sessions = await conn.query(
+        'SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1',
+        [structure.cashRegisterId]
+      );
+      const session = sessions[0];
+      if (paymentMethod === 'efectivo' && !session) {
+        const error = new Error('Debes tener una caja abierta para registrar cobros en efectivo.');
+        error.statusCode = 409;
+        throw error;
       }
+      const sessionId = session ? Number(session.id || 0) : null;
 
       let remaining = amount;
       const appliedSales = [];
@@ -266,7 +375,7 @@ function createClientesCreditosRouter({
         if (remaining <= 0) break;
         const total = normalizeCurrencyAmount(sale.total || 0);
         const receivedAmount = normalizeCurrencyAmount(sale.received_amount || 0);
-        const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount));
+        const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount - Number(sale.credit_adjustment || 0)));
         const appliedAmount = normalizeCurrencyAmount(Math.min(remaining, pendingAmount));
         if (appliedAmount <= 0) continue;
 
@@ -301,8 +410,8 @@ function createClientesCreditosRouter({
         await conn.query(
           `INSERT INTO cash_movements
             (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id)
-           VALUES (?, "Cobro crédito cliente", ?, ?, ?, ?, datetime('now'), ?, ?)`,
-          [sessionId, amount, notes, actor.userId || null, actor.userName || 'Sistema', structure.branchId, structure.cashRegisterId]
+           VALUES (?, "Cobro crédito cliente", ?, ?, ?, ?, ?, ?, ?)`,
+          [sessionId, amount, notes, actor.userId || null, actor.userName || 'Sistema', happenedAt, structure.branchId, structure.cashRegisterId]
         );
         await conn.query('UPDATE cash_sessions SET current_amount = current_amount + ? WHERE id = ?', [amount, sessionId]);
         await conn.query('UPDATE config SET cash_amount = cash_amount + ? WHERE id = 1', [amount]);
@@ -311,8 +420,8 @@ function createClientesCreditosRouter({
       const paymentInsert = await conn.query(
         `INSERT INTO client_credit_payments
           (client_id, amount, payment_method, notes, cash_session_id, branch_id, cash_register_id, created_by_user_id, created_by_user_name, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        [clientId, amount, paymentMethod, notes, sessionId, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema']
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [clientId, amount, paymentMethod, notes, sessionId, structure.branchId, structure.cashRegisterId, actor.userId || null, actor.userName || 'Sistema', happenedAt]
       );
       const paymentId = paymentInsert.insertId;
 
@@ -323,7 +432,7 @@ function createClientesCreditosRouter({
         );
       }
 
-      return {
+      const response = {
         client: mapClientRow(await getClientRowWithComputedBalance(clientId, conn)),
         appliedSales,
         updatedSales,
@@ -332,13 +441,13 @@ function createClientesCreditosRouter({
         paymentId,
         sessionId
       };
-    });
-
-    await writeAuditLog({
-      ...actor,
-      moduleName: 'Clientes',
-      actionName: 'Cobro de crédito registrado',
-      detail: `${result.client.nombre} · ${paymentMethod} · abono ${amount.toFixed(2)} · ${structure.branch.nombre} · ${structure.cashRegister.nombre}`
+      await writeAuditLog({ ...actor, moduleName: 'Clientes', actionName: 'Cobro de crédito registrado',
+        branchId: structure.branchId, cashRegisterId: structure.cashRegisterId, cashSessionId: sessionId, clientId,
+        documentRef: String(paymentId), amount, paymentMethod,
+        before: { balance: totalPending }, after: { balance: updatedPendingTotal, paymentId, allocations },
+        detail: `${clientRow.nombre} · ${paymentMethod} · abono ${amount.toFixed(2)}` }, conn);
+      if (requestId) await conn.query('INSERT INTO client_credit_payment_requests (request_id, client_id, payload_hash, response_json) VALUES (?, ?, ?, ?)', [requestId, clientId, payloadHash, JSON.stringify(response)]);
+      return response;
     });
 
     // ── Sync reporte-sistema-pos: refrescar cuentas por cobrar + movimiento de caja ──

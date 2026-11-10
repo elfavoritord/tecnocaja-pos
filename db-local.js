@@ -358,6 +358,8 @@ async function _initLocalDb() {
   _addLocalColumnIfMissing(db, 'offline_cache_users', 'role_permissions', 'TEXT DEFAULT NULL');
   _addLocalColumnIfMissing(db, 'offline_cache_users', 'branch_id', 'INTEGER DEFAULT NULL');
   _addLocalColumnIfMissing(db, 'offline_cache_users', 'cash_register_id', 'INTEGER DEFAULT NULL');
+  // Permisos propios del usuario (users.permisos_usuario): sin internet valen igual.
+  _addLocalColumnIfMissing(db, 'offline_cache_users', 'permisos_usuario', 'TEXT DEFAULT NULL');
 
   _saveLocalDb(db);
   return db;

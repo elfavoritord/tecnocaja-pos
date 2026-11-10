@@ -287,6 +287,8 @@ function buildBlockedMessage(state = {}) {
       return 'La firma digital de la licencia no es válida. Debes regenerarla desde el backend antes de usar el sistema.';
     case 'missing_remote':
       return 'No se encontró la licencia en Firebase. Verifica el ID de licencia y el panel administrador.';
+    case 'activation_required':
+      return 'Este equipo no tiene una autorización local verificable. Conéctalo a internet para validar su licencia; si cambió de PC, el propietario de Tecno Caja debe autorizar el nuevo equipo.';
     case 'suspended':
       return 'La licencia del sistema está suspendida desde tu app de administrador. Comunícate con soporte o reactívala para seguir usando la aplicación.';
     case 'expired':
@@ -1051,7 +1053,7 @@ class LicenseService {
               || remoteError?.code === 'LICENSE_CACHE_TAMPERED'
               || remoteError?.code === 'LICENSE_CACHE_INVALID_FORMAT'
               ? 'tamper'
-              : (remoteError?.code === 'LICENSE_REMOTE_NOT_FOUND' ? 'missing_remote' : 'expired'),
+              : (remoteError?.code === 'LICENSE_REMOTE_NOT_FOUND' ? 'missing_remote' : 'activation_required'),
           };
       fallbackState.message = fallbackState.canEnter ? null : buildBlockedMessage(fallbackState);
       const trial = await this.mirrorStateToConfig(fallbackState, { isTrial: bootstrapAllowed }).catch(() => null);

@@ -423,11 +423,68 @@ CREATE TABLE cash_closings (
   closed_by_user_name VARCHAR(120) DEFAULT NULL,
   closed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   usd_total_received DECIMAL(12,2) DEFAULT NULL,
+  -- Cierre seguro (server/routes/caja-segura.routes.js): conteo y reporte guardados.
+  denominations_json TEXT DEFAULT NULL,
+  report_json LONGTEXT DEFAULT NULL,
+  secure_mode TINYINT(1) NOT NULL DEFAULT 0,
+  card_terminal_total DECIMAL(12,2) DEFAULT NULL,
   KEY idx_cash_closings_session (cash_session_id),
   CONSTRAINT fk_cash_closings_session FOREIGN KEY (cash_session_id) REFERENCES cash_sessions(id) ON DELETE CASCADE,
   CONSTRAINT fk_cash_closings_branch FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
   CONSTRAINT fk_cash_closings_register FOREIGN KEY (cash_register_id) REFERENCES cash_registers(id) ON DELETE CASCADE,
   CONSTRAINT fk_cash_closings_user FOREIGN KEY (closed_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Arqueos (durante el turno o al cierre) por denominaciones dominicanas.
+CREATE TABLE IF NOT EXISTS cash_counts (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  count_uuid VARCHAR(64) NOT NULL,
+  cash_session_id INT NOT NULL,
+  branch_id INT DEFAULT NULL,
+  cash_register_id INT DEFAULT NULL,
+  kind VARCHAR(20) NOT NULL DEFAULT 'arqueo',
+  denominations_json TEXT NOT NULL,
+  counted_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  expected_amount DECIMAL(12,2) DEFAULT NULL,
+  difference_amount DECIMAL(12,2) DEFAULT NULL,
+  notes VARCHAR(255) DEFAULT NULL,
+  counted_by_user_id INT DEFAULT NULL,
+  counted_by_user_name VARCHAR(120) DEFAULT NULL,
+  device_id VARCHAR(160) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_cash_counts_uuid (count_uuid),
+  KEY idx_cash_counts_session (cash_session_id)
+);
+
+-- Órdenes de apertura de la gaveta con su motivo (manual o con venta).
+CREATE TABLE IF NOT EXISTS cash_drawer_events (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  event_uuid VARCHAR(64) NOT NULL,
+  cash_session_id INT DEFAULT NULL,
+  branch_id INT DEFAULT NULL,
+  cash_register_id INT DEFAULT NULL,
+  device_id VARCHAR(160) DEFAULT NULL,
+  user_id INT DEFAULT NULL,
+  user_name VARCHAR(120) DEFAULT NULL,
+  origin VARCHAR(20) NOT NULL DEFAULT 'manual',
+  reason VARCHAR(30) NOT NULL,
+  description VARCHAR(500) DEFAULT NULL,
+  amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  cash_in DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  cash_out DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  destination VARCHAR(160) DEFAULT NULL,
+  responsible VARCHAR(160) DEFAULT NULL,
+  evidence VARCHAR(255) DEFAULT NULL,
+  cash_movement_id INT DEFAULT NULL,
+  cash_count_id INT DEFAULT NULL,
+  sale_ref VARCHAR(60) DEFAULT NULL,
+  items_json TEXT DEFAULT NULL,
+  drawer_requested TINYINT(1) NOT NULL DEFAULT 1,
+  drawer_status VARCHAR(20) NOT NULL DEFAULT 'pendiente',
+  drawer_error VARCHAR(255) DEFAULT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY idx_drawer_events_uuid (event_uuid),
+  KEY idx_drawer_events_session (cash_session_id)
 );
 
 CREATE TABLE sales (

@@ -235,8 +235,9 @@ function mapExpenseRow(row) {
 }
 
 function createGastosRouter({
-  emitirEcfDeOperacion = null,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
+  // Fase D: E41/E43/E47 con estados y aprobación (comprobantes-compra.service.js).
+  comprobantesCompra = null, puedeAprobarComprobantes = () => false,
 }) {
   const router = express.Router();
 
@@ -432,59 +433,18 @@ function createGastosRouter({
       });
 
       // E41 (compra sin comprobante; las empresas de servicios no tienen menú de Compras),
-      // E43 (gastos menores) o E47 (pago al exterior). El gasto ya quedó: si falla, se avisa.
+      // E43 (gastos menores) o E47 (pago al exterior). El gasto ya quedó: el comprobante se
+      // pide aparte y sigue su estado (con la modalidad «con aprobación» espera al
+      // administrador); el e-NCF pasa al gasto solo cuando la DGII lo acepta.
       // E43 y E47 van exentos en el XML (XSD), así que su monto incluye el ITBIS.
       let ecf = null;
       const tipoEcf = ['E41', 'E43', 'E47'].includes(String(req.body?.emitirEcf || '')) ? String(req.body.emitirEcf) : null;
-      if (tipoEcf === 'E41' && emitirEcfDeOperacion) {
-        const [proveedor] = g.supplierId
-          ? await query('SELECT nombre, rnc FROM suppliers WHERE id = ? LIMIT 1', [g.supplierId])
-          : [];
-        ecf = proveedor?.rnc
-          ? await emitirEcfDeOperacion({
-            tipoEcf,
-            customer: { rnc: proveedor.rnc, nombre: proveedor.nombre },
-            items: (g.lineas.length ? g.lineas : [{ descripcion: g.descripcion, cantidad: 1, precio: g.subtotal, itbisPct: 0 }]).map((l, i) => ({
-              name: l.descripcion || g.descripcion,
-              quantity: Number(l.cantidad || 1),
-              unitPrice: Number(l.precio || 0),
-              discount: 0,
-              taxRate: Number(l.itbisPct || 0),
-              withholdingAmount: i === 0 ? g.retencionIsr : 0,
-            })),
-            document: { totalItbisRetenido: g.retencionItbis },
-            origen: `expense:${expenseId}`,
-            branchId: g.branchId,
-            context: { userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor) },
-          })
-          : { ok: false, error: 'Para el E41 elige un proveedor que tenga RNC o cédula.' };
-        if (ecf?.encf) {
-          await query('UPDATE expenses SET ncf = ?, tipo_ncf = ? WHERE id = ?', [ecf.encf, tipoEcf, expenseId]);
-        }
-      } else if (tipoEcf && emitirEcfDeOperacion) {
-        const lineas = g.lineas.length
-          ? g.lineas
-          : [{ descripcion: g.descripcion, cantidad: 1, total: g.total }];
-        ecf = await emitirEcfDeOperacion({
-          tipoEcf,
-          customer: { nombre: g.beneficiario || g.descripcion, identificadorExtranjero: String(req.body?.identificadorExtranjero || '').trim() },
-          items: lineas.map((l, i) => ({
-            name: l.descripcion || g.descripcion,
-            quantity: 1,
-            unitPrice: Number(l.total || 0),
-            discount: 0,
-            taxRate: 0,
-            isService: tipoEcf === 'E47',
-            withholdingAmount: tipoEcf === 'E47' && i === 0 ? g.retencionIsr : 0,
-          })),
-          document: tipoEcf === 'E47' ? { totalIsrRetencion: g.retencionIsr } : {},
-          origen: `expense:${expenseId}`,
-          branchId: g.branchId,
-          context: { userId: actor.id, userName: actorName(actor), userRole: roleCodeOf(actor) },
+      if (tipoEcf && comprobantesCompra) {
+        const pedido = await comprobantesCompra.solicitarDe({
+          tipo: 'gasto', id: expenseId, tipoEcf, actor, puedeAprobar: puedeAprobarComprobantes(actor),
+          extra: { identificadorExtranjero: String(req.body?.identificadorExtranjero || '').trim() },
         });
-        if (ecf?.encf) {
-          await query('UPDATE expenses SET ncf = ?, tipo_ncf = ? WHERE id = ?', [ecf.encf, tipoEcf, expenseId]);
-        }
+        ecf = pedido.ecf;
       }
 
       const creado = await gastoConLineas(expenseId);
@@ -622,4 +582,4 @@ function createGastosRouter({
   return router;
 }
 
-module.exports = { createGastosRouter, ensureSchema, EXPENSE_CATEGORIES, normalizarLineasGasto, unirCategorias };
+module.exports = { createGastosRouter, ensureSchema, EXPENSE_CATEGORIES, EXPENSE_CATEGORY_TO_DGII_CODE, normalizarLineasGasto, unirCategorias };

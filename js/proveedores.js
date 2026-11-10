@@ -29,9 +29,18 @@ function esc(s) {
 function getSupplierInvoicesFor(id) {
   return (DB.facturasProveedores || []).filter(i => i.supplierId === id);
 }
+// AAAA-MM-DD en la hora de esta PC (toISOString() es UTC: de noche ya da mañana).
+function fechaLocalProveedor(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function sumarDiasProveedor(fecha, dias) {
+  const [a, m, d] = String(fecha || '').split('-').map(Number);
+  if (!a || !m || !d) return '';
+  return fechaLocalProveedor(new Date(a, m - 1, d + Number(dias || 0)));
+}
 function getSupplierPendingSummary(id) {
   const inv = getSupplierInvoicesFor(id);
-  const today = new Date().toISOString().slice(0,10);
   return {
     totalFacturas: inv.length,
     pendientes:    inv.filter(i => i.montoPendiente > 0).length,
@@ -493,9 +502,8 @@ function openSupplierInvoiceModal(supplierId = null) {
   const suppliers = (DB.proveedores||[]).filter(p=>p.estado==='Activo');
   const selId     = supplierId || suppliers[0]?.id || '';
   const supplier  = (DB.proveedores||[]).find(p=>p.id===selId);
-  const today     = new Date().toISOString().slice(0,10);
-  const dueDate   = new Date();
-  dueDate.setDate(dueDate.getDate() + Number(supplier?.terminosPagoDias||30));
+  const today     = fechaLocalProveedor();
+  const dueDate   = sumarDiasProveedor(today, supplier?.terminosPagoDias || 30);
 
   document.getElementById('modal-title').textContent = 'Registrar Factura de Proveedor';
   document.getElementById('modal-body').innerHTML = `
@@ -514,7 +522,7 @@ function openSupplierInvoiceModal(supplierId = null) {
         </select>
       </div>
       <div class="form-group"><label>Fecha emisión *</label><input type="date" id="spi-issued" class="form-input" value="${today}" onchange="syncSupplierInvoiceDueDate()"></div>
-      <div class="form-group"><label>Fecha vencimiento</label><input type="date" id="spi-due" class="form-input" value="${dueDate.toISOString().slice(0,10)}"></div>
+      <div class="form-group"><label>Fecha vencimiento</label><input type="date" id="spi-due" class="form-input" value="${dueDate}"></div>
       <div class="form-group"><label>Monto total *</label><input type="number" id="spi-total" class="form-input" min="0" step="0.01" value="0" oninput="calcITBIS()"></div>
       <div class="form-group"><label>ITBIS (18%)</label><input type="number" id="spi-itbis" class="form-input" min="0" step="0.01" value="0" placeholder="Se calcula automático"></div>
       <div class="form-group"><label>Monto abonado</label><input type="number" id="spi-paid" class="form-input" min="0" step="0.01" value="0"></div>
@@ -546,9 +554,7 @@ function syncSupplierInvoiceDueDate() {
   const issued   = document.getElementById('spi-issued')?.value;
   const dueInput = document.getElementById('spi-due');
   if (!supplier || !issued || !dueInput) return;
-  const d = new Date(issued);
-  d.setDate(d.getDate() + Number(supplier.terminosPagoDias||30));
-  dueInput.value = d.toISOString().slice(0,10);
+  dueInput.value = sumarDiasProveedor(issued, supplier.terminosPagoDias || 30);
 }
 
 async function saveSupplierInvoice() {

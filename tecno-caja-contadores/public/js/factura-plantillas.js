@@ -246,6 +246,8 @@
     const out = [['Subtotal', dinero(d.subtotal), '']];
     if (Number(d.descuento)) out.push(['Descuento', '- ' + dinero(d.descuento), '']);
     if (Number(d.itbis)) out.push(['ITBIS', dinero(d.itbis), '']);
+    // Propina legal 10 %: aparte del ITBIS (opcional; el portal no la usa).
+    if (Number(d.propinaLegal || 0) > 0) out.push(['Propina legal 10%', dinero(d.propinaLegal), '']);
     if (Math.abs(Number(d.redondeo || 0)) >= 0.01) out.push(['Redondeo', dinero(d.redondeo), '']);
     return out;
   }

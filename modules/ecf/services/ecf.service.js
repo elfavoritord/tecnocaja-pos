@@ -30,6 +30,10 @@ const { parseXml } = require('../utils/xml.util');
 const { detectXmlRoot, getDgiiXmlDispatchType, generarNombreArchivoDGII } = require('../utils/dgii-file.util');
 const { assertValidRfceXml } = require('../utils/rfce-xsd.util');
 const { ecfWorkPath } = require('../utils/work-dir.util');
+const { validarEcfXsd } = require('../utils/xsd-validator');
+
+// e-CF de compras y gastos que se validan contra su XSD antes de firmar.
+const XSD_ANTES_DE_FIRMAR = new Set(['E41', 'E43', 'E47']);
 
 // Base escribible: en instalaciones empaquetadas (.exe), __dirname y process.cwd()
 // pueden caer dentro de app.asar (archivo de solo lectura), y fs.mkdirSync ahí
@@ -3336,11 +3340,12 @@ class EcfService {
     const preparedItems = items.map((item) => {
       const quantity = Number(item.qty || 0);
       const unitPrice = Number(item.price || 0);
-      const discount = Number(item.discount_amount || 0) > 0
+      const itemDiscount = Number(item.discount_amount || 0) > 0
         ? Number(item.discount_amount || 0)
         : Number(item.discount_rate || 0) > 0
           ? quantity * unitPrice * (Number(item.discount_rate || 0) / 100)
           : 0;
+      const discount = itemDiscount + Number(item.general_discount_amount || 0);
       // ITBIS de monto fijo (Ticket) no es una tasa de catálogo DGII — se
       // declara con la tasa {0,16,18} más cercana solo para este comprobante
       // fiscal. El monto real cobrado al cliente no cambia (eso vive en
@@ -3348,7 +3353,7 @@ class EcfService {
       const taxRate = item.tax_mode === 'monto'
         ? nearestCatalogTaxRate(item.tax_amount, (quantity * unitPrice) - discount)
         : Number(item.tax_rate || item.itbis || 0);
-      return { name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate, isService: item.product_type === 'servicio' || Number(item.is_service) === 1 };
+      return { legalTipAmount: Number(item.legal_tip_amount || 0), name: item.product_name || item.nombre || 'Producto', quantity, unitPrice, discount, taxRate, isService: item.product_type === 'servicio' || Number(item.is_service) === 1 };
     });
 
     const totals = buildTotals(preparedItems);
@@ -3372,7 +3377,7 @@ class EcfService {
         eNCF: reservation.encf,
         tipoeCF: tipoEcf,
         tipoIngresos: '01',
-        tipoPago: String(sale.payment_method || '').toLowerCase() === 'credito' ? '2' : '1',
+        tipoPago: String(sale.payment_method || '').toLowerCase() === 'credito' || Number(sale.credit_amount || 0) > 0 ? '2' : '1',
         fechaVencimientoSecuencia: reservation.sequence?.fecha_vencimiento || null,
       },
       items: preparedItems.map((item) => (
@@ -3457,6 +3462,15 @@ class EcfService {
       items,
       issueDate,
     });
+    // Compras, gastos menores y pagos al exterior: el XML se valida contra el XSD
+    // oficial antes de firmar. Si no pasa, no sale nada (el número queda reservado
+    // para el reintento de esta misma operación).
+    if (XSD_ANTES_DE_FIRMAR.has(tipoEcf)) {
+      const xsd = validarEcfXsd(generated.xml, { tipo: tipoEcf, sinFirma: true });
+      if (!xsd.ok) {
+        throw new EcfError(`El ${tipoEcf} no cumple el XSD de la DGII: ${xsd.errores.slice(0, 3).join(' | ')}`, { statusCode: 422, details: xsd });
+      }
+    }
     const certificate = await this.resolveCertificate();
     const signedXml = signatureService.signXML(generated.xml, certificate);
     const verification = signatureService.verifySignature(signedXml);
@@ -3689,6 +3703,59 @@ class EcfService {
         { statusCode: 422, code: 'ECF_SIN_VENCIMIENTO', details: { tipoEcf } }
       );
     }
+  }
+
+  // Tipos e-CF que Cobrar puede ofrecer ahora: emisor activo, servicio
+  // permitido y un rango usable, con las mismas reglas que
+  // assertSaleHasSequence (el resto se muestra apagado en el POS).
+  async availableSaleTypes({ branchId = null, cashRegisterId = null } = {}) {
+    return this.availableTypes({ branchId, cashRegisterId, tipos: ['E31', 'E32', 'E44', 'E45', 'E46'] });
+  }
+
+  // Los de compras y gastos que el negocio emite (E41, E43, E47).
+  async availablePurchaseTypes({ branchId = null, cashRegisterId = null } = {}) {
+    return this.availableTypes({ branchId, cashRegisterId, tipos: ['E41', 'E43', 'E47'] });
+  }
+
+  // Revisión previa de un e-CF de compras o gastos, sin gastar número: emisor y
+  // certificado listos, rango disponible y el XML contra el XSD oficial (con un
+  // e-NCF de muestra). Lo usa la aprobación de comprobantes de compra.
+  async previewStandaloneDocument({ tipoEcf, customer = {}, items, document: extras = {}, branchId = null, cashRegisterId = null, issueDate = new Date() }) {
+    const errores = [];
+    try {
+      await this.ensureReady();
+      const rawEmitter = await this.repository.getResolvedEmitter(1);
+      if (!rawEmitter.is_active) return { ok: false, errores: ['La facturación electrónica está desactivada (Configuración → Facturación electrónica).'] };
+      errores.push(...validateEmitterForEcf(rawEmitter), ...validateCertificateForEcf(await this.getCertificateStatus()));
+      const disponibles = await this.availableTypes({ branchId, cashRegisterId, tipos: [tipoEcf] });
+      if (!disponibles.includes(tipoEcf)) errores.push(`No hay secuencia ${tipoEcf} disponible (Configuración → Comprobantes).`);
+      const emitter = await this.getEmitterForXml(1);
+      const generated = generateEcfXml({
+        emitter, customer, items, issueDate,
+        document: { eNCF: `${tipoEcf}0000000001`, tipoeCF: tipoEcf, tipoIngresos: '01', tipoPago: '1', fechaVencimientoSecuencia: '2099-12-31', ...extras },
+      });
+      const xsd = validarEcfXsd(generated.xml, { tipo: tipoEcf, sinFirma: true });
+      if (!xsd.ok) errores.push(...xsd.errores.map((e) => `XSD ${tipoEcf}: ${e}`));
+      return { ok: errores.length === 0, errores, totales: generated.totals };
+    } catch (error) {
+      return { ok: false, errores: [...errores, error.message] };
+    }
+  }
+
+  async availableTypes({ branchId = null, cashRegisterId = null, tipos: tiposPedidos = [] } = {}) {
+    const environment = await this.getActiveSaleEnvironment();
+    if (!environment) return [];
+    if (typeof this.servicioPermitido === 'function' && !this.servicioPermitido()) return [];
+    const tipos = [];
+    for (const tipoEcf of tiposPedidos) {
+      const disponibles = await this.repository.usableSequences({
+        tipoComprobante: tipoEcf, environment, branchId, cashRegisterId,
+      }).catch(() => []);
+      if (!disponibles.length) continue;
+      if (llevaVencimiento(tipoEcf) && !disponibles.some((row) => row.fecha_vencimiento)) continue;
+      tipos.push(tipoEcf);
+    }
+    return tipos;
   }
 
   async processSaleForElectronicInvoicing(saleId, context = {}) {

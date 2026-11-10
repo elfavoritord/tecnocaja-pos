@@ -13,7 +13,7 @@
  *
  * Rutas:
  *  GET    /api/fiscal-sequences?series=&status=&branchId=
- *  GET    /api/fiscal-sequences/available?branchId=
+ *  GET    /api/fiscal-sequences/available?branchId=   (serie B + e-CF emitibles)
  *  POST   /api/fiscal-sequences
  *  PUT    /api/fiscal-sequences/:id
  *  POST   /api/fiscal-sequences/:id/activate
@@ -284,6 +284,9 @@ function createFiscalSequencesRouter({
   isGlobalAdministratorUser, isBranchAdministratorUser,
   attachmentsDir, attachmentsWebPath = '/uploads/comprobantes-fiscales', isMysqlDeployment,
   onSequencesChanged = null,
+  // ({ branchId }) → ['E31', 'E32', …]: e-CF que se pueden emitir ahora
+  // (emisor activo + rango usable). Sin ella, /available solo da la serie B.
+  listarEcfDisponibles = null,
 }) {
   const router = express.Router();
 
@@ -373,11 +376,26 @@ function createFiscalSequencesRouter({
   // seguir viendo los tipos activos del sistema LEGACY (ncf_sequences) —
   // si no, el panel mostraría "sin comprobantes disponibles" aunque el
   // backend todavía esté facturando con normalidad contra ncf_sequences.
+  // Cobrar solo deja elegir lo que de verdad se puede emitir: a la serie B se
+  // suman los e-CF (E31, E32, E44…) con emisor activo y rango usable.
+  // uso = 'compras': los que emite el negocio por compras y gastos (E41, E43, E47);
+  // si no, los de venta.
+  async function ecfDisponibles(branchId, uso = 'ventas') {
+    if (typeof listarEcfDisponibles !== 'function') return [];
+    const tipos = await Promise.resolve(listarEcfDisponibles({ branchId, uso })).catch(() => []);
+    return (Array.isArray(tipos) ? tipos : []).map((tipo) => ({
+      documentType: tipo,
+      documentName: DOCUMENT_LABELS[tipo] || tipo,
+      series: 'E',
+    }));
+  }
+
   router.get('/available', async (req, res) => {
     try {
       const actor = req.authUser;
       const requestedBranchId = req.query.branchId ? Number(req.query.branchId) : null;
       const branchId = getUserScopeBranchId(actor) || requestedBranchId;
+      const electronicos = await ecfDisponibles(branchId, req.query.uso === 'compras' ? 'compras' : 'ventas');
 
       const [cfg] = await query('SELECT ncf_authorized_sequences_v2_enabled FROM config WHERE id = 1 LIMIT 1');
       if (!cfg || !Number(cfg.ncf_authorized_sequences_v2_enabled)) {
@@ -394,11 +412,11 @@ function createFiscalSequencesRouter({
         // realmente se va a usar.
         const seen = new Set();
         const uniqueRows = legacyRows.filter((r) => (seen.has(r.ncf_type) ? false : (seen.add(r.ncf_type), true)));
-        return res.json(uniqueRows.map((r) => ({
+        return res.json([...uniqueRows.map((r) => ({
           documentType: r.ncf_type,
           documentName: DOCUMENT_LABELS[r.ncf_type] || r.ncf_type,
           nextNumber: r.siguiente_numero,
-        })));
+        })), ...electronicos]);
       }
 
       const rows = await query(
@@ -412,11 +430,11 @@ function createFiscalSequencesRouter({
       );
       const seen = new Set();
       const uniqueRows = rows.filter((r) => (seen.has(r.document_type) ? false : (seen.add(r.document_type), true)));
-      res.json(uniqueRows.map((r) => ({
+      res.json([...uniqueRows.map((r) => ({
         documentType: r.document_type,
         documentName: r.document_name || DOCUMENT_LABELS[r.document_type] || r.document_type,
         nextNumber: r.next_number,
-      })));
+      })), ...electronicos]);
     } catch (e) { res.status(e.statusCode || 500).json({ error: e.message }); }
   });
 

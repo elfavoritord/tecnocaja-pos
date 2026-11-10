@@ -28,12 +28,12 @@ function getClientePendingCreditSales(clienteId) {
 
   return (DB.ventas || [])
     .filter((sale) => Number(sale?.clientId || 0) === normalizedClientId)
-    .filter((sale) => String(sale?.metodo || '').trim() === 'credito')
+    .filter((sale) => String(sale?.metodo || '').trim() === 'credito' || Number(sale?.montoCredito || 0) > 0)
     .filter((sale) => String(sale?.estadoFiscal || 'emitida').trim() !== 'cancelada')
     .map((sale) => {
       const total = Number(sale?.total || 0);
       const recibido = Number(sale?.recibido || 0);
-      const pendiente = Math.max(0, Number((total - recibido).toFixed(2)));
+      const pendiente = Math.max(0, Number((total - recibido - Number(sale.ajusteCredito || 0)).toFixed(2)));
       return {
         invoiceNumber: sale.id,
         fecha: sale.fecha,
@@ -64,6 +64,7 @@ function clientesIcon(name, size = 18) {
 
 function loadClientesTable(filter) {
   const tbody = document.getElementById('clientes-tbody');
+
   if (!tbody) return;
   if (filter !== undefined) clientesFilterValue = String(filter || '');
   // En modo Empresa de Servicios se muestra Correo en vez de Referencia/Mapa.
@@ -107,7 +108,7 @@ function loadClientesTable(filter) {
     return `
     <tr>
       <td><span class="tc-cell-title">${c.nombre}</span></td>
-      <td>${c.telefono || '—'}</td>
+      <td>${escapeHtml(c.telefonoFormateado || ClienteTelefono.display(c.telefono, c.phoneCountry || 'DO')) || '—'}</td>
       ${midCols(c)}
       <td class="tc-cell-muted">${c.cedula || c.rnc || '—'}</td>
       <td class="is-num ${balance > 0 ? 'tc-num-warn' : ''}"><strong>${fmt(balance)}</strong></td>
@@ -115,6 +116,7 @@ function loadClientesTable(filter) {
       <td class="is-actions">
         <div class="tc-row-actions">
           ${balance > 0 ? `<button type="button" class="tc-btn" onclick="openClienteCobroModal(${c.id})">${clientText('Cobrar')}</button>` : ''}
+          <button type="button" class="tc-btn tc-btn--soft" onclick="openClientStatement(${c.id})">Estado de cuenta</button>
           <button type="button" class="tc-btn tc-btn--soft" onclick="editCliente(${c.id})">${clientText('Ver')}</button>
           <button type="button" class="tc-btn tc-btn--icon tc-row-danger" onclick="deleteCliente(${c.id})" title="${clientText('Eliminar cliente')}" aria-label="${clientText('Eliminar cliente')}">${clientesIcon('trash-2', 18)}</button>
         </div>
@@ -182,7 +184,7 @@ function openClienteModal(id) {
     <div class="modal-grid">
       <div id="client-modal-error" class="span-full inline-form-alert hidden"></div>
       <div class="form-group span-full"><label>${clientText('Nombre Completo')}</label><input type="text" id="cl-nombre" class="form-input" value="${c?c.nombre||'':''}" placeholder="${clientText('Nombre del cliente')}"></div>
-      <div class="form-group"><label>${clientText('Teléfono')}</label><input type="text" id="cl-tel" class="form-input" value="${c?c.telefono||'':''}" placeholder="809-000-0000"></div>
+      <div class="form-group"><label>${clientText('Teléfono')} *</label><select id="cl-phone-country" class="form-input" aria-label="País del teléfono"><option value="DO" ${!c || c.phoneCountry === 'DO' || !c.phoneCountry ? 'selected' : ''}>República Dominicana (+1)</option><option value="INT" ${c && c.phoneCountry && c.phoneCountry !== 'DO' ? 'selected' : ''}>Otro país (incluye + y código)</option></select><input type="tel" id="cl-tel" required class="form-input" value="${escapeHtml(c?.telefono || '')}" placeholder="809-555-1234"><small>Validación de formato; no confirma titularidad ni WhatsApp.</small></div>
       <div class="form-group"><label>${clientText('Cédula / RNC')}</label><input type="text" id="cl-cedula" class="form-input" value="${c?c.cedula||'':''}" placeholder="000-0000000-0"></div>
       <div class="form-group span-full"><label>${clientText('Correo electrónico')}</label><input type="email" id="cl-email" class="form-input" value="${c?c.email||'':''}" placeholder="cliente@correo.com"></div>
       ${clienteModalIsServiceMode() ? `
@@ -369,6 +371,7 @@ function openClienteDetailModal(id) {
   `;
   document.getElementById('modal-footer').innerHTML = `
     <button class="btn-secondary" onclick="closeAllModals()">${clientText('Cerrar')}</button>
+    <button class="btn-secondary" onclick="openClientStatement(${id})">Estado de cuenta</button>
     <button class="btn-ghost" onclick="closeAllModals();openClienteModal(${id})">✏ ${clientText('Editar')}</button>
     ${totalPendiente > 0 ? `<button class="btn-primary" onclick="closeAllModals();openClienteCobroModal(${id})">💰 ${clientText('Cobrar')}</button>` : ''}
   `;
@@ -501,7 +504,9 @@ function renderAgendaCrm(items) {
 
 function editCliente(id) { openClienteDetailModal(id); }
 
+let clientCreditRequestId = null;
 function openClienteCobroModal(id) {
+  clientCreditRequestId = window.crypto?.randomUUID?.() || ('cobro-' + Date.now() + '-' + Math.random().toString(36).slice(2));
   const cliente = DB.clientes.find((item) => item.id === id);
   const clientName = cliente?.nombre || clientText('Cliente');
   const sales = getClientePendingCreditSales(id);
@@ -734,6 +739,7 @@ async function saveClienteCobro(id) {
 
   try {
     const response = await api.payClientCredit(id, {
+      clientRequestId: clientCreditRequestId,
       monto: amount,
       metodo: method,
       obs: note,
@@ -835,6 +841,7 @@ async function saveCliente(id) {
   const data = {
     nombre,
     telefono: document.getElementById('cl-tel').value,
+    phoneCountry: document.getElementById('cl-phone-country')?.value || 'DO',
     email: emailVal,
     cedula: document.getElementById('cl-cedula').value,
     direccion: document.getElementById('cl-dir')?.value || '',
@@ -844,6 +851,9 @@ async function saveCliente(id) {
       ? 0
       : (parseFloat(document.getElementById('cl-limite')?.value) || 0),
   };
+  const phone = ClienteTelefono.normalize(data.telefono, data.phoneCountry);
+  if (!phone.ok) { showClienteModalError(phone.error); return; }
+  data.telefono = phone.value;
   try {
     if (id) {
       const updated = await api.updateClient(id, { ...data, ...getActorPayload() });
@@ -851,6 +861,7 @@ async function saveCliente(id) {
       if (idx >= 0) DB.clientes[idx] = updated;
       clearClienteModalError();
       showToast(clientText('Cliente actualizado'), 'success');
+      if (updated.warnings?.length) showToast(updated.warnings[0].message, 'warning');
     } else {
       const created = await api.createClient({ ...data, ...getActorPayload() });
       DB.clientes.push(created);
@@ -859,6 +870,7 @@ async function saveCliente(id) {
       }
       clearClienteModalError();
       showToast(clientText('Cliente creado'), 'success');
+      if (created.warnings?.length) showToast(created.warnings[0].message, 'warning');
     }
   } catch (error) {
     showClienteModalError(error.message);
@@ -1581,6 +1593,8 @@ function getCurrentUserRolePermissionsClient() {
 }
 
 function currentUserCanManageUsersUi() {
+  // Con permisos propios decide su lista (como en el servidor).
+  if (DB.currentUser?.permisosPropios) return (DB.currentUser.rolePermissions || []).includes('usuarios');
   const currentRoleCode = getCurrentUserRoleCodeClient();
   if (currentRoleCode === 'administrador_general' || currentRoleCode === 'administrador_sucursal') {
     return true;
@@ -1598,7 +1612,7 @@ function canAssignRoleFromUi(roleCode) {
   const nextRoleCode = normalizeUserRoleCodeClient(roleCode);
   if (actorRoleCode === 'administrador_general') return true;
   if (actorRoleCode === 'administrador_sucursal') return nextRoleCode !== 'administrador_general';
-  if (actorRoleCode === 'supervisor' && currentUserCanManageUsersUi()) {
+  if ((actorRoleCode === 'supervisor' || DB.currentUser?.permisosPropios) && currentUserCanManageUsersUi()) {
     return !['administrador_general', 'administrador_sucursal'].includes(nextRoleCode);
   }
   return false;
@@ -1775,7 +1789,7 @@ function loadUsuariosTable() {
           <div class="user-assignment-text">${escapeUserFieldHtml(getUserAssignmentCaption(user))}</div>
           <div class="user-assignment-text">${escapeUserFieldHtml(getUserBillingFunctionCaptionUi(user))}</div>
         </td>
-        <td>${getRolBadge(user)}</td>
+        <td>${getRolBadge(user)}${user.permisosPropios ? ` <span class="badge badge-info" title="${escapeUserFieldHtml(userText('Tiene permisos propios distintos a los de su rol'))}">${userText('Personalizado')}</span>` : ''}</td>
         <td><span class="badge ${isActive ? 'badge-success' : 'badge-warning'}">${userText(user.estado)}</span></td>
         <td>${fbBadge}</td>
         <td class="tc-cell-muted">${escapeUserFieldHtml(user.lastLogin ? (window.TcFecha ? window.TcFecha.formatear(user.lastLogin) : user.lastLogin) : '—')}</td>
@@ -2263,29 +2277,23 @@ const EU_STATE = {
   snapshot:  null,
   activeTab: 'info',
   syncMeta:  null,
+  // Permisos propios que se están editando; null = los de su rol.
+  permisos:  null,
 };
 
+// Roles: ícono de js/iconos.js y qué hacen. Lo que cada usuario puede hacer de
+// verdad sale de js/permisos-catalogo.js (su rol o sus permisos propios).
 const EU_ROLE_META = {
-  administrador_general:  { icon: '🌐', name: 'Administrador General',   desc: 'Acceso completo al sistema.',            perms: ['ventas','caja','inventario','clientes','reportes','usuarios','configuracion','facturacion_electronica','delivery','rrhh'] },
-  administrador_sucursal: { icon: '🏪', name: 'Admin. Sucursal',         desc: 'Gestiona su sucursal asignada.',         perms: ['ventas','caja','inventario','clientes','reportes','usuarios'] },
-  cajero:                 { icon: '💰', name: 'Cajero',                  desc: 'Solo ventas y cobros.',                  perms: ['ventas','caja','clientes'] },
-  supervisor:             { icon: '👁',  name: 'Supervisor',              desc: 'Supervisa sin configurar.',              perms: ['ventas','caja','inventario','reportes'] },
-  repartidor:             { icon: '🛵', name: 'Delivery',                desc: 'App de delivery y pedidos.',             perms: ['delivery'] },
-  contabilidad:           { icon: '📊', name: 'Contabilidad',            desc: 'Solo reportes financieros.',             perms: ['reportes','facturacion_electronica'] },
+  administrador_general:  { icon: 'shield',       name: 'Administrador general', desc: 'Todo el sistema, sin límites.' },
+  administrador_sucursal: { icon: 'store',        name: 'Admin. de sucursal',    desc: 'Administra su sucursal.' },
+  supervisor:             { icon: 'eye',          name: 'Supervisor',            desc: 'Supervisa ventas y caja.' },
+  cajero:                 { icon: 'banknote',     name: 'Cajero',                desc: 'Vende y cobra en su caja.' },
+  repartidor:             { icon: 'bike',         name: 'Delivery',              desc: 'Pedidos a domicilio.' },
+  contabilidad:           { icon: 'chart-column', name: 'Contabilidad',          desc: 'Reportes financieros.' },
+  contador_asociado:      { icon: 'chart-column', name: 'Contador asociado',     desc: 'Acceso del contador del negocio.' },
+  superadmin:             { icon: 'shield',       name: 'Super administrador',   desc: 'Soporte de Tecno Caja.' },
 };
-
-const EU_PERM_META = {
-  ventas:                 { icon: '🛒', label: 'Ventas' },
-  caja:                   { icon: '💳', label: 'Caja y cobros' },
-  inventario:             { icon: '📦', label: 'Inventario' },
-  clientes:               { icon: '👥', label: 'Clientes' },
-  reportes:               { icon: '📊', label: 'Reportes' },
-  usuarios:               { icon: '🔐', label: 'Gestión de usuarios' },
-  configuracion:          { icon: '⚙',  label: 'Configuración' },
-  facturacion_electronica:{ icon: '🧾', label: 'Facturación electrónica' },
-  delivery:               { icon: '🛵', label: 'App Delivery' },
-  rrhh:                   { icon: '🧑‍💼', label: 'Recursos Humanos' },
-};
+const euIcon = (name, size = 16) => (window.TcIconos ? window.TcIconos.svg(name, size) : '');
 
 function openCreateUserModal() {
   if (!currentUserCanManageUsersUi()) {
@@ -2345,6 +2353,7 @@ function euOpenUserModal(user, options = {}) {
   EU_STATE.user = { ...user };
   EU_STATE.activeTab = 'info';
   EU_STATE.syncMeta = euBuildSyncMeta();
+  EU_STATE.permisos = Array.isArray(user?.permisosUsuario) ? [...user.permisosUsuario] : null;
 
   euRenderHeader(EU_STATE.user);
   euRenderTabInfo(EU_STATE.user);
@@ -2359,7 +2368,7 @@ function euOpenUserModal(user, options = {}) {
   });
 
   document.getElementById('eu-overlay').classList.remove('hidden');
-  euSwitchTab('info');
+  document.querySelector('#eu-overlay .eu-body')?.scrollTo?.(0, 0);
   document.getElementById('eu-nombre')?.focus();
   void euRefreshSyncMeta();
 
@@ -2372,7 +2381,9 @@ function euOpenUserModal(user, options = {}) {
 
 function euBuildDraftUser() {
   const roles = getAssignableRolesForUi();
-  const defaultRoleCode = normalizeUserRoleCodeClient(roles[0]?.codigo || 'cajero');
+  // Un usuario nuevo arranca como cajero (el más común), no como administrador.
+  const preferido = roles.find((r) => normalizeUserRoleCodeClient(r.codigo) === 'cajero') || roles[roles.length - 1] || roles[0];
+  const defaultRoleCode = normalizeUserRoleCodeClient(preferido?.codigo || 'cajero');
   const defaultBranchId = Number(DB.currentUser?.sucursalId || DB.currentUser?.branchId || getPrimaryBranchForUsers() || 0) || null;
   const defaultCashId = roleNeedsCashUi(defaultRoleCode)
     ? (Number(getPrimaryCashRegisterForUsers(defaultBranchId || getPrimaryBranchForUsers()) || 0) || null)
@@ -2404,21 +2415,24 @@ function euClose() {
   EU_STATE.user     = null;
   EU_STATE.snapshot = null;
   EU_STATE.syncMeta = null;
+  EU_STATE.permisos = null;
 }
 
 function euCloseOverlay(event) {
   if (event.target.id === 'eu-overlay') euClose();
 }
 
-function euSwitchTab(name, btn) {
+// Ya no hay pestañas: lleva a la sección (la validación la usa para mostrar
+// el campo con problema) y la resalta un momento.
+function euSwitchTab(name) {
   EU_STATE.activeTab = name;
-  document.querySelectorAll('.eu-tab').forEach(t =>
-    t.classList.toggle('eu-tab--active', t.dataset.tab === name));
-  document.querySelectorAll('.eu-panel').forEach(p =>
-    p.classList.toggle('eu-panel--hidden', p.id !== 'eu-panel-' + name));
-  if (name === 'sync' && EU_STATE.user) {
-    euRenderTabSync(EU_STATE.user);
-  }
+  const seccion = document.getElementById('eu-panel-' + name);
+  if (!seccion) return;
+  if (seccion.tagName === 'DETAILS') seccion.open = true;
+  seccion.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  seccion.classList.remove('eu-card--aviso');
+  void seccion.offsetWidth;
+  seccion.classList.add('eu-card--aviso');
 }
 
 // ── Render: Header ────────────────────────────────────
@@ -2436,41 +2450,67 @@ function euRenderHeader(user) {
 
 // ── Render: Tab 1 — Información ───────────────────────
 function euRenderTabInfo(user) {
+  const isCreate = EU_STATE.mode === 'create';
   document.getElementById('eu-panel-info').innerHTML = `
-    <div class="eu-field">
-      <label class="eu-label">👤 ${userText('Nombre completo')} <span style="color:#f87171">*</span></label>
-      <input id="eu-nombre" class="eu-input" type="text"
-             placeholder="${userText('Ej: María Fernández')}"
-             value="${escapeUserFieldHtml(user?.nombre || '')}" autocomplete="off">
-    </div>
-    <div class="eu-field">
-      <label class="eu-label">🔖 ${userText('Usuario de acceso')} <span style="color:#f87171">*</span></label>
-      <input id="eu-usuario" class="eu-input" type="text"
-             placeholder="nombre.usuario"
-             value="${escapeUserFieldHtml(user?.usuario || '')}" autocomplete="off">
-      <div class="eu-field-error hidden" id="eu-usuario-error">⚠ ${userText('Ya existe otro usuario con ese nombre de acceso')}</div>
-    </div>
-    <div class="eu-field">
-      <label class="eu-label">📧 ${userText('Correo electrónico')} <span title="${userText('Usado para acceso móvil y sincronización Firebase')}" style="cursor:help;opacity:.7">(?)</span></label>
-      <input id="eu-email" class="eu-input" type="email"
-             placeholder="usuario@negocio.com"
-             value="${escapeUserFieldHtml(user?.email || '')}" autocomplete="off">
-      <div class="eu-field-error hidden" id="eu-email-error">⚠ ${userText('Introduce un correo válido')}</div>
-      <div class="eu-field-error hidden" id="eu-email-duplicate-error">⚠ ${userText('Ya existe otro usuario usando ese correo')}</div>
-    </div>
-    <div class="eu-field">
-      <label class="eu-label">📱 ${userText('Teléfono')}</label>
-      <input id="eu-telefono" class="eu-input" type="text"
-             placeholder="${userText('Opcional')}"
-             value="${escapeUserFieldHtml(user?.telefono || '')}">
-    </div>
-    <div class="eu-field">
-      <label class="eu-label">📝 ${userText('Observación')}</label>
-      <textarea id="eu-observacion" class="eu-input" rows="2"
-                style="resize:vertical;min-height:58px"
-                placeholder="${userText('Notas internas opcionales')}">${escapeUserFieldHtml(user?.observacion || '')}</textarea>
+    <h4 class="eu-card-title" id="eu-titulo-datos">${euIcon('user', 16)} ${userText('Datos de la persona')}</h4>
+    <div class="eu-form-grid">
+      <div class="eu-field eu-field--full">
+        <label class="eu-label" for="eu-nombre">${userText('Nombre completo')} <span class="eu-req">*</span></label>
+        <input id="eu-nombre" class="eu-input" type="text" maxlength="120"
+               placeholder="${userText('Ej: María Fernández')}"
+               value="${escapeUserFieldHtml(user?.nombre || '')}" autocomplete="off">
+      </div>
+      <div class="eu-field">
+        <label class="eu-label" for="eu-usuario">${userText('Usuario para entrar')} <span class="eu-req">*</span></label>
+        <input id="eu-usuario" class="eu-input" type="text" maxlength="60" spellcheck="false"
+               placeholder="maria.fernandez"
+               value="${escapeUserFieldHtml(user?.usuario || '')}" autocomplete="off">
+        <div class="eu-hint" id="eu-usuario-hint">${userText(isCreate ? 'Se sugiere a partir del nombre. Sin espacios.' : 'Con este nombre entra al sistema.')}</div>
+        <div class="eu-field-error hidden" id="eu-usuario-error">${userText('Ya existe otro usuario con ese nombre de acceso')}</div>
+      </div>
+      <div class="eu-field">
+        <label class="eu-label" for="eu-telefono">${userText('Teléfono')}</label>
+        <input id="eu-telefono" class="eu-input" type="tel" maxlength="40" inputmode="tel"
+               placeholder="809-000-0000"
+               value="${escapeUserFieldHtml(user?.telefono || '')}">
+      </div>
+      <div class="eu-field eu-field--full">
+        <label class="eu-label" for="eu-email">${userText('Correo electrónico')}</label>
+        <input id="eu-email" class="eu-input" type="email" maxlength="160"
+               placeholder="usuario@negocio.com"
+               value="${escapeUserFieldHtml(user?.email || '')}" autocomplete="off">
+        <div class="eu-hint">${userText('Opcional. Con correo puede entrar a la app de reportes y a la app móvil.')}</div>
+        <div class="eu-field-error hidden" id="eu-email-error">${userText('Introduce un correo válido')}</div>
+        <div class="eu-field-error hidden" id="eu-email-duplicate-error">${userText('Ya existe otro usuario usando ese correo')}</div>
+      </div>
+      <div class="eu-field eu-field--full">
+        <label class="eu-label" for="eu-observacion">${userText('Observación')}</label>
+        <textarea id="eu-observacion" class="eu-input" rows="2" maxlength="500"
+                  placeholder="${userText('Notas internas (opcional)')}">${escapeUserFieldHtml(user?.observacion || '')}</textarea>
+      </div>
     </div>
   `;
+  if (isCreate) euWireUsernameSuggestion();
+}
+
+// Al crear: el usuario de acceso se sugiere del nombre (maria.fernandez) hasta
+// que la persona lo escriba a mano.
+function euWireUsernameSuggestion() {
+  const nombre = document.getElementById('eu-nombre');
+  const usuario = document.getElementById('eu-usuario');
+  if (!nombre || !usuario) return;
+  let escritoAMano = Boolean(usuario.value.trim());
+  usuario.addEventListener('input', () => { escritoAMano = Boolean(usuario.value.trim()); });
+  nombre.addEventListener('input', () => {
+    if (escritoAMano) return;
+    const partes = nombre.value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    usuario.value = partes.length > 1 ? `${partes[0]}.${partes[partes.length - 1]}` : (partes[0] || '');
+    usuario.dispatchEvent(new Event('change'));
+    if (typeof euValidateDuplicateFields === 'function') euValidateDuplicateFields();
+    euUpdateChanges();
+  });
+  usuario.addEventListener('input', () => { usuario.value = usuario.value.replace(/\s+/g, ''); });
 }
 
 // ── Render: Tab 2 — Permisos ──────────────────────────
@@ -2482,55 +2522,102 @@ function euRenderTabPermisos(user) {
 
   const roleCards = roles.map(r => {
     const code = normalizeUserRoleCodeClient(r.codigo);
-    const meta = EU_ROLE_META[code] || { icon: '👤', name: r.nombre, desc: '' };
+    const meta = EU_ROLE_META[code] || { icon: 'user', name: r.nombre, desc: '' };
+    const activo = code === currentRoleCode;
     return `
-      <button class="eu-role-card ${code === currentRoleCode ? 'eu-role-card--active' : ''}"
+      <button type="button" class="eu-role-card ${activo ? 'eu-role-card--active' : ''}" aria-pressed="${activo}"
               data-role="${escapeUserFieldHtml(r.codigo)}"
               onclick="euSelectRole('${escapeUserFieldHtml(r.codigo)}', this)">
-        <div class="eu-role-icon">${meta.icon}</div>
-        <div class="eu-role-name">${escapeUserFieldHtml(meta.name || r.nombre)}</div>
-        <div class="eu-role-desc">${escapeUserFieldHtml(meta.desc || '')}</div>
+        <span class="eu-role-icon">${euIcon(meta.icon, 18)}</span>
+        <span class="eu-role-text">
+          <span class="eu-role-name">${escapeUserFieldHtml(meta.name || r.nombre)}</span>
+          <span class="eu-role-desc">${escapeUserFieldHtml(meta.desc || '')}</span>
+        </span>
       </button>`;
   }).join('');
 
-  const currentMeta = EU_ROLE_META[currentRoleCode] || { perms: [] };
-  const permList = Object.entries(EU_PERM_META).map(([key, pm]) => {
-    const on = currentMeta.perms.includes(key);
-    return `<div class="eu-perm-item">
-      <div class="eu-perm-check ${on ? 'eu-perm-check--on' : 'eu-perm-check--off'}">${on ? '✓' : ''}</div>
-      <span>${pm.icon} ${userText(pm.label)}</span>
-    </div>`;
-  }).join('');
-
   document.getElementById('eu-panel-permisos').innerHTML = `
+    <h4 class="eu-card-title" id="eu-titulo-permisos">${euIcon('shield', 16)} ${userText('Rol y permisos')}</h4>
     <input type="hidden" id="eu-role-code" value="${currentRoleCode}">
-    <div class="eu-section-title">${userText('Seleccionar rol')}</div>
-    <div class="eu-roles-grid" id="eu-roles-grid">${roleCards}</div>
-    <div class="eu-perms-section">
-      <div class="eu-perms-title">${userText('Permisos del rol seleccionado')} <span title="${userText('Los permisos se derivan del rol actual de este usuario')}" style="cursor:help;opacity:.7">(?)</span></div>
-      <div class="eu-perm-list" id="eu-perm-list">${permList}</div>
-    </div>
+    <div class="eu-roles-grid" id="eu-roles-grid" role="group" aria-label="${userText('Rol')}">${roleCards}</div>
     <div id="eu-role-assignment"></div>
+    <div class="eu-perms-section" id="eu-perms-section"></div>
   `;
   euRenderRoleAssignment(currentRoleCode, currentBranchId, currentCashId);
+  euRenderPermisos();
+}
+
+// ── "Qué puede hacer": casillas del catálogo (js/permisos-catalogo.js) ───────
+function euPermisosDelRol(roleCode) {
+  const catalogo = window.PermisosCatalogo;
+  if (!catalogo) return [];
+  return catalogo.porDefecto(roleCode, getRoleDefinitionForUsers(roleCode)?.permisos || []);
+}
+function euPuedePersonalizar() {
+  return getCurrentUserRoleCodeClient() === 'administrador_general';
+}
+function euRenderPermisos() {
+  const box = document.getElementById('eu-perms-section');
+  const catalogo = window.PermisosCatalogo;
+  if (!box || !catalogo) return;
+  const roleCode = normalizeUserRoleCodeClient(document.getElementById('eu-role-code')?.value || '');
+  const esAdminGeneral = roleCode === 'administrador_general';
+  const delRol = euPermisosDelRol(roleCode);
+  const propios = esAdminGeneral ? null : EU_STATE.permisos;
+  const marcados = new Set(propios || delRol);
+  const editable = euPuedePersonalizar() && !esAdminGeneral;
+  const nota = esAdminGeneral
+    ? userText('El administrador general siempre puede hacer todo.')
+    : (editable
+      ? userText('Marca lo que este usuario puede hacer. Empieza con lo de su rol.')
+      : userText('Solo el administrador general puede cambiar los permisos de un usuario.'));
+  box.innerHTML = `
+    <div class="eu-perms-head">
+      <div>
+        <div class="eu-perms-title">${userText('Qué puede hacer')}</div>
+        <div class="eu-hint">${nota}</div>
+      </div>
+      <div class="eu-perms-estado">
+        <span class="eu-badge ${propios ? 'eu-badge--propio' : ''}">${userText(propios ? 'Personalizado' : 'Según el rol')}</span>
+        <span class="eu-perms-cuenta">${marcados.size} ${userText('de')} ${catalogo.CODIGOS.length}</span>
+      </div>
+    </div>
+    ${propios && editable ? `<button type="button" class="eu-link-btn" onclick="euRestablecerPermisos()">${euIcon('rotate-ccw', 14)} ${userText('Volver a los permisos del rol')}</button>` : ''}
+    <div class="eu-perm-groups">
+      ${catalogo.GRUPOS.map((g) => `
+        <fieldset class="eu-perm-group">
+          <legend>${escapeUserFieldHtml(userText(g.titulo))}</legend>
+          ${g.permisos.map((p) => `
+            <label class="eu-perm-item ${editable ? '' : 'eu-perm-item--fijo'}" title="${escapeUserFieldHtml(userText(p.ayuda))}">
+              <input type="checkbox" class="eu-perm-check" data-permiso="${escapeUserFieldHtml(p.codigo)}" ${marcados.has(p.codigo) ? 'checked' : ''} ${editable ? '' : 'disabled'} onchange="euCambiarPermiso()">
+              <span class="eu-perm-text"><span class="eu-perm-name">${escapeUserFieldHtml(userText(p.nombre))}</span><span class="eu-perm-help">${escapeUserFieldHtml(userText(p.ayuda))}</span></span>
+            </label>`).join('')}
+        </fieldset>`).join('')}
+    </div>`;
+}
+function euCambiarPermiso() {
+  const catalogo = window.PermisosCatalogo;
+  const roleCode = document.getElementById('eu-role-code')?.value || '';
+  const lista = [...document.querySelectorAll('#eu-perms-section .eu-perm-check:checked')].map((c) => c.dataset.permiso);
+  // Igual a lo del rol = sin permisos propios.
+  EU_STATE.permisos = catalogo.iguales(lista, euPermisosDelRol(roleCode)) ? null : catalogo.normalizar(lista);
+  euRenderPermisos();
+  euUpdateChanges();
+}
+function euRestablecerPermisos() {
+  EU_STATE.permisos = null;
+  euRenderPermisos();
+  euUpdateChanges();
 }
 
 function euSelectRole(roleCode, btn) {
   document.getElementById('eu-role-code').value = roleCode;
-  document.querySelectorAll('.eu-role-card').forEach(c => c.classList.remove('eu-role-card--active'));
+  document.querySelectorAll('.eu-role-card').forEach(c => { c.classList.remove('eu-role-card--active'); c.setAttribute('aria-pressed', 'false'); });
   btn.classList.add('eu-role-card--active');
-  const code = normalizeUserRoleCodeClient(roleCode);
-  const meta = EU_ROLE_META[code] || { perms: [] };
-  const list = document.getElementById('eu-perm-list');
-  if (list) {
-    list.innerHTML = Object.entries(EU_PERM_META).map(([key, pm]) => {
-      const on = meta.perms.includes(key);
-      return `<div class="eu-perm-item">
-        <div class="eu-perm-check ${on ? 'eu-perm-check--on' : 'eu-perm-check--off'}">${on ? '✓' : ''}</div>
-        <span>${pm.icon} ${userText(pm.label)}</span>
-      </div>`;
-    }).join('');
-  }
+  btn.setAttribute('aria-pressed', 'true');
+  // Otro rol: arranca con los permisos de ese rol.
+  EU_STATE.permisos = null;
+  euRenderPermisos();
   const branchId = Number(document.getElementById('eu-branch-id')?.value || EU_STATE.user?.sucursalId || EU_STATE.user?.branchId || getPrimaryBranchForUsers() || 0);
   const cashId = Number(document.getElementById('eu-cash-id')?.value || EU_STATE.user?.cajaId || EU_STATE.user?.cashRegisterId || getPrimaryCashRegisterForUsers(branchId) || 0);
   euRenderRoleAssignment(roleCode, branchId, cashId);
@@ -2566,8 +2653,6 @@ function euRenderRoleAssignment(roleCode, branchId, cashId) {
     return;
   }
 
-  html += `<div class="eu-section-title" style="margin-top:0.5rem">${userText('Asignación')}</div>`;
-
   if (showBranchSelect) {
     const branchOptions = scopedBranches.map((branch) => `
       <option value="${branch.id}" ${Number(branch.id) === Number(effectiveBranchId || 0) ? 'selected' : ''}>
@@ -2576,15 +2661,15 @@ function euRenderRoleAssignment(roleCode, branchId, cashId) {
     `).join('');
     html += `
       <div class="eu-field">
-        <label class="eu-label">🏪 ${userText('Sucursal')}</label>
+        <label class="eu-label" for="eu-branch-id">${userText('Sucursal')}</label>
         <select id="eu-branch-id" class="eu-input" onchange="euUpdateCashDropdown()">${branchOptions}</select>
       </div>
     `;
   } else {
     html += `
       <input type="hidden" id="eu-branch-id" value="${effectiveBranchId || ''}">
-      <div class="eu-id-card" style="margin-top:.2rem">
-        <div class="eu-id-card-label">🏪 ${userText('Sucursal')}</div>
+      <div class="eu-id-card">
+        <div class="eu-id-card-label">${userText('Sucursal')}</div>
         <div class="eu-id-card-value ${effectiveBranchId ? '' : 'eu-id-missing'}">${escapeUserFieldHtml(getBranchNameById(effectiveBranchId) || userText('No aplica'))}</div>
       </div>
     `;
@@ -2598,7 +2683,7 @@ function euRenderRoleAssignment(roleCode, branchId, cashId) {
     `).join('');
     html += `
       <div class="eu-field">
-        <label class="eu-label">🖥 ${userText('Caja')}</label>
+        <label class="eu-label" for="eu-cash-id">${userText('Caja')}</label>
         <select id="eu-cash-id" class="eu-input" onchange="euUpdateChanges()">
           <option value="">${userText('Selecciona una caja')}</option>
           ${cashOptions}
@@ -2608,8 +2693,8 @@ function euRenderRoleAssignment(roleCode, branchId, cashId) {
   } else if (roleNeedsCashUi(normalizedRole)) {
     html += `
       <input type="hidden" id="eu-cash-id" value="${effectiveCashId || ''}">
-      <div class="eu-id-card" style="margin-top:.2rem">
-        <div class="eu-id-card-label">🖥 ${userText('Caja')}</div>
+      <div class="eu-id-card">
+        <div class="eu-id-card-label">${userText('Caja')}</div>
         <div class="eu-id-card-value ${effectiveCashId ? '' : 'eu-id-missing'}">${escapeUserFieldHtml(getCashRegisterNameById(effectiveCashId) || userText('No disponible'))}</div>
       </div>
     `;
@@ -2617,7 +2702,7 @@ function euRenderRoleAssignment(roleCode, branchId, cashId) {
     html += `<input type="hidden" id="eu-cash-id" value="">`;
   }
 
-  container.innerHTML = html;
+  container.innerHTML = `<div class="eu-subtitle">${userText('Dónde trabaja')}</div><div class="eu-asignacion">${html}</div>`;
 }
 
 // ── Render: Tab 3 — Configuración ─────────────────────
@@ -2626,64 +2711,97 @@ function euRenderTabConfig(user) {
   const estado      = user?.estado || 'Activo';
   const billingType = user?.tipoFacturacion || 'mixta';
   const statuses = [
-    { val: 'Activo',     dot: '🟢', label: userText('Activo') },
-    { val: 'Inactivo',   dot: '🔴', label: userText('Inactivo') },
-    { val: 'Suspendido', dot: '🟡', label: userText('Suspendido') },
+    { val: 'Activo',     label: userText('Activo'),     desc: userText('Puede entrar') },
+    { val: 'Inactivo',   label: userText('Inactivo'),   desc: userText('No puede entrar') },
+    { val: 'Suspendido', label: userText('Suspendido'), desc: userText('Bloqueado por ahora') },
   ];
+  const funciones = [
+    ['mixta', 'Mixta', 'Factura y cobra.'],
+    ['facturacion', 'Solo factura', 'Sus facturas pasan a la cola de cobro.'],
+    ['cobro', 'Solo cobra', 'Cobra las facturas pendientes.'],
+    ['centralizadora', 'Centralizadora', 'Cobra lo que facturan otras cajas.'],
+  ];
+  const ojo = `<button class="eu-pass-toggle" type="button" onclick="euTogglePass('{id}',this)" aria-label="${userText('Mostrar contraseña')}" title="${userText('Mostrar contraseña')}">${euIcon('eye', 16)}</button>`;
 
   document.getElementById('eu-panel-config').innerHTML = `
-    <div class="eu-section-title">${userText('Estado de la cuenta')}</div>
-    <div class="eu-status-selector">
-      ${statuses.map(s => `
-        <button class="eu-status-opt ${estado === s.val ? 'eu-status-opt--active' : ''}"
-                data-status="${s.val}" onclick="euSelectStatus('${s.val}', this)">
-          <span class="eu-status-dot">${s.dot}</span>
-          <span>${s.label}</span>
-        </button>`).join('')}
-    </div>
-    <input type="hidden" id="eu-estado" value="${estado}">
-
-    <div class="eu-section-title" style="margin-top:0.25rem">${userText('Función de facturación')}</div>
+    <h4 class="eu-card-title" id="eu-titulo-acceso">${euIcon('lock', 16)} ${userText('Acceso y seguridad')}</h4>
     <div class="eu-field">
-      <label class="eu-label">🧾 ${userText('Función de facturación')} <span title="${userText('Define cómo opera este usuario en caja y facturación')}" style="cursor:help;opacity:.7">(?)</span></label>
-      <select id="eu-billing-type" class="eu-input" onchange="euUpdateChanges()">
-        <option value="mixta"          ${billingType==='mixta'          ? 'selected':''}>Mixta</option>
-        <option value="facturacion"    ${billingType==='facturacion'    ? 'selected':''}>Solo factura</option>
-        <option value="cobro"          ${billingType==='cobro'          ? 'selected':''}>Solo cobra</option>
-        <option value="centralizadora" ${billingType==='centralizadora' ? 'selected':''}>Centralizadora</option>
+      <span class="eu-label">${userText('Estado de la cuenta')}</span>
+      <div class="eu-status-selector" role="radiogroup" aria-label="${userText('Estado de la cuenta')}">
+        ${statuses.map(s => `
+          <button type="button" role="radio" aria-checked="${estado === s.val}" class="eu-status-opt ${estado === s.val ? 'eu-status-opt--active' : ''}"
+                  data-status="${s.val}" onclick="euSelectStatus('${s.val}', this)">
+            <span class="eu-status-dot" aria-hidden="true"></span>
+            <span class="eu-status-text"><strong>${s.label}</strong><small>${s.desc}</small></span>
+          </button>`).join('')}
+      </div>
+      <input type="hidden" id="eu-estado" value="${estado}">
+    </div>
+
+    <div class="eu-form-grid">
+      <div class="eu-field">
+        <label class="eu-label" for="eu-pass">${userText(isCreate ? 'Contraseña' : 'Nueva contraseña')} ${isCreate ? '<span class="eu-req">*</span>' : ''}</label>
+        <div class="eu-pass-wrap">
+          <input id="eu-pass" class="eu-input" type="password"
+                 placeholder="${userText(isCreate ? 'Mínimo 6 caracteres' : 'Vacío = no cambia')}"
+                 oninput="euOnPasswordInput(this.value)" autocomplete="new-password">
+          ${ojo.replace('{id}', 'eu-pass')}
+        </div>
+        <div class="eu-strength-bar"><div class="eu-strength-fill" id="eu-strength-fill"></div></div>
+        <div class="eu-strength-label hidden" id="eu-strength-label"></div>
+      </div>
+      <div class="eu-field">
+        <label class="eu-label" for="eu-pass-confirm">${userText('Repetir contraseña')}</label>
+        <div class="eu-pass-wrap">
+          <input id="eu-pass-confirm" class="eu-input" type="password"
+                 placeholder="${userText('Igual a la de al lado')}"
+                 oninput="euOnConfirmInput()" autocomplete="new-password">
+          ${ojo.replace('{id}', 'eu-pass-confirm')}
+        </div>
+        <div class="eu-field-error hidden" id="eu-pass-match-error">${userText('Las contraseñas no coinciden')}</div>
+      </div>
+    </div>
+    <button type="button" class="eu-link-btn" onclick="euGenerarClave()">${euIcon('key-round', 14)} ${userText('Generar una contraseña segura')}</button>
+
+    <div class="eu-field">
+      <label class="eu-label" for="eu-billing-type">${userText('Función en caja')}</label>
+      <select id="eu-billing-type" class="eu-input" onchange="euUpdateChanges(); euDescribirFuncion()">
+        ${funciones.map(([val, nombre]) => `<option value="${val}" ${billingType === val ? 'selected' : ''}>${userText(nombre)}</option>`).join('')}
       </select>
-    </div>
-
-    <div class="eu-section-title" style="margin-top:0.25rem">${userText('Seguridad')}</div>
-    <div class="eu-field">
-      <label class="eu-label">🔑 ${userText('Nueva contraseña')}
-        <span style="font-weight:400;opacity:0.6;font-size:0.73rem">(${userText(isCreate ? 'obligatoria para crear el usuario' : 'vacío = sin cambios')})</span>
-      </label>
-      <div class="eu-pass-wrap">
-        <input id="eu-pass" class="eu-input" type="password"
-               placeholder="${userText('Mínimo 6 caracteres')}" style="padding-right:2.5rem"
-               oninput="euOnPasswordInput(this.value)" autocomplete="new-password">
-        <button class="eu-pass-toggle" type="button" onclick="euTogglePass('eu-pass',this)" aria-label="${userText('Mostrar')}">👁</button>
-      </div>
-      <div class="eu-strength-bar"><div class="eu-strength-fill" id="eu-strength-fill"></div></div>
-      <div class="eu-strength-label hidden" id="eu-strength-label"></div>
-    </div>
-    <div class="eu-field">
-      <label class="eu-label">🔑 ${userText('Confirmar contraseña')}</label>
-      <div class="eu-pass-wrap">
-        <input id="eu-pass-confirm" class="eu-input" type="password"
-               placeholder="${userText('Repetir contraseña')}" style="padding-right:2.5rem"
-               oninput="euOnConfirmInput()" autocomplete="new-password">
-        <button class="eu-pass-toggle" type="button" onclick="euTogglePass('eu-pass-confirm',this)" aria-label="${userText('Mostrar')}">👁</button>
-      </div>
-      <div class="eu-field-error hidden" id="eu-pass-match-error">⚠ ${userText('Las contraseñas no coinciden')}</div>
+      <div class="eu-hint" id="eu-billing-hint" data-descripciones="${escapeUserFieldHtml(JSON.stringify(Object.fromEntries(funciones.map(([v, , d]) => [v, userText(d)]))))}"></div>
     </div>
   `;
+  euDescribirFuncion();
+}
+
+function euDescribirFuncion() {
+  const hint = document.getElementById('eu-billing-hint');
+  const valor = document.getElementById('eu-billing-type')?.value || 'mixta';
+  if (!hint) return;
+  try { hint.textContent = JSON.parse(hint.dataset.descripciones || '{}')[valor] || ''; } catch (_) { hint.textContent = ''; }
+}
+
+// Contraseña de 10 caracteres sin letras que se confunden (l, 1, O, 0); se
+// muestra para poder dársela a la persona.
+function euGenerarClave() {
+  const letras = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const azar = new Uint32Array(10);
+  (window.crypto || window.msCrypto).getRandomValues(azar);
+  const clave = Array.from(azar, (n) => letras[n % letras.length]).join('');
+  for (const id of ['eu-pass', 'eu-pass-confirm']) {
+    const input = document.getElementById(id);
+    if (!input) continue;
+    input.value = clave;
+    input.type = 'text';
+  }
+  euOnPasswordInput(clave);
+  showToast(userText('Contraseña generada. Anótala para dársela a la persona.'), 'info');
 }
 
 function euSelectStatus(val, btn) {
-  document.querySelectorAll('.eu-status-opt').forEach(b => b.classList.remove('eu-status-opt--active'));
+  document.querySelectorAll('.eu-status-opt').forEach(b => { b.classList.remove('eu-status-opt--active'); b.setAttribute('aria-checked', 'false'); });
   btn.classList.add('eu-status-opt--active');
+  btn.setAttribute('aria-checked', 'true');
   document.getElementById('eu-estado').value = val;
   euUpdateChanges();
 }
@@ -2730,7 +2848,8 @@ function euTogglePass(inputId, btn) {
   if (!input) return;
   const show = input.type === 'password';
   input.type = show ? 'text' : 'password';
-  btn.textContent = show ? '🔒' : '👁';
+  btn.innerHTML = euIcon(show ? 'lock' : 'eye', 16);
+  btn.setAttribute('aria-label', userText(show ? 'Ocultar contraseña' : 'Mostrar contraseña'));
 }
 
 // ── Render: Tab 4 — Sincronización ────────────────────
@@ -2740,68 +2859,49 @@ function euRenderTabSync(user) {
   const hasUid     = Boolean(identity.firebaseUid);
   const isDelivery = normalizeUserRoleCodeClient(user?.roleCode || user?.rol) === 'repartidor';
   const canSync = Boolean(EU_STATE.userId);
+  const panel = document.getElementById('eu-panel-sync');
+  // Al crear no hay nada que sincronizar todavía: la sección no se muestra.
+  panel.hidden = isCreate;
+  const abierto = panel.open;
+  const ok = (bien) => `<span class="eu-sync-app-icon ${bien ? 'ok' : 'warn'}">${euIcon(bien ? 'check' : 'minus', 14)}</span>`;
+  const sinGuardar = canSync ? '' : `disabled title="${userText('Guarda el usuario primero')}"`;
 
-  document.getElementById('eu-panel-sync').innerHTML = `
-    <div class="eu-sync-status-card ${hasUid ? 'eu-sync-ok' : 'eu-sync-warn'}">
-      <div class="eu-sync-status-dot">${hasUid ? '🟢' : (isCreate ? '🟡' : '🔴')}</div>
-      <div>
-        <div class="eu-sync-status-text">${hasUid ? userText('Sincronizado con Firebase') : userText(isCreate ? 'Pendiente de creación' : 'Sin sincronización Firebase')}</div>
-        <div class="eu-sync-status-sub">${hasUid ? userText('El usuario puede acceder a las apps móviles') : userText(isCreate ? 'Guarda el usuario para generar sus identificadores y acceso móvil' : 'Requiere sincronización para acceso móvil')}</div>
+  panel.innerHTML = `
+    <summary class="eu-card-title eu-card-summary">
+      ${euIcon('smartphone', 16)} ${userText('Acceso a las apps móviles')}
+      <span class="eu-badge ${hasUid ? 'eu-badge--ok' : ''}">${userText(hasUid ? 'Conectado' : 'Sin conectar')}</span>
+    </summary>
+    <div class="eu-sync-body">
+      <p class="eu-hint">${userText(hasUid ? 'Puede entrar a la app de reportes con su correo y contraseña.' : 'Para entrar a las apps móviles necesita correo y sincronizarse.')}</p>
+      <div class="eu-sync-apps">
+        <div class="eu-sync-app-row">${ok(hasUid)}<span>${userText('Cuenta en la nube (Firebase)')}</span></div>
+        <div class="eu-sync-app-row">${ok(hasUid)}<span>${userText('App de reportes')}</span></div>
+        ${isDelivery ? `<div class="eu-sync-app-row">${ok(hasUid)}<span>${userText('App Delivery')}</span></div>` : ''}
       </div>
-    </div>
-
-    <div class="eu-section-title">${userText('Identidad — Solo lectura')}</div>
-    <div class="eu-identity-grid">
-      <div class="eu-id-card">
-        <div class="eu-id-card-label">🔒 ${userText('Usuario')}</div>
-        <div class="eu-id-card-value">${escapeUserFieldHtml(identity.userNumber)}</div>
+      <div class="eu-sync-actions">
+        <button type="button" class="eu-sync-action-btn" id="eu-sync-firebase-btn" onclick="euSyncFirebase()" ${sinGuardar}>${euIcon('refresh-cw', 14)} ${userText('Sincronizar ahora')}</button>
+        <button type="button" class="eu-sync-action-btn" id="eu-repair-btn" onclick="euRepairSync()" ${sinGuardar}>${euIcon('wrench', 14)} ${userText('Reparar sincronización')}</button>
+        ${isDelivery ? `<button type="button" class="eu-sync-action-btn" id="eu-sync-delivery-btn" onclick="euSyncDelivery()" ${sinGuardar}>${euIcon('bike', 14)} ${userText('Reintentar Delivery')}</button>` : ''}
       </div>
-      <div class="eu-id-card">
-        <div class="eu-id-card-label">🔥 Firebase UID</div>
-        <div class="eu-id-card-value ${hasUid ? '' : 'eu-id-missing'}" title="${escapeUserFieldHtml(identity.firebaseUid)}">
-          ${hasUid ? escapeUserFieldHtml(identity.firebaseUid) : userText('No asignado')}
+      <details class="eu-ids">
+        <summary>${userText('Identificadores técnicos')}</summary>
+        <div class="eu-identity-grid">
+          <div class="eu-id-card"><div class="eu-id-card-label">${userText('Usuario')}</div><div class="eu-id-card-value">${escapeUserFieldHtml(identity.userNumber)}</div></div>
+          <div class="eu-id-card"><div class="eu-id-card-label">Firebase UID</div><div class="eu-id-card-value ${hasUid ? '' : 'eu-id-missing'}" title="${escapeUserFieldHtml(identity.firebaseUid)}">${hasUid ? escapeUserFieldHtml(identity.firebaseUid) : userText('No asignado')}</div></div>
+          <div class="eu-id-card"><div class="eu-id-card-label">${userText('Negocio')}</div><div class="eu-id-card-value ${identity.businessId ? '' : 'eu-id-missing'}">${escapeUserFieldHtml(identity.businessId || userText('No disponible'))}</div></div>
+          <div class="eu-id-card"><div class="eu-id-card-label">${userText('Licencia')}</div><div class="eu-id-card-value ${identity.licenseId ? '' : 'eu-id-missing'}">${escapeUserFieldHtml(identity.licenseId || userText('No disponible'))}</div></div>
         </div>
-      </div>
-      <div class="eu-id-card">
-        <div class="eu-id-card-label">🏢 ${userText('Business')}</div>
-        <div class="eu-id-card-value ${identity.businessId ? '' : 'eu-id-missing'}">${escapeUserFieldHtml(identity.businessId || userText('No disponible'))}</div>
-      </div>
-      <div class="eu-id-card">
-        <div class="eu-id-card-label">📄 ${userText('Licencia')}</div>
-        <div class="eu-id-card-value ${identity.licenseId ? '' : 'eu-id-missing'}">${escapeUserFieldHtml(identity.licenseId || userText('No disponible'))}</div>
-      </div>
-    </div>
-
-    <div class="eu-section-title">${userText('Aplicaciones vinculadas')}</div>
-    <div class="eu-sync-apps">
-      <div class="eu-sync-app-row">
-        <span class="eu-sync-app-icon ${hasUid ? 'ok' : 'warn'}">${hasUid ? '✓' : '○'}</span>
-        <span>🔐 Firebase Authentication</span>
-      </div>
-      <div class="eu-sync-app-row">
-        <span class="eu-sync-app-icon ${hasUid ? 'ok' : 'warn'}">${hasUid ? '✓' : '○'}</span>
-        <span>📊 ${userText('App Reportes')}</span>
-      </div>
-      ${isDelivery ? `<div class="eu-sync-app-row">
-        <span class="eu-sync-app-icon ${hasUid ? 'ok' : 'warn'}">${hasUid ? '✓' : '○'}</span>
-        <span>🛵 ${userText('App Delivery')}</span>
-      </div>` : ''}
-    </div>
-
-    <div class="eu-section-title">${userText('Acciones de sincronización')}</div>
-    <div class="eu-sync-actions">
-      <button class="eu-sync-action-btn" id="eu-sync-firebase-btn" onclick="euSyncFirebase()" ${canSync ? '' : 'disabled title="Guarda el usuario primero"'}>🔄 ${userText('Sincronizar ahora')}</button>
-      <button class="eu-sync-action-btn" id="eu-repair-btn"        onclick="euRepairSync()" ${canSync ? '' : 'disabled title="Guarda el usuario primero"'}>🧹 ${userText('Reparar sincronización')}</button>
-      ${isDelivery ? `<button class="eu-sync-action-btn" id="eu-sync-delivery-btn" onclick="euSyncDelivery()" ${canSync ? '' : 'disabled title="Guarda el usuario primero"'}>🔁 ${userText('Reintentar Delivery')}</button>` : ''}
+      </details>
     </div>
   `;
+  panel.open = abierto;
 }
 
 function euUpdateFooterSyncBtn(user) {
   const btn = document.getElementById('eu-footer-sync-btn');
   const saveBtn = document.getElementById('eu-save-btn');
-  if (btn) btn.textContent = `🔄 ${userText(EU_STATE.mode === 'create' ? 'Crear y sincronizar' : 'Guardar y sincronizar')}`;
-  if (saveBtn) saveBtn.textContent = `${EU_STATE.mode === 'create' ? '➕' : '💾'} ${userText(EU_STATE.mode === 'create' ? 'Crear usuario' : 'Guardar cambios')}`;
+  if (btn) btn.textContent = userText(EU_STATE.mode === 'create' ? 'Crear y sincronizar' : 'Guardar y sincronizar');
+  if (saveBtn) saveBtn.textContent = userText(EU_STATE.mode === 'create' ? 'Crear usuario' : 'Guardar cambios');
 }
 
 // ── Change detection ───────────────────────────────────
@@ -2832,6 +2932,7 @@ function euCollectValues() {
     cashId:      document.getElementById('eu-cash-id')?.value               || '',
     password:    document.getElementById('eu-pass')?.value                  || '',
     sucursalesEmpresa: JSON.stringify(window.MultisucursalEnlace?.leerDeUsuario?.()?.sucursalesEmpresa ?? null),
+    permisos:    JSON.stringify(EU_STATE.permisos ?? null),
   };
 }
 
@@ -2855,8 +2956,8 @@ function euUpdateChanges() {
   }
   const labels = { nombre:'Nombre', usuario:'Usuario', email:'Correo', telefono:'Teléfono',
     observacion:'Observación', roleCode:'Rol', estado:'Estado', billingType:'Facturación',
-    branchId:'Sucursal', cashId:'Caja', password:'Contraseña', sucursalesEmpresa:'Sucursales de la empresa' };
-  pill.innerHTML = '✏ ' + realChanges.map(k => labels[k] || k).join(', ');
+    branchId:'Sucursal', cashId:'Caja', password:'Contraseña', sucursalesEmpresa:'Sucursales de la empresa', permisos:'Permisos' };
+  pill.textContent = `${userText('Cambios sin guardar')}: ${realChanges.map(k => userText(labels[k] || k)).join(', ')}`;
   pill.className = 'eu-changes-pill eu-changed';
 }
 
@@ -2971,6 +3072,8 @@ async function euSave(options = {}) {
         cashRegisterId,
         telefono: values.telefono,
         observacion: values.observacion,
+        // Permisos propios: solo los manda el administrador general (null = los del rol).
+        ...(euPuedePersonalizar() && EU_STATE.permisos ? { permisos: EU_STATE.permisos } : {}),
         ...(window.MultisucursalEnlace?.leerDeUsuario?.() || {}),
         ...getActorPayload()
       };
@@ -2995,6 +3098,8 @@ async function euSave(options = {}) {
       if (realChanges.includes('branchId')) payload.branchId = branchId;
       if (realChanges.includes('cashId')) payload.cashRegisterId = cashRegisterId;
       if (realChanges.includes('password')) payload.password = values.password;
+      // Al cambiar de rol sin tocar casillas, el servidor vuelve a los permisos del rol.
+      if (realChanges.includes('permisos') && euPuedePersonalizar()) payload.permisos = EU_STATE.permisos ?? null;
       if (realChanges.includes('sucursalesEmpresa')) Object.assign(payload, window.MultisucursalEnlace?.leerDeUsuario?.() || {});
 
       saved = await api.updateUser(editingId, payload);

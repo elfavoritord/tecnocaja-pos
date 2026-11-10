@@ -1,0 +1,63 @@
+/* Cancelación y notas de crédito (js/ajustes-venta.js) */
+#modal-box:has(.nc-modal) { width: min(1100px, calc(100vw - 32px)); max-width: 1100px; }
+#modal-box:has(.nc-modal) #modal-footer { flex-wrap: wrap; gap: 8px; }
+.nc-buscar { display: flex; gap: 8px; }
+.nc-buscar input { flex: 1; }
+.nc-lista { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; max-height: 50vh; overflow: auto; }
+.nc-item { display: grid; grid-template-columns: 1.2fr 1fr 2fr auto; gap: 10px; padding: 10px 12px; text-align: left; border: 1px solid var(--border); border-radius: 10px; background: var(--bg3); color: var(--text); cursor: pointer; }
+.nc-cabecera { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.nc-cabecera div { display: flex; flex-direction: column; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.nc-cabecera span { font-size: 0.75rem; color: var(--text2); }
+.nc-acciones { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.nc-accion { padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg2); }
+.nc-accion h4 { margin: 0 0 6px; }
+.nc-accion p { color: var(--text2); font-size: 0.88rem; }
+.nc-accion.nc-off { opacity: .7; }
+.nc-radio, .nc-check { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.nc-tipo { display: flex; flex-wrap: wrap; gap: 14px; }
+.nc-tabla .nc-qty { width: 90px; text-align: right; }
+
+/* ITBIS por tipo de documento (js/itbis-separado.js) */
+.itbis-sep-filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 10px; }
+.itbis-sep-filtros label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; min-width: 150px; }
+.itbis-sep-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 12px; }
+.itbis-sep-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.itbis-sep-kpis div { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
+.itbis-sep-kpis span { font-size: 0.78rem; color: var(--text2); }
+.itbis-sep-kpis strong { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.itbis-sep-kpis .destacado { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+.itbis-sep-sub { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.itbis-sep-sub h4 { margin: 6px 0; }
+.itbis-sep-estados { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.itbis-sep-estados div { display: flex; flex-direction: column; padding: 10px 14px; border-radius: 10px; background: var(--bg3); }
+.itbis-sep-estados span { font-size: 0.78rem; color: var(--text2); }
+.itbis-sep-estados .rechazo { box-shadow: inset 3px 0 0 var(--danger); }
+.itbis-sep-nota { color: var(--text2); font-size: 0.85rem; }
+.itbis-sep-aviso { margin-bottom: 12px; }
+.itbis-sep-tabla { max-height: 420px; overflow: auto; }
+.itbis-sep-acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* Visor de auditoría (js/auditoria.js) */
+#modal-box:has(.aud-modal) { width: min(1320px, calc(100vw - 32px)); max-width: 1320px; }
+#modal-box:has(.aud-modal) #modal-footer { flex-wrap: wrap; gap: 8px; }
+.aud-filtros { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; align-items: end; margin-bottom: 12px; }
+.aud-filtros label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
+.aud-filtros .aud-check { flex-direction: row; align-items: center; gap: 8px; font-weight: 600; }
+.aud-resumen { color: var(--text2); font-size: 0.85rem; }
+.aud-tabla { max-height: 52vh; overflow: auto; }
+.aud-tabla .data-table { min-width: 1100px; width: 100%; }
+.aud-tabla tbody tr { cursor: pointer; }
+.aud-tabla tbody tr:hover, .aud-tabla tbody tr:focus { background: var(--accent-glow); outline: none; }
+.aud-critico td:first-child { box-shadow: inset 3px 0 0 var(--warning); }
+.aud-det { max-width: 340px; color: var(--text2); }
+.aud-res { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: var(--bg3); }
+.aud-res--exito { background: color-mix(in srgb, var(--success) 20%, transparent); }
+.aud-res--diferencia, .aud-res--pendiente { background: color-mix(in srgb, var(--warning) 22%, transparent); }
+.aud-res--rechazado, .aud-res--error, .aud-res--denegado { background: color-mix(in srgb, var(--danger) 20%, transparent); }
+.aud-paginas { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.aud-detalle { position: fixed; inset: 0; z-index: 2600; display: grid; place-items: center; background: rgba(6, 8, 16, 0.6); }
+.aud-detalle-card { width: min(720px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 20px 22px; border-radius: 14px; background: var(--bg2); color: var(--text); }
+.aud-detalle-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
+.aud-fila { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+.aud-fila span { color: var(--text2); }
+.aud-json { max-height: 220px; overflow: auto; padding: 10px; border-radius: 8px; background: var(--bg3); font-size: 0.8rem; white-space: pre-wrap; word-break: break-word; }

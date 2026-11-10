@@ -48,12 +48,15 @@ function showComprasTab(tab) {
     pane.classList.toggle('hidden', pane.id !== `compras-tab-${tab}`);
   });
   if (tab === 'compras') loadComprasTable();
+  if (tab === 'borradores') window.ComprasPreparar?.cargarBorradores();
+  if (tab === 'recepciones') window.ComprasPreparar?.cargarRecepciones();
   if (tab === 'cuentas-por-pagar') loadCuentasPorPagar();
   if (tab === 'gastos') loadGastosTable();
 }
 
 function initComprasModule() {
   showComprasTab(_comprasActiveTab);
+  window.ComprasPreparar?.actualizarContadores();
 }
 
 // ── Listado de compras ───────────────────────────────────────────────────
@@ -465,11 +468,13 @@ async function verCompra(id) {
 
 // ── Anular compra ─────────────────────────────────────────────────────────
 async function anularCompra(id) {
-  const shouldProceed = typeof showDeleteConfirm === 'function'
-    ? await showDeleteConfirm('¿Anular esta compra? Se revertirá el inventario que generó y se cancelará su cuenta por pagar. Esta acción no se puede deshacer.')
-    : window.confirm('¿Anular esta compra? Se revertirá el inventario que generó y se cancelará su cuenta por pagar.');
-  if (!shouldProceed) return;
-  const motivo = window.prompt('Motivo de anulación (opcional):', '') || '';
+  // Una sola ventana: confirmar y, si quiere, el motivo (Electron no tiene prompt()).
+  const datos = await showFormModal('¿Anular esta compra?', [{ name: 'motivo', label: 'Motivo de anulación (opcional)' }], {
+    descripcion: 'Se revertirá el inventario que generó y se cancelará su cuenta por pagar. Esta acción no se puede deshacer.',
+    confirmText: 'Anular compra',
+  });
+  if (!datos) return;
+  const motivo = datos.motivo.trim();
   try {
     await api.voidPurchase(id, { motivo });
     showToast('Compra anulada.', 'success');
@@ -964,6 +969,29 @@ async function openNuevoGastoModal(gasto = null) {
   document.getElementById('modal-overlay').classList.remove('hidden');
   if (typeof translateDynamicUi === 'function') translateDynamicUi(document.getElementById('modal-overlay'));
   setTimeout(() => tbody?.querySelector('.gl-desc')?.focus(), 50);
+  filtrarEcfDisponiblesGasto();
+}
+
+// «Emitir e-CF» del gasto: solo los tipos con secuencia disponible
+// (Configuración → Comprobantes). Sin secuencia, la opción no aparece.
+async function filtrarEcfDisponiblesGasto() {
+  const select = document.getElementById('gasto-emitir-ecf');
+  if (!select) return;
+  try {
+    const branchId = DB.config?.activeBranchId || '';
+    const filas = await api.request(`/api/fiscal-sequences/available?uso=compras${branchId ? `&branchId=${encodeURIComponent(branchId)}` : ''}`);
+    const disponibles = new Set((filas || []).map((f) => String(f.documentType || '').toUpperCase()));
+    let quedan = 0;
+    [...select.options].forEach((op) => {
+      if (!op.value) return;
+      const hay = disponibles.has(op.value);
+      op.hidden = !hay; op.disabled = !hay;
+      if (hay) quedan += 1;
+      else if (select.value === op.value) select.value = '';
+    });
+    const vacia = select.querySelector('option[value=""]');
+    if (vacia) vacia.textContent = quedan ? 'No emitir' : 'No emitir (no hay secuencias E41, E43 ni E47 disponibles)';
+  } catch (_) { /* si no se puede saber, el servidor valida al guardar */ }
 }
 
 function elegirEstadoGasto(estado) {
@@ -1299,11 +1327,12 @@ async function imprimirGasto(id) {
 }
 
 async function anularGasto(id) {
-  const shouldProceed = typeof showDeleteConfirm === 'function'
-    ? await showDeleteConfirm('¿Anular este gasto? Esta acción no se puede deshacer.')
-    : window.confirm('¿Anular este gasto?');
-  if (!shouldProceed) return;
-  const motivo = window.prompt('Motivo de anulación (opcional):', '') || '';
+  const datos = await showFormModal('¿Anular este gasto?', [{ name: 'motivo', label: 'Motivo de anulación (opcional)' }], {
+    descripcion: 'Esta acción no se puede deshacer.',
+    confirmText: 'Anular gasto',
+  });
+  if (!datos) return;
+  const motivo = datos.motivo.trim();
   try {
     await api.voidExpense(id, { motivo });
     showToast('Gasto anulado.', 'success');

@@ -234,4 +234,13 @@ contextBridge.exposeInMainWorld('novaDesktop', {
   openTextFile(content, filename) {
     return ipcRenderer.invoke('report:open-text', { content, filename });
   },
+
+  /**
+   * En Windows, después de un alert()/confirm() nativo la ventana se queda
+   * sin foco de teclado: los campos no reciben lo que se escribe hasta que se
+   * cambia de ventana. js/ui.js llama esto al cerrarse cada diálogo nativo.
+   */
+  reenfocarVentana() {
+    ipcRenderer.send('ventana:reenfocar');
+  },
 });

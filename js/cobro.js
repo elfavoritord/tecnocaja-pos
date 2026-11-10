@@ -17,24 +17,40 @@
     return `<svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
   }
 
+  // Comprobante: Ticket, E32 (consumo) y E31 (crédito fiscal) a la vista; la
+  // serie B y los demás e-CF en «Más». No hay botón «e-CF» genérico: solo se
+  // factura con Ticket o con un comprobante que tenga secuencia activa, y
+  // ventas.js (refreshAvailableNcfDocTypes) apaga los que no la tienen.
   const MAIN_DOCS = [
     { key: 'ticket', label: 'Ticket', hint: 'Sin NCF' },
-    { key: 'B02', label: 'B02', hint: 'Consumo' },
-    { key: 'B01', label: 'B01', hint: 'Créd. fiscal' },
-    { key: 'factura-electronica', label: 'e-CF', hint: 'Electrónico' }
+    { key: 'E32', label: 'E32', hint: 'Consumo' },
+    { key: 'E31', label: 'E31', hint: 'Créd. fiscal' }
   ];
   // B11/B12/B13/B17 quedan fuera a propósito: son de Compras/Gastos, no de
   // una venta del POS.
-  const EXTRA_DOCS = [
-    { key: 'B14', label: 'B14', hint: 'Régimen especial' },
-    { key: 'B15', label: 'B15', hint: 'Gubernamental' },
-    { key: 'B16', label: 'B16', hint: 'Exportaciones' },
-    { key: 'B03', label: 'B03', hint: 'Nota de débito' },
-    { key: 'B04', label: 'B04', hint: 'Nota de crédito' },
-    { key: 'E44', label: 'E44', hint: 'e-CF régimen especial' },
-    { key: 'E45', label: 'E45', hint: 'e-CF gubernamental' },
-    { key: 'E46', label: 'E46', hint: 'e-CF exportaciones' }
+  const EXTRA_GROUPS = [
+    {
+      title: 'Serie B',
+      docs: [
+        { key: 'B02', label: 'B02', hint: 'Consumo' },
+        { key: 'B01', label: 'B01', hint: 'Créd. fiscal' },
+        { key: 'B14', label: 'B14', hint: 'Régimen especial' },
+        { key: 'B15', label: 'B15', hint: 'Gubernamental' },
+        { key: 'B16', label: 'B16', hint: 'Exportaciones' },
+        { key: 'B03', label: 'B03', hint: 'Nota de débito' },
+        { key: 'B04', label: 'B04', hint: 'Nota de crédito' }
+      ]
+    },
+    {
+      title: 'Electrónicos',
+      docs: [
+        { key: 'E44', label: 'E44', hint: 'Régimen especial' },
+        { key: 'E45', label: 'E45', hint: 'Gubernamental' },
+        { key: 'E46', label: 'E46', hint: 'Exportaciones' }
+      ]
+    }
   ];
+  const EXTRA_DOCS = EXTRA_GROUPS.flatMap((group) => group.docs);
   const ORDER_TYPES = [
     { key: 'mostrador', label: 'Mostrador' },
     { key: 'delivery', label: 'Delivery' },
@@ -51,11 +67,11 @@
   ];
 
   // RNC/razón social: siempre visibles donde la validación actual los EXIGE
-  // (buildBillingValidationBuckets en ventas.js: B01). Donde son opcionales
-  // (Ticket, B02, e-CF, B14, B15, B16) quedan detrás de "Agregar RNC", sin
+  // (buildBillingValidationBuckets en ventas.js: B01 y E31). Donde son opcionales
+  // (Ticket, E32, B02, B14, B15, B16, E44…) quedan detrás de "Agregar RNC", sin
   // perder la posibilidad que tienen hoy. B03/B04 usan el buscador de la
   // factura original en su lugar, igual que antes.
-  const RNC_REQUIRED_PRESETS = new Set(['B01']);
+  const RNC_REQUIRED_PRESETS = new Set(['B01', 'E31']);
   const REFERENCE_PRESETS = new Set(['B03', 'B04']);
 
   const NO_RATE_HELP = 'Sin tasa del día. Se registra al abrir la caja: Caja → Abrir caja → "Tipo de cambio USD → DOP".';
@@ -65,6 +81,24 @@
   let resumeOnReopen = false;
 
   // ── Utilidades ────────────────────────────────────────────────────────────
+
+  // Saldo, límite y crédito disponible del cliente elegido (crédito y pago
+  // mixto con crédito). El servidor vuelve a validar el límite al cobrar.
+  function buildClientCreditSummary(client) {
+    if (!client) {
+      return '<div class="cobro-credit-info cobro-credit-info--vacio">Busca y selecciona un cliente registrado (nombre, teléfono, cédula o RNC). No se registra deuda a un cliente no identificado.</div>';
+    }
+    const limite = Number(client.limiteCredito || 0);
+    const saldo = Number(client.balance || 0);
+    const disponible = limite > 0 ? Math.max(0, limite - saldo) : null;
+    const cell = (label, value, extra = '') => `<div class="${extra}"><span>${label}</span><strong>${esc(value)}</strong></div>`;
+    return `<div class="cobro-credit-info">
+      ${cell('Cliente', client.nombre || '')}
+      ${cell('Saldo actual', fmt(saldo))}
+      ${cell('Límite', limite > 0 ? fmt(limite) : 'Sin límite')}
+      ${cell('Disponible', disponible === null ? 'Sin límite' : fmt(disponible), disponible !== null && disponible <= 0 ? 'cobro-credit-agotado' : '')}
+    </div>`;
+  }
 
   function esc(value) {
     return typeof escapeHtml === 'function' ? escapeHtml(value) : String(value ?? '');
@@ -93,9 +127,16 @@
   }
 
   function getActivePreset() {
-    return typeof getBillingActiveDocumentPreset === 'function'
+    const preset = typeof getBillingActiveDocumentPreset === 'function'
       ? getBillingActiveDocumentPreset()
       : 'ticket';
+    // e-CF sin tipo elegido (preferido «Factura electrónica»): el servidor
+    // usa E31 con RNC y E32 sin él; se marca el botón que corresponde.
+    if (preset === 'factura-electronica') {
+      const client = typeof getSelectedSaleClient === 'function' ? getSelectedSaleClient() : null;
+      return String(DB.saleRncCliente || '').trim() || String(client?.rnc || '').trim() ? 'E31' : 'E32';
+    }
+    return preset;
   }
 
   // ── Markup ────────────────────────────────────────────────────────────────
@@ -144,7 +185,7 @@
             <label class="tc-field cobro-span-2"><span class="tc-field-label">Nombre</span><input id="billing-qc-nombre" type="text" class="tc-input" placeholder="Nombre completo"></label>
             <label class="tc-field"><span class="tc-field-label">Cédula</span><input id="billing-qc-cedula" type="text" class="tc-input" placeholder="Documento"></label>
             <label class="tc-field"><span class="tc-field-label">RNC</span><input id="billing-qc-rnc" type="text" class="tc-input" placeholder="RNC"></label>
-            <label class="tc-field"><span class="tc-field-label">Teléfono</span><input id="billing-qc-telefono" type="text" class="tc-input" placeholder="809-000-0000"></label>
+            <label class="tc-field"><span class="tc-field-label">Teléfono *</span><input id="billing-qc-telefono" type="tel" required class="tc-input" placeholder="809-000-0000"></label>
             <label class="tc-field"><span class="tc-field-label">WhatsApp</span><input id="billing-qc-whatsapp" type="text" class="tc-input" placeholder="809-000-0000"></label>
             <label class="tc-field cobro-span-2"><span class="tc-field-label">Dirección</span><input id="billing-qc-direccion" type="text" class="tc-input" placeholder="Dirección"></label>
           </div>
@@ -175,10 +216,15 @@
           </button>
         </div>
         <div id="cobro-doc-menu" class="tc-popover cobro-popover cobro-doc-menu hidden" role="menu">
-          ${EXTRA_DOCS.map((doc) => `
-            <button type="button" class="tc-menu-item cobro-menu-item" role="menuitem" data-preset="${doc.key}" onclick="CobroUI.chooseExtraDoc('${doc.key}')">
-              <strong>${doc.label}</strong><span>${doc.hint}</span>
-            </button>
+          ${EXTRA_GROUPS.map((group) => `
+            <div class="cobro-doc-menu-group">${group.title}</div>
+            <div class="cobro-doc-menu-items">
+              ${group.docs.map((doc) => `
+                <button type="button" class="tc-menu-item cobro-menu-item" role="menuitem" data-preset="${doc.key}" onclick="CobroUI.chooseExtraDoc('${doc.key}')">
+                  <strong>${doc.label}</strong><span>${doc.hint}</span>
+                </button>
+              `).join('')}
+            </div>
           `).join('')}
         </div>
 
@@ -211,15 +257,32 @@
     `;
   }
 
+  // «Mesa» aparece cuando la venta es de una mesa o el negocio la ofrece
+  // como tipo de pedido: es consumo en el local (propina legal).
+  function orderTypesForCheckout() {
+    const negocio = typeof getSalesOrderTypeOptions === 'function' ? getSalesOrderTypeOptions() : [];
+    const conMesa = DB.saleOrderType === 'mesa' || Boolean(window.Mesas?.cuentaActiva?.()) || negocio.some((o) => o?.value === 'mesa');
+    return conMesa ? [...ORDER_TYPES, { key: 'mesa', label: 'Mesa' }] : ORDER_TYPES;
+  }
+
   function buildOrderSection() {
+    const tipos = orderTypesForCheckout();
+    // «Consumo en el local» solo tiene sentido en mostrador: la mesa siempre
+    // lleva propina y delivery/para llevar nunca (syncOrderType la muestra).
+    const consumoLocal = DB.config?.legalTipEnabled
+      ? `<label class="cobro-consumo-local ${String(DB.saleOrderType || 'mostrador') === 'mostrador' ? '' : 'hidden'}" id="cobro-consumo-local">
+          <input type="checkbox" ${DB.saleConsumedHere ? 'checked' : ''} onchange="setSaleConsumedHere(this.checked)">
+          Consumo en el local · propina legal 10%${DB.config?.legalTipScope === 'marcados' ? ' en productos marcados' : ''}</label>`
+      : '';
     return `
       <section class="cobro-section">
         <div class="cobro-label">Tipo de venta</div>
-        <div class="cobro-segment">
-          ${ORDER_TYPES.map((type) => `
+        <div class="cobro-segment" data-cols="${tipos.length}">
+          ${tipos.map((type) => `
             <button type="button" class="tc-choice cobro-seg" data-order="${type.key}" onclick="setSaleOrderType('${type.key}')">${type.label}</button>
           `).join('')}
         </div>
+        ${consumoLocal}
         <!-- Mismos campos para Delivery y Contra entrega (DB.saleDelivery*): se muestran una sola vez -->
         <div id="billing-delivery-fields" class="cobro-grid-2 cobro-delivery ${String(DB.saleOrderType || 'mostrador') === 'delivery' ? '' : 'hidden'}">
           <select id="sale-delivery-user" class="tc-select" aria-label="Repartidor" onchange="setSaleDeliveryUser(this.value)">
@@ -253,9 +316,11 @@
           </div>
         </section>
 
-        <div class="cobro-left-actions">
+        <div class="cobro-left-actions" id="cobro-left-actions" data-cols="2">
           <button type="button" class="tc-btn tc-btn--soft cobro-add-products" onclick="CobroUI.addProducts()">${icon('plus')} Agregar productos</button>
           <button type="button" class="tc-btn" id="cobro-discount-btn" onclick="openBillingDiscountModal()">${icon('percent')} <span id="cobro-discount-label">Aplicar descuento</span></button>
+          <!-- Quitar la propina legal solo en esta venta (visible cuando aplica). -->
+          <button type="button" class="tc-btn cobro-propina-btn hidden" id="cobro-propina-btn" onclick="toggleSaleTipWaived()" aria-pressed="false"><span id="cobro-propina-label">Quitar propina</span></button>
         </div>
 
         <!-- Con subtotal gravado/exento (Configuración → separar gravado y
@@ -268,9 +333,13 @@
             <div class="cobro-totals-row hidden" id="cobro-gravado-row"><span><span class="cobro-totals-prefix">Subtotal </span>gravado</span><span id="cobro-gravado">0.00</span></div>
             <div class="cobro-totals-row hidden" id="cobro-exento-row"><span><span class="cobro-totals-prefix">Subtotal </span>exento</span><span id="cobro-exento">0.00</span></div>
             <div class="cobro-totals-row"><span id="cobro-itbis-label">ITBIS</span><span id="cobro-itbis">0.00</span></div>
+            <div class="cobro-totals-row hidden"><span data-legal-tip-label>Propina legal 10%</span><span data-legal-tip-value>0.00</span></div>
             <div class="cobro-totals-row hidden" id="cobro-redondeo-row"><span>Redondeo</span><span id="cobro-redondeo">0.00</span></div>
           </div>
           <div class="cobro-totals-row cobro-totals-total"><span>Total</span><span id="cobro-total-left">RD$ 0.00</span></div>
+          <!-- Anticipo de reserva (Mesas): ya pagado, se descuenta de lo que paga el cliente. -->
+          <div class="cobro-totals-row cobro-anticipo-row hidden" id="cobro-anticipo-row"><span>Anticipo de reserva</span><span id="cobro-anticipo">0.00</span></div>
+          <div class="cobro-totals-row cobro-totals-total hidden" id="cobro-apagar-row"><span>A pagar</span><span id="cobro-apagar">RD$ 0.00</span></div>
         </div>
       </aside>
     `;
@@ -374,7 +443,13 @@
             ${buildAmountField({ id: 'mixto-tarjeta', oninput: 'calcMixto()', value: state.mixedCardAmount, small: true })}</div>
           <div class="tc-field"><span class="tc-field-label">Transferencia</span>
             ${buildAmountField({ id: 'mixto-transferencia', oninput: 'calcMixto()', value: state.mixedTransferAmount, small: true })}</div>
+          <div class="tc-field"><span class="tc-field-label">Crédito al cliente</span>
+            ${buildAmountField({ id: 'mixto-credito', oninput: 'calcMixto()', value: state.mixedCreditAmount, small: true })}</div>
+          <label class="tc-field"><span class="tc-field-label">Vencimiento del crédito</span>
+            <input type="date" class="tc-input" value="${esc(state.creditDueDate || '')}" oninput="updateBillingPaymentDetail('creditDueDate', this.value)"></label>
+          <p class="cobro-exact-note">Selecciona un cliente registrado. Con crédito, los cuatro importes deben sumar exactamente el total.</p>
         </div>
+        ${buildClientCreditSummary(selectedClient)}
         <div class="cobro-mixto-status cobro-mixto-pending" id="mixto-status">
           <span>Pendiente</span><strong id="mixto-pendiente">RD$ 0.00</strong>
         </div>
@@ -388,11 +463,10 @@
         <div class="cobro-grid-2">
           <label class="tc-field"><span class="tc-field-label">Vence</span>
             <input type="date" class="tc-input" value="${esc(state.creditDueDate || '')}" oninput="updateBillingPaymentDetail('creditDueDate', this.value)"></label>
-          <label class="tc-field"><span class="tc-field-label">Límite de crédito</span>
-            <input type="text" class="tc-input" readonly value="${selectedClient ? esc(fmt(Math.max(0, Number(selectedClient.limiteCredito || 0)))) : 'Elige un cliente'}"></label>
           <label class="tc-field cobro-span-2"><span class="tc-field-label">Nota (opcional)</span>
             <textarea class="tc-textarea" rows="2" placeholder="Notas del crédito" oninput="updateBillingPaymentDetail('creditNotes', this.value)">${esc(state.creditNotes || '')}</textarea></label>
         </div>
+        ${buildClientCreditSummary(selectedClient)}
       </div>
 
       <!-- Contra entrega -->
@@ -435,6 +509,7 @@
           <!-- Fuente del total para los cálculos de ventas.js (calcCambio, setMontoExacto...) -->
           <strong id="billing-total" class="tc-hidden">${typeof fmt === 'function' ? fmt(total) : total}</strong>
           <div id="billing-total-empty" class="tc-hidden"></div>
+          <div class="cobro-anticipo-nota hidden" id="cobro-anticipo-nota"></div>
         </div>
 
         <div class="cobro-label">Método de pago</div>
@@ -632,6 +707,12 @@
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
+    const consumoLocal = document.getElementById('cobro-consumo-local');
+    if (consumoLocal) {
+      consumoLocal.classList.toggle('hidden', orderType !== 'mostrador');
+      const casilla = consumoLocal.querySelector('input');
+      if (casilla) casilla.checked = DB.saleConsumedHere === true;
+    }
   }
 
   function syncItemsCount() {
@@ -664,6 +745,26 @@
     document.getElementById('cobro-exento-row')?.classList.toggle('hidden', !separate);
     document.getElementById('cobro-totals')?.classList.toggle('is-detailed', separate);
     set('cobro-itbis', stripCurrency(textOf('s-itbis', '0')));
+    const tipAmount = typeof parseFmt === 'function' ? parseFmt(textOf('s-propina', '0')) : 0;
+    const propina = typeof calculateCurrentSaleTotals === 'function' && DB.config?.legalTipEnabled ? calculateCurrentSaleTotals() : null;
+    const quitada = Boolean(propina?.propinaQuitada);
+    document.querySelectorAll('[data-legal-tip-value]').forEach(el => {
+      el.textContent = quitada ? '0.00' : stripCurrency(textOf('s-propina','0'));
+      el.parentElement.classList.toggle('hidden', !(tipAmount > 0) && !quitada);
+    });
+    document.querySelectorAll('[data-legal-tip-label]').forEach(el => { el.textContent = quitada ? 'Propina legal (quitada)' : 'Propina legal 10%'; });
+    // Botón «Quitar propina»: solo cuando esta venta lleva (o llevaba) propina.
+    const boton = document.getElementById('cobro-propina-btn');
+    if (boton) {
+      const visible = Boolean(propina && propina.propinaPosible > 0);
+      boton.classList.toggle('hidden', !visible);
+      boton.classList.toggle('is-active', quitada);
+      boton.setAttribute('aria-pressed', quitada ? 'true' : 'false');
+      boton.title = quitada ? `Volver a cobrar la propina legal (${plainAmount(propina.propinaPosible)})` : `No cobrar la propina legal en esta venta (${plainAmount(propina?.propinaPosible || 0)})`;
+      const etiqueta = document.getElementById('cobro-propina-label');
+      if (etiqueta) etiqueta.textContent = quitada ? 'Cobrar propina' : 'Quitar propina';
+      document.getElementById('cobro-left-actions')?.setAttribute('data-cols', visible ? '3' : '2');
+    }
     set('cobro-itbis-label', textOf('sale-tax-label', 'ITBIS').replace(/[()]/g, '').trim() || 'ITBIS');
 
     // Redondeo solo cuando existe: cambia el total y hay que poder explicarlo.
@@ -673,7 +774,20 @@
 
     const totalText = textOf('billing-total', textOf('s-total', '0'));
     set('cobro-total-value', stripCurrency(totalText));
-    set('cobro-total-left', totalText);
+    // Con anticipo de reserva: Total = la factura; A pagar = lo que paga ahora.
+    const totalFactura = textOf('s-total', totalText);
+    const anticipo = typeof anticipoReservaCobro === 'function' && typeof parseFmt === 'function' ? anticipoReservaCobro(parseFmt(totalFactura)) : 0;
+    const conAnticipo = anticipo > 0;
+    document.getElementById('cobro-anticipo-row')?.classList.toggle('hidden', !conAnticipo);
+    document.getElementById('cobro-apagar-row')?.classList.toggle('hidden', !conAnticipo);
+    set('cobro-anticipo', `-${plainAmount(anticipo)}`);
+    set('cobro-apagar', totalText);
+    set('cobro-total-left', conAnticipo ? totalFactura : totalText);
+    const nota = document.getElementById('cobro-anticipo-nota');
+    if (nota) {
+      nota.classList.toggle('hidden', !conAnticipo);
+      nota.textContent = conAnticipo ? `Ya descontado el anticipo de la reserva (${plainAmount(anticipo)}). Total de la factura: ${stripCurrency(totalFactura)}.` : '';
+    }
   }
 
   function syncDiscount() {
@@ -850,14 +964,14 @@
     'monto-recibido-contra-entrega',
     'mixto-efectivo',
     'mixto-tarjeta',
-    'mixto-transferencia'
+    'mixto-transferencia', 'mixto-credito'
   ]);
   const METHOD_AMOUNT_TARGET = {
     efectivo: 'monto-recibido',
     usd: 'monto-recibido-usd',
     contra_entrega: 'monto-recibido-contra-entrega'
   };
-  const MIXTO_IDS = ['mixto-efectivo', 'mixto-tarjeta', 'mixto-transferencia'];
+  const MIXTO_IDS = ['mixto-efectivo', 'mixto-tarjeta', 'mixto-transferencia', 'mixto-credito'];
   const MAX_INTEGER_DIGITS = 9;
   let lastPanelField = null;
   let lastQuickKey = '';

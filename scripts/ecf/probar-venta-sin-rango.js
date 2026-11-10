@@ -70,9 +70,14 @@ async function estado() {
     ctx.productId = Number(prod.body?.product?.id || prod.body?.producto?.id || prod.body?.id || 0);
     L.check('Producto creado', ctx.productId > 0, `HTTP ${prod.status} ${prod.body?.error || ''}`);
 
-    // e-CF apagado: crea las tablas y no comprueba nada.
+    // e-CF apagado: crea las tablas y la venta con e-CF se frena (solo se
+    // factura con Ticket, serie B con secuencia o e-CF con el emisor activo).
     const apagado = await api('POST', '/api/sales', venta('factura-electronica'));
-    L.check('Con e-CF inactivo la venta sigue igual', apagado.status === 201 || apagado.status === 200, `HTTP ${apagado.status} ${apagado.body?.error || ''}`);
+    L.check('Con e-CF inactivo la venta con e-CF se frena (422)', apagado.status === 422 && /no está activa/.test(apagado.body?.error || ''),
+      `HTTP ${apagado.status} ${apagado.body?.error || ''}`);
+    const ofrecidosApagado = await api('GET', '/api/fiscal-sequences/available');
+    L.check('Con e-CF inactivo Cobrar no ofrece E31/E32', ofrecidosApagado.status === 200
+      && !(ofrecidosApagado.body || []).some((r) => /^E/.test(r.documentType)), `HTTP ${ofrecidosApagado.status} ${JSON.stringify(ofrecidosApagado.body)}`.slice(0, 200));
 
     await db("UPDATE {db}.ecf_emitters SET is_active = 1, environment = 'certecf' WHERE business_id = 1");
     await db(`INSERT INTO {db}.ecf_emitters (business_id, rnc, environment, is_active)
@@ -94,6 +99,9 @@ async function estado() {
       VALUES (1, 'E32', 'certecf', 1, 100, 1, 1)`);
     const conRango = await api('POST', '/api/sales', venta('factura-electronica'));
     L.check('Con rango la venta pasa', conRango.status === 201 || conRango.status === 200, `HTTP ${conRango.status} ${conRango.body?.error || ''}`);
+    const ofrecidos = await api('GET', '/api/fiscal-sequences/available');
+    const tiposE = (ofrecidos.body || []).filter((r) => /^E/.test(r.documentType)).map((r) => r.documentType);
+    L.check('Cobrar ofrece solo el e-CF con rango (E32 sí, E31 no)', tiposE.includes('E32') && !tiposE.includes('E31'), JSON.stringify(tiposE));
     L.check('Si el e-CF falla después, la respuesta trae el motivo para avisarle al cajero (aquí falta el certificado)',
       Boolean(conRango.body?.ecf?.error), conRango.body?.ecf?.error || JSON.stringify(conRango.body?.ecf));
 

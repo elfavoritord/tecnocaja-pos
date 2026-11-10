@@ -552,8 +552,15 @@
       bucket.__text = state;
     }
   }
+  // Español es el idioma de los textos: no hay nada que traducir. Antes se
+  // recorría todo el documento tras cada cambio en la página (~0,3 s por vez en
+  // un PC lento y más con catálogos grandes): escribir en un campo que repinta
+  // una lista se sentía trabado. Solo se recorre si ya se tradujo algo.
+  let tradujo = false;
   function apply(root = document.body, l = current()) {
     if (!root) return;
+    if (lang(l) === 'es' && !tradujo) return;
+    tradujo = true;
     if (document.title) {
       if (!titleOriginal || document.title !== titleRendered) titleOriginal = document.title;
       const translatedTitle = translateText(titleOriginal, l);
@@ -584,14 +591,28 @@
   }
   let timer = null;
   let started = false;
+  // Se traduce solo lo que cambió (no todo el documento en cada cambio).
+  const pendientes = new Set();
   function schedule(root = document.body) {
+    if (root) pendientes.add(root);
     clearTimeout(timer);
-    timer = setTimeout(() => apply(root, current()), 0);
+    timer = setTimeout(() => {
+      const l = current();
+      const raices = pendientes.has(document.body) || pendientes.size > 60 ? [document.body] : [...pendientes];
+      pendientes.clear();
+      for (const r of raices) if (r.isConnected) apply(r, l);
+    }, 0);
   }
   function observe() {
     if (started || !document.body) return;
     started = true;
-    new MutationObserver(() => schedule(document.body)).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['placeholder', 'title', 'aria-label', 'alt'] });
+    new MutationObserver((cambios) => {
+      if (lang(current()) === 'es' && !tradujo) return;
+      for (const c of cambios) {
+        const nodo = c.type === 'characterData' ? c.target.parentElement : c.target;
+        if (nodo && nodo.nodeType === Node.ELEMENT_NODE) schedule(nodo);
+      }
+    }).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['placeholder', 'title', 'aria-label', 'alt'] });
     schedule(document.body);
   }
   const c = window.confirm?.bind(window);

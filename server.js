@@ -29,6 +29,8 @@ const { prepareRuntimeEnvironment, persistEnvFileValues } = require('./scripts/r
 const { esEmpresaServicios } = require('./server/services/articulos');
 const { query, withTransaction, withTransactionRetry, reloadDatabase, getDbClient, flushPendingSave } = require('./db');
 const { verifyInternalRequest } = require('./server/security/internal-request');
+// Permisos propios por usuario (users.permisos_usuario); NULL = los de su rol.
+const permisosUsuario = require('./server/security/permisos-usuario');
 const productsCache = require('./server/cache/products-cache');
 const { createNcfSequenceService, NCF_LABELS } = require('./server/services/ncf-sequence.service');
 // isMysqlDeployment() está definida más abajo en este archivo — se puede
@@ -112,6 +114,11 @@ const { createComprasRouter, ensureSchema: ensureComprasSchema } = require('./se
 // Gastos — registro fiscal de gastos operativos (Fase 2 de Compras y Gastos).
 // NO descuenta Tesorería/Caja General a propósito (ver comentario en el archivo).
 const { createGastosRouter, ensureSchema: ensureGastosSchema } = require('./server/routes/gastos.routes');
+const { crearServicioComprobantesCompra } = require('./server/services/comprobantes-compra.service');
+const { crearConstructoresComprobante } = require('./server/services/comprobantes-compra.datos');
+const { createComprobantesCompraRouter } = require('./server/routes/comprobantes-compra.routes');
+const { createFormatosDgiiRouter } = require('./server/routes/formatos-dgii.routes');
+const { crearDatos606 } = require('./server/services/dgii/datos-606');
 
 // Cobro de crédito a clientes — extraído de server.js con fix de caja/reportes/factura.
 const { createClientesCreditosRouter, ensureSchema: ensureClientesCreditosSchema } = require('./server/routes/clientes-creditos.routes');
@@ -2140,9 +2147,18 @@ if (helmetMiddleware) app.use(helmetMiddleware);
 app.use(cors(CORS_OPTIONS));
 // Antes de los routers: tienen que contar todas las escrituras en curso.
 const operacionesActivas = createOperacionesActivas({ query });
+app.locals.withExclusiveRestore = (work) => operacionesActivas.withExclusive(() => require('./db').withExclusiveMaintenance(work));
+app.locals.afterBackupRestore = () => {
+  _authSessionCache.clear();
+  _sessionFallback.clear();
+  secureLicenseService.invalidateStateMemo();
+};
 app.use(operacionesActivas.middleware);
 app.use('/api/system', operacionesActivas.router);
+app.use('/api/respaldos', express.json({ limit: '384mb' }));
 app.use(express.json({ limit: '10mb' }));
+// Auditoría de accesos denegados y logins fallidos (al terminar la respuesta).
+app.use(require('./server/routes/auditoria.routes').createAuditDeniedMiddleware({ writeAuditLog: (e) => writeAuditLog(e) }));
 app.use(express.static(path.join(__dirname), {
   // El frontend cambia seguido durante desarrollo/soporte y Electron reusa su
   // caché de disco entre reinicios de la app (no es una pestaña de navegador
@@ -2380,7 +2396,10 @@ app.locals.ensureWaBot = function ensureWaBot() {
   waBotModule = require('./server/integrations/whatsapp-bot');
   waBotModule.setDependencies({
     insertQuotationRow, writeAuditLog, mapQuotationRow,
-    insertClientRow, findClientByPhone, updateClientAddress, updateClientLocation, updateClientPhone,
+    // El bot guarda el número tal como llega de WhatsApp: la regla de teléfono
+    // obligatorio es para lo que escribe un usuario (ver insertClientRow).
+    insertClientRow: (runner, data) => insertClientRow(runner, data, { origen: 'sistema' }),
+    findClientByPhone, updateClientAddress, updateClientLocation, updateClientPhone,
     getClientById: getClientByIdMapped,
     findClientByJid, updateClientJid
   });
@@ -2583,6 +2602,24 @@ app.use('/api/combos', createCombosRouter({
 
 // Combos personalizados de precio fijo (Apariencia → Combos personalizados;
 // Promociones → Combos personalizados). La venta la valida POST /api/sales.
+app.use('/api/mesas', require('./server/routes/mesas.routes')({
+  query, withTransaction, addColumnIfMissing, resolveRequestActorUser,
+  userRoleHasPermission,
+  isGlobalAdministratorUser, isBranchAdministratorUser, getUserScopeBranchId,
+  getTerminalBranchId: () => getTerminalScopeSelection().branchId, writeAuditLog,
+  // Anticipos de reservas: entran o salen por la caja abierta de esta terminal.
+  resolveCashStructure: (req, conn) => resolveScopedBusinessStructureSelection(req, conn, req.body?.branchId, req.body?.cashRegisterId),
+  prepararCaja: async () => { await ensureBusinessStructureExtensions(); await ensureCashMovementExtensions(); },
+  userCanReturnSales, getConfig, nowSql: nowRDString,
+  sincronizarMovimientoCaja: (movement) => fireReportSync(async () => {
+    await reportsSync.syncCashMovement(movement, { config: await getReportSyncConfig(), branches: await getReportSyncBranchesMap() });
+  }),
+}));
+
+app.use('/api', require('./server/routes/offline-readiness.routes')({
+  query, resolveRequestActorUser, licenseService: secureLicenseService, internetMonitor: getInternetMonitor(),
+}));
+
 app.use('/api/combos-personalizados', createCombosPersonalizadosRouter({
   query,
   addColumnIfMissing,
@@ -2632,6 +2669,14 @@ const fiscalSequencesRouter = createFiscalSequencesRouter({
   attachmentsDir: FISCAL_ATTACHMENTS_DIR, attachmentsWebPath: FISCAL_ATTACHMENTS_WEB_PATH,
   verifyUserPassword: verifyUserAccountPassword, isMysqlDeployment,
   onSequencesChanged: () => syncPortalContableFireAndForget('secuencias NCF'),
+  // Misma sucursal y caja que resuelve POST /api/sales para esta terminal.
+  listarEcfDisponibles: async ({ branchId, uso }) => {
+    const seleccion = await resolveBusinessStructureSelection(null, branchId || null, null)
+      .catch(() => ({ branchId: branchId || null, cashRegisterId: null }));
+    const donde = { branchId: seleccion.branchId, cashRegisterId: seleccion.cashRegisterId };
+    // Compras y gastos (E41, E43, E47) no son tipos de venta: antes no salían nunca.
+    return uso === 'compras' ? ecfModule.service.availablePurchaseTypes(donde) : ecfModule.service.availableSaleTypes(donde);
+  },
 });
 app.use('/api/fiscal-sequences', fiscalSequencesRouter);
 
@@ -2642,17 +2687,56 @@ const emitirEcfDeOperacion = (args) => ecfModule.service.emitSafely('emitStandal
   context: { ...(args.context || {}), internetOffline: getInternetMonitor().isKnownOffline() },
 });
 
+// E41, E43 y E47 con aprobación y estados (Fase D de compras): cada uno tiene su
+// registro, se valida contra el XSD antes de salir y el e-NCF pasa a la compra o
+// al gasto solo cuando la DGII lo acepta.
+const comprobantesCompra = crearServicioComprobantesCompra({
+  query, writeAuditLog, ahora: () => nowRDString(),
+  emitir: emitirEcfDeOperacion,
+  revisar: (args) => ecfModule.service.previewStandaloneDocument(args),
+  consultarEstado: (documentId) => ecfModule.service.queryDocumentStatus(documentId),
+  constructores: crearConstructoresComprobante({ query }),
+  sinInternet: () => getInternetMonitor().isKnownOffline(),
+});
+const puedeAprobarComprobantes = (actor) => normalizeLegacyUserRoleCode(actor?.role_code || actor?.rol) === 'administrador_general'
+  || userRoleHasPermission(actor, 'comprobantes_compra.aprobar');
+app.use('/api/comprobantes-compra', createComprobantesCompraRouter({
+  servicio: comprobantesCompra, resolveRequestActorUser, userRoleHasPermission, getUserScopeBranchId,
+}));
+// Formatos de envío de datos a la DGII (606): revisión, TXT y constancia de presentación.
+app.use('/api/dgii', createFormatosDgiiRouter({
+  query, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, ahora: () => nowRDString(),
+}));
+// Respuestas de la DGII de los E41/E43/E47 que salieron y aún no tienen resultado
+// (la consulta va en segundo plano; nunca frena la venta).
+setInterval(() => {
+  comprobantesCompra.sincronizar({ consultar: true, limite: 10 }).catch(() => {});
+}, 2 * 60 * 1000).unref?.();
+
 const comprasRouter = createComprasRouter({
-  emitirEcfDeOperacion,
+  comprobantesCompra, puedeAprobarComprobantes,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
   changeBranchInventoryStock, registerInventoryMovement, mapSupplierInvoiceRow, resolveSupplierInvoiceStatus,
   isMysqlDeployment,
+  // Preparar compra: productos nuevos, suplidores y caché del catálogo (server/services/compras/).
+  createProductInTransaction, insertSupplierRow, getConfig, afterProductsChanged,
+  // B11 (comprobante de compras) cuando el proveedor no da comprobante.
+  getNextNcf: (conn, tipo, branchId) => getNextNcfFromSequence(conn, tipo, branchId),
+  prepararProductos: async () => {
+    await ensureCategoriesTable(); await ensureProductExtensions(); await ensureBusinessStructureExtensions();
+    await ensureBranchInventoryTable(); await ensureInventoryMovementsTable();
+  },
+  alCrearProducto: (productId) => multisucursal.catalogo.guardarAlcanceProducto(productId, {}, { nuevo: true }),
+  resolverAlcanceCatalogo: (actor) => getProductCatalogBranchScope(actor),
+  puedeGestionarProductos: (actor) => userCanManageProductCatalog(actor),
+  verificarFirmaXml: (xml) => require('./modules/ecf/signature/signature.service').verifySignature(xml),
+  getTerminalBranchId: () => getTerminalScopeSelection().branchId,
 });
 app.use('/api/purchases', comprasRouter);
 
 // Gastos — registro fiscal (Fase 2)
 const gastosRouter = createGastosRouter({
-  emitirEcfDeOperacion,
+  comprobantesCompra, puedeAprobarComprobantes,
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog, getUserScopeBranchId,
 });
 app.use('/api/expenses', gastosRouter);
@@ -2661,7 +2745,9 @@ app.use('/api/expenses', gastosRouter);
 app.use('/api/servicios', createServiciosRouter({
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog,
   getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
-  getConfig, getNextNcfFromSequence, insertClientRow, mapClientRow,
+  // Servicios crea el cliente desde el nombre y la cédula del documento; no
+  // trae teléfono, y su flujo no cambia (memoria: Servicios no toca el POS).
+  getConfig, getNextNcfFromSequence, insertClientRow: (runner, data) => insertClientRow(runner, data, { origen: 'sistema' }), mapClientRow,
   withTransactionRetry, changeBranchInventoryStock, registerInventoryMovement,
   syncProductsToReports: (ids, options) => syncProductsToReportsByIds(ids, options).catch(() => {}),
   ecfService: ecfModule.service,
@@ -2675,15 +2761,63 @@ const clientesCreditosRouter = createClientesCreditosRouter({
   normalizeCurrencyAmount, mapClientRow, getClientRowWithComputedBalance,
   writeAuditLog, getConfig, ensureClientExtensions, ensureSalesExtensions,
   ensureCashMovementExtensions, fireReportSync, getReportSyncConfig, getReportSyncBranchesMap,
-  resolveRequestActorUser,
+  resolveRequestActorUser, ensureReturnTables, getClientRowsWithComputedBalance, nowSql: nowRDString,
+  // Cuentas por cobrar de todo el negocio: quien ve reportes de caja (un
+  // administrador de sucursal solo ve lo de su sucursal).
+  canViewReceivables: (u) => userCanViewCashReports(u) || userRoleHasPermission(u, 'cobrar_creditos', 'ver_clientes'),
+  getUserScopeBranchId,
 });
 app.use('/api/clients', clientesCreditosRouter);
+
+// Cierre seguro con arqueo por denominaciones y aperturas de gaveta con motivo
+// (server/routes/caja-segura.routes.js). El cierre sigue en POST /api/cash/close,
+// que usa cajaSegura.prepararCierre() dentro de su transacción.
+const cajaSegura = require('./server/routes/caja-segura.routes').createCajaSeguraRouter({
+  query, withTransaction, addColumnIfMissing, resolveRequestActorUser, getActor, writeAuditLog,
+  resolveScopedBusinessStructureSelection, userCanCloseCash, userCanMakeCorte, userCanOpenDrawer,
+  userCanViewCashReports, userCanManageGlobalConfig, getUserScopeBranchId, isMysqlDeployment,
+  changeBranchInventoryStock, registerInventoryMovement, nowSql: nowRDString, ensureReturnTables,
+});
+app.use('/api/caja', cajaSegura.router);
+
+// Cancelación y notas de crédito según el documento y su estado fiscal real
+// (server/routes/ajustes-venta.routes.js). Atiende POST /api/sales/return y
+// PATCH /api/sales/:invoiceNumber/cancel; la factura original no se borra.
+const ajustesVenta = require('./server/routes/ajustes-venta.routes').createAjustesVentaRouters({
+  query, withTransaction, resolveRequestActorUser, getActor, writeAuditLog, userCanReturnSales, isGlobalAdministratorUser,
+  userRoleHasPermission, assertActorCanAccessBranch, resolveScopedBusinessStructureSelection, isMysqlDeployment,
+  ensureSchema: async () => { await ensureBusinessRulesExtensions(); await ensureSalesExtensions(); await ensureCashMovementExtensions(); await ensureInventoryMovementsTable(); await cajaSegura.ensureSchema(); },
+  changeBranchInventoryStock, registerInventoryMovement, combosService, getNextNcfFromSequence,
+  getEcfService: () => ecfModule.service, isInternetOffline: () => getInternetMonitor().isKnownOffline(), mapSaleRows,
+  getConfig, nowSql: nowRDString,
+  onSaleCancelledInTx: (conn, sale, actorUser) => tiendaOnline.hooks.onSaleCancelledInTx(conn, sale, actorUser),
+  afterCancel: ({ invoiceNumber, reason, productIds = [], branchId, releasedOnlineOrderId } = {}) => {
+    try {
+      if (releasedOnlineOrderId) tiendaOnline.hooks.afterSaleCancelled(releasedOnlineOrderId);
+      tiendaOnline.hooks.afterAnySale();
+    } catch (_e) { /* no bloquea */ }
+    fireReportSync(async () => {
+      if (invoiceNumber) await reportsSync.markSaleCancelled(invoiceNumber, { config: await getReportSyncConfig(), reason });
+      if (productIds.length) await syncProductsToReportsByIds(productIds, { branchId });
+    });
+  },
+});
+app.use('/api/ventas', ajustesVenta.ventas);
+app.use('/api/sales', ajustesVenta.sales);
+
+// Auditoría global con filtros (solo lectura; server/routes/auditoria.routes.js).
+app.use('/api/auditoria', require('./server/routes/auditoria.routes').createAuditoriaRouter({
+  query, resolveRequestActorUser, ensureAuditTable: () => ensureAuditTable(), mapAuditRow,
+  userCanAccessGlobalAudit, isBranchAdministratorUser, getUserScopeBranchId,
+}));
 
 // ✅ Respaldo local + nube — registrado DESPUÉS del middleware de auth para que
 //    req.authUser esté disponible en las rutas de respaldo.
 createRespaldosRouter({
   app,
   query,
+  isMainTerminal: () => isMainTerminalConfig(getTerminalConfig()),
+  backupMetadataPath: path.join(runtime.userDataPath, 'config', 'backup-location.json'),
   getActor,
   writeAuditLog,
   ensureAdministrator,
@@ -3011,6 +3145,7 @@ const BRANCH_ADMIN_ALLOWED_PERMISSIONS = [
   'compras.ver',
   'compras.crear',
   'compras.anular',
+  'compras.recibir',
   'cuentas_por_pagar.ver',
   'cuentas_por_pagar.pagar',
   // Gastos — solo su propia sucursal (resolveBranchScope en gastos.routes.js)
@@ -3198,6 +3333,7 @@ function userCanManageGlobalProductCatalog(user) {
 // sucursal (products.branch_id = su sucursal), sin necesitar el permiso
 // global de arriba. El branchId a forzar sale de getProductCatalogBranchScope().
 function userCanManageProductCatalog(user) {
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'productos');
   return userCanManageGlobalProductCatalog(user) || isBranchAdministratorUser(user);
 }
 
@@ -3206,6 +3342,8 @@ function userCanManageProductCatalog(user) {
 // explícito), o su propia sucursal si es admin de sucursal (nunca puede crear
 // productos globales ni de otra sucursal, sin importar lo que mande el body).
 function getProductCatalogBranchScope(user) {
+  // Con permiso propio «Productos» crea productos de su sucursal, como un admin de sucursal.
+  if (userHasCustomPermissions(user)) return getUserBranchIdValue(user);
   if (userCanManageGlobalProductCatalog(user)) return null;
   if (isBranchAdministratorUser(user)) return getUserBranchIdValue(user);
   return null;
@@ -3229,6 +3367,7 @@ function userCanResetScopedPasswords(user) {
 
 function userCanOpenCash(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'abrir_caja');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   if (isCashierUser(user)) return true;
   return userRoleHasPermission(user, 'abrir_caja');
@@ -3236,6 +3375,7 @@ function userCanOpenCash(user) {
 
 function userCanCloseCash(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'cerrar_caja');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   if (isCashierUser(user)) return true;
   return userRoleHasPermission(user, 'cerrar_caja');
@@ -3243,6 +3383,7 @@ function userCanCloseCash(user) {
 
 function userCanMakeCorte(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'hacer_corte_caja');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   if (isCashierUser(user)) return true;
   return userRoleHasPermission(user, 'hacer_corte_caja');
@@ -3250,6 +3391,7 @@ function userCanMakeCorte(user) {
 
 function userCanOpenDrawer(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'abrir_gaveta');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   if (isCashierUser(user)) return true;
   return userRoleHasPermission(user, 'abrir_gaveta');
@@ -3257,18 +3399,21 @@ function userCanOpenDrawer(user) {
 
 function userCanVoidSales(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'anular_ventas');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   return userRoleHasPermission(user, 'anular_ventas');
 }
 
 function userCanReturnSales(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'devolver_ventas');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   return userRoleHasPermission(user, 'devolver_ventas');
 }
 
 function userCanViewCashReports(user) {
   if (!user) return false;
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'ver_reportes_caja');
   if (isGlobalAdministratorUser(user) || isBranchAdministratorUser(user) || isSupervisorUser(user)) return true;
   return userRoleHasPermission(user, 'ver_reportes_caja');
 }
@@ -3420,7 +3565,10 @@ function mapUserRow(row) {
     userNumber: String(row.user_number || `pos_user_${row.id || ''}`).trim(),
     localPasswordSet: Boolean(String(row.password_hash || row.password || '').trim()),
     googleLinked: Boolean(firebaseUid),
-    rolePermissions: parseJsonArrayField(row.role_permissions),
+    // Permisos efectivos: los propios del usuario o, si no tiene, los de su rol.
+    rolePermissions: permisosUsuario.propios(row) || parseJsonArrayField(row.role_permissions),
+    permisosPropios: permisosUsuario.personalizado(row),
+    permisosUsuario: permisosUsuario.propios(row),
     // Multisucursal: sucursales de la empresa donde puede entrar (lo fija la principal).
     sucursalesEmpresa: parseJsonArrayField(row.sucursales_empresa, null),
     origenUsuario: row.origen_usuario || 'local'
@@ -3571,6 +3719,7 @@ function mapProductRow(row) {
   return {
     id: row.id,
     codigo: row.codigo,
+    propinaLegal: Boolean(row.legal_tip_eligible),
     branchId: rawCatalogBranchId === null || rawCatalogBranchId === undefined ? null : Number(rawCatalogBranchId),
     barcode: row.barcode || row.codigo || '',
     nombre: row.nombre,
@@ -3706,6 +3855,12 @@ async function resolveComboStockBranchId(actor) {
 // sucursal llegaría un "combo" vacío que se vendería sin descontar nada. Cada
 // sucursal arma sus combos con sus productos.
 async function afterCombosChanged(ids = []) {
+  return afterProductsChanged(ids, { motivo: 'combos', stockReal: false });
+}
+
+// Productos que cambiaron fuera de su pantalla (combos, compras): caché del
+// catálogo, app de reportes, Firebase y respaldo CSV, igual que al editarlos.
+async function afterProductsChanged(ids = [], { motivo = 'productos', stockReal = true } = {}) {
   const unique = [...new Set(ids.map(Number).filter((id) => id > 0))];
   if (!unique.length) return;
   for (const id of unique) {
@@ -3725,15 +3880,16 @@ async function afterCombosChanged(ids = []) {
           businessId: _lic,
           codigo: row.codigo || '', nombre: row.nombre || '', categoria: row.categoria || '',
           marca: row.marca || '', unidad: row.unidad || '', precioVenta: Number(row.precio_venta || 0),
-          precioCompra: Number(row.precio_compra || 0), stock: 0, stockMin: 0, estado: row.estado || 'Activo',
+          precioCompra: Number(row.precio_compra || 0), stock: stockReal ? Number(row.stock || 0) : 0,
+          stockMin: stockReal ? Number(row.stock_min || 0) : 0, estado: row.estado || 'Activo',
           aplicaItbis: Boolean(row.aplica_itbis), imageUrl: row.image_url || null,
           updatedAt: new Date().toISOString(),
         });
       }
     } catch (_e) { /* sync en segundo plano */ }
   }
-  await persistProductsCsvBackup('combos');
-  scheduleSilentProductBackup('combos');
+  await persistProductsCsvBackup(motivo);
+  scheduleSilentProductBackup(motivo);
 }
 
 async function persistProductsCsvBackup(reason = 'auto') {
@@ -3827,6 +3983,8 @@ function mapClientRow(row) {
     id: row.id,
     nombre: row.nombre,
     telefono: row.telefono,
+    phoneCountry: row.phone_country || 'DO',
+    telefonoFormateado: require('./js/cliente-telefono').display(row.telefono, row.phone_country || 'DO'),
     email: row.email || '',
     direccion: row.direccion,
     cedula: row.cedula,
@@ -3853,6 +4011,8 @@ async function getClientRowsWithComputedBalance(clientId = null, executor = quer
     `SELECT c.id,
             c.nombre,
             c.telefono,
+            c.phone_country,
+            c.rnc,
             c.email,
             c.direccion,
             c.cedula,
@@ -3867,10 +4027,10 @@ async function getClientRowsWithComputedBalance(clientId = null, executor = quer
        SELECT client_id,
               ROUND(SUM(
                 CASE
-                  WHEN payment_method = 'credito'
+                  WHEN (payment_method = 'credito' OR credit_amount > 0)
                    AND COALESCE(fiscal_status, 'emitida') <> 'cancelada'
-                   AND COALESCE(total, 0) > COALESCE(received_amount, 0)
-                  THEN COALESCE(total, 0) - COALESCE(received_amount, 0)
+                   AND COALESCE(total, 0) > COALESCE(received_amount, 0) + COALESCE(credit_adjustment, 0)
+                  THEN COALESCE(total, 0) - COALESCE(received_amount, 0) - COALESCE(credit_adjustment, 0)
                   ELSE 0
                 END
               ), 2) AS pending_balance
@@ -3904,12 +4064,12 @@ function buildClientPendingCreditMapFromSaleRows(saleRows = []) {
   for (const sale of saleRows || []) {
     const clientId = Number(sale?.client_id || 0);
     if (!clientId) continue;
-    if (String(sale?.payment_method || '').trim() !== 'credito') continue;
+    if (String(sale?.payment_method || '').trim() !== 'credito' && !(Number(sale?.credit_amount) > 0)) continue;
     if (String(sale?.fiscal_status || 'emitida').trim() === 'cancelada') continue;
 
     const total = normalizeCurrencyAmount(sale?.total || 0);
     const receivedAmount = normalizeCurrencyAmount(sale?.received_amount || 0);
-    const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount));
+    const pendingAmount = normalizeCurrencyAmount(Math.max(0, total - receivedAmount - Number(sale.credit_adjustment || 0)));
     if (pendingAmount <= 0) continue;
 
     pendingByClient.set(
@@ -3963,6 +4123,7 @@ function sanitizeClientPayload(data = {}) {
   return {
     nombre: String(data.nombre || '').trim(),
     telefono: String(data.telefono || '').trim(),
+    phoneCountry: String(data.phoneCountry || 'DO').trim().toUpperCase(),
     email: String(data.email || '').trim().toLowerCase(),
     direccion: String(data.direccion || '').trim(),
     cedula: String(data.cedula || '').trim(),
@@ -4647,7 +4808,26 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // -15: combos personalizados de precio fijo — tabla custom_combos,
 // config.custom_combos_*, products.combo_personalizado y sale_items.custom_combo_*
 // — ver ensureCustomCombosExtensions.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-15`;
+// -16: propina legal, pago mixto con crédito, teléfono por país y auditoría con
+// contexto — ver ensureFinanceColumns y ensureAuditTable.
+// -17: cierre seguro, arqueos, aperturas de gaveta y notas de crédito — tablas
+// cash_counts y cash_drawer_events y columnas de sale_returns/cash_closings
+// (ver ensureNuevasMejorasSchema). Las rutas también lo aseguran al usarse.
+// -18: users.permisos_usuario (permisos propios por usuario) — ver
+// ensureUserExtensions; las rutas de usuarios también lo aseguran.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-19`;
+
+// Esquema de las nueve mejoras financieras. Va después del resto (en serie)
+// porque toca tablas que crean otras migraciones (sales, sale_returns).
+async function ensureNuevasMejorasSchema() {
+  try {
+    await ensureBusinessRulesExtensions();
+    await ensureAuditTable();
+    await cajaSegura.ensureSchema();
+  } catch (e) {
+    console.warn('[nueve-mejoras] init fallo:', e.message);
+  }
+}
 
 async function runCoreSchemaMigrations(migrate) {
   await query(`
@@ -4727,6 +4907,7 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'security_password', `VARCHAR(120) NOT NULL DEFAULT '${DEFAULT_SECURITY_PASSWORD}'`);
   await addColumnIfMissing('config', 'language', `VARCHAR(10) NOT NULL DEFAULT 'es'`);
   await addColumnIfMissing('config', 'business_type', `VARCHAR(30) NOT NULL DEFAULT 'pizzeria'`);
+  await addColumnIfMissing('config', 'business_uuid', 'VARCHAR(80) DEFAULT NULL');
   await addColumnIfMissing('config', 'starter_catalog_seeded', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('config', 'setup_completed', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('config', 'setup_completed_at', 'DATETIME DEFAULT NULL');
@@ -4802,6 +4983,7 @@ async function ensureConfigExtensions() {
   }
   await query(`UPDATE config SET language = 'es' WHERE id = 1 AND (language IS NULL OR language = '')`);
   await query(`UPDATE config SET business_type = 'pizzeria' WHERE id = 1 AND (business_type IS NULL OR business_type = '')`);
+  await query("UPDATE config SET business_uuid = ? WHERE id = 1 AND setup_completed = 1 AND (business_uuid IS NULL OR business_uuid = '')", [crypto.randomUUID()]);
   await query(`UPDATE config SET business_structure_mode = 'monocaja' WHERE id = 1 AND (business_structure_mode IS NULL OR business_structure_mode = '')`);
   await query('UPDATE config SET cashier_register_required = 1 WHERE id = 1 AND cashier_register_required IS NULL');
   await query('UPDATE config SET exclusive_cashier_per_register = 1 WHERE id = 1 AND exclusive_cashier_per_register IS NULL');
@@ -5308,6 +5490,7 @@ async function ensureReturnTables() {
       line_total DECIMAL(12,2) NOT NULL DEFAULT 0.00
     )
   `);
+  await addColumnIfMissing('sale_returns', 'credit_reduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await addColumnIfMissing('sale_return_items', 'sale_item_id', 'INT DEFAULT NULL');
   if (isMysqlDeployment()) {
     await query('ALTER TABLE sale_return_items MODIFY COLUMN product_id INT NULL').catch(() => {});
@@ -5442,6 +5625,7 @@ async function ensureBusinessRulesExtensions() {
   await ensureSalesExtensions();
   await ensureInventoryMovementsTable();
   await ensureNcfExtensions();
+  await require('./server/services/finance-migration').ensureFinanceColumns(addColumnIfMissing);
 
   await addColumnIfMissing('branches', 'business_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('branches', 'encargado', 'VARCHAR(160) DEFAULT NULL');
@@ -5794,6 +5978,8 @@ async function ensureUserExtensions() {
   await addColumnIfMissing('users', 'account_type', `VARCHAR(40) NOT NULL DEFAULT 'staff'`);
   await addColumnIfMissing('users', 'auth_provider', `VARCHAR(40) NOT NULL DEFAULT 'local'`);
   await addColumnIfMissing('users', 'firebase_uid', 'VARCHAR(191) DEFAULT NULL');
+  // Permisos propios del usuario (JSON); NULL = los de su rol. Ver server/security/permisos-usuario.js.
+  await addColumnIfMissing('users', 'permisos_usuario', 'TEXT DEFAULT NULL');
   await query('CREATE UNIQUE INDEX idx_users_firebase_uid ON users (firebase_uid)').catch(() => {});
   await query('CREATE UNIQUE INDEX idx_users_email_unique ON users (email)').catch(() => {});
   await query('CREATE INDEX idx_users_sucursal_id ON users (sucursal_id)').catch(() => {});
@@ -5816,6 +6002,7 @@ async function ensureUserExtensions() {
 }
 
 async function ensureProductExtensions() {
+  await addColumnIfMissing('products', 'legal_tip_eligible', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('products', 'barcode', 'VARCHAR(120) DEFAULT NULL');
   await addColumnIfMissing('products', 'remote_report_product_id', 'VARCHAR(191) DEFAULT NULL');
   await addColumnIfMissing('products', 'sync_origin', 'VARCHAR(40) DEFAULT NULL');
@@ -5864,6 +6051,7 @@ async function ensureReportAppProductSyncLogTable() {
 }
 
 async function ensureClientExtensions() {
+  await addColumnIfMissing('clients', 'phone_country', "VARCHAR(3) NOT NULL DEFAULT 'DO'");
   await addColumnIfMissing('clients', 'email', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('clients', 'reference_note', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('clients', 'location_link', 'VARCHAR(500) DEFAULT NULL');
@@ -5876,6 +6064,8 @@ async function ensureClientExtensions() {
 }
 
 async function ensureSalesExtensions() {
+  await addColumnIfMissing('sale_items', 'general_discount_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
+  await addColumnIfMissing('sale_items', 'legal_tip_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await addColumnIfMissing('sale_items', 'item_name', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'is_quick_sale', 'TINYINT(1) NOT NULL DEFAULT 0');
   if (isMysqlDeployment()) {
@@ -6259,6 +6449,8 @@ async function ensurePendingCashMovementExtensions() {
   await addColumnIfMissing('offline_cache_users', 'role_permissions', 'TEXT DEFAULT NULL');
   await addColumnIfMissing('offline_cache_users', 'branch_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('offline_cache_users', 'cash_register_id', 'INT DEFAULT NULL');
+  // Permisos propios del usuario (users.permisos_usuario) para el login sin internet.
+  await addColumnIfMissing('offline_cache_users', 'permisos_usuario', 'TEXT DEFAULT NULL');
   await addColumnIfMissing('offline_cache_products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('pending_product_changes', 'offline_product_id', 'INT DEFAULT NULL');
   await addColumnIfMissing('pending_product_changes', 'product_id', 'INT DEFAULT NULL');
@@ -6855,7 +7047,9 @@ async function ensureDeliveryTrackingTable() {
 function resolveSupplierInvoiceStatus(invoice) {
   const pending = Number(invoice.pending_amount || invoice.pendingAmount || 0);
   const dueAt = String(invoice.due_at || invoice.dueAt || '').slice(0, 10);
-  const today = new Date().toISOString().slice(0, 10);
+  // «Hoy» en hora de RD: con toISOString() (UTC), desde las 8 p. m. ya era
+  // mañana y una factura que vence hoy salía «Vencida» un día antes.
+  const today = toLocalDateKeyRD();
   if (pending <= 0) return 'Pagada';
   if (dueAt && dueAt < today) return 'Vencida';
   return 'Pendiente';
@@ -6899,12 +7093,16 @@ function mapCashRegisterRow(row) {
 function mapAuditRow(row) {
   return {
     id: row.id,
-    fecha: row.created_at,
+    fecha: row.event_id ? (row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at || '').replace(' ','T') + 'Z') : row.created_at,
     usuario: row.user_name,
     rol: row.user_role,
     modulo: row.module_name,
     accion: row.action_name,
-    detalle: row.detail
+    detalle: row.detail,
+    eventId: row.event_id || null, sucursalId: row.branch_id || null, cajaId: row.cash_register_id || null,
+    empresaId: row.business_id || null, sesionCajaId: row.cash_session_id || null, dispositivo: row.device_id || '',
+    resultado: row.result || 'exito', motivo: row.reason || '', referencia: row.document_ref || '',
+    antes: parseJsonObjectField(row.before_json, null), despues: parseJsonObjectField(row.after_json, null)
   };
 }
 
@@ -6983,6 +7181,18 @@ async function ensureAuditTable() {
       CONSTRAINT fk_audit_logs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
     )
   `);
+  for (const [name, type] of Object.entries({
+    event_id: 'VARCHAR(100) DEFAULT NULL', business_id: 'VARCHAR(160) DEFAULT NULL', cash_session_id: 'INT DEFAULT NULL',
+    device_id: 'VARCHAR(160) DEFAULT NULL', result: "VARCHAR(30) NOT NULL DEFAULT 'exito'", reason: 'TEXT DEFAULT NULL',
+    before_json: 'TEXT DEFAULT NULL', after_json: 'TEXT DEFAULT NULL', branch_id: 'INT DEFAULT NULL', cash_register_id: 'INT DEFAULT NULL',
+    client_id: 'INT DEFAULT NULL', document_type: 'VARCHAR(60) DEFAULT NULL', document_ref: 'VARCHAR(160) DEFAULT NULL',
+    amount: 'DECIMAL(12,2) DEFAULT NULL', payment_method: 'VARCHAR(40) DEFAULT NULL'
+  })) await addColumnIfMissing('audit_logs', name, type);
+  // Existing rows remain historical. All new events have globally unique IDs.
+  await query('CREATE UNIQUE INDEX idx_audit_event_id ON audit_logs (event_id)').catch(e => {
+    if (!/already exists|duplicate key name/i.test(String(e.message))) throw e;
+  });
+
 }
 
 async function ensureCategoriesTable() {
@@ -7006,48 +7216,14 @@ async function getCategories() {
   return rows.map(mapCategoryRow);
 }
 
-async function writeAuditLog({
-  userId = null, userName = 'Sistema', userRole = 'Sistema', moduleName, actionName, detail = '',
-  // Contexto opcional para el modo Empresas de Servicios (spec §3 y §20). Se
-  // guarda en columnas nullable agregadas por ensureServiciosCoreExtensions().
-  branchId = null, cashRegisterId = null, clientId = null,
-  documentType = null, documentRef = null, amount = null, paymentMethod = null,
-} = {}) {
+async function writeAuditLog(event = {}, executor = query) {
   await ensureAuditTable();
-  let safeUserId = userId;
-  if (safeUserId !== null && safeUserId !== undefined && safeUserId !== '') {
-    try {
-      const rows = await query('SELECT id FROM users WHERE id = ? LIMIT 1', [safeUserId]);
-      if (!rows[0]) {
-        safeUserId = null;
-      }
-    } catch (_error) {
-      safeUserId = null;
-    }
-  } else {
-    safeUserId = null;
+  const runner = typeof executor === 'function' ? executor : executor.query.bind(executor);
+  if (event.userId) {
+    const rows = await runner('SELECT id FROM users WHERE id = ? LIMIT 1', [event.userId]);
+    if (!rows[0]) event = { ...event, userId: null };
   }
-  const result = await query(
-    `INSERT INTO audit_logs (user_id, user_name, user_role, module_name, action_name, detail, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
-    [safeUserId, userName, userRole, moduleName, actionName, detail]
-  );
-  const hasContext = branchId != null || cashRegisterId != null || clientId != null
-    || documentType != null || documentRef != null || amount != null || paymentMethod != null;
-  if (hasContext && result && result.insertId != null) {
-    try {
-      await query(
-        `UPDATE audit_logs SET branch_id = ?, cash_register_id = ?, client_id = ?,
-           document_type = ?, document_ref = ?, amount = ?, payment_method = ?
-         WHERE id = ?`,
-        [branchId, cashRegisterId, clientId, documentType, documentRef,
-         amount != null ? Number(amount) : null, paymentMethod, result.insertId]
-      );
-    } catch (err) {
-      // Columnas de contexto aún no migradas: la auditoría base ya quedó escrita.
-      console.warn('[audit] contexto de servicios no guardado:', err.message);
-    }
-  }
+  return require('./server/services/audit-event').append(runner, event);
 }
 
 async function logWizardNetworkAttempt({
@@ -7192,12 +7368,19 @@ async function resolveScopedBusinessStructureSelection(req, executor = null, bra
 }
 
 function userRoleHasPermission(user, ...permissions) {
-  const values = new Set(parseJsonArrayField(user?.role_permissions));
+  // Con permisos propios manda su lista; si no, la de su rol (como siempre).
+  const values = new Set(permisosUsuario.propios(user) || parseJsonArrayField(user?.role_permissions));
   if (values.has('*')) return true;
   return permissions.some((permission) => values.has(permission));
 }
 
+// Usuario con permisos propios: los atajos por rol no le aplican.
+function userHasCustomPermissions(user) {
+  return permisosUsuario.personalizado(user);
+}
+
 function canManageUsersWithRole(user) {
+  if (userHasCustomPermissions(user)) return userRoleHasPermission(user, 'usuarios');
   const roleCode = normalizeLegacyUserRoleCode(user?.role_code || user?.rol);
   if (roleCode === 'administrador_general' || roleCode === 'administrador_sucursal') {
     return true;
@@ -7218,7 +7401,8 @@ function canAssignManagedRole(actorUser, targetRoleCode) {
   if (actorRoleCode === 'administrador_sucursal') {
     return nextRoleCode !== 'administrador_general';
   }
-  if (actorRoleCode === 'supervisor' && canManageUsersWithRole(actorUser)) {
+  // Supervisor (o cualquier usuario con permiso propio «Usuarios»): no crea administradores.
+  if ((actorRoleCode === 'supervisor' || userHasCustomPermissions(actorUser)) && canManageUsersWithRole(actorUser)) {
     return !['administrador_general', 'administrador_sucursal'].includes(nextRoleCode);
   }
   return false;
@@ -7296,7 +7480,13 @@ async function validateAndNormalizeUserPayload(data, actorUser, options = {}) {
   const existingUser = options.existingUser || null;
   const editingUserId = Number(existingUser?.id || 0) || 0;
   const runtime = await getUserManagementRuntimeContext();
-  const role = await resolveRoleSelection(data.roleId || existingUser?.role_id, data.roleCode, data.rol || existingUser?.rol);
+  // El rol que se elige manda; el guardado solo si no se manda ninguno. Antes el
+  // role_id guardado ganaba siempre y cambiar de rol al editar no surtía efecto.
+  const role = await resolveRoleSelection(
+    data.roleId || (String(data.roleCode || '').trim() ? null : existingUser?.role_id),
+    data.roleCode,
+    data.rol || existingUser?.rol
+  );
   const roleCode = normalizeLegacyUserRoleCode(role.codigo);
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(data || {}, key);
   const nombre = String(data.nombre || existingUser?.nombre || '').trim();
@@ -7481,7 +7671,47 @@ async function validateAndNormalizeUserPayload(data, actorUser, options = {}) {
     ? createLocalPasswordHash(passwordInput)
     : (String(existingUser?.password_hash || '').trim() || (nextPassword ? createLocalPasswordHash(nextPassword) : null));
 
+  // Permisos propios (null = los de su rol). Solo el administrador general los
+  // personaliza; al administrador general no se le quitan; al cambiar de rol
+  // sin mandar permisos vuelve a los del rol nuevo.
+  const catalogoPermisos = permisosUsuario.catalogo;
+  const permisosAntes = permisosUsuario.leerLista(existingUser?.permisos_usuario);
+  let permisosNuevos = permisosAntes;
+  const rolAnterior = existingUser ? normalizeLegacyUserRoleCode(existingUser.role_code || existingUser.rol) : null;
+  if (hasOwn('permisos')) {
+    if (data.permisos !== null && !Array.isArray(data.permisos)) {
+      const error = new Error('La lista de permisos no es válida.');
+      error.statusCode = 400;
+      throw error;
+    }
+    const desconocido = (data.permisos || []).find((codigo) => !catalogoPermisos.esValido(codigo));
+    if (desconocido) {
+      const error = new Error(`Permiso no reconocido: ${desconocido}.`);
+      error.statusCode = 400;
+      throw error;
+    }
+    permisosNuevos = data.permisos === null ? null : catalogoPermisos.normalizar(data.permisos);
+  } else if (existingUser && rolAnterior !== roleCode) {
+    permisosNuevos = null;
+  }
+  if (roleCode === 'administrador_general') permisosNuevos = null;
+  // Si quedó igual a lo que da el rol, no se guarda como propio.
+  if (permisosNuevos && catalogoPermisos.iguales(permisosNuevos, catalogoPermisos.porDefecto(roleCode, parseJsonArrayField(role.permisos)))) {
+    permisosNuevos = null;
+  }
+  const mismaLista = (a, b) => (a === null || b === null ? a === b : catalogoPermisos.iguales(a, b));
+  const permisosCambiaron = !mismaLista(permisosNuevos, permisosAntes);
+  if (permisosCambiaron && hasOwn('permisos') && !isGlobalAdministratorUser(actorUser)) {
+    const error = new Error('Solo el administrador general puede personalizar los permisos de un usuario.');
+    error.statusCode = 403;
+    throw error;
+  }
+
   return {
+    permisosUsuario: permisosNuevos ? JSON.stringify(permisosNuevos) : null,
+    permisosAntes,
+    permisosNuevos,
+    permisosCambiaron,
     role,
     roleCode,
     nombre,
@@ -7498,7 +7728,15 @@ async function validateAndNormalizeUserPayload(data, actorUser, options = {}) {
   };
 }
 
-function ensureNotCashier(req) {
+// `permiso`: el que exige esta acción a un usuario con permisos propios (para
+// él no aplica la regla por rol). Sin permisos propios: la regla de siempre.
+function ensureNotCashier(req, permiso = null) {
+  if (permiso && userHasCustomPermissions(req.authUser)) {
+    if (userRoleHasPermission(req.authUser, permiso)) return;
+    const error = new Error('Este usuario no tiene permiso para realizar esta acción.');
+    error.statusCode = 403;
+    throw error;
+  }
   if (getRequestRoleCode(req) === 'cajero') {
     const error = new Error('Este usuario no tiene permiso para realizar esta acción.');
     error.statusCode = 403;
@@ -7555,7 +7793,8 @@ async function resolveRoleSelection(inputRoleId, inputRoleCode, inputRoleLabel) 
     id: Number(role.id),
     codigo: String(role.codigo || '').trim(),
     nombre: String(role.nombre || '').trim(),
-    legacyLabel: mapRoleCodeToLegacyName(role.codigo)
+    legacyLabel: mapRoleCodeToLegacyName(role.codigo),
+    permisos: parseJsonArrayField(role.permisos)
   };
 }
 
@@ -8307,6 +8546,16 @@ function mapSaleRows(sales, items) {
     clienteTelefono: sale.client_phone_snapshot || sale.client_phone || '',
     clienteRncCedula: sale.client_tax_id_snapshot || '',
     metodo: sale.payment_method,
+    financialVersion: Number(sale.financial_version || 0),
+    montoEfectivo: sale.cash_amount == null ? null : Number(sale.cash_amount),
+    montoTarjeta: sale.card_amount == null ? null : Number(sale.card_amount),
+    montoTransferencia: sale.transfer_amount == null ? null : Number(sale.transfer_amount),
+    montoCredito: Number(sale.credit_amount || 0),
+    propinaLegal: Number(sale.legal_tip_amount || 0),
+    consumoLocal: Boolean(sale.consumed_here),
+    ajusteCredito: Number(sale.credit_adjustment || 0),
+    creditDueDate: sale.credit_due_date || null,
+    paymentDetails: (() => { try { return JSON.parse(sale.payment_details || '{}'); } catch (_) { return {}; } })(),
     estadoCobroDelivery: sale.delivery_cash_status || 'na',
     cobroDeliveryValidadoEn: sale.delivery_cash_received_at || null,
     cobroDeliveryValidadoPor: sale.delivery_cash_received_by_user_name || '',
@@ -8334,6 +8583,9 @@ function mapSaleRows(sales, items) {
     referenciaDelivery: sale.delivery_reference_snapshot || '',
     linkUbicacionDelivery: sale.delivery_location_link_snapshot || '',
     mesa: sale.table_label || '',
+    mesero: sale.mesas_mesero_nombre || '',
+    // Anticipo de reserva descontado al cobrar (ya pagado antes; el total no cambia).
+    anticipoReserva: Number(sale.reserva_anticipo || 0),
     notasPedido: sale.order_notes || '',
     codigoSeguridadFiscal: String(fiscalPayload.codigoSeguridad || '').trim(),
     fiscalFechaIso: String(fiscalPayload.fecha || '').trim(),
@@ -8400,6 +8652,17 @@ function mapSaleRows(sales, items) {
   })});
 }
 
+// ¿El negocio emite e-CF? (emisor activo). getConfig se llama a menudo: un
+// «sí» se recuerda 30 s; un «no» se vuelve a consultar siempre (son dos
+// SELECT), para que activar el emisor se vea en el acto.
+let _ecfActivoCache = { at: 0, value: false };
+async function getEcfActivoCached() {
+  if (_ecfActivoCache.value && Date.now() - _ecfActivoCache.at < 30000) return true;
+  const environment = await ecfModule.service.getActiveSaleEnvironment().catch(() => null);
+  _ecfActivoCache = { at: Date.now(), value: Boolean(environment) };
+  return _ecfActivoCache.value;
+}
+
 async function getConfig(options = {}) {
   await ensureBusinessStructureExtensions();
   await ensureCurrencyExtensions();
@@ -8431,6 +8694,7 @@ async function getConfig(options = {}) {
   const row = rows[0];
   const license = licenseResult?.license || getLicenseSummary(row || {});
   const businessType = row.business_type || 'pizzeria';
+  const ecfActivo = await getEcfActivoCached();
   const structure = await getActiveBusinessStructure(row);
   const activeSessionRows = structure.activeCashRegisterId
     ? await query(
@@ -8468,6 +8732,12 @@ async function getConfig(options = {}) {
     prefix: row.invoice_prefix,
     nextInvoice: Number(row.invoice_next_number || 1001),
     eInvoiceEnabled: Boolean(row.e_invoice_enabled),
+    // El negocio emite e-CF (emisor activo): Cobrar solo ofrece Ticket y los
+    // comprobantes electrónicos, sin la serie B (ver js/cobro.js).
+    ecfActivo,
+    legalTipEnabled: Boolean(row.legal_tip_enabled),
+    legalTipScope: row.legal_tip_scope === 'marcados' ? 'marcados' : 'todos',
+    legalTipMinimum: Number(row.legal_tip_min_amount || 0),
     eInvoicePrefix: row.e_invoice_prefix || 'ECF-',
     eInvoiceNextNumber: Number(row.e_invoice_next_number || 1),
     ecfSequencesWarning,
@@ -8698,7 +8968,14 @@ async function getBootstrapData(actorUser = null) {
   const effectiveCashRegisterId = Number(scopedCashRegisterId || (!scopedBranchId ? config.activeCashRegisterId : null) || 0) || null;
   const canAccessGlobalAudit = !actorUser || userCanAccessGlobalAudit(actorUser);
   const branchScopedUser = shouldForceBranchScope || Boolean(scopedBranchId);
-  await query('UPDATE supplier_invoices SET status = CASE WHEN pending_amount <= 0 THEN "Pagada" WHEN due_at IS NOT NULL AND due_at < date(\'now\') THEN "Vencida" ELSE "Pendiente" END');
+  // Una factura anulada (compra anulada) se queda anulada: antes pasaba a
+  // «Pagada» (pendiente 0) y volvía a sumar en lo comprado al proveedor.
+  // La fecha de hoy va como parámetro (hora de RD): date('now') es UTC en SQLite
+  // y en MariaDB da NULL (nunca marcaba vencidas).
+  await query(
+    "UPDATE supplier_invoices SET status = CASE WHEN pending_amount <= 0 THEN 'Pagada' WHEN due_at IS NOT NULL AND due_at < ? THEN 'Vencida' ELSE 'Pendiente' END WHERE LOWER(COALESCE(status, '')) <> 'anulada'",
+    [toLocalDateKeyRD()]
+  );
   const [categoryRows, productRows, clientRows, supplierRows, supplierInvoiceRows, userRows, saleRows, saleItemRows, movementRows, openSessionRows, auditRows, inventoryMovementRows, diningTableRows, deliveryLocations, suspendedSalesRows, quotationRows, branchRows, cashRegisterRows] = await Promise.all([
     getCategories(),
     effectiveBranchId
@@ -8823,6 +9100,8 @@ async function getBootstrapData(actorUser = null) {
       exchangeRateUsdDop: openSession.exchange_rate_usd_dop !== null && openSession.exchange_rate_usd_dop !== undefined
         ? Number(openSession.exchange_rate_usd_dop)
         : null,
+      // Anticipos de reservas de Mesas del turno (entrada de dinero en la pantalla de Caja).
+      anticiposReserva: await require('./server/services/mesas-anticipos').totalesTurno(query, Number(openSession.id)),
     };
   }
 
@@ -9030,7 +9309,7 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     return res.status(423).json({ error: 'Debes completar el asistente inicial antes de iniciar sesión.' });
   }
   if (!setupStatus.license.canEnter) {
-    return res.status(403).json({ error: getLicenseDeniedMessage(setupStatus.license) });
+    return res.status(403).json({ error: getLicenseDeniedMessage(setupStatus.license), code: setupStatus.license.blockedCode || 'LICENSE_BLOCKED' });
   }
 
   const { usuario, password } = req.body || {};
@@ -9625,7 +9904,7 @@ app.post('/api/setup/complete', async (req, res) => {
 
     await conn.query(
        `UPDATE config
-        SET business_name = ?, rnc = ?, address = ?, phone = ?, currency = ?, tax_rate = ?,
+        SET business_name = ?, business_uuid = ?, rnc = ?, address = ?, phone = ?, currency = ?, tax_rate = ?,
            invoice_prefix = ?, invoice_next_number = ?, e_invoice_enabled = ?, e_invoice_prefix = ?,
            e_invoice_next_number = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?, app_logo = ?,
            active_branch_id = NULL, active_cash_register_id = NULL, cash_open = 1, cash_amount = ?, language = ?, business_type = ?, business_structure_mode = ?, install_network_key = ?, starter_catalog_seeded = 0, setup_completed = 1, setup_completed_at = datetime('now'),
@@ -9634,6 +9913,7 @@ app.post('/api/setup/complete', async (req, res) => {
        WHERE id = 1`,
       [
         businessName,
+        crypto.randomUUID(),
         businessRnc,
         businessAddress,
         businessPhone,
@@ -10800,7 +11080,9 @@ app.post('/api/auth/offline-login', loginLimiter, async (req, res) => {
     // userRoleHasPermission() y getUserBranchIdValue() en server.js). Antes
     // quedaba con permisos vacíos en ambas formas, así que cualquier rol
     // personalizado perdía acceso a todo al entrar sin internet.
-    const rolePermissionsArr = parseJsonArrayField(localUser.role_permissions);
+    // Con permisos propios (users.permisos_usuario) valen esos, igual que en línea.
+    const permisosPropiosOffline = permisosUsuario.propios({ role_code: localUser.role_code, rol: localUser.rol, permisos_usuario: localUser.permisos_usuario });
+    const rolePermissionsArr = permisosPropiosOffline || parseJsonArrayField(localUser.role_permissions);
     const branchIdVal = localUser.branch_id === null || localUser.branch_id === undefined ? null : Number(localUser.branch_id);
     const cashRegisterIdVal = localUser.cash_register_id === null || localUser.cash_register_id === undefined ? null : Number(localUser.cash_register_id);
     const roleIdVal = localUser.role_id === null || localUser.role_id === undefined ? null : Number(localUser.role_id);
@@ -10814,6 +11096,7 @@ app.post('/api/auth/offline-login', loginLimiter, async (req, res) => {
       roleName: localUser.role_name || localUser.rol,
       roleId: roleIdVal,
       rolePermissions: rolePermissionsArr,
+      permisosPropios: Boolean(permisosPropiosOffline),
       sucursalId: branchIdVal,
       cajaId: cashRegisterIdVal,
       // snake_case — consumido por chequeos de permisos del backend sobre req.authUser
@@ -10821,6 +11104,7 @@ app.post('/api/auth/offline-login', loginLimiter, async (req, res) => {
       role_name: localUser.role_name || localUser.rol,
       role_id: roleIdVal,
       role_permissions: rolePermissionsArr,
+      permisos_usuario: permisosPropiosOffline ? JSON.stringify(permisosPropiosOffline) : null,
       permisos: rolePermissionsArr,
       sucursal_id: branchIdVal,
       branch_id: branchIdVal,
@@ -11557,14 +11841,14 @@ app.get('/api/bootstrap', async (req, res) => {
 });
 
 app.get('/api/business-templates', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   res.json({
     items: listBusinessTypes()
   });
 });
 
 app.get('/api/business-templates/:type', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const businessType = String(req.params.type || '').trim().toLowerCase();
   if (!BUSINESS_TEMPLATES[businessType]) {
     return res.status(404).json({ error: 'El tipo de negocio demo solicitado no existe.' });
@@ -11577,7 +11861,7 @@ app.get('/api/firebase-sync/status', async (_req, res) => {
 });
 
 app.post('/api/firebase-sync/clients', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actor = getActor(req);
   const status = getFirebaseConfigStatus();
   if (!status.adminEnabled) {
@@ -11598,7 +11882,7 @@ app.post('/api/firebase-sync/clients', async (req, res) => {
 });
 
 app.post('/api/firebase-sync/accounts', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actor = getActor(req);
   const status = getFirebaseConfigStatus();
   if (!status.adminEnabled) {
@@ -12197,7 +12481,9 @@ app.post('/api/security-password/reset', async (req, res) => {
 
 app.post('/api/account/access-password', async (req, res) => {
   await ensureUserExtensions();
-  const userId = Number(req.body?.actorUserId || 0);
+  const actor = await resolveRequestActorUser(req, { required: true });
+  const userId = Number(actor.id);
+  if (req.body?.actorUserId && Number(req.body.actorUserId) !== userId) return res.status(403).json({ error: 'Solo puedes configurar la contraseña de tu propia sesión.' });
   const currentPassword = String(req.body?.currentPassword || '');
   const newPassword = String(req.body?.newPassword || '');
 
@@ -12223,7 +12509,7 @@ app.post('/api/account/access-password', async (req, res) => {
     `UPDATE users
      SET password = ?, password_hash = ?, auth_provider = CASE WHEN auth_provider = 'google' THEN 'google' ELSE 'local' END
      WHERE id = ?`,
-    [newPassword, createLocalPasswordHash(newPassword), userId]
+    ['', createLocalPasswordHash(newPassword), userId]
   );
 
   const updatedRows = await query('SELECT * FROM users WHERE id = ? LIMIT 1', [userId]);
@@ -12413,7 +12699,7 @@ app.post('/api/qrcode', async (req, res) => {
 });
 
 app.post('/api/categories', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageGlobalProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para crear categorías globales desde tu sucursal.' });
@@ -12559,6 +12845,7 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
     });
   }
 
+  await conn.query('UPDATE products SET legal_tip_eligible = ? WHERE id = ?', [data.propinaLegal === true ? 1 : 0, productId]);
   const rows = await conn.query('SELECT * FROM products WHERE id = ?', [productId]);
   return {
     row: rows[0],
@@ -12656,7 +12943,7 @@ function syncPortalContableFireAndForget(reason = '') {
 }
 
 app.post('/api/products', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para crear productos.' });
@@ -12732,7 +13019,7 @@ app.post('/api/products', async (req, res) => {
 });
 
 app.post('/api/products/import-csv', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para importar productos.' });
@@ -13161,7 +13448,7 @@ app.get('/api/products/image-search', async (req, res) => {
 });
 
 app.post('/api/products/:id/image', express.json({ limit: '20mb' }), async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para modificar imágenes del catálogo.' });
@@ -13226,7 +13513,7 @@ app.post('/api/products/:id/image', express.json({ limit: '20mb' }), async (req,
 });
 
 app.delete('/api/products/:id/image', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para modificar imágenes del catálogo.' });
@@ -13257,7 +13544,7 @@ app.delete('/api/products/:id/image', async (req, res) => {
 });
 
 app.put('/api/products/:id', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para editar productos.' });
@@ -13396,6 +13683,7 @@ app.put('/api/products/:id', async (req, res) => {
       });
     }
 
+    if (Object.prototype.hasOwnProperty.call(data, 'propinaLegal')) await conn.query('UPDATE products SET legal_tip_eligible = ? WHERE id = ?', [data.propinaLegal === true ? 1 : 0, id]);
     const rows = await conn.query('SELECT * FROM products WHERE id = ?', [id]);
     return {
       row: rows[0],
@@ -13451,7 +13739,7 @@ app.put('/api/products/:id', async (req, res) => {
 });
 
 app.delete('/api/products/:id', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para eliminar productos.' });
@@ -13516,7 +13804,7 @@ app.delete('/api/products/:id', async (req, res) => {
 
 // ── Limpieza masiva: elimina productos sin precio de venta configurado ────────
 app.post('/api/admin/cleanup-zero-price-products', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'productos');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageGlobalProductCatalog(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para realizar esta acción.' });
@@ -13569,7 +13857,7 @@ app.post('/api/admin/cleanup-zero-price-products', async (req, res) => {
 });
 
 app.post('/api/inventory/adjust', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'inventario');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   await ensureBusinessRulesExtensions();
   await ensureInventoryMovementsTable();
@@ -13703,16 +13991,28 @@ async function syncClientToRemote(clientRow) {
   } catch (_e) {}
 }
 
-async function insertClientRow(runner, rawData) {
+async function clientPhoneWarnings(clientId, phone) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  const variants = digits.startsWith('1') && digits.length === 11 ? [digits, digits.slice(1)] : [digits, digits];
+  const rows = await query(`SELECT id FROM clients WHERE id <> ? AND REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(telefono,''),' ',''),'-',''),'(',''),')',''),'+',''),'.','') IN (?, ?)`, [clientId, ...variants]);
+  return rows.length ? [{ code: 'PHONE_SHARED', message: 'Este teléfono también está registrado en otro cliente. Puede ser compartido; revisa los datos.', count: rows.length }] : [];
+}
+// origen 'usuario' (pantallas): teléfono obligatorio y con formato válido.
+// origen 'sistema' (bot de WhatsApp, documentos de Servicios): se normaliza si
+// es válido y, si no, se guarda como llegó — nunca se pierde el cliente.
+async function insertClientRow(runner, rawData, { origen = 'usuario' } = {}) {
   await ensureClientExtensions();
   const data = sanitizeClientPayload(rawData);
+  const phone = require('./js/cliente-telefono').normalize(data.telefono, data.phoneCountry);
+  if (phone.ok) data.telefono = phone.value;
+  else if (origen === 'usuario') throw createHttpError(phone.error, 400);
   if (!data.nombre) {
     throw createHttpError('El nombre del cliente es requerido.', 400);
   }
   const result = await runner.query(
     `INSERT INTO clients
-      (nombre, telefono, email, direccion, cedula, rnc, limite_credito, balance, reference_note, location_link, latitude, longitude, whatsapp_jid)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (nombre, telefono, email, direccion, cedula, rnc, limite_credito, balance, reference_note, location_link, latitude, longitude, whatsapp_jid, phone_country)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       data.nombre,
       normalizeOptionalText(data.telefono),
@@ -13726,7 +14026,8 @@ async function insertClientRow(runner, rawData) {
       normalizeOptionalText(data.linkUbicacion),
       Number.isFinite(data.latitud) ? data.latitud : null,
       Number.isFinite(data.longitud) ? data.longitud : null,
-      normalizeOptionalText(data.whatsappJid)
+      normalizeOptionalText(data.whatsappJid),
+      data.phoneCountry
     ]
   );
   const createdRow = await resolveClientRowAfterInsert(result.insertId, data);
@@ -13739,6 +14040,7 @@ async function insertClientRow(runner, rawData) {
 }
 
 app.post('/api/clients', async (req, res) => {
+  await resolveRequestActorUser(req, { required: true });
   // insertClientRow() ya dispara syncClientToRemote() internamente — así
   // cualquier otro llamador (el bot de WhatsApp incluido) queda cubierto
   // igual, sin tener que repetir este bloque en cada sitio que cree clientes.
@@ -13750,19 +14052,23 @@ app.post('/api/clients', async (req, res) => {
     actionName: 'Cliente creado',
     detail: createdRow.nombre
   });
-  res.status(201).json(mapClientRow(createdRow));
+  res.status(201).json({ ...mapClientRow(createdRow), warnings: await clientPhoneWarnings(createdRow.id, createdRow.telefono) });
 });
 
 app.put('/api/clients/:id', async (req, res) => {
+  await resolveRequestActorUser(req, { required: true });
   const data = sanitizeClientPayload(req.body);
   const { id } = req.params;
   await ensureClientExtensions();
+  const phone = require('./js/cliente-telefono').normalize(data.telefono, data.phoneCountry);
+  if (!phone.ok) return res.status(400).json({ error: phone.error });
+  data.telefono = phone.value;
   if (!data.nombre) {
     return res.status(400).json({ error: 'El nombre del cliente es requerido.' });
   }
   await query(
     `UPDATE clients
-     SET nombre = ?, telefono = ?, email = ?, direccion = ?, cedula = ?, rnc = ?, limite_credito = ?, balance = ?, reference_note = ?, location_link = ?, latitude = ?, longitude = ?
+     SET nombre = ?, telefono = ?, email = ?, direccion = ?, cedula = ?, rnc = ?, limite_credito = ?, reference_note = ?, location_link = ?, latitude = ?, longitude = ?, phone_country = ?
      WHERE id = ?`,
     [
       data.nombre,
@@ -13772,11 +14078,11 @@ app.put('/api/clients/:id', async (req, res) => {
       normalizeOptionalText(data.cedula),
       normalizeOptionalText(data.rnc),
       data.limiteCredito,
-      data.balance,
       normalizeOptionalText(data.referencia),
       normalizeOptionalText(data.linkUbicacion),
       Number.isFinite(data.latitud) ? data.latitud : null,
       Number.isFinite(data.longitud) ? data.longitud : null,
+      data.phoneCountry,
       id
     ]
   );
@@ -13790,7 +14096,7 @@ app.put('/api/clients/:id', async (req, res) => {
   });
   syncClientToRemote(rows[0]).catch(() => {});
   scheduleSilentProductBackup('cliente_actualizado');
-  res.json(mapClientRow(rows[0]));
+  res.json({ ...mapClientRow(rows[0]), warnings: await clientPhoneWarnings(Number(id), data.telefono) });
 });
 
 app.delete('/api/clients/:id', async (req, res) => {
@@ -13803,7 +14109,7 @@ app.delete('/api/clients/:id', async (req, res) => {
   const pendingCreditRows = await query(
     `SELECT COUNT(*) AS total
      FROM sales
-     WHERE client_id = ? AND payment_method = "credito" AND total > received_amount`,
+     WHERE client_id = ? AND (payment_method = "credito" OR credit_amount > 0) AND total > received_amount + COALESCE(credit_adjustment, 0)`,
     [req.params.id]
   );
   const hasPendingCredit = Number(pendingCreditRows[0]?.total || 0) > 0;
@@ -14086,7 +14392,25 @@ async function updateSupplierRow(runner, id, data) {
   );
 }
 
-app.post('/api/suppliers', async (req, res) => {
+// Suplidores y sus facturas: antes no pedían sesión ni permiso (cualquiera en
+// la red podía crear, borrar o abonar). Ahora, sesión y el permiso de Compras
+// que toque; el administrador general siempre puede.
+function conPermisoSuplidor(permisos, handler) {
+  return async (req, res) => {
+    try {
+      const actor = await resolveRequestActorUser(req, { required: true });
+      if (!isGlobalAdministratorUser(actor) && !userRoleHasPermission(actor, ...permisos)) {
+        return res.status(403).json({ error: 'No tienes permiso para esta acción de suplidores.' });
+      }
+      return await handler(req, res);
+    } catch (error) {
+      if (res.headersSent) return undefined;
+      return res.status(error.statusCode || 500).json({ error: error.message || 'No se pudo completar la operación.' });
+    }
+  };
+}
+
+app.post('/api/suppliers', conPermisoSuplidor(['compras.crear'], async (req, res) => {
   await ensureSuppliersTable();
   const data = req.body || {};
   const nombre = String(data.nombre || '').trim();
@@ -14100,9 +14424,9 @@ app.post('/api/suppliers', async (req, res) => {
   await writeAuditLog({ ...actor, moduleName: 'Proveedores', actionName: 'Proveedor creado', detail: nombre });
   addToSyncQueue('proveedores', 'proveedor_creado', { id: insertId, nombre, rnc: data.rnc || null });
   res.status(201).json(mapSupplierRow(rows[0]));
-});
+}));
 
-app.put('/api/suppliers/:id', async (req, res) => {
+app.put('/api/suppliers/:id', conPermisoSuplidor(['compras.crear'], async (req, res) => {
   await ensureSuppliersTable();
   const data = req.body || {};
   const nombre = String(data.nombre || '').trim();
@@ -14121,20 +14445,19 @@ app.put('/api/suppliers/:id', async (req, res) => {
   });
   addToSyncQueue('proveedores', 'proveedor_actualizado', { id: req.params.id, nombre });
   res.json(mapSupplierRow(rows[0]));
-});
+}));
 
 // ── Detalle completo del proveedor ────────────────────────────────────────────
-app.get('/api/suppliers/:id/detail', async (req, res) => {
+app.get('/api/suppliers/:id/detail', conPermisoSuplidor(['compras.ver', 'cuentas_por_pagar.ver'], async (req, res) => {
   await ensureSuppliersTable();
   await ensureSupplierInvoicesTable();
   const supplierId = Number(req.params.id);
   const [supplier] = await query('SELECT * FROM suppliers WHERE id = ?', [supplierId]);
   if (!supplier) return res.status(404).json({ error: 'Proveedor no encontrado.' });
 
-  const today = new Date().toISOString().slice(0, 10);
-  const now = new Date();
-  const monthStr = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-  const yearStr = `${now.getFullYear()}-01-01`;
+  const today = toLocalDateKeyRD();
+  const monthStr = `${today.slice(0, 7)}-01`;
+  const yearStr = `${today.slice(0, 4)}-01-01`;
 
   const invoices = await query(
     'SELECT * FROM supplier_invoices WHERE supplier_id = ? ORDER BY issued_at DESC, id DESC',
@@ -14193,7 +14516,7 @@ app.get('/api/suppliers/:id/detail', async (req, res) => {
     pagos: payments,
     alertas,
   });
-});
+}));
 
 // Compartido entre la ruta online y _syncSupplierChanges (offline.routes.js).
 // Devuelve { ok: true, nombre } o { ok: false, error } sin lanzar, para que el
@@ -14214,7 +14537,7 @@ async function deleteSupplierIfNoPendingInvoices(runner, id) {
   return { ok: true, nombre: rows[0]?.nombre || `ID ${id}` };
 }
 
-app.delete('/api/suppliers/:id', async (req, res) => {
+app.delete('/api/suppliers/:id', conPermisoSuplidor(['compras.crear'], async (req, res) => {
   await ensureSuppliersTable();
   await ensureSupplierInvoicesTable();
   const result = await deleteSupplierIfNoPendingInvoices({ query }, req.params.id);
@@ -14230,9 +14553,9 @@ app.delete('/api/suppliers/:id', async (req, res) => {
     detail: result.nombre
   });
   res.status(204).end();
-});
+}));
 
-app.post('/api/supplier-invoices', async (req, res) => {
+app.post('/api/supplier-invoices', conPermisoSuplidor(['compras.crear'], async (req, res) => {
   await ensureSuppliersTable();
   await ensureSupplierInvoicesTable();
   const data = req.body || {};
@@ -14253,7 +14576,7 @@ app.post('/api/supplier-invoices', async (req, res) => {
   }
 
   const dueAt = String(data.fechaVencimiento || '').trim() || null;
-  const status = pendingAmount <= 0 ? 'Pagada' : (dueAt && dueAt < new Date().toISOString().slice(0, 10) ? 'Vencida' : 'Pendiente');
+  const status = pendingAmount <= 0 ? 'Pagada' : (dueAt && dueAt < toLocalDateKeyRD() ? 'Vencida' : 'Pendiente');
   const itbisAmount = Number(data.itbisAmount || data.itbis_amount || 0);
   const result = await query(
     `INSERT INTO supplier_invoices (supplier_id, invoice_number, issued_at, due_at, total_amount, paid_amount, pending_amount, status, notes, ncf, tipo_ncf, itbis_amount)
@@ -14273,9 +14596,9 @@ app.post('/api/supplier-invoices', async (req, res) => {
     detail: `${supplierRows[0].nombre} · ${invoiceNumber} · pendiente ${pendingAmount.toFixed(2)}`
   });
   res.status(201).json(mapSupplierInvoiceRow(rows[0]));
-});
+}));
 
-app.post('/api/supplier-invoices/:id/payment', async (req, res) => {
+app.post('/api/supplier-invoices/:id/payment', conPermisoSuplidor(['cuentas_por_pagar.pagar', 'compras.crear'], async (req, res) => {
   await ensureSupplierInvoicesTable();
   const invoiceId = Number(req.params.id);
   const amount = Number(req.body?.monto || 0);
@@ -14314,7 +14637,7 @@ app.post('/api/supplier-invoices/:id/payment', async (req, res) => {
       invoiceId,
       amount,
       req.body?.metodoPago || 'Efectivo',
-      new Date().toISOString().slice(0, 10),
+      toLocalDateKeyRD(),
       req.body?.notas || null,
       actor?.actorName || null
     ]
@@ -14330,7 +14653,7 @@ app.post('/api/supplier-invoices/:id/payment', async (req, res) => {
     detail: `${invoice.supplier_name} · ${invoice.invoice_number} · abono ${amount.toFixed(2)}`
   });
   res.json(mapSupplierInvoiceRow(updatedRows[0]));
-});
+}));
 
 app.post('/api/users', async (req, res) => {
   const actorUser = await resolveUserManagementActor(req);
@@ -14358,6 +14681,10 @@ app.post('/api/users', async (req, res) => {
       Number(actorUser.id)
     ]
   );
+  // Permisos propios (null = los del rol): columna aparte para no tocar el INSERT de siempre.
+  if (normalized.permisosUsuario) {
+    await query('UPDATE users SET permisos_usuario = ? WHERE id = ?', [normalized.permisosUsuario, result.insertId]);
+  }
   // Multisucursal: en la principal, en qué sucursales de la empresa puede entrar.
   await multisucursal.catalogo.guardarSucursalesUsuario(result.insertId, data);
   let firebaseAuthResult = null;
@@ -14375,7 +14702,7 @@ app.post('/api/users', async (req, res) => {
     userRole: actorUser.rol,
     moduleName: 'Usuarios',
     actionName: 'Usuario creado',
-    detail: `${normalized.usuario} · rol ${normalized.role.nombre}${normalized.sucursalId ? ` · sucursal ${normalized.sucursalId}` : ''}${normalized.cajaId ? ` · caja ${normalized.cajaId}` : ''} · función ${getBillingFunctionLabel(normalized.tipoFacturacion)}`
+    detail: `${normalized.usuario} · rol ${normalized.role.nombre}${normalized.sucursalId ? ` · sucursal ${normalized.sucursalId}` : ''}${normalized.cajaId ? ` · caja ${normalized.cajaId}` : ''} · función ${getBillingFunctionLabel(normalized.tipoFacturacion)}${normalized.permisosNuevos ? ` · permisos propios: ${normalized.permisosNuevos.join(', ')}` : ''}`
   });
   await trySyncAllPosAccountsToFirebase().catch((error) => {
     console.warn('No se pudo sincronizar el usuario POS creado a Firebase:', error.message);
@@ -14487,6 +14814,19 @@ app.put('/api/users/:id', async (req, res) => {
       id
     ]
   );
+  if (normalized.permisosCambiaron) {
+    await query('UPDATE users SET permisos_usuario = ? WHERE id = ?', [normalized.permisosUsuario, id]);
+    await writeAuditLog({
+      userId: actorUser.id,
+      userName: actorUser.nombre,
+      userRole: actorUser.rol,
+      moduleName: 'Usuarios',
+      actionName: 'Permisos del usuario',
+      before: { permisos: normalized.permisosAntes || 'los de su rol' },
+      after: { permisos: normalized.permisosNuevos || 'los de su rol' },
+      detail: `${normalized.usuario} · ${normalized.permisosNuevos ? `permisos propios: ${normalized.permisosNuevos.join(', ')}` : 'vuelve a los permisos de su rol'}`
+    });
+  }
   await multisucursal.catalogo.guardarSucursalesUsuario(id, data);
   let firebaseAuthResult = null;
   if (normalized.email) {
@@ -14641,8 +14981,28 @@ app.post('/api/users/:id/sync-firebase', async (req, res) => {
   });
 });
 
+app.put('/api/config/legal-tip', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanManageGlobalConfig(actorUser)) return res.status(403).json({ error: 'No tienes permiso para configurar el negocio.' });
+  await ensureBusinessRulesExtensions();
+  if (typeof req.body.enabled !== 'boolean') return res.status(400).json({ error: 'Indica si la propina está habilitada.' });
+  const alcance = req.body.alcance === undefined ? null : String(req.body.alcance);
+  if (alcance !== null && !['todos', 'marcados'].includes(alcance)) return res.status(400).json({ error: 'Alcance de la propina no válido.' });
+  const minimo = req.body.minimo === undefined || req.body.minimo === null || req.body.minimo === '' ? null : Number(req.body.minimo);
+  if (minimo !== null && (!Number.isFinite(minimo) || minimo < 0 || minimo > 10000000)) return res.status(400).json({ error: 'El monto mínimo de la propina no es válido.' });
+  await withTransaction(async conn => {
+    const previous = (await conn.query('SELECT legal_tip_enabled, legal_tip_scope, legal_tip_min_amount FROM config WHERE id = 1'))[0];
+    await conn.query('UPDATE config SET legal_tip_enabled = ?, legal_tip_scope = COALESCE(?, legal_tip_scope), legal_tip_min_amount = COALESCE(?, legal_tip_min_amount) WHERE id = 1',
+      [req.body.enabled ? 1 : 0, alcance, minimo === null ? null : Number(minimo.toFixed(2))]);
+    await writeAuditLog({ ...getActor(req), moduleName: 'Configuración', actionName: 'Propina legal configurada',
+      before: { enabled: Boolean(previous?.legal_tip_enabled), alcance: previous?.legal_tip_scope || 'todos', minimo: Number(previous?.legal_tip_min_amount || 0) },
+      after: { enabled: req.body.enabled, alcance: alcance || previous?.legal_tip_scope || 'todos', minimo: minimo === null ? Number(previous?.legal_tip_min_amount || 0) : minimo } }, conn);
+  });
+  res.json({ config: await getConfig({ syncRemote: false }) });
+});
+
 app.put('/api/config', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageGlobalConfig(actorUser)) {
     return res.status(403).json({ error: 'La configuración global solo puede ser cambiada por el administrador general.' });
@@ -14862,7 +15222,7 @@ app.put('/api/config', async (req, res) => {
 });
 
 app.post('/api/branches', plans.requirePlan('plus', query, () => secureLicenseService.resolveState({ allowRemote: true })), async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!isGlobalAdministratorUser(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para crear nuevas sucursales.' });
@@ -15045,304 +15405,7 @@ app.get('/api/sales/:invoiceNumber/return-detail', async (req, res) => {
 });
 
 // ─── 3. Procesar devolución (parcial o total) ──────────────────────────────
-app.post('/api/sales/return', async (req, res) => {
-  try {
-    await ensureReturnTables();
-    await ensureSalesExtensions();
-    await ensureCashMovementExtensions();
-    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
-    if (!userCanReturnSales(actorUser)) {
-      return res.status(403).json({ error: 'No tienes permiso para procesar devoluciones.' });
-    }
-    const actor = getActor(req);
-    const invoiceNumber = String(req.body?.invoiceNumber || '').trim();
-    const itemsToReturn = Array.isArray(req.body?.items) ? req.body.items : [];
-    const reason = String(req.body?.reason || '').trim() || 'Devolución de cliente';
-    const refundCash = Boolean(req.body?.refundCash !== false);
-
-    if (!invoiceNumber) return res.status(400).json({ error: 'Número de factura requerido.' });
-    if (!itemsToReturn.length) return res.status(400).json({ error: 'Debes seleccionar al menos un producto a devolver.' });
-
-    // Validar estructura de negocio
-    let structure;
-    try {
-      structure = await resolveScopedBusinessStructureSelection(req, null, req.body?.branchId, req.body?.cashRegisterId);
-    } catch (_e) {
-      structure = { branchId: null, cashRegisterId: null, branch: { nombre: 'Principal' }, cashRegister: { nombre: 'Caja' } };
-    }
-
-    const result = await withTransaction(async (conn) => {
-      // Cargar la venta original. FOR UPDATE (solo MySQL) bloquea la fila para que dos
-      // devoluciones simultáneas de la misma factura (doble clic, dos cajeros) no lean
-      // ambas el mismo "ya devuelto" antes de que la primera confirme — mismo patrón que
-      // getNextNcfFromSequence.
-      const saleRows = await conn.query(
-        `SELECT s.*, COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS client_name
-         FROM sales s LEFT JOIN clients c ON c.id = s.client_id
-         WHERE s.invoice_number = ? LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
-        [invoiceNumber]
-      );
-      if (!saleRows.length) throw Object.assign(new Error('Factura no encontrada.'), { statusCode: 404 });
-      const sale = saleRows[0];
-
-      if (String(sale.fiscal_status || '').trim() === 'cancelada') {
-        throw Object.assign(new Error('Esta venta ya fue cancelada. No se puede devolver.'), { statusCode: 409 });
-      }
-      if (String(sale.sale_status || '').trim() === 'pendiente') {
-        throw Object.assign(new Error('Esta venta aún no está pagada/entregada. No se puede devolver.'), { statusCode: 409 });
-      }
-
-      const inventoryBranchId = Number(sale.inventory_branch_id || sale.branch_id || structure.branchId || 0);
-
-      // Cargar items originales
-      const originalItems = await conn.query(
-        `SELECT si.*, COALESCE(si.item_name, p.nombre,'Producto') AS product_name
-         FROM sale_items si LEFT JOIN products p ON p.id = si.product_id
-         WHERE si.sale_id = ?`,
-        [sale.id]
-      );
-
-      // Cargar cantidades ya devueltas
-      const prevReturns = await conn.query(
-        `SELECT sri.sale_item_id, SUM(sri.qty_returned) AS total_devuelto
-         FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
-         WHERE sr.original_sale_id = ? GROUP BY sri.sale_item_id`,
-        [sale.id]
-      );
-      const devueltoMap = {};
-      prevReturns.forEach(r => { devueltoMap[r.sale_item_id] = Number(r.total_devuelto || 0); });
-
-      // Validar cantidades a devolver
-      let returnedAmount = 0;
-      const validatedItems = [];
-      for (const item of itemsToReturn) {
-        const saleItemId = Number(item.saleItemId || 0);
-        const pid = Number(item.productId || 0);
-        const qtyReturn = Number(item.qty || 0);
-        if (!saleItemId || qtyReturn <= 0) continue;
-
-        const original = originalItems.find(o => Number(o.id) === saleItemId);
-        if (!original) throw Object.assign(new Error(`La línea ${saleItemId} no pertenece a esta factura.`), { statusCode: 400 });
-
-        const qtyOriginal = Number(original.qty || 0);
-        const qtyYaDevuelta = devueltoMap[saleItemId] || 0;
-        const qtyDisponible = qtyOriginal - qtyYaDevuelta;
-
-        if (qtyReturn > qtyDisponible) {
-          throw Object.assign(new Error(
-            `${original.product_name}: solo puedes devolver ${qtyDisponible} unidad(es), ya se devolvieron ${qtyYaDevuelta}.`
-          ), { statusCode: 400 });
-        }
-
-        const unitPrice = Number(original.price || 0);
-        const discRate = Number(original.discount_rate || 0);
-        const effectivePrice = unitPrice * (1 - discRate / 100);
-        const lineTotal = effectivePrice * qtyReturn;
-        returnedAmount += lineTotal;
-
-        validatedItems.push({
-          saleItemId,
-          productId: original.product_id ? Number(original.product_id) : null,
-          productName: original.product_name || '',
-          qty: qtyReturn,
-          price: effectivePrice,
-          lineTotal,
-          comboSnapshot: original.combo_snapshot || null,
-          taxRate: Number(original.tax_rate || original.itbis || 0),
-        });
-      }
-
-      if (!validatedItems.length) throw Object.assign(new Error('No hay ítems válidos para devolver.'), { statusCode: 400 });
-
-      returnedAmount = Number(returnedAmount.toFixed(2));
-
-      // "Total" vs "parcial" se decide por CANTIDAD devuelta acumulada (incluyendo devoluciones
-      // previas), no por cuántas líneas de producto distintas toca esta devolución — una
-      // devolución parcial que roza todas las líneas de la factura no es una devolución total.
-      const totalItemsQty = originalItems.reduce((s, i) => s + Number(i.qty || 0), 0);
-      const totalDevueltaQty = validatedItems.reduce((s, i) => s + i.qty, 0) +
-        Object.values(devueltoMap).reduce((s, v) => s + v, 0);
-      const isFullyReturned = totalDevueltaQty >= totalItemsQty;
-
-      // Insertar registro de devolución
-      const returnInsert = await conn.query(
-        `INSERT INTO sale_returns
-         (original_sale_id, original_invoice_number, return_type, return_reason,
-          returned_amount, returned_by_user_id, returned_by_user_name,
-          branch_id, cash_register_id, returned_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-        [
-          sale.id, invoiceNumber,
-          isFullyReturned ? 'total' : 'parcial',
-          reason, returnedAmount,
-          actor.userId || null, actor.userName || 'Sistema',
-          structure.branchId || null, structure.cashRegisterId || null,
-        ]
-      );
-      const returnId = returnInsert.insertId;
-
-      // Insertar items devueltos y reintegrar al inventario
-      for (const item of validatedItems) {
-        await conn.query(
-          `INSERT INTO sale_return_items (return_id, sale_item_id, product_id, product_name, qty_returned, price, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [returnId, item.saleItemId, item.productId, item.productName, item.qty, item.price, item.lineTotal]
-        );
-        // Reintegrar al inventario. Un combo devuelve sus componentes × las
-        // unidades devueltas, según la foto de la venta (no la composición actual).
-        const returnLines = item.comboSnapshot
-          ? combosService.inventoryLinesForSaleItem({ combo_snapshot: item.comboSnapshot }, item.qty)
-              .filter((line) => line.tracksStock && line.qty > 0)
-          : (item.productId ? [{ productId: item.productId, qty: item.qty, comboName: '' }] : []);
-        for (const line of (inventoryBranchId ? returnLines : [])) {
-          const stockChange = await changeBranchInventoryStock(conn, {
-            productId: line.productId,
-            branchId: inventoryBranchId,
-            quantityDelta: +line.qty,
-            preventNegative: false,
-          });
-          // Movimiento de inventario con las columnas reales de la tabla (antes
-          // usaba columnas que no existen y el registro fallaba en silencio).
-          await registerInventoryMovement(conn, {
-            productId: line.productId,
-            branchId: inventoryBranchId,
-            cashRegisterId: structure.cashRegisterId || null,
-            saleId: sale.id,
-            tipo: 'devolucion',
-            cantidad: line.qty,
-            stockAnterior: stockChange.previousStock,
-            stockNuevo: stockChange.nextStock,
-            costoUnitario: Number(line.unitCost || stockChange.unitCost || 0),
-            referenciaTipo: 'devolucion',
-            referenciaId: invoiceNumber,
-            notas: `Devolución factura ${invoiceNumber}${line.comboName ? ` (combo ${line.comboName})` : ''} — ${reason}`.slice(0, 255),
-            usuarioId: actor.userId || null,
-            usuarioNombre: actor.userName || 'Sistema',
-          }).catch((err) => console.warn('[devolucion] No se pudo registrar el movimiento:', err.message));
-        }
-      }
-
-      // Repartir el monto devuelto entre "efectivo de caja" y "saldo de crédito del cliente"
-      // según cómo se cobró realmente la venta — igual que ya hace /api/sales/:invoiceNumber/cancel.
-      // Sin esto, devolver una venta a crédito nunca bajaba lo que el cliente debía, y devolver
-      // una venta pagada con tarjeta/transferencia sacaba dinero de la caja física sin haberlo
-      // recibido ahí nunca.
-      const saleTotal = Number(sale.total || 0);
-      const receivedAmount = Number(sale.received_amount || 0);
-      const proportion = saleTotal > 0 ? returnedAmount / saleTotal : 0;
-
-      let cashPortion = 0;
-      let creditBalancePortion = 0;
-      if (sale.payment_method === 'credito') {
-        // Lo que se abonó en efectivo al momento de la venta se reembolsa en efectivo;
-        // el resto reduce lo que el cliente debe.
-        cashPortion = Number((receivedAmount * proportion).toFixed(2));
-        creditBalancePortion = Number((returnedAmount - cashPortion).toFixed(2));
-      } else if (sale.payment_method === 'contra_entrega') {
-        const collected = String(sale.delivery_cash_status || '').trim() === 'validado';
-        cashPortion = collected ? returnedAmount : 0;
-      } else {
-        cashPortion = returnedAmount;
-      }
-
-      // Registrar egreso de caja si aplica
-      let cashMovementId = null;
-      if (refundCash && cashPortion > 0 && structure.cashRegisterId) {
-        const cashInsert = await conn.query(
-          `INSERT INTO cash_movements
-           (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id)
-           VALUES (NULL, 'Devolución', ?, ?, ?, ?, datetime('now'), ?, ?)`,
-          [-cashPortion, `Devolución ${invoiceNumber} — ${reason}`,
-           actor.userId || null, actor.userName || 'Sistema',
-           structure.branchId || null, structure.cashRegisterId]
-        );
-        cashMovementId = cashInsert.insertId;
-        await conn.query(
-          `UPDATE sale_returns SET cash_movement_id = ? WHERE id = ?`,
-          [cashMovementId, returnId]
-        );
-        // Actualizar saldo de la sesión activa
-        const openSessions = await conn.query(
-          'SELECT id FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1',
-          [structure.cashRegisterId]
-        );
-        if (openSessions.length) {
-          await conn.query(
-            'UPDATE cash_sessions SET current_amount = current_amount - ? WHERE id = ?',
-            [cashPortion, openSessions[0].id]
-          );
-        }
-        // Actualizar también el campo legacy config.cash_amount
-        await conn.query('UPDATE config SET cash_amount = cash_amount - ? WHERE id = 1', [cashPortion]);
-      }
-
-      // Reducir el saldo adeudado del cliente si la venta (o parte de ella) fue a crédito
-      if (creditBalancePortion > 0 && sale.client_id) {
-        await conn.query(
-          'UPDATE clients SET balance = MAX(COALESCE(balance, 0) - ?, 0) WHERE id = ?',
-          [creditBalancePortion, sale.client_id]
-        );
-      }
-
-      // Si todos los items fueron devueltos, marcar venta como devuelta
-      if (isFullyReturned) {
-        await conn.query(
-          `UPDATE sales SET sale_status = 'devuelta', fiscal_status = 'cancelada',
-                            canceled_at = datetime('now'), canceled_by_user_id = ?, canceled_by_user_name = ?,
-                            cancel_reason = ?
-           WHERE id = ?`,
-          [actor.userId || null, actor.userName || 'Sistema',
-           `Devolución total — ${reason}`, sale.id]
-        );
-      }
-
-      return {
-        returnId, returnedAmount, itemsCount: validatedItems.length, cashMovementId, cashPortion, creditBalancePortion,
-        saleId: sale.id, isFullyReturned, validatedItems,
-      };
-    });
-
-    // Nota de crédito de la devolución, si la factura era un e-CF aceptado. La
-    // devolución ya está hecha: si la nota falla, se avisa y no se deshace nada.
-    const ecfNota = await ecfModule.service.emitSafely('emitNoteForSale', {
-      saleId: result.saleId,
-      tipoEcf: 'E34',
-      items: result.validatedItems.map((item) => ({
-        name: item.productName || 'Producto', quantity: item.qty, unitPrice: item.price, discount: 0, taxRate: item.taxRate,
-      })),
-      codigoModificacion: result.isFullyReturned ? '1' : '3',
-      razon: reason,
-      origen: `return:${result.returnId}`,
-      context: { userId: actor.userId || null, userName: actor.userName || null, internetOffline: getInternetMonitor().isKnownOffline() },
-    });
-
-    const creditNote = result.creditBalancePortion > 0
-      ? ` — RD$ ${result.creditBalancePortion.toFixed(2)} rebajado del saldo a crédito del cliente`
-      : '';
-    await writeAuditLog({
-      ...actor,
-      moduleName: 'Ventas',
-      actionName: 'Devolución procesada',
-      detail: `Factura ${invoiceNumber} — ${result.itemsCount} producto(s) — RD$ ${result.returnedAmount.toFixed(2)} — ${reason}${creditNote}`
-    });
-
-    res.status(201).json({
-      ok: true,
-      returnId: result.returnId,
-      returnedAmount: result.returnedAmount,
-      cashPortion: result.cashPortion,
-      creditBalancePortion: result.creditBalancePortion,
-      itemsCount: result.itemsCount,
-      message: `Devolución procesada: RD$ ${result.returnedAmount.toFixed(2)} por ${result.itemsCount} producto(s).${creditNote}`,
-      ecfNota: ecfNota?.skipped ? null : ecfNota,
-    });
-  } catch (err) {
-    const code = err.statusCode || 500;
-    console.error('[return] Error:', err.message);
-    res.status(code).json({ error: err.message });
-  }
-});
-
+// POST /api/sales/return (nota de crédito) — server/routes/ajustes-venta.routes.js
 // ─── 4. Historial de devoluciones de una sucursal ─────────────────────────
 app.get('/api/sales/returns-history', async (req, res) => {
   try {
@@ -15374,7 +15437,7 @@ app.get('/api/sales/returns-history', async (req, res) => {
 });
 
 app.post('/api/cash-registers', plans.requirePlan('pro', query, () => secureLicenseService.resolveState({ allowRemote: true })), async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageCashRegisters(actorUser)) {
     return res.status(403).json({ error: 'No tienes permiso para gestionar cajas.' });
@@ -15579,7 +15642,7 @@ app.delete('/api/cash-registers/:id', async (req, res) => {
 });
 
 app.put('/api/business-structure/active', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!isGlobalAdministratorUser(actorUser)) {
     return res.status(403).json({ error: 'Solo el administrador general puede cambiar la sucursal y caja activas del sistema.' });
@@ -15672,7 +15735,7 @@ app.post('/api/config/bascula/test', async (req, res) => {
 });
 
 app.put('/api/config/whatsapp-guide', async (req, res) => {
-  ensureNotCashier(req);
+  ensureNotCashier(req, 'gestionar_configuracion_global');
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanManageGlobalConfig(actorUser)) {
     return res.status(403).json({ error: 'Solo el administrador general puede cambiar esta configuración.' });
@@ -15939,8 +16002,11 @@ async function resolveOfflineBusinessStructureSelection(req) {
 app.post('/api/cash/close', async (req, res) => {
   await ensureBusinessRulesExtensions();
   await ensureCashMovementExtensions();
-  const amount = Number(req.body?.monto || 0);
-  const amountWasCaptured = req.body?.montoCapturado === true;
+  await cajaSegura.ensureSchema();
+  let amount = Number(req.body?.monto || 0);
+  const countedByDenominations = Boolean(req.body?.denominaciones && typeof req.body.denominaciones === 'object');
+  const amountWasCaptured = req.body?.montoCapturado === true || countedByDenominations;
+  let closeReport = null;
   const notes = req.body?.obs || 'Cierre de caja';
   const actorUser = await resolveRequestActorUser(req, { required: true });
   if (!userCanCloseCash(actorUser)) {
@@ -16020,9 +16086,14 @@ app.post('/api/cash/close', async (req, res) => {
       if (!lockedSession || lockedSession.status !== 'open') {
         throw Object.assign(new Error('Esta caja ya fue cerrada.'), { statusCode: 409 });
       }
-      const expectedAmount = Number(lockedSession.current_amount || 0);
-      const countedAmount = amount;
-      const differenceAmount = Number((countedAmount - expectedAmount).toFixed(2));
+      // Esperado calculado desde las ventas (por componente de pago), abonos y
+      // movimientos del turno — ver server/services/caja-arqueo.js. Ni el
+      // crédito ni la tarjeta ni la transferencia cuentan como billetes.
+      const preparado = await cajaSegura.prepararCierre(conn, { session: lockedSession, body: req.body || {}, actor, structure, req });
+      const expectedAmount = preparado.comparacion.esperado;
+      const countedAmount = preparado.comparacion.contado;
+      const differenceAmount = preparado.comparacion.diferencia;
+      amount = countedAmount;
       // Calcular duración del turno en horas
       const openedAtMs = session.opened_at ? new Date(session.opened_at).getTime() : Date.now();
       const durationHours = Number(((Date.now() - openedAtMs) / 3600000).toFixed(2));
@@ -16042,12 +16113,22 @@ app.post('/api/cash/close', async (req, res) => {
         `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id) VALUES (?, "Cierre", ?, ?, ?, ?, datetime('now'), ?, ?)`,
         [session.id, countedAmount, notes, actor.userId || null, actor.userName || 'Sistema', structure.branchId, structure.cashRegisterId]
       );
-      await conn.query(
+      const closingInsert = await conn.query(
         `INSERT INTO cash_closings (cash_session_id, branch_id, cash_register_id, expected_amount, counted_amount, difference_amount, notes, closed_by_user_id, closed_by_user_name, closed_at, usd_total_received)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?)`,
         [session.id, structure.branchId, structure.cashRegisterId, expectedAmount, countedAmount, differenceAmount, notes, actor.userId || null, actor.userName || 'Sistema', usdTotalReceived]
       );
+      preparado.reporte.usdRecibido = usdTotalReceived;
+      await cajaSegura.guardarReporteCierre(conn, closingInsert.insertId, preparado);
       await conn.query('UPDATE config SET cash_open = 0, cash_amount = 0 WHERE id = 1');
+      await writeAuditLog({
+        ...actor, moduleName: 'Caja', actionName: 'Cierre de caja', branchId: structure.branchId, cashRegisterId: structure.cashRegisterId,
+        cashSessionId: session.id, documentRef: `turno-${session.id}`, amount: countedAmount,
+        result: Math.abs(differenceAmount) < 0.005 ? 'exito' : 'diferencia',
+        after: { modo: preparado.reporte.conteo.modo, cierreSeguro: preparado.cierreSeguro, esperado: expectedAmount, contado: countedAmount, diferencia: differenceAmount, tarjeta: preparado.reporte.tarjeta.cobrado, transferencia: preparado.reporte.transferencia.cobrado, credito: preparado.reporte.credito.pendienteNuevo },
+        detail: `${structure.branch.nombre} · ${structure.cashRegister.nombre} · ${notes} · contado ${countedAmount.toFixed(2)} · esperado ${expectedAmount.toFixed(2)} · diferencia ${differenceAmount.toFixed(2)}`,
+      }, conn);
+      closeReport = preparado.reporte;
     });
   } catch (err) {
     if (isUnreachableHostError(err)) {
@@ -16062,12 +16143,6 @@ app.post('/api/cash/close', async (req, res) => {
     throw err;
   }
 
-  await writeAuditLog({
-    ...actor,
-    moduleName: 'Caja',
-    actionName: 'Cierre de caja',
-    detail: `${structure.branch.nombre} · ${structure.cashRegister.nombre} · ${notes} · monto ${amount.toFixed(2)}`
-  });
   firebaseSync.syncEstadoCaja({
     cajaId: structure.cashRegisterId,
     cajaNombre: structure.cashRegister.nombre,
@@ -16102,7 +16177,7 @@ app.post('/api/cash/close', async (req, res) => {
       branch_id: structure.branchId,
       closed_at: new Date(),
       counted_amount: amount,
-      expected_amount: Number(session.current_amount || 0),
+      expected_amount: closeReport ? closeReport.efectivo.esperado : Number(session.current_amount || 0),
       notes: notes || null,
     }, {
       config: cfg,
@@ -16167,7 +16242,7 @@ app.post('/api/cash/close', async (req, res) => {
 
   res.json({
     config: await getConfig(), usdTotalReceived, sessionId: session.id, branchId: structure.branchId, cashRegisterId: structure.cashRegisterId,
-    tesoreria: tesoreriaInfo,
+    tesoreria: tesoreriaInfo, reporte: closeReport,
   });
 });
 
@@ -16224,6 +16299,7 @@ app.post('/api/cash/expense', async (req, res) => {
   if (!allowedTypes[expenseType] || amount <= 0) {
     return res.status(400).json({ error: 'Tipo de egreso y monto válido son requeridos.' });
   }
+  if (expenseType === 'pago_suplidor') await ensureSupplierPaymentsTable().catch(() => {});
 
   const result = await withTransaction(async (conn) => {
     const sessions = await conn.query('SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [structure.cashRegisterId]);
@@ -16278,6 +16354,14 @@ app.post('/api/cash/expense', async (req, res) => {
       await conn.query(
         'UPDATE supplier_invoices SET paid_amount = ?, pending_amount = ?, status = ? WHERE id = ?',
         [newPaid, newPending, status, supplierInvoiceId]
+      );
+      // El pago también queda en el historial del suplidor (antes solo bajaba
+      // el saldo y no aparecía en Pagos del proveedor). No mueve la caja otra vez.
+      await conn.query(
+        `INSERT INTO supplier_payments (supplier_id, invoice_id, monto, metodo_pago, fecha_pago, notas, created_by)
+         VALUES (?, ?, ?, 'Efectivo', ?, ?, ?)`,
+        [supplierInvoice.supplier_id, supplierInvoiceId, appliedAmount, nowRDString().slice(0, 10),
+          `Pago desde caja · ${notes}`.slice(0, 255), actor.userName || 'Sistema']
       );
       const updatedRows = await conn.query(
         'SELECT si.*, s.nombre AS supplier_name FROM supplier_invoices si LEFT JOIN suppliers s ON s.id = si.supplier_id WHERE si.id = ? LIMIT 1',
@@ -16508,6 +16592,7 @@ app.post('/api/sales', async (req, res) => {
   await ensurePromotionsExtensions();
   const actorUser = await resolveRequestActorUser(req, { required: true });
   const sale = req.body;
+  if (sale.mesasCuenta) await require('./server/services/mesas-cuentas').ensure(query, addColumnIfMissing);
   if (Array.isArray(sale?.items) && sale.items.some((item) => combosPersonalizados.esLineaDeCombo(item))) {
     await ensureCustomCombosExtensions();
   }
@@ -16537,6 +16622,7 @@ app.post('/api/sales', async (req, res) => {
     const config = configRows[0];
     const businessId = Number(config?.business_id || 1) || 1;
     const structure = await resolveScopedBusinessStructureSelection(req, conn, sale.branchId, sale.cashRegisterId);
+    const mesasCuentaCobrada = await require('./server/services/mesas-cuentas').validarCobro(conn, sale, structure.branchId);
     const billingAccess = await resolveEffectiveBillingAccess(conn, actorUser, structure.cashRegisterId);
 
     if (!billingAccess.canCreateSales) {
@@ -16662,6 +16748,14 @@ app.post('/api/sales', async (req, res) => {
 
     const effectiveNcfType = requestedNcfType;
     const shouldUseEcfFlow = documentType === 'factura-electronica';
+    // Solo se factura con Ticket, serie B con secuencia o e-CF con el emisor
+    // activo. Antes la venta se guardaba y el e-CF quedaba en error.
+    if (shouldUseEcfFlow && !ecfSaleEnvironment) {
+      const error = new Error('La facturación electrónica no está activa en este negocio, así que esta venta no se cobró. Cóbrala con Ticket o con un comprobante B que tenga secuencia activa.');
+      error.statusCode = 422;
+      error.code = 'ECF_NO_ACTIVO';
+      throw error;
+    }
     if (shouldUseEcfFlow && ecfSaleEnvironment) {
       await ecfModule.service.assertSaleHasSequence({
         exec: (sql, params) => conn.query(sql, params),
@@ -16738,15 +16832,16 @@ app.post('/api/sales', async (req, res) => {
     const shouldDiscountInventoryNow = saleStatus === 'pagada' || saleStatus === 'pendiente_cobro';
     const deliveryCashStatus = paymentMethod === 'contra_entrega' ? 'pendiente' : 'na';
     const saleTotal = Number(sale.total || 0);
-    const receivedAmount = saleStatus === 'pagada'
-      ? (paymentMethod === 'contra_entrega' ? 0 : (paymentMethod === 'credito' ? 0 : Number(sale.recibido || 0)))
-      : 0;
-    const changeAmount = saleStatus === 'pagada'
-      ? (paymentMethod === 'contra_entrega' ? 0 : (paymentMethod === 'credito' ? 0 : Number(sale.cambio || 0)))
-      : 0;
-    const pendingCreditAmount = paymentMethod === 'credito'
-      ? Math.max(0, saleTotal - receivedAmount)
-      : 0;
+    // Anticipo consumible de la reserva de la mesa: el cliente ya lo pagó y se
+    // descuenta de lo que paga ahora. La factura conserva su total (ITBIS, e-CF).
+    const anticipoReserva = await require('./server/services/mesas-anticipos').paraCobro(conn,
+      { cuenta: mesasCuentaCobrada, sale, branchId: structure.branchId, total: saleTotal, method: paymentMethod });
+    const paymentBreakdown = require('./server/services/payment-breakdown').calculate(sale, { method: paymentMethod, status: saleStatus,
+      total: anticipoReserva ? require('./js/mesas-reservas').restarAnticipo(saleTotal, anticipoReserva.monto) : saleTotal });
+    const receivedAmount = paymentMethod === 'usd' ? Number(sale.recibido || 0)
+      : (saleStatus !== 'pagada' || paymentMethod === 'contra_entrega' ? 0 : paymentBreakdown.received);
+    const changeAmount = paymentMethod === 'usd' ? Number(sale.cambio || 0) : paymentBreakdown.change;
+    const pendingCreditAmount = paymentBreakdown.credit;
     const deliveryClientPayAmount = paymentMethod === 'contra_entrega'
       ? Number(sale.montoClienteEntrega || 0)
       : null;
@@ -16772,7 +16867,7 @@ app.post('/api/sales', async (req, res) => {
       error.statusCode = 400;
       throw error;
     }
-    if (paymentMethod === 'credito' && !clientId) {
+    if (pendingCreditAmount > 0 && !clientId) {
       const error = new Error('Debes seleccionar un cliente para registrar una factura a crédito.');
       error.statusCode = 400;
       throw error;
@@ -16780,7 +16875,8 @@ app.post('/api/sales', async (req, res) => {
     // No existía ningún tope: un cliente con límite de crédito configurado
     // podía acumular balance infinito repitiendo ventas a crédito. limite_credito
     // = 0 significa "sin límite" (mismo criterio que js/clientes.js).
-    if (paymentMethod === 'credito' && clientId && pendingCreditAmount > 0) {
+    if (clientId && pendingCreditAmount > 0) {
+      await conn.query(`SELECT id FROM clients WHERE id = ?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`, [clientId]);
       const clientRow = await getClientRowWithComputedBalance(clientId, conn);
       if (!clientRow) {
         const error = new Error('El cliente seleccionado no existe.');
@@ -17001,6 +17097,16 @@ app.post('/api/sales', async (req, res) => {
       }
     }
 
+    // Estado real del cobro: la tarjeta la aprobó el verifón; la transferencia
+    // queda pendiente hasta confirmarla con el banco (una captura no confirma).
+    await conn.query(`UPDATE sales SET financial_version = 1, cash_amount = ?, card_amount = ?, transfer_amount = ?, credit_amount = ?, credit_due_date = ?,
+        card_status = ?, transfer_status = ?, payment_details = ? WHERE id = ?`,
+      [paymentBreakdown.cash, paymentBreakdown.card, paymentBreakdown.transfer, paymentBreakdown.credit, paymentBreakdown.dueDate,
+        paymentBreakdown.card > 0 ? 'aprobada' : null, paymentBreakdown.transfer > 0 ? 'pendiente' : null,
+        JSON.stringify({ cardBank: String(sale.paymentDetails?.cardBank || '').slice(0,120), cardReference: String(sale.paymentDetails?.cardReference || '').slice(0,120),
+          cardType: String(sale.paymentDetails?.cardType || '').slice(0,40), transferBank: String(sale.paymentDetails?.transferBank || '').slice(0,120),
+          transferReference: String(sale.paymentDetails?.transferReference || '').slice(0,120), creditNotes: String(sale.paymentDetails?.creditNotes || '').slice(0,500),
+          responsible: String(sale.responsableVenta || '').slice(0,120) }), result.insertId]);
     await conn.query('UPDATE sales SET delivery_cash_status = ? WHERE id = ?', [deliveryCashStatus, result.insertId]);
     // Índice único: si otra petición con el mismo intento ya la registró, esta
     // falla aquí y toda la transacción se deshace (factura, NCF, inventario).
@@ -17084,6 +17190,7 @@ app.post('/api/sales', async (req, res) => {
     });
     let ahorroPromociones = 0;
     let computedSubtotal = 0;
+    const legalTipLines = [];
     // Techo de ITBIS acumulado por línea (para el anti-tamper de más abajo).
     // Productos con ITBIS de monto fijo no tienen una "tasa" que aplicarle al
     // subtotal — su techo es el monto fijo real (releído de BD) por la
@@ -17106,7 +17213,7 @@ app.post('/api/sales', async (req, res) => {
       let comboSnapshot = null;
       if (!isQuickSale) {
         affectedProductIds.add(Number(item.id || 0) || 0);
-        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, aplica_itbis, itbis_modo, itbis_monto, estado FROM products WHERE id = ? LIMIT 1', [item.id]);
+        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, legal_tip_eligible, aplica_itbis, itbis_modo, itbis_monto, estado FROM products WHERE id = ? LIMIT 1', [item.id]);
         product = productRows[0];
         if (!product) {
           const missingError = new Error(`El producto ID ${item.id} no existe.`);
@@ -17150,7 +17257,9 @@ app.post('/api/sales', async (req, res) => {
         ahorroPromociones += (agreed.originalPrice - agreed.price) * Number(item.qty || 0);
       }
       const effectiveLineTotal = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
-      computedSubtotal += effectiveLineTotal;
+      const lineMoney = require('./js/pos-money');
+      const itemNet = lineMoney.number(lineMoney.cents(effectiveLineTotal) - lineMoney.percent(lineMoney.cents(effectiveLineTotal), item.descuento || 0));
+      computedSubtotal += itemNet;
       if (activePromo) ahorroPromociones += activePromo.ahorro * Number(item.qty || 0);
 
       // Modo/monto de ITBIS SIEMPRE releídos de products (nunca del payload
@@ -17208,6 +17317,10 @@ app.post('/api/sales', async (req, res) => {
           comboSnapshot ? JSON.stringify(comboSnapshot) : null,
         ]
       );
+      // Alcance de la propina: todo lo consumido (por defecto) o solo los
+      // productos marcados. Debe coincidir con calcularTotales (js/ventas.js).
+      legalTipLines.push({ id: saleItemInsert.insertId, net: itemNet,
+        eligible: config.legal_tip_scope === 'marcados' ? Boolean(product?.legal_tip_eligible) : true });
       // Marca del combo personalizado en su línea (aparte del INSERT de
       // siempre: una venta sin combos no toca estas columnas).
       if (customCombo) {
@@ -17302,7 +17415,17 @@ app.post('/api/sales', async (req, res) => {
     if (!Number.isFinite(itbisDeclared) || itbisDeclared < -0.01 || itbisDeclared > maxTaxCeiling + subtotalTolerance) {
       throw Object.assign(new Error('El ITBIS de la venta no es válido.'), { statusCode: 409 });
     }
-    const expectedTotal = Number((subtotalDeclared - descuentoDeclared + itbisDeclared).toFixed(2));
+    // Mismo cálculo que el carrito: alcance, mínimo del negocio y si el cajero
+    // la quitó en esta venta (sinPropina).
+    const legalTip = require('./js/propina-legal').calculate({ enabled: Boolean(config.legal_tip_enabled), orderType,
+      consumedHere: sale.consumoLocal === true, lines: legalTipLines, discount: descuentoDeclared,
+      minimo: Number(config.legal_tip_min_amount || 0), sinPropina: sale.sinPropina === true });
+    if (Math.abs(Number(sale.propinaLegal || 0) - legalTip.amount) > 0.001) throw Object.assign(new Error('La propina legal no coincide con los productos y la modalidad de consumo.'), { statusCode: 409 });
+    const consumoEnLocal = orderType === 'mesa' || (orderType === 'mostrador' && sale.consumoLocal === true);
+    await conn.query('UPDATE sales SET legal_tip_amount = ?, consumed_here = ?, legal_tip_waived = ?, legal_tip_waived_amount = ? WHERE id = ?',
+      [legalTip.amount, consumoEnLocal ? 1 : 0, legalTip.quitada ? 1 : 0, legalTip.quitada ? legalTip.posible : 0, result.insertId]);
+    for (const [i,line] of legalTipLines.entries()) await conn.query('UPDATE sale_items SET legal_tip_amount = ?, general_discount_amount = ? WHERE id = ?', [legalTip.lineAmounts[i],legalTip.lineDiscounts[i],line.id]);
+    const expectedTotal = require('./js/pos-money').number(require('./js/pos-money').cents(subtotalDeclared) - require('./js/pos-money').cents(descuentoDeclared) + require('./js/pos-money').cents(itbisDeclared) + require('./js/pos-money').cents(legalTip.amount));
     if (!Number.isFinite(saleTotal) || Math.abs(saleTotal - expectedTotal) > subtotalTolerance) {
       throw Object.assign(
         new Error('El total de la venta no coincide con subtotal/descuento/ITBIS. Actualiza la página e intenta de nuevo.'),
@@ -17317,18 +17440,14 @@ app.post('/api/sales', async (req, res) => {
       ]);
     }
 
-    if (paymentMethod === 'credito' && clientId && pendingCreditAmount > 0) {
+    if (clientId && pendingCreditAmount > 0) {
       await conn.query(
         'UPDATE clients SET balance = COALESCE(balance, 0) + ? WHERE id = ?',
         [pendingCreditAmount, clientId]
       );
     }
 
-    const cashDelta = saleStatus !== 'pagada'
-      ? 0
-      : paymentMethod === 'contra_entrega'
-        ? 0
-        : (paymentMethod === 'credito' ? receivedAmount : saleTotal);
+    const cashDelta = saleStatus === 'pagada' ? paymentBreakdown.cash : 0;
 
     if (saleStatus === 'pagada' && (cashDelta > 0 || paymentMethod === 'efectivo')) {
       const sessionRows = await conn.query(
@@ -17351,6 +17470,24 @@ app.post('/api/sales', async (req, res) => {
       [cashDelta]
     );
 
+    if (mesasCuentaCobrada) {
+      if (saleStatus !== 'pagada') throw Object.assign(new Error('La cuenta de mesa requiere un pago confirmado.'), { statusCode: 409 });
+      await conn.query("UPDATE mesas_cuentas SET estado = 'pagada', sale_id = ?, updated_at = ? WHERE id = ?", [Number(result.insertId), new Date().toISOString(), mesasCuentaCobrada.id]);
+      await conn.query('UPDATE sales SET mesas_mesero_nombre = ? WHERE id = ?', [mesasCuentaCobrada.meseroNombre || null, Number(result.insertId)]);
+      if (anticipoReserva) {
+        await require('./server/services/mesas-anticipos').aplicarEnVenta(conn,
+          { anticipo: anticipoReserva, saleId: Number(result.insertId), factura: invoiceNumber, cashRegisterId: structure.cashRegisterId });
+      }
+    }
+    await writeAuditLog({ userId: actorUser.id, userName: actorUser.nombre || actorUser.usuario, userRole: actorUser.rol,
+      moduleName: 'Ventas', actionName: saleStatus === 'pendiente' ? 'Factura pendiente creada' : 'Venta registrada',
+      branchId: structure.branchId, cashRegisterId: structure.cashRegisterId, cashSessionId: activeSession?.id || null,
+      clientId, documentType, documentRef: invoiceNumber, amount: saleTotal, paymentMethod,
+      after: { saleId: result.insertId, total: saleTotal, payment: paymentBreakdown, status: saleStatus,
+        descuento: Number(descuentoDeclared || 0), itbis: Number(itbisDeclared || 0), propinaLegal: legalTip.amount,
+        ...(legalTip.quitada ? { propinaQuitada: legalTip.posible } : {}),
+        ...(anticipoReserva ? { anticipoReserva: anticipoReserva.monto, reservaId: anticipoReserva.reservaId } : {}) },
+      detail: `${invoiceNumber} · ${paymentMethod} · RD$ ${saleTotal.toFixed(2)}${anticipoReserva ? ` · anticipo de reserva RD$ ${anticipoReserva.monto.toFixed(2)}` : ''}` }, conn);
     return {
       saleId: Number(result.insertId),
       updatedClientId: clientId ? Number(clientId) : null,
@@ -17422,15 +17559,20 @@ app.post('/api/sales', async (req, res) => {
     ? await getClientRowsWithComputedBalance(created.updatedClientId)
     : [];
   assertActorCanAccessBranch(actorUser, created.branchId, 'No puedes registrar ventas fuera de tu sucursal.');
-  // Audit log fire-and-forget — no necesitamos bloquear la respuesta al cajero.
-  writeAuditLog({
-    userId: actorUser.id || sale.userId || null,
-    userName: actorUser.nombre || actorUser.usuario || 'Sistema',
-    userRole: actorUser.rol || 'Sistema',
-    moduleName: 'Ventas',
-    actionName: created.saleStatus === 'pendiente' ? 'Factura pendiente creada' : 'Venta registrada',
-    detail: `${created.branchName || 'Sucursal'} · ${created.cashRegisterName || 'Caja'} · ${rows[0]?.invoice_number || 'Venta'} · ${created.saleMode || 'directa'} · ${created.saleStatus || 'pagada'} · Pago: ${rows[0]?.payment_method || 'efectivo'} · RD$ ${Number(sale.total || 0).toFixed(2)}`
-  }).catch((err) => console.warn('[audit] Falló al registrar venta:', err.message));
+  // Facturación electrónica en la auditoría global: estado real que quedó
+  // (aceptado, pendiente, rechazado o error); nunca se asume aceptación.
+  if (created.shouldAttemptEcf && rows[0]) {
+    const estadoEcf = String(rows[0].ecf_estado || (ecfEmissionResult?.ok === false ? 'error' : 'pendiente'));
+    writeAuditLog({
+      userId: actorUser.id || null, userName: actorUser.nombre || actorUser.usuario || 'Sistema', userRole: actorUser.rol || 'Sistema',
+      moduleName: 'Facturación electrónica', actionName: 'e-CF de venta', branchId: created.branchId || null,
+      cashRegisterId: Number(rows[0].cash_register_id || 0) || null, documentType: 'e-CF', documentRef: rows[0].ncf || rows[0].invoice_number,
+      amount: Number(rows[0].total || 0),
+      result: /^aceptado/.test(estadoEcf) ? 'exito' : (/rechaz/.test(estadoEcf) ? 'rechazado' : (/error/.test(estadoEcf) ? 'error' : 'pendiente')),
+      after: { factura: rows[0].invoice_number, encf: rows[0].ncf || null, estado: estadoEcf },
+      detail: `${rows[0].invoice_number} · ${rows[0].ncf || 'sin e-NCF'} · estado DGII: ${estadoEcf}`,
+    }).catch(() => {});
+  }
   // Combos personalizados: el precio lo elige el cajero, así que cada combo
   // queda en la auditoría con el valor normal de lo que llevó.
   for (const combo of created.customCombos || []) {
@@ -17795,9 +17937,26 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
       });
     }
 
-    const cashDelta = Number(sale.total || 0);
-    const effectiveReceived = receivedAmount > 0 ? receivedAmount : cashDelta;
-    const changeAmount = Math.max(0, Number((effectiveReceived - cashDelta).toFixed(2)));
+    const collectMethod = paymentMethod || sale.payment_method;
+    if (!['efectivo', 'tarjeta', 'transferencia', 'mixto', 'credito'].includes(collectMethod)) throw Object.assign(new Error('Método no disponible para este cobro.'), { statusCode: 400 });
+    const breakdown = require('./server/services/payment-breakdown').calculate({ ...req.body, total: sale.total, clientId: sale.client_id,
+      recibido: receivedAmount, paymentDetails: req.body.paymentDetails || {} }, { method: collectMethod });
+    if (breakdown.credit > 0) {
+      await conn.query(`SELECT id FROM clients WHERE id = ?${isMysqlDeployment() ? ' FOR UPDATE' : ''}`, [sale.client_id]);
+      const client = await getClientRowWithComputedBalance(sale.client_id, conn);
+      if (!client) throw Object.assign(new Error('Cliente no encontrado.'), { statusCode: 404 });
+      if (Number(client.limite_credito) > 0 && Number(client.balance) + breakdown.credit > Number(client.limite_credito)) throw Object.assign(new Error('El cobro supera el límite de crédito.'), { statusCode: 409 });
+      await conn.query('UPDATE clients SET balance = COALESCE(balance, 0) + ? WHERE id = ?', [breakdown.credit, sale.client_id]);
+    }
+    const cashDelta = breakdown.cash;
+    const effectiveReceived = breakdown.received;
+    const changeAmount = breakdown.change;
+    await conn.query('UPDATE sales SET financial_version = 1, cash_amount = ?, card_amount = ?, transfer_amount = ?, credit_amount = ?, credit_due_date = ?, card_status = ?, transfer_status = ?, payment_details = ? WHERE id = ?',
+      [breakdown.cash, breakdown.card, breakdown.transfer, breakdown.credit, breakdown.dueDate,
+        breakdown.card > 0 ? 'aprobada' : null, breakdown.transfer > 0 ? 'pendiente' : null,
+        JSON.stringify({ cardBank: String(req.body.paymentDetails?.cardBank || '').slice(0,120), cardReference: String(req.body.paymentDetails?.cardReference || '').slice(0,120),
+          transferBank: String(req.body.paymentDetails?.transferBank || '').slice(0,120), transferReference: String(req.body.paymentDetails?.transferReference || '').slice(0,120),
+          creditNotes: String(req.body.paymentDetails?.creditNotes || '').slice(0,500) }), sale.id]);
     await conn.query(
       `UPDATE sales
        SET sale_status = 'pagada',
@@ -17827,7 +17986,9 @@ app.patch('/api/sales/:invoiceNumber/collect', async (req, res) => {
       'SELECT id FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1',
       [structure.cashRegisterId]
     );
-    if (openSessionRows[0]?.id) {
+    if (!openSessionRows[0]?.id) throw Object.assign(new Error('Debes abrir la caja antes de cobrar.'), { statusCode: 409 });
+    await conn.query('UPDATE sales SET cash_session_id = ? WHERE id = ?', [openSessionRows[0].id, sale.id]);
+    if (cashDelta !== 0) {
       await conn.query(
         `INSERT INTO cash_movements (session_id, movement_type, amount, notes, created_by_user_id, created_by_user_name, happened_at, branch_id, cash_register_id)
          VALUES (?, "Cobro factura pendiente", ?, ?, ?, ?, datetime('now'), ?, ?)`,
@@ -17923,6 +18084,9 @@ app.patch('/api/sales/:invoiceNumber/settle-delivery-cash', async (req, res) => 
     );
     if (openSessionRows[0]?.id) {
       await conn.query('UPDATE cash_sessions SET current_amount = current_amount + ? WHERE id = ?', [Number(sale.total || 0), openSessionRows[0].id]);
+      // El cierre seguro cuenta este efectivo en el turno que lo recibió.
+      await cajaSegura.ensureSchema();
+      await conn.query('UPDATE sales SET delivery_cash_session_id = ? WHERE id = ?', [openSessionRows[0].id, sale.id]);
     }
     await conn.query('UPDATE config SET cash_amount = cash_amount + ? WHERE id = 1', [Number(sale.total || 0)]);
 
@@ -17948,172 +18112,7 @@ app.patch('/api/sales/:invoiceNumber/settle-delivery-cash', async (req, res) => 
   });
 });
 
-app.patch('/api/sales/:invoiceNumber/cancel', async (req, res) => {
-  await ensureBusinessRulesExtensions();
-  await ensureInventoryMovementsTable();
-  const invoiceNumber = String(req.params.invoiceNumber || '').trim();
-  const actorUser = await resolveRequestActorUser(req, { required: true });
-  if (!isGlobalAdministratorUser(actorUser) && !userRoleHasPermission(actorUser, 'borrar_ventas')) {
-    return res.status(403).json({ error: 'No tienes permiso para cancelar ventas históricas.' });
-  }
-  const actor = getActor(req);
-  const reason = String(req.body?.reason || '').trim() || 'Cancelada desde movimientos';
-
-  const result = await withTransaction(async (conn) => {
-    // FOR UPDATE (solo MySQL) — misma razón que en devoluciones (/api/sales/return):
-    // dos cancelaciones simultáneas de la misma factura podían pasar ambas el
-    // chequeo de fiscal_status antes de que la primera confirmara, reintegrando
-    // inventario y ajustando caja/crédito del cliente dos veces.
-    const saleRows = await conn.query(
-      `SELECT * FROM sales WHERE invoice_number = ? LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`,
-      [invoiceNumber]
-    );
-    const sale = saleRows[0];
-    if (!sale) {
-      const error = new Error('Factura o pedido no encontrado.');
-      error.statusCode = 404;
-      throw error;
-    }
-    assertActorCanAccessBranch(actorUser, Number(sale.inventory_branch_id || sale.billed_branch_id || sale.branch_id || 0), 'No puedes cancelar ventas de otra sucursal.');
-    if (String(sale.fiscal_status || '').trim() === 'cancelada') {
-      const error = new Error('Esta factura ya fue cancelada.');
-      error.statusCode = 409;
-      throw error;
-    }
-
-    const saleItems = await conn.query(
-      `SELECT si.*, p.codigo AS product_code, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name,
-              p.stock, p.precio_compra, p.tracks_stock
-       FROM sale_items si
-       LEFT JOIN products p ON p.id = si.product_id
-       WHERE si.sale_id = ?`,
-      [sale.id]
-    );
-
-    const inventoryWasDiscounted = Boolean(sale.inventory_discounted_at) || String(sale.sale_status || '').trim() === 'pagada';
-    const inventoryBranchId = Number(sale.inventory_branch_id || sale.billed_branch_id || sale.branch_id || 0) || 0;
-
-    const affectedProductIds = new Set();
-    if (inventoryWasDiscounted && inventoryBranchId) {
-      // Un combo reintegra sus componentes según la foto de la venta (no la
-      // composición actual del combo, que pudo cambiar).
-      for (const line of saleItems.flatMap((item) => combosService.inventoryLinesForSaleItem(item))) {
-        if (!line.productId || !line.tracksStock) continue;
-        affectedProductIds.add(line.productId);
-        const qty = Number(line.qty || 0);
-        const stockChange = await changeBranchInventoryStock(conn, {
-          productId: line.productId,
-          branchId: inventoryBranchId,
-          quantityDelta: qty
-        });
-        await registerInventoryMovement(conn, {
-          productId: line.productId,
-          tipo: 'cancelacion_venta',
-          cantidad: qty,
-          stockAnterior: stockChange.previousStock,
-          stockNuevo: stockChange.nextStock,
-          costoUnitario: Number(line.unitCost || stockChange.unitCost || 0),
-          referenciaTipo: 'cancelacion_venta',
-          referenciaId: invoiceNumber,
-          notas: line.comboName
-            ? `Reintegro por cancelación ${invoiceNumber} (combo ${line.comboName})`.slice(0, 255)
-            : `Reintegro por cancelación ${invoiceNumber}`,
-          usuarioId: actor.userId || null,
-          usuarioNombre: actor.userName || 'Sistema',
-          branchId: inventoryBranchId,
-          cashRegisterId: Number(sale.charged_cash_register_id || sale.cash_register_id || 0) || null,
-          saleId: sale.id
-        });
-      }
-    }
-
-    await conn.query(
-      `UPDATE sales
-       SET fiscal_status = 'cancelada',
-           canceled_at = datetime('now'),
-           canceled_by_user_id = ?,
-           canceled_by_user_name = ?,
-           cancel_reason = ?
-       WHERE id = ?`,
-      [actor.userId || null, actor.userName || 'Sistema', reason, sale.id]
-    );
-
-    const saleTotal = Number(sale.total || 0);
-    const receivedAmount = Number(sale.received_amount || 0);
-    const alreadyCollected = String(sale.sale_status || '').trim() === 'pagada';
-    const cashAdjustment = !alreadyCollected
-      ? 0
-      : sale.payment_method === 'contra_entrega'
-      ? (String(sale.delivery_cash_status || '').trim() === 'validado' ? saleTotal : 0)
-      : (sale.payment_method === 'credito' ? receivedAmount : saleTotal);
-    const creditBalanceAdjustment = sale.payment_method === 'credito'
-      ? Math.max(0, saleTotal - receivedAmount)
-      : 0;
-
-    await conn.query('UPDATE config SET cash_amount = cash_amount - ? WHERE id = 1', [cashAdjustment]);
-    if (sale.client_id && creditBalanceAdjustment > 0) {
-      await conn.query(
-        'UPDATE clients SET balance = MAX(COALESCE(balance, 0) - ?, 0) WHERE id = ?',
-        [creditBalanceAdjustment, sale.client_id]
-      );
-    }
-    // Venta de un pedido online: el pedido queda libre para cobrarse de nuevo.
-    const releasedOnlineOrderId = sale.online_order_id
-      ? await tiendaOnline.hooks.onSaleCancelledInTx(conn, sale, actorUser)
-      : null;
-
-    const rows = await conn.query(
-      'SELECT s.*, u.nombre AS cashier_name, COALESCE(c.nombre, "Consumidor Final") AS client_name, COALESCE(c.telefono, "") AS client_phone FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN clients c ON c.id = s.client_id WHERE s.id = ?',
-      [sale.id]
-    );
-    const items = await conn.query(`SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto') AS product_name, p.codigo AS product_code
-                                    FROM sale_items si LEFT JOIN products p ON p.id = si.product_id WHERE sale_id = ?`, [sale.id]);
-    return {
-      sale: mapSaleRows(rows, items)[0],
-      productIds: [...affectedProductIds].filter((value) => value > 0),
-      branchId: inventoryBranchId || null,
-      releasedOnlineOrderId,
-    };
-  });
-
-  await writeAuditLog({
-    ...actor,
-    moduleName: 'Ventas',
-    actionName: 'Factura cancelada',
-    detail: `${invoiceNumber} · ${reason}`
-  });
-  try {
-    if (result.releasedOnlineOrderId) tiendaOnline.hooks.afterSaleCancelled(result.releasedOnlineOrderId);
-    tiendaOnline.hooks.afterAnySale();
-  } catch (_e) { /* no bloquea la anulación */ }
-  fireReportSync(async () => {
-    const cfg = await getReportSyncConfig();
-    await reportsSync.markSaleCancelled(invoiceNumber, {
-      config: cfg,
-      reason,
-    });
-    await syncProductsToReportsByIds(result.productIds, {
-      branchId: result.branchId,
-    });
-  });
-
-  // Nota de crédito que anula el e-CF aceptado de la factura cancelada.
-  const [ventaCancelada] = await query('SELECT id FROM sales WHERE invoice_number = ? LIMIT 1', [invoiceNumber]);
-  const ecfNota = await ecfModule.service.emitSafely('emitNoteForSale', {
-    saleId: ventaCancelada?.id,
-    tipoEcf: 'E34',
-    codigoModificacion: '1',
-    razon: reason,
-    origen: `sale:${ventaCancelada?.id}:anulacion`,
-    context: { userId: actor.userId || null, userName: actor.userName || null, internetOffline: getInternetMonitor().isKnownOffline() },
-  });
-  res.json({
-    sale: result.sale,
-    config: await getConfig(),
-    ecfNota: ecfNota?.skipped ? null : ecfNota,
-  });
-});
-
+// PATCH /api/sales/:invoiceNumber/cancel — server/routes/ajustes-venta.routes.js
 // Stores the local PDF path after Electron saves it to disk
 app.patch('/api/sales/:invoiceNumber/pdf-path', async (req, res) => {
   try {
@@ -18945,6 +18944,61 @@ function appendDateRangeFilter(where, params, { desdeDatetime, hastaDatetime, al
 }
 
 // ── KPIs generales ──────────────────────────────────────────
+// ITBIS separado: tickets internos / no electrónicos, e-CF por estado DGII y
+// consolidado (server/services/itbis-separado.js). Cada venta cuenta una vez.
+app.get('/api/reports/itbis-separado', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanViewCashReports(actorUser)) return res.status(403).json({ error: 'No tienes permiso para consultar el ITBIS.' });
+  await ensureBusinessRulesExtensions();
+  await cajaSegura.ensureSchema();
+  const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
+  if (![desde, hasta].every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)) || desde > hasta) return res.status(400).json({ error: 'Período no válido.' });
+  const branchId = getUserScopeBranchId(actorUser) || Number(req.query.branchId || 0) || null;
+  const obligadoEcf = Boolean(await ecfModule.service.getActiveSaleEnvironment().catch(() => null));
+  const data = await require('./server/services/itbis-separado').generar(query, {
+    desdeDatetime, hastaDatetime, branchId, obligadoEcf,
+    cashRegisterId: Number(req.query.cashRegisterId || 0) || null, userId: Number(req.query.userId || 0) || null,
+  });
+  res.json({ desde, hasta, branchId, ...data });
+});
+
+app.get('/api/reports/legal-tips', async (req, res) => {
+  const actorUser = await resolveRequestActorUser(req, { required: true });
+  if (!userCanViewCashReports(actorUser)) return res.status(403).json({ error: 'No tienes permiso para consultar la recaudación.' });
+  await ensureBusinessRulesExtensions();
+  const { desde, hasta, desdeDatetime, hastaDatetime } = getDefaultRange(req);
+  if (![desde,hasta].every(d => /^\d{4}-\d{2}-\d{2}$/.test(d)) || desde > hasta) return res.status(400).json({error:'Período no válido.'});
+  const branchId = getUserScopeBranchId(actorUser) || Number(req.query.branchId || 0);
+  const params = [desdeDatetime,hastaDatetime];
+  let where = `s.created_at BETWEEN ? AND ? AND s.legal_tip_amount > 0 AND ${buildSaleActiveClause('s')}`;
+  if (branchId) { where += ' AND s.branch_id = ?'; params.push(branchId); }
+  if (Number(req.query.cashierId)) { where += ' AND s.user_id = ?'; params.push(Number(req.query.cashierId)); }
+  if (String(req.query.waiter || '').trim()) { where += ' AND s.mesas_mesero_nombre = ?'; params.push(String(req.query.waiter).trim()); }
+  const rows = await query(`SELECT s.*, u.nombre AS cashier_name, b.nombre AS branch_name FROM sales s LEFT JOIN users u ON u.id = s.user_id LEFT JOIN branches b ON b.id = s.branch_id WHERE ${where} ORDER BY s.created_at,s.id`,params);
+  const M = require('./js/pos-money');
+  const result = rows.map(s => {
+    const total = M.cents(s.total), tip = M.cents(s.legal_tip_amount);
+    let paid = M.cents(s.received_amount || 0) - M.cents(s.change_amount || 0);
+    if (paid < 0n) paid = 0n; if (paid > total) paid = total;
+    const collected = total > 0n ? M.divide(tip * paid,total) : 0n;
+    return {fecha:s.created_at instanceof Date?s.created_at.toISOString().slice(0,19).replace('T',' '):s.created_at,
+      factura:s.ncf || s.invoice_number,sucursal:s.branch_name || '',cajero:s.cashier_name || '',mesero:s.mesas_mesero_nombre || 'Sin asignar',
+      propina:M.number(tip),cobrada:M.number(collected),pendiente:M.number(tip-collected)};
+  });
+  const totals = Object.fromEntries(['propina','cobrada','pendiente'].map(k=>[k,M.number(result.reduce((sum,r)=>sum+M.cents(r[k]),0n))]));
+  // Ventas en que el cajero quitó la propina (control; mismos filtros).
+  const quitadasRows = await query(`SELECT s.created_at, s.invoice_number, s.ncf, s.legal_tip_waived_amount, u.nombre AS cashier_name
+     FROM sales s LEFT JOIN users u ON u.id = s.user_id
+    WHERE ${where.replace('s.legal_tip_amount > 0', 's.legal_tip_waived = 1')} ORDER BY s.created_at, s.id`, params).catch(() => []);
+  const quitadas = {
+    ventas: quitadasRows.length,
+    monto: M.number(quitadasRows.reduce((sum, s) => sum + M.cents(s.legal_tip_waived_amount || 0), 0n)),
+    detalle: quitadasRows.map((s) => ({ fecha: s.created_at instanceof Date ? s.created_at.toISOString().slice(0, 19).replace('T', ' ') : s.created_at,
+      factura: s.ncf || s.invoice_number, cajero: s.cashier_name || '', monto: Number(s.legal_tip_waived_amount || 0) })),
+  };
+  res.json({desde,hasta,rows:result,totals,quitadas});
+});
+
 app.get('/api/reports/advanced/kpis', async (req, res) => {
   try {
     const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
@@ -18969,10 +19023,10 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
         COALESCE(SUM(s.tax),0) AS total_itbis,
         COALESCE(SUM(s.subtotal),0) AS total_subtotal,
         COALESCE(AVG(s.total),0) AS ticket_promedio,
-        COALESCE(SUM(CASE WHEN s.payment_method='efectivo' THEN s.total ELSE 0 END),0) AS efectivo,
-        COALESCE(SUM(CASE WHEN s.payment_method='tarjeta' THEN s.total ELSE 0 END),0) AS tarjeta,
-        COALESCE(SUM(CASE WHEN s.payment_method='transferencia' THEN s.total ELSE 0 END),0) AS transferencia,
-        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.cash_amount,0) WHEN s.payment_method='efectivo' THEN s.total ELSE 0 END),0) AS efectivo,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.card_amount,0) WHEN s.payment_method='tarjeta' THEN s.total ELSE 0 END),0) AS tarjeta,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.transfer_amount,0) WHEN s.payment_method='transferencia' THEN s.total ELSE 0 END),0) AS transferencia,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.credit_amount,0) WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito,
         COALESCE(SUM(CASE WHEN s.payment_method='contra_entrega' THEN s.total ELSE 0 END),0) AS contra_entrega,
         COALESCE(SUM(CASE WHEN s.payment_method='usd' THEN s.total ELSE 0 END),0) AS usd,
         COALESCE(SUM(CASE WHEN s.payment_method='usd' THEN s.usd_amount_received ELSE 0 END),0) AS usd_recibido_total
@@ -19071,7 +19125,7 @@ app.get('/api/reports/advanced/ventas-dia', async (req, res) => {
         DATE(s.created_at) AS dia,
         COUNT(*) AS facturas,
         COALESCE(SUM(s.total),0) AS total,
-        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.credit_amount,0) WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         COALESCE(SUM(s.tax),0) AS itbis
       FROM sales s ${w}
       GROUP BY DATE(s.created_at)
@@ -19296,7 +19350,7 @@ app.get('/api/reports/advanced/por-usuario', async (req, res) => {
         u.id, COALESCE(u.nombre, u.usuario, 'Sin cajero') AS nombre, u.usuario,
         COUNT(s.id) AS facturas,
         SUM(s.total) AS total,
-        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.credit_amount,0) WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         AVG(s.total) AS ticket_promedio,
         COALESCE(SUM(s.tax),0) AS itbis
       FROM sales s
@@ -19365,7 +19419,7 @@ app.get('/api/reports/advanced/por-sucursal', async (req, res) => {
         b.id, b.nombre AS sucursal, b.estado,
         COUNT(s.id) AS facturas,
         COALESCE(SUM(s.total),0) AS total,
-        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.credit_amount,0) WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         COALESCE(SUM(s.tax),0) AS itbis,
         COALESCE(AVG(s.total),0) AS ticket_promedio,
         COALESCE(eg.total_gastos, 0) AS total_gastos,
@@ -19517,7 +19571,7 @@ app.get('/api/reports/advanced/por-caja', async (req, res) => {
         b.nombre AS sucursal,
         COUNT(s.id) AS facturas,
         COALESCE(SUM(s.total),0) AS total,
-        COALESCE(SUM(CASE WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
+        COALESCE(SUM(CASE WHEN s.financial_version > 0 THEN COALESCE(s.credit_amount,0) WHEN s.payment_method='credito' THEN s.total ELSE 0 END),0) AS credito_accrual,
         COALESCE(SUM(s.tax),0) AS itbis,
         COALESCE(AVG(s.total),0) AS ticket_promedio
       FROM sales s
@@ -19913,59 +19967,35 @@ app.get('/api/reports/advanced/dgii/exportar-contador', async (req, res) => {
       FROM sales s ${wAnulados}
       ORDER BY s.created_at ASC`, pAnulados);
 
-    // 606 — Compras (mercancía) y Gastos con NCF registrado. Se leen ambas
-    // tablas por separado (cada una tiene su propio set de columnas del 606,
-    // ver server/routes/compras.routes.js y gastos.routes.js) y se combinan
-    // abajo al mapear — evita el JOIN artificial entre dos tablas con
-    // estructura distinta.
-    const comprasMercancia = await query(`
-      SELECT p.ncf, p.ncf_modificado, p.fecha_comprobante AS fecha, p.fecha_vencimiento AS fecha_pago,
-             p.subtotal AS monto_bienes, 0 AS monto_servicios, p.itbis AS itbis_facturado,
-             p.itbis_retenido, p.isr_tipo_retencion, p.isr_monto_retencion,
-             p.tipo_bienes_servicios, p.forma_pago, s.rnc AS supplier_rnc
-      FROM purchases p
-      LEFT JOIN suppliers s ON s.id = p.supplier_id
-      WHERE p.fecha_comprobante BETWEEN ? AND ? AND p.ncf IS NOT NULL AND p.ncf <> '' AND p.estado = 'activa'
-      ORDER BY p.fecha_comprobante ASC`, [desde, hasta]);
-
-    // Mismo mapa que EXPENSE_CATEGORY_TO_DGII_CODE en gastos.routes.js —
-    // duplicado a propósito (constante pequeña) para no acoplar server.js a
-    // los internals de ese router. Mantener sincronizado si cambia allá.
-    const EXPENSE_CATEGORY_TO_DGII_CODE_606 = {
-      'Alquiler': 3, 'Electricidad': 2, 'Internet': 2, 'Agua': 2, 'Servicios': 2, 'Mantenimiento': 2,
-      'Seguridad': 2, 'Limpieza': 2, 'Combustible': 2, 'Publicidad': 5, 'Papelería': 6, 'Nómina': 1,
-      'Honorarios': 2, 'Impuestos': 6, 'Caja Chica': 6, 'Otros': 6,
-    };
-    const gastosConNcf = await query(`
-      SELECT e.ncf, e.ncf_modificado, e.fecha, e.fecha_pago,
-             0 AS monto_bienes, e.subtotal AS monto_servicios, e.itbis AS itbis_facturado,
-             e.retencion_itbis AS itbis_retenido, e.isr_tipo_retencion, e.retencion_isr AS isr_monto_retencion,
-             e.categoria, e.forma_pago, s.rnc AS supplier_rnc
-      FROM expenses e
-      LEFT JOIN suppliers s ON s.id = e.supplier_id
-      WHERE e.fecha BETWEEN ? AND ? AND e.ncf IS NOT NULL AND e.ncf <> '' AND e.estado <> 'anulado'
-      ORDER BY e.fecha ASC`, [desde, hasta]);
-
-    const mapCompra606 = (r) => ({
-      ncf: r.ncf,
-      tipoNcf: tipoNcfDe(r.ncf),
-      ncfModificado: r.ncf_modificado || '',
-      rncProveedor: r.supplier_rnc || '',
-      tipoIdentificacion: tipoIdentificacion(r.supplier_rnc),
-      tipoBienesServicios: Number(r.tipo_bienes_servicios || EXPENSE_CATEGORY_TO_DGII_CODE_606[r.categoria] || 9),
-      fechaComprobante: soloFecha(r.fecha),
-      fechaPago: soloFecha(r.fecha_pago),
-      montoServicios: Number(r.monto_servicios || 0),
-      montoBienes: Number(r.monto_bienes || 0),
-      montoFacturado: Number(r.monto_servicios || 0) + Number(r.monto_bienes || 0),
-      itbisFacturado: Number(r.itbis_facturado || 0),
-      itbisRetenido: Number(r.itbis_retenido || 0),
-      isrTipoRetencion: r.isr_tipo_retencion || null,
-      montoRetencionRenta: Number(r.isr_monto_retencion || 0),
-      formaPago: r.forma_pago || null,
-    });
-    const compras606 = [...comprasMercancia.map(mapCompra606), ...gastosConNcf.map(mapCompra606)]
-      .sort((a, b) => String(a.fechaComprobante).localeCompare(String(b.fechaComprobante)));
+    // 606 — Compras y Gastos con comprobante: los mismos datos que el TXT del POS
+    // (server/services/dgii/datos-606.js): fecha de pago real, bienes y servicios
+    // por línea y solo los E41/E43/E47 aceptados. Antes salía la fecha de
+    // vencimiento como fecha de pago y todo como bienes. Va mes por mes (el 606
+    // es mensual); los nombres viejos (rncProveedor, montoFacturado…) siguen para
+    // los portales que aún no se actualizan.
+    const meses = [];
+    for (let m = String(desde).slice(0, 7); m && m <= String(hasta).slice(0, 7);) {
+      meses.push(m.replace('-', ''));
+      const [a, mm] = m.split('-').map(Number);
+      m = mm === 12 ? `${a + 1}-01` : `${a}-${String(mm + 1).padStart(2, '0')}`;
+      if (meses.length > 36) break;
+    }
+    const lector606 = crearDatos606({ query });
+    const compras606 = [];
+    const excluidos606 = [];
+    for (const periodo of meses) {
+      const datos = await lector606.leer(periodo);
+      excluidos606.push(...datos.excluidos);
+      for (const r of datos.registros) {
+        if (r.fechaComprobante > hasta || (r.fechaComprobante < desde && !(r.fechaPago && r.fechaPago >= desde))) continue;
+        const montoFacturado = Number(r.montoServicios || 0) + Number(r.montoBienes || 0);
+        compras606.push({
+          ...r, periodo, tipoNcf: tipoNcfDe(r.ncf), rncProveedor: r.rncCedula, tipoIdentificacion: tipoIdentificacion(r.rncCedula),
+          montoServicios: Number(r.montoServicios || 0), montoBienes: Number(r.montoBienes || 0),
+          montoFacturado: Math.round(montoFacturado * 100) / 100, isrTipoRetencion: r.tipoRetencionIsr || null,
+        });
+      }
+    }
 
     res.json({
       tipo: 'tecno_caja_export_fiscal',
@@ -19991,6 +20021,7 @@ app.get('/api/reports/advanced/dgii/exportar-contador', async (req, res) => {
         itbisFacturado: Number(r.tax || 0),
       })),
       compras606,
+      excluidos606,
       anulados608: anulados.map((r) => ({
         ncf: r.ncf,
         tipoNcf: tipoNcfDe(r.ncf),
@@ -20045,9 +20076,9 @@ app.get('/api/reports/advanced/gastos', async (req, res) => {
 });
 
 async function buildAccountsReceivableReportData(scopedBranchId) {
-  let where = `WHERE s.payment_method = 'credito'
+  let where = `WHERE (s.payment_method = 'credito' OR s.credit_amount > 0)
     AND COALESCE(s.fiscal_status, 'emitida') <> 'cancelada'
-    AND COALESCE(s.total, 0) > COALESCE(s.received_amount, 0)`;
+    AND COALESCE(s.total, 0) > COALESCE(s.received_amount, 0) + COALESCE(s.credit_adjustment, 0)`;
   const params = [];
   if (scopedBranchId) {
     where += ' AND COALESCE(s.billed_branch_id, s.branch_id) = ?';
@@ -20058,7 +20089,7 @@ async function buildAccountsReceivableReportData(scopedBranchId) {
     SELECT
       s.id,
       s.created_at,
-      s.total,
+      s.total, s.credit_adjustment, s.credit_due_date,
       COALESCE(s.received_amount, 0) AS paid_amount,
       s.invoice_number,
       c.id AS client_id,
@@ -20081,7 +20112,8 @@ async function buildAccountsReceivableReportData(scopedBranchId) {
     branchName: row.branch_name || '',
     total: Number(row.total || 0),
     paid: Number(row.paid_amount || 0),
-    balance: Math.max(0, Number(row.total || 0) - Number(row.paid_amount || 0)),
+    balance: Math.max(0, Number(row.total || 0) - Number(row.paid_amount || 0) - Number(row.credit_adjustment || 0)),
+    dueDate: row.credit_due_date || null,
     createdAt: row.created_at,
   }));
 
@@ -20239,9 +20271,9 @@ app.post('/api/reports/auto-save-daily', async (req, res) => {
     const [kpisRows, porSucursalRows, porMetodoRows] = await Promise.all([
       query(`SELECT COUNT(*) AS total_facturas, COALESCE(SUM(total),0) AS total_ventas,
              COALESCE(SUM(tax),0) AS total_itbis, COALESCE(AVG(total),0) AS ticket_promedio,
-             COALESCE(SUM(CASE WHEN payment_method='efectivo' THEN total ELSE 0 END),0) AS efectivo,
-             COALESCE(SUM(CASE WHEN payment_method='tarjeta' THEN total ELSE 0 END),0) AS tarjeta,
-             COALESCE(SUM(CASE WHEN payment_method='transferencia' THEN total ELSE 0 END),0) AS transferencia,
+             COALESCE(SUM(CASE WHEN financial_version > 0 THEN COALESCE(cash_amount,0) WHEN payment_method='efectivo' THEN total ELSE 0 END),0) AS efectivo,
+             COALESCE(SUM(CASE WHEN financial_version > 0 THEN COALESCE(card_amount,0) WHEN payment_method='tarjeta' THEN total ELSE 0 END),0) AS tarjeta,
+             COALESCE(SUM(CASE WHEN financial_version > 0 THEN COALESCE(transfer_amount,0) WHEN payment_method='transferencia' THEN total ELSE 0 END),0) AS transferencia,
              COALESCE(SUM(CASE WHEN payment_method='usd' THEN total ELSE 0 END),0) AS usd,
              COALESCE(SUM(CASE WHEN payment_method='usd' THEN usd_amount_received ELSE 0 END),0) AS usd_recibido_total
              FROM sales s WHERE s.created_at BETWEEN ? AND ? AND ${buildSaleActiveClause('s')}`, p),
@@ -20665,7 +20697,7 @@ async function finishMysqlRuntimeInit() {
         ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
         ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
         ensureFiscalSequencesSchema(query).catch(e => console.warn('[fiscal-sequences] init fallo:', e.message)),
-        ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
+        ensureComprasSchema(query, { withTransaction }).catch(e => console.warn('[compras] init fallo:', e.message)),
         ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
         ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
         ensureAssistantSchema(query).catch(e => console.warn('[assistant] init fallo:', e.message)),
@@ -20675,7 +20707,7 @@ async function finishMysqlRuntimeInit() {
         ensureSyncQueueTable().catch(e => console.warn('[sync-queue] init fallo:', e.message)),
         ensureCombosExtensions().catch(e => console.warn('[combos] init fallo:', e.message)),
         ensureCustomCombosExtensions().catch(e => console.warn('[combos-personalizados] init fallo:', e.message)),
-      ]));
+      ]).then(() => ensureNuevasMejorasSchema()));
       await multisucursal.prepararAlArrancar();
       const setup = await getSetupStatus();
       await ensureStarterCatalogSeededIfNeeded(setup.config);
@@ -20875,7 +20907,7 @@ async function prepareServerRuntime() {
       ensureLabelsSchema(query).catch(e => console.warn('[labels] init fallo:', e.message)),
       ensureTesoreriaSchema(query).catch(e => console.warn('[tesoreria] init fallo:', e.message)),
       ensureFiscalSequencesSchema(query).catch(e => console.warn('[fiscal-sequences] init fallo:', e.message)),
-      ensureComprasSchema(query).catch(e => console.warn('[compras] init fallo:', e.message)),
+      ensureComprasSchema(query, { withTransaction }).catch(e => console.warn('[compras] init fallo:', e.message)),
       ensureGastosSchema(query).catch(e => console.warn('[gastos] init fallo:', e.message)),
       ensureClientesCreditosSchema(query).catch(e => console.warn('[clientes-creditos] init fallo:', e.message)),
       ensureAssistantSchema(query).catch(e => console.warn('[assistant] init fallo:', e.message)),
@@ -20883,7 +20915,7 @@ async function prepareServerRuntime() {
       ensureOperativeDateExtensions().catch(e => console.warn('[operative-date] init fallo:', e.message)),
       ensureCombosExtensions().catch(e => console.warn('[combos] init fallo:', e.message)),
       ensureCustomCombosExtensions().catch(e => console.warn('[combos-personalizados] init fallo:', e.message)),
-    ]));
+    ]).then(() => ensureNuevasMejorasSchema()));
     // Antes de la recuperación automática: un respaldo hecho con esta versión
     // trae la columna uuid y la base tiene que tenerla para restaurarlo.
     await multisucursal.prepararAlArrancar();

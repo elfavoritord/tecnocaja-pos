@@ -1,15 +1,20 @@
 {
-  "version": "1.6.14",
-  "stableVersion": "1.6.14",
-  "date": "04/11/2026",
+  "version": "1.6.15",
+  "stableVersion": "1.6.15",
+  "date": "09/11/2026",
   "size": "198 MB",
   "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Combos personalizados (opcional, Configuración → Apariencia): el cajero escribe el precio del combo con ITBIS incluido y elige los productos.",
-    "La factura muestra el combo como un solo concepto con \"Impuesto incluido\"; el e-CF lleva cada producto con su base y su ITBIS.",
-    "El inventario descuenta cada producto del combo; devoluciones, cancelaciones y reportes funcionan igual.",
-    "Reporte de combos en Promociones → Combos personalizados."
+    "Compras: sube la factura del proveedor (XML e-CF, Excel o CSV, foto o PDF) y revísala en «Preparar compra» antes de registrarla; crea los productos nuevos con su precio.",
+    "Compras: precio de venta con o sin ITBIS, control de inventario por producto y recepción de mercancía (total o parcial) si el negocio la usa.",
+    "Comprobantes de compras y gastos: solo aparecen los que tienen secuencia, los electrónicos primero; el RNC o cédula busca en la DGII.",
+    "E41, E43 y E47 se revisan contra el formato oficial de la DGII antes de salir y el e-NCF pasa a la compra o al gasto solo cuando la DGII lo acepta.",
+    "Finanzas: propina legal, crédito en pago mixto, estados de cuenta, notas de crédito, ITBIS separado, cierre de caja seguro y apertura de gaveta con motivo.",
+    "Mesas: reservas con anticipo (consumible o no) que entra a la caja y constancia impresa.",
+    "Usuarios: permisos personalizados por usuario.",
+    "Respaldos: cada empresa con su propia carpeta, copia completa del día y reintentos automáticos a la nube cuando vuelve Internet.",
+    "Proveedores: las tarjetas muestran el nombre correcto (Total comprado ya no sale como «Facturas vencidas»)."
   ]
 }

@@ -41,13 +41,14 @@ describe('Respaldo automático: una copia por día, quedan hoy y ayer', () => {
     process.env.TECNO_CAJA_LICENSE_UID = 'pos_prueba';
     process.env.TECNO_CAJA_SECURITY_PASSWORD = 'clave-de-prueba-respaldos';
     mockNube.clear();
+    require('../../server/services/r2-storage').upload.mockImplementation(async (key, buf) => { mockNube.set(key, { buf, fecha: new Date() }); });
     casa = fs.mkdtempSync(path.join(os.tmpdir(), 'tc-respaldo-'));
     jest.spyOn(os, 'homedir').mockReturnValue(casa);
-    carpeta = path.join(casa, 'Documents', 'TecnoCaja', 'Backups');
     base = await crearBaseSqlite();
     await base.query("UPDATE config SET setup_completed = 1, business_name = 'Colmado Prueba' WHERE id = 1");
     await base.query("INSERT INTO users (usuario, password, nombre, rol) VALUES ('admin', '', 'Admin', 'Administrador')");
     await base.query("INSERT INTO products (codigo, nombre, categoria, precio_venta) VALUES ('P1', 'Arroz', 'X', 10)");
+    carpeta = await require('../../server/services/backup-policy').directory(base.query);
   });
 
   afterEach(() => {
@@ -146,11 +147,46 @@ describe('Respaldo automático: una copia por día, quedan hoy y ayer', () => {
     expect(await respaldos.asegurarCopiaDelDia(base.query)).toMatchObject({ fileName: expect.stringContaining('2026-10-20') });
   });
 
-  test('sin nube configurada se guarda solo local, sin dejar subidas pendientes', async () => {
+  test('sin llave B2 conserva local y deja visible la configuración pendiente', async () => {
     delete process.env.R2_ACCESS_KEY_ID;
     en(DIA(19));
-    expect(await respaldar()).toMatchObject({ ok: true, estado: 'completado', storagePath: null });
+    expect(await respaldar()).toMatchObject({ ok: true, estado: 'pendiente_configuracion', storagePath: null });
     expect(mockNube.size).toBe(0);
+  });
+
+  test('la cola sobrevive a fallos y respeta el próximo intento persistido', async () => {
+    en(DIA(19));
+    await respaldos.createAutomaticBackup({ query: base.query, deferCloud: true });
+    const storage = require('../../server/services/r2-storage');
+    storage.upload.mockRejectedValueOnce(new Error('Internet no disponible'));
+    const first = await respaldos.uploadPendingCloudBackups(base.query);
+    expect(first[0]).toMatchObject({ ok: false, attempts: 1 });
+    expect((await base.query('SELECT attempts FROM backup_upload_retry'))[0].attempts).toBe(1);
+    expect(await respaldos.uploadPendingCloudBackups(base.query)).toEqual([]);
+    en(DIA(19, 10, 2));
+    expect((await respaldos.uploadPendingCloudBackups(base.query))[0].ok).toBe(true);
+    expect(await base.query('SELECT * FROM backup_upload_retry')).toEqual([]);
+    expect((await base.query('SELECT estado FROM backup_history'))[0].estado).toBe('completado');
+  });
+
+  test('dos empresas con el mismo nombre guardan copias en carpetas diferentes', async () => {
+    en(DIA(19)); await respaldar();
+    const primera = carpeta;
+    process.env.TECNO_CAJA_LICENSE_UID = 'otra_empresa';
+    en(DIA(20)); const second = await respaldar();
+    expect(path.dirname(second.filePath)).not.toBe(primera);
+    expect(fs.readdirSync(primera).some((f) => f.endsWith('.tcbak'))).toBe(true);
+  });
+
+  test('al actualizar rehace una copia V2 del día en formato integral V3', async () => {
+    en(DIA(19));
+    const core = require('../../server/services/backup-core');
+    const old = await core.buildFullPayload(base.query); old.formatVersion = '2';
+    fs.mkdirSync(carpeta, { recursive: true });
+    const file = path.join(carpeta, retencion.nombreDiario(old.businessName));
+    fs.writeFileSync(file, await core.createTcbakBuffer(old, process.env.TECNO_CAJA_SECURITY_PASSWORD));
+    expect((await respaldos.asegurarCopiaDelDia(base.query)).skipped).not.toBe(true);
+    expect((await core.parseTcbakBuffer(fs.readFileSync(file), process.env.TECNO_CAJA_SECURITY_PASSWORD)).payload.formatVersion).toBe('3');
   });
 });
 

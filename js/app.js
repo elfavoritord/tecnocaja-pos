@@ -1337,6 +1337,8 @@ function currentUserCan(permission) {
   const perms = Array.isArray(user.rolePermissions) ? user.rolePermissions : [];
   if (perms.includes('*')) return true;
   if (perms.includes(permission)) return true;
+  // Con permisos propios vale solo su lista: sin atajos por rol ni equivalencias viejas.
+  if (user.permisosPropios) return false;
 
   // Administrador de sucursal — permisos completos de caja y ventas
   const ADMIN_SUCURSAL_CAJA_PERMS = [
@@ -1768,7 +1770,13 @@ function canAccessModule(name) {
     return false;
   }
   if (!DB.currentUser) return true;
-  const visibleModules = getVisibleModulesForCurrentRole();
+  // Usuario con permisos propios: el menú sale de su lista (js/permisos-catalogo.js);
+  // los módulos sin regla propia siguen la de siempre.
+  const permitido = DB.currentUser.permisosPropios && window.PermisosCatalogo
+    ? window.PermisosCatalogo.moduloPermitido(name, DB.currentUser.rolePermissions)
+    : null;
+  if (permitido === false) return false;
+  const visibleModules = permitido ? null : getVisibleModulesForCurrentRole();
   if (visibleModules && !visibleModules.has(name)) {
     return false;
   }
@@ -1809,7 +1817,8 @@ function applyRolePermissions() {
   document.querySelectorAll('.nav-item').forEach((item) => {
     const deniedRole = item.dataset.denyRole;
     const moduleName = item.dataset.module || '';
-    const hiddenByLegacyRole = Boolean(deniedRole && deniedRole === (DB.currentUser?.rol || ''));
+    // Con permisos propios manda su lista (canAccessModule), no el rol.
+    const hiddenByLegacyRole = !DB.currentUser?.permisosPropios && Boolean(deniedRole && deniedRole === (DB.currentUser?.rol || ''));
     const hiddenByBusiness = !isBusinessModuleEnabled(moduleName);
     const hiddenByScopedAccess = !canAccessModule(moduleName);
     item.classList.toggle('hidden', hiddenByLegacyRole || hiddenByBusiness || hiddenByScopedAccess);
@@ -2085,13 +2094,24 @@ function applyAppTranslations() {
   setPlaceholderBySelector('#proveedores-search', translateCatalogText('Buscar proveedor, empresa o RNC...'));
   setTextBySelector('#module-proveedores .module-header [onclick^="openProveedorModal"] .btn-label', translateCatalogText('Nuevo proveedor'));
   setTextBySelector('#module-proveedores .module-header [onclick^="openSupplierInvoiceModal"] .btn-label', translateCatalogText('Registrar factura'));
-  const supplierCardHeaders = ['Total Proveedores', 'Activos', 'Facturas Pendientes', 'Facturas Vencidas'];
-  document.querySelectorAll('#module-proveedores .report-card-header').forEach((el, index) => {
-    if (supplierCardHeaders[index]) el.textContent = translateCatalogText(supplierCardHeaders[index]);
-  });
-  const supplierCardSubs = ['Registrados en el sistema', 'Disponibles para compras', 'Saldo por pagar', 'Requieren atención'];
-  document.querySelectorAll('#module-proveedores .report-card-sub').forEach((el, index) => {
-    if (supplierCardSubs[index]) el.textContent = translateCatalogText(supplierCardSubs[index]);
+  // Cada tarjeta se nombra por el dato que muestra (su id), no por su posición:
+  // con 6 tarjetas, renombrar las 4 primeras por posición dejaba «Total comprado»
+  // rotulado como «Facturas vencidas».
+  const supplierCards = {
+    'prov-total': ['Total Proveedores', 'Registrados en el sistema'],
+    'prov-activos': ['Activos', 'Disponibles para compras'],
+    'prov-con-alertas': ['Con alertas', 'Con facturas vencidas'],
+    'prov-balance-total': ['Total comprado', 'Historial acumulado'],
+    'prov-pendientes': ['Por pagar', 'Saldo de facturas pendientes'],
+    'prov-vencidas': ['Vencido', 'Requieren atención'],
+  };
+  Object.entries(supplierCards).forEach(([id, [header, sub]]) => {
+    const card = document.getElementById(id)?.closest('.report-card');
+    if (!card) return;
+    const headerEl = card.querySelector('.report-card-header');
+    const subEl = card.querySelector('.report-card-sub');
+    if (headerEl) headerEl.textContent = translateCatalogText(header);
+    if (subEl) subEl.textContent = translateCatalogText(sub);
   });
   const supplierPanelTitles = ['Directorio de Proveedores', 'Facturas de Proveedores'];
   document.querySelectorAll('#module-proveedores .proveedores-panel-title').forEach((el, index) => {
@@ -3830,6 +3850,9 @@ function initApp() {
   // la app entra por el auto-login con Ventas ya abierta y sin pasar por
   // showModule('ventas'): el botón se quedaba escondido.
   window.CombosPersonalizados?.cargar?.({ forzar: true });
+  window.Mesas?.cargar();
+  window.CajaSegura?.cargarConfig?.({ forzar: true });
+  mostrarAvisoAccesoLocal();
 
   // Iniciar el gestor de conexión offline (multicaja)
   if (window.OfflineManager && !window.offlineManager) {
@@ -3880,6 +3903,12 @@ function showModule(name, el) {
     showToast('No tienes permiso para entrar a este módulo', 'error');
     return;
   }
+  // Cierre seguro con la caja abierta: el cajero ve sus ventas al cerrar
+  // (quien ve reportes de caja sí entra; lo decide el servidor).
+  if (name === 'reportes' && window.CajaSegura?.ventasOcultas) {
+    showToast(window.CajaSegura.AVISO_CIEGO, 'warning');
+    return;
+  }
   document.querySelectorAll('.module').forEach(m => {
     m.classList.remove('active');
     m.classList.add('hidden');
@@ -3927,6 +3956,7 @@ function showModule(name, el) {
     if (typeof syncSaleFiscalControls === 'function') syncSaleFiscalControls();
     if (typeof loadActivePromotionsMap === 'function') loadActivePromotionsMap();
     window.CombosPersonalizados?.onVentasOpen();
+    window.Mesas?.cargar();
     if (typeof renderSalesCatalog === 'function') renderSalesCatalog();
     window.VentasUI?.sync();
     // Re-render diferido por si el DOM todavía está acomodándose en la carga inicial
@@ -3970,6 +4000,8 @@ function showModule(name, el) {
     if (typeof loadTesoreriaConfig === 'function') loadTesoreriaConfig();
     window.TiendaOnline?.loadConfigSection();
     window.CombosPersonalizados?.loadConfigSection();
+    window.CajaSegura?.loadConfigSection?.();
+    window.Mesas?.cargar();
     window.MultisucursalEnlace?.loadConfigSection();
     // Inicializar módulo de actualización del sistema
     if (typeof window.Actualizaciones?.init === 'function') window.Actualizaciones.init();
@@ -6004,7 +6036,7 @@ function applyBusinessProfile() {
 // (dispositivo no autorizado, límite de equipos, reloj alterado, etc.) —
 // mostrarlos como "Prueba vencida" confunde al usuario sobre la causa real.
 // Misma lista que usa showLicenseBlockedScreen() para la pantalla completa.
-const LICENSE_VALIDATION_BLOCKED_CODES = ['tamper', 'clock_rollback', 'offline_grace', 'device_limit', 'invalid_signature', 'missing_signature'];
+const LICENSE_VALIDATION_BLOCKED_CODES = ['tamper', 'clock_rollback', 'offline_grace', 'device_limit', 'invalid_signature', 'missing_signature', 'activation_required', 'missing_remote'];
 
 function applyLicenseSnapshot(license = {}) {
   const status = String(license.status || DB.config?.licenseStatus || 'trial').trim().toLowerCase();
@@ -7064,6 +7096,29 @@ function getAccessMethodsLabel() {
   return methods[0] || appText('settings.accessMethodLocalOnly', 'Usuario y contraseña');
 }
 
+function mostrarAvisoAccesoLocal() {
+  document.getElementById('aviso-acceso-local')?.remove();
+  if (!DB.currentUser || DB.currentUser.localPasswordSet) return;
+  const aviso = document.createElement('div'); aviso.id = 'aviso-acceso-local';
+  aviso.style.cssText = 'position:fixed;bottom:16px;right:16px;max-width:360px;padding:16px;border:1px solid var(--accent,#7868fc);border-radius:10px;background:var(--bg2,#161b27);color:var(--text,#e5e9f5);z-index:1100';
+  aviso.innerHTML = '<strong>Prepara tu acceso sin internet</strong><p style="font-size:13px;margin:8px 0">Tu cuenta usa Google y todavía no tiene contraseña local. Créala para poder entrar con tu usuario cuando no haya internet.</p><button type="button" class="btn-primary">Crear contraseña local</button><button type="button" class="btn-secondary" style="margin-left:8px">Después</button>';
+  aviso.querySelector('.btn-primary').onclick = () => { aviso.remove(); openAccessPasswordModal(); };
+  aviso.querySelector('.btn-secondary').onclick = () => aviso.remove(); document.body.append(aviso);
+}
+
+async function comprobarAccesoSinInternet() {
+  const output = document.getElementById('cfg-offline-readiness');
+  if (!output) return;
+  output.textContent = 'Comprobando acceso local…';
+  try {
+    const result = await api.request('/api/account/offline-readiness');
+    output.textContent = [result.ready ? '✓ Este usuario y este equipo están preparados para entrar sin internet.' : 'Falta preparar el acceso sin internet.',
+      `Contraseña local: ${result.localPasswordAvailable ? 'configurada' : 'pendiente'}.`,
+      `Licencia guardada en este equipo: ${result.licenseLocallyValid ? 'válida' : 'requiere validación'}.`,
+      ...result.actions].join('\n');
+  } catch (e) { output.textContent = `No se pudo comprobar el servidor local: ${e.message}`; }
+}
+
 function openAccessPasswordModal() {
   if (!DB.currentUser?.id) {
     showToast('Debes iniciar sesión para cambiar tu contraseña de acceso.', 'error');
@@ -7163,6 +7218,7 @@ async function submitAccessPasswordAction() {
       newPassword
     });
     DB.currentUser = { ...DB.currentUser, ...updatedUser };
+    document.getElementById('aviso-acceso-local')?.remove();
     closeAllModals();
     syncConfigForm();
     showToast(hasExistingPassword ? 'Contraseña de acceso actualizada.' : 'Contraseña de acceso creada.', 'success');
@@ -7639,7 +7695,7 @@ async function legacyRestoreSecureBackupHandler() {
     return;
   }
 
-  const password = prompt('Ingresa la clave de seguridad para restaurar la copia segura:');
+  const password = await showPromptModal('Ingresa la clave de seguridad para restaurar la copia segura:', { inputType: 'password', confirmText: 'Continuar' });
   if (password === null) return;
   if (!password.trim()) {
     showToast('Debes ingresar la clave de seguridad.', 'warning');
@@ -7667,7 +7723,7 @@ async function legacyOpenSecureBackupFolderHandler() {
     return;
   }
 
-  const password = prompt('Ingresa la clave de seguridad para abrir la carpeta protegida:');
+  const password = await showPromptModal('Ingresa la clave de seguridad para abrir la carpeta protegida:', { inputType: 'password', confirmText: 'Abrir' });
   if (password === null) return;
   if (!password.trim()) {
     showToast('Debes ingresar la clave de seguridad.', 'warning');
@@ -7746,6 +7802,9 @@ function goToVentasAction(action) {
 let _gavetaMotivoSelected = '';
 
 function openGavetaModal() {
+  // Motivos con su efecto real (conteo, cambio, retiro, consumo, gasto, otro):
+  // js/caja-segura.js. El modal viejo de 4 motivos queda solo como respaldo.
+  if (window.CajaSegura?.abrirGaveta) { window.CajaSegura.abrirGaveta(); return; }
   if (!DB.config.cajaAbierta) {
     showToast('La caja debe estar abierta para usar la gaveta.', 'warning');
     return;
@@ -7887,6 +7946,13 @@ function _getCorteData() {
     const mth = String(s.metodo || '').trim();
     const total = Number(s.total || 0);
     descuentos += Number(s.descuento || 0);
+    if (Number(s.financialVersion || 0) > 0 && mth !== 'contra_entrega' && mth !== 'usd') {
+      efectivo += Number(s.montoEfectivo || 0);
+      tarjeta += Number(s.montoTarjeta || 0);
+      transferencia += Number(s.montoTransferencia || 0);
+      credito += Number(s.montoCredito || 0);
+      continue;
+    }
     if (mth === 'efectivo' || mth === 'contra_entrega') efectivo += total;
     else if (mth === 'tarjeta') tarjeta += total;
     else if (mth === 'transferencia') transferencia += total;
@@ -7927,10 +7993,15 @@ function _getCorteData() {
     } else {
       if (getDateKeyFromValue(mov.hora) !== todayKey) continue;
     }
-    if (mov.tipo === 'Ingreso adicional') entradas += monto;
+    if (TIPOS_INGRESO_CAJA.has(mov.tipo) && monto > 0) entradas += monto;
     else if (mov.tipo === 'Devolución' && monto < 0) devoluciones += Math.abs(monto);
     else if (monto < 0) salidas += Math.abs(monto);
   }
+  // Anticipos de reservas con tarjeta o transferencia (el efectivo ya vino en
+  // su movimiento de caja, arriba).
+  const anticiposReserva = getCajaAnticiposReserva();
+  tarjeta += anticiposReserva.recibidos.tarjeta - anticiposReserva.devueltos.tarjeta;
+  transferencia += anticiposReserva.recibidos.transferencia - anticiposReserva.devueltos.transferencia;
 
   // Total esperado en la gaveta:
   // monto inicial (apertura) + ventas efectivo + entradas - salidas - devoluciones
@@ -7952,6 +8023,9 @@ function openCashCorteModal() {
     showToast('No tienes permiso para hacer el corte de caja.', 'error');
     return;
   }
+  // Cierre seguro con la caja abierta: el corte es un conteo a ciegas
+  // (js/caja-segura.js); los montos del turno se ven al cerrar.
+  if (window.CajaSegura?.turnoCiego) { window.CajaSegura.abrirCorteCiego(); return; }
   const d = _getCorteData();
   document.getElementById('corte-cajero').textContent       = d.cajero;
   document.getElementById('corte-hora-apertura').textContent = d.horaApertura;
@@ -8014,6 +8088,10 @@ function parseFmtMoney(text) {
 
 /** Imprime el corte actual sin cerrar la caja */
 async function printSoloCorte() {
+  if (window.CajaSegura?.turnoCiego) {
+    showToast(window.CajaSegura.AVISO_CIEGO, 'info');
+    return;
+  }
   const d = _getCorteData();
   try {
     await _printCashCorte(d, 0, 0, '');
@@ -8078,11 +8156,13 @@ async function saveCashCorteAndClose() {
 // CIERRE DE CAJA (separado del corte — no hace logout)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function openCashCierreModal() {
+async function openCashCierreModal() {
   if (!currentUserCan('cerrar_caja')) {
     showToast('No tienes permiso para cerrar caja.', 'error');
     return;
   }
+  // Cierre seguro activo: conteo por denominaciones a ciegas (js/caja-segura.js).
+  if (window.CajaSegura?.cierreSeguro) { window.CajaSegura.abrirCierre(); return; }
   if (!cajaAbierta) {
     showToast('La caja no está abierta.', 'warning');
     return;
@@ -8093,6 +8173,9 @@ function openCashCierreModal() {
     showToast(`No puedes cerrar caja: hay ${pendingDeliveries.length} pedido(s) contra entrega sin validar (${facturas}). Valídalos primero.`, 'error');
     return;
   }
+  // Mesas con consumo sin cobrar en la sucursal: no se cierra (el servidor
+  // también lo bloquea al cerrar).
+  if (window.CajaSegura?.verificarCierre && !(await window.CajaSegura.verificarCierre())) return;
   const d = _getCorteData();
   document.getElementById('cierre-cajero').textContent       = d.cajero;
   document.getElementById('cierre-hora-apertura').textContent = d.horaApertura;
@@ -8237,7 +8320,13 @@ async function executeCashCierre({ print = false } = {}) {
       });
     }
 
-    // 6. Mostrar pantalla de resumen — SIN logout
+    // 6. Mostrar pantalla de resumen — SIN logout. Los montos salen del
+    // reporte que calculó el servidor (el mismo que se imprime y se guarda).
+    if (response.reporte && window.CajaSegura?.resumenPostCierre) {
+      window.CajaSegura.guardarUltimoReporte(response.reporte);
+      showPostCloseScreen(window.CajaSegura.resumenPostCierre(response.reporte, response, notas));
+      return;
+    }
     showPostCloseScreen({
       cajero: d.cajero,
       apertura: d.horaApertura,
@@ -8531,6 +8620,9 @@ let _devolucionCurrentSale = null;
 let _devolucionCurrentItems = [];
 
 function openDevolucionModal() {
+  // La devolución de productos ahora es una nota de crédito contextual
+  // (js/ajustes-venta.js): depende del comprobante y de su estado DGII.
+  if (window.AjustesVenta?.abrir) { window.AjustesVenta.abrir(); return; }
   if (!currentUserCan('devolver_ventas')) {
     showToast('No tienes permiso para procesar devoluciones.', 'error');
     return;
@@ -8845,6 +8937,8 @@ function syncCajaState() {
     identity.textContent = `${DB.config?.activeBranchName || 'Sin sucursal'} · ${DB.config?.activeCashRegisterName || 'Sin caja'}`;
   }
   cajaMontoEl.textContent = fmt(DB.config.cajaMonto);
+  // Arqueo a ciegas: con cierre seguro el cajero no ve el efectivo esperado.
+  window.CajaSegura?.aplicarModoCiego?.();
   const canOpenClose = currentUserCan('abrir_caja') || currentUserCan('cerrar_caja');
   btn.textContent = cajaAbierta ? appText('cash.closeAction', 'Cerrar Caja') : appText('cash.openAction', 'Abrir Caja');
   btn.classList.toggle('btn-danger', cajaAbierta);
@@ -9208,6 +9302,19 @@ function renderCajaExpenseSummary() {
   if (retiroEl) retiroEl.textContent = fmt(totals.retiro_efectivo);
 }
 
+// Movimientos de caja que son dinero que entra aparte de las ventas (cuentan
+// en "Entradas" del corte). El anticipo de una reserva de Mesas en efectivo es
+// uno de ellos; su devolución es una salida como cualquier otra.
+const TIPOS_INGRESO_CAJA = new Set(['Ingreso adicional', 'Anticipo de reserva']);
+
+// Anticipos de reservas del turno abierto, por forma de pago (lo calcula el
+// servidor: server/services/mesas-anticipos.js → totalesTurno).
+function getCajaAnticiposReserva() {
+  const a = _getActiveCajaSession()?.anticiposReserva;
+  const vacio = { efectivo: 0, tarjeta: 0, transferencia: 0, total: 0 };
+  return { recibidos: { ...vacio, ...(a?.recibidos || {}) }, devueltos: { ...vacio, ...(a?.devueltos || {}) }, neto: Number(a?.neto || 0) };
+}
+
 function getCajaIncomeBreakdown() {
   const totals = {
     ingreso_adicional: 0
@@ -9229,11 +9336,26 @@ function getCajaIncomeBreakdown() {
 
 function renderCajaIncomeSummary() {
   const totals = getCajaIncomeBreakdown();
-  const total = totals.ingreso_adicional;
+  const anticipos = getCajaAnticiposReserva();
+  const total = totals.ingreso_adicional + anticipos.neto;
   const totalEl = document.getElementById('caja-ingresos-total');
   const extraEl = document.getElementById('caja-ingreso-extra');
   if (totalEl) totalEl.textContent = fmt(total);
-  if (extraEl) extraEl.textContent = `${fmt(total)} hoy`;
+  if (extraEl) extraEl.textContent = `${fmt(totals.ingreso_adicional)} hoy`;
+  const conAnticipos = anticipos.recibidos.total > 0 || anticipos.devueltos.total > 0;
+  document.getElementById('caja-ingreso-anticipos-row')?.classList.toggle('hidden', !conAnticipos);
+  const anticiposEl = document.getElementById('caja-ingreso-anticipos');
+  if (anticiposEl) anticiposEl.textContent = `${fmt(anticipos.neto)} en este turno${describirAnticiposCaja(anticipos)}`;
+}
+
+// " · efectivo RD$ 500.00 · tarjeta RD$ 300.00 · devuelto RD$ 100.00"
+function describirAnticiposCaja(anticipos) {
+  const partes = [];
+  for (const [clave, texto] of [['efectivo', 'efectivo'], ['tarjeta', 'tarjeta'], ['transferencia', 'transferencia']]) {
+    if (anticipos.recibidos[clave] > 0) partes.push(`${texto} ${fmt(anticipos.recibidos[clave])}`);
+  }
+  if (anticipos.devueltos.total > 0) partes.push(`devuelto ${fmt(anticipos.devueltos.total)}`);
+  return partes.length ? ` · ${partes.join(' · ')}` : '';
 }
 
 function getCajaDaySalesSummary() {
@@ -9252,6 +9374,17 @@ function getCajaDaySalesSummary() {
     let method = String(sale.metodo || '').trim();
     let saleDate = sale.cobradaEn || sale.fecha;
     const saleStatus = String(sale.estadoVenta || 'pagada').trim();
+
+    // Ventas con desglose exacto (pago mixto con hasta cuatro métodos): cada
+    // componente va a su método; el crédito no es dinero recibido.
+    if (Number(sale.financialVersion || 0) > 0 && method !== 'contra_entrega' && method !== 'usd' && saleStatus === 'pagada') {
+      if (session ? !_isSaleInActiveSession(sale) : getDateKeyFromValue(saleDate) !== todayKey) continue;
+      totals.efectivo += Number(sale.montoEfectivo || 0);
+      totals.tarjeta += Number(sale.montoTarjeta || 0);
+      totals.transferencia += Number(sale.montoTransferencia || 0);
+      totals.credito += Number(sale.montoCredito || 0);
+      continue;
+    }
 
     if (method === 'contra_entrega') {
       if (String(sale.estadoCobroDelivery || 'pendiente').trim() !== 'validado') continue;
@@ -9312,7 +9445,16 @@ function renderCajaDaySummary() {
     + Number(expenseTotals.pago_suplidor || 0)
     + Number(expenseTotals.retiro_efectivo || 0);
   const totalEgresos = totalGastosOperativos + totalDevoluciones;
-  const balance = totalVentas + Number(incomeTotals.ingreso_adicional || 0) - totalEgresos;
+  // Anticipos de reservas: dinero que entró en el turno (menos lo devuelto).
+  // Al cobrar la cuenta, la venta solo trae lo pagado ahora: no se cuenta dos veces.
+  const anticipos = getCajaAnticiposReserva();
+  const balance = totalVentas + Number(incomeTotals.ingreso_adicional || 0) + anticipos.neto - totalEgresos;
+  const conAnticipos = anticipos.recibidos.total > 0 || anticipos.devueltos.total > 0;
+  document.getElementById('res-anticipos-row')?.classList.toggle('hidden', !conAnticipos);
+  const anticiposEl = document.getElementById('res-anticipos');
+  if (anticiposEl) anticiposEl.textContent = fmt(anticipos.neto);
+  const anticiposDetalleEl = document.getElementById('res-anticipos-detalle');
+  if (anticiposDetalleEl) anticiposDetalleEl.textContent = describirAnticiposCaja(anticipos).replace(/^ · /, '');
 
   const efectivoEl    = document.getElementById('res-efectivo');
   const tarjetaEl     = document.getElementById('res-tarjeta');
@@ -9333,6 +9475,7 @@ function renderCajaDaySummary() {
   // "Gastos" muestra solo egresos operativos (sin devoluciones)
   if (gastosEl)     gastosEl.textContent = fmt(totalGastosOperativos);
   if (balanceEl)    balanceEl.textContent = fmt(balance);
+  window.CajaSegura?.aplicarModoCiego?.();
 }
 
 function getPendingSupplierInvoicesForCash() {

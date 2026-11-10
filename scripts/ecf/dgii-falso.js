@@ -42,7 +42,11 @@ function revisarEcf(xml) {
     if (Math.abs(calculado - (num(l, 'MontoItem') || 0)) > 0.05) errores.push({ codigo: 9009, valor: `Línea ${i + 1}: cantidad × precio − descuento ≠ MontoItem` });
   });
   if (!casi(sumaLineas, grav + exento)) errores.push({ codigo: 9001, valor: `Líneas ${sumaLineas} ≠ gravado ${grav} + exento ${exento}` });
-  if (!casi(grav + exento + itbis, total)) errores.push({ codigo: 9002, valor: `Total ${total} ≠ ${grav} + ${exento} + ${itbis}` });
+  // MontoTotal incluye los impuestos adicionales (propina legal 001, ISC…).
+  const adicional = num(xml, 'MontoImpuestoAdicional') || 0;
+  if (!casi(grav + exento + itbis + adicional, total)) errores.push({ codigo: 9002, valor: `Total ${total} ≠ ${grav} + ${exento} + ${itbis} + ${adicional}` });
+  const otros = [...xml.matchAll(/<OtrosImpuestosAdicionales>([^<]*)<\/OtrosImpuestosAdicionales>/g)].reduce((s, m) => s + Number(m[1] || 0), 0);
+  if (adicional && !casi(otros, adicional)) errores.push({ codigo: 9010, valor: `Impuestos adicionales ${otros} ≠ MontoImpuestoAdicional ${adicional}` });
   const i1 = num(xml, 'MontoGravadoI1') || 0;
   const i2 = num(xml, 'MontoGravadoI2') || 0;
   const i3 = num(xml, 'MontoGravadoI3') || 0;

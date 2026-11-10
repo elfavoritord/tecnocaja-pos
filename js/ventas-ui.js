@@ -64,6 +64,11 @@
     set('ventas-sum-itbis', stripCurrency(textOf('s-itbis', '0')));
     set('ventas-sum-itbis-label', textOf('sale-tax-label', 'ITBIS').replace(/[()]/g, '').trim() || 'ITBIS');
 
+    // Propina legal: aparte del ITBIS, solo cuando la venta la lleva.
+    const propina = typeof parseFmt === 'function' ? parseFmt(textOf('s-propina', '0')) : 0;
+    document.getElementById('ventas-sum-propina-row')?.classList.toggle('hidden', !(propina > 0));
+    set('ventas-sum-propina', stripCurrency(textOf('s-propina', '0')));
+
     // Redondeo solo cuando existe: cambia el total y hay que poder explicarlo.
     const rounding = typeof parseFmt === 'function' ? parseFmt(textOf('s-redondeo', '0')) : 0;
     document.getElementById('ventas-sum-redondeo-row')?.classList.toggle('hidden', Math.abs(rounding) < 0.01);

@@ -9,12 +9,12 @@
 // parseando.
 
 const { parentPort } = require('worker_threads');
+const fs = require('fs');
 
 let handler = null;
 let ready = false;
 let lastError = null;
 let warmupPromise = null;
-let dailyTimerSet = false;
 
 function getHandler() {
   if (handler) return handler;
@@ -27,25 +27,18 @@ function getHandler() {
   return handler;
 }
 
-function scheduleDailyCheck() {
-  if (dailyTimerSet) return;
-  dailyTimerSet = true;
-  const timer = setInterval(() => {
-    warmup().catch(() => {});
-  }, 24 * 60 * 60 * 1000);
-  timer.unref?.();
-}
-
-function warmup() {
+function warmup(allowNetwork = true) {
   if (warmupPromise) return warmupPromise;
   const h = getHandler();
   if (!h) return Promise.resolve();
-  warmupPromise = h
-    .checkFile()
+  warmupPromise = Promise.resolve().then(async () => {
+    if (allowNetwork) await h.checkFile();
+    else if (fs.existsSync(h.dataPath)) { if (!ready) await h.loadData(); }
+    else throw new Error('No hay un catálogo RNC descargado en esta PC. Puedes escribir los datos manualmente y seguir trabajando sin internet.');
+  })
     .then(() => {
       ready = true;
       lastError = null;
-      scheduleDailyCheck();
     })
     .catch((err) => {
       lastError = err.message;
@@ -92,13 +85,13 @@ async function handleMessage({ id, action, payload }) {
     }
 
     if (action === 'warmup') {
-      await warmup();
+      await warmup(payload?.allowNetwork !== false);
       parentPort.postMessage({ id, ok: true, result: { ready, error: lastError } });
       return;
     }
 
     if (action === 'lookup') {
-      if (!ready) await warmup();
+      if (!ready) await warmup(payload?.allowNetwork !== false);
       if (!ready) {
         parentPort.postMessage({ id, ok: false, error: lastError || 'Servicio RNC no disponible.' });
         return;
@@ -109,7 +102,7 @@ async function handleMessage({ id, action, payload }) {
     }
 
     if (action === 'search') {
-      if (!ready) await warmup();
+      if (!ready) await warmup(payload?.allowNetwork !== false);
       if (!ready) {
         parentPort.postMessage({ id, ok: false, error: lastError || 'Servicio RNC no disponible.' });
         return;

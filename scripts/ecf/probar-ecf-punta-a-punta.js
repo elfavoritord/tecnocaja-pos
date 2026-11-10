@@ -113,9 +113,11 @@ function linea(prod, { qty = 1, itbis = 18, descuento = 0 } = {}) {
     subtotal: bruto, rebaja, total: redondear(bruto - rebaja + impuesto), impuestoMonto: impuesto,
   };
 }
+// Como el carrito (js/ventas.js buildSalePayload): el subtotal ya trae el
+// descuento de cada línea y `descuento` es solo el descuento general.
 function venta(items, extras = {}) {
-  const subtotal = redondear(items.reduce((s, i) => s + i.subtotal, 0));
-  const descuento = redondear(items.reduce((s, i) => s + i.rebaja, 0));
+  const subtotal = redondear(items.reduce((s, i) => s + i.subtotal - i.rebaja, 0));
+  const descuento = 0;
   const itbis = redondear(items.reduce((s, i) => s + i.impuestoMonto, 0));
   const total = redondear(subtotal - descuento + itbis);
   return {
@@ -215,13 +217,33 @@ async function pruebasPos() {
   check('E44 con ITBIS: se frena antes de cobrar', conItbis.status === 422 && conItbis.body?.code !== undefined || conItbis.status === 422, `HTTP ${conItbis.status} ${conItbis.body?.error || ''}`.slice(0, 200));
 
   // Fiado: con cliente registrado.
-  const cliente = await api('POST', '/api/clients', { nombre: 'Cliente a Crédito SRL', cedula: '101010101', limiteCredito: 100000 });
+  const cliente = await api('POST', '/api/clients', { nombre: 'Cliente a Crédito SRL', telefono: '8295551234', cedula: '101010101', limiteCredito: 100000 });
   const fiado = await api('POST', '/api/sales', venta([linea('GRAV')], {
-    clientId: cliente.body?.id, cliente: 'Cliente a Crédito SRL', metodo: 'credito', recibido: 0, ecfType: 'E31',
+    clientId: cliente.body?.id, cliente: 'Cliente a Crédito SRL', metodo: 'credito', recibido: 0, ecfType: 'E31', paymentDetails: { creditDueDate: VENCE },
     rncCliente: '101010101', razonSocialCliente: 'Cliente a Crédito SRL',
   }));
   check('E31 fiada: venta guardada', fiado.status === 201, `HTTP ${fiado.status} ${fiado.body?.error || ''}`.slice(0, 200));
   await comprobarEmitido('E31 fiada', encfVenta(fiado), { tipo: 'E31', total: 118, tipoPago: '2' });
+
+  // Propina legal 10 %: impuesto adicional 001, aparte del ITBIS (no entra en
+  // su base). 100 + 18 ITBIS + 10 propina = 128.
+  await api('PUT', '/api/config/legal-tip', { enabled: true });
+  const conProp = await api('POST', '/api/products', {
+    codigo: 'PROP', barcode: 'PROP', nombre: 'Plato con propina', categoria: 'GENERAL', unidad: 'Unidad', marca: '', precioVenta: 100, precioCompra: 40,
+    stock: 50, stockMin: 0, aplicaItbis: true, estado: 'Activo', branchId: ctx.branchId, propinaLegal: true,
+  });
+  ctx.productos.PROP = Number(conProp.body?.product?.id || conProp.body?.id || 0);
+  PRECIOS.PROP = 100;
+  for (const [nombre, extras, tipo] of [['E31 con propina legal', { ...conRnc, ecfType: 'E31' }, 'E31'], ['E32 con propina legal', {}, 'E32']]) {
+    const r = await api('POST', '/api/sales', venta([linea('PROP')], { ...extras, tipoPedido: 'mesa', propinaLegal: 10, total: 128, recibido: 128 }));
+    check(`${nombre}: venta guardada por 128`, r.status === 201 && r.body?.sale?.total === 128, `HTTP ${r.status} ${r.body?.error || ''}`.slice(0, 200));
+    const doc = await comprobarEmitido(nombre, encfVenta(r), { tipo, ...(tipo === 'E31' ? { total: 128, itbis: 18 } : {}) });
+    const firmado = await fetch(`http://127.0.0.1:${PORT}/api/ecf/documents/${doc?.id}/xml`, { headers: { Authorization: `Bearer ${ctx.token}` } }).then((x) => x.text());
+    check(`${nombre}: impuesto adicional 001 de 10.00 y total 128`,
+      tag(firmado, 'TipoImpuesto') === '001' && Number(tag(firmado, 'MontoImpuestoAdicional')) === 10 && Number(tag(firmado, 'MontoTotal')) === 128 && Number(tag(firmado, 'TotalITBIS') || 0) === 18,
+      `TipoImpuesto ${tag(firmado, 'TipoImpuesto')} · MontoImpuestoAdicional ${tag(firmado, 'MontoImpuestoAdicional')} · MontoTotal ${tag(firmado, 'MontoTotal')} · ITBIS ${tag(firmado, 'TotalITBIS')}`);
+  }
+  await api('PUT', '/api/config/legal-tip', { enabled: false });
 
   // Comprador faltante: se frena antes de gastar número.
   const antes = dgii.estado.recibidos.length;

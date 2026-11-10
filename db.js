@@ -427,7 +427,7 @@ async function runMysqlSpecial(connection, normalized) {
   }
 
   if (normalized.type === 'sqlite_master') {
-    const tableResult = await connection.query('SHOW TABLES');
+    const tableResult = await connection.query("SHOW FULL TABLES WHERE Table_type = 'BASE TABLE'");
     const tableRows = tableResult[0];
     const rows = [];
     for (const tableRow of tableRows) {
@@ -485,7 +485,9 @@ async function reloadDatabase() {
   return sqlitePromise;
 }
 
-async function query(sql, params) {
+const maintenance = require('./server/system/db-maintenance').createDatabaseMaintenance();
+function query(sql, params) { return maintenance.guard(() => rawQuery(sql, params)); }
+async function rawQuery(sql, params) {
   if (params === undefined) params = [];
   if (dbClient === 'mysql') {
     return runMysqlQueryWith(getMysqlPool(), sql, params);
@@ -509,7 +511,8 @@ async function ensureSessionTuning(connection) {
   connection.__tcTuned = true;
 }
 
-async function withTransaction(work) {
+function withTransaction(work) { return maintenance.guard(() => rawTransaction(work)); }
+async function rawTransaction(work) {
   if (dbClient === 'mysql') {
     const connection = await getMysqlPool().getConnection();
     try {
@@ -607,11 +610,45 @@ async function withTransactionRetry(work, options = {}) {
   throw lastError;
 }
 
+// Lectura consistente para respaldos: una conexión InnoDB dedicada o una copia
+// SQLite en memoria. No comparte la transacción del cajero ni exporta su licencia.
+function withReadSnapshot(work) { return maintenance.guard(() => rawReadSnapshot(work)); }
+async function rawReadSnapshot(work) {
+  if (dbClient === 'mysql') {
+    const connection = await getMysqlPool().getConnection();
+    try {
+      const [engines] = await connection.query("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND ENGINE <> 'InnoDB'");
+      if (engines.length) throw new Error('Hay tablas sin transacciones InnoDB. No se puede garantizar un respaldo consistente.');
+      await connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT');
+      // Conserva el literal SQL de DATE/DATETIME: convertirlo a Date y luego
+      // a JSON desplaza la hora al restaurarlo en una zona horaria diferente.
+      const snapshotConnection = { query: (sql, params = []) => connection.query({ sql, values: params, dateStrings: true }) };
+      const result = await work({ query: (sql, params = []) => runMysqlQueryWith(snapshotConnection, sql, params) });
+      await connection.commit(); return result;
+    } catch (e) { await connection.rollback().catch(() => {}); throw e; }
+    finally { connection.release(); }
+  }
+  const db = await getSqlitePromise();
+  const SQL = await initSqlJs();
+  const snapshot = new SQL.Database(db.export());
+  try {
+    return await work({ query: async (sql, params = []) => {
+      if (!/^\s*(SELECT|PRAGMA)\b/i.test(sql)) throw new Error('El respaldo solo puede leer su instantánea.');
+      const statement = snapshot.prepare(sql);
+      try { statement.bind(params); const rows = []; while (statement.step()) rows.push(statement.getAsObject()); return rows; }
+      finally { statement.free(); }
+    } });
+  } finally { snapshot.close(); }
+}
+
 module.exports = {
   adaptarCreateTableSqlite,
   query: query,
   withTransaction: withTransaction,
   withTransactionRetry: withTransactionRetry,
+  withReadSnapshot,
+  withExclusiveMaintenance: maintenance.runExclusive,
   _isTransientTxnError: isTransientTxnError,
   reloadDatabase: reloadDatabase,
   dbFile: dbFile,

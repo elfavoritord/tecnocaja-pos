@@ -71,13 +71,19 @@ describe('C1 — actorUserId ya no autentica', () => {
 
   test('ensureAdministrator/ensureNotCashier siguen leyendo SOLO req.authUser (nunca el body directamente)', () => {
     const adminFnStart = serverSrc.indexOf('function ensureAdministrator(req) {');
-    const cashierFnStart = serverSrc.indexOf('function ensureNotCashier(req) {');
+    // ensureNotCashier(req, permiso): el segundo argumento es el permiso que
+    // exige a un usuario con permisos propios (lo fija el código, no el cliente).
+    const cashierFnStart = serverSrc.indexOf('function ensureNotCashier(req, permiso = null) {');
     expect(adminFnStart).toBeGreaterThan(-1);
     expect(cashierFnStart).toBeGreaterThan(-1);
     const adminFnBody = serverSrc.slice(adminFnStart, adminFnStart + 200);
-    const cashierFnBody = serverSrc.slice(cashierFnStart, cashierFnStart + 200);
+    const cashierFnEnd = serverSrc.indexOf('\nfunction ', cashierFnStart + 10);
+    const cashierFnBody = serverSrc.slice(cashierFnStart, cashierFnEnd);
     expect(adminFnBody).not.toContain('req.body');
     expect(cashierFnBody).not.toContain('req.body');
+    expect(cashierFnBody).not.toContain('req.query');
+    expect(cashierFnBody).toContain('req.authUser');
+    expect(cashierFnBody).toContain('getRequestRoleCode(req)');
     expect(adminFnBody).toContain('getRequestRoleCode(req)');
   });
 });

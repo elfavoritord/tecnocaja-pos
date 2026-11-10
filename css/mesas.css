@@ -1,0 +1,279 @@
+.mesas-pantalla{position:fixed;inset:0;z-index:5000;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font-family:var(--tc-font,Arial);display:flex;flex-direction:column;padding:20px 24px 12px;gap:16px;box-sizing:border-box}
+.mesas-pantalla header{display:flex;align-items:center;gap:16px}.mesas-pantalla h2{flex:1;margin:0}.mesas-pantalla button{padding:10px 14px;cursor:pointer}.mesas-contenido{display:flex;gap:12px;min-height:0;flex:1}.mesas-contenido aside{width:200px;overflow:auto;flex-shrink:0}.mesas-contenido aside button,.mesas-contenido aside label{display:block;margin:8px 0}.mesas-contenido input:not([type=checkbox]){width:100%;box-sizing:border-box;padding:8px}.mesas-scroll{flex:1;overflow:auto;background:#fff;border:1px solid #bbb}.mesas-lienzo{position:relative;width:1600px;height:1000px;background-image:radial-gradient(#ddd 1px,transparent 1px);background-size:20px 20px}.mesas-figura{position:absolute;color:#172033;border:2px solid #64748b;overflow:hidden;touch-action:none}.mesas-figura:focus{outline:3px solid #2563eb}.mesas-aviso{margin:0;padding:10px;background:#fff3cd;color:#664d03}.mesas-contenido [hidden]{display:none}
+.mesas-pantalla *{box-sizing:border-box}
+.mesas-pantalla button{border:1px solid var(--tc-border,#39405a);border-radius:8px;background:var(--tc-surface,#1c2233);color:var(--tc-text,#e5e9f5);padding:10px 16px;font:inherit;font-size:14px;cursor:pointer}
+.mesas-pantalla button:hover{border-color:var(--tc-primary,#7868fc)}
+.mesas-pantalla button:focus-visible{outline:2px solid var(--tc-primary,#7868fc);outline-offset:3px}
+.mesas-pantalla button:disabled{opacity:.5;cursor:wait}
+.mesas-pantalla [hidden]{display:none!important}
+.mesas-pantalla .mesas-plano-cabecera{gap:20px;min-height:62px;flex-shrink:0}
+.mesas-plano-titulo{flex:1}.mesas-plano-titulo>span{font-size:10px;letter-spacing:1.8px;font-weight:700;color:var(--tc-primary,#a99fff)}
+.mesas-pantalla .mesas-plano-titulo h2{font-size:26px;font-weight:650;margin:4px 0 0;letter-spacing:-.5px}
+.mesas-plano-acciones{display:flex;gap:8px}
+.mesas-pantalla .mesas-btn-primario{background:#6955f5;border-color:#6955f5;color:#fff;font-weight:600}
+.mesas-plano-herramientas{display:flex;align-items:center;gap:22px;flex-shrink:0;padding:12px 16px;background:var(--tc-surface,#1c2233);border:1px solid var(--tc-border-soft,#30364a);border-radius:12px}
+.mesas-plano-herramientas p{flex:1;margin:0;color:var(--tc-text-2,#96a1b8);font-size:14px}
+.mesas-leyenda{display:flex;gap:18px;align-items:center}.mesas-leyenda span{display:flex;align-items:center;gap:7px;white-space:nowrap;font-size:12px}
+.mesas-estado-cantidad{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:25px;padding:0 6px;border:1px solid var(--tc-border,#39405a);border-radius:7px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font-size:14px;font-weight:750;font-variant-numeric:tabular-nums}
+.mesas-punto{width:14px;height:14px;flex-shrink:0;border-radius:50%;display:inline-block}.mesas-punto.disponible{background:#00e640}.mesas-punto.ocupada{background:#ff152b}.mesas-punto.decorativa{background:#8e949e;outline:1px solid #555d69}
+.mesas-pantalla .mesas-contenido{gap:16px;overflow:hidden}
+.mesas-pantalla aside{width:220px;background:var(--tc-surface,#1c2233);border:1px solid var(--tc-border-soft,#30364a);border-radius:14px;padding:16px}
+.mesas-pantalla #mesas-propiedades{width:248px}
+.mesas-panel-titulo{padding-bottom:16px;margin-bottom:14px;border-bottom:1px solid var(--tc-border-soft,#30364a)}
+.mesas-panel-titulo h3{font-size:15px;margin:0 0 5px}.mesas-panel-titulo p{font-size:12px;margin:0;color:var(--tc-text-2,#96a1b8)}
+.mesas-biblioteca-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mesas-pantalla .mesas-biblioteca-grid button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;margin:0;padding:12px 4px;min-height:80px;font-size:11px;background:var(--tc-bg,#10131d)}
+.mesas-biblioteca-grid svg{color:var(--tc-primary,#a99fff)}
+.mesas-panel-nota{font-size:11px;line-height:1.6;color:var(--tc-text-2,#96a1b8);margin:18px 0 0}
+.mesas-seleccion-barra{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-shrink:0;padding:8px 12px;border:1px solid var(--tc-border-soft,#30364a);border-radius:10px;background:var(--tc-surface,#1c2233)}
+.mesas-pantalla .mesas-seleccion-barra button{padding:7px 10px;font-size:12px}
+.mesas-seleccion-barra>span{font-size:12px;color:var(--tc-primary,#a99fff);margin:0 6px;font-weight:600}
+.mesas-seleccion-barra small{margin-left:auto;color:var(--tc-text-2,#96a1b8);font-size:10px}
+.mesas-marco-seleccion{position:absolute;z-index:10;pointer-events:none;border:1px solid #7868fc;background:#7868fc22}
+.mesas-acciones-multiples{display:flex;flex-direction:column;gap:8px}
+.mesas-pantalla .mesas-acciones-multiples button{margin:0;padding:10px;font-size:12px}
+.mesas-pantalla .mesas-acciones-multiples [data-multiple="eliminar"]{color:#dc5360;border-color:#dc536066}
+.mesas-mapa-marco{flex:1;min-width:0;min-height:0;display:flex;flex-direction:column;border:1px solid var(--tc-border,#39405a);border-radius:14px;overflow:hidden;background:var(--tc-surface,#1c2233)}
+.mesas-mapa-etiqueta{display:flex;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--tc-border-soft,#30364a);font-size:12px;color:var(--tc-text-2,#96a1b8)}
+.mesas-mapa-etiqueta span:first-child{color:var(--tc-text,#e5e9f5);font-weight:600}
+.mesas-pantalla{--mesas-fondo-plano:#1c2028;--mesas-cuadricula:rgba(169,181,200,.16)}
+[data-theme="light"] .mesas-pantalla{--mesas-fondo-plano:#f3f4f6;--mesas-cuadricula:rgba(102,119,143,.18)}
+.mesas-pantalla .mesas-scroll{border:0;background:var(--mesas-fondo-plano);min-height:0;scrollbar-width:thin}
+.mesas-pantalla .mesas-lienzo{background-color:var(--mesas-fondo-plano);background-image:none}
+.mesas-pantalla.mesas-editor-activo .mesas-lienzo{background-image:linear-gradient(var(--mesas-cuadricula) 1px,transparent 1px),linear-gradient(90deg,var(--mesas-cuadricula) 1px,transparent 1px);background-size:24px 24px}
+.mesas-pantalla .mesas-figura{padding:6px;border-width:1.5px;font-size:12px;font-weight:600;line-height:1.3;overflow:hidden;overflow-wrap:anywhere;display:flex;align-items:center;justify-content:center;background:var(--tc-surface-2,#252b3d);color:var(--tc-text-2,#96a1b8)}
+.mesas-pantalla .mesas-figura.is-available{background:color-mix(in srgb,#23a782 14%,var(--tc-surface,#1c2233));border-color:#36a88a;color:color-mix(in srgb,#139874 75%,var(--tc-text,#e5e9f5))}
+.mesas-pantalla .mesas-figura.is-occupied{background:color-mix(in srgb,#ed896e 18%,var(--tc-surface,#1c2233));border-color:#df927a;color:color-mix(in srgb,#c96548 75%,var(--tc-text,#e5e9f5))}
+.mesas-pantalla .mesas-figura.is-decoration{border-color:var(--tc-border-strong,#667087);font-weight:500;cursor:default}
+.mesas-editor-activo .mesas-figura{cursor:grab}.mesas-editor-activo .mesas-figura:active{cursor:grabbing}
+.mesas-pantalla .mesas-figura.seleccionada{outline:2px solid #7868fc;outline-offset:3px;border-color:#7868fc}
+.mesas-propiedades-vacio{display:flex;flex-direction:column;align-items:center;text-align:center;padding:28px 4px;gap:12px;color:var(--tc-text-2,#96a1b8)}
+.mesas-propiedades-vacio>span{width:52px;height:52px;display:grid;place-items:center;font-size:28px;background:var(--tc-bg,#10131d);border-radius:14px;color:var(--tc-primary,#a99fff)}
+.mesas-propiedades-vacio strong{font-size:13px;color:var(--tc-text,#e5e9f5)}.mesas-propiedades-vacio p{font-size:12px;line-height:1.6;margin:0}
+.mesas-propiedades-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.mesas-pantalla .mesas-propiedades-grid label{margin:0;min-width:0;font-size:11px;color:var(--tc-text-2,#96a1b8)}
+.mesas-campo-ancho{grid-column:1/-1}
+.mesas-pantalla .mesas-propiedades-grid input{margin-top:6px;padding:9px 10px;border:1px solid var(--tc-border,#39405a);border-radius:7px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font:inherit;font-size:13px;outline-color:#7868fc}
+.mesas-pantalla .mesas-ventas-check{display:flex;align-items:center;gap:8px;padding:14px 0;margin:10px 0;border-top:1px solid var(--tc-border-soft,#30364a);border-bottom:1px solid var(--tc-border-soft,#30364a);font-size:13px}
+.mesas-ventas-check input{accent-color:#6955f5;width:16px;height:16px}
+.mesas-propiedades-acciones{display:flex;gap:8px}.mesas-pantalla .mesas-propiedades-acciones button{flex:1;margin:0;padding:10px;font-size:12px}
+.mesas-pantalla #mesas-eliminar{color:#d65a60;background:color-mix(in srgb,#e86970 8%,var(--tc-surface,#1c2233));border-color:color-mix(in srgb,#e86970 35%,var(--tc-border,#39405a))}
+.mesas-plano-pie{display:flex;justify-content:space-between;gap:12px;font-size:10px;color:var(--tc-text-2,#96a1b8);flex-shrink:0}
+.mesas-pantalla .mesas-biblioteca{width:254px}
+.mesas-elementos-grupo h4{font-size:12px;margin:20px 0 10px;color:var(--tc-text,#e5e9f5)}
+.mesas-pantalla .mesas-biblioteca-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.mesas-pantalla .mesas-biblioteca-grid button{padding:5px;gap:4px;font-size:10px;line-height:1.25;min-height:88px;background:var(--tc-surface,#1c2233)}
+.mesas-biblioteca-grid button svg{width:52px;height:52px;flex-shrink:0}
+.mesas-pantalla .mesas-buscar-elemento{border:1px solid var(--tc-border,#39405a);border-radius:8px;padding:10px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font:inherit;font-size:12px;position:sticky;top:0;z-index:2}
+.mesas-pantalla .mesas-elemento-visual{border:1px solid transparent!important;border-radius:4px;padding:0;background:transparent!important;display:block;overflow:visible;isolation:isolate}
+.mesas-elemento-visual>svg{width:100%;height:100%;display:block;pointer-events:none}
+.mesas-pantalla .mesas-elemento-visual{transform:rotate(var(--mesas-giro,0deg));transform-origin:center}
+.mesas-pantalla .mesas-elemento-visual .mesas-elemento-nombre{transform:translateX(-50%) rotate(var(--mesas-giro-inverso,0deg))}
+.mesas-control-giro{padding-top:14px;font-size:12px;color:var(--tc-text-2,#96a1b8)}
+.mesas-control-giro>div{display:grid;grid-template-columns:1fr 65px 1fr;gap:6px;align-items:center;margin-top:8px}
+.mesas-pantalla .mesas-control-giro button{margin:0;padding:8px 4px;font-size:12px}
+.mesas-pantalla #mesas-angulo{padding:8px 3px;border:1px solid var(--tc-border,#39405a);border-radius:7px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);text-align:center;font:inherit}
+.mesas-pantalla .mesas-control-giro .mesas-giro-restablecer{margin-top:8px;width:100%;border:0;background:transparent;color:var(--tc-primary,#a99fff);font-size:11px}
+.mesas-elemento-visual{z-index:1}.mesas-elemento-visual[data-forma="zona"]{z-index:0}
+.mesas-pantalla .mesas-elemento-visual[data-forma="zona"]>svg rect{fill-opacity:.28;stroke-opacity:.12;stroke-dasharray:none}
+.mesas-pantalla.mesas-editor-activo .mesas-elemento-visual[data-forma="zona"]>svg rect{stroke-opacity:.6;stroke-dasharray:6 4}
+.mesas-colores-zona{display:flex;gap:6px;margin-top:10px}
+.mesas-pantalla .mesas-colores-zona button{display:flex;flex:1;flex-direction:column;align-items:center;gap:5px;padding:7px 3px;font-size:10px;margin:0}
+.mesas-colores-zona i{width:22px;height:16px;border:1px solid #8290a544;border-radius:4px}
+.mesas-pantalla:not(.mesas-editor-activo) .mesas-elemento-visual.is-decoration{pointer-events:none}
+.mesas-pantalla .mesas-elemento-nombre{position:absolute;bottom:2px;left:50%;transform:translateX(-50%);max-width:100%;padding:3px 6px;border-radius:5px;font-size:11px;line-height:1.2;text-align:center;overflow-wrap:anywhere;color:var(--tc-text,#e5e9f5);background:color-mix(in srgb,var(--tc-surface,#1c2233) 93%,transparent);pointer-events:none}
+.mesas-elemento-estado{position:absolute;top:2px;right:2px;width:20px;height:20px;border:3px solid var(--tc-surface,#1c2233);border-radius:50%;background:#00e640;box-shadow:0 0 0 1px #00a82f,0 0 5px #00e64066;pointer-events:none;transform:scale(var(--mesas-indicador-escala,1));transform-origin:center;z-index:2}
+.is-occupied .mesas-elemento-estado{background:#ff152b;box-shadow:0 0 0 1px #d40019,0 0 5px #ff152b66}
+.is-decoration .mesas-elemento-estado{background:#8e949e;box-shadow:0 0 0 1px #555d69,0 0 4px #a9afb866}
+.mesas-pantalla .is-occupied .mesas-elemento-nombre{background:#fff0e9;color:#9b482e;border:1px solid #edb69d}
+.mesas-pantalla .is-available .mesas-elemento-nombre{background:#e6f6ee;color:#17664d;border:1px solid #8ecab2}
+.mesas-pantalla .mesas-elemento-visual:hover{outline:1px dashed #8e83dd;outline-offset:2px}
+.mesas-lienzo-tamano{position:relative;flex-shrink:0;overflow:hidden}
+.mesas-zoom{display:flex;align-items:center;gap:8px}.mesas-pantalla .mesas-zoom button{padding:4px 10px;font-size:12px}.mesas-zoom>span{min-width:38px;text-align:center;font-variant-numeric:tabular-nums}
+.mesas-mapa-controles{display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:flex-end}
+.mesas-tamano-texto{display:flex;align-items:center;gap:8px;padding-right:16px;border-right:1px solid var(--tc-border,#39405a)}
+.mesas-pantalla .mesas-tamano-texto button{padding:4px 10px;font-size:13px;font-weight:600}
+.mesas-pantalla .mesas-tamano-texto button:disabled{cursor:default}
+.mesas-tamano-texto>span{min-width:70px;font-size:11px;text-align:center;font-variant-numeric:tabular-nums}
+.mesas-pantalla .mesas-elemento-nombre{font-size:calc(11px * var(--mesas-texto-factor,1))}
+.mesas-tamano-elemento{padding:0 0 14px;margin-bottom:14px;border-bottom:1px solid var(--tc-border-soft,#30364a)}.mesas-tamano-elemento h4{margin:0 0 10px;font-size:12px}
+.mesas-tamano-elemento>div{display:grid;grid-template-columns:minmax(0,1fr) 30px 68px 30px;align-items:center;gap:4px;margin-top:8px;font-size:11px}
+.mesas-pantalla .mesas-tamano-elemento button{padding:7px 0;margin:0;font-size:12px}
+.mesas-tamano-elemento output{text-align:center;font-size:10px;font-variant-numeric:tabular-nums}
+.mesas-tamano-elemento p{font-size:10px;color:var(--tc-text-2,#96a1b8);margin:10px 0 0}
+@media(max-width:800px){.mesas-mapa-etiqueta{flex-wrap:wrap}.mesas-mapa-controles{gap:8px}.mesas-tamano-texto{padding-right:8px}}
+.mesas-pantalla .mesas-propiedades-grid select{margin-top:6px;width:100%;padding:9px 6px;border:1px solid var(--tc-border,#39405a);border-radius:7px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font:inherit;font-size:12px}
+.mesas-pantalla #mesas-color-elemento{padding:3px;height:37px;cursor:pointer}
+.mesas-pantalla .mesas-ventas-check{padding:10px 0;margin:6px 0}
+@media(max-width:1000px){.mesas-pantalla{padding:12px;gap:10px}.mesas-pantalla aside{width:164px;padding:12px}.mesas-pantalla #mesas-propiedades{width:204px}.mesas-plano-herramientas{gap:12px;flex-wrap:wrap}.mesas-leyenda{gap:12px}.mesas-pantalla .mesas-plano-titulo h2{font-size:22px}}
+@media(max-width:700px){.mesas-pantalla .mesas-plano-cabecera{flex-wrap:wrap;gap:10px}.mesas-plano-acciones{margin-left:auto}.mesas-pantalla .mesas-contenido{overflow:auto}.mesas-pantalla aside{flex-shrink:0}.mesas-editor-activo .mesas-mapa-marco{min-width:300px}.mesas-plano-herramientas p{flex-basis:100%}}
+#mesas-consumo-ventana{position:fixed;inset:0;z-index:1200;display:flex;flex-direction:column;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font-family:var(--tc-font,Arial);overflow:hidden}
+.mesas-consumo-cabecera{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid var(--tc-border,#39405a);background:var(--tc-surface,#1c2233)}
+.mesas-consumo-etiqueta{font-size:11px;letter-spacing:1.8px;color:var(--tc-primary,#7565ff);font-weight:700}
+.mesas-consumo-cabecera h2{font-size:23px;margin:5px 0 0}.mesas-consumo-cabecera h2 span{font-size:16px;color:var(--tc-text-2,#96a1b8);font-weight:400}
+.mesas-consumo-cuerpo{flex:1;min-height:0;display:flex;overflow:hidden}
+#mesas-consumo-ventana #module-ventas{display:flex!important;flex:1;min-width:0;min-height:0;margin:0;padding:20px 24px}
+#mesas-consumo-ventana #module-ventas .ventas-layout{grid-template-columns:minmax(0,1fr) 460px;gap:20px}
+#mesas-consumo-ventana #module-ventas .ventas-view-switch,#mesas-consumo-ventana .ventas-actions,#mesas-consumo-ventana .ventas-launch,#mesas-consumo-ventana #mesas-abrir{display:none!important}
+#mesas-consumo-ventana #module-ventas .ventas-workspace{display:flex;flex-direction:column}
+#mesas-consumo-ventana #module-ventas .sales-catalog-panel{display:flex!important;flex-direction:column;gap:16px;flex:1;min-height:0;overflow:hidden;padding:16px}
+#mesas-consumo-ventana #module-ventas .sales-catalog-header{flex-shrink:0}
+#mesas-consumo-ventana #module-ventas .sales-catalog-grid{overflow:auto;display:grid;align-content:start;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));flex:1;min-height:0}
+#mesas-consumo-ventana #module-ventas .ventas-side{min-height:0;overflow:hidden;gap:12px}
+#mesas-consumo-ventana #module-ventas .sale-order-panel{display:flex!important;flex:1;min-height:120px;overflow:auto}
+#mesas-consumo-ventana #module-ventas .sale-empty{min-height:100px}
+#mesas-consumo-ventana #module-ventas .sale-table{min-width:0;width:100%;table-layout:auto}
+#mesas-consumo-ventana #module-ventas .sale-table th:nth-child(1),#mesas-consumo-ventana #module-ventas .sale-table td:nth-child(1):not([colspan]),
+#mesas-consumo-ventana #module-ventas .sale-table th:nth-child(2),#mesas-consumo-ventana #module-ventas .sale-table td:nth-child(2),
+#mesas-consumo-ventana #module-ventas .sale-table th:nth-child(4),#mesas-consumo-ventana #module-ventas .sale-table td:nth-child(4),
+#mesas-consumo-ventana #module-ventas .sale-table th:nth-child(7),#mesas-consumo-ventana #module-ventas .sale-table td:nth-child(7){display:none}
+#mesas-consumo-ventana #module-ventas .sale-table th,#mesas-consumo-ventana #module-ventas .sale-table td{padding:10px 6px;font-size:12px}
+#mesas-consumo-ventana #module-ventas .sale-item-name{white-space:normal;overflow:visible;text-overflow:clip}
+#mesas-consumo-ventana #module-ventas .ventas-total-card{margin-top:0}
+.mesas-consumo-pie{padding:14px 24px;border-top:1px solid var(--tc-border,#39405a);background:var(--tc-surface,#1c2233);flex-shrink:0}
+#mesas-cuenta-barra{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+#mesas-cuenta-barra strong{display:none}
+#mesas-cuenta-barra select{margin-right:auto;min-width:180px}
+#mesas-cuenta-barra button,#mesas-cuenta-barra select{padding:12px 16px;border-radius:8px;border:1px solid var(--tc-border,#49516b);background:var(--tc-bg,#161b29);color:var(--tc-text,#e5e9f5);cursor:pointer;font:inherit}
+#mesas-cuenta-barra #mesas-cobrar{background:#6955f5;color:#fff;border-color:#6955f5;font-weight:700;min-width:140px}
+#mesas-cuenta-barra #mesas-guardar-consumo{border-color:#7868fc;color:var(--tc-primary,#a99fff)}
+#mesas-cuenta-barra #mesas-volver{display:none}
+/* Pedido: el nombre ocupa toda la fila y la lista aprovecha la altura libre. */
+#mesas-consumo-ventana #module-ventas .ventas-layout{grid-template-columns:minmax(0,1fr) clamp(440px,40vw,600px)}
+#mesas-consumo-ventana #module-ventas .ventas-side{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;gap:12px}
+#mesas-consumo-ventana #module-ventas .sale-order-panel{height:auto;min-height:0;overflow:hidden}
+#mesas-consumo-ventana #module-ventas .sale-table-wrap{flex:1;min-height:0;overflow:auto}
+#mesas-consumo-ventana #module-ventas .sale-table thead{display:none}
+#mesas-consumo-ventana #module-ventas .sale-table tbody{display:block;padding:10px}
+#mesas-consumo-ventana #module-ventas .sale-table tr:not(.empty-row){display:grid;grid-template-columns:minmax(130px,1fr) 64px 90px 36px;gap:8px 10px;padding:14px;margin-bottom:10px;border:1px solid var(--tc-border,#39405a);border-radius:10px;background:var(--tc-surface,#1c2233)}
+#mesas-consumo-ventana #module-ventas .sale-table tr:not(.empty-row) td{width:auto;height:auto;border:0;padding:0;background:transparent;overflow:visible;align-self:center}
+#mesas-consumo-ventana #module-ventas .sale-table tr.is-selected{border-color:var(--tc-primary,#7868fc);background:var(--tc-select-bg,#24213c)}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-name{grid-column:1/-1;text-align:left}
+#mesas-consumo-ventana #module-ventas .sale-item-name{display:block;-webkit-line-clamp:unset;white-space:normal;overflow:visible;overflow-wrap:anywhere;font-size:17px;line-height:1.4;font-weight:600}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-qty{grid-column:1;text-align:left}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-disc{grid-column:2;text-align:right}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-total{grid-column:3;text-align:right;font-size:18px}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-remove{grid-column:4}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-disc:before{content:'Desc.';display:block;font-size:11px;color:var(--tc-text-2,#96a1b8);margin-bottom:4px}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-total:before{content:'Importe';display:block;font-size:11px;font-weight:400;color:var(--tc-text-2,#96a1b8);margin-bottom:4px}
+#mesas-consumo-ventana #module-ventas .ventas-summary{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;padding:12px 16px}
+#mesas-consumo-ventana #module-ventas .ventas-sum-row{font-size:13px;gap:8px}
+#mesas-consumo-ventana #module-ventas .ventas-total{margin-top:0;padding:12px 16px}
+#mesas-consumo-ventana #module-ventas .ventas-total-value{font-size:38px}
+/* Densidad del despacho: más catálogo y más líneas sin perder los nombres. */
+#mesas-consumo-ventana .mesas-consumo-cabecera{padding:10px 16px}
+#mesas-consumo-ventana .mesas-consumo-cabecera h2{font-size:19px;margin-top:2px}
+#mesas-consumo-ventana #module-ventas{padding:12px 16px}
+#mesas-consumo-ventana #module-ventas .ventas-layout{gap:14px}
+#mesas-consumo-ventana #module-ventas .sales-catalog-panel{padding:10px;gap:10px}
+#mesas-consumo-ventana #module-ventas .sales-catalog-filters{display:none!important}
+#mesas-categorias{display:flex;flex-wrap:wrap;gap:6px}
+#mesas-categorias button{padding:7px 13px;border-radius:7px;border:1px solid var(--tc-border,#39405a);background:var(--tc-surface,#1c2233);color:var(--tc-text,#e5e9f5);font:inherit;font-size:13px;cursor:pointer}
+#mesas-categorias button[aria-pressed="true"]{background:#6955f5;color:#fff;border-color:#6955f5}
+#mesas-categorias:empty{display:none}
+#mesas-consumo-ventana #module-ventas .sales-catalog-grid{grid-template-columns:repeat(auto-fill,minmax(116px,1fr));gap:8px}
+#mesas-consumo-ventana #module-ventas .sales-product-card{grid-template-rows:66px auto}
+#mesas-consumo-ventana #module-ventas .sales-product-media{height:66px;min-height:0;padding:5px}
+#mesas-consumo-ventana #module-ventas .sales-product-image{height:56px;max-height:56px;width:100%;object-fit:contain}
+#mesas-consumo-ventana #module-ventas .sales-product-body{padding:6px;gap:2px}
+#mesas-consumo-ventana #module-ventas .sales-product-name{font-size:12px;line-height:1.25}
+#mesas-consumo-ventana #module-ventas .sales-product-price{font-size:14px}
+#mesas-consumo-ventana #module-ventas .sales-product-stock{font-size:10px}
+#mesas-consumo-ventana #module-ventas .sale-table tbody{padding:6px}
+#mesas-consumo-ventana #module-ventas .sale-table tr:not(.empty-row){padding:8px 10px;gap:4px 8px;margin-bottom:6px}
+#mesas-consumo-ventana #module-ventas .sale-item-name{font-size:15px;line-height:1.3}
+#mesas-consumo-ventana #module-ventas .sale-table td.col-total{font-size:16px}
+#mesas-consumo-ventana #module-ventas .sale-qty-btn{width:34px;height:34px}
+#mesas-consumo-ventana #module-ventas .sale-table .qty-input{width:36px;height:34px;font-size:14px}
+#mesas-consumo-ventana #module-ventas .ventas-side{gap:8px}
+#mesas-consumo-ventana #module-ventas .ventas-summary{padding:8px 12px;gap:5px 14px}
+#mesas-consumo-ventana #module-ventas .ventas-total{padding:8px 12px}
+#mesas-consumo-ventana #module-ventas .ventas-total-value{font-size:32px}
+.mesas-consumo-pie{padding:10px 16px}
+#mesas-consumo-ventana #mesas-cuenta-barra{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:12px}
+#mesas-consumo-ventana #mesas-cuenta-mesero{grid-column:1;justify-self:start;margin:0;min-width:0;width:180px;max-width:100%}
+.mesas-acciones-centrales{grid-column:2;display:flex;align-items:center;justify-content:center;gap:8px}
+#mesas-cuenta-barra .mesas-acciones-centrales button{display:flex;align-items:center;justify-content:center;gap:16px;white-space:nowrap;padding:14px 24px;min-width:180px;min-height:52px;font-size:15px}
+#mesas-cuenta-barra #mesas-guardar-consumo{min-width:250px}
+#mesas-cuenta-barra #mesas-cobrar{min-width:180px}
+.mesas-acciones-centrales kbd{font:inherit;font-size:12px;font-weight:600;opacity:.85;border:1px solid currentColor;border-radius:4px;padding:2px 6px}
+@media(max-width:950px){#mesas-consumo-ventana #mesas-cuenta-barra{grid-template-columns:1fr}.mesas-acciones-centrales{grid-column:1;flex-wrap:wrap;justify-self:center}#mesas-consumo-ventana #mesas-cuenta-mesero{width:150px}.mesas-acciones-centrales kbd{font-size:9px}}
+@media(max-width:950px){#mesas-consumo-ventana #module-ventas .ventas-layout{grid-template-columns:minmax(0,1fr) 360px;gap:12px}#mesas-consumo-ventana #module-ventas{padding:12px}.mesas-consumo-cabecera{padding:12px}}
+@media(max-width:680px){#mesas-consumo-ventana #module-ventas .ventas-layout{display:flex;flex-direction:column;overflow:auto}#mesas-consumo-ventana #module-ventas .ventas-main{min-height:250px;flex:none}#mesas-consumo-ventana #module-ventas .ventas-side{overflow:visible;min-height:360px}#mesas-consumo-ventana #module-ventas .sale-order-panel{min-height:160px}.mesas-consumo-pie{padding:10px}#mesas-cuenta-barra{gap:6px}#mesas-cuenta-barra button{padding:10px;font-size:12px}}
+/* Ventanas propias del plano (meseros y elegir cuenta): el plano va por encima de los modales de la app. */
+.mesas-pantalla.mesas-dialogo-fondo{position:fixed;inset:0;z-index:5100;display:grid;place-items:center;padding:16px;gap:0;background:rgba(8,10,18,.55)}
+.mesas-dialogo{width:min(460px,100%);max-height:calc(100% - 32px);overflow:auto;display:flex;flex-direction:column;gap:12px;padding:20px;border:1px solid var(--tc-border-soft,#30364a);border-radius:14px;background:var(--tc-surface,#1c2233);color:var(--tc-text,#e5e9f5);box-shadow:0 24px 60px rgba(0,0,0,.35)}
+.mesas-dialogo h3{margin:0;font-size:18px}
+.mesas-dialogo-nota{margin:0;font-size:13px;color:var(--tc-text-2,#96a1b8)}
+.mesas-dialogo-botones{display:flex;justify-content:flex-end;gap:8px}
+.mesas-dialogo-opciones{display:flex;flex-direction:column;gap:8px}
+.mesas-pantalla .mesas-dialogo-opciones button{display:flex;justify-content:space-between;align-items:center;text-align:left}
+.mesas-dialogo-opciones small,.mesas-meseros-lista small{color:var(--tc-text-2,#96a1b8);font-size:12px}
+.mesas-meseros-lista{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px;max-height:240px;overflow:auto}
+.mesas-meseros-lista li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--tc-border-soft,#30364a);border-radius:8px}
+.mesas-meseros-lista li.inactivo>span{opacity:.6}
+.mesas-meseros-lista li.vacio{justify-content:center;color:var(--tc-text-2,#96a1b8);font-size:13px}
+.mesas-pantalla .mesas-meseros-lista button{padding:6px 10px;font-size:12px}
+.mesas-meseros-nuevo{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end}
+.mesas-meseros-nuevo label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--tc-text-2,#96a1b8)}
+.mesas-meseros-nuevo input{width:100%;padding:9px 10px;border:1px solid var(--tc-border,#39405a);border-radius:8px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font:inherit;font-size:14px}
+@media(max-width:520px){.mesas-meseros-nuevo{grid-template-columns:1fr}}
+/* Reservaciones (js/mesas-reservas.js): mesa reservada en ámbar y aviso con la hora. */
+.mesas-punto.reservada{background:#f5a524}
+.is-reserved .mesas-elemento-estado{background:#f5a524;box-shadow:0 0 0 1px #c47f0a,0 0 5px #f5a52466}
+.mesas-pantalla .is-reserved .mesas-elemento-nombre{background:#fff6e5;color:#8a5300;border:1px solid #f1c56f}
+.mesas-pantalla .mesas-reserva-chip{position:absolute;bottom:calc(100% + 3px);left:50%;transform:translateX(-50%) rotate(var(--mesas-giro-inverso,0deg));z-index:2;padding:2px 6px;border-radius:999px;font-size:calc(10px * var(--mesas-texto-factor,1));font-weight:700;line-height:1.2;white-space:nowrap;pointer-events:none;background:#fff6e5;color:#8a5300;border:1px solid #f1c56f}
+.mesas-pantalla .mesas-reserva-chip.is-abajo{bottom:auto;top:calc(100% + 3px)}
+.mesas-pantalla .mesas-reserva-chip.is-vigente{background:#f5a524;color:#1f1300;border-color:#c47f0a}
+.mesas-atrasada{color:#e5484d;font-style:normal;font-weight:700}
+.mesas-pantalla .mesas-plano-herramientas>button .mesas-estado-cantidad{margin-left:6px;height:20px;min-width:22px;font-size:12px}
+.mesas-dialogo.mesas-dialogo--ancho{width:min(760px,100%)}
+.mesas-reserva-ficha{display:flex;flex-direction:column;gap:4px;padding:12px;border:1px solid #f1c56f;border-radius:10px;background:color-mix(in srgb,#f5a524 10%,transparent)}
+.mesas-reserva-ficha strong{font-size:18px}
+.mesas-reserva-ficha span{font-size:13px;color:var(--tc-text-2,#96a1b8)}
+.mesas-reserva-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:end}
+.mesas-reserva-form .mesas-campo-ancho{grid-column:1/-1}
+.mesas-reserva-form label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--tc-text-2,#96a1b8)}
+.mesas-reserva-form input,.mesas-reserva-form select{width:100%;padding:9px 10px;border:1px solid var(--tc-border,#39405a);border-radius:8px;background:var(--tc-bg,#10131d);color:var(--tc-text,#e5e9f5);font:inherit;font-size:14px}
+.mesas-reserva-lista{display:flex;flex-direction:column;gap:6px;max-height:300px;overflow:auto}
+.mesas-reserva-lista h4{margin:8px 0 2px;font-size:13px;text-transform:capitalize}
+.mesas-reserva-lista ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.mesas-reserva-lista li{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--tc-border-soft,#30364a);border-radius:8px}
+.mesas-reserva-hora{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap}
+.mesas-reserva-datos{display:flex;flex-direction:column;min-width:0}
+.mesas-reserva-datos small{font-size:12px;color:var(--tc-text-2,#96a1b8);overflow-wrap:anywhere}
+.mesas-reserva-acciones{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+.mesas-pantalla .mesas-reserva-acciones button{padding:5px 9px;font-size:12px}
+.mesas-reserva-vacia{margin:4px 0 0;font-size:13px;color:var(--tc-text-2,#96a1b8)}
+@media(max-width:560px){.mesas-reserva-form{grid-template-columns:1fr}.mesas-reserva-lista li{grid-template-columns:1fr}.mesas-reserva-acciones{justify-content:flex-start}}
+/* Anticipo de la reserva (opcional) y constancia. */
+.mesas-anticipo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0;padding:10px 12px 12px;border:1px dashed var(--tc-border,#39405a);border-radius:10px}
+.mesas-anticipo legend{padding:0 6px;font-size:13px;font-weight:700;color:var(--tc-text,#e5e9f5)}
+.mesas-anticipo legend small{font-weight:500;color:var(--tc-text-2,#96a1b8)}
+.mesas-anticipo-detalle{display:flex;flex-direction:column;gap:8px}
+.mesas-anticipo-detalle[hidden]{display:none}
+.mesas-reserva-form label.mesas-check{flex-direction:row;align-items:center;gap:8px;font-size:13px;color:var(--tc-text,#e5e9f5);cursor:pointer}
+.mesas-reserva-form label.mesas-check input{width:18px;height:18px;padding:0;accent-color:#16a34a}
+.mesas-reserva-anticipo{display:block;margin-top:2px;font-size:12px;font-weight:600;color:var(--tc-success-text,#15803d)}
+.mesas-reserva-ficha .mesas-reserva-anticipo{color:var(--tc-success-text,#15803d)}
+.mesas-reserva-lista h4.mesas-reserva-alerta{color:#c2410c}
+.mesas-pantalla .mesas-plano-herramientas>button .mesas-estado-cantidad.mesas-alerta{border-color:#f59e0b;background:#fff7ed;color:#9a3412;min-width:auto}
+.mesas-constancia{max-height:min(60vh,520px);overflow:auto;padding:14px;border-radius:10px;background:#fff;color:#111;box-shadow:inset 0 0 0 1px #e5e7eb}
+.mesas-constancia-hoja{font-family:'Courier New',monospace;font-size:13px;max-width:360px;margin:0 auto}
+.mesas-constancia-hoja h4{margin:0 0 2px;text-align:center;font-size:16px}
+.mesas-constancia-hoja h5{margin:10px 0 4px;padding-bottom:2px;border-bottom:1px dashed #555;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.mesas-constancia-hoja p{margin:3px 0;font-size:12px}
+.mesas-constancia-centro{text-align:center}
+.mesas-constancia-fila{display:flex;justify-content:space-between;gap:12px}
+.mesas-constancia-fila span:last-child{text-align:right;overflow-wrap:anywhere}
+.mesas-constancia-fila.is-negrita{font-weight:700}
+#mesas-cuenta-barra .mesas-cuenta-anticipo{grid-column:3;grid-row:1;justify-self:end;padding:8px 12px;border-radius:999px;border:1px solid #86efac;background:#f0fdf4;color:#166534;font-size:13px;font-weight:700;white-space:nowrap}
+@media(max-width:950px){#mesas-cuenta-barra .mesas-cuenta-anticipo{grid-column:auto;grid-row:auto;justify-self:center}}
+/* Biblioteca por grupos plegables (js/mesas-elementos.js). */
+.mesas-elementos-grupo{margin-top:16px}
+.mesas-elementos-grupo>summary{display:flex;align-items:center;gap:6px;margin:0 0 10px;cursor:pointer;list-style:none;font-size:12px;font-weight:650;color:var(--tc-text,#e5e9f5);user-select:none}
+.mesas-elementos-grupo>summary::-webkit-details-marker{display:none}
+.mesas-elementos-grupo>summary::before{content:'';width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg) translate(-1px,-1px);transition:transform .15s ease;opacity:.7}
+.mesas-elementos-grupo:not([open])>summary::before{transform:rotate(-45deg)}
+.mesas-elementos-grupo>summary span{margin-left:auto;min-width:22px;padding:1px 6px;border-radius:999px;background:var(--tc-bg,#10131d);color:var(--tc-text-2,#96a1b8);font-size:10px;font-weight:600;text-align:center}
+.mesas-elementos-grupo>summary:focus-visible{outline:2px solid var(--tc-primary,#7868fc);outline-offset:2px;border-radius:4px}

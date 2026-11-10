@@ -1,5 +1,24 @@
 ﻿// ===== TECNO_CAJA - UI HELPERS =====
 
+// alert()/confirm() nativos en la app de escritorio (Windows): al cerrarse,
+// la ventana queda sin foco de teclado y los campos de texto "no responden"
+// hasta un rato después o hasta cambiar de ventana. Tras cada uno se le
+// devuelve el foco (electron/main.js, 'ventana:reenfocar'). Para pedir datos
+// se usan showPromptModal/showFormModal: prompt() no existe en Electron.
+(function reenfocarTrasDialogosNativos() {
+  if (typeof window === 'undefined' || window.__tcDialogosReenfocan) return;
+  window.__tcDialogosReenfocan = true;
+  for (const nombre of ['alert', 'confirm']) {
+    const original = typeof window[nombre] === 'function' ? window[nombre].bind(window) : null;
+    if (!original) continue;
+    window[nombre] = function dialogoNativo(...args) {
+      try { return original(...args); } finally {
+        try { window.novaDesktop?.reenfocarVentana?.(); } catch (_) { /* fuera de Electron no aplica */ }
+      }
+    };
+  }
+}());
+
 function showToast(msg, type = 'success', durationMs = null) {
   let t = document.getElementById('toast');
   if (!t) {
@@ -160,51 +179,90 @@ window.showDeleteConfirm = showDeleteConfirm;
  * aparece y devuelve null de inmediato), a diferencia de alert/confirm que
  * sí muestran un diálogo nativo. Mismo patrón en-página que showDeleteConfirm.
  * Devuelve el texto ingresado, o null si se canceló.
+ * No usar prompt() en la app: siempre showPromptModal o showFormModal.
  */
-function showPromptModal(message, { defaultValue = '', inputType = 'text', confirmText = 'Aceptar', cancelText = 'Cancelar' } = {}) {
+function showPromptModal(message, { defaultValue = '', inputType = 'text', confirmText = 'Aceptar', cancelText = 'Cancelar', placeholder = '' } = {}) {
+  return showFormModal(message, [{ name: 'valor', type: inputType, value: defaultValue, placeholder }], { confirmText, cancelText })
+    .then((valores) => (valores ? valores.valor : null));
+}
+window.showPromptModal = showPromptModal;
+
+/**
+ * Varios datos en una sola ventana (lo que antes eran prompt() seguidos).
+ * campos: [{ name, label, type = 'text', value, placeholder, required, min, step }]
+ * Devuelve { name: valor } o null si se canceló. Los textos se escapan.
+ */
+function showFormModal(titulo, campos = [], { confirmText = 'Aceptar', cancelText = 'Cancelar', descripcion = '' } = {}) {
+  const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
+    overlay.className = 'tc-form-modal-fondo';
+    // Por encima de los modales de Servicios (9999) y del plano de Mesas (5000).
     overlay.style.cssText = [
       'position:fixed', 'inset:0',
       'background:rgba(6,8,16,0.88)',
-      'z-index:5000',
+      'z-index:10050',
       'display:flex', 'align-items:center', 'justify-content:center',
     ].join(';');
+    const unSoloCampo = campos.length === 1 && !campos[0].label;
     overlay.innerHTML = `
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem 1.75rem;max-width:360px;width:92%;box-shadow:var(--card-shadow)">
-        <p style="margin:0 0 0.85rem;color:var(--text);line-height:1.6;font-size:0.95rem">${message}</p>
-        <input type="${inputType}" class="form-input" data-role="prompt-input" style="width:100%;margin-bottom:1.25rem" value="${defaultValue}">
+      <form role="dialog" aria-modal="true" aria-label="${esc(titulo)}" novalidate style="background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem 1.75rem;max-width:${campos.length > 1 ? 420 : 360}px;width:92%;box-shadow:var(--card-shadow);color:var(--text)">
+        <p style="margin:0 0 0.85rem;line-height:1.6;font-size:0.95rem;${unSoloCampo ? '' : 'font-weight:600'}">${esc(titulo)}</p>
+        ${descripcion ? `<p style="margin:-0.4rem 0 0.85rem;color:var(--text2);font-size:0.85rem;line-height:1.5">${esc(descripcion)}</p>` : ''}
+        ${campos.map((c, i) => `
+          <label style="display:flex;flex-direction:column;gap:0.3rem;margin-bottom:${i === campos.length - 1 ? '1.25rem' : '0.75rem'};font-size:0.85rem;color:var(--text2)">
+            ${c.label ? esc(c.label) : ''}
+            <input class="form-input" name="${esc(c.name)}" type="${esc(c.type || 'text')}" value="${esc(c.value ?? '')}"
+              ${c.placeholder ? `placeholder="${esc(c.placeholder)}"` : ''} ${c.min !== undefined ? `min="${esc(c.min)}"` : ''} ${c.step !== undefined ? `step="${esc(c.step)}"` : (c.type === 'number' ? 'step="any"' : '')}
+              ${c.type === 'password' ? 'autocomplete="off"' : ''} style="width:100%">
+          </label>`).join('')}
+        <p data-role="form-error" style="display:none;margin:-0.6rem 0 1rem;color:var(--danger);font-size:0.85rem"></p>
         <div style="display:flex;gap:0.75rem;justify-content:flex-end">
-          <button class="btn-secondary" data-action="cancel">${cancelText}</button>
-          <button class="btn-primary" data-action="ok">${confirmText}</button>
+          <button type="button" class="btn-secondary" data-action="cancel">${esc(cancelText)}</button>
+          <button type="submit" class="btn-primary" data-action="ok">${esc(confirmText)}</button>
         </div>
-      </div>
+      </form>
     `;
     document.body.appendChild(overlay);
 
-    const input = overlay.querySelector('[data-role="prompt-input"]');
-    const cancelBtn = overlay.querySelector('[data-action="cancel"]');
-    const okBtn = overlay.querySelector('[data-action="ok"]');
-    input.focus();
-    input.select();
+    const form = overlay.querySelector('form');
+    const errorEl = overlay.querySelector('[data-role="form-error"]');
+    const primero = form.querySelector('input');
+    primero?.focus();
+    primero?.select?.();
 
     function close(result) {
       document.removeEventListener('keydown', onKey, true);
-      if (overlay.parentNode) document.body.removeChild(overlay);
+      overlay.remove();
       resolve(result);
     }
-
+    // En captura, para que los atajos de la app (Enter en Ventas, etc.) no actúen detrás.
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(null); }
-      if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); close(input.value); }
+      if (e.key === 'Enter' && !(overlay.contains(e.target) && e.target.tagName === 'BUTTON')) { e.preventDefault(); e.stopPropagation(); form.requestSubmit(); }
     }
-
-    cancelBtn.addEventListener('click', () => close(null));
-    okBtn.addEventListener('click', () => close(input.value));
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const valores = {};
+      for (const c of campos) {
+        const input = form.elements.namedItem(c.name);
+        const valor = String(input?.value ?? '');
+        if (c.required && !valor.trim()) {
+          errorEl.textContent = `Completa «${c.label || titulo}».`;
+          errorEl.style.display = '';
+          input?.focus();
+          return;
+        }
+        valores[c.name] = valor;
+      }
+      close(valores);
+    });
+    overlay.querySelector('[data-action="cancel"]').addEventListener('click', () => close(null));
     document.addEventListener('keydown', onKey, true);
   });
 }
-window.showPromptModal = showPromptModal;
+window.showFormModal = showFormModal;
 
 // Keyboard shortcuts
 window.addEventListener('keydown', function(e) {

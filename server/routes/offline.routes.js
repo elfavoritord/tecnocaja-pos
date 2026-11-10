@@ -436,23 +436,29 @@ module.exports = function createOfflineRouter(deps) {
          LEFT JOIN roles r ON r.id = u.role_id
          WHERE u.estado = 'Activo' LIMIT 500`
       );
+      // Permisos propios aparte: si la columna aún no existe, no se rompe el caché.
+      const permisosPropios = new Map();
+      try {
+        for (const p of await query('SELECT id, permisos_usuario FROM users WHERE permisos_usuario IS NOT NULL')) permisosPropios.set(Number(p.id), p.permisos_usuario);
+      } catch (_) { /* base anterior a los permisos por usuario */ }
       for (const u of (usuarios || [])) {
         await localQuery(
           `INSERT INTO offline_cache_users
              (user_id, usuario, nombre, rol, password_hash, puede_vender, puede_cobrar, puede_ver_reportes,
-              role_id, role_code, role_name, role_permissions, branch_id, cash_register_id, last_updated)
-           VALUES (?, ?, ?, ?, ?, 1, 1, 1, ?, ?, ?, ?, ?, ?, datetime('now'))
+              role_id, role_code, role_name, role_permissions, branch_id, cash_register_id, permisos_usuario, last_updated)
+           VALUES (?, ?, ?, ?, ?, 1, 1, 1, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(user_id) DO UPDATE SET
              usuario=excluded.usuario, nombre=excluded.nombre, rol=excluded.rol,
              password_hash=excluded.password_hash,
              role_id=excluded.role_id, role_code=excluded.role_code, role_name=excluded.role_name,
              role_permissions=excluded.role_permissions, branch_id=excluded.branch_id,
-             cash_register_id=excluded.cash_register_id, last_updated=excluded.last_updated`,
+             cash_register_id=excluded.cash_register_id, permisos_usuario=excluded.permisos_usuario,
+             last_updated=excluded.last_updated`,
           [
             u.id, u.usuario, u.nombre, u.rol, u.password_hash || '',
             u.role_id ?? null, u.role_code || null, u.role_name || null,
             typeof u.role_permissions === 'string' ? u.role_permissions : JSON.stringify(u.role_permissions || []),
-            u.branch_id ?? null, u.cash_register_id ?? null
+            u.branch_id ?? null, u.cash_register_id ?? null, permisosPropios.get(Number(u.id)) ?? null
           ]
         );
         usersCached++;

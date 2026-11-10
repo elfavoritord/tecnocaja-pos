@@ -182,3 +182,7 @@ llenado B06/
 # Vistas previas temporales de facturas/reportes (salida de trabajo, no código)
 _preview-*.html
 _preview-*.pdf
+
+# Datos locales del negocio de demostración POS
+runtime-data/demo-pos/
+runtime-data/auditoria-respaldos/

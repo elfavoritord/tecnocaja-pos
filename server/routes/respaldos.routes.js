@@ -33,7 +33,7 @@ const {
   buildFullPayload,
   createTcbakBuffer,
   parseTcbakBuffer,
-  restorePayloadToDb,
+  restorePayloadToDb: restorePayloadBase,
 } = require('../services/backup-core');
 
 // Permiso para restaurar desde la pantalla de inicio encima de un negocio ya
@@ -45,24 +45,22 @@ const DEFAULT_BACKUP_RETENTION = 5; // cuántos .tcbak conservar automáticament
 // ─── R2 Storage helpers ───────────────────────────────────────────────────────
 const r2 = require('../services/r2-storage');
 const retencion = require('../services/retencion-respaldos');
+const backupPolicy = require('../services/backup-policy');
+const uploadState = require('../services/backup-upload-state');
+const runningBackups = new WeakMap();
+function serializeBackup(query, work) {
+  const next = (runningBackups.get(query) || Promise.resolve()).catch(() => {}).then(work);
+  runningBackups.set(query, next);
+  return next.finally(() => { if (runningBackups.get(query) === next) runningBackups.delete(query); });
+}
 
 /**
  * Devuelve el businessId canónico para paths en R2.
- * Prioridad: TECNO_CAJA_LICENSE_UID > config.business_id > 'default'
- * Siempre devuelve un string no vacío y limpio.
+ * Prioridad: autorización original > UUID persistente de empresa.
+ * Un ID numérico local (habitualmente 1) no identifica una empresa en la nube.
  */
 async function resolveBusinessId(queryFn) {
-  const envUid = (process.env.TECNO_CAJA_LICENSE_UID || '').trim();
-  if (envUid) return envUid;
-
-  try {
-    const rows = await queryFn('SELECT business_id FROM config LIMIT 1');
-    const raw  = rows[0]?.business_id;
-    const str  = String(raw || '').trim();
-    if (str && str !== '0') return str;
-  } catch (_) {}
-
-  return 'default';
+  return backupPolicy.assertCloudIdentity(await backupPolicy.context(queryFn));
 }
 
 /**
@@ -90,337 +88,7 @@ function leerPermisoDueno(token) {
   return jwt.verify(token, SECRETO_PERMISO_DUENO);
 }
 
-// ─── Registrar en backup_history ─────────────────────────────────────────────
-async function recordHistory(query, row) {
-  try {
-    await query(
-      `INSERT INTO backup_history
-       (file_name, file_path, storage_path, file_size, sha256, tipo, estado,
-        business_name, business_id, system_version,
-        productos_count, clientes_count, ventas_count,
-        created_by, device_name, firestore_id, error_message, observacion, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [
-        row.fileName     || '',
-        row.filePath     || null,
-        row.storagePath  || null,
-        row.fileSize     || 0,
-        row.sha256       || null,
-        row.tipo         || 'local',
-        row.estado       || 'completado',
-        row.businessName || '',
-        row.businessId   || '',
-        row.version      || '',
-        row.productos    || 0,
-        row.clientes     || 0,
-        row.ventas       || 0,
-        row.createdBy    || 'sistema',
-        row.device       || os.hostname(),
-        row.firestoreId  || null,
-        row.errorMsg     || null,
-        row.observacion  || null,
-      ]
-    );
-  } catch (_) { /* non-fatal */ }
-}
-
-function normalizeRetentionCount(value) {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_BACKUP_RETENTION;
-  return Math.min(50, Math.max(3, parsed));
-}
-
-async function getBackupRetentionCount(query) {
-  const rows = await query(
-    'SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1',
-    ['backup_retener_cantidad']
-  ).catch(() => []);
-  return normalizeRetentionCount(rows[0]?.config_value);
-}
-
-// ─── Limpiar respaldos viejos (local y nube, mismas reglas) ─────────────────
-// Automáticos: solo la copia de hoy y la del día anterior. Manuales y PRE-…:
-// los `keepCount` más recientes. Ver server/services/retencion-respaldos.js.
-function pruneLocalBackups(dir, keepCount = DEFAULT_BACKUP_RETENTION) {
-  const files = listLocalBackups(dir).filter(f => f.name.endsWith('.tcbak'));
-  const borrar = new Set(retencion.aBorrar(
-    files.map(f => ({ nombre: f.name, fecha: f.mtime })),
-    { otrosMax: normalizeRetentionCount(keepCount) }
-  ));
-  files.filter(f => borrar.has(f.name)).forEach(f => {
-    try { fs.unlinkSync(f.path); } catch (_) {}
-  });
-}
-
-async function pruneCloudBackups(businessId, keepCount = DEFAULT_BACKUP_RETENTION) {
-  const prefix = r2.backupPrefix(businessId);
-  const objects = (await r2.listObjects(prefix)).filter(o => (o.Key || '').endsWith('.tcbak'));
-  const borrar = new Set(retencion.aBorrar(
-    objects.map(o => ({ nombre: path.basename(o.Key), fecha: o.LastModified })),
-    { otrosMax: normalizeRetentionCount(keepCount) }
-  ));
-  for (const old of objects.filter(o => borrar.has(path.basename(o.Key)))) {
-    try { await r2.remove(old.Key); } catch (_) {}
-  }
-}
-
-// La nube está configurada en esta PC (llave de Backblaze/R2 en app.env).
-function nubeConfigurada() {
-  return Boolean(String(process.env.R2_ACCESS_KEY_ID || '').trim() && String(process.env.R2_SECRET_ACCESS_KEY || '').trim());
-}
-
-// Números del último respaldo diario bueno, FUERA de la base (junto a los
-// respaldos): si la base se pierde y arranca en blanco, todavía se sabe que
-// antes tenía datos y el respaldo vacío no pisa el bueno.
-const ARCHIVO_ULTIMO_DIARIO = '.ultimo-diario.json';
-function leerUltimoDiario(dir) {
-  try { return JSON.parse(fs.readFileSync(path.join(dir, ARCHIVO_ULTIMO_DIARIO), 'utf8')); } catch (_) { return null; }
-}
-function guardarUltimoDiario(dir, datos) {
-  try { fs.writeFileSync(path.join(dir, ARCHIVO_ULTIMO_DIARIO), JSON.stringify(datos)); } catch (_) { /* solo es una referencia */ }
-}
-
-// Disparadores que SIEMPRE rehacen la copia del día (cierres, la revisión
-// diaria y antes de actualizar). Los demás (cambios de productos y clientes)
-// la rehacen como mucho cada 15 minutos.
-const DISPARADORES_DE_CIERRE = new Set(['cierre_app', 'cierre_caja', 'cierre_dia', 'diario', 'actualizacion_sistema', 'manual']);
-const ESPERA_ENTRE_COPIAS_MS = 15 * 60 * 1000;
-
-// Respaldo automático = la copia del día (local y Backblaze). Cada uno del
-// mismo día la reemplaza con los datos más recientes; quedan solo la de hoy y
-// la del día anterior.
-// deferCloud: guarda local y deja la copia en la nube "pendiente" para el
-// ciclo de subidas (cada 10 min). Lo usa el respaldo previo a una
-// actualización, que no debe esperar a Internet.
-async function createAutomaticBackup({ query, trigger = 'manual', forceCloud = false, deferCloud = false } = {}) {
-  const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
-
-  // Verificar si el auto-backup del trigger específico está habilitado.
-  // 'cierre_dia' se rige por backup_auto_diario; 'cierre_caja' por
-  // backup_al_cerrar_caja. El resto de triggers (cierre_app, cambios de
-  // producto/cliente) siempre corren — son eventos puntuales, no un cron.
-  const TRIGGER_CONFIG_KEY = { cierre_dia: 'backup_auto_diario', diario: 'backup_auto_diario', cierre_caja: 'backup_al_cerrar_caja' };
-  const cfgKey = TRIGGER_CONFIG_KEY[trigger];
-  if (cfgKey && !forceCloud) {
-    const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', [cfgKey]).catch(() => []);
-    const autoEnabled = (cfgRows[0]?.config_value || '1') !== '0';
-    if (!autoEnabled) {
-      return { ok: true, skipped: true, reason: `Auto-backup (${trigger}) deshabilitado.` };
-    }
-  }
-
-  const backupDir  = ensureDir(getDefaultBackupDir());
-  const hoy        = retencion.fechaLocal();
-  if (!DISPARADORES_DE_CIERRE.has(trigger)) {
-    const deHoy = listLocalBackups(backupDir).find(f => retencion.esDiario(f.name) && f.name.endsWith(`_${hoy}.tcbak`));
-    if (deHoy && Date.now() - new Date(deHoy.mtime).getTime() < ESPERA_ENTRE_COPIAS_MS) {
-      return { ok: true, skipped: true, reason: 'La copia de hoy se hizo hace menos de 15 minutos.' };
-    }
-  }
-
-  const payload    = await buildFullPayload(query);
-  const retentionCount = await getBackupRetentionCount(query);
-  const numeros = {
-    usuarios: Array.isArray(payload?.data?.users) ? payload.data.users.length : 0,
-    productos: Number(payload.stats?.productos || 0),
-    ventas: Number(payload.stats?.ventas || 0),
-  };
-  // Parece una base vacía o reiniciada: se guarda aparte para revisarla y no
-  // reemplaza la copia buena del día ni hace borrar la de ayer.
-  const paraRevisar = retencion.pareceVacio(numeros, leerUltimoDiario(backupDir));
-  const fileName   = paraRevisar
-    ? retencion.nombreRevisar(payload.businessName)
-    : retencion.nombreDiario(payload.businessName);
-  const fileBuffer = await createTcbakBuffer(payload, securityPwd);
-  const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
-  const filePath   = path.join(backupDir, fileName);
-  writeFileAtomic(filePath, fileBuffer);
-  if (!paraRevisar) {
-    guardarUltimoDiario(backupDir, { fecha: hoy, ...numeros });
-    pruneLocalBackups(backupDir, retentionCount);
-  }
-
-  // La copia del día también va a Backblaze cuando la nube está configurada
-  // (salvo que se haya apagado a propósito en Respaldos → "Subir a la nube").
-  const nubeRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_nube_auto']).catch(() => []);
-  const nubeAuto = nubeConfigurada() && (forceCloud || (nubeRows[0]?.config_value ?? '1') !== '0');
-
-  let estado = 'completado';
-  let storagePath = null;
-  if (nubeAuto && deferCloud) {
-    estado = 'pendiente_nube';
-  } else if (nubeAuto) {
-    try {
-      const businessId = await resolveBusinessId(query);
-      storagePath = r2.backupKey(businessId, fileName);
-      await r2.upload(storagePath, fileBuffer, {
-        businessId,
-        trigger,
-        sha256,
-        exportedAt: new Date().toISOString(),
-      });
-      if (!paraRevisar) await pruneCloudBackups(businessId, retentionCount);
-      estado = 'completado';
-    } catch (_) {
-      // Sin internet o R2 no configurado: conservar local y marcar pendiente.
-      estado = 'pendiente_nube';
-      storagePath = null;
-    }
-  }
-
-  await recordHistory(query, {
-    fileName, filePath, storagePath, sha256,
-    fileSize: fileBuffer.length,
-    tipo: nubeAuto && storagePath ? 'local_cloud' : 'automatico',
-    estado,
-    businessName: payload.businessName,
-    businessId:   payload.businessId,
-    version:      payload.systemVersion,
-    productos:    payload.stats.productos,
-    clientes:     payload.stats.clientes,
-    ventas:       payload.stats.ventas,
-    createdBy:    'sistema-auto',
-    observacion:  paraRevisar ? `Trigger: ${trigger} · parece una base vacía: no reemplazó la copia del día` : `Trigger: ${trigger}`,
-  });
-
-  return { ok: true, fileName, filePath, storagePath, sha256, estado, stats: payload.stats, paraRevisar };
-}
-
-// La copia del día aunque la app no se cierre ni se cierre caja (PC que pasa
-// días encendida): cada hora revisa si ya existe la de hoy.
-async function asegurarCopiaDelDia(query) {
-  const cfg = await query('SELECT setup_completed FROM config WHERE id = 1 LIMIT 1').catch(() => []);
-  if (!Number(cfg[0]?.setup_completed || 0)) return { ok: true, skipped: true, reason: 'Sin configurar.' };
-  const hoy = retencion.fechaLocal();
-  const dir = getDefaultBackupDir();
-  const yaEsta = listLocalBackups(dir).some(f => retencion.esDiario(f.name) && f.name.endsWith(`_${hoy}.tcbak`));
-  if (yaEsta) return { ok: true, skipped: true, reason: 'Ya hay copia de hoy.' };
-  return createAutomaticBackup({ query, trigger: 'diario' });
-}
-
-async function uploadPendingCloudBackups(query, limit = 5) {
-  const pendientes = await query(
-    `SELECT * FROM backup_history WHERE estado = 'pendiente_nube' ORDER BY created_at ASC LIMIT ?`,
-    [limit]
-  ).catch(() => []);
-
-  const resultados = [];
-  for (const row of pendientes) {
-    if (!row.file_path || !fs.existsSync(row.file_path)) {
-      resultados.push({ fileName: row.file_name, ok: false, error: 'Archivo local no encontrado.' });
-      continue;
-    }
-    try {
-      const fileBuffer = fs.readFileSync(row.file_path);
-      const businessId = await resolveBusinessId(query);
-      const storageKey = r2.backupKey(businessId, row.file_name);
-      await r2.upload(storageKey, fileBuffer, { businessId, recoveredFromPending: true });
-      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
-      await query('UPDATE backup_history SET estado = ?, tipo = ?, storage_path = ? WHERE id = ?', ['completado', 'local_cloud', storageKey, row.id]);
-      resultados.push({ fileName: row.file_name, ok: true, storageKey });
-    } catch (uploadErr) {
-      resultados.push({ fileName: row.file_name, ok: false, error: uploadErr.message });
-    }
-  }
-
-  return resultados;
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-//  FACTORY PRINCIPAL
-// ════════════════════════════════════════════════════════════════════════════
-module.exports = function createRespaldosRouter({
-  app, query, getActor, writeAuditLog, ensureAdministrator, isGlobalAdministratorUser, resolveRequestActorUser,
-  // Restaurar desde la nube en una PC recién instalada: la cuenta del dueño
-  // (idToken de Firebase → { email }) y sus negocios (licencias-del-dueno.js).
-  verificarCuentaDueno = null,
-  licenciasDelCorreo = null,
-  // Guarda valores en config/app.env (licencia de la PC, token de sucursal).
-  persistEnv = () => {},
-}) {
-  // Después de restaurar: si esta PC estaba enlazada como una sucursal y el
-  // respaldo es de otro negocio u otra sucursal, deja de hablar por ella (si
-  // no, mandaría los datos restaurados como si fueran de esa sucursal).
-  async function revisarEnlaceTrasRestaurar() {
-    const token = String(process.env.TECNO_CAJA_SYNC_TOKEN || '').trim();
-    if (!token) return null;
-    const filas = await query("SELECT config_value FROM installation_config WHERE config_key = 'multisucursal_enlace' LIMIT 1").catch(() => []);
-    let estado = {};
-    try { estado = JSON.parse(filas[0]?.config_value || '{}') || {}; } catch (_) { estado = {}; }
-    const branchUuid = String(estado?.sucursal?.branchUuid || '').trim().toLowerCase();
-    const misma = branchUuid
-      ? await query('SELECT id FROM branches WHERE LOWER(uuid) = ? LIMIT 1', [branchUuid]).catch(() => [])
-      : [];
-    if (misma.length) return { enlace: 'conservado' };
-    persistEnv({ TECNO_CAJA_SYNC_TOKEN: '' });
-    await query("UPDATE installation_config SET config_value = ? WHERE config_key = 'multisucursal_enlace'", [
-      JSON.stringify({ estado: 'sin_vincular', desvinculadoEn: new Date().toISOString(), motivo: 'Se restauró un respaldo de otro negocio o de otra sucursal.' }),
-    ]).catch(() => {});
-    console.warn('[respaldos] El respaldo restaurado no es de la sucursal enlazada: esta PC quedó desvinculada de la central.');
-    return { enlace: 'desvinculado' };
-  }
-
-  app.locals.createAutomaticBackup = (options = {}) => createAutomaticBackup({ query, ...options });
-  app.locals.uploadPendingCloudBackups = (limit = 5) => uploadPendingCloudBackups(query, limit);
-  if (!app.locals.backupPendingUploadTimer) {
-    app.locals.backupPendingUploadTimer = setInterval(() => {
-      uploadPendingCloudBackups(query, 5).catch(() => {});
-    }, 10 * 60 * 1000);
-    // El servidor HTTP mantiene vivo el proceso; el temporizador solo no.
-    if (typeof app.locals.backupPendingUploadTimer.unref === 'function') app.locals.backupPendingUploadTimer.unref();
-  }
-  if (!app.locals.copiaDelDiaTimer && process.env.NODE_ENV !== 'test') {
-    const revisar = () => asegurarCopiaDelDia(query).catch((e) => console.warn('[respaldos] Copia del día:', e.message));
-    app.locals.copiaDelDiaTimer = setInterval(revisar, 60 * 60 * 1000);
-    if (typeof app.locals.copiaDelDiaTimer.unref === 'function') app.locals.copiaDelDiaTimer.unref();
-    // La primera, unos minutos después de arrancar (no compite con el arranque).
-    const primera = setTimeout(revisar, 3 * 60 * 1000);
-    if (typeof primera.unref === 'function') primera.unref();
-  }
-
-  // ── Middleware de admin ──────────────────────────────────────────────────
-  async function adminOnly(req, res, next) {
-    try {
-      const user = await resolveRequestActorUser(req, { required: true });
-      if (!isGlobalAdministratorUser(user)) {
-        return res.status(403).json({ ok: false, error: 'Solo el administrador puede realizar esta acción.' });
-      }
-      req.authUser = user;
-      next();
-    } catch (e) {
-      res.status(401).json({ ok: false, error: e.message });
-    }
-  }
-
-  async function anyStaff(req, res, next) {
-    try {
-      const user = await resolveRequestActorUser(req, { required: true });
-      req.authUser = user;
-      next();
-    } catch (e) {
-      res.status(401).json({ ok: false, error: e.message });
-    }
-  }
-
-  // Copia del negocio actual antes de restaurar encima. Es una red de
-  // seguridad, no el objetivo de la restauración: si la BD actual está tan mal
-  // que ni se puede leer (la razón misma por la que alguien restauraría),
-  // devuelve null y la restauración sigue.
-  async function crearPreRespaldo(sufijo, securityPwd, origen) {
-    try {
-      const currentPayload = await buildFullPayload(query);
-      const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
-      const nombre = generateFilename(`${currentPayload.businessName}_${sufijo}`, currentPayload.systemVersion);
-      writeFileAtomic(path.join(ensureDir(getDefaultBackupDir()), nombre), currentBuf);
-      return nombre;
-    } catch (preBackupErr) {
-      console.warn(`[respaldos][${origen}] No se pudo crear el pre-backup del estado actual (se continúa con la restauración):`, preBackupErr.message);
-      return null;
-    }
-  }
-
-  // ── Asegurar tabla backup_history ────────────────────────────────────────
-  async function ensureBackupHistoryTable() {
+async function ensureBackupHistoryTable(query) {
     await query(`
       CREATE TABLE IF NOT EXISTS backup_history (
         id             INT AUTO_INCREMENT PRIMARY KEY,
@@ -475,21 +143,410 @@ module.exports = function createRespaldosRouter({
           created_at     DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at     DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-      `).catch(() => {});
+      `);
     });
   }
 
+
+// ─── Registrar en backup_history ─────────────────────────────────────────────
+async function recordHistory(query, row) {
+  try {
+    await query(
+      `INSERT INTO backup_history
+       (file_name, file_path, storage_path, file_size, sha256, tipo, estado,
+        business_name, business_id, system_version,
+        productos_count, clientes_count, ventas_count,
+        created_by, device_name, firestore_id, error_message, observacion, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      [
+        row.fileName     || '',
+        row.filePath     || null,
+        row.storagePath  || null,
+        row.fileSize     || 0,
+        row.sha256       || null,
+        row.tipo         || 'local',
+        row.estado       || 'completado',
+        row.businessName || '',
+        row.businessId   || '',
+        row.version      || '',
+        row.productos    || 0,
+        row.clientes     || 0,
+        row.ventas       || 0,
+        row.createdBy    || 'sistema',
+        row.device       || os.hostname(),
+        row.firestoreId  || null,
+        row.errorMsg     || null,
+        row.capturedAt ? JSON.stringify({ note: row.observacion || '', capturedAt: row.capturedAt, formatVersion: row.formatVersion }) : row.observacion || null,
+      ]
+    );
+  } catch (e) { throw new Error(`La copia local se conserva, pero no se pudo registrar para seguimiento: ${e.message}`); }
+}
+
+function normalizeRetentionCount(value) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_BACKUP_RETENTION;
+  return Math.min(50, Math.max(3, parsed));
+}
+
+async function getBackupRetentionCount(query) {
+  const rows = await query(
+    'SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1',
+    ['backup_retener_cantidad']
+  ).catch(() => []);
+  return normalizeRetentionCount(rows[0]?.config_value);
+}
+
+// ─── Limpiar respaldos viejos (local y nube, mismas reglas) ─────────────────
+// Automáticos: solo la copia de hoy y la del día anterior. Manuales y PRE-…:
+// los `keepCount` más recientes. Ver server/services/retencion-respaldos.js.
+function pruneLocalBackups(dir, keepCount = DEFAULT_BACKUP_RETENTION) {
+  const files = listLocalBackups(dir).filter(f => f.name.endsWith('.tcbak'));
+  const borrar = new Set(retencion.aBorrar(
+    files.map(f => ({ nombre: f.name, fecha: f.mtime })),
+    { otrosMax: normalizeRetentionCount(keepCount) }
+  ));
+  files.filter(f => borrar.has(f.name)).forEach(f => {
+    try { fs.unlinkSync(f.path); } catch (_) {}
+  });
+}
+
+async function pruneCloudBackups(businessId, keepCount = DEFAULT_BACKUP_RETENTION) {
+  const prefix = r2.backupPrefix(businessId);
+  const objects = (await r2.listObjects(prefix)).filter(o => (o.Key || '').endsWith('.tcbak'));
+  const borrar = new Set(retencion.aBorrar(
+    objects.map(o => ({ nombre: path.basename(o.Key), fecha: o.LastModified })),
+    { otrosMax: normalizeRetentionCount(keepCount) }
+  ));
+  for (const old of objects.filter(o => borrar.has(path.basename(o.Key)))) {
+    try { await r2.remove(old.Key); } catch (_) {}
+  }
+}
+
+// La nube está configurada en esta PC (llave de Backblaze/R2 en app.env).
+function nubeConfigurada() {
+  return typeof r2.isConfigured === 'function' ? r2.isConfigured() : Boolean(String(process.env.R2_ACCESS_KEY_ID || '').trim() && String(process.env.R2_SECRET_ACCESS_KEY || '').trim());
+}
+
+// Números del último respaldo diario bueno, FUERA de la base (junto a los
+// respaldos): si la base se pierde y arranca en blanco, todavía se sabe que
+// antes tenía datos y el respaldo vacío no pisa el bueno.
+const ARCHIVO_ULTIMO_DIARIO = '.ultimo-diario.json';
+function leerUltimoDiario(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, ARCHIVO_ULTIMO_DIARIO), 'utf8')); } catch (_) { return null; }
+}
+function guardarUltimoDiario(dir, datos) {
+  try { fs.writeFileSync(path.join(dir, ARCHIVO_ULTIMO_DIARIO), JSON.stringify(datos)); } catch (_) { /* solo es una referencia */ }
+}
+
+// Disparadores que SIEMPRE rehacen la copia del día (cierres, la revisión
+// diaria y antes de actualizar). Los demás (cambios de productos y clientes)
+// la rehacen como mucho cada 15 minutos.
+const DISPARADORES_DE_CIERRE = new Set(['cierre_app', 'cierre_caja', 'cierre_dia', 'diario', 'actualizacion_sistema', 'manual']);
+const ESPERA_ENTRE_COPIAS_MS = 15 * 60 * 1000;
+
+// Respaldo automático = la copia del día (local y Backblaze). Cada uno del
+// mismo día la reemplaza con los datos más recientes; quedan solo la de hoy y
+// la del día anterior.
+// deferCloud: guarda local y deja la copia en la nube "pendiente" para el
+// ciclo de subidas (cada 10 min). Lo usa el respaldo previo a una
+// actualización, que no debe esperar a Internet.
+function createAutomaticBackup(options = {}) { return serializeBackup(options.query, () => createAutomaticBackupWork(options)); }
+async function createAutomaticBackupWork({ query, trigger = 'manual', forceCloud = false, deferCloud = false, metadataPath } = {}) {
+  await ensureBackupHistoryTable(query);
+  const securityPwd = process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026';
+
+  // Verificar si el auto-backup del trigger específico está habilitado.
+  // 'cierre_dia' se rige por backup_auto_diario; 'cierre_caja' por
+  // backup_al_cerrar_caja. El resto de triggers (cierre_app, cambios de
+  // producto/cliente) siempre corren — son eventos puntuales, no un cron.
+  const TRIGGER_CONFIG_KEY = { cierre_dia: 'backup_auto_diario', diario: 'backup_auto_diario', cierre_caja: 'backup_al_cerrar_caja' };
+  const cfgKey = TRIGGER_CONFIG_KEY[trigger];
+  if (cfgKey && !forceCloud) {
+    const cfgRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', [cfgKey]).catch(() => []);
+    const autoEnabled = (cfgRows[0]?.config_value || '1') !== '0';
+    if (!autoEnabled) {
+      return { ok: true, skipped: true, reason: `Auto-backup (${trigger}) deshabilitado.` };
+    }
+  }
+
+  const backupDir  = ensureDir(await backupPolicy.directory(query));
+  const hoy        = retencion.fechaLocal();
+  if (!DISPARADORES_DE_CIERRE.has(trigger)) {
+    const deHoy = listLocalBackups(backupDir).find(f => retencion.esDiario(f.name) && f.name.endsWith(`_${hoy}.tcbak`));
+    if (deHoy && Date.now() - new Date(deHoy.mtime).getTime() < ESPERA_ENTRE_COPIAS_MS) {
+      return { ok: true, skipped: true, reason: 'La copia de hoy se hizo hace menos de 15 minutos.' };
+    }
+  }
+
+  const payload    = await buildFullPayload(query);
+  const retentionCount = await getBackupRetentionCount(query);
+  const numeros = {
+    usuarios: Array.isArray(payload?.data?.users) ? payload.data.users.length : 0,
+    productos: Number(payload.stats?.productos || 0),
+    ventas: Number(payload.stats?.ventas || 0),
+  };
+  // Parece una base vacía o reiniciada: se guarda aparte para revisarla y no
+  // reemplaza la copia buena del día ni hace borrar la de ayer.
+  const paraRevisar = retencion.pareceVacio(numeros, leerUltimoDiario(backupDir));
+  const fileName   = paraRevisar
+    ? retencion.nombreRevisar(payload.businessName)
+    : retencion.nombreDiario(payload.businessName);
+  const fileBuffer = await createTcbakBuffer(payload, securityPwd);
+  const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  const filePath   = path.join(backupDir, fileName);
+  writeFileAtomic(filePath, fileBuffer);
+  backupPolicy.remember(filePath, metadataPath, payload);
+  if (!paraRevisar) {
+    guardarUltimoDiario(backupDir, { fecha: hoy, ...numeros });
+    pruneLocalBackups(backupDir, retentionCount);
+  }
+
+  // La copia del día también va a Backblaze cuando la nube está configurada
+  // (salvo que se haya apagado a propósito en Respaldos → "Subir a la nube").
+  const nubeRows = await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_nube_auto']).catch(() => []);
+  const quiereNube = forceCloud || (nubeRows[0]?.config_value ?? '1') !== '0';
+  const nubeAuto = nubeConfigurada() && quiereNube;
+
+  let estado = quiereNube && !nubeConfigurada() ? 'pendiente_configuracion' : 'completado';
+  let storagePath = null;
+  if (nubeAuto && deferCloud) {
+    estado = 'pendiente_nube';
+  } else if (nubeAuto) {
+    try {
+      const businessId = await resolveBusinessId(query);
+      storagePath = r2.backupKey(businessId, fileName);
+      await r2.upload(storagePath, fileBuffer, {
+        businessId,
+        trigger,
+        sha256,
+        exportedAt: new Date().toISOString(),
+      });
+      if (!paraRevisar) await pruneCloudBackups(businessId, retentionCount);
+      estado = 'completado';
+    } catch (_) {
+      // Sin internet o R2 no configurado: conservar local y marcar pendiente.
+      estado = 'pendiente_nube';
+      storagePath = null;
+    }
+  }
+
+  await recordHistory(query, {
+    fileName, filePath, storagePath, sha256,
+    fileSize: fileBuffer.length,
+    tipo: nubeAuto && storagePath ? 'local_cloud' : 'automatico',
+    estado,
+    businessName: payload.businessName,
+    businessId:   payload.businessId,
+    version:      payload.systemVersion,
+        capturedAt: payload.snapshot?.capturedAt || payload.exportedAt,
+        formatVersion: payload.formatVersion,
+    productos:    payload.stats.productos,
+    clientes:     payload.stats.clientes,
+    ventas:       payload.stats.ventas,
+    createdBy:    'sistema-auto',
+    observacion:  paraRevisar ? `Trigger: ${trigger} · parece una base vacía: no reemplazó la copia del día` : `Trigger: ${trigger}`,
+  });
+
+  return { ok: true, fileName, filePath, storagePath, sha256, estado, stats: payload.stats, paraRevisar };
+}
+
+// La copia del día aunque la app no se cierre ni se cierre caja (PC que pasa
+// días encendida): cada hora revisa si ya existe la de hoy.
+async function asegurarCopiaDelDia(query, options = {}) {
+  const cfg = await query('SELECT setup_completed FROM config WHERE id = 1 LIMIT 1').catch(() => []);
+  if (!Number(cfg[0]?.setup_completed || 0)) return { ok: true, skipped: true, reason: 'Sin configurar.' };
+  const hoy = retencion.fechaLocal();
+  const dir = await backupPolicy.directory(query);
+  const file = listLocalBackups(dir).find(f => retencion.esDiario(f.name) && f.name.endsWith(`_${hoy}.tcbak`));
+  if (file) {
+    try {
+      const { payload } = await parseTcbakBuffer(fs.readFileSync(file.path), process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026');
+      backupPolicy.assertPayload(payload, await backupPolicy.context(query));
+      if (String(payload.formatVersion) === '3') return { ok: true, skipped: true, reason: 'Ya hay copia V3 íntegra de hoy.' };
+    } catch (_) { /* rehacer desde la base actual; conservar las copias anteriores en su carpeta */ }
+  }
+  return createAutomaticBackup({ query, trigger: 'diario', deferCloud: true, ...options });
+}
+
+function uploadPendingCloudBackups(query, limit = 5) { return serializeBackup(query, () => uploadPendingCloudBackupsWork(query, limit)); }
+async function uploadPendingCloudBackupsWork(query, limit = 5) {
+  if (!nubeConfigurada()) return [];
+  await uploadState.ensure(query);
+  const identity = await backupPolicy.context(query);
+  const businessId = backupPolicy.assertCloudIdentity(identity);
+  const pendientes = await query(
+    `SELECT h.* FROM backup_history h WHERE h.estado IN ('pendiente_nube', 'pendiente_configuracion')
+      AND NOT EXISTS (SELECT 1 FROM backup_upload_retry r WHERE r.backup_id = h.id AND r.next_attempt_at > ?)
+      ORDER BY h.created_at DESC LIMIT ?`,
+    [new Date().toISOString(), limit]
+  );
+
+  const resultados = [];
+  for (const row of pendientes) {
+    if (!row.file_path || !fs.existsSync(row.file_path)) {
+      await query('UPDATE backup_history SET estado = ?, error_message = ? WHERE id = ?', ['archivo_no_disponible', 'El archivo ya no está disponible en esta PC.', row.id]);
+      resultados.push({ fileName: row.file_name, ok: false, error: 'Archivo local no encontrado.' });
+      continue;
+    }
+    try {
+      const fileBuffer = fs.readFileSync(row.file_path);
+      const actualHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+      if (!row.sha256 || actualHash !== row.sha256) {
+        await query('UPDATE backup_history SET estado = ? WHERE id = ?', ['archivo_reemplazado', row.id]);
+        resultados.push({ fileName: row.file_name, ok: false, error: 'El archivo local cambió desde su registro; se conserva pendiente la versión vigente.' });
+        continue;
+      }
+      const { payload } = await parseTcbakBuffer(fileBuffer, process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026');
+      backupPolicy.assertPayload(payload, identity);
+      const storageKey = r2.backupKey(businessId, row.file_name);
+      await r2.upload(storageKey, fileBuffer, { businessId, recoveredFromPending: true });
+      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
+      await query('UPDATE backup_history SET estado = ?, tipo = ?, storage_path = ? WHERE id = ?', ['completado', 'local_cloud', storageKey, row.id]);
+      await query('DELETE FROM backup_upload_retry WHERE backup_id = ?', [row.id]);
+      resultados.push({ fileName: row.file_name, ok: true, storageKey });
+    } catch (uploadErr) {
+      if (uploadErr.code === 'BACKUP_IDENTITY_UNVERIFIED') {
+        await query('UPDATE backup_history SET estado = ?, error_message = ? WHERE id = ?', ['revision_identidad', uploadErr.message, row.id]);
+        resultados.push({ fileName: row.file_name, ok: false, error: uploadErr.message });
+        continue;
+      }
+      const retry = await uploadState.fail(query, row.id, uploadErr);
+      resultados.push({ fileName: row.file_name, ok: false, error: uploadErr.message, ...retry });
+    }
+  }
+
+  return resultados;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+//  FACTORY PRINCIPAL
+// ════════════════════════════════════════════════════════════════════════════
+module.exports = function createRespaldosRouter({
+  app, query, getActor, writeAuditLog, ensureAdministrator, isGlobalAdministratorUser, resolveRequestActorUser,
+  // Restaurar desde la nube en una PC recién instalada: la cuenta del dueño
+  // (idToken de Firebase → { email }) y sus negocios (licencias-del-dueno.js).
+  verificarCuentaDueno = null,
+  licenciasDelCorreo = null,
+  // Guarda valores en config/app.env (licencia de la PC, token de sucursal).
+  persistEnv = () => {},
+  isMainTerminal = () => true,
+  backupMetadataPath = null,
+}) {
+  function comprobarEquipoPrincipal() {
+    const host = String(process.env.DB_HOST || '').trim().toLowerCase();
+    if (String(process.env.DB_CLIENT).toLowerCase() === 'mysql' && host && !['localhost', '127.0.0.1', '::1'].includes(host)) {
+      throw new Error('Esta caja utiliza una base central en la LAN. Reconecta con la PC principal; la restauración debe realizarse en esa PC.');
+    }
+  }
+  async function restorePayloadToDb(payload, q) {
+    comprobarEquipoPrincipal();
+    const ejecutar = async () => {
+      const estado = await q('SELECT setup_completed FROM config WHERE id = 1');
+      if (Number(estado[0]?.setup_completed)) {
+        const copia = await crearPreRespaldo('PRE-CORTE-RESTORE', process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026', 'corte-final');
+        if (!copia) throw new Error('No se pudo crear el punto de retorno. No se restauró la base activa.');
+      }
+      const result = await restorePayloadBase(payload, q);
+      if (typeof app.locals.afterBackupRestore === 'function') app.locals.afterBackupRestore();
+      return result;
+    };
+    return typeof app.locals.withExclusiveRestore === 'function' ? app.locals.withExclusiveRestore(ejecutar) : ejecutar();
+  }
+  // Después de restaurar: si esta PC estaba enlazada como una sucursal y el
+  // respaldo es de otro negocio u otra sucursal, deja de hablar por ella (si
+  // no, mandaría los datos restaurados como si fueran de esa sucursal).
+  async function revisarEnlaceTrasRestaurar() {
+    const token = String(process.env.TECNO_CAJA_SYNC_TOKEN || '').trim();
+    if (!token) return null;
+    const filas = await query("SELECT config_value FROM installation_config WHERE config_key = 'multisucursal_enlace' LIMIT 1").catch(() => []);
+    let estado = {};
+    try { estado = JSON.parse(filas[0]?.config_value || '{}') || {}; } catch (_) { estado = {}; }
+    const branchUuid = String(estado?.sucursal?.branchUuid || '').trim().toLowerCase();
+    const misma = branchUuid
+      ? await query('SELECT id FROM branches WHERE LOWER(uuid) = ? LIMIT 1', [branchUuid]).catch(() => [])
+      : [];
+    if (misma.length) return { enlace: 'conservado' };
+    persistEnv({ TECNO_CAJA_SYNC_TOKEN: '' });
+    await query("UPDATE installation_config SET config_value = ? WHERE config_key = 'multisucursal_enlace'", [
+      JSON.stringify({ estado: 'sin_vincular', desvinculadoEn: new Date().toISOString(), motivo: 'Se restauró un respaldo de otro negocio o de otra sucursal.' }),
+    ]).catch(() => {});
+    console.warn('[respaldos] El respaldo restaurado no es de la sucursal enlazada: esta PC quedó desvinculada de la central.');
+    return { enlace: 'desvinculado' };
+  }
+
+  app.locals.createAutomaticBackup = async (options = {}) => { if (!isMainTerminal()) return { ok: true, skipped: true, reason: 'La PC principal gestiona los respaldos de esta empresa.' }; await historyReady; return createAutomaticBackup({ query, deferCloud: true, metadataPath: backupMetadataPath, ...options }); };
+  app.locals.uploadPendingCloudBackups = (limit = 5) => isMainTerminal() ? uploadPendingCloudBackups(query, limit) : Promise.resolve([]);
+  if (!app.locals.backupPendingUploadTimer) {
+    app.locals.backupPendingUploadTimer = setInterval(() => {
+      app.locals.uploadPendingCloudBackups(5).catch(() => {});
+    }, 60 * 1000);
+    // El servidor HTTP mantiene vivo el proceso; el temporizador solo no.
+    if (typeof app.locals.backupPendingUploadTimer.unref === 'function') app.locals.backupPendingUploadTimer.unref();
+  }
+  if (!app.locals.copiaDelDiaTimer && process.env.NODE_ENV !== 'test') {
+    const revisar = () => { if (!isMainTerminal()) return; return historyReady.then(() => asegurarCopiaDelDia(query, { metadataPath: backupMetadataPath })).catch((e) => console.warn('[respaldos] Copia del día:', e.message)); };
+    app.locals.copiaDelDiaTimer = setInterval(revisar, 60 * 60 * 1000);
+    if (typeof app.locals.copiaDelDiaTimer.unref === 'function') app.locals.copiaDelDiaTimer.unref();
+    // La primera, unos minutos después de arrancar (no compite con el arranque).
+    const primera = setTimeout(revisar, 3 * 60 * 1000);
+    if (typeof primera.unref === 'function') primera.unref();
+  }
+
+  // ── Middleware de admin ──────────────────────────────────────────────────
+  async function adminOnly(req, res, next) {
+    try {
+      const user = await resolveRequestActorUser(req, { required: true });
+      if (!isGlobalAdministratorUser(user)) {
+        return res.status(403).json({ ok: false, error: 'Solo el administrador puede realizar esta acción.' });
+      }
+      req.authUser = user;
+      next();
+    } catch (e) {
+      res.status(401).json({ ok: false, error: e.message });
+    }
+  }
+
+  async function anyStaff(req, res, next) {
+    try {
+      const user = await resolveRequestActorUser(req, { required: true });
+      req.authUser = user;
+      next();
+    } catch (e) {
+      res.status(401).json({ ok: false, error: e.message });
+    }
+  }
+
+  // Copia del negocio actual antes de restaurar encima. Es una red de
+  // seguridad, no el objetivo de la restauración: si la BD actual está tan mal
+  // que ni se puede leer (la razón misma por la que alguien restauraría),
+  // devuelve null y la restauración sigue.
+  async function crearPreRespaldo(sufijo, securityPwd, origen) {
+    try {
+      const currentPayload = await buildFullPayload(query);
+      const currentBuf     = await createTcbakBuffer(currentPayload, securityPwd);
+      const nombre = generateFilename(currentPayload.businessName, currentPayload.systemVersion).replace(/\.tcbak$/, `_${sufijo}_${crypto.randomUUID()}.tcbak`);
+      writeFileAtomic(path.join(ensureDir(await backupPolicy.directory(query)), nombre), currentBuf);
+      return nombre;
+    } catch (preBackupErr) {
+      console.warn(`[respaldos][${origen}] No se pudo crear el punto de retorno:`, preBackupErr.message);
+      return null;
+    }
+  }
+
+  // ── Asegurar tabla backup_history ────────────────────────────────────────
   // Inicializar tabla al arrancar
-  ensureBackupHistoryTable();
+  const historyReady = ensureBackupHistoryTable(query);
+  historyReady.catch((e) => console.error('[respaldos] No se pudo preparar el historial:', e.message));
 
   // ══════════════════════════════════════════════════════════════════════
   //  GET /api/respaldos/estado
   // ══════════════════════════════════════════════════════════════════════
   app.get('/api/respaldos/estado', anyStaff, async (req, res) => {
     try {
-      const customDir  = (await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_dir_personalizado']).catch(() => []))[0]?.config_value || null;
-      const backupDir  = customDir || getDefaultBackupDir();
-      pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
+      // Se asegura en cada consulta: en una instalación SQLite nueva la tabla
+      // creada al arrancar no existe después del asistente y el panel daba 500.
+      await ensureBackupHistoryTable(query);
+      const backupDir = await backupPolicy.directory(query);
       const localFiles = listLocalBackups(backupDir);
 
       const historyRows = await query(
@@ -530,6 +587,8 @@ module.exports = function createRespaldosRouter({
       res.json({
         ok: true,
         backupDir,
+        legacyBackupDir: await backupPolicy.baseDirectory(query),
+        verification: await require('../services/backup-health').inspect({ query, files: localFiles, cloudConfigured: nubeConfigurada, cloudAvailable: nubeDisponible, verifyCloud: r2.verifyObject }),
         planActual: plan,
         nubeConfigurada,
         nubeDisponible,
@@ -564,17 +623,16 @@ module.exports = function createRespaldosRouter({
       const sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
       // 3. Guardar en disco
-      const customDir = carpetaDestino
-        || (await query('SELECT config_value FROM installation_config WHERE config_key = ? LIMIT 1', ['backup_dir_personalizado']).catch(() => []))[0]?.config_value
-        || null;
-      const backupDir = ensureDir(customDir || getDefaultBackupDir());
+      await ensureBackupHistoryTable(query);
+      const backupDir = ensureDir(carpetaDestino || await backupPolicy.directory(query));
       const filePath  = path.join(backupDir, fileName);
       writeFileAtomic(filePath, fileBuffer);
+      backupPolicy.remember(filePath, backupMetadataPath, payload);
 
       const fileSize = fs.statSync(filePath).size;
 
       // 4. Limpiar respaldos viejos
-      pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
+      if (!carpetaDestino) pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
 
       // 5. Historial
       await recordHistory(query, {
@@ -583,6 +641,8 @@ module.exports = function createRespaldosRouter({
         businessName: payload.businessName,
         businessId:   payload.businessId,
         version:      payload.systemVersion,
+        capturedAt: payload.snapshot?.capturedAt || payload.exportedAt,
+        formatVersion: payload.formatVersion,
         productos:    payload.stats.productos,
         clientes:     payload.stats.clientes,
         ventas:       payload.stats.ventas,
@@ -700,7 +760,7 @@ module.exports = function createRespaldosRouter({
         fileBuffer = await createTcbakBuffer(payload, securityPwd);
         sha256     = crypto.createHash('sha256').update(fileBuffer).digest('hex');
         // Guardar copia local también
-        const backupDir = ensureDir(getDefaultBackupDir());
+        const backupDir = ensureDir(await backupPolicy.directory(query));
         const localPath = path.join(backupDir, fileName);
         writeFileAtomic(localPath, fileBuffer);
         pruneLocalBackups(backupDir, await getBackupRetentionCount(query));
@@ -709,6 +769,7 @@ module.exports = function createRespaldosRouter({
       // Subir a Cloudflare R2
       const businessId = await resolveBusinessId(query);
       const storageKey = r2.backupKey(businessId, fileName);
+      backupPolicy.assertPayload(payload, await backupPolicy.context(query));
       await r2.upload(storageKey, fileBuffer, {
         businessId,
         businessName:  payload.businessName,
@@ -729,6 +790,8 @@ module.exports = function createRespaldosRouter({
         businessName: payload.businessName,
         businessId:   String(payload.businessId || businessId),
         version:      payload.systemVersion,
+        capturedAt: payload.snapshot?.capturedAt || payload.exportedAt,
+        formatVersion: payload.formatVersion,
         productos:    payload.stats?.productos || 0,
         clientes:     payload.stats?.clientes  || 0,
         ventas:       payload.stats?.ventas    || 0,
@@ -757,7 +820,6 @@ module.exports = function createRespaldosRouter({
   app.get('/api/respaldos/lista-nube', anyStaff, async (req, res) => {
     try {
       const businessId = await resolveBusinessId(query);
-      await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
       const prefix     = r2.backupPrefix(businessId);
       const objects    = await r2.listObjects(prefix);
 
@@ -784,6 +846,30 @@ module.exports = function createRespaldosRouter({
   //  Body: { base64: '<base64 del .tcbak>', fileName, password }
   //  O:    { filePath: '/ruta/al/archivo.tcbak', password }
   // ══════════════════════════════════════════════════════════════════════
+  app.post('/api/respaldos/prevalidar', adminOnly, async (req, res) => {
+    try {
+      comprobarEquipoPrincipal();
+      const { base64, filePath, storageKey, password } = req.body || {};
+      let buffer;
+      if (storageKey) {
+        const prefix = r2.backupPrefix(await resolveBusinessId(query));
+        if (!String(storageKey).startsWith(prefix)) throw new Error('El archivo no pertenece a la carpeta de esta empresa.');
+        buffer = await r2.download(storageKey);
+      } else if (base64) buffer = Buffer.from(base64, 'base64');
+      else if (filePath && fs.existsSync(filePath)) buffer = fs.readFileSync(filePath);
+      else throw new Error('Selecciona un archivo de respaldo.');
+      const { payload, metadata } = await parseTcbakBuffer(buffer, password || process.env.TECNO_CAJA_SECURITY_PASSWORD || 'Seguridad2026');
+      const integral = String(payload.formatVersion) === '3';
+      const plan = integral ? await require('../services/backup-restore-integral').prevalidar(payload, query, { expectedLicenseUid: process.env.TECNO_CAJA_LICENSE_UID || '' }) : null;
+      res.json({ ok: true, metadata, formatVersion: payload.formatVersion,
+        backupId: payload.backupId || null, empresaId: payload.companyUuid || payload.licenseUid || null,
+        capturedAt: plan?.capturedAt || payload.exportedAt,
+        tables: plan?.destino.length || Object.keys(payload.data || {}).length,
+        files: payload.archivos?.archivos?.length || 0,
+        requiresReconfiguration: [...(plan?.requiresReconfiguration || []), ...(payload.archivos?.requiereReconfiguracion || [])],
+        warning: integral ? null : 'Respaldo antiguo: no dispone del manifiesto integral de módulos y archivos.' });
+    } catch (e) { res.status(400).json({ ok: false, error: e.message }); }
+  });
   app.post('/api/respaldos/restaurar-local', adminOnly, async (req, res) => {
     const actor = getActor(req);
     try {
@@ -838,6 +924,7 @@ module.exports = function createRespaldosRouter({
     try {
       const { storageKey, sha256Esperado, password: pwdOverride } = req.body || {};
       if (!storageKey) return res.status(400).json({ ok: false, error: 'storageKey requerido.' });
+      if (!String(storageKey).startsWith(r2.backupPrefix(await resolveBusinessId(query)))) throw new Error('El respaldo no está en la carpeta de esta empresa.');
 
       const securityPwd = pwdOverride
         || process.env.TECNO_CAJA_SECURITY_PASSWORD
@@ -922,28 +1009,7 @@ module.exports = function createRespaldosRouter({
   app.post('/api/respaldos/subir-pendientes', adminOnly, async (req, res) => {
     const actor = getActor(req);
     try {
-      const pendientes = await query(
-        `SELECT * FROM backup_history WHERE estado = 'pendiente_nube' ORDER BY created_at DESC LIMIT 5`
-      ).catch(() => []);
-
-      const resultados = [];
-      for (const row of pendientes) {
-        if (!row.file_path || !fs.existsSync(row.file_path)) {
-          resultados.push({ fileName: row.file_name, ok: false, error: 'Archivo local no encontrado.' });
-          continue;
-        }
-        try {
-          const fileBuffer = fs.readFileSync(row.file_path);
-          const businessId = await resolveBusinessId(query);
-          const storageKey = r2.backupKey(businessId, row.file_name);
-          await r2.upload(storageKey, fileBuffer, { businessId });
-          await pruneCloudBackups(businessId, await getBackupRetentionCount(query));
-          await query('UPDATE backup_history SET estado = ?, tipo = ?, storage_path = ? WHERE id = ?', ['completado', 'local_cloud', storageKey, row.id]);
-          resultados.push({ fileName: row.file_name, ok: true, storageKey });
-        } catch (uploadErr) {
-          resultados.push({ fileName: row.file_name, ok: false, error: uploadErr.message });
-        }
-      }
+      const resultados = await uploadPendingCloudBackups(query, 5);
 
       res.json({ ok: true, resultados, subidos: resultados.filter(r => r.ok).length });
     } catch (e) {
@@ -986,6 +1052,7 @@ module.exports = function createRespaldosRouter({
       // Subir a R2
       const businessId = await resolveBusinessId(query);
       const storageKey = r2.backupKey(businessId, fileName);
+      backupPolicy.assertPayload(payload, await backupPolicy.context(query));
       await r2.upload(storageKey, fileBuffer, {
         businessId,
         sha256,
@@ -1501,3 +1568,4 @@ module.exports = function createRespaldosRouter({
 module.exports.createAutomaticBackup = createAutomaticBackup;
 module.exports.asegurarCopiaDelDia = asegurarCopiaDelDia;
 module.exports.pruneCloudBackups = pruneCloudBackups;
+module.exports.uploadPendingCloudBackups = uploadPendingCloudBackups;

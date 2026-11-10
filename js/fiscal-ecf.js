@@ -1852,14 +1852,15 @@ async function openActivateProductionModal() {
 }
 
 async function revertProductionEnvironment() {
-  const reason = prompt('Motivo para volver de Producción a CerteCF (obligatorio):');
+  const reason = await showPromptModal('Motivo para volver de Producción a CerteCF (obligatorio):', { confirmText: 'Continuar' });
   if (!reason || !reason.trim()) return;
   const ok = await showDeleteConfirm(
     'Volver a CerteCF no anula ni modifica los documentos fiscales ya emitidos en producción. Escriba VOLVER A CERTIFICACION en el siguiente paso para confirmar.',
     { confirmText: 'Continuar' }
   );
   if (!ok) return;
-  const confirmationText = prompt('Escriba exactamente: VOLVER A CERTIFICACION');
+  const confirmationText = await showPromptModal('Escriba exactamente: VOLVER A CERTIFICACION', { confirmText: 'Volver a CerteCF' });
+  if (confirmationText === null) return;
   if (confirmationText !== 'VOLVER A CERTIFICACION') {
     showFiscalToast('Texto de confirmación incorrecto. Operación cancelada.', 'error');
     return;
@@ -1952,8 +1953,8 @@ async function loadSequenceUsagePanel() {
 }
 
 async function openFindNextSequenceModal() {
-  const tipo = prompt('Ingresa el tipo de e-CF a consultar (ej. E31, E32, E33, E41, E44, E45, E46, E47):');
-  if (!tipo) return;
+  const tipo = await showPromptModal('Ingresa el tipo de e-CF a consultar (ej. E31, E32, E33, E41, E44, E45, E46, E47):', { placeholder: 'E32', confirmText: 'Consultar' });
+  if (!tipo || !tipo.trim()) return;
   try {
     const r = await fiscalApi('POST', '/sequence-usage/find-next', { tipoEcf: tipo.trim().toUpperCase() });
     if (!r.ok) { showFiscalToast(r.message || 'No se encontró resultado.', 'warning'); return; }
@@ -2196,7 +2197,7 @@ async function saveEcfSequences() {
 }
 
 async function setEcfSequenceNext(id, currentNext, tipo) {
-  const nextValue = prompt(`Indica el próximo número para la secuencia ${tipo}.`, String(currentNext || ''));
+  const nextValue = await showPromptModal(`Indica el próximo número para la secuencia ${tipo}.`, { inputType: 'number', defaultValue: String(currentNext || ''), confirmText: 'Guardar' });
   if (nextValue == null) return;
   const parsed = parseInt(String(nextValue).trim(), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {

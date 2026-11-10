@@ -209,7 +209,7 @@ function renderCancelSaleLookupResult(sale) {
         <button class="btn-edit" onclick="showReceiptFromHistory('${sale.id}')">🧾 ${movementText('Ver factura')}</button>
         ${sale.cancelada
           ? `<button class="btn-secondary" type="button" onclick="clearCancelSaleLookup()">${movementText('Nueva búsqueda')}</button>`
-          : `<button class="btn-danger" onclick="confirmCancelSale('${sale.id}')">✕ ${movementText('Cancelar factura')}</button>`}
+          : `<button class="btn-danger" onclick="AjustesVenta.abrir('${sale.id}')">${movementText('Cancelar o emitir nota de crédito')}</button>`}
       </div>
     </div>
   `;

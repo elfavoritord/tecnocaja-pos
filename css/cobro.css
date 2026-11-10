@@ -318,10 +318,11 @@
   color: var(--tc-primary);
 }
 
-/* Comprobante */
+/* Comprobante: Ticket, E32, E31 y «Más». «Más» va del mismo ancho porque
+   muestra el comprobante que se eligió de su lista (p. ej. «B02 Consumo»). */
 #cobro-shell .cobro-docs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) 60px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -438,6 +439,30 @@
   font-weight: var(--tc-weight-semibold);
 }
 
+/* Con «Mesa» son cuatro tipos: una sola fila para no quitarle alto a la
+   lista de productos. */
+#cobro-shell .cobro-segment[data-cols="4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#cobro-shell .cobro-segment[data-cols="4"] .cobro-seg {
+  padding-left: 4px;
+  padding-right: 4px;
+  font-size: var(--tc-fs-sm);
+  white-space: nowrap;
+}
+
+/* Propina en mostrador: una línea discreta */
+#cobro-shell .cobro-consumo-local {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--tc-fs-sm);
+  color: var(--tc-text-2);
+  cursor: pointer;
+}
+
 #cobro-shell .cobro-delivery {
   margin-top: 2px;
 }
@@ -499,6 +524,28 @@
 
 #cobro-shell .cobro-left-actions .tc-btn {
   padding: 0 var(--tc-space-2);
+}
+
+/* Con «Quitar propina» son tres botones en la misma fila (no se le quita
+   alto a la lista de productos). */
+#cobro-shell .cobro-left-actions[data-cols="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#cobro-shell .cobro-left-actions[data-cols="3"] .tc-btn {
+  gap: 4px;
+  padding: 0 6px;
+  font-size: var(--tc-fs-sm);
+  line-height: 1.1;
+  white-space: normal;
+  text-align: center;
+}
+
+#cobro-shell .cobro-propina-btn.is-active {
+  border-color: var(--tc-warning, #d97706);
+  color: var(--tc-warning, #d97706);
+  background: color-mix(in srgb, var(--tc-warning, #d97706) 12%, transparent);
 }
 
 #cobro-shell .cobro-add-products .tc-icon {
@@ -564,9 +611,35 @@
   z-index: 30;
 }
 
+/* «Más»: serie B y demás e-CF, en dos columnas para que la lista no pase
+   de la pantalla. */
 #cobro-shell .cobro-doc-menu {
   left: auto;
-  width: 220px;
+  width: 300px;
+  max-height: min(460px, 64vh);
+  overflow-y: auto;
+}
+
+#cobro-shell .cobro-doc-menu-group {
+  padding: 2px var(--tc-space-1) 0;
+  font-size: 11px;
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-text-2);
+}
+
+#cobro-shell .cobro-doc-menu-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--tc-space-1);
+}
+
+#cobro-shell .cobro-menu-item.is-unavailable {
+  color: var(--tc-disabled-text);
+  cursor: not-allowed;
+}
+
+#cobro-shell .cobro-menu-item.is-unavailable span {
+  color: var(--tc-disabled-text);
 }
 
 #cobro-shell .cobro-client-results {
@@ -639,6 +712,17 @@
   font-size: var(--tc-fs-md);
   font-weight: var(--tc-weight-semibold);
   color: var(--tc-total-label);
+}
+
+/* Anticipo de reserva (Mesas) ya descontado del total a pagar. */
+#cobro-shell .cobro-anticipo-nota {
+  font-size: var(--tc-fs-sm);
+  font-weight: var(--tc-weight-semibold);
+  color: var(--tc-total-label);
+}
+#cobro-shell .cobro-anticipo-row > span:last-child {
+  color: var(--tc-success-text, #15803d);
+  font-weight: var(--tc-weight-semibold);
 }
 
 #cobro-shell .cobro-total-amount {
@@ -1240,7 +1324,6 @@ body:has(#modal-overlay:not(.hidden) #cobro-shell) #assistant-panel {
   }
 
   #cobro-shell .cobro-docs {
-    grid-template-columns: repeat(4, minmax(0, 1fr)) 48px;
     gap: 4px;
   }
 

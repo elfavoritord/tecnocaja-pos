@@ -1,0 +1,175 @@
+/* Compras de proveedores: «Preparar compra», subida de facturas, borradores y
+   recepción (js/compras-preparar.js). Solo tokens de css/tokens.css (día/noche). */
+
+/* ── Pantalla completa «Preparar compra» ──────────────────────────────────── */
+.cp-pantalla {
+  position: fixed;
+  inset: 0;
+  z-index: 1450;
+  display: flex;
+  flex-direction: column;
+  background: var(--tc-bg);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+}
+.cp-cabecera {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-4);
+  padding: var(--tc-space-3) var(--tc-space-5);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  background: var(--tc-surface);
+}
+.cp-etiqueta { font-size: var(--tc-fs-xs); font-weight: var(--tc-weight-semibold); letter-spacing: .06em; color: var(--tc-text-2); }
+.cp-cabecera h2 { margin: 2px 0 0; font-size: var(--tc-fs-xl); }
+.cp-cabecera h2 small { font-size: var(--tc-fs-md); color: var(--tc-text-2); font-weight: var(--tc-weight-medium); }
+.cp-cabecera-acciones { display: flex; gap: var(--tc-space-2); }
+.cp-cuerpo {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--tc-space-3);
+  padding: var(--tc-space-4) var(--tc-space-5);
+}
+.cp-panel {
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  padding: var(--tc-space-3) var(--tc-space-4);
+}
+.cp-encabezado {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--tc-space-3) var(--tc-space-4);
+  align-items: end;
+}
+.cp-ancho2 { grid-column: span 2; }
+.cp-ancho4 { grid-column: 1 / -1; }
+.cp-campo { display: flex; flex-direction: column; gap: 4px; font-size: var(--tc-fs-sm); color: var(--tc-text-2); }
+.cp-campo .tc-input, .cp-campo .tc-select { width: 100%; }
+.cp-nuevo { color: var(--tc-warning-text); font-weight: var(--tc-weight-semibold); }
+.cp-check { display: flex; align-items: flex-start; gap: var(--tc-space-2); font-size: var(--tc-fs-sm); color: var(--tc-text); cursor: pointer; }
+.cp-check input { margin-top: 3px; accent-color: var(--tc-primary); }
+/* ¿Quién da el comprobante? (proveedor / negocio) */
+.cp-segmento { display: inline-flex; gap: 4px; padding: 4px; border-radius: 12px; background: var(--tc-surface-2); border: var(--tc-border-w) solid var(--tc-border-soft); flex-wrap: wrap; }
+.cp-segmento button { min-height: 36px; padding: 6px 14px; border: 0; border-radius: 9px; background: transparent; color: var(--tc-text-2); font: inherit; font-size: var(--tc-fs-sm); font-weight: var(--tc-weight-semibold); cursor: pointer; }
+.cp-segmento button.is-on { background: var(--tc-primary); color: var(--tc-on-primary); }
+.cp-segmento button:disabled { opacity: .45; cursor: not-allowed; }
+.cp-tipo-ncf { min-height: 1.2em; color: var(--tc-text-2); font-weight: var(--tc-weight-semibold); }
+.cp-rnc { position: relative; }
+.cp-rnc .rnc-badge { align-self: flex-start; margin-top: 2px; }
+.cp-fiscal summary { cursor: pointer; font-size: var(--tc-fs-sm); color: var(--tc-text-2); font-weight: var(--tc-weight-semibold); }
+.cp-fiscal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--tc-space-3); margin-top: var(--tc-space-2); }
+
+/* Avisos y bloqueos */
+.cp-avisos ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.cp-avisos li { font-size: var(--tc-fs-sm); padding: 4px 10px; border-radius: 8px; }
+.cp-aviso-error { background: var(--tc-danger-bg); color: var(--tc-danger-text); border: var(--tc-border-w) solid var(--tc-danger-border); }
+.cp-aviso-aviso { background: var(--tc-warning-bg); color: var(--tc-warning-text); border: var(--tc-border-w) solid var(--tc-warning-border); }
+.cp-aviso-info { background: var(--tc-surface-2); color: var(--tc-text-2); }
+.cp-ok { margin: 0; color: var(--tc-success-text); font-weight: var(--tc-weight-semibold); font-size: var(--tc-fs-sm); }
+
+/* Líneas */
+.cp-lineas { display: flex; flex-direction: column; gap: var(--tc-space-2); min-height: 260px; }
+.cp-lineas-barra { display: flex; align-items: center; gap: var(--tc-space-3); flex-wrap: wrap; }
+.cp-masivo { display: flex; align-items: center; gap: var(--tc-space-2); flex-wrap: wrap; font-size: var(--tc-fs-sm); padding: 4px 8px; border-radius: 10px; background: var(--tc-surface-2); }
+.cp-masivo.is-oculto { display: none; }
+.cp-masivo .tc-select { width: auto; min-width: 190px; min-height: 34px; }
+.cp-masivo .tc-btn { min-height: 34px; padding: 4px 12px; }
+.cp-margen { width: 96px; min-height: 34px; }
+.cp-tabla select[data-l="tipo"] { min-width: 150px; }
+.cp-agregar { margin-left: auto; display: flex; gap: var(--tc-space-2); flex-wrap: wrap; }
+.cp-tabla-scroll { overflow: auto; }
+.cp-tabla { width: 100%; border-collapse: collapse; font-size: var(--tc-fs-sm); }
+.cp-tabla th { position: sticky; top: 0; z-index: 1; text-align: left; padding: 6px; background: var(--tc-surface); color: var(--tc-text-2); font-weight: var(--tc-weight-semibold); border-bottom: var(--tc-border-w) solid var(--tc-border); white-space: nowrap; }
+.cp-tabla td { padding: 6px; vertical-align: top; border-bottom: var(--tc-border-w) solid var(--tc-border-soft); }
+.cp-tabla tr.cp-con-aviso td { background: color-mix(in srgb, var(--tc-warning-bg) 40%, transparent); }
+.cp-tabla .tc-input, .cp-tabla .tc-select { min-height: 34px; padding: 4px 8px; font-size: var(--tc-fs-sm); }
+.cp-col-producto { min-width: 260px; }
+.cp-col-producto > .tc-input, .cp-col-producto > .tc-select { width: 100%; }
+.cp-col-precio { min-width: 230px; }
+.cp-num { width: 92px; text-align: right; }
+.cp-precio .cp-num { width: 110px; }
+.cp-pct { width: 70px; }
+.cp-subtotal { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-top: 12px !important; }
+.cp-producto { display: block; }
+.cp-producto small, .cp-original, .cp-linea-aviso { display: block; color: var(--tc-text-2); font-size: var(--tc-fs-xs); margin-top: 2px; }
+.cp-linea-aviso { color: var(--tc-warning-text); }
+.cp-badge { display: inline-block; margin-top: 4px; padding: 1px 8px; border-radius: 999px; font-size: var(--tc-fs-xs); font-weight: var(--tc-weight-semibold); border: var(--tc-border-w) solid transparent; }
+.cp-badge-existe { background: var(--tc-success-bg); color: var(--tc-success-text); border-color: var(--tc-success-border); }
+.cp-badge-nuevo { background: var(--tc-warning-bg); color: var(--tc-warning-text); border-color: var(--tc-warning-border); }
+.cp-badge-elegir { background: var(--tc-danger-bg); color: var(--tc-danger-text); border-color: var(--tc-danger-border); }
+.cp-badge-servicio { background: var(--tc-surface-2); color: var(--tc-text-2); border-color: var(--tc-border); }
+.cp-mini { margin-left: 6px; padding: 1px 8px; border-radius: 6px; border: var(--tc-border-w) solid var(--tc-border); background: transparent; color: var(--tc-text-2); font-size: var(--tc-fs-xs); cursor: pointer; }
+.cp-mini:hover { color: var(--tc-text); border-color: var(--tc-border-strong); }
+.cp-quitar { margin-left: 0; margin-top: 6px; }
+.cp-precio { display: flex; flex-wrap: wrap; gap: 4px; }
+.cp-precio .tc-select { flex: 1 1 140px; }
+.cp-precio-info { flex: 1 1 100%; color: var(--tc-text-2); font-size: var(--tc-fs-xs); line-height: 1.35; }
+.cp-precio-info b { color: var(--tc-text); }
+.cp-switch { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; cursor: pointer; font-weight: var(--tc-weight-semibold); }
+.cp-switch input { width: 18px; height: 18px; accent-color: var(--tc-primary); }
+.cp-tenue { color: var(--tc-text-2); }
+.cp-vacio { padding: var(--tc-space-4); text-align: center; color: var(--tc-text-2); }
+
+/* Pie: totales y botones */
+.cp-pie {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tc-space-4);
+  flex-wrap: wrap;
+  padding: var(--tc-space-3) var(--tc-space-5);
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  background: var(--tc-surface);
+}
+.cp-totales { display: flex; align-items: center; gap: var(--tc-space-4); flex-wrap: wrap; font-size: var(--tc-fs-sm); color: var(--tc-text-2); }
+.cp-totales b { color: var(--tc-text); font-variant-numeric: tabular-nums; font-weight: var(--tc-weight-semibold); }
+.cp-totales label { display: inline-flex; align-items: center; gap: 6px; }
+.cp-total { font-size: var(--tc-fs-lg); }
+.cp-total b { font-weight: var(--tc-weight-bold); }
+.cp-dif-ok { color: var(--tc-success-text); font-weight: var(--tc-weight-semibold); }
+.cp-dif-mal { color: var(--tc-danger-text); font-weight: var(--tc-weight-semibold); }
+.cp-pie-botones { display: flex; gap: var(--tc-space-2); flex-wrap: wrap; }
+
+/* Buscador de productos sobre la pantalla */
+.cp-buscador { position: fixed; inset: 0; z-index: 1460; display: grid; place-items: start center; padding-top: 12vh; background: var(--tc-scrim); }
+.cp-buscador-caja { width: min(560px, calc(100vw - 32px)); max-height: 70vh; display: flex; flex-direction: column; gap: var(--tc-space-2); padding: var(--tc-space-4); border-radius: var(--tc-radius-panel); background: var(--tc-surface); border: var(--tc-border-w) solid var(--tc-border); box-shadow: 0 24px 60px rgba(0, 0, 0, .3); }
+.cp-buscador-caja ul { list-style: none; margin: 0; padding: 0; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.cp-buscador-caja li button { width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; border: 0; background: transparent; color: var(--tc-text); cursor: pointer; font: inherit; }
+.cp-buscador-caja li button:hover, .cp-buscador-caja li button:focus-visible { background: var(--tc-surface-2); }
+.cp-buscador-caja li small { color: var(--tc-text-2); }
+.cp-buscador-pie { display: flex; gap: var(--tc-space-2); justify-content: flex-end; flex-wrap: wrap; }
+
+/* ── Subida de facturas (ventana) ─────────────────────────────────────────── */
+.cp-subida { display: flex; flex-direction: column; gap: var(--tc-space-3); min-width: min(620px, 80vw); }
+.cp-drop { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: var(--tc-space-6) var(--tc-space-4); border: 2px dashed var(--tc-border-strong); border-radius: var(--tc-radius-panel); text-align: center; cursor: pointer; color: var(--tc-text-2); }
+.cp-drop strong { color: var(--tc-text); font-size: var(--tc-fs-md); }
+.cp-drop span { font-size: var(--tc-fs-sm); }
+.cp-drop.is-over { border-color: var(--tc-primary); background: var(--tc-surface-2); }
+.cp-nota { margin: 0; font-size: var(--tc-fs-sm); color: var(--tc-text-2); }
+.cp-link { margin-left: 6px; padding: 2px 10px; min-height: 0; font-size: var(--tc-fs-xs); }
+.cp-progreso { display: flex; align-items: center; gap: var(--tc-space-2); font-size: var(--tc-fs-sm); }
+.cp-progreso-barra { flex: 1; height: 8px; border-radius: 999px; background: var(--tc-surface-2); overflow: hidden; }
+.cp-progreso-barra i { display: block; height: 100%; width: 0; background: var(--tc-primary); transition: width .2s; }
+.cp-archivos { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+.cp-archivos li { display: flex; justify-content: space-between; gap: var(--tc-space-3); padding: 6px 10px; border-radius: 8px; background: var(--tc-surface-2); font-size: var(--tc-fs-sm); }
+.cp-archivos li.is-ok .cp-archivo-estado { color: var(--tc-success-text); }
+.cp-archivos li.is-error .cp-archivo-estado { color: var(--tc-danger-text); }
+.cp-archivo-nombre { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Listas de borradores y recepciones */
+.cp-tabla-lista { width: 100%; font-size: .85rem; }
+.cp-tabla-lista td small { display: block; color: var(--tc-text-2); }
+.cp-acciones { white-space: nowrap; }
+.cp-config { border: var(--tc-border-w) solid var(--tc-border-soft); border-radius: var(--tc-radius-panel); padding: var(--tc-space-3); margin: 0 0 var(--tc-space-3); display: flex; flex-direction: column; gap: var(--tc-space-2); }
+.cp-config legend { padding: 0 6px; font-weight: var(--tc-weight-semibold); }
+
+@media (max-width: 900px) {
+  .cp-encabezado { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cp-fiscal-grid { grid-template-columns: 1fr; }
+  .cp-agregar { margin-left: 0; }
+}

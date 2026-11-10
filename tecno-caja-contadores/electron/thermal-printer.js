@@ -841,8 +841,28 @@ function buildCorteReceipt(data) {
     p.bold(true).size(...sz).text(negocio.nombre).size(1, 1).bold(false);
   }
   if (negocio.rnc) p.text(`RNC: ${negocio.rnc}`);
-  p.feed(1).bold(true).text('CORTE DE CAJA').bold(false).align(0);
+  p.feed(1).bold(true).text(String(data.titulo || 'CORTE DE CAJA')).bold(false).align(0);
   p.separator('-');
+
+  // Reporte por secciones (cierre seguro, js/caja-segura.js): mismas filas que
+  // la pantalla y el PDF. Sin `secciones` se imprime el corte de siempre.
+  if (Array.isArray(data.secciones) && data.secciones.length) {
+    for (const seccion of data.secciones) {
+      p.bold(true).text(String(seccion.titulo || '').toUpperCase()).bold(false);
+      for (const fila of seccion.filas || []) {
+        const etiqueta = String(fila.etiqueta ?? '');
+        const valor = String(fila.valor ?? '');
+        if (fila.negrita) p.bold(true);
+        if (valor) p.row2(etiqueta, valor); else p.text(etiqueta);
+        if (fila.negrita) p.bold(false);
+      }
+      p.separator('-');
+    }
+    p.align(1).text(new Date().toLocaleString('es-DO')).align(0);
+    p.feed(3);
+    if (config.cortarPapel !== false) p.cut(false);
+    return p.build();
+  }
 
   // ── Datos del turno ───────────────────────────────────────────────────────
   p.row2('Cajero:',   String(corte.cajero        || ''));

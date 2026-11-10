@@ -1,6 +1,7 @@
 'use strict';
 
 const builder = require('xmlbuilder');
+const Money = require('../../../js/pos-money');
 const { assertCondition, EcfError } = require('../utils/errors');
 const { llevaVencimiento } = require('../config/document-types');
 const { parseXml, serializeXml, stripInvalidXmlChars } = require('../utils/xml.util');
@@ -114,6 +115,8 @@ function buildTotals(items) {
     const discount = Number(item.discount ?? item.lineDiscount ?? 0);
     const taxRate = Number(item.taxRate ?? item.itbisRate ?? item.tax_rate ?? item.itbis ?? 0);
     const withholdingAmount = Number(item.isrRetenido ?? item.withholdingAmount ?? item.isrWithholding ?? 0);
+    // E41: ITBIS retenido de la línea (Retencion/MontoITBISRetenido del XSD).
+    const itbisWithheld = Number(item.itbisRetenido ?? item.itbisWithheld ?? 0);
     const billingIndicator = item.billingIndicator ?? item.indicadorFacturacion ?? item.indicador_facturacion ?? null;
     const retentionIndicator = item.retentionIndicator ?? item.indicadorAgenteRetencionoPercepcion ?? item.indicador_agente_retencion ?? null;
     const goodsOrServicesIndicator = Number(
@@ -132,6 +135,7 @@ function buildTotals(items) {
     assertCondition(unitPrice >= 0, `El precio del item ${index + 1} no puede ser negativo.`);
     assertCondition(discount >= 0, `El descuento del item ${index + 1} no puede ser negativo.`);
     assertCondition(withholdingAmount >= 0, `La retención ISR del item ${index + 1} no puede ser negativa.`);
+    assertCondition(itbisWithheld >= 0, `El ITBIS retenido del item ${index + 1} no puede ser negativo.`);
 
     const lineSubtotal = round2(quantity * unitPrice);
     const taxableBase = round2(Math.max(lineSubtotal - discount, 0));
@@ -139,6 +143,7 @@ function buildTotals(items) {
     const lineTotal = round2(taxableBase + taxAmount);
 
     return {
+      legalTipAmount: Math.max(0, Number(item.legalTipAmount || 0)),
       lineNumber: index + 1,
       name: sanitizeText(item.name || item.description || item.product_name || 'Producto'),
       quantity,
@@ -151,6 +156,7 @@ function buildTotals(items) {
       // Indicador 3 = gravado al 0%. Sin él, tasa 0 es exento (indicador 4).
       exempt: taxRate <= 0 && Number(billingIndicator) !== 3,
       withholdingAmount,
+      itbisWithheld,
       billingIndicator,
       retentionIndicator,
       goodsOrServicesIndicator,
@@ -167,8 +173,10 @@ function buildTotals(items) {
   // Un exento no es gravado: contarlo en los dos da la DGII 3205 "MontoTotal no es correcto".
   const taxed0 = round2(normalizedItems.filter((item) => item.taxRate === 0 && !item.exempt).reduce((sum, item) => sum + item.taxableBase, 0));
   const totalTax = round2(normalizedItems.reduce((sum, item) => sum + item.taxAmount, 0));
-  const total = round2(normalizedItems.reduce((sum, item) => sum + item.lineTotal, 0));
+  const legalTipAmount = Money.number(normalizedItems.reduce((sum,item) => sum + Money.cents(item.legalTipAmount),0n));
+  const total = Money.number(normalizedItems.reduce((sum,item) => sum + Money.cents(item.lineTotal),0n) + Money.cents(legalTipAmount));
   const totalIsrRetenido = round2(normalizedItems.reduce((sum, item) => sum + item.withholdingAmount, 0));
+  const totalItbisRetenido = round2(normalizedItems.reduce((sum, item) => sum + item.itbisWithheld, 0));
 
   return {
     items: normalizedItems,
@@ -182,7 +190,18 @@ function buildTotals(items) {
     total,
     totalTaxed: round2(taxed18 + taxed16 + taxed0),
     totalIsrRetenido,
+    totalItbisRetenido,
+    legalTipAmount,
   };
+}
+
+function appendLegalTipTotals(node, amount, summary = false) {
+  if (!(Number(amount) > 0)) return;
+  node.ele('MontoImpuestoAdicional').txt(Money.decimal(Money.cents(amount)));
+  const tax = node.ele('ImpuestosAdicionales').ele('ImpuestoAdicional');
+  tax.ele('TipoImpuesto').txt('001');
+  if (!summary) tax.ele('TasaImpuestoAdicional').txt('10.00');
+  tax.ele('OtrosImpuestosAdicionales').txt(Money.decimal(Money.cents(amount)));
 }
 
 function appendIfValue(node, key, value) {
@@ -391,6 +410,7 @@ function generateEcfXml(payload) {
   const hasTipoIngresos = !TIPOS_SIN_TIPO_INGRESOS.has(documentTypeCode);
   const hasTipoPago = !TIPOS_SIN_TIPO_PAGO.has(documentTypeCode);
 
+  assertCondition(!(totals.legalTipAmount > 0) || !['E41','E43','E47'].includes(documentTypeCode), 'Este tipo de documento no admite propina legal de venta.', { statusCode: 422 });
   assertCondition(items.length > 0, 'No se puede generar un XML e-CF sin productos.', { statusCode: 422 });
   assertCondition(totals.total >= 0, 'El monto total del e-CF no puede ser negativo.', { statusCode: 422 });
   assertCondition(document.eNCF, 'Debe indicar el eNCF del documento.', { statusCode: 422 });
@@ -508,9 +528,12 @@ function generateEcfXml(payload) {
     appendIfValue(totalsNode, 'TotalITBIS1', totals.taxed18 ? round2(totals.taxed18 * 0.18).toFixed(2) : null);
     appendIfValue(totalsNode, 'TotalITBIS2', totals.taxed16 ? round2(totals.taxed16 * 0.16).toFixed(2) : null);
     appendIfValue(totalsNode, 'TotalITBIS3', totals.taxed0 ? '0.00' : null);
+    appendLegalTipTotals(totalsNode, totals.legalTipAmount);
     totalsNode.ele('MontoTotal').txt(totals.total.toFixed(2));
     if (documentTypeCode === TIPO_COMPRAS) {
-      appendIfValue(totalsNode, 'TotalITBISRetenido', round2(document.totalItbisRetenido ?? 0) ? round2(document.totalItbisRetenido).toFixed(2) : null);
+      // Con el retenido por línea, el total es su suma (la DGII los cuadra).
+      const itbisRetenido = totals.totalItbisRetenido || round2(document.totalItbisRetenido ?? 0);
+      appendIfValue(totalsNode, 'TotalITBISRetenido', itbisRetenido ? itbisRetenido.toFixed(2) : null);
       appendIfValue(totalsNode, 'TotalISRRetencion', totals.totalIsrRetenido ? totals.totalIsrRetenido.toFixed(2) : null);
     }
   }
@@ -550,6 +573,7 @@ function generateEcfXml(payload) {
       if (documentTypeCode === TIPO_COMPRAS) {
         const retencion = detalle.ele('Retencion');
         retencion.ele('IndicadorAgenteRetencionoPercepcion').txt(String(item.retentionIndicator ?? document.retentionIndicator ?? 1));
+        appendIfValue(retencion, 'MontoITBISRetenido', item.itbisWithheld ? round2(item.itbisWithheld).toFixed(2) : null);
         appendIfValue(retencion, 'MontoISRRetenido', item.withholdingAmount ? round2(item.withholdingAmount).toFixed(2) : null);
       }
       detalle.ele('NombreItem').txt(recortar(item.name, 80));
@@ -560,6 +584,7 @@ function generateEcfXml(payload) {
       appendIfValue(detalle, 'UnidadMedida', /^\d+$/.test(String(item.unitMeasure ?? '')) ? item.unitMeasure : null);
       detalle.ele('PrecioUnitarioItem').txt(cantidadYPrecioDgii(item).precio);
       appendIfValue(detalle, 'DescuentoMonto', item.discount ? item.discount.toFixed(2) : null);
+      if (item.legalTipAmount > 0) detalle.ele('TablaImpuestoAdicional').ele('ImpuestoAdicional').ele('TipoImpuesto').txt('001');
       // MontoItem = base imponible sin ITBIS; siempre al final del bloque Item
       detalle.ele('MontoItem').txt(item.taxableBase.toFixed(2));
     }
@@ -646,6 +671,7 @@ function generateRfceXml(payload) {
   if (rfceItbis1 > 0) totalNode.ele('TotalITBIS1').txt(rfceItbis1.toFixed(2));
   const rfceItbis2 = rfceTaxed16 > 0 ? round2(rfceTaxed16 * 0.16) : 0;
   if (rfceItbis2 > 0) totalNode.ele('TotalITBIS2').txt(rfceItbis2.toFixed(2));
+  appendLegalTipTotals(totalNode, totals.legalTipAmount, true);
   totalNode.ele('MontoTotal').txt(Number(totals.total || 0).toFixed(2));
   encabezado.ele('CodigoSeguridadeCF').txt(codigoSeguridad);
 

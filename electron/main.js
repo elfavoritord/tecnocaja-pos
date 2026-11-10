@@ -2966,6 +2966,17 @@ async function stopServer() {
   await stopLocalMysqlRuntime();
 }
 
+// Después de un alert()/confirm() nativo, Windows deja la ventana sin foco de
+// teclado y los campos de texto no responden hasta cambiar de ventana. Quitar
+// y devolver el foco a la ventana lo restablece (lo pide js/ui.js).
+ipcMain.on('ventana:reenfocar', (event) => {
+  const ventana = BrowserWindow.fromWebContents(event.sender);
+  if (!ventana || ventana.isDestroyed() || ventana.isMinimized()) return;
+  ventana.blur();
+  ventana.focus();
+  ventana.webContents.focus();
+});
+
 ipcMain.handle('secure-backup:open-folder', async (_event, password) => {
   try {
     await verifySecurityPassword(String(password || ''));

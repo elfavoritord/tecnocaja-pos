@@ -3,6 +3,7 @@
 const express = require('express');
 const path = require('path');
 const { Worker } = require('worker_threads');
+const { getInternetMonitor } = require('../network/internet-monitor');
 
 // El paquete `dgii-rnc` descarga y parsea de forma SÍNCRONA un archivo de la
 // DGII de ~784k líneas (fs.readFileSync + split/map bloqueantes). Correr eso
@@ -74,7 +75,7 @@ function callWorker(action, payload, timeoutMs) {
       resolve: (result) => { clearTimeout(timer); resolve(result); },
       reject: (err) => { clearTimeout(timer); reject(err); },
     });
-    w.postMessage({ id, action, payload });
+    w.postMessage({ id, action, payload: { ...payload, allowNetwork: !getInternetMonitor().isKnownOffline() } });
   });
 }
 
@@ -88,6 +89,10 @@ function createRncRouter() {
     callWorker('warmup', {}, 120_000).catch(() => {});
   }, 15_000);
   warmupTimer.unref?.();
+  // El worker no tiene su propio monitor: recibe el estado de la conexión
+  // antes de cualquier comprobación del dataset, incluida la actualización diaria.
+  const dailyTimer = setInterval(() => { callWorker('warmup', {}, 120_000).catch(() => {}); }, 24 * 60 * 60 * 1000);
+  dailyTimer.unref?.();
 
   // GET /api/rnc/lookup?id=130000000
   router.get('/api/rnc/lookup', async (req, res) => {

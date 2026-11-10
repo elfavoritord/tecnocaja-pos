@@ -39,6 +39,7 @@ const USER_DATA_TARGETS = [
   '.wwebjs_auth_pos',
   'ecf-sequence-high-watermarks.json',
   path.join('config', 'terminal-config.json'),
+  path.join('config', 'backup-location.json'),
   path.join('config', 'peripherals-config.json'),
   path.join('config', 'pending-db-migration.json'),
   path.join('config', 'pending-db-migration.json.failed'),

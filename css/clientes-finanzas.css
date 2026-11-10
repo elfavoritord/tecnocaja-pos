@@ -1,0 +1,28 @@
+#modal-box:has(#statement-from),
+#modal-box:has(#receivables-report-table) {
+  width: min(1160px, calc(100vw - 32px));
+  max-width: 1160px;
+}
+#modal-box:has(#statement-from) .data-table,
+#receivables-report-table .data-table { min-width: 850px; width: 100%; }
+#modal-box:has(#statement-from) .data-table th,
+#modal-box:has(#statement-from) .data-table td { white-space: nowrap; padding: 12px; }
+#modal-box:has(#statement-from) #modal-footer,
+#modal-box:has(#receivables-report-table) #modal-footer { flex-wrap: wrap; }
+
+#modal-box:has(#finance-report) {width:min(1160px,calc(100vw - 32px));max-width:1160px;}
+#modal-box:has(#receivables-report-table) { width: min(1280px, calc(100vw - 32px)); max-width: 1280px; }
+.ec-cabecera { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.ec-cabecera div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.ec-cabecera span { font-size: 0.75rem; color: var(--text2); }
+.ec-cabecera small { color: var(--text2); }
+.ec-cabecera .ec-alerta { border-color: var(--danger); }
+.ec-filtros { align-items: end; }
+
+/* Crédito del cliente en Cobrar (js/cobro.js) */
+.cobro-credit-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 10px; }
+.cobro-credit-info > div { display: flex; flex-direction: column; padding: 8px 10px; border-radius: 8px; background: var(--bg3, rgba(0,0,0,.04)); }
+.cobro-credit-info span { font-size: 0.75rem; color: var(--text2); }
+.cobro-credit-info strong { font-variant-numeric: tabular-nums; }
+.cobro-credit-info .cobro-credit-agotado { box-shadow: inset 3px 0 0 var(--danger); }
+.cobro-credit-info--vacio { display: block; padding: 10px 12px; color: var(--text2); font-size: 0.85rem; }

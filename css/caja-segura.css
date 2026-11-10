@@ -1,0 +1,95 @@
+/* Cierre seguro, arqueos y gaveta (js/caja-segura.js). Usa los tokens del
+   tema (modulos.css) para funcionar en modo día y noche. */
+#modal-box:has(.cs-modal) { width: min(980px, calc(100vw - 32px)); max-width: 980px; }
+#modal-box:has(.cs-historial) { width: min(1240px, calc(100vw - 32px)); max-width: 1240px; }
+#modal-box:has(.cs-modal) #modal-footer { flex-wrap: wrap; gap: 8px; }
+
+.cs-aviso { color: var(--text2); font-size: 0.9rem; margin: 0 0 12px; line-height: 1.45; }
+.propina-alcance { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+.propina-alcance legend { padding: 0 6px; font-weight: 600; }
+.cs-den-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.cs-den-col h4 { margin: 0 0 8px; font-size: 0.82rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text2); }
+.cs-den-row { display: grid; grid-template-columns: 1fr 96px 120px; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border); }
+.cs-den-label { font-weight: 600; }
+.cs-den-input { text-align: right; font-variant-numeric: tabular-nums; }
+.cs-den-sub { text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; color: var(--text2); }
+.cs-total-contado { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding: 12px 14px;
+  border-radius: 10px; background: var(--accent-glow); color: var(--text); }
+.cs-total-contado strong { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cs-extra, .cs-notas, .cs-campo { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-size: 0.9rem; }
+.cs-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+
+.cs-modo-chip { display: flex; align-items: center; gap: 8px; }
+.cs-badge { padding: 6px 10px; border-radius: 999px; background: var(--accent-glow); font-size: 0.8rem; font-weight: 600; }
+/* Cierre seguro con la caja abierta: los montos del turno se tapan en el DOM. */
+.caja-resumen.cs-ciego .resumen-row span:last-child,
+.caja-resumen.cs-ciego .resumen-total span:last-child { color: var(--text3); letter-spacing: .08em; user-select: none; }
+.cs-ciego-aviso { margin: 0 0 10px; padding: 10px 12px; border-radius: 10px; background: var(--accent-glow); color: var(--text); font-size: 0.85rem; line-height: 1.4; }
+#caja-monto[data-cs-ciego] { color: var(--text3); letter-spacing: .06em; }
+.cs-config { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; }
+
+/* Animación de análisis: el avance lo marca cada paso real terminado. */
+.cs-analisis { position: fixed; inset: 0; z-index: 3000; display: grid; place-items: center; background: rgba(8, 14, 12, 0.62); backdrop-filter: blur(4px); animation: cs-fade .18s ease-out; }
+.cs-analisis.cs-salida { opacity: 0; transition: opacity .2s ease; }
+.cs-analisis-card { width: min(440px, calc(100vw - 32px)); padding: 26px 26px 20px; border-radius: 16px; background: var(--bg2); color: var(--text); box-shadow: 0 24px 60px rgba(0,0,0,.35); text-align: center; }
+.cs-analisis-card h3 { margin: 10px 0 14px; }
+.cs-analisis-orb { position: relative; width: 74px; height: 74px; margin: 0 auto; }
+.cs-analisis-orb span { position: absolute; inset: 0; border-radius: 50%; border: 3px solid transparent; border-top-color: var(--accent); animation: cs-spin 1.1s linear infinite; }
+.cs-analisis-orb span:nth-child(2) { inset: 10px; border-top-color: var(--success); animation-duration: 1.6s; animation-direction: reverse; }
+.cs-analisis-orb span:nth-child(3) { inset: 22px; background: var(--accent-glow); border: 0; animation: cs-pulse 1.4s ease-in-out infinite; }
+.cs-progress { height: 8px; border-radius: 99px; background: var(--bg3); overflow: hidden; }
+.cs-progress-bar { width: 0; height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); transition: width .25s ease; }
+.cs-pasos { list-style: none; margin: 16px 0 6px; padding: 0; text-align: left; }
+.cs-pasos li { display: flex; align-items: center; gap: 10px; padding: 6px 0; color: var(--text3); }
+.cs-pasos li.activo { color: var(--text); font-weight: 600; }
+.cs-pasos li.hecho { color: var(--text); }
+.cs-paso-dot { width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; flex: none; }
+.cs-pasos li.activo .cs-paso-dot { border-color: var(--accent); animation: cs-pulse 1s ease-in-out infinite; }
+.cs-pasos li.hecho .cs-paso-dot { background: var(--success); border-color: var(--success); }
+.cs-analisis-nota { font-size: 0.78rem; color: var(--text3); margin: 8px 0 0; }
+@keyframes cs-spin { to { transform: rotate(360deg); } }
+@keyframes cs-pulse { 50% { opacity: .45; transform: scale(.92); } }
+@keyframes cs-fade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cs-analisis-orb span, .cs-pasos li.activo .cs-paso-dot { animation: none; } }
+
+/* Reporte en pantalla */
+.cs-reporte { max-height: 62vh; overflow: auto; }
+.cs-reporte .csr { max-width: 640px; margin: 0 auto; }
+.csr h2 { text-align: center; margin: 0 0 2px; }
+.csr .csr-sub { text-align: center; margin: 0 0 4px; color: var(--text2); font-size: 0.85rem; }
+.csr-sec { border-top: 1px dashed var(--border); margin-top: 10px; padding-top: 8px; }
+.csr-sec h4 { margin: 0 0 6px; font-size: 0.82rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text2); }
+.csr-row { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
+.csr-row span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.csr-bold { font-weight: 700; }
+.csr-res { text-align: center; font-weight: 700; font-size: 1.1rem; padding: 10px; border-radius: 10px; margin: 8px 0; }
+.csr-res--ok { background: color-mix(in srgb, var(--success) 18%, transparent); }
+.csr-res--sobra { background: color-mix(in srgb, var(--warning) 20%, transparent); }
+.csr-res--falta { background: color-mix(in srgb, var(--danger) 18%, transparent); }
+
+/* Gaveta */
+.cs-motivos { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.cs-motivo { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 14px; text-align: left; border: 1px solid var(--border); border-radius: 12px; background: var(--bg3); color: var(--text); cursor: pointer; }
+.cs-motivo small { color: var(--text2); line-height: 1.35; }
+.cs-motivo.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+#cs-motivo-form { margin-top: 14px; }
+.cs-resultados { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.cs-resultado { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); color: var(--text); cursor: pointer; }
+.cs-consumo { margin-top: 10px; }
+.cs-consumo-row { display: grid; grid-template-columns: 1fr 110px; gap: 8px; align-items: center; padding: 4px 0; }
+.cs-resultado-arqueo { max-width: 420px; margin: 0 auto; font-size: 1.05rem; }
+
+/* Historial */
+.cs-filtros { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 12px; }
+.cs-filtros label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; min-width: 150px; }
+.cs-kpis { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
+.cs-kpis div { display: flex; flex-direction: column; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; min-width: 130px; }
+.cs-kpis span { font-size: 0.78rem; color: var(--text2); }
+.cs-kpis strong { font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+.cs-tabla-wrap { max-height: 50vh; overflow: auto; }
+.cs-tabla-wrap .data-table { min-width: 980px; width: 100%; }
+
+@media (max-width: 720px) {
+  .cs-den-grid { grid-template-columns: 1fr; }
+  .cs-den-row { grid-template-columns: 1fr 80px 100px; }
+}

@@ -798,6 +798,22 @@ svg.tc-emoji-icon {
   font-weight: var(--tc-weight-medium);
 }
 
+/* Anticipos de reservas: el detalle por forma de pago va debajo, el monto en una línea. */
+#app #module-caja #res-anticipos-row {
+  gap: var(--tc-space-3);
+  padding: 6px 0;
+}
+#app #module-caja #res-anticipos-row small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--tc-fs-xs);
+  line-height: 1.35;
+}
+#app #module-caja #res-anticipos-row > span:last-child {
+  white-space: nowrap;
+  color: var(--tc-success-text, #15803d);
+}
+
 #app #module-caja .resumen-total {
   padding: var(--tc-space-3) 0 0;
   color: var(--tc-text);
@@ -1319,6 +1335,8 @@ svg.tc-emoji-icon {
 /* ═══ COMPRAS Y GASTOS: un solo botón principal según la pestaña ═════════ */
 
 #app #module-compras[data-tab="gastos"] #btn-compras-nueva,
+#app #module-compras[data-tab="gastos"] #btn-compras-subir,
+#app #module-compras[data-tab="gastos"] #btn-compras-config,
 #app #module-compras:not([data-tab="gastos"]) #btn-compras-gasto {
   display: none;
 }

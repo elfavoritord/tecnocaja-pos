@@ -2015,7 +2015,7 @@ Condición: La compra de los equipos y la programación de la instalación estar
         { label: '', render: (r) => r.anuladoAt ? '' : acciones([accion('data-void', r.id, 'Anular', 'anular', 'peligro')]) },
       ], rows);
       b.querySelectorAll('[data-void]').forEach((el) => el.onclick = async () => {
-        const motivo = prompt('Motivo de la anulación del pago:');
+        const motivo = await showPromptModal('Motivo de la anulación del pago:', { confirmText: 'Anular pago' });
         if (motivo == null) return;
         try { await post(`/cobros/${el.dataset.void}/anular`, { motivo }); toast('Pago anulado', 'success'); renderCobros(); }
         catch (e) { toast(e.message, 'error'); }
@@ -2311,14 +2311,13 @@ Condición: La compra de los equipos y la programación de la instalación estar
       catch (e) { toast(e.message, 'error'); }
     };
     m.querySelector('#srv-pr-edit').onclick = () => { m.remove(); formProyecto(p); };
-    m.querySelector('#srv-pr-addtask').onclick = () => {
-      const titulo = prompt('Título de la tarea:'); if (!titulo) return;
+    m.querySelector('#srv-pr-addtask').onclick = async () => {
+      const titulo = await pedirTexto('Título de la tarea:'); if (!titulo) return;
       post(`/proyectos/${id}/tareas`, { titulo }).then(reload).catch((e) => toast(e.message, 'error'));
     };
-    m.querySelector('#srv-pr-addexp').onclick = () => {
-      const d = prompt('Descripción del gasto:'); if (!d) return;
-      const mo = Number(prompt('Monto:') || 0); if (!(mo > 0)) return;
-      post(`/proyectos/${id}/gastos`, { descripcion: d, monto: mo }).then(reload).catch((e) => toast(e.message, 'error'));
+    m.querySelector('#srv-pr-addexp').onclick = async () => {
+      const v = await pedirGasto('Agregar gasto al proyecto'); if (!v) return;
+      post(`/proyectos/${id}/gastos`, v).then(reload).catch((e) => toast(e.message, 'error'));
     };
     m.querySelectorAll('[data-task]').forEach((sel) => sel.onchange = () => post(`/proyectos/${id}/tareas/${sel.dataset.task}/estado`, { estado: sel.value }).then(() => { renderProyectos(); }).catch((e) => toast(e.message, 'error')));
     m.querySelectorAll('[data-deltask]').forEach((el) => el.onclick = () => del(`/proyectos/${id}/tareas/${el.dataset.deltask}`).then(reload).catch((e) => toast(e.message, 'error')));
@@ -2430,10 +2429,22 @@ Condición: La compra de los equipos y la programación de la instalación estar
     if (host) { host.innerHTML = `<button class="btn btn-primary" data-new>+ ${esc(newLabel)}</button>`; host.querySelector('[data-new]').onclick = onNew; }
     bodyOf(mod).innerHTML = '<div class="srv-loading">Cargando…</div>';
   }
-  async function prompt2(label1, label2) {
-    const a = prompt(label1); if (a == null) return null;
-    const b = prompt(label2); if (b == null) return null;
-    return [a, b];
+  // La app de escritorio no tiene window.prompt: los datos sueltos se piden con
+  // las ventanas de js/ui.js (showPromptModal / showFormModal).
+  async function pedirTexto(titulo, confirmText = 'Agregar') {
+    const v = await showPromptModal(titulo, { confirmText });
+    return v && v.trim() ? v.trim() : null;
+  }
+  const numero = (v, porDefecto = 0) => (String(v ?? '').trim() === '' ? porDefecto : Number(v));
+  async function pedirGasto(titulo) {
+    const v = await showFormModal(titulo, [
+      { name: 'descripcion', label: 'Descripción', required: true },
+      { name: 'monto', label: 'Monto', type: 'number', min: 0, step: '0.01', required: true },
+    ], { confirmText: 'Agregar' });
+    if (!v) return null;
+    const monto = numero(v.monto);
+    if (!(monto > 0)) { toast('El monto debe ser mayor que cero.', 'warning'); return null; }
+    return { descripcion: v.descripcion.trim(), monto };
   }
 
   // ── Puestos de seguridad ─────────────────────────────────────────────────
@@ -2488,11 +2499,15 @@ Condición: La compra de los equipos y la programación de la instalación estar
       ], p.incidencias)}`, async () => {}, { wide: true, submitLabel: 'Cerrar' });
     const reload = () => { m.remove(); viewPuesto(id); };
     m.querySelector('#pt-add').onclick = async () => {
-      const r = await prompt2('Nombre del guardia:', 'Fecha (AAAA-MM-DD):'); if (!r) return;
-      post(`/seguridad/puestos/${id}/turnos`, { employeeName: r[0], fecha: r[1] }).then(reload).catch((e) => toast(e.message, 'error'));
+      const r = await showFormModal('Agregar turno', [
+        { name: 'guardia', label: 'Nombre del guardia', required: true },
+        { name: 'fecha', label: 'Fecha', type: 'date', value: today(), required: true },
+      ], { confirmText: 'Agregar' });
+      if (!r) return;
+      post(`/seguridad/puestos/${id}/turnos`, { employeeName: r.guardia.trim(), fecha: r.fecha }).then(reload).catch((e) => toast(e.message, 'error'));
     };
     m.querySelector('#pi-add').onclick = async () => {
-      const d = prompt('Descripción de la incidencia:'); if (!d) return;
+      const d = await pedirTexto('Descripción de la incidencia:'); if (!d) return;
       post(`/seguridad/puestos/${id}/incidencias`, { descripcion: d }).then(reload).catch((e) => toast(e.message, 'error'));
     };
     m.querySelectorAll('[data-shift]').forEach((s) => s.onchange = () => post(`/seguridad/turnos/${s.dataset.shift}/estado`, { estado: s.value }).catch((e) => toast(e.message, 'error')));
@@ -2555,13 +2570,16 @@ Condición: La compra de los equipos y la programación de la instalación estar
       ], e.historial)}`, async () => {}, { wide: true, submitLabel: 'Cerrar' });
     const reload = () => { m.remove(); viewEquipo(id); };
     m.querySelector('#mp-add').onclick = async () => {
-      const t = prompt('Título del plan:'); if (!t) return;
+      const t = await pedirTexto('Título del plan:'); if (!t) return;
       post(`/mantenimiento/equipos/${id}/planes`, { titulo: t }).then(reload).catch((x) => toast(x.message, 'error'));
     };
     m.querySelector('#mh-add').onclick = async () => {
-      const d = prompt('Descripción de la intervención:'); if (!d) return;
-      const c = Number(prompt('Costo (0 si no aplica):') || 0);
-      post(`/mantenimiento/equipos/${id}/historial`, { descripcion: d, costo: c }).then(reload).catch((x) => toast(x.message, 'error'));
+      const v = await showFormModal('Agregar intervención', [
+        { name: 'descripcion', label: 'Descripción de la intervención', required: true },
+        { name: 'costo', label: 'Costo (0 si no aplica)', type: 'number', min: 0, step: '0.01', value: '0' },
+      ], { confirmText: 'Agregar' });
+      if (!v) return;
+      post(`/mantenimiento/equipos/${id}/historial`, { descripcion: v.descripcion.trim(), costo: numero(v.costo) }).then(reload).catch((x) => toast(x.message, 'error'));
     };
     m.querySelectorAll('[data-delplan]').forEach((el) => el.onclick = () => del(`/mantenimiento/planes/${el.dataset.delplan}`).then(reload));
   }
@@ -2635,15 +2653,23 @@ Condición: La compra de los equipos y la programación de la instalación estar
     m.querySelector('#rs-est-apply').onclick = () => post(`/viajes/reservaciones/${id}/estado`, { estado: m.querySelector('#rs-est').value }).then(() => { renderReservaciones(); reload(); }).catch((e) => toast(e.message, 'error'));
     m.querySelector('#rs-edit').onclick = () => { m.remove(); formReserva(r); };
     m.querySelector('#ri-add').onclick = async () => {
-      const d = prompt('Descripción (ej. Vuelo SDQ-MIA):'); if (!d) return;
-      const costo = Number(prompt('Costo:') || 0); const precio = Number(prompt('Precio al cliente:') || 0);
-      post(`/viajes/reservaciones/${id}/items`, { descripcion: d, costo, precio }).then(reload).catch((e) => toast(e.message, 'error'));
+      const v = await showFormModal('Agregar servicio a la reservación', [
+        { name: 'descripcion', label: 'Descripción', placeholder: 'Ej.: Vuelo SDQ-MIA', required: true },
+        { name: 'costo', label: 'Costo', type: 'number', min: 0, step: '0.01', value: '0' },
+        { name: 'precio', label: 'Precio al cliente', type: 'number', min: 0, step: '0.01', value: '0' },
+      ], { confirmText: 'Agregar' });
+      if (!v) return;
+      post(`/viajes/reservaciones/${id}/items`, { descripcion: v.descripcion.trim(), costo: numero(v.costo), precio: numero(v.precio) }).then(reload).catch((e) => toast(e.message, 'error'));
     };
-    m.querySelector('#rt-add').onclick = async () => { const n = prompt('Nombre del viajero:'); if (!n) return; post(`/viajes/reservaciones/${id}/viajeros`, { travelerName: n }).then(reload).catch((e) => toast(e.message, 'error')); };
+    m.querySelector('#rt-add').onclick = async () => { const n = await pedirTexto('Nombre del viajero:'); if (!n) return; post(`/viajes/reservaciones/${id}/viajeros`, { travelerName: n }).then(reload).catch((e) => toast(e.message, 'error')); };
     m.querySelector('#rc-add').onclick = async () => {
-      const d = prompt('Descripción de la comisión:'); if (!d) return;
-      const base = Number(prompt('Base:') || 0); const pct = Number(prompt('% comisión:') || 0);
-      post(`/viajes/reservaciones/${id}/comisiones`, { descripcion: d, base, pct }).then(reload).catch((e) => toast(e.message, 'error'));
+      const v = await showFormModal('Agregar comisión', [
+        { name: 'descripcion', label: 'Descripción de la comisión', required: true },
+        { name: 'base', label: 'Base', type: 'number', min: 0, step: '0.01', value: '0' },
+        { name: 'pct', label: '% de comisión', type: 'number', min: 0, step: '0.01', value: '0' },
+      ], { confirmText: 'Agregar' });
+      if (!v) return;
+      post(`/viajes/reservaciones/${id}/comisiones`, { descripcion: v.descripcion.trim(), base: numero(v.base), pct: numero(v.pct) }).then(reload).catch((e) => toast(e.message, 'error'));
     };
     m.querySelectorAll('[data-delitem]').forEach((el) => el.onclick = () => del(`/viajes/items/${el.dataset.delitem}`).then(reload));
     m.querySelectorAll('[data-deltrav]').forEach((el) => el.onclick = () => del(`/viajes/viajeros-reserva/${el.dataset.deltrav}`).then(reload));
@@ -2701,9 +2727,8 @@ Condición: La compra de los equipos y la programación de la instalación estar
       ], c.gastos)}`, async () => {}, { wide: true, submitLabel: 'Cerrar' });
     const reload = () => { m.remove(); viewCampana(id); };
     m.querySelector('#ce-add').onclick = async () => {
-      const d = prompt('Descripción del gasto:'); if (!d) return;
-      const mo = Number(prompt('Monto:') || 0); if (!(mo > 0)) return;
-      post(`/campanas/${id}/gastos`, { descripcion: d, monto: mo }).then(reload).catch((e) => toast(e.message, 'error'));
+      const v = await pedirGasto('Agregar gasto a la campaña'); if (!v) return;
+      post(`/campanas/${id}/gastos`, v).then(reload).catch((e) => toast(e.message, 'error'));
     };
     m.querySelectorAll('[data-delexp]').forEach((el) => el.onclick = () => del(`/campanas/gastos/${el.dataset.delexp}`).then(reload));
   }
@@ -2765,14 +2790,21 @@ Condición: La compra de los equipos y la programación de la instalación estar
       ], s.materiales)}`, async () => {}, { wide: true, submitLabel: 'Cerrar' });
     const reload = () => { m.remove(); viewObra(id); };
     m.querySelector('#op-add').onclick = async () => {
-      const pct = Number(prompt('Avance total (%):') || 0);
-      const d = prompt('Descripción del avance:') || '';
-      post(`/obras/${id}/avances`, { avancePct: pct, descripcion: d }).then(() => { renderObras(); reload(); }).catch((e) => toast(e.message, 'error'));
+      const v = await showFormModal('Registrar avance', [
+        { name: 'pct', label: 'Avance total (%)', type: 'number', min: 0, step: '0.01', required: true },
+        { name: 'descripcion', label: 'Descripción del avance' },
+      ], { confirmText: 'Registrar' });
+      if (!v) return;
+      post(`/obras/${id}/avances`, { avancePct: numero(v.pct), descripcion: v.descripcion.trim() }).then(() => { renderObras(); reload(); }).catch((e) => toast(e.message, 'error'));
     };
     m.querySelector('#om-add').onclick = async () => {
-      const d = prompt('Descripción del material:'); if (!d) return;
-      const cant = Number(prompt('Cantidad:') || 1); const cu = Number(prompt('Costo unitario:') || 0);
-      post(`/obras/${id}/materiales`, { descripcion: d, cantidad: cant, costoUnit: cu }).then(reload).catch((e) => toast(e.message, 'error'));
+      const v = await showFormModal('Agregar material', [
+        { name: 'descripcion', label: 'Descripción del material', required: true },
+        { name: 'cantidad', label: 'Cantidad', type: 'number', min: 0, step: 'any', value: '1' },
+        { name: 'costo', label: 'Costo unitario', type: 'number', min: 0, step: '0.01', value: '0' },
+      ], { confirmText: 'Agregar' });
+      if (!v) return;
+      post(`/obras/${id}/materiales`, { descripcion: v.descripcion.trim(), cantidad: numero(v.cantidad, 1), costoUnit: numero(v.costo) }).then(reload).catch((e) => toast(e.message, 'error'));
     };
     m.querySelectorAll('[data-delp]').forEach((el) => el.onclick = () => del(`/obras/avances/${el.dataset.delp}`).then(reload));
     m.querySelectorAll('[data-delm]').forEach((el) => el.onclick = () => del(`/obras/materiales/${el.dataset.delm}`).then(reload));

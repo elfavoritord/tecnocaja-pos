@@ -55,7 +55,11 @@ describe('Respaldo de una sucursal enlazada', () => {
     const destino = await baseMigrada();
     await restorePayloadToDb(leido.payload || leido, destino.query);
 
-    expect(await destino.query('SELECT event_id, status FROM sync_outbox')).toEqual([{ event_id: 'e-pend', status: 'pendiente' }]);
+    expect(await destino.query('SELECT event_id, status FROM sync_outbox ORDER BY event_id')).toEqual([{ event_id: 'e-ok', status: 'sincronizado' }, { event_id: 'e-pend', status: 'pendiente' }]);
+    // Conservar los ya confirmados no los vuelve pendientes ni los duplica.
+    await restorePayloadToDb(leido.payload, destino.query);
+    await restorePayloadToDb(leido.payload, destino.query);
+    expect((await destino.query('SELECT COUNT(*) AS n FROM sync_outbox'))[0].n).toBe(2);
     expect(await destino.query('SELECT stream, cursor_value FROM sync_cursors')).toEqual([{ stream: 'bajada:catalogo', cursor_value: '42' }]);
     expect((await destino.query("SELECT clave FROM sync_conflictos WHERE estado = 'pendiente'")).map((r) => r.clave)).toEqual(['F9']);
     expect(await destino.query('SELECT rango_uuid, estado, desde, hasta FROM ncf_rangos_central')).toEqual([{ rango_uuid: 'r1', estado: 'en_uso', desde: 2501, hasta: 5000 }]);

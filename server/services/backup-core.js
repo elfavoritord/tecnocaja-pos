@@ -14,16 +14,12 @@ const path = require('path');
 const fs   = require('fs');
 const os   = require('os');
 const crypto = require('crypto');
-const zlib   = require('zlib');
-const { promisify } = require('util');
 
-const { withTransaction: _withDbTransaction, getDbClient } = require('../../db');
-
-const gzip   = promisify(zlib.gzip);
-const gunzip = promisify(zlib.gunzip);
+const { query: _dbQuery, withTransaction: _withDbTransaction, withReadSnapshot, getDbClient } = require('../../db');
+const catalog = require('./backup-catalog');
 
 const BACKUP_MAGIC          = 'TECNOCAJA_BACKUP_V1';
-const BACKUP_FORMAT_VERSION = '2';
+const BACKUP_FORMAT_VERSION = catalog.VERSION;
 
 function getDefaultBackupDir() {
   return path.join(os.homedir(), 'Documents', 'TecnoCaja', 'Backups');
@@ -81,196 +77,15 @@ function listLocalBackups(dir) {
 }
 
 // ─── Construir payload completo ──────────────────────────────────────────────
-async function buildFullPayload(query) {
-  // Tablas cuyo fallo de lectura NO debe producir un respaldo "exitoso" con
-  // datos vacíos. Si una de estas falla (pool cerrándose, conexión caída al
-  // cerrar la app, etc.), abortamos en vez de subir/guardar un .tcbak vacío
-  // que luego reemplaza respaldos buenos por rotación (pruneCloudBackups).
-  const CRITICAL_TABLES = new Set(['config', 'users', 'products', 'clients']);
-  const failedCritical = [];
-
-  const safeQuery = async (sql, params = [], tableLabel = '') => {
-    try { return await query(sql, params); }
-    catch (e) {
-      if (CRITICAL_TABLES.has(tableLabel)) failedCritical.push({ table: tableLabel, error: e.message });
-      return [];
-    }
-  };
-
-  const [
-    config, users, categories, products, clients,
-    suppliers, supplierInvoices,
-    cashSessions, cashMovements,
-    sales, saleItems,
-    auditLogs, suspendedSales, quotations,
-    ncfSequences, pendingSales,
-    tables, paymentMethods, branches, cashRegisters,
-    inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
-    syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
-    productComboItems, customCombos,
-  ] = await Promise.all([
-    safeQuery('SELECT * FROM config', [], 'config'),
-    safeQuery('SELECT * FROM users', [], 'users'),
-    safeQuery('SELECT * FROM categories'),
-    safeQuery('SELECT * FROM products', [], 'products'),
-    safeQuery('SELECT * FROM clients', [], 'clients'),
-    safeQuery('SELECT * FROM suppliers LIMIT 5000'),
-    safeQuery('SELECT * FROM supplier_invoices LIMIT 10000'),
-    safeQuery('SELECT * FROM cash_sessions LIMIT 3000'),
-    safeQuery('SELECT * FROM cash_movements LIMIT 50000'),
-    safeQuery('SELECT * FROM sales LIMIT 200000'),
-    safeQuery('SELECT * FROM sale_items LIMIT 500000'),
-    safeQuery('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 5000'),
-    safeQuery('SELECT * FROM suspended_sales LIMIT 1000'),
-    safeQuery('SELECT * FROM quotations LIMIT 3000'),
-    safeQuery('SELECT * FROM ncf_sequences LIMIT 1000'),
-    safeQuery('SELECT * FROM pending_sales LIMIT 2000'),
-    safeQuery('SELECT * FROM dining_tables LIMIT 500'),
-    safeQuery('SELECT * FROM payment_methods'),
-    safeQuery('SELECT * FROM branches'),
-    safeQuery('SELECT * FROM cash_registers'),
-    safeQuery('SELECT * FROM inventory_by_branch LIMIT 200000'),
-    safeQuery('SELECT * FROM inventory_movements LIMIT 500000'),
-    safeQuery('SELECT * FROM branch_transfers LIMIT 50000'),
-    safeQuery('SELECT * FROM branch_transfer_items LIMIT 200000'),
-    // Multisucursal: lo que todavía no confirmó la central, por dónde va cada
-    // descarga, lo que espera "Vincular" y los rangos NCF que asignó la central.
-    safeQuery("SELECT * FROM sync_outbox WHERE status <> 'sincronizado' LIMIT 200000"),
-    safeQuery('SELECT * FROM sync_cursors'),
-    safeQuery("SELECT * FROM sync_conflictos WHERE estado = 'pendiente' LIMIT 50000"),
-    safeQuery('SELECT * FROM ncf_rangos_central'),
-    // Combos promocionales: qué productos lleva cada combo.
-    safeQuery('SELECT * FROM product_combo_items'),
-    // Combos personalizados de precio fijo (las ventas guardan su foto en sale_items).
-    safeQuery('SELECT * FROM custom_combos'),
-  ]);
-
-  if (failedCritical.length) {
-    const detail = failedCritical.map(f => `${f.table}: ${f.error}`).join(' | ');
-    throw new Error(`Respaldo abortado — no se pudieron leer tablas críticas (${detail}). No se guardó ningún archivo para evitar un respaldo vacío.`);
+async function buildFullPayload(query, options = {}) {
+  if (query === _dbQuery && typeof withReadSnapshot === 'function' && !options.inSnapshot) {
+    return withReadSnapshot(({ query: q }) => buildFullPayload(q, { ...options, inSnapshot: true }));
   }
-
-  // Config como mapa para metadatos
-  const cfgMap = {};
-  (config || []).forEach(r => {
-    const k = r.clave || r.config_key || '';
-    const v = r.valor || r.config_value || r.value || '';
-    if (k) cfgMap[k] = v;
-    // columnas directas del row (tabla config tiene columnas planas)
-    Object.keys(r).forEach(col => { if (!cfgMap[col]) cfgMap[col] = r[col]; });
-  });
-
-  const businessName = cfgMap.business_name || cfgMap.nombre_negocio || cfgMap.businessName || 'TecnoCaja';
-  const businessId   = cfgMap.business_id   || cfgMap.businessId    || '';
-  const rnc          = cfgMap.rnc            || '';
-  const sysVersion   = process.env.npm_package_version || '1.0.0';
-
-  return {
-    magic:          BACKUP_MAGIC,
-    formatVersion:  BACKUP_FORMAT_VERSION,
-    exportedAt:     new Date().toISOString(),
-    timezone:       'America/Santo_Domingo',
-    businessName,
-    businessId,
-    rnc,
-    systemVersion:  sysVersion,
-    stats: {
-      productos:   (products    || []).length,
-      clientes:    (clients     || []).length,
-      ventas:      (sales       || []).length,
-      usuarios:    (users       || []).length,
-      categorias:  (categories  || []).length,
-      facturas:    (saleItems   || []).length,
-      proveedores: (suppliers   || []).length,
-      inventario:  (inventoryByBranch || []).length,
-      movimientosInventario: (inventoryMovements || []).length,
-    },
-    data: {
-      config, users, categories, products, clients,
-      suppliers, supplierInvoices,
-      cashSessions, cashMovements,
-      sales, saleItems,
-      auditLogs, suspendedSales, quotations,
-      ncfSequences, pendingSales,
-      tables, paymentMethods, branches, cashRegisters,
-      inventoryByBranch, inventoryMovements, branchTransfers, branchTransferItems,
-      syncOutbox, syncCursors, syncConflictos, ncfRangosCentral,
-      productComboItems, customCombos,
-    },
-  };
+  return require('./backup-builder').buildFullPayload(query, options);
 }
 
 // ─── Crear buffer .tcbak cifrado + comprimido ────────────────────────────────
-async function createTcbakBuffer(payload, password) {
-  const payloadJson = JSON.stringify(payload);
-  const sha256      = crypto.createHash('sha256').update(payloadJson, 'utf8').digest('hex');
-
-  const compressed  = await gzip(Buffer.from(payloadJson, 'utf8'));
-  const { encryptBackupPayload } = require('../security/backup-crypto');
-  const encContent  = encryptBackupPayload(compressed.toString('base64'), password);
-
-  const tcbak = {
-    magic:         BACKUP_MAGIC,
-    formatVersion: BACKUP_FORMAT_VERSION,
-    sha256,
-    createdAt:     payload.exportedAt,
-    metadata: {
-      businessName:  payload.businessName,
-      businessId:    payload.businessId,
-      rnc:           payload.rnc,
-      systemVersion: payload.systemVersion,
-      stats:         payload.stats,
-    },
-    encrypted: encContent,
-  };
-
-  return Buffer.from(JSON.stringify(tcbak), 'utf8');
-}
-
-// ─── Parsear y descifrar .tcbak ──────────────────────────────────────────────
-async function parseTcbakBuffer(fileBuffer, password) {
-  let tcbak;
-  try {
-    tcbak = JSON.parse(fileBuffer.toString('utf8'));
-  } catch (_) {
-    throw new Error('El archivo no es un respaldo válido de Tecno Caja (formato inválido).');
-  }
-
-  if (tcbak.magic !== BACKUP_MAGIC) {
-    throw new Error('Este archivo no es un respaldo de Tecno Caja.');
-  }
-
-  const { decryptBackupPayload } = require('../security/backup-crypto');
-  let decryptedBase64;
-  try {
-    decryptedBase64 = decryptBackupPayload(tcbak.encrypted, password);
-  } catch (_) {
-    throw new Error('Contraseña incorrecta o archivo corrupto. No se pudo descifrar el respaldo.');
-  }
-
-  let payloadJson;
-  try {
-    const compressed = Buffer.from(decryptedBase64, 'base64');
-    const decompressed = await gunzip(compressed);
-    payloadJson = decompressed.toString('utf8');
-  } catch (_) {
-    throw new Error('Error al descomprimir el respaldo. El archivo puede estar dañado.');
-  }
-
-  const sha256Actual = crypto.createHash('sha256').update(payloadJson, 'utf8').digest('hex');
-  if (sha256Actual !== tcbak.sha256) {
-    throw new Error('El respaldo está corrupto o fue modificado (SHA-256 no coincide). Restauración cancelada.');
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(payloadJson);
-  } catch (_) {
-    throw new Error('Error al procesar el contenido del respaldo.');
-  }
-
-  return { payload, metadata: tcbak.metadata, sha256: tcbak.sha256 };
-}
+const { createTcbakBuffer, parseTcbakBuffer } = require('./backup-format');
 
 /**
  * Normaliza un valor datetime al formato que acepta MariaDB/MySQL: 'YYYY-MM-DD HH:MM:SS'.
@@ -308,7 +123,15 @@ function _normalizeDateTimesInRow(row) {
 }
 
 // ─── Restaurar payload en la base de datos ───────────────────────────────────
-async function restorePayloadToDb(payload, query) {
+async function restorePayloadToDb(payload, query, options = {}) {
+  if (String(payload.formatVersion) === '3') {
+    const transaction = options.withTransaction || (query === _dbQuery ? _withDbTransaction : async (work) => {
+      await query('BEGIN IMMEDIATE TRANSACTION');
+      try { const result = await work({ query }); await query('COMMIT'); return result; }
+      catch (e) { await query('ROLLBACK'); throw e; }
+    });
+    return require('./backup-restore-integral').restaurar(payload, query, { ...options, withTransaction: transaction, dialect: options.dialect || getDbClient(), expectedLicenseUid: options.expectedLicenseUid ?? process.env.TECNO_CAJA_LICENSE_UID ?? '' });
+  }
   const { data } = payload;
   if (!data) throw new Error('El respaldo no contiene datos.');
 
@@ -362,25 +185,28 @@ async function restorePayloadToDb(payload, query) {
 
   async function _doRestore(q) {
     const safeQ = async (sql, params) => {
+      if (!isMySQL && /^SET FOREIGN_KEY_CHECKS/i.test(sql)) return [];
       try {
         return await q(sql, params);
       } catch (e) {
-        console.warn(`[respaldos][restore] query omitida: ${String(sql).slice(0, 80)} — ${e.message}`);
+        throw new Error(`Restauración cancelada: ${e.message}`);
       }
     };
 
     await safeQ('SET FOREIGN_KEY_CHECKS = 0', []);
+    if (!isMySQL) await q('PRAGMA defer_foreign_keys = ON');
 
     // La composición de los combos apunta a ids de productos: si se restauran
     // productos, la vieja se borra aunque el respaldo no traiga combos (uno de
     // antes de los combos), o quedaría apuntando a productos que ya no son.
     const restoringProducts = (data.products || []).length > 0;
 
-    for (const [table, rows] of tableOrder) {
+    const presentes = tableOrder.filter(([table, rows]) => rows.length || Object.values(data).includes(rows) || (table === 'product_combo_items' && restoringProducts));
+    for (const [table] of [...presentes].reverse()) await safeQ(`DELETE FROM \`${table}\``, []);
+    for (const [table, rows] of presentes) {
       const alwaysClear = table === 'product_combo_items' && restoringProducts;
       if (!rows.length && !alwaysClear) continue;
 
-      await safeQ(`DELETE FROM \`${table}\``, []);
       if (!rows.length) continue;
 
       const normalizedRows = rows.map(_normalizeDateTimesInRow);
@@ -394,7 +220,7 @@ async function restorePayloadToDb(payload, query) {
       if (omitidas.length) {
         console.warn(`[respaldos][restore] ${table}: el respaldo trae columnas que esta versión no tiene; se omiten: ${omitidas.join(', ')}`);
       }
-      if (!cols.length) continue;
+      if (!cols.length) throw new Error(`No hay columnas compatibles para ${table}.`);
 
       if (isMySQL) {
         const insert = `INSERT INTO \`${table}\` (${cols.map(c => `\`${c}\``).join(',')}) VALUES ?`;
@@ -425,21 +251,27 @@ async function restorePayloadToDb(payload, query) {
     const userCheck = await safeQ('SELECT COUNT(*) AS total FROM `users`');
     const userCount = Number(userCheck?.[0]?.total || 0);
     if (userCount === 0) {
-      console.warn('[respaldos][restore] ¡ADVERTENCIA! La tabla users quedó vacía tras restauración.');
-      await safeQ('UPDATE `config` SET `setup_completed` = 0 WHERE `id` = 1', []);
-      console.warn('[respaldos][restore] setup_completed → 0 para evitar estado "corrompido". El usuario verá el wizard inicial.');
+      throw new Error('El respaldo no permite recuperar usuarios. Se conserva la base anterior.');
     } else {
       console.log(`[respaldos][restore] ✅ ${userCount} usuario(s) restaurado(s) correctamente.`);
     }
   }
 
   let restoreResult = { userCount: 0 };
-  if (isMySQL) {
-    await _withDbTransaction(async ({ query: txQ }) => {
-      await _doRestore(txQ);
+  if (options.withTransaction || query === _dbQuery) {
+    await (options.withTransaction || _withDbTransaction)(async ({ query: txQ }) => {
+      try { await _doRestore(txQ); }
+      finally { if (isMySQL) await txQ('SET FOREIGN_KEY_CHECKS = 1'); }
+      if (!isMySQL && (await txQ('PRAGMA foreign_key_check')).length) throw new Error('El respaldo contiene relaciones incompletas.');
     });
   } else {
-    await _doRestore(query);
+    if (isMySQL) throw new Error('Se requiere una transacción dedicada para restaurar MariaDB.');
+    await query('BEGIN IMMEDIATE TRANSACTION');
+    try {
+      await _doRestore(query);
+      if ((await query('PRAGMA foreign_key_check')).length) throw new Error('El respaldo contiene relaciones incompletas.');
+      await query('COMMIT');
+    } catch (e) { await query('ROLLBACK'); throw e; }
   }
 
   try {

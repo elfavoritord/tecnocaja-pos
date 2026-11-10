@@ -15,9 +15,13 @@ const CAJA_ACTIVA_MS = 5 * 60 * 1000;
 
 function createOperacionesActivas({ query, ahora = Date.now }) {
   let enCurso = 0;
+  let mantenimiento = null;
 
   function middleware(req, res, next) {
     const ruta = String(req.originalUrl || req.url || '').split('?')[0];
+    if (mantenimiento && ruta.startsWith('/api/') && !ruta.startsWith('/api/system/')) {
+      res.status(503).json({ error: 'Restauración en curso. Espera a que termine antes de continuar.', code: 'RESTORE_IN_PROGRESS' }); return;
+    }
     if (!METODOS_DE_ESCRITURA.has(req.method) || !ruta.startsWith('/api/') || NO_CUENTAN.test(ruta)) {
       next();
       return;
@@ -43,7 +47,19 @@ function createOperacionesActivas({ query, ahora = Date.now }) {
     res.json({ activas: enCurso, otrasCajas: await otrasCajasConectadas() });
   });
 
-  return { middleware, router, activas: () => enCurso };
+  async function withExclusive(work, { currentRequests = 1, timeoutMs = 15000 } = {}) {
+    if (mantenimiento) throw Object.assign(new Error('Ya hay una restauración en curso.'), { statusCode: 409 });
+    mantenimiento = 'restore';
+    try {
+      const limite = Date.now() + timeoutMs;
+      while (enCurso > currentRequests) {
+        if (Date.now() > limite) throw Object.assign(new Error('Hay operaciones activas. Reintenta la restauración al terminar los cobros.'), { statusCode: 409 });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return await work();
+    } finally { mantenimiento = null; }
+  }
+  return { middleware, router, activas: () => enCurso, withExclusive };
 }
 
 module.exports = { createOperacionesActivas };

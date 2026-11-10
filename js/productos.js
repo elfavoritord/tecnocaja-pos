@@ -1544,6 +1544,7 @@ function openProductModal(id) {
             Sin control de inventario. El stock no se descontará al vender. Ideal para productos a granel, vendidos por peso o servicios sin existencias fijas.
           </p>
         </div>
+        <div class="form-group compact-toggle-card"><label><input type="checkbox" id="mp-propina-legal" ${prod?.propinaLegal ? 'checked' : ''}> Comida / bebida sujeta a propina legal al consumirse en el local</label><small>Solo cuenta si la propina legal está activa con el alcance «Solo productos marcados». Con «A todo lo consumido» se cobra en todos los productos.</small></div>
         <div class="form-group compact-toggle-card" id="mp-itbis-group">
           <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
             <input type="checkbox" id="mp-aplica-itbis" ${prod?.aplicaItbis ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
@@ -1850,6 +1851,7 @@ async function saveProduct(id) {
     tiempoPreparacion: allowPrepTime ? (parseInt(document.getElementById('mp-tiempo').value, 10) || profile.prepDefault || 0) : 0,
     permiteMitades: allowPizzaConfig && document.getElementById('mp-mitades').value === 'si',
     esCombo: document.getElementById('mp-combo').value === 'si',
+    propinaLegal: document.getElementById('mp-propina-legal')?.checked === true,
     aplicaItbis: document.getElementById('mp-aplica-itbis')?.checked ?? false,
     itbisModo: document.getElementById('mp-itbis-modo-monto')?.checked ? 'monto' : 'porcentaje',
     itbisMonto: Math.max(0, parseFloat(document.getElementById('mp-itbis-monto')?.value) || 0),

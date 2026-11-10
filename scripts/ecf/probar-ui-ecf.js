@@ -186,10 +186,19 @@ function crearCertificado(destino, clave) {
       await page.evaluate(() => setSaleDocumentPreset('E44'));
       await sleep(400);
       check('Cobro en E44: total 100 sin ITBIS', Number(await totalCobro()) === 100 && Number(await itbisCobro()) === 0, `${await totalCobro()} / ${await itbisCobro()}`);
+      const recibidoYDevuelta = () => page.evaluate(() => ({
+        recibido: Number(document.getElementById('monto-recibido')?.value || 0),
+        devuelta: parseFmt(document.getElementById('cambio-val')?.textContent || '0'),
+      }));
+      const e44Recibido = await recibidoYDevuelta();
+      check('E44: el recibido exacto baja a 100, sin devuelta', e44Recibido.recibido === 100 && e44Recibido.devuelta === 0, JSON.stringify(e44Recibido));
+      check('Comprobantes: Ticket, E32, E31 y «Más» (sin botón e-CF)', JSON.stringify(await page.$$eval('#cobro-shell .cobro-docs .cobro-doc[data-preset]', (b) => b.map((x) => x.dataset.preset))) === '["ticket","E32","E31"]');
       await page.screenshot({ path: path.join(CAPTURAS, 'cobro-e44.png') });
       await page.evaluate(() => setSaleDocumentPreset('factura-electronica'));
       await sleep(400);
       check('Volver a e-CF: total 118', Number(await totalCobro()) === 118, await totalCobro());
+      const vueltaRecibido = await recibidoYDevuelta();
+      check('Volver a e-CF: el recibido exacto sube a 118', vueltaRecibido.recibido === 118 && vueltaRecibido.devuelta === 0, JSON.stringify(vueltaRecibido));
 
       // Cobrar E31 escribiendo el RNC.
       await page.evaluate(() => { window.CobroUI?.revealRnc?.(); });

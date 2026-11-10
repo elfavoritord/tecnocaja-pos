@@ -359,19 +359,26 @@ function sessionCollections(query, sessionIds) {
 
 // ── Clientes y cuentas por cobrar ───────────────────────────────────────────
 
-function openReceivables(query) {
-  return query(
-    `SELECT s.id, s.invoice_number, s.client_id, ${BRANCH} AS b, s.created_at,
-            s.total, COALESCE(s.received_amount, 0) AS paid,
+// Crédito = ventas a crédito y pagos mixtos con parte a crédito; lo pagado
+// incluye las notas de crédito que rebajaron la deuda. Una base que todavía no
+// tiene esas columnas (no ha migrado) usa la consulta de siempre.
+async function openReceivables(query) {
+  const sql = (nuevas) => `SELECT s.id, s.invoice_number, s.client_id, ${BRANCH} AS b, s.created_at,
+            s.total, COALESCE(s.received_amount, 0)${nuevas ? ' + COALESCE(s.credit_adjustment, 0)' : ''} AS paid,
             COALESCE(c.nombre, s.client_name_snapshot, 'Cliente') AS name,
             COALESCE(c.telefono, s.client_phone_snapshot, '') AS phone
        FROM sales s
        LEFT JOIN clients c ON c.id = s.client_id
-      WHERE s.payment_method = 'credito'
+      WHERE ${nuevas ? "(s.payment_method = 'credito' OR s.credit_amount > 0)" : "s.payment_method = 'credito'"}
         AND COALESCE(s.fiscal_status, 'emitida') <> 'cancelada'
-        AND COALESCE(s.total, 0) > COALESCE(s.received_amount, 0)
-      ORDER BY s.created_at ASC`
-  );
+        AND COALESCE(s.total, 0) > COALESCE(s.received_amount, 0)${nuevas ? ' + COALESCE(s.credit_adjustment, 0)' : ''}
+      ORDER BY s.created_at ASC`;
+  try {
+    return await query(sql(true));
+  } catch (error) {
+    if (!/no such column|unknown column/i.test(String(error?.message || ''))) throw error;
+    return query(sql(false));
+  }
 }
 
 function recentCollections(query, limit = 30) {

@@ -250,10 +250,10 @@ async function buildPosStats(ventasRows = []) {
     query(
       `SELECT COALESCE(SUM(total - received_amount),0) AS total
        FROM sales
-       WHERE payment_method = 'credito'
+       WHERE (payment_method = 'credito' OR credit_amount > 0)
          AND sale_status = 'pagada'
          AND COALESCE(fiscal_status,'emitida') <> 'cancelada'
-         AND COALESCE(total,0) > COALESCE(received_amount,0)`
+         AND COALESCE(total,0) > COALESCE(received_amount,0) + COALESCE(credit_adjustment,0)`
     ),
   ]);
 
@@ -395,16 +395,16 @@ async function buildReportesTabs() {
          s.branch_id,
          s.branch_id                                             AS branchId,
          b.nombre                                              AS sucursal,
-         SUM(COALESCE(s.total,0) - COALESCE(s.received_amount,0)) AS deuda,
+         SUM(COALESCE(s.total,0) - COALESCE(s.received_amount,0) - COALESCE(s.credit_adjustment,0)) AS deuda,
          MAX(s.created_at)                                      AS ultima_compra,
          'Pendiente'                                            AS estado
        FROM sales s
        LEFT JOIN clients c ON s.client_id = c.id
        LEFT JOIN branches b ON b.id = s.branch_id
-       WHERE s.payment_method = 'credito'
+       WHERE (s.payment_method = 'credito' OR s.credit_amount > 0)
          AND s.sale_status = 'pagada'
          AND COALESCE(s.fiscal_status,'emitida') <> 'cancelada'
-         AND COALESCE(s.total,0) > COALESCE(s.received_amount,0)
+         AND COALESCE(s.total,0) > COALESCE(s.received_amount,0) + COALESCE(s.credit_adjustment,0)
        GROUP BY s.client_id, s.client_name_snapshot, s.client_tax_id_snapshot, s.client_phone_snapshot, s.branch_id, b.nombre
        ORDER BY deuda DESC
        LIMIT ${MAX_ROWS}`

@@ -83,6 +83,9 @@ const api = {
       // mensaje genérico al toast, sin forma de saber qué falló realmente.
       if (body?.details !== undefined) err.details = body.details;
       if (body?.code) err.code = body.code;
+      // Compras: lo que impide registrar y las filas con error de un Excel.
+      if (Array.isArray(body?.bloqueos)) err.bloqueos = body.bloqueos;
+      if (Array.isArray(body?.errores)) err.errores = body.errores;
       // Señal del backend: hay que pasar a la base de datos de red (MySQL) antes
       // de continuar — la manejan saveConfig() y completeInitialSetup().
       if (body?.needsNetworkDbSwitch) {

@@ -51,7 +51,7 @@ const SALE_PAYMENT_TYPES = {
   efectivo: 'Efectivo',
   tarjeta: 'Tarjeta',
   transferencia: 'Transferencia',
-  mixto: 'Mixto (Tarjeta + Efectivo)',
+  mixto: 'Pago mixto',
   credito: 'Crédito',
   contra_entrega: 'Contra entrega',
   usd: 'Dólares (USD)'
@@ -93,6 +93,7 @@ function createDefaultBillingModalState() {
     mixedCashAmount: '',
     mixedCardAmount: '',
     mixedTransferAmount: '',
+    mixedCreditAmount: '',
     creditDueDate: '',
     creditNotes: '',
     responsibleType: 'cajero'
@@ -1488,6 +1489,7 @@ function calcularTotales(items = [], options = {}) {
   let itbis = 0;
   let discount = 0;
   let itemCount = 0;
+  const tipLines = [];
 
   (Array.isArray(items) ? items : []).forEach((rawItem) => {
     const item = normalizeSaleItem(rawItem);
@@ -1506,6 +1508,8 @@ function calcularTotales(items = [], options = {}) {
       subtotalExentoFinal += lineNetAfterGeneralDiscount;
     }
 
+    // Igual que el servidor: todo lo consumido, o solo los productos marcados.
+    tipLines.push({ net, eligible: options.config?.legalTipScope === 'marcados' ? findProductForSaleItem(item)?.propinaLegal === true : true });
     discount += generalDiscountAmount;
     itemCount += qty;
   });
@@ -1520,12 +1524,21 @@ function calcularTotales(items = [], options = {}) {
   const subtotal = roundSaleMoney(subtotalGravado + subtotalExento);
   const subtotalFinal = roundSaleMoney(subtotalGravadoFinal + subtotalExentoFinal);
 
-  const totalBeforeRounding = roundSaleMoney(subtotalFinal + (behavior.calculateAtEnd ? itbis : itbis));
+  // Mismo cálculo que el servidor: modalidad, alcance, mínimo del negocio y
+  // si el cajero la quitó en esta venta (botón «Quitar propina» en Cobrar).
+  const legalTip = PropinaLegal.calculate({ enabled: options.config?.legalTipEnabled === true, orderType: options.orderType || DB.saleOrderType || 'mostrador',
+    consumedHere: DB.saleConsumedHere === true, lines: tipLines, discount,
+    minimo: Number(options.config?.legalTipMinimum || 0), sinPropina: options.orderType === 'cotizacion' ? false : DB.saleTipWaived === true });
+  const totalBeforeRounding = PosMoney.number(PosMoney.cents(subtotalFinal) + PosMoney.cents(itbis) + PosMoney.cents(legalTip.amount));
   const roundingMode = String(options.config?.roundingMode || 'none');
   const total = applyRoundingUp(totalBeforeRounding, roundingMode);
   const roundingAdjustment = roundSaleMoney(total - totalBeforeRounding);
 
   return {
+    propinaLegal: legalTip.amount,
+    propinaPosible: legalTip.posible,
+    propinaQuitada: legalTip.quitada,
+    propinaMotivo: legalTip.motivo,
     subtotal,
     subtotalGravado,
     subtotalExento,
@@ -1917,6 +1930,7 @@ function refreshRecoverSalesModalIfOpen() {
 }
 
 function isSalesSplitViewEnabled(forceValue = null) {
+  if (window.Mesas?.cuentaActiva?.()) return true;
   if (typeof forceValue === 'boolean') return forceValue;
   return Boolean(DB.config?.salesSplitViewEnabled);
 }
@@ -2026,6 +2040,7 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
 
   applySalesQuickMenuState();
   refreshSalesCategoryFilter();
+  window.Mesas?.renderCategorias?.();
   const products = getSalesCatalogProducts();
   const totalEnDB = Array.isArray(DB.productos) ? DB.productos.length : 0;
   if (summary) {
@@ -2213,6 +2228,15 @@ function resetBillingModalState() {
 // solo define cuál llega ya seleccionado.
 function applyPreferredBillingDocumentType() {
   const preferred = String(DB.config?.preferredBillingDocType || 'ticket').trim();
+  // Negocio con e-CF activo: el preferido B02/B01 pasa a su equivalente
+  // electrónico (E32/E31), que es lo que Cobrar tiene a la vista.
+  if (DB.config?.ecfActivo && /^B0[12]$/i.test(preferred)) {
+    DB.saleDocumentType = 'factura-electronica';
+    DB.saleNcfType = '';
+    DB.saleEcfType = preferred.toUpperCase() === 'B01' ? 'E31' : 'E32';
+    return;
+  }
+  DB.saleEcfType = null;
   if (preferred === 'factura-electronica') {
     DB.saleDocumentType = 'factura-electronica';
     DB.saleNcfType = '';
@@ -2229,6 +2253,8 @@ function resetBillingCheckoutDraft({ preserveRememberedClient = false } = {}) {
   resetBillingModalState();
   applyPreferredBillingDocumentType();
   DB.saleOrderType = 'mostrador';
+  // Cada cobro nuevo empieza con la propina (si aplica); quitarla es por venta.
+  DB.saleTipWaived = false;
   DB.saleKitchenStatus = 'pendiente';
   DB.saleGeneralDiscount = 0;
   DB.saleRncCliente = '';
@@ -2309,7 +2335,8 @@ function getBillingDirtyFields() {
     Boolean(String(billingModalState.creditNotes || '').trim()),
     Boolean(String(billingModalState.mixedCashAmount || '').trim()),
     Boolean(String(billingModalState.mixedCardAmount || '').trim()),
-    Boolean(String(billingModalState.mixedTransferAmount || '').trim())
+    Boolean(String(billingModalState.mixedTransferAmount || '').trim()),
+    Boolean(String(billingModalState.mixedCreditAmount || '').trim())
   ];
 }
 
@@ -2998,6 +3025,13 @@ function buildBillingStepModalMarkup() {
                   <span class="mixto-field-label">🏦 Transferencia</span>
                   <input type="number" id="mixto-transferencia" class="amount-input" placeholder="0.00" min="0" step="0.01" value="${escapeHtml(String(billingModalState.mixedTransferAmount || ''))}" oninput="calcMixto()">
                 </div>
+                <div class="mixto-field">
+                  <span class="mixto-field-label">Crédito al cliente</span>
+                  <input type="number" id="mixto-credito" class="amount-input" placeholder="0.00" min="0" step="0.01" value="${escapeHtml(String(billingModalState.mixedCreditAmount || ''))}" oninput="calcMixto()">
+                </div>
+                <label class="mixto-field"><span class="mixto-field-label">Vencimiento</span>
+                  <input type="date" class="form-input" value="${escapeHtml(billingModalState.creditDueDate || '')}" oninput="updateBillingPaymentDetail('creditDueDate', this.value)">
+                </label>
               </div>
               <div class="mixto-status" id="mixto-status">
                 <span class="mixto-status-label">Pendiente:</span>
@@ -3431,6 +3465,13 @@ function _buildBillingCompactModalMarkup_legacy() {
                   <span class="mixto-field-label">🏦 Transferencia</span>
                   <input type="number" id="mixto-transferencia" class="amount-input" placeholder="0.00" min="0" step="0.01" value="${escapeHtml(String(billingModalState.mixedTransferAmount || ''))}" oninput="calcMixto()">
                 </div>
+                <div class="mixto-field">
+                  <span class="mixto-field-label">Crédito al cliente</span>
+                  <input type="number" id="mixto-credito" class="amount-input" placeholder="0.00" min="0" step="0.01" value="${escapeHtml(String(billingModalState.mixedCreditAmount || ''))}" oninput="calcMixto()">
+                </div>
+                <label class="mixto-field"><span class="mixto-field-label">Vencimiento</span>
+                  <input type="date" class="form-input" value="${escapeHtml(billingModalState.creditDueDate || '')}" oninput="updateBillingPaymentDetail('creditDueDate', this.value)">
+                </label>
               </div>
               <div class="mixto-status" id="mixto-status">
                 <span class="mixto-status-label">Pendiente:</span>
@@ -3478,10 +3519,10 @@ function _buildBillingCompactModalMarkup_legacy() {
   `;
 }
 
-// Tipos de comprobante NCF (serie B) con secuencia activa y números
-// disponibles, según el registro manual de Configuración → Comprobantes
-// fiscales (server/routes/fiscal-sequences.routes.js). null = todavía no se
-// consultó esta sesión de facturación (no bloquea, solo no colorea aún).
+// Comprobantes con secuencia activa y números disponibles: serie B
+// (Configuración → Comprobantes fiscales) y e-CF (E31, E32, E44…) solo con
+// el emisor activo (server/routes/fiscal-sequences.routes.js). null = todavía
+// no se consultó esta sesión de facturación (no bloquea, solo no colorea aún).
 let _availableNcfDocTypes = null;
 // Próximo número real de cada tipo NCF activo (solo para previsualizar en el
 // título del modal — ver getDocumentSequencePreview) — el número final que de
@@ -3502,27 +3543,80 @@ async function refreshAvailableNcfDocTypes() {
       .filter((r) => r.nextNumber !== undefined && r.nextNumber !== null)
       .map((r) => [String(r.documentType || '').toUpperCase(), Number(r.nextNumber)]));
     _applyAvailableNcfDocTypesToPills();
+    _fallbackToTicketIfDocUnavailable();
     if (typeof syncBillingModalHeader === 'function') syncBillingModalHeader();
   } catch (_) { /* si falla, no se bloquea la venta — solo se sigue mostrando el placeholder */ }
 }
 
-// Solo aplica a los presets que son un tipo NCF real (B01/B02/...) — ticket
-// y factura-electronica no dependen de fiscal_sequences.
+// Tipo real del comprobante elegido: «factura-electronica» sin tipo es E31
+// con RNC y E32 sin él (lo mismo que decide el servidor).
+function _billingDocTypeForAvailability() {
+  const preset = String(getBillingActiveDocumentPreset() || '').toUpperCase();
+  if (preset !== 'FACTURA-ELECTRONICA') return preset;
+  const client = getSelectedSaleClient();
+  return String(DB.saleRncCliente || '').trim() || String(client?.rnc || '').trim() ? 'E31' : 'E32';
+}
+
+// true/false para los comprobantes con secuencia (B01…, E31…); null si no
+// depende de una (ticket) o todavía no se sabe (no se bloquea: el servidor
+// vuelve a validar al cobrar).
+function _isDocTypeAvailable(type) {
+  const upper = String(type || '').toUpperCase();
+  if (!/^[BE]\d{2}$/.test(upper)) return null;
+  if (/^E/.test(upper) && DB.config && !DB.config.eInvoiceEnabled) return false;
+  if (!_availableNcfDocTypes) return null;
+  return _availableNcfDocTypes.has(upper);
+}
+
+function _docUnavailableMessage(type) {
+  if (/^E\d{2}$/.test(type) && DB.config && !DB.config.eInvoiceEnabled) {
+    return 'La factura electrónica está deshabilitada en configuración.';
+  }
+  if (/^E\d{2}$/.test(type)) {
+    return DB.config?.ecfActivo
+      ? `No hay comprobantes electrónicos ${type} disponibles. Tu contador puede registrarlos desde su portal, o agrégalos en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`
+      : `La facturación electrónica no está activa en este negocio, así que no se puede emitir ${type}.`;
+  }
+  return `No existen secuencias disponibles para ${type}. Regístrala en Configuración → Comprobantes fiscales.`;
+}
+
+// Solo se factura con Ticket o con un comprobante que tenga secuencia activa:
+// si el que trae la venta (el preferido del negocio) no la tiene, queda en
+// Ticket y se avisa, en vez de fallar al cobrar.
+function _fallbackToTicketIfDocUnavailable() {
+  if (!document.getElementById('cobro-shell')) return;
+  const type = _billingDocTypeForAvailability();
+  if (_isDocTypeAvailable(type) !== false) return;
+  setSaleDocumentPreset('ticket');
+  showToast(`${_docUnavailableMessage(type)} La venta quedó como Ticket.`, 'warning');
+}
+
+// Solo aplica a los comprobantes con secuencia (B01/B02…, E31/E32…): el
+// ticket no depende de ninguna.
 function _applyAvailableNcfDocTypesToPills() {
-  if (!_availableNcfDocTypes) return;
   document.querySelectorAll('#cobro-shell .cobro-doc[data-preset], #cobro-shell .cobro-menu-item[data-preset]').forEach((btn) => {
     const preset = String(btn.dataset.preset || '').toUpperCase();
-    if (!/^B\d{2}$/.test(preset)) return;
-    const available = _availableNcfDocTypes.has(preset);
+    if (!/^[BE]\d{2}$/.test(preset)) return;
+    const available = _isDocTypeAvailable(preset) !== false;
     btn.classList.toggle('is-unavailable', !available);
-    btn.title = available ? btn.title : 'Sin secuencia activa para este comprobante — regístrala en Configuración → Comprobantes fiscales.';
+    if (!available) btn.title = _docUnavailableMessage(preset);
+    else btn.removeAttribute('title');
   });
 }
 
 function setSaleDocumentPreset(preset) {
   const normalized = String(preset || 'ticket').trim();
-  // E44, E45 y E46 se eligen; sin elegir, el servidor usa E31 con RNC y E32 sin él.
-  DB.saleEcfType = ['E44', 'E45', 'E46'].includes(normalized) ? normalized : null;
+  const upper = normalized.toUpperCase();
+  if (_isDocTypeAvailable(upper) === false) {
+    showToast(_docUnavailableMessage(upper), 'warning');
+    return;
+  }
+  // E44/E46 van sin ITBIS: el total cambia y el recibido puesto por el
+  // sistema lo sigue (si no, la diferencia salía como devuelta al cliente).
+  const totalAntes = totalCobroActual();
+  // E31, E32, E44, E45 y E46 se eligen; con «e-CF» sin tipo (preferido del
+  // negocio), el servidor usa E31 con RNC y E32 sin él.
+  DB.saleEcfType = ['E31', 'E32', 'E44', 'E45', 'E46'].includes(normalized) ? normalized : null;
   if (normalized === 'factura-electronica' || DB.saleEcfType) {
     DB.saleDocumentType = 'factura-electronica';
     setSaleNcfType('');
@@ -3530,15 +3624,11 @@ function setSaleDocumentPreset(preset) {
     DB.saleDocumentType = 'ticket';
     setSaleNcfType('');
   } else {
-    const upper = normalized.toUpperCase();
-    if (_availableNcfDocTypes && /^B\d{2}$/.test(upper) && !_availableNcfDocTypes.has(upper)) {
-      showToast(`No existen secuencias disponibles para ${upper}. Regístrala en Configuración → Comprobantes fiscales.`, 'warning');
-      return;
-    }
     DB.saleDocumentType = 'ticket';
     setSaleNcfType(upper);
   }
   syncSaleFiscalControls();
+  if (document.getElementById('cobro-shell')) ajustarRecibidoAlTotal(totalAntes);
 }
 
 function cycleBillingPaymentMethod() {
@@ -3549,9 +3639,13 @@ function cycleBillingPaymentMethod() {
   if (nextButton) setPayMethod(next, nextButton);
 }
 
+// Atajo de teclado: recorre Ticket y los comprobantes de consumo y crédito
+// fiscal que tengan secuencia (primero los electrónicos).
 function cycleBillingDocumentPreset() {
-  const presets = ['ticket', 'B02', 'B01', 'factura-electronica'];
-  const current = presets.indexOf(getBillingActiveDocumentPreset());
+  const presets = ['ticket', ...['E32', 'E31', 'B02', 'B01'].filter((type) => (
+    _availableNcfDocTypes ? _isDocTypeAvailable(type) : /^E/.test(type)
+  ))];
+  const current = presets.indexOf(_billingDocTypeForAvailability().replace(/^TICKET$/, 'ticket'));
   const next = presets[(current + 1) % presets.length];
   setSaleDocumentPreset(next);
 }
@@ -3574,7 +3668,10 @@ function buildBillingStepLabel(step) {
 }
 
 function buildBillingValidationBuckets() {
-  const total = parseFmt(document.getElementById('s-total')?.textContent || fmt(0));
+  const totalFactura = calcularTotales(DB.saleItems, { generalDiscountRate: getGeneralDiscountValue(), config: DB.config }).total;
+  // Los pagos cubren lo que paga el cliente (con anticipo de reserva, menos).
+  const anticipoReserva = anticipoReservaCobro(totalFactura);
+  const total = totalAPagarCobro(totalFactura);
   const client = getSelectedSaleClient();
   const paymentMethod = DB.payMethod || 'efectivo';
   const documentType = DB.saleDocumentType || 'ticket';
@@ -3585,7 +3682,8 @@ function buildBillingValidationBuckets() {
   const mixedCash = Number(parseFloat(document.getElementById('mixto-efectivo')?.value) || 0);
   const mixedCard = Number(parseFloat(document.getElementById('mixto-tarjeta')?.value) || 0);
   const mixedTransfer = Number(parseFloat(document.getElementById('mixto-transferencia')?.value) || 0);
-  const mixedTotal = mixedCash + mixedCard + mixedTransfer;
+  const mixedCredit = Number(document.getElementById('mixto-credito')?.value || 0);
+  const mixedTotal = mixedCash + mixedCard + mixedTransfer + mixedCredit;
   const buckets = {
     order: [],
     client: [],
@@ -3596,14 +3694,21 @@ function buildBillingValidationBuckets() {
   if (!Array.isArray(DB.saleItems) || !DB.saleItems.length) {
     buckets.order.push('No existen productos para cobrar.');
   }
-  if (!(total > 0)) {
+  if (!(totalFactura > 0)) {
     buckets.order.push('El total debe ser mayor a RD$ 0.00.');
+  }
+  if (anticipoReserva > 0 && (paymentMethod === 'credito' || paymentMethod === 'contra_entrega' || mixedCredit > 0)) {
+    buckets.payment.push('Con anticipo de reserva no se vende a crédito: cobra el resto con efectivo, tarjeta o transferencia.');
   }
 
   if (documentType === 'factura-electronica') {
     const buyerRnc = (DB.saleRncCliente || '').trim() || String(client?.rnc || '').trim();
     if (buyerRnc && !(buyerRnc.length === 9 || buyerRnc.length === 11)) {
       buckets.client.push('El RNC para emitir e-CF debe tener 9 u 11 dígitos.');
+    }
+    // E31 (crédito fiscal electrónico) siempre lleva el RNC del comprador.
+    if (DB.saleEcfType === 'E31' && !(rnc.length === 9 || rnc.length === 11)) {
+      buckets.client.push('E31 requiere el RNC o la cédula del comprador (9 u 11 dígitos).');
     }
   }
   if (ncfType === 'B01') {
@@ -3625,10 +3730,11 @@ function buildBillingValidationBuckets() {
     buckets.payment.push('El monto recibido en efectivo es insuficiente.');
   }
   if (paymentMethod === 'mixto') {
-    if (mixedTotal <= 0) buckets.payment.push('Ingresa montos para el pago mixto.');
+    if (mixedTotal <= 0 && total > 0) buckets.payment.push('Ingresa montos para el pago mixto.');
     if (mixedTotal < total) buckets.payment.push('La suma del pago mixto no cubre el total.');
   }
-  if (paymentMethod === 'credito') {
+  if (paymentMethod === 'credito' || (paymentMethod === 'mixto' && mixedCredit > 0)) {
+    if (paymentMethod === 'mixto' && Math.abs(mixedTotal - total) > 0.001) buckets.payment.push('Con crédito, el pago mixto debe sumar exactamente el total.');
     if (!client) buckets.payment.push('El crédito requiere un cliente seleccionado.');
     if (!billingModalState.creditDueDate) buckets.payment.push('Define una fecha de vencimiento para el crédito.');
   }
@@ -3879,6 +3985,7 @@ async function saveBillingQuickClient() {
   const payload = {
     nombre,
     telefono: telefono || whatsapp,
+    phoneCountry: (telefono || whatsapp).startsWith('+') && !(telefono || whatsapp).startsWith('+1') ? 'INT' : 'DO',
     cedula: String(document.getElementById('billing-qc-cedula')?.value || '').trim(),
     rnc: String(document.getElementById('billing-qc-rnc')?.value || '').trim(),
     direccion: String(document.getElementById('billing-qc-direccion')?.value || '').trim(),
@@ -3890,6 +3997,9 @@ async function saveBillingQuickClient() {
   };
 
   try {
+    const phone = ClienteTelefono.normalize(payload.telefono, payload.phoneCountry);
+    if (!phone.ok) { showToast(phone.error, 'error'); return; }
+    payload.telefono = phone.value;
     const created = await api.createClient(payload);
     DB.clientes.push(created);
     refreshSaleClientOptions();
@@ -3898,6 +4008,7 @@ async function saveBillingQuickClient() {
     if (clientSelect) clientSelect.value = String(created.id);
     toggleBillingQuickClient(false);
     showToast('Cliente creado y vinculado a la venta.', 'success');
+    (created.warnings || []).forEach(w => showToast(w.message, 'warning'));
   } catch (error) {
     showToast(error.message || 'No se pudo crear el cliente.', 'error');
   }
@@ -4148,7 +4259,7 @@ const BILLING_ENTER_AMOUNT_INPUTS = new Set([
   'monto-recibido-contra-entrega',
   'mixto-efectivo',
   'mixto-tarjeta',
-  'mixto-transferencia'
+  'mixto-transferencia', 'mixto-credito'
 ]);
 
 function selectBillingPayMethod(method) {
@@ -4336,8 +4447,16 @@ function openBillingModal() {
     // El cliente elegido en Ventas (o el de una venta recuperada) se conserva;
     // sin cliente elegido, se usa el último recordado como antes.
     const chosenClientId = DB.saleClientId || null;
+    // Cobro de una cuenta de mesa (módulo Mesas): el pedido sigue siendo
+    // «Mesa» con su mesa. Antes se reiniciaba a mostrador y se perdía la
+    // propina legal de la venta y de la factura.
+    const mesaActiva = window.Mesas?.cuentaActiva?.() ? { tableLabel: DB.saleTableLabel || '' } : null;
     resetBillingCheckoutDraft({ preserveRememberedClient: true });
     if (chosenClientId) DB.saleClientId = chosenClientId;
+    if (mesaActiva) {
+      DB.saleOrderType = 'mesa';
+      DB.saleTableLabel = mesaActiva.tableLabel;
+    }
   }
   // setSaleNcfType() (abajo, y también setPayMethod con tarjeta) limpia RNC,
   // razón social y factura de referencia: al reanudar se devuelven las que el
@@ -4447,7 +4566,8 @@ function syncBillingModalTotals() {
   if (subtotalExentoRowEl) subtotalExentoRowEl.style.display = taxBehavior.separateTaxableAndExempt ? '' : 'none';
   if (itbisEl) itbisEl.textContent = sidebarItbis;
   if (descuentoEl) descuentoEl.textContent = sidebarDescuento;
-  if (totalEl) totalEl.textContent = sidebarTotal;
+  // #billing-total es lo que paga el cliente: con anticipo de reserva, ya descontado.
+  if (totalEl) totalEl.textContent = anticipoReservaCobro(totalValue) > 0 ? fmt(totalAPagarCobro(totalValue)) : sidebarTotal;
   if (totalEmptyEl) totalEmptyEl.classList.toggle('hidden', Array.isArray(DB.saleItems) && DB.saleItems.length && totalValue > 0);
   syncBillingModalFooter();
   syncBillingConfirmSummary();
@@ -4547,6 +4667,8 @@ function setSaleClient(value) {
 }
 
 function setSaleOrderType(value) {
+  const totalAntes = totalCobroActual();
+  DB.saleConsumedHere = false;
   DB.saleOrderType = value || getSalesFlowConfig().defaultOrderType || 'mostrador';
   if (DB.saleOrderType === 'delivery') {
     billingModalState.responsibleType = 'delivery';
@@ -4582,6 +4704,11 @@ function setSaleOrderType(value) {
   document.getElementById('billing-delivery-fields')?.classList.toggle('hidden', DB.saleOrderType !== 'delivery');
   const orderTypeSelect = document.getElementById('sale-order-type');
   if (orderTypeSelect) orderTypeSelect.value = DB.saleOrderType;
+  // El tipo de pedido decide la propina legal: se recalculan los totales y el
+  // recibido sigue al total si lo había puesto el sistema.
+  renderSaleTable();
+  updateTotals();
+  ajustarRecibidoAlTotal(totalAntes);
   syncContraEntregaAvailability();
   syncBillingModalFooter();
   syncBillingConfirmSummary();
@@ -5467,6 +5594,9 @@ function updateTotals() {
   document.getElementById('s-subtotal-exento').textContent = fmt(totals.subtotalExento);
   document.getElementById('s-descuento').textContent = '- ' + fmt(totals.discount);
   document.getElementById('s-itbis').textContent = fmt(totals.itbis);
+  const tipElement = document.getElementById('s-propina');
+  if (tipElement) tipElement.textContent = fmt(totals.propinaLegal || 0);
+  document.querySelectorAll('[data-legal-tip-value]').forEach(el => { el.textContent = fmt(totals.propinaLegal || 0); el.parentElement.classList.toggle('hidden', !(totals.propinaLegal > 0)); });
   const redondeoEl = document.getElementById('s-redondeo');
   if (redondeoEl) redondeoEl.textContent = '+ ' + fmt(totals.roundingAdjustment || 0);
   document.getElementById('s-total').textContent = fmt(totals.total);
@@ -5596,6 +5726,8 @@ function setPayMethod(method, el) {
     if (mixtoTarjeta) mixtoTarjeta.value = String(billingModalState.mixedCardAmount || '');
     if (mixtoEfectivo) mixtoEfectivo.value = String(billingModalState.mixedCashAmount || '');
     if (mixtoTransferencia) mixtoTransferencia.value = String(billingModalState.mixedTransferAmount || '');
+    const mixtoCredito = document.getElementById('mixto-credito');
+    if (mixtoCredito) mixtoCredito.value = String(billingModalState.mixedCreditAmount || '');
     calcMixto();
     mixtoTarjeta?.focus();
   } else if (method === 'usd') {
@@ -5841,15 +5973,16 @@ function _setCambioCardState(card, faltanEl, state, faltanText) {
 }
 
 function calcMixto() {
-  const totalEl = document.getElementById('s-total')?.textContent || fmt(0);
-  const total = parseFmt(totalEl);
+  const total = totalAPagarCobro(calcularTotales(DB.saleItems, { generalDiscountRate: getGeneralDiscountValue(), config: DB.config }).total);
   const tarjeta = parseFloat(document.getElementById('mixto-tarjeta')?.value) || 0;
   const efectivo = parseFloat(document.getElementById('mixto-efectivo')?.value) || 0;
   const transferencia = parseFloat(document.getElementById('mixto-transferencia')?.value) || 0;
   billingModalState.mixedCardAmount = tarjeta ? String(tarjeta) : '';
   billingModalState.mixedCashAmount = efectivo ? String(efectivo) : '';
   billingModalState.mixedTransferAmount = transferencia ? String(transferencia) : '';
-  const suma = tarjeta + efectivo + transferencia;
+  const credito = Number(document.getElementById('mixto-credito')?.value || 0);
+  billingModalState.mixedCreditAmount = credito ? String(credito) : '';
+  const suma = PosMoney.number(PosMoney.cents(tarjeta) + PosMoney.cents(efectivo) + PosMoney.cents(transferencia) + PosMoney.cents(credito));
   const pendiente = total - suma;
   const cambio = Math.max(0, suma - total);
 
@@ -5896,6 +6029,48 @@ function setMontoExacto(button = null) {
     quickButton.classList.toggle('active', quickButton === button);
   });
   calcCambio();
+}
+
+// El total cambió dentro de Cobrar (propina quitada o agregada, tipo de
+// venta). Si el recibido lo puso el sistema («Exacto», botón rápido) o era
+// justo el total anterior, pasa al total nuevo: la propina quitada no puede
+// salir como devuelta. Si el cajero escribió otro monto (p. ej. le dieron
+// 500), se respeta y solo se recalcula la devuelta.
+function ajustarRecibidoAlTotal(totalAnterior) {
+  const input = document.getElementById('monto-recibido');
+  if (!input) return;
+  const nuevo = parseFmt(document.getElementById('billing-total')?.textContent || fmt(0));
+  const anterior = Number(totalAnterior || 0);
+  const valor = String(input.value || '').trim();
+  const puestoPorSistema = valor !== '' && valor !== (input.dataset.userValue ?? '');
+  const eraElTotal = valor !== '' && Math.abs(Number(valor) - anterior) < 0.005;
+  if (DB.payMethod === 'efectivo' && Math.abs(nuevo - anterior) >= 0.005 && (puestoPorSistema || eraElTotal)) {
+    input.value = nuevo.toFixed(2);
+    delete input.dataset.userValue; // sigue siendo un monto puesto por el sistema
+    calcCambio();
+    window.CobroUI?.sync?.();
+    return;
+  }
+  calcCambio();
+}
+
+function totalCobroActual() {
+  return parseFmt(document.getElementById('billing-total')?.textContent || fmt(0));
+}
+
+// Anticipo consumible de la reserva de la mesa que se cobra (js/mesas.js): ya
+// lo pagó el cliente y se descuenta de lo que paga ahora; la factura conserva
+// su total. Fuera de Mesas, o sin anticipo, es 0 y el cobro es el de siempre.
+function anticipoReservaCobro(total) {
+  const anticipo = window.Mesas?.anticipoCuenta?.();
+  if (!anticipo || !window.MesasReservas) return 0;
+  return window.MesasReservas.anticipoAplicable(anticipo, total);
+}
+
+// Lo que paga el cliente en este cobro (total de la factura menos el anticipo).
+function totalAPagarCobro(total) {
+  const anticipo = anticipoReservaCobro(total);
+  return anticipo > 0 ? window.MesasReservas.restarAnticipo(total, anticipo) : total;
 }
 
 function parseFmt(str) {
@@ -6728,6 +6903,13 @@ function buildSalePayload() {
     config: DB.config
   });
   const total = saleTotals.total;
+  // Anticipo de reserva (Mesas): los pagos de ahora cubren el total menos el anticipo.
+  const anticipoReserva = anticipoReservaCobro(total);
+  const aPagar = totalAPagarCobro(total);
+  if (anticipoReserva > 0 && window.offlineManager?.getState?.()?.isOnline === false) {
+    showToast('Las cuentas con anticipo de reserva se cobran con la PC principal conectada. Espera a que vuelva la conexión.', 'warning');
+    return null;
+  }
   if (!(total > 0)) {
     showToast('No existen productos válidos para cobrar.', 'error');
     return null;
@@ -6736,13 +6918,15 @@ function buildSalePayload() {
   let montoTarjeta = 0;
   let montoEfectivo = 0;
   let montoTransferencia = 0;
+  let montoCredito = 0;
   let usdRecibido = 0;
   let usdRate = 0;
   if (DB.payMethod === 'mixto') {
     montoTarjeta = parseFloat(document.getElementById('mixto-tarjeta')?.value) || 0;
     montoEfectivo = parseFloat(document.getElementById('mixto-efectivo')?.value) || 0;
     montoTransferencia = parseFloat(document.getElementById('mixto-transferencia')?.value) || 0;
-    recibido = montoTarjeta + montoEfectivo + montoTransferencia;
+    montoCredito = Number(document.getElementById('mixto-credito')?.value || 0);
+    recibido = PosMoney.number(PosMoney.cents(montoTarjeta) + PosMoney.cents(montoEfectivo) + PosMoney.cents(montoTransferencia));
   } else if (DB.payMethod === 'contra_entrega' || DB.payMethod === 'credito') {
     recibido = 0;
   } else if (DB.payMethod === 'usd') {
@@ -6757,21 +6941,25 @@ function buildSalePayload() {
     showToast('No hay un tipo de cambio válido para este turno. No se puede cobrar en dólares.', 'error');
     return null;
   }
-  if ((DB.payMethod === 'efectivo' || DB.payMethod === 'usd') && recibido < total) {
+  if ((DB.payMethod === 'efectivo' || DB.payMethod === 'usd') && recibido < aPagar) {
     showToast(
       DB.payMethod === 'usd'
-        ? 'Monto en dólares insuficiente. Faltan US$ ' + ((total - recibido) / usdRate).toFixed(2)
+        ? 'Monto en dólares insuficiente. Faltan US$ ' + ((aPagar - recibido) / usdRate).toFixed(2)
         : 'Monto recibido insuficiente',
       'error'
     );
     return null;
   }
+  if (anticipoReserva > 0 && (DB.payMethod === 'credito' || DB.payMethod === 'contra_entrega' || montoCredito > 0)) {
+    showToast('Con anticipo de reserva no se vende a crédito: cobra el resto con efectivo, tarjeta o transferencia.', 'error');
+    return null;
+  }
   if (DB.payMethod === 'mixto') {
-    if (montoTarjeta <= 0 && montoEfectivo <= 0) {
-      showToast('Ingresa al menos un monto en tarjeta o efectivo', 'error'); return null;
+    if (aPagar > 0 && montoTarjeta <= 0 && montoEfectivo <= 0 && montoTransferencia <= 0 && montoCredito <= 0) {
+      showToast('Ingresa al menos un importe para el pago mixto', 'error'); return null;
     }
-    if (recibido < total) {
-      showToast(`Faltan RD$ ${fmt(total - recibido)} para completar el pago mixto`, 'error'); return null;
+    if (PosMoney.cents(recibido) + PosMoney.cents(montoCredito) < PosMoney.cents(aPagar)) {
+      showToast(`Faltan RD$ ${fmt(aPagar - recibido)} para completar el pago mixto`, 'error'); return null;
     }
   }
   if (DB.payMethod === 'contra_entrega' && (DB.saleOrderType || document.getElementById('sale-order-type')?.value) !== 'delivery') {
@@ -6798,7 +6986,7 @@ function buildSalePayload() {
   const tipoComprobante = DB.saleDocumentType || 'ticket';
   const ncfType = DB.saleNcfType || '';
 
-  if (DB.payMethod === 'credito' && !client) {
+  if ((DB.payMethod === 'credito' || montoCredito > 0) && !client) {
     showToast('Selecciona un cliente para registrar una factura a crédito.', 'error');
     return null;
   }
@@ -6833,11 +7021,14 @@ function buildSalePayload() {
   if (['B03','B04'].includes(ncfType) && !DB.saleNcfReferencia) {
     showToast(`${ncfType} requiere seleccionar la factura original.`, 'error'); return null;
   }
-  if (DB.payMethod === 'credito' && !billingModalState.creditDueDate) {
+  if ((DB.payMethod === 'credito' || montoCredito > 0) && !billingModalState.creditDueDate) {
     showToast('Define una fecha de vencimiento para la factura a crédito.', 'error');
     return null;
   }
 
+  if (montoCredito > 0 && PosMoney.cents(recibido) + PosMoney.cents(montoCredito) !== PosMoney.cents(total)) {
+    showToast('Con crédito, los importes deben sumar exactamente el total.', 'error'); return null;
+  }
   return {
     fecha: new Date().toISOString(),  // ISO 8601 — parseable en servidor, BD y reportes
     id: getDocumentSequencePreview(tipoComprobante),
@@ -6857,6 +7048,9 @@ function buildSalePayload() {
     rncCliente: DB.saleRncCliente || client?.rnc || '',
     razonSocialCliente: DB.saleRazonSocial || client?.razon_social || '',
     ncfReferencia: DB.saleNcfReferencia || null,
+    propinaLegal: saleTotals.propinaLegal || 0,
+    consumoLocal: DB.saleConsumedHere === true,
+    sinPropina: saleTotals.propinaQuitada === true,
     tipoPedido: DB.saleOrderType || document.getElementById('sale-order-type')?.value || 'mostrador',
     estadoCocina: DB.saleKitchenStatus || document.getElementById('sale-kitchen-status')?.value || 'pendiente',
     repartidorId: DB.saleDeliveryUserId || null,
@@ -6872,6 +7066,7 @@ function buildSalePayload() {
     montoTarjeta: DB.payMethod === 'mixto' ? montoTarjeta : 0,
     montoEfectivo: DB.payMethod === 'mixto' ? montoEfectivo : 0,
     montoTransferencia: DB.payMethod === 'mixto' ? montoTransferencia : 0,
+    montoCredito: DB.payMethod === 'mixto' ? montoCredito : (DB.payMethod === 'credito' ? total : 0),
     responsableVenta: billingModalState.responsibleType,
     paymentDetails: {
       cardBank: billingModalState.cardBank || '',
@@ -6919,7 +7114,9 @@ function buildSalePayload() {
     itbis: saleTotals.itbis,
     total: saleTotals.total,
     recibido: recibido,
-    cambio: (DB.payMethod === 'contra_entrega' || DB.payMethod === 'credito') ? 0 : Math.max(0, recibido - total),
+    cambio: (DB.payMethod === 'contra_entrega' || DB.payMethod === 'credito') ? 0 : Math.max(0, recibido - aPagar),
+    // Anticipo de reserva descontado (el servidor lo vuelve a calcular y debe coincidir).
+    ...(anticipoReserva > 0 ? { anticipoReserva, reservaId: window.Mesas.anticipoCuenta().reservaId } : {}),
     montoClienteEntrega: DB.payMethod === 'contra_entrega' ? Number(DB.saleDeliveryPayAmount || 0) : 0,
     cambioRepartidor: DB.payMethod === 'contra_entrega' ? Math.max(0, Number(DB.saleDeliveryPayAmount || 0) - total) : 0,
     paymentCurrency: DB.payMethod === 'usd' ? 'USD' : 'DOP',
@@ -6984,8 +7181,10 @@ async function processSale(action = 'print') {
   _billingSubmitting = true;
   syncBillingModalFooter();
   try {
+    await window.Mesas?.prepararVenta?.();
     const venta = buildSalePayload();
     if (!venta) return;
+    if (window.Mesas?.cuentaActiva) venta.mesasCuenta = window.Mesas.cuentaActiva();
     venta.clientRequestId = _resolveSaleAttemptKey(venta);
 
     pendingSaleConfirmation = venta;
@@ -7001,7 +7200,7 @@ async function processSale(action = 'print') {
  * Abre la gaveta registradora si está configurada y habilitada.
  * No lanza errores — falla silenciosamente para no interrumpir el cobro.
  */
-function _tryOpenCashDrawer() {
+function _tryOpenCashDrawer(saleRef = '') {
   if (!window.novaDesktop?.openCashDrawer) return;
 
   const enabled = getReceiptConfigValue('cashDrawerEnabled');
@@ -7025,6 +7224,8 @@ function _tryOpenCashDrawer() {
     if (!result?.ok) {
       console.warn('[gaveta] No se pudo abrir:', result?.error);
     }
+    // Queda en el historial como apertura "con venta", aparte de las manuales.
+    window.CajaSegura?.registrarAperturaVenta?.(saleRef, result);
   }).catch(err => {
     console.warn('[gaveta] Error:', err?.message);
   });
@@ -7070,6 +7271,7 @@ async function finalizePendingSale(action = 'charge') {
       warmReceiptPrintPipeline().catch(() => {});
     }
     const response = await api.createSale(salePayload);
+    window.Mesas?.ventaConfirmada?.(salePayload);
     // Venta confirmada: el próximo cobro es otra venta (nuevo identificador).
     _saleAttempt = null;
     if (response?.duplicate) {
@@ -7198,9 +7400,10 @@ async function finalizePendingSale(action = 'charge') {
     refreshAuditLogs();
     updateNotifications();
     showToast('Venta procesada: ' + savedVenta.id, 'success');
+    window.Mesas?.volverTrasVenta?.();
 
     // ── Abrir gaveta automáticamente (no bloquea el flujo) ──
-    _tryOpenCashDrawer();
+    _tryOpenCashDrawer(savedVenta?.id || '');
 
     // ── Guardar PDF automáticamente en disco (no bloquea el flujo) ──
     _tryAutoSaveInvoicePdf(savedVenta);
@@ -7439,7 +7642,7 @@ function buildReceiptWhatsAppMessage(venta) {
     `Cliente: ${venta.cliente}`,
     `Total: ${fmt(venta.total)}`,
     venta.metodo === 'mixto'
-      ? `Método: Mixto (Tarjeta RD$ ${fmt(venta.montoTarjeta || 0)} + Efectivo RD$ ${fmt(venta.montoEfectivo || 0)})`
+      ? `Método: Mixto · Efectivo ${fmt(venta.montoEfectivo || 0)} · Tarjeta ${fmt(venta.montoTarjeta || 0)} · Transferencia ${fmt(venta.montoTransferencia || 0)} · Crédito ${fmt(venta.montoCredito || 0)}`
       : `Método: ${SALE_PAYMENT_TYPES[venta.metodo] || venta.metodo}`,
     `Fecha: ${formatReceiptDateForPaper(venta.fecha, '80mm')}`,
     '',
@@ -7892,7 +8095,9 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
   const payments = venta?.metodo === 'mixto'
     ? [
         { metodo: 'Tarjeta', monto: Number(venta?.montoTarjeta || 0) },
-        { metodo: 'Efectivo', monto: Number(venta?.montoEfectivo || 0) }
+        { metodo: 'Efectivo', monto: Number(venta?.montoEfectivo || 0) },
+        { metodo: 'Transferencia', monto: Number(venta?.montoTransferencia || 0) },
+        { metodo: 'Crédito', monto: Number(venta?.montoCredito || 0) }
       ].filter(p => p.monto > 0)
     : receivedAmount > 0
       ? [{ metodo: paymentLabel, monto: receivedAmount }]
@@ -8286,7 +8491,7 @@ function getReceiptSummaryBreakdown(venta) {
   const total = roundSaleMoney(venta?.total || 0);
   // El redondeo no se persiste en columna propia — se deriva de los totales ya
   // guardados (total incluye el ajuste de redondeo aplicado al cobrar).
-  const redondeo = roundSaleMoney(total - (subtotal - descuento + itbis));
+  const redondeo = roundSaleMoney(total - (subtotal - descuento + itbis + Number(venta.propinaLegal || 0)));
 
   return {
     subtotalGravado: roundSaleMoney(venta?.subtotalGravado ?? subtotalGravado),
@@ -8315,6 +8520,7 @@ function buildReceiptSummaryRows(venta) {
   if (taxBehavior.showBreakdownOnReceipts && breakdown.itbis > 0) {
     rows.push([`ITBIS (${taxBehavior.taxRate.toFixed(2).replace(/\.00$/, '')}%)`, fmt(breakdown.itbis)]);
   }
+  if (Number(venta.propinaLegal || 0) > 0) rows.push(['Propina legal 10%', fmt(venta.propinaLegal)]);
   if (Math.abs(breakdown.redondeo) >= 0.01) {
     rows.push(['Redondeo', `+${fmt(breakdown.redondeo)}`]);
   }
@@ -8357,7 +8563,7 @@ function getReceiptTemplateData(venta) {
   const metodoLabel = venta.receiptMethodLabelOverride || SALE_PAYMENT_TYPES[venta.metodo] || venta.metodo || 'Efectivo';
   const primaryDocumentLabel = venta.receiptPrimaryLabel || 'Factura';
   const methodRowLabel = venta.receiptMethodRowLabel || 'Método';
-  const pendienteCredito = venta.metodo === 'credito'
+  const pendienteCredito = venta.metodo === 'credito' || Number(venta.montoCredito || 0) > 0
     ? Math.max(0, Number((Number(venta.total || 0) - Number(venta.recibido || 0)).toFixed(2)))
     : 0;
   const isDeliveryOrder = String(venta.tipoPedido || '') === 'delivery';
@@ -8373,6 +8579,8 @@ function getReceiptTemplateData(venta) {
     ...(venta.tipoEcf ? [['Tipo e-CF', venta.tipoEcf]] : []),
     ['Fecha', formatReceiptDateForPaper(venta.fecha, paperVariant)],
     ['Cajero', normalizeReceiptText(venta.cajero || 'Sistema')],
+    ...(venta.mesa ? [['Mesa', normalizeReceiptText(venta.mesa)]] : []),
+    ...(venta.mesero ? [['Atendido por', normalizeReceiptText(venta.mesero)]] : []),
     // Razón social primero (B01), como en la factura A4.
     ['Cliente', normalizeReceiptText(venta.razonSocialCliente || venta.cliente || 'Consumidor Final')],
     ...((venta.clienteRncCedula || venta.rncCliente) ? [['RNC / Cédula', normalizeReceiptText(venta.clienteRncCedula || venta.rncCliente)]] : []),
@@ -8649,7 +8857,13 @@ function buildThermalSummaryRows(venta) {
 // Filas que van después del TOTAL: crédito, pago mixto, dólares o devuelta.
 // [etiqueta, valor, variante] — la variante 'total'/'meta-strong' va resaltada.
 function buildThermalPaymentRows(venta) {
-  const rows = [];
+  // Anticipo de reserva (Mesas): ya pagado; se resta de lo que paga el cliente.
+  const anticipo = Number(venta.anticipoReserva || 0);
+  const anticipoRows = anticipo > 0
+    ? [['Anticipo reserva', `-${formatThermalAmount(anticipo)}`], [venta.isPrecuenta ? 'Saldo pendiente' : 'Pagado ahora', formatThermalAmount(Math.max(0, Number(venta.total || 0) - anticipo)), 'meta-strong']]
+    : [];
+  if (venta.isPrecuenta) return anticipoRows.length ? anticipoRows : [['Saldo pendiente', formatThermalAmount(venta.total), 'meta-strong']];
+  const rows = [...anticipoRows];
   if (venta.metodo === 'credito' && !isCreditFullyPaid(venta)) {
     const pendiente = Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0));
     const abonado = Number(venta.recibido || 0);
@@ -8663,7 +8877,13 @@ function buildThermalPaymentRows(venta) {
     if (Number(venta.montoTarjeta || 0) > 0) rows.push(['Tarjeta', formatThermalAmount(venta.montoTarjeta)]);
     if (Number(venta.montoEfectivo || 0) > 0) rows.push(['Efectivo', formatThermalAmount(venta.montoEfectivo)]);
     if (Number(venta.cambio || 0) > 0) rows.push(['Cambio', formatThermalAmount(venta.cambio)]);
-    rows.push(['Método', 'Mixto (Tarjeta + Efectivo)']);
+    if (Number(venta.montoTransferencia || 0) > 0) rows.push(['Transferencia', formatThermalAmount(venta.montoTransferencia)]);
+    if (Number(venta.montoCredito || 0) > 0) {
+      rows.push(['Crédito inicial', formatThermalAmount(venta.montoCredito)]);
+      rows.push(['Pendiente', formatThermalAmount(Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0))), 'meta-strong']);
+      if (venta.creditDueDate) rows.push(['Vence', String(venta.creditDueDate).slice(0, 10)]);
+    }
+    rows.push(['Método', 'Pago mixto']);
   } else if (venta.paymentCurrency === 'USD') {
     // Fase 3 multi-moneda: monto cobrado en US$ y su equivalente/vuelto en RD$
     rows.push(['Recibido US$', Number(venta.usdAmountReceived || 0).toFixed(2)]);
@@ -8768,6 +8988,7 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
   `).join('');
   const totalsRows = [
     ...buildReceiptSummaryRows(venta),
+    Number(venta.anticipoReserva || 0) > 0 ? ['Anticipo de reserva', `-${fmt(venta.anticipoReserva)}`] : null,
     venta.metodo === 'credito' && !isCreditFullyPaid(venta)
       ? ['A crédito', fmt(Math.max(0, Number(venta.total || 0) - Number(venta.recibido || 0)))]
       : Number(venta.recibido || 0) > 0 ? ['Pagado', fmt(venta.recibido)] : null,
@@ -8978,7 +9199,7 @@ function ventaToFormalDoc(venta) {
   const ncf = elec ? (getElectronicReceiptNumber(venta) || '') : (venta.ncf || '');
   const totalNum = Number(bd.total || venta.total || 0);
   const recibido = Number(venta.recibido || 0);
-  const esCredito = venta.metodo === 'credito';
+  const esCredito = venta.metodo === 'credito' || Number(venta.montoCredito || 0) > 0;
   const pagado = isCot ? 0
     : esCredito ? recibido
     : (recibido > 0 ? Math.min(recibido, totalNum) : totalNum);
@@ -9078,6 +9299,7 @@ function ventaToFormalDoc(venta) {
     subtotal: bd.subtotal,
     descuento: bd.descuento,
     itbis: bd.itbis,
+    propinaLegal: Number(venta.propinaLegal || 0),
     redondeo: bd.redondeo,
     total: totalNum,
     mensaje: venta.receiptFooterMessageOverride || getReceiptConfigValue('mensaje') || '',
@@ -9544,6 +9766,7 @@ function openPrintPreviewFromConfig() {
 }
 
 function cancelSale() {
+  if (window.Mesas?.cancelarConsumo?.()) return;
   // Venta cancelada/cobrada/suspendida: el próximo cobro empieza de cero.
   window.CobroUI?.clearResume();
   clearRecoveredQuotationTracking();
@@ -9556,7 +9779,9 @@ function cancelSale() {
   if (amountInput) amountInput.value = '';
   const generalDiscountInput = document.getElementById('desc-general');
   if (generalDiscountInput) generalDiscountInput.value = '';
-  const mixedInputs = ['mixto-tarjeta', 'mixto-efectivo', 'mixto-transferencia'];
+  DB.saleConsumedHere = false;
+  DB.saleTipWaived = false;
+  const mixedInputs = ['mixto-tarjeta', 'mixto-efectivo', 'mixto-transferencia', 'mixto-credito'];
   mixedInputs.forEach((id) => {
     const input = document.getElementById(id);
     if (input) input.value = '';
@@ -9661,7 +9886,9 @@ function buildQuotationReceiptDocument(quotation) {
   });
   const totals = calcularTotales(items, {
     generalDiscountRate: Number(quotation?.generalDiscount || 0),
-    config: DB.config
+    config: DB.config,
+    // Una cotización no es consumo en el local: sin propina legal.
+    orderType: 'cotizacion'
   });
   const quoteId = String(quotation?.id || quotation?.nombre || 'COT').trim() || 'COT';
 

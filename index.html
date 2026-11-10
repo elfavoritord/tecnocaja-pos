@@ -22,6 +22,11 @@
 <link rel="stylesheet" href="css/tienda-online.css">
   <link rel="stylesheet" href="css/planes-precios.css">
   <link rel="stylesheet" href="css/tienda-editor.css">
+<link rel="stylesheet" href="css/mesas.css">
+<link rel="stylesheet" href="css/compras-preparar.css">
+<link rel="stylesheet" href="css/clientes-finanzas.css">
+<link rel="stylesheet" href="css/caja-segura.css">
+<link rel="stylesheet" href="css/auditoria.css">
 </head>
 <body>
 <!-- LOGIN SCREEN -->
@@ -898,6 +903,7 @@
               <input type="text" id="product-search" placeholder="Buscar por nombre, código o escanear (F2)" oninput="searchProduct(this.value)" onkeydown="handleSearchKey(event)" autocomplete="off">
               <span class="search-hint">Enter para agregar</span>
               <!-- Combos personalizados de precio fijo (js/combos-personalizados.js): solo con la función activa. -->
+              <button id="mesas-abrir" class="ccp-ventas-btn hidden" type="button" onclick="Mesas.abrir()">MESAS</button>
               <button id="ccp-ventas-btn" class="ccp-ventas-btn hidden" type="button" onclick="CombosPersonalizados.abrir()" title="Armar un combo al precio que acordó el cliente">COMBOS</button>
               <button class="quick-sale-add-btn" type="button" onclick="openQuickSaleModal()" title="Agregar producto rápido" aria-label="Agregar producto rápido"></button>
             </div>
@@ -994,6 +1000,7 @@
             <div class="ventas-sum-row"><span>Subtotal</span><span id="ventas-sum-subtotal">0.00</span></div>
             <div class="ventas-sum-row"><span>Descuento</span><span id="ventas-sum-descuento">0.00</span></div>
             <div class="ventas-sum-row"><span id="ventas-sum-itbis-label">ITBIS</span><span id="ventas-sum-itbis">0.00</span></div>
+            <div class="ventas-sum-row hidden" id="ventas-sum-propina-row"><span>Propina legal 10%</span><span id="ventas-sum-propina">0.00</span></div>
             <div class="ventas-sum-row hidden" id="ventas-sum-redondeo-row"><span>Redondeo</span><span id="ventas-sum-redondeo">0.00</span></div>
           </div>
 
@@ -1049,6 +1056,7 @@
             <span id="s-subtotal-exento">RD$ 0.00</span>
             <span id="s-descuento">- RD$ 0.00</span>
             <span id="s-itbis">RD$ 0.00</span>
+            <span id="s-propina">RD$ 0.00</span>
             <span id="s-redondeo">RD$ 0.00</span>
             <span id="s-total">RD$ 0.00</span>
             <span id="s-separate-tax-breakdown">1</span>
@@ -1455,6 +1463,7 @@
         <h2>Clientes</h2>
         <div class="module-actions">
           <input type="text" id="clientes-search" placeholder="Buscar por nombre, cédula o teléfono..." class="mod-search" oninput="filterClientes(this.value)">
+          <button class="btn-secondary" onclick="openClientReceivablesReport()" title="Clientes con límite, saldo, facturas pendientes y vencidas; PDF, A4 y Excel">Reporte general</button>
           <button class="btn-secondary" onclick="abrirAgendaCrm()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v3"/><path d="M16 2v3"/><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg><span class="btn-label">Agenda</span></button>
           <button class="btn-primary" onclick="openClienteModal()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="btn-label">Nuevo cliente</span></button>
         </div>
@@ -1582,19 +1591,33 @@
       <div class="module-header">
         <h2>Compras y Gastos</h2>
         <div class="module-actions">
-          <button class="btn-primary" id="btn-compras-nueva" onclick="openNuevaCompraModal()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="btn-label">Nueva compra</span></button>
+          <button class="btn-secondary" id="btn-compras-config" type="button" onclick="ComprasPreparar.abrirConfig()" title="Configuración de compras"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="btn-label">Configuración</span></button>
+          <button class="btn-secondary" id="btn-compras-subir" type="button" onclick="ComprasPreparar.abrirSubida()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/></svg><span class="btn-label">Subir factura de proveedor</span></button>
+          <button class="btn-primary" id="btn-compras-nueva" type="button" onclick="ComprasPreparar.nuevaManual()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="btn-label">Registrar compra manualmente</span></button>
           <button class="btn-primary" id="btn-compras-gasto" onclick="openNuevoGastoModal()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg><span class="btn-label">Nuevo gasto</span></button>
         </div>
       </div>
 
       <div class="rrhh-tabs">
         <button class="compras-tab-btn active" data-tab="compras" onclick="showComprasTab('compras')">Compras</button>
+        <button class="compras-tab-btn" data-tab="borradores" onclick="showComprasTab('borradores')">Borradores <span class="nav-badge hidden" id="compras-badge-borradores"></span></button>
+        <button class="compras-tab-btn" data-tab="recepciones" onclick="showComprasTab('recepciones')">Recepciones <span class="nav-badge hidden" id="compras-badge-recepciones"></span></button>
         <button class="compras-tab-btn" data-tab="cuentas-por-pagar" onclick="showComprasTab('cuentas-por-pagar')">Cuentas por pagar</button>
         <button class="compras-tab-btn" data-tab="gastos" onclick="showComprasTab('gastos')">Gastos</button>
       </div>
 
       <div id="compras-tab-compras" class="compras-tab-pane">
         <div id="compras-list"><div class="loading-text">Cargando…</div></div>
+      </div>
+
+      <!-- Borradores de «Preparar compra» (js/compras-preparar.js): facturas subidas o manuales sin registrar. -->
+      <div id="compras-tab-borradores" class="compras-tab-pane hidden">
+        <div id="compras-borradores-list"><div class="loading-text">Cargando…</div></div>
+      </div>
+
+      <!-- Mercancía por recibir (modalidad «con confirmación» de Configuración de compras). -->
+      <div id="compras-tab-recepciones" class="compras-tab-pane hidden">
+        <div id="compras-recepciones-list"><div class="loading-text">Cargando…</div></div>
       </div>
 
       <div id="compras-tab-cuentas-por-pagar" class="compras-tab-pane hidden">
@@ -1641,17 +1664,13 @@
           <span class="cqa-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg></span>
           <span class="cqa-label">Registrar egreso</span>
         </button>
-        <button class="caja-quick-btn" type="button" onclick="openCashCorteModal()" title="Corte de caja">
-          <span class="cqa-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17V7"/><path d="M16 8h-6a2 2 0 0 0 0 4h4a2 2 0 0 1 0 4H8"/><path d="M4 3a1 1 0 0 1 1-1 1.3 1.3 0 0 1 .7.2l.933.6a1.3 1.3 0 0 0 1.4 0l.934-.6a1.3 1.3 0 0 1 1.4 0l.933.6a1.3 1.3 0 0 0 1.4 0l.933-.6a1.3 1.3 0 0 1 1.4 0l.934.6a1.3 1.3 0 0 0 1.4 0l.933-.6A1.3 1.3 0 0 1 19 2a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1 1.3 1.3 0 0 1-.7-.2l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.934.6a1.3 1.3 0 0 1-1.4 0l-.933-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-1.4 0l-.934-.6a1.3 1.3 0 0 0-1.4 0l-.933.6a1.3 1.3 0 0 1-.7.2 1 1 0 0 1-1-1z"/></svg></span>
-          <span class="cqa-label">Corte de caja</span>
-        </button>
         <button class="caja-quick-btn" type="button" onclick="openGavetaModal()" title="Abrir gaveta sin venta">
           <span class="cqa-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="20" height="12" x="2" y="6" rx="2"/><circle cx="12" cy="12" r="2"/><path d="M6 12h.01M18 12h.01"/></svg></span>
           <span class="cqa-label">Abrir gaveta</span>
         </button>
-        <button class="caja-quick-btn" type="button" onclick="openDevolucionModal()" title="Devolución de venta con selección de productos">
+        <button class="caja-quick-btn" type="button" onclick="AjustesVenta.abrir()" title="Cancelar una factura o emitir una nota de crédito (con devolución de productos), según su comprobante">
           <span class="cqa-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg></span>
-          <span class="cqa-label">Devolución</span>
+          <span class="cqa-label">Cancelar / Nota de crédito</span>
         </button>
         <button class="caja-quick-btn" type="button" onclick="goToVentasAction('suspend')" title="Ir a ventas y suspender">
           <span class="cqa-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg></span>
@@ -1738,6 +1757,13 @@
                 </div>
                 <button class="btn-primary" type="button" onclick="openCashIncomeModal()">Registrar ingreso</button>
               </div>
+              <!-- Dinero que dejan los clientes al reservar mesa (Mesas → Reservaciones). -->
+              <div class="caja-income-row hidden" id="caja-ingreso-anticipos-row">
+                <div class="caja-income-copy">
+                  <strong>Anticipos de reservas</strong>
+                  <small id="caja-ingreso-anticipos">RD$ 0.00 en este turno</small>
+                </div>
+              </div>
             </div>
             <div class="movimientos-list">
               <h3>Contra entrega pendiente</h3>
@@ -1754,6 +1780,8 @@
             <div class="resumen-row"><span>Transferencias</span><span id="res-transfer">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Crédito (fiado del turno)</span><span id="res-credito">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Total Ventas</span><span id="res-total">RD$ 0.00</span></div>
+            <!-- Anticipos de reservas de Mesas del turno (entrada de dinero; js/app.js renderCajaDaySummary). -->
+            <div class="resumen-row hidden" id="res-anticipos-row"><span>Anticipos de reservas <small id="res-anticipos-detalle" class="text-muted"></small></span><span id="res-anticipos">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Devoluciones</span><span id="res-devoluciones">RD$ 0.00</span></div>
             <div class="resumen-row"><span>Gastos</span><span id="res-gastos">RD$ 0.00</span></div>
             <div class="resumen-total"><span>Balance Final</span><span id="res-balance">RD$ 0.00</span></div>
@@ -2001,6 +2029,7 @@
         Sin conexión: mostrando solo lo vendido sin sincronizar en esta sesión. Los reportes históricos completos (DGII, rangos de fecha) requieren conexión.
       </div>
 
+      <button class="btn-secondary" onclick="openLegalTipReport()">Propinas legales</button>
       <!-- BARRA SUPERIOR: TABS + FILTROS -->
       <div class="repv2-topbar">
         <div class="repv2-tabs">
@@ -2368,6 +2397,9 @@
           Este reporte es orientativo. Consulte con su contador para la declaración oficial ante la DGII. Los valores se calculan con base en las ventas registradas en el sistema.
         </div>
 
+        <!-- ITBIS por tipo de documento: tickets / e-CF / consolidado (js/itbis-separado.js) -->
+        <div id="itbis-separado" class="itbis-sep"></div>
+
       </div><!-- /dgii -->
 
       <!-- ══════════════ TAB: EXPORTAR ══════════════ -->
@@ -2706,6 +2738,7 @@
           <select class="mod-select" id="movimientos-module-filter" onchange="filterMovimientos()">
             <option value="todos">Todos los módulos</option>
           </select>
+          <button class="btn-primary" type="button" onclick="Auditoria.abrir()" title="Filtros por fecha, usuario, caja, sucursal, módulo, factura, cliente y eventos críticos; detalle y exportación">Auditoría completa</button>
         </div>
       </div>
       <div id="movimientos-offline-banner" class="hidden" style="background:#fff3cd;border:1px solid #ffe69c;color:#664d03;border-radius:8px;padding:10px 14px;margin-bottom:1rem;font-size:0.85rem">
@@ -2838,6 +2871,7 @@
     <div id="module-configuracion" class="module hidden">
       <div class="module-header">
         <h2>Configuración General</h2>
+        <button class="btn-secondary" onclick="openLegalTipConfig()">Propina legal</button>
       </div>
       <div class="config-grid">
         <div class="config-section">
@@ -3021,6 +3055,18 @@
             </small>
           </div>
           <div class="form-group"><label id="cfg-label-receipt-message">Mensaje en Recibo</label><input type="text" id="cfg-msg" class="form-input" value="¡Gracias por su compra!"></div>
+          <!-- Cierre de caja seguro (js/caja-segura.js). Se guarda al instante. -->
+          <div class="form-group span-full cs-config" id="cfg-cierre-seguro-section">
+            <div class="toggle-switch">
+              <span class="toggle-switch-label">Cierre de caja seguro (arqueo a ciegas)</span>
+              <label class="toggle-switch-input">
+                <input type="checkbox" id="cfg-cierre-seguro" onchange="CajaSegura.cambiarModo(this.checked, this)">
+                <span class="toggle-switch-slider"></span>
+              </label>
+            </div>
+            <small class="helper-text">Mientras la caja está abierta, el cajero no ve sus ventas ni el efectivo del turno: en Caja los montos salen ocultos, un conteo durante el turno no muestra el esperado y Reportes solo se abre para supervisores y administradores. Al cerrar, cuenta el efectivo por billetes y monedas y entonces ve el resumen de ventas con el sobrante o faltante.</small>
+            <small class="helper-text hidden" id="cfg-cierre-seguro-permiso">Solo un administrador puede cambiar esta opción.</small>
+          </div>
         </div>
 
         <!-- ══════════ IMPRESORA DE RECIBOS (Periféricos — local por terminal) ══════════ -->
@@ -3568,6 +3614,7 @@
 
         <div class="config-section">
           <h3 id="cfg-section-appearance-title">Apariencia</h3>
+          <div class="form-group"><label><input type="checkbox" id="cfg-mesas-enabled" disabled onchange="Mesas.activar(this.checked)"> Plano interactivo de ventas 2D</label></div>
           <div class="form-group"><label id="cfg-label-theme">Tema</label>
             <select id="cfg-theme" class="form-input" onchange="setTheme(this.value)">
               <option id="cfg-option-theme-dark" value="dark">Oscuro</option>
@@ -3693,6 +3740,7 @@
           </div>
 
           <!-- ── Fila superior: estado local + estado nube ──────────────── -->
+          <div id="rb-verificacion" role="status" style="padding:14px;margin-bottom:14px;border:1px solid var(--border);border-radius:10px;white-space:pre-line">Comprobando respaldo local y nube…</div>
           <div class="rb-status-grid">
             <!-- Estado local -->
             <div class="rb-status-card">
@@ -3706,6 +3754,7 @@
               <div class="rb-status-body">
                 <div id="rb-ultimo-local" class="rb-status-value rb-empty">Sin respaldos aún</div>
                 <div class="rb-status-dir" id="rb-dir-display" style="font-size:0.65rem;color:var(--text3);margin-top:0.2rem;word-break:break-all"></div>
+                <p id="rb-legacy-dir" style="font-size:0.75rem;color:var(--text3);word-break:break-all"></p>
               </div>
               <div class="rb-status-actions">
                 <button class="rb-btn rb-btn-primary" onclick="RespaldosMod.crearLocal()">
@@ -3887,6 +3936,8 @@
             </p>
             <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
               <button id="cfg-btn-change-access-password" class="btn-primary" type="button" onclick="openAccessPasswordModal()">Crear / cambiar contraseña</button>
+              <button class="btn-secondary" type="button" onclick="comprobarAccesoSinInternet()">Comprobar acceso sin internet</button>
+              <p id="cfg-offline-readiness" role="status" style="white-space:pre-line;margin-top:10px"></p>
             </div>
           </div>
         </div>
@@ -5428,10 +5479,28 @@
 <script src="js/combos.js"></script>
 <script src="js/combos-personalizados-motor.js"></script>
 <script src="js/combos-personalizados.js"></script>
+<script src="js/mesas-elementos.js"></script>
+<script src="js/mesas-reservas.js"></script>
+<script src="js/mesas-seleccion.js"></script>
+<script src="js/mesas-historial.js"></script>
+<script src="js/mesas.js"></script>
 <script src="js/rnc-lookup.js"></script>
+<script src="js/pos-money.js"></script>
+<script src="js/propina-legal.js"></script>
+<script src="js/propina-config.js"></script>
+<script src="js/cliente-telefono.js"></script>
+<script src="js/permisos-catalogo.js"></script>
 <script src="js/clientes.js"></script>
+<script src="js/clientes-estado-cuenta.js"></script>
+<script src="js/reportes-financieros.js"></script>
+<script src="js/caja-segura.js"></script>
+<script src="js/auditoria.js"></script>
+<script src="js/itbis-separado.js"></script>
+<script src="js/ajustes-venta.js"></script>
 <script src="js/proveedores.js"></script>
 <script src="js/compras.js"></script>
+<script src="js/compras-precios.js"></script>
+<script src="js/compras-preparar.js"></script>
 <script src="js/iconos.js"></script>
 <script src="js/factura-plantillas.js"></script>
 <script src="js/ventas.js"></script>
@@ -5545,20 +5614,18 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
       <button class="eu-close-btn" onclick="euClose()" aria-label="Cerrar"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
     </div>
 
-    <!-- Tabs -->
-    <div class="eu-tabs-bar" role="tablist">
-      <button class="eu-tab eu-tab--active" data-tab="info"     onclick="euSwitchTab('info',this)"     role="tab">Información</button>
-      <button class="eu-tab"                data-tab="permisos" onclick="euSwitchTab('permisos',this)" role="tab">Permisos</button>
-      <button class="eu-tab"                data-tab="config"   onclick="euSwitchTab('config',this)"   role="tab">Configuración</button>
-      <button class="eu-tab"                data-tab="sync"     onclick="euSwitchTab('sync',this)"     role="tab">Sincronización</button>
-    </div>
-
-    <!-- Body -->
+    <!-- Body: todo a la vista en dos columnas (js/clientes.js, eu*) -->
     <div class="eu-body">
-      <div class="eu-panel" id="eu-panel-info"></div>
-      <div class="eu-panel eu-panel--hidden" id="eu-panel-permisos"></div>
-      <div class="eu-panel eu-panel--hidden" id="eu-panel-config"></div>
-      <div class="eu-panel eu-panel--hidden" id="eu-panel-sync"></div>
+      <div class="eu-grid">
+        <div class="eu-col">
+          <section class="eu-card" id="eu-panel-info" aria-labelledby="eu-titulo-datos"></section>
+          <section class="eu-card" id="eu-panel-config" aria-labelledby="eu-titulo-acceso"></section>
+        </div>
+        <div class="eu-col">
+          <section class="eu-card" id="eu-panel-permisos" aria-labelledby="eu-titulo-permisos"></section>
+          <details class="eu-card eu-card--plegable" id="eu-panel-sync"></details>
+        </div>
+      </div>
     </div>
 
     <!-- Footer -->
@@ -5789,6 +5856,7 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
     </div>
     <div class="modal-card-footer corte-modal-footer">
       <button class="btn-secondary" type="button" onclick="closeCashCierreModal()">Cancelar</button>
+      <button class="btn-secondary" type="button" onclick="CajaSegura.abrirCierre()" title="Contar billetes y monedas; el esperado se muestra al final">Cierre con arqueo por denominaciones</button>
       <button class="btn-secondary" type="button" onclick="executeCashCierre({ print: false })" id="btn-cierre-sin-imprimir">Cerrar sin imprimir</button>
       <button class="btn-primary" type="button" onclick="executeCashCierre({ print: true })" id="btn-cierre-con-imprimir">Cerrar e imprimir</button>
     </div>
@@ -5854,6 +5922,7 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
     <div class="modal-card-footer corte-summary-footer">
       <button class="btn-secondary corte-logout" type="button" onclick="closePostCloseScreen(); doLogout()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg><span>Cerrar sesión</span></button>
       <button class="btn-secondary" type="button" onclick="printCloseSummary()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg><span>Imprimir</span></button>
+      <button class="btn-secondary" type="button" onclick="CajaSegura.verUltimoReporte()">Reporte completo</button>
       <button class="btn-secondary" type="button" onclick="closePostCloseScreen(); openCajaModule()">Ver ventas</button>
       <button class="btn-secondary hidden" id="btn-transferir-caja-general" type="button">Transferir a Caja General</button>
       <button class="btn-primary" type="button" onclick="closePostCloseScreen()">Nuevo turno / Continuar</button>

@@ -68,7 +68,7 @@ function encryptBackupPayload(payload, password) {
  * @param {string} password
  * @returns {object} payload original
  */
-function decryptBackupPayload(encryptedContent, password) {
+function decryptBackupPayload(encryptedContent, password, { allowLegacyFallback = true } = {}) {
   if (!password) throw new Error('decryptBackupPayload requiere password');
 
   let parsed = encryptedContent;
@@ -82,7 +82,7 @@ function decryptBackupPayload(encryptedContent, password) {
   const content = Buffer.from(parsed.content, 'base64');
 
   const candidates = [password];
-  if (password !== LEGACY_DEFAULT_SECURITY_PASSWORD) {
+  if (allowLegacyFallback && password !== LEGACY_DEFAULT_SECURITY_PASSWORD) {
     candidates.push(LEGACY_DEFAULT_SECURITY_PASSWORD);
   }
 

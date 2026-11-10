@@ -971,6 +971,8 @@
     try {
       RV2.dgii = await apiGet('/api/reports/advanced/dgii' + buildQS());
       renderDGII();
+      // ITBIS separado por tipo de documento (js/itbis-separado.js).
+      window.ItbisSeparado?.montar();
     } catch (e) { console.error('[Reportes] loadDGII:', e.message); }
   }
 

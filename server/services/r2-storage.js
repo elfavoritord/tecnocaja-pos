@@ -1,4 +1,5 @@
 'use strict';
+const crypto = require('crypto');
 
 /**
  * r2-storage.js — Almacenamiento en nube para respaldos Tecno Caja
@@ -69,6 +70,8 @@ function getClient() {
   const isB2 = endpointOverride.includes('backblazeb2.com');
 
   _client = new S3Client({
+    maxAttempts: 2,
+    requestHandler: { connectionTimeout: 4000, requestTimeout: 15000 },
     region,
     endpoint,
     credentials: { accessKeyId, secretAccessKey },
@@ -115,7 +118,7 @@ async function isR2Available(force = false, prefix = '') {
     const bucket = getBucket();
     // ListObjectsV2 con MaxKeys=1 funciona en R2, B2 y S3 genérico
     // HeadBucket a veces falla en B2 con permisos de app key
-    await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1, ...(prefix ? { Prefix: prefix } : {}) }));
+    await client.send(new ListObjectsV2Command({ Bucket: bucket, MaxKeys: 1, ...(prefix ? { Prefix: prefix } : {}) }), { abortSignal: AbortSignal.timeout(7000) });
     _availCache.set(cacheKey, { ok: true, ts: now });
     return true;
   } catch (e) {
@@ -128,22 +131,32 @@ async function isR2Available(force = false, prefix = '') {
 async function upload(key, buffer, metadata = {}) {
   const client = getClient();
   const bucket = getBucket();
+  const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
   await client.send(new PutObjectCommand({
     Bucket:      bucket,
     Key:         key,
     Body:        buffer,
     ContentType: 'application/octet-stream',
     Metadata:    Object.fromEntries(
-      Object.entries(metadata).map(([k, v]) => [k, String(v)])
+      Object.entries({ ...metadata, sha256 }).map(([k, v]) => [k, String(v)])
     ),
-  }));
+  }), { abortSignal: AbortSignal.timeout(120000) });
+  await verifyObject(key, { size: buffer.length, sha256 });
+  return { sha256, verifiedAt: new Date().toISOString() };
+}
+
+async function verifyObject(key, { size, sha256 }) {
+  if (!sha256) throw new Error('Falta la huella registrada para comprobar el objeto en B2.');
+  const confirmed = await getClient().send(new HeadObjectCommand({ Bucket: getBucket(), Key: key }), { abortSignal: AbortSignal.timeout(10000) });
+  if (Number(confirmed.ContentLength) !== Number(size) || confirmed.Metadata?.sha256 !== sha256) throw new Error('La nube no confirmó tamaño y huella del respaldo. Permanece pendiente de envío.');
+  return { verifiedAt: new Date().toISOString() };
 }
 
 // ─── Descargar archivo ────────────────────────────────────────────────────────
 async function download(key) {
   const client = getClient();
   const bucket = getBucket();
-  const resp   = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const resp   = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(120000) });
 
   // Convertir ReadableStream → Buffer
   const chunks = [];
@@ -166,7 +179,7 @@ async function listObjects(prefix) {
       Prefix:            prefix,
       MaxKeys:           100,
       ContinuationToken: token,
-    }));
+    }), { abortSignal: AbortSignal.timeout(20000) });
     (resp.Contents || []).forEach(obj => results.push(obj));
     token = resp.IsTruncated ? resp.NextContinuationToken : null;
   } while (token);
@@ -233,6 +246,7 @@ module.exports = {
   isConfigured,
   isR2Available,
   upload,
+  verifyObject,
   download,
   listObjects,
   remove,
