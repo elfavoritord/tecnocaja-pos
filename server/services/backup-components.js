@@ -11,7 +11,7 @@ function defaultComponents() {
     { id: 'comprobantes', root: process.env.TREASURY_ATTACHMENTS_DIR || path.join(root, 'uploads', 'comprobantes') },
     { id: 'fiscales', root: process.env.FISCAL_ATTACHMENTS_DIR || path.join(root, 'uploads', 'comprobantes-fiscales') },
     { id: 'documentos', root: path.join(root, 'Sistema_Data') },
-    { id: 'ecf-archivos', root: path.join(root, 'storage', 'ecf') },
+    { id: 'ecf-archivos', root: path.join(root, 'storage', 'ecf'), jsonFiles: ['cert-wizard-state.json', 'cert-wizard-state.json.bak'] },
     { id: 'ecf-trabajo', root: path.join(root, 'ecf') },
     { id: 'fiscal-control', root, files: ['ecf-sequence-high-watermarks.json'] },
   ];
@@ -40,7 +40,7 @@ async function capturar({ components = defaultComponents(), maxBytes = 256 * 102
         const file = path.join(dir, entrada.name), relative = path.relative(c.root, file).split(path.sep).join('/');
         if (entrada.isSymbolicLink()) throw new Error(`Enlace no respaldable en ${c.id}.`);
         if (entrada.isDirectory()) { if (!/^(certificates|node_modules|backups)$/i.test(entrada.name)) await recorrer(file); else if (/certificates/i.test(entrada.name)) requiereReconfiguracion.push(`${c.id}:certificado`); continue; }
-        if (!MEDIA.test(entrada.name) && !c.files?.includes(entrada.name)) {
+        if (!MEDIA.test(entrada.name) && !c.files?.includes(entrada.name) && !c.jsonFiles?.includes(relative)) {
           if (/\.(p12|pfx|pem|key)$/i.test(entrada.name)) requiereReconfiguracion.push(`${c.id}:certificado`);
           continue;
         }

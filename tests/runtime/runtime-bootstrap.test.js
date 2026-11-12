@@ -20,6 +20,21 @@ describe('scripts/runtime-bootstrap', () => {
     process.env = envSnapshot;
   });
 
+  it('recupera la credencial local preservada cuando la actualización retiró la copia empaquetada', () => {
+    const appRoot = makeTempDir('tecnocaja-app-');
+    const userDataPath = makeTempDir('tecnocaja-user-');
+    const preserved = path.join(userDataPath, 'config', 'firebase-key.json');
+    fs.mkdirSync(path.dirname(preserved), { recursive: true });
+    fs.writeFileSync(preserved, '{"project_id":"demo-local"}', 'utf8');
+    process.env.FIREBASE_SERVICE_ACCOUNT_PATH = path.join(appRoot, 'resources', 'firebase-key.json');
+    delete process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const { prepareRuntimeEnvironment } = require('../../scripts/runtime-bootstrap');
+    const runtime = prepareRuntimeEnvironment({ appRoot, userDataPath });
+    expect(process.env.FIREBASE_SERVICE_ACCOUNT_PATH).toBe(preserved);
+    expect(fs.readFileSync(runtime.userEnvFile, 'utf8')).toContain(`FIREBASE_SERVICE_ACCOUNT_PATH=${preserved}`);
+  });
+
   it('usa la credencial Firebase empaquetada cuando la ruta configurada no existe', () => {
     const appRoot = makeTempDir('tecnocaja-app-');
     const userDataPath = makeTempDir('tecnocaja-user-');

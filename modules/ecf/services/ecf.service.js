@@ -54,20 +54,14 @@ const SEQUENCE_HIGH_WATERMARK_PATH = path.join(ECF_WRITABLE_BASE_DIR, 'ecf-seque
 // lo veía (mostraba 0%); en el .exe caía en la carpeta del programa, que el
 // instalador reemplaza en cada actualización.
 const CERT_WIZARD_STATE_PATH = path.join(ECF_WRITABLE_BASE_DIR, 'storage', 'ecf', 'cert-wizard-state.json');
+const { readWizardState, writeWizardState } = require('../utils/cert-wizard-state.util');
 
 function legacyCertWizardStatePath() {
   return path.join(process.cwd(), 'storage', 'ecf', 'cert-wizard-state.json');
 }
 
 function readCertWizardStateFile() {
-  for (const stateFile of [CERT_WIZARD_STATE_PATH, legacyCertWizardStatePath()]) {
-    try {
-      return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    } catch (_) {
-      // Sigue con la ruta vieja.
-    }
-  }
-  return null;
+  return readWizardState(CERT_WIZARD_STATE_PATH, [legacyCertWizardStatePath()]);
 }
 
 const CERT_WIZARD_TOTAL_STEPS = 15;
@@ -925,7 +919,16 @@ class EcfService {
   async resolveCertificate() {
     await this.ensureReady();
     const stored = await this.repository.getCertificate(1);
-    const certPath = stored?.certificate_path || this.config.CERT_PATH;
+    let certPath = stored?.certificate_path || this.config.CERT_PATH;
+    let usingPreservedCertificate = false;
+    const preservedCertPath = path.join(CERT_STORAGE_DIR, 'business-1-active.p12');
+    // La actualizacion conserva el archivo en userData; una fila antigua puede
+    // seguir apuntando a la carpeta reemplazada. Se valida RNC y clave abajo.
+    if (stored?.serial_number && certPath && !fs.existsSync(certPath)
+      && path.basename(certPath) === 'business-1-active.p12' && fs.existsSync(preservedCertPath)) {
+      certPath = preservedCertPath;
+      usingPreservedCertificate = true;
+    }
     // Sin certificado en la BD se usa CERT_PATH del .env, que puede apuntar a un
     // .p12 viejo ya borrado: decir dónde cargarlo en vez de solo la ruta.
     if (!certPath || !fs.existsSync(certPath)) {
@@ -951,6 +954,10 @@ class EcfService {
       certPath,
       certPassword,
     });
+    if (usingPreservedCertificate && (String(certificate.serialNumber).toLowerCase() !== String(stored.serial_number).toLowerCase()
+      || (stored.issuer && certificate.issuer !== stored.issuer))) {
+      throw new EcfError('El certificado conservado no coincide con el que estaba registrado. Vuelve a cargar tu .p12 sin reiniciar la certificación.', { statusCode: 422 });
+    }
     const validation = signatureService.validateCertificate(certificate, {
       expectedRnc: (await this.repository.getResolvedEmitter(1)).rnc,
     });
@@ -9243,8 +9250,7 @@ class EcfService {
   }
 
   _writeCertWizardState(state) {
-    fs.mkdirSync(path.dirname(CERT_WIZARD_STATE_PATH), { recursive: true });
-    fs.writeFileSync(CERT_WIZARD_STATE_PATH, JSON.stringify(state, null, 2), 'utf8');
+    writeWizardState(CERT_WIZARD_STATE_PATH, state);
   }
 
   // ENDPOINT DE DIAGNÓSTICO TEMPORAL — eliminar después de resolver el problema de certificación

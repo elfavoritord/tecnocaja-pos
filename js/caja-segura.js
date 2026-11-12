@@ -23,6 +23,11 @@
     { id: 'gasto', titulo: 'Gasto o salida', ayuda: 'Pago de un gasto con efectivo de la caja. Reduce el esperado.' },
     { id: 'otro', titulo: 'Otro motivo', ayuda: 'Cualquier otra apertura. Describe el motivo; no mueve dinero.' },
   ];
+  const MOTIVOS_HISTORIAL = [...MOTIVOS_UI,
+    { id: 'arqueo', titulo: 'Corte / arqueo de caja' },
+    { id: 'cierre', titulo: 'Conteo para cierre de caja' },
+    { id: 'venta', titulo: 'Apertura con venta' },
+  ];
   const state = { config: null, cierreClasico: null };
 
   const esc = (v) => (typeof escapeHtml === 'function' ? escapeHtml(String(v ?? '')) : String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch])));
@@ -157,10 +162,11 @@
   }
 
   // Botón «Corte de caja» con el cierre seguro: conteo a ciegas que no cierra.
-  function abrirCorteCiego() {
+  async function abrirCorteCiego() {
     if (!cajaAbiertaAhora()) { toast('La caja no está abierta.', 'warning'); return; }
     if (!puede('hacer_corte_caja')) { toast('No tienes permiso para hacer el corte de caja.', 'error'); return; }
-    abrirArqueo('', { corte: true });
+    const evento = await abrirGavetaParaConteo('arqueo');
+    abrirArqueo(evento, { corte: true });
   }
 
   // ── Formulario de denominaciones ─────────────────────────────────────
@@ -262,6 +268,7 @@
     `<button class="btn-secondary" onclick="closeAllModals()">Cancelar</button>
      <button class="btn-primary" id="cs-btn-cerrar" onclick="CajaSegura.confirmarCierre()">Guardar conteo y analizar</button>`, 'cs-cierre');
     setTimeout(() => document.getElementById('cs-den-2000')?.focus(), 80);
+    await abrirGavetaParaConteo('cierre');
   }
 
   function overlayAnalisis() {
@@ -656,6 +663,28 @@
   }
 
   // La orden física va después de registrar el motivo; su resultado también queda.
+  // Se usan los permisos propios del corte/cierre; no es una apertura manual.
+  async function abrirGavetaParaConteo(motivo) {
+    if (!['cierre', 'arqueo'].includes(motivo) || !cajaAbiertaAhora()) return '';
+    if (!puede(motivo === 'cierre' ? 'cerrar_caja' : 'hacer_corte_caja')) return '';
+    // Un equipo sin gaveta también puede contar y cerrar su turno.
+    if (!window.novaDesktop?.openCashDrawer || typeof getCashDrawerOpenConfig !== 'function' || !getCashDrawerOpenConfig()) return '';
+    if (state.aperturaConteo) return state.aperturaConteo;
+    state.aperturaConteo = (async () => {
+      try {
+        const evento = await api.request('/api/caja/gaveta', { method: 'POST', body: JSON.stringify({
+          eventUuid: uuid(), motivo, ...estructura(), ...actorPayload(),
+        }) });
+        if (evento.abrirGaveta) await abrirGavetaFisica(evento.eventUuid);
+        return evento.eventUuid || '';
+      } catch (e) {
+        toast(e.message || 'No se pudo abrir la gaveta para contar el efectivo.', 'warning');
+        return '';
+      }
+    })();
+    try { return await state.aperturaConteo; } finally { state.aperturaConteo = null; }
+  }
+
   async function abrirGavetaFisica(eventUuid) {
     let estado = 'sin_gaveta', error = '';
     const cfg = typeof getCashDrawerOpenConfig === 'function' ? getCashDrawerOpenConfig() : null;
@@ -741,7 +770,7 @@
       <div class="cs-filtros">
         <label>Desde<input type="date" id="csh-desde" class="form-input" value="${d.slice(0, 8)}01"></label>
         <label>Hasta<input type="date" id="csh-hasta" class="form-input" value="${d}"></label>
-        <label>Motivo<select id="csh-motivo" class="form-input"><option value="">Todos</option>${MOTIVOS_UI.map((m) => `<option value="${m.id}">${esc(m.titulo)}</option>`).join('')}<option value="venta">Apertura con venta</option></select></label>
+        <label>Motivo<select id="csh-motivo" class="form-input"><option value="">Todos</option>${MOTIVOS_HISTORIAL.map((m) => `<option value="${m.id}">${esc(m.titulo)}</option>`).join('')}</select></label>
         <label>Origen<select id="csh-origen" class="form-input"><option value="">Manual y con venta</option><option value="manual">Solo manual (sin venta)</option><option value="venta">Solo con venta</option></select></label>
         <label>Usuario<select id="csh-usuario" class="form-input"><option value="">Todos</option>${(DB.users || []).map((u) => `<option value="${Number(u.id)}">${esc(u.nombre)}</option>`).join('')}</select></label>
         <label>Caja<select id="csh-caja" class="form-input"><option value="">Todas</option>${(DB.cajasSucursal || DB.cashRegisters || []).map((c) => `<option value="${Number(c.id)}">${esc(c.nombre)}</option>`).join('')}</select></label>
@@ -762,7 +791,7 @@
         userId: document.getElementById('csh-usuario').value, cashRegisterId: document.getElementById('csh-caja').value });
       const data = await api.request(`/api/caja/gaveta?${qs}`);
       state.historial = data;
-      const etiquetas = Object.fromEntries([...MOTIVOS_UI.map((m) => [m.id, m.titulo]), ['venta', 'Apertura con venta']]);
+      const etiquetas = Object.fromEntries(MOTIVOS_HISTORIAL.map((m) => [m.id, m.titulo]));
       box.innerHTML = `<div class="cs-kpis">
           <div><span>Aperturas</span><strong>${data.total}</strong></div>
           <div><span>Entradas de efectivo</span><strong>${money(data.entradas)}</strong></div>
@@ -815,7 +844,7 @@
     cargarConfig, loadConfigSection, aplicarModoCiego, cambiarModo, abrirCierre, confirmarCierre, recalcular, mostrarReporte, cerrarReporte, verReporteTurno,
     resumenPostCierre, guardarUltimoReporte, verUltimoReporte, verificarCierre, irAMesas, abrirCorteCiego,
     imprimirReporte, pdfReporte, abrirGaveta, elegirMotivo, buscarProducto, agregarConsumo, cambiarConsumo, confirmarGaveta,
-    registrarAperturaVenta, imprimirComprobante, abrirArqueo, guardarArqueo, abrirHistorialGaveta, cargarHistorial, exportarHistorial,
+    registrarAperturaVenta, abrirGavetaParaConteo, imprimirComprobante, abrirArqueo, guardarArqueo, abrirHistorialGaveta, cargarHistorial, exportarHistorial,
     get cierreSeguro() { return activo(); },
     get turnoCiego() { return turnoCiego(); },
     get ventasOcultas() { return ventasOcultas(); },

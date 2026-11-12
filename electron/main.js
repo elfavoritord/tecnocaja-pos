@@ -10,6 +10,9 @@ const { printReceipt, printCorteReceipt, openCashDrawer: escposOpenDrawer } = re
 const { printLabelsTspl } = require('./tspl-printer');
 const { openDrawer: openCashDrawerAll, testDrawer } = require('./cash-drawer');
 const { listSerialPorts, readWeightFromSerial } = require('./scale-reader');
+const { closeRawPrinters } = require('./raw-printer');
+const { createPrintWindowPool } = require('./print-window-pool');
+const printWindowPool = createPrintWindowPool({ createWindow: (options) => new BrowserWindow(options) });
 const { buildInternalHeaders } = require('../server/security/internal-request');
 const { crearRecordatorio } = require('./update-recordatorio');
 const { hasPendingFactoryReset, runPendingFactoryReset } = require('../server/services/factory-reset.service');
@@ -2075,6 +2078,8 @@ async function createWindow() {
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
+    // Las ventanas de impresión ocultas no deben mantener abierta la aplicación.
+    printWindowPool.clear();
   });
 
   // El frontend (HTML/JS/CSS) se sirve vía HTTP desde server.js y cambia
@@ -2343,7 +2348,7 @@ async function waitForPrintWindowReady(printWindow) {
     new Promise((resolve) => {
       const images = Array.from(document.images || []);
       const waitForImages = Promise.all(images.map((image) => {
-        if (image.complete && image.naturalWidth > 0) {
+        if (image.complete) {
           return Promise.resolve();
         }
 
@@ -2358,11 +2363,17 @@ async function waitForPrintWindowReady(printWindow) {
         ? document.fonts.ready.catch(() => undefined)
         : Promise.resolve();
 
-      Promise.all([waitForImages, waitForFonts]).finally(() => {
-        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      const timeout = setTimeout(() => resolve(false), 10000);
+      Promise.all([waitForImages, waitForFonts]).then(() => {
+        clearTimeout(timeout);
+        // La lectura de layout fuerza el cálculo; no esperar frames de una ventana oculta.
+        document.body.getBoundingClientRect();
+        resolve(true);
       });
     });
-  `, true);
+  `, true).then((ready) => {
+    if (!ready) throw new Error('No terminaron de cargar las imágenes o fuentes del documento. Vuelve a intentar imprimir.');
+  });
 }
 
 function sanitizeReceiptPrintOptions(options = {}, { preservePageSize = false } = {}) {
@@ -2393,12 +2404,30 @@ function sanitizeReceiptPrintOptions(options = {}, { preservePageSize = false } 
 async function runReceiptPrintJob(printWindow, options, sanitizeOptions) {
   const safeOptions = sanitizeReceiptPrintOptions(options, sanitizeOptions);
   return new Promise((resolve) => {
-    printWindow.webContents.print(safeOptions, (success, failureReason) => {
+    const contents = printWindow.webContents;
+    let done = false;
+    let timer = null;
+    const finish = (success, failureReason) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      contents.removeListener('destroyed', interrupted);
+      contents.removeListener('render-process-gone', interrupted);
       resolve({
         ok: success,
-        error: success ? null : (failureReason || 'No se pudo imprimir la factura.')
+        error: success ? null : (failureReason || 'No se pudo imprimir el documento.')
       });
-    });
+    };
+    const interrupted = () => {
+      finish(false, 'Se interrumpió la impresión. Revisa la cola de Windows antes de repetir.');
+      if (!printWindow.isDestroyed()) printWindow.destroy();
+    };
+    contents.once('destroyed', interrupted);
+    contents.once('render-process-gone', interrupted);
+    // El diálogo puede permanecer abierto mientras el usuario elige impresora.
+    if (safeOptions.silent) timer = setTimeout(interrupted, 30000);
+    try { contents.print(safeOptions, finish); }
+    catch (error) { finish(false, error.message); }
   });
 }
 
@@ -3337,101 +3366,68 @@ ipcMain.handle('scale:read-weight', async (_event, config = {}) => {
 });
 
 ipcMain.handle('receipt:print-html', async (_event, html, options = {}) => {
-  let printWindow = null;
-  let tempPrintFile = null;
   try {
     const layout = resolvePaperLayout(options?.paperSize);
     const normalizedPaperSize = String(options?.paperSize || '80mm').toLowerCase();
     const isThermalPrint = normalizedPaperSize === '58mm' || normalizedPaperSize === '80mm';
     const printableHtml = buildPrintShell(String(html || ''), layout);
-    tempPrintFile = path.join(os.tmpdir(), `tecnocaja-receipt-${Date.now()}-${Math.random().toString(16).slice(2)}.html`);
-    fs.writeFileSync(tempPrintFile, printableHtml, 'utf8');
-    printWindow = new BrowserWindow({
-      show: false,
-      width: layout.previewWidth || 420,
-      height: layout.previewHeight || 900,
-      backgroundColor: '#ffffff',
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false
+    return await printWindowPool.run(options?.printerName, layout, printableHtml, async (printWindow) => {
+      await waitForPrintWindowReady(printWindow);
+
+      const mode = String(options?.mode || 'dialog').toLowerCase();
+      const printerName = String(options?.printerName || '').trim();
+      const shouldUsePrinterDefaultPageSize = mode !== 'direct' && !isThermalPrint;
+      const printOptions = {
+        silent: mode === 'direct',
+        printBackground: !isThermalPrint,
+        deviceName: printerName || undefined,
+        color: !isThermalPrint,
+        margins: { marginType: 'none' },
+        scaleFactor: 100,
+        pagesPerSheet: 1,
+        copies: 1,
+        collate: false,
+        duplexMode: 'simplex',
+        landscape: Boolean(layout.landscape)
+      };
+      if (shouldUsePrinterDefaultPageSize) {
+        printOptions.usePrinterDefaultPageSize = true;
       }
+      if (isThermalPrint) {
+        printOptions.dpi = { horizontal: 203, vertical: 203 };
+        const contentHeightPx = await printWindow.webContents.executeJavaScript(`
+          (() => {
+            const root = document.querySelector('.ticket-print') ||
+                         document.querySelector('.receipt-sheet') ||
+                         document.querySelector('.print-root') ||
+                         document.body;
+            const rootRect = root.getBoundingClientRect();
+            const visibleNodes = [root, ...Array.from(root.querySelectorAll('*'))].filter((node) => {
+              const style = window.getComputedStyle(node);
+              if (style.display === 'none' || style.visibility === 'hidden') return false;
+              const rect = node.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0;
+            });
+            const lastNode = visibleNodes[visibleNodes.length - 1] || root;
+            const lastRect = lastNode.getBoundingClientRect();
+            const rootStyle = window.getComputedStyle(root);
+            const paddingTop = parseFloat(rootStyle.paddingTop || '0') || 0;
+            const paddingBottom = parseFloat(rootStyle.paddingBottom || '0') || 0;
+            const contentHeight = Math.ceil((lastRect.bottom - rootRect.top) + paddingBottom);
+            return Math.max(1, Math.ceil(contentHeight + paddingTop));
+          })()`
+        );
+        const widthMicrons = normalizedPaperSize === '58mm' ? 58000 : 80000;
+        const heightMicrons = Math.max(18000, Math.ceil(contentHeightPx * (25400 / 96)) + 1200);
+        printOptions.pageSize = { width: widthMicrons, height: heightMicrons };
+      } else {
+        printOptions.pageSize = layout.pageSize;
+      }
+
+      const sanitizeOptions = { preservePageSize: isThermalPrint };
+      return await runReceiptPrintJob(printWindow, printOptions, sanitizeOptions);
     });
-
-    await printWindow.loadFile(tempPrintFile);
-    await waitForPrintWindowReady(printWindow);
-
-    const mode = String(options?.mode || 'dialog').toLowerCase();
-    const printerName = String(options?.printerName || '').trim();
-    const shouldUsePrinterDefaultPageSize = mode !== 'direct' && !isThermalPrint;
-    const printOptions = {
-      silent: mode === 'direct',
-      printBackground: !isThermalPrint,
-      deviceName: printerName || undefined,
-      color: !isThermalPrint,
-      margins: { marginType: 'none' },
-      scaleFactor: 100,
-      pagesPerSheet: 1,
-      copies: 1,
-      collate: false,
-      duplexMode: 'simplex',
-      landscape: Boolean(layout.landscape)
-    };
-    if (shouldUsePrinterDefaultPageSize) {
-      printOptions.usePrinterDefaultPageSize = true;
-    }
-    if (isThermalPrint) {
-      printOptions.dpi = { horizontal: 203, vertical: 203 };
-      const contentHeightPx = await printWindow.webContents.executeJavaScript(`
-        (() => {
-          const root = document.querySelector('.ticket-print') ||
-                       document.querySelector('.receipt-sheet') ||
-                       document.querySelector('.print-root') ||
-                       document.body;
-          const rootRect = root.getBoundingClientRect();
-          const visibleNodes = [root, ...Array.from(root.querySelectorAll('*'))].filter((node) => {
-            const style = window.getComputedStyle(node);
-            if (style.display === 'none' || style.visibility === 'hidden') return false;
-            const rect = node.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0;
-          });
-          const lastNode = visibleNodes[visibleNodes.length - 1] || root;
-          const lastRect = lastNode.getBoundingClientRect();
-          const rootStyle = window.getComputedStyle(root);
-          const paddingTop = parseFloat(rootStyle.paddingTop || '0') || 0;
-          const paddingBottom = parseFloat(rootStyle.paddingBottom || '0') || 0;
-          const contentHeight = Math.ceil((lastRect.bottom - rootRect.top) + paddingBottom);
-          return Math.max(1, Math.ceil(contentHeight + paddingTop));
-        })()`
-      );
-      const widthMicrons = normalizedPaperSize === '58mm' ? 58000 : 80000;
-      const heightMicrons = Math.max(18000, Math.ceil(contentHeightPx * (25400 / 96)) + 1200);
-      printOptions.pageSize = { width: widthMicrons, height: heightMicrons };
-    } else {
-      printOptions.pageSize = layout.pageSize;
-    }
-
-    let effectivePrintOptions = { ...printOptions };
-    const sanitizeOptions = { preservePageSize: isThermalPrint };
-    let result = await runReceiptPrintJob(printWindow, effectivePrintOptions, sanitizeOptions);
-    if (!result.ok && printerName) {
-      result = await runReceiptPrintJob(printWindow, {
-        ...effectivePrintOptions,
-        deviceName: undefined
-      }, sanitizeOptions);
-    }
-
-    printWindow.close();
-    if (tempPrintFile && fs.existsSync(tempPrintFile)) {
-      fs.unlinkSync(tempPrintFile);
-    }
-    return result;
   } catch (error) {
-    if (printWindow && !printWindow.isDestroyed()) {
-      printWindow.close();
-    }
-    if (tempPrintFile && fs.existsSync(tempPrintFile)) {
-      fs.unlinkSync(tempPrintFile);
-    }
     return { ok: false, error: error.message || 'No se pudo preparar la impresión.' };
   }
 });
@@ -3440,68 +3436,38 @@ ipcMain.handle('receipt:print-html', async (_event, html, options = {}) => {
 // El tamaño de página es el tamaño físico real de la etiqueta (resolveLabelLayout),
 // no A4 — cada etiqueta es su propia página, la impresora avanza el rollo sola.
 ipcMain.handle('labels:print-html', async (_event, html, options = {}) => {
-  let printWindow = null;
-  let tempPrintFile = null;
   try {
     const layout = resolveLabelLayout(options?.tamanoKey);
     const printableHtml = buildLabelPrintShell(String(html || ''), layout);
-    tempPrintFile = path.join(os.tmpdir(), `tecnocaja-labels-${Date.now()}-${Math.random().toString(16).slice(2)}.html`);
-    fs.writeFileSync(tempPrintFile, printableHtml, 'utf8');
-    printWindow = new BrowserWindow({
-      show: false,
-      width: layout.previewWidth || 400,
-      height: layout.previewHeight || 400,
-      backgroundColor: '#ffffff',
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false
-      }
+    return await printWindowPool.run(options?.printerName, layout, printableHtml, async (printWindow) => {
+      await waitForPrintWindowReady(printWindow);
+
+      const mode = String(options?.mode || 'dialog').toLowerCase();
+      const printerName = String(options?.printerName || '').trim();
+      // Tamaño de página explícito (no usePrinterDefaultPageSize) — de lo
+      // contrario Chromium usa el tamaño por defecto del driver de la
+      // impresora, casi nunca el tamaño real de la etiqueta cargada.
+      // color:false/printBackground:false igual que el papel térmico de
+      // recibos (isThermalPrint más abajo) — impresoras de etiquetas
+      // dedicadas son monocromáticas; forzar color en modo silencioso hace
+      // que algunos drivers GDI genéricos devuelvan la etiqueta en blanco.
+      const printOptions = {
+        silent: mode === 'direct',
+        printBackground: false,
+        deviceName: printerName || undefined,
+        color: false,
+        pageSize: layout.pageSize,
+        margins: { marginType: 'none' },
+        scaleFactor: 100,
+        copies: 1,
+        collate: false,
+        duplexMode: 'simplex',
+        landscape: false
+      };
+
+      return await runReceiptPrintJob(printWindow, printOptions, { preservePageSize: true });
     });
-
-    await printWindow.loadFile(tempPrintFile);
-    await waitForPrintWindowReady(printWindow);
-
-    const mode = String(options?.mode || 'dialog').toLowerCase();
-    const printerName = String(options?.printerName || '').trim();
-    // Tamaño de página explícito (no usePrinterDefaultPageSize) — de lo
-    // contrario Chromium usa el tamaño por defecto del driver de la
-    // impresora, casi nunca el tamaño real de la etiqueta cargada.
-    // color:false/printBackground:false igual que el papel térmico de
-    // recibos (isThermalPrint más abajo) — impresoras de etiquetas
-    // dedicadas son monocromáticas; forzar color en modo silencioso hace
-    // que algunos drivers GDI genéricos devuelvan la etiqueta en blanco.
-    const printOptions = {
-      silent: mode === 'direct',
-      printBackground: false,
-      deviceName: printerName || undefined,
-      color: false,
-      pageSize: layout.pageSize,
-      margins: { marginType: 'none' },
-      scaleFactor: 100,
-      copies: 1,
-      collate: false,
-      duplexMode: 'simplex',
-      landscape: false
-    };
-
-    const result = await new Promise((resolve) => {
-      printWindow.webContents.print(printOptions, (success, failureReason) => {
-        resolve({ ok: success, error: success ? null : (failureReason || 'No se pudo imprimir las etiquetas.') });
-      });
-    });
-
-    printWindow.close();
-    if (tempPrintFile && fs.existsSync(tempPrintFile)) {
-      fs.unlinkSync(tempPrintFile);
-    }
-    return result;
   } catch (error) {
-    if (printWindow && !printWindow.isDestroyed()) {
-      printWindow.close();
-    }
-    if (tempPrintFile && fs.existsSync(tempPrintFile)) {
-      fs.unlinkSync(tempPrintFile);
-    }
     return { ok: false, error: error.message || 'No se pudo preparar la impresión de etiquetas.' };
   }
 });
@@ -4596,6 +4562,11 @@ app.on('before-quit', function(e) {
   createAutoBackup({ trigger: 'cierre_app', forceCloud: false })
     .catch(function() {})
     .finally(function() { stopServer().catch(function() {}).finally(function() { app.quit(); }); });
+});
+
+app.on('will-quit', () => {
+  closeRawPrinters();
+  printWindowPool.close();
 });
 
 app.on('window-all-closed', function() {

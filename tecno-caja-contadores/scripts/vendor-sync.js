@@ -34,6 +34,9 @@ const FILES = [
   ['js/dgii-autorizacion.js', 'public/js/dgii-autorizacion.js'],
   ['js/catalogo-csv.js', 'public/js/catalogo-csv.js'],
   ['electron/thermal-printer.js', 'electron/thermal-printer.js'],
+  ['electron/raw-printer.js', 'electron/raw-printer.js'],
+  ['electron/raw-print-worker.ps1', 'electron/raw-print-worker.ps1'],
+  ['electron/printer-queue.js', 'electron/printer-queue.js'],
   // Compras desde el portal (fase C): los mismos lectores de facturas del POS
   // (XML e-CF del proveedor, Excel/CSV con la plantilla de Compras).
   ['modules/ecf/utils/xml.util.js', 'server/compras/xml.util.js'],

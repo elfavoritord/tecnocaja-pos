@@ -1,14 +1,15 @@
 {
-  "version": "1.6.17",
-  "stableVersion": "1.6.17",
-  "date": "10/11/2026",
+  "version": "1.6.18",
+  "stableVersion": "1.6.18",
+  "date": "12/11/2026",
   "size": "198 MB",
-  "type": "feature",
+  "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Tu contador puede registrar las compras de tus proveedores desde su portal: entran solas al inventario, los costos y las cuentas por pagar.",
-    "Si una compra del contador no cuadra (producto parecido, totales, factura repetida), vuelve a su portal para corregirla; nunca se registra dos veces.",
-    "Puedes apagarlo cuando quieras en Compras → Configuración («Mi contador registra compras»)."
+    "Las facturas de consumo menor de 250 mil muestran el nombre y RNC de la empresa configurada.",
+    "La gaveta abre al iniciar el corte o cierre para contar el efectivo.",
+    "Impresión más rápida con recursos reutilizables y colas independientes por impresora.",
+    "La actualización conserva el avance, XML y lotes de certificación DGII de los pasos 4 y 5."
   ]
 }

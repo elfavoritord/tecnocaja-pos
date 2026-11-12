@@ -15,6 +15,9 @@ const COPIAS = [
   ['js/dgii-autorizacion.js', 'tecno-caja-contadores/public/js/dgii-autorizacion.js'],
   ['js/catalogo-csv.js', 'tecno-caja-contadores/public/js/catalogo-csv.js'],
   ['electron/thermal-printer.js', 'tecno-caja-contadores/electron/thermal-printer.js'],
+  ['electron/raw-printer.js', 'tecno-caja-contadores/electron/raw-printer.js'],
+  ['electron/raw-print-worker.ps1', 'tecno-caja-contadores/electron/raw-print-worker.ps1'],
+  ['electron/printer-queue.js', 'tecno-caja-contadores/electron/printer-queue.js'],
   ['server/multisucursal/central/sincronizacion-central.js', 'cloud/sync-api/vendor/multisucursal/sincronizacion-central.js'],
   ['server/multisucursal/central/sucursales.js', 'cloud/sync-api/vendor/multisucursal/sucursales.js'],
 ];

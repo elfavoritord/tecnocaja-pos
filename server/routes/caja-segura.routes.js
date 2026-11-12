@@ -22,6 +22,8 @@ const { ensureCajaSegura } = require('../services/finance-migration');
 
 const MOTIVOS = Object.freeze({
   conteo: { etiqueta: 'Conteo de efectivo', abreGaveta: true },
+  arqueo: { etiqueta: 'Corte / arqueo de caja', abreGaveta: true },
+  cierre: { etiqueta: 'Conteo para cierre de caja', abreGaveta: true },
   cambio: { etiqueta: 'Cambio de menudo / denominaciones', abreGaveta: true },
   retiro: { etiqueta: 'Corte parcial / retiro para resguardo', abreGaveta: true },
   consumo: { etiqueta: 'Consumo interno de productos', abreGaveta: false },
@@ -303,7 +305,9 @@ function createCajaSeguraRouter(deps) {
     const motivo = String(req.body?.motivo || '').trim();
     const definicion = MOTIVOS[motivo];
     if (!definicion) return res.status(400).json({ error: 'Selecciona el motivo de la apertura.' });
-    if (motivo !== 'venta' && !userCanOpenDrawer(actorUser)) return res.status(403).json({ error: 'No tienes permiso para abrir la gaveta.' });
+    const autorizado = motivo === 'venta' || (motivo === 'cierre' ? userCanCloseCash(actorUser)
+      : motivo === 'arqueo' ? userCanMakeCorte(actorUser) : userCanOpenDrawer(actorUser));
+    if (!autorizado) return res.status(403).json({ error: 'No tienes permiso para abrir la gaveta.' });
     const eventUuid = texto(req.body?.eventUuid || randomUUID(), 64);
     if (!UUID.test(eventUuid)) return res.status(400).json({ error: 'Identificador de apertura no válido.' });
     const actor = getActor(req);
@@ -321,7 +325,7 @@ function createCajaSeguraRouter(deps) {
         movementId: null, items: null, saleRef: texto(b.saleRef, 60) || null,
         drawerStatus: definicion.abreGaveta ? 'pendiente' : 'no_aplica',
       };
-      const requiereTurno = ['conteo', 'cambio', 'retiro', 'gasto'].includes(motivo);
+      const requiereTurno = ['conteo', 'arqueo', 'cierre', 'cambio', 'retiro', 'gasto'].includes(motivo);
       if (requiereTurno && !session) throw httpError('La caja debe estar abierta para esta operación.', 409);
 
       if (motivo === 'cambio') {

@@ -4,6 +4,7 @@
 !define VC_REDIST_FILE    "vc_redist.x64.exe"
 !define MARIADB_HELPER_FILE "ensure-mariadb-service.ps1"
 !define APP_NAME          "Tecno Caja"
+!define CERT_PRESERVE_SCRIPT "${__FILEDIR__}\preserve-certification.ps1"
 
 ; ── Paths que usa el runtime ─────────────────────────────────────────────────
 ;
@@ -29,6 +30,27 @@
 !define MARIADB_INSTALL_LOG     "$TEMP\tecnocaja-mariadb-install.log"
 
 !ifndef BUILD_UNINSTALLER
+
+; Conservar despues de cerrar la app y ANTES de quitar la version vieja.
+; customInstall es demasiado tarde: el desinstalador anterior ya habria borrado
+; los XML y el avance que algunas versiones guardaron junto al ejecutable.
+!include "getProcessInfo.nsh"
+!macro customCheckAppRunning
+  Var /GLOBAL pid
+  !insertmacro IS_POWERSHELL_AVAILABLE
+  !insertmacro _CHECK_APP_RUNNING
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\preserve-certification.ps1" "${CERT_PRESERVE_SCRIPT}"
+  ReadRegStr $R7 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ReadRegStr $R8 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  ReadEnvStr $R6 "APPDATA"
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\preserve-certification.ps1" -InstallDir "$INSTDIR" -UserDataPath "$R6\Tecno Caja" -PreviousUserInstall "$R7" -PreviousMachineInstall "$R8"'
+  Pop $R9
+  ${If} $R9 != 0
+    MessageBox MB_ICONSTOP|MB_OK "No se pudo conservar la certificacion DGII. La actualizacion se detuvo antes de reemplazar la version instalada. Revisa el espacio y los permisos de la carpeta de datos."
+    Abort
+  ${EndIf}
+!macroend
 
 ; ── Verifica si Visual C++ Redistributable ya está instalado ─────────────────
 Function CheckVCRedistInstalled

@@ -344,7 +344,9 @@ function prepareRuntimeEnvironment(options = {}) {
 
   const resolvedServiceAccountPath = sanitizeOptionalFileEnv('FIREBASE_SERVICE_ACCOUNT_PATH', appRoot, warnings);
   if (!resolvedServiceAccountPath) {
-    const bundledServiceAccountPath = findBundledServiceAccountPath(appRoot);
+    const preservedServiceAccountPath = path.join(userDataPath, 'config', 'firebase-key.json');
+    const bundledServiceAccountPath = fs.existsSync(preservedServiceAccountPath)
+      ? preservedServiceAccountPath : findBundledServiceAccountPath(appRoot);
     if (bundledServiceAccountPath) {
       process.env.FIREBASE_SERVICE_ACCOUNT_PATH = bundledServiceAccountPath;
       persistEnvFileValues(userEnvFile, {

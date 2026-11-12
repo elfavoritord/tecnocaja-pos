@@ -8018,7 +8018,7 @@ function _getCorteData() {
   };
 }
 
-function openCashCorteModal() {
+async function openCashCorteModal() {
   if (!currentUserCan('hacer_corte_caja')) {
     showToast('No tienes permiso para hacer el corte de caja.', 'error');
     return;
@@ -8045,6 +8045,7 @@ function openCashCorteModal() {
   document.getElementById('corte-diff-wrap')?.classList.add('hidden');
   document.getElementById('corte-notas').value = '';
   document.getElementById('cash-corte-modal')?.classList.remove('hidden');
+  await window.CajaSegura?.abrirGavetaParaConteo?.('arqueo');
 }
 
 function closeCashCorteModal() {
@@ -8197,6 +8198,7 @@ async function openCashCierreModal() {
   // Guardar datos del turno para el resumen post-cierre
   openCashCierreModal._turnoData = d;
   document.getElementById('cash-cierre-modal')?.classList.remove('hidden');
+  await window.CajaSegura?.abrirGavetaParaConteo?.('cierre');
 }
 
 function closeCashCierreModal() {

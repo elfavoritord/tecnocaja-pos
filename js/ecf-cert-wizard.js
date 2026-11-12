@@ -329,17 +329,32 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function loadState() {
+    let serverState = null;
     try {
       const res = await fiscalApi('GET', '/wizard/state');
-      WZ.state = (res && res.state) ? res.state : defaultState();
-    } catch (_) {
+      serverState = res?.state || null;
+    } catch (_) { /* Recuperar la copia local si el servidor no devuelve avance. */ }
+    if (serverState) {
+      WZ.state = serverState;
+    } else {
       try {
         const local = localStorage.getItem('ecf_cert_wz_v2');
-        WZ.state = local ? JSON.parse(local) : defaultState();
+        const parsed = local ? JSON.parse(local) : null;
+        const currentRnc = String(typeof DB !== 'undefined' ? DB.config?.rnc || '' : '').replace(/\D/g, '');
+        const savedRnc = String(parsed?.steps?.[1]?.data?.rnc || '').replace(/\D/g, '');
+        const valid = parsed && Number.isInteger(parsed.currentStep) && parsed.currentStep >= 1 && parsed.currentStep <= STEPS.length
+          && Array.isArray(parsed.completedSteps) && parsed.completedSteps.every((id) => Number.isInteger(id) && id >= 1 && id <= STEPS.length)
+          && !(currentRnc && savedRnc && currentRnc !== savedRnc);
+        WZ.state = valid ? parsed : defaultState();
+        if (valid) {
+          // Migrar el avance existente; no se envía ni se regenera ningún comprobante.
+          try { await fiscalApi('POST', '/wizard/state', { state: parsed }); } catch (_) {}
+        }
       } catch (__) {
         WZ.state = defaultState();
       }
     }
+    WZ.state.steps = WZ.state.steps || {};
     WZ.activeStep = WZ.state.currentStep || 1;
   }
 

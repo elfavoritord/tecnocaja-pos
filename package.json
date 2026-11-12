@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.17",
+  "version": "1.6.18",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -171,13 +171,6 @@
       {
         "from": "build/vc_redist.x64.exe",
         "to": "vc_redist.x64.exe"
-      },
-      {
-        "from": "firebase-key.json",
-        "to": "firebase-key.json",
-        "filter": [
-          "**/*"
-        ]
       }
     ],
     "extraMetadata": {

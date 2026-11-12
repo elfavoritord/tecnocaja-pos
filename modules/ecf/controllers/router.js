@@ -117,6 +117,17 @@ function createEcfRouter(deps) {
      ORDER BY tipo_ecf, submission_mode, encf`,
   );
 
+  const loadStep5Emitter = async () => {
+    const emitter = await service.getEmitterForXml(1);
+    return {
+      ...emitter,
+      // El set de certificación puede dejar un nombre comercial de prueba.
+      // La cabecera debe identificar a la empresa configurada en este POS.
+      nombre_comercial: /documentos electronicos/i.test(emitter.nombre_comercial || '')
+        ? '' : emitter.nombre_comercial,
+    };
+  };
+
   router.get('/status', wrap(() => service.getSystemStatus()));
   router.get('/config', wrap(() => service.getBundle()));
   router.get('/config/dgii', wrap(() => service.getBundle()));
@@ -495,17 +506,16 @@ function createEcfRouter(deps) {
 
       // Los 11 PDF se arman ANTES de empezar a mandar el ZIP: si uno falla a medias, la
       // respuesta es un error legible y no un ZIP cortado que Windows no puede abrir.
-      //
-      // La Representación Impresa debe mostrar exactamente lo que se transmitió a la DGII —
-      // durante certificación esos datos vienen fijos del set de pruebas de la DGII (incluida
-      // su empresa de ejemplo), no del emisor/comprador real configurado localmente. Por eso no
-      // se sobreescribe emitter/buyer aquí: se deja que generateReprImpresaHtml lea el XML tal cual.
+      // Usar la misma empresa configurada para todos los encabezados, incluido
+      // consumo menor de 250 mil. Los XML firmados siguen siendo la fuente del QR.
+      const emitter = await loadStep5Emitter();
       const pdfFiles = [];
       for (const { key, idx, row, representation } of selected) {
         const label = TYPE_LABELS[key] || key;
         const filename = `${String(idx).padStart(2,'0')}-${label}-${row.encf}.pdf`;
         const html = await generateReprImpresaHtml(representation.signedXml, {
           env: row.environment || process.env.DGII_ENV || 'certecf',
+          emitter,
           rfceSummaryXml: representation.rfceSummaryXml,
         });
         await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 15000 });
@@ -620,6 +630,7 @@ function createEcfRouter(deps) {
       const representation = resolveStep5Representation(rows[0]);
       const html = await generateReprImpresaHtml(representation.signedXml, {
         env: rows[0].environment || process.env.DGII_ENV || 'certecf',
+        emitter: await loadStep5Emitter(),
         rfceSummaryXml: representation.rfceSummaryXml,
         modality: String(req.query.modalidad || '').toLowerCase() === 'contingencia' ? 'contingencia' : undefined,
       });
@@ -646,6 +657,7 @@ function createEcfRouter(deps) {
       const representation = resolveStep5Representation(rows[0]);
       const html = await generateReprImpresaHtml(representation.signedXml, {
         env: rows[0].environment || process.env.DGII_ENV || 'certecf',
+        emitter: await loadStep5Emitter(),
         rfceSummaryXml: representation.rfceSummaryXml,
         modality: String(req.query.modalidad || '').toLowerCase() === 'contingencia' ? 'contingencia' : undefined,
       });
