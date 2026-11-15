@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.26",
+  "version": "1.6.27",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -27,6 +27,8 @@
     "test:coverage": "jest --coverage",
     "test:e2e-lan": "node scripts/e2e-lan/run-lan-e2e.js",
     "test:permisos": "node scripts/probar-permisos-usuarios.js --ui && node scripts/probar-permisos-usuarios.js --mariadb --ui",
+    "test:venta-por-monto": "node scripts/ventas/probar-venta-por-monto.js",
+    "test:itbis-incluido": "node scripts/ventas/probar-itbis-incluido.js",
     "test:combos-e2e": "node scripts/combos/probar-combos-e2e.js && node scripts/combos/probar-combos-e2e.js --sqlite && node scripts/combos/probar-combos-ui.js",
     "test:combos-personalizados-e2e": "node scripts/combos-personalizados/probar-e2e.js && node scripts/combos-personalizados/probar-e2e.js --sqlite && node scripts/combos-personalizados/probar-ui.js",
     "test:ecf-completo": "node scripts/ecf/probar-ecf-punta-a-punta.js && node scripts/ecf/probar-ecf-punta-a-punta.js --servicios && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite --servicios && node scripts/ecf/probar-ui-ecf.js && node scripts/ecf/probar-ui-ecf.js --servicios && node scripts/ecf/probar-comprobantes-ui.js",
@@ -146,6 +148,7 @@
       "!scripts/generar-reporte-respaldos.js",
       "!scripts/respaldar-base-local-verificada.js",
       "!scripts/ecf/**",
+      "!scripts/ventas/**",
       "!scripts/actualizacion/**",
       "!scripts/portal-250mil-upload/**",
       "!electron/*.log",
@@ -173,6 +176,13 @@
       {
         "from": "build/vc_redist.x64.exe",
         "to": "vc_redist.x64.exe"
+      },
+      {
+        "from": "firebase-key.json",
+        "to": "firebase-key.json",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "extraMetadata": {

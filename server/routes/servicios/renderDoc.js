@@ -4,7 +4,7 @@
  * renderDoc.js — Documentos formales del modo Empresas de Servicios.
  *   A4  → factura y cotización con la plantilla y el color elegidos en
  *         Configuración → Impresora de Recibos (js/factura-plantillas.js, la
- *         misma de la factura A4 del POS). doc.diseno = { plantilla, color }.
+ *         misma de la factura A4 del POS). doc.diseno = { plantilla, color, logoEscala }.
  *         renderFormalA4 (diseño propio) queda de respaldo si la plantilla falla.
  *   80mm / 58mm → ticket térmico.
  * El envío por correo usa SIEMPRE A4.
@@ -232,7 +232,7 @@ function aDocumentoPlantilla({ empresa = {}, invoice = {}, items = [], terminos 
 function renderPlantillaA4(doc) {
   const d = aDocumentoPlantilla(doc);
   const diseno = doc.diseno || {};
-  const hoja = FacturaPlantillas.render(d, { plantilla: diseno.plantilla, color: diseno.color });
+  const hoja = FacturaPlantillas.render(d, { plantilla: diseno.plantilla, color: diseno.color, logoEscala: diseno.logoEscala });
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
 <title>${esc(d.numero)} — ${d.isCot ? 'COTIZACIÓN' : 'FACTURA'}</title>
 <style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#eef1f4}@media print{html,body{background:#fff}}</style>
@@ -249,8 +249,11 @@ function renderFormalA4(doc) {
   const estadoLabel = st.label;
   const stampClass = st.sello;
   const anulada = st.anulada;
+  // Aquí se llega cuando las plantillas fallan: no depender de FacturaPlantillas.
+  const logoPct = Math.round(Number(doc.diseno?.logoEscala));
+  const logoFactor = Number.isFinite(logoPct) && logoPct > 0 ? Math.min(100, Math.max(30, logoPct)) / 100 : 1;
   const logoHtml = empresa.logo
-    ? `<img src="${empresa.logo}" class="logo" alt="logo">`
+    ? `<img src="${empresa.logo}" class="logo" alt="logo" style="max-height:${30 * logoFactor}mm;max-width:${80 * logoFactor}mm">`
     : `<div class="brand-fallback">${esc(empresa.nombre || 'Empresa')}</div>`;
 
   const rows = items.map((it, i) => `

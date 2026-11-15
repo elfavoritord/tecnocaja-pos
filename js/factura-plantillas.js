@@ -38,6 +38,20 @@
   ];
   const PLANTILLA_POR_DEFECTO = 'clasica';
 
+  // Tamaño del logo (Configuración → Datos del Negocio): porcentaje del tamaño
+  // máximo que cada plantilla le da al logo. 100 = el de siempre; solo se puede
+  // reducir. Llega como opciones.logoEscala y se aplica con --tcf-logo.
+  const LOGO_ESCALA_MINIMA = 30;
+  const LOGO_ESCALA_MAXIMA = 100;
+  function normalizarEscalaLogo(valor) {
+    const n = Math.round(Number(valor));
+    if (!Number.isFinite(n) || n <= 0) return LOGO_ESCALA_MAXIMA;
+    return Math.min(LOGO_ESCALA_MAXIMA, Math.max(LOGO_ESCALA_MINIMA, n));
+  }
+  function factorLogo(valor) {
+    return normalizarEscalaLogo(valor) / 100;
+  }
+
   // Tonos que se leen bien impresos en papel blanco.
   const PALETA = [
     { nombre: 'Verde', color: '#15803d' },
@@ -365,7 +379,7 @@
   const CSS = {
     clasica: `
 .tcfac-root .tcf-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:14mm; padding-bottom:6mm; }
-.tcfac-root .tcf-logo{ max-height:26mm; max-width:70mm; display:block; margin-bottom:3mm; }
+.tcfac-root .tcf-logo{ max-height:calc(26mm * var(--tcf-logo, 1)); max-width:calc(70mm * var(--tcf-logo, 1)); display:block; margin-bottom:3mm; }
 .tcfac-root .tcf-brand-fallback{ font-size:20px; font-weight:800; color:var(--acc-ink); letter-spacing:.5px; margin-bottom:3mm; }
 .tcfac-root .tcf-em{ font-size:9.5px; line-height:1.5; color:#4b5563; }
 .tcfac-root .tcf-em strong{ color:#1f2937; }
@@ -414,7 +428,7 @@
     ejecutiva: `
 .tcfac-root .tce-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12mm; padding-bottom:5mm; }
 .tcfac-root .tce-brand{ display:flex; align-items:flex-start; gap:4mm; min-width:0; }
-.tcfac-root .tce-logo{ max-height:20mm; max-width:42mm; display:block; flex:none; }
+.tcfac-root .tce-logo{ max-height:calc(20mm * var(--tcf-logo, 1)); max-width:calc(42mm * var(--tcf-logo, 1)); display:block; flex:none; }
 .tcfac-root .tce-mark{ width:15mm; height:15mm; flex:none; border-radius:2mm; background:var(--acc); color:var(--on-acc);
   display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:800; letter-spacing:.5px; }
 .tcfac-root .tce-name{ font-size:15px; font-weight:800; color:var(--acc-ink); line-height:1.2; margin-bottom:1.2mm; }
@@ -456,7 +470,7 @@
     recuadro: `
 .tcfac-root .tcr-head{ display:flex; justify-content:space-between; align-items:flex-start; gap:12mm; margin-bottom:7mm; }
 .tcfac-root .tcr-brand{ min-width:0; padding-top:1mm; }
-.tcfac-root .tcr-logo{ max-height:22mm; max-width:55mm; display:block; margin-bottom:3mm; }
+.tcfac-root .tcr-logo{ max-height:calc(22mm * var(--tcf-logo, 1)); max-width:calc(55mm * var(--tcf-logo, 1)); display:block; margin-bottom:3mm; }
 .tcfac-root .tcr-circle{ width:17mm; height:17mm; border-radius:50%; background:var(--acc); color:var(--on-acc);
   display:flex; align-items:center; justify-content:center; font-size:17px; font-weight:800; margin-bottom:3mm; }
 .tcfac-root .tcr-name{ font-size:14px; font-weight:800; color:var(--acc-ink); text-transform:uppercase;
@@ -508,7 +522,7 @@
   display:flex; justify-content:space-between; align-items:center; gap:10mm; }
 .tcfac-root .tcb-brand{ display:flex; align-items:center; gap:5mm; min-width:0; }
 .tcfac-root .tcb-logo{ flex:none; background:#fff; border-radius:2mm; padding:1.8mm; }
-.tcfac-root .tcb-logo img{ max-height:16mm; max-width:34mm; display:block; }
+.tcfac-root .tcb-logo img{ max-height:calc(16mm * var(--tcf-logo, 1)); max-width:calc(34mm * var(--tcf-logo, 1)); display:block; }
 .tcfac-root .tcb-mark{ flex:none; width:16mm; height:16mm; border-radius:2mm; background:rgba(255,255,255,.16);
   border:1px solid rgba(255,255,255,.35); display:flex; align-items:center; justify-content:center;
   font-size:17px; font-weight:800; }
@@ -889,7 +903,7 @@
 
   // Representación Impresa e-CF: conserva los campos fiscales y permite que
   // la RI adopte la plantilla comercial seleccionada para la factura A4.
-  function dibujarEcfRi(d, plantilla, color) {
+  function dibujarEcfRi(d, plantilla, color, logoEscala) {
     const tema = resolverColores(plantilla, color);
     const prefijo = String(d.ncf || '').match(/^E(\d{2})/)?.[1] || '';
     const titulos = { '31': 'Factura de Crédito Fiscal Electrónica', '32': 'Factura de Consumo Electrónica',
@@ -918,7 +932,7 @@
 .tcf-tpl-recuadro .tcfac-ecf-ri .head{border:1px solid var(--ri-accent);border-radius:2mm;padding:5mm}.tcf-tpl-recuadro .tcfac-ecf-ri th{background:#fff;border-bottom:2px solid var(--ri-accent)}
 .tcf-tpl-banner .tcfac-ecf-ri .head{background:var(--ri-accent);border:0;padding:6mm;color:var(--ri-on-accent)}.tcf-tpl-banner .tcfac-ecf-ri .head h1,.tcf-tpl-banner .tcfac-ecf-ri .head p,.tcf-tpl-banner .tcfac-ecf-ri .head .ident strong{color:var(--ri-on-accent)}.tcf-tpl-banner .tcfac-ecf-ri th{background:var(--ri-tint)}
 @media print{.tcfac-ecf-ri{padding:0;min-height:0}}
-</style><div class="tcfac-root tcf-tpl-${plantilla}" style="--acc:${tema.acc};--acc-ink:${tema.ink};--acc-tint:${tema.tint};--on-acc:${tema.onAcc}"><div class="tcf-page"><div class="tcf-content"><div class="tcfac-ecf-ri"><div class="head"><div>${d.empresa.logo ? `<img src="${esc(d.empresa.logo)}" alt="Logo" style="max-width:48mm;max-height:22mm;object-fit:contain;margin-bottom:2mm">` : ''}<h1>${esc(d.empresa.nombre || '')}</h1><p>RNC: ${esc(d.empresa.rnc || '')}</p><p>${esc(d.empresa.direccion || '')}</p><p>${esc(d.empresa.telefono || '')}</p></div><div class="ident"><strong>${esc(titulo)}</strong><p>e-NCF: ${esc(d.ncf || '')}</p><p>Fecha de emisión: ${esc(d.fechaTexto || '')}</p>${d.ncfVencimiento ? `<p>Fecha de vencimiento: ${esc(d.vencimientoTexto || d.ncfVencimiento)}</p>` : ''}</div></div>
+</style><div class="tcfac-root tcf-tpl-${plantilla}" style="--acc:${tema.acc};--acc-ink:${tema.ink};--acc-tint:${tema.tint};--on-acc:${tema.onAcc};--tcf-logo:${factorLogo(logoEscala)}"><div class="tcf-page"><div class="tcf-content"><div class="tcfac-ecf-ri"><div class="head"><div>${d.empresa.logo ? `<img src="${esc(d.empresa.logo)}" alt="Logo" style="max-width:calc(48mm * var(--tcf-logo, 1));max-height:calc(22mm * var(--tcf-logo, 1));object-fit:contain;margin-bottom:2mm">` : ''}<h1>${esc(d.empresa.nombre || '')}</h1><p>RNC: ${esc(d.empresa.rnc || '')}</p><p>${esc(d.empresa.direccion || '')}</p><p>${esc(d.empresa.telefono || '')}</p></div><div class="ident"><strong>${esc(titulo)}</strong><p>e-NCF: ${esc(d.ncf || '')}</p><p>Fecha de emisión: ${esc(d.fechaTexto || '')}</p>${d.ncfVencimiento ? `<p>Fecha de vencimiento: ${esc(d.vencimientoTexto || d.ncfVencimiento)}</p>` : ''}</div></div>
 ${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"><span>Razón social: ${esc(cliente.nombre || 'Consumidor Final')}</span><span>RNC/Cédula: ${esc(cliente.rnc || '')}</span><span>Dirección: ${esc(cliente.dir || '')}</span><span>Teléfono: ${esc(cliente.tel || '')}</span></div></div>`}
 <table><thead><tr><th>Cantidad</th><th>Descripción</th><th>Unidad de Medida</th><th class="n">Precio</th><th class="n">ITBIS</th><th class="n">Valor</th></tr></thead><tbody>${rows}</tbody></table>
 <div class="bottom"><div class="qr-block">${d.qrDataUrl ? `<img class="qr" src="${esc(d.qrDataUrl)}" alt="Código QR DGII">` : ''}<div class="security">${d.codigoSeguridad ? `<p><b>Código de seguridad:</b> ${esc(d.codigoSeguridad)}</p>` : ''}${d.fechaFirma ? `<p><b>Fecha de firma digital:</b> ${esc(d.fechaFirma)}</p>` : ''}</div></div><div class="totals"><div><span>Monto gravado</span><b>${dinero(Number(d.subtotal || 0) - Number(d.descuento || 0))}</b></div>${Number(d.descuento) ? `<div><span>Descuento</span><b>${dinero(d.descuento)}</b></div>` : ''}<div><span>ITBIS</span><b>${dinero(d.itbis)}</b></div><div class="grand"><span>Total</span><b>${dinero(d.total)}</b></div></div></div>${d.anulada ? '<div class="watermark">ANULADA</div>' : ''}</div></div></div></div>`;
@@ -966,7 +980,8 @@ ${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"
   /**
    * Factura A4 completa (con su CSS) lista para innerHTML.
    * @param {object} d  datos de ventaToFormalDoc() (js/ventas.js) o documentoDeMuestra()
-   * @param {{plantilla?: string, color?: string}} opciones  '' = color de la plantilla
+   * @param {{plantilla?: string, color?: string, logoEscala?: number}} opciones
+   *   color '' = el de la plantilla; logoEscala = % del tamaño del logo (30–100, sin dato = 100)
    */
   function render(d, opciones = {}) {
     const plantilla = normalizarPlantilla(opciones.plantilla);
@@ -977,9 +992,9 @@ ${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"
       cliente: d.cliente || {},
       items: Array.isArray(d.items) ? d.items : []
     };
-    if (doc.fiscalMode === 'ecf') return dibujarEcfRi(doc, plantilla, opciones.color);
+    if (doc.fiscalMode === 'ecf') return dibujarEcfRi(doc, plantilla, opciones.color, opciones.logoEscala);
     const cuerpo = DIBUJOS[plantilla](doc, textosComunes(doc));
-    const vars = `--acc:${c.acc};--acc-ink:${c.ink};--acc-tint:${c.tint};--on-acc:${c.onAcc}`;
+    const vars = `--acc:${c.acc};--acc-ink:${c.ink};--acc-tint:${c.tint};--on-acc:${c.onAcc};--tcf-logo:${factorLogo(opciones.logoEscala)}`;
     return `<div class="tcfac-root tcf-tpl-${plantilla}" style="${vars}">
   <style>${cssDe(plantilla)}</style>
   <div class="tcf-page">
@@ -1052,7 +1067,9 @@ ${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"
   function eleccionActual() {
     return {
       plantilla: normalizarPlantilla(porId('cfg-invoice-template')?.value),
-      color: normalizarColor(porId('cfg-invoice-color')?.value)
+      color: normalizarColor(porId('cfg-invoice-color')?.value),
+      // Sin el control (portal de contadores) queda en 100: el tamaño de siempre.
+      logoEscala: normalizarEscalaLogo(porId('cfg-logo-scale')?.value)
     };
   }
 
@@ -1071,11 +1088,11 @@ ${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"
   function pintarMiniaturas() {
     const cont = porId('cfg-invoice-templates');
     if (!cont) return;
-    const { plantilla, color } = eleccionActual();
+    const { plantilla, color, logoEscala } = eleccionActual();
     const muestra = muestraPropia ? muestraPropia() : documentoDeMuestra(empresaParaMuestra());
     cont.innerHTML = PLANTILLAS.map((p) => `
       <div class="tc-fp-card" role="radio" tabindex="0" aria-checked="${p.id === plantilla}" data-plantilla="${p.id}">
-        <div class="tc-fp-thumb"><div class="tc-fp-thumb-inner">${render(muestra, { plantilla: p.id, color })}</div></div>
+        <div class="tc-fp-thumb"><div class="tc-fp-thumb-inner">${render(muestra, { plantilla: p.id, color, logoEscala })}</div></div>
         <div class="tc-fp-card__name">${esc(p.nombre)}</div>
         <div class="tc-fp-card__desc">${esc(p.descripcion)}</div>
       </div>`).join('');
@@ -1221,8 +1238,13 @@ ${consumidor ? '' : `<div class="box"><b>Datos del cliente</b><div class="buyer"
     resolverColores,
     normalizarPlantilla,
     normalizarColor,
+    normalizarEscalaLogo,
+    LOGO_ESCALA_MINIMA,
+    LOGO_ESCALA_MAXIMA,
     montoEnLetras,
-    sincronizarSelector
+    sincronizarSelector,
+    // Repinta las miniaturas (p. ej. al mover el tamaño del logo).
+    actualizarMiniaturas: programarMiniaturas
   };
 
   global.FacturaPlantillas = api;

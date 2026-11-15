@@ -4844,6 +4844,8 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     // Factura A4 (js/factura-plantillas.js). Color '' = el de la plantilla.
     invoiceTemplate: document.getElementById('cfg-invoice-template')?.value || DB.config?.invoiceTemplate || 'clasica',
     invoiceAccentColor: document.getElementById('cfg-invoice-color')?.value ?? DB.config?.invoiceAccentColor ?? '',
+    // Tamaño del logo en facturas y tickets (% de 30 a 100). Datos del Negocio.
+    invoiceLogoScale: getLogoScaleInputValue(),
     receiptNarrowCols: Boolean(document.getElementById('cfg-receipt-narrow-cols')?.checked ?? DB.config?.receiptNarrowCols ?? false),
     cashierRegisterRequired: Boolean(document.getElementById('cfg-cashier-register-required')?.checked ?? DB.config?.cashierRegisterRequired ?? true),
     exclusiveCashierPerRegister: Boolean(document.getElementById('cfg-exclusive-cashier-register')?.checked ?? DB.config?.exclusiveCashierPerRegister ?? true),
@@ -4866,6 +4868,10 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     scaleRoundingDecimals: Number(document.getElementById('cfg-scale-rounding-decimals')?.value ?? DB.config?.scaleRoundingDecimals ?? 2),
     scaleAutoRead: Boolean(document.getElementById('cfg-scale-auto-read')?.checked ?? DB.config?.scaleAutoRead ?? true),
     roundingMode: document.getElementById('cfg-rounding-mode')?.value || DB.config?.roundingMode || 'none',
+    // Facturación: editar el total en productos por peso (js/venta-por-monto.js).
+    weightTotalEditEnabled: Boolean(document.getElementById('cfg-weight-total-edit')?.checked ?? DB.config?.weightTotalEditEnabled ?? false),
+    // Impuestos: método de ITBIS que trae un producto nuevo (adicional / fijo / incluido).
+    itbisMetodoPredeterminado: document.getElementById('cfg-itbis-metodo')?.value || DB.config?.itbisMetodoPredeterminado || 'adicional',
   };
 }
 
@@ -4919,6 +4925,8 @@ function syncConfigForm() {
     if (el === activeElement) return;
     el.value = val ?? '';
   });
+  // Antes del selector: sus miniaturas ya salen con el tamaño del logo guardado.
+  syncLogoScaleControl(cfg);
   window.FacturaPlantillas?.sincronizarSelector(cfg);
   if (window.RNCLookup) {
     const rncEl = document.getElementById('cfg-rnc');
@@ -5092,6 +5100,16 @@ function syncConfigForm() {
   const roundingModeSelect = document.getElementById('cfg-rounding-mode');
   if (roundingModeSelect && roundingModeSelect !== activeElement) {
     roundingModeSelect.value = cfg.roundingMode || 'none';
+  }
+  const weightTotalEditToggle = document.getElementById('cfg-weight-total-edit');
+  if (weightTotalEditToggle && weightTotalEditToggle !== activeElement) {
+    weightTotalEditToggle.checked = Boolean(cfg.weightTotalEditEnabled);
+  }
+  const itbisMetodoSelect = document.getElementById('cfg-itbis-metodo');
+  if (itbisMetodoSelect && itbisMetodoSelect !== activeElement) {
+    itbisMetodoSelect.value = ['adicional', 'fijo', 'incluido'].includes(cfg.itbisMetodoPredeterminado)
+      ? cfg.itbisMetodoPredeterminado
+      : 'adicional';
   }
 
   syncWhatsAppButtons(cfg.whatsappWebEnabled);
@@ -6137,12 +6155,29 @@ function connectLicenseSocket() {
       }
       refrescarCatalogoSinTocarLaVenta();
     });
+    // Otra caja cambió un producto (precio, ITBIS, existencia…): la pantalla
+    // dividida de Ventas lo muestra sin reiniciar (server/realtime/catalogo-en-vivo.js).
+    _licenseSocket.on('catalogo:actualizado', () => avisoCatalogoActualizado());
     _licenseSocket.on('disconnect', () => {
       _licenseSocket = null;
     });
   } catch (_err) {
     _licenseSocket = null;
   }
+}
+
+// Aviso 'catalogo:actualizado': si el cambio lo hizo esta misma caja hace un
+// momento (ya tiene el producto al día), no se vuelve a leer. Varios avisos
+// seguidos se juntan en una sola lectura.
+let _catalogoAvisoTimer = null;
+function avisoCatalogoActualizado() {
+  if (Date.now() - Number(window._tcUltimoCambioCatalogoLocal || 0) < 3000) return;
+  clearTimeout(_catalogoAvisoTimer);
+  _catalogoAvisoTimer = setTimeout(() => {
+    _catalogoAvisoTimer = null;
+    if (!DB.currentUser) return;
+    refrescarCatalogoSinTocarLaVenta();
+  }, 700);
 }
 
 // Refresca SOLO lo que puede llegar de fuera mientras la pantalla está abierta
@@ -6448,6 +6483,155 @@ function updateLogoPreview(logoData) {
   const preview = document.getElementById('cfg-logo-preview');
   if (!preview) return;
   preview.innerHTML = `<img src="${logoData || DEFAULT_BRAND_LOGO}" alt="Vista previa del logo">`;
+  // Al cargar o quitar el logo, la vista previa del tamaño también cambia.
+  scheduleLogoScalePreview();
+}
+
+// ── Tamaño del logo en facturas y tickets ──────────────────────────────────
+// Un solo % (30 a 100) para la factura A4 y el ticket térmico; 100 = el tamaño
+// de siempre. La vista previa usa lo mismo que se imprime: la plantilla A4
+// elegida y el logo ya pasado a blanco y negro con el ancho real del ticket.
+// Se guarda con "Guardar cambios" (getConfigPreviewValues → invoiceLogoScale).
+function normalizeLogoScale(value) {
+  const fp = window.FacturaPlantillas;
+  if (fp?.normalizarEscalaLogo) return fp.normalizarEscalaLogo(value);
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.max(30, n)) : 100;
+}
+
+function getLogoScaleInputValue() {
+  const input = document.getElementById('cfg-logo-scale');
+  return normalizeLogoScale(input ? input.value : DB.config?.invoiceLogoScale);
+}
+
+function syncLogoScaleControl(cfg = getEffectiveConfig()) {
+  const input = document.getElementById('cfg-logo-scale');
+  if (!input) return;
+  if (!input.dataset.previewWired) {
+    input.dataset.previewWired = '1';
+    // El papel, la plantilla y el color también cambian la vista previa.
+    document.getElementById('cfg-paper-size')?.addEventListener('change', scheduleLogoScalePreview);
+    ['click', 'input'].forEach((type) => {
+      document.getElementById('cfg-invoice-design')?.addEventListener(type, scheduleLogoScalePreview);
+    });
+    document.getElementById('cfg-nombre')?.addEventListener('input', scheduleLogoScalePreview);
+  }
+  if (document.activeElement !== input) input.value = String(normalizeLogoScale(cfg.invoiceLogoScale));
+  updateLogoScaleLabel();
+  scheduleLogoScalePreview();
+}
+
+function updateLogoScaleLabel() {
+  const pct = getLogoScaleInputValue();
+  const output = document.getElementById('cfg-logo-scale-value');
+  if (output) output.textContent = `${pct}%`;
+  const minus = document.getElementById('cfg-logo-scale-minus');
+  const plus = document.getElementById('cfg-logo-scale-plus');
+  if (minus) minus.disabled = pct <= (window.FacturaPlantillas?.LOGO_ESCALA_MINIMA || 30);
+  if (plus) plus.disabled = pct >= (window.FacturaPlantillas?.LOGO_ESCALA_MAXIMA || 100);
+}
+
+function setLogoScale(value) {
+  const input = document.getElementById('cfg-logo-scale');
+  if (!input) return;
+  input.value = String(normalizeLogoScale(value));
+  onLogoScaleChange();
+}
+
+function stepLogoScale(delta) {
+  setLogoScale(getLogoScaleInputValue() + Number(delta || 0));
+}
+
+function onLogoScaleChange() {
+  updateLogoScaleLabel();
+  scheduleLogoScalePreview();
+  // Las miniaturas de las plantillas (Impresora de Recibos) también.
+  window.FacturaPlantillas?.actualizarMiniaturas?.();
+}
+
+let logoScalePreviewQueued = false;
+let logoScalePreviewToken = 0;
+
+function scheduleLogoScalePreview() {
+  if (logoScalePreviewQueued || !document.getElementById('cfg-logo-scale-preview')) return;
+  logoScalePreviewQueued = true;
+  const raf = window.requestAnimationFrame || ((fn) => setTimeout(fn, 16));
+  raf(() => {
+    logoScalePreviewQueued = false;
+    renderLogoScalePreview().catch((error) => console.warn('Vista previa del logo:', error.message));
+  });
+}
+
+// Puntos de la impresora térmica (203 dpi) → px de la vista previa: 0.125 mm
+// por punto y 2.5 px por mm (un papel de 80 mm mide 200 px).
+const LOGO_PREVIEW_PX_PER_MM = 2.5;
+const THERMAL_MM_PER_DOT = 0.125;
+
+async function renderLogoScalePreview() {
+  const box = document.getElementById('cfg-logo-scale-preview');
+  if (!box) return;
+  const token = ++logoScalePreviewToken;
+  const pct = getLogoScaleInputValue();
+  const logo = document.getElementById('cfg-logo-input')?.dataset.logoData || DB.config?.logo || '';
+  const empty = document.getElementById('cfg-logo-scale-empty');
+  box.classList.toggle('is-empty', !logo);
+  if (empty) empty.hidden = Boolean(logo);
+  if (!logo) return;
+
+  const nombre = document.getElementById('cfg-nombre')?.value || DB.config?.nombre || 'Mi Negocio';
+  const fp = window.FacturaPlantillas;
+  const a4 = document.getElementById('cfg-logo-scale-a4');
+  if (a4 && fp?.render) {
+    const muestra = fp.documentoDeMuestra({
+      nombre,
+      rnc: document.getElementById('cfg-rnc')?.value || DB.config?.rnc || '',
+      direccion: document.getElementById('cfg-dir')?.value || DB.config?.direccion || '',
+      telefono: document.getElementById('cfg-tel')?.value || DB.config?.telefono || '',
+      logo,
+    });
+    a4.innerHTML = fp.render(muestra, {
+      plantilla: document.getElementById('cfg-invoice-template')?.value || DB.config?.invoiceTemplate,
+      color: document.getElementById('cfg-invoice-color')?.value ?? DB.config?.invoiceAccentColor,
+      logoEscala: pct,
+    });
+  }
+
+  const paper = String(document.getElementById('cfg-paper-size')?.value || DB.config?.receiptPaperSize || '80mm').toLowerCase();
+  const ticketPaper = paper === '58mm' ? '58mm' : '80mm';
+  const ticket = document.getElementById('cfg-logo-scale-ticket');
+  const caption = document.getElementById('cfg-logo-scale-ticket-caption');
+  const nameEl = document.getElementById('cfg-logo-scale-ticket-name');
+  const canvas = document.getElementById('cfg-logo-scale-ticket-canvas');
+  if (ticket) ticket.style.width = `${(ticketPaper === '58mm' ? 58 : 80) * LOGO_PREVIEW_PX_PER_MM}px`;
+  if (caption) caption.textContent = `Ticket ${ticketPaper.replace('mm', ' mm')}`;
+  if (nameEl) nameEl.textContent = nombre;
+  if (!canvas || typeof convertLogoToEscposMonochrome !== 'function') return;
+  const maxPx = typeof getReceiptLogoMaxPx === 'function' ? getReceiptLogoMaxPx(ticketPaper) : (ticketPaper === '58mm' ? 280 : 400);
+  const mono = await convertLogoToEscposMonochrome(logo, maxPx, pct / 100);
+  if (token !== logoScalePreviewToken) return; // llegó otra vista previa más nueva
+  if (!mono) {
+    canvas.hidden = true;
+    return;
+  }
+  // El mismo blanco y negro que va a la impresora.
+  canvas.hidden = false;
+  canvas.width = mono.width;
+  canvas.height = mono.height;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(mono.width, mono.height);
+  for (let y = 0; y < mono.height; y++) {
+    for (let x = 0; x < mono.width; x++) {
+      const byte = mono.data[y * mono.bytesPerLine + (x >> 3)];
+      const ink = (byte >> (7 - (x & 7))) & 1;
+      const i = (y * mono.width + x) * 4;
+      const value = ink ? 17 : 255;
+      image.data[i] = value; image.data[i + 1] = value; image.data[i + 2] = value; image.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  const pxPerDot = THERMAL_MM_PER_DOT * LOGO_PREVIEW_PX_PER_MM;
+  canvas.style.width = `${mono.width * pxPerDot}px`;
+  canvas.style.height = `${mono.height * pxPerDot}px`;
 }
 
 function renderSetupChoiceCards(containerId, items, selectedValue, type) {

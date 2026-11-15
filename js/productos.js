@@ -914,17 +914,45 @@ function loadProductsTable() {
   }
 }
 
-// Precio REAL con el que se vende el producto (precio de catálogo + ITBIS,
-// sea % global o monto fijo) — el mismo cálculo que "Se venderá en" del
-// modal de edición, para que la tarjeta del catálogo muestre de una vez
-// cuánto va a pagar el cliente, no solo el precio antes de impuesto.
+// Lo que paga el cliente por una unidad (lo que muestran las tarjetas del
+// catálogo y "Se venderá en" del modal): el precio de venta más su ITBIS
+// (se suma al precio o monto fijo), el precio tal cual si no lleva ITBIS, o el
+// precio tal cual si ya incluye el ITBIS (método 3, "itbisIncluido").
 function getProductFinalPriceWithItbis(p) {
   const precio = Number(p.precioVenta || 0);
-  if (!p.aplicaItbis) return precio;
+  if (!p.aplicaItbis || p.itbisIncluido) return precio;
   const itbisAmount = p.itbisModo === 'monto'
     ? Number(p.itbisMonto || 0)
     : precio * (Number(DB.config?.itbis ?? 18) / 100);
   return precio + itbisAmount;
+}
+
+// Después de crear, editar, pausar o borrar un producto: la pantalla dividida
+// de Ventas muestra ya el precio (con su ITBIS) y la existencia nuevos. Las
+// otras cajas se enteran por el aviso 'catalogo:actualizado' del servidor.
+function refreshSalesCatalogAfterProductChange() {
+  // Esta caja ya tiene el cambio: no hace falta releer cuando llegue el aviso.
+  window._tcUltimoCambioCatalogoLocal = Date.now();
+  if (typeof renderSalesCatalog !== 'function') return;
+  try {
+    renderSalesCatalog();
+  } catch (error) {
+    console.warn('[Tecno Caja] No se pudo refrescar el catálogo de Ventas:', error);
+  }
+}
+window.refreshSalesCatalogAfterProductChange = refreshSalesCatalogAfterProductChange;
+
+// Método de ITBIS de un producto: 'adicional' (se suma el % al precio),
+// 'fijo' (se suma un monto fijo) o 'incluido' (el precio ya lo trae). Un
+// producto nuevo toma el que el negocio eligió en Configuración → Impuestos.
+const PRODUCT_ITBIS_METODOS = ['adicional', 'fijo', 'incluido'];
+function getProductItbisMetodo(prod) {
+  if (prod) {
+    if (prod.itbisModo === 'monto') return 'fijo';
+    return prod.itbisIncluido ? 'incluido' : 'adicional';
+  }
+  const predeterminado = String(DB.config?.itbisMetodoPredeterminado || '').trim().toLowerCase();
+  return PRODUCT_ITBIS_METODOS.includes(predeterminado) ? predeterminado : 'adicional';
 }
 
 function updateProductsStats(productsList = getFilteredProducts()) {
@@ -938,7 +966,9 @@ function updateProductsStats(productsList = getFilteredProducts()) {
   outEl.textContent = productsList.filter(p => p.tracksStock !== false && p.stock === 0).length;
   const totalRetail = productsList.reduce((sum, p) => sum + (Number(p.precioVenta || 0) * p.stock), 0);
   const totalCost   = productsList.reduce((sum, p) => sum + (Number(p.precioCompra || 0) * p.stock), 0);
-  const potentialProfit = totalRetail - totalCost;
+  // La ganancia no cuenta el ITBIS que ya viene dentro del precio (método 3).
+  const totalSinItbis = productsList.reduce((sum, p) => sum + (getProductPrecioSinItbis(p) * p.stock), 0);
+  const potentialProfit = totalSinItbis - totalCost;
   const totalValEl = document.getElementById('products-total-value');
   const profitSubEl = document.getElementById('products-profit-sub');
   if (totalValEl) totalValEl.textContent = fmt(totalRetail);
@@ -953,8 +983,21 @@ function getStockBadge(p) {
   return `<span class="badge badge-success">${translateCatalogText('Activo')}</span>`;
 }
 
+// Precio sin ITBIS: con el ITBIS incluido (método 3) se saca de adentro; el
+// ITBIS no es ganancia del negocio.
+function getProductPrecioSinItbis(product) {
+  const precio = Number(product?.precioVenta || 0);
+  if (!product?.aplicaItbis || !product?.itbisIncluido || !window.VentaPorMonto?.precioBaseIncluido) return precio;
+  return window.VentaPorMonto.precioBaseIncluido({
+    precioFinal: precio,
+    modoItbis: product.itbisModo === 'monto' ? 'monto' : 'porcentaje',
+    tasaItbis: Number(DB.config?.itbis ?? 18),
+    itbisPorUnidad: Number(product.itbisMonto || 0),
+  });
+}
+
 function getMarginAmount(product) {
-  return Number(product.precioVenta || 0) - Number(product.precioCompra || 0);
+  return Number((getProductPrecioSinItbis(product) - Number(product.precioCompra || 0)).toFixed(2));
 }
 
 function getMarginLabel(product) {
@@ -1443,6 +1486,7 @@ function openProductModal(id) {
     return;
   }
   const profile = getProductFormProfile();
+  const itbisMetodo = getProductItbisMetodo(prod);
   const cats = DB.categorias.map(c => `<option ${prod&&prod.categoria===c?'selected':''}>${c}</option>`).join('');
   const selectedType = prod?.tipoProducto || profile.typeOptions?.[0]?.[0] || 'general';
   const selectedUnit = prod?.unidad || profile.unitOptions?.[0] || 'Unidad';
@@ -1553,15 +1597,22 @@ function openProductModal(id) {
           <div id="mp-itbis-modo-wrap" style="display:${prod?.aplicaItbis ? '' : 'none'};margin-top:0.55rem">
             <div style="display:flex;gap:1rem;flex-wrap:wrap">
               <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
-                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-pct" value="porcentaje" ${prod?.itbisModo !== 'monto' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
-                <span>% global (${DB.config?.itbis ?? 18}%)</span>
+                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-pct" value="porcentaje" ${itbisMetodo === 'adicional' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+                <span>Se suma al precio (${DB.config?.itbis ?? 18}%)</span>
               </label>
               <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
-                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-monto" value="monto" ${prod?.itbisModo === 'monto' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-monto" value="monto" ${itbisMetodo === 'fijo' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
                 <span>Monto fijo (RD$)</span>
               </label>
+              <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
+                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-incluido" value="incluido" ${itbisMetodo === 'incluido' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+                <span>Ya incluido en el precio (${DB.config?.itbis ?? 18}%)</span>
+              </label>
             </div>
-            <div id="mp-itbis-monto-wrap" style="display:${prod?.itbisModo === 'monto' ? '' : 'none'};margin-top:0.5rem">
+            <p id="mp-itbis-incluido-hint" style="display:${itbisMetodo === 'incluido' ? '' : 'none'};margin:0.4rem 0 0;color:var(--text2);font-size:0.78rem;line-height:1.4">
+              El precio de venta es lo que paga el cliente. El sistema saca la base y el ITBIS de adentro (precio ÷ ${Number((1 + Number(DB.config?.itbis ?? 18) / 100).toFixed(4))}); el precio no sube.
+            </p>
+            <div id="mp-itbis-monto-wrap" style="display:${itbisMetodo === 'fijo' ? '' : 'none'};margin-top:0.5rem">
               <label>ITBIS fijo por unidad (RD$)</label>
               <input type="number" id="mp-itbis-monto" class="form-input" style="max-width:160px" value="${prod?.itbisMonto || ''}" min="0" step="0.01" placeholder="0.00">
               <p style="margin:0.35rem 0 0;color:var(--text2);font-size:0.74rem;line-height:1.35">
@@ -1691,6 +1742,8 @@ function syncProductItbisFields() {
   const esMonto = document.getElementById('mp-itbis-modo-monto')?.checked ?? false;
   const montoWrap = document.getElementById('mp-itbis-monto-wrap');
   if (montoWrap) montoWrap.style.display = esMonto ? '' : 'none';
+  const incluidoHint = document.getElementById('mp-itbis-incluido-hint');
+  if (incluidoHint) incluidoHint.style.display = document.getElementById('mp-itbis-modo-incluido')?.checked ? '' : 'none';
   updateProductPreview();
 }
 window.syncProductItbisFields = syncProductItbisFields;
@@ -1777,7 +1830,14 @@ function updateProductPreview() {
   const compra = parseFloat(document.getElementById('mp-pcompra')?.value) || 0;
   const venta = parseFloat(document.getElementById('mp-pventa')?.value) || 0;
   const stock = parseFloat(document.getElementById('mp-stock')?.value) || 0;
-  const utilidad = venta - compra;
+  // Con el ITBIS incluido, la ganancia sale del precio sin ITBIS.
+  const ventaSinItbis = getProductPrecioSinItbis({
+    precioVenta: venta,
+    aplicaItbis: document.getElementById('mp-aplica-itbis')?.checked ?? false,
+    itbisIncluido: document.getElementById('mp-itbis-modo-incluido')?.checked === true,
+    itbisModo: 'porcentaje',
+  });
+  const utilidad = ventaSinItbis - compra;
   const margen = compra > 0 ? (utilidad / compra) * 100 : 0;
   const profitPreview = document.getElementById('product-profit-preview');
   const marginPreview = document.getElementById('product-margin-preview');
@@ -1794,8 +1854,25 @@ function updateProductPreview() {
   // suma el ITBIS sin tener que probarlo primero en una venta.
   const aplicaItbis = document.getElementById('mp-aplica-itbis')?.checked ?? false;
   const esMontoFijo = document.getElementById('mp-itbis-modo-monto')?.checked ?? false;
+  const tasaItbis = Number(DB.config?.itbis ?? 18);
+
+  // Método 3: el precio ya trae el ITBIS. Se vende en el mismo precio y la
+  // nota muestra la base y el ITBIS que salen de adentro.
+  if (aplicaItbis && document.getElementById('mp-itbis-modo-incluido')?.checked) {
+    const base = window.VentaPorMonto?.precioBaseIncluido
+      ? window.VentaPorMonto.precioBaseIncluido({ precioFinal: venta, modoItbis: 'porcentaje', tasaItbis })
+      : Number((venta / (1 + tasaItbis / 100)).toFixed(2));
+    const itbisDentro = Number((venta - base).toFixed(2));
+    salePricePreview.textContent = `RD$${venta.toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    if (salePriceNote) {
+      salePriceNote.textContent = `Base RD$${Number(base).toFixed(2)} + ITBIS RD$${itbisDentro.toFixed(2)} (incluido)`;
+      salePriceNote.style.display = venta > 0 && tasaItbis > 0 ? '' : 'none';
+    }
+    return;
+  }
+
   const itbisMonto = esMontoFijo ? (Math.max(0, parseFloat(document.getElementById('mp-itbis-monto')?.value) || 0)) : 0;
-  const itbisAmount = !aplicaItbis ? 0 : (esMontoFijo ? itbisMonto : Number((venta * (Number(DB.config?.itbis ?? 18) / 100)).toFixed(2)));
+  const itbisAmount = !aplicaItbis ? 0 : (esMontoFijo ? itbisMonto : Number((venta * (tasaItbis / 100)).toFixed(2)));
   const finalPrice = venta + itbisAmount;
 
   salePricePreview.textContent = `RD$${finalPrice.toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -1855,6 +1932,9 @@ async function saveProduct(id) {
     aplicaItbis: document.getElementById('mp-aplica-itbis')?.checked ?? false,
     itbisModo: document.getElementById('mp-itbis-modo-monto')?.checked ? 'monto' : 'porcentaje',
     itbisMonto: Math.max(0, parseFloat(document.getElementById('mp-itbis-monto')?.value) || 0),
+    // Método 3: el precio de venta ya incluye el ITBIS (solo con el % global).
+    itbisIncluido: (document.getElementById('mp-aplica-itbis')?.checked ?? false)
+      && document.getElementById('mp-itbis-modo-incluido')?.checked === true,
     tracksStock: document.getElementById('mp-tracks-stock')?.checked !== false,
     descuentoPct: Math.min(100, Math.max(0, parseFloat(document.getElementById('mp-descuento')?.value) || 0)),
     descuentoHastaAgotar: document.getElementById('mp-descuento-hasta-agotar')?.checked ?? false,
@@ -1944,6 +2024,8 @@ async function saveProduct(id) {
     loadProductsTable();
     loadInventoryTable();
     updateInventoryStats();
+    // El precio nuevo se ve ya en la pantalla dividida de Ventas.
+    refreshSalesCatalogAfterProductChange();
     if (typeof refreshAuditLogs === 'function') await refreshAuditLogs();
     if (typeof updateNotifications === 'function') updateNotifications();
   } catch (uiError) {
@@ -1979,6 +2061,7 @@ async function deleteProduct(id) {
     loadProductsTable();
     loadInventoryTable();
     updateInventoryStats();
+    refreshSalesCatalogAfterProductChange();
     if (typeof refreshAuditLogs === 'function') await refreshAuditLogs();
     if (typeof updateNotifications === 'function') updateNotifications();
     showToast('Producto eliminado', 'success');
@@ -2009,6 +2092,7 @@ async function toggleProductStatus(id) {
     loadProductsTable();
     loadInventoryTable();
     updateInventoryStats();
+    refreshSalesCatalogAfterProductChange();
     refreshAuditLogs();
     updateNotifications();
     showToast(`Producto ${updated.estado === 'Activo' ? 'activado' : 'pausado'}`, 'success');
@@ -2251,6 +2335,7 @@ async function saveAjuste() {
     loadProductsTable();
     loadInventoryTable();
     updateInventoryStats();
+    refreshSalesCatalogAfterProductChange();
     if (typeof refreshAuditLogs === 'function') await refreshAuditLogs();
     if (typeof updateNotifications === 'function') updateNotifications();
     showToast(

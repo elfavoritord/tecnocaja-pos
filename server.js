@@ -61,7 +61,10 @@ const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatc
 const { startControlCenterPublisher, notifyControlCenterChange } = require('./server/sync/control-center');
 const { esFotoDeLaApp, guardarFotoDeLaApp } = require('./server/sync/foto-de-la-app');
 const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
-const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor } = require('./server/utils/invoice-design');
+const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor, sanitizeInvoiceLogoScale } = require('./server/utils/invoice-design');
+// Total editado por peso e ITBIS incluido en el precio: el mismo cálculo que la caja.
+const VentaPorMonto = require('./js/venta-por-monto');
+const { sanitizeItbisMetodo } = require('./server/utils/itbis-metodo');
 const { buildQrVerificationUrl } = require('./modules/ecf/utils/qr-url.util');
 const syncRoutes = require('./server/routes/sync.routes');
 
@@ -1657,11 +1660,16 @@ async function ensurePosCloudConnection(credentials = {}) {
   const users = await query("SELECT * FROM users WHERE LOWER(rol) IN ('administrador','admin','super_admin') AND estado = 'Activo' ORDER BY id LIMIT 1");
   const owner = users[0];
   if (!owner) throw new Error('No se encontró el administrador del negocio.');
+  // Solo con la clave que el dueño acaba de escribir (o su cuenta de Google): nunca la
+  // columna guardada, que puede ser una clave vieja en claro y creaba cuentas en Firebase.
+  if (!credentials.password && !credentials.idToken) {
+    throw Object.assign(new Error('El negocio aún no se ha registrado en la nube. Inicia sesión con su administrador.'), { code: 'CLOUD_REGISTRATION_REQUIRED' });
+  }
   const result = await cloud.register({
     business: { name: config.business_name, rnc: config.rnc, structure: config.business_structure_mode,
       trialStartedAt: parseUtcDbDateTime(config.trial_started_at)?.toISOString() },
     device: require('./server/security/machine-identity').getDeviceDescriptor(),
-    email: owner.email, password: credentials.password || owner.password,
+    email: owner.email, password: credentials.password,
     idToken: credentials.idToken, licenseId: process.env.TECNO_CAJA_LICENSE_UID,
     notifyOwner: Boolean(credentials.password || credentials.idToken),
   });
@@ -2198,6 +2206,9 @@ app.use('/api/respaldos', express.json({ limit: '384mb' }));
 app.use(express.json({ limit: '10mb' }));
 // Auditoría de accesos denegados y logins fallidos (al terminar la respuesta).
 app.use(require('./server/routes/auditoria.routes').createAuditDeniedMiddleware({ writeAuditLog: (e) => writeAuditLog(e) }));
+// Catálogo en vivo: al cambiar un producto, las demás cajas refrescan su
+// pantalla dividida (aviso 'catalogo:actualizado' al terminar la respuesta).
+app.use(require('./server/realtime/catalogo-en-vivo').createCatalogoEnVivo({ io }).middleware);
 app.use(express.static(path.join(__dirname), {
   // El frontend cambia seguido durante desarrollo/soporte y Electron reusa su
   // caché de disco entre reinicios de la app (no es una pestaña de navegador
@@ -3852,6 +3863,8 @@ function mapProductRow(row) {
     aplicaItbis: Boolean(row.aplica_itbis),
     itbisModo: row.itbis_modo === 'monto' ? 'monto' : 'porcentaje',
     itbisMonto: Number(row.itbis_monto || 0),
+    // Método 3: el precio de venta ya incluye el ITBIS.
+    itbisIncluido: Boolean(row.aplica_itbis) && Boolean(Number(row.itbis_incluido || 0)),
     tiempoPreparacion: Number(row.preparation_time_minutes || 15),
     saleMode: normalizeProductSaleMode(row.sale_mode),
     metaNegocio: parseJsonObjectField(row.business_metadata, {}),
@@ -4920,7 +4933,14 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // (ver ensureNuevasMejorasSchema). Las rutas también lo aseguran al usarse.
 // -18: users.permisos_usuario (permisos propios por usuario) — ver
 // ensureUserExtensions; las rutas de usuarios también lo aseguran.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-19`;
+// -20: config.invoice_logo_scale (tamaño del logo en facturas y tickets),
+// config.weight_total_edit_enabled (editar el total en productos por peso) y
+// sale_items.requested_amount (ese total) — ver ensureConfigExtensions y
+// ensureSalesExtensions; guardar la configuración y cobrar también lo aseguran.
+// -21: ITBIS incluido en el precio (método 3) — products.itbis_incluido y
+// config.itbis_metodo_predeterminado (ver ensureProductExtensions y
+// ensureConfigExtensions); cobrar y guardar productos también lo aseguran.
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-21`;
 
 // Esquema de las nueve mejoras financieras. Va después del resto (en serie)
 // porque toca tablas que crean otras migraciones (sales, sale_returns).
@@ -5049,6 +5069,12 @@ async function ensureConfigExtensions() {
   // NULL = plantilla clásica / color propio de la plantilla.
   await addColumnIfMissing('config', 'invoice_template', 'VARCHAR(20) DEFAULT NULL');
   await addColumnIfMissing('config', 'invoice_accent_color', 'VARCHAR(7) DEFAULT NULL');
+  // Tamaño del logo (Configuración → Datos del Negocio), % de 30 a 100. NULL = 100.
+  await addColumnIfMissing('config', 'invoice_logo_scale', 'INT DEFAULT NULL');
+  // Facturación → "Permitir modificar el total en productos por peso" (js/venta-por-monto.js).
+  await addColumnIfMissing('config', 'weight_total_edit_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
+  // Facturación → Impuestos: método de ITBIS de los productos nuevos (server/utils/itbis-metodo.js).
+  await addColumnIfMissing('config', 'itbis_metodo_predeterminado', `VARCHAR(12) NOT NULL DEFAULT 'adicional'`);
   await query(
     `INSERT OR IGNORE INTO config
       (id, business_name, rnc, address, phone, currency, tax_rate, invoice_prefix, invoice_next_number, e_invoice_enabled, e_invoice_prefix, e_invoice_next_number, receipt_message, receipt_print_mode, receipt_printer_name, receipt_paper_size, cash_drawer_enabled, cash_drawer_method, cash_drawer_printer_name, cash_drawer_pin, cash_drawer_network_host, cash_drawer_network_port, cash_drawer_serial_port, app_logo, security_password, cash_open, cash_amount, language, business_type, business_structure_mode, cashier_register_required, exclusive_cashier_per_register, starter_catalog_seeded, setup_completed, setup_completed_at, trial_started_at, trial_ends_at, license_status, license_activated_at, license_activated_by, require_cash_open_before_use)
@@ -5891,9 +5917,11 @@ async function changeBranchInventoryStock(executor, { productId, branchId, quant
   }
 
   const previousStock = Number(inventoryRow.stock || 0);
-  const computedStock = absoluteStock === null || absoluteStock === undefined
+  // Redondeo a milésimas: con cantidades por peso (1.13 lb) la suma en coma
+  // flotante dejaba restos como -0.0000000001 que frenaban una venta válida.
+  const computedStock = Math.round((absoluteStock === null || absoluteStock === undefined
     ? previousStock + Number(quantityDelta || 0)
-    : Number(absoluteStock || 0);
+    : Number(absoluteStock || 0)) * 1000) / 1000;
   if (preventNegative && computedStock < 0) {
     const error = new Error(`Stock insuficiente en la sucursal para ${inventoryRow.product_name || 'el producto'}.`);
     error.statusCode = 409;
@@ -6099,6 +6127,9 @@ async function ensureProductExtensions() {
   await addColumnIfMissing('products', 'aplica_itbis', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('products', 'itbis_modo', `VARCHAR(20) NOT NULL DEFAULT 'porcentaje'`);
   await addColumnIfMissing('products', 'itbis_monto', 'DECIMAL(10,2) NOT NULL DEFAULT 0.00');
+  // Método 3: el precio de venta ya incluye el ITBIS (js/venta-por-monto.js →
+  // lineaItbisIncluido). 0 = como siempre (ITBIS encima del precio).
+  await addColumnIfMissing('products', 'itbis_incluido', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('products', 'preparation_time_minutes', 'INT NOT NULL DEFAULT 15');
   await addColumnIfMissing('products', 'business_metadata', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
@@ -6143,7 +6174,40 @@ async function ensureClientExtensions() {
   await query('CREATE INDEX idx_clients_remote_mobile_id ON clients (remote_mobile_client_id)').catch(() => {});
 }
 
+// Total editado en un producto por peso (js/venta-por-monto.js): el monto final
+// de la línea; y la marca de línea con el ITBIS incluido en el precio. Con
+// cualquiera de las dos, el e-CF y las devoluciones usan line_total ÷ qty como
+// precio. Se aseguran UNA vez y siempre fuera de la transacción de la venta (en
+// MariaDB un ALTER dentro la confirma a medias).
+let saleItemsRequestedAmountReady = null;
+function ensureSaleItemsRequestedAmount() {
+  if (!saleItemsRequestedAmountReady) {
+    saleItemsRequestedAmountReady = addColumnIfMissing('sale_items', 'requested_amount', 'DECIMAL(12,2) DEFAULT NULL')
+      .then(() => addColumnIfMissing('sale_items', 'itbis_incluido', 'TINYINT(1) NOT NULL DEFAULT 0'))
+      .catch((error) => {
+        saleItemsRequestedAmountReady = null;
+        throw error;
+      });
+  }
+  return saleItemsRequestedAmountReady;
+}
+
+// ITBIS incluido en el precio (products.itbis_incluido): la venta lo lee del
+// producto. Se asegura UNA vez y fuera de la transacción de la venta.
+let productsItbisIncluidoReady = null;
+function ensureProductsItbisIncluido() {
+  if (!productsItbisIncluidoReady) {
+    productsItbisIncluidoReady = addColumnIfMissing('products', 'itbis_incluido', 'TINYINT(1) NOT NULL DEFAULT 0')
+      .catch((error) => {
+        productsItbisIncluidoReady = null;
+        throw error;
+      });
+  }
+  return productsItbisIncluidoReady;
+}
+
 async function ensureSalesExtensions() {
+  await ensureProductsItbisIncluido();
   await addColumnIfMissing('sale_items', 'general_discount_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await addColumnIfMissing('sale_items', 'legal_tip_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await addColumnIfMissing('sale_items', 'item_name', 'VARCHAR(255) DEFAULT NULL');
@@ -6161,6 +6225,7 @@ async function ensureSalesExtensions() {
   await addColumnIfMissing('sale_items', 'scale_raw_reading', 'VARCHAR(255) DEFAULT NULL');
   await addColumnIfMissing('sale_items', 'tax_mode', `VARCHAR(20) NOT NULL DEFAULT 'porcentaje'`);
   await addColumnIfMissing('sale_items', 'tax_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00');
+  await ensureSaleItemsRequestedAmount();
   await query(`UPDATE sale_items SET sale_mode = 'unidad' WHERE sale_mode IS NULL OR sale_mode = ''`).catch(() => {});
   await addColumnIfMissing('sales', 'document_type', `VARCHAR(30) NOT NULL DEFAULT 'ticket'`);
   await addColumnIfMissing('sales', 'client_name_snapshot', 'VARCHAR(160) DEFAULT NULL');
@@ -8834,6 +8899,9 @@ async function getConfig(options = {}) {
     // Combos en facturas y tickets: 'agrupado' (una línea) o 'desglosado'.
     comboInvoiceDisplay: combosService.normalizeComboInvoiceDisplay(row.combo_invoice_display),
     invoiceAccentColor: sanitizeInvoiceAccentColor(row.invoice_accent_color) || '',
+    invoiceLogoScale: sanitizeInvoiceLogoScale(row.invoice_logo_scale) || 100,
+    weightTotalEditEnabled: Boolean(Number(row.weight_total_edit_enabled ?? 0)),
+    itbisMetodoPredeterminado: sanitizeItbisMetodo(row.itbis_metodo_predeterminado),
     cashDrawerEnabled: Boolean(row.cash_drawer_enabled ?? 0),
     cashDrawerMethod: row.cash_drawer_method || 'escpos',
     cashDrawerPrinterName: row.cash_drawer_printer_name || '',
@@ -12907,6 +12975,10 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
   );
 
   const productId = Number(result.insertId || 0);
+  // Método 3 (el precio ya incluye el ITBIS): aparte del INSERT de siempre.
+  if (productId && data.aplicaItbis && data.itbisIncluido) {
+    await conn.query('UPDATE products SET itbis_incluido = 1 WHERE id = ?', [productId]);
+  }
   const terminalScope = getTerminalScopeSelection();
   const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
   const preferredBranchId = Number(catalogBranchId || data.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
@@ -13168,6 +13240,10 @@ app.post('/api/products/import-csv', async (req, res) => {
   // todas, el id de una sucursal = solo esa, 'archivo' (o sin elegir, como
   // antes) = la columna Sucursal de cada fila.
   const importDestino = String([].concat(parsed?.fields?.destino ?? [])[0] || 'archivo').trim().toLowerCase();
+  // Método de ITBIS del negocio para productos nuevos (Configuración → Facturación).
+  const csvItbisIncluidoPorDefecto = sanitizeItbisMetodo(
+    (await query('SELECT itbis_metodo_predeterminado FROM config WHERE id = 1 LIMIT 1').catch(() => []))[0]?.itbis_metodo_predeterminado
+  ) === 'incluido';
 
   const summary = await withTransaction(async (conn) => {
     const report = {
@@ -13308,6 +13384,11 @@ app.post('/api/products/import-csv', async (req, res) => {
               existing.id,
             ]
           );
+          // Método 3: solo si el archivo trae la columna "ITBIS Incluido".
+          if ((record.providedFields || []).includes('itbisIncluido')) {
+            await conn.query('UPDATE products SET itbis_incluido = ? WHERE id = ?',
+              [payload.aplicaItbis && record.itbisIncluido ? 1 : 0, existing.id]);
+          }
 
           await ensureBranchInventoryCoverageForProduct(conn, {
             productId: Number(existing.id),
@@ -13384,6 +13465,14 @@ app.post('/api/products/import-csv', async (req, res) => {
         );
 
         const productId = Number(result.insertId || 0);
+        // Método 3: la columna "ITBIS Incluido" o, si el archivo no la trae, el
+        // método de ITBIS del negocio para productos nuevos.
+        const itbisIncluidoNuevo = (record.providedFields || []).includes('itbisIncluido')
+          ? record.itbisIncluido
+          : csvItbisIncluidoPorDefecto;
+        if (productId && record.aplicaItbis && itbisIncluidoNuevo) {
+          await conn.query('UPDATE products SET itbis_incluido = 1 WHERE id = ?', [productId]);
+        }
         await ensureBranchInventoryCoverageForProduct(conn, {
           productId,
           branchId,
@@ -13744,6 +13833,11 @@ app.put('/api/products/:id', async (req, res) => {
         id
       ]
     );
+    // Método 3 (el precio ya incluye el ITBIS). Solo si quien guarda lo manda:
+    // así lo que guarde un producto sin conocer este campo no lo borra.
+    if (data.itbisIncluido !== undefined) {
+      await conn.query('UPDATE products SET itbis_incluido = ? WHERE id = ?', [data.aplicaItbis && data.itbisIncluido ? 1 : 0, id]);
+    }
 
     const terminalScope = getTerminalScopeSelection();
     const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
@@ -15293,6 +15387,46 @@ app.put('/api/config', async (req, res) => {
     ).catch((error) => {
       console.warn('No se pudo guardar el diseño de la factura A4:', error.message);
     });
+  }
+  // Tamaño del logo en facturas y tickets. Aparte y con la columna asegurada aquí
+  // mismo: el arranque solo migra cuando sube CORE_SCHEMA_VERSION.
+  if (data.invoiceLogoScale !== undefined) {
+    const logoScale = sanitizeInvoiceLogoScale(data.invoiceLogoScale);
+    const saveLogoScale = () => query('UPDATE config SET invoice_logo_scale = ? WHERE id = 1', [logoScale]);
+    await saveLogoScale()
+      .catch(async () => {
+        await addColumnIfMissing('config', 'invoice_logo_scale', 'INT DEFAULT NULL');
+        await saveLogoScale();
+      })
+      .catch((error) => {
+        console.warn('No se pudo guardar el tamaño del logo:', error.message);
+      });
+  }
+  // Editar el total en productos por peso. Aparte, con la columna asegurada aquí.
+  if (data.weightTotalEditEnabled !== undefined) {
+    const enabled = data.weightTotalEditEnabled === true || data.weightTotalEditEnabled === 'true' || Number(data.weightTotalEditEnabled) === 1 ? 1 : 0;
+    const saveWeightTotalEdit = () => query('UPDATE config SET weight_total_edit_enabled = ? WHERE id = 1', [enabled]);
+    await saveWeightTotalEdit()
+      .catch(async () => {
+        await addColumnIfMissing('config', 'weight_total_edit_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
+        await saveWeightTotalEdit();
+      })
+      .catch((error) => {
+        console.warn('No se pudo guardar "modificar el total en productos por peso":', error.message);
+      });
+  }
+  // Método de ITBIS para productos nuevos. Aparte, con la columna asegurada aquí.
+  if (data.itbisMetodoPredeterminado !== undefined) {
+    const metodo = sanitizeItbisMetodo(data.itbisMetodoPredeterminado);
+    const saveItbisMetodo = () => query('UPDATE config SET itbis_metodo_predeterminado = ? WHERE id = 1', [metodo]);
+    await saveItbisMetodo()
+      .catch(async () => {
+        await addColumnIfMissing('config', 'itbis_metodo_predeterminado', `VARCHAR(12) NOT NULL DEFAULT 'adicional'`);
+        await saveItbisMetodo();
+      })
+      .catch((error) => {
+        console.warn('No se pudo guardar el método de ITBIS:', error.message);
+      });
   }
   // Sincronizar plan_code con el nuevo business_structure_mode
   await query(`
@@ -17314,7 +17448,7 @@ app.post('/api/sales', async (req, res) => {
       let comboSnapshot = null;
       if (!isQuickSale) {
         affectedProductIds.add(Number(item.id || 0) || 0);
-        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, legal_tip_eligible, aplica_itbis, itbis_modo, itbis_monto, estado FROM products WHERE id = ? LIMIT 1', [item.id]);
+        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, legal_tip_eligible, aplica_itbis, itbis_modo, itbis_monto, itbis_incluido, estado, sale_mode FROM products WHERE id = ? LIMIT 1', [item.id]);
         product = productRows[0];
         if (!product) {
           const missingError = new Error(`El producto ID ${item.id} no existe.`);
@@ -17357,7 +17491,66 @@ app.post('/api/sales', async (req, res) => {
       if (agreed && agreed.originalPrice !== null && agreed.originalPrice > agreed.price) {
         ahorroPromociones += (agreed.originalPrice - agreed.price) * Number(item.qty || 0);
       }
-      const effectiveLineTotal = Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
+      // ITBIS incluido en el precio (método 3, products.itbis_incluido): el precio
+      // de venta (o el de su oferta) ya trae el ITBIS. La línea se guarda SIN ITBIS,
+      // como cualquier otra, y su importe sale de precio final × cantidad
+      // (js/venta-por-monto.js → lineaItbisIncluido, lo mismo que la caja).
+      const isFixedTaxProduct = Boolean(product?.aplica_itbis) && String(product?.itbis_modo) === 'monto';
+      const itbisIncluido = !isQuickSale && !customCombo && !agreed
+        && Boolean(product?.aplica_itbis) && Number(product?.itbis_incluido || 0) === 1;
+      const itbisIncluidoParams = {
+        modoItbis: isFixedTaxProduct ? 'monto' : 'porcentaje',
+        tasaItbis: isFixedTaxProduct ? 0 : Number(config.tax_rate ?? 18),
+        itbisPorUnidad: isFixedTaxProduct ? Number(product?.itbis_monto || 0) : 0,
+      };
+      const unitPriceForLine = itbisIncluido
+        ? VentaPorMonto.precioBaseIncluido({ precioFinal: effectivePrice, ...itbisIncluidoParams })
+        : effectivePrice;
+      // Total editado en un producto por peso (Configuración → Facturación,
+      // js/venta-por-monto.js): la cantidad y el importe se recalculan aquí con el
+      // precio de la línea (el de la base u oferta, nunca el del body), su
+      // descuento y su ITBIS, y se cobra exacto el monto. El precio no cambia.
+      let lineaMonto = null;
+      if (Number(item.montoFinal) > 0) {
+        if (!Number(config.weight_total_edit_enabled || 0)) {
+          throw Object.assign(new Error('Modificar el total en productos por peso está desactivado en Configuración → Facturación.'), { statusCode: 400 });
+        }
+        if (isQuickSale || customCombo || comboSnapshot || agreed || normalizeProductSaleMode(product?.sale_mode) !== 'peso') {
+          throw Object.assign(new Error(`El total de "${product?.nombre || item.nombre || 'este producto'}" no se puede modificar: solo aplica a productos por peso.`), { statusCode: 400 });
+        }
+        const lineaSinItbis = documentType === 'factura-electronica'
+          && ['E44', 'E46'].includes(String(sale.ecfType || '').trim().toUpperCase());
+        lineaMonto = VentaPorMonto.calcular({
+          monto: Number(item.montoFinal),
+          precio: unitPriceForLine,
+          descuentoPct: Number(item.descuento || 0),
+          modoItbis: isFixedTaxProduct ? 'monto' : 'porcentaje',
+          tasaItbis: isFixedTaxProduct ? 0 : Number(item.itbis || 0),
+          itbisPorUnidad: isFixedTaxProduct && !lineaSinItbis ? Number(product.itbis_monto || 0) : 0,
+        });
+        if (!lineaMonto) {
+          throw Object.assign(new Error(`No se pudo calcular la cantidad de "${product?.nombre || 'el producto'}" con el total escrito.`), { statusCode: 400 });
+        }
+        // La cantidad que manda la caja se reemplaza por la calculada aquí: con
+        // ella se descuenta el inventario y se guarda la línea.
+        item.qty = lineaMonto.cantidad;
+      }
+      // Importe de la línea antes del descuento. Con el total editado, el que da
+      // exacto el monto (cantidad × precio puede diferir unos centavos por el
+      // redondeo del peso a 2 decimales).
+      const lineaIncluida = !lineaMonto && itbisIncluido
+        ? VentaPorMonto.lineaItbisIncluido({
+          precioFinal: effectivePrice,
+          cantidad: Number(item.qty || 0),
+          descuentoPct: Number(item.descuento || 0),
+          ...itbisIncluidoParams,
+        })
+        : null;
+      const effectiveLineTotal = lineaMonto
+        ? lineaMonto.base
+        : lineaIncluida
+          ? lineaIncluida.base
+          : Number((effectivePrice * Number(item.qty || 0)).toFixed(2));
       const lineMoney = require('./js/pos-money');
       const itemNet = lineMoney.number(lineMoney.cents(effectiveLineTotal) - lineMoney.percent(lineMoney.cents(effectiveLineTotal), item.descuento || 0));
       computedSubtotal += itemNet;
@@ -17396,7 +17589,8 @@ app.post('/api/sales', async (req, res) => {
           comboSnapshot ? comboSnapshot.nombre : (isQuickSale ? quickName : null),
           isQuickSale ? 1 : 0,
           item.qty,
-          effectivePrice,
+          // Precio por unidad sin ITBIS (con ITBIS incluido, el que sale del precio final).
+          unitPriceForLine,
           item.descuento || 0,
           item.itbis || 0,
           effectiveTaxMode,
@@ -17418,6 +17612,23 @@ app.post('/api/sales', async (req, res) => {
           comboSnapshot ? JSON.stringify(comboSnapshot) : null,
         ]
       );
+      // Total editado: el monto queda en la línea (aparte del INSERT de siempre).
+      // Con él, el e-CF y las devoluciones usan line_total ÷ qty como precio para
+      // cuadrar exacto. La columna ya se aseguró antes de la transacción.
+      if (lineaMonto) {
+        await conn.query(
+          'UPDATE sale_items SET requested_amount = ? WHERE id = ?',
+          [lineaMonto.total, saleItemInsert.insertId]
+        ).catch((error) => console.warn('[ventas] No se guardó el total editado de la línea:', error.message));
+      }
+      // ITBIS incluido en el precio: la marca le dice al e-CF y a las
+      // devoluciones que el precio que cuadra es line_total ÷ qty.
+      if (lineaIncluida) {
+        await conn.query(
+          'UPDATE sale_items SET itbis_incluido = 1 WHERE id = ?',
+          [saleItemInsert.insertId]
+        ).catch((error) => console.warn('[ventas] No se marcó la línea con ITBIS incluido:', error.message));
+      }
       // Alcance de la propina: todo lo consumido (por defecto) o solo los
       // productos marcados. Debe coincidir con calcularTotales (js/ventas.js).
       legalTipLines.push({ id: saleItemInsert.insertId, net: itemNet,

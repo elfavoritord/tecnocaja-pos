@@ -166,7 +166,7 @@ function createCotizacionesRouter(deps) {
       invoice: { ...full, ...contact, docType: 'cotizacion', digitalSign },
       items: full.items,
       // Plantilla y color de Configuración → Impresora de Recibos (factura A4).
-      diseno: { plantilla: cfg.invoiceTemplate, color: cfg.invoiceAccentColor },
+      diseno: { plantilla: cfg.invoiceTemplate, color: cfg.invoiceAccentColor, logoEscala: cfg.invoiceLogoScale },
       // Términos y condiciones de Ajustes de Empresa de Servicios.
       terminos,
     };

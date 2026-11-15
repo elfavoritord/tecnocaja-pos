@@ -227,7 +227,7 @@ function htmlFactura(venta, cfg = {}, opciones = {}) {
   const titulo = textoLimpio(doc.numero).replace(/[<>&"]/g, '');
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${titulo}</title>`
     + '<style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#fff}</style></head>'
-    + `<body style="margin:0">${FacturaPlantillas.render(doc, { plantilla: cfg.invoiceTemplate, color: cfg.invoiceAccentColor })}`
+    + `<body style="margin:0">${FacturaPlantillas.render(doc, { plantilla: cfg.invoiceTemplate, color: cfg.invoiceAccentColor, logoEscala: cfg.invoiceLogoScale })}`
     + `${FacturaPlantillas.scriptUnaHoja()}</body></html>`;
 }
 

@@ -21,6 +21,8 @@
 // ══════════════════════════════════════════════════════════════════════════════
 
 const motor = require('../../js/combos-personalizados-motor');
+// ITBIS incluido en el precio (método 3): el mismo cálculo que la caja.
+const VentaPorMonto = require('../../js/venta-por-monto');
 
 const CONFIG_COLUMNS = {
   activo: 'custom_combos_enabled',
@@ -217,7 +219,7 @@ async function prepararVenta(runQuery, { items = [], config = {}, ventaSinItbis 
   const productosById = new Map();
   if (productIds.length) {
     const rows = await runQuery(
-      `SELECT id, nombre, precio_venta, aplica_itbis, itbis_modo, itbis_monto, estado, sale_mode, product_type, combo_personalizado
+      `SELECT id, nombre, precio_venta, aplica_itbis, itbis_modo, itbis_monto, itbis_incluido, estado, sale_mode, product_type, combo_personalizado
          FROM products WHERE id IN (${productIds.map(() => '?').join(', ')})`,
       productIds
     );
@@ -280,10 +282,20 @@ async function prepararVenta(runQuery, { items = [], config = {}, ventaSinItbis 
       const previa = porProducto.get(fila.id);
       if (previa) previa.qty += fila.qty;
       else {
+        const aplica = Boolean(Number(fila.producto.aplica_itbis || 0));
+        const porMonto = aplica && String(fila.producto.itbis_modo || '') === 'monto';
         porProducto.set(fila.id, {
           id: fila.id,
           qty: fila.qty,
-          precio: Number(fila.producto.precio_venta || 0),
+          // Con el ITBIS incluido en el precio (método 3), el precio sin ITBIS (igual que la caja).
+          precio: aplica && Number(fila.producto.itbis_incluido || 0) === 1
+            ? VentaPorMonto.precioBaseIncluido({
+              precioFinal: Number(fila.producto.precio_venta || 0),
+              modoItbis: porMonto ? 'monto' : 'porcentaje',
+              tasaItbis: porMonto ? 0 : tasaGeneral,
+              itbisPorUnidad: porMonto ? Number(fila.producto.itbis_monto || 0) : 0,
+            })
+            : Number(fila.producto.precio_venta || 0),
           aplicaItbis: Boolean(Number(fila.producto.aplica_itbis || 0)),
           itbisModo: String(fila.producto.itbis_modo || '') === 'monto' ? 'monto' : 'porcentaje',
           itbisMonto: Number(fila.producto.itbis_monto || 0),

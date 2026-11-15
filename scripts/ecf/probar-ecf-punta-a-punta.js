@@ -102,7 +102,19 @@ async function comprobarEmitido(nombre, encf, { tipo, total, itbis, indicador, t
 
 // ── POS: venta normal ────────────────────────────────────────────────────────
 // El precio lo pone el catálogo del servidor: cada producto de prueba tiene el suyo.
-const PRECIOS = { GRAV: 100, EXEN: 100, MEDIO: 50, DEC: 33.33, CARO: 300000, SERV: 100 };
+const PRECIOS = { GRAV: 100, EXEN: 100, MEDIO: 50, DEC: 33.33, CARO: 300000, SERV: 100, INCL: 118, INCL2: 99.99 };
+// INCL e INCL2 tienen el ITBIS incluido en el precio (método 3): la línea va
+// como la arma la caja (js/ventas.js → calculateSaleItemBase).
+const VentaPorMonto = require(path.join(L.PROJECT, 'js', 'venta-por-monto.js'));
+function lineaIncluida(prod, { qty = 1, descuento = 0 } = {}) {
+  const precioFinal = PRECIOS[prod];
+  const l = VentaPorMonto.lineaItbisIncluido({ precioFinal, cantidad: qty, descuentoPct: descuento, tasaItbis: 18 });
+  return {
+    id: ctx.productos[prod], codigo: prod, nombre: prod, qty, descuento, itbis: 18, itbisModo: 'porcentaje',
+    precio: VentaPorMonto.precioBaseIncluido({ precioFinal, tasaItbis: 18 }), itbisIncluido: true, precioFinalUnit: precioFinal,
+    subtotal: l.base, rebaja: l.descuento, total: l.total, impuestoMonto: l.itbis,
+  };
+}
 function linea(prod, { qty = 1, itbis = 18, descuento = 0 } = {}) {
   const precio = PRECIOS[prod];
   const bruto = redondear(qty * precio);
@@ -145,6 +157,12 @@ async function pruebasPos() {
     ['E45 gubernamental', venta([linea('GRAV')], { ...conRnc, ecfType: 'E45' }), { tipo: 'E45', indicador: '0' }],
     ['E46 exportación', venta([linea('GRAV', { itbis: 0 })], { ecfType: 'E46', cliente: 'Foreign Buyer LLC', razonSocialCliente: 'Foreign Buyer LLC' }), { tipo: 'E46' }],
     ['E32 de 250 mil o más con comprador', venta([linea('CARO', { itbis: 0 })], { ...conRnc, ecfType: 'E32' }), { tipo: 'E32', total: 300000 }],
+    // ITBIS incluido en el precio: el precio final no sube y el ITBIS no se duplica.
+    ['E31 ITBIS incluido', venta([lineaIncluida('INCL')], { ...conRnc, ecfType: 'E31' }), { tipo: 'E31', total: 118, itbis: 18, indicador: '0' }],
+    ['E31 ITBIS incluido x3 con descuento', venta([lineaIncluida('INCL', { qty: 3, descuento: 10 })], { ...conRnc, ecfType: 'E31' }), { tipo: 'E31', total: 318.6, itbis: 48.6 }],
+    ['E31 ITBIS incluido con centavos', venta([lineaIncluida('INCL2', { qty: 3 })], { ...conRnc, ecfType: 'E31' }), { tipo: 'E31', total: 299.97, itbis: 45.76 }],
+    ['E31 ITBIS incluido y sumado', venta([lineaIncluida('INCL'), linea('GRAV')], { ...conRnc, ecfType: 'E31' }), { tipo: 'E31', total: 236, itbis: 36 }],
+    ['E32 ITBIS incluido', venta([lineaIncluida('INCL2', { qty: 1.5 })]), { tipo: 'E32' }],
   ];
   const emitidos = {};
   for (const [nombre, cuerpo, esperado] of casos) {
@@ -153,6 +171,25 @@ async function pruebasPos() {
     const encf = encfVenta(r);
     await comprobarEmitido(nombre, encf, esperado);
     emitidos[nombre] = { encf, factura: r.body?.sale?.invoiceNumber || r.body?.sale?.id, saleId: r.body?.sale?.dbId || r.body?.sale?.saleId };
+  }
+
+  // ITBIS incluido: en el XML la línea va sin ITBIS (118 → 100 + 18).
+  const xmlIncluido = recibidoDe(emitidos['E31 ITBIS incluido']?.encf)?.xml;
+  check('E31 ITBIS incluido: la línea va con precio 100 y monto 100',
+    Number(tag(xmlIncluido, 'PrecioUnitarioItem')) === 100 && Number(tag(xmlIncluido, 'MontoItem')) === 100,
+    `${tag(xmlIncluido, 'PrecioUnitarioItem')} ${tag(xmlIncluido, 'MontoItem')}`);
+  // Devolver 1 de las 3 (con su 10%): la E34 es 106.20 (90 + ITBIS 16.20).
+  const incluidaDev = emitidos['E31 ITBIS incluido x3 con descuento'];
+  const detalleIncluida = await api('GET', `/api/sales/${encodeURIComponent(incluidaDev?.factura)}/return-detail`);
+  const devIncluida = await api('POST', '/api/sales/return', {
+    invoiceNumber: incluidaDev?.factura, reason: 'Prueba ITBIS incluido', refundCash: true, branchId: ctx.branchId, cashRegisterId: ctx.cashRegisterId,
+    items: [{ saleItemId: detalleIncluida.body?.items?.[0]?.id, productId: ctx.productos.INCL, qty: 1 }],
+  });
+  check('ITBIS incluido: devolución parcial hecha', devIncluida.status === 201, `HTTP ${devIncluida.status} ${devIncluida.body?.error || ''}`.slice(0, 200));
+  if (devIncluida.body?.ecfNota?.encf) {
+    await comprobarEmitido('ITBIS incluido: E34 de la devolución', devIncluida.body.ecfNota.encf, { tipo: 'E34', total: 106.2, itbis: 16.2 });
+  } else {
+    check('ITBIS incluido: la devolución trae la E34', false, JSON.stringify(devIncluida.body?.ecfNota).slice(0, 200));
   }
 
   // Cliente registrado con todos sus datos: teléfono sin guiones, correo y dirección.
@@ -472,6 +509,14 @@ async function pruebasServicios() {
         stock: 0, stockMin: 0, aplicaItbis: true, estado: 'Activo', branchId: ctx.branchId, tipoProducto: 'servicio', tracksStock: false,
       });
       ctx.productos.SERV = Number(servicio.body?.product?.id || servicio.body?.producto?.id || servicio.body?.id || 0);
+      for (const codigo of ['INCL', 'INCL2']) {
+        const prod = await api('POST', '/api/products', {
+          codigo, barcode: codigo, nombre: codigo, categoria: 'GENERAL', unidad: 'Unidad', marca: '', precioVenta: PRECIOS[codigo], precioCompra: 1,
+          stock: 1000, stockMin: 0, aplicaItbis: true, itbisIncluido: true, estado: 'Activo', branchId: ctx.branchId,
+        });
+        ctx.productos[codigo] = Number(prod.body?.product?.id || prod.body?.producto?.id || prod.body?.id || 0);
+        check(`Producto ${codigo} con ITBIS incluido`, prod.body?.itbisIncluido === true || prod.body?.product?.itbisIncluido === true, JSON.stringify(prod.body).slice(0, 160));
+      }
       const emitidos = await pruebasPos();
       encfOrigen = emitidos['E31 mixta']?.encf;
 

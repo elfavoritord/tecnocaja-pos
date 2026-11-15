@@ -297,7 +297,7 @@ function getSaleQuantityDecimals() {
 
 function findProductForSaleItem(item = {}) {
   const productId = Number(item.id || item.productId || 0);
-  return productId ? (DB.productos || []).find((product) => Number(product.id || 0) === productId) || null : null;
+  return productId ? getSalesProductIndex().get(productId) || null : null;
 }
 
 function getSaleItemSaleMode(item = {}, product = null) {
@@ -364,7 +364,62 @@ function sanitizeSaleItemQty(item = {}, value, options = {}) {
   }
 
   const minimum = allowZero ? 0 : 0.01;
-  return getSaleScaleUtils().roundValue(Math.max(minimum, numeric), getSaleQuantityDecimals());
+  // Línea con el total editado: su cantidad va siempre a 2 decimales
+  // (js/venta-por-monto.js), aunque la báscula esté configurada con otros.
+  const decimals = Number(item?.montoFinal) > 0 ? 2 : getSaleQuantityDecimals();
+  return getSaleScaleUtils().roundValue(Math.max(minimum, numeric), decimals);
+}
+
+// ── Total editado en productos por peso ───────────────────────────────────
+// Configuración → Facturación → "Permitir modificar el total en productos por
+// peso". El cajero toca el Total de la línea, escribe el monto final y el
+// sistema calcula la cantidad (RD$180 a RD$160/lb → 1.125 lb). El precio no
+// cambia y se cobra exacto ese monto. El cálculo vive en js/venta-por-monto.js
+// y el servidor lo repite al cobrar.
+function isWeightTotalEditEnabled() {
+  return Boolean(getEffectiveConfig().weightTotalEditEnabled);
+}
+
+function canEditSaleLineTotal(item = {}) {
+  return isWeightTotalEditEnabled() && isWeightSaleItem(item) && !isCustomComboSaleItem(item)
+    && !item.quickSale && Number(item.precio) > 0;
+}
+
+// Lo mismo que usa el carrito para la línea (precio, descuento e ITBIS de la línea).
+function getSaleLineTotalParams(item = {}) {
+  return {
+    precio: Number(item.precio || 0),
+    descuentoPct: Number(item.descuento || 0),
+    modoItbis: item.itbisModo === 'monto' ? 'monto' : 'porcentaje',
+    tasaItbis: saleVaSinItbis() ? 0 : Number(item.itbis || 0),
+    itbisPorUnidad: item.itbisModo === 'monto' && !saleVaSinItbis() ? Number(item.itbisMontoUnit || 0) : 0,
+  };
+}
+
+// Devuelve la línea con su cantidad calculada para cobrar exacto `monto`, o null.
+function applyFinalAmountToSaleItem(item, monto) {
+  const calc = window.VentaPorMonto?.calcular({ monto, ...getSaleLineTotalParams(item) });
+  if (!calc) return null;
+  const next = normalizeSaleItem({
+    ...item,
+    qty: calc.cantidad,
+    montoFinal: roundSaleMoney(monto),
+    baseFinal: calc.base,
+    scaleWeight: calc.cantidad,
+    scaleMeasuredValue: calc.cantidad,
+    scaleMeasuredUnit: getSaleItemWeightUnit(item),
+    scaleSource: 'total',
+    scaleRawReading: '',
+  });
+  next.total = calcItemTotal(next);
+  return next;
+}
+
+// La línea deja de estar fijada por su total (cambió el peso, el descuento…).
+function clearSaleLineFinalAmount(item = {}) {
+  if (!(Number(item.montoFinal) > 0)) return item;
+  const { montoFinal, baseFinal, ...rest } = item;
+  return rest;
 }
 
 function formatSaleItemQuantity(item = {}, value = item.qty, options = {}) {
@@ -495,6 +550,12 @@ function resolvePromotionForCartLine(productId, qty) {
 // cantidad final — necesario porque, a diferencia de Oferta de Precio, un
 // Descuento por Cantidad depende de cuánto termine habiendo en el carrito.
 function recalcSaleItemForQty(item, qty) {
+  // Línea con el total editado: con la misma cantidad conserva su total; si la
+  // cantidad cambia (otro peso), vuelve a ser precio × cantidad.
+  if (Number(item?.montoFinal) > 0) {
+    if (Math.abs(Number(qty) - Number(item.qty)) < 0.0001) return item;
+    item = clearSaleLineFinalAmount(item);
+  }
   // Línea de un combo personalizado: su precio de catálogo, sin ofertas.
   if (isCustomComboSaleItem(item)) {
     const fixed = normalizeSaleItem({ ...item, qty, promoAplicada: null, descuento: 0 });
@@ -510,10 +571,12 @@ function recalcSaleItemForQty(item, qty) {
   }
   const promo = resolvePromotionForCartLine(Number(item.id), qty);
   const product = findProductForSaleItem(item);
+  const pricing = product ? getSaleLinePricing(product, promo) : null;
   const updated = normalizeSaleItem({
     ...item,
     qty,
-    precio: promo ? Number(promo.precioPromocion) : Number(product?.precioVenta ?? item.precio ?? 0),
+    precio: pricing ? pricing.precio : (promo ? Number(promo.precioPromocion) : Number(item.precio ?? 0)),
+    ...(pricing ? { itbisIncluido: pricing.itbisIncluido, precioFinalUnit: pricing.precioFinalUnit } : {}),
     promoAplicada: promo ? {
       promotionId: promo.promotionId,
       nombre: promo.nombre,
@@ -528,13 +591,45 @@ function recalcSaleItemForQty(item, qty) {
   return updated;
 }
 
+// ── ITBIS incluido en el precio (método 3) ─────────────────────────────────
+// Producto con "Aplicar ITBIS" → "Ya incluido en el precio": su precio es el
+// final. La línea lleva el precio SIN ITBIS (como cualquier otra) y su importe
+// sale de precio final × cantidad (js/venta-por-monto.js), así el cliente paga
+// lo marcado: RD$118 → base 100 + ITBIS 18. Con los otros métodos todo sigue
+// como siempre (ITBIS encima del precio, o sin ITBIS).
+function isProductItbisIncluido(product) {
+  return Boolean(product?.aplicaItbis) && Boolean(product?.itbisIncluido);
+}
+
+// Precio de la línea para un producto (y su oferta, si aplica).
+function getSaleLinePricing(product, promo = null) {
+  const precioFinal = promo ? Number(promo.precioPromocion) : Number(product?.precioVenta || 0);
+  if (!isProductItbisIncluido(product) || !window.VentaPorMonto?.precioBaseIncluido) {
+    return { precio: precioFinal, itbisIncluido: false, precioFinalUnit: null };
+  }
+  const porMonto = product.itbisModo === 'monto';
+  return {
+    precio: window.VentaPorMonto.precioBaseIncluido({
+      precioFinal,
+      modoItbis: porMonto ? 'monto' : 'porcentaje',
+      tasaItbis: Number(DB.config?.itbis || 0),
+      itbisPorUnidad: porMonto ? Number(product.itbisMonto || 0) : 0,
+    }),
+    itbisIncluido: true,
+    precioFinalUnit: precioFinal,
+  };
+}
+
 function buildSaleItem(product, qty = 1, extra = {}) {
   const promo = resolvePromotionForCartLine(product.id, qty);
+  const pricing = getSaleLinePricing(product, promo);
   const item = normalizeSaleItem({
     id: product.id,
     codigo: product.codigo,
     nombre: product.nombre,
-    precio: promo ? Number(promo.precioPromocion) : Number(product.precioVenta || 0),
+    precio: pricing.precio,
+    itbisIncluido: pricing.itbisIncluido,
+    precioFinalUnit: pricing.precioFinalUnit,
     promoAplicada: promo ? {
       promotionId: promo.promotionId,
       nombre: promo.nombre,
@@ -739,14 +834,65 @@ function removeCustomComboGroup(clave) {
   renderSalesCatalog();
 }
 
+// Productos por id. Con miles de productos, buscar con DB.productos.find() por
+// cada línea del carrito y por cada tarjeta del catálogo trababa la pantalla.
+// Guarda la POSICIÓN de cada id y lee siempre lo que hay en DB.productos: así un
+// producto reemplazado en su lugar (DB.productos[i] = actualizado, al editarlo)
+// se ve al momento. Se rehace si cambia la lista, su tamaño o una posición.
+let salesProductIndexCache = { ref: null, size: -1, pos: new Map() };
+function getSalesProductIndex() {
+  const list = Array.isArray(DB.productos) ? DB.productos : [];
+  const rebuild = () => {
+    salesProductIndexCache = { ref: list, size: list.length, pos: new Map(list.map((p, i) => [Number(p?.id), i])) };
+  };
+  if (salesProductIndexCache.ref !== list || salesProductIndexCache.size !== list.length) rebuild();
+  return {
+    get(id) {
+      const key = Number(id);
+      const at = (i) => (i === undefined ? undefined : list[i]);
+      let product = at(salesProductIndexCache.pos.get(key));
+      if (product && Number(product.id) === key) return product;
+      if (product) {
+        // Se movió un producto de lugar: se rehace una vez.
+        rebuild();
+        product = at(salesProductIndexCache.pos.get(key));
+        if (product && Number(product.id) === key) return product;
+      }
+      return undefined;
+    },
+  };
+}
+
+// Lo que aparta el carrito de cada producto (incluye lo que llevan los combos),
+// calculado una sola vez para todo el catálogo. Igual que getCartQtyForProduct.
+function getCartQtyMap() {
+  const index = getSalesProductIndex();
+  const map = new Map();
+  const add = (id, qty) => map.set(id, (map.get(id) || 0) + qty);
+  for (const item of DB.saleItems || []) {
+    const id = Number(item.id || 0);
+    if (!id) continue;
+    const qty = Number(item.qty || 0);
+    add(id, qty);
+    const combo = index.get(id);
+    if (isComboProduct(combo)) {
+      for (const component of combo.componentes) {
+        if (component.controlaStock !== false) add(Number(component.id), qty * Number(component.cantidad || 0));
+      }
+    }
+  }
+  return map;
+}
+
 // Suma la cantidad de un producto que ya está en el carrito (aún no facturada),
 // para poder mostrar disponibilidad en vivo y evitar agregar más de lo que hay.
 // Cuenta también lo que lleva cada combo del carrito.
 function getCartQtyForProduct(productId, excludeIdx = -1) {
+  const index = getSalesProductIndex();
   return (DB.saleItems || []).reduce((sum, item, idx) => {
     if (idx === excludeIdx) return sum;
     if (Number(item.id || 0) === Number(productId)) return sum + Number(item.qty || 0);
-    const combo = item.id ? DB.productos.find((p) => Number(p.id) === Number(item.id)) : null;
+    const combo = item.id ? index.get(Number(item.id)) || null : null;
     const component = isComboProduct(combo)
       ? combo.componentes.find((c) => Number(c.id) === Number(productId) && c.controlaStock !== false)
       : null;
@@ -1131,7 +1277,8 @@ async function reweighSaleItem(index) {
   if (!result) return;
 
   const nextItem = normalizeSaleItem({
-    ...currentItem,
+    // Un peso nuevo de la báscula reemplaza el total que se hubiera escrito.
+    ...clearSaleLineFinalAmount(currentItem),
     qty: result.qty,
     weightUnit: result.weightUnit,
     scaleWeight: result.scaleWeight,
@@ -1434,6 +1581,25 @@ function getSaleTaxConfig(config = DB.config || {}) {
 }
 
 function calculateSaleItemBase(item = {}) {
+  // Total editado en un producto por peso: el importe que, con su descuento e
+  // ITBIS, da exacto el monto escrito (js/venta-por-monto.js). El precio no
+  // cambia; precio × cantidad puede diferir unos centavos por el redondeo del peso.
+  if (Number(item?.montoFinal) > 0 && Number.isFinite(Number(item?.baseFinal))) {
+    return roundSaleMoney(item.baseFinal);
+  }
+  // ITBIS incluido en el precio: el importe sin ITBIS que, con su descuento e
+  // ITBIS, da precio final × cantidad (o un centavo menos, nunca más).
+  if (item?.itbisIncluido && Number.isFinite(Number(item?.precioFinalUnit)) && window.VentaPorMonto?.lineaItbisIncluido) {
+    const linea = window.VentaPorMonto.lineaItbisIncluido({
+      precioFinal: Number(item.precioFinalUnit),
+      cantidad: Number(item.qty || 0),
+      descuentoPct: Number(item.descuento || 0),
+      modoItbis: item.itbisModo === 'monto' ? 'monto' : 'porcentaje',
+      tasaItbis: Number(item.itbis || 0),
+      itbisPorUnidad: Number(item.itbisMontoUnit || 0),
+    });
+    if (linea) return roundSaleMoney(linea.base);
+  }
   return roundSaleMoney(Number(item?.precio || 0) * Number(item?.qty || 0));
 }
 
@@ -1945,7 +2111,8 @@ function syncSalesSplitViewLayout(forceValue = null) {
   }
   if (catalogPanel) {
     catalogPanel.classList.toggle('hidden', !enabled);
-    catalogPanel.setAttribute('aria-hidden', enabled ? 'false' : 'true');
+    const ariaHidden = enabled ? 'false' : 'true';
+    if (catalogPanel.getAttribute('aria-hidden') !== ariaHidden) catalogPanel.setAttribute('aria-hidden', ariaHidden);
   }
   window.VentasUI?.sync();
 
@@ -2025,6 +2192,11 @@ function refreshSalesCategoryFilter() {
   if (!select) return;
   const currentValue = select.value;
   const categories = [...new Set(DB.productos.map((item) => item.categoria).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  // Se llama con cada redibujo del catálogo: si las categorías no cambiaron, no
+  // se reconstruye la lista (y no se pierde lo elegido).
+  const categoriesKey = `${DB.config?.idioma || ''}|${categories.join('\u0001')}`;
+  if (select._categoriesKey === categoriesKey && select.options.length === categories.length + 1) return;
+  select._categoriesKey = categoriesKey;
   select.innerHTML = '<option value="">Todas las categorías</option>' + categories.map((category) => {
     const label = typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(category) : category;
     return `<option value="${category}">${label}</option>`;
@@ -2044,45 +2216,185 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
   const products = getSalesCatalogProducts();
   const totalEnDB = Array.isArray(DB.productos) ? DB.productos.length : 0;
   if (summary) {
-    summary.textContent = totalEnDB > 0 && products.length === 0
+    const summaryText = totalEnDB > 0 && products.length === 0
       ? `0 visibles (${totalEnDB} en catálogo)`
       : `${products.length} producto${products.length === 1 ? '' : 's'} visible${products.length === 1 ? '' : 's'}`;
+    if (summary.textContent !== summaryText) summary.textContent = summaryText;
   }
   if (!products.length) {
     const emptyMsg = totalEnDB === 0
       ? 'No se cargaron productos del servidor. Revisa la conexión o reinicia la app.'
       : `No hay productos con esos filtros. <br><small style="opacity:.7">${totalEnDB} producto${totalEnDB === 1 ? '' : 's'} en tu catálogo.</small>`;
     grid.innerHTML = `<div class="sales-catalog-empty">${emptyMsg}</div>`;
+    salesCatalogState = { grid: null, listKey: '', products: [], rendered: 0 };
     return;
   }
 
-  grid.innerHTML = products.map((product) => {
-    const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(product) : product.nombre;
-    const stock = Number(product.stock || 0);
-    const stockMin = Number(product.stockMin || 0);
-    const isCombo = isComboProduct(product);
-    const comboAvailable = isCombo ? getComboAvailableQty(product) : null;
-    const tracksStock = isCombo ? comboAvailable !== null : product.tracksStock !== false;
-    // El stock mostrado descuenta lo que ya está en el carrito (aún no vendido)
-    // para que baje en vivo al agregar y vuelva a la normalidad si se quita.
-    const cartQty = tracksStock && !isCombo ? getCartQtyForProduct(product.id) : 0;
-    const availableStock = isCombo ? (comboAvailable ?? 0) : (tracksStock ? Math.max(0, stock - cartQty) : stock);
-    const stockClass = tracksStock && availableStock === 0 ? 'is-out' : tracksStock && !isCombo && availableStock <= stockMin ? 'is-low' : '';
-    const stockLabel = !tracksStock ? '' : availableStock === 0 ? 'Agotado' : `Disp: ${availableStock}`;
-    const comboTitle = isCombo ? ` — ${getComboComponentsLabel(product.componentes)}` : '';
-    return `
-    <article class="sales-product-card ${stockClass}" onclick="addProductById(${product.id})" title="${escapeHtml(`${nombre}${comboTitle}`)}">
+  // Misma lista (mismos filtros y productos en el mismo orden): solo se rehacen
+  // las tarjetas ya pintadas que cambiaron (la existencia que aparta el carrito,
+  // un precio…) y el scroll queda donde estaba. Si cambió la búsqueda o un
+  // filtro, se empieza de nuevo por la primera tanda.
+  // El idioma, la moneda y el ITBIS cambian cómo se ven todas las tarjetas.
+  const listKey = `${DB.config?.idioma || ''}|${DB.config?.moneda || ''}|${DB.config?.itbis ?? ''}|${products.length}|${products.map((product) => product.id).join(',')}`;
+  if (salesCatalogState.grid === grid && salesCatalogState.listKey === listKey
+    && salesCatalogState.rendered > 0 && grid.querySelector('.sales-product-card')) {
+    salesCatalogState.products = products;
+    refreshRenderedSalesCatalogCards(grid);
+    return;
+  }
+  salesCatalogState = { grid, listKey, products, rendered: 0 };
+  grid.innerHTML = '';
+  grid.scrollTop = 0;
+  appendSalesCatalogPage(grid);
+}
+
+// ── Catálogo rápido con miles de productos ─────────────────────────────────
+// Antes se pintaban TODAS las tarjetas (3.000+) y se volvían a pintar con cada
+// tecla del buscador y cada producto agregado: la pantalla dividida se trababa
+// y casi no hacía scroll. Ahora se pintan por tandas (la primera al entrar y las
+// demás al acercarse al final con el scroll) y el navegador no dibuja las que no
+// se ven (content-visibility en css/ventas.css).
+const SALES_CATALOG_PAGE = 120;
+let salesCatalogState = { grid: null, listKey: '', products: [], rendered: 0 };
+let salesCatalogObserver = null;
+let salesCatalogObserverRoot = null;
+
+// Firma barata de lo que muestra una tarjeta (datos crudos, sin formatear): si no
+// cambió, la tarjeta no se toca. El idioma, la moneda y el ITBIS van en listKey.
+function salesCatalogCardSig(product, cartQtyMap) {
+  const extra = isComboProduct(product)
+    ? `c${getComboAvailableQty(product)}`
+    : `q${cartQtyMap.get(Number(product.id)) || 0}`;
+  return `${product.id}|${product.nombre}|${product.precioVenta}|${product.stock}|${product.stockMin}|${product.tracksStock}`
+    + `|${product.aplicaItbis}|${product.itbisModo}|${product.itbisMonto}|${product.itbisIncluido}|${getSalesProductImage(product)}|${extra}`;
+}
+
+// Tarjeta de un producto; `sig` resume lo que se ve para saber si cambió.
+function buildSalesCatalogCard(product, cartQtyMap) {
+  const nombre = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(product) : product.nombre;
+  const stock = Number(product.stock || 0);
+  const stockMin = Number(product.stockMin || 0);
+  const isCombo = isComboProduct(product);
+  const comboAvailable = isCombo ? getComboAvailableQty(product) : null;
+  const tracksStock = isCombo ? comboAvailable !== null : product.tracksStock !== false;
+  // El stock mostrado descuenta lo que ya está en el carrito (aún no vendido)
+  // para que baje en vivo al agregar y vuelva a la normalidad si se quita.
+  const cartQty = tracksStock && !isCombo ? Number(cartQtyMap.get(Number(product.id)) || 0) : 0;
+  const availableStock = isCombo ? (comboAvailable ?? 0) : (tracksStock ? Math.max(0, stock - cartQty) : stock);
+  const stockClass = tracksStock && availableStock === 0 ? 'is-out' : tracksStock && !isCombo && availableStock <= stockMin ? 'is-low' : '';
+  const stockLabel = !tracksStock ? '' : availableStock === 0 ? 'Agotado' : `Disp: ${availableStock}`;
+  const comboTitle = isCombo ? ` — ${getComboComponentsLabel(product.componentes)}` : '';
+  const price = fmt(getProductFinalPriceWithItbis(product));
+  const image = getSalesProductImage(product);
+  const sig = salesCatalogCardSig(product, cartQtyMap);
+  // Lo que no es la existencia: si no cambió, la tarjeta se actualiza en su lugar.
+  const look = [nombre, price, image, comboTitle, isCombo].join('\u0001');
+  const html = `
+    <article class="sales-product-card ${stockClass}" data-product-id="${Number(product.id)}" onclick="addProductById(${product.id})" title="${escapeHtml(`${nombre}${comboTitle}`)}">
       <div class="sales-product-media"${isCombo ? ' style="position:relative"' : ''}>
         ${isCombo ? '<span class="sales-product-combo-badge">Combo</span>' : ''}
-        <img class="sales-product-image" src="${getSalesProductImage(product)}" alt="${nombre}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
+        <img class="sales-product-image" src="${image}" alt="${nombre}" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
       </div>
       <div class="sales-product-body">
         <div class="sales-product-name">${nombre}</div>
-        <div class="sales-product-price">${fmt(getProductFinalPriceWithItbis(product))}</div>
+        <div class="sales-product-price">${price}</div>
         ${stockLabel ? `<div class="sales-product-stock ${stockClass}">${stockLabel}</div>` : ''}
       </div>
     </article>`;
-  }).join('');
+  return { html, sig, look, stockLabel, stockClass };
+}
+
+// Solo cambió la existencia (lo común al agregar al carrito): se cambia el texto
+// en la misma tarjeta. Reemplazar la tarjeta obliga al navegador a reacomodar
+// todo el catálogo, que con miles de tarjetas tardaba casi un segundo.
+function patchSalesCatalogCardStock(node, card) {
+  node.className = `sales-product-card ${card.stockClass}`.trim();
+  let stockEl = node.querySelector('.sales-product-stock');
+  if (!card.stockLabel) {
+    stockEl?.remove();
+  } else {
+    if (!stockEl) {
+      stockEl = document.createElement('div');
+      node.querySelector('.sales-product-body')?.appendChild(stockEl);
+    }
+    stockEl.className = `sales-product-stock ${card.stockClass}`.trim();
+    stockEl.textContent = card.stockLabel;
+  }
+  node._salesSig = card.sig;
+}
+
+function appendSalesCatalogPage(grid) {
+  const state = salesCatalogState;
+  if (state.grid !== grid) return;
+  const next = state.products.slice(state.rendered, state.rendered + SALES_CATALOG_PAGE);
+  grid.querySelector('.sales-catalog-more')?.remove();
+  if (!next.length) return;
+  const cartQtyMap = getCartQtyMap();
+  const cards = next.map((product) => buildSalesCatalogCard(product, cartQtyMap));
+  grid.insertAdjacentHTML('beforeend', cards.map((card) => card.html).join(''));
+  // La firma va en una propiedad (no en el HTML): sirve para no repintar lo que no cambió.
+  const nodes = grid.querySelectorAll('.sales-product-card');
+  for (let i = 0; i < cards.length; i += 1) {
+    const node = nodes[state.rendered + i];
+    if (node) {
+      node._salesSig = cards[i].sig;
+      node._salesLook = cards[i].look;
+    }
+  }
+  state.rendered += next.length;
+  if (state.rendered < state.products.length) {
+    grid.insertAdjacentHTML('beforeend', `<div class="sales-catalog-more" aria-hidden="true">Mostrando ${state.rendered} de ${state.products.length}… baja para ver más</div>`);
+    watchSalesCatalogEnd(grid);
+  }
+}
+
+// Al acercarse al final del catálogo se pinta la siguiente tanda.
+function watchSalesCatalogEnd(grid) {
+  const sentinel = grid.querySelector('.sales-catalog-more');
+  if (!sentinel) return;
+  if (typeof IntersectionObserver === 'function') {
+    if (!salesCatalogObserver || salesCatalogObserverRoot !== grid) {
+      salesCatalogObserver?.disconnect();
+      salesCatalogObserverRoot = grid;
+      salesCatalogObserver = new IntersectionObserver((entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) appendSalesCatalogPage(grid);
+      }, { root: grid, rootMargin: '0px 0px 800px 0px' });
+    }
+    salesCatalogObserver.disconnect();
+    salesCatalogObserver.observe(sentinel);
+    return;
+  }
+  if (!grid._salesScrollWatch) {
+    grid._salesScrollWatch = true;
+    grid.addEventListener('scroll', () => {
+      if (grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 800) appendSalesCatalogPage(grid);
+    }, { passive: true });
+  }
+}
+
+// Repinta solo las tarjetas ya pintadas cuya información cambió (por ejemplo
+// la existencia al agregar al carrito), en vez de rehacer todo el catálogo.
+function refreshRenderedSalesCatalogCards(grid) {
+  const state = salesCatalogState;
+  const nodes = grid.querySelectorAll('.sales-product-card');
+  const cartQtyMap = getCartQtyMap();
+  const limit = Math.min(state.rendered, nodes.length, state.products.length);
+  for (let i = 0; i < limit; i += 1) {
+    // Primero la firma barata; el HTML solo se arma para las tarjetas que cambiaron.
+    if (nodes[i]._salesSig === salesCatalogCardSig(state.products[i], cartQtyMap)) continue;
+    const card = buildSalesCatalogCard(state.products[i], cartQtyMap);
+    if (nodes[i]._salesLook === card.look) {
+      patchSalesCatalogCardStock(nodes[i], card);
+      continue;
+    }
+    nodes[i].insertAdjacentHTML('afterend', card.html);
+    const replacement = nodes[i].nextElementSibling;
+    nodes[i].remove();
+    if (replacement) {
+      replacement._salesSig = card.sig;
+      replacement._salesLook = card.look;
+    }
+  }
 }
 
 function getSalesProductImage(product) {
@@ -4458,7 +4770,7 @@ function openBillingModal() {
       DB.saleTableLabel = mesaActiva.tableLabel;
     }
   }
-  // setSaleNcfType() (abajo, y también setPayMethod con tarjeta) limpia RNC,
+  // setSaleNcfType() (abajo) limpia RNC,
   // razón social y factura de referencia: al reanudar se devuelven las que el
   // cajero ya había escrito.
   const resumedFiscal = resumeDraft
@@ -4983,7 +5295,7 @@ function _doSearchProduct(query) {
         </div>
       </div>
       <div class="sri-side">
-        <div class="sri-price">${fmt(p.precioVenta)}</div>
+        <div class="sri-price">${fmt(typeof getProductFinalPriceWithItbis === 'function' ? getProductFinalPriceWithItbis(p) : p.precioVenta)}</div>
         <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${isComboProduct(p)?`Combo · Disp: ${getComboAvailableQty(p) ?? '—'}`:(p.tracksStock===false?'':(p.stock===0?(!p.branchId?'Sin stock en esta sucursal':'Agotado'):'Stock: '+p.stock))}</div>
       </div>
     </div>
@@ -5144,7 +5456,14 @@ async function addProductById(id) {
   let nextQty = 1;
   let lineExtra = {};
 
-  if (saleMode === 'peso') {
+  if (saleMode === 'peso' && isWeightTotalEditEnabled() && getSaleScaleConfig().type === 'none') {
+    // Sin báscula y con "modificar el total" activo: entra 1 unidad de peso sin
+    // ventanas; el cajero toca el Total y escribe el monto final.
+    lineExtra = {
+      weightUnit: getSaleScaleUtils().getProductWeightUnit(prod, getSaleScaleConfig().defaultUnit),
+      scaleSource: 'manual'
+    };
+  } else if (saleMode === 'peso') {
     // Si hay un peso fresco de la báscula TCP (< 4s), usarlo directamente sin prompt
     if (addBasculaTcpWeightToProduct(prod)) return;
 
@@ -5366,7 +5685,9 @@ function renderSaleTable() {
           ? `
             <div class="sale-weight">
               <span class="sale-weight-value">${escapeHtml(formatSaleItemQuantity(item, item.qty, { includeUnit: true }))}</span>
-              <button class="tc-btn sale-weight-btn" type="button" onclick="reweighSaleItem(${idx})">${saleIcon('scale', 18)}<span>Leer peso</span></button>
+              ${getSaleScaleConfig().type === 'none' && isWeightTotalEditEnabled()
+                ? ''
+                : `<button class="tc-btn sale-weight-btn" type="button" onclick="reweighSaleItem(${idx})">${saleIcon('scale', 18)}<span>Leer peso</span></button>`}
             </div>
           `
           : `
@@ -5384,7 +5705,12 @@ function renderSaleTable() {
         </label>`}
       </td>
       <td class="col-itbis" id="sale-item-itbis-${idx}" title="${getSaleItemTaxRateText(item)}">${formatSaleTableAmount(getSaleItemTaxForTable(item))}</td>
-      <td class="col-total" id="sale-item-total-${idx}">${formatSaleTableAmount(item.total)}</td>
+      ${canEditSaleLineTotal(item)
+        ? `<td class="col-total sale-total-editable" id="sale-item-total-${idx}" role="button" tabindex="0"
+            title="Toca para escribir el total; la cantidad se calcula sola"
+            onclick="startSaleLineTotalEdit(${idx})"
+            onkeydown="if(event.key==='Enter'||event.key===' '||event.key==='F2'){event.preventDefault();startSaleLineTotalEdit(${idx})}"><span class="sale-total-value">${formatSaleTableAmount(item.total)}</span></td>`
+        : `<td class="col-total" id="sale-item-total-${idx}">${formatSaleTableAmount(item.total)}</td>`}
       <td class="col-remove">${customCombo ? '' : `<button class="sale-remove-btn" type="button" onclick="removeItem(${idx})" title="Quitar producto" aria-label="Quitar ${escapeHtml(name ?? 'producto')}">${saleIcon('trash-2', 20)}</button>`}</td>
     </tr>
   `;
@@ -5466,12 +5792,83 @@ function getGeneralDiscountValue() {
   return parseFloat(DB.saleGeneralDiscount || 0) || 0;
 }
 
+// ── Editar el total de una línea por peso (sin ventanas) ──────────────────
+// Toca/clic en el Total → campo con el monto seleccionado → Enter confirma
+// (también al salir del campo) y Escape lo deja como estaba.
+function startSaleLineTotalEdit(idx) {
+  const item = DB.saleItems[idx];
+  const cell = document.getElementById(`sale-item-total-${idx}`);
+  if (!item || !cell || !canEditSaleLineTotal(item) || cell.querySelector('.sale-total-input')) return;
+  const previous = formatSaleTableAmount(item.total);
+  cell.innerHTML = `<input class="sale-total-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+    value="${Number(item.total || 0).toFixed(2)}" aria-label="Total de ${escapeHtml(item.nombre || 'la línea')}">`;
+  const input = cell.querySelector('.sale-total-input');
+  let finished = false;
+  const finish = (commit) => {
+    if (finished) return;
+    finished = true;
+    if (!commit || !commitSaleLineTotalEdit(idx, input.value)) {
+      cell.innerHTML = `<span class="sale-total-value">${previous}</span>`;
+    }
+    focusSalesSearchInput({ force: true });
+  };
+  input.addEventListener('keydown', (event) => {
+    event.stopPropagation(); // los atajos de la pantalla de ventas no toman estas teclas
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (event) => event.stopPropagation());
+  input.focus();
+  input.select();
+}
+
+// true si aplicó el monto (la tabla ya se volvió a pintar).
+function commitSaleLineTotalEdit(idx, rawValue) {
+  const item = DB.saleItems[idx];
+  if (!item || !canEditSaleLineTotal(item)) return false;
+  const monto = window.VentaPorMonto?.leerNumero(rawValue);
+  const current = roundSaleMoney(item.total);
+  if (Number.isFinite(monto) && roundSaleMoney(monto) === current) return false; // sin cambio
+  if (!(monto > 0) || monto > (window.VentaPorMonto?.MONTO_MAXIMO || 9999999)) {
+    showToast('Escribe un total mayor que cero.', 'warning');
+    return false;
+  }
+  const next = applyFinalAmountToSaleItem(item, monto);
+  if (!next) {
+    showToast('No se pudo calcular la cantidad: revisa el precio y el descuento del producto.', 'warning');
+    return false;
+  }
+  // Existencia disponible (lo que hay menos lo que ya aparta el resto del carrito).
+  const product = findProductForSaleItem(item);
+  if (product && product.tracksStock !== false) {
+    const available = Number(product.stock || 0) - getCartQtyForProduct(product.id, idx);
+    if (next.qty > available + 0.0001) {
+      showToast(`Solo quedan ${formatSaleItemQuantity(next, Math.max(0, available), { includeUnit: true })} de "${product.nombre}".`, 'warning');
+      return false;
+    }
+  }
+  DB.saleItems[idx] = next;
+  renderSaleTable();
+  updateTotals();
+  return true;
+}
+
 function syncSaleRowDisplay(idx) {
   const item = DB.saleItems[idx];
   if (!item) return;
 
   const totalCell = document.getElementById(`sale-item-total-${idx}`);
-  if (totalCell) totalCell.textContent = formatSaleTableAmount(item.total);
+  // Mientras el cajero escribe el total (startSaleLineTotalEdit) no se pisa el campo.
+  if (totalCell && !totalCell.querySelector('.sale-total-input')) {
+    const totalValue = totalCell.querySelector('.sale-total-value');
+    (totalValue || totalCell).textContent = formatSaleTableAmount(item.total);
+  }
 
   const taxCell = document.getElementById(`sale-item-itbis-${idx}`);
   if (taxCell) taxCell.textContent = formatSaleTableAmount(getSaleItemTaxForTable(item));
@@ -5551,6 +5948,9 @@ function updateItemPrice(idx, val) {
 }
 function updateItemDisc(idx, val) {
   if (isCustomComboSaleItem(DB.saleItems[idx])) return;
+  // Otro descuento sobre una línea con el total editado: vuelve a precio ×
+  // cantidad (el descuento nunca se esconde dentro del precio).
+  DB.saleItems[idx] = clearSaleLineFinalAmount(DB.saleItems[idx]);
   DB.saleItems[idx].descuento = Math.min(100, Math.max(0, parseFloat(val) || 0));
   DB.saleItems[idx].total = calcItemTotal(DB.saleItems[idx]);
   syncSaleRowDisplay(idx);
@@ -5663,12 +6063,10 @@ function setPayMethod(method, el) {
   DB.payMethod = method;
   document.querySelectorAll('.pay-method').forEach(b => b.classList.remove('active'));
   el?.classList.add('active');
-  // Pago con tarjeta siempre se factura con NCF fiscal — por defecto B02 (Consumidor
-  // Final), salvo que el cajero ya haya puesto B01 porque el cliente lo pidió con RNC
-  // (no se sobreescribe). Sigue siendo editable: el cajero puede cambiarlo después.
-  if (method === 'tarjeta' && DB.saleNcfType !== 'B01') {
-    setSaleNcfType('B02');
-  }
+  // El método de pago NO cambia el comprobante: tarjeta y transferencia se cobran
+  // con Ticket o con el que elija el cajero, sin exigir secuencias activas. Antes
+  // la tarjeta forzaba B02 (y, como syncSaleFiscalControls vuelve a llamar aquí,
+  // no dejaba elegir Ticket): sin secuencia B02 no se podía cobrar con tarjeta.
   // Recalcular totales ANTES de prellenar el monto a cobrar más abajo — el ITBIS de
   // cada producto es el mismo sin importar el método de pago, pero el total mostrado
   // debe estar actualizado antes de copiarlo al campo de monto a cobrar.
@@ -7101,6 +7499,12 @@ function buildSalePayload() {
         scaleMeasuredUnit: normalizedItem.scaleMeasuredUnit,
         scaleSource: normalizedItem.scaleSource,
         scaleRawReading: normalizedItem.scaleRawReading,
+        // Total editado en un producto por peso: el servidor recalcula cantidad e
+        // importes con el precio de la base y cobra exacto este monto.
+        ...(Number(normalizedItem.montoFinal) > 0 ? { montoFinal: Number(normalizedItem.montoFinal) } : {}),
+        // ITBIS incluido en el precio: el servidor lo vuelve a leer del producto;
+        // la venta sin conexión lo usa para no recalcular la línea con una oferta.
+        ...(normalizedItem.itbisIncluido ? { itbisIncluido: true, precioFinalUnit: Number(normalizedItem.precioFinalUnit) } : {}),
         quickSale: normalizedItem.quickSale === true,
         // Combo personalizado: a qué combo pertenece la línea (el servidor
         // vuelve a calcular el combo con los precios de la base).
@@ -7990,20 +8394,33 @@ function shouldUseReceiptMirrorPrint() {
 
 const receiptLogoMonoCache = new Map();
 
-async function convertLogoToEscposMonochrome(logoDataUrl, maxWidthPx) {
+// Tamaño del logo (Configuración → Datos del Negocio): % de 30 a 100 del ancho
+// de siempre (400 puntos en 80 mm, 280 en 58 mm). Sin dato = 100.
+function getReceiptLogoScaleFactor(value = getReceiptConfigValue('invoiceLogoScale')) {
+  const pct = window.FacturaPlantillas?.normalizarEscalaLogo
+    ? window.FacturaPlantillas.normalizarEscalaLogo(value)
+    : Math.min(100, Math.max(30, Math.round(Number(value)) || 100));
+  return pct / 100;
+}
+
+function getReceiptLogoMaxPx(paperSize) {
+  return String(paperSize || '').toLowerCase() === '58mm' ? 280 : 400;
+}
+
+async function convertLogoToEscposMonochrome(logoDataUrl, maxWidthPx, factor = 1) {
   if (!logoDataUrl || !maxWidthPx) return null;
-  const cacheKey = `${maxWidthPx}:${logoDataUrl}`;
+  const cacheKey = `${maxWidthPx}:${factor}:${logoDataUrl}`;
   if (receiptLogoMonoCache.has(cacheKey)) {
     return receiptLogoMonoCache.get(cacheKey);
   }
-  const conversion = convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx);
+  const conversion = convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx, factor);
   receiptLogoMonoCache.set(cacheKey, conversion);
   const result = await conversion;
   receiptLogoMonoCache.set(cacheKey, Promise.resolve(result));
   return result;
 }
 
-async function convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx) {
+async function convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx, factor = 1) {
   try {
     return await new Promise((resolve) => {
       const img = new Image();
@@ -8038,9 +8455,10 @@ async function convertLogoToEscposMonochromeUncached(logoDataUrl, maxWidthPx) {
           const cropW = hasContent ? (maxX - minX + 1) : img.width;
           const cropH = hasContent ? (maxY - minY + 1) : img.height;
 
-          const scale = Math.min(1, maxWidthPx / cropW);
-          const w = Math.round(cropW * scale);
-          const h = Math.round(cropH * scale);
+          // El factor reduce sobre el tamaño de siempre (también un logo chico).
+          const scale = Math.min(1, maxWidthPx / cropW) * (factor > 0 && factor <= 1 ? factor : 1);
+          const w = Math.max(8, Math.round(cropW * scale));
+          const h = Math.max(1, Math.round(cropH * scale));
           const printW = Math.ceil(w / 8) * 8; // ancho múltiplo de 8 para ESC/POS
           const canvas = document.createElement('canvas');
           canvas.width = printW;
@@ -8077,13 +8495,13 @@ async function warmReceiptPrintPipeline() {
   const paperSize = String(getReceiptConfigValue('receiptPaperSize') || '80mm').toLowerCase();
   const configuredPrinterName = String(getReceiptConfigValue('receiptPrinterName') || '').trim();
   const logoDataUrl = getReceiptConfigValue('logo') || '';
-  const maxLogoPx = paperSize === '58mm' ? 280 : 400;
+  const maxLogoPx = getReceiptLogoMaxPx(paperSize);
   await Promise.all([
     configuredPrinterName
       ? Promise.resolve(configuredPrinterName)
       : resolveReceiptPrinterName(''),
     logoDataUrl
-      ? convertLogoToEscposMonochrome(logoDataUrl, maxLogoPx)
+      ? convertLogoToEscposMonochrome(logoDataUrl, maxLogoPx, getReceiptLogoScaleFactor())
       : Promise.resolve(null),
   ]);
 }
@@ -8107,8 +8525,10 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
     : '';
 
   const logoDataUrl = getReceiptConfigValue('logo') || '';
-  const maxLogoPx = normalizedPaperSize === '58mm' ? 280 : 400;
-  const logoMono = logoDataUrl ? await convertLogoToEscposMonochrome(logoDataUrl, maxLogoPx) : null;
+  const maxLogoPx = getReceiptLogoMaxPx(normalizedPaperSize);
+  const logoMono = logoDataUrl
+    ? await convertLogoToEscposMonochrome(logoDataUrl, maxLogoPx, getReceiptLogoScaleFactor())
+    : null;
   // Mismas filas que el ticket en pantalla (getReceiptTemplateData y
   // buildThermal*Rows): electron/thermal-printer.js las imprime tal cual.
   const templateData = getReceiptTemplateData(venta);
@@ -9317,7 +9737,8 @@ function ventaToFormalDoc(venta) {
 function buildFormalInvoiceMarkup(venta) {
   return window.FacturaPlantillas.render(ventaToFormalDoc(venta), {
     plantilla: getReceiptConfigValue('invoiceTemplate'),
-    color: getReceiptConfigValue('invoiceAccentColor')
+    color: getReceiptConfigValue('invoiceAccentColor'),
+    logoEscala: getReceiptConfigValue('invoiceLogoScale')
   });
 }
 

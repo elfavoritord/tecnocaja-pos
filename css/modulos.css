@@ -2728,6 +2728,143 @@ svg.tc-emoji-icon {
   outline-offset: 2px;
 }
 
+/* ── Tamaño del logo en facturas y tickets (Datos del Negocio) ─────────────
+   El papel se ve blanco en día y noche, igual que las miniaturas de abajo. */
+#cfg-logo-size .tc-logo-size__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tc-space-2);
+}
+
+#cfg-logo-size .tc-logo-size__step {
+  min-width: 40px;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+#cfg-logo-size .tc-logo-size__step:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+#cfg-logo-size .tc-logo-size__range {
+  flex: 1 1 140px;
+  min-width: 120px;
+  accent-color: var(--tc-select-border);
+}
+
+#cfg-logo-size .tc-logo-size__value {
+  min-width: 4ch;
+  color: var(--tc-text);
+  font-weight: var(--tc-weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+#cfg-logo-size .tc-logo-size__preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--tc-space-3);
+  margin-top: var(--tc-space-2);
+  padding: var(--tc-space-3);
+  border: var(--tc-border-w) solid var(--tc-border);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface-2);
+}
+
+#cfg-logo-size .tc-logo-size__preview.is-empty .tc-logo-size__fig {
+  display: none;
+}
+
+#cfg-logo-size .tc-logo-size__fig {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--tc-space-1);
+  margin: 0;
+}
+
+#cfg-logo-size .tc-logo-size__fig figcaption,
+#cfg-logo-size .tc-logo-size__empty {
+  margin: 0;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+}
+
+/* Factura: la hoja A4 real (794 px) reducida a 260 px; se ve el encabezado. */
+#cfg-logo-size .tc-logo-size__a4 {
+  position: relative;
+  width: 260px;
+  height: 150px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+#cfg-logo-size .tc-logo-size__a4-inner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 794px;
+  transform: scale(0.3275);
+  transform-origin: top left;
+  pointer-events: none;
+}
+
+#cfg-logo-size .tc-logo-size__a4 .tcfac-root {
+  padding: 0;
+  background: #fff;
+}
+
+#cfg-logo-size .tc-logo-size__a4 .tcfac-root .tcf-page {
+  margin: 0;
+  filter: none;
+}
+
+/* Ticket: papel a escala (2.5 px por mm) con el logo en blanco y negro, tal
+   como lo imprime la térmica (renderLogoScalePreview en app.js). */
+#cfg-logo-size .tc-logo-size__ticket {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 14px;
+  border-radius: 2px;
+  background: #fff;
+  color: #111;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+#cfg-logo-size .tc-logo-size__ticket-logo {
+  display: block;
+  image-rendering: pixelated;
+}
+
+#cfg-logo-size .tc-logo-size__ticket-name {
+  padding: 0 8px;
+  font: 700 11px/1.2 'Courier New', monospace;
+  text-align: center;
+}
+
+#cfg-logo-size .tc-logo-size__ticket-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 80%;
+}
+
+#cfg-logo-size .tc-logo-size__ticket-lines span {
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: #d1d5db;
+}
+
+#cfg-logo-size .tc-logo-size__ticket-lines span:nth-child(2) { width: 70%; }
+#cfg-logo-size .tc-logo-size__ticket-lines span:nth-child(4) { width: 55%; margin-left: auto; }
+
 /* Miniatura: la factura A4 real (210 mm = 794 px) reducida a 154 px. */
 #cfg-invoice-design .tc-fp-thumb {
   position: relative;

@@ -3,24 +3,26 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-function harness(signedReceipt) {
+function harness(signedReceipt, { confirmAnswer = false, items } = {}) {
   const state = { currentStep: 9, completedSteps: [1,2,3,4,5,6,7,8], steps: {}, progress: 53 };
   const elements = {
     'ecf-cert-wz-css': {}, 'fiscal-tab-homologation': {},
     'ecf-wz-sidebar': {}, 'ecf-wz-content': { style: {} },
-    'ecf-wz-reception-retry': {},
+    'ecf-wz-reception-retry': {}, 'ecf-wz-gateway-code': { value: '' },
     'ecf-wz-gateway-status': {}, 'ecf-wz-step9-list': { getClientRects: () => [{}] },
   };
   const calls = [];
+  const received = items || [{ type: 'recepcion-ecf', receivedAt: '2026-11-15T04:00:00Z', meta: { encf: 'E310000000004', signedReceipt } }];
   const context = { console, Date, setTimeout: jest.fn(), clearTimeout: jest.fn(),
     requestAnimationFrame: callback => callback(),
     document: { getElementById: id => elements[id] || null },
     localStorage: { getItem: () => null, setItem: jest.fn() },
     showFiscalToast: jest.fn(),
+    confirm: jest.fn(() => confirmAnswer),
     fiscalApi: jest.fn(async (method, url, data) => {
       calls.push({ method, url, data });
       if (url === '/wizard/state') return { state };
-      if (url === '/reception/received') return { items: [{ type: 'recepcion-ecf', receivedAt: '2026-11-15T04:00:00Z', meta: { encf: 'E310000000004', signedReceipt } }] };
+      if (url === '/reception/received') return { items: received };
       return { ok: true };
     }),
   };
@@ -29,30 +31,67 @@ function harness(signedReceipt) {
   return { context, elements, calls, wizard: context.wizard };
 }
 
+const savedState = (h) => h.calls.filter(c => c.method === 'POST' && c.url === '/wizard/state');
+
 test('el paso 9 espera y actualiza la recepción sin intentar conectar la nube', async () => {
   const h = harness(true);
   await h.wizard.init();
   await Promise.resolve();
   await Promise.resolve();
   expect(h.calls).toContainEqual({ method: 'GET', url: '/reception/received', data: undefined });
-  expect(h.calls).not.toContainEqual({ method: 'POST', url: '/reception/connect-gateway', data: {} });
-  expect(h.elements['ecf-wz-step9-list'].innerHTML).toContain('Acuse firmado');
+  expect(h.calls.some(c => c.url === '/reception/connect-gateway')).toBe(false);
+  expect(h.elements['ecf-wz-step9-list'].innerHTML).toContain('ARECF firmado');
   expect(h.context.setTimeout).toHaveBeenCalledWith(expect.any(Function), 8000);
 });
-test('un comprobante antiguo con acuse sin firma no completa la prueba', async () => {
+
+test('conectar la recepción exige el código y lo envía al servidor', async () => {
   const h = harness(false);
   await h.wizard.init();
-  await h.wizard._pollStep9();
-  await h.wizard.runStep9ecf();
-  expect(h.elements['ecf-wz-step9-list'].innerHTML).toContain('acuse sin firma');
-  expect(h.calls.filter(c => c.method === 'POST' && c.url === '/wizard/state')).toHaveLength(0);
-  expect(h.context.showFiscalToast).toHaveBeenCalled();
+  await h.wizard.connectReceptionGateway();
+  expect(h.calls.some(c => c.url === '/reception/connect-gateway')).toBe(false);
+  expect(h.elements['ecf-wz-gateway-status'].textContent).toContain('código de conexión');
+
+  // Acepta la línea del archivo de soporte tal cual.
+  h.elements['ecf-wz-gateway-code'].value = '  ECF_GATEWAY_TOKEN=132967161.abc123  ';
+  await h.wizard.connectReceptionGateway();
+  expect(h.calls).toContainEqual({ method: 'POST', url: '/reception/connect-gateway', data: { token: '132967161.abc123' } });
+  expect(h.elements['ecf-wz-gateway-code'].value).toBe('');
+  expect(h.elements['ecf-wz-gateway-status'].textContent).toContain('Recepción conectada');
 });
-test('con acuse firmado permite confirmar la validación realizada por DGII', async () => {
+
+test('un acuse sin firma se marca y pide confirmar antes de completar', async () => {
+  const h = harness(false, { confirmAnswer: false });
+  await h.wizard.init();
+  await h.wizard._pollStep9();
+  expect(h.elements['ecf-wz-step9-list'].innerHTML).toContain('ARECF sin firma');
+  await h.wizard.runStep9ecf();
+  expect(h.context.confirm).toHaveBeenCalled();
+  expect(savedState(h)).toHaveLength(0);
+});
+
+test('si la DGII ya lo aprobó se puede continuar con el acuse sin firma', async () => {
+  const h = harness(false, { confirmAnswer: true });
+  await h.wizard.init();
+  await h.wizard.runStep9ecf();
+  const saved = savedState(h).pop();
+  expect(saved.data.state.currentStep).toBe(10);
+  expect(saved.data.state.completedSteps).toContain(9);
+});
+
+test('con acuse firmado completa sin preguntar', async () => {
   const h = harness(true);
   await h.wizard.init();
   await h.wizard.runStep9ecf();
-  const saved = h.calls.find(c => c.method === 'POST' && c.url === '/wizard/state');
+  expect(h.context.confirm).not.toHaveBeenCalled();
+  const saved = savedState(h).pop();
   expect(saved.data.state.currentStep).toBe(10);
   expect(saved.data.state.completedSteps).toContain(9);
+});
+
+test('sin nada recibido avisa y no completa', async () => {
+  const h = harness(true, { items: [] });
+  await h.wizard.init();
+  await h.wizard.runStep9ecf();
+  expect(h.context.showFiscalToast).toHaveBeenCalled();
+  expect(savedState(h)).toHaveLength(0);
 });

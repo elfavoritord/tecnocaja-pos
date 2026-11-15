@@ -437,6 +437,51 @@
   background: var(--tc-surface);
 }
 
+/* Total editable de una línea por peso (Configuración → Facturación →
+   "Permitir modificar el total en productos por peso"): igual que el descuento,
+   se ve como texto y se edita en el mismo sitio. */
+#module-ventas .sale-table td.sale-total-editable {
+  cursor: text;
+}
+
+#module-ventas .sale-total-editable .sale-total-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 72px;
+  height: var(--tc-control-h);
+  padding: 0 6px;
+  border: var(--tc-border-w) dashed var(--tc-border);
+  border-radius: var(--tc-radius-btn);
+}
+
+#module-ventas .sale-total-editable:hover .sale-total-value,
+#module-ventas .sale-total-editable:focus-visible .sale-total-value {
+  border-style: solid;
+  border-color: var(--tc-primary);
+  outline: none;
+}
+
+#module-ventas .sale-total-editable:focus-visible {
+  outline: none;
+}
+
+#module-ventas .sale-table .sale-total-input {
+  width: 92px;
+  height: var(--tc-control-h);
+  padding: 0 6px;
+  border: var(--tc-border-w) solid var(--tc-primary);
+  border-radius: var(--tc-radius-btn);
+  box-shadow: inset 0 0 0 1px var(--tc-primary);
+  background: var(--tc-surface);
+  color: var(--tc-text);
+  font-family: var(--tc-font);
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-bold);
+  text-align: right;
+  outline: none;
+}
+
 #module-ventas .sale-table .disc-input {
   width: 38px;
   min-width: 0;
@@ -524,6 +569,19 @@
   background: var(--tc-surface);
   box-shadow: none;
   transition: none;
+  /* Con miles de productos: el navegador no dibuja las tarjetas que no se ven
+     (el scroll sigue suave). "auto" recuerda el alto real una vez dibujada. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 190px;
+}
+
+/* Fin de la tanda pintada (renderSalesCatalog): al acercarse se pinta la siguiente. */
+.sales-catalog-grid .sales-catalog-more {
+  grid-column: 1 / -1;
+  padding: var(--tc-space-3, 12px) 0;
+  color: var(--tc-text-2, inherit);
+  font-size: var(--tc-fs-sm, 0.85rem);
+  text-align: center;
 }
 
 #module-ventas .sales-product-card:hover {

@@ -16,6 +16,8 @@ const { esEmpresaServicios, esServicio } = require('../services/articulos');
 const { fetchDateActiveRows, isActiveOnDate } = require('../services/promotion-engine');
 const { claveProducto, claveFotoProducto, METODOS_PAGO } = require('./contrato');
 const { leerFotosExtra } = require('./fotos');
+// ITBIS incluido en el precio (método 3): el mismo cálculo que la caja.
+const VentaPorMonto = require('../../js/venta-por-monto');
 
 function pad2(n) {
   return String(n).padStart(2, '0');
@@ -164,7 +166,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
   async function readProducts({ branchId, primaryBranchId }) {
     return query(
       `SELECT p.id, p.codigo, p.nombre, p.categoria, p.marca, p.product_type, p.online_created_at, p.unidad, p.sale_mode, p.precio_venta, p.estado,
-              p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.tracks_stock, p.discount_percent, p.branch_id,
+              p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.itbis_incluido, p.tracks_stock, p.discount_percent, p.branch_id,
               p.image_url, p.image_local, p.online_images, p.online_description, p.online_featured, p.online_order,
               p.online_stock_mode, p.stock AS legacy_stock,
               ib.stock AS branch_stock,
@@ -248,7 +250,17 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
         creadoEn: fechaIso(row.online_created_at),
         unidad: String(row.unidad || 'Unidad'),
         modoVenta: ['peso', 'medida'].includes(String(row.sale_mode)) ? String(row.sale_mode) : 'unidad',
-        precio: Number(row.precio_venta || 0),
+        // Con el ITBIS incluido en el precio (método 3) se publica el precio SIN
+        // ITBIS: la tienda le suma su ITBIS y el cliente ve el mismo precio final
+        // que en la caja (js/venta-por-monto.js).
+        precio: aplicaItbis && Number(row.itbis_incluido || 0) === 1
+          ? VentaPorMonto.precioBaseIncluido({
+            precioFinal: Number(row.precio_venta || 0),
+            modoItbis: itbis?.modo === 'monto' ? 'monto' : 'porcentaje',
+            tasaItbis: itbis?.modo === 'monto' ? 0 : Number(taxRate || 0),
+            itbisPorUnidad: itbis?.modo === 'monto' ? Number(itbis.monto || 0) : 0,
+          })
+          : Number(row.precio_venta || 0),
         descuentoPct: Math.min(100, Math.max(0, Number(row.discount_percent || 0))),
         itbis,
         controlaStock,
@@ -366,7 +378,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
     const rows = await query(
       `SELECT p.id, p.estado, p.tracks_stock, p.online_stock_mode, p.branch_id, p.stock AS legacy_stock,
               p.nombre, p.categoria, p.unidad, p.sale_mode, p.precio_venta, p.discount_percent,
-              p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.image_local,
+              p.aplica_itbis, p.itbis_modo, p.itbis_monto, p.itbis_incluido, p.image_local,
               LENGTH(COALESCE(p.image_url, '')) AS image_len, SUBSTR(COALESCE(p.image_url, ''), -32) AS image_tail,
               p.online_description, p.online_featured, p.online_order, p.online_images,
               ib.stock AS branch_stock,
@@ -386,7 +398,7 @@ function createCatalogBuilder({ query, nowSql = null, getLicenseId = () => '', r
         row.id, row.estado, row.tracks_stock, row.online_stock_mode, row.branch_id,
         row.nombre, row.categoria, row.unidad, row.sale_mode, Number(row.precio_venta || 0), Number(row.discount_percent || 0),
         row.aplica_itbis, row.itbis_modo, Number(row.itbis_monto || 0), row.image_local, Number(row.image_len || 0), row.image_tail,
-        row.online_description, row.online_featured, row.online_order, row.online_images,
+        row.online_description, row.online_featured, row.online_order, row.online_images, Number(row.itbis_incluido || 0),
       ]));
     }
     const stock = {};

@@ -8,8 +8,11 @@
 const FacturaPlantillas = require('../js/factura-plantillas.js');
 const {
   INVOICE_TEMPLATES,
+  INVOICE_LOGO_SCALE_MIN,
+  INVOICE_LOGO_SCALE_MAX,
   sanitizeInvoiceTemplate,
-  sanitizeInvoiceAccentColor
+  sanitizeInvoiceAccentColor,
+  sanitizeInvoiceLogoScale
 } = require('../server/utils/invoice-design');
 
 function documento(overrides = {}) {
@@ -189,5 +192,47 @@ describe('server/utils/invoice-design', () => {
     expect(sanitizeInvoiceAccentColor('red')).toBeNull();
     expect(sanitizeInvoiceAccentColor('#fff')).toBeNull();
     expect(sanitizeInvoiceAccentColor('#123456; background:url(x)')).toBeNull();
+  });
+
+  test('sanitizeInvoiceLogoScale: de 30 a 100, sin dato = null', () => {
+    expect(sanitizeInvoiceLogoScale(60)).toBe(60);
+    expect(sanitizeInvoiceLogoScale('45')).toBe(45);
+    expect(sanitizeInvoiceLogoScale(10)).toBe(30);
+    expect(sanitizeInvoiceLogoScale(250)).toBe(100);
+    expect(sanitizeInvoiceLogoScale('')).toBeNull();
+    expect(sanitizeInvoiceLogoScale(undefined)).toBeNull();
+    expect(sanitizeInvoiceLogoScale('abc')).toBeNull();
+    expect(sanitizeInvoiceLogoScale('50; drop table')).toBeNull();
+  });
+
+  test('los límites del servidor coinciden con los del renderer', () => {
+    expect(INVOICE_LOGO_SCALE_MIN).toBe(FacturaPlantillas.LOGO_ESCALA_MINIMA);
+    expect(INVOICE_LOGO_SCALE_MAX).toBe(FacturaPlantillas.LOGO_ESCALA_MAXIMA);
+  });
+});
+
+describe('Tamaño del logo', () => {
+  const conLogo = () => documento({ empresa: { nombre: 'Colmado', logo: 'data:image/png;base64,AAAA' } });
+
+  test.each(FacturaPlantillas.PLANTILLAS.map((p) => p.id))('%s: sin dato queda el tamaño de siempre', (plantilla) => {
+    const html = FacturaPlantillas.render(conLogo(), { plantilla });
+    expect(html).toContain('--tcf-logo:1"');
+    expect(html).toMatch(/max-height:calc\(\d+mm \* var\(--tcf-logo, 1\)\)/);
+  });
+
+  test.each(FacturaPlantillas.PLANTILLAS.map((p) => p.id))('%s: el porcentaje reduce el logo', (plantilla) => {
+    expect(FacturaPlantillas.render(conLogo(), { plantilla, logoEscala: 50 })).toContain('--tcf-logo:0.5"');
+  });
+
+  test('no se agranda ni baja de 30 %', () => {
+    expect(FacturaPlantillas.render(conLogo(), { logoEscala: 300 })).toContain('--tcf-logo:1"');
+    expect(FacturaPlantillas.render(conLogo(), { logoEscala: 5 })).toContain('--tcf-logo:0.3"');
+    expect(FacturaPlantillas.render(conLogo(), { logoEscala: 'x' })).toContain('--tcf-logo:1"');
+  });
+
+  test('la representación impresa del e-CF también lo respeta', () => {
+    const html = FacturaPlantillas.render({ ...conLogo(), fiscalMode: 'ecf', ncf: 'E320000000001' }, { logoEscala: 40 });
+    expect(html).toContain('--tcf-logo:0.4"');
+    expect(html).toContain('max-width:calc(48mm * var(--tcf-logo, 1))');
   });
 });

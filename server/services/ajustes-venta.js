@@ -104,14 +104,23 @@ function calcularLineas({ sale, originalItems, devueltoMap, itemsToReturn, previ
     const yaDevuelta = Number(devueltoMap[saleItemId] || 0);
     if (qty > vendida - yaDevuelta + 1e-9) throw httpError(`${original.product_name}: solo puedes devolver ${vendida - yaDevuelta} unidad(es), ya se devolvieron ${yaDevuelta}.`);
     const r = vendida > 0 ? qty / vendida : 0;
-    const neto = c(Number(original.price || 0) * qty * (1 - Number(original.discount_rate || 0) / 100)) - c(Number(original.general_discount_amount || 0) * r);
+    // Línea por peso con el total editado (requested_amount) o con el ITBIS
+    // incluido en el precio (itbis_incluido): su importe es line_total, que no
+    // siempre es precio × cantidad por el redondeo; el precio que cuadra es
+    // line_total ÷ cantidad (js/venta-por-monto.js). Igual que
+    // saleItemUnitPriceForEcf en el e-CF. Las demás líneas, como siempre.
+    const precioGuardado = Number(original.price || 0);
+    const importeLinea = Number(original.line_total);
+    const marcada = Number(original.requested_amount) > 0 || Number(original.itbis_incluido) === 1;
+    const precioLinea = marcada && vendida > 0 && importeLinea > 0 ? importeLinea / vendida : precioGuardado;
+    const neto = c(precioLinea * qty * (1 - Number(original.discount_rate || 0) / 100)) - c(Number(original.general_discount_amount || 0) * r);
     const itbis = String(original.tax_mode || '') === 'monto'
       ? c(Number(original.tax_amount || 0) * r)
       : M.percent(neto, Number(original.tax_rate || 0));
     const propina = c(Number(original.legal_tip_amount || 0) * r);
     validados.push({
       saleItemId, productId: original.product_id ? Number(original.product_id) : null, productName: original.product_name || '',
-      qty, price: Number(original.price || 0), comboSnapshot: original.combo_snapshot || null, taxRate: Number(original.tax_rate || 0),
+      qty, price: precioLinea, comboSnapshot: original.combo_snapshot || null, taxRate: Number(original.tax_rate || 0),
       tracksStock: original.tracks_stock === undefined ? true : Number(original.tracks_stock) !== 0,
       restock: item.restock !== false && item.reintegrar !== false,
       neto, itbis, propina, total: neto + itbis + propina,

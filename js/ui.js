@@ -296,6 +296,9 @@ window.addEventListener('keydown', function(e) {
     return;
   }
   if (e.key === 'Escape') {
+    // Escape mientras se escribe el total de una línea por peso solo cancela esa
+    // edición (startSaleLineTotalEdit en ventas.js), nunca la venta entera.
+    if (e.target?.classList?.contains('sale-total-input')) return;
     // Un menú abierto (Más, usuario, notificaciones, cliente de Ventas) se
     // cierra primero; ese Esc no cancela la venta.
     if (modalHidden && receiptHidden && (window.VentasUI?.closePopovers?.() || window.TcShell?.closePopovers?.())) {

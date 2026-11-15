@@ -556,7 +556,10 @@ module.exports = function createOfflineRouter(deps) {
           ['requireCashOpenBeforeUse', String(cfg.require_cash_open_before_use ?? true)],
           ['sales_split_view_enabled', String(cfg.sales_split_view_enabled ?? 0)],
           ['invoice_template', cfg.invoice_template || ''],
-          ['invoice_accent_color', cfg.invoice_accent_color || '']
+          ['invoice_accent_color', cfg.invoice_accent_color || ''],
+          ['invoice_logo_scale', String(cfg.invoice_logo_scale || '')],
+          ['weight_total_edit_enabled', String(Number(cfg.weight_total_edit_enabled || 0))],
+          ['itbis_metodo_predeterminado', String(cfg.itbis_metodo_predeterminado || 'adicional')]
         ];
         for (const [k, v] of configItems) {
           await localQuery(
@@ -1652,6 +1655,9 @@ module.exports = function createOfflineRouter(deps) {
         salesSplitViewEnabled: rawCfg.sales_split_view_enabled === '1' || rawCfg.salesSplitViewEnabled === 'true',
         invoiceTemplate: rawCfg.invoice_template || 'clasica',
         invoiceAccentColor: rawCfg.invoice_accent_color || '',
+        invoiceLogoScale: Number(rawCfg.invoice_logo_scale) || 100,
+        weightTotalEditEnabled: rawCfg.weight_total_edit_enabled === '1' || rawCfg.weightTotalEditEnabled === 'true',
+        itbisMetodoPredeterminado: ['adicional', 'fijo', 'incluido'].includes(rawCfg.itbis_metodo_predeterminado) ? rawCfg.itbis_metodo_predeterminado : 'adicional',
         activeBranchId: Number(rawCfg.active_branch_id || rawCfg.activeBranchId || 0) || null,
         activeCashRegisterId: Number(rawCfg.active_cash_register_id || rawCfg.activeCashRegisterId || 0) || null,
         activeBranchName: rawCfg.activeBranchName || '',
@@ -2027,7 +2033,10 @@ module.exports = function createOfflineRouter(deps) {
           // se guarda de verdad.
           // Un producto dentro de un combo personalizado va a su precio de
           // catálogo (con ese se armó el combo): no se le busca oferta.
-          const activePromo = isQuickSale || customCombo
+          // Línea por peso con el total editado o con el ITBIS incluido en el
+          // precio: ya trae su importe exacto (js/venta-por-monto.js); no se
+          // recalcula con una oferta encima.
+          const activePromo = isQuickSale || customCombo || Number(item.montoFinal) > 0 || item.itbisIncluido === true
             ? null
             : pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
           const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;

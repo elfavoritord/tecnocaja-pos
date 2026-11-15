@@ -18,8 +18,24 @@ function sanitizeInvoiceAccentColor(value) {
   return /^#[0-9a-f]{6}$/.test(clean) ? clean : null;
 }
 
+// Tamaño del logo en facturas y tickets (config.invoice_logo_scale): % del
+// tamaño de siempre, de 30 a 100 (los mismos límites que js/factura-plantillas.js).
+// null = 100.
+const INVOICE_LOGO_SCALE_MIN = 30;
+const INVOICE_LOGO_SCALE_MAX = 100;
+
+function sanitizeInvoiceLogoScale(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.min(INVOICE_LOGO_SCALE_MAX, Math.max(INVOICE_LOGO_SCALE_MIN, n));
+}
+
 module.exports = {
   INVOICE_TEMPLATES,
+  INVOICE_LOGO_SCALE_MIN,
+  INVOICE_LOGO_SCALE_MAX,
   sanitizeInvoiceTemplate,
-  sanitizeInvoiceAccentColor
+  sanitizeInvoiceAccentColor,
+  sanitizeInvoiceLogoScale
 };

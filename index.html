@@ -2888,6 +2888,32 @@
             </div>
             <input type="file" id="cfg-logo-input" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="hidden" onchange="handleLogoUpload(event)">
           </div>
+          <div class="form-group tc-logo-size" id="cfg-logo-size">
+            <label for="cfg-logo-scale">Tamaño del logo en facturas y tickets</label>
+            <div class="tc-logo-size__controls">
+              <button type="button" class="btn-secondary tc-logo-size__step" id="cfg-logo-scale-minus" onclick="stepLogoScale(-10)" aria-label="Reducir el logo" title="Reducir">−</button>
+              <input type="range" id="cfg-logo-scale" class="tc-logo-size__range" min="30" max="100" step="5" value="100" oninput="onLogoScaleChange()" aria-describedby="cfg-logo-scale-help">
+              <button type="button" class="btn-secondary tc-logo-size__step" id="cfg-logo-scale-plus" onclick="stepLogoScale(10)" aria-label="Agrandar el logo" title="Agrandar">+</button>
+              <output id="cfg-logo-scale-value" class="tc-logo-size__value" for="cfg-logo-scale">100%</output>
+              <button type="button" class="btn-secondary" onclick="setLogoScale(100)">Tamaño original</button>
+            </div>
+            <small id="cfg-logo-scale-help" class="helper-text">Así queda el logo impreso. Pulsa «Guardar cambios» para aplicarlo a las facturas y tickets.</small>
+            <div class="tc-logo-size__preview" id="cfg-logo-scale-preview">
+              <figure class="tc-logo-size__fig">
+                <div class="tc-logo-size__a4"><div class="tc-logo-size__a4-inner" id="cfg-logo-scale-a4"></div></div>
+                <figcaption>Factura A4</figcaption>
+              </figure>
+              <figure class="tc-logo-size__fig">
+                <div class="tc-logo-size__ticket" id="cfg-logo-scale-ticket">
+                  <canvas id="cfg-logo-scale-ticket-canvas" class="tc-logo-size__ticket-logo" role="img" aria-label="Logo como sale en el ticket"></canvas>
+                  <div class="tc-logo-size__ticket-name" id="cfg-logo-scale-ticket-name"></div>
+                  <div class="tc-logo-size__ticket-lines" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+                </div>
+                <figcaption id="cfg-logo-scale-ticket-caption">Ticket 80 mm</figcaption>
+              </figure>
+              <p class="tc-logo-size__empty" id="cfg-logo-scale-empty" hidden>Carga el logo del negocio para ver cómo queda.</p>
+            </div>
+          </div>
           <div class="form-group"><label id="cfg-label-rnc">RNC / Cédula</label><input type="text" id="cfg-rnc" class="form-input" placeholder="000-00000-0"></div>
           <div class="form-group"><label id="cfg-label-razon-social">Razón Social</label><input type="text" id="cfg-razon-social" class="form-input" placeholder="Nombre legal registrado (si es distinto al comercial)"></div>
           <div class="form-group"><label id="cfg-label-address">Dirección</label><input type="text" id="cfg-dir" class="form-input" placeholder="Calle, Ciudad, País"></div>
@@ -3026,6 +3052,15 @@
               <label><input type="checkbox" id="cfg-tax-separate-subtotals" checked> Separar subtotal gravado y exento</label>
             </div>
           </div>
+          <div class="form-group span-full">
+            <label for="cfg-itbis-metodo">Método de ITBIS para productos nuevos</label>
+            <select class="form-input" id="cfg-itbis-metodo">
+              <option value="adicional">Se suma al precio (precio + ITBIS %)</option>
+              <option value="fijo">Monto fijo por unidad (precio + RD$ fijo)</option>
+              <option value="incluido">Ya incluido en el precio final (cálculo inverso)</option>
+            </select>
+            <small class="helper-text">Es el método que trae marcado un producto nuevo o importado sin columna «ITBIS Incluido». Cada producto se puede cambiar en su ficha. Los productos que ya existen no cambian. Con «Ya incluido», un producto de RD$118 se cobra RD$118: base RD$100 + ITBIS RD$18.</small>
+          </div>
           <div class="form-group">
             <label>Redondeo automático del total</label>
             <select class="form-input" id="cfg-rounding-mode">
@@ -3034,6 +3069,13 @@
               <option value="5">Redondear a RD$5</option>
               <option value="10">Redondear a RD$10</option>
             </select>
+          </div>
+          <div class="form-group span-full">
+            <label style="font-weight:600">Productos por peso</label>
+            <div class="settings-checkbox-list">
+              <label><input type="checkbox" id="cfg-weight-total-edit"> Permitir modificar el total en productos por peso</label>
+            </div>
+            <small class="helper-text">Permite modificar directamente el monto final de cualquier producto vendido por peso y recalcular automáticamente su cantidad según el precio unitario establecido. En el carrito, toca el total de la línea, escribe el monto y pulsa Enter.</small>
           </div>
           <div class="form-group"><label id="cfg-label-prefix">Prefijo Factura</label><input type="text" id="cfg-prefix" class="form-input" value="FAC-"></div>
           <div class="form-group"><label id="cfg-label-next-ticket">Próximo Ticket</label><input type="number" id="cfg-next-invoice" class="form-input" value="1001" min="1"></div>
@@ -5486,6 +5528,7 @@
 <script src="js/mesas.js"></script>
 <script src="js/rnc-lookup.js"></script>
 <script src="js/pos-money.js"></script>
+<script src="js/venta-por-monto.js"></script>
 <script src="js/propina-legal.js"></script>
 <script src="js/propina-config.js"></script>
 <script src="js/cliente-telefono.js"></script>

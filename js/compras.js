@@ -1260,6 +1260,7 @@ function gastoDocumentoHtml(g) {
   const hoja = FP.render(gastoAFormalDoc(g), {
     plantilla: DB.config?.invoiceTemplate,
     color: DB.config?.invoiceAccentColor,
+    logoEscala: DB.config?.invoiceLogoScale,
   });
   return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8"><title>${escapeHtml(numeroGasto(g.id))}</title>
 <style>@page{size:A4;margin:0}html,body{margin:0;padding:0;background:#eef1f4}@media print{html,body{background:#fff}}</style>

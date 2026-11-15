@@ -50,6 +50,9 @@ function maestroProducto(row) {
     aplicaItbis: Boolean(Number(row.aplica_itbis || 0)),
     itbisModo: row.itbis_modo === 'monto' ? 'monto' : 'porcentaje',
     itbisMonto: Math.round(Number(row.itbis_monto || 0) * 100) / 100,
+    // ITBIS incluido en el precio (método 3). Solo va cuando está marcado: así
+    // la huella de los demás productos no cambia y no se republica el catálogo.
+    ...(Number(row.aplica_itbis || 0) && Number(row.itbis_incluido || 0) === 1 ? { itbisIncluido: true } : {}),
     tracksStock: Number(row.tracks_stock ?? 1) !== 0,
     estado: row.estado === 'Inactivo' ? 'Inactivo' : 'Activo',
   };
@@ -168,6 +171,7 @@ function createCatalogoLocal({ query, enlace, alCambiar = () => {} }) {
       aplicaItbis: m.aplicaItbis,
       itbisModo: m.itbisModo,
       itbisMonto: m.itbisMonto,
+      itbisIncluido: m.itbisIncluido === true,
       tracksStock: m.tracksStock,
     };
   }

@@ -354,6 +354,8 @@ function createSincronizacion({
       tracks_stock: d.tracksStock === false ? 0 : 1,
     };
     if (await tieneColumna('products', 'barcode')) cols.barcode = d.barcode || d.codigo;
+    // ITBIS incluido en el precio (método 3), como lo publicó la principal.
+    if (await tieneColumna('products', 'itbis_incluido')) cols.itbis_incluido = d.aplicaItbis && d.itbisIncluido === true ? 1 : 0;
     return cols;
   }
 

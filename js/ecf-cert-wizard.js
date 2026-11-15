@@ -3125,9 +3125,15 @@ const ECF_CERT_WIZARD = (() => {
           <div style="font-size:.82rem;color:var(--text2);margin-bottom:.75rem">
             DGII está enviando e-CF de prueba. Tecno Caja los recibe y responde automáticamente con el <strong>acuse de recibo (ARECF)</strong>.
           </div>
-          <button id="ecf-wz-reception-retry" class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD.connectReceptionGateway()">Reintentar conexión automática</button>
-          <div id="ecf-wz-gateway-status" role="status" style="font-size:.8rem;margin-top:.5rem"></div>
-          <div style="font-size:.78rem;color:var(--text2);margin:.6rem 0">Tecno Caja conecta el receptor con el certificado guardado de tu empresa y firma los acuses automáticamente.</div>
+          <div style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">
+            La DGII rechaza el acuse si no viene firmado. Para que el receptor lo firme con el certificado de esta empresa,
+            pega su <strong>código de conexión</strong> (archivo <code>&lt;RNC&gt;-conexion.txt</code> o <code>&lt;RNC&gt;-token.txt</code>
+            que da soporte) y pulsa conectar. Se hace una sola vez por empresa.
+          </div>
+          <label for="ecf-wz-gateway-code" style="display:block;font-size:.8rem;margin-bottom:.35rem">Código de conexión de esta empresa</label>
+          <input id="ecf-wz-gateway-code" type="password" autocomplete="off" placeholder="RNC.código" style="width:100%;padding:.6rem;margin-bottom:.5rem;box-sizing:border-box">
+          <button id="ecf-wz-reception-retry" class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD.connectReceptionGateway()">Conectar recepción con mi certificado guardado</button>
+          <div id="ecf-wz-gateway-status" role="status" style="font-size:.8rem;margin:.5rem 0 .6rem"></div>
           <div id="ecf-wz-step9-list" style="min-height:80px;margin-bottom:.85rem">
             <div style="font-size:.82rem;color:var(--text3);text-align:center">Cargando documentos recibidos…</div>
           </div>
@@ -3143,19 +3149,27 @@ const ECF_CERT_WIZARD = (() => {
   }
 
   async function connectReceptionGateway() {
-    const input = document.getElementById('ecf-wz-reception-retry');
+    const button = document.getElementById('ecf-wz-reception-retry');
+    const codeInput = document.getElementById('ecf-wz-gateway-code');
     const status = document.getElementById('ecf-wz-gateway-status');
-    if (!input || !status || input.disabled) return;
-    input.disabled = true;
-    status.textContent = 'Conectando recepción con el certificado guardado…';
+    if (!button || !status || button.disabled) return;
+    // Acepta el archivo de soporte tal cual: "RNC.codigo" o la línea "ECF_GATEWAY_TOKEN=RNC.codigo".
+    const token = String(codeInput?.value || '').trim().replace(/^ECF_GATEWAY_TOKEN\s*=\s*/i, '').trim();
+    if (!token) {
+      status.textContent = 'Pega el código de conexión de esta empresa (lo da soporte, empieza con el RNC).';
+      return;
+    }
+    button.disabled = true;
+    status.textContent = 'Subiendo el certificado guardado al receptor…';
     try {
-      await fiscalApi('POST', '/reception/connect-gateway', {});
-      status.textContent = 'Recepción conectada con el certificado de tu empresa. Si la prueba anterior falló, repite el envío en el portal DGII.';
+      await fiscalApi('POST', '/reception/connect-gateway', { token });
+      if (codeInput) codeInput.value = '';
+      status.textContent = '✅ Recepción conectada: los próximos acuses salen firmados. Repite el envío de prueba en el portal DGII y espera aquí.';
       await _pollStep9();
     } catch (error) {
       status.textContent = error.message || 'No se pudo conectar la recepción.';
     } finally {
-      input.disabled = false;
+      button.disabled = false;
     }
   }
 
@@ -3181,7 +3195,9 @@ const ECF_CERT_WIZARD = (() => {
               <div style="font-size:.8rem;font-weight:600;color:#4ade80">${h(item.meta?.encf||'eNCF desconocido')}</div>
               <div style="font-size:.72rem;color:var(--text3)">RNC: ${h(item.meta?.rncEmisor||'—')} · ${h(new Date(item.receivedAt).toLocaleString('es-DO'))}</div>
             </div>
-            <span style="font-size:.72rem;padding:.1rem .4rem;border-radius:4px">${item.meta?.signedReceipt === true ? 'Acuse firmado' : 'Repetir prueba: acuse sin firma confirmada'}</span>
+            ${item.meta?.signedReceipt === true
+              ? '<span style="font-size:.72rem;color:#4ade80;background:rgba(22,163,74,.15);padding:.1rem .4rem;border-radius:4px">ARECF firmado ✓</span>'
+              : `<span style="font-size:.72rem;color:#fbbf24;background:rgba(251,191,36,.12);padding:.1rem .4rem;border-radius:4px" title="El receptor respondió sin firma: la DGII lo rechaza. Conecta el certificado arriba y repite la prueba en la DGII.">⚠ ARECF sin firma</span>`}
           </div>
         `).join('')}
       `;
@@ -3201,13 +3217,20 @@ const ECF_CERT_WIZARD = (() => {
     // Step 8 is confirmed after the user starts the test in DGII. Its
     // startedAt timestamp is therefore recorded after DGII may already have
     // delivered the documents, so filtering against it rejects valid receipts.
-    const received = (result?.items || []).filter((i) => i.type === 'recepcion-ecf' && i.meta?.signedReceipt === true).length;
-    if (received === 0) {
+    const items = (result?.items || []).filter((i) => i.type === 'recepcion-ecf');
+    const signed = items.filter((i) => i.meta?.signedReceipt === true).length;
+    if (items.length === 0) {
       if (typeof showFiscalToast === 'function') {
-        showFiscalToast('Todavía no hay un e-CF con acuse firmado confirmado. Conecta la recepción y repite el envío de prueba en DGII.', 'warning');
+        showFiscalToast('Todavía no hay ningún e-CF de prueba recibido de DGII. Espera a que DGII envíe y actualiza la lista.', 'warning');
       }
       return;
     }
+    // Sin acuse firmado la DGII casi siempre rechaza el paso; quien decide es su portal,
+    // así que se avisa y se deja continuar si el usuario ya lo vio aprobado allí.
+    if (signed === 0 && !confirm('Los e-CF recibidos se respondieron con el acuse SIN firma y la DGII suele rechazarlos.\n\nConecta el certificado con el código de conexión y repite la prueba en la DGII.\n\n¿El portal de la DGII ya marcó este paso como aprobado?')) {
+      return;
+    }
+    const received = signed || items.length;
     setBtnState('ecf-wz-step9-btn', true, 'Guardando…');
     await markDone(9, { received, completedAt: new Date().toISOString() });
   }

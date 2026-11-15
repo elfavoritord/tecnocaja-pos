@@ -68,12 +68,20 @@ function listDgiiReceived() {
 // solo devuelve lo de esta empresa; con el token de administrador se filtra
 // por DGII_RNC.
 async function fetchGatewayReceived() {
-  let saved;
+  // Nunca lanza: si falla la consulta al gateway, el Paso 9/11 igual debe mostrar
+  // lo recibido en esta PC (antes un error aquí dejaba la lista entera en blanco).
+  let saved = null;
   try { saved = require('../../modules/ecf/services/gateway-connection').readConnection(); }
-  catch (_) { throw new Error('No se pudo leer la conexión de recepción. Vuelve a conectar el gateway desde el Paso 9.'); }
+  catch (error) { console.warn('[DGII-PUBLIC] No se pudo leer la conexión de recepción:', error.message); }
   if (saved?.mode === 'broker') {
-    const cloud = require('../services/pos-cloud-runtime').getConnection();
-    return cloud.request('reception-received');
+    try {
+      const cloud = require('../services/pos-cloud-runtime').getConnection();
+      const data = await cloud.request('reception-received');
+      return { received: data?.received || [], approvals: data?.approvals || [] };
+    } catch (error) {
+      console.warn('[DGII-PUBLIC] Recepción por la nube no disponible, se usa el código del gateway:', error.message);
+      saved = null;
+    }
   }
   const base = String(saved?.base || process.env.ECF_GATEWAY_BASE_URL || '').trim().replace(/\/+$/, '');
   const token = String(saved?.token || process.env.ECF_GATEWAY_TOKEN || process.env.ECF_GATEWAY_ADMIN_TOKEN || '').trim();

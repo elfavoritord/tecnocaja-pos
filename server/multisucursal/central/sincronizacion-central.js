@@ -268,6 +268,8 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
       aplicaItbis: Boolean(p.aplicaItbis),
       itbisModo: p.itbisModo === 'monto' ? 'monto' : 'porcentaje',
       itbisMonto: numero(p.itbisMonto),
+      // ITBIS incluido en el precio (método 3): solo cuando está marcado.
+      ...(p.aplicaItbis && p.itbisIncluido === true ? { itbisIncluido: true } : {}),
       tracksStock: p.tracksStock !== false,
       estado: p.estado === 'Inactivo' ? 'Inactivo' : 'Activo',
       precioSugerido: numero(p.precioSugerido),

@@ -160,9 +160,19 @@
 
   // Lo que el motor necesita de un producto del catálogo (DB.productos).
   function aMotor(p) {
+    const porMonto = p.aplicaItbis && p.itbisModo === 'monto';
     return {
       id: Number(p.id),
-      precio: Number(p.precioVenta || 0),
+      // Con el ITBIS incluido en el precio (método 3), el precio sin ITBIS: el
+      // motor le suma su ITBIS, igual que en la venta normal.
+      precio: p.aplicaItbis && p.itbisIncluido && window.VentaPorMonto?.precioBaseIncluido
+        ? window.VentaPorMonto.precioBaseIncluido({
+          precioFinal: Number(p.precioVenta || 0),
+          modoItbis: porMonto ? 'monto' : 'porcentaje',
+          tasaItbis: porMonto ? 0 : Number(DB.config?.itbis || 0),
+          itbisPorUnidad: porMonto ? Number(p.itbisMonto || 0) : 0,
+        })
+        : Number(p.precioVenta || 0),
       aplicaItbis: Boolean(p.aplicaItbis),
       itbisModo: p.aplicaItbis && p.itbisModo === 'monto' ? 'monto' : 'porcentaje',
       itbisMonto: Number(p.itbisMonto || 0),

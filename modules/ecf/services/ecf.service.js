@@ -633,6 +633,22 @@ function isNetworkLikeError(error) {
   return NETWORK_ERROR_PATTERN.test(text);
 }
 
+// Precio unitario de una línea de venta para el e-CF. Solo en una línea del POS
+// por peso con el total editado (requested_amount) o con el ITBIS incluido en el
+// precio (itbis_incluido), line_total es el importe sin ITBIS antes del
+// descuento y precio × cantidad puede diferir unos centavos de él por el
+// redondeo (js/venta-por-monto.js): entonces el precio es importe ÷ cantidad y
+// el e-CF da justo lo cobrado (el generador lo escribe con 4 decimales). En
+// cualquier otra línea (p. ej. las facturas de servicios, cuyo line_total ya
+// trae el ITBIS) se usa el precio guardado, como siempre.
+function saleItemUnitPriceForEcf(item = {}) {
+  const quantity = Number(item.qty || 0);
+  const lineTotal = Number(item.line_total);
+  const marcada = Number(item.requested_amount) > 0 || Number(item.itbis_incluido) === 1;
+  if (marcada && quantity > 0 && lineTotal > 0) return lineTotal / quantity;
+  return Number(item.price || 0);
+}
+
 class EcfService {
   constructor({ query, withTransaction, resolveRequestActorUser, cloudConnection }) {
     this.repository = new EcfRepository({ query, withTransaction });
@@ -3363,7 +3379,7 @@ class EcfService {
 
     const preparedItems = items.map((item) => {
       const quantity = Number(item.qty || 0);
-      const unitPrice = Number(item.price || 0);
+      const unitPrice = saleItemUnitPriceForEcf(item);
       const itemDiscount = Number(item.discount_amount || 0) > 0
         ? Number(item.discount_amount || 0)
         : Number(item.discount_rate || 0) > 0
@@ -3614,7 +3630,7 @@ class EcfService {
     const lineas = items || saleItems.map((item) => ({
       name: item.product_name || item.nombre || 'Producto',
       quantity: Number(item.qty || 0),
-      unitPrice: Number(item.price || 0),
+      unitPrice: saleItemUnitPriceForEcf(item),
       discount: Number(item.discount_amount || 0),
       taxRate: Number(item.tax_rate || item.itbis || 0),
       isService: item.product_type === 'servicio' || Number(item.is_service) === 1,
