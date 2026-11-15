@@ -1049,6 +1049,16 @@ function createFacturacionRouter(deps) {
     }
   });
 
+  // La factura A4 de /:id/documento, para la app de reportes
+  // (server/services/app-reportes/documentos.js). null si no existe.
+  router.documentoA4 = async (id) => {
+    await ensureSchema(query);
+    const full = await fetchFull(Number(id));
+    if (!full) return null;
+    const cfg = await getConfig().catch(() => ({}));
+    return renderInvoiceDoc(await buildDocPayload(full, cfg), 'a4');
+  };
+
   return router;
 }
 

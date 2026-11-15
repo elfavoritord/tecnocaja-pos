@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Certificación e-CF</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --text:#0f172a; --muted:#64748b; --line:#e2e8f0; --blue:#1d4ed8; --blue-soft:#dbeafe;
+          --ok:#15803d; --ok-soft:#dcfce7; --warn:#b45309; --warn-soft:#fef3c7; --bad:#b91c1c; --bad-soft:#fee2e2; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0b1220; --card:#111a2e; --text:#e2e8f0; --muted:#94a3b8; --line:#1f2a44; --blue:#60a5fa; --blue-soft:#172554;
+            --ok:#4ade80; --ok-soft:#052e16; --warn:#fbbf24; --warn-soft:#3b2a06; --bad:#f87171; --bad-soft:#3f0d0d; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  main { max-width:1040px; margin:0 auto; padding:24px 16px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px; }
+  .fila { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  input { font:inherit; padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); min-width:0; }
+  button { font:inherit; padding:8px 13px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); cursor:pointer; }
+  button.primario { background:var(--blue); border-color:var(--blue); color:#fff; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:13px; font-weight:600; }
+  .lista { background:var(--ok-soft); color:var(--ok); } .apagada { background:var(--line); color:var(--muted); }
+  .error { background:var(--bad-soft); color:var(--bad); } .creando, .encendiendo, .apagando { background:var(--warn-soft); color:var(--warn); }
+  .empresa h2 { font-size:18px; margin:0; }
+  .datos { display:grid; grid-template-columns: 170px 1fr; gap:6px 12px; margin:12px 0; }
+  .datos span:nth-child(odd) { color:var(--muted); }
+  code { font-family: Consolas, monospace; font-size:13px; background:var(--bg); padding:2px 6px; border-radius:6px; word-break:break-all; }
+  a { color:var(--blue); }
+  .aviso { padding:10px 12px; border-radius:8px; margin-top:10px; font-size:14px; }
+  .aviso.malo { background:var(--bad-soft); color:var(--bad); } .aviso.medio { background:var(--warn-soft); color:var(--warn); } .aviso.bien { background:var(--ok-soft); color:var(--ok); }
+  .barra { height:8px; background:var(--line); border-radius:99px; overflow:hidden; margin-top:4px; max-width:260px; }
+  .barra > i { display:block; height:100%; background:var(--blue); }
+  details { margin-top:10px; } summary { cursor:pointer; color:var(--muted); }
+  ol { margin:6px 0 0; padding-left:20px; } li { margin:3px 0; }
+  .terminadas .empresa { opacity:.75; }
+  @media (max-width:640px) { .datos { grid-template-columns: 1fr; } .datos span:nth-child(odd) { margin-top:6px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Servidor de certificación e-CF</h1>
+  <p class="sub">Cada empresa es un POS aparte, nuevo y aislado: no toca tu sistema ni tus datos. Este panel solo se abre en esta PC.</p>
+
+  <div class="card">
+    <strong>Nueva empresa a certificar</strong>
+    <form id="nueva" class="fila" style="margin-top:10px">
+      <input id="nombre" placeholder="Nombre de la empresa" required style="flex:2 1 240px">
+      <input id="rnc" placeholder="RNC o cédula" inputmode="numeric" required style="flex:1 1 150px">
+      <button class="primario" type="submit">Crear</button>
+    </form>
+    <div id="msg"></div>
+    <details>
+      <summary>Cómo se certifica una empresa aquí</summary>
+      <ol>
+        <li>Crea la empresa. Tarda 1 o 2 minutos: deja listo su POS con tu usuario y el del contable.</li>
+        <li>Entra con <strong>«Abrir aquí»</strong>. Tu contable usa la dirección https y su usuario. Esa dirección cambia cada vez que se enciende la empresa, así que se la vuelves a mandar.</li>
+        <li>En <em>Configurar e-CF DGII → Certificado</em>, carga el .p12 de la empresa. Revisa que la cédula del «Subject» sea la del representante registrado en la DGII.</li>
+        <li>Sigue el asistente de certificación (15 pasos) como siempre.</li>
+        <li><strong>Antes del Paso 7</strong>, da de alta la empresa en el gateway con el comando que sale en su tarjeta. Luego toca «Reiniciar» para que los pasos 9 y 11 vean lo que manda la DGII.</li>
+        <li>Al terminar, en el POS del cliente se usa <strong>«Ya me certifiqué antes»</strong> con su .p12. Aquí marca la empresa como terminada.</li>
+      </ol>
+    </details>
+  </div>
+
+  <div id="avisos"></div>
+  <div id="empresas"></div>
+  <div id="terminadas" class="terminadas"></div>
+</main>
+<script>
+const H = { 'Content-Type': 'application/json', 'X-Panel': 'certificacion' };
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ESTADOS = { lista: 'Encendida', apagada: 'Apagada', error: 'Con error', creando: 'Preparando…', encendiendo: 'Encendiendo…', apagando: 'Apagando…' };
+let ocupado = false;
+
+async function api(metodo, ruta, cuerpo) {
+  const r = await fetch(ruta, { method: metodo, headers: H, body: cuerpo ? JSON.stringify(cuerpo) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
+  return j;
+}
+
+function copiar(texto, boton) {
+  navigator.clipboard.writeText(texto).then(() => { const t = boton.textContent; boton.textContent = 'Copiado'; setTimeout(() => { boton.textContent = t; }, 1400); });
+}
+
+function mensajeContable(e) {
+  const c = e.usuarios.find((u) => u.rol === 'Contable') || e.usuarios[1];
+  return `Hola. Para la certificación e-CF de ${e.nombre} (RNC ${e.rnc}) entra desde Chrome a:\n${e.url}\nUsuario: ${c.usuario}\nClave: ${c.clave}\n(La dirección cambia si apago el servidor; te aviso.)`;
+}
+
+function tarjeta(e) {
+  const p = e.progreso;
+  const usuarios = e.usuarios.map((u) => `<span>${esc(u.rol)}</span><span><code>${esc(u.usuario)}</code> · clave <code>${esc(u.clave)}</code></span>`).join('');
+  const encendida = e.estado === 'lista';
+  const enProceso = ['creando', 'encendiendo', 'apagando'].includes(e.estado);
+  return `<div class="card empresa" data-rnc="${esc(e.rnc)}">
+    <div class="fila" style="justify-content:space-between">
+      <div><h2>${esc(e.nombre)}</h2><span style="color:var(--muted)">RNC ${esc(e.rnc)}</span></div>
+      <span class="pill ${esc(e.estado)}">${esc(ESTADOS[e.estado] || e.estado)}</span>
+    </div>
+    <div class="datos">
+      <span>En esta PC</span><span>${encendida ? `<a href="${esc(e.local)}" target="_blank">${esc(e.local)}</a>` : `<code>${esc(e.local)}</code>`}</span>
+      <span>Para tu contable</span><span>${e.url ? `<a href="${esc(e.url)}" target="_blank">${esc(e.url)}</a> <button data-copiar="${esc(e.url)}">Copiar</button>` : (encendida ? 'Sin dirección de Internet (toca «Reiniciar»)' : '—')}</span>
+      ${usuarios}
+      <span>Asistente DGII</span><span>${p.terminado ? '<strong style="color:var(--ok)">Certificada (15/15)</strong>' : `Paso ${esc(p.paso)} de 15 · ${esc(p.completos)} completos`}<div class="barra"><i style="width:${Math.round(p.completos / 15 * 100)}%"></i></div></span>
+      <span>Gateway (pasos 7–11)</span><span>${e.gateway.listo ? (e.gateway.reiniciar ? '<strong style="color:var(--warn)">Dada de alta: toca «Reiniciar» para usarla</strong>' : '<span style="color:var(--ok)">Dada de alta</span>') : 'Falta el alta (antes del Paso 7)'}</span>
+    </div>
+    ${e.error ? `<div class="aviso malo">${esc(e.error)}</div>` : ''}
+    ${!e.gateway.listo && e.lista ? `<details><summary>Comando para el alta en el gateway (PowerShell, en esta PC)</summary><p><code>${esc(e.altaComando)}</code> <button data-copiar="${esc(e.altaComando)}">Copiar</button></p><p style="color:var(--muted);margin:0">Cambia la ruta por la del .p12 de la empresa. Te pide la clave del certificado y no la guarda.</p></details>` : ''}
+    <div class="fila" style="margin-top:12px">
+      ${encendida ? `<a href="${esc(e.local)}" target="_blank"><button class="primario">Abrir aquí</button></a>` : ''}
+      ${e.url ? `<button data-mensaje="${esc(e.rnc)}">Copiar mensaje para el contable</button>` : ''}
+      ${!encendida && !enProceso && e.activa ? `<button data-accion="encender">Encender</button>` : ''}
+      ${encendida ? `<button data-accion="reiniciar">Reiniciar (nueva dirección)</button><button data-accion="apagar">Apagar</button>` : ''}
+      ${e.activa ? (!enProceso ? `<button data-accion="terminar">Marcar como terminada</button>` : '') : `<button data-accion="encender">Volver a abrir</button>`}
+      <button data-accion="carpeta">Ver carpeta</button>
+    </div>
+  </div>`;
+}
+
+let ultima = [];
+async function refrescar() {
+  if (ocupado) return;
+  try {
+    const d = await api('GET', '/api/estado');
+    ultima = d.empresas;
+    document.getElementById('avisos').innerHTML = d.cloudflared ? '' : '<div class="aviso medio">No está instalado cloudflared: las empresas solo se ven en esta PC. Instálalo con <code>winget install Cloudflare.cloudflared</code>.</div>';
+    const activas = d.empresas.filter((e) => e.activa);
+    const terminadas = d.empresas.filter((e) => !e.activa);
+    document.getElementById('empresas').innerHTML = activas.length ? activas.map(tarjeta).join('') : '<div class="card" style="color:var(--muted)">Todavía no hay empresas. Crea la primera arriba.</div>';
+    document.getElementById('terminadas').innerHTML = terminadas.length ? `<h3 style="margin:22px 0 10px">Terminadas</h3>${terminadas.map(tarjeta).join('')}` : '';
+  } catch (e) {
+    document.getElementById('avisos').innerHTML = `<div class="aviso malo">El servidor de certificación no responde: ${esc(e.message)}. ¿Se cerró la ventana negra?</div>`;
+  }
+}
+
+document.addEventListener('click', async (ev) => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  if (b.dataset.copiar) return copiar(b.dataset.copiar, b);
+  if (b.dataset.mensaje) { const e = ultima.find((x) => x.rnc === b.dataset.mensaje); return copiar(mensajeContable(e), b); }
+  const accion = b.dataset.accion;
+  if (!accion) return;
+  const rnc = b.closest('[data-rnc]').dataset.rnc;
+  if (accion === 'terminar' && !confirm('¿Marcar como terminada? Se apaga y no se enciende sola. Sus datos se quedan en su carpeta.')) return;
+  if (accion === 'reiniciar' && !confirm('Se apaga y se vuelve a encender. La dirección para tu contable va a cambiar.')) return;
+  b.disabled = true;
+  ocupado = true;
+  try { await api('POST', `/api/empresas/${rnc}/${accion}`); } catch (e) { alert(e.message); } finally { ocupado = false; refrescar(); }
+});
+
+document.getElementById('nueva').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const msg = document.getElementById('msg');
+  msg.innerHTML = '';
+  try {
+    await api('POST', '/api/empresas', { nombre: document.getElementById('nombre').value, rnc: document.getElementById('rnc').value });
+    msg.innerHTML = '<div class="aviso bien">Preparando su POS (1 o 2 minutos)…</div>';
+    ev.target.reset();
+  } catch (e) { msg.innerHTML = `<div class="aviso malo">${esc(e.message)}</div>`; }
+  refrescar();
+});
+
+refrescar();
+setInterval(refrescar, 3000);
+</script>
+</body>
+</html>

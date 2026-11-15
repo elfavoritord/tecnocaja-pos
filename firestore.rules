@@ -115,6 +115,15 @@ service cloud.firestore {
                         'createdBy', 'createdAt']);
     }
 
+    // Lo fiscal de una venta solo lo escribe el servidor (Admin SDK): desde un
+    // cliente nadie se asigna un NCF ni se marca un e-CF como aceptado.
+    function fiscalFields() {
+      return ['ncf', 'ncfType', 'ambiente', 'estadoFiscal', 'ecfTrackId',
+              'ecfQrUrl', 'ecfCodigoSeguridad', 'ecfFechaFirma', 'ecfError',
+              'ecfVencimientoSecuencia', 'ecfSecuenciaReutilizable',
+              'ecfLockAt', 'ecfLockBy', 'ncfAssignedAt', 'ncfAssignedBy'];
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
     // /users/{uid}  — Perfil de usuario para app Flutter
     // Solo el propio usuario puede leer su perfil.
@@ -139,8 +148,11 @@ service cloud.firestore {
         allow read:   if isEmployee(businessId);
         allow create: if isEmployee(businessId)
                       && validBusiness(businessId)
-                      && validCreatedBy();
-        allow update: if isOwnerOrAdmin(businessId) && coreImmutable();
+                      && validCreatedBy()
+                      && !request.resource.data.keys().hasAny(fiscalFields());
+        allow update: if isOwnerOrAdmin(businessId)
+                      && coreImmutable()
+                      && immutable(fiscalFields());
         allow delete: if false;
       }
 
@@ -379,6 +391,62 @@ service cloud.firestore {
       }
       match /pedidosOnlineClaves/{keyId} {
         allow read, write: if false;
+      }
+
+      // ── App de reportes: compras de proveedores ────────────────────────────
+      // El dueño o un administrador deja la factura del proveedor; la PC
+      // principal la registra con los permisos del POS
+      // (server/services/compras/cola-app.js). Desde la app solo se crean
+      // pendientes con el uid propio, se reenvían las que volvieron para
+      // corregir y se cancelan las propias. Lo demás lo escribe el POS.
+      match /appCompras/{compraId} {
+        allow read:   if isBranchAdmin(businessId) && resource.data.createdBy == uid();
+        allow create: if isBranchAdmin(businessId)
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.status == 'pendiente'
+                      && request.resource.data.createdAt == request.time
+                      && request.resource.data.keys().hasOnly(['status', 'createdBy', 'createdByName',
+                           'createdAt', 'updatedAt', 'branchId', 'encabezado', 'lineas', 'appVersion'])
+                      && request.resource.data.lineas is list
+                      && request.resource.data.lineas.size() <= 200;
+        allow update: if isBranchAdmin(businessId)
+                      && resource.data.createdBy == uid()
+                      && request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['status', 'encabezado', 'lineas', 'branchId', 'updatedAt',
+                                   'mensaje', 'bloqueos', 'intentos', 'appVersion'])
+                      && ((resource.data.status in ['requiere_correccion', 'rechazada']
+                           && request.resource.data.status == 'pendiente'
+                           && request.resource.data.lineas is list
+                           && request.resource.data.lineas.size() <= 200)
+                          || (resource.data.status in ['pendiente', 'requiere_correccion', 'rechazada']
+                              && request.resource.data.status == 'cancelada'));
+        allow delete: if false;
+      }
+
+      // ── App de reportes: pedidos de documentos ─────────────────────────────
+      // Facturas y estados de cuenta en PDF que prepara la PC principal
+      // (server/services/app-reportes/solicitudes-app.js). Cada quien ve solo
+      // los suyos; el PDF grande va partido en /partes. El POS los borra a los
+      // 3 días.
+      match /appSolicitudes/{solicitudId} {
+        allow read:   if isBranchAdmin(businessId) && resource.data.createdBy == uid();
+        allow create: if isBranchAdmin(businessId)
+                      && request.resource.data.createdBy == uid()
+                      && request.resource.data.status == 'pendiente'
+                      && request.resource.data.createdAt == request.time
+                      && request.resource.data.keys().hasOnly(['tipo', 'parametros', 'status',
+                           'createdBy', 'createdAt', 'appVersion'])
+                      && request.resource.data.tipo is string
+                      && request.resource.data.tipo.size() <= 30
+                      && request.resource.data.parametros is map
+                      && request.resource.data.parametros.size() <= 8;
+        allow update, delete: if false;
+
+        match /partes/{parteId} {
+          allow read:  if isBranchAdmin(businessId)
+                       && get(/databases/$(database)/documents/businesses/$(businessId)/appSolicitudes/$(solicitudId)).data.createdBy == uid();
+          allow write: if false;
+        }
       }
 
       // ── Auditoría — solo lectura para dueño/admin ──────────────────────────

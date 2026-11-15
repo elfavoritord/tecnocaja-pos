@@ -1211,15 +1211,8 @@ module.exports = function createRespaldosRouter({
 
       const fileBuffer = Buffer.from(base64, 'base64');
       let tcbak;
-      try {
-        tcbak = JSON.parse(fileBuffer.toString('utf8'));
-      } catch (_) {
-        return res.status(400).json({ ok: false, error: 'El archivo no es un respaldo válido de Tecno Caja (formato inválido).' });
-      }
-
-      if (tcbak.magic !== BACKUP_MAGIC) {
-        return res.status(400).json({ ok: false, error: 'Este archivo no es un respaldo de Tecno Caja.' });
-      }
+      try { tcbak = require('../services/backup-format').readTcbakEnvelope(fileBuffer); }
+      catch (error) { return res.status(400).json({ ok: false, error: error.message }); }
 
       res.json({
         ok:        true,
@@ -1347,14 +1340,25 @@ module.exports = function createRespaldosRouter({
   // de TODOS sus negocios y sus PC de sucursal, aunque esta PC esté recién
   // instalada o formateada. Devuelve un permiso de 30 min (cloudToken) que
   // /setup/restaurar-nube exige para restaurar uno de esos negocios.
-  async function respaldosDelDueno(idToken) {
+  async function respaldosDelDueno(idToken, sesionVerificada = null) {
     let cuenta;
+    let licencias;
+    if (sesionVerificada?.modo === 'dueno' && sesionVerificada.email && Array.isArray(sesionVerificada.licencias)) {
+      // El servicio ya verificó Firebase y consultó las licencias. La PC recién
+      // instalada no necesita llaves privadas de Firebase para repetirlo.
+      cuenta = { email: sesionVerificada.email };
+      licencias = sesionVerificada.licencias;
+    } else {
     try {
       cuenta = await verificarCuentaDueno(idToken);
-    } catch (_) {
+    } catch (error) {
+      if (error.statusCode >= 500 || /configurad|llaves públicas|fetch failed|timeout/i.test(error.message || '')) {
+        return { status: 503, cuerpo: { ok: false, code: 'VERIFICACION_NO_DISPONIBLE', error: 'No se pudo verificar tu cuenta con la nube. Revisa la conexión y la configuración de Firebase; este error no significa que tu contraseña sea incorrecta.' } };
+      }
       return { status: 401, cuerpo: { ok: false, code: 'CUENTA_INVALIDA', error: 'Correo o contraseña incorrectos. Usa la cuenta de Tecno Caja del dueño del negocio.' } };
     }
-    const licencias = await licenciasDelCorreo(cuenta.email);
+    licencias = await licenciasDelCorreo(cuenta.email);
+    }
     if (!licencias.length) {
       return { status: 404, cuerpo: { ok: false, code: 'SIN_NEGOCIOS', error: `${cuenta.email} no es la cuenta del dueño de ningún negocio en Tecno Caja.` } };
     }
@@ -1400,15 +1404,16 @@ module.exports = function createRespaldosRouter({
       // recién instalada o formateada), el servicio de Tecno Caja le da acceso a
       // los respaldos de sus negocios. Nada que configurar a mano.
       if (idToken && typeof verificarCuentaDueno === 'function' && typeof licenciasDelCorreo === 'function') {
-        if (typeof r2.tieneLlavePropia === 'function' && !r2.tieneLlavePropia()) {
+        let sesionVerificada = null;
+        if (typeof r2.entrarComoDueno === 'function') {
           try {
-            await r2.entrarComoDueno(String(idToken));
+            sesionVerificada = await r2.entrarComoDueno(String(idToken));
           } catch (e) {
             const status = e.statusCode === 404 ? 404 : (e.statusCode === 401 ? 401 : 503);
             return res.status(status).json({ ok: false, code: e.code || 'NUBE_NO_DISPONIBLE', error: e.message });
           }
         }
-        const r = await respaldosDelDueno(String(idToken));
+        const r = await respaldosDelDueno(String(idToken), sesionVerificada);
         return res.status(r.status).json(r.cuerpo);
       }
 

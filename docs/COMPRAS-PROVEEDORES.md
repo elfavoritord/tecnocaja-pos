@@ -132,6 +132,24 @@ Decisión de Emilio: **el contador registra directo** (la compra entra sola, sin
   POS viejo el portal no deja mandar.
 - Pruebas: `npx jest tests/compras/cola-portal tests/contadores-compras`.
 
+## Compras desde la app de reportes (2026-11-10, pedido de Emilio)
+
+El dueño o un administrador escribe la factura del proveedor en la app (Más → **Compras**) y la PC
+principal la registra con la misma ruta (`registrar`):
+
+- La app la deja en `businesses/{negocio}/appCompras/{uuid}` (status `pendiente`, su uid en `createdBy`;
+  las reglas de Firestore no dejan ponerse otro ni inventar el resultado). Reenvía corregida con el mismo
+  uuid y puede cancelar las suyas.
+- **POS** (`server/services/compras/cola-app.js`, motor común en `cola-compras.js`, el mismo de la cola del
+  contador): vuelve a limpiar lo que mandó la app (`limpiarCompraApp`, mismas reglas del Portal), mira
+  quién es (`server/services/app-reportes/usuario-app.js`: su perfil `users/{uid}` y, si es usuario del POS,
+  su permiso **«Registrar compras»** `compras.crear`); un administrador de sucursal registra solo en la suya.
+  No cambia precio ni control de inventario de productos existentes; crea productos nuevos; no emite E41/B11.
+  `documento_origen = 'app_reportes'`; auditoría «Compra registrada desde la app de reportes».
+- Contrato app → POS: `reporte app/test/fixtures/app_requests/compra_app.json` (lo verifica la prueba de
+  Flutter y lo registra `tests/app-reportes/contrato-app.test.js`).
+- Pruebas: `npx jest tests/app-reportes` y `npm run test:app-reportes` (reglas + POS real con el emulador).
+
 ## Pendiente (fases siguientes)
 
 - **B**: lectura de fotos/PDF (texto del PDF digital, IA con visión con clave del negocio, OCR

@@ -106,7 +106,8 @@ const api = {
     // real, perdiendo caja abierta/tipo de cambio/permisos en el camino.
     return this.request('/api/login', {
       method: 'POST',
-      body: JSON.stringify({ usuario, password })
+        body: JSON.stringify({ usuario, password }),
+        _timeoutMs: 60000
     });
   },
 
@@ -131,7 +132,8 @@ const api = {
   completeInitialSetup(data) {
     return this.request('/api/setup/complete', {
       method: 'POST',
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      _timeoutMs: 60000
     });
   },
 

@@ -2693,8 +2693,9 @@ const ECF_CERT_WIZARD = (() => {
             <div style="font-size:.82rem;color:var(--text1);font-weight:600">${h(doc.label)}</div>
             <div style="font-size:.73rem;color:var(--text3);font-family:monospace">${h(doc.encf)} <span style="color:${doc.estado==='aceptado'?'#4ade80':'#fbbf24'};font-family:sans-serif;font-size:.7rem">${doc.estado}</span></div>
             <div style="font-size:.7rem;font-family:sans-serif;color:${doc.dgiiVerificado?'#4ade80':'#fbbf24'}" title="Si escaneas el QR de este PDF ahora mismo, ¿el portal público de DGII ya lo reconoce como aceptado?">
-              ${doc.dgiiVerificado ? `✅ QR verificado en DGII (${h(doc.dgiiEstadoPublico||'Aceptado')})` : '⏳ DGII aún no indexó el QR públicamente — puede tardar'}
+              ${doc.dgiiVerificado ? `✅ QR verificado en DGII (${h(doc.dgiiEstadoPublico||'Aceptado')})` : `⚠ QR sin verificar${doc.dgiiEstadoPublico ? ': ' + h(doc.dgiiEstadoPublico) : '. Comprueba la consulta de DGII'}`}
             </div>
+            ${doc.qrVerificationUrl ? `<a href="${h(doc.qrVerificationUrl)}" target="_blank" rel="noopener noreferrer" style="font-size:.73rem">Abrir consulta del QR en DGII</a>` : ''}
             ${doc.representationReady ? '' : `<div style="font-size:.7rem;color:#f87171">Representación inválida: ${h(doc.representationError || 'falta el E32 completo vinculado')}</div>`}
           </div>
           <div style="display:flex;gap:.4rem;flex-shrink:0">
@@ -3124,6 +3125,9 @@ const ECF_CERT_WIZARD = (() => {
           <div style="font-size:.82rem;color:var(--text2);margin-bottom:.75rem">
             DGII está enviando e-CF de prueba. Tecno Caja los recibe y responde automáticamente con el <strong>acuse de recibo (ARECF)</strong>.
           </div>
+          <button id="ecf-wz-reception-retry" class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD.connectReceptionGateway()">Reintentar conexión automática</button>
+          <div id="ecf-wz-gateway-status" role="status" style="font-size:.8rem;margin-top:.5rem"></div>
+          <div style="font-size:.78rem;color:var(--text2);margin:.6rem 0">Tecno Caja conecta el receptor con el certificado guardado de tu empresa y firma los acuses automáticamente.</div>
           <div id="ecf-wz-step9-list" style="min-height:80px;margin-bottom:.85rem">
             <div style="font-size:.82rem;color:var(--text3);text-align:center">Cargando documentos recibidos…</div>
           </div>
@@ -3138,9 +3142,27 @@ const ECF_CERT_WIZARD = (() => {
     `;
   }
 
+  async function connectReceptionGateway() {
+    const input = document.getElementById('ecf-wz-reception-retry');
+    const status = document.getElementById('ecf-wz-gateway-status');
+    if (!input || !status || input.disabled) return;
+    input.disabled = true;
+    status.textContent = 'Conectando recepción con el certificado guardado…';
+    try {
+      await fiscalApi('POST', '/reception/connect-gateway', {});
+      status.textContent = 'Recepción conectada con el certificado de tu empresa. Si la prueba anterior falló, repite el envío en el portal DGII.';
+      await _pollStep9();
+    } catch (error) {
+      status.textContent = error.message || 'No se pudo conectar la recepción.';
+    } finally {
+      input.disabled = false;
+    }
+  }
+
   async function _pollStep9() {
     const el = document.getElementById('ecf-wz-step9-list');
-    if (!el) return;
+    if (!el || WZ.receptionPollBusy) return;
+    WZ.receptionPollBusy = true;
     try {
       const result = await fiscalApi('GET', '/reception/received');
       const items = (result?.items || []).filter(i => i.type === 'recepcion-ecf');
@@ -3159,12 +3181,18 @@ const ECF_CERT_WIZARD = (() => {
               <div style="font-size:.8rem;font-weight:600;color:#4ade80">${h(item.meta?.encf||'eNCF desconocido')}</div>
               <div style="font-size:.72rem;color:var(--text3)">RNC: ${h(item.meta?.rncEmisor||'—')} · ${h(new Date(item.receivedAt).toLocaleString('es-DO'))}</div>
             </div>
-            <span style="font-size:.72rem;color:#4ade80;background:rgba(22,163,74,.15);padding:.1rem .4rem;border-radius:4px">ARECF ✓</span>
+            <span style="font-size:.72rem;padding:.1rem .4rem;border-radius:4px">${item.meta?.signedReceipt === true ? 'Acuse firmado' : 'Repetir prueba: acuse sin firma confirmada'}</span>
           </div>
         `).join('')}
       `;
     } catch (err) {
       if (el) el.innerHTML = `<div style="color:#f87171;font-size:.82rem">Error: ${h(err.message)}</div>`;
+    } finally {
+      WZ.receptionPollBusy = false;
+      clearTimeout(WZ.receptionPollTimer);
+      if (WZ.activeStep === 9 && document.getElementById('ecf-wz-step9-list')?.getClientRects().length) {
+        WZ.receptionPollTimer = setTimeout(() => _pollStep9(), 8000);
+      }
     }
   }
 
@@ -3173,10 +3201,10 @@ const ECF_CERT_WIZARD = (() => {
     // Step 8 is confirmed after the user starts the test in DGII. Its
     // startedAt timestamp is therefore recorded after DGII may already have
     // delivered the documents, so filtering against it rejects valid receipts.
-    const received = (result?.items || []).filter((i) => i.type === 'recepcion-ecf').length;
+    const received = (result?.items || []).filter((i) => i.type === 'recepcion-ecf' && i.meta?.signedReceipt === true).length;
     if (received === 0) {
       if (typeof showFiscalToast === 'function') {
-        showFiscalToast('Todavía no hay ningún e-CF de prueba recibido de DGII. Espera a que DGII envíe y actualiza la lista.', 'warning');
+        showFiscalToast('Todavía no hay un e-CF con acuse firmado confirmado. Conecta la recepción y repite el envío de prueba en DGII.', 'warning');
       }
       return;
     }
@@ -3782,6 +3810,7 @@ const ECF_CERT_WIZARD = (() => {
 
   // ── Step initializers (called after render) ────────────────────────────────────
   function initStepHandlers(stepId) {
+    clearTimeout(WZ.receptionPollTimer);
     if (stepId === 1) initStep1();
     if (stepId === 2) _initStep2();
     if (stepId === 4) initStep4();
@@ -3997,6 +4026,7 @@ const ECF_CERT_WIZARD = (() => {
     _checkStep8Status,
 
     // Step 9 — Recepción e-CF
+    connectReceptionGateway,
     runStep9ecf,
     _pollStep9,
 

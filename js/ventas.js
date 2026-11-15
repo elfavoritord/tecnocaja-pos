@@ -8357,7 +8357,7 @@ function renderReceiptFooter(options = {}) {
   if (options.receiptPreview) {
     footer.innerHTML = `
       <button class="btn-secondary" onclick="closeReceipt()">Cerrar</button>
-      <button type="button" class="btn-primary" onclick="printReceiptPreview()">🖨️ Imprimir recibo</button>
+      <button type="button" class="btn-primary" onclick="printReceiptFromPreview(currentReceiptSale)">🖨️ Imprimir recibo</button>
     `;
     return;
   }
@@ -9640,6 +9640,8 @@ window.showReceiptPreview = function(venta, options = {}) {
   }
 
   overlay._previewSale = venta;
+  const printButton = overlay.querySelector('[data-preview-print]');
+  if (printButton) printButton.textContent = venta.isPrecuenta ? '🖨️ Imprimir precuenta' : '🖨️ Imprimir recibo';
   const title = overlay.querySelector('#report-receipt-preview-title');
   const content = overlay.querySelector('#report-receipt-preview-content');
   if (title) title.textContent = options.title || 'Vista previa del recibo';

@@ -4,6 +4,7 @@ const express = require('express');
 const helmet = require('helmet');
 const { createRouter } = require('./router');
 const { createRespaldosRouter } = require('./respaldos');
+const { createPosRouter } = require('./pos-installations');
 
 /**
  * @param {object} [deps]  { db, now, limites, verificarIdToken, almacen, secretoRespaldos } —
@@ -18,6 +19,8 @@ function createApp(deps = {}) {
   app.set('trust proxy', 1);
   // Solo API (el POS llama desde Node, no desde un navegador): sin CORS.
   app.use(helmet());
+  app.use(createPosRouter({ db: backend.db, verificarIdToken: backend.verificarIdToken, now: deps.now,
+    gatewayFetch: deps.gatewayFetch, gatewayToken: deps.gatewayToken }));
   app.use(createRouter({
     db: backend.db, now: deps.now, limites: deps.limites, verificarIdToken: backend.verificarIdToken,
   }));

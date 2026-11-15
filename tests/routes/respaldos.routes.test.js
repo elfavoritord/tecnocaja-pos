@@ -42,6 +42,22 @@ function buildApp() {
   return { app };
 }
 
+describe('Lectura inicial del respaldo local', () => {
+  test.each([['TECNOCAJA_BACKUP_V1', '1'], ['TECNOCAJA_BACKUP_V1', '2'], ['TECNOCAJA_BACKUP_V3', '3']])('acepta %s versión %s sin restaurar datos', async (magic, formatVersion) => {
+    const { app } = buildApp();
+    const envelope = { magic, formatVersion, metadata: { businessName: 'Prueba' }, sha256: 'huella' };
+    const res = await request(app).post('/api/respaldos/setup/leer-tcbak').send({ base64: Buffer.from(JSON.stringify(envelope)).toString('base64') });
+    expect(res.status).toBe(200);
+    expect(res.body.metadata.businessName).toBe('Prueba');
+  });
+  test.each([{ magic: 'AJENO' }, { magic: 'TECNOCAJA_BACKUP_V3', formatVersion: '99' }])('rechaza formatos ajenos o futuros', async (envelope) => {
+    const { app } = buildApp();
+    const res = await request(app).post('/api/respaldos/setup/leer-tcbak').send({ base64: Buffer.from(JSON.stringify(envelope)).toString('base64') });
+    expect(res.status).toBe(400);
+    expect(res.body.ok).toBe(false);
+  });
+});
+
 describe('POST /api/respaldos/auto — control de acceso (Fase 2, C1)', () => {
   let app;
   let timer;

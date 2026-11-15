@@ -6,13 +6,14 @@ const fs = require('fs');
 
 jest.mock('qrcode', () => ({ toDataURL: async () => 'data:image/png;base64,AA==' }));
 jest.mock('../modules/ecf/services/ecf.service', () => ({ createEcfService: jest.fn() }));
-jest.mock('../modules/ecf/utils/dgii-live-check.util', () => ({ checkQrResolves: async () => ({ indexed: true }) }));
+jest.mock('../modules/ecf/utils/dgii-live-check.util', () => ({ checkQrResolves: jest.fn() }));
 jest.mock('../modules/ecf/utils/qr-diagnostic.util', () => ({ recordQrDiagnostic: jest.fn() }));
 jest.mock('../modules/ecf/utils/pdf-browser.util', () => ({ launchPdfBrowser: jest.fn() }));
 
 const { createEcfService } = require('../modules/ecf/services/ecf.service');
 const { launchPdfBrowser } = require('../modules/ecf/utils/pdf-browser.util');
 const { createEcfRouter } = require('../modules/ecf/controllers/router');
+const { checkQrResolves } = require('../modules/ecf/utils/dgii-live-check.util');
 
 function xml(tipo, encf, summary = false) {
   const root = summary ? 'RFCE' : 'ECF';
@@ -33,6 +34,7 @@ describe('Paso 5: empresa emisora en vista previa, PDF y ZIP', () => {
   let rows;
 
   beforeEach(() => {
+    checkQrResolves.mockReset().mockResolvedValue({ indexed: true, valid: true, estado: 'Aceptado' });
     const types = ['31', '32', '32', '33', '34', '41', '43', '44', '45', '46', '47'];
     rows = types.map((tipo, index) => {
       const summary = index === 2;
@@ -91,5 +93,44 @@ describe('Paso 5: empresa emisora en vista previa, PDF y ZIP', () => {
     expect(setContent).toHaveBeenCalledTimes(11);
     for (const [html] of setContent.mock.calls) expectHeader(html);
     expect(setContent.mock.calls[2][0]).toContain('Cargador');
+  });
+
+  test.each(['45', '47'])('E%s rechazado en el QR impide preparar el lote aunque la recepción local figure aceptada', async (tipo) => {
+    checkQrResolves.mockImplementation(async (url) => url.includes(`ENCF=E${tipo}`)
+      ? { indexed: true, valid: false, estado: 'Rechazado' }
+      : { indexed: true, valid: true, estado: 'Aceptado' });
+    const list = await request(app).get('/api/ecf/print/step5-docs');
+    const doc = list.body.docs.find((item) => item.tipo === tipo);
+    expect(doc.dgiiVerificado).toBe(false);
+    expect(doc.representationReady).toBe(false);
+    expect(list.body.complete).toBe(false);
+    const bundle = await request(app).get('/api/ecf/print/step5-pdf-bundle');
+    expect(bundle.status).toBe(409);
+    expect(bundle.body.error).toContain('Rechazado');
+  });
+
+  test('selecciona otro E47 aceptado cuando el primer QR aparece rechazado', async () => {
+    const original = rows.find((row) => row.tipo_ecf === '47');
+    const encf = 'E470000000099';
+    rows.push({ ...original, encf, signed_xml_content: xml('47', encf) });
+    checkQrResolves.mockImplementation(async (url) => url.includes(`ENCF=${original.encf}`)
+      ? { indexed: true, valid: false, estado: 'Rechazado' }
+      : { indexed: true, valid: true, estado: 'Aceptado' });
+    const list = await request(app).get('/api/ecf/print/step5-docs');
+    expect(list.body.docs.find((item) => item.tipo === '47')).toMatchObject({ encf, dgiiVerificado: true, representationReady: true });
+  });
+
+  test.each(['45', '47'])('E%s no encontrado en el QR bloquea el ZIP y permite abrir el enlace exacto para diagnóstico', async (tipo) => {
+    checkQrResolves.mockImplementation(async (url) => url.includes(`ENCF=E${tipo}`)
+      ? { indexed: false, valid: false, estado: null, reason: 'not_found' }
+      : { indexed: true, valid: true, estado: 'Aceptado' });
+    const list = await request(app).get('/api/ecf/print/step5-docs');
+    expect(list.body.docs.find((item) => item.tipo === tipo)).toMatchObject({
+      dgiiVerificado: false, representationReady: false, dgiiEstadoPublico: 'No encontrado',
+      qrVerificationUrl: expect.stringContaining(`ENCF=E${tipo}`),
+    });
+    const bundle = await request(app).get('/api/ecf/print/step5-pdf-bundle');
+    expect(bundle.status).toBe(409);
+    expect(bundle.body.error).toContain('No encontrado');
   });
 });

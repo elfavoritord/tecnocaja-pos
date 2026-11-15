@@ -25,19 +25,24 @@ function fetchHtml(url, timeoutMs = 8000) {
 // llegar — en indexarlo en este servicio público. Por eso, antes de elegir qué comprobante subir
 // como representante en el Paso 5 (donde DGII revisa "la correcta conformación del QR"), conviene
 // comprobar cuál de los aceptados YA resuelve aquí, en vez de tomar el primero por eNCF a ciegas.
+function parseQrResult(html) {
+  if (/no fue encontrad[ao]|(?:factura|comprobante|e-?cf)[^<\n]{0,80}no encontrad[ao]/i.test(html)) {
+    return { indexed: false, valid: false, estado: null, reason: 'not_found' };
+  }
+  const match = html.match(/<th\b[^>]*>\s*Estado\s*<\/th>\s*<td\b[^>]*>\s*([^<]+?)\s*<\/td>/i);
+  const estado = match ? match[1].trim() : null;
+  const normalized = String(estado || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  return { indexed: Boolean(estado), valid: /^aceptado(?:\s+(?:condicional|condicionado))?$/.test(normalized), estado };
+}
+
 async function checkQrResolves(qrUrl) {
   if (!qrUrl) return { indexed: false, estado: null };
   try {
     const html = await fetchHtml(qrUrl);
-    if (/no fue encontrada la factura/i.test(html)) {
-      return { indexed: false, estado: null };
-    }
-    const match = html.match(/<th>\s*Estado\s*<\/th>\s*<td>\s*([^<]+?)\s*<\/td>/i);
-    const estado = match ? match[1].trim() : null;
-    return { indexed: Boolean(estado), estado };
+    return parseQrResult(html);
   } catch (err) {
     return { indexed: false, estado: null, error: err.message };
   }
 }
 
-module.exports = { checkQrResolves };
+module.exports = { checkQrResolves, parseQrResult };

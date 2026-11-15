@@ -459,7 +459,8 @@ function buildReceivables(rows, today, scopeKey) {
       branchId: r.branch_id ? String(r.branch_id) : null,
     });
     const key = r.client_id ? `c${r.client_id}` : `n${String(r.client_name || '').trim().toLowerCase()}`;
-    const debtor = debtors.get(key) || { name: r.client_name || 'Cliente sin nombre', invoices: 0, balance: 0, overdue: false, oldestDate: null };
+    // clientId: la app de reportes pide con él el estado de cuenta del cliente.
+    const debtor = debtors.get(key) || { clientId: r.client_id ? String(r.client_id) : null, name: r.client_name || 'Cliente sin nombre', invoices: 0, balance: 0, overdue: false, oldestDate: null };
     debtor.invoices += 1;
     debtor.balance = round2(debtor.balance + balance);
     debtor.overdue = debtor.overdue || late;

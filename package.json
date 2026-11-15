@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.18",
+  "version": "1.6.26",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -31,6 +31,8 @@
     "test:combos-personalizados-e2e": "node scripts/combos-personalizados/probar-e2e.js && node scripts/combos-personalizados/probar-e2e.js --sqlite && node scripts/combos-personalizados/probar-ui.js",
     "test:ecf-completo": "node scripts/ecf/probar-ecf-punta-a-punta.js && node scripts/ecf/probar-ecf-punta-a-punta.js --servicios && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite && node scripts/ecf/probar-ecf-punta-a-punta.js --sqlite --servicios && node scripts/ecf/probar-ui-ecf.js && node scripts/ecf/probar-ui-ecf.js --servicios && node scripts/ecf/probar-comprobantes-ui.js",
     "test:pantallas": "node scripts/ecf/recorrer-pantallas.js && node scripts/ecf/recorrer-pantallas.js --servicios && node scripts/ecf/recorrer-pantallas.js --mariadb && node scripts/ecf/recorrer-pantallas.js --mariadb --servicios",
+    "certificacion": "node tools/certificacion/servidor.js",
+    "test:app-reportes": "npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tc \"node scripts/app-reportes/check-reglas-app.js && node scripts/app-reportes/probar-app-reportes.js\"",
     "test:multisucursal-mariadb": "node scripts/multisucursal/probar-migraciones-mariadb.js",
     "test:multisucursal-sqlite": "node scripts/multisucursal/probar-arranque-sqlite.js",
     "test:multisucursal-enlace": "node cloud/sync-api/scripts/vendor-sync.js && npx -y firebase-tools@13.35.1 emulators:exec --config firebase.emulador.json --only firestore --project demo-tecnocaja \"node scripts/multisucursal/probar-enlace-pos.js\"",

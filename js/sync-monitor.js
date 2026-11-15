@@ -101,6 +101,13 @@ function _describeConnectivity(c) {
     };
   }
   const errors = Number(c.pending?.cloudErrors || 0);
+  if (c.cloud?.ready === false) {
+    return {
+      state: 'offline',
+      label: pendingCloud ? `Nube no disponible · ${pendingCloud} pendientes` : 'Nube no disponible',
+      detail: 'Hay Internet, pero Firebase no está listo en este equipo. Los cambios permanecen guardados localmente; revisa el error de sincronización para habilitar la subida.'
+    };
+  }
   if (errors > 0) {
     return { state: 'error', label: `${errors} con error`, detail: 'Hay cambios que la nube rechazó. Ábrelo para reintentar.' };
   }
@@ -110,9 +117,6 @@ function _describeConnectivity(c) {
       label: `${pendingCloud + pendingEcf} ${pendingCloud + pendingEcf === 1 ? 'pendiente' : 'pendientes'}`,
       detail: 'Enviando a la nube y a la DGII lo que quedó pendiente.'
     };
-  }
-  if (c.cloud?.ready === false) {
-    return { state: 'offline', label: 'Nube no configurada', detail: 'Hay Internet, pero la nube (Firebase) no está configurada en este equipo. La caja funciona igual.' };
   }
   return { state: 'ok', label: 'Sincronizado', detail: 'Servidor local e Internet conectados. Todo al día.' };
 }
@@ -224,6 +228,7 @@ async function refreshSyncMonitor() {
     }
   }
   if (sync) {
+    if (sync.lastError) rows.push(_statusRow('Error de sincronización', sync.lastError, 'danger'));
     rows.push(_statusRow('Cambios con error', sync.fallidos ?? sync.queue?.errors ?? 0, (sync.fallidos ?? sync.queue?.errors) ? 'danger' : ''));
     rows.push(_statusRow('Última sincronización', _formatDateTime(sync.ultimo_sync ?? sync.lastSyncAt)));
   }
@@ -240,7 +245,7 @@ async function refreshSyncMonitor() {
       <span>${view.detail}</span>
     </div>
     <div class="tc-conn-rows">${rows.join('')}</div>
-    <p class="tc-conn-help">La red local mantiene funcionando el negocio: ventas, caja, inventario, clientes e impresión no necesitan Internet. Internet solo sincroniza la nube, los respaldos en línea y la DGII; lo pendiente se envía solo al volver la conexión.</p>`;
+    <p class="tc-conn-help">La red local mantiene funcionando el negocio: ventas, caja, inventario, clientes e impresión no necesitan Internet. Los cambios pendientes se envían cuando Internet y el servicio de nube están disponibles. Si aparece un error de configuración, hay que corregirlo para habilitar la subida.</p>`;
 }
 
 async function retrySyncFailed() {

@@ -22,6 +22,7 @@ async function prevalidar(payload, query, { expectedLicenseUid = '', components 
   files.validar(payload.archivos, components);
   const current = await validarIdentidad(payload, query, expectedLicenseUid);
   const destino = [];
+  const requiereReconfiguracion = new Set(contenido.requiereReconfiguracion || []);
   for (const entrada of contenido.manifiesto) {
     const table = entrada.nombre, rows = contenido.tablas[table];
     const columns = await query(`PRAGMA table_info(${quote(table)})`);
@@ -30,11 +31,30 @@ async function prevalidar(payload, query, { expectedLicenseUid = '', components 
     for (const row of rows) for (const key of Object.keys(row)) {
       if (!nombres.has(key)) throw new Error(`La columna ${table}.${key} no existe en esta versión. No se ha modificado la base.`);
     }
-    destino.push({ table, rows, columns });
+    const preparadas = rows.map((source) => {
+      const row = { ...source };
+      for (const column of columns) {
+        const name = column.name;
+        if (!Number(column.notnull) || row[name] !== undefined && row[name] !== null) continue;
+        const omitida = !Object.prototype.hasOwnProperty.call(row, name);
+        if (omitida && (column.dflt_value !== null && column.dflt_value !== undefined || Number(column.pk))) continue;
+        // El catálogo omite secretos por diseño. Una tabla antigua puede exigir
+        // TEXT NOT NULL sin valor por defecto: se conserva el registro, pero
+        // nunca se inventa ni se reutiliza una contraseña de otro certificado.
+        if (SECRET.test(name) && name !== 'password_hash' && /char|text|blob|binary/i.test(column.type || '')) {
+          row[name] = '';
+          requiereReconfiguracion.add(`${table}.${name}`);
+          continue;
+        }
+        throw new Error(`No se puede restaurar ${table}: falta el campo obligatorio ${name}. No se ha modificado la base.`);
+      }
+      return row;
+    });
+    destino.push({ table, rows: preparadas, columns });
   }
   if (!contenido.tablas.config?.some((c) => Number(c.id) === 1) || !contenido.tablas.users?.length) throw new Error('El respaldo carece de empresa o usuarios recuperables.');
   return { destino, current, backupId: payload.backupId, empresaId: payload.companyUuid || payload.licenseUid || null,
-    capturedAt: payload.snapshot?.capturedAt || payload.exportedAt, requiresReconfiguration: contenido.requiereReconfiguracion || [] };
+    capturedAt: payload.snapshot?.capturedAt || payload.exportedAt, requiresReconfiguration: [...requiereReconfiguracion].sort() };
 }
 function valorDb(value, type) {
   if (value && typeof value === 'object' && Object.keys(value).length === 1 && typeof value.__tcbak_binary === 'string') return Buffer.from(value.__tcbak_binary, 'base64');

@@ -373,6 +373,27 @@ function createGatewayRouter({ store, kms }) {
   });
 
   // ── Empresas del Gateway ─────────────────────────────────────────────────
+  router.post('/admin/automatic-connection', requireAuth, requireAdmin, async (req, res) => {
+    const rnc = normalizeRnc(req.body?.rnc);
+    const licenseId = String(req.body?.licenseId || '');
+    if (!isValidRnc(rnc) || !/^pos_[a-zA-Z0-9_-]+$/.test(licenseId)) return res.status(400).json({ error: 'Identidad de empresa no válida.' });
+    const existing = await store.findByKey('ecf_gateway_tenants', rnc);
+    if (existing?.active === false || (existing?.businessId && existing.businessId !== licenseId)) return res.status(403).json({ error: 'El receptor pertenece a otra licencia o está desactivado.' });
+    const buffer = Buffer.from(String(req.body?.certificateBase64 || ''), 'base64');
+    try {
+      const certificate = await sealCertificate({ p12Buffer: buffer, password: String(req.body?.password || ''), kms });
+      const approved = req.body?.authorizedRnc === true;
+      if (!approved && existing?.businessId !== licenseId) {
+        return res.status(403).json({ error: 'El administrador debe autorizar la relación entre esta licencia y el RNC del certificado de su representante.' });
+      }
+      // La asociación se escribe después de validar el certificado y la pertenencia.
+      await tenants.upsert({ rnc, nombre: req.body?.name, businessId: licenseId });
+      const tenant = await tenants.saveCertificate(rnc, certificate);
+      res.json({ ok: true, rnc, validTo: certificate.validTo, fingerprintSha256: certificate.fingerprintSha256, tenant });
+    } catch (e) { res.status(e.statusCode || 500).json({ error: e.statusCode ? e.message : 'No se pudo guardar el certificado del receptor.' }); }
+    finally { buffer.fill(0); }
+  });
+
   router.get('/admin/tenants', requireAuth, requireAdmin, async (_req, res) => {
     res.json({ tenants: await tenants.list() });
   });

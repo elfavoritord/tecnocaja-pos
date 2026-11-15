@@ -91,6 +91,15 @@ function resolveStep5Representation(row) {
 function createEcfRouter(deps) {
   const router = express.Router();
   const service = createEcfService(deps);
+  router.post('/reception/connect-gateway', wrap(async (req) => {
+    await service.ensureReady();
+    try {
+      return await service.connectReception(req.body?.token);
+    } catch (error) {
+      error.statusCode = 422;
+      throw error;
+    }
+  }));
   const disabled250MilPortalFlow = (_req, res) => {
     res.status(410).json({
       error: 'Flujo eliminado. No se deben generar ni subir ECF completos <250Mil por esta vía.',
@@ -382,11 +391,13 @@ function createEcfRouter(deps) {
         let chosen = candidates[0];
         let dgiiVerificado = false;
         let dgiiEstadoPublico = null;
+        let firstQrResult = null;
         for (const candidate of candidates) {
           if (!['aceptado', 'aceptado_condicional'].includes(String(candidate.estado_dgii || '').toLowerCase())) break;
           const qrUrl = buildQrVerificationUrl(candidate.signed_xml_content, candidate.environment);
           const result = await checkQrResolves(qrUrl);
-          if (result.indexed) {
+          if (candidate === candidates[0]) firstQrResult = result;
+          if (result.indexed && result.valid !== false) {
             chosen = candidate;
             dgiiVerificado = true;
             dgiiEstadoPublico = result.estado;
@@ -401,6 +412,11 @@ function createEcfRouter(deps) {
           representationReady = false;
           representationError = error.message;
         }
+        if (!dgiiVerificado && (firstQrResult?.reason === 'not_found' || (firstQrResult?.indexed && firstQrResult.valid === false))) {
+          representationReady = false;
+          dgiiEstadoPublico = firstQrResult.estado || 'No encontrado';
+          representationError = `El QR de ${chosen.encf} muestra ${dgiiEstadoPublico} en DGII. No subas esta representación; comprueba el XML enviado y el ambiente antes de reiniciar la prueba.`;
+        }
         const estado = String(chosen.estado_dgii || '').toLowerCase();
         docs.push({
           key: k,
@@ -413,6 +429,7 @@ function createEcfRouter(deps) {
           representationError,
           dgiiVerificado,
           dgiiEstadoPublico,
+          qrVerificationUrl: buildQrVerificationUrl(chosen.signed_xml_content, chosen.environment),
         });
       }
       const presentKeys = new Set(docs.map((doc) => doc.key));
@@ -476,11 +493,13 @@ function createEcfRouter(deps) {
         let row = candidates[0];
         let dgiiVerificado = false;
         let dgiiEstadoPublico = null;
+        let firstQrResult = null;
         for (const candidate of candidates) {
           if (!['aceptado', 'aceptado_condicional'].includes(String(candidate.estado_dgii || '').toLowerCase())) break;
           const qrUrl = buildQrVerificationUrl(candidate.signed_xml_content, candidate.environment);
           const result = await checkQrResolves(qrUrl);
-          if (result.indexed) {
+          if (candidate === candidates[0]) firstQrResult = result;
+          if (result.indexed && result.valid !== false) {
             row = candidate;
             dgiiVerificado = true;
             dgiiEstadoPublico = result.estado;
@@ -488,6 +507,9 @@ function createEcfRouter(deps) {
           }
         }
         const estado = String(row.estado_dgii || '').toLowerCase();
+        if (!dgiiVerificado && (firstQrResult?.reason === 'not_found' || (firstQrResult?.indexed && firstQrResult.valid === false))) {
+          return res.status(409).json({ error: `El QR de ${row.encf} (${key}) muestra ${firstQrResult.estado || 'No encontrado'} en DGII. Comprueba el XML enviado y el ambiente antes de descargar el lote o reiniciar la prueba.` });
+        }
         if (!STEP5_ACCEPTED_STATES.has(estado)) {
           return res.status(409).json({ error: `El documento ${key} todavía no está aceptado por DGII.` });
         }
@@ -532,9 +554,9 @@ function createEcfRouter(deps) {
 
       const resumenLines = [
         'Verificación en vivo contra el portal público de DGII (ConsultaTimbre/ConsultaTimbreFC) al momento de generar este ZIP.',
-        'Un "NO" no significa que el documento esté mal — DGII lo aceptó igual en la recepción — significa que su índice',
-        'público de verificación aún no lo tiene indexado. Si DGII rechaza este comprobante en el Paso 6 por el QR,',
-        'espera un poco y vuelve a generar el ZIP: puede que ya haya un candidato del mismo tipo que sí resuelva.',
+        'Un "NO" significa que no se pudo confirmar la validez en la consulta pública. No demuestra por sí solo un retraso de DGII.',
+        'Antes de subir esos PDF al portal, abre sus QR y contrasta el ambiente, e-NCF y código de seguridad con el XML enviado.',
+        'Si un QR muestra No encontrado o Rechazado, revisa ese documento antes de reiniciar la prueba.',
         '',
         ...verificationSummary.map((v) => `Tipo ${v.key}: eNCF ${v.encf} — verificado en DGII: ${v.dgiiVerificado ? 'SI (' + v.dgiiEstadoPublico + ')' : 'NO'}`),
       ];

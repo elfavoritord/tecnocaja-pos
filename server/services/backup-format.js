@@ -36,7 +36,7 @@ async function createTcbakBuffer(payload, password) {
 }
 
 // ─── Parsear y descifrar .tcbak ──────────────────────────────────────────────
-async function parseTcbakBuffer(fileBuffer, password) {
+function readTcbakEnvelope(fileBuffer) {
   let tcbak;
   try {
     tcbak = JSON.parse(fileBuffer.toString('utf8'));
@@ -48,6 +48,11 @@ async function parseTcbakBuffer(fileBuffer, password) {
     throw new Error('Este archivo no es un respaldo de Tecno Caja.');
   }
   if (!['1', '2', '3'].includes(String(tcbak.formatVersion || '1'))) throw new Error('Versión de respaldo incompatible. Actualiza Tecno Caja antes de restaurar.');
+  return tcbak;
+}
+
+async function parseTcbakBuffer(fileBuffer, password) {
+  const tcbak = readTcbakEnvelope(fileBuffer);
 
   const { decryptBackupPayload } = require('../security/backup-crypto');
   let decryptedBase64;
@@ -102,4 +107,4 @@ async function parseTcbakBufferCon(fileBuffer, claves) {
   throw ultimo || new Error('Contraseña incorrecta o archivo corrupto. No se pudo descifrar el respaldo.');
 }
 
-module.exports = { createTcbakBuffer, parseTcbakBuffer, parseTcbakBufferCon };
+module.exports = { createTcbakBuffer, parseTcbakBuffer, parseTcbakBufferCon, readTcbakEnvelope };

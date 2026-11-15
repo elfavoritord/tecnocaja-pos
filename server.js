@@ -176,6 +176,7 @@ const {
 
 const ecfModule = createEcfModule({
   query, withTransaction, resolveRequestActorUser,
+  cloudConnection: { request: async (action, body) => (await ensurePosCloudConnection()).request(action, body) },
   // El espejo de secuencias del Portal del Contador se refresca al momento.
   onSequencesChanged: () => syncPortalContableFireAndForget('secuencias e-NCF'),
 });
@@ -1643,14 +1644,52 @@ const licenciaSucursal = require('./server/multisucursal/licencia-sucursal').cre
   },
 });
 
+async function ensurePosCloudConnection(credentials = {}) {
+  const cloud = require('./server/services/pos-cloud-runtime').getConnection();
+  const [config] = await query('SELECT * FROM config WHERE id = 1 LIMIT 1');
+  if (!config?.setup_completed) throw new Error('Completa la configuración inicial del negocio.');
+  if (!config.business_uuid) {
+    await query("UPDATE config SET business_uuid = ? WHERE id = 1 AND (business_uuid IS NULL OR business_uuid = '')", [crypto.randomUUID()]);
+    config.business_uuid = (await query('SELECT business_uuid FROM config WHERE id = 1 LIMIT 1'))[0]?.business_uuid;
+  }
+  cloud.selectBusiness(config.business_uuid || config.business_name);
+  if (cloud.connected()) return cloud;
+  const users = await query("SELECT * FROM users WHERE LOWER(rol) IN ('administrador','admin','super_admin') AND estado = 'Activo' ORDER BY id LIMIT 1");
+  const owner = users[0];
+  if (!owner) throw new Error('No se encontró el administrador del negocio.');
+  const result = await cloud.register({
+    business: { name: config.business_name, rnc: config.rnc, structure: config.business_structure_mode,
+      trialStartedAt: parseUtcDbDateTime(config.trial_started_at)?.toISOString() },
+    device: require('./server/security/machine-identity').getDeviceDescriptor(),
+    email: owner.email, password: credentials.password || owner.password,
+    idToken: credentials.idToken, licenseId: process.env.TECNO_CAJA_LICENSE_UID,
+    notifyOwner: Boolean(credentials.password || credentials.idToken),
+  });
+  persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: result.license.id });
+  return cloud;
+}
+
 const secureLicenseService = createLicenseService({
   query,
-  fetchRemoteLicense: async (context = {}) => licenciaSucursal.combinar(
-    await require('./modules/firebase-admin').fetchRemotePosLicenseState({
+  fetchRemoteLicense: async (context = {}) => {
+    const firebase = require('./modules/firebase-admin');
+    if (!firebase.getFirebaseConfigStatus().adminEnabled) {
+      const cloud = await ensurePosCloudConnection();
+      return licenciaSucursal.combinar((await cloud.request('license')).license);
+    }
+    return licenciaSucursal.combinar(await firebase.fetchRemotePosLicenseState({
       business_name: context.businessName,
       principalFirebaseUid: context.principalFirebaseUid,
-    })
-  ),
+    }));
+  },
+  updateRemoteDevice: async (license, context, options) => {
+    if (!getFirebaseConfigStatus().adminEnabled) {
+      // La lectura del intermediario verifica la clave de esta instalación y
+      // que su equipo siga registrado y no haya sido revocado.
+      return { allowed: license.devices.some(d => d.deviceId === secureLicenseService.device.deviceId) };
+    }
+    return secureLicenseService.defaultUpdateRemoteDevice(license, context, options);
+  },
   persistRemoteUid: (licenseUid) => {
     if (!licenseUid) return;
     const currentUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
@@ -2763,7 +2802,7 @@ const gastosRouter = createGastosRouter({
 app.use('/api/expenses', gastosRouter);
 
 // Modo Empresa de Servicios — núcleo M1 (solo activo si config.serviceCompany).
-app.use('/api/servicios', createServiciosRouter({
+const serviciosRouter = createServiciosRouter({
   query, withTransaction, resolveRequestActorUser, userRoleHasPermission, writeAuditLog,
   getUserScopeBranchId, isGlobalAdministratorUser, isBranchAdministratorUser,
   // Servicios crea el cliente desde el nombre y la cédula del documento; no
@@ -2774,7 +2813,8 @@ app.use('/api/servicios', createServiciosRouter({
   ecfService: ecfModule.service,
   // Sin Internet el e-CF de la factura se firma y queda pendiente de envío.
   isInternetOffline: () => getInternetMonitor().isKnownOffline(),
-}));
+});
+app.use('/api/servicios', serviciosRouter);
 
 // Cobro de crédito a clientes
 const clientesCreditosRouter = createClientesCreditosRouter({
@@ -2789,6 +2829,50 @@ const clientesCreditosRouter = createClientesCreditosRouter({
   getUserScopeBranchId,
 });
 app.use('/api/clients', clientesCreditosRouter);
+
+// App de reportes (TCP Reportes): la app deja en Firestore compras de proveedores
+// (businesses/{id}/appCompras) y pedidos de facturas y estados de cuenta
+// (businesses/{id}/appSolicitudes); esta PC principal los atiende en segundo
+// plano con los mismos permisos del POS. Ver server/services/app-reportes.
+const appReportes = (() => {
+  const getDb = () => {
+    if (!getFirebaseConfigStatus().adminEnabled) return null;
+    return require('./modules/firebase-admin').getFirestore();
+  };
+  const getBusinessId = async () => reportsSync.getBusinessId(await getReportSyncConfig());
+  const esPrincipal = () => isMainTerminalConfig(getTerminalConfig());
+  const usuarioApp = require('./server/services/app-reportes/usuario-app').createUsuarioApp({
+    getUserWithRoleContextById, isGlobalAdministratorUser, userRoleHasPermission, getUserScopeBranchId,
+  });
+  const documentos = require('./server/services/app-reportes/documentos');
+  const generadores = documentos.createDocumentosApp({
+    query, getConfig: () => getConfig({ syncRemote: false }), obtenerVentaImprimible,
+    estadoDeCuenta: clientesCreditosRouter.estadoDeCuenta,
+    facturaServicioHtml: serviciosRouter.facturaA4, mapClientRow,
+    puedeVerCuentas: (u) => userCanViewCashReports(u) || userRoleHasPermission(u, 'cobrar_creditos', 'ver_clientes', 'clientes'),
+    htmlAPdf: documentos.crearHtmlAPdf(),
+  });
+  const solicitudes = require('./server/services/app-reportes/solicitudes-app').createSolicitudesApp({
+    getDb, getBusinessId, esPrincipal, usuarioApp, generadores, quien: () => require('os').hostname(),
+  });
+  const compras = require('./server/services/compras/cola-app').createColaComprasApp({
+    servicio: comprasRouter.servicio, query, writeAuditLog, getDb, getBusinessId, esPrincipal, usuarioApp,
+    getBranchId: async () => {
+      const propia = Number(getTerminalScopeSelection().branchId || 0);
+      if (propia) return propia;
+      const [b] = await query('SELECT id FROM branches ORDER BY id LIMIT 1').catch(() => []);
+      return b ? Number(b.id) : null;
+    },
+    alRegistrar: () => syncPortalContableFireAndForget('compra registrada desde la app de reportes'),
+    quien: () => require('os').hostname(),
+  });
+  return {
+    escuchar: async () => (esPrincipal() ? Promise.all([solicitudes.escuchar(), compras.escuchar()]) : false),
+    procesar: () => Promise.all([solicitudes.procesar(), compras.procesar()]),
+  };
+})();
+// Respaldo de los listeners: cada 2 minutos (sin Firebase o sin Internet no hace nada).
+setInterval(() => { appReportes.procesar().catch(() => {}); }, 2 * 60 * 1000).unref?.();
 
 // Cierre seguro con arqueo por denominaciones y aperturas de gaveta con motivo
 // (server/routes/caja-segura.routes.js). El cierre sigue en POST /api/cash/close,
@@ -5015,36 +5099,11 @@ async function ensureConfigExtensions() {
   // (setup_completed_at, que solo se escribe una vez). En MariaDB las fechas de
   // prueba se corrían 4 h por cada lectura+escritura (ver
   // server/licensing/trial-window.js) — las instalaciones que ya arrastran ese
-  // desfase se re-anclan aquí a setup_completed_at + 30 días, y se limpia el
-  // caché de licencia para que se reconstruya limpio.
+  // desfase se re-anclan aquí a setup_completed_at + 30 días. La autorización
+  // de este equipo se conserva y LicenseService la valida por su vía normal.
   try {
-    const [lc] = await query(
-      `SELECT setup_completed_at, trial_started_at, trial_ends_at, license_status FROM config WHERE id = 1 LIMIT 1`
-    );
-    const isTrial = lc && String(lc.license_status || '').toLowerCase() === 'trial';
-    // setup_completed_at sale de datetime('now'): en SQLite es texto UTC; en
-    // MariaDB es CURRENT_TIMESTAMP (hora local) y mysql2 ya lo entrega como el
-    // instante correcto. Las columnas trial_* sí van siempre en UTC.
-    const anchor = !lc ? null
-      : lc.setup_completed_at instanceof Date ? lc.setup_completed_at
-        : parseUtcDbDateTime(lc.setup_completed_at || lc.trial_started_at);
-    if (isTrial && anchor && !Number.isNaN(anchor.getTime())) {
-      const expected = computeTrialWindow({ startedAt: anchor, now: new Date() });
-      const startedAt = parseUtcDbDateTime(lc.trial_started_at);
-      const endsAt = parseUtcDbDateTime(lc.trial_ends_at);
-      const driftMs = Math.max(
-        startedAt ? Math.abs(startedAt.getTime() - expected.startedAt.getTime()) : Infinity,
-        endsAt ? Math.abs(endsAt.getTime() - expected.endsAt.getTime()) : Infinity
-      );
-      if (driftMs > 60 * 60 * 1000) {
-        await query(
-          `UPDATE config SET trial_started_at = ?, trial_ends_at = ? WHERE id = 1`,
-          [toUtcDbDateTime(expected.startedAt), toUtcDbDateTime(expected.endsAt)]
-        );
-        await query('DELETE FROM license_cache').catch(() => {});
-        console.log(`[license] prueba re-anclada a setup+30d (quedan ${expected.daysLeft} días).`);
-      }
-    }
+    const repairedTrial = await require('./server/licensing/trial-repair').repairTrialDates({ query });
+    if (repairedTrial.repaired) console.log(`[license] prueba re-anclada a setup+30d (quedan ${repairedTrial.daysLeft} días).`);
   } catch (_) { /* si falta la columna o license_cache, no bloquea el arranque */ }
   const codeRows = await query('SELECT mobile_connection_code FROM config WHERE id = 1 LIMIT 1');
   const currentCode = String(codeRows[0]?.mobile_connection_code || '').trim();
@@ -9324,15 +9383,11 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   const _loginT0 = Date.now();
   const _lap = (label) => console.log(`[login-timing] ${label}: ${Date.now() - _loginT0}ms`);
 
-  const setupStatus = await getSetupStatus();
+  let setupStatus = await getSetupStatus();
   _lap('getSetupStatus');
   if (setupStatus.setupRequired) {
     return res.status(423).json({ error: 'Debes completar el asistente inicial antes de iniciar sesión.' });
   }
-  if (!setupStatus.license.canEnter) {
-    return res.status(403).json({ error: getLicenseDeniedMessage(setupStatus.license), code: setupStatus.license.blockedCode || 'LICENSE_BLOCKED' });
-  }
-
   const { usuario, password } = req.body || {};
   if (!usuario || !password) {
     return res.status(400).json({ error: 'Usuario y contraseña son requeridos.' });
@@ -9365,6 +9420,20 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     return res.status(401).json({ error: 'Usuario o contraseña incorrectos.' });
   }
   _lap('verificarPassword');
+
+  if (!setupStatus.license.canEnter && ['activation_required', 'missing_remote'].includes(setupStatus.license.blockedCode)
+    && isGlobalAdministratorUser(user) && !getFirebaseConfigStatus().adminEnabled) {
+    try {
+      await ensurePosCloudConnection({ password });
+      await secureLicenseService.resolveState({ force: true, allowRemote: true });
+      setupStatus = await getSetupStatus();
+    } catch (error) {
+      return res.status(503).json({ error: error.message, code: error.code || 'CLOUD_REGISTRATION_PENDING' });
+    }
+  }
+  if (!setupStatus.license.canEnter) {
+    return res.status(403).json({ error: getLicenseDeniedMessage(setupStatus.license), code: setupStatus.license.blockedCode || 'LICENSE_BLOCKED' });
+  }
 
   const now = new Date().toLocaleString('sv-SE').replace(' ', ' ');
   await query('UPDATE users SET last_login = ?, auth_provider = ? WHERE id = ?', [now, 'local', user.id]);
@@ -10103,6 +10172,16 @@ app.post('/api/setup/complete', async (req, res) => {
     trialEndsAt,
     businessStructureMode,
   });
+  let cloudRegistrationWarning = null;
+  if (!getFirebaseConfigStatus().adminEnabled) {
+    try {
+      await ensurePosCloudConnection({ password: adminPassword, idToken: setupGoogleIdToken || undefined });
+      await secureLicenseService.resolveState({ force: true, allowRemote: true });
+    } catch (error) {
+      cloudRegistrationWarning = error.message;
+      console.warn('[setup] Registro en la nube pendiente:', error.message);
+    }
+  }
 
   // Vincular el contador elegido en la pantalla de plataforma del asistente
   // (platform-init → setupWizard._platform*). Debe ir DESPUÉS de
@@ -10165,7 +10244,8 @@ app.post('/api/setup/complete', async (req, res) => {
     data: normalizeJsonValue(bootstrap),
     networkHosting,
     linkedContadorProfile,
-    contadorSyncWarning
+    contadorSyncWarning,
+    cloudRegistrationWarning
   });
 });
 
@@ -17696,13 +17776,10 @@ app.post('/api/sales', async (req, res) => {
 });
 
 // GET /api/sales/:invoiceNumber/receipt — datos completos para reimprimir un comprobante
-app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
-  try {
+// La venta lista para imprimir (la usa la reimpresión y la factura que pide la
+// app de reportes, server/services/app-reportes). null si no existe.
+async function obtenerVentaImprimible(invoiceNumber) {
     await ensureSalesExtensions();
-    const actorUser = await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
-    const invoiceNumber = String(req.params.invoiceNumber || '').trim();
-    if (!invoiceNumber) return res.status(400).json({ error: 'Número de factura requerido.' });
-
     const rows = await query(
       `SELECT s.*,
               COALESCE(c.nombre, s.client_name_snapshot, 'Consumidor Final') AS cashier_name_join,
@@ -17714,7 +17791,7 @@ app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
        WHERE s.invoice_number = ? LIMIT 1`,
       [invoiceNumber]
     );
-    if (!rows.length) return res.status(404).json({ error: 'Factura no encontrada.' });
+    if (!rows.length) return null;
 
     const items = await query(
       `SELECT si.*, COALESCE(si.item_name, p.nombre, 'Producto eliminado') AS product_name, p.codigo AS product_code
@@ -17724,7 +17801,9 @@ app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
     );
 
     const sale = mapSaleRows(rows, items)[0];
-    if (!sale) return res.status(404).json({ error: 'No se pudo construir el comprobante.' });
+    if (!sale) return null;
+    // sale.id es el número de factura (FAC-…); para escribir hace falta el id de la fila.
+    const saleRowId = rows[0].id;
     if (sale.ecfDocumentId) {
       const ecfRows = await query(
         'SELECT signed_xml_content, environment FROM ecf_documents WHERE id = ? LIMIT 1',
@@ -17741,18 +17820,28 @@ app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
           : (/^\d{4}-\d{2}-\d{2}$/.test(fechaVencimientoXml) ? fechaVencimientoXml : '');
         if (fixedQrUrl) {
           sale.qrUrl = fixedQrUrl;
-          await query('UPDATE sales SET qr_data = ? WHERE id = ?', [fixedQrUrl, sale.id]).catch(() => {});
+          await query('UPDATE sales SET qr_data = ? WHERE id = ?', [fixedQrUrl, saleRowId]).catch(() => {});
         }
         if (firma) sale.fechaFirmaFiscal = firma;
         if (fechaVencimientoIso) {
           sale.ncfVencimiento = fechaVencimientoIso;
           await query(
             'UPDATE sales SET ncf_vencimiento = COALESCE(ncf_vencimiento, ?) WHERE id = ?',
-            [fechaVencimientoIso, sale.id]
+            [fechaVencimientoIso, saleRowId]
           ).catch(() => {});
         }
       }
     }
+    return sale;
+}
+
+app.get('/api/sales/:invoiceNumber/receipt', async (req, res) => {
+  try {
+    await resolveRequestActorUser(req, { required: true, allowPayloadFallback: true });
+    const invoiceNumber = String(req.params.invoiceNumber || '').trim();
+    if (!invoiceNumber) return res.status(400).json({ error: 'Número de factura requerido.' });
+    const sale = await obtenerVentaImprimible(invoiceNumber);
+    if (!sale) return res.status(404).json({ error: 'Factura no encontrada.' });
     res.json({ sale });
   } catch (e) {
     console.error('[receipt reprint]', e.message);
@@ -20673,6 +20762,7 @@ function startLicenseServicesInBackground() {
     startFirestoreNcfPendientesWatcher(),
     startFirestoreProductosPendientesWatcher(),
     Promise.resolve().then(() => (isMainTerminalConfig(getTerminalConfig()) ? colaComprasPortal.escuchar() : false)),
+    Promise.resolve().then(() => appReportes.escuchar()),
   ]).then((results) => {
     for (const result of results) {
       if (result.status === 'rejected') {

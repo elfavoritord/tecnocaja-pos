@@ -72,6 +72,36 @@ function signedCertificate(xml) {
 describe('Gateway multiempresa (misma URL, datos por empresa)', () => {
   const tempFiles = [];
 
+  it('conecta el certificado automáticamente con autorización del servidor y verifica la firma del acuse', async () => {
+    process.env.GATEWAY_ADMIN_TOKEN = ADMIN_TOKEN;
+    process.env.GATEWAY_DEFAULT_RNC = RNC_EMILIO;
+    const { app, store } = buildApp();
+    const cert = createTestP12();
+    tempFiles.push(cert.certPath);
+    const body = { licenseId: 'pos_cliente', rnc: RNC_CLIENTE, name: 'Cliente', authorizedRnc: true,
+      certificateBase64: fs.readFileSync(cert.certPath).toString('base64'), password: cert.certPassword };
+    await request(app).post('/admin/automatic-connection').send(body).expect(401);
+    await request(app).post('/admin/automatic-connection').set('Authorization', `Bearer ${ADMIN_TOKEN}`).send(body).expect(200);
+    expect((await store.findByKey('ecf_gateway_tenants', RNC_CLIENTE)).businessId).toBe('pos_cliente');
+    await request(app).post('/admin/automatic-connection').set('Authorization', `Bearer ${ADMIN_TOKEN}`).send({ ...body, licenseId: 'pos_otro' }).expect(403);
+    const receipt = await request(app).post('/fe/recepcion/api/ecf').set('Content-Type', 'application/xml')
+      .send(sampleEcfXml({ rncComprador: RNC_CLIENTE, encf: 'E310000000088' })).expect(200);
+    const context = loadCertificate(cert);
+    const verifier = new SignedXml({ publicCert: context.certificatePem, getCertFromKeyInfo: () => context.certificatePem });
+    verifier.loadSignature(receipt.text.match(/<Signature[\s\S]*<\/Signature>/)[0]);
+    expect(verifier.checkSignature(receipt.text)).toBe(true);
+  }, 60000);
+
+  it('no vincula una empresa nueva con un certificado de otro RNC sin aprobación administrativa', async () => {
+    process.env.GATEWAY_ADMIN_TOKEN = ADMIN_TOKEN;
+    const { app, store } = buildApp();
+    const cert = createTestP12(); tempFiles.push(cert.certPath);
+    await request(app).post('/admin/automatic-connection').set('Authorization', `Bearer ${ADMIN_TOKEN}`).send({
+      licenseId: 'pos_nuevo', rnc: RNC_CLIENTE, certificateBase64: fs.readFileSync(cert.certPath).toString('base64'), password: cert.certPassword,
+    }).expect(403);
+    expect(await store.findByKey('ecf_gateway_tenants', RNC_CLIENTE)).toBeNull();
+  }, 60000);
+
   beforeEach(() => {
     process.env.GATEWAY_ADMIN_TOKEN = ADMIN_TOKEN;
     process.env.GATEWAY_DEFAULT_RNC = RNC_EMILIO;

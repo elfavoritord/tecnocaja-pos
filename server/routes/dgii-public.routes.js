@@ -68,12 +68,19 @@ function listDgiiReceived() {
 // solo devuelve lo de esta empresa; con el token de administrador se filtra
 // por DGII_RNC.
 async function fetchGatewayReceived() {
-  const base = String(process.env.ECF_GATEWAY_BASE_URL || '').trim().replace(/\/+$/, '');
-  const token = String(process.env.ECF_GATEWAY_TOKEN || process.env.ECF_GATEWAY_ADMIN_TOKEN || '').trim();
+  let saved;
+  try { saved = require('../../modules/ecf/services/gateway-connection').readConnection(); }
+  catch (_) { throw new Error('No se pudo leer la conexión de recepción. Vuelve a conectar el gateway desde el Paso 9.'); }
+  if (saved?.mode === 'broker') {
+    const cloud = require('../services/pos-cloud-runtime').getConnection();
+    return cloud.request('reception-received');
+  }
+  const base = String(saved?.base || process.env.ECF_GATEWAY_BASE_URL || '').trim().replace(/\/+$/, '');
+  const token = String(saved?.token || process.env.ECF_GATEWAY_TOKEN || process.env.ECF_GATEWAY_ADMIN_TOKEN || '').trim();
   if (!base || !token) return { received: [], approvals: [] };
 
   const params = new URLSearchParams({ limit: '50' });
-  const rnc = String(process.env.DGII_RNC || '').replace(/\D/g, '');
+  const rnc = String(saved?.rnc || process.env.DGII_RNC || '').replace(/\D/g, '');
   if (rnc) params.set('rnc', rnc);
 
   try {
@@ -97,7 +104,8 @@ function gatewayReceivedToItems({ received, approvals }) {
     id: `gw-recepcion-${r.rncEmisor}_${r.encf}`,
     type: 'recepcion-ecf',
     receivedAt: r.receivedAt,
-    meta: { rncEmisor: r.rncEmisor, rncComprador: r.rncComprador, encf: r.encf, source: 'gateway' },
+    meta: { rncEmisor: r.rncEmisor, rncComprador: r.rncComprador, encf: r.encf, source: 'gateway',
+      signedReceipt: /<(?:[\w.-]+:)?Signature(?:\s|>)/.test(String(r.arecf || '')) },
     payload: String(r.xml || '').slice(0, 50000),
   }));
   const aprobacionItems = approvals.map((a) => ({
@@ -173,7 +181,7 @@ function createDgiiPublicRouter() {
     const rncComprador = String(extractTagValue(body, 'RNCComprador') || '').replace(/\D/g, '') || '00000000000';
     const encf = extractTagValue(body, 'eNCF') || 'E000000000000';
     const savedId = saveReceived('recepcion-ecf', body, {
-      rncEmisor, rncComprador, encf,
+      rncEmisor, rncComprador, encf, signedReceipt: false,
       ip: req.ip || req.socket?.remoteAddress,
     });
     console.log(`[DGII-PUBLIC] POST recepcion/ecf — eNCF=${encf} RNC=${rncEmisor} [id=${savedId}]`);

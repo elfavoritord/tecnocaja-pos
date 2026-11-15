@@ -634,9 +634,10 @@ function isNetworkLikeError(error) {
 }
 
 class EcfService {
-  constructor({ query, withTransaction, resolveRequestActorUser }) {
+  constructor({ query, withTransaction, resolveRequestActorUser, cloudConnection }) {
     this.repository = new EcfRepository({ query, withTransaction });
     this.resolveRequestActorUser = resolveRequestActorUser;
+    this.cloudConnection = cloudConnection;
     this.runtimeState = {
       lastConnection: null,
       // Candado de reentrancia para el envío de RFCE (ver step4RfceSubmit). El wizard tiene
@@ -1443,10 +1444,26 @@ class EcfService {
       expectedRnc: (await this.repository.getResolvedEmitter(1)).rnc,
     });
     await this._saveActiveCertificate({ uploaded, password, validation, actor });
+    let receptionWarning = null;
+    if (this.cloudConnection && validation.isValidNow) {
+      try { await this.connectReception(); }
+      catch (error) { receptionWarning = error.message; }
+    }
     return {
       ok: validation.isValidNow,
       result: validation,
+      receptionWarning,
     };
+  }
+
+  async connectReception(token) {
+    const { connectGateway, readConnection } = require('./gateway-connection');
+    const emitter = await this.repository.getResolvedEmitter(1);
+    const certificate = await this.resolveCertificate();
+    const saved = readConnection();
+    return connectGateway({ certificate, rnc: emitter.rnc,
+      token: token || saved?.token || process.env.ECF_GATEWAY_TOKEN,
+      cloudConnection: this.cloudConnection });
   }
 
   async _saveActiveCertificate({ uploaded, password, validation, actor }) {

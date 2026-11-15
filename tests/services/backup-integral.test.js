@@ -58,6 +58,31 @@ describe('respaldo integral V3 (solo bases y archivos temporales)', () => {
     await expect(restore.prevalidar(payload, base.query, { components })).rejects.toThrow(/Integridad/);
     expect((await base.query('SELECT nombre FROM mesas_prueba'))[0].nombre).toBe('Mesa 9');
   });
+
+  test('restaura un secreto omitido en una columna TEXT NOT NULL antigua sin reutilizar la contraseña local', async () => {
+    await base.query('CREATE TABLE certificados_prueba (id INTEGER PRIMARY KEY, serial TEXT NOT NULL, password_encrypted TEXT NOT NULL)');
+    await base.query('INSERT INTO certificados_prueba VALUES (1, ?, ?)', ['cert-original', 'contraseña-local-no-transferible']);
+    const backup = await core.buildFullPayload(base.query, { components });
+    expect(backup.catalogo.tablas.certificados_prueba[0].password_encrypted).toBeUndefined();
+    const hashAntes = catalog.hash(backup.catalogo.tablas.certificados_prueba);
+    const plan = await restore.prevalidar(backup, base.query, { components });
+    expect(plan.destino.find((t) => t.table === 'certificados_prueba').rows[0].password_encrypted).toBe('');
+    expect(catalog.hash(backup.catalogo.tablas.certificados_prueba)).toBe(hashAntes);
+    const result = await restore.restaurar(backup, base.query, { withTransaction: base.withTransaction, components });
+    expect(await base.query('SELECT * FROM certificados_prueba')).toEqual([{ id: 1, serial: 'cert-original', password_encrypted: '' }]);
+    expect(result.requiresReconfiguration).toContain('certificados_prueba.password_encrypted');
+    expect(result.userCount).toBe(1);
+  });
+
+  test('un dato de negocio obligatorio ausente se detecta antes de vaciar tablas', async () => {
+    await base.query('CREATE TABLE documentos_prueba (id INTEGER PRIMARY KEY, numero TEXT NOT NULL)');
+    await base.query("INSERT INTO documentos_prueba VALUES (1, 'DOC-1')");
+    const backup = await core.buildFullPayload(base.query, { components });
+    delete backup.catalogo.tablas.documentos_prueba[0].numero;
+    backup.catalogo.manifiesto.find((t) => t.nombre === 'documentos_prueba').sha256 = catalog.hash(backup.catalogo.tablas.documentos_prueba);
+    await expect(restore.restaurar(backup, base.query, { withTransaction: base.withTransaction, components })).rejects.toThrow(/documentos_prueba.*numero/);
+    expect(await base.query('SELECT * FROM documentos_prueba')).toEqual([{ id: 1, numero: 'DOC-1' }]);
+  });
   test('revierte la base y los adjuntos si falla la confirmación', async () => {
     await base.query("UPDATE mesas_prueba SET nombre = 'estado actual'");
     fs.writeFileSync(path.join(root, 'factura.pdf'), 'archivo actual');

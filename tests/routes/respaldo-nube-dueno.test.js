@@ -22,6 +22,7 @@ jest.mock('../../server/services/r2-storage', () => ({
   download: jest.fn(async (key) => mockNube.get(key).buf),
   upload: jest.fn(async () => {}),
   remove: jest.fn(async () => {}),
+  entrarComoDueno: jest.fn(),
 }));
 
 const { crearBaseSqlite } = require('../multisucursal/sqlite-helper');
@@ -36,6 +37,7 @@ describe('Restaurar desde la nube con la cuenta del dueño', () => {
   let pc;
   let app;
   let guardado;
+  let verificacionError;
 
   async function respaldoDe(nombreNegocio, { branchUuid = null } = {}) {
     const origen = await crearBaseSqlite();
@@ -52,6 +54,8 @@ describe('Restaurar desde la nube con la cuenta del dueño', () => {
   }
 
   beforeEach(async () => {
+    verificacionError = null;
+    require('../../server/services/r2-storage').entrarComoDueno.mockReset();
     envAntes = { ...process.env };
     process.env.TECNO_CAJA_SECURITY_PASSWORD = CLAVE_CIFRADO;
     delete process.env.TECNO_CAJA_LICENSE_UID;
@@ -73,6 +77,7 @@ describe('Restaurar desde la nube con la cuenta del dueño', () => {
       isGlobalAdministratorUser: () => true,
       resolveRequestActorUser: async () => null,
       verificarCuentaDueno: async (idToken) => {
+        if (verificacionError) throw verificacionError;
         if (idToken !== 'token-del-dueno') throw new Error('token inválido');
         return { uid: 'uid-dueno', email: DUENO };
       },
@@ -96,6 +101,32 @@ describe('Restaurar desde la nube con la cuenta del dueño', () => {
   test('cuenta equivocada: no ve nada', async () => {
     const r = await request(app).post('/api/respaldos/setup/cloud/auth').send({ email: DUENO, idToken: 'falso' }).expect(401);
     expect(r.body.code).toBe('CUENTA_INVALIDA');
+  });
+
+  test('usa la cuenta y las licencias verificadas por el servicio sin credenciales Firebase locales', async () => {
+    require('../../server/services/r2-storage').entrarComoDueno.mockResolvedValue({
+      modo: 'dueno', email: DUENO, licencias: [{ licenseId: 'pos_bravo', nombre: 'Bravo' }],
+    });
+    const r = await request(app).post('/api/respaldos/setup/cloud/auth').send({ idToken: 'verificado-por-el-servicio' }).expect(200);
+    expect(r.body.email).toBe(DUENO);
+    expect(r.body.backups).toHaveLength(1);
+    expect(r.body.backups[0].licenseId).toBe('pos_bravo');
+    expect(r.body.cloudToken).toBeTruthy();
+  });
+
+  test('no usa correo o licencias enviados por el navegador cuando el servicio rechaza el token', async () => {
+    require('../../server/services/r2-storage').entrarComoDueno.mockRejectedValue(Object.assign(new Error('Cuenta inválida'), { statusCode: 401 }));
+    const r = await request(app).post('/api/respaldos/setup/cloud/auth').send({
+      idToken: 'falso', email: DUENO, licencias: [{ licenseId: 'pos_bravo' }],
+    }).expect(401);
+    expect(r.body.backups).toBeUndefined();
+  });
+
+  test('un fallo de configuración Firebase no se informa como contraseña incorrecta', async () => {
+    verificacionError = Object.assign(new Error('FIREBASE_PROJECT_ID no esta configurado'), { statusCode: 503 });
+    const r = await request(app).post('/api/respaldos/setup/cloud/auth').send({ idToken: 'token-del-dueno' }).expect(503);
+    expect(r.body.code).toBe('VERIFICACION_NO_DISPONIBLE');
+    expect(r.body.backups).toBeUndefined();
   });
 
   test('con la cuenta del dueño ve los respaldos de SUS negocios y restaura uno', async () => {

@@ -1005,12 +1005,14 @@
           id: activa.draft.tableLabel, fecha: new Date().toISOString(), tipoComprobante: 'ticket',
           cliente: getSelectedSaleClient()?.nombre || 'Consumidor final',
           mesa: activa.draft.tableLabel, mesero, isPrecuenta: true, recibido: 0, cambio: 0,
+          printSuccessMessage: 'Precuenta enviada a impresión.',
+          printFailureMessage: 'No se pudo imprimir la precuenta.',
           descuento: totals.discount || 0,
           receiptDocumentTitle: 'PRECUENTA / ESTADO DE CUENTA',
           receiptDocumentNumber: 'PENDIENTE DE PAGO', receiptPrimaryLabel: 'Mesa',
           receiptMethodRowLabel: 'Estado', receiptMethodLabelOverride: 'Pendiente de pago',
           receiptFooterMessageOverride: 'Documento informativo. No es factura fiscal ni comprobante de pago.' };
-        showReceipt(venta, { receiptPreview: true, title: 'Precuenta · Pendiente de pago' });
+        window.showReceiptPreview(venta, { title: 'Precuenta · Pendiente de pago' });
       } catch (e) { error(e); }
     };
   }

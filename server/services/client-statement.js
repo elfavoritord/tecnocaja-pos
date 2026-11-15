@@ -4,7 +4,14 @@
 // después de cada movimiento. Todo en centavos; la pantalla, el PDF y lo que
 // se comparte salen de este mismo cálculo.
 const M = require('../../js/pos-money');
-function timestamp(value) { return value instanceof Date ? value.toISOString().slice(0, 19).replace('T', ' ') : String(value || ''); }
+// MariaDB devuelve DATETIME como Date con la hora de esta PC: se toma esa hora
+// (toISOString la pasaba a UTC y un abono de las 9 p. m. salía al día siguiente).
+function timestamp(value) {
+  if (!(value instanceof Date)) return String(value || '');
+  if (Number.isNaN(value.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return `${value.getFullYear()}-${p(value.getMonth() + 1)}-${p(value.getDate())} ${p(value.getHours())}:${p(value.getMinutes())}:${p(value.getSeconds())}`;
+}
 function hoyRD() {
   return new Date(Date.now() - 4 * 3600000).toISOString().slice(0, 10); // RD = UTC−4
 }

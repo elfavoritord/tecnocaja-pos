@@ -83,7 +83,10 @@ function createServiciosRouter(baseDeps) {
 
   router.use('/catalogo', createCatalogoRouter(deps));
   router.use('/cotizaciones', createCotizacionesRouter(deps));
-  router.use('/facturas', createFacturacionRouter(deps));
+  const facturas = createFacturacionRouter(deps);
+  router.use('/facturas', facturas);
+  // Para la app de reportes: la factura A4 de Facturación (solo Empresa de Servicios).
+  router.facturaA4 = (id) => facturas.documentoA4(id);
   router.use('/cobros', createCobrosRouter(deps));
   router.use('/dashboard', createDashboardRouter(deps));
   router.use('/auditoria', createAuditoriaRouter(deps));

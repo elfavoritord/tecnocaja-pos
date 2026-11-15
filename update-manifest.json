@@ -1,15 +1,15 @@
 {
-  "version": "1.6.18",
-  "stableVersion": "1.6.18",
-  "date": "12/11/2026",
+  "version": "1.6.26",
+  "stableVersion": "1.6.26",
+  "date": "15/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Las facturas de consumo menor de 250 mil muestran el nombre y RNC de la empresa configurada.",
-    "La gaveta abre al iniciar el corte o cierre para contar el efectivo.",
-    "Impresión más rápida con recursos reutilizables y colas independientes por impresora.",
-    "La actualización conserva el avance, XML y lotes de certificación DGII de los pasos 4 y 5."
+    "Registra negocios nuevos y valida su equipo mediante el servidor de Tecno Caja sin una llave Firebase Admin en el cliente.",
+    "Recupera el registro pendiente al iniciar sesión con el administrador y conserva la licencia, el vencimiento y el límite de equipos existentes.",
+    "Conecta automáticamente el certificado guardado al receptor DGII y consulta los comprobantes de la empresa sin pedir un código manual.",
+    "El paso 9 espera y actualiza automáticamente los e-CF recibidos sin intentar validar la cuenta en la nube al abrirlo."
   ]
 }

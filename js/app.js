@@ -6708,6 +6708,9 @@ async function completeInitialSetup() {
     if (response?.contadorSyncWarning) {
       showToast(`Tu contador se guardó, pero no se pudo enlazar en la nube: ${response.contadorSyncWarning}`, 'warning');
     }
+    if (response?.cloudRegistrationWarning) {
+      showToast(`El negocio se guardó en esta PC. Su registro en la nube está pendiente: ${response.cloudRegistrationWarning}`, 'warning');
+    }
   } catch (error) {
     if (error && error.needsNetworkDbSwitch) {
       if (typeof window.wzOnNeedsNetworkDbSwitch === 'function') {

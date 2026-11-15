@@ -318,6 +318,30 @@ no tiene inventario ni cajas. La app arma su menú según el negocio:
 
 ---
 
+## 8b. Lo que la app le pide a la PC principal (2026-11-10, app 1.5.0 / POS 1.6.18)
+
+Hasta aquí la app solo leía. Ahora, además, **pide documentos y manda compras**; la PC principal (si está
+encendida y con Internet) los atiende con los datos y los permisos del POS. Nada pasa por la PC si no está:
+el pedido espera en Firestore.
+
+| Qué | Dónde lo deja la app | Quién lo atiende |
+|---|---|---|
+| Factura A4 en PDF de una venta (Ventas → toca la factura; ficha del cliente; Por cobrar en servicios) | `businesses/{id}/appSolicitudes/{uuid}` `tipo: 'factura'` | `server/services/app-reportes/documentos.js` → misma hoja que imprime el POS (`js/factura-plantillas.js`, plantilla y color del negocio; `factura-de-venta.js` es la copia de `ventaToFormalDoc`), PDF con el Chrome/Edge de la PC. En Empresa de Servicios, la de Facturación (`renderDoc`). |
+| Estado de cuenta en PDF de un cliente (ficha del cliente, Cuentas por cobrar, Por cobrar) | `appSolicitudes` `tipo: 'estado_cuenta'` | Mismo cálculo del POS (`client-statement.build`; en servicios, `estado-cuenta-servicios.js` con `svc_invoices`/pagos) y mismo PDF (`estado-cuenta-pdf.js`, copia de `buildClientStatementPdf`). |
+| Compra de proveedor | `businesses/{id}/appCompras/{uuid}` | `server/services/compras/cola-app.js` (ver `docs/COMPRAS-PROVEEDORES.md`). |
+
+- El PDF vuelve en el mismo documento (bytes) o partido en `appSolicitudes/{id}/partes/{n}` si pasa de
+  700 KB; la app lo baja y abre el menú de compartir (`share_plus`). El POS borra los pedidos a los 3 días.
+- Quién: las reglas solo dejan crear a administradores del negocio y con su uid; el POS vuelve a mirar el
+  perfil y, si es usuario del POS, sus permisos (factura: Reportes/Ventas/Clientes; estado de cuenta: ver
+  cuentas de clientes; compras: `compras.crear`). Un administrador de sucursal no ve facturas de otra.
+- Sin la versión del POS que lo atiende, la app avisa con la versión de la PC principal (`terminals`).
+- `controlCenter/services` publica ahora el `clientId` de cada deudor (para pedir su estado de cuenta).
+- Pruebas: `npx jest tests/app-reportes`, `flutter test` en la app y `npm run test:app-reportes` (reglas con
+  el emulador + POS real atendiendo factura, estado de cuenta y compra).
+
+---
+
 ## 9. Otras funciones del POS que podrían entrar después
 
 - Cuentas por pagar a suplidores (`supplier_invoices`) en Finanzas.

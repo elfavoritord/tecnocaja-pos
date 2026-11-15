@@ -1,0 +1,8 @@
+node_modules/
+test/
+storage/
+.env
+.env.*
+*.log
+*.p12
+*.pfx

@@ -115,7 +115,6 @@ function isConfigured() {
 // El dueño entró con su cuenta en una PC sin licencia o formateada: con eso el
 // servicio le deja ver y bajar los respaldos de sus negocios (30 min).
 async function entrarComoDueno(idToken) {
-  if (tieneLlavePropia()) return null;
   return nube.entrarComoDueno(idToken);
 }
 

@@ -154,13 +154,14 @@ function createClientesCreditosRouter({
     return conHora ? s : s.slice(0, 10);
   }
 
-  router.get('/:id/statement', async (req, res) => {
+  // El mismo cálculo para la pantalla, el PDF y la app de reportes
+  // (server/services/app-reportes, vía router.estadoDeCuenta).
+  async function estadoDeCuenta(clientId, { from = '', to = '' } = {}) {
     await ensureReturnTables();
-    await resolveRequestActorUser(req, { required: true });
-    const clientId = Number(req.params.id);
-    const from = String(req.query.from || ''), to = String(req.query.to || '');
-    if ([from,to].some(d => d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) || (from && to && from > to)) return res.status(400).json({ error: 'Período no válido.' });
-    const result = await withTransaction(async conn => {
+    if ([from, to].some(d => d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) || (from && to && from > to)) {
+      throw Object.assign(new Error('Período no válido.'), { statusCode: 400 });
+    }
+    return withTransaction(async conn => {
       const client = await getClientRowWithComputedBalance(clientId, conn);
       if (!client) throw Object.assign(new Error('Cliente no encontrado.'), { statusCode: 404 });
       const sales = await conn.query(`SELECT * FROM sales WHERE client_id = ? AND (payment_method = 'credito' OR credit_amount > 0) ORDER BY created_at, id`, [clientId]);
@@ -169,7 +170,17 @@ function createClientesCreditosRouter({
       const returns = await conn.query('SELECT r.* FROM sale_returns r JOIN sales s ON s.id = r.original_sale_id WHERE s.client_id = ?', [clientId]);
       return require('../services/client-statement').build({ client: mapClientRow(client), sales, payments, returns, from, to });
     });
-    res.json(result);
+  }
+  router.estadoDeCuenta = estadoDeCuenta;
+
+  router.get('/:id/statement', async (req, res) => {
+    await resolveRequestActorUser(req, { required: true });
+    try {
+      res.json(await estadoDeCuenta(Number(req.params.id), { from: String(req.query.from || ''), to: String(req.query.to || '') }));
+    } catch (e) {
+      if (e.statusCode === 400) return res.status(400).json({ error: e.message });
+      throw e;
+    }
   });
 
   // Reimpresión del recibo de un cobro ya registrado — usado desde Reportes
