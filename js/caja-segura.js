@@ -27,6 +27,7 @@
     { id: 'arqueo', titulo: 'Corte / arqueo de caja' },
     { id: 'cierre', titulo: 'Conteo para cierre de caja' },
     { id: 'venta', titulo: 'Apertura con venta' },
+    { id: 'prueba', titulo: 'Prueba de gaveta desde Configuración' },
   ];
   const state = { config: null, cierreClasico: null };
 
@@ -705,6 +706,12 @@
     api.request('/api/caja/gaveta', { method: 'POST', body: JSON.stringify({ eventUuid: uuid(), motivo: 'venta', saleRef, estadoGaveta: resultado?.ok ? 'abierta' : 'fallo', ...estructura(), ...actorPayload() }) }).catch(() => {});
   }
 
+  // "Probar apertura de gaveta" (Configuración → Periféricos) también abre el
+  // dinero: queda en el historial de la gaveta y en la bitácora de Movimientos.
+  function registrarAperturaPrueba(resultado) {
+    return api.request('/api/caja/gaveta', { method: 'POST', body: JSON.stringify({ eventUuid: uuid(), motivo: 'prueba', estadoGaveta: resultado?.ok ? 'abierta' : 'fallo', ...estructura(), ...actorPayload() }) }).catch(() => {});
+  }
+
   function mostrarComprobanteRetiro(evento) {
     const html = `<div class="csr"><h2>${esc(DB.config?.nombre || DB.config?.businessName || 'Tecno Caja')}</h2><p class="csr-sub">COMPROBANTE DE RETIRO DE EFECTIVO</p>
       <section class="csr-sec">
@@ -844,7 +851,7 @@
     cargarConfig, loadConfigSection, aplicarModoCiego, cambiarModo, abrirCierre, confirmarCierre, recalcular, mostrarReporte, cerrarReporte, verReporteTurno,
     resumenPostCierre, guardarUltimoReporte, verUltimoReporte, verificarCierre, irAMesas, abrirCorteCiego,
     imprimirReporte, pdfReporte, abrirGaveta, elegirMotivo, buscarProducto, agregarConsumo, cambiarConsumo, confirmarGaveta,
-    registrarAperturaVenta, abrirGavetaParaConteo, imprimirComprobante, abrirArqueo, guardarArqueo, abrirHistorialGaveta, cargarHistorial, exportarHistorial,
+    registrarAperturaVenta, registrarAperturaPrueba, abrirGavetaParaConteo, imprimirComprobante, abrirArqueo, guardarArqueo, abrirHistorialGaveta, cargarHistorial, exportarHistorial,
     get cierreSeguro() { return activo(); },
     get turnoCiego() { return turnoCiego(); },
     get ventasOcultas() { return ventasOcultas(); },

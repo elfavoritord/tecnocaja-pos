@@ -9,6 +9,7 @@ const { signXmlDocument } = require('./xmlsign');
 const {
   LEGACY_APPROVALS,
   LEGACY_RECEIVED,
+  TENANTS,
   approvalsCollection,
   createTenantService,
   isValidRnc,
@@ -412,6 +413,72 @@ function createGatewayRouter({ store, kms }) {
     });
     console.log(`[GATEWAY] empresa ${result.created ? 'registrada' : 'actualizada'}: ${rnc}`);
     res.status(result.created ? 201 : 200).json({ tenant: result.tenant, token: result.token });
+  });
+
+  // ── Conexión automática desde el POS (sin el token de administrador) ─────
+  // Pedido de Emilio (2026-11-16): que el Paso 9 sea automático. Antes cada
+  // empresa nueva necesitaba que Emilio corriera alta-empresa.ps1 desde su PC
+  // con el .p12 del cliente. Ahora el POS del cliente registra su empresa al
+  // cargar el certificado o al llegar a los Pasos 7–9: prueba que tiene el
+  // certificado (lo abre con su clave, vigente) y recibe el código de su
+  // empresa. Reglas:
+  //  - empresa nueva → se registra con ese certificado;
+  //  - ya registrada sin certificado, o con ese MISMO certificado → se guarda y
+  //    se entrega un código nuevo (el anterior deja de servir);
+  //  - ya registrada con OTRO certificado → no: la renovación va con el código
+  //    de la empresa (PUT /admin/tenants/:rnc/certificate) o por soporte, así
+  //    nadie se queda con la recepción de una empresa que ya está conectada;
+  //  - nunca la empresa por defecto (la de Emilio) ni una desactivada.
+  const selfServiceHits = new Map();
+  function selfServiceAllowed(ip) {
+    const now = Date.now();
+    const entry = selfServiceHits.get(ip);
+    if (!entry || entry.resetAt <= now) {
+      if (selfServiceHits.size > 5000) selfServiceHits.clear();
+      selfServiceHits.set(ip, { count: 1, resetAt: now + 15 * 60000 });
+      return true;
+    }
+    entry.count += 1;
+    return entry.count <= 20;
+  }
+
+  router.post('/self-service/connect', async (req, res) => {
+    // Detrás de Cloud Run la IP del cliente viene en X-Forwarded-For.
+    const ip = String(req.headers['x-forwarded-for'] || req.ip || '').split(',')[0].trim();
+    if (!selfServiceAllowed(ip)) {
+      return res.status(429).json({ error: 'Demasiados intentos. Espera unos minutos.' });
+    }
+    const rnc = normalizeRnc(req.body?.rnc);
+    if (!isValidRnc(rnc)) return res.status(400).json({ error: 'El RNC debe tener 9 u 11 dígitos.' });
+    if (defaultRnc && rnc === defaultRnc) {
+      return res.status(403).json({ error: 'Esta empresa se administra desde soporte.' });
+    }
+    const buffer = Buffer.from(String(req.body?.certificateBase64 || ''), 'base64');
+    let certificate;
+    try {
+      certificate = await sealCertificate({ p12Buffer: buffer, password: String(req.body?.password || ''), kms });
+    } catch (err) {
+      return res.status(err.statusCode || 500).json({ error: err.statusCode ? err.message : 'No se pudo abrir el certificado.' });
+    } finally {
+      buffer.fill(0);
+    }
+    const existing = await store.findByKey(TENANTS, rnc);
+    if (existing?.active === false) {
+      return res.status(403).json({ error: 'La recepción de esta empresa está desactivada. Comunícate con soporte.' });
+    }
+    const previous = existing?.certificate?.fingerprintSha256;
+    if (previous && previous !== certificate.fingerprintSha256) {
+      return res.status(409).json({
+        error: 'Esta empresa ya está conectada con otro certificado. Pega el código de conexión de la empresa o pide ayuda a soporte.',
+        code: 'OTRO_CERTIFICADO',
+      });
+    }
+    const { created, token } = await tenants.upsert({
+      rnc, nombre: String(req.body?.nombre || existing?.nombre || '').slice(0, 160), rotateToken: true,
+    });
+    const tenant = await tenants.saveCertificate(rnc, certificate);
+    console.log(`[GATEWAY] conexión automática ${created ? 'nueva' : 'renovada'}: ${rnc} · ${certificate.subject} (vence ${certificate.validTo})`);
+    res.status(created ? 201 : 200).json({ ok: true, rnc, created, token, tenant });
   });
 
   // Sube el .p12 con el que se firma el ARECF de esa empresa. Acepta

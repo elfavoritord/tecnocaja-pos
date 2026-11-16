@@ -1460,8 +1460,10 @@ class EcfService {
       expectedRnc: (await this.repository.getResolvedEmitter(1)).rnc,
     });
     await this._saveActiveCertificate({ uploaded, password, validation, actor });
+    // Paso 9 automático: al cargar el certificado, la empresa queda conectada al
+    // receptor de la DGII con ese mismo certificado (sin código de soporte).
     let receptionWarning = null;
-    if (this.cloudConnection && validation.isValidNow) {
+    if (validation.isValidNow) {
       try { await this.connectReception(); }
       catch (error) { receptionWarning = error.message; }
     }
@@ -1472,14 +1474,30 @@ class EcfService {
     };
   }
 
+  // Conecta la recepción de la DGII (Pasos 7–11 y producción) con el
+  // certificado de la empresa. Con el código que escribió el usuario, solo ese;
+  // si no, el código guardado de esta empresa y, si ya no sirve o no hay, la
+  // conexión automática con el certificado (gateway-connection.js).
   async connectReception(token) {
     const { connectGateway, readConnection } = require('./gateway-connection');
     const emitter = await this.repository.getResolvedEmitter(1);
     const certificate = await this.resolveCertificate();
+    const rnc = String(emitter.rnc || '').replace(/\D/g, '');
+    const base = { certificate, rnc, nombre: emitter.razon_social || emitter.nombre_comercial || '', cloudConnection: this.cloudConnection };
+    const escrito = String(token || '').trim();
+    if (escrito) return connectGateway({ ...base, token: escrito });
     const saved = readConnection();
-    return connectGateway({ certificate, rnc: emitter.rnc,
-      token: token || saved?.token || process.env.ECF_GATEWAY_TOKEN,
-      cloudConnection: this.cloudConnection });
+    const guardado = [saved?.rnc === rnc ? saved?.token : '', process.env.ECF_GATEWAY_TOKEN]
+      .map((t) => String(t || '').trim())
+      .find((t) => t.startsWith(`${rnc}.`));
+    if (guardado) {
+      try {
+        return await connectGateway({ ...base, token: guardado });
+      } catch (_) {
+        // El código guardado ya no sirve (lo cambiaron): se conecta solo.
+      }
+    }
+    return connectGateway({ ...base, token: '' });
   }
 
   async _saveActiveCertificate({ uploaded, password, validation, actor }) {
@@ -7794,29 +7812,32 @@ class EcfService {
       { statusCode: 409 }
     );
 
-    // El Paso 3 corresponde a una selección de los e-CF aceptados en el lote más
-    // reciente del Paso 2. Esta comprobación evita enviar un Excel cacheado de un
-    // intento anterior, que DGII invalidaría al rechazar la primera fila.
-    const latestBatchId = await this.repository.getLatestCertificationBatchId();
-    if (latestBatchId) {
-      const acceptedLocalRows = await this.repository.query(
-        `SELECT encf
-           FROM ecf_documents
-          WHERE business_id = 1
-            AND certification_batch_id = ?
-            AND estado_dgii IN ('aceptado', 'aceptado_condicional')`,
-        [latestBatchId]
-      );
-      const acceptedLocalEncfs = new Set(
-        acceptedLocalRows.map((item) => String(item.encf || '').trim().toUpperCase()).filter(Boolean)
-      );
-      const missingCurrentEncfs = [...encfs].filter((encf) => !acceptedLocalEncfs.has(encf));
-      assertCondition(
-        missingCurrentEncfs.length === 0,
-        `Este Excel no pertenece al último lote aceptado del Paso 2. Faltan: ${missingCurrentEncfs.join(', ')}. Descarga el Excel más reciente del Paso 3.`,
-        { statusCode: 409 }
-      );
-    }
+    // El Excel del Paso 3 lo arma la DGII con e-CF que ELLA aceptó en el Paso 2,
+    // y puede tomarlos de cualquier intento, no solo del último lote de esta PC
+    // (2026-11-16: un Excel bueno se rechazaba con "no pertenece al último lote"
+    // porque traía E31…001 y E31…004 de un envío anterior). Se compara contra
+    // todos los e-CF de certificación aceptados aquí; si aun así alguno no está
+    // (por ejemplo, el Paso 2 se hizo en otra PC), se avisa y el usuario decide:
+    // la DGII es la que sabe qué aceptó.
+    const acceptedLocalRows = await this.repository.query(
+      `SELECT encf
+         FROM ecf_documents
+        WHERE business_id = 1
+          AND certification_case_key IS NOT NULL
+          AND estado_dgii IN ('aceptado', 'aceptado_condicional')`
+    );
+    const acceptedLocalEncfs = new Set(
+      acceptedLocalRows.map((item) => String(item.encf || '').trim().toUpperCase()).filter(Boolean)
+    );
+    const unknownEncfs = [...encfs].filter((encf) => !acceptedLocalEncfs.has(encf));
+    const confirmedUnknown = ['1', 'true', 'si', 'sí'].includes(oneField('confirmarFueraDeLote', 'confirmar').toLowerCase());
+    assertCondition(
+      acceptedLocalRows.length === 0 || unknownEncfs.length === 0 || confirmedUnknown,
+      `Estos e-NCF del Excel no aparecen aceptados en esta PC: ${unknownEncfs.join(', ')}. `
+        + 'Si la DGII los aceptó (por ejemplo, el Paso 2 se hizo en otra PC), puedes enviarlo igual; '
+        + 'si no, descarga el Excel más reciente del Paso 3.',
+      { statusCode: 409, details: { code: 'ACECF_FUERA_DE_LOTE', faltan: unknownEncfs } }
+    );
 
     // Solo autenticamos después de validar el lote completo. Así un archivo viejo,
     // renombrado o incompleto se rechaza localmente antes de contactar a DGII.

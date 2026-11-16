@@ -72,7 +72,7 @@
         ${data.eventos.map((e, i) => `<tr class="${e.critico ? 'aud-critico' : ''}" onclick="Auditoria.detalle(${i})" tabindex="0" onkeydown="if(event.key==='Enter')Auditoria.detalle(${i})">
           <td>${esc(fechaLocal(e.fecha))}</td><td>${esc(e.usuario)}<br><small>${esc(e.rol)}</small></td><td>${esc(e.modulo)}</td><td>${esc(e.accion)}</td>
           <td><span class="aud-res aud-res--${esc(e.resultado)}">${esc(e.resultado)}</span></td><td>${esc(e.referencia)}</td>
-          <td>${e.monto === null ? '' : esc(money(e.monto))}</td><td class="aud-det">${esc(String(e.detalle || '').slice(0, 160))}</td></tr>`).join('') || '<tr><td colspan="8">Sin eventos con estos filtros.</td></tr>'}
+          <td>${e.monto === null ? '' : esc(money(e.monto))}</td><td class="aud-det">${esc(String(detalleLegible(e.detalle) || '').slice(0, 160))}</td></tr>`).join('') || '<tr><td colspan="8">Sin eventos con estos filtros.</td></tr>'}
         </tbody></table></div>
         <div class="aud-paginas">
           <button class="btn-secondary" ${data.page <= 1 ? 'disabled' : ''} onclick="Auditoria.buscar(${data.page - 1})">Anterior</button>
@@ -82,6 +82,9 @@
       if (box) box.innerHTML = `<p class="inline-form-alert">${esc(e.message)}</p>`;
     }
   }
+
+  // Detalles viejos guardados como JSON crudo se leen de corrido (js/movimientos.js).
+  const detalleLegible = (d) => (typeof window.formatMovementDetail === 'function' ? window.formatMovementDetail(d) : d);
 
   function bloqueJson(titulo, valor) {
     if (valor === null || valor === undefined) return '';
@@ -105,7 +108,7 @@
     box.innerHTML = `<div class="aud-detalle-card" role="dialog" aria-modal="true" aria-label="Detalle del evento">
       <div class="aud-detalle-head"><h3>${esc(e.accion)}</h3><button class="btn-secondary" onclick="document.getElementById('aud-detalle').remove()">Cerrar</button></div>
       ${filas.map(([k, v]) => `<div class="aud-fila"><span>${esc(k)}</span><strong>${esc(v)}</strong></div>`).join('')}
-      <h4>Detalle</h4><p>${esc(e.detalle)}</p>
+      <h4>Detalle</h4><p>${esc(detalleLegible(e.detalle))}</p>
       ${bloqueJson('Antes', e.antes)}${bloqueJson('Después', e.despues)}
       <p class="text-muted">Los eventos no se editan: una corrección queda como un evento nuevo.</p></div>`;
   }

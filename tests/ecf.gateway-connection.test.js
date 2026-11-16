@@ -47,10 +47,29 @@ describe('Conexión del certificado local al gateway', () => {
     await expect(connection.connectGateway({ certificate, rnc, token, fetchImpl })).rejects.toThrow('No autorizado');
     expect(connection.readConnection()).toBeNull();
   });
-  it('conecta automáticamente sin pedir un código y no vuelve a subir el mismo certificado', async () => {
+  it('Paso 9 automático: sin código, registra la empresa con su certificado y guarda el código cifrado', async () => {
+    const nuevo = `${rnc}.codigo-automatico`;
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: true, status: 201, json: async () => ({ ok: true, rnc, created: true, token: nuevo, tenant: { rnc, certificate: { validTo: '2027-05-11' } } }) });
+    const result = await connection.connectGateway({ certificate, rnc, nombre: 'Vicris & Asociados SRL', fetchImpl });
+    expect(result).toMatchObject({ ok: true, automatic: true, created: true });
+    expect(fetchImpl.mock.calls[0][0]).toBe(`${connection.GATEWAY_URL}/self-service/connect`);
+    const enviado = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    expect(enviado).toMatchObject({ rnc, nombre: 'Vicris & Asociados SRL', password: certificate.certPassword });
+    expect(connection.readConnection()).toEqual({ rnc, token: nuevo, base: connection.GATEWAY_URL });
+    const saved = fs.readFileSync(path.join(directory, 'storage/ecf/gateway-connection.json'), 'utf8');
+    expect(saved).not.toContain(nuevo);
+    expect(saved).not.toContain(certificate.certPassword);
+  });
+  it('si la empresa ya está con otro certificado, muestra el error del receptor', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: 'Esta empresa ya está conectada con otro certificado.', code: 'OTRO_CERTIFICADO' }) });
+    await expect(connection.connectGateway({ certificate, rnc, fetchImpl })).rejects.toThrow('otro certificado');
+    expect(connection.readConnection()).toBeNull();
+  });
+  it('si el receptor no responde, intenta por la nube (1.6.25–1.6.26) y no vuelve a subir el mismo certificado', async () => {
+    const fetchImpl = jest.fn().mockRejectedValue(new Error('sin red'));
     const cloudConnection = { request: jest.fn().mockResolvedValue({ ok: true, rnc, fingerprintSha256: 'leaf-fingerprint', validTo: '2027-01-01' }) };
-    await connection.connectGateway({ certificate, rnc, cloudConnection });
-    await connection.connectGateway({ certificate, rnc, cloudConnection });
+    await connection.connectGateway({ certificate, rnc, cloudConnection, fetchImpl });
+    await connection.connectGateway({ certificate, rnc, cloudConnection, fetchImpl });
     expect(cloudConnection.request).toHaveBeenCalledTimes(1);
     expect(connection.readConnection()).toMatchObject({ mode: 'broker', rnc });
     const saved = fs.readFileSync(path.join(directory, 'storage/ecf/gateway-connection.json'), 'utf8');

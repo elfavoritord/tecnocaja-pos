@@ -30,7 +30,13 @@ const MOTIVOS = Object.freeze({
   gasto: { etiqueta: 'Gasto o salida de efectivo', abreGaveta: true },
   otro: { etiqueta: 'Otro motivo', abreGaveta: true },
   venta: { etiqueta: 'Apertura con venta', abreGaveta: true },
+  // "Probar apertura de gaveta" en Configuración → Periféricos (también es una
+  // apertura real del dinero: queda en el historial y en la bitácora).
+  prueba: { etiqueta: 'Prueba de gaveta desde Configuración', abreGaveta: true },
 });
+// Aperturas que ya pasaron en la caja (al cobrar o al probar): se registran
+// siempre, aunque el usuario no tenga permiso de abrirla a mano.
+const YA_ABIERTA = new Set(['venta', 'prueba']);
 const ESTADOS_GAVETA = new Set(['abierta', 'fallo', 'sin_gaveta']);
 const UUID = /^[\w-]{16,64}$/;
 
@@ -305,7 +311,7 @@ function createCajaSeguraRouter(deps) {
     const motivo = String(req.body?.motivo || '').trim();
     const definicion = MOTIVOS[motivo];
     if (!definicion) return res.status(400).json({ error: 'Selecciona el motivo de la apertura.' });
-    const autorizado = motivo === 'venta' || (motivo === 'cierre' ? userCanCloseCash(actorUser)
+    const autorizado = YA_ABIERTA.has(motivo) || (motivo === 'cierre' ? userCanCloseCash(actorUser)
       : motivo === 'arqueo' ? userCanMakeCorte(actorUser) : userCanOpenDrawer(actorUser));
     if (!autorizado) return res.status(403).json({ error: 'No tienes permiso para abrir la gaveta.' });
     const eventUuid = texto(req.body?.eventUuid || randomUUID(), 64);
@@ -384,6 +390,8 @@ function createCajaSeguraRouter(deps) {
       } else if (motivo === 'venta') {
         if (!evento.saleRef) throw httpError('Falta la factura de la venta.');
         evento.drawerStatus = ESTADOS_GAVETA.has(b.estadoGaveta) ? b.estadoGaveta : 'abierta';
+      } else if (motivo === 'prueba') {
+        evento.drawerStatus = ESTADOS_GAVETA.has(b.estadoGaveta) ? b.estadoGaveta : 'abierta';
       }
 
       const ins = await conn.query(
@@ -395,7 +403,17 @@ function createCajaSeguraRouter(deps) {
           evento.destination, evento.responsible, evento.evidence, evento.movementId, evento.saleRef, evento.items ? JSON.stringify(evento.items) : null,
           definicion.abreGaveta ? 1 : 0, evento.drawerStatus, fecha]
       );
-      if (motivo !== 'venta') {
+      // Toda apertura de la gaveta queda en la bitácora (Movimientos), también la
+      // que hace el cobro y la prueba desde Configuración (pedido de Emilio).
+      if (YA_ABIERTA.has(motivo)) {
+        const resultado = evento.drawerStatus === 'fallo' ? 'la gaveta no respondió' : 'gaveta abierta';
+        await auditar(req, actor, structure, {
+          actionName: `Gaveta: ${definicion.etiqueta}`, cashSessionId: session?.id || null,
+          documentRef: evento.saleRef || eventUuid, result: evento.drawerStatus === 'fallo' ? 'error' : 'exito',
+          after: { motivo, factura: evento.saleRef, estado: evento.drawerStatus },
+          detail: `${definicion.etiqueta}${evento.saleRef ? ` · factura ${evento.saleRef}` : ''} · ${resultado}`,
+        }, conn);
+      } else {
         await auditar(req, actor, structure, {
           actionName: `Gaveta: ${definicion.etiqueta}`, cashSessionId: session?.id || null, documentRef: eventUuid,
           amount: evento.amount === 0n ? null : M.number(evento.amount), reason: evento.description || evento.destination || null,

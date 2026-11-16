@@ -1,14 +1,15 @@
 {
-  "version": "1.6.28",
-  "stableVersion": "1.6.28",
+  "version": "1.6.29",
+  "stableVersion": "1.6.29",
   "date": "16/11/2026",
   "size": "198 MB",
-  "type": "feature",
-  "critical": false,
+  "type": "fix",
+  "critical": true,
   "downloadUrl": null,
   "changes": [
-    "F3 o el botón \"Precio\" en Ventas: cambia el precio del producto elegido solo para esa venta, sin cambiar la cantidad (no aplica a productos por peso). Queda en la auditoría.",
-    "Producto nuevo desde la venta: al escanear un código que no está en el sistema, sale una ventana corta con el código puesto; escribe el nombre y el precio y entra a la venta.",
-    "El ticket ya no corta la cantidad de los productos por peso (antes salía \"2...\")."
+    "Certificación DGII, Paso 3: un Excel de Aprobaciones Comerciales correcto ya no se rechaza con \"no pertenece al último lote\".",
+    "Certificación DGII, Paso 9: la recepción se conecta sola con el certificado de la empresa; ya no hace falta pedir un código a soporte.",
+    "Movimientos: la hora de la bitácora sale bien y queda registrada toda apertura de la gaveta (al cobrar, al probarla y a mano), el cierre de sesión y el corte de caja en texto claro.",
+    "Al cerrar sesión, la sesión también se cierra en el servidor."
   ]
 }

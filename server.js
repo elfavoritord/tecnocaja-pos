@@ -3184,6 +3184,9 @@ async function createAuthSession(user, ip = null, ua = null, sessionType = 'desk
 
 async function destroyAuthSession(token) {
   if (!token) return;
+  // También fuera del caché en memoria: si no, una sesión cerrada (desactivada en
+  // la base) seguía entrando por el respaldo "sin base de datos".
+  _authSessionCache.delete(token);
   try {
     await query(`UPDATE sesiones_activas SET is_active = 0 WHERE id = ?`, [token]);
   } catch (_e) {
@@ -7244,10 +7247,13 @@ function mapCashRegisterRow(row) {
   };
 }
 
+// La hora de la bitácora: guardada en UTC; con MariaDB salía 4 horas adelantada.
+const { auditCreatedAtIso } = require('./server/utils/fecha-auditoria');
+
 function mapAuditRow(row) {
   return {
     id: row.id,
-    fecha: row.event_id ? (row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at || '').replace(' ','T') + 'Z') : row.created_at,
+    fecha: row.event_id ? auditCreatedAtIso(row.created_at) : row.created_at,
     usuario: row.user_name,
     rol: row.user_role,
     modulo: row.module_name,
@@ -9369,7 +9375,19 @@ async function getBootstrapData(actorUser = null) {
 
 app.post('/api/logout', async (req, res) => {
   const token = readAuthToken(req);
+  // Quién sale queda en la bitácora (igual que "Inicio de sesión").
+  const user = token ? await resolveRequestActorUser(req, { required: false, allowPayloadFallback: false }).catch(() => null) : null;
   if (token) await destroyAuthSession(token);
+  if (user?.id) {
+    writeAuditLog({
+      userId: user.id,
+      userName: user.nombre || user.usuario,
+      userRole: user.rol,
+      moduleName: 'Sistema',
+      actionName: 'Cierre de sesión',
+      detail: `Salida del sistema con usuario ${user.usuario || user.nombre || ''}`.trim(),
+    }).catch(() => {});
+  }
   res.json({ ok: true });
 });
 
@@ -10296,6 +10314,20 @@ app.post('/api/setup/complete', async (req, res) => {
     actionName: forceReset ? 'Sistema reinstalado' : 'Configuración inicial completada',
     detail: `${businessName} · ${getBusinessTemplate(businessType).label} · ${businessStructureMode} · prueba 30 días`
   });
+  // El asistente deja la caja abierta: esa apertura también va a la bitácora,
+  // como cualquier "Apertura de caja".
+  await writeAuditLog({
+    userId: sessionData.userId,
+    userName: adminName,
+    userRole: 'Administrador',
+    moduleName: 'Caja',
+    actionName: 'Apertura de caja',
+    branchId: sessionData.branchId,
+    cashRegisterId: sessionData.cashRegisterId,
+    cashSessionId: sessionData.sessionId,
+    amount: Number(openingAmount || 0),
+    detail: `Sucursal Principal · Caja Principal · apertura desde el asistente inicial · monto ${Number(openingAmount || 0).toFixed(2)}`
+  }).catch(() => {});
 
   const bootstrap = await getBootstrapData();
   const currentUserRows = await query(
@@ -16791,7 +16823,12 @@ app.post('/api/cash/corte', async (req, res) => {
     ...actor,
     moduleName: 'Caja',
     actionName: 'Corte de caja',
-    detail: JSON.stringify({
+    branchId: structure.branchId,
+    cashRegisterId: structure.cashRegisterId,
+    amount: Number(totalEsperado || 0),
+    // Los datos completos van en "después"; el detalle se lee de corrido (antes
+    // era el JSON crudo en la bitácora de Movimientos).
+    after: {
       cajero, horaApertura, horaCorte,
       ventas: Number(ventas || 0),
       efectivo: Number(efectivo || 0),
@@ -16808,7 +16845,23 @@ app.post('/api/cash/corte', async (req, res) => {
       notas: notas || '',
       sucursal: structure.branch.nombre,
       caja: structure.cashRegister.nombre
-    })
+    },
+    detail: [
+      `${structure.branch.nombre} · ${structure.cashRegister.nombre}`,
+      cajero ? `cajero ${cajero}` : '',
+      horaApertura ? `apertura ${horaApertura}` : '',
+      horaCorte ? `corte ${horaCorte}` : '',
+      `ventas ${Number(ventas || 0).toFixed(2)}`,
+      `efectivo ${Number(efectivo || 0).toFixed(2)}`,
+      Number(tarjeta || 0) ? `tarjeta ${Number(tarjeta).toFixed(2)}` : '',
+      Number(transferencia || 0) ? `transferencia ${Number(transferencia).toFixed(2)}` : '',
+      Number(credito || 0) ? `crédito ${Number(credito).toFixed(2)}` : '',
+      Number(devoluciones || 0) ? `devoluciones ${Number(devoluciones).toFixed(2)}` : '',
+      `esperado ${Number(totalEsperado || 0).toFixed(2)}`,
+      `contado ${Number(contadoFisico || 0).toFixed(2)}`,
+      `diferencia ${Number(diferencia || 0).toFixed(2)}`,
+      notas ? `notas: ${notas}` : '',
+    ].filter(Boolean).join(' · ')
   });
 
   res.json({ ok: true });

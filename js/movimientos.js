@@ -13,6 +13,46 @@ function movementLocale() {
   return typeof getCurrentLocale === 'function' ? getCurrentLocale() : 'es-DO';
 }
 
+function escapeMovementHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// Algunos módulos guardaban el detalle como JSON crudo ({"cajero":"…","ventas":0,…})
+// y así salía en la bitácora. Se muestra de corrido: "Cajero: … · Ventas: 0.00 · …".
+const MOVEMENT_DETAIL_LABELS = {
+  cajero: 'Cajero', horaApertura: 'Apertura', horaCorte: 'Corte', ventas: 'Ventas', efectivo: 'Efectivo',
+  tarjeta: 'Tarjeta', transferencia: 'Transferencia', credito: 'Crédito', descuentos: 'Descuentos',
+  devoluciones: 'Devoluciones', entradas: 'Entradas', salidas: 'Salidas', totalEsperado: 'Esperado',
+  contadoFisico: 'Contado', diferencia: 'Diferencia', notas: 'Notas', sucursal: 'Sucursal', caja: 'Caja',
+  reason: 'Motivo', motivo: 'Motivo', amount: 'Monto', monto: 'Monto', movementId: 'Movimiento',
+  fiscalSequenceId: 'Secuencia', cashSessionId: 'Turno', distributed: 'Distribuido',
+};
+function formatMovementDetail(detalle) {
+  const texto = String(detalle ?? '').trim();
+  if (!texto.startsWith('{') || !texto.endsWith('}')) return texto;
+  let datos;
+  try { datos = JSON.parse(texto); } catch (_) { return texto; }
+  if (!datos || typeof datos !== 'object' || Array.isArray(datos)) return texto;
+  const partes = Object.entries(datos)
+    .filter(([, valor]) => valor !== null && valor !== undefined && valor !== '' && typeof valor !== 'object')
+    .map(([clave, valor]) => {
+      const etiqueta = MOVEMENT_DETAIL_LABELS[clave]
+        || clave.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
+      const mostrado = typeof valor === 'number' && !/Id$/.test(clave) ? valor.toFixed(2)
+        : typeof valor === 'boolean' ? (valor ? 'sí' : 'no') : String(valor);
+      return `${etiqueta}: ${mostrado}`;
+    });
+  return partes.length ? partes.join(' · ') : texto;
+}
+window.formatMovementDetail = formatMovementDetail;
+
+// "Hoy" en la hora de la PC (no en UTC: de noche contaba el día siguiente).
+function movementLocalDay(value) {
+  const date = window.TcFecha ? window.TcFecha.toDate(value) : new Date(value);
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function toggleMovimientosAuditPanel() {
   const panel = document.getElementById('movimientos-audit-panel');
   if (!panel) return;
@@ -75,11 +115,11 @@ function renderMovimientosSistema() {
   }
 
   const list = getFilteredMovimientos();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = movementLocalDay(new Date());
   const activeSales = (DB.ventas || []).filter((sale) => !sale.cancelada);
 
   totalEl.textContent = list.length;
-  todayEl.textContent = list.filter((item) => String(item.fecha || '').slice(0, 10) === today).length;
+  todayEl.textContent = list.filter((item) => movementLocalDay(item.fecha) === today).length;
   usersEl.textContent = new Set(list.map((item) => item.usuario)).size;
   if (logCountEl) logCountEl.textContent = `${list.length} ${movementText(list.length === 1 ? 'evento' : 'eventos')}`;
   if (salesCountEl) salesCountEl.textContent = `${activeSales.length} ${movementText('activas')}`;
@@ -87,11 +127,11 @@ function renderMovimientosSistema() {
   tbody.innerHTML = list.map((item) => `
     <tr>
       <td class="tc-cell-muted">${formatMovimientoDate(item.fecha)}</td>
-      <td><span class="tc-cell-title">${item.usuario}</span></td>
+      <td><span class="tc-cell-title">${escapeMovementHtml(item.usuario)}</span></td>
       <td>${getRolBadge(item.rol)}</td>
-      <td><span class="badge badge-info">${movementText(item.modulo)}</span></td>
-      <td>${movementText(item.accion)}</td>
-      <td style="color:var(--text2)">${item.detalle ? movementText(item.detalle) : '—'}</td>
+      <td><span class="badge badge-info">${escapeMovementHtml(movementText(item.modulo))}</span></td>
+      <td>${escapeMovementHtml(movementText(item.accion))}</td>
+      <td style="color:var(--text2)">${item.detalle ? escapeMovementHtml(movementText(formatMovementDetail(item.detalle))) : '—'}</td>
     </tr>
   `).join('') || `<tr><td colspan="6" style="text-align:center;padding:2rem;color:var(--text3)">${movementText('No hay movimientos registrados')}</td></tr>`;
 

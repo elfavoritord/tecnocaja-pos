@@ -3767,6 +3767,11 @@ async function doLogout() {
       // Keep logout resilient even if Firebase logout fails.
     }
   }
+  // Cierra la sesión también en el servidor (antes el token seguía valiendo) y
+  // deja "Cierre de sesión" en la bitácora. Sin conexión, se sale igual.
+  if (window.getTecnoCajaAuthToken?.() || DB.authToken) {
+    await api.request('/api/logout', { method: 'POST', body: '{}', _timeoutMs: 4000 }).catch(() => {});
+  }
   showLoginScreen();
   clearTrialBusinessRuntimeState();
   DB.currentUser = null;
@@ -5766,6 +5771,12 @@ async function testCashDrawerConfig() {
 
   try {
     const res = await window.novaDesktop.testCashDrawer(cfg);
+    // La prueba también abre el dinero: queda en la bitácora y en el historial.
+    if (window.CajaSegura?.registrarAperturaPrueba) {
+      window.CajaSegura.registrarAperturaPrueba(res);
+    } else if (res?.ok) {
+      api.cashDrawerEvent({ motivo: 'Prueba de gaveta desde Configuración', ...getBusinessStructurePayload(), ...getActorPayload() }).catch(() => {});
+    }
     if (res.ok) {
       showToast('¡Gaveta abierta correctamente!', 'success');
       if (result) result.textContent = `✓ Gaveta abierta en ${res.elapsed || 0}ms`;

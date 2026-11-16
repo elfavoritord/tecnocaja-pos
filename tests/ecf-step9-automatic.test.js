@@ -33,23 +33,25 @@ function harness(signedReceipt, { confirmAnswer = false, items } = {}) {
 
 const savedState = (h) => h.calls.filter(c => c.method === 'POST' && c.url === '/wizard/state');
 
-test('el paso 9 espera y actualiza la recepción sin intentar conectar la nube', async () => {
+test('el paso 9 conecta la recepción solo (sin código) y actualiza la lista', async () => {
   const h = harness(true);
   await h.wizard.init();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 6; i += 1) await Promise.resolve();
   expect(h.calls).toContainEqual({ method: 'GET', url: '/reception/received', data: undefined });
-  expect(h.calls.some(c => c.url === '/reception/connect-gateway')).toBe(false);
+  // Paso 9 automático: se conecta con el certificado de la empresa, sin código.
+  expect(h.calls).toContainEqual({ method: 'POST', url: '/reception/connect-gateway', data: {} });
+  expect(h.elements['ecf-wz-gateway-status'].textContent).toContain('Recepción conectada');
   expect(h.elements['ecf-wz-step9-list'].innerHTML).toContain('ARECF firmado');
   expect(h.context.setTimeout).toHaveBeenCalledWith(expect.any(Function), 8000);
 });
 
-test('conectar la recepción exige el código y lo envía al servidor', async () => {
+test('el botón conecta sin código (automático) o con el código de soporte', async () => {
   const h = harness(false);
   await h.wizard.init();
+  h.calls.length = 0;
   await h.wizard.connectReceptionGateway();
-  expect(h.calls.some(c => c.url === '/reception/connect-gateway')).toBe(false);
-  expect(h.elements['ecf-wz-gateway-status'].textContent).toContain('código de conexión');
+  expect(h.calls).toContainEqual({ method: 'POST', url: '/reception/connect-gateway', data: {} });
+  expect(h.elements['ecf-wz-gateway-status'].textContent).toContain('Recepción conectada');
 
   // Acepta la línea del archivo de soporte tal cual.
   h.elements['ecf-wz-gateway-code'].value = '  ECF_GATEWAY_TOKEN=132967161.abc123  ';

@@ -1679,7 +1679,7 @@ const ECF_CERT_WIZARD = (() => {
     _setStep3File(files[0]);
   }
 
-  async function runStep3() {
+  async function runStep3(confirmarFueraDeLote = false) {
     const fileInput = document.getElementById('ecf-wz-step3-file');
     const resultEl  = document.getElementById('ecf-wz-step3-result');
     if (!fileInput?.files?.[0]) {
@@ -1690,11 +1690,29 @@ const ECF_CERT_WIZARD = (() => {
     setBtnState('ecf-wz-step3-btn', true, 'Enviando a DGII…');
     if (resultEl) resultEl.style.display = 'none';
 
+    let reintentarConfirmado = false;
     try {
       const form = new FormData();
       form.append('excel', fileInput.files[0]);
       form.append('environment', WZ.state?.environment || 'certecf');
-      const result = await fiscalApi('POST', '/certification/aprobacion-comercial/process', form, true);
+      if (confirmarFueraDeLote) form.append('confirmarFueraDeLote', '1');
+      let result;
+      try {
+        result = await fiscalApi('POST', '/certification/aprobacion-comercial/process', form, true);
+      } catch (err) {
+        // El Excel trae e-NCF que esta PC no tiene aceptados (la DGII los pudo
+        // aceptar en otro intento u otra PC). Antes se bloqueaba; ahora decide el usuario.
+        if (!confirmarFueraDeLote && err?.details?.code === 'ACECF_FUERA_DE_LOTE') {
+          const faltan = (err.details.faltan || []).join(', ');
+          reintentarConfirmado = confirm(
+            `Estos e-NCF del Excel no aparecen aceptados en esta PC:\n${faltan}\n\n`
+            + 'Pasa cuando la DGII los aceptó en un envío anterior o en otra PC. El Excel lo arma la DGII con lo que ella aceptó.\n\n'
+            + '¿Enviar las 11 aprobaciones igual?'
+          );
+          if (reintentarConfirmado) return;
+        }
+        throw err;
+      }
 
       const accepted = result.accepted || 0;
       const total    = result.total || (result.results || []).length;
@@ -1751,6 +1769,8 @@ const ECF_CERT_WIZARD = (() => {
     } finally {
       setBtnState('ecf-wz-step3-btn', false, '✅ Enviar Aprobaciones Comerciales a DGII →');
     }
+    // Confirmó enviar un Excel con e-NCF que esta PC no tiene aceptados.
+    if (reintentarConfirmado) await runStep3(true);
   }
 
   async function _confirmStep3() {
@@ -3084,8 +3104,8 @@ const ECF_CERT_WIZARD = (() => {
             <div style="font-weight:700;color:${active?'#4ade80':'#fbbf24'};font-size:.83rem">Servidor: ${active?'LISTO':'CONFIGURACIÓN INCOMPLETA'}</div>
             <div style="font-size:.76rem;color:var(--text3)">
               Ambiente: ${h(status?.environment||'—')} ·
-              Certificado: ${certificateLoaded?'✅':'❌'} ·
-              Emisor: ${emitterConfigured?'✅':'❌'}
+              Certificado: ${certificateLoaded ? 'cargado' : 'falta'} ·
+              Emisor: ${emitterConfigured ? 'configurado' : 'falta'}
             </div>
           </div>
         </div>
@@ -3126,12 +3146,11 @@ const ECF_CERT_WIZARD = (() => {
             DGII está enviando e-CF de prueba. Tecno Caja los recibe y responde automáticamente con el <strong>acuse de recibo (ARECF)</strong>.
           </div>
           <div style="font-size:.78rem;color:var(--text2);margin-bottom:.5rem">
-            La DGII rechaza el acuse si no viene firmado. Para que el receptor lo firme con el certificado de esta empresa,
-            pega su <strong>código de conexión</strong> (archivo <code>&lt;RNC&gt;-conexion.txt</code> o <code>&lt;RNC&gt;-token.txt</code>
-            que da soporte) y pulsa conectar. Se hace una sola vez por empresa.
+            La DGII rechaza el acuse si no viene firmado. La recepción se conecta <strong>sola</strong> con el certificado
+            de esta empresa al abrir este paso. Solo si soporte te dio un <strong>código de conexión</strong>, pégalo abajo.
           </div>
-          <label for="ecf-wz-gateway-code" style="display:block;font-size:.8rem;margin-bottom:.35rem">Código de conexión de esta empresa</label>
-          <input id="ecf-wz-gateway-code" type="password" autocomplete="off" placeholder="RNC.código" style="width:100%;padding:.6rem;margin-bottom:.5rem;box-sizing:border-box">
+          <label for="ecf-wz-gateway-code" style="display:block;font-size:.8rem;margin-bottom:.35rem">Código de conexión (opcional)</label>
+          <input id="ecf-wz-gateway-code" type="password" autocomplete="off" placeholder="Déjalo vacío: se conecta solo" style="width:100%;padding:.6rem;margin-bottom:.5rem;box-sizing:border-box">
           <button id="ecf-wz-reception-retry" class="ecf-wz-action-btn secondary" onclick="ECF_CERT_WIZARD.connectReceptionGateway()">Conectar recepción con mi certificado guardado</button>
           <div id="ecf-wz-gateway-status" role="status" style="font-size:.8rem;margin:.5rem 0 .6rem"></div>
           <div id="ecf-wz-step9-list" style="min-height:80px;margin-bottom:.85rem">
@@ -3154,22 +3173,44 @@ const ECF_CERT_WIZARD = (() => {
     const status = document.getElementById('ecf-wz-gateway-status');
     if (!button || !status || button.disabled) return;
     // Acepta el archivo de soporte tal cual: "RNC.codigo" o la línea "ECF_GATEWAY_TOKEN=RNC.codigo".
+    // Vacío = conexión automática con el certificado de esta empresa.
     const token = String(codeInput?.value || '').trim().replace(/^ECF_GATEWAY_TOKEN\s*=\s*/i, '').trim();
-    if (!token) {
-      status.textContent = 'Pega el código de conexión de esta empresa (lo da soporte, empieza con el RNC).';
-      return;
-    }
     button.disabled = true;
-    status.textContent = 'Subiendo el certificado guardado al receptor…';
+    status.textContent = 'Conectando la recepción con el certificado de esta empresa…';
     try {
-      await fiscalApi('POST', '/reception/connect-gateway', { token });
+      await fiscalApi('POST', '/reception/connect-gateway', token ? { token } : {});
       if (codeInput) codeInput.value = '';
-      status.textContent = '✅ Recepción conectada: los próximos acuses salen firmados. Repite el envío de prueba en el portal DGII y espera aquí.';
+      WZ.receptionAutoDone = true;
+      status.textContent = 'Recepción conectada: los acuses salen firmados con el certificado de esta empresa. Si la DGII reinició la prueba, repite el envío en el portal y espera aquí.';
       await _pollStep9();
     } catch (error) {
       status.textContent = error.message || 'No se pudo conectar la recepción.';
     } finally {
       button.disabled = false;
+    }
+  }
+
+  // Paso 9 automático (pedido de Emilio, 2026-11-16): al abrir los Pasos 7, 8 y
+  // 9 la recepción se conecta sola con el certificado de la empresa (una vez
+  // por sesión). Antes soporte tenía que registrar la empresa con su .p12 y el
+  // cliente pegar un código; si la DGII llegaba sin eso, el acuse salía sin
+  // firma y la DGII reiniciaba la prueba ("La firma del XML no es válida").
+  async function _autoConnectReception() {
+    if (WZ.receptionAutoDone || WZ.receptionAutoBusy) return;
+    WZ.receptionAutoBusy = true;
+    const status = () => document.getElementById('ecf-wz-gateway-status');
+    if (status()) status().textContent = 'Conectando la recepción con el certificado de esta empresa…';
+    try {
+      await fiscalApi('POST', '/reception/connect-gateway', {});
+      WZ.receptionAutoDone = true;
+      if (status()) status().textContent = 'Recepción conectada: los acuses salen firmados con el certificado de esta empresa.';
+    } catch (error) {
+      if (status()) {
+        status().textContent = `No se pudo conectar sola la recepción: ${error.message || 'sin respuesta'}. `
+          + 'Revisa el certificado y la conexión a internet y pulsa "Conectar recepción"; si soporte te dio un código, pégalo arriba.';
+      }
+    } finally {
+      WZ.receptionAutoBusy = false;
     }
   }
 
@@ -3841,6 +3882,8 @@ const ECF_CERT_WIZARD = (() => {
     if (stepId === 7) _loadStep7Urls();
     if (stepId === 8) _checkStep8Status();
     if (stepId === 9) _pollStep9();
+    // Antes de que la DGII envíe (Pasos 7–9), la recepción queda conectada sola.
+    if ([7, 8, 9].includes(stepId) && !isCompleted(9)) _autoConnectReception();
   }
 
   async function _initStep2() {
