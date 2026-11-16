@@ -666,6 +666,13 @@ class EcfService {
       // primera sigue en curso, sin importar qué botón la disparó.
       rfceSubmitInFlight: false,
       rfceSubmitLastRun: null,
+      // "Procesar y enviar" del Paso 2 (certificationCenterProcess): uno a la vez. Con la
+      // DGII real tarda minutos (4 RFCE + 21 e-CF), así que el asistente lo pide en segundo
+      // plano y sigue el avance en certificationProcessRun (va en el estado del centro).
+      certificationProcessInFlight: false,
+      certificationProcessRun: null,
+      certificationRefreshInFlight: null,
+      certificationPollInFlight: null,
       simulationSendInFlight: false,
       simulationSendStatus: null,
     };
@@ -4481,23 +4488,64 @@ class EcfService {
    * "enviado" indefinidamente sin refrescarlo nunca contra DGII.
    */
   async _refreshPendingCertificationStatuses() {
-    const pending = await this.repository.query(
-      `SELECT id FROM ecf_documents
-       WHERE business_id = 1
-         AND certification_case_key IS NOT NULL
-         AND track_id IS NOT NULL
-         AND estado_dgii IN ('enviado', 'procesando', 'en_proceso')`
-    ).catch(() => []);
-    for (const row of pending) {
-      await this.queryDocumentStatus(row.id).catch((err) => {
-        console.warn('[ECF] No se pudo refrescar estado del documento', row.id, ':', err.message);
-      });
+    // Una sola ronda a la vez: el asistente pide el estado cada pocos segundos y cada
+    // ronda consulta en la DGII, uno por uno, todo lo enviado. Sin esto las rondas se
+    // amontonaban mientras se mandaban los 21 y la DGII respondía cada vez más lento.
+    // Si ya hay una en curso, este estado sale con lo que hay en la base.
+    if (this.runtimeState.certificationRefreshInFlight) return;
+    this.runtimeState.certificationRefreshInFlight = (async () => {
+      const pending = await this.repository.query(
+        `SELECT id FROM ecf_documents
+         WHERE business_id = 1
+           AND certification_case_key IS NOT NULL
+           AND track_id IS NOT NULL
+           AND estado_dgii IN ('enviado', 'procesando', 'en_proceso')`
+      ).catch(() => []);
+      for (const row of pending) {
+        await this.queryDocumentStatus(row.id).catch((err) => {
+          console.warn('[ECF] No se pudo refrescar estado del documento', row.id, ':', err.message);
+        });
+      }
+    })();
+    try {
+      await this.runtimeState.certificationRefreshInFlight;
+    } finally {
+      this.runtimeState.certificationRefreshInFlight = null;
+    }
+  }
+
+  // Lo que el asistente necesita para seguir "Procesar y enviar" en segundo plano.
+  _certificationProcessRunView() {
+    const run = this.runtimeState.certificationProcessRun;
+    if (!run) return null;
+    return {
+      active: !!run.active,
+      phase: run.phase,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt || null,
+      rfceTotal: run.rfceTotal || 0,
+      ecfTotal: run.ecfTotal || 0,
+      ecfSent: run.ecfSent || 0,
+      result: run.result || null,
+      error: run.error || null,
+    };
+  }
+
+  _assertCertificationProcessIdle() {
+    if (this.runtimeState.certificationProcessInFlight) {
+      throw new EcfError(
+        'Se están enviando los comprobantes del Paso 2. Espera a que termine; el avance se ve en la pantalla del Paso 2.',
+        { statusCode: 409, details: { code: 'PASO2_EN_CURSO' } }
+      );
     }
   }
 
   async certificationCenterStatus() {
     await this.ensureReady();
-    await this._refreshPendingCertificationStatuses();
+    // Mientras "Procesar y enviar" corre, el estado sale de la base sin consultar la DGII:
+    // el propio envío consulta los TrackID al terminar, y cada consulta de más le quitaba
+    // tiempo a los envíos (con SQLite, cada cambio se escribe al disco).
+    if (!this.runtimeState.certificationProcessInFlight) await this._refreshPendingCertificationStatuses();
     const payload = await this.listCertificationCases({ compact: true });
     const cases = (payload.cases || []).map((testCase) => {
       const state = String(testCase.estado || '').trim().toLowerCase();
@@ -4583,6 +4631,7 @@ class EcfService {
         items: rfceStep4.items || [],
         lastUpdated: rfceStep4.lastUpdated || null,
       },
+      processRun: this._certificationProcessRunView(),
       history,
       message: cases.length
         ? `Centro de Certificación listo: ${counts.accepted}/${counts.total} aceptados, ${counts.blocked} bloqueados.`
@@ -4599,9 +4648,77 @@ class EcfService {
     };
   }
 
+  // Paso 2, "Procesar y enviar comprobantes": importa el set de la DGII y manda los 4 RFCE
+  // y después los 21 e-CF. Con background=true (lo que usa el asistente) responde apenas
+  // importa y el envío sigue en segundo plano: con la DGII real son varios minutos y la
+  // pantalla se quedaba "cargando" sin mostrar los 21. El avance queda en processRun del
+  // estado del centro. Sin background responde al final, como siempre.
   async certificationCenterProcess(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
+    this._assertCertificationProcessIdle();
+    this.runtimeState.certificationProcessInFlight = true;
+    let enSegundoPlano = false;
+    try {
+      const prepared = await this._certificationCenterPrepare(req, actor);
+      if (prepared.early) return prepared.early;
+      if (!prepared.background) return await this._certificationCenterSend(prepared, null);
+
+      const run = {
+        active: true,
+        phase: prepared.rfceTotal > 0 ? 'rfce' : 'ecf',
+        startedAt: nowIso(),
+        rfceTotal: prepared.rfceTotal,
+        ecfTotal: prepared.ecfTotal,
+        ecfSent: 0,
+        result: null,
+        error: null,
+      };
+      this.runtimeState.certificationProcessRun = run;
+      enSegundoPlano = true;
+      Promise.resolve()
+        .then(() => this._certificationCenterSend(prepared, run))
+        .then((result) => {
+          run.result = {
+            counts: result.counts,
+            rfceFirstRejected: !!result.rfceFirstRejected,
+            message: result.message || '',
+            rfceProcessResult: result.rfceProcessResult
+              ? {
+                ok: result.rfceProcessResult.ok,
+                aceptados: result.rfceProcessResult.aceptados,
+                rechazados: result.rfceProcessResult.rechazados,
+                error: result.rfceProcessResult.error || null,
+              }
+              : null,
+            sent: (result.results || []).length,
+            durationMs: result.durationMs || Date.now() - prepared.startedAt,
+          };
+        })
+        .catch((error) => {
+          console.error('[ECF] Paso 2 en segundo plano falló:', error.message);
+          run.error = error.message || String(error);
+        })
+        .finally(() => {
+          run.active = false;
+          run.phase = 'listo';
+          run.finishedAt = nowIso();
+          this.runtimeState.certificationProcessInFlight = false;
+        });
+      return {
+        ok: true,
+        processing: true,
+        imported: prepared.importedCount,
+        importResult: { total: prepared.importResult.total, ok: prepared.importResult.ok, errors: prepared.importResult.errors },
+        processRun: this._certificationProcessRunView(),
+        message: `${prepared.importedCount} comprobante(s) importados. Se están enviando a la DGII.`,
+      };
+    } finally {
+      if (!enSegundoPlano) this.runtimeState.certificationProcessInFlight = false;
+    }
+  }
+
+  async _certificationCenterPrepare(req, actor) {
     const startedAt = Date.now();
     const form = formidable({ multiples: true, maxFileSize: 60 * 1024 * 1024, keepExtensions: true });
     const { fields, files } = await new Promise((resolve, reject) => {
@@ -4731,14 +4848,37 @@ class EcfService {
     const importOnly = String(oneField('importOnly') || '').toLowerCase() === 'true';
     if (importOnly) {
       return {
-        ok: true,
-        imported: importedCount,
-        total: importedCount,
-        created: importedCount,
-        message: `${importedCount} templates importados. Usa "Regenerar con nuevos eNCFs" para asignar secuencias nuevas y enviar.`,
+        early: {
+          ok: true,
+          imported: importedCount,
+          total: importedCount,
+          created: importedCount,
+          message: `${importedCount} templates importados. Usa "Regenerar con nuevos eNCFs" para asignar secuencias nuevas y enviar.`,
+        },
       };
     }
 
+    const rfceRows = await this.repository.query(
+      `SELECT COUNT(*) AS cnt FROM ecf_documents
+        WHERE business_id = 1 AND certification_case_key IS NOT NULL AND submission_mode = 'rfce'`
+    ).catch(() => [{ cnt: 0 }]);
+    const rfceTotal = Number(rfceRows?.[0]?.cnt || 0);
+    return {
+      req,
+      actor,
+      environment,
+      importResult,
+      deleted,
+      startedAt,
+      importedCount,
+      rfceTotal,
+      ecfTotal: Math.max(0, importedCount - rfceTotal),
+      background: String(oneField('background') || '').toLowerCase() === 'true',
+    };
+  }
+
+  async _certificationCenterSend(prepared, run) {
+    const { req, actor, environment, importResult, deleted, startedAt, rfceTotal } = prepared;
     // Paso 2: PRIMERO los 4 RFCE (decisión de Emilio, 2026-11-16). La DGII a veces
     // rechaza el RFCE en el primer envío de un set ("El e-NCF de este Resumen de
     // Factura de Consumo ya ha sido utilizado previamente": el número ya vino en un
@@ -4747,11 +4887,8 @@ class EcfService {
     // mandar los 21 y el segundo intento es corto. Cada RFCE sigue saliendo una
     // sola vez por lote (sent_at, ver _step4RfceSubmitInner).
     let rfceProcessResult = null;
-    const rfceRows = await this.repository.query(
-      `SELECT COUNT(*) AS cnt FROM ecf_documents
-        WHERE business_id = 1 AND certification_case_key IS NOT NULL AND submission_mode = 'rfce'`
-    ).catch(() => [{ cnt: 0 }]);
-    if (Number(rfceRows?.[0]?.cnt || 0) > 0) {
+    if (rfceTotal > 0) {
+      if (run) run.phase = 'rfce';
       try {
         rfceProcessResult = await this.step4RfceSubmit(req);
       } catch (error) {
@@ -4786,10 +4923,12 @@ class EcfService {
 
     const results = [];
     const processed = new Set();
+    if (run) run.phase = 'ecf';
     for (let index = 0; index < 80; index += 1) {
       const nextDocument = await this.repository.getNextPendingCertificationDocument({ includeRejected: false });
       if (!nextDocument || processed.has(nextDocument.id)) break;
       processed.add(nextDocument.id);
+      if (run) run.ecfSent = processed.size;
       if (isCertificationBlockedEncf(nextDocument.encf)) {
         await this.markCertificationBlockedEncfs({ reason: 'known-used-before-send', encfs: [nextDocument.encf] });
         results.push({ ok: false, blocked: true, encf: nextDocument.encf, message: 'e-NCF bloqueado; no se envió a DGII.' });
@@ -4820,6 +4959,7 @@ class EcfService {
     // no deja dos envíos a la vez y no reenvía los que tienen sent_at).
 
     // Esperar y consultar varias rondas cortas para mantener el panel sincronizado sin dormir de más.
+    if (run) run.phase = 'consultando';
     let pollResult = { ok: false };
     let rfcePollResult = { ok: false };
     const pollDelays = [1200, 1800, 2600, 3600, 5000];
@@ -4870,6 +5010,7 @@ class EcfService {
   async certificationCenterRetry(documentId, req) {
     await this.ensureReady();
     await this.getCurrentActor(req, { adminOnly: true });
+    this._assertCertificationProcessIdle();
     const document = await this.repository.getDocument(Number(documentId));
     assertCondition(document?.certification_case_key, 'Caso de certificación no encontrado.', { statusCode: 404 });
     this._assertCertificationRfceNotSent(document);
@@ -5361,6 +5502,7 @@ class EcfService {
   async certificationCenterReset(req) {
     await this.ensureReady();
     const actor = await this.getCurrentActor(req, { adminOnly: true });
+    this._assertCertificationProcessIdle();
     const result = await this.repository.query(
       'DELETE FROM ecf_documents WHERE business_id = 1 AND certification_case_key IS NOT NULL'
     );
@@ -7611,6 +7753,7 @@ class EcfService {
   async step2ResetCompletely(req) {
     await this.ensureReady();
     if (req) await this.getCurrentActor(req, { adminOnly: true });
+    this._assertCertificationProcessIdle();
 
     const { reset, batchId } = await this.repository.resetCertificationBatchCompletely();
 
@@ -7645,6 +7788,18 @@ class EcfService {
   async step4RfcePollStatuses() {
     await this.ensureReady();
     const state = this._step4RfceReadState();
+    // Mientras salen los RFCE, no se toca su estado: esta consulta lo leería a medias y, al
+    // guardarlo, pisaría lo que el envío acaba de escribir.
+    if (this.runtimeState.rfceSubmitInFlight) {
+      const items = state.items || [];
+      return {
+        ok: true,
+        busy: true,
+        results: [],
+        items,
+        aceptados: items.filter((item) => ['aceptado', 'aceptado_condicional'].includes(String(item.estado || '').toLowerCase())).length,
+      };
+    }
     const updatedItems = [...(state.items || [])];
     const results = [];
 
@@ -8701,6 +8856,7 @@ class EcfService {
   async runCertificationSequence(req) {
     await this.ensureReady();
     await this.getCurrentActor(req, { adminOnly: true });
+    this._assertCertificationProcessIdle();
     // Límite generoso — un set DGII típico tiene 21-30 casos.
     const limit = Math.max(1, Math.min(Number(req.body?.limit || 50), 200));
     // Retardo entre envíos (ms) para no saturar DGII ni expirar el token.
@@ -8919,6 +9075,20 @@ class EcfService {
   // los estados sin bloquear el bucle de envío.
   async pollCertificationStatuses() {
     await this.ensureReady();
+    // Una ronda a la vez (ver _refreshPendingCertificationStatuses): si ya hay una, esta no
+    // vuelve a consultar los mismos TrackID en la DGII.
+    if (this.runtimeState.certificationPollInFlight) {
+      return { ok: true, busy: true, polled: 0, results: [], summary: await this.repository.getCertificationSummary() };
+    }
+    this.runtimeState.certificationPollInFlight = true;
+    try {
+      return await this._pollCertificationStatusesInner();
+    } finally {
+      this.runtimeState.certificationPollInFlight = null;
+    }
+  }
+
+  async _pollCertificationStatusesInner() {
     const batchId = await this.repository.getLatestCertificationBatchId();
     const params = [];
     let batchClause = '';

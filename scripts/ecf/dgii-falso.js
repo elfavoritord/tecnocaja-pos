@@ -67,6 +67,13 @@ function crearDgiiFalso({ carpeta }) {
     rechazarSiguiente: 0,
     tiposSinRango: new Set(),
     responderEnProceso: 0,
+    // Demora de cada respuesta (ms), para parecerse a la DGII real, que tarda.
+    demoraMs: 0,
+    // Rechaza el primer RFCE con "ya utilizado", como hace a veces la DGII real.
+    rechazarPrimerRfce: false,
+    // Peticiones que la DGII falsa está atendiendo ahora y el máximo que llegó a tener.
+    enCurso: 0,
+    maxEnCurso: 0,
   };
   const usados = new Set();
   const porTrack = new Map();
@@ -97,7 +104,10 @@ function crearDgiiFalso({ carpeta }) {
   const servidor = http.createServer((req, res) => {
     const partes = [];
     req.on('data', (c) => partes.push(c));
-    req.on('end', () => {
+    estado.enCurso += 1;
+    estado.maxEnCurso = Math.max(estado.maxEnCurso, estado.enCurso);
+    res.on('finish', () => { estado.enCurso -= 1; });
+    req.on('end', () => setTimeout(() => {
       const cuerpo = Buffer.concat(partes);
       const url = new URL(req.url, 'http://x');
       const ruta = url.pathname;
@@ -112,6 +122,10 @@ function crearDgiiFalso({ carpeta }) {
       if (/RecepcionFC/i.test(ruta) && req.method === 'POST') {
         const xml = xmlDelMultipart(cuerpo, req.headers['content-type']);
         const r = recibir(xml, 'RFCE');
+        if (estado.rechazarPrimerRfce) {
+          estado.rechazarPrimerRfce = false;
+          return responder(res, 200, { codigo: 2, estado: 'Rechazado', mensajes: [{ valor: 'El e-NCF de este Resumen de Factura de Consumo ya ha sido utilizado previamente.', codigo: 1209 }], encf: r.encf, secuenciaUtilizada: true });
+        }
         return responder(res, 200, r.repetido
           ? { codigo: 2, estado: 'Rechazado', mensajes: [{ valor: 'Secuencia ya utilizada', codigo: 1209 }], encf: r.encf, secuenciaUtilizada: true }
           : r.errores.length
@@ -146,7 +160,7 @@ function crearDgiiFalso({ carpeta }) {
         });
       }
       return responder(res, 404, { error: `Ruta no simulada: ${req.method} ${ruta}` });
-    });
+    }, estado.demoraMs || 0));
   });
 
   return {
