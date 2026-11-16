@@ -569,9 +569,12 @@ function recalcSaleItemForQty(item, qty) {
     pactado.total = calcItemTotal(pactado);
     return pactado;
   }
-  const promo = resolvePromotionForCartLine(Number(item.id), qty);
+  // Precio cambiado en la venta (F3): la línea conserva ese precio con
+  // cualquier cantidad, sin ofertas.
+  const manual = hasSaleLineManualPrice(item);
+  const promo = manual ? null : resolvePromotionForCartLine(Number(item.id), qty);
   const product = findProductForSaleItem(item);
-  const pricing = product ? getSaleLinePricing(product, promo) : null;
+  const pricing = product ? getSaleLinePricing(product, promo, manual ? Number(item.precioManual) : null) : null;
   const updated = normalizeSaleItem({
     ...item,
     qty,
@@ -601,9 +604,13 @@ function isProductItbisIncluido(product) {
   return Boolean(product?.aplicaItbis) && Boolean(product?.itbisIncluido);
 }
 
-// Precio de la línea para un producto (y su oferta, si aplica).
-function getSaleLinePricing(product, promo = null) {
-  const precioFinal = promo ? Number(promo.precioPromocion) : Number(product?.precioVenta || 0);
+// Precio de la línea para un producto (y su oferta, si aplica). `precioManual`:
+// el precio cambiado en la venta (F3), en el mismo sentido que el precio del
+// producto (con ITBIS incluido, el precio final).
+function getSaleLinePricing(product, promo = null, precioManual = null) {
+  const precioFinal = precioManual !== null && precioManual !== undefined
+    ? Number(precioManual)
+    : promo ? Number(promo.precioPromocion) : Number(product?.precioVenta || 0);
   if (!isProductItbisIncluido(product) || !window.VentaPorMonto?.precioBaseIncluido) {
     return { precio: precioFinal, itbisIncluido: false, precioFinalUnit: null };
   }
@@ -5391,13 +5398,26 @@ function handleSearchKey(e) {
   }
 }
 
-function suggestRegisterProduct(codigo) {
+// ── Producto nuevo desde la venta ──────────────────────────────────────────
+// Pedido de Emilio (2026-11-15): al escanear un código que no está en el
+// sistema, en vez de mandar a Productos, sale una ventana corta con el código
+// ya puesto: se escribe el nombre y el precio (Enter pasa al siguiente y Enter
+// en el precio guarda) y el producto se crea y entra a la venta. Queda por
+// unidad, sin ITBIS (se cobra justo el precio escrito) y sin control de
+// existencias (si no, con 0 no se podría vender); el resto se completa luego en
+// Productos o con "Ficha completa".
+function looksLikeScannedCode(texto) {
+  return /^\S+$/.test(String(texto || '').trim());
+}
+
+function suggestRegisterProduct(consulta) {
   const searchInput = document.getElementById('product-search');
   if (searchInput) searchInput.value = '';
   document.getElementById('search-dropdown')?.classList.add('hidden');
   searchResults = [];
 
   const overlay = document.getElementById('modal-overlay');
+  const box = document.getElementById('modal-box');
   const title = document.getElementById('modal-title');
   const body = document.getElementById('modal-body');
   const footer = document.getElementById('modal-footer');
@@ -5407,21 +5427,132 @@ function suggestRegisterProduct(codigo) {
     return;
   }
 
-  title.textContent = 'Producto no registrado';
+  const texto = String(consulta || '').trim();
+  // Un código escaneado (sin espacios) va en Código; si escribieron un nombre, va en Nombre.
+  const codigo = looksLikeScannedCode(texto) ? texto : '';
+  const nombre = codigo ? '' : texto;
+  box?.classList.remove('product-modal', 'billing-modal');
+  box?.classList.add('quick-add-product-modal');
+  title.textContent = 'Producto nuevo';
   body.innerHTML = `
-    <p style="line-height:1.6;color:var(--text2)">
-      El código <strong style="color:var(--text1);font-family:var(--font-mono)">${escapeHtml(codigo)}</strong>
-      no está registrado en el catálogo.
-    </p>
-    <p style="line-height:1.6;color:var(--text2);margin-top:0.5rem">
-      ¿Deseas ir al módulo de Productos para registrarlo?
-    </p>
+    <div class="qap-wrapper" id="venta-producto-nuevo">
+      <p style="margin:0;color:var(--text2);line-height:1.5">
+        ${codigo ? `El código <strong style="color:var(--text1);font-family:var(--font-mono)">${escapeHtml(codigo)}</strong> no está en el sistema.` : 'No se encontró ese producto.'}
+        Escribe el nombre y el precio: se guarda y entra a la venta.
+      </p>
+      <div class="form-group">
+        <label for="vpn-codigo">Código</label>
+        <input type="text" id="vpn-codigo" class="form-input" value="${escapeHtml(codigo)}" autocomplete="off" spellcheck="false"
+          placeholder="Escanea o escribe el código">
+      </div>
+      <div class="form-group">
+        <label for="vpn-nombre">Nombre <span class="required-star">*</span></label>
+        <input type="text" id="vpn-nombre" class="form-input" value="${escapeHtml(nombre)}" autocomplete="off" placeholder="Ej: Galletas de soda">
+      </div>
+      <div class="form-group">
+        <label for="vpn-precio">Precio <span class="required-star">*</span></label>
+        <input type="text" id="vpn-precio" class="form-input" inputmode="decimal" autocomplete="off" placeholder="0.00">
+      </div>
+    </div>
   `;
   footer.innerHTML = `
     <button class="btn-secondary" type="button" onclick="closeAllModals();focusSalesSearchInput({force:true})">Cancelar</button>
-    <button class="btn-primary" type="button" onclick="closeAllModals();irARegistrarProducto(${JSON.stringify(codigo)})">Registrar producto</button>
+    <button class="btn-secondary" type="button" id="vpn-ficha" title="Abrir la ficha completa en Productos (categoría, costo, ITBIS, existencia…)">Ficha completa</button>
+    <button class="btn-primary" type="button" id="vpn-guardar" onclick="saveSaleQuickProduct()">Agregar a la venta</button>
   `;
+  document.getElementById('vpn-ficha')?.addEventListener('click', () => {
+    const codigoEscrito = String(document.getElementById('vpn-codigo')?.value || codigo).trim();
+    closeAllModals();
+    irARegistrarProducto(codigoEscrito);
+  });
   overlay.classList.remove('hidden');
+
+  // Enter: Código → Nombre → Precio → guardar.
+  const orden = ['vpn-codigo', 'vpn-nombre', 'vpn-precio'];
+  orden.forEach((id, index) => {
+    document.getElementById(id)?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (index < orden.length - 1) document.getElementById(orden[index + 1])?.focus();
+      else saveSaleQuickProduct();
+    });
+  });
+  setTimeout(() => document.getElementById(codigo ? 'vpn-nombre' : (nombre ? 'vpn-codigo' : 'vpn-nombre'))?.focus(), 80);
+}
+
+let _saleQuickProductSaving = false;
+async function saveSaleQuickProduct() {
+  if (_saleQuickProductSaving) return;
+  const codigo = String(document.getElementById('vpn-codigo')?.value || '').trim();
+  const nombre = String(document.getElementById('vpn-nombre')?.value || '').trim();
+  const precio = window.VentaPorMonto?.leerNumero
+    ? window.VentaPorMonto.leerNumero(document.getElementById('vpn-precio')?.value)
+    : parseFloat(document.getElementById('vpn-precio')?.value);
+  if (!codigo) {
+    showToast('Escribe o escanea el código del producto.', 'warning');
+    document.getElementById('vpn-codigo')?.focus();
+    return;
+  }
+  if (!nombre) {
+    showToast('Escribe el nombre del producto.', 'warning');
+    document.getElementById('vpn-nombre')?.focus();
+    return;
+  }
+  if (!(precio > 0)) {
+    showToast('Escribe un precio mayor que cero.', 'warning');
+    document.getElementById('vpn-precio')?.focus();
+    return;
+  }
+  const yaExiste = (DB.productos || []).find((p) => String(p.codigo || '').toLowerCase() === codigo.toLowerCase()
+    || String(p.barcode || '').toLowerCase() === codigo.toLowerCase());
+  if (yaExiste) {
+    // Llegó por otra caja mientras tanto: se agrega ese.
+    closeAllModals();
+    await addProductById(yaExiste.id);
+    return;
+  }
+  // "General" (no la primera de la lista: unas galletas no deben caer en Bebidas).
+  const categorias = Array.isArray(DB.categorias) ? DB.categorias : [];
+  const categoria = categorias.find((c) => String(c).toLowerCase() === 'general') || 'General';
+  const boton = document.getElementById('vpn-guardar');
+  _saleQuickProductSaving = true;
+  if (boton) { boton.disabled = true; boton.textContent = 'Guardando…'; }
+  try {
+    const creado = await api.createProduct({
+      codigo,
+      barcode: codigo,
+      nombre,
+      categoria,
+      marca: '',
+      precioVenta: Math.round(precio * 100) / 100,
+      precioCompra: 0,
+      stock: 0,
+      stockMin: 0,
+      estado: 'Activo',
+      unidad: 'Unidad',
+      saleMode: 'unidad',
+      tipoProducto: 'general',
+      tracksStock: false,
+      aplicaItbis: false,
+      ...getActorPayload(),
+    });
+    const producto = creado?.product || creado;
+    if (!producto?.id) throw new Error('El servidor no devolvió el producto.');
+    DB.productos = [...(DB.productos || []), producto];
+    if (typeof window.refreshSalesCatalogAfterProductChange === 'function') window.refreshSalesCatalogAfterProductChange();
+    closeAllModals();
+    await addProductById(producto.id);
+    showToast(`"${nombre}" quedó guardado y en la venta.`, 'success');
+  } catch (error) {
+    const msg = String(error?.message || '');
+    showToast(/duplicate|duplicado|ya existe|ER_DUP_ENTRY/i.test(msg)
+      ? 'Ya hay un producto con ese código.'
+      : (msg || 'No se pudo guardar el producto.'), 'error');
+    if (boton) { boton.disabled = false; boton.textContent = 'Agregar a la venta'; }
+  } finally {
+    _saleQuickProductSaving = false;
+  }
 }
 
 function irARegistrarProducto(codigo) {
@@ -5657,7 +5788,7 @@ function renderSaleTable() {
       ? `${item.promoAplicada.cantidadMinima ? `${item.promoAplicada.cantidadMinima}+ uds · ` : ''}${item.promoAplicada.texto || item.promoAplicada.nombre || 'Oferta'}`
       : '';
     return `${customComboHeader}
-    <tr class="${isHighlighted ? 'is-selected' : ''}${customCombo ? ' sale-combo-line' : ''}" data-sale-row="${idx}">
+    <tr class="${isHighlighted ? 'is-selected' : ''}${customCombo ? ' sale-combo-line' : ''}" data-sale-row="${idx}" onclick="selectSaleRow(${idx}, event)">
       <td class="col-n">${idx + 1}</td>
       <td class="col-code">${escapeHtml(item.codigo ?? '')}</td>
       <td class="col-name">
@@ -5672,6 +5803,7 @@ function renderSaleTable() {
             : '';
         })()}
         ${promoText ? `<span class="tc-tag tc-tag--primary sale-item-tag">${escapeHtml(promoText)}</span>` : ''}
+        ${hasSaleLineManualPrice(item) ? '<span class="tc-tag sale-item-tag" title="Precio cambiado en esta venta (F3)">Precio cambiado</span>' : ''}
       </td>
       <td class="col-price">
         ${item.promoAplicada ? `<span class="sale-item-price-before">${formatSaleTableAmount(item.promoAplicada.precioOriginal)}</span>` : ''}
@@ -5851,6 +5983,140 @@ function commitSaleLineTotalEdit(idx, rawValue) {
     if (next.qty > available + 0.0001) {
       showToast(`Solo quedan ${formatSaleItemQuantity(next, Math.max(0, available), { includeUnit: true })} de "${product.nombre}".`, 'warning');
       return false;
+    }
+  }
+  DB.saleItems[idx] = next;
+  renderSaleTable();
+  updateTotals();
+  return true;
+}
+
+// ── Cambiar el precio de una línea (F3) ───────────────────────────────────
+// Decisiones de Emilio (2026-11-15): con la línea elegida (clic en la fila; si
+// no se eligió ninguna, la última que entró) F3 o el botón "Precio" convierten
+// su Precio en un campo: se escribe el nuevo, Enter guarda y Escape lo deja
+// como estaba. La cantidad no cambia. Es solo para esta venta (el producto
+// conserva su precio), cualquier usuario puede (queda en la auditoría) y nunca
+// en productos por peso, que tienen el total editado. El precio va en el mismo
+// sentido que el del producto: con ITBIS incluido, el precio final. El
+// servidor lo vuelve a validar (server/sales/precio-manual.js).
+function hasSaleLineManualPrice(item = {}) {
+  return item.precioManual !== undefined && item.precioManual !== null && item.precioManual !== ''
+    && Number(item.precioManual) > 0;
+}
+
+function canEditSaleLinePrice(item = {}) {
+  if (!item || isWeightSaleItem(item) || isCustomComboSaleItem(item)) return false;
+  if (Number(item.montoFinal) > 0) return false;
+  if (item.precioPactado !== undefined && item.precioPactado !== null) return false;
+  if (item.quickSale) return true;
+  const product = findProductForSaleItem(item);
+  return Boolean(product) && !isComboProduct(product);
+}
+
+// El precio que se escribe: con ITBIS incluido, el final por unidad.
+function getSaleLineEditablePrice(item = {}) {
+  if (item.itbisIncluido && Number.isFinite(Number(item.precioFinalUnit))) return Number(item.precioFinalUnit);
+  return Number(item.precio || 0);
+}
+
+function getSelectedSaleItemIndex() {
+  if (!DB.saleItems.length) return -1;
+  const idx = DB.saleItems.findIndex((item) => getSaleRowKey(item) === saleTableHighlightKey);
+  return idx >= 0 ? idx : DB.saleItems.length - 1;
+}
+
+// Clic en una fila del carrito: queda elegida (para F3). Los botones de la
+// fila (quitar, + y −) no la eligen.
+function selectSaleRow(idx, event = null) {
+  if (event?.target?.closest?.('button')) return;
+  const item = DB.saleItems[idx];
+  if (!item) return;
+  saleTableHighlightKey = getSaleRowKey(item);
+  const tbody = document.getElementById('sale-items');
+  tbody?.querySelectorAll('tr.is-selected').forEach((row) => row.classList.remove('is-selected'));
+  tbody?.querySelector(`tr[data-sale-row="${idx}"]`)?.classList.add('is-selected');
+}
+
+function startSelectedSaleLinePriceEdit() {
+  const idx = getSelectedSaleItemIndex();
+  if (idx < 0) {
+    showToast('Agrega un producto para cambiarle el precio.', 'info');
+    return;
+  }
+  const item = DB.saleItems[idx];
+  if (!canEditSaleLinePrice(item)) {
+    showToast(isWeightSaleItem(item)
+      ? 'Los productos por peso no cambian de precio: toca su Total para escribir el monto.'
+      : 'El precio de esta línea no se puede cambiar.', 'warning');
+    return;
+  }
+  startSaleLinePriceEdit(idx);
+}
+
+function startSaleLinePriceEdit(idx) {
+  const item = DB.saleItems[idx];
+  const cell = document.getElementById(`sale-item-price-text-${idx}`)?.closest('td');
+  if (!item || !cell || !canEditSaleLinePrice(item) || cell.querySelector('.sale-price-input')) return;
+  selectSaleRow(idx);
+  const incluido = Boolean(item.itbisIncluido);
+  // Misma clase que el total editado: mismo aspecto y Escape no cancela la venta (ui.js).
+  cell.innerHTML = `<input class="sale-total-input sale-price-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
+    value="${getSaleLineEditablePrice(item).toFixed(2)}" aria-label="Precio de ${escapeHtml(item.nombre || 'la línea')}"
+    title="${incluido ? 'Precio final por unidad (con el ITBIS incluido)' : 'Precio por unidad'} · Enter guarda, Esc cancela">`;
+  const input = cell.querySelector('.sale-price-input');
+  let finished = false;
+  const finish = (commit) => {
+    if (finished) return;
+    finished = true;
+    if (!commit || !commitSaleLinePriceEdit(idx, input.value)) renderSaleTable();
+    focusSalesSearchInput({ force: true });
+  };
+  input.addEventListener('keydown', (event) => {
+    event.stopPropagation(); // los atajos de la pantalla de ventas no toman estas teclas
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('click', (event) => event.stopPropagation());
+  input.focus();
+  input.select();
+}
+
+// true si cambió el precio (la tabla ya se volvió a pintar).
+function commitSaleLinePriceEdit(idx, rawValue) {
+  const item = DB.saleItems[idx];
+  if (!item || !canEditSaleLinePrice(item)) return false;
+  const leido = window.VentaPorMonto?.leerNumero(rawValue);
+  if (!(leido > 0) || leido > 99999999) {
+    showToast('Escribe un precio mayor que cero.', 'warning');
+    return false;
+  }
+  const nuevo = roundSaleMoney(leido);
+  if (nuevo === roundSaleMoney(getSaleLineEditablePrice(item))) return false; // sin cambio
+  let next;
+  if (item.quickSale) {
+    // Venta rápida: su precio ya lo escribe el cajero.
+    next = normalizeSaleItem({ ...item, precio: nuevo });
+    next.total = calcItemTotal(next);
+  } else {
+    const product = findProductForSaleItem(item);
+    const { precioManual: _anterior, ...sinPrecioManual } = item;
+    if (product && nuevo === roundSaleMoney(Number(product.precioVenta || 0))) {
+      // Volvió al precio del producto: la línea deja de estar cambiada (y le
+      // vuelven a aplicar sus ofertas).
+      next = recalcSaleItemForQty(sinPrecioManual, item.qty);
+    } else {
+      next = recalcSaleItemForQty({ ...sinPrecioManual, precioManual: nuevo }, item.qty);
+      const costo = Number(product?.precioCompra || 0);
+      if (costo > 0 && Number(next.precio || 0) < costo) {
+        showToast(`Ojo: "${item.nombre}" queda por debajo de su costo (${fmt(costo)}).`, 'warning');
+      }
     }
   }
   DB.saleItems[idx] = next;
@@ -7505,6 +7771,8 @@ function buildSalePayload() {
         // ITBIS incluido en el precio: el servidor lo vuelve a leer del producto;
         // la venta sin conexión lo usa para no recalcular la línea con una oferta.
         ...(normalizedItem.itbisIncluido ? { itbisIncluido: true, precioFinalUnit: Number(normalizedItem.precioFinalUnit) } : {}),
+        // Precio cambiado en la venta (F3): el servidor lo vuelve a validar.
+        ...(hasSaleLineManualPrice(normalizedItem) ? { precioManual: Number(normalizedItem.precioManual) } : {}),
         quickSale: normalizedItem.quickSale === true,
         // Combo personalizado: a qué combo pertenece la línea (el servidor
         // vuelve a calcular el combo con los precios de la base).
@@ -9221,16 +9489,37 @@ function buildThermalItemLines(items, width, paperVariant) {
     maximumFractionDigits: 2
   });
   const fmtQty = (item) => formatReceiptSaleItemQuantity(item, { compactUnit: true });
+  // La cantidad de un producto por peso ("2.50lb") no cabía en CANT y salía
+  // "2...". La columna se ensancha lo necesario quitándole a ARTICULO (que
+  // igual parte el nombre en varias líneas); si aun así no cabe, va solo el
+  // número ("2.50"), nunca cortado.
+  const qtyTexts = items.map((item) => fmtQty(item));
+  const minName = paperVariant === '58mm' ? 5 : 8;
+  const maxQty = paperVariant === '58mm' ? 6 : 8;
+  const wanted = Math.min(maxQty, Math.max(columns.qty, ...qtyTexts.map((text) => normalizeReceiptText(text).length)));
+  const extra = Math.max(0, Math.min(wanted - columns.qty, columns.name - minName));
+  columns.qty += extra;
+  columns.name -= extra;
+  const qtyFor = (item, index) => {
+    const text = normalizeReceiptText(qtyTexts[index]);
+    if (text.length <= columns.qty) return text;
+    const numero = formatSaleItemQuantity(item, item.qty ?? item.cantidad, { includeUnit: false });
+    if (numero.length <= columns.qty) return numero;
+    // 58 mm con un peso grande: menos decimales antes que cortarlo ("12.3").
+    const valor = Number(item.qty ?? item.cantidad ?? 0);
+    const unDecimal = valor.toFixed(1);
+    return unDecimal.length <= columns.qty ? unDecimal : String(Math.round(valor));
+  };
 
   const itbisHeader = hasAnyItbis ? ` ${padThermalLeft('ITBIS', columns.itbis)}` : '';
   const lines = [
     `${padThermalRight('ARTICULO', columns.name)}${itbisHeader} ${padThermalLeft(columns.qtyLabel, columns.qty)} ${padThermalLeft(columns.priceLabel, columns.price)} ${padThermalLeft(columns.totalLabel, columns.total)}`
   ];
 
-  items.forEach((item) => {
+  items.forEach((item, index) => {
     const nameLines = wrapThermalText(item.nombre, columns.name, paperVariant === '58mm' ? 3 : 4);
     const itbisCol = hasAnyItbis ? ` ${padThermalLeft(getThermalItemItbisText(item), columns.itbis)}` : '';
-    const qty = padThermalLeft(fmtQty(item), columns.qty);
+    const qty = padThermalLeft(qtyFor(item, index), columns.qty);
     const price = padThermalLeft(fmtAmount(item.precio), columns.price);
     const total = padThermalLeft(fmtAmount(item.total), columns.total);
 

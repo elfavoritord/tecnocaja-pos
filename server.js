@@ -61,6 +61,7 @@ const { startEcfDeferredDispatch } = require('./server/sync/ecf-deferred-dispatc
 const { startControlCenterPublisher, notifyControlCenterChange } = require('./server/sync/control-center');
 const { esFotoDeLaApp, guardarFotoDeLaApp } = require('./server/sync/foto-de-la-app');
 const { createSaleIdempotency, normalizeClientRequestId, isDuplicateClientRequestError } = require('./server/sales/sale-idempotency');
+const { precioManualDeLinea } = require('./server/sales/precio-manual');
 const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor, sanitizeInvoiceLogoScale } = require('./server/utils/invoice-design');
 // Total editado por peso e ITBIS incluido en el precio: el mismo cálculo que la caja.
 const VentaPorMonto = require('./js/venta-por-monto');
@@ -1677,8 +1678,16 @@ async function ensurePosCloudConnection(credentials = {}) {
   return cloud;
 }
 
+// Modo demostración: SOLO para el servidor de prueba de Emilio corriendo desde
+// el código fuente (TECNO_CAJA_DEMO=1). La licencia siempre deja entrar y no se
+// registra nada en la nube. Dentro del instalador (app.asar) se ignora siempre:
+// un cliente no lo puede encender.
+const LICENCIA_DEMO = process.env.TECNO_CAJA_DEMO === '1' && !/app\.asar/i.test(__dirname);
+if (LICENCIA_DEMO) console.warn('[licencia] MODO DEMOSTRACIÓN: la licencia no se valida (solo pruebas desde el código fuente).');
+
 const secureLicenseService = createLicenseService({
   query,
+  demoMode: LICENCIA_DEMO,
   fetchRemoteLicense: async (context = {}) => {
     const firebase = require('./modules/firebase-admin');
     if (!firebase.getFirebaseConfigStatus().adminEnabled) {
@@ -17426,6 +17435,8 @@ app.post('/api/sales', async (req, res) => {
     let ahorroPromociones = 0;
     let computedSubtotal = 0;
     const legalTipLines = [];
+    // Precios cambiados en la venta (F3): van a la auditoría después de cobrar.
+    const preciosCambiados = [];
     // Techo de ITBIS acumulado por línea (para el anti-tamper de más abajo).
     // Productos con ITBIS de monto fijo no tienen una "tasa" que aplicarle al
     // subtotal — su techo es el monto fijo real (releído de BD) por la
@@ -17478,7 +17489,15 @@ app.post('/api/sales', async (req, res) => {
       // Combo personalizado: su parte del precio del combo, repartida por el
       // servidor en prepararVenta (sin ofertas: nunca del body).
       const agreed = !isQuickSale && !customCombo && onlineAgreedPrices ? onlineAgreedPrices.get(Number(item.id)) : null;
-      const activePromo = isQuickSale || agreed || customCombo
+      // Precio cambiado en la venta (F3 en el carrito, js/ventas.js →
+      // startSaleLinePriceEdit): solo para esta línea y nunca en productos por
+      // peso, combos, venta rápida ni pedidos online. Va en el sentido del
+      // precio del producto (con ITBIS incluido, el precio final). Sin oferta.
+      const precioManual = precioManualDeLinea(item, {
+        product, isQuickSale, customCombo, comboSnapshot, agreed,
+        porPeso: normalizeProductSaleMode(product?.sale_mode) === 'peso',
+      });
+      const activePromo = isQuickSale || agreed || customCombo || precioManual !== null
         ? null
         : pickWinningPromotion({ ofertaMap, quantityMap, productoId: item.id, qty: item.qty });
       const effectivePrice = isQuickSale
@@ -17487,7 +17506,12 @@ app.post('/api/sales', async (req, res) => {
           ? customCombo.precioLinea
           : agreed
             ? agreed.price
-            : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
+            : precioManual !== null
+              ? precioManual
+              : (activePromo ? activePromo.precioPromocion : Number(product.precio_venta || 0));
+      if (precioManual !== null && Math.abs(precioManual - Number(product.precio_venta || 0)) >= 0.005) {
+        preciosCambiados.push({ codigo: product.codigo, nombre: product.nombre, antes: Number(product.precio_venta || 0), ahora: precioManual, qty: Number(item.qty || 0) });
+      }
       if (agreed && agreed.originalPrice !== null && agreed.originalPrice > agreed.price) {
         ahorroPromociones += (agreed.originalPrice - agreed.price) * Number(item.qty || 0);
       }
@@ -17605,10 +17629,13 @@ app.post('/api/sales', async (req, res) => {
           String(item.scaleRawReading || '').trim() || null,
           effectiveLineTotal,
           activePromo ? activePromo.promotionId : (agreed?.promotionId || null),
-          // Combo personalizado: el precio de catálogo del producto (trazabilidad).
+          // Combo personalizado o precio cambiado en la venta: el precio de
+          // catálogo del producto (trazabilidad).
           customCombo
             ? customCombo.precioOriginal
-            : (activePromo ? activePromo.precioOriginal : (agreed && agreed.originalPrice !== null ? agreed.originalPrice : null)),
+            : precioManual !== null
+              ? Number(product.precio_venta || 0)
+              : (activePromo ? activePromo.precioOriginal : (agreed && agreed.originalPrice !== null ? agreed.originalPrice : null)),
           comboSnapshot ? JSON.stringify(comboSnapshot) : null,
         ]
       );
@@ -17815,6 +17842,7 @@ app.post('/api/sales', async (req, res) => {
       shouldAttemptEcf: shouldUseEcfFlow,
       onlineOrderId,
       customCombos: saleCustomCombos ? saleCustomCombos.grupos : [],
+      preciosCambiados,
     };
   });
   } catch (error) {
@@ -17895,6 +17923,21 @@ app.post('/api/sales', async (req, res) => {
       moduleName: 'Ventas',
       actionName: 'Combo personalizado vendido',
       detail: `${rows[0]?.invoice_number || 'Venta'} · ${combo.nombre} · ${combosPersonalizados.fmt(combo.precio)} (valor normal ${combosPersonalizados.fmt(combo.normal)})`
+    }).catch(() => {});
+  }
+  // Precio cambiado en la venta (F3): quién, qué producto y de cuánto a cuánto.
+  for (const cambio of created.preciosCambiados || []) {
+    writeAuditLog({
+      userId: actorUser.id || sale.userId || null,
+      userName: actorUser.nombre || actorUser.usuario || 'Sistema',
+      userRole: actorUser.rol || 'Sistema',
+      moduleName: 'Ventas',
+      actionName: 'Precio cambiado en la venta',
+      branchId: created.branchId || null,
+      documentRef: rows[0]?.invoice_number || null,
+      before: { precio: cambio.antes },
+      after: { precio: cambio.ahora, cantidad: cambio.qty },
+      detail: `${rows[0]?.invoice_number || 'Venta'} · ${cambio.codigo} ${cambio.nombre} · ${combosPersonalizados.fmt(cambio.antes)} → ${combosPersonalizados.fmt(cambio.ahora)} × ${cambio.qty}`
     }).catch(() => {});
   }
   if (created.saleStatus === 'pagada') {

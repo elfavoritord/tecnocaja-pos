@@ -101,6 +101,7 @@ function closeAllModals(force = false, source = 'generic') {
   modalBox?.classList.remove('product-modal');
   modalBox?.classList.remove('recover-sales-modal');
   modalBox?.classList.remove('gasto-modal');
+  modalBox?.classList.remove('quick-add-product-modal');
   modalBox?.style.removeProperty('width');
   modalBox?.style.removeProperty('max-width');
   modalBox?.style.removeProperty('height');
@@ -325,6 +326,17 @@ window.addEventListener('keydown', function(e) {
   }
 
   if (!isVentasActive) {
+    return;
+  }
+
+  // F3: cambiar el precio de la línea elegida del carrito (solo esa venta;
+  // nunca en productos por peso). Ver startSelectedSaleLinePriceEdit en ventas.js.
+  if (e.key === 'F3') {
+    e.preventDefault();
+    if (modalHidden && receiptHidden && !e.target?.classList?.contains('sale-price-input')
+      && typeof startSelectedSaleLinePriceEdit === 'function') {
+      startSelectedSaleLinePriceEdit();
+    }
     return;
   }
 

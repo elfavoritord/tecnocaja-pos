@@ -2061,6 +2061,7 @@ function applyAppTranslations() {
   if (logoutBtn) logoutBtn.textContent = appText('shell.logout', logoutBtn.textContent);
 
   setTextBySelector('#module-ventas .sales-pizza-mini-title', translateCatalogText('Menú rápido'));
+  setTextBySelector('#module-ventas [data-ventas-label="price"]', translateCatalogText('Precio'));
   setTextBySelector('#module-ventas [data-ventas-label="cancel"]', translateCatalogText('Cancelar venta'));
   setTextBySelector('#module-ventas [data-ventas-label="suspend"]', translateCatalogText('Suspender'));
   setTextBySelector('#module-ventas [data-ventas-label="recover"]', translateCatalogText('Recuperar'));

@@ -331,6 +331,25 @@ class LicenseService {
     this.ensureCacheTablePromise = null;
     this.syncPromise = null;
     this.cacheRowId = null;
+    // Modo demostración (servidor de prueba desde el código fuente, nunca el
+    // instalador: lo decide server.js). La licencia siempre deja entrar y no se
+    // consulta ni se registra nada en la nube.
+    this.demoMode = options.demoMode === true;
+  }
+
+  buildDemoState(context = {}) {
+    const base = this.buildBootstrapState(context);
+    return {
+      ...base,
+      source: 'demo',
+      status: 'trial',
+      validationMode: 'demo',
+      expired: false,
+      canEnter: true,
+      blockedCode: null,
+      message: null,
+      daysLeft: Math.max(1, Number(base.daysLeft || 0)),
+    };
   }
 
   // "Eliminar todo" borra license_cache (tabla) y Firebase, pero este objeto
@@ -983,6 +1002,13 @@ class LicenseService {
     const context = await this.loadBusinessContext();
     let result = null;
     let remoteError = null;
+
+    if (this.demoMode) {
+      const license = this.buildDemoState(context);
+      result = { synced: false, changed: false, source: 'demo', reason: 'Modo demostración', license, licenseUid: null };
+      this.stateMemo = { at: nowMs, value: result };
+      return result;
+    }
 
     if (options.allowRemote !== false && !this.isInternetKnownOffline()) {
       try {

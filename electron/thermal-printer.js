@@ -424,10 +424,29 @@ function buildReceipt(data) {
   const hasItbisCol = items.some((item) => String(item.itbisTexto || '').trim());
   const totalCol = is58 ? 7 : 9;
   const priceCol = is58 ? 7 : 8;
-  const qtyCol   = is58 ? 3 : 4;
   const itbisCol = hasItbisCol ? (is58 ? 4 : 5) : 0;
-  const nameCol  = COLS - qtyCol - priceCol - totalCol - itbisCol - (hasItbisCol ? 4 : 3);
+  // La cantidad de un producto por peso ("12.25lb") no cabía en CANT y salía
+  // cortada ("12.2"). La columna se ensancha lo necesario quitándole a
+  // ARTICULO (que igual se parte en varias líneas); si aun así no cabe, va
+  // solo el número, nunca cortado. Igual que buildThermalItemLines (js/ventas.js).
+  const qtyTextOf = (item) => String(item.cantidadTexto || fmtQty(Number(item.cantidad || 1)));
+  const baseQtyCol = is58 ? 3 : 4;
+  const wantedQty = Math.min(is58 ? 6 : 8, Math.max(baseQtyCol, ...items.map((item) => qtyTextOf(item).length)));
+  const baseNameCol = COLS - baseQtyCol - priceCol - totalCol - itbisCol - (hasItbisCol ? 4 : 3);
+  const qtyExtra = Math.max(0, Math.min(wantedQty - baseQtyCol, baseNameCol - (is58 ? 5 : 8)));
+  const qtyCol   = baseQtyCol + qtyExtra;
+  const nameCol  = baseNameCol - qtyExtra;
   const itbisCell = (text) => (hasItbisCol ? ` ${padL(text, itbisCol)}` : '');
+  const qtyCell = (text) => {
+    if (text.length <= qtyCol) return text;
+    const numero = (text.match(/^[\d.,]+/) || [text])[0];
+    if (numero.length <= qtyCol) return numero;
+    // 58 mm con un peso grande: menos decimales antes que cortarlo ("12.3").
+    const valor = Number(numero.replace(/,/g, ''));
+    if (!Number.isFinite(valor)) return numero.slice(0, qtyCol);
+    const unDecimal = valor.toFixed(1);
+    return unDecimal.length <= qtyCol ? unDecimal : String(Math.round(valor));
+  };
 
   p.bold(true).text(`${padR('ARTICULO', nameCol)}${itbisCell('ITBIS')} ${padL('CANT', qtyCol)} ${padL('VALOR', priceCol)} ${padL('TOTAL', totalCol)}`).bold(false);
   p.separator('-');
@@ -435,7 +454,7 @@ function buildReceipt(data) {
   for (const item of items) {
     const desc  = String(item.descripcion || item.nombre || '');
     const qty   = Number(item.cantidad || 1);
-    const qtyText = String(item.cantidadTexto || fmtQty(qty));
+    const qtyText = qtyCell(qtyTextOf(item));
     const price = Number(item.precio || 0);
     const total = Number(item.subtotal ?? (price * qty));
 

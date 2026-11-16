@@ -2035,8 +2035,10 @@ module.exports = function createOfflineRouter(deps) {
           // catálogo (con ese se armó el combo): no se le busca oferta.
           // Línea por peso con el total editado o con el ITBIS incluido en el
           // precio: ya trae su importe exacto (js/venta-por-monto.js); no se
-          // recalcula con una oferta encima.
-          const activePromo = isQuickSale || customCombo || Number(item.montoFinal) > 0 || item.itbisIncluido === true
+          // recalcula con una oferta encima. Tampoco la de precio cambiado en
+          // la venta (F3): el cajero ya escribió el precio.
+          const precioCambiado = item.precioManual !== undefined && item.precioManual !== null && item.precioManual !== '';
+          const activePromo = isQuickSale || customCombo || Number(item.montoFinal) > 0 || item.itbisIncluido === true || precioCambiado
             ? null
             : pickWinningPromotion({ ofertaMap, quantityMap, productoId: productId, qty });
           const effectiveUnitPrice = activePromo ? activePromo.precioPromocion : unitPrice;

@@ -1,18 +1,14 @@
 {
-  "version": "1.6.27",
-  "stableVersion": "1.6.27",
-  "date": "15/11/2026",
+  "version": "1.6.28",
+  "stableVersion": "1.6.28",
+  "date": "16/11/2026",
   "size": "198 MB",
   "type": "feature",
-  "critical": true,
+  "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Las computadoras instaladas desde cero vuelven a registrar su licencia y a conectarse con la nube: ya no sale \"La prueba del sistema expiró\" ni \"Firebase no configurado\".",
-    "Certificación DGII, Paso 9: vuelve el campo del código de conexión de la empresa y la lista de comprobantes recibidos ya no se cae.",
-    "Cobrar con tarjeta o transferencia ya no exige tener secuencias NCF activas.",
-    "Nuevo control para achicar el logo del negocio en facturas y tickets, con vista previa.",
-    "Productos por peso: toca el total de la línea, escribe el monto de la etiqueta y el sistema calcula las libras (se activa en Configuración → Facturación).",
-    "ITBIS incluido en el precio final: nuevo método por producto o para los productos nuevos del negocio (RD$118 = base 100 + ITBIS 18), también en la factura electrónica.",
-    "Pantalla dividida rápida aunque haya miles de productos, con el precio final con ITBIS y cambios de precio que se ven al momento en todas las cajas."
+    "F3 o el botón \"Precio\" en Ventas: cambia el precio del producto elegido solo para esa venta, sin cambiar la cantidad (no aplica a productos por peso). Queda en la auditoría.",
+    "Producto nuevo desde la venta: al escanear un código que no está en el sistema, sale una ventana corta con el código puesto; escribe el nombre y el precio y entra a la venta.",
+    "El ticket ya no corta la cantidad de los productos por peso (antes salía \"2...\")."
   ]
 }
