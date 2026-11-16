@@ -1174,17 +1174,25 @@ const ECF_CERT_WIZARD = (() => {
       const counts = result.counts || {};
       const blocked = counts.blocked || 0;
       const rejected = counts.rejected || 0;
+      // Paso 2: los RFCE salen primero. Si la DGII rechazó uno, no se mandaron los 21.
+      if (result.rfceFirstRejected) {
+        logLine(`⚠ ${result.message}`, 'err');
+        if (alertEl) alertEl.style.display = '';
+        return;
+      }
+      const rfceAceptados = Number(result.rfceProcessResult?.aceptados || 0);
+      if (result.rfceProcessResult) logLine(`RFCE enviados primero: ${rfceAceptados}/4 aceptados.`, rfceAceptados >= 4 ? 'ok' : 'info');
       logLine(`Listo: ${counts.accepted||0}/${counts.total||0} aceptados, ${rejected} rechazados, ${blocked} bloqueados.`,
         blocked > 0 || rejected > 0 ? 'warn' : 'ok');
       if (blocked > 0 || rejected > 0) {
         logLine('⚠ Hay documentos con problemas — usa "Resetear y reintentar".', 'err');
         if (alertEl) alertEl.style.display = '';
       } else {
-        // El envío de RFCE ya NO es automático: se disparaba a la vez que un envío manual
-        // podía estar en curso, reenviando los 4 resúmenes por partida doble y re-quemando
-        // eNCF del set fijo DGII sin que el usuario pudiera controlarlo.
-        // Ahora es 100% manual — usa el botón "Enviar RFCE" cuando estés listo.
-        logLine('✅ 21/21 comprobantes listos. Usa "Enviar RFCE" para enviar los resúmenes <250Mil (cada uno sale una sola vez).', 'ok');
+        // Los RFCE salen primero dentro de "Procesar y enviar" (una sola vez por lote; el
+        // servidor no deja dos envíos a la vez). "Enviar RFCE" queda para los pendientes.
+        logLine(rfceAceptados >= 4
+          ? '✅ Comprobantes y RFCE enviados. Revisa el portal DGII.'
+          : '✅ Comprobantes enviados. Si algún RFCE quedó pendiente, usa "Enviar RFCE".', 'ok');
       }
     } catch (err) {
       clearTimeout(hangTimeout);
@@ -1345,11 +1353,13 @@ const ECF_CERT_WIZARD = (() => {
           const accepted = state === 'aceptado' || state === 'aceptado_condicional';
           const color = accepted ? '#4ade80' : state.includes('rechaz') ? '#f87171' : state === 'enviado' ? '#f59e0b' : 'var(--text3)';
           const icon  = accepted ? '✅' : state.includes('rechaz') ? '❌' : state === 'enviado' ? '⏳' : '⏸';
+          // El motivo de la DGII de un RFCE rechazado (antes solo se veía "RECHAZADO").
+          const motivo = !accepted ? String(item.mensajeDgii || item.errorMessage || item.error_message || '').trim() : '';
           return `<div class="ecf-wz-doc-row" style="margin-bottom:.3rem">
             <span style="font-size:.74rem;font-weight:700;min-width:62px">${icon} RFCE ${i+1}</span>
             <span style="font-size:.7rem;color:var(--text3);font-family:var(--font-mono);flex:1;overflow:hidden;text-overflow:ellipsis">${h(item.encf||'—')}</span>
             <span style="font-size:.7rem;font-weight:700;color:${color};flex-shrink:0">${state.toUpperCase()}</span>
-          </div>`;
+          </div>${motivo ? `<div style="font-size:.7rem;color:#fca5a5;margin:-.15rem 0 .35rem 1.2rem;line-height:1.35">DGII: ${h(motivo)}</div>` : ''}`;
         }).join('');
       }
     }

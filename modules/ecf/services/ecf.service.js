@@ -4739,6 +4739,51 @@ class EcfService {
       };
     }
 
+    // Paso 2: PRIMERO los 4 RFCE (decisión de Emilio, 2026-11-16). La DGII a veces
+    // rechaza el RFCE en el primer envío de un set ("El e-NCF de este Resumen de
+    // Factura de Consumo ya ha sido utilizado previamente": el número ya vino en un
+    // intento anterior) y reinicia toda la prueba. Antes se mandaban primero los 21
+    // comprobantes y se perdían; ahora, si un RFCE se rechaza, se para aquí sin
+    // mandar los 21 y el segundo intento es corto. Cada RFCE sigue saliendo una
+    // sola vez por lote (sent_at, ver _step4RfceSubmitInner).
+    let rfceProcessResult = null;
+    const rfceRows = await this.repository.query(
+      `SELECT COUNT(*) AS cnt FROM ecf_documents
+        WHERE business_id = 1 AND certification_case_key IS NOT NULL AND submission_mode = 'rfce'`
+    ).catch(() => [{ cnt: 0 }]);
+    if (Number(rfceRows?.[0]?.cnt || 0) > 0) {
+      try {
+        rfceProcessResult = await this.step4RfceSubmit(req);
+      } catch (error) {
+        rfceProcessResult = { ok: false, error: error.message };
+      }
+      const rfceRejected = (rfceProcessResult?.results || []).filter((item) =>
+        ['rechazado', 'error'].includes(String(item.estado || '').toLowerCase()) || item.permanentlyBlocked);
+      if (rfceProcessResult?.ok === false || rfceRejected.length) {
+        const motivo = rfceRejected.map((item) => item.mensaje || item.error).find(Boolean)
+          || rfceProcessResult?.error || 'La DGII rechazó un resumen RFCE.';
+        const status = await this.certificationCenterStatus();
+        await this.repository.saveTestRun(
+          'certification_center_process', 'warning',
+          `RFCE rechazado antes de enviar los comprobantes: ${motivo}`,
+          { importResult, rfceProcessResult, deleted: deleted.affectedRows || 0 }, environment
+        ).catch(() => {});
+        const rechazoDgii = Number(rfceProcessResult?.rechazados || 0) > 0 || rfceProcessResult?.batchInvalidated
+          || rfceRejected.some((item) => String(item.estado || '').toLowerCase() === 'rechazado');
+        return {
+          ...status,
+          importResult,
+          results: [],
+          rfceProcessResult,
+          rfceFirstRejected: true,
+          message: rechazoDgii
+            ? `La DGII rechazó un RFCE (${motivo}) y reinició la prueba. No se envió ninguno de los 21 comprobantes. `
+              + 'Descarga el set otra vez en el portal DGII y vuelve a procesarlo: el segundo intento suele aceptarse.'
+            : `No se pudieron enviar los RFCE (${motivo}). No se envió ninguno de los 21 comprobantes; corrige eso y vuelve a procesar el set.`,
+        };
+      }
+    }
+
     const results = [];
     const processed = new Set();
     for (let index = 0; index < 80; index += 1) {
@@ -4771,12 +4816,8 @@ class EcfService {
       }
     }
 
-    // El envío de RFCE es 100% manual (botón "Reenviar RFCE" del Paso 2) — nunca se dispara
-    // aquí. Antes se enviaba automáticamente apenas terminaban los 21 comprobantes normales,
-    // sin ninguna pausa para el usuario; si el usuario disparaba "Reenviar RFCE" manualmente
-    // casi al mismo tiempo, los dos envíos competían por el mismo e-NCF + código de seguridad
-    // del resumen y DGII rechazaba uno de los dos como "combinación ya utilizada".
-    const rfceProcessResult = null;
+    // Los RFCE ya salieron arriba, antes de los 21 (y una sola vez: step4RfceSubmit
+    // no deja dos envíos a la vez y no reenvía los que tienen sent_at).
 
     // Esperar y consultar varias rondas cortas para mantener el panel sincronizado sin dormir de más.
     let pollResult = { ok: false };

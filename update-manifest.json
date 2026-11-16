@@ -1,15 +1,13 @@
 {
-  "version": "1.6.29",
-  "stableVersion": "1.6.29",
+  "version": "1.6.30",
+  "stableVersion": "1.6.30",
   "date": "16/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": true,
   "downloadUrl": null,
   "changes": [
-    "Certificación DGII, Paso 3: un Excel de Aprobaciones Comerciales correcto ya no se rechaza con \"no pertenece al último lote\".",
-    "Certificación DGII, Paso 9: la recepción se conecta sola con el certificado de la empresa; ya no hace falta pedir un código a soporte.",
-    "Movimientos: la hora de la bitácora sale bien y queda registrada toda apertura de la gaveta (al cobrar, al probarla y a mano), el cierre de sesión y el corte de caja en texto claro.",
-    "Al cerrar sesión, la sesión también se cierra en el servidor."
+    "Certificación DGII, Paso 2: \"Procesar y enviar comprobantes\" manda primero los 4 RFCE. Si la DGII rechaza uno, se detiene sin mandar los 21 comprobantes y el segundo intento es corto.",
+    "Certificación DGII, Paso 2: debajo de cada RFCE rechazado se ve el motivo que dio la DGII."
   ]
 }
