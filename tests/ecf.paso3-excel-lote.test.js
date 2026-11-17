@@ -45,7 +45,7 @@ function peticion(campos = {}) {
   return req;
 }
 
-function servicio(aceptadosEnEstaPC) {
+function servicio(aceptadosEnEstaPC, { enProceso = [], dgiiDice = {} } = {}) {
   const s = createEcfService({
     query: async () => [],
     withTransaction: async (work) => work({ query: async () => [] }),
@@ -55,7 +55,19 @@ function servicio(aceptadosEnEstaPC) {
   s.getCurrentActor = async () => ({ id: 1 });
   s.applyRuntimeConfig = () => {};
   s.resolveCertificate = async () => ({});
-  s.repository.query = async (sql) => (/estado_dgii IN/.test(sql) ? aceptadosEnEstaPC.map((encf) => ({ encf })) : []);
+  s.consultados = [];
+  s.repository.query = async (sql, params = []) => {
+    // Los que esta PC mandó y todavía tiene "en proceso".
+    if (/track_id IS NOT NULL/.test(sql)) {
+      return enProceso.filter((encf) => params.includes(encf)).map((encf, i) => ({ id: 100 + i, encf }));
+    }
+    return /estado_dgii IN/.test(sql) ? aceptadosEnEstaPC.map((encf) => ({ encf })) : [];
+  };
+  s.queryDocumentStatus = async (id) => {
+    const encf = enProceso[id - 100];
+    s.consultados.push(encf);
+    return { estado: dgiiDice[encf] || 'en_proceso', encf };
+  };
   // Pasar la validación local = llegar a autenticarse con la DGII (aquí se corta).
   s.authService.authenticate = async () => { throw Object.assign(new Error('LLEGÓ A LA DGII'), { llego: true }); };
   return s;
@@ -88,6 +100,22 @@ test('si alguno no está aceptado en esta PC, pregunta (409) en vez de bloquear'
 test('con la confirmación del usuario se envía igual', async () => {
   const r = await intentar(servicio(ENCFS.slice(4)), { confirmarFueraDeLote: '1' });
   expect(r.llego).toBe(true);
+});
+
+test('los que esta PC tiene "en proceso" se consultan a la DGII antes de preguntar', async () => {
+  // E31…001 y E31…004 salieron de aquí y la DGII ya los aceptó; esta PC no se había enterado.
+  const aceptadosAhora = { E310000000001: 'aceptado', E310000000004: 'aceptado' };
+  const s = servicio(ENCFS.slice(2), { enProceso: ['E310000000001', 'E310000000004'], dgiiDice: aceptadosAhora });
+  const r = await intentar(s, {});
+  expect(s.consultados).toEqual(['E310000000001', 'E310000000004']);
+  expect(r.llego).toBe(true);
+});
+
+test('si la DGII todavía no los acepta, se pregunta solo por esos', async () => {
+  const s = servicio(ENCFS.slice(2), { enProceso: ['E310000000001', 'E310000000004'], dgiiDice: { E310000000001: 'aceptado' } });
+  const r = await intentar(s, {});
+  expect(r.llego).toBe(false);
+  expect(r.error.details.faltan).toEqual(['E310000000004']);
 });
 
 test('sin nada de certificación en esta PC (Paso 2 en otra PC) se envía sin preguntar', async () => {

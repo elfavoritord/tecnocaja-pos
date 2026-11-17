@@ -1912,7 +1912,6 @@ const ECF_CERT_WIZARD = (() => {
     setBtnState('ecf-wz-step3-btn', true, 'Enviando a DGII…');
     if (resultEl) resultEl.style.display = 'none';
 
-    let reintentarConfirmado = false;
     try {
       const form = new FormData();
       form.append('excel', fileInput.files[0]);
@@ -1924,16 +1923,19 @@ const ECF_CERT_WIZARD = (() => {
       } catch (err) {
         // El Excel trae e-NCF que esta PC no tiene aceptados (la DGII los pudo
         // aceptar en otro intento u otra PC). Antes se bloqueaba; ahora decide el usuario.
-        if (!confirmarFueraDeLote && err?.details?.code === 'ACECF_FUERA_DE_LOTE') {
-          const faltan = (err.details.faltan || []).join(', ');
-          reintentarConfirmado = confirm(
-            `Estos e-NCF del Excel no aparecen aceptados en esta PC:\n${faltan}\n\n`
-            + 'Pasa cuando la DGII los aceptó en un envío anterior o en otra PC. El Excel lo arma la DGII con lo que ella aceptó.\n\n'
-            + '¿Enviar las 11 aprobaciones igual?'
-          );
-          if (reintentarConfirmado) return;
-        }
-        throw err;
+        if (confirmarFueraDeLote || err?.details?.code !== 'ACECF_FUERA_DE_LOTE') throw err;
+        const faltan = (err.details.faltan || []).join(', ');
+        const enviarIgual = confirm(
+          `Estos e-NCF del Excel no aparecen aceptados en esta PC:\n${faltan}\n\n`
+          + 'Pasa cuando la DGII los aceptó en un envío anterior o en otra PC. El Excel lo arma la DGII con lo que ella aceptó.\n\n'
+          + '¿Enviar las 11 aprobaciones igual?'
+        );
+        if (!enviarIgual) return;
+        // Se envía aquí mismo. Antes el reintento quedaba después de un `return`
+        // dentro del try y nunca corría: comparaba el Excel y no mandaba nada.
+        setBtnState('ecf-wz-step3-btn', true, 'Enviando a DGII…');
+        form.append('confirmarFueraDeLote', '1');
+        result = await fiscalApi('POST', '/certification/aprobacion-comercial/process', form, true);
       }
 
       const accepted = result.accepted || 0;
@@ -1991,8 +1993,6 @@ const ECF_CERT_WIZARD = (() => {
     } finally {
       setBtnState('ecf-wz-step3-btn', false, '✅ Enviar Aprobaciones Comerciales a DGII →');
     }
-    // Confirmó enviar un Excel con e-NCF que esta PC no tiene aceptados.
-    if (reintentarConfirmado) await runStep3(true);
   }
 
   async function _confirmStep3() {
@@ -3935,7 +3935,23 @@ const ECF_CERT_WIZARD = (() => {
       const form = new FormData();
       form.append('excel', fileInput.files[0]);
       form.append('environment', WZ.state?.environment || 'certecf');
-      const result = await fiscalApi('POST', '/certification/aprobacion-comercial/process', form, true);
+      let result;
+      try {
+        result = await fiscalApi('POST', '/certification/aprobacion-comercial/process', form, true);
+      } catch (err) {
+        // Igual que en el Paso 3: e-NCF que la DGII aceptó pero esta PC no tiene aceptados.
+        if (err?.details?.code !== 'ACECF_FUERA_DE_LOTE') throw err;
+        const enviarIgual = confirm(
+          `Estos e-NCF del Excel no aparecen aceptados en esta PC:\n${(err.details.faltan || []).join(', ')}\n\n`
+          + '¿Enviar las aprobaciones igual?'
+        );
+        if (!enviarIgual) {
+          setBtnState('ecf-wz-step11-btn', false, '✅ Enviar Aprobaciones Comerciales →');
+          return;
+        }
+        form.append('confirmarFueraDeLote', '1');
+        result = await fiscalApi('POST', '/certification/aprobacion-comercial/process', form, true);
+      }
 
       const accepted = result.accepted || 0;
       const total = result.total || (result.results||[]).length;

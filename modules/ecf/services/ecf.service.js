@@ -8211,6 +8211,30 @@ class EcfService {
     const acceptedLocalEncfs = new Set(
       acceptedLocalRows.map((item) => String(item.encf || '').trim().toUpperCase()).filter(Boolean)
     );
+    // Los que esta PC mandó pero todavía tiene "en proceso" (la DGII los aceptó
+    // después): se le pregunta a la DGII antes de decir que no están aceptados.
+    const porConfirmar = [...encfs].filter((encf) => !acceptedLocalEncfs.has(encf));
+    if (porConfirmar.length) {
+      const enProceso = await this.repository.query(
+        `SELECT id, encf
+           FROM ecf_documents
+          WHERE business_id = 1
+            AND certification_case_key IS NOT NULL
+            AND track_id IS NOT NULL
+            AND estado_dgii IN ('enviado', 'en_proceso', 'procesando', 'pendiente')
+            AND encf IN (${porConfirmar.map(() => '?').join(', ')})`,
+        porConfirmar
+      ).catch(() => []);
+      for (const doc of enProceso) {
+        try {
+          const estado = await this.queryDocumentStatus(doc.id);
+          if (['aceptado', 'aceptado_condicional'].includes(estado.estado)) {
+            acceptedLocalEncfs.add(String(doc.encf || '').trim().toUpperCase());
+          }
+        } catch (_) { /* sin respuesta de la DGII: queda como no confirmado */ }
+      }
+      if (enProceso.length) this.applyRuntimeConfig(environment);
+    }
     const unknownEncfs = [...encfs].filter((encf) => !acceptedLocalEncfs.has(encf));
     const confirmedUnknown = ['1', 'true', 'si', 'sí'].includes(oneField('confirmarFueraDeLote', 'confirmar').toLowerCase());
     assertCondition(

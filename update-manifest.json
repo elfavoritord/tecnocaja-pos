@@ -1,15 +1,13 @@
 {
-  "version": "1.6.32",
-  "stableVersion": "1.6.32",
+  "version": "1.6.33",
+  "stableVersion": "1.6.33",
   "date": "17/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": true,
   "downloadUrl": null,
   "changes": [
-    "Licencia: un negocio con licencia pagada ya no se queda fuera de su sistema. Si la licencia vence, la suspenden o no se puede validar, todo sigue funcionando y solo se detiene la facturación electrónica. Se corrigió el aviso falso de \"licencia vencida\" con la licencia activa.",
-    "Productos por peso: se escribe el monto que dice el producto en el Total y la libra se calcula sola. Sin báscula no sale la ventana de peso ni el botón \"Ingresar peso\".",
-    "Productos: la ficha está ordenada en pestañas y tiene información adicional (descripción, especificaciones, procedencia y observaciones) que puede salir en la factura.",
-    "Certificación DGII, Paso 2: el envío se detiene al primer comprobante rechazado y, si se corta la conexión, se puede continuar sin repetir lo ya enviado."
+    "Certificación DGII, Paso 3: al confirmar \"¿Enviar las 11 aprobaciones igual?\" ahora sí se envían a la DGII (antes comparaba el Excel y no mandaba nada).",
+    "Certificación DGII, Paso 3: antes de preguntar, el sistema consulta a la DGII los comprobantes que tenía \"en proceso\", así la pregunta solo sale cuando de verdad falta alguno."
   ]
 }
