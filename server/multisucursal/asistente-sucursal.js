@@ -174,6 +174,8 @@ function createAsistenteSucursal({
           perfil.tipoNegocio, modo, claveRed ? crearHashClave(claveRed) : null, sqlFecha(inicio), sqlFecha(finPrueba),
         ]
       );
+      // La marca de licencia pagada vuelve con la licencia de la empresa.
+      await conn.query('UPDATE config SET licencia_pagada = 0 WHERE id = 1').catch(() => {});
       if (esEmpresaDeServicios(perfil.tipoNegocio)) {
         await conn.query(
           `UPDATE config

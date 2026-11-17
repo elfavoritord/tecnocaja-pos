@@ -28,7 +28,7 @@ function peticion({ background = false } = {}) {
   return req;
 }
 
-function servicio({ rfce }) {
+function servicio({ rfce, pendientes: lista } = {}) {
   const s = createEcfService({
     query: async () => [],
     withTransaction: async (work) => work({ query: async () => [] }),
@@ -53,8 +53,15 @@ function servicio({ rfce }) {
   s.step4RfceSubmit = jest.fn(async () => { orden.push('rfce'); return rfce; });
   s.step4RfcePollStatuses = async () => ({ ok: true });
   s.pollCertificationStatuses = async () => ({ ok: true });
-  const pendientes = [{ id: 1, encf: 'E310000000001' }, { id: 2, encf: 'E330000000001' }];
+  const pendientes = lista || [{ id: 1, encf: 'E310000000001' }, { id: 2, encf: 'E330000000001' }];
+  const porId = new Map(pendientes.map((d) => [d.id, d]));
   s.repository.getNextPendingCertificationDocument = async () => pendientes.shift() || null;
+  // Lo que ya salió tiene TrackID; la DGII (statusService) contesta "aceptado" salvo que
+  // la prueba diga otra cosa.
+  s.repository.getDocument = async (id) => ({ ...(porId.get(id) || { id }), track_id: `t${id}` });
+  s.useDocumentEnvironment = () => {};
+  s.statusService.getTrackStatus = async () => ({ codigo: '1', estado: 'Aceptado' });
+  s.queryDocumentStatus = async () => ({ estado: 'aceptado', mensaje: 'Consulta completada.' });
   s.sendCertificationCase = jest.fn(async (id) => { orden.push(`ecf-${id}`); return { ok: true, id }; });
   return { s, orden };
 }
@@ -139,5 +146,85 @@ test('Si falla antes de enviar, se suelta el candado', async () => {
   const { s } = servicio({ rfce: { ok: true, results: [] } });
   s.repository.getResolvedEmitter = async () => { throw new Error('sin emisor'); };
   await expect(s.certificationCenterProcess(peticion({ background: true }))).rejects.toThrow('sin emisor');
+  expect(s.runtimeState.certificationProcessInFlight).toBe(false);
+});
+
+// Al primer error se para (pedido de Emilio, 2026-11-16): antes seguía mandando los demás.
+const rfceBien = { ok: true, aceptados: 4, rechazados: 0, results: [1, 2, 3, 4].map((n) => ({ encf: `E32000000001${n}`, ok: true, estado: 'aceptado' })) };
+const tres = () => [{ id: 1, encf: 'E310000000001' }, { id: 2, encf: 'E310000000002' }, { id: 3, encf: 'E330000000001' }];
+
+test('Si la DGII no recibe uno (400), se para y no manda los demás', async () => {
+  const { s, orden } = servicio({ rfce: rfceBien, pendientes: tres() });
+  s.sendCertificationCase = jest.fn(async (id) => {
+    orden.push(`ecf-${id}`);
+    return id === 1
+      ? { ok: false, message: 'El XML no cumple el formato', dgiiResponse: { http: { status: 400 } }, case: { estado: 'rechazado' } }
+      : { ok: true, id };
+  });
+  const r = await s.certificationCenterProcess(peticion());
+  expect(orden).toEqual(['rfce', 'ecf-1']);
+  expect(r.stopped).toMatchObject({ encf: 'E310000000001', tipo: 'dgii' });
+  expect(r.message).toMatch(/La DGII rechazó E310000000001/);
+  expect(r.message).toMatch(/descarga el set otra vez/);
+});
+
+test('Si la DGII rechaza uno que ya salió, no manda los que faltan', async () => {
+  const { s, orden } = servicio({ rfce: rfceBien, pendientes: tres() });
+  let consultasT1 = 0;
+  s.statusService.getTrackStatus = async (track) => {
+    if (track !== 't1') return { codigo: '1', estado: 'Aceptado' };
+    consultasT1 += 1;
+    return consultasT1 === 1 ? { codigo: '3', estado: 'En Proceso' } : { codigo: '2', estado: 'Rechazado' };
+  };
+  s.queryDocumentStatus = async (id) => (id === 1
+    ? { estado: 'rechazado', mensaje: 'Monto total mal calculado' }
+    : { estado: 'aceptado', mensaje: 'Consulta completada.' });
+  const r = await s.certificationCenterProcess(peticion());
+  // El 1 contestó "En proceso" mientras salía el 2; al salir el 2 ya estaba rechazado.
+  expect(orden).toEqual(['rfce', 'ecf-1', 'ecf-2']);
+  expect(r.stopped).toMatchObject({ encf: 'E310000000001', tipo: 'dgii', motivo: 'Monto total mal calculado', enviados: 2 });
+});
+
+test('Corte de conexión: se para y ofrece seguir, no un set nuevo', async () => {
+  const { s, orden } = servicio({ rfce: rfceBien, pendientes: tres() });
+  s.sendCertificationCase = jest.fn(async (id) => {
+    orden.push(`ecf-${id}`);
+    return id === 2 ? { ok: false, message: 'socket hang up', dgiiResponse: {} } : { ok: true, id };
+  });
+  const r = await s.certificationCenterProcess(peticion());
+  expect(orden).toEqual(['rfce', 'ecf-1', 'ecf-2']);
+  expect(r.stopped).toMatchObject({ encf: 'E310000000002', tipo: 'conexion' });
+  expect(r.message).toMatch(/Continuar envío/);
+});
+
+test('Continuar envío: solo vuelve a la cola lo que no llegó a la DGII', async () => {
+  const { s, orden } = servicio({ rfce: { ...rfceBien, results: rfceBien.results.map((x) => ({ ...x, skipped: true, alreadySent: true })) } });
+  const consultas = [];
+  s.repository.query = async (sql) => {
+    consultas.push(sql);
+    if (/SELECT environment, submission_mode/.test(sql)) {
+      return [
+        ...[1, 2, 3, 4].map(() => ({ environment: 'certecf', submission_mode: 'rfce', estado_dgii: 'aceptado', track_id: null })),
+        { environment: 'certecf', submission_mode: 'normal', estado_dgii: 'aceptado', track_id: 't9' },
+        { environment: 'certecf', submission_mode: 'normal', estado_dgii: 'error', track_id: null },
+      ];
+    }
+    return [];
+  };
+  const r = await s.certificationCenterContinue({});
+  expect(r.processing).toBe(true);
+  const fin = await esperarFin(s);
+  expect(fin.error).toBeNull();
+  expect(consultas.some((q) => /SET estado_dgii = 'firmado'/.test(q) && /track_id IS NULL/.test(q) && /estado_dgii = 'error'/.test(q))).toBe(true);
+  // Los RFCE pasan por el envío de siempre, que no reenvía los que ya salieron (sent_at).
+  expect(orden).toEqual(['rfce', 'ecf-1', 'ecf-2']);
+});
+
+test('Continuar envío no sigue si la DGII ya rechazó uno del set', async () => {
+  const { s } = servicio({ rfce: rfceBien });
+  s.repository.query = async (sql) => (/SELECT environment, submission_mode/.test(sql)
+    ? [{ environment: 'certecf', submission_mode: 'normal', estado_dgii: 'rechazado', track_id: 't1' }]
+    : []);
+  await expect(s.certificationCenterContinue({})).rejects.toMatchObject({ statusCode: 409 });
   expect(s.runtimeState.certificationProcessInFlight).toBe(false);
 });

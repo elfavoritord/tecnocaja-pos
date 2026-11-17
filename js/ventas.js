@@ -475,7 +475,7 @@ function buildSaleItemMeta(item = {}, product = null) {
   const scaleSource = isWeightSaleItem(item, product)
     ? (item.scaleSource === 'serial'
         ? 'Báscula COM'
-        : (item.scaleSource === 'usb' ? 'Báscula USB' : 'Báscula'))
+        : (item.scaleSource === 'usb' ? 'Báscula USB' : (item.scaleSource === 'manual' ? 'Peso ingresado manualmente' : 'Báscula')))
     : '';
   return [modeLabel, unitLabel, scaleSource].filter(Boolean).join(' · ');
 }
@@ -1012,9 +1012,28 @@ function applyScaleReadingToDialog(parsed, source = 'usb') {
     scaleMeasuredUnit: parsed.unit,
     scaleSource: source
   };
+  const manualInput = document.getElementById('sale-scale-manual-weight');
+  if (manualInput && source !== 'manual') manualInput.value = String(qty);
   updateSaleScaleSummary();
   setSaleScaleStatus('Peso detectado correctamente. Puedes confirmar la venta.', 'success');
   return true;
+}
+
+function applyManualSaleWeight() {
+  const input = document.getElementById('sale-scale-manual-weight');
+  const qty = Number(input?.value);
+  if (!input || !Number.isFinite(qty) || qty <= 0) {
+    saleScaleState.reading = null;
+    updateSaleScaleSummary();
+    setSaleScaleStatus('Ingresa un peso mayor que cero.', 'info');
+    return false;
+  }
+  const unit = getSaleScaleUtils().getProductWeightUnit(saleScaleState.product, saleScaleState.config?.defaultUnit || 'kg');
+  saleScaleState.reading = null;
+  const accepted = applyScaleReadingToDialog({ value: qty, unit, raw: input.value }, 'manual');
+  if (!accepted) updateSaleScaleSummary();
+  if (accepted) setSaleScaleStatus('Peso ingresado. Puedes confirmar la venta.', 'success');
+  return accepted;
 }
 
 function consumeSaleScaleHidInput() {
@@ -1075,6 +1094,7 @@ async function requestSaleScaleWeightRead() {
 
   if (!window.novaDesktop?.readScaleWeight) {
     setSaleScaleStatus('La lectura por puerto COM solo está disponible en la app de escritorio.', 'error');
+    document.getElementById('sale-scale-manual-weight')?.focus();
     return;
   }
 
@@ -1107,7 +1127,9 @@ async function requestSaleScaleWeightRead() {
 
     applyScaleReadingToDialog(parsed, 'serial');
   } catch (error) {
-    setSaleScaleStatus(error.message || 'No se pudo leer el peso desde la báscula.', 'error');
+    setSaleScaleStatus(`${error.message || 'No se pudo leer el peso desde la báscula.'} Puedes escribir el peso a mano.`, 'error');
+    // Báscula desconectada: el cursor pasa al peso para escribirlo a mano.
+    document.getElementById('sale-scale-manual-weight')?.focus();
     const rawEl = document.getElementById('sale-scale-raw-reading');
     if (rawEl) rawEl.textContent = 'Sin lectura válida';
   } finally {
@@ -1165,13 +1187,14 @@ function closeSaleScaleDialog(result = null) {
 function buildSaleScaleModalMarkup(product) {
   const config = getSaleScaleConfig();
   const weightUnit = getSaleScaleUtils().getProductWeightUnit(product, config.defaultUnit);
-  const typeLabel = config.type === 'serial' ? 'Báscula por puerto COM' : 'Báscula USB / HID';
+  const manualOnly = config.type === 'none';
+  const typeLabel = manualOnly ? 'Ingreso manual de peso' : (config.type === 'serial' ? 'Báscula por puerto COM' : 'Báscula USB / HID');
   const autoReadLabel = config.autoRead
     ? 'La captura automática está activa para este producto.'
     : 'Usa el botón "Leer peso" cuando el producto esté colocado en la báscula.';
 
   return `
-    <div class="modal" style="max-width:560px;width:min(92vw,560px)" onclick="event.stopPropagation()">
+    <div class="modal sale-scale-dialog" style="max-width:560px;width:min(92vw,560px)" onclick="event.stopPropagation()">
       <div class="modal-header">
         <h3>Venta por peso</h3>
         <button class="modal-close" type="button" onclick="closeSaleScaleDialog()">✕</button>
@@ -1184,8 +1207,13 @@ function buildSaleScaleModalMarkup(product) {
               <div style="font-size:1.1rem;font-weight:800;color:var(--text1)">${escapeHtml(typeof getLocalizedProductName === 'function' ? getLocalizedProductName(product) : product.nombre)}</div>
               <div style="color:var(--text2);font-size:.9rem">${escapeHtml(typeLabel)} · Precio por ${escapeHtml(weightUnit)}</div>
             </div>
-            <div style="padding:.45rem .7rem;border-radius:999px;background:rgba(15,23,42,.08);font-size:.78rem;color:var(--text2)">Coloque el producto en la báscula</div>
+            <div style="padding:.45rem .7rem;border-radius:999px;background:rgba(15,23,42,.08);font-size:.78rem;color:var(--text2)">${manualOnly ? 'Escribe el peso' : 'Báscula o ingreso manual'}</div>
           </div>
+        </div>
+        <div class="form-group" style="margin:0">
+          <label for="sale-scale-manual-weight">Peso en ${escapeHtml(weightUnit)}</label>
+          <input id="sale-scale-manual-weight" class="form-input" type="number" inputmode="decimal" min="${getSaleItemMinQuantity({ saleMode: 'peso' })}" step="${getSaleItemQuantityStep({ saleMode: 'peso' })}" placeholder="Ej.: 0.5" oninput="applyManualSaleWeight()" onkeydown="if(event.key === 'Enter'){event.preventDefault();confirmSaleScaleWeight()}">
+          <small class="helper-text">${manualOnly ? 'Ingresa el peso para calcular el importe. No necesitas una báscula conectada.' : 'Puedes escribir el peso o usar la lectura de la báscula.'}</small>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem">
           <div style="padding:.9rem;border:1px solid rgba(148,163,184,.18);border-radius:16px;background:rgba(15,23,42,.02)">
@@ -1203,9 +1231,9 @@ function buildSaleScaleModalMarkup(product) {
         </div>
         <div style="display:flex;flex-direction:column;gap:.45rem;padding:.9rem;border-radius:16px;background:rgba(15,23,42,.025);border:1px dashed rgba(148,163,184,.22)">
           <div id="sale-scale-status" style="font-weight:700;color:var(--text2)">Coloque el producto en la báscula.</div>
-          <small class="helper-text">${escapeHtml(autoReadLabel)}</small>
+          <small class="helper-text">${manualOnly ? 'Acepta decimales en la unidad del producto.' : escapeHtml(autoReadLabel)}</small>
         </div>
-        <div class="form-group" style="margin:0">
+        <div class="form-group" style="margin:0;${manualOnly ? 'display:none' : ''}">
           <label>Lectura recibida</label>
           <div id="sale-scale-raw-reading" style="padding:.78rem .9rem;border:1px solid rgba(148,163,184,.18);border-radius:14px;background:var(--surface);font-family:var(--font-mono);color:var(--text2)">Esperando lectura...</div>
         </div>
@@ -1213,7 +1241,7 @@ function buildSaleScaleModalMarkup(product) {
       </div>
       <div class="modal-footer">
         <button class="btn-secondary" type="button" onclick="closeSaleScaleDialog()">Cancelar</button>
-        <button class="btn-secondary" type="button" id="sale-scale-read-btn" onclick="requestSaleScaleWeightRead()">Leer peso</button>
+        <button class="btn-secondary" type="button" id="sale-scale-read-btn" ${manualOnly ? 'hidden style="display:none"' : ''} onclick="requestSaleScaleWeightRead()">Leer peso</button>
         <button class="btn-primary" type="button" id="sale-scale-confirm-btn" onclick="confirmSaleScaleWeight()" disabled>Usar este peso</button>
       </div>
     </div>
@@ -1222,11 +1250,6 @@ function buildSaleScaleModalMarkup(product) {
 
 function promptWeightForProduct(product) {
   const config = getSaleScaleConfig();
-  if (config.type === 'none') {
-    showToast('Este producto se vende por peso. Configura la báscula en Ajustes antes de venderlo.', 'warning');
-    return Promise.resolve(null);
-  }
-
   closeSaleScaleDialog();
 
   return new Promise((resolve) => {
@@ -1259,14 +1282,17 @@ function promptWeightForProduct(product) {
     });
 
     updateSaleScaleSummary();
-    setSaleScaleStatus('Coloque el producto en la báscula.', 'info');
+    setSaleScaleStatus(config.type === 'none' ? 'Ingresa el peso del producto.' : 'Lee la báscula o escribe el peso manualmente.', 'info');
 
     if (typeof translateDynamicUi === 'function') translateDynamicUi(overlay);
 
     if (config.type === 'usb') {
       armSaleScaleUsbCapture();
     }
-    if (config.autoRead) {
+    // Sin báscula o con la del puerto COM, el cursor queda en el peso para escribirlo
+    // a mano (la USB necesita el campo oculto para recibir lo que manda la báscula).
+    if (config.type !== 'usb') overlay.querySelector('#sale-scale-manual-weight')?.focus();
+    if (config.autoRead && config.type !== 'none') {
       requestSaleScaleWeightRead();
     }
   });
@@ -1282,6 +1308,14 @@ async function reweighSaleItem(index) {
 
   const result = await promptWeightForProduct(product);
   if (!result) return;
+
+  if (product.tracksStock !== false) {
+    const available = Math.max(0, Number(product.stock || 0) - getCartQtyForProduct(product.id, index));
+    if (Number(result.qty) > available) {
+      showToast(`Solo quedan ${available} ${getSaleItemWeightUnit(currentItem, product)} disponibles.`, 'warning');
+      return;
+    }
+  }
 
   const nextItem = normalizeSaleItem({
     // Un peso nuevo de la báscula reemplaza el total que se hubiera escrito.
@@ -5817,9 +5851,15 @@ function renderSaleTable() {
           ? `
             <div class="sale-weight">
               <span class="sale-weight-value">${escapeHtml(formatSaleItemQuantity(item, item.qty, { includeUnit: true }))}</span>
-              ${getSaleScaleConfig().type === 'none' && isWeightTotalEditEnabled()
-                ? ''
-                : `<button class="tc-btn sale-weight-btn" type="button" onclick="reweighSaleItem(${idx})">${saleIcon('scale', 18)}<span>Leer peso</span></button>`}
+              ${(() => {
+                // Sin báscula y con el total editable, el peso sale del monto que se
+                // escribe en el Total: el botón "Ingresar peso" sobra (Emilio, 2026-11-17).
+                // Con báscula se deja para volver a leerla; con la opción apagada es
+                // la única forma de corregir el peso de la línea.
+                const sinBascula = getSaleScaleConfig().type === 'none';
+                if (sinBascula && canEditSaleLineTotal(item)) return '';
+                return `<button class="tc-btn sale-weight-btn" type="button" onclick="reweighSaleItem(${idx})">${saleIcon('scale', 18)}<span>${sinBascula ? 'Ingresar peso' : 'Leer / ingresar peso'}</span></button>`;
+              })()}
             </div>
           `
           : `
@@ -6167,7 +6207,7 @@ function updateItemQty(idx, val) {
     return;
   }
   if (isWeightSaleItem(item)) {
-    showToast('Los productos por peso se actualizan leyendo la báscula.', 'warning');
+    showToast('Usa el botón de peso para ingresarlo manualmente o leer la báscula.', 'warning');
     renderSaleTable();
     return;
   }
@@ -7744,6 +7784,11 @@ function buildSalePayload() {
     },
     items: DB.saleItems.map((item) => {
       const normalizedItem = normalizeSaleItem(item);
+      // Descripción, especificaciones y procedencia que salen en la factura. El
+      // servidor arma su propia copia; la venta sin conexión usa esta.
+      const infoLinea = normalizedItem.quickSale === true || !window.ProductoInfoAdicional
+        ? null
+        : window.ProductoInfoAdicional.paraVenta(findProductForSaleItem(normalizedItem)?.infoAdicional, DB.config?.infoAdicionalFactura);
       return {
         id: normalizedItem.id,
         codigo: normalizedItem.codigo || '',
@@ -7774,6 +7819,7 @@ function buildSalePayload() {
         // Precio cambiado en la venta (F3): el servidor lo vuelve a validar.
         ...(hasSaleLineManualPrice(normalizedItem) ? { precioManual: Number(normalizedItem.precioManual) } : {}),
         quickSale: normalizedItem.quickSale === true,
+        ...(infoLinea ? { infoAdicional: infoLinea } : {}),
         // Combo personalizado: a qué combo pertenece la línea (el servidor
         // vuelve a calcular el combo con los precios de la base).
         ...(isCustomComboSaleItem(normalizedItem) ? { comboPersonalizado: { ...normalizedItem.comboPersonalizado } } : {})
@@ -8159,6 +8205,24 @@ function normalizeReceiptText(value) {
     .replace(/[\u0000-\u001F\u007F]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// Información adicional del producto (descripción, especificaciones,
+// procedencia) que salió en la factura: la copia de la línea de venta
+// (sale_items.info_adicional; ver js/producto-info-adicional.js). Va debajo del
+// nombre, con el código primero.
+function getReceiptItemInfoLines(item) {
+  const Info = window.ProductoInfoAdicional;
+  if (!Info || !item?.infoAdicional) return [];
+  return Info.lineas(item.infoAdicional, { codigo: item.codigo }).map((linea) => normalizeReceiptText(linea)).filter(Boolean);
+}
+
+// Las mismas líneas partidas al ancho del ticket térmico, con sangría.
+function getThermalItemInfoLines(item, width) {
+  const Info = window.ProductoInfoAdicional;
+  if (!Info || !item?.infoAdicional) return [];
+  const ancho = Math.max(8, (Number(width) || 32) - 2);
+  return getReceiptItemInfoLines(item).flatMap((linea) => Info.partirAncho(linea, ancho)).map((linea) => `  ${linea}`);
 }
 
 function formatReceiptDateForPaper(value, paperVariant) {
@@ -8839,7 +8903,10 @@ async function buildEscposReceiptPayload(venta, paperSize = String(getReceiptCon
         // personalizado: sus productos con el monto alineado a la derecha.
         componentes: Array.isArray(item?.comboPersonalizadoDetalle)
           ? formatCustomComboDetailLines(item, getThermalReceiptCharWidth(normalizedPaperSize === '58mm' ? '58mm' : '80mm') - 4)
-          : getReceiptComboLines(item)
+          : getReceiptComboLines(item),
+        // Descripción, especificaciones y procedencia, ya partidas al ancho del papel.
+        infoAdicional: getThermalItemInfoLines(item, getThermalReceiptCharWidth(normalizedPaperSize === '58mm' ? '58mm' : '80mm'))
+          .map((linea) => linea.trim())
       })),
       filasDetalle: templateData.detailRows.map(([label, value]) => [String(label), normalizeReceiptText(value)]),
       filasResumen: buildThermalSummaryRows(venta),
@@ -9321,9 +9388,11 @@ function getReceiptTemplateData(venta) {
     const itemName = clipReceiptItemName(item.nombre);
     // Combo desglosado: sus productos debajo, sin precio (ya están en el del combo).
     const comboLines = getReceiptComboLines(item);
-    const comboMarkup = comboLines.length
+    const comboMarkup = (comboLines.length
       ? comboLines.map((line) => `<div class="receipt-item-meta receipt-item-combo">&nbsp;&nbsp;- ${escapeReceiptHtml(line)}</div>`).join('')
-      : '';
+      : '')
+      // Descripción, especificaciones y procedencia del producto.
+      + getReceiptItemInfoLines(item).map((line) => `<div class="receipt-item-meta receipt-item-info">${escapeReceiptHtml(line)}</div>`).join('');
     if (usesTableItems) {
       return `
         <div class="receipt-item receipt-item--table">
@@ -9530,6 +9599,8 @@ function buildThermalItemLines(items, width, paperVariant) {
     if (Array.isArray(item.comboPersonalizadoDetalle)) {
       formatCustomComboDetailLines(item, width - 4).forEach((line) => lines.push(`  - ${line}`));
     }
+    // Descripción, especificaciones y procedencia, partidas al ancho del papel.
+    getThermalItemInfoLines(item, width).forEach((line) => lines.push(line));
   });
 
   return lines.map((line) => String(line || '').slice(0, Math.max(0, Number(width) || 0)));
@@ -9690,7 +9761,7 @@ function buildA4ReceiptSheetMarkup(venta, templateData, qrMarkup) {
       <div>${escapeReceiptHtml(formatReceiptSaleItemQuantity(item))}</div>
       <div>${escapeReceiptHtml(item.nombre)}${Array.isArray(item.comboPersonalizadoLineas)
         ? item.comboPersonalizadoLineas.map((line) => `<div class="receipt-item-meta receipt-item-combo">- ${escapeReceiptHtml(line)}</div>`).join('')
-        : ''}</div>
+        : ''}${getReceiptItemInfoLines(item).map((line) => `<div class="receipt-item-meta receipt-item-info">${escapeReceiptHtml(line)}</div>`).join('')}</div>
       <div>${escapeReceiptHtml(Array.isArray(item.comboPersonalizadoDetalle) ? 'Incluido' : (item.itbisModo === 'monto' ? `RD$${Number(item.itbisMontoUnit || 0).toFixed(2)}` : (item.itbisRate > 0 ? `${item.itbisRate.toFixed(2)}%` : '0.00')))}</div>
       <div>${escapeReceiptHtml(fmt(item.total))}</div>
     </div>
@@ -9962,10 +10033,13 @@ function ventaToFormalDoc(venta) {
       };
     }
     const comboLines = getReceiptComboLines(it);
+    const infoLines = getReceiptItemInfoLines(it);
     return {
       descripcion: it.nombre,
       // Combo desglosado: sus productos como nota de la línea (sin precio).
       ...(comboLines.length ? { nota: `Incluye: ${comboLines.join(', ')}` } : {}),
+      // Código, descripción, especificaciones y procedencia debajo del nombre.
+      ...(infoLines.length ? { detalle: infoLines } : {}),
       cantidad: it.qty,
       unidad: it.unitLabel || it.unidad || it.unidadMedida || 'Unidad',
       precio: it.precio,

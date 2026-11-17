@@ -195,7 +195,15 @@
   // Descripción con una nota chica opcional debajo (en servicios: el descuento
   // de la línea, que estas plantillas no tienen como columna).
   function celdaDescripcion(it) {
-    return esc(it.descripcion) + (it.nota ? `<small class="tcf-inote">${esc(it.nota)}</small>` : '');
+    return esc(it.descripcion) + (it.nota ? `<small class="tcf-inote">${esc(it.nota)}</small>` : '') + detalleItem(it);
+  }
+
+  // Información adicional del producto (código, descripción, especificaciones,
+  // procedencia; js/producto-info-adicional.js): una línea cada una, debajo del nombre.
+  function detalleItem(it) {
+    return Array.isArray(it.detalle) && it.detalle.length
+      ? `<small class="tcf-idet">${it.detalle.map((linea) => esc(linea)).join('<br>')}</small>`
+      : '';
   }
 
   // Notas largas (condiciones de una cotización, alcance de un servicio): en
@@ -349,6 +357,7 @@
 .tcfac-root .tcf-page .tcf-head{ gap:10mm; }
 .tcfac-root .tcf-page .tcf-doc{ flex:0 1 100mm; min-width:0; }
 .tcfac-root .tcf-inote{ display:block; margin-top:.6mm; font-size:8.5px; font-weight:400; color:#6b7280; white-space:normal; }
+.tcfac-root .tcf-idet{ display:block; margin-top:.6mm; font-size:8.5px; font-weight:400; color:#4b5563; line-height:1.35; white-space:normal; overflow-wrap:anywhere; }
 .tcfac-root .tcf-notas{ margin-top:6mm; break-inside:avoid; }
 .tcfac-root .tcf-notas-t{ font-size:8.5px; font-weight:800; letter-spacing:1px; text-transform:uppercase;
   color:var(--acc-ink); margin-bottom:1.5mm; }
@@ -917,7 +926,7 @@
       const qty = Number(it.cantidad || 0);
       const tax = Number(it.itbisMonto || 0);
       const valor = Number(it.total || (Number(it.precio || 0) * qty));
-      return `<tr><td class="q">${esc(qty)}</td><td>${esc(it.descripcion || '')}</td><td>${esc(it.unidad || 'Unidad')}</td><td class="n">${dinero(it.precio)}</td><td class="n">${dinero(tax)}</td><td class="n">${dinero(valor)}</td></tr>`;
+      return `<tr><td class="q">${esc(qty)}</td><td>${esc(it.descripcion || '')}${detalleItem(it)}</td><td>${esc(it.unidad || 'Unidad')}</td><td class="n">${dinero(it.precio)}</td><td class="n">${dinero(tax)}</td><td class="n">${dinero(valor)}</td></tr>`;
     }).join('');
     return `<style>${BASE_CSS}${CSS[plantilla]}
 .tcfac-ecf-ri{font:${tamanoLetra(10)}px Arial,sans-serif;color:#202b36;background:#fff;--ri-accent:var(--acc);--ri-ink:var(--acc-ink);--ri-tint:var(--acc-tint);--ri-on-accent:var(--on-acc)}

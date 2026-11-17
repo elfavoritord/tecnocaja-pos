@@ -1,7 +1,9 @@
 // Paso 2 de la certificación con la pantalla real (Chrome) y el DGII FALSO lento, como la
 // DGII real: "Procesar y enviar comprobantes" tiene que mostrar el avance de los 4 RFCE y
 // de los 21 e-CF hasta el final, sin quedarse "cargando". Nada sale a la DGII real.
-// Uso: node scripts/ecf/probar-paso2-ui.js <set-paso2.xlsx> [--demora=1500] [--en-proceso]
+// Uso: node scripts/ecf/probar-paso2-ui.js <set-paso2.xlsx> [--demora=1500] [--en-proceso] [--rechazar-ecf=3]
+//   --rechazar-ecf=N: la DGII falsa rechaza el e-CF número N; el envío tiene que pararse ahí
+//   y decir una sola vez qué hacer.
 //   --en-proceso: la DGII falsa contesta "En proceso" un buen rato después de recibirlos,
 //   como pasó con un cliente; la pantalla tiene que seguir preguntando sola.
 /* global ECF_CERT_WIZARD, doLogin, openFiscalConfigModal, switchFiscalTab, DB -- corren en la página */
@@ -18,6 +20,7 @@ const { crearDgiiFalso } = require('./dgii-falso');
 const SET = process.argv[2];
 const DEMORA = Number((process.argv.find((a) => a.startsWith('--demora=')) || '').split('=')[1]) || 1500;
 const EN_PROCESO = process.argv.includes('--en-proceso');
+const RECHAZAR_ECF = Number((process.argv.find((a) => a.startsWith('--rechazar-ecf=')) || '').split('=')[1]) || 0;
 const PORT = Number(process.env.TC_PRUEBA_PORT) || 3467;
 const USER_DATA = path.join(L.WORK, 'pc-data');
 const HOME = path.join(L.WORK, 'home');
@@ -96,10 +99,14 @@ function crearCertificado(destino, clave, rnc) {
       state: { currentStep: 2, completedSteps: [1], startedAt: new Date().toISOString(), environment: 'certecf', steps: {} },
     });
     dgii.estado.demoraMs = DEMORA;
+    // Con el set oficial, la DGII falsa no revisa las cuentas (sus reglas rechazan casos
+    // que la DGII real acepta); solo rechaza el que se pida.
+    dgii.estado.revisar = false;
+    dgii.estado.rechazarEcfNumero = RECHAZAR_ECF;
     // 5 rondas de consulta del envío + 2 de la pantalla contestan "En proceso" (21 cada una).
     if (EN_PROCESO) dgii.estado.responderEnProceso = 21 * 7;
 
-    browser = await puppeteer.launch({ headless: true });
+    browser = await puppeteer.launch({ headless: true, protocolTimeout: 1800000 });
     page = await browser.newPage();
     await page.setViewport({ width: 1366, height: 900 });
     const errores = [];
@@ -129,9 +136,14 @@ function crearCertificado(destino, clave, rnc) {
     const botonOcupado = () => page.evaluate(() => document.getElementById('ecf-wz-step2-process-btn')?.disabled === true);
 
     // Pasados los 90 s (donde antes la pantalla dejaba de esperar) sigue mostrando el avance.
-    await page.waitForFunction(() => /Enviando comprobantes a la DGII: \d+ de \d+/.test(document.getElementById('ecf-wz-step2-log')?.textContent || ''), { timeout: 240000 });
+    await page.waitForFunction(() => /Enviando comprobantes a la DGII: \d+ de \d+|Se detuvo el envío/.test(document.getElementById('ecf-wz-step2-log')?.textContent || ''), { timeout: 240000 });
     check('Muestra el avance de los comprobantes', true);
-    check('El botón queda ocupado mientras envía', await botonOcupado());
+    if (!RECHAZAR_ECF) {
+      check('El botón queda ocupado mientras envía', await botonOcupado());
+      const bloqueados = await page.evaluate(() => ['ecf-wz-s2-rfce-resend-btn', 'ecf-wz-s2-reset-all-btn']
+        .map((id) => `${id}=${document.getElementById(id)?.disabled}`));
+      check('Mientras envía no se puede tocar "Enviar RFCE" ni "Reiniciar Paso 2"', bloqueados.every((b) => b.endsWith('=true')), bloqueados.join(' '));
+    }
     await page.screenshot({ path: path.join(CAPTURAS, 'paso2-enviando.png') });
 
     // Cambiar de paso y volver: el avance se retoma solo.
@@ -144,8 +156,8 @@ function crearCertificado(destino, clave, rnc) {
     await page.waitForFunction(() => {
       const texto = document.getElementById('ecf-wz-step2-log')?.textContent || '';
       const libre = document.getElementById('ecf-wz-step2-process-btn')?.disabled === false;
-      return libre && /Listo: \d+\/\d+ comprobantes aceptados|RFCE rechazado|Error:/.test(texto);
-    }, { timeout: 1500000, polling: 1000 });
+      return libre && /Listo: \d+\/\d+ comprobantes aceptados|Se detuvo el envío|RFCE rechazado|Error:/.test(texto);
+    }, { timeout: Number(process.env.TC_ESPERA_MS) || 1500000, polling: 1000 });
     const segundos = Math.round((Date.now() - inicio) / 1000);
     const log = await leerLog();
     await page.screenshot({ path: path.join(CAPTURAS, 'paso2-listo.png') });
@@ -155,11 +167,34 @@ function crearCertificado(destino, clave, rnc) {
     const rutas = dgii.estado.rutas.filter((r) => /^POST /.test(r));
     const fc = rutas.filter((r) => /RecepcionFC/i.test(r)).length;
     const ecf = rutas.filter((r) => /Recepcion/i.test(r) && !/RecepcionFC/i.test(r)).length;
-    check('Siguió hasta el final sin quedarse cargando', log.some((l) => /^Listo:/.test(l)), `${segundos} s`);
-    check('Salieron los 4 RFCE y los 21 e-CF', fc === 4 && ecf === 21, `RFCE ${fc} · e-CF ${ecf}`);
-    check('Al volver al Paso 2 se retomó el avance', log.some((l) => /^Listo:/.test(l)), log.slice(-2).join(' | '));
+    const aviso = await page.evaluate(() => {
+      const caja = document.getElementById('ecf-wz-step2-blocked-alert');
+      const visible = (id) => { const el = document.getElementById(id); return Boolean(el && el.offsetParent !== null); };
+      return {
+        visible: Boolean(caja && caja.style.display !== 'none'),
+        texto: document.getElementById('ecf-wz-step2-blocked-text')?.textContent || '',
+        continuar: visible('ecf-wz-step2-continue-btn'),
+        resetear: visible('ecf-wz-step2-reset-btn'),
+        libres: ['ecf-wz-s2-rfce-resend-btn', 'ecf-wz-s2-reset-all-btn'].every((id) => document.getElementById(id)?.disabled === false),
+      };
+    });
+    console.log(`[paso2-ui] aviso: ${JSON.stringify(aviso)}`);
     check('El botón vuelve a quedar libre', !(await botonOcupado()));
-    check('El resultado cuenta los 21 sin los RFCE', log.some((l) => /^Listo: \d+\/21 comprobantes aceptados/.test(l)), log.find((l) => /^Listo:/.test(l)) || '');
+    check('Los demás botones vuelven a quedar libres', aviso.libres);
+    check('Nunca ofrece "Resetear y reintentar"', !aviso.resetear);
+    check('Sin líneas de error repetidas', log.filter((l) => /^Error:/.test(l)).length === 0, log.filter((l) => /^Error:/.test(l)).join(' | '));
+    if (RECHAZAR_ECF) {
+      check('Se paró en el comprobante rechazado', ecf < 21, `e-CF enviados ${ecf}`);
+      const corte = log.filter((l) => /Se detuvo el envío\. Salieron/.test(l));
+      check('Dice una sola vez qué pasó y qué hacer', corte.length === 1 && /descarga el set otra vez/i.test(corte[0] || ''), corte.join(' | '));
+      check('El aviso pide el set nuevo, sin "Continuar envío"', aviso.visible && /La DGII rechazó/.test(aviso.texto) && !aviso.continuar, aviso.texto);
+    } else {
+      check('Siguió hasta el final sin quedarse cargando', log.some((l) => /^Listo:/.test(l)), `${segundos} s`);
+      check('Salieron los 4 RFCE y los 21 e-CF', fc === 4 && ecf === 21, `RFCE ${fc} · e-CF ${ecf}`);
+      check('Al volver al Paso 2 se retomó el avance', log.some((l) => /^Listo:/.test(l)), log.slice(-2).join(' | '));
+      check('El resultado cuenta los 21 sin los RFCE', log.some((l) => /^Listo: \d+\/21 comprobantes aceptados/.test(l)), log.find((l) => /^Listo:/.test(l)) || '');
+      if (!EN_PROCESO) check('Sin rechazos no hay aviso rojo', !aviso.visible, aviso.texto);
+    }
     if (EN_PROCESO) {
       check('Avisa que la DGII sigue validando', log.some((l) => /todavía está validando 21 comprobante/.test(l)));
       check('Sigue preguntando sola hasta la respuesta de la DGII', log.some((l) => /^La DGII respondió: \d+\/21/.test(l)), log.slice(-2).join(' | '));
@@ -172,6 +207,11 @@ function crearCertificado(destino, clave, rnc) {
       await page.screenshot({ path: path.join(CAPTURAS, 'fallo.png') }).catch(() => {});
       const texto = await page.evaluate(() => (document.getElementById('fiscal-tab-homologation')?.innerText || document.body.innerText || '').slice(0, 1500)).catch(() => '');
       console.error('Pantalla:', texto.replace(/\s+/g, ' '));
+      const detalle = await page.evaluate(() => ({
+        log: [...document.querySelectorAll('#ecf-wz-step2-log div')].map((d) => d.textContent),
+        boton: document.getElementById('ecf-wz-step2-process-btn')?.disabled,
+      })).catch(() => null);
+      console.error('Registro:', JSON.stringify(detalle));
     }
     process.exitCode = 1;
   } finally {

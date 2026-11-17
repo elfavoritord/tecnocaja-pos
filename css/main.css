@@ -5612,6 +5612,66 @@ textarea.form-input { resize:vertical; min-height:80px; }
   .mp-image-box { width:68px; height:68px; }
 }
 
+/* ── Ficha de producto en pestañas (2026-11-16) ──────────────────────────────
+   Arriba siempre imagen, código, nombre y categoría; abajo General · Precio e
+   ITBIS · Inventario · Detalles · Opciones · Tienda. Un poco más ancha para que
+   las pestañas quepan en una fila. */
+.product-modal { width:640px; }
+.product-modal .modal-body > * { max-width:560px; }
+.product-modal .mp-image-row { grid-template-columns:84px minmax(0, 1fr); margin-bottom:0.35rem; }
+.product-modal .mp-image-box { width:84px; height:84px; }
+.product-modal .mp-image-fields { gap:0.45rem; }
+.product-modal .mp-name-block { margin:0; }
+.product-modal .mp-category-block { margin-bottom:0; }
+.product-modal .product-tab-nav {
+  flex-wrap:wrap;
+  gap:0.3rem;
+  margin-top:0.65rem;
+}
+.product-modal .product-tab-panel.active {
+  gap:0.55rem 0.7rem;
+  padding-top:0.1rem;
+  align-content:start;
+}
+.product-modal .product-tab-panel .form-group { margin-bottom:0; }
+/* Los avisos de "Venta por" ocupan todo el ancho de la pestaña General. */
+.product-modal #mp-quantity-behavior-group,
+.product-modal #mp-measure-hint-group,
+.product-modal #mp-weight-hint-group { max-width:none; margin-left:0; margin-right:0; }
+.product-modal .mp-scan-btn { display:inline-flex; align-items:center; justify-content:center; min-width:44px; }
+.product-modal textarea.form-input { resize:vertical; min-height:62px; line-height:1.45; }
+.mp-info-aviso {
+  background:rgba(245,158,11,0.09);
+  border:1px solid rgba(245,158,11,0.3);
+  border-radius:0.65rem;
+  padding:0.6rem 0.8rem;
+  font-size:0.8rem;
+  line-height:1.45;
+  color:var(--text2);
+}
+.mp-info-mostrar-card { display:flex; align-items:center; }
+.mp-info-preview {
+  display:flex;
+  flex-direction:column;
+  gap:0.12rem;
+  background:var(--panel2);
+  border:1px dashed var(--border);
+  border-radius:0.65rem;
+  padding:0.65rem 0.85rem;
+  font-size:0.82rem;
+  line-height:1.4;
+  color:var(--text2);
+  white-space:pre-line;
+  word-break:break-word;
+}
+.mp-info-preview strong { color:var(--text); font-size:0.88rem; }
+.mp-info-preview.is-off { opacity:0.7; }
+.mp-info-preview-vacio { color:var(--text3); font-style:italic; }
+.mp-info-preview-nota { margin-top:0.35rem; color:var(--warning, #f59e0b); font-style:normal; font-size:0.76rem; }
+@media (max-width:720px) {
+  .product-modal { width:min(94vw, 640px); }
+}
+
 /* ── Botón Escaneo Rápido — estado activo (pulsante) ── */
 #btn-products-quick-scan.is-scanning {
   background: var(--warning, #f59e0b);

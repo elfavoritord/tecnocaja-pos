@@ -998,8 +998,10 @@ const ECF_CERT_WIZARD = (() => {
         <div id="ecf-wz-step2-blocked-alert" style="display:none">
           <div style="background:rgba(220,38,38,.07);border:1px solid rgba(220,38,38,.3);border-radius:10px;padding:.75rem 1rem;margin-bottom:.5rem;display:flex;align-items:center;gap:.65rem;flex-wrap:wrap">
             <span style="font-size:1.2rem">⚠️</span>
-            <span id="ecf-wz-step2-blocked-text" style="font-weight:700;color:#f87171;font-size:.85rem;flex:1">Comprobantes rechazados — resetear y reintentar</span>
-            <button id="ecf-wz-step2-reset-btn" class="ecf-wz-action-btn" style="font-size:.8rem;padding:.4rem .8rem"
+            <span id="ecf-wz-step2-blocked-text" style="font-weight:700;color:#f87171;font-size:.85rem;flex:1"></span>
+            <button id="ecf-wz-step2-continue-btn" class="ecf-wz-action-btn" style="display:none;font-size:.8rem;padding:.4rem .8rem"
+              onclick="ECF_CERT_WIZARD.runStep2Continue()">▶ Continuar envío</button>
+            <button id="ecf-wz-step2-reset-btn" class="ecf-wz-action-btn" style="display:none;font-size:.8rem;padding:.4rem .8rem"
               onclick="ECF_CERT_WIZARD._resetAndRetry2()">🔄 Resetear y reintentar</button>
           </div>
         </div>
@@ -1125,8 +1127,7 @@ const ECF_CERT_WIZARD = (() => {
       }
     } catch (_) {}
 
-    const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
-    if (alertEl) alertEl.style.display = 'none';
+    _setStep2Busy(true);
     setBtnState('ecf-wz-step2-process-btn', true, 'Procesando…');
     const logId = 'ecf-wz-step2-log';
     document.getElementById(logId).innerHTML = '';
@@ -1177,6 +1178,7 @@ const ECF_CERT_WIZARD = (() => {
     } catch (err) {
       logLine(`Error: ${err.message}`, 'err');
       setBtnState('ecf-wz-step2-process-btn', false, '📤 Procesar y enviar comprobantes →');
+      _setStep2Busy(false);
       _pollStep2();
       return;
     }
@@ -1189,25 +1191,95 @@ const ECF_CERT_WIZARD = (() => {
     }
     _showStep2Result(result);
     setBtnState('ecf-wz-step2-process-btn', false, '📤 Procesar y enviar comprobantes →');
+    _setStep2Busy(false);
     _pollStep2();
+  }
+
+  // Aviso rojo del Paso 2: un solo texto claro y, solo si se cortó la conexión, el botón
+  // "Continuar envío". "Resetear y reintentar" ya no se ofrece: volvía a mandar lo que la
+  // DGII ya tenía y, si la DGII rechaza uno, igual pide descargar el set otra vez.
+  function _step2Alert(texto, { continuar = false } = {}) {
+    const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
+    if (!alertEl) return;
+    if (!texto) { alertEl.style.display = 'none'; return; }
+    const textEl = document.getElementById('ecf-wz-step2-blocked-text');
+    const resetBtn = document.getElementById('ecf-wz-step2-reset-btn');
+    const contBtn = document.getElementById('ecf-wz-step2-continue-btn');
+    if (textEl) textEl.textContent = texto;
+    if (resetBtn) resetBtn.style.display = 'none';
+    if (contBtn) contBtn.style.display = continuar ? '' : 'none';
+    alertEl.style.display = '';
+  }
+
+  const PASO2_SET_NUEVO = 'Descarga el set otra vez en el portal DGII y procésalo con "Procesar y enviar comprobantes".';
+
+  // Mientras se envía, nada más se puede tocar en el Paso 2 (antes un clic en "Resetear
+  // y reintentar" o "Enviar RFCE" a mitad del envío llenaba la pantalla de errores).
+  function _setStep2Busy(busy) {
+    for (const id of ['ecf-wz-s2-rfce-resend-btn', 'ecf-wz-s2-reset-all-btn', 'ecf-wz-step2-confirm-btn', 'ecf-wz-step2-continue-btn']) {
+      const el = document.getElementById(id);
+      if (el) el.disabled = busy;
+    }
+    const zona = document.getElementById('ecf-wz-step2-dropzone');
+    if (zona) {
+      zona.style.pointerEvents = busy ? 'none' : '';
+      zona.style.opacity = busy ? '.55' : '';
+    }
+    if (busy) {
+      _step2Alert('');
+      for (const id of ['ecf-wz-s2-rfce-resend-log', 'ecf-wz-s2-reset-all-log']) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '';
+      }
+    }
+  }
+
+  // "Continuar envío": después de un corte de conexión sigue desde ese comprobante, sin
+  // volver a mandar los RFCE ni los que ya llegaron a la DGII.
+  async function runStep2Continue() {
+    if (WZ._step2Following) return;
+    const logLine = (msg, type = 'info') => appendLog('ecf-wz-step2-log', msg, type);
+    _setStep2Busy(true);
+    setBtnState('ecf-wz-step2-process-btn', true, 'Enviando a la DGII…');
+    try {
+      await fiscalApi('POST', '/certification-center/process-continue');
+      logLine('Se sigue enviando desde donde se cortó…');
+    } catch (err) {
+      if (err.details?.code !== 'PASO2_EN_CURSO') {
+        logLine(`Error: ${err.message}`, 'err');
+        setBtnState('ecf-wz-step2-process-btn', false, '📤 Procesar y enviar comprobantes →');
+        _setStep2Busy(false);
+        _pollStep2();
+        return;
+      }
+    }
+    await _followStep2Run();
   }
 
   // Resultado final de "Procesar y enviar" (venga en la respuesta o al terminar el envío
   // en segundo plano).
   function _showStep2Result(result, error) {
     const logLine = (msg, type = 'info') => appendLog('ecf-wz-step2-log', msg, type);
-    const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
     if (error || !result) {
       logLine(`Error: ${error || 'El envío terminó sin resultado. Usa "Actualizar".'}`, 'err');
       return;
     }
     const counts = result.counts || {};
     const blocked = counts.blocked || 0;
-    const rejected = counts.rejected || 0;
+    const rejected = Math.max(0, (counts.rejected || 0) - (counts.rfceRejected || 0));
     // Paso 2: los RFCE salen primero. Si la DGII rechazó uno, no se mandaron los 21.
     if (result.rfceFirstRejected) {
       logLine(`⚠ ${result.message}`, 'err');
-      if (alertEl) alertEl.style.display = '';
+      _step2Alert(`La DGII rechazó un RFCE y no se mandaron los 21 comprobantes. ${PASO2_SET_NUEVO}`);
+      return;
+    }
+    // Al primer error se paró el envío: se dice cuál y qué hacer, una sola vez.
+    if (result.stopped) {
+      logLine(`⛔ ${result.message}`, 'err');
+      const st = result.stopped;
+      if (st.tipo === 'conexion') _step2Alert(`Se cortó el envío en ${st.encf}: no llegó a la DGII. Revisa la conexión y toca "Continuar envío".`, { continuar: true });
+      else if (st.tipo === 'local') _step2Alert(`${st.encf} no pasó la revisión antes de enviarlo. Avísale a soporte de Tecno Caja.`);
+      else _step2Alert(`La DGII rechazó ${st.encf}. ${PASO2_SET_NUEVO}`);
       return;
     }
     const rfceAceptados = Number(result.rfceProcessResult?.aceptados || 0);
@@ -1221,8 +1293,8 @@ const ECF_CERT_WIZARD = (() => {
       blocked > 0 || rejected > 0 ? 'warn' : 'ok');
     if (enProceso > 0 && !blocked && !rejected) return;
     if (blocked > 0 || rejected > 0) {
-      logLine('⚠ Hay documentos con problemas — usa "Resetear y reintentar".', 'err');
-      if (alertEl) alertEl.style.display = '';
+      logLine(`⚠ La DGII rechazó ${rejected + blocked} comprobante(s). Cuando rechaza uno reinicia la prueba. ${PASO2_SET_NUEVO}`, 'err');
+      _step2Alert(`La DGII rechazó ${rejected + blocked} comprobante(s). ${PASO2_SET_NUEVO}`);
     } else {
       // Los RFCE salen primero dentro de "Procesar y enviar" (una sola vez por lote; el
       // servidor no deja dos envíos a la vez). "Enviar RFCE" queda para los pendientes.
@@ -1235,7 +1307,11 @@ const ECF_CERT_WIZARD = (() => {
   function _step2RunText(run) {
     if (run.phase === 'rfce') return `Enviando los ${run.rfceTotal || 4} RFCE a la DGII…`;
     if (run.phase === 'ecf') return `Enviando comprobantes a la DGII: ${run.ecfSent || 0} de ${run.ecfTotal || 0}…`;
-    if (run.phase === 'consultando') return `Los ${run.ecfTotal || 0} comprobantes salieron. Esperando la respuesta de la DGII…`;
+    if (run.phase === 'consultando') {
+      return run.stopped
+        ? `Se detuvo el envío en ${run.stopped.encf}. Revisando los que salieron…`
+        : `Los ${run.ecfTotal || 0} comprobantes salieron. Esperando la respuesta de la DGII…`;
+    }
     return 'Enviando…';
   }
 
@@ -1251,6 +1327,7 @@ const ECF_CERT_WIZARD = (() => {
       const hasta = Date.now() + 30 * 60 * 1000;
       while (Date.now() < hasta) {
         setBtnState('ecf-wz-step2-process-btn', true, 'Enviando a la DGII…');
+        _setStep2Busy(true);
         let status = null;
         try {
           status = await fiscalApi('GET', '/certification-center/status');
@@ -1268,7 +1345,7 @@ const ECF_CERT_WIZARD = (() => {
           if (!run.active) {
             _showStep2Result(run.result, run.error);
             const fin = run.result;
-            if (!run.error && fin && !fin.rfceFirstRejected && Number(fin.counts?.sent || 0) > 0) {
+            if (!run.error && fin && !fin.rfceFirstRejected && !fin.stopped && Number(fin.counts?.sent || 0) > 0) {
               await _waitDgiiValidation(Number(fin.counts.sent));
             }
             return;
@@ -1282,7 +1359,8 @@ const ECF_CERT_WIZARD = (() => {
     } finally {
       WZ._step2Following = false;
       setBtnState('ecf-wz-step2-process-btn', false, '📤 Procesar y enviar comprobantes →');
-      _pollStep2();
+      _setStep2Busy(false);
+      _pollStep2({ sinAviso: true });
     }
   }
 
@@ -1296,6 +1374,7 @@ const ECF_CERT_WIZARD = (() => {
     let ultimo = enProcesoInicial;
     while (Date.now() < hasta) {
       setBtnState('ecf-wz-step2-process-btn', true, 'Esperando la respuesta de la DGII…');
+      _setStep2Busy(true);
       await new Promise((resolve) => setTimeout(resolve, 20000));
       const status = await fiscalApi('GET', '/certification-center/status').catch(() => null);
       if (!status) continue;
@@ -1307,13 +1386,12 @@ const ECF_CERT_WIZARD = (() => {
       const enProceso = Number(c.sent || 0);
       const ecfTot = Math.max(0, (c.total || 0) - (c.rfceTotal || 0));
       const ecfAcc = Math.max(0, (c.accepted || 0) - (c.rfceAccepted || 0));
-      const rechazados = Number(c.rejected || 0) + Number(c.blocked || 0);
+      const rechazados = Math.max(0, Number(c.rejected || 0) - Number(c.rfceRejected || 0)) + Number(c.blocked || 0);
       if (!enProceso) {
         logLine(`La DGII respondió: ${ecfAcc}/${ecfTot} comprobantes aceptados, ${rechazados} rechazados.`, rechazados ? 'warn' : 'ok');
         if (rechazados) {
-          logLine('⚠ Hay documentos con problemas — revisa el motivo de la DGII en cada uno.', 'err');
-          const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
-          if (alertEl) alertEl.style.display = '';
+          logLine(`⚠ Cuando la DGII rechaza un comprobante reinicia la prueba. ${PASO2_SET_NUEVO}`, 'err');
+          _step2Alert(`La DGII rechazó ${rechazados} comprobante(s). ${PASO2_SET_NUEVO}`);
         } else {
           logLine('✅ Comprobantes y RFCE aceptados. Revisa el portal DGII.', 'ok');
         }
@@ -1331,10 +1409,15 @@ const ECF_CERT_WIZARD = (() => {
     // Una consulta a la vez: si la anterior no ha vuelto, no se apila otra.
     if (WZ._step2PollBusy) return;
     WZ._step2PollBusy = true;
+    const sinAviso = Boolean(logLine && logLine.sinAviso);
+    if (typeof logLine !== 'function') logLine = null;
     try {
-      // 1. Sincronizar estados con DGII (track IDs pendientes)
-      fiscalApi('POST', '/certification/poll-statuses').catch(() => {});
-      fiscalApi('POST', '/certification-center/rfce/poll').catch(() => {});
+      // 1. Sincronizar estados con DGII (track IDs pendientes). Mientras se envía no: el
+      //    propio envío consulta al final y aquí solo se lee lo que hay.
+      if (!WZ._step2Following) {
+        fiscalApi('POST', '/certification/poll-statuses').catch(() => {});
+        fiscalApi('POST', '/certification-center/rfce/poll').catch(() => {});
+      }
 
       // 2. Leer estado local actualizado
       const [ecfStatus, rfceStatus] = await Promise.all([
@@ -1357,24 +1440,26 @@ const ECF_CERT_WIZARD = (() => {
         if (rej  > 0) parts.push(`${rej} rechazados`);
         logLine(parts.join(' · ') + '…');
       }
-      // "Resetear y reintentar" (run-sequential) excluye RFCE por diseño — nunca toca esos
-      // documentos. Si el único rechazo es RFCE, ese botón no hace nada útil; mostrarlo igual
-      // confunde (y antes de este fix, además reenviaba de gratis los ya aceptados). Separamos
-      // el conteo para no ofrecer una acción que no puede resolver el caso mostrado.
-      const rfceRejected = rfceItems.filter((i) => String(i.estado || '').toLowerCase().includes('rechaz')).length;
-      const nonRfceRejected = Math.max(0, (counts.rejected || 0) - rfceRejected);
-      if ((counts.blocked||0) > 0 || nonRfceRejected > 0 || rfceRejected > 0) {
-        const alertEl = document.getElementById('ecf-wz-step2-blocked-alert');
-        const textEl = document.getElementById('ecf-wz-step2-blocked-text');
-        const resetBtn = document.getElementById('ecf-wz-step2-reset-btn');
-        if (alertEl) alertEl.style.display = '';
-        if (nonRfceRejected > 0) {
-          if (textEl) textEl.textContent = 'Comprobantes rechazados — resetear y reintentar';
-          if (resetBtn) resetBtn.style.display = '';
-        } else if (rfceRejected > 0) {
-          if (textEl) textEl.textContent = 'RFCE rechazado por la DGII. No se reenvía en este lote: descarga el set otra vez en el portal DGII y cárgalo aquí con "Procesar y enviar comprobantes".';
-          if (resetBtn) resetBtn.style.display = 'none';
-        }
+      // Mientras se envía (o se espera a la DGII) no se muestra ningún aviso: el resultado
+      // sale al final, una sola vez.
+      if (WZ._step2Following || sinAviso) return;
+      const rfceRejected = Math.max(
+        rfceItems.filter((i) => String(i.estado || '').toLowerCase().includes('rechaz')).length,
+        Number(counts.rfceRejected || 0)
+      );
+      const nonRfceRejected = Math.max(0, (counts.rejected || 0) - Number(counts.rfceRejected || 0)) + Number(counts.blocked || 0);
+      const corte = ecfStatus.processRun?.result?.stopped;
+      // El que se cortó queda como "error" (cuenta entre los no aceptados): igual se ofrece seguir.
+      if (corte?.tipo === 'conexion' && !rfceRejected) {
+        _step2Alert(`Se cortó el envío en ${corte.encf}: no llegó a la DGII. Revisa la conexión y toca "Continuar envío".`, { continuar: true });
+      } else if (rfceRejected > 0) {
+        _step2Alert(`La DGII rechazó un RFCE. No se reenvía en este lote. ${PASO2_SET_NUEVO}`);
+      } else if (corte?.tipo === 'local') {
+        _step2Alert(`${corte.encf} no pasó la revisión antes de enviarlo. Avísale a soporte de Tecno Caja.`);
+      } else if (nonRfceRejected > 0) {
+        _step2Alert(`La DGII rechazó ${nonRfceRejected} comprobante(s). ${PASO2_SET_NUEVO}`);
+      } else {
+        _step2Alert('');
       }
     } catch (_) {
     } finally {
@@ -1392,7 +1477,7 @@ const ECF_CERT_WIZARD = (() => {
       const ecfTot  = (counts.total    || 0) - (counts.rfceTotal    || 0);
       const ecfAcc  = (counts.accepted || 0) - (counts.rfceAccepted || 0);
       const ecfSent = counts.sent      || 0;   // enviados / en proceso en DGII
-      const ecfRej  = counts.rejected  || 0;
+      const ecfRej  = Math.max(0, (counts.rejected || 0) - (counts.rfceRejected || 0));
       const allDone = ecfTot > 0 && ecfAcc === ecfTot;
       const inFlight = ecfSent > 0 && !allDone;
 
@@ -1410,7 +1495,7 @@ const ECF_CERT_WIZARD = (() => {
         } else if (ecfRej > 0 && !allDone) {
           ecfProgEl.style.display = '';
           ecfProgEl.style.color = '#f87171';
-          ecfProgEl.textContent = `❌ ${ecfRej} rechazado(s) — revisa el log`;
+          ecfProgEl.textContent = `❌ ${ecfRej} no aceptado(s) — mira el aviso`;
         } else {
           ecfProgEl.style.display = 'none';
         }
@@ -4035,7 +4120,10 @@ const ECF_CERT_WIZARD = (() => {
       await _loadStep2ManualDocs([], rfceStatus.items || []);
       // "Procesar y enviar" sigue corriendo en el servidor (o se espera a la DGII): se
       // retoma el avance y el botón no queda libre para procesar el set otra vez.
-      if (WZ._step2Following) setBtnState('ecf-wz-step2-process-btn', true, 'Esperando la respuesta de la DGII…');
+      if (WZ._step2Following) {
+        setBtnState('ecf-wz-step2-process-btn', true, 'Enviando a la DGII…');
+        _setStep2Busy(true);
+      }
       else if (ecfStatus.processRun?.active) _followStep2Run();
     } catch (_) {}
   }
@@ -4170,6 +4258,7 @@ const ECF_CERT_WIZARD = (() => {
 
     // Step 2 — Pruebas de Datos e-CF
     runStep2,
+    runStep2Continue,
     runStep2Confirm,
     runStep2ForceSync,
     runStep2SendPending,

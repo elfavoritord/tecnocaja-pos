@@ -41,6 +41,7 @@ const {
   PRODUCTS_CSV_CURRENT_FILE,
   parseProductsCsvBuffer,
   writeProductsCsvSnapshot,
+  infoAdicionalDeFilaCsv,
 } = require('./server/services/products-csv.service');
 const { Server } = require('socket.io');
 const { initializeDatabase } = require('./scripts/auto-init-db');
@@ -66,6 +67,9 @@ const { sanitizeInvoiceTemplate, sanitizeInvoiceAccentColor, sanitizeInvoiceLogo
 // Total editado por peso e ITBIS incluido en el precio: el mismo cálculo que la caja.
 const VentaPorMonto = require('./js/venta-por-monto');
 const { sanitizeItbisMetodo } = require('./server/utils/itbis-metodo');
+// Descripción, especificaciones y procedencia del producto en la factura.
+const { createInfoAdicional } = require('./server/productos/info-adicional');
+const infoAdicional = createInfoAdicional({ addColumnIfMissing: (...args) => addColumnIfMissing(...args) });
 const { buildQrVerificationUrl } = require('./modules/ecf/utils/qr-url.util');
 const syncRoutes = require('./server/routes/sync.routes');
 
@@ -1718,6 +1722,7 @@ const secureLicenseService = createLicenseService({
 });
 // El e-CF se deja de emitir solo si el contrato lo dice; el resto del programa no se entera.
 ecfModule.service.servicioPermitido = () => secureLicenseService.ecfPermitido();
+ecfModule.service.servicioMensaje = () => secureLicenseService.ecfBloqueoMensaje();
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -3880,6 +3885,8 @@ function mapProductRow(row) {
     tiempoPreparacion: Number(row.preparation_time_minutes || 15),
     saleMode: normalizeProductSaleMode(row.sale_mode),
     metaNegocio: parseJsonObjectField(row.business_metadata, {}),
+    // Descripción, especificaciones, procedencia y observaciones (null = nada escrito).
+    infoAdicional: infoAdicional.deFila(row),
     tracksStock: Boolean(row.tracks_stock ?? 1),
     descuentoPct: Number(row.discount_percent || 0),
     descuentoHastaAgotar: Boolean(row.discount_until_stock_out),
@@ -4952,7 +4959,13 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // -21: ITBIS incluido en el precio (método 3) — products.itbis_incluido y
 // config.itbis_metodo_predeterminado (ver ensureProductExtensions y
 // ensureConfigExtensions); cobrar y guardar productos también lo aseguran.
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-21`;
+// -22: información adicional del producto en la factura — products.info_adicional,
+// sale_items.info_adicional y config.info_adicional_factura (ver
+// server/productos/info-adicional.js); cobrar, guardar productos y guardar la
+// configuración también lo aseguran.
+// -23: "modificar el total en productos por peso" encendido una vez en todas
+// las instalaciones (config.peso_monto_activado_v1; ver ensureConfigExtensions).
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-23`;
 
 // Esquema de las nueve mejoras financieras. Va después del resto (en serie)
 // porque toca tablas que crean otras migraciones (sales, sale_returns).
@@ -5052,6 +5065,15 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'trial_ends_at', 'DATETIME DEFAULT NULL');
   await addColumnIfMissing('config', 'license_status', `VARCHAR(20) NOT NULL DEFAULT 'trial'`);
   await addColumnIfMissing('config', 'license_activated_at', 'DATETIME DEFAULT NULL');
+  // Esta PC ya trabajó con una licencia pagada: aunque venza o la suspendan,
+  // el sistema sigue y solo se detiene la facturación electrónica (ver
+  // server/licensing/license-service.js → isPaidLicense).
+  await addColumnIfMissing('config', 'licencia_pagada', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await query(
+    `UPDATE config SET licencia_pagada = 1
+      WHERE id = 1 AND COALESCE(licencia_pagada, 0) = 0
+        AND (license_activated_at IS NOT NULL OR license_status = 'active')`
+  ).catch(() => {});
   await addColumnIfMissing('config', 'license_activated_by', 'VARCHAR(160) DEFAULT NULL');
   await addColumnIfMissing('config', 'license_last_remote_check_at', 'DATETIME DEFAULT NULL');
   await addColumnIfMissing('config', 'plan_code', `VARCHAR(40) NOT NULL DEFAULT 'basico'`);
@@ -5085,8 +5107,16 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'invoice_logo_scale', 'INT DEFAULT NULL');
   // Facturación → "Permitir modificar el total en productos por peso" (js/venta-por-monto.js).
   await addColumnIfMissing('config', 'weight_total_edit_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
+  // 2026-11-17 (Emilio): lo normal es vender por peso sin ventana y escribir el
+  // monto que marca el producto. Se enciende UNA vez en las instalaciones que ya
+  // existían; después se respeta lo que elija cada negocio en Configuración.
+  await addColumnIfMissing('config', 'peso_monto_activado_v1', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await query('UPDATE config SET weight_total_edit_enabled = 1, peso_monto_activado_v1 = 1 WHERE id = 1 AND COALESCE(peso_monto_activado_v1, 0) = 0')
+    .catch((error) => console.warn('[config] No se encendió "modificar el total en productos por peso":', error.message));
   // Facturación → Impuestos: método de ITBIS de los productos nuevos (server/utils/itbis-metodo.js).
   await addColumnIfMissing('config', 'itbis_metodo_predeterminado', `VARCHAR(12) NOT NULL DEFAULT 'adicional'`);
+  // Facturación → "Descripciones adicionales en facturas" (server/productos/info-adicional.js).
+  await addColumnIfMissing('config', 'info_adicional_factura', 'LONGTEXT DEFAULT NULL');
   await query(
     `INSERT OR IGNORE INTO config
       (id, business_name, rnc, address, phone, currency, tax_rate, invoice_prefix, invoice_next_number, e_invoice_enabled, e_invoice_prefix, e_invoice_next_number, receipt_message, receipt_print_mode, receipt_printer_name, receipt_paper_size, cash_drawer_enabled, cash_drawer_method, cash_drawer_printer_name, cash_drawer_pin, cash_drawer_network_host, cash_drawer_network_port, cash_drawer_serial_port, app_logo, security_password, cash_open, cash_amount, language, business_type, business_structure_mode, cashier_register_required, exclusive_cashier_per_register, starter_catalog_seeded, setup_completed, setup_completed_at, trial_started_at, trial_ends_at, license_status, license_activated_at, license_activated_by, require_cash_open_before_use)
@@ -5979,6 +6009,11 @@ function buildLicenseSocketPayload(license = {}, licenseUid = null) {
     trialEndsAt: license.trialEndsAt || null,
     blockedCode: license.blockedCode || null,
     message: license.message || null,
+    // Licencia pagada con problema: el sistema sigue, sin facturación electrónica.
+    pagada: Boolean(license.pagada),
+    ecfBloqueado: Boolean(license.ecfBloqueado),
+    ecfBloqueoMotivo: license.ecfBloqueoMotivo || null,
+    aviso: license.aviso || null,
     licenseUid: licenseUid || license.licenseId || null,
   };
 }
@@ -6038,15 +6073,21 @@ async function syncRemoteLicenseToLocalConfig({ force = false, allowRemoteWrite 
 
       return result;
     } catch (error) {
+      // Antes un error cualquiera (la base ocupada, Firebase a medias) devolvía
+      // "vencida" y sacaba al negocio de su sistema. Ahora se usa lo último que
+      // se sabía de esta PC; un error nunca bloquea.
       console.warn('[license-sync] Error al sincronizar licencia:', error.message);
+      const conocido = await secureLicenseService.resolveState({ allowRemote: false }).catch(() => null);
       return {
         synced: false,
         reason: error.message,
-        license: {
-          status: 'expired',
-          canEnter: false,
-          blockedCode: 'tamper',
-          message: error.message,
+        license: conocido?.license || secureLicenseService.stateMemo?.value?.license || {
+          status: 'active',
+          canEnter: true,
+          blockedCode: null,
+          ecfBloqueado: true,
+          ecfBloqueoMotivo: 'error',
+          message: null,
         },
       };
     }
@@ -6144,6 +6185,8 @@ async function ensureProductExtensions() {
   await addColumnIfMissing('products', 'itbis_incluido', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('products', 'preparation_time_minutes', 'INT NOT NULL DEFAULT 15');
   await addColumnIfMissing('products', 'business_metadata', 'LONGTEXT DEFAULT NULL');
+  // Descripción, especificaciones, procedencia y observaciones (pestaña Detalles).
+  await addColumnIfMissing('products', 'info_adicional', 'LONGTEXT DEFAULT NULL');
   await addColumnIfMissing('products', 'tracks_stock', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('products', 'discount_percent', 'DECIMAL(5,2) NOT NULL DEFAULT 0.00');
   await addColumnIfMissing('products', 'discount_until_stock_out', 'TINYINT(1) NOT NULL DEFAULT 0');
@@ -6220,6 +6263,8 @@ function ensureProductsItbisIncluido() {
 
 async function ensureSalesExtensions() {
   await ensureProductsItbisIncluido();
+  // products/sale_items.info_adicional: la venta lee la del producto y guarda su copia.
+  await infoAdicional.asegurarColumnas();
   await addColumnIfMissing('sale_items', 'general_discount_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await addColumnIfMissing('sale_items', 'legal_tip_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
   await addColumnIfMissing('sale_items', 'item_name', 'VARCHAR(255) DEFAULT NULL');
@@ -8797,7 +8842,9 @@ function mapSaleRows(sales, items) {
         // Combo: los componentes tal como se vendieron (para el desglose impreso).
         ...comboDisplayFromSaleItem(item),
         // Combo personalizado: a qué combo perteneció la línea (foto del día).
-        ...combosPersonalizados.comboDeLineaGuardada(item)
+        ...combosPersonalizados.comboDeLineaGuardada(item),
+        // Descripción, especificaciones y procedencia tal como salieron en la factura.
+        ...infoAdicional.deLineaGuardada(item)
       })),
     subtotal: Number(sale.subtotal || 0),
     descuento: Number(sale.discount || 0),
@@ -8917,6 +8964,8 @@ async function getConfig(options = {}) {
     invoiceLogoScale: sanitizeInvoiceLogoScale(row.invoice_logo_scale) || 100,
     weightTotalEditEnabled: Boolean(Number(row.weight_total_edit_enabled ?? 0)),
     itbisMetodoPredeterminado: sanitizeItbisMetodo(row.itbis_metodo_predeterminado),
+    // Facturación → "Descripciones adicionales en facturas" (apagada = como siempre).
+    infoAdicionalFactura: infoAdicional.configParaCliente(row),
     cashDrawerEnabled: Boolean(row.cash_drawer_enabled ?? 0),
     cashDrawerMethod: row.cash_drawer_method || 'escpos',
     cashDrawerPrinterName: row.cash_drawer_printer_name || '',
@@ -8955,6 +9004,12 @@ async function getConfig(options = {}) {
     trialEndsAt: license.trialEndsAt,
     trialDaysLeft: license.daysLeft,
     trialExpired: license.expired,
+    // Licencia pagada vencida/suspendida o con un problema de validación: todo
+    // sigue igual y solo se detiene la facturación electrónica.
+    licensePagada: Boolean(license.pagada),
+    ecfBloqueado: Boolean(license.ecfBloqueado),
+    ecfBloqueoMotivo: license.ecfBloqueoMotivo || null,
+    licenseAviso: license.aviso || null,
     planCode: (() => {
       const stored  = String(row.plan_code || 'basico').toLowerCase();
       const derived = plans.planForMode(row.business_structure_mode) || 'basico';
@@ -10123,6 +10178,9 @@ app.post('/api/setup/complete', async (req, res) => {
         trialEndsSql
       ]
     );
+    // Negocio nuevo en prueba: la marca de "licencia pagada" de lo que hubiera
+    // antes en esta PC no se hereda (se vuelve a poner al activarse la licencia).
+    await conn.query('UPDATE config SET licencia_pagada = 0 WHERE id = 1').catch(() => {});
 
     // Modo Empresa de Servicios: sin apertura/cierre de caja de efectivo, sin
     // cajero exclusivo por terminal, sin catálogo de arranque. El operador
@@ -12027,6 +12085,10 @@ app.get('/api/license/status', async (_req, res) => {
       canEnter: Boolean(license.canEnter),
       message: license.canEnter ? null : getLicenseDeniedMessage(license),
       blockedCode: license.blockedCode || null,
+      pagada: Boolean(license.pagada),
+      ecfBloqueado: Boolean(license.ecfBloqueado),
+      ecfBloqueoMotivo: license.ecfBloqueoMotivo || null,
+      aviso: license.aviso || null,
       deviceId: license.deviceId || null,
       deviceLimit: license.deviceLimit || null,
       offlineGraceDays: license.offlineGraceDays || null,
@@ -13020,6 +13082,10 @@ async function createProductInTransaction(conn, { data, catalogBranchId, actor }
   if (productId && data.aplicaItbis && data.itbisIncluido) {
     await conn.query('UPDATE products SET itbis_incluido = 1 WHERE id = ?', [productId]);
   }
+  // Pestaña Detalles: descripción, especificaciones, procedencia y observaciones.
+  if (productId && data.infoAdicional !== undefined) {
+    await infoAdicional.guardarEnProducto(conn, productId, data.infoAdicional);
+  }
   const terminalScope = getTerminalScopeSelection();
   const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
   const preferredBranchId = Number(catalogBranchId || data.branchId || terminalScope.branchId || configRows[0]?.active_branch_id || 0) || null;
@@ -13285,6 +13351,8 @@ app.post('/api/products/import-csv', async (req, res) => {
   const csvItbisIncluidoPorDefecto = sanitizeItbisMetodo(
     (await query('SELECT itbis_metodo_predeterminado FROM config WHERE id = 1 LIMIT 1').catch(() => []))[0]?.itbis_metodo_predeterminado
   ) === 'incluido';
+  // Columnas de la información adicional (Descripción Adicional, Procedencia…).
+  await infoAdicional.asegurarColumnas();
 
   const summary = await withTransaction(async (conn) => {
     const report = {
@@ -13430,6 +13498,8 @@ app.post('/api/products/import-csv', async (req, res) => {
             await conn.query('UPDATE products SET itbis_incluido = ? WHERE id = ?',
               [payload.aplicaItbis && record.itbisIncluido ? 1 : 0, existing.id]);
           }
+          // Información adicional: solo las columnas que traiga el archivo.
+          await infoAdicional.guardarEnProducto(conn, existing.id, infoAdicionalDeFilaCsv(record, existing.info_adicional));
 
           await ensureBranchInventoryCoverageForProduct(conn, {
             productId: Number(existing.id),
@@ -13514,6 +13584,7 @@ app.post('/api/products/import-csv', async (req, res) => {
         if (productId && record.aplicaItbis && itbisIncluidoNuevo) {
           await conn.query('UPDATE products SET itbis_incluido = 1 WHERE id = ?', [productId]);
         }
+        await infoAdicional.guardarEnProducto(conn, productId, infoAdicionalDeFilaCsv(record, null));
         await ensureBranchInventoryCoverageForProduct(conn, {
           productId,
           branchId,
@@ -13879,6 +13950,8 @@ app.put('/api/products/:id', async (req, res) => {
     if (data.itbisIncluido !== undefined) {
       await conn.query('UPDATE products SET itbis_incluido = ? WHERE id = ?', [data.aplicaItbis && data.itbisIncluido ? 1 : 0, id]);
     }
+    // Pestaña Detalles (mismo criterio: solo si viene en lo que se guarda).
+    await infoAdicional.guardarEnProducto(conn, Number(id), data.infoAdicional);
 
     const terminalScope = getTerminalScopeSelection();
     const configRows = await conn.query('SELECT active_branch_id FROM config WHERE id = 1 LIMIT 1');
@@ -15454,6 +15527,14 @@ app.put('/api/config', async (req, res) => {
       })
       .catch((error) => {
         console.warn('No se pudo guardar "modificar el total en productos por peso":', error.message);
+      });
+  }
+  // Descripciones adicionales en facturas. Aparte, con la columna asegurada aquí.
+  if (data.infoAdicionalFactura !== undefined) {
+    await infoAdicional.asegurarColumnas()
+      .then(() => query('UPDATE config SET info_adicional_factura = ? WHERE id = 1', [infoAdicional.configParaGuardar(data.infoAdicionalFactura)]))
+      .catch((error) => {
+        console.warn('No se pudo guardar "Descripciones adicionales en facturas":', error.message);
       });
   }
   // Método de ITBIS para productos nuevos. Aparte, con la columna asegurada aquí.
@@ -17512,7 +17593,7 @@ app.post('/api/sales', async (req, res) => {
       let comboSnapshot = null;
       if (!isQuickSale) {
         affectedProductIds.add(Number(item.id || 0) || 0);
-        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, legal_tip_eligible, aplica_itbis, itbis_modo, itbis_monto, itbis_incluido, estado, sale_mode FROM products WHERE id = ? LIMIT 1', [item.id]);
+        const productRows = await conn.query('SELECT id, codigo, nombre, precio_compra, precio_venta, tracks_stock, legal_tip_eligible, aplica_itbis, itbis_modo, itbis_monto, itbis_incluido, info_adicional, estado, sale_mode FROM products WHERE id = ? LIMIT 1', [item.id]);
         product = productRows[0];
         if (!product) {
           const missingError = new Error(`El producto ID ${item.id} no existe.`);
@@ -17708,6 +17789,13 @@ app.post('/api/sales', async (req, res) => {
           'UPDATE sale_items SET itbis_incluido = 1 WHERE id = ?',
           [saleItemInsert.insertId]
         ).catch((error) => console.warn('[ventas] No se marcó la línea con ITBIS incluido:', error.message));
+      }
+      // Descripción, especificaciones y procedencia que salen en la factura: una
+      // copia en la línea (solo si el negocio lo activó y el producto lo pide).
+      // Así la reimpresión sale igual aunque después cambie el producto.
+      if (!isQuickSale) {
+        await infoAdicional.guardarEnLinea(conn, saleItemInsert.insertId, infoAdicional.copiaParaLinea(product, config))
+          .catch((error) => console.warn('[ventas] No se guardó la información adicional de la línea:', error.message));
       }
       // Alcance de la propina: todo lo consumido (por defecto) o solo los
       // productos marcados. Debe coincidir con calcularTotales (js/ventas.js).

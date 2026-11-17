@@ -473,6 +473,11 @@ function buildReceipt(data) {
     if (Array.isArray(item.componentes)) {
       item.componentes.forEach((line) => p.text(`  - ${String(line || '')}`.slice(0, COLS)));
     }
+    // Información adicional del producto (código, descripción, especificaciones,
+    // procedencia): ya viene partida al ancho del papel (js/ventas.js).
+    if (Array.isArray(item.infoAdicional)) {
+      item.infoAdicional.forEach((line) => p.text(`  ${String(line || '')}`.slice(0, COLS)));
+    }
   }
 
   p.separator('-');

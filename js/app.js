@@ -4878,8 +4878,38 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     weightTotalEditEnabled: Boolean(document.getElementById('cfg-weight-total-edit')?.checked ?? DB.config?.weightTotalEditEnabled ?? false),
     // Impuestos: método de ITBIS que trae un producto nuevo (adicional / fijo / incluido).
     itbisMetodoPredeterminado: document.getElementById('cfg-itbis-metodo')?.value || DB.config?.itbisMetodoPredeterminado || 'adicional',
+    // Descripciones adicionales en facturas (js/producto-info-adicional.js).
+    infoAdicionalFactura: readInfoAdicionalConfigForm(),
   };
 }
+
+// Facturación → "Descripciones adicionales en facturas". Sin la sección en
+// pantalla se devuelve lo que ya está guardado.
+function readInfoAdicionalConfigForm() {
+  const actual = window.ProductoInfoAdicional?.configFactura(DB.config?.infoAdicionalFactura) || DB.config?.infoAdicionalFactura || {};
+  const marcado = (id, base) => {
+    const el = document.getElementById(id);
+    return el ? Boolean(el.checked) : Boolean(base);
+  };
+  return {
+    activo: marcado('cfg-info-adicional-activo', actual.activo),
+    descripcion: marcado('cfg-info-adicional-descripcion', actual.descripcion),
+    especificaciones: marcado('cfg-info-adicional-especificaciones', actual.especificaciones),
+    procedencia: marcado('cfg-info-adicional-procedencia', actual.procedencia),
+    observaciones: marcado('cfg-info-adicional-observaciones', actual.observaciones),
+    nuevosMuestran: marcado('cfg-info-adicional-nuevos', actual.nuevosMuestran),
+  };
+}
+
+// Con la función apagada, las opciones se ven pero no se pueden tocar.
+function syncInfoAdicionalConfigForm() {
+  const activo = Boolean(document.getElementById('cfg-info-adicional-activo')?.checked);
+  const opciones = document.getElementById('cfg-info-adicional-opciones');
+  if (!opciones) return;
+  opciones.style.opacity = activo ? '' : '.55';
+  opciones.querySelectorAll('input').forEach((input) => { input.disabled = !activo; });
+}
+window.syncInfoAdicionalConfigForm = syncInfoAdicionalConfigForm;
 
 function syncTaxConfigToggles(changedId = '') {
   const calculateAtEnd = document.getElementById('cfg-tax-calculate-at-end');
@@ -4981,17 +5011,7 @@ function syncConfigForm() {
   applyBusinessStructureDraftState(cfg.businessStructureMode);
   lockBusinessStructureMode();
   const licenseReadonly = document.getElementById('cfg-license-readonly');
-  if (licenseReadonly) {
-    licenseReadonly.value = cfg.licenseStatus === 'active'
-      ? (cfg.licenseModalidad === 'LIFETIME_NO_SUBSCRIPTION'
-        ? appText('license.permanent', 'Licencia permanente')
-        : appText('license.active', 'Licencia activa'))
-      : (cfg.licenseStatus === 'suspended'
-          ? appText('license.suspended', 'Licencia suspendida')
-          : (cfg.trialExpired
-              ? appText('license.expired', 'Prueba vencida')
-              : fillText(appText('license.trialShort', 'Prueba: {days} día(s)'), { days: Number(cfg.trialDaysLeft || 0) })));
-  }
+  if (licenseReadonly) licenseReadonly.value = getConfigLicenseSummaryText(cfg);
   const eInvoiceEnabled = document.getElementById('cfg-einvoice-enabled');
   if (eInvoiceEnabled && eInvoiceEnabled !== activeElement) eInvoiceEnabled.checked = Boolean(cfg.eInvoiceEnabled);
   const printerSelect = document.getElementById('cfg-printer-name');
@@ -5111,6 +5131,20 @@ function syncConfigForm() {
   if (weightTotalEditToggle && weightTotalEditToggle !== activeElement) {
     weightTotalEditToggle.checked = Boolean(cfg.weightTotalEditEnabled);
   }
+  // Descripciones adicionales en facturas.
+  const infoCfg = window.ProductoInfoAdicional?.configFactura(cfg.infoAdicionalFactura) || cfg.infoAdicionalFactura || {};
+  [
+    ['cfg-info-adicional-activo', infoCfg.activo],
+    ['cfg-info-adicional-descripcion', infoCfg.descripcion],
+    ['cfg-info-adicional-especificaciones', infoCfg.especificaciones],
+    ['cfg-info-adicional-procedencia', infoCfg.procedencia],
+    ['cfg-info-adicional-observaciones', infoCfg.observaciones],
+    ['cfg-info-adicional-nuevos', infoCfg.nuevosMuestran],
+  ].forEach(([id, valor]) => {
+    const el = document.getElementById(id);
+    if (el && el !== activeElement) el.checked = Boolean(valor);
+  });
+  syncInfoAdicionalConfigForm();
   const itbisMetodoSelect = document.getElementById('cfg-itbis-metodo');
   if (itbisMetodoSelect && itbisMetodoSelect !== activeElement) {
     itbisMetodoSelect.value = ['adicional', 'fijo', 'incluido'].includes(cfg.itbisMetodoPredeterminado)
@@ -5570,20 +5604,31 @@ function renderAdminDeleteLists() {
   }
 }
 
-function syncConfigLicenseSummary() {
-  const cfg = DB.config || {};
-  const licenseReadonly = document.getElementById('cfg-license-readonly');
-  if (licenseReadonly) {
-    licenseReadonly.value = cfg.licenseStatus === 'active'
-      ? (cfg.licenseModalidad === 'LIFETIME_NO_SUBSCRIPTION'
-        ? appText('license.permanent', 'Licencia permanente')
-        : appText('license.active', 'Licencia activa'))
-      : (cfg.licenseStatus === 'suspended'
-          ? appText('license.suspended', 'Licencia suspendida')
-          : (cfg.trialExpired
-              ? appText('license.expired', 'Prueba vencida')
-              : fillText(appText('license.trialShort', 'Prueba: {days} día(s)'), { days: Number(cfg.trialDaysLeft || 0) })));
+// Texto de la licencia en Configuración → Mi Negocio.
+function getConfigLicenseSummaryText(cfg = DB.config || {}) {
+  // Licencia pagada con un problema: sigue todo, sin facturación electrónica.
+  if (cfg.ecfBloqueado && cfg.trialExpired !== true) {
+    const motivo = {
+      expired: 'Licencia vencida',
+      suspended: 'Licencia suspendida',
+      device_limit: 'Equipo no autorizado',
+      clock_rollback: 'Fecha de la PC atrasada',
+    }[String(cfg.ecfBloqueoMotivo || '').toLowerCase()] || 'Licencia sin validar';
+    return `${motivo} · facturación electrónica detenida`;
   }
+  if (cfg.licenseStatus === 'active') {
+    return cfg.licenseModalidad === 'LIFETIME_NO_SUBSCRIPTION'
+      ? appText('license.permanent', 'Licencia permanente')
+      : appText('license.active', 'Licencia activa');
+  }
+  if (cfg.licenseStatus === 'suspended') return appText('license.suspended', 'Licencia suspendida');
+  if (cfg.trialExpired) return appText('license.expired', 'Prueba vencida');
+  return fillText(appText('license.trialShort', 'Prueba: {days} día(s)'), { days: Number(cfg.trialDaysLeft || 0) });
+}
+
+function syncConfigLicenseSummary() {
+  const licenseReadonly = document.getElementById('cfg-license-readonly');
+  if (licenseReadonly) licenseReadonly.value = getConfigLicenseSummaryText(DB.config || {});
 }
 
 function syncWhatsAppGuidePreference(enabled) {
@@ -6074,22 +6119,36 @@ function applyLicenseSnapshot(license = {}) {
   DB.config.trialStartedAt = license.trialStartedAt ?? DB.config.trialStartedAt ?? null;
   DB.config.trialEndsAt = license.trialEndsAt ?? null;
   DB.config.trialDaysLeft = Number(license.daysLeft ?? DB.config?.trialDaysLeft ?? 0) || 0;
-  DB.config.trialExpired = Boolean(license.expired || status === 'expired');
+  // Licencia pagada vencida, suspendida o con un problema de validación: todo
+  // sigue funcionando y solo se detiene la facturación electrónica (política de
+  // Emilio, 2026-11-17). Solo una prueba vencida deja sin entrar.
+  const sigueFuncionando = license.canEnter !== false && (license.ecfBloqueado === true || license.pagada === true);
+  DB.config.trialExpired = sigueFuncionando ? false : Boolean(license.expired || status === 'expired');
   DB.config.licenseBlockedCode = String(license.blockedCode || '').trim().toLowerCase() || null;
   DB.config.licenseMessage = license.message || null;
   DB.config.licenseValidationBlocked = LICENSE_VALIDATION_BLOCKED_CODES.includes(DB.config.licenseBlockedCode || '');
+  if (license.ecfBloqueado !== undefined) DB.config.ecfBloqueado = Boolean(license.ecfBloqueado);
+  if (license.ecfBloqueoMotivo !== undefined) DB.config.ecfBloqueoMotivo = license.ecfBloqueoMotivo || null;
+  if (license.aviso !== undefined) DB.config.licenseAviso = license.aviso || null;
+  if (license.pagada !== undefined) DB.config.licensePagada = Boolean(license.pagada);
+}
+
+// La licencia pagada sigue funcionando aunque esté vencida o suspendida.
+function licenseSigueActiva() {
+  return Boolean(DB.config?.licensePagada || DB.config?.ecfBloqueado) && DB.config?.trialExpired !== true;
 }
 
 function getLicenseUiVariant() {
   const status = String(DB.config?.licenseStatus || 'trial').trim().toLowerCase();
-  if (status === 'active') return 'active';
+  if (status === 'active' || licenseSigueActiva()) return 'active';
   if (status === 'suspended') return 'suspended';
   if (DB.config?.trialExpired) return 'expired';
   return 'trial';
 }
 
 function updateLicenseSupportActions() {
-  const blocked = getLicenseUiVariant() === 'expired' || String(DB.config?.licenseStatus || '').trim().toLowerCase() === 'suspended';
+  const blocked = getLicenseUiVariant() === 'expired'
+    || (String(DB.config?.licenseStatus || '').trim().toLowerCase() === 'suspended' && !licenseSigueActiva());
   [
     document.getElementById('login-license-actions'),
     document.getElementById('cfg-license-actions')
@@ -6126,6 +6185,10 @@ function connectLicenseSocket() {
         canEnter: data.canEnter,
         planCode: data.planCode,
         planName: data.planName,
+        pagada: data.pagada,
+        ecfBloqueado: data.ecfBloqueado,
+        ecfBloqueoMotivo: data.ecfBloqueoMotivo,
+        aviso: data.aviso,
       });
       updateLicenseUI();
       syncConfigLicenseSummary();
@@ -6413,7 +6476,9 @@ function updateLicenseUI() {
 
   const validationBlocked = Boolean(DB.config?.licenseValidationBlocked);
 
-  if (status === 'active') {
+  if (DB.config?.ecfBloqueado && licenseSigueActiva()) {
+    text = 'Facturación electrónica detenida';
+  } else if (status === 'active' || licenseSigueActiva()) {
     text = appText('license.active', 'Licencia activa');
   } else if (status === 'suspended') {
     text = appText('license.suspended', 'Licencia suspendida');
@@ -6428,17 +6493,18 @@ function updateLicenseUI() {
   if (pill) {
     // El plan y la licencia viven en Configuración: aquí solo se avisa cuando
     // faltan 7 días o menos, o si está vencida, suspendida o sin verificar.
-    const showWarning = status === 'suspended'
-      || validationBlocked
-      || Boolean(DB.config?.trialExpired)
-      || (status !== 'active' && daysLeft <= 7);
+    const showWarning = Boolean(DB.config?.ecfBloqueado)
+      || (!licenseSigueActiva() && (status === 'suspended'
+        || validationBlocked
+        || Boolean(DB.config?.trialExpired)
+        || (status !== 'active' && daysLeft <= 7)));
     pill.textContent = text;
     pill.className = `license-pill ${variant}`;
     pill.classList.toggle('hidden', !showWarning);
   }
 
   if (loginHint) {
-    loginHint.textContent = status === 'active'
+    loginHint.textContent = (status === 'active' || licenseSigueActiva())
       ? appText('license.active', 'Licencia activa')
       : (status === 'suspended'
           ? appText('license.suspendedLong', 'La licencia fue suspendida desde tu app de administrador.')
@@ -10081,7 +10147,17 @@ function buildNotifications() {
     });
   }
 
-  if (DB.config?.licenseStatus === 'suspended') {
+  if (DB.config?.ecfBloqueado && licenseSigueActiva()) {
+    // Licencia pagada vencida o suspendida: el sistema sigue; solo el e-CF se detiene.
+    notifications.push({
+      severity: 'warning',
+      title: 'Facturación electrónica detenida',
+      text: DB.config?.licenseAviso || 'La facturación electrónica quedó detenida. El resto del sistema sigue funcionando.',
+      time: 'Sistema'
+    });
+  } else if (licenseSigueActiva()) {
+    // Licencia pagada al día: nada que avisar.
+  } else if (DB.config?.licenseStatus === 'suspended') {
     notifications.push({
       severity: 'danger',
       title: 'Licencia suspendida',

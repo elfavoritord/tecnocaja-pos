@@ -18,6 +18,8 @@
  */
 
 const crypto = require('crypto');
+// Descripción, especificaciones, procedencia y observaciones del producto.
+const InfoAdicional = require('../../js/producto-info-adicional');
 
 const ALCANCES = Object.freeze(['local', 'global', 'sucursales']);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -53,6 +55,9 @@ function maestroProducto(row) {
     // ITBIS incluido en el precio (método 3). Solo va cuando está marcado: así
     // la huella de los demás productos no cambia y no se republica el catálogo.
     ...(Number(row.aplica_itbis || 0) && Number(row.itbis_incluido || 0) === 1 ? { itbisIncluido: true } : {}),
+    // Información adicional (pestaña Detalles): solo cuando tiene texto, por la
+    // misma razón (la huella de los productos sin ella no cambia).
+    ...(InfoAdicional.deFila(row.info_adicional) ? { infoAdicional: InfoAdicional.deFila(row.info_adicional) } : {}),
     tracksStock: Number(row.tracks_stock ?? 1) !== 0,
     estado: row.estado === 'Inactivo' ? 'Inactivo' : 'Activo',
   };
@@ -172,6 +177,8 @@ function createCatalogoLocal({ query, enlace, alCambiar = () => {} }) {
       itbisModo: m.itbisModo,
       itbisMonto: m.itbisMonto,
       itbisIncluido: m.itbisIncluido === true,
+      // La información adicional también la manda la central.
+      infoAdicional: m.infoAdicional || null,
       tracksStock: m.tracksStock,
     };
   }

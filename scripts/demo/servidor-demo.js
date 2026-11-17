@@ -35,7 +35,41 @@ const PRODUCTOS = [
   { codigo: 'QUESO', nombre: 'Queso de freír', categoria: 'Lácteos', unidad: 'lb', saleMode: 'peso', precioVenta: 300, precioCompra: 200, stock: 40, aplicaItbis: true, itbisIncluido: true },
 ];
 
+// El proceso que tiene ocupado el puerto (Windows), o null.
+function procesoEnPuerto(puerto) {
+  try {
+    const salida = require('child_process').execSync('netstat -ano -p tcp', { encoding: 'utf8' });
+    const linea = salida.split(/\r?\n/).find((l) => new RegExp(`[:.]${puerto}\\s+\\S+\\s+(LISTENING|ESCUCHANDO)`, 'i').test(l));
+    return linea ? Number(linea.trim().split(/\s+/).pop()) || null : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Si ya hay un demo encendido no se arranca otro encima: copiar el código nuevo
+// sobre el que está corriendo lo dañaba ("memory access out of bounds") y este
+// script terminaba hablando con el viejo.
+async function revisarDemoEncendido() {
+  const pid = procesoEnPuerto(PORT);
+  if (!pid) return;
+  let entra = false;
+  try {
+    const r = await L.request(PORT, 'POST', '/api/login', { usuario: 'admin', password: '1234' }, '', 8000);
+    entra = r.status === 200;
+  } catch (_) { /* no responde */ }
+  const cerrar = `Ciérralo (Ctrl+C en la ventana donde corre, o en PowerShell: Stop-Process -Id ${pid}) y vuelve a correr npm run demo.`;
+  if (entra) {
+    console.log(`[demo] Ya hay un demo encendido en http://127.0.0.1:${PORT} (proceso ${pid}) y se puede entrar (admin / 1234).`);
+    console.log(`[demo] Ese demo tiene el código de cuando se encendió. Para probar el código de ahora: ${cerrar}`);
+    process.exit(0);
+  }
+  console.error(`[demo] El puerto ${PORT} lo tiene otro proceso (${pid}) que no deja entrar: es un demo viejo dañado u otro programa. ${cerrar}`);
+  console.error(`[demo] Los datos del demo están guardados en ${USER_DATA} y no se pierden al cerrarlo.`);
+  process.exit(1);
+}
+
 (async () => {
+  await revisarDemoEncendido();
   L.prepareSandbox(); // copia el código actual de esta carpeta (no toca los datos)
   if (NUEVO) for (const dir of [USER_DATA, HOME]) fs.rmSync(dir, { recursive: true, force: true });
   fs.mkdirSync(path.join(HOME, 'Documents'), { recursive: true });

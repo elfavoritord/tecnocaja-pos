@@ -237,6 +237,7 @@ function normalizeRegisteredDevices(value) {
     return value
       .map((entry) => ({
         deviceId: String(entry?.deviceId || entry?.id || '').trim(),
+        pcId: String(entry?.pcId || '').trim() || null,
         hostname: String(entry?.hostname || entry?.name || '').trim(),
         firstSeenAt: toIsoString(entry?.firstSeenAt || entry?.first_seen_at),
         lastSeenAt: toIsoString(entry?.lastSeenAt || entry?.last_seen_at),
@@ -247,6 +248,7 @@ function normalizeRegisteredDevices(value) {
   if (value && typeof value === 'object') {
     return Object.entries(value).map(([deviceId, entry]) => ({
       deviceId: String(deviceId || entry?.deviceId || '').trim(),
+      pcId: String(entry?.pcId || '').trim() || null,
       hostname: String(entry?.hostname || entry?.name || '').trim(),
       firstSeenAt: toIsoString(entry?.firstSeenAt || entry?.first_seen_at),
       lastSeenAt: toIsoString(entry?.lastSeenAt || entry?.last_seen_at),
@@ -292,10 +294,39 @@ function buildBlockedMessage(state = {}) {
     case 'suspended':
       return 'La licencia del sistema está suspendida desde tu app de administrador. Comunícate con soporte o reactívala para seguir usando la aplicación.';
     case 'expired':
-      return 'La licencia expiró o la prueba terminó. Debes renovarla para seguir usando el sistema.';
+      // Con la política de 2026-11-17 solo la prueba llega a bloquearse por esto.
+      return 'La prueba de Tecno Caja terminó. Tus datos siguen guardados en esta PC y vuelven completos al activar la licencia.';
     default:
       return 'No se pudo validar la licencia del sistema.';
   }
+}
+
+// Licencia PAGADA con un problema (vencida, suspendida, equipo o reloj): el
+// programa sigue completo y solo se detiene la facturación electrónica
+// (política de Emilio, 2026-11-17). Este es el aviso que ve el negocio.
+function buildEcfBlockedNotice(code) {
+  switch (code) {
+    case 'suspended':
+      return 'La licencia está suspendida: la facturación electrónica quedó detenida. El resto del sistema sigue funcionando. Comunícate con Tecno Caja para reactivarla.';
+    case 'expired':
+      return 'La licencia venció: la facturación electrónica quedó detenida hasta renovar. El resto del sistema sigue funcionando.';
+    case 'device_limit':
+      return 'Este equipo no está autorizado en la licencia: la facturación electrónica quedó detenida. El resto del sistema sigue funcionando. Pide a Tecno Caja que autorice este equipo.';
+    case 'clock_rollback':
+      return 'La fecha de esta PC está atrasada: la facturación electrónica quedó detenida hasta corregir el reloj. El resto del sistema sigue funcionando.';
+    default:
+      return 'No se pudo validar la licencia: la facturación electrónica quedó detenida hasta conectarse a Internet y revalidar. El resto del sistema sigue funcionando.';
+  }
+}
+
+// ¿Es una licencia pagada? La prueba de 30 días es la única que deja sin
+// entrar; una licencia que alguna vez estuvo activa (o con contrato/modalidad)
+// nunca deja al negocio sin su sistema.
+function isPaidLicense(license = {}, localMark = false) {
+  if (localMark === true) return true;
+  if (normalizeLicenseStatus(license.status) === 'active') return true;
+  if (normalizarModalidad(license.modalidad)) return true;
+  return Boolean(license.servicios && typeof license.servicios === 'object' && Object.keys(license.servicios).length);
 }
 
 function compareStateFields(a = {}, b = {}) {
@@ -307,6 +338,7 @@ function compareStateFields(a = {}, b = {}) {
     'expiresAt',
     'canEnter',
     'blockedCode',
+    'ecfBloqueado',
   ].some((field) => String(a[field] || '') !== String(b[field] || ''));
 }
 
@@ -369,9 +401,16 @@ class LicenseService {
    */
   ecfPermitido(now = this.now()) {
     const license = this.stateMemo.value?.license;
+    if (license?.ecfBloqueado) return false;
     if (!license?.servicios?.conContrato) return true;
     const { ecf } = resolverServicios(license.servicios.fuente, asDate(now) || new Date());
     return ecf.permitido;
+  }
+
+  // Por qué no se puede emitir e-CF (para el mensaje de la venta), o null.
+  ecfBloqueoMensaje() {
+    const license = this.stateMemo.value?.license;
+    return license?.ecfBloqueado ? (license.aviso || buildEcfBlockedNotice(license.ecfBloqueoMotivo)) : null;
   }
 
   signatureVerificationConfigured() {
@@ -435,12 +474,28 @@ class LicenseService {
     ]);
 
     const configRow = configRows[0] || {};
+    // Aparte: si la columna no existe todavía, la consulta de arriba no falla.
+    const [marca] = await this.query(
+      'SELECT licencia_pagada, license_activated_at FROM config WHERE id = 1 LIMIT 1'
+    ).catch(() => []);
     return {
       configRow,
       businessName: String(configRow.business_name || 'Tecno Caja').trim() || 'Tecno Caja',
       setupCompleted: Boolean(configRow.setup_completed),
       principalFirebaseUid: String(adminRows[0]?.firebase_uid || '').trim() || null,
+      // Esta PC ya trabajó con una licencia pagada (ver markPaidLicense).
+      pagada: Boolean(Number(marca?.licencia_pagada || 0))
+        || Boolean(marca?.license_activated_at)
+        || normalizeLicenseStatus(configRow.license_status) === 'active',
     };
+  }
+
+  // Se anota UNA vez que esta PC trabaja con una licencia pagada: aunque después
+  // venza o la suspendan, el negocio no se queda sin su sistema.
+  async markPaidLicense() {
+    await this.query(
+      'UPDATE config SET licencia_pagada = 1 WHERE id = 1 AND COALESCE(licencia_pagada, 0) = 0'
+    ).catch(() => {});
   }
 
   async defaultFetchRemoteLicense(context = {}) {
@@ -459,7 +514,10 @@ class LicenseService {
       raw.forceBlocked ? 'suspended' : (remote.status || raw.status || context.configRow?.license_status || 'trial')
     );
     const issuedAt = toIsoString(remote.issuedAt || raw.issuedAt || raw.issued_at || raw.trialStartedAt || remote.trialStartedAt || raw.createdAt || raw.syncedAt || remote.syncedAt);
-    const expiresAt = toIsoString(remote.expiresAt || raw.expiresAt || raw.expires_at || raw.trialEndsAt || remote.trialEndsAt);
+    // trialEndsAt solo es el vencimiento de una PRUEBA: una licencia activada que
+    // conserva la fecha de cuando era prueba no vence por eso.
+    const expiresAt = toIsoString(remote.expiresAt || raw.expiresAt || raw.expires_at
+      || (status === 'trial' ? (raw.trialEndsAt || remote.trialEndsAt) : null));
     const deviceLimit = safePositiveInteger(remote.deviceLimit || raw.deviceLimit || raw.device_limit, 0);
     const offlineGraceDays = safePositiveInteger(remote.offlineGraceDays || raw.offlineGraceDays || raw.offline_grace_days, this.defaultOfflineGraceDays());
     const devices = normalizeRegisteredDevices(remote.devices || raw.devices || raw.deviceRegistry || raw.registeredDevices);
@@ -606,9 +664,27 @@ class LicenseService {
     } else if (offlineGraceExceeded) {
       blockedCode = 'offline_grace';
       status = 'expired';
+    } else if (status === 'expired') {
+      // Vencida desde el panel (sin fecha): que el aviso lo diga, no "no se pudo validar".
+      blockedCode = 'expired';
     }
 
-    const canEnter = !blockedCode && (status === 'active' || status === 'trial');
+    let canEnter = !blockedCode && (status === 'active' || status === 'trial');
+    // Política de Emilio (2026-11-17): solo la prueba vencida deja sin entrar.
+    // Una licencia pagada vencida, suspendida o con un problema de validación
+    // (equipo, reloj, firma, caché) sigue con todo el sistema y solo se le
+    // detiene la facturación electrónica. Los datos nunca se tocan.
+    const pagada = isPaidLicense(license, options.pagada === true);
+    let ecfBloqueado = false;
+    let ecfBloqueoMotivo = null;
+    let aviso = null;
+    if (pagada && !canEnter) {
+      ecfBloqueado = true;
+      ecfBloqueoMotivo = blockedCode || status;
+      aviso = buildEcfBlockedNotice(ecfBloqueoMotivo);
+      blockedCode = null;
+      canEnter = true;
+    }
     let daysLeft = expiresAt
       ? Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / DAY_MS))
       : 0;
@@ -644,11 +720,16 @@ class LicenseService {
         : null,
       offlineDaysSinceLastValidation: Number.isFinite(offlineDaysSinceLastValidation) ? offlineDaysSinceLastValidation : null,
       daysLeft,
-      expired: status === 'expired',
+      // "expired" = sin poder entrar por vencida (la prueba); el estado real va en status.
+      expired: !canEnter && status === 'expired',
       suspended: status === 'suspended',
       canEnter,
       blockedCode,
       message,
+      pagada,
+      ecfBloqueado,
+      ecfBloqueoMotivo,
+      aviso,
       clockRollbackDetected,
       validationMode: verification.verificationMode,
       signatureValid: verification.valid,
@@ -808,6 +889,8 @@ class LicenseService {
   // atrasado, límite de equipos, gracia offline).
   applyTrialWindow(state, trial) {
     if (!trial?.isTrial) return state;
+    // Una PC que ya trabajaba con licencia pagada no vuelve a regirse por la prueba.
+    if (state.pagada) return state;
     if (state.blockedCode && state.blockedCode !== 'expired') return state;
     state.status = trial.expired ? 'expired' : 'trial';
     state.issuedAt = trial.trialStartedAt;
@@ -829,7 +912,22 @@ class LicenseService {
     }
 
     const existingDevices = normalizeRegisteredDevices(remoteLicense.devices);
-    const currentDevice = existingDevices.find((entry) => entry.deviceId === this.device.deviceId);
+    let currentDevice = existingDevices.find((entry) => entry.deviceId === this.device.deviceId);
+    // El deviceId cambia con las MAC (apagar el Wi-Fi, un adaptador USB) y con la
+    // versión de Windows: la misma PC aparecía como "otro equipo" y, con límite 1,
+    // la licencia activa salía vencida. Se reconoce por su identidad estable
+    // (pcId) o, en registros viejos sin pcId, por el nombre del equipo.
+    let staleDeviceId = null;
+    if (!currentDevice) {
+      const pcId = String(this.device.pcId || '').trim();
+      const hostname = String(this.device.hostname || '').trim().toLowerCase();
+      const samePc = existingDevices.find((entry) => (pcId && entry.pcId && entry.pcId === pcId)
+        || (!entry.pcId && hostname && String(entry.hostname || '').trim().toLowerCase() === hostname));
+      if (samePc) {
+        currentDevice = samePc;
+        staleDeviceId = samePc.deviceId;
+      }
+    }
     // deviceLimit=0 significa ilimitado. Solo bloquear si el límite es explícito y > 0.
     const limit = safePositiveInteger(remoteLicense.deviceLimit, 0);
     if (!currentDevice && limit > 0 && existingDevices.length >= limit) {
@@ -848,6 +946,7 @@ class LicenseService {
     const currentDeviceLastSeenAt = asDate(currentDevice?.lastSeenAt || currentDevice?.firstSeenAt);
     if (
       currentDevice
+      && !staleDeviceId
       && currentDeviceLastSeenAt
       && (now.getTime() - currentDeviceLastSeenAt.getTime()) < heartbeatMs
     ) {
@@ -864,6 +963,7 @@ class LicenseService {
 
     payload[`devices.${this.device.deviceId}`] = {
       deviceId: this.device.deviceId,
+      pcId: this.device.pcId || null,
       hostname: this.device.hostname,
       platform: this.device.platform,
       arch: this.device.arch,
@@ -871,6 +971,14 @@ class LicenseService {
       lastSeenAt: now,
       status: 'active',
     };
+
+    // La misma PC con otro deviceId: el registro viejo se reemplaza (no ocupa otro cupo).
+    if (staleDeviceId && staleDeviceId !== this.device.deviceId) {
+      try {
+        const { FieldValue } = require('firebase-admin/firestore');
+        payload[`devices.${staleDeviceId}`] = FieldValue.delete();
+      } catch (_) { /* sin firebase-admin: queda el registro viejo */ }
+    }
 
     await docRef.update(payload).catch(async () => {
       await docRef.set({
@@ -930,6 +1038,10 @@ class LicenseService {
 
       const previousSnapshot = await this.readCacheSnapshot().catch(() => null);
       const normalizedRemote = this.normalizeRemoteLicense(remote, context);
+      if (isPaidLicense(normalizedRemote)) {
+        context.pagada = true;
+        await this.markPaidLicense();
+      }
       if (normalizedRemote.licenseId) {
         this.persistRemoteUid(normalizedRemote.licenseId);
       }
@@ -964,13 +1076,14 @@ class LicenseService {
         now: this.now(),
         enforceOfflineGrace: false,
         deviceLimitExceeded: Boolean(normalizedRemote.deviceLimitExceeded),
+        pagada: context.pagada,
       });
 
       await this.writeCacheSnapshot(snapshot);
       // "changed" compara contra el snapshot anterior ANTES de aplicar la
       // ventana local de prueba: solo debe avisar cambios reales en Firebase.
       const changed = compareStateFields(
-        previousSnapshot ? this.buildStateFromSnapshot(previousSnapshot, { source: 'cache', now: this.now() }) : {},
+        previousSnapshot ? this.buildStateFromSnapshot(previousSnapshot, { source: 'cache', now: this.now(), pagada: context.pagada }) : {},
         state
       );
       const trial = await this.mirrorStateToConfig(state, { isTrial: normalizedRemote.status === 'trial' });
@@ -1032,10 +1145,15 @@ class LicenseService {
       try {
         const snapshot = await this.readCacheSnapshot();
         if (snapshot) {
+          if (isPaidLicense(snapshot.license || {})) {
+            context.pagada = true;
+            await this.markPaidLicense();
+          }
           const state = this.buildStateFromSnapshot(snapshot, {
             source: 'cache',
             now: this.now(),
             enforceOfflineGrace: true,
+            pagada: context.pagada,
           });
 
           if (
@@ -1063,6 +1181,37 @@ class LicenseService {
       } catch (cacheError) {
         remoteError = cacheError;
       }
+    }
+
+    if (!result && context.setupCompleted && context.pagada) {
+      // No se pudo leer ni Firebase ni la copia de esta PC (otra PC, caché
+      // dañado…), pero esta PC ya trabajaba con una licencia pagada.
+      const motivo = remoteError?.code === 'LICENSE_CACHE_HASH_MISMATCH'
+        || remoteError?.code === 'LICENSE_CACHE_TAMPERED'
+        || remoteError?.code === 'LICENSE_CACHE_INVALID_FORMAT'
+        ? 'tamper'
+        : 'activation_required';
+      const state = {
+        ...this.buildBootstrapState(context),
+        source: 'local',
+        status: normalizeLicenseStatus(context.configRow?.license_status) || 'active',
+        expired: false,
+        canEnter: true,
+        blockedCode: null,
+        message: null,
+        pagada: true,
+        ecfBloqueado: true,
+        ecfBloqueoMotivo: motivo,
+        aviso: buildEcfBlockedNotice(motivo),
+      };
+      result = {
+        synced: false,
+        changed: false,
+        source: 'local',
+        reason: remoteError?.message || null,
+        license: state,
+        licenseUid: null,
+      };
     }
 
     if (!result) {
@@ -1107,6 +1256,8 @@ function createLicenseService(options = {}) {
 }
 
 module.exports = {
+  buildEcfBlockedNotice,
+  isPaidLicense,
   buildLicenseSignaturePayload,
   createLicenseService,
   normalizeLicenseStatus,

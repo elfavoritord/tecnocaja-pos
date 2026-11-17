@@ -31,6 +31,7 @@ const crypto = require('crypto');
 const { createMigrationContext } = require('../migrations/runner');
 const { maestroProducto, huellaProducto, maestroUsuario, huellaUsuario, listaJson } = require('./catalogo-local');
 const { ESTADOS_SALIDA } = require('./bandejas');
+const InfoAdicional = require('../../js/producto-info-adicional');
 
 const STREAMS = ['usuarios', 'catalogo', 'comandos', 'ncf'];
 const LOTE_SUBIDA = 200;
@@ -356,6 +357,8 @@ function createSincronizacion({
     if (await tieneColumna('products', 'barcode')) cols.barcode = d.barcode || d.codigo;
     // ITBIS incluido en el precio (método 3), como lo publicó la principal.
     if (await tieneColumna('products', 'itbis_incluido')) cols.itbis_incluido = d.aplicaItbis && d.itbisIncluido === true ? 1 : 0;
+    // Información adicional (descripción, procedencia…), como la publicó la principal.
+    if (await tieneColumna('products', 'info_adicional')) cols.info_adicional = InfoAdicional.serializar(d.infoAdicional);
     return cols;
   }
 

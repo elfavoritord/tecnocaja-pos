@@ -5,6 +5,8 @@
 //        [--demora=800]       cada respuesta de la DGII falsa tarda eso (ms), como la real
 //        [--con-asistente]    mientras tanto consulta el estado cada 4 s, como el asistente
 //        [--sin-segundo-plano] espera la respuesta al final (sin background=true)
+//        [--rechazar-ecf=3]   la DGII falsa rechaza el 3.er e-CF: el envío tiene que pararse ahí
+//        [--revisar]          la DGII falsa revisa las cuentas de cada e-CF (por defecto no)
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -16,6 +18,8 @@ const { crearDgiiFalso } = require('./dgii-falso');
 
 const SET = process.argv[2];
 const RECHAZAR = process.argv.includes('--rechazar-rfce');
+const RECHAZAR_ECF = Number((process.argv.find((a) => a.startsWith('--rechazar-ecf=')) || '').split('=')[1]) || 0;
+const REVISAR = process.argv.includes('--revisar');
 const DEMORA = Number((process.argv.find((a) => a.startsWith('--demora=')) || '').split('=')[1]) || 0;
 const CON_ASISTENTE = process.argv.includes('--con-asistente');
 const SEGUNDO_PLANO = !process.argv.includes('--sin-segundo-plano');
@@ -83,6 +87,8 @@ function crearCertificado(destino, clave, rnc) {
     // Si se pide, el DGII falso rechaza el primer RFCE como "ya utilizado".
     if (RECHAZAR) dgii.estado.rechazarPrimerRfce = true;
     dgii.estado.demoraMs = DEMORA;
+    dgii.estado.revisar = REVISAR;
+    dgii.estado.rechazarEcfNumero = RECHAZAR_ECF;
 
     const rutaP12 = path.join(L.WORK, 'prueba.p12');
     crearCertificado(rutaP12, 'clave-prueba', RNC);
@@ -129,6 +135,10 @@ function crearCertificado(destino, clave, rnc) {
       });
       const dobleCuerpo = await doble.json().catch(() => ({}));
       check('Un segundo clic no arranca otro envío', doble.status === 409 && dobleCuerpo.details?.code === 'PASO2_EN_CURSO', `HTTP ${doble.status}`);
+      // "Resetear y reintentar" y "Enviar RFCE" a mitad del envío tampoco tocan el lote.
+      const reset = await api('POST', '/api/ecf/certification/reset-sent', {});
+      const rfce = await api('POST', '/api/ecf/certification-center/rfce/submit', {});
+      check('A mitad del envío no se puede resetear ni mandar RFCE aparte', reset.status === 409 && rfce.status === 409, `reset ${reset.status} · rfce ${rfce.status}`);
       const fases = new Set();
       let run = cuerpo.processRun;
       while (run?.active && Date.now() - inicio < 900000) {
@@ -157,6 +167,13 @@ function crearCertificado(destino, clave, rnc) {
     check('El proceso responde', res.status === 200, `HTTP ${res.status} ${cuerpo.error || ''}`);
     if (RECHAZAR) {
       check('RFCE rechazado: no se mandó ningún e-CF', ecf === 0 && cuerpo.rfceFirstRejected === true, `e-CF ${ecf}`);
+    } else if (RECHAZAR_ECF) {
+      const rechazado = dgii.estado.recibidos.filter((r) => r.raiz === 'ECF')[RECHAZAR_ECF - 1];
+      console.log(`[paso2] detenido: ${JSON.stringify(cuerpo.stopped || null)}`);
+      console.log(`[paso2] mensaje: ${cuerpo.message || ''}`);
+      check('Se paró en el comprobante rechazado', cuerpo.stopped?.encf === rechazado?.encf && cuerpo.stopped?.tipo === 'dgii', `${cuerpo.stopped?.encf} / ${rechazado?.encf}`);
+      check('No mandó los que faltaban', ecf < 21 && ecf <= RECHAZAR_ECF + 2, `e-CF ${ecf}`);
+      check('Dice qué hacer (set nuevo)', /descarga el set otra vez/i.test(cuerpo.message || ''), cuerpo.message || '');
     } else {
       check('Los RFCE salen antes que los e-CF', primerFc >= 0 && (primerEcf < 0 || primerFc < primerEcf), `FC en ${primerFc}, e-CF en ${primerEcf}`);
       check('Salieron los 4 RFCE', fc === 4, String(fc));

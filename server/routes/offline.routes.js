@@ -19,6 +19,8 @@ const https = require('https');
 const crypto = require('crypto');
 const { resolveActivePromotions, resolveActiveQuantityRules, pickWinningPromotion } = require('../services/promotion-engine');
 const combosService = require('../services/combos.service');
+// Descripción, especificaciones y procedencia que salieron en el ticket sin conexión.
+const InfoAdicional = require('../../js/producto-info-adicional');
 const { normalizeClientRequestId, isDuplicateClientRequestError } = require('../sales/sale-idempotency');
 
 // Una venta de contingencia que ya entró a la base principal (por otra
@@ -2063,6 +2065,13 @@ module.exports = function createOfflineRouter(deps) {
              activePromo ? activePromo.promotionId : null, activePromo ? activePromo.precioOriginal : null,
              comboSnapshot ? JSON.stringify(comboSnapshot) : null]
           );
+          // La información adicional que salió en el ticket de la caja sin conexión
+          // (la copia de la línea), para que la reimpresión salga igual.
+          const infoLinea = isQuickSale ? null : InfoAdicional.deLinea(item.infoAdicional);
+          if (infoLinea && saleItemInsert && saleItemInsert.insertId) {
+            await conn.query('UPDATE sale_items SET info_adicional = ? WHERE id = ?', [JSON.stringify(infoLinea), saleItemInsert.insertId])
+              .catch((error) => console.warn('[offline] No se guardó la información adicional de la línea:', error.message));
+          }
           if (customCombo && saleItemInsert && saleItemInsert.insertId) {
             // El INSERT de arriba no guarda el ITBIS de la línea: en una línea de
             // combo se guarda el que cobró la caja (incluido el de monto fijo),

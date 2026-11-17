@@ -1,6 +1,6 @@
 {
   "name": "pos-system",
-  "version": "1.6.31",
+  "version": "1.6.32",
   "description": "Sistema POS moderno, rapido y profesional inspirado en Eleventa.",
   "main": "electron/main.js",
   "scripts": {
@@ -31,6 +31,9 @@
     "test:itbis-incluido": "node scripts/ventas/probar-itbis-incluido.js",
     "test:cambiar-precio": "node scripts/ventas/probar-cambiar-precio.js",
     "test:producto-nuevo": "node scripts/ventas/probar-producto-nuevo.js",
+    "test:info-adicional": "node scripts/productos/probar-info-adicional.js",
+    "test:peso-sin-bascula": "node scripts/ventas/probar-peso-sin-bascula.js",
+    "test:licencia-pagada": "node scripts/licencia/probar-licencia-pagada.js",
     "demo": "node scripts/demo/servidor-demo.js",
     "test:bitacora": "node scripts/caja/probar-bitacora.js && node scripts/caja/probar-bitacora.js --sqlite",
     "test:combos-e2e": "node scripts/combos/probar-combos-e2e.js && node scripts/combos/probar-combos-e2e.js --sqlite && node scripts/combos/probar-combos-ui.js",
@@ -155,6 +158,8 @@
       "!scripts/ventas/**",
       "!scripts/demo/**",
       "!scripts/caja/**",
+      "!scripts/productos/**",
+      "!scripts/licencia/**",
       "!scripts/actualizacion/**",
       "!scripts/portal-250mil-upload/**",
       "!electron/*.log",

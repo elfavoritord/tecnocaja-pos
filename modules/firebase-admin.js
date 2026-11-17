@@ -978,8 +978,13 @@ async function syncPosAccountsToFirestore(users, config) {
         plan_name: localPlanName || null,
         businessStructureMode: localBusinessStructureMode || null,
         business_structure_mode: localBusinessStructureMode || null,
-        trialStartedAt: trialStartsAt && !Number.isNaN(trialStartsAt.getTime()) ? trialStartsAt : null,
-        trialEndsAt: trialEndsAt && !Number.isNaN(trialEndsAt.getTime()) ? trialEndsAt : null,
+        // Las fechas de la prueba solo se suben mientras es prueba: a una licencia
+        // ya activada desde el panel se le volvía a escribir la fecha de fin de
+        // la prueba y el POS la leía como vencimiento ("licencia vencida").
+        ...(statusToWrite === 'active' || statusToWrite === 'suspended' ? {} : {
+          trialStartedAt: trialStartsAt && !Number.isNaN(trialStartsAt.getTime()) ? trialStartsAt : null,
+          trialEndsAt: trialEndsAt && !Number.isNaN(trialEndsAt.getTime()) ? trialEndsAt : null,
+        }),
       }),
       ...contadorFields,
       syncedAt,
@@ -1181,17 +1186,20 @@ async function fetchRemotePosLicenseState(config) {
   }
 
   const remotePlanCode = String(data.planCode || data.plan_code || '').trim().toLowerCase();
+  const remoteStatus = normalizeLicenseStatus(data.status);
   return {
     id: doc.id,
     businessKey,
     businessName,
     principalUid: String(data.principalUid || doc.id).trim() || doc.id,
-    status: normalizeLicenseStatus(data.status),
+    status: remoteStatus,
     planCode: remotePlanCode || null,
     licenseId: String(data.licenseId || data.license_id || doc.id).trim() || doc.id,
     businessNameRemote: String(data.businessName || data.business_name || businessName).trim() || businessName,
     issuedAt: asJsDate(data.issuedAt || data.issued_at || data.trialStartedAt || data.createdAt || data.syncedAt),
-    expiresAt: asJsDate(data.expiresAt || data.expires_at || data.trialEndsAt),
+    // trialEndsAt solo vence una PRUEBA. Una licencia activa que conserva (o a la
+    // que el POS le volvió a escribir) la fecha de la prueba salía "vencida".
+    expiresAt: asJsDate(data.expiresAt || data.expires_at || (remoteStatus === 'trial' ? data.trialEndsAt : null)),
     deviceLimit: Number(data.deviceLimit || data.device_limit || 1) || 1,
     offlineGraceDays: Number(data.offlineGraceDays || data.offline_grace_days || 3) || 3,
     signature: String(data.signature || '').trim() || null,

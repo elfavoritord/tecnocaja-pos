@@ -1,14 +1,15 @@
 {
-  "version": "1.6.31",
-  "stableVersion": "1.6.31",
-  "date": "16/11/2026",
+  "version": "1.6.32",
+  "stableVersion": "1.6.32",
+  "date": "17/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": true,
   "downloadUrl": null,
   "changes": [
-    "Certificación DGII, Paso 2: \"Procesar y enviar comprobantes\" muestra el avance hasta el final (primero los RFCE y luego \"Enviando comprobantes a la DGII: 12 de 21\"). Antes la pantalla dejaba de esperar a los 90 segundos y parecía que los 21 no salían.",
-    "Certificación DGII, Paso 2: si la DGII responde \"En proceso\", la pantalla vuelve a preguntar sola cada 20 segundos hasta tener la respuesta.",
-    "Certificación DGII, Paso 2: el conteo de comprobantes aceptados ya no incluye los 4 RFCE, y no se puede volver a procesar el set mientras se está enviando."
+    "Licencia: un negocio con licencia pagada ya no se queda fuera de su sistema. Si la licencia vence, la suspenden o no se puede validar, todo sigue funcionando y solo se detiene la facturación electrónica. Se corrigió el aviso falso de \"licencia vencida\" con la licencia activa.",
+    "Productos por peso: se escribe el monto que dice el producto en el Total y la libra se calcula sola. Sin báscula no sale la ventana de peso ni el botón \"Ingresar peso\".",
+    "Productos: la ficha está ordenada en pestañas y tiene información adicional (descripción, especificaciones, procedencia y observaciones) que puede salir en la factura.",
+    "Certificación DGII, Paso 2: el envío se detiene al primer comprobante rechazado y, si se corta la conexión, se puede continuar sin repetir lo ya enviado."
   ]
 }

@@ -81,6 +81,22 @@ function getStableMachineFingerprint() {
   return cachedStableMachineFingerprint;
 }
 
+// Identificador de la PC que NO cambia con la red ni con Windows: sin MAC (se
+// van al apagar el Wi-Fi o desconectar el cable), sin la versión de Windows (sube
+// con cada actualización) y sin la memoria. Solo sirve para reconocer que un
+// deviceId nuevo es la MISMA PC que ya estaba autorizada en la licencia; el
+// deviceId registrado no cambia (ver getMachineFingerprint).
+let cachedPcId = null;
+function getPcId() {
+  if (!cachedPcId) {
+    const { hostname, platform, arch, cpus, cpuModel, systemDrive } = getMachineDescriptor();
+    cachedPcId = `pc_${sha256Hex(JSON.stringify({
+      hostname: String(hostname || '').toLowerCase(), platform, arch, cpus, cpuModel, systemDrive,
+    })).slice(0, 24)}`;
+  }
+  return cachedPcId;
+}
+
 function deriveDeviceId() {
   const fingerprint = getMachineFingerprint();
   const secret = String(
@@ -108,6 +124,7 @@ function getDeviceDescriptor() {
   const machine = getMachineDescriptor();
   return {
     deviceId: getDeviceId(),
+    pcId: getPcId(),
     hostname: machine.hostname,
     platform: machine.platform,
     arch: machine.arch,
@@ -120,6 +137,7 @@ module.exports = {
   getDeviceId,
   getMachineDescriptor,
   getMachineFingerprint,
+  getPcId,
   getStableMachineFingerprint,
   sha256Hex,
 };

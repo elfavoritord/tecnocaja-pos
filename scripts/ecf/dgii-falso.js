@@ -71,6 +71,12 @@ function crearDgiiFalso({ carpeta }) {
     demoraMs: 0,
     // Rechaza el primer RFCE con "ya utilizado", como hace a veces la DGII real.
     rechazarPrimerRfce: false,
+    // Revisa las cuentas de cada e-CF como la DGII (false: acepta lo que llegue, para
+    // probar el flujo con un set oficial sin depender de esas reglas).
+    revisar: true,
+    // Rechaza el e-CF número N que reciba (1 = el primero), con "Rechazo simulado".
+    rechazarEcfNumero: 0,
+    ecfRecibidos: 0,
     // Peticiones que la DGII falsa está atendiendo ahora y el máximo que llegó a tener.
     enCurso: 0,
     maxEnCurso: 0,
@@ -88,7 +94,13 @@ function crearDgiiFalso({ carpeta }) {
     const tipo = encf ? encf.slice(0, 3) : '';
     const ruta = path.join(carpeta, `${tipo}-${estado.recibidos.length + 1}-${raiz}-${encf}.xml`);
     fs.writeFileSync(ruta, xml, 'utf8');
-    const errores = raiz === 'ECF' ? revisarEcf(xml) : [];
+    const errores = raiz === 'ECF' && estado.revisar !== false ? revisarEcf(xml) : [];
+    if (raiz === 'ECF') {
+      estado.ecfRecibidos += 1;
+      if (estado.rechazarEcfNumero && estado.ecfRecibidos === estado.rechazarEcfNumero) {
+        errores.push({ codigo: 8000, valor: 'Rechazo simulado de la prueba' });
+      }
+    }
     const repetido = usados.has(encf);
     if (estado.tiposSinRango.has(tipo)) errores.push({ codigo: 135, valor: 'No existen rangos de secuencias disponibles.' });
     if (estado.rechazarSiguiente > 0) {

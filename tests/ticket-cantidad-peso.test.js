@@ -46,9 +46,12 @@ describe('pantalla (js/ventas.js → buildThermalItemLines)', () => {
     }
     return fuente.slice(inicio, i + 1);
   };
-  const codigo = ['clipThermalText', 'padThermalRight', 'padThermalLeft', 'wrapThermalText', 'getThermalItemItbisText', 'buildThermalItemLines']
+  const codigo = ['clipThermalText', 'padThermalRight', 'padThermalLeft', 'wrapThermalText', 'getThermalItemItbisText',
+    'getReceiptItemInfoLines', 'getThermalItemInfoLines', 'buildThermalItemLines']
     .map(tomar).join('\n');
   const contexto = {
+    // Información adicional del producto debajo del nombre (js/producto-info-adicional.js).
+    window: { ProductoInfoAdicional: require('../js/producto-info-adicional') },
     normalizeReceiptText: (v) => String(v ?? '').replace(/\s+/g, ' ').trim(),
     formatCustomComboDetailLines: () => [],
     formatReceiptSaleItemQuantity: (item) => (item.saleMode === 'peso' ? `${Number(item.qty).toFixed(2)}lb` : String(item.qty)),
@@ -72,6 +75,18 @@ describe('pantalla (js/ventas.js → buildThermalItemLines)', () => {
     // En 58 mm, con la columna ITBIS, un peso de dos cifras va con un decimal.
     expect(queso).toMatch(papel === '80mm' ? /12\.25(lb)?\s/ : /12\.3\s/);
     expect(queso).not.toMatch(/\s1\.\.\./);
+    for (const l of lineas) expect(l.length).toBeLessThanOrEqual(ancho);
+  });
+
+  test.each([['80mm', 48], ['58mm', 32]])('%s: la información adicional va debajo del nombre, al ancho del papel', (papel, ancho) => {
+    const disco = {
+      nombre: 'Disco 115mm ultra fino porcelanato', codigo: 'MRT115', qty: 1, saleMode: 'unidad', precio: 850, total: 850, itbisRate: 0,
+      infoAdicional: { descripcion: 'Corte de porcelanato, Dekton, Neolith e Infinity.', procedencia: 'China' },
+    };
+    const lineas = contexto.buildThermalItemLines([disco], ancho, papel);
+    expect(lineas).toContain('  MRT115');
+    expect(lineas).toContain('  PROCEDENCIA: CHINA');
+    expect(lineas.map((l) => l.trim()).join(' ')).toMatch(/Neolith e Infinity\./);
     for (const l of lineas) expect(l.length).toBeLessThanOrEqual(ancho);
   });
 });

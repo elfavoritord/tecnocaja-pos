@@ -184,7 +184,7 @@ describe('server/licensing/license-service', () => {
     expect(result.license.offlineGraceDays).toBeNull();
   });
 
-  it('sin Internet, una licencia activada igual vence en su fecha (renovar sí necesita Internet)', async () => {
+  it('sin Internet, una licencia activada vence en su fecha: sigue entrando y solo se detiene el e-CF', async () => {
     const state = createMockQueryState();
     const query = createMockQuery(state);
     let now = new Date('2026-04-30T10:00:00.000Z');
@@ -210,8 +210,11 @@ describe('server/licensing/license-service', () => {
       fetchRemoteLicense: async () => { throw new Error('offline'); },
     }).resolveState({ force: true, allowRemote: true });
 
-    expect(result.license.canEnter).toBe(false);
-    expect(result.license.blockedCode).toBe('expired');
+    expect(result.license.canEnter).toBe(true);
+    expect(result.license.status).toBe('expired');
+    expect(result.license.ecfBloqueado).toBe(true);
+    expect(result.license.ecfBloqueoMotivo).toBe('expired');
+    expect(result.license.aviso).toMatch(/facturación electrónica/);
   });
 
   it('la prueba sí mantiene el límite de días sin Internet', async () => {
@@ -250,7 +253,7 @@ describe('server/licensing/license-service', () => {
     expect(result.license.blockedCode).toBe('offline_grace');
   });
 
-  it('bloquea si el caché local fue manipulado', async () => {
+  it('caché local manipulado en una licencia pagada: sigue entrando, sin e-CF', async () => {
     const state = createMockQueryState();
     const query = createMockQuery(state);
     const device = { deviceId: 'npd_test_3', hostname: 'POS-03', platform: 'win32', arch: 'x64' };
@@ -279,11 +282,39 @@ describe('server/licensing/license-service', () => {
     });
 
     const result = await offlineService.resolveState({ force: true, allowRemote: true });
-    expect(result.license.canEnter).toBe(false);
-    expect(result.license.blockedCode).toBe('tamper');
+    expect(result.license.canEnter).toBe(true);
+    expect(result.license.ecfBloqueado).toBe(true);
+    expect(result.license.ecfBloqueoMotivo).toBe('tamper');
+    expect(offlineService.ecfPermitido()).toBe(false);
   });
 
-  it('bloquea si el dispositivo supera el límite autorizado', async () => {
+  it('caché manipulado en una prueba: sí queda bloqueada', async () => {
+    const state = createMockQueryState();
+    const query = createMockQuery(state);
+    const device = { deviceId: 'npd_test_3b', hostname: 'POS-03B', platform: 'win32', arch: 'x64' };
+    await createLicenseService({
+      query,
+      now: () => new Date('2026-04-20T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+        overrides: { status: 'trial' },
+      }),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    }).resolveState({ force: true, allowRemote: true });
+    state.licenseCache.integrity_hash = 'alterado';
+    const result = await createLicenseService({
+      query,
+      now: () => new Date('2026-04-21T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => { throw new Error('offline'); },
+    }).resolveState({ force: true, allowRemote: true });
+    expect(result.license.canEnter).toBe(false);
+    expect(result.license.ecfBloqueado).toBeFalsy();
+  });
+
+  it('límite de equipos en una licencia pagada: sigue entrando, sin e-CF', async () => {
     const state = createMockQueryState();
     const query = createMockQuery(state);
     const device = { deviceId: 'npd_test_4', hostname: 'POS-04', platform: 'win32', arch: 'x64' };
@@ -301,8 +332,81 @@ describe('server/licensing/license-service', () => {
 
     const result = await service.resolveState({ force: true, allowRemote: true });
     expect(result.synced).toBe(true);
+    expect(result.license.canEnter).toBe(true);
+    expect(result.license.ecfBloqueado).toBe(true);
+    expect(result.license.ecfBloqueoMotivo).toBe('device_limit');
+    expect(service.ecfPermitido()).toBe(false);
+    expect(service.ecfBloqueoMensaje()).toMatch(/no está autorizado/);
+  });
+
+  it('la prueba con el límite de equipos superado sí queda bloqueada (no es pagada)', async () => {
+    const state = createMockQueryState();
+    const query = createMockQuery(state);
+    const device = { deviceId: 'npd_test_4b', hostname: 'POS-04B', platform: 'win32', arch: 'x64' };
+    const service = createLicenseService({
+      query,
+      now: () => new Date('2026-04-20T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => buildRemoteLicense({
+        deviceId: device.deviceId,
+        secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+        overrides: { status: 'trial' },
+      }),
+      updateRemoteDevice: async () => ({ allowed: false, activeCount: 1, limit: 1 }),
+    });
+    const result = await service.resolveState({ force: true, allowRemote: true });
     expect(result.license.canEnter).toBe(false);
     expect(result.license.blockedCode).toBe('device_limit');
+    expect(result.license.ecfBloqueado).toBeFalsy();
+  });
+
+  it('suspendida desde el panel (pagada): sigue entrando, sin e-CF', async () => {
+    const state = createMockQueryState();
+    const query = createMockQuery(state);
+    const device = { deviceId: 'npd_test_4c', hostname: 'POS-04C', platform: 'win32', arch: 'x64' };
+    const remota = (status) => buildRemoteLicense({
+      deviceId: device.deviceId,
+      secret: process.env.TECNO_CAJA_LICENSE_HMAC_SECRET,
+      overrides: { status },
+    });
+    // Primero activa (queda anotada como pagada) y después la suspenden.
+    await createLicenseService({
+      query,
+      now: () => new Date('2026-04-20T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => remota('active'),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    }).resolveState({ force: true, allowRemote: true });
+    const service = createLicenseService({
+      query,
+      now: () => new Date('2026-04-21T10:00:00.000Z'),
+      device,
+      fetchRemoteLicense: async () => remota('suspended'),
+      updateRemoteDevice: async () => ({ allowed: true, activeCount: 1, limit: 1 }),
+    });
+    const result = await service.resolveState({ force: true, allowRemote: true });
+    expect(result.license.status).toBe('suspended');
+    expect(result.license.canEnter).toBe(true);
+    expect(result.license.ecfBloqueado).toBe(true);
+    expect(result.license.ecfBloqueoMotivo).toBe('suspended');
+    expect(service.ecfPermitido()).toBe(false);
+  });
+
+  it('la misma PC con otro deviceId (otra MAC u otra versión de Windows) no ocupa otro cupo', async () => {
+    const service = createLicenseService({
+      query: createMockQuery(createMockQueryState()),
+      device: { deviceId: 'npd_nuevo', pcId: 'pc_misma', hostname: 'CAJA-1', platform: 'win32', arch: 'x64' },
+    });
+    const registrar = (devices) => service.defaultUpdateRemoteDevice(
+      { licenseId: 'lic', deviceLimit: 1, devices },
+      {},
+      { allowRemoteWrite: false }
+    );
+    expect((await registrar([{ deviceId: 'npd_viejo', pcId: 'pc_misma', hostname: 'CAJA-1' }])).allowed).toBe(true);
+    // Registros viejos sin pcId: se reconoce por el nombre del equipo.
+    expect((await registrar([{ deviceId: 'npd_viejo', hostname: 'caja-1' }])).allowed).toBe(true);
+    // Otra PC de verdad sí ocupa otro cupo.
+    expect((await registrar([{ deviceId: 'npd_otra', pcId: 'pc_otra', hostname: 'OFICINA' }])).allowed).toBe(false);
   });
 
   it('no marca cambio cuando solo se refresca la validación remota', async () => {

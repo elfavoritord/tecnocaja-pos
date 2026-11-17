@@ -11,6 +11,7 @@
  */
 
 const FacturaPlantillas = require('../../../js/factura-plantillas');
+const InfoAdicional = require('../../../js/producto-info-adicional');
 
 const METODOS = {
   efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia', mixto: 'Pago mixto',
@@ -173,9 +174,12 @@ function ventaAFactura(venta, cfg = {}, { qrDataUrl = '' } = {}) {
       };
     }
     const combo = lineasDeCombo(it, cfg);
+    // Información adicional del producto (getReceiptItemInfoLines en js/ventas.js).
+    const detalle = InfoAdicional.lineas(it.infoAdicional, { codigo: it.codigo }).map(textoLimpio).filter(Boolean);
     return {
       descripcion: it.nombre,
       ...(combo.length ? { nota: `Incluye: ${combo.join(', ')}` } : {}),
+      ...(detalle.length ? { detalle } : {}),
       cantidad: it.qty, unidad: it.unitLabel || 'Unidad', precio: it.precio, itbisPct: rate, itbisMonto: monto, total: Number(it.total || 0),
     };
   });

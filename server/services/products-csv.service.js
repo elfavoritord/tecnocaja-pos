@@ -28,7 +28,23 @@ const PRODUCT_CSV_COLUMNS = [
   { key: 'tiempoPreparacion', label: 'Tiempo Preparación' },
   { key: 'imagenUrl', label: 'Imagen URL' },
   { key: 'imagenLocal', label: 'Imagen Local' },
+  // Pestaña Detalles de la ficha (js/producto-info-adicional.js).
+  { key: 'descripcionAdicional', label: 'Descripción Adicional' },
+  { key: 'especificaciones', label: 'Especificaciones' },
+  { key: 'procedencia', label: 'Procedencia' },
+  { key: 'observaciones', label: 'Observaciones' },
+  { key: 'mostrarInfoFactura', label: 'Mostrar Info en Factura' },
 ];
+
+// Columnas de la información adicional: si el archivo trae alguna, se guarda
+// lo que trae y lo demás queda como estaba en el producto.
+const INFO_ADICIONAL_CSV = {
+  descripcionAdicional: 'descripcion',
+  especificaciones: 'especificaciones',
+  procedencia: 'procedencia',
+  observaciones: 'observaciones',
+  mostrarInfoFactura: 'mostrarEnFactura',
+};
 
 const HEADER_ALIASES = {
   codigo: 'codigo',
@@ -87,6 +103,18 @@ const HEADER_ALIASES = {
   preparacion: 'tiempoPreparacion',
   imagenurl: 'imagenUrl',
   imageurl: 'imagenUrl',
+  descripcionadicional: 'descripcionAdicional',
+  especificaciones: 'especificaciones',
+  especificacionestecnicas: 'especificaciones',
+  procedencia: 'procedencia',
+  paisdeprocedencia: 'procedencia',
+  paisprocedencia: 'procedencia',
+  pais: 'procedencia',
+  observaciones: 'observaciones',
+  observacionesadicionales: 'observaciones',
+  mostrarinfoenfactura: 'mostrarInfoFactura',
+  mostrarinfofactura: 'mostrarInfoFactura',
+  mostrarenfactura: 'mostrarInfoFactura',
   imagen_local: 'imagenLocal',
   imagenlocal: 'imagenLocal',
   imagelocal: 'imagenLocal',
@@ -263,7 +291,30 @@ function normalizeProductCsvRow(rawRow = {}, rowNumber = 0, providedFields = [])
     tiempoPreparacion: Math.max(0, Math.round(parseDecimalLike(rawRow.tiempoPreparacion, 15))),
     imagenUrl: String(rawRow.imagenUrl || '').trim(),
     imagenLocal: String(rawRow.imagenLocal || '').trim(),
+    descripcionAdicional: String(rawRow.descripcionAdicional ?? ''),
+    especificaciones: String(rawRow.especificaciones ?? ''),
+    procedencia: String(rawRow.procedencia ?? ''),
+    observaciones: String(rawRow.observaciones ?? ''),
+    mostrarInfoFactura: parseBooleanLike(rawRow.mostrarInfoFactura, false),
   };
+}
+
+// La información adicional que queda en el producto después de importar la
+// fila, o undefined si el archivo no trae ninguna de esas columnas (no se toca).
+function infoAdicionalDeFilaCsv(record = {}, existente = null) {
+  const columnas = Object.keys(INFO_ADICIONAL_CSV).filter((key) => (record.providedFields || []).includes(key));
+  if (!columnas.length) return undefined;
+  let base = {};
+  try {
+    base = existente ? (typeof existente === 'string' ? JSON.parse(existente) : existente) || {} : {};
+  } catch (_) {
+    base = {};
+  }
+  const info = { ...base };
+  columnas.forEach((key) => {
+    info[INFO_ADICIONAL_CSV[key]] = record[key];
+  });
+  return info;
 }
 
 // Excel (sobre todo en Windows en espa\u00F1ol) suele arruinar el UTF-8 de un CSV
@@ -365,6 +416,23 @@ function mapProductRowToCsvRecord(row = {}) {
     tiempoPreparacion: Number(row.preparation_time_minutes ?? row.tiempoPreparacion ?? 15),
     imagenUrl: row.image_url || row.imagenUrl || '',
     imagenLocal: row.image_local || row.imagenLocal || '',
+    ...infoAdicionalParaCsv(row.info_adicional ?? row.infoAdicional),
+  };
+}
+
+function infoAdicionalParaCsv(raw) {
+  let info = {};
+  try {
+    info = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) || {} : {};
+  } catch (_) {
+    info = {};
+  }
+  return {
+    descripcionAdicional: info.descripcion || '',
+    especificaciones: info.especificaciones || '',
+    procedencia: info.procedencia || '',
+    observaciones: info.observaciones || '',
+    mostrarInfoFactura: info.mostrarEnFactura ? 'Sí' : 'No',
   };
 }
 
@@ -401,6 +469,7 @@ module.exports = {
   PRODUCTS_CSV_CURRENT_FILE,
   PRODUCTS_CSV_DIR,
   PRODUCT_CSV_COLUMNS,
+  infoAdicionalDeFilaCsv,
   buildProductsCsvContent,
   parseProductsCsvBuffer,
   writeProductsCsvSnapshot,

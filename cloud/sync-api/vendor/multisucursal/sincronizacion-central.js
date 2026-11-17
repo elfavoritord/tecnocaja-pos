@@ -82,6 +82,29 @@ function texto(valor, max) {
   return String(valor == null ? '' : valor).trim().replace(/\s+/g, ' ').slice(0, max);
 }
 
+// Información adicional del producto (descripción, especificaciones,
+// procedencia y observaciones; js/producto-info-adicional.js en el POS). Con
+// saltos de línea y sus largos; va solo si tiene texto.
+function infoAdicionalProducto(valor) {
+  if (!valor || typeof valor !== 'object') return null;
+  const multilinea = (v, max) => String(v == null ? '' : v)
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((linea) => linea.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, max);
+  const info = {
+    descripcion: multilinea(valor.descripcion, 1000),
+    especificaciones: multilinea(valor.especificaciones, 2000),
+    procedencia: texto(valor.procedencia, 60),
+    observaciones: multilinea(valor.observaciones, 1000),
+    mostrarEnFactura: valor.mostrarEnFactura === true,
+  };
+  return info.descripcion || info.especificaciones || info.procedencia || info.observaciones ? info : null;
+}
+
 function numero(valor) {
   const n = Number(valor);
   return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
@@ -270,6 +293,8 @@ function createSincronizacionCentral({ db, now = () => new Date(), randomUUID = 
       itbisMonto: numero(p.itbisMonto),
       // ITBIS incluido en el precio (método 3): solo cuando está marcado.
       ...(p.aplicaItbis && p.itbisIncluido === true ? { itbisIncluido: true } : {}),
+      // Información adicional (pestaña Detalles): solo cuando tiene texto.
+      ...(infoAdicionalProducto(p.infoAdicional) ? { infoAdicional: infoAdicionalProducto(p.infoAdicional) } : {}),
       tracksStock: p.tracksStock !== false,
       estado: p.estado === 'Inactivo' ? 'Inactivo' : 'Activo',
       precioSugerido: numero(p.precioSugerido),

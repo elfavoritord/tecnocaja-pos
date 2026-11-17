@@ -584,6 +584,12 @@ function buildProductDynamicHighlights(product, limit = 3) {
   return chips.length ? `<div class="product-dynamic-highlights">${chips.join('')}</div>` : '';
 }
 
+// La pestaña "Opciones" solo aparece si el tipo de negocio o de producto tiene
+// algo que mostrar (tiempo de preparación, combo, opciones de pizza, campos propios).
+function syncProductOptionsTab() {
+  // Descuentos y condiciones de venta están disponibles en todos los negocios.
+}
+
 function syncProductBusinessFields() {
   const profile = getProductFormProfile();
   const typeValue = document.getElementById('mp-tipo')?.value || profile.typeOptions?.[0]?.[0] || 'general';
@@ -608,6 +614,7 @@ function syncProductBusinessFields() {
   });
   document.getElementById('mp-tiempo-group')?.classList.toggle('hidden', !showPrepTime);
   document.getElementById('mp-combo-group')?.classList.toggle('hidden', !showComboField);
+  syncProductOptionsTab();
   document.getElementById('mp-measure-hint-group')?.classList.toggle('hidden', !measureMode);
   document.getElementById('mp-weight-hint-group')?.classList.toggle('hidden', !weightMode);
 
@@ -623,7 +630,7 @@ function syncProductBusinessFields() {
 
   if (quantityBehavior) {
     quantityBehavior.textContent = weightMode
-      ? 'La cantidad se tomará desde la báscula. El cajero no la escribirá manualmente en ventas.'
+      ? 'El peso puede ingresarse manualmente o leerse desde una báscula.'
       : (measureMode
           ? 'La cantidad podrá editarse con decimales para vender por longitud, fracción o medida manual.'
           : 'La cantidad se manejará con el flujo tradicional por unidad.');
@@ -637,7 +644,7 @@ function syncProductBusinessFields() {
     const defaultScaleUnit = scaleUtils.getWeightUnitLabel
       ? scaleUtils.getWeightUnitLabel(DB.config?.scaleDefaultUnit || 'kg')
       : (DB.config?.scaleDefaultUnit || 'kg');
-    weightHint.textContent = `La venta se pesará en caja. Si la báscula envía el peso en ${defaultScaleUnit}, el sistema lo convertirá automáticamente a ${effectiveUnit}.`;
+    weightHint.textContent = `Ingresa el peso manualmente en ${effectiveUnit} o usa una báscula. Las lecturas en ${defaultScaleUnit} se convierten automáticamente.`;
   }
 
   const numericStep = saleMode === 'unidad' ? '1' : '0.01';
@@ -1249,7 +1256,7 @@ function resetProductScanner() {
     clearTimeout(productScannerState.timer);
     productScannerState.timer = null;
   }
-  updateProductScanHint('Puedes escribir el código manualmente o usar un lector de barras.');
+  updateProductScanHint('Código manual o lector de barras.');
 }
 
 function armProductScanner() {
@@ -1501,131 +1508,120 @@ function openProductModal(id) {
   document.getElementById('modal-title').textContent = prod ? 'Editar Producto' : 'Nuevo Producto';
   document.getElementById('modal-body').innerHTML = `
 
-    <!-- Fila imagen + campos básicos rápidos -->
-    <div class="mp-image-row">
-      <div class="mp-image-box ${hasExistingImg ? 'has-image' : ''}" onclick="document.getElementById('mp-image-file').click()" title="Clic para cambiar imagen">
+    <div class="product-tab-nav mp-main-tabs" role="tablist" aria-label="Ficha del producto">
+      <button type="button" class="product-tab-btn active" data-product-panel="0" onclick="switchProductTab(0)">${productsIcon('package', 22)}<span><strong>General</strong><small>Información, precio e inventario</small></span></button>
+      <button type="button" class="product-tab-btn" data-product-panel="3" onclick="switchProductTab(3)">${productsIcon('file-text', 22)}<span><strong>Detalles</strong><small>Descripción y procedencia</small></span></button>
+      <button type="button" class="product-tab-btn" data-product-panel="4" onclick="switchProductTab(4)">${productsIcon('settings', 22)}<span><strong>Opciones</strong><small>Tienda online y configuración</small></span></button>
+    </div>
+    <div class="product-tab-panel active mp-overview" id="product-tab-0">
+      <section class="mp-section mp-information">
+        <h4>${productsIcon('package', 18)} Información del producto</h4>
+        <div class="mp-information-layout"><div class="mp-photo-column"><div class="mp-image-box ${hasExistingImg ? 'has-image' : ''}" role="button" tabindex="0" aria-label="Elegir imagen del producto" onclick="document.getElementById('mp-image-file').click()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('mp-image-file').click()}" title="Clic para cambiar imagen">
         <img id="mp-image-preview" class="mp-image-preview" src="${hasExistingImg ? existingImgSrc : ''}" style="display:${hasExistingImg ? 'block' : 'none'}" onerror="this.style.display='none';document.getElementById('mp-image-placeholder').style.display='flex'">
         <div class="mp-image-placeholder" id="mp-image-placeholder" style="display:${hasExistingImg ? 'none' : 'flex'}">
           <span>📷</span>
           <small>Imagen</small>
         </div>
         <input type="file" id="mp-image-file" accept="image/*" style="display:none" onchange="handleProductImageSelect(this)">
-      </div>
-      <div class="mp-image-fields">
-        <div class="form-group">
-          <label>Código</label>
+      </div><small>Haz clic para elegir una imagen</small></div>
+        <div class="mp-information-fields"><div class="form-group mp-name-block">
+          <label for="mp-nombre">Nombre del producto *</label>
+          <input type="text" id="mp-nombre" class="form-input" value="${prod?prod.nombre:''}" placeholder="Nombre del producto">
+          <small id="mp-name-feedback" style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)"></small>
+          <div id="mp-name-suggestions" class="hidden"></div>
+        </div><div class="form-group">
+          <label for="mp-codigo">Código / código de barras *</label>
           <div class="scan-input-row">
             <input type="text" id="mp-codigo" class="form-input" value="${prod?prod.codigo:''}" placeholder="Escribe o escanea">
-            <button type="button" class="btn-secondary" onclick="armProductScanner()">📷</button>
+            <button type="button" class="btn-secondary mp-scan-btn" onclick="armProductScanner()" title="Escanear con el lector">${productsIcon('scan-barcode', 18) || '📷'}</button>
           </div>
           <small id="mp-code-feedback" style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)"></small>
-          <small id="product-scan-hint" style="display:block;margin-top:0.25rem;font-size:0.78rem;color:var(--text2)">Puedes escribir el código manualmente o usar un lector de barras.</small>
+          <small id="product-scan-hint" class="mp-scan-hint"></small>
+        </div><div class="mp-field-grid"><div class="form-group mp-category-block">
+      <label>Categoría</label>
+      <div class="scan-input-row">
+        <select id="mp-categoria" class="form-input">${cats}</select>
+        <button type="button" class="btn-secondary" onclick="toggleNewCategoryForm(true)" title="Agregar categoría" aria-label="Agregar categoría">+</button>
+      </div>
+      <div id="new-category-box" class="new-category-box hidden">
+        <input type="text" id="new-category-input" class="form-input" placeholder="Nueva categoría">
+        <div class="new-category-actions">
+          <button type="button" class="btn-primary" onclick="saveNewCategoryFromModal()">Guardar</button>
+          <button type="button" class="btn-ghost" onclick="toggleNewCategoryForm(false)">Cancelar</button>
         </div>
       </div>
-    </div>
-
-    <div class="form-group span-full mp-name-block">
-      <label>Nombre del producto</label>
-      <input type="text" id="mp-nombre" class="form-input" value="${prod?prod.nombre:''}" placeholder="Nombre del producto">
-      <small id="mp-name-feedback" style="display:block;margin-top:0.35rem;font-size:0.78rem;color:var(--text2)"></small>
-      <div id="mp-name-suggestions" class="hidden"></div>
-    </div>
-
-    ${renderProductBranchScopeField(prod)}
-
-    <!-- Multisucursal: catálogo de la empresa (js/multisucursal-enlace.js) -->
-    <div id="mp-empresa-scope" class="span-full"></div>
-
-    <!-- Campos básicos siempre visibles -->
-    <div class="modal-grid mp-basics-grid">
-      <div class="form-group span-full">
-        <label>Categoría</label>
-        <div class="scan-input-row">
-          <select id="mp-categoria" class="form-input">${cats}</select>
-          <button type="button" class="btn-secondary" onclick="toggleNewCategoryForm(true)">+</button>
-        </div>
-        <div id="new-category-box" class="new-category-box hidden">
-          <input type="text" id="new-category-input" class="form-input" placeholder="Nueva categoría">
-          <div class="new-category-actions">
-            <button type="button" class="btn-primary" onclick="saveNewCategoryFromModal()">Guardar</button>
-            <button type="button" class="btn-ghost" onclick="toggleNewCategoryForm(false)">Cancelar</button>
+    </div><div class="form-group"><label>Unidad</label><select id="mp-unidad" class="form-input">
+        ${buildUnitOptions(profile.unitOptions, selectedUnit)}
+      </select></div><div class="form-group"><label>Tipo de producto</label><select id="mp-tipo" class="form-input">${buildProductOptions(profile.typeOptions, selectedType, humanizeProductType(selectedType))}</select></div><div class="form-group"><label>Estado</label><select id="mp-estado" class="form-input"><option value="Activo" ${!prod || prod.estado === 'Activo' ? 'selected' : ''}>Activo</option><option value="Inactivo" ${prod && prod.estado === 'Inactivo' ? 'selected' : ''}>Inactivo</option></select></div></div></div></div>
+        <div class="mp-scope-fields">${renderProductBranchScopeField(prod)}<div id="mp-empresa-scope"></div></div>
+      </section>
+      <div class="mp-right-column">
+       <section class="mp-section mp-pricing"><h4>${productsIcon('coins', 18)} Precio e impuestos</h4><div class="mp-field-grid"><div class="form-group"><label>Costo (RD$)</label><input type="number" id="mp-pcompra" class="form-input" value="${prod?prod.precioCompra:''}" min="0" step="0.01"></div><div class="form-group"><label id="mp-price-label" for="mp-pventa">Precio de venta (RD$)</label><input type="number" id="mp-pventa" class="form-input" value="${prod?prod.precioVenta:''}" min="0" step="0.01"></div><div class="form-group span-full" id="mp-itbis-group">
+ <div class="mp-tax-grid">
+  <div class="form-group"><label for="mp-tax-method">Tipo de ITBIS</label>
+   <select id="mp-tax-method" class="form-input" onchange="setProductTaxMethod(this.value)">
+    <option value="exento">Sin ITBIS</option><option value="adicional">Se suma al precio</option><option value="incluido">ITBIS incluido en el precio</option><option value="fijo">Monto fijo por unidad</option>
+   </select>
+  </div>
+  <div class="form-group"><label for="mp-tax-rate">Tasa</label><input id="mp-tax-rate" class="form-input" value="${DB.config?.itbis ?? 18}%" readonly></div>
+ </div>
+ <div hidden>        <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
+          <input type="checkbox" id="mp-aplica-itbis" ${prod?.aplicaItbis ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+          <span>Aplicar ITBIS a este producto</span>
+        </label>
+        <div id="mp-itbis-modo-wrap" style="display:${prod?.aplicaItbis ? '' : 'none'};margin-top:0.55rem">
+          <div style="display:flex;gap:1rem;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
+              <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-pct" value="porcentaje" ${itbisMetodo === 'adicional' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+              <span>Se suma al precio (${DB.config?.itbis ?? 18}%)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
+              <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-monto" value="monto" ${itbisMetodo === 'fijo' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+              <span>Monto fijo (RD$)</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
+              <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-incluido" value="incluido" ${itbisMetodo === 'incluido' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
+              <span>Ya incluido en el precio (${DB.config?.itbis ?? 18}%)</span>
+            </label>
           </div>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Tipo</label>
-        <select id="mp-tipo" class="form-input">
-          ${buildProductOptions(profile.typeOptions, selectedType, humanizeProductType(selectedType))}
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Estado</label>
-        <select id="mp-estado" class="form-input">
-          <option value="Activo" ${!prod || prod.estado === 'Activo' ? 'selected' : ''}>Activo</option>
-          <option value="Inactivo" ${prod && prod.estado === 'Inactivo' ? 'selected' : ''}>Inactivo</option>
-        </select>
-      </div>
-    </div>
-
-    <!-- Tabs: Precios / Avanzado -->
-    <div class="product-tab-nav">
-      <button class="product-tab-btn active" onclick="switchProductTab(0)">💰 Precios</button>
-      <button class="product-tab-btn" onclick="switchProductTab(1)">⚙️ Avanzado</button>
-      ${window.TiendaOnline?.productTabButton?.(2) || ''}
-    </div>
-
-    <!-- TAB 0: Precio e inventario -->
-    <div class="product-tab-panel modal-grid active" id="product-tab-0">
-      <div class="form-group"><label>Precio Compra (RD$)</label><input type="number" id="mp-pcompra" class="form-input" value="${prod?prod.precioCompra:''}" min="0" step="0.01"></div>
-      <div class="form-group"><label>Precio Venta (RD$)</label><input type="number" id="mp-pventa" class="form-input" value="${prod?prod.precioVenta:''}" min="0" step="0.01"></div>
-      <div class="span-full product-toggle-grid">
-        <div class="form-group compact-toggle-card" id="mp-tracks-stock-group">
-          <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
-            <input type="checkbox" id="mp-tracks-stock" ${prod?.tracksStock !== false ? 'checked' : ''} style="width:auto" onchange="syncProductBusinessFields()">
-            <span>Controlar inventario (existencias)</span>
-          </label>
-          <p id="mp-no-stock-hint" style="margin:0.4rem 0 0;color:var(--text2);font-size:0.82rem;line-height:1.45;display:${prod?.tracksStock === false ? '' : 'none'}">
-            Sin control de inventario. El stock no se descontará al vender. Ideal para productos a granel, vendidos por peso o servicios sin existencias fijas.
+</div></div>
+          <p id="mp-itbis-incluido-hint" style="display:${itbisMetodo === 'incluido' ? '' : 'none'};margin:0.4rem 0 0;color:var(--text2);font-size:0.78rem;line-height:1.4">
+            El precio de venta ya incluye el ITBIS; no se suma al cobrar.
           </p>
-        </div>
-        <div class="form-group compact-toggle-card"><label><input type="checkbox" id="mp-propina-legal" ${prod?.propinaLegal ? 'checked' : ''}> Comida / bebida sujeta a propina legal al consumirse en el local</label><small>Solo cuenta si la propina legal está activa con el alcance «Solo productos marcados». Con «A todo lo consumido» se cobra en todos los productos.</small></div>
-        <div class="form-group compact-toggle-card" id="mp-itbis-group">
-          <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
-            <input type="checkbox" id="mp-aplica-itbis" ${prod?.aplicaItbis ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
-            <span>Aplicar ITBIS a este producto</span>
-          </label>
-          <div id="mp-itbis-modo-wrap" style="display:${prod?.aplicaItbis ? '' : 'none'};margin-top:0.55rem">
-            <div style="display:flex;gap:1rem;flex-wrap:wrap">
-              <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
-                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-pct" value="porcentaje" ${itbisMetodo === 'adicional' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
-                <span>Se suma al precio (${DB.config?.itbis ?? 18}%)</span>
-              </label>
-              <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
-                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-monto" value="monto" ${itbisMetodo === 'fijo' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
-                <span>Monto fijo (RD$)</span>
-              </label>
-              <label style="display:flex;align-items:center;gap:0.35rem;cursor:pointer;font-weight:400">
-                <input type="radio" name="mp-itbis-modo" id="mp-itbis-modo-incluido" value="incluido" ${itbisMetodo === 'incluido' ? 'checked' : ''} style="width:auto" onchange="syncProductItbisFields()">
-                <span>Ya incluido en el precio (${DB.config?.itbis ?? 18}%)</span>
-              </label>
-            </div>
-            <p id="mp-itbis-incluido-hint" style="display:${itbisMetodo === 'incluido' ? '' : 'none'};margin:0.4rem 0 0;color:var(--text2);font-size:0.78rem;line-height:1.4">
-              El precio de venta es lo que paga el cliente. El sistema saca la base y el ITBIS de adentro (precio ÷ ${Number((1 + Number(DB.config?.itbis ?? 18) / 100).toFixed(4))}); el precio no sube.
+          <div id="mp-itbis-monto-wrap" style="display:${itbisMetodo === 'fijo' ? '' : 'none'};margin-top:0.5rem">
+            <label>ITBIS fijo por unidad (RD$)</label>
+            <input type="number" id="mp-itbis-monto" class="form-input" style="max-width:160px" value="${prod?.itbisMonto || ''}" min="0" step="0.01" placeholder="0.00">
+            <p style="margin:0.35rem 0 0;color:var(--text2);font-size:0.74rem;line-height:1.35">
+              Se cobra tal cual en Ticket. En NCF/e-CF se convierte a la tasa DGII más cercana (0/16/18%).
             </p>
-            <div id="mp-itbis-monto-wrap" style="display:${itbisMetodo === 'fijo' ? '' : 'none'};margin-top:0.5rem">
-              <label>ITBIS fijo por unidad (RD$)</label>
-              <input type="number" id="mp-itbis-monto" class="form-input" style="max-width:160px" value="${prod?.itbisMonto || ''}" min="0" step="0.01" placeholder="0.00">
-              <p style="margin:0.35rem 0 0;color:var(--text2);font-size:0.74rem;line-height:1.35">
-                Se cobra tal cual en Ticket. En NCF/e-CF se convierte a la tasa DGII más cercana (0/16/18%).
-              </p>
-            </div>
           </div>
-        </div>
-        ${window.CombosPersonalizados?.campoProducto?.(prod) || ''}
+      </div><div class="mp-price-breakdown span-full"><div><span>Precio sin ITBIS</span><strong id="mp-base-preview">RD$0.00</strong></div><div><span id="mp-tax-amount-label">ITBIS</span><strong id="mp-tax-preview">RD$0.00</strong></div><div><span>Precio final</span><strong id="mp-final-preview">RD$0.00</strong></div></div></div></section>
+       <section class="mp-section mp-inventory"><h4>${productsIcon('package', 18)} Inventario</h4><div class="mp-inventory-fields"><div class="form-group" id="mp-stock-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Existencias</label><input type="number" id="mp-stock" class="form-input" value="${prod?prod.stock:0}" min="0"></div><div class="form-group" id="mp-stockmin-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Mínimo</label><input type="number" id="mp-stockmin" class="form-input" value="${prod?prod.stockMin:5}" min="0"></div><div class="form-group"><label>Venta por</label><select id="mp-sale-mode" class="form-input">
+        ${buildProductOptions(PRODUCT_SALE_MODE_OPTIONS, selectedSaleMode, 'Unidad')}
+      </select></div></div><div class="form-group span-full compact-toggle-card" id="mp-tracks-stock-group">
+        <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
+          <input type="checkbox" id="mp-tracks-stock" ${prod?.tracksStock !== false ? 'checked' : ''} style="width:auto" onchange="syncProductBusinessFields()">
+          <span>Controlar inventario (existencias)</span>
+        </label>
+        <p id="mp-no-stock-hint" style="margin:0.4rem 0 0;color:var(--text2);font-size:0.82rem;line-height:1.45;display:${prod?.tracksStock === false ? '' : 'none'}">
+          Sin control de inventario. El stock no se descontará al vender. Ideal para productos a granel, vendidos por peso o servicios sin existencias fijas.
+        </p>
+      </div><div class="form-group span-full" id="mp-quantity-behavior-group" style="background:var(--panel2);border:1px solid var(--border);border-radius:0.65rem;padding:0.75rem 0.9rem">
+        <label style="display:block;margin-bottom:0.3rem">Comportamiento en caja</label>
+        <div id="mp-quantity-behavior" style="color:var(--text2);line-height:1.45">La cantidad se manejará con el flujo tradicional por unidad.</div>
+      </div><div class="form-group span-full hidden" id="mp-measure-hint-group" style="background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.24);border-radius:0.65rem;padding:0.75rem 0.9rem">
+        <label style="display:block;margin-bottom:0.3rem">Venta por medida</label>
+        <div id="mp-measure-hint" style="color:var(--text2);line-height:1.45">Ejemplo: 1.5 metros o 0.75 metros.</div>
+      </div><div class="form-group span-full hidden" id="mp-weight-hint-group" style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.22);border-radius:0.65rem;padding:0.75rem 0.9rem">
+        <label style="display:block;margin-bottom:0.3rem">Venta por peso</label>
+        <div id="mp-weight-hint" style="color:var(--text2);line-height:1.45">El peso puede ingresarse manualmente o leerse desde una báscula.</div>
+      </div></section>
       </div>
-      <div class="form-group" id="mp-stock-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Actual</label><input type="number" id="mp-stock" class="form-input" value="${prod?prod.stock:0}" min="0"></div>
-      <div class="form-group" id="mp-stockmin-group" style="display:${prod?.tracksStock === false ? 'none' : ''}"><label>Stock Mínimo</label><input type="number" id="mp-stockmin" class="form-input" value="${prod?prod.stockMin:5}" min="0"></div>
-      <div class="form-group span-full compact-toggle-card" id="mp-descuento-group">
+    </div>
+    <div class="product-tab-panel modal-grid mp-section" id="product-tab-3">${buildProductInfoAdicionalMarkup(prod)}</div>
+    <div class="product-tab-panel modal-grid mp-section" id="product-tab-4">
+      <h4 class="span-full">${productsIcon('settings', 18)} Opciones del producto</h4>
+<div class="form-group span-full compact-toggle-card" id="mp-descuento-group">
         <label>Descuento (%)</label>
         <input type="number" id="mp-descuento" class="form-input" style="max-width:160px" value="${prod?.descuentoPct ? prod.descuentoPct : ''}" min="0" max="100" step="0.01" placeholder="0">
         <label class="toggle-switch" id="mp-descuento-hasta-agotar-wrap"
@@ -1636,28 +1632,9 @@ function openProductModal(id) {
         <p style="margin:0.4rem 0 0;color:var(--text2);font-size:0.78rem;line-height:1.4">
           Si no marcas la casilla, el descuento se mantiene activo hasta que lo quites manualmente.
         </p>
-      </div>
-    </div>
-
-    <!-- TAB 1: Config. avanzada -->
-    <div class="product-tab-panel modal-grid" id="product-tab-1">
-      <div class="form-group"><label>Unidad</label><select id="mp-unidad" class="form-input">
-        ${buildUnitOptions(profile.unitOptions, selectedUnit)}
-      </select></div>
-      <div class="form-group"><label>Venta por</label><select id="mp-sale-mode" class="form-input">
-        ${buildProductOptions(PRODUCT_SALE_MODE_OPTIONS, selectedSaleMode, 'Unidad')}
-      </select></div>
-      <div class="form-group span-full" id="mp-quantity-behavior-group" style="background:var(--panel2);border:1px solid var(--border);border-radius:0.65rem;padding:0.75rem 0.9rem">
-        <label style="display:block;margin-bottom:0.3rem">Comportamiento en caja</label>
-        <div id="mp-quantity-behavior" style="color:var(--text2);line-height:1.45">La cantidad se manejará con el flujo tradicional por unidad.</div>
-      </div>
-      <div class="form-group span-full hidden" id="mp-measure-hint-group" style="background:rgba(14,165,233,0.08);border:1px solid rgba(14,165,233,0.24);border-radius:0.65rem;padding:0.75rem 0.9rem">
-        <label style="display:block;margin-bottom:0.3rem">Venta por medida</label>
-        <div id="mp-measure-hint" style="color:var(--text2);line-height:1.45">Ejemplo: 1.5 metros o 0.75 metros.</div>
-      </div>
-      <div class="form-group span-full hidden" id="mp-weight-hint-group" style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.22);border-radius:0.65rem;padding:0.75rem 0.9rem">
-        <label style="display:block;margin-bottom:0.3rem">Venta por peso</label>
-        <div id="mp-weight-hint" style="color:var(--text2);line-height:1.45">La venta se pesará en caja usando la báscula configurada.</div>
+      </div><div class="span-full product-toggle-grid">
+        <div class="form-group compact-toggle-card"><label><input type="checkbox" id="mp-propina-legal" ${prod?.propinaLegal ? 'checked' : ''}> Comida / bebida sujeta a propina legal al consumirse en el local</label><small>Solo cuenta si la propina legal está activa con el alcance «Solo productos marcados». Con «A todo lo consumido» se cobra en todos los productos.</small></div>
+        ${window.CombosPersonalizados?.campoProducto?.(prod) || ''}
       </div>
       <div class="form-group" id="mp-combo-group"><label>¿Es combo?</label><select id="mp-combo" class="form-input">
         <option value="no" ${prod?.esCombo ? '' : 'selected'}>No</option>
@@ -1673,12 +1650,16 @@ function openProductModal(id) {
       <div class="form-group span-full" id="mp-bordes-group"><label>Bordes</label><input type="text" id="mp-bordes" class="form-input" value="${prod?(prod.bordes||[]).join(', '):''}" placeholder="Normal, Queso, Ajo parmesano"></div>
       <div class="form-group span-full" id="mp-extras-group"><label>Extras</label><input type="text" id="mp-extras" class="form-input" value="${prod?(prod.extras||[]).join(', '):''}" placeholder="Extra queso, Pepperoni, Bacon"></div>
       ${buildDynamicFieldsMarkup(profile, prod)}
+    <div class="span-full mp-online-settings">${window.TiendaOnline?.productTabPanel?.(5, prod) || ''}</div>
     </div>
-
-    ${window.TiendaOnline?.productTabPanel?.(2, prod) || ''}
   `;
   document.getElementById('modal-footer').innerHTML = `
-    <div class="product-footer-summary">
+    <div class="product-footer-summary"><div class="mp-summary-heading"><strong>Resumen del producto</strong><small>Cálculos automáticos</small></div>      <div class="product-footer-sale">
+        <label>Se venderá en</label>
+        <strong id="product-sale-price-preview">RD$0.00</strong>
+        <small id="product-sale-price-note" style="display:none"></small>
+      </div>
+
       <div class="product-form-card">
         <label>Utilidad</label>
         <strong id="product-profit-preview">RD$ 0.00</strong>
@@ -1692,14 +1673,8 @@ function openProductModal(id) {
         <strong id="product-stock-value-preview">RD$ 0.00</strong>
       </div>
     </div>
-    <div class="product-footer-bottom">
-      <div class="product-footer-sale">
-        <label>Se venderá en</label>
-        <strong id="product-sale-price-preview">RD$0.00</strong>
-        <small id="product-sale-price-note" style="display:none"></small>
-      </div>
+    <div class="product-footer-bottom"><small class="mp-required-note">* Nombre y código son obligatorios.</small>
       <div class="product-footer-actions">
-        <button class="btn-secondary" onclick="closeAllModals()">Cancelar</button>
         ${id ? `
         <div class="product-footer-more">
           <button type="button" class="btn-ghost" onclick="toggleProductFooterMenu(event)">⋮ Más</button>
@@ -1709,7 +1684,7 @@ function openProductModal(id) {
             <button type="button" style="color:var(--danger,#ef4444)" onclick="closeProductFooterMenu();closeAllModals();deleteProduct(${id})">🗑 Eliminar</button>
           </div>
         </div>` : ''}
-        <button class="btn-primary" onclick="saveProduct(${id||'null'})">💾 Guardar</button>
+        <button type="button" class="btn-primary" data-product-save onclick="saveProduct(${id||'null'})">Guardar</button>
       </div>
     </div>
   `;
@@ -1727,13 +1702,118 @@ function openProductModal(id) {
   document.getElementById('mp-codigo')?.addEventListener('keydown', handleProductCodeEnter);
   document.getElementById('mp-codigo')?.addEventListener('input', () => validateProductIdentity());
   document.getElementById('mp-nombre')?.addEventListener('input', () => validateProductIdentity());
-  document.getElementById('mp-codigo')?.focus();
+  document.getElementById('mp-nombre')?.focus();
   resetProductScanner();
   validateProductIdentity();
   updateProductPreview();
   syncProductBusinessFields();
   syncProductItbisFields();
+  switchProductTab(0);
+  ['mp-info-descripcion', 'mp-info-especificaciones', 'mp-info-procedencia', 'mp-info-observaciones', 'mp-info-mostrar', 'mp-nombre', 'mp-codigo']
+    .forEach((fieldId) => document.getElementById(fieldId)?.addEventListener('input', updateProductInfoPreview));
+  document.getElementById('mp-info-mostrar')?.addEventListener('change', updateProductInfoPreview);
+  updateProductInfoPreview();
 }
+
+// ─── Pestaña Detalles: información adicional para la factura ──────────────────
+// Descripción, especificaciones técnicas, país de procedencia y observaciones
+// (js/producto-info-adicional.js). Todo opcional. Sale debajo del nombre en el
+// ticket, la factura A4 y el PDF si el negocio lo activó (Configuración →
+// Facturación) y el producto tiene marcado "Mostrar en la factura". Solo se
+// cambia aquí, no en la venta (decisión de Emilio, 2026-11-16).
+function getInfoAdicionalConfig() {
+  return window.ProductoInfoAdicional?.configFactura(DB.config?.infoAdicionalFactura) || { activo: false, nuevosMuestran: true };
+}
+
+function buildProductInfoAdicionalMarkup(prod) {
+  const Info = window.ProductoInfoAdicional;
+  if (!Info) return '';
+  const info = Info.normalizar(prod?.infoAdicional || {});
+  const cfg = getInfoAdicionalConfig();
+  const mostrar = prod ? info.mostrarEnFactura : cfg.nuevosMuestran;
+  const esc = escapeProductIdentityHtml;
+  const paises = Info.PAISES.map((pais) => `<option value="${esc(pais)}"></option>`).join('');
+  const aviso = cfg.activo
+    ? ''
+    : `<div class="form-group span-full mp-info-aviso">
+        Para que salga en las facturas, actívalo en <strong>Configuración → Facturación → Descripciones adicionales en facturas</strong>. Igual puedes escribirla ahora.
+      </div>`;
+  return `
+      ${aviso}
+      <div class="form-group span-full">
+        <label for="mp-info-descripcion">Descripción adicional</label>
+        <textarea id="mp-info-descripcion" class="form-input" rows="3" maxlength="${Info.LIMITES.descripcion}"
+          placeholder="Para qué sirve o en qué se usa. Ej.: Corte de porcelanato, Dekton, Neolith e Infinity.">${esc(info.descripcion)}</textarea>
+      </div>
+      <div class="form-group span-full">
+        <label for="mp-info-especificaciones">Especificaciones técnicas</label>
+        <textarea id="mp-info-especificaciones" class="form-input" rows="3" maxlength="${Info.LIMITES.especificaciones}"
+          placeholder="Medidas, materiales, compatibilidad…">${esc(info.especificaciones)}</textarea>
+      </div>
+      <div class="form-group">
+        <label for="mp-info-procedencia">País de procedencia</label>
+        <input type="text" id="mp-info-procedencia" class="form-input" list="mp-info-paises" maxlength="${Info.LIMITES.procedencia}"
+          value="${esc(info.procedencia)}" placeholder="Busca o escribe el país" autocomplete="off">
+        <datalist id="mp-info-paises">${paises}</datalist>
+      </div>
+      <div class="form-group compact-toggle-card mp-info-mostrar-card">
+        <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
+          <input type="checkbox" id="mp-info-mostrar" ${mostrar ? 'checked' : ''} style="width:auto">
+          <span>Mostrar en la factura</span>
+        </label>
+      </div>
+      <div class="form-group span-full">
+        <label for="mp-info-observaciones">Observaciones adicionales</label>
+        <textarea id="mp-info-observaciones" class="form-input" rows="2" maxlength="${Info.LIMITES.observaciones}"
+          placeholder="Otra información para el cliente (garantía, recomendaciones…)">${esc(info.observaciones)}</textarea>
+      </div>
+      <div class="form-group span-full mp-info-preview-wrap">
+        <label>Así se verá en la factura</label>
+        <div id="mp-info-preview" class="mp-info-preview"></div>
+      </div>
+  `;
+}
+window.buildProductInfoAdicionalMarkup = buildProductInfoAdicionalMarkup;
+
+// Lo que se guarda en el producto, o undefined si la pestaña no está en pantalla
+// (así no se borra lo que tenía).
+function readProductInfoAdicional() {
+  if (!document.getElementById('mp-info-descripcion')) return undefined;
+  const valor = (fieldId) => document.getElementById(fieldId)?.value || '';
+  return {
+    descripcion: valor('mp-info-descripcion'),
+    especificaciones: valor('mp-info-especificaciones'),
+    procedencia: valor('mp-info-procedencia'),
+    observaciones: valor('mp-info-observaciones'),
+    mostrarEnFactura: document.getElementById('mp-info-mostrar')?.checked === true,
+  };
+}
+
+function updateProductInfoPreview() {
+  const box = document.getElementById('mp-info-preview');
+  const Info = window.ProductoInfoAdicional;
+  if (!box || !Info) return;
+  const esc = escapeProductIdentityHtml;
+  const info = readProductInfoAdicional() || {};
+  const cfg = getInfoAdicionalConfig();
+  // Se muestra lo que saldría con la configuración del negocio (si está apagada,
+  // lo que saldría al activarla).
+  const copia = Info.paraVenta({ ...info, mostrarEnFactura: true }, { ...cfg, activo: true });
+  const nombre = document.getElementById('mp-nombre')?.value.trim() || 'Nombre del producto';
+  const codigo = document.getElementById('mp-codigo')?.value.trim() || '';
+  if (!copia) {
+    box.innerHTML = `<span class="mp-info-preview-vacio">Escribe una descripción, especificaciones o la procedencia para verla aquí.</span>`;
+    return;
+  }
+  const lineas = Info.lineas(copia, { codigo });
+  const apagado = !cfg.activo || info.mostrarEnFactura !== true;
+  box.classList.toggle('is-off', apagado);
+  box.innerHTML = `<strong>${esc(nombre)}</strong>${lineas.map((linea) => `<span>${esc(linea)}</span>`).join('')}`
+    + (apagado
+      ? `<em class="mp-info-preview-nota">${!cfg.activo ? 'No sale en la factura hasta activarlo en Configuración.' : 'No sale en la factura: marca «Mostrar en la factura».'}</em>`
+      : '');
+}
+window.updateProductInfoPreview = updateProductInfoPreview;
 
 function syncProductItbisFields() {
   const aplica = document.getElementById('mp-aplica-itbis')?.checked ?? false;
@@ -1741,11 +1821,28 @@ function syncProductItbisFields() {
   if (modoWrap) modoWrap.style.display = aplica ? '' : 'none';
   const esMonto = document.getElementById('mp-itbis-modo-monto')?.checked ?? false;
   const montoWrap = document.getElementById('mp-itbis-monto-wrap');
-  if (montoWrap) montoWrap.style.display = esMonto ? '' : 'none';
+  if (montoWrap) montoWrap.style.display = aplica && esMonto ? '' : 'none';
   const incluidoHint = document.getElementById('mp-itbis-incluido-hint');
-  if (incluidoHint) incluidoHint.style.display = document.getElementById('mp-itbis-modo-incluido')?.checked ? '' : 'none';
+  if (incluidoHint) incluidoHint.style.display = aplica && document.getElementById('mp-itbis-modo-incluido')?.checked ? '' : 'none';
+  const method = document.getElementById('mp-tax-method');
+  if (method) method.value = !aplica ? 'exento' : (esMonto ? 'fijo' : (document.getElementById('mp-itbis-modo-incluido')?.checked ? 'incluido' : 'adicional'));
+  const included = aplica && document.getElementById('mp-itbis-modo-incluido')?.checked === true;
+  const priceLabel = document.getElementById('mp-price-label');
+  if (priceLabel) priceLabel.textContent = included ? 'Precio final con ITBIS (RD$)' : 'Precio de venta (RD$)';
+  const taxLabel = document.getElementById('mp-tax-amount-label');
+  if (taxLabel) taxLabel.textContent = included ? `ITBIS incluido (${DB.config?.itbis ?? 18}%)` : 'ITBIS';
+  const rate = document.getElementById('mp-tax-rate');
+  if (rate) rate.value = !aplica ? '0%' : (esMonto ? 'Monto fijo' : `${DB.config?.itbis ?? 18}%`);
   updateProductPreview();
 }
+function setProductTaxMethod(method) {
+  document.getElementById('mp-aplica-itbis').checked = method !== 'exento';
+  document.getElementById('mp-itbis-modo-pct').checked = method === 'adicional' || method === 'exento';
+  document.getElementById('mp-itbis-modo-monto').checked = method === 'fijo';
+  document.getElementById('mp-itbis-modo-incluido').checked = method === 'incluido';
+  syncProductItbisFields();
+}
+window.setProductTaxMethod = setProductTaxMethod;
 window.syncProductItbisFields = syncProductItbisFields;
 
 function closeProductFooterMenu() {
@@ -1767,9 +1864,18 @@ document.addEventListener('click', (event) => {
 });
 
 function switchProductTab(index) {
-  document.querySelectorAll('.product-tab-btn').forEach((btn, i) => btn.classList.toggle('active', i === index));
-  document.querySelectorAll('.product-tab-panel').forEach((panel, i) => panel.classList.toggle('active', i === index));
+  const target = [1, 2].includes(Number(index)) ? 0 : (Number(index) === 5 ? 4 : Number(index));
+  document.querySelectorAll('.mp-main-tabs .product-tab-btn').forEach((btn) => {
+    const active = Number(btn.dataset.productPanel) === target;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+    btn.setAttribute('role', 'tab');
+  });
+  [0, 3, 4].forEach((id) => document.getElementById(`product-tab-${id}`)?.classList.toggle('active', id === target));
+  const body = document.getElementById('modal-body');
+  if (body) body.scrollTop = 0;
 }
+
 window.switchProductTab = switchProductTab;
 
 function editProduct(id) { openProductModal(id); }
@@ -1847,6 +1953,14 @@ function updateProductPreview() {
   if (profitPreview) profitPreview.textContent = fmt(utilidad);
   if (marginPreview) marginPreview.textContent = `${margen.toFixed(1)}%`;
   if (stockValuePreview) stockValuePreview.textContent = fmt(stock * compra);
+  const fixedTax = document.getElementById('mp-itbis-modo-monto')?.checked === true;
+  const appliedTax = document.getElementById('mp-aplica-itbis')?.checked === true;
+  const includedTax = appliedTax && document.getElementById('mp-itbis-modo-incluido')?.checked === true;
+  const tax = !appliedTax ? 0 : (includedTax ? Number((venta - ventaSinItbis).toFixed(2)) : (fixedTax ? Math.max(0, parseFloat(document.getElementById('mp-itbis-monto')?.value) || 0) : Number((venta * Number(DB.config?.itbis ?? 18) / 100).toFixed(2))));
+  [['mp-base-preview', includedTax ? ventaSinItbis : venta], ['mp-tax-preview', tax], ['mp-final-preview', includedTax ? venta : venta + tax]].forEach(([id, value]) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = fmt(value);
+  });
   if (!salePricePreview) return;
 
   // "Se venderá en" muestra el precio REAL que paga el cliente (precio +
@@ -1939,6 +2053,8 @@ async function saveProduct(id) {
     descuentoPct: Math.min(100, Math.max(0, parseFloat(document.getElementById('mp-descuento')?.value) || 0)),
     descuentoHastaAgotar: document.getElementById('mp-descuento-hasta-agotar')?.checked ?? false,
     metaNegocio: readDynamicProductFields(profile),
+    // Pestaña Detalles: descripción, especificaciones, procedencia y observaciones.
+    infoAdicional: readProductInfoAdicional(),
     // Multisucursal: en la principal, si el producto va a la empresa.
     ...(window.MultisucursalEnlace?.leerDeProducto?.() || {})
   };
@@ -1952,14 +2068,9 @@ async function saveProduct(id) {
   }
 
   const saveButton = document.querySelector('#modal-footer .btn-primary');
-  const cancelButton = document.querySelector('#modal-footer .btn-secondary');
   if (saveButton) {
     saveButton.disabled = true;
     saveButton.style.opacity = '0.7';
-  }
-  if (cancelButton) {
-    cancelButton.disabled = true;
-    cancelButton.style.opacity = '0.7';
   }
 
   try {
@@ -2011,10 +2122,6 @@ async function saveProduct(id) {
     if (saveButton) {
       saveButton.disabled = false;
       saveButton.style.opacity = '';
-    }
-    if (cancelButton) {
-      cancelButton.disabled = false;
-      cancelButton.style.opacity = '';
     }
     return;
   }

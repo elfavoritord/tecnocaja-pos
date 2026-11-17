@@ -721,6 +721,36 @@ class EcfService {
     this.dgiiAuthTimer = null;
     this.dgiiAuthBootstrapped = false;
     this.dgiiAuthBootstrapPromise = null;
+    this._protegerEnviosConLicencia();
+  }
+
+  // Licencia pagada vencida o suspendida, o el e-CF sin contratar: en producción
+  // no sale ningún comprobante a la DGII (política de Emilio, 2026-11-17; el resto
+  // del sistema sigue). Se revisa en lo último antes de la DGII porque hay varios
+  // caminos de envío: la venta, la cola sin Internet, los reenvíos y los RFCE.
+  // servicioPermitido lo pone server.js (secureLicenseService.ecfPermitido).
+  _protegerEnviosConLicencia() {
+    const proteger = (servicio, metodo) => {
+      if (!servicio || typeof servicio[metodo] !== 'function' || servicio[metodo].__conLicencia) return;
+      const original = servicio[metodo].bind(servicio);
+      const protegido = async (...args) => {
+        if (normalizeEnvironmentKey(this.config?.DGII_ENV) === 'ecf'
+          && typeof this.servicioPermitido === 'function' && !this.servicioPermitido()) {
+          throw new EcfError(this._mensajeEcfDetenido(), { statusCode: 422, code: 'ECF_SERVICIO_INACTIVO' });
+        }
+        return original(...args);
+      };
+      protegido.__conLicencia = true;
+      servicio[metodo] = protegido;
+    };
+    proteger(this.receptionService, 'sendSignedEcf');
+    proteger(this.fcService, 'sendConsumptionSummary');
+  }
+
+  _mensajeEcfDetenido() {
+    const porLicencia = typeof this.servicioMensaje === 'function' ? this.servicioMensaje() : null;
+    return porLicencia
+      || 'La facturación electrónica no está activa en esta licencia. Escríbenos para activarla.';
   }
 
   async ensureReady() {
@@ -3742,9 +3772,12 @@ class EcfService {
   async assertSaleHasSequence({ exec, environment, requestedType, buyerTaxId, branchId, cashRegisterId, itbis = 0 }) {
     const tipoEcf = inferRequestedType(requestedType, buyerTaxId);
     if (typeof this.servicioPermitido === 'function' && !this.servicioPermitido()) {
+      const porLicencia = typeof this.servicioMensaje === 'function' ? this.servicioMensaje() : null;
       throw new EcfError(
-        'La facturación electrónica no está activa en esta licencia, así que esta venta no se cobró. '
-        + 'Cóbrala sin comprobante electrónico o escríbenos para activarla.',
+        porLicencia
+          ? `${porLicencia} Esta venta no se cobró: cóbrala sin comprobante electrónico.`
+          : 'La facturación electrónica no está activa en esta licencia, así que esta venta no se cobró. '
+            + 'Cóbrala sin comprobante electrónico o escríbenos para activarla.',
         { statusCode: 422, code: 'ECF_SERVICIO_INACTIVO', details: { tipoEcf } }
       );
     }
@@ -4526,6 +4559,7 @@ class EcfService {
       rfceTotal: run.rfceTotal || 0,
       ecfTotal: run.ecfTotal || 0,
       ecfSent: run.ecfSent || 0,
+      stopped: run.stopped || null,
       result: run.result || null,
       error: run.error || null,
     };
@@ -4581,9 +4615,11 @@ class EcfService {
       if (String(item.submissionMode || '').toLowerCase() === 'rfce' || String(item.tipo || '').toUpperCase() === 'E32') {
         acc.rfceTotal += String(item.submissionMode || '').toLowerCase() === 'rfce' ? 1 : 0;
         if (String(item.submissionMode || '').toLowerCase() === 'rfce' && (state === 'aceptado' || state === 'aceptado_condicional')) acc.rfceAccepted += 1;
+        // Para que la pantalla no cuente un RFCE rechazado entre los 21 comprobantes.
+        if (String(item.submissionMode || '').toLowerCase() === 'rfce' && (state === 'rechazado' || state === 'error')) acc.rfceRejected += 1;
       }
       return acc;
-    }, { total: 0, accepted: 0, rejected: 0, blocked: 0, sent: 0, pending: 0, rfceTotal: 0, rfceAccepted: 0 });
+    }, { total: 0, accepted: 0, rejected: 0, blocked: 0, sent: 0, pending: 0, rfceTotal: 0, rfceAccepted: 0, rfceRejected: 0 });
     counts.progress = counts.total ? Math.round(((counts.accepted + counts.rejected + counts.blocked) / counts.total) * 100) : 0;
 
     // Desglose por tipo de comprobante (mismo formato que el portal DGII)
@@ -4664,47 +4700,8 @@ class EcfService {
       if (prepared.early) return prepared.early;
       if (!prepared.background) return await this._certificationCenterSend(prepared, null);
 
-      const run = {
-        active: true,
-        phase: prepared.rfceTotal > 0 ? 'rfce' : 'ecf',
-        startedAt: nowIso(),
-        rfceTotal: prepared.rfceTotal,
-        ecfTotal: prepared.ecfTotal,
-        ecfSent: 0,
-        result: null,
-        error: null,
-      };
-      this.runtimeState.certificationProcessRun = run;
+      this._launchCertificationRun(prepared);
       enSegundoPlano = true;
-      Promise.resolve()
-        .then(() => this._certificationCenterSend(prepared, run))
-        .then((result) => {
-          run.result = {
-            counts: result.counts,
-            rfceFirstRejected: !!result.rfceFirstRejected,
-            message: result.message || '',
-            rfceProcessResult: result.rfceProcessResult
-              ? {
-                ok: result.rfceProcessResult.ok,
-                aceptados: result.rfceProcessResult.aceptados,
-                rechazados: result.rfceProcessResult.rechazados,
-                error: result.rfceProcessResult.error || null,
-              }
-              : null,
-            sent: (result.results || []).length,
-            durationMs: result.durationMs || Date.now() - prepared.startedAt,
-          };
-        })
-        .catch((error) => {
-          console.error('[ECF] Paso 2 en segundo plano falló:', error.message);
-          run.error = error.message || String(error);
-        })
-        .finally(() => {
-          run.active = false;
-          run.phase = 'listo';
-          run.finishedAt = nowIso();
-          this.runtimeState.certificationProcessInFlight = false;
-        });
       return {
         ok: true,
         processing: true,
@@ -4713,6 +4710,108 @@ class EcfService {
         processRun: this._certificationProcessRunView(),
         message: `${prepared.importedCount} comprobante(s) importados. Se están enviando a la DGII.`,
       };
+    } finally {
+      if (!enSegundoPlano) this.runtimeState.certificationProcessInFlight = false;
+    }
+  }
+
+  // Corre _certificationCenterSend en segundo plano y deja el avance en processRun. Quien
+  // lo llama ya tomó el candado (certificationProcessInFlight); aquí se suelta al terminar.
+  _launchCertificationRun(prepared) {
+    const run = {
+      active: true,
+      phase: prepared.rfceTotal > 0 ? 'rfce' : 'ecf',
+      startedAt: nowIso(),
+      rfceTotal: prepared.rfceTotal,
+      ecfTotal: prepared.ecfTotal,
+      ecfSent: 0,
+      stopped: null,
+      result: null,
+      error: null,
+    };
+    this.runtimeState.certificationProcessRun = run;
+    Promise.resolve()
+      .then(() => this._certificationCenterSend(prepared, run))
+      .then((result) => {
+        run.result = {
+          counts: result.counts,
+          rfceFirstRejected: !!result.rfceFirstRejected,
+          stopped: result.stopped || null,
+          message: result.message || '',
+          rfceProcessResult: result.rfceProcessResult
+            ? {
+              ok: result.rfceProcessResult.ok,
+              aceptados: result.rfceProcessResult.aceptados,
+              rechazados: result.rfceProcessResult.rechazados,
+              error: result.rfceProcessResult.error || null,
+            }
+            : null,
+          sent: (result.results || []).length,
+          durationMs: result.durationMs || Date.now() - prepared.startedAt,
+        };
+      })
+      .catch((error) => {
+        console.error('[ECF] Paso 2 en segundo plano falló:', error.message);
+        run.error = error.message || String(error);
+      })
+      .finally(() => {
+        run.active = false;
+        run.phase = 'listo';
+        run.finishedAt = nowIso();
+        this.runtimeState.certificationProcessInFlight = false;
+      });
+    return run;
+  }
+
+  // "Continuar envío" del Paso 2: después de un corte por conexión (el comprobante no
+  // llegó a la DGII), sigue desde ese comprobante con el mismo lote. No vuelve a mandar
+  // los RFCE (salen una sola vez por lote, sent_at) ni los que ya tienen TrackID.
+  async certificationCenterContinue(req) {
+    await this.ensureReady();
+    const actor = await this.getCurrentActor(req, { adminOnly: true });
+    this._assertCertificationProcessIdle();
+    this.runtimeState.certificationProcessInFlight = true;
+    let enSegundoPlano = false;
+    try {
+      const filas = await this.repository.query(
+        `SELECT environment, submission_mode, estado_dgii, track_id
+           FROM ecf_documents
+          WHERE business_id = 1 AND certification_case_key IS NOT NULL`
+      );
+      assertCondition(filas.length, 'No hay un set del Paso 2 cargado. Usa "Procesar y enviar comprobantes".', { statusCode: 409 });
+      const esRfce = (fila) => String(fila.submission_mode || '').toLowerCase() === 'rfce';
+      const rfceRechazado = filas.some((fila) => esRfce(fila) && String(fila.estado_dgii || '').toLowerCase() === 'rechazado');
+      assertCondition(!rfceRechazado, 'La DGII rechazó un RFCE de este set: descarga el set otra vez en el portal DGII y vuelve a procesarlo.', { statusCode: 409 });
+      const rechazado = filas.some((fila) => !esRfce(fila) && String(fila.estado_dgii || '').toLowerCase() === 'rechazado');
+      assertCondition(!rechazado, 'La DGII rechazó un comprobante de este set: descarga el set otra vez en el portal DGII y vuelve a procesarlo.', { statusCode: 409 });
+      // Solo vuelven a la cola los que nunca llegaron a la DGII (sin TrackID).
+      await this.repository.query(
+        `UPDATE ecf_documents
+            SET estado_dgii = 'firmado', error_message = NULL, updated_at = CURRENT_TIMESTAMP
+          WHERE business_id = 1
+            AND certification_case_key IS NOT NULL
+            AND (submission_mode IS NULL OR submission_mode <> 'rfce')
+            AND estado_dgii = 'error'
+            AND (track_id IS NULL OR track_id = '')`
+      );
+      const environment = normalizeEnvironmentKey(filas[0].environment || 'certecf');
+      this.applyRuntimeConfig(environment);
+      const rfceTotal = filas.filter(esRfce).length;
+      const prepared = {
+        req,
+        actor,
+        environment,
+        importResult: { total: filas.length, ok: filas.length, errors: 0 },
+        deleted: { affectedRows: 0 },
+        startedAt: Date.now(),
+        importedCount: filas.length,
+        rfceTotal,
+        ecfTotal: filas.length - rfceTotal,
+        background: true,
+      };
+      this._launchCertificationRun(prepared);
+      enSegundoPlano = true;
+      return { ok: true, processing: true, processRun: this._certificationProcessRunView(), message: 'Se sigue enviando desde donde se cortó.' };
     } finally {
       if (!enSegundoPlano) this.runtimeState.certificationProcessInFlight = false;
     }
@@ -4923,12 +5022,29 @@ class EcfService {
 
     const results = [];
     const processed = new Set();
+    // Los que la DGII recibió en este envío, en orden, y los que ya tienen respuesta final.
+    const recibidos = [];
+    const conRespuesta = new Set();
+    // Al primer error se para (pedido de Emilio, 2026-11-16): antes seguía mandando el
+    // resto aunque uno hubiera fallado. Si la DGII rechaza un comprobante, reinicia la
+    // prueba y pide generar el set otra vez, así que los que faltan ya no cuentan.
+    let detenido = null;
     if (run) run.phase = 'ecf';
-    for (let index = 0; index < 80; index += 1) {
+    for (let index = 0; index < 80 && !detenido; index += 1) {
       const nextDocument = await this.repository.getNextPendingCertificationDocument({ includeRejected: false });
       if (!nextDocument || processed.has(nextDocument.id)) break;
       processed.add(nextDocument.id);
       if (run) run.ecfSent = processed.size;
+      // Ya llegó a la DGII (tiene TrackID) y solo falló la consulta de su estado: no se
+      // vuelve a mandar (la DGII lo contaría dos veces).
+      if (nextDocument.track_id) {
+        await this.repository.query(
+          "UPDATE ecf_documents SET estado_dgii = 'enviado', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          [nextDocument.id]
+        );
+        recibidos.push(nextDocument.id);
+        continue;
+      }
       if (isCertificationBlockedEncf(nextDocument.encf)) {
         await this.markCertificationBlockedEncfs({ reason: 'known-used-before-send', encfs: [nextDocument.encf] });
         results.push({ ok: false, blocked: true, encf: nextDocument.encf, message: 'e-NCF bloqueado; no se envió a DGII.' });
@@ -4939,6 +5055,11 @@ class EcfService {
         results.push(sent);
         if (sent?.sequenceUsed) {
           await this.markCertificationBlockedEncfs({ reason: 'dgii-sequence-used', encfs: [nextDocument.encf] });
+        } else if (sent && sent.ok === false) {
+          detenido = this._certificationStopFromSend(nextDocument.encf, sent);
+          break;
+        } else {
+          recibidos.push(nextDocument.id);
         }
       } catch (error) {
         if (isDgiiSequenceUsedResponse(error)) {
@@ -4952,7 +5073,20 @@ class EcfService {
           error_message: error.message,
         });
         results.push({ ok: false, encf: nextDocument.encf, message: error.message });
+        const deRed = /ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|timeout|tiempo|network|red/i
+          .test(`${error.code || ''} ${error.message || ''}`) || Number(error.statusCode || 0) >= 500;
+        detenido = { encf: nextDocument.encf, motivo: error.message, tipo: deRed ? 'conexion' : 'local' };
+        break;
       }
+      // Mientras salen los siguientes, la DGII ya respondió alguno de los anteriores: se
+      // pregunta por el más antiguo sin respuesta (uno por vuelta) y, si lo rechazó, se para.
+      detenido = await this._certificationRejectionAmong(recibidos, conRespuesta);
+    }
+    if (detenido) {
+      detenido.enviados = recibidos.length;
+      detenido.total = prepared.ecfTotal || 0;
+      if (run) run.stopped = detenido;
+      console.warn(`[ECF] Paso 2 detenido en ${detenido.encf}: ${detenido.motivo}`);
     }
 
     // Los RFCE ya salieron arriba, antes de los 21 (y una sola vez: step4RfceSubmit
@@ -4962,7 +5096,8 @@ class EcfService {
     if (run) run.phase = 'consultando';
     let pollResult = { ok: false };
     let rfcePollResult = { ok: false };
-    const pollDelays = [1200, 1800, 2600, 3600, 5000];
+    // Si se paró, una sola ronda: lo que importa es decirlo pronto.
+    const pollDelays = detenido ? [1200] : [1200, 1800, 2600, 3600, 5000];
     for (let pollRound = 0; pollRound < pollDelays.length; pollRound += 1) {
       await new Promise((resolve) => setTimeout(resolve, pollDelays[pollRound]));
       [pollResult, rfcePollResult] = await Promise.all([
@@ -5002,9 +5137,60 @@ class EcfService {
       rfceProcessResult,
       pollResult,
       rfcePollResult,
+      stopped: detenido,
+      message: detenido ? this._certificationStopMessage(detenido) : '',
       durationMs: Date.now() - startedAt,
       deletedPrevious: deleted.affectedRows || 0,
     };
+  }
+
+  // Por qué se paró el envío del Paso 2 a partir de lo que devolvió sendCertificationCase.
+  _certificationStopFromSend(encf, sent) {
+    if (sent.localValidation) return { encf, motivo: sent.message, tipo: 'local' };
+    const http = Number(sent.dgiiResponse?.http?.status || sent.dgiiResponse?.httpStatus || 0);
+    const estado = String(sent.case?.estado || '').toLowerCase();
+    // 401/403 es del token o del acceso, no un rechazo del comprobante: se puede seguir.
+    const deLaDgii = (http >= 400 && http < 500 && ![401, 403].includes(http)) || estado === 'rechazado';
+    return { encf, motivo: sent.message || 'La DGII no lo aceptó.', tipo: deLaDgii ? 'dgii' : 'conexion' };
+  }
+
+  // Pregunta a la DGII por el comprobante más antiguo de este envío que aún no tiene
+  // respuesta. Devuelve el rechazo si lo hay. No guarda "error de consulta" en el
+  // documento: ese estado lo volvería a poner en la cola y se mandaría dos veces.
+  async _certificationRejectionAmong(recibidos, conRespuesta) {
+    const id = recibidos.find((docId) => !conRespuesta.has(docId));
+    if (!id) return null;
+    const doc = await this.repository.getDocument(id);
+    if (!doc?.track_id) return null;
+    let dgii;
+    try {
+      this.useDocumentEnvironment(doc);
+      dgii = await this.statusService.getTrackStatus(doc.track_id);
+    } catch (_) {
+      return null;
+    }
+    const estado = isDgiiSequenceUsedResponse(dgii) ? 'rechazado' : normalizeDgiiState(dgii);
+    if (!['aceptado', 'aceptado_condicional', 'rechazado'].includes(estado)) return null;
+    conRespuesta.add(id);
+    // Ya tiene respuesta: se guarda con la consulta de siempre (motivo, mensajes, etc.).
+    const guardado = await this.queryDocumentStatus(id).catch(() => null);
+    if (estado !== 'rechazado') return null;
+    const mensaje = guardado?.mensaje && guardado.mensaje !== 'Consulta completada.' ? guardado.mensaje : 'Rechazado por la DGII.';
+    return { encf: doc.encf, motivo: mensaje, tipo: 'dgii' };
+  }
+
+  _certificationStopMessage(detenido) {
+    const salieron = `Salieron ${detenido.enviados || 0} de ${detenido.total || 21} comprobantes; los demás no se mandaron.`;
+    if (detenido.tipo === 'dgii') {
+      return `La DGII rechazó ${detenido.encf}: ${detenido.motivo}. Se detuvo el envío. ${salieron} `
+        + 'Cuando la DGII rechaza un comprobante reinicia la prueba: descarga el set otra vez en el portal DGII y vuelve a procesarlo.';
+    }
+    if (detenido.tipo === 'local') {
+      return `${detenido.encf} no pasó la revisión antes de enviarlo (${detenido.motivo}) y no salió a la DGII. Se detuvo el envío. ${salieron} `
+        + 'Avísale a soporte de Tecno Caja.';
+    }
+    return `No se pudo enviar ${detenido.encf} (${detenido.motivo}) y no llegó a la DGII. Se detuvo el envío. ${salieron} `
+      + 'Revisa la conexión a Internet y toca "Continuar envío": sigue desde ese comprobante, sin volver a mandar los RFCE ni los que ya salieron.';
   }
 
   async certificationCenterRetry(documentId, req) {

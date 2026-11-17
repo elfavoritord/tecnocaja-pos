@@ -3082,6 +3082,21 @@
             </div>
             <small class="helper-text">Permite modificar directamente el monto final de cualquier producto vendido por peso y recalcular automáticamente su cantidad según el precio unitario establecido. En el carrito, toca el total de la línea, escribe el monto y pulsa Enter.</small>
           </div>
+          <!-- Información adicional del producto en la factura (js/producto-info-adicional.js) -->
+          <div class="form-group span-full" id="cfg-info-adicional-group">
+            <label style="font-weight:600">Descripciones adicionales en facturas</label>
+            <div class="settings-checkbox-list">
+              <label><input type="checkbox" id="cfg-info-adicional-activo" onchange="syncInfoAdicionalConfigForm()"> Mostrar la información adicional de los productos en las facturas</label>
+            </div>
+            <div id="cfg-info-adicional-opciones" class="settings-checkbox-list" style="margin-top:.4rem;padding-left:1.4rem">
+              <label><input type="checkbox" id="cfg-info-adicional-descripcion"> Descripción adicional</label>
+              <label><input type="checkbox" id="cfg-info-adicional-especificaciones"> Especificaciones técnicas</label>
+              <label><input type="checkbox" id="cfg-info-adicional-procedencia"> País de procedencia</label>
+              <label><input type="checkbox" id="cfg-info-adicional-observaciones"> Observaciones adicionales</label>
+              <label><input type="checkbox" id="cfg-info-adicional-nuevos"> Los productos nuevos la muestran en la factura</label>
+            </div>
+            <small class="helper-text">Se escribe en cada producto (pestaña Detalles) y sale debajo del nombre en el ticket, la factura A4 y el PDF, solo en los productos que tengan marcado «Mostrar en la factura». Las facturas ya emitidas se reimprimen con la información que tenían. No cambia precios, impuestos ni el comprobante electrónico que va a la DGII.</small>
+          </div>
           <div class="form-group"><label id="cfg-label-prefix">Prefijo Factura</label><input type="text" id="cfg-prefix" class="form-input" value="FAC-"></div>
           <div class="form-group"><label id="cfg-label-next-ticket">Próximo Ticket</label><input type="number" id="cfg-next-invoice" class="form-input" value="1001" min="1"></div>
           <div class="form-group"><label id="cfg-label-einvoice-toggle"><input type="checkbox" id="cfg-einvoice-enabled"> Habilitar factura electrónica</label></div>
@@ -5534,6 +5549,7 @@
 <script src="js/rnc-lookup.js"></script>
 <script src="js/pos-money.js"></script>
 <script src="js/venta-por-monto.js"></script>
+<script src="js/producto-info-adicional.js"></script>
 <script src="js/propina-legal.js"></script>
 <script src="js/propina-config.js"></script>
 <script src="js/cliente-telefono.js"></script>

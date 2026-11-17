@@ -109,7 +109,7 @@ describe('licencia permanente', () => {
     expect(atrasado.license.canEnter).toBe(true);
   });
 
-  test('en un equipo no autorizado no entra, pero no aparece como vencida', async () => {
+  test('en un equipo no autorizado sigue entrando; solo se detiene el e-CF', async () => {
     const pos = basePos();
     const now = { valor: new Date('2026-11-02T00:00:00Z') };
     const { license } = await servicio(pos, {
@@ -117,41 +117,59 @@ describe('licencia permanente', () => {
       remote: async () => remota(),
       updateRemoteDevice: async () => ({ allowed: false, activeCount: 1, limit: 1 }),
     }).resolveState({ force: true });
-    expect(license.canEnter).toBe(false);
-    expect(license.blockedCode).toBe('device_limit');
+    expect(license.canEnter).toBe(true);
+    expect(license.ecfBloqueado).toBe(true);
+    expect(license.ecfBloqueoMotivo).toBe('device_limit');
     expect(license.expired).toBe(false);
   });
 
-  test('el caché alterado se detecta', async () => {
+  test('el caché alterado se detecta: sigue entrando, sin e-CF', async () => {
     const pos = basePos();
     const now = { valor: new Date('2026-11-02T00:00:00Z') };
     await servicio(pos, { now, remote: async () => remota() }).resolveState({ force: true });
     pos.estado.cache.cache_blob = `${pos.estado.cache.cache_blob}x`;
     const { license } = await servicio(pos, { now, remote: async () => { throw new Error('sin red'); } }).resolveState({ force: true });
-    expect(license.canEnter).toBe(false);
-    expect(license.blockedCode).toBe('tamper');
+    expect(license.canEnter).toBe(true);
+    expect(license.ecfBloqueado).toBe(true);
+    expect(license.ecfBloqueoMotivo).toBe('tamper');
   });
 });
 
 describe('suscripción: las reglas de siempre', () => {
   const mensual = (expiresAt) => remota({ campos: { expiresAt }, docData: { modalidad: 'mensual' } });
 
-  test('vence en su fecha', async () => {
+  test('vence en su fecha: sigue entrando y solo se detiene el e-CF', async () => {
     const pos = basePos();
     const now = { valor: new Date('2026-12-05T00:00:00Z') };
-    const { license } = await servicio(pos, { now, remote: async () => mensual(new Date('2026-12-02T00:00:00Z')) }).resolveState({ force: true });
-    expect(license.canEnter).toBe(false);
-    expect(license.blockedCode).toBe('expired');
+    const s = servicio(pos, { now, remote: async () => mensual(new Date('2026-12-02T00:00:00Z')) });
+    const { license } = await s.resolveState({ force: true });
+    expect(license.canEnter).toBe(true);
+    expect(license.status).toBe('expired');
+    expect(license.ecfBloqueado).toBe(true);
+    expect(license.ecfBloqueoMotivo).toBe('expired');
+    expect(s.ecfPermitido()).toBe(false);
+    expect(s.ecfBloqueoMensaje()).toMatch(/venció/);
   });
 
-  test('atrasar el reloj no recupera una licencia vencida', async () => {
+  test('atrasar el reloj no recupera el e-CF de una licencia vencida', async () => {
     const pos = basePos();
     const now = { valor: new Date('2026-12-05T00:00:00Z') };
     await servicio(pos, { now, remote: async () => mensual(new Date('2026-12-02T00:00:00Z')) }).resolveState({ force: true });
     now.valor = new Date('2026-11-20T00:00:00Z');
     const { license } = await servicio(pos, { now, remote: async () => { throw new Error('sin red'); } }).resolveState({ force: true });
-    expect(license.canEnter).toBe(false);
-    expect(license.blockedCode).toBe('clock_rollback');
+    expect(license.canEnter).toBe(true);
+    expect(license.ecfBloqueado).toBe(true);
+    expect(license.ecfBloqueoMotivo).toBe('clock_rollback');
+  });
+
+  test('activada desde el panel con la fecha vieja de la prueba: no vence por esa fecha', async () => {
+    const pos = basePos();
+    const now = { valor: new Date('2026-12-05T00:00:00Z') };
+    const remote = async () => remota({ docData: { modalidad: 'mensual', trialEndsAt: '2026-06-01T00:00:00Z' } });
+    const { license } = await servicio(pos, { now, remote }).resolveState({ force: true });
+    expect(license.canEnter).toBe(true);
+    expect(license.status).toBe('active');
+    expect(license.ecfBloqueado).toBe(false);
   });
 
   test('al volver Internet con el pago hecho, entra', async () => {
@@ -212,6 +230,32 @@ test('la venta se frena con un mensaje claro cuando el e-CF no está activo', as
   // Permitido: sigue a la revisión normal de secuencias.
   svc.servicioPermitido = () => true;
   await expect(svc.assertSaleHasSequence({ requestedType: 'E32', buyerTaxId: '' })).rejects.toMatchObject({ code: 'ECF_SIN_SECUENCIA' });
+});
+
+test('licencia vencida o suspendida: en producción no sale ningún comprobante a la DGII', async () => {
+  const { createEcfService } = require('../../modules/ecf/services/ecf.service');
+  const svc = createEcfService({ query: async () => [], addColumnIfMissing: async () => {}, writeAuditLog: async () => {} });
+  const enviados = [];
+  // Lo que hay detrás del guardia (el envío real a la DGII) se reemplaza por un registro.
+  svc.receptionService.sendSignedEcf = async () => { enviados.push('ecf'); return { ok: true }; };
+  svc.fcService.sendConsumptionSummary = async () => { enviados.push('rfce'); return { ok: true }; };
+  svc._protegerEnviosConLicencia();
+  svc.servicioPermitido = () => false;
+  svc.servicioMensaje = () => 'La licencia venció: la facturación electrónica quedó detenida hasta renovar.';
+
+  svc.applyRuntimeConfig('ecf');
+  await expect(svc.receptionService.sendSignedEcf({})).rejects.toMatchObject({ code: 'ECF_SERVICIO_INACTIVO', message: expect.stringMatching(/venció/) });
+  await expect(svc.fcService.sendConsumptionSummary({})).rejects.toMatchObject({ code: 'ECF_SERVICIO_INACTIVO' });
+  expect(enviados).toEqual([]);
+
+  // La certificación (CerteCF) no es facturación real: sigue.
+  svc.applyRuntimeConfig('certecf');
+  await svc.receptionService.sendSignedEcf({});
+  // Con la licencia al día, producción envía.
+  svc.applyRuntimeConfig('ecf');
+  svc.servicioPermitido = () => true;
+  await svc.fcService.sendConsumptionSummary({});
+  expect(enviados).toEqual(['ecf', 'rfce']);
 });
 
 if (createLicenciaSucursal) {

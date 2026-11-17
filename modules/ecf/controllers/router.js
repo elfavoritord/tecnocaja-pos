@@ -250,11 +250,30 @@ function createEcfRouter(deps) {
   })));
   router.post('/dgii/debug-auth', wrap((req) => service.debugAuth(req)));
 
+  // Mientras corre "Procesar y enviar" del Paso 2, nada más toca ese lote: un "Resetear y
+  // reintentar" o "Enviar RFCE" a mitad del envío devolvía a "firmado" lo ya enviado y
+  // borraba el estado de los RFCE (los mandaba dos veces y la DGII reiniciaba la prueba).
+  router.post([
+    '/homologation/import-test-set',
+    '/certification/import', '/certification/send-next', '/certification/reset-sent', '/certification/reset-rejected',
+    '/certification/fix-ncf-refs', '/certification/rotate-encfs', '/certification/fix-nombre-comercial',
+    '/certification/fix-nombre-comercial-all', '/certification/fix-rawrow', '/certification/generate-250mil',
+    '/certification-center/force-sync', '/certification-center/simulate/generate', '/certification-center/simulate/manual-send',
+    '/certification-center/rfce/generate', '/certification-center/rfce/submit', '/certification-center/rfce/prepare-portal',
+  ], (req, res, next) => {
+    try {
+      service._assertCertificationProcessIdle();
+      next();
+    } catch (error) {
+      res.status(error.statusCode || 409).json({ error: error.message, details: error.details || undefined });
+    }
+  });
   router.post('/homologation/import-test-set', wrap((req) => service.importTestSet(req)));
   router.post('/homologation/checklist/:key', wrap((req) => service.saveManualChecklist(req)));
   router.get('/certification-center/status', wrap(() => service.certificationCenterStatus()));
   router.post('/certification-center/force-sync', wrap((req) => service.certificationCenterForceSync(req)));
   router.post('/certification-center/process', wrap((req) => service.certificationCenterProcess(req)));
+  router.post('/certification-center/process-continue', wrap((req) => service.certificationCenterContinue(req)));
   router.post('/certification-center/simulate/generate', wrap((req) => service.generateSimulationSet(req)));
   router.get('/certification-center/simulate/status', wrap(() => service.certificationSimulationSendStatus()));
   router.post('/certification-center/simulate/manual-send', wrap((req) => service.simulateManualSend(req)));
