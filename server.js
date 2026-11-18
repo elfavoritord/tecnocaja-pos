@@ -2741,6 +2741,11 @@ const fiscalSequencesRouter = createFiscalSequencesRouter({
     // Compras y gastos (E41, E43, E47) no son tipos de venta: antes no salían nunca.
     return uso === 'compras' ? ecfModule.service.availablePurchaseTypes(donde) : ecfModule.service.availableSaleTypes(donde);
   },
+  explicarEcfDisponibles: async ({ branchId }) => {
+    const seleccion = await resolveBusinessStructureSelection(null, branchId || null, null)
+      .catch(() => ({ branchId: branchId || null, cashRegisterId: null }));
+    return ecfModule.service.explainSaleTypes({ branchId: seleccion.branchId, cashRegisterId: seleccion.cashRegisterId });
+  },
 });
 app.use('/api/fiscal-sequences', fiscalSequencesRouter);
 
@@ -4965,7 +4970,9 @@ async function addColumnIfMissing(tableName, columnName, definition) {
 // configuración también lo aseguran.
 // -23: "modificar el total en productos por peso" encendido una vez en todas
 // las instalaciones (config.peso_monto_activado_v1; ver ensureConfigExtensions).
-const CORE_SCHEMA_VERSION = `core-${packageJson.version}-23`;
+// -24: config.cobro_serie_b (mostrar la serie B en Cobrar; guardar la
+// configuración también la asegura).
+const CORE_SCHEMA_VERSION = `core-${packageJson.version}-24`;
 
 // Esquema de las nueve mejoras financieras. Va después del resto (en serie)
 // porque toca tablas que crean otras migraciones (sales, sale_returns).
@@ -5113,6 +5120,8 @@ async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'peso_monto_activado_v1', 'TINYINT(1) NOT NULL DEFAULT 0');
   await query('UPDATE config SET weight_total_edit_enabled = 1, peso_monto_activado_v1 = 1 WHERE id = 1 AND COALESCE(peso_monto_activado_v1, 0) = 0')
     .catch((error) => console.warn('[config] No se encendió "modificar el total en productos por peso":', error.message));
+  // Facturación → "Mostrar comprobantes serie B en Cobrar" (B01, B02, B14…). 1 = como siempre.
+  await addColumnIfMissing('config', 'cobro_serie_b', 'TINYINT(1) NOT NULL DEFAULT 1');
   // Facturación → Impuestos: método de ITBIS de los productos nuevos (server/utils/itbis-metodo.js).
   await addColumnIfMissing('config', 'itbis_metodo_predeterminado', `VARCHAR(12) NOT NULL DEFAULT 'adicional'`);
   // Facturación → "Descripciones adicionales en facturas" (server/productos/info-adicional.js).
@@ -8963,6 +8972,8 @@ async function getConfig(options = {}) {
     invoiceAccentColor: sanitizeInvoiceAccentColor(row.invoice_accent_color) || '',
     invoiceLogoScale: sanitizeInvoiceLogoScale(row.invoice_logo_scale) || 100,
     weightTotalEditEnabled: Boolean(Number(row.weight_total_edit_enabled ?? 0)),
+    // Sin la columna todavía (antes de la migración) = como siempre: se muestran.
+    cobroSerieB: row.cobro_serie_b === undefined || row.cobro_serie_b === null ? true : Boolean(Number(row.cobro_serie_b)),
     itbisMetodoPredeterminado: sanitizeItbisMetodo(row.itbis_metodo_predeterminado),
     // Facturación → "Descripciones adicionales en facturas" (apagada = como siempre).
     infoAdicionalFactura: infoAdicional.configParaCliente(row),
@@ -9583,6 +9594,21 @@ app.post('/api/login', loginLimiter, async (req, res) => {
   }
   if (!setupStatus.license.canEnter) {
     return res.status(403).json({ error: getLicenseDeniedMessage(setupStatus.license), code: setupStatus.license.blockedCode || 'LICENSE_BLOCKED' });
+  }
+  // Licencia pagada que entra pero con el e-CF detenido porque esta PC perdió su
+  // autorización local: el administrador, al entrar con su clave, la vuelve a
+  // registrar (antes eso pasaba al quedar bloqueada; ahora ya no se bloquea).
+  // Si falla, entra igual: solo sigue sin facturación electrónica.
+  if (setupStatus.license.ecfBloqueado
+    && ['activation_required', 'missing_remote'].includes(setupStatus.license.ecfBloqueoMotivo)
+    && isGlobalAdministratorUser(user) && !getFirebaseConfigStatus().adminEnabled) {
+    try {
+      await ensurePosCloudConnection({ password });
+      await secureLicenseService.resolveState({ force: true, allowRemote: true });
+      setupStatus = await getSetupStatus();
+    } catch (error) {
+      console.warn('[login] No se pudo volver a registrar la PC en la nube:', error.message);
+    }
   }
 
   const now = new Date().toLocaleString('sv-SE').replace(' ', ' ');
@@ -15529,6 +15555,19 @@ app.put('/api/config', async (req, res) => {
         console.warn('No se pudo guardar "modificar el total en productos por peso":', error.message);
       });
   }
+  // Mostrar la serie B (B01, B02…) en Cobrar. Aparte, con la columna asegurada aquí.
+  if (data.cobroSerieB !== undefined) {
+    const visible = data.cobroSerieB === true || data.cobroSerieB === 'true' || Number(data.cobroSerieB) === 1 ? 1 : 0;
+    const guardarSerieB = () => query('UPDATE config SET cobro_serie_b = ? WHERE id = 1', [visible]);
+    await guardarSerieB()
+      .catch(async () => {
+        await addColumnIfMissing('config', 'cobro_serie_b', 'TINYINT(1) NOT NULL DEFAULT 1');
+        await guardarSerieB();
+      })
+      .catch((error) => {
+        console.warn('No se pudo guardar "Mostrar comprobantes serie B en Cobrar":', error.message);
+      });
+  }
   // Descripciones adicionales en facturas. Aparte, con la columna asegurada aquí.
   if (data.infoAdicionalFactura !== undefined) {
     await infoAdicional.asegurarColumnas()
@@ -19524,6 +19563,8 @@ app.get('/api/reports/advanced/kpis', async (req, res) => {
     const kpis = await query(`
       SELECT
         COUNT(*) AS total_facturas,
+        COALESCE(SUM(CASE WHEN s.document_type = 'factura-electronica' THEN 1 ELSE 0 END),0) AS facturas_ecf,
+        COALESCE(SUM(CASE WHEN s.document_type = 'comprobante-fiscal' THEN 1 ELSE 0 END),0) AS facturas_ncf,
         COALESCE(SUM(s.total),0) AS total_ventas,
         COALESCE(SUM(s.tax),0) AS total_itbis,
         COALESCE(SUM(s.subtotal),0) AS total_subtotal,

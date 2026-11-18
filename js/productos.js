@@ -1702,7 +1702,8 @@ function openProductModal(id) {
   document.getElementById('mp-codigo')?.addEventListener('keydown', handleProductCodeEnter);
   document.getElementById('mp-codigo')?.addEventListener('input', () => validateProductIdentity());
   document.getElementById('mp-nombre')?.addEventListener('input', () => validateProductIdentity());
-  document.getElementById('mp-nombre')?.focus();
+  // El cursor empieza en el código (Emilio, 2026-11-17): se escanea y Enter pasa al nombre.
+  document.getElementById('mp-codigo')?.focus();
   resetProductScanner();
   validateProductIdentity();
   updateProductPreview();

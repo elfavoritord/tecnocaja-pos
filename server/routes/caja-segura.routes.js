@@ -205,6 +205,78 @@ function createCajaSeguraRouter(deps) {
     res.json(await arqueo.resumenTurno(query, sessionId));
   });
 
+  // ── Auditoría de cierres (Reportes → Cierres de caja) ──────────────────
+  // ?desde=AAAA-MM-DD&hasta=AAAA-MM-DD&branchId&cajaId&userId. La fecha que
+  // cuenta es la del cierre en hora de RD (la del reporte guardado): closed_at
+  // queda en UTC con SQLite y en hora local con MariaDB, así que se trae un día
+  // de más por cada lado y se filtra aquí.
+  router.get('/cierres', async (req, res) => {
+    const actorUser = await resolveRequestActorUser(req, { required: true });
+    if (!userCanViewCashReports(actorUser)) return res.status(403).json({ error: 'No tienes permiso para ver los cierres de caja.' });
+    await ensureSchema();
+    const fechaValida = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null);
+    const hoy = nowSql().slice(0, 10);
+    const desde = fechaValida(req.query.desde) || hoy;
+    const hasta = fechaValida(req.query.hasta) || hoy;
+    const masDias = (fecha, dias) => {
+      const d = new Date(`${fecha}T12:00:00Z`);
+      d.setUTCDate(d.getUTCDate() + dias);
+      return d.toISOString().slice(0, 10);
+    };
+    let where = 'WHERE cc.closed_at BETWEEN ? AND ?';
+    const params = [`${masDias(desde, -1)} 00:00:00`, `${masDias(hasta, 1)} 23:59:59`];
+    const sucursal = getUserScopeBranchId(actorUser) || Number(req.query.branchId || 0) || null;
+    if (sucursal) { where += ' AND cc.branch_id = ?'; params.push(sucursal); }
+    const caja = Number(req.query.cajaId || 0) || null;
+    if (caja) { where += ' AND cc.cash_register_id = ?'; params.push(caja); }
+    const usuario = Number(req.query.userId || 0) || null;
+    if (usuario) { where += ' AND cc.closed_by_user_id = ?'; params.push(usuario); }
+    const filas = await query(
+      `SELECT cc.id, cc.cash_session_id, cc.branch_id, cc.cash_register_id, cc.expected_amount, cc.counted_amount, cc.difference_amount,
+              cc.closed_by_user_name, cc.closed_at, cc.report_json, b.nombre AS sucursal, r.nombre AS caja
+         FROM cash_closings cc
+         LEFT JOIN branches b ON b.id = cc.branch_id
+         LEFT JOIN cash_registers r ON r.id = cc.cash_register_id
+        ${where}
+        ORDER BY cc.closed_at DESC, cc.id DESC
+        LIMIT 1000`,
+      params
+    );
+    const cierres = [];
+    for (const f of filas) {
+      let rep = null;
+      try { rep = f.report_json ? JSON.parse(f.report_json) : null; } catch (_) { rep = null; }
+      const cierre = String(rep?.turno?.cierre || rep?.generadoEn || '').slice(0, 19)
+        || (f.closed_at instanceof Date ? f.closed_at.toISOString().slice(0, 19).replace('T', ' ') : String(f.closed_at || '').slice(0, 19));
+      const dia = cierre.slice(0, 10);
+      if (dia < desde || dia > hasta) continue;
+      cierres.push({
+        id: Number(f.id),
+        sessionId: Number(f.cash_session_id),
+        cierre,
+        apertura: rep?.turno?.apertura || null,
+        sucursal: f.sucursal || '',
+        caja: f.caja || '',
+        cajero: rep?.cerradoPor || f.closed_by_user_name || '',
+        facturas: Number(rep?.ventas?.facturas?.total || 0),
+        vendido: Number(rep?.ventas?.total || 0),
+        efectivo: Number(rep?.cobrado?.efectivo || 0),
+        tarjeta: Number(rep?.cobrado?.tarjeta || 0),
+        transferencia: Number(rep?.cobrado?.transferencia || 0),
+        gastos: Number(rep?.efectivo?.gastos || 0) + Number(rep?.efectivo?.pagosSuplidor || 0),
+        esperado: Number(f.expected_amount || 0),
+        contado: Number(f.counted_amount || 0),
+        diferencia: Number(f.difference_amount || 0),
+        conReporte: Boolean(rep),
+      });
+    }
+    const suma = (k) => M.number(cierres.reduce((t, c) => t + M.cents(c[k].toFixed(2)), 0n));
+    res.json({
+      desde, hasta, cierres,
+      totales: { cierres: cierres.length, facturas: cierres.reduce((t, c) => t + c.facturas, 0), vendido: suma('vendido'), esperado: suma('esperado'), contado: suma('contado'), diferencia: suma('diferencia') },
+    });
+  });
+
   // ── Arqueo durante el turno (no cierra ni cambia el esperado) ──────────
   router.post('/arqueos', async (req, res) => {
     const actorUser = await resolveRequestActorUser(req, { required: true });
@@ -272,6 +344,12 @@ function createCajaSeguraRouter(deps) {
       const cents = montoOpcional(body.tarjetaVerifon, 'Total del verifón');
       verifon = { total: M.number(cents), diferencia: M.number(cents - M.cents(resumen.tarjeta.cobrado.toFixed(2))) };
     }
+    // Transferencias que el cajero declara (lo que ve en el banco), igual que el verifón.
+    let transferenciaDeclarada = null;
+    if (body.transferenciaDeclarada !== undefined && body.transferenciaDeclarada !== null && body.transferenciaDeclarada !== '') {
+      const cents = montoOpcional(body.transferenciaDeclarada, 'Total de transferencias');
+      transferenciaDeclarada = { total: M.number(cents), diferencia: M.number(cents - M.cents(resumen.transferencia.cobrado.toFixed(2))) };
+    }
     let countId = null;
     if (conteo) {
       const ins = await conn.query(
@@ -286,6 +364,7 @@ function createCajaSeguraRouter(deps) {
       ...resumen,
       conteo: { modo: conteo ? 'denominaciones' : 'monto', cierreSeguro, denominaciones: conteo ? conteo.lineas : null, ...cmp, countId },
       verifon,
+      transferenciaDeclarada,
       cerradoPor: actor.userName || 'Sistema',
       notas: texto(body.obs, 255),
       generadoEn: nowSql(),

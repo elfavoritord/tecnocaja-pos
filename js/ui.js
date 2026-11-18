@@ -79,6 +79,9 @@ function closeModal(e) {
 }
 
 function closeAllModals(force = false, source = 'generic') {
+  // Cierre de caja en curso (después de "Sí, cerrar la caja"): el conteo no se
+  // cancela con Esc ni con la X; solo lo cierra el propio cierre (Emilio, 2026-11-17).
+  if (window.CierreObligatorio?.activo && source !== 'cierre-caja') return;
   const modalBox = document.getElementById('modal-box');
   if (!force && modalBox?.classList.contains('billing-modal') && typeof window.requestBillingModalClose === 'function') {
     window.requestBillingModalClose({ source });

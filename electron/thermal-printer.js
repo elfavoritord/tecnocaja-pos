@@ -623,7 +623,11 @@ function buildCorteReceipt(data) {
         const etiqueta = String(fila.etiqueta ?? '');
         const valor = String(fila.valor ?? '');
         if (fila.negrita) p.bold(true);
-        if (valor) p.row2(etiqueta, valor); else p.text(etiqueta);
+        // Una etiqueta larga (p. ej. la descripción de un gasto) va completa en su
+        // línea y el monto debajo, a la derecha: row2 la cortaba.
+        if (valor && etiqueta.length + valor.length + 1 > p.cols) { p.text(etiqueta); p.row2('', valor); }
+        else if (valor) p.row2(etiqueta, valor);
+        else p.text(etiqueta);
         if (fila.negrita) p.bold(false);
       }
       p.separator('-');

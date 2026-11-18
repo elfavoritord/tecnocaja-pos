@@ -2585,9 +2585,12 @@ svg.tc-emoji-icon {
   flex-wrap: nowrap;
 }
 
-/* Resumen: "Cerrar sesión" a la izquierda, separado de las acciones del turno. */
-.modal-overlay .corte-summary-footer .corte-logout {
+/* Caja cerrada: el aviso a la izquierda; "Imprimir cuadre" y "Cerrar" (cierra
+   la sesión) a la derecha. */
+.modal-overlay .corte-summary-footer .corte-summary-aviso {
   margin-right: auto;
+  color: var(--tc-text-muted, var(--text3));
+  font-size: var(--tc-fs-sm);
 }
 
 @media (max-width: 760px) {

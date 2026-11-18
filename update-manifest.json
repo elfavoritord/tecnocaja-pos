@@ -1,13 +1,22 @@
 {
-  "version": "1.6.33",
-  "stableVersion": "1.6.33",
+  "version": "1.6.34",
+  "stableVersion": "1.6.34",
   "date": "17/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": true,
   "downloadUrl": null,
   "changes": [
-    "Certificación DGII, Paso 3: al confirmar \"¿Enviar las 11 aprobaciones igual?\" ahora sí se envían a la DGII (antes comparaba el Excel y no mandaba nada).",
-    "Certificación DGII, Paso 3: antes de preguntar, el sistema consulta a la DGII los comprobantes que tenía \"en proceso\", así la pregunta solo sale cuando de verdad falta alguno."
+    "Cierre de caja: el cuadre es corto, como el de papel (desglose del sistema y del cajero, efectivo contado, diferencia y firma), y cada gasto sale con su descripción.",
+    "Cierre de caja: antes de cerrar se avisa que termina el turno; después ya no se puede cancelar, solo imprimir el cuadre y cerrar la sesión.",
+    "Arqueo por denominaciones: también pide el total de transferencias, y la ventana es más pequeña.",
+    "Reportes: nueva pestaña \"Cierres de caja\" para ver e imprimir los cuadres de cualquier día, semana, mes o año; y la tarjeta \"Facturas\" dice cuántas se hicieron.",
+    "Caja: con el cierre seguro, los montos de egresos, ingresos y el efectivo disponible también salen ocultos.",
+    "Configuración → Facturación: opción para no mostrar los comprobantes serie B en Cobrar.",
+    "Cobrar: en \"¿Salir sin cobrar?\", la tecla Enter ya no cobra la venta. Enter deja seguir cobrando y para salir se elige \"Salir sin cobrar\".",
+    "Cobrar: cuando E32 o E31 no se pueden elegir, el sistema dice por qué (el rango es de otro ambiente, de otra caja, está vencido o agotado, o la licencia detuvo la facturación electrónica).",
+    "Facturación electrónica: el Estado del e-CF avisa si el servicio no está activo en la licencia (por eso Cobrar no ofrecía E31/E32 aunque todo lo demás estuviera listo).",
+    "Producto rápido: \"Aplicar ITBIS\" viene apagado; se marca solo si el producto lo lleva.",
+    "Nuevo producto: el cursor empieza en el código de barras."
   ]
 }

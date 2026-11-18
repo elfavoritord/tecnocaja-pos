@@ -51,7 +51,9 @@
     document.getElementById('modal-overlay').classList.remove('hidden');
     return body;
   }
-  const cerrarModal = () => (typeof closeAllModals === 'function' ? closeAllModals() : document.getElementById('modal-overlay')?.classList.add('hidden'));
+  // 'cierre-caja': este módulo sí puede cerrar su modal durante el cierre
+  // obligatorio (ui.js → closeAllModals); Esc y la X no.
+  const cerrarModal = () => (typeof closeAllModals === 'function' ? closeAllModals(true, 'cierre-caja') : document.getElementById('modal-overlay')?.classList.add('hidden'));
 
   async function cargarConfig({ forzar = false } = {}) {
     if (state.config && !forzar) return state.config;
@@ -80,6 +82,9 @@
   const AVISO_CIEGO = 'Cierre seguro activo: las ventas y el efectivo del turno se muestran al cerrar la caja.';
   function aplicarModoCiego() {
     const ciego = turnoCiego();
+    // Egresos e ingresos del turno (app.js → montoCajaVisible): tapados o a la vista.
+    if (typeof renderCajaExpenseSummary === 'function') renderCajaExpenseSummary();
+    if (typeof renderCajaIncomeSummary === 'function') renderCajaIncomeSummary();
     const monto = document.getElementById('caja-monto');
     if (monto) {
       if (ciego) {
@@ -174,7 +179,7 @@
   function formularioDenominaciones({ prefijo = 'cs', conVerifon = false } = {}) {
     const fila = (d) => `
       <div class="cs-den-row" data-valor="${d.valor}">
-        <span class="cs-den-label">${d.tipo === 'moneda' ? 'Moneda' : 'Billete'} RD$${d.valor.toLocaleString('es-DO')}</span>
+        <span class="cs-den-label">RD$${d.valor.toLocaleString('es-DO')}</span>
         <input type="number" inputmode="numeric" min="0" step="1" class="form-input cs-den-input" id="${prefijo}-den-${d.valor}" placeholder="0" oninput="CajaSegura.recalcular('${prefijo}')" aria-label="Cantidad de ${d.tipo} de ${d.valor}">
         <span class="cs-den-sub" id="${prefijo}-sub-${d.valor}">RD$ 0.00</span>
       </div>`;
@@ -188,6 +193,8 @@
       ${conVerifon ? `<div class="cs-extra">
         <label>Total de tarjetas según el cierre del verifón (opcional)
           <input type="number" min="0" step="0.01" class="form-input" id="${prefijo}-verifon" placeholder="0.00"></label>
+        <label>Total de transferencias recibidas (opcional)
+          <input type="number" min="0" step="0.01" class="form-input" id="${prefijo}-transferencias" placeholder="0.00"></label>
       </div>` : ''}
       <label class="cs-notas">Observaciones<textarea id="${prefijo}-notas" class="form-input" rows="2" maxlength="255" placeholder="Opcional"></textarea></label>`;
   }
@@ -231,6 +238,8 @@
       return true; // Sin respuesta: decide el servidor al cerrar.
     }
     if (r.puedeCerrar) return true;
+    // No se puede cerrar: el cierre deja de ser obligatorio (hay que cobrar las mesas).
+    window.CierreObligatorio?.terminar();
     if (typeof closeCashCierreModal === 'function') closeCashCierreModal();
     const total = r.mesas.reduce((n, m) => n + Math.round(Number(m.consumo || 0) * 100), 0) / 100;
     abrirModal('No se puede cerrar la caja', `
@@ -266,8 +275,9 @@
       <p class="cs-aviso">Cuenta el efectivo físico de la gaveta y escribe cuántas unidades hay de cada billete y moneda.
       ${activo() ? 'El sistema mostrará las ventas y el efectivo esperado <strong>después</strong> de guardar el conteo.' : 'El esperado y la diferencia se muestran al guardar el conteo.'}</p>
       ${formularioDenominaciones({ prefijo: 'cs', conVerifon: true })}`,
-    `<button class="btn-secondary" onclick="closeAllModals()">Cancelar</button>
-     <button class="btn-primary" id="cs-btn-cerrar" onclick="CajaSegura.confirmarCierre()">Guardar conteo y analizar</button>`, 'cs-cierre');
+    // Sin "Cancelar": después de "Sí, cerrar la caja" el cierre es obligatorio.
+    `<button class="btn-primary" id="cs-btn-cerrar" onclick="CajaSegura.confirmarCierre()">Guardar conteo y cerrar la caja</button>`, 'cs-cierre');
+    window.CierreObligatorio?.iniciar();
     setTimeout(() => document.getElementById('cs-den-2000')?.focus(), 80);
     await abrirGavetaParaConteo('cierre');
   }
@@ -304,6 +314,7 @@
     let conteo;
     try { conteo = leerDenominaciones('cs'); } catch (e) { toast(e.message, 'error'); return; }
     const verifonRaw = String(document.getElementById('cs-verifon')?.value || '').trim();
+    const transferenciasRaw = String(document.getElementById('cs-transferencias')?.value || '').trim();
     const notas = String(document.getElementById('cs-notas')?.value || '').trim();
     const btn = document.getElementById('cs-btn-cerrar');
     if (btn) btn.disabled = true;
@@ -316,7 +327,9 @@
       anim.paso(1);
       const response = await api.closeCash({
         denominaciones: conteo.denominaciones, monto: conteo.total, montoCapturado: true,
-        tarjetaVerifon: verifonRaw === '' ? null : Number(verifonRaw), obs: notas || 'Cierre de caja',
+        tarjetaVerifon: verifonRaw === '' ? null : Number(verifonRaw),
+        transferenciaDeclarada: transferenciasRaw === '' ? null : Number(transferenciasRaw),
+        obs: notas || 'Cierre de caja',
         ...estructura(), ...actorPayload(),
       });
       anim.paso(1, 'hecho');
@@ -331,13 +344,12 @@
       despuesDeCerrar(response, notas);
       anim.paso(3, 'hecho');
       anim.cerrar();
-      // Al cerrar el reporte sigue la pantalla de siempre (incluye la
-      // transferencia a Caja General cuando ese módulo está activo).
-      state.alCerrarReporte = () => {
-        if (typeof showPostCloseScreen === 'function') showPostCloseScreen(resumenPostCierre(reporte, response, notas));
-      };
+      // Caja cerrada: solo se imprime el cuadre y se cierra la sesión (Emilio,
+      // 2026-11-17). La pantalla posterior también trae la transferencia a Caja
+      // General cuando ese módulo está activo.
       state.ultimoReporte = reporte;
-      mostrarReporte(reporte);
+      if (typeof showPostCloseScreen === 'function') showPostCloseScreen(resumenPostCierre(reporte, response, notas));
+      else mostrarReporte(reporte);
     } catch (e) {
       anim.cerrar();
       toast(e.message || 'No se pudo cerrar la caja.', 'error');
@@ -362,8 +374,81 @@
     if (typeof updateNotifications === 'function') updateNotifications();
   }
 
-  // ── Reporte de cierre ────────────────────────────────────────────────
+  // ── Cuadre de caja (corto) ───────────────────────────────────────────
+  // Lo que se ve, se imprime y sale en el PDF (Emilio, 2026-11-17: el reporte
+  // largo traía demasiado). Como el cuadre de papel de siempre: lo que dice el
+  // sistema, lo que declara el cajero, el efectivo contado y la diferencia. Los
+  // gastos y entradas van con su descripción.
+  const horaCorta = (v) => {
+    const s = String(v || '');
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+    return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : s;
+  };
+  const textoDiferencia = (v) => {
+    const n = Number(v || 0);
+    if (Math.abs(n) < 0.005) return 'Cuadrado';
+    return n > 0 ? `Sobra ${money(n)}` : `Falta ${money(Math.abs(n))}`;
+  };
+
   function filasReporte(r) {
+    const e = r.efectivo || {}, cnt = r.conteo || {}, f = r.ventas?.facturas || {};
+    const movimientos = Array.isArray(r.movimientos) ? r.movimientos : [];
+    const salidas = movimientos.filter((m) => Number(m.monto) < 0);
+    const entradas = movimientos.filter((m) => Number(m.monto) > 0);
+    const totalSalidas = salidas.reduce((t, m) => t + Math.round(Math.abs(Number(m.monto)) * 100), 0) / 100;
+    const totalEntradas = entradas.reduce((t, m) => t + Math.round(Number(m.monto) * 100), 0) / 100;
+    const descripcion = (m) => `  · ${String(m.notas || '').trim() || m.tipo}`;
+    const partesFacturas = [
+      f.ticket ? `${f.ticket} ticket${f.ticket === 1 ? '' : 's'}` : '',
+      f.electronica ? `${f.electronica} e-CF` : '',
+      f.comprobanteFiscal ? `${f.comprobanteFiscal} NCF` : '',
+    ].filter(Boolean).join(' · ');
+    const cobrado = r.cobrado || {};
+    const declaradoCent = Math.round(Number(cnt.contado || 0) * 100)
+      + Math.round(Number(r.verifon?.total ?? 0) * 100) + Math.round(Number(r.transferenciaDeclarada?.total ?? 0) * 100);
+    const descuadreCent = Math.round(Number(cnt.diferencia || 0) * 100)
+      + Math.round(Number(r.verifon?.diferencia ?? 0) * 100) + Math.round(Number(r.transferenciaDeclarada?.diferencia ?? 0) * 100);
+    const secciones = [
+      { titulo: 'Turno', filas: [
+        ['Cajero', r.cerradoPor || r.turno?.cerradoPor || ''],
+        ['Apertura', horaCorta(r.turno?.apertura)], ['Cierre', horaCorta(r.turno?.cierre)],
+        ['Facturas', `${f.total || 0}${partesFacturas ? ` (${partesFacturas})` : ''}`],
+        ['Total vendido', money(r.ventas?.total), true],
+      ] },
+      { titulo: 'Desglose del sistema', filas: [
+        ['Fondo de caja', money(e.apertura)],
+        ['Efectivo', money(Number(e.ventas || 0) + Number(e.abonos || 0))],
+        ['Tarjeta', money(cobrado.tarjeta)],
+        ['Transferencia', money(cobrado.transferencia)],
+        ...(totalEntradas ? [['Ingresos', money(totalEntradas)], ...entradas.map((m) => [descripcion(m), money(m.monto)])] : []),
+        ...(totalSalidas ? [['Gastos y salidas', `- ${money(totalSalidas)}`], ...salidas.map((m) => [descripcion(m), `- ${money(Math.abs(m.monto))}`])] : []),
+        ...(Number(r.credito?.pendienteNuevo || 0) ? [['Crédito (no es dinero)', money(r.credito.pendienteNuevo)]] : []),
+        ['Efectivo esperado', money(e.esperado), true],
+      ] },
+      { titulo: 'Desglose del cajero', filas: [
+        ['Efectivo contado', money(cnt.contado)],
+        ...(r.verifon ? [['Tarjeta (verifón)', money(r.verifon.total)]] : []),
+        ...(r.transferenciaDeclarada ? [['Transferencias', money(r.transferenciaDeclarada.total)]] : []),
+        ['Total declarado', money(declaradoCent / 100), true],
+      ] },
+    ];
+    const denominaciones = (cnt.denominaciones || []).filter((d) => d.cantidad > 0);
+    if (denominaciones.length) {
+      secciones.push({ titulo: 'Efectivo físico en caja', filas: denominaciones
+        .map((d) => [`${Number(d.valor).toLocaleString('es-DO')} x ${d.cantidad}`, money(d.subtotal)]) });
+    }
+    secciones.push({ titulo: 'Diferencia sistema - cajero', filas: [
+      ['Efectivo', textoDiferencia(cnt.diferencia)],
+      ...(r.verifon ? [['Tarjeta', textoDiferencia(r.verifon.diferencia)]] : []),
+      ...(r.transferenciaDeclarada ? [['Transferencia', textoDiferencia(r.transferenciaDeclarada.diferencia)]] : []),
+      ['Descuadre', textoDiferencia(descuadreCent / 100), true],
+    ] });
+    if (r.notas && r.notas !== 'Cierre de caja') secciones.push({ titulo: 'Notas', filas: [[r.notas, '']] });
+    return secciones;
+  }
+
+  // ── Reporte de cierre detallado (Reportes → Cierres de caja → Detalle) ─
+  function filasDetalle(r) {
     const e = r.efectivo, cnt = r.conteo || {};
     const dif = Number(cnt.diferencia || 0);
     const difTxt = Math.abs(dif) < 0.005 ? 'Sin diferencia' : (dif > 0 ? `Sobrante ${money(dif)}` : `Faltante ${money(Math.abs(dif))}`);
@@ -426,7 +511,7 @@
         ...ant.detalle.slice(0, 30).map((d) => [`${d.cliente} · ${{ recibido: `recibido (${metodoTxt[d.metodo] || d.metodo})`, aplicado: `en factura ${d.factura}`, devuelto: `devuelto${d.metodo ? ` (${metodoTxt[d.metodo] || d.metodo})` : ''}`, retenido: 'quedó al negocio' }[d.tipo] || d.tipo}`, money(d.monto)]),
       ] });
     }
-    if (r.movimientos?.length) secciones.push({ titulo: 'Movimientos de dinero', filas: r.movimientos.slice(0, 40).map((m) => [`${String(m.fecha).slice(11, 16)} ${m.tipo}`, money(m.monto)]) });
+    if (r.movimientos?.length) secciones.push({ titulo: 'Movimientos de dinero', filas: r.movimientos.slice(0, 40).map((m) => [`${String(m.fecha).slice(11, 16)} ${m.tipo}${m.notas ? ` · ${m.notas}` : ''}`, money(m.monto)]) });
     if (r.devoluciones?.length) secciones.push({ titulo: 'Notas de crédito / devoluciones', filas: r.devoluciones.map((d) => [`${d.factura}${d.documento ? ` · ${d.documento}` : ''}`, money(d.monto)]) });
     if (r.arqueos?.length) secciones.push({ titulo: 'Arqueos durante el turno', filas: r.arqueos.map((a) => [`${String(a.fecha).slice(11, 16)} ${a.usuario}`, `${money(a.contado)} (dif. ${money(a.diferencia)})`]) });
     if (r.gaveta?.length) secciones.push({ titulo: 'Aperturas de gaveta', filas: r.gaveta.map((g) => [`${g.origen === 'venta' ? 'Con venta' : 'Manual'} · ${g.motivo}`, String(g.veces)]) });
@@ -435,11 +520,14 @@
     return secciones;
   }
 
-  function htmlReporte(r, { imprimir = false, a4 = false } = {}) {
+  function htmlReporte(r, { imprimir = false, a4 = false, detalle = false } = {}) {
     const cfg = typeof getEffectiveConfig === 'function' ? getEffectiveConfig() : (DB.config || {});
-    const dif = Number(r.conteo?.diferencia || 0);
+    // Arriba, el descuadre total del cuadre (efectivo + tarjeta + transferencia declarados).
+    const dif = (Math.round(Number(r.conteo?.diferencia || 0) * 100)
+      + (detalle ? 0 : Math.round(Number(r.verifon?.diferencia ?? 0) * 100) + Math.round(Number(r.transferenciaDeclarada?.diferencia ?? 0) * 100))) / 100;
     const clase = Math.abs(dif) < 0.005 ? 'ok' : (dif > 0 ? 'sobra' : 'falta');
-    const secciones = filasReporte(r).map((s) => `
+    const filas = (detalle ? filasDetalle(r) : filasReporte(r)).concat(imprimir ? [FIRMA] : []);
+    const secciones = filas.map((s) => `
       <section class="csr-sec"><h4>${esc(s.titulo)}</h4>
         ${s.filas.map(([l, v, b]) => `<div class="csr-row${b ? ' csr-bold' : ''}"><span>${esc(l)}</span><span>${esc(v)}</span></div>`).join('')}
       </section>`).join('');
@@ -453,13 +541,16 @@
     const resultado = Math.abs(dif) < 0.005 ? 'Caja cuadrada' : (dif > 0 ? `Sobrante de ${money(dif)}` : `Faltante de ${money(Math.abs(dif))}`);
     return `${estilos}<div class="csr ${imprimir ? (a4 ? 'corte-print corte-print--a4' : 'ticket-print') : ''}">
       <h2>${esc(cfg.nombre || DB.config?.nombre || cfg.businessName || 'Tecno Caja')}</h2>
-      <p class="csr-sub">${cfg.rnc ? `RNC ${esc(cfg.rnc)} · ` : ''}REPORTE DE CIERRE DE CAJA</p>
+      <p class="csr-sub">${cfg.rnc ? `RNC ${esc(cfg.rnc)} · ` : ''}${detalle ? 'REPORTE DE CIERRE DE CAJA' : 'CUADRE DE CAJA'}</p>
       <p class="csr-sub">${esc(DB.config?.activeBranchName || '')}${DB.config?.activeCashRegisterName ? ` · ${esc(DB.config.activeCashRegisterName)}` : ''}</p>
       <div class="csr-res csr-res--${clase}">${esc(resultado)}</div>
       ${secciones}
       <p class="csr-sub">Generado ${esc(r.generadoEn || new Date().toLocaleString('es-DO'))}</p>
     </div>`;
   }
+
+  // Al pie del cuadre impreso, como el de papel.
+  const FIRMA = { titulo: 'Recibido por', filas: [[' ', ''], ['________________________________', ''], ['Firma', '']] };
 
   function resumenPostCierre(r, response, notas) {
     const e = r.efectivo;
@@ -492,14 +583,26 @@
     if (typeof despues === 'function') despues();
   }
 
-  function mostrarReporte(r) {
+  function mostrarReporte(r, { detalle = false } = {}) {
     state.ultimoReporte = r;
-    abrirModal('Reporte de cierre de caja', `<div class="cs-reporte">${htmlReporte(r)}</div>`,
+    state.detalle = Boolean(detalle);
+    abrirModal(detalle ? 'Reporte de cierre de caja' : 'Cuadre de caja', `<div class="cs-reporte">${htmlReporte(r, { detalle })}</div>`,
       `<button class="btn-secondary" onclick="CajaSegura.cerrarReporte()">Cerrar</button>
+       <button class="btn-secondary" onclick="CajaSegura.mostrarReporte(CajaSegura.ultimoReporte, { detalle: ${!detalle} })">${detalle ? 'Ver cuadre' : 'Ver detalle completo'}</button>
        <button class="btn-secondary" onclick="CajaSegura.imprimirReporte('58mm')">Imprimir 58 mm</button>
        <button class="btn-secondary" onclick="CajaSegura.imprimirReporte('80mm')">Imprimir 80 mm</button>
        <button class="btn-secondary" onclick="CajaSegura.imprimirReporte('a4')">Imprimir A4</button>
        <button class="btn-primary" onclick="CajaSegura.pdfReporte()">Descargar PDF</button>`, 'cs-reporte-modal');
+  }
+
+  // El cuadre en la impresora y el papel de esta PC (los mismos de la factura).
+  async function imprimirCuadre() {
+    if (!state.ultimoReporte) { toast('No hay un cierre reciente para imprimir.', 'info'); return false; }
+    state.detalle = false;
+    const settings = typeof _resolveCortePrintSettings === 'function' ? await _resolveCortePrintSettings() : { paperWidth: '80mm' };
+    const papel = ['58mm', '80mm', 'a4'].includes(String(settings.paperWidth || '').toLowerCase()) ? String(settings.paperWidth).toLowerCase() : '80mm';
+    await imprimirReporte(papel);
+    return true;
   }
 
   async function verReporteTurno(sessionId) {
@@ -517,8 +620,9 @@
         const cfg = settings.cfg || {};
         const result = await window.novaDesktop.printCorteEscpos({
           negocio: { nombre: cfg.nombre || DB.config?.nombre || cfg.businessName || 'Tecno Caja', rnc: cfg.rnc || '' },
-          titulo: 'CIERRE DE CAJA',
-          secciones: filasReporte(r).map((s) => ({ titulo: s.titulo, filas: s.filas.map(([l, v, b]) => ({ etiqueta: l, valor: v, negrita: Boolean(b) })) })),
+          titulo: state.detalle ? 'CIERRE DE CAJA' : 'CUADRE DE CAJA',
+          secciones: (state.detalle ? filasDetalle(r) : filasReporte(r)).concat([FIRMA])
+            .map((s) => ({ titulo: s.titulo, filas: s.filas.map(([l, v, b]) => ({ etiqueta: l, valor: v, negrita: Boolean(b) })) })),
           corte: {},
           config: { paperWidth: papel, narrowCols: Boolean(cfg.receiptNarrowCols), cortarPapel: true, currency: settings.currency || 'RD$' },
         }, { printerName: settings.printerName, paperWidth: papel });
@@ -526,7 +630,7 @@
         toast(result?.error || 'No se pudo imprimir en la térmica.', 'error');
         return;
       }
-      const html = htmlReporte(r, { imprimir: true, a4: papel === 'a4' });
+      const html = htmlReporte(r, { imprimir: true, a4: papel === 'a4', detalle: state.detalle });
       if (typeof _printConfiguredHtml === 'function' && window.novaDesktop?.printReceiptHtml) {
         await _printConfiguredHtml(html, { ...settings, paperWidth: papel, isThermal: termico }, 'Reporte enviado a la impresora.');
       } else {
@@ -547,8 +651,8 @@
       let y = 16;
       const cfg = typeof getEffectiveConfig === 'function' ? getEffectiveConfig() : (DB.config || {});
       doc.setFontSize(15); doc.text(String(cfg.nombre || DB.config?.nombre || cfg.businessName || 'Tecno Caja'), 105, y, { align: 'center' }); y += 7;
-      doc.setFontSize(10); doc.text(`Reporte de cierre de caja · turno #${r.turno.id}`, 105, y, { align: 'center' }); y += 9;
-      for (const s of filasReporte(r)) {
+      doc.setFontSize(10); doc.text(`${state.detalle ? 'Reporte de cierre' : 'Cuadre'} de caja · turno #${r.turno.id}`, 105, y, { align: 'center' }); y += 9;
+      for (const s of (state.detalle ? filasDetalle(r) : filasReporte(r)).concat([FIRMA])) {
         if (y > 270) { doc.addPage(); y = 16; }
         doc.setFont('helvetica', 'bold'); doc.setFontSize(10); doc.text(s.titulo, 14, y); y += 5;
         doc.setDrawColor(200); doc.line(14, y - 3.5, 196, y - 3.5);
@@ -850,7 +954,10 @@
   window.CajaSegura = {
     cargarConfig, loadConfigSection, aplicarModoCiego, cambiarModo, abrirCierre, confirmarCierre, recalcular, mostrarReporte, cerrarReporte, verReporteTurno,
     resumenPostCierre, guardarUltimoReporte, verUltimoReporte, verificarCierre, irAMesas, abrirCorteCiego,
-    imprimirReporte, pdfReporte, abrirGaveta, elegirMotivo, buscarProducto, agregarConsumo, cambiarConsumo, confirmarGaveta,
+    imprimirReporte, imprimirCuadre, pdfReporte, abrirGaveta,
+    get ultimoReporte() { return state.ultimoReporte || null; },
+    _filasDetalle: filasDetalle,
+    _htmlReporte: htmlReporte, elegirMotivo, buscarProducto, agregarConsumo, cambiarConsumo, confirmarGaveta,
     registrarAperturaVenta, registrarAperturaPrueba, abrirGavetaParaConteo, imprimirComprobante, abrirArqueo, guardarArqueo, abrirHistorialGaveta, cargarHistorial, exportarHistorial,
     get cierreSeguro() { return activo(); },
     get turnoCiego() { return turnoCiego(); },

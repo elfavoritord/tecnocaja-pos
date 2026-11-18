@@ -19,6 +19,32 @@
 .cs-extra, .cs-notas, .cs-campo { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-size: 0.9rem; }
 .cs-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 
+/* Cierre de caja en curso: sin la X (ver window.CierreObligatorio en app.js). */
+#modal-box.modal-obligatorio .modal-close { display: none; }
+
+/* Cierre con arqueo por denominaciones: más angosto y compacto, para que entre
+   sin tanto scroll (Emilio, 2026-11-17). #modal-box para ganarle a los campos
+   del tema (modulos.css). */
+#modal-box:has(.cs-cierre) { width: min(760px, calc(100vw - 32px)); max-width: 760px; }
+#modal-box .cs-cierre .cs-aviso { font-size: 0.82rem; margin-bottom: 8px; }
+#modal-box .cs-cierre .cs-den-grid { gap: 16px; }
+#modal-box .cs-cierre .cs-den-col h4 { margin-bottom: 2px; }
+#modal-box .cs-cierre .cs-den-row { grid-template-columns: 1fr 70px 96px; gap: 6px; padding: 2px 0; }
+#modal-box .cs-cierre .cs-den-label { font-size: 0.86rem; }
+/* Dos id: los campos del tema llevan :is(#app, .modal-overlay…) con varios :not(). */
+#modal-overlay #modal-box .cs-cierre .cs-den-input { min-height: 32px; height: 32px; padding: 0 8px; font-size: 0.9rem; }
+#modal-box .cs-cierre .cs-den-sub { font-size: 0.82rem; }
+#modal-box .cs-cierre .cs-total-contado { margin-top: 8px; padding: 8px 12px; }
+#modal-box .cs-cierre .cs-total-contado strong { font-size: 1.15rem; }
+#modal-box .cs-cierre .cs-extra { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; font-size: 0.82rem; }
+#modal-box .cs-cierre .cs-extra label { display: flex; flex-direction: column; gap: 4px; }
+#modal-overlay #modal-box .cs-cierre .cs-extra .form-input { min-height: 34px; height: 34px; }
+#modal-box .cs-cierre .cs-notas { margin-top: 8px; font-size: 0.82rem; }
+#modal-overlay #modal-box .cs-cierre textarea.form-input { min-height: 40px; height: 40px; }
+@media (max-width: 640px) {
+  #modal-box .cs-cierre .cs-extra { grid-template-columns: 1fr; }
+}
+
 .cs-modo-chip { display: flex; align-items: center; gap: 8px; }
 .cs-badge { padding: 6px 10px; border-radius: 999px; background: var(--accent-glow); font-size: 0.8rem; font-weight: 600; }
 /* Cierre seguro con la caja abierta: los montos del turno se tapan en el DOM. */

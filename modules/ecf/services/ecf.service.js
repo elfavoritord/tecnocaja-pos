@@ -1107,6 +1107,25 @@ class EcfService {
       .filter((item) => item.environment === sequenceEnvironment(emitter.environment));
     const checklist = this.buildChecklist(emitter, certificate, sequences);
     const ready = checklist.items.every((item) => item.status === 'ok');
+    // La licencia puede tener el e-CF apagado (contrato con el servicio sin activar,
+    // vencida o suspendida) con todo lo demás en verde: Cobrar no ofrecía E31/E32
+    // y aquí no se veía por qué (GRUPO DUPAAL, 2026-11-17). Va como observación:
+    // no cambia el "listo" del emisor.
+    if (typeof this.servicioPermitido === 'function') {
+      const permitido = this.servicioPermitido();
+      const porLicencia = !permitido && typeof this.servicioMensaje === 'function' ? this.servicioMensaje() : null;
+      checklist.items.push({
+        key: 'license_service',
+        label: 'Facturación electrónica en la licencia',
+        status: permitido ? 'ok' : 'warning',
+        message: permitido
+          ? 'El servicio está activo en la licencia.'
+          : (porLicencia || 'El servicio de facturación electrónica no está activo en la licencia de este negocio, así que Cobrar no ofrece E31 ni E32. Se activa desde el panel de Tecno Caja: negocio → Contrato → Facturación electrónica.'),
+      });
+      checklist.summary.total += 1;
+      if (permitido) checklist.summary.ok += 1;
+      else checklist.summary.warning += 1;
+    }
 
     return {
       status: ready ? (emitter.is_active ? 'listo' : 'inactivo') : 'no_configurado',
@@ -3838,6 +3857,83 @@ class EcfService {
     } catch (error) {
       return { ok: false, errores: [...errores, error.message] };
     }
+  }
+
+  // Por qué un e-CF de venta sale apagado en Cobrar, con las mismas reglas que
+  // availableTypes/usableSequences. Antes el cajero solo veía "no hay comprobantes
+  // disponibles" aunque los rangos estuvieran activos en otro ambiente, en otra
+  // caja, vencidos o con el servicio detenido por la licencia (2026-11-17).
+  async explainSaleTypes({ branchId = null, cashRegisterId = null, tipos = ['E31', 'E32', 'E44', 'E45', 'E46'] } = {}) {
+    const nombreAmbiente = (env) => ({ ecf: 'producción', certecf: 'certificación', testecf: 'pruebas' }[env] || env);
+    await this.ensureReady();
+    const emitter = await this.repository.getResolvedEmitter(1).catch(() => null);
+    if (!emitter?.is_active) {
+      return {
+        general: 'La facturación electrónica no está activa en este negocio. Actívala en Configuración → e-CF · DGII.',
+        ambiente: null,
+        tipos: {},
+      };
+    }
+    const ambiente = sequenceEnvironment(emitter.environment);
+    if (typeof this.servicioPermitido === 'function' && !this.servicioPermitido()) {
+      const porLicencia = typeof this.servicioMensaje === 'function' ? this.servicioMensaje() : null;
+      return {
+        general: porLicencia || 'El servicio de facturación electrónica no está activo en la licencia de este negocio. Comunícate con Tecno Caja para activarlo.',
+        ambiente,
+        tipos: {},
+      };
+    }
+    const filas = await this.repository.query(
+      `SELECT tipo_comprobante, environment, activo, branch_id, cash_register_id, numero_final, proximo_numero, fecha_vencimiento
+         FROM ecf_sequences
+        WHERE business_id = 1 AND deleted_at IS NULL
+          AND tipo_comprobante IN (${tipos.map(() => '?').join(', ')})`,
+      tipos
+    ).catch(() => []);
+    const ahora = Date.now();
+    // "AAAA-MM-DD" se muestra tal cual (new Date() lo toma en UTC y en RD sale un día antes);
+    // un Date (DATE de MariaDB) ya viene en hora local.
+    const fecha = (valor) => {
+      const texto = String(valor || '');
+      const m = texto.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (m && !(valor instanceof Date)) return `${m[3]}/${m[2]}/${m[1]}`;
+      const d = valor instanceof Date ? valor : new Date(valor);
+      if (Number.isNaN(d.getTime())) return texto;
+      return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+    };
+    const resultado = {};
+    for (const tipo of tipos) {
+      const todos = filas.filter((f) => String(f.tipo_comprobante).toUpperCase() === tipo);
+      const enAmbiente = todos.filter((f) => sequenceEnvironment(f.environment) === ambiente);
+      const activos = enAmbiente.filter((f) => Number(f.activo) === 1);
+      const aqui = activos.filter((f) => (f.branch_id == null || Number(f.branch_id) === Number(branchId))
+        && (f.cash_register_id == null || Number(f.cash_register_id) === Number(cashRegisterId)));
+      const vigentes = aqui.filter((f) => !f.fecha_vencimiento || new Date(f.fecha_vencimiento).getTime() >= ahora);
+      const conNumeros = vigentes.filter((f) => Number(f.proximo_numero || 0) <= Number(f.numero_final || 0));
+      let motivo = null;
+      if (!todos.length) {
+        motivo = `No hay rango ${tipo} registrado. Tu contador puede registrarlo desde su portal, o agrégalo en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`;
+      } else if (!enAmbiente.length) {
+        const otros = [...new Set(todos.map((f) => nombreAmbiente(sequenceEnvironment(f.environment))))].join(' y ');
+        motivo = ambiente === 'ecf'
+          ? `El rango ${tipo} está registrado para ${otros}, no para producción. Regístralo otra vez como rango de producción, con el Nº de autorización de la DGII.`
+          : `El sistema todavía está en ${nombreAmbiente(ambiente)} y el rango ${tipo} es de ${otros}: se usa cuando la certificación termine y se active producción en Configuración → e-CF · DGII.`;
+      } else if (!activos.length) {
+        motivo = `El rango ${tipo} está desactivado. Actívalo en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`;
+      } else if (!aqui.length) {
+        motivo = `El rango ${tipo} está asignado a otra sucursal o caja, no a esta.`;
+      } else if (!vigentes.length) {
+        const ultima = aqui.map((f) => f.fecha_vencimiento).filter(Boolean)
+          .sort((a, b) => new Date(a).getTime() - new Date(b).getTime()).pop();
+        motivo = `El rango ${tipo} venció${ultima ? ` el ${fecha(ultima)}` : ''}. Pide uno nuevo a la DGII.`;
+      } else if (!conNumeros.length) {
+        motivo = `Se usaron todos los números del rango ${tipo}. Registra un rango nuevo.`;
+      } else if (llevaVencimiento(tipo) && !conNumeros.some((f) => f.fecha_vencimiento)) {
+        motivo = `Al rango ${tipo} le falta la fecha de vencimiento que dio la DGII. Ponla en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos, botón "Fecha de vencimiento".`;
+      }
+      resultado[tipo] = { disponible: !motivo, motivo };
+    }
+    return { general: null, ambiente, tipos: resultado };
   }
 
   async availableTypes({ branchId = null, cashRegisterId = null, tipos: tiposPedidos = [] } = {}) {

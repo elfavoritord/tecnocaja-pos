@@ -287,6 +287,9 @@ function createFiscalSequencesRouter({
   // ({ branchId }) → ['E31', 'E32', …]: e-CF que se pueden emitir ahora
   // (emisor activo + rango usable). Sin ella, /available solo da la serie B.
   listarEcfDisponibles = null,
+  // ({ branchId }) → { general, ambiente, tipos: { E32: { disponible, motivo } } }:
+  // por qué un e-CF sale apagado en Cobrar.
+  explicarEcfDisponibles = null,
 }) {
   const router = express.Router();
 
@@ -389,6 +392,18 @@ function createFiscalSequencesRouter({
       series: 'E',
     }));
   }
+
+  // El motivo de cada e-CF apagado en Cobrar (ambiente, licencia, caja, vencido…).
+  router.get('/available/explain', async (req, res) => {
+    try {
+      if (typeof explicarEcfDisponibles !== 'function') return res.json({ general: null, ambiente: null, tipos: {} });
+      const requestedBranchId = req.query.branchId ? Number(req.query.branchId) : null;
+      const branchId = getUserScopeBranchId(req.authUser) || requestedBranchId;
+      res.json(await explicarEcfDisponibles({ branchId }));
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   router.get('/available', async (req, res) => {
     try {

@@ -137,6 +137,7 @@
     });
     // Lazy-load tab data
     if (tab === 'dgii' && !RV2.dgii) loadDGII();
+    if (tab === 'cierres') loadCierres();
     if (tab === 'detallados') repV2SwitchSubtab(RV2.subtab);
     if (tab === 'caja-general' && typeof window.tesoreriaOnTabOpen === 'function') window.tesoreriaOnTabOpen();
   };
@@ -204,7 +205,71 @@
 
     if (RV2.tab === 'detallados') repV2SwitchSubtab(RV2.subtab);
     if (RV2.tab === 'dgii') loadDGII();
+    if (RV2.tab === 'cierres') loadCierres();
   };
+
+  // ── Cierres de caja (auditoría de cuadres) ───────────────────────────
+  // Los cuadres guardados del período, sucursal, caja y cajero de arriba. "Ver"
+  // abre el mismo cuadre del cierre (js/caja-segura.js) para revisarlo o imprimirlo.
+  async function loadCierres() {
+    calcFiltros();
+    const body = el('repv2-cierres-body');
+    const resumen = el('repv2-cierres-resumen');
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="9" style="padding:12px;color:var(--text3)">Cargando…</td></tr>';
+    const f = RV2.filtros;
+    const qs = new URLSearchParams();
+    if (f.desde) qs.set('desde', f.desde);
+    if (f.hasta) qs.set('hasta', f.hasta);
+    if (f.sucursalId) qs.set('branchId', f.sucursalId);
+    if (f.cajaId) qs.set('cajaId', f.cajaId);
+    if (f.usuarioId) qs.set('userId', f.usuarioId);
+    let data;
+    try {
+      const r = await fetch(`/api/caja/cierres?${qs}`, { headers: getAuthHeaders() });
+      data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `${r.status} ${r.statusText}`);
+    } catch (e) {
+      body.innerHTML = `<tr><td colspan="9" style="padding:12px;color:var(--text3)">${escHtml(e.message || 'No se pudieron cargar los cierres.')}</td></tr>`;
+      if (resumen) resumen.textContent = '';
+      return;
+    }
+    const filas = data.cierres || [];
+    const t = data.totales || {};
+    if (resumen) {
+      resumen.textContent = filas.length
+        ? `${fmtNum(t.cierres)} cierre${t.cierres === 1 ? '' : 's'} · ${fmtNum(t.facturas)} facturas · vendido ${fmt(t.vendido)} · esperado ${fmt(t.esperado)} · contado ${fmt(t.contado)} · diferencia ${fmt(t.diferencia)}`
+        : '';
+    }
+    if (!filas.length) {
+      body.innerHTML = `<tr><td colspan="9" style="padding:12px;color:var(--text3)">No hay cierres de caja del ${escHtml(data.desde || '')} al ${escHtml(data.hasta || '')}.</td></tr>`;
+      return;
+    }
+    const diferencia = (v) => {
+      const n = Number(v || 0);
+      if (Math.abs(n) < 0.005) return '<span class="repv2-ok">Cuadrado</span>';
+      return n > 0 ? `<span class="repv2-warn">Sobra ${fmt(n)}</span>` : `<span class="repv2-bad">Falta ${fmt(Math.abs(n))}</span>`;
+    };
+    body.innerHTML = filas.map((c) => `
+      <tr>
+        <td>${escHtml(String(c.cierre || '').slice(0, 16))}</td>
+        <td>${escHtml([c.sucursal, c.caja].filter(Boolean).join(' / '))}</td>
+        <td>${escHtml(c.cajero)}</td>
+        <td>${fmtNum(c.facturas)}</td>
+        <td>${fmt(c.vendido)}</td>
+        <td>${fmt(c.esperado)}</td>
+        <td>${fmt(c.contado)}</td>
+        <td>${diferencia(c.diferencia)}</td>
+        <td><button class="repv2-btn-export" onclick="repV2VerCierre(${Number(c.sessionId)})">Ver</button></td>
+      </tr>`).join('');
+  }
+  window.repV2LoadCierres = loadCierres;
+  window.repV2VerCierre = function (sessionId) {
+    if (window.CajaSegura?.verReporteTurno) window.CajaSegura.verReporteTurno(sessionId);
+  };
+  function escHtml(v) {
+    return typeof escapeHtml === 'function' ? escapeHtml(String(v ?? '')) : String(v ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+  }
 
   // ── Init del módulo ──────────────────────────────────────
   async function initRepV2() {
@@ -289,6 +354,19 @@
     setText('kpi-ganancia',  fmt(k.ganancia || 0));
     setText('kpi-margen',    `${k.margen || '0.0'}% margen`);
     setText('kpi-ticket',    fmt(k.ticket_promedio || 0));
+    // Facturas del período: todas (ticket, NCF y e-CF), con el desglose y el
+    // ticket promedio debajo (Emilio, 2026-11-17).
+    const totalFacturas = Number(k.total_facturas || 0);
+    const ecf = Number(k.facturas_ecf || 0);
+    const ncf = Number(k.facturas_ncf || 0);
+    const tickets = Math.max(0, totalFacturas - ecf - ncf);
+    setText('kpi-num-facturas', fmtNum(totalFacturas));
+    setText('kpi-facturas-detalle', [
+      `${fmtNum(tickets)} ticket${tickets === 1 ? '' : 's'}`,
+      ecf ? `${fmtNum(ecf)} e-CF` : '',
+      ncf ? `${fmtNum(ncf)} NCF` : '',
+      `Promedio ${fmt(k.ticket_promedio || 0)}`,
+    ].filter(Boolean).join(' · '));
     setText('kpi-itbis',     fmt(k.total_itbis || 0));
     setText('kpi-efectivo',  fmt(k.efectivo || 0));
     setText('kpi-tarjeta',   fmt(k.tarjeta || 0));

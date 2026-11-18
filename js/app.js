@@ -3196,6 +3196,9 @@ function handleEnterActions(event) {
 
   if (!document.getElementById('app')?.classList.contains('hidden') && target?.id === 'monto-recibido') {
     event.preventDefault();
+    // Con una ventana del cobro abierta encima ("¿Salir sin cobrar?", descuento…)
+    // Enter no cobra: antes Esc → Enter registraba la venta que se cancelaba.
+    if (window.CobroUI?.hasOpenOverlay?.()) return;
     if (typeof processSale === 'function') processSale();
     return;
   }
@@ -4876,6 +4879,8 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     roundingMode: document.getElementById('cfg-rounding-mode')?.value || DB.config?.roundingMode || 'none',
     // Facturación: editar el total en productos por peso (js/venta-por-monto.js).
     weightTotalEditEnabled: Boolean(document.getElementById('cfg-weight-total-edit')?.checked ?? DB.config?.weightTotalEditEnabled ?? false),
+    // Facturación: la serie B (B01, B02…) sale o no en Cobrar.
+    cobroSerieB: Boolean(document.getElementById('cfg-cobro-serie-b')?.checked ?? DB.config?.cobroSerieB ?? true),
     // Impuestos: método de ITBIS que trae un producto nuevo (adicional / fijo / incluido).
     itbisMetodoPredeterminado: document.getElementById('cfg-itbis-metodo')?.value || DB.config?.itbisMetodoPredeterminado || 'adicional',
     // Descripciones adicionales en facturas (js/producto-info-adicional.js).
@@ -5130,6 +5135,10 @@ function syncConfigForm() {
   const weightTotalEditToggle = document.getElementById('cfg-weight-total-edit');
   if (weightTotalEditToggle && weightTotalEditToggle !== activeElement) {
     weightTotalEditToggle.checked = Boolean(cfg.weightTotalEditEnabled);
+  }
+  const serieBToggle = document.getElementById('cfg-cobro-serie-b');
+  if (serieBToggle && serieBToggle !== activeElement) {
+    serieBToggle.checked = cfg.cobroSerieB !== false;
   }
   // Descripciones adicionales en facturas.
   const infoCfg = window.ProductoInfoAdicional?.configFactura(cfg.infoAdicionalFactura) || cfg.infoAdicionalFactura || {};
@@ -8422,13 +8431,37 @@ async function saveCashCorteAndClose() {
 // CIERRE DE CAJA (separado del corte — no hace logout)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Después de "Sí, cerrar la caja" el cierre es obligatorio: el conteo no tiene
+// "Cancelar" ni X, y Esc no lo cierra (closeAllModals en ui.js). Se termina al
+// llegar a la pantalla final, o si algo impide cerrar (mesas sin cobrar).
+window.CierreObligatorio = {
+  activo: false,
+  iniciar() {
+    this.activo = true;
+    document.getElementById('modal-box')?.classList.add('modal-obligatorio');
+  },
+  terminar() {
+    this.activo = false;
+    document.getElementById('modal-box')?.classList.remove('modal-obligatorio');
+  },
+};
+
+// Antes de cerrar la caja se avisa lo que viene: termina el turno, solo queda
+// imprimir el cuadre y la sesión se cierra (Emilio, 2026-11-17).
+async function confirmarCierreDeCaja() {
+  const respuesta = await showFormModal('¿Cerrar la caja?', [], {
+    confirmText: 'Sí, cerrar la caja',
+    cancelText: 'Cancelar',
+    descripcion: 'Al cerrar la caja termina el turno: se hace el cuadre, solo podrás imprimirlo y la sesión se cerrará. Para volver a vender hay que abrir la caja otra vez.',
+  });
+  return respuesta !== null;
+}
+
 async function openCashCierreModal() {
   if (!currentUserCan('cerrar_caja')) {
     showToast('No tienes permiso para cerrar caja.', 'error');
     return;
   }
-  // Cierre seguro activo: conteo por denominaciones a ciegas (js/caja-segura.js).
-  if (window.CajaSegura?.cierreSeguro) { window.CajaSegura.abrirCierre(); return; }
   if (!cajaAbierta) {
     showToast('La caja no está abierta.', 'warning');
     return;
@@ -8439,6 +8472,10 @@ async function openCashCierreModal() {
     showToast(`No puedes cerrar caja: hay ${pendingDeliveries.length} pedido(s) contra entrega sin validar (${facturas}). Valídalos primero.`, 'error');
     return;
   }
+  if (!(await confirmarCierreDeCaja())) return;
+  window.CierreObligatorio.iniciar();
+  // Cierre seguro activo: conteo por denominaciones a ciegas (js/caja-segura.js).
+  if (window.CajaSegura?.cierreSeguro) { window.CajaSegura.abrirCierre(); return; }
   // Mesas con consumo sin cobrar en la sucursal: no se cierra (el servidor
   // también lo bloquea al cerrar).
   if (window.CajaSegura?.verificarCierre && !(await window.CajaSegura.verificarCierre())) return;
@@ -8501,8 +8538,8 @@ function calcCierreDiff() {
 }
 
 /**
- * Cierra la caja/turno activo.
- * NO hace logout — muestra la pantalla de resumen post-cierre.
+ * Cierra la caja/turno activo y muestra la pantalla final, que solo deja
+ * imprimir el cuadre y cerrar (cerrar = cerrar la sesión).
  */
 async function executeCashCierre({ print = false } = {}) {
   if (!currentUserCan('cerrar_caja')) {
@@ -8576,21 +8613,23 @@ async function executeCashCierre({ print = false } = {}) {
     // 4. Cerrar modal de cierre
     closeCashCierreModal();
 
-    // 5. Imprimir si se solicitó
+    // 5. Imprimir si se solicitó: el cuadre corto que calculó el servidor
+    // (js/caja-segura.js → filasReporte), con los gastos y su descripción.
+    if (response.reporte && window.CajaSegura?.guardarUltimoReporte) window.CajaSegura.guardarUltimoReporte(response.reporte);
     if (print) {
-      _printCashCorte(
-        { ...d, horaCorte: horaCierre },
-        contado, diferencia, notas
-      ).catch(err => {
+      const impresion = response.reporte && window.CajaSegura?.imprimirCuadre
+        ? window.CajaSegura.imprimirCuadre()
+        : _printCashCorte({ ...d, horaCorte: horaCierre }, contado, diferencia, notas);
+      Promise.resolve(impresion).catch(err => {
         console.warn('[cierre] Error imprimiendo:', err);
-        showToast('Caja cerrada. No se pudo imprimir el comprobante.', 'warning');
+        showToast('Caja cerrada. No se pudo imprimir el cuadre.', 'warning');
       });
     }
 
-    // 6. Mostrar pantalla de resumen — SIN logout. Los montos salen del
-    // reporte que calculó el servidor (el mismo que se imprime y se guarda).
+    // 6. Pantalla posterior al cierre: solo imprimir el cuadre y cerrar la
+    // sesión (Emilio, 2026-11-17). Los montos salen del reporte que calculó el
+    // servidor (el mismo que se imprime y se guarda).
     if (response.reporte && window.CajaSegura?.resumenPostCierre) {
-      window.CajaSegura.guardarUltimoReporte(response.reporte);
       showPostCloseScreen(window.CajaSegura.resumenPostCierre(response.reporte, response, notas));
       return;
     }
@@ -8624,6 +8663,8 @@ async function executeCashCierre({ print = false } = {}) {
 
 /** Muestra la pantalla de resumen después del cierre (sin logout) */
 function showPostCloseScreen(summary) {
+  // La caja ya cerró: termina el cierre obligatorio (queda imprimir y cerrar sesión).
+  window.CierreObligatorio?.terminar();
   const f = fmt;
   const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
 
@@ -8682,10 +8723,18 @@ function closePostCloseScreen() {
   document.getElementById('cash-cierre-summary')?.classList.add('hidden');
 }
 
-/** Imprime el resumen del cierre desde la pantalla de resumen post-cierre */
+/** Imprime el cuadre desde la pantalla posterior al cierre */
 async function printCloseSummary() {
   const summary = showPostCloseScreen._lastSummary;
   if (!summary) return;
+  // El cuadre corto del servidor (el mismo para los dos cierres).
+  if (window.CajaSegura?.ultimoReporte && window.CajaSegura?.imprimirCuadre) {
+    try { await window.CajaSegura.imprimirCuadre(); } catch (err) {
+      console.warn('[summary] Error imprimiendo el cuadre:', err);
+      showToast('No se pudo imprimir el cuadre.', 'error');
+    }
+    return;
+  }
   try {
     await _printCashCorte(
       {
@@ -9554,6 +9603,14 @@ function getCajaExpenseBreakdown() {
   return totals;
 }
 
+// Con el cierre seguro (turno a ciegas) el cajero no ve montos de la caja: el
+// efectivo, los egresos y los ingresos salen tapados, igual que el resumen de
+// Caja (js/caja-segura.js → aplicarModoCiego). Emilio, 2026-11-17.
+function montoCajaVisible(valor) {
+  if (window.CajaSegura?.turnoCiego) return `${DB.config?.moneda || DB.config?.currency || 'RD$'} ••••••`;
+  return fmt(valor);
+}
+
 function renderCajaExpenseSummary() {
   const totals = getCajaExpenseBreakdown();
   const total = Object.values(totals).reduce((sum, value) => sum + Number(value || 0), 0);
@@ -9562,11 +9619,11 @@ function renderCajaExpenseSummary() {
   const suplidorEl = document.getElementById('caja-egreso-suplidor');
   const devolucionEl = document.getElementById('caja-egreso-devolucion');
   const retiroEl = document.getElementById('caja-egreso-retiro');
-  if (totalEl) totalEl.textContent = fmt(total);
-  if (gastoEl) gastoEl.textContent = fmt(totals.gasto);
-  if (suplidorEl) suplidorEl.textContent = fmt(totals.pago_suplidor);
-  if (devolucionEl) devolucionEl.textContent = fmt(totals.devolucion);
-  if (retiroEl) retiroEl.textContent = fmt(totals.retiro_efectivo);
+  if (totalEl) totalEl.textContent = montoCajaVisible(total);
+  if (gastoEl) gastoEl.textContent = montoCajaVisible(totals.gasto);
+  if (suplidorEl) suplidorEl.textContent = montoCajaVisible(totals.pago_suplidor);
+  if (devolucionEl) devolucionEl.textContent = montoCajaVisible(totals.devolucion);
+  if (retiroEl) retiroEl.textContent = montoCajaVisible(totals.retiro_efectivo);
 }
 
 // Movimientos de caja que son dinero que entra aparte de las ventas (cuentan
@@ -9607,12 +9664,16 @@ function renderCajaIncomeSummary() {
   const total = totals.ingreso_adicional + anticipos.neto;
   const totalEl = document.getElementById('caja-ingresos-total');
   const extraEl = document.getElementById('caja-ingreso-extra');
-  if (totalEl) totalEl.textContent = fmt(total);
-  if (extraEl) extraEl.textContent = `${fmt(totals.ingreso_adicional)} hoy`;
+  if (totalEl) totalEl.textContent = montoCajaVisible(total);
+  if (extraEl) extraEl.textContent = `${montoCajaVisible(totals.ingreso_adicional)} hoy`;
   const conAnticipos = anticipos.recibidos.total > 0 || anticipos.devueltos.total > 0;
   document.getElementById('caja-ingreso-anticipos-row')?.classList.toggle('hidden', !conAnticipos);
   const anticiposEl = document.getElementById('caja-ingreso-anticipos');
-  if (anticiposEl) anticiposEl.textContent = `${fmt(anticipos.neto)} en este turno${describirAnticiposCaja(anticipos)}`;
+  if (anticiposEl) {
+    anticiposEl.textContent = window.CajaSegura?.turnoCiego
+      ? `${montoCajaVisible(anticipos.neto)} en este turno`
+      : `${fmt(anticipos.neto)} en este turno${describirAnticiposCaja(anticipos)}`;
+  }
 }
 
 // " · efectivo RD$ 500.00 · tarjeta RD$ 300.00 · devuelto RD$ 100.00"
@@ -9810,7 +9871,7 @@ function openCashExpenseModal(defaultType = 'gasto') {
         <div class="cash-expense-inline">
           <div class="cash-expense-inline-card">
             <span>Efectivo disponible</span>
-            <strong>${fmt(DB.config.cajaMonto || 0)}</strong>
+            <strong>${montoCajaVisible(DB.config.cajaMonto || 0)}</strong>
           </div>
           <div class="cash-expense-inline-card">
             <span>Caja</span>
@@ -9940,7 +10001,7 @@ function openCashIncomeModal() {
         <div class="cash-expense-inline">
           <div class="cash-expense-inline-card">
             <span>Efectivo actual</span>
-            <strong>${fmt(DB.config.cajaMonto || 0)}</strong>
+            <strong>${montoCajaVisible(DB.config.cajaMonto || 0)}</strong>
           </div>
           <div class="cash-expense-inline-card">
             <span>Destino</span>

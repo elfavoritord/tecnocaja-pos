@@ -326,6 +326,14 @@
   gap: 6px;
 }
 
+/* Por qué E32/E31 salen apagados (ambiente, licencia, rango vencido…). */
+#cobro-shell .cobro-ecf-hint {
+  margin-top: 6px;
+  color: var(--tc-warning-text);
+  font-size: var(--tc-fs-sm);
+  line-height: 1.35;
+}
+
 #cobro-shell .cobro-doc {
   height: var(--tc-control-h);
   padding: 0 2px;

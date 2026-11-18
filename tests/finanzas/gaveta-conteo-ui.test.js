@@ -6,7 +6,7 @@ const vm = require('vm');
 const source = fs.readFileSync(path.join(__dirname, '../../js/caja-segura.js'), 'utf8');
 const appSource = fs.readFileSync(path.join(__dirname, '../../js/app.js'), 'utf8');
 
-function pantalla({ permisos = true, abierta = true, configurada = true, hardwareOk = true, puedeCerrar = true } = {}) {
+function pantalla({ permisos = true, abierta = true, configurada = true, hardwareOk = true, puedeCerrar = true, confirmaCierre = true } = {}) {
   const elements = new Map();
   const element = (id) => {
     if (!elements.has(id)) elements.set(id, { dataset: {}, classList: { add: jest.fn(), remove: jest.fn(), toggle: jest.fn() }, focus() {} });
@@ -19,7 +19,10 @@ function pantalla({ permisos = true, abierta = true, configurada = true, hardwar
     if (url === '/api/caja/gaveta') return { eventUuid: 'evento-conteo-1234', abrirGaveta: true };
     return {};
   });
-  const ctx = vm.createContext({ window: { crypto: { randomUUID: () => 'evento-conteo-1234' }, novaDesktop: { openCashDrawer } },
+  const cierreObligatorio = { activo: false, iniciar() { this.activo = true; }, terminar() { this.activo = false; } };
+  const ctx = vm.createContext({ window: { crypto: { randomUUID: () => 'evento-conteo-1234' }, novaDesktop: { openCashDrawer }, CierreObligatorio: cierreObligatorio },
+    // El aviso "¿Cerrar la caja?" (app.js): sí o cancelar.
+    confirmarCierreDeCaja: async () => confirmaCierre,
     DB: { config: { cajaAbierta: abierta } }, cajaAbierta: abierta,
     document: { getElementById: element, querySelector: () => null },
     api: { request }, currentUserCan: () => permisos, showToast: jest.fn(),
@@ -52,6 +55,22 @@ describe('apertura de gaveta antes de contar el efectivo', () => {
     expect(p.openCashDrawer).toHaveBeenCalledTimes(1);
     expect(p.openCashDrawer).toHaveBeenCalledWith({ printerName: 'Impresora Caja 1', pin: 0 });
     expect(p.request).toHaveBeenCalledWith('/api/caja/gaveta/evento-conteo-1234/resultado', expect.objectContaining({ body: JSON.stringify({ estado: 'abierta', error: '' }) }));
+  });
+
+  test('con "Cancelar" en el aviso de cerrar la caja no se abre la gaveta ni empieza el cierre', async () => {
+    const p = pantalla({ confirmaCierre: false });
+    await p.ctx.openCashCierreModal();
+    expect(p.openCashDrawer).not.toHaveBeenCalled();
+    expect(p.ctx.window.CierreObligatorio.activo).toBe(false);
+  });
+
+  test('con "Sí, cerrar la caja" el cierre queda obligatorio; mesas sin cobrar lo liberan', async () => {
+    const p = pantalla();
+    await p.ctx.openCashCierreModal();
+    expect(p.ctx.window.CierreObligatorio.activo).toBe(true);
+    const bloqueado = pantalla({ puedeCerrar: false });
+    await bloqueado.ctx.openCashCierreModal();
+    expect(bloqueado.ctx.window.CierreObligatorio.activo).toBe(false);
   });
 
   test.each([{ permisos: false }, { abierta: false }, { puedeCerrar: false }])('no abre en un cierre bloqueado: %j', async (opciones) => {

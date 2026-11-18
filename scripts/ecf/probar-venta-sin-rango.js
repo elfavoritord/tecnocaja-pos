@@ -84,6 +84,10 @@ async function estado() {
       SELECT 1, '132839676', 'certecf', 1 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM {db}.ecf_emitters WHERE business_id = 1)`);
     await db('DELETE FROM {db}.ecf_sequences');
 
+    const motivoSinRango = await api('GET', '/api/fiscal-sequences/available/explain');
+    L.check('Cobrar explica por qué E32 sale apagado (sin rango)', /No hay rango E32/.test(motivoSinRango.body?.tipos?.E32?.motivo || ''),
+      JSON.stringify(motivoSinRango.body).slice(0, 300));
+
     const antes = await estado();
     const sinRango = await api('POST', '/api/sales', venta('factura-electronica'));
     const despues = await estado();
@@ -130,6 +134,14 @@ async function estado() {
     await db('DELETE FROM {db}.ecf_documents');
     await db('DELETE FROM {db}.ecf_sequence_usage');
     await db("UPDATE {db}.ecf_emitters SET environment = 'ecf' WHERE business_id = 1");
+    // Rango activo, pero cargado para certificación: en producción no sirve y Cobrar lo dice.
+    await db(`INSERT INTO {db}.ecf_sequences (business_id, tipo_comprobante, environment, numero_inicial, numero_final, proximo_numero, activo)
+      VALUES (1, 'E32', 'certecf', 1, 100, 1, 1)`);
+    const motivoAmbiente = await api('GET', '/api/fiscal-sequences/available/explain');
+    L.check('Rango de certificación con el sistema en producción: Cobrar dice el motivo',
+      /registrado para certificación, no para producción/.test(motivoAmbiente.body?.tipos?.E32?.motivo || ''),
+      JSON.stringify(motivoAmbiente.body?.tipos?.E32));
+    await db('DELETE FROM {db}.ecf_sequences');
     const sinMarcar = await api('POST', '/api/sales', venta('factura-electronica'));
     L.check('Producción sin marcar nada: la venta se frena', sinMarcar.status === 422, `HTTP ${sinMarcar.status}`);
     const marcar = await api('POST', '/api/ecf/sequences/simple', { tipoComprobante: 'E32' });
@@ -139,6 +151,8 @@ async function estado() {
     L.check('Marcar E31 sin fecha se rechaza, porque el XML la exige', sinFecha.status === 422, `HTTP ${sinFecha.status} ${sinFecha.body?.error || ''}`);
     const marcada = await api('POST', '/api/sales', venta('factura-electronica'));
     L.check('Con E32 marcado la venta pasa', marcada.status === 201 || marcada.status === 200, `HTTP ${marcada.status} ${marcada.body?.error || ''}`);
+    const motivoListo = await api('GET', '/api/fiscal-sequences/available/explain');
+    L.check('Con E32 marcado, Cobrar lo da por disponible', motivoListo.body?.tipos?.E32?.disponible === true, JSON.stringify(motivoListo.body?.tipos?.E32));
 
     await api('POST', '/api/ecf/sequences/simple', { tipoComprobante: 'E34' });
     await db('UPDATE {db}.config SET service_company = 1 WHERE id = 1');

@@ -51,6 +51,12 @@
     }
   ];
   const EXTRA_DOCS = EXTRA_GROUPS.flatMap((group) => group.docs);
+  // Configuración → Facturación → "Mostrar los comprobantes serie B en Cobrar".
+  // Apagado, el grupo «Serie B» no sale en «Más» (las secuencias no se tocan).
+  function extraGroups() {
+    const conSerieB = typeof DB === 'undefined' || DB.config?.cobroSerieB !== false;
+    return EXTRA_GROUPS.filter((group) => conSerieB || group.title !== 'Serie B');
+  }
   const ORDER_TYPES = [
     { key: 'mostrador', label: 'Mostrador' },
     { key: 'delivery', label: 'Delivery' },
@@ -215,8 +221,10 @@
             <strong id="cobro-doc-more-label">Más</strong><span id="cobro-doc-more-hint">${icon('chevron-down', 16)}</span>
           </button>
         </div>
+        <!-- Por qué E32/E31 salen apagados con la facturación electrónica activa (ventas.js → _renderEcfHint) -->
+        <div id="cobro-ecf-hint" class="cobro-ecf-hint hidden" role="note"></div>
         <div id="cobro-doc-menu" class="tc-popover cobro-popover cobro-doc-menu hidden" role="menu">
-          ${EXTRA_GROUPS.map((group) => `
+          ${extraGroups().map((group) => `
             <div class="cobro-doc-menu-group">${group.title}</div>
             <div class="cobro-doc-menu-items">
               ${group.docs.map((doc) => `

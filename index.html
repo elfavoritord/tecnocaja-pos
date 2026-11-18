@@ -2044,6 +2044,9 @@
           <button class="repv2-tab" data-tab="detallados" onclick="repV2SwitchTab('detallados')">
             <span class="repv2-tab-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg></span> Detallados
           </button>
+          <button class="repv2-tab" data-tab="cierres" onclick="repV2SwitchTab('cierres')">
+            <span class="repv2-tab-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span> Cierres de caja
+          </button>
           <button class="repv2-tab" data-tab="dgii" onclick="repV2SwitchTab('dgii')">
             <span class="repv2-tab-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 18v-7"/><path d="M11.119 2.205a2 2 0 0 1 1.762 0l7.84 3.846A.5.5 0 0 1 20.5 7h-17a.5.5 0 0 1-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></svg></span> DGII
           </button>
@@ -2105,9 +2108,9 @@
             <div class="repv2-kpi-sub" id="kpi-margen">0% margen</div>
           </div>
           <div class="repv2-kpi repv2-kpi-blue">
-            <div class="repv2-kpi-label">Ticket Promedio</div>
-            <div class="repv2-kpi-val" id="kpi-ticket">RD$ 0.00</div>
-            <div class="repv2-kpi-sub">Por transacción</div>
+            <div class="repv2-kpi-label">Facturas</div>
+            <div class="repv2-kpi-val" id="kpi-num-facturas">0</div>
+            <div class="repv2-kpi-sub" id="kpi-facturas-detalle">Ticket, NCF y e-CF</div>
           </div>
           <div class="repv2-kpi repv2-kpi-orange">
             <div class="repv2-kpi-label">ITBIS Recaudado</div>
@@ -2332,6 +2335,20 @@
       </div><!-- /detallados -->
 
       <!-- ══════════════ TAB: DGII ══════════════ -->
+      <!-- ══════════════ TAB: CIERRES DE CAJA (auditoría de cuadres) ══════════════ -->
+      <div id="repv2-tab-cierres" class="repv2-pane hidden">
+        <div class="repv2-panel-head">
+          <div><h3>Cierres de caja</h3><p>Los cuadres del período elegido arriba (hoy, ayer, semana, mes, año o personalizado), por sucursal, caja o cajero. Toca «Ver» para revisarlo o imprimirlo.</p></div>
+        </div>
+        <div class="repv2-cierres-resumen" id="repv2-cierres-resumen"></div>
+        <div class="repv2-table-wrap">
+          <table class="data-table">
+            <thead><tr><th>Cierre</th><th>Sucursal / caja</th><th>Cajero</th><th>Facturas</th><th>Vendido</th><th>Efectivo esperado</th><th>Contado</th><th>Diferencia</th><th></th></tr></thead>
+            <tbody id="repv2-cierres-body"><tr><td colspan="9" style="padding:12px;color:var(--text3)">Elige el período y pulsa Aplicar.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
       <div id="repv2-tab-dgii" class="repv2-pane hidden">
 
         <div class="repv2-dgii-header">
@@ -3074,6 +3091,13 @@
               <option value="5">Redondear a RD$5</option>
               <option value="10">Redondear a RD$10</option>
             </select>
+          </div>
+          <div class="form-group span-full">
+            <label style="font-weight:600">Comprobantes serie B</label>
+            <div class="settings-checkbox-list">
+              <label><input type="checkbox" id="cfg-cobro-serie-b"> Mostrar los comprobantes serie B (B01, B02, B14…) en Cobrar</label>
+            </div>
+            <small class="helper-text">Apágalo si el negocio solo vende con Ticket o con factura electrónica: los B dejan de salir en la pantalla de cobro. Las secuencias registradas no se borran y puedes volver a encenderlo cuando quieras.</small>
           </div>
           <div class="form-group span-full">
             <label style="font-weight:600">Productos por peso</label>
@@ -5850,7 +5874,7 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
     <div class="modal-card-header">
       <span class="modal-card-icon"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
       <h3 id="cierre-modal-title">Cierre de Caja</h3>
-      <button class="modal-card-close" type="button" onclick="closeCashCierreModal()" aria-label="Cerrar"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+      <!-- Sin X ni "Cancelar": después de "Sí, cerrar la caja" el cierre es obligatorio (Emilio, 2026-11-17). -->
     </div>
     <div class="modal-card-body corte-modal-body">
 
@@ -5919,7 +5943,6 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
 
     </div>
     <div class="modal-card-footer corte-modal-footer">
-      <button class="btn-secondary" type="button" onclick="closeCashCierreModal()">Cancelar</button>
       <button class="btn-secondary" type="button" onclick="CajaSegura.abrirCierre()" title="Contar billetes y monedas; el esperado se muestra al final">Cierre con arqueo por denominaciones</button>
       <button class="btn-secondary" type="button" onclick="executeCashCierre({ print: false })" id="btn-cierre-sin-imprimir">Cerrar sin imprimir</button>
       <button class="btn-primary" type="button" onclick="executeCashCierre({ print: true })" id="btn-cierre-con-imprimir">Cerrar e imprimir</button>
@@ -5983,13 +6006,12 @@ document.addEventListener('tecnocaja:config-opened', _updateNetworkPreview);
       </div>
 
     </div>
+    <!-- Caja cerrada: solo imprimir el cuadre y cerrar (cierra la sesión). Emilio, 2026-11-17. -->
     <div class="modal-card-footer corte-summary-footer">
-      <button class="btn-secondary corte-logout" type="button" onclick="closePostCloseScreen(); doLogout()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg><span>Cerrar sesión</span></button>
-      <button class="btn-secondary" type="button" onclick="printCloseSummary()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg><span>Imprimir</span></button>
-      <button class="btn-secondary" type="button" onclick="CajaSegura.verUltimoReporte()">Reporte completo</button>
-      <button class="btn-secondary" type="button" onclick="closePostCloseScreen(); openCajaModule()">Ver ventas</button>
+      <span class="corte-summary-aviso">Al cerrar se cierra la sesión.</span>
+      <button class="btn-secondary" type="button" id="btn-imprimir-cuadre" onclick="printCloseSummary()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 9V3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v6"/><rect x="6" y="14" width="12" height="8" rx="1"/></svg><span>Imprimir cuadre</span></button>
       <button class="btn-secondary hidden" id="btn-transferir-caja-general" type="button">Transferir a Caja General</button>
-      <button class="btn-primary" type="button" onclick="closePostCloseScreen()">Nuevo turno / Continuar</button>
+      <button class="btn-primary corte-logout" type="button" id="btn-cerrar-turno" onclick="closePostCloseScreen(); doLogout()"><svg class="tc-icon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/></svg><span>Cerrar</span></button>
     </div>
   </div>
 </div>

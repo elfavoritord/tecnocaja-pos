@@ -722,7 +722,7 @@ function openQuickSaleModal() {
       </div>
       <div class="form-group compact-toggle-card">
         <label class="toggle-switch" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer;user-select:none">
-          <input type="checkbox" id="quick-sale-itbis" checked style="width:auto" onchange="syncQuickSaleTotal()">
+          <input type="checkbox" id="quick-sale-itbis" style="width:auto" onchange="syncQuickSaleTotal()">
           <span>Aplicar ITBIS (${DB.config?.itbis ?? 18}%) a este producto</span>
         </label>
       </div>
@@ -2590,6 +2590,13 @@ function applyPreferredBillingDocumentType() {
     return;
   }
   DB.saleEcfType = null;
+  // Serie B apagada en Cobrar (Configuración → Facturación): un preferido B
+  // arranca como Ticket.
+  if (DB.config?.cobroSerieB === false && /^B\d{2}$/i.test(preferred)) {
+    DB.saleDocumentType = 'ticket';
+    DB.saleNcfType = '';
+    return;
+  }
   if (preferred === 'factura-electronica') {
     DB.saleDocumentType = 'factura-electronica';
     DB.saleNcfType = '';
@@ -3898,7 +3905,46 @@ async function refreshAvailableNcfDocTypes() {
     _applyAvailableNcfDocTypesToPills();
     _fallbackToTicketIfDocUnavailable();
     if (typeof syncBillingModalHeader === 'function') syncBillingModalHeader();
+    await _refreshEcfUnavailableReasons(branchId);
   } catch (_) { /* si falla, no se bloquea la venta — solo se sigue mostrando el placeholder */ }
+}
+
+// Por qué E31/E32 salen apagados con la facturación electrónica activa: rango en
+// otro ambiente, en otra caja, vencido, agotado o el servicio detenido por la
+// licencia (server: explainSaleTypes). Antes solo decía "no hay comprobantes".
+let _ecfUnavailableReasons = null;
+
+async function _refreshEcfUnavailableReasons(branchId) {
+  _ecfUnavailableReasons = null;
+  const apagados = ['E31', 'E32'].filter((tipo) => _isDocTypeAvailable(tipo) === false);
+  if (DB.config?.eInvoiceEnabled && apagados.length) {
+    try {
+      const res = await fetch(`/api/fiscal-sequences/available/explain${branchId ? `?branchId=${encodeURIComponent(branchId)}` : ''}`, {
+        headers: { Authorization: `Bearer ${DB.authToken || ''}` }
+      });
+      if (res.ok) _ecfUnavailableReasons = await res.json();
+    } catch (_) { /* sin el motivo se queda el aviso general */ }
+  }
+  _applyAvailableNcfDocTypesToPills();
+  _renderEcfHint();
+}
+
+function _ecfReasonFor(type) {
+  const r = _ecfUnavailableReasons;
+  if (!r || !/^E\d{2}$/.test(type)) return null;
+  return r.general || r.tipos?.[type]?.motivo || null;
+}
+
+// Debajo de los comprobantes, solo cuando el negocio factura con e-CF (emisor
+// activo) y aun así E32/E31 no se pueden elegir.
+function _renderEcfHint() {
+  const hint = document.getElementById('cobro-ecf-hint');
+  if (!hint) return;
+  const motivos = DB.config?.ecfActivo
+    ? [...new Set(['E32', 'E31'].filter((t) => _isDocTypeAvailable(t) === false).map(_ecfReasonFor).filter(Boolean))]
+    : [];
+  hint.textContent = motivos.join(' ');
+  hint.classList.toggle('hidden', !motivos.length);
 }
 
 // Tipo real del comprobante elegido: «factura-electronica» sin tipo es E31
@@ -3926,6 +3972,8 @@ function _docUnavailableMessage(type) {
     return 'La factura electrónica está deshabilitada en configuración.';
   }
   if (/^E\d{2}$/.test(type)) {
+    const motivo = _ecfReasonFor(type);
+    if (motivo) return motivo;
     return DB.config?.ecfActivo
       ? `No hay comprobantes electrónicos ${type} disponibles. Tu contador puede registrarlos desde su portal, o agrégalos en Configuración → Ventas y Facturación → Secuencias de Comprobantes Electrónicos (e-NCF).`
       : `La facturación electrónica no está activa en este negocio, así que no se puede emitir ${type}.`;
@@ -3960,6 +4008,10 @@ function _applyAvailableNcfDocTypesToPills() {
 function setSaleDocumentPreset(preset) {
   const normalized = String(preset || 'ticket').trim();
   const upper = normalized.toUpperCase();
+  if (DB.config?.cobroSerieB === false && /^B\d{2}$/.test(upper)) {
+    showToast('Los comprobantes serie B están apagados en Configuración → Facturación.', 'warning');
+    return;
+  }
   if (_isDocTypeAvailable(upper) === false) {
     showToast(_docUnavailableMessage(upper), 'warning');
     return;
@@ -4247,7 +4299,11 @@ function syncBillingModalFooter() {
 
 function showBillingDiscardPrompt() {
   billingModalState.discardPromptVisible = true;
-  document.getElementById('billing-discard-guard')?.classList.remove('hidden');
+  const guard = document.getElementById('billing-discard-guard');
+  guard?.classList.remove('hidden');
+  // El foco sale del campo del monto y queda en "Seguir cobrando": Enter no cobra
+  // ni descarta; para salir hay que elegir "Salir sin cobrar".
+  guard?.querySelector('.tc-btn:not(.tc-btn--danger)')?.focus();
 }
 
 function hideBillingDiscardPrompt() {
@@ -7885,6 +7941,10 @@ function _resolveSaleAttemptKey(venta) {
 
 async function processSale(action = 'print') {
   if (_billingSubmitting) return;
+  // Con "¿Salir sin cobrar?" a la vista no se cobra nada: Esc → Enter cobraba la
+  // venta que el cajero estaba cancelando (Emilio, 2026-11-17).
+  const discardGuard = document.getElementById('billing-discard-guard');
+  if (discardGuard && !discardGuard.classList.contains('hidden')) return;
   const billingCaps = window.TecnoCajaBilling?.getEffectiveBillingCapabilities
     ? window.TecnoCajaBilling.getEffectiveBillingCapabilities()
     : { canCreateSales: true };

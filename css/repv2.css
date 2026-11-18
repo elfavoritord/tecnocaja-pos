@@ -177,6 +177,13 @@
 }
 .repv2-panel-head h3 { font-size: 0.95rem; font-weight: 800; color: var(--text); margin: 0 0 0.2rem; }
 .repv2-panel-head p  { font-size: 0.78rem; color: var(--text3); margin: 0; }
+
+/* Cierres de caja (auditoría de cuadres) */
+.repv2-cierres-resumen { margin: 0.75rem 0; font-size: 0.82rem; font-weight: 600; color: var(--text2); }
+.repv2-cierres-resumen:empty { display: none; }
+#repv2-tab-cierres .repv2-ok { color: var(--success, #16a34a); font-weight: 600; }
+#repv2-tab-cierres .repv2-warn { color: var(--warning, #b45309); font-weight: 600; }
+#repv2-tab-cierres .repv2-bad { color: var(--danger, #dc2626); font-weight: 600; }
 .repv2-badge {
   padding: 0.3rem 0.75rem;
   background: var(--accent-glow);

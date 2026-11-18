@@ -532,6 +532,21 @@ module.exports = async function verificarPantallas({ port, outputDir, datos }) {
     assert.ok(ciega.resumen.length >= 8 && ciega.resumen.every((t) => t === '••••••'), `Resumen del día oculto: ${ciega.resumen}`);
     assert.match(ciega.aviso, /al cerrar la caja/);
     assert.equal(ciega.interruptorEnCaja, false, 'el interruptor ya no está en Caja');
+    // Egresos, ingresos y los modales de registrar egreso/ingreso tampoco muestran montos.
+    const tapados = await page.evaluate(() => {
+      const egresos = ['caja-egresos-total', 'caja-egreso-gasto', 'caja-egreso-retiro', 'caja-ingresos-total', 'caja-ingreso-extra']
+        .map((id) => document.getElementById(id)?.textContent || '');
+      openCashExpenseModal('gasto');
+      const egreso = document.querySelector('#modal-body .cash-expense-inline-card strong')?.textContent || '';
+      closeAllModals();
+      openCashIncomeModal();
+      const ingreso = document.querySelector('#modal-body .cash-expense-inline-card strong')?.textContent || '';
+      closeAllModals();
+      return { egresos, egreso, ingreso };
+    });
+    assert.ok(tapados.egresos.every((t) => /••••••/.test(t)), `egresos e ingresos tapados: ${tapados.egresos.join(' | ')}`);
+    assert.match(tapados.egreso, /••••••/, `"Efectivo disponible" tapado en Registrar egreso: ${tapados.egreso}`);
+    assert.match(tapados.ingreso, /••••••/, `"Efectivo actual" tapado en Registrar ingreso: ${tapados.ingreso}`);
     await foto('caja-cierre-seguro');
     await page.evaluate(() => openCashCorteModal());
     const corte = await page.evaluate(() => ({
@@ -594,15 +609,38 @@ module.exports = async function verificarPantallas({ port, outputDir, datos }) {
     await page.evaluate(() => { document.getElementById('cs-den-1000').value = '1'; document.getElementById('cs-den-25').value = '2'; CajaSegura.recalcular('cs'); });
     const totalTxt = await page.evaluate(() => document.getElementById('cs-total').textContent);
     assert.match(totalTxt, /1,050\.00/);
+    // El arqueo también pide el total de transferencias (como el del verifón).
+    assert.ok(await page.evaluate(() => Boolean(document.getElementById('cs-transferencias'))), 'el arqueo pide las transferencias');
+    await page.evaluate(() => { document.getElementById('cs-transferencias').value = '0'; });
     await foto('cierre-conteo');
     await page.evaluate(() => CajaSegura.confirmarCierre());
-    await page.waitForFunction(() => document.querySelector('.cs-reporte-modal .csr'), { timeout: 60000 });
-    const reporte = await page.evaluate(() => document.querySelector('.cs-reporte-modal').textContent);
-    assert.match(reporte, /REPORTE DE CIERRE DE CAJA/); assert.match(reporte, /1\. Efectivo/); assert.match(reporte, /4\. Crédito/);
-    await foto('cierre-reporte');
-    await page.evaluate(() => CajaSegura.cerrarReporte());
-    await page.waitForFunction(() => !document.getElementById('cash-cierre-summary')?.classList.contains('hidden'), { timeout: 20000 });
+    // Caja cerrada: directo a la pantalla final, que solo deja imprimir el cuadre y cerrar.
+    await page.waitForFunction(() => !document.getElementById('cash-cierre-summary')?.classList.contains('hidden'), { timeout: 60000 });
+    const botonesFinales = await page.evaluate(() => [...document.querySelectorAll('#cash-cierre-summary .corte-summary-footer button')]
+      .filter((b) => !b.classList.contains('hidden')).map((b) => b.textContent.trim()));
+    assert.deepEqual(botonesFinales, ['Imprimir cuadre', 'Cerrar'], `botones al cerrar: ${botonesFinales.join(', ')}`);
     await foto('cierre-resumen');
+    // El cuadre corto (el que se imprime).
+    await page.evaluate(() => CajaSegura.mostrarReporte(CajaSegura.ultimoReporte));
+    await page.waitForFunction(() => document.querySelector('.cs-reporte-modal .csr'), { timeout: 20000 });
+    const reporte = await page.evaluate(() => document.querySelector('.cs-reporte-modal').textContent);
+    assert.match(reporte, /CUADRE DE CAJA/); assert.match(reporte, /Desglose del sistema/); assert.match(reporte, /Desglose del cajero/);
+    assert.match(reporte, /Transferencias/); assert.match(reporte, /Diferencia sistema - cajero/);
+    assert.doesNotMatch(reporte, /Aperturas de gaveta|Propina legal/);
+    await foto('cierre-cuadre');
+    await page.evaluate(() => CajaSegura.cerrarReporte());
+    // Reportes → Cierres de caja: el cierre de hoy sale en la lista y se puede ver.
+    await page.evaluate(() => document.getElementById('cash-cierre-summary')?.classList.add('hidden'));
+    await page.evaluate(async () => {
+      showModule('reportes', document.querySelector('.nav-item[data-module="reportes"]'));
+      const periodo = document.getElementById('repv2-periodo'); if (periodo) periodo.value = 'hoy';
+      repV2SwitchTab('cierres');
+    });
+    await page.waitForFunction(() => /Ver/.test(document.getElementById('repv2-cierres-body')?.textContent || ''), { timeout: 20000 });
+    await foto('reportes-cierres');
+    await page.evaluate(() => document.querySelector('#repv2-cierres-body button').click());
+    await page.waitForFunction(() => /CUADRE DE CAJA/.test(document.querySelector('.cs-reporte-modal')?.textContent || ''), { timeout: 20000 });
+    await page.evaluate(() => closeAllModals());
     await new Promise((r) => setTimeout(r, 500));
     errores.push(...(await page.evaluate(() => window.__avisosError || [])).map((m) => `aviso de error: ${m}`));
     assert.deepEqual(errores, [], `errores en la página:\n${errores.join('\n')}`);

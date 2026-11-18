@@ -129,6 +129,7 @@ CREATE TABLE config (
   invoice_logo_scale INT DEFAULT NULL,
   weight_total_edit_enabled TINYINT(1) NOT NULL DEFAULT 1,
   peso_monto_activado_v1 TINYINT(1) NOT NULL DEFAULT 1,
+  cobro_serie_b TINYINT(1) NOT NULL DEFAULT 1,
   itbis_metodo_predeterminado VARCHAR(12) NOT NULL DEFAULT 'adicional',
   info_adicional_factura LONGTEXT DEFAULT NULL,
   combo_invoice_display VARCHAR(20) NOT NULL DEFAULT 'agrupado',
