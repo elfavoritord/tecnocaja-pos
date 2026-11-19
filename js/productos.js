@@ -699,7 +699,7 @@ function renderProductsFallback(productsList, reason = '') {
       ${preview.map((product) => `
         <div class="products-fallback-item">
           <strong>${product.codigo} · ${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(product) : product.nombre}</strong><br>
-          <span>${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(product.categoria) : product.categoria} · ${translateCatalogText(product.unidad || 'Unidad')} · Stock ${product.stock} · ${fmt(product.precioVenta)}</span>
+          <span>${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(product.categoria) : product.categoria} · ${translateCatalogText(product.unidad || 'Unidad')} · Stock ${product.stock} · ${fmt(getProductCatalogPrice(product))}</span>
         </div>
       `).join('')}
     </div>
@@ -838,7 +838,7 @@ function buildProductRowMarkup(p) {
         <span class="tc-cell-sub">${escapeProductIdentityHtml(p.codigo || '')}</span>
       </td>
       <td class="tc-cell-muted">${escapeProductIdentityHtml(categoria || '')}</td>
-      <td class="is-num">${fmt(getProductFinalPriceWithItbis(p))}</td>
+      <td class="is-num">${fmt(getProductCatalogPrice(p))}</td>
       <td class="is-num tc-cell-muted">${fmt(p.precioCompra || 0)}</td>
       <td class="is-num"><strong>${stock}</strong></td>
       <td>${getStockBadge(p)}</td>
@@ -864,7 +864,7 @@ function buildProductCardMarkup(p) {
         <div class="products-catalog-body">
           <div class="products-catalog-name">${nombre}</div>
           <div class="products-catalog-scope">${escapeProductIdentityHtml(scopeLabel)}</div>
-          <div class="products-catalog-price">${fmt(getProductFinalPriceWithItbis(p))}</div>
+          <div class="products-catalog-price">${fmt(getProductCatalogPrice(p))}</div>
         </div>
       </article>`;
 }
@@ -921,13 +921,10 @@ function loadProductsTable() {
   }
 }
 
-// Lo que paga el cliente por una unidad (lo que muestran las tarjetas del
-// catálogo y "Se venderá en" del modal): el precio de venta más su ITBIS
-// (se suma al precio o monto fijo), el precio tal cual si no lleva ITBIS, o el
-// precio tal cual si ya incluye el ITBIS (método 3, "itbisIncluido").
-function getProductFinalPriceWithItbis(p) {
+// Precio que se muestra antes de agregar el producto a la venta.
+function getProductCatalogPrice(p) {
   const precio = Number(p.precioVenta || 0);
-  if (!p.aplicaItbis || p.itbisIncluido) return precio;
+  if (DB.config?.taxIncludeInCatalogPrice !== true || !p.aplicaItbis || p.itbisIncluido) return precio;
   const itbisAmount = p.itbisModo === 'monto'
     ? Number(p.itbisMonto || 0)
     : precio * (Number(DB.config?.itbis ?? 18) / 100);
@@ -935,7 +932,7 @@ function getProductFinalPriceWithItbis(p) {
 }
 
 // Después de crear, editar, pausar o borrar un producto: la pantalla dividida
-// de Ventas muestra ya el precio (con su ITBIS) y la existencia nuevos. Las
+// de Ventas muestra ya el precio y la existencia nuevos. Las
 // otras cajas se enteran por el aviso 'catalogo:actualizado' del servidor.
 function refreshSalesCatalogAfterProductChange() {
   // Esta caja ya tiene el cambio: no hace falta releer cuando llegue el aviso.

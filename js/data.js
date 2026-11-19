@@ -20,6 +20,7 @@ const DB = {
     itbis: 18,
     taxCalculateAtInvoiceEnd: true,
     taxIncludeInProductPrice: false,
+    taxIncludeInCatalogPrice: false,
     taxShowBreakdownOnReceipts: true,
     taxSeparateTaxableAndExempt: true,
     prefix: 'FAC-',

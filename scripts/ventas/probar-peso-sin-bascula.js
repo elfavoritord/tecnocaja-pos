@@ -8,7 +8,7 @@
 //      ventana y se escribe el monto en el Total;
 //   E. se cobra cada venta y el servidor guarda la cantidad con decimales.
 // Uso: npm run test:peso-sin-bascula
-/* global DB, doLogin, showModule, openBillingModal, setMontoExacto, processSale, startSaleLineTotalEdit, closeReceipt, renderSaleTable -- corren en la página */
+/* global DB, doLogin, showModule, openBillingModal, setMontoExacto, processSale, startSaleLineTotalEdit, closeReceipt, normalizeSaleItem -- corren en la página */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -45,6 +45,7 @@ const check = L.check;
     for (const p of [
       { codigo: 'POLLO', nombre: 'Pollo', precioVenta: 100, stock: 100, aplicaItbis: false },
       { codigo: 'QUESO', nombre: 'Queso de freír', precioVenta: 300, stock: 40, aplicaItbis: true, itbisIncluido: true },
+      { codigo: 'RES', nombre: 'Carne de res', precioVenta: 250, stock: 20, aplicaItbis: false },
     ]) {
       const r = await L.request(PORT, 'POST', '/api/products', {
         marca: '', estado: 'Activo', stockMin: 0, categoria: 'Carnes', unidad: 'Libra (lb)', saleMode: 'peso', precioCompra: 50, ...p,
@@ -120,12 +121,24 @@ const check = L.check;
     const porDefecto = await page.evaluate(() => DB.config?.weightTotalEditEnabled);
     check('Instalación nueva: "modificar el total en productos por peso" viene encendido', porDefecto === true, String(porDefecto));
     await bascula({ scaleType: 'none' });
-    await escanear('POLLO');
+    await escanear('RES');
     const sinVentana = await carrito();
-    check('Sin báscula: el producto por peso entra directo (1 lb), sin la ventana', !(await ventana()) && sinVentana.length === 1 && sinVentana[0].qty === 1, JSON.stringify(sinVentana));
+    check('Sin báscula: el producto entra directo con 1 lb a RD$250', !(await ventana()) && sinVentana.length === 1 && sinVentana[0].qty === 1 && sinVentana[0].total === 250, JSON.stringify(sinVentana));
     const botonPeso = () => page.evaluate(() => Boolean(document.querySelector('#module-ventas .sale-weight-btn')));
     check('Sin báscula: la línea no trae el botón "Ingresar peso" (se escribe el Total)', !(await botonPeso()));
-    await page.evaluate(() => { DB.saleItems = []; renderSaleTable(); });
+    const pesos = await page.evaluate(() => {
+      const item = DB.saleItems[0];
+      const recuperada = normalizeSaleItem({ ...item, scaleWeight: 0, scaleMeasuredValue: 0 });
+      return [item.scaleWeight, item.scaleMeasuredValue, recuperada.scaleWeight, recuperada.scaleMeasuredValue];
+    });
+    check('La libra manual se registra también al recuperar una línea con el peso anterior en cero',
+      pesos.every((peso) => peso === 1), JSON.stringify(pesos));
+    const rDirecta = await cobrar();
+    const ventaDirecta = rDirecta?.cuerpo?.sale;
+    check('Sin báscula: cobra RD$250 por 1 lb sin editar el total',
+      rDirecta?.status === 201 && Number(ventaDirecta?.total) === 250 && Number(ventaDirecta?.items?.[0]?.qty) === 1,
+      `HTTP ${rDirecta?.status} total ${ventaDirecta?.total} qty ${ventaDirecta?.items?.[0]?.qty} ${rDirecta?.cuerpo?.error || ''}`);
+    await page.evaluate(() => { closeReceipt(); showModule('ventas'); });
     await sleep(300);
 
     // ── A. Sin báscula y con la opción apagada: la ventana pide el peso ──────

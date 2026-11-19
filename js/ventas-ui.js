@@ -64,6 +64,18 @@
     set('ventas-sum-itbis', stripCurrency(textOf('s-itbis', '0')));
     set('ventas-sum-itbis-label', textOf('sale-tax-label', 'ITBIS').replace(/[()]/g, '').trim() || 'ITBIS');
 
+    // Precios con ITBIS incluido (js/ventas.js → getSaleResumenConItbis): sin
+    // subtotal ni ITBIS, y el descuento (solo si hay) sobre los precios con
+    // ITBIS que se ven en las líneas. La factura sigue mostrando el ITBIS.
+    const conItbis = typeof getSaleResumenConItbis === 'function' ? getSaleResumenConItbis() : null;
+    const fila = (id) => document.getElementById(id)?.closest('.ventas-sum-row');
+    fila('ventas-sum-subtotal')?.classList.toggle('hidden', Boolean(conItbis));
+    fila('ventas-sum-itbis')?.classList.toggle('hidden', Boolean(conItbis));
+    fila('ventas-sum-descuento')?.classList.toggle('hidden', Boolean(conItbis) && !conItbis.hayDescuento);
+    if (conItbis?.hayDescuento && typeof fmt === 'function') {
+      set('ventas-sum-descuento', stripCurrency(`- ${fmt(conItbis.descuento)}`));
+    }
+
     // Propina legal: aparte del ITBIS, solo cuando la venta la lleva.
     const propina = typeof parseFmt === 'function' ? parseFmt(textOf('s-propina', '0')) : 0;
     document.getElementById('ventas-sum-propina-row')?.classList.toggle('hidden', !(propina > 0));

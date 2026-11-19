@@ -3068,11 +3068,13 @@
           <div class="form-group span-full">
             <label style="font-weight:600">Impuestos</label>
             <div class="settings-checkbox-list">
-              <label><input type="checkbox" id="cfg-tax-calculate-at-end" checked onchange="syncTaxConfigToggles('cfg-tax-calculate-at-end')"> Calcular ITBIS al final de factura</label>
-              <label><input type="checkbox" id="cfg-tax-include-in-price" onchange="syncTaxConfigToggles('cfg-tax-include-in-price')"> Agregar ITBIS directamente al precio producto</label>
+              <label><input type="checkbox" id="cfg-tax-calculate-at-end" checked onchange="syncTaxConfigToggles('cfg-tax-calculate-at-end')"> Mostrar el ITBIS aparte en la venta (precio sin ITBIS y columna ITBIS)</label>
+              <label><input type="checkbox" id="cfg-tax-include-in-price" onchange="syncTaxConfigToggles('cfg-tax-include-in-price')"> Mostrar los precios con ITBIS incluido en el detalle de la venta</label>
+              <label><input type="checkbox" id="cfg-tax-include-in-catalog-price"> Sumar el ITBIS al precio mostrado en Productos y en el selector de Venta</label>
               <label><input type="checkbox" id="cfg-tax-show-breakdown" checked> Mostrar desglose de ITBIS en recibos</label>
               <label><input type="checkbox" id="cfg-tax-separate-subtotals" checked> Separar subtotal gravado y exento</label>
             </div>
+            <small class="helper-text">Las listas muestran el precio registrado por defecto. Al agregar el producto a la venta, el total refleja el ITBIS que le corresponde.</small>
           </div>
           <div class="form-group span-full">
             <label for="cfg-itbis-metodo">Método de ITBIS para productos nuevos</label>

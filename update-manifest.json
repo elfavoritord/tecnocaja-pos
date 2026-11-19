@@ -1,12 +1,13 @@
 {
-  "version": "1.6.35",
-  "stableVersion": "1.6.35",
-  "date": "18/11/2026",
+  "version": "1.6.36",
+  "stableVersion": "1.6.36",
+  "date": "19/11/2026",
   "size": "198 MB",
   "type": "fix",
-  "critical": true,
+  "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Multisucursal: la PC principal de una empresa (la que tiene la licencia de la empresa) ya no se puede conectar por error como sucursal. El asistente lo avisa y explica cómo recuperarla: \"Restaurar desde la nube\" y después conectarla como principal desde Configuración."
+    "Productos y el selector de Venta muestran el precio registrado. En Configuración → Facturación puedes elegir que el catálogo muestre el precio con ITBIS. Al cobrar se sigue aplicando el impuesto que corresponda.",
+    "Venta por peso sin báscula: se puede cobrar una libra al precio registrado directamente, sin editar el total ni solicitar una lectura de peso."
   ]
 }

@@ -13,7 +13,7 @@ const os = require('os');
 const path = require('path');
 
 const PROJECT = path.resolve(__dirname, '..', '..');
-process.env.TC_E2E_DIR = path.join(os.tmpdir(), 'tecnocaja-itbis-incluido');
+process.env.TC_E2E_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tecnocaja-itbis-incluido-'));
 const L = require(path.join(PROJECT, 'scripts', 'e2e-lan', 'lib'));
 const puppeteer = require(path.join(PROJECT, 'node_modules', 'puppeteer'));
 
@@ -32,7 +32,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     for (const dir of [USER_DATA, HOME, OUT]) fs.rmSync(dir, { recursive: true, force: true });
     fs.mkdirSync(path.join(HOME, 'Documents'), { recursive: true });
     fs.mkdirSync(OUT, { recursive: true });
-    server = L.startServer('itbis-incluido', { port: PORT, userData: USER_DATA, env: { DB_CLIENT: 'sqlite', USERPROFILE: HOME, HOME } });
+    server = L.startServer('itbis-incluido', { port: PORT, userData: USER_DATA, env: { DB_CLIENT: 'sqlite', USERPROFILE: HOME, HOME, TECNO_CAJA_DEMO: '1', TECNO_CAJA_SYNC_URL: 'off' } });
     await L.waitHttp(PORT);
     await L.request(PORT, 'POST', '/api/setup/complete', {
       language: 'es', businessType: 'colmado', businessStructureMode: 'monocaja',
@@ -143,16 +143,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     L.check('Los productos que ya existían no cambian', guardado.viejo?.itbisIncluido === false && guardado.arroz?.itbisIncluido === false && Number(guardado.viejo?.precioVenta) === 100);
 
     // Abrir y guardar la ficha de un producto viejo conserva su método.
-    await page.evaluate(async (id) => {
-      openProductModal(id);
-      await new Promise((r) => setTimeout(r, 600));
-      return saveProduct(id);
-    }, ids.viejo);
-    await sleep(1200);
+    await page.evaluate((id) => openProductModal(id), ids.viejo);
+    await page.waitForSelector('#mp-itbis-modo-pct', { timeout: 15000 });
+    const editarViejo = page.waitForResponse((res) => res.request().method() === 'PUT'
+      && new URL(res.url()).pathname === `/api/products/${ids.viejo}`, { timeout: 20000 });
+    await page.evaluate((id) => { void saveProduct(id); }, ids.viejo);
+    const respuestaViejo = await editarViejo;
+    L.check('La ficha del producto existente se guarda', respuestaViejo.ok(), String(respuestaViejo.status()));
+    await page.waitForSelector('#mp-itbis-modo-pct', { hidden: true, timeout: 15000 });
     const viejoTrasEditar = await page.evaluate((id) => DB.productos.find((p) => p.id === id), ids.viejo);
     L.check('Guardar la ficha de Galletas la deja con ITBIS sumado', viejoTrasEditar?.itbisIncluido === false && viejoTrasEditar?.aplicaItbis === true, JSON.stringify(viejoTrasEditar || {}).slice(0, 160));
 
-    // 3. Pantalla dividida: precio final de cada producto.
+    // 3. Precio de catálogo antes de agregar los productos al carrito.
     const precioTarjeta = (p, id) => p.evaluate((pid) => document.querySelector(`.sales-product-card[data-product-id="${pid}"] .sales-product-price`)?.textContent || null, id);
     const abrirVentasDividida = (p) => p.evaluate(async () => {
       showModule('ventas');
@@ -169,8 +171,37 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     };
     await page.screenshot({ path: path.join(OUT, '2-pantalla-dividida.png') });
     L.check('Pantalla dividida: Refresco (incluido) RD$118, no 139.24', /118\.00/.test(tarjetas.refresco || ''), JSON.stringify(tarjetas));
-    L.check('Pantalla dividida: Galletas (100 + 18%) RD$118', /118\.00/.test(tarjetas.viejo || ''), JSON.stringify(tarjetas));
+    L.check('Pantalla dividida: Galletas muestra el precio registrado de RD$100', /100\.00/.test(tarjetas.viejo || ''), JSON.stringify(tarjetas));
     L.check('Pantalla dividida: Arroz exento RD$40', /40\.00/.test(tarjetas.arroz || ''), JSON.stringify(tarjetas));
+
+    const preciosCatalogo = () => page.evaluate((id) => {
+      const gridPrice = document.querySelector(`.sales-product-card[data-product-id="${id}"] .sales-product-price`)?.textContent;
+      _doSearchProduct('VIEJO');
+      const searchPrice = document.querySelector('#search-dropdown .sri-price')?.textContent;
+      _doSearchProduct('');
+      const row = [...document.querySelectorAll('#products-tbody tr')]
+        .find((item) => item.querySelector('.tc-cell-sub')?.textContent === 'VIEJO');
+      return [gridPrice, searchPrice, row?.cells[2]?.textContent];
+    }, ids.viejo);
+    const guardarPrecioConItbis = (checked) => page.evaluate(async (enabled) => {
+      const toggle = document.getElementById('cfg-tax-include-in-catalog-price');
+      if (toggle.checked !== enabled) toggle.click();
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('No se guardó la opción de ITBIS del catálogo')), 10000);
+        saveConfig(() => { clearTimeout(timeout); resolve(); });
+      });
+      const response = await fetch('/api/bootstrap', { headers: { Authorization: `Bearer ${DB.authToken}` } });
+      return (await response.json()).config?.taxIncludeInCatalogPrice;
+    }, checked);
+    await page.evaluate(() => setProductsView('tabla'));
+    const conItbis = await guardarPrecioConItbis(true);
+    const preciosConItbis = await preciosCatalogo();
+    L.check('La casilla activada se guarda y muestra RD$118 en tarjeta, buscador y tabla',
+      conItbis === true && preciosConItbis.every((price) => /118\.00/.test(price || '')), JSON.stringify(preciosConItbis));
+    const sinItbis = await guardarPrecioConItbis(false);
+    const preciosSinItbis = await preciosCatalogo();
+    L.check('La casilla desactivada se guarda y vuelve a mostrar RD$100',
+      sinItbis === false && preciosSinItbis.every((price) => /100\.00/.test(price || '')), JSON.stringify(preciosSinItbis));
 
     // 4. Carrito: 118 → base 100 + ITBIS 18; cantidades y descuento.
     const carrito = () => page.evaluate(() => {
@@ -198,6 +229,44 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const cMix = await carrito();
     L.check('Carrito: con Galletas (100 + 18%) suma 436.60', cMix.total === 436.6 && cMix.itbis === 66.6, JSON.stringify(cMix));
     await page.screenshot({ path: path.join(OUT, '3-carrito.png') });
+
+    // 4b. "Mostrar los precios con ITBIS incluido en la venta": solo cambia lo
+    //     que se ve (precio con ITBIS, sin columna ITBIS, resumen con el total).
+    //     Se deja encendida para cobrar: la venta debe salir igual (paso 5).
+    const pantalla = () => page.evaluate(() => {
+      const visible = (n) => Boolean(n) && getComputedStyle(n).display !== 'none' && !n.closest('.hidden');
+      const fila = (id) => document.getElementById(id)?.closest('.ventas-sum-row');
+      const precios = {};
+      document.querySelectorAll('#sale-items tr[data-sale-row]').forEach((tr) => {
+        precios[tr.querySelector('.sale-item-name')?.textContent.trim()] = tr.querySelector('.sale-item-price')?.textContent.trim();
+      });
+      return {
+        precios,
+        columnaItbis: visible(document.querySelector('#module-ventas .sale-table th.col-itbis')),
+        subtotal: visible(fila('ventas-sum-subtotal')),
+        itbis: visible(fila('ventas-sum-itbis')),
+        descuento: visible(fila('ventas-sum-descuento')) ? document.getElementById('ventas-sum-descuento').textContent : null,
+        total: document.getElementById('ventas-total-value')?.textContent,
+      };
+    });
+    const sinOpcion = await pantalla();
+    L.check('Como siempre: Galletas a 100.00 con la columna ITBIS, subtotal e ITBIS en el resumen',
+      sinOpcion.precios.Galletas === '100.00' && sinOpcion.columnaItbis && sinOpcion.subtotal && sinOpcion.itbis, JSON.stringify(sinOpcion));
+    await page.evaluate(() => {
+      DB.config.taxIncludeInProductPrice = true;
+      DB.config.taxCalculateAtInvoiceEnd = false;
+      renderSaleTable();
+      updateTotals();
+    });
+    await sleep(300);
+    const conOpcion = await pantalla();
+    L.check('Precios con ITBIS: Refresco y Galletas a 118.00 en la línea', conOpcion.precios['Refresco de uva'] === '118.00' && conOpcion.precios.Galletas === '118.00', JSON.stringify(conOpcion.precios));
+    L.check('Precios con ITBIS: sin la columna ITBIS ni subtotal/ITBIS en el resumen', !conOpcion.columnaItbis && !conOpcion.subtotal && !conOpcion.itbis, JSON.stringify(conOpcion));
+    L.check('Precios con ITBIS: descuento 35.40 sobre los precios con ITBIS y el total sigue en 436.60',
+      conOpcion.descuento === '-35.40' && conOpcion.total === '436.60', JSON.stringify({ descuento: conOpcion.descuento, total: conOpcion.total }));
+    const cCon = await carrito();
+    L.check('Precios con ITBIS: lo que se cobra no cambia (436.60, ITBIS 66.60)', cCon.total === 436.6 && cCon.itbis === 66.6, JSON.stringify(cCon));
+    await page.screenshot({ path: path.join(OUT, '3b-carrito-precios-con-itbis.png') });
 
     // 5. Cobrar y revisar lo guardado.
     await page.evaluate(() => openBillingModal());

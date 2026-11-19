@@ -113,6 +113,7 @@ CREATE TABLE config (
   tax_rate DECIMAL(5,2) NOT NULL DEFAULT 18.00,
   tax_calculate_at_invoice_end TINYINT(1) NOT NULL DEFAULT 1,
   tax_include_in_product_price TINYINT(1) NOT NULL DEFAULT 0,
+  tax_include_in_catalog_price TINYINT(1) NOT NULL DEFAULT 0,
   tax_show_breakdown_on_receipts TINYINT(1) NOT NULL DEFAULT 1,
   tax_separate_taxable_and_exempt TINYINT(1) NOT NULL DEFAULT 1,
   invoice_prefix VARCHAR(20) NOT NULL DEFAULT 'FAC-',

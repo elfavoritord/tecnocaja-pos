@@ -4824,6 +4824,8 @@ function getConfigPreviewValues(parsedTaxOverride = null) {
     taxIncludeInProductPrice: taxIncludeInPriceCheckbox
       ? Boolean(taxIncludeInPriceCheckbox.checked)
       : Boolean(DB.config?.taxIncludeInProductPrice ?? false),
+    taxIncludeInCatalogPrice: document.getElementById('cfg-tax-include-in-catalog-price')?.checked
+      ?? DB.config?.taxIncludeInCatalogPrice ?? false,
     taxShowBreakdownOnReceipts: taxShowBreakdownCheckbox
       ? Boolean(taxShowBreakdownCheckbox.checked)
       : Boolean(DB.config?.taxShowBreakdownOnReceipts ?? true),
@@ -4994,6 +4996,10 @@ function syncConfigForm() {
   const taxIncludeInPriceToggle = document.getElementById('cfg-tax-include-in-price');
   if (taxIncludeInPriceToggle) {
     taxIncludeInPriceToggle.checked = Boolean(cfg.taxIncludeInProductPrice ?? false);
+  }
+  const taxIncludeInCatalogPriceToggle = document.getElementById('cfg-tax-include-in-catalog-price');
+  if (taxIncludeInCatalogPriceToggle) {
+    taxIncludeInCatalogPriceToggle.checked = cfg.taxIncludeInCatalogPrice === true;
   }
   const taxShowBreakdownToggle = document.getElementById('cfg-tax-show-breakdown');
   if (taxShowBreakdownToggle) {

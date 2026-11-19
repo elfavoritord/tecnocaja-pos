@@ -312,6 +312,14 @@
 #module-ventas .sale-table .col-remove { width: 52px; text-align: center; }
 #module-ventas .sale-table th.col-itbis { color: var(--tc-text); }
 #module-ventas .sale-table td.col-total { white-space: nowrap; }
+/* Precios con ITBIS incluido (Configuración → Facturación): sin la columna ITBIS. */
+#module-ventas .sale-table.sale-table--con-itbis .col-itbis { display: none; }
+#module-ventas .sale-price-hint {
+  display: block;
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-xs);
+  text-align: right;
+}
 
 #module-ventas .sale-item-name {
   display: -webkit-box;

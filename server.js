@@ -5024,6 +5024,7 @@ async function runCoreSchemaMigrations(migrate) {
 async function ensureConfigExtensions() {
   await addColumnIfMissing('config', 'tax_calculate_at_invoice_end', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'tax_include_in_product_price', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumnIfMissing('config', 'tax_include_in_catalog_price', 'TINYINT(1) NOT NULL DEFAULT 0');
   await addColumnIfMissing('config', 'tax_show_breakdown_on_receipts', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'tax_separate_taxable_and_exempt', 'TINYINT(1) NOT NULL DEFAULT 1');
   await addColumnIfMissing('config', 'invoice_next_number', 'INT NOT NULL DEFAULT 1001');
@@ -8943,6 +8944,7 @@ async function getConfig(options = {}) {
     itbis: Number(row.tax_rate ?? 18),
     taxCalculateAtInvoiceEnd: Boolean(row.tax_calculate_at_invoice_end ?? 1),
     taxIncludeInProductPrice: Boolean(row.tax_include_in_product_price ?? 0),
+    taxIncludeInCatalogPrice: Number(row.tax_include_in_catalog_price) === 1,
     taxShowBreakdownOnReceipts: Boolean(row.tax_show_breakdown_on_receipts ?? 1),
     taxSeparateTaxableAndExempt: Boolean(row.tax_separate_taxable_and_exempt ?? 1),
     prefix: row.invoice_prefix,
@@ -15457,6 +15459,7 @@ app.put('/api/config', async (req, res) => {
     `UPDATE config
      SET business_name = ?, rnc = ?, address = ?, phone = ?, currency = ?, tax_rate = ?,
          tax_calculate_at_invoice_end = ?, tax_include_in_product_price = ?, tax_show_breakdown_on_receipts = ?, tax_separate_taxable_and_exempt = ?,
+         tax_include_in_catalog_price = COALESCE(?, tax_include_in_catalog_price),
          invoice_prefix = ?, invoice_next_number = ?, e_invoice_enabled = ?, e_invoice_prefix = ?,
       e_invoice_next_number = ?, ncf_alert_expiry_days = ?, ncf_alert_low_count_threshold = ?, ncf_authorized_sequences_v2_enabled = ?, preferred_billing_doc_type = ?, receipt_message = ?, receipt_print_mode = ?, receipt_printer_name = ?, receipt_paper_size = ?,
          cash_drawer_enabled = ?, cash_drawer_method = ?, cash_drawer_printer_name = ?, cash_drawer_pin = ?, cash_drawer_network_host = ?, cash_drawer_network_port = ?, cash_drawer_serial_port = ?,
@@ -15476,6 +15479,7 @@ app.put('/api/config', async (req, res) => {
       data.taxIncludeInProductPrice ? 1 : 0,
       data.taxShowBreakdownOnReceipts !== false ? 1 : 0,
       data.taxSeparateTaxableAndExempt !== false ? 1 : 0,
+      typeof data.taxIncludeInCatalogPrice === 'boolean' ? Number(data.taxIncludeInCatalogPrice) : null,
       data.prefix,
       data.nextInvoice,
       data.eInvoiceEnabled ? 1 : 0,

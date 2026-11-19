@@ -494,14 +494,23 @@ function normalizeSaleItem(item = {}) {
   };
 
   if (saleMode === 'peso') {
-    normalized.scaleWeight = Number.isFinite(Number(item.scaleWeight))
-      ? getSaleScaleUtils().roundValue(Number(item.scaleWeight), getSaleQuantityDecimals())
-      : normalized.qty;
-    normalized.scaleMeasuredValue = Number.isFinite(Number(item.scaleMeasuredValue))
-      ? getSaleScaleUtils().roundValue(Number(item.scaleMeasuredValue), getSaleQuantityDecimals())
-      : normalized.scaleWeight;
-    normalized.scaleMeasuredUnit = item.scaleMeasuredUnit || weightUnit;
     normalized.scaleSource = String(item.scaleSource || '').trim();
+    const scaleWeight = Number(item.scaleWeight);
+    if (normalized.scaleSource === 'manual' && (item.scaleWeight == null || scaleWeight === 0)) {
+      // Al vender sin báscula, la cantidad del carrito es el peso manual.
+      // Las ventas suspendidas también pueden traer el peso anterior en cero.
+      normalized.scaleWeight = normalized.qty;
+      normalized.scaleMeasuredValue = normalized.qty;
+      normalized.scaleMeasuredUnit = weightUnit;
+    } else {
+      normalized.scaleWeight = Number.isFinite(scaleWeight)
+        ? getSaleScaleUtils().roundValue(scaleWeight, getSaleQuantityDecimals())
+        : normalized.qty;
+      normalized.scaleMeasuredValue = Number.isFinite(Number(item.scaleMeasuredValue))
+        ? getSaleScaleUtils().roundValue(Number(item.scaleMeasuredValue), getSaleQuantityDecimals())
+        : normalized.scaleWeight;
+      normalized.scaleMeasuredUnit = item.scaleMeasuredUnit || weightUnit;
+    }
     normalized.scaleRawReading = String(item.scaleRawReading || '').trim();
   } else {
     normalized.scaleWeight = null;
@@ -1621,6 +1630,52 @@ function getSaleTaxConfig(config = DB.config || {}) {
   };
 }
 
+// Configuración → Facturación → "Mostrar los precios con ITBIS incluido en el
+// detalle de la venta" (config.taxIncludeInProductPrice). Solo cambia lo que se ve en la
+// pantalla de venta: el precio de cada línea sale con su ITBIS, sin la columna
+// ITBIS, y el resumen muestra solo el total. Lo cobrado, la factura (que sigue
+// mostrando el ITBIS cobrado) y el e-CF no cambian (Emilio, 2026-11-19).
+function salePreciosConItbis() {
+  return getSaleTaxConfig().includeInProductPrice === true;
+}
+
+// Precio por unidad con su ITBIS, para mostrar. `valor`: el precio de la línea
+// (sin ITBIS); con `delProducto`, uno en el sentido del precio del producto
+// (si el producto trae el ITBIS incluido, ya es el final), como el precio de
+// antes de una oferta.
+function salePrecioConItbis(item = {}, valor = item.precio, { delProducto = false } = {}) {
+  const precio = Number(valor || 0);
+  if (saleVaSinItbis()) return precio;
+  if (item.itbisIncluido) {
+    if (delProducto) return precio;
+    return Number.isFinite(Number(item.precioFinalUnit)) ? Number(item.precioFinalUnit) : precio;
+  }
+  if (String(item.itbisModo || 'porcentaje') === 'monto') {
+    return roundSaleMoney(precio + Math.max(0, Number(item.itbisMontoUnit || 0)));
+  }
+  return roundSaleMoney(precio * (1 + Math.max(0, Number(item.itbis || 0)) / 100));
+}
+
+// El precio que muestra la tabla del carrito para una línea.
+function getSaleTablePrice(item = {}, valor = item.precio, opciones = {}) {
+  return salePreciosConItbis() ? salePrecioConItbis(item, valor, opciones) : Number(valor || 0);
+}
+
+// Resumen del panel derecho con la opción encendida: el descuento se cuenta
+// sobre los precios con ITBIS (lo que el cliente ve en cada línea). null si la
+// opción está apagada.
+function getSaleResumenConItbis() {
+  if (!salePreciosConItbis()) return null;
+  const items = Array.isArray(DB.saleItems) ? DB.saleItems : [];
+  const general = Number(getGeneralDiscountValue() || 0);
+  const hayDescuento = general > 0 || items.some((item) => Number(item?.descuento || 0) > 0);
+  if (!hayDescuento) return { hayDescuento: false, descuento: 0 };
+  const totals = calcularTotales(items, { generalDiscountRate: general, config: DB.config });
+  const bruto = items.reduce((acc, item) => acc + roundSaleMoney(salePrecioConItbis(item) * Number(item?.qty || 0)), 0);
+  const cobrado = Number(totals.total || 0) - Number(totals.propinaLegal || 0) - Number(totals.roundingAdjustment || 0);
+  return { hayDescuento: true, descuento: Math.max(0, roundSaleMoney(bruto - cobrado)) };
+}
+
 function calculateSaleItemBase(item = {}) {
   // Total editado en un producto por peso: el importe que, con su descuento e
   // ITBIS, da exacto el monto escrito (js/venta-por-monto.js). El precio no
@@ -2276,7 +2331,7 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
   // un precio…) y el scroll queda donde estaba. Si cambió la búsqueda o un
   // filtro, se empieza de nuevo por la primera tanda.
   // El idioma, la moneda y el ITBIS cambian cómo se ven todas las tarjetas.
-  const listKey = `${DB.config?.idioma || ''}|${DB.config?.moneda || ''}|${DB.config?.itbis ?? ''}|${products.length}|${products.map((product) => product.id).join(',')}`;
+  const listKey = `${DB.config?.idioma || ''}|${DB.config?.moneda || ''}|${DB.config?.itbis ?? ''}|${DB.config?.taxIncludeInCatalogPrice === true}|${products.length}|${products.map((product) => product.id).join(',')}`;
   if (salesCatalogState.grid === grid && salesCatalogState.listKey === listKey
     && salesCatalogState.rendered > 0 && grid.querySelector('.sales-product-card')) {
     salesCatalogState.products = products;
@@ -2325,7 +2380,7 @@ function buildSalesCatalogCard(product, cartQtyMap) {
   const stockClass = tracksStock && availableStock === 0 ? 'is-out' : tracksStock && !isCombo && availableStock <= stockMin ? 'is-low' : '';
   const stockLabel = !tracksStock ? '' : availableStock === 0 ? 'Agotado' : `Disp: ${availableStock}`;
   const comboTitle = isCombo ? ` — ${getComboComponentsLabel(product.componentes)}` : '';
-  const price = fmt(getProductFinalPriceWithItbis(product));
+  const price = fmt(getProductCatalogPrice(product));
   const image = getSalesProductImage(product);
   const sig = salesCatalogCardSig(product, cartQtyMap);
   // Lo que no es la existencia: si no cambió, la tarjeta se actualiza en su lugar.
@@ -5392,7 +5447,7 @@ function _doSearchProduct(query) {
         </div>
       </div>
       <div class="sri-side">
-        <div class="sri-price">${fmt(typeof getProductFinalPriceWithItbis === 'function' ? getProductFinalPriceWithItbis(p) : p.precioVenta)}</div>
+        <div class="sri-price">${fmt(getProductCatalogPrice(p))}</div>
         <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${isComboProduct(p)?`Combo · Disp: ${getComboAvailableQty(p) ?? '—'}`:(p.tracksStock===false?'':(p.stock===0?(!p.branchId?'Sin stock en esta sucursal':'Agotado'):'Stock: '+p.stock))}</div>
       </div>
     </div>
@@ -5856,6 +5911,8 @@ function renderSaleTable() {
   const tbody = document.getElementById('sale-items');
   normalizeCartSaleItems();
   syncSaleOrderCount();
+  // Precios con ITBIS incluido: sin la columna ITBIS (css/ventas.css).
+  tbody?.closest('table')?.classList.toggle('sale-table--con-itbis', salePreciosConItbis());
 
   if (!DB.saleItems.length) {
     saleTableSnapshot = new Map();
@@ -5896,8 +5953,8 @@ function renderSaleTable() {
         ${hasSaleLineManualPrice(item) ? '<span class="tc-tag sale-item-tag" title="Precio cambiado en esta venta (F3)">Precio cambiado</span>' : ''}
       </td>
       <td class="col-price">
-        ${item.promoAplicada ? `<span class="sale-item-price-before">${formatSaleTableAmount(item.promoAplicada.precioOriginal)}</span>` : ''}
-        <span class="sale-item-price" id="sale-item-price-text-${idx}">${formatSaleTableAmount(item.precio)}</span>
+        ${item.promoAplicada ? `<span class="sale-item-price-before">${formatSaleTableAmount(getSaleTablePrice(item, item.promoAplicada.precioOriginal, { delProducto: true }))}</span>` : ''}
+        <span class="sale-item-price" id="sale-item-price-text-${idx}">${formatSaleTableAmount(getSaleTablePrice(item))}</span>
         <input id="sale-item-price-${idx}" class="tc-hidden" type="number" value="${item.precio}" readonly disabled tabindex="-1" aria-hidden="true">
       </td>
       <td class="col-qty">
@@ -6156,10 +6213,13 @@ function startSaleLinePriceEdit(idx) {
   if (!item || !cell || !canEditSaleLinePrice(item) || cell.querySelector('.sale-price-input')) return;
   selectSaleRow(idx);
   const incluido = Boolean(item.itbisIncluido);
+  // Con los precios mostrados con ITBIS, el de un producto que suma el ITBIS
+  // se sigue escribiendo sin él (como en su ficha): se avisa debajo del campo.
+  const sinItbis = !incluido && salePreciosConItbis() && isSaleItemTaxable(item) && !saleVaSinItbis();
   // Misma clase que el total editado: mismo aspecto y Escape no cancela la venta (ui.js).
   cell.innerHTML = `<input class="sale-total-input sale-price-input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"
-    value="${getSaleLineEditablePrice(item).toFixed(2)}" aria-label="Precio de ${escapeHtml(item.nombre || 'la línea')}"
-    title="${incluido ? 'Precio final por unidad (con el ITBIS incluido)' : 'Precio por unidad'} · Enter guarda, Esc cancela">`;
+    value="${getSaleLineEditablePrice(item).toFixed(2)}" aria-label="Precio de ${escapeHtml(item.nombre || 'la línea')}${sinItbis ? ' sin ITBIS' : ''}"
+    title="${incluido ? 'Precio final por unidad (con el ITBIS incluido)' : (sinItbis ? 'Precio por unidad sin ITBIS (el ITBIS se suma solo)' : 'Precio por unidad')} · Enter guarda, Esc cancela">${sinItbis ? '<small class="sale-price-hint">sin ITBIS</small>' : ''}`;
   const input = cell.querySelector('.sale-price-input');
   let finished = false;
   const finish = (commit) => {
@@ -6236,7 +6296,7 @@ function syncSaleRowDisplay(idx) {
   if (taxCell) taxCell.textContent = formatSaleTableAmount(getSaleItemTaxForTable(item));
 
   const priceText = document.getElementById(`sale-item-price-text-${idx}`);
-  if (priceText) priceText.textContent = formatSaleTableAmount(item.precio);
+  if (priceText) priceText.textContent = formatSaleTableAmount(getSaleTablePrice(item));
 
   const qtyInput = document.getElementById(`sale-item-qty-${idx}`);
   if (qtyInput && document.activeElement !== qtyInput) {
