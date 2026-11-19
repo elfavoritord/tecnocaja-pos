@@ -1,22 +1,12 @@
 {
-  "version": "1.6.34",
-  "stableVersion": "1.6.34",
-  "date": "17/11/2026",
+  "version": "1.6.35",
+  "stableVersion": "1.6.35",
+  "date": "18/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": true,
   "downloadUrl": null,
   "changes": [
-    "Cierre de caja: el cuadre es corto, como el de papel (desglose del sistema y del cajero, efectivo contado, diferencia y firma), y cada gasto sale con su descripción.",
-    "Cierre de caja: antes de cerrar se avisa que termina el turno; después ya no se puede cancelar, solo imprimir el cuadre y cerrar la sesión.",
-    "Arqueo por denominaciones: también pide el total de transferencias, y la ventana es más pequeña.",
-    "Reportes: nueva pestaña \"Cierres de caja\" para ver e imprimir los cuadres de cualquier día, semana, mes o año; y la tarjeta \"Facturas\" dice cuántas se hicieron.",
-    "Caja: con el cierre seguro, los montos de egresos, ingresos y el efectivo disponible también salen ocultos.",
-    "Configuración → Facturación: opción para no mostrar los comprobantes serie B en Cobrar.",
-    "Cobrar: en \"¿Salir sin cobrar?\", la tecla Enter ya no cobra la venta. Enter deja seguir cobrando y para salir se elige \"Salir sin cobrar\".",
-    "Cobrar: cuando E32 o E31 no se pueden elegir, el sistema dice por qué (el rango es de otro ambiente, de otra caja, está vencido o agotado, o la licencia detuvo la facturación electrónica).",
-    "Facturación electrónica: el Estado del e-CF avisa si el servicio no está activo en la licencia (por eso Cobrar no ofrecía E31/E32 aunque todo lo demás estuviera listo).",
-    "Producto rápido: \"Aplicar ITBIS\" viene apagado; se marca solo si el producto lo lleva.",
-    "Nuevo producto: el cursor empieza en el código de barras."
+    "Multisucursal: la PC principal de una empresa (la que tiene la licencia de la empresa) ya no se puede conectar por error como sucursal. El asistente lo avisa y explica cómo recuperarla: \"Restaurar desde la nube\" y después conectarla como principal desde Configuración."
   ]
 }

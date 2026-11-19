@@ -758,9 +758,10 @@
     WZS.empresas.forEach((empresa) => {
       partes.push(`<div style="font-weight:600;font-size:.86rem;margin-top:.2rem">${wzsEsc(empresa.nombre)}${empresa.activa === false ? ' — licencia no activa' : ''}</div>`);
       (empresa.sucursales || []).forEach((s) => {
-        const disponible = empresa.activa !== false && s.estado === 'activa' && !s.esPrincipal;
+        const disponible = empresa.activa !== false && !empresa.deEstaPc && s.estado === 'activa' && !s.esPrincipal;
         let nota = 'Todavía sin PC';
-        if (s.esPrincipal) nota = 'Principal: es la PC donde ya trabaja tu negocio';
+        if (empresa.deEstaPc) nota = s.esPrincipal ? 'Principal: es esta PC' : 'Esta PC es la principal de la empresa';
+        else if (s.esPrincipal) nota = 'Principal: es la PC donde ya trabaja tu negocio';
         else if (s.estado !== 'activa') nota = 'Desactivada';
         else if (s.pc) nota = `Ya tiene una PC (${s.pc.hostname || 'sin nombre'}): si eliges esta, esa PC deja de sincronizar`;
         partes.push(`
@@ -772,9 +773,17 @@
       });
     });
     // Solo la principal (o ninguna libre): sin explicación parece un error.
-    const hayElegible = WZS.empresas.some((empresa) => empresa.activa !== false
+    const hayElegible = WZS.empresas.some((empresa) => empresa.activa !== false && !empresa.deEstaPc
       && (empresa.sucursales || []).some((s) => s.estado === 'activa' && !s.esPrincipal));
-    if (partes.length && !hayElegible) {
+    // Esta PC tiene la licencia de la empresa: es su principal, reinstalada.
+    // Conectarla como sucursal dejaba a la empresa sin principal.
+    const deEstaPc = WZS.empresas.find((empresa) => empresa.deEstaPc);
+    if (deEstaPc) {
+      partes.push(`<div style="margin-top:.4rem;padding:.65rem .85rem;border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.1);border-radius:10px;font-size:.82rem;line-height:1.45">
+        <strong>Esta PC es la principal de ${wzsEsc(deEstaPc.nombre || 'tu empresa')}.</strong> Tiene la licencia de la empresa, así que no se puede conectar como sucursal.
+        Para recuperarla, cierra y abre Tecno Caja y, en la primera pantalla, elige «Restaurar desde la nube». Después conéctala desde Configuración → Mi Negocio → Sucursal conectada a Tecno Caja, eligiendo la sucursal principal.
+      </div>`);
+    } else if (partes.length && !hayElegible) {
       partes.push(`<div style="margin-top:.4rem;padding:.65rem .85rem;border:1px solid rgba(245,158,11,.45);background:rgba(245,158,11,.1);border-radius:10px;font-size:.82rem;line-height:1.45">
         <strong>No hay otra sucursal para esta PC.</strong> La principal es la tienda donde ya trabaja tu negocio con su PC actual.
         Pide a Tecno Caja o a tu contador que cree la sucursal de esta PC (por ejemplo, la segunda tienda) y después pulsa «Volver» y entra otra vez.

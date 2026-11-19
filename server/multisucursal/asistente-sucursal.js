@@ -77,6 +77,9 @@ function createAsistenteSucursal({
   guardarTerminal = () => {},
   // Licencia propia de esta PC en Firestore (registerPosLicenseInFirestore).
   registrarLicencia = async () => null,
+  // TECNO_CAJA_LICENSE_UID de esta PC. Si es la de la empresa, esta PC es su
+  // principal (reinstalada sin restaurar): no se puede unir como sucursal.
+  getLicenciaPropia = () => process.env.TECNO_CAJA_LICENSE_UID,
   // MariaDB: publicar la base en la red para las demás cajas de la sucursal.
   prepararRedLan = async () => null,
   tiposDeNegocio = () => [TIPO_POR_DEFECTO],
@@ -107,7 +110,10 @@ function createAsistenteSucursal({
   async function empresasDelDueno(idToken) {
     await exigirSinConfigurar();
     const r = await multisucursal.enlace.empresasDelDueno(idToken);
-    return { dueno: r.dueno || null, empresas: Array.isArray(r.empresas) ? r.empresas : [] };
+    const propia = texto(getLicenciaPropia(), 160);
+    const empresas = (Array.isArray(r.empresas) ? r.empresas : [])
+      .map((e) => (propia && e?.licenseId === propia ? { ...e, deEstaPc: true } : e));
+    return { dueno: r.dueno || null, empresas };
   }
 
   // La sucursal elegida, revisada ANTES de enlazar: enlazar deja fuera a la PC
@@ -118,6 +124,17 @@ function createAsistenteSucursal({
     const sucursal = empresa?.sucursales?.find((s) => s.branchUuid === branchUuid);
     if (!empresa || !sucursal) throw new ErrorAsistente('Esa sucursal ya no está en tu empresa. Vuelve a entrar.', 'NO_ENCONTRADA', 404);
     if (empresa.activa === false) throw new ErrorAsistente('La licencia de la empresa no está activa.', 'LICENCIA_INACTIVA', 403);
+    // Unirla igual marcaba la licencia de la EMPRESA como sucursal de sí misma
+    // (registrarLicencia escribe en la licencia de esta PC): la empresa
+    // desaparecía del panel, perdía su nombre y el correo del dueño, y ninguna
+    // PC quedaba como principal (Grupo Alimcar, 2026-11-18).
+    if (empresa.deEstaPc) {
+      throw new ErrorAsistente(
+        `Esta PC es la principal de ${empresa.nombre || 'la empresa'} (tiene su licencia): no se puede conectar como sucursal. `
+          + 'Cierra y abre Tecno Caja, elige «Restaurar desde la nube» en la primera pantalla y después conéctala desde Configuración → Mi Negocio → Sucursal conectada a Tecno Caja, eligiendo la sucursal principal.',
+        'ES_LA_EMPRESA', 409
+      );
+    }
     if (sucursal.estado !== 'activa') throw new ErrorAsistente('Esa sucursal está desactivada.', 'SUCURSAL_INACTIVA', 409);
     if (sucursal.esPrincipal) {
       throw new ErrorAsistente(
