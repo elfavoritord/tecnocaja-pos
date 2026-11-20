@@ -1,0 +1,126 @@
+name: Instalador de Tecno Caja POS
+
+on:
+  push:
+    branches:
+      - codex/release-1.6.36
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+    steps:
+      - name: Conservar saltos de línea del repositorio
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test -- --runInBand --silent
+      - name: Preparar MariaDB y Visual C++ para Windows x64
+        run: |
+          $mariaZip = Join-Path $env:RUNNER_TEMP 'mariadb-12.2.2-winx64.zip'
+          $mariaDir = Join-Path $env:RUNNER_TEMP 'mariadb-12.2.2'
+          curl.exe --fail --location --retry 3 --output $mariaZip https://archive.mariadb.org/mariadb-12.2.2/winx64-packages/mariadb-12.2.2-winx64.zip
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo descargar MariaDB.' }
+          if ((Get-FileHash -LiteralPath $mariaZip -Algorithm SHA256).Hash -ne 'b34bb91f0dd4bd184f420288a12aace2b5fcb20734f2b880075c36150d4641c6') {
+            throw 'La descarga de MariaDB no coincide con el SHA-256 oficial.'
+          }
+          Expand-Archive -LiteralPath $mariaZip -DestinationPath $mariaDir
+          $mariaSources = @(Get-ChildItem -LiteralPath $mariaDir -Directory | Where-Object {
+            Test-Path -LiteralPath (Join-Path $_.FullName 'bin\mariadbd.exe')
+          })
+          if ($mariaSources.Count -ne 1) { throw 'No se encontró una sola distribución de MariaDB.' }
+          $env:TECNO_CAJA_MARIADB_SOURCE = $mariaSources[0].FullName
+          node scripts/prepare-mariadb-bundle.js
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo preparar el paquete de MariaDB.' }
+
+          curl.exe --fail --location --retry 3 --output build/vc_redist.x64.exe https://aka.ms/vs/17/release/14.44.35211/VC_redist.x64.exe
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo descargar Visual C++ Redistributable.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath 'build/vc_redist.x64.exe'
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'CN=Microsoft Corporation') {
+            throw 'El redistribuible de Visual C++ no tiene una firma válida de Microsoft.'
+          }
+
+      - name: Compilar el instalador NSIS
+        run: npx --no-install electron-builder --win nsis --publish never -c.npmRebuild=false
+      - name: Verificar los archivos del actualizador
+        run: |
+          @'
+          const assert = require('node:assert/strict');
+          const crypto = require('node:crypto');
+          const fs = require('node:fs');
+          const asar = require('@electron/asar');
+          const yaml = require('js-yaml');
+
+          async function main() {
+            const {version} = require('./package.json');
+            const notes = require('./update-manifest.json');
+            const installer = `TecnoCaja-Setup-${version}.exe`;
+            const manifest = yaml.load(fs.readFileSync('dist/latest.yml', 'utf8'));
+            const entry = manifest.files.find(file => file.url === installer);
+            assert.equal(version, '1.6.36');
+            assert.equal(notes.version, version);
+            assert.equal(manifest.version, version);
+            assert.equal(manifest.path, installer);
+            assert.equal(entry.size, fs.statSync(`dist/${installer}`).size);
+            assert(fs.statSync(`dist/${installer}.blockmap`).size > 0);
+            const hash = crypto.createHash('sha512');
+            for await (const bytes of fs.createReadStream(`dist/${installer}`)) hash.update(bytes);
+            const sha512 = hash.digest('base64');
+            assert.equal(manifest.sha512, sha512);
+            assert.equal(entry.sha512, sha512);
+
+            const dir = 'dist/win-unpacked/resources';
+            const archive = `${dir}/app.asar`;
+            const forbidden = /(?:^|[\\/])(?:\.env$|firebase-key\.json$|firebase-service-account\.json$)/i;
+            const files = [...fs.readdirSync(dir, {recursive: true}), ...asar.listPackage(archive)];
+            assert(!files.some(file => forbidden.test(file)), 'No se pueden distribuir credenciales privadas.');
+            assert.equal(JSON.parse(asar.extractFile(archive, 'package.json')).version, version);
+            for (const file of ['index.html', 'js/productos.js', 'js/ventas.js', 'server.js']) {
+              assert(asar.extractFile(archive, file).equals(fs.readFileSync(file)), file);
+            }
+            fs.writeFileSync('dist/release-notes.md', notes.changes.map(change => `- ${change}`).join('\n') + '\n');
+          }
+
+          main().catch(error => { console.error(error); process.exitCode = 1; });
+          '@ | node -
+          if ($LASTEXITCODE -ne 0) { throw 'Falló la verificación del instalador.' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: TecnoCaja-1.6.36-windows-x64
+          path: |
+            dist/TecnoCaja-Setup-1.6.36.exe
+            dist/TecnoCaja-Setup-1.6.36.exe.blockmap
+            dist/latest.yml
+            dist/release-notes.md
+          if-no-files-found: error
+          compression-level: 0
+
+  draft:
+    needs: installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: TecnoCaja-1.6.36-windows-x64
+          path: dist
+      - name: Subir archivos a GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create v1.6.36 --draft --target "$GITHUB_SHA" --title 'Tecno Caja POS 1.6.36' --notes-file dist/release-notes.md \
+            dist/TecnoCaja-Setup-1.6.36.exe dist/TecnoCaja-Setup-1.6.36.exe.blockmap dist/latest.yml
