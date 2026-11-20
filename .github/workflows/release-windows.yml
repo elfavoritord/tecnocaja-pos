@@ -52,7 +52,11 @@ jobs:
           }
 
       - name: Compilar el instalador NSIS
-        run: npx --no-install electron-builder --win nsis --publish never -c.npmRebuild=false
+        run: |
+          $builderConfig = Join-Path $env:RUNNER_TEMP 'tecnocaja-electron-builder.json'
+          node -e "const fs = require('node:fs'); const {build} = require('./package.json'); fs.writeFileSync(process.argv[1], JSON.stringify({...build, npmRebuild: false}));" $builderConfig
+          if ($LASTEXITCODE -ne 0) { throw 'No se pudo preparar la configuración de Electron Builder.' }
+          npx --no-install electron-builder --win nsis --publish never --config $builderConfig
       - name: Verificar los archivos del actualizador
         run: |
           @'
@@ -89,7 +93,8 @@ jobs:
             for (const file of ['index.html', 'js/productos.js', 'js/ventas.js', 'server.js']) {
               assert(asar.extractFile(archive, file).equals(fs.readFileSync(file)), file);
             }
-            fs.writeFileSync('dist/release-notes.md', notes.changes.map(change => `- ${change}`).join('\n') + '\n');
+            const scope = 'Actualización para equipos con Tecno Caja instalado. En una instalación nueva, la sincronización de clientes y usuarios requiere configurar Firebase por separado.';
+            fs.writeFileSync('dist/release-notes.md', [scope, '', ...notes.changes.map(change => `- ${change}`), ''].join('\n'));
           }
 
           main().catch(error => { console.error(error); process.exitCode = 1; });
