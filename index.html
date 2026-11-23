@@ -2034,7 +2034,12 @@
         Sin conexión: mostrando solo lo vendido sin sincronizar en esta sesión. Los reportes históricos completos (DGII, rangos de fecha) requieren conexión.
       </div>
 
-      <button class="btn-secondary" onclick="openLegalTipReport()">Propinas legales</button>
+      <!-- Cierre seguro con la caja abierta: el cajero solo ve y reimprime facturas (js/reportes-v2.js). -->
+      <div id="repv2-solo-facturas-aviso" class="repv2-solo-aviso hidden">
+        Cierre seguro activo: aquí solo puedes buscar, ver y reimprimir facturas. Las ventas y el efectivo del turno se muestran al cerrar la caja.
+      </div>
+
+      <button class="btn-secondary repv2-solo-ocultar" onclick="openLegalTipReport()">Propinas legales</button>
       <!-- BARRA SUPERIOR: TABS + FILTROS -->
       <div class="repv2-topbar">
         <div class="repv2-tabs">
@@ -2221,7 +2226,7 @@
               <thead><tr>
                 <th>Factura</th><th>NCF</th><th>Fecha</th>
                 <th>Cliente</th><th>Cajero</th><th>Sucursal</th>
-                <th>Método</th><th>Subtotal</th><th>ITBIS</th><th>Total</th><th>Estado</th><th>Cobro</th><th></th>
+                <th>Método</th><th class="repv2-col-monto">Subtotal</th><th class="repv2-col-monto">ITBIS</th><th class="repv2-col-monto">Total</th><th>Estado</th><th>Cobro</th><th></th>
               </tr></thead>
               <tbody id="det-facturas-tbody"></tbody>
               <tfoot id="det-facturas-tfoot"></tfoot>

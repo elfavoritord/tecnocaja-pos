@@ -598,22 +598,45 @@ module.exports = async function verificarPantallas({ port, outputDir, datos }) {
     assert.match(conteoCiego, /500\.00/); assert.ok(!/Esperado|Sobrante|Faltante/.test(conteoCiego), conteoCiego);
     await foto('corte-ciego');
     await cerrar();
-    const reportes = await page.evaluate((sel) => {
-      const avisos = [];
-      const original = window.showToast;
-      window.showToast = (m, t, ...r) => { avisos.push(String(m)); return original(m, t, ...r); };
+    // Con el turno abierto, el cajero entra a Reportes solo para ver y
+    // reimprimir facturas: sin las demás pestañas, sin montos ni totales.
+    const vistaReportes = () => {
+      const modulo = document.getElementById('module-reportes');
+      const visible = (n) => Boolean(n) && getComputedStyle(n).display !== 'none' && n.offsetParent !== null;
+      return {
+        activo: modulo.classList.contains('active'),
+        soloFacturas: modulo.classList.contains('repv2-solo-facturas'),
+        aviso: visible(document.getElementById('repv2-solo-facturas-aviso')),
+        pestanas: [...modulo.querySelectorAll('.repv2-tab')].filter(visible).map((b) => b.dataset.tab),
+        subpestanas: [...modulo.querySelectorAll('.repv2-subtab')].filter(visible).map((b) => b.dataset.subtab),
+        montos: [...modulo.querySelectorAll('#repv2-subtab-facturas .repv2-col-monto')].filter(visible).length,
+        facturasVisible: visible(document.getElementById('repv2-subtab-facturas')),
+      };
+    };
+    const reportes = {};
+    reportes.cajero = await page.evaluate(async (sel, vista) => {
+      DB.cajaSegura.veTurnoAbierto = false; // un cajero: no ve reportes de caja
+      showModule('reportes', document.querySelector(sel));
+      await new Promise((r) => setTimeout(r, 1500));
+      return new Function(`return (${vista})()`)();
+    }, navDe('reportes'), vistaReportes.toString());
+    await foto('reportes-solo-facturas');
+    Object.assign(reportes, await page.evaluate((sel, vista) => {
+      const leer = new Function(`return (${vista})()`);
       try {
-        DB.cajaSegura.veTurnoAbierto = false; // un cajero: no ve reportes de caja
-        showModule('reportes', document.querySelector(sel));
-        const cajero = document.getElementById('module-reportes').classList.contains('active');
+        repV2SwitchTab('dashboard'); // ni a la fuerza cambia de pestaña
+        const sigue = leer();
         DB.cajaSegura.veTurnoAbierto = true;
         showModule('reportes', document.querySelector(sel));
-        return { cajero, admin: document.getElementById('module-reportes').classList.contains('active'), avisos };
-      } finally { DB.cajaSegura.veTurnoAbierto = true; window.showToast = original; }
-    }, navDe('reportes'));
-    assert.equal(reportes.cajero, false, 'el cajero no entra a Reportes con el turno abierto');
-    assert.ok(reportes.avisos.some((m) => /al cerrar la caja/.test(m)), reportes.avisos.join(' | '));
-    assert.equal(reportes.admin, true, 'quien ve reportes de caja sí entra');
+        return { sigue, admin: leer() };
+      } finally { DB.cajaSegura.veTurnoAbierto = true; }
+    }, navDe('reportes'), vistaReportes.toString()));
+    assert.ok(reportes.cajero.activo && reportes.cajero.soloFacturas && reportes.cajero.aviso, `el cajero entra a Reportes en modo solo facturas: ${JSON.stringify(reportes.cajero)}`);
+    assert.deepEqual(reportes.cajero.pestanas, ['detallados'], JSON.stringify(reportes.cajero));
+    assert.deepEqual(reportes.cajero.subpestanas, ['facturas'], JSON.stringify(reportes.cajero));
+    assert.ok(reportes.cajero.facturasVisible && reportes.cajero.montos === 0, `sin montos en la lista: ${JSON.stringify(reportes.cajero)}`);
+    assert.ok(reportes.sigue.facturasVisible && reportes.sigue.pestanas.length === 1, 'no se puede pasar al Dashboard');
+    assert.ok(reportes.admin.activo && !reportes.admin.soloFacturas && reportes.admin.pestanas.includes('dashboard'), `quien ve reportes de caja entra completo: ${JSON.stringify(reportes.admin)}`);
     await toggleCierreSeguro(false);
     const visible = await pantallaCaja();
     assert.ok(!/•/.test(visible.monto) && visible.resumen.every((t) => /\d/.test(t)) && !visible.aviso, JSON.stringify(visible));

@@ -2346,20 +2346,10 @@ function applyAppTranslations() {
   reportPanelTexts.forEach((el, index) => {
     if (panelTexts[index]) el.textContent = panelTexts[index];
   });
-  const reportTableHeaders = document.querySelectorAll('#module-reportes table thead th');
-  const reportHeaderTitles = [
-    appText('reports.invoice', 'Factura'),
-    appText('reports.type', 'Tipo'),
-    appText('reports.date', 'Fecha'),
-    appText('reports.client', 'Cliente'),
-    appText('reports.cashier', 'Cajero'),
-    appText('reports.method', 'Método'),
-    appText('reports.total', 'Total'),
-    appText('reports.action', 'Acción')
-  ];
-  reportTableHeaders.forEach((el, index) => {
-    if (reportHeaderTitles[index]) el.textContent = reportHeaderTitles[index];
-  });
+  // Los encabezados de las tablas de Reportes ya vienen en index.html. Aquí se
+  // renombraban los 8 primeros con los de una tabla vieja que ya no existe, y en
+  // Facturas quedaban corridos: "Método" encima de Sucursal y "Total" encima del
+  // método (2026-11-23).
 
   const cashStatus = document.getElementById('caja-status-text');
   if (cashStatus) cashStatus.textContent = cajaAbierta ? appText('cash.open', 'Caja Abierta') : appText('cash.closed', 'Caja Cerrada');
@@ -3915,12 +3905,10 @@ function showModule(name, el) {
     showToast('No tienes permiso para entrar a este módulo', 'error');
     return;
   }
-  // Cierre seguro con la caja abierta: el cajero ve sus ventas al cerrar
-  // (quien ve reportes de caja sí entra; lo decide el servidor).
-  if (name === 'reportes' && window.CajaSegura?.ventasOcultas) {
-    showToast(window.CajaSegura.AVISO_CIEGO, 'warning');
-    return;
-  }
+  // Cierre seguro con la caja abierta: el cajero entra a Reportes solo para ver
+  // y reimprimir facturas, sin montos ni totales (js/reportes-v2.js →
+  // aplicarSoloFacturas). Quien ve reportes de caja entra completo; lo decide
+  // el servidor (veTurnoAbierto).
   document.querySelectorAll('.module').forEach(m => {
     m.classList.remove('active');
     m.classList.add('hidden');
@@ -3932,6 +3920,7 @@ function showModule(name, el) {
     mod.style.display = 'flex';
     mod.classList.add('active');
   }
+  if (name === 'reportes') window.repV2AplicarSoloFacturas?.();
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (el) el.classList.add('active');
   document.getElementById('breadcrumb').textContent = el ? el.querySelector('.nav-label').textContent : name;

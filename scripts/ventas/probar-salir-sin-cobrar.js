@@ -172,7 +172,8 @@ const check = L.check;
     await page.type('#quick-sale-name', 'Cable especial');
     await page.type('#quick-sale-price', '100');
     await page.evaluate(() => document.querySelector('#modal-footer .btn-primary').click());
-    await sleep(500);
+    // Desde la 1.6.39 el producto rápido se guarda en Productos antes de entrar.
+    await page.waitForFunction(() => DB.saleItems.length > 0, { timeout: 10000 }).catch(() => {});
     const lineaRapida = await page.evaluate(() => DB.saleItems.map((i) => ({ nombre: i.nombre, total: Number(i.total) })));
     check('Producto rápido sin ITBIS: se cobra justo el precio escrito', lineaRapida.length === 1 && lineaRapida[0].total === 100, JSON.stringify(lineaRapida));
     await page.evaluate(() => { DB.saleItems = []; renderSaleTable(); });

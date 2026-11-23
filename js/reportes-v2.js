@@ -126,8 +126,35 @@
     RV2.filtros.origen     = el('repv2-origen')?.value || '';
   }
 
+  // ── Cierre seguro: solo facturas ─────────────────────────
+  // Con el cierre seguro y la caja abierta, quien no ve reportes de caja
+  // (js/caja-segura.js → ventasOcultas, lo decide el servidor) entra solo a
+  // Detallados → Facturas para buscar, ver y reimprimir, sin montos ni totales
+  // (css/repv2.css): así no puede sacar lo que espera la caja (Emilio, 2026-11-19).
+  function soloFacturas() {
+    return Boolean(el('module-reportes')?.classList.contains('repv2-solo-facturas'));
+  }
+
+  function aplicarSoloFacturas() {
+    const modulo = el('module-reportes');
+    if (!modulo) return;
+    const activo = Boolean(window.CajaSegura?.ventasOcultas);
+    const antes = soloFacturas();
+    modulo.classList.toggle('repv2-solo-facturas', activo);
+    el('repv2-solo-facturas-aviso')?.classList.toggle('hidden', !activo);
+    if (activo) {
+      calcFiltros(); // la lista sale del período elegido (por defecto, el turno)
+      RV2.subtab = 'facturas';
+      repV2SwitchTab('detallados');
+    } else if (antes) {
+      repV2SwitchTab('dashboard');
+    }
+  }
+  window.repV2AplicarSoloFacturas = aplicarSoloFacturas;
+
   // ── Tab switching ────────────────────────────────────────
   window.repV2SwitchTab = function (tab) {
+    if (soloFacturas() && tab !== 'detallados') return;
     RV2.tab = tab;
     document.querySelectorAll('.repv2-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     document.querySelectorAll('.repv2-pane').forEach(p => {
@@ -143,6 +170,7 @@
   };
 
   window.repV2SwitchSubtab = function (subtab) {
+    if (soloFacturas() && subtab !== 'facturas') return;
     RV2.subtab = subtab;
     document.querySelectorAll('.repv2-subtab').forEach(b => b.classList.toggle('active', b.dataset.subtab === subtab));
     document.querySelectorAll('.repv2-subpane').forEach(p => {
@@ -774,9 +802,9 @@
         <td>${r.cajero || '—'}${r.tipo === 'cobro' ? ' <span class="products-subtle">(cobró)</span>' : ''}</td>
         <td>${r.sucursal || '—'}</td>
         <td>${fmtMetodo(r.metodo)}</td>
-        <td style="font-family:var(--font-mono)">${fmt(r.subtotal)}</td>
-        <td style="font-family:var(--font-mono)">${fmt(r.itbis)}</td>
-        <td style="font-family:var(--font-mono);font-weight:800">${fmt(r.total)}</td>
+        <td class="repv2-col-monto" style="font-family:var(--font-mono)">${fmt(r.subtotal)}</td>
+        <td class="repv2-col-monto" style="font-family:var(--font-mono)">${fmt(r.itbis)}</td>
+        <td class="repv2-col-monto" style="font-family:var(--font-mono);font-weight:800">${fmt(r.total)}</td>
         <td>${r.tipo === 'cobro' ? '—' : `<span class="repv2-estado repv2-estado-${r.estado}">${r.estado}</span>`}</td>
         <td>${fmtEstadoCobro(r)}</td>
         <td class="repv2-invoice-actions">
@@ -842,7 +870,9 @@
     if (!row.estadoCobro) return '—';
     const map = {
       pagada: '<span class="repv2-estado repv2-estado-emitida">✅ Pagada</span>',
-      parcial: `<span class="repv2-estado repv2-estado-pendiente">🟡 Parcial (${fmt(row.recibido)}/${fmt(row.total)})</span>`,
+      parcial: soloFacturas()
+        ? '<span class="repv2-estado repv2-estado-pendiente">🟡 Parcial</span>'
+        : `<span class="repv2-estado repv2-estado-pendiente">🟡 Parcial (${fmt(row.recibido)}/${fmt(row.total)})</span>`,
       pendiente: '<span class="repv2-estado repv2-estado-cancelada">🔴 Pendiente</span>'
     };
     return map[row.estadoCobro] || '—';
@@ -1481,6 +1511,7 @@
   window.showModule = function (mod) {
     if (typeof _origShowModule === 'function') _origShowModule(mod);
     if (mod === 'reportes' || mod === 'module-reportes') {
+      aplicarSoloFacturas();
       if (!RV2.kpis) initRepV2();
     }
   };
@@ -1491,9 +1522,10 @@
     const moduleEl = document.getElementById('module-reportes');
     if (!moduleEl) return;
     const obs = new MutationObserver(() => {
-      if (!moduleEl.classList.contains('hidden') && !RV2.kpis) {
-        initRepV2();
-      }
+      if (moduleEl.classList.contains('hidden')) return;
+      // El cierre seguro también aplica si el módulo se abrió por otro camino.
+      if (soloFacturas() !== Boolean(window.CajaSegura?.ventasOcultas)) aplicarSoloFacturas();
+      if (!RV2.kpis) initRepV2();
     });
     obs.observe(moduleEl, { attributes: true, attributeFilter: ['class'] });
   });

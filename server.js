@@ -2933,6 +2933,41 @@ const cajaSegura = require('./server/routes/caja-segura.routes').createCajaSegur
 });
 app.use('/api/caja', cajaSegura.router);
 
+// Catálogo desde la venta: el producto rápido (+) y el producto nuevo quedan en
+// Productos, y el precio de F3 queda en el producto; también para el cajero
+// (server/routes/venta-catalogo.routes.js).
+app.use('/api/products/venta', require('./server/routes/venta-catalogo.routes').createVentaCatalogoRouter({
+  query, withTransaction, resolveRequestActorUser, getActor, writeAuditLog, userRoleHasPermission,
+  getProductCatalogBranchScope, createProductInTransaction, mapProductRow,
+  prepararProductos: async () => {
+    await ensureCategoriesTable(); await ensureProductExtensions(); await ensureBusinessStructureExtensions();
+    await ensureBranchInventoryTable(); await ensureInventoryMovementsTable();
+  },
+  publicarProductoNuevo: (id) => multisucursal.catalogo.guardarAlcanceProducto(id, {}, { nuevo: true }),
+  alGuardarProducto: (row, branchId, motivo) => {
+    try { productsCache.upsert(mapProductRow(row)); } catch (_) { /* el caché se rehace solo */ }
+    fireReportSync(async () => {
+      const cfg = await getReportSyncConfig();
+      await syncCategoriesToReports({ config: cfg });
+      await reportsSync.syncProduct(row, { config: cfg, branchId });
+    });
+    try {
+      const lic = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
+      if (lic) {
+        getSyncService().enqueueAndSync('product', row.id, {
+          businessId: lic, codigo: row.codigo || '', nombre: row.nombre || '', categoria: row.categoria || '',
+          marca: row.marca || '', unidad: row.unidad || '', precioVenta: Number(row.precio_venta || 0),
+          precioCompra: Number(row.precio_compra || 0), stock: Number(row.stock || 0), stockMin: Number(row.stock_min || 0),
+          estado: row.estado || 'Activo', aplicaItbis: Boolean(row.aplica_itbis), imageUrl: row.image_url || null,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch (_) { /* la sincronización reintenta sola */ }
+    persistProductsCsvBackup(motivo).catch(() => {});
+    scheduleSilentProductBackup(motivo);
+  },
+}));
+
 // Cancelación y notas de crédito según el documento y su estado fiscal real
 // (server/routes/ajustes-venta.routes.js). Atiende POST /api/sales/return y
 // PATCH /api/sales/:invoiceNumber/cancel; la factura original no se borra.

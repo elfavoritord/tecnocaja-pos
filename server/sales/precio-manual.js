@@ -2,7 +2,9 @@
 
 // Precio cambiado en la venta (F3 en el carrito, js/ventas.js →
 // startSaleLinePriceEdit). Decisiones de Emilio (2026-11-15):
-//  - solo para esa línea de esa venta: el producto conserva su precio;
+//  - en la venta vale para esa línea; desde el 2026-11-23 la pantalla también
+//    lo deja en el producto (POST /api/products/venta/:id/precio,
+//    server/routes/venta-catalogo.routes.js);
 //  - cualquier usuario que venda puede hacerlo (queda en la auditoría);
 //  - nunca en productos por peso (ellos tienen el total editado), ni en combos,
 //    venta rápida, combos personalizados o pedidos de la tienda online.

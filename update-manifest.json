@@ -1,15 +1,16 @@
 {
-  "version": "1.6.38",
-  "stableVersion": "1.6.38",
+  "version": "1.6.39",
+  "stableVersion": "1.6.39",
   "date": "23/11/2026",
   "size": "198 MB",
-  "type": "fix",
+  "type": "feature",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Caja: el mismo gasto ya no se registra varias veces. Un doble clic o la tecla Enter sostenida en \"Registrar egreso\" lo guardaba repetido y el cuadre salía con sobrante.",
-    "Caja: si registras un gasto igual a otro del mismo turno (mismo monto y misma descripción), el sistema pregunta si es otro gasto antes de guardarlo.",
-    "Cuadre de caja: un solo gasto sale en una línea con su descripción (\"Gasto: compra de hielo\"); con varios, cada uno y el total al final.",
-    "Cierre de caja → detalle completo: cada movimiento de dinero muestra el día y la hora."
+    "Ventas: el producto que se agrega con \"+\" (Agregar producto rápido) queda guardado en Productos, activo y sin control de existencia. Si ya hay uno con ese nombre, entra ese con su precio.",
+    "Ventas: el precio que se cambia con F3 queda guardado en el producto; la próxima venta ya sale con ese precio. Queda en la auditoría con el precio de antes.",
+    "El cajero también puede hacer las dos cosas desde la venta, aunque no entre a Productos.",
+    "Reportes: con el cierre seguro y la caja abierta, el cajero entra a Reportes para buscar, ver y reimprimir facturas (sin montos ni totales del turno).",
+    "Reportes: los encabezados de la lista de facturas ya no salen corridos (\"Método\" salía encima de la sucursal)."
   ]
 }

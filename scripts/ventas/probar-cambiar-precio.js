@@ -2,8 +2,8 @@
 // en la app real, con SQLite en una carpeta temporal: elegir la fila, F3,
 // escribir, Enter/Escape, la cantidad no cambia, se queda con ese precio al
 // sumar más, ITBIS incluido, productos por peso intocables, cobro, lo guardado,
-// la auditoría, que el producto conserve su precio y que el servidor no acepte
-// trampas.
+// la auditoría, que el precio quede en el producto (desde el 2026-11-23, también
+// para el cajero) y que el servidor no acepte trampas.
 // Uso: npm run test:cambiar-precio
 /* global DB, doLogin, showModule, addProductById, openBillingModal, setMontoExacto, processSale,
    closeReceipt, closeAllModals, renderSalesCatalog, calculateCurrentSaleTotals, buildSalePayload, api */
@@ -184,10 +184,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const gGuardada = (detalle?.items || []).find((i) => i.productName === 'Galletas');
     L.check('Galletas guardadas: 4 a 90', gGuardada && Number(gGuardada.qty) === 4 && Number(gGuardada.price) === 90, JSON.stringify(gGuardada));
     const auditoria = await page.evaluate(async () => (await (await fetch('/api/auditoria?pageSize=50', { headers: { Authorization: `Bearer ${DB.authToken}` } })).json()).eventos || []);
-    const cambios = auditoria.filter((e) => /Precio cambiado en la venta/.test(JSON.stringify(e)));
-    L.check('Auditoría: 2 precios cambiados (Galletas y Refresco)', cambios.length === 2, JSON.stringify(cambios.map((c) => c.detalle || c.detail)).slice(0, 300));
+    // El cambio queda una vez, en el producto ("desde la venta", con el precio
+    // de antes); la venta ya no lo repite porque el producto ya vale eso.
+    const cambios = auditoria.filter((e) => /Precio cambiado (en|desde) la venta/.test(JSON.stringify(e)));
+    L.check('Auditoría: 2 precios cambiados (Galletas y Refresco), una vez cada uno', cambios.length === 2
+      && cambios.every((e) => /desde la venta/.test(JSON.stringify(e))), JSON.stringify(cambios.map((c) => c.accion || c.detalle || c.detail)).slice(0, 300));
 
-    // 7. El producto conserva su precio para la próxima venta.
+    // 7. El precio quedó en el producto (Emilio, 2026-11-23): la próxima venta
+    // ya sale con él, y el catálogo y la auditoría lo dicen.
+    const enCatalogo = await page.evaluate(async (i) => {
+      const j = await (await fetch('/api/products', { headers: { Authorization: `Bearer ${DB.authToken}` } })).json();
+      const lista = Array.isArray(j) ? j : j.products;
+      return { galletas: lista.find((p) => p.id === i.galletas)?.precioVenta, refresco: lista.find((p) => p.id === i.refresco)?.precioVenta };
+    }, ids);
+    L.check('El precio quedó en el producto: Galletas 90, Refresco 100 (precio final)', enCatalogo.galletas === 90 && enCatalogo.refresco === 100, JSON.stringify(enCatalogo));
+    const guardados = await page.evaluate(async () => (await (await fetch('/api/auditoria?pageSize=50', { headers: { Authorization: `Bearer ${DB.authToken}` } })).json()).eventos || []);
+    L.check('Auditoría: "Precio cambiado desde la venta" con el de antes', guardados.filter((e) => /Precio cambiado desde la venta/.test(JSON.stringify(e)) && /antes 100\.00/.test(JSON.stringify(e))).length === 1,
+      JSON.stringify(guardados.filter((e) => /desde la venta/.test(JSON.stringify(e))).map((c) => c.detalle || c.detail)).slice(0, 300));
     await page.evaluate(() => {
       try { if (typeof closeReceipt === 'function') closeReceipt(); } catch (_) { /* ya cerrado */ }
       try { if (typeof closeAllModals === 'function') closeAllModals(); } catch (_) { /* ya cerrado */ }
@@ -198,7 +211,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await page.evaluate((id) => addProductById(id), ids.galletas);
     await sleep(400);
     const nueva = await linea(0);
-    L.check('Venta nueva: Galletas vuelve a 100', nueva.precio === 100 && nueva.precioManual === null, JSON.stringify(nueva));
+    L.check('Venta nueva: Galletas sale a 90, sin "precio cambiado"', nueva.precio === 90 && nueva.precioManual === null, JSON.stringify(nueva));
 
     // 8. Trampas contra el servidor.
     const enviar = (cambiar) => page.evaluate(async (fn) => {
@@ -224,6 +237,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const pollo = await page.evaluate((id) => ({ id }), ids.pollo);
     const peso = await enviar(`payload.items[0].id = ${pollo.id}; payload.items[0].nombre = 'Pollo'; payload.items[0].saleMode = 'peso'; payload.items[0].precioManual = 1;`);
     L.check('Precio cambiado en un producto por peso → rechazado', peso.ok === false && /no se puede cambiar/i.test(peso.error || ''), JSON.stringify(peso));
+
+    // 9. El cajero también deja el precio en el producto y guarda productos
+    // rápidos, aunque no pueda entrar a Productos.
+    const sesionAdmin = await L.request(PORT, 'POST', '/api/login', { usuario: 'admin', password: '1234' });
+    const adminToken = sesionAdmin.body?.token;
+    const branchId = sesionAdmin.body?.data?.sucursales?.[0]?.id;
+    const cashRegisterId = sesionAdmin.body?.data?.cajasSucursal?.[0]?.id;
+    const alta = await L.request(PORT, 'POST', '/api/users', { nombre: 'Cajera Precio', usuario: 'cajera.precio', password: 'Cajera2026!', roleCode: 'cajero', estado: 'Activo', branchId, cashRegisterId }, adminToken);
+    L.check('Cajera creada', alta.status === 201 || alta.status === 200, JSON.stringify(alta.body).slice(0, 200));
+    const sesionCajera = await L.request(PORT, 'POST', '/api/login', { usuario: 'cajera.precio', password: 'Cajera2026!' });
+    const tCajera = sesionCajera.body?.token;
+    const precioCajera = await L.request(PORT, 'POST', `/api/products/venta/${ids.galletas}/precio`, { precio: 95 }, tCajera);
+    L.check('Cajera: F3 deja Galletas en 95', precioCajera.status === 200 && precioCajera.body?.product?.precioVenta === 95, JSON.stringify(precioCajera.body).slice(0, 200));
+    const pesoCajera = await L.request(PORT, 'POST', `/api/products/venta/${ids.pollo}/precio`, { precio: 1 }, tCajera);
+    L.check('Cajera: un producto por peso no cambia de precio', pesoCajera.status === 400, JSON.stringify(pesoCajera.body));
+    const rapido = await L.request(PORT, 'POST', '/api/products/venta/rapido', { nombre: 'Plátanos', precio: 25, aplicaItbis: false }, tCajera);
+    L.check('Cajera: el producto rápido queda guardado (RAP-0001, sin existencia)', rapido.status === 201 && rapido.body?.product?.codigo === 'RAP-0001'
+      && rapido.body.product.tracksStock === false && rapido.body.product.estado === 'Activo', JSON.stringify(rapido.body).slice(0, 220));
+    const otraVez = await L.request(PORT, 'POST', '/api/products/venta/rapido', { nombre: 'plátanos', precio: 30 }, tCajera);
+    L.check('Cajera: el mismo nombre otra vez usa el que ya está', otraVez.status === 200 && otraVez.body?.creado === false && otraVez.body.product?.id === rapido.body?.product?.id, JSON.stringify(otraVez.body).slice(0, 200));
+    const directo = await L.request(PORT, 'POST', '/api/products', { codigo: 'X1', nombre: 'Por Productos', precioVenta: 5, categoria: 'General' }, tCajera);
+    L.check('Cajera: Productos sigue cerrado para ella', directo.status === 403, String(directo.status));
 
     L.check('Sin errores en la página', problemas.length === 0, problemas.join('\n'));
     if (L.results.some((r) => !r.ok)) process.exitCode = 1;

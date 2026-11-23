@@ -470,3 +470,23 @@
   .repv2-dgii-kpis { grid-template-columns: 1fr; }
   .dgii-kpi-pagar { grid-column: span 1; }
 }
+
+/* Cierre seguro con la caja abierta (js/reportes-v2.js → aplicarSoloFacturas):
+   el cajero solo ve Detallados → Facturas, sin montos ni totales. */
+.repv2-solo-aviso {
+  margin-bottom: 1rem;
+  padding: 10px 14px;
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+#module-reportes.repv2-solo-facturas .repv2-tab:not([data-tab="detallados"]),
+#module-reportes.repv2-solo-facturas .repv2-subtab:not([data-subtab="facturas"]),
+#module-reportes.repv2-solo-facturas .repv2-solo-ocultar,
+#module-reportes.repv2-solo-facturas .repv2-col-monto,
+#module-reportes.repv2-solo-facturas #det-facturas-tfoot,
+#module-reportes.repv2-solo-facturas #repv2-subtab-facturas .repv2-btn-export {
+  display: none !important;
+}

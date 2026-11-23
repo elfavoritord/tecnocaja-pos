@@ -747,7 +747,8 @@ function openQuickSaleModal() {
   setTimeout(() => document.getElementById('quick-sale-name')?.focus(), 50);
 }
 
-function addQuickSaleItem() {
+let _quickSaleSaving = false;
+async function addQuickSaleItem() {
   const nameInput = document.getElementById('quick-sale-name');
   const priceInput = document.getElementById('quick-sale-price');
   const qtyInput = document.getElementById('quick-sale-qty');
@@ -772,12 +773,55 @@ function addQuickSaleItem() {
     return;
   }
 
-  DB.saleItems.push(buildQuickSaleItem({ nombre, precio, qty, aplicaItbis }));
-  closeAllModals();
+  // Queda guardado en Productos: activo y sin control de existencia (Emilio,
+  // 2026-11-23). Si ya hay uno con ese nombre, entra ese con su precio. Sin
+  // conexión o si no se puede guardar, entra solo a esta venta, como antes.
+  if (_quickSaleSaving) return;
+  _quickSaleSaving = true;
+  const boton = document.querySelector('#modal-footer button[form="quick-sale-form"]');
+  if (boton) { boton.disabled = true; boton.textContent = 'Guardando…'; }
+  try {
+    const r = await api.request('/api/products/venta/rapido', {
+      method: 'POST',
+      body: JSON.stringify({ nombre, precio, aplicaItbis, ...getActorPayload() }),
+    });
+    closeAllModals();
+    await agregarProductoGuardado(r.product, qty);
+    showToast(r.creado
+      ? `"${nombre}" quedó guardado en Productos y en la venta.`
+      : `"${r.product.nombre}" ya estaba en Productos: entró con su precio (${fmt(r.product.precioVenta)}). Si cambió, usa F3.`,
+    r.creado ? 'success' : 'info');
+  } catch (error) {
+    closeAllModals();
+    DB.saleItems.push(buildQuickSaleItem({ nombre, precio, qty, aplicaItbis }));
+    renderSaleTable();
+    updateTotals();
+    showToast(`"${nombre}" entró solo a esta venta: ${error.message || 'no se pudo guardar en Productos'}.`, 'warning');
+    focusSalesSearchInput({ force: true });
+  } finally {
+    _quickSaleSaving = false;
+  }
+}
+
+// Un producto que el servidor acaba de guardar (o que ya existía) entra a la
+// venta con la cantidad pedida.
+async function agregarProductoGuardado(product, qty = 1) {
+  if (!product?.id) throw new Error('El servidor no devolvió el producto.');
+  let prod = (DB.productos || []).find((p) => Number(p.id) === Number(product.id));
+  if (!prod) {
+    DB.productos = [...(DB.productos || []), product];
+    prod = product;
+    if (typeof window.refreshSalesCatalogAfterProductChange === 'function') window.refreshSalesCatalogAfterProductChange();
+  }
+  await addProductById(prod.id);
+  const extra = Math.max(0, Math.round(Number(qty || 1)) - 1);
+  const saleMode = getSaleItemSaleMode(prod, prod);
+  if (!extra || saleMode === 'peso') return;
+  const idx = findMergeableSaleItemIndex(prod, saleMode);
+  if (idx < 0) return;
+  DB.saleItems[idx] = recalcSaleItemForQty(DB.saleItems[idx], Number(DB.saleItems[idx].qty || 0) + extra);
   renderSaleTable();
   updateTotals();
-  showToast(`Producto rápido agregado: ${nombre}`, 'success');
-  focusSalesSearchInput({ force: true });
 }
 
 function findMergeableSaleItemIndex(product, saleMode) {
@@ -5657,38 +5701,22 @@ async function saveSaleQuickProduct() {
     await addProductById(yaExiste.id);
     return;
   }
-  // "General" (no la primera de la lista: unas galletas no deben caer en Bebidas).
-  const categorias = Array.isArray(DB.categorias) ? DB.categorias : [];
-  const categoria = categorias.find((c) => String(c).toLowerCase() === 'general') || 'General';
+  // Lo guarda el servidor (server/routes/venta-catalogo.routes.js): en
+  // "General", por unidad, sin ITBIS y sin control de existencia. También lo
+  // puede hacer el cajero (Emilio, 2026-11-23).
   const boton = document.getElementById('vpn-guardar');
   _saleQuickProductSaving = true;
   if (boton) { boton.disabled = true; boton.textContent = 'Guardando…'; }
   try {
-    const creado = await api.createProduct({
-      codigo,
-      barcode: codigo,
-      nombre,
-      categoria,
-      marca: '',
-      precioVenta: Math.round(precio * 100) / 100,
-      precioCompra: 0,
-      stock: 0,
-      stockMin: 0,
-      estado: 'Activo',
-      unidad: 'Unidad',
-      saleMode: 'unidad',
-      tipoProducto: 'general',
-      tracksStock: false,
-      aplicaItbis: false,
-      ...getActorPayload(),
+    const r = await api.request('/api/products/venta/rapido', {
+      method: 'POST',
+      body: JSON.stringify({ codigo, nombre, precio: Math.round(precio * 100) / 100, aplicaItbis: false, ...getActorPayload() }),
     });
-    const producto = creado?.product || creado;
-    if (!producto?.id) throw new Error('El servidor no devolvió el producto.');
-    DB.productos = [...(DB.productos || []), producto];
-    if (typeof window.refreshSalesCatalogAfterProductChange === 'function') window.refreshSalesCatalogAfterProductChange();
     closeAllModals();
-    await addProductById(producto.id);
-    showToast(`"${nombre}" quedó guardado y en la venta.`, 'success');
+    await agregarProductoGuardado(r.product, 1);
+    showToast(r.creado
+      ? `"${nombre}" quedó guardado y en la venta.`
+      : `"${r.product.nombre}" ya estaba en Productos: entró con su precio.`, r.creado ? 'success' : 'info');
   } catch (error) {
     const msg = String(error?.message || '');
     showToast(/duplicate|duplicado|ya existe|ER_DUP_ENTRY/i.test(msg)
@@ -6148,9 +6176,10 @@ function commitSaleLineTotalEdit(idx, rawValue) {
 // Decisiones de Emilio (2026-11-15): con la línea elegida (clic en la fila; si
 // no se eligió ninguna, la última que entró) F3 o el botón "Precio" convierten
 // su Precio en un campo: se escribe el nuevo, Enter guarda y Escape lo deja
-// como estaba. La cantidad no cambia. Es solo para esta venta (el producto
-// conserva su precio), cualquier usuario puede (queda en la auditoría) y nunca
-// en productos por peso, que tienen el total editado. El precio va en el mismo
+// como estaba. La cantidad no cambia. Desde el 2026-11-23 el precio también
+// queda en el producto (guardarPrecioDeVentaEnProducto; antes era solo para
+// esta venta). Cualquier usuario puede (queda en la auditoría) y nunca en
+// productos por peso, que tienen el total editado. El precio va en el mismo
 // sentido que el del producto: con ITBIS incluido, el precio final. El
 // servidor lo vuelve a validar (server/sales/precio-manual.js).
 function hasSaleLineManualPrice(item = {}) {
@@ -6273,12 +6302,33 @@ function commitSaleLinePriceEdit(idx, rawValue) {
       if (costo > 0 && Number(next.precio || 0) < costo) {
         showToast(`Ojo: "${item.nombre}" queda por debajo de su costo (${fmt(costo)}).`, 'warning');
       }
+      if (product) guardarPrecioDeVentaEnProducto(product, nuevo);
     }
   }
   DB.saleItems[idx] = next;
   renderSaleTable();
   updateTotals();
   return true;
+}
+
+// F3 deja el precio en el producto (Emilio, 2026-11-23): la próxima venta ya
+// sale con ese precio. Si no se puede guardar (sin conexión, sin permiso),
+// queda solo para esta venta, como antes, y se avisa.
+async function guardarPrecioDeVentaEnProducto(product, precio) {
+  try {
+    const r = await api.request(`/api/products/venta/${encodeURIComponent(product.id)}/precio`, {
+      method: 'POST',
+      body: JSON.stringify({ precio, ...getActorPayload() }),
+    });
+    const enLista = (DB.productos || []).find((p) => Number(p.id) === Number(product.id));
+    const nuevoPrecio = Number(r?.product?.precioVenta ?? precio);
+    if (enLista) enLista.precioVenta = nuevoPrecio;
+    if (product !== enLista) product.precioVenta = nuevoPrecio;
+    if (typeof window.refreshSalesCatalogAfterProductChange === 'function') window.refreshSalesCatalogAfterProductChange();
+    showToast(`Precio guardado: "${product.nombre}" ahora vale ${fmt(nuevoPrecio)}.`, 'success');
+  } catch (error) {
+    showToast(`El precio cambió solo en esta venta: ${error.message || 'no se pudo guardar en el producto'}.`, 'warning');
+  }
 }
 
 function syncSaleRowDisplay(idx) {

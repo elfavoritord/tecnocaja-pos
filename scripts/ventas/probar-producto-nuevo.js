@@ -3,7 +3,7 @@
 // código puesto; nombre + precio con Enter y el producto se crea y entra a la
 // venta. En la app real, con SQLite en una carpeta temporal.
 // Uso: npm run test:producto-nuevo
-/* global DB, doLogin, showModule, openBillingModal, setMontoExacto, processSale */
+/* global DB, doLogin, showModule, openBillingModal, setMontoExacto, processSale, openQuickSaleModal, closeReceipt, closeAllModals */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -140,6 +140,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     await sleep(3000);
     const venta = ventas.find((v) => v.status < 300)?.cuerpo?.sale;
     L.check('La venta se cobra: 2 × 65.50 = 131.00', Number(venta?.total) === 131, JSON.stringify(venta || ventas).slice(0, 200));
+
+    // 8. "+" (Agregar producto rápido) también queda en Productos (Emilio,
+    // 2026-11-23): activo, sin control de existencia y con código RAP-0001.
+    await page.evaluate(() => {
+      try { if (typeof closeReceipt === 'function') closeReceipt(); } catch (_) { /* ya cerrado */ }
+      try { closeAllModals(); } catch (_) { /* ya cerrado */ }
+      DB.saleItems = [];
+      showModule('ventas');
+    });
+    await sleep(800);
+    const rapido = async (nombre, precio, qty) => {
+      await page.evaluate(() => openQuickSaleModal());
+      await page.waitForSelector('#quick-sale-name', { timeout: 5000 });
+      await page.evaluate((n, p, q) => {
+        document.getElementById('quick-sale-name').value = n;
+        document.getElementById('quick-sale-price').value = String(p);
+        document.getElementById('quick-sale-qty').value = String(q);
+      }, nombre, precio, qty);
+      await page.click('#modal-footer button[form="quick-sale-form"]');
+      await sleep(1500);
+    };
+    await rapido('Hielo grande', 50, 3);
+    const c4 = await carrito();
+    const hielo = await page.evaluate(async () => {
+      const j = await (await fetch('/api/products', { headers: { Authorization: `Bearer ${DB.authToken}` } })).json();
+      return (Array.isArray(j) ? j : j.products).find((p) => p.nombre === 'Hielo grande') || null;
+    });
+    L.check('"+": entra a la venta (3 a 50) como producto del catálogo', c4.length === 1 && c4[0].qty === 3 && c4[0].precio === 50 && c4[0].codigo === 'RAP-0001', JSON.stringify(c4));
+    L.check('"+": quedó en Productos, activo y sin control de existencia', hielo && hielo.codigo === 'RAP-0001' && hielo.estado === 'Activo'
+      && hielo.tracksStock === false && hielo.precioVenta === 50, JSON.stringify(hielo).slice(0, 220));
+    await rapido('hielo grande', 60, 1);
+    const c5 = await carrito();
+    L.check('"+" con el mismo nombre usa el que ya está (suma uno, a su precio)', c5.length === 1 && c5[0].qty === 4 && c5[0].precio === 50, JSON.stringify(c5));
 
     L.check('Sin errores en la página', problemas.length === 0, problemas.join('\n'));
     if (L.results.some((r) => !r.ok)) process.exitCode = 1;
