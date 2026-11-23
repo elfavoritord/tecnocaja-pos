@@ -9646,6 +9646,19 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     } catch (error) {
       return res.status(503).json({ error: error.message, code: error.code || 'CLOUD_REGISTRATION_PENDING' });
     }
+  } else if (!setupStatus.license.canEnter && setupStatus.license.blockedCode === 'expired'
+    && isGlobalAdministratorUser(user) && !getFirebaseConfigStatus().adminEnabled) {
+    // Prueba "vencida" según la copia local, pero esta PC nunca se conectó a la
+    // nube (sin identidad en config/pos-cloud): el panel pudo haberla activado
+    // y la PC jamás se entera. Con la clave del administrador se conecta y
+    // revalida; si falla, sigue el mensaje normal de prueba vencida.
+    try {
+      await ensurePosCloudConnection({ password });
+      await secureLicenseService.resolveState({ force: true, allowRemote: true });
+      setupStatus = await getSetupStatus();
+    } catch (error) {
+      console.warn('[login] No se pudo conectar a la nube con la prueba vencida:', error.message);
+    }
   }
   if (!setupStatus.license.canEnter) {
     return res.status(403).json({ error: getLicenseDeniedMessage(setupStatus.license), code: setupStatus.license.blockedCode || 'LICENSE_BLOCKED' });
