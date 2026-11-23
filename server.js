@@ -1644,7 +1644,15 @@ async function isNetworkDbReady() {
 const licenciaSucursal = require('./server/multisucursal/licencia-sucursal').createLicenciaSucursal({
   getEnlace: () => { try { return multisucursal.enlace; } catch (_) { return null; } },
   leerLicencia: async (licenseId) => {
-    const { getFirestore: firestoreAdmin, getAdminLicensesCollectionName } = require('./modules/firebase-admin');
+    const firebaseAdmin = require('./modules/firebase-admin');
+    // Instalaciones sin llave de Firebase (1.6.36+): el contrato de la empresa
+    // llega por la Sync API con el token de esta sucursal.
+    if (!firebaseAdmin.getFirebaseConfigStatus().adminEnabled) {
+      const contrato = await multisucursal.enlace.licenciaEmpresa();
+      if (!contrato) throw new Error('La central todavía no entrega la licencia de la empresa.');
+      return contrato;
+    }
+    const { getFirestore: firestoreAdmin, getAdminLicensesCollectionName } = firebaseAdmin;
     const fs = firestoreAdmin();
     if (!fs) throw new Error('Firebase no está configurado en esta PC.');
     const doc = await fs.collection(getAdminLicensesCollectionName()).doc(licenseId).get();
@@ -1695,6 +1703,11 @@ const secureLicenseService = createLicenseService({
   fetchRemoteLicense: async (context = {}) => {
     const firebase = require('./modules/firebase-admin');
     if (!firebase.getFirebaseConfigStatus().adminEnabled) {
+      // Sucursal enlazada: se rige por la licencia de la empresa que entrega la
+      // Sync API. No se registra como negocio aparte en la nube.
+      if (await licenciaSucursal.empresaDeEstaPc().catch(() => null)) {
+        return licenciaSucursal.combinar(null);
+      }
       const cloud = await ensurePosCloudConnection();
       return licenciaSucursal.combinar((await cloud.request('license')).license);
     }
@@ -1705,6 +1718,11 @@ const secureLicenseService = createLicenseService({
   },
   updateRemoteDevice: async (license, context, options) => {
     if (!getFirebaseConfigStatus().adminEnabled) {
+      // Una sucursal enlazada no se registra como equipo de la licencia: la
+      // limitan el número de sucursales y la PC única de cada una.
+      if (await licenciaSucursal.empresaDeEstaPc().catch(() => null)) {
+        return { allowed: true, activeCount: 0, limit: 0, skipped: true };
+      }
       // La lectura del intermediario verifica la clave de esta instalación y
       // que su equipo siga registrado y no haya sido revocado.
       return { allowed: license.devices.some(d => d.deviceId === secureLicenseService.device.deviceId) };

@@ -75,7 +75,8 @@ describe('Alta y licencia del POS sin Firebase Admin en la PC', () => {
   test('equipo revocado no obtiene autorización con su clave antigua', async () => {
     const { license } = await register();
     db.data.get(`licencias/${license.id}`).devices[device.deviceId].status = 'released';
-    await expect(client.request('license')).rejects.toThrow('liberado');
+    expect((await client.request('license')).license.docData.forceBlocked).toBe(true);
+    await expect(client.request('reception-received')).rejects.toThrow('liberado');
   });
   test('no reclama una licencia ajena ni siquiera indicando su ID', async () => {
     db.data.set('licencias/pos_other', { ownerEmail: 'other@example.test', ownerUid: 'other', status: 'active' });
@@ -130,6 +131,11 @@ describe('Alta y licencia del POS sin Firebase Admin en la PC', () => {
       const offline = await createLicenseService({ ...options, fetchRemoteLicense: async () => { throw Error('Sin internet'); } }).resolveState({ allowRemote: false });
       expect(offline.source).toBe('cache');
       expect(offline.license.canEnter).toBe(true);
+      db.data.get(`licencias/${license.id}`).devices[device.deviceId].status = 'released';
+      const denied = await createLicenseService(options).resolveState({ force: true, allowRemote: true });
+      expect(denied.license.canEnter).toBe(false);
+      const blockedOffline = await createLicenseService(options).resolveState({ allowRemote: false });
+      expect(blockedOffline.license.canEnter).toBe(false);
     } finally { base.close(); }
   });
 });

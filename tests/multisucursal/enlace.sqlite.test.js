@@ -249,6 +249,27 @@ describe('Enlace del POS con la central', () => {
     expect(r).toMatchObject({ estado, vinculado: false, tieneToken: true, ultimoError: { codigo } });
   });
 
+  test('licenciaEmpresa: trae el contrato de la empresa con el token (PC sin llave de Firebase)', async () => {
+    activacionOk();
+    await enlace.activar('ABCD-EFGH');
+    const contrato = { status: 'active', planCode: 'plus', expiresAt: null, forceBlocked: false };
+    api.limpiar();
+    api.responder('GET /v1/identidad', 200, { ok: true, empresa: EMPRESA, sucursal: SUCURSAL, equipo: {}, licencia: { status: 'active' }, licenciaEmpresa: contrato });
+    expect(await enlace.licenciaEmpresa()).toEqual(contrato);
+    expect(api.llamadas[0]).toMatchObject({ ruta: '/v1/identidad', method: 'GET', auth: `Bearer ${TOKEN}` });
+  });
+
+  test('licenciaEmpresa: Sync API sin el campo → null; empresa suspendida → estado suspendido', async () => {
+    activacionOk();
+    await enlace.activar('ABCD-EFGH');
+    api.responder('GET /v1/identidad', 200, { ok: true, empresa: EMPRESA, sucursal: SUCURSAL, equipo: {}, licencia: { status: 'active' } });
+    expect(await enlace.licenciaEmpresa()).toBeNull();
+    api.responder('GET /v1/identidad', 403, { ok: false, error: 'no', code: 'LICENCIA_INACTIVA' });
+    expect(await enlace.licenciaEmpresa()).toEqual({ status: 'suspended', forceBlocked: true });
+    api.limpiar();
+    await expect(enlace.licenciaEmpresa()).rejects.toMatchObject({ code: 'SIN_CONEXION' });
+  });
+
   test('reemplazado o revocado: deja de mandar latidos', async () => {
     activacionOk();
     await enlace.activar('ABCD-EFGH');

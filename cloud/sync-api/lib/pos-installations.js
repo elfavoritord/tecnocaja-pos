@@ -49,14 +49,19 @@ function createPosRouter({ db, verificarIdToken, now = () => new Date(), gateway
     for (const field of ['issuedAt', 'expiresAt', 'trialStartedAt', 'trialEndsAt', 'createdAt', 'updatedAt']) docData[field] = iso(docData[field]) || null;
     return { id, docData: serializable(docData), businessName: lic.businessName };
   }
-  async function authorized(p) {
+  async function authorized(p, licenseRead = false) {
     const id = clean(p.data.licenseId, 120);
     if (!/^pos_[a-zA-Z0-9_-]+$/.test(id)) throw fail('Licencia no válida.', 403, 'SIN_LICENCIA');
     const snap = await db.collection('licencias').doc(id).get();
     const lic = snap.exists ? snap.data() : null;
-    if (!lic || lic.deleted || lic.posInstallations?.[p.keyId]?.deviceId !== p.data.deviceId) throw fail('Este equipo no está vinculado a la licencia.', 403, 'EQUIPO_NO_REGISTRADO');
+    if (!lic || lic.posInstallations?.[p.keyId]?.deviceId !== p.data.deviceId) throw fail('Este equipo no está vinculado a la licencia.', 403, 'EQUIPO_NO_REGISTRADO');
     const device = lic.devices?.[p.data.deviceId];
-    if (!device || ['released', 'blocked', 'liberado', 'bloqueado'].includes(device.status)) throw fail('Este equipo fue liberado o bloqueado.', 403, 'EQUIPO_REVOCADO');
+    if (lic.deleted || !device || ['released', 'blocked', 'liberado', 'bloqueado'].includes(device.status)) {
+      // La denegación conocida debe llegar como estado de licencia: un error
+      // de transporte haría que el POS recurriese a su autorización offline.
+      if (licenseRead) return { id, lic: { ...lic, forceBlocked: true } };
+      throw fail('Este equipo fue liberado o bloqueado.', 403, 'EQUIPO_REVOCADO');
+    }
     return { id, lic };
   }
   wrap('register', async (p) => {
@@ -122,7 +127,7 @@ function createPosRouter({ db, verificarIdToken, now = () => new Date(), gateway
     });
     return { license: view(id, (await ref.get()).data()) };
   });
-  wrap('license', async p => { const { id, lic } = await authorized(p); return { license: view(id, lic) }; });
+  wrap('license', async p => { const { id, lic } = await authorized(p, true); return { license: view(id, lic) }; });
   const gateway = async (route, method, body) => {
     if (!gatewayToken) throw fail('El receptor automático no está configurado en el servidor.', 503, 'RECEPTOR_NO_CONFIGURADO');
     const r = await gatewayFetch(`https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app${route}`, { method, headers: { Authorization: `Bearer ${gatewayToken}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60000), redirect: 'error' });

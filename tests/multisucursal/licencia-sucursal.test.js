@@ -130,6 +130,61 @@ describe('Licencia de una PC de sucursal', () => {
     expect(leer).not.toHaveBeenCalled();
   });
 
+  // Instalador sin llave de Firebase (1.6.36+): la PC de sucursal no tiene
+  // licencia propia y el contrato de la empresa llega de la Sync API
+  // (GET /v1/identidad → licenciaEmpresa, fechas en texto ISO).
+  describe('PC de sucursal sin llave de Firebase', () => {
+    function crearSinLlave({ query, contrato, now = () => new Date('2026-10-20T12:00:00.000Z') }) {
+      const leerPorEnlace = jest.fn(async () => contrato);
+      const licencia = createLicenciaSucursal({
+        getEnlace: () => ({ estado: async () => enlace }),
+        leerLicencia: leerPorEnlace,
+        getLicenciaPropia: () => '',
+        logger: { warn() {} },
+      });
+      const persistidos = [];
+      const service = createLicenseService({
+        query,
+        now,
+        device: { deviceId: 'npd_norte', hostname: 'CAJA-NORTE', platform: 'win32', arch: 'x64' },
+        // Lo mismo que server.js hace sin llave en una sucursal enlazada.
+        fetchRemoteLicense: async () => licencia.combinar(null),
+        updateRemoteDevice: async () => ({ allowed: true, activeCount: 0, limit: 0, skipped: true }),
+        persistRemoteUid: (uid) => persistidos.push(uid),
+      });
+      return { service, persistidos, leerPorEnlace };
+    }
+
+    test('entra con el plan y el estado de la empresa y no adopta ningún id', async () => {
+      const { query, state } = baseLocal();
+      const { service, persistidos, leerPorEnlace } = crearSinLlave({
+        query,
+        contrato: { status: 'active', planCode: 'plus', modalidad: null, servicios: null, issuedAt: '2026-10-01T00:00:00.000Z', expiresAt: null, trialStartedAt: null, trialEndsAt: null, forceBlocked: false },
+      });
+      const r = await service.resolveState({ force: true });
+      expect(r.source).toBe('firebase');
+      expect(r.license).toMatchObject({ status: 'active', planCode: 'plus', canEnter: true, blockedCode: null });
+      expect(leerPorEnlace).toHaveBeenCalledWith(EMPRESA);
+      expect(persistidos).toEqual([]);
+      expect(state.configRow).toMatchObject({ license_status: 'active', plan_code: 'plus' });
+    });
+
+    test('empresa en prueba vigente: entra con la fecha de la empresa', async () => {
+      const { query } = baseLocal();
+      const r = await crearSinLlave({
+        query,
+        contrato: { status: 'trial', planCode: 'plus', expiresAt: '2026-11-10T00:00:00.000Z', trialStartedAt: '2026-10-11T00:00:00.000Z', trialEndsAt: '2026-11-10T00:00:00.000Z' },
+      }).service.resolveState({ force: true });
+      expect(r.license).toMatchObject({ status: 'trial', canEnter: true });
+    });
+
+    test('empresa suspendida (la central responde LICENCIA_INACTIVA): queda suspendida', async () => {
+      const { query } = baseLocal();
+      const r = await crearSinLlave({ query, contrato: { status: 'suspended', forceBlocked: true } }).service.resolveState({ force: true });
+      expect(r.license).toMatchObject({ status: 'suspended', canEnter: false, blockedCode: 'suspended' });
+    });
+  });
+
   test('vigila la licencia de la empresa una sola vez y suelta al desvincular', async () => {
     const { licencia } = crear(baseLocal());
     const cancelar = jest.fn();

@@ -2,8 +2,9 @@ name: Instalador de Tecno Caja POS
 
 on:
   push:
+    # Una rama release/<versión> por publicación; la versión sale de package.json.
     branches:
-      - codex/release-1.6.36
+      - 'release/**'
 
 permissions:
   contents: read
@@ -14,12 +15,21 @@ jobs:
     timeout-minutes: 25
     env:
       PUPPETEER_SKIP_DOWNLOAD: 'true'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Conservar saltos de línea del repositorio
         run: git config --global core.autocrlf false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+      - name: Leer la versión
+        id: version
+        run: |
+          $version = node -p "require('./package.json').version"
+          if ("$env:GITHUB_REF_NAME" -ne "release/$version") { throw "La rama $env:GITHUB_REF_NAME no corresponde a la versión $version de package.json." }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "TC_VERSION=$version" >> $env:GITHUB_ENV
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version-file: .nvmrc
@@ -72,7 +82,7 @@ jobs:
             const installer = `TecnoCaja-Setup-${version}.exe`;
             const manifest = yaml.load(fs.readFileSync('dist/latest.yml', 'utf8'));
             const entry = manifest.files.find(file => file.url === installer);
-            assert.equal(version, '1.6.36');
+            assert.equal(version, process.env.TC_VERSION);
             assert.equal(notes.version, version);
             assert.equal(manifest.version, version);
             assert.equal(manifest.path, installer);
@@ -102,10 +112,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Falló la verificación del instalador.' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: TecnoCaja-1.6.36-windows-x64
+          name: TecnoCaja-${{ steps.version.outputs.version }}-windows-x64
           path: |
-            dist/TecnoCaja-Setup-1.6.36.exe
-            dist/TecnoCaja-Setup-1.6.36.exe.blockmap
+            dist/TecnoCaja-Setup-${{ steps.version.outputs.version }}.exe
+            dist/TecnoCaja-Setup-${{ steps.version.outputs.version }}.exe.blockmap
             dist/latest.yml
             dist/release-notes.md
           if-no-files-found: error
@@ -120,12 +130,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: TecnoCaja-1.6.36-windows-x64
+          name: TecnoCaja-${{ needs.installer.outputs.version }}-windows-x64
           path: dist
       - name: Subir archivos a GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.installer.outputs.version }}
         run: |
-          gh release create v1.6.36 --draft --target "$GITHUB_SHA" --title 'Tecno Caja POS 1.6.36' --notes-file dist/release-notes.md \
-            dist/TecnoCaja-Setup-1.6.36.exe dist/TecnoCaja-Setup-1.6.36.exe.blockmap dist/latest.yml
+          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" --title "Tecno Caja POS $VERSION" --notes-file dist/release-notes.md \
+            "dist/TecnoCaja-Setup-$VERSION.exe" "dist/TecnoCaja-Setup-$VERSION.exe.blockmap" dist/latest.yml

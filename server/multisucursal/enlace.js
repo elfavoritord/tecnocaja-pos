@@ -305,6 +305,20 @@ function createEnlaceCentral({
     }
   }
 
+  // Contrato de la empresa tal como lo ve la central, para la PC de sucursal
+  // que no tiene llave de Firebase. Devuelve null si la central todavía no lo
+  // publica (Sync API vieja). Una licencia suspendida llega como estado, no
+  // como error: así la PC la muestra en vez de decir que no la encuentra.
+  async function licenciaEmpresa() {
+    try {
+      const r = await llamarSync('GET', '/v1/identidad');
+      return r.licenciaEmpresa || null;
+    } catch (error) {
+      if (error.code === 'LICENCIA_INACTIVA') return { status: 'suspended', forceBlocked: true };
+      throw error;
+    }
+  }
+
   async function desvincular() {
     env.TECNO_CAJA_SYNC_TOKEN = '';
     persistEnv({ TECNO_CAJA_SYNC_TOKEN: '' });
@@ -351,6 +365,7 @@ function createEnlaceCentral({
 
   return {
     activar, empresasDelDueno, activarConDueno, refrescarIdentidad, latido, desvincular, estado, iniciar, detener, llamarSync,
+    licenciaEmpresa,
   };
 }
 

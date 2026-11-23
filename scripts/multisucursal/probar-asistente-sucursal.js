@@ -6,6 +6,8 @@
  * Firestore y un Firebase Auth falso en la Sync API.
  *
  *   npm run test:multisucursal-asistente
+ *   npm run test:multisucursal-asistente -- --sin-llave   (PC nueva sin llave de
+ *     Firebase, como el instalador 1.6.36+: la licencia de la empresa llega por la Sync API)
  *
  * Flujo:
  *   1. Central: la empresa del dueño con dos sucursales (Centro principal y
@@ -34,7 +36,8 @@ if (!process.env.FIRESTORE_EMULATOR_HOST) {
   process.exit(1);
 }
 
-const SALIDA = process.argv[2] || path.join(L.WORK, 'capturas');
+const SIN_LLAVE = process.argv.includes('--sin-llave');
+const SALIDA = process.argv.slice(2).find((a) => !a.startsWith('--')) || path.join(L.WORK, 'capturas');
 const LIC = 'pos:tecno-caja-supermercado-bravo';
 const DUENO = 'dueno@bravo.test';
 const CLAVE_DUENO = 'clave-del-dueno';
@@ -193,7 +196,8 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     const equiposEmpresaAntes = Object.keys((await db.collection('licencias').doc(LIC).get()).data().devices || {});
 
     // ── 3. PC nueva: el asistente ────────────────────────────────────────
-    norte = crearPc('norte', 3494, SYNC_URL, firebaseDelEmulador());
+    const licenciasAntes = (await db.collection('licencias').get()).size;
+    norte = crearPc('norte', 3494, SYNC_URL, SIN_LLAVE ? {} : firebaseDelEmulador());
     await arrancar(norte);
     const estado0 = await L.request(norte.port, 'GET', '/api/setup/status');
     L.check('PC nueva: sin configurar', estado0.body?.setupRequired === true);
@@ -270,10 +274,16 @@ const api = (pc, method, ruta, body, token = pc.token) => L.request(pc.port, met
     L.check('Licencia: la PC de la sucursal trabaja con la licencia de la empresa (Plus, activa)', lic.status === 'active' && lic.planCode === 'plus' && lic.canEnter === true,
       JSON.stringify({ status: lic.status, plan: lic.planCode, canEnter: lic.canEnter }));
     const propia = leerAppEnv(norte, 'TECNO_CAJA_LICENSE_UID');
-    const docPropio = propia ? (await db.collection('licencias').doc(propia).get()).data() : null;
-    L.check('Licencia: la PC guarda su propio documento marcado como sucursal de la empresa (no aparece como negocio)',
-      Boolean(propia) && propia !== LIC && docPropio?.sucursalDe?.licenseId === LIC && docPropio.sucursalDe.branchUuid === sNorte.branchUuid,
-      `${propia} → ${JSON.stringify(docPropio?.sucursalDe || null)}`);
+    if (SIN_LLAVE) {
+      const licenciasDespues = (await db.collection('licencias').get()).size;
+      L.check('Sin llave: la PC no adopta ningún id de licencia ni crea un negocio aparte en la nube',
+        !propia && licenciasDespues === licenciasAntes, JSON.stringify({ propia, licenciasAntes, licenciasDespues }));
+    } else {
+      const docPropio = propia ? (await db.collection('licencias').doc(propia).get()).data() : null;
+      L.check('Licencia: la PC guarda su propio documento marcado como sucursal de la empresa (no aparece como negocio)',
+        Boolean(propia) && propia !== LIC && docPropio?.sucursalDe?.licenseId === LIC && docPropio.sucursalDe.branchUuid === sNorte.branchUuid,
+        `${propia} → ${JSON.stringify(docPropio?.sucursalDe || null)}`);
+    }
     const docEmpresa = (await db.collection('licencias').doc(LIC).get()).data();
     const equiposEmpresa = Object.keys(docEmpresa.devices || {});
     L.check('Licencia: la PC de la sucursal no escribió en la licencia de la empresa',

@@ -28,7 +28,8 @@ describir('Sync API: activar equipos, identidad y latido', () => {
 
   beforeAll(() => {
     const admin = require('firebase-admin');
-    db = admin.initializeApp({ projectId: PROYECTO }, `sync-api-${Date.now()}`).firestore();
+    // firebase-admin 14 (el de la Sync API) ya no trae app.firestore().
+    db = require('firebase-admin/firestore').getFirestore(admin.initializeApp({ projectId: PROYECTO }, `sync-api-${Date.now()}`));
   });
 
   beforeEach(async () => {
@@ -106,6 +107,26 @@ describir('Sync API: activar equipos, identidad y latido', () => {
     expect((await request(app).get('/v1/identidad').expect(401)).body.code).toBe('SIN_TOKEN');
     const falso = body.token.replace(/\..*$/, `.${'A'.repeat(43)}`);
     expect((await identidad(falso).expect(401)).body.code).toBe('TOKEN_INVALIDO');
+  });
+
+  test('la identidad trae el contrato de la empresa para la sucursal sin llave, sin datos del dueño', async () => {
+    await db.collection('licencias').doc(LIC).set({
+      status: 'trial', planCode: 'plus', ownerEmail: 'dueno@bravo.do', correo: 'dueno@bravo.do',
+      trialStartedAt: new Date('2026-10-10T00:00:00.000Z'), trialEndsAt: new Date('2026-11-09T00:00:00.000Z'),
+      expiresAt: new Date('2026-11-09T00:00:00.000Z'), servicios: { ecf: { estado: 'activo', venceEn: new Date('2027-01-01T00:00:00.000Z') } },
+      devices: { npd_principal: { status: 'active' } },
+    }, { merge: true });
+    const s = await sucursalConCodigo();
+    const { body } = await activar(s.codigo).expect(201);
+    const r = await identidad(body.token).expect(200);
+    expect(r.body.licenciaEmpresa).toEqual({
+      status: 'trial', planCode: 'plus', modalidad: null,
+      servicios: { ecf: { estado: 'activo', venceEn: '2027-01-01T00:00:00.000Z' } },
+      issuedAt: null, expiresAt: '2026-11-09T00:00:00.000Z',
+      trialStartedAt: '2026-10-10T00:00:00.000Z', trialEndsAt: '2026-11-09T00:00:00.000Z',
+      forceBlocked: false, adminAccessBlocked: false, adminManaged: false,
+    });
+    expect(JSON.stringify(r.body)).not.toMatch(/dueno@bravo|npd_principal/);
   });
 
   test('la identidad trae los datos vigentes (si el contador edita la sucursal)', async () => {

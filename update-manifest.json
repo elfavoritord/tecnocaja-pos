@@ -1,13 +1,12 @@
 {
-  "version": "1.6.36",
-  "stableVersion": "1.6.36",
-  "date": "19/11/2026",
+  "version": "1.6.37",
+  "stableVersion": "1.6.37",
+  "date": "23/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Productos y el selector de Venta muestran el precio registrado. En Configuración → Facturación puedes elegir que el catálogo muestre el precio con ITBIS. Al cobrar se sigue aplicando el impuesto que corresponda.",
-    "Venta por peso sin báscula: se puede cobrar una libra al precio registrado directamente, sin editar el total ni solicitar una lectura de peso."
+    "Sucursales: una PC nueva conectada como sucursal ya entra con la licencia de la empresa. Con la 1.6.36 se quedaba en \"Este equipo no tiene una autorización local verificable\"."
   ]
 }

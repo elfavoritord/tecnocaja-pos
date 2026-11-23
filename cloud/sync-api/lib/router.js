@@ -11,7 +11,7 @@
  *   POST /v1/equipos/activar-dueno  { idToken, licenseId, branchUuid, equipo }
  *        → 201 igual que activar, sin código (el dueño elige la sucursal)
  *   GET  /v1/identidad          Authorization: Bearer <token>
- *        → { empresa, sucursal, equipo, licencia }      (datos vigentes desde la central)
+ *        → { empresa, sucursal, equipo, licencia, licenciaEmpresa }  (datos vigentes desde la central)
  *   POST /v1/latido             Authorization: Bearer <token>
  *        { appVersion, modo, pendientes: { salida, errores }, ultimaSincronizacion, ncf: [{ rangoUuid, siguiente }] }
  *        → { ok }   (para el estado de cada sucursal en los paneles)
@@ -54,6 +54,38 @@ function vistaSucursal(s) {
     esPrincipal: Boolean(s.esPrincipal),
     estado: s.estado,
     version: Number(s.version || 1),
+  };
+}
+
+function fechaIso(valor) {
+  if (!valor) return null;
+  if (typeof valor.toDate === 'function') return valor.toDate().toISOString();
+  const f = valor instanceof Date ? valor : new Date(valor);
+  return Number.isNaN(f.getTime()) ? null : f.toISOString();
+}
+
+// Solo lo que una sucursal necesita para regirse por el contrato de la
+// empresa (plan, estado, fechas, bloqueos y servicios). Nada del dueño.
+function vistaLicenciaEmpresa(lic = {}) {
+  let servicios = null;
+  if (lic.servicios && typeof lic.servicios === 'object') {
+    servicios = {};
+    for (const [clave, s] of Object.entries(lic.servicios)) {
+      servicios[clave] = { ...(s || {}), venceEn: fechaIso(s?.venceEn) };
+    }
+  }
+  return {
+    status: lic.status || 'trial',
+    planCode: lic.planCode || lic.plan_code || null,
+    modalidad: lic.modalidad || null,
+    servicios,
+    issuedAt: fechaIso(lic.issuedAt),
+    expiresAt: fechaIso(lic.expiresAt),
+    trialStartedAt: fechaIso(lic.trialStartedAt),
+    trialEndsAt: fechaIso(lic.trialEndsAt),
+    forceBlocked: Boolean(lic.forceBlocked),
+    adminAccessBlocked: lic.adminAccessBlocked === true,
+    adminManaged: lic.adminManaged === true,
   };
 }
 
@@ -252,6 +284,9 @@ function createRouter({
   router.get('/v1/identidad', autenticado, (req, res) => {
     const { equipo, licencia, sucursal } = req.ctx;
     res.set('Cache-Control', 'no-store').json({
+      // Contrato de la empresa para la PC de sucursal que no lleva llave de
+      // Firebase (POS 1.6.36+): con esto trabaja sin registrarse en la nube.
+      licenciaEmpresa: vistaLicenciaEmpresa(licencia),
       ok: true,
       empresa: {
         licenseId: equipo.licenseId,
