@@ -1,16 +1,12 @@
 {
-  "version": "1.6.39",
-  "stableVersion": "1.6.39",
+  "version": "1.6.40",
+  "stableVersion": "1.6.40",
   "date": "23/11/2026",
   "size": "198 MB",
-  "type": "feature",
+  "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Ventas: el producto que se agrega con \"+\" (Agregar producto rápido) queda guardado en Productos, activo y sin control de existencia. Si ya hay uno con ese nombre, entra ese con su precio.",
-    "Ventas: el precio que se cambia con F3 queda guardado en el producto; la próxima venta ya sale con ese precio. Queda en la auditoría con el precio de antes.",
-    "El cajero también puede hacer las dos cosas desde la venta, aunque no entre a Productos.",
-    "Reportes: con el cierre seguro y la caja abierta, el cajero entra a Reportes para buscar, ver y reimprimir facturas (sin montos ni totales del turno).",
-    "Reportes: los encabezados de la lista de facturas ya no salen corridos (\"Método\" salía encima de la sucursal)."
+    "Licencia: si una PC mostraba \"licencia vencida\" aunque el negocio estaba activo en la nube, el administrador ahora la reconecta al iniciar sesión y entra con su licencia activa."
   ]
 }
