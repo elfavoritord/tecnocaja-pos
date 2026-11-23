@@ -136,7 +136,8 @@ function requestPrimaryModalClose() {
  * Usa un modal en-página para evitar que el renderer pierda el foco
  * con los diálogos nativos del sistema operativo.
  */
-function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Cancelar' } = {}) {
+// `enterCancela`: Enter responde "no" (para avisos como un gasto repetido).
+function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Cancelar', enterCancela = false } = {}) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
     overlay.style.cssText = [
@@ -158,7 +159,7 @@ function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Ca
 
     const cancelBtn = overlay.querySelector('[data-action="cancel"]');
     const okBtn = overlay.querySelector('[data-action="ok"]');
-    okBtn.focus();
+    (enterCancela ? cancelBtn : okBtn).focus();
 
     function close(result) {
       document.removeEventListener('keydown', onKey, true);
@@ -166,9 +167,10 @@ function showDeleteConfirm(message, { confirmText = 'Eliminar', cancelText = 'Ca
       resolve(result);
     }
 
+    // Una tecla Enter que ya venía sostenida no responde el aviso.
     function onKey(e) {
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(false); }
-      if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); close(true);  }
+      if (e.key === 'Enter')  { e.preventDefault(); e.stopPropagation(); if (!e.repeat) close(!enterCancela); }
     }
 
     cancelBtn.addEventListener('click', () => close(false));

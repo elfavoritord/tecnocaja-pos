@@ -40,9 +40,14 @@ test('el cuadre trae lo importante, en el orden del cuadre de papel', () => {
   ]);
   const plano = secciones.flatMap((s) => s.filas.map(([l, v]) => `${l} = ${v}`));
   expect(plano).toContain('Facturas = 12 (9 tickets · 3 e-CF)');
+  // Varios gastos: el título, cada uno con su descripción y el total al final.
+  expect(plano).toContain('Gastos y salidas = ');
   expect(plano).toContain('  · Pago de la luz = - RD$ 350.00');
   expect(plano).toContain('  · Gasto = - RD$ 150.00'); // sin descripción: el tipo
-  expect(plano).toContain('  · Cambio de menudo = RD$ 100.00');
+  expect(plano).toContain('Total gastos y salidas = - RD$ 500.00');
+  // Un solo ingreso: una línea, con su descripción.
+  expect(plano).toContain('Entrada: Cambio de menudo = RD$ 100.00');
+  expect(plano.some((l) => /^Ingresos/.test(l))).toBe(false);
   expect(plano).toContain('Transferencias = RD$ 750.00');
   expect(plano).toContain('Total declarado = RD$ 6030.00');
   expect(plano).toContain('2,000 x 1 = RD$ 2000.00');
@@ -52,6 +57,28 @@ test('el cuadre trae lo importante, en el orden del cuadre de papel', () => {
   expect(plano).toContain('Descuadre = Falta RD$ 70.00');
   // Lo largo (ITBIS, propina, aperturas de gaveta, anticipos…) ya no sale.
   expect(plano.some((l) => /ITBIS|Propina|gaveta|Anticipos/.test(l))).toBe(false);
+});
+
+test('un solo gasto sale una vez, en una línea con su descripción', () => {
+  const secciones = cargar()._filasReporte({
+    ...reporte,
+    efectivo: { ...reporte.efectivo, gastos: 500, esperado: 3700 },
+    movimientos: [{ tipo: 'Gasto', monto: -500, notas: 'compra de hielo' }],
+  });
+  const sistema = secciones.find((s) => s.titulo === 'Desglose del sistema').filas.map(([l, v]) => `${l} = ${v}`);
+  expect(sistema.filter((l) => l.includes('RD$ 500.00'))).toEqual(['Gasto: compra de hielo = - RD$ 500.00']);
+  expect(sistema.some((l) => /Gastos y salidas|^Ingresos/.test(l))).toBe(false);
+  // El esperado es el del servidor: la pantalla no lo vuelve a restar.
+  expect(sistema).toContain('Efectivo esperado = RD$ 3700.00');
+});
+
+test('la descripción no repite el tipo y un retiro dice que es retiro', () => {
+  const lineas = (m) => cargar()._filasReporte({ ...reporte, movimientos: [m] })
+    .find((s) => s.titulo === 'Desglose del sistema').filas.map(([l]) => l);
+  expect(lineas({ tipo: 'Gasto', monto: -80, notas: 'gasto' })).toContain('Gasto');
+  expect(lineas({ tipo: 'Gasto', monto: -80, notas: '' })).toContain('Gasto');
+  expect(lineas({ tipo: 'Retiro de efectivo', monto: -2000, notas: 'Corte parcial → caja fuerte' }))
+    .toContain('Retiro de efectivo: Corte parcial → caja fuerte');
 });
 
 test('sin verifón ni transferencias declaradas, el cajero solo declara el efectivo', () => {

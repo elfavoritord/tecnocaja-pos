@@ -3209,6 +3209,9 @@ function handleEnterActions(event) {
     const actionButton = modalOverlay.querySelector('#modal-footer .btn-primary, #modal-footer .btn-danger');
     if (actionButton) {
       event.preventDefault();
+      // Enter sostenido (la tecla se repite) no vuelve a guardar: así se
+      // registraba el mismo gasto muchas veces (2026-11-23).
+      if (event.repeat || actionButton.disabled) return;
       actionButton.click();
     }
   }
@@ -9924,7 +9927,12 @@ function syncCashExpenseFields() {
   }
 }
 
-async function saveCashExpense() {
+// Un egreso a la vez: un doble clic o Enter repetido registraba el mismo gasto
+// varias veces (cuadre con 14 gastos "platanos" iguales, 2026-11-23).
+let _cashExpenseSaving = false;
+
+async function saveCashExpense(confirmarRepetido = false) {
+  if (_cashExpenseSaving) return;
   const type = document.getElementById('cash-expense-type')?.value || 'gasto';
   const amount = Number(document.getElementById('cash-expense-amount')?.value || 0);
   const notes = String(document.getElementById('cash-expense-notes')?.value || '').trim();
@@ -9943,12 +9951,17 @@ async function saveCashExpense() {
     return;
   }
 
+  const saveButton = document.querySelector('#modal-footer .btn-primary');
+  _cashExpenseSaving = true;
+  if (saveButton) saveButton.disabled = true;
+  let repetido = false;
   try {
     const response = await api.createCashExpense({
       tipo: type,
       monto: amount,
       obs: notes,
       supplierInvoiceId,
+      confirmarRepetido,
       ...getBusinessStructurePayload(),
       ...getActorPayload()
     });
@@ -9974,8 +9987,21 @@ async function saveCashExpense() {
       response.offlineMode ? 'warning' : 'success'
     );
   } catch (error) {
-    showToast(error.message || 'No se pudo registrar el egreso.', 'error');
+    if (error.code === 'GASTO_REPETIDO' && !confirmarRepetido) repetido = true;
+    else showToast(error.message || 'No se pudo registrar el egreso.', 'error');
+  } finally {
+    _cashExpenseSaving = false;
+    if (saveButton) saveButton.disabled = false;
   }
+  // Ya hay un gasto igual en el turno: se pregunta. Enter = "No" (no se repite).
+  if (!repetido) return;
+  const otro = await showDeleteConfirm(
+    `En este turno ya está registrado un gasto <strong>«${escapeHtml(notes || 'Egreso de caja')}»</strong> de <strong>${fmt(amount)}</strong>.<br><br>¿Es otro gasto distinto?`,
+    { confirmText: 'Sí, registrar otro', cancelText: 'No, ya está registrado', enterCancela: true }
+  );
+  if (otro) { await saveCashExpense(true); return; }
+  closeAllModals();
+  showToast('No se registró otra vez.', 'info');
 }
 
 function openCashIncomeModal() {

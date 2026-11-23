@@ -18,6 +18,7 @@ const os = require('os');
 const { randomUUID } = require('crypto');
 const M = require('../../js/pos-money');
 const arqueo = require('../services/caja-arqueo');
+const gastoRepetido = require('../services/caja-gasto-repetido');
 const { ensureCajaSegura } = require('../services/finance-migration');
 
 const MOTIVOS = Object.freeze({
@@ -428,15 +429,20 @@ function createCajaSeguraRouter(deps) {
           evento.destination = texto(b.destino, 160);
           if (!evento.destination) throw httpError('Indica a dónde va el dinero retirado (caja fuerte, banco, administración…).');
         } else if (!evento.description) throw httpError('Indica el concepto del gasto.');
+        const notas = motivo === 'retiro'
+          ? `Corte parcial → ${evento.destination}${evento.responsible ? ` · recibe ${evento.responsible}` : ''}`
+          : `${evento.description}${evento.responsible ? ` · ${evento.responsible}` : ''}`;
+        if (motivo === 'gasto') {
+          await gastoRepetido.exigirConfirmacionSiRepetido(run(conn), {
+            sessionId: session.id, monto: M.number(monto), notas: texto(notas, 255), confirmado: b.confirmarRepetido === true,
+          });
+        }
         const resumen = await arqueo.resumenTurno(run(conn), session.id);
         if (M.cents(resumen.efectivo.esperado.toFixed(2)) < monto) throw httpError('El monto supera el efectivo registrado en caja.', 409);
         evento.cashOut = monto; evento.amount = -monto;
         evento.movementId = await registrarMovimiento(conn, {
           session, structure, actor, fecha, monto: -monto,
-          tipo: motivo === 'retiro' ? 'Retiro de efectivo' : 'Gasto',
-          notas: motivo === 'retiro'
-            ? `Corte parcial → ${evento.destination}${evento.responsible ? ` · recibe ${evento.responsible}` : ''}`
-            : `${evento.description}${evento.responsible ? ` · ${evento.responsible}` : ''}`,
+          tipo: motivo === 'retiro' ? 'Retiro de efectivo' : gastoRepetido.TIPO_GASTO, notas,
         });
       } else if (motivo === 'consumo') {
         const items = Array.isArray(b.items) ? b.items : [];

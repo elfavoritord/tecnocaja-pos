@@ -1,12 +1,15 @@
 {
-  "version": "1.6.37",
-  "stableVersion": "1.6.37",
+  "version": "1.6.38",
+  "stableVersion": "1.6.38",
   "date": "23/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Sucursales: una PC nueva conectada como sucursal ya entra con la licencia de la empresa. Con la 1.6.36 se quedaba en \"Este equipo no tiene una autorización local verificable\"."
+    "Caja: el mismo gasto ya no se registra varias veces. Un doble clic o la tecla Enter sostenida en \"Registrar egreso\" lo guardaba repetido y el cuadre salía con sobrante.",
+    "Caja: si registras un gasto igual a otro del mismo turno (mismo monto y misma descripción), el sistema pregunta si es otro gasto antes de guardarlo.",
+    "Cuadre de caja: un solo gasto sale en una línea con su descripción (\"Gasto: compra de hielo\"); con varios, cada uno y el total al final.",
+    "Cierre de caja → detalle completo: cada movimiento de dinero muestra el día y la hora."
   ]
 }

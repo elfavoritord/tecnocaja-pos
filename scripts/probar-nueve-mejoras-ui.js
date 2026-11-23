@@ -73,6 +73,43 @@ module.exports = async function verificarPantallas({ port, outputDir, datos }) {
     await foto('gaveta-historial');
     await cerrar();
 
+    // Caja → Gastos (2026-11-23, un cuadre con 14 gastos "platanos" iguales):
+    // Enter sostenido y el clic de más registran el gasto una sola vez, y el
+    // mismo gasto otra vez pregunta antes (Enter = "No, ya está registrado").
+    const gastoUi = await page.evaluate(async () => {
+      const texto = `platanos prueba ${Date.now()}`;
+      const sid = DB.caja?.activeSession?.id || DB.caja?.sessionId;
+      const contar = async () => (await api.request(`/api/caja/turnos/${sid}/resumen`)).movimientos.filter((m) => m.notas === texto).length;
+      const esperar = (fn) => new Promise((listo, falla) => {
+        const t0 = Date.now();
+        const mirar = () => (fn() ? listo() : (Date.now() - t0 > 20000 ? falla(new Error('tiempo de espera')) : setTimeout(mirar, 50)));
+        mirar();
+      });
+      const llenar = () => {
+        DB.config.cajaAbierta = true;
+        openCashExpenseModal('gasto');
+        document.getElementById('cash-expense-amount').value = '16';
+        document.getElementById('cash-expense-notes').value = texto;
+      };
+      const enter = (repeat) => document.getElementById('cash-expense-amount').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, repeat }));
+      llenar();
+      enter(false);
+      for (let i = 0; i < 10; i += 1) enter(true);
+      document.querySelector('#modal-footer .btn-primary').click();
+      await esperar(() => document.getElementById('modal-overlay').classList.contains('hidden'));
+      const unaVez = await contar();
+      llenar();
+      enter(false);
+      await esperar(() => document.querySelector('[data-action="cancel"]'));
+      const aviso = document.querySelector('[data-action="cancel"]').closest('div').parentElement.textContent;
+      const foco = document.activeElement?.dataset?.action || '';
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await esperar(() => !document.querySelector('[data-action="cancel"]') && document.getElementById('modal-overlay').classList.contains('hidden'));
+      return { unaVez, alFinal: await contar(), aviso, foco };
+    });
+    assert.deepEqual({ unaVez: gastoUi.unaVez, alFinal: gastoUi.alFinal, foco: gastoUi.foco }, { unaVez: 1, alFinal: 1, foco: 'cancel' }, JSON.stringify(gastoUi));
+    assert.match(gastoUi.aviso, /ya está registrado un gasto/);
+
     // Auditoría con detalle.
     await page.evaluate(() => Auditoria.abrir());
     await page.waitForFunction(() => document.querySelector('#aud-resultado-lista table tbody tr'), { timeout: 20000 });

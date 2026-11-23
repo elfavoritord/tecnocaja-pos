@@ -398,6 +398,22 @@
     const totalSalidas = salidas.reduce((t, m) => t + Math.round(Math.abs(Number(m.monto)) * 100), 0) / 100;
     const totalEntradas = entradas.reduce((t, m) => t + Math.round(Number(m.monto) * 100), 0) / 100;
     const descripcion = (m) => `  · ${String(m.notas || '').trim() || m.tipo}`;
+    // Un solo gasto (o ingreso) va en una línea con su descripción: "Gasto:
+    // compra de hielo". Varios, uno debajo del otro y el total al final. Antes
+    // salía el total y debajo el mismo gasto, y parecía repetido (Emilio,
+    // 2026-11-23). Solo cambia cómo se ve: el esperado lo calcula el servidor.
+    const unaLinea = (m) => {
+      const tipo = String(m.tipo || '').trim();
+      const notas = String(m.notas || '').trim();
+      if (!tipo) return notas || 'Movimiento';
+      return !notas || notas.toLowerCase() === tipo.toLowerCase() ? tipo : `${tipo}: ${notas}`;
+    };
+    const grupo = (lista, titulo, total, monto) => {
+      if (!lista.length) return [];
+      if (lista.length === 1) return [[unaLinea(lista[0]), monto(lista[0].monto)]];
+      return [[titulo, ''], ...lista.map((m) => [descripcion(m), monto(m.monto)]), [`Total ${titulo.toLowerCase()}`, monto(total)]];
+    };
+    const salida = (v) => `- ${money(Math.abs(Number(v)))}`;
     const partesFacturas = [
       f.ticket ? `${f.ticket} ticket${f.ticket === 1 ? '' : 's'}` : '',
       f.electronica ? `${f.electronica} e-CF` : '',
@@ -420,8 +436,8 @@
         ['Efectivo', money(Number(e.ventas || 0) + Number(e.abonos || 0))],
         ['Tarjeta', money(cobrado.tarjeta)],
         ['Transferencia', money(cobrado.transferencia)],
-        ...(totalEntradas ? [['Ingresos', money(totalEntradas)], ...entradas.map((m) => [descripcion(m), money(m.monto)])] : []),
-        ...(totalSalidas ? [['Gastos y salidas', `- ${money(totalSalidas)}`], ...salidas.map((m) => [descripcion(m), `- ${money(Math.abs(m.monto))}`])] : []),
+        ...grupo(entradas, 'Ingresos', totalEntradas, money),
+        ...grupo(salidas, 'Gastos y salidas', totalSalidas, salida),
         ...(Number(r.credito?.pendienteNuevo || 0) ? [['Crédito (no es dinero)', money(r.credito.pendienteNuevo)]] : []),
         ['Efectivo esperado', money(e.esperado), true],
       ] },
@@ -511,7 +527,10 @@
         ...ant.detalle.slice(0, 30).map((d) => [`${d.cliente} · ${{ recibido: `recibido (${metodoTxt[d.metodo] || d.metodo})`, aplicado: `en factura ${d.factura}`, devuelto: `devuelto${d.metodo ? ` (${metodoTxt[d.metodo] || d.metodo})` : ''}`, retenido: 'quedó al negocio' }[d.tipo] || d.tipo}`, money(d.monto)]),
       ] });
     }
-    if (r.movimientos?.length) secciones.push({ titulo: 'Movimientos de dinero', filas: r.movimientos.slice(0, 40).map((m) => [`${String(m.fecha).slice(11, 16)} ${m.tipo}${m.notas ? ` · ${m.notas}` : ''}`, money(m.monto)]) });
+    // Con día y hora: un turno puede durar varios días, y así se ve si un gasto
+    // se registró dos veces seguidas.
+    const diaHora = (v) => { const p = String(v || '').match(/^\d{4}-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/); return p ? `${p[2]}/${p[1]} ${p[3]}:${p[4]}` : String(v || '').slice(11, 16); };
+    if (r.movimientos?.length) secciones.push({ titulo: 'Movimientos de dinero', filas: r.movimientos.slice(0, 40).map((m) => [`${diaHora(m.fecha)} ${m.tipo}${m.notas ? ` · ${m.notas}` : ''}`, money(m.monto)]) });
     if (r.devoluciones?.length) secciones.push({ titulo: 'Notas de crédito / devoluciones', filas: r.devoluciones.map((d) => [`${d.factura}${d.documento ? ` · ${d.documento}` : ''}`, money(d.monto)]) });
     if (r.arqueos?.length) secciones.push({ titulo: 'Arqueos durante el turno', filas: r.arqueos.map((a) => [`${String(a.fecha).slice(11, 16)} ${a.usuario}`, `${money(a.contado)} (dif. ${money(a.diferencia)})`]) });
     if (r.gaveta?.length) secciones.push({ titulo: 'Aperturas de gaveta', filas: r.gaveta.map((g) => [`${g.origen === 'venta' ? 'Con venta' : 'Manual'} · ${g.motivo}`, String(g.veces)]) });
@@ -686,6 +705,9 @@
   function elegirMotivo(id) {
     state.motivo = id;
     state.consumo = [];
+    // Un identificador por formulario: si se vuelve a enviar (no respondió a
+    // tiempo, doble clic), el servidor lo reconoce y no registra dos veces.
+    state.gavetaUuid = uuid();
     document.querySelectorAll('.cs-motivo').forEach((b) => b.classList.toggle('selected', b.dataset.motivo === id));
     const form = document.getElementById('cs-motivo-form');
     const ok = document.getElementById('cs-gaveta-ok');
@@ -743,17 +765,23 @@
       : '<p class="text-muted">Agrega los productos consumidos.</p>';
   }
 
-  async function confirmarGaveta() {
+  async function confirmarGaveta(confirmarRepetido = false) {
     const motivo = state.motivo;
-    if (!motivo) return;
+    if (!motivo || state.enviandoGaveta) return;
     const val = (id) => String(document.getElementById(id)?.value || '').trim();
-    const payload = { eventUuid: uuid(), motivo, descripcion: val('cs-g-desc'), responsable: val('cs-g-resp'), evidencia: val('cs-g-evid'),
+    if (!state.gavetaUuid) state.gavetaUuid = uuid();
+    const payload = { eventUuid: state.gavetaUuid, motivo, descripcion: val('cs-g-desc'), responsable: val('cs-g-resp'), evidencia: val('cs-g-evid'),
       destino: val('cs-g-destino'), monto: val('cs-g-monto') || undefined, entrada: val('cs-g-entrada') || undefined, salida: val('cs-g-salida') || undefined,
-      items: motivo === 'consumo' ? state.consumo.map((x) => ({ productId: x.productId, qty: x.qty })) : undefined, ...estructura(), ...actorPayload() };
+      items: motivo === 'consumo' ? state.consumo.map((x) => ({ productId: x.productId, qty: x.qty })) : undefined,
+      ...(confirmarRepetido ? { confirmarRepetido: true } : {}), ...estructura(), ...actorPayload() };
     const ok = document.getElementById('cs-gaveta-ok');
     if (ok) ok.disabled = true;
+    state.enviandoGaveta = true;
     try {
       const evento = await api.request('/api/caja/gaveta', { method: 'POST', body: JSON.stringify(payload) });
+      // El identificador se queda hasta elegir otro motivo: si algo falla
+      // después y se vuelve a tocar el botón, el servidor no lo repite.
+      state.enviandoGaveta = false;
       if (evento.abrirGaveta) await abrirGavetaFisica(evento.eventUuid);
       if (evento.movimientoCajaId && typeof refreshCajaData === 'function') refreshCajaData();
       if (motivo === 'consumo' && typeof loadInventoryTable === 'function') loadInventoryTable();
@@ -762,8 +790,16 @@
       toast(`${MOTIVOS_UI.find((m) => m.id === motivo)?.titulo || 'Apertura'} registrado.`, 'success');
       if (motivo === 'retiro') mostrarComprobanteRetiro(evento);
     } catch (e) {
-      toast(e.message, 'error');
+      state.enviandoGaveta = false;
       if (ok) ok.disabled = false;
+      if (e.code !== 'GASTO_REPETIDO' || confirmarRepetido) { toast(e.message, 'error'); return; }
+      // Ya hay un gasto igual en el turno: se pregunta. Enter = "No".
+      const otro = typeof showDeleteConfirm === 'function' && await showDeleteConfirm(
+        `En este turno ya está registrado un gasto <strong>«${esc(val('cs-g-desc'))}»</strong> de <strong>${esc(money(val('cs-g-monto')))}</strong>.<br><br>¿Es otro gasto distinto?`,
+        { confirmText: 'Sí, registrar otro', cancelText: 'No, ya está registrado', enterCancela: true });
+      if (otro) { await confirmarGaveta(true); return; }
+      cerrarModal();
+      toast('No se registró otra vez.', 'info');
     }
   }
 

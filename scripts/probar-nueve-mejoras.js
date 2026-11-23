@@ -125,6 +125,12 @@ async function probarCaja(ctx) {
   assert.equal(sinDestino.status, 400, JSON.stringify(sinDestino.body));
   const gasto = await api('POST', '/api/caja/gaveta', { eventUuid: randomUUID(), motivo: 'gasto', monto: 30, descripcion: 'Compra de hielo', ...estructura });
   assert.equal(gasto.status, 201, JSON.stringify(gasto.body));
+  // El mismo gasto otra vez en el turno no se registra sin confirmar, por
+  // ninguna de las dos vías (el esperado de abajo sigue en 1055).
+  const gastoOtraVez = await api('POST', '/api/caja/gaveta', { eventUuid: randomUUID(), motivo: 'gasto', monto: 30, descripcion: ' compra de  hielo', ...estructura });
+  assert.equal(gastoOtraVez.status, 409, JSON.stringify(gastoOtraVez.body)); assert.equal(gastoOtraVez.body.code, 'GASTO_REPETIDO');
+  const egresoOtraVez = await api('POST', '/api/cash/expense', { tipo: 'gasto', monto: 30, obs: 'Compra de hielo', ...estructura });
+  assert.equal(egresoOtraVez.status, 409, JSON.stringify(egresoOtraVez.body)); assert.equal(egresoOtraVez.body.code, 'GASTO_REPETIDO');
   const antesConsumo = (await api('GET', '/api/products')).body;
   const stockAntes = Number((Array.isArray(antesConsumo) ? antesConsumo : antesConsumo.products || []).find((p) => p.id === prod.id)?.stock);
   const consumo = await api('POST', '/api/caja/gaveta', { eventUuid: randomUUID(), motivo: 'consumo', items: [{ productId: prod.id, qty: 2 }], responsable: 'Cocina', descripcion: 'almuerzo', ...estructura });
@@ -199,6 +205,31 @@ async function probarCaja(ctx) {
   const reabrir = await api('POST', '/api/cash/open', { monto: 500, exchangeRate: 60, ...estructura });
   assert.equal(reabrir.status, 201, JSON.stringify(reabrir.body));
   await api('PUT', '/api/caja/config', { cierreSeguro: false });
+
+  // Gasto repetido (2026-11-23, un cuadre con 14 gastos "platanos" iguales): el
+  // del turno anterior no cuenta; en el mismo turno se confirma por las dos
+  // vías, y reenviar el mismo formulario no lo registra dos veces.
+  const esperadoAntes = await esperadoActual(ctx);
+  const hielo = { motivo: 'gasto', monto: 30, descripcion: 'Compra de hielo', ...estructura };
+  const g1 = await api('POST', '/api/caja/gaveta', { eventUuid: randomUUID(), ...hielo });
+  assert.equal(g1.status, 201, `turno nuevo: ${JSON.stringify(g1.body)}`);
+  const g2Uuid = randomUUID();
+  const g2 = await api('POST', '/api/caja/gaveta', { eventUuid: g2Uuid, ...hielo });
+  assert.equal(g2.status, 409, JSON.stringify(g2.body)); assert.equal(g2.body.code, 'GASTO_REPETIDO');
+  const g2Confirmado = await api('POST', '/api/caja/gaveta', { eventUuid: g2Uuid, ...hielo, confirmarRepetido: true });
+  assert.equal(g2Confirmado.status, 201, JSON.stringify(g2Confirmado.body));
+  const g2Reenviado = await api('POST', '/api/caja/gaveta', { eventUuid: g2Uuid, ...hielo, confirmarRepetido: true });
+  assert.equal(g2Reenviado.status, 200); assert.equal(g2Reenviado.body.repetido, true);
+  const e1 = await api('POST', '/api/cash/expense', { tipo: 'gasto', monto: 30, obs: 'Compra de hielo', ...estructura });
+  assert.equal(e1.status, 409, JSON.stringify(e1.body)); assert.match(e1.body.error, /ya se registraron 2 gastos "Compra de hielo" de 30\.00/);
+  const e1Confirmado = await api('POST', '/api/cash/expense', { tipo: 'gasto', monto: 30, obs: 'Compra de hielo', confirmarRepetido: true, ...estructura });
+  assert.equal(e1Confirmado.status, 201, JSON.stringify(e1Confirmado.body));
+  for (let i = 0; i < 2; i += 1) {
+    const retiroIgual = await api('POST', '/api/cash/expense', { tipo: 'retiro_efectivo', monto: 20, obs: 'Caja fuerte', ...estructura });
+    assert.equal(retiroIgual.status, 201, `los retiros iguales no se preguntan: ${JSON.stringify(retiroIgual.body)}`);
+  }
+  assert.equal(await esperadoActual(ctx), r2(esperadoAntes - 30 * 3 - 20 * 2), 'cada gasto se resta una sola vez');
+  ok('gasto repetido: se confirma en el mismo turno (gaveta y Caja → Gastos), el reenvío no duplica y los retiros no se preguntan');
 }
 
 // Línea con ITBIS como la arma el carrito: subtotal ya con el descuento de la

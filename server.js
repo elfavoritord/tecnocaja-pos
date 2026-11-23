@@ -16720,13 +16720,18 @@ app.post('/api/cash/expense', async (req, res) => {
   if (expenseType === 'pago_suplidor') await ensureSupplierPaymentsTable().catch(() => {});
 
   const result = await withTransaction(async (conn) => {
-    const sessions = await conn.query('SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1', [structure.cashRegisterId]);
+    // Con el turno bloqueado, dos egresos a la vez no se saltan la revisión de abajo.
+    const sessions = await conn.query(`SELECT * FROM cash_sessions WHERE status = "open" AND cash_register_id = ? ORDER BY id DESC LIMIT 1${isMysqlDeployment() ? ' FOR UPDATE' : ''}`, [structure.cashRegisterId]);
     const session = sessions[0];
     if (!session) {
       const error = new Error('No hay una caja abierta para registrar egresos.');
       error.statusCode = 400;
       throw error;
     }
+    // Un gasto igual a otro del mismo turno se confirma antes (409 GASTO_REPETIDO).
+    await require('./server/services/caja-gasto-repetido').exigirConfirmacionSiRepetido((sql, params) => conn.query(sql, params), {
+      sessionId: session.id, tipo: allowedTypes[expenseType], monto: amount, notas: notes, confirmado: req.body?.confirmarRepetido === true,
+    });
 
     const cashAmount = Number(session.current_amount || 0);
     if (cashAmount < amount) {
