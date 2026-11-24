@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const { createRouter } = require('./router');
 const { createRespaldosRouter } = require('./respaldos');
 const { createPosRouter } = require('./pos-installations');
+const { createContadoresRouter } = require('./contadores');
 
 /**
  * @param {object} [deps]  { db, now, limites, verificarIdToken, almacen, secretoRespaldos } —
@@ -20,7 +21,10 @@ function createApp(deps = {}) {
   // Solo API (el POS llama desde Node, no desde un navegador): sin CORS.
   app.use(helmet());
   app.use(createPosRouter({ db: backend.db, verificarIdToken: backend.verificarIdToken, now: deps.now,
-    gatewayFetch: deps.gatewayFetch, gatewayToken: deps.gatewayToken }));
+    gatewayFetch: deps.gatewayFetch, gatewayToken: deps.gatewayToken,
+    ...('posCredential' in deps ? { posCredential: deps.posCredential } : {}) }));
+  // Directorio de contadores para el asistente del POS (antes lo leía la PC con la llave).
+  app.use(createContadoresRouter({ db: backend.db, now: deps.now }));
   app.use(createRouter({
     db: backend.db, now: deps.now, limites: deps.limites, verificarIdToken: backend.verificarIdToken,
   }));

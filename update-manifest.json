@@ -1,12 +1,14 @@
 {
-  "version": "1.6.40",
-  "stableVersion": "1.6.40",
+  "version": "1.6.41",
+  "stableVersion": "1.6.41",
   "date": "23/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Licencia: si una PC mostraba \"licencia vencida\" aunque el negocio estaba activo en la nube, el administrador ahora la reconecta al iniciar sesión y entra con su licencia activa."
+    "Nube: las PC instaladas sin la llave de Firebase vuelven a subir sus datos (app de reportes, Centro de Control, catálogo, tienda). Al quedar vinculada, la PC recibe de la nube una credencial limitada y la guarda cifrada.",
+    "Asistente: vuelven a aparecer los contadores al buscar \"Cliente de un contador\", y el contador elegido queda guardado en la licencia.",
+    "Licencia: si la nube rechaza revalidar una prueba vencida, el mensaje dice el motivo (por ejemplo, el correo del dueño sin verificar o el límite de equipos)."
   ]
 }

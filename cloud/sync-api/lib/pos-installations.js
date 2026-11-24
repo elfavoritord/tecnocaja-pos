@@ -14,8 +14,24 @@ const serializable = value => {
   return value;
 };
 
-function createPosRouter({ db, verificarIdToken, now = () => new Date(), gatewayFetch = fetch, gatewayToken = process.env.GATEWAY_ADMIN_TOKEN }) {
+// Credencial de datos para las PC vinculadas: una cuenta de servicio que solo
+// tiene Firestore (sin Firebase Auth). Llega por Secret Manager y nunca va en el
+// instalador público. Sin ella, `credential` responde 503 y la PC sigue igual.
+function leerCredencialPos(valor) {
+  try {
+    const c = typeof valor === 'string' ? (valor.trim() ? JSON.parse(valor) : null) : valor;
+    if (!c || c.type !== 'service_account' || !c.client_email || !c.private_key || !c.project_id) return null;
+    return {
+      type: c.type, project_id: c.project_id, private_key_id: c.private_key_id, private_key: c.private_key,
+      client_email: c.client_email, client_id: c.client_id, token_uri: c.token_uri,
+    };
+  } catch (_) { return null; }
+}
+
+function createPosRouter({ db, verificarIdToken, now = () => new Date(), gatewayFetch = fetch, gatewayToken = process.env.GATEWAY_ADMIN_TOKEN,
+  posCredential = process.env.POS_FIRESTORE_CREDENTIAL }) {
   const router = express.Router();
+  const credencialPos = leerCredencialPos(posCredential);
   const limit = createRateLimiter({ windowMs: 15 * 60000, max: 90, now: () => now().getTime() });
   router.use('/v1/pos', express.json({ limit: '160kb' }), (req, res, next) => {
     if (!limit(req.ip)) return res.status(429).json({ error: 'Demasiados intentos. Espera unos minutos.' });
@@ -128,6 +144,30 @@ function createPosRouter({ db, verificarIdToken, now = () => new Date(), gateway
     return { license: view(id, (await ref.get()).data()) };
   });
   wrap('license', async p => { const { id, lic } = await authorized(p, true); return { license: view(id, lic) }; });
+  // Solo a una PC vinculada y no liberada: con esto sube sus datos (app de
+  // reportes, Centro de Control, catálogo). La licencia sigue por `license`.
+  wrap('credential', async p => {
+    const { id } = await authorized(p);
+    if (!credencialPos) throw fail('La nube todavía no entrega la credencial de datos.', 503, 'CREDENCIAL_NO_CONFIGURADA');
+    return { licenseId: id, serviceAccount: credencialPos };
+  });
+  // Contador elegido en el asistente o en Configuración (sin contadorId = sin contador).
+  wrap('contador', async p => {
+    const { id } = await authorized(p);
+    const ref = db.collection('licencias').doc(id);
+    const contadorId = clean(p.data.contadorId, 120);
+    if (!contadorId) {
+      await ref.set({ contadorId: null, contadorNombre: null, businessStructureMode: 'independent' }, { merge: true });
+      return { ok: true, contadorId: null, contadorNombre: null };
+    }
+    const snap = await db.collection('contadores').doc(contadorId).get();
+    if (!snap.exists) throw fail('Ese contador no está registrado en Tecno Caja.', 404, 'CONTADOR_NO_EXISTE');
+    const contador = snap.data() || {};
+    if (String(contador.estado || '').toLowerCase() === 'suspendido') throw fail('Ese contador está suspendido.', 409, 'CONTADOR_SUSPENDIDO');
+    const contadorNombre = clean(contador.nombre_firma);
+    await ref.set({ contadorId, contadorNombre, businessStructureMode: 'accountant_client' }, { merge: true });
+    return { ok: true, contadorId, contadorNombre };
+  });
   const gateway = async (route, method, body) => {
     if (!gatewayToken) throw fail('El receptor automático no está configurado en el servidor.', 503, 'RECEPTOR_NO_CONFIGURADO');
     const r = await gatewayFetch(`https://tecno-caja-ecf-gateway-1052855422372.us-east1.run.app${route}`, { method, headers: { Authorization: `Bearer ${gatewayToken}`, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60000), redirect: 'error' });

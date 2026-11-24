@@ -90,7 +90,16 @@ function createPosCloudConnection({ directory, fetchImpl = fetch, now = () => Da
     if (!registering) registering = registerOnce(options).finally(() => { registering = null; });
     return registering;
   }
-  return { selectBusiness, connected: () => Boolean(read()?.licenseId), request, register };
+  // Directorio de contadores (asistente): público, no necesita que la PC esté vinculada.
+  async function buscarContadores(q) {
+    const r = await fetchImpl(`${API}/v1/contadores/buscar?q=${encodeURIComponent(String(q || '').slice(0, 80))}`, {
+      signal: AbortSignal.timeout(10000), redirect: 'error',
+    });
+    const result = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(result.error || 'No se pudo buscar contadores en la nube.'), { statusCode: r.status });
+    return Array.isArray(result.contadores) ? result.contadores : [];
+  }
+  return { selectBusiness, connected: () => Boolean(read()?.licenseId), request, register, buscarContadores };
 }
 
 module.exports = { createPosCloudConnection };

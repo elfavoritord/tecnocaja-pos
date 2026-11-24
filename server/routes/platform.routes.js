@@ -30,9 +30,21 @@ function getFirestoreDb() {
 // identificador de un flujo distinto (registrar-negocio) y puede no
 // coincidir. Se prioriza TECNO_CAJA_LICENSE_UID y solo se cae a
 // cloud_business_id si esa variable no está configurada.
-async function _syncContadorToFirestore(query, contadorId, contadorNombre) {
+async function _syncContadorToFirestore(query, contadorId, contadorNombre, nube = null) {
   const db = getFirestoreDb();
-  if (!db) return { skipped: true, reason: 'getFirestoreDb() devolvió null — Firebase Admin no disponible en este proceso.' };
+  if (!db) {
+    // PC sin acceso directo a Firestore (sin llave): el contador se guarda en la
+    // licencia por la Sync API, que verifica que el contador exista.
+    if (nube && typeof nube.asignarContador === 'function') {
+      try {
+        const r = await nube.asignarContador(contadorId ? String(contadorId) : null);
+        return { skipped: false, via: 'nube', wrote: { contadorId: r?.contadorId ?? null, contadorNombre: r?.contadorNombre ?? null } };
+      } catch (e) {
+        return { skipped: true, reason: `No se pudo guardar el contador en la nube: ${e.message}` };
+      }
+    }
+    return { skipped: true, reason: 'getFirestoreDb() devolvió null — Firebase Admin no disponible en este proceso.' };
+  }
 
   const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
   let bizId = licenseUid;
@@ -79,7 +91,9 @@ async function _syncContadorToFirestore(query, contadorId, contadorNombre) {
   return { skipped: false, bizId, bizIdSource, docPath, wrote: { contadorId: null } };
 }
 
-function createPlatformRouter({ query }) {
+// nube (opcional): { buscarContadores(q), asignarContador(contadorId|null) } por la
+// Sync API, para las PC que no tienen acceso directo a Firestore.
+function createPlatformRouter({ query, nube = null }) {
   const router = express.Router();
 
   // ── Buscar contadores ──────────────────────────────────────────────────────
@@ -124,6 +138,25 @@ function createPlatformRouter({ query }) {
         return res.json(results);
       } catch (e) {
         console.error('[platform] Firestore buscar contadores ERROR:', e.message);
+      }
+    }
+
+    // ── Sin Firestore en esta PC: el directorio de la nube (Sync API) ──────
+    // El asistente corre antes de vincular la PC, así que aquí no hay llave.
+    if (!db && nube && typeof nube.buscarContadores === 'function') {
+      try {
+        const lista = await nube.buscarContadores(q);
+        return res.json(lista.slice(0, 20).map((c) => ({
+          id:           String(c.id || ''),
+          nombre_firma: c.nombre_firma || '',
+          responsable:  c.responsable  || '',
+          rnc:          c.rnc          || '',
+          telefono:     c.telefono     || '',
+          correo:       c.correo       || '',
+          logo_url:     c.logo_url     || null,
+        })).filter((c) => c.id && c.nombre_firma));
+      } catch (e) {
+        console.warn('[platform/contadores/buscar] La nube no respondió:', e.message);
       }
     }
 
@@ -221,7 +254,7 @@ function createPlatformRouter({ query }) {
         // Usa _syncContadorToFirestore (resuelve el doc por TECNO_CAJA_LICENSE_UID,
         // no por nombre de negocio) para no arriesgarse a escribir en el doc de
         // otro negocio con un nombre igual o parecido.
-        await _syncContadorToFirestore(query, contador_id, contNombre || '').catch(e => {
+        await _syncContadorToFirestore(query, contador_id, contNombre || '', nube).catch(e => {
           console.warn('[platform] No se pudo parchar licencia Firestore:', e.message);
         });
       } else {
@@ -361,7 +394,7 @@ function createPlatformRouter({ query }) {
       // aunque Firestore nunca se hubiera actualizado.
       let syncWarning = null;
       try {
-        const r = await _syncContadorToFirestore(query, contador_id, nombre_firma || '');
+        const r = await _syncContadorToFirestore(query, contador_id, nombre_firma || '', nube);
         if (r && r.skipped) syncWarning = r.reason || 'Se guardó localmente pero no se sincronizó con la nube.';
       } catch (syncErr) {
         console.error('[platform] Error sincronizando contador a Firestore:', syncErr.message);
@@ -383,7 +416,7 @@ function createPlatformRouter({ query }) {
       // reporta cualquier error en vez de tragarlo en silencio.
       let syncWarning = null;
       try {
-        const r = await _syncContadorToFirestore(query, null, null);
+        const r = await _syncContadorToFirestore(query, null, null, nube);
         if (r && r.skipped) syncWarning = r.reason || 'Se desvinculó localmente pero no se sincronizó con la nube.';
       } catch (syncErr) {
         console.error('[platform] Error desvinculando contador en Firestore:', syncErr.message);

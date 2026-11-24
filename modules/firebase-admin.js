@@ -80,6 +80,55 @@ function hasAdminCredentialConfig() {
   );
 }
 
+// Credencial de datos que la nube (Sync API, `credential`) entrega a una PC ya
+// vinculada: una cuenta de servicio que solo tiene Firestore, sin Firebase Auth.
+// Se guarda cifrada con la huella de esta PC, junto a su identidad de la nube.
+// No cuenta como llave de administrador: la licencia, la identidad y el registro
+// del negocio siguen por la Sync API (`adminEnabled` = solo la llave completa).
+const CREDENCIAL_ENTREGADA_PROPOSITO = 'pos-firestore-credential';
+
+function rutaCredencialEntregada() {
+  const base = String(process.env.TECNO_CAJA_USER_DATA || '').trim() || process.cwd();
+  return path.join(base, 'config', 'pos-cloud', 'firestore-credencial.json');
+}
+
+function tieneCredencialEntregada() {
+  try { return fs.existsSync(rutaCredencialEntregada()); } catch (_) { return false; }
+}
+
+function leerCredencialEntregada() {
+  try {
+    const archivo = rutaCredencialEntregada();
+    if (!fs.existsSync(archivo)) return null;
+    const { decryptJsonEnvelope } = require('../server/security/local-machine-crypto');
+    const datos = decryptJsonEnvelope(fs.readFileSync(archivo, 'utf8'), { purpose: CREDENCIAL_ENTREGADA_PROPOSITO });
+    const cuenta = datos && datos.serviceAccount;
+    return cuenta && cuenta.client_email && cuenta.private_key ? cuenta : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function guardarCredencialEntregada(serviceAccount) {
+  if (!serviceAccount || !serviceAccount.client_email || !serviceAccount.private_key) {
+    throw new Error('La credencial que entregó la nube no es válida.');
+  }
+  const archivo = rutaCredencialEntregada();
+  fs.mkdirSync(path.dirname(archivo), { recursive: true });
+  const { encryptJsonEnvelope } = require('../server/security/local-machine-crypto');
+  const cifrado = encryptJsonEnvelope({ serviceAccount, savedAt: new Date().toISOString() }, { purpose: CREDENCIAL_ENTREGADA_PROPOSITO });
+  const temporal = `${archivo}.tmp`;
+  fs.writeFileSync(temporal, typeof cifrado === 'string' ? cifrado : JSON.stringify(cifrado), { mode: 0o600 });
+  fs.renameSync(temporal, archivo);
+  // Si todavía no había Firebase en este proceso, el próximo getFirestore() la usa.
+  if (!initializedApp) initError = null;
+}
+
+function borrarCredencialEntregada() {
+  try { fs.rmSync(rutaCredencialEntregada(), { force: true }); } catch (_) {}
+  if (!initializedApp) initError = null;
+}
+
 function canVerifyTokensWithoutAdmin() {
   return Boolean(getFirebaseProjectId());
 }
@@ -113,6 +162,14 @@ function getFirebaseApp() {
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
       initializedApp = firebaseAdminLib.initializeApp({
         credential: firebaseAdminLib.credential.applicationDefault(),
+      });
+      return initializedApp;
+    }
+
+    const entregada = leerCredencialEntregada();
+    if (entregada) {
+      initializedApp = firebaseAdminLib.initializeApp({
+        credential: firebaseAdminLib.credential.cert(entregada),
       });
       return initializedApp;
     }
@@ -1468,9 +1525,13 @@ async function purgePosBusinessFromFirebase(options = {}) {
 function getFirebaseConfigStatus() {
   const authEnabled = canVerifyTokensWithoutAdmin();
   const adminEnabled = hasAdminCredentialConfig();
+  const credencialEntregada = !adminEnabled && tieneCredencialEntregada();
   const status = {
     enabled: authEnabled,
     adminEnabled,
+    // Subir datos a Firestore: con la llave completa o con la credencial de la nube.
+    firestoreEnabled: adminEnabled || credencialEntregada,
+    credencialEntregada,
     collection: getPosClientsCollectionName(),
   };
 
@@ -1495,6 +1556,9 @@ function getFirebaseConfigStatus() {
 }
 
 module.exports = {
+  borrarCredencialEntregada,
+  guardarCredencialEntregada,
+  tieneCredencialEntregada,
   assertNoFirebaseIdentityConflicts,
   buildPosBusinessKey,
   buildPosClientDocId,

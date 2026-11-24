@@ -39,6 +39,18 @@ Respuestas 403 con `code`: `EQUIPO_REEMPLAZADO`, `EQUIPO_REVOCADO`, `SUCURSAL_IN
 
 Reglas de eventos y cambios: `vendor/multisucursal/sincronizacion-central.js`, copia de `server/multisucursal/central/sincronizacion-central.js`. Ver `docs/MULTISUCURSAL-FASES-4-8.md`.
 
+## Datos de la PC sin la llave completa (2026-11-23, rev 00016)
+
+Desde la 1.6.36 el instalador no trae la llave de administrador de Firebase. La PC principal ya vinculada (instalación firmada con su clave ed25519, ver `lib/pos-installations.js`) pide aquí lo que necesita para subir sus datos:
+
+| Método | Ruta | Para qué |
+|---|---|---|
+| POST | `/v1/pos/credential` | Firmado por la PC vinculada y no liberada → cuenta de servicio `tecno-caja-pos-pc` (**solo Cloud Datastore User**, sin Firebase Auth). El POS la guarda cifrada en `config/pos-cloud/firestore-credencial.json` y la usa para Firestore (app de reportes, Centro de Control, catálogo, tienda); la licencia y la identidad siguen por esta API. 503 `CREDENCIAL_NO_CONFIGURADA` sin el secreto |
+| POST | `/v1/pos/contador` | Firmado → guarda `contadorId`/`contadorNombre` en la licencia (verifica que el contador exista y no esté suspendido; sin `contadorId` lo quita) |
+| GET | `/v1/contadores/buscar?q=` | **Pública** (el asistente corre antes de vincular la PC): nombre de la firma, responsable, RNC, teléfono, correo y logo `https`; sin suspendidos, máximo 20, 40 búsquedas por minuto por IP, lista en caché 60 s |
+
+La llave sale de Secret Manager: `pos-firestore-credential` → variable `POS_FIRESTORE_CREDENTIAL` (`--update-secrets=POS_FIRESTORE_CREDENTIAL=pos-firestore-credential:latest`; la cuenta de Compute del servicio tiene `secretAccessor` sobre ese secreto). Para cambiar la llave: crear otra de `tecno-caja-pos-pc`, `gcloud secrets versions add pos-firestore-credential --data-file=…`, volver a desplegar y borrar la vieja; cada PC la vuelve a pedir al abrir. Ojo: Firestore no deja limitar una cuenta de servicio a un negocio, así que esa llave lee y escribe los datos de todos (sin cuentas de usuario, sin Storage). Pruebas: `npx jest test/pos-datos`.
+
 ## Firestore
 
 | Colección | Contenido |

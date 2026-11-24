@@ -1690,6 +1690,65 @@ async function ensurePosCloudConnection(credentials = {}) {
   return cloud;
 }
 
+// PC sin la llave completa (instaladores 1.6.36+): la nube le entrega a la PC ya
+// vinculada una credencial que solo tiene Firestore, para subir sus datos (app de
+// reportes, Centro de Control, catálogo, contador). La licencia, la identidad y
+// el registro del negocio siguen por la Sync API. `renovar`: pedirla aunque ya
+// haya una guardada (al abrir), para que un cambio de llave en la nube llegue solo.
+let credencialFirestorePromise = null;
+async function asegurarCredencialFirestore({ renovar = false } = {}) {
+  const firebaseAdmin = require('./modules/firebase-admin');
+  if (getFirebaseConfigStatus().adminEnabled) return { ok: true, fuente: 'llave' };
+  if (!renovar && firebaseAdmin.tieneCredencialEntregada()) return { ok: true, fuente: 'guardada' };
+  if (getInternetMonitor().isKnownOffline()) return { ok: firebaseAdmin.tieneCredencialEntregada(), motivo: 'sin_internet' };
+  if (credencialFirestorePromise) return credencialFirestorePromise;
+  credencialFirestorePromise = (async () => {
+    try {
+      // Una PC de sucursal enlazada no es una instalación registrada: usa su token de sucursal.
+      if (await licenciaSucursal.empresaDeEstaPc().catch(() => null)) return { ok: false, motivo: 'sucursal' };
+      const cloud = await ensurePosCloudConnection();
+      const { serviceAccount } = await cloud.request('credential');
+      firebaseAdmin.guardarCredencialEntregada(serviceAccount);
+      getSyncService().tryInitFirebase();
+      return { ok: true, fuente: 'nube' };
+    } catch (error) {
+      // Equipo liberado o bloqueado desde el panel: tampoco sube datos.
+      if (error.code === 'EQUIPO_REVOCADO') firebaseAdmin.borrarCredencialEntregada();
+      if (error.code !== 'CLOUD_REGISTRATION_REQUIRED') {
+        console.warn('[nube] No se pudo obtener la credencial de datos:', error.message);
+      }
+      return { ok: firebaseAdmin.tieneCredencialEntregada(), motivo: error.code || error.message };
+    } finally {
+      credencialFirestorePromise = null;
+    }
+  })();
+  return credencialFirestorePromise;
+}
+
+// Lo que escucha Firestore en segundo plano (pedidos de la app de reportes, compras
+// del contador, NCF y productos pendientes). Cada uno no hace nada si ya corre.
+async function arrancarServiciosDeDatosEnLaNube(opciones = {}) {
+  await asegurarCredencialFirestore(opciones).catch(() => null);
+  const resultados = await Promise.allSettled([
+    startFirestoreNcfPendientesWatcher(),
+    startFirestoreProductosPendientesWatcher(),
+    Promise.resolve().then(() => (isMainTerminalConfig(getTerminalConfig()) ? colaComprasPortal.escuchar() : false)),
+    Promise.resolve().then(() => appReportes.escuchar()),
+  ]);
+  for (const r of resultados) {
+    if (r.status === 'rejected') console.warn('[nube] Servicio de datos no disponible:', r.reason?.message || r.reason);
+  }
+  return resultados;
+}
+
+// Contadores por la Sync API cuando esta PC no tiene acceso directo a Firestore
+// (server/routes/platform.routes.js). La búsqueda es pública (asistente); el
+// cambio de contador necesita la PC vinculada.
+const nubePlataforma = {
+  buscarContadores: (q) => require('./server/services/pos-cloud-runtime').getConnection().buscarContadores(q),
+  asignarContador: async (contadorId) => (await ensurePosCloudConnection()).request('contador', { contadorId: contadorId || '' }),
+};
+
 // Modo demostración: SOLO para el servidor de prueba de Emilio corriendo desde
 // el código fuente (TECNO_CAJA_DEMO=1). La licencia siempre deja entrar y no se
 // registra nada en la nube. Dentro del instalador (app.asar) se ignora siempre:
@@ -2716,7 +2775,7 @@ app.use('/api/combos-personalizados', createCombosPersonalizadosRouter({
 }));
 
 // Plataforma Multiempresa — solo rutas públicas del wizard (buscar contador)
-app.use('/api/platform', createPlatformRouter({ query }));
+app.use('/api/platform', createPlatformRouter({ query, nube: nubePlataforma }));
 
 // Panel SuperAdmin — solo accesible con role_code = 'superadmin'
 app.use('/api/superadmin', createSuperAdminRouter({ query, resolveRequestActorUser, createLocalPasswordHash }));
@@ -2826,7 +2885,7 @@ app.use('/api/purchases', comprasRouter);
 const colaComprasPortal = require('./server/services/compras/cola-portal').createColaComprasPortal({
   servicio: comprasRouter.servicio, query, writeAuditLog,
   getDb: () => {
-    if (!getFirebaseConfigStatus().adminEnabled) return null;
+    if (!getFirebaseConfigStatus().firestoreEnabled) return null;
     return require('./modules/firebase-admin').getFirestore();
   },
   getBranchId: async () => {
@@ -2884,7 +2943,7 @@ app.use('/api/clients', clientesCreditosRouter);
 // plano con los mismos permisos del POS. Ver server/services/app-reportes.
 const appReportes = (() => {
   const getDb = () => {
-    if (!getFirebaseConfigStatus().adminEnabled) return null;
+    if (!getFirebaseConfigStatus().firestoreEnabled) return null;
     return require('./modules/firebase-admin').getFirestore();
   };
   const getBusinessId = async () => reportsSync.getBusinessId(await getReportSyncConfig());
@@ -4473,7 +4532,7 @@ function normalizeMobileConnectionCode(value) {
 
 async function trySyncAllPosClientsToFirebase() {
   const status = getFirebaseConfigStatus();
-  if (!status.adminEnabled) return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
+  if (!status.firestoreEnabled) return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
   const [clientRows, config] = await Promise.all([
     query('SELECT * FROM clients ORDER BY id'),
     getConfig()
@@ -4574,7 +4633,7 @@ async function trySyncAllStaffToFirebaseAuth() {
 
 async function tryRepairPendingDeliveryOrdersInFirebase() {
   const status = getFirebaseConfigStatus();
-  if (!status.adminEnabled) {
+  if (!status.firestoreEnabled) {
     return { repaired: false, reason: status.adminReason || status.reason, collection: status.collection, count: 0 };
   }
 
@@ -4680,7 +4739,7 @@ async function trySyncStaffFirebaseAuthForLocalUser(userId) {
 
 async function trySyncPosClientToFirebaseById(clientId) {
   const status = getFirebaseConfigStatus();
-  if (!status.adminEnabled) return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
+  if (!status.firestoreEnabled) return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
   const [clientRows, config] = await Promise.all([
     query('SELECT * FROM clients WHERE id = ? LIMIT 1', [clientId]),
     getConfig()
@@ -4694,7 +4753,7 @@ async function trySyncPosClientToFirebaseById(clientId) {
 
 async function tryDeletePosClientSync(clientId) {
   const status = getFirebaseConfigStatus();
-  if (!status.adminEnabled) return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
+  if (!status.firestoreEnabled) return { synced: false, reason: status.adminReason || status.reason, collection: status.collection };
   await deletePosClientFromFirestore(clientId);
   return { synced: true, deleted: true, collection: status.collection };
 }
@@ -9641,6 +9700,7 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     && isGlobalAdministratorUser(user) && !getFirebaseConfigStatus().adminEnabled) {
     try {
       await ensurePosCloudConnection({ password });
+      arrancarServiciosDeDatosEnLaNube().catch(() => {});
       await secureLicenseService.resolveState({ force: true, allowRemote: true });
       setupStatus = await getSetupStatus();
     } catch (error) {
@@ -9651,13 +9711,21 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     // Prueba "vencida" según la copia local, pero esta PC nunca se conectó a la
     // nube (sin identidad en config/pos-cloud): el panel pudo haberla activado
     // y la PC jamás se entera. Con la clave del administrador se conecta y
-    // revalida; si falla, sigue el mensaje normal de prueba vencida.
+    // revalida; si la nube la rechaza, el mensaje dice por qué (correo del dueño
+    // sin verificar, límite de equipos...), no solo "la prueba terminó".
     try {
       await ensurePosCloudConnection({ password });
+      arrancarServiciosDeDatosEnLaNube().catch(() => {});
       await secureLicenseService.resolveState({ force: true, allowRemote: true });
       setupStatus = await getSetupStatus();
     } catch (error) {
       console.warn('[login] No se pudo conectar a la nube con la prueba vencida:', error.message);
+      if (!setupStatus.license.canEnter) {
+        return res.status(403).json({
+          error: `${getLicenseDeniedMessage(setupStatus.license)} No se pudo revalidar con la nube: ${error.message}`,
+          code: error.code || setupStatus.license.blockedCode || 'LICENSE_BLOCKED',
+        });
+      }
     }
   }
   if (!setupStatus.license.canEnter) {
@@ -9672,6 +9740,7 @@ app.post('/api/login', loginLimiter, async (req, res) => {
     && isGlobalAdministratorUser(user) && !getFirebaseConfigStatus().adminEnabled) {
     try {
       await ensurePosCloudConnection({ password });
+      arrancarServiciosDeDatosEnLaNube().catch(() => {});
       await secureLicenseService.resolveState({ force: true, allowRemote: true });
       setupStatus = await getSetupStatus();
     } catch (error) {
@@ -9985,6 +10054,10 @@ app.post('/api/login/google/link', async (req, res) => {
 // `extra`: campos propios de un caso (p. ej. `sucursalDe` en una PC de
 // sucursal, server/multisucursal/asistente-sucursal.js).
 async function registerPosLicenseInFirestore({ businessName, adminEmail, trialEndsAt, businessStructureMode, extra = {} }) {
+  // Solo con la llave completa. Con la credencial de datos que entrega la nube,
+  // la licencia la crea y la cuida la Sync API (dueño verificado, equipos): la PC
+  // no escribe su propia licencia.
+  if (!getFirebaseConfigStatus().adminEnabled) return null;
   try {
     const { getFirestore, buildPosBusinessKey } = require('./modules/firebase-admin');
     const db = getFirestore();
@@ -10423,6 +10496,7 @@ app.post('/api/setup/complete', async (req, res) => {
   if (!getFirebaseConfigStatus().adminEnabled) {
     try {
       await ensurePosCloudConnection({ password: adminPassword, idToken: setupGoogleIdToken || undefined });
+      arrancarServiciosDeDatosEnLaNube().catch(() => {});
       await secureLicenseService.resolveState({ force: true, allowRemote: true });
     } catch (error) {
       cloudRegistrationWarning = error.message;
@@ -10442,7 +10516,7 @@ app.post('/api/setup/complete', async (req, res) => {
       await query('UPDATE config SET accountant_id = ?, accountant_name = ? WHERE id = 1',
         [platformContadorId, platformContadorName || null]);
       const r = typeof syncContadorToFirestore === 'function'
-        ? await syncContadorToFirestore(query, platformContadorId, platformContadorName)
+        ? await syncContadorToFirestore(query, platformContadorId, platformContadorName, nubePlataforma)
         : { skipped: true, reason: 'helper no disponible' };
       if (r && r.skipped) {
         contadorSyncWarning = r.reason || 'El contador se guardó localmente pero no se sincronizó con la nube.';
@@ -12230,7 +12304,7 @@ app.post('/api/firebase-sync/clients', async (req, res) => {
   ensureNotCashier(req, 'gestionar_configuracion_global');
   const actor = getActor(req);
   const status = getFirebaseConfigStatus();
-  if (!status.adminEnabled) {
+  if (!status.firestoreEnabled) {
     return res.status(503).json({
       error: status.adminReason || status.reason || 'Firebase Admin no esta configurado.',
       collection: status.collection
@@ -12956,12 +13030,17 @@ app.post('/api/system/reset', async (req, res) => {
     // sync escribía bajo un ID derivado del nombre del negocio, pero el
     // borrado apuntaba al UID legacy: buscaba y borraba el documento
     // equivocado, dejando intacta toda la data real en Firebase.
-    firebaseSummary = await purgePosBusinessFromFirebase({
-      businessName: config?.nombre || 'Tecno Caja',
-      businessId: getReportsBusinessId(config),
-      licenseUid: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim() || null,
-      authUids: userRows.map((row) => row.firebase_uid).filter(Boolean),
-    });
+    // Borrar en la nube (licencia, usuarios, datos) solo con la llave completa: la
+    // credencial de datos que entrega la nube a una PC de cliente no debe poder
+    // borrar su licencia. Lo local se limpia igual.
+    firebaseSummary = getFirebaseConfigStatus().adminEnabled
+      ? await purgePosBusinessFromFirebase({
+        businessName: config?.nombre || 'Tecno Caja',
+        businessId: getReportsBusinessId(config),
+        licenseUid: String(process.env.TECNO_CAJA_LICENSE_UID || '').trim() || null,
+        authUids: userRows.map((row) => row.firebase_uid).filter(Boolean),
+      })
+      : { skipped: true, reason: 'Esta PC no tiene la llave de administrador: la nube no se borra desde aquí.' };
     persistRuntimeEnvValues({
       TECNO_CAJA_LICENSE_UID: '',
       TECNO_CAJA_BUSINESS_ID: ''
@@ -12986,6 +13065,8 @@ app.post('/api/system/reset', async (req, res) => {
         console.warn('[factory-reset] No se pudo liberar este equipo en Firebase:', release.reason);
       }
     }
+    // La credencial de datos se vuelve a pedir cuando la PC quede vinculada otra vez.
+    require('./modules/firebase-admin').borrarCredencialEntregada();
     persistRuntimeEnvValues({ TECNO_CAJA_LICENSE_UID: '', TECNO_CAJA_BUSINESS_ID: '' });
     removeTerminalConfigFiles();
   }
@@ -21270,10 +21351,8 @@ function startLicenseServicesInBackground() {
   licenseStartupPromise = Promise.allSettled([
     syncRemoteLicenseToLocalConfig({ force: true }),
     ensureLicenseBackgroundSync(),
-    startFirestoreNcfPendientesWatcher(),
-    startFirestoreProductosPendientesWatcher(),
-    Promise.resolve().then(() => (isMainTerminalConfig(getTerminalConfig()) ? colaComprasPortal.escuchar() : false)),
-    Promise.resolve().then(() => appReportes.escuchar()),
+    // Primero la credencial de datos (PC sin llave), después lo que escucha Firestore.
+    arrancarServiciosDeDatosEnLaNube({ renovar: true }),
   ]).then((results) => {
     for (const result of results) {
       if (result.status === 'rejected') {
@@ -21722,7 +21801,7 @@ async function startFirestoreLicenseWatcher() {
 // como red de respaldo si este listener nunca llega a conectar.
 async function startFirestoreNcfPendientesWatcher() {
   const firebaseStatus = getFirebaseConfigStatus();
-  if (!firebaseStatus.adminEnabled) return false;
+  if (!firebaseStatus.firestoreEnabled) return false;
   if (ncfPendientesWatcherUnsubscribe) return true;
 
   const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
@@ -21758,7 +21837,7 @@ async function startFirestoreNcfPendientesWatcher() {
 // venta/apertura/cierre de caja del cliente.
 async function startFirestoreProductosPendientesWatcher() {
   const firebaseStatus = getFirebaseConfigStatus();
-  if (!firebaseStatus.adminEnabled) return false;
+  if (!firebaseStatus.firestoreEnabled) return false;
   if (productosPendientesWatcherUnsubscribe) return true;
 
   const licenseUid = String(process.env.TECNO_CAJA_LICENSE_UID || '').trim();
