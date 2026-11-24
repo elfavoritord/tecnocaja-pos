@@ -120,7 +120,8 @@
 #module-ventas .search-dropdown {
   top: calc(100% + 4px);
   z-index: 100;
-  max-height: min(420px, 60vh);
+  /* Más alto: salen hasta 50 en cuadros (js/buscador-productos.js). */
+  max-height: min(720px, calc(100vh - 190px));
   border: var(--tc-border-w) solid var(--tc-border);
   border-radius: var(--tc-radius-panel);
   background: var(--tc-surface);
@@ -191,6 +192,121 @@
 #module-ventas .search-empty {
   padding: var(--tc-space-4);
   color: var(--tc-text-2);
+}
+
+/* Resultados en cuadros, como el catálogo (Emilio, 2026-11-24): 6 a 8 por
+   fila según el ancho. _doSearchProduct en js/ventas.js. */
+#module-ventas .search-dropdown.search-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(128px, 100%), 1fr));
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: var(--tc-space-2);
+  padding: var(--tc-space-2);
+}
+
+#module-ventas .search-dropdown.search-grid .search-empty {
+  grid-column: 1 / -1;
+}
+
+#module-ventas .search-dropdown.search-grid .search-note {
+  grid-column: 1 / -1;
+  border: none;
+  padding: 2px 4px;
+}
+
+#module-ventas .search-dropdown .search-card {
+  display: grid;
+  grid-template-rows: 88px auto;
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  border: var(--tc-border-w) solid var(--tc-border-soft);
+  border-radius: var(--tc-radius-panel);
+  background: var(--tc-surface);
+  cursor: pointer;
+}
+
+#module-ventas .search-dropdown .search-card.is-low { border-color: var(--tc-warning-border); }
+#module-ventas .search-dropdown .search-card.is-out { border-color: var(--tc-danger-border); }
+
+#module-ventas .search-dropdown .search-card:hover {
+  border-color: var(--tc-select-border);
+  background: var(--tc-surface);
+  box-shadow: none;
+}
+
+#module-ventas .search-dropdown .search-card.selected {
+  border-color: var(--tc-primary);
+  background: var(--tc-select-bg);
+  box-shadow: inset 0 0 0 1px var(--tc-primary);
+}
+
+#module-ventas .search-card-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 88px;
+  padding: var(--tc-space-2);
+}
+
+#module-ventas .search-card-img {
+  width: 100%;
+  height: 100%;
+  max-width: 68px;
+  max-height: 68px;
+  object-fit: contain;
+  border-radius: var(--tc-radius-btn);
+}
+
+#module-ventas .search-card-body {
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+  align-content: start;
+  padding: var(--tc-space-2) var(--tc-space-2) var(--tc-space-3);
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  text-align: center;
+}
+
+#module-ventas .search-card .sri-name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 2.5em;
+  font-size: var(--tc-fs-sm);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+#module-ventas .search-card .sri-price {
+  font-size: var(--tc-fs-md);
+  font-weight: var(--tc-weight-bold);
+  white-space: nowrap;
+}
+
+#module-ventas .search-card .sri-stock {
+  font-size: var(--tc-fs-xs);
+}
+
+#module-ventas .search-card .sri-stock.is-low { color: var(--tc-warning-text); }
+#module-ventas .search-card .sri-stock.is-out { color: var(--tc-danger-text); }
+
+/* "Estos se parecen" y "Se ven 50 de 120" (js/buscador-productos.js) */
+#module-ventas .search-note {
+  padding: var(--tc-space-2) var(--tc-space-3);
+  border-bottom: var(--tc-border-w) solid var(--tc-border-soft);
+  color: var(--tc-text-2);
+  font-size: var(--tc-fs-sm);
+}
+
+#module-ventas .search-note-more {
+  border-top: var(--tc-border-w) solid var(--tc-border-soft);
+  border-bottom: none;
+  text-align: center;
 }
 
 /* ── Pedido | Catálogo (solo con la vista de catálogo activa) ─────────── */

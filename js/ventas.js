@@ -2297,34 +2297,25 @@ function toggleSalesQuickMenu() {
 }
 
 function getSalesCatalogProducts() {
-  const query = String(document.getElementById('product-search')?.value || '').toLowerCase().trim();
+  const query = String(document.getElementById('product-search')?.value || '').trim();
   const category = String(document.getElementById('sales-category-filter')?.value || '');
   const stockFilter = String(document.getElementById('sales-stock-filter')?.value || 'todos');
 
-  return DB.productos.filter((product) => {
-    // Usar la misma función que el buscador → catálogo y búsqueda son coherentes.
+  // Usar la misma función que el buscador → catálogo y búsqueda son coherentes.
+  const pasaFiltros = (product) => {
     if (!isProductSellable(product)) return false;
-
-    const localizedName = typeof getLocalizedProductName === 'function' ? getLocalizedProductName(product) : product.nombre;
-    const localizedCategory = typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(product.categoria) : product.categoria;
-
-    const matchesQuery = !query || [
-      product.nombre,
-      localizedName,
-      product.codigo,
-      product.categoria,
-      localizedCategory,
-      product.marca || ''
-    ].some((value) => String(value).toLowerCase().includes(query));
     const matchesCategory = !category || product.categoria === category;
     const matchesStock = stockFilter === 'agotados'
       ? product.tracksStock !== false && Number(product.stock || 0) === 0
       : stockFilter === 'disponibles'
         ? product.tracksStock === false || Number(product.stock || 0) > 0
         : true;
+    return matchesCategory && matchesStock;
+  };
 
-    return matchesQuery && matchesCategory && matchesStock;
-  });
+  // Con algo escrito, el mismo buscador de la venta (del más parecido al menos).
+  if (query) return buscarProductosVenta(query, { filtro: pasaFiltros }).resultados;
+  return DB.productos.filter(pasaFiltros);
 }
 
 function refreshSalesCategoryFilter() {
@@ -2353,6 +2344,7 @@ function renderSalesCatalog(forceSplitViewEnabled = null) {
   applySalesQuickMenuState();
   refreshSalesCategoryFilter();
   window.Mesas?.renderCategorias?.();
+  prepararBuscadorVenta();
   const products = getSalesCatalogProducts();
   const totalEnDB = Array.isArray(DB.productos) ? DB.productos.length : 0;
   if (summary) {
@@ -5444,7 +5436,47 @@ function clearNcfRef() {
 let _searchDebounceTimer = null;
 function searchProduct(query) {
   clearTimeout(_searchDebounceTimer);
-  _searchDebounceTimer = setTimeout(() => _doSearchProduct(query), 120);
+  // Cualquier tecla quita la fila marcada: así un Enter que llega antes de que
+  // se vuelva a buscar (el escáner) nunca agrega lo marcado en la búsqueda anterior.
+  selectedSearchIdx = -1;
+  _searchDebounceTimer = setTimeout(() => {
+    // Lo que hay escrito ahora (si ya se agregó un producto, el campo quedó vacío).
+    const input = document.getElementById('product-search');
+    _doSearchProduct(input ? input.value : query);
+  }, 60);
+}
+
+// Buscador de la venta (js/buscador-productos.js): sin acentos, por palabras en
+// cualquier orden, del más parecido al menos y con los mal escritos al final.
+const SEARCH_DROPDOWN_LIMIT = 50;
+function opcionesBuscadorVenta() {
+  return {
+    nombreLocal: typeof getLocalizedProductName === 'function' ? getLocalizedProductName : null,
+    categoriaLocal: typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName : null,
+    idioma: DB.config?.idioma || '',
+  };
+}
+
+function buscarProductosVenta(query, { limite, filtro } = {}) {
+  return window.BuscadorProductos.buscar(DB.productos || [], query, {
+    ...opcionesBuscadorVenta(),
+    limite,
+    filtro: filtro || isProductSellable,
+  });
+}
+
+// Con el catálogo recién cargado (o en otro idioma), el índice del buscador se
+// arma cuando la caja está quieta: así la primera tecla no espera.
+let _buscadorVentaPreparado = null;
+function prepararBuscadorVenta() {
+  const productos = DB.productos;
+  if (!Array.isArray(productos) || !window.BuscadorProductos?.preparar) return;
+  const marca = `${productos.length}|${DB.config?.idioma || ''}`;
+  if (_buscadorVentaPreparado?.lista === productos && _buscadorVentaPreparado.marca === marca) return;
+  _buscadorVentaPreparado = { lista: productos, marca };
+  const correr = () => window.BuscadorProductos.preparar(productos, opcionesBuscadorVenta());
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(correr, { timeout: 2000 });
+  else setTimeout(correr, 200);
 }
 // Criterio único de "producto vendible": no inactivo ni eliminado (igual que catálogo visual).
 // Centralizar aquí evita que búsqueda y catálogo muestren resultados distintos.
@@ -5453,51 +5485,72 @@ function isProductSellable(p) {
   return st !== 'inactivo' && st !== 'eliminado';
 }
 
+// Devuelve la búsqueda (soloParecidos, sugerirPrimero…) para el Enter.
 function _doSearchProduct(query) {
-  const q = query.toLowerCase().trim();
+  const texto = String(query || '').trim();
   const dd = document.getElementById('search-dropdown');
-  if (!q) {
+  if (!texto) {
     dd.classList.add('hidden');
     searchResults = [];
+    selectedSearchIdx = -1;
     renderSalesCatalog();
-    return;
+    return null;
   }
 
-  searchResults = DB.productos.filter(p =>
-    isProductSellable(p) && (
-      p.nombre.toLowerCase().includes(q) ||
-      (typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre).toLowerCase().includes(q) ||
-      p.codigo.toLowerCase().includes(q) ||
-      (p.categoria || '').toLowerCase().includes(q) ||
-      (typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(p.categoria) : p.categoria || '').toLowerCase().includes(q) ||
-      (p.marca && p.marca.toLowerCase().includes(q))
-    )
-  ).slice(0, 8);
+  const busqueda = buscarProductosVenta(texto, { limite: SEARCH_DROPDOWN_LIMIT });
+  searchResults = busqueda.resultados;
+  // El que más se parece queda marcado (Enter lo agrega) solo si se escribió un
+  // nombre; con un código que no existe no se marca nada.
+  selectedSearchIdx = busqueda.sugerirPrimero ? 0 : -1;
 
   if (!searchResults.length) {
     dd.innerHTML = '<div class="search-empty">No se encontraron productos</div>';
     dd.classList.remove('hidden');
-    return;
+    return busqueda;
   }
 
-  dd.innerHTML = searchResults.map((p, i) => `
-    <div class="search-result-item ${i===selectedSearchIdx?'selected':''}" onclick="addProductById(${p.id})">
-      <div class="sri-main">
-        <img class="sri-img" src="${getSalesProductImage(p)}" alt="${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre}" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
-        <div>
-          <div class="sri-name">${typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre}</div>
-          <div class="sri-code">${p.codigo} · ${typeof getLocalizedCategoryName === 'function' ? getLocalizedCategoryName(p.categoria) : p.categoria}</div>
-          <div class="sri-meta">${escapeHtml(buildSaleItemMeta(p, p))}</div>
-        </div>
+  // En cuadros, como el catálogo (pedido de Emilio, 2026-11-24): 6 a 8 por
+  // fila según el ancho, con la foto, el nombre, el precio y la existencia.
+  const nombreDe = (p) => (typeof getLocalizedProductName === 'function' ? getLocalizedProductName(p) : p.nombre);
+  const aviso = busqueda.soloParecidos
+    ? `<div class="search-note">No hay uno escrito así. Estos se parecen:</div>`
+    : '';
+  const mas = busqueda.total > searchResults.length
+    ? `<div class="search-note search-note-more">Se ven ${searchResults.length} de ${busqueda.total}. Escribe otra palabra para encontrarlo más rápido.</div>`
+    : '';
+  const existenciaDe = (p) => {
+    if (isComboProduct(p)) return { texto: `Combo · Disp: ${getComboAvailableQty(p) ?? '—'}`, clase: '' };
+    if (p.tracksStock === false) return { texto: '', clase: '' };
+    if (Number(p.stock || 0) === 0) return { texto: p.branchId ? 'Agotado' : 'Sin stock aquí', clase: 'is-out' };
+    return { texto: `Disp: ${p.stock}`, clase: Number(p.stock) <= Number(p.stockMin || 0) ? 'is-low' : '' };
+  };
+  dd.classList.add('search-grid');
+  dd.innerHTML = aviso + searchResults.map((p, i) => {
+    const nombre = nombreDe(p);
+    const existencia = existenciaDe(p);
+    return `
+    <div class="search-result-item search-card ${existencia.clase} ${i===selectedSearchIdx?'selected':''}" onclick="addProductById(${p.id})" title="${escapeHtml(`${nombre} · ${p.codigo ?? ''}`)}">
+      <div class="search-card-media">
+        <img class="search-card-img" src="${escapeHtml(getSalesProductImage(p))}" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${PRODUCT_IMAGE_PLACEHOLDER}'">
       </div>
-      <div class="sri-side">
+      <div class="search-card-body">
+        <div class="sri-name">${escapeHtml(nombre)}</div>
         <div class="sri-price">${fmt(getProductCatalogPrice(p))}</div>
-        <div class="sri-stock ${p.tracksStock!==false&&p.stock===0?'text-danger':''}">${isComboProduct(p)?`Combo · Disp: ${getComboAvailableQty(p) ?? '—'}`:(p.tracksStock===false?'':(p.stock===0?(!p.branchId?'Sin stock en esta sucursal':'Agotado'):'Stock: '+p.stock))}</div>
+        ${existencia.texto ? `<div class="sri-stock ${existencia.clase}">${escapeHtml(existencia.texto)}</div>` : ''}
       </div>
-    </div>
-  `).join('');
+    </div>`;
+  }).join('') + mas;
   dd.classList.remove('hidden');
-  selectedSearchIdx = -1;
+  dd.scrollTop = 0;
+  return busqueda;
+}
+
+// Cuántos cuadros hay por fila en el buscador (para bajar y subir con las flechas).
+function searchGridColumns() {
+  const dd = document.getElementById('search-dropdown');
+  if (!dd || !dd.classList.contains('search-grid')) return 1;
+  const columnas = String(getComputedStyle(dd).gridTemplateColumns || '').trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, columnas || 1);
 }
 
 function handleSearchKey(e) {
@@ -5514,13 +5567,26 @@ function handleSearchKey(e) {
   // el Enter si el foco quedó aquí por cualquier otra razón.
   if (typeof isSalesOverlayOpen === 'function' && isSalesOverlayOpen()) return;
   const dd = document.getElementById('search-dropdown');
+  // Los resultados van en cuadros: ↓ ↑ cambian de fila y → ← de cuadro (las
+  // dos últimas solo con uno marcado; si no, mueven el cursor del texto).
+  const listaAbierta = !dd.classList.contains('hidden') && searchResults.length > 0;
   if (e.key === 'ArrowDown') {
     e.preventDefault();
-    selectedSearchIdx = Math.min(selectedSearchIdx + 1, searchResults.length - 1);
+    if (!listaAbierta) return;
+    selectedSearchIdx = selectedSearchIdx < 0
+      ? 0
+      : Math.min(selectedSearchIdx + searchGridColumns(), searchResults.length - 1);
     highlightSearch();
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
-    selectedSearchIdx = Math.max(selectedSearchIdx - 1, 0);
+    if (!listaAbierta) return;
+    selectedSearchIdx = Math.max(selectedSearchIdx - searchGridColumns(), 0);
+    highlightSearch();
+  } else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && listaAbierta && selectedSearchIdx >= 0) {
+    e.preventDefault();
+    selectedSearchIdx = e.key === 'ArrowRight'
+      ? Math.min(selectedSearchIdx + 1, searchResults.length - 1)
+      : Math.max(selectedSearchIdx - 1, 0);
     highlightSearch();
   } else if (e.key === 'Enter') {
     e.preventDefault();
@@ -5530,8 +5596,9 @@ function handleSearchKey(e) {
     const currentQuery = String(document.getElementById('product-search')?.value || '').trim();
     if (currentQuery && addProductByScaleBarcode(currentQuery)) return;
 
-    // Si el usuario seleccionó un ítem con las flechas ↑↓, usar esa selección explícita.
-    if (selectedSearchIdx >= 0 && searchResults[selectedSearchIdx]) {
+    // La fila marcada (con las flechas ↑↓, o la que más se parece al nombre
+    // escrito) se agrega; solo si la lista está a la vista.
+    if (selectedSearchIdx >= 0 && searchResults[selectedSearchIdx] && !dd.classList.contains('hidden')) {
       addProductById(searchResults[selectedSearchIdx].id);
       return;
     }
@@ -5557,24 +5624,26 @@ function handleSearchKey(e) {
       // adivinar.
       const ddVisible = !dd.classList.contains('hidden');
       if (ddVisible && searchResults.length > 0 && selectedSearchIdx < 0) {
-        const exactMatch = searchResults.find(p => p.codigo.toLowerCase() === currentQuery.toLowerCase());
+        const exactMatch = searchResults.find(p => String(p.codigo ?? '').toLowerCase() === currentQuery.toLowerCase());
         if (exactMatch) {
           addProductById(exactMatch.id);
           return;
         }
       }
 
-      _doSearchProduct(currentQuery);
-      if (searchResults.length === 1) {
+      const busqueda = _doSearchProduct(currentQuery);
+      if (searchResults.length === 1 && !busqueda?.soloParecidos) {
         addProductById(searchResults[0].id);
-      } else if (searchResults.length > 1) {
+      } else if (searchResults.length >= 1) {
         // Múltiples resultados: buscar coincidencia exacta por código primero
-        const exactMatch = searchResults.find(p => p.codigo.toLowerCase() === currentQuery.toLowerCase());
+        const exactMatch = searchResults.find(p => String(p.codigo ?? '').toLowerCase() === currentQuery.toLowerCase());
         if (exactMatch) {
           addProductById(exactMatch.id);
         }
         // Si no hay exacta, el dropdown se muestra con los resultados frescos
-        // y no se agrega nada a ciegas — el cajero elige con clic o flechas+Enter.
+        // y no se agrega nada a ciegas: el cajero lo ve (con el más parecido
+        // marcado si escribió un nombre) y elige con otro Enter, flechas o clic.
+        // Uno solo "parecido" (mal escrito) tampoco entra sin que lo vea.
       } else {
         // Sin resultados — sugerir registro del producto
         if (!addProductByScaleBarcode(currentQuery)) {
@@ -5747,8 +5816,10 @@ function irARegistrarProducto(codigo) {
 }
 
 function highlightSearch() {
-  document.querySelectorAll('.search-result-item').forEach((el, i) => {
+  document.querySelectorAll('#search-dropdown .search-result-item').forEach((el, i) => {
     el.classList.toggle('selected', i === selectedSearchIdx);
+    // Con 50 en la lista, la marcada se lleva a la vista al bajar con las flechas.
+    if (i === selectedSearchIdx && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
   });
 }
 

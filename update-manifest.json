@@ -1,14 +1,14 @@
 {
-  "version": "1.6.41",
-  "stableVersion": "1.6.41",
-  "date": "23/11/2026",
+  "version": "1.6.42",
+  "stableVersion": "1.6.42",
+  "date": "24/11/2026",
   "size": "198 MB",
   "type": "fix",
   "critical": false,
   "downloadUrl": null,
   "changes": [
-    "Nube: las PC instaladas sin la llave de Firebase vuelven a subir sus datos (app de reportes, Centro de Control, catálogo, tienda). Al quedar vinculada, la PC recibe de la nube una credencial limitada y la guarda cifrada.",
-    "Asistente: vuelven a aparecer los contadores al buscar \"Cliente de un contador\", y el contador elegido queda guardado en la licencia.",
-    "Licencia: si la nube rechaza revalidar una prueba vencida, el mensaje dice el motivo (por ejemplo, el correo del dueño sin verificar o el límite de equipos)."
+    "Ventas: el buscador encuentra el producto con un pedazo del nombre, con las palabras en cualquier orden y sin acentos (\"pollo horno\", \"pina\"), lo ordena del más parecido al menos y sugiere el parecido cuando está mal escrito.",
+    "Ventas: los resultados salen en cuadros como el catálogo (hasta 50) y Enter agrega el que más se parece. El lector de códigos funciona igual que antes.",
+    "Productos: la vista de cuadrícula vuelve a hacer scroll y muestra el pie con las páginas."
   ]
 }

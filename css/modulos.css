@@ -935,6 +935,15 @@ svg.tc-emoji-icon {
   overflow: auto;
 }
 
+/* La cuadrícula (Productos → Cuadrícula) también se desplaza dentro del panel:
+   sin esto quedaba cortada y no hacía scroll (Emilio, 2026-11-24). */
+#app .tc-list-panel > .products-grid-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-top: 0;
+  overflow: auto;
+}
+
 #app .tc-list-panel > .tc-table-footer {
   border-top: var(--tc-border-w) solid var(--tc-border-soft);
 }
